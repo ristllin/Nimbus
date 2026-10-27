@@ -554,9 +554,9 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
     for (size_t i = 0; i < hostCount; ++i)
       spend->add(hostList[i].c_str(), pd.orchModel ? pd.orchModel(hostList[i].c_str()).c_str() : "",
                  hostUse[i]);
-    char line[256];
-    orch::spendLine(*spend, line, sizeof(line));
-    hlog::logf("fabric-spend: %s", line);
+    std::string line(400, '\0');   // model ids included: logged whole, built off the stack
+    line.resize(orch::spendLine(*spend, &line[0], line.size()));
+    hlog::log(("fabric-spend: " + line).c_str());
   }
   // Glass Box P3: hand the canonical transcript to the engine BEFORE the
   // failure return - a failed turn's middle is exactly what needs debugging.

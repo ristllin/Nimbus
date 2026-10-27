@@ -2,8 +2,10 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_heap_caps.h>
 #include <time.h>
 
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -15,10 +17,13 @@
 #include "nimbus/orch/model_choices.h"  // staticModelChoices - before the first fetch
 #include "nimbus/orch/model_refresh.h"
 #include "nimbus/orch/provider_slots.h"
+#include "nimbus/orch/served_model.h"   // the concrete model behind an answer's alias
+#include "nimbus/orch/turn_images.h"    // installImageInputLookup - photos only to a seeing head
 #include "nimbus/orch/usage_ledger.h"   // rateSrcName
 #include "orchestrator.h"               // turnInFlight
 #include "provider_verify.h"
 #include "store.h"
+#include "telegram.h"                   // taskAlive - the poll task a refresh can run on
 #include "version.h"                    // NIMBUS_FW_VERSION - the store header's firmware
 
 namespace agent {
@@ -31,7 +36,8 @@ using nimbus::orch::RefreshAsk;
 std::mutex                       g_mx;   // the queue: turn task, web task, main loop
 nimbus::orch::ModelRefreshQueue  g_q;
 bool                             g_begun = false;
-char                             g_running[16] = {};   // the refresh the verify task runs now
+char                             g_running[16] = {};   // the refresh under way (its task or the poll task)
+char                             g_staged[16] = {};    // handed to the poll task, not yet run there
 const char*                      g_why[nimbus::orch::kProviderSlotCount] = {};
 
 // The passive check: first at boot plus 10 minutes (the first turns after a restart
@@ -140,11 +146,12 @@ int passiveCheck() {
   const uint32_t now = nowEpoch();
   int queued = 0;
   for (const nimbus::orch::ProviderSlot& slot : nimbus::orch::kProviderSlots) {
-    // A rejected key is the owner's to fix: it is not asked again every 6 hours.
-    if (!keyed(slot.slug) || store::verifyResult(slot.slug) == 0) continue;
-    const nimbus::orch::PassiveWhy why =
-        nimbus::orch::passiveRefreshDue(readStamp(slot.slug), runningFw(), now);
-    if (why == nimbus::orch::PassiveWhy::None) continue;
+    // A rejected key is the owner's to fix: it is not asked again every 6 hours. A
+    // paused or parked provider is asked: its list GET is free (passiveWants).
+    const nimbus::orch::ModelsStamp stamp = readStamp(slot.slug);
+    if (!nimbus::orch::passiveWants(keyed(slot.slug), store::verifyResult(slot.slug), stamp, runningFw(), now))
+      continue;
+    const nimbus::orch::PassiveWhy why = nimbus::orch::passiveRefreshDue(stamp, runningFw(), now);
     const RefreshAsk a = request(slot.slug, "passive");
     queued += a == RefreshAsk::Queued;
     alogif("models: %s passive refresh due (%s) -> %s", slot.slug, nimbus::orch::passiveWhyToken(why),
@@ -161,7 +168,8 @@ RefreshAsk request(const char* provider, const char* why) {
   RefreshAsk a;
   {
     std::lock_guard<std::mutex> lk(g_mx);
-    a = g_q.request(provider, k, (uint32_t)millis());
+    // A key verify (a key saved or checked again): the list may differ, so the hour does not hold it.
+    a = g_q.request(provider, k, (uint32_t)millis(), why && !std::strcmp(why, "verify"));
     if (a == RefreshAsk::Queued) g_why[slotIndex(provider)] = why;
   }
   if (a == RefreshAsk::Queued) alogif("models: %s list refresh queued (%s)", provider, why ? why : "-");
@@ -182,7 +190,26 @@ int passiveCheckNow() { return g_begun ? passiveCheck() : 0; }
 
 bool pending(const char* provider) {
   std::lock_guard<std::mutex> lk(g_mx);
-  return g_q.queued(provider) || (g_running[0] && provider && !std::strcmp(g_running, provider));
+  // A refresh waiting out a failure's retry delay is not under way: the page does not wait on it.
+  const bool waiting = g_q.queued(provider) && !g_q.retryWaiting(provider, (uint32_t)millis());
+  return waiting || (g_running[0] && provider && !std::strcmp(g_running, provider));
+}
+
+bool stagedPending() {
+  std::lock_guard<std::mutex> lk(g_mx);
+  return g_staged[0] != 0;
+}
+
+void runStaged() {
+  char slug[sizeof(g_staged)];
+  {
+    std::lock_guard<std::mutex> lk(g_mx);
+    std::memcpy(slug, g_staged, sizeof(slug));
+  }
+  // A refusal runs nothing: the next pass settles it as a failed run (the retry delay applies).
+  if (slug[0]) (void)provider_verify::runRefreshHere(String(slug));
+  std::lock_guard<std::mutex> lk(g_mx);
+  g_staged[0] = 0;   // cleared after the run: tick reads "busy" until here
 }
 
 void begin() {
@@ -198,6 +225,68 @@ void begin() {
   h.load = [](const std::string& p, nimbus::orch::ProviderModels& out) { return loadRows(p, out); };
   h.requestRefresh = [](const std::string& p) { return request(p.c_str(), "head"); };
   nimbus::orch::registerModelsTool(memory::registry(), h);
+  // A turn's record names the concrete model each host answered with: a "-latest" echo
+  // (Mistral's answers) is looked up in the stored lists this module keeps fresh.
+  nimbus::orch::installServedModelResolver([](const char* host, const char* echo, char* out, size_t cap) {
+    const std::string id = store::concreteModelId(String(host), echo ? std::string(echo) : std::string());
+    if (!id.empty()) std::snprintf(out, cap, "%s", id.c_str());
+  });
+  // Photos go to the head as images only when its model takes them: the provider's own
+  // list decides when it says (Mistral's and Anthropic's do), else the name rule.
+  nimbus::orch::installImageInputLookup([](const char* host, const char* model) {
+    return store::modelImageInput(String(host), model ? std::string(model) : std::string());
+  });
+}
+
+// The refresh the verify task ran for `slug` has ended: when the stored list is still
+// due (no answer, a cut or empty list, a failed write) it is queued again on the
+// queue's growing delay. A key the refresh found rejected, or a removed key, is not
+// retried (the owner's to fix).
+static void noteFinished(const char* slug, uint32_t nowMs) {
+  const bool stillDue = nimbus::orch::passiveWants(keyed(slug), store::verifyResult(slug), readStamp(slug),
+                                                   runningFw(), nowEpoch());
+  uint32_t retryMs;
+  {
+    std::lock_guard<std::mutex> lk(g_mx);
+    retryMs = g_q.finished(slug, stillDue, nowMs);
+  }
+  if (retryMs) alogf("models: %s list refresh did not land - next try in %u min", slug, (unsigned)(retryMs / 60000u));
+}
+
+// Whether a refresh is under way (on its task, or handed to the poll task and not yet
+// run there); one that ended since the last pass is settled here (noteFinished).
+static bool settleRun(bool pollAlive, uint32_t nowMs) {
+  char ended[sizeof(g_running)] = {};
+  bool busy;
+  {
+    std::lock_guard<std::mutex> lk(g_mx);
+    if (!pollAlive) g_staged[0] = 0;   // the poll task is gone: what it held ends as a failed run
+    busy = provider_verify::pending() || g_staged[0];
+    if (!busy && g_running[0]) {
+      std::memcpy(ended, g_running, sizeof(ended));
+      g_running[0] = 0;
+    }
+  }
+  if (ended[0]) noteFinished(ended, nowMs);   // flash reads: outside the queue lock
+  return busy;
+}
+
+// Start `due` on its route: its own task, or handed to the poll task's staged work.
+static void startDue(const char* due, const char* why, nimbus::orch::RefreshRoute route, bool pollAlive,
+                     uint32_t nowMs) {
+  bool onPoll = route == nimbus::orch::RefreshRoute::Poll;
+  // Its own task refused after all (the block moved): the poll task, when there is one.
+  if (!onPoll && !provider_verify::requestRefresh(due)) {
+    if (!pollAlive) return;   // stays queued until it starts
+    onPoll = true;
+  }
+  {
+    std::lock_guard<std::mutex> lk(g_mx);
+    g_q.started(due, nowMs);
+    std::strncpy(g_running, due, sizeof(g_running) - 1);
+    if (onPoll) std::strncpy(g_staged, due, sizeof(g_staged) - 1);
+  }
+  alogif("models: %s list refresh started (%s, %s)", due, why ? why : "-", onPoll ? "poll" : "task");
 }
 
 void tick(uint32_t nowMs) {
@@ -215,25 +304,23 @@ void tick(uint32_t nowMs) {
     s_passiveAt = nowMs + kPassiveEveryMs;
     passiveCheck();
   }
-  const bool busy = provider_verify::pending();
   const bool inTurn = orchestrator::turnInFlight();
-  const bool online = WiFi.status() == WL_CONNECTED;
-  const bool restingOk = nimbus::heapwatch::restingLargest() >= provider_verify::deferFloor();
+  const bool pollAlive = telegram::taskAlive();
+  const bool busy = settleRun(pollAlive, nowMs);
   const char* due;
   const char* why;
   {
     std::lock_guard<std::mutex> lk(g_mx);
-    if (!busy) g_running[0] = 0;
-    due = g_q.due(inTurn, online, busy, restingOk);
+    due = g_q.due(inTurn, WiFi.status() == WL_CONNECTED, busy, /*restingOk=*/true, nowMs);
     why = due ? g_why[slotIndex(due)] : nullptr;
   }
-  if (!due || !provider_verify::requestRefresh(due)) return;   // stays queued until it starts
-  {
-    std::lock_guard<std::mutex> lk(g_mx);
-    g_q.started(due, nowMs);
-    std::strncpy(g_running, due, sizeof(g_running) - 1);
-  }
-  alogif("models: %s list refresh started (%s)", due, why ? why : "-");
+  if (!due) return;
+  // Its own task when the 8 KB stack fits, else the poll task, else it waits (model_refresh.h
+  // refreshRoute: the memory gate, judged only when something is due).
+  const nimbus::orch::RefreshRoute route = nimbus::orch::refreshRoute(
+      inTurn, pollAlive, (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+      (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), nimbus::heapwatch::restingLargest());
+  if (route != nimbus::orch::RefreshRoute::Wait) startDue(due, why, route, pollAlive, nowMs);
 }
 
 }  // namespace model_refresh

@@ -36,6 +36,12 @@ bool request(const String& provider);
 // resting heap is short; the caller (model_refresh) keeps it queued for later.
 bool requestRefresh(const String& provider);
 
+// The same model-list refresh run on the CALLING task: the Telegram poll task's staged
+// work (model_refresh), when the verify task's 8 KB stack does not fit in one internal
+// block (nimbus::orch::refreshRoute). Same claim, same work slot, same GET; at a turn's
+// floors. False (nothing ran) while a verify runs, a turn is in flight or memory is short.
+bool runRefreshHere(const String& provider);
+
 // True while a verify is queued or running.
 bool pending();
 

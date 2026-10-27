@@ -831,6 +831,59 @@ static void test_api_rows_carry_price_or_unknown() {
   TEST_ASSERT_TRUE(sawBuiltin && sawUnknown);
 }
 
+// HFM (26 Oct 2026): Mistral's chat answers echo the alias asked for ("model":
+// "mistral-large-latest"), so the device learns the model behind it from Mistral's own
+// list: each -latest row keeps the dated model it points at as its name (the API's
+// name, else its dated alias), and concreteModelName reads it back from the store.
+// Rows of other providers keep their display names, which never answer as a model id.
+static void test_mistral_aliases_resolve_to_their_dated_model() {
+  ModelStoreMeta meta;
+  meta.fw = "v4.6.1";
+  const std::string mistral =
+      serializeModelStore(meta, harvestOf("mistral", readFix10("mistral.json"), kOct22).rows);
+  struct Case { const char* alias; const char* want; };
+  const Case cases[] = {
+      {"mistral-large-latest", "mistral-large-2512"},    // the API's name
+      {"mistral-small-latest", "mistral-small-2603"},
+      {"mistral-medium-latest", "mistral-medium-2604"},  // the name is the alias: its dated alias
+      {"magistral-medium-latest", "mistral-medium-2604"},
+      {"ministral-8b-latest", "ministral-8b-2512"},
+  };
+  for (const Case& c : cases) TEST_ASSERT_EQUAL_STRING_MESSAGE(c.want, concreteModelName(mistral, c.alias).c_str(), c.alias);
+  // Nothing to resolve: a concrete id, an unknown alias, an empty or hostile id.
+  TEST_ASSERT_EQUAL_STRING("", concreteModelName(mistral, "mistral-large-2512").c_str());
+  TEST_ASSERT_EQUAL_STRING("", concreteModelName(mistral, "mistral-huge-latest").c_str());
+  TEST_ASSERT_EQUAL_STRING("", concreteModelName(mistral, "").c_str());
+  TEST_ASSERT_EQUAL_STRING("", concreteModelName(mistral, "x\tmistral-large-latest").c_str());
+  TEST_ASSERT_EQUAL_STRING("", concreteModelName("", "mistral-large-latest").c_str());
+  // A display name is no model id (Anthropic's "Claude Opus 5.5").
+  const std::string anthropic =
+      serializeModelStore(meta, harvestOf("anthropic", readFix10("anthropic.json"), kOct22).rows);
+  TEST_ASSERT_EQUAL_STRING("", concreteModelName(anthropic, "claude-opus-5-5").c_str());
+  TEST_ASSERT_TRUE(anthropic.find("\nclaude-opus-5-5\tClaude Opus 5.5\t") != std::string::npos);
+}
+
+// Whether the head model takes images, from the provider's own list (the photos go to
+// the head natively only when it does): Mistral's and Anthropic's lists say so per model;
+// an OpenAI or Z.ai row (no capabilities in the API) and an unknown id leave it to the
+// name rule (-1).
+static void test_store_image_input_from_api_capabilities() {
+  ModelStoreMeta meta;
+  meta.fw = "v4.6.1";
+  auto storeOf = [&](const char* p) {
+    return serializeModelStore(meta, harvestOf(p, readFix10((std::string(p) + ".json").c_str()), kOct22).rows);
+  };
+  const std::string mistral = storeOf("mistral");
+  TEST_ASSERT_EQUAL_INT(1, storeImageInput("mistral", mistral, "mistral-large-latest"));
+  TEST_ASSERT_EQUAL_INT(1, storeImageInput("mistral", mistral, "mistral-small-latest"));
+  TEST_ASSERT_EQUAL_INT(0, storeImageInput("mistral", mistral, "codestral-latest"));
+  TEST_ASSERT_EQUAL_INT(-1, storeImageInput("mistral", mistral, "mistral-large-2512"));   // folded into its alias
+  TEST_ASSERT_EQUAL_INT(1, storeImageInput("anthropic", storeOf("anthropic"), "claude-haiku-5-5"));
+  TEST_ASSERT_EQUAL_INT(-1, storeImageInput("openai", storeOf("openai"), "gpt-5.6-sol"));
+  TEST_ASSERT_EQUAL_INT(-1, storeImageInput("mistral", "", "mistral-large-latest"));
+  TEST_ASSERT_EQUAL_INT(-1, storeImageInput("mistral", mistral, ""));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_probe_verdict);
@@ -866,6 +919,8 @@ int main(int, char**) {
   RUN_TEST(test_legacy_lists_merge_into_the_store);
   RUN_TEST(test_api_rows_carry_price_or_unknown);
   RUN_TEST(test_probe_verdict_on_the_live_oct_2026_answers);
+  RUN_TEST(test_mistral_aliases_resolve_to_their_dated_model);
+  RUN_TEST(test_store_image_input_from_api_capabilities);
   UNITY_END();
   return 0;
 }

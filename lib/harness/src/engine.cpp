@@ -1360,10 +1360,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     lastTurnUsage_ = total;
     if (!total.empty()) sessionUsage_ += total;
     {
-      char line[256];
-      orch::spendLine(tf.spend, line, sizeof(line));
-      hlog::logf("turn spend: %s %s | %s", okFlag ? "ok" : "FAIL",
-                 turnSourceSlug(turnSource_, attribution_), line);
+      // Four slots with their model ids outgrow logf's line: built off the stack, logged whole.
+      std::string line(400, '\0');
+      line.resize(orch::spendLine(tf.spend, &line[0], line.size()));
+      hlog::log((std::string("turn spend: ") + (okFlag ? "ok " : "FAIL ") +
+                 turnSourceSlug(turnSource_, attribution_) + " | " + line).c_str());
     }
     // Lane T (19 Oct triage): a turn no host billed was never served by a fallback -
     // fallback=false on its row, and the next turn gets no [FALLBACK] note about it.
@@ -1749,6 +1750,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.failure = ev.ok ? nullptr : &tf.chain;
     ev.loopTurn = !lastBrief_.empty();   // only a tool loop hands back a transcript brief
     ev.history = history;
+    for (size_t i = tf.spend.n; i-- > 0;)
+      if (host == tf.spend.slot[i].host) { ev.servedModel = tf.spend.slot[i].served; break; }
+    ev.askedModel = d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
     d_.hooks.onTurnDebug(ev);
   }
   if (!ok || outJson.empty()) {

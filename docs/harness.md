@@ -151,7 +151,9 @@ is told once; with no key anywhere every turn answers "No AI provider has a key:
 add one under Assistant > Models." without a request. The model can switch its own
 host and model via the `orch_model` action (validated by the one model check, key
 required; a miss answers `not in <provider> list cached <date>; refresh queued` and
-queues one list refresh, at most one per provider an hour), but
+queues one list refresh, at most one per provider an hour; a switch away from a head
+that is paused, out of credit or over its budget is refused with the reason, since the
+failover is already automatic and temporary, unless the owner asks again by name), but
 keys, priority order and routing stay owner-only, both structurally (no setter
 exists in the config contract) and by protected-key refusal. Failover walks up
 to 2 keyed alternates; a fresh provider thread each time. A failed turn sends the

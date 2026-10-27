@@ -380,6 +380,22 @@ inline constexpr size_t kDirectChoicesMax = 8;
 std::string directChoices(const std::string& provider, const std::vector<ModelInfo>& rows,
                           uint32_t now);
 
+// The concrete model behind a "-latest" alias, from a store text: the row whose id is
+// `alias` names it (Mistral's /v1/models gives each alias the model it points at, e.g.
+// mistral-large-latest -> "mistral-large-2512"; the harvest keeps that as the row's
+// name). "" when `alias` is no -latest alias, no row holds it, or its name is not a
+// model id (a display name such as "Claude Opus 5.5" never answers). Mistral's chat
+// answers echo the alias it was asked for, never the model behind it (measured 26 Oct
+// 2026), so this is how the device learns which model really answered.
+std::string concreteModelName(const std::string& storeText, const std::string& alias);
+// Does `id` end in "-latest" (a provider alias for its current model)?
+bool isLatestAlias(const std::string& id);
+
+// What a store text says about `id` taking image input: 1 = its row's API-reported
+// capabilities include vision, 0 = they do not, -1 = no row for `id`, or its
+// capabilities are the id heuristic's (an OpenAI or Z.ai list, a legacy merge).
+int storeImageInput(const std::string& provider, const std::string& storeText, const std::string& id);
+
 // Honest freshness for the prompt's model line: "(list from 2026-10-22, may miss newer
 // models)", "(list date unknown, may miss newer models)" for a store written while the
 // clock was unset (or merged from an older build), "(built-in list, not fetched yet)"

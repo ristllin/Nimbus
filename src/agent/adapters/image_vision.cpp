@@ -194,9 +194,19 @@ bool chatHasPhoto(const std::string& ns, const std::string& ref) {
 }
 }  // namespace
 
+// Never both: a photo of this turn the head already has as an image is not read a
+// second time (on 26 Oct such a second read held the turn for two minutes and failed).
+static bool shownThisTurn(const std::string& ref) {
+  const nimbus::orch::TurnImages* cur = nimbus::orch::activeTurnImages();
+  return cur && cur->shown && !cur->rejected && cur->holds(ref);
+}
+
 std::string look(const std::string& ref, const std::string& question, const std::string& ns, bool owner,
                  std::string& err) {
   if (!lookArgsValid(ref, question, err)) return std::string();
+  if (shownThisTurn(ref))
+    return "This photo came with the current message and is already in front of you as an image: "
+           "answer from what you see in it.";
   if (!memory::haveSd()) {
     err = "no memory card: earlier photos are not kept";
     return std::string();

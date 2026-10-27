@@ -1,5 +1,7 @@
 #include "nimbus/harness/turn_anatomy.h"
 
+#include "nimbus/orch/model_catalog.h"   // isLatestAlias
+
 #include "nimbus/harness/hooks.h"
 #include "nimbus/harness/prompt_layout.h"
 #include "nimbus/orch/failure_chain.h"   // FailureChain - why a turn failed (lane T)
@@ -185,11 +187,27 @@ std::string resultLine(const TurnDebugEv& ev) {
   return "FAILED";
 }
 
+// The model line: what the answering host really ran, then what it was asked for when
+// that differs ("mistral-large-2512 (asked for mistral-large-latest)").
+static std::string modelLine(const TurnDebugEv& ev) {
+  if (ev.servedModel.empty()) {
+    const std::string none = ev.ok ? "not named by the provider" : "no answer named one";
+    return ev.askedModel.empty() ? none : none + " (asked for " + ev.askedModel + ")";
+  }
+  // An alias the provider's stored list does not resolve yet is no concrete model.
+  const std::string alias = nimbus::orch::isLatestAlias(ev.servedModel)
+                                ? " (an alias: its list does not name the model behind it yet)"
+                                : "";
+  if (ev.askedModel.empty() || ev.askedModel == ev.servedModel) return ev.servedModel + alias;
+  return ev.servedModel + " (asked for " + ev.askedModel + ")" + alias;
+}
+
 std::string turnAnatomyHeader(const TurnDebugEv& ev) {
   static const std::string kNone;
   const std::string& prompt = ev.instructions ? *ev.instructions : kNone;
   return "===== NIMBUS TURN ANATOMY - the last completed turn =====\n"
          "host: " + ev.host + "\n"
+         "model: " + modelLine(ev) + "\n"
          "provider chain: " + chainLine(ev) + "\n"
          "device history this turn: " + historyLine(ev.history) + "\n"
          "result: " + resultLine(ev) + "\n"

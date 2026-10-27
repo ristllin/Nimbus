@@ -1,5 +1,6 @@
 ===== NIMBUS TURN ANATOMY - the last completed turn =====
 host: anthropic
+model: not named by the provider (asked for model-anthropic)
 provider chain: none (stateless loop)
 device history this turn: summary 0 B (clipped no), recent window 2 rows / 172 bytes, running memory 0 B, recalled 1 item
 result: ok

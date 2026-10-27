@@ -69,6 +69,10 @@
 #include "nimbus/orch/compact.h"        // modelCtxTokens (window table)
 #include "nimbus/orch/owner_first.h"    // OwnerFirstGate - background work waits for the owner
 #include "nimbus/orch/servedby.h"       // CUM-236 turn-chip served-by disclosure
+#include "nimbus/orch/served_model.h"   // the model each provider really answered with
+#include "nimbus/orch/provider_slots.h" // kProviderSlots - every provider, for that list
+#include "nimbus/orch/head_switch.h"    // headPauseNote - why a head is closed
+#include "nimbus/orch/provider_park.h"  // the park the head pause reads
 #include "nimbus/orch/failure_rows.h"   // turnEndRowJson / errorEventText - lane T rows
 #include "nimbus/orch/trace_rows.h"    // the tool trace row + the lost-sidecar mark (L19-24)
 #include "nimbus/orch/command.h"
@@ -117,6 +121,12 @@ static Sinks        g_sinks;
 static JobEngine*   g_jobs = nullptr;
 // The portable turn orchestration (Stage G lift) - constructed in begin().
 static TurnEngine*  g_engine = nullptr;
+// The owner's message of the turn in flight (empty for a turn the owner did not write):
+// the one thing that may confirm moving the head away from a paused provider (head_switch.h).
+// Written on the turn task (handleMessage); read by the apply under it.
+static nimbus::orch::OwnerMessage g_turnOwner;   // empty = no owner message in flight
+static uint32_t     g_ownerMsgs = 0;              // owner messages numbered since boot
+static std::mutex   g_turnOwnerMx;                // device.control may also run on the /mcp task
 // The harness's read-mostly config view over NVS (store_config.cpp).
 static HarnessConfig g_cfg;
 
@@ -768,6 +778,23 @@ static JobEngine::Deps buildJobDeps() {
 
 // ---- the TurnEngine wiring --------------------------------------------------
 
+// Why paid requests to `p` are held off now, as the sentence a refused head switch opens
+// with (nimbus::orch::headPauseNote), "" when it is open: the pause switch (the owner,
+// the overall ceiling, the provider's monthly limit), a refusal park on the chat seam,
+// the monthly budget check. The park's re-check request is never taken; the budget check
+// is the one every turn makes at its start.
+static std::string headPauseNoteFor(const std::string& p) {
+  nimbus::orch::ProviderPark& park = nimbus::orch::providerPark();
+  nimbus::orch::ParkKind kind = nimbus::orch::ParkKind::None;
+  nimbus::orch::ParkEntry e[nimbus::orch::ProviderPark::kMaxProviders];
+  const size_t n = park.snapshot(e, nimbus::orch::ProviderPark::kMaxProviders, millis());
+  for (size_t i = 0; i < n; ++i)
+    if (p == e[i].provider && (e[i].seamMask & (1u << (uint8_t)nimbus::orch::PaidSeam::Chat))) kind = e[i].kind;
+  const nimbus::orch::ProviderSlot* slot = nimbus::orch::findProviderSlot(p.c_str());
+  return nimbus::orch::headPauseNote(slot ? slot->label : p, park.pausedBy(p.c_str()), kind,
+                                       store::providerOverBudget(String(p.c_str())));
+}
+
 static agent::ApplyDeps buildApplyDeps() {
   agent::ApplyDeps d;
   // Execution-only closures - every POLICY decision (scheduled-turn refusals,
@@ -814,6 +841,14 @@ static agent::ApplyDeps buildApplyDeps() {
     store::setOrchHost(String(p.c_str()));
     store::setOrchModel(String(p.c_str()), String(m.c_str()));
   };
+  // A pause never moves the owner's head (the policy is apply.cpp's): the facts.
+  d.headHost = [] { return g_engine ? g_engine->headHost() : std::string(store::orchHost().c_str()); };
+  d.headPause = [](const std::string& p) { return headPauseNoteFor(p); };
+  d.ownerMessage = [] {
+    std::lock_guard<std::mutex> lk(g_turnOwnerMx);
+    return g_turnOwner;
+  };
+  d.nowMs = [] { return (uint32_t)millis(); };
   d.setModelMemory = [](const std::string& chatId, const std::string& v) {
     return g_mem.setModel(chatId, v);   // per-chat running memory (B3)
   };
@@ -1156,6 +1191,11 @@ static TurnEngine::Deps buildTurnDeps() {
     if (!agent::history::v2Enabled()) in.recentConversation = buildRecentWindow(chatId);
     in.devName   = std::string(nimbus::sys::deviceName().c_str());
     in.hostLabel = agent::hostForPrompt(g_cfg.provider);
+    // The model each provider really answered with for its current pick (the identity line).
+    for (const nimbus::orch::ProviderSlot& slot : nimbus::orch::kProviderSlots) {
+      std::string m = nimbus::orch::servedModelFor(slot.slug, store::orchModel(slot.slug).c_str());
+      if (!m.empty()) in.servedModels.push_back({slot.slug, std::move(m)});
+    }
     in.now       = std::string(nimbus::hw::localTimeStr().c_str());  // "" = unsynced
     in.fw        = NIMBUS_FW_VERSION " (" NIMBUS_FW_BUILD ")";
     in.directive = g_mem.directive();
@@ -1692,6 +1732,10 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
                          ORCH_AUTO_TURN_MIN_HEAP, ORCH_LOOP_MIN_HEAP,
                          ORCH_TURN_MIN_LARGEST_BLOCK});
   g_engine = &turnEngine;
+  // A lazily created mutex allocates from internal RAM on first use: create these now.
+  { std::lock_guard<std::mutex> prime(g_turnOwnerMx); }
+  nimbus::orch::headSwitchGuard().reset();
+  nimbus::orch::clearServedModels();
   g_mem.begin(&g_memStore, std::string(store::sysPrompt().c_str()));
   g_folds.begin(&g_foldIO);   // v3.6.0 per-chat fold state (/data/chatsum.txt)
   loadTenants();              // v3.7.0 RBAC roles/quotas (+ legacy adoption)
@@ -2074,8 +2118,17 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                     ": That message couldn't be processed here.", /*system=*/true);
     return;
   }
+  // Only the owner's own words may confirm a head switch (head_switch.h): web, serial and
+  // voice are the owner's channels, a Telegram chat counts when it is the admin's.
+  if (nimbus::orch::ownerChannel(std::string(chatId.c_str()), roleOfChat(chatId) == nimbus::orch::Role::Admin)) {
+    std::lock_guard<std::mutex> lk(g_turnOwnerMx);
+    g_turnOwner.text = text.c_str();
+    g_turnOwner.number = ++g_ownerMsgs;
+  }
   g_engine->handleMessage(std::string(text.c_str()), std::string(fromName.c_str()),
                           std::string(chatId.c_str()));
+  std::lock_guard<std::mutex> lk(g_turnOwnerMx);
+  g_turnOwner = nimbus::orch::OwnerMessage();
 }
 
 // ---- output-channel helpers (P6: reply.speak / reply.telegram tools) --------

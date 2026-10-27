@@ -12,15 +12,19 @@
 // joins one RAM queue with one rule: at most one refresh per provider per hour
 // (nimbus::orch::ModelRefreshQueue, host-tested). tick() on the main loop starts a
 // queued refresh only when the device is free - no turn in flight, online, the
-// verify slot idle, the resting heap above the handshake floor - one provider at a
-// time, on the self-deleting verify task (provider_verify::requestRefresh). Nothing
+// verify slot idle, the resting heap above the one-connection floor
+// (nimbus::orch::kRefreshMinLargest) - one provider at a time, on the self-deleting
+// verify task (provider_verify::requestRefresh), or on the Telegram poll task when that
+// task's stack does not fit in one internal block. A refresh that ends with the list
+// still due is queued again on a growing delay (2 min doubling to 1 hour). Nothing
 // here opens a connection or blocks: the tool and the web route only set a flag.
 //
 // The passive refresh: weekly, or after a firmware update. It reads the header of lane
 // F's model store (/data/models_<slug>.txt: "#models v1 fetchedAt=<s> fw=<version>
 // ...", written by every list fetch); at boot plus 10 minutes, then every 6 hours, a
-// keyed provider whose store is missing, a week old or written by another firmware
-// version is queued. Never NVS.
+// keyed provider whose store is missing, only the boot merge of an older build's
+// lists, a week old or written by another firmware version is queued, paused or
+// parked or not (the list GET is free). Never NVS.
 namespace agent {
 namespace model_refresh {
 
@@ -48,8 +52,15 @@ uint32_t fetchedAt(const char* provider);
 // The firmware version that wrote `provider`'s store ("" = no store).
 std::string stampFw(const char* provider);
 
-// A refresh of `provider` is queued or running.
+// A refresh of `provider` is queued or running (a failed one waiting out its retry
+// delay is neither).
 bool pending(const char* provider);
+
+// The Telegram poll task's staged work (main.cpp stagedWorkPending / stagedWorkRun): a
+// refresh whose own task does not fit in one internal block runs on that task, at its
+// loop top, never inside a turn (nimbus::orch::refreshRoute).
+bool stagedPending();
+void runStaged();
 
 // Run the passive check now instead of on its clock (the test console's MODELS
 // passive); returns how many providers it queued.

@@ -27,6 +27,8 @@
 #include "orchestrator.h"         // turnInFlight - never re-verify beside a live turn
 #include "provider_verify_retry.h" // pure backoff policy (host-tested)
 #include "workspace_probe.h"       // CUM-537 probe queue + yielding fetch (host-tested)
+#include "model_refresh.h"         // a deferred LLM verify still gets its model list
+#include "nimbus/orch/model_refresh.h"  // kRefreshMinLargest - a list refresh's floor
 
 namespace agent {
 namespace provider_verify {
@@ -78,6 +80,10 @@ uint32_t deferFloor() { return (uint32_t)VERIFY_MIN_MAX8; }
 // task it read 7,156 B while the device rested at 15,860 B - the stack had taken the
 // block - and a loaded device deferred every verify for good.
 static const uint32_t kVerifyStackBytes = 8192;
+static_assert(kVerifyStackBytes == nimbus::orch::kRefreshTaskStackBytes,
+              "the refresh route (model_refresh.h refreshRoute) sizes this worker's stack");
+static_assert(nimbus::orch::kRefreshPollMinFree == ORCH_TURN_HARD_FLOOR,
+              "a refresh on the poll task takes a turn's total-free floor");
 
 static void verifyTask(void*);   // spawned per request(); self-deletes
 
@@ -155,6 +161,9 @@ static WorkspaceProbeQueue g_wsq;
 // R5: the claimed task is a model-list refresh only (requestRefresh), written after
 // the claim like g_wsOnly.
 static bool                g_refreshOnly = false;
+// The claimed run is on the CALLING task (runRefreshHere: the Telegram poll task), whose
+// own work waits while it runs: it waits a short time for the work slot, not 35 s.
+static bool                g_inline = false;
 
 static void deferLowMemory(const String& provider, uint32_t max8);
 
@@ -165,6 +174,7 @@ static bool startTask(const char* provider, bool wsOnly, bool refreshOnly = fals
   g_provider[sizeof(g_provider) - 1] = 0;
   g_wsOnly = wsOnly;
   g_refreshOnly = refreshOnly;
+  g_inline = false;
   // Memory before the stack: never while a turn is in flight, only with room for the
   // stack plus 16 KB, and only when the RESTING largest block clears the handshake
   // floor (a single sample inside a transient read 7,156 B on a device resting at
@@ -172,7 +182,10 @@ static bool startTask(const char* provider, bool wsOnly, bool refreshOnly = fals
   // low memory records the deferral and arms the self-retry.
   const nimbus::heapwatch::SpawnVerdict sv = nimbus::heapwatch::spawnGate(kVerifyStackBytes, "verify");
   const uint32_t resting = nimbus::heapwatch::restingLargest();
-  const bool lowBlock = deferReason(resting, (uint32_t)VERIFY_MIN_MAX8)[0] != 0;
+  // A model-list refresh is one GET on one connection: the per-connection floor every
+  // turn request clears (nimbus::orch::kRefreshMinLargest), not the full verify's.
+  const uint32_t floor = refreshOnly ? nimbus::orch::kRefreshMinLargest : (uint32_t)VERIFY_MIN_MAX8;
+  const bool lowBlock = deferReason(resting, floor)[0] != 0;
   if (sv != nimbus::heapwatch::SpawnVerdict::Ok || lowBlock) {
     g_pending = false;
     // The probe queue re-arms itself (rearmWorkspaceProbe); a refresh stays queued in
@@ -204,6 +217,28 @@ static bool startTask(const char* provider, bool wsOnly, bool refreshOnly = fals
 bool request(const String& provider) { return startTask(provider.c_str(), false); }
 
 bool requestRefresh(const String& provider) { return startTask(provider.c_str(), false, true); }
+
+static void runOne();   // below: one claimed verify, refresh or probe
+
+bool runRefreshHere(const String& provider) {
+  const uint32_t resting = nimbus::heapwatch::restingLargest();
+  const uint32_t freeB = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  if (orchestrator::turnInFlight() || !nimbus::orch::refreshHeapOk(resting) || freeB < ORCH_TURN_HARD_FLOOR)
+    return false;
+  bool idle = false;
+  if (!g_pending.compare_exchange_strong(idle, true)) return false;   // a verify runs
+  strncpy(g_provider, provider.c_str(), sizeof(g_provider) - 1);
+  g_provider[sizeof(g_provider) - 1] = 0;
+  g_wsOnly = false;
+  g_refreshOnly = true;
+  alogf("verify: %s model list refresh on the Telegram poll task (free %u, resting largest %u)",
+        provider.c_str(), (unsigned)freeB, (unsigned)resting);
+  nimbus::heapwatch::Scope verifying(nimbus::heapwatch::kVerify);
+  g_inline = true;
+  runOne();   // clears g_pending on every exit path
+  g_inline = false;
+  return true;
+}
 
 bool pending() { return g_pending; }
 
@@ -755,6 +790,9 @@ static void deferLowMemory(const String& provider, uint32_t max8) {
   if (act.armRetry && ri >= 0) g_retry[ri].onDeferred((uint32_t)millis());
   alogf("verify: %s deferred low-memory (resting largest %u, need %u)", provider.c_str(),
         (unsigned)max8, (unsigned)VERIFY_MIN_MAX8);
+  // The model list needs only one connection: a key verify the device cannot run yet
+  // still refreshes the list (a no-op for telegram/tavily, which have no list).
+  (void)model_refresh::request(provider.c_str(), "verify");
 }
 
 static void runOne() {
@@ -818,7 +856,7 @@ static void runOne() {
   // (CUM-451). The retry is cleared only on a DEFINITIVE verdict, in recordVerify().
   // Outlast one full Telegram long-poll cycle (30 s) so a verify queued behind
   // an orchestrator turn still lands instead of bouncing "tls busy".
-  if (!arbiter::acquireWork(35000)) {
+  if (!arbiter::acquireWork(g_inline ? 5000 : 35000)) {
     recordOutcome(provider, -1, "tlsbusy", refreshOnly);
     alogf("verify: %s tls busy", provider.c_str());
     g_pending = false;

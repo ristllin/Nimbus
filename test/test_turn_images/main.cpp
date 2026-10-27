@@ -349,11 +349,54 @@ static void test_active_set_nests_and_restores() {
   TEST_ASSERT_NULL(activeTurnImages());
 }
 
+// The provider's own list decides when it says (HFM, 26 Oct 2026): a model its list
+// says takes no images gets the transcription, one it says takes them gets the parts.
+// A direct Mistral head its list does not know gets the transcription (never a guess
+// from the name); elsewhere an unknown model falls back to the name rule. A router
+// selector is judged by its upstream, by the name rule when no list says.
+static int g_knownVision = -1;
+static std::string g_askedHost;
+static int lookupStub(const char* host, const char* model) {
+  g_askedHost = host;
+  return std::string(model) == "listed-blind" ? 0 : std::string(model) == "listed-seeing" ? 1 : g_knownVision;
+}
+static void test_the_providers_list_decides_image_input() {
+  installImageInputLookup(&lookupStub);
+  TEST_ASSERT_FALSE(headTakesImages("mistral", "listed-blind"));
+  TEST_ASSERT_TRUE(headTakesImages("zai", "listed-seeing"));
+  TEST_ASSERT_FALSE(headTakesImages("mistral", "mistral-large-latest"));  // -1 on a direct Mistral head: not known
+  TEST_ASSERT_TRUE(headTakesImages("anthropic", "claude-opus-5-5"));       // -1 elsewhere: the name rule
+  TEST_ASSERT_TRUE(headTakesImages("openai", "gpt-5.6-sol"));
+  TEST_ASSERT_TRUE(headTakesImages("cumulo", "mistral/mistral-large-latest"));   // a router upstream: the name rule
+  TEST_ASSERT_FALSE(headTakesImages("mistral", "codestral-latest"));
+  TEST_ASSERT_FALSE(headTakesImages("cumulo", "mistral/listed-blind"));
+  TEST_ASSERT_EQUAL_STRING("mistral", g_askedHost.c_str());               // asked of the upstream
+  g_knownVision = 0;
+  TEST_ASSERT_FALSE(headTakesImages("anthropic", "claude-haiku-5-5"));    // the list said no
+  g_knownVision = -1;
+  installImageInputLookup(nullptr);
+  TEST_ASSERT_TRUE(headTakesImages("anthropic", "claude-haiku-5-5"));
+}
+
+// The set knows its own photos (image.look on one the head already sees makes no call).
+static void test_the_set_holds_its_refs() {
+  TurnImages set;
+  TurnImage a;
+  a.ref = "0123456789abcdef";
+  set.items.push_back(a);
+  TEST_ASSERT_TRUE(set.holds("0123456789abcdef"));
+  TEST_ASSERT_FALSE(set.holds("fedcba9876543210"));
+  TEST_ASSERT_FALSE(set.holds(""));
+  TEST_ASSERT_FALSE(set.shown);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_spliced_body_reads_back_at_every_offset);
   RUN_TEST(test_large_photo_in_transport_slices);
   RUN_TEST(test_head_takes_images_table);
+  RUN_TEST(test_the_providers_list_decides_image_input);
+  RUN_TEST(test_the_set_holds_its_refs);
   RUN_TEST(test_formats);
   RUN_TEST(test_sniff_by_magic);
   RUN_TEST(test_admission_and_fallbacks);

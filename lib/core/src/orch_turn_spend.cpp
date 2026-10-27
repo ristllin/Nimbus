@@ -1,6 +1,7 @@
 #include "nimbus/orch/turn_spend.h"
 
 #include "nimbus/orch/model_price_defaults.h"
+#include "nimbus/orch/served_model.h"   // the concrete model behind an echo
 
 #include <cstdio>
 #include <cstring>
@@ -15,7 +16,11 @@ uint16_t addSat16(uint16_t a, uint16_t b) {
   return (uint32_t)a + b > 0xFFFFu ? (uint16_t)0xFFFFu : (uint16_t)(a + b);
 }
 
-void addInto(SpendSlot& s, const TokenUsage& u) {
+void copyBounded(char* dst, size_t cap, const char* src);
+
+// The usage into the slot; the latest model named (a later round, a later attempt) wins.
+void addInto(SpendSlot& s, const TokenUsage& u, const char* served = "") {
+  if (served[0]) copyBounded(s.served, sizeof(s.served), served);
   s.in = addSat32(s.in, u.promptTokens);
   s.out = addSat32(s.out, u.completionTokens);
   s.cacheR = addSat32(s.cacheR, u.cacheReadTokens);
@@ -60,24 +65,30 @@ void TurnSpend::add(const char* host, const char* configuredModel, const TokenUs
   billKey(host, configuredModel, use, key);
   char h[kProvKeyCap];
   copyBounded(h, sizeof(h), host);
+  char served[kModelKeyCap];
+  resolveServedModel(h, use.servedModel.c_str(), served, sizeof(served));
+  noteServedModel(h, configuredModel, served);
   SpendSlot* sameHost = nullptr;
   for (size_t i = 0; i < n; ++i) {
     if (std::strcmp(slot[i].host, h) != 0) continue;
-    if (std::strcmp(slot[i].model, key) == 0) { addInto(slot[i], use); return; }
+    if (std::strcmp(slot[i].model, key) == 0) {
+      addInto(slot[i], use, served);
+      return;
+    }
     if (!sameHost) sameHost = &slot[i];
   }
   if (n == kSlots && sameHost) {   // full: this host's own slot takes it
-    addInto(*sameHost, use);
+    addInto(*sameHost, use, served);
     return;
   }
   if (n == kSlots) freeOneSlot();   // a new host: fold another host's second model
   // Four hosts in one turn (the fabric and the ladder both stop at three): the last
   // slot is the guard for a caller that broke that rule - tokens are never dropped.
-  if (n == kSlots) { addInto(slot[kSlots - 1], use); return; }
+  if (n == kSlots) { addInto(slot[kSlots - 1], use, served); return; }
   SpendSlot& s = slot[n++];
   copyBounded(s.host, sizeof(s.host), h);
   copyBounded(s.model, sizeof(s.model), key);
-  addInto(s, use);
+  addInto(s, use, served);
 }
 
 void TurnSpend::freeOneSlot() {
@@ -92,6 +103,7 @@ void TurnSpend::freeOneSlot() {
       a.cacheR = addSat32(a.cacheR, b.cacheR);
       a.cacheW = addSat32(a.cacheW, b.cacheW);
       a.billed = addSat16(a.billed, b.billed);
+      if (!a.served[0]) copyBounded(a.served, sizeof(a.served), b.served);
       for (size_t k = j + 1; k < n; ++k) slot[k - 1] = slot[k];
       slot[--n] = SpendSlot();
       return;
@@ -142,10 +154,11 @@ size_t spendLine(const TurnSpend& s, char* out, size_t cap) {
   size_t off = 0;
   for (size_t i = 0; i < s.n && off + 1 < cap; ++i) {
     const SpendSlot& x = s.slot[i];
-    const int w = std::snprintf(out + off, cap - off, "%s%s/%s in=%u out=%u cR=%u cW=%u n=%u",
+    const int w = std::snprintf(out + off, cap - off, "%s%s/%s in=%u out=%u cR=%u cW=%u n=%u%s%s",
                                 i ? " | " : "", x.host, x.model[0] ? x.model : "-",
                                 (unsigned)x.in, (unsigned)x.out, (unsigned)x.cacheR,
-                                (unsigned)x.cacheW, (unsigned)x.billed);
+                                (unsigned)x.cacheW, (unsigned)x.billed, x.served[0] ? " id=" : "",
+                                x.served);
     if (w < 0) break;
     off += (size_t)w;
   }

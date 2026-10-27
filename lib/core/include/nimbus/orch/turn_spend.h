@@ -28,6 +28,9 @@ namespace orch {
 struct SpendSlot {
   char     host[kProvKeyCap] = {0};
   char     model[kModelKeyCap] = {0};   // usageModelKey at bill time ("" = provider level)
+  // The concrete model the host answered with: its last response's "model" field, an
+  // alias resolved through the provider's list (served_model.h). "" = none named one.
+  char     served[kModelKeyCap] = {0};
   uint32_t in = 0, out = 0, cacheR = 0, cacheW = 0;   // provider-native counts
   uint32_t cacheW1h = 0;   // the 1-hour-TTL part of cacheW (Anthropic; 0 elsewhere)
   uint16_t billed = 0;                  // billed responses (HTTP 200s with usage)
@@ -47,7 +50,10 @@ struct TurnSpend {
   // slot exists for a host that billed nothing. When the table is full, a new model of
   // a host with a slot merges into that slot, and a new host gets the slot of another
   // host's second model (folded into that host's first): model precision is lost,
-  // never tokens, and spend never merges across hosts (up to kSlots hosts).
+  // never tokens, and spend never merges across hosts (up to kSlots hosts). The echo
+  // (use.servedModel) is resolved to the concrete model (resolveServedModel) into the
+  // slot's `served`, and noted as what `host` answers for `configuredModel`
+  // (noteServedModel).
   void add(const char* host, const char* configuredModel, const TokenUsage& use);
   // The display / back-compat sum of every slot (what a turn's TokenUsage was):
   // servedModel is the model key of the last slot that billed.
@@ -65,8 +71,9 @@ struct TurnSpend {
 };
 
 // One log-ready line for every slot, at most `cap` bytes into `out`:
-//   "anthropic/claude-haiku-5-5 in=816 out=250 cR=9743 cW=0 n=1 | mistral/... "
-// "(none)" when nothing billed. Returns strlen(out).
+//   "anthropic/claude-haiku-5-5 in=816 out=250 cR=9743 cW=0 n=1 id=claude-haiku-5-5 | mistral/... "
+// (" id=<concrete model>" when the host named one). "(none)" when nothing billed.
+// Returns strlen(out).
 size_t spendLine(const TurnSpend& s, char* out, size_t cap);
 
 }  // namespace orch

@@ -3193,7 +3193,8 @@ static void otaEventHook(int ev, const char* a, const char* b) {
 static bool stagedWorkPending() {
   return otaupd::onPollPending() ||
          (g_orchMode && (agent::memory::sdOutageNoticeDue(millis()) || agent::memory::sdRecoveryDue() ||
-                         agent::memory::embedDrainDue() || agent::vision::idleDue()));
+                         agent::memory::embedDrainDue() || agent::model_refresh::stagedPending() ||
+                         agent::vision::idleDue()));
 }
 // The memory card's outage notice and recovery step (a remount once memory is back, or
 // writing what it refused during an outage) go before the embedding drain, whose stores
@@ -3208,6 +3209,8 @@ static void stagedWorkRun() {
     agent::memory::sdRecoveryStep();
   } else if (g_orchMode && agent::memory::embedDrainDue()) {
     agent::memory::drainPendingStep();
+  } else if (g_orchMode && agent::model_refresh::stagedPending()) {
+    agent::model_refresh::runStaged();   // a model-list refresh whose own task did not fit
   } else if (g_orchMode) {
     agent::vision::idleStep();   // R1: an upload's deletion or a photo's record
   }

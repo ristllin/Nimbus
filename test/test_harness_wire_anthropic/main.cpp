@@ -1208,11 +1208,29 @@ static void test_r1_refused_images_are_resent_as_transcriptions() {
     TEST_ASSERT_TRUE(bodyHas(d, r, "(machine transcription by anthropic: photo 2 shows a label)"));
   }
   TEST_ASSERT_TRUE(fx.set->rejected);
+  TEST_ASSERT_FALSE(fx.set->shown);   // image.look reads them again: the head no longer has them
   // A 400 about something else is not an image refusal: no blind re-send.
   TEST_ASSERT_FALSE(providers::imageparts::refusedImages(400, "max_tokens: must be at most 64000"));
   TEST_ASSERT_FALSE(providers::imageparts::refusedImages(500, "image service down"));
   TEST_ASSERT_TRUE(providers::imageparts::refusedImages(413, "request_too_large"));
   TEST_ASSERT_TRUE(providers::imageparts::refusedImages(422, "Invalid Image URL"));
+}
+
+// The latest render decides what the head has (image.look answers "already in front of
+// you" only then): a seeing head marks the photos shown, a failover to a blind host
+// clears it, and so does a refusal of the parts.
+static void test_shown_follows_the_host_in_use() {
+  harness_test::PhotoTurn fx;
+  nimbus::orch::Transcript tr;
+  tr.setImages(fx.set.get());
+  TEST_ASSERT_NOT_NULL(providers::imageparts::shown(tr, "anthropic", "claude-haiku-5-5"));
+  TEST_ASSERT_TRUE(fx.set->shown);
+  TEST_ASSERT_NULL(providers::imageparts::shown(tr, "zai", "glm-5.3"));
+  TEST_ASSERT_FALSE(fx.set->shown);
+  TEST_ASSERT_NOT_NULL(providers::imageparts::shown(tr, "mistral", "mistral-small-latest"));
+  TEST_ASSERT_TRUE(providers::imageparts::rejectAndRetry(fx.set.get(), "test", 400));
+  TEST_ASSERT_FALSE(fx.set->shown);
+  TEST_ASSERT_NULL(providers::imageparts::shown(tr, "anthropic", "claude-haiku-5-5"));
 }
 
 // The single shot (tool loop off) shows no photo: the transcriptions ride its text.
@@ -1286,6 +1304,7 @@ int main(int, char**) {
   RUN_TEST(test_r1_upload_boundary_is_not_in_the_bytes);
   RUN_TEST(test_r1_model_without_image_input_reads_transcriptions);
   RUN_TEST(test_r1_refused_images_are_resent_as_transcriptions);
+  RUN_TEST(test_shown_follows_the_host_in_use);
   RUN_TEST(test_r1_single_shot_reads_transcriptions);
   RUN_TEST(test_r1_no_photos_no_change);
   UNITY_END();

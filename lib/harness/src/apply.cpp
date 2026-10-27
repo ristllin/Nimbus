@@ -7,6 +7,7 @@
 #include "nimbus/harness/log.h"
 #include "nimbus/orch/models_tool.h"     // the "not in <provider> list" answers
 #include "nimbus/orch/provider_slots.h"  // the orch_model provider enum
+#include "nimbus/orch/head_switch.h"     // a pause never moves the owner's head
 #include "nimbus/orch/spawn_claim.h"
 
 // Lifted from src/agent/orchestrator.cpp applyTurn (Stage E). Every summary
@@ -125,7 +126,28 @@ static bool deviceElementLanded(const std::string& one) {
   if (one == "tts " || one == "led " || one == "lights " || one == "reboot ") return true;
   if (one.size() >= 4 && one.compare(one.size() - 4, 4, "cfg ") == 0) return true;
   return one.rfind("orch_model(", 0) == 0 && one.find("(invalid)") == std::string::npos &&
-         one.find("(no-key)") == std::string::npos;
+         one.find("(no-key)") == std::string::npos && one.find("(no change)") == std::string::npos;
+}
+
+// A switch away from a head that is paused, parked or over its budget, refused because
+// the failover is already automatic and temporary (head_switch.h): the plain
+// explanation, or "" when the switch may go ahead (an open head, the same provider, or
+// the owner's confirmation in a later message).
+static std::string headPauseRefusal(const ValidatedAction& va, const ApplyDeps& d) {
+  if (!d.headPause || !d.headHost) return std::string();
+  const std::string head = d.headHost();
+  if (head.empty() || head == va.orchProvider) return std::string();
+  const std::string closed = d.headPause(head);
+  const nimbus::orch::OwnerMessage owner = d.ownerMessage ? d.ownerMessage() : nimbus::orch::OwnerMessage();
+  const uint32_t now = d.nowMs ? d.nowMs() : 0;
+  if (nimbus::orch::headSwitchGuard().allow(head, closed, va.orchProvider, va.orchModel, owner, now))
+    return std::string();
+  const nimbus::orch::ProviderSlot* h = nimbus::orch::findProviderSlot(head.c_str());
+  const nimbus::orch::ProviderSlot* t = nimbus::orch::findProviderSlot(va.orchProvider.c_str());
+  const std::string headLabel = h ? h->label : head;
+  // A turn the owner did not write learns no more than that the head stays.
+  if (!owner.present()) return headLabel + " stays the main provider: only the owner can move it.";
+  return nimbus::orch::headSwitchRefusal(closed, t ? t->label : va.orchProvider);
 }
 
 // Why an orch_model the device refused names no model it can switch to, in the
@@ -282,6 +304,7 @@ std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
       else devSummary += "reboot(noop) ";
       break;
     case ActionKind::OrchModel: {
+      std::string paused;   // why a pause keeps the head where it is ("" = it does not)
       // The agent reroutes its OWN provider host + model (owner: "switch to opus").
       // Validate the model against that provider's choice list, then set BOTH host
       // and model - NVS-only, any-task safe. Keys + provider PRIORITY stay owner-only
@@ -298,6 +321,11 @@ std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
                       orchModelMiss(va, d) + " ";
       } else if (!d.providerHasKey || !d.providerHasKey(va.orchProvider)) {
         devSummary += "orch_model(no-key) ";
+      } else if (!(paused = headPauseRefusal(va, d)).empty()) {
+        // A pause is no reason to move the owner's head: nothing changes, and the reply
+        // carries why (whatever the model chose to say).
+        devSummary += "orch_model(no change) " + va.orchProvider + "/" + va.orchModel + ": " + paused + " ";
+        if (riskNote) *riskNote += "\n" + paused;
       } else {
         d.setOrchHostModel(va.orchProvider, va.orchModel);
         devSummary += "orch_model(" + va.orchProvider + "/" + va.orchModel + ") ";
@@ -350,6 +378,9 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
     if (one.rfind("orch_model(invalid) ", 0) == 0 && st.pendingMemResults)
       *st.pendingMemResults += "[DEVICE] orch_model not applied: " + one.substr(20) +
                                "- call models.list for the ids it offers\n";
+    static const std::string kKept = "orch_model(no change) ";
+    if (one.rfind(kKept, 0) == 0 && st.pendingMemResults)
+      *st.pendingMemResults += "[DEVICE] orch_model not applied, the head stays: " + one.substr(kKept.size()) + "\n";
     nimbus::orch::FxKind k;
     if (st.claims && ClaimCheck::deviceActionEffect(da.json, k))
       st.claims->effects().add(k, deviceElementLanded(one));

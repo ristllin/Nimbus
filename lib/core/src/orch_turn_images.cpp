@@ -1,5 +1,6 @@
 #include "nimbus/orch/turn_images.h"
 
+#include <atomic>
 #include <cstring>
 
 #include "nimbus/orch/model_catalog.h"   // gptGeneration: the one "gpt-5 and newer" rule
@@ -99,22 +100,46 @@ const char* sniffImageMime(const uint8_t* b, size_t n) {
   return "";
 }
 
-bool headTakesImages(const std::string& host, const std::string& model) {
+namespace {
+std::atomic<ImageInputLookup> g_imageInput{nullptr};
+}  // namespace
+
+void installImageInputLookup(ImageInputLookup f) { g_imageInput.store(f); }
+
+namespace {
+// `viaRouter`: judged as a router selector's upstream, where the device may hold no list
+// of that upstream (a Cumulo-only device): the name rule decides when no list says.
+bool takesImages(const std::string& host, const std::string& model, bool viaRouter) {
   const std::string h = lower(host), m = lower(model);
+  // The provider's own word first (a router selector is judged by its upstream below).
+  const ImageInputLookup f = g_imageInput.load();
+  const int known = (f && h != "cumulo") ? f(host.c_str(), model.c_str()) : -1;
+  if (known >= 0) return known == 1;
   if (h == "anthropic") return m.empty() || startsWith(m, "claude-");
   if (h == "openai") return openaiTakesImages(m);
-  if (h == "mistral") return mistralTakesImages(m);
+  // Mistral says per model; a direct head the device's list does not know yet (before the
+  // first fetch) reads the photos as their transcriptions, never by a guess from its name.
+  if (h == "mistral") return (f && !viaRouter) ? false : mistralTakesImages(m);
   if (h == "cumulo") {
     const size_t slash = m.find('/');
     if (slash == std::string::npos || slash == 0) return false;
     const std::string up = m.substr(0, slash);
-    return up != "cumulo" && headTakesImages(up, m.substr(slash + 1));
+    return up != "cumulo" && takesImages(up, m.substr(slash + 1), true);
   }
   return false;   // zai, custom, unknown
 }
+}  // namespace
+
+bool headTakesImages(const std::string& host, const std::string& model) { return takesImages(host, model, false); }
 
 TurnImages::~TurnImages() {
   if (release) release(*this);
+}
+
+bool TurnImages::holds(const std::string& ref) const {
+  for (const TurnImage& it : items)
+    if (!ref.empty() && it.ref == ref) return true;
+  return false;
 }
 
 size_t TurnImages::bytes() const {

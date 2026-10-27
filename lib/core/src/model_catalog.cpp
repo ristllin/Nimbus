@@ -396,9 +396,36 @@ uint32_t createdAt(JsonObjectConst m) {
   return ca ? parseIsoTime(ca) : 0;
 }
 
+// Mistral: the dated model a row's alias points at ("mistral-medium-2604"), from the
+// row's name, its own id or its aliases, in that order (a "-<4 digits>" release suffix,
+// never another alias); null when none names one. The device reads it back to tell
+// which model a "-latest" request really ran (concreteModelName): Mistral's answers
+// echo the alias.
+const char* mistralDatedName(JsonObjectConst m) {
+  auto dated = [](const char* s) {
+    const size_t n = s ? std::strlen(s) : 0;
+    if (n < 6 || s[n - 5] != '-') return false;
+    for (size_t i = n - 4; i < n; ++i)
+      if (s[i] < '0' || s[i] > '9') return false;
+    return cleanModelId(s);
+  };
+  const char* name = m["name"] | (const char*)nullptr;
+  if (dated(name)) return name;
+  const char* id = m["id"] | (const char*)nullptr;
+  if (dated(id)) return id;
+  for (JsonVariantConst a : m["aliases"].as<JsonArrayConst>()) {
+    const char* al = a | (const char*)nullptr;
+    if (dated(al)) return al;
+  }
+  return nullptr;
+}
+
 void overlayMeta(const std::string& provider, JsonObjectConst m, ModelInfo& mi) {
   const char* nm = m["display_name"] | (const char*)nullptr;
-  if (!nm && provider == "mistral") nm = m["name"] | (const char*)nullptr;
+  if (!nm && provider == "mistral") {
+    nm = mistralDatedName(m);
+    if (!nm) nm = m["name"] | (const char*)nullptr;
+  }
   if (nm && mi.id != nm) mi.name = cleanModelText(nm, kModelNameMax);
   if (const char* ln = m["line"] | (const char*)nullptr) mi.line = cleanModelText(ln, kModelLineMax);
   mi.created = createdAt(m);

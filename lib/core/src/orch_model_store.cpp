@@ -707,6 +707,37 @@ std::string isoDate(uint32_t t) {
   return b;
 }
 
+bool isLatestAlias(const std::string& id) {
+  return id.size() > 7 && id.compare(id.size() - 7, 7, "-latest") == 0;
+}
+
+std::string concreteModelName(const std::string& storeText, const std::string& alias) {
+  if (!isLatestAlias(alias) || !cleanModelId(alias)) return std::string();
+  // Row lines are "<selector>\t<name>\t..." (appendRow); line 1 is the header.
+  const std::string key = "\n" + alias + "\t";
+  const size_t at = storeText.find(key);
+  if (at == std::string::npos) return std::string();
+  const size_t b = at + key.size();
+  const size_t e = storeText.find_first_of("\t\n", b);
+  const std::string name = storeText.substr(b, (e == std::string::npos ? storeText.size() : e) - b);
+  if (name == alias || isLatestAlias(name) || !cleanModelId(name)) return std::string();
+  return name;
+}
+
+int storeImageInput(const std::string& provider, const std::string& storeText, const std::string& id) {
+  if (id.empty() || !cleanModelId(id)) return -1;
+  const std::string key = "\n" + id + "\t";
+  const size_t at = storeText.find(key);
+  if (at == std::string::npos) return -1;
+  const size_t b = at + 1;
+  const size_t e = storeText.find('\n', b);
+  ModelInfo m;
+  if (!parseModelStoreLine(provider, storeText.data() + b, (e == std::string::npos ? storeText.size() : e) - b, m))
+    return -1;
+  if (!m.apiCaps) return -1;
+  return m.hasCap(CapVision) ? 1 : 0;
+}
+
 std::string modelListNote(bool haveStore, const ModelStoreMeta& meta) {
   if (!haveStore) return "(built-in list, not fetched yet)";
   if (!meta.fetchedAt) return "(list date unknown, may miss newer models)";

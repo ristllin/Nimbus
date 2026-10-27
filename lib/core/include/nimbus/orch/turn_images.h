@@ -50,13 +50,23 @@ bool animatedGif(const uint8_t* bytes, size_t len);
 const char* sniffImageMime(const uint8_t* bytes, size_t len);
 
 // Does this head model take image input? One rule for the telegram path (attach or
-// caption) and every renderer (render the parts, or the transcription):
+// caption) and every renderer (render the parts, or the transcription). What the
+// provider's own model list says decides when the device holds it (the image-input
+// lookup below: Mistral's and Anthropic's lists carry it per model); a direct Mistral
+// head its list does not know yet takes no images (the photos go as transcriptions);
+// otherwise the name rule:
 //   anthropic: every claude- model; openai: gpt-4o, gpt-4.1, gpt-5 and newer, o3,
 //   o4; mistral: chat models with vision (small, medium, large, ministral,
 //   magistral, pixtral), not codestral, devstral, voxtral or the OCR models;
 //   cumulo: the "<upstream>/<model>" it names; zai and custom: no (GLM vision
 //   models are not on the device's list).
 bool headTakesImages(const std::string& host, const std::string& model);
+
+// The device's image-input lookup: 1 = the provider's stored list says `model` takes
+// images, 0 = it says it does not, -1 = no row for it or the list does not say (the
+// name rule decides). Unset (host tests, the hosted daemon): the name rule alone.
+using ImageInputLookup = int (*)(const char* host, const char* model);
+void installImageInputLookup(ImageInputLookup f);
 
 struct TurnImage {
   std::string ref;        // the blob hash (16 lowercase hex)
@@ -91,6 +101,11 @@ class TurnImages {
   // A provider refused the image parts this turn (HTTP 400 naming the image): every
   // later request of the turn reads the transcription instead.
   bool rejected = false;
+  // A request of this turn carried the photos as image parts: the head has them in
+  // front of it, so image.look on one of them makes no second provider call.
+  bool shown = false;
+  // Is `ref` one of this turn's photos?
+  bool holds(const std::string& ref) const;
   // Upload once (a provider file reference, the Anthropic Files API): `uploadOnce`
   // asks for it (the device's switch; on by default), `uploadTried` records that the
   // first round of the turn already tried, so a failed upload is not retried per round.

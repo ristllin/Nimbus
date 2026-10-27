@@ -739,6 +739,32 @@ std::string modelStoreText(const String& provider) {
   return modelStoreLocked(slot, provider).text;
 }
 
+std::string concreteModelId(const String& provider, const std::string& alias) {
+  if (!nimbus::orch::isLatestAlias(alias)) return std::string();
+  const size_t slash = alias.rfind('/');
+  const std::string bare = slash == std::string::npos ? alias : alias.substr(slash + 1);
+  auto lookup = [&](const String& p) {
+    const int slot = modelSlot(p);
+    if (slot < 0) return std::string();
+    std::lock_guard<std::mutex> lk(g_modelMx);   // scanned in place: no copy of the text
+    const std::string& text = modelStoreLocked(slot, p).text;
+    const std::string name = nimbus::orch::concreteModelName(text, alias);
+    return name.empty() && bare != alias ? nimbus::orch::concreteModelName(text, bare) : name;
+  };
+  // The provider's own list first; then Mistral's, the one provider whose answers echo an
+  // alias, for a router or custom host relaying a Mistral alias ("<up>/" dropped).
+  std::string name = lookup(provider);
+  if (name.empty() && provider != "mistral") name = lookup(String("mistral"));
+  return name;
+}
+
+int modelImageInput(const String& provider, const std::string& id) {
+  const int slot = modelSlot(provider);
+  if (slot < 0) return -1;
+  std::lock_guard<std::mutex> lk(g_modelMx);   // scanned in place: no copy of the text
+  return nimbus::orch::storeImageInput(std::string(provider.c_str()), modelStoreLocked(slot, provider).text, id);
+}
+
 // The flash write runs outside g_modelMx (readers on the web and turn tasks never wait
 // on it); a write mutex keeps two writers (the verify task, the boot merge) in order.
 // The header is parsed before the lock is taken, so the swap is all the lock covers.

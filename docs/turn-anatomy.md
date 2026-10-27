@@ -319,7 +319,10 @@ the reply names that real cause instead. The device never goes silent on a chat.
 
 Work through the blocks above in order: open that turn's **Turn anatomy** in the
 Chat tab (or `/api/lastturn` for the most recent one). Its header names the
-provider chain and measures the device history sent in the prompt - the summary,
+model the answering provider really ran (its answer's `model` field; a `-latest` alias
+Mistral echoes is resolved through Mistral's own model list, so `mistral-large-latest`
+reads `mistral-large-2512 (asked for mistral-large-latest)`), the provider chain, and
+measures the device history sent in the prompt - the summary,
 the recent window, the running memory and the recalled items - so a stateless
 loop turn no longer reads as a chat with no memory of earlier turns. The legend
 under section 1 lists every `##` section the prompt carries (an ambiguous message

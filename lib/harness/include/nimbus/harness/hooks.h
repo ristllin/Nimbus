@@ -117,6 +117,11 @@ struct TurnDebugEv {
   bool loopTurn = false;
   // What the device sent as history in the system prompt (turn_anatomy.h).
   HistoryFacts history;
+  // The model the answering host really ran (SpendSlot::served: its last response's
+  // "model" field, an alias resolved through the provider's list; "" = none named one)
+  // and the model the device asked that host for.
+  std::string servedModel;
+  std::string askedModel;
 };
 
 struct Hooks {

@@ -78,8 +78,12 @@ bool inlineImage(const orch::TurnImage& it) { return it.fileId.empty(); }
 
 orch::TurnImages* shown(const orch::Transcript& tr, const std::string& host, const std::string& model) {
   orch::TurnImages* imgs = tr.images();
-  if (!imgs || imgs->empty() || imgs->rejected) return nullptr;
-  return orch::headTakesImages(host, model) ? imgs : nullptr;
+  if (!imgs || imgs->empty()) return nullptr;
+  // The latest render decides what the head has: image.look on these photos answers without a
+  // second request only while the host in use sees them (a failover to a blind host reads them
+  // as transcriptions again).
+  imgs->shown = !imgs->rejected && orch::headTakesImages(host, model);
+  return imgs->shown ? imgs : nullptr;
 }
 
 std::string userText(const orch::Transcript& tr, const std::string& text, bool showing) {
@@ -141,6 +145,7 @@ bool refusedImages(int httpStatus, const std::string& errText) {
 bool rejectAndRetry(orch::TurnImages* imgs, const char* who, int httpStatus) {
   if (!imgs || imgs->rejected) return false;
   imgs->rejected = true;
+  imgs->shown = false;
   hlog::logf("%s: the provider refused the photos (HTTP %d) - re-sent with their transcriptions", who,
              httpStatus);
   return true;

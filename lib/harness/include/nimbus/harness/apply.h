@@ -7,6 +7,7 @@
 
 #include "nimbus/harness/claim_check.h"
 #include "nimbus/orch/device_actions.h"
+#include "nimbus/orch/head_switch.h"     // OwnerMessage - who may confirm a head switch
 #include "nimbus/orch/memory_tools.h"   // kMemOutcome* codes
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/turn.h"
@@ -48,6 +49,15 @@ struct ApplyDeps {
   // and returns the head's answer, "not in <provider> list cached <date>; refresh
   // queued" (models_tool.h modelMissText). Null => "not in <provider> list".
   std::function<std::string(const std::string& prov, const std::string& model)> modelMiss;
+  // A pause never moves the head (nimbus/orch/head_switch.h). headHost: the head the
+  // owner chose (before any failover). headPause: why paid requests to `prov` are held
+  // off now (headPauseNote; "" = open). ownerMessage: the owner's message this turn and
+  // its number (empty for a turn the owner did not write: a member, a guest, a routine).
+  // nowMs: the device clock. Null headPause => no guard.
+  std::function<std::string()> headHost;
+  std::function<std::string(const std::string& prov)> headPause;
+  std::function<nimbus::orch::OwnerMessage()> ownerMessage;
+  std::function<uint32_t()> nowMs;
 
   // Model working memory (OrchMemory): returns true when truncated to cap.
   std::function<bool(const std::string& chatId, const std::string& v)> setModelMemory;

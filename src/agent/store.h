@@ -125,6 +125,13 @@ std::string modelStoreText(const String& provider);
 // Replace it (a temp file renamed over the old one, so a reader never sees half a
 // file). False = the file write failed and the last list stays. No NVS write.
 [[nodiscard]] bool setModelStoreText(const String& provider, const std::string& text);
+// The concrete model behind a "-latest" alias a provider answered with, from its stored
+// list (nimbus::orch::concreteModelName), falling back to the Mistral list for a host
+// relaying a Mistral alias; "" when no stored list names it. Safe from any task.
+std::string concreteModelId(const String& provider, const std::string& alias);
+// Does the stored list say `id` takes image input? 1 / 0 from the provider's own
+// capabilities, -1 when it holds no row for it or does not say (nimbus::orch::storeImageInput).
+int modelImageInput(const String& provider, const std::string& id);
 // The short list (CSV) the prompt's [AVAILABLE MODELS] line and the picker's quick
 // picks show: the store header's choices, "" with no store (callers then use the
 // cold-start list through nimbus::orch::effectiveModelChoices).

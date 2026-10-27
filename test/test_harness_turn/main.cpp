@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include "nimbus/orch/served_model.h"
 #include "nimbus/harness/prompt_layout.h"   // the static/summary/per-turn split
 
 #include <map>
@@ -938,6 +939,54 @@ static void test_turn_spend_files_under_the_serving_model() {
     TEST_ASSERT_EQUAL_STRING("openai", r.cfg.recorded[0].host.c_str());
     TEST_ASSERT_EQUAL_STRING("gpt-5.6-luna", r.cfg.recorded[0].model.c_str());
   }
+}
+
+// HFM (26 Oct 2026): the turn's record names the model the answering host really ran:
+// /api/lastturn's head says it next to the model asked for, the turn spend line carries
+// it as " id=", and an alias echo is resolved through the provider's list (the device's
+// resolver; Mistral answers "mistral-large-latest"). A host that named no model says so.
+static void lumiAliasResolver(const char* host, const char* echo, char* out, size_t cap) {
+  if (!std::strcmp(host, "mistral") && !std::strcmp(echo, "mistral-large-latest"))
+    std::snprintf(out, cap, "%s", "mistral-large-2512");
+}
+static void test_lastturn_and_spend_line_name_the_model_that_answered() {
+  nimbus::orch::installServedModelResolver(&lumiAliasResolver);
+  {
+    Rig r;
+    r.cfg.orchHost = "mistral";
+    r.cfg.orchModels["mistral"] = "mistral-large-latest";
+    Rig::Script s;
+    s.served = "mistral-large-latest";
+    r.scripts["mistral"] = {s};
+    r.eng->runTurn("inputs", "1001", "");
+    TEST_ASSERT_EQUAL(1, (int)r.debug.size());
+    TEST_ASSERT_TRUE_MESSAGE(
+        r.debug[0].header.find("\nmodel: mistral-large-2512 (asked for mistral-large-latest)\n") != std::string::npos,
+        r.debug[0].header.substr(0, 200).c_str());
+    bool spendLine = false;
+    for (const std::string& l : LogCapture::lines())
+      spendLine = spendLine || (l.rfind("turn spend: ok ", 0) == 0 && l.find(" id=mistral-large-2512") != std::string::npos);
+    TEST_ASSERT_TRUE(spendLine);
+    TEST_ASSERT_EQUAL_STRING("mistral-large-2512",
+                             nimbus::orch::servedModelFor("mistral", "mistral-large-latest").c_str());
+  }
+  {
+    Rig r;
+    r.cfg.orchModels["anthropic"] = "claude-haiku-5-5";
+    Rig::Script s;
+    s.served = "claude-haiku-5-5";
+    r.scripts["anthropic"] = {s};
+    r.eng->runTurn("inputs", "1001", "");
+    TEST_ASSERT_TRUE(r.debug[0].header.find("\nmodel: claude-haiku-5-5\n") != std::string::npos);
+  }
+  {
+    Rig r;   // the provider named no model
+    r.eng->runTurn("inputs", "1001", "");
+    TEST_ASSERT_TRUE(r.debug[0].header.find("\nmodel: not named by the provider (asked for model-anthropic)\n") !=
+                     std::string::npos);
+  }
+  nimbus::orch::installServedModelResolver(nullptr);
+  nimbus::orch::clearServedModels();
 }
 
 // Gate G5: only the attempt that served the turn names its model. A failed attempt
@@ -4626,6 +4675,7 @@ static void runFirstHalf() {
   RUN_TEST(test_same_host_fresh_conv_retry);
   RUN_TEST(test_failover_walks_priority_with_owner_notice);
   RUN_TEST(test_turn_spend_files_under_the_serving_model);
+  RUN_TEST(test_lastturn_and_spend_line_name_the_model_that_answered);
   RUN_TEST(test_failed_attempt_echo_never_names_the_serving_model);
   RUN_TEST(test_cum477_unsent_request_reply_blames_memory_not_connection);
   RUN_TEST(test_prompt_round_cap_follows_the_configured_loop);

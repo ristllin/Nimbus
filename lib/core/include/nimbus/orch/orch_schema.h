@@ -107,8 +107,9 @@ namespace orch {
   "openai|anthropic|mistral|zai|cumulo, model an id that provider lists in " \
   "models.list or AVAILABLE MODELS: cumulo ids are <upstream>/<model> router ids, " \
   "the other providers take bare ids) - use it when asked to change your model, " \
-  "e.g. 'switch to opus'. Secrets, API keys, and provider PRIORITY stay BLOCKED - " \
-  "only the owner can change those, from the device web page."
+  "e.g. 'switch to opus', never for a paused provider (failover is automatic). Secrets, " \
+  "API keys, and provider PRIORITY stay " \
+  "BLOCKED - only the owner can change those, from the device web page."
 #define ORCH_D_MEMW \
   "Durable facts to store in long-term memory (embedded + saved) so you can " \
   "recall them in future conversations. importance 0-1. ttl is how long the " \

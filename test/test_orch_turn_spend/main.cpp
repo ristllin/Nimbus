@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/served_model.h"
 #include "nimbus/orch/token_usage_json.h"
 #include "nimbus/orch/turn_spend.h"
 #include "nimbus/orch/usage_ledger.h"
@@ -275,6 +276,97 @@ static void test_openai_cache_write_tokens_parsed() {
   TEST_ASSERT_EQUAL_UINT32(10569, tokenUsageFromJson(a["usage"].as<JsonObjectConst>()).maxRequestIn);
 }
 
+// ---- the concrete model each host answered with (HFM, 26 Oct 2026) -----------------
+
+static TokenUsage answered(const char* model, uint32_t in = 100, uint32_t out = 10) {
+  TokenUsage u;
+  u.promptTokens = in;
+  u.completionTokens = out;
+  u.responses = 1;
+  u.servedModel = model ? model : "";
+  return u;
+}
+
+// What a device with a fetched Mistral list resolves (the model store's own lookup is
+// tested in test_model_catalog): a "-latest" echo becomes the model behind it.
+static void lumiResolver(const char* host, const char* echo, char* out, size_t cap) {
+  if (!std::strcmp(host, "mistral") && !std::strcmp(echo, "mistral-large-latest"))
+    std::snprintf(out, cap, "%s", "mistral-large-2512");
+}
+
+// Lumi's turns on 26 Oct, recorded the way they now are: every slot names the model the
+// provider answered with, resolved when it echoed an alias; the spend line carries it
+// as " id=" after the counts (the log parsers read up to n=); a host that named no
+// model files no id; the next turn's prompt can ask what each pick really runs.
+static void test_each_slot_names_the_model_that_answered() {
+  nimbus::orch::clearServedModels();
+  nimbus::orch::installServedModelResolver(&lumiResolver);
+  TurnSpend s;
+  s.add("mistral", "mistral-large-latest", answered("mistral-large-latest", 34494, 63));
+  s.add("mistral", "mistral-large-latest", answered("mistral-large-latest", 100, 1));   // a second round
+  s.add("mistral", "mistral-small-latest", answered("mistral-small-latest", 1293, 320));   // a helper, unresolved
+  s.add("anthropic", "claude-haiku-5-5", answered(""));                                   // named none
+  TEST_ASSERT_EQUAL(3, (int)s.n);
+  TEST_ASSERT_EQUAL_STRING("mistral-large-2512", s.slot[0].served);
+  TEST_ASSERT_EQUAL_UINT16(2, s.slot[0].billed);
+  TEST_ASSERT_EQUAL_STRING("mistral-small-latest", s.slot[1].served);   // the echo, as returned
+  TEST_ASSERT_EQUAL_STRING("", s.slot[2].served);
+  char line[400];
+  nimbus::orch::spendLine(s, line, sizeof(line));
+  TEST_ASSERT_EQUAL_STRING(
+      "mistral/mistral-large in=34594 out=64 cR=0 cW=0 n=2 id=mistral-large-2512 | "
+      "mistral/mistral-small in=1293 out=320 cR=0 cW=0 n=1 id=mistral-small-latest | "
+      "anthropic/claude-haiku-5-5 in=100 out=10 cR=0 cW=0 n=1",
+      line);
+  TEST_ASSERT_EQUAL_STRING("mistral-large-2512",
+                           nimbus::orch::servedModelFor("mistral", "mistral-large-latest").c_str());
+  TEST_ASSERT_EQUAL_STRING("", nimbus::orch::servedModelFor("mistral", "mistral-medium-latest").c_str());
+  TEST_ASSERT_EQUAL_STRING("", nimbus::orch::servedModelFor("anthropic", "claude-haiku-5-5").c_str());
+  const nimbus::orch::ServedModelNote last = nimbus::orch::lastServedModel();
+  TEST_ASSERT_EQUAL_STRING("mistral", last.host.c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral-small-latest", last.asked.c_str());
+  nimbus::orch::installServedModelResolver(nullptr);
+  nimbus::orch::clearServedModels();
+}
+
+// Unresolved (no resolver, or it has no answer): the echo stands; a later answer of the
+// same (host, asked) replaces the note; the notes keep the newest kServedNotes pairs; an
+// echo longer than a model id is cut, never overflowing.
+static void test_served_notes_are_bounded_and_newest_wins() {
+  nimbus::orch::clearServedModels();
+  TurnSpend s;
+  s.add("openai", "gpt-5.6", answered("gpt-5.6-sol"));
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6-sol", s.slot[0].served);
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6-sol", nimbus::orch::servedModelFor("openai", "gpt-5.6").c_str());
+  nimbus::orch::noteServedModel("openai", "gpt-5.6", "gpt-5.6-sol-2");
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6-sol-2", nimbus::orch::servedModelFor("openai", "gpt-5.6").c_str());
+  for (size_t i = 0; i < nimbus::orch::kServedNotes; ++i) {
+    const std::string asked = "m" + std::to_string(i);
+    nimbus::orch::noteServedModel("zai", asked.c_str(), ("served-" + asked).c_str());
+  }
+  TEST_ASSERT_EQUAL_STRING("", nimbus::orch::servedModelFor("openai", "gpt-5.6").c_str());   // the oldest went
+  TEST_ASSERT_EQUAL_STRING("served-m0", nimbus::orch::servedModelFor("zai", "m0").c_str());
+  // Provider text: a clean id longer than the slot is cut, never overflowing; an echo
+  // that is no clean model id (too long, a newline that would forge a log or page line)
+  // is not recorded at all.
+  const std::string longEcho(60, 'x');
+  TurnSpend t;
+  t.add("zai", "glm-5.3", answered(longEcho.c_str()));
+  TEST_ASSERT_EQUAL_UINT(nimbus::orch::kModelKeyCap - 1, std::strlen(t.slot[0].served));
+  for (const char* hostile : {"glm-5.3\nresult: ok", "a/b in=1 out=1 cR=1 cW=1 n=1", "<b>x</b>"}) {
+    TurnSpend h;
+    h.add("zai", "glm-5.3", answered(hostile));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", h.slot[0].served, hostile);
+  }
+  TurnSpend huge;
+  huge.add("zai", "glm-5.3", answered(std::string(200, 'x').c_str()));
+  TEST_ASSERT_EQUAL_STRING("", huge.slot[0].served);
+  nimbus::orch::noteServedModel("", "a", "b");   // nothing to note
+  nimbus::orch::noteServedModel("zai", "", "b");
+  nimbus::orch::clearServedModels();
+  TEST_ASSERT_EQUAL_STRING("", nimbus::orch::lastServedModel().host.c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_property_every_response_filed_once_under_its_host);
@@ -283,5 +375,7 @@ int main() {
   RUN_TEST(test_live_switched_shape_never_underflows);
   RUN_TEST(test_failed_turn_files_only_what_billed);
   RUN_TEST(test_openai_cache_write_tokens_parsed);
+  RUN_TEST(test_each_slot_names_the_model_that_answered);
+  RUN_TEST(test_served_notes_are_bounded_and_newest_wins);
   return UNITY_END();
 }

@@ -13,6 +13,8 @@
 #include "nimbus/orch/model_refresh.h"
 #include "nimbus/orch/model_selectable.h"
 #include "nimbus/orch/models_tool.h"
+#include "nimbus/orch/head_switch.h"
+#include "nimbus/orch/turn_effects.h"   // deviceSummaryEffect - what the claim check reads
 #include "nimbus/orch/provider_slots.h"
 
 // Stage E suite - the SECURITY RAILS of turn application, host-tested for the
@@ -255,6 +257,160 @@ static void test_tts_text_bounded_400() {
                    "1001", d, st, spawned);
   TEST_ASSERT_EQUAL(1, (int)r.spoken.size());
   TEST_ASSERT_EQUAL(400, (int)r.spoken[0].size());
+}
+
+// ---- a pause never moves the owner's head (26 Oct 2026, Lumi) -------------------
+
+// The production case: Anthropic, the owner's head, paused by its monthly limit; every
+// turn already ran on Mistral. The facts the device supplies, one owner message per turn.
+struct PausedHead {
+  std::string head = "anthropic";
+  std::string clause = nimbus::orch::headPauseNote("Anthropic", nimbus::orch::kPauseProviderLimit,
+                                                    nimbus::orch::ParkKind::None, false);
+  std::string owner;
+  uint32_t msg = 0;   // the owner message's number (0 = a turn the owner did not write)
+  uint32_t now = 1000;
+};
+
+static ApplyDeps pausedDeps(Rec& r, PausedHead& h) {
+  ApplyDeps d = makeDeps(r);
+  d.headHost = [&h] { return h.head; };
+  d.headPause = [&h](const std::string& p) { return p == h.head ? h.clause : std::string(); };
+  d.ownerMessage = [&h] {
+    nimbus::orch::OwnerMessage m;
+    m.text = h.owner;
+    m.number = h.msg;
+    return m;
+  };
+  d.nowMs = [&h] { return h.now; };
+  return d;
+}
+
+// One owner message (a new number each time, the same words or not); "" = a turn the
+// owner did not write.
+static std::string switchTo(Rec& r, PausedHead& h, const char* provider, const char* owner, bool scheduled = false) {
+  static uint32_t s_msgs = 0;
+  h.owner = owner;
+  h.msg = *owner ? ++s_msgs : 0;
+  ApplyDeps d = pausedDeps(r, h);
+  ApplyState st = makeState(r, scheduled);
+  std::string risk;
+  const std::string json = std::string("{\"type\":\"orch_model\",\"provider\":\"") + provider +
+                           "\",\"model\":\"good-latest\"}";
+  return agent::applyDeviceElement(json, scheduled, "1001", d, &risk) + risk;
+}
+
+// The owner's words on Lumi ("Hmm I thought anthropic is out of budget") and the DoD's
+// "switch to mistral since anthropic is out of budget": the head stays, nothing is
+// written, the explanation rides the reply, and the next turn's feedback says so.
+static void test_orch_model_does_not_move_a_paused_head() {
+  nimbus::orch::headSwitchGuard().reset();
+  for (const char* owner : {"Hmm I thought anthropic is out of budget",
+                            "switch to mistral since anthropic is out of budget"}) {
+    nimbus::orch::headSwitchGuard().reset();
+    Rec r;
+    PausedHead h;
+    h.owner = owner;
+    h.msg = 1;
+    ApplyDeps d = pausedDeps(r, h);
+    ApplyState st = makeState(r);
+    bool spawned = false;
+    agent::applyTurn(
+        turnWithDevice("{\"type\":\"orch_model\",\"provider\":\"mistral\",\"model\":\"good-large-latest\"}"),
+        "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.hostModelSet.size(), owner);
+    TEST_ASSERT_TRUE(LogCapture::contains("orch_model(no change) mistral/good-large-latest"));
+    TEST_ASSERT_TRUE_MESSAGE(r.pendingMem.find("[DEVICE] orch_model not applied, the head stays") != std::string::npos,
+                             r.pendingMem.c_str());
+    const std::string want =
+        "Anthropic is paused by your monthly limit; replies already fail over automatically and return to "
+        "Anthropic when it lifts.";
+    TEST_ASSERT_TRUE_MESSAGE(r.pendingMem.find(want) != std::string::npos, r.pendingMem.c_str());
+  }
+}
+
+// Told why, the owner can still have it: a LATER owner message that names the provider
+// (or the model) within the window applies the switch, the same words sent again
+// included. A message that does not name it, a turn the owner did not write, or a reply
+// after the window stays refused; a refusal on a turn the owner did not write is not one
+// the owner can confirm, and it tells that turn only that the head stays.
+static void test_a_paused_head_moves_only_on_the_owners_explicit_second_ask() {
+  nimbus::orch::headSwitchGuard().reset();
+  Rec r;
+  PausedHead h;
+  std::string sum = switchTo(r, h, "mistral", "");   // a routine or a guest asks first
+  TEST_ASSERT_EQUAL_STRING("orch_model(no change) mistral/good-latest: Anthropic stays the main provider: only "
+                           "the owner can move it. \nAnthropic stays the main provider: only the owner can move it.",
+                           sum.c_str());
+  h.now += 60000;
+  sum = switchTo(r, h, "mistral", "switch to mistral since anthropic is out of budget");
+  TEST_ASSERT_TRUE_MESSAGE(sum.rfind("orch_model(no change) ", 0) == 0, sum.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(sum.find("To make Mistral your main provider anyway, ask again") != std::string::npos,
+                           sum.c_str());
+  h.now += 60000;
+  sum = switchTo(r, h, "mistral", "ok, thanks");                                           // names nothing
+  TEST_ASSERT_TRUE(sum.rfind("orch_model(no change) ", 0) == 0);
+  h.now += 60000;
+  sum = switchTo(r, h, "mistral", "", /*scheduled=*/true);                                 // a routine
+  TEST_ASSERT_TRUE(sum.rfind("orch_model(no change) ", 0) == 0);
+  TEST_ASSERT_EQUAL(0, (int)r.hostModelSet.size());
+  h.now += 60000;
+  sum = switchTo(r, h, "mistral", "switch to mistral since anthropic is out of budget");   // the same words again
+  TEST_ASSERT_EQUAL_STRING("orch_model(mistral/good-latest) ", sum.c_str());
+  TEST_ASSERT_EQUAL(1, (int)r.hostModelSet.size());
+  // The confirmation is spent: the next ask starts over. And it expires.
+  h.now += 60000;
+  TEST_ASSERT_TRUE(switchTo(r, h, "openai", "use gpt then").rfind("orch_model(no change) ", 0) == 0);
+  h.now += nimbus::orch::HeadSwitchGuard::kConfirmMs;
+  TEST_ASSERT_TRUE(switchTo(r, h, "openai", "yes, gpt for good").rfind("orch_model(no change) ", 0) == 0);
+  TEST_ASSERT_EQUAL(1, (int)r.hostModelSet.size());
+}
+
+// Unaffected: an open head, a model change within the paused head's own provider, and a
+// device that supplies no pause facts (host rigs).
+static void test_orch_model_is_unchanged_for_an_open_head_or_the_same_provider() {
+  nimbus::orch::headSwitchGuard().reset();
+  Rec r;
+  PausedHead h;
+  TEST_ASSERT_EQUAL_STRING("orch_model(anthropic/good-latest) ", switchTo(r, h, "anthropic", "opus please").c_str());
+  h.clause.clear();   // the limit lifted
+  TEST_ASSERT_EQUAL_STRING("orch_model(mistral/good-latest) ", switchTo(r, h, "mistral", "use mistral").c_str());
+  Rec r2;
+  ApplyDeps bare = makeDeps(r2);   // no headPause: no guard
+  std::string risk;
+  TEST_ASSERT_EQUAL_STRING("orch_model(mistral/good-latest) ",
+                           agent::applyDeviceElement(
+                               "{\"type\":\"orch_model\",\"provider\":\"mistral\",\"model\":\"good-latest\"}", false,
+                               "1001", bare, &risk)
+                               .c_str());
+}
+
+// Class rule over every way a head is closed: each one keeps the head, and the switch
+// is not counted as done (the claim check holds a "switched" reply against it).
+static void test_every_closed_head_keeps_the_head_and_backs_no_switch_claim() {
+  using nimbus::orch::ParkKind;
+  struct Case { uint8_t pause; ParkKind park; bool over; };
+  const Case cases[] = {{nimbus::orch::kPauseProviderLimit, ParkKind::None, false},
+                        {nimbus::orch::kPauseSpendCeiling, ParkKind::None, false},
+                        {nimbus::orch::kPauseOwner, ParkKind::None, false},
+                        {0, ParkKind::Billing, false},
+                        {0, ParkKind::Auth, false},
+                        {0, ParkKind::None, true}};
+  for (const Case& c : cases) {
+    nimbus::orch::headSwitchGuard().reset();
+    Rec r;
+    PausedHead h;
+    h.clause = nimbus::orch::headPauseNote("Anthropic", c.pause, c.park, c.over);
+    TEST_ASSERT_FALSE(h.clause.empty());
+    const std::string sum = switchTo(r, h, "mistral", "switch to mistral");
+    TEST_ASSERT_TRUE_MESSAGE(sum.rfind("orch_model(no change) ", 0) == 0, sum.c_str());
+    TEST_ASSERT_TRUE(sum.find(h.clause + " To make Mistral") != std::string::npos);
+    nimbus::orch::FxKind k;
+    bool landed = true;
+    TEST_ASSERT_TRUE(nimbus::orch::deviceSummaryEffect(sum, k, landed));
+    TEST_ASSERT_FALSE(landed);
+  }
+  TEST_ASSERT_TRUE(nimbus::orch::headPauseNote("Anthropic", 0, ParkKind::None, false).empty());
 }
 
 // ---- orch_model validation --------------------------------------------------
@@ -1035,7 +1191,7 @@ static void test_orch_model_misses_answer_and_queue_one_refresh_per_provider_an_
                                sum.c_str());
     }
     if (i == 2) {   // the main loop starts the queued refreshes between turns, one at a time
-      while (const char* due = q.due(false, true, false, true)) {
+      while (const char* due = q.due(false, true, false, true, now)) {
         q.started(due, now);
         starts++;
       }
@@ -1045,7 +1201,7 @@ static void test_orch_model_misses_answer_and_queue_one_refresh_per_provider_an_
   TEST_ASSERT_EQUAL(2, starts);                 // one refresh per provider in the hour
   TEST_ASSERT_EQUAL(1, queued["anthropic"]);
   TEST_ASSERT_EQUAL(1, queued["openai"]);
-  TEST_ASSERT_TRUE(q.due(false, true, false, true) == nullptr);
+  TEST_ASSERT_TRUE(q.due(false, true, false, true, now) == nullptr);
   TEST_ASSERT_EQUAL(0, (int)r.hostModelSet.size());
   // The end-of-turn device[] path tells the head next turn.
   ApplyState st = makeState(r);
@@ -1179,6 +1335,10 @@ int main(int, char**) {
   RUN_TEST(test_orch_model_valid_and_keyed_applies);
   RUN_TEST(test_orch_model_invalid_model_refused);
   RUN_TEST(test_orch_model_keyless_provider_refused);
+  RUN_TEST(test_orch_model_does_not_move_a_paused_head);
+  RUN_TEST(test_a_paused_head_moves_only_on_the_owners_explicit_second_ask);
+  RUN_TEST(test_orch_model_is_unchanged_for_an_open_head_or_the_same_provider);
+  RUN_TEST(test_every_closed_head_keeps_the_head_and_backs_no_switch_claim);
   RUN_TEST(test_orch_model_id_in_the_store_applies);
   RUN_TEST(test_reply_and_ask_deliver_as_one_message);
   RUN_TEST(test_lane_l_an_ask_the_reply_already_ends_with_is_not_repeated);
