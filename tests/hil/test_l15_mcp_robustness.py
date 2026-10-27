@@ -17,8 +17,9 @@ What it asserts:
     with JSON-RPC error -32003 and never dials the server: since v4.6.1 a tool that
     waits on the network runs only in the device's own turns, never on the web task
     the watchdog watches (lib/core/src/sys_web_guard.cpp toolWaitsOnNetwork).
-  * An echo call round-trips through a real device turn with all N resident, and
-    internal heap is still above the turn floor after it.
+  * A real device turn calls a connected server's echo tool with all N resident
+    (proved from the turn's own tool-loop transcript, not the reply: the marker is
+    in the prompt), and internal heap is still above the turn floor after it.
 
 The oversize half moved to the host suite: the LAN endpoint can no longer carry a
 220 KB argument to the server (it refuses the call), and a model cannot write one
@@ -41,7 +42,7 @@ import time
 
 import pytest
 
-from connectors import mcp_call, new_marker, reply_text, run_turn, skip_if_unavailable
+from connectors import mcp_call, mcp_result_line, new_marker, reply_text, run_turn, skip_if_unavailable
 from test_l4_network import lan_ip_or_skip
 from test_l15_mcp_outbound import (
     _add_device_mcp,
@@ -86,7 +87,7 @@ def _assert_internal_headroom(net, ip, where: str) -> dict:
 
 # ---- N connectors resident + one call mid-turn --------------------------------
 @pytest.mark.manual
-def test_multi_connector_sram_and_big_payload(device, net, secrets, require_secret, require_manual):
+def test_multi_connector_sram_and_an_mcp_call_mid_turn(device, net, secrets, require_secret, require_manual):
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
     url = _local_url_or_skip()
     names = ["hilrobust_a", "hilrobust_b", "hilrobust_c"]
@@ -111,8 +112,10 @@ def test_multi_connector_sram_and_big_payload(device, net, secrets, require_secr
         lan = mcp_call(net, ip, "mcp.hilrobust_a.echo", {"message": "from the LAN"})
         assert (lan.get("error") or {}).get("code") == _TURN_ONLY_RPC_ERROR, f"LAN /mcp mcp.* call: {lan!r}"[:300]
 
-        # (3) Another server's echo round-trips through a real device turn with all
-        # three resident, and internal heap still holds above the turn floor after it.
+        # (3) A real device turn calls another server's echo with all three resident:
+        # the turn's tool-loop transcript holds the call's result carrying the marker
+        # (the reply alone proves nothing: the prompt carries the marker). Internal
+        # heap still holds above the turn floor after the call.
         marker = new_marker("l15b-echo")
         turn = run_turn(
             net,
@@ -120,13 +123,18 @@ def test_multi_connector_sram_and_big_payload(device, net, secrets, require_secr
             f"Use the echo tool from the hilrobust_b MCP server to echo exactly this text: {marker}",
         )
         skip_if_unavailable(turn, "device MCP (everything)")
-        assert marker in reply_text(turn), f"echo marker did not round-trip; reply: {reply_text(turn)[:200]!r}"
-        _assert_internal_headroom(net, ip, "after-the-echo-turn")
+        called = mcp_result_line(turn, "hilrobust_b", "echo", marker)
+        assert called, (
+            "the turn never called mcp.hilrobust_b.echo (no result line with the marker in its "
+            f"tool-loop transcript); reply: {reply_text(turn)[:200]!r}"
+        )
+        print(f"[l15b] {called[:160]}", flush=True)
+        _assert_internal_headroom(net, ip, "after-the-mcp-call")
 
         # (4) Human confirmation: nothing blanked or rebooted on the glass. The
         # white-screen/wedge class (AGENTS.md) is only ever confirmed by an eyeball.
         require_manual.confirm(
-            "During the three-server discovery and the echo turn, did the panel stay up "
+            "During the three-server discovery and the MCP call turn, did the panel stay up "
             "(no blank screen, no reboot, ring/menu still responsive)?"
         )
     finally:

@@ -139,6 +139,17 @@ def reply_text(turn: dict) -> str:
     return str(turn.get("reply", "") or "")
 
 
+def mcp_result_line(turn: dict, server: str, tool: str, marker: str) -> str:
+    """Device evidence that the turn CALLED ``mcp.<server>.<tool>`` and got ``marker``
+    back: the tool-loop transcript's result line (section 4 of /api/lastturn, kept as
+    ``_raw`` by run_turn: "[result] <tool name> <output>", the name with or without
+    the dots the head's wire form replaces). "" when the turn never called it. A
+    marker the prompt carries proves nothing in the reply: the model can repeat it."""
+    name = rf"mcp[._]{re.escape(server)}[._]{re.escape(tool)}"
+    found = re.search(rf"^\[result\] {name} (?!\(error\)).*{re.escape(marker)}", turn.get("_raw", ""), re.M)
+    return found.group(0) if found else ""
+
+
 def skip_if_unavailable(turn: dict, human_name: str) -> None:
     """If the agent's reply says the connector/resource was unreachable, SKIP with
     the reason rather than hard-failing (external state, not a device regression)."""
