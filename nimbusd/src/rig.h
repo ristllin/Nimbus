@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "spend_ceiling_vn.h"   // lane DEF: the monthly spend ceiling (R7: hosted too)
+#include "nimbus/orch/food_ledger.h"     // scanFoodLedger - the VN ledger (CUM-840)
 #include "nimbus/orch/food_portions.h"   // food.portions
 #include "nimbus/orch/spend_guard.h"   // lane QW4: sentWithoutAnswer - a sent embedding counts
 #include "connectors_store.h"
@@ -2238,6 +2239,16 @@ class NimbusdRig {
     };
     d.firstAllowedChat = [] { return std::string("owner"); };
     d.journalGc = [] {};
+    // Lane CTX (CUM-840): today's food ledger over the VN's own POSIX files store,
+    // the same scan the device runs - the hosted turn's per-turn block and the fold
+    // read the real path, not the desk device's card.
+    d.foodLedger = [this](const std::string&) {
+      const std::string where =
+          std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodLedgerOwnerName;
+      return orch::scanFoodLedger(files_->get(where), files_->has(where),
+                                  orch::logDayOf(std::time(nullptr), true),
+                                  orch::kFoodLedgerProject, orch::kFoodLedgerOwnerName);
+    };
 
     d.hooks.onToolCall = [this](const orch::HeadToolCall& c) {
       cur_.toolCalls.push_back(c.name + "(" + trunc(c.argsJson, 200) + ")");

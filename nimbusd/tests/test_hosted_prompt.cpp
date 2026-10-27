@@ -117,6 +117,49 @@ static void testClockFollowsTheOwnersZone(ndtest::Ctx& c) {
 // message arrived via Telegram; your reply is delivered as a Telegram message". The
 // page's turn (POST /api/chat) names the web UI, as the device's page does, and a
 // real Telegram message from an approved chat still says Telegram.
+
+// Lane CTX (CUM-840): the hosted turn reads today's food ledger from the VN's own
+// files store - the same scan the device runs. A ledger row seeded under the
+// reserved owner name rides the turn's per-turn block; with no ledger file the
+// block is absent (a fresh VN is never told about a phantom day).
+static void testFoodLedgerRidesTheHostedTurn(ndtest::Ctx& c) {
+  std::printf("  -- the VN turn reads today's food ledger --\n");
+  const std::string where =
+      std::string(nimbus::orch::kFoodLedgerProject) + "/" + nimbus::orch::kFoodLedgerOwnerName;
+  const std::string row = "date,time,food,amount_unit,kcal,note\n";
+  // With a ledger: the block names the file and carries the row.
+  {
+    clearEnv();
+    setenv("CUMULO_API_KEY", "cumulo_sk_test_FOOD", 1);
+    FakeHttpTransport tx;
+    for (int i = 0; i < 4; i++) tx.script.push_back(Exchange{"", "", 500, "{}"});
+    Config cfg;
+    NimbusdRig rig(cfg, opts("hp-food"), &tx);
+    rig.files().seed(where, row);
+    rig.say("owner", "I ate lunch, log it please");
+    c.ok(!tx.seen.empty(), "the ledger turn dispatched");
+    c.ok(has(tx.seen[0].body, "[TODAY'S FOOD LEDGER"), "the ledger block rides the VN turn");
+    c.ok(has(tx.seen[0].body, nimbus::orch::kFoodLedgerProject) &&
+             has(tx.seen[0].body, nimbus::orch::kFoodLedgerOwnerName),
+         "the block names the owner's ledger file");
+    c.ok(has(tx.seen[0].body, "date,time,food,amount_unit,kcal,note"), "the header row rides");
+    clearEnv();
+  }
+  // Without one: no block, no phantom day.
+  {
+    clearEnv();
+    setenv("CUMULO_API_KEY", "cumulo_sk_test_FOOD2", 1);
+    FakeHttpTransport tx;
+    for (int i = 0; i < 4; i++) tx.script.push_back(Exchange{"", "", 500, "{}"});
+    Config cfg;
+    NimbusdRig rig(cfg, opts("hp-food2"), &tx);
+    rig.say("owner", "what's on the agenda?");
+    c.ok(!tx.seen.empty(), "the plain turn dispatched");
+    c.ok(!has(tx.seen[0].body, "[TODAY'S FOOD LEDGER"), "no ledger block without a ledger");
+    clearEnv();
+  }
+}
+
 static void testWebPageIsTheWebChannel(ndtest::Ctx& c) {
   // The hosted rig opts in to the page alias at construction (a device never does).
   nimbus::orch::setHostedWebChatAlias(false);
@@ -172,6 +215,7 @@ int main() {
   std::printf("=== hosted prompt truth (CUM-542, offline) ===\n");
   testEveryHeadGetsTheHostedTruth(c);
   testClockFollowsTheOwnersZone(c);
+  testFoodLedgerRidesTheHostedTurn(c);
   testWebPageIsTheWebChannel(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
