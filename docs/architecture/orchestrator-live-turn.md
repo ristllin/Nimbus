@@ -258,7 +258,11 @@ not as a description of it (`nimbus/orch/turn_images.h`). When the configured he
 images (every Claude model; OpenAI gpt-4o, gpt-4.1, gpt-5 and newer; Mistral chat models
 with vision, by one rule, `headTakesImages`), the photo's bytes are copied into one PSRAM
 buffer held for the turn and its label reads `(attached: the photo itself is in this
-message)`; no caption call is made. The channel offers the turn's photos to a single slot
+message)`; no caption call is made. The provider's own model list decides when it says
+yes or no for the exact model; a model it has no row for (a `-latest` alias, a model
+newer than the last fetch) and a device with no list fall back to the name rule, which
+the model catalog's vision role shares (`mistralVisionByName`): a wrong guess costs one
+refusal, answered by re-sending the photos as transcriptions (below). The channel offers the turn's photos to a single slot
 bound to the chat and the routed text; the engine takes them when the owner turn starts
 and every head loop seeds its transcript with them. Each renderer puts them into the
 seeded user message, the newest user message of the request, as its provider's image

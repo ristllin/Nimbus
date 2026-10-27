@@ -1343,6 +1343,30 @@ static void test_r1_mistral_refused_image_resent_as_transcriptions() {
   TEST_ASSERT_TRUE(fx.set->rejected);
 }
 
+// RCA 27 Oct (A2): a Mistral list with no row for the head's exact id (-1) no longer turns
+// the head caption-only: the name rule sends the photos natively. If the guess is wrong,
+// the provider's refusal (422 naming the image) is the safety net: the round is re-sent
+// once with the transcriptions and the rest of the turn stays blind.
+static int noRowForTheModel(const char* host, const char*) { return std::string(host) == "mistral" ? -1 : -2; }
+static void test_r1_a_list_without_the_models_row_sends_images_and_a_refusal_falls_back() {
+  nimbus::orch::installImageInputLookup(&noRowForTheModel);
+  harness_test::PhotoTurn fx;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 422,
+                           "{\"object\":\"error\",\"message\":\"Image input is not supported for this model\","
+                           "\"type\":\"invalid_request_error\"}"});
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, chatFinalBody()});
+  std::string err;
+  const bool ok = misPhotoTurn(d, fx, "mistral-large-latest", err);
+  nimbus::orch::installImageInputLookup(nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "image_url"));   // native: the name rule, not captions
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "image_url"));
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "(machine transcription by anthropic: photo 2 shows a label)"));
+  TEST_ASSERT_TRUE(fx.set->rejected);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_reserved_toolname_renamed_and_inverted);
@@ -1384,6 +1408,7 @@ int main(int, char**) {
   RUN_TEST(test_r1_image_url_parts_in_the_seeded_user_message);
   RUN_TEST(test_r1_mistral_model_without_image_input_reads_transcriptions);
   RUN_TEST(test_r1_mistral_refused_image_resent_as_transcriptions);
+  RUN_TEST(test_r1_a_list_without_the_models_row_sends_images_and_a_refusal_falls_back);
   UNITY_END();
   return 0;
 }
