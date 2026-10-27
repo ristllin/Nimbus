@@ -35,7 +35,7 @@ import time
 
 import pytest
 
-from webrig import ip_tok_or_skip, make_session, require_orchestrator
+from webrig import chat_turn, ip_tok_or_skip, make_session, require_orchestrator
 
 _S = None
 SLUGS = ("cumulo", "openai", "anthropic", "mistral", "zai")
@@ -107,41 +107,42 @@ def _jobs_live(ip: str) -> int:
         return 1
 
 
-def _drain(ip: str) -> str:
+def _epi_id(row: dict) -> int:
     try:
-        j = _S.get(f"http://{ip}/api/chat", timeout=8).json()
-        return "" if j.get("pending") else str(j.get("reply", "") or "")
-    except Exception:  # noqa: BLE001
-        return ""
+        return int(str(row.get("id", "m0"))[1:], 16)
+    except ValueError:
+        return 0
+
+
+def _assistant_rows(ip: str, floor: int) -> list:
+    """The web chat's assistant messages after episodic id `floor`, oldest first (a sub-agent's
+    synthesis has no turn id of its own: it is read from the log, never the legacy slot)."""
+    try:
+        j = _S.get(
+            f"http://{ip}/api/mem/episodic", params={"session": "web", "kind": "message", "limit": 20}, timeout=15
+        ).json()
+    except Exception:  # noqa: BLE001 - a busy page: nothing new this poll
+        return []
+    rows = [r for r in j.get("messages") or [] if r.get("role") == "assistant" and _epi_id(r) > floor]
+    return sorted(rows, key=_epi_id)
 
 
 def _ask(ip: str, text: str, cap_s: int = 420) -> list:
-    """One web-chat ask: its own reply, then every later delivery (the synthesis of the
-    sub-agent it started) until no job runs and nothing new arrives for 25 s."""
-    _drain(ip)
-    r = _S.post(f"http://{ip}/api/chat", data={"text": text}, timeout=10)
-    assert r.status_code == 200, f"chat send {r.status_code}: {r.text[:200]}"
-    turn = str(r.json().get("turn") or "")
-    replies = []
+    """One web-chat ask: its own reply (by turn id), then every later delivery (the synthesis of
+    the sub-agent it started) until no job runs and nothing new arrives for 25 s."""
+    floor = max((_epi_id(r) for r in _assistant_rows(ip, 0)), default=0)
+    first = chat_turn(_S, ip, text, timeout_s=cap_s)
     deadline = time.time() + cap_s
+    seen, quiet_since = 0, time.time()
     while time.time() < deadline:
-        j = _S.get(f"http://{ip}/api/chat", params={"turn": turn}, timeout=10).json()
-        if j.get("done"):
-            replies.append(str(j.get("reply") or ""))
-            break
-        time.sleep(3)
-    quiet_since = time.time()
-    while time.time() < deadline:
-        rep = _drain(ip)
-        if rep and rep not in replies:
-            replies.append(rep)
-            quiet_since = time.time()
-        if _jobs_live(ip):
-            quiet_since = time.time()
+        rows = _assistant_rows(ip, floor)
+        if len(rows) != seen or _jobs_live(ip):
+            seen, quiet_since = len(rows), time.time()
         elif time.time() - quiet_since >= 25:
             break
         time.sleep(4)
-    return replies
+    texts = [str(r.get("text") or "") for r in _assistant_rows(ip, floor)]
+    return texts if texts else [first]
 
 
 def _spend_state(device) -> dict:
