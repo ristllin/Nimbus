@@ -77,6 +77,14 @@ class Transcript {
   // The heading the folded lines sit under in the seeded message.
   static const char kFoldNote[];
 
+  // Shrink the arguments of recorded calls over `minBytes` to a short stub, a JSON
+  // object every wire accepts as a call's arguments; the id and name stay, so each
+  // call stays paired with its result. For the body-budget refit (head_loop), which
+  // runs before a step, when every recorded call has already run - so the stub says
+  // so. Final-answer correction pairs (orch_turn) are left whole. Returns the replay
+  // bytes reclaimed.
+  size_t stubArguments(size_t minBytes);
+
   // Provider-neutral compact render (spawn-with-history, /api/lastturn debug).
   // Byte-bounded, oldest-first, with an explicit omission marker.
   std::string renderBrief(size_t maxBytes) const;

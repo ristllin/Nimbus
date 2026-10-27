@@ -173,6 +173,20 @@ void Transcript::clipNewest(int newest, size_t cap) {
   }
 }
 
+size_t Transcript::stubArguments(size_t minBytes) {
+  size_t freed = 0;
+  for (auto& it : e_) {
+    if (it.kind != TranscriptItem::Kind::ToolUse || it.name == "orch_turn" || it.text.size() <= minBytes)
+      continue;
+    std::string stub = "{\"omitted\":\"" + std::to_string((unsigned)it.text.size()) + " bytes; this call already ran\"}";
+    if (stub.size() >= it.text.size()) continue;
+    freed += it.text.size() - stub.size();
+    it.text = std::move(stub);
+  }
+  replayBytes_ -= freed;
+  return freed;
+}
+
 size_t Transcript::trimToolOutputs(size_t maxTotalToolBytes) {
   if (!maxTotalToolBytes || replayBytes_ <= maxTotalToolBytes) return 0;
   const size_t before = replayBytes_;

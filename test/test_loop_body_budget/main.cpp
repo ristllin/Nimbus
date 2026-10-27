@@ -60,6 +60,7 @@ namespace {
 // bodyWithinBudget does. Tool rounds until `toolRounds`, then the final answer.
 struct GrowingLoop {
   size_t base = 70000, budget = providers::kWireBodyMax, resultBytes = 3000;
+  size_t argsBytes = 0;   // > 0: the first call is one big write with arguments this size
   int toolRounds = 8;
   Transcript tr;
   std::vector<size_t> sent;
@@ -127,7 +128,8 @@ struct GrowingLoop {
       HeadToolCall c;
       c.id = "c" + std::to_string(++calls);
       c.name = "memory_search";
-      c.argsJson = "{\"q\":\"update notes\"}";
+      c.argsJson = argsBytes && calls == 1 ? "{\"text\":\"" + std::string(argsBytes, 'w') + "\"}"
+                                           : std::string("{\"q\":\"update notes\"}");
       s.toolCalls.push_back(c);
       return s;
     };
@@ -176,6 +178,28 @@ static void test_every_growing_loop_ends_with_an_answer() {
   TEST_ASSERT_TRUE(refits > 10);   // the matrix really crosses the budget
 }
 
+// One big write (merge review): an executed call whose ARGUMENTS are the oversize
+// part - an artifact.save of 6-24 KB on a 60-70 KB base. Folding older rounds and
+// clipping results cannot shrink it; its arguments become a short stub (the call ran,
+// its id and name stay paired with its result) and the turn still ends with an answer.
+static void test_big_write_arguments_still_answer() {
+  for (size_t base : {60000u, 70000u})
+    for (size_t args : {6000u, 12000u, 18000u, 24000u})
+      for (int rounds : {1, 3}) {
+        GrowingLoop g;
+        g.base = base;
+        g.argsBytes = args;
+        g.resultBytes = 120;   // "saved" and friends
+        g.toolRounds = rounds;
+        const HeadOutcome o = g.run();
+        char msg[160];
+        std::snprintf(msg, sizeof msg, "base %zu args %zu rounds %d: %s", base, args, rounds, o.error.c_str());
+        TEST_ASSERT_TRUE_MESSAGE(o.ok, msg);
+        TEST_ASSERT_EQUAL_INT_MESSAGE(rounds + 1, (int)g.sent.size(), msg);
+        for (size_t sz : g.sent) TEST_ASSERT_TRUE_MESSAGE(sz <= g.budget, msg);
+      }
+}
+
 // Counter-tests: a base that alone is over the budget (nothing to fold) fails
 // honestly with the refusal and never spins; without a transcript the old failure
 // stands.
@@ -217,6 +241,18 @@ std::string toolResponse(const std::string& host, int n) {
            "\",\"name\":\"memory_search\",\"arguments\":\"{\\\"q\\\":\\\"notes\\\"}\"}]}";
   return std::string("{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":[{\"id\":\"") + id +
          "\",\"function\":{\"name\":\"memory_search\",\"arguments\":\"{\\\"q\\\":\\\"notes\\\"}\"}}]}}]}";
+}
+// A tool round whose one call carries `bytes` of text in its arguments (a big write).
+std::string bigWriteResponse(const std::string& host, size_t bytes) {
+  const std::string text(bytes, 'w');
+  if (host == "anthropic")
+    return "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tc0000001\",\"name\":\"memory_search\","
+           "\"input\":{\"q\":\"" + text + "\"}}],\"stop_reason\":\"tool_use\"}";
+  if (host == "openai")
+    return "{\"id\":\"rw1\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"tc0000001\","
+           "\"name\":\"memory_search\",\"arguments\":\"{\\\"q\\\":\\\"" + text + "\\\"}\"}]}";
+  return "{\"choices\":[{\"message\":{\"content\":\"\",\"tool_calls\":[{\"id\":\"tc0000001\","
+         "\"function\":{\"name\":\"memory_search\",\"arguments\":\"{\\\"q\\\":\\\"" + text + "\\\"}\"}}]}}]}";
 }
 std::string finalResponse(const std::string& host) {
   if (host == "anthropic")
@@ -322,6 +358,73 @@ static void test_fabric_refit_is_not_a_failed_step() {
   TEST_ASSERT_EQUAL_INT(0, (int)big.http.seen.size());
 }
 
+// The stub itself: valid JSON arguments, id and name kept (the pair with its result
+// stays), small arguments and final-answer correction pairs left whole, the replay
+// count follows.
+static void test_stub_arguments_keeps_pairs() {
+  Transcript tr;
+  tr.addUser("[USER] save it");
+  tr.addToolCall({"c1", "artifact_save", "{\"text\":\"" + std::string(18000, 'w') + "\"}"}, 0, "");
+  tr.addToolResult({"c1", "artifact_save", "saved a1", false}, 0);
+  tr.addToolCall({"c2", "memory_search", "{\"q\":\"tea\"}"}, 1, "");
+  tr.addToolResult({"c2", "memory_search", "no hits", false}, 1);
+  tr.addToolCall({nimbus::orch::kFinalCheckCallId, "orch_turn", "{\"reply\":\"" + std::string(2000, 'r') + "\"}"}, 1,
+                 "");
+  const size_t before = tr.toolBytes();
+  const size_t freed = tr.stubArguments(512);
+  TEST_ASSERT_TRUE(freed > 17000);
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)(before - freed), (uint32_t)tr.toolBytes());
+  const auto& e = tr.entries();
+  TEST_ASSERT_EQUAL_STRING("c1", e[1].id.c_str());
+  TEST_ASSERT_EQUAL_STRING("artifact_save", e[1].name.c_str());
+  TEST_ASSERT_EQUAL_STRING("{\"omitted\":\"18011 bytes; this call already ran\"}", e[1].text.c_str());
+  JsonDocument parsed;
+  TEST_ASSERT_TRUE(deserializeJson(parsed, e[1].text) == DeserializationError::Ok);
+  TEST_ASSERT_TRUE(parsed.is<JsonObject>());
+  TEST_ASSERT_EQUAL_STRING("{\"q\":\"tea\"}", e[3].text.c_str());   // small: whole
+  TEST_ASSERT_TRUE(e[5].text.size() > 2000);                           // orch_turn: whole
+  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)tr.stubArguments(512));        // idempotent
+}
+
+// The big write on every real wire: the model saves 18 KB in round 0 (it runs), and
+// round 1's request would carry it again over the budget. The refit stubs the executed
+// call's arguments; each wire still renders a valid call/result pair; the owner gets an
+// answer with no extra request.
+static void test_big_write_on_every_loop_wire() {
+  for (const char* host : {"anthropic", "openai", "mistral"}) {
+    LogCapture::install();
+    FakeProviderDeps d;
+    const std::string h = host;
+    d.http.script.push_back({"", "", 200, bigWriteResponse(h, 18000)});
+    d.http.script.push_back({"", "", 200, finalResponse(h)});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    for (const auto& sp : deviceShapedSpecs()) rig.ht.specs.push_back(sp);
+    rig.ht.cfg.maxRounds = 8;
+    rig.ht.cfg.maxToolResultBytes = 8192;
+    rig.ht.cfg.maxTotalToolBytes = 65536;
+    rig.result = "saved artifact a1 (18000 B)";
+    std::string conv, out, err;
+    bool ok = false;
+    if (h == "anthropic") ok = providers::orchTurnAnthropic(pd, conv, kLumiIns, kLumiUser, out, err, &rig.ht, nullptr);
+    if (h == "openai") ok = providers::orchTurnOpenAI(pd, conv, kLumiIns, kLumiUser, out, err, &rig.ht, nullptr);
+    if (h == "mistral") ok = providers::orchTurnMistral(pd, conv, kLumiIns, kLumiUser, out, err, &rig.ht, nullptr);
+    char msg[200];
+    std::snprintf(msg, sizeof msg, "%s: ok=%d requests=%zu round0=%zu err=%s", host, (int)ok, d.http.seen.size(),
+                  d.http.seen.empty() ? 0 : d.http.seen[0].body.size(), err.c_str());
+    TEST_MESSAGE(msg);
+    TEST_ASSERT_TRUE_MESSAGE(ok, msg);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)rig.dispatched.size(), msg);   // the write ran once
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, (int)d.http.seen.size(), msg);      // no extra request
+    for (const auto& r : d.http.seen) TEST_ASSERT_TRUE_MESSAGE(r.body.size() <= providers::kWireBodyMax, msg);
+    const std::string& second = d.http.seen[1].body;
+    TEST_ASSERT_TRUE_MESSAGE(second.find("this call already ran") != std::string::npos, msg);
+    TEST_ASSERT_TRUE_MESSAGE(second.find("tc0000001") != std::string::npos, msg);   // the pair stays
+    TEST_ASSERT_TRUE_MESSAGE(second.find("saved artifact a1") != std::string::npos, msg);   // its result too
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_refusal_wording_round_trips);
@@ -330,5 +433,8 @@ int main(int, char**) {
   RUN_TEST(test_unfittable_round_fails_honestly);
   RUN_TEST(test_lumi_shape_on_every_loop_wire);
   RUN_TEST(test_fabric_refit_is_not_a_failed_step);
+  RUN_TEST(test_big_write_arguments_still_answer);
+  RUN_TEST(test_stub_arguments_keeps_pairs);
+  RUN_TEST(test_big_write_on_every_loop_wire);
   return UNITY_END();
 }

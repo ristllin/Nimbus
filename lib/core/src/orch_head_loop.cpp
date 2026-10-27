@@ -243,9 +243,11 @@ namespace {
 // what remains.
 constexpr size_t kBudgetRefitSlack = 4096;
 constexpr size_t kBudgetClipSlack = 512;
-// Refits per round: older rounds first, then the newest round's clip, then one
+// Refits per round: big arguments, older rounds, the newest round's clip, and one
 // more for a fold whose stub lines ate the room it made.
-constexpr int kBudgetRefits = 3;
+constexpr int kBudgetRefits = 4;
+// Arguments over this many bytes shrink to a stub (a write of a document, not a query).
+constexpr size_t kArgStubOver = 512;
 
 // The replayed bytes of the newest round (the results the model has not seen yet).
 size_t newestRoundBytes(const Transcript& tr) {
@@ -260,10 +262,12 @@ size_t newestRoundBytes(const Transcript& tr) {
 
 // A round the provider refused to SEND because its body outgrew the wire budget
 // (body_budget.h): nothing left the device and nothing was billed, so the loop
-// folds the older tool rounds to one-line stubs and runs the same round again; the
-// newest round is clipped only when folding the older ones frees nothing more
-// (why it matters: body_budget.h). True when something was reclaimed and a re-run
-// can fit.
+// shrinks what it replays and runs the same round again, least informative first:
+// the arguments of calls that already ran (one big write is otherwise unfittable:
+// the model knows what it wrote and its result says what happened), then the older
+// tool rounds folded to one-line stubs, then - only when nothing else frees room -
+// the newest round's results clipped (why it matters: body_budget.h). True when
+// something was reclaimed and a re-run can fit.
 bool refitToBudget(const HeadStep& sr, const HeadLoopHooks& hooks, int round) {
   size_t budget = 0, size = 0;
   if (sr.ok || !hooks.transcript || !parseBodyBudgetError(sr.error, budget, size) || size <= budget)
@@ -273,14 +277,15 @@ bool refitToBudget(const HeadStep& sr, const HeadLoopHooks& hooks, int round) {
   const size_t newest = newestRoundBytes(tr);
   const size_t want = (size - budget) + (have > newest ? kBudgetRefitSlack : kBudgetClipSlack);
   const size_t cap = have > want ? have - want : 1;   // trimToolOutputs(0) means no cap
+  size_t freed = tr.stubArguments(kArgStubOver);
   // trimToolOutputs(newest) folds every older round and never clips the newest:
   // it folds down to half its cap, and the newest round alone is over that.
-  size_t freed = cap < newest ? tr.trimToolOutputs(newest) : 0;
+  if (freed == 0 && cap < newest) freed = tr.trimToolOutputs(newest);
   if (freed == 0) freed = tr.trimToolOutputs(cap);
   if (hooks.log)
     hooks.log("headloop: round " + std::to_string(round) + " body " + std::to_string(size) + " B over the " +
               std::to_string(budget) + " B budget - folded " + std::to_string(freed) +
-              " B of tool results" + (freed ? ", running the round again" : ", nothing left to fold"));
+              " B of the replayed tool rounds" + (freed ? ", running the round again" : ", nothing left to fold"));
   return freed > 0;
 }
 

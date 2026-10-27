@@ -142,9 +142,11 @@ serves:
   over the budget is refused before the send (fail closed, named), so a
   component that escapes its cap costs one honest turn instead of a TLS
   stall. Inside a tool loop the refusal does not end the turn: nothing was
-  sent, so the loop (`runHeadLoop`) folds the older tool rounds to one-line
-  stubs, clips the newest round only if it alone does not fit, and runs the
-  same round again (`nimbus/orch/body_budget.h` holds the one wording both
+  sent, so the loop (`runHeadLoop`) shrinks the arguments of calls that already
+  ran to a short stub (each call keeps its id and name, so it stays paired with
+  its result on every wire), folds the older tool rounds to one-line stubs,
+  clips the newest round only if nothing else frees room, and runs the same
+  round again (`nimbus/orch/body_budget.h` holds the one wording both
   sides read). Photos splice in after the check: they are their own bounded
   channel.
 - **Valid UTF-8, whole strings**: every provider answers a body that is not
