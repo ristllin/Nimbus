@@ -61,8 +61,9 @@ static void test_every_failure_class_has_its_own_label() {
                            notReadLabel(vision::ReadFail::ProviderError, "openai", 500).c_str());
 }
 
-// The R1 classes: the photo itself, another model's transcription (named), the
-// pending record of a photo the head saw; each its own suffix.
+// The R1 classes: the photo itself, another model's transcription (named), a kept
+// photo its turn has not settled, a photo the head saw (with its own note, or without);
+// each its own suffix.
 static void test_r1_classes() {
   orch::MediaLabel l;
   l.k = 2;
@@ -77,9 +78,20 @@ static void test_r1_classes() {
   TEST_ASSERT_EQUAL_STRING("[image 2/3 ref=fedcba9876543210] (transcribed by anthropic) Batch 4417, net 250 g",
                            orch::mediaSegment(l).c_str());
   l.cls = orch::MediaClass::Pending;
-  TEST_ASSERT_EQUAL_STRING("[image 2/3 ref=fedcba9876543210] (seen in its turn; no record written yet)",
+  TEST_ASSERT_EQUAL_STRING("[image 2/3 ref=fedcba9876543210] (kept; image.look shows it)",
+                           orch::mediaSegment(l).c_str());
+  l.cls = orch::MediaClass::Seen;
+  TEST_ASSERT_EQUAL_STRING("[image 2/3 ref=fedcba9876543210] (seen in its turn; image.look shows it again)",
+                           orch::mediaSegment(l).c_str());
+  l.cls = orch::MediaClass::Noted;
+  l.detail = "receipt, 3 items, total 12.40";
+  TEST_ASSERT_EQUAL_STRING("[image 2/3 ref=fedcba9876543210] (seen; note: receipt, 3 items, total 12.40)",
+                           orch::mediaSegment(l).c_str());
+  l.detail.clear();   // a note never written reads as seen
+  TEST_ASSERT_EQUAL_STRING("[image 2/3 ref=fedcba9876543210] (seen in its turn; image.look shows it again)",
                            orch::mediaSegment(l).c_str());
   TEST_ASSERT_EQUAL_STRING(" (attached: the photo itself is in this message)", orch::kAttachedSuffix);
+  TEST_ASSERT_EQUAL_STRING(" (seen in its turn; image.look shows it again)", orch::kSeenSuffix);
 }
 
 // Property: whatever the provider answers (its error text echoing a key, a URL, the

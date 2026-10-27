@@ -74,15 +74,17 @@ void freeBytes(nimbus::orch::TurnImages& set) {
     free(const_cast<uint8_t*>(it.bytes));
     it.bytes = nullptr;
   }
+  for (auto& l : set.looked) {
+    free(const_cast<uint8_t*>(l.img.bytes));
+    l.img.bytes = nullptr;
+  }
 }
 
 // The turn being built (one at a time, on the poll task).
 std::unique_ptr<nimbus::orch::TurnImages> g_set;
 
-// A photo's fallback segment for a head that cannot see it: its transcription, or
-// why there is none (the typed label).
-std::string transcribeFor(const nimbus::orch::TurnImage& it) {
-  const CaptionResult r = read(it.bytes, it.len, it.mime.c_str(), String(), CaptionKind::Fallback);
+// A reading's segment: its transcription (named), or why there is none.
+std::string readingSegment(const std::string& tag, const CaptionResult& r) {
   nimbus::orch::MediaLabel l;
   l.kind = nimbus::orch::MediaKind::Image;
   if (!r.text.empty()) {
@@ -91,9 +93,76 @@ std::string transcribeFor(const nimbus::orch::TurnImage& it) {
     l.by = r.provider;
   } else {
     l.cls = nimbus::orch::MediaClass::NotRead;
-    l.detail = r.words;
+    l.detail = notReadWords(r);
   }
-  return it.tag + nimbus::orch::mediaSuffix(l);
+  return tag + nimbus::orch::mediaSuffix(l);
+}
+
+// A photo's fallback segment for a host that cannot see it (made only when such a
+// host renders the turn): its transcription, or why there is none. A reading that
+// failed for a passing reason (a refusal, a closed provider, no answer) is read again
+// once a provider is open (the turn's end queues it).
+std::string transcribeFor(nimbus::orch::TurnImage& it) {
+  const CaptionResult r = read(it.bytes, it.len, it.mime.c_str(), String(), CaptionKind::Fallback);
+  it.retryRead = r.text.empty() && rereadLater(r.fail);
+  return readingSegment(it.tag, r);
+}
+
+// A blind host's reading of a photo image.look showed again: the answer to the head's
+// question (one caption request, made on first use).
+std::string answerFor(const nimbus::orch::TurnImage& it, const std::string& question) {
+  const CaptionResult r =
+      read(it.bytes, it.len, it.mime.c_str(), String(), CaptionKind::Question, String(question.c_str()));
+  return readingSegment(it.tag, r);
+}
+
+// Queue the re-read of photo `it` (its turn's reading failed for a passing reason).
+void queueReread(const nimbus::orch::TurnImages& set, const nimbus::orch::TurnImage& it) {
+  PendingRecord r;
+  r.chatId = nimbus::orch::workingCopy(set.chatId);
+  r.ref = nimbus::orch::workingCopy(it.ref);
+  r.mime = nimbus::orch::workingCopy(it.mime);
+  r.tag = nimbus::orch::workingCopy(it.tag);
+  r.len = it.len;
+  recordQueue().push(r);
+}
+
+// The turn is over (R1): each photo's stored row says what the head had of it (its own
+// note, a blind host's reading, or "seen in its turn"), written before the row is ever
+// sent as history, so no caption call is made for a photo the head saw and no history
+// message changes after it was sent. A photo the turn never showed or read keeps the
+// row intake stored.
+void settleRows(nimbus::orch::TurnImages& set) {
+  for (size_t i = 0; i < set.items.size(); ++i) {
+    const nimbus::orch::TurnImage& it = set.items[i];
+    if (it.retryRead) queueReread(set, it);
+    const std::string row = nimbus::orch::settledRow(set, i);
+    if (row.empty() || set.chatId.empty()) continue;
+    const bool ok = memory::replaceMediaRowText(set.chatId.c_str(), it.ref, String(row.c_str()));
+    alogf("vision: photo %d/%d row %s (%s)", it.k, it.n, ok ? "settled" : "has no row to settle",
+          !it.note.empty() && set.sent ? "the head's note" : set.sent ? "seen" : "read for a blind host");
+  }
+}
+
+// The set's end (its release hook): the rows, then the bytes.
+void endOfTurn(nimbus::orch::TurnImages& set) {
+  settleRows(set);
+  freeBytes(set);
+}
+
+std::string newNonce() {
+  char nonce[17];
+  snprintf(nonce, sizeof nonce, "%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
+  return nonce;
+}
+
+// The device's hooks on a turn's set (the photo set, or the empty set of a turn that
+// brought none, on its first image.look).
+void adopt(nimbus::orch::TurnImages& set) {
+  if (set.nonce.empty()) set.nonce = newNonce();
+  if (!set.release) set.release = endOfTurn;
+  if (!set.transcribe) set.transcribe = transcribeFor;
+  if (!set.answer) set.answer = answerFor;
 }
 
 }  // namespace
@@ -203,12 +272,39 @@ static bool shownThisTurn(const std::string& ref) {
   return cur && cur->shown && !cur->rejected && cur->holds(ref);
 }
 
+// image.look on a turn's set (R1): the photo joins the set's looked photos and every
+// later request of the turn shows it to a host that sees images (a blind host reads the
+// caption step's answer to `question`, made on first use). Takes `buf` (freed with the
+// set) and returns the result text, or "" (buf untouched) when it cannot join.
+static std::string showAgain(nimbus::orch::TurnImages& set, const std::string& ref, const std::string& question,
+                             uint8_t* buf, size_t len) {
+  const char* why = "";
+  const char* real = nimbus::orch::admitLook(set, buf, len, why);
+  if (!*real) {
+    alogf("vision: image.look %s not shown as an image (%s) - the caption step reads it", ref.c_str(), why);
+    return std::string();
+  }
+  adopt(set);
+  nimbus::orch::LookedImage l;
+  l.img.ref = ref;
+  l.img.mime = real;
+  l.img.bytes = buf;
+  l.img.len = len;
+  l.img.tag = "[image ref=" + ref + "]";
+  l.question = question;
+  set.looked.push_back(l);
+  alogf("vision: image.look %s goes to the head as an image (%u bytes)", ref.c_str(), (unsigned)len);
+  return nimbus::orch::lookResultText(ref);
+}
+
 std::string look(const std::string& ref, const std::string& question, const std::string& ns, bool owner,
                  std::string& err) {
   if (!lookArgsValid(ref, question, err)) return std::string();
   if (shownThisTurn(ref))
     return "This photo came with the current message and is already in front of you as an image: "
            "answer from what you see in it.";
+  nimbus::orch::TurnImages* set = nimbus::orch::activeTurnImages();
+  if (set && set->lookedIndex(ref) >= 0) return nimbus::orch::lookResultText(ref);   // already shown again
   if (!memory::haveSd()) {
     err = "no memory card: earlier photos are not kept";
     return std::string();
@@ -239,21 +335,40 @@ std::string look(const std::string& ref, const std::string& question, const std:
     err = "that ref is not a photo";
     return std::string();
   }
+  // The pixels, when a turn holds a set (the owner's turns): the head views the photo
+  // itself. Otherwise (a routine, the turn's limits reached) one caption request.
+  if (set && g_native) {
+    const std::string shown = showAgain(*set, ref, question, buf, len);
+    if (!shown.empty()) return shown;
+  }
   const CaptionResult r = read(buf, len, mime, String(), CaptionKind::Question, String(question.c_str()));
   free(buf);
   if (r.text.empty()) err = "the photo could not be read: " + r.words;
   return r.text;
 }
 
+std::string note(const std::string& ref, const std::string& text, std::string& err) {
+  nimbus::orch::TurnImages* set = nimbus::orch::activeTurnImages();
+  if (!nimbus::orch::validRef(ref)) {
+    err = "ref must be the 16 hex characters in the photo's [image ... ref=...] label";
+    return std::string();
+  }
+  if (!set || !set->holds(ref)) {
+    err = "image.note is only for a photo of the current message; an earlier photo keeps its note";
+    return std::string();
+  }
+  if (!set->setNote(ref, text)) {
+    err = "the note is empty";
+    return std::string();
+  }
+  return "noted";
+}
+
 nimbus::orch::TurnImages* turnSet(bool create) {
   if (!g_set && create) {
     g_set.reset(new nimbus::orch::TurnImages());
-    char nonce[17];
-    snprintf(nonce, sizeof nonce, "%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
-    g_set->nonce = nonce;
     g_set->uploadOnce = g_uploadOnce;
-    g_set->release = freeBytes;
-    g_set->transcribe = transcribeFor;
+    adopt(*g_set);
   }
   return g_set.get();
 }
@@ -263,8 +378,9 @@ void offerTurnSet(const String& chatId, const String& routedText) {
     g_set.reset();
     return;
   }
-  alogf("vision: %u photo(s), %u bytes, go to the head as images", (unsigned)g_set->items.size(),
-        (unsigned)g_set->bytes());
+  g_set->chatId = chatId.c_str();
+  alogf("vision: %u photo(s), %u bytes, kept for the head (images to a host that sees them)",
+        (unsigned)g_set->items.size(), (unsigned)g_set->bytes());
   nimbus::orch::offerTurnImages(chatId.c_str(), routedText.c_str(), std::move(g_set));
 }
 
@@ -297,21 +413,25 @@ void idleStep() {
   const PendingRecord* due = recordQueue().due((uint32_t)millis(), available());
   if (!due) return;
   const PendingRecord rec = *due;   // settle() reorders the queue
-  const std::string path = nimbus::orch::blobPath("/mem/blobs", nimbus::orch::plainCopy(rec.ref),
-                                                  rec.ext.empty() ? "jpg" : nimbus::orch::plainCopy(rec.ext));
   size_t len = 0;
-  const char* why = "";
+  const char* why = "could not be fetched";
   uint8_t* buf = nullptr;
-  {
+  for (const char* ext : {"jpg", "bin"}) {   // a photo, or an image sent as a file
+    if (!rec.ext.empty() && rec.ext != ext) continue;
+    const std::string path = nimbus::orch::blobPath("/mem/blobs", nimbus::orch::plainCopy(rec.ref), ext);
     memory::Lock lk;   // the card: one reader at a time (the idle step holds no turn)
+    if (!memory::dataFs().exists(path.c_str())) continue;
     buf = loadToPsram(path.c_str(), memory::dataFs(), nimbus::orch::kImagePartBytes, len, why);
+    break;
   }
   if (!buf) {
     alogf("vision: record for %s skipped: %s", rec.ref.c_str(), why);
     recordQueue().settle(rec.ref, true, (uint32_t)millis());   // nothing to read: give up
     return;
   }
-  const CaptionResult r = read(buf, len, rec.mime.c_str(), String(rec.context.c_str()), CaptionKind::Memory);
+  // Only a photo a blind host could not read gets here (the head's own photos are
+  // settled at their turn's end, with no caption call): its fallback reading again.
+  const CaptionResult r = read(buf, len, rec.mime.c_str(), String(rec.context.c_str()), CaptionKind::Fallback);
   free(buf);
   if (r.text.empty()) {
     alogf("vision: record for %s not written (%s)", rec.ref.c_str(), r.words.c_str());

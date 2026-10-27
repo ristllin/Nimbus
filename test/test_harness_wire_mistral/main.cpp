@@ -1537,6 +1537,76 @@ static void test_r1_mistral_model_without_image_input_reads_transcriptions() {
   TEST_ASSERT_TRUE(d.http.spliced[0].empty());
 }
 
+// ---- lane IMG: image.look returns the pixels ------------------------------------
+// A turn with no photo of its own: image.look's photo follows the round's tool message
+// as one user message [label, image_url] (a user message after tool messages is
+// accepted: probed live 27 Oct on mistral-small-latest and mistral-large-latest).
+
+static bool misLookTurn(FakeProviderDeps& d, harness_test::LookRig& look, const char* model, std::string& err) {
+  auto pd = d.contract();
+  const std::string m = model;
+  pd.orchModel = [m](const char*) { return m; };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  rig.ht.dispatch = [&look](const nimbus::orch::HeadToolCall& c) { return look.dispatch(c); };
+  const nimbus::orch::ActiveTurnImages active(nullptr);
+  std::string conv, out;
+  return providers::orchTurnMistral(pd, conv, "SYS", "look at that photo again", out, err, &rig.ht, nullptr);
+}
+
+static void test_img_look_photo_follows_the_tool_message() {
+  harness_test::LookRig look;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200,
+                           chatToolCallBody("image_look", "lk1lk1lk1",
+                                            "{\"ref\":\"00112233445566ff\",\"question\":\"what number is on it?\"}")});
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, chatFinalBody()});
+  std::string err;
+  TEST_ASSERT_TRUE_MESSAGE(misLookTurn(d, look, "mistral-large-latest", err), err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  JsonDocument req;
+  TEST_ASSERT_FALSE(deserializeJson(req, d.http.seen[1].body, DeserializationOption::NestingLimit(64)));
+  JsonArrayConst msgs = req["messages"];
+  // system, user seed, assistant(tool_calls), tool, user(the photo)
+  TEST_ASSERT_EQUAL(5, (int)msgs.size());
+  TEST_ASSERT_EQUAL_STRING("tool", str(msgs[3]["role"]));
+  TEST_ASSERT_EQUAL_STRING(
+      "[image ref=00112233445566ff] The photo follows in the next message as an image: answer from what you see in it.",
+      str(msgs[3]["content"]));
+  TEST_ASSERT_EQUAL_STRING("user", str(msgs[4]["role"]));
+  JsonArrayConst c = msgs[4]["content"];
+  TEST_ASSERT_EQUAL(2, (int)c.size());
+  TEST_ASSERT_EQUAL_STRING("[image ref=00112233445566ff] (the photo image.look shows you again)", str(c[0]["text"]));
+  TEST_ASSERT_EQUAL_STRING("image_url", str(c[1]["type"]));
+  TEST_ASSERT_EQUAL_STRING(("data:image/jpeg;base64," + harness_test::b64Of(look.photo)).c_str(), str(c[1]["image_url"]));
+  TEST_ASSERT_EQUAL(1, (int)d.http.spliced[1].size());
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "nlook:"));
+  TEST_ASSERT_TRUE(d.http.spliced[0].empty());
+  TEST_ASSERT_EQUAL(0, look.answered);
+}
+
+// Codestral takes no image: the tool message carries the caption's answer (made once),
+// and no user message follows it.
+static void test_img_look_blind_mistral_reads_the_answer() {
+  harness_test::LookRig look;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200,
+                           chatToolCallBody("image_look", "lk1lk1lk1",
+                                            "{\"ref\":\"00112233445566ff\",\"question\":\"what number is on it?\"}")});
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, chatFinalBody()});
+  std::string err;
+  TEST_ASSERT_TRUE_MESSAGE(misLookTurn(d, look, "codestral-latest", err), err.c_str());
+  JsonDocument req;
+  deserializeJson(req, d.http.seen[1].body, DeserializationOption::NestingLimit(64));
+  JsonArrayConst msgs = req["messages"];
+  TEST_ASSERT_EQUAL(4, (int)msgs.size());
+  TEST_ASSERT_EQUAL_STRING("[image ref=00112233445566ff] (transcribed by mistral) what number is on it? 73",
+                           str(msgs[3]["content"]));
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "image_url"));
+  TEST_ASSERT_TRUE(d.http.spliced[1].empty());
+  TEST_ASSERT_EQUAL(1, look.answered);
+}
+
 // Mistral refuses the image (400 naming it): re-sent once, blind.
 static void test_r1_mistral_refused_image_resent_as_transcriptions() {
   harness_test::PhotoTurn fx;
@@ -1625,6 +1695,8 @@ int main(int, char**) {
   RUN_TEST(test_r1_mistral_model_without_image_input_reads_transcriptions);
   RUN_TEST(test_r1_mistral_refused_image_resent_as_transcriptions);
   RUN_TEST(test_r1_a_list_without_the_models_row_sends_images_and_a_refusal_falls_back);
+  RUN_TEST(test_img_look_photo_follows_the_tool_message);
+  RUN_TEST(test_img_look_blind_mistral_reads_the_answer);
   UNITY_END();
   return 0;
 }

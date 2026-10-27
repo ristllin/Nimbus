@@ -367,8 +367,11 @@ FabricErr oaiCancel(const ProviderDeps& pd, const char* host, const std::string&
 // function_call_output answers. Prose/reasoning SUMMARIES are observed-only and
 // never replayed (the encrypted reasoning items in `meta` are the replayable
 // form a reasoning model requires under store:false).
+// R1: an image.look result that shows an earlier photo again is followed, after the
+// round's outputs, by one user message carrying the photo when this host sees images;
+// a blind host reads a caption's answer in the output instead.
 static void renderOaiInput(const nimbus::orch::Transcript& tr, ArduinoJson::JsonArray in,
-                           bool showingImages) {
+                           bool showingImages, bool sees) {
   namespace orch = nimbus::orch;
   using Kind = orch::TranscriptItem::Kind;
   const auto& e = tr.entries();
@@ -410,15 +413,27 @@ static void renderOaiInput(const nimbus::orch::Transcript& tr, ArduinoJson::Json
       fc["name"]      = e[ci].name;
       wire::putModelStr(fc["arguments"], e[ci].text, e[ci].name.c_str());
     }
+    std::vector<size_t> looks;
     for (size_t ri : results) {
       JsonObject o = in.add<JsonObject>();
       o["type"]    = "function_call_output";
       o["call_id"] = e[ri].id;
+      const int look = imageparts::lookedFor(tr.images(), e[ri]);
+      if (look >= 0) {
+        if (sees) looks.push_back((size_t)look);
+        wire::putModelStr(o["output"],
+                          imageparts::lookText(*tr.images(), (size_t)look, sees,
+                                               imageparts::Dialect::OpenAIResponses),
+                          e[ri].name.c_str());
+        continue;
+      }
       // No is_error field on function_call_output - encode failure in the text.
       wire::putModelStr(o["output"],
                         e[ri].isError ? (std::string("ERROR: ") + e[ri].text) : e[ri].text,
                         e[ri].name.c_str());
     }
+    if (!looks.empty())
+      imageparts::putLookMessage(in, *tr.images(), looks, imageparts::Dialect::OpenAIResponses);
   }
 }
 
@@ -487,6 +502,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     // R1: the photos ride the seeded user message when this model takes images and
     // no provider refused them this turn (inline data URLs, spliced at send time).
     orch::TurnImages* imgs = imageparts::shown(tr, "openai", model);
+    bool sees = imageparts::sees(tr, "openai", model);   // image.look's photos too
     auto renderInput = [&]() {
       JsonArray in = req["input"].to<JsonArray>();
       // A split prompt (prompt_layout.h): the static block and the shelf as
@@ -495,7 +511,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       // led by the per-turn block. The request then starts with the same bytes
       // on every turn of a day.
       if (round.split) layout::putOpenAIInput(in, round);
-      renderOaiInput(tr, in, imgs != nullptr);
+      renderOaiInput(tr, in, imgs != nullptr, sees);
       // The SEEDED user message (this turn's own, after the history): the
       // per-turn block leads it and the photos ride it. Index, not "first
       // user" - the history items are users too.
@@ -599,7 +615,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     BodySplices splices;
     if (!wire::serializeChecked(req, body, out.error) ||
         !bodyWithinBudget(body, out.error) ||   // R3: the stated budget, before the photo splice
-        (imgs && !imageparts::spliceMarkers(body, *imgs, splices, out.error))) {
+        !imageparts::spliceAll(body, sees ? tr.images() : nullptr, imgs != nullptr, splices, out.error)) {
       out.ok = false;
       return out;
     }
@@ -607,11 +623,12 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
     int code = oaiResponses(pd, std::move(body), roundMs, resp, filter, splices.empty() ? nullptr : &splices);
     if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
-    if (code != 200 && imgs && imageparts::refusedImages(code, resp["error"]["message"] | "") &&
-        imageparts::rejectAndRetry(imgs, "orchTurn(oai-loop)", code)) {
+    if (code != 200 && !splices.empty() && imageparts::refusedImages(code, resp["error"]["message"] | "") &&
+        imageparts::rejectAndRetry(tr.images(), "orchTurn(oai-loop)", code)) {
       // The provider refused the photos themselves: this round again, reading their
       // transcriptions (the fallback captioner), and so does the rest of the turn.
       imgs = nullptr;
+      sees = false;
       renderInput();
       body.clear();
       if (!wire::serializeChecked(req, body, out.error) ||
@@ -621,6 +638,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       code = oaiResponses(pd, std::move(body), roundMs, resp, filter);
       if (code <= 0) { wire::transportFailure(pd, t1, roundMs, out); return out; }
     }
+    if (code == 200 && imgs) imgs->sent = true;   // the head has seen the turn's photos
     if (code != 200) {
       const std::string e = wire::httpErrLine("resp", code, resp["error"]["message"] | "");
       wire::httpFailure(out, code, e,

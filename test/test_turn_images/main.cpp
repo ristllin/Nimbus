@@ -298,6 +298,148 @@ static void test_release_runs_once() {
   TEST_ASSERT_EQUAL(1, released);
 }
 
+// ---- lane IMG: the head's note, the looked photos, the settled row --------------------
+
+// image.note: one line, trimmed, capped at kImageNoteMax on a character boundary, and
+// only for this turn's own photos (an earlier photo's row is never rewritten).
+static void test_note_is_one_capped_line_for_this_turns_photo_only() {
+  auto set = twoPhotos();
+  TEST_ASSERT_TRUE(set->setNote("0123456789abcdef", "  pasta,\nabout 600 kcal\t "));
+  TEST_ASSERT_EQUAL_STRING("pasta, about 600 kcal", set->items[0].note.c_str());
+  TEST_ASSERT_FALSE(set->setNote("aaaaaaaaaaaaaaaa", "not this turn's photo"));
+  TEST_ASSERT_FALSE(set->setNote("fedcba9876543210", " \n\t "));
+  TEST_ASSERT_TRUE(set->items[1].note.empty());
+  TEST_ASSERT_FALSE(set->setNote("", "no ref"));
+  // A long note of 3-byte characters is cut on a character boundary, never mid-sequence.
+  std::string longNote;
+  for (int i = 0; i < 200; ++i) longNote += "\xE2\x82\xAC";   // the euro sign, 600 bytes
+  TEST_ASSERT_TRUE(set->setNote("fedcba9876543210", longNote));
+  const std::string& n = set->items[1].note;
+  TEST_ASSERT_TRUE(n.size() <= kImageNoteMax);
+  TEST_ASSERT_EQUAL(0, (int)(n.size() % 3));
+  TEST_ASSERT_TRUE(n.size() >= kImageNoteMax - 2);
+}
+
+// The looked photos: counted in the set's bytes, admitted under the same per-photo and
+// per-turn limits plus their own count, found by ref, with their own markers.
+static void test_looked_photos_limits_markers_and_bytes() {
+  auto set = twoPhotos();
+  const size_t base = set->bytes();
+  static const uint8_t jpeg[] = {0xFF, 0xD8, 0xFF, 0xDB, 1, 2, 3, 4};
+  const char* why = "";
+  TEST_ASSERT_EQUAL_STRING("image/jpeg", admitLook(*set, jpeg, sizeof jpeg, why));
+  for (size_t j = 0; j < kTurnLookMax; ++j) {
+    LookedImage l;
+    l.img.ref = std::string("00000000000000") + char('a' + j) + "0";
+    l.img.bytes = jpeg;
+    l.img.len = sizeof jpeg;
+    set->looked.push_back(l);
+  }
+  TEST_ASSERT_EQUAL(base + kTurnLookMax * sizeof jpeg, set->bytes());
+  TEST_ASSERT_EQUAL_STRING("", admitLook(*set, jpeg, sizeof jpeg, why));
+  TEST_ASSERT_EQUAL_STRING("the turn's limit of photos looked at again", why);
+  set->looked.pop_back();
+  static const uint8_t text[] = {'h', 'e', 'l', 'l', 'o'};
+  TEST_ASSERT_EQUAL_STRING("", admitLook(*set, text, sizeof text, why));
+  TEST_ASSERT_EQUAL_STRING("not an image by its bytes", why);
+  std::vector<uint8_t> big(kImagePartBytes + 1, 0);
+  big[0] = 0xFF; big[1] = 0xD8; big[2] = 0xFF;
+  TEST_ASSERT_EQUAL_STRING("", admitLook(*set, big.data(), big.size(), why));
+  TEST_ASSERT_EQUAL_STRING("too large", why);
+  TEST_ASSERT_EQUAL(1, set->lookedIndex("00000000000000b0"));
+  TEST_ASSERT_EQUAL(-1, set->lookedIndex("0123456789abcdef"));   // a photo of the turn is not a look
+  TEST_ASSERT_EQUAL(-1, set->lookedIndex(""));
+  TEST_ASSERT_EQUAL_STRING("nlook:n0nce:1:", set->lookMarker(1).c_str());
+  TEST_ASSERT_TRUE(set->lookMarker(1).find(set->marker(1)) == std::string::npos);
+}
+
+// The record a look leaves in the transcript names only its ref, and only that exact
+// text reads back as a look (a tool's prose quoting it does not).
+static void test_look_result_text_round_trips_only_exactly() {
+  const std::string t = lookResultText("0123456789abcdef");
+  TEST_ASSERT_EQUAL_STRING("[image ref=0123456789abcdef] shown to you again", t.c_str());
+  TEST_ASSERT_EQUAL_STRING("0123456789abcdef", lookResultRef(t).c_str());
+  TEST_ASSERT_EQUAL_STRING("", lookResultRef("x" + t).c_str());
+  TEST_ASSERT_EQUAL_STRING("", lookResultRef(t + " and more").c_str());
+  TEST_ASSERT_EQUAL_STRING("", lookResultRef("[image ref=0123456789ABCDEF] shown to you again").c_str());
+  TEST_ASSERT_EQUAL_STRING("", lookResultRef("[image ref=0123456789abcde] shown to you again").c_str());
+  TEST_ASSERT_EQUAL_STRING("", lookResultRef("").c_str());
+}
+
+// A blind host's reading of a looked photo is made once, on first use, and names why
+// when nothing could read it.
+static void test_look_answer_made_once() {
+  auto set = twoPhotos();
+  int asked = 0;
+  set->answer = [&asked](const TurnImage& it, const std::string& q) {
+    ++asked;
+    return it.tag + " (transcribed by mistral) " + q + ": 73";
+  };
+  LookedImage l;
+  l.img.ref = "00000000000000a0";
+  l.img.tag = "[image ref=00000000000000a0]";
+  l.question = "the number";
+  set->looked.push_back(l);
+  TEST_ASSERT_EQUAL_STRING("[image ref=00000000000000a0] (transcribed by mistral) the number: 73",
+                           set->lookAnswer(0).c_str());
+  set->lookAnswer(0);
+  TEST_ASSERT_EQUAL(1, asked);
+  auto bare = twoPhotos();
+  bare->looked.push_back(l);
+  TEST_ASSERT_EQUAL_STRING("[image ref=00000000000000a0] (not read: no provider could read it)",
+                           bare->lookAnswer(0).c_str());
+}
+
+// Property over every case of a photo's turn (seen or not, a note or not, a blind
+// host's reading or not): the settled row is the head's note only for a photo it saw,
+// a blind host's reading otherwise, "seen" for a photo seen with no note, and nothing
+// (the intake row stays) for a photo the turn never showed or read. No case asks for a
+// caption: the settled row is built from what the turn already has.
+static void test_settled_row_property() {
+  for (int sent = 0; sent < 2; ++sent)
+    for (int noted = 0; noted < 2; ++noted)
+      for (int read = 0; read < 2; ++read) {
+        int transcribed = 0;
+        auto set = twoPhotos(nullptr, &transcribed);
+        set->sent = sent;
+        if (noted) TEST_ASSERT_TRUE(set->setNote("0123456789abcdef", "pasta, about 600 kcal"));
+        if (read) set->fallbackOf(0);
+        transcribed = 0;
+        const std::string row = settledRow(*set, 0);
+        char what[64];
+        snprintf(what, sizeof what, "sent=%d noted=%d read=%d", sent, noted, read);
+        TEST_ASSERT_EQUAL_MESSAGE(0, transcribed, what);
+        if (sent && noted)
+          TEST_ASSERT_EQUAL_STRING_MESSAGE("[image 1/2 ref=0123456789abcdef] (seen; note: pasta, about 600 kcal)",
+                                           row.c_str(), what);
+        else if (read)
+          TEST_ASSERT_EQUAL_STRING_MESSAGE(
+              "[image 1/2 ref=0123456789abcdef] (machine transcription by anthropic: photo 1)", row.c_str(), what);
+        else if (sent)
+          TEST_ASSERT_EQUAL_STRING_MESSAGE("[image 1/2 ref=0123456789abcdef] (seen in its turn; image.look shows it again)",
+                                           row.c_str(), what);
+        else
+          TEST_ASSERT_EQUAL_STRING_MESSAGE("", row.c_str(), what);
+      }
+  auto set = twoPhotos();
+  TEST_ASSERT_EQUAL_STRING("", settledRow(*set, 2).c_str());   // out of range
+}
+
+// A turn that brought no photo still gets a set (image.look can show it an earlier
+// photo); it is freed, its release hook run once, when the turn ends.
+static void test_turn_without_photos_gets_an_empty_set() {
+  int released = 0;
+  {
+    ActiveTurnImages none(nullptr);
+    TurnImages* set = activeTurnImages();
+    TEST_ASSERT_NOT_NULL(set);
+    TEST_ASSERT_TRUE(set->empty());
+    set->release = [&released](TurnImages&) { ++released; };
+  }
+  TEST_ASSERT_NULL(activeTurnImages());
+  TEST_ASSERT_EQUAL(1, released);
+}
+
 // ---- the slot ----------------------------------------------------------------------
 
 static void test_slot_binds_chat_and_text() {
@@ -451,5 +593,11 @@ int main(int, char**) {
   RUN_TEST(test_slot_binds_chat_and_text);
   RUN_TEST(test_slot_replace_and_drop_free_the_old_set);
   RUN_TEST(test_active_set_nests_and_restores);
+  RUN_TEST(test_note_is_one_capped_line_for_this_turns_photo_only);
+  RUN_TEST(test_looked_photos_limits_markers_and_bytes);
+  RUN_TEST(test_look_result_text_round_trips_only_exactly);
+  RUN_TEST(test_look_answer_made_once);
+  RUN_TEST(test_settled_row_property);
+  RUN_TEST(test_turn_without_photos_gets_an_empty_set);
   return UNITY_END();
 }

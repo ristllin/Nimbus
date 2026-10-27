@@ -227,10 +227,12 @@ namespace {
 // a tool whose result can only CONFIRM the reply's claim - a pure ack. A
 // read (memory_search, files_read) returns facts the answer was written
 // without, and files_append returns the running day total, so they still get
-// the CUM-506 re-ask round; so does any failed call.
+// the CUM-506 re-ask round; so does any failed call. image_note (the head's own record
+// of a photo it saw, lane IMG) is a pure ack: sent with the answer it costs no round.
 bool isAckWrite(const std::string& loopName) {
   static const char* const kAcks[] = {"memory_write",  "memory_update",   "memory_pin",
-                                      "memory_delete", "memory_config",   "memory_scratchpad"};
+                                      "memory_delete", "memory_config",   "memory_scratchpad",
+                                      "image_note"};
   for (const char* w : kAcks)
     if (loopName == w) return true;
   return false;

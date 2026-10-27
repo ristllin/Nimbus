@@ -11,6 +11,7 @@
 #include "../support/image_turn_fixture.h"
 #include "../../lib/harness/src/providers/image_parts.h"   // refusedImages - the image refusal rule
 #include "nimbus/harness/output_caps.h"
+#include "nimbus/harness/prompt_layout.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/orch_schema.h"
@@ -33,6 +34,7 @@ namespace providers = agent::providers;
 namespace orch = nimbus::orch;
 
 void setUp() {
+  providers::imageparts::forgetFileRefs();   // lane IMG: no kept photo file leaks between tests
   LogCapture::install();
   providers::antForgetIds();   // the managed-agent ids live in RAM for a boot
 }
@@ -1118,6 +1120,11 @@ static void test_r1_anthropic_uploads_once_and_references_file_ids() {
     TEST_ASSERT_EQUAL_STRING("managed-agents-2026-04-01,files-api-2025-04-14",
                              headerOf(d.http.seen[r], "anthropic-beta").c_str());
   }
+  // Lane IMG: the uploads are kept for re-attach (nothing deleted yet); dropping them
+  // (re-attach off, or unused for kFileRefIdleTurns loops) queues their deletion.
+  TEST_ASSERT_EQUAL(2, (int)providers::imageparts::fileRefCount());
+  TEST_ASSERT_EQUAL(0, (int)providers::pendingUploadDeletes());
+  providers::imageparts::dropFileRefs();
   TEST_ASSERT_EQUAL(2, (int)providers::pendingUploadDeletes());
   d.http.script.push_back({"api.anthropic.com", "/v1/files/file_a1", 200, "{\"id\":\"file_a1\"}"});
   d.http.script.push_back({"api.anthropic.com", "/v1/files/file_b2", 404, "{}"});
@@ -1143,6 +1150,7 @@ static void test_r1_upload_delete_retries_only_transient_failures() {
   std::string err;
   antPhotoTurn(d, fx, "claude-haiku-5-5", ok, err);
   TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  providers::imageparts::dropFileRefs();
   auto pd = d.contract();
   d.http.script.push_back({"api.anthropic.com", "/v1/files/file_x", 503, "{}"});
   TEST_ASSERT_EQUAL(0, providers::deletePendingUploads(pd, 1));   // a 503: not settled...
@@ -1174,6 +1182,7 @@ static void test_r1_upload_boundary_is_not_in_the_bytes() {
   const std::string boundary = ct.substr(ct.find("boundary=") + 9);
   TEST_ASSERT_EQUAL_STRING("nimbus-photo-t3st-0123456789abcdefx", boundary.c_str());
   TEST_ASSERT_TRUE(evil.find("--" + boundary) == std::string::npos);
+  providers::imageparts::dropFileRefs();
   auto pd = d.contract();
   d.http.script.push_back({"api.anthropic.com", "/v1/files/", 200, "{}"});
   d.http.script.push_back({"api.anthropic.com", "/v1/files/", 200, "{}"});
@@ -1280,6 +1289,307 @@ static void test_r1_single_shot_reads_transcriptions() {
   TEST_ASSERT_FALSE(bodyHas(d, 0, "\"type\":\"image\""));
 }
 
+// ---- lane IMG: image.look returns the pixels ------------------------------------
+
+static std::string antLookBody() {
+  return "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_look\",\"name\":\"image_look\","
+         "\"input\":{\"ref\":\"00112233445566ff\",\"question\":\"what number is on it?\"}}],"
+         "\"stop_reason\":\"tool_use\",\"usage\":{\"input_tokens\":50,\"output_tokens\":10}}";
+}
+
+// A turn that brought no photo (the owner asks about an earlier one): image.look's
+// photo goes back to the head as an image block inside its tool result, after one text
+// block naming it; the bytes spliced at send time, no caption call.
+static void antLookTurn(FakeProviderDeps& d, harness_test::LookRig& look, const char* model, bool& ok,
+                        std::string& err) {
+  auto pd = d.contract();
+  const std::string m = model;
+  pd.orchModel = [m](const char*) { return m; };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  rig.ht.dispatch = [&look](const nimbus::orch::HeadToolCall& c) { return look.dispatch(c); };
+  const nimbus::orch::ActiveTurnImages active(nullptr);   // no photo with this turn
+  std::string conv, out;
+  ok = providers::orchTurnAnthropic(pd, conv, "SYS", "look at that photo again", out, err, &rig.ht, nullptr);
+}
+
+static void test_img_look_returns_the_pixels_in_the_tool_result() {
+  harness_test::LookRig look;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antLookBody()});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  bool ok = false;
+  std::string err;
+  antLookTurn(d, look, "claude-haiku-5-5", ok, err);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL(1, look.looks);
+  JsonDocument req;
+  TEST_ASSERT_FALSE(deserializeJson(req, reqBody(d, 1), DeserializationOption::NestingLimit(64)));
+  JsonObjectConst res = req["messages"][2]["content"][0];
+  TEST_ASSERT_EQUAL_STRING("tool_result", str(res["type"]));
+  TEST_ASSERT_EQUAL_STRING("tu_look", str(res["tool_use_id"]));
+  JsonArrayConst c = res["content"];
+  TEST_ASSERT_EQUAL(2, (int)c.size());
+  TEST_ASSERT_EQUAL_STRING("text", str(c[0]["type"]));
+  TEST_ASSERT_EQUAL_STRING(
+      "[image ref=00112233445566ff] The photo is attached to this result as an image: answer from what you see in it.",
+      str(c[0]["text"]));
+  TEST_ASSERT_EQUAL_STRING("image", str(c[1]["type"]));
+  TEST_ASSERT_EQUAL_STRING("base64", str(c[1]["source"]["type"]));
+  TEST_ASSERT_EQUAL_STRING("image/jpeg", str(c[1]["source"]["media_type"]));
+  TEST_ASSERT_EQUAL_STRING(harness_test::b64Of(look.photo).c_str(), str(c[1]["source"]["data"]));
+  TEST_ASSERT_EQUAL(1, (int)d.http.spliced[1].size());   // the bytes, spliced at send time
+  TEST_ASSERT_TRUE(d.http.spliced[1][0].base64);
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "nlook:"));
+  TEST_ASSERT_TRUE(d.http.spliced[0].empty());   // round 1 had nothing to show
+  int images = 0;
+  bool cached = false;
+  harness_test::walkParts(req["messages"], "image", images, cached);
+  TEST_ASSERT_EQUAL(1, images);
+  TEST_ASSERT_EQUAL_MESSAGE(0, look.answered, "a host that sees images makes no caption call");
+}
+
+// A host that cannot see images reads one caption's answer in the tool result instead
+// (made once for the turn, however many rounds follow); no image part, nothing spliced.
+static void test_img_look_blind_host_reads_the_answer_once() {
+  harness_test::LookRig look;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antLookBody()});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, toolUseBody()});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  bool ok = false;
+  std::string err;
+  antLookTurn(d, look, "model-anthropic", ok, err);   // not a claude- id: no image input
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(3, (int)d.http.seen.size());
+  for (size_t r = 1; r < 3; ++r) {
+    JsonDocument req;
+    deserializeJson(req, reqBody(d, r), DeserializationOption::NestingLimit(64));
+    TEST_ASSERT_EQUAL_STRING("[image ref=00112233445566ff] (transcribed by mistral) what number is on it? 73",
+                             str(req["messages"][2]["content"][0]["content"]));
+    TEST_ASSERT_FALSE(bodyHas(d, r, "\"type\":\"image\""));
+    TEST_ASSERT_TRUE(d.http.spliced[r].empty());
+  }
+  TEST_ASSERT_EQUAL(1, look.answered);
+}
+
+// ---- lane IMG: recent photos re-attached as file references ---------------------
+
+namespace layout = agent::layout;
+
+// A turn's prompt with `pairs` history exchanges (user, assistant), split like
+// compose.cpp writes it.
+static std::string promptWithHistory(const std::vector<std::string>& users) {
+  layout::PromptParts p;
+  p.split = true;
+  p.stat = "SYS";
+  for (size_t i = 0; i < users.size(); ++i) {
+    p.history.push_back(layout::Msg{true, users[i]});
+    p.history.push_back(layout::Msg{false, "reply " + std::to_string(i + 1)});
+  }
+  p.dyn = "DYN";
+  return layout::join(p);
+}
+
+static const char* kPhotoRow =
+    "[image 1/2 ref=0123456789abcdef] (seen; note: a label, batch 4417)\n"
+    "[image 2/2 ref=fedcba9876543210] (seen in its turn; image.look shows it again)\nwhat do they say?";
+
+// A turn with no photo of its own over `instructions`; returns the request body.
+static std::string antHistoryTurn(FakeProviderDeps& d, const std::string& instructions) {
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("claude-haiku-5-5"); };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  const nimbus::orch::ActiveTurnImages active(nullptr);
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnAnthropic(pd, conv, instructions, "next", out, err, &rig.ht, nullptr),
+                           err.c_str());
+  return d.http.seen.back().body;
+}
+
+static std::string withoutCachePoints(JsonVariantConst v) {
+  JsonDocument c;
+  c.set(v);
+  for (JsonObject b : c["content"].as<JsonArray>()) b.remove("cache_control");
+  std::string out;
+  serializeJson(c, out);
+  return out;
+}
+
+// The photo turn uploads its two photos once; the next turns re-attach them to their
+// own history message as file references, before the message text (which keeps the
+// cache point), with the Files beta; turn N+2 sends turn N+1's history messages with the
+// same bytes (only the cache point moved on), so the cached prefix holds.
+static void test_img_reattach_rides_the_history_message_with_a_stable_prefix() {
+  harness_test::PhotoTurn fx;
+  fx.set->uploadOnce = true;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/files", 200, "{\"id\":\"file_a1\",\"type\":\"file\"}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/files", 200, "{\"id\":\"file_b2\",\"type\":\"file\"}"});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  bool ok = false;
+  std::string err;
+  antPhotoTurn(d, fx, "claude-haiku-5-5", ok, err);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)providers::imageparts::fileRefCount());
+  TEST_ASSERT_EQUAL(0, (int)providers::pendingUploadDeletes());
+
+  const std::string b1 = antHistoryTurn(d, promptWithHistory({kPhotoRow}));
+  TEST_ASSERT_EQUAL_STRING("managed-agents-2026-04-01,files-api-2025-04-14",
+                           headerOf(d.http.seen.back(), "anthropic-beta").c_str());
+  TEST_ASSERT_TRUE(d.http.spliced.back().empty());   // no bytes re-sent
+  JsonDocument r1;
+  TEST_ASSERT_FALSE(deserializeJson(r1, b1, DeserializationOption::NestingLimit(64)));
+  JsonArrayConst c = r1["messages"][0]["content"];
+  TEST_ASSERT_EQUAL(5, (int)c.size());
+  TEST_ASSERT_EQUAL_STRING("[image 1/2 ref=0123456789abcdef]", str(c[0]["text"]));
+  TEST_ASSERT_EQUAL_STRING("file", str(c[1]["source"]["type"]));
+  TEST_ASSERT_EQUAL_STRING("file_a1", str(c[1]["source"]["file_id"]));
+  TEST_ASSERT_EQUAL_STRING("[image 2/2 ref=fedcba9876543210]", str(c[2]["text"]));
+  TEST_ASSERT_EQUAL_STRING("file_b2", str(c[3]["source"]["file_id"]));
+  TEST_ASSERT_EQUAL_STRING(kPhotoRow, str(c[4]["text"]));
+  int images = 0;
+  bool cached = false;
+  harness_test::walkParts(r1["messages"], "image", images, cached);
+  TEST_ASSERT_EQUAL(2, images);
+  TEST_ASSERT_FALSE(cached);   // the cache points stay on text blocks
+
+  const std::string b2 = antHistoryTurn(d, promptWithHistory({kPhotoRow, "and the price?"}));
+  JsonDocument r2;
+  TEST_ASSERT_FALSE(deserializeJson(r2, b2, DeserializationOption::NestingLimit(64)));
+  for (size_t i = 0; i < 2; ++i)
+    TEST_ASSERT_EQUAL_STRING(withoutCachePoints(r1["messages"][i]).c_str(),
+                             withoutCachePoints(r2["messages"][i]).c_str());
+  std::string m0a, m0b;
+  serializeJson(r1["messages"][0], m0a);
+  serializeJson(r2["messages"][0], m0b);
+  TEST_ASSERT_EQUAL_STRING(m0a.c_str(), m0b.c_str());   // byte for byte
+  TEST_ASSERT_EQUAL(2, (int)providers::imageparts::fileRefCount());
+}
+
+// Property over a run of turns (photos arriving at random turns, each kept at its
+// turn's end, then riding its history message): every turn's history messages are
+// the previous turn's, byte for byte (the moving cache point aside), plus the new
+// exchange, except across a fold (the history starts over from the summary).
+static void test_img_history_prefix_is_append_only_except_across_a_fold() {
+  uint32_t seed = 20261027;
+  auto rnd = [&seed](uint32_t n) {
+    seed = seed * 1103515245u + 12345u;
+    return (seed >> 16) % n;
+  };
+  std::vector<std::string> users;
+  std::string prev;
+  JsonDocument prevDoc;
+  size_t prevCount = 0;
+  int folds = 0, photos = 0;
+  for (int turn = 0; turn < 24; ++turn) {
+    bool folded = false;
+    if (turn > 4 && rnd(7) == 0) {   // a fold: the history starts again from its summary
+      users.erase(users.begin(), users.end() - 2);
+      users.insert(users.begin(), "[summary] earlier days");
+      folded = true;
+      ++folds;
+    }
+    // Render this turn's history with the photos kept so far.
+    layout::PromptParts p = layout::split(promptWithHistory(users));
+    JsonDocument doc;
+    JsonArray msgs = doc.to<JsonArray>();
+    layout::putAnthropicHistory(msgs, p);
+    providers::imageparts::reattachHistory(msgs, msgs.size());
+    if (!folded && prevCount) {
+      for (size_t i = 0; i < prevCount; ++i) {
+        char what[48];
+        snprintf(what, sizeof what, "turn %d message %u", turn, (unsigned)i);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(withoutCachePoints(prevDoc[i]).c_str(), withoutCachePoints(msgs[i]).c_str(),
+                                         what);
+      }
+    }
+    prevDoc.set(doc);
+    prevCount = msgs.size();
+    // This turn's message: sometimes a photo, uploaded and kept at its loop's end; its
+    // row (settled at the turn's end, never rewritten) joins the history next turn.
+    std::string user = "message " + std::to_string(turn);
+    {
+      auto set = std::unique_ptr<nimbus::orch::TurnImages>(new nimbus::orch::TurnImages());
+      set->uploadOnce = true;
+      if (rnd(3) == 0) {
+        char ref[17];
+        snprintf(ref, sizeof ref, "%016x", 0xabc000u + (unsigned)turn);
+        nimbus::orch::TurnImage it;
+        it.ref = ref;
+        it.fileId = std::string("file_") + ref;
+        it.fileHost = "anthropic";
+        set->items.push_back(it);
+        user = std::string("[image 1/1 ref=") + ref + "] (seen; note: plate " + std::to_string(turn) + ")\n" + user;
+        ++photos;
+      }
+      const nimbus::orch::ActiveTurnImages active(set.get());
+      nimbus::orch::Transcript tr;
+      const providers::imageparts::LoopImages loop(tr);
+    }
+    users.push_back(user);
+  }
+  TEST_ASSERT_TRUE(folds >= 1);
+  TEST_ASSERT_TRUE(photos >= 3);
+  providers::imageparts::dropFileRefs();
+}
+
+// A kept id unused for kFileRefIdleTurns head loops is deleted; the bound drops the
+// longest unused first; a refusal of a kept file forgets them all and the round is
+// re-sent without them (once).
+static void test_img_kept_files_age_out_and_a_refusal_forgets_them() {
+  {
+    auto set = std::unique_ptr<nimbus::orch::TurnImages>(new nimbus::orch::TurnImages());
+    set->uploadOnce = true;
+    nimbus::orch::TurnImage it;
+    it.ref = "0123456789abcdef";
+    it.fileId = "file_old";
+    it.fileHost = "anthropic";
+    set->items.push_back(it);
+    const nimbus::orch::ActiveTurnImages active(set.get());
+    nimbus::orch::Transcript tr;
+    const providers::imageparts::LoopImages loop(tr);
+  }
+  TEST_ASSERT_EQUAL(1, (int)providers::imageparts::fileRefCount());
+  const size_t before = providers::pendingUploadDeletes();
+  for (uint8_t i = 0; i <= providers::imageparts::kFileRefIdleTurns; ++i) {
+    TEST_ASSERT_EQUAL(1, (int)providers::imageparts::fileRefCount());
+    const nimbus::orch::ActiveTurnImages none(nullptr);
+    nimbus::orch::Transcript tr;
+    const providers::imageparts::LoopImages loop(tr);
+  }
+  TEST_ASSERT_EQUAL(0, (int)providers::imageparts::fileRefCount());
+  TEST_ASSERT_EQUAL((int)before + 1, (int)providers::pendingUploadDeletes());
+
+  // A refused kept file: forgotten, the round re-sent without it.
+  {
+    auto set = std::unique_ptr<nimbus::orch::TurnImages>(new nimbus::orch::TurnImages());
+    set->uploadOnce = true;
+    nimbus::orch::TurnImage it;
+    it.ref = "0123456789abcdef";
+    it.fileId = "file_gone";
+    it.fileHost = "anthropic";
+    set->items.push_back(it);
+    const nimbus::orch::ActiveTurnImages active(set.get());
+    nimbus::orch::Transcript tr;
+    const providers::imageparts::LoopImages loop(tr);
+  }
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 400,
+                           "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":"
+                           "\"messages.0.content.1.image.source.file_id: File not found: file_gone\"}}"});
+  const std::string body = antHistoryTurn(d, promptWithHistory({kPhotoRow}));
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "file_gone"));
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "file_gone"));
+  TEST_ASSERT_EQUAL_STRING("managed-agents-2026-04-01", headerOf(d.http.seen[1], "anthropic-beta").c_str());
+  TEST_ASSERT_EQUAL(0, (int)providers::imageparts::fileRefCount());
+  (void)body;
+}
+
 // No photo in flight: the request is byte-for-byte the pre-R1 shape (the seeded
 // message is one text block, nothing spliced).
 static void test_r1_no_photos_no_change() {
@@ -1341,6 +1651,11 @@ int main(int, char**) {
   RUN_TEST(test_shown_follows_the_host_in_use);
   RUN_TEST(test_r1_single_shot_reads_transcriptions);
   RUN_TEST(test_r1_no_photos_no_change);
+  RUN_TEST(test_img_look_returns_the_pixels_in_the_tool_result);
+  RUN_TEST(test_img_look_blind_host_reads_the_answer_once);
+  RUN_TEST(test_img_reattach_rides_the_history_message_with_a_stable_prefix);
+  RUN_TEST(test_img_history_prefix_is_append_only_except_across_a_fold);
+  RUN_TEST(test_img_kept_files_age_out_and_a_refusal_forgets_them);
   UNITY_END();
   return 0;
 }

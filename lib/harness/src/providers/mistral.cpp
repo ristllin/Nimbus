@@ -275,11 +275,17 @@ std::string mistralCallId(const std::string& id) {
 // an assistant message ({content?, tool_calls[]}) answered by role:"tool"
 // messages. Prose-only rounds are not replayed. Registry names ride the wire
 // through mistralSafeName (the reserved-name rename, inverted on dispatch).
+// R1: an image.look result that shows an earlier photo again is followed, after the
+// round's tool messages, by one user message carrying the photo when this host sees
+// images (a user message after tool messages is accepted: probed live 27 Oct on
+// mistral-small-latest and mistral-large-latest); a blind host reads a caption's
+// answer in the tool message instead.
 static void renderMistralMessages(const nimbus::orch::Transcript& tr,
                                   ArduinoJson::JsonArray msgs,
                                   const std::string& sysText,
                                   bool showingImages,
-                                  const layout::PromptParts* parts = nullptr) {
+                                  const layout::PromptParts* parts = nullptr,
+                                  bool sees = false) {
   namespace orch = nimbus::orch;
   using Kind = orch::TranscriptItem::Kind;
   {
@@ -337,15 +343,25 @@ static void renderMistralMessages(const nimbus::orch::Transcript& tr,
       fn["name"]      = mistralSafeName(e[ci].name);
       wire::putModelStr(fn["arguments"], e[ci].text, e[ci].name.c_str());
     }
+    std::vector<size_t> looks;
     for (size_t ri : results) {
       JsonObject m = msgs.add<JsonObject>();
       m["role"]         = "tool";
       m["tool_call_id"] = mistralCallId(e[ri].id);
       m["name"]         = mistralSafeName(e[ri].name);
+      const int look = imageparts::lookedFor(tr.images(), e[ri]);
+      if (look >= 0) {
+        if (sees) looks.push_back((size_t)look);
+        wire::putModelStr(m["content"],
+                          imageparts::lookText(*tr.images(), (size_t)look, sees, imageparts::Dialect::MistralChat),
+                          e[ri].name.c_str());
+        continue;
+      }
       wire::putModelStr(m["content"],
                         e[ri].isError ? (std::string("ERROR: ") + e[ri].text) : e[ri].text,
                         e[ri].name.c_str());
     }
+    if (!looks.empty()) imageparts::putLookMessage(msgs, *tr.images(), looks, imageparts::Dialect::MistralChat);
   }
 }
 
@@ -362,6 +378,7 @@ struct MisLoopReq {
   const char* effort;   // reasoning_effort ("" = the field is not sent)
   nimbus::orch::TurnImages* imgs;   // R1: the photos this request shows (nullptr = blind)
   BodySplices* splices;             // where their bytes are spliced in at send time
+  bool sees = false;                // image.look's photos ride this request (the host sees)
 };
 
 // CUM-616: a model the table says reasons but that refused reasoning_effort (400
@@ -453,7 +470,7 @@ static bool misLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& 
     // the user seed. R3: prompt_cache_key keeps one chat's turns on one cache.
     const layout::PromptParts& p = *a.round;
     layout::putCacheKey(req.as<ArduinoJson::JsonObject>(), p);
-    renderMistralMessages(tr, msgs, p.stat + p.shelf, a.imgs != nullptr, p.split ? &p : nullptr);
+    renderMistralMessages(tr, msgs, p.stat + p.shelf, a.imgs != nullptr, p.split ? &p : nullptr, a.sees);
     misSeedUserMessage(msgs, p, a.imgs);
   }
   if (!misPutLoopTools(pd, req["tools"].to<JsonArray>(), a.ht, err)) return false;
@@ -472,7 +489,7 @@ static bool misLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& 
   }
   if (!wire::serializeChecked(req, body, err)) return false;
   if (!bodyWithinBudget(body, err)) return false;   // R3: the stated budget, before the photo splice
-  return !a.imgs || imageparts::spliceMarkers(body, *a.imgs, *a.splices, err);
+  return imageparts::spliceAll(body, a.sees ? tr.images() : nullptr, a.imgs != nullptr, *a.splices, err);
 }
 
 // Read one chat-completions reply into `out`. Returns false when the reply is cut
@@ -570,13 +587,14 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     // R1: the photos ride the seeded user message when this model takes images and
     // no provider refused them this turn (inline data URLs, spliced at send time).
     orch::TurnImages* imgs = imageparts::shown(tr, "mistral", model);
+    bool sees = imageparts::sees(tr, "mistral", model);   // image.look's photos too
     for (int attempt = 0; attempt < 2; ++attempt) {
       out = orch::HeadStep();
       const uint32_t maxTokens = attempt ? cap.retryTokens : cap.maxTokens;
       const char* effort = misEffortRefusedBefore(model) ? "" : (attempt ? cap.retryEffort : cap.effort);
       std::string body;
       BodySplices splices;
-      if (!misLoopBody(pd, tr, MisLoopReq{&round, &ht, allowTools, maxTokens, effort, imgs, &splices}, body,
+      if (!misLoopBody(pd, tr, MisLoopReq{&round, &ht, allowTools, maxTokens, effort, imgs, &splices, sees}, body,
                        out.error)) {
         out.ok = false;
         out.kind = orch::StepErr::BadRequest;
@@ -588,12 +606,14 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
       int code = mistralRequest(pd, "POST", "/v1/chat/completions", std::move(body),
                                 resp, filter, roundMs, &quota, splices.empty() ? nullptr : &splices);
       if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
-      if (code != 200 && imgs && imageparts::refusedImages(code, mistralErrText(resp)) &&
-          imageparts::rejectAndRetry(imgs, "orchTurn(mistral-loop)", code)) {
+      if (code != 200 && !splices.empty() && imageparts::refusedImages(code, mistralErrText(resp)) &&
+          imageparts::rejectAndRetry(tr.images(), "orchTurn(mistral-loop)", code)) {
         imgs = nullptr;   // this round again, reading the transcriptions (and the rest of the turn)
+        sees = false;
         --attempt;
         continue;
       }
+      if (code == 200 && imgs) imgs->sent = true;   // the head has seen the turn's photos
       if (code != 200 && *effort && !effortRetried &&
           misRefusedEffort(code, mistralErrText(resp) + " " + (const char*)(resp["code"] | ""))) {
         hlog::logf("orchTurn(mistral-loop): %s refused reasoning_effort (HTTP %d) - one retry without it",

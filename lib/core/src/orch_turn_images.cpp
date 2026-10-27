@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstring>
 
+#include "nimbus/mem_cap.h"              // utf8CapLen - a note cut on a character boundary
 #include "nimbus/orch/model_catalog.h"   // gptGeneration, mistralVisionByName: the one name rules
 
 // The photos of the head turn in flight (see turn_images.h). Pure logic plus one
@@ -133,14 +134,46 @@ bool TurnImages::holds(const std::string& ref) const {
   return false;
 }
 
+bool TurnImages::setNote(const std::string& ref, const std::string& note) {
+  std::string one;
+  one.reserve(note.size());
+  for (char c : note) one += (c == '\n' || c == '\r' || c == '\t') ? ' ' : c;   // one line in the row
+  const size_t a = one.find_first_not_of(' ');
+  if (a == std::string::npos) return false;
+  one = one.substr(a, one.find_last_not_of(' ') - a + 1);
+  if (one.size() > kImageNoteMax)
+    one.resize((size_t)nimbus::utf8CapLen(one.data(), (int)one.size(), (int)kImageNoteMax));
+  for (TurnImage& it : items)
+    if (!ref.empty() && it.ref == ref) {
+      it.note = one;
+      return true;
+    }
+  return false;
+}
+
+int TurnImages::lookedIndex(const std::string& ref) const {
+  for (size_t j = 0; j < looked.size(); ++j)
+    if (!ref.empty() && looked[j].img.ref == ref) return (int)j;
+  return -1;
+}
+
 size_t TurnImages::bytes() const {
   size_t n = 0;
   for (const auto& it : items) n += it.len;
+  for (const auto& l : looked) n += l.img.len;
   return n;
 }
 
 // Closed by a colon, so no marker is a prefix of another ("nimg:n:1:" vs "nimg:n:10:").
 std::string TurnImages::marker(size_t i) const { return "nimg:" + nonce + ":" + std::to_string(i) + ":"; }
+std::string TurnImages::lookMarker(size_t j) const { return "nlook:" + nonce + ":" + std::to_string(j) + ":"; }
+
+const std::string& TurnImages::lookAnswer(size_t j) {
+  LookedImage& l = looked[j];
+  if (l.answer.empty() && answer) l.answer = answer(l.img, l.question);
+  if (l.answer.empty()) l.answer = l.img.tag + " (not read: no provider could read it)";
+  return l.answer;
+}
 
 const std::string& TurnImages::fallbackOf(size_t i) {
   TurnImage& it = items[i];
@@ -176,6 +209,47 @@ const char* admitImage(const TurnImages& set, const uint8_t* bytes, size_t len, 
   else if (!*mime) why = "not an image by its bytes";
   else if (animatedGif(bytes, len)) why = "an animated GIF";
   return *why ? "" : mime;
+}
+
+const char* admitLook(const TurnImages& set, const uint8_t* bytes, size_t len, const char*& why) {
+  why = "";
+  const char* mime = sniffImageMime(bytes, len);
+  if (set.looked.size() >= kTurnLookMax) why = "the turn's limit of photos looked at again";
+  else if (len > kImagePartBytes) why = "too large";
+  else if (set.bytes() + len > kTurnImageBytes) why = "over the turn's photo budget";
+  else if (!*mime) why = "not an image by its bytes";
+  else if (animatedGif(bytes, len)) why = "an animated GIF";
+  return *why ? "" : mime;
+}
+
+namespace {
+const char kLookHead[] = "[image ref=";
+const char kLookTail[] = "] shown to you again";
+}  // namespace
+
+std::string lookResultText(const std::string& ref) { return kLookHead + ref + kLookTail; }
+
+std::string lookResultRef(const std::string& text) {
+  const size_t head = sizeof(kLookHead) - 1, tail = sizeof(kLookTail) - 1;
+  if (text.size() != head + 16 + tail || text.compare(0, head, kLookHead) != 0 ||
+      text.compare(head + 16, tail, kLookTail) != 0)
+    return std::string();
+  const std::string ref = text.substr(head, 16);
+  return validRef(ref) ? ref : std::string();
+}
+
+std::string settledRow(const TurnImages& set, size_t i) {
+  if (i >= set.items.size()) return std::string();
+  const TurnImage& it = set.items[i];
+  MediaLabel l;
+  if (set.sent && !it.note.empty()) {   // the head's own words, from the photo it saw
+    l.cls = MediaClass::Noted;
+    l.detail = it.note;
+    return it.tag + mediaSuffix(l);
+  }
+  if (!it.fallback.empty()) return it.fallback;   // a blind host read its transcription
+  if (set.sent) return it.tag + kSeenSuffix;
+  return std::string();   // never shown or read: the row keeps what intake stored
 }
 
 TurnImage attachedImage(const MediaLabel& label, const uint8_t* bytes, size_t len, const std::string& mime) {
@@ -251,8 +325,14 @@ void dropTurnImages() { offer().imgs.reset(); }
 
 TurnImages* activeTurnImages() { return active(); }
 
-ActiveTurnImages::ActiveTurnImages(TurnImages* imgs) : prev_(active()) { active() = imgs; }
-ActiveTurnImages::~ActiveTurnImages() { active() = prev_; }
+ActiveTurnImages::ActiveTurnImages(TurnImages* imgs) : prev_(active()) {
+  if (!imgs) {   // no photo with this turn: an empty set, so image.look can still show one
+    own_.reset(new TurnImages());
+    imgs = own_.get();
+  }
+  active() = imgs;
+}
+ActiveTurnImages::~ActiveTurnImages() { active() = prev_; }   // own_ is freed after
 
 }  // namespace orch
 }  // namespace nimbus

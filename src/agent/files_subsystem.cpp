@@ -1828,17 +1828,17 @@ void registerTools() {
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"chat_id":{"type":"string"}},"required":["project","name"]})");
 
-  // image.look (R1) - the head sees a photo as an image only in the turn it arrived;
-  // an earlier photo is looked at again on demand, by the ref in its label, with one
-  // question. One caption-step request (the provider walk, the shared park), through
-  // the work slot like every TLS user. Turn-only: the request blocks for seconds, so it
-  // runs on the turn task, never the AsyncTCP /mcp path. A caller that is not the owner
-  // looks only at photos of its own chat.
+  // image.look (R1) - an earlier photo, by the ref in its label, goes back in front of
+  // the head as an image (no provider call: the stored copy is read from the card, the
+  // card lock held only for that read); a host that cannot see images reads one
+  // caption request's answer to `question` instead. Turn-only: it runs on the turn
+  // task, never the AsyncTCP /mcp path. A caller that is not the owner looks only at
+  // photos of its own chat.
   reg.add("image.look",
-          "Look again at a photo sent earlier and answer one question about it. ref = the "
-          "16 hex characters in its [image ... ref=...] label; question = what to look for "
-          "(copy any text you need from it). One provider call: use it only when the stored "
-          "record of the photo does not answer the question.",
+          "View a photo sent earlier yourself: it comes back to you as an image. ref = the 16 hex "
+          "characters in its [image ... ref=...] label in the conversation; question = what you "
+          "want to check in it (used only when you cannot see images). Use it whenever the "
+          "photo's note or your earlier reply does not answer what you are asked.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
             if (!agent::orchestrator::turnInFlight())
               return nimbus::orch::ToolResult::fail("image.look is only available during a turn");
@@ -1849,6 +1849,26 @@ void registerTools() {
             return nimbus::orch::ToolResult::ok(answer);
           },
           R"({"type":"object","properties":{"ref":{"type":"string"},"question":{"type":"string"}},"required":["ref","question"]})");
+
+  // image.note (R1) - the head writes the record of a photo it saw in this message
+  // (one line, at most 300 bytes): it becomes the photo's row in the conversation from
+  // the next turn on, so no second model is asked to caption it. Only for this turn's
+  // photos (a row already sent as history is never rewritten). A pure write: sent with
+  // the final answer it costs no extra round.
+  reg.add("image.note",
+          "Write the record of a photo of this message that you saw: one short line of what "
+          "matters in it (the dish and portion, the numbers on a label, what the document "
+          "says). It is what the conversation keeps of the photo; call it with your answer "
+          "for every photo you see. ref = the 16 hex characters in its [image ... ref=...] label.",
+          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
+            if (!agent::orchestrator::turnInFlight())
+              return nimbus::orch::ToolResult::fail("image.note is only available during a turn");
+            std::string err;
+            const std::string done = agent::vision::note(argStr(a, "ref"), argStr(a, "note"), err);
+            if (done.empty()) return nimbus::orch::ToolResult::fail(err);
+            return nimbus::orch::ToolResult::ok(done);
+          },
+          R"({"type":"object","properties":{"ref":{"type":"string"},"note":{"type":"string"}},"required":["ref","note"]})");
 
   // image.generate - the write half of image support (the read half is inbound
   // photos to the head as images, image.look for an earlier one). Generates a PNG from a prompt, streams it to the

@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 
 #include <string>
+#include <vector>
 
 #include "nimbus/harness/http.h"
 #include "nimbus/harness/providers.h"
@@ -12,13 +13,18 @@
 // nimbus/orch/turn_images.h). INTERNAL to the provider files, like wire.h.
 //
 // One seeded user message carries the photos: the newest user message of the
-// request (the later user messages of a tool loop carry tool results only), so a
-// photo is sent with the turn it arrived in and never re-attached to a later turn
-// (an older photo is re-read only through image.look). Each photo is preceded by a
-// one-line text part naming its label, so the head can tell which ref is which, and
-// the turn text comes last. No image part carries cache_control: the moving cache
-// point stays on the last text block, after the photos, so a later round reads them
-// from the provider's cache as part of the prefix.
+// request (the later user messages of a tool loop carry tool results only). Each
+// photo is preceded by a one-line text part naming its label, so the head can tell
+// which ref is which, and the turn text comes last. No image part carries
+// cache_control: the moving cache point stays on the last text block, after the
+// photos, so a later round reads them from the provider's cache as part of the prefix.
+//
+// An earlier photo comes back as pixels through image.look (the turn's `looked`
+// photos): Anthropic in the tool result itself ([text, image]), OpenAI and Mistral in
+// one user message right after the round's results ([label, image] per photo). A host
+// that cannot see images reads a caption answering the head's question instead (made
+// once, on first use), so a failover between hosts never shows a blind host a photo
+// it cannot read or hides one from a host that can.
 //
 // The bytes never become a JSON string: the part carries a marker (TurnImages::
 // marker) and spliceMarkers() cuts it out of the serialized body and records a splice
@@ -52,6 +58,27 @@ void putParts(ArduinoJson::JsonObject m, const nimbus::orch::TurnImages& imgs, D
 // would carry the photo's label but not the photo.
 bool spliceMarkers(std::string& body, const nimbus::orch::TurnImages& imgs, BodySplices& out,
                    std::string& err);
+// The same over the whole set: the seeded photos when `photos` (strict, as above),
+// and every looked photo whose marker the body carries (a round folded away shows none).
+bool spliceAll(std::string& body, const nimbus::orch::TurnImages* imgs, bool photos, BodySplices& out,
+               std::string& err);
+
+// ---- image.look: an earlier photo shown again -----------------------------------
+// Does a request on this host show images this turn (its model takes image input and
+// no provider refused them)? The looked photos follow the same rule as the seeded ones.
+bool sees(const nimbus::orch::Transcript& tr, const std::string& host, const std::string& model);
+// The looked photo a transcript entry shows again (-1 = none): an image.look result
+// (lookResultText) naming a photo of the set's `looked`.
+int lookedFor(const nimbus::orch::TurnImages* imgs, const nimbus::orch::TranscriptItem& result);
+// The text a request renders for that result: where the photo is (`showing`, in the
+// dialect's words), else a blind host's reading of it (made once).
+std::string lookText(nimbus::orch::TurnImages& imgs, size_t j, bool showing, Dialect d);
+// Anthropic: the tool_result's content as [text, image].
+void putLookResult(ArduinoJson::JsonObject toolResult, nimbus::orch::TurnImages& imgs, size_t j);
+// OpenAI and Mistral: one user message after a round's results, [label, image] for
+// each looked photo `js` of the round.
+void putLookMessage(ArduinoJson::JsonArray msgs, const nimbus::orch::TurnImages& imgs, const std::vector<size_t>& js,
+                    Dialect d);
 
 // A refusal of the image parts themselves (HTTP 400/422 naming the image, or 413:
 // the request was too large to take): the round is re-sent with the transcriptions.
@@ -88,6 +115,35 @@ inline constexpr const char* kAntFilesBeta = "files-api-2025-04-14";
 int antUploadImages(const ProviderDeps& pd, nimbus::orch::TurnImages& imgs);
 // Any photo of the set rides as a file reference (the request needs kAntFilesBeta).
 bool anyFileRef(const nimbus::orch::TurnImages* imgs);
+// A serialized request carries a file image source (it needs kAntFilesBeta): the
+// turn's photos, a re-attached history photo or a looked photo by file_id.
+bool bodyHasFileRef(const std::string& body);
+
+// ---- re-attach (Anthropic): recent photos ride their history message -------------
+// A photo uploaded once in its turn keeps its file id after the turn (RAM, bounded),
+// and while its label is in the history window it rides its ORIGINAL history message
+// as a file reference: [label, image, ..., the message text], the text block last (it
+// keeps the message's cache point), so every later turn sends the same bytes for that
+// message and the cached prefix holds across turns. A photo whose id is no longer kept
+// (a restart, the bound) renders as its label only; the head can still image.look it.
+// An id unused for kFileRefIdleTurns head loops is deleted (the idle step).
+inline constexpr size_t kMaxFileRefs = 16;
+inline constexpr uint8_t kFileRefIdleTurns = 24;
+// The kept file id of photo `ref` ("" = none).
+std::string fileRefFor(const std::string& ref);
+// Re-attach the kept photos of the first `count` messages (the history). Returns the
+// images added.
+int reattachHistory(ArduinoJson::JsonArray messages, size_t count);
+// A looked photo with a kept id rides as that file reference (no bytes re-sent).
+void useFileRef(nimbus::orch::TurnImage& it);
+// The provider refused a request that carried kept ids (a changed key, an expired
+// file): forget them all (nothing to delete) so the round is re-sent without them.
+void forgetFileRefs();
+// Queue the deletion of every kept id (re-attach switched off).
+void dropFileRefs();
+size_t fileRefCount();
+// A refusal of a file reference itself (HTTP 400/404 naming a file).
+bool refusedFileRefs(int httpStatus, const std::string& errText);
 
 }  // namespace imageparts
 }  // namespace providers

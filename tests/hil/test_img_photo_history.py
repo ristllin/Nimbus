@@ -1,0 +1,311 @@
+"""IMG - photos stay real images for the head, before and after the turn they arrive in.
+
+Host-tested first (test/test_turn_images, test_harness_wire_{anthropic,openai,mistral},
+test_image_label, test_tg_archive): every photo is kept for the turn and the host that
+serves each request decides whether it sees the pixels; the head writes the photo's
+record itself (image.note) and no caption call is made for a photo it saw; image.look
+puts an earlier photo back in front of the head as an image; on Anthropic a recent
+photo rides its own history message as a file reference, so the cached prefix holds.
+
+These legs prove it on hardware with no phone and no bot token (TGINJECT pages whose
+photos are card files staged over HTTP, the lane D helpers in test_l48_albums), at
+Lumi's memory (FAULT sram_ballast down to a largest internal block of about 7.7 KB and
+at most 33 KB free, the release bench recipe), with the head named by
+``NIMBUS_IMG_HEAD`` ("anthropic:claude-haiku-5-5" by default, or
+"mistral:mistral-large-latest"); the head, the ballast and the allowlist are restored.
+
+* ``test_img_photo_turn_then_look_again``: a label photo (a number only a reader of the
+  pixels can know) goes to the head as an image ("attached for the head"); no caption
+  request is made during the turn or in the idle steps after it; the photo's row is
+  settled by the turn ("row settled"); the archive item reads ok at turn time. A
+  follow-up "look at that photo again" turn views the pixels again ("image.look ...
+  goes to the head as an image", still no caption request) and the reply names the
+  number. On Anthropic a third turn follows, and the cache-read tokens rise over the
+  three turns (the history, the re-attached photo included, is read from the cache).
+
+The pure helpers are host-tested at the bottom (``-m host``).
+"""
+
+from __future__ import annotations
+
+import io
+import os
+import re
+import time
+from typing import Dict, List, Optional, Tuple
+
+import pytest
+
+import tg_archive_bench as tb
+from test_l48_albums import (  # noqa: F401 - the fixtures are used by name
+    _episodic,
+    _http,
+    _inject,
+    _lines_until,
+    _wait,
+    album_page,
+    owner_chat,
+)
+
+CAPTION_RE = re.compile(r"vision: (?:TEST override answered \S+|\S+ \S+ read \d+ bytes)")
+ATTACHED_RE = re.compile(r"telegram: media (\d+)/(\d+) attached for the head \((\d+) bytes\)")
+SETTLED_RE = re.compile(r"vision: photo (\d+)/(\d+) row settled \(([^)]*)\)")
+LOOK_RE = re.compile(r"vision: image\.look ([0-9a-f]{16}) goes to the head as an image \((\d+) bytes\)")
+SPEND_RE = re.compile(r"turn spend: (ok|FAIL) .*")
+SLOT_RE = re.compile(r"(?P<host>[a-z]+)/(?P<model>\S+) in=(?P<inp>\d+) out=(?P<out>\d+) cR=(?P<cr>\d+) cW=(?P<cw>\d+)")
+BALLAST_RE = re.compile(r"held=(\d+) intFree=(\d+) intLargest=(\d+)")
+REF_RE = re.compile(r"\[image 1/1 ref=([0-9a-f]{16})")
+REATTACH_RE = re.compile(r"anthropic: (\d+) recent photo\(s\) ride their history message")
+LUMI_LARGEST = 7700
+LUMI_FREE = 33000
+IDLE_WATCH_S = 45  # the old record call ran in the idle steps right after the reply
+LABEL_VALUE = "58213"
+
+
+# ---- pure helpers (host-tested) ---------------------------------------------------
+
+
+def caption_calls(lines: List[str]) -> List[str]:
+    """Every caption request a stretch of console lines shows (a real one or the
+    PROVFAULT test override)."""
+    return [ln for ln in lines if CAPTION_RE.search(ln)]
+
+
+def spend_slots(lines: List[str]) -> List[Dict[str, object]]:
+    """The provider slots of the last turn-spend line: host, model, in, out, cR, cW."""
+    last = None
+    for ln in lines:
+        if SPEND_RE.search(ln):
+            last = ln
+    if not last:
+        return []
+    out = []
+    for m in SLOT_RE.finditer(last):
+        d: Dict[str, object] = {"host": m.group("host"), "model": m.group("model")}
+        for k in ("inp", "out", "cr", "cw"):
+            d[k] = int(m.group(k))
+        out.append(d)
+    return out
+
+
+def head_cache_read(lines: List[str], host: str) -> Optional[int]:
+    """The cache-read tokens the head's host billed in the turn (None: no such slot)."""
+    for s in spend_slots(lines):
+        if s["host"] == host:
+            return int(s["cr"])
+    return None
+
+
+def head_spec(value: str) -> Tuple[str, str]:
+    host, _, model = (value or "anthropic:claude-haiku-5-5").partition(":")
+    return host, model or "claude-haiku-5-5"
+
+
+def label_photo(value: str, seed: int) -> bytes:
+    """A JPEG label with a large number (only a reader of the pixels can know it),
+    kept under the turn's 80 KB pick budget."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGB", (640, 420), (250, 248, 240))
+    d = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 120)
+    except OSError:
+        font = ImageFont.load_default()
+    d.rectangle([14, 14, 626, 406], outline=(20, 20, 20), width=6)
+    d.text((40, 60), "LOT", fill=(10, 10, 10), font=font)
+    d.text((40, 220), value, fill=(10, 10, 10), font=font)
+    d.point([(seed % 640, 412)], fill=(0, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=80)
+    return buf.getvalue()
+
+
+# ---- device helpers ---------------------------------------------------------------
+
+
+def _orch(net) -> dict:
+    return _http(lambda: net.get("/api/orch", timeout=8.0), "reading /api/orch").json()
+
+
+def _mem(net) -> Dict[str, int]:
+    st = net.get_json("/api/state", timeout=8.0)
+    return {"free": int((st.get("mem") or {}).get("intFree") or st.get("heap") or 0),
+            "largest": int((st.get("mem") or {}).get("intLargest") or 0)}
+
+
+@pytest.fixture
+def lumi_heap(device, net):
+    """FAULT sram_ballast until the largest internal block is at most LUMI_LARGEST with
+    at most LUMI_FREE free (Lumi's resting heap); released afterwards."""
+    device.cmd("FAULT sram_ballast 0", "FAULT sram_ballast", timeout=10.0)
+    time.sleep(1.0)
+    hold = _mem(net)["largest"] + 500
+    out = ""
+    for _ in range(60):
+        out = device.cmd(f"FAULT sram_ballast {hold}", "FAULT sram_ballast", timeout=10.0)
+        m = BALLAST_RE.search(out or "")
+        if m and int(m.group(3)) <= LUMI_LARGEST and int(m.group(2)) <= LUMI_FREE:
+            break
+        hold += 500
+    m = BALLAST_RE.search(out or "")
+    print(f"ballast: {out}")
+    if not m or int(m.group(3)) > LUMI_LARGEST or int(m.group(2)) > LUMI_FREE:
+        device.cmd("FAULT sram_ballast 0", "FAULT sram_ballast", timeout=10.0)
+        pytest.fail(f"Lumi's heap not reached (largest <= {LUMI_LARGEST}, free <= {LUMI_FREE}): {out}")
+    try:
+        yield {"free": int(m.group(2)), "largest": int(m.group(3)), "held": int(m.group(1))}
+    finally:
+        device.cmd("FAULT sram_ballast 0", "FAULT sram_ballast", timeout=10.0)
+
+
+@pytest.fixture
+def img_head(device, net, owner_chat):  # noqa: F811 - the lane D fixture, imported by name
+    """The head named by NIMBUS_IMG_HEAD, the tool loop on, the photo path in its
+    default state (native, upload once); everything restored afterwards."""
+    host, model = head_spec(os.environ.get("NIMBUS_IMG_HEAD", ""))
+    before = _orch(net)
+    prev_model = ((before.get("providers") or {}).get(host) or {}).get("orchModel", "")
+    _http(lambda: net.post("/api/orch", {"orchHost": host, "orchLoop": "1", f"orchM_{host}": model}, timeout=8.0),
+          "pinning the head")
+    device.cmd("IMGMODE native", "IMGMODE native=", timeout=8.0)
+    device.cmd("IMGMODE upload", "IMGMODE native=", timeout=8.0)
+    try:
+        yield {"chat": owner_chat, "host": host, "model": model}
+    finally:
+        restore = {"orchHost": before.get("orchHost", ""), "orchLoop": str(int(before.get("orchLoop", 1)))}
+        if prev_model:
+            restore[f"orchM_{host}"] = prev_model
+        _http(lambda: net.post("/api/orch", restore, timeout=8.0), "restoring the head")
+
+
+def _stage_label(net, value: str, seed: int) -> Tuple[str, int]:
+    import requests
+
+    data = label_photo(value, seed)
+    name = f"img{seed}.jpg"
+    url = f"http://{net.ip}/api/files/upload?project=l48&name={name}"
+    files = {"file": (name, data, "image/jpeg")}
+    _http(lambda: requests.post(url, files=files, headers=net._auth(), timeout=60), f"staging {name}")
+    return f"/mem/files/l48/{name}", len(data)
+
+
+def _idle_lines(device, seconds: float) -> List[str]:
+    """Console lines for `seconds` after a turn (the idle steps run between cycles)."""
+    out, end = [], time.time() + seconds
+    while time.time() < end:
+        try:
+            out.append(device.expect_re(r".", timeout=max(0.5, end - time.time())).string)
+        except Exception:  # noqa: BLE001 - quiet console: the window just ends
+            break
+    return out
+
+
+def _reply(net, needle: str, timeout: float = 120.0) -> Optional[str]:
+    def got():
+        for row in _episodic(net, 40):
+            if row.get("role") == "assistant" and needle in row.get("text", ""):
+                return row["text"]
+        return None
+
+    return _wait(got, timeout)
+
+
+def _archive_status(net, chat: int, uid: int) -> Optional[str]:
+    """The archive item status of update `uid` (its status lines folded in by the web
+    route), searched in the chat's newest days."""
+    days = net.get_json(f"/api/tg/archive?chat={chat}", timeout=10.0).get("days", [])
+    names = sorted((d.get("day") if isinstance(d, dict) else d for d in days), reverse=True)[:3]
+    for day in names or [time.strftime("%Y-%m-%d", time.gmtime())]:
+        data = net.get_json(f"/api/tg/archive?chat={chat}&day={day}&limit=200", timeout=10.0)
+        for row in data.get("rows", []):
+            if int(row.get("u") or 0) == uid:
+                return row.get("st")
+    return None
+
+
+# ---- legs ---------------------------------------------------------------------------
+
+
+@pytest.mark.hil
+@pytest.mark.net
+@pytest.mark.agent
+def test_img_photo_turn_then_look_again(device, net, img_head, lumi_heap):
+    chat, host = img_head["chat"], img_head["host"]
+    print(f"head {host}/{img_head['model']} at Lumi's heap {lumi_heap}")
+    item = _stage_label(net, LABEL_VALUE, seed=int(time.time()) % 100000)
+    uid = tb.first_update_id() + 7100
+
+    # Turn 1: the photo, seen by the head itself.
+    lines = _inject(device, album_page(uid, chat, [item], caption=f"what does this label say? one line ({uid})"))
+    lines += _idle_lines(device, IDLE_WATCH_S)
+    print("\n".join(ln for ln in lines if "telegram:" in ln or "vision" in ln or "turn spend" in ln))
+    assert ATTACHED_RE.search("\n".join(lines)), "the photo was not attached for the head"
+    assert not caption_calls(lines), f"a caption request was made for a photo the head saw: {caption_calls(lines)}"
+    settled = [m.groups() for m in map(SETTLED_RE.search, lines) if m]
+    assert settled, "the photo's row was not settled by its turn"
+    assert settled[0][2] in ("the head's note", "seen"), settled
+    st = _archive_status(net, chat, uid)
+    assert st == "ok", f"the archive item reads {st!r} at turn time"
+    cr = [head_cache_read(lines, host)]
+    ref = None
+    for row in _episodic(net, 40):
+        m = REF_RE.search(row.get("text", ""))
+        if m and row.get("kind") == "image":
+            ref = m.group(1)
+            print("stored row:", row.get("text", "")[:200])
+            break
+    assert ref, "no stored row for the photo"
+
+    # Turn 2: look at it again - the pixels come back, no caption request.
+    t2 = f"look at that photo again yourself and tell me the number on it ({uid + 1})"
+    lines2 = _inject(device, tb.page([tb.text_update(uid + 1, chat, t2)]))
+    lines2 += _idle_lines(device, 10)
+    print("\n".join(ln for ln in lines2 if "vision" in ln or "turn spend" in ln or "anthropic:" in ln))
+    looks = [m.groups() for m in map(LOOK_RE.search, lines2) if m]
+    reattached = [ln for ln in lines2 if REATTACH_RE.search(ln)]
+    assert looks or reattached, "the photo was not viewed again (no image.look image, no re-attached file)"
+    print(f"viewed again: image.look {looks}, re-attached {reattached[:1]}")
+    if looks:
+        assert looks[0][0] == ref, (looks, ref)
+    assert not caption_calls(lines2), f"a caption request was made on a seeing head: {caption_calls(lines2)}"
+    text = _reply(net, LABEL_VALUE)
+    assert text, f"no reply named the label value {LABEL_VALUE}"
+    cr.append(head_cache_read(lines2, host))
+
+    if host != "anthropic":
+        print(f"cache reads (informational on {host}): {cr}")
+        return
+    # Turn 3: on Anthropic the cache-read tokens rise over the three turns.
+    lines3 = _inject(device, tb.page([tb.text_update(uid + 2, chat, f"thanks, and the first word on it? ({uid + 2})")]))
+    cr.append(head_cache_read(lines3, host))
+    assert not caption_calls(lines3)
+    print(f"cache reads over three turns: {cr}")
+    assert all(c is not None for c in cr), cr
+    assert cr[0] < cr[1] < cr[2], f"cache reads did not rise: {cr}"
+
+
+# ---- host tests ---------------------------------------------------------------------
+
+
+@pytest.mark.host
+def test_host_caption_and_spend_parse():
+    lines = [
+        "telegram: media 1/1 attached for the head (61234 bytes)",
+        "vision: mistral mistral-small-latest read 92938 bytes -> 749 chars",
+        "vision: TEST override answered api.openai.com",
+        "turn spend: ok telegram | anthropic/claude-haiku-5-5 in=812 out=95 cR=10450 cW=1200 n=2 | "
+        "mistral/mistral-small-latest in=300 out=50 cR=0 cW=0 n=1",
+    ]
+    assert len(caption_calls(lines)) == 2
+    assert head_cache_read(lines, "anthropic") == 10450
+    assert head_cache_read(lines, "mistral") == 0
+    assert head_cache_read(lines, "openai") is None
+    assert not caption_calls(["vision: photo 1/1 row settled (seen)", "vision: image.look ab goes to the head"])
+    m = LOOK_RE.search("[agent] vision: image.look 0123456789abcdef goes to the head as an image (61234 bytes)")
+    assert m and m.group(1) == "0123456789abcdef"
+    s = SETTLED_RE.search("vision: photo 1/1 row settled (the head's note)")
+    assert s and s.group(3) == "the head's note"
+    assert REATTACH_RE.search("[agent] anthropic: 1 recent photo(s) ride their history message (kept files)")
+    assert head_spec("") == ("anthropic", "claude-haiku-5-5")
+    assert head_spec("mistral:mistral-large-latest") == ("mistral", "mistral-large-latest")

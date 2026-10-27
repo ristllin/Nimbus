@@ -16,6 +16,8 @@
 //   [image 1/2 ref=0123456789abcdef] (attached: the photo itself is in this message)
 //   [image 2/2 ref=fedcba9876543210] (transcribed by openai) Nutrition facts ...
 //   [image 1/1 ref=0123456789abcdef] (not read: anthropic out of credit (HTTP 429))
+//   [image 1/1 ref=0123456789abcdef] (seen; note: receipt, 3 items, total 12.40)
+//   [image 1/1 ref=0123456789abcdef] (seen in its turn; image.look shows it again)
 //
 // - k/N: the item's position among the media of its turn (album order), and the count.
 // - ref: the item's content hash (the 16 lowercase hex characters of the blob store's
@@ -45,7 +47,10 @@ enum class MediaClass : uint8_t {
                  // and a photo's short record in memory; `detail` is the text
   NotRead,       // nobody could read it: `detail` is the typed reason (vision::ReadFail
                  // words: "anthropic out of credit (HTTP 429)", "too large", ...)
-  Pending,       // a stored photo the head saw, its short record not written yet
+  Pending,       // a stored photo whose turn has not shown or read it yet (kept for
+                 // image.look); its turn rewrites the row before it is ever history
+  Seen,          // the head saw the photo itself in its turn and wrote no note
+  Noted,         // the head saw it and wrote its own note (image.note): `detail`
   Count,         // sentinel: the class test walks every value below it
 };
 
@@ -80,6 +85,8 @@ std::string mediaSegment(const MediaLabel& l);
 std::string mediaSuffix(const MediaLabel& l);
 // The suffix of an image the head sees itself (Attached), word for word.
 extern const char kAttachedSuffix[];
+// The suffix of a photo seen in its turn with no note (Seen), word for word.
+extern const char kSeenSuffix[];
 
 // A late or redelivered item: its Telegram date is more than kLateItemS before the
 // device clock (false while the clock is unset, before 2020). Such an item carries

@@ -1573,14 +1573,16 @@ static bool failedSegment(nimbus::orch::MediaLabel& label, const char* why, int 
   return false;
 }
 
-// R1: photo k of n goes to the head as an image when the head reads images: its bytes
-// (staged at `in.lfsPath`) are copied into one PSRAM buffer held for the turn, no
-// caption call. False (the caption step reads it instead) when the head has no image
-// input, the format is not one a head reads, an animated GIF, the turn's photo budget
-// is spent, or PSRAM is short.
+// R1: photo k of n is kept for the head as an image: its bytes (staged at `in.lfsPath`)
+// are copied into one PSRAM buffer held for the turn, no caption call. Whatever head
+// is configured: the host that serves each request decides whether it sees the pixels
+// or reads a transcription (made only then), so a failover to a seeing host still
+// gets the photo. False (the caption step reads it now) when the format is not one a
+// head reads, an animated GIF, the turn's photo budget is spent, PSRAM is short, or
+// the bench switched native input off.
 static bool attachNative(const InboundFile& in, nimbus::orch::MediaLabel& label) {
   const char* mime = in.slot.mime[0] ? in.slot.mime : "image/jpeg";
-  if (!agent::vision::nativeHead() || !nimbus::orch::imagePartMime(mime)[0]) return false;
+  if (!agent::vision::native() || !nimbus::orch::imagePartMime(mime)[0]) return false;
   nimbus::orch::TurnImages* set = agent::vision::turnSet(true);
   if (set->items.size() >= nimbus::orch::kTurnImageMax) return false;
   size_t len = 0;
@@ -1672,22 +1674,22 @@ static void describeStaged(const InboundFile& in, size_t turn, size_t k, size_t 
   transcribeStaged(in, visionContext(turn, k, n), label, fail);
 }
 
-// The photo's stored row (R1): a photo the head sees itself is stored with a pending
-// label until its short record is written (agent::vision's idle step replaces it);
-// any other item's row is its segment.
+// The photo's stored row (R1): a photo kept for the head is stored as kept (for
+// image.look) and its turn's end settles the row (the head's note, "seen", or a blind
+// host's reading) before it is ever sent as history; any other item's row is its
+// segment.
 static std::string rowSegment(const nimbus::orch::MediaLabel& label) {
   nimbus::orch::MediaLabel row = label;
   if (row.cls == nimbus::orch::MediaClass::Attached) row.cls = nimbus::orch::MediaClass::Pending;
   return nimbus::orch::mediaSegment(row);
 }
 
-// Queue the photo's record (a photo the head saw), or its re-read once a provider is
-// open again (a reading that failed for a refusal, a closed provider or no answer).
+// Queue the re-read of a photo the caption step could not read at intake, once a
+// provider is open again (a refusal, a closed provider or no answer). A photo kept for
+// the head is never queued: no caption call is made for a photo the head sees.
 static void queueRecord(const MediaSlot& m, const nimbus::orch::MediaLabel& label, agent::vision::ReadFail fail,
                         const String& ctx, size_t len, const char* ext) {
-  const bool record = label.cls == nimbus::orch::MediaClass::Attached;
-  const bool reread = agent::vision::rereadLater(fail);
-  if (!record && !reread) return;
+  if (!agent::vision::rereadLater(fail)) return;
   agent::vision::PendingRecord r;
   r.chatId = m.chatId;
   r.ref = nimbus::orch::workingCopy(label.ref);

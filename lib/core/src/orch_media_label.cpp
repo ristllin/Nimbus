@@ -43,6 +43,7 @@ std::string mediaTag(const MediaLabel& l) {
 }
 
 const char kAttachedSuffix[] = " (attached: the photo itself is in this message)";
+const char kSeenSuffix[] = " (seen in its turn; image.look shows it again)";
 
 namespace {
 // `detail`, or `fallback` when it is empty.
@@ -74,7 +75,11 @@ std::string mediaSuffix(const MediaLabel& l) {
     case MediaClass::NotRead:
       return " (not read: " + orElse(l.detail, "no provider could read it") + ")";
     case MediaClass::Pending:
-      return " (seen in its turn; no record written yet)";
+      return " (kept; image.look shows it)";
+    case MediaClass::Seen:
+      return kSeenSuffix;
+    case MediaClass::Noted:
+      return l.detail.empty() ? std::string(kSeenSuffix) : " (seen; note: " + capped(l.detail) + ")";
     case MediaClass::Count:
       break;
   }

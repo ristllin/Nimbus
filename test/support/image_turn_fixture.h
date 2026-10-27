@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/head_loop.h"
 #include "nimbus/orch/turn_images.h"
 
 // R1 wire-suite fixture: a turn carrying two small photos (known bytes, so a test can
@@ -44,6 +45,44 @@ struct PhotoTurn {
     it.tag = "[image " + std::to_string(k) + "/2 ref=" + ref + "]";
     it.segment = it.tag + " (attached: the photo itself is in this message)";
     set->items.push_back(it);
+  }
+};
+
+// image.look on the device, for the wire suites (lane IMG): an image_look call puts the
+// earlier photo `ref` into the turn's set as a looked photo (what agent::vision::look
+// does in an owner turn) and answers with the record the renderers turn into the
+// photo; a blind host's reading is counted. Any other call answers "tool-ok".
+struct LookRig {
+  std::vector<uint8_t> photo{0xFF, 0xD8, 0xFF, 0xDB, 0x43, 0x00, 0x21, 0x7F};   // 8 bytes
+  std::string ref = "00112233445566ff";
+  int answered = 0;
+  int looks = 0;
+  nimbus::orch::HeadToolResult dispatch(const nimbus::orch::HeadToolCall& c) {
+    nimbus::orch::HeadToolResult r;
+    r.id = c.id;
+    r.name = c.name;
+    r.output = "tool-ok";
+    if (c.name != "image_look" && c.name != "image.look") return r;
+    nimbus::orch::TurnImages* set = nimbus::orch::activeTurnImages();
+    if (!set) return r;
+    ++looks;
+    if (set->lookedIndex(ref) < 0) {
+      nimbus::orch::LookedImage l;
+      l.img.ref = ref;
+      l.img.mime = "image/jpeg";
+      l.img.bytes = photo.data();
+      l.img.len = photo.size();
+      l.img.tag = "[image ref=" + ref + "]";
+      l.question = "what number is on it?";
+      set->looked.push_back(l);
+      if (set->nonce.empty()) set->nonce = "l00k";
+      set->answer = [this](const nimbus::orch::TurnImage& it, const std::string& q) {
+        ++answered;
+        return it.tag + " (transcribed by mistral) " + q + " 73";
+      };
+    }
+    r.output = nimbus::orch::lookResultText(ref);
+    return r;
   }
 };
 
