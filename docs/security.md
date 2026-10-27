@@ -180,15 +180,21 @@ results turn could move the main model or stop sub-agents.
 
 **The caller.** Each check reads three facts:
 
-- **Role**: the role of the chat the turn runs for (the owner's Telegram chat, the
+- **Role**: the tenant role of the chat the turn runs for (the owner's chats, the
   web chat, on-device voice and the serial console are the owner; a member is a
-  user; a guest is a guest; a public-mode stranger is a user or a guest), or the LAN
-  endpoint's own identity (one device sign-in code, no per-caller identity, user
-  rights in its own namespace).
+  user; a guest is a guest; a public-mode stranger is a user or a guest; a revoked or
+  never-approved chat is unknown), or the LAN endpoint's own identity (one device
+  sign-in code, no per-caller identity, user rights in its own namespace). A chat
+  with no role yet takes the Telegram owner rule only while the tenant table has no
+  admin at all, so a newly onboarded owner is the owner from the first message and
+  position on the allowlist never makes anyone else one. The owner-only commands
+  (`/model`, `/budget`, `/update`, `/mcp`, ...) read the same role.
 - **Unattended**: nobody is writing this turn right now. Routines, wakeups, the
   nightly dream, the turn that summarizes sub-agent results, and the device's own
-  post-update turn are unattended. They run on the owner's chat, so the role alone
-  cannot tell them apart from the owner.
+  post-update turn are unattended. A routine, a wakeup and the post-update turn run
+  on the owner's chat; a results summary runs on the chat that started the
+  sub-agents, under that chat's role, so the role alone cannot tell the owner's
+  automatic turns apart from the owner.
 - **LAN**: the call came over `POST /mcp`.
 
 **The rules.** One table, one row per action (`lib/core/src/orch_action_rules.cpp`):
@@ -196,14 +202,15 @@ results turn could move the main model or stop sub-agents.
 | Rule | Owner turn | Member | Guest | Routine | Results summary | System turn | LAN `/mcp` | Serial |
 |---|---|---|---|---|---|---|---|---|
 | open | yes | yes | yes | yes | yes | yes | yes | yes |
-| turn | yes | yes | yes | yes | yes | yes | no | yes |
+| turn (an approved chat) | yes | yes | yes | yes | yes | yes | no | yes |
 | owner | yes | no | no | yes | yes | yes | no | yes |
 | owner, attended | yes | no | no | no | no | no | no | yes |
 
-Starting a sub-agent from a turn's own reply is open to every turn caller, as before
-(see the open items below). The three unattended classes (a routine or wakeup, a
-results summary, the system turn) share one column: the table treats every turn
-nobody is writing alike, as the device's scheduled-turn rails always have.
+The three unattended classes (a routine or wakeup, a results summary of the owner's
+sub-agents, the system turn) share one column: the table treats every owner turn
+nobody is writing alike, as the device's scheduled-turn rails always have. A results
+summary of a member's sub-agents runs as that member. A revoked or never-approved chat
+(role unknown) is refused everything but the open actions.
 
 "Open" actions read or write the caller's own data, so the handler draws the line
 (its own namespace and quota, see [People and privacy](./people-and-privacy.md)).
@@ -213,10 +220,10 @@ access or physical risk: only the owner, in a message they write.
 
 | Rule | Actions |
 |---|---|
-| owner, attended | device actions: `orch_model` (the main model), `reboot`; config knobs: `priority`, `ttsVoice`, `ttsProv`, `ttsOn`, `sttProv`, `sleepOvr`, `brightOvr`, `devName`; tools: `memory.config` with `action: update`, `prefs.edit` add / replace / remove, `loop.create`, `loop.cancel`, `skill.save`, `skill.delete`, `tenant.list`, `tenant.set_role`, `tenant.set_quota`, `session.terminate` (and the turn's terminate op), `session.tell`, `device.selftest` with `audible: true`, `reply.telegram` or `files.send` to a chat other than the one the turn runs for, every connected tool server's tool (`mcp.<server>.<tool>`) |
+| owner, attended | device actions: `orch_model` (the main model), `reboot`; config knobs: `priority`, `ttsVoice`, `ttsProv`, `ttsOn`, `sttProv`, `sleepOvr`, `brightOvr`, `devName`; tools: `memory.config` with `action: update`, `prefs.edit` add / replace / remove, `loop.create`, `loop.cancel`, `skill.save`, `skill.delete`, `tenant.list`, `tenant.set_role`, `tenant.set_quota`, `session.terminate` (and the turn's terminate op), `session.tell`, `device.selftest` with `audible: true`, `reply.telegram` or `files.send` to a chat other than the one the turn runs for (a `files.send` naming no chat from the web chat, voice or serial goes to the owner's chat, so it counts as another chat), `files.share` by the owner (it can share any file with everyone; stopping a share stays open), every connected tool server's tool (`mcp.<server>.<tool>`) |
 | owner | device actions: `led`, `lights`, `tts`, a `config` element as a whole; config knobs: `ledBrightness`, `posture`, `profile`, `theme`, `attnHoldMs`, `sfxLvlN`, `sfxLvlO`, `sfxVol`, `sfxTheme`; tools: `device.control`, `device.status` (it carries the spend and budgets), `device.log`, `media.play`, `media.pause`, `media.stop`, `reply.speak`, `models.list` with `refresh: true`, `memory.scratchpad` (and the turn's `scratchpad` field), `prefs.edit` list, `loop.list`, `wakeup.set`; the needs-you light a turn's question raises |
-| turn | `web.search`, `image.generate`, `image.look`, `reply.telegram` and `files.send` to the caller's own chat, `session.spawn` |
-| open | `memory.write`, `memory.search`, `memory.update`, `memory.pin`, `memory.episodic`, `memory.archive`, `memory.config` view, `results.get`, `results.list`, `session.poll`, `session.list`, `models.list`, `artifact.save`, `files.append`, `files.fetch`, `files.list`, `files.pdf`, `files.read`, `files.search`, `files.share`, `files.stat`, `docs.list`, `docs.read`, `docs.search`, `skill.get`, `skill.list`, `system.health`, `device.selftest`, `ota.status`, `media.list` |
+| turn | `web.search`, `image.generate`, `image.look`, `reply.telegram` and `files.send` to the caller's own chat, `session.spawn`, the turn's spawn ops |
+| open | `memory.write`, `memory.search`, `memory.update`, `memory.pin`, `memory.episodic`, `memory.archive`, `memory.config` view, `results.get`, `results.list`, `session.poll`, `session.list`, `models.list`, `artifact.save`, `files.append`, `files.fetch`, `files.list`, `files.pdf`, `files.read`, `files.search`, `files.share` (a member's own files, and stopping a share), `files.stat`, `docs.list`, `docs.read`, `docs.search`, `skill.get`, `skill.list`, `system.health`, `device.selftest`, `ota.status`, `media.list` |
 
 **Where it is enforced.** Two seams, every route:
 
@@ -230,6 +237,23 @@ access or physical risk: only the owner, in a message they write.
   tool call through the access resolver `installActionRules` installs, on the turn's
   tool loop, the LAN endpoint and the test seams, in both modes. A member's or a
   guest's turn is not offered a tool it would be refused.
+
+**Sub-agents belong to the chat that started them.** A sub-agent inherits the role
+of the turn that started it (`nimbus/orch/connector_grant.h`, `JobEngine`). One the
+owner started carries the owner's connectors (remote tool servers, Gmail, Calendar,
+Drive, Studio connectors); one a member or a guest started carries the provider's
+built-in tools only (web search, the code sandbox), exactly like a request over the
+shared router, and a connector of the owner's named as its task is refused with the
+reason. Every request a member's or a guest's own turn makes is held to the same
+rule. Its finished result is read only by that chat's turns: the owner's turns read
+every result of the owner's sub-agents (one person across channels), a member's or a
+guest's turn only its own chat's, so member-written text never reaches an owner turn
+and the owner's results never reach a member. The summary turn runs per chat under
+that chat's role, and the raw fallback goes to each chat with its own results. The
+running sub-agents a turn is shown (`[ACTIVE SESSIONS]`, `session.list`,
+`session.poll` by id) follow the same line: the owner sees every one, a member or a
+guest only its own, the LAN endpoint none. The results store was already scoped this
+way (`results.get`, `results.list`).
 
 **A refusal is never silent.** The head reads it: a refused tool call or
 `device.control` call fails with the reason, and a refused end-of-turn action adds a
@@ -257,11 +281,6 @@ owner's password.
 
 **What is not covered yet** (tracked for the next release):
 
-- A sub-agent started from a member's or a guest's turn still runs with the
-  connectors attached on its provider (they carry the owner's sign-ins), because the
-  job and the provider request do not yet carry who started it.
-- Every turn's prompt lists all running sub-agents, a member's included, so a member
-  can read the owner's sub-agent tasks (`session.list` shows the same).
 - "Owner, attended" proves the owner is writing, not that an instruction came from
   the owner: a turn of the owner's that read outside content (a web page, a file, a
   sub-agent result) can still be steered into an owner-attended action. Skills and
@@ -269,9 +288,13 @@ owner's password.
   actions do not yet.
 - Members and guests spend the owner's provider budget on their own turns (chat,
   `web.search`, images, sub-agents), within the spend ceilings.
-- The unattended column does not tell an owner's routine from a results summary fed
-  by outside text, so a results summary keeps the owner's everyday actions (the
-  ring, the speaker, music, a wakeup, the scratchpad).
+- The unattended column does not tell an owner's routine from a summary of the
+  owner's own sub-agents fed by outside text, so such a summary keeps the owner's
+  everyday actions (the ring, the speaker, music, a wakeup, the scratchpad).
+- A chat approved from the pending list gets no tenant row until someone sets its
+  role, so it resolves by the allowlist (a user once the table has an admin).
+- A Mistral head conversation pins the connectors it started with: a chat whose role
+  changes keeps its open conversation's connectors until that conversation is reset.
 - A routine that runs on the web chat or voice and names the owner's Telegram chat
   as a target counts that as another chat, which an automatic turn cannot message.
 - `tools/list` over `/mcp` still lists the whole registry; a call outside the LAN

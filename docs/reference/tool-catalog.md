@@ -149,7 +149,11 @@ Notes:
 Registered by `registerSessionTools()`
 (`lib/core/src/orch_session_tools.cpp`). Each tool's device behavior depends on
 its injected `SessionHandlers` handler; a missing handler makes the tool report
-`"not supported on this device"`.
+`"not supported on this device"`. A caller sees only the sub-agents it may see: the
+owner every one, a member or a guest those its own chat started, the LAN endpoint
+none; an id it may not see answers like one that is not running. A sub-agent a member
+or a guest starts runs with the provider's built-in tools only, never the owner's
+connectors, and its result reaches only that chat.
 
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
@@ -279,8 +283,8 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 | `files.search` | Search the CONTENT of saved text documents for words; returns the best matches with a snippet, ranked by how many of the words each document holds, then by how often they occur. | `query` (**required**), `project` (optional filter) | live |
 | `files.append` | Add rows to a text document (a log, a CSV); creates it when missing. Without `key`, the rows go on the end and nothing stored is rewritten. With `key`, a keyed CSV update: a row is its date plus its key, so the same date and key again replaces that row (a correction) and other days are never touched. | `project` (**required**), `name` (**required**, a text extension), `text` (**required**, max 4 KB per call; with `key`, the stored header row first), `key` (optional, the column that tells one day's rows apart, such as `meal`; the log needs a date column), `sum` (optional, a numeric column - the reply carries the day totals), `replace` (optional, `"all"`: when the key names several stored rows that are one item logged twice, this row replaces them) | live |
 | `artifact.save` | Persist a TEXT artifact (report, summary, document) into the durable store. | `project` (**required**), `name` (**required**, with extension `.md`/`.txt`/`.csv`/`.json`), `text` (**required**, max ~24 KB per call) | live |
-| `files.share` | Share one of your saved files read-only with everyone, or stop sharing it. | `project` (**required**), `name` (**required**), `share` (boolean, default true) | live |
-| `files.send` | Send a stored file to the owner on Telegram - images go as an inline photo, other files as a document. | `project` (**required**), `name` (**required**), `chat_id` (optional) | live |
+| `files.share` | Share one of your saved files read-only with everyone, or stop sharing it. | `project` (**required**), `name` (**required**), `share` (boolean, default true) | live (the owner shares only in a message they write) |
+| `files.send` | Send a stored file to the owner on Telegram - images go as an inline photo, other files as a document. With no `chat_id` it goes to the turn's own Telegram chat; from the web chat, voice or serial to the owner's chat (the owner only, writing now). | `project` (**required**), `name` (**required**), `chat_id` (optional) | live |
 | `files.pdf` | Write a PDF with the device's own writer from a title and light Markdown text (`#` headings, `-` bullets, `| table |` rows); text and simple tables only. Saves `<project>/<name>.pdf`, then deliver it with `files.send`. Owner only; needs an SD card. | `project` (**required**), `name` (**required**), `title`, `text` (**required**, up to 48 KB) | live |
 | `files.fetch` | Download a document from an https URL into the file store, governed by the owner's URL-download trust policy (Off / Ask me per link / Scan, then keep / Full trust; web: Assistant → Safety → Downloads). Runs in the background; per-file size cap applies; under Ask me per link the owner approves each link (Telegram `/fetch approve <id>` or the web card); under Scan, then keep the file is quarantined and promoted only on a SAFE AI verdict. | `url`, `project`, `name` | live |
 | `image.generate` | Generate an image from a text prompt and save it as a PNG in the durable store; returns the saved `project`/`name`. | `prompt` (**required**), `project` (default `images`), `name` (optional stem), `size` (optional), `quality` (`low`/`medium`/`high`, default `low`), `model` (optional, default `gpt-image-1`), `describe` (boolean, default false) | live (listed while an OpenAI key is set; a key added later works on the next turn) |

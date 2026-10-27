@@ -34,10 +34,12 @@ Three rules the device enforces for you:
 - **There is always at least one admin.** Demoting or removing the last one is
   refused, in the web UI and in conversation alike, so the device can never
   be left without someone able to administer it.
-- **The owner is the admin from the first message.** A chat on the Telegram
-  allowlist that has no role yet takes the owner rule the commands use: the chats
-  named as owners (or, when none are named, the first chat on the allowlist) are
-  admins, everyone else on the allowlist is a user.
+- **The owner is the admin from the first message.** While no one has the admin
+  role yet, a chat on the Telegram allowlist with no role takes the owner rule: the
+  chats named as owners (or, when none are named, the first chat on the allowlist)
+  are admins, everyone else on the allowlist is a user. Once an admin exists, a chat
+  with no role is a user, wherever it sits on the allowlist. The owner-only commands
+  follow the role too: a demoted or revoked chat loses them.
 - **An upgrade changes nobody's access.** On the first start after upgrading
   from firmware without roles, existing Telegram owners become admins and
   everyone else on the allowlist becomes a user, matching the access they
@@ -67,8 +69,14 @@ settings, the light ring, the speaker and music, routines, skills, standing rule
 people, and stopping sub-agents. When a member asks for one of these, the assistant
 says that only the owner can, and nothing changes.
 
-Routines, wakeups, the nightly memory pass and the summary of sub-agent results run
-for the owner, but nobody is writing them at that moment. They can do the everyday
+A sub-agent belongs to the chat that started it. One a member or a guest starts can
+search the web and use the provider's own tools, never the owner's connected accounts
+(mail, calendar, documents, tool servers), and its results reach only that chat. The
+owner's sub-agents and their results stay the owner's, and a member sees only its own
+running sub-agents.
+
+Routines, wakeups, the nightly memory pass and the summary of the owner's sub-agent
+results run for the owner, but nobody is writing them at that moment. They can do the everyday
 things a routine needs, such as dimming the ring at night or playing an alarm.
 Anything that changes the main model, a voice or provider setting, a safety
 override, the device's name, routines, skills or people needs a message the owner
