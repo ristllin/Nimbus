@@ -204,8 +204,13 @@ class CsvDayTally {
   std::string whyNot() const;
   const DayTotal& total() const { return t_; }
   int undated() const { return undated_; }   // data rows with no YYYY-MM-DD date
+  // Every stored row dated `day`, counted or not, as it is read (the food ledger
+  // shows today's rows with the same reading the total uses). Optional.
+  void setDayRowSink(std::function<void(const std::string& row)> sink) { dayRow_ = std::move(sink); }
 
  private:
+  void readHeader(const std::string& row);
+  std::function<void(const std::string& row)> dayRow_;
   std::string sumCol_, day_;
   std::vector<std::string> header_, prev_;
   int dateIdx_ = -1, sumIdx_ = -1;

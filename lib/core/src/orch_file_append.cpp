@@ -709,26 +709,29 @@ CsvDayTally::CsvDayTally(const std::string& sumCol, const std::string& day)
   t_.date = day;
 }
 
+void CsvDayTally::readHeader(const std::string& row) {
+  if (isBlankRow(row)) return;   // blank lines above the header
+  sawHeader_ = true;
+  header_ = csvFields(withoutBom(row));
+  width_ = header_.size();
+  sumIdx_ = sumCol_.empty() ? -1 : columnIndex(header_, sumCol_);
+}
+
 void CsvDayTally::feed(const std::string& row, bool complete) {
-  if (!sawHeader_) {
-    if (isBlankRow(row)) return;   // blank lines above the header
-    sawHeader_ = true;
-    header_ = csvFields(withoutBom(row));
-    width_ = header_.size();
-    sumIdx_ = sumCol_.empty() ? -1 : columnIndex(header_, sumCol_);
-    return;
-  }
+  if (!sawHeader_) return readHeader(row);
   if (sumIdx_ < 0 || day_.empty() || isCommentRow(row) || isBlankRow(row)) return;
   bool quotes = true;
   const std::vector<std::string> f = csvFields(row, &quotes, width_);
   if (!complete && provablyCut(f, quotes, width_, prev_, sumIdx_)) return;   // a cut row never counts
   if (f.size() == width_) prev_ = f;
   if (dateIdx_ < 0) dateIdx_ = dateColumnOf(header_, {f});   // the first data row settles it
-  if (dateIdx_ < 0 || f.size() <= (size_t)dateIdx_ || isoDay(f[(size_t)dateIdx_]).empty()) {
+  const std::string day = dateIdx_ >= 0 && f.size() > (size_t)dateIdx_ ? isoDay(f[(size_t)dateIdx_]) : std::string();
+  if (day.empty()) {
     undated_++;
     return;
   }
   tallyInto(t_, f, width_, dateIdx_, sumIdx_);
+  if (dayRow_ && day == day_) dayRow_(row);
 }
 
 bool CsvDayTally::ok() const {

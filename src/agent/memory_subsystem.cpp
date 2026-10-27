@@ -5,6 +5,7 @@
 #include <esp_littlefs.h>    // esp_littlefs_format_partition - the scrub's empty FS
 #include <esp_partition.h>   // esp_partition_erase_range - the scrub erases every block
 
+#include "nimbus/orch/food_portions.h"   // lane CTX: food.portions
 #include "nimbus/orch/reset_plan.h"   // scrubChunk: the erase plan (host-tested)
 
 
@@ -1174,6 +1175,7 @@ void begin() {
   g_ctx = ctx;
   registerMemoryTools(g_reg, ctx);
   nimbus::orch::registerPrefsTools(g_reg, prefs::context());
+  nimbus::orch::registerFoodTools(g_reg);   // lane CTX: food.portions (a plan's arithmetic)
   applyConfig();   // capacity cap (score-based eviction on add); tier-aware (§degraded)
 
   // session.* tools for external MCP clients. list + terminate are live over the
@@ -2302,6 +2304,38 @@ static void loadPending() {
 }
 
 int pendingCount() { Lock g; return (int)g_pending.size(); }
+
+std::string queueFact(const std::string& content, const std::string& ns, float importance,
+                      const char* ttl, uint32_t createdHours) {
+  Lock g;
+  if (!g_begun || g_erasing) return "memory is not ready";
+  nimbus::orch::PendingEmbed p;
+  p.id = nimbus::orch::memoryIdFor(content);
+  p.ns = ns;
+  p.content = content;
+  p.importance = importance;
+  p.ttlName = ttl ? ttl : "months";
+  p.source = "prefs";
+  // A given date was stamped by a set clock (a rule records 0 when the clock was not set).
+  p.createdAtHours = createdHours ? createdHours : nowHours();
+  p.clockSynced = createdHours ? true : clockSynced();
+  using Add = nimbus::orch::PendingEmbeds::Add;
+  switch (g_pending.enqueue(p)) {
+    case Add::Added:
+      if (persistPending()) return std::string();
+      g_pending.pop(p.id);
+      return "device storage unavailable";
+    case Add::Coalesced:
+      persistPending();
+      return std::string();
+    case Add::Full:
+    case Add::BytesFull:
+    case Add::NsFull:  return "the waiting list is full";
+    case Add::TooLong: return "too long";
+    case Add::Empty:   return "nothing to store";
+  }
+  return "not queued";
+}
 
 WriteOutcomes writeOutcomes() { Lock g; return g_outcomes; }
 

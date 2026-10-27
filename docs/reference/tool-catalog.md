@@ -187,8 +187,8 @@ Notes:
 
 Registered by the memory subsystem (`src/agent/memory_subsystem.cpp`; store in
 `src/agent/skills.cpp`, built-in text in `lib/harness/src/builtin_skills.cpp`).
-On-device markdown playbooks: six built-ins (`architecture`, `deep-research`,
-`hardware`, `tools-guide`, `deliver-pdf`, `log-rows`) plus owner- or agent-authored capsules
+On-device markdown playbooks: eight built-ins (`architecture`, `deep-research`,
+`hardware`, `tools-guide`, `deliver-pdf`, `log-rows`, `food-log`, `food-coach`) plus owner- or agent-authored capsules
 on the SD card. A built-in names `reply.telegram` or `files.send` only on a turn
 that was offered both; on any other turn it points at the Files list on the
 device web page.
@@ -225,6 +225,32 @@ Notes:
   `desc:`; the assistant's history rows carry a `skills:` tag saying which
   skills a reply used.
 
+The two food playbooks are also attached without a read: on a turn about food the
+device adds `food-log` when the owner reports food eaten, `food-coach` when they ask
+for an amount or a plan, and both when the words say neither (see
+[turn-anatomy.md](../turn-anatomy.md)).
+
+## `food.*` - the portion calculator
+
+Registered by `registerFoodTools()` (`lib/core/src/orch_food_portions.cpp`). The model
+picks the foods and their proportions; the device does the arithmetic. The free foods
+are scaled together and rounded to whole units (`unit_g`) or 5 g steps, so the total
+lands at 95 to 100 percent of `left_kcal`, never over it unless the fixed amounts alone
+are; when whole units cannot land in that band the reply says so. Figures no food has
+(`left_kcal` over 20,000, `kcal_100g` over 1,000, `protein_100g` over 100, an amount
+over 5,000 g) are refused.
+
+| Tool | Description (as registered) | Arguments | State |
+|---|---|---|---|
+| `food.portions` | Exact amounts for a meal plan, or for using up what is left of the day: every food of the meal (from the foods the owner said they have; with none named the model asks instead) with its kcal and protein per 100 g, the owner's amounts as `fixed_g` (an approximate one too), the others with the portion the model would choose (`amount_g`, kept as proportions and scaled together). Returns each food's amount, kcal and protein, the total, and the answer in one sentence. Writes nothing. | `left_kcal` (number, **required**), `left_protein` (number), `foods` (array, **required**, at most 12: `name`, `kcal_100g` (both required), `protein_100g`, `amount_g`, `unit_g`, `fixed_g`) | live |
+
+Notes:
+- The total lands within 95 to 105 percent of `left_kcal` whenever whole units allow:
+  weighed foods move in 5 g steps, a food with `unit_g` in whole slices or pieces.
+- Fixed amounts stay exact. A weighed free food with no `amount_g` is refused with
+  its name (equal shares made piles of salad); a food counted in units starts from
+  one unit.
+
 ## `prefs.*` - the owner's standing rules
 
 Registered by `registerPrefsTools()` (`lib/core/src/orch_prefs_tools.cpp`) over
@@ -233,7 +259,7 @@ ride the never-dropped part of every owner-facing prompt as `[STANDING RULES]`.
 
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
-| `prefs.edit` | Your owner's STANDING RULES: always/never rules they want in EVERY reply whatever the topic. Add one only when the owner asks in their own words; facts and topic-specific likes go to memory. | `action` (**required**, `add` \| `replace` \| `remove` \| `list`), `text` (string), `id` (string, e.g. `p3`) | live (owner/admin only) |
+| `prefs.edit` | Your owner's STANDING RULES: always/never rules they want in EVERY reply whatever the topic. Add one only when the owner asks in their own words; facts and topic-specific likes go to memory, and a meal or a day's total to the food ledger (a dated one-off fact is refused here). | `action` (**required**, `add` \| `replace` \| `remove` \| `list`), `text` (string), `id` (string, e.g. `p3`) | live (owner/admin only) |
 
 Notes:
 - Owner-only: a member or guest turn never sees the tool or the rules.
@@ -244,6 +270,14 @@ Notes:
 - The owner sees every change in a line the device writes itself, over Telegram.
 - A rule whose words ban em dashes also switches on a device-enforced filter
   that removes them from every delivered reply.
+- A dated one-off fact (a date or a day word with a meal, a day's total or a
+  measurement, and no always, never or every) is refused on every add path
+  (`prefs.edit`, `/prefs add`, the web page) with where it belongs: a meal or a
+  total goes to the food ledger, a measurement to memory. A `standing: true`
+  `mem_write` of a dated measurement is stored as an ordinary memory instead.
+- `list` and `/prefs` show each rule's age ("added 11 days ago") and, under
+  their own heading, the rules moved to memory at boot as dated facts, each with
+  `/prefs restore <id>`.
 
 ## `docs.*` - the device's own documentation
 

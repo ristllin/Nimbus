@@ -4584,12 +4584,17 @@ function loadPrefs(){
     _prefsSeen=now;
     const items=d.items||[];
     if(!items.length){box.innerHTML='<span class=hint>No standing rules yet. Add one below, or ask in chat.</span>';return;}
+    // A rule moved to memory at boot (it read as a dated fact) is listed apart with
+    // Restore; every rule shows its age when the device knows it.
     box.innerHTML=items.map(r=>'<div class=row style="margin:2px 0">'
       +'<span style="flex:1">'+_fesc(r.text)
       +(r.state==='pending'?' <b style="color:#e0a349">waits for your approval</b>':'')
+      +(r.state==='moved'?' <span class=hint>(moved to memory: a dated fact, not a rule)</span>':'')
       +(r.nodash?' <span class=hint>(em dashes are removed from replies)</span>':'')
+      +(r.age?' <span class=hint>'+_fesc(r.age)+'</span>':'')
       +'</span>'
       +(r.state==='pending'?' <a href="#" data-pid="'+_fesc(r.id)+'" data-pact="approve">Approve</a>':'')
+      +(r.state==='moved'?' <a href="#" data-pid="'+_fesc(r.id)+'" data-pact="restore">Restore</a>':'')
       +' <a href="#" data-pid="'+_fesc(r.id)+'" data-pact="remove">Remove</a></div>').join('');
     const msg=$('prefsmsg'); if(msg)msg.textContent='';
     box.querySelectorAll('a[data-pid]').forEach(a=>a.onclick=e=>{e.preventDefault();

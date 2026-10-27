@@ -20,6 +20,7 @@
 #include "nimbus/harness/websearch.h"
 #include "nimbus/docs_pack.h"
 #include "nimbus/orch/embedding.h"
+#include "nimbus/orch/food_portions.h"   // lane CTX: food.portions
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/model_choices.h"
@@ -361,6 +362,7 @@ class LabRig {
     prefs_.bindStanding(mc);   // lane J: mem_write standing:true -> the rules
     orch::registerMemoryTools(reg_, mc);
     prefs_.registerTools(reg_);   // lane J: prefs.edit, registered as the device does
+    orch::registerFoodTools(reg_);   // lane CTX: food.portions, as the device registers it
 
     // Split by tool group so each registration (and its lambda) stays inside the
     // complexity gate. Registration order is preserved (it drives toolNames_).
@@ -624,8 +626,40 @@ class LabRig {
   // The device's host adapters (fabric failover, Z.ai single-shot, the three
   // loop hosts), split out of buildEngine to stay under the complexity gate.
   void wireHosts(agent::TurnEngine::Deps& d) {
-    wireHosts(d);
-
+    // The device's mid-turn failover: LOOP turns run the engine-owned fabric over
+    // the same deps (a failed round re-runs on the next host against the shared
+    // transcript). Z.ai is single-shot only, as on the device.
+    d.hosts.fabric = [this](const std::vector<std::string>& hostList, const std::string& ins,
+                            const std::string& inp, std::string& out, std::string& err,
+                            const agent::HeadTools& ht, orch::TurnSpend* spend,
+                            const std::function<void(const std::string&, const std::string&)>& notify) {
+      return agent::providers::runFabricLoop(providerDeps(), hostList, ins, inp, out, err, ht,
+                                             spend, notify);
+    };
+    d.hosts.fabricSupports = [](const std::string& h) { return agent::providers::fabricSupports(h); };
+    if (!env_.providerKey("zai").empty()) {
+      d.hosts.add("zai", [this](std::string& conv, const std::string& ins, const std::string& inp,
+                                std::string& out, std::string& err, const agent::HeadTools* tools,
+                                orch::TokenUsage* usage) -> bool {
+        return agent::providers::orchTurnCustom(zaiProviderDeps(), conv, ins, inp, out, err, tools,
+                                                usage);
+      });
+    }
+    for (const char* h : {"openai", "anthropic", "mistral"}) {
+      if (env_.providerKey(h).empty()) continue;
+      const std::string host = h;
+      d.hosts.add(host, [this, host](std::string& conv, const std::string& ins,
+                                     const std::string& inp, std::string& out,
+                                     std::string& err, const agent::HeadTools* tools,
+                                     orch::TokenUsage* usage) -> bool {
+        auto pd = providerDeps();
+        if (host == "anthropic")
+          return agent::providers::orchTurnAnthropic(pd, conv, ins, inp, out, err, tools, usage);
+        if (host == "openai")
+          return agent::providers::orchTurnOpenAI(pd, conv, ins, inp, out, err, tools, usage);
+        return agent::providers::orchTurnMistral(pd, conv, ins, inp, out, err, tools, usage);
+      });
+    }
   }
 
   void buildEngine() {
@@ -676,6 +710,13 @@ class LabRig {
     d.firstAllowedChat = [] { return std::string("owner"); };
     d.journalGc = [] {};
     wireHistory(d);
+    // Lane CTX: today's food ledger over the RAM files, as the device reads its card
+    // (the lab is single-owner, so every chat reads the owner's file).
+    d.foodLedger = [this](const std::string&) {
+      const std::string where = std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodLedgerOwnerName;
+      return orch::scanFoodLedger(files_.get(where), files_.has(where), orch::logDayOf(std::time(nullptr), true),
+                                  orch::kFoodLedgerProject, orch::kFoodLedgerOwnerName);
+    };
 
     // The glass box, for free: on the host these hooks are just callbacks.
     d.hooks.onToolCall = [this](const orch::HeadToolCall& c) {
@@ -712,40 +753,7 @@ class LabRig {
     // can store memories only this way) - wired inside wireTurnFields.
     wireTurnFields(d.apply);
 
-    // The device's mid-turn failover: LOOP turns run the engine-owned fabric over
-    // the same deps (a failed round re-runs on the next host against the shared
-    // transcript). Z.ai is single-shot only, as on the device.
-    d.hosts.fabric = [this](const std::vector<std::string>& hostList, const std::string& ins,
-                            const std::string& inp, std::string& out, std::string& err,
-                            const agent::HeadTools& ht, orch::TurnSpend* spend,
-                            const std::function<void(const std::string&, const std::string&)>& notify) {
-      return agent::providers::runFabricLoop(providerDeps(), hostList, ins, inp, out, err, ht,
-                                             spend, notify);
-    };
-    d.hosts.fabricSupports = [](const std::string& h) { return agent::providers::fabricSupports(h); };
-    if (!env_.providerKey("zai").empty()) {
-      d.hosts.add("zai", [this](std::string& conv, const std::string& ins, const std::string& inp,
-                                std::string& out, std::string& err, const agent::HeadTools* tools,
-                                orch::TokenUsage* usage) -> bool {
-        return agent::providers::orchTurnCustom(zaiProviderDeps(), conv, ins, inp, out, err, tools,
-                                                usage);
-      });
-    }
-    for (const char* h : {"openai", "anthropic", "mistral"}) {
-      if (env_.providerKey(h).empty()) continue;
-      const std::string host = h;
-      d.hosts.add(host, [this, host](std::string& conv, const std::string& ins,
-                                     const std::string& inp, std::string& out,
-                                     std::string& err, const agent::HeadTools* tools,
-                                     orch::TokenUsage* usage) -> bool {
-        auto pd = providerDeps();
-        if (host == "anthropic")
-          return agent::providers::orchTurnAnthropic(pd, conv, ins, inp, out, err, tools, usage);
-        if (host == "openai")
-          return agent::providers::orchTurnOpenAI(pd, conv, ins, inp, out, err, tools, usage);
-        return agent::providers::orchTurnMistral(pd, conv, ins, inp, out, err, tools, usage);
-      });
-    }
+    wireHosts(d);
     eng_.reset(new agent::TurnEngine(std::move(d)));
   }
 

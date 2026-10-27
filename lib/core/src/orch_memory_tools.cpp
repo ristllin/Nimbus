@@ -1559,5 +1559,7 @@ EmbedDrainResult drainOne(const MemoryContext& ctx, const EmbedDrainDeps& d) {
   runLocked(d, [&] { r.step = storeQueued(ctx, d, p, who, std::move(t.vec), descVec); });
   return r;
 }
+std::string memoryIdFor(const std::string& content) { return contentId(content); }
+
 }  // namespace orch
 }  // namespace nimbus

@@ -12,10 +12,17 @@
 // ([STANDING RULES], compose.cpp).
 //
 // File format (line-oriented, tab-separated, tolerant: a bad line is skipped):
-//   #nimbus-prefs v1 seeded=<0|1> listed=<0|1> next=<n>
-//   p<id> <A|P> <createdHours> <origin> <filters|-> <text>
+//   #nimbus-prefs v1 seeded=<0|1> listed=<0|1> next=<n> [dated=1]
+//   p<id> <A|P|M> <createdHours> <origin> <filters|-> <text>
 // A = active (in the prompt), P = pending (saved from a turn that read outside
-// content; the owner approves it). Ids are never reused while the file exists.
+// content; the owner approves it), M = moved (lane CTX: a dated one-off fact that
+// was a rule; kept out of the prompt, copied to memory, and restorable). dated=1:
+// the one-time move has run. Ids are never reused while the file exists.
+//
+// Lane CTX: a rule is for every later reply, so a dated one-off fact (a meal, a
+// day's total, a measurement) is refused with a pointer to where it belongs: the
+// food ledger or memory. On 26 Oct a 16 Oct meal stored as rule p1 rode every
+// prompt and was counted as that day's meal.
 //
 // Portable, Arduino-free, host-tested (test_owner_prefs). The device glue
 // (src/agent/prefs_subsystem.cpp) supplies the file IO and the lock.
@@ -35,6 +42,10 @@ inline constexpr size_t kPrefsMaxItems = 12;     // active + pending
 inline constexpr size_t kPrefItemMax = 240;      // bytes per rule text
 inline constexpr size_t kPrefsMaxBytes = 1200;   // all active rule texts together
 inline constexpr size_t kPrefsPendingMax = 4;
+inline constexpr size_t kPrefsMovedMax = 8;      // moved rules kept for /prefs restore
+// The file at its fullest (12 rules and 8 moved ones at 240 bytes, with their
+// fields): what a loader reads before it stops.
+inline constexpr size_t kPrefsFileMax = 8192;
 
 // Device-enforced output filters a rule can switch on (a closed set: no pattern
 // from a model ever becomes a rewrite rule).
@@ -55,6 +66,9 @@ enum class PrefErr : uint8_t {
   NotFound,       // no rule with that id
   NotPending,     // approve on a rule that is already active
   PersistFailed,  // the file could not be written: nothing changed
+  DatedFood,      // lane CTX: a dated meal or day total, not a rule (the food ledger)
+  DatedFact,      // lane CTX: a dated measurement or one-off fact, not a rule (memory)
+  NotMoved,       // restore on a rule that was not moved
 };
 // Plain words for an error, for the tool result, /prefs and the web route.
 const char* prefErrWords(PrefErr e);
@@ -62,6 +76,7 @@ const char* prefErrWords(PrefErr e);
 struct PrefEntry {
   uint32_t    id = 0;             // shown as "p<id>"
   bool        pending = false;
+  bool        moved = false;      // lane CTX: a dated fact moved to memory (state M)
   uint32_t    createdHours = 0;   // device epoch hours (0 = clock not set)
   PrefOrigin  origin = PrefOrigin::Chat;
   uint32_t    filters = 0;        // PrefFilter bits
@@ -91,6 +106,17 @@ uint32_t filtersForRule(const std::string& text);
 // "p3" / "P3" / "3" -> 3; 0 when it is not an id.
 uint32_t parsePrefId(const std::string& s);
 
+// Lane CTX: what a text reads as when it is a dated one-off fact rather than a
+// rule - a calendar date or a day word (today, yesterday, tonight, this morning,
+// last night, 16 Oct, 2026-10-16) together with a meal or a day's total (Food) or
+// a body measurement (Measurement), and no standing marker (always, never, every,
+// from now on, whenever, by default, unless). None for a rule or a plain fact.
+enum class DatedKind : uint8_t { None = 0, Food, Measurement };
+DatedKind datedKindOf(const std::string& text);
+// "added today", "added 1 day ago", "added 11 days ago"; "" when either hour is
+// unknown (0) or the rule is newer than now (a clock change).
+std::string prefAgeText(uint32_t createdHours, uint32_t nowHours);
+
 class OwnerPrefs {
  public:
   // Load and parse the file. A missing or unreadable file is an empty list;
@@ -107,6 +133,14 @@ class OwnerPrefs {
   PrefErr remove(uint32_t id);
   PrefErr approve(uint32_t id);
   PrefErr clear();
+  // Lane CTX: move every active rule that reads as a dated one-off fact out of the
+  // prompt (state moved), once per file (dated=1 marks it); the moved entries come
+  // back in *moved for the caller to copy into memory and log. Ok with nothing to
+  // move still marks the file. restore() brings a moved rule back as active (the
+  // owner's choice: no dated check), when there is room.
+  PrefErr moveDatedFacts(std::vector<PrefEntry>* moved);
+  bool datedChecked() const { return datedChecked_; }
+  PrefErr restore(uint32_t id);
 
   // First-boot seed: rules recovered from memory, added active with origin Seed
   // (up to the caps; texts longer than kPrefItemMax are cut at a word). Marks the
@@ -123,6 +157,7 @@ class OwnerPrefs {
   const PrefEntry* find(uint32_t id) const;
   size_t activeCount() const;
   size_t pendingCount() const;
+  size_t movedCount() const;
   size_t activeBytes() const;
 
   // The prompt block body: one "- (p<id>) <text>" line per ACTIVE rule, "" when
@@ -138,7 +173,11 @@ class OwnerPrefs {
   size_t parse(const std::string& blob);
 
  private:
-  PrefErr commit(const std::vector<PrefEntry>& next, bool seeded, bool listed, uint32_t nextId);
+  PrefErr commit(const std::vector<PrefEntry>& next, bool seeded, bool listed, uint32_t nextId,
+                 bool dated);
+  PrefErr commit(const std::vector<PrefEntry>& next, bool seeded, bool listed, uint32_t nextId) {
+    return commit(next, seeded, listed, nextId, datedChecked_);
+  }
   PrefErr checkRoom(const std::vector<PrefEntry>& next) const;
   int indexOf(uint32_t id) const;
   int indexOfKey(const std::string& key) const;
@@ -148,6 +187,7 @@ class OwnerPrefs {
   bool existed_ = false;
   bool seeded_ = false;
   bool listed_ = false;
+  bool datedChecked_ = false;
   uint32_t nextId_ = 1;
 };
 

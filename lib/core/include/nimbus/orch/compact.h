@@ -90,8 +90,13 @@ extern const char* const ORCH_COMPACT_PROMPT;
 // Assemble the compaction call's input: the previous anchored summary (may be
 // empty) + the new episodic digest since the last compaction. digest should
 // already be byte-bounded by the caller (the device stages ≤64 KB in PSRAM).
+// Lane CTX: `day` (the engine's foldDayContext: a "[TODAY] <date> (<zone>)" line
+// and the food ledger's view) closes the input so the summary dates its facts and
+// carries today's ledger totals. It is added only while the whole input stays
+// under kJsonStrGuard: whole, else its [TODAY] and totals lines, else not at all.
 std::string buildCompactInputs(const std::string& prevSummary,
-                               const std::string& digest);
+                               const std::string& digest,
+                               const std::string& day = std::string());
 
 // Cap a produced summary to kChatSummaryMax bytes, UTF-8-safe (the fold output
 // is re-injected into every future prompt - a torn sequence would 400 them all).

@@ -120,6 +120,15 @@ struct ComposeInputs {
   // loop-off note reads it: on a heap-gated single-shot turn it says models.list
   // cannot run either (prism row 1).
   bool modelsPointer = false;
+  // Lane CTX: today's food ledger as the per-turn block shows it (the engine renders
+  // it, nimbus/orch/food_ledger.h renderLedgerBlock): every turn whose chat has rows
+  // today, and a food turn with the call that starts today's rows. "" = none.
+  std::string foodLedger;
+  // Lane CTX: the food playbooks attached to this food turn (the approved bodies of
+  // food-log and/or food-coach, then the one-line intent hint), so the model follows
+  // them without a skill read. "" = not a food turn, or both are already in
+  // [ACTIVE SKILLS].
+  std::string foodPlaybook;
 };
 
 // Compose the World system prompt as the cacheable parts of prompt_layout.h,
@@ -132,12 +141,16 @@ struct ComposeInputs {
 //   history - the conversation history as real messages (the summary pair first
 //             when the chat was compacted);
 //   dynamic - the clock, the speaker line, [RUNNING MEMORY], the tool-loop note,
-//             running sessions, the histV1 text window, the scratchpad and the
-//             recalled memories;
+//             today's food ledger and the food playbook (lane CTX), running
+//             sessions, the histV1 text window, the scratchpad and the recalled
+//             memories;
 //   cache   - the turn's cache settings (TTL, key), for the providers.
 // The static block is budgeted alone (budgetBytes minus a per-turn reserve that
 // depends on budgetBytes only, minus the shelf, history and catalog bytes), so
-// two turns that differ only in per-turn content share it byte for byte.
+// two turns that differ only in per-turn content share it byte for byte. The food
+// ledger and playbook are never dropped and do not take the per-turn block's room:
+// they ride on top of the budget, up to the largest budget an owner can set
+// (MemConfig::kContextMax), so the whole prompt stays under the provider string guard.
 // Providers split the string again (layout::split) or send it flat
 // (layout::flat).
 std::string composeInstructions(const ComposeInputs& in);

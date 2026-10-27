@@ -492,9 +492,10 @@ flowchart LR
 - **The anchor and the slice** (turn-structured history): the summary records
   the newest row it covers (`thru`), and the history starts after it. A fold
   digests only the turns after the previous anchor that lie beyond the kept
-  verbatim tail (half the history budget), repeats collapsed to one line with a
-  count; when that slice is under 1 KB there is nothing worth a paid call and
-  the fold is skipped. A manual `/compact` digests every turn.
+  verbatim tail (half the history budget) and the owner's current local day
+  (kept verbatim, up to 16 KB), repeats collapsed to one line with a count;
+  when that slice is under 1 KB there is nothing worth a paid call and the fold
+  is skipped. A manual `/compact` digests every turn.
   The anchor and the overflow shift ride the fold blob as suffixes of its
   numeric fields, which an older image's parser stops before.
 - **The fold call** (`TurnEngine::runFold`) is deliberately NOT a turn: no
@@ -508,6 +509,14 @@ flowchart LR
   the `compact` attribution (never a routine's budget). Gates (low heap, over
   budget, turn in flight) **defer** - only a real failed attempt counts
   against the breaker.
+- **Dated, with the day's ledger**: the fold input closes with `[TODAY]` and
+  the person's food ledger for the day (its rows and totals; only the date and
+  totals when the input is near the one-string limit). The prompt has every
+  date written as YYYY-MM-DD (never today or yesterday) and every total name its
+  day, copies the ledger's totals and any open food question into Pending
+  items, never adds up a day's meals from the conversation, and drops rules that
+  belonged to a passing situation (how to answer repeated messages, an outage, a
+  workaround) once the conversation no longer shows it.
 - **Anchored, not cumulative**: each fold UPDATES the previous summary with
   the new slice (opencode's pattern), so fold cost stays bounded forever. The
   summary re-enters every prompt as `## CONVERSATION SUMMARY` - explicitly

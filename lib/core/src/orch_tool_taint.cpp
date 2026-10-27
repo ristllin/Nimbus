@@ -25,6 +25,9 @@ const ToolTaintRow kRows[] = {
     // the owner's standing rules (lib/core/src/orch_prefs_tools.cpp): a durable save
     // the owner asked for, so a "saved" claim is backed like a memory write
     {"prefs.edit", T::Internal, E::MemWrite},
+    // the portion calculator (lib/core/src/orch_food_portions.cpp): arithmetic over the
+    // model's own arguments, nothing stored or fetched
+    {"food.portions", T::Internal, E::Read},
     // the recent-results ring (lib/core/src/orch_result_store.cpp)
     {"results.get", T::External, E::Read},
     {"results.list", T::External, E::Read},

@@ -468,6 +468,13 @@ bool persistPending();        // durable write of the queue; false = not durable
 struct WriteOutcomes { int stored = 0, queued = 0, refused = 0; };
 WriteOutcomes writeOutcomes();
 int  pendingCount();
+// Lane CTX: keep `content` as a memory of namespace `ns` with no embedding call now: it
+// joins this queue (stored when the drain next embeds; keyword recall finds it
+// meanwhile). For a device-side move that must not run a TLS embed (the boot move of
+// a standing rule that was a dated fact). `createdHours` dates the memory (0 = now).
+// "" = queued (or already queued), else why not.
+std::string queueFact(const std::string& content, const std::string& ns, float importance,
+                      const char* ttl, uint32_t createdHours = 0);
 // Drain notes for this namespace's next turn ("... -> now stored"), taken once.
 std::string pendingNotes(const std::string& ns);
 String embedParkedWhy();      // "" when embeddings are not parked

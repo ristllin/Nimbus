@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <string>
 
+#include "nimbus/orch/food_ledger.h"     // ledgerNameWritable - the reserved ledger names
 #include "nimbus/orch/vector_memory.h"   // kOwnerNs
 #include <vector>
 
@@ -125,9 +126,12 @@ class FileStore {
     }
     return n;
   }
-  // Refuse a write that would overwrite an entry the caller does not own.
+  // Refuse a write that would overwrite an entry the caller does not own, or create
+  // another person's food ledger (lane CTX: a member could otherwise create the
+  // owner's food/food-log.csv first and write into the owner's prompt).
   bool writeAllowed(const std::string& project, const std::string& name,
                     const std::string& ns, bool owner) const {
+    if (!ledgerNameWritable(project, name, ns, owner)) return false;
     const FileEntry* cur = find(project, name);
     return !cur || ownedBy(*cur, ns, owner);
   }

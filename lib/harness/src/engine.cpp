@@ -1160,7 +1160,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // numbers are kept.
     std::string rec;
     for (const std::string& r : recalled) rec += r + "\n";
-    claims_.setSources(inputs, rec);
+    claims_.setSources(inputs + loadFoodLedger(chatId), rec);   // lane CTX: the ledger shown is a source
   }
   const uint32_t heapAfterRecall = freeHeap();
   turnMem().gate.phase("recall", heapAfterRecall, largestFreeBlock());
@@ -1310,7 +1310,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // R3: the skills shelf (its own cached block; "" = none on this fabric).
   if (d_.skillsIndex) ci.skillsShelf = d_.skillsIndex();
   ci.recallDegraded = recall.degraded;
+  applyFoodContext(ci, userText);   // lane CTX: today's ledger, and the food playbook on a food turn
   std::string instructions = agent::composeInstructions(ci);
+  if (fitHistoryToWire(ci.history, instructions.size(), wireToolBytes(specs, ci.loopOn), inputs.size(), ci.loopOn))
+    instructions = agent::composeInstructions(ci);   // lane CTX: the history fits the request body
   turnMem().gate.phase("prompt", freeHeap(), largestFreeBlock());
   // ONE line, only when the loop was actually withheld - the interesting case,
   // and it keeps a healthy device's log clean. entry -> recall -> compose shows
@@ -2889,7 +2892,7 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
   std::string outJson, err;
   std::string host;
   orch::TokenUsage usage;
-  const std::string inputs = orch::buildCompactInputs(prevSummary, digest);
+  const std::string inputs = orch::buildCompactInputs(prevSummary, digest, foldDayContext(chatId));
   bool ok = false;
   // Every attempt's spend, failed ones included, filed under its own host and model and
   // metered once as "compact" (lane T: the same per-host rule and R4 cache split as a
@@ -3102,24 +3105,47 @@ std::vector<HistTurn> TurnEngine::loadTurns(const std::string& chatId, const His
   return historyTurns(rows, zoned, &repeats);
 }
 
-std::string TurnEngine::historyBlock(const std::string& chatId, size_t highBytes) {
-  if (chatId.empty() || chatId == "system") return std::string();
-  const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
+// The head the next turn runs on, as a context window in tokens.
+static uint32_t headCtxTokens(const TurnEngine::Deps& d) {
+  const std::string host = resolveTurnHost(d);
+  return orch::modelCtxTokens(host, d.cfg.provider.orchModel ? d.cfg.provider.orchModel(host) : std::string());
+}
+
+HistoryBudget TurnEngine::historyBudgetFor(size_t highBytes) const {
   HistoryBudget b;
   b.highBytes = highBytes;
+  b.dayBytes = historyDayBytes(headCtxTokens(d_));
+  b.dayStartUnix = localDayStartUnix(d_.platform.nowEpoch ? d_.platform.nowEpoch() : 0,
+                                     d_.utcOffsetMin ? d_.utcOffsetMin() : 0);
+  return b;
+}
+
+// Twice the row budget: enough to see past high water and shift once; after the
+// shift the whole history after the soft start fits one read. Lane CTX: plus the
+// rows a busy day needs, so the day floor sees the whole day.
+static size_t historyReadRows(const HistoryBudget& b) {
+  return 2 * b.highRows + (b.dayStartUnix ? kHistoryDayRows : 0);
+}
+
+HistoryWindow TurnEngine::historyWindow(const std::string& chatId, size_t highBytes) {
+  const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
+  const HistoryBudget b = historyBudgetFor(highBytes);
   HistoryOptions o;
   o.inFlightId = curUserRowId_;
   o.startAfter = rowIdAfter(marks.softStart, marks.thru) ? marks.softStart : marks.thru;
   o.utcOffsetMin = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
-  // Twice the row budget: enough to see past high water and shift once; after
-  // the shift the whole history after the soft start fits one read.
-  const HistoryWindow w = fitHistory(loadTurns(chatId, o, 2 * b.highRows), marks.softStart, b, o.utcOffsetMin);
+  HistoryWindow w = fitHistory(loadTurns(chatId, o, historyReadRows(b)), marks.softStart, b, o.utcOffsetMin);
   if (w.shifted) {
     hlog::logf("history(%s): overflow shift to %s (%u B kept)", chatId.c_str(), w.softStart.c_str(),
                (unsigned)w.bytes);
     if (d_.noteHistoryShift) d_.noteHistoryShift(chatId, w.softStart);
   }
-  return w.block;
+  return w;
+}
+
+std::string TurnEngine::historyBlock(const std::string& chatId, size_t highBytes) {
+  if (chatId.empty() || chatId == "system") return std::string();
+  return historyWindow(chatId, highBytes).block;
 }
 
 // R3 (G1): the same fitted turns as real messages (renderHistory), the summary
@@ -3128,36 +3154,18 @@ std::vector<HistMsg> TurnEngine::historyMessages(const std::string& chatId, size
                                                  const std::string& summary) {
   if (chatId.empty() || chatId == "system")
     return summary.empty() ? std::vector<HistMsg>() : renderHistory({}, summary, 0);
-  const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
-  HistoryBudget b;
-  b.highBytes = highBytes;
-  HistoryOptions o;
-  o.inFlightId = curUserRowId_;
-  o.startAfter = rowIdAfter(marks.softStart, marks.thru) ? marks.softStart : marks.thru;
-  o.utcOffsetMin = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
-  const HistoryWindow w = fitHistory(loadTurns(chatId, o, 2 * b.highRows), marks.softStart, b, o.utcOffsetMin);
-  if (w.shifted) {
-    hlog::logf("history(%s): overflow shift to %s (%u B kept)", chatId.c_str(), w.softStart.c_str(),
-               (unsigned)w.bytes);
-    if (d_.noteHistoryShift) d_.noteHistoryShift(chatId, w.softStart);
-  }
-  return renderHistory(w.kept, summary, o.utcOffsetMin);
+  const int32_t off = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
+  return renderHistory(historyWindow(chatId, highBytes).kept, summary, off);
 }
 
 FoldSlice TurnEngine::historyFoldSlice(const std::string& chatId, size_t capBytes, bool manual) {
   if (!histV2On() || chatId.empty()) return FoldSlice();
-  const std::string host = resolveTurnHost(d_);
-  HistoryBudget b;
-  b.highBytes = orch::deriveBudget(orch::modelCtxTokens(host, d_.cfg.provider.orchModel
-                                                                  ? d_.cfg.provider.orchModel(host)
-                                                                  : std::string()),
-                                   {})
-                    .recentConvBytes;
+  const HistoryBudget b = historyBudgetFor(orch::deriveBudget(headCtxTokens(d_), {}).recentConvBytes);
   const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
   HistoryOptions o;
   o.startAfter = marks.thru;   // the shift's hidden rows are exactly what a fold must take
   o.utcOffsetMin = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
-  return foldSlice(loadTurns(chatId, o, 400), b.lowBytes(), capBytes, manual, o.utcOffsetMin);
+  return foldSlice(loadTurns(chatId, o, 400), b.lowBytes(), capBytes, manual, o.utcOffsetMin, b);
 }
 
 void TurnEngine::captureAssistantRow(const std::string& chatId, const std::string& text,

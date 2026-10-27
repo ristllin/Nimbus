@@ -16,6 +16,7 @@
 #include "nimbus/harness/platform.h"    // Platform (nowMs / freeHeap / delayMs)
 #include "nimbus/harness/conversation.h"   // FoldSlice - the history fold slice (histV2)
 #include "nimbus/harness/skill_attach.h"   // AttachPick - the [ACTIVE SKILLS] picks (F1)
+#include "nimbus/orch/food_ledger.h"   // lane CTX: Deps::foodLedger
 #include "nimbus/orch/episodic.h"       // EpisodicMessage (historyRows)
 #include "nimbus/orch/failure_chain.h"  // FailureChain - the turn's causes
 #include "nimbus/orch/fallback_rules.h" // ErrorClass - the pending [FALLBACK] note's class
@@ -155,6 +156,16 @@ struct HistoryMarks {
   std::string softStart;   // the overflow shift: rows up to it are hidden until a fold
 };
 
+// Lane CTX: the bytes a turn's tool list adds to its request (each advertised tool's
+// name, description and schema with its envelope, and the final-answer schema; a
+// single-shot turn sends the schema alone) - the history's wire guard reads it.
+size_t wireToolBytes(const std::vector<nimbus::orch::ToolRegistry::Spec>& specs, bool loopOn);
+// Lane CTX, the history's wire guard: drop the oldest turns of `history` (never the
+// summary pair or the newest turn) until the request this turn sends fits the body
+// budget with room for its tool rounds. Returns the messages dropped (0 = none).
+size_t fitHistoryToWire(std::vector<HistMsg>& history, size_t instructionBytes, size_t toolBytes,
+                        size_t inputBytes, bool loopOn);
+
 class TurnEngine {
  public:
   struct Deps {
@@ -288,6 +299,11 @@ class TurnEngine {
     // The same, valid at a unix time: DST and zone changes apply to each row at its own
     // time. Unwired = utcOffsetMin for every row.
     OffsetAt utcOffsetAt;
+
+    // Lane CTX: today's food ledger for this chat's person (nimbus/orch/food_ledger.h;
+    // device: the canonical file streamed through FoodLedgerScan under the turn's
+    // read boundary). It rides the per-turn block and the fold. Nullable => none.
+    std::function<nimbus::orch::FoodLedger(const std::string& chatId)> foodLedger;
   };
 
   // Heap floors, defaulted to src/agent/agent_config.h's values so the
@@ -533,6 +549,14 @@ class TurnEngine {
   // apply gives a promise without a spawn.
   void noteUnappliedSpawnClaim(const std::string& chatId);
   std::string buildDynamicContext(const std::string& chatId);
+  // Lane CTX (day_context.cpp): load this chat's food ledger for the turn into
+  // ledger_ and return its block as claim sources ("" when it has no rows today);
+  // then, once the history is known, fill the per-turn ledger and (a food turn) the
+  // playbooks.
+  std::string loadFoodLedger(const std::string& chatId);
+  void applyFoodContext(ComposeInputs& ci, const std::string& userText) const;
+  // The fold's day: [TODAY] and the ledger's view for this chat ("" = no clock).
+  std::string foldDayContext(const std::string& chatId) const;
   // modelsTool: the CONFIG's loop toggle is on, models.list is registered and the
   // head runs a tool loop, so [AVAILABLE MODELS] is the one pointer line instead
   // of the per-provider lists. Config-keyed, never this turn's heap gate: the
@@ -591,6 +615,8 @@ class TurnEngine {
   // skills: tag, so a later turn answers "did you use the skill?" from the row.
   std::vector<AttachPick> attachPicks_;
   std::vector<std::string> skillsUsed_;
+  // Lane CTX: this turn's food ledger (loadFoodLedger), shown by applyFoodContext.
+  nimbus::orch::FoodLedger ledger_;
   void noteSkillUsed(const std::string& id);   // dedup, at most 4 ids
   uint32_t quietNoticesHeld_ = 0;       // engine notices a quiet turn held back (tests, diagnostics)
   struct HeldNotice {
@@ -675,6 +701,11 @@ class TurnEngine {
   // The capture of a turn's own owner row (H1 tags, H7 duplicate source).
   // False = a delivery already in the history: the turn is dropped.
   bool captureOwnerRow(const std::string& chatId, const std::string& text, const std::string& fromTag);
+  // The history budget for a window of `highBytes`, with (lane CTX) the owner's
+  // current local day as its floor, sized for the head the next turn runs on.
+  HistoryBudget historyBudgetFor(size_t highBytes) const;
+  // The chat's verbatim history fitted to that budget (the overflow shift noted).
+  HistoryWindow historyWindow(const std::string& chatId, size_t highBytes);
   // H2/H3: the RECENT CONVERSATION block for this turn ("" = none).
   std::string historyBlock(const std::string& chatId, size_t highBytes);
   // R3 (G1): the same turns as real messages (renderHistory - the summary pair

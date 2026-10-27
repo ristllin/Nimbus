@@ -7,6 +7,7 @@
 #include "orchestrator.h"               // inScheduledTurn + the turn taint accessor
 #include "telegram.h"                   // the owner notice channel
 #include "../sys/agent_log.h"
+#include "nimbus/orch/history_rows.h"   // kClockValidHours
 #include "nimbus/orch/rbac.h"           // Role
 
 namespace agent {
@@ -23,7 +24,7 @@ class LittleFsPrefsIO : public nimbus::orch::PrefsStoreIO {
     memory::Lock g;   // the same recursive lock the engines take (withStore re-enters)
     File f = LittleFS.open(nimbus::orch::kPrefsPath, FILE_READ);
     if (!f) return false;
-    out.resize(f.size() > 4096 ? 4096 : f.size());
+    out.resize(f.size() > nimbus::orch::kPrefsFileMax ? nimbus::orch::kPrefsFileMax : f.size());
     const size_t got = out.empty() ? 0 : f.read((uint8_t*)out.data(), out.size());
     f.close();
     out.resize(got);
@@ -89,8 +90,54 @@ uint32_t filtersForRole(bool ownerFacing) {
   return g_prefs.activeFilters();
 }
 
+namespace {
+
+// Lane CTX: the one-time move of rules that are dated one-off facts (a 16 Oct meal
+// stored as rule p1 rode every prompt on Lumi and was counted as 26 Oct's). Each
+// leaves the prompt at once (state moved, still in the file: /prefs restore brings it
+// back), is queued as an owner memory with no network call (stored when the queue
+// next drains), is logged, and the owner is told once. Runs on every boot until the
+// file records it ran (dated=1).
+void moveDatedFacts() {
+  std::vector<nimbus::orch::PrefEntry> moved;
+  nimbus::orch::PrefErr e;
+  {
+    memory::Lock g;
+    begin();
+    // No file yet: no rules to check, and the first-boot seed (which never lifts a
+    // dated fact) must still see a fresh device.
+    if (g_prefs.datedChecked() || !g_prefs.fileExisted()) return;
+    e = g_prefs.moveDatedFacts(&moved);
+  }
+  if (e != nimbus::orch::PrefErr::Ok) {
+    alogf("prefs: dated-fact check not saved (%s); it runs again next boot", nimbus::orch::prefErrWords(e));
+    return;
+  }
+  if (moved.empty()) return;
+  std::string lines;
+  bool allKept = true;
+  for (const nimbus::orch::PrefEntry& m : moved) {
+    // The memory keeps the rule's own date when a set clock stamped it (the fact is
+    // as old as the rule).
+    const uint32_t dated = m.createdHours >= nimbus::orch::kClockValidHours ? m.createdHours : 0;
+    const std::string why = memory::queueFact(m.text, nimbus::orch::kOwnerNs, 0.6f, "months", dated);
+    alogf("prefs: rule %s was a dated fact - moved out of the standing rules, memory %s", m.idStr().c_str(),
+          why.empty() ? "queued" : ("not queued: " + why).c_str());
+    lines += "(" + m.idStr() + ") " + m.text + (why.empty() ? "" : " (not kept as a memory: " + why + ")") + "\n";
+    allKept = allKept && why.empty();
+  }
+  notifyOwner(std::string("Standing rules are for things that apply every time. These read as one-off dated "
+                          "facts, so they are no longer rules") +
+              (allKept ? " and were kept as memories instead" : "") + ":\n" + lines +
+              "To make one a rule again, send /prefs restore and its id (for example /prefs restore " +
+              moved.front().idStr() + ").");
+}
+
+}  // namespace
+
 void seedFirstBoot(const std::string& devName) {
   if (!flashMounted()) return;
+  moveDatedFacts();
   {
     memory::Lock g;
     begin();

@@ -99,11 +99,12 @@ of the table first, then recall bullets one at a time:
 | 5 | static | `## HOW YOUR MEMORY WORKS` | `compose.cpp` | the memory-tier usage instructions (v1 prompt only) |
 | 6 | static | catalogs | `engine.cpp::buildStableCatalogs` | `[AVAILABLE PROVIDERS]` (sub-session priority as configured, then "(paused now: ...)" naming the providers in it that are paused right now), `[AVAILABLE MODELS]` (one line naming the keyed providers and pointing to the `models.list` tool when the config's tool loop is on, the tool is registered and the head runs a tool loop - a config-keyed shape, never this turn's heap gate, so the cached block cannot flip per turn; on heads that keep the inline per-provider short lists from the model store, each with its age, "list from <date>, may miss newer models", router ids under cumulo only; every listed model passes the spawn and model-switch checks; when the loop is off for a single turn, the dynamic loop-off note says the pointer tool cannot run either), `[PROVIDERS & CONNECTORS]` (where the head runs reads the head's own seam, so a head that refuses its model shows as paused for your own turns; the rows read each provider's sub-agent seam: a paused provider's row says why and when it returns and names its connectors as waiting, it gets no spawn, PDF or sandbox route, and a `PUBLIC WEB FACTS` line names the open web search routes). Counted against the static part's budget since the shelf split (a flat render can no longer pass the 60 KB wire guard) |
 | 7 | shelf | the skills index | `engine.cpp` | the playbook list (`[SKILLS]`), the same index the skill.get tool serves from; an edit re-caches only the shelf |
-| 8 | history | the conversation messages | `conversation.cpp::renderHistory` | the fold summary's message pair first, then **per-chat history: one user and one assistant message per turn, oldest first, append-only between boundaries, byte budget derived from the head model's window (8 KB at 200K, 3000 B floor, 16 KB cap), stopping at the newest `/clear` boundary or the fold anchor** (shared photos, files and voice notes appear once, inside the turn that carried them; the in-flight turn is excluded - it arrives as `[USER]`). Providers send these as real history messages; a flat head reads them as the `## RECENT CONVERSATION` block. Rules: see "The turn-structured history" below |
+| 8 | history | the conversation messages | `conversation.cpp::renderHistory` | the fold summary's message pair first, then **per-chat history: one user and one assistant message per turn, oldest first, append-only between boundaries, byte budget derived from the head model's window (8 KB at 200K, 3000 B floor, 16 KB cap), with the owner's current local day kept whole on top of it (up to 16 KB), stopping at the newest `/clear` boundary or the fold anchor** (shared photos, files and voice notes appear once, inside the turn that carried them; the in-flight turn is excluded - it arrives as `[USER]`). Providers send these as real history messages; a flat head reads them as the `## RECENT CONVERSATION` block. Rules: see "The turn-structured history" below |
 | 9 | per-turn | clock, speaker, `[RUNNING MEMORY]`, tool-loop note | `compose.cpp` | the time of day, who sent this message (human turns only), the model's own `memory` field from last turn, and whether the tool loop is ON this turn |
-| 10 | per-turn | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
-| 11 | per-turn | `## SCRATCHPAD` | flash file `/data/scratchpad.bin` | the model's own goal tiers (now/short/long) |
-| 12 | per-turn | `## RELEVANT MEMORIES` | vector-DB recall on the user text | top-k long-term memories semantically similar to your message, prefixed `[NN%]` |
+| 10 | per-turn | `[TODAY'S FOOD LEDGER]`, `[FOOD PLAYBOOK]` | the food ledger file (`nimbus/orch/food_ledger.h`), the `food-log` built-in | today's rows of the person's food ledger (`food/food-log.csv` for the owner) and their kcal and protein totals, on every turn that has rows today (the newest 24 rows or 1,400 B are shown; the totals count every row); on a food turn with no rows yet, the one `files.append` call that starts them. A food turn (the message, the exchange before it, or a question about the ledger's list, total or an earlier estimate) also gets a food playbook with no `skill.get` round: `food-log` (logging a meal eaten) when the message reports food, `food-coach` (answer first, plans from the foods the owner has, amounts from the `food.portions` calculator) when it asks, both when its words say neither, then one line naming which it is. Never dropped, and never takes the rest of the per-turn part's room |
+| 11 | per-turn | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
+| 12 | per-turn | `## SCRATCHPAD` | flash file `/data/scratchpad.bin` | the model's own goal tiers (now/short/long) |
+| 13 | per-turn | `## RELEVANT MEMORIES` | vector-DB recall on the user text | top-k long-term memories semantically similar to your message, prefixed `[NN%]` |
 
 #### The cacheable prefix
 
@@ -289,7 +290,17 @@ called by the engine for every turn:
   newest row the summary covers) or at an overflow shift: past high water (the
   byte budget, or 64 rows) the oldest whole turns drop until the rest fits half
   of it, never one row per message, and never the newest turn or the last
-  answered one. The shift is kept with the fold state (`/data/chatsum.txt`), so
+  answered one.
+- **The whole day stays.** The owner's current local day is a floor under the
+  budget: its turns never shift out and never fold, up to 16 KB (a sixteenth of
+  a window under 64K tokens), the newest first; past that cap the oldest quarter
+  of the day leaves at once, so the window grows again before the next shift.
+  Each turn's day is the one its row was stored on, in the owner's zone at that
+  time, so a clock-change day is still one day. At the next local midnight they
+  become yesterday's and leave with the next shift. A request that would pass
+  the 85 KB body budget with room for its tool rounds leaves out the oldest
+  history turns first (never the summary or the newest turn) and logs one
+  `history: N message(s) left out` line. The shift is kept with the fold state (`/data/chatsum.txt`), so
   a restart renders the same history, and the rows it hid make the next fold
   due.
 - **One message's cap.** A single message over 6 KB is clipped once, at a fixed

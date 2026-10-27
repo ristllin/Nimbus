@@ -3,6 +3,8 @@
 #include <string>
 
 #include "nimbus/orch/compact.h"
+#include "nimbus/orch/food_ledger.h"   // lane CTX: the fold's day
+#include "nimbus/orch/wire_limits.h"   // kJsonStrGuard
 
 using namespace nimbus::orch;
 
@@ -191,6 +193,59 @@ static void test_prompt_contract_lines() {
   TEST_ASSERT_TRUE(p.find("Decisions & preferences") != std::string::npos);
   TEST_ASSERT_TRUE(p.find("Decisions & preferences") < p.find("Owner intent & active threads"));
   TEST_ASSERT_TRUE(p.find("Facts worth remembering long-term") < p.find("Device & task state"));
+}
+
+// ---- lane CTX: dated facts, today's ledger, no stale incident rules ------------
+// On 26 Oct the 15:03 summary kept a storm-era reply rule ("Dupe batch #N") and an
+// earlier day's closing total, and none of that morning's meal estimates. The
+// prompt now dates every fact (CUM-783), copies the device's ledger and drops rules
+// that belonged to a passing situation.
+static void test_ctx_prompt_dates_food_and_stale_rules() {
+  const std::string p = ORCH_COMPACT_PROMPT;
+  for (const char* must : {"write every date as YYYY-MM-DD", "never write today, yesterday, tonight or this morning",
+                           "Every total, count or figure about a day names that day's date",
+                           "[TODAY]", "Drop what belonged to a passing situation",
+                           "how to answer repeated or duplicate messages", "[STANDING RULES]",
+                           "a [FOOD LEDGER] block is the device's record",
+                           "Copy its date and totals exactly into Pending items",
+                           "every food question still open", "Never add up a day's meals from the conversation"})
+    TEST_ASSERT_TRUE_MESSAGE(p.find(must) != std::string::npos, must);
+  // The new rules sit before the section list, which still starts with the durable ones.
+  TEST_ASSERT_TRUE(p.find("[FOOD LEDGER]") < p.find("1. Decisions & preferences"));
+}
+
+static void test_ctx_compact_inputs_close_with_the_day() {
+  std::string file = "date,meal,items,kcal,protein_g\n";
+  file += "2026-10-26,breakfast,oats + skyr,450,30\n2026-10-26,lunch,brunch plate,865,70\n";
+  const LogDay day{"2026-10-26", "GMT"};
+  const std::string ctx = "[TODAY] 2026-10-26 (GMT)\n" +
+                          renderLedgerForFold(scanFoodLedger(file, true, day, kFoodLedgerProject, kFoodLedgerOwnerName));
+  const std::string in = buildCompactInputs("1. Decisions & preferences\n- x\n", "- user: hi\n", ctx);
+  TEST_ASSERT_TRUE(in.find("[CONVERSATION SINCE]") < in.find("[TODAY] 2026-10-26 (GMT)"));
+  TEST_ASSERT_TRUE(in.find("Totals for 2026-10-26: 1315 kcal from 2 rows, 100 g protein.") != std::string::npos);
+  TEST_ASSERT_TRUE(in.find("brunch plate") != std::string::npos);
+  // No day: byte-identical to before.
+  TEST_ASSERT_EQUAL_STRING(buildCompactInputs("s", "d").c_str(), buildCompactInputs("s", "d", "").c_str());
+  // Near the one-string guard: whole, then the essentials ([TODAY] and the totals),
+  // then nothing; never over the guard.
+  const size_t head = std::string("[CONVERSATION SINCE]\n").size() + 2;
+  size_t essentials = 0;
+  for (size_t p = 0; p < ctx.size();) {
+    const size_t nl = ctx.find('\n', p);
+    const std::string line = ctx.substr(p, nl - p + 1);
+    if (line.rfind("[TODAY]", 0) == 0 || line.rfind("Totals for ", 0) == 0) essentials += line.size();
+    p = nl + 1;
+  }
+  const size_t whole = kJsonStrGuard - head - ctx.size();
+  const std::string a = buildCompactInputs("", std::string(whole, 'd'), ctx);
+  TEST_ASSERT_TRUE(a.size() <= kJsonStrGuard && a.find("brunch plate") != std::string::npos);
+  const std::string b = buildCompactInputs("", std::string(whole + 1, 'd'), ctx);
+  TEST_ASSERT_TRUE(b.size() <= kJsonStrGuard);
+  TEST_ASSERT_TRUE(b.find("brunch plate") == std::string::npos);
+  TEST_ASSERT_TRUE(b.find("[TODAY] 2026-10-26") != std::string::npos);
+  TEST_ASSERT_TRUE(b.find("Totals for 2026-10-26") != std::string::npos);
+  const std::string c = buildCompactInputs("", std::string(kJsonStrGuard - head - essentials + 1, 'd'), ctx);
+  TEST_ASSERT_TRUE(c.size() <= kJsonStrGuard && c.find("[TODAY]") == std::string::npos);
 }
 
 // ---- L19-27: section-aware cap ------------------------------------------------
@@ -596,6 +651,8 @@ int main(int, char**) {
   RUN_TEST(test_breaker_success_resets);
   RUN_TEST(test_build_inputs_fresh_vs_anchored);
   RUN_TEST(test_prompt_contract_lines);
+  RUN_TEST(test_ctx_prompt_dates_food_and_stale_rules);
+  RUN_TEST(test_ctx_compact_inputs_close_with_the_day);
   RUN_TEST(test_cap_summary_utf8_safe);
   RUN_TEST(test_foldstore_accumulate_and_persist_cadence);
   RUN_TEST(test_foldstore_roundtrip_and_tolerant_load);

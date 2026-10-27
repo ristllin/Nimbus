@@ -91,6 +91,10 @@ std::string embedFailReasonFor(EmbedFail kind, const std::string& detail);
 // clock was set (boot-relative hours). Pure + host-tested.
 std::string episodicWhen(uint32_t tsHours, uint32_t nowHours);
 
+// The id a memory of `content` gets (a content hash, "m" + 8 hex digits): the one a
+// queued write is stored under (lane CTX: the device queues a moved rule by it).
+std::string memoryIdFor(const std::string& content);
+
 // ToolResult::code values of memory.write / memory.update. Every write ends in
 // exactly one of them, and the words of a queued or refused one say so.
 inline constexpr const char* kMemOutcomeStored    = "stored";

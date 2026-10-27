@@ -62,12 +62,32 @@ surfaces from it.
 The assistant adds one only when the owner asks in their own words
 (`prefs.edit`, or a `mem_write` item marked `standing:true`), never from an
 unattended turn, and a turn that read outside content can only add one that
-waits for the owner's approval. The owner manages the list with `/prefs`
-(list, add, rm, approve, clear) or the web page under Memory, beside the
-directive; a first boot after the update seeds it from the always/never rules
+waits for the owner's approval. A dated one-off fact is refused as a rule
+with where it belongs: a meal or a day's total goes to the food ledger, a
+measurement or an event to memory (a `standing: true` memory of a dated
+measurement is stored as an ordinary memory). Once per device, rules saved
+before this check that read as dated facts leave the rules for memory at boot
+(logged, the owner told once, and `/prefs restore <id>` brings one back). The
+owner manages the list with `/prefs`
+(list with each rule's age, add, rm, approve, restore, clear) or the web page
+under Memory, beside the directive; a first boot after the update seeds it from the always/never rules
 already in memory and lists them once. A rule that forbids em dashes also
 switches on a device-enforced filter that removes them from every delivered
 reply, so the guarantee holds even when the model slips.
+
+### 1.1c Today's food ledger
+
+Meals live in one ledger file per person, never in memory: `food/food-log.csv`
+for the owner (`food/food-log-<chat id>.csv` for a member, who cannot write the
+owner's file), one row per eating occasion (`date,meal,items,kcal,protein_g`),
+written with `files.append` keyed by date and meal, so a correction replaces its
+row. The device reads today's rows (the local day) and their totals into the
+per-turn part of every turn that has rows today, and on a food turn attaches the
+`food-log` playbook (meals only to the ledger, a row the moment a meal eaten has
+an estimate, totals read from the ledger) or, when the owner asks for an amount
+or a plan, `food-coach` (answer first, only the foods the owner has, amounts from
+the `food.portions` calculator). The model never rebuilds a day's total from
+memory or the conversation; the fold summary copies the ledger's dated totals.
 
 ### 1.2 Scratchpad - model-owned working goals
 A set of goal tiers (short-term / mid-term / long-term goals plus an

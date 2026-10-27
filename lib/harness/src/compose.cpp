@@ -6,6 +6,7 @@
 
 #include "nimbus/orch/directive.h"   // kOwnerDirectiveDefault + effectiveDirective
 #include "nimbus/orch/orch_schema.h"
+#include "nimbus/orch/mem_config.h"    // MemConfig::kContextMax - the food block's ceiling
 #include "nimbus/harness/prompt_layout.h"
 
 // Every model-visible string here moved BYTE-IDENTICAL from
@@ -263,6 +264,27 @@ static int dynamicReserve(int budgetBytes) {
   return quarter > 3328 ? quarter : 3328;
 }
 
+// Lane CTX: today's food ledger, then (a food turn) the food playbook. Both change
+// with the conversation, so they ride the per-turn block, never a cached one.
+static std::string foodBlock(const ComposeInputs& in) {
+  std::string out;
+  if (!in.foodLedger.empty()) out += "\n" + in.foodLedger;
+  if (!in.foodPlaybook.empty())
+    out += "\n[FOOD PLAYBOOK - attached because this turn is about food: follow it; no "
+           "skill_get needed]\n" + in.foodPlaybook;
+  return out;
+}
+
+// The bytes the food block may add on top of the budget: all of it, up to the
+// largest budget an owner can set (MemConfig::kContextMax, which mem_config.h keeps
+// under the provider string guard). Past that it takes room inside the budget like
+// any other never-dropped line.
+static int foodAllowance(int budgetBytes, size_t foodBytes) {
+  const int room = nimbus::orch::MemConfig::kContextMax - budgetBytes;
+  if (room <= 0) return 0;
+  return (int)foodBytes < room ? (int)foodBytes : room;
+}
+
 // R1 / L19-4: what the photo labels mean, in one line. A photo the head sees itself
 // rides the message as an image; a transcription is another model's text; a photo
 // nobody could read names the reason, and the head says so instead of guessing or
@@ -495,13 +517,16 @@ std::string composeInstructions(const ComposeInputs& in) {
   std::string head = dynamicClockLine(in.now) + speakerLine(in);
   if (!in.runningMemory.empty())
     head += (head.empty() ? "" : "\n") + std::string("[RUNNING MEMORY]\n") + in.runningMemory + "\n";
-  dyn.identity = "\n" + head + (head.empty() ? "" : "\n") + loopNote;
+  const std::string food = foodBlock(in);
+  dyn.identity = "\n" + head + (head.empty() ? "" : "\n") + loopNote + food;
   dyn.sessions = renderSessions(in.sessions);
   dyn.recentConversation = in.recentConversation;
   dyn.scratchpad = in.scratchpad;
   dyn.recalled = in.recalled;
   dyn.recallDegraded = in.recallDegraded;
-  parts.dyn = assembleContext(dyn, budget - (int)parts.stat.size() - (int)shelf.size()).prompt;
+  parts.dyn = assembleContext(dyn, budget - (int)parts.stat.size() - (int)shelf.size() +
+                                       foodAllowance(budget, food.size()))
+                  .prompt;
 
   // 5. the cached blocks and the history the providers render as messages, and
   // the turn's cache settings.

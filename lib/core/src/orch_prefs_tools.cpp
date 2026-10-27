@@ -27,18 +27,39 @@ constexpr const char kUnavailable[] = "the standing rules are unavailable right 
 constexpr const char kOwnerOnly[] =
     "standing rules belong to the device's owner; only the owner can see or change them";
 
-// "(p3) text" plus what the device does about it.
-std::string ruleLine(const PrefEntry& e) {
+// "(p3) text" plus what the device does about it, and (lane CTX) how old it is.
+std::string ruleLine(const PrefEntry& e, uint32_t nowH) {
   std::string out = "(" + e.idStr() + ") " + e.text;
+  const std::string age = prefAgeText(e.createdHours, nowH);
+  if (!age.empty()) out += " [" + age + "]";
   if (e.pending) out += " [waits for the owner's approval]";
   if (e.filters & kPrefFilterNoDash) out += " [em dashes are also removed from replies]";
   return out;
 }
 
-std::string listText(const OwnerPrefs& p) {
-  if (p.entries().empty()) return "no standing rules yet";
+// The rules' lines, each ending in a newline ("" when there are none).
+std::string ruleLines(const OwnerPrefs& p, uint32_t nowH) {
   std::string out;
-  for (const PrefEntry& e : p.entries()) out += ruleLine(e) + "\n";
+  for (const PrefEntry& e : p.entries())
+    if (!e.moved) out += ruleLine(e, nowH) + "\n";
+  return out;
+}
+
+// (Lane CTX) the dated facts that were moved to memory, under their heading and
+// each with the way back ("" when there are none).
+std::string movedLines(const OwnerPrefs& p) {
+  if (!p.movedCount()) return std::string();
+  std::string out = "Moved to memory (dated facts, not rules):\n";
+  for (const PrefEntry& e : p.entries())
+    if (e.moved) out += "(" + e.idStr() + ") " + e.text + " [restore: /prefs restore " + e.idStr() + "]\n";
+  return out;
+}
+
+// The rules, then the moved facts (the model's list).
+std::string listText(const OwnerPrefs& p, uint32_t nowH) {
+  std::string out = ruleLines(p, nowH);
+  if (out.empty()) out = "no standing rules yet\n";
+  out += movedLines(p);
   out.pop_back();
   return out;
 }
@@ -126,7 +147,7 @@ ToolResult doPrefsEdit(const PrefsToolContext& ctx, ArduinoJson::JsonObjectConst
   const std::string action = strArg(a, "action");
   if (action == "list") {
     std::string out;
-    const bool ran = ctx.withPrefs && ctx.withPrefs([&](OwnerPrefs& p) { out = listText(p); });
+    const bool ran = ctx.withPrefs && ctx.withPrefs([&](OwnerPrefs& p) { out = listText(p, now(ctx)); });
     return ran ? ToolResult::ok(out) : ToolResult::fail(kUnavailable);
   }
   if (action != "add" && action != "replace" && action != "remove")
@@ -156,13 +177,16 @@ std::string firstWord(const std::string& s, std::string& rest) {
 constexpr const char kUsage[] =
     "Standing rules: /prefs lists them. /prefs add <rule> saves one (for example /prefs add Never use "
     "em dashes). /prefs rm <id> removes one. /prefs approve <id> turns on a rule that waits for "
-    "approval. /prefs clear yes removes them all.";
+    "approval. /prefs restore <id> brings back a rule that was moved to memory. /prefs clear yes "
+    "removes them all.";
 
-std::string commandList(const OwnerPrefs& p) {
+std::string commandList(const OwnerPrefs& p, uint32_t nowH) {
   if (p.entries().empty())
     return "No standing rules yet. Add one with /prefs add <rule>, for example /prefs add Never use em dashes.";
-  return "Standing rules (" + std::to_string(p.entries().size()) + "):\n" + listText(p) +
-         "\nAdd: /prefs add <rule>. Remove: /prefs rm <id>.";
+  const size_t rules = p.entries().size() - p.movedCount();
+  const std::string head =
+      rules ? "Standing rules (" + std::to_string(rules) + "):\n" + ruleLines(p, nowH) : "No standing rules yet.\n";
+  return head + movedLines(p) + "Add: /prefs add <rule>. Remove: /prefs rm <id>.";
 }
 
 std::string commandAct(OwnerPrefs& p, const std::string& verb, const std::string& rest, uint32_t nowH) {
@@ -181,6 +205,11 @@ std::string commandAct(OwnerPrefs& p, const std::string& verb, const std::string
     return e == PrefErr::Ok ? "Approved " + pid + ". It applies from the next reply."
                             : std::string("Not changed: ") + prefErrWords(e) + ".";
   }
+  if (verb == "restore") {
+    const PrefErr e = p.restore(n);
+    return e == PrefErr::Ok ? "Restored " + pid + " as a standing rule. It applies from the next reply."
+                            : std::string("Not changed: ") + prefErrWords(e) + ".";
+  }
   const PrefErr e = p.remove(n);
   return e == PrefErr::Ok ? "Removed " + pid + "." : std::string("Not changed: ") + prefErrWords(e) + ".";
 }
@@ -195,7 +224,8 @@ void registerPrefsTools(ToolRegistry& reg, const PrefsToolContext& ctx) {
                       "under [STANDING RULES]. ") +
               kStandingRuleTest +
               " Then add it here, only when the owner asks in their own words; facts and one-off "
-              "details go to memory. add {text} | replace {id,text} | remove {id} | list.",
+              "details go to memory, and a meal or a day's total to the food ledger (a dated "
+              "one-off fact is refused here). add {text} | replace {id,text} | remove {id} | list.",
           [ctx](ArduinoJson::JsonObjectConst a, const Principal& who) { return doPrefsEdit(ctx, a, who); },
           R"({"type":"object","properties":{"action":{"type":"string",)"
           R"("enum":["add","replace","remove","list"]},"id":{"type":"string"},)"
@@ -206,7 +236,11 @@ void registerPrefsTools(ToolRegistry& reg, const PrefsToolContext& ctx) {
 
 ToolResult prefsSaveStanding(const PrefsToolContext& ctx, const std::string& text, const Principal& who,
                              bool& handled) {
-  handled = who.owner && who.perms().manageTenants && !scheduled(ctx);
+  // Lane CTX: a dated measurement marked standing is a fact: it is stored as an
+  // ordinary memory (the caller's route). A dated meal is refused below with the
+  // food ledger named.
+  handled = who.owner && who.perms().manageTenants && !scheduled(ctx) &&
+            datedKindOf(text) != DatedKind::Measurement;
   if (!handled) return ToolResult::fail("not a standing rule here");
   const ModelAdd r = modelAdd(ctx, text);
   noticeForAdd(ctx, r);
@@ -226,33 +260,41 @@ std::string commandClear(const PrefsToolContext& ctx, const std::string& rest) {
   return ran ? reply : kUnavailable;
 }
 
+// The verb a /prefs word means ("rm", "delete" and "del" all remove), or "".
+std::string canonicalVerb(const std::string& word) {
+  static const char* const kVerbs[][2] = {{"", "list"},        {"list", "list"},       {"clear", "clear"},
+                                          {"add", "add"},      {"approve", "approve"}, {"restore", "restore"},
+                                          {"rm", "remove"},    {"remove", "remove"},   {"delete", "remove"},
+                                          {"del", "remove"}};
+  for (const auto& v : kVerbs)
+    if (word == v[0]) return v[1];
+  return std::string();
+}
+
 std::string prefsCommand(const PrefsToolContext& ctx, const std::string& args) {
   std::string rest;
-  const std::string verb = firstWord(args, rest);
-  std::string reply = kUnavailable;
-  auto run = [&](const std::function<void(OwnerPrefs&)>& fn) { return ctx.withPrefs && ctx.withPrefs(fn); };
-  if (verb.empty() || verb == "list") {
-    run([&](OwnerPrefs& p) { reply = commandList(p); });
-    return reply;
-  }
+  const std::string verb = canonicalVerb(firstWord(args, rest));
   if (verb == "clear") return commandClear(ctx, rest);
-  const bool known = verb == "add" || verb == "approve" || verb == "rm" || verb == "remove" ||
-                     verb == "delete" || verb == "del";
-  if (!known || rest.empty()) return kUsage;
-  const std::string act = (verb == "add" || verb == "approve") ? verb : "remove";
-  run([&](OwnerPrefs& p) { reply = commandAct(p, act, rest, now(ctx)); });
+  if (verb.empty() || (verb != "list" && rest.empty())) return kUsage;
+  std::string reply = kUnavailable;
+  const auto fn = [&](OwnerPrefs& p) {
+    reply = verb == "list" ? commandList(p, now(ctx)) : commandAct(p, verb, rest, now(ctx));
+  };
+  if (ctx.withPrefs) ctx.withPrefs(fn);
   return reply;
 }
 
-std::string prefsJson(const OwnerPrefs& p) {
+std::string prefsJson(const OwnerPrefs& p, uint32_t nowHours) {
   JsonDocument d;
   JsonArray items = d["items"].to<JsonArray>();
   for (const PrefEntry& e : p.entries()) {
     JsonObject o = items.add<JsonObject>();
     o["id"] = e.idStr();
     o["text"] = e.text;
-    o["state"] = e.pending ? "pending" : "active";
+    o["state"] = e.moved ? "moved" : e.pending ? "pending" : "active";
     o["created"] = e.createdHours;
+    const std::string age = prefAgeText(e.createdHours, nowHours);
+    if (!age.empty()) o["age"] = age;
     o["origin"] = prefOriginSlug(e.origin);
     o["nodash"] = (e.filters & kPrefFilterNoDash) != 0;
   }
@@ -278,6 +320,7 @@ PrefErr prefsWebAction(OwnerPrefs& p, const std::string& action, const std::stri
   if (action == "replace") return p.replace(n, text, PrefOrigin::Web, nowHours);
   if (action == "remove") return p.remove(n);
   if (action == "approve") return p.approve(n);
+  if (action == "restore") return p.restore(n);
   return PrefErr::NotFound;
 }
 
@@ -285,11 +328,14 @@ int prefErrHttpStatus(PrefErr e) {
   switch (e) {
     case PrefErr::Ok:            return 200;
     case PrefErr::Empty:
-    case PrefErr::TooLong:       return 400;
+    case PrefErr::TooLong:
+    case PrefErr::DatedFood:
+    case PrefErr::DatedFact:     return 400;
     case PrefErr::NotFound:      return 404;
     case PrefErr::Full:
     case PrefErr::PendingFull:
-    case PrefErr::NotPending:    return 409;
+    case PrefErr::NotPending:
+    case PrefErr::NotMoved:      return 409;
     case PrefErr::PersistFailed: return 507;
   }
   return 500;

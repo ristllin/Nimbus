@@ -81,11 +81,11 @@ bool sameEntries(const OwnerPrefs& a, const OwnerPrefs& b) {
   if (a.entries().size() != b.entries().size()) return false;
   for (size_t i = 0; i < a.entries().size(); i++) {
     const PrefEntry &x = a.entries()[i], &y = b.entries()[i];
-    if (x.id != y.id || x.pending != y.pending || x.text != y.text || x.filters != y.filters ||
+    if (x.id != y.id || x.pending != y.pending || x.moved != y.moved || x.text != y.text || x.filters != y.filters ||
         x.origin != y.origin || x.createdHours != y.createdHours)
       return false;
   }
-  return a.seeded() == b.seeded() && a.listingOwed() == b.listingOwed();
+  return a.seeded() == b.seeded() && a.listingOwed() == b.listingOwed() && a.datedChecked() == b.datedChecked();
 }
 
 size_t lineCount(const std::string& s) {
@@ -747,6 +747,171 @@ static void test_web_actions_and_json() {
   TEST_ASSERT_EQUAL(0, (int)p.entries().size());
 }
 
+// ---- lane CTX: a dated one-off fact is not a rule ------------------------------------
+// Lumi's rule p1 (26 Oct): a 16 Oct meal, stored as a standing rule, rode every prompt
+// and was counted as that day's meal. Rules refuse dated meals, day totals and
+// measurements with where they belong; a rule that merely mentions a quantity, or a
+// standing rule with a date, stays a rule.
+namespace {
+const char* const kLumiP1 =
+    "On 2026-10-16, Roy provided gram-level ground truth for the wooden-tray meal: 696 kcal and 49 g "
+    "protein. Components: cucumber 27 g/4 kcal; pear 30 g/17; clementine 43 g/20; cherry tomato 42 g/8";
+}  // namespace
+
+static void test_ctx_dated_facts_are_classified() {
+  for (const char* food : {kLumiP1, "Wednesday 21 Oct closed at ~2,365 kcal / ~155g protein",
+                           "Today Roy had pasta for dinner, about 600 kcal",
+                           "Breakfast on 2026-10-25 was skyr with berries (320 kcal)",
+                           "Yesterday's total: 2,410 kcal", "Last night dinner was 850 kcal"})
+    TEST_ASSERT_EQUAL_MESSAGE(int(DatedKind::Food), int(datedKindOf(food)), food);
+  for (const char* measure : {"Roy weighed 104.2 kg on 2026-10-20", "This morning's weigh-in: 103.8 kg",
+                              "Resting heart rate 58 bpm on 14 October", "Slept 6.5 hours last night"})
+    TEST_ASSERT_EQUAL_MESSAGE(int(DatedKind::Measurement), int(datedKindOf(measure)), measure);
+  for (const char* rule : {"Plain cappuccino = 100 ml semi-skimmed milk, about 52 kcal and 3.6 g protein",
+                           "Never use em dashes", "Meat weights I give are raw",
+                           "On weekday commute days, send a train brief at exactly 06:00",
+                           "From 2026-11-01 always reply in British English",
+                           "Every day at 21:00 send me today's kcal total",
+                           "Treat workout-watch calorie figures as gross, not free food",
+                           "Roy's birthday is 3 March", "Remind me on 30 Oct to book the dentist",
+                           // rules that name today or a figure (the review's counter-examples)
+                           "Show the day's calorie total for today after each meal I log",
+                           "Report protein for today in grams, not kcal", "Keep today's meal plan under 2000 kcal",
+                           "Breakfast at 8 may be skipped on gym days"})
+    TEST_ASSERT_EQUAL_MESSAGE(int(DatedKind::None), int(datedKindOf(rule)), rule);
+}
+
+static void test_ctx_every_add_path_refuses_a_dated_fact() {
+  World w;
+  w.p.begin(&w.io);
+  std::string id;
+  // The store, on every origin.
+  for (PrefOrigin o : {PrefOrigin::Chat, PrefOrigin::Web, PrefOrigin::Command, PrefOrigin::Import})
+    TEST_ASSERT_EQUAL(int(PrefErr::DatedFood), int(w.p.add(kLumiP1, o, 10, false, &id)));
+  TEST_ASSERT_EQUAL(int(PrefErr::DatedFact), int(w.p.add("Roy weighed 104.2 kg on 2026-10-20", PrefOrigin::Web, 10, false, &id)));
+  TEST_ASSERT_EQUAL(0, (int)w.p.entries().size());
+  TEST_ASSERT_EQUAL(0, w.io.saves);   // refused before anything was written
+  w.p.add("Never use em dashes", PrefOrigin::Web, 10, false, &id);
+  TEST_ASSERT_EQUAL(int(PrefErr::DatedFood), int(w.p.replace(1, kLumiP1, PrefOrigin::Web, 11)));
+  TEST_ASSERT_EQUAL_STRING("Never use em dashes", w.p.find(1)->text.c_str());
+  // The words point where each fact belongs.
+  TEST_ASSERT_TRUE(std::string(prefErrWords(PrefErr::DatedFood)).find("food ledger (food/food-log.csv)") != std::string::npos);
+  TEST_ASSERT_TRUE(std::string(prefErrWords(PrefErr::DatedFact)).find("keep it in memory") != std::string::npos);
+  TEST_ASSERT_EQUAL(400, prefErrHttpStatus(PrefErr::DatedFood));
+  // prefs.edit and /prefs say so; the owner gets no notice for a refusal.
+  ToolRegistry reg;
+  registerPrefsTools(reg, w.ctx());
+  const Principal owner = principalForRole("owner-chat", Role::Admin);
+  const ToolResult r = callTool(reg, "add", nullptr, kLumiP1, owner);
+  TEST_ASSERT_FALSE(r.success);
+  TEST_ASSERT_TRUE_MESSAGE(r.error.find("not saved: that is a dated meal or day total") != std::string::npos, r.error.c_str());
+  TEST_ASSERT_TRUE(prefsCommand(w.ctx(), std::string("add ") + kLumiP1).find("Not saved: that is a dated meal") == 0);
+  TEST_ASSERT_EQUAL(0, w.notices);
+  // The loop-off route (a standing:true mem_write): a dated meal is refused with the
+  // ledger named; a dated measurement goes on as an ordinary memory.
+  bool handled = false;
+  const ToolResult m = prefsSaveStanding(w.ctx(), kLumiP1, owner, handled);
+  TEST_ASSERT_TRUE(handled);
+  TEST_ASSERT_FALSE(m.success);
+  TEST_ASSERT_EQUAL_STRING(kMemOutcomeRefused, m.code.c_str());
+  prefsSaveStanding(w.ctx(), "Roy weighed 104.2 kg on 2026-10-20", owner, handled);
+  TEST_ASSERT_FALSE(handled);
+  TEST_ASSERT_EQUAL(1, (int)w.p.entries().size());
+  // The first-boot seed never lifts one.
+  TEST_ASSERT_EQUAL(0, (int)pickSeedRules({{kLumiP1, true, 1.0f, 5}}).size());
+}
+
+// The one-time move: a dated fact leaves the prompt (state moved), the other rules
+// stay, the file records the move ran, and the move is reversible.
+static void test_ctx_dated_rules_move_once_and_restore() {
+  FakeIO io;
+  io.exists = true;
+  io.blob = std::string("#nimbus-prefs v1 seeded=1 listed=1 next=4\n") + "p1\tA\t490000\tseed\t-\t" + kLumiP1 +
+            "\np2\tA\t490000\tseed\t-\tRoy wants a concise train brief at exactly 06:00 on commute days\n"
+            "p3\tA\t490000\tchat\tnodash\tNever use em dashes anywhere\n";
+  OwnerPrefs p;
+  p.begin(&io);
+  TEST_ASSERT_FALSE(p.datedChecked());
+  TEST_ASSERT_TRUE(p.renderBlock().find("wooden-tray") != std::string::npos);
+  std::vector<PrefEntry> moved;
+  TEST_ASSERT_EQUAL(int(PrefErr::Ok), int(p.moveDatedFacts(&moved)));
+  TEST_ASSERT_EQUAL(1, (int)moved.size());
+  TEST_ASSERT_EQUAL_UINT32(1, moved[0].id);
+  TEST_ASSERT_TRUE(p.datedChecked());
+  TEST_ASSERT_TRUE(p.find(1)->moved);
+  TEST_ASSERT_TRUE(p.renderBlock().find("wooden-tray") == std::string::npos);   // out of the prompt
+  TEST_ASSERT_TRUE(p.renderBlock().find("(p2)") != std::string::npos);
+  TEST_ASSERT_EQUAL(2, (int)p.activeCount());
+  TEST_ASSERT_EQUAL(1, (int)p.movedCount());
+  TEST_ASSERT_EQUAL(int(kPrefFilterNoDash), int(p.activeFilters()));
+  // Persisted: a reload sees the same, and the move never runs twice.
+  OwnerPrefs again;
+  again.begin(&io);
+  TEST_ASSERT_TRUE(again.datedChecked());
+  TEST_ASSERT_TRUE(again.find(1)->moved);
+  TEST_ASSERT_TRUE(io.blob.find("p1\tM\t") != std::string::npos);
+  TEST_ASSERT_TRUE(io.blob.find(" dated=1") != std::string::npos);
+  // The list shows it under its own heading with the way back; /prefs restore brings it back.
+  World w;
+  w.io = io;
+  w.p.begin(&w.io);
+  const std::string list = prefsCommand(w.ctx(), "");
+  TEST_ASSERT_TRUE_MESSAGE(list.find("Moved to memory (dated facts, not rules):\n(p1) On 2026-10-16") != std::string::npos,
+                           list.c_str());
+  TEST_ASSERT_TRUE(list.find("/prefs restore p1") != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(list.find("Standing rules (2):\n(p2)") == 0, list.c_str());   // moved ones not counted
+  TEST_ASSERT_TRUE(prefsCommand(w.ctx(), "restore p2").find("Not changed: that rule was not moved") == 0);
+  TEST_ASSERT_TRUE(prefsCommand(w.ctx(), "restore p1").find("Restored p1") == 0);
+  TEST_ASSERT_FALSE(w.p.find(1)->moved);
+  TEST_ASSERT_TRUE(w.p.renderBlock().find("wooden-tray") != std::string::npos);
+  TEST_ASSERT_TRUE(w.p.datedChecked());   // a restored rule is the owner's choice: it stays
+  checkInvariants(w.p);
+  // Every rule moved: the list says there are none, then shows the moved ones; the
+  // remove aliases still work on them.
+  World only;
+  only.io.exists = true;
+  only.io.blob = std::string("#nimbus-prefs v1 seeded=1 listed=1 next=2 dated=1\n") + "p1\tM\t490000\tseed\t-\t" +
+                 kLumiP1 + "\n";
+  only.p.begin(&only.io);
+  const std::string none = prefsCommand(only.ctx(), "list");
+  TEST_ASSERT_TRUE_MESSAGE(none.find("No standing rules yet.\nMoved to memory (dated facts, not rules):\n(p1)") == 0,
+                           none.c_str());
+  TEST_ASSERT_TRUE(prefsCommand(only.ctx(), "frobnicate p1").find("Standing rules: /prefs lists them") == 0);
+  TEST_ASSERT_TRUE(prefsCommand(only.ctx(), "del p1").find("Removed p1") == 0);
+  TEST_ASSERT_TRUE(prefsCommand(only.ctx(), "").find("No standing rules yet. Add one") == 0);
+  // An older file (no dated flag, no M lines) still parses; an older firmware
+  // reading ours skips the moved line (A and P only), which is its old behavior.
+  OwnerPrefs old;
+  old.parse("#nimbus-prefs v1 seeded=0 listed=0 next=2\np1\tA\t0\tchat\t-\tNever use em dashes\n");
+  TEST_ASSERT_FALSE(old.datedChecked());
+  TEST_ASSERT_EQUAL(1, (int)old.activeCount());
+}
+
+static void test_ctx_lists_show_each_rule_age() {
+  const uint32_t now = 491000;   // a synced clock (epoch hours)
+  TEST_ASSERT_EQUAL_STRING("added today", prefAgeText(now - 3, now).c_str());
+  TEST_ASSERT_EQUAL_STRING("added 1 day ago", prefAgeText(now - 30, now).c_str());
+  TEST_ASSERT_EQUAL_STRING("added 11 days ago", prefAgeText(now - 11 * 24 - 2, now).c_str());
+  TEST_ASSERT_EQUAL_STRING("", prefAgeText(0, now).c_str());       // unknown
+  TEST_ASSERT_EQUAL_STRING("", prefAgeText(77, now).c_str());      // boot-relative hour
+  TEST_ASSERT_EQUAL_STRING("", prefAgeText(now + 5, now).c_str()); // the clock went back
+  World w;
+  w.p.begin(&w.io);
+  w.p.add("Never use em dashes", PrefOrigin::Web, now - 11 * 24, false, nullptr);
+  PrefsToolContext c = w.ctx();
+  c.nowHours = [now] { return now; };
+  TEST_ASSERT_TRUE(prefsCommand(c, "").find("(p1) Never use em dashes [added 11 days ago]") != std::string::npos);
+  ToolRegistry reg;
+  registerPrefsTools(reg, c);
+  const ToolResult l = callTool(reg, "list", nullptr, nullptr, principalForRole("owner-chat", Role::Admin));
+  TEST_ASSERT_TRUE_MESSAGE(l.output.find("[added 11 days ago]") != std::string::npos, l.output.c_str());
+  JsonDocument d;
+  TEST_ASSERT_TRUE(deserializeJson(d, prefsJson(w.p, now)) == DeserializationError::Ok);
+  TEST_ASSERT_EQUAL_STRING("added 11 days ago", d["items"][0]["age"] | "");
+  // The prompt block carries no age: it is a cached block, and ages change daily.
+  TEST_ASSERT_TRUE(w.p.renderBlock().find("added") == std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_caps_and_persist_hold_under_any_op_sequence);
@@ -769,5 +934,9 @@ int main(int, char**) {
   RUN_TEST(test_prefs_edit_is_never_advertised_to_a_member);
   RUN_TEST(test_prefs_command_flows);
   RUN_TEST(test_web_actions_and_json);
+  RUN_TEST(test_ctx_dated_facts_are_classified);
+  RUN_TEST(test_ctx_every_add_path_refuses_a_dated_fact);
+  RUN_TEST(test_ctx_dated_rules_move_once_and_restore);
+  RUN_TEST(test_ctx_lists_show_each_rule_age);
   return UNITY_END();
 }

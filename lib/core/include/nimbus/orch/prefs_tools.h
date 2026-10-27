@@ -54,12 +54,14 @@ ToolResult prefsSaveStanding(const PrefsToolContext& ctx, const std::string& tex
                              const Principal& who, bool& handled);
 
 // Telegram /prefs (owner only; the verb table gates it): the reply text, device
-// copy. "" | list, add <rule>, rm|remove <id>, approve <id>, clear yes.
+// copy. "" | list, add <rule>, rm|remove <id>, approve <id>, restore <id>, clear yes.
+// The list shows each rule's age (lane CTX) and the dated facts moved to memory.
 std::string prefsCommand(const PrefsToolContext& ctx, const std::string& args);
 
-// The web routes. GET /api/prefs body.
-std::string prefsJson(const OwnerPrefs& p);
-// POST /api/prefs: action add | import | replace | remove | approve | clear.
+// The web routes. GET /api/prefs body (lane CTX: with each rule's age when
+// `nowHours` is known; a moved rule has state "moved").
+std::string prefsJson(const OwnerPrefs& p, uint32_t nowHours = 0);
+// POST /api/prefs: action add | import | replace | remove | approve | restore | clear.
 // add is the owner typing on the page (origin web); import is a restore (origin
 // import). Both are active at once.
 PrefErr prefsWebAction(OwnerPrefs& p, const std::string& action, const std::string& id,

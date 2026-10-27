@@ -195,19 +195,46 @@ struct HistMsg {
   bool user = true;
   std::string text;
 };
+// The summary pair's two messages (renderHistory writes them; readers find the pair
+// by them).
+extern const char kSummaryUserHead[];   // "[CONVERSATION SUMMARY - compacted earlier; ...]\n"
+extern const char kSummaryAck[];        // "Noted - continuing from this summary."
 std::vector<HistMsg> renderHistory(const std::vector<HistTurn>& turns, const std::string& summary,
                                    int32_t utcOffsetMin);
 
 // Budgets of the verbatim history: past high water (bytes or rows) the oldest
 // whole turns drop until the rest fits low water. The newest kHistoryKeepTurns
 // turns always stay (the newest owner message and the last reply).
+//
+// Lane CTX, the day floor: the owner's current local day stays verbatim. Its turns
+// never shift out and never fold (foldSlice), up to dayBytes of them, the newest
+// first. On 26 Oct a 128K head kept 2.6 to 5.2 KB (about 10 messages) and the fold
+// took the morning's meal estimates at 15:03, so at 18:35 the head asked for
+// weights it had estimated itself. dayStartUnix 0 (no clock) = no floor.
 struct HistoryBudget {
   size_t highBytes = 8192;   // ContextBudget::recentConvBytes
   size_t highRows = 64;
+  uint32_t dayStartUnix = 0; // the first second of the owner's local day
+  size_t dayBytes = 0;       // the day floor's cap (historyDayBytes)
   size_t lowBytes() const { return highBytes / 2; }
   size_t lowRows() const { return highRows / 2; }
 };
 constexpr size_t kHistoryKeepTurns = 2;
+// The day floor's cap: about 4,000 tokens on any head with a 64K window or more,
+// a sixteenth of a smaller window; the request's wire guard (engine) bounds it too.
+constexpr size_t kHistoryDayBytesMax = 16384;
+size_t historyDayBytes(uint32_t ctxTokens);
+// Extra rows a read may take so a busy day is read whole (rows ride PSRAM).
+constexpr size_t kHistoryDayRows = 128;
+// The first second of the local day holding `nowUnix` at `utcOffsetMin` minutes
+// east of UTC; 0 when the clock is not set (no day floor).
+uint32_t localDayStartUnix(uint64_t nowUnix, int32_t utcOffsetMin);
+// How many of the newest turns the day floor keeps: every turn on the day starting
+// at b.dayStartUnix while they fit b.dayBytes together; past that, the newest three
+// quarters of b.dayBytes (hysteresis: the window then grows before it shifts again).
+// 0 without a floor. A turn's time is its send time, else its hour; an unknown
+// time, or one outside that day, is not today.
+size_t dayTailTurns(const std::vector<HistTurn>& turns, const HistoryBudget& b, int32_t utcOffsetMin);
 constexpr size_t kHistoryMessageCap = 6144;   // one message's fixed clip (UTF-8 safe)
 extern const char kHistoryHeader[];
 
@@ -237,8 +264,10 @@ struct FoldSlice {
   std::string thru;
   size_t turns = 0;
 };
+// Lane CTX: `day` keeps the current local day out of the slice too (its day floor,
+// HistoryBudget); a manual /compact still folds every turn.
 FoldSlice foldSlice(const std::vector<HistTurn>& turns, size_t keepBytes, size_t capBytes,
-                    bool manual, int32_t utcOffsetMin);
+                    bool manual, int32_t utcOffsetMin, const HistoryBudget& day = HistoryBudget());
 
 // Consecutive identical owner rows (newest first) as one row with " (xN)" - the
 // fold input of a chat that has no turn-structured history yet. The same rule

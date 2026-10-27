@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "spend_ceiling_vn.h"   // lane DEF: the monthly spend ceiling (R7: hosted too)
+#include "nimbus/orch/food_portions.h"   // food.portions
 #include "nimbus/orch/spend_guard.h"   // lane QW4: sentWithoutAnswer - a sent embedding counts
 #include "connectors_store.h"
 #include "daemon_config.h"
@@ -1571,6 +1572,7 @@ class NimbusdRig {
     mc.embedProvider = [this] { return opt_.embedHost; };
     memCtx_ = mc;
     orch::registerMemoryTools(reg_, mc);
+    orch::registerFoodTools(reg_);   // the food playbook's portion calculator (as the device)
 
     registerWebSearchTool();
     registerDocsTools();

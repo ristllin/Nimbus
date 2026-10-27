@@ -29,6 +29,7 @@
 #include "provider_verify.h"            // queueWorkspaceProbeIfStale() at boot (CUM-537)
 #include "nimbus/orch/connectors_wire.h" // portable attach*Wire (builtinsOnly cumulo route)
 #include "files_subsystem.h"            // files::available - E1 capability manifest
+#include "food_ledger_device.h"         // lane CTX: today's food ledger for the per-turn block
 #include "skills.h"                     // skills::spawnCapsule - per-spawn injection (P2)
 #include "prefs_subsystem.h"            // standing rules: the block, /prefs, the delivery filter
 #include "budget_command.h"             // lane BUD: /usage, /budget, /model (the spending commands)
@@ -1402,6 +1403,11 @@ static TurnEngine::Deps buildTurnDeps() {
   // decides DST for a past time, so a row stored before a clock change keeps its offset).
   d.utcOffsetMin = []() -> int32_t { return agent::utcOffsetAtUnix((uint32_t)time(nullptr)); };
   d.utcOffsetAt = [](uint32_t unixSec) -> int32_t { return agent::utcOffsetAtUnix(unixSec); };
+  // Lane CTX: today's food ledger of the turn's person (the per-turn block and the fold).
+  d.foodLedger = [](const std::string& chatId) {
+    const String cid(chatId.c_str());
+    return agent::foodledger::today(chatId, nimbus::orch::principalForRole(chatId, roleOfChat(cid)));
+  };
   d.firstAllowedChat = [] { return std::string(firstAllowedChat().c_str()); };
   d.journalGc = [] { g_journal.gc(); };
   // Clamped-tool-result spill (Context Fabric): the loop's truncation marker

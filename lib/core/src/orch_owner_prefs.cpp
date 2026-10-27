@@ -4,6 +4,8 @@
 #include <cstdlib>
 
 #include "nimbus/mem_cap.h"   // utf8CapLen
+#include "nimbus/orch/history_rows.h"   // kClockValidHours - an hour from before the clock was set
+#include "nimbus/orch/word_match.h"     // whole-word phrase tests (shared with the food ledger)
 #include "nimbus/utf8.h"      // utf8Repair
 
 namespace nimbus {
@@ -28,40 +30,15 @@ PrefOrigin originFromSlug(const std::string& s) {
   return PrefOrigin::Chat;
 }
 
-std::string lowerAscii(const std::string& s) {
-  std::string out = s;
-  for (char& c : out)
-    if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-  return out;
-}
+using words::hasPhrase;
+using words::isWordChar;
+using words::lowerAscii;
 
 bool contains(const std::string& hay, const char* needle) { return hay.find(needle) != std::string::npos; }
 
 bool containsAny(const std::string& hay, const char* const* needles, size_t n) {
   for (size_t i = 0; i < n; i++)
     if (contains(hay, needles[i])) return true;
-  return false;
-}
-
-bool isWordChar(char c) {
-  return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || (unsigned char)c >= 0x80;
-}
-
-// `phrase` occurs in `s` (lowercase) as whole words: no letter or digit touches it.
-bool hasPhrase(const std::string& s, const char* phrase) {
-  const std::string p = phrase;
-  for (size_t at = s.find(p); at != std::string::npos; at = s.find(p, at + 1)) {
-    const bool startOk = at == 0 || !isWordChar(s[at - 1]);
-    const size_t end = at + p.size();
-    const bool endOk = end >= s.size() || !isWordChar(s[end]);
-    if (startOk && endOk) return true;
-  }
-  return false;
-}
-
-bool hasAnyPhrase(const std::string& s, const char* const* phrases, size_t n) {
-  for (size_t i = 0; i < n; i++)
-    if (hasPhrase(s, phrases[i])) return true;
   return false;
 }
 
@@ -140,8 +117,9 @@ bool parseRuleLine(const std::string& line, PrefEntry& e) {
   const std::vector<std::string> f = splitTabs(line, 6);
   if (f.size() != 6 || f[0].size() < 2 || (f[0][0] != 'p' && f[0][0] != 'P')) return false;
   e.id = toU32(f[0].substr(1));
-  if (e.id == 0 || (f[1] != "A" && f[1] != "P")) return false;
+  if (e.id == 0 || (f[1] != "A" && f[1] != "P" && f[1] != "M")) return false;
   e.pending = f[1] == "P";
+  e.moved = f[1] == "M";
   e.createdHours = toU32(f[2]);
   e.origin = originFromSlug(f[3]);
   e.filters = filtersFromSlug(f[4]);
@@ -152,7 +130,7 @@ bool parseRuleLine(const std::string& line, PrefEntry& e) {
 }
 
 // The header's key=value flags.
-void parseHeader(const std::string& line, bool& seeded, bool& listed, uint32_t& next) {
+void parseHeader(const std::string& line, bool& seeded, bool& listed, bool& dated, uint32_t& next) {
   size_t pos = 0;
   while (pos < line.size()) {
     size_t sp = line.find(' ', pos);
@@ -160,26 +138,32 @@ void parseHeader(const std::string& line, bool& seeded, bool& listed, uint32_t& 
     const std::string tok = line.substr(pos, sp - pos);
     if (tok == "seeded=1") seeded = true;
     if (tok == "listed=1") listed = true;
+    if (tok == "dated=1") dated = true;
     if (tok.rfind("next=", 0) == 0) next = toU32(tok.substr(5));
     pos = sp + 1;
   }
 }
 
+const char* stateLetter(const PrefEntry& e) { return e.moved ? "M" : e.pending ? "P" : "A"; }
+
 std::string serializeState(const std::vector<PrefEntry>& items, bool seeded, bool listed,
-                           uint32_t nextId) {
+                           uint32_t nextId, bool dated) {
   std::string out = std::string(kHeader) + " seeded=" + (seeded ? "1" : "0") +
-                    " listed=" + (listed ? "1" : "0") + " next=" + std::to_string(nextId) + "\n";
+                    " listed=" + (listed ? "1" : "0") + " next=" + std::to_string(nextId) +
+                    (dated ? " dated=1" : "") + "\n";
   for (const PrefEntry& e : items) {
-    out += e.idStr() + "\t" + (e.pending ? "P" : "A") + "\t" + std::to_string(e.createdHours) + "\t" +
+    out += e.idStr() + "\t" + stateLetter(e) + "\t" + std::to_string(e.createdHours) + "\t" +
            prefOriginSlug(e.origin) + "\t" + filtersSlug(e.filters) + "\t" + e.text + "\n";
   }
   return out;
 }
 
+bool isActive(const PrefEntry& e) { return !e.pending && !e.moved; }
+
 size_t activeBytesOf(const std::vector<PrefEntry>& v) {
   size_t n = 0;
   for (const PrefEntry& e : v)
-    if (!e.pending) n += e.text.size();
+    if (isActive(e)) n += e.text.size();
   return n;
 }
 
@@ -190,12 +174,33 @@ size_t pendingOf(const std::vector<PrefEntry>& v) {
   return n;
 }
 
+size_t movedOf(const std::vector<PrefEntry>& v) {
+  size_t n = 0;
+  for (const PrefEntry& e : v)
+    if (e.moved) n++;
+  return n;
+}
+
+// The rules the 12-rule cap counts: active and pending (a moved one is not a rule).
+size_t rulesOf(const std::vector<PrefEntry>& v) { return v.size() - movedOf(v); }
+
 // Would this entry fit the parsed list's caps? (The tolerant parse keeps every
 // intact line up to the caps, in file order.)
 bool fitsCaps(const std::vector<PrefEntry>& kept, const PrefEntry& e) {
-  if (kept.size() >= kPrefsMaxItems) return false;
+  if (e.moved) return movedOf(kept) < kPrefsMovedMax;
+  if (rulesOf(kept) >= kPrefsMaxItems) return false;
   if (e.pending) return pendingOf(kept) < kPrefsPendingMax;
   return activeBytesOf(kept) + e.text.size() <= kPrefsMaxBytes;
+}
+
+// Lane CTX: a dated one-off fact is refused with where it belongs.
+PrefErr datedRefusal(const std::string& text) {
+  switch (datedKindOf(text)) {
+    case DatedKind::Food:        return PrefErr::DatedFood;
+    case DatedKind::Measurement: return PrefErr::DatedFact;
+    case DatedKind::None:        break;
+  }
+  return PrefErr::Ok;
 }
 
 bool knownIdOrKey(const std::vector<PrefEntry>& kept, const PrefEntry& e) {
@@ -225,6 +230,13 @@ const char* prefErrWords(PrefErr e) {
     case PrefErr::NotFound:      return "no standing rule with that id";
     case PrefErr::NotPending:    return "that rule is already active";
     case PrefErr::PersistFailed: return "could not save the standing rules (storage error); nothing changed";
+    case PrefErr::DatedFood:
+      return "that is a dated meal or day total, not a standing rule: meals and totals go in today's food "
+             "ledger (food/food-log.csv), which the assistant reads every turn";
+    case PrefErr::DatedFact:
+      return "that is a dated one-off fact (a measurement or an event), not a standing rule: keep it in "
+             "memory instead, where it is recalled when it matters";
+    case PrefErr::NotMoved:      return "that rule was not moved to memory";
   }
   return "error";
 }
@@ -280,7 +292,7 @@ uint32_t parsePrefId(const std::string& raw) {
 void OwnerPrefs::begin(PrefsStoreIO* io) {
   io_ = io;
   items_.clear();
-  seeded_ = listed_ = false;
+  seeded_ = listed_ = datedChecked_ = false;
   nextId_ = 1;
   std::string blob;
   existed_ = io_ && io_->load(blob);
@@ -289,7 +301,7 @@ void OwnerPrefs::begin(PrefsStoreIO* io) {
 
 size_t OwnerPrefs::parse(const std::string& blob) {
   items_.clear();
-  seeded_ = listed_ = false;
+  seeded_ = listed_ = datedChecked_ = false;
   uint32_t next = 1, maxId = 0;
   size_t pos = 0;
   while (pos < blob.size()) {
@@ -298,7 +310,7 @@ size_t OwnerPrefs::parse(const std::string& blob) {
     std::string line = blob.substr(pos, nl - pos);
     pos = nl + 1;
     if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (line.rfind(kHeader, 0) == 0) { parseHeader(line, seeded_, listed_, next); continue; }
+    if (line.rfind(kHeader, 0) == 0) { parseHeader(line, seeded_, listed_, datedChecked_, next); continue; }
     PrefEntry e;
     if (!parseRuleLine(line, e) || knownIdOrKey(items_, e) || !fitsCaps(items_, e)) continue;
     maxId = std::max(maxId, e.id);
@@ -308,7 +320,9 @@ size_t OwnerPrefs::parse(const std::string& blob) {
   return items_.size();
 }
 
-std::string OwnerPrefs::serialize() const { return serializeState(items_, seeded_, listed_, nextId_); }
+std::string OwnerPrefs::serialize() const {
+  return serializeState(items_, seeded_, listed_, nextId_, datedChecked_);
+}
 
 int OwnerPrefs::indexOf(uint32_t id) const {
   for (size_t i = 0; i < items_.size(); i++)
@@ -327,23 +341,25 @@ const PrefEntry* OwnerPrefs::find(uint32_t id) const {
   return i < 0 ? nullptr : &items_[(size_t)i];
 }
 
-size_t OwnerPrefs::activeCount() const { return items_.size() - pendingOf(items_); }
+size_t OwnerPrefs::activeCount() const { return rulesOf(items_) - pendingOf(items_); }
 size_t OwnerPrefs::pendingCount() const { return pendingOf(items_); }
+size_t OwnerPrefs::movedCount() const { return movedOf(items_); }
 size_t OwnerPrefs::activeBytes() const { return activeBytesOf(items_); }
 
 PrefErr OwnerPrefs::checkRoom(const std::vector<PrefEntry>& next) const {
-  if (next.size() > kPrefsMaxItems) return PrefErr::Full;
+  if (rulesOf(next) > kPrefsMaxItems) return PrefErr::Full;
   if (pendingOf(next) > kPrefsPendingMax) return PrefErr::PendingFull;
   if (activeBytesOf(next) > kPrefsMaxBytes) return PrefErr::Full;
   return PrefErr::Ok;
 }
 
 PrefErr OwnerPrefs::commit(const std::vector<PrefEntry>& next, bool seeded, bool listed,
-                           uint32_t nextId) {
-  if (!io_ || !io_->saveChecked(serializeState(next, seeded, listed, nextId))) return PrefErr::PersistFailed;
+                           uint32_t nextId, bool dated) {
+  if (!io_ || !io_->saveChecked(serializeState(next, seeded, listed, nextId, dated))) return PrefErr::PersistFailed;
   items_ = next;
   seeded_ = seeded;
   listed_ = listed;
+  datedChecked_ = dated;
   nextId_ = nextId;
   existed_ = true;
   return PrefErr::Ok;
@@ -354,6 +370,7 @@ PrefErr OwnerPrefs::add(const std::string& text, PrefOrigin origin, uint32_t now
   const std::string t = sanitizePrefText(text);
   if (t.empty()) return PrefErr::Empty;
   if (t.size() > kPrefItemMax) return PrefErr::TooLong;
+  if (const PrefErr dated = datedRefusal(t); dated != PrefErr::Ok) return dated;
   const int dup = indexOfKey(prefKey(t));
   if (dup >= 0) {
     if (idOut) *idOut = items_[(size_t)dup].idStr();
@@ -384,6 +401,7 @@ PrefErr OwnerPrefs::replace(uint32_t id, const std::string& text, PrefOrigin ori
   const std::string t = sanitizePrefText(text);
   if (t.empty()) return PrefErr::Empty;
   if (t.size() > kPrefItemMax) return PrefErr::TooLong;
+  if (const PrefErr dated = datedRefusal(t); dated != PrefErr::Ok) return dated;
   std::vector<PrefEntry> next = items_;
   const int same = indexOfKey(prefKey(t));
   if (same >= 0 && same != i) {
@@ -429,7 +447,7 @@ PrefErr OwnerPrefs::seed(const std::vector<std::string>& texts, uint32_t nowHour
   for (const std::string& raw : texts) {
     PrefEntry e;
     e.text = cutAtWord(sanitizePrefText(raw), kPrefItemMax);
-    if (e.text.empty() || e.text == "...") continue;
+    if (e.text.empty() || e.text == "..." || datedKindOf(e.text) != DatedKind::None) continue;
     e.id = nextId;
     e.createdHours = nowHours;
     e.origin = PrefOrigin::Seed;
@@ -446,11 +464,35 @@ PrefErr OwnerPrefs::seed(const std::vector<std::string>& texts, uint32_t nowHour
 
 PrefErr OwnerPrefs::markListed() { return commit(items_, seeded_, true, nextId_); }
 
+PrefErr OwnerPrefs::moveDatedFacts(std::vector<PrefEntry>* moved) {
+  std::vector<PrefEntry> next = items_;
+  std::vector<PrefEntry> out;
+  for (PrefEntry& e : next) {
+    if (!isActive(e) || datedKindOf(e.text) == DatedKind::None || movedOf(next) >= kPrefsMovedMax) continue;
+    e.moved = true;
+    out.push_back(e);
+  }
+  const PrefErr r = commit(next, seeded_, listed_, nextId_, /*dated=*/true);
+  if (r == PrefErr::Ok && moved) *moved = out;
+  return r;
+}
+
+PrefErr OwnerPrefs::restore(uint32_t id) {
+  const int i = indexOf(id);
+  if (i < 0) return PrefErr::NotFound;
+  if (!items_[(size_t)i].moved) return PrefErr::NotMoved;
+  std::vector<PrefEntry> next = items_;
+  next[(size_t)i].moved = false;
+  const PrefErr room = checkRoom(next);
+  if (room != PrefErr::Ok) return room;
+  return commit(next, seeded_, listed_, nextId_);
+}
+
 std::string OwnerPrefs::renderBlock() const {
   std::string out;
   size_t textBytes = 0;
   for (const PrefEntry& e : items_) {
-    if (e.pending) continue;
+    if (!isActive(e)) continue;
     if (textBytes + e.text.size() > kPrefsMaxBytes) continue;   // whole lines only
     textBytes += e.text.size();
     if (!out.empty()) out += '\n';
@@ -462,7 +504,7 @@ std::string OwnerPrefs::renderBlock() const {
 uint32_t OwnerPrefs::activeFilters() const {
   uint32_t f = 0;
   for (const PrefEntry& e : items_)
-    if (!e.pending) f |= e.filters;
+    if (isActive(e)) f |= e.filters;
   return f;
 }
 
@@ -506,7 +548,7 @@ const char* const kOutputStyle[] = {"reply",   "replies", "response", "responses
 
 template <size_t N>
 bool anyOf(const std::string& s, const char* const (&list)[N]) {
-  return hasAnyPhrase(s, list, N);
+  return words::anyPhrase(s, list);
 }
 
 bool startsWithStanding(const std::string& s) {
@@ -536,6 +578,118 @@ bool isRule(const std::string& s, const std::string& dev) {
 
 }  // namespace
 
+namespace {
+
+// ---- lane CTX: a dated one-off fact -------------------------------------------
+const char* const kMonthWords[] = {"jan",      "feb",     "mar",      "apr",     "jun",      "jul",
+                                   "aug",      "sep",     "sept",     "oct",     "nov",      "dec",
+                                   "january",  "february", "march",   "april",   "june",     "july",
+                                   "august",   "september", "october", "november", "december"};
+// Day words date a fact only beside a past-tense or reported figure ("today was",
+// "had", "weighed"): "show today's total after each meal" is a rule.
+const char* const kDayWords[] = {"today", "yesterday", "tonight", "this morning", "this evening",
+                                 "this afternoon", "last night", "earlier today"};
+const char* const kReported[] = {"had", "ate", "eaten", "was", "were", "closed at", "came to", "weighed",
+                                 "weigh-in", "provided", "logged", "drank", "slept", "measured", "total",
+                                 "totals"};
+const char* const kFoodFacts[] = {"kcal",  "calorie", "calories", "protein", "meal",  "meals", "breakfast",
+                                  "brunch", "lunch",  "dinner",   "snack",   "ate",   "eaten", "day total",
+                                  "daily total"};
+// A recurring instruction is not a one-off fact, even with today in it.
+const char* const kRecurring[] = {"every", "daily", "weekly", "each day", "each morning", "each evening",
+                                  "after each"};
+// An instruction to the assistant is a rule, whatever date or figure it names.
+const char* const kImperativeLeads[] = {"show", "report", "keep", "give", "send", "tell", "remind", "use",
+                                        "track", "count", "list", "answer", "reply", "write", "make",
+                                        "ask", "log", "treat"};
+const char* const kMeasureFacts[] = {"weighed", "weigh-in", "weight",   "kg",        "kgs",      "lb",
+                                     "lbs",     "steps",    "bpm",      "heart rate", "blood pressure",
+                                     "mmol",    "slept",    "body fat", "waist"};
+
+bool allDigitsN(const std::string& s, size_t from, size_t n) {
+  if (from + n > s.size()) return false;
+  for (size_t i = from; i < from + n; i++)
+    if (s[i] < '0' || s[i] > '9') return false;
+  return true;
+}
+
+bool hasIsoDate(const std::string& s) {
+  for (size_t i = 0; i + 10 <= s.size(); i++)
+    if (allDigitsN(s, i, 4) && s[i + 4] == '-' && allDigitsN(s, i + 5, 2) && s[i + 7] == '-' &&
+        allDigitsN(s, i + 8, 2))
+      return true;
+  return false;
+}
+
+std::vector<std::string> wordTokens(const std::string& s) {
+  std::vector<std::string> tok(1);
+  for (char c : s) {
+    if (isWordChar(c)) tok.back() += c;
+    else if (!tok.back().empty()) tok.emplace_back();
+  }
+  if (tok.back().empty()) tok.pop_back();
+  return tok;
+}
+
+// "16", "21st": a day of the month.
+bool isDayNumber(const std::string& t) {
+  size_t d = 0;
+  while (d < t.size() && t[d] >= '0' && t[d] <= '9') d++;
+  if (d == 0 || d > 2) return false;
+  const std::string rest = t.substr(d);
+  const int n = std::atoi(t.substr(0, d).c_str());
+  return n >= 1 && n <= 31 && (rest.empty() || rest == "st" || rest == "nd" || rest == "rd" || rest == "th");
+}
+
+bool isMonthWord(const std::string& t) {
+  for (const char* m : kMonthWords)
+    if (t == m) return true;
+  return false;
+}
+
+// A day of the month next to a month name: "16 oct", "oct 16", "21st october".
+// ("may" is left out: "8 may be skipped" is not a date.)
+bool hasDayMonth(const std::string& s) {
+  const std::vector<std::string> tok = wordTokens(s);
+  for (size_t i = 0; i < tok.size(); i++) {
+    if (!isMonthWord(tok[i])) continue;
+    if ((i > 0 && isDayNumber(tok[i - 1])) || (i + 1 < tok.size() && isDayNumber(tok[i + 1]))) return true;
+  }
+  return false;
+}
+
+// Dated: a calendar date, or a day word beside a reported figure or event.
+bool isDated(const std::string& s) {
+  return hasIsoDate(s) || hasDayMonth(s) || (anyOf(s, kDayWords) && anyOf(s, kReported));
+}
+
+bool startsImperative(const std::string& s) {
+  const std::vector<std::string> tok = wordTokens(s);
+  if (tok.empty()) return false;
+  for (const char* v : kImperativeLeads)
+    if (tok[0] == v) return true;
+  return false;
+}
+
+}  // namespace
+
+DatedKind datedKindOf(const std::string& text) {
+  const std::string s = collapseSpaces(lowerAscii(sanitizePrefText(text)));
+  if (!isDated(s) || startsImperative(s) || anyOf(s, kStandingMarkers) || anyOf(s, kRecurring))
+    return DatedKind::None;
+  if (anyOf(s, kFoodFacts)) return DatedKind::Food;
+  if (anyOf(s, kMeasureFacts)) return DatedKind::Measurement;
+  return DatedKind::None;
+}
+
+std::string prefAgeText(uint32_t createdHours, uint32_t nowHours) {
+  if (createdHours < kClockValidHours || nowHours < kClockValidHours || createdHours > nowHours)
+    return std::string();
+  const uint32_t days = (nowHours - createdHours) / 24;
+  if (days == 0) return "added today";
+  return "added " + std::to_string(days) + (days == 1 ? " day ago" : " days ago");
+}
+
 bool looksLikeStandingRule(const std::string& text, const std::string& devName) {
   const std::string s = collapseSpaces(lowerAscii(sanitizePrefText(text)));
   return !s.empty() && isRule(s, lowerAscii(devName));
@@ -545,6 +699,7 @@ std::vector<std::string> pickSeedRules(const std::vector<SeedCandidate>& in, con
   std::vector<const SeedCandidate*> picked;
   for (const SeedCandidate& c : in) {
     const std::string s = lowerAscii(sanitizePrefText(c.text));
+    if (datedKindOf(c.text) != DatedKind::None) continue;   // lane CTX: a dated fact is never a rule
     if (looksLikeStandingRule(c.text, devName) || (c.pinned && quantityConvention(s)))
       picked.push_back(&c);
   }

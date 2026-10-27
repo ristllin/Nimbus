@@ -3,7 +3,7 @@
 #include <string>
 
 // builtin_skills - the device's built-in capsules (architecture, deep-research,
-// hardware, tools-guide, deliver-pdf): the [SKILLS] index line and the body
+// hardware, tools-guide, deliver-pdf, log-rows, food-log, food-coach): the [SKILLS] index line and the body
 // skill.get serves. Portable and flash-resident (const tables, no heap until a
 // body is rendered), so the host suite reads exactly what the model reads.
 //
@@ -14,6 +14,11 @@
 // on that side. The device picks the side with the same per-turn sample the engine
 // filters the tool list with (TurnEngine::turnTelegram).
 namespace agent {
+
+// The food playbooks' ids (lane CTX): the engine attaches food-log when the owner
+// reports food, food-coach when they ask about it, both when the words do not say.
+inline constexpr const char kFoodLogSkillId[] = "food-log";
+inline constexpr const char kFoodCoachSkillId[] = "food-coach";
 
 struct BuiltinSkill {
   const char* id;

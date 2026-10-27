@@ -43,7 +43,8 @@ void registerPrefsRoutes(AsyncWebServer& server) {
     agent::memory::WebLock card;   // the card: tried, never waited for (web_guard.h)
     if (!card) return net::admission::sendCardBusy(r);
     std::string body;
-    const bool ran = prefs::withStore([&](orch::OwnerPrefs& p) { body = orch::prefsJson(p); });
+    const uint32_t nowH = agent::memory::nowHours();   // each rule's age (lane CTX)
+    const bool ran = prefs::withStore([&](orch::OwnerPrefs& p) { body = orch::prefsJson(p, nowH); });
     if (!ran) { sendJson(r, 507, "{\"error\":\"The rules file area is not available.\"}"); return; }
     sendJson(r, 200, String(body.c_str()));
   });

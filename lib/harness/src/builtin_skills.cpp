@@ -201,9 +201,10 @@ const Part kLogRows[] = {
      "   REPLACES that row; a new key adds a row; other days are never touched.\n"
      "5. Dates are the owner's local date as YYYY-MM-DD, from the Current date line.\n"
      "   What was eaten before midnight belongs to that day, even when logged later.\n"
-     "6. The food log is ONE file (the CSV you keep for meals, e.g. food-log.csv in\n"
-     "   the owner's project), columns like date,meal,items,kcal,protein_g. Never\n"
-     "   split a day's meals across files. Each eating occasion gets its own meal\n"
+     "6. The food log is ONE file: the ledger [TODAY'S FOOD LEDGER] names (the\n"
+     "   owner's is food/food-log.csv), columns date,meal,items,kcal,protein_g; the\n"
+     "   food-log playbook has the food rules. Never split a day's meals across\n"
+     "   files. Each eating occasion gets its own meal\n"
      "   name for that day: breakfast, lunch, dinner, and for anything else snack\n"
      "   plus the time eaten (snack-1126). An item added to a meal already logged:\n"
      "   re-send that meal's row with the combined figures. Separate items with +\n"
@@ -233,6 +234,87 @@ const Part kLogRows[] = {
      "   rows for one meal go in ONE call, one row per line.\n"
      "11. If a reply says the stored last row was cut mid-write, say so and log\n"
      "   that row again in full.\n"},
+};
+
+// The food playbooks (lane CTX). On 26 Oct the head never opened a playbook, logged
+// meals to long-term memory, guessed three file names and rebuilt the day's total
+// from history five different ways in an hour. The device now shows today's ledger
+// in every turn that has one ([TODAY'S FOOD LEDGER], food_ledger.h) and attaches a
+// playbook to every food turn without a skill read (day_context.cpp): food-log when
+// the owner reports food, food-coach when they ask, both when the words do not say.
+// The coach carries the food-coach eval's findings (tests/evals/food_coach): a plan
+// built with oil, rice and potatoes the owner never named, and a number asked for
+// three times.
+const Part kFoodLog[] = {
+    {Side::Both,
+     "# Food log: logging a meal in today's ledger\n"
+     "[TODAY'S FOOD LEDGER] in this turn's context is the device's record of today's\n"
+     "meals: its rows and totals are the truth for today.\n"
+     "1. A meal is logged only when the owner says it was eaten (I had, I ate,\n"
+     "   breakfast was, a photo of their plate). A question, a request for a plan or\n"
+     "   for amounts (how much, what should I eat, plan my dinner) and a complaint\n"
+     "   about a plan are not meals: no files.append, and no word about logging.\n"
+     "2. Meals go ONLY to the ledger file it names, never to mem_write, memory.write,\n"
+     "   the scratchpad or standing rules. Long-term memory holds lasting facts\n"
+     "   (targets, preferences, calibrations), not what was eaten today.\n"
+     "3. Write the row as soon as the meal has an estimate (the owner's description,\n"
+     "   a photo you estimated, a figure they correct): one files.append\n"
+     "   {project, name, text, key: \"meal\", sum: \"kcal\"}; text = the ledger's header\n"
+     "   row, then one row per meal, dated with the ledger's date; items joined with +\n"
+     "   (a field never holds a bare comma). Then give the row you wrote (meal, kcal,\n"
+     "   protein) and today's total as the tool states it.\n"
+     "4. One row per eating occasion: breakfast, lunch, dinner; anything else snack\n"
+     "   plus the time eaten (snack-1530). An item added to a meal: re-send that meal's\n"
+     "   row with the combined items and figures (it replaces the row). A correction:\n"
+     "   the same date and meal with the corrected figures. To take a row off: 0 kcal\n"
+     "   and the reason in items. Never a second row for one meal. A meal from another\n"
+     "   day goes under that day's date only when the owner names the day.\n"
+     "5. Totals come from [TODAY'S FOOD LEDGER] or the files.append reply. Never add up\n"
+     "   a day from the conversation, a summary, memory or a standing rule. Never say\n"
+     "   a meal was logged without the files.append reply that shows it.\n"
+     "6. Estimates are estimates: give the figure with its main assumption. When an\n"
+     "   amount is missing, log your best estimate and ask one short question; replace\n"
+     "   the row when the owner answers.\n"
+     "7. A photo nobody could read: say so in the reply, with the reason given. When\n"
+     "   the owner's words describe the meal, estimate from them and say the estimate\n"
+     "   comes from their description; otherwise ask for a short description and log\n"
+     "   nothing yet. Never describe what only the photo could show.\n"},
+};
+
+// The food coach (lane CTX, the food-coach eval's findings): attached to a food turn
+// that asks for an answer or a plan. It carries no logging procedure: a Mistral head
+// given the logging steps on such a turn logged the requested plan as a meal eaten.
+const Part kFoodCoach[] = {
+    {Side::Both,
+     "# Food coach: answers and plans\n"
+     "1. Totals come from [TODAY'S FOOD LEDGER] in this turn's context, never from the\n"
+     "   conversation, a summary, memory or a standing rule. Asked for the list by\n"
+     "   meal, list the ledger's rows with their kcal and its total.\n"
+     "2. Only meals the owner says they ate go in the ledger (with files.append, never\n"
+     "   memory). A question, a plan or an amount asked for is not a meal: write no\n"
+     "   row and say nothing about logging.\n"
+     "3. Answer what was asked, first: the reply's first sentence gives the number\n"
+     "   asked for (grams, slices, kcal, yes or no), not a heading, a list, an apology\n"
+     "   or an agreement (the one exception is the [THIS MESSAGE] line's own). Then\n"
+     "   each food's amount with its kcal, and the total. Take the owner's goal as\n"
+     "   stated (\"max out\" means use up what is left); never argue with it or open\n"
+     "   with the day's totals.\n"
+     "4. When the owner has named no food at all in this chat, ask one short question\n"
+     "   about what they have: no plan, no amounts and no food.portions call yet.\n"
+     "5. Amounts and plans come from food.portions, never from your own arithmetic:\n"
+     "   left_kcal = what is left (the owner's figure, or their target minus today's\n"
+     "   ledger total), left_protein likewise, and one entry per food the owner says\n"
+     "   they have, in this chat (the ledger lists what was eaten, not what is in the\n"
+     "   kitchen), the ones the owner fixed included: its kcal and protein per 100 g,\n"
+     "   fixed_g for every amount the owner fixed, otherwise amount_g (a sensible\n"
+     "   portion; the tool keeps the proportions and scales them), and unit_g for\n"
+     "   slices or pieces. When the owner\n"
+     "   fixes some amounts and leaves the rest to you (\"assume 100 g beef, you tell me\n"
+     "   the rest\"), the fixed foods still go in the call as fixed_g: the kcal left\n"
+     "   covers them too. Answer with exactly the amounts it returns, one line per\n"
+     "   food with its kcal, and its Total line; add nothing on top. Nothing the owner\n"
+     "   did not name (cooking oil, rice, potatoes, a side) goes in; at most one\n"
+     "   optional extra may be offered after the total.\n"},
 };
 
 // ONE table: the index entry and the body together, so they cannot drift.
@@ -267,6 +349,14 @@ const Entry kEntries[] = {
       "Add rows to a log with files.append and read its end with files.read tail - read "
       "BEFORE logging or correcting a meal, a weight, a ledger total or any tracker row."},
      NIMBUS_PARTS(kLogRows)},
+    {{"food-log", "Today's food ledger: logging and correcting meals",
+      "How a meal eaten is logged and corrected in today's food ledger - attached "
+      "automatically when the owner reports food."},
+     NIMBUS_PARTS(kFoodLog)},
+    {{"food-coach", "Food answers and plans from today's ledger",
+      "Answer-first amounts and plans from the foods the owner has - attached "
+      "automatically when the owner asks about food."},
+     NIMBUS_PARTS(kFoodCoach)},
 };
 #undef NIMBUS_PARTS
 constexpr size_t kEntryCount = sizeof(kEntries) / sizeof(kEntries[0]);

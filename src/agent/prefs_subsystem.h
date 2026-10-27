@@ -45,6 +45,8 @@ uint32_t filtersForRole(bool ownerFacing);
 // tier, add them as active rules, and send the owner one plain-words listing.
 // Marks the file seeded even when nothing qualified, so it never runs again.
 // `devName` (the device's own name) sharpens the classifier; "" is fine.
+// Lane CTX: first, once per file, rules that read as dated one-off facts (a meal,
+// a day's total, a measurement) leave the rules for memory, logged and restorable.
 void seedFirstBoot(const std::string& devName);
 
 }  // namespace prefs

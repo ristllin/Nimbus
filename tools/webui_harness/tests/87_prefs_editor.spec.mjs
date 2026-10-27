@@ -86,3 +86,24 @@ test('Remove posts action=remove with the id', async ({ page }) => {
   expect(formValue(state.actions[0], 'action')).toBe('remove');
   expect(formValue(state.actions[0], 'id')).toBe('p1');
 });
+
+// Lane CTX: each rule shows its age, and a rule moved to memory at boot (it read
+// as a dated fact) is labeled as such with Restore, which posts action=restore.
+test('a moved rule is labeled with Restore, and ages show', async ({ page }) => {
+  const items = [
+    { ...RULES.items[0], age: 'added 11 days ago' },
+    { id: 'p3', text: 'On 2026-10-16 the owner had the wooden-tray meal: 696 kcal.', state: 'moved',
+      created: 497700, origin: 'seed', nodash: false },
+  ];
+  const state = { body: prefsPayload(items) };
+  await openMemory(page, state);
+  await expect(page.locator('#prefslist')).toContainText('added 11 days ago');
+  await expect(page.locator('#prefslist')).toContainText('moved to memory: a dated fact, not a rule');
+  const restore = page.locator('#prefslist a[data-pid="p3"][data-pact="restore"]');
+  await expect(restore).toHaveText('Restore');
+  await expect(page.locator('#prefslist a[data-pid="p1"][data-pact="restore"]')).toHaveCount(0);
+  await restore.dispatchEvent('click');
+  await expect.poll(() => state.actions.length).toBe(1);
+  expect(formValue(state.actions[0], 'action')).toBe('restore');
+  expect(formValue(state.actions[0], 'id')).toBe('p3');
+});

@@ -380,6 +380,31 @@ static void test_sd_quota_and_supported_card() {
   TEST_ASSERT_TRUE(store.wouldExceed("p", "f", 100, err));  // any real add refused
 }
 
+// Lane CTX: the food ledgers are reserved names. Nobody creates another person's
+// ledger before that person's first meal (the device would read the squatter's
+// rows as their day), with any spelling the card's FAT file system folds together.
+void test_food_ledger_names_are_reserved() {
+  FileStore st;
+  for (const char* name : {"food-log.csv", "FOOD-LOG.CSV", "food-log-99.csv", "food-log-backup.csv"}) {
+    TEST_ASSERT_FALSE_MESSAGE(st.writeAllowed("food", name, "chat:42", false), name);
+    TEST_ASSERT_FALSE_MESSAGE(st.writeAllowed("Food", name, "chat:42", false), name);
+    TEST_ASSERT_FALSE_MESSAGE(st.writeAllowed("food", name, "guest", false), name);
+    TEST_ASSERT_TRUE_MESSAGE(st.writeAllowed("food", name, nimbus::orch::kOwnerNs, true), name);
+  }
+  TEST_ASSERT_TRUE(st.writeAllowed("food", "food-log-42.csv", "chat:42", false));   // a member's own
+  TEST_ASSERT_TRUE(st.writeAllowed("food", "recipes.md", "chat:42", false));        // other names
+  TEST_ASSERT_TRUE(st.writeAllowed("notes", "food-log.csv", "chat:42", false));     // other projects
+  // An entry the member owns elsewhere changes nothing: the name is still reserved.
+  FileEntry squat;
+  squat.project = "food";
+  squat.name = "food-log.csv";
+  squat.bytes = 1;
+  squat.owner = "chat:42";
+  std::string err;
+  TEST_ASSERT_TRUE(st.add(squat, err));
+  TEST_ASSERT_FALSE(st.writeAllowed("food", "food-log.csv", "chat:42", false));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_sd_quota_and_supported_card);
@@ -398,5 +423,6 @@ int main() {
   RUN_TEST(test_dump_load_roundtrip);
   RUN_TEST(test_load_tolerates_garbage_and_revalidates);
   RUN_TEST(test_list_and_projects);
+  RUN_TEST(test_food_ledger_names_are_reserved);
   return UNITY_END();
 }
