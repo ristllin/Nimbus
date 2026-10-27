@@ -15,7 +15,7 @@
 // restart drops it); an applied change goes through the same setters the web page's
 // Usage tab uses (the overall ceiling, the provider's dollar budget), is logged to the
 // durable device log, kept in a small flash record the Usage page lists
-// (/data/budget_log.txt, never NVS) and mirrored once to the web chat. /model answers
+// (/data/budget_log.txt, never NVS) and copied once into the web chat's history. /model answers
 // from the stored head choice, the last reply's provider and model (the turn-end hook)
 // and the park. None of them calls a model, so they work while every provider is paused.
 //
@@ -44,7 +44,7 @@ void noteMessage(const String& chatId, const nimbus::orch::Command& cmd);
 void noteTurnEnd(const std::string& host, const std::string& model, const std::string& requestedHost,
                  const char* src, bool ok);
 
-// The recent applied changes for the Usage page, newest first:
+// The newest 3 applied changes for the Usage page, newest first:
 // [{"t":<epoch s, 0 = clock unset>,"src":"telegram"|"web"|"serial","text":".."}].
 std::string changesJson();
 

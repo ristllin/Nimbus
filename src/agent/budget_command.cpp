@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include <esp_timer.h>
 
 #include <cstring>
 #include <ctime>
@@ -38,11 +39,12 @@ const bool g_commandsInstalled = (nimbus::orch::installBudgetCommands(true), tru
 constexpr const char* kLogPath = "/data/budget_log.txt";
 constexpr size_t kRows = 8;        // the change record keeps the newest 8 changes
 constexpr size_t kLogMax = 2048;   // a longer file is not ours
+constexpr size_t kPageRows = 3;    // the Usage page lists the newest 3
 
 struct LastTurn {
   bool        known = false, ok = false;
   std::string host, model, requested;
-  uint32_t    atMs = 0;
+  uint64_t    atMs = 0;
 };
 struct LogRow {
   uint32_t t = 0;
@@ -59,6 +61,10 @@ struct State {
 std::mutex g_mx;      // the confirm window and the last reply (the poll task; cheap insurance)
 std::mutex g_logMx;   // the change record (the poll task writes, the web task reads)
 State&     g_st = ::nimbus::psramObject<State>();
+
+uint64_t nowMs() { return (uint64_t)(esp_timer_get_time() / 1000); }   // 64-bit: never wraps
+
+Reply reply(std::string text, std::string mirror = std::string()) { return {std::move(text), std::move(mirror)}; }
 
 void pushRowLocked(uint32_t t, const char* src, const char* text) {
   if (g_st.n == kRows) {
@@ -96,14 +102,14 @@ void loadLogLocked() {
   }
 }
 
-bool persistLogLocked() {
+// Caller holds g_logMx: the file's content.
+std::string logBlobLocked() {
   std::string blob;
   for (size_t i = 0; i < g_st.n; ++i) {
     const LogRow& r = g_st.rows[i];
     blob += std::to_string(r.t) + "|" + r.src + "|" + r.text + "\n";
   }
-  LittleFS.mkdir("/data");
-  return agent::writeFileAtomic(kLogPath, blob, "budget_log");
+  return blob;
 }
 
 const char* channelSlug(const String& chat) {
@@ -117,18 +123,38 @@ const char* channelLabel(const String& chat) {
   return "Telegram";
 }
 
-// One applied change: the durable device log, the Usage page's record.
+// One applied change: the durable device log, the Usage page's record (written outside
+// the record's lock, so the web task never waits on the flash write; only this task
+// writes the file).
 void recordChange(const BudgetPlan& p, const String& chat) {
   const std::string what = nimbus::orch::changeSummary(p);
   alogf("budget: %s, from %s (confirmed by the owner)", what.c_str(), channelSlug(chat));
   const time_t now = time(nullptr);
-  std::lock_guard<std::mutex> lk(g_logMx);
-  loadLogLocked();
-  pushRowLocked(now >= nimbus::orch::kCeilingClockValid ? (uint32_t)now : 0, channelSlug(chat), what.c_str());
-  if (!persistLogLocked()) alogf("budget: the change record did not store (the change itself did)");
+  std::string blob;
+  {
+    std::lock_guard<std::mutex> lk(g_logMx);
+    loadLogLocked();
+    pushRowLocked(now >= nimbus::orch::kCeilingClockValid ? (uint32_t)now : 0, channelSlug(chat), what.c_str());
+    blob = logBlobLocked();
+  }
+  LittleFS.mkdir("/data");
+  if (!agent::writeFileAtomic(kLogPath, blob, "budget_log"))
+    alogf("budget: the change record did not store (the change itself did)");
 }
 
 // ---- the state ----------------------------------------------------------------------
+
+// A provider's token or call budget reached (the usage ledger's "over", when its dollar
+// limit is not what stops it): turns and searches to it are refused too.
+void addUsageLimits(LimitsView& v) {
+  JsonDocument d;
+  if (deserializeJson(d, agent::store::providerBudgetJson()) != DeserializationError::Ok) return;
+  for (JsonObjectConst e : d.as<JsonArrayConst>()) {
+    const char* p = e["prov"] | "";
+    const nimbus::orch::LimitRow* r = v.row(p);
+    if (*p && (e["over"] | false) && !(r && r->atLimit())) v.pauses.push_back({p, 0, 0, true});
+  }
+}
 
 LimitsView view() {
   LimitsView v;
@@ -139,8 +165,9 @@ LimitsView view() {
   for (size_t i = 0; i < n; ++i) {
     // A refusal counts when it closes replies (a 403 on one other seam does not).
     const uint8_t kind = (e[i].seamMask & chatSeam) ? (uint8_t)e[i].kind : 0;
-    if (e[i].paused || kind) v.pauses.push_back({e[i].provider, e[i].paused, kind});
+    if (e[i].paused || kind) v.pauses.push_back({e[i].provider, e[i].paused, kind, false});
   }
+  addUsageLimits(v);
   return v;
 }
 
@@ -170,25 +197,33 @@ bool apply(const BudgetPlan& p) {
   return storeProviderCents(p.req.target, p.toMicro / 10000ULL);
 }
 
-// Whether the state after the change matches what the reply is about to say.
+// Whether the state after the change is the one the reply is about to state: the limit
+// read back, and the pauses as planned (a full cap table or ledger can drop a limit).
 bool landedAsPlanned(const BudgetPlan& p) {
   const LimitsView after = view();
   if (after.frozen != p.overallFrozenAfter) return false;
-  if (p.overall) return true;
+  if (p.overall) return after.active && after.limitMicro == p.toMicro;
   const nimbus::orch::LimitRow* r = after.row(p.req.target);
-  return (r ? r->frozen : false) == p.targetFrozenAfter;
+  return (r ? r->capMicro : 0) == p.toMicro && (r ? r->atLimit() : false) == p.targetFrozenAfter;
 }
 
 Reply propose(const String& chat, const BudgetRequest& req) {
   const LimitsView v = view();
   const BudgetPlan p = nimbus::orch::planBudgetChange(req, v);
-  if (p.verdict == BudgetVerdict::Ok) {
+  const bool ok = p.verdict == BudgetVerdict::Ok;
+  {
     std::lock_guard<std::mutex> lk(g_mx);
-    g_st.confirm.propose(chat.c_str(), req, millis());
+    g_st.confirm.offer(chat.c_str(), req, ok, nowMs());   // a refused one cancels a waiting one
+  }
+  if (ok)
     alogf("budget: proposed from %s: %s (waits for /budget confirm)", channelSlug(chat),
           nimbus::orch::changeSummary(p).c_str());
-  }
-  return {nimbus::orch::proposalText(p, v), std::string()};
+  return reply(nimbus::orch::proposalText(p, v));
+}
+
+void markFailed(const String& chat) {
+  std::lock_guard<std::mutex> lk(g_mx);
+  g_st.confirm.failed(chat.c_str());
 }
 
 Reply confirm(const String& chat) {
@@ -197,22 +232,26 @@ Reply confirm(const String& chat) {
   bool ok;
   {
     std::lock_guard<std::mutex> lk(g_mx);
-    ok = g_st.confirm.take(chat.c_str(), millis(), req, why);
+    ok = g_st.confirm.take(chat.c_str(), nowMs(), req, why);
   }
-  if (!ok) return {nimbus::orch::confirmMissText(why, req), std::string()};
+  if (!ok) return reply(nimbus::orch::confirmMissText(why, req));
   // Re-planned on the state now: a change made meanwhile (the web page) is never
   // overwritten blind, and the bounds hold against the limit as it is now.
   const LimitsView v = view();
   const BudgetPlan p = nimbus::orch::planBudgetChange(req, v);
-  if (p.verdict != BudgetVerdict::Ok) return {"The limits changed since that was proposed. " + p.why, std::string()};
+  if (p.verdict != BudgetVerdict::Ok) {
+    markFailed(chat);
+    return reply(nimbus::orch::replanRefusedText(p));
+  }
   if (!apply(p)) {
+    markFailed(chat);
     alogf("budget: a confirmed change did not store - nothing changed");
-    return {"The change could not be stored, so nothing changed. Try again in a minute.", std::string()};
+    return reply(nimbus::orch::storeFailedText(req));
   }
   recordChange(p, chat);
   std::string text = nimbus::orch::appliedText(p, v);
-  if (!landedAsPlanned(p)) text += "\nSend /usage to see what is paused now.";
-  return {text, std::string("Changed from ") + channelLabel(chat) + ": " + nimbus::orch::changeSummary(p) + "."};
+  if (!landedAsPlanned(p)) text += "\nSend /usage to see what applies now.";
+  return reply(text, std::string("Changed from ") + channelLabel(chat) + ": " + nimbus::orch::changeSummary(p) + ".");
 }
 
 Reply modelReply() {
@@ -228,8 +267,8 @@ Reply modelReply() {
   f.last.host = g_st.last.host;
   f.last.model = g_st.last.model;
   f.last.requestedHost = g_st.last.requested;
-  f.last.agoS = (uint32_t)(millis() - g_st.last.atMs) / 1000u;
-  return {nimbus::orch::modelText(f), std::string()};
+  f.last.agoS = (uint32_t)((nowMs() - g_st.last.atMs) / 1000u);
+  return reply(nimbus::orch::modelText(f));
 }
 
 }  // namespace
@@ -238,34 +277,31 @@ Reply handle(const std::string& verb, const std::string& args, const String& cha
   const BudgetAccess access = nimbus::orch::budgetAccessFor(chatId.c_str(), owner);
   if (access == BudgetAccess::Group || access == BudgetAccess::NotOwner) {
     alogf("budget: /%s refused from %s", verb.c_str(), access == BudgetAccess::Group ? "a group chat" : "a member chat");
-    return {nimbus::orch::budgetAccessText(access), std::string()};
+    return reply(nimbus::orch::budgetAccessText(access));
   }
   if (verb == "model") return modelReply();
   BudgetRequest req;
   if (verb == "usage") req.verb = BudgetVerb::Show;
   else req = nimbus::orch::parseBudgetArgs(args);
   switch (req.verb) {
-    case BudgetVerb::Show:  return {nimbus::orch::usageText(view()), std::string()};
-    case BudgetVerb::Help:  return {nimbus::orch::budgetHelpText(), std::string()};
-    case BudgetVerb::Error: return {req.error, std::string()};
+    case BudgetVerb::Show:  return reply(nimbus::orch::usageText(view()));
+    case BudgetVerb::Help:  return reply(nimbus::orch::budgetHelpText());
+    case BudgetVerb::Error: return reply(req.error);
     case BudgetVerb::Cancel: {
       std::lock_guard<std::mutex> lk(g_mx);
-      return {g_st.confirm.cancel(chatId.c_str()) ? "Cancelled. Nothing changed." : "No change is waiting.", std::string()};
+      return reply(nimbus::orch::cancelText(g_st.confirm.cancel(chatId.c_str())));
     }
     default: break;
   }
   if (access == BudgetAccess::ReadOnly) {
     alogf("budget: a change by voice refused (read-only channel)");
-    return {nimbus::orch::budgetAccessText(access), std::string()};
+    return reply(nimbus::orch::budgetAccessText(access));
   }
   return req.verb == BudgetVerb::Confirm ? confirm(chatId) : propose(chatId, req);
 }
 
 void noteMessage(const String& chatId, const nimbus::orch::Command& cmd) {
-  if (cmd.isCommand && cmd.verb == "budget") {
-    const BudgetVerb v = nimbus::orch::parseBudgetArgs(cmd.args).verb;
-    if (v == BudgetVerb::Confirm || v == BudgetVerb::Cancel || v == BudgetVerb::Set || v == BudgetVerb::Off) return;
-  }
+  if (nimbus::orch::budgetKeepsWaiting(cmd)) return;
   bool cancelled;
   {
     std::lock_guard<std::mutex> lk(g_mx);
@@ -286,19 +322,21 @@ void noteTurnEnd(const std::string& host, const std::string& model, const std::s
   g_st.last.host = host;
   g_st.last.model = model;
   g_st.last.requested = requestedHost;
-  g_st.last.atMs = millis();
+  g_st.last.atMs = nowMs();
 }
 
 std::string changesJson() {
-  std::lock_guard<std::mutex> lk(g_logMx);
-  loadLogLocked();
   JsonDocument d;
   JsonArray a = d.to<JsonArray>();
-  for (size_t i = g_st.n; i-- > 0;) {
-    JsonObject o = a.add<JsonObject>();
-    o["t"] = g_st.rows[i].t;
-    o["src"] = g_st.rows[i].src;
-    o["text"] = g_st.rows[i].text;
+  {
+    std::lock_guard<std::mutex> lk(g_logMx);
+    loadLogLocked();
+    for (size_t i = g_st.n, k = 0; i-- > 0 && k < kPageRows; ++k) {
+      JsonObject o = a.add<JsonObject>();
+      o["t"] = g_st.rows[i].t;
+      o["src"] = g_st.rows[i].src;
+      o["text"] = g_st.rows[i].text;
+    }
   }
   std::string out;
   serializeJson(d, out);

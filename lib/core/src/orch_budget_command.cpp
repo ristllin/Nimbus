@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cctype>
+#include <cstdio>
 
 #include "nimbus/orch/provider_caps.h"   // providerName
 #include "nimbus/orch/provider_slots.h"
@@ -48,7 +49,12 @@ std::string quoted(const std::string& w) {
   return "\"" + out + "\"";
 }
 
-constexpr const char* kTargets = "anthropic, openai, mistral, zai, cumulo, custom, tavily, or all";
+// "anthropic, openai, ..., tavily, or all" (the providers a limit can be set for).
+std::string targetsText() {
+  std::string s;
+  for (const std::string& p : budgetProviders()) s += p + ", ";
+  return s + "or all";
+}
 
 BudgetRequest errorOf(const std::string& why) {
   BudgetRequest r;
@@ -57,10 +63,7 @@ BudgetRequest errorOf(const std::string& why) {
   return r;
 }
 
-uint64_t ceilDollarsMicro(uint64_t micro) {
-  const uint64_t d = (micro + 999999ULL) / 1000000ULL;
-  return d * 1000000ULL;
-}
+uint64_t ceilDollarsMicro(uint64_t micro) { return (micro + 999999ULL) / 1000000ULL * 1000000ULL; }
 
 // Rounds a whole-dollar amount up to a readable step: tens from 100 USD, hundreds from
 // 1,000 USD.
@@ -69,157 +72,40 @@ uint64_t roundUpReadable(uint64_t micro) {
   return (micro + step - 1) / step * step;
 }
 
-bool anyCap(const std::vector<LimitRow>& rows) {
-  for (const LimitRow& r : rows)
-    if (r.capMicro) return true;
-  return false;
-}
-
 SpendCeiling ceilingOf(const LimitsView& v) {
   SpendCeiling c;
   c.limitMicro = v.limitMicro;
   c.ownerSet = v.ownerSet;
   c.monthKey = v.monthKey;
   c.spentMicro = v.spentMicro;
-  c.providerCaps = anyCap(v.rows);
+  c.providerCaps = v.anyLimit();
   c.frozen = c.active() && c.spentMicro >= c.limitMicro;
   return c;
 }
 
-bool atOrOver(uint64_t capMicro, uint64_t spentMicro) { return capMicro && spentMicro >= capMicro; }
-
-// The bounds every Set passes before anything else.
-bool boundsRefusal(const BudgetRequest& req, std::string& why) {
-  if (req.micro < BudgetBounds::kMinMicro) {
-    why = "The smallest monthly limit is " + formatUsd(BudgetBounds::kMinMicro) + ". To remove a provider's "
-          "limit, send /budget <provider> off.";
-    return true;
-  }
-  if (req.micro > BudgetBounds::kMaxMicro) {
-    why = "The largest monthly limit is " + formatUsd(BudgetBounds::kMaxMicro) + ".";
-    return true;
-  }
-  return false;
-}
-
-std::string forceWhy(const BudgetPlan& p, const std::string& name) {
-  BudgetRequest again = p.req;
-  again.force = true;
-  std::string s;
-  if (p.toMicro > BudgetBounds::kNoForceMaxMicro)
-    s = formatUsd(p.toMicro) + " is above the " + formatUsd(BudgetBounds::kNoForceMaxMicro) +
-        " a month that /budget sets without a second word.";
-  else
-    s = "That raises " + name + " more than " + std::to_string(BudgetBounds::kMaxRaiseFactor) + " times, from " +
-        formatUsd(p.fromMicro) + " to " + formatUsd(p.toMicro) + ".";
-  return s + " If you mean it, send " + budgetCommandText(again) + ".";
-}
-
-void planProvider(BudgetPlan& p, const LimitsView& v) {
-  const std::string& slug = p.req.target;
-  const LimitRow* r = v.row(slug);
-  p.fromMicro = r ? r->capMicro : 0;
-  p.spentMicro = r ? r->spentMicro : 0;
-  p.toMicro = p.req.verb == BudgetVerb::Off ? 0 : p.req.micro;
-  p.targetFrozenBefore = r ? (r->frozen || atOrOver(r->capMicro, r->spentMicro)) : false;
-  p.targetFrozenAfter = atOrOver(p.toMicro, p.spentMicro);
-  std::vector<LimitRow> after = v.rows;
-  bool found = false;
-  for (LimitRow& row : after)
-    if (row.provider == slug) { row.capMicro = p.toMicro; found = true; }
-  if (!found) {
-    LimitRow row;
-    row.provider = slug;
-    row.capMicro = p.toMicro;
-    after.push_back(row);
-  }
-  SpendCeiling c = ceilingOf(v);
-  c.setProviderCaps(anyCap(after));
-  p.overallActiveAfter = c.active();
-  p.overallFrozenAfter = c.frozenWith(0);
-  p.overallLimitAfter = c.limitMicro;
-  if (p.targetFrozenBefore && !p.targetFrozenAfter) p.resumes.push_back(slug);
-  if (!p.targetFrozenBefore && p.targetFrozenAfter) p.pauses.push_back(slug);
-}
-
-void planOverall(BudgetPlan& p, const LimitsView& v) {
-  p.fromMicro = v.active ? v.limitMicro : 0;
-  p.spentMicro = v.spentMicro;
-  p.toMicro = p.req.micro;
-  SpendCeiling c = ceilingOf(v);
-  c.setLimit(p.req.micro);
-  p.overallActiveAfter = c.active();
-  p.overallFrozenAfter = c.frozenWith(0);
-  p.overallLimitAfter = c.limitMicro;
-}
-
-// The Unchanged / NeedsForce / Refused verdicts of a planned change ("" when Ok).
-BudgetVerdict verdictOf(BudgetPlan& p, const LimitsView& v) {
-  const std::string name = p.overall ? std::string("the overall ceiling") : providerName(p.req.target);
-  if (p.req.verb == BudgetVerb::Off) {
-    if (p.fromMicro) return BudgetVerdict::Ok;
-    p.why = capitalFirst(name) + " has no monthly limit. Nothing to change.";
-    return BudgetVerdict::Unchanged;
-  }
-  if (boundsRefusal(p.req, p.why)) return BudgetVerdict::Refused;
-  const bool same = p.overall ? (v.active && v.ownerSet && v.limitMicro == p.toMicro) : p.fromMicro == p.toMicro;
-  if (same) {
-    p.why = (p.overall ? std::string("The overall monthly ceiling") : "The " + name + " monthly limit") +
-            " is already " + formatUsd(p.toMicro) + ". Nothing to change.";
-    return BudgetVerdict::Unchanged;
-  }
-  if (!p.req.force && budgetNeedsForce(p.fromMicro, p.toMicro)) {
-    p.why = forceWhy(p, name);
-    return BudgetVerdict::NeedsForce;
-  }
-  return BudgetVerdict::Ok;
-}
-
-}  // namespace
-
-std::string capitalFirst(std::string s) {
-  if (!s.empty()) s[0] = (char)std::toupper((unsigned char)s[0]);
-  return s;
-}
-
-std::string budgetTargetSlug(const std::string& word) {
-  const std::string w = lower(word);
-  if (w == kBudgetAll) return kBudgetAll;
-  if (w == "z.ai") return "zai";
-  if (isProviderSlug(w.c_str()) || w == "custom" || w == "tavily") return w;
-  return std::string();
-}
-
-bool parseUsdAmount(const std::string& text, uint64_t& micro) {
-  std::string s = lower(text);
-  if (!s.empty() && s[0] == '$') s.erase(0, 1);
-  if (endsWith(s, "usd")) s.resize(s.size() - 3);
-  uint64_t dollars = 0, cents = 0;
-  int decimals = -1, digits = 0;
+// The dollar split of a typed amount ("70.5" -> 70, 50, 1 decimal); false when it is not
+// digits with at most one '.' and two decimals.
+bool splitDollarsCents(const std::string& s, uint64_t& dollars, uint64_t& cents, int& decimals) {
+  int digits = 0;
   for (char ch : s) {
     if (ch == '.') {
       if (decimals >= 0) return false;
       decimals = 0;
       continue;
     }
-    if (ch < '0' || ch > '9') return false;
+    if (ch < '0' || ch > '9' || decimals == 2) return false;
     ++digits;
-    if (decimals < 0) {
-      dollars = dollars * 10 + (uint64_t)(ch - '0');
-      if (dollars > 1000000000ULL) dollars = 1000000000ULL;   // saturate: refused as too large
-    } else {
-      if (decimals == 2) return false;
+    if (decimals >= 0) {
       cents = cents * 10 + (uint64_t)(ch - '0');
       ++decimals;
+    } else if ((dollars = dollars * 10 + (uint64_t)(ch - '0')) > 1000000000ULL) {
+      dollars = 1000000000ULL;   // saturate: refused by the plan as too large
     }
   }
-  if (digits == 0 || decimals == 0) return false;   // "", "$", "70."
-  if (decimals == 1) cents *= 10;
-  micro = dollars * 1000000ULL + cents * 10000ULL;
-  return true;
+  return digits > 0 && decimals != 0;   // not "", "$" or "70."
 }
 
-namespace {
+// ---- the parse ---------------------------------------------------------------------
 
 // A lone keyword ("confirm", "cancel", "help"); false for anything else.
 bool keywordOf(const std::vector<std::string>& w, BudgetRequest& r) {
@@ -232,12 +118,15 @@ bool keywordOf(const std::vector<std::string>& w, BudgetRequest& r) {
   return true;
 }
 
-// "<target> off": a provider's limit removed (the overall ceiling never by command).
+constexpr const char* kAllOff = "The overall ceiling can be turned off only on the device's web page (Assistant > "
+                                "Usage). To raise it, send /budget all <USD>.";
+
+// "<target> off [force]": a provider's limit removed (the overall ceiling never by command).
 BudgetRequest offOf(const std::vector<std::string>& w, BudgetRequest r) {
-  if (w.size() != 2) return errorOf("To remove a limit, send /budget " + r.target + " off on its own.");
-  if (r.target == kBudgetAll)
-    return errorOf("The overall ceiling can be turned off only on the device's web page (Assistant > Usage). "
-                   "To raise it, send /budget all <USD>.");
+  r.force = w.size() == 3 && lower(w[2]) == "force";
+  if (w.size() != 2 && !r.force)
+    return errorOf("To remove a limit, send /budget " + r.target + " off (or /budget " + r.target + " off force).");
+  if (r.target == kBudgetAll) return errorOf(kAllOff);
   r.verb = BudgetVerb::Off;
   return r;
 }
@@ -260,36 +149,129 @@ BudgetRequest setOf(const std::vector<std::string>& w, BudgetRequest r) {
   return r;
 }
 
-}  // namespace
+// ---- the plan ----------------------------------------------------------------------
 
-BudgetRequest parseBudgetArgs(const std::string& args) {
-  const std::vector<std::string> w = wordsOf(args);
-  BudgetRequest r;
-  if (w.empty()) {
-    r.verb = BudgetVerb::Show;
-    return r;
-  }
-  if (keywordOf(w, r)) return r;
-  r.target = budgetTargetSlug(w[0]);
-  if (r.target.empty())
-    return errorOf("There is no provider called " + quoted(w[0]) + ". Use " + kTargets + ".");
-  if (w.size() == 1)
-    return errorOf("Add the new monthly limit in dollars, for example /budget " + r.target + " 70.");
-  return lower(w[1]) == "off" ? offOf(w, r) : setOf(w, r);
+std::string limitWhat(const BudgetPlan& p) {
+  if (p.overall) return "the overall ceiling";
+  const std::string n = providerName(p.req.target);
+  return (n.rfind("your ", 0) == 0 ? "the " + n.substr(5) : "the " + n) + " limit";
 }
 
-std::string budgetCommandText(const BudgetRequest& req) {
-  std::string s = "/budget " + req.target;
-  if (req.verb == BudgetVerb::Off) return s + " off";
-  const uint64_t cents = req.micro / 10000ULL;
-  char amt[32];
-  if (cents % 100)
-    snprintf(amt, sizeof(amt), " %llu.%02llu", (unsigned long long)(cents / 100), (unsigned long long)(cents % 100));
-  else
-    snprintf(amt, sizeof(amt), " %llu", (unsigned long long)(cents / 100));
-  s += amt;
-  if (req.force) s += " force";
+std::string forceAgain(const BudgetPlan& p) {
+  BudgetRequest again = p.req;
+  again.force = true;
+  return " If you mean it, send " + budgetCommandText(again) + ".";
+}
+
+void planProvider(BudgetPlan& p, const LimitsView& v) {
+  const LimitRow* r = v.row(p.req.target);
+  p.fromMicro = r ? r->capMicro : 0;
+  p.spentMicro = r ? r->spentMicro : 0;
+  p.toMicro = p.req.verb == BudgetVerb::Off ? 0 : p.req.micro;
+  p.targetFrozenBefore = r && r->atLimit();
+  p.targetFrozenAfter = p.toMicro && p.spentMicro >= p.toMicro;
+  bool anyAfter = p.toMicro != 0;
+  for (const LimitRow& row : v.rows)
+    if (row.provider != p.req.target && row.capMicro) anyAfter = true;
+  SpendCeiling c = ceilingOf(v);
+  c.setProviderCaps(anyAfter);
+  p.overallActiveAfter = c.active();
+  p.overallFrozenAfter = c.frozenWith(0);
+}
+
+void planOverall(BudgetPlan& p, const LimitsView& v) {
+  p.fromMicro = v.active ? v.limitMicro : 0;
+  p.spentMicro = v.spentMicro;
+  p.toMicro = p.req.micro;
+  SpendCeiling c = ceilingOf(v);
+  c.setLimit(p.req.micro);
+  p.overallActiveAfter = c.active();
+  p.overallFrozenAfter = c.frozenWith(0);
+}
+
+// The "force" a change needs beyond the bounds ("" when none): a first provider limit
+// that turns the default overall ceiling off, and "off" when nothing would limit the
+// provider afterwards.
+std::string forceNeeded(const BudgetPlan& p) {
+  if (p.overall || p.req.force) return std::string();
+  const std::string name = capitalFirst(providerName(p.req.target));
+  if (p.req.verb == BudgetVerb::Off && !p.overallActiveAfter)
+    return name + " would have no monthly stop at all: the overall ceiling is off." + forceAgain(p);
+  if (p.overallActiveBefore && !p.overallActiveAfter)
+    return "A first provider limit turns the overall ceiling off, so every provider without a limit of its "
+           "own would have no monthly stop." + forceAgain(p) +
+           " To keep a ceiling as well, send /budget all <USD> afterwards.";
+  if (p.req.verb == BudgetVerb::Set && budgetNeedsForce(p.fromMicro, p.toMicro))
+    return p.toMicro > BudgetBounds::kNoForceMaxMicro
+               ? formatUsd(p.toMicro) + " is above the " + formatUsd(BudgetBounds::kNoForceMaxMicro) +
+                     " a month that /budget sets without a second word." + forceAgain(p)
+               : "That raises " + limitWhat(p) + " more than " + std::to_string(BudgetBounds::kMaxRaiseFactor) +
+                     " times, from " + formatUsd(p.fromMicro) + " to " + formatUsd(p.toMicro) + "." + forceAgain(p);
+  return std::string();
+}
+
+// Why a change is refused outright ("" when it is not): the overall ceiling turned off,
+// or an amount outside the bounds (even with force).
+std::string refusedWhy(const BudgetPlan& p) {
+  if (p.overall && p.req.verb == BudgetVerb::Off) return kAllOff;
+  if (p.req.verb != BudgetVerb::Set) return std::string();
+  const bool low = p.req.micro < BudgetBounds::kMinMicro;
+  if (!low && p.req.micro <= BudgetBounds::kMaxMicro) return std::string();
+  return std::string(low ? "The smallest" : "The largest") + (p.overall ? " overall ceiling is " : " monthly limit is ") +
+         formatUsd(low ? BudgetBounds::kMinMicro : BudgetBounds::kMaxMicro) + "." +
+         (low && !p.overall ? " To remove a provider's limit, send /budget <provider> off." : "");
+}
+
+// Why a change changes nothing ("" when it does).
+std::string unchangedWhy(const BudgetPlan& p, const LimitsView& v) {
+  if (p.req.verb == BudgetVerb::Off)
+    return p.fromMicro ? std::string() : capitalFirst(providerName(p.req.target)) + " has no monthly limit. Nothing to change.";
+  const bool same = p.overall ? (v.active && v.ownerSet && v.limitMicro == p.toMicro) : p.fromMicro == p.toMicro;
+  return same ? capitalFirst(limitWhat(p)) + " is already " + formatUsd(p.toMicro) + ". Nothing to change." : std::string();
+}
+
+// The verdict of a planned change; `why` filled for every verdict but Ok.
+BudgetVerdict verdictOf(BudgetPlan& p, const LimitsView& v) {
+  if (!(p.why = refusedWhy(p)).empty()) return BudgetVerdict::Refused;
+  if (!(p.why = unchangedWhy(p, v)).empty()) return BudgetVerdict::Unchanged;
+  p.why = forceNeeded(p);
+  return p.why.empty() ? BudgetVerdict::Ok : BudgetVerdict::NeedsForce;
+}
+
+}  // namespace
+
+std::string capitalFirst(std::string s) {
+  if (!s.empty()) s[0] = (char)std::toupper((unsigned char)s[0]);
   return s;
+}
+
+std::vector<std::string> budgetProviders() {
+  std::vector<std::string> out;
+  for (const ProviderSlot& s : kProviderSlots) out.push_back(s.slug);
+  out.push_back("custom");
+  out.push_back("tavily");
+  return out;
+}
+
+std::string budgetTargetSlug(const std::string& word) {
+  const std::string w = lower(word);
+  if (w == kBudgetAll) return kBudgetAll;
+  if (w == "z.ai") return "zai";
+  for (const std::string& p : budgetProviders())
+    if (w == p) return w;
+  return std::string();
+}
+
+bool parseUsdAmount(const std::string& text, uint64_t& micro) {
+  std::string s = lower(text);
+  if (!s.empty() && s[0] == '$') s.erase(0, 1);
+  if (endsWith(s, "usd")) s.resize(s.size() - 3);
+  uint64_t dollars = 0, cents = 0;
+  int decimals = -1;
+  if (!splitDollarsCents(s, dollars, cents, decimals)) return false;
+  if (decimals == 1) cents *= 10;
+  micro = dollars * 1000000ULL + cents * 10000ULL;
+  return true;
 }
 
 // ---- who may run them --------------------------------------------------------------
@@ -315,12 +297,61 @@ std::string budgetAccessText(BudgetAccess a) {
   return std::string();
 }
 
+bool runsWhilePaused(const std::string& text) {
+  const Command c = parseCommand(text);
+  if (!c.isCommand) return false;
+  for (const char* v : {"usage", "budget", "model", "help", "start"})
+    if (c.verb == v) return true;
+  return false;
+}
+
+// ---- the parse ---------------------------------------------------------------------
+
+BudgetRequest parseBudgetArgs(const std::string& args) {
+  const std::vector<std::string> w = wordsOf(args);
+  BudgetRequest r;
+  if (w.empty()) {
+    r.verb = BudgetVerb::Show;
+    return r;
+  }
+  if (keywordOf(w, r)) return r;
+  r.target = budgetTargetSlug(w[0]);
+  if (r.target.empty()) return errorOf("There is no provider called " + quoted(w[0]) + ". Use " + targetsText() + ".");
+  if (w.size() == 1)
+    return errorOf("Add the new monthly limit in dollars, for example /budget " + r.target + " 70.");
+  return lower(w[1]) == "off" ? offOf(w, r) : setOf(w, r);
+}
+
+std::string budgetCommandText(const BudgetRequest& req) {
+  std::string s = "/budget " + req.target;
+  if (req.verb == BudgetVerb::Off) return s + (req.force ? " off force" : " off");
+  const uint64_t cents = req.micro / 10000ULL;
+  char amt[32];
+  if (cents % 100)
+    snprintf(amt, sizeof(amt), " %llu.%02llu", (unsigned long long)(cents / 100), (unsigned long long)(cents % 100));
+  else
+    snprintf(amt, sizeof(amt), " %llu", (unsigned long long)(cents / 100));
+  return s + amt + (req.force ? " force" : "");
+}
+
+bool budgetKeepsWaiting(const Command& cmd) {
+  if (!cmd.isCommand || cmd.verb != "budget") return false;
+  const BudgetVerb v = parseBudgetArgs(cmd.args).verb;
+  return v == BudgetVerb::Confirm || v == BudgetVerb::Cancel || v == BudgetVerb::Set || v == BudgetVerb::Off;
+}
+
 // ---- the view ----------------------------------------------------------------------
 
 const LimitRow* LimitsView::row(const std::string& provider) const {
   for (const LimitRow& r : rows)
     if (r.provider == provider) return &r;
   return nullptr;
+}
+
+bool LimitsView::anyLimit() const {
+  for (const LimitRow& r : rows)
+    if (r.capMicro) return true;
+  return false;
 }
 
 uint8_t LimitsView::pausedBy(const std::string& provider) const {
@@ -332,8 +363,14 @@ uint8_t LimitsView::pausedBy(const std::string& provider) const {
 
 uint8_t LimitsView::parkKindOf(const std::string& provider) const {
   for (const PauseFact& f : pauses)
-    if (f.provider == provider) return f.parkKind;
+    if (f.provider == provider && f.parkKind) return f.parkKind;
   return 0;
+}
+
+bool LimitsView::usageLimited(const std::string& provider) const {
+  for (const PauseFact& f : pauses)
+    if (f.provider == provider && f.usageLimit) return true;
+  return false;
 }
 
 bool limitsViewFromJson(const std::string& stateJson, LimitsView& out) {
@@ -405,9 +442,8 @@ bool budgetCommandsInstalled() { return g_commands.load(); }
 uint64_t suggestedLimitMicro(uint64_t capMicro, uint64_t spentMicro) {
   const uint64_t base = capMicro > spentMicro ? capMicro : spentMicro;
   uint64_t s = roundUpReadable(ceilDollarsMicro(base + base / 2));
-  const uint64_t floor = ceilDollarsMicro(capMicro + 1000000ULL);
-  if (s < floor) s = roundUpReadable(floor);
-  if (s <= spentMicro) s = roundUpReadable(ceilDollarsMicro(spentMicro + 1000000ULL));
+  const uint64_t atLeast = ceilDollarsMicro(capMicro + 1000000ULL);
+  if (s < atLeast) s = roundUpReadable(atLeast);
   return s > BudgetBounds::kMaxMicro ? BudgetBounds::kMaxMicro : s;
 }
 
@@ -420,13 +456,26 @@ std::string liftCommand(const std::string& target, uint64_t capMicro, uint64_t s
   return budgetCommandText(r);
 }
 
+std::string liftSentence(const std::string& target, const std::string& what, uint64_t capMicro,
+                         uint64_t spentMicro) {
+  if (!budgetCommandsInstalled()) return std::string();
+  return " Reply " + liftCommand(target, capMicro, spentMicro) + " and then /budget confirm to raise " + what +
+         " to " + formatUsd(suggestedLimitMicro(capMicro, spentMicro)) + ".";
+}
+
 // ---- the confirm window ------------------------------------------------------------
 
-void BudgetConfirm::propose(const std::string& chat, const BudgetRequest& req, uint32_t nowMs) {
-  if (waiting_ && chat_ != chat) {
-    last_ = Ended::Replaced;
-    lastChat_ = chat_;
-    lastReq_ = req_;
+void BudgetConfirm::end(Ended why, const std::string& chat) {
+  waiting_ = false;
+  last_ = why;
+  lastChat_ = chat;
+  lastReq_ = req_;
+}
+
+void BudgetConfirm::offer(const std::string& chat, const BudgetRequest& req, bool ok, uint64_t nowMs) {
+  if (!ok) {
+    noteOther(chat);
+    return;
   }
   waiting_ = true;
   chat_ = chat;
@@ -434,50 +483,38 @@ void BudgetConfirm::propose(const std::string& chat, const BudgetRequest& req, u
   atMs_ = nowMs;
 }
 
-bool BudgetConfirm::take(const std::string& chat, uint32_t nowMs, BudgetRequest& out, Ended& why) {
-  if (waiting_ && chat_ == chat) {
-    waiting_ = false;
-    lastChat_ = chat;
-    lastReq_ = req_;
-    if ((uint32_t)(nowMs - atMs_) <= BudgetBounds::kConfirmWindowMs) {
-      last_ = Ended::Confirmed;
-      out = req_;
-      why = Ended::Confirmed;
-      return true;
-    }
-    last_ = Ended::Expired;
-    why = Ended::Expired;
+bool BudgetConfirm::take(const std::string& chat, uint64_t nowMs, BudgetRequest& out, Ended& why) {
+  if (waiting_ && chat_ != chat) {   // a confirm from another chat: the waiting change is dropped
+    end(Ended::ConfirmedElsewhere, chat_);
     out = lastReq_;
-    return false;
-  }
-  if (waiting_) {   // a confirm from another chat: the waiting change is dropped
-    waiting_ = false;
-    last_ = Ended::OtherChat;
-    lastChat_ = chat_;
-    lastReq_ = req_;
     why = Ended::OtherChat;
     return false;
+  }
+  if (waiting_) {
+    const bool inTime = nowMs >= atMs_ && nowMs - atMs_ <= BudgetBounds::kConfirmWindowMs;
+    end(inTime ? Ended::Confirmed : Ended::Expired, chat);
+    out = lastReq_;
+    why = last_;
+    return inTime;
   }
   why = lastChat_ == chat ? last_ : Ended::None;
   out = lastReq_;
   return false;
 }
 
+void BudgetConfirm::failed(const std::string& chat) {
+  if (!waiting_ && lastChat_ == chat && last_ == Ended::Confirmed) last_ = Ended::Failed;
+}
+
 bool BudgetConfirm::cancel(const std::string& chat) {
   if (!waiting_ || chat_ != chat) return false;
-  waiting_ = false;
-  last_ = Ended::Cancelled;
-  lastChat_ = chat;
-  lastReq_ = req_;
+  end(Ended::Cancelled, chat);
   return true;
 }
 
 bool BudgetConfirm::noteOther(const std::string& chat) {
   if (!waiting_ || chat_ != chat) return false;
-  waiting_ = false;
-  last_ = Ended::OtherMessage;
-  lastChat_ = chat;
-  lastReq_ = req_;
+  end(Ended::OtherMessage, chat);
   return true;
 }
 

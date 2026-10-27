@@ -1,6 +1,6 @@
 #include "nimbus/orch/provider_caps.h"
 
-#include "nimbus/orch/budget_command.h"   // liftCommand: the freeze notice names the command
+#include "nimbus/orch/budget_command.h"   // liftSentence: the freeze notice names the command
 
 #include <cstdio>
 #include <cstring>
@@ -366,11 +366,7 @@ std::string providerFreezeText(const CapFacts& f) {
   const std::string d = capResetText(f.periodKey, f.resetDay);
   s += d.empty() ? " It resumes when the next period starts" : " It resumes on " + d;
   s += ", or as soon as the limit is raised on the device's web page (Assistant > Usage).";
-  if (!budgetCommandsInstalled()) return s;   // a build with no /budget names no command
-  const uint64_t lift = suggestedLimitMicro(f.capMicro, f.spentMicro);
-  s += " Reply " + liftCommand(f.provider, f.capMicro, f.spentMicro) + " to raise its monthly limit to " +
-       formatUsd(lift) + ".";
-  return s;
+  return s + liftSentence(f.provider, "its monthly limit", f.capMicro, f.spentMicro);   // "" with no /budget
 }
 
 std::string providerWarnText(const CapFacts& f) {

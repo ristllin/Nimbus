@@ -144,7 +144,8 @@ A heads-up goes out once a month when the estimate reaches **80%** of the ceilin
 
 The owner can see and change the limits from Telegram (the owner's own chat with the
 device, never a group) or from the web chat. The commands never call a model, so they
-work while every provider is paused.
+work while every provider is paused (while the overall ceiling holds, the web chat
+answers these commands, `/model` and `/help`, and nothing else).
 
 | Command | What it does |
 |---|---|
@@ -162,10 +163,18 @@ last provider limit says the overall ceiling applies again. The change applies o
 when you send `/budget confirm` from the same chat within 2 minutes; any other message
 cancels it, and a restart drops it.
 
-Two guards stop a slip of the finger. A limit is between 1 USD and 100,000 USD. A raise
-above 250 USD a month, or to more than 10 times the current limit, needs the word
-`force` after the amount, for example `/budget anthropic 500 force`. Lowering a limit
-or setting a new one never does.
+Guards stop a slip of the finger. A limit is between 1 USD and 100,000 USD, even with
+`force`. The word `force` after the amount (or after `off`) is needed for:
+
+- a raise above 250 USD a month, or to more than 10 times the current limit, for
+  example `/budget anthropic 500 force`;
+- a first provider limit while the default overall ceiling is on: provider limits
+  replace that ceiling, so every provider without a limit of its own would have no
+  monthly stop (send `/budget all <USD>` afterwards to keep a ceiling as well);
+- removing a limit while the overall ceiling is off, which leaves that provider with
+  no monthly stop at all (`/budget openai off force`).
+
+Lowering a limit, or a new limit while an overall ceiling you set stays on, never does.
 
 Each applied change is written to the device log, listed on the web page under
 **Assistant > Usage** (the last few, with when and from where), and copied once into

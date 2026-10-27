@@ -5,7 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "nimbus/orch/budget_command.h"   // liftCommand: a pause notice names the command
+#include "nimbus/orch/budget_command.h"   // liftSentence: a pause notice names the command
 #include "nimbus/orch/model_defaults.h"
 #include "nimbus/orch/model_price_defaults.h"
 
@@ -286,10 +286,8 @@ constexpr const char* kWhere =
 // Lane BUD: a pause notice ends with the one command that lifts it from the owner's chat
 // (budget_command.h), so a paused device away from its web page is never stuck. Only on
 // a build that answers the command (the device; the hosted instance has none).
-std::string liftSentence(const CeilingFacts& f) {
-  if (!budgetCommandsInstalled()) return std::string();   // a build with no /budget (the hosted one)
-  return " Reply " + liftCommand(kBudgetAll, f.limitMicro, f.spentMicro) + " to raise the ceiling to " +
-         formatUsd(suggestedLimitMicro(f.limitMicro, f.spentMicro)) + ".";
+std::string ceilingLift(const CeilingFacts& f) {
+  return liftSentence(kBudgetAll, "the ceiling", f.limitMicro, f.spentMicro);
 }
 
 // The provider head row whose price table holds `head` (the first that does), or nullptr.
@@ -329,7 +327,7 @@ std::string freezeNoticeText(const CeilingFacts& f) {
          "is raised or the month ends. " +
          (d.empty() ? std::string("Paid calls resume when the next month starts")
                     : "Paid calls resume on " + d) +
-         ", or as soon as the ceiling is raised on the device's web page (Assistant > Usage)." + liftSentence(f);
+         ", or as soon as the ceiling is raised on the device's web page (Assistant > Usage)." + ceilingLift(f);
 }
 
 std::string freezeScreenLine(const CeilingFacts&) { return "Paid AI paused"; }
@@ -374,7 +372,7 @@ std::string migrationNoticeText(const CeilingFacts& f) {
          row->fallback + ") costs about " + r + "x less for the same work.";
   }
   s += " To change it, " + std::string(kWhere) + ".";
-  if (f.spentMicro >= f.limitMicro) s += liftSentence(f);   // paused now: name the command
+  if (f.spentMicro >= f.limitMicro) s += ceilingLift(f);   // paused now: name the command
   return s;
 }
 

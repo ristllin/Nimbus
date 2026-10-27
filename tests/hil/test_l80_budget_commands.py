@@ -23,9 +23,11 @@ record (``/api/tg/archive``, outbound rows of the owner chat):
      by any other message is cancelled.
 
 Everything changed is put back in a finally: the Anthropic budget entry, the Anthropic
-and overall counts (plus what the leg spent), the head and Mistral models, the provider
-keys, the allowlist and the bot token. Real calls: two short owner turns (Anthropic
-``claude-haiku-5-5`` and Mistral ``mistral-small-latest``), well under one cent each.
+and overall counts (plus what the leg spent), the head model, the provider keys, the
+allowlist and the bot token. Left behind by design: the change record's row on the
+Usage page (/data/budget_log.txt keeps the newest 8) and its copy in the web chat's
+history. Real calls: two short owner turns (Anthropic ``claude-haiku-5-5``, and Mistral
+on the unit's configured model), about a cent each.
 
 Run (unit A or L under its device lock; the leg takes ``locks/tg-bot`` itself):
 NIMBUS_STORM_TG=1 NIMBUS_BENCH_LOCKS=<program>/locks NIMBUS_STORM_UNIT=A \\
@@ -50,7 +52,6 @@ import pytest
 pytestmark = [pytest.mark.hil, pytest.mark.net]
 
 LEG = ""  # not a storm leg: the storm fixture writes no storm evidence for it
-MISTRAL_MODEL = os.environ.get("NIMBUS_L80_MISTRAL_MODEL", "mistral-small-latest")
 CAP_CENTS = 100  # the micro cap: 1.00 USD
 MEMBER_CHAT = 4747474791
 GROUP_CHAT = -1004747474792
@@ -190,16 +191,14 @@ def leg_keys(storm, kit) -> Iterator[None]:
 
 @contextlib.contextmanager
 def leg_models(storm, kit) -> Iterator[None]:
-    """The head on Anthropic claude-haiku-5-5 and Mistral on its small model."""
+    """The head on Anthropic claude-haiku-5-5 (Mistral keeps its configured model)."""
     o = storm.orch()
     prior = {"orchHost": o.get("orchHost") or ""}
-    for p in KEEP:
-        m = ((o.get("providers") or {}).get(p) or {}).get("orchModel")
-        if m:
-            prior[f"orchM_{p}"] = m
-    storm.post_orch({"orchHost": "anthropic", "orchM_anthropic": kit.MODEL, "convReset": "1"})
-    storm.post_orch({"orchM_mistral": MISTRAL_MODEL}, ok=(200, 400))  # 400: not a head pick here, keep the default
+    m = ((o.get("providers") or {}).get("anthropic") or {}).get("orchModel")
+    if m:
+        prior["orchM_anthropic"] = m
     try:
+        storm.post_orch({"orchHost": "anthropic", "orchM_anthropic": kit.MODEL, "convReset": "1"})
         yield
     finally:
         storm.post_orch(prior, ok=(200, 400, 507))
@@ -255,7 +254,7 @@ def freeze_anthropic(storm, state: dict) -> None:
 
 def leg_paused_answers(owner: Owner, kit) -> None:
     u = owner.ask("/usage", "Spending this month")
-    assert "Anthropic: $1.01 of its $1.00 limit." in u, u
+    assert "Anthropic: $1.01 of its $1.00 limit" in u, u
     assert "Anthropic (monthly limit reached)" in u, u
     m = owner.ask("/model", "The assistant runs on")
     assert f"Anthropic, {kit.MODEL} (your choice)" in m, m
@@ -270,17 +269,20 @@ def leg_failover(owner: Owner) -> None:
     assert "It started on Anthropic and moved to Mistral." in m, m
 
 
-def leg_strangers(storm, owner: Owner) -> List[str]:
-    """A member and a group (members) cannot propose; a member's confirm does not apply
-    the owner's waiting change. Returns the console lines of the group-as-owner probe."""
+def leg_strangers(storm, owner: Owner) -> bool:
+    """A member and a group (members) cannot propose; a group on the owner list is refused
+    by the spending commands' own rule; a member's confirm does not apply the owner's
+    waiting change. The owner's proposal is made last, so its 2-minute window holds only
+    the member's confirm. Returns whether the group-as-owner probe ran."""
     member = lambda text: inject_page(storm, kit_text_page(owner, MEMBER_CHAT, text))  # noqa: E731
     member("/budget anthropic 50")
     inject_page(storm, group_page(owner.next_uid(), "/budget@NimbusBenchBot anthropic 50"))
+    probed = bool(group_owner_probe(storm, owner))
     assert prov_row(spend(storm), "anthropic")["capCents"] == CAP_CENTS, "a member or group changed the limit"
     owner.ask("/budget anthropic 3", "Send /budget confirm within 2 minutes")
     member("/budget confirm")
     assert prov_row(spend(storm), "anthropic")["capCents"] == CAP_CENTS, "a member's confirm applied the change"
-    return group_owner_probe(storm, owner)
+    return probed
 
 
 def kit_text_page(owner: Owner, chat: int, text: str) -> str:
@@ -356,7 +358,7 @@ def test_l80_budget_commands(storm):
             freeze_anthropic(storm, state)
             leg_paused_answers(owner, kit)
             leg_failover(owner)
-            result["groupProbe"] = bool(leg_strangers(storm, owner))
+            result["groupProbe"] = leg_strangers(storm, owner)
             leg_raise(storm, owner, kit)
             leg_guards(storm, owner)
         result["grade"] = "PASS"

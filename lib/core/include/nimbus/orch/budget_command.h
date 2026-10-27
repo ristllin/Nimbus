@@ -4,11 +4,12 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/command.h"
 #include "nimbus/orch/spend_ceiling.h"
 
 // budget_command - the owner's spending commands over Telegram and the web chat:
 // /usage (and a bare /budget), /budget <provider|all> <USD> [force], /budget <provider>
-// off, /budget confirm and /budget cancel, and /model. Portable (NO Arduino),
+// off [force], /budget confirm and /budget cancel, and /model. Portable (NO Arduino),
 // host-tested in test/test_budget_command.
 //
 // Why: with every provider paused by a limit the device answers no message until the
@@ -20,34 +21,39 @@
 //   - every change is proposed first: the reply states the exact change and what it
 //     pauses or resumes, and it applies only on "/budget confirm" from the same chat
 //     within kConfirmWindowMs; any other message from that chat cancels it;
-//   - defensive bounds: a limit is at least kMinMicro and at most kMaxMicro; a single
-//     change above kNoForceMaxMicro, or more than kMaxRaiseFactor times the current
-//     limit, needs the word "force" after the amount;
-//   - "/budget <provider> off" removes a provider's limit (an explicit word, confirmed
-//     like every change); the overall ceiling is turned off only on the web page;
+//   - defensive bounds: a limit is at least kMinMicro and at most kMaxMicro, even with
+//     "force". The word "force" after the amount is needed for a raise of an existing
+//     limit above kNoForceMaxMicro or to more than kMaxRaiseFactor times it, for a first
+//     provider limit that turns the default overall ceiling off (every provider without
+//     a limit of its own then has no monthly stop), and for "off" when nothing else would
+//     limit that provider afterwards. A new limit or a lower one needs nothing;
+//   - the overall ceiling is turned off only on the web page;
 //   - the effect a reply states is the spend rules re-run on the changed limits
-//     (SpendCeiling for the overall ceiling, "at or over the limit" for a provider), so
-//     a change that turns the default ceiling back on, or that is still under this
-//     month's spend, says so before the owner confirms it.
-// Who may run them (owner chats only, never a group or a guest) is the device's check;
-// this module only parses, plans and words.
+//     (SpendCeiling for the overall ceiling, "at or over the limit" for a provider, as
+//     ProviderCaps decides), so a change that turns the ceiling off or back on, or that
+//     is still under this month's spend, says so before the owner confirms it.
+// Who may run them (owner chats only, never a group or a guest) is decided by
+// budgetAccessFor after the device's own owner gate.
 namespace nimbus {
 namespace orch {
 
 struct BudgetBounds {
   static constexpr uint64_t kMinMicro = SpendCeiling::kMinLimitMicro;   // 1 USD
   static constexpr uint64_t kMaxMicro = SpendCeiling::kMaxLimitMicro;   // 100,000 USD, even with force
-  static constexpr uint64_t kNoForceMaxMicro = 250000000ULL;            // 250 USD without "force"
-  static constexpr uint64_t kMaxRaiseFactor = 10;                       // more than 10x needs "force"
+  static constexpr uint64_t kNoForceMaxMicro = 250000000ULL;            // a raise above 250 USD needs force
+  static constexpr uint64_t kMaxRaiseFactor = 10;                       // more than 10x needs force
   static constexpr uint32_t kConfirmWindowMs = 120000;                  // 2 minutes
+  static_assert(kConfirmWindowMs % 60000 == 0, "the copy states the window in whole minutes");
 };
 
 // The target word for the overall ceiling.
 inline constexpr const char* kBudgetAll = "all";
 
+// Every provider a monthly limit can be set for (the slots of provider_slots.h, then the
+// custom endpoint and Tavily), in that order; the copy and the docs name the same list.
+std::vector<std::string> budgetProviders();
 // The provider slug a typed word names ("anthropic", "z.ai" -> "zai"), "all" for the
-// overall ceiling, "" for anything else. Case-insensitive. The providers are the ones a
-// monthly limit can be set for: every provider slot, the custom endpoint and Tavily.
+// overall ceiling, "" for anything else. Case-insensitive.
 std::string budgetTargetSlug(const std::string& word);
 
 // A typed dollar amount ("70", "70.5", "$70.25", "70usd") in micro-USD. False for
@@ -68,6 +74,11 @@ BudgetAccess budgetAccessFor(const std::string& chatId, bool owner);
 // The refusal for NotOwner / Group, the read-only note for ReadOnly ("" for Full).
 std::string budgetAccessText(BudgetAccess a);
 
+// Whether a slash command still runs in the web chat while the overall ceiling pauses
+// paid calls: the spending commands, /model and /help (they never call a model). Any
+// other text gets the web chat's "paid calls are paused" answer at once.
+bool runsWhilePaused(const std::string& text);
+
 // ---- the parse -------------------------------------------------------------------
 
 enum class BudgetVerb : uint8_t { Show, Set, Off, Confirm, Cancel, Help, Error };
@@ -81,20 +92,25 @@ struct BudgetRequest {
 };
 
 // The arguments after "/budget": "" -> Show; "confirm", "cancel", "help"; "<target>
-// <amount> [usd] [force]" -> Set; "<target> off" -> Off; anything else -> Error.
+// <amount> [usd] [force]" -> Set; "<target> off [force]" -> Off; anything else -> Error.
 BudgetRequest parseBudgetArgs(const std::string& args);
 
 // The command that asks for `req` again ("/budget anthropic 70 force").
 std::string budgetCommandText(const BudgetRequest& req);
 
+// Whether a message keeps a change that waits for confirmation (from the same chat):
+// only "/budget confirm", "/budget cancel" (they decide it) and a new /budget change (it
+// replaces it; a refused one cancels it, BudgetConfirm::offer). Anything else cancels.
+bool budgetKeepsWaiting(const Command& cmd);
+
 // ---- what the device knows -------------------------------------------------------
 
-// Why paid calls to a provider are held off besides its own limit: the park's pause
-// causes (nimbus/orch/provider_park.h PauseCause bits) and refusal kind.
+// Why paid calls to a provider are held off besides its own dollar limit.
 struct PauseFact {
-  std::string provider;   // slug; "*" holds the causes that pause every provider
-  uint8_t     paused = 0; // PauseCause bits
-  uint8_t     parkKind = 0;   // ParkKind: 1 out of credit, 2 key refused
+  std::string provider;           // slug; "*" holds the causes that pause every provider
+  uint8_t     paused = 0;         // the park's PauseCause bits (provider_park.h)
+  uint8_t     parkKind = 0;       // the park's ParkKind: 1 out of credit, 2 key refused
+  bool        usageLimit = false; // its token or call budget is reached (the usage ledger)
 };
 
 // One provider's count against its monthly limit (the spend store's row).
@@ -104,9 +120,11 @@ struct LimitRow {
   uint64_t    spentMicro = 0;   // this period
   bool        frozen = false;
   std::string resetsOn;         // "1 November" ("" when the clock is unset)
+  // At or over its limit (the stored episode, or the count against the cap).
+  bool atLimit() const { return capMicro && (frozen || spentMicro >= capMicro); }
 };
 
-// The spend store's state (agent::spend::stateJson) plus the park's pauses.
+// The spend store's state (agent::spend::stateJson) plus the other pauses.
 struct LimitsView {
   bool        loaded = false;
   uint64_t    limitMicro = SpendCeiling::kDefaultLimitMicro;
@@ -122,9 +140,11 @@ struct LimitsView {
   std::vector<PauseFact> pauses;
 
   const LimitRow* row(const std::string& provider) const;
+  bool anyLimit() const;   // some provider has a dollar limit
   // The pause causes of `provider` (its own plus every-provider ones) and its park kind.
   uint8_t pausedBy(const std::string& provider) const;
   uint8_t parkKindOf(const std::string& provider) const;
+  bool    usageLimited(const std::string& provider) const;
 };
 
 // The store's state JSON into `out` (rows and the overall figures; pauses untouched).
@@ -145,11 +165,8 @@ struct BudgetPlan {
   // The spend rules before and after the change.
   bool     overallActiveBefore = false, overallActiveAfter = false;
   bool     overallFrozenBefore = false, overallFrozenAfter = false;
-  uint64_t overallLimitAfter = 0;
   bool     targetFrozenBefore = false, targetFrozenAfter = false;   // a provider's own limit
-  std::vector<std::string> resumes;   // providers whose own-limit pause ends
-  std::vector<std::string> pauses;    // providers whose own-limit pause starts
-  std::string why;                    // NeedsForce / Refused / Unchanged: plain words
+  std::string why;               // NeedsForce / Refused / Unchanged: plain words
 };
 
 // The plan for a Set or Off request on the state `v` (re-run at confirm time on the
@@ -158,49 +175,68 @@ BudgetPlan planBudgetChange(const BudgetRequest& req, const LimitsView& v);
 
 // Whether this build answers the spending commands: the device installs them at
 // start-up (src/agent/budget_command.cpp); the hosted instance has no such command, so
-// its pause notices are worded without one. Unset = not installed.
+// its pause notices are worded without one. Unset = not installed. (A process-wide
+// switch rather than a field of CeilingFacts/CapFacts: the stores that fill those facts
+// belong to the spend-ceiling seams and the hosted instance, which this lane leaves be.)
 void installBudgetCommands(bool on = true);
 bool budgetCommandsInstalled();
 
 // A suggested new limit that lifts a pause at `capMicro` with `spentMicro` counted:
-// about half again over the larger of the two, in whole dollars, at least a dollar over
-// the cap, at most kMaxMicro.
+// about half again over the larger of the two, in whole dollars (tens from 100 USD,
+// hundreds from 1,000 USD), at least a dollar over the cap, at most kMaxMicro.
 uint64_t suggestedLimitMicro(uint64_t capMicro, uint64_t spentMicro);
-// Whether moving a limit from `fromMicro` (0 = none) to `toMicro` needs "force".
+// Whether a raise of an existing limit from `fromMicro` (0 = none) to `toMicro` needs
+// "force" by the bounds alone (the plan adds the overall-ceiling and "off" cases).
 bool budgetNeedsForce(uint64_t fromMicro, uint64_t toMicro);
 // "/budget anthropic 75" (with " force" when the suggestion needs it) for `target` (a
 // provider slug or kBudgetAll) paused at `capMicro` with `spentMicro` counted.
 std::string liftCommand(const std::string& target, uint64_t capMicro, uint64_t spentMicro);
+// The sentence a pause notice ends with: "Reply <liftCommand> and then /budget confirm
+// to raise <what> to $X." ("" on a build without the commands).
+std::string liftSentence(const std::string& target, const std::string& what, uint64_t capMicro,
+                         uint64_t spentMicro);
 
 // ---- the confirm window ----------------------------------------------------------
 
 // One change waits for confirmation at a time, device-wide (RAM only: a restart drops
-// it). nowMs is a monotonic millisecond clock (wraps safely).
+// it). nowMs is a monotonic 64-bit millisecond clock.
 class BudgetConfirm {
  public:
-  enum class Ended : uint8_t { None, Confirmed, Expired, Cancelled, Replaced, OtherMessage, OtherChat };
+  enum class Ended : uint8_t {
+    None,                // nothing ever waited for that chat
+    Confirmed,           // it was applied
+    Expired,             // the confirm came after the window
+    Cancelled,           // /budget cancel
+    OtherMessage,        // another message from that chat
+    OtherChat,           // (to the confirming chat) nothing waited here; a change waiting elsewhere is dropped
+    ConfirmedElsewhere,  // (to the proposing chat) a confirm from another chat dropped it
+    Failed,              // confirmed, but it could not be applied
+  };
 
-  // `chat` proposes `req`; a change already waiting (from any chat) is replaced.
-  void propose(const std::string& chat, const BudgetRequest& req, uint32_t nowMs);
+  // `chat` proposed `req`: it waits when `ok` (the plan's verdict was Ok, replacing any
+  // waiting change); a refused proposal cancels that chat's waiting change instead.
+  void offer(const std::string& chat, const BudgetRequest& req, bool ok, uint64_t nowMs);
   // "/budget confirm" from `chat`: true and the request when one waits for that chat
-  // within the window. Otherwise false, and `why` says what happened to the last one:
-  // Expired, Cancelled / OtherMessage / Replaced / OtherChat, or None (nothing ever
-  // waited). A confirm from another chat cancels the waiting change (fail closed).
-  bool take(const std::string& chat, uint32_t nowMs, BudgetRequest& out, Ended& why);
+  // within the window. Otherwise false, and `why` says what happened to the last one
+  // (`out` = its request, for "send it again"). A confirm from another chat drops the
+  // waiting change (fail closed).
+  bool take(const std::string& chat, uint64_t nowMs, BudgetRequest& out, Ended& why);
+  // The confirmed change of `chat` could not be applied (the next confirm says so).
+  void failed(const std::string& chat);
   // "/budget cancel" from `chat`: true when it cancelled a change of that chat.
   bool cancel(const std::string& chat);
-  // Any other message from `chat` (a chat message or another command): cancels a change
-  // that chat proposed; true when it did. Messages from other chats change nothing.
+  // Any other message from `chat`: cancels a change that chat proposed; true when it
+  // did. Messages from other chats change nothing.
   bool noteOther(const std::string& chat);
   bool waiting() const { return waiting_; }
-  // The request that waits (valid while waiting()).
-  const BudgetRequest& request() const { return req_; }
 
  private:
+  void end(Ended why, const std::string& chat);
+
   bool          waiting_ = false;
   std::string   chat_;
   BudgetRequest req_;
-  uint32_t      atMs_ = 0;
+  uint64_t      atMs_ = 0;
   Ended         last_ = Ended::None;
   std::string   lastChat_;
   BudgetRequest lastReq_;
@@ -210,7 +246,6 @@ class BudgetConfirm {
 
 // "anthropic" -> "Anthropic", "your custom endpoint" -> "Your custom endpoint".
 std::string capitalFirst(std::string s);
-
 // The /usage reply. Not loaded: says the figures are not ready yet.
 std::string usageText(const LimitsView& v);
 // The proposal ("Change ... ? Send /budget confirm within 2 minutes ...") for an Ok
@@ -219,8 +254,14 @@ std::string usageText(const LimitsView& v);
 std::string proposalText(const BudgetPlan& p, const LimitsView& v);
 // The reply once the change was stored (`p` re-planned at confirm time on `v`).
 std::string appliedText(const BudgetPlan& p, const LimitsView& v);
+// The reply to a confirm whose re-plan (on the state at confirm time) is not Ok.
+std::string replanRefusedText(const BudgetPlan& p);
+// The reply when a confirmed change could not be stored (nothing changed).
+std::string storeFailedText(const BudgetRequest& req);
 // The reply to a confirm with nothing to apply (`why`, `last` = the ended request).
 std::string confirmMissText(BudgetConfirm::Ended why, const BudgetRequest& last);
+// The reply to /budget cancel (`cancelled`: a change was waiting).
+std::string cancelText(bool cancelled);
 // The /budget usage lines.
 std::string budgetHelpText();
 
@@ -231,7 +272,8 @@ struct LastTurnFacts {
   bool        ok = false;
   std::string host;              // the provider that answered (failover-final)
   std::string model;             // the model key it billed under ("" = none billed)
-  std::string concreteModel;     // the exact id the provider reported ("" = not recorded)
+  std::string concreteModel;     // the exact id the provider reported ("" = not recorded:
+                                 // the turn result does not carry it yet; lane HFM adds it)
   std::string requestedHost;     // the head the turn started on
   uint32_t    agoS = 0;
 };
@@ -250,8 +292,8 @@ std::string modelText(const ModelFacts& f);
 
 // ---- the Usage page's record ------------------------------------------------------
 
-// One line of the change record ("Anthropic monthly limit $50.00 -> $70.00"), from the
-// applied plan.
+// One line of the change record ("Anthropic monthly limit changed from $50.00 to
+// $70.00"), from the applied plan.
 std::string changeSummary(const BudgetPlan& p);
 
 }  // namespace orch

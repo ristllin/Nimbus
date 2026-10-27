@@ -3867,7 +3867,7 @@ function renderBudgetLog(){
   const src={telegram:'Telegram',web:'web chat',serial:'serial console'};
   const when=t=>t?new Date(t*1000).toLocaleString([],{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'Time not known';
   box.innerHTML='<p class=hint style="margin:6px 0 2px">Changed by command:</p>'+rows.map(r=>
-    '<div class=hint>'+_sEsc(when(r.t))+' ('+_sEsc(src[r.src]||String(r.src||''))+'): '+_sEsc(String(r.text||''))+'</div>').join('');
+    '<div class=hint>'+_sEsc(when(r.t))+' ('+_sEsc(Object.prototype.hasOwnProperty.call(src,r.src)?src[r.src]:String(r.src||''))+'): '+_sEsc(String(r.text||''))+'</div>').join('');
 }
 if($('ceil_usd'))$('ceil_usd').oninput=()=>{$('ceil_usd').dataset.edited='1';};
 if($('ceil_on'))$('ceil_on').onchange=()=>{$('ceil_on').dataset.edited='1';};

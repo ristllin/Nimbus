@@ -82,7 +82,7 @@
 #include "../agent/fs_atomic.h"         // flashMounted - /api/state fsMounted
 #include "../agent/dream_subsystem.h"   // the last night - /api/state dream
 #include "../agent/spend_ceiling_store.h"   // lane DEF: the monthly spend ceiling (state + setting)
-#include "nimbus/orch/command.h"             // lane BUD: a slash command passes the paused web chat
+#include "nimbus/orch/budget_command.h"      // lane BUD: runsWhilePaused (the paused web chat)
 #include "../agent/budget_command.h"         // lane BUD: the /budget changes the Usage page lists
 #include "../agent/telegram.h"          // /api/telegram - allowlist + approval (P8)
 #include "ble_notifier.h"               // /api/health - BLE status (Notifier mode)
@@ -3203,10 +3203,10 @@ void beginWeb(const WebConfig& wc) {
     if (text.length() == 0) { r->send(400, "application/json", "{\"error\":\"empty message\"}"); return; }
     // Lane DEF: at the monthly spend ceiling no turn can run; say so at once instead of
     // a message that waits for a reply that never comes (the chat's one notice already
-    // explains it; this is the send's answer, not a chat message). Lane BUD: a slash
-    // command never calls a model, so it still goes through (the pause notice ends with
-    // the /budget command that lifts it, and /usage says what is paused).
-    if (nimbus::orch::spendFrozen() && !nimbus::orch::isCommandText(std::string(text.c_str()))) {
+    // explains it; this is the send's answer, not a chat message). Lane BUD: the spending
+    // commands, /model and /help never call a model, so they still go through (the pause
+    // notice ends with the /budget command that lifts it, and /usage says what is paused).
+    if (nimbus::orch::spendFrozen() && !nimbus::orch::runsWhilePaused(std::string(text.c_str()))) {
       r->send(409, "application/json",
               "{\"error\":\"Paid AI calls are paused: this month's spend ceiling is reached. "
               "Raise it on Assistant > Usage, or send the /budget command from the pause message.\","

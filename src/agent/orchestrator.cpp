@@ -1547,7 +1547,7 @@ static TurnEngine::Deps buildTurnDeps() {
                   "the turn-end row is always produced only within kTurnEndRowMin");
     const char* src = agent::turnSourceSlug(ev.source, ev.attribution);
     // Lane BUD: /model's "last reply" (the served provider and the model it billed under).
-    budget::noteTurnEnd(ev.host, ev.servedModel.empty() ? ev.model : ev.servedModel, ev.requestedHost, src, ev.ok);
+    budget::noteTurnEnd(ev.host, ev.servedModel, ev.requestedHost, src, ev.ok);
     if (memory::traceActive() && g_turnTag[0] && !ev.chatId.empty()) {
       // Served-by disclosure (CUM-236 device leg): the turn view (_turnChip) reads
       // model+fallback off this row. The shared rule decides it; it never names a
@@ -2122,15 +2122,15 @@ void handleMessage(const String& text, const String& fromName, const String& cha
       if (v == "usage" || v == "budget" || v == "model") {
         // Lane BUD: the spending commands and /model - deterministic, owner-only, never
         // a paid turn, so they work while every provider is paused. The module refuses a
-        // group chat and a change by voice on its own; an applied change is mirrored once
-        // to the web chat (a change made in the web chat is already there).
+        // group chat and a change by voice on its own; an applied change is copied once into
+        // the web chat's history (a change made in the web chat is already there). History
+        // only: a delivery to "web" here would fill the web chat's reply slot of a turn
+        // that is not running.
         const budget::Reply r = budget::handle(v, cmd.args, chatId, owner);
         say(selfTag + String(r.text.c_str()));
-        if (!r.mirror.empty() && chatId != "web") {
+        if (!r.mirror.empty() && chatId != "web")
           memory::captureMessage("web", "assistant", orch::MsgKind::Message, String(r.mirror.c_str()), "",
                                  "ev:budget");
-          deliver("web", String(r.mirror.c_str()), /*system=*/true);
-        }
         return;
       }
       if (v == "help" || v == "start") {

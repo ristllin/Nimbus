@@ -14,6 +14,7 @@
 #include "nimbus/orch/command.h"
 #include "nimbus/orch/provider_caps.h"
 #include "nimbus/orch/provider_park.h"
+#include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/spend_ceiling.h"
 
 // The owner's spending commands (lane BUD, owner request 26 Oct 2026: with every
@@ -135,7 +136,7 @@ static void test_the_parse_refuses_with_plain_words() {
       {"anthropic seventy", "is not an amount"},
       {"anthropic 70 please", "Only the word force"},
       {"anthropic 70 force now", "Only the word force"},
-      {"anthropic off now", "on its own"},
+      {"anthropic off now", "To remove a limit, send /budget anthropic off"},
       {"all off", "only on the device's web page"},
       {"confirm now", "no provider called"},
   };
@@ -181,6 +182,7 @@ static void test_force_is_needed_exactly_for_a_big_raise() {
       const bool expect = from > 0 && to > from && (to > 10 * from || to > 250 * kUsd);
       TEST_ASSERT_EQUAL_MESSAGE(expect, budgetNeedsForce(from, to), (std::to_string(from) + "->" + std::to_string(to)).c_str());
       LimitsView v = defaultView(0);
+      v.ownerSet = true;   // an owner-set ceiling stays on: the bounds alone decide here
       v.rows = {{"anthropic", from, 0, false, "1 November"}};
       const BudgetPlan plain = planBudgetChange(set("anthropic", to), v);
       if (from == to) {
@@ -203,7 +205,7 @@ static void test_the_bounds_hold_even_with_force() {
   TEST_ASSERT_TRUE(p.why.find("smallest monthly limit is $1.00") != std::string::npos);
   p = planBudgetChange(set("all", 100001 * kUsd, true), v);
   TEST_ASSERT_TRUE(p.verdict == BudgetVerdict::Refused);
-  TEST_ASSERT_TRUE(p.why.find("largest monthly limit is $100000.00") != std::string::npos);
+  TEST_ASSERT_TRUE(p.why.find("largest overall ceiling is $100000.00") != std::string::npos);
   p = planBudgetChange(set("all", 100000 * kUsd, true), v);
   TEST_ASSERT_TRUE(p.verdict == BudgetVerdict::Ok);
   // The force refusal names the exact command that would pass.
@@ -226,10 +228,10 @@ static void test_raising_a_paused_provider_resumes_it() {
   TEST_ASSERT_TRUE(p.verdict == BudgetVerdict::Ok);
   TEST_ASSERT_TRUE(p.targetFrozenBefore);
   TEST_ASSERT_FALSE(p.targetFrozenAfter);
-  TEST_ASSERT_EQUAL(1, (int)p.resumes.size());
   TEST_ASSERT_FALSE(p.overallActiveAfter);   // other limits remain: the ceiling stays off
   const std::string text = proposalText(p, v);
   TEST_ASSERT_TRUE(text.find("Change the Anthropic monthly limit from $250.00 to $400.00?") == 0);
+  TEST_ASSERT_TRUE(text.find("Anthropic spend so far: $296.82.") != std::string::npos);
   TEST_ASSERT_TRUE(text.find("Paid calls to Anthropic resume once it is applied.") != std::string::npos);
   TEST_ASSERT_TRUE(text.find("Send /budget confirm within 2 minutes") != std::string::npos);
   // Still under this month's spend: it says the pause stays.
@@ -248,7 +250,8 @@ static void test_lowering_a_limit_under_the_spend_pauses_it() {
   const LimitsView v = lumiView();
   const BudgetPlan p = planBudgetChange(set("mistral", 2 * kUsd), v);
   TEST_ASSERT_TRUE(p.verdict == BudgetVerdict::Ok);
-  TEST_ASSERT_EQUAL(1, (int)p.pauses.size());
+  TEST_ASSERT_FALSE(p.targetFrozenBefore);
+  TEST_ASSERT_TRUE(p.targetFrozenAfter);
   TEST_ASSERT_TRUE(proposalText(p, v).find("Set a monthly limit of $2.00 for Mistral?") == 0);
   TEST_ASSERT_TRUE(proposalText(p, v).find("Paid calls to Mistral pause once it is applied.") != std::string::npos);
   TEST_ASSERT_TRUE(appliedText(p, v).find("Paid calls to Mistral pause now.") != std::string::npos);
@@ -329,7 +332,7 @@ static void test_every_pause_notice_ends_with_a_command_that_lifts_it() {
       f.periodKey = 2026 * 12 + 9;
       const std::string notice = providerFreezeText(f);
       std::smatch m;
-      TEST_ASSERT_TRUE_MESSAGE(std::regex_search(notice, m, std::regex(R"re(Reply (/budget [^ ]+ [0-9.]+( force)?) to raise its monthly limit to \$[0-9.]+\.$)re")),
+      TEST_ASSERT_TRUE_MESSAGE(std::regex_search(notice, m, std::regex(R"re(Reply (/budget [^ ]+ [0-9.]+( force)?) and then /budget confirm to raise its monthly limit to \$[0-9.]+\.$)re")),
                                notice.c_str());
       const Command c = parseCommand(m[1].str());
       const BudgetRequest r = parseBudgetArgs(c.args);
@@ -343,14 +346,13 @@ static void test_every_pause_notice_ends_with_a_command_that_lifts_it() {
       }
       TEST_ASSERT_TRUE_MESSAGE(p.verdict == BudgetVerdict::Ok, notice.c_str());
       TEST_ASSERT_FALSE_MESSAGE(p.targetFrozenAfter, notice.c_str());
-      TEST_ASSERT_EQUAL(1, (int)p.resumes.size());
       // The overall ceiling's notice, the same rule.
       CeilingFacts cf;
       cf.limitMicro = cap;
       cf.spentMicro = spent;
       cf.monthKey = 202610;
       const std::string all = freezeNoticeText(cf);
-      TEST_ASSERT_TRUE_MESSAGE(std::regex_search(all, m, std::regex(R"re(Reply (/budget all [0-9.]+( force)?) to raise the ceiling to \$[0-9.]+\.$)re")),
+      TEST_ASSERT_TRUE_MESSAGE(std::regex_search(all, m, std::regex(R"re(Reply (/budget all [0-9.]+( force)?) and then /budget confirm to raise the ceiling to \$[0-9.]+\.$)re")),
                                all.c_str());
       LimitsView g = defaultView(0);
       g.ownerSet = true;
@@ -380,10 +382,210 @@ static void test_every_pause_notice_ends_with_a_command_that_lifts_it() {
   mig.limitMicro = 20 * kUsd;
   mig.spentMicro = 6320 * kCent;
   mig.monthKey = 202610;
-  TEST_ASSERT_TRUE(noticeText(SpendCeiling::Notice::Migration, mig).find("Reply /budget all 95 to raise the ceiling") !=
+  TEST_ASSERT_TRUE(noticeText(SpendCeiling::Notice::Migration, mig).find("Reply /budget all 95 and then /budget confirm to raise the ceiling") !=
                    std::string::npos);
   mig.spentMicro = 660 * kCent;
   TEST_ASSERT_TRUE(noticeText(SpendCeiling::Notice::Migration, mig).find("/budget") == std::string::npos);
+}
+
+
+// ---- the force cases beyond the bounds -------------------------------------------------
+
+// On a default (not owner-set) ceiling the first provider limit turns the ceiling off:
+// every provider without a limit of its own then has no monthly stop. A slip there needs
+// the second word, and the proposal says what happens.
+static void test_a_first_limit_that_turns_the_ceiling_off_needs_force() {
+  const LimitsView paused = defaultView(25 * kUsd);
+  BudgetPlan p = planBudgetChange(set("tavily", 1 * kUsd), paused);
+  TEST_ASSERT_TRUE(p.verdict == BudgetVerdict::NeedsForce);
+  TEST_ASSERT_TRUE(p.why.find("A first provider limit turns the overall ceiling off") == 0);
+  TEST_ASSERT_TRUE(p.why.find("If you mean it, send /budget tavily 1 force.") != std::string::npos);
+  p = planBudgetChange(set("tavily", 1 * kUsd, true), paused);
+  TEST_ASSERT_TRUE(p.verdict == BudgetVerdict::Ok);
+  TEST_ASSERT_TRUE(proposalText(p, paused).find("The overall ceiling of $20.00 turns off while you have provider "
+                                                "limits, so providers without a limit of their own have no monthly "
+                                                "stop and its pause ends once it is applied.") != std::string::npos);
+  // An owner-set ceiling stays on: no force, nothing about the ceiling.
+  LimitsView owner = defaultView(5 * kUsd);
+  owner.ownerSet = true;
+  p = planBudgetChange(set("tavily", 1 * kUsd), owner);
+  TEST_ASSERT_TRUE(p.verdict == BudgetVerdict::Ok);
+  TEST_ASSERT_TRUE(proposalText(p, owner).find("overall ceiling") == std::string::npos);
+}
+
+// "off" with the overall ceiling off leaves the provider with no stop at all.
+static void test_off_with_nothing_else_limiting_needs_force() {
+  const LimitsView v = lumiView();   // ceiling off, Anthropic keeps its limit
+  BudgetPlan p = planBudgetChange(parseBudgetArgs("openai off"), v);
+  TEST_ASSERT_TRUE(p.verdict == BudgetVerdict::NeedsForce);
+  TEST_ASSERT_EQUAL_STRING("OpenAI would have no monthly stop at all: the overall ceiling is off. If you mean it, "
+                           "send /budget openai off force.",
+                           p.why.c_str());
+  p = planBudgetChange(parseBudgetArgs("openai off force"), v);
+  TEST_ASSERT_TRUE(p.verdict == BudgetVerdict::Ok);
+  TEST_ASSERT_TRUE(proposalText(p, v).find("OpenAI will have no monthly limit, and nothing else limits it: the "
+                                           "overall ceiling is off.") != std::string::npos);
+  // The overall ceiling is never turned off by command, whatever reaches the plan.
+  BudgetRequest allOff;
+  allOff.verb = BudgetVerb::Off;
+  allOff.target = "all";
+  allOff.force = true;
+  TEST_ASSERT_TRUE(planBudgetChange(allOff, v).verdict == BudgetVerdict::Refused);
+  TEST_ASSERT_EQUAL_STRING("The smallest overall ceiling is $1.00.",
+                           planBudgetChange(set("all", 50 * kCent, true), v).why.c_str());
+}
+
+// ---- which messages keep a waiting change ----------------------------------------------
+
+static void test_only_a_confirm_cancel_or_new_change_keeps_a_waiting_one() {
+  struct Case { std::string text; bool keeps; };
+  const Case cases[] = {
+      {"/budget confirm", true},       {"/budget@NimbusBot confirm", true}, {"/budget cancel", true},
+      {"/budget anthropic 70", true},  {"/budget anthropic 7000", true},    {"/budget openai off", true},
+      {"/budget", false},              {"/budget help", false},             {"/budget bogus 5", false},
+      {"/budget confirm now", false},  {"/usage", false},                   {"/model", false},
+      {"/help", false},                {"/clear yes", false},               {"hello there", false},
+      {forwardedText("/budget confirm"), false},
+  };
+  for (const Case& c : cases)
+    TEST_ASSERT_EQUAL_MESSAGE(c.keeps, budgetKeepsWaiting(parseCommand(c.text)), c.text.c_str());
+}
+
+// The paused web chat lets through exactly the commands that never call a model.
+static void test_the_paused_web_chat_runs_only_model_free_commands() {
+  for (const char* t : {"/usage", "/budget anthropic 70", "/budget confirm", "/model", "/help", "/start", " /usage"})
+    TEST_ASSERT_TRUE_MESSAGE(runsWhilePaused(t), t);
+  for (const char* t : {"/compact", "/remind 5m tea", "/loops", "/zzz", "hello", "usage"})
+    TEST_ASSERT_FALSE_MESSAGE(runsWhilePaused(t), t);
+}
+
+// ---- every provider, every line ----------------------------------------------------------
+
+static void checkWording(const std::string& text, const std::string& where) {
+  TEST_ASSERT_TRUE_MESSAGE(printable(text), where.c_str());
+  for (const char* bad : {"the your", "The your", "s your custom", " Your "})
+    TEST_ASSERT_TRUE_MESSAGE(text.find(bad) == std::string::npos, (where + ": " + text).c_str());
+}
+
+// The provider list is the registry plus the custom endpoint and Tavily, and every one
+// reads right in every line that names it (the custom endpoint's name starts "your").
+static void test_every_provider_reads_right_in_every_line() {
+  std::vector<std::string> want;
+  for (const ProviderSlot& slot : kProviderSlots) want.push_back(slot.slug);
+  want.push_back("custom");
+  want.push_back("tavily");
+  TEST_ASSERT_TRUE(budgetProviders() == want);
+  const std::string doc = slurp("docs/spend-ceiling.md");
+  const std::string commands = doc.substr(doc.find("## Commands"), doc.find("\n## ", doc.find("## Commands") + 3));
+  for (const std::string& t : want) {
+    TEST_ASSERT_EQUAL_STRING(t.c_str(), budgetTargetSlug(t).c_str());
+    TEST_ASSERT_TRUE_MESSAGE(budgetHelpText().find(t) != std::string::npos, t.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(commands.find("`" + t + "`") != std::string::npos, t.c_str());
+    LimitsView v = lumiView();
+    v.rows.push_back({t, 5 * kUsd, 6 * kUsd, true, "1 November"});
+    v.pauses.push_back({t, kPauseProviderLimit, (uint8_t)ParkKind::Billing, true});
+    checkWording(usageText(v), t + " usage");
+    for (const char* args : {" 7", " 5", " off force", " 2"}) {
+      const BudgetPlan p = planBudgetChange(parseBudgetArgs(t + args), v);
+      checkWording(proposalText(p, v), t + args);
+      if (p.verdict == BudgetVerdict::Ok) checkWording(appliedText(p, v) + "\n" + changeSummary(p), t + args);
+    }
+    LimitsView fresh = lumiView();
+    const BudgetPlan first = planBudgetChange(set(t.c_str(), 4 * kUsd), fresh);
+    checkWording(proposalText(first, fresh), t + " first");
+    CapFacts cf;
+    cf.provider = t;
+    cf.capMicro = 5 * kUsd;
+    cf.spentMicro = 6 * kUsd;
+    cf.periodKey = 2026 * 12 + 9;
+    const std::string notice = providerFreezeText(cf);
+    const size_t at = notice.find("Reply /budget ");
+    TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, notice.c_str());
+    const BudgetRequest r = parseBudgetArgs(parseCommand(notice.substr(at + 6)).args.substr(0, notice.substr(at + 6).find(" and then") - 8));
+    TEST_ASSERT_TRUE_MESSAGE(r.verb == BudgetVerb::Set && r.target == t, notice.c_str());
+    ModelFacts m;
+    m.chosenHost = t;
+    m.runsOnHost = t;
+    m.runsOnModel = "some-model";
+    m.limits = v;
+    m.last.known = true;
+    m.last.host = t;
+    m.last.requestedHost = "anthropic";
+    checkWording(modelText(m), t + " model");
+  }
+}
+
+// ---- the plan against the real rules -------------------------------------------------------
+
+namespace {
+const LocalDate kToday{2026, 10, 22};
+
+// The real counters for one grid point: Anthropic's limit `cap` (0 = none) and count
+// `spent`, OpenAI limited too when `otherCap`, the ceiling owner-set at 20 USD or the
+// default, and the month's count a dollar over Anthropic's.
+struct Real {
+  std::vector<CapRule> rules;
+  ProviderCaps pc;
+  SpendCeiling c;
+};
+Real realOf(bool ownerSet, bool otherCap, uint64_t cap, uint64_t spent) {
+  Real r;
+  if (cap) r.rules.push_back({"anthropic", cap, 1});
+  if (otherCap) r.rules.push_back({"openai", 10 * kUsd, 1});
+  r.pc.seed("anthropic", spent, kToday);
+  r.pc.setRules(r.rules, kToday);
+  if (ownerSet) r.c.setLimit(20 * kUsd);
+  r.c.add(spent + 1 * kUsd, 202610);
+  r.c.setProviderCaps(r.pc.anyCap());
+  return r;
+}
+
+LimitsView viewOf(const Real& r) {
+  LimitsView v;
+  v.loaded = true;
+  v.limitMicro = r.c.limitMicro;
+  v.spentMicro = r.c.spentMicro;
+  v.ownerSet = r.c.ownerSet;
+  v.active = r.c.active();
+  v.frozen = r.c.frozenWith(0);
+  v.monthKey = 202610;
+  for (int i = 0; i < (int)r.pc.n; ++i)
+    v.rows.push_back({r.pc.rows[i].provider, r.pc.rows[i].capMicro, r.pc.rows[i].spentMicro, r.pc.rows[i].frozen, ""});
+  return v;
+}
+
+// The same change on the real counters: Anthropic's limit becomes `to` (0 = removed).
+void applyReal(Real& r, uint64_t to) {
+  bool found = false;
+  for (CapRule& rule : r.rules)
+    if (rule.provider == "anthropic") { rule.capMicro = to; found = true; }
+  if (to && !found) r.rules.push_back({"anthropic", to, 1});
+  r.pc.setRules(r.rules, kToday);
+  r.c.setProviderCaps(r.pc.anyCap());
+}
+}  // namespace
+
+// The plan's simulation over a grid of states and changes agrees with the real counters:
+// ProviderCaps (the rules, the seed, the freeze) and SpendCeiling (on, off, frozen).
+static void test_the_plan_matches_the_real_counters() {
+  const uint64_t caps[] = {0, 5 * kUsd, 50 * kUsd};
+  const uint64_t spends[] = {0, 3 * kUsd, 50 * kUsd, 60 * kUsd};
+  const uint64_t news[] = {0, 2 * kUsd, 50 * kUsd, 100 * kUsd};   // 0 = off
+  int checked = 0;
+  for (int k = 0; k < 2 * 2 * 3 * 4 * 4; ++k) {
+    const bool ownerSet = k & 1, otherCap = (k >> 1) & 1;
+    const uint64_t cap = caps[(k >> 2) % 3], spent = spends[(k / 12) % 4], to = news[(k / 48) % 4];
+    Real r = realOf(ownerSet, otherCap, cap, spent);
+    const BudgetPlan p =
+        planBudgetChange(to ? set("anthropic", to, true) : parseBudgetArgs("anthropic off force"), viewOf(r));
+    if (p.verdict != BudgetVerdict::Ok) continue;
+    applyReal(r, to);
+    TEST_ASSERT_EQUAL(r.pc.frozenWith("anthropic", 0), p.targetFrozenAfter);
+    TEST_ASSERT_EQUAL(r.c.active(), p.overallActiveAfter);
+    TEST_ASSERT_EQUAL(r.c.frozenWith(0), p.overallFrozenAfter);
+    ++checked;
+  }
+  TEST_ASSERT_TRUE(checked > 40);
 }
 
 // ---- the confirm window ---------------------------------------------------------------
@@ -396,28 +598,32 @@ static void test_the_confirm_window_is_two_minutes_and_one_chat() {
   TEST_ASSERT_FALSE(w.take("111", 0, out, why));
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::None);
   // On the last millisecond of the window: applied, once.
-  w.propose("111", r, 5000);
+  w.offer("111", r, true, 5000);
   TEST_ASSERT_TRUE(w.take("111", 5000 + BudgetBounds::kConfirmWindowMs, out, why));
   TEST_ASSERT_EQUAL_UINT64(70 * kUsd, out.micro);
   TEST_ASSERT_FALSE(w.take("111", 5001 + BudgetBounds::kConfirmWindowMs, out, why));
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::Confirmed);
   // One millisecond late: expired, and the reply offers the command again.
-  w.propose("111", r, 5000);
+  w.offer("111", r, true, 5000);
   TEST_ASSERT_FALSE(w.take("111", 5001 + BudgetBounds::kConfirmWindowMs, out, why));
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::Expired);
   TEST_ASSERT_TRUE(confirmMissText(why, out).find("To try again, send /budget anthropic 70.") != std::string::npos);
-  // Across the millisecond clock's wrap.
-  w.propose("111", r, 0xFFFFFF00u);
-  TEST_ASSERT_TRUE(w.take("111", 0x00000100u, out, why));
-  // A confirm from another chat applies nothing and drops the waiting change.
-  w.propose("111", r, 0);
+  // The clock is 64-bit: 50 days later (a 32-bit millisecond clock would have wrapped
+  // back into the window) the change is long expired.
+  w.offer("111", r, true, 1000);
+  TEST_ASSERT_FALSE(w.take("111", 1000 + 50ULL * 86400000ULL, out, why));
+  TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::Expired);
+  // A confirm from another chat applies nothing and drops the waiting change; the
+  // proposer then reads why.
+  w.offer("111", r, true, 0);
   TEST_ASSERT_FALSE(w.take("222", 10, out, why));
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::OtherChat);
   TEST_ASSERT_FALSE(w.waiting());
   TEST_ASSERT_FALSE(w.take("111", 20, out, why));
-  TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::OtherChat);
+  TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::ConfirmedElsewhere);
+  TEST_ASSERT_TRUE(confirmMissText(why, out).find("a confirmation came from another chat") != std::string::npos);
   // Any other message from the same chat cancels; from another chat it changes nothing.
-  w.propose("111", r, 0);
+  w.offer("111", r, true, 0);
   TEST_ASSERT_FALSE(w.noteOther("222"));
   TEST_ASSERT_TRUE(w.waiting());
   TEST_ASSERT_TRUE(w.noteOther("111"));
@@ -425,20 +631,35 @@ static void test_the_confirm_window_is_two_minutes_and_one_chat() {
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::OtherMessage);
   TEST_ASSERT_TRUE(confirmMissText(why, out).find("cancelled by your next message") != std::string::npos);
   // /budget cancel, and a newer proposal replaces an older one.
-  w.propose("111", r, 0);
+  w.offer("111", r, true, 0);
   TEST_ASSERT_FALSE(w.cancel("222"));
   TEST_ASSERT_TRUE(w.cancel("111"));
   TEST_ASSERT_FALSE(w.take("111", 10, out, why));
   TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::Cancelled);
-  w.propose("111", r, 0);
-  w.propose("111", set("anthropic", 80 * kUsd), 10);
+  w.offer("111", r, true, 0);
+  w.offer("111", set("anthropic", 80 * kUsd), true, 10);
   TEST_ASSERT_TRUE(w.take("111", 20, out, why));
   TEST_ASSERT_EQUAL_UINT64(80 * kUsd, out.micro);
-  w.propose("111", r, 0);
-  w.propose("web", set("openai", 9 * kUsd), 10);
+  w.offer("111", r, true, 0);
+  w.offer("web", set("openai", 9 * kUsd), true, 10);
   TEST_ASSERT_FALSE(w.take("111", 20, out, why));   // drops the web chat's change too (fail closed)
   TEST_ASSERT_FALSE(w.waiting());
-  for (int e = 0; e <= (int)BudgetConfirm::Ended::OtherChat; ++e)
+  // A refused proposal cancels the chat's waiting change ("anything else cancels").
+  w.offer("111", r, true, 0);
+  w.offer("111", set("anthropic", 900 * kUsd), false, 10);
+  TEST_ASSERT_FALSE(w.waiting());
+  TEST_ASSERT_FALSE(w.take("111", 20, out, why));
+  TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::OtherMessage);
+  // A confirmed change that could not be applied says so on the next confirm, never
+  // "already applied".
+  w.offer("111", r, true, 0);
+  TEST_ASSERT_TRUE(w.take("111", 10, out, why));
+  w.failed("111");
+  TEST_ASSERT_FALSE(w.take("111", 20, out, why));
+  TEST_ASSERT_TRUE(why == BudgetConfirm::Ended::Failed);
+  TEST_ASSERT_TRUE(confirmMissText(why, out).find("The last change was not applied. To try again, send /budget "
+                                                  "anthropic 70.") == 0);
+  for (int e = 0; e <= (int)BudgetConfirm::Ended::Failed; ++e)
     TEST_ASSERT_TRUE(printable(confirmMissText((BudgetConfirm::Ended)e, r)));
 }
 
@@ -519,12 +740,19 @@ static void test_copy_goldens() {
   out += "[proposal, overall raise]\n" + proposalText(p, frozen) + "\n";
   out += "[applied, overall raise]\n" + appliedText(p, frozen) + "\n";
   out += "[record, overall raise]\n" + changeSummary(p) + "\n";
-  BudgetRequest off;
-  off.verb = BudgetVerb::Off;
-  off.target = "openai";
-  p = planBudgetChange(off, lumi);
-  out += "[proposal, provider off]\n" + proposalText(p, lumi) + "\n";
+  p = planBudgetChange(parseBudgetArgs("openai off"), lumi);
+  out += "[refusal, off with nothing else limiting]\n" + proposalText(p, lumi) + "\n";
+  p = planBudgetChange(parseBudgetArgs("openai off force"), lumi);
+  out += "[proposal, provider off force]\n" + proposalText(p, lumi) + "\n";
   out += "[record, provider off]\n" + changeSummary(p) + "\n";
+  const LimitsView dflt = defaultView(25 * kUsd);
+  out += "[refusal, a first limit turns the ceiling off]\n" +
+         proposalText(planBudgetChange(set("anthropic", 10 * kUsd), dflt), dflt) + "\n";
+  p = planBudgetChange(set("anthropic", 10 * kUsd, true), dflt);
+  out += "[proposal, a first limit with force]\n" + proposalText(p, dflt) + "\n";
+  out += "[replies, confirm paths]\n" + storeFailedText(set("anthropic", 70 * kUsd)) + "\n" +
+         replanRefusedText(planBudgetChange(set("anthropic", 900 * kUsd), lumi)) + "\n" + cancelText(true) +
+         "\n" + cancelText(false) + "\n";
   out += "[help]\n" + budgetHelpText() + "\n";
   CapFacts cf;
   cf.provider = "anthropic";
@@ -590,6 +818,12 @@ int main(int, char**) {
   RUN_TEST(test_removing_the_last_limit_says_the_ceiling_returns);
   RUN_TEST(test_the_overall_ceiling_plans);
   RUN_TEST(test_every_pause_notice_ends_with_a_command_that_lifts_it);
+  RUN_TEST(test_a_first_limit_that_turns_the_ceiling_off_needs_force);
+  RUN_TEST(test_off_with_nothing_else_limiting_needs_force);
+  RUN_TEST(test_only_a_confirm_cancel_or_new_change_keeps_a_waiting_one);
+  RUN_TEST(test_the_paused_web_chat_runs_only_model_free_commands);
+  RUN_TEST(test_every_provider_reads_right_in_every_line);
+  RUN_TEST(test_the_plan_matches_the_real_counters);
   RUN_TEST(test_the_confirm_window_is_two_minutes_and_one_chat);
   RUN_TEST(test_owner_chats_only_never_a_group);
   RUN_TEST(test_the_dispatcher_wires_the_verbs);

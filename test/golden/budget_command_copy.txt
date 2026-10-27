@@ -7,7 +7,7 @@ Mistral: $3.13, no limit.
 Today: $1.20, daily warning at $5.00.
 Paused now: Anthropic (monthly limit reached) and OpenAI (monthly limit reached).
 Monthly counts start again on 1 November.
-Send /budget anthropic 450 force to raise the Anthropic limit.
+Send /budget anthropic 450 force and then /budget confirm to raise the Anthropic limit.
 [usage, new device]
 Spending this month (estimated): $0.00 across all providers.
 Overall ceiling: $20.00.
@@ -21,7 +21,7 @@ Overall ceiling: $20.00, reached.
 Today: $0.00, with the built-in daily warning.
 Paused now: every provider, because the overall ceiling is reached.
 Monthly counts start again on 1 November.
-Send /budget all 31 to raise the ceiling.
+Send /budget all 31 and then /budget confirm to raise the ceiling.
 [usage, out of credit, a reset day]
 Spending this month (estimated): $377.00 across all providers.
 Overall ceiling: off while you have provider limits.
@@ -32,7 +32,7 @@ Z.ai: $2.00 of its $15.00 limit (starts again 15 November).
 Today: $1.20, daily warning at $5.00.
 Paused now: Anthropic (monthly limit reached), OpenAI (monthly limit reached) and Z.ai (out of credit).
 Monthly counts start again on 1 November.
-Send /budget anthropic 450 force to raise the Anthropic limit.
+Send /budget anthropic 450 force and then /budget confirm to raise the Anthropic limit.
 [usage, not loaded]
 Spending figures are not ready yet: the device is still starting, or its clock is not set. Try again in a minute.
 [usage, overall and a provider limit]
@@ -42,10 +42,10 @@ Anthropic: $12.00 of its $10.00 limit.
 Today: $0.00, with the built-in daily warning.
 Paused now: every provider, because the overall ceiling is reached. Also paused on their own: Anthropic (monthly limit reached).
 Monthly counts start again on 1 November.
-Send /budget all 31 to raise the ceiling.
+Send /budget all 31 and then /budget confirm to raise the ceiling.
 [proposal, provider raise]
 Change the Anthropic monthly limit from $250.00 to $400.00?
-This month's Anthropic spend so far: $296.82.
+Anthropic spend so far: $296.82.
 Paid calls to Anthropic resume once it is applied.
 Send /budget confirm within 2 minutes to apply it. Any other message cancels it.
 [applied, provider raise]
@@ -57,7 +57,7 @@ Anthropic monthly limit changed from $250.00 to $400.00
 $400.00 is above the $250.00 a month that /budget sets without a second word. If you mean it, send /budget anthropic 400 force.
 [proposal, overall raise]
 Change the overall monthly ceiling from $20.00 to $31.00?
-This month's spend so far: $20.13.
+Spend so far this month: $20.13.
 Paid calls resume once it is applied.
 Send /budget confirm within 2 minutes to apply it. Any other message cancels it.
 [applied, overall raise]
@@ -65,14 +65,28 @@ Done. The overall monthly ceiling is now $31.00 (it was $20.00).
 Paid calls resume now.
 [record, overall raise]
 Overall ceiling changed from $20.00 to $31.00
-[proposal, provider off]
+[refusal, off with nothing else limiting]
+OpenAI would have no monthly stop at all: the overall ceiling is off. If you mean it, send /budget openai off force.
+[proposal, provider off force]
 Remove the OpenAI monthly limit of $75.00?
-This month's OpenAI spend so far: $77.05.
-OpenAI will have no monthly limit.
+OpenAI spend so far: $77.05.
+OpenAI will have no monthly limit, and nothing else limits it: the overall ceiling is off.
 Paid calls to OpenAI resume once it is applied.
 Send /budget confirm within 2 minutes to apply it. Any other message cancels it.
 [record, provider off]
 OpenAI monthly limit of $75.00 removed
+[refusal, a first limit turns the ceiling off]
+A first provider limit turns the overall ceiling off, so every provider without a limit of its own would have no monthly stop. If you mean it, send /budget anthropic 10 force. To keep a ceiling as well, send /budget all <USD> afterwards.
+[proposal, a first limit with force]
+Set a monthly limit of $10.00 for Anthropic?
+Anthropic spend so far: $0.00.
+The overall ceiling of $20.00 turns off while you have provider limits, so providers without a limit of their own have no monthly stop and its pause ends once it is applied.
+Send /budget confirm within 2 minutes to apply it. Any other message cancels it.
+[replies, confirm paths]
+The change could not be stored, so nothing changed. To try again, send /budget anthropic 70.
+The limits changed since that was proposed, so nothing changed. $900.00 is above the $250.00 a month that /budget sets without a second word. If you mean it, send /budget anthropic 900 force.
+Cancelled. Nothing changed.
+No change is waiting.
 [help]
 Spending commands:
 /usage - this month's spending, limits and what is paused
@@ -80,13 +94,13 @@ Spending commands:
 /budget all <USD> - set the overall monthly ceiling
 /budget <provider> off - remove a provider's limit
 /budget confirm - apply the change just proposed (within 2 minutes); /budget cancel drops it
-Providers: anthropic, openai, mistral, zai, cumulo, custom, tavily. A raise above $250.00, or more than 10 times the limit, needs the word force after the amount.
+Providers: cumulo, openai, anthropic, mistral, zai, custom, tavily. A raise above $250.00, or to more than 10 times the limit, needs the word force after the amount.
 [notice, provider limit, a raise that needs force]
-Paid AI calls to Anthropic are paused. This month's estimated Anthropic spend ($296.82) reached the $250.00 monthly limit you set, so replies, helpers, memory, voice, photos and images stop using Anthropic; other providers keep working. It resumes on 1 November, or as soon as the limit is raised on the device's web page (Assistant > Usage). Reply /budget anthropic 450 force to raise its monthly limit to $450.00.
+Paid AI calls to Anthropic are paused. This month's estimated Anthropic spend ($296.82) reached the $250.00 monthly limit you set, so replies, helpers, memory, voice, photos and images stop using Anthropic; other providers keep working. It resumes on 1 November, or as soon as the limit is raised on the device's web page (Assistant > Usage). Reply /budget anthropic 450 force and then /budget confirm to raise its monthly limit to $450.00.
 [notice, provider limit]
-Paid AI calls to Anthropic are paused. This month's estimated Anthropic spend ($50.12) reached the $50.00 monthly limit you set, so replies, helpers, memory, voice, photos and images stop using Anthropic; other providers keep working. It resumes on 1 November, or as soon as the limit is raised on the device's web page (Assistant > Usage). Reply /budget anthropic 76 to raise its monthly limit to $76.00.
+Paid AI calls to Anthropic are paused. This month's estimated Anthropic spend ($50.12) reached the $50.00 monthly limit you set, so replies, helpers, memory, voice, photos and images stop using Anthropic; other providers keep working. It resumes on 1 November, or as soon as the limit is raised on the device's web page (Assistant > Usage). Reply /budget anthropic 76 and then /budget confirm to raise its monthly limit to $76.00.
 [notice, overall ceiling]
-Paid AI calls are paused. This month's estimated spend ($20.13) reached the monthly spend ceiling of $20.00, so replies, helpers, voice, photo and image features stay off until the ceiling is raised or the month ends. Paid calls resume on 1 November, or as soon as the ceiling is raised on the device's web page (Assistant > Usage). Reply /budget all 31 to raise the ceiling to $31.00.
+Paid AI calls are paused. This month's estimated spend ($20.13) reached the monthly spend ceiling of $20.00, so replies, helpers, voice, photo and image features stay off until the ceiling is raised or the month ends. Paid calls resume on 1 November, or as soon as the ceiling is raised on the device's web page (Assistant > Usage). Reply /budget all 31 and then /budget confirm to raise the ceiling to $31.00.
 [model, head paused, failover]
 The assistant runs on Anthropic, claude-opus-5 (your choice).
 Last reply (3 min ago): Mistral, mistral-medium-latest. It started on Anthropic and moved to Mistral.
