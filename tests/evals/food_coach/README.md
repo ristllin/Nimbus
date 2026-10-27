@@ -26,6 +26,7 @@ see any of them:
 | `plan-earlier` | A dinner plan; the foods were listed several messages earlier | The earlier list is used and never asked for again |
 | `complaint-recovery` | "You invented things I didn't say we have" | One short acknowledgement, then a corrected plan from the listed foods |
 | `no-inventory-guard` | A dinner plan when no food was ever named | One short question, or a plan clearly labeled as suggestions: never a confident guess |
+| `evening-replay` | The 26 Oct evening: a day of meals after a compaction (a stale summary with an old pending question and another day's total, a 16 Oct meal stored as a standing rule), "the full list by meal", a photo nobody could read, "you estimated earlier, what's the total?" | The list and the total come from today's ledger, the dropped question stays dropped, the photo failure is said, the dinner is written to the ledger, the total adds up, nothing is "not saved" |
 
 The last scenario is a guard: a fix for invented food must not turn into guessing or
 into a stall when the owner has named nothing.
@@ -36,9 +37,12 @@ reported and never gate. A scenario meets the target when at least 4 of its 5 ru
 
 ## How a run works
 
-1. `fcworld.py` builds the world from the scenario file: a food log for today (the same
-   columns the device keeps), the owner's targets in long-term memory, the owner-approved
-   meal skill, and any earlier chat turns.
+1. `fcworld.py` builds the world from the scenario file: today's food ledger (the
+   device's `food/food-log.csv`, one row per eating occasion), the owner's targets in
+   long-term memory, the owner-approved meal skill, any earlier chat turns and, when the
+   scenario has them, the owner's standing rules (as the device's file holds them; a
+   firmware that moves dated facts out of the rules at boot gets that move) and a
+   conversation summary from an earlier fold.
 2. `driver/fc_driver.cpp` replays the owner's messages through the **host harness lab**
    (`tools/harness-lab`): the device's own turn engine, prompt composer, tool registry,
    memory engines and provider adapters, with real API calls. The prompt carries what a
@@ -109,7 +113,7 @@ python3 tests/evals/food_coach/run_eval.py run --backend device --unit A --label
   `--max-minutes`.
 - **What it changes and puts back.** The head provider and model, the stored directive, the
   monthly spend ceiling (raised only when the month's room is gone), the web chat's history, the
-  vector memory, the `nutrition` file project and the `meal-photo-science` skill. All of it is
+  vector memory, the food log's file project (`food`) and the `meal-photo-science` skill. All of it is
   restored or removed in a `finally`.
 - **Earlier chat turns are replayed live.** A device cannot be given assistant replies it never
   wrote, so a scenario's earlier owner messages are sent for real and the unit's own replies are
@@ -134,8 +138,10 @@ usage numbers, never from a device ledger.
 
 Add `scenarios/<id>.json` (copy the closest one). Keep the owner's messages short and
 in the owner's voice, with generic foods and numbers. A scenario names a food-log set from
-`profiles/log_sets.json`, may seed earlier chat turns (they must alternate and start with the
-owner), and lists criteria with plain-language text; mark a criterion `required` only when a
+`profiles/log_sets.json` (or gives its ledger rows as `ledger_rows`: meal, items, kcal,
+protein), may seed earlier chat turns (they must alternate and start with the owner),
+standing rules (`prefs`) and a fold summary (`summary`), and lists criteria with
+plain-language text; mark a criterion `required` only when a
 failure is a failure of the behavior being protected. `python3 -m pytest
 tests/evals/food_coach` checks the files, the verdict rules, the pricing and the runner with a
 fake driver and a fake judge, with no network.

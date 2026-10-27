@@ -1,5 +1,6 @@
 {
-  "columns": "date,time,meal_id,meal_type,item,quantity,quantity_unit,kcal,protein_g,method,confidence,notes",
+  "columns": "date,meal,items,kcal,protein_g",
+  "note": "One row per eating occasion, the device's ledger shape: items of one meal are joined with + and their kcal and protein summed (fcworld.build_log_csv).",
   "sets": {
     "light-day": {
       "note": "Logged 1,600 kcal and 88 g protein, so 800 kcal remain to reach 2,400.",
@@ -8,11 +9,11 @@
         ["breakfast", "blueberries", 100, "g", 57, 0.7],
         ["breakfast", "granola", 40, "g", 180, 4],
         ["lunch", "salmon sandwich", 1, "sandwich", 540, 34],
-        ["snack", "almonds", 30, "g", 175, 6.5],
-        ["snack", "cappuccino", 1, "cup", 70, 3.5],
-        ["afternoon", "banana", 1, "piece", 105, 1.3],
-        ["afternoon", "protein bar", 1, "bar", 205, 20],
-        ["afternoon", "tea with honey", 1, "cup", 48, 0]
+        ["snack-1030", "almonds", 30, "g", 175, 6.5],
+        ["snack-1030", "cappuccino", 1, "cup", 70, 3.5],
+        ["snack-1600", "banana", 1, "piece", 105, 1.3],
+        ["snack-1600", "protein bar", 1, "bar", 205, 20],
+        ["snack-1600", "tea with honey", 1, "cup", 48, 0]
       ]
     },
     "dinner-day": {
@@ -23,8 +24,8 @@
         ["breakfast", "toast", 2, "slices", 160, 6],
         ["lunch", "salmon sandwich", 1, "sandwich", 560, 38],
         ["lunch", "apple", 1, "piece", 80, 0.4],
-        ["snack", "almonds", 30, "g", 175, 6.5],
-        ["snack", "whey shake", 1, "scoop", 85, 19.6]
+        ["snack-1500", "almonds", 30, "g", 175, 6.5],
+        ["snack-1500", "whey shake", 1, "scoop", 85, 19.6]
       ]
     }
   }

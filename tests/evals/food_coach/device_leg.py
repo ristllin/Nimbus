@@ -6,7 +6,7 @@ confirmation leg: small repetition counts, one unit, one repetition at a time.
 
 What it touches on the unit, and puts back when it ends (even on Ctrl-C):
 the head provider and model, the stored directive, the monthly spend ceiling, the
-chat history of the web chat, the vector memory, the `nutrition` file project, the
+chat history of the web chat, the vector memory, the food log's file project, the
 `meal-photo-science` skill and nothing else. It never touches Lumi: the unit comes
 only from the bench secrets (unit A or L), and an address that is Lumi's is refused.
 It runs only while holding the bench lock of the unit (an atomic mkdir), for at most
@@ -29,6 +29,7 @@ import requests
 import fcworld
 
 UNITS = ("A", "L")
+LOG_PROJECT = fcworld.LOG_PATH.split("/", 1)[0]  # the food log's project, removed with the leg's seeds
 LUMI_IPS = {"192.168.50.76"}
 CHAT = "web"
 TURN_TIMEOUT_S = 300
@@ -206,7 +207,7 @@ def forget_seeded_memory(unit: Unit) -> int:
 def cleanup(unit: Unit) -> None:
     """Take the leg's seeds off the unit; every step runs even if an earlier one fails."""
     steps = (
-        lambda: unit.post("/api/files/rmproject", {"project": "nutrition", "confirm": "DELETE"}),
+        lambda: unit.post("/api/files/rmproject", {"project": LOG_PROJECT, "confirm": "DELETE"}),
         lambda: unit.post("/api/skills/delete", {"id": "meal-photo-science"}),
         lambda: forget_seeded_memory(unit),
         lambda: unit.orch({"clearConv": "1", "memClear": "1"}),
@@ -251,7 +252,7 @@ def reset_world(unit: Unit) -> None:
     running notes, none of this leg's earlier seeds. Long-term memory and files the leg did
     not write are left alone."""
     unit.orch({"clearConv": "1", "convReset": "1", "memClear": "1"})
-    unit.post("/api/files/rmproject", {"project": "nutrition", "confirm": "DELETE"})
+    unit.post("/api/files/rmproject", {"project": LOG_PROJECT, "confirm": "DELETE"})
     unit.post("/api/skills/delete", {"id": "meal-photo-science"})
     forget_seeded_memory(unit)
     time.sleep(6)  # the turn task drains the staged clear between turns

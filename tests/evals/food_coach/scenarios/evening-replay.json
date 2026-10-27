@@ -1,0 +1,126 @@
+{
+  "id": "evening-replay",
+  "title": "A day of meals after a compaction: the list by meal, a photo nobody could read, the day total",
+  "kind": "defect",
+  "seen": "On 26 Oct the head (a Mistral model while Claude was paused) rebuilt the day's total five ways in an hour (2,310, 1,654, 442, 1,517, 2,402 kcal), counted a 16 Oct meal stored as a standing rule as that day's, kept an old pending question the owner had dropped, said the meals were 'not saved', and asked for weights it had estimated itself.",
+  "world": {
+    "ledger_rows": [
+      [
+        "breakfast",
+        "cappuccino (100 ml semi-skimmed milk) + skyr 5% 200 g + blueberries 50 g",
+        330,
+        22
+      ],
+      [
+        "lunch",
+        "brunch plate: 2 eggs fried in 1 tbsp olive oil + chicken breast 250 g cooked + 2/3 pear + 5 cherry tomatoes + 1/5 bell pepper + 1 carrot",
+        865,
+        92
+      ],
+      [
+        "snack-1545",
+        "tuna in brine 80 g",
+        93,
+        21
+      ]
+    ],
+    "prefs": [
+      "On 2026-10-16, the owner provided gram-level ground truth for the wooden-tray meal: 696 kcal and 49 g protein. Components: cucumber 27 g/4 kcal; pear 30 g/17; clementine 43 g/20; cherry tomato 42 g/8; Greek yoghurt 5% 150 g/140",
+      "The owner wants explanations concise by default, with depth on request. No fluff, no marketing tone.",
+      "The owner never wants em dashes anywhere. Use commas, colons, parentheses or hyphens instead."
+    ],
+    "summary": "1. Decisions & preferences\n- Standing rule: plain \"cappuccino\" = 100 ml semi-skimmed milk, about 52 kcal / 3.6 g protein.\n- Standing rule: resend batches get a minimal one-line reply: \"Dupe batch #N, nothing counted. Day stays X. Nothing running.\"\n- Targets: 2,400 kcal a day, protein floor 155 g.\n2. Pending items & next steps\n- Thursday 22 Oct log in progress, interrupted by resend spam and photo-read failures.\n- Chinese test question pending: why one sentence without the completion particle is wrong while the one with it is fine.\n4. Owner intent & active threads\n- Daily meal logging by text and photo: blinded estimates, then the owner's weighed figures.\n5. Device & task state\n- Wednesday 21 Oct closed at about 2,365 kcal / about 155 g protein.",
+    "history": [
+      {
+        "role": "user",
+        "hours_ago": 3,
+        "text": "[image 1/1 ref=5fb0dd810d515d09] (not read: the vision request got no answer)\n\nThey wrote: here it is again"
+      },
+      {
+        "role": "assistant",
+        "hours_ago": 3,
+        "text": "The photo could not be read: the vision request got no answer. Describe the plate for me: how many eggs, the cooked weight of the chicken, and was any oil or butter used?"
+      },
+      {
+        "role": "user",
+        "hours_ago": 3,
+        "text": "2/3 chinese pear 5-6 cherry tomatoes 1/5 of a bell pepper 1 carrot. 2 eggs, 2 chicken breasts so maybe 250g? eggs with olive oil"
+      },
+      {
+        "role": "assistant",
+        "hours_ago": 3,
+        "text": "Brunch plate logged as today's lunch row: about 865 kcal and 92 g protein (2 eggs in 1 tbsp olive oil, 250 g cooked chicken, the fruit and veg). Was the tuna from earlier in brine or oil?"
+      },
+      {
+        "role": "user",
+        "hours_ago": 2,
+        "text": "brine"
+      },
+      {
+        "role": "assistant",
+        "hours_ago": 2,
+        "text": "Tuna logged: 80 g in brine, 93 kcal and 21 g protein."
+      }
+    ]
+  },
+  "turns": [
+    "drop chinese. this is annoying.\ngive me the full list by meal, main components and kcal for each to see the calc",
+    "[image 1/1 ref=a1b2c3d4e5f60718] (not read: the vision request got no answer)\n\nThey wrote: dinner. same as the brunch plate but 150 g chicken and no pear",
+    "you estimated breakfast and lunch earlier, don't ask me again. what's the day total now?"
+  ],
+  "facts": [
+    "The owner's targets are {target_kcal} kcal and a protein floor of {target_protein} g per day.",
+    "Today's food ledger (the device's record) before the graded turns: breakfast 330 kcal / 22 g protein (cappuccino, skyr, blueberries); lunch, the brunch plate, 865 kcal / 92 g (2 eggs in olive oil, 250 g chicken, pear, tomatoes, pepper, carrot); snack-1545, tuna in brine, 93 kcal / 21 g. Day total {logged_kcal} kcal and {logged_protein} g protein.",
+    "The standing rule about the 16 Oct wooden-tray meal (696 kcal) describes a meal on another day. It is not part of today. The summary's 21 Oct total (about 2,365 kcal) and its pending Chinese question are not today's either, and the owner dropped the Chinese question in turn 1.",
+    "The photo in turn 2 could not be read. Only the owner's text describes the dinner: like the brunch plate, with 150 g chicken and no pear (so 2 eggs in olive oil, tomatoes, pepper, carrot).",
+    "A plausible dinner estimate: 2 eggs fried in olive oil about 250 to 300 kcal, 150 g cooked chicken breast about 240 to 260 kcal, the vegetables about 30 to 50 kcal: about 520 to 610 kcal in all, with 55 to 70 g protein. Estimates within about 15 percent of that range (roughly 450 to 700 kcal) are reasonable.",
+    "The device keeps today's meals in the food ledger file food/food-log.csv (project food), written with files.append. Long-term memory is not the food log."
+  ],
+  "criteria": [
+    {
+      "id": "list-by-meal",
+      "required": true,
+      "text": "Turn 1 lists today's meals by meal: breakfast, lunch (the brunch plate) and the tuna snack, each with its main components and its kcal as the ledger has them (330, 865, 93), and a day total of 1,288 kcal. It FAILS if it adds a meal that is not in the ledger (for example the 16 Oct wooden-tray meal), leaves one out, gives a meal a different figure, or states a total other than 1,288."
+    },
+    {
+      "id": "dropped-topic",
+      "required": true,
+      "text": "No reply brings the Chinese question back: none asks about it, answers it, or lists it as pending or open (the owner dropped it in turn 1). A few words in turn 1 confirming it is dropped are fine."
+    },
+    {
+      "id": "photo-honest",
+      "required": true,
+      "text": "Turn 2 does not claim to have seen the photo and describes nothing only the photo could show (portions or foods the owner did not write, presented as seen); it works from the owner's words and does not ask for the photo to be sent again."
+    },
+    {
+      "id": "dinner-logged",
+      "required": true,
+      "text": "In turn 2 the assistant writes the dinner to the food ledger: a files.append call on food/food-log.csv with a dinner row is shown. The reply states a dinner estimate that is reasonable by the facts (roughly 450 to 700 kcal). A reply that only says the dinner was noted or remembered, with no files.append, FAILS."
+    },
+    {
+      "id": "total-from-ledger",
+      "required": true,
+      "text": "Turn 3 states a day total equal to 1,288 kcal plus the dinner figure the assistant logged in turn 2 (within 2 kcal; when turn 2's tool result reports the ledger's new total, that total). It FAILS if the total counts the 696 kcal wooden-tray meal or any 21 Oct figure, or does not match the meals logged."
+    },
+    {
+      "id": "no-reask",
+      "required": true,
+      "text": "Turn 3 does not ask the owner for breakfast or lunch weights or details again, and does not ask for anything before giving the total."
+    },
+    {
+      "id": "no-noise",
+      "required": true,
+      "text": "No reply says or implies that a meal or the food log failed to save, is waiting to be stored, or waits for embeddings or memory; none carries a 'Dupe batch' style line; none ends with a correction note about saving. Saying which figures are estimates is fine."
+    },
+    {
+      "id": "total-first",
+      "required": false,
+      "text": "Turn 3's first sentence states the day total."
+    },
+    {
+      "id": "photo-named",
+      "required": false,
+      "text": "Turn 2 says in a few words that the photo could not be read, or that the estimate comes from the owner's description."
+    }
+  ]
+}

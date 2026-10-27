@@ -89,9 +89,28 @@ def test_facts_use_the_log_the_driver_is_seeded_with():
     assert values["remaining_kcal"] == "800" and "800 kcal remain" in facts
     payload = fcworld.run_payload(scn, CFG, TODAY)
     csv = payload["seed"]["files"][0]["text"]
-    rows = csv.strip().splitlines()[1:]
-    assert sum(float(r.split(",")[7]) for r in rows) == 1600
+    assert payload["seed"]["files"][0]["path"] == "food/food-log.csv"
+    header, *rows = csv.strip().splitlines()
+    assert header == "date,meal,items,kcal,protein_g"
+    assert sum(float(r.split(",")[3]) for r in rows) == 1600
     assert all(r.startswith("2026-10-26,") for r in rows)
+    meals = [r.split(",")[1] for r in rows]
+    assert len(meals) == len(set(meals))  # one row per eating occasion (the ledger's key)
+
+
+def test_evening_replay_world():
+    scn = fcworld.load_scenarios(["evening-replay"])[0]
+    assert fcworld.validate_scenario(scn, CFG) == []
+    assert fcworld.fact_values(scn, CFG)["logged_kcal"] == "1288"
+    p = fcworld.run_payload(scn, CFG, TODAY)
+    csv = p["seed"]["files"][0]["text"]
+    assert "2026-10-26,snack-1545,tuna in brine 80 g,93,21" in csv
+    assert p["seed"]["prefs"][0].startswith("On 2026-10-16, the owner provided")
+    assert "Dupe batch #N" in p["seed"]["summary"]
+    assert len(p["turns"]) == 3
+    # The other scenarios seed no rules and no summary.
+    q = fcworld.run_payload(fcworld.load_scenarios(["qty-vague"])[0], CFG, TODAY)
+    assert q["seed"]["prefs"] == [] and q["seed"]["summary"] == ""
 
 
 def test_payload_carries_the_world_a_device_would_have():
@@ -389,3 +408,14 @@ def test_judge_lists_are_a_first_judge_and_comma_separated_second_opinions():
     assert run_eval._judges(many, CFG) == ["a/x", "b/y", "c/z"]
     default = parse(base)
     assert run_eval._judges(default, CFG) == [CFG["models"]["judge"], CFG["models"]["judge2"]]
+
+
+def test_normalize_reads_a_stringified_verdict():
+    scn = fcworld.load_scenarios(["qty-vague"])[0]
+    rows = [{"id": c["id"], "evidence": "e", "verdict": "pass"} for c in scn["criteria"]]
+    as_string = fcjudge.normalize(json.dumps({"criteria": rows, "summary": "s"}), scn)
+    inner_string = fcjudge.normalize({"criteria": json.dumps(rows), "summary": "s"}, scn)
+    assert as_string["pass"] and inner_string["pass"]
+    broken = fcjudge.normalize("not json", scn)
+    assert not broken["pass"] and broken["criteria"][0]["evidence"] == "no verdict returned"
+    assert not fcjudge.normalize({"criteria": ["x", 3]}, scn)["pass"]

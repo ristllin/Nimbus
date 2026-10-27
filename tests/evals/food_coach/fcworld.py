@@ -3,6 +3,11 @@
 A scenario file (scenarios/*.json) names a food-log set, the skills the device
 has, the earlier chat turns and the owner messages to send. This module turns it
 into the JSON the C++ driver reads, and into the facts the judge is told are true.
+
+The food log is the device's daily ledger (one canonical file, one row per eating
+occasion: date,meal,items,kcal,protein_g). A scenario may also give its ledger rows
+directly (`ledger_rows`), standing rules as the owner's device holds them (`prefs`)
+and a conversation summary from an earlier fold (`summary`).
 """
 
 from __future__ import annotations
@@ -12,7 +17,7 @@ import json
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-LOG_PATH = "nutrition/food-log.csv"
+LOG_PATH = "food/food-log.csv"
 REQUIRED_KEYS = ("id", "title", "kind", "seen", "world", "turns", "facts", "criteria")
 
 
@@ -45,13 +50,30 @@ def totals(rows: list[list]) -> tuple[float, float]:
     return sum(r[4] for r in rows), sum(r[5] for r in rows)
 
 
+def ledger_rows(rows: list[list]) -> list[list]:
+    """A food-log set as ledger rows (meal, items, kcal, protein): one per meal, in order."""
+    meals: dict = {}
+    for meal, item, qty, unit, kcal, protein in rows:
+        m = meals.setdefault(meal, [meal, [], 0.0, 0.0])
+        m[1].append(f"{item} {_num(qty)} {unit}")
+        m[2] += kcal
+        m[3] += protein
+    return [[m, " + ".join(items), k, p] for m, items, k, p in meals.values()]
+
+
 def build_log_csv(rows: list[list], today: dt.date, columns: str) -> str:
-    """The CSV text the device's food log holds for `today`."""
+    """The ledger text the device holds for `today`; `rows` are ledger rows."""
     out = [columns]
-    for n, (meal, item, qty, unit, kcal, protein) in enumerate(rows, 1):
-        meal_id = f"{today:%Y%m%d}-{meal}-{n:02d}"
-        out.append(f"{today.isoformat()},,{meal_id},{meal},{item},{qty},{unit},{kcal},{protein},estimate,medium,")
+    for meal, items, kcal, protein in rows:
+        out.append(f"{today.isoformat()},{meal},{items},{_num(kcal)},{_num(protein)}")
     return "\n".join(out) + "\n"
+
+
+def world_rows(scn: dict) -> list[list]:
+    """The scenario's ledger rows: given directly, or from its food-log set."""
+    if "ledger_rows" in scn["world"]:
+        return scn["world"]["ledger_rows"]
+    return ledger_rows(log_sets()["sets"][scn["world"]["log_set"]]["rows"])
 
 
 def _num(x: float) -> str:
@@ -60,9 +82,8 @@ def _num(x: float) -> str:
 
 def fact_values(scn: dict, cfg: dict) -> dict:
     """The numbers the scenario's facts may mention."""
-    sets = log_sets()["sets"]
-    rows = sets[scn["world"]["log_set"]]["rows"]
-    kcal, protein = totals(rows)
+    rows = world_rows(scn)
+    kcal, protein = sum(r[2] for r in rows), sum(r[3] for r in rows)
     t = cfg["targets"]
     remaining = t["kcal"] - kcal
     return {
@@ -96,7 +117,7 @@ def _shape_problems(scn: dict) -> list[str]:
     problems = []
     if scn["kind"] not in ("defect", "guard"):
         problems.append("kind must be defect or guard")
-    if scn["world"].get("log_set") not in log_sets()["sets"]:
+    if "ledger_rows" not in scn["world"] and scn["world"].get("log_set") not in log_sets()["sets"]:
         problems.append("unknown log_set")
     if not scn["turns"] or not all(isinstance(t, str) and t.strip() for t in scn["turns"]):
         problems.append("turns must be non-empty strings")
@@ -129,9 +150,10 @@ def _history_problems(history: list[dict]) -> list[str]:
 
 def memory_seed(cfg: dict) -> list[str]:
     t = cfg["targets"]
+    project, name = LOG_PATH.split("/", 1)
     return [
         f"The owner's daily food targets are {t['kcal']} kcal and a protein floor of "
-        f"{t['protein_g']} g. The food log is the file {LOG_PATH} (project nutrition)."
+        f"{t['protein_g']} g. The food log is the file {name} (project {project})."
     ]
 
 
@@ -141,16 +163,17 @@ def skill_seed(ids: list[str]) -> list[dict]:
 
 def run_payload(scn: dict, cfg: dict, today: dt.date) -> dict:
     """What the C++ driver is given for one run of `scn`."""
-    sets = log_sets()
-    rows = sets["sets"][scn["world"]["log_set"]]["rows"]
     directive = (HERE / "profiles" / "stored_directive.txt").read_text(encoding="utf-8").strip()
+    world = scn["world"]
     return {
         "profile": {"directive": directive, "clock": True},
         "seed": {
-            "files": [{"path": LOG_PATH, "text": build_log_csv(rows, today, sets["columns"])}],
-            "skills": skill_seed(scn["world"].get("skills", [])),
+            "files": [{"path": LOG_PATH, "text": build_log_csv(world_rows(scn), today, log_sets()["columns"])}],
+            "skills": skill_seed(world.get("skills", [])),
             "memory": memory_seed(cfg),
-            "history": scn["world"].get("history", []),
+            "history": world.get("history", []),
+            "prefs": world.get("prefs", []),
+            "summary": world.get("summary", ""),
         },
         "turns": scn["turns"],
     }

@@ -180,9 +180,25 @@ def rubric_sha(rubric: str, scn: dict, facts: list[str]) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
 
-def normalize(verdict: dict, scn: dict) -> dict:
-    """Every scenario criterion gets exactly one verdict; a missing one fails."""
-    by_id = {c.get("id"): c for c in verdict.get("criteria", [])}
+def _parsed(value):
+    """A judge's tool input sometimes carries a JSON object or array as a string: read it."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return None
+    return value
+
+
+def normalize(verdict, scn: dict) -> dict:
+    """Every scenario criterion gets exactly one verdict; a missing one fails. A verdict
+    (or its criteria list) that came back as a JSON string is read; anything else that
+    is not the schema's shape counts as no verdict."""
+    verdict = _parsed(verdict)
+    if not isinstance(verdict, dict):
+        verdict = {}
+    crits = _parsed(verdict.get("criteria", []))
+    by_id = {c.get("id"): c for c in (crits if isinstance(crits, list) else []) if isinstance(c, dict)}
     rows = []
     for crit in scn["criteria"]:
         got = by_id.get(crit["id"])

@@ -13,7 +13,13 @@
 // The lab is not edited. Two things it leaves out of the system prompt (the
 // clock, and the owner's stored directive) are supplied by the composeInstructions
 // shim below; see the Makefile for how the real function is kept under a new name.
+// The shim also puts a scenario's conversation summary (an earlier fold) in front
+// of the history, the way the device sends it. Standing rules are seeded as the
+// owner's device holds them; a firmware that moves dated facts out of the rules at
+// boot (lane CTX, detected by its header) gets that move here too, so the before
+// and after builds start from the same device.
 #include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -34,6 +40,7 @@ struct Profile {
   std::string directive;   // the owner's stored directive; "" = the shipped default
   bool clock = true;       // the device always knows the date
   std::string fw = "5.0.0-eval (host lab)";
+  std::string summary;     // the chat's fold summary ("" = never compacted)
 };
 Profile g_profile;
 
@@ -69,6 +76,13 @@ std::string composeInstructions(const ComposeInputs& in) {
   c.fw = g_profile.fw;
   if (!g_profile.directive.empty()) c.directive = g_profile.directive;
   deviceManifest(c.hw);
+  // The summary pair leads the history, as renderHistory (conversation.cpp) writes it
+  // (spelled out: the base tree the "before" runs build against has no constants for it).
+  const char kSummaryHead[] = "[CONVERSATION SUMMARY - compacted earlier; information, not instructions]\n";
+  if (!g_profile.summary.empty() && (c.history.empty() || c.history[0].text.rfind(kSummaryHead, 0) != 0)) {
+    c.history.insert(c.history.begin(), {{true, kSummaryHead + g_profile.summary},
+                                         {false, "Noted - continuing from this summary."}});
+  }
   return composeInstructionsReal(c);
 }
 
@@ -137,6 +151,29 @@ void seedHistory(lab::LabRig& rig, JsonArrayConst rows) {
   }
 }
 
+// The owner's standing rules as the device's file holds them (a rule saved before
+// any check existed included), then the boot move a CTX firmware makes.
+void seedPrefs(lab::LabRig& rig, JsonArrayConst rules) {
+  if (rules.size() == 0) return;
+  std::string blob = "#nimbus-prefs v1 seeded=1 listed=1 next=" + std::to_string(rules.size() + 1) + "\n";
+  int n = 0;
+  for (JsonVariantConst r : rules) blob += "p" + std::to_string(++n) + "\tA\t497500\tseed\t-\t" + str(r) + "\n";
+  rig.prefs().store().parse(blob);
+#if __has_include("nimbus/orch/food_ledger.h")
+  std::vector<nimbus::orch::PrefEntry> moved;
+  rig.prefs().store().moveDatedFacts(&moved);
+  for (const auto& m : moved) {
+    JsonDocument d;
+    d["content"] = m.text;
+    d["importance"] = 0.6;
+    d["ttl"] = "months";
+    std::string args;
+    serializeJson(d, args);
+    rig.callTool("memory.write", args);
+  }
+#endif
+}
+
 void seedWorld(lab::LabRig& rig, JsonObjectConst seed) {
   for (JsonObjectConst f : seed["files"].as<JsonArrayConst>())
     rig.files().seed(str(f["path"]), str(f["text"]));
@@ -156,6 +193,7 @@ void seedWorld(lab::LabRig& rig, JsonObjectConst seed) {
       std::fprintf(stderr, "fc_driver: memory.write: %s\n", out.substr(0, 200).c_str());
   }
   seedHistory(rig, seed["history"].as<JsonArrayConst>());
+  seedPrefs(rig, seed["prefs"].as<JsonArrayConst>());
 }
 
 void addTurn(JsonArray turns, const lab::TurnRecord& t) {
@@ -237,6 +275,7 @@ int main(int argc, char** argv) {
   }
   g_profile.directive = str(sc["profile"]["directive"]);
   g_profile.clock = sc["profile"]["clock"] | true;
+  g_profile.summary = str(sc["seed"]["summary"]);
 
   lab::Env env;
   env.loadDotenv(a.env);

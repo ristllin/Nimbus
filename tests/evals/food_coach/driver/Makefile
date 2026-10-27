@@ -39,10 +39,17 @@ $(BUILD)/compose_real.o: $(REPO)/lib/harness/src/compose.cpp | lab $(BUILD)
 $(BUILD)/fc_driver.o: $(HERE)/fc_driver.cpp | lab $(BUILD)
 	@$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# The lab objects are listed after `lab` has run, so a stale lab never links.
-$(BIN): $(BUILD)/fc_driver.o $(BUILD)/compose_real.o
+# The lab objects are listed by the shell when the link runs (after the lab built:
+# a make function in the recipe is expanded before its first line runs, which left
+# a fresh tree's first link without them), so a stale lab never links; the
+# link always runs (FORCE), so a lab object rebuilt from a changed source (a playbook
+# text, say) always reaches the binary.
+.PHONY: FORCE
+FORCE:
+$(BIN): $(BUILD)/fc_driver.o $(BUILD)/compose_real.o FORCE
 	@$(MAKE) -s -C $(LAB)
-	@$(CXX) $^ $(filter-out $(LAB)/build/main.o $(LAB)/build/compose.o,$(wildcard $(LAB)/build/*.o)) -lcurl -o $@
+	@objs=$$(ls $(LAB)/build/*.o | grep -v -e '/main\.o$$' -e '/compose\.o$$'); \
+	  $(CXX) $(filter-out FORCE,$^) $$objs -lcurl -o $@
 	@echo "built $@"
 
 clean:

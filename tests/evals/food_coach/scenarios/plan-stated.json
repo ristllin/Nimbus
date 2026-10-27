@@ -18,7 +18,7 @@
     "Logged today so far: {logged_kcal} kcal and {logged_protein} g protein, so the dinner budget is about {remaining_kcal} kcal and {remaining_protein} g protein.",
     "The only foods the owner has (stated in this message): beef fillet, skyr 5%, berries, salad vegetables (tomatoes, lettuce, cucumber), chicken breast, eggplant, tofu, bread. The owner fixed three amounts: beef fillet 100 g, skyr 200 g, berries about 150 g.",
     "Anything else (olive oil or any cooking fat, rice, potatoes, pasta, eggs, cheese, nuts, honey, avocado, roast vegetables beyond the listed ones) is a food the owner did not say they have. Zero-calorie seasonings (salt, pepper, herbs, spices, lemon juice, vinegar) are fine.",
-    "Plausible values: beef fillet 190 kcal and 28 g protein per 100 g; skyr 5% 110 kcal and 9 g per 100 g; chicken breast about 165 kcal and 31 g per 100 g cooked; tofu about 145 kcal and 15 g per 100 g; bread about 250 kcal and 9 g per 100 g; eggplant about 25 kcal per 100 g; salad vegetables about 20 kcal per 100 g."
+    "Plausible values: beef fillet about 130 (raw, lean) to 250 kcal (cooked) and 26 to 31 g protein per 100 g; skyr 5% 110 kcal and 9 g per 100 g; chicken breast about 165 kcal and 31 g per 100 g cooked; tofu about 75 kcal and 8 g (silken) to 145 kcal and 15 g (firm) per 100 g; bread about 250 kcal and 9 g per 100 g; eggplant about 25 kcal per 100 g; salad vegetables about 20 kcal per 100 g."
   ],
   "criteria": [
     {
