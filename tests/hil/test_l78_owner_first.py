@@ -12,9 +12,12 @@ Legs (each runnable alone, graded from the device log and the owner chat):
      an owner message 5 s later is answered at normal latency, BEFORE the awareness
      turn starts, with no fold in between; the awareness turn runs bounded (2 rounds,
      or single-shot on a fallback head).
-  b  a long tool loop on Mistral (mistral-small) reads a 64 KB file page by page; when
-     its requests reach the 85 KB body budget the loop folds older rounds and the owner
-     gets an answer (no "request body over" failure, no body over the budget sent).
+  b  Lumi's shape: the configured head Anthropic over its token budget, the turn served
+     by Mistral (mistral-small) with the 200K-derived prompt budget, a long page-by-page
+     read; when a request reaches the 85 KB body budget the loop folds older rounds and
+     the owner gets an answer (no "request body over" failure, no body over the budget
+     sent). BLOCKED, not FAIL, on a unit whose base request is too small to reach the
+     budget (a bench unit with fewer tools: 55 KB against Lumi's 70 KB).
   c  with compactKB at its floor (8), ten ordinary turns make a fold due; it runs
      after two quiet minutes, three more turns follow, and no compaction-paused
      notice reaches the owner.
@@ -24,6 +27,7 @@ Run (candidate test-cyd build, one unit, its lock held):
   NIMBUS_STORM_EVIDENCE=<lane>/evidence/hil NIMBUS_ENV_FILE=<nimbus>/.env PYTHONUNBUFFERED=1 \\
   python3 -m pytest tests/hil/test_l78_owner_first.py -m "hil or net" --allow-hardware -s
 Spend: legs a and c on claude-haiku-5-5 (a few cents), leg b on mistral-small-latest.
+The legs restore what they change (allowlist, keys, head, priority, budget, compactKB).
 """
 
 from __future__ import annotations
@@ -106,10 +110,12 @@ def _drive_update_then_owner(storm, uid):
         assert "armed" in armed, armed
         time.sleep(5.0)  # the DoD: an owner message within 10 s of the update
         t0 = time.time()
-        storm.inject(f"l78a {uid}: what is six times seven? one word", uid, timeout=240.0)
+        # inject() reads the console until the page has run: the owner's turn lines are
+        # in what it returns, not in the tap.
+        lines = list(storm.inject(f"l78a {uid}: what is six times seven? one word", uid, timeout=240.0))
         replies = _new_replies(storm, before)
         owner_s = time.time() - t0
-        lines = storm.tap.poll()
+        lines += storm.tap.poll()
         lines += _collect(storm, 420.0, lambda ls: _system_turn_done(lines + ls))  # 2 quiet minutes first
     finally:
         storm.verb("OTASIM clear", "OTASIM", timeout=8.0)
@@ -146,30 +152,38 @@ def test_l78a_owner_answered_before_the_update_turn(storm):
 
 
 # ---- leg b: a long tool loop that reaches the body budget still answers -----------------
+def _anthropic_budget(storm) -> str:
+    rows = (storm.orch().get("usage") or {}).get("byProvider") or []
+    a = next((r for r in rows if r.get("prov") == "anthropic"), {})
+    return f"anthropic:{a.get('tokenLimit', 0)}:{a.get('callLimit', 0)}:{a.get('resetDay', 1)}:{a.get('centsLimit', 0)}"
+
+
 @contextlib.contextmanager
-def _mistral_head(storm):
-    """The head on Mistral (mistral-small-latest), its key pushed from the bench .env when
-    the unit has none (cleared after)."""
+def _lumi_fallback_head(storm):
+    """Lumi's shape on 26 Oct: the configured head Anthropic is over its monthly token
+    budget, so the turn fails over to Mistral (mistral-small-latest) with the prompt
+    budget derived from the configured head's 200K window. Priority, budget, head and
+    model are put back after the leg."""
     o = storm.orch()
     mis = (o.get("providers") or {}).get("mistral") or {}
-    prior = {"orchHost": o.get("orchHost") or "", "convReset": "1"}
+    assert mis.get("hasKey") and ((o.get("providers") or {}).get("anthropic") or {}).get("hasKey"), (
+        "the leg needs the Anthropic and Mistral keys on the unit"
+    )
+    prior = {"orchHost": o.get("orchHost") or "", "provPrio": o.get("provPrio") or "", "convReset": "1"}
     if mis.get("orchModel"):
         prior["orchM_mistral"] = mis["orchModel"]
+    budget = _anthropic_budget(storm)
     try:
-        if not mis.get("hasKey"):
-            storm.post_orch({"mistKey": storm.env["MISTRAL_API_KEY"]})
-        storm.post_orch({"orchHost": "mistral", "orchM_mistral": MISTRAL_SMALL, "convReset": "1"})
+        storm.post_orch({"orchHost": "anthropic", "provPrio": "anthropic,mistral", "orchM_mistral": MISTRAL_SMALL})
+        storm.post_orch({"budget": "anthropic:1:0:1:0", "convReset": "1"})  # 1 token: over at once
         yield
     finally:
+        storm.post_orch({"budget": budget}, ok=(200, 507))
         storm.post_orch(prior, ok=(200, 507))
-        if not mis.get("hasKey"):
-            storm.post_orch({"clr_mistKey": "1"}, ok=(200, 507))
 
 
 def _long_file() -> bytes:
-    rows = [
-        f"line {i:05d}: the bench plant log, watered, fed, turned toward the window, all fine.\n" for i in range(760)
-    ]
+    rows = [f"line {i:05d}: the quokka ledger, counted, fed, turned toward the window, all fine.\n" for i in range(760)]
     return ("".join(rows) + "The last word is QUOKKA\n").encode()
 
 
@@ -212,17 +226,22 @@ def test_l78b_long_loop_reaching_the_budget_answers(storm):
 
     uid = kit.first_update_id() + 10
     ask = (
-        f"l78b {uid}: read the file plant-log.txt in project hft with files_read, page by page from offset 0 "
+        f"l78b {uid}: read the file quokka-ledger.txt in project hftbench with files_read, page by page from offset 0 "
         "to the end, one page per call, waiting for each page before the next. Then tell me the very last "
         "word in the file."
     )
-    with _uploaded(storm, "hft", "plant-log.txt", _long_file()), storm.session("mistral", _mistral_head(storm)):
-        before = set(storm.chat_rows(80))
-        storm.tap.arm()
-        t0 = time.time()
-        storm.inject(ask, uid, timeout=600.0)
-        replies = _new_replies(storm, before, timeout=300.0)
-        rec = _grade_b(replies, storm.tap.poll(), time.time() - t0)
+    with (
+        _uploaded(storm, "hftbench", "quokka-ledger.txt", _long_file()),
+        storm.owner_chat(),
+        storm.spend_room("mistral"),
+    ):
+        with _lumi_fallback_head(storm):
+            before = set(storm.chat_rows(80))
+            storm.tap.arm()
+            t0 = time.time()
+            lines = list(storm.inject(ask, uid, timeout=600.0))  # the turn's console lines
+            replies = _new_replies(storm, before, timeout=300.0)
+            rec = _grade_b(replies, lines + storm.tap.poll(), time.time() - t0)
     _write("b", rec)
     failed = [k for k, ok in rec["checks"].items() if not ok]
     assert not failed, failed
@@ -232,14 +251,12 @@ def test_l78b_long_loop_reaching_the_budget_answers(storm):
 
 # ---- leg c: a fold with no false alarm ------------------------------------------------
 def _drive_turns(storm, uid, n):
-    import kit
-
     before = set(storm.chat_rows(80))
     storm.tap.arm()
     lines = []
     filler = " ".join(f"item{j}" for j in range(120))
     for i in range(n):
-        kit.owner_turn(storm, f"l78c {uid + i}: note {i} for the plant log, just say noted. {filler}", uid + i)
+        lines += storm.inject(f"l78c {uid + i}: reply with the single word noted, nothing else. {filler}", uid + i)
         lines += storm.tap.poll()
     lines += _collect(storm, 60.0, lambda ls: False)
     rows = [r for r in storm.chat_rows(120).values() if str(r.get("id")) not in before]
