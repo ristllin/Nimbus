@@ -1852,7 +1852,7 @@ void registerTools() {
           R"({"type":"object","properties":{"ref":{"type":"string"},"question":{"type":"string"}},"required":["ref","question"]})");
 
   // image.note (R1) - the head writes the record of a photo it saw in this message
-  // (one line, at most 300 bytes): it becomes the photo's row in the conversation from
+  // (one line, capped by the device): it becomes the photo's row in the conversation from
   // the next turn on, so no second model is asked to caption it. Only for this turn's
   // photos (a row already sent as history is never rewritten). A pure write: sent with
   // the final answer it costs no extra round.
