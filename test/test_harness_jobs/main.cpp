@@ -1213,8 +1213,8 @@ static void test_poll_lifecycle_running_then_done_parks_fresh() {
   // The parked block is byte-shaped: header + "- tag (label): text".
   std::string block = r.eng->takeFreshResults();
   TEST_ASSERT_EQUAL_STRING(
-      "[FRESH RESULTS] (sub-agents that just finished)\n"
-      "- job0000 (good-m (research)) [no tools ran]: fake result\n",
+      (std::string("[FRESH RESULTS] (sub-agents that just finished)\n") + agent::kFreshFactsLine +
+       "- job0000 (good-m (research)) [no tools ran]: fake result\n").c_str(),
       block.c_str());
   TEST_ASSERT_FALSE(r.eng->hasFreshResults());     // consumed + clock reset
 }
@@ -1321,13 +1321,10 @@ static void test_provenance_property_live_research_connector_by_tool_runs() {
 }
 
 // CUM-822 (unit A, 27 Oct): a synthesis over a weather-only web result added "trains are
-// running normally" from an earlier answer and dropped the sources. A block holding a web
-// result says, once, to keep its sources and state only facts it contains; a block with
-// no web run carries no such line.
+// running normally" from an earlier answer and dropped the sources. Merged with lane
+// HON's CUM-824 facts line: EVERY fresh block carries one line that keeps a result's
+// sources and forbids stale facts from earlier answers, web run or not.
 static void test_cum822_web_results_carry_the_sources_and_no_stale_facts_line() {
-  const std::string line =
-      "For a result tagged web: keep the sources it names and state only facts it contains, never facts "
-      "from earlier answers.\n";
   for (uint16_t web : {0, 1, 3}) {
     Rig r;
     r.adapter.toolRuns = web ? web : 1;
@@ -1335,12 +1332,11 @@ static void test_cum822_web_results_carry_the_sources_and_no_stale_facts_line() 
     r.adapter.doneReply = "Cambridge: 14 C, showers (bbc.co.uk/weather).";
     runOneDoneJob(r, sp("Use the web_search tool and name the source of each fact: weather in Cambridge"));
     const std::string block = r.eng->takeFreshResults();
+    const std::string line = agent::kFreshFactsLine;
     const size_t at = block.find(line);
-    TEST_ASSERT_EQUAL_MESSAGE(web > 0, at != std::string::npos, block.c_str());
-    if (web) {
-      TEST_ASSERT_EQUAL(block.find('\n') + 1, at);   // right under the header
-      TEST_ASSERT_EQUAL(at, block.rfind(line));      // once
-    }
+    TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, block.c_str());
+    TEST_ASSERT_EQUAL(block.find('\n') + 1, at);   // right under the header
+    TEST_ASSERT_EQUAL(at, block.rfind(line));      // once
   }
 }
 
@@ -1359,6 +1355,69 @@ static void test_cum536_marker_when_only_a_web_tool_ran() {
   const std::string block = r.eng->takeFreshResults(&unverified);
   TEST_ASSERT_TRUE(unverified);
   TEST_ASSERT_TRUE_MESSAGE(block.find("NOT called") != std::string::npos, block.c_str());
+}
+
+// CUM-824 (Lumi, 27 Oct): "Why Notion?" about a finished sub was answered with an
+// invented "Notion is my only weather source"; later turns had only "[tools: 2]". The
+// fresh result and the spawn ledger carry what each sub ran, by name, with counts,
+// and the ledger says to answer a question about a sub from it.
+static void test_ledger_and_fresh_results_name_the_tools_each_sub_ran() {
+  Rig r;
+  r.adapter.toolRuns = 2;
+  r.adapter.toolNames = "notion_search x2, web_search x0";
+  r.adapter.doneReply = "No rail schedule or weather data found in Notion.";
+  orch::Spawn s = sp("Look up today's rail status and the weather for the commute");
+  s.name = "commute-lookup";
+  runOneDoneJob(r, s);
+  const std::string ledger = r.eng->spawnLedgerText("web");
+  TEST_ASSERT_TRUE_MESSAGE(ledger.find("- commute-lookup (job0000, ") != std::string::npos, ledger.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(ledger.find("finished just now; it ran notion_search x2, web_search x0 (why it picked them is not "
+                                       "recorded); task: \"Look up "
+                                       "today's rail status and the weather for the commute\"; its result came back "
+                                       "as a fresh result") != std::string::npos,
+                           ledger.c_str());
+  TEST_ASSERT_TRUE(ledger.find("asked about one, answer from these lines alone (its task, what it ran, how it "
+                               "ended); where they do not say why, say the reason is not recorded") != std::string::npos);
+  // The sub's own reply never rides the ledger (external text in a block read as the truth).
+  TEST_ASSERT_TRUE(ledger.find("No rail schedule") == std::string::npos);
+  const std::string block = r.eng->takeFreshResults();
+  TEST_ASSERT_TRUE_MESSAGE(block.find("- job0000 (commute-lookup) [tools: 2] [ran: notion_search x2, web_search x0]: ") !=
+                               std::string::npos,
+                           block.c_str());
+  // A failed sub keeps its tools on the ledger too.
+  Rig f;
+  f.adapter.pollScript = {agent::JobState::Running, agent::JobState::Error};
+  f.adapter.toolNames = "web_search x1";
+  runOneDoneJob(f, sp("Check the Central line status"));
+  const std::string fl = f.eng->spawnLedgerText("web");
+  TEST_ASSERT_TRUE_MESSAGE(fl.find("failed just now - unknown error; it ran web_search x1 (why it picked them is not "
+                                   "recorded); task: \"Check the Central "
+                                   "line status\"") != std::string::npos,
+                           fl.c_str());
+  // No names recorded: the count tag alone, and no "it ran".
+  Rig n;
+  n.adapter.toolRuns = 1;
+  runOneDoneJob(n, sp("Summarize timber framing"));
+  TEST_ASSERT_TRUE(n.eng->spawnLedgerText("web").find("; it ran ") == std::string::npos);
+  const std::string nb = n.eng->takeFreshResults();
+  TEST_ASSERT_TRUE(nb.find(" [tools: 1]: ") != std::string::npos);
+  TEST_ASSERT_TRUE(nb.find("[ran:") == std::string::npos);
+}
+
+// CUM-824 (lane HFC's live check, 27 Oct): a synthesis merged "trains running normally"
+// from an earlier answer into a weather-only result. Every [FRESH RESULTS] block, one
+// result or several, done or failed, carries the facts line exactly once, right after
+// its title.
+static void test_every_fresh_block_says_to_state_only_the_results_facts() {
+  for (int results = 1; results <= 4; results++) {
+    Rig r;
+    for (int i = 0; i < results; i++)
+      r.eng->addFreshResult(("job000" + std::to_string(i)).c_str(), "m", "result text", "", i % 2 == 1);
+    const std::string block = r.eng->takeFreshResults();
+    const std::string head = std::string("[FRESH RESULTS] (sub-agents that just finished)\n") + agent::kFreshFactsLine;
+    TEST_ASSERT_EQUAL(0, (int)block.find(head));
+    TEST_ASSERT_EQUAL(std::string::npos, block.find(agent::kFreshFactsLine, head.size()));
+  }
 }
 
 static void test_done_arc_cleared_after_grace() {
@@ -2841,6 +2900,8 @@ int main(int, char**) {
   RUN_TEST(test_provenance_property_live_research_connector_by_tool_runs);
   RUN_TEST(test_cum822_web_results_carry_the_sources_and_no_stale_facts_line);
   RUN_TEST(test_connector_that_ran_or_was_not_asked_is_not_marked);
+  RUN_TEST(test_ledger_and_fresh_results_name_the_tools_each_sub_ran);
+  RUN_TEST(test_every_fresh_block_says_to_state_only_the_results_facts);
   RUN_TEST(test_done_arc_cleared_after_grace);
   RUN_TEST(test_error_delivers_failure_and_holds_attn_window);
   RUN_TEST(test_transient_backoff_doubles_then_resets);

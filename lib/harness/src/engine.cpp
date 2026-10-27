@@ -1026,6 +1026,20 @@ struct TurnEngine::ApplyCapture {
   ApplyCapture& operator=(const ApplyCapture&) = delete;
 };
 
+// CUM-824: the parts of this turn's input the claim check reads, as the engine took them
+// (never re-parsed from the composed text, where a sub-agent's reply could pose as a block).
+TurnSources TurnEngine::claimSources(const std::string& chatId, const std::string& userText) const {
+  TurnSources parts;
+  parts.owner = userText;
+  for (const JobEngine::FreshResult& f : turnMem().fresh) {
+    parts.fresh += f.provenance + " " + f.text + "\n";
+    parts.webRead = parts.webRead || f.provenance.find(", web: ") != std::string::npos;
+  }
+  parts.memory = turnMem().memBody;
+  if (d_.jobs) parts.ledger = d_.jobs->spawnLedgerText(chatId);
+  return parts;
+}
+
 bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                          const std::string& userText) {
   return runTurn(inputs, chatId, userText, telegramOn(chatId));
@@ -1157,10 +1171,14 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   {
     // The figure check's sources: the input block (the owner's text, captions,
     // the window, fresh results) and, apart, the recalled memories. Only their
-    // numbers are kept.
+    // numbers are kept. The owner's own text names the sources a reply may credit
+    // and holds the figures to credit to the owner (CUM-824).
     std::string rec;
     for (const std::string& r : recalled) rec += r + "\n";
-    claims_.setSources(inputs + loadFoodLedger(chatId), rec);   // lane CTX: the ledger shown is a source
+    // Lane CTX: the ledger shown is a source. Its words ride the composed prompt
+    // (lastInstructions_, set at compose below), so the quote rule sees them too.
+    claims_.setSources(inputs + loadFoodLedger(chatId), rec, claimSources(chatId, userText));
+    claims_.setQuoteContext(&lastInstructions_, &inputs);   // filled at compose, below
   }
   const uint32_t heapAfterRecall = freeHeap();
   turnMem().gate.phase("recall", heapAfterRecall, largestFreeBlock());

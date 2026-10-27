@@ -38,6 +38,17 @@ namespace agent {
 // a lookup: nothing the device can vouch for.
 nimbus::orch::FxKind fxKindForTool(const std::string& regName);
 
+// The device-authored parts of a turn's input block, apart (CUM-824). The claim check
+// never re-parses them out of the composed text: a sub-agent reply or a stored memory
+// that contains a block's title must not pose as that block.
+struct TurnSources {
+  std::string owner;    // the owner's message ("" on a synthesis or scheduled turn)
+  std::string fresh;    // the sub-agent results the turn read: provenance tags and text
+  std::string memory;   // the [MEMORY RESULTS] body
+  std::string ledger;   // the spawn ledger block (JobEngine::spawnLedgerText)
+  bool webRead = false; // a result's provider record shows a web search or fetch
+};
+
 class ClaimCheck {
  public:
   // Start a turn: clears the ledger, the sources and the per-turn flags.
@@ -49,14 +60,36 @@ class ClaimCheck {
   // The input block also seeds this turn's cause evidence (L19-11): what the
   // records the model was given say about the owner's phone/app/connection,
   // damaged files, timeouts and the like, as orch::CauseEvidence bits.
-  void setSources(const std::string& inputs, const std::string& recalled);
+  // CUM-824: the sources a reply may credit by name (a gauge, a label, an app, a
+  // website) come from `parts`: the owner's message, the sub-agent results (one with web
+  // runs names a website), the memory search results, a photo in the owner's message (it
+  // may show any of them) and, for the owner's own devices, the recalled memories; never
+  // from the rest of the block or the history window. The owner's numbers are kept
+  // apart, for the correction; the spawn ledger is what a why-question is answered from.
+  void setSources(const std::string& inputs, const std::string& recalled, const TurnSources& parts);
+  // The same with only the owner's message (a caller with no results or ledger).
+  void setSources(const std::string& inputs, const std::string& recalled,
+                  const std::string& ownerText = std::string()) {
+    TurnSources parts;
+    parts.owner = ownerText;
+    setSources(inputs, recalled, parts);
+  }
+  // CUM-824: everything the turn was given, for the quoted-record rule (a quote presented
+  // as a memory, a message or a record must be words the turn saw): the composed prompt
+  // (its history, standing rules, notes, recalled memories) and the input block. Both
+  // outlive the turn's checks (engine-owned); null leaves the rule unchecked.
+  void setQuoteContext(const std::string* instructions, const std::string* inputs) {
+    instructions_ = instructions;
+    inputs_ = inputs;
+  }
   // A head tool ran: its effect class (the shared tool table) and its result.
   // The result text joins the figure sources (bounded).
   void noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
                 uint8_t flags = 0);
   // The ledger flags a tool call's arguments carry (kFxPermanent for a memory
   // written or updated with permanent:true, kFxVoice for reply.telegram
-  // voice:true, kFxHealth for a read of the device's own state).
+  // voice:true, kFxHealth for a read of the device's own state, kFxLogRow for a
+  // files.append into a .csv or .log file, kept only if its result counts a row).
   static uint8_t toolCallFlags(const std::string& regName, const std::string& argsJson);
   // Sub-agent results this turn read: how many had a lookup behind them and how
   // many were live-data results with none.
@@ -99,10 +132,24 @@ class ClaimCheck {
   std::vector<nimbus::orch::ClaimGap> gapsFor(const std::string& reply,
                                               const nimbus::orch::TurnEffects& fx,
                                               bool skipSpawned) const;
+  bool hostedMayBack(const nimbus::orch::ClaimGap& g) const;
+  void recordGaps(const std::string& reply, std::vector<nimbus::orch::ClaimGap>& kept) const;
+  std::string seenText(bool fixedToo) const;   // what a quote (fixedToo) or a reason may come from
+  void noteToolText(const std::string& output);
 
   nimbus::orch::TurnEffects fx_;
   std::string sources_;
   std::string recalled_;
+  std::string ownerNums_;        // the numbers the owner's own message holds (CUM-824)
+  uint32_t sourceNames_ = 0;     // SourceEvidence bits this turn names (CUM-824)
+  std::string sourceWords_;      // the words those sources hold, for a source named by name
+  std::string toolText_;         // the tool results in normalizedWords form (bounded)
+  std::string ownerText_;        // the owner's message (bounded): a why-question's reasons
+  std::string ledger_;           // the spawn ledger block this turn read
+  bool clipped_ = false;         // an evidence text or store hit its cap: the source, quote and
+                                 // reason rules (which assert absence) stand down
+  const std::string* instructions_ = nullptr;   // setQuoteContext
+  const std::string* inputs_ = nullptr;
   uint32_t causeEvidence_ = 0;   // this turn's records, as CauseEvidence bits
   bool hosted_ = false;
   bool corrected_ = false;

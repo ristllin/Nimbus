@@ -15,6 +15,7 @@
 #include "nimbus/orch/turn.h"         // leadingJsonObject - the shared whole-reply rule
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - per-round usage
 #include "nimbus/orch/seam_meter.h"        // meterSubAnswer - a sub's spend (lane DEF)
+#include "nimbus/orch/sub_provenance.h"    // ToolTally - the sub's tools by name (CUM-824)
 #include "nimbus/orch/transcript.h"   // Transcript - the canonical turn record (Stage 2)
 #include "nimbus/orch/reply_text.h"
 #include "image_parts.h"   // R1: the turn's photos as image parts of the seeded user message
@@ -910,6 +911,7 @@ struct Cached {
   std::string connectorAsked;
   uint16_t toolRuns;
   uint16_t webRuns;
+  std::string toolNames;   // ToolTally::render: the run's tools by name, with counts
 };
 static Cached s_cache[6];   // == kAgentMaxJobs; sync jobs vacate in seconds
 
@@ -931,6 +933,7 @@ void clearSlot(Cached& c) {
   c.connectorCalls = 0;
   c.toolRuns = 0;
   c.webRuns = 0;
+  c.toolNames.clear();
 }
 
 // CUM-536 connector provenance, decided from the request before the run: the
@@ -940,9 +943,14 @@ struct Provenance {
   std::vector<nimbus::orch::AttachedConnector> attached;   // connectors on the request
   std::string askedId;                  // the wire id the task named ("" = none)
   std::string asked;                    // its display name
+  std::vector<std::string> builtins;    // built-in tools on the request (web_search, ...)
 };
 Provenance provenanceOf(const ProviderDeps& pd, const JsonDocument& req, const Directive& d) {
   Provenance p;
+  for (JsonObjectConst t : req["tools"].as<JsonArrayConst>()) {
+    const char* type = t["type"] | "";
+    if (nimbus::orch::isProviderBuiltinTool(type)) p.builtins.push_back(type);
+  }
   p.attached = nimbus::orch::mistralAttachedConnectors(req);
   if (p.attached.empty()) return p;
   // The request names a connector only by its wire id, and a custom Studio
@@ -991,9 +999,31 @@ struct RunCounts {
   uint16_t connector = 0;   // runs of the asked connector (CUM-536)
   uint16_t tools = 0;       // every tool.execution entry
   uint16_t web = 0;         // ...that was a web search or fetch
+  nimbus::orch::ToolTally byName;   // the same entries by name, plus what was offered
 };
 // weather_search: Mistral's web_search built-in answers a weather question through it
 // (usage "connectors":{"web_search_mcp":1}, probed 27 Oct; it returns no source urls).
+
+// A connector's name in the tally: the device's name for it, else its type, else
+// its wire id.
+std::string connectorLabel(const nimbus::orch::AttachedConnector& a) {
+  if (!a.name.empty()) return a.name;
+  return a.type.empty() ? a.id : a.type;
+}
+
+// What the request offered and the run never used counts 0 (CUM-824): a built-in
+// whose name never ran, and a connector no run counted for (an unrecognized run
+// name counts for every connector, so a connector is shown idle only when it surely was).
+void tallyOffered(const Provenance& p, const std::vector<std::string>& ranNames, RunCounts& runs) {
+  for (const std::string& b : p.builtins) runs.byName.offered(b);
+  for (const auto& a : p.attached) {
+    bool ran = false;
+    for (const std::string& n : ranNames)
+      ran = ran || (!nimbus::orch::isProviderBuiltinTool(n) &&
+                    nimbus::orch::countsAsConnectorRun(n, a.id, p.attached));
+    if (!ran) runs.byName.offered(connectorLabel(a));
+  }
+}
 bool isWebTool(const char* name) {
   return strstr(name, "web_search") != nullptr || strstr(name, "web_fetch") != nullptr ||
          strstr(name, "news_search") != nullptr || strstr(name, "weather_search") != nullptr;
@@ -1013,10 +1043,13 @@ void bump(uint16_t& n) { if (n < 0xFFFF) n++; }
 std::string outputsReply(const JsonDocument& doc, const Provenance& p, RunCounts& runs) {
   std::string reply;
   runs = RunCounts();
+  std::vector<std::string> ranNames;
   for (JsonObjectConst o : doc["outputs"].as<JsonArrayConst>()) {
     const char* type = o["type"] | "";
     if (strcmp(type, "tool.execution") == 0) {
       const char* nm = o["name"] | "";
+      runs.byName.ran(nm);
+      ranNames.push_back(nm);
       bump(runs.tools);
       // A web tool (web_search, weather_search, news_search, web_fetch) is never a run of
       // an attached connector: "the weather for my calendar events" that ran only
@@ -1028,6 +1061,7 @@ std::string outputsReply(const JsonDocument& doc, const Provenance& p, RunCounts
     }
     if (strcmp(type, "message.output") == 0) reply = mistralSubReplyContent(o);   // string OR chunks, with sources
   }
+  tallyOffered(p, ranNames, runs);
   return reply;
 }
 }  // namespace
@@ -1126,6 +1160,7 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   s_cache[slot].connectorAsked = prov.asked;
   s_cache[slot].toolRuns = runs.tools;
   s_cache[slot].webRuns = runs.web;
+  s_cache[slot].toolNames = runs.byName.render(sizeof(ResultEnvelope::toolNames) - 1);
   if (!prov.attached.empty())
     hlog::logf("mistral sub: connectors attached=%u calls=%u asked=%s",
                (unsigned)prov.attached.size(), (unsigned)runs.connector,
@@ -1170,6 +1205,7 @@ FabricErr mistralPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope&
   env.connectorCalls = s_cache[slot].connectorCalls;
   env.toolRuns = s_cache[slot].toolRuns;
   env.webRuns = s_cache[slot].webRuns;
+  snprintf(env.toolNames, sizeof(env.toolNames), "%s", s_cache[slot].toolNames.c_str());
   snprintf(env.connectorAsked, sizeof(env.connectorAsked), "%s",
            s_cache[slot].connectorAsked.c_str());
   clearSlot(s_cache[slot]);                   // slot freed after delivery

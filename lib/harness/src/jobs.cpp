@@ -508,13 +508,12 @@ std::string JobEngine::takeFreshResults(bool* unverified) { return takeFresh(nul
 // the CUM-822 web header pushed it over the CCN cap); behavior unchanged.
 static std::string freshSeedBody(const std::vector<JobEngine::FreshResult>& taken) {
   std::string b = "[FRESH RESULTS] (sub-agents that just finished)\n";
-  // CUM-822 (unit A, 27 Oct): a synthesis over a weather-only web result told the owner
-  // trains were "running normally", a fact from an earlier answer, and dropped sources.
-  bool web = false;
-  for (const auto& f : taken) web = web || (f.web && !f.failed);
-  if (web)
-    b += "For a result tagged web: keep the sources it names and state only facts it "
-         "contains, never facts from earlier answers.\n";
+  // CUM-824 (the HFC live check and lane HON's): a synthesis over a weather-only
+  // result told the owner trains were "running normally", a fact from an earlier
+  // answer, and dropped sources. One line covers the web case too: keep the
+  // sources a result names and state only facts it contains, never facts from
+  // earlier answers.
+  b += kFreshFactsLine;
   // Bound the SEED (Context Fabric, 2026-08-05): a fan-out synthesis inlined all
   // sub-results here - 6 x 3500 chars = ~21 KB in the pinned user turn that the
   // in-turn fold can never trim, which (measured) floored the request body near
@@ -697,11 +696,13 @@ void JobEngine::ledgerRefused(const std::string& chatId, const std::string& name
   ledger_.push_back(std::move(e));
 }
 
-void JobEngine::ledgerFinished(const char* tag, LedgerState st, const std::string& reason) {
+void JobEngine::ledgerFinished(const char* tag, LedgerState st, const std::string& reason,
+                               const char* tools) {
   for (auto& e : ledger_) {
     if (e.tag != tag) continue;
     e.state = st;
     e.reason = capText(reason, kLedgerReasonMax);
+    e.tools = tools ? tools : "";
     e.atMs = nowMs();
     return;
   }
@@ -717,6 +718,18 @@ static const char* notDurableNote(bool notDurable) {
   return notDurable ? "; its record could not be stored, so a restart would lose it" : "";
 }
 
+// CUM-824: what a finished sub was asked and what it ran, by name, from its provider's
+// record, so "why did it use Notion?" is answered from them. The task is the head's own
+// words (never the sub's reply: external text must not ride a block read as the truth).
+// The device never records why a sub picked its tools; saying so beside them keeps a
+// model from inventing a reason (the 27 Oct "Notion was the fallback").
+static std::string ledgerFacts(const std::string& tools, const std::string& task) {
+  std::string out;
+  if (!tools.empty()) out = kLedgerRanLead + tools + " (why it picked them is not recorded)";
+  if (!task.empty()) out += "; task: \"" + nimbus::orch::foldLine("", task, 100) + "\"";
+  return out;
+}
+
 // One ledger line: who, then what became of it.
 std::string JobEngine::ledgerLine(const LedgerEntry& e, uint32_t now) {
   const unsigned mins = (unsigned)((now - e.atMs) / 60000u);
@@ -724,11 +737,12 @@ std::string JobEngine::ledgerLine(const LedgerEntry& e, uint32_t now) {
   std::string who = !e.name.empty() ? e.name : nimbus::orch::foldLine("", e.task, 40);
   if (!e.tag.empty()) who += " (" + e.tag + ", " + e.provider + "/" + e.model + ")";
   std::string line = "- " + who + ": ";
+  const std::string ran = ledgerFacts(e.tools, e.task);
   switch (e.state) {
     case LedgerState::Queued:    line += "queued, not started yet; it starts when a slot frees"; break;
     case LedgerState::Running:   line += "running, started " + ago + notDurableNote(e.notDurable); break;
-    case LedgerState::Done:      line += "finished " + ago + "; its result came back as a fresh result"; break;
-    case LedgerState::Failed:    line += "failed " + ago + (e.reason.empty() ? "" : " - " + e.reason); break;
+    case LedgerState::Done:      line += "finished " + ago + ran + "; its result came back as a fresh result"; break;
+    case LedgerState::Failed:    line += "failed " + ago + (e.reason.empty() ? "" : " - " + e.reason) + ran; break;
     case LedgerState::Refused:   line += "did not start (" + ago + ") - " + e.reason; break;
     case LedgerState::Cancelled: line += "stopped " + ago; break;
   }
@@ -749,9 +763,13 @@ std::string JobEngine::spawnLedgerText(const std::string& chatId) const {
     shown++;
   }
   if (lines.empty()) return "";
+  // CUM-824: "Why Notion?" was answered with an invented reason; the lines carry what
+  // each sub ran, and a question about one is answered from them.
   return "[SPAWN LEDGER] (this chat's sub-agents from the device's own job table, newest first. "
-         "It is the truth about them: never re-check it with file or session tools, and never "
-         "copy it into your notes.)\n" + lines;
+         "It is the truth about them: asked about one, answer from these lines alone (its task, "
+         "what it ran, how it ended); where they do not say why, say the reason is not recorded, "
+         "never a rule, setting, memory or limit you cannot see this turn. Never re-check it with "
+         "file or session tools, and never copy it into your notes.)\n" + lines;
 }
 
 // ---- spawn enqueue + dispatch -----------------------------------------------
@@ -1623,7 +1641,7 @@ int JobEngine::pump() {
       // owner actually sees. If the synthesis can't run (heap/provider down), the
       // fallback (60 s after the batch drains) delivers the raw results - never lost.
       emitJobState(rec.tag, rec.backend, orch::JobState::Done);
-      ledgerFinished(rec.tag, LedgerState::Done);
+      ledgerFinished(rec.tag, LedgerState::Done, std::string(), env_ref().toolNames);
       watchClear(rec.tag);
       scheduleReap(rec.tag);   // collapse the Done arc off the ring after a short grace
       // v4.0.0 auto-persist: a run-tagged job's FULL reply becomes a durable
@@ -1659,8 +1677,10 @@ int JobEngine::pump() {
       addFreshResult(rec.tag, jobLabel(rec).c_str(), reply,
                      nimbus::orch::nsForChat(rec.chatId, /*admin=*/false),
                      /*failed=*/false, unverified);
-      // How many tools the sub ran, from the provider's own record (lane S).
-      fresh_.back().provenance = nimbus::orch::freshProvenanceTag(env_ref().toolRuns, env_ref().webRuns);
+      // How many tools the sub ran, from the provider's own record (lane S);
+      // CUM-824: and which ones, by name. The web mark rides the same record.
+      fresh_.back().provenance = nimbus::orch::freshProvenanceTag(env_ref().toolRuns, env_ref().webRuns) +
+                                 nimbus::orch::toolRunsTag(env_ref().toolNames);
       fresh_.back().web = env_ref().webRuns > 0;
       freshChatId_ = rec.chatId;
     } else if (env_ref().state == orch::JobState::Error) {
@@ -1670,7 +1690,8 @@ int JobEngine::pump() {
       // A failure with nothing else live IS the final report: deliver as before.
       const std::string failText = std::string("Job [") + jobLabel(rec) + "] failed: " +
               (env_ref().error[0] ? env_ref().error : "unknown error");
-      ledgerFinished(rec.tag, LedgerState::Failed, env_ref().error[0] ? env_ref().error : "unknown error");
+      ledgerFinished(rec.tag, LedgerState::Failed, env_ref().error[0] ? env_ref().error : "unknown error",
+                     env_ref().toolNames);
       if (activeCount() > 1 || !pending_.empty()) {   // >1: this job still counts
         addFreshResult(rec.tag, jobLabel(rec).c_str(), std::string("FAILED: ") + failText,
                        nimbus::orch::nsForChat(rec.chatId, /*admin=*/false), /*failed=*/true);

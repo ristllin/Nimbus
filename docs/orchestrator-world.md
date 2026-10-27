@@ -432,7 +432,8 @@ invents capabilities it lacks nor refuses ones it has:
   saving a skill is an investment for FUTURE runs, never a step of the current
   task; the model may delete only capsules it authored. Rails in §6.
 - **Honesty:** one rule (the `reply` field description) covers every claim of an
-  effect, a durability, live data or a figure from a source, and the device checks
+  effect, a durability, live data or a figure or fact from a named source (a figure
+  the owner just gave is credited to the owner), and the device checks
   each claim against the turn's recorded effects before delivery (see the claim
   check in [turn-anatomy.md](turn-anatomy.md)); owner-only knobs (keys, routing)
   are named as owner-only so it can explain the boundary instead of silently

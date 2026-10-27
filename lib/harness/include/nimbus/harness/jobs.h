@@ -40,6 +40,17 @@ inline constexpr const char* kSubReplyCapNote =
     "\n\n[Reply size: the first 16 KB of your reply reaches the head directly; a longer reply is "
     "saved whole as a file the head can read, so finish your full report and do not pad or repeat it.]";
 
+// CUM-824: how a spawn ledger line names what a sub ran ("...; it ran notion_search x2
+// (why ...)"). The claim check reads the names back from it (claim_check.cpp).
+inline constexpr const char* kLedgerRanLead = "; it ran ";
+
+// CUM-824: the second line of every [FRESH RESULTS] block. A synthesis states what the
+// results it is given contain; a fact from an earlier answer is labeled as earlier.
+inline constexpr const char* kFreshFactsLine =
+    "State only facts these results contain, with only the sources they name: anything they do "
+    "not cover (a status from an earlier answer, a source they do not name) is left out or labeled "
+    "as earlier, never stated as current or checked.\n";
+
 // A stable ring key from a job tag (FNV-1a) - the attention Router keys jobs by a
 // uint32, not a string, so hash the tag into that key space. Exposed so the
 // device glue can key its head-turn arc ("head") on the same hash.
@@ -497,6 +508,7 @@ class JobEngine {
   struct LedgerEntry {
     std::string chatId, name, task, tag, provider, model, asked, reason;
     std::string swapped;   // why the model that runs is not the one asked for ("" = none)
+    std::string tools;     // what it ran, by name ("web_search x2, notion x0"; "" = unknown)
     LedgerState state = LedgerState::Queued;
     uint32_t atMs = 0;
     bool notDurable = false;   // its journal record did not store: a restart loses it
@@ -509,7 +521,8 @@ class JobEngine {
   LedgerEntry* queuedEntry(const PendingSpawn& p);   // this spawn's Queued row, or nullptr
   void ledgerRefused(const std::string& chatId, const std::string& name, const std::string& task,
                      const std::string& reason);
-  void ledgerFinished(const char* tag, LedgerState st, const std::string& reason = std::string());
+  void ledgerFinished(const char* tag, LedgerState st, const std::string& reason = std::string(),
+                      const char* tools = "");
   static std::string ledgerLine(const LedgerEntry& e, uint32_t now);
   // Found or added (bounded); nullptr when there is no room for a plain refusal.
   SpawnNotes* spawnNotesFor(const std::string& chatId, bool mayHaveRun);

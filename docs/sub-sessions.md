@@ -66,9 +66,17 @@ work belong there. A new backend without a mode fails to build.
 (`JobEngine::spawnLedgerText`): that chat's sub-agents from the last two hours,
 newest first, from the job engine's own records - queued, running (with its job
 tag and provider/model), finished, failed with its reason, did not start with
-its reason, or stopped. The head never has to keep this in its notes or re-check
-it with file or session tools (on 17-18 Oct a note to "verify files_list" made
-every later turn poll a dead project). It is RAM only, at most 12 entries.
+its reason, or stopped. A finished or failed sub-agent's line also names the tools
+it ran, with counts, from its provider's own record ("it ran notion_search x2,
+web_search x0 (why it picked them is not recorded)"; Mistral lists every tool run and
+the tools and connectors it was offered and never used, OpenAI every `*_call` item,
+Anthropic every tool-use event), and its task as the head wrote it. The sub-agent's
+own reply never rides the ledger: it is outside text, and the block is read as the
+truth. The block tells the head to answer a question about a sub-agent from these
+lines alone and, where they do not say why, to say the reason is not recorded. The head never has to keep this in
+its notes or re-check it with file or session tools (on 17-18 Oct a note to
+"verify files_list" made every later turn poll a dead project). It is RAM only,
+at most 12 entries.
 
 **The pending queue is decoupled from concurrency.** `kMaxPendingSpawns`
 (8, `caps.h`) is the depth one turn may enqueue; `kAgentMaxJobs` (6) is the

@@ -36,8 +36,9 @@ namespace orch {
   "Text to send the owner now; empty string if none. Say only what actually " \
   "happened this turn and only what you actually saw: a claim that something was " \
   "saved, written, started, sent, spoken, scheduled, pinned or changed, that it " \
-  "survives a restart, that you checked live data, that a figure came from a " \
-  "source (a label, a receipt, the owner's watch), or that something caused a " \
+  "survives a restart, that you checked live data, that a figure or fact came " \
+  "from a source (a label, a receipt, a gauge, an app or website, the owner's " \
+  "watch; what the owner just told you is the owner's, so say so), or that something caused a " \
   "failure - the owner's phone, app or connection, a damaged file, one of your " \
   "own subsystems - needs a tool result, a field of this reply or a source " \
   "text this turn that shows it; quote the real id. If a " \

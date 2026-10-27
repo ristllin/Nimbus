@@ -390,11 +390,11 @@ it read, with how many tools that sub-agent ran. The ledger also carries what th
 turn's records show about CAUSES (the input block and every tool result: a network
 failure, a client error, a damaged file, a timeout, a billing refusal, a health
 read). A scanner reads the reply for
-claims in nine classes:
+claims in ten classes:
 
 | Class | Example | Backed by |
 |---|---|---|
-| saved | "Logged.", "Noted." | a memory write, file write, skill save or scratchpad write; a record correction ("updated the day log", "corrected the entry", "adjusted the totals") needs the file write |
+| saved | "Logged.", "Noted." | a memory write, file write, skill save or scratchpad write; a log claim ("updated the day log", "corrected the entry", "logged it in your food log") needs a row that landed in a `.csv` or `.log` file: a `files.append` whose result counts at least one row appended, added or replaced (any other file write backs none) |
 | deliverable | "written and waiting", "saved as plan.md" | a file or skill written this turn |
 | spawned | "I started three research sub-agents" | that many accepted spawns |
 | sent | "sent", "reminder set", "read it aloud" | a send, a schedule, speech; for a voice message ("I sent you a voice message", "Voice note sent"), only a voice send whose result names Telegram's `message_id`; any other Telegram send (text, document, photo) is the same: a queued send with no `message_id` backs no "sent", and the line says the message is queued, not delivered |
@@ -402,7 +402,33 @@ claims in nine classes:
 | durable | "survives a restart", "never decays" | a save that landed (not RAM only); a pin for "never decays" |
 | checked | "I checked", "live data" | a lookup, or a sub-agent result with a lookup behind it; a pin call for "confirmed it's pinned" |
 | figure | "200 kcal (label)", "your watch said 408" | the number appears in a source the turn was given |
+| source | "Rain gauge at the office roof: 3.0 mm", "the live gauge says", "per the label", "according to the app", "Source: National Rail Enquiries", "checked live on National Rail" | that source (a gauge, sensor, label, receipt, menu, watch, scale, app, website, ...) named this turn by the owner's message, a tool result, a sub-agent result or a memory search result; a photo this turn may show any of them, and a sub-agent result with web runs names a website; recalled memories name only the owner's own devices (watch, scale, tracker); the history window names nothing. A source credited by name (a citation, a check on it, or "according to" it in a sentence about now: "today", "live", "this morning") needs every word of the name in those texts. A quote presented as something on record from before ("I recalled a memory: \"...\"", "you said \"...\"", "your message: \"...\"") needs those words, in order, in something the turn was given (the prompt with its history, the input block, a tool result); a draft, a translation or a save confirmation in quotes is not checked |
 | cause | "your connection", "corrupt", "it timed out", "my vision path is working", "you keep sending" | a record this turn that shows it: a network failure, a client error, a damaged file, a timeout, a billing refusal; "it is working" needs a health read this turn and no failure on record; "you keep sending" is refused when the records show the DEVICE repeated the deliveries; guesses and hedges do not exempt a cause |
+
+A source claim is a credit: the source said, showed or read something ("the gauge
+says", "watch data"), the reply cites it ("per the label", "according to the app", or
+"from your watch" and "on the website" with a figure next to them), or an instrument
+names a reading by itself ("Rain gauge: 3.0 mm"). A kind ("a rain gauge would
+help"), a hypothetical ("the gauge would show more"), the owner's own report ("the
+label you sent says") and a source labeled as earlier are not claims. The correction
+round for a source names the figures the owner gave this turn, so the rewrite credits
+the owner ("you said 3.0 mm") instead of a source the device never read.
+
+When the owner asks why about a past sub-agent (the question names one of the spawn
+ledger's tools, connectors or job tags, or a sub-agent), each reason the reply gives in a
+sentence about it ("because ...", "the fallback", "was configured to", "I recalled ...")
+must be built from words the turn's records hold: the history, the standing preferences,
+the input block and the tool results, not the fixed instructions. Two or more content
+words found in none of them (one, when the reason cites a memory, a rule or the owner's
+own request) make it a cause gap; the correction round hands the model the
+spawn ledger's lines and asks it to say what they show and that the reason is not
+recorded. A reason about anything else ("sourdough rises because wild yeast ferments the
+flour", or the weather when a job is named after it) is not checked. The claim check reads
+the owner's message, the sub-agent results, the memory results and the spawn ledger as
+the engine took them, never by searching the composed input for a block's title, so a
+sub-agent's reply cannot pose as one. When a tool result is too long to read whole, or an
+evidence store fills, the source, quote and reason rules stand down for the turn rather
+than state that something is missing.
 
 Questions, offers, conditions, possibilities and plain futures ("want me to", "I'll",
 "it may have been lost, or saved elsewhere"), a negation within four words, a clause
@@ -411,8 +437,10 @@ saved"), quoted text, another person's action and references to earlier turns ar
 claims. Replies that are mostly not English are not scanned. When the head has
 provider-hosted tools on its turn (connectors, a hosted web search), claims of sending,
 checking or changing something are not checked, because those tools run where the
-device cannot see them; everything the device does itself (memory, files, skills,
-notes, sub-agents, a Telegram voice message from its own bot) is always checked.
+device cannot see them, and neither are sources such a tool may have read (a website,
+an app, a feed, a report, a receipt); everything the device does itself (memory, files,
+skills, notes, sub-agents, a Telegram voice message from its own bot) is always checked,
+and so is a source no hosted tool can read (a gauge, a sensor, a label, a watch).
 Cause claims are always checked: the records are the device's own.
 
 A memory write that states an unbacked cause as a fact ("the owner's Telegram
@@ -429,9 +457,11 @@ or the claimed effect failed when the turn was applied, the reply gets one calm 
 per class that says what did not happen, for example "(Correction: that has not
 been saved.)", "(Correction: nothing was pinned this turn.)", "(Note: this is kept
 only until the next restart; saving it permanently failed.)", "(Note: that is
-queued for Telegram; the device has no delivery receipt for it yet.)" or, for a
+queued for Telegram; the device has no delivery receipt for it yet.)", for a
 cause, "(Note: the device has no record of a problem with your phone, app or
-connection, so that cause is not confirmed.)". A reply that already
+connection, so that cause is not confirmed.)", for a source, "(Correction: the device
+read nothing from a gauge this turn; 3.0 is the figure you gave.)" or, for a log
+claim, "(Correction: no row was added to the log.)". A reply that already
 says so itself ("it was already pinned, so nothing changed") gets no line. The
 conversation history keeps the delivered text, lines included. `/api/state` counts
 both outcomes (`claimsCorrected` for correction rounds, `claimsTailed` for lines;
@@ -439,10 +469,16 @@ RAM only).
 
 A sub-agent result for a live-data task (a status, the weather, prices, news) that
 ran no tool is marked `[NOT CHECKED]`, and every `[FRESH RESULTS]` line says how
-many tools ran (`[tools: 2, web: 1]` or `[no tools ran]`). A reply built on such a
-result must say the data was not checked, or it gets the "not checked live" line.
-When a result ran a web search, the block also tells the head to keep the sources
-it names and to state only facts it contains, never facts from earlier answers.
+many tools ran (`[tools: 2, web: 1]` or `[no tools ran]`) and, when the provider's
+record names them, which ones (`[ran: web_search x2, notion x0]`: a tool the run was
+offered and never used counts 0). The spawn ledger keeps the same names for two
+hours, with the sub-agent's task (the head's own words, never the sub-agent's reply) and
+a note that why it picked those tools is not recorded, so "why did it use Notion?" is
+answered from what the sub-agent was asked and ran. A reply
+built on an unchecked result must say the data was not checked, or it gets the "not
+checked live" line. The block opens with one line telling the head to state only
+facts the results contain, to keep the sources a result names, and to label anything
+from an earlier answer as earlier.
 
 ## Diagnosing a failure
 

@@ -9,6 +9,7 @@
 #include "nimbus/orch/model_catalog.h" // gptGeneration - the reasoning-family gate
 #include "nimbus/orch/model_defaults.h" // currentTurnRole - a background turn thinks little
 #include "nimbus/orch/seam_meter.h"    // meterSubSearchRuns - a sub's search runs (lane DEF)
+#include "nimbus/orch/sub_provenance.h"  // ToolTally - the sub's tools by name (CUM-824)
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - per-round usage
 #include "nimbus/orch/transcript.h"   // Transcript - the canonical turn record (Stage 2)
@@ -95,6 +96,16 @@ static void stripFieldDescriptions(ArduinoJson::JsonVariant v) {
   }
 }
 
+// A "*_call" output item's tool name for the tally: the connector of an MCP call, the
+// function of a function call, else the item type without "_call" (web_search, ...).
+static std::string oaiToolName(JsonObjectConst item, const std::string& type) {
+  const char* label = item["server_label"] | "";
+  if (type == "mcp_call" && label[0]) return label;
+  const char* name = item["name"] | "";
+  if (name[0]) return name;
+  return type.substr(0, type.size() - 5);
+}
+
 static JobState mapStatus(const char* s) {
   if (!s) return JobState::Unknown;
   if (!strcmp(s, "completed"))   return JobState::Done;
@@ -175,6 +186,8 @@ FabricErr oaiPoll(const ProviderDeps& pd, const char* host, const std::string& k
   filter["usage"] = true;   // real sub-session token usage -> spawn attribution
   JsonObject outItem  = filter["output"].add<JsonObject>();    // applies to all output items
   outItem["type"] = true;   // "*_call" items: the tools the sub actually ran (provenance)
+  outItem["name"] = true;          // function_call / mcp_call: which tool (CUM-824)
+  outItem["server_label"] = true;  // mcp_call: which connector
   JsonObject contItem = outItem["content"].add<JsonObject>();  // applies to all content items
   contItem["type"] = true;
   contItem["text"] = true;
@@ -207,14 +220,17 @@ FabricErr oaiPoll(const ProviderDeps& pd, const char* host, const std::string& k
   env.webRuns = 0;
   bool container = false;   // lane DEF: a code-interpreter run bills a container
   bool worked = false;      // lane QW4: the run lists output, whatever its usage says
+  nimbus::orch::ToolTally byName;   // CUM-824: the same items by name
   for (JsonObjectConst item : doc["output"].as<JsonArrayConst>()) {
     worked = true;
     const std::string ty = item["type"] | "";
     if (ty.size() < 5 || ty.compare(ty.size() - 5, 5, "_call") != 0) continue;
+    byName.ran(oaiToolName(item, ty));
     if (env.toolRuns < 0xFFFF) env.toolRuns++;
     if (ty == "web_search_call" && env.webRuns < 0xFFFF) env.webRuns++;
     if (ty == "code_interpreter_call") container = true;
   }
+  byName.copyTo(env.toolNames);
   // Real billed usage of the background response (present on terminal objects).
   {
     nimbus::orch::TokenUsage u =

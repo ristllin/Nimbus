@@ -37,6 +37,8 @@ struct FakeAdapter : agent::ManagedAgentAdapter {
   std::string connectorAsked;
   // Optional scripted tool-run counts (the provider's own record), on the Done poll.
   uint16_t toolRuns = 0, webRuns = 0;
+  // Optional scripted tool names with counts (CUM-824), on the Done or Error poll.
+  std::string toolNames;
   int pollCount = 0;
 
   const char* backendId() const override { return backend.c_str(); }
@@ -76,6 +78,8 @@ struct FakeAdapter : agent::ManagedAgentAdapter {
       env.webRuns = webRuns;
       strncpy(env.connectorAsked, connectorAsked.c_str(), sizeof(env.connectorAsked) - 1);
     }
+    if (env.state == agent::JobState::Done || env.state == agent::JobState::Error)
+      strncpy(env.toolNames, toolNames.c_str(), sizeof(env.toolNames) - 1);
     return agent::FabricErr::Ok;
   }
 

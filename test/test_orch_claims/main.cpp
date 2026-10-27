@@ -78,6 +78,11 @@ static std::string coreFor(const ClaimCueInfo& c) {
       return std::strchr(c.phrase, '#') ? w : w + " six sub-agents";
     case ClaimClass::Figure:
       return "protein 37 g " + w;
+    case ClaimClass::Source:   // a credited noun, a parenthesized source, or a credited name
+      if (c.namesASource)
+        return w[0] == 's' ? w + ": BBC Weather today" : w[0] == 'c' ? w + " live on BBC Weather today"
+                                                                     : w + " BBC Weather, rain today";
+      return c.needsCredit ? "the " + w + " says it is 3.0 mm" : "rain 3.0 mm " + w;
     default:
       return w;
   }
@@ -110,7 +115,7 @@ static void test_every_class_has_cues_and_a_template() {
     TEST_ASSERT_GREATER_THAN_MESSAGE(0, perClass[c], claimClassSlug((ClaimClass)c));
     TEST_ASSERT_NOT_EQUAL(0, std::strcmp(claimClassSlug((ClaimClass)c), "unknown"));
   }
-  TEST_ASSERT_EQUAL(9, (int)ClaimClass::kCount);   // update coreFor and this line together
+  TEST_ASSERT_EQUAL(10, (int)ClaimClass::kCount);   // update coreFor and this line together
 }
 
 static void test_every_cue_is_a_claim_when_plain() {
@@ -122,8 +127,13 @@ static void test_every_cue_is_a_claim_when_plain() {
 }
 
 // Figure cues credit numbers to a source; negation and offers do not apply to
-// them the same way, so their scoping has its own tests (questions, quotes).
-static bool isFigure(const ClaimCueInfo& c) { return c.cls == ClaimClass::Figure; }
+// them the same way, so their scoping has its own tests (questions, quotes). A
+// source in parentheses after its figure ("3.0 mm (gauge)") is credited by that
+// form, like a figure's label, and is scoped the same way; a credited source noun
+// ("the gauge says") follows every action rule and has its own tests below.
+static bool isFigure(const ClaimCueInfo& c) {
+  return c.cls == ClaimClass::Figure || (c.cls == ClaimClass::Source && !c.needsCredit && !c.namesASource);
+}
 
 static void test_every_cue_negated_within_four_tokens_is_not_a_claim() {
   const char* negs[] = {"not", "never", "haven\xE2\x80\x99t", "didn't", "cannot"};
@@ -944,17 +954,26 @@ static void test_a_correction_of_the_record_needs_a_files_effect() {
       "I adjusted the totals after recounting.",
       "The day log has been updated.",
       "I amended the ledger with the refund.",
+      "I logged it in your food log.",
   };
-  TurnEffects none, mem, file, cfg;
+  // CUM-782: a log claim needs a row that landed in a log file (kFxLogRow); any other
+  // file write (a saved artifact, a fetched file, a PDF, an image) backs none of them.
+  TurnEffects none, mem, file, cfg, row;
   mem.add(FxKind::MemWrite, true);
   file.add(FxKind::FileWrite, true);
   cfg.add(FxKind::Config, true);
+  row.add(FxKind::FileWrite, true, "food/2026-10-27.csv", 1, kFxLogRow);
   for (const char* r : replies) {
     TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(r, none), ClaimClass::Saved), r);
     TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(r, mem), ClaimClass::Saved), r);
     TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(r, cfg), ClaimClass::Saved), r);
-    TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(r, file), ClaimClass::Saved), r);
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(r, file), ClaimClass::Saved), r);
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(r, row), ClaimClass::Saved), r);
+    const std::vector<ClaimGap> g = gapsFor(r, file);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("\n\n(Correction: no row was added to the log.)", claimTail(g).c_str(), r);
   }
+  // A plain "logged" with no log near it stays a save, backed by any save.
+  TEST_ASSERT_FALSE(gapOf(gapsFor("Logged it.", mem), ClaimClass::Saved));
   // Without a record near, "corrected" is any save; "updated the settings" is a change.
   TEST_ASSERT_FALSE(gapOf(gapsFor("I corrected it for you.", mem), ClaimClass::Saved));
   TEST_ASSERT_FALSE(gapOf(gapsFor("I updated the model settings for you.", cfg), ClaimClass::Changed));
@@ -975,6 +994,340 @@ static void test_switch_claims_need_a_setting_that_changed() {
     TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(c, mem), ClaimClass::Changed), c);
     TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(c, changed), ClaimClass::Changed), c);
   }
+}
+
+// ---- named sources (CUM-824) ---------------------------------------------------
+// 27 Oct, Lumi on Mistral: the owner wrote "Its 3.0mm rn" and the reply said "Rain
+// gauge at the office roof: 3.0 mm so far this morning ... the live gauge says it is
+// heavy" (claims: ok n=0). A credited source must be named this turn.
+
+static std::vector<ClaimGap> sourceGaps(const std::string& reply, uint32_t named,
+                                        const std::string& ownerText = std::string()) {
+  TurnEffects fx;
+  ClaimEvidence ev;
+  ev.fx = &fx;
+  ev.sources = &named;
+  const std::string nums = figureNumbers(ownerText);
+  ev.owner = &nums;
+  return claimGaps(reply, scanClaims(reply), ev);
+}
+
+static uint32_t sourceBitOf(const std::vector<ClaimGap>& gaps) {
+  for (const ClaimGap& g : gaps)
+    if (g.cls == ClaimClass::Source) return g.source;
+  return 0;
+}
+
+// Every source cue: a gap with nothing named, backed by its own noun only, and its
+// noun is one the evidence scan recognizes (the two tables cannot drift apart).
+static void test_every_source_cue_needs_its_own_noun_named_this_turn() {
+  int cues = 0;
+  for (size_t i = 0; i < claimCueCount(); i++) {
+    const ClaimCueInfo c = claimCue(i);
+    if (c.cls != ClaimClass::Source || c.namesASource) continue;
+    cues++;
+    const std::string s = positiveFor(c);
+    const uint32_t bit = sourceBitOf(sourceGaps(s, 0));
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(0, bit, s.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(0, bit & (bit - 1), s.c_str());   // one noun per cue
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(sourceGaps(s, bit), ClaimClass::Source), s.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(sourceGaps(s, kSrcAll & ~bit), ClaimClass::Source), s.c_str());
+    TEST_ASSERT_TRUE_MESSAGE((sourceEvidenceOf(cueWords(c.phrase)) & bit) != 0, c.phrase);
+    // Without source evidence the rule is not checked (callers that predate it).
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(s, TurnEffects()), ClaimClass::Source), s.c_str());
+  }
+  TEST_ASSERT_GREATER_THAN(20, cues);
+}
+
+static void test_source_credit_forms_and_what_is_not_a_credit() {
+  const char* credited[] = {
+      "Rain gauge at the office roof: 3.0 mm so far this morning.",
+      "The live gauge says it is heavy.",
+      "Per the label, it has 20 g of protein.",
+      "According to the Met Office app, the rain stops at noon.",
+      "From your watch, you ran 5 km.",
+      "On the BBC website the forecast is 16C.",
+      "The sensor is showing 21C.",
+      "Your watch data puts you at 9,000 steps.",
+      "The receipt lists 3 items.",
+      "| Bar | 20 g (label) |",
+  };
+  for (const char* r : credited) TEST_ASSERT_TRUE_MESSAGE(hasClass(scanClaims(r), ClaimClass::Source), r);
+  const char* notCredited[] = {
+      "A rain gauge would help you measure it.",        // a kind, not a source
+      "You said 3.0 mm, which is light rain.",          // credited to the owner, no source
+      "The label you sent says 20 g of protein.",       // the owner's own report
+      "Going by your message, the gauge reads 3.0 mm.", // the owner's message
+      "Earlier the website said trains were normal.",   // labeled as earlier
+      "I don't have a rain gauge reading.",             // negated
+      "Do you have a rain gauge?",                      // a question
+      "The gauge would show more after an hour.",       // a hypothetical
+      "We are on site at 9.",                           // a bare "on site"
+      "Fish is on the menu tonight.",                   // "on the menu" credits nothing
+      "Watch out for the 3 pm showers.",                // a verb, not a watch
+      "Gauges usually read 2 to 3 mm in a shower.",     // a plural kind
+      "I can check the app for you.",                   // an offer
+      "On a scale of 1 to 10, it is a 7.",              // an idiom
+      "\"The gauge says 3 mm\" is what the post said.", // quoted
+      "On the device web page, check which provider runs the dream.",   // a place, no figure
+      "Think pretraining applied to numeric sequences (sensor readings, sales).",   // a kind in a list
+      // An explanation of how instruments work (the CUM-495 eddy covariance reply).
+      "How it works: a three-dimensional sonic anemometer and a fast gas analyzer take measurements 10 to 20 "
+      "times per second.",
+      "The thermometer reads the temperature of the air around it.",
+      "Each station logs rainfall every hour.",
+  };
+  for (const char* r : notCredited) TEST_ASSERT_FALSE_MESSAGE(hasClass(scanClaims(r), ClaimClass::Source), r);
+}
+
+// The live shape end to end: the owner's own figure rides the gap, so the correction
+// tells the model to credit the owner, and the tail says the figure is the owner's.
+static void test_invented_gauge_carries_the_owners_figure() {
+  const std::string reply =
+      "Rain gauge at the office roof: 3.0 mm so far this morning. The live gauge says it is heavy.";
+  const std::vector<ClaimGap> gaps = sourceGaps(reply, sourceEvidenceOf("Its 3.0mm rn"), "Its 3.0mm rn");
+  TEST_ASSERT_TRUE(gapOf(gaps, ClaimClass::Source));
+  TEST_ASSERT_EQUAL_STRING("3.0", gaps[0].missing.c_str());
+  TEST_ASSERT_EQUAL((uint32_t)kSrcGauge, gaps[0].source);
+  TurnEffects fx;
+  const std::string fix = claimCorrection(gaps, fx);
+  TEST_ASSERT_TRUE(fix.find("it credits a gauge, but nothing this turn names that source") != std::string::npos);
+  TEST_ASSERT_TRUE(fix.find("credit the owner") != std::string::npos);
+  TEST_ASSERT_TRUE(fix.find("(3.0)") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING(
+      "\n\n(Correction: the device read nothing from a gauge this turn; 3.0 is the figure you gave.)",
+      claimTail(gaps).c_str());
+  // Named by the owner ("my gauge"), the same reply is backed.
+  TEST_ASSERT_FALSE(gapOf(sourceGaps(reply, sourceEvidenceOf("My rain gauge says 3.0mm"), "x"), ClaimClass::Source));
+  // The honest rewrite credits the owner and names no source.
+  TEST_ASSERT_TRUE(sourceGaps("You're seeing 3.0 mm so far, a steady rain for the walk in.", 0, "Its 3.0mm rn").empty());
+  // A fact with no figure: the tail says the source is not confirmed.
+  const std::vector<ClaimGap> fact = sourceGaps("The live radar shows heavy rain.", 0, "It's pouring");
+  TEST_ASSERT_EQUAL_STRING(
+      "\n\n(Correction: the device read nothing from a radar this turn, so that source is not confirmed.)",
+      claimTail(fact).c_str());
+}
+
+// A source credited by name (mistral-large-latest in the eval, 27 Oct: a weather-only
+// result became "Trains ... are running normally. Source: National Rail Enquiries,
+// checked just now"): every word of the name must be in this turn's source texts.
+static std::vector<ClaimGap> nameGaps(const std::string& reply, const std::string& sourceText) {
+  TurnEffects fx;
+  ClaimEvidence ev;
+  ev.fx = &fx;
+  const std::string words = sourceWordsOf(sourceText);
+  ev.sourceWords = &words;
+  return claimGaps(reply, scanClaims(reply), ev);
+}
+
+static void test_a_source_named_by_name_needs_its_words_in_a_source() {
+  const std::string fresh =
+      "- job0000 (weather-trains) [tools: 1, web: 1]: Reading weather today, 27 Oct (BBC Weather): 16 C with "
+      "showers. Source: https://www.bbc.com/weather";
+  std::vector<ClaimGap> g = nameGaps("Trains are running normally. Source: National Rail Enquiries, checked just now.", fresh);
+  TEST_ASSERT_TRUE(gapOf(g, ClaimClass::Source));
+  TEST_ASSERT_EQUAL_STRING("National Rail Enquiries", g[0].name.c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "\n\n(Correction: nothing the device read this turn came from National Rail Enquiries, so that source is not "
+      "confirmed.)",
+      claimTail(g).c_str());
+  TEST_ASSERT_TRUE(claimCorrection(g, TurnEffects()).find("it credits National Rail Enquiries, but") != std::string::npos);
+  TEST_ASSERT_TRUE(gapOf(nameGaps("Trains run normally (checked live from National Rail Enquiries).", fresh), ClaimClass::Source));
+  TEST_ASSERT_TRUE(gapOf(nameGaps("According to the Met Office, the rain stops at noon today.", fresh), ClaimClass::Source));
+  // Backed: the result names it (a link's parts count); a list is checked name by name.
+  TEST_ASSERT_TRUE(nameGaps("Reading: 16 C with showers. Source: BBC Weather.", fresh).empty());
+  const std::string brief = "[Greater Anglia](https://www.greateranglia.co.uk) and [Grand Central Rail](x) and BBC Weather";
+  TEST_ASSERT_TRUE(nameGaps("Sources: Greater Anglia, Grand Central Rail, BBC Weather (Cambridge and London).", brief).empty());
+  g = nameGaps("Sources: Greater Anglia, National Rail, BBC Weather.", brief);
+  TEST_ASSERT_EQUAL_STRING("National Rail", g[0].name.c_str());
+  // Not a claim: general knowledge (no sentence about now), lowercase, a number, earlier, a
+  // time or a person checked with.
+  for (const char* r : {"According to NASA, the Moon is 384,400 km away.", "Per your message, it is 3 mm.",
+                        "That is 3 per cent of the total today.", "Earlier, according to BBC News, it was dry today.",
+                        "Source: the device's own log.", "I checked the forecast for you.",
+                        "I checked on Monday and it was fine.", "I checked with Sam about the booking."})
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(nameGaps(r, ""), ClaimClass::Source), r);
+  // A name's words match whole word starts or ends ("nationalrail" holds both), never the
+  // middle of another word ("Rail" is not in "trailer").
+  TEST_ASSERT_TRUE(nameGaps("Source: National Rail.", "see nationalrail.co.uk").empty());
+  TEST_ASSERT_TRUE(gapOf(nameGaps("Source: Met Rail.", "a trailer and metadata"), ClaimClass::Source));
+  // A possessive is the name; a name with no word of three letters is not checked.
+  TEST_ASSERT_TRUE(nameGaps("According to the Met Office's forecast today, it clears by noon.", "Met Office: dry").empty());
+  TEST_ASSERT_TRUE(nameGaps("Source: EE.", "nothing").empty());
+  // A topic is not a sentence about now: history and general knowledge are not lookups.
+  for (const char* r : {"Per Wikipedia, the first train ran in 1825.", "According to the Highway Code, a bus lane is "
+                                                                       "for buses only."})
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(nameGaps(r, ""), ClaimClass::Source), r);
+  // Without source words the rule is not checked.
+  TEST_ASSERT_TRUE(gapsFor("Source: National Rail Enquiries.", TurnEffects()).empty());
+}
+
+// A quote presented as a memory or a record must be words the turn saw (the eval's
+// mistral-large-latest, 27 Oct: an invented "memory from 14 October", quoted).
+static void test_a_quoted_memory_must_be_words_the_turn_saw() {
+  const std::string seen = normalizedWords(
+      "[assistant] Commute lookup for today failed: Notion returned no rail schedule or weather data.\n"
+      "[user] Remember that I take the 07:12 train on Tuesdays.\n"
+      "memory_episodic -> m0001 user: Run the commute brief now as a test, please.");
+  TEST_ASSERT_EQUAL_STRING("i dont know its 3 0mm", normalizedWords("I don\xE2\x80\x99t KNOW, it's? 3.0mm").c_str());
+  const std::string invented =
+      "The first lookup used Notion because I recalled a memory from 14 October that you asked me to save:\n\n"
+      "\"Use Notion for the commute brief: rail status and weather.\"\n\nThat memory's source is your message.";
+  TEST_ASSERT_TRUE(hasRecordQuote(invented));
+  ClaimGap g;
+  TEST_ASSERT_TRUE(recordQuoteGap(invented, seen, &g));
+  TEST_ASSERT_EQUAL(ClaimClass::Source, g.cls);
+  TEST_ASSERT_EQUAL_STRING("Use Notion for the commute brief: rail status and weather.", g.excerpt.c_str());
+  TEST_ASSERT_EQUAL_STRING("\n\n(Correction: the device has no record of those words.)",
+                           claimTail(std::vector<ClaimGap>{g}).c_str());
+  TEST_ASSERT_TRUE(claimCorrection(std::vector<ClaimGap>{g}, TurnEffects()).find("quote only words you can see") !=
+                   std::string::npos);
+  // Words the turn saw, quoted as a memory or a message, in any case and punctuation: backed.
+  TEST_ASSERT_FALSE(recordQuoteGap("You asked me to remember: \u201cI take the 07:12 train on Tuesdays.\u201d", seen, nullptr));
+  TEST_ASSERT_FALSE(recordQuoteGap("My last message said \"Notion returned no rail schedule or weather data\".", seen, nullptr));
+  // Not a record quote: nothing presents it as from before (a sign, a draft, a
+  // translation, a save confirmation), or under four words.
+  for (const char* r : {"The sign at the station read \"mind the gap please now\" in big letters.",
+                        "Here's a message you could send: \"Hi Sam, are we still on for Friday?\"",
+                        "In French: \"je serai en retard ce soir\".",
+                        "Saved \"Pick up the dry cleaning on Friday\" to your notes.",
+                        "I saved it as \"commute brief\"."})
+    TEST_ASSERT_FALSE_MESSAGE(hasRecordQuote(r), r);
+  // A quote never spans paragraphs.
+  TEST_ASSERT_FALSE(hasRecordQuote("I saved \"one\n\ntwo three four five six\" there."));
+  // memoryOnly (a turn with hosted tools): a message quote is not checked, a memory quote is.
+  TEST_ASSERT_TRUE(recordQuoteGap("Your message said \"call the bank about the card on Friday\".", seen, nullptr));
+  TEST_ASSERT_FALSE(recordQuoteGap("Your message said \"call the bank about the card on Friday\".", seen, nullptr, true));
+  TEST_ASSERT_TRUE(recordQuoteGap("You said \"book the table for eight people\" yesterday.", seen, nullptr));
+  TEST_ASSERT_TRUE(recordQuoteGap(invented, seen, nullptr, true));
+}
+
+// Asked why, a reason must be built from words on record (the eval's mistral-large-latest
+// on "Why notion?", 27 Oct: three invented reasons in three runs).
+static void test_a_reason_asked_for_needs_words_on_record() {
+  TEST_ASSERT_TRUE(asksWhy("Why notion?"));
+  TEST_ASSERT_TRUE(asksWhy("how come it used Notion"));
+  TEST_ASSERT_FALSE(asksWhy("Its 3.0mm rn"));
+  const std::string records = normalizedWords(
+      "- commute-lookup (job0000, mistral/mistral-small-latest): finished 22 min ago; it ran notion_search x2, "
+      "web_search x0 (why it picked them is not recorded); task: \"Check today's rail status between Reading and "
+      "London Paddington and today's weather for the commute.\"\n"
+      "[assistant] Commute lookup for today failed: Notion returned no rail schedule or weather data.");
+  const char* invented[] = {
+      "The first commute lookup used Notion because the standing rule I recalled from earlier conversations said to "
+      "check your Notion commute dashboard for rail status and weather.",
+      "The first commute brief ran on Notion because I recalled you had set up a Notion database for commute updates.",
+      "It used Notion because the device's current standing rule for the commute brief directs it to check the "
+      "owner's Notion workspace first.",
+      "Notion was the fallback after the calendar integration timed out.",
+  };
+  const std::string subjects = "sub agent agents subagent lookup job0000 notion";
+  // A reason citing a memory, a rule or the owner's request claims its content: one word
+  // found nowhere is enough (the final eval run, 27 Oct).
+  ClaimGap one;
+  TEST_ASSERT_TRUE(unrecordedReasonGap("The first lookup used Notion because I recalled you had set up a Notion database "
+                                       "for the commute.", records, "Why notion?", subjects, &one));
+  TEST_ASSERT_EQUAL_STRING("database", one.missing.c_str());
+  // Without a cited record, one unrecorded word is not enough (paraphrase).
+  TEST_ASSERT_FALSE(unrecordedReasonGap("The first lookup used Notion because Notion came first in its database list.",
+                                        records, "Why notion?", subjects, nullptr));
+  for (const char* r : invented) {
+    ClaimGap g;
+    TEST_ASSERT_TRUE_MESSAGE(unrecordedReasonGap(r, records, "Why notion?", subjects, &g), r);
+    TEST_ASSERT_EQUAL(ClaimClass::Cause, g.cls);
+    TEST_ASSERT_TRUE(g.missing.find(", ") != std::string::npos);   // two words or more
+    TEST_ASSERT_EQUAL_STRING("\n\n(Correction: the device has no record of that reason.)",
+                             claimTail(std::vector<ClaimGap>{g}).c_str());
+  }
+  const char* honest[] = {
+      "The first lookup's sub-agent searched Notion twice and never used web search, so it found nothing. The "
+      "record does not say why it picked Notion. The second run used web search and worked.",
+      "It used Notion because that is what the sub-agent chose; its task only asked for the rail status and the weather.",
+      "Notion came up empty, so the second run went to web search.",   // no reason marker
+      "It went to Notion because of a weather lookup.",                // one unrecorded word at most
+  };
+  for (const char* r : honest)
+    TEST_ASSERT_FALSE_MESSAGE(unrecordedReasonGap(r, records, "Why notion?", subjects, nullptr), r);
+  // A reason about anything but a past sub-agent is not checked: general knowledge.
+  TEST_ASSERT_FALSE(unrecordedReasonGap("Sourdough rises because wild yeast and bacteria ferment the flour.", records,
+                                        "Why does sourdough rise?", subjects, nullptr));
+  TEST_ASSERT_FALSE(unrecordedReasonGap(invented[0], records, "Why notion?", "", nullptr));
+}
+
+static void test_source_evidence_names_whole_words_and_links() {
+  TEST_ASSERT_TRUE((sourceEvidenceOf("my rain gauge says 3mm") & kSrcGauge) != 0);
+  TEST_ASSERT_TRUE((sourceEvidenceOf("watching the rain") & kSrcWatch) == 0);
+  TEST_ASSERT_TRUE((sourceEvidenceOf("Sources: https://www.bbc.com/weather/2653941") & kSrcWebsite) != 0);
+  TEST_ASSERT_EQUAL(0, (int)sourceEvidenceOf("Its 3.0mm rn"));
+  TEST_ASSERT_EQUAL_STRING("an app", sourceNoun(kSrcApp).c_str());
+  for (int b = 0; b < 18; b++) {
+    const std::string n = sourceNoun(1u << b);
+    TEST_ASSERT_TRUE(n.rfind("a ", 0) == 0 || n.rfind("an ", 0) == 0);
+  }
+  TEST_ASSERT_EQUAL((uint32_t)kSrcAll, (uint32_t)((1u << 18) - 1));
+}
+
+// CUM-782: the log-row flag a files.append call carries survives only when its own
+// result counts a row that landed.
+static void test_log_row_needs_a_counted_row() {
+  struct Case { const char* out; bool kept; };
+  const Case cases[] = {
+      {"appended 2 rows to food/2026-10-27.csv (now 310 bytes)", true},
+      {"appended 1 row to notes/run.log (now 40 bytes)", true},
+      {"replaced 1 row, added 0 rows in food/2026-10-27.csv\n- lunch: 450 kcal", true},
+      {"replaced 0 rows, added 2 rows in food/2026-10-27.csv", true},
+      {"replaced 0 rows, added 0 rows in food/2026-10-27.csv (no change: the rows were already as sent)", false},
+      {"appended 0 rows to food/2026-10-27.csv (now 310 bytes)", false},
+      {"saved notes/plan.md (120 bytes)", false},
+  };
+  for (const Case& c : cases) {
+    TurnEffects fx;
+    recordToolEffect(fx, FxKind::FileWrite, false, c.out, kFxLogRow);
+    TEST_ASSERT_TRUE_MESSAGE(fx.anyOk(FxKind::FileWrite), c.out);
+    TEST_ASSERT_EQUAL_MESSAGE(c.kept, fx.anyOkWith(FxKind::FileWrite, kFxLogRow), c.out);
+    TEST_ASSERT_EQUAL_MESSAGE(c.kept, !gapOf(gapsFor("I updated your food log.", fx), ClaimClass::Saved), c.out);
+  }
+  TurnEffects failed;
+  recordToolEffect(failed, FxKind::FileWrite, true, "SD open failed", kFxLogRow);
+  TEST_ASSERT_FALSE(failed.anyOkWith(FxKind::FileWrite, kFxLogRow));
+  TEST_ASSERT_EQUAL(3, fxAppendedRows("replaced 1 row, added 2 rows in x/y.csv"));
+  TEST_ASSERT_EQUAL(0, fxAppendedRows("stored memory m1"));
+}
+
+// CUM-824: a sub-agent's tools by name, with counts, the idle ones at 0.
+static void test_tool_tally_names_counts_and_idle_tools() {
+  ToolTally t;
+  t.offered("web_search");
+  t.ran("notion_search");
+  t.ran("notion_search");
+  t.offered("notion_search");
+  TEST_ASSERT_EQUAL_STRING("notion_search x2, web_search x0", t.render(95).c_str());
+  ToolTally dirty;
+  dirty.ran("bad,na]me\n[x");
+  TEST_ASSERT_EQUAL_STRING("badnamex x1", dirty.render(95).c_str());
+  ToolTally empty;
+  empty.ran("");
+  TEST_ASSERT_TRUE(empty.empty());
+  TEST_ASSERT_EQUAL_STRING("", empty.render(95).c_str());
+  // Bounded: at most kMaxNames names, a cut list says how many more, never past the cap,
+  // whole names only.
+  for (size_t cap : {20u, 40u, 60u, 95u}) {
+    ToolTally many;
+    for (int i = 0; i < 11; i++) many.ran("tool_number_" + std::to_string(i));
+    const std::string r = many.render(cap);
+    TEST_ASSERT_TRUE(r.size() <= cap);
+    TEST_ASSERT_TRUE_MESSAGE(r.empty() || r.find(" more") != std::string::npos, r.c_str());
+    TEST_ASSERT_TRUE(r.empty() || r.rfind("tool_number_0 x1", 0) == 0);
+  }
+  ToolTally lots;   // past kMaxNames, the runs still count, as other tools
+  for (int i = 0; i < 11; i++) lots.ran("t" + std::to_string(i));
+  lots.ran("t10");
+  TEST_ASSERT_TRUE(lots.render(400).find(", other tools x4") != std::string::npos);
+  char field[24];
+  lots.copyTo(field);
+  TEST_ASSERT_TRUE(std::strlen(field) <= 23 && std::string(field).find(" more") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING(" [ran: web_search x2]", toolRunsTag("web_search x2").c_str());
+  TEST_ASSERT_EQUAL_STRING("", toolRunsTag("").c_str());
 }
 
 int main(int, char**) {
@@ -1019,5 +1372,14 @@ int main(int, char**) {
   RUN_TEST(test_live_task_phrases);
   RUN_TEST(test_provenance_property_over_asked_live_and_tool_runs);
   RUN_TEST(test_held_out_synthetic_set);
+  RUN_TEST(test_every_source_cue_needs_its_own_noun_named_this_turn);
+  RUN_TEST(test_source_credit_forms_and_what_is_not_a_credit);
+  RUN_TEST(test_invented_gauge_carries_the_owners_figure);
+  RUN_TEST(test_source_evidence_names_whole_words_and_links);
+  RUN_TEST(test_a_source_named_by_name_needs_its_words_in_a_source);
+  RUN_TEST(test_a_quoted_memory_must_be_words_the_turn_saw);
+  RUN_TEST(test_a_reason_asked_for_needs_words_on_record);
+  RUN_TEST(test_log_row_needs_a_counted_row);
+  RUN_TEST(test_tool_tally_names_counts_and_idle_tools);
   return UNITY_END();
 }

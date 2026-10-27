@@ -1,5 +1,6 @@
 #include "nimbus/orch/turn_effects.h"
 
+#include <cstdlib>
 #include <cstring>
 
 namespace nimbus {
@@ -199,6 +200,15 @@ std::string fxRefFromOutput(const std::string& out) {
   return std::string();
 }
 
+int fxAppendedRows(const std::string& out) {
+  if (contains(out, "(no change")) return 0;
+  if (startsWith(out, "appended ")) return std::atoi(out.c_str() + 9);
+  if (!startsWith(out, "replaced ")) return 0;
+  const int replaced = std::atoi(out.c_str() + 9);
+  const size_t added = out.find(", added ");
+  return replaced + (added == std::string::npos ? 0 : std::atoi(out.c_str() + added + 8));
+}
+
 std::string fxReceiptId(const std::string& out) {
   static const char kLead[] = "message_id ";
   const size_t at = out.find(kLead);
@@ -282,6 +292,13 @@ static bool queuedWrite(FxKind base, const std::string& out) {
          (startsWith(out, "queued memory ") || startsWith(out, "queued update for "));
 }
 
+// CUM-782: a log claim needs a row that landed, which only the append's own count shows.
+static uint8_t logRowFlags(uint8_t flags, FxKind k, const std::string& output) {
+  if ((flags & kFxLogRow) && (k != FxKind::FileWrite || fxAppendedRows(output) < 1))
+    return (uint8_t)(flags & ~kFxLogRow);
+  return flags;
+}
+
 void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::string& output,
                       uint8_t flags) {
   if (queuedWrite(base, output)) {   // queued is not stored, success flag or not
@@ -312,6 +329,7 @@ void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::str
     return;
   }
   const FxKind k = refineKind(base, output);
+  flags = logRowFlags(flags, k, output);
   // A memory is pinned by a write only when the write stored it; a duplicate
   // says whether the existing one was already pinned (a pin that changed nothing).
   const bool stored = startsWith(output, "stored memory ");

@@ -1,6 +1,7 @@
 #include "nimbus/orch/claims.h"
 #include "nimbus/orch/spawn_claim.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 
@@ -15,7 +16,7 @@ namespace {
 
 constexpr uint32_t fxBit(FxKind k) { return 1u << (unsigned)k; }
 
-enum CueFlag : uint16_t {
+enum CueFlag : uint32_t {
   kSelf       = 1u << 0,   // counts only after the assistant, a passive, or at clause start
   kAnySubject = 1u << 1,   // no other-person / adjective filter (states, sources)
   kNeverDecay = 1u << 2,   // durable: backed by a pin or a permanent memory write
@@ -31,13 +32,25 @@ enum CueFlag : uint16_t {
   kContraRepeat = 1u << 12,  // cause about the sender repeating: a gap when the device repeated
   kSelfOk     = 1u << 13,  // cause: "it is working": needs a health read and no failure on record
   kLogObject  = 1u << 14,  // saved: a log, entry, ledger or total within reach ("updated the log")
+  kSourceNoun = 1u << 15,  // source: a noun that counts only when the reply credits it (sourceCredited)
+  kSrcOn      = 1u << 16,  // source: "on the <noun>" credits it ("on the label"; never "on the menu")
+  kSrcHeading = 1u << 17,  // source: an instrument naming a reading by itself ("Rain gauge: 3.0 mm")
+  kSrcName    = 1u << 18,  // source: credits the NAME after it ("Source: National Rail Enquiries")
+};
+
+// What a source credited by name looks like (kSrcName cues keep it in Cue::backs).
+enum NameKind : uint32_t {
+  kNameCitation = 1,   // "Source: X", "Sources: X, Y"
+  kNameChecked = 2,    // "checked live on X"
+  kNameAccording = 3,  // "according to X", "per X"
 };
 
 struct Cue {
   ClaimClass  cls;
   const char* phrase;
-  uint16_t    flags;
-  uint32_t    backs;   // FxKind bits that back the claim (0 = class-specific rule)
+  uint32_t    flags;
+  uint32_t    backs;   // FxKind bits that back the claim (0 = class-specific rule); a cause's
+                       // CauseEvidence bit; a source's SourceEvidence bit
 };
 
 // A scratchpad write whose save landed is saved; one kept in RAM only is not.
@@ -60,9 +73,8 @@ constexpr uint32_t kCheckBacks = fxBit(FxKind::Read) | fxBit(FxKind::SubSourced)
 // "switched", "turned on", "set it to": a setting (a config change that stored a new
 // value) or a routine; a memory or file write does not back it.
 constexpr uint32_t kSwitchBacks = fxBit(FxKind::Config) | fxBit(FxKind::Schedule);
-// "updated the log", "adjusted the entry" (19 Oct: the day log was said to be updated
-// after a correction and was not): only a file write backs it.
-constexpr uint32_t kLogBacks = fxBit(FxKind::FileWrite);
+// A named source (CUM-824): any subject, no plain-future exemption for the credit itself.
+constexpr uint32_t kSrc = kAnySubject | kSourceNoun;
 constexpr uint32_t kDurableStoreBacks = fxBit(FxKind::MemWrite) | fxBit(FxKind::MemUpdate) |
                                         fxBit(FxKind::MemPin) | fxBit(FxKind::FileWrite) |
                                         fxBit(FxKind::SkillSave);
@@ -75,6 +87,8 @@ using C = ClaimClass;
 // narrow: every cue here was read against real replies (claims.h).
 constexpr Cue kCues[] = {
     // ---- saved / logged / noted
+    // "logged it in your food log": a log claim, backed only by a landed row (CUM-782)
+    {C::Saved, "logged", kLogObject | kLogSense, 0},
     {C::Saved, "logged", kLogSense, kSavedBacks},
     {C::Saved, "saved", 0, kSavedBacks},
     {C::Saved, "noted", 0, kNotedBacks},
@@ -88,12 +102,13 @@ constexpr Cue kCues[] = {
     {C::Saved, "committed to memory", 0, kSavedBacks},
     {C::Saved, "made a note", kSelf, kNotedBacks},
     {C::Saved, "jotted down", kSelf, kNotedBacks},
-    // a correction carried into a record (L19-50): with a log noun near, a file write
-    // backs it; "corrected" alone is backed by any save
-    {C::Saved, "updated", kLogObject, kLogBacks},
-    {C::Saved, "corrected", kLogObject, kLogBacks},
-    {C::Saved, "adjusted", kLogObject, kLogBacks},
-    {C::Saved, "amended", kLogObject, kLogBacks},
+    // a correction carried into a record (L19-50, CUM-782): with a log noun near, only a
+    // row that landed in a log file backs it (savedGap, kFxLogRow); "corrected" alone is
+    // backed by any save
+    {C::Saved, "updated", kLogObject, 0},
+    {C::Saved, "corrected", kLogObject, 0},
+    {C::Saved, "adjusted", kLogObject, 0},
+    {C::Saved, "amended", kLogObject, 0},
     {C::Saved, "corrected", kSelf | kNoPassive, kSavedBacks},
     // ---- a deliverable that exists outside the reply
     {C::Deliverable, "written and waiting", kAnySubject, kFileBacks},
@@ -266,6 +281,55 @@ constexpr Cue kCues[] = {
     {C::Figure, "package says", kAnySubject | kState | kFigure, 0},
     {C::Figure, "per the packaging", kAnySubject | kState | kFigure, 0},
     {C::Figure, "on the packaging", kAnySubject | kState | kFigure, 0},
+    // ---- a named source (CUM-824): the noun must be named this turn (SourceEvidence)
+    {C::Source, "gauge*", kSrc | kSrcOn | kSrcHeading, kSrcGauge},
+    {C::Source, "sensor*", kSrc | kSrcOn | kSrcHeading, kSrcSensor},
+    {C::Source, "thermometer*", kSrc | kSrcOn | kSrcHeading, kSrcThermometer},
+    {C::Source, "barometer*", kSrc | kSrcOn | kSrcHeading, kSrcThermometer},
+    {C::Source, "hygrometer*", kSrc | kSrcOn | kSrcHeading, kSrcThermometer},
+    {C::Source, "anemometer*", kSrc | kSrcOn | kSrcHeading, kSrcThermometer},
+    {C::Source, "weather station*", kSrc | kSrcOn | kSrcHeading, kSrcStation},
+    {C::Source, "radar", kSrc | kSrcOn | kSrcHeading, kSrcRadar},
+    {C::Source, "smart meter*", kSrc | kSrcOn | kSrcHeading, kSrcMeter},
+    {C::Source, "label", kSrc | kSrcOn, kSrcLabel},
+    {C::Source, "labels", kSrc | kSrcOn, kSrcLabel},
+    {C::Source, "receipt*", kSrc | kSrcOn, kSrcReceipt},
+    {C::Source, "invoice*", kSrc | kSrcOn, kSrcReceipt},
+    {C::Source, "menu", kSrc, kSrcMenu},
+    {C::Source, "package", kSrc | kSrcOn, kSrcPackage},
+    {C::Source, "packaging", kSrc | kSrcOn, kSrcPackage},
+    {C::Source, "packet", kSrc | kSrcOn, kSrcPackage},
+    {C::Source, "watch", kSrc, kSrcWatch},
+    {C::Source, "smartwatch*", kSrc | kSrcOn, kSrcWatch},
+    {C::Source, "scale", kSrc, kSrcScale},
+    {C::Source, "tracker", kSrc | kSrcOn, kSrcTracker},
+    {C::Source, "app", kSrc | kSrcOn, kSrcApp},
+    {C::Source, "website*", kSrc | kSrcOn, kSrcWebsite},
+    {C::Source, "site", kSrc | kSrcOn, kSrcWebsite},
+    {C::Source, "webpage*", kSrc | kSrcOn, kSrcWebsite},
+    {C::Source, "web page*", kSrc | kSrcOn, kSrcWebsite},
+    {C::Source, "feed", kSrc | kSrcOn, kSrcFeed},
+    {C::Source, "dashboard", kSrc | kSrcOn, kSrcFeed},
+    {C::Source, "screenshot*", kSrc | kSrcOn, kSrcScreenshot},
+    {C::Source, "report", kSrc, kSrcReport},
+    // a source in parentheses after its figure ("3.0 mm (gauge)"): credited by its form
+    {C::Source, "(gauge)", kAnySubject, kSrcGauge},
+    {C::Source, "(sensor)", kAnySubject, kSrcSensor},
+    {C::Source, "(label)", kAnySubject, kSrcLabel},
+    {C::Source, "(receipt)", kAnySubject, kSrcReceipt},
+    {C::Source, "(menu)", kAnySubject, kSrcMenu},
+    {C::Source, "(package)", kAnySubject, kSrcPackage},
+    {C::Source, "(watch)", kAnySubject, kSrcWatch},
+    {C::Source, "(scale)", kAnySubject, kSrcScale},
+    {C::Source, "(app)", kAnySubject, kSrcApp},
+    {C::Source, "(website)", kAnySubject, kSrcWebsite},
+    // a source credited by name: a citation, a check on it, or "according to"/"per" it in a
+    // sentence about now (sourceNameCredited); the name's words must be in a source text
+    {C::Source, "source", kAnySubject | kSrcName, kNameCitation},
+    {C::Source, "sources", kAnySubject | kSrcName, kNameCitation},
+    {C::Source, "according to", kAnySubject | kSrcName, kNameAccording},
+    {C::Source, "per", kAnySubject | kSrcName, kNameAccording},
+    {C::Source, "checked", kAnySubject | kSrcName, kNameChecked},
     // ---- causes (backs = the CauseEvidence bit that supports the cause)
     // the owner's phone, app or client (a fault word in the sentence makes it a cause)
     {C::Cause, "telegram client", kAnySubject | kState | kFaultCtx, kEvClient},
@@ -1200,17 +1264,287 @@ constexpr const char* kRecordNouns[] = {"log",   "logs",  "entry", "entries", "l
                                         "totals", "tally", "diary", "tracker", "record"};
 
 bool recordNounNear(const Scan& sc, size_t i, size_t len) {
-  for (size_t k = i + len; k < sc.toks.size() && k < i + len + 4 && sameClause(sc, k, i); k++)
+  // Five after: "logged it in your food log" (CUM-782).
+  for (size_t k = i + len; k < sc.toks.size() && k < i + len + 5 && sameClause(sc, k, i); k++)
     if (tokIn(sc.s, sc.toks[k], kRecordNouns)) return true;
   for (size_t d = 1; d <= 3 && d <= i && sameClause(sc, i - d, i); d++)
     if (tokIn(sc.s, sc.toks[i - d], kRecordNouns)) return true;
   return false;
 }
 
+// ---- named sources (CUM-824) ------------------------------------------------
+
+// After a source noun (past at most two fillers), these credit a fact to it: "the gauge
+// says", "the label lists", "the gauge is showing".
+constexpr const char* kSourceReports[] = {
+    "says",      "said",      "shows",     "showed",   "shown",  "showing", "reported",
+    "indicates", "indicated", "displays",  "displayed", "confirms", "confirmed", "suggests",
+    "puts",      "gives",     "gave",      "lists",    "listed", "states",  "stated",
+};
+// These also describe what an instrument does ("the thermometer reads the air
+// temperature"), so they credit it only with a figure next to them: "the label reads
+// 20 g", "watch data puts you at 9,000 steps".
+constexpr const char* kSourceMeasures[] = {
+    "reads",    "read",     "reading",   "readings",  "records",   "recorded", "measured",
+    "measures", "registered", "registers", "logged",  "tracked",   "counted",  "estimates",
+    "estimated", "data",    "figure",    "figures",   "reports",
+};
+constexpr const char* kSourceFillers[] = {"is", "was", "currently", "just", "now", "also", "still", "itself"};
+// Before a source noun (within four tokens, same clause): "per the label", "according to
+// the app" credit it by themselves; "from your watch", "via the feed", "read off the
+// gauge" and "on the website" (kSrcOn) are also places, so they credit it only with a
+// figure next to it (figureNear: "On the device web page, check the provider" credits
+// nothing). The noun phrase opens with a determiner, a possessive or a name ("from the
+// BBC website"), never bare ("on site").
+constexpr const char* kSourcePreps[] = {"from", "via", "off"};
+// Right before a source noun these make it a kind, not a source ("a rain gauge would help").
+constexpr const char* kGenericDets[] = {"a", "an", "any", "some", "another", "every", "each"};
+// Right after a source noun these make it a hypothetical ("the gauge would show more").
+constexpr const char* kModalsAfter[] = {"would", "could", "might", "may", "should", "will", "can",
+                                        "wouldn't", "couldn't", "won't", "can't"};
+// The owner reporting it, anywhere in the sentence ("the label you sent says 20 g"): the
+// figure is the owner's, not a source the device read.
+constexpr const char* kOwnerReports[] = {
+    "said", "say",   "mentioned", "sent",   "shared", "gave",   "give",   "told",   "reported",
+    "showed", "measured", "read",  "logged", "wrote", "typed",  "posted", "noted",  "quoted",
+    "saw",  "see",   "seeing",    "checked", "got",   "have",   "had",    "recorded",
+};
+constexpr const char* kYouWords[] = {"you", "you've", "you're", "you'd"};
+constexpr const char* kOwnerItems[] = {"message", "note", "photo", "text", "numbers", "figure", "reading"};
+// A source labeled as earlier ("earlier the website said ..."): not this turn's claim.
+constexpr const char* kSourceEarlier[] = {"earlier", "yesterday", "previously"};
+constexpr const char* kLiveWords[] = {"live"};
+
+// A word of `set` within n tokens before token i, in its clause.
+template <size_t N>
+bool inBefore(const Scan& sc, size_t i, size_t n, const char* const (&set)[N]) {
+  for (size_t d = 1; d <= n && d <= i && sameClause(sc, i - d, i); d++)
+    if (tokIn(sc.s, sc.toks[i - d], set)) return true;
+  return false;
+}
+
+// The first and last token of token i's sentence.
+void sentenceRange(const Scan& sc, size_t i, size_t& f, size_t& l) {
+  f = l = i;
+  while (f > 0 && sc.toks[f - 1].sent == sc.toks[i].sent) f--;
+  while (l + 1 < sc.toks.size() && sc.toks[l + 1].sent == sc.toks[i].sent) l++;
+}
+
+// A figure in the source noun's clause or the clause after it ("From your watch, you ran
+// 5 km"); one further on belongs to something else.
+bool figureNear(const Scan& sc, size_t i) {
+  const Tok& at = sc.toks[i];
+  for (const Tok& t : sc.toks)
+    if (t.sent == at.sent && (t.clause == at.clause || t.clause == at.clause + 1) && (t.flags & kTokNum))
+      return true;
+  return false;
+}
+
+// A crediting verb right after the noun phrase ending at e: a report always, a
+// measuring verb with a figure next to it.
+bool sourceVerbAfter(const Scan& sc, size_t i, size_t e) {
+  size_t k = e;
+  for (int f = 0; f < 2 && k < sc.toks.size() && sameClause(sc, k, i) && tokIn(sc.s, sc.toks[k], kSourceFillers); f++)
+    k++;
+  if (k >= sc.toks.size() || !sameClause(sc, k, i)) return false;
+  if (tokIn(sc.s, sc.toks[k], kSourceReports)) return true;
+  return tokIn(sc.s, sc.toks[k], kSourceMeasures) && figureNear(sc, i);
+}
+
+bool modalAfter(const Scan& sc, size_t i, size_t e) {
+  for (size_t k = e; k < e + 2 && k < sc.toks.size() && sameClause(sc, k, i); k++)
+    if (tokIn(sc.s, sc.toks[k], kModalsAfter)) return true;
+  return false;
+}
+
+// A determiner, a possessive or a name opens the noun phrase at token k.
+bool phraseOpener(const Scan& sc, size_t k) {
+  const Tok& t = sc.toks[k];
+  const unsigned char c0 = (unsigned char)sc.s[t.b];
+  return tokIn(sc.s, t, kDeterminers) || endsWith(sc.s, t, "'s") || (c0 >= 'A' && c0 <= 'Z');
+}
+
+// The noun phrase ending at the source noun i opens within three tokens with a
+// determiner, a possessive or a name ("the gauge says", "Your watch data"), not as a
+// bare kind in a list ("numeric sequences (sensor readings, sales)").
+bool openedPhrase(const Scan& sc, size_t i) {
+  for (size_t d = 0; d <= 3 && d <= i && sameClause(sc, i - d, i); d++)
+    if ((d > 0 || i == 0 || !sameClause(sc, i - 1, i)) && phraseOpener(sc, i - d)) return true;
+  return false;
+}
+
+bool numberLaterInSentence(const Scan& sc, size_t e, uint16_t sent) {
+  for (size_t k = e; k < sc.toks.size() && sc.toks[k].sent == sent; k++)
+    if (sc.toks[k].flags & kTokNum) return true;
+  return false;
+}
+
+bool sourcePrepBefore(const Scan& sc, size_t i, bool onOk) {
+  for (size_t d = 2; d <= 5 && d <= i && sameClause(sc, i - d, i); d++) {
+    const Tok& t = sc.toks[i - d];
+    const bool strong = tokIs(sc.s, t, "per") ||
+                        (tokIs(sc.s, t, "to") && i >= d + 1 && tokIs(sc.s, sc.toks[i - d - 1], "according") &&
+                         sameClause(sc, i - d - 1, i));
+    const bool weak = tokIn(sc.s, t, kSourcePreps) || (onOk && tokIs(sc.s, t, "on"));
+    if (!strong && !weak) continue;
+    return phraseOpener(sc, i - d + 1) && (strong || figureNear(sc, i));
+  }
+  return false;
+}
+
+// Token k reports the owner's own words ("you said", "your message").
+bool ownerReportAt(const Scan& sc, size_t k, size_t l) {
+  const bool you = tokIn(sc.s, sc.toks[k], kYouWords), your = tokIs(sc.s, sc.toks[k], "your");
+  for (size_t j = k + 1; j <= k + 2 && j <= l; j++) {
+    if (you && tokIn(sc.s, sc.toks[j], kOwnerReports)) return true;
+    if (your && j == k + 1 && tokIn(sc.s, sc.toks[j], kOwnerItems)) return true;
+  }
+  return false;
+}
+
+// The owner's report or an earlier answer named in the sentence: not this turn's source.
+bool ownerOrEarlierSource(const Scan& sc, size_t i) {
+  size_t f, l;
+  sentenceRange(sc, i, f, l);
+  for (size_t k = f; k <= l; k++)
+    if (tokIn(sc.s, sc.toks[k], kSourceEarlier) || ownerReportAt(sc, k, l)) return true;
+  return false;
+}
+
+// A source noun the reply credits as where a figure or a fact came from.
+bool sourceCredited(const Scan& sc, size_t i, size_t len, const Cue& cue) {
+  if (inBefore(sc, i, 3, kGenericDets) || modalAfter(sc, i, i + len) || ownerOrEarlierSource(sc, i)) return false;
+  if (inBefore(sc, i, 2, kLiveWords)) return true;   // "the live gauge"
+  if (sourceVerbAfter(sc, i, i + len) && openedPhrase(sc, i)) return true;
+  if (sourcePrepBefore(sc, i, (cue.flags & kSrcOn) != 0)) return true;
+  // "Rain gauge at the office roof: 3.0 mm": an instrument (singular) heading a reading
+  // (at most three words before it in its sentence), not one an explanation mentions
+  // ("how it works: a sonic anemometer takes 20 ...").
+  size_t f, l;
+  sentenceRange(sc, i, f, l);
+  return (cue.flags & kSrcHeading) && !endsWith(sc.s, sc.toks[i + len - 1], "s") && i - f <= 3 &&
+         numberLaterInSentence(sc, i + len, sc.toks[i].sent);
+}
+
+// ---- a source credited by name -------------------------------------------------
+
+constexpr const char* kNameJoins[] = {"of", "and", "the", "&"};
+constexpr const char* kCheckedPreps[] = {"on", "from", "with", "at", "via"};
+// Capitalized words that are times, not sources ("checked on Monday").
+constexpr const char* kCalendarWords[] = {
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "today", "tomorrow",
+    "january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+    "november", "december",
+};
+
+bool capitalized(const Scan& sc, size_t k) {
+  const unsigned char c = (unsigned char)sc.s[sc.toks[k].b];
+  return c >= 'A' && c <= 'Z' && !tokIn(sc.s, sc.toks[k], kCalendarWords);
+}
+
+// The name starting at token k, in its clause: capitalized words and the joins between
+// them ("National Rail Enquiries", "Bank of England"), at most five words. Returns the
+// token after it (== k when no name starts there).
+size_t nameEnd(const Scan& sc, size_t k) {
+  size_t e = k, last = k;
+  while (e < sc.toks.size() && e < k + 5 && sameClause(sc, e, k) && !(sc.toks[e].flags & kTokQuoted)) {
+    if (capitalized(sc, e)) last = e + 1;
+    else if (!(e > k && tokIn(sc.s, sc.toks[e], kNameJoins))) break;
+    e++;
+  }
+  return last;
+}
+
+// The token a name starts at after the cue ending at e, or sc.toks.size() when the cue
+// credits no name: "Source: X", "checked live on X", "according to (the) X".
+size_t nameStart(const Scan& sc, size_t i, size_t e, const Cue& cue) {
+  const size_t none = sc.toks.size();
+  if (e >= sc.toks.size() || sc.toks[e].sent != sc.toks[i].sent) return none;
+  if (cue.backs == kNameCitation) {   // the cue word right before a colon
+    const size_t after = sc.toks[i].b + sc.toks[i].len;
+    return after < sc.s.size() && sc.s[after] == ':' ? e : none;
+  }
+  if (cue.backs == kNameChecked) {
+    for (size_t k = e; k < e + 3 && k + 1 < sc.toks.size() && sameClause(sc, k, i); k++)
+      if (tokIn(sc.s, sc.toks[k], kCheckedPreps)) return k + 1;
+    return none;
+  }
+  const size_t k = tokIs(sc.s, sc.toks[e], "the") ? e + 1 : e;
+  return k < sc.toks.size() && sameClause(sc, k, i) ? k : none;
+}
+
+// A sentence about now: a word or a phrase of the present ("today", "now", "currently",
+// "live", "this morning"). Topics are not enough ("per Wikipedia, the first train ran in
+// 1825" is about history, however live a train can be).
+constexpr const char* kNowWords[] = {"today", "today's", "now", "currently", "tonight", "live", "latest"};
+constexpr const char* kNowPairs[][2] = {{"this", "morning"}, {"this", "afternoon"}, {"this", "evening"},
+                                        {"right", "now"},    {"at", "present"},     {"as", "of"}};
+bool aboutNow(const Scan& sc, size_t i) {
+  size_t f, l;
+  sentenceRange(sc, i, f, l);
+  for (size_t k = f; k <= l; k++) {
+    if (tokIn(sc.s, sc.toks[k], kNowWords)) return true;
+    for (const auto& pair : kNowPairs)
+      if (k < l && tokIs(sc.s, sc.toks[k], pair[0]) && tokIs(sc.s, sc.toks[k + 1], pair[1])) return true;
+  }
+  return false;
+}
+
+bool sourceNameCredited(const Scan& sc, size_t i, size_t len, const Cue& cue) {
+  const size_t k = nameStart(sc, i, i + len, cue);
+  if (k >= sc.toks.size() || nameEnd(sc, k) == k || ownerOrEarlierSource(sc, i)) return false;
+  // A check ("checked with Sam") or "according to" ("according to NASA, the Moon is
+  // 384,400 km away") also names people and general knowledge: only a sentence about
+  // now claims a lookup. A citation always does.
+  return cue.backs == kNameCitation || aboutNow(sc, i);
+}
+
+// Every name the credit at token i names: one after the cue, then, for a citation list
+// ("Sources: Greater Anglia, Grand Central Rail, BBC Weather"), one per comma or "and";
+// a parenthesis or any other word ends the list ("BBC Weather (Cambridge and London)").
+std::vector<std::string> creditedNames(const Scan& sc, size_t i, size_t len, const Cue& cue) {
+  std::vector<std::string> out;
+  size_t k = nameStart(sc, i, i + len, cue);
+  while (k < sc.toks.size() && sc.toks[k].sent == sc.toks[i].sent && out.size() < 6) {
+    const size_t e = nameEnd(sc, k);
+    if (e == k) break;
+    const Tok &first = sc.toks[k], &last = sc.toks[e - 1];
+    out.push_back(sc.s.substr(first.b, last.b + last.len - first.b));
+    if (cue.backs != kNameCitation || e >= sc.toks.size()) break;
+    const std::string between = sc.s.substr(last.b + last.len, sc.toks[e].b - last.b - last.len);
+    if (between.find('(') != std::string::npos) break;
+    if (between.find(',') != std::string::npos) k = e;
+    else if (tokIs(sc.s, sc.toks[e], "and")) k = e + 1;
+    else break;
+  }
+  return out;
+}
+
+// Every word of the name (three letters or more, joins aside) starts or ends a word of the
+// source words (" "-separated): "National Rail" is in "nationalrail co uk", "Rail" is
+// not in "trailer".
+// A name with no word to check (short names such as "EE" or "O2") is not checked: precision
+// first. A possessive is the name ("the Met Office's forecast").
+bool nameInSources(const std::string& name, const std::string& words) {
+  const std::string hay = " " + words + " ";
+  const std::string ns = normalizedWords(name) + " ";
+  for (size_t b = 0, e; (e = ns.find(' ', b)) != std::string::npos; b = e + 1) {
+    std::string w = ns.substr(b, e - b);
+    if (w.size() < 3 || w == "the" || w == "and") continue;
+    const bool found = hay.find(" " + w) != std::string::npos || hay.find(w + " ") != std::string::npos;
+    if (!found && !(w.back() == 's' && hay.find(" " + w.substr(0, w.size() - 1) + " ") != std::string::npos))
+      return false;
+  }
+  return true;
+}
+
 // A cue that needs company it does not have: a cause noun with no fault word in its
-// sentence, a record verb with no record near.
+// sentence, a source noun or name the reply does not credit, a record verb with no record
+// near.
 bool contextMissing(const Scan& sc, size_t i, size_t len, const Cue& cue) {
   if ((cue.flags & kFaultCtx) && !faultWordInSentence(sc, i, len)) return true;
+  if ((cue.flags & kSourceNoun) && !sourceCredited(sc, i, len, cue)) return true;
+  if ((cue.flags & kSrcName) && !sourceNameCredited(sc, i, len, cue)) return true;
   return (cue.flags & kLogObject) && !recordNounNear(sc, i, len);
 }
 
@@ -1219,7 +1553,7 @@ void addClaim(const Scan& sc, size_t i, size_t c, int num, ClaimScan& out) {
   cl.cls = kCues[c].cls;
   cl.cue = (uint16_t)c;
   cl.count = (uint8_t)(num > 0 && num < 256 ? num : 0);
-  claimSpan(sc, i, (kCues[c].flags & kFigure) != 0, cl.begin, cl.end);
+  claimSpan(sc, i, (kCues[c].flags & kFigure) != 0 || kCues[c].cls == C::Source, cl.begin, cl.end);
   for (const Claim& o : out.claims)
     if (o.cls == cl.cls && o.begin == cl.begin) return;
   out.claims.push_back(cl);
@@ -1306,19 +1640,23 @@ std::vector<std::string> groundingNumbers(const std::string& g) {
   return out;
 }
 
-// The span's numbers that no source holds, joined ("60, 200, 21").
-std::string missingFigures(const Scan& sc, const Claim& cl, const std::vector<std::string>& ground) {
-  std::string miss;
+// The span's numbers that no source holds (inSet false: "60, 200, 21"), or that the
+// set does hold (inSet true: the figures the owner gave, for a source claim), joined.
+std::string spanFigures(const Scan& sc, const Claim& cl, const std::vector<std::string>& set, bool inSet) {
+  std::string out;
   for (size_t k = 0; k < sc.toks.size(); k++) {
     const Tok& t = sc.toks[k];
     if (t.b < cl.begin || t.b >= cl.end || !(t.flags & kTokNum)) continue;
-    if (estimateBefore(sc, k) || inRange(sc, k)) continue;
+    if (!inSet && (estimateBefore(sc, k) || inRange(sc, k))) continue;
     const std::string n = normNumber(sc.s, t.b, t.len);
-    if (n.empty() || n == "0" || n == "1" || numberInSet(n, ground)) continue;
-    if (miss.find(n) != std::string::npos) continue;
-    miss += (miss.empty() ? "" : ", ") + n;
+    if (n.empty() || (!inSet && (n == "0" || n == "1")) || numberInSet(n, set) != inSet) continue;
+    if ((", " + out + ",").find(", " + n + ",") != std::string::npos) continue;
+    out += (out.empty() ? "" : ", ") + n;
   }
-  return miss;
+  return out;
+}
+std::string missingFigures(const Scan& sc, const Claim& cl, const std::vector<std::string>& ground) {
+  return spanFigures(sc, cl, ground, false);
 }
 
 // ---- gaps --------------------------------------------------------------------
@@ -1333,6 +1671,9 @@ enum GapVariant : uint8_t {
   kGapCauseOkFailed = 11,    // "it is working", with a failure on record
   kGapCauseOkUnchecked = 12, // "it is working", nothing read to confirm it
   kGapCauseOwn = 13,         // the assistant's own subsystem (timed out, out of credit)
+  kGapNoLogRow = 14,         // a log claim with no row landed in a .csv or .log file (CUM-782)
+  kGapQuote = 15,            // a quote presented as a memory or record that nothing holds (CUM-824)
+  kGapCauseUnrecorded = 16,  // a reason, asked why, that nothing on record holds (CUM-824)
 };
 
 // Phrases that make a send claim a voice-message claim: the delivery itself named as
@@ -1384,6 +1725,11 @@ bool failedWritesQueued(const TurnEffects& fx) {
 }
 
 bool savedGap(const Cue& cue, const TurnEffects& fx, uint8_t* variant) {
+  if (cue.flags & kLogObject) {   // CUM-782: only a landed row backs a log claim
+    if (fx.anyOkWith(FxKind::FileWrite, kFxLogRow)) return false;
+    *variant = kGapNoLogRow;
+    return true;
+  }
   if (backedBy(fx, cue.backs)) return false;
   if (fx.anyOk(FxKind::ScratchRamOnly) && fx.countFailed(FxKind::MemWrite) == 0) *variant = kGapRamOnly;
   else if (failedWritesQueued(fx)) *variant = kGapQueued;
@@ -1549,6 +1895,36 @@ struct GapCheck {
     const std::vector<std::string> more = groundingNumbers(*ev.recalled);
     recalled.insert(recalled.end(), more.begin(), more.end());
   }
+  // CUM-824: a source the turn does not name. The figures the owner gave ride the gap,
+  // so the correction says to credit the owner.
+  bool sourceGap(const Cue& cue, const Claim& cl, ClaimGap& g) {
+    if (cue.flags & kSrcName) return nameGap(cue, cl, g);
+    if (!ev.sources || (*ev.sources & cue.backs)) return false;
+    g.source = cue.backs;
+    if (ev.owner && !ev.owner->empty()) {
+      ensureTokens();
+      g.missing = spanFigures(sc, cl, groundingNumbers(*ev.owner), true);
+    }
+    return true;
+  }
+  // A source credited by name: the names whose words no source text this turn holds.
+  bool nameGap(const Cue& cue, const Claim& cl, ClaimGap& g) {
+    if (!ev.sourceWords) return false;
+    ensureTokens();
+    const size_t k = cueToken(sc, cue, cl);
+    if (k >= sc.toks.size()) return false;
+    for (const std::string& n : creditedNames(sc, k, matchPhrase(sc, k, cue.phrase, nullptr), cue))
+      if (!nameInSources(n, *ev.sourceWords)) g.name += (g.name.empty() ? "" : ", ") + n;
+    return !g.name.empty();
+  }
+  // One claim against its evidence, by class.
+  bool gap(const Cue& cue, const Claim& cl, ClaimGap& g) {
+    switch (cl.cls) {
+      case C::Figure: return figureGap(cue, cl, g);
+      case C::Source: return sourceGap(cue, cl, g);
+      default: return effectGap(cue, cl, g);
+    }
+  }
   bool figureGap(const Cue& cue, const Claim& cl, ClaimGap& g) {
     if (!ev.grounding) return false;
     const bool recallOk = (cue.flags & kRecallOk) && ev.recalled;
@@ -1613,12 +1989,18 @@ const char* causeWhat(uint8_t variant) {
              "sent them again";
     case kGapCauseOkFailed: return "the device's records this turn show a failure there, so it is not confirmed working";
     case kGapCauseOkUnchecked: return "nothing read this turn confirms it is working";
+    case kGapCauseUnrecorded:
+      return "it gives a reason that nothing you were given records; say what the records show and "
+             "that the reason is not recorded";
     default: return "no tool result or device record this turn shows that cause";
   }
 }
 
 // The save-class what: queued, RAM-only or nothing at all.
 const char* savedWhat(uint8_t variant) {
+  if (variant == kGapNoLogRow)
+    return "no row landed in a log file (.csv or .log); only a files.append that adds or replaces "
+           "a row updates a log";
   if (variant == kGapQueued) return "the memory write was only queued; it is not stored yet";
   return variant == kGapRamOnly ? "it was kept in RAM only; saving failed" : "nothing was saved";
 }
@@ -1652,11 +2034,25 @@ const char* gapWhat(const ClaimGap& g) {
   }
 }
 
+// The source-class what: a quote no record holds, or a source (a noun or a name) nothing
+// this turn names, with the owner's figures when they gave some.
+std::string sourceWhat(const ClaimGap& g) {
+  if (g.variant == kGapQuote)
+    return "it quotes those words as a memory, a message or a record, but nothing you were given this turn "
+           "holds them; quote only words you can see, or say it is not recorded";
+  const std::string what = "it credits " + (g.name.empty() ? sourceNoun(g.source) : g.name) +
+                           ", but nothing this turn names that source (no owner message, tool result or "
+                           "sub-agent result mentions it); ";
+  return what + (g.missing.empty() ? "drop that source and anything it alone supports, unless a result you were "
+                                     "given states it; a fact from an earlier answer is labeled as earlier"
+                                   : "the owner gave these figures this turn, so credit the owner (\"you said ...\")");
+}
+
 }  // namespace
 
 const char* claimClassSlug(ClaimClass c) {
   static const char* const kSlugs[] = {"saved",   "deliverable", "spawned", "sent",  "changed",
-                                       "durable", "checked",     "figure",  "cause"};
+                                       "durable", "checked",     "figure",  "cause", "source"};
   static_assert(sizeof(kSlugs) / sizeof(kSlugs[0]) == (size_t)ClaimClass::kCount,
                 "every ClaimClass needs a slug");
   return (size_t)c < (size_t)ClaimClass::kCount ? kSlugs[(size_t)c] : "unknown";
@@ -1667,7 +2063,7 @@ size_t claimCueCount() { return kCueCount; }
 ClaimCueInfo claimCue(size_t i) {
   const Cue& c = kCues[i < kCueCount ? i : 0];
   return ClaimCueInfo{c.cls, c.phrase, (c.flags & kSelf) != 0, (c.flags & kFaultCtx) != 0,
-                      (c.flags & kLogObject) != 0};
+                      (c.flags & kLogObject) != 0, (c.flags & kSourceNoun) != 0, (c.flags & kSrcName) != 0};
 }
 
 ClaimScan scanClaims(const std::string& reply) {
@@ -1694,8 +2090,7 @@ std::vector<ClaimGap> claimGaps(const std::string& reply, const ClaimScan& scan,
     const Cue& cue = kCues[cl.cue];
     ClaimGap g;
     g.cls = cl.cls;
-    const bool gap = cl.cls == C::Figure ? chk.figureGap(cue, cl, g) : chk.effectGap(cue, cl, g);
-    if (!gap) continue;
+    if (!chk.gap(cue, cl, g)) continue;
     g.excerpt = excerptOf(reply, cl);
     gaps.push_back(std::move(g));
   }
@@ -1775,12 +2170,21 @@ constexpr EvidencePhrases kEvidence[] = {
 
 }  // namespace
 
-uint32_t causeEvidenceOf(const std::string& record) {
-  constexpr size_t kWindow = 32768;   // the newest 32 KB (inputs end with the owner's text)
-  const size_t from = record.size() > kWindow ? record.size() - kWindow : 0;
+namespace {
+// The newest 32 KB of a record, folded (inputs end with the owner's text): what the
+// evidence scans read.
+constexpr size_t kEvidenceWindow = 32768;
+std::string foldedTail(const std::string& text) {
+  const size_t from = text.size() > kEvidenceWindow ? text.size() - kEvidenceWindow : 0;
   std::string low;
-  low.reserve(record.size() - from);
-  for (size_t p = from; p < record.size();) low += foldAt(record, p);
+  low.reserve(text.size() - from);
+  for (size_t p = from; p < text.size();) low += foldAt(text, p);
+  return low;
+}
+}  // namespace
+
+uint32_t causeEvidenceOf(const std::string& record) {
+  const std::string low = foldedTail(record);
   uint32_t bits = 0;
   for (const EvidencePhrases& e : kEvidence) {
     if (bits & e.bit) continue;
@@ -1824,6 +2228,323 @@ bool hasWordPhrase(const std::string& low, const char* phrase) {
   return false;
 }
 }  // namespace
+
+namespace {
+// The words that name each source in a turn's text (CUM-824), matched as whole words.
+struct SourceWord {
+  uint32_t bit;
+  const char* word;
+};
+constexpr SourceWord kSourceWords[] = {
+    {kSrcGauge, "gauge"},           {kSrcGauge, "gauges"},          {kSrcSensor, "sensor"},
+    {kSrcSensor, "sensors"},        {kSrcThermometer, "thermometer"}, {kSrcThermometer, "barometer"},
+    {kSrcThermometer, "hygrometer"}, {kSrcThermometer, "anemometer"}, {kSrcStation, "station"},
+    {kSrcStation, "stations"},      {kSrcRadar, "radar"},           {kSrcMeter, "meter"},
+    {kSrcLabel, "label"},           {kSrcLabel, "labels"},          {kSrcLabel, "nutrition facts"},
+    {kSrcReceipt, "receipt"},       {kSrcReceipt, "receipts"},      {kSrcReceipt, "invoice"},
+    {kSrcReceipt, "invoices"},      {kSrcMenu, "menu"},             {kSrcPackage, "package"},
+    {kSrcPackage, "packaging"},     {kSrcPackage, "packet"},        {kSrcPackage, "wrapper"},
+    {kSrcWatch, "watch"},           {kSrcWatch, "smartwatch"},      {kSrcWatch, "garmin"},
+    {kSrcWatch, "fitbit"},          {kSrcScale, "scale"},           {kSrcScale, "scales"},
+    {kSrcTracker, "tracker"},       {kSrcApp, "app"},               {kSrcApp, "apps"},
+    {kSrcApp, "application"},       {kSrcWebsite, "website"},       {kSrcWebsite, "websites"},
+    {kSrcWebsite, "site"},          {kSrcWebsite, "web page"},      {kSrcWebsite, "webpage"},
+    {kSrcWebsite, "page"},          {kSrcFeed, "feed"},             {kSrcFeed, "dashboard"},
+    {kSrcScreenshot, "screenshot"}, {kSrcReport, "report"},         {kSrcReport, "reports"},
+};
+// Each bit's noun as a correction names it, in bit order.
+constexpr const char* kSourceNouns[] = {
+    "a gauge",  "a sensor", "a thermometer", "a weather station", "a radar", "a meter",
+    "a label",  "a receipt", "a menu",       "a package",         "a watch", "a scale",
+    "a tracker", "an app",  "a website",     "a feed",            "a screenshot", "a report",
+};
+static_assert(((1u << (sizeof(kSourceNouns) / sizeof(kSourceNouns[0]))) - 1) == kSrcAll,
+              "one noun per SourceEvidence bit");
+}  // namespace
+
+uint32_t sourceEvidenceOf(const std::string& text) {
+  const std::string low = foldedTail(text);
+  uint32_t bits = 0;
+  for (const SourceWord& w : kSourceWords)
+    if (!(bits & w.bit) && hasWordPhrase(low, w.word)) bits |= w.bit;
+  if (low.find("http://") != std::string::npos || low.find("https://") != std::string::npos ||
+      low.find("www.") != std::string::npos)
+    bits |= kSrcWebsite;   // a link names a website
+  return bits;
+}
+
+std::string sourceWordsOf(const std::string& text, size_t cap, bool* clipped) {
+  const std::string ns = normalizedWords(foldedTail(text)) + " ";
+  if (clipped) *clipped = text.size() > kEvidenceWindow;   // words before the window are not read
+  std::string out = " ";
+  for (size_t b = 0, e; (e = ns.find(' ', b)) != std::string::npos; b = e + 1) {
+    const std::string w = ns.substr(b, e - b);
+    if (w.size() < 3) continue;
+    if (out.size() + w.size() + 1 > cap) {   // full: stop before any more searching
+      if (clipped) *clipped = true;
+      break;
+    }
+    if (out.find(" " + w + " ") == std::string::npos) out += w + " ";
+  }
+  return out;
+}
+
+std::string normalizedWords(const std::string& text) {
+  std::string out;
+  out.reserve(text.size());
+  bool word = false;
+  for (size_t p = 0; p < text.size();) {
+    const char c = foldAt(text, p);   // lowercased, the typographic apostrophe folded
+    const unsigned char u = (unsigned char)c;
+    if (isAsciiLetter(u) || isDigit(u)) {
+      if (!word && !out.empty()) out += ' ';
+      out += c;
+      word = true;
+    } else if (c != '\'') {   // "don't" stays one word
+      word = false;
+    }
+  }
+  return out;
+}
+
+namespace {
+// Phrases near a quote that present it as something on record from before: the device's
+// own memory, or the owner's words, a rule or a record. A draft, a translation or a save
+// confirmation names none of them ("a message you could send: ...", "Saved: ...").
+constexpr const char* kMemoryPhrases[] = {"recalled",  "i remember", "i remembered", "a memory",  "the memory",
+                                          "my memory", "memories",   "from memory",  "in memory", "you asked me to save",
+                                          "you asked me to remember"};
+constexpr const char* kRecordPhrases[] = {"you said",     "you wrote",  "you told me", "you asked me", "your message",
+                                          "your messages", "your words", "your note",   "your rule",    "standing rule",
+                                          "the rule",     "the record", "the log says"};
+constexpr size_t kQuoteContextBefore = 160, kQuoteContextAfter = 120;
+constexpr size_t kQuoteMinWords = 4;   // a shorter quote is a name or a phrase, not a record
+
+// A code fence or a blank line at p: no quote is open across it (a quote never spans
+// paragraphs). Toggles `fence` at a fence; returns the bytes to skip.
+size_t quoteBreak(const std::string& r, size_t p, bool& fence) {
+  if (r.compare(p, 3, "```") == 0) {
+    fence = !fence;
+    return 3;
+  }
+  return r.compare(p, 2, "\n\n") == 0 ? 2 : 0;
+}
+
+// One quote mark at p ('"' or a curly one) against the open quote: opens, closes or
+// neither. Returns the mark's byte length (0 = no mark).
+size_t quoteMark(const std::string& r, size_t p, size_t& open, std::vector<std::pair<size_t, size_t>>& out) {
+  const bool curlyOpen = isCurlyOpenQuote(r, p), curlyClose = isCurlyCloseQuote(r, p);
+  if (r[p] != '"' && !curlyOpen && !curlyClose) return 0;
+  const size_t len = r[p] == '"' ? 1 : 3;
+  if (open == std::string::npos && !curlyClose) {
+    open = p + len;
+  } else if (open != std::string::npos && !curlyOpen) {
+    out.emplace_back(open, p);
+    open = std::string::npos;
+  }
+  return len;
+}
+
+// The quoted spans of a reply: straight double quotes paired within a paragraph, and the
+// curly pair. Code is skipped.
+std::vector<std::pair<size_t, size_t>> quoteSpans(const std::string& r) {
+  std::vector<std::pair<size_t, size_t>> out;
+  size_t open = std::string::npos;
+  bool fence = false;
+  for (size_t p = 0; p < r.size() && p < kScanMax;) {
+    const size_t brk = quoteBreak(r, p, fence);
+    if (brk) {
+      open = std::string::npos;
+      p += brk;
+      continue;
+    }
+    const size_t mark = fence ? 0 : quoteMark(r, p, open, out);
+    p += mark ? mark : 1;
+  }
+  return out;
+}
+
+template <size_t N>
+bool anyWordIn(const std::string& padded, const char* const (&set)[N]) {
+  for (const char* w : set)
+    if (padded.find(std::string(" ") + w + " ") != std::string::npos) return true;
+  return false;
+}
+
+bool recordWordNear(const std::string& r, size_t b, size_t e, bool memoryOnly) {
+  const size_t from = b > kQuoteContextBefore ? b - kQuoteContextBefore : 0;
+  const std::string ctx = " " + normalizedWords(r.substr(from, b - from)) + " " +
+                          normalizedWords(r.substr(e, kQuoteContextAfter)) + " ";
+  return anyWordIn(ctx, kMemoryPhrases) || (!memoryOnly && anyWordIn(ctx, kRecordPhrases));
+}
+
+// The quotes a reply presents as a memory, a message or a record, normalized, with their
+// byte spans.
+std::vector<std::pair<std::pair<size_t, size_t>, std::string>> presentedQuotes(const std::string& reply,
+                                                                               bool memoryOnly) {
+  std::vector<std::pair<std::pair<size_t, size_t>, std::string>> out;
+  for (const auto& q : quoteSpans(reply)) {
+    std::string words = normalizedWords(reply.substr(q.first, q.second - q.first));
+    if ((size_t)std::count(words.begin(), words.end(), ' ') + 1 < kQuoteMinWords) continue;
+    if (recordWordNear(reply, q.first, q.second, memoryOnly)) out.emplace_back(q, std::move(words));
+  }
+  return out;
+}
+
+// A gap whose excerpt is the byte span [b, e) of the reply.
+ClaimGap spanGap(const std::string& reply, size_t b, size_t e, ClaimClass cls, uint8_t variant) {
+  ClaimGap g;
+  g.cls = cls;
+  g.variant = variant;
+  Claim cl;
+  cl.begin = (uint32_t)b;
+  cl.end = (uint32_t)e;
+  g.excerpt = excerptOf(reply, cl);
+  return g;
+}
+}  // namespace
+
+bool hasRecordQuote(const std::string& reply) { return !presentedQuotes(reply, false).empty(); }
+
+bool recordQuoteGap(const std::string& reply, const std::string& seen, ClaimGap* out, bool memoryOnly) {
+  const std::string hay = " " + seen + " ";
+  for (const auto& q : presentedQuotes(reply, memoryOnly)) {
+    if (hay.find(" " + q.second + " ") != std::string::npos) continue;
+    if (out) *out = spanGap(reply, q.first.first, q.first.second, ClaimClass::Source, kGapQuote);
+    return true;
+  }
+  return false;
+}
+
+namespace {
+// What makes a sentence a reason (the words after a "because"-like marker, or the whole
+// sentence for the others).
+constexpr const char* kReasonAfter[] = {"because", "due to", "owing to"};
+constexpr const char* kReasonSentence[] = {
+    "the fallback",  "a fallback",    "was configured", "is configured", "were configured",
+    "set up to",     "was told to",   "were told to",   "instructed to", "standing rule",
+    "i recalled",    "i recall",      "i remembered",   "found a memory", "a memory from",
+    "the memory from", "my memory",   "the only connector", "the only source", "the only tool",
+};
+// A reason that cites a memory, a rule or the owner's own request claims that record's
+// content: one word of it found nowhere is already an invented record (the eval's "because
+// I recalled you had set up a Notion database").
+constexpr const char* kReasonRecord[] = {"i recalled",   "i recall",     "i remembered", "a memory", "the memory",
+                                         "my memory",    "standing rule", "you set up",   "you had set up",
+                                         "you asked me", "you told me",  "you wanted"};
+// Content words that carry no claim (attribution, time, filler), five letters or more.
+constexpr const char* kReasonStop[] = {
+    "because", "which", "would", "could", "should", "their", "there", "these", "those", "about",
+    "after", "before", "first", "again", "other", "still", "every", "never", "always", "earlier",
+    "later", "today", "recalled", "recall", "remember", "remembered", "memory", "memories", "found",
+    "check", "checked", "checking", "conversation", "conversations", "record", "records", "recorded",
+    "reason", "think", "thought", "probably", "maybe", "really", "actually", "agent", "agents",
+    "device", "assistant", "while", "where", "since", "until", "using", "instead", "rather",
+    "within", "without", "something", "nothing", "anything", "everything", "through", "being",
+    "having", "doing", "going", "asked", "owner", "previously", "message", "messages", "morning",
+    "evening",
+};
+
+bool reasonStop(const std::string& w) {
+  for (const char* s : kReasonStop)
+    if (w == s) return true;
+  return false;
+}
+
+// The word, or its stem (plural, past, -ing cut off), starts a word of `hay` (" "-led).
+bool wordOnRecord(const std::string& w, const std::string& hay) {
+  if (hay.find(" " + w) != std::string::npos) return true;
+  for (const char* suf : {"ing", "ed", "es", "s"}) {
+    const size_t n = std::strlen(suf);
+    if (w.size() > n + 3 && w.compare(w.size() - n, n, suf) == 0 &&
+        hay.find(" " + w.substr(0, w.size() - n)) != std::string::npos)
+      return true;
+  }
+  return false;
+}
+
+// The part of normalized sentence `ns` that states the reason, or "" when it gives none.
+std::string reasonPart(const std::string& ns) {
+  const std::string pad = " " + ns + " ";
+  for (const char* m : kReasonAfter) {
+    const size_t at = pad.find(std::string(" ") + m + " ");
+    if (at != std::string::npos) return pad.substr(at + std::strlen(m) + 2);
+  }
+  for (const char* m : kReasonSentence)
+    if (pad.find(std::string(" ") + m + " ") != std::string::npos) return ns;
+  return std::string();
+}
+
+// The reply's sentences (split at . ! ? and line ends), as byte spans.
+std::vector<std::pair<size_t, size_t>> sentenceSpans(const std::string& r) {
+  std::vector<std::pair<size_t, size_t>> out;
+  size_t b = 0;
+  const size_t n = r.size() < kScanMax ? r.size() : kScanMax;
+  for (size_t p = 0; p <= n; p++) {
+    const bool end = p == n || r[p] == '\n' || ((r[p] == '.' || r[p] == '!' || r[p] == '?') &&
+                                                (p + 1 >= n || r[p + 1] == ' ' || r[p + 1] == '\n'));
+    if (!end) continue;
+    if (p > b) out.emplace_back(b, p);
+    b = p + 1;
+  }
+  return out;
+}
+}  // namespace
+
+bool isUnrecordedReason(const ClaimGap& g) { return g.cls == C::Cause && g.variant == kGapCauseUnrecorded; }
+
+bool asksWhy(const std::string& ownerText) {
+  const std::string pad = " " + normalizedWords(ownerText) + " ";
+  return pad.find(" why ") != std::string::npos || pad.find(" how come ") != std::string::npos ||
+         pad.find(" what made you ") != std::string::npos;
+}
+
+// The sentence names one of `subjects` (" "-separated normalized words): it is about a
+// past sub-agent.
+bool aboutSubject(const std::string& ns, const std::string& subjects) {
+  const std::string pad = " " + ns + " ", list = subjects + " ";
+  for (size_t b = 0, e; (e = list.find(' ', b)) != std::string::npos; b = e + 1)
+    if (e > b && pad.find(" " + list.substr(b, e - b) + " ") != std::string::npos) return true;
+  return false;
+}
+
+// The content words of a reason part (five letters or more, not a stop word, not the
+// question's own) that no record holds, each once.
+std::vector<std::string> unrecordedWords(const std::string& part, const std::string& asked, const std::string& hay) {
+  std::vector<std::string> out;
+  const std::string ns = part + " ";
+  for (size_t b = 0, e; (e = ns.find(' ', b)) != std::string::npos; b = e + 1) {
+    const std::string w = ns.substr(b, e - b);
+    if (w.size() < 5 || reasonStop(w) || asked.find(" " + w + " ") != std::string::npos || wordOnRecord(w, hay))
+      continue;
+    if (std::find(out.begin(), out.end(), w) == out.end()) out.push_back(w);
+  }
+  return out;
+}
+
+bool unrecordedReasonGap(const std::string& reply, const std::string& records, const std::string& question,
+                         const std::string& subjects, ClaimGap* out) {
+  const std::string hay = " " + records + " ";
+  const std::string asked = " " + normalizedWords(question) + " ";
+  for (const auto& sp : sentenceSpans(reply)) {
+    const std::string ns = normalizedWords(reply.substr(sp.first, sp.second - sp.first));
+    const std::string part = aboutSubject(ns, subjects) ? reasonPart(ns) : std::string();
+    const std::vector<std::string> missing = part.empty() ? std::vector<std::string>() : unrecordedWords(part, asked, hay);
+    if (missing.size() < (anyWordIn(" " + ns + " ", kReasonRecord) ? 1u : 2u)) continue;
+    if (out) {
+      *out = spanGap(reply, sp.first, sp.second, ClaimClass::Cause, kGapCauseUnrecorded);
+      for (const std::string& w : missing) out->missing += (out->missing.empty() ? "" : ", ") + w;
+    }
+    return true;
+  }
+  return false;
+}
+
+std::string sourceNoun(uint32_t bit) {
+  for (size_t i = 0; i < sizeof(kSourceNouns) / sizeof(kSourceNouns[0]); i++)
+    if (bit & (1u << i)) return kSourceNouns[i];
+  return "that source";
+}
 
 bool replyHedgesUnchecked(const std::string& reply) {
   static const char* const kHedges[] = {
@@ -1879,7 +2600,7 @@ std::string claimCorrection(const std::vector<ClaimGap>& gaps, const TurnEffects
     if (shown++ == 4) break;
     out += "- ";
     if (!g.excerpt.empty()) out += "\"" + quotedSafe(g.excerpt) + "\": ";
-    out += gapWhat(g);
+    out += g.cls == ClaimClass::Source ? sourceWhat(g) : std::string(gapWhat(g));
     if (!g.missing.empty()) out += " (" + g.missing + ")";
     out += ".\n";
   }
@@ -1900,6 +2621,7 @@ std::string causeLine(uint8_t variant) {
       return "(Note: the device recorded repeats on its own side, so these may not have come from you.)";
     case kGapCauseOkFailed: return "(Correction: the device recorded a failure there, so it is not confirmed working.)";
     case kGapCauseOkUnchecked: return "(Note: nothing was checked this turn to confirm that it is working.)";
+    case kGapCauseUnrecorded: return "(Correction: the device has no record of that reason.)";
     default: return "(Note: the device has no record of that cause.)";
   }
 }
@@ -1907,6 +2629,7 @@ std::string causeLine(uint8_t variant) {
 
 // The save-class tail: queued, RAM-only, or the plain not-saved correction.
 std::string savedTail(uint8_t variant) {
+  if (variant == kGapNoLogRow) return "(Correction: no row was added to the log.)";
   if (variant == kGapQueued)
     return "(Correction: that has not been saved yet; it is waiting on the device to be stored.)";
   return variant == kGapRamOnly
@@ -1920,6 +2643,17 @@ std::string sentTail(uint8_t variant) {
   return variant == kGapNoReceipt
              ? "(Note: that is queued for Telegram; the device has no delivery receipt for it yet.)"
              : "(Correction: that has not been sent.)";
+}
+
+// The source-class tail: a quote no record holds, a name, or a noun (with the owner's figures).
+static std::string sourceTail(const ClaimGap& g) {
+  if (g.variant == kGapQuote) return "(Correction: the device has no record of those words.)";
+  if (!g.name.empty())
+    return "(Correction: nothing the device read this turn came from " + g.name + ", so that source is not confirmed.)";
+  const std::string from = "(Correction: the device read nothing from " + sourceNoun(g.source) + " this turn";
+  if (g.missing.empty()) return from + ", so that source is not confirmed.)";
+  const bool many = g.missing.find(", ") != std::string::npos;
+  return from + "; " + joinNumbers(g.missing) + (many ? " are the figures" : " is the figure") + " you gave.)";
 }
 
 std::string claimTailLine(const ClaimGap& g) {
@@ -1942,6 +2676,7 @@ std::string claimTailLine(const ClaimGap& g) {
       return "(Note: " + joinNumbers(g.missing) +
              " did not appear in the source I was given, so treat them as estimates.)";
     case C::Cause: return causeLine(g.variant);
+    case C::Source: return sourceTail(g);
     default: return std::string();
   }
 }

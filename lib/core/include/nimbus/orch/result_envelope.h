@@ -91,6 +91,12 @@ struct ResultEnvelope {
   // web" with webRuns == 0 did not. Zeroed by the existing memsets (+4 B).
   uint16_t toolRuns = 0;
   uint16_t webRuns  = 0;
+  // The same record by name (sub_provenance.h ToolTally::render): "web_search x2,
+  // notion x0", a tool the run was offered and never ran counting 0 where the adapter
+  // sees the offer (Mistral). The spawn ledger and [FRESH RESULTS] carry it, so a later
+  // question about the sub is answered from what it ran. "" = the adapter recorded no
+  // names. Zeroed by the existing memsets.
+  char     toolNames[96] = {};
   Action   actions[kMaxActions] = {};
   int      actionCount = 0;
   Artifact artifacts[kMaxArtifacts] = {};

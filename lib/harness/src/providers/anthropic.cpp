@@ -17,6 +17,7 @@
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/seam_meter.h"   // anthropicSessionUsage - a finished sub's spend
+#include "nimbus/orch/sub_provenance.h"  // ToolTally - the sub's tools by name (CUM-824)
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - per-round usage
 #include "nimbus/orch/transcript.h"   // Transcript - the canonical turn record (Stage 2)
 #include "image_parts.h"   // R1: the turn's photos as image parts of the seeded user message
@@ -555,6 +556,7 @@ static std::string antSandboxOutput(JsonArrayConst events) {
 static void antCountRuns(JsonArrayConst events, ResultEnvelope& env) {
   env.toolRuns = 0;
   env.webRuns = 0;
+  nimbus::orch::ToolTally byName;   // CUM-824: the same events by name
   for (JsonObjectConst ev : events) {
     const char* type = ev["type"] | "";
     if (strcmp(type, "agent.tool_use") && strcmp(type, "agent.mcp_tool_use") &&
@@ -562,8 +564,10 @@ static void antCountRuns(JsonArrayConst events, ResultEnvelope& env) {
       continue;
     if (env.toolRuns < 0xFFFF) env.toolRuns++;
     const char* nm = ev["name"] | "";
+    byName.ran(nm);
     if ((!strcmp(nm, "web_search") || !strcmp(nm, "web_fetch")) && env.webRuns < 0xFFFF) env.webRuns++;
   }
+  byName.copyTo(env.toolNames);
 }
 
 // ---- session output files (OA-107, L19-37) ----------------------------------
