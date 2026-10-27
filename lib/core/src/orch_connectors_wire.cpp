@@ -347,36 +347,46 @@ bool codeInterpreterOnWire(const std::vector<ConnectorInfo>& cs, const char* hea
   return false;
 }
 
-PdfRoute pdfRoute(const std::vector<ConnectorInfo>& cs, const ProviderState& ps) {
-  PdfRoute r;
-  const bool capture = ps.fileCapture && ps.fileStoreReady;
-  // CUM-821 (review of 4e9cf28f): Lumi's route was openai while OpenAI was paused, and
-  // the file task's spawn went there. A held-off sandbox is skipped.
+namespace {
+// The sandbox routes as the PDF rule sees them. CUM-821 (review of 4e9cf28f): Lumi's route
+// was openai while OpenAI was paused, and the file task's spawn went there, so a held-off
+// sandbox is no route.
+struct Sandboxes {
+  bool capture = false;   // the device can keep a file a sub-agent builds
+  bool oaiOpen = false;   // an open openai sub with code_interpreter on its wire
+  bool antOpen = false;   // an open anthropic sub
+  bool held = false;      // a keyed sandbox provider is held off right now
+  std::string heldFact;   // its pause fact, without the final period
+};
+Sandboxes sandboxes(const std::vector<ConnectorInfo>& cs, const ProviderState& ps) {
+  Sandboxes s;
+  s.capture = ps.fileCapture && ps.fileStoreReady;
   const bool oaiSbx = ps.openaiKeyed && codeInterpreterOnWire(cs, "openai");
   const bool oaiHeld = oaiSbx && pauseHolds(ps.openaiPause);
   const bool antHeld = ps.anthropicKeyed && pauseHolds(ps.anthropicPause);
-  if (capture && oaiSbx && !oaiHeld) {
-    r.path = PdfPath::OpenAiSandbox;
-    r.slug = "openai";
-  } else if (capture && ps.anthropicKeyed && !antHeld) {
-    r.path = PdfPath::AnthropicSandbox;
-    r.slug = "anthropic";
-  } else if (ps.pdfWriter && ps.fileStoreReady) {
-    r.path = PdfPath::DeviceWriter;
-    r.slug = capture && (oaiHeld || antHeld) ? "devicepaused" : "device";
-  } else if (capture && (oaiHeld || antHeld)) {
-    std::string fact = oaiHeld ? providerPauseFact("OpenAI", ps.openaiPause)
-                               : providerPauseFact("Anthropic", ps.anthropicPause);
-    if (!fact.empty() && fact.back() == '.') fact.pop_back();
-    r.blocker = fact;
-    r.slug = "paused";
-  } else if (!ps.fileStoreReady) {
+  s.oaiOpen = s.capture && oaiSbx && !oaiHeld;
+  s.antOpen = s.capture && ps.anthropicKeyed && !antHeld;
+  s.held = s.capture && (oaiHeld || antHeld);
+  if (s.held) {
+    s.heldFact = oaiHeld ? providerPauseFact("OpenAI", ps.openaiPause)
+                         : providerPauseFact("Anthropic", ps.anthropicPause);
+    if (!s.heldFact.empty() && s.heldFact.back() == '.') s.heldFact.pop_back();
+  }
+  return s;
+}
+
+// Why no route exists, in the order the owner would fix it.
+void noPdfRoute(const ProviderState& ps, const Sandboxes& sb, PdfRoute& r) {
+  if (!ps.fileStoreReady) {
     r.blocker = "this device has no SD card, so it cannot keep a generated file (the owner "
                 "inserts one)";
     r.slug = "nostore";
   } else if (!ps.fileCapture) {
     r.blocker = "this instance cannot collect a file a sub-agent builds";
     r.slug = "nocapture";
+  } else if (sb.held) {
+    r.blocker = sb.heldFact;
+    r.slug = "paused";
   } else if (ps.openaiKeyed) {
     r.blocker = "openai's Code Interpreter is off (the owner turns on Code sandbox on the "
                 "device web page, Assistant > Tools > Tool use)";
@@ -385,6 +395,24 @@ PdfRoute pdfRoute(const std::vector<ConnectorInfo>& cs, const ProviderState& ps)
     r.blocker = "it needs the owner's own OpenAI or Anthropic API key (a Cumulo or Mistral "
                 "key cannot bring a PDF back)";
     r.slug = "nokey";
+  }
+}
+}  // namespace
+
+PdfRoute pdfRoute(const std::vector<ConnectorInfo>& cs, const ProviderState& ps) {
+  PdfRoute r;
+  const Sandboxes sb = sandboxes(cs, ps);
+  if (sb.oaiOpen) {
+    r.path = PdfPath::OpenAiSandbox;
+    r.slug = "openai";
+  } else if (sb.antOpen) {
+    r.path = PdfPath::AnthropicSandbox;
+    r.slug = "anthropic";
+  } else if (ps.pdfWriter && ps.fileStoreReady) {
+    r.path = PdfPath::DeviceWriter;
+    r.slug = sb.held ? "devicepaused" : "device";
+  } else {
+    noPdfRoute(ps, sb, r);
   }
   return r;
 }
