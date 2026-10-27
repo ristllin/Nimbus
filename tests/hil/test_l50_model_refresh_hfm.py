@@ -302,8 +302,12 @@ def test_hfm_a_frozen_head_is_not_moved(board, device):
         # and cannot move the head either.
         action = {"type": "orch_model", "provider": "mistral", "model": "mistral-small-latest"}
         body = json.dumps(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-             "params": {"name": "device.control", "arguments": {"action": action}}}
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "device.control", "arguments": {"action": action}},
+            }
         )
         r = _S.post(f"http://{board}/mcp", data=body, headers={"Content-Type": "application/json"}, timeout=20)
         print(f"[L50hfm] LAN device.control orch_model -> {r.status_code} {r.text[:300]}")
