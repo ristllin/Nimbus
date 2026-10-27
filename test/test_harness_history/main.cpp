@@ -8,6 +8,7 @@
 
 #include "nimbus/harness/conversation.h"
 #include "nimbus/harness/engine.h"
+#include "nimbus/harness/jobs.h"   // kJobDeliveryTag
 #include "nimbus/harness/turn_inbox.h"
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/media_label.h"   // the one label the receive path writes (lane D)
@@ -591,6 +592,112 @@ static void test_a_run_of_unanswered_repeats_is_one_line_through_the_engine() {
   }
 }
 
+// The message being answered never starts or absorbs a run: it is dropped from the history with
+// its count, so an owner who sends "ping" after N unanswered "ping"s still shows the N earlier ones
+// as one line (they used to chain into the in-flight row and vanish with it).
+static void test_the_in_flight_message_does_not_swallow_an_unanswered_run() {
+  const uint32_t t0 = (kH - 9 + 10) * 3600u;   // Sat 8 Nov 2025 10:00 UTC
+  for (int n : {1, 2, 12, 36}) {
+    Rig r;
+    r.plat.epoch = t0 + 50u * (uint32_t)n;   // the next 50 s step: close enough to chain into the run
+    for (int i = 0; i < n; i++) {
+      const uint32_t sec = t0 + 50u * (uint32_t)i;
+      r.hour = sec / 3600u;
+      r.add("123", "user", MsgKind::Message, "ping", "from:Roy,at:" + std::to_string(sec));
+    }
+    r.hour = r.plat.epoch / 3600u;
+    r.eng->handleMessage("ping", "Roy", "123");   // the same text as the run, sent last
+    const std::string w = r.lastWindow();
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)count(w, "ping"), w.c_str());
+    if (n > 1) TEST_ASSERT_TRUE_MESSAGE(w.find("(x" + std::to_string(n) + ") ping") != std::string::npos, w.c_str());
+  }
+}
+
+// A captured job delivery sits between two owner messages in the row stream but is not
+// conversation: it is transparent to a run, so the run is one line however the rows interleave.
+// Two runs of different lengths on either side of one (the newest run's newest row is 150 s from
+// the older run's newest row, its oldest row 50 s) used to read as two lines.
+static void test_a_job_delivery_inside_a_run_of_repeats_is_transparent() {
+  const uint32_t t0 = (kH - 9 + 10) * 3600u;
+  Rig r;
+  r.plat.epoch = t0 + 3600u;
+  const uint32_t at[] = {0, 50, 1000, 100, 150, 200};   // 1000 marks the job row's slot
+  for (const uint32_t s : at) {
+    r.hour = (t0 + (s == 1000 ? 75 : s)) / 3600u;
+    if (s == 1000) r.add("123", "tool", MsgKind::Message, "On it.", agent::kJobDeliveryTag);
+    else r.add("123", "user", MsgKind::Message, "ping", "from:Roy,at:" + std::to_string(t0 + s));
+  }
+  r.hour = (t0 + 3600u) / 3600u;
+  r.eng->handleMessage("and now?", "Roy", "123");
+  const std::string w = r.lastWindow();
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)count(w, "ping"), w.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(w.find("(x5) ping") != std::string::npos, w.c_str());
+  TEST_ASSERT_EQUAL(0, (int)count(w, "On it."));
+}
+
+// A window does not depend on the turns before it. After the overflow shift the history starts after
+// a soft start; its first turn is told from the day of the row it starts after, exactly as when the
+// turns before it are still loaded. India: 18:40 UTC is 00:10 the next day, and an on-device voice
+// row stored in hour 18 is told the day before on its own.
+static void test_a_shifted_window_keeps_the_days_of_the_full_history() {
+  const uint32_t h18 = (kH - 9 + 18) * 3600u;   // Sat 8 Nov 2025 18:00 UTC
+  const auto build = [h18](Rig& r) {
+    r.offMin = 330;
+    std::string last;
+    const std::pair<uint32_t, const char*> exchanges[] = {{20, "first"}, {40, "second"}};
+    for (const auto& e : exchanges) {
+      const uint32_t sec = h18 + e.first * 60u;
+      r.hour = sec / 3600u;
+      const std::string u = r.add("123", "user", MsgKind::Message, e.second, "from:Roy,at:" + std::to_string(sec));
+      last = r.add("123", "assistant", MsgKind::Message, "ok",
+                   "fx:none,out:reply,turn:" + u + ",at:" + std::to_string(sec + 60u));
+    }
+    r.hour = h18 / 3600u;
+    r.add("123", "user", MsgKind::Audio, "[voice note] hi", "from:Roy", "/mem/blobs/00000000abc00007.ogg");
+    const uint32_t third = h18 + 55 * 60u;
+    r.add("123", "user", MsgKind::Message, "third", "from:Roy,at:" + std::to_string(third));
+    r.plat.epoch = h18 + 3500u;
+    r.hour = r.plat.epoch / 3600u;
+    return last;
+  };
+  Rig full;
+  build(full);
+  full.eng->handleMessage("later", "Roy", "123");
+  const std::string f = full.lastWindow();
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)count(f, "(Sun 9 Nov)"), f.c_str());   // the voice row opens no second Sunday
+  TEST_ASSERT_EQUAL(0, (int)count(f.substr(f.find("(Sun 9 Nov)")), "(Sat 8 Nov)"));
+  Rig shifted;
+  shifted.marks.softStart = build(shifted);   // the history starts after the second exchange
+  shifted.eng->handleMessage("later", "Roy", "123");
+  const std::string s = shifted.lastWindow();
+  TEST_ASSERT_TRUE_MESSAGE(s.find("(Sun 9 Nov) [voice note] hi") != std::string::npos, s.c_str());
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)count(s, "(Sat 8 Nov)"), s.c_str());
+}
+
+// The engine path through a prefix check: turns 5 minutes apart across an India midnight (18:30 UTC),
+// an unstamped voice row now and then in the half hour after it. Each turn's history continues the
+// previous turn's byte for byte, and the day appears once.
+static void test_history_stays_append_only_across_a_half_hour_zone_midnight() {
+  const uint32_t base = (kH - 9 + 17) * 3600u + 30u * 60u;   // Sat 8 Nov 2025 17:30 UTC
+  Rig r;
+  r.offMin = 330;
+  std::string prev;
+  for (int i = 0; i < 25; i++) {
+    const uint32_t sec = base + 300u * (uint32_t)i;
+    r.plat.epoch = sec;
+    r.hour = sec / 3600u;
+    if (i % 4 == 2)
+      r.add("123", "user", MsgKind::Audio, "[voice note] " + std::to_string(i), "from:Roy",
+            "/mem/blobs/00000000abc01" + std::to_string(100 + i) + ".ogg");
+    r.eng->handleMessage("turn " + std::to_string(i), "Roy", "123");
+    const std::string w = r.lastWindow();
+    if (!prev.empty()) TEST_ASSERT_TRUE_MESSAGE(w.compare(0, prev.size(), prev) == 0, w.c_str());
+    prev = w;
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)count(prev, "(Sat 8 Nov)"), prev.c_str());
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)count(prev, "(Sun 9 Nov)"), prev.c_str());
+}
+
 // The whole chain with nothing seeded by hand: web-chat turns arrive while the clock reads a
 // chosen second, the engine stamps each owner row, and the next turn's history tells the days
 // with the zone in force at each stamp (the clocks go back at 01:00 UTC on Sun 9 Nov here).
@@ -636,6 +743,8 @@ static void test_engine_stamps_the_second_a_row_was_stored() {
   r.eng->handleMessage("hello", "Roy", "123");
   auto rows = r.all("123");
   TEST_ASSERT_EQUAL_STRING(std::to_string(kH * 3600u + 1234u).c_str(), agent::tagValue(rows[1].tags, agent::kAtTag).c_str());
+  // The reply row carries it too: the history reads the latest row of a turn for the day floor.
+  TEST_ASSERT_EQUAL_STRING(std::to_string(kH * 3600u + 1234u).c_str(), agent::tagValue(rows[0].tags, agent::kAtTag).c_str());
   agent::history::Inbound in;   // a Telegram turn keeps the sender's time too
   in.chatId = "123";
   in.src = "tg:77x1";
@@ -674,6 +783,10 @@ int main(int, char**) {
   RUN_TEST(test_history_days_use_the_zone_in_force_when_the_row_was_stored);
   RUN_TEST(test_engine_stamped_turns_tell_their_own_days);
   RUN_TEST(test_a_run_of_unanswered_repeats_is_one_line_through_the_engine);
+  RUN_TEST(test_the_in_flight_message_does_not_swallow_an_unanswered_run);
+  RUN_TEST(test_a_job_delivery_inside_a_run_of_repeats_is_transparent);
+  RUN_TEST(test_a_shifted_window_keeps_the_days_of_the_full_history);
+  RUN_TEST(test_history_stays_append_only_across_a_half_hour_zone_midnight);
   RUN_TEST(test_engine_stamps_the_second_a_row_was_stored);
   RUN_TEST(test_owner_row_tags_and_stored_text);
   RUN_TEST(test_image_row_is_capped_to_about_300_chars);

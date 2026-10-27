@@ -2951,6 +2951,8 @@ std::string TurnEngine::assistantRowTags() const {
     ids += (ids.empty() ? "" : ".") + s;
   }
   if (!ids.empty()) tags += std::string(",") + kSkillsTag + ids;
+  const std::string at = atItem(d_);   // when the reply was stored: the history's day floor reads it
+  if (!at.empty()) tags += "," + at;
   return tags;
 }
 
@@ -2966,15 +2968,30 @@ namespace {
 constexpr size_t kHistoryPageRows = 24;   // one read of the chat's rows (transient)
 constexpr int kHistoryMaxPages = 32;      // a flood of one repeated line folds as it is read
 
+// True when `m` ends the window (a /clear, or the row the window starts after). The row the
+// window starts after is context only: its local day becomes `o.dayFloor`.
+bool windowEnds(const nimbus::orch::EpisodicMessage& m, HistoryOptions& o, const OffsetAt& zone) {
+  if (isClearBoundary(m)) return true;
+  if (o.startAfter.empty() || rowIdAfter(m.id, o.startAfter)) return false;
+  if (m.id == o.startAfter) o.dayFloor = rowLocalDay(m, zone);
+  return true;
+}
+
+// True when `m` is one more of the run `rows.back()` stands for. The in-flight row never starts
+// or absorbs a run: it is dropped from the history, and its count with it.
+bool joinsRun(const std::vector<nimbus::orch::EpisodicMessage>& rows, const HistoryOptions& o,
+              const RepeatStamp& chain, const OffsetAt& zone, const nimbus::orch::EpisodicMessage& m) {
+  if (rows.empty() || rows.back().id == o.inFlightId) return false;
+  return isRepeatOf(rows.back(), chain, m, zone);
+}
+
 // The chat's rows after `startAfter`, newest first, a page at a time. An owner
 // row identical to the one read just before it folds into that row's count as
 // it is read, so a flood of one message holds one row of memory; reading stops
 // at the newest /clear, at `o.startAfter` and at `maxRows` distinct rows. `o`'s zone tells the
 // owner's local days: two identical messages either side of LOCAL midnight are two messages.
-void readHistory(const TurnEngine::Deps& d, const std::string& chatId, const HistoryOptions& o,
-                 size_t maxRows, std::vector<nimbus::orch::EpisodicMessage>& rows,
-                 std::vector<uint32_t>& repeats) {
-  const std::string& startAfter = o.startAfter;
+void readHistory(const TurnEngine::Deps& d, const std::string& chatId, HistoryOptions& o, size_t maxRows,
+                 std::vector<nimbus::orch::EpisodicMessage>& rows, std::vector<uint32_t>& repeats) {
   const OffsetAt zone = localZone(o);
   RepeatStamp chain;   // the row just newer than the one being read: a run is chained row by row
   std::string before;
@@ -2983,8 +3000,9 @@ void readHistory(const TurnEngine::Deps& d, const std::string& chatId, const His
     const bool full = got.size() >= kHistoryPageRows;
     if (full) before = got.back().id;
     for (auto& m : got) {
-      if (isClearBoundary(m) || (!startAfter.empty() && !rowIdAfter(m.id, startAfter))) return;
-      if (!rows.empty() && isRepeatOf(rows.back(), chain, m, zone)) {
+      if (windowEnds(m, o, zone)) return;
+      if (isJobDelivery(m.tags)) continue;   // never conversation: transparent to a run of repeats
+      if (joinsRun(rows, o, chain, zone, m)) {
         repeats.back()++;
         chain = repeatStampOf(m);
         continue;

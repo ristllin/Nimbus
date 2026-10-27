@@ -104,6 +104,7 @@ struct HistTurn {
   // tag, else sent:, else its hour) with the offset valid then. kDayUnresolved: the render
   // functions' fixed offset applies to tsHours instead.
   int32_t localDay = kDayUnresolved;
+  int32_t lastDay = kDayNone;   // the local day of the turn's latest row (the floor for what follows)
   int32_t sentOffMin = 0;  // minutes east of UTC when it was sent (the "sent hh:mm" label)
   uint32_t replyHours = 0; // the hour of the turn's last assistant row (0 = none)
   uint32_t repeats = 1;    // consecutive identical owner messages folded in (xN)
@@ -116,7 +117,15 @@ struct HistoryOptions {
   std::string startAfter;     // rows with an id at or before this are not history
   int32_t utcOffsetMin = 0;   // local day markers and send times (a fixed offset)
   OffsetAt utcOffsetAt;       // the offset valid at a unix time; when set it replaces utcOffsetMin
+  // The local day of the row the window starts after (the soft start or fold anchor): a turn
+  // never starts below it, so the days of a window do not depend on the turns before it.
+  // kDayNone = no such row. The history reader sets it; historyTurns uses it.
+  int32_t dayFloor = kDayNone;
 };
+
+// The local day a row is told at (its at:/sent: second refining its hour, the offset valid
+// then); kDayNone for a row stored before the clock was set.
+int32_t rowLocalDay(const nimbus::orch::EpisodicMessage& m, const OffsetAt& zone);
 
 // The offset source `o` names: utcOffsetAt when set, else the fixed utcOffsetMin.
 OffsetAt localZone(const HistoryOptions& o);

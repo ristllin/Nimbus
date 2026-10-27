@@ -287,6 +287,7 @@ struct Building {
   std::vector<const EpisodicMessage*> asst;
   std::string key;                            // what an assistant row's turn: tag names
   std::string firstId, lastId;
+  const EpisodicMessage* lastRow = nullptr;   // the row lastId names
   size_t rows = 0;
   uint32_t repeats = 1;
   bool seedless = false;
@@ -294,7 +295,10 @@ struct Building {
 
   void note(const EpisodicMessage& m) {
     if (firstId.empty() || rowIdAfter(firstId, m.id)) firstId = m.id;
-    if (lastId.empty() || rowIdAfter(m.id, lastId)) lastId = m.id;
+    if (lastId.empty() || rowIdAfter(m.id, lastId)) {
+      lastId = m.id;
+      lastRow = &m;
+    }
     rows++;
   }
 };
@@ -395,9 +399,9 @@ HistTurn finish(const Building& b, const OffsetAt& zone) {
   if (!head && !b.asst.empty()) head = b.asst.front();
   if (head) {
     t.tsHours = head->tsHours;
-    const uint32_t at = placedSecond(*head);
-    t.localDay = at ? (int32_t)localDaySec(at, zone) : kDayNone;
+    t.localDay = rowLocalDay(*head, zone);
   }
+  if (b.lastRow) t.lastDay = rowLocalDay(*b.lastRow, zone);
   if (b.userRow) {
     t.sentUnix = toU32(tagValue(b.userRow->tags, kSentTag));
     t.atUnix = toU32(tagValue(b.userRow->tags, kAtTag));
@@ -564,6 +568,7 @@ void collapseTurns(std::vector<HistTurn>& turns, const OffsetAt& zone) {
       last->assistant = t.assistant;
       last->did = t.did;
       last->replyHours = t.replyHours;
+      last->lastDay = t.lastDay;
       chain = mine;
       continue;
     }
@@ -575,13 +580,13 @@ void collapseTurns(std::vector<HistTurn>& turns, const OffsetAt& zone) {
 
 // A turn without a stamp on its first row (an on-device voice row, a reply nobody asked for) is
 // told at the start of its hour, which in a half-hour zone can fall on the day before the turn
-// that precedes it. Days never run backwards: the marker would step back a day and repeat.
-void keepDaysForward(std::vector<HistTurn>& turns) {
-  int32_t floorDay = kDayNone;   // below every real day
+// that precedes it. Days never run backwards: the marker would step back a day and repeat. The
+// floor is the latest day any earlier row was told at, starting from the row the window starts
+// after (`floorDay`), so a window's days do not change when its start moves.
+void keepDaysForward(std::vector<HistTurn>& turns, int32_t floorDay) {
   for (HistTurn& t : turns) {
-    if (t.localDay == kDayNone) continue;   // no date stays no date
-    if (t.localDay < floorDay) t.localDay = floorDay;
-    else floorDay = t.localDay;
+    if (t.localDay != kDayNone && t.localDay < floorDay) t.localDay = floorDay;   // no date stays no date
+    floorDay = std::max(floorDay, std::max(t.localDay, t.lastDay));   // kDayNone is below every real day
   }
 }
 
@@ -633,6 +638,11 @@ std::vector<std::string> splitRefs(const std::string& joined) {
 
 void spillToPsram(std::string& s) {
   if (s.capacity() > std::string().capacity() && s.capacity() < kSpillBytes) s.reserve(kSpillBytes);
+}
+
+int32_t rowLocalDay(const EpisodicMessage& m, const OffsetAt& zone) {
+  const uint32_t at = placedSecond(m);
+  return at ? (int32_t)localDaySec(at, zone) : kDayNone;
 }
 
 OffsetAt fixedZone(int32_t utcOffsetMin) {
@@ -688,7 +698,7 @@ std::vector<HistTurn> historyTurns(const std::vector<EpisodicMessage>& newestFir
   turns.reserve(g.turns.size());
   for (const Building& b : g.turns) turns.push_back(finish(b, zone));
   collapseTurns(turns, zone);
-  keepDaysForward(turns);
+  keepDaysForward(turns, opt.dayFloor);
   return turns;
 }
 

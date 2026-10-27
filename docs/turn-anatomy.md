@@ -266,15 +266,19 @@ called by the engine for every turn:
   the device's time zone re-tells every earlier turn in the new zone, once. A row
   stored before this tag existed keeps only its hour: its day is told at the start
   of that hour, and never earlier than the turn before it (days do not run
-  backwards, so a half-hour zone cannot repeat a day). A row stored before the
-  clock was set has no date and opens no marker.
+  backwards, so a half-hour zone cannot repeat a day). A history that starts after
+  a fold or an overflow shift tells its days from the row it starts after, so they
+  match the full history. A row stored before the clock was set has no date and
+  opens no marker.
 - **Repeats collapse.** Consecutive identical owner messages with nothing
   answered in between are one line with a count: `- user (x37): ...`. Only
   messages sent close together on one local day fold: within 2 minutes of the
   message before it when both carry a time to the second, else in the same hour
   (and never when that hour holds a local midnight, as in a half-hour zone). A
   steady run, each message 50 seconds after the last, is one line however long it
-  grows, and an earlier line never changes as the run grows. The same message sent
+  grows, and an earlier line never changes as the run grows. A job's output
+  between two of the messages does not break the run, and the message being
+  answered never joins it. The same message sent
   yesterday and again today, or a minute either side of local midnight, stays
   two lines under their own days.
 - **Append-only between boundaries.** A closed turn's bytes depend only on its

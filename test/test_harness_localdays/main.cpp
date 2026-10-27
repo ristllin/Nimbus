@@ -76,8 +76,9 @@ struct Chat {
     if (stamp) tags += ",at:" + std::to_string(sec);
     return add("user", text, sec, tags);
   }
-  void reply(const std::string& turnId, const std::string& text, uint32_t sec) {
-    add("assistant", text, sec, "fx:none,out:reply,turn:" + turnId);
+  std::string reply(const std::string& turnId, const std::string& text, uint32_t sec, bool stamp = false) {
+    return add("assistant", text, sec,
+               "fx:none,out:reply,turn:" + turnId + (stamp ? ",at:" + std::to_string(sec) : std::string()));
   }
   std::vector<EpisodicMessage> newestFirst() const {
     return std::vector<EpisodicMessage>(rows.rbegin(), rows.rend());
@@ -390,24 +391,86 @@ static void test_days_never_run_backwards_for_a_turn_without_a_stamp() {
   const std::string w = c.block(agent::fixedZone(330));
   TEST_ASSERT_EQUAL_MESSAGE(1, (int)count(w, "(Tue 27 Oct)"), w.c_str());
   TEST_ASSERT_EQUAL_MESSAGE(0, (int)count(w, "(Mon 26 Oct)"), w.c_str());
-  // The class: whatever mix of stamped and unstamped turns, the days never decrease.
-  Chat mix;
-  uint32_t s = utc(2026, 10, 25, 12, 0, 0);
-  for (int i = 0; i < 60; i++, s += 1777u) {
-    if (i % 3 == 1) mix.add("user", "[voice note]", s, "from:Roy", MsgKind::Audio, "/mem/blobs/00000000abc0" + std::to_string(10 + i) + ".ogg");
-    else mix.user("m" + std::to_string(i), s, i % 3 != 2);
-  }
-  for (const int32_t off : {330, 345, -210, 60, 0}) {
-    const auto t = mix.turns(agent::fixedZone(off));
-    for (size_t k = 1; k < t.size(); k++)
-      TEST_ASSERT_TRUE_MESSAGE(t[k].localDay >= t[k - 1].localDay, std::to_string(off).c_str());
-  }
   // A turn stored before the clock was set stays undated and does not lift the floor.
   Chat boot;
   boot.user("early", 5 * 3600u, false);
   boot.user("later", a);
   const auto bt = boot.turns(agent::fixedZone(0));
   TEST_ASSERT_EQUAL_INT32(agent::kDayNone, bt[0].localDay);
+}
+
+// The class: whatever mix of stamped and unstamped turns, in whatever zone, the days never
+// decrease, never fall below what a turn's own stamp or hour tells, and are raised only where
+// an hour holds a local midnight. Steps of 5 to 20 minutes with a repeatable generator, so
+// unstamped rows land in the half hour after a local midnight; the clamp must actually fire.
+static void test_days_never_decrease_whatever_mix_of_stamped_and_unstamped_turns() {
+  for (const int32_t off : {330, 345, -210, 765, 60, 0}) {
+    int raised = 0;
+    for (uint32_t seed = 1; seed <= 6; seed++) {
+      Chat mix;
+      std::vector<int32_t> own;   // each row's day as its own stamp, or its hour, tells it
+      uint32_t s = utc(2026, 10, 25, 9, 0, 0) + seed * 777u, rnd = seed * 2654435761u;
+      for (int i = 0; i < 160; i++) {
+        rnd = rnd * 1664525u + 1013904223u;
+        s += 300u + (rnd >> 8) % 901u;
+        const bool voice = (rnd >> 4) % 3 == 1;
+        const bool stamped = !voice && (rnd >> 6) % 4 != 0;
+        if (voice)
+          mix.add("user", "[voice note] " + std::to_string(i), s, "from:Roy", MsgKind::Audio,
+                  "/mem/blobs/00000000abc" + std::to_string(1000 + i) + ".ogg");
+        else
+          mix.user("m" + std::to_string(i), s, stamped);
+        const uint32_t placed = stamped ? s : (s / 3600u) * 3600u;
+        own.push_back((int32_t)(((int64_t)placed + (int64_t)off * 60) / 86400));
+      }
+      const auto t = mix.turns(agent::fixedZone(off));
+      TEST_ASSERT_EQUAL(160, (int)t.size());
+      for (size_t k = 0; k < t.size(); k++) {
+        TEST_ASSERT_TRUE_MESSAGE(t[k].localDay >= own[k], std::to_string(off).c_str());
+        if (k) TEST_ASSERT_TRUE_MESSAGE(t[k].localDay >= t[k - 1].localDay, std::to_string(off).c_str());
+        raised += t[k].localDay > own[k] ? 1 : 0;
+      }
+    }
+    const bool wholeHours = off % 60 == 0;   // a whole-hour zone has no ambiguous hour: nothing to raise
+    char msg[48];
+    snprintf(msg, sizeof(msg), "zone %d raised %d", (int)off, raised);
+    if (wholeHours) TEST_ASSERT_EQUAL_MESSAGE(0, raised, msg);
+    else TEST_ASSERT_TRUE_MESSAGE(raised > 0, msg);
+  }
+}
+
+// A window does not depend on the turns before it. The history starts after a soft start or a fold
+// anchor, so its first turn has no turn before it; its days start from the day of the row it
+// starts after (the window's dayFloor), which is the same floor the full list gives it. India:
+// 18:40 UTC is 00:10 Tuesday, and a voice row stored in hour 18 is told Monday on its own.
+static void test_a_window_starts_from_the_day_of_the_row_before_it() {
+  const uint32_t h18 = utc(2026, 10, 26, 18, 0, 0);
+  Chat c;
+  const std::string a = c.user("first", h18 + 20 * 60);                            // 23:50 Monday
+  c.reply(a, "ok", h18 + 21 * 60, true);
+  const std::string b = c.user("second", h18 + 40 * 60);                           // 00:10 Tuesday
+  const std::string rb = c.reply(b, "ok", h18 + 41 * 60, true);
+  c.add("user", "[voice note] hi", h18 + 45 * 60, "from:Roy", MsgKind::Audio, "/mem/blobs/00000000abc00007.ogg");
+  c.user("third", h18 + 55 * 60);
+  const agent::OffsetAt india = agent::fixedZone(330);
+  const int32_t tue = (int32_t)daysFromCivil(2026, 10, 27), mon = tue - 1;
+  const auto full = c.turns(india);
+  TEST_ASSERT_EQUAL(4, (int)full.size());
+  TEST_ASSERT_EQUAL_INT32(tue, full[2].localDay);   // the voice row, told Tuesday by the turn before it
+  // The window after the second exchange: the same days, with the floor read from the row it starts after.
+  agent::HistoryOptions o;
+  o.utcOffsetAt = india;
+  o.startAfter = rb;
+  for (const auto& m : c.rows)
+    if (m.id == rb) o.dayFloor = agent::rowLocalDay(m, india);
+  TEST_ASSERT_EQUAL_INT32(tue, o.dayFloor);
+  const auto win = agent::historyTurns(c.newestFirst(), o);
+  TEST_ASSERT_EQUAL(2, (int)win.size());
+  TEST_ASSERT_EQUAL_INT32(full[2].localDay, win[0].localDay);
+  TEST_ASSERT_EQUAL_INT32(full[3].localDay, win[1].localDay);
+  // Counter-test: without the floor the window's first turn is Monday again.
+  o.dayFloor = agent::kDayNone;
+  TEST_ASSERT_EQUAL_INT32(mon, agent::historyTurns(c.newestFirst(), o)[0].localDay);
 }
 
 // What may fold: the 120 s window is closed at its edge (120 s folds, 121 s does not), a replay
@@ -597,6 +660,8 @@ int main(int, char**) {
   RUN_TEST(test_hour_only_repeats_do_not_fold_across_a_possible_midnight);
   RUN_TEST(test_a_run_of_repeats_stays_one_group_and_never_re_splits);
   RUN_TEST(test_days_never_run_backwards_for_a_turn_without_a_stamp);
+  RUN_TEST(test_days_never_decrease_whatever_mix_of_stamped_and_unstamped_turns);
+  RUN_TEST(test_a_window_starts_from_the_day_of_the_row_before_it);
   RUN_TEST(test_repeat_window_edge_and_stamp_sources);
   RUN_TEST(test_the_process_zone_rule_gives_the_offset_in_force_at_each_time);
   RUN_TEST(test_history_stays_append_only_across_a_clock_change);
