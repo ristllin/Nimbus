@@ -73,8 +73,15 @@ struct CaptionResult {
   std::string model;
   int status = 0;            // that refusal's HTTP status (0 = none)
   std::string words;         // plain words for the label: never a body, a key or a URL
-  nimbus::orch::TokenUsage usage;   // what the answering provider billed
+  nimbus::orch::TokenUsage usage;   // what every provider tried billed, summed
   int requests = 0;          // requests sent (one per provider tried)
+  // Lane QW4: each provider tried that billed, on its own provider and model (a request
+  // with no answer counts its estimate there, not on the provider that answered).
+  struct Spend {
+    std::string provider, model;
+    nimbus::orch::TokenUsage usage;
+  };
+  std::vector<Spend> spends;
 };
 
 struct CaptionDeps {

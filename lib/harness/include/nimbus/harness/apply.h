@@ -111,6 +111,9 @@ struct ApplyDeps {
   // the refusal already reached the owner and the head).
   std::function<bool(const nimbus::orch::Spawn&, const std::string& chatId, bool quiet)> enqueueSpawn;
   std::function<bool(const std::string& id)> cancelSession;
+  // Lane QW4 (CUM-774): true when that stop is not yet confirmed by the provider (the
+  // job stays tracked and its cancel is asked again). Nullable: then "Stopped".
+  std::function<bool(const std::string& id)> sessionStopping;
   std::function<void(const std::string& firstTag)> awaitTag;  // aim round-robin + poll now
   std::function<void()> noteSpawned;                          // dispatch-now nudge
 

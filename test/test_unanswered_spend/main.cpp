@@ -7,6 +7,7 @@
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/vision_caption.h"
+#include "nimbus/harness/websearch.h"
 #include "nimbus/orch/model_price_defaults.h"
 #include "nimbus/orch/seam_meter.h"
 #include "nimbus/orch/spend_ceiling.h"
@@ -156,6 +157,62 @@ static void test_an_in_request_sub_on_the_custom_endpoint_is_counted_as_custom()
   TEST_ASSERT_EQUAL_STRING("cumulo", wire::estimateRoute(pd, "evil.example", "/v1/chat/completions", "m").provider.c_str());
 }
 
+// The Z.ai head borrows the custom adapter (its base set to the Z.ai host): its estimate
+// is Z.ai's (price and monthly limit), never "custom" priced by the owner's own endpoint.
+static void test_a_head_borrowing_the_custom_adapter_is_filed_on_its_provider() {
+  FakeProviderDeps d;
+  d.custBase = "https://api.z.ai";
+  auto pd = d.contract();
+  const orch::SeamRoute r = wire::estimateRoute(pd, "api.z.ai", "/api/paas/v4/chat/completions", "glm-5.3");
+  TEST_ASSERT_EQUAL_STRING("zai", r.provider.c_str());
+  TEST_ASSERT_EQUAL_STRING("glm-5.3", r.model.c_str());
+  d.custBase = "https://api.openai.com";   // an official host as the custom base: that provider
+  auto po = d.contract();
+  TEST_ASSERT_EQUAL_STRING("openai", wire::estimateRoute(po, "api.openai.com", "/v1/chat/completions", "m").provider.c_str());
+}
+
+// An Anthropic sub whose starting turn got no answer may be running with no job id to
+// poll or stop it: the session is interrupted at once, and the confirmed interrupt reads
+// the session back and counts what it used (beside the turn's own estimate).
+static void test_an_anthropic_turn_with_no_answer_interrupts_its_session() {
+  providers::antForgetIds();
+  FakeProviderDeps d;
+  d.antEnv = "env_1";
+  d.antAgents = "claude-sonnet-5=ag_1;";
+  d.http.script.push_back({"", "/v1/sessions", 200, "{\"id\":\"sess_1\"}"});
+  d.http.script.push_back(harness_test::transportCut(2000, "no response"));
+  d.http.script.push_back({"", "/v1/sessions/sess_1/events", 200, "{\"data\":[]}"});
+  d.http.script.push_back({"", "/v1/sessions/sess_1", 200,
+                           "{\"id\":\"sess_1\",\"agent\":{\"model\":{\"id\":\"claude-sonnet-5\"}},"
+                           "\"usage\":{\"input_tokens\":900,\"output_tokens\":40}}"});
+  auto pd = d.contract();
+  agent::Directive dir{};
+  dir.instruction = "research tea";
+  char job[72] = {};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Timeout, (int)providers::antDispatch(pd, "claude-sonnet-5", dir, job));
+  TEST_ASSERT_EQUAL(4, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(d.http.seen[2].body.find("user.interrupt") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("GET", d.http.seen[3].method.c_str());
+  TEST_ASSERT_EQUAL(2, (int)g_meter.size());
+  TEST_ASSERT_EQUAL((int)orch::SpendSeam::Wire, (int)g_meter[0].seam);   // the turn's estimate
+  TEST_ASSERT_EQUAL_STRING("anthropic", g_meter[0].provider.c_str());
+  TEST_ASSERT_EQUAL_UINT32(estimateOf(d.http.seen[1]), g_meter[0].in);
+  TEST_ASSERT_EQUAL((int)orch::SpendSeam::Sub, (int)g_meter[1].seam);    // the session read back
+  TEST_ASSERT_EQUAL_STRING("claude-sonnet-5", g_meter[1].model.c_str());
+  TEST_ASSERT_EQUAL_UINT32(900, g_meter[1].in);
+  TEST_ASSERT_EQUAL_UINT32(40, g_meter[1].out);
+  // A turn that never left starts nothing: no interrupt.
+  providers::antForgetIds();
+  FakeProviderDeps u;
+  u.antEnv = "env_1";
+  u.antAgents = "claude-sonnet-5=ag_1;";
+  u.http.script.push_back({"", "/v1/sessions", 200, "{\"id\":\"sess_2\"}"});
+  u.http.script.push_back(harness_test::transportCut(0, "head write failed"));
+  auto pu = u.contract();
+  providers::antDispatch(pu, "claude-sonnet-5", dir, job);
+  TEST_ASSERT_EQUAL(2, (int)u.http.seen.size());
+}
+
 // The caption step (its own transport, not the wire): a photo sent with no answer counts
 // its estimate in the caption's billed usage, the photo at the image estimate.
 static void test_a_caption_with_no_answer_is_counted() {
@@ -182,6 +239,54 @@ static void test_a_caption_with_no_answer_is_counted() {
   TEST_ASSERT_EQUAL_UINT32(one * (uint32_t)http.seen.size(), r.usage.promptTokens);
   TEST_ASSERT_TRUE(r.usage.promptTokens >= orch::kImageEstimateChars / 2);   // the photo counts
   TEST_ASSERT_EQUAL_UINT32(0, r.usage.completionTokens);
+  // Each attempt is filed on the provider it went to.
+  uint32_t filed = 0;
+  for (const auto& sp : r.spends) {
+    TEST_ASSERT_EQUAL_STRING("openai", sp.provider.c_str());
+    filed += sp.usage.promptTokens;
+  }
+  TEST_ASSERT_EQUAL_UINT32(r.usage.promptTokens, filed);
+}
+
+// Two providers tried, neither answered: each estimate stays on its own provider (never
+// summed onto the last or the best one), so each is priced and limited as its own.
+static void test_caption_attempts_are_filed_on_their_own_providers() {
+  harness_test::FakeHttpTransport http;
+  for (int i = 0; i < 6; ++i) http.script.push_back(harness_test::transportCut(0, "no response"));
+  vision::CaptionDeps deps;
+  deps.http = &http;
+  deps.key = [](const std::string& p) { return p == "openai" || p == "anthropic" ? "key-" + p : std::string(); };
+  deps.priority = [] { return std::string("openai,anthropic"); };
+  deps.nowMs = [] { return (uint32_t)7000; };
+  const uint8_t photo[6] = {0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10};
+  vision::CaptionRequest in;
+  in.bytes = photo;
+  in.len = sizeof photo;
+  in.mime = "image/jpeg";
+  const vision::CaptionResult r = vision::caption(deps, in);
+  TEST_ASSERT_TRUE(r.text.empty());
+  bool sawOpenai = false, sawAnthropic = false;
+  for (const auto& sp : r.spends) {
+    sawOpenai = sawOpenai || sp.provider == "openai";
+    sawAnthropic = sawAnthropic || sp.provider == "anthropic";
+    TEST_ASSERT_TRUE(sp.usage.promptTokens >= orch::kImageEstimateChars / 2);
+  }
+  TEST_ASSERT_TRUE(sawOpenai);
+  TEST_ASSERT_TRUE(sawAnthropic);
+}
+
+// A web search sent with no answer (or answered 2xx and cut) may have been billed: the
+// result says so, and the tool counts it like a search (test_spend_seams pins the count).
+static void test_a_search_with_no_answer_is_marked_billed() {
+  harness_test::FakeHttpTransport http;
+  http.script.push_back(harness_test::transportCut(0, "no response"));
+  TEST_ASSERT_TRUE(agent::websearch::search(http, "k", "tea", 3).billed);
+  harness_test::FakeHttpTransport refused;
+  refused.script.push_back({"", "", 429, "{\"detail\":{\"error\":\"quota\"}}"});
+  TEST_ASSERT_FALSE(agent::websearch::search(refused, "k", "tea", 3).billed);
+  harness_test::FakeHttpTransport unsent;
+  unsent.script.push_back(harness_test::transportCut(0, "connect failed"));
+  TEST_ASSERT_FALSE(agent::websearch::search(unsent, "k", "tea", 3).billed);
 }
 
 // ---- the counter-tests -------------------------------------------------------------------
@@ -224,7 +329,11 @@ int main(int, char**) {
   RUN_TEST(test_a_head_round_with_no_answer_is_counted);
   RUN_TEST(test_a_sub_dispatch_with_no_answer_is_counted);
   RUN_TEST(test_an_in_request_sub_on_the_custom_endpoint_is_counted_as_custom);
+  RUN_TEST(test_a_head_borrowing_the_custom_adapter_is_filed_on_its_provider);
+  RUN_TEST(test_an_anthropic_turn_with_no_answer_interrupts_its_session);
   RUN_TEST(test_a_caption_with_no_answer_is_counted);
+  RUN_TEST(test_caption_attempts_are_filed_on_their_own_providers);
+  RUN_TEST(test_a_search_with_no_answer_is_marked_billed);
   RUN_TEST(test_refused_or_unsent_requests_count_nothing);
   return UNITY_END();
 }

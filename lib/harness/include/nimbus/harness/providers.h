@@ -404,6 +404,9 @@ void configureRouterCompatHead(ProviderDeps& pd, const std::string& upstream,
 FabricErr antDispatch(const ProviderDeps& pd, const char* defaultModel,
                       const Directive& d, char outJobId[72]);
 FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env);
+// Cancels (antCancel, oaiCancel): Ok on any 2xx, NotFound when the provider no longer
+// has the job (404, 410: nothing left running), else RemoteFail (lane QW4: the job engine
+// keeps a job whose cancel was not confirmed and asks again).
 FabricErr antCancel(const ProviderDeps& pd, const char* jobId);
 FabricErr antAnswer(const ProviderDeps& pd, const char* jobId, const char* userText);
 // Drop the boot-lifetime RAM copy of the managed-agent ids; the next dispatch

@@ -639,8 +639,10 @@ struct LoopbackRedirect : agent::HttpTransport {
   DaemonHttpTransport curl;
   int port = 0;
   int calls = 0;
+  std::string lastBody;   // the last request's body (lane QW4: the interrupt after a cut turn)
   bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
     ++calls;
+    lastBody = req.body;
     agent::HttpRequest r = req;   // the path, headers and body exactly as the rig built them
     r.host = "127.0.0.1";
     r.port = uint16_t(port);
@@ -694,7 +696,12 @@ static void testCutSubMayHaveStarted(ndtest::Ctx& c) {
     c.ok(has(notes, "'glm-notes' may have started"), who + ": the note says the sub may have started (got \"" + notes + "\")");
     c.ok(maybe, who + ": the head is told the run may have started");
     rig.jobs().pump();   // a later pump must not send the paid work again
-    c.eqi((long)tx.calls, calls, who + ": nothing is dispatched again");
+    // Lane QW4 (CUM-776): the Anthropic turn that got no answer is followed by the
+    // session's interrupt (the run may have started with no job id to stop it): a stop,
+    // never the paid work again.
+    const long stops = who == "anthropic" ? 1 : 0;
+    c.eqi((long)tx.calls, calls + stops, who + ": nothing is dispatched again");
+    if (stops) c.ok(has(tx.lastBody, "user.interrupt"), who + ": the one request after the cut interrupts the session");
   }
   clearEnv();
 }

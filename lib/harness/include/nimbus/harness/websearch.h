@@ -25,6 +25,9 @@ struct Result {
   bool        ok = false;
   std::string digest;  // model-facing text: answer + top hits
   std::string err;     // NAMES the cause when !ok - never a catch-all
+  // Lane QW4 (CUM-776): the provider may have billed the call: it answered 2xx (whole or
+  // not), or the request went out and no answer came back. Counted like a search.
+  bool        billed = false;
 };
 
 // One search round-trip. `maxResults` is clamped to [1,10].

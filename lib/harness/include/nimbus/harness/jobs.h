@@ -242,6 +242,9 @@ class JobEngine {
   int pump();
 
   bool cancel(const char* tagOrJobId);
+  // Lane QW4 (CUM-774): true while a job's stop is asked but not yet confirmed by its
+  // provider (the job stays tracked, its cancel asked again, its spend counted).
+  bool stopping(const char* tagOrJobId) const;
   // Aim the round-robin at the awaited tag + poll now (turn `await[0]`).
   void awaitTag(const std::string& firstTag);
   std::vector<nimbus::orch::SessionInfo> sessionInfos() const;
@@ -506,15 +509,21 @@ class JobEngine {
   JobWatch& watchFor(const char* tag);   // find-or-claim (evicts a free/stale slot)
   const JobWatch* watchFind(const char* tag) const;   // nullptr: no watch for it
   void watchClear(const char* tag);
-  // Lane QW4 (CUM-774, CUM-778): stop a job on its provider (true: confirmed and
-  // finished; false: kept, the cancel asked again later); finish a stopped job; stop
-  // the helpers a spend freeze paused (one message per chat).
+  // Lane QW4 (CUM-774, CUM-778): stop a job on its provider (true: confirmed or gone,
+  // and finished; false: kept, the cancel asked again later); mark a job to stop at the
+  // next pump; one poll of a job being stopped; finish and count a stopped job; stop the
+  // helpers a spend freeze paused (one message per chat).
   bool stopJob(const nimbus::orch::JobRecord& rec);
+  void markStopping(const nimbus::orch::JobRecord& rec);
+  bool pollStopping(const nimbus::orch::JobRecord& rec, FabricErr err);
+  bool stoppingGaveUp(const nimbus::orch::JobRecord& rec);
+  void countStopped(const nimbus::orch::JobRecord& rec, bool ended);
   void finishStopped(const nimbus::orch::JobRecord& rec);
   void stopFrozenHelpers();
-  std::vector<nimbus::orch::JobRecord> frozenHelpers() const;
+  std::vector<nimbus::orch::JobRecord> frozenHelpers(bool ceiling) const;
   void retryDueCancels();
-  uint32_t frozenCheckAt_ = 0;
+  uint32_t frozenCheckedAt_ = 0;
+  bool frozenChecked_ = false;
 
   std::vector<PendingSpawn> pending_;
   uint32_t nextDispatchAt_ = 0;

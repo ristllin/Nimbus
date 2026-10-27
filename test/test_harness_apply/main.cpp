@@ -709,6 +709,27 @@ static void test_session_ops_spawn_terminate_tell() {
   TEST_ASSERT_TRUE(r.pendingMem.find("'tell' isn't supported") != std::string::npos);
 }
 
+// Lane QW4 (CUM-774): a stop the provider has not confirmed is never reported as done.
+static void test_an_unconfirmed_terminate_is_not_reported_as_stopped() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  d.sessionStopping = [](const std::string& id) { return id == "job0042"; };
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  Turn t;
+  nimbus::orch::SessionOp term;
+  term.op = "terminate";
+  term.id = "job0042";
+  t.session_ops.push_back(term);
+  t.reply = "ok";
+  agent::applyTurn(t, "1001", d, st, spawned);
+  TEST_ASSERT_EQUAL_STRING("job0042", r.cancelled[0].c_str());
+  const std::string said = r.delivered[0].second;
+  TEST_ASSERT_TRUE(said.find("Asked the provider to stop job0042.") == 0);
+  TEST_ASSERT_TRUE(said.find("not confirmed yet") != std::string::npos);
+  TEST_ASSERT_TRUE(said.find("Stopped") == std::string::npos);
+}
+
 static void test_await_aims_round_robin() {
   Rec r;
   ApplyDeps d = makeDeps(r);
@@ -1374,6 +1395,7 @@ int main(int, char**) {
   RUN_TEST(test_spawn_quiet_flag_tracks_scheduled_turn);
   RUN_TEST(test_done_suppressed_after_spawn_or_tool_reply);
   RUN_TEST(test_session_ops_spawn_terminate_tell);
+  RUN_TEST(test_an_unconfirmed_terminate_is_not_reported_as_stopped);
   RUN_TEST(test_await_aims_round_robin);
   RUN_TEST(test_mem_write_and_query_dispatch_under_lock);
   RUN_TEST(test_unverified_connector_turn_refuses_mem_write);

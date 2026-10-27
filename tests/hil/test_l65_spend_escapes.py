@@ -7,12 +7,13 @@ TEST build (the SPENDSET console verb seeds the count):
      mistral-small-latest) is counted at the high estimate, never at 0: with the
      count seeded 5 cents under the ceiling, the next turn on it crosses the ceiling
      and paid calls pause; the turn after that is refused before any request.
-  2. Stopping a running OpenAI helper while paid calls are paused: the cancel goes out
+  2. A running OpenAI helper when paid calls pause: the device stops it by itself
+     (CUM-778, owner ruling: the freeze stops running paid helpers), the cancel goes out
      (no "refused - spend ceiling"), the job is read back and counted (OpenAI reports
      the tokens a cancelled run billed; 0 when it billed none), and OpenAI itself says
      the run is cancelled.
   3. The same for an Anthropic helper (a managed-agent session): the interrupt goes
-     out and the session's usage so far is counted toward the ceiling.
+     out by itself and the session's usage so far is counted toward the ceiling.
 
 Every setting a leg changes is restored in a finally: the ceiling and this month's
 count, the head, the helper order, the custom endpoint.
@@ -101,20 +102,6 @@ def _web_turn(text: str, timeout_s: int = 150):
             return 200, str(j.get("reply") or "")
         time.sleep(2.0)
     pytest.fail(f"turn {turn} was not answered within {timeout_s}s")
-
-
-def _terminate(tag: str) -> str:
-    body = json.dumps(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {"name": "session.terminate", "arguments": {"id": tag}},
-        }
-    )
-    r = _S.post(f"http://{_IP}/api/test/astool", data={"chat": "web", "body": body}, timeout=20)
-    assert r.status_code == 200, f"astool session.terminate -> {r.status_code}: {r.text[:160]}"
-    return r.text
 
 
 def _provider_get(url: str, headers: dict) -> dict:
@@ -299,8 +286,9 @@ def _spawn_helper(device, prov: str) -> tuple:
 
 
 def _cancel_under_freeze(device, prov: str, running) -> tuple:
-    """Spawn on `prov`, wait until `running(job)` says the run is under way, freeze,
-    terminate: (job id, console lines, spent before, spent after)."""
+    """Spawn on `prov`, wait until `running(job)` says the run is under way, freeze: the
+    device stops the helper by itself (CUM-778; checked every 5 s), nothing else asks.
+    (job id, console lines, spent before, spent after)."""
     _post({"subPrio": prov})
     _seed(device, f"limit {LIMIT_CENTS}")
     _seed(device, "0")
@@ -308,19 +296,18 @@ def _cancel_under_freeze(device, prov: str, running) -> tuple:
     deadline = time.time() + 90.0
     while time.time() < deadline and not running(job):
         time.sleep(3.0)
-    _seed(device, str(LIMIT_CENTS + 100))
+    device.drain(quiet=0.3)
+    before = LIMIT_CENTS + 100
+    _seed(device, str(before))
+    lines = _collect(device, r"cancelled job .* counted", 90.0)
+    for ln in lines:
+        if any(k in ln for k in ("cancel", "stopping", "refused", "counted")):
+            print(f"[l65q]   {ln}")
     st = _spend(device)
     assert st["frozen"] is True, f"the count over the ceiling did not freeze: {st}"
-    before = st["spentCents"]
-    device.drain(quiet=0.3)
-    print(f"[l65q] terminate {tag}: {_terminate(tag)[:120]}")
-    lines = _collect(device, r"cancelled job .* counted", 90.0)
-    lines += _collect(device, r"staged terminate", 5.0)  # logged right after the cancel returns
-    for ln in lines:
-        if any(k in ln for k in ("cancel", "terminate", "refused", "counted")):
-            print(f"[l65q]   {ln}")
-    after = _spend(device)["spentCents"]
-    return job, lines, before, after
+    stopping = [ln for ln in lines if f"{tag} stopping - paid calls to {prov} are paused" in ln]
+    assert stopping, f"the freeze did not stop {tag} by itself"
+    return job, lines, before, st["spentCents"]
 
 
 def _grade_cancel(job: str, lines: list, path_part: str) -> re.Match:

@@ -306,7 +306,10 @@ FabricErr oaiCancel(const ProviderDeps& pd, const char* host, const std::string&
   std::string path = std::string("/v1/responses/") + (colon + 1) + "/cancel";
   int code = exchange(pd, host, 443, true, "POST", path, oaiHeaders(key), "",
                       OAI_TIMEOUT_MS, doc, filter);
-  return (code == 200) ? FabricErr::Ok : FabricErr::RemoteFail;
+  // Lane QW4: any 2xx confirms (the wire reads the job back on the same rule); a job the
+  // provider no longer has (404, 410) has nothing left running.
+  if (code >= 200 && code < 300) return FabricErr::Ok;
+  return (code == 404 || code == 410) ? FabricErr::NotFound : FabricErr::RemoteFail;
 }
 
 // ---- multi-turn tool-use loop (ReAct) ---------------------------------------

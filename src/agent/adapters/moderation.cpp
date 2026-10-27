@@ -67,8 +67,20 @@ static ClassifierVerdict classifyMistral(const std::string& text, uint32_t acqui
   c.print(body);
 
   const uint32_t deadline = millis() + 30000;
+  // Lane QW4 (CUM-776): sent and no usable answer: it may have been billed, so the text's
+  // estimate counts (no usage to read).
+  auto meterUnanswered = [&body] {
+    nimbus::orch::meterSeamAnswer(nimbus::orch::SpendSeam::Moderation, "mistral", "mistral-moderation-latest",
+                                  ArduinoJson::JsonVariantConst(), body.length(), 0);
+  };
   String line;
-  if (!readLine(c, line, deadline)) { tlsClose(c); slot.release(); alog("moderation: no response"); return ClassifierVerdict::Error; }
+  if (!readLine(c, line, deadline)) {
+    tlsClose(c);
+    slot.release();
+    alog("moderation: no response");
+    meterUnanswered();
+    return ClassifierVerdict::Error;
+  }
   while (readLine(c, line, deadline) && line.length() > 0) {}   // skip headers
 
   // Filtered parse: only the per-category booleans of the first result (and the billed
@@ -80,7 +92,11 @@ static ClassifierVerdict classifyMistral(const std::string& text, uint32_t acqui
   DeserializationError je = deserializeJson(resp, c, ArduinoJson::DeserializationOption::Filter(filter));
   tlsClose(c);
   slot.release();
-  if (je) { alog("moderation: bad response"); return ClassifierVerdict::Error; }
+  if (je) {
+    alog("moderation: bad response");
+    meterUnanswered();
+    return ClassifierVerdict::Error;
+  }
 
   JsonObject cats = resp["results"][0]["categories"];
   if (cats.isNull()) return ClassifierVerdict::Error;   // no verdict body

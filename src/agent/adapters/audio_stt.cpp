@@ -112,6 +112,13 @@ static void noteToPark(const SttProvider& prov, bool ok, const String& err, cons
   gate::noteAnswer(prov.slug.c_str(), nimbus::orch::PaidSeam::Stt, prov.key, ok ? 200 : st, resp.c_str());
 }
 
+// Lane QW4 (CUM-776): the audio went out and no status line came back ("HTTP 0"): the
+// provider may have transcribed and billed it, so the audio's length counts.
+static void meterIfUnanswered(const SttProvider& prov, const String& err, uint32_t audioMs) {
+  if (err != String(nimbus::voice::kErrHttpPrefix) + "0") return;
+  nimbus::orch::meterTranscription(prov.slug.c_str(), prov.model, "", audioMs);
+}
+
 // Shared transcription core: multipart POST (optionally with inline prefix bytes
 // ahead of the on-disk file) -> parse {"text":...}. Returns a structured result so
 // the mic path can tell the owner WHICH thing failed (CUM-456): no network, a
@@ -155,6 +162,7 @@ static nimbus::voice::SttResult transcribeCommon(const char* localPath, const ch
           ok ? 1 : 0, err.c_str(), (unsigned)resp.length(), resp.c_str());
   noteToPark(prov, ok, err, resp);
   if (!ok) {
+    meterIfUnanswered(prov, err, nimbus::orch::audioMsEstimate(fsz, prefix != nullptr));
     // A router refusal is JSON {error:<code>} with 4xx (funding_cap_reached,
     // rate_limited, audio_duration_unknown, unsupported_media_type - the CUM-376
     // route contract). Only THOSE are reworded as a refusal line; any other body

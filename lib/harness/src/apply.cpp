@@ -551,11 +551,15 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
       enqueue(s);
     } else if (op.op == "terminate") {
       bool ok = d.cancelSession && d.cancelSession(op.id);
+      const bool pending = ok && d.sessionStopping && d.sessionStopping(op.id);
       hlog::logf("orchestrator: session terminate %s -> %s", op.id.c_str(),
-                 ok ? "ok" : "not found");
-      if (d.deliver)
-        d.deliver(chatId, ok ? ("Stopped " + op.id + ".")
-                             : ("No running session '" + op.id + "' to stop."));
+                 !ok ? "not found" : pending ? "asked, not yet confirmed" : "ok");
+      std::string said = "Stopped " + op.id + ".";
+      if (!ok) said = "No running session '" + op.id + "' to stop.";
+      else if (pending)   // lane QW4 (CUM-774): never "Stopped" before the provider confirms
+        said = "Asked the provider to stop " + op.id + ". It has not confirmed yet, so the device keeps "
+               "asking and counts what it uses until it stops.";
+      if (d.deliver) d.deliver(chatId, said);
     } else if (op.op == "list") {
       // no-op: [ACTIVE SESSIONS] is already assembled into every turn's prompt.
     } else {  // tell / poll

@@ -301,11 +301,18 @@ OpenAI or Anthropic sub (`session.terminate`, or the assistant ending it) always
 the cancel, even while paid calls are paused, and the job is read back once right after
 it (a free `GET` of the response or session) so what it spent until then is counted; a
 read that fails counts the session estimate. A cancel the provider does not confirm
-never drops the job: it stays polled (its spend counts when it ends) and the cancel is
-asked again after 30 s, doubling up to 5 minutes. When the monthly spend ceiling or a
-provider's monthly limit pauses paid calls, every sub still running on a paused
-provider's side is stopped this way and its chat gets one message naming them; raising
-the limit does not restart them. An
+never drops the job: the assistant says the stop is not confirmed yet, the job stays
+polled (its spend counts when it ends, the session estimate when it reports no tokens)
+and the cancel is asked again after 30 s, doubling up to 5 minutes, one job at a time.
+A job the provider no longer has (404) has nothing left running and ends at once. If
+the provider stops answering about a job being stopped, it is held for 6 hours (not
+the usual 15 minutes), then counted at the session estimate and dropped with a message.
+Its result is never delivered. When the monthly spend ceiling or a provider's monthly
+limit pauses paid calls, every sub still running on a paused provider's side is
+stopped this way and its chat gets one message naming them; raising the limit does not
+restart them. A hosted instance reads its ceiling directly for this. An Anthropic sub
+whose starting turn got no answer (the run may have started with no job id to follow)
+is interrupted at once, and the interrupt reads the session back and counts it. An
 OpenAI background run that ends `incomplete` keeps the text it wrote, marked
 `[the agent stopped before it finished (<reason>): this is its partial answer]`;
 with no text it fails with that reason.

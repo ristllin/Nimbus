@@ -16,6 +16,15 @@ namespace imagegen {
 
 bool available() { return store::hasOpenaiKey(); }
 
+// An image the provider billed: its reported usage when the answer holds one, else the
+// per-image price at the requested quality (lane DEF; lane QW4: also a request sent with
+// no answer, which the provider may well have generated and billed).
+static void meterImageAt(const char* model, const char* quality, const char* usage) {
+  const char* m = (model && *model) ? model : "gpt-image-1";
+  const char* q = (quality && *quality) ? quality : (strcmp(m, "gpt-image-1") == 0 ? "low" : "");
+  nimbus::orch::meterImage("openai", m, q, usage);
+}
+
 uint8_t* generateToBuffer(const String& prompt, const char* model, const char* size,
                           const char* quality, size_t& outLen, String& errOut) {
   outLen = 0;
@@ -96,6 +105,7 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
     }
     free(buf); tlsClose(c); slot.release();
     gate::noteAnswer("openai", nimbus::orch::PaidSeam::ImageGen, key, status, errb);
+    if (status == 0) meterImageAt(model, quality, nullptr);   // sent, no answer: counted (CUM-776)
     errOut = "HTTP " + String(status);
     alogf("imagegen: HTTP %d: %.140s", status, errb);
     return nullptr;
@@ -136,9 +146,7 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
     const String& src = rest.indexOf("\"usage\"") >= 0 ? rest : head;
     const int u = src.indexOf("\"usage\"");
     const int brace = u >= 0 ? src.indexOf('{', u) : -1;
-    const char* m = (model && *model) ? model : "gpt-image-1";
-    const char* q = (quality && *quality) ? quality : (strcmp(m, "gpt-image-1") == 0 ? "low" : "");
-    nimbus::orch::meterImage("openai", m, q, brace >= 0 ? src.c_str() + brace : nullptr);
+    meterImageAt(model, quality, brace >= 0 ? src.c_str() + brace : nullptr);
   }
   if (total == 0) {
     free(buf);

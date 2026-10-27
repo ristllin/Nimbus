@@ -915,6 +915,7 @@ static agent::ApplyDeps buildApplyDeps() {
     return g_jobs && g_jobs->enqueueSpawn(s, chatId, quiet);
   };
   d.cancelSession = [](const std::string& id) { return cancel(id.c_str()); };
+  d.sessionStopping = [](const std::string& id) { return g_jobs && g_jobs->stopping(id.c_str()); };
   d.awaitTag = [](const std::string& firstTag) {
     if (g_jobs) g_jobs->awaitTag(firstTag);
   };

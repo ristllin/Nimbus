@@ -224,13 +224,17 @@ inline bool isCustomHost(const ProviderDeps& pd, const char* host) {
   return !base.empty() && base == host;
 }
 
-// Where an estimate is filed: a routed request at its upstream's price (seamRouteFor), the
-// custom endpoint as "custom" (priced by its switch: a keyless local model stays free),
-// every other host by seamRouteFor (an unknown host fail-closed at the highest row).
+// Where an estimate is filed: by seamRouteFor (a routed request at its upstream's price, a
+// known provider host on that provider, even when a head borrows the custom adapter as
+// the Z.ai head does); an unknown host that is the custom endpoint as "custom" (priced by
+// its switch: a keyless local model stays free); any other host fail-closed at the
+// highest row.
 inline nimbus::orch::SeamRoute estimateRoute(const ProviderDeps& pd, const char* host, const std::string& path,
                                              const std::string& model) {
-  if (path.rfind("/router/", 0) != 0 && isCustomHost(pd, host)) return nimbus::orch::SeamRoute{"custom", model};
-  return nimbus::orch::seamRouteFor(host, path.c_str(), model.c_str());
+  nimbus::orch::SeamRoute r = nimbus::orch::seamRouteFor(host, path.c_str(), model.c_str());
+  const bool routed = path.rfind("/router/", 0) == 0;
+  if (!routed && r.provider == "cumulo" && isCustomHost(pd, host)) r.provider = "custom";
+  return r;
 }
 
 inline void meterUnanswered(const ProviderDeps& pd, const char* host, const HttpRequest& req) {

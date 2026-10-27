@@ -28,6 +28,8 @@
 #include "nimbus/orch/file_swap.h"    // whole-file replace without a moment the file is gone
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
+#include "nimbus/orch/provider_caps.h"  // LocalDate - the upsert's today
+#include "nimbus/orch/spend_ceiling.h"  // paidCallAllowed - the scan's gate before the download (lane QW4)
 #include "nimbus/orch/tool_registry.h"
 
 namespace agent::files {
@@ -1309,6 +1311,16 @@ uint64_t downloadToStore(const nimbus::orch::FetchReq& r, std::string& err) {
 // The scan path: quarantine -> magic check -> AI verdict -> promote or delete.
 void runScanFetch(nimbus::orch::FetchReq req) {
   using nimbus::orch::FetchState;
+  // Lane QW4 (CUM-777): the scan is a paid call. While the monthly spend ceiling pauses
+  // paid calls it cannot run, so nothing is downloaded (scanVerdict refuses on the same
+  // gate, fail-closed, should the freeze arrive mid-download).
+  if (!nimbus::orch::paidCallAllowed(nimbus::orch::SpendSeam::UrlFetch)) {
+    std::lock_guard<std::mutex> lk(g_fetchMx);
+    g_fetchQ.finish(req.id, FetchState::Failed,
+                    std::string("scan unavailable (") + nimbus::orch::kSpendFrozenError + ") - nothing downloaded",
+                    0);
+    return;
+  }
   // ⚠ prism: EVERY quarantine SD touch takes memory::Lock for THAT op only -
   // the same per-chunk discipline as writeChunk ("serializes with other SD
   // users"). Unlocked writes here raced tickSdHealth/promoteSd tearing the SD

@@ -106,7 +106,7 @@ bool verifyProbeAllowed(bool ownerAsked, bool frozen, bool parkOpen);
 std::string httpBodyOf(const std::string& raw);
 
 // Lane QW4 (CUM-778, owner ruling): the one message a chat gets when the spend ceiling or
-// a provider's monthly limit stopped its running helpers. `labels` are the helpers' owner
+// a provider's monthly limit stops its running helpers (sent as the stops are asked). `labels` are the helpers' owner
 // labels; `ceiling` says the overall ceiling paused them, else `providers` (display
 // names) are the ones whose limits did. Plain words, ASCII.
 std::string helpersStoppedText(const std::vector<std::string>& labels, bool ceiling,

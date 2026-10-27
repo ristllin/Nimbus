@@ -137,8 +137,15 @@ static void test_every_sub_dispatcher_reads_a_cut_by_one_rule() {
       const std::string what = std::string(dp.name) + " <- \"" + c.err + "\"" +
                                (c.wholeDeadline ? " (whole deadline)" : " (fast)");
       if (got != c.want) wrong += what + ": " + errName(got) + " want " + errName(c.want) + "; ";
-      TEST_ASSERT_EQUAL_UINT32_MESSAGE(rig.http.script.size(), rig.http.seen.size(), what.c_str());
-      const agent::HttpRequest& paid = rig.http.seen.back();
+      // Lane QW4 (CUM-776): an Anthropic turn sent with no answer is followed by the
+      // session's interrupt (the run may have started with no job id to stop it).
+      const bool interrupts =
+          std::string(dp.name) == "anthropic" && std::string(c.err).find("no response") != std::string::npos;
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(rig.http.script.size() + (interrupts ? 1 : 0), rig.http.seen.size(),
+                                       what.c_str());
+      if (interrupts)
+        TEST_ASSERT_TRUE_MESSAGE(rig.http.seen.back().body.find("user.interrupt") != std::string::npos, what.c_str());
+      const agent::HttpRequest& paid = rig.http.seen[rig.http.script.size() - 1];
       TEST_ASSERT_EQUAL_STRING_MESSAGE(dp.paidPath, paid.path.c_str(), what.c_str());
       TEST_ASSERT_EQUAL_STRING_MESSAGE("POST", paid.method.c_str(), what.c_str());
       TEST_ASSERT_EQUAL_UINT32_MESSAGE(dp.deadlineMs, paid.timeoutMs, what.c_str());

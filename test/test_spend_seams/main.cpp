@@ -201,7 +201,7 @@ const MeterRow kMeters[] = {
     {"fallback captioner", S::VisionFallback, "src/agent/adapters/image_vision.cpp", "CaptionResult read(", "addVisionSpend("},
     {"speech to text", S::Stt, "src/agent/adapters/audio_stt.cpp", "static nimbus::voice::SttResult transcribeCommon(", "meterTranscription("},
     {"text to speech", S::Tts, "src/agent/adapters/audio_tts.cpp", "size_t synthesizeToFile(", "meterSpeech("},
-    {"image generation", S::ImageGen, "src/agent/adapters/image_gen.cpp", "uint8_t* generateToBuffer(", "meterImage("},
+    {"image generation", S::ImageGen, "src/agent/adapters/image_gen.cpp", "uint8_t* generateToBuffer(", "meterImageAt("},
     {"url_fetch scan", S::UrlFetch, "src/agent/adapters/url_fetch.cpp", "int scanVerdict(", "SpendSeam::UrlFetch"},
     {"moderation", S::Moderation, "src/agent/adapters/moderation.cpp", "static ClassifierVerdict classifyMistral(", "SpendSeam::Moderation"},
     // Lane QW4 (CUM-776): a request that left and got no usable answer is counted at an
@@ -212,6 +212,27 @@ const MeterRow kMeters[] = {
      "CaptionResult askOne(", "sentRequestEstimate("},
     {"a scan with no answer", S::UrlFetch, "src/agent/adapters/url_fetch.cpp", "int scanVerdict(",
      "meterUnansweredScan(p, body.length())"},
+    // ...and every paid seam on its own transport (the review of round 2).
+    {"an image with no answer", S::ImageGen, "src/agent/adapters/image_gen.cpp", "uint8_t* generateToBuffer(",
+     "if (status == 0) meterImageAt(model, quality, nullptr)"},
+    {"speech with no answer", S::Tts, "src/agent/adapters/audio_tts.cpp", "size_t synthesizeToFile(",
+     "res.answered || res.unanswered"},
+    {"a transcription with no answer", S::Stt, "src/agent/adapters/audio_stt.cpp",
+     "static nimbus::voice::SttResult transcribeCommon(", "meterIfUnanswered(prov, err,"},
+    {"an embedding with no answer", S::Embed, "src/agent/adapters/embeddings.cpp",
+     "std::vector<int8_t> embedWith(const String& text,", "nullptr, text.length(), 0)"},
+    {"a hosted embedding with no answer", S::Embed, "nimbusd/src/rig.h",
+     "std::vector<int8_t> embedWith(const std::string& text,", "orch::sentWithoutAnswer(resp.status, httpErr)"},
+    {"a moderation with no answer", S::Moderation, "src/agent/adapters/moderation.cpp",
+     "static ClassifierVerdict classifyMistral(", "meterUnanswered();"},
+    {"a search with no answer", S::Search, "lib/harness/src/websearch.cpp", "Result search(",
+     "nimbus::orch::sentWithoutAnswer(status, err)"},
+    {"a search with no answer counted", S::Search, "lib/harness/src/websearch.cpp", "void registerWebSearchTool(",
+     "(r.ok || r.billed) && deps.recordCall"},
+    {"an Anthropic sub turn with no answer stops its session", S::Sub, "lib/harness/src/providers/anthropic.cpp",
+     "static FabricErr turnUnanswered(", "if (unseen) antCancel("},
+    {"a stopped helper counted", S::Sub, "lib/harness/src/jobs.cpp", "void JobEngine::countStopped(",
+     "d_.recordSpawnUsage(rec.backend, rec.model, u)"},
 };
 
 // The two sinks the meter reports reach (the device's ceiling, the hosted one's).

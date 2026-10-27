@@ -219,6 +219,7 @@ struct TtsRequest {
 struct TtsResult {
   size_t bytes = 0;
   bool   answered = false;
+  bool   unanswered = false;   // sent, no status line: it may have been billed (lane QW4, CUM-776)
 };
 
 // Send the request and stream the answer into outPath. Holds the work slot the
@@ -240,6 +241,7 @@ TtsResult requestAndStream(WiFiClientSecure& c, const TtsProvider& prov, const T
   if (status < 200 || status >= 300) {
     noteRefusal(c, prov, status, deadline, why);
     if (status == 0) setWhy(why, "the voice provider did not answer in time");
+    res.unanswered = status == 0;
     return res;
   }
   res.answered = true;
@@ -338,8 +340,9 @@ size_t synthesizeToFile(const String& text, const char* outPath,
   slot.release();
   // Lane DEF: an answered synthesis is billed per character of the text (the answer is
   // audio, with no usage), counted toward the monthly spend ceiling, even when the
-  // clip arrived cut and is not used.
-  if (res.answered) nimbus::orch::meterSpeech(prov.slug.c_str(), prov.model, text.length());
+  // clip arrived cut and is not used. Lane QW4 (CUM-776): so is a request sent with no
+  // answer (the provider may have synthesized and billed it).
+  if (res.answered || res.unanswered) nimbus::orch::meterSpeech(prov.slug.c_str(), prov.model, text.length());
   return res.bytes;
 }
 

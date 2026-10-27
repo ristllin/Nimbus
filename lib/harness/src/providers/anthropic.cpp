@@ -377,6 +377,17 @@ static std::string sessionBody(const std::string& agentId, const std::string& en
   return serializeBody(doc);
 }
 
+// Lane QW4 (CUM-776): the turn that starts the run got no answer. When it went out, the
+// run may have started with no job id to poll or stop it, so the session is interrupted
+// now (a cancel always goes out; a confirmed one reads the session back and counts what
+// it used). The dispatch's own transport verdict is returned.
+static FabricErr turnUnanswered(const ProviderDeps& pd, const std::string& sessionId, uint32_t sentAtMs) {
+  const bool unseen = wire::lastExchange().noResponse || wire::lastExchange().partial;
+  const FabricErr e = wire::subTransportErr(pd, sentAtMs, kSyncSubCeilingMs);
+  if (unseen) antCancel(pd, (std::string("anthropic:") + sessionId).c_str());
+  return e;
+}
+
 FabricErr antDispatch(const ProviderDeps& pd, const char* defaultModel,
                       const Directive& d, char outJobId[72]) {
   if (!pd.key || pd.key("anthropic").empty()) { hlog::log("anthropic: no API key"); return FabricErr::Auth; }
@@ -417,7 +428,7 @@ FabricErr antDispatch(const ProviderDeps& pd, const char* defaultModel,
   const int code = sendTurn(pd, session.id.c_str(), task.c_str(), turnDoc);
   if (code <= 0) {
     logCallFail("send turn", code, turnDoc);
-    return wire::subTransportErr(pd, t0, kSyncSubCeilingMs);
+    return turnUnanswered(pd, session.id, t0);
   }
   if (!is2xx(code)) return chainErr(d, "send turn", code, turnDoc);
 
@@ -754,7 +765,8 @@ FabricErr antCancel(const ProviderDeps& pd, const char* jobId) {
   int code = antRequest(pd, "POST", path, std::move(body), doc, filter);
   if (is2xx(code)) return FabricErr::Ok;
   logCallFail("cancel", code, doc);
-  return FabricErr::RemoteFail;
+  // Lane QW4: a session the provider no longer has (404, 410) has nothing left running.
+  return (code == 404 || code == 410) ? FabricErr::NotFound : FabricErr::RemoteFail;
 }
 
 // Recursively drop "description" keys from a schema node. Anthropic's strict

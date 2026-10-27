@@ -224,6 +224,10 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
       const bool deadlinePassed = (int32_t)(millis() - deadline) >= 0;
       err = deadlinePassed ? "timeout" : "connect failed";
       alogf("embed: no status (%s) heap=%u", err.c_str(), ESP.getFreeHeap());
+      // Lane QW4 (CUM-776): the request went out (connected, written) and no answer came
+      // back: it may have been billed, so the text's estimate counts.
+      nimbus::orch::meterSeamAnswerBody(nimbus::orch::SpendSeam::Embed, provider.c_str(), model.c_str(),
+                                        nullptr, text.length(), 0);
       return {};
     }
     if (code != 200) {

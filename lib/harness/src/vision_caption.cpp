@@ -465,12 +465,14 @@ CaptionResult caption(const CaptionDeps& d, const CaptionRequest& in) {
   worst.words = failWords(worst.fail, "", 0);
   int requests = 0;
   orch::TokenUsage billed;   // every answer billed, a failed one included
+  std::vector<CaptionResult::Spend> spends;   // ...each on its own provider (lane QW4)
   std::string billedBy;      // the first provider that refused for billing this photo
   int billedStatus = 0;
   for (const std::string& p : walkOrder(d)) {
     const CaptionResult r = tryProvider(d, p, now, in);
     requests += r.requests;
     billed += r.usage;
+    if (!r.usage.empty() || r.usage.cacheReadTokens) spends.push_back({r.provider, r.model, r.usage});
     if (r.fail == ReadFail::Billing && billedBy.empty()) {
       billedBy = p;
       billedStatus = r.status;
@@ -486,6 +488,7 @@ CaptionResult caption(const CaptionDeps& d, const CaptionRequest& in) {
   CaptionResult& out = res.text.empty() ? worst : res;
   out.requests = requests;
   out.usage = billed;
+  out.spends = spends;
   if (out.text.empty()) noteLast(d, out);
   return out;
 }

@@ -125,8 +125,10 @@ CaptionResult read(const uint8_t* bytes, size_t len, const char* mime, const Str
   in.kind = kind;
   CaptionResult r = caption(deps(), in);
   g_failWords = r.text.empty() ? String(r.words.c_str()) : String();
-  // T's per-turn spend: what the caption step billed rides the next turn's record.
-  if (!r.usage.empty()) nimbus::orch::addVisionSpend(r.provider.c_str(), r.model.c_str(), r.usage);
+  // T's per-turn spend: what the caption step billed rides the next turn's record, each
+  // provider tried on its own price and limit (lane QW4).
+  for (const CaptionResult::Spend& s : r.spends)
+    nimbus::orch::addVisionSpend(s.provider.c_str(), s.model.c_str(), s.usage);
   return r;
 }
 

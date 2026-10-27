@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "spend_ceiling_vn.h"   // lane DEF: the monthly spend ceiling (R7: hosted too)
+#include "nimbus/orch/spend_guard.h"   // lane QW4: sentWithoutAnswer - a sent embedding counts
 #include "connectors_store.h"
 #include "daemon_config.h"
 #include "daemon_http.h"
@@ -1655,6 +1656,14 @@ class NimbusdRig {
     std::string host, path, key, dialect;   // dialect: the buildEmbeddingRequest provider
     bool viaRouter = false;
   };
+  // Where an embedding's spend is filed: a routed one on the router, its upstream named.
+  struct EmbedMeter {
+    std::string provider, model;
+  };
+  static EmbedMeter embedMeterOf(const EmbedRoute& route, const std::string& provider, const std::string& model) {
+    if (!route.viaRouter) return EmbedMeter{provider, model};
+    return EmbedMeter{kCumuloSlug, provider != kCumuloSlug ? provider + "/" + model : model};
+  }
   bool embedRoute(const std::string& provider, EmbedRoute& r) const {
     const orch::EmbedRoute er = orch::embedRouteFor(provider);
     if (!er.known) return false;
@@ -1729,7 +1738,16 @@ class NimbusdRig {
     req.body = orch::buildEmbeddingRequest(route.dialect, model, text, dims);
     agent::HttpResponse resp;
     std::string httpErr;
-    if (!http_->exec(req, resp, httpErr))            { err = "connect failed"; return {}; }
+    const EmbedMeter meter = embedMeterOf(route, provider, model);
+    if (!http_->exec(req, resp, httpErr)) {
+      // Lane QW4 (CUM-776): sent and no usable answer: it may have been billed, so the
+      // text's estimate counts.
+      if (orch::sentWithoutAnswer(resp.status, httpErr))
+        orch::meterSeamAnswerBody(orch::SpendSeam::Embed, meter.provider.c_str(), meter.model.c_str(), nullptr,
+                                  text.size(), 0);
+      err = "connect failed";
+      return {};
+    }
     if (resp.status == 401 || resp.status == 403)    { err = "key rejected"; return {}; }
     if (resp.status < 200 || resp.status >= 300) {
       // Device parity (embeddings.cpp): append the provider's machine code, so a
@@ -1740,10 +1758,8 @@ class NimbusdRig {
       return {};
     }
     // Lane DEF: an answered embedding is billed (its reported usage, else an estimate).
-    const std::string meterModel =
-        route.viaRouter && provider != kCumuloSlug ? provider + "/" + model : model;
-    orch::meterSeamAnswerBody(orch::SpendSeam::Embed, route.viaRouter ? kCumuloSlug : provider.c_str(),
-                              meterModel.c_str(), resp.body.c_str(), text.size(), 0);
+    orch::meterSeamAnswerBody(orch::SpendSeam::Embed, meter.provider.c_str(), meter.model.c_str(),
+                              resp.body.c_str(), text.size(), 0);
     std::vector<float> f;
     std::string perr;
     if (!orch::parseEmbeddingResponse(resp.body.c_str(), 0, f, perr)) {
@@ -2309,6 +2325,7 @@ class NimbusdRig {
       if (!who.owner && who.ns != bgNs_) return false;
       return jobs_ && jobs_->cancel(id.c_str());
     };
+    d.apply.sessionStopping = [this](const std::string& id) { return jobs_ && jobs_->stopping(id.c_str()); };
     d.apply.awaitTag = [this](const std::string& tag) {
       if (jobs_) jobs_->awaitTag(tag);
     };

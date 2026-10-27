@@ -140,10 +140,12 @@ std::string helpersStoppedText(const std::vector<std::string>& labels, bool ceil
           " reached";
   }
   const bool one = labels.size() == 1;
-  return "Paid AI calls are paused (" + why + "), so the device stopped " +
+  return "Paid AI calls are paused (" + why + "), so the device is stopping " +
          (one ? std::string("a running helper: ") : std::to_string(labels.size()) + " running helpers: ") +
-         list + ". What " + (one ? "it" : "they") + " used until now is counted. Raising the limit does not "
-         "restart " + (one ? "it" : "them") + "; ask again if you still need the work.";
+         list + ". What " + (one ? "it uses" : "they use") + " until " + (one ? "it stops" : "they stop") +
+         " is counted, and " + (one ? "its result is" : "their results are") +
+         " not delivered. Raising the limit does not restart " + (one ? "it" : "them") +
+         "; ask again if you still need the work.";
 }
 
 bool sentWithoutAnswer(int status, const std::string& transportError) {

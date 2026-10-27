@@ -1,6 +1,7 @@
 #include "nimbus/harness/websearch.h"
 
 #include "nimbus/orch/spend_ceiling.h"   // lane DEF: the paid-call gate
+#include "nimbus/orch/spend_guard.h"     // lane QW4: sentWithoutAnswer - a sent search counts
 
 namespace agent {
 namespace websearch {
@@ -92,6 +93,7 @@ Result search(HttpTransport& http, const std::string& apiKey,
   JsonDocument doc = alloc ? JsonDocument(alloc) : JsonDocument();
   std::string err;
   const int status = http.execJson(req, doc, filter, err);
+  res.billed = (status >= 200 && status < 300) || nimbus::orch::sentWithoutAnswer(status, err);
 
   if (status == 0) {
     res.err = "network: " + (err.empty() ? std::string("transport failed") : err);
@@ -153,10 +155,12 @@ void registerWebSearchTool(nimbus::orch::ToolRegistry& reg, const WebSearchToolD
             if (!deps.search) return ToolResult::fail("web search is not wired on this build");
             const int k = a["max_results"].is<int>() ? a["max_results"].as<int>() : 5;
             Result r = deps.search(q, k);
+            // Lane QW4 (CUM-776): a call the provider may have billed counts, answered
+            // or not.
+            if ((r.ok || r.billed) && deps.recordCall) deps.recordCall();
             // Report the ACTUAL cause - one catch-all string used to send the model
             // retrying a search that could never work.
             if (!r.ok) return ToolResult::fail("web search failed: " + r.err);
-            if (deps.recordCall) deps.recordCall();
             return ToolResult::ok(r.digest);
           },
           R"({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"}},"required":["query"]})");
