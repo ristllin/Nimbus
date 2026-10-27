@@ -206,7 +206,9 @@ FabricErr oaiPoll(const ProviderDeps& pd, const char* host, const std::string& k
   env.toolRuns = 0;
   env.webRuns = 0;
   bool container = false;   // lane DEF: a code-interpreter run bills a container
+  bool worked = false;      // lane QW4: the run lists output, whatever its usage says
   for (JsonObjectConst item : doc["output"].as<JsonArrayConst>()) {
+    worked = true;
     const std::string ty = item["type"] | "";
     if (ty.size() < 5 || ty.compare(ty.size() - 5, 5, "_call") != 0) continue;
     if (env.toolRuns < 0xFFFF) env.toolRuns++;
@@ -221,6 +223,10 @@ FabricErr oaiPoll(const ProviderDeps& pd, const char* host, const std::string& k
     env.completionTokens = u.completionTokens;
     env.cacheReadTokens  = u.cacheReadTokens;    // lane DEF: cached input at its own rate
     env.cacheWriteTokens = u.cacheWriteTokens;
+    // Lane QW4 round 3: a terminal run that lists output but reports no tokens counts the
+    // session estimate (the wire's read-back rule; the stop list trusts a final poll).
+    if (nimbus::orch::isTerminal(env.state) && worked && u.empty() && !u.cacheReadTokens && !u.cacheWriteTokens)
+      env.promptTokens = nimbus::orch::kSessionInputEstimateTokens;
   }
   // Lane DEF: the web searches the sub ran bill per call, outside the usage object (the
   // tokens are filed once by the job engine from the envelope; a job is polled to its

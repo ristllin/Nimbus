@@ -77,8 +77,12 @@ std::atomic<uint64_t> g_limitView{SpendCeiling::kDefaultLimitMicro};
 std::atomic<uint64_t> g_dailyView{0};
 std::atomic<bool>     g_loadedView{false};   // the file is loaded and the park holds its freezes
 
-uint32_t monthNow() { return nimbus::orch::ceilingMonthKey(time(nullptr)); }
-nimbus::orch::LocalDate dateNow() { return nimbus::orch::localDateOf(time(nullptr)); }
+// Lane QW4 round 3 (merge review major 5): the clock, else the newest server date seen
+// plus the uptime since (a network that blocks NTP never sets the clock), so the month
+// rolls and the provisional count settles either way.
+time_t spendNow() { return (time_t)nimbus::orch::serverClock().epoch((int64_t)time(nullptr), millis()); }
+uint32_t monthNow() { return nimbus::orch::ceilingMonthKey(nimbus::orch::serverClock().epoch((int64_t)time(nullptr), millis())); }
+nimbus::orch::LocalDate dateNow() { return nimbus::orch::localDateOf(spendNow()); }
 uint32_t dayNow() {
   const nimbus::orch::LocalDate d = dateNow();
   return d.valid() ? nimbus::orch::civilDayKey(d.year, d.month, d.day) : 0;
@@ -734,13 +738,18 @@ std::string screenLine(std::string& detail) {
   return nimbus::orch::freezeScreenLine(f);
 }
 
-std::string frozenReplyFor(const std::string& chatId, bool answered) {
+std::string frozenReplyFor(const std::string& chatId, bool answered, bool owner) {
   const bool tg = nimbus::orch::deliveryChannelOf(chatId) == nimbus::orch::DeliveryChannel::Telegram;
   if (!tg || answered) return std::string();
   std::lock_guard<std::mutex> lk(g_mx);
   const bool paused = loadedLocked() && g_st.c.frozenWith(g_st.pending);
   if (!nimbus::orch::frozenReplyDue(tg, paused, answered)) return std::string();
-  return nimbus::orch::frozenReplyText(factsLocked());
+  // Round 3 (merge review 7): the owner at most once per 30 minutes, any other chat one
+  // neutral line per freeze (named by its month and ceiling).
+  static nimbus::orch::FrozenReplyThrottle throttle;   // guarded by g_mx
+  const uint32_t episode = g_st.c.monthKey * 2654435761u ^ (uint32_t)(g_st.c.limitMicro / 10000ULL);
+  if (!throttle.allow(chatId, owner, episode, millis())) return std::string();
+  return owner ? nimbus::orch::frozenReplyText(factsLocked()) : nimbus::orch::frozenReplyTextOther();
 }
 
 std::string stateJson() {

@@ -381,10 +381,16 @@ static std::string sessionBody(const std::string& agentId, const std::string& en
 // run may have started with no job id to poll or stop it, so the session is interrupted
 // now (a cancel always goes out; a confirmed one reads the session back and counts what
 // it used). The dispatch's own transport verdict is returned.
+// Round 3 (merge review blocker 1): when that interrupt is not confirmed either (it
+// failed, or the session has not stopped yet), the session id is never dropped: the job
+// engine takes it (takeUnseenRun) and keeps stopping and counting it in the background.
 static FabricErr turnUnanswered(const ProviderDeps& pd, const std::string& sessionId, uint32_t sentAtMs) {
   const bool unseen = wire::lastExchange().noResponse || wire::lastExchange().partial;
   const FabricErr e = wire::subTransportErr(pd, sentAtMs, kSyncSubCeilingMs);
-  if (unseen) antCancel(pd, (std::string("anthropic:") + sessionId).c_str());
+  if (!unseen) return e;
+  const std::string job = std::string("anthropic:") + sessionId;
+  const FabricErr stop = antCancel(pd, job.c_str());
+  if (stop != FabricErr::Ok && stop != FabricErr::NotFound) noteUnseenRun(job);
   return e;
 }
 
@@ -763,7 +769,9 @@ FabricErr antCancel(const ProviderDeps& pd, const char* jobId) {
   JsonDocument doc;
   std::string path = std::string("/v1/sessions/") + (colon + 1) + "/events";
   int code = antRequest(pd, "POST", path, std::move(body), doc, filter);
-  if (is2xx(code)) return FabricErr::Ok;
+  // Round 3: accepted, but the session has not stopped yet (or its read failed): not
+  // confirmed, so the job engine keeps it and counts it when it settles.
+  if (is2xx(code)) return wire::lastExchange().cancelUnsettled ? FabricErr::RemoteFail : FabricErr::Ok;
   logCallFail("cancel", code, doc);
   // Lane QW4: a session the provider no longer has (404, 410) has nothing left running.
   return (code == 404 || code == 410) ? FabricErr::NotFound : FabricErr::RemoteFail;

@@ -55,6 +55,10 @@ struct LastExchange {
   bool tooLarge = false;
   bool allocFailed = false;
   bool spendFrozen = false;   // lane DEF: refused before the send (monthly spend ceiling)
+  // Lane QW4 round 3: a cancel the provider accepted (2xx) whose job has not settled yet
+  // (an interrupted Anthropic session still running, or a read-back that failed): nothing
+  // was counted, and the caller reads the stop as not yet confirmed.
+  bool cancelUnsettled = false;
 };
 inline LastExchange& lastExchange() {
   static LastExchange s;
@@ -190,7 +194,7 @@ inline CancelOf cancelRequestOf(const char* method, const std::string& path, con
   return c;
 }
 
-inline void meterCancelledJob(const ProviderDeps& pd, const char* host, uint16_t port, bool tls,
+inline bool meterCancelledJob(const ProviderDeps& pd, const char* host, uint16_t port, bool tls,
                               const std::vector<std::pair<std::string, std::string>>& headers,
                               const CancelOf& c);
 
@@ -237,14 +241,20 @@ inline nimbus::orch::SeamRoute estimateRoute(const ProviderDeps& pd, const char*
   return r;
 }
 
-inline void meterUnanswered(const ProviderDeps& pd, const char* host, const HttpRequest& req) {
-  const nimbus::orch::TokenUsage u = nimbus::orch::sentRequestEstimate(req.body.size(), req.splices.size());
+inline void meterUnanswered(const ProviderDeps& pd, const char* host, const HttpRequest& req, uint32_t heldMs) {
+  nimbus::orch::UnansweredRequest ur;   // round 3: output for the time it was held, a run's start
+  ur.bodyChars = req.body.size();
+  ur.images = req.splices.size();
+  ur.heldMs = heldMs;
+  ur.outputCap = nimbus::orch::bodyOutputCap(req.body);
+  ur.startsRun = nimbus::orch::bodyStartsRun(req.path, req.body);
+  const nimbus::orch::TokenUsage u = nimbus::orch::unansweredEstimate(ur);
   const std::string model = bodyModel(req.body);
   const nimbus::orch::SeamRoute r = estimateRoute(pd, host, req.path, model);
   nimbus::orch::meterSeamUsage(nimbus::orch::SpendSeam::Wire, r.provider.c_str(), r.model.c_str(), u);
-  hlog::logf("provider: %s%s sent but no usable answer - counted at an estimate (%s %s, %u input tokens)",
+  hlog::logf("provider: %s%s sent but no usable answer - counted at an estimate (%s %s, in=%u out=%u)",
              host, req.path.c_str(), r.provider.c_str(), r.model.empty() ? "(no model)" : r.model.c_str(),
-             (unsigned)u.promptTokens);
+             (unsigned)u.promptTokens, (unsigned)u.completionTokens);
 }
 
 // Runs meterCancelledJob when exchange() returns from a confirmed cancel (every return
@@ -270,8 +280,9 @@ struct CancelMeterOnExit {
   ~CancelMeterOnExit() {
     if (cancel.kind == CancelKind::None || status < 200 || status >= 300) return;
     const LastExchange cancelled = lastExchange();
-    meterCancelledJob(pd, host, port, tls, headers, cancel);
+    const bool settled = meterCancelledJob(pd, host, port, tls, headers, cancel);
     lastExchange() = cancelled;
+    lastExchange().cancelUnsettled = !settled;
   }
 };
 
@@ -348,9 +359,11 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   // host/fake it filter-parses the scripted body string. Either way only the
   // filter-retained fields land in `doc`. Empty/garbage bodies leave doc cleared.
   std::string terr;
+  const uint32_t sentAt = pd.monoMs ? pd.monoMs() : 0;
   int status = pd.http->execJson(req, doc, filter, terr);
   // Lane QW4 (CUM-776): sent, no usable answer: counted at an estimate.
-  if (paidRequest && nimbus::orch::sentWithoutAnswer(status, terr)) meterUnanswered(pd, host, req);
+  if (paidRequest && nimbus::orch::sentWithoutAnswer(status, terr))
+    meterUnanswered(pd, host, req, pd.monoMs ? pd.monoMs() - sentAt : 0);
   lastExchange().allocFailed = terr.find("alloc failed") != std::string::npos;
   noteParkRefusal(pd, host, status, doc);
   if (status == 0) {
@@ -433,27 +446,52 @@ inline CancelledBill anthropicJobBill(const JsonDocument& doc) {
 // a job that lists output but reports no tokens, or whose read could not be made
 // (no answer, a refused key, a busy or failing provider), counts the session estimate at
 // the provider's price (fail-closed).
-inline void meterCancelledJob(const ProviderDeps& pd, const char* host, uint16_t port, bool tls,
-                              const std::vector<std::pair<std::string, std::string>>& headers,
-                              const CancelOf& c) {
-  JsonDocument filter;
-  filter["usage"] = true;
-  filter["model"] = true;
-  filter["agent"]["model"] = true;
-  filter["output"].add<JsonObject>()["type"] = true;
-  JsonDocument doc;
-  const int code = exchange(pd, host, port, tls, "GET", c.jobPath, headers, std::string(),
-                            kCancelUsageReadMs, doc, filter);
+// Round 3 (merge review blocker 2): an Anthropic interrupt is processed asynchronously and
+// a session reports its tokens once it is idle, so its read counts only when the session
+// says it stopped (idle, terminated). Still running, or not readable: nothing is counted
+// here and false is returned (the stop is not settled), so the job engine keeps the
+// helper on its stop list and counts the final usage when it settles. An OpenAI cancel
+// answers with the cancelled run itself, so its read is always final.
+inline bool sessionSettled(int code, const JsonDocument& doc) {
+  const char* st = doc["status"] | "";
+  return code == 200 && (std::strcmp(st, "idle") == 0 || std::strcmp(st, "terminated") == 0);
+}
+
+// What the read says the cancelled job billed; `estimate` set when it is the session
+// estimate (unread, or work listed with no tokens).
+inline CancelledBill cancelledBillOf(const CancelOf& c, int code, const JsonDocument& doc, bool& estimate) {
   CancelledBill b;
   if (code == 200) b = c.kind == CancelKind::Response ? openaiJobBill(doc) : anthropicJobBill(doc);
   const bool noTokens = b.u.empty() && !b.u.cacheReadTokens && !b.u.cacheWriteTokens;
   const bool unread = code <= 0 || code == 401 || code == 403 || code == 429 || code >= 500;
-  const bool estimate = unread || (code == 200 && b.worked && noTokens);
+  estimate = unread || (code == 200 && b.worked && noTokens);
   if (estimate) {
     b.u = nimbus::orch::TokenUsage{};
     b.u.promptTokens = nimbus::orch::kSessionInputEstimateTokens;   // unread or unreported: never zero
     b.u.responses = 1;
   }
+  return b;
+}
+
+inline bool meterCancelledJob(const ProviderDeps& pd, const char* host, uint16_t port, bool tls,
+                              const std::vector<std::pair<std::string, std::string>>& headers,
+                              const CancelOf& c) {
+  JsonDocument filter;
+  filter["usage"] = true;
+  filter["model"] = true;
+  filter["status"] = true;
+  filter["agent"]["model"] = true;
+  filter["output"].add<JsonObject>()["type"] = true;
+  JsonDocument doc;
+  const int code = exchange(pd, host, port, tls, "GET", c.jobPath, headers, std::string(),
+                            kCancelUsageReadMs, doc, filter);
+  if (c.kind == CancelKind::Session && !sessionSettled(code, doc)) {
+    hlog::logf("provider: interrupt of %s%s accepted, the session has not stopped yet (read %d, %s) - "
+               "counted when it does", host, c.jobPath.c_str(), code, doc["status"] | "unread");
+    return false;
+  }
+  bool estimate = false;
+  const CancelledBill b = cancelledBillOf(c, code, doc, estimate);
   const nimbus::orch::SeamRoute r = nimbus::orch::seamRouteFor(host, c.jobPath.c_str(), b.model.c_str());
   nimbus::orch::meterSeamUsage(nimbus::orch::SpendSeam::Sub, r.provider.c_str(), r.model.c_str(), b.u);
   nimbus::orch::meterSubSearchRuns(r.provider.c_str(), b.webRuns);
@@ -463,6 +501,7 @@ inline void meterCancelledJob(const ProviderDeps& pd, const char* host, uint16_t
   hlog::logf("provider: cancelled job %s%s counted (%s in=%u out=%u web=%u%s)", host, c.jobPath.c_str(),
              r.provider.c_str(), (unsigned)b.u.promptTokens, (unsigned)b.u.completionTokens,
              (unsigned)b.webRuns, estimate ? ", estimated" : "");
+  return true;
 }
 
 // ---- typed step failures (lane K) ------------------------------------------------

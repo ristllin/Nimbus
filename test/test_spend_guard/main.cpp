@@ -205,8 +205,68 @@ static void test_frozen_reply_text_is_short_plain_and_names_the_way_out() {
   TEST_ASSERT_TRUE(has(t, "1 November"));
   TEST_ASSERT_TRUE(t.size() < 320);
   for (unsigned char ch : t) TEST_ASSERT_TRUE_MESSAGE(ch >= 0x20 && ch < 0x7f, "printable ASCII only");
-  f.monthKey = 0;   // a provisional month: no date named
-  TEST_ASSERT_TRUE(has(frozenReplyText(f), "when the next month starts"));
+  // Round 3 (merge review major 5): with no clock the month cannot roll on its own, so
+  // the reply never promises "next month": it says the clock must be set first.
+  f.monthKey = 0;
+  TEST_ASSERT_FALSE(has(frozenReplyText(f), "next month"));
+  TEST_ASSERT_TRUE(has(frozenReplyText(f), "once the device's clock is set"));
+}
+
+// Round 3 (merge review 7): the paused reply is throttled. The owner's chat gets the full
+// reply at most once per 30 minutes (and again when a new freeze starts); any other chat
+// (a member, a guest, a group) one neutral line per freeze, with no amount and no steps.
+static void test_the_paused_reply_is_throttled_and_others_get_one_neutral_line() {
+  FrozenReplyThrottle th;
+  const uint32_t ep = 202610;
+  TEST_ASSERT_TRUE(th.allow("owner", true, ep, 1000));
+  TEST_ASSERT_FALSE(th.allow("owner", true, ep, 1000 + 60000));
+  TEST_ASSERT_FALSE(th.allow("owner", true, ep, 1000 + kFrozenReplyEveryMs - 1));
+  TEST_ASSERT_TRUE(th.allow("owner", true, ep, 1000 + kFrozenReplyEveryMs));
+  TEST_ASSERT_TRUE(th.allow("group", false, ep, 5000));
+  TEST_ASSERT_FALSE(th.allow("group", false, ep, 5000 + 10u * kFrozenReplyEveryMs));   // once per freeze
+  TEST_ASSERT_TRUE(th.allow("group", false, ep + 1, 9000));                           // a new freeze
+  TEST_ASSERT_TRUE(th.allow("owner", true, ep + 1, 1000 + kFrozenReplyEveryMs + 1));  // a new freeze
+  for (int i = 0; i < 40; ++i) th.allow("chat" + std::to_string(i), false, ep, 20000);   // more chats than slots
+  const std::string other = frozenReplyTextOther();
+  TEST_ASSERT_FALSE(has(other, "$"));
+  TEST_ASSERT_FALSE(has(other, "Usage"));
+  TEST_ASSERT_TRUE(has(other, "paused"));
+  for (unsigned char ch : other) TEST_ASSERT_TRUE(ch >= 0x20 && ch < 0x7f);
+  // The store asks the throttle, and main says which chat is the owner's.
+  const std::string store = bodyOf(slurp("src/agent/spend_ceiling_store.cpp"),
+                                   "std::string frozenReplyFor(const std::string& chatId, bool answered, bool owner)");
+  TEST_ASSERT_TRUE(has(store, ".allow(chatId, owner,"));
+  TEST_ASSERT_TRUE(has(store, "frozenReplyTextOther()"));
+  TEST_ASSERT_TRUE(has(bodyOf(slurp("src/main.cpp"), "static void answerIfPaused("), "agent::telegram::ownerChat()"));
+}
+
+// Round 3 (merge review major 5): a network that blocks NTP leaves the clock unset for
+// good. The newest server date the device has seen (an HTTPS Date header) plus the uptime
+// since stands in, so the month still rolls.
+static void test_a_server_date_stands_in_for_an_unset_clock() {
+  int64_t e = 0;
+  TEST_ASSERT_TRUE(parseHttpDate("Tue, 27 Oct 2026 03:10:00 GMT", e));
+  TEST_ASSERT_EQUAL_INT64(1793070600LL, e);
+  TEST_ASSERT_TRUE(parseHttpDate("Sun, 01 Nov 2026 00:00:00 GMT", e));
+  TEST_ASSERT_EQUAL_INT64(1793491200LL, e);
+  TEST_ASSERT_FALSE(parseHttpDate("not a date", e));
+  TEST_ASSERT_FALSE(parseHttpDate("Tue, 27 Foo 2026 03:10:00 GMT", e));
+  TEST_ASSERT_FALSE(parseHttpDate("Tue, 27 Oct 1999 03:10:00 GMT", e));   // before any valid clock
+  ServerClock c;
+  TEST_ASSERT_EQUAL_INT64(0, c.epoch(0, 5000));                 // no clock, no server date
+  TEST_ASSERT_EQUAL_INT64(1793491200LL, c.epoch(1793491200LL, 5000));   // a set clock wins
+  c.note(1793070600LL, 10000);
+  TEST_ASSERT_EQUAL_INT64(1793070600LL + 50, c.epoch(0, 60000));        // the server date + the uptime since
+  c.note(1793070000LL, 70000);                                  // an older date never moves it back
+  TEST_ASSERT_EQUAL_INT64(1793070600LL + 60, c.epoch(0, 70000));
+  TEST_ASSERT_EQUAL_UINT32(202610u, ceilingMonthKey((time_t)c.epoch(0, 70000)));
+  // Five days later (no NTP all the while) it is November: the month rolls.
+  TEST_ASSERT_EQUAL_UINT32(202611u, ceilingMonthKey((time_t)c.epoch(0, 70000u + 5u * 86400000u)));
+  // The device feeds it and the store reads it.
+  const std::string st = slurp("src/agent/spend_ceiling_store.cpp");
+  TEST_ASSERT_TRUE(has(bodyOf(st, "uint32_t monthNow()"), "serverClock().epoch("));
+  TEST_ASSERT_TRUE(has(slurp("src/agent/transport_tls.cpp"), "noteHttpDateHeader("));
+  TEST_ASSERT_TRUE(has(slurp("src/agent/telegram.cpp"), "noteHttpDateHeader("));
 }
 
 static void test_frozen_reply_is_due_only_for_an_unanswered_telegram_message_during_a_pause() {
@@ -237,7 +297,7 @@ static void test_main_wires_the_unanswered_reply_and_the_owner_notice() {
   TEST_ASSERT_FALSE(has(pump, "firstAllowedChat()"));
   // The store's answer: Telegram chats only, the overall freeze, the one decision.
   const std::string store = bodyOf(slurp("src/agent/spend_ceiling_store.cpp"),
-                                   "std::string frozenReplyFor(const std::string& chatId, bool answered)");
+                                   "std::string frozenReplyFor(const std::string& chatId, bool answered, bool owner)");
   TEST_ASSERT_TRUE(has(store, "DeliveryChannel::Telegram"));
   TEST_ASSERT_TRUE(has(store, "frozenReplyDue("));
   TEST_ASSERT_TRUE(has(store, "frozenWith(g_st.pending)"));
@@ -463,6 +523,8 @@ int main(int, char**) {
   RUN_TEST(test_the_device_refreshes_the_custom_switch_before_paid_calls);
   RUN_TEST(test_frozen_reply_text_is_short_plain_and_names_the_way_out);
   RUN_TEST(test_frozen_reply_is_due_only_for_an_unanswered_telegram_message_during_a_pause);
+  RUN_TEST(test_the_paused_reply_is_throttled_and_others_get_one_neutral_line);
+  RUN_TEST(test_a_server_date_stands_in_for_an_unset_clock);
   RUN_TEST(test_main_wires_the_unanswered_reply_and_the_owner_notice);
   RUN_TEST(test_counts_without_a_clock_are_enforced_at_once);
   RUN_TEST(test_spend_made_without_a_clock_survives_a_month_that_changed_meanwhile);

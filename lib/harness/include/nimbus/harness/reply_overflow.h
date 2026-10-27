@@ -31,5 +31,12 @@ void replyOverflowAppend(const char* s, size_t n);
 // is cleared. `dropped` (optional) receives the bytes past kReplyOverflowMax.
 std::string takeReplyOverflow(size_t* dropped = nullptr);
 
+// Lane QW4 round 3: a run a dispatch may have started but could not hand over or stop
+// (an Anthropic session whose starting turn got no answer and whose interrupt was not
+// confirmed). The dispatcher notes its job id; the job engine takes it right after the
+// failed dispatch and keeps stopping and counting it. One slot: a newer note replaces it.
+void noteUnseenRun(const std::string& jobId);
+std::string takeUnseenRun();   // "" when none; clears it
+
 }  // namespace providers
 }  // namespace agent

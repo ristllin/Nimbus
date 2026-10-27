@@ -298,21 +298,34 @@ is read once from `GET /v1/sessions/<id>`, and the synchronous subs (Mistral, Z.
 Cumulo, custom) are metered at their one request; the web searches a sub runs on its
 provider count too (see [Monthly spend ceiling](spend-ceiling.md)). Stopping a running
 OpenAI or Anthropic sub (`session.terminate`, or the assistant ending it) always sends
-the cancel, even while paid calls are paused, and the job is read back once right after
-it (a free `GET` of the response or session) so what it spent until then is counted; a
-read that fails counts the session estimate. A cancel the provider does not confirm
-never drops the job: the assistant says the stop is not confirmed yet, the job stays
-polled (its spend counts when it ends, the session estimate when it reports no tokens)
-and the cancel is asked again after 30 s, doubling up to 5 minutes, one job at a time.
-A job the provider no longer has (404) has nothing left running and ends at once. If
-the provider stops answering about a job being stopped, it is held for 6 hours (not
-the usual 15 minutes), then counted at the session estimate and dropped with a message.
-Its result is never delivered. When the monthly spend ceiling or a provider's monthly
-limit pauses paid calls, every sub still running on a paused provider's side is
-stopped this way and its chat gets one message naming them; raising the limit does not
-restart them. A hosted instance reads its ceiling directly for this. An Anthropic sub
-whose starting turn got no answer (the run may have started with no job id to follow)
-is interrupted at once, and the interrupt reads the session back and counts it. An
+the cancel, even while paid calls are paused, and the job is read back right after it
+(a free `GET` of the response or session) so what it spent until then is counted. An
+Anthropic interrupt is processed asynchronously and a session reports its tokens once
+it is idle, so that read counts only an idle (or terminated) session; one still running
+counts later, as below.
+
+A stop the provider does not confirm (no answer, a refusal, a session still running)
+never drops the run. The job leaves its slot at once (no result is delivered, no
+synthesis waits on it, a new helper can start) and joins a **stop list** kept apart from
+the job records, saved in flash (`/data/jobs_stopping.txt`; on a hosted instance in its
+data folder), so a restart keeps it. The assistant says the stop is not confirmed yet.
+The list asks the stop again after 30 s, doubling up to 5 minutes, and polls the run
+every 15 s, one request a pump: a confirmed stop, or a final poll counted as the
+provider reports it (0 included; a poll that cannot read the usage, or a run that lists
+work but no tokens, counts the session estimate), ends it. A run the provider no longer
+has (404) ends with nothing more to count. After 15 minutes of failed polls the session
+estimate is counted at once (a later final read counts only what exceeds it); after 6
+hours the run is dropped with a message.
+
+The usual 15-minute give-up on a job whose polls all fail now also counts the session
+estimate and puts the job on the stop list (its result still does not arrive). When the
+monthly spend ceiling or a provider's monthly limit pauses paid calls, every sub still
+running on a paused provider's side goes to the stop list the same way and its chat gets
+one message naming them; raising the limit does not restart them. A hosted instance
+reads its ceiling directly for this. An Anthropic sub whose starting turn got no answer
+(the run may have started with no job id to follow) is interrupted at once; if that
+interrupt is not confirmed either, the session joins the stop list (a full list, 8 runs,
+counts the session estimate at once). An
 OpenAI background run that ends `incomplete` keeps the text it wrote, marked
 `[the agent stopped before it finished (<reason>): this is its partial answer]`;
 with no text it fails with that reason.
@@ -514,6 +527,7 @@ battery-lab's host-side tool, not firmware.)
 | the sub-agent's final reply | 16 KB envelope → 3500 char fresh result → the synthesis turn's reply + anything it `mem_write`s; the full reply in the `ev:subresult` row; a reply longer than the envelope saved whole as a file in the job's project (or `results`) | via episodic / vector memory; the file via `files.read` |
 | the sub-agent's internal transcript | **not stored** - provider-side only | - |
 | pending spawn queue, fresh results awaiting synthesis | RAM | no - lost on restart (results already delivered per-job survive as chat messages) |
+| the stop list (runs whose stop is not yet confirmed: tag, provider job id, model, chat, the estimate already counted) | flash file `/data/jobs_stopping.txt`, up to 8 | yes - the stop is asked again at once after a restart |
 
 **No-SD degradation** (same tiering as everything else,
 [orchestrator-storage.md](orchestrator-storage.md)): episodic falls back to a

@@ -190,19 +190,10 @@ JobEngine::JobWatch& JobEngine::watchFor(const char* tag) {
     if (strncmp(watch_[i].tag, tag, sizeof(watch_[i].tag)) == 0) return watch_[i];
     if (freeSlot < 0 && !watch_[i].tag[0]) freeSlot = i;
   }
-  // Full: evict a slot with no cancel pending (lane QW4: a stop in progress is never lost).
-  for (int i = 0; freeSlot < 0 && i < nimbus::orch::kAgentMaxJobs; i++)
-    if (!watch_[i].cancelling) freeSlot = i;
   if (freeSlot < 0) freeSlot = 0;
   watch_[freeSlot] = JobWatch{};
   strncpy(watch_[freeSlot].tag, tag, sizeof(watch_[freeSlot].tag) - 1);
   return watch_[freeSlot];
-}
-
-const JobEngine::JobWatch* JobEngine::watchFind(const char* tag) const {
-  for (int i = 0; i < nimbus::orch::kAgentMaxJobs; i++)
-    if (watch_[i].tag[0] && strncmp(watch_[i].tag, tag, sizeof(watch_[i].tag)) == 0) return &watch_[i];
-  return nullptr;
 }
 
 void JobEngine::watchClear(const char* tag) {
@@ -1162,10 +1153,12 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   d.rateLimit   = &window;
 
   char jobId[96] = {};
+  (void)providers::takeUnseenRun();   // nothing stale from an earlier call
   FabricErr err = a->dispatch(d, jobId);
   if (err != FabricErr::Ok) {
     hlog::logf("orchestrator: spawn failed %d (prov=%s model=%s cat=%s)",
                (int)err, provider.c_str(), model.c_str(), p.category);
+    keepUnseenRun(tag, p, model);   // lane QW4 round 3: a run it started and could not stop
     const std::string refusal = spawnRefusal(err, provider, window);
     deliver(chatId, refusal);
     if (err == FabricErr::Timeout || err == FabricErr::ParseFail) {
@@ -1285,7 +1278,7 @@ int JobEngine::pump() {
   if (!d_.fabric || !d_.journal) return 0;
   reapDone();     // collapse any delivered sub-agent arcs whose grace has elapsed
   stopFrozenHelpers();   // lane QW4 (CUM-778): a spend freeze stops paid helpers
-  retryDueCancels();     // lane QW4 (CUM-774): a cancel not yet confirmed is asked again
+  serviceStopList();     // lane QW4 (CUM-774): helpers whose stop is not yet confirmed
 
   // Synthesis fires only when ALL spawned work has drained (owner design,
   // 2026-08-10, superseding R5b's per-completion synthesis): "if you spin 50
@@ -1385,7 +1378,6 @@ int JobEngine::pump() {
     const std::string overflow = providers::takeReplyOverflow(&overflowDropped);
     hlog::logf("orchestrator: poll %s err=%d state=%d heap %u->%u", rec.tag, (int)err,
                (int)env_ref().state, (unsigned)hBefore, (unsigned)freeHeap());
-    if (pollStopping(rec, err)) return d_.journal->count();   // lane QW4 (CUM-774)
 
     if (err == FabricErr::NotFound) {   // expired / unknown remote job: terminal
       // A synchronous sub's result lived in the device's RAM, so a job restored after a
@@ -1416,10 +1408,15 @@ int JobEngine::pump() {
       if ((int32_t)(nowMs() - w.firstErrMs) > (int32_t)nimbus::orch::kJobPollGiveUpMs) {
         hlog::logf("orchestrator: %s gave up - %u min of failed polls (last err %d)",
                    rec.tag, (unsigned)(nimbus::orch::kJobPollGiveUpMs / 60000u), (int)err);
+        // Lane QW4 round 3 (merge review blocker 3): the run may still be billing. It is
+        // counted at the session estimate now and moves to the stop list (its stop asked,
+        // a final read counting only what exceeds the estimate).
+        countEstimate(rec.backend, rec.model);
+        toStopList(rec, nowMs(), 0, orch::kSessionInputEstimateTokens);
         const std::string failText = std::string("Job [") + jobLabel(rec) +
             "] lost: no response from " + rec.backend +
-            " for 15 minutes - giving up. Its work may still finish remotely, "
-            "but the result won't reach this device.";
+            " for 15 minutes - giving up on its result. The device is asking " + rec.backend +
+            " to stop it and has counted it at an estimate, so it cannot keep billing unseen.";
         // Same owner-delivery discipline as a normal sub failure (W19): while
         // other work runs, the failure joins the fresh results so the final
         // synthesis reports it; alone, it IS the report.
@@ -1577,101 +1574,249 @@ void JobEngine::finishStopped(const orch::JobRecord& rec) {
   watchClear(rec.tag);
 }
 
-// Lane QW4 (CUM-774): stop a job on its provider. A confirmed cancel finishes it (the
-// wire read the job back and counted what it used). One the provider did not confirm (no
-// answer, a refusal) never drops the job: it stays in the journal and is polled as
-// before, so its spend is counted when it ends, and the cancel is asked again after 30 s,
-// doubling up to 5 minutes, until the provider confirms or the job ends by itself.
+// ---- the background stop list (lane QW4, CUM-774; round 3, merge review 1-4) ---------
+// A helper whose stop its provider has not confirmed leaves the journal at once (it holds
+// no slot, no synthesis waits on it, its result is never delivered) and joins this list.
+// The list asks the stop again after 30 s, doubling up to 5 minutes, and polls the run
+// every 15 s (backing off to 2 minutes while polls fail), one request a pump. A confirmed
+// stop (the wire read the run back and counted it) or a final poll (counted as its
+// provider reports it) ends it; a run the provider no longer has (404) ends with nothing
+// more to count. After 15 minutes of failed polls the session estimate is counted at once
+// (prepaid: a later final read counts only what exceeds it); after 6 hours the run is
+// dropped and its chat told. The list is saved on every change, so a restart keeps it.
 static constexpr uint32_t kCancelRetryMs = 30000;
 static constexpr uint32_t kCancelRetryMaxMs = 300000;
-
-bool JobEngine::stopJob(const orch::JobRecord& rec) {
-  const FabricErr err = d_.fabric->cancel(rec.jobId);
-  if (err == FabricErr::Ok || err == FabricErr::NotFound) {   // stopped, or gone from its provider
-    finishStopped(rec);
-    return true;
-  }
-  JobWatch& w = watchFor(rec.tag);
-  const uint32_t wait = std::min<uint32_t>(kCancelRetryMs << std::min<uint8_t>(w.cancelTries, 4), kCancelRetryMaxMs);
-  w.cancelling = true;
-  if (w.cancelTries < 0xFF) ++w.cancelTries;
-  w.cancelAtMs = nowMs() + wait;
-  hlog::logf("orchestrator: %s cancel not confirmed (err %d) - kept and polled, asking again in %u s",
-             rec.tag, (int)err, (unsigned)(wait / 1000));
-  return false;
-}
-
-// Lane QW4 (CUM-778): a job the freeze stops is marked now and its cancel asked at once by
-// retryDueCancels (one cancel a pump).
-void JobEngine::markStopping(const orch::JobRecord& rec) {
-  JobWatch& w = watchFor(rec.tag);
-  w.cancelling = true;
-  w.cancelAtMs = nowMs();
-}
-
-// Lane QW4 (CUM-774): one poll of a job being stopped (its cancel not yet confirmed). It
-// never takes the result path. Still running: polled as before (false). Ended on its
-// provider, or gone (404): counted (its own usage, else the session estimate) and
-// finished as stopped, its result not delivered. Unreachable: polled with the usual
-// backoff, the cancel asked again meanwhile, for up to 6 hours; then counted at the
-// session estimate and dropped, its chat told.
+static constexpr uint32_t kStoppingPrepayMs = nimbus::orch::kJobPollGiveUpMs;
 static constexpr uint32_t kStoppingGiveUpMs = 6u * 3600u * 1000u;
+static constexpr uint32_t kStoppingPollMaxMs = 120000;
 
-bool JobEngine::pollStopping(const orch::JobRecord& rec, FabricErr err) {
-  const JobWatch* w = watchFind(rec.tag);
-  if (!w || !w->cancelling) return false;
-  const bool ended = err == FabricErr::Ok && orch::isTerminal(env_ref().state);
-  if (err == FabricErr::Ok && !ended) return false;
-  const bool unreachable = !ended && err != FabricErr::NotFound;
-  if (unreachable && !stoppingGaveUp(rec)) return true;
-  countStopped(rec, ended);
-  hlog::logf("orchestrator: %s stopped on its provider after the cancel (err %d, state %d)", rec.tag,
-             (int)err, (int)env_ref().state);
-  if (unreachable)
-    deliver(rec.chatId, "I could not confirm that [" + jobLabel(rec) + "] stopped: " + rec.backend +
-                            " has not answered for 6 hours. It is counted at an estimate, and its result "
-                            "will not be delivered.");
-  finishStopped(rec);
-  scheduleReap(rec.tag);
+namespace {
+uint32_t stopRetryWait(uint8_t tries) {
+  return std::min<uint32_t>(kCancelRetryMs << std::min<uint8_t>(tries, 4), kCancelRetryMaxMs);
+}
+std::string stopField(std::string v) {
+  for (char& c : v)
+    if (c == '\x1f' || c == '\n' || c == '\r') c = ' ';
+  return v;
+}
+std::vector<std::string> splitFields(const std::string& line) {
+  std::vector<std::string> out;
+  size_t from = 0;
+  for (size_t at; (at = line.find('\x1f', from)) != std::string::npos; from = at + 1)
+    out.push_back(line.substr(from, at - from));
+  out.push_back(line.substr(from));
+  return out;
+}
+constexpr const char* kStopListHeader = "QW4-STOP 1";
+}  // namespace
+
+void JobEngine::loadStopList() {
+  if (stoppingLoaded_) return;
+  stoppingLoaded_ = true;
+  const std::string text = d_.loadStopping ? d_.loadStopping() : std::string();
+  if (text.rfind(kStopListHeader, 0) != 0) return;   // none, or not ours: nothing to resume
+  const uint32_t now = nowMs();
+  size_t from = text.find('\n');
+  while (from != std::string::npos && stopping_.size() < (size_t)kMaxStopping) {
+    const size_t end = text.find('\n', from + 1);
+    const std::vector<std::string> f = splitFields(text.substr(from + 1, end == std::string::npos ? end : end - from - 1));
+    from = end;
+    if (f.size() < 7 || f[1].find(':') == std::string::npos) continue;
+    Stopping e;
+    e.tag = f[0], e.jobId = f[1], e.backend = f[2], e.model = f[3], e.chatId = f[4], e.label = f[5];
+    e.prepaid = (uint32_t)std::strtoul(f[6].c_str(), nullptr, 10);
+    e.cancelAtMs = now;   // a restart asks again at once
+    e.pollAtMs = now + t_.pollIntervalMs;
+    stopping_.push_back(e);
+    hlog::logf("orchestrator: %s (%s) still being stopped after the restart", e.tag.c_str(), e.jobId.c_str());
+  }
+}
+
+void JobEngine::saveStopList() {
+  if (!d_.saveStopping) return;
+  std::string out = std::string(kStopListHeader) + "\n";
+  for (const Stopping& e : stopping_)
+    out += stopField(e.tag) + '\x1f' + stopField(e.jobId) + '\x1f' + stopField(e.backend) + '\x1f' +
+           stopField(e.model) + '\x1f' + stopField(e.chatId) + '\x1f' + stopField(e.label) + '\x1f' +
+           std::to_string(e.prepaid) + "\n";
+  if (!d_.saveStopping(out)) hlog::log("orchestrator: the stop list was not saved (a restart forgets it)");
+}
+
+// The session estimate, counted at once for a run the device cannot follow or read.
+void JobEngine::countEstimate(const std::string& backend, const std::string& model) {
+  if (!d_.recordSpawnUsage) return;
+  orch::TokenUsage u;
+  u.promptTokens = orch::kSessionInputEstimateTokens;
+  u.responses = 1;
+  d_.recordSpawnUsage(backend, model, u);
+}
+
+// Keep a run on the list (false: the list is full, and the session estimate was counted
+// at once instead, unless it already was).
+bool JobEngine::keepStopping(Stopping e) {
+  loadStopList();
+  for (const Stopping& x : stopping_)
+    if (x.jobId == e.jobId) return true;   // already being stopped
+  if (stopping_.size() >= (size_t)kMaxStopping) {
+    hlog::logf("orchestrator: stop list full - %s counted at the session estimate", e.jobId.c_str());
+    if (!e.prepaid) countEstimate(e.backend, e.model);
+    return false;
+  }
+  if (!e.pollAtMs) e.pollAtMs = nowMs() + t_.pollIntervalMs;
+  stopping_.push_back(e);
+  saveStopList();
   return true;
 }
 
-// The stop's poll failed: true once it has failed for kStoppingGiveUpMs, else the usual
-// poll backoff.
-bool JobEngine::stoppingGaveUp(const orch::JobRecord& rec) {
-  JobWatch& w = watchFor(rec.tag);
-  if (!w.firstErrMs) w.firstErrMs = nowMs() ? nowMs() : 1;
-  if ((int32_t)(nowMs() - w.firstErrMs) > (int32_t)kStoppingGiveUpMs) return true;
-  pollBackoffMs_ = pollBackoffMs_ < 120000 ? pollBackoffMs_ * 2 : 120000;
-  nextPollAt_ = nowMs() + pollBackoffMs_;
+// Lane QW4 round 3 (merge review blocker 1): a dispatch whose start got no answer and
+// whose stop failed handed over the run it may have started (providers::takeUnseenRun).
+// It has no job record (the head is told it may have started, and it is never spawned
+// again): the stop list asks its stop again after 30 s and counts it; a full list counts
+// the session estimate at once.
+void JobEngine::keepUnseenRun(const char* tag, const PendingSpawn& p, const std::string& model) {
+  const std::string unseen = providers::takeUnseenRun();
+  if (unseen.empty()) return;
+  char backend[sizeof(orch::JobRecord{}.backend)] = {};
+  backendOf(unseen.c_str(), backend, sizeof(backend));
+  Stopping e;
+  e.tag = tag, e.jobId = unseen, e.backend = backend, e.chatId = p.chatId;
+  e.model = model.empty() ? std::string("default") : model;
+  e.label = p.name[0] ? std::string(p.name) : std::string(tag);
+  e.cancelAtMs = nowMs() + stopRetryWait(0);
+  e.tries = 1;
+  hlog::logf("orchestrator: %s may be running unseen on %s (%s) - on the stop list", tag, backend, unseen.c_str());
+  keepStopping(e);
+}
+
+// A journal job leaves its slot for the stop list (its stop asked at `cancelAtMs`).
+void JobEngine::toStopList(const orch::JobRecord& rec, uint32_t cancelAtMs, uint8_t tries, uint32_t prepaid) {
+  Stopping e;
+  e.tag = rec.tag, e.jobId = rec.jobId, e.backend = rec.backend, e.model = rec.model, e.chatId = rec.chatId;
+  e.label = jobLabel(rec);
+  e.cancelAtMs = cancelAtMs;
+  e.tries = tries;
+  e.prepaid = prepaid;
+  keepStopping(e);
+}
+
+// Lane QW4 (CUM-774): stop a job on its provider. A confirmed cancel finishes it (the
+// wire read the job back and counted what it used); a job its provider no longer has
+// (404) has nothing left running. One the provider did not confirm leaves the journal
+// for the stop list (asked again after 30 s, polled, counted when it ends).
+bool JobEngine::stopJob(const orch::JobRecord& rec) {
+  const FabricErr err = d_.fabric->cancel(rec.jobId);
+  finishStopped(rec);
+  if (err == FabricErr::Ok || err == FabricErr::NotFound) return true;
+  hlog::logf("orchestrator: %s cancel not confirmed (err %d) - on the stop list, asking again in %u s",
+             rec.tag, (int)err, (unsigned)(stopRetryWait(0) / 1000));
+  toStopList(rec, nowMs() + stopRetryWait(0), 1, 0);
   return false;
 }
 
-// What a stopped job counts: the usage its provider reported at its end, else (none
-// reported, or its end never read) the session estimate at its model's price, never zero
-// (fail-closed, as the wire counts a job it could not read after a confirmed cancel).
-void JobEngine::countStopped(const orch::JobRecord& rec, bool ended) {
+// Lane QW4 (CUM-778): a job the freeze stops leaves its slot now; its stop is asked at
+// the next turn of the stop list (one request a pump).
+void JobEngine::markStopping(const orch::JobRecord& rec) {
+  finishStopped(rec);
+  toStopList(rec, nowMs(), 0, 0);
+}
+
+// One request a pump for the whole list: the first stop that is due, else the first poll.
+void JobEngine::serviceStopList() {
+  loadStopList();
+  const uint32_t now = nowMs();
+  for (size_t i = 0; i < stopping_.size(); ++i)
+    if ((int32_t)(now - stopping_[i].cancelAtMs) >= 0) {
+      askStop(i);
+      return;
+    }
+  for (size_t i = 0; i < stopping_.size(); ++i)
+    if ((int32_t)(now - stopping_[i].pollAtMs) >= 0) {
+      pollStop(i);
+      return;
+    }
+}
+
+void JobEngine::askStop(size_t i) {
+  Stopping& e = stopping_[i];
+  const FabricErr err = d_.fabric->cancel(e.jobId.c_str());
+  if (err == FabricErr::Ok || err == FabricErr::NotFound) {
+    hlog::logf("orchestrator: %s stop confirmed on its provider (err %d)", e.tag.c_str(), (int)err);
+    endStop(i);
+    return;
+  }
+  const uint32_t wait = stopRetryWait(e.tries);
+  if (e.tries < 0xFF) ++e.tries;
+  e.cancelAtMs = nowMs() + wait;
+  hlog::logf("orchestrator: %s stop still not confirmed (err %d) - asking again in %u s", e.tag.c_str(),
+             (int)err, (unsigned)(wait / 1000));
+}
+
+void JobEngine::pollStop(size_t i) {
+  Stopping& e = stopping_[i];
+  memset(&env_ref(), 0, sizeof(nimbus::orch::ResultEnvelope));
+  const FabricErr err = d_.fabric->poll(e.jobId.c_str(), env_ref());
+  (void)providers::takeReplyOverflow(nullptr);   // a stopped run's result is never delivered
+  const bool ended = err == FabricErr::Ok && orch::isTerminal(env_ref().state);
+  if (err == FabricErr::Ok && !ended) {   // still running: keep asking it to stop
+    e.firstErrMs = 0;
+    e.pollWaitMs = t_.pollIntervalMs;
+    e.pollAtMs = nowMs() + e.pollWaitMs;
+    return;
+  }
+  if (ended || err == FabricErr::NotFound) {
+    if (ended) countFinal(e);
+    hlog::logf("orchestrator: %s stopped on its provider (err %d, state %d)", e.tag.c_str(), (int)err,
+               (int)env_ref().state);
+    endStop(i);
+    return;
+  }
+  stopUnreachable(i);
+}
+
+// The run's polls fail: the session estimate counted after 15 minutes, the run dropped
+// (its chat told) after 6 hours, the poll backing off meanwhile.
+void JobEngine::stopUnreachable(size_t i) {
+  Stopping& e = stopping_[i];
+  const uint32_t now = nowMs();
+  if (!e.firstErrMs) e.firstErrMs = now ? now : 1;
+  const uint32_t failing = now - e.firstErrMs;
+  if (failing >= kStoppingPrepayMs && !e.prepaid) {
+    countEstimate(e.backend, e.model);
+    e.prepaid = orch::kSessionInputEstimateTokens;
+    saveStopList();
+  }
+  if (failing >= kStoppingGiveUpMs) {
+    deliver(e.chatId, "I could not confirm that [" + e.label + "] stopped: " + e.backend +
+                          " has not answered for 6 hours. It is counted at an estimate, and its result "
+                          "will not be delivered.");
+    endStop(i);
+    return;
+  }
+  e.pollWaitMs = std::min<uint32_t>(std::max<uint32_t>(e.pollWaitMs, t_.pollIntervalMs) * 2, kStoppingPollMaxMs);
+  e.pollAtMs = now + e.pollWaitMs;
+}
+
+// A final read: what the provider reports (each provider's poll counts the session
+// estimate itself when its usage read fails), less what was already counted for it.
+void JobEngine::countFinal(const Stopping& e) {
   if (!d_.recordSpawnUsage) return;
   orch::TokenUsage u;
-  if (ended) {
-    u.promptTokens = env_ref().promptTokens;
-    u.completionTokens = env_ref().completionTokens;
-    u.cacheReadTokens = env_ref().cacheReadTokens;
-    u.cacheWriteTokens = env_ref().cacheWriteTokens;
-  }
-  if (u.empty() && !u.cacheReadTokens && !u.cacheWriteTokens) u.promptTokens = orch::kSessionInputEstimateTokens;
+  u.promptTokens = env_ref().promptTokens > e.prepaid ? env_ref().promptTokens - e.prepaid : 0;
+  u.completionTokens = env_ref().completionTokens;
+  u.cacheReadTokens = env_ref().cacheReadTokens;
+  u.cacheWriteTokens = env_ref().cacheWriteTokens;
   u.responses = 1;
-  d_.recordSpawnUsage(rec.backend, rec.model, u);
+  if (!u.empty() || u.cacheReadTokens || u.cacheWriteTokens) d_.recordSpawnUsage(e.backend, e.model, u);
+}
+
+void JobEngine::endStop(size_t i) {
+  stopping_.erase(stopping_.begin() + (long)i);
+  saveStopList();
 }
 
 bool JobEngine::stopping(const char* tagOrJobId) const {
-  for (int i = 0; d_.journal && i < d_.journal->count(); i++) {
-    orch::JobRecord rec;
-    if (!d_.journal->get(i, rec)) continue;
-    if (strcmp(rec.tag, tagOrJobId) != 0 && strcmp(rec.jobId, tagOrJobId) != 0) continue;
-    const JobWatch* w = watchFind(rec.tag);
-    return w && w->cancelling;
-  }
+  for (const Stopping& e : stopping_)
+    if (e.tag == tagOrJobId || e.jobId == tagOrJobId) return true;
   return false;
 }
 
@@ -1686,22 +1831,7 @@ bool JobEngine::cancel(const char* tagOrJobId) {
       return true;   // stopped, or being stopped (asked again until the provider confirms)
     }
   }
-  return false;
-}
-
-// Lane QW4 (CUM-774): a job whose cancel is due is asked (again), whatever the poll
-// cadence (a job is polled every 15 s at best; the retry keeps its own clock). One cancel
-// a pump: each can take a request's whole deadline on this task, and an unconfirmed one
-// moves its next try out, so every due job gets its turn.
-void JobEngine::retryDueCancels() {
-  for (int i = 0; i < d_.journal->count(); i++) {
-    orch::JobRecord rec;
-    if (!d_.journal->get(i, rec)) continue;
-    const JobWatch* w = watchFind(rec.tag);
-    if (!w || !w->cancelling || (int32_t)(nowMs() - w->cancelAtMs) < 0) continue;
-    stopJob(rec);
-    return;
-  }
+  return stopping(tagOrJobId);   // already on the stop list: it is being stopped
 }
 
 // Lane QW4 (CUM-778, owner ruling, defensive defaults): when the monthly spend ceiling
@@ -1722,8 +1852,7 @@ std::vector<orch::JobRecord> JobEngine::frozenHelpers(bool ceiling) const {
   for (int i = 0; i < d_.journal->count(); i++) {
     orch::JobRecord rec;
     if (!d_.journal->get(i, rec) || rec.resultSeen || orch::isTerminal(rec.state)) continue;
-    const JobWatch* w = watchFind(rec.tag);
-    if ((w && w->cancelling) || backendRunsSync(rec.backend)) continue;
+    if (backendRunsSync(rec.backend)) continue;
     if (ceiling || (nimbus::orch::providerPark().pausedBy(rec.backend) & spendCauses)) out.push_back(rec);
   }
   return out;

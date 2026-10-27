@@ -78,6 +78,7 @@ struct FakeProviderDeps {
       s["url"] = "https://mcp.example.com";
     };
     pd.nowMs = [this] { now += 10; return now; };
+    pd.monoMs = [this] { return now; };   // lane QW4: reads the rig clock without moving it
     pd.freeHeap = [this] { return heap; };
     pd.largestBlock = [this] { return largest; };
     return pd;

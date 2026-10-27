@@ -46,6 +46,7 @@
 #include "pdf_tool.h"                        // files.pdf - the device PDF writer
 #include <solide/audio.h>               // reply.speak - play WAV on the device speaker (P6)
 #include <LittleFS.h>
+#include "fs_atomic.h"   // writeFileAtomic - the stop list (lane QW4)
 #include <atomic>                       // voiceTurnSeq - hold-to-talk completion edge
 #include <memory>                       // unique_ptr - heap Info[] (kMaxConnectors)
 #include <new>       // std::nothrow - alloc failure degrades, never panics
@@ -120,6 +121,7 @@ static Sinks        g_sinks;
 // The portable sub-agent job machinery (spawn queue / dispatch gate / round-robin
 // poll / fresh results / reap scheduler) - constructed in begin(), Stage F lift.
 static JobEngine*   g_jobs = nullptr;
+static constexpr const char* kStopListPath = "/data/jobs_stopping.txt";   // lane QW4: the stop list
 // The portable turn orchestration (Stage G lift) - constructed in begin().
 static TurnEngine*  g_engine = nullptr;
 // The owner's message of the turn in flight (empty for a turn the owner did not write):
@@ -775,6 +777,20 @@ static JobEngine::Deps buildJobDeps() {
                                                                   : String(model.c_str());
     nimbus::orch::meterSeamUsage(nimbus::orch::SpendSeam::Sub, backend.c_str(),
                                  resolved.c_str(), u);
+  };
+  // Lane QW4 round 3: the background stop list (helpers whose stop is not yet confirmed)
+  // in flash, so a restart keeps asking them to stop and counts them.
+  d.loadStopping = [] {
+    std::string out;
+    File f = LittleFS.open(kStopListPath, "r");
+    if (!f) return out;
+    while (f.available() && out.size() < 4096) out += (char)f.read();
+    f.close();
+    return out;
+  };
+  d.saveStopping = [](const std::string& text) {
+    LittleFS.mkdir("/data");
+    return agent::writeFileAtomic(kStopListPath, text, "jobs_stopping", false);
   };
   // Recent-results spill: every finished sub-agent's FULL text into the ring,
   // so [FRESH RESULTS] stubs/clips can point at results.get("sub:<tag>").

@@ -869,6 +869,8 @@ static void test_sub_poll_states() {
 static void test_sub_cancel_sends_interrupt() {
   FakeProviderDeps d;
   d.http.script.push_back({"", "/v1/sessions/sess_1/events", 200, "{\"data\":[]}"});
+  // Lane QW4 round 3: confirmed once the session reads back idle (its final usage).
+  d.http.script.push_back({"", "/v1/sessions/sess_1", 200, "{\"id\":\"sess_1\",\"status\":\"idle\"}"});
   auto pd = d.contract();
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok,
                     (int)providers::antCancel(pd, "anthropic:sess_1"));

@@ -207,7 +207,7 @@ const MeterRow kMeters[] = {
     // Lane QW4 (CUM-776): a request that left and got no usable answer is counted at an
     // estimate: every provider request (the wire), the caption step, the download scan.
     {"a sent request with no answer", S::Wire, "lib/harness/src/providers/wire.h", "inline int exchange(",
-     "meterUnanswered(pd, host, req)"},
+     "meterUnanswered(pd, host, req,"},
     {"a caption with no answer", S::VisionFallback, "lib/harness/src/vision_caption.cpp",
      "CaptionResult askOne(", "sentRequestEstimate("},
     {"a scan with no answer", S::UrlFetch, "src/agent/adapters/url_fetch.cpp", "int scanVerdict(",
@@ -230,9 +230,13 @@ const MeterRow kMeters[] = {
     {"a search with no answer counted", S::Search, "lib/harness/src/websearch.cpp", "void registerWebSearchTool(",
      "(r.ok || r.billed) && deps.recordCall"},
     {"an Anthropic sub turn with no answer stops its session", S::Sub, "lib/harness/src/providers/anthropic.cpp",
-     "static FabricErr turnUnanswered(", "if (unseen) antCancel("},
-    {"a stopped helper counted", S::Sub, "lib/harness/src/jobs.cpp", "void JobEngine::countStopped(",
-     "d_.recordSpawnUsage(rec.backend, rec.model, u)"},
+     "static FabricErr turnUnanswered(", "noteUnseenRun(job)"},
+    {"a stopped helper counted", S::Sub, "lib/harness/src/jobs.cpp", "void JobEngine::countFinal(",
+     "d_.recordSpawnUsage(e.backend, e.model, u)"},
+    {"a helper that cannot be followed counted", S::Sub, "lib/harness/src/jobs.cpp",
+     "void JobEngine::countEstimate(", "d_.recordSpawnUsage(backend, model, u)"},
+    {"a lost helper counted at the give-up", S::Sub, "lib/harness/src/jobs.cpp", "int JobEngine::pump()",
+     "countEstimate(rec.backend, rec.model)"},
 };
 
 // The two sinks the meter reports reach (the device's ceiling, the hosted one's).

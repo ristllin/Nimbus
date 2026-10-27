@@ -58,7 +58,7 @@ const char* kOaiJob =
     "\"usage\":{\"input_tokens\":1200,\"output_tokens\":340,"
     "\"input_tokens_details\":{\"cached_tokens\":0}}}";
 const char* kAntSession =
-    "{\"id\":\"sesn_1\",\"agent\":{\"model\":{\"id\":\"claude-haiku-5-5\"}},"
+    "{\"id\":\"sesn_1\",\"status\":\"idle\",\"agent\":{\"model\":{\"id\":\"claude-haiku-5-5\"}},"
     "\"usage\":{\"input_tokens\":5000,\"output_tokens\":700,\"cache_read_input_tokens\":2000,"
     "\"server_tool_use\":{\"web_search_requests\":2,\"web_fetch_requests\":1}}}";
 
@@ -252,6 +252,59 @@ static void test_anthropic_interrupt_goes_out_while_frozen_and_counts_the_sessio
   TEST_ASSERT_EQUAL_UINT64(3ULL * orch::kProviderSearchRunMicro, g_meter[1].estimate);
 }
 
+// Round 3 (merge review blocker 2): the interrupt is processed asynchronously, and a
+// session reports its tokens once it is idle. A read-back that finds it still running
+// (or cannot read it) is not final: nothing is counted there and the stop reads as not
+// yet confirmed, so the job engine keeps the helper on its stop list and counts the
+// session's final usage when it settles (or the estimate if it never does).
+static void test_an_interrupted_session_still_running_is_not_counted_yet() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "/v1/sessions/sesn_7/events", 200, "{\"data\":[]}"});
+  d.http.script.push_back({"", "/v1/sessions/sesn_7", 200,
+                           "{\"id\":\"sesn_7\",\"status\":\"running\",\"agent\":{\"model\":\"claude-haiku-5-5\"},"
+                           "\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"});
+  auto pd = d.contract();
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::RemoteFail, (int)providers::antCancel(pd, "anthropic:sesn_7"));
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL(0, (int)g_meter.size());
+  FakeProviderDeps u;   // the read itself failed: not final either
+  u.http.script.push_back({"", "/v1/sessions/sesn_8/events", 200, "{\"data\":[]}"});
+  u.http.script.push_back({"", "/v1/sessions/sesn_8", 503, "{}"});
+  auto pu = u.contract();
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::RemoteFail, (int)providers::antCancel(pu, "anthropic:sesn_8"));
+  TEST_ASSERT_EQUAL(0, (int)g_meter.size());
+  FakeProviderDeps i;   // idle with no tokens: final, and 0 is what it billed (live, 27 Oct)
+  i.http.script.push_back({"", "/v1/sessions/sesn_9/events", 200, "{\"data\":[]}"});
+  i.http.script.push_back({"", "/v1/sessions/sesn_9", 200,
+                           "{\"id\":\"sesn_9\",\"status\":\"idle\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}"});
+  auto pi = i.contract();
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antCancel(pi, "anthropic:sesn_9"));
+}
+
+// Round 3: the stop list trusts a final poll as its provider reports it, so the poll
+// itself applies the wire's rule: a run that lists output (it worked) but reports no
+// tokens counts the session estimate; one with no output and no tokens counts nothing.
+static void test_a_final_poll_of_work_without_tokens_counts_the_estimate() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "/v1/responses/resp_9", 200,
+                           "{\"status\":\"cancelled\",\"model\":\"gpt-6-luna\",\"usage\":"
+                           "{\"input_tokens\":0,\"output_tokens\":0},\"output\":[{\"type\":\"reasoning\"}]}"});
+  auto pd = d.contract();
+  agent::ResultEnvelope env{};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok,
+                    (int)providers::oaiPoll(pd, "api.openai.com", "sk-fake-oai", "openai", "openai:resp_9", env));
+  TEST_ASSERT_TRUE(orch::isTerminal(env.state));
+  TEST_ASSERT_EQUAL_UINT32(orch::kSessionInputEstimateTokens, env.promptTokens);
+  FakeProviderDeps n;
+  n.http.script.push_back({"", "/v1/responses/resp_10", 200,
+                           "{\"status\":\"cancelled\",\"model\":\"gpt-6-luna\",\"usage\":"
+                           "{\"input_tokens\":0,\"output_tokens\":0},\"output\":[]}"});
+  auto pn = n.contract();
+  agent::ResultEnvelope e2{};
+  providers::oaiPoll(pn, "api.openai.com", "sk-fake-oai", "openai", "openai:resp_10", e2);
+  TEST_ASSERT_EQUAL_UINT32(0, e2.promptTokens);
+}
+
 // ---- what is still refused --------------------------------------------------------------
 
 // The counter-test: while frozen, every request that starts or continues paid work is
@@ -283,6 +336,8 @@ int main(int, char**) {
   RUN_TEST(test_a_job_that_is_gone_counts_nothing);
   RUN_TEST(test_a_cancel_is_counted_when_nothing_is_frozen_too);
   RUN_TEST(test_anthropic_interrupt_goes_out_while_frozen_and_counts_the_session);
+  RUN_TEST(test_an_interrupted_session_still_running_is_not_counted_yet);
+  RUN_TEST(test_a_final_poll_of_work_without_tokens_counts_the_estimate);
   RUN_TEST(test_paid_work_is_still_refused_while_frozen);
   return UNITY_END();
 }

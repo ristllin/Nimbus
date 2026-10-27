@@ -990,10 +990,12 @@ static void orchSpeakSink(const String& text) {
 // Lane QW4: a Telegram message the device left unanswered because the overall spend
 // ceiling holds (the engine refuses the turn and sends nothing, so the notice pump's one
 // notice is the owner's only word, and a queued notice can be lost) gets the short reply
-// saying so, every time. A message something already answered (a command, a failure
-// reply) gets nothing more.
+// saying so: the owner's chat at most once per 30 minutes, any other chat (a member, a
+// guest, a group) one neutral line per freeze with no amount (round 3). A message
+// something already answered (a command, a failure reply) gets nothing more.
 static void answerIfPaused(const String& chatId, bool answered) {
-  const std::string text = agent::spend::frozenReplyFor(std::string(chatId.c_str()), answered);
+  const bool owner = chatId == agent::telegram::ownerChat();   // round 3: others get one neutral line
+  const std::string text = agent::spend::frozenReplyFor(std::string(chatId.c_str()), answered, owner);
   if (text.empty()) return;
   const bool queued = agent::telegram::send(chatId, String(text.c_str()), /*block=*/false);
   agent::alogf("spend: a message went unanswered while paid calls are paused - told %s (%s)",

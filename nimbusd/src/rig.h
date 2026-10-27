@@ -1957,6 +1957,7 @@ class NimbusdRig {
       return (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
                  std::chrono::steady_clock::now().time_since_epoch()).count();
     };
+    pd.monoMs = pd.nowMs;   // lane QW4: a request's held time (the no-answer estimate)
     pd.freeHeap = [this] { return mem_.freeBytes(); };
     // Connector attach seams (CUM-424): BYOK heads advertise the instance's
     // configured connectors exactly as a device with direct keys does
@@ -2565,6 +2566,16 @@ class NimbusdRig {
                                  const orch::TokenUsage& u) {
       const std::string m = (model.empty() || model == "default") ? subModelFor(backend) : model;
       orch::meterSeamUsage(orch::SpendSeam::Sub, backend.c_str(), m.c_str(), u);
+    };
+    // Lane QW4 round 3: the background stop list on disk (device parity), so a restart
+    // keeps asking unconfirmed stops and counts them.
+    jd.loadStopping = [this] {
+      std::string out;
+      fsutil::readFile(opt_.dataDir + "/jobs_stopping.txt", out);
+      return out;
+    };
+    jd.saveStopping = [this](const std::string& text) {
+      return fsutil::writeFileAtomic(opt_.dataDir + "/jobs_stopping.txt", text);
     };
   }
 

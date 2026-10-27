@@ -46,6 +46,49 @@ std::string frozenReplyText(const CeilingFacts& f);
 // command, or an honest failure reply, already answered it).
 bool frozenReplyDue(bool telegramChat, bool frozen, bool answered);
 
+// Round 3 (merge review 7): the paused reply, throttled. The owner's chat gets the full
+// reply at most once per kFrozenReplyEveryMs, and again when a new freeze starts; any
+// other chat (a member, a guest, a group) one neutral line per freeze
+// (frozenReplyTextOther: no amount, no owner steps). `episode` names the freeze (its
+// month and ceiling: raising the ceiling or a new month starts another). A bounded table:
+// past its room the chat seen longest ago gives its place.
+inline constexpr uint32_t kFrozenReplyEveryMs = 30u * 60u * 1000u;
+class FrozenReplyThrottle {
+ public:
+  bool allow(const std::string& chat, bool owner, uint32_t episode, uint32_t nowMs);
+
+ private:
+  struct Slot {
+    uint32_t chat = 0, episode = 0, atMs = 0;
+    bool used = false;
+  };
+  static constexpr int kSlots = 16;
+  Slot slots_[kSlots];
+};
+std::string frozenReplyTextOther();
+
+// Round 3 (merge review major 5): a time base when the clock never sets (a network that
+// blocks NTP; TLS works without a valid date on this hardware). The newest server date
+// seen (an HTTPS answer's Date header, a Telegram update) plus the uptime since stands in
+// for the clock, so the month still rolls; a set clock always wins, and an older date
+// never moves it back. Thread-safe.
+bool parseHttpDate(const char* s, int64_t& epoch);   // IMF-fixdate, "Tue, 27 Oct 2026 03:10:00 GMT"
+class ServerClock {
+ public:
+  void note(int64_t epoch, uint32_t nowMs);
+  // `systemNow` when it is a set clock, else the server date plus the uptime since, else
+  // `systemNow` (unset).
+  int64_t epoch(int64_t systemNow, uint32_t nowMs) const;
+
+ private:
+  int64_t date_ = 0;
+  uint32_t atMs_ = 0;
+};
+ServerClock& serverClock();                              // the device's one
+void noteServerDate(int64_t epoch, uint32_t nowMs);      // serverClock().note
+// A response's Date header value (after "Date:"), noted when it parses.
+void noteHttpDateHeader(const char* value, uint32_t nowMs);
+
 // The first valid clock (`month` non-zero) after counts made without one: a provisional
 // count (month 0) moves into `month` (SpendCeiling::roll keeps it), and when the store
 // owed a seed (it started without the ledger's estimate of this month, which needs the
@@ -120,6 +163,26 @@ std::string helpersStoppedText(const std::vector<std::string>& labels, bool ceil
 // `transportError` is the transport's error text; `status` the HTTP status it returned.
 bool sentWithoutAnswer(int status, const std::string& transportError);
 TokenUsage sentRequestEstimate(size_t bodyChars, size_t images);
+
+// Round 3 (merge review major 6): the full estimate for such a request, by what is known
+// of it. Input: the sent body (sentRequestEstimate), and at least the session estimate
+// when the request starts a run on the provider's side (an OpenAI background job, a
+// Mistral Conversations run). Output: what a model can have written while the request
+// was held open (kEstimateOutputTokensPerSec a second), capped by the request's own
+// output cap when it names one.
+inline constexpr uint32_t kEstimateOutputTokensPerSec = 200;
+struct UnansweredRequest {
+  size_t bodyChars = 0;
+  size_t images = 0;
+  uint32_t heldMs = 0;      // from the send to the failure
+  uint32_t outputCap = 0;   // 0 = the request names none
+  bool startsRun = false;
+};
+TokenUsage unansweredEstimate(const UnansweredRequest& r);
+// The output cap a request body names (max_tokens, max_output_tokens or
+// max_completion_tokens; 0 when none), and whether it starts a server-side run.
+uint32_t bodyOutputCap(const std::string& body);
+bool bodyStartsRun(const std::string& path, const std::string& body);
 
 }  // namespace orch
 }  // namespace nimbus

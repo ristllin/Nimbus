@@ -111,12 +111,13 @@ static void test_a_head_round_with_no_answer_is_counted() {
   TEST_ASSERT_EQUAL_STRING("openai", g_meter[0].provider.c_str());
   TEST_ASSERT_EQUAL_STRING("model-openai", g_meter[0].model.c_str());
   TEST_ASSERT_EQUAL_UINT32(estimateOf(d.http.seen[0]), g_meter[0].in);
-  TEST_ASSERT_EQUAL_UINT32(0, g_meter[0].out);
+  TEST_ASSERT_TRUE(g_meter[0].out <= orch::kEstimateOutputTokensPerSec);   // failed at once: at most a second's writing
   TEST_ASSERT_EQUAL((size_t)d.http.seen.size(), g_meter.size());   // one estimate per request sent
 }
 
 // A sub-agent dispatch that got no answer (an OpenAI background job may have started):
-// counted once, on the model it named.
+// counted once, on the model it named, at least the session estimate (round 3), with the
+// output it could have written in its two minutes (capped by its own output cap).
 static void test_a_sub_dispatch_with_no_answer_is_counted() {
   FakeProviderDeps d;
   d.http.script.push_back(harness_test::transportCut(120000, "no response"));
@@ -130,7 +131,11 @@ static void test_a_sub_dispatch_with_no_answer_is_counted() {
   TEST_ASSERT_EQUAL(1, (int)g_meter.size());
   TEST_ASSERT_EQUAL_STRING("openai", g_meter[0].provider.c_str());
   TEST_ASSERT_EQUAL_STRING("gpt-6-luna", g_meter[0].model.c_str());
-  TEST_ASSERT_EQUAL_UINT32(estimateOf(d.http.seen[0]), g_meter[0].in);
+  TEST_ASSERT_EQUAL_UINT32(orch::kSessionInputEstimateTokens, g_meter[0].in);
+  const uint32_t cap = orch::bodyOutputCap(d.http.seen[0].body);
+  const uint32_t held = 120u * orch::kEstimateOutputTokensPerSec;
+  const uint32_t want = cap && cap < held ? cap : held;   // (+ the fake clock's few ms)
+  TEST_ASSERT_TRUE(g_meter[0].out >= want && g_meter[0].out <= want + orch::kEstimateOutputTokensPerSec);
 }
 
 // A sub-agent that runs inside its one request, on a paid custom endpoint: counted on
@@ -183,7 +188,7 @@ static void test_an_anthropic_turn_with_no_answer_interrupts_its_session() {
   d.http.script.push_back(harness_test::transportCut(2000, "no response"));
   d.http.script.push_back({"", "/v1/sessions/sess_1/events", 200, "{\"data\":[]}"});
   d.http.script.push_back({"", "/v1/sessions/sess_1", 200,
-                           "{\"id\":\"sess_1\",\"agent\":{\"model\":{\"id\":\"claude-sonnet-5\"}},"
+                           "{\"id\":\"sess_1\",\"status\":\"idle\",\"agent\":{\"model\":{\"id\":\"claude-sonnet-5\"}},"
                            "\"usage\":{\"input_tokens\":900,\"output_tokens\":40}}"});
   auto pd = d.contract();
   agent::Directive dir{};
@@ -201,6 +206,21 @@ static void test_an_anthropic_turn_with_no_answer_interrupts_its_session() {
   TEST_ASSERT_EQUAL_STRING("claude-sonnet-5", g_meter[1].model.c_str());
   TEST_ASSERT_EQUAL_UINT32(900, g_meter[1].in);
   TEST_ASSERT_EQUAL_UINT32(40, g_meter[1].out);
+  TEST_ASSERT_EQUAL_STRING("", providers::takeUnseenRun().c_str());   // stopped and counted: nothing left
+  // Round 3 (merge review blocker 1): the interrupt failed too. The session id is never
+  // dropped: the engine gets it (and keeps stopping and counting it in the background).
+  providers::antForgetIds();
+  FakeProviderDeps f;
+  f.antEnv = "env_1";
+  f.antAgents = "claude-sonnet-5=ag_1;";
+  f.http.script.push_back({"", "/v1/sessions", 200, "{\"id\":\"sess_3\"}"});
+  f.http.script.push_back(harness_test::transportCut(2000, "no response"));
+  f.http.script.push_back(harness_test::transportCut(2000, "no response"));
+  auto pf = f.contract();
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Timeout, (int)providers::antDispatch(pf, "claude-sonnet-5", dir, job));
+  TEST_ASSERT_EQUAL(3, (int)f.http.seen.size());
+  TEST_ASSERT_EQUAL_STRING("anthropic:sess_3", providers::takeUnseenRun().c_str());
+  TEST_ASSERT_EQUAL_STRING("", providers::takeUnseenRun().c_str());   // taken once
   // A turn that never left starts nothing: no interrupt.
   providers::antForgetIds();
   FakeProviderDeps u;
@@ -289,6 +309,52 @@ static void test_a_search_with_no_answer_is_marked_billed() {
   TEST_ASSERT_FALSE(agent::websearch::search(unsent, "k", "tea", 3).billed);
 }
 
+// Round 3 (merge review major 6): a request held open to its deadline may have had a
+// model writing all that time, and a background start may have begun a whole run: the
+// estimate counts output for the time it was held, and a run's start counts at least the
+// session estimate.
+static void test_a_request_held_to_its_deadline_counts_output_too() {
+  FakeProviderDeps d;
+  d.toolLoop = false;
+  d.http.script.push_back(harness_test::transportCut(120000, "no response"));
+  auto pd = d.contract();
+  std::string conv, out, err;
+  providers::orchTurnOpenAI(pd, conv, "SYS", "USER", out, err, nullptr, nullptr);
+  TEST_ASSERT_TRUE(g_meter.size() >= 1);
+  TEST_ASSERT_TRUE(g_meter[0].out > 0);   // two minutes of possible writing
+  g_meter.clear();
+  FakeProviderDeps b;   // an OpenAI background start: a whole run may have begun
+  b.http.script.push_back(harness_test::transportCut(1000, "no response"));
+  auto pb = b.contract();
+  agent::Directive dir{};
+  dir.instruction = "research tea";
+  char job[72] = {};
+  providers::oaiDispatch(pb, "api.openai.com", "sk-fake-oai", "gpt-6-luna", "openai", dir, job);
+  TEST_ASSERT_EQUAL(1, (int)g_meter.size());
+  TEST_ASSERT_TRUE(g_meter[0].in >= orch::kSessionInputEstimateTokens);
+}
+
+// The estimate's rule, by itself.
+static void test_the_held_open_estimate_rule() {
+  orch::UnansweredRequest r;
+  r.bodyChars = 1000;
+  TEST_ASSERT_EQUAL_UINT32(0, orch::unansweredEstimate(r).completionTokens);   // failed at once
+  r.heldMs = 120000;
+  TEST_ASSERT_EQUAL_UINT32(120u * orch::kEstimateOutputTokensPerSec, orch::unansweredEstimate(r).completionTokens);
+  r.outputCap = 4096;
+  TEST_ASSERT_EQUAL_UINT32(4096, orch::unansweredEstimate(r).completionTokens);   // never past its own cap
+  TEST_ASSERT_EQUAL_UINT32(500, orch::unansweredEstimate(r).promptTokens);
+  r.startsRun = true;
+  TEST_ASSERT_EQUAL_UINT32(orch::kSessionInputEstimateTokens, orch::unansweredEstimate(r).promptTokens);
+  TEST_ASSERT_EQUAL_UINT32(16000, orch::bodyOutputCap("{\"model\":\"m\",\"max_output_tokens\":16000}"));
+  TEST_ASSERT_EQUAL_UINT32(800, orch::bodyOutputCap("{\"max_tokens\": 800,\"x\":1}"));
+  TEST_ASSERT_EQUAL_UINT32(0, orch::bodyOutputCap("{\"model\":\"m\"}"));
+  TEST_ASSERT_TRUE(orch::bodyStartsRun("/v1/responses", "{\"background\":true}"));
+  TEST_ASSERT_FALSE(orch::bodyStartsRun("/v1/responses", "{\"stream\":false}"));
+  TEST_ASSERT_TRUE(orch::bodyStartsRun("/v1/conversations", "{}"));
+  TEST_ASSERT_FALSE(orch::bodyStartsRun("/v1/chat/completions", "{}"));
+}
+
 // ---- the counter-tests -------------------------------------------------------------------
 
 // A refused request (a 500, a 429) and one that never left (the head write failed, a
@@ -334,6 +400,8 @@ int main(int, char**) {
   RUN_TEST(test_a_caption_with_no_answer_is_counted);
   RUN_TEST(test_caption_attempts_are_filed_on_their_own_providers);
   RUN_TEST(test_a_search_with_no_answer_is_marked_billed);
+  RUN_TEST(test_a_request_held_to_its_deadline_counts_output_too);
+  RUN_TEST(test_the_held_open_estimate_rule);
   RUN_TEST(test_refused_or_unsent_requests_count_nothing);
   return UNITY_END();
 }

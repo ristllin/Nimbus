@@ -94,7 +94,7 @@ std::string screenLine(std::string& detail);
 // the message was handled (`answered`). The notice pump says it once per pause; this
 // answers every message the pause leaves unanswered, so a lost notice never leaves the
 // bot silent.
-std::string frozenReplyFor(const std::string& chatId, bool answered);
+std::string frozenReplyFor(const std::string& chatId, bool answered, bool owner);
 
 // The state for /api/state and /api/orch: {"limitCents":..,"spentCents":..,"frozen":..,
 // "ownerSet":..,"active":..,"month":..,"resetsOn":"..","saved":..,"loaded":..,

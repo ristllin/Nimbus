@@ -14,6 +14,7 @@
 #include "agent_config.h"
 #include "nimbus/exchange_trace.h"   // the traced exchange: one line on every path
 #include "nimbus/fault.h"
+#include "nimbus/orch/spend_guard.h"   // noteHttpDateHeader - a time base without NTP (lane QW4)
 #include "connectors.h"
 #include "store.h"
 
@@ -208,6 +209,10 @@ struct TlsIo {
         if (c == '\n') {
           if (line.length() == 0) return true;
           keepErrHeader(req, code, line);
+          // Lane QW4 round 3: the server's date stands in for a clock that never set (no
+          // NTP), so the monthly spend ceiling still rolls its month.
+          if (line.length() > 5 && strncasecmp(line.c_str(), "Date:", 5) == 0)
+            nimbus::orch::noteHttpDateHeader(line.c_str() + 5, millis());
           line = "";
         }
         else if (c != '\r') line += c;
@@ -427,6 +432,7 @@ providers::ProviderDeps deviceProviderDeps() {
   pd.attachMistral = [](JsonDocument& d) { connectors::attachMistral(d); };
   pd.attachAnthropic = [](JsonDocument& d) { connectors::attachAnthropic(d); };
   pd.nowMs = [] { return (uint32_t)millis(); };
+  pd.monoMs = [] { return (uint32_t)millis(); };   // lane QW4: a request's held time
   // CUM-477: every head loop's one resend of an unsent request may wait (bounded)
   // for the internal heap to recover - on the calling task, no new task.
   pd.delayMs = [](uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms)); };

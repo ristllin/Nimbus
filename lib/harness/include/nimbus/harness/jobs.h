@@ -100,6 +100,12 @@ class JobEngine {
                        const nimbus::orch::TokenUsage& usage)>
         recordSpawnUsage;
 
+    // Lane QW4 round 3: the background stop list (helpers whose stop is not yet
+    // confirmed), saved whole after every change and read once at the first pump, so a
+    // restart keeps asking them to stop and counts them. Nullable: RAM only.
+    std::function<std::string()> loadStopping;
+    std::function<bool(const std::string& text)> saveStopping;
+
     // Recent-results spill (nullable - Context Fabric Stage 1): called with the
     // FULL result text for EVERY finished sub-agent, before any clipping. The
     // returned ring tag ("sub:<jobtag>") is referenced by overflow stubs and
@@ -243,8 +249,10 @@ class JobEngine {
 
   bool cancel(const char* tagOrJobId);
   // Lane QW4 (CUM-774): true while a job's stop is asked but not yet confirmed by its
-  // provider (the job stays tracked, its cancel asked again, its spend counted).
+  // provider (it is on the background stop list: asked again, polled, counted).
   bool stopping(const char* tagOrJobId) const;
+  int stoppingCount() const { return (int)stopping_.size(); }
+  static constexpr int kMaxStopping = 8;   // the stop list's room (a full one counts the estimate)
   // Aim the round-robin at the awaited tag + poll now (turn `await[0]`).
   void awaitTag(const std::string& firstTag);
   std::vector<nimbus::orch::SessionInfo> sessionInfos() const;
@@ -494,34 +502,39 @@ class JobEngine {
   // Stuck-job watchdog (RAM only - JobRecord is an NVS-persisted POD whose
   // layout must not change; a reboot resetting these clocks just restarts the
   // generous ceilings). Keyed by tag; entries clear on any terminal outcome.
-  // Lane QW4 (CUM-774): `cancelling` - a cancel the provider did not confirm; the job
-  // stays polled (its spend is counted at its end) and the cancel is asked again at
-  // cancelAtMs, with a growing wait.
-  struct JobWatch {
-    char tag[12] = {};
-    uint32_t firstErrMs = 0;
-    bool parked = false;
-    bool cancelling = false;
-    uint8_t cancelTries = 0;
-    uint32_t cancelAtMs = 0;
-  };
+  struct JobWatch { char tag[12] = {}; uint32_t firstErrMs = 0; bool parked = false; };
   JobWatch watch_[nimbus::orch::kAgentMaxJobs];
   JobWatch& watchFor(const char* tag);   // find-or-claim (evicts a free/stale slot)
-  const JobWatch* watchFind(const char* tag) const;   // nullptr: no watch for it
   void watchClear(const char* tag);
-  // Lane QW4 (CUM-774, CUM-778): stop a job on its provider (true: confirmed or gone,
-  // and finished; false: kept, the cancel asked again later); mark a job to stop at the
-  // next pump; one poll of a job being stopped; finish and count a stopped job; stop the
-  // helpers a spend freeze paused (one message per chat).
-  bool stopJob(const nimbus::orch::JobRecord& rec);
+
+  // Lane QW4 (CUM-774, CUM-778; round 3, merge review 1-4): the background stop list (see
+  // jobs.cpp). Saved fields: tag, jobId, backend, model, chatId, label, prepaid (the
+  // session-estimate tokens already counted for it); the clocks are RAM.
+  struct Stopping {
+    std::string tag, jobId, backend, model, chatId, label;
+    uint32_t prepaid = 0;
+    uint8_t tries = 0;
+    uint32_t cancelAtMs = 0, pollAtMs = 0, pollWaitMs = 0, firstErrMs = 0;
+  };
+  std::vector<Stopping> stopping_;
+  bool stoppingLoaded_ = false;
+  bool stopJob(const nimbus::orch::JobRecord& rec);   // true: confirmed or gone
   void markStopping(const nimbus::orch::JobRecord& rec);
-  bool pollStopping(const nimbus::orch::JobRecord& rec, FabricErr err);
-  bool stoppingGaveUp(const nimbus::orch::JobRecord& rec);
-  void countStopped(const nimbus::orch::JobRecord& rec, bool ended);
   void finishStopped(const nimbus::orch::JobRecord& rec);
+  void toStopList(const nimbus::orch::JobRecord& rec, uint32_t cancelAtMs, uint8_t tries, uint32_t prepaid);
+  bool keepStopping(Stopping e);
+  void keepUnseenRun(const char* tag, const PendingSpawn& p, const std::string& model);
+  void loadStopList();
+  void saveStopList();
+  void serviceStopList();
+  void askStop(size_t i);
+  void pollStop(size_t i);
+  void stopUnreachable(size_t i);
+  void countFinal(const Stopping& e);
+  void countEstimate(const std::string& backend, const std::string& model);
+  void endStop(size_t i);
   void stopFrozenHelpers();
   std::vector<nimbus::orch::JobRecord> frozenHelpers(bool ceiling) const;
-  void retryDueCancels();
   uint32_t frozenCheckedAt_ = 0;
   bool frozenChecked_ = false;
 

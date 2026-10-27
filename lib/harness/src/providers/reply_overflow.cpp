@@ -40,6 +40,23 @@ void replyOverflowAppend(const char* s, size_t n) {
   if (store().on) keep(s, n);
 }
 
+// Lane QW4 round 3: the unseen run side channel (reply_overflow.h), beside the reply overflow:
+// both hand the job engine what a provider call left behind.
+namespace {
+std::string& unseenRun() {
+  static std::string id;
+  return id;
+}
+}  // namespace
+
+void noteUnseenRun(const std::string& jobId) { unseenRun() = jobId; }
+
+std::string takeUnseenRun() {
+  std::string out;
+  out.swap(unseenRun());
+  return out;
+}
+
 std::string takeReplyOverflow(size_t* dropped) {
   Overflow& o = store();
   std::string out;

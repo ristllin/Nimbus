@@ -9,6 +9,7 @@
 #include "nimbus/harness/head_tools.h"  // HeadTools - the multi-turn tool-use loop glue
 #include "nimbus/harness/http.h"        // HttpTransport - the device/host seam
 #include "nimbus/orch/body_budget.h"    // bodyBudgetError - the refusal the tool loop reads back
+#include "nimbus/harness/reply_overflow.h"  // noteUnseenRun / takeUnseenRun (lane QW4)
 #include "nimbus/orch/head_loop.h"      // StepErr - the typed step error
 #include "nimbus/orch/provider_park.h"  // the one per-provider park (the host park's store)
 #include "nimbus/orch/token_usage.h"
@@ -147,6 +148,10 @@ struct ProviderDeps {
 
   // Platform (loop deadline/heap re-gate). nowMs required for loop turns.
   std::function<uint32_t()> nowMs;
+  // Lane QW4 round 3: a plain clock read (no side effect on a test rig's clock) for how
+  // long a request was held open, which the estimate of a request with no answer uses.
+  // Nullable: such a request then counts no output.
+  std::function<uint32_t()> monoMs;
   std::function<uint32_t()> freeHeap;
   // Optional: largest contiguous free INTERNAL block (fragmentation trace for the
   // per-round headloop log - free-vs-largest divergence IS fragmentation).

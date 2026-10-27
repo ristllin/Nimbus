@@ -19,7 +19,9 @@ control. This page explains both, in plain words.
 - **From the first paid call**, even on a new device whose clock is not set yet: the
   count starts at once, the ceiling applies at once, and the count joins the month
   as soon as the clock is set. Until the clock is set the count cannot start a new
-  month either.
+  month either. On a network that blocks the time service, the date a server gives in
+  its answers (Telegram's, or a provider's) stands in for the clock, so the month still
+  changes on time.
 - **Calendar month in the device's time zone** (set it under **Device**; UTC when it
   is not set). The count starts again on the 1st.
 - **At the ceiling, paid calls pause.** The device's side stops them before any
@@ -79,8 +81,8 @@ never reads lower than the bill:
 | Generated images | the largest size at the requested quality: 0.016 (low), 0.063 (medium), 0.25 USD (high or other models) |
 | A web search a helper runs on its provider | 0.03 USD each |
 | An OpenAI helper's code interpreter | 0.03 USD a run |
-| A request that was sent and got no answer (it timed out, or the answer was cut): replies, helpers, photo descriptions, the download scan, memory, moderation and web searches | one token per two characters sent (a photo counts 16,000 tokens), no answer tokens, on the provider and model it named: the provider may well have run it. Generated images count their per-image price, voice its usual price, a web search one call |
-| A helper whose stop the provider never confirmed, or that ended without reporting its tokens | 50,000 input tokens at its model's price |
+| A request that was sent and got no answer (it timed out, or the answer was cut): replies, helpers, photo descriptions, the download scan, memory, moderation and web searches | one token per two characters sent (a photo counts 16,000 tokens), on the provider and model it named: the provider may well have run it. A reply or helper request also counts the answer a model could have written while it waited, 200 tokens a second up to the request's own limit, and a helper start (an OpenAI background run, a Mistral run) at least 50,000 input tokens. Generated images count their per-image price, voice its usual price, a web search one call |
+| A helper whose stop is not confirmed and whose provider stops answering for 15 minutes, or that cannot be followed at all | 50,000 input tokens at its model's price, at once (what its provider reports later counts only above that) |
 
 Helpers' tokens also show on the **Usage** page under their provider. Everything else
 in this list (the web searches helpers run included) counts toward the ceiling only.
@@ -108,9 +110,11 @@ at the estimate below). Until you set one:
 
 Once per pause, on each channel:
 
-- **Telegram**: one message in your owner chat. Every Telegram message the pause
+- **Telegram**: one message in your owner chat. A message of yours that the pause
   leaves unanswered also gets a short reply saying it was not answered and how to
-  raise the ceiling, so you hear about it even if that one message did not arrive.
+  raise the ceiling (at most once every 30 minutes), so you hear about it even if that
+  one message did not arrive. Any other chat gets one plain line per pause saying the
+  assistant cannot answer right now, with no amounts.
 - **The web chat**: one message in the conversation. A message you send while the
   pause lasts is answered at once with the reason instead of waiting.
 - **The device screen**: a line in place of **Hold to talk** that says paid AI is

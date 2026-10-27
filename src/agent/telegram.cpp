@@ -61,6 +61,7 @@
 #include <time.h>
 #include "nimbus/tg_html.h"   // v4.1.1: markdown -> Telegram HTML (plain fallback below)
 #include "nimbus/orch/reply_markup.h"   // lane L: cleanReplyMarkup at the Telegram seam
+#include "nimbus/orch/spend_guard.h"    // lane QW4: noteHttpDateHeader - a time base without NTP
 
 #define TG_HOST "api.telegram.org"
 static const int TG_PORT = 443;
@@ -864,6 +865,7 @@ static void readPollHeaders(uint32_t deadline, long& contentLen, bool& serverClo
     if (n == 0) break;
     if (!strncasecmp(line, "Content-Length:", 15)) contentLen = atol(line + 15);
     else if (!strncasecmp(line, "Connection:", 11) && strstr(line, "close")) serverClose = true;
+    else if (!strncasecmp(line, "Date:", 5)) nimbus::orch::noteHttpDateHeader(line + 5, millis());   // lane QW4
     else if (retryAfterS && !strncasecmp(line, "Retry-After:", 12))
       *retryAfterS = nimbus::net::tgRetryAfterHeaderS(line + 12);
   }
