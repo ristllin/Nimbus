@@ -502,5 +502,6 @@ def test_turn_rows_pairs_replies_by_turn_tag():
 
 @pytest.mark.host
 def test_plate_is_a_jpeg():
+    pytest.importorskip("PIL")  # host CI installs pytest only
     data = plate_jpeg()
     assert data[:2] == b"\xff\xd8" and 20000 < len(data) < 600000
