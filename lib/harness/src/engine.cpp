@@ -1034,6 +1034,7 @@ TurnSources TurnEngine::claimSources(const std::string& chatId, const std::strin
   for (const JobEngine::FreshResult& f : turnMem().fresh) {
     parts.fresh += f.provenance + " " + f.text + "\n";
     parts.webRead = parts.webRead || f.provenance.find(", web: ") != std::string::npos;
+    parts.subRuns.add(nimbus::orch::runsInRecord(f.provenance));   // CUM-835
   }
   parts.memory = turnMem().memBody;
   if (d_.jobs) parts.ledger = d_.jobs->spawnLedgerText(chatId);
@@ -1109,7 +1110,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   claims_.beginTurn();
   claims_.noteFresh(freshSourced_, freshUnsourced_);
   freshSourced_ = freshUnsourced_ = 0;   // consumed: never carried into a later turn
-  claims_.setHostedTools(d_.cfg.headHostedTools && d_.cfg.headHostedTools());
   // Lifecycle hook: turn start (observer-only; source set by the entry wrapper).
   if (d_.hooks.onTurnStart) {
     TurnStartEv ev;

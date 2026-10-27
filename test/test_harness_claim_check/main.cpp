@@ -102,20 +102,45 @@ static void test_scratchpad_durability_fresh_device_and_full_nvs() {
   TEST_ASSERT_TRUE(full.tailAfterApply(reply).find("until the next restart") != std::string::npos);
 }
 
-static void test_hosted_tools_leave_sent_checked_and_changed_unchecked() {
-  for (int hosted = 0; hosted < 2; hosted++) {
-    for (const char* reply : {"I sent the email to Sam.", "I checked your calendar.", "I updated the event."}) {
+// CUM-835: what a provider-hosted tool could have done where the device cannot see
+// it stands unchecked only when such a tool really ran this turn: a head response
+// listed a server-side run (the adapter noted it), or a sub-agent result's provider
+// record names one. An enabled connector that never ran exempts nothing (Lumi has a
+// connector on, so every turn used to read as hosted). A web search never sent an
+// email or changed an event; any run may have checked something.
+static void test_a_hosted_run_this_turn_leaves_what_it_could_back_unchecked() {
+  struct Run { const char* label; const char* headTool; const char* subRecord; bool connector; bool any; };
+  const Run runs[] = {
+      {"nothing ran", nullptr, nullptr, false, false},
+      {"head connector", "gmail", nullptr, true, true},
+      {"head web search", "web_search", nullptr, false, true},
+      {"head code run", "code_interpreter", nullptr, false, true},
+      {"sub connector", nullptr, " [tools: 1] [ran: gmail x1]", true, true},
+      {"sub web search", nullptr, " [tools: 2, web: 2] [ran: web_search x2]", false, true},
+      {"sub connector offered, idle", nullptr, " [tools: 1, web: 1] [ran: web_search x1, gmail x0]", false, true},
+      {"sub ran nothing", nullptr, " [no tools ran] [ran: gmail x0]", false, false},
+      {"sub tools, no names", nullptr, " [tools: 3, web: 1]", true, true},
+  };
+  struct Claim { const char* reply; bool needsConnector; };
+  const Claim claims[] = {{"I sent the email to Sam.", true}, {"I updated the event.", true},
+                          {"I checked your calendar.", false}};
+  for (const Run& r : runs) {
+    for (const Claim& c : claims) {
       ClaimCheck cc;
       cc.beginTurn();
-      cc.setHostedTools(hosted != 0);
-      const bool flagged = !cc.finalCheck(turnJson(reply)).empty();
-      TEST_ASSERT_EQUAL_MESSAGE(!hosted, flagged, reply);
+      if (r.headTool) nimbus::orch::noteHostedRun(r.headTool);
+      agent::TurnSources parts;
+      if (r.subRecord) parts.subRuns = nimbus::orch::runsInRecord(r.subRecord);
+      cc.setSources("", "", parts);
+      const bool exempt = c.needsConnector ? r.connector : r.any;
+      const std::string why = std::string(r.label) + ": " + c.reply;
+      TEST_ASSERT_EQUAL_MESSAGE(!exempt, !cc.finalCheck(turnJson(c.reply)).empty(), why.c_str());
     }
-    // Device-side claims are checked either way.
+    // Device-side claims are checked whatever ran.
     ClaimCheck cc;
     cc.beginTurn();
-    cc.setHostedTools(hosted != 0);
-    TEST_ASSERT_FALSE(cc.finalCheck(turnJson("Logged.")).empty());
+    if (r.headTool) nimbus::orch::noteHostedRun(r.headTool);
+    TEST_ASSERT_FALSE_MESSAGE(cc.finalCheck(turnJson("Logged.")).empty(), r.label);
   }
 }
 
@@ -194,13 +219,14 @@ static void test_begin_turn_clears_everything() {
   ClaimCheck cc;
   cc.beginTurn();
   cc.noteTool(FxKind::MemWrite, false, "stored memory m1");
-  cc.setHostedTools(true);
+  nimbus::orch::noteHostedRun("gmail");
   cc.finalCheck(turnJson("I sent it, and the block is written and waiting."));
   TEST_ASSERT_TRUE(cc.corrected());
   cc.beginTurn();
   TEST_ASSERT_TRUE(cc.effects().empty());
   TEST_ASSERT_FALSE(cc.corrected());
-  TEST_ASSERT_FALSE(cc.finalCheck(turnJson("I sent it.")).empty());   // hosted flag reset
+  TEST_ASSERT_EQUAL_UINT16(0, nimbus::orch::hostedRuns().total);   // the hosted runs too
+  TEST_ASSERT_FALSE(cc.finalCheck(turnJson("I sent it.")).empty());
 }
 
 // Every registered tool's ledger kind comes from the shared tool table, per
@@ -482,7 +508,7 @@ static void test_voice_claim_needs_a_telegram_receipt() {
     for (int hosted = 0; hosted < 2; hosted++) {
       ClaimCheck incident;
       incident.beginTurn();
-      incident.setHostedTools(hosted != 0);
+      if (hosted) nimbus::orch::noteHostedRun("gmail");
       incident.noteTool(agent::fxKindForTool("reply.telegram"), false, "sent to Telegram", flags);
       const std::string fix = incident.finalCheck(turnJson(reply));
       TEST_ASSERT_TRUE_MESSAGE(fix.find("no voice message reached Telegram") != std::string::npos, reply);
@@ -490,7 +516,7 @@ static void test_voice_claim_needs_a_telegram_receipt() {
                                        incident.tailAfterApply(reply).c_str(), reply);
       ClaimCheck delivered;
       delivered.beginTurn();
-      delivered.setHostedTools(hosted != 0);
+      if (hosted) nimbus::orch::noteHostedRun("gmail");
       delivered.noteTool(agent::fxKindForTool("reply.telegram"), false, receipt, flags);
       TEST_ASSERT_EQUAL_STRING_MESSAGE("", delivered.finalCheck(turnJson(reply)).c_str(), reply);
     }
@@ -764,17 +790,19 @@ static void test_a_named_source_needs_the_owner_or_a_result_naming_it() {
                                            "Roy's watch logged 142 bpm on the hill climb.\n").c_str());
 }
 
-// A connector or a hosted search the device cannot see may have read a website; it
-// cannot have read a gauge.
+// A connector or a hosted search that ran this turn may have read a website; it
+// cannot have read a gauge. One that did not run read nothing (CUM-835).
 static void test_hosted_tools_leave_only_web_sources_unchecked() {
-  for (const char* reply : {"According to the Met Office website, it is raining.", "The live gauge says it is heavy."}) {
-    const TurnInput t = inputsWith("", "", "", "", "Its 3.0mm rn");
-    ClaimCheck cc;
-    cc.beginTurn();
-    cc.setHostedTools(true);
-    cc.setSources(t.inputs, "", t.parts);
-    const bool web = std::string(reply).find("website") != std::string::npos;
-    TEST_ASSERT_EQUAL_MESSAGE(web, cc.finalCheck(turnJson(reply)).empty(), reply);
+  for (int ran = 0; ran < 2; ran++) {
+    for (const char* reply : {"According to the Met Office website, it is raining.", "The live gauge says it is heavy."}) {
+      const TurnInput t = inputsWith("", "", "", "", "Its 3.0mm rn");
+      ClaimCheck cc;
+      cc.beginTurn();
+      if (ran) nimbus::orch::noteHostedRun("web_search");
+      cc.setSources(t.inputs, "", t.parts);
+      const bool web = std::string(reply).find("website") != std::string::npos;
+      TEST_ASSERT_EQUAL_MESSAGE(ran && web, cc.finalCheck(turnJson(reply)).empty(), reply);
+    }
   }
 }
 
@@ -914,7 +942,7 @@ int main(int, char**) {
   RUN_TEST(test_unbacked_claim_gets_one_correction_with_the_record);
   RUN_TEST(test_tail_after_apply_uses_the_real_outcomes);
   RUN_TEST(test_scratchpad_durability_fresh_device_and_full_nvs);
-  RUN_TEST(test_hosted_tools_leave_sent_checked_and_changed_unchecked);
+  RUN_TEST(test_a_hosted_run_this_turn_leaves_what_it_could_back_unchecked);
   RUN_TEST(test_skip_spawned_leaves_the_spawn_class_to_the_shape_check);
   RUN_TEST(test_unsourced_fresh_result_needs_a_hedge);
   RUN_TEST(test_figures_against_the_turn_sources);

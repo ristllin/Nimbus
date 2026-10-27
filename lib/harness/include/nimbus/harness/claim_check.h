@@ -14,10 +14,12 @@
 //
 // Claims a provider-hosted tool could back (a connector's send, a hosted web
 // search, a remote calendar change) run where the device cannot see them, so
-// when the head had hosted tools this turn, the sent / checked / changed
-// classes are not checked (precision first) - except a gap only this device
-// could have closed (a Telegram voice message from its own bot:
-// ClaimGap::deviceOnly). Everything the device does itself
+// when such a tool really ran this turn (CUM-835: a head response listed a
+// server-side tool run, or a sub-agent result's provider record names one),
+// the classes it could back are not checked (precision first): a connector run
+// stands for sent / changed, any run for checked and a website or app source -
+// except a gap only this device could have closed (a Telegram voice message
+// from its own bot: ClaimGap::deviceOnly). Everything the device does itself
 // (memory, files, skills, the scratchpad, spawns, durability, figures from a
 // source, unsourced sub-agent results) is always checked.
 //
@@ -28,6 +30,7 @@
 #include <vector>
 
 #include "nimbus/orch/claims.h"
+#include "nimbus/orch/hosted_runs.h"
 #include "nimbus/orch/turn.h"
 #include "nimbus/orch/turn_effects.h"
 
@@ -47,11 +50,13 @@ struct TurnSources {
   std::string memory;   // the [MEMORY RESULTS] body
   std::string ledger;   // the spawn ledger block (JobEngine::spawnLedgerText)
   bool webRead = false; // a result's provider record shows a web search or fetch
+  nimbus::orch::HostedRuns subRuns;   // the tools those results' provider records name (CUM-835)
 };
 
 class ClaimCheck {
  public:
-  // Start a turn: clears the ledger, the sources and the per-turn flags.
+  // Start a turn: clears the ledger, the sources, the per-turn flags and this
+  // thread's record of hosted tool runs (nimbus::orch::resetHostedRuns).
   void beginTurn();
 
   // The sources a figure may come from: the turn's input block (the owner's
@@ -94,8 +99,6 @@ class ClaimCheck {
   // Sub-agent results this turn read: how many had a lookup behind them and how
   // many were live-data results with none.
   void noteFresh(int sourced, int unsourced);
-  // The head had provider-hosted tools this turn (connectors, hosted search).
-  void setHostedTools(bool on) { hosted_ = on; }
 
   // This turn's cause evidence (L19-11): what the records the model was given
   // (its inputs, its tool results, its health reads) say about causes, as
@@ -132,6 +135,7 @@ class ClaimCheck {
   std::vector<nimbus::orch::ClaimGap> gapsFor(const std::string& reply,
                                               const nimbus::orch::TurnEffects& fx,
                                               bool skipSpawned) const;
+  nimbus::orch::HostedRuns hostedRan() const;   // the head's server-side runs plus the subs'
   bool hostedMayBack(const nimbus::orch::ClaimGap& g) const;
   void recordGaps(const std::string& reply, std::vector<nimbus::orch::ClaimGap>& kept) const;
   std::string seenText(bool fixedToo) const;   // what a quote (fixedToo) or a reason may come from
@@ -151,7 +155,7 @@ class ClaimCheck {
   const std::string* instructions_ = nullptr;   // setQuoteContext
   const std::string* inputs_ = nullptr;
   uint32_t causeEvidence_ = 0;   // this turn's records, as CauseEvidence bits
-  bool hosted_ = false;
+  nimbus::orch::HostedRuns subRuns_;   // TurnSources::subRuns
   bool corrected_ = false;
 };
 

@@ -10,9 +10,11 @@
 #include <cstring>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "nimbus/orch/claims.h"
+#include "nimbus/orch/hosted_runs.h"
 #include "nimbus/orch/sub_provenance.h"
 #include "nimbus/orch/turn_effects.h"
 
@@ -1330,6 +1332,73 @@ static void test_tool_tally_names_counts_and_idle_tools() {
   TEST_ASSERT_EQUAL_STRING("", toolRunsTag("").c_str());
 }
 
+// CUM-835: the record of what ran server-side, read from where the device sees it: a
+// head adapter's notes (one record per thread) and a sub's provenance tags. Property:
+// over every mix of tools and counts, the runs read back from the tags the jobs engine
+// writes (freshProvenanceTag + toolRunsTag over the envelope's tally) are the runs made,
+// split as web, connector, or a provider built-in that is neither.
+static void test_hosted_runs_read_back_from_what_the_device_records() {
+  struct Tool { const char* name; bool web, connector; };
+  const Tool pool[] = {{"web_search", true, false},  {"notion_search", false, true}, {"gmail", false, true},
+                       {"code_interpreter", false, false}, {"news_search", true, false}};
+  const int kTools = (int)(sizeof(pool) / sizeof(pool[0]));
+  int checked = 0;
+  for (int mix = 0; mix < 243; mix++) {   // 3^5: each tool idle, once or twice
+    ToolTally tally;
+    HostedRuns want;
+    uint16_t webRuns = 0, toolRuns = 0;
+    for (int i = 0, m = mix; i < kTools; i++, m /= 3) {
+      const int n = m % 3;
+      if (n == 0) tally.offered(pool[i].name);
+      for (int k = 0; k < n; k++) tally.ran(pool[i].name);
+      want.total = (uint16_t)(want.total + n);
+      if (pool[i].web) {
+        want.web = (uint16_t)(want.web + n);
+        webRuns = (uint16_t)(webRuns + n);
+      }
+      if (pool[i].connector) want.connector = (uint16_t)(want.connector + n);
+      toolRuns = (uint16_t)(toolRuns + n);
+    }
+    char field[96];   // ResultEnvelope::toolNames
+    tally.copyTo(field);
+    const std::string record = freshProvenanceTag(toolRuns, webRuns) + toolRunsTag(field);
+    const HostedRuns got = runsInRecord(record);
+    TEST_ASSERT_EQUAL_UINT16_MESSAGE(want.total, got.total, record.c_str());
+    TEST_ASSERT_EQUAL_UINT16_MESSAGE(want.web, got.web, record.c_str());
+    TEST_ASSERT_EQUAL_UINT16_MESSAGE(want.connector, got.connector, record.c_str());
+    TEST_ASSERT_EQUAL(want.any(), got.any());
+    // No names recorded (an adapter with no tally): the counts alone, a run with no
+    // name read as a connector (precision first).
+    const HostedRuns counts = runsInRecord(freshProvenanceTag(toolRuns, webRuns));
+    TEST_ASSERT_EQUAL_UINT16(want.total, counts.total);
+    TEST_ASSERT_EQUAL_UINT16(want.web, counts.web);
+    TEST_ASSERT_EQUAL_UINT16((uint16_t)(want.total - want.web), counts.connector);
+    checked++;
+  }
+  TEST_ASSERT_EQUAL(243, checked);
+  TEST_ASSERT_FALSE(runsInRecord(" [no tools ran]").any());
+  TEST_ASSERT_FALSE(runsInRecord("").any());
+  TEST_ASSERT_EQUAL_UINT16(3, runsInRecord(" [tools: 3] [ran: other tools x3]").connector);
+  // The head's record: per thread, reset per turn, every spelling classed.
+  resetHostedRuns();
+  for (const char* n : {"web_search_preview", "web_search", "gmail", "file_search", "image_generation", ""})
+    noteHostedRun(n);
+  HostedRuns head = hostedRuns();
+  TEST_ASSERT_EQUAL_UINT16(6, head.total);
+  TEST_ASSERT_EQUAL_UINT16(2, head.web);
+  TEST_ASSERT_EQUAL_UINT16(2, head.connector);   // gmail, and a run with no name
+  HostedRuns other;
+  std::thread t([&other] {
+    noteHostedRun("gmail");
+    other = hostedRuns();
+  });
+  t.join();
+  TEST_ASSERT_EQUAL_UINT16(1, other.total);        // another turn's thread starts empty
+  TEST_ASSERT_EQUAL_UINT16(6, hostedRuns().total);  // and leaves this one alone
+  resetHostedRuns();
+  TEST_ASSERT_FALSE(hostedRuns().any());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_class_has_cues_and_a_template);
@@ -1381,5 +1450,6 @@ int main(int, char**) {
   RUN_TEST(test_a_reason_asked_for_needs_words_on_record);
   RUN_TEST(test_log_row_needs_a_counted_row);
   RUN_TEST(test_tool_tally_names_counts_and_idle_tools);
+  RUN_TEST(test_hosted_runs_read_back_from_what_the_device_records);
   return UNITY_END();
 }

@@ -1,7 +1,6 @@
 #include "store_config.h"
 
 #include "store.h"
-#include "connectors.h"   // anyEnabled: hosted tools on the head turn (claim check)
 #include "../sys/config_nvs.h"   // nimbus::sys::deviceName - prompt identity
 #include "nimbus/orch/provider_slots.h"   // CUM-246: canonical registry + anySlotWhere fanout
 
@@ -82,7 +81,6 @@ HarnessConfig harnessConfigFromStore() {
   c.loop.toolLoopOn = [] { return store::orchToolLoop(); };
   c.loop.midTurnFailover = [] { return store::midTurnFailover(); };
   c.promptV2 = [] { return store::orchPromptV2(); };
-  c.headHostedTools = [] { return connectors::anyEnabled(); };
   c.loop.rounds = [] { return store::orchLoopRounds(); };
   c.loop.deadlineS = [] { return store::orchLoopDeadlineS(); };
   c.loop.resultCap = [] { return store::orchLoopResultCap(); };

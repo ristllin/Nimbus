@@ -30,6 +30,7 @@
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/providers.h"   // lane K's host park (hostParked / noteHostFailed)
 #include "nimbus/harness/turn_contract.h"
+#include "nimbus/orch/hosted_runs.h"   // CUM-835: a head adapter's server-side runs
 #include "nimbus/orch/model_defaults.h"
 #include "nimbus/orch/spend_ceiling.h"
 #include "nimbus/orch/billing_refusal.h"   // the one-notice-per-episode latch
@@ -3786,6 +3787,45 @@ static void test_lane_s_the_claim_check_joins_the_final_check() {
   TEST_ASSERT_EQUAL_STRING("", r.finalChecks[2].c_str());
 }
 
+// CUM-835 (Lumi has a connector enabled, so every turn read as hosted): the hosted
+// exemption follows what ran this turn. A head response that ran a connector
+// server-side (the adapter notes it) may back "I sent the email"; the next turn, with
+// nothing run, gets the owner line. On a synthesis turn, a sub-agent result whose
+// provider record names a connector run backs it; one whose connector sat idle does not.
+static void test_cum835_the_hosted_exemption_follows_what_ran_this_turn() {
+  Rig::Script s;
+  s.outJson = "{\"reply\":\"I sent the email to Sam.\"}";
+  Rig r;
+  r.cfg.toolLoop = false;
+  r.scripts["anthropic"] = {s};
+  r.onProviderCall = [] { nimbus::orch::noteHostedRun("gmail"); };
+  r.eng->handleMessage("email Sam the plan", "Roy", "1001");
+  TEST_ASSERT_EQUAL_STRING("I sent the email to Sam.", r.lastText().c_str());
+  r.onProviderCall = nullptr;
+  r.eng->handleMessage("and Kim too", "Roy", "1001");
+  TEST_ASSERT_TRUE_MESSAGE(r.lastText().find("(Correction:") != std::string::npos, r.lastText().c_str());
+  for (int ran = 0; ran < 2; ran++) {
+    Rig y(true);
+    y.cfg.toolLoop = false;
+    y.scripts["anthropic"] = {s};
+    y.subAdapter.toolRuns = (uint16_t)ran;
+    y.subAdapter.toolNames = ran ? "gmail x1" : "gmail x0";
+    orch::Spawn sp;
+    sp.task = "Email Sam the plan";
+    sp.provider = "anthropic";
+    sp.name = "mailer";
+    y.jobs->enqueueSpawn(sp, "1001");
+    y.jobs->pump();
+    y.plat.ms = 2500;
+    y.jobs->pump();
+    y.plat.ms = 17500;
+    y.jobs->pump();
+    TEST_ASSERT_TRUE(y.jobs->hasFreshResults());
+    y.eng->maybeConsolidate("1001");
+    TEST_ASSERT_EQUAL_MESSAGE(ran == 0, y.lastText().find("(Correction:") != std::string::npos, y.lastText().c_str());
+  }
+}
+
 // Bench C1 on the host: the custom head (the LAN mock) answers the mock's exact
 // "mock-claim-saved" turn on the serial chat, and the memory write does not land
 // (FAULT embed_fail queues it; a full queue refuses it). The turn delivers exactly
@@ -4913,6 +4953,7 @@ static void runFirstHalf() {
   RUN_TEST(test_lane_l_the_final_check_rides_every_loop_turn);
   RUN_TEST(test_turn_rig_attach_and_prefix_stability);
   RUN_TEST(test_lane_s_the_claim_check_joins_the_final_check);
+  RUN_TEST(test_cum835_the_hosted_exemption_follows_what_ran_this_turn);
   RUN_TEST(test_pg5_custom_head_saved_claim_delivers_one_reply);
   RUN_TEST(test_pg5_custom_head_durability_claim_follows_the_flash_save);
   RUN_TEST(test_lane_l_markup_never_reaches_the_owner);

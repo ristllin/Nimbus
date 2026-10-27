@@ -4922,13 +4922,16 @@ Questions, offers, conditions, possibilities and plain futures ("want me to", "I
 "it may have been lost, or saved elsewhere"), a negation within four words, a clause
 whose subject is "nothing", "none" or "no record" ("nothing in the logs shows it was
 saved"), quoted text, another person's action and references to earlier turns are not
-claims. Replies that are mostly not English are not scanned. When the head has
-provider-hosted tools on its turn (connectors, a hosted web search), claims of sending,
-checking or changing something are not checked, because those tools run where the
-device cannot see them, and neither are sources such a tool may have read (a website,
-an app, a feed, a report, a receipt); everything the device does itself (memory, files,
-skills, notes, sub-agents, a Telegram voice message from its own bot) is always checked,
-and so is a source no hosted tool can read (a gauge, a sensor, a label, a watch).
+claims. Replies that are mostly not English are not scanned. Provider-hosted tools
+(a connector, a hosted web search) run where the device cannot see them, so when one
+really ran this turn, what it could have done is not checked: the head's response
+listed a server-side tool run, or a sub-agent result's provider record names one. A
+connector run stands for claims of sending or changing something, any run for checking
+something and for a source such a tool may have read (a website, an app, a feed, a
+report, a receipt). An enabled connector that did not run backs nothing. Everything the
+device does itself (memory, files, skills, notes, sub-agents, a Telegram voice message
+from its own bot) is always checked, and so is a source no hosted tool can read (a
+gauge, a sensor, a label, a watch).
 Cause claims are always checked: the records are the device's own.
 
 A memory write that states an unbacked cause as a fact ("the owner's Telegram

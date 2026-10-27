@@ -6,6 +6,7 @@
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
 #include "../support/image_turn_fixture.h"
+#include "nimbus/orch/hosted_runs.h"   // CUM-835: what a head response ran server-side
 #include "nimbus/orch/turn_images.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
@@ -376,6 +377,63 @@ static void test_loop_round2_replays_full_transcript() {
   TEST_ASSERT_TRUE(bodyHas(d, 1, "\"type\":\"function_call_output\""));
   TEST_ASSERT_TRUE(bodyHas(d, 1, "\"call_id\":\"call_1\""));
   TEST_ASSERT_TRUE(bodyHas(d, 1, "\"output\":\"tool-ok\""));
+}
+
+// CUM-835: the server-side tools a head response lists are noted for the claim check
+// (which then may leave a "sent" or "checked" claim to them): a hosted connector
+// (mcp_call, by its server label) and a hosted search (web_search_call); a function
+// call the device runs and a computer call it answers are not; a turn that ran
+// nothing notes nothing.
+static void test_cum835_hosted_tool_runs_are_noted_single_shot_and_loop() {
+  const std::string hostedItems =
+      "{\"type\":\"web_search_call\",\"id\":\"ws_1\",\"status\":\"completed\"},"
+      "{\"type\":\"mcp_list_tools\",\"server_label\":\"gmail\"},"
+      "{\"type\":\"mcp_call\",\"id\":\"mcp_1\",\"server_label\":\"gmail\",\"name\":\"send_email\"},";
+  {
+    FakeProviderDeps d;
+    std::string body = singleShotBody();
+    body.insert(body.find("\"output\":[") + 10, hostedItems);
+    d.http.script.push_back({"api.openai.com", "/v1/responses", 200, body});
+    auto pd = d.contract();
+    std::string conv, out, err;
+    orch::resetHostedRuns();
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnOpenAI(pd, conv, "SYS", "USER", out, err, nullptr, nullptr), err.c_str());
+    TEST_ASSERT_EQUAL_STRING(kFinalTurn, out.c_str());
+    const orch::HostedRuns ran = orch::hostedRuns();
+    TEST_ASSERT_EQUAL_UINT16(2, ran.total);
+    TEST_ASSERT_EQUAL_UINT16(1, ran.web);
+    TEST_ASSERT_EQUAL_UINT16(1, ran.connector);
+  }
+  {
+    FakeProviderDeps d;
+    std::string first = toolCallBody("resp_1");
+    first.insert(first.find("\"output\":[") + 10,
+                 "{\"type\":\"computer_call\",\"call_id\":\"cc_1\"},"
+                 "{\"type\":\"custom_tool_call\",\"call_id\":\"ct_1\",\"name\":\"grammar\"},");
+    std::string final = finalCallBody("resp_2");
+    final.insert(final.find("\"output\":[") + 10, hostedItems);
+    d.http.script.push_back({"", "", 200, first});
+    d.http.script.push_back({"", "", 200, final});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    std::string conv, out, err;
+    orch::resetHostedRuns();
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnOpenAI(pd, conv, "S", "U", out, err, &rig.ht, nullptr), err.c_str());
+    TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
+    const orch::HostedRuns ran = orch::hostedRuns();
+    TEST_ASSERT_EQUAL_UINT16(2, ran.total);   // the round's function call is the device's own
+    TEST_ASSERT_EQUAL_UINT16(1, ran.connector);
+  }
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.openai.com", "/v1/responses", 200, singleShotBody()});
+    auto pd = d.contract();
+    std::string conv, out, err;
+    orch::resetHostedRuns();
+    TEST_ASSERT_TRUE(providers::orchTurnOpenAI(pd, conv, "SYS", "USER", out, err, nullptr, nullptr));
+    TEST_ASSERT_EQUAL_UINT16(0, orch::hostedRuns().total);
+  }
 }
 
 // A final response that batched a registry call WITH orch_turn (here AFTER it).
@@ -1040,6 +1098,7 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_single_shot_request_shape);
   RUN_TEST(test_single_shot_parse_conv_usage);
+  RUN_TEST(test_cum835_hosted_tool_runs_are_noted_single_shot_and_loop);
   RUN_TEST(test_no_key_refused);
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_loop_round_shapes_and_pairing);

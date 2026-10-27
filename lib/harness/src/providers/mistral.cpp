@@ -10,6 +10,7 @@
 #include "nimbus/harness/rate_limit.h"  // 429 -> the quota window that refused (CUM-460)
 #include "nimbus/orch/connectors_wire.h"  // connector provenance (CUM-536)
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
+#include "nimbus/orch/hosted_runs.h"  // noteHostedRun - a head's server-side tool runs (CUM-835)
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/provider_park.h"  // parkKeyFingerprint - the no-effort memo
 #include "nimbus/orch/turn.h"         // leadingJsonObject - the shared whole-reply rule
@@ -845,6 +846,7 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
   filter["conversation_id"] = true;
   JsonObject oi = filter["outputs"].add<JsonObject>();
   oi["type"] = true; oi["content"] = true;
+  oi["name"] = true;                   // tool.execution: a Studio connector ran (CUM-835)
   keepMistralError(filter);            // every error-envelope shape
   filter["usage"] = true;              // whole usage object -> token accounting
   filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
@@ -870,6 +872,9 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
   const char* cid = doc["conversation_id"] | "";
   if (cid[0]) convId = cid;
   for (JsonObjectConst o : doc["outputs"].as<JsonArrayConst>()) {
+    // CUM-835: a tool.execution entry is a Studio connector or built-in the
+    // provider ran within this response; the claim check reads the record.
+    if (strcmp(o["type"] | "", "tool.execution") == 0) nimbus::orch::noteHostedRun(o["name"] | "");
     if (strcmp(o["type"] | "", "message.output") != 0) continue;
     outJson = mistralOutputContent(o);   // string OR array-of-text-chunks
   }

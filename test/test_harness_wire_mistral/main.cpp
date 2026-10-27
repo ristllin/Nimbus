@@ -12,6 +12,7 @@
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
 #include "nimbus/orch/connectors_wire.h"   // CUM-536: the real Mistral attach + identity probe
+#include "nimbus/orch/hosted_runs.h"   // CUM-835: what a head response ran server-side
 #include "nimbus/orch/orch_schema.h"
 #include "nimbus/orch/turn.h"
 
@@ -189,6 +190,32 @@ static void test_new_conversation_request_shape() {
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"hello there\",\"memory\":\"\"}", out.c_str());
   TEST_ASSERT_EQUAL(100, (int)u.promptTokens);
   TEST_ASSERT_EQUAL(20, (int)u.completionTokens);
+}
+
+// CUM-835: a head response's tool.execution entries (a Studio connector or the
+// built-in search ran server-side) are noted for the claim check; a response with
+// none notes nothing.
+static void test_cum835_head_tool_executions_are_noted() {
+  FakeProviderDeps d;
+  std::string body = messageOutputBody("conv_1");
+  body.insert(body.find("\"outputs\":[") + 11,
+              "{\"type\":\"tool.execution\",\"name\":\"web_search\"},"
+              "{\"type\":\"tool.execution\",\"name\":\"notion_search\"},");
+  d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, body});
+  d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("conv_2")});
+  auto pd = d.contract();
+  std::string conv, out, err;
+  orch::resetHostedRuns();
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr), err.c_str());
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"hello there\",\"memory\":\"\"}", out.c_str());
+  orch::HostedRuns ran = orch::hostedRuns();
+  TEST_ASSERT_EQUAL_UINT16(2, ran.total);
+  TEST_ASSERT_EQUAL_UINT16(1, ran.web);
+  TEST_ASSERT_EQUAL_UINT16(1, ran.connector);
+  orch::resetHostedRuns();
+  conv.clear();
+  TEST_ASSERT_TRUE(providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr));
+  TEST_ASSERT_EQUAL_UINT16(0, orch::hostedRuns().total);
 }
 
 static void test_continuation_sends_no_model_or_instructions() {
@@ -1530,6 +1557,7 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_reserved_toolname_renamed_and_inverted);
   RUN_TEST(test_new_conversation_request_shape);
+  RUN_TEST(test_cum835_head_tool_executions_are_noted);
   RUN_TEST(test_continuation_sends_no_model_or_instructions);
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_loop_chat_completions_stateless);

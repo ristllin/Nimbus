@@ -45,13 +45,6 @@ bool deviceEffect(const std::string& json, orch::FxKind& out) {
   }
 }
 
-// A hosted tool (a connector, a hosted search) runs where the device cannot
-// see it, so a claim of these classes may be true without a ledger entry.
-bool hostedClass(orch::ClaimClass c) {
-  return c == orch::ClaimClass::Sent || c == orch::ClaimClass::Checked ||
-         c == orch::ClaimClass::Changed;
-}
-
 // A photo in the owner's message that a model could read (attached, described or
 // transcribed): it may show a label, a receipt, a watch or a gauge.
 bool readablePhoto(const std::string& ownerText) {
@@ -179,7 +172,8 @@ void ClaimCheck::beginTurn() {
   clipped_ = false;
   instructions_ = inputs_ = nullptr;
   causeEvidence_ = 0;
-  hosted_ = false;
+  subRuns_ = orch::HostedRuns();
+  orch::resetHostedRuns();   // CUM-835: the head adapters record this turn's server-side runs
   corrected_ = false;
 }
 
@@ -190,6 +184,7 @@ void ClaimCheck::setSources(const std::string& inputs, const std::string& recall
   ownerNums_ = orch::figureNumbers(parts.owner, kSourceNumbersMax);
   ownerText_ = parts.owner.substr(0, kOwnerTextMax);
   ledger_ = parts.ledger;
+  subRuns_ = parts.subRuns;
   sourceNames_ = namedSources(parts, recalled);
   bool clipped = false;
   sourceWords_ = orch::sourceWordsOf(parts.owner + "\n" + parts.fresh + "\n" + parts.memory, kSourceWordsMax, &clipped);
@@ -268,15 +263,29 @@ void ClaimCheck::addPending(orch::TurnEffects& fx, const orch::Turn& t) {
   }
 }
 
-// A gap the turn's provider-hosted tools may have closed where the device cannot see it.
+orch::HostedRuns ClaimCheck::hostedRan() const {
+  orch::HostedRuns ran = orch::hostedRuns();
+  ran.add(subRuns_);
+  return ran;
+}
+
+// CUM-835: a gap a provider-hosted tool that really ran this turn may have closed
+// where the device cannot see it. A web search never sent an email or changed a
+// calendar: those classes need a connector run.
 bool ClaimCheck::hostedMayBack(const orch::ClaimGap& g) const {
-  if (!hosted_) return false;
+  const orch::HostedRuns ran = hostedRan();
+  if (!ran.any()) return false;
   // A hosted tool may have sent an email, but never this device's Telegram voice
-  // message: a device-only gap is checked whatever tools the head had.
-  if (hostedClass(g.cls) && !g.deviceOnly) return true;
-  // A connector or a hosted search may have read a website, an app or a receipt the
-  // device never saw; a gauge, a label or a watch it cannot have read (CUM-824).
-  return g.cls == orch::ClaimClass::Source && ((g.source & orch::kSrcHostable) || !g.name.empty());
+  // message: a device-only gap is checked whatever tools ran.
+  switch (g.cls) {
+    case orch::ClaimClass::Sent:
+    case orch::ClaimClass::Changed: return ran.connector > 0 && !g.deviceOnly;
+    case orch::ClaimClass::Checked: return !g.deviceOnly;
+    // A connector or a hosted search may have read a website, an app or a receipt
+    // the device never saw; a gauge, a label or a watch it cannot have read (CUM-824).
+    case orch::ClaimClass::Source: return (g.source & orch::kSrcHostable) || !g.name.empty();
+    default: return false;
+  }
 }
 
 // CUM-824: the rules that read what the turn was given, not the cue table: a quote
@@ -286,7 +295,7 @@ void ClaimCheck::recordGaps(const std::string& reply, std::vector<orch::ClaimGap
   if (clipped_) return;   // a tool result past the cap may hold the words
   orch::ClaimGap g;
   if ((instructions_ || inputs_) && orch::hasRecordQuote(reply) &&
-      orch::recordQuoteGap(reply, seenText(/*fixedToo=*/true), &g, hosted_))
+      orch::recordQuoteGap(reply, seenText(/*fixedToo=*/true), &g, hostedRan().any()))
     kept.push_back(g);
   // Asked why about a past sub-agent: the question names one ("Why notion?").
   std::string subjects = orch::asksWhy(ownerText_) ? ledgerSubjects(ledger_) : std::string();
