@@ -6,6 +6,20 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v4.6.1 - Faster replies, no web-page restarts, the real model named
+
+A fix release for problems seen in the first hours of v4.6.0.
+
+- **Replies are fast again.** v4.6.0 paused up to 1.5 s before every 4 KB of a request whenever the device's largest free memory block was small, and on a device that had been running for a while that was always. A normal reply paid 20 to 100 seconds of waiting. The pause now stops as soon as it stops helping and never takes more than 2 seconds, or a tenth of the request's time limit.
+- **Photos are read on the first try.** The device now sends the model Telegram's 800 px copy of a photo instead of the 1280 px one: half the size, still sharp enough to read a nutrition label, and small enough to send reliably when memory is tight.
+- **The device no longer restarts when its web page is open.** A status request from the web page could wait for the SD card while a photo was being read, long enough for the watchdog to restart the device. Every web request now gives up quickly when the card is busy, and no tool holds the card while it waits on the network.
+- **Your message comes first.** After an update, or while the conversation is being summarized, your message is answered before the background work. The post-update check-in is short and cannot run a long chain of tool calls.
+- **A long tool session finishes with an answer.** When a request would grow past the size limit, older tool results are shortened instead of the whole turn failing.
+- **No false "compaction paused" warning.** The first summary after the update could trip the repeat guard and warn you for nothing. A real repeat still pauses, once.
+- **The assistant names the model that is really answering.** Each request now carries the provider and the exact model that answers it, including when your chosen provider is paused by a monthly limit and replies fail over to another one. The assistant no longer guesses a model name.
+- **A pause never moves your chosen model.** When a provider is paused, replies already fail over on their own and return when the pause lifts. The assistant now refuses to switch your main model because of a pause; it switches only when you ask for it in your own words.
+- **Model lists stay fresh.** The device could stop refreshing its provider model lists when memory was fragmented, so newer models were missing. Lists now refresh within minutes and retry until they land.
+
 ## v4.6.0 - Cheaper replies, honest failures, and a spend ceiling
 
 The wave of work after the October storm: conversations are cached the way providers
