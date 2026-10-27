@@ -46,6 +46,13 @@ AwsResponseFiller cardFileFiller(std::shared_ptr<::File> f);
 // card lock when it is free (a read handle's close writes nothing to the card).
 std::shared_ptr<::File> cardFileHandle();
 AwsResponseFiller bufferFiller(std::shared_ptr<char> body, size_t len);
+// A built JSON body sent through the filler path, never the library's basic response:
+// that one's write() reports 0 when lwIP queued the bytes but could not output them yet
+// (tcp_output ERR_MEM while the packet buffers run short, as in a photo turn) and then
+// queues the same bytes again, so a body over one send buffer (5,744 B less the
+// headers) arrives with its start repeated past that point (bench, 26 Oct: /api/state).
+// The filler path counts what was queued. An empty body (not built) answers busy.
+void sendJson(AsyncWebServerRequest* r, String&& body);
 
 // The whole gate for a chunked big response: decide; on Busy send the busy answer and
 // return false (the caller stops); on Trickle wrap `filler`; on Serve leave it.

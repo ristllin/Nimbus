@@ -62,7 +62,14 @@ from device import ExpectTimeout
 try:  # the LAN client's transport; a connect or read failure while the board rejoins
     import requests
 
-    TRANSIENT_NET_ERRORS: tuple = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
+    # A streamed page the board closed mid-body is retried too: a card file stream whose
+    # next chunk waits on a busy card stalls in the web library (its in-flight credits
+    # run out with nothing left to acknowledge) and is closed by the ack timeout (CUM-820).
+    TRANSIENT_NET_ERRORS: tuple = (
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+        requests.exceptions.ChunkedEncodingError,
+    )
 except ImportError:  # pragma: no cover - requests ships with the HIL environment
     TRANSIENT_NET_ERRORS = (OSError,)
 

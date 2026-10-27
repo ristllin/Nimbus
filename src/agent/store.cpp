@@ -6,6 +6,7 @@
 #include "nimbus/power/power_policy.h"
 #include "nimbus/power/board_power.h"   // clampBattCellsOverride - guard 1S/2S override (CUM-371)
 
+#include <atomic>
 #include <esp_random.h>
 #include <esp_heap_caps.h>   // PSRAM buffer for the usage-history JSON payload
 #include <solide/memory.h>
@@ -40,6 +41,7 @@
 #include <ArduinoJson.h>
 #include "../sys/agent_log.h"              // alogc + errlog::cat - loud NVS-full seed hint (CUM-408)
 #include "../sys/config_nvs.h"             // notePersist - the persist ledger (CUM-479)
+#include "../sys/web_task.h"               // webTake - the web task never waits out a ledger write
 
 // Device config accessors backed by solide::memory (NVS). Defaults mirror
 // Nuage-Solide storage.cpp: priorities default to "openai,anthropic,mistral"
@@ -1985,8 +1987,14 @@ char* usageModelsJsonPs(size_t& outLen) {
 }
 
 bool usageLedgerSaved() {
-  std::lock_guard<std::mutex> lk(g_ledgerMx);
-  return g_ledgerState.saved();
+  // /api/state reads this on the web task; a ledger write holds g_ledgerMx across its
+  // flash write (1.1 s at a turn's end on the bench, 27 Oct): there the last answer serves.
+  static std::atomic<bool> s_last{true};
+  std::unique_lock<std::mutex> lk(g_ledgerMx, std::defer_lock);
+  if (!nimbus::sys::webTake(lk)) return s_last.load();
+  const bool saved = g_ledgerState.saved();
+  s_last.store(saved);
+  return saved;
 }
 
 // Both run on the main loop (usageMaintain), which never waits (loop_guard.h): the card

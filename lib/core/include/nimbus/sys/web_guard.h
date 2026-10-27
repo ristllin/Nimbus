@@ -31,9 +31,15 @@ namespace nimbus::sys {
 
 // The longest a web handler tries for the card lock before it answers busy.
 inline constexpr uint32_t kWebLockWaitMs = 150;
-// A chunked response filler's try: the server calls a filler that answered "try
-// again" on its next poll, so it never needs to wait long.
+// A chunked response filler's try (the server calls a filler that answered "try
+// again" on its next poll) and the polled /api/state's (its last card figures serve a
+// busy answer), so neither needs to wait long.
 inline constexpr uint32_t kWebFillerWaitMs = 20;
+// How old /api/state's internal flash figures may get: LittleFS walks the whole file
+// area to count them (about half a second), so the polled page measures them at most
+// this often, and only after this long without a turn (a turn's end writes flash).
+inline constexpr uint32_t kWebFlashFactsMaxAgeMs = 60000;
+inline constexpr uint32_t kWebFlashFactsQuietMs = 10000;
 // Card-lock tries one request may chain (an accessor, then its filler's first chunk).
 inline constexpr uint32_t kWebLockTriesPerRequest = 2;
 // The longest a web request waits for the TLS work slot (a turn usually holds it).

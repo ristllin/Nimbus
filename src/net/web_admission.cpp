@@ -111,6 +111,21 @@ AwsResponseFiller bufferFiller(std::shared_ptr<char> body, size_t len) {
   };
 }
 
+void sendJson(AsyncWebServerRequest* r, String&& body) {
+  if (body.isEmpty()) return sendBusy(r, /*html=*/false);
+  auto held = std::make_shared<String>(std::move(body));
+  const size_t len = held->length();
+  AsyncWebServerResponse* res = r->beginResponse(
+      "application/json", len, [held, len](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
+        if (index >= len) return 0;
+        const size_t take = len - index < maxLen ? len - index : maxLen;
+        memcpy(buf, held->c_str() + index, take);
+        return take;
+      });
+  res->addHeader("Cache-Control", "no-store");
+  r->send(res);
+}
+
 bool admit(AsyncWebServerRequest* r, size_t bodyBytes, bool html, AwsResponseFiller& filler) {
   switch (decide(r, bodyBytes)) {
     case nimbus::cloud::ServeDecision::Busy:

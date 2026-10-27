@@ -11,6 +11,10 @@
 //     and every web handler, filler or callback that reaches a function taking the
 //     card lock (transitively, by name, through src/agent, src/sys and src/sfx) opens
 //     with a WebLock first. A new web path that waits fails here;
+//   * at source level (the state page): built whole and sent through the filler path,
+//     so a short packet-buffer moment never cuts or repeats the page, and its flash
+//     figures (a half-second LittleFS walk) are measured once a minute, not per poll,
+//     and the spend and ledger locks (held across flash writes) are only tried;
 //   * at source level (the turn's tool dispatch): every registered tool whose handler
 //     makes a network call is one the dispatcher runs outside its whole-call card lock,
 //     and the memory engines' embedding gives the lock up for its request.
@@ -652,6 +656,75 @@ static void test_the_web_task_watchdog_is_stated_in_the_build() {
   TEST_ASSERT_TRUE(web.find("setWebTask(") != std::string::npos);
 }
 
+// The polled state page answers whole and quickly while the packet buffers run short:
+// its body is built in one allocation (or not at all) and sent through the filler path,
+// which counts what lwIP queued; the library's basic response re-queues bytes after a
+// failed output (bench, 26 Oct: the page's start repeated past 5,608 B in a photo turn).
+static void test_the_state_page_never_goes_out_cut_or_repeated() {
+  const std::string web = stripped(readSource("src/net/webui.cpp"), true);
+  for (const char* path : {"\"/api/state\", HTTP_GET", "\"/api/orch\", HTTP_GET"}) {
+    const size_t reg = web.find(path);
+    TEST_ASSERT_TRUE_MESSAGE(reg != std::string::npos, path);
+    const size_t open = web.find('{', reg);
+    const std::string route = web.substr(open, closeOf(web, open) - open);
+    TEST_ASSERT_TRUE_MESSAGE(route.find("admission::sendJson(") != std::string::npos, path);
+    TEST_ASSERT_TRUE_MESSAGE(route.find("beginResponse(") == std::string::npos, path);
+  }
+  const Unit ui = unitFrom("src/net/webui.cpp", readSource("src/net/webui.cpp"));
+  TEST_ASSERT_TRUE(ui.fns.count("buildState") && ui.fns.count("buildOrchState") && ui.fns.count("serializeWhole"));
+  const std::string& build = ui.fns.at("buildState");
+  TEST_ASSERT_TRUE(build.find("serializeWhole(d, out)") != std::string::npos);
+  TEST_ASSERT_TRUE(build.find("serializeJson(d, out)") == std::string::npos);
+  TEST_ASSERT_TRUE(ui.fns.at("buildOrchState").find("serializeWhole(d, out)") != std::string::npos);
+  // Whole or empty: ArduinoJson's String writer empties the string first (a reserve is
+  // lost), so the length is checked against the measured size afterwards.
+  const std::string& whole = ui.fns.at("serializeWhole");
+  TEST_ASSERT_TRUE(whole.find("measureJson(") != std::string::npos && whole.find("out.length() != n") != std::string::npos);
+  // The flash figures: LittleFS walks its whole file area to count them (half a second,
+  // under its own lock), so the page measures them at most once a minute, after a quiet
+  // spell with no turn.
+  TEST_ASSERT_TRUE_MESSAGE(build.find("LittleFS.usedBytes(") == std::string::npos, "buildState walks LittleFS");
+  TEST_ASSERT_TRUE(build.find("readFlashFacts(") != std::string::npos);
+  TEST_ASSERT_TRUE(ui.fns.count("readFlashFacts"));
+  const std::string& flash = ui.fns.at("readFlashFacts");
+  TEST_ASSERT_TRUE(flash.find("kWebFlashFactsMaxAgeMs") != std::string::npos);
+  TEST_ASSERT_TRUE(flash.find("kWebFlashFactsQuietMs") != std::string::npos);
+  TEST_ASSERT_TRUE(flash.find("turnInFlight()") != std::string::npos);
+  TEST_ASSERT_TRUE(flash.find("turnCount()") != std::string::npos);
+  TEST_ASSERT_TRUE(flash.find("turnInFlight()") < flash.find("LittleFS.usedBytes("));
+  TEST_ASSERT_TRUE(kWebFlashFactsMaxAgeMs >= 30000 && kWebFlashFactsQuietMs >= 5000);
+  const Unit adm = loadUnit("src/net/web_admission.cpp");
+  TEST_ASSERT_TRUE(adm.fns.count("sendJson"));
+  const std::string& send = adm.fns.at("sendJson");
+  TEST_ASSERT_TRUE(send.find("isEmpty()") != std::string::npos && send.find("sendBusy(") != std::string::npos);
+  // The filler overload: a content length and a callback, no content string.
+  TEST_ASSERT_TRUE(std::regex_search(send, std::regex(R"(beginResponse\(\s*(""|\w+)\s*,\s*len\s*,\s*\[)")));
+}
+
+// The state page's other locks: the spend limits and the usage ledger are written to
+// flash under their own locks (1.1 s at a turn's end on the bench, 27 Oct), so the
+// accessors the page reads take them with webTake (tried on the web task, the last
+// answer served), and the page keeps those last answers.
+static void test_the_state_page_never_waits_out_a_flash_write() {
+  const std::string task = codeOnly(readSource("src/sys/web_task.h"));
+  TEST_ASSERT_TRUE(task.find("kWebFillerWaitMs") != std::string::npos && task.find("try_lock()") != std::string::npos);
+  const Unit spend = loadUnit("src/agent/spend_ceiling_store.cpp");
+  for (const char* fn : {"stateJson", "setupText"}) {
+    TEST_ASSERT_TRUE_MESSAGE(spend.fns.count(fn), fn);
+    const std::string& b = spend.fns.at(fn);
+    TEST_ASSERT_TRUE_MESSAGE(b.find("webTake(") != std::string::npos, fn);
+    TEST_ASSERT_TRUE_MESSAGE(b.find("lock_guard") == std::string::npos, fn);
+  }
+  const Unit store = loadUnit("src/agent/store.cpp");
+  TEST_ASSERT_TRUE(store.fns.count("usageLedgerSaved"));
+  const std::string& saved = store.fns.at("usageLedgerSaved");
+  TEST_ASSERT_TRUE(saved.find("webTake(") != std::string::npos && saved.find("lock_guard") == std::string::npos);
+  const Unit ui = unitFrom("src/net/webui.cpp", readSource("src/net/webui.cpp"));
+  TEST_ASSERT_TRUE(ui.fns.at("buildState").find("readSpendFacts()") != std::string::npos);
+  TEST_ASSERT_TRUE(ui.fns.at("buildOrchState").find("readSpendFacts()") != std::string::npos);
+  TEST_ASSERT_TRUE(ui.fns.at("buildOrchState").find("spend::stateJson()") == std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_slot_wait_is_capped_on_the_web_task_only);
@@ -666,5 +739,7 @@ int main(int, char**) {
   RUN_TEST(test_tool_server_calls_never_hold_the_card_lock);
   RUN_TEST(test_the_tls_arbiter_checks_every_request);
   RUN_TEST(test_the_web_task_watchdog_is_stated_in_the_build);
+  RUN_TEST(test_the_state_page_never_goes_out_cut_or_repeated);
+  RUN_TEST(test_the_state_page_never_waits_out_a_flash_write);
   return UNITY_END();
 }

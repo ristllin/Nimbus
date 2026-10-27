@@ -88,9 +88,10 @@ std::string screenLine(std::string& detail);
 // The state for /api/state and /api/orch: {"limitCents":..,"spentCents":..,"frozen":..,
 // "ownerSet":..,"active":..,"month":..,"resetsOn":"..","saved":..,"loaded":..,
 // "dailyWarnCents":..,"todayCents":..,"providers":[{"p":..,"capCents":..,"spentCents":..,
-// "frozen":..,"resetsOn":".."}]}.
+// "frozen":..,"resetsOn":".."}]}. Empty on the web task while a commit holds the state
+// across its flash write (nimbus/sys/web_guard.h): the caller serves its last answer.
 std::string stateJson();
-// The setup wizard line (defaults and the ceiling, plain words).
+// The setup wizard line (defaults and the ceiling, plain words); empty like stateJson.
 std::string setupText();
 
 // Test builds: seed the counts (the bench SPENDSET verb). Not in production images.

@@ -133,6 +133,20 @@ def async_tcp_signature_verdict(rep: dict) -> "tuple[bool, str]":
     return True, "watchdog reset with the web task blocked"
 
 
+def boot_report_from_state(state: dict) -> dict:
+    """``/api/state``'s boot object in the shape async_tcp_signature_verdict reads. The
+    running boot's own record: a bench unit's durable log can hold several boot-number
+    sequences (other lanes' images), so a search for "the first boot after n" can pick an
+    old one; the boot the device is running is unambiguous."""
+    boot = state.get("boot") or {}
+    crash = boot.get("crash") or {}
+    return {
+        "boot": {"n": boot.get("n"), "slug": boot.get("reason")},
+        "crash": {"this": "1" if crash.get("thisReset") else "0", "task": crash.get("task")},
+        "why": crash.get("why") or "",
+    }
+
+
 def look_fallback(providers: dict) -> Optional[str]:
     """The keyed provider the photo caption falls through to after the canned one."""
     for slug in ("mistral", "openai"):
@@ -143,16 +157,20 @@ def look_fallback(providers: dict) -> Optional[str]:
 
 # ---- device helpers ---------------------------------------------------------------
 def _webguard(device) -> Dict[str, object]:
-    device.drain(quiet=0.2)
-    device.send("WEBGUARD?")
-    try:
-        line = device.expect("WEBGUARD", timeout=5.0)
-    except ExpectTimeout:
-        pytest.skip("this image has no WEBGUARD? verb")
-    got = parse_webguard(line)
-    if got is None:
-        pytest.skip(f"WEBGUARD? reply not understood: {line!r}")
-    return got
+    """``WEBGUARD?``, asked up to 3 times (a line sent while the board settles after a
+    reset can be lost); an image that never answers has no such verb."""
+    line = ""
+    for _ in range(3):
+        device.drain(quiet=0.3)
+        device.send("WEBGUARD?")
+        try:
+            line = device.expect("WEBGUARD", timeout=5.0)
+        except ExpectTimeout:
+            continue
+        got = parse_webguard(line)
+        if got is not None:
+            return got
+    pytest.skip(f"this image has no WEBGUARD? verb (last: {line!r})")
 
 
 class StatePoller:
@@ -172,8 +190,15 @@ class StatePoller:
                 r = self.net.get("/api/state", ip=self.ip, timeout=5.0)
                 s["ms"] = int((time.time() - t0) * 1000)
                 s["status"] = r.status_code
+                s["len"] = len(r.content)
                 if r.status_code == 200:
-                    s["cardBusy"] = bool(r.json().get("cardBusy"))
+                    try:
+                        s["cardBusy"] = bool(r.json().get("cardBusy"))
+                    except ValueError:  # an answer that is not JSON: kept for the report
+                        s["status"] = 0
+                        s["error"] = "not JSON"
+                        s["clen"] = r.headers.get("Content-Length")
+                        s["tail"] = r.text[-120:]
             except Exception as exc:  # noqa: BLE001 - a stalled or rebooting board: recorded
                 s["ms"] = int((time.time() - t0) * 1000)
                 s["status"] = 0
@@ -328,7 +353,7 @@ def test_state_answers_while_a_tool_holds_the_card(device, net):
 @pytest.mark.net
 def test_before_fix_image_resets_on_the_web_task(device, net):
     """Run only against the v4.6.0 test image (NIMBUS_L68_BEFORE=1)."""
-    from test_l39_crash_forensics import NoCrash, _await_crash_reboot, _boot_n, _crash_report, _lan_ip
+    from test_l39_crash_forensics import NoCrash, _await_crash_reboot, _boot_n, _lan_ip
 
     if not _before():
         pytest.skip("set NIMBUS_L68_BEFORE=1 with the v4.6.0 image to reproduce the reset")
@@ -346,19 +371,46 @@ def test_before_fix_image_resets_on_the_web_task(device, net):
         for s in poll.samples:
             print(f"[L68] poll {s}")
         ip = _lan_ip(ip2)
-        rep = _crash_report(net, ip, before_n)
-        print(f"[L68] v4.6.0 reset: boot={rep['boot']} crash={rep['crash']} why={rep['why']!r}")
+        rep = boot_report_from_state(net.get_json("/api/state", ip=ip, timeout=10.0))
+        print(f"[L68] v4.6.0 reset: boot={rep['boot']} crash={rep['crash']} why={rep['why']!r} (before: n={before_n})")
         ok, why = async_tcp_signature_verdict(rep)
         assert ok, why
     finally:
         _cleanup(device, net, ip, prio)
 
 
+def _assert_v460_look_reset(device, net, ip: str, before_n: int) -> None:
+    """The v4.6.0 image: the look's stall resets the board on the web task."""
+    from test_l39_crash_forensics import NoCrash, _await_crash_reboot, _lan_ip
+
+    device.expect(f"TOOLSTALL: {LOOK_TOOL}", timeout=60.0)
+    try:
+        ip2 = _await_crash_reboot(device, net, ip, before_n, 60.0)
+    except NoCrash as exc:
+        pytest.fail(f"image.look under the card lock did not reset the v4.6.0 image: {exc}")
+    rep = boot_report_from_state(net.get_json("/api/state", ip=_lan_ip(ip2), timeout=10.0))
+    print(f"[L68] v4.6.0 look reset: boot={rep['boot']} crash={rep['crash']} why={rep['why']!r} (before: n={before_n})")
+    ok, why = async_tcp_signature_verdict(rep)
+    assert ok, why
+
+
+def _assert_look_ran_free(lines: List[str], samples: List[dict], wg0, wg1) -> None:
+    """The tip: the look ran outside the dispatcher's lock and the page kept answering."""
+    assert not any(f"TOOLSTALL: {LOOK_TOOL}" in ln for ln in lines), (
+        "image.look ran under the dispatcher's card lock (the armed stall fired for it)"
+    )
+    assert any(ln.startswith("vision:") or " vision: " in ln for ln in lines), "no caption request was seen"
+    ok, why = state_verdict(samples, expect_busy=False)
+    assert ok, why
+    ok, why = web_guard_verdict(wg0, wg1, expect_busy=False)
+    assert ok, why
+
+
 @pytest.mark.hil
 @pytest.mark.net
 def test_image_look_runs_outside_the_card_lock(device, net):
     """The 26 Oct trigger: image.look on a stored photo while /api/state is polled."""
-    from test_l39_crash_forensics import NoCrash, _await_crash_reboot, _boot_n, _crash_report, _errlog_file, _lan_ip
+    from test_l39_crash_forensics import _boot_n, _errlog_file, _lan_ip
 
     ip = _lan_ip(None)
     providers = net.get_json("/api/orch", ip=ip, timeout=8.0).get("providers") or {}
@@ -374,6 +426,7 @@ def test_image_look_runs_outside_the_card_lock(device, net):
     wg0 = None if _before() else _webguard(device)
     prio = _orch_prio(net, ip)
     turn = ""
+    ended = None
     lines: List[str] = []
     try:
         with StatePoller(net, ip) as poll:
@@ -382,15 +435,7 @@ def test_image_look_runs_outside_the_card_lock(device, net):
                 device, net, ip, f"anthropic,{fallback}", look, "L68 look probe: look at that photo again."
             )
             if _before():
-                device.expect(f"TOOLSTALL: {LOOK_TOOL}", timeout=60.0)
-                try:
-                    ip2 = _await_crash_reboot(device, net, ip, before_n, 60.0)
-                except NoCrash as exc:
-                    pytest.fail(f"image.look under the card lock did not reset the v4.6.0 image: {exc}")
-                rep = _crash_report(net, _lan_ip(ip2), before_n)
-                print(f"[L68] v4.6.0 look reset: boot={rep['boot']} crash={rep['crash']} why={rep['why']!r}")
-                ok, why = async_tcp_signature_verdict(rep)
-                assert ok, why
+                _assert_v460_look_reset(device, net, ip, before_n)
                 return
             lines = _console_until(device, r"vision: \S+ \S+ read \d+ bytes", 90.0)
             time.sleep(5.0)
@@ -399,16 +444,14 @@ def test_image_look_runs_outside_the_card_lock(device, net):
             print(f"[L68] poll {s}")
         print(f"[L68] webguard before={wg0} after={wg1}")
         assert _boot_n(net, ip) == before_n, "the board restarted during the look"
-        assert not any(f"TOOLSTALL: {LOOK_TOOL}" in ln for ln in lines), (
-            "image.look ran under the dispatcher's card lock (the armed stall fired for it)"
-        )
-        assert any(ln.startswith("vision:") or " vision: " in ln for ln in lines), "no caption request was seen"
-        ok, why = state_verdict(poll.samples, expect_busy=False)
-        assert ok, why
-        ok, why = web_guard_verdict(wg0, wg1, expect_busy=False)
-        assert ok, why
+        _assert_look_ran_free(lines, poll.samples, wg0, wg1)
+        # The log is a big page: while the canned rounds still run, internal memory sits
+        # under the big-response floor and it answers 503 (bench, 27 Oct). Read it after.
+        ended = _wait_turn_end(net, ip, turn)
+        assert ended, "the turn did not end"
         holds = [m for m in HOLD_LINE_RE.finditer(_errlog_file(net, ip)) if m.group("tool") == LOOK_TOOL]
         assert not holds, f"the durable log names image.look holding the card lock: {holds[-1].group(0)}"
     finally:
-        ended = _wait_turn_end(net, ip, turn) if turn and not _before() else True
+        if ended is None:
+            ended = _wait_turn_end(net, ip, turn) if turn and not _before() else True
         _cleanup(device, net, ip, prio, provfault_off=ended)

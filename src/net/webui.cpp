@@ -574,7 +574,10 @@ struct CardFacts {
 static CardFacts readCardFacts(bool& busy) {
   static CardFacts s_last;          // the AsyncTCP task only
   static bool s_haveLast = false;
-  agent::memory::WebLock card;
+  // A filler's short try: the page polls this route every few seconds and the last
+  // figures serve it, so the answer never pays the full web wait (bench, 26 Oct: a
+  // busy answer then took 640-960 ms against a 1 s bar, the route itself 450-770 ms).
+  agent::memory::WebLock card(nimbus::sys::kWebFillerWaitMs);
   busy = !card;
   if (busy) {
     if (s_haveLast) return s_last;
@@ -593,6 +596,68 @@ static CardFacts readCardFacts(bool& busy) {
   s_last = f;
   s_haveLast = true;
   return f;
+}
+
+// The spend limits' state and setup line for the web pages. Both accessors come back
+// empty while a commit writes the spend file (web_task.h webTake): the last answers
+// serve (the AsyncTCP task only), and a busy state skips the second try.
+struct SpendFacts {
+  std::string state;
+  std::string setup;
+};
+
+static const SpendFacts& readSpendFacts() {
+  static SpendFacts s_last;
+  std::string state = agent::spend::stateJson();
+  if (state.empty()) return s_last;
+  s_last.state = std::move(state);
+  std::string setup = agent::spend::setupText();
+  if (!setup.empty()) s_last.setup = std::move(setup);
+  return s_last;
+}
+
+// A polled page's body, whole or empty (an empty body answers busy, web_admission.h).
+// ArduinoJson grows the String piece by piece (its writer first empties the string, so a
+// reserve beforehand is lost) and a failed growth drops text mid-document.
+static void serializeWhole(const JsonDocument& d, String& out) {
+  const size_t n = measureJson(d);
+  serializeJson(d, out);
+  if (out.length() != n) out = String();
+}
+
+// The internal flash figures for /api/state. LittleFS counts its used blocks by walking
+// the whole file area (480-500 ms on the bench, 27 Oct: nine tenths of this route) under
+// its own lock, which a writer on another task holds for a whole write. They change
+// slowly, so they are measured at most once a minute, and only once no turn has run for
+// a while (a turn writes flash, at its end too: a walk then took 1.7-2 s on the bench);
+// the last figures serve every other poll.
+struct FlashFacts {
+  uint32_t total = 0;
+  uint32_t used = 0;
+};
+
+static FlashFacts readFlashFacts(bool fsUp) {
+  static FlashFacts s_last;         // the AsyncTCP task only
+  static uint32_t s_atMs = 0;
+  static uint32_t s_turnSeenMs = 0;
+  static uint32_t s_turns = 0;
+  static bool s_haveLast = false;
+  if (!fsUp) return FlashFacts{};
+  const uint32_t now = millis();
+  const uint32_t turns = agent::orchestrator::turnCount();
+  if (agent::orchestrator::turnInFlight() || turns != s_turns) s_turnSeenMs = now;
+  s_turns = turns;
+  const bool stale = now - s_atMs >= nimbus::sys::kWebFlashFactsMaxAgeMs;
+  const bool quiet = now - s_turnSeenMs >= nimbus::sys::kWebFlashFactsQuietMs;
+  // The first figures wait only for no turn in flight (zeros until then); each call
+  // below walks the file area, and the total never changes while it is mounted.
+  if (s_haveLast ? (stale && quiet) : !agent::orchestrator::turnInFlight()) {
+    if (s_last.total == 0) s_last.total = (uint32_t)LittleFS.totalBytes();
+    s_last.used = (uint32_t)LittleFS.usedBytes();
+    s_atMs = now;
+    s_haveLast = true;
+  }
+  return s_last;
 }
 
 static void buildState(String& out) {
@@ -660,8 +725,9 @@ static void buildState(String& out) {
   // No LittleFS walk while a storage erase runs: a full factory reset unmounts the
   // internal file area (scrubInternalFs) under this polled request otherwise.
   const bool fsUp = !agent::memory::erasing();
-  const uint32_t fsTotal = fsUp ? (uint32_t)LittleFS.totalBytes() : 0;
-  const uint32_t fsUsed  = fsUp ? (uint32_t)LittleFS.usedBytes() : 0;
+  const FlashFacts flash = readFlashFacts(fsUp);
+  const uint32_t fsTotal = flash.total;
+  const uint32_t fsUsed  = flash.used;
   d["fsTotal"]    = fsTotal;   // internal flash (firmware/config)
   d["fsUsed"]     = fsUsed;
   // Whether that file area is mounted at all (settings, routines and the dream state
@@ -901,10 +967,11 @@ static void buildState(String& out) {
   d["needsOnboarding"] = !agent::store::onboarded();
   // Lane DEF: the monthly spend ceiling (the paused banner, the wizard's defaults line).
   {
+    const SpendFacts& sp = readSpendFacts();
     JsonDocument cd;
-    if (deserializeJson(cd, agent::spend::stateJson()) == DeserializationError::Ok)
+    if (!sp.state.empty() && deserializeJson(cd, sp.state) == DeserializationError::Ok)
       d["spend"] = cd.as<JsonObject>();
-    d["setupDefaults"] = agent::spend::setupText();
+    d["setupDefaults"] = sp.setup;
   }
   if (s_wc.testWakeInfo) d["testWake"] = s_wc.testWakeInfo();   // test image only (CUM-248)
   // Onboarding summary truth (CUM-233): at least one provider verified - the SAME
@@ -1111,7 +1178,7 @@ static void buildState(String& out) {
   // This boot (crash forensics): boot number, reset reason + raw ROM code, the clock the
   // RTC kept, and the core dump's summary when one is stored (crash: null otherwise).
   nimbus::crash::fillBootState(d["boot"].to<JsonObject>());
-  serializeJson(d, out);
+  serializeWhole(d, out);
 }
 
 // Stage a single-param override / clear (runs on the AsyncTCP task). The Config
@@ -1336,8 +1403,9 @@ static void buildOrchState(String& out) {
     }
     // Lane DEF: the monthly spend ceiling across all providers (the Usage meter).
     {
+      const SpendFacts& sp = readSpendFacts();
       JsonDocument cd;
-      if (deserializeJson(cd, agent::spend::stateJson()) == DeserializationError::Ok)
+      if (!sp.state.empty() && deserializeJson(cd, sp.state) == DeserializationError::Ok)
         u["ceiling"] = cd.as<JsonObject>();
     }
   }
@@ -1408,7 +1476,7 @@ static void buildOrchState(String& out) {
   d["mem"]  = agent::orchestrator::memorySnapshot();
   d["jobs"] = serialized(agent::orchestrator::sessionsJson());
 
-  serializeJson(d, out);
+  serializeWhole(d, out);
 }
 
 // GET /api/models - the capability-aware catalog (contract on CUM-26). Reads each
@@ -1979,9 +2047,7 @@ void beginWeb(const WebConfig& wc) {
   s_server.on("/api/state", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;  // strict gate: NO data before identification (owner R2)
     String s; buildState(s);
-    AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);
-    res->addHeader("Cache-Control", "no-store");
-    r->send(res);
+    net::admission::sendJson(r, std::move(s));  // never the basic response (web_admission.h)
   });
 
   // What fills the settings storage (NVS): every key in every namespace with its type,
@@ -2479,9 +2545,7 @@ void beginWeb(const WebConfig& wc) {
   s_server.on("/api/orch", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;  // strict gate: NO data before identification (owner R2)
     String s; buildOrchState(s);
-    AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);
-    res->addHeader("Cache-Control", "no-store");
-    r->send(res);
+    net::admission::sendJson(r, std::move(s));  // never the basic response (web_admission.h)
   });
   // GET /api/models[?provider=<slug>][&all=1] - the capability catalog (CUM-26).
   s_server.on("/api/models", HTTP_GET, [](AsyncWebServerRequest* r) {

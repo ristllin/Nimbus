@@ -19,6 +19,7 @@ from test_l68_web_stall import (
     HOLD_MS,
     LOOK_TOOL,
     async_tcp_signature_verdict,
+    boot_report_from_state,
     look_fallback,
     parse_webguard,
     photo_ref,
@@ -159,3 +160,22 @@ def test_hold_line_shape_and_the_hold_length():
     m = HOLD_LINE_RE.search("12 3456 - memory: tool image.look held the card lock for 120477 ms")
     assert m and m.group("tool") == LOOK_TOOL and int(m.group("ms")) == 120477
     assert HOLD_MS > 8000 * 3  # several watchdog windows of polls inside one hold
+
+
+def test_the_running_boot_record_reads_the_signature():
+    state = {
+        "boot": {
+            "n": 77,
+            "reason": "crash(watchdog)",
+            "crash": {
+                "thisReset": True,
+                "task": "IDLE1",
+                "why": "Task watchdog got triggered. ... - async_tcp (CPU 1)",
+            },
+        }
+    }
+    ok, why = async_tcp_signature_verdict(boot_report_from_state(state))
+    assert ok, why
+    state["boot"]["crash"]["thisReset"] = False  # an older crash's record kept across a boot
+    assert not async_tcp_signature_verdict(boot_report_from_state(state))[0]
+    assert not async_tcp_signature_verdict(boot_report_from_state({"boot": {"reason": "usb", "crash": None}}))[0]

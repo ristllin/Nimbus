@@ -103,7 +103,8 @@ tool call, which can include a long card scan. So every piece of card work the l
 does (the SD health probe, the held timeline rows, the battery history row, a timeline
 event such as an SD edge) tries for the lock for at most 20 ms and, when a tool holds
 it, skips that pass or parks the event for a later one. A web request tries for at most
-150 ms (a streaming download's next chunk, 20 ms) and, when the lock stays busy,
+150 ms (a streaming download's next chunk and `GET /api/state`, 20 ms) and, when the
+lock stays busy,
 `GET /api/state` answers at once with the last card figures it read and
 `"cardBusy": true`, while the other card routes answer `503` with `Retry-After: 5` and
 `{"error":"busy"}`. A tool call that holds the lock for 3 s or more is named in the

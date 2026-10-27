@@ -18,6 +18,7 @@
 #include "store.h"
 #include "../sys/agent_log.h"
 #include "../sys/config_nvs.h"   // notePersist: an owner edit that did not store answers 507
+#include "../sys/web_task.h"     // webTake: the web task never waits out a commit's flash write
 
 namespace agent {
 namespace spend {
@@ -536,7 +537,8 @@ std::string screenLine(std::string& detail) {
 }
 
 std::string stateJson() {
-  std::lock_guard<std::mutex> lk(g_mx);
+  std::unique_lock<std::mutex> lk(g_mx, std::defer_lock);
+  if (!nimbus::sys::webTake(lk)) return std::string();   // a commit is writing flash
   const bool loaded = loadedLocked();
   char buf[320];
   snprintf(buf, sizeof(buf),
@@ -566,7 +568,8 @@ std::string stateJson() {
 }
 
 std::string setupText() {
-  std::lock_guard<std::mutex> lk(g_mx);
+  std::unique_lock<std::mutex> lk(g_mx, std::defer_lock);
+  if (!nimbus::sys::webTake(lk)) return std::string();   // a commit is writing flash
   loadedLocked();
   return nimbus::orch::setupDefaultsText(g_st.c.limitMicro);
 }
