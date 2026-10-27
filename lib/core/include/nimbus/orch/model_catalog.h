@@ -89,6 +89,13 @@ struct ModelInfo {
 // and the device harvest ordering all key on it, so a new generation (gpt-6-astra,
 // 2026-09) is classified the day it appears instead of drifting per call site.
 int gptGeneration(const std::string& id);
+// Whether a Mistral model takes image input, by its name: the chat families with
+// vision (small, medium, large, ministral, magistral, pixtral), never codestral,
+// devstral, voxtral, the OCR, embedding or moderation models. The ONE Mistral vision
+// name rule: the catalog's vision role and the head's native photos both read it
+// (mistral-small-latest and mistral-large-latest both read a photo's pixels on the
+// API, 26 Oct 2026), so the two can never disagree again.
+bool mistralVisionByName(const std::string& id);
 // True when `id` is in the provider's current flagship family - the ids the
 // device lists first in the model dropdown (openai: gpt-5 and newer generations;
 // zai: glm-5 and newer). Non-flagship families (gpt-4o, o-series, glm-4.x) are

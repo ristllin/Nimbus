@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/head_switch.h"   // HeadPause - what holds a provider off
+
 // connectors_wire - the PORTABLE half of the connectors subsystem (host-tested
 // via pio test -e native). It owns the pure decisions: given a parsed connector
 // list + provider state, (a) build the per-provider request-body attach JSON and
@@ -132,6 +134,21 @@ struct ProviderState {
   // The device's own PDF writer (the files.pdf tool: headings, text and simple
   // tables, no charts) is registered.
   bool pdfWriter = false;
+  // CUM-821: what holds each provider off right now - the pause switch (the owner, the
+  // overall spending limit, its own monthly limit), a billing or key park, its monthly
+  // budget - the same HeadPause the per-turn [THIS TURN RUNS ON] line reads. A held-off
+  // provider renders PAUSED with the reason and when it lifts, never "available", and is
+  // never offered as a spawn target or as the route for web or long work.
+  HeadPause openaiPause;
+  HeadPause anthropicPause;
+  HeadPause mistralPause;
+  // The chosen head's own (Chat seam) state: the "You are currently running on" and
+  // "(YOU are here)" lines read it, the rows above read the Spawn seam. A Chat-only 403
+  // on the head moves every turn elsewhere while its sub-agents still run.
+  HeadPause hostPause;
+  // CUM-822: the head's own web.search tool (Tavily) is listed: its key is present and its
+  // budget is open.
+  bool webSearchTool = false;
 };
 
 // --- Code sandbox and file delivery: ONE rule (wf_plan 3 and 4a) ---------------
@@ -151,6 +168,8 @@ bool codeInterpreterOnWire(const std::vector<ConnectorInfo>& cs, const char* hea
 // the order tried: an openai sub's code_interpreter (needs an OpenAI key and the
 // Code sandbox switch), an anthropic sub's sandbox (needs an Anthropic key; the sub
 // saves the file under /mnt/session/outputs/), else the device's own PDF writer.
+// A provider ps.*Pause holds off is no route (CUM-821): the next one is tried, the
+// writer route says "devicepaused", and with no route the blocker is its pause fact.
 // Both sandbox routes need capture and every route needs the file store. The PDF
 // line, the CODE SANDBOX line, the code_interpreter caps line, the web status line
 // and the spawn routing of a file task all read this one rule, so they can never
@@ -158,9 +177,10 @@ bool codeInterpreterOnWire(const std::vector<ConnectorInfo>& cs, const char* hea
 enum class PdfPath : uint8_t { None, OpenAiSandbox, AnthropicSandbox, DeviceWriter };
 struct PdfRoute {
   PdfPath path = PdfPath::None;
-  const char* blocker = "";   // model-facing reason when path == None ("" otherwise)
+  std::string blocker;        // model-facing reason when path == None ("" otherwise)
   const char* slug = "";      // machine slug for the web status line (frozen once shipped):
-                              // openai | anthropic | device | nostore | nocapture | sandboxoff | nokey
+                              // openai | anthropic | device | devicepaused | nostore | nocapture |
+                              // paused | sandboxoff | nokey
 };
 PdfRoute pdfRoute(const std::vector<ConnectorInfo>& cs, const ProviderState& ps);
 // The provider a file task's sub-agent runs on for this route ("" = none: the

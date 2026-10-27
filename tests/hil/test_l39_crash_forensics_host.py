@@ -8,7 +8,6 @@ test/test_errlog), so a renamed field fails here instead of passing a bench run 
 from __future__ import annotations
 
 import pytest
-import requests
 
 import test_l39_crash_forensics as l39
 from test_l39_crash_forensics import (
@@ -27,6 +26,18 @@ from test_l39_crash_forensics import (
 )
 
 pytestmark = pytest.mark.host
+
+# The transient errors poll_until retries. With requests installed (the bench) they are
+# its connect/read failures; CI's gate-logic job has only pytest, where the module falls
+# back to OSError, so the builtin connect/timeout errors stand in for them.
+try:
+    import requests
+
+    CONNECT_TIMEOUT = requests.exceptions.ConnectTimeout
+    REFUSED = requests.exceptions.ConnectionError
+    READ_TIMEOUT = requests.exceptions.ReadTimeout
+except ImportError:
+    CONNECT_TIMEOUT, REFUSED, READ_TIMEOUT = TimeoutError, ConnectionRefusedError, TimeoutError
 
 BOOT_PANIC = "0 812 boot boot: n=17 fw=v4.5.14 build=v4.5.14-3-gabc1234 reason=crash(panic)(0x0c) wake=none mode=orch t=1792336105 ota=ok prev=none"
 CRASH_NEW = (
@@ -331,9 +342,9 @@ def test_poll_retries_connection_errors_within_the_budget():
     def fetch():
         calls.append(clock.t)
         if len(calls) <= 2:
-            raise requests.exceptions.ConnectTimeout("rejoining Wi-Fi")
+            raise CONNECT_TIMEOUT("rejoining Wi-Fi")
         if len(calls) == 3:
-            raise requests.exceptions.ConnectionError("refused")
+            raise REFUSED("refused")
         return "clock never synced, clock never synced"
 
     value, err = poll_until(fetch, lambda t: t.count("never synced") >= 2, 120.0, 5.0, clock.now, clock.sleep)
@@ -345,10 +356,10 @@ def test_poll_gives_up_at_the_budget_with_the_last_error():
 
     def fetch():
         calls.append(clock.t)
-        raise requests.exceptions.ReadTimeout("still booting")
+        raise READ_TIMEOUT("still booting")
 
     value, err = poll_until(fetch, lambda _: True, 120.0, 5.0, clock.now, clock.sleep)
-    assert value is None and isinstance(err, requests.exceptions.ReadTimeout)
+    assert value is None and isinstance(err, READ_TIMEOUT)
     assert clock.t >= 120.0 and len(calls) == 25  # every 5 s from 0 through 120
 
 

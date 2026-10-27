@@ -640,7 +640,7 @@ struct Rig {
     };
     d.toolSpecs = [](const orch::Principal&) { return std::vector<orch::ToolRegistry::Spec>{}; };
     d.mcpDispatch = [](const std::string&, const nimbus::orch::Principal&) { return std::string("{}"); };
-    d.connectorsCatalog = [] { return std::string("## PROVIDERS & CONNECTORS\n"); };
+    d.connectorsCatalog = [](bool) { return std::string("## PROVIDERS & CONNECTORS\n"); };
     d.modelChoices = [](const std::string& p) { return "model-" + p; };
     d.firstAllowedChat = [] { return std::string("1001"); };
     d.apply.deliver = d.deliver;

@@ -516,8 +516,26 @@ static void test_orch_model_keyed_shape_matches_the_typed_one() {
   TEST_ASSERT_FALSE(validateJson("{\"orch_model\":\"glm-5.3\"}").allowed);
 }
 
+// Review of 4e9cf28f: the prompt shows "(paused now: ...)" beside the priority list. A model
+// that echoes it, or an older "openai (paused)", still stores plain provider slugs.
+static void test_priority_knob_drops_parenthesised_text() {
+  using nimbus::orch::cleanSubPriority;
+  TEST_ASSERT_EQUAL_STRING("mistral,openai,anthropic",
+                           cleanSubPriority("mistral, openai (paused),anthropic (paused)").c_str());
+  TEST_ASSERT_EQUAL_STRING("openai,mistral,anthropic",
+                           cleanSubPriority("openai,mistral,anthropic (paused now: openai, anthropic)").c_str());
+  TEST_ASSERT_EQUAL_STRING("openai,mistral", cleanSubPriority("openai,mistral").c_str());
+  TEST_ASSERT_EQUAL_STRING("", cleanSubPriority(" , (x) ,").c_str());
+  ArduinoJson::JsonDocument d;
+  ArduinoJson::deserializeJson(d, "{\"type\":\"config\",\"priority\":\"mistral,openai (paused)\"}");
+  const nimbus::orch::ValidatedAction a = nimbus::orch::validateAction(d.as<ArduinoJson::JsonVariantConst>());
+  TEST_ASSERT_TRUE(a.hasPriority);
+  TEST_ASSERT_EQUAL_STRING("mistral,openai", a.priority.c_str());
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_priority_knob_drops_parenthesised_text);
   RUN_TEST(test_led_defaults_and_clamp);
   RUN_TEST(test_orch_model_action);
   RUN_TEST(test_orch_model_requires_model);

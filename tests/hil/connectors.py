@@ -139,6 +139,17 @@ def reply_text(turn: dict) -> str:
     return str(turn.get("reply", "") or "")
 
 
+def mcp_result_line(turn: dict, server: str, tool: str, marker: str) -> str:
+    """Device evidence that the turn CALLED ``mcp.<server>.<tool>`` and got ``marker``
+    back: the tool-loop transcript's result line (section 4 of /api/lastturn, kept as
+    ``_raw`` by run_turn: "[result] <tool name> <output>", the name with or without
+    the dots the head's wire form replaces). "" when the turn never called it. A
+    marker the prompt carries proves nothing in the reply: the model can repeat it."""
+    name = rf"mcp[._]{re.escape(server)}[._]{re.escape(tool)}"
+    found = re.search(rf"^\[result\] {name} (?!\(error\)).*{re.escape(marker)}", turn.get("_raw", ""), re.M)
+    return found.group(0) if found else ""
+
+
 def skip_if_unavailable(turn: dict, human_name: str) -> None:
     """If the agent's reply says the connector/resource was unreachable, SKIP with
     the reason rather than hard-failing (external state, not a device regression)."""
@@ -154,12 +165,12 @@ def mcp_call(net, ip, tool: str, arguments: dict, *, req_id: int = 1) -> dict:
     body = json.dumps(
         {"jsonrpc": "2.0", "id": req_id, "method": "tools/call", "params": {"name": tool, "arguments": arguments}}
     )
-    # /mcp takes a RAW JSON body (not form-encoded), token via ?t=.
+    # /mcp takes a RAW JSON body (not form-encoded); the token rides the X-Nimbus-Token
+    # header (a ?t= query has been ignored since CUM-45, so it answered 401).
     import requests
 
-    resp = requests.post(
-        f"http://{ip}/mcp?t={net.token()}", data=body, headers={"Content-Type": "application/json"}, timeout=15.0
-    )
+    headers = {"Content-Type": "application/json", **net._auth()}
+    resp = requests.post(f"http://{ip}/mcp", data=body, headers=headers, timeout=15.0)
     assert resp.status_code == 200, f"/mcp -> {resp.status_code}: {resp.text[:160]}"
     return resp.json()
 

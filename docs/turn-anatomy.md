@@ -70,7 +70,8 @@ Assembled by `composeInstructions()` (`lib/harness/src/compose.cpp`; section
 emission + byte budget in `lib/core/src/orch_world.cpp::assembleContext`) in five
 parts, in this order (see "The cacheable prefix" below for why):
 
-- the **static** part, which changes only with the device config or the date;
+- the **static** part, which changes only with the device config, the date, a key
+  verdict, or a provider pausing or returning;
 - the **shelf** part (the owner's standing preferences and the skills index),
   which changes only on an owner or skill edit;
 - the **history** part: the conversation as real user and assistant messages,
@@ -96,7 +97,7 @@ of the table first, then recall bullets one at a time:
 | 3 | shelf | `[OWNER PREFERENCES ...]` | `sysPrompt` (NVS) | your standing instructions from the web Directive box (and the setup wizard). It ships with an owner-authored default and is editable (or revertible) any time; empty stored value uses that default. Framed as subordinate to blocks 1-2, so it shapes tone and behavior but never overrides safety, moderation, or access rules. It rides the shelf (its own cached block), so an owner edit re-caches only the shelf. Below it, `[STANDING RULES]`: your short always/never rules from `/data/prefs.txt` (up to 12), every owner-facing turn, added with `/prefs` or `prefs.edit` |
 | 4 | static | `## CAPABILITIES` | `orch_world.cpp` | hardware manifest, ring/screen honesty prose, artifact store, voice on/off, sub-agent fire-and-forget note, Limits (keys/routing blocked), connector honesty. The `Tools you can call:` list appears only when the mid-turn tool loop is disabled in the settings - with the loop on, every tool rides the request itself with its full description and the manifest points there (about 8 KB less per turn) |
 | 5 | static | `## HOW YOUR MEMORY WORKS` | `compose.cpp` | the memory-tier usage instructions (v1 prompt only) |
-| 6 | static | catalogs | `engine.cpp::buildStableCatalogs` | `[AVAILABLE PROVIDERS]` (sub-session priority), `[AVAILABLE MODELS]` (one line naming the keyed providers and pointing to the `models.list` tool when the config's tool loop is on, the tool is registered and the head runs a tool loop - a config-keyed shape, never this turn's heap gate, so the cached block cannot flip per turn; on heads that keep the inline per-provider short lists from the model store, each with its age, "list from <date>, may miss newer models", router ids under cumulo only; every listed model passes the spawn and model-switch checks; when the loop is off for a single turn, the dynamic loop-off note says the pointer tool cannot run either), `[PROVIDERS & CONNECTORS]`. Counted against the static part's budget since the shelf split (a flat render can no longer pass the 60 KB wire guard) |
+| 6 | static | catalogs | `engine.cpp::buildStableCatalogs` | `[AVAILABLE PROVIDERS]` (sub-session priority as configured, then "(paused now: ...)" naming the providers in it that are paused right now), `[AVAILABLE MODELS]` (one line naming the keyed providers and pointing to the `models.list` tool when the config's tool loop is on, the tool is registered and the head runs a tool loop - a config-keyed shape, never this turn's heap gate, so the cached block cannot flip per turn; on heads that keep the inline per-provider short lists from the model store, each with its age, "list from <date>, may miss newer models", router ids under cumulo only; every listed model passes the spawn and model-switch checks; when the loop is off for a single turn, the dynamic loop-off note says the pointer tool cannot run either), `[PROVIDERS & CONNECTORS]` (where the head runs reads the head's own seam, so a head that refuses its model shows as paused for your own turns; the rows read each provider's sub-agent seam: a paused provider's row says why and when it returns and names its connectors as waiting, it gets no spawn, PDF or sandbox route, and a `PUBLIC WEB FACTS` line names the open web search routes). Counted against the static part's budget since the shelf split (a flat render can no longer pass the 60 KB wire guard) |
 | 7 | shelf | the skills index | `engine.cpp` | the playbook list (`[SKILLS]`), the same index the skill.get tool serves from; an edit re-caches only the shelf |
 | 8 | history | the conversation messages | `conversation.cpp::renderHistory` | the fold summary's message pair first, then **per-chat history: one user and one assistant message per turn, oldest first, append-only between boundaries, byte budget derived from the head model's window (8 KB at 200K, 3000 B floor, 16 KB cap), stopping at the newest `/clear` boundary or the fold anchor** (shared photos, files and voice notes appear once, inside the turn that carried them; the in-flight turn is excluded - it arrives as `[USER]`). Providers send these as real history messages; a flat head reads them as the `## RECENT CONVERSATION` block. Rules: see "The turn-structured history" below |
 | 9 | per-turn | clock, speaker, `[RUNNING MEMORY]`, tool-loop note | `compose.cpp` | the time of day, who sent this message (human turns only), the model's own `memory` field from last turn, and whether the tool loop is ON this turn |
@@ -336,10 +337,12 @@ the reply names that real cause instead. The device never goes silent on a chat.
 
 The per-turn input opens with one line naming what the request runs on, so the model
 can answer "which model are you?" exactly: `[THIS TURN RUNS ON] mistral /
-mistral-large-2512 (asked for mistral-large-latest).`, then, when the chosen head is not
-the one answering, why ("Anthropic, the chosen head, is paused by the owner's monthly limit
-and returns automatically when it lifts."), then "When asked which model you run, name this
-one only." The line is built for each request from the provider that request goes to: each
+mistral-large-2512 (asked for mistral-large-latest).` It ends one of two ways. When the
+chosen head is the one answering, it closes with "When asked which model you run, name
+this one only." When it is not, it says why ("Anthropic, the chosen head, is paused by
+the owner's monthly limit and returns automatically when it lifts.") and closes with
+"When asked which model you run, name this one and say why the chosen head is not running
+this turn." The line is built for each request from the provider that request goes to: each
 host a single-shot turn tries, the host a tool-loop turn starts on (after a paused head is
 skipped) and the host it moves to mid-turn. It rides the input, never the cached system
 prompt, which names no model at all.
@@ -421,6 +424,8 @@ A sub-agent result for a live-data task (a status, the weather, prices, news) th
 ran no tool is marked `[NOT CHECKED]`, and every `[FRESH RESULTS]` line says how
 many tools ran (`[tools: 2, web: 1]` or `[no tools ran]`). A reply built on such a
 result must say the data was not checked, or it gets the "not checked live" line.
+When a result ran a web search, the block also tells the head to keep the sources
+it names and to state only facts it contains, never facts from earlier answers.
 
 ## Diagnosing a failure
 

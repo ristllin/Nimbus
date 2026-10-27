@@ -162,9 +162,11 @@ class FakeUnit:
         raise AssertionError(f"unexpected console line {line!r}")
 
     def _row(self, role: str, text: str) -> None:
-        self.rows.append(
-            {"id": f"m{len(self.rows) + 1:08x}", "session": "serial", "role": role, "kind": "message", "text": text}
-        )
+        # The device mints m%08x ids past the card's highest (the counter seeds above it
+        # each boot), so a new row's id sorts above every row already there: the leg's
+        # id floor (new_replies) relies on it.
+        top = max((int(r["id"][1:], 16) for r in self.rows), default=0)
+        self.rows.append({"id": f"m{top + 1:08x}", "session": "serial", "role": role, "kind": "message", "text": text})
 
     def _turn(self, text: str) -> None:
         self.requests.append(self.model)

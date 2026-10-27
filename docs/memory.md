@@ -225,13 +225,30 @@ buffers (freed a few ms after its connection closes) or work beside the turn (a 
 page being served), is sampled again up to five times, 200 ms apart. Still under it,
 the turn ends with one reply, "I'm short of memory right now. Please try again in a
 minute.", recorded in the chat history, and no provider request; a routine's fire is
-deferred instead (no message; a one-shot reminder retries in two minutes, the
-post-update awareness turn in one). What the turn had already taken from its queues
+deferred instead (no message; a one-shot reminder retries in two minutes). The
+post-update awareness turn retries after one minute at the earliest when it was
+deferred before it began, and after two minutes when it ended for memory once begun
+(at its provider request, or a failed allocation in its setup): the owner-first quiet
+window counts that turn's end like any other. What the turn had already taken from its queues
 (sub-agent results, the last turn's memory results, spawn notes) is put back for the
 next turn, so a synthesis turn waits and synthesizes later rather than handing the
 owner a raw dump. A failed C++ allocation in a turn ends it the same way instead of
 aborting, and nothing it held stays taken: the TLS work slot, the card lock, the file
-store's upload slot and the mutexes on the turn's path are held by scope guards.
+store's upload slot and the mutexes on the turn's path are held by scope guards. Once
+the turn has asked a provider, a failed allocation is no longer a deferral: a round may
+already have billed and run tools (a Telegram reply sent, a memory written), so a
+routine's or the awareness turn's fire counts as a failure, never a memory deferral
+(the awareness turn is not staged again), and the rounds it billed are metered. A fire
+whose turn handed the model's words to the owner before it failed (its reply, a cut
+reply it salvaged, a Telegram message, file or voice note a tool sent, speech that
+played; for a routine's delivery to the web chat, whose history is the only copy, once
+that history row is written) is never run again early,
+so the owner never gets the same message twice: a one-shot reminder or wakeup retires
+instead of taking its one short retry, and the owner gets one message saying it was
+delivered but its turn did not finish; a routine keeps its next slot. A quiet turn's
+held text does not count, and neither does a delivery that failed before anything was
+queued. A fire whose turn was served counts as served even when an allocation fails in
+its bookkeeping afterwards, so a working routine is never paused for it.
 
 **Do not re-raise these floors to "survive with no PSRAM".** PSRAM is present
 and carries the churn. If turns are deferring ("low on working memory") while

@@ -51,21 +51,21 @@ const char* sniffImageMime(const uint8_t* bytes, size_t len);
 
 // Does this head model take image input? One rule for the telegram path (attach or
 // caption) and every renderer (render the parts, or the transcription). What the
-// provider's own model list says decides when the device holds it (the image-input
-// lookup below: Mistral's and Anthropic's lists carry it per model); a direct Mistral
-// head its list does not know yet takes no images (the photos go as transcriptions);
-// otherwise the name rule:
+// provider's own model list says decides when it says (the image-input lookup below:
+// Mistral's and Anthropic's lists carry it per model, yes or no); a model the list has
+// no row for (an alias, a new model) and a device with no list fall back to the name
+// rule (a wrong guess is a 400/422 the provider path answers with the transcriptions):
 //   anthropic: every claude- model; openai: gpt-4o, gpt-4.1, gpt-5 and newer, o3,
-//   o4; mistral: chat models with vision (small, medium, large, ministral,
-//   magistral, pixtral), not codestral, devstral, voxtral or the OCR models;
+//   o4; mistral: mistralVisionByName (model_catalog.h: small, medium, large,
+//   ministral, magistral, pixtral; not codestral, devstral, voxtral or the OCR models);
 //   cumulo: the "<upstream>/<model>" it names; zai and custom: no (GLM vision
 //   models are not on the device's list).
 bool headTakesImages(const std::string& host, const std::string& model);
 
 // The device's image-input lookup: 1 = the provider's stored list says `model` takes
 // images, 0 = it says it does not, -1 = no row for it or the list does not say, -2 = the
-// device holds no list of that provider (the name rule decides). Unset (host tests, the
-// hosted daemon): the name rule alone.
+// device holds no list of that provider. Only 1 and 0 decide; -1 and -2 leave it to the
+// name rule. Unset (host tests, the hosted daemon): the name rule alone.
 using ImageInputLookup = int (*)(const char* host, const char* model);
 void installImageInputLookup(ImageInputLookup f);
 

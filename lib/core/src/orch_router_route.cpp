@@ -42,5 +42,11 @@ bool routableSelector(const char* sel, size_t len) {
 }
 bool routableSelector(const std::string& sel) { return routableSelector(sel.data(), sel.size()); }
 
+bool headRunsToolLoop(const std::string& host, const std::string& cumuloSelector) {
+  auto native = [](const std::string& h) { return h == "openai" || h == "anthropic" || h == "mistral"; };
+  if (host == "cumulo") return native(resolveRouterRoute(cumuloSelector).upstream);
+  return native(host);
+}
+
 }  // namespace orch
 }  // namespace nimbus

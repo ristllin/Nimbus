@@ -2,6 +2,7 @@
 
 #include <functional>
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1199,9 +1200,13 @@ static void test_catalog_hint_when_listed_but_not_signed_in() {
   // The hint must steer the model to TRY the connector (live 2026-09-28: the first
   // wording, "reports it not signed in", made the model refuse notion/slack without
   // trying - the hint acting as a gate), and only then relay a needs-connect result.
-  TEST_ASSERT_TRUE(t.find("gcal (usable: always try it first.") != std::string::npos);
-  TEST_ASSERT_TRUE(t.find("never skip it on that basis") != std::string::npos);
-  TEST_ASSERT_TRUE(t.find("not signed in") == std::string::npos);
+  // CUM-822: only for the owner's data in it - "always try it first" sent a rail and
+  // weather lookup to Notion.
+  TEST_ASSERT_TRUE(t.find("gcal (for the owner's gcal data only: call it for that even though "
+                          "Mistral says it is not signed in;") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("only a reply asking to sign in means it is not connected") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("always try it first") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find("returns nothing or asks to sign in") == std::string::npos);
   TEST_ASSERT_TRUE(t.find("gcal (not usable") == std::string::npos);
   TEST_ASSERT_TRUE(t.find("notion\n") != std::string::npos || t.find("notion,") != std::string::npos);
   TEST_ASSERT_TRUE(t.find("notion (") == std::string::npos);
@@ -2343,6 +2348,378 @@ static void test_empty_url_mcp_entries_are_rejected() {
   TEST_ASSERT_EQUAL(0, (int)d["tools"].size());
 }
 
+// ---- CUM-821 / CUM-822: paused providers and public web facts ----------------
+
+namespace hfc {
+using nimbus::orch::HeadPause;
+using nimbus::orch::ParkKind;
+
+// Every way a provider is held off, with the reason and the "when it lifts" words the
+// row must carry (the same words the per-turn [THIS TURN RUNS ON] line uses).
+struct Cause {
+  const char* name;
+  HeadPause pause;
+  const char* why;
+  const char* until;
+};
+static std::vector<Cause> causes() {
+  std::vector<Cause> v;
+  HeadPause p;
+  p = HeadPause(); p.causes = nimbus::orch::kPauseProviderLimit;
+  v.push_back({"provider limit", p, "is paused by the owner's monthly limit", "when it lifts"});
+  p = HeadPause(); p.causes = nimbus::orch::kPauseSpendCeiling;
+  v.push_back({"overall ceiling frozen", p, "is paused by the owner's overall spending limit", "when it lifts"});
+  p = HeadPause(); p.causes = nimbus::orch::kPauseOwner;
+  v.push_back({"paused by the owner", p, "is paused by the owner", "when the owner resumes it"});
+  p = HeadPause(); p.park = ParkKind::Billing;
+  v.push_back({"parked: billing", p, "is out of credit", "once credit is added"});
+  p = HeadPause(); p.park = ParkKind::Auth;
+  v.push_back({"parked: key", p, "rejected its key", "once its key is replaced"});
+  p = HeadPause(); p.overBudget = true;
+  v.push_back({"over its budget", p, "is over its monthly budget", "when its budget resets"});
+  p = HeadPause(); p.park = ParkKind::Auth; p.parkStatus = 403;
+  v.push_back({"parked: 403 on the spawn seam", p, "refused a request (HTTP 403)", "when it is checked again"});
+  return v;
+}
+static HeadPause& pauseOf(ProviderState& ps, const std::string& prov) {
+  return prov == "openai" ? ps.openaiPause : prov == "anthropic" ? ps.anthropicPause : ps.mistralPause;
+}
+static std::string label(const std::string& prov) {
+  return prov == "openai" ? "OpenAI" : prov == "anthropic" ? "Anthropic" : "Mistral";
+}
+// The catalog line that starts with `prefix` ("" when absent).
+static std::string lineOf(const std::string& t, const std::string& prefix) {
+  size_t at = t.rfind("\n" + prefix);
+  if (at == std::string::npos) return std::string();
+  at++;
+  return t.substr(at, t.find('\n', at) - at);
+}
+static std::vector<ConnectorInfo> lumiConnectors() {
+  return {mk("notion", "mistral", "connector"), mk("web_search", "mistral", "builtin"),
+          mk("image_generation", "mistral", "builtin"), mk("code_interpreter", "mistral", "builtin"),
+          mk("gmail", "openai", "connector", "", "connector_gmail")};
+}
+static ProviderState allKeyed(const char* host) {
+  ProviderState ps;
+  ps.openaiKeyed = ps.anthropicKeyed = ps.mistralKeyed = true;
+  ps.openaiVerified = ps.anthropicVerified = ps.mistralVerified = 1;
+  ps.currentHost = host;
+  return ps;
+}
+}  // namespace hfc
+
+// CUM-821 (Lumi, 27 Oct): Anthropic and OpenAI were paused by the owner's monthly
+// limits, yet the block said "available, VERIFIED" and offered "spawn on openai" and
+// "spawn on anthropic". Every cause, on every provider: the row says PAUSED with the
+// reason and when it lifts, never "available", and no line routes work to it.
+static void test_cum821_every_pause_cause_renders_paused_and_drops_the_spawn_target() {
+  int checked = 0;
+  for (const auto& c : hfc::causes()) {
+    for (const std::string prov : {"openai", "anthropic", "mistral"}) {
+      const std::string host = prov == "mistral" ? "openai" : "mistral";
+      ProviderState ps = hfc::allKeyed(host.c_str());
+      hfc::pauseOf(ps, prov) = c.pause;
+      const std::string t = catalogText(hfc::lumiConnectors(), ps);
+      const std::string msg = prov + " / " + c.name;
+      const std::string row = hfc::lineOf(t, "- " + prov + ":");
+      const char* names = prov == "openai" ? "gmail"
+                          : prov == "mistral" ? "notion, web_search, image_generation, code_interpreter"
+                                              : "";
+      const std::string want = "- " + prov + ": PAUSED. " + hfc::label(prov) + " " + c.why +
+                               " and returns automatically " + c.until +
+                               ". Nothing on it runs until then: no sub-agents" +
+                               (*names ? std::string("; its connectors (") + names + ") wait until it returns."
+                                       : std::string("."));
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), row.c_str(), msg.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(t.find("- spawn on " + prov + ":") == std::string::npos, msg.c_str());
+      const std::string web = hfc::lineOf(t, "PUBLIC WEB FACTS");
+      TEST_ASSERT_TRUE_MESSAGE(web.find("spawn on " + prov) == std::string::npos, msg.c_str());
+      const std::string howLong = hfc::lineOf(t, "HOW LONG A SUB MAY RUN");
+      if (prov != "mistral")
+        TEST_ASSERT_TRUE_MESSAGE(howLong.find("spawn on " + prov) == std::string::npos &&
+                                     howLong.find("or " + prov) == std::string::npos,
+                                 msg.c_str());
+      else
+        TEST_ASSERT_TRUE_MESSAGE(howLong.empty(), msg.c_str());   // no mistral sub to cap
+      // The open providers keep their rows and spawn lines.
+      for (const std::string other : {"openai", "anthropic", "mistral"}) {
+        if (other == prov) continue;
+        TEST_ASSERT_TRUE_MESSAGE(hfc::lineOf(t, "- " + other).find("available, VERIFIED") != std::string::npos,
+                                 msg.c_str());
+        TEST_ASSERT_TRUE_MESSAGE(t.find("- spawn on " + other + ":") != std::string::npos, msg.c_str());
+      }
+      // The same reason words as the per-turn line (HFM headPauseFact).
+      const std::string fact = nimbus::orch::headPauseFact(hfc::label(prov), c.pause);
+      const std::string tail = fact.substr(fact.find(", the chosen head,") + 18);
+      TEST_ASSERT_TRUE_MESSAGE(row.find(tail) != std::string::npos, msg.c_str());
+      checked++;
+    }
+  }
+  TEST_ASSERT_EQUAL(21, checked);
+  // Counter-test: nothing held off, nothing PAUSED.
+  const std::string open = catalogText(hfc::lumiConnectors(), hfc::allKeyed("mistral"));
+  TEST_ASSERT_TRUE(open.find("PAUSED") == std::string::npos);
+  TEST_ASSERT_TRUE(open.find("- spawn on openai:") != std::string::npos);
+  TEST_ASSERT_TRUE(open.find("- spawn on anthropic:") != std::string::npos);
+}
+
+// The Lumi state itself: Mistral head, OpenAI and Anthropic paused by their monthly
+// limits. The only spawn target and web route left is mistral's web_search.
+static void test_cum821_lumi_state_routes_web_and_long_work_only_to_mistral() {
+  ProviderState ps = hfc::allKeyed("mistral");
+  ps.openaiPause.causes = nimbus::orch::kPauseProviderLimit;
+  ps.anthropicPause.causes = nimbus::orch::kPauseProviderLimit;
+  const std::string t = catalogText(hfc::lumiConnectors(), ps);
+  TEST_ASSERT_TRUE(t.find("openai: available") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find("anthropic: available") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find("- mistral (YOU are here): available, VERIFIED.") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("hosted web_search on sub-agents") == std::string::npos);   // openai's tools
+  // A paused provider's connector is named (so the head never denies having it), with no caps.
+  TEST_ASSERT_TRUE(t.find("its connectors (gmail) wait until it returns.") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("  - gmail:") == std::string::npos);
+  TEST_ASSERT_EQUAL_STRING(
+      "PUBLIC WEB FACTS (weather, travel and train status, news, prices, opening hours) come from "
+      "a fresh web search, not memory or earlier answers: spawn on mistral with skill web_search and write \"use the web_search tool and "
+      "name the source of each fact\" in the task. Name the sources in your reply. Connectors "
+      "(Notion, Gmail, Calendar, Drive) hold only the owner's own data: use one only for that data, "
+      "never for public facts.",
+      hfc::lineOf(t, "PUBLIC WEB FACTS").c_str());
+  TEST_ASSERT_TRUE(t.find("- spawn on mistral: web_search + hosted tools") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("spawn on openai") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find("spawn on anthropic") == std::string::npos);
+  // Long work has nowhere else to go: split it into waves.
+  TEST_ASSERT_TRUE(hfc::lineOf(t, "HOW LONG A SUB MAY RUN").find("waves") != std::string::npos);
+}
+
+// A paused chosen head: its turns run elsewhere (the per-turn [THIS TURN RUNS ON] line
+// names where), so the block never says "You are currently running on" it.
+static void test_cum821_paused_chosen_head_is_not_you_are_here() {
+  ProviderState ps = hfc::allKeyed("anthropic");
+  ps.anthropicPause.causes = nimbus::orch::kPauseProviderLimit;
+  ps.hostPause = ps.anthropicPause;   // the device fills both (Spawn rows, Chat head)
+  const std::string t = catalogText(hfc::lumiConnectors(), ps);
+  TEST_ASSERT_TRUE(t.find("You are currently running on anthropic") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find("YOU are here") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find("Your chosen head, anthropic, is PAUSED for your own turns: Anthropic is paused by the "
+                          "owner's monthly limit and returns automatically when it lifts. Each turn runs on "
+                          "another provider, named in the turn's [THIS TURN RUNS ON] line.") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("- anthropic (your chosen head): PAUSED. Anthropic is paused by the owner's "
+                          "monthly limit and returns automatically when it lifts.") != std::string::npos);
+  // A paused mistral head never gets the mistral-head EXCEPTION line either.
+  ProviderState m = hfc::allKeyed("mistral");
+  m.mistralHeadCarriesStudio = false;
+  m.mistralPause.overBudget = true;
+  m.hostPause.overBudget = true;
+  const std::string tm = catalogText(hfc::lumiConnectors(), m);
+  TEST_ASSERT_TRUE(tm.find("EXCEPTION: Mistral Studio connectors") == std::string::npos);
+  TEST_ASSERT_TRUE(tm.find("- mistral (your chosen head): PAUSED.") != std::string::npos);
+  // Counter-test: an open head is still "here".
+  const std::string open = catalogText(hfc::lumiConnectors(), hfc::allKeyed("anthropic"));
+  TEST_ASSERT_TRUE(open.find("You are currently running on anthropic.") != std::string::npos);
+  TEST_ASSERT_TRUE(open.find("- anthropic (YOU are here): available, VERIFIED.") != std::string::npos);
+}
+
+// CUM-822: the web-facts line names web search on each OPEN provider that has it, and
+// the head's own web.search when Tavily is keyed; with none, it says so.
+static void test_cum822_web_facts_line_names_web_search_on_open_providers() {
+  const std::string head = "PUBLIC WEB FACTS (weather, travel and train status, news, prices, "
+                           "opening hours) come from a fresh web search, not memory or earlier answers: ";
+  const std::string tail = ". Connectors (Notion, Gmail, Calendar, Drive) hold only the owner's own "
+                           "data: use one only for that data, never for public facts.";
+  const std::string mis =
+      "spawn on mistral with skill web_search and write \"use the web_search tool and name the source of each fact\" "
+      "in the task";
+  const std::string named = ". Name the sources in your reply";
+  {
+    ProviderState ps = hfc::allKeyed("mistral");
+    ps.webSearchTool = true;
+    const std::string t = catalogText(hfc::lumiConnectors(), ps);
+    TEST_ASSERT_EQUAL_STRING((head + "call web.search on your own turn and keep its sources; or " + mis +
+                              "; or spawn on openai (hosted web_search) and ask for the source of each fact; or "
+                              "spawn on anthropic (web search/fetch) and ask for the source of each fact" +
+                              named + tail).c_str(),
+                             hfc::lineOf(t, "PUBLIC WEB FACTS").c_str());
+  }
+  {
+    // Mistral's web_search built-in turned off: mistral is not a web route, and its
+    // spawn line no longer promises web_search.
+    std::vector<ConnectorInfo> cs = {mk("notion", "mistral", "connector"),
+                                     mk("web_search", "mistral", "builtin", "", "", false)};
+    ProviderState ps = hfc::allKeyed("mistral");
+    ps.openaiPause.causes = nimbus::orch::kPauseOwner;
+    const std::string t = catalogText(cs, ps);
+    TEST_ASSERT_EQUAL_STRING(
+        (head + "spawn on anthropic (web search/fetch) and ask for the source of each fact" + named + tail).c_str(),
+                             hfc::lineOf(t, "PUBLIC WEB FACTS").c_str());
+    TEST_ASSERT_TRUE(t.find("- spawn on mistral: hosted tools (its web_search is off)") != std::string::npos);
+  }
+  {
+    // Every provider held off (the overall ceiling): no route, said plainly.
+    ProviderState ps = hfc::allKeyed("mistral");
+    for (nimbus::orch::HeadPause* p : {&ps.openaiPause, &ps.anthropicPause, &ps.mistralPause})
+      p->causes = nimbus::orch::kPauseSpendCeiling;
+    const std::string t = catalogText(hfc::lumiConnectors(), ps);
+    TEST_ASSERT_EQUAL_STRING((head + "none is available right now, so say so plainly" + tail).c_str(),
+                             hfc::lineOf(t, "PUBLIC WEB FACTS").c_str());
+    TEST_ASSERT_TRUE(t.find("- spawn on") == std::string::npos);
+  }
+  {
+    // Tavily alone (no provider keyed) is still a route.
+    ProviderState ps;
+    ps.webSearchTool = true;
+    const std::string t = catalogText({}, ps);
+    TEST_ASSERT_EQUAL_STRING((head + "call web.search on your own turn and keep its sources" + named + tail).c_str(),
+                             hfc::lineOf(t, "PUBLIC WEB FACTS").c_str());
+  }
+}
+
+// CUM-822, the class: no connector row note (every auth x workspace x probe x provider x
+// kind state) and no connector capability blurb claims priority over web search for
+// public facts. "always try it first" was read as "Notion first for anything". A new
+// note that says "always", "first" or "prefer" must fail here.
+static void test_cum822_no_connector_note_claims_priority_over_web_search() {
+  const char* banned[] = {"always", "try it first", "use it first", " first ", "prefer",
+                          "for anything", "any task", "instead of web"};
+  const W states[] = {W::NotApplicable, W::Unprobed, W::NotListed, W::ListedNotSignedIn, W::ListedSignedIn};
+  int checked = 0;
+  for (const char* prov : {"mistral", "openai", "anthropic"})
+    for (const char* kind : {"connector", "builtin", "mcp"})
+      for (int auth = 0; auth <= 2; auth++)
+        for (W w : states)
+          for (int pending = 0; pending < 2; pending++) {
+            ConnectorInfo c = mk("notion", prov, kind, std::strcmp(kind, "mcp") ? "" : "https://mcp.notion.com");
+            c.auth = auth;
+            c.workspace = w;
+            ProviderState ps = hfc::allKeyed("anthropic");
+            ps.mistralProbePending = pending != 0;
+            const std::string row = hfc::lineOf(catalogText({c}, ps), std::string("- ") + prov);
+            const size_t at = row.find("Enabled connectors: ");
+            TEST_ASSERT_TRUE(at != std::string::npos);
+            std::string note = row.substr(at);
+            for (char& ch : note) ch = (char)std::tolower((unsigned char)ch);
+            for (const char* b : banned) {
+              char msg[160];
+              std::snprintf(msg, sizeof msg, "%s/%s auth=%d ws=%d pending=%d says '%s': %s", prov, kind, auth,
+                            (int)w, pending, b, note.c_str());
+              TEST_ASSERT_TRUE_MESSAGE(note.find(b) == std::string::npos, msg);
+            }
+            // A note that tells the model to call a connector scopes it to the owner's data.
+            if (note.find("call it") != std::string::npos)
+              TEST_ASSERT_TRUE_MESSAGE(note.find("owner's notion data only") != std::string::npos, note.c_str());
+            checked++;
+          }
+  TEST_ASSERT_EQUAL(270, checked);
+  int kn = 0;
+  const nimbus::orch::KnownConnector* kk = knownConnectors(kn);
+  for (int i = 0; i < kn; i++) {
+    std::string caps = std::string(kk[i].caps) + " " + kk[i].oneLine;
+    for (char& ch : caps) ch = (char)std::tolower((unsigned char)ch);
+    for (const char* b : {"always", "try it first", "use it first", "prefer", "for anything", "instead of web"})
+      TEST_ASSERT_TRUE_MESSAGE(caps.find(b) == std::string::npos, kk[i].id);
+  }
+}
+
+// Review of 4e9cf28f (HIGH): with OpenAI paused, the PDF line still sent work to an openai
+// sub's code_interpreter and file-skill spawns were routed there. A held-off sandbox is no
+// route: the next open one, else the device writer ("devicepaused"), else an honest
+// "not possible right now" naming the pause and when it lifts. The CODE SANDBOX line and
+// the coding line name only open providers.
+static void test_pdf_route_skips_a_paused_provider() {
+  std::vector<ConnectorInfo> cs = {mk("code_interpreter", "openai", "builtin"),
+                                   mk("code_interpreter", "mistral", "builtin")};
+  ProviderState ps = hfc::allKeyed("mistral");
+  ps.fileStoreReady = true;
+  ps.openaiPause.causes = nimbus::orch::kPauseProviderLimit;
+  nimbus::orch::PdfRoute r = pdfRoute(cs, ps);
+  TEST_ASSERT_EQUAL_STRING("anthropic", r.slug);
+  TEST_ASSERT_EQUAL_STRING("anthropic", nimbus::orch::pdfRouteProvider(r));
+  std::string t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("TO DELIVER A PDF (or other generated document): POSSIBLE on this device through an "
+                          "anthropic sub's sandbox") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("openai sub's code_interpreter") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find("CODE SANDBOX: available on mistral sub-agents") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("For CODING tasks: an anthropic sub has a real sandbox") != std::string::npos);
+  // Anthropic paused too: the device writer when registered, else none, saying why and until when.
+  ps.anthropicPause.overBudget = true;
+  ps.pdfWriter = true;
+  r = pdfRoute(cs, ps);
+  TEST_ASSERT_EQUAL_STRING("devicepaused", r.slug);
+  TEST_ASSERT_EQUAL_STRING("", nimbus::orch::pdfRouteProvider(r));
+  t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("POSSIBLE on this device with its own PDF writer") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("For CODING tasks: openai/mistral subs run Python") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("An anthropic sub always has its own sandbox") == std::string::npos);
+  ps.pdfWriter = false;
+  r = pdfRoute(cs, ps);
+  TEST_ASSERT_EQUAL_STRING("paused", r.slug);
+  TEST_ASSERT_EQUAL_STRING("OpenAI is paused by the owner's monthly limit and returns automatically when it lifts",
+                           r.blocker.c_str());
+  t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("TO DELIVER A PDF: not possible right now - OpenAI is paused by the owner's monthly "
+                          "limit and returns automatically when it lifts. Offer markdown") != std::string::npos);
+  // Counter-test: nothing paused, the openai route as before.
+  ProviderState open = hfc::allKeyed("mistral");
+  open.fileStoreReady = true;
+  TEST_ASSERT_EQUAL_STRING("openai", pdfRoute(cs, open).slug);
+}
+
+// Check of c962b5d0: where the head runs reads its Chat seam. A Chat-only 403 on the head
+// (its head model refused) moves every turn elsewhere, while its sub-agents still run: the
+// intro says the head is paused for your own turns, its row and spawn line stay.
+static void test_head_location_reads_the_chat_seam() {
+  ProviderState ps = hfc::allKeyed("openai");
+  ps.hostPause.park = nimbus::orch::ParkKind::Auth;
+  ps.hostPause.parkStatus = 403;
+  const std::string t = catalogText(hfc::lumiConnectors(), ps);
+  TEST_ASSERT_TRUE(t.find("You are currently running on openai") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find("Your chosen head, openai, is PAUSED for your own turns: OpenAI refused a request (HTTP "
+                          "403) and returns automatically when it is checked again.") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("- openai (your chosen head): available, VERIFIED.") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("- spawn on openai:") != std::string::npos);
+  // Counter-test: an open head is "here".
+  TEST_ASSERT_TRUE(catalogText(hfc::lumiConnectors(), hfc::allKeyed("openai")).find("- openai (YOU are here)") !=
+                   std::string::npos);
+}
+
+// Check of c962b5d0: with Code sandbox on and its providers paused, the line says so (never
+// "turn on Code sandbox"); GitHub's clone/build/run work goes to an anthropic sandbox only
+// while Anthropic is open.
+static void test_sandbox_and_github_lines_follow_paused_providers() {
+  std::vector<ConnectorInfo> cs = {mk("code_interpreter", "openai", "builtin"),
+                                   mk("code_interpreter", "mistral", "builtin"),
+                                   mk("github", "openai", "mcp", "https://api.githubcopilot.com/mcp/")};
+  ProviderState ps = hfc::allKeyed("anthropic");
+  ps.openaiPause.causes = nimbus::orch::kPauseProviderLimit;
+  ps.mistralPause.causes = nimbus::orch::kPauseProviderLimit;
+  std::string t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("CODE SANDBOX: on, but the providers that run it are paused now (see their rows). An "
+                          "anthropic sub always has its own sandbox.") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("turns on Code sandbox") == std::string::npos);
+  ps.anthropicPause.causes = nimbus::orch::kPauseProviderLimit;
+  ps.openaiPause = nimbus::orch::HeadPause();   // github rides openai: its caps line shows
+  t = catalogText(cs, ps);
+  // Check of abe4c6a8: OpenAI open with its code_interpreter (Lumi's state without Anthropic):
+  // the line names that sub, never "no open provider can run code".
+  TEST_ASSERT_TRUE(t.find("It cannot CLONE, BUILD, or RUN code - an openai/mistral code_interpreter sub runs Python "
+                          "(see CODE SANDBOX) but cannot clone or build a repo.") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("CODE SANDBOX: available on openai sub-agents") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("spawn an anthropic sandbox sub") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find("no open provider can run code now") == std::string::npos);
+  // No code_interpreter anywhere and Anthropic paused: nothing runs code.
+  const std::vector<ConnectorInfo> gh = {mk("github", "openai", "mcp", "https://api.githubcopilot.com/mcp/")};
+  TEST_ASSERT_TRUE(catalogText(gh, ps).find("It cannot CLONE, BUILD, or RUN code - and no open provider can run code "
+                                            "now (see the rows).") != std::string::npos);
+  ps.anthropicPause = nimbus::orch::HeadPause();
+  t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("It cannot CLONE, BUILD, or RUN code - for that, spawn an anthropic sandbox sub.") !=
+                   std::string::npos);
+  // The switch really off: the "turn it on" wording.
+  ProviderState off = hfc::allKeyed("anthropic");
+  TEST_ASSERT_TRUE(catalogText({mk("github", "openai", "mcp", "https://api.githubcopilot.com/mcp/")}, off)
+                       .find("CODE SANDBOX: the hosted code_interpreter is off. The owner turns on Code sandbox") !=
+                   std::string::npos);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_mistral_connector_id_shared_map);
@@ -2434,5 +2811,13 @@ int main() {
   RUN_TEST(test_pdf_route_provider_and_slugs);
   RUN_TEST(test_code_interpreter_is_never_a_card_to_add);
   RUN_TEST(test_empty_url_mcp_entries_are_rejected);
+  RUN_TEST(test_cum821_every_pause_cause_renders_paused_and_drops_the_spawn_target);
+  RUN_TEST(test_cum821_lumi_state_routes_web_and_long_work_only_to_mistral);
+  RUN_TEST(test_cum821_paused_chosen_head_is_not_you_are_here);
+  RUN_TEST(test_cum822_web_facts_line_names_web_search_on_open_providers);
+  RUN_TEST(test_cum822_no_connector_note_claims_priority_over_web_search);
+  RUN_TEST(test_pdf_route_skips_a_paused_provider);
+  RUN_TEST(test_head_location_reads_the_chat_seam);
+  RUN_TEST(test_sandbox_and_github_lines_follow_paused_providers);
   return UNITY_END();
 }

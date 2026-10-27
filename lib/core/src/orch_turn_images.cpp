@@ -3,7 +3,7 @@
 #include <atomic>
 #include <cstring>
 
-#include "nimbus/orch/model_catalog.h"   // gptGeneration: the one "gpt-5 and newer" rule
+#include "nimbus/orch/model_catalog.h"   // gptGeneration, mistralVisionByName: the one name rules
 
 // The photos of the head turn in flight (see turn_images.h). Pure logic plus one
 // single-task slot; the bytes belong to whoever filled the set (its release hook).
@@ -30,13 +30,6 @@ bool openaiTakesImages(const std::string& m) {
   return m == "o1" || startsWith(m, "o1-2") || m == "o3" || startsWith(m, "o3-2") || startsWith(m, "o4-mini");
 }
 
-bool mistralTakesImages(const std::string& m) {
-  for (const char* no : {"codestral", "devstral", "voxtral", "ocr", "embed", "moderation"})
-    if (has(m, no)) return false;
-  for (const char* yes : {"small", "medium", "large", "ministral", "magistral", "pixtral"})
-    if (has(m, yes)) return true;
-  return false;
-}
 
 // The routed text an offer was written for, by its FNV-1a digest (the text itself
 // can be large and already lives in the channel's turn).
@@ -106,33 +99,29 @@ std::atomic<ImageInputLookup> g_imageInput{nullptr};
 
 void installImageInputLookup(ImageInputLookup f) { g_imageInput.store(f); }
 
-namespace {
-// `viaRouter`: judged as a router selector's upstream, where the device may hold no list
-// of that upstream (a Cumulo-only device): the name rule decides when no list says.
-bool takesImages(const std::string& host, const std::string& model, bool viaRouter) {
+bool headTakesImages(const std::string& host, const std::string& model) {
   const std::string h = lower(host), m = lower(model);
-  // The provider's own word first (a router selector is judged by its upstream below).
+  // The provider's own word first, only when it gives one: 1 = it takes images, 0 = it
+  // says it does not (a router selector is judged by its upstream below). No row for this
+  // exact id (-1: a -latest alias or a dated id its list folded into another row, a model
+  // added since the last fetch) and no list at all (-2) fall back to the name rule: a
+  // wrong guess costs one 400/422 the provider path answers by re-sending the photos as
+  // their transcriptions, while a missing row must never turn a seeing head caption-only
+  // (RCA 27 Oct, A2: a fresh Mistral list without the head's exact id did exactly that).
   const ImageInputLookup f = g_imageInput.load();
   const int known = (f && h != "cumulo") ? f(host.c_str(), model.c_str()) : -1;
   if (known >= 0) return known == 1;
   if (h == "anthropic") return m.empty() || startsWith(m, "claude-");
   if (h == "openai") return openaiTakesImages(m);
-  // Mistral says per model; a direct head the device's list does not know yet (before the
-  // first fetch) reads the photos as their transcriptions, never by a guess from its name. A
-  // device with no Mistral list at all (-2: a Cumulo-only device routing to Mistral) keeps the
-  // name rule, so intake and the renderer agree.
-  if (h == "mistral") return (f && !viaRouter && known == -1) ? false : mistralTakesImages(m);
+  if (h == "mistral") return mistralVisionByName(m);
   if (h == "cumulo") {
     const size_t slash = m.find('/');
     if (slash == std::string::npos || slash == 0) return false;
     const std::string up = m.substr(0, slash);
-    return up != "cumulo" && takesImages(up, m.substr(slash + 1), true);
+    return up != "cumulo" && headTakesImages(up, m.substr(slash + 1));
   }
   return false;   // zai, custom, unknown
 }
-}  // namespace
-
-bool headTakesImages(const std::string& host, const std::string& model) { return takesImages(host, model, false); }
 
 TurnImages::~TurnImages() {
   if (release) release(*this);

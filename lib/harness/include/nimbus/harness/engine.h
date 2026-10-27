@@ -167,6 +167,12 @@ class TurnEngine {
 
     // Owner delivery (device: Telegram reply queue + full-queue logging).
     std::function<void(const std::string& chatId, const std::string& text)> deliver;
+    // CUM-826: asked right after a delivery to `chatId` returned (apply's or the
+    // engine's): true when it queued no content of its own and the chat's history row
+    // is the owner's copy (the device: the web chat while a routine fires, whose page
+    // re-renders its history; a full reply queue). The fire spoke only once that row
+    // is written. Null = every delivery queues its content.
+    std::function<bool(const std::string& chatId)> deliveryNeedsRow;
     // Attention-event sink (device: attn::Router via g_sinks.event). Nullable.
     std::function<void(const nimbus::attn::Event&)> event;
     // Sound cue, execution-only: "turnstart" (device: sfx TurnStart). Nullable.
@@ -201,7 +207,17 @@ class TurnEngine {
     std::function<std::string(const std::string& jsonRpcRequest,
                               const nimbus::orch::Principal& who)> mcpDispatch;
     // Per-provider capability + connector catalog (device: connectors::catalog).
-    std::function<std::string()> connectorsCatalog;
+    // `headCallsTools`: the config's tool loop is on and the head runs one (the
+    // models.list rule), so the head's own web.search may be offered.
+    std::function<std::string(bool headCallsTools)> connectorsCatalog;
+    // What holds a provider off for SUB-AGENTS (the Spawn seam; device:
+    // orchestrator::providerPause): [SPAWN CAPACITY] and the [AVAILABLE PROVIDERS]
+    // marking read it, so they agree with the catalog. Null = no park is known (only
+    // the budget check): never the head's Chat read (check of c962b5d0).
+    std::function<nimbus::orch::HeadPause(const std::string& provider)> spawnPause;
+    // Does a head on `host` run the tool loop (orch::headRunsToolLoop)? Decides whether
+    // the catalog offers the head's own web.search. Null = hosts.fabricSupports.
+    std::function<bool(const std::string& host)> headRunsTools;
     // W15: the ambient [SKILLS] index (device: skills::indexText) - one line per
     // capsule so the model can PULL a playbook with skill.get. A skill the
     // per-turn context never NAMES is a skill the model will never reach for.
@@ -424,8 +440,15 @@ class TurnEngine {
   const std::string& currentChat() const { return curChat_; }
   // A mid-loop reply.telegram/reply.speak already answered THIS turn's chat -
   // applyTurn then suppresses its bare "Done." fallback (device sendToChat
-  // reports it here).
-  void noteToolReplied() { toolReplied_ = true; }
+  // reports it here). The reply reached the owner, so the fire spoke too.
+  void noteToolReplied() {
+    toolReplied_ = true;
+    spoke_ = true;
+  }
+  // CUM-826: the model's text reached the owner on a path the engine does not see (a
+  // tool sent it to another allowlisted chat of the owner). Called once the send was
+  // handed over (queued or delivered), never before.
+  void noteSpoke() { spoke_ = true; }
 
   // The last turn's billed total, on EVERY exit (a failed turn's spend too): a
   // scheduled fire and the dream report their own spend, never a previous turn's.
@@ -514,7 +537,7 @@ class TurnEngine {
   // head runs a tool loop, so [AVAILABLE MODELS] is the one pointer line instead
   // of the per-provider lists. Config-keyed, never this turn's heap gate: the
   // catalogs ride the CACHED static block (prism row 1).
-  std::string buildStableCatalogs(bool modelsTool = false);
+  std::string buildStableCatalogs(bool modelsTool = false, bool headCallsTools = true);
  public:
   // The head the next turn will run on - the ONE resolution runTurn and the
   // [THIS TURN RUNS ON] line's "asked for" use (explicit orchHost, else the first keyed priority
@@ -531,8 +554,9 @@ class TurnEngine {
   // a quiet turn held it), and a delivered notice is also the chat's history row -
   // a device with no armed Telegram channel drains-and-discards its reply queue,
   // so the row is the one channel an unarmed owner (the web page, the episodic
-  // reads) ever sees (storm finding 2, 24 Oct).
-  bool deliver(const std::string& chatId, const std::string& text);
+  // reads) ever sees (storm finding 2, 24 Oct). `modelText`: the text is the
+  // model's own (a salvaged answer), so the fire spoke once it is handed over.
+  bool deliver(const std::string& chatId, const std::string& text, bool modelText = false);
   uint32_t nowMs() const { return d_.platform.nowMs ? d_.platform.nowMs() : 0; }
   uint32_t freeHeap() const { return d_.platform.freeHeap ? d_.platform.freeHeap() : 0xFFFFFFFFu; }
   // Largest contiguous free INTERNAL block (CUM-404). Unwired => 0xFFFFFFFF, so the
@@ -551,6 +575,12 @@ class TurnEngine {
   volatile uint32_t turnStartMs_ = 0;   // nowMs() at TurnGuard ctor (stuck-turn reaper)
   std::string curChat_;                 // routing chatId of the in-flight turn
   volatile bool toolReplied_ = false;   // a mid-loop reply already answered this turn
+  // CUM-826: the one "spoke" fact of a fire - model text reached the owner (apply's
+  // delivery or speech, a salvaged answer, a tool's send), set only after the hand-over
+  // returned. A quiet turn's held text does not count. Cleared at fire entry and at
+  // each turn's start; FireOutcome.answered reads it.
+  volatile bool spoke_ = false;
+  bool fireServed_ = false;   // the fire's runTurn returned true (recorded before its bookkeeping)
   volatile bool turnTelegram_ = true;   // CUM-523: this turn's one Telegram sample (read cross-task)
   volatile bool turnFileSend_ = true;   // CUM-523: and whether files.send can deliver on it
   bool scheduledTurn_ = false;          // a Local Loops / synthesis (unattended) turn is running

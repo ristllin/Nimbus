@@ -979,12 +979,15 @@ static void orchSpeakSink(const String& text) {
   // production stub is a constant false, so this line compiles to nothing there.
   if (tc::ttsMuted()) return;
   // capture=false: the tts device action records the spoken text to history itself
-  // (apply.cpp captureAssistant), so speakOnDevice must not also capture it.
+  // (apply.cpp captureAssistant), so speakOnDevice must not also capture it. It notes
+  // the turn spoke once the speaker started (CUM-826).
   if (agent::orchestrator::speakOnDevice(text, /*capture=*/false)) return;   // played on the speaker
   String allow = agent::store::telegramAllowlist();
   int c = allow.indexOf(','); String chat = (c > 0) ? allow.substring(0, c) : allow; chat.trim();
   if (chat.length() == 0) return;
-  agent::voicereply::deliver(chat, text);   // logs the receipt, or why nothing arrived
+  // Logs the receipt, or why nothing arrived. A note that reached the owner's chat is
+  // the turn speaking (CUM-826); nothing heard and nothing sent is not.
+  if (agent::voicereply::deliver(chat, text).notesSent > 0) agent::orchestrator::noteTurnSpoke();
 }
 
 // Lane QW4: a Telegram message the device left unanswered because the overall spend

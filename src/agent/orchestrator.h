@@ -11,6 +11,7 @@
 #include "nimbus/orch/world.h"  // SessionInfo (session.list / running-sessions digest)
 #include "nimbus/orch/token_usage.h"  // TokenUsage - Phase 0 cost seam (lastTurnUsage)
 #include "nimbus/orch/loops.h"        // FireOutcome - Local Loops scheduled-turn result
+#include "nimbus/orch/head_switch.h"  // HeadPause - what holds a provider off
 
 // orchestrator - the Head-Orchestrator-v2 turn loop for Nimbus, ported from
 // Nuage-Solide src/agent/orchestrator.{h,cpp}. Single-task by design: handleMessage()
@@ -117,6 +118,10 @@ nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String
 // True while a scheduled-loop turn is executing - the device-action validator
 // refuses `reboot` and `loop.create` in this window (prism fork-bomb/reset guard).
 bool inScheduledTurn();
+// What holds paid requests to provider `p` off now on `seam` (the pause switch, a refusal
+// park covering that seam, its monthly budget). The orch_model guard and [THIS TURN RUNS ON]
+// read Chat; the catalog, the PDF route and the spawn advice read Spawn (CUM-821).
+nimbus::orch::HeadPause providerPause(const std::string& p, nimbus::orch::PaidSeam seam);
 // Lane J: did the running turn read outside content (a folded-in media row or
 // an external-tainted tool result)? The standing rules' taint rail reads it.
 bool turnReadOutsideContent();
@@ -257,6 +262,10 @@ bool   speakOnDevice(const String& text, bool capture = true, String* why = null
 // only when every note arrived. False with `result` untouched: the chat is not allowed.
 bool   sendToChat(const String& chatId, const String& text, bool asVoice,
                   std::string* result = nullptr);
+// CUM-826: the in-flight turn's model text reached the owner outside apply (a tool's
+// send, speech that started playing). Call it only once the hand-over succeeded.
+// Turn task only.
+void   noteTurnSpoke();
 void   requestMemoryClear(); // stage a model-memory wipe (echo zeroed at once)
 void   requestConvReset();   // stage a provider-conversation reset (drained on tg_poll,
                              // AFTER any in-flight turn's write-back - prism B)

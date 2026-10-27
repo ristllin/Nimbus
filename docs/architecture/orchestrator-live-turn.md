@@ -174,8 +174,8 @@ precedent.
 
 Total concurrent TLS is bounded by the `tls_arbiter` work slot: Telegram holds its
 own persistent session and every other TLS user (turn, dispatch, poll, STT, TTS,
-media upload) must `acquireWork` before opening a `WiFiClientSecure` and release it
-immediately after close - so the single mbedTLS arena holds at most the Telegram
+media upload) must take the work slot before opening a `WiFiClientSecure` and give
+it back immediately after close - so the single mbedTLS arena holds at most the Telegram
 session plus one work session (two work sessions when **Concurrent connections**
 is set to 2, applied at boot). The cloud relay keeps its WebSocket open between
 requests, but its dial (connect, upgrade, hello) takes the slot, and so does every
@@ -184,8 +184,12 @@ released between chunks, so a turn waiting for the slot gets it within one chunk
 Heartbeats, acks and small responses, including the dashboard's 6-7 KB status polls,
 take no slot, so the cloud dashboard stays live during a turn. The rule is on the
 body, not the frame: base64 makes the frame about a third larger, and deciding on
-the frame put every poll in the slot. `tests/hil/test_l41_tls_slot_guard.py` (a source
-check, no board) fails on any new TLS connect outside the slot.
+the frame put every poll in the slot. Code a turn can reach takes the slot with the
+`arbiter::WorkSlot` scope guard (`nimbus/held_slot.h`), which gives it back on every
+path out, including a `std::bad_alloc` the turn catches; only the few non-turn sites
+that `test_held_slot` lists still call `acquireWork` and `releaseWork` by hand.
+`tests/hil/test_l41_tls_slot_guard.py` (a source check, no board) fails on any new TLS
+connect that does not take the slot first, in either form.
 
 ## PSRAM-backed mbedTLS - the unblock for every live turn
 
@@ -290,7 +294,11 @@ not as a description of it (`nimbus/orch/turn_images.h`). When the configured he
 images (every Claude model; OpenAI gpt-4o, gpt-4.1, gpt-5 and newer; Mistral chat models
 with vision, by one rule, `headTakesImages`), the photo's bytes are copied into one PSRAM
 buffer held for the turn and its label reads `(attached: the photo itself is in this
-message)`; no caption call is made. The channel offers the turn's photos to a single slot
+message)`; no caption call is made. The provider's own model list decides when it says
+yes or no for the exact model; a model it has no row for (a `-latest` alias, a model
+newer than the last fetch) and a device with no list fall back to the name rule, which
+the model catalog's vision role shares (`mistralVisionByName`): a wrong guess costs one
+refusal, answered by re-sending the photos as transcriptions (below). The channel offers the turn's photos to a single slot
 bound to the chat and the routed text; the engine takes them when the owner turn starts
 and every head loop seeds its transcript with them. Each renderer puts them into the
 seeded user message, the newest user message of the request, as its provider's image

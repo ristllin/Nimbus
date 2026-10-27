@@ -61,7 +61,7 @@ bool visionHeuristic(const std::string& provider, const std::string& id) {
   if (provider == "anthropic") return startsWith(m, "claude-");  // all modern Claude take images
   if (provider == "openai")
     return has(m, "gpt-4o") || gptGeneration(m) >= 5 || has(m, "-vision") || has(m, "omni");
-  if (provider == "mistral") return has(m, "pixtral") || has(m, "medium") || has(m, "large");
+  if (provider == "mistral") return mistralVisionByName(m);
   if (provider == "zai") return has(m, "-v") || has(m, "vision") || has(m, "glm-4.5v");
   return has(m, "vision") || has(m, "-v-") || has(m, "multimodal");
 }
@@ -118,6 +118,15 @@ int glmGeneration(const std::string& m) {
   return startsWith(m, "glm-") ? leadingInt(m.c_str() + 4) : 0;
 }
 }  // namespace
+
+bool mistralVisionByName(const std::string& id) {
+  const std::string m = lower(id);
+  for (const char* no : {"codestral", "devstral", "voxtral", "ocr", "embed", "moderation"})
+    if (has(m, no)) return false;
+  for (const char* yes : {"small", "medium", "large", "ministral", "magistral", "pixtral"})
+    if (has(m, yes)) return true;
+  return false;
+}
 
 int gptGeneration(const std::string& id) {
   const std::string m = lower(id);

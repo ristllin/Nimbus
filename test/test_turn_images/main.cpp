@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "nimbus/harness/http.h"
+#include "nimbus/orch/model_catalog.h"   // mistralVisionByName, classifyModel: the one Mistral vision rule
 #include "nimbus/orch/turn_images.h"
 
 // R1 (photos to the head as images): the portable pieces under every head renderer.
@@ -351,9 +352,11 @@ static void test_active_set_nests_and_restores() {
 
 // The provider's own list decides when it says (HFM, 26 Oct 2026): a model its list
 // says takes no images gets the transcription, one it says takes them gets the parts.
-// A direct Mistral head its list does not know gets the transcription (never a guess
-// from the name); elsewhere an unknown model falls back to the name rule. A router
-// selector is judged by its upstream, by the name rule when no list says.
+// A model the list has no row for (-1: an alias such as mistral-large-latest, a dated id
+// the list folded into its alias, a model newer than the fetch) falls back to the name
+// rule on every host, Mistral included (RCA 27 Oct, A2: a fresh Mistral list without the
+// head's exact id turned a seeing head caption-only). A router selector is judged by its
+// upstream, by the name rule when no list says.
 static int g_knownVision = -1;
 static std::string g_askedHost;
 static int lookupStub(const char* host, const char* model) {
@@ -364,23 +367,29 @@ static void test_the_providers_list_decides_image_input() {
   installImageInputLookup(&lookupStub);
   TEST_ASSERT_FALSE(headTakesImages("mistral", "listed-blind"));
   TEST_ASSERT_TRUE(headTakesImages("zai", "listed-seeing"));
-  TEST_ASSERT_FALSE(headTakesImages("mistral", "mistral-large-latest"));  // -1 on a direct Mistral head: not known
-  TEST_ASSERT_TRUE(headTakesImages("anthropic", "claude-opus-5-5"));       // -1 elsewhere: the name rule
+  TEST_ASSERT_TRUE(headTakesImages("mistral", "mistral-large-latest"));   // -1: the name rule, native photos
+  TEST_ASSERT_TRUE(headTakesImages("mistral", "mistral-small-latest"));
+  TEST_ASSERT_TRUE(headTakesImages("mistral", "mistral-large-2512"));     // a dated id folded into its alias
+  TEST_ASSERT_TRUE(headTakesImages("anthropic", "claude-opus-5-5"));      // -1 elsewhere: the name rule
   TEST_ASSERT_TRUE(headTakesImages("openai", "gpt-5.6-sol"));
   TEST_ASSERT_TRUE(headTakesImages("cumulo", "mistral/mistral-large-latest"));   // a router upstream: the name rule
   TEST_ASSERT_FALSE(headTakesImages("mistral", "codestral-latest"));
   TEST_ASSERT_FALSE(headTakesImages("cumulo", "mistral/listed-blind"));
   TEST_ASSERT_EQUAL_STRING("mistral", g_askedHost.c_str());               // asked of the upstream
-  g_knownVision = 0;
-  TEST_ASSERT_FALSE(headTakesImages("anthropic", "claude-haiku-5-5"));    // the list said no
+  g_knownVision = 0;   // the API said no: no image, whatever the name says
+  TEST_ASSERT_FALSE(headTakesImages("anthropic", "claude-haiku-5-5"));
+  TEST_ASSERT_FALSE(headTakesImages("mistral", "mistral-large-latest"));
+  TEST_ASSERT_FALSE(headTakesImages("mistral", "mistral-small-latest"));
+  g_knownVision = 1;   // the API said yes: images, whatever the name says
+  TEST_ASSERT_TRUE(headTakesImages("mistral", "codestral-latest"));
   g_knownVision = -1;
   installImageInputLookup(nullptr);
   TEST_ASSERT_TRUE(headTakesImages("anthropic", "claude-haiku-5-5"));
 }
 
 // HFM review, LOW: a device that holds NO Mistral list at all (a Cumulo-only device whose head
-// routes to Mistral) keeps the name rule (the lookup says -2: no list), so intake and the
-// renderer agree; a Mistral list that does not know the model (-1) still means captions.
+// routes to Mistral, or Lumi before its first Mistral fetch) keeps the name rule (the lookup
+// says -2: no list), so intake and the renderer agree - exactly as a list with no row does.
 static int lookupNoList(const char* host, const char* model) {
   (void)model;
   return std::string(host) == "mistral" ? -2 : -1;
@@ -391,6 +400,23 @@ static void test_no_list_at_all_keeps_the_name_rule() {
   TEST_ASSERT_TRUE(headTakesImages("cumulo", "mistral/mistral-small-latest"));
   TEST_ASSERT_FALSE(headTakesImages("mistral", "codestral-latest"));
   installImageInputLookup(nullptr);
+}
+
+// One Mistral vision rule (RCA 27 Oct): the catalog's vision role and the head's native
+// photos read the same name rule, so they agree on every Mistral id - the API reads a
+// photo's pixels on both mistral-small-latest and mistral-large-latest (HFM's
+// mistral_vision proof, 26 Oct), which the catalog used to deny for small.
+static void test_the_catalog_and_the_head_agree_on_mistral_vision() {
+  installImageInputLookup(nullptr);
+  for (const char* id : {"mistral-small-latest", "mistral-small-2603", "mistral-medium-latest", "mistral-large-latest",
+                         "mistral-large-2512", "ministral-8b-latest", "magistral-medium-latest",
+                         "pixtral-large-latest", "codestral-latest", "devstral-small-latest", "open-mistral-nemo",
+                         "mistral-ocr-latest", "voxtral-small-latest", "mistral-embed", "mistral-moderation-latest"}) {
+    const bool head = headTakesImages("mistral", id);
+    TEST_ASSERT_EQUAL_MESSAGE(nimbus::orch::mistralVisionByName(id), head, id);
+    TEST_ASSERT_EQUAL_MESSAGE(head, nimbus::orch::classifyModel("mistral", id).hasRole(nimbus::orch::RoleVision), id);
+  }
+  TEST_ASSERT_TRUE(nimbus::orch::classifyModel("mistral", "mistral-small-latest").hasRole(nimbus::orch::RoleVision));
 }
 
 // The set knows its own photos (image.look on one the head already sees makes no call).
@@ -413,6 +439,7 @@ int main(int, char**) {
   RUN_TEST(test_the_providers_list_decides_image_input);
   RUN_TEST(test_the_set_holds_its_refs);
   RUN_TEST(test_no_list_at_all_keeps_the_name_rule);
+  RUN_TEST(test_the_catalog_and_the_head_agree_on_mistral_vision);
   RUN_TEST(test_formats);
   RUN_TEST(test_sniff_by_magic);
   RUN_TEST(test_admission_and_fallbacks);

@@ -24,7 +24,7 @@ static const KnownConnector kKnown[] = {
      "- private repos otherwise return 'not accessible'); no Actions or Gists "
      "tools; releases are read-only. Mistral (Studio github_app): toolset "
      "unverified - confirm a write tool exists before promising it. It cannot "
-     "CLONE, BUILD, or RUN code - for that, spawn an anthropic sandbox sub."},
+     "CLONE, BUILD, or RUN code."},
     {"gmail", "Gmail", "openai,mistral", "connector", "connector_gmail",
      "OAuth refresh token (minted off-device)",
      "Read, search, draft, and label email.", "gmail",
@@ -347,25 +347,46 @@ bool codeInterpreterOnWire(const std::vector<ConnectorInfo>& cs, const char* hea
   return false;
 }
 
-PdfRoute pdfRoute(const std::vector<ConnectorInfo>& cs, const ProviderState& ps) {
-  PdfRoute r;
-  const bool capture = ps.fileCapture && ps.fileStoreReady;
-  if (capture && ps.openaiKeyed && codeInterpreterOnWire(cs, "openai")) {
-    r.path = PdfPath::OpenAiSandbox;
-    r.slug = "openai";
-  } else if (capture && ps.anthropicKeyed) {
-    r.path = PdfPath::AnthropicSandbox;
-    r.slug = "anthropic";
-  } else if (ps.pdfWriter && ps.fileStoreReady) {
-    r.path = PdfPath::DeviceWriter;
-    r.slug = "device";
-  } else if (!ps.fileStoreReady) {
+namespace {
+// The sandbox routes as the PDF rule sees them. CUM-821 (review of 4e9cf28f): Lumi's route
+// was openai while OpenAI was paused, and the file task's spawn went there, so a held-off
+// sandbox is no route.
+struct Sandboxes {
+  bool capture = false;   // the device can keep a file a sub-agent builds
+  bool oaiOpen = false;   // an open openai sub with code_interpreter on its wire
+  bool antOpen = false;   // an open anthropic sub
+  bool held = false;      // a keyed sandbox provider is held off right now
+  std::string heldFact;   // its pause fact, without the final period
+};
+Sandboxes sandboxes(const std::vector<ConnectorInfo>& cs, const ProviderState& ps) {
+  Sandboxes s;
+  s.capture = ps.fileCapture && ps.fileStoreReady;
+  const bool oaiSbx = ps.openaiKeyed && codeInterpreterOnWire(cs, "openai");
+  const bool oaiHeld = oaiSbx && pauseHolds(ps.openaiPause);
+  const bool antHeld = ps.anthropicKeyed && pauseHolds(ps.anthropicPause);
+  s.oaiOpen = s.capture && oaiSbx && !oaiHeld;
+  s.antOpen = s.capture && ps.anthropicKeyed && !antHeld;
+  s.held = s.capture && (oaiHeld || antHeld);
+  if (s.held) {
+    s.heldFact = oaiHeld ? providerPauseFact("OpenAI", ps.openaiPause)
+                         : providerPauseFact("Anthropic", ps.anthropicPause);
+    if (!s.heldFact.empty() && s.heldFact.back() == '.') s.heldFact.pop_back();
+  }
+  return s;
+}
+
+// Why no route exists, in the order the owner would fix it.
+void noPdfRoute(const ProviderState& ps, const Sandboxes& sb, PdfRoute& r) {
+  if (!ps.fileStoreReady) {
     r.blocker = "this device has no SD card, so it cannot keep a generated file (the owner "
                 "inserts one)";
     r.slug = "nostore";
   } else if (!ps.fileCapture) {
     r.blocker = "this instance cannot collect a file a sub-agent builds";
     r.slug = "nocapture";
+  } else if (sb.held) {
+    r.blocker = sb.heldFact;
+    r.slug = "paused";
   } else if (ps.openaiKeyed) {
     r.blocker = "openai's Code Interpreter is off (the owner turns on Code sandbox on the "
                 "device web page, Assistant > Tools > Tool use)";
@@ -374,6 +395,24 @@ PdfRoute pdfRoute(const std::vector<ConnectorInfo>& cs, const ProviderState& ps)
     r.blocker = "it needs the owner's own OpenAI or Anthropic API key (a Cumulo or Mistral "
                 "key cannot bring a PDF back)";
     r.slug = "nokey";
+  }
+}
+}  // namespace
+
+PdfRoute pdfRoute(const std::vector<ConnectorInfo>& cs, const ProviderState& ps) {
+  PdfRoute r;
+  const Sandboxes sb = sandboxes(cs, ps);
+  if (sb.oaiOpen) {
+    r.path = PdfPath::OpenAiSandbox;
+    r.slug = "openai";
+  } else if (sb.antOpen) {
+    r.path = PdfPath::AnthropicSandbox;
+    r.slug = "anthropic";
+  } else if (ps.pdfWriter && ps.fileStoreReady) {
+    r.path = PdfPath::DeviceWriter;
+    r.slug = sb.held ? "devicepaused" : "device";
+  } else {
+    noPdfRoute(ps, sb, r);
   }
   return r;
 }
@@ -1366,26 +1405,109 @@ static std::string connectorRowNote(const ConnectorInfo& c, const char* prov,
     return " (NO credential - not usable until the owner adds one)";
   }
   // Usable. is_authenticated is a hint, never a gate: a listed connector that
-  // reports it false still ran live, so say what an empty result may mean.
+  // reports it false still ran live. CUM-822 (Lumi, 27 Oct): "always try it first"
+  // read as "Notion first for anything", so a rail and weather lookup searched Notion
+  // twice and found nothing. The note is scoped to the owner's data in it.
   if (c.workspace == W::ListedNotSignedIn)
-    return " (usable: always try it first. Mistral's signed-in flag is unreliable for "
-           "it, so never skip it on that basis; only if it returns nothing or asks to "
-           "sign in, tell the owner to connect it in Mistral)";
+    return " (for the owner's " + c.name + " data only: call it for that even though "
+           "Mistral says it is not signed in; only a reply asking to sign in means it is "
+           "not connected, then tell the owner to connect it in Mistral)";
   return "";
 }
+
+namespace {
+// A known connector's caps line. GitHub's names where clone, build and run work can go,
+// from the providers open now (check of c962b5d0: it sent that work to a paused anthropic;
+// check of abe4c6a8: it said no provider runs code while an open code_interpreter sub did).
+std::string capsText(const KnownConnector& k, bool antUp, bool codeSubUp) {
+  std::string text = k.caps;
+  if (std::strcmp(k.id, "github") != 0) return text;
+  if (!text.empty() && text.back() == '.') text.pop_back();
+  if (antUp) return text + " - for that, spawn an anthropic sandbox sub.";
+  if (codeSubUp)
+    return text + " - an openai/mistral code_interpreter sub runs Python (see CODE SANDBOX) but cannot "
+                  "clone or build a repo.";
+  return text + " - and no open provider can run code now (see the rows).";
+}
+
+// CUM-821: a provider's display name ("OpenAI"), else its slug.
+std::string providerDisplay(const char* prov) {
+  const ProviderSlot* s = findProviderSlot(prov);
+  return s ? std::string(s->label) : std::string(prov);
+}
+
+// Mistral's hosted web search rides its sub-agents only while the built-in is on
+// the wire (the attachMistralWire rule).
+bool mistralWebSearchOnWire(const std::vector<ConnectorInfo>& cs) {
+  for (const ConnectorInfo& c : cs)
+    if (c.kind == "builtin" && (c.name == "web_search" || c.name == "web_search_premium") &&
+        forwardsToProviderHead(c, "mistral"))
+      return true;
+  return false;
+}
+
+// CUM-822 (Lumi, 27 Oct): a rail and weather lookup on Mistral went to Notion and the
+// head then told the owner Notion was its only source, with web search on the same
+// request. Public facts come from web search on a provider that is open now; a
+// connector only holds the owner's own data.
+std::string webFactsLine(const std::vector<ConnectorInfo>& cs, const ProviderState& ps,
+                         bool oaiUp, bool antUp, bool misUp) {
+  // Every route asks for the source of each fact (live 27 Oct: mistral-small subs
+  // returned bare facts and the head passed them on unsourced).
+  std::vector<std::string> routes;
+  if (ps.webSearchTool) routes.push_back("call web.search on your own turn and keep its sources");
+  if (misUp && mistralWebSearchOnWire(cs))
+    routes.push_back("spawn on mistral with skill web_search and write \"use the web_search "
+                     "tool and name the source of each fact\" in the task");
+  if (oaiUp) routes.push_back("spawn on openai (hosted web_search) and ask for the source of each fact");
+  if (antUp) routes.push_back("spawn on anthropic (web search/fetch) and ask for the source of each fact");
+  std::string out = "PUBLIC WEB FACTS (weather, travel and train status, news, prices, opening "
+                    "hours) come from a fresh web search, not memory or earlier answers: ";
+  if (routes.empty()) {
+    out += "none is available right now, so say so plainly";
+  } else {
+    for (size_t i = 0; i < routes.size(); i++) out += (i ? "; or " : "") + routes[i];
+    out += ". Name the sources in your reply";
+  }
+  out += ". Connectors (Notion, Gmail, Calendar, Drive) hold only the owner's own data: use "
+         "one only for that data, never for public facts.\n";
+  return out;
+}
+}  // namespace
 
 std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderState& ps) {
   std::string out = "\n[PROVIDERS & CONNECTORS]\n";
   const std::string& host = ps.currentHost;
   const bool hostKnown = (host == "openai" || host == "anthropic" || host == "mistral");
-  if (hostKnown) {
+  // CUM-821: a provider held off right now (ProviderState.*Pause) is PAUSED, not
+  // available: its row says why and when it lifts, and no line routes work to it.
+  const std::string oaiPaused = providerPauseFact(providerDisplay("openai"), ps.openaiPause);
+  const std::string antPaused = providerPauseFact(providerDisplay("anthropic"), ps.anthropicPause);
+  const std::string misPaused = providerPauseFact(providerDisplay("mistral"), ps.mistralPause);
+  const bool oaiUp = ps.openaiKeyed && oaiPaused.empty();
+  const bool antUp = ps.anthropicKeyed && antPaused.empty();
+  const bool misUp = ps.mistralKeyed && misPaused.empty();
+  // Where the head runs reads its own Chat seam (ps.hostPause), never the Spawn rows: a
+  // Chat-only 403 on the head moves every turn elsewhere (check of c962b5d0).
+  const std::string hostFact =
+      hostKnown ? providerPauseFact(providerDisplay(host.c_str()), ps.hostPause) : std::string();
+  const bool hostPaused = !hostFact.empty();
+  if (hostPaused) {
+    // The turns of a paused head run elsewhere, named per request in [THIS TURN RUNS ON].
+    out += "Your chosen head, " + host + ", is PAUSED for your own turns: " + hostFact +
+           " Each turn runs on another provider, named in the turn's [THIS TURN RUNS ON] line. "
+           "Connectors on that provider are callable on YOUR OWN turns; connectors on the other "
+           "providers are reachable only by spawning a sub-agent on that provider.\n";
+  } else if (hostKnown) {
     out += "You are currently running on ";
     out += host;
     out += ". Connectors on ";
     out += host;
     out += " are callable on YOUR OWN turns; connectors on the other providers are "
            "reachable only by spawning a sub-agent on that provider.\n";
-    if (host == "mistral" && !ps.mistralHeadCarriesStudio)
+  }
+  if (hostKnown) {
+    if (host == "mistral" && !hostPaused && !ps.mistralHeadCarriesStudio)
       out += "EXCEPTION: Mistral Studio connectors (calendar, Notion, Slack, Gmail, "
              "Drive, GitHub...) are NOT attached to your own turns here; they run ONLY "
              "on a sub-agent you spawn on mistral (session_ops spawn: provider = "
@@ -1402,17 +1524,18 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
     const char* prov;
     bool keyed;
     int8_t verified;    // 1 ok / 0 rejected / -1 unchecked
+    const std::string* paused;   // providerPauseFact, "" = open
     const char* native;
   };
   const Row rows[] = {
-      {"openai", ps.openaiKeyed, ps.openaiVerified,
+      {"openai", ps.openaiKeyed, ps.openaiVerified, &oaiPaused,
        "connectors/MCP run server-side on your own turns AND on sub-agents; "
        "hosted web_search on sub-agents"},
-      {"anthropic", ps.anthropicKeyed, ps.anthropicVerified,
+      {"anthropic", ps.anthropicKeyed, ps.anthropicVerified, &antPaused,
        "sub-agents run in a cloud sandbox with bash, file read/write, web "
        "search/fetch; connectors (BYO MCP by URL) attach to SUB-AGENTS only, "
        "not your own turns"},
-      {"mistral", ps.mistralKeyed, ps.mistralVerified,
+      {"mistral", ps.mistralKeyed, ps.mistralVerified, &misPaused,
        ps.mistralHeadCarriesStudio
            ? "connectors + built-ins attach to a single-shot turn AND to sub-agents "
              "you spawn on mistral, but NOT to your tool-loop turns (the loop forces "
@@ -1426,7 +1549,17 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
   for (const Row& r : rows) {
     out += "- ";
     out += r.prov;
-    if (hostKnown && host == r.prov) out += " (YOU are here)";
+    if (hostKnown && host == r.prov) out += hostPaused ? " (your chosen head)" : " (YOU are here)";
+    if (r.keyed && !r.paused->empty()) {
+      // Nothing on a paused provider runs: its tools are not listed, its connectors by
+      // name only, so the head never denies having the owner's Notion (review of 4e9cf28f).
+      out += ": PAUSED. " + *r.paused + " Nothing on it runs until then: no sub-agents";
+      std::string names;
+      for (const ConnectorInfo& c : cs)
+        if (provMatches(c, r.prov)) names += (names.empty() ? "" : ", ") + c.name;
+      out += names.empty() ? ".\n" : "; its connectors (" + names + ") wait until it returns.\n";
+      continue;
+    }
     // key-presence is NOT validity: say which it is (owner: truly tested). With
     // validation OFF (capProbe==0) the device makes no verified/rejected claim -
     // it just reports the key is present and trusts it.
@@ -1446,23 +1579,31 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
     }
     out += "\n";
   }
+  out += webFactsLine(cs, ps, oaiUp, antUp, misUp);
   // Per-connector real capabilities/limits - so you use only tools that EXIST and
   // never fake an outcome (owner-caught: claimed 'email sent' when Gmail only drafts).
   int kn = 0;
   const KnownConnector* kk = knownConnectors(kn);
   std::string capsBlock;
   bool ciCaps = false;   // the code_interpreter line once, not once per provider
+  // An open openai/mistral code_interpreter sub (the CODE SANDBOX line's rule).
+  const bool codeSubUp = (oaiUp && codeInterpreterOnWire(cs, "openai")) ||
+                         (misUp && codeInterpreterOnWire(cs, "mistral"));
   for (const ConnectorInfo& c : cs) {
     if (!c.enabled) continue;
+    // A paused provider's connectors do not run (its row says so): no caps line.
+    if ((c.prov == "openai" && !oaiPaused.empty()) || (c.prov == "anthropic" && !antPaused.empty()) ||
+        (c.prov == "mistral" && !misPaused.empty()))
+      continue;
     if (isCodeInterpreter(c)) {
       if (ciCaps) continue;
       ciCaps = true;
     }
-    const char* caps = nullptr;
+    const KnownConnector* known = nullptr;
     for (int i = 0; i < kn; i++)
-      if (c.type == kk[i].id || c.name == kk[i].id) { caps = kk[i].caps; break; }
-    if (caps && caps[0]) {
-      capsBlock += "  - " + c.name + ": " + caps + "\n";
+      if (c.type == kk[i].id || c.name == kk[i].id) { known = &kk[i]; break; }
+    if (known && known->caps[0]) {
+      capsBlock += "  - " + c.name + ": " + capsText(*known, antUp, codeSubUp) + "\n";
     } else if (c.kind == "mcp" && !c.url.empty()) {
       // A CUSTOM MCP the owner added (not in the built-in catalog): the model
       // used to see only its bare name with no idea what it does. Surface the
@@ -1540,14 +1681,17 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
          "(and run connectors); the HEAD assembles the results and delivers to the "
          "owner. Give each sub a project so its full reply auto-saves as a doc you "
          "can then deliver.\n";
-  auto spawnTargets = [&](const char* prov, bool keyed) {
-    if (!keyed) return;
+  // A paused provider is no spawn target (CUM-821): its row says why and until when.
+  auto spawnTargets = [&](const char* prov, bool up) {
+    if (!up) return;
     std::string line = std::string("- spawn on ") + prov + ": ";
     std::vector<std::string> names;
     for (const ConnectorInfo& c : cs)
       if (provMatches(c, prov)) names.push_back(c.name);
     if (!std::strcmp(prov, "anthropic"))
       line += "cloud sandbox (bash, file read/write, web search/fetch)";
+    else if (!std::strcmp(prov, "mistral") && !mistralWebSearchOnWire(cs))
+      line += "hosted tools (its web_search is off)";
     else
       line += "web_search + hosted tools";
     if (!names.empty()) {
@@ -1556,16 +1700,17 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
     }
     out += line + "\n";
   };
-  spawnTargets("openai", ps.openaiKeyed);
-  spawnTargets("anthropic", ps.anthropicKeyed);
-  spawnTargets("mistral", ps.mistralKeyed);
+  spawnTargets("openai", oaiUp);
+  spawnTargets("anthropic", antUp);
+  spawnTargets("mistral", misUp);
   // W12 (owner ask): what each sandbox is FOR - "can a sub be used for coding?"
   // had no honest answer in the prompt.
   // Verified live against the hosted GitHub MCP (tools/list): create_repository
   // and push_files/create_or_update_file ARE exposed - the old "no sub can push"
   // line was false in the API-write sense. The true limit is clone/build/run.
-  out += "For CODING tasks: an anthropic sub has a real sandbox (writes AND runs "
-         "code, bash + files); openai/mistral subs run Python via code_interpreter "
+  out += "For CODING tasks: ";
+  if (antUp) out += "an anthropic sub has a real sandbox (writes AND runs code, bash + files); ";
+  out += "openai/mistral subs run Python via code_interpreter "
          "when the CODE SANDBOX line says so. The github connector works the GitHub API - issues/"
          "PRs/code search, and with a repo-scoped PAT it can CREATE repositories "
          "and push file contents - but it cannot clone, build, or run a repo.\n";
@@ -1578,17 +1723,16 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
   // fine. Routing is the ONLY lever - the cap is a provider limitation, not a knob
   // (and NEVER a reason to add device concurrency; see the stability constraint in
   // AGENTS.md). Emitted only for the providers that are actually keyed.
-  if (ps.mistralKeyed && (ps.openaiKeyed || ps.anthropicKeyed)) {
+  if (misUp && (oaiUp || antUp)) {
     out += "HOW LONG A SUB MAY RUN: a spawned mistral sub-agent is capped at ~60 "
            "SECONDS (this is not a limit on your own turns or the nightly dream) - its "
            "API is synchronous, so the device cannot wait past that and the sub's "
            "work is LOST, not delayed. Keep mistral subs to ONE focused lookup. "
            "For anything longer - a multi-source sweep, reading several pages, "
            "producing a document - spawn on ";
-    out += ps.openaiKeyed ? (ps.anthropicKeyed ? "openai or anthropic" : "openai")
-                          : "anthropic";
+    out += oaiUp ? (antUp ? "openai or anthropic" : "openai") : "anthropic";
     out += ", which run asynchronously and may take minutes.\n";
-  } else if (ps.mistralKeyed) {
+  } else if (misUp) {
     out += "HOW LONG A SUB MAY RUN: a spawned mistral sub-agent is capped at ~60 "
            "SECONDS (its API is synchronous; this is not a limit on your own turns or "
            "the nightly dream) and its work is LOST past that, so keep each sub "
@@ -1630,8 +1774,8 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
              "sub to 'make a PDF': it cannot bring the file back.\n";
       break;
   }
-  const bool oaiSbx = ps.openaiKeyed && codeInterpreterOnWire(cs, "openai");
-  const bool misSbx = ps.mistralKeyed && codeInterpreterOnWire(cs, "mistral");
+  const bool oaiSbx = oaiUp && codeInterpreterOnWire(cs, "openai");
+  const bool misSbx = misUp && codeInterpreterOnWire(cs, "mistral");
   if (oaiSbx || misSbx) {
     const char* which = "mistral";
     if (oaiSbx && misSbx) which = "openai and mistral";
@@ -1642,10 +1786,14 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
                ? "; finished files land under Files on the device.\n"
                : ", but this device cannot collect them yet (see the PDF line).\n";
   } else {
-    out += "CODE SANDBOX: the hosted code_interpreter is off. The owner turns on Code "
-           "sandbox on the device web page (Assistant > Tools > Tool use); it runs on an "
-           "OpenAI or Mistral key.";
-    if (ps.anthropicKeyed) out += " An anthropic sub always has its own sandbox.";
+    // The switch on, its providers paused: say so, never "turn it on" (check of c962b5d0).
+    const bool switchOn = (ps.openaiKeyed && codeInterpreterOnWire(cs, "openai")) ||
+                          (ps.mistralKeyed && codeInterpreterOnWire(cs, "mistral"));
+    out += switchOn ? "CODE SANDBOX: on, but the providers that run it are paused now (see their rows)."
+                    : "CODE SANDBOX: the hosted code_interpreter is off. The owner turns on Code "
+                      "sandbox on the device web page (Assistant > Tools > Tool use); it runs on an "
+                      "OpenAI or Mistral key.";
+    if (antUp) out += " An anthropic sub always has its own sandbox.";
     out += "\n";
   }
 

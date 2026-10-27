@@ -137,8 +137,10 @@ static void testProbeFlipsAndKeeps(ndtest::Ctx& c) {
   c.eqi(authOf(rig, "ghost"), 2, "a Studio connector the workspace does not list => refused");
   c.eqi(authOf(rig, "web_search"), -1, "a built-in stays provider-side (-1)");
   const std::string cat = rig.connectorsCatalog();
-  c.ok(has(cat, "gcal (usable: always try it first."),
-       "the catalog carries the not-signed-in hint for gcal");
+  c.ok(has(cat, "gcal (for the owner's gcal data only: call it for that even though Mistral says it is not "
+                "signed in;"),
+       "the catalog carries the not-signed-in hint for gcal, scoped to its own data (CUM-822)");
+  c.ok(!has(cat, "always try it first"), "the hint claims no priority over web search (CUM-822)");
   c.ok(!has(cat, "gcal (not usable"), "the hint never gates: gcal is not called unusable");
   c.ok(has(cat, "ghost (not attached: the owner's Mistral workspace does not offer it"),
        "the unlisted connector points the owner at Mistral and is not sent");
@@ -204,6 +206,74 @@ static void testResolvedHead(ndtest::Ctx& c) {
   c.eq(rig2.subPriority(), "openai,mistral,anthropic", "the sub ladder is its own setting");
   NimbusdRig rig3(cfg, opts("mws-e3", "openai,mistral"), &tx);
   c.eq(rig3.subPriority(), "openai,mistral", "an unset sub ladder follows the head priority");
+  clearEnv();
+}
+
+// (h) CUM-821/822 on a Virtual Nimbus: the head's own web.search (a Tavily key) is a web
+// route when the head can call tools, and a provider the shared park holds off is PAUSED
+// with no spawn line (review of 4e9cf28f: the VN catalog never read either).
+static void testWebRouteAndPauses(ndtest::Ctx& c) {
+  std::printf("  -- (h) web.search is a web route; a held-off provider is PAUSED --\n");
+  clearEnv();
+  setenv("TAVILY_API_KEY", "tv_TEST_KEY_1", 1);
+  FakeHttpTransport tx;
+  Config cfg;
+  NimbusdRig rig(cfg, opts("mws-h", "mistral,openai"), &tx);
+  rig.applyProviderKey("mistral", "mk_TEST_KEY_6");
+  rig.applyProviderKey("openai", "sk_TEST_KEY_7");
+  c.eq(rig.connectors().replaceBlob(
+           "[{\"name\":\"notion\",\"type\":\"notion\",\"prov\":\"mistral\",\"kind\":\"connector\","
+           "\"cid\":\"notion\",\"en\":1}]"),
+       "", "a Notion card, no Mistral web_search card");
+  const std::string cat = rig.connectorsCatalog();
+  c.ok(has(cat, "call web.search on your own turn"), "the head's web.search is named as a web route");
+  c.ok(!has(cat, "none is available"), "the line never says no web search exists");
+  c.ok(!has(rig.connectorsCatalog(false), "call web.search"), "a head that cannot call tools is not offered it");
+  nimbus::orch::providerPark().clear();
+  nimbus::orch::providerPark().pause("openai", nimbus::orch::kPauseProviderLimit);
+  const std::string held = rig.connectorsCatalog();
+  c.ok(has(held, "- openai: PAUSED. OpenAI is paused by the owner's monthly limit"), "a paused provider is PAUSED");
+  c.ok(!has(held, "spawn on openai"), "and is no spawn target");
+  nimbus::orch::providerPark().resume("openai", nimbus::orch::kPauseProviderLimit);
+  c.ok(!has(rig.connectorsCatalog(), "PAUSED"), "it returns when the pause lifts");
+  nimbus::orch::providerPark().clear();
+  clearEnv();
+}
+
+// (i) Check of c962b5d0: the head's web.search route follows whether THIS head runs the tool
+// loop, the device's rule (orch::headRunsToolLoop) on the rig's engine closure: a Z.ai head
+// runs single-shot (no route), a Cumulo-only head on the default openai upstream runs the
+// loop (the route stays: the one-key onboarding path).
+static void testWebRouteFollowsTheHead(ndtest::Ctx& c) {
+  std::printf("  -- (i) web.search is offered only to a head that runs the tool loop --\n");
+  const char* blob =
+      "[{\"name\":\"notion\",\"type\":\"notion\",\"prov\":\"mistral\",\"kind\":\"connector\","
+      "\"cid\":\"notion\",\"en\":1}]";
+  struct Case { const char* env; const char* prio; const char* head; bool route; };
+  const Case cases[] = {{"Z_AI_TOKEN", "zai", "zai", false}, {"CUMULO_API_KEY", "cumulo", "cumulo", true}};
+  for (const Case& k : cases) {
+    clearEnv();
+    setenv("TAVILY_API_KEY", "tv_TEST_KEY_2", 1);
+    setenv(k.env, "tk_TEST_KEY_8", 1);
+    FakeHttpTransport tx;
+    Config cfg;
+    NimbusdRig rig(cfg, opts(std::string("mws-i-") + k.head, k.prio), &tx);
+    c.eq(rig.connectors().replaceBlob(blob), "", "a Notion card");
+    c.eq(rig.hostBadge(), k.head, "the head resolves");
+    const std::string cat = rig.connectorsCatalog(rig.headRunsTools(rig.hostBadge()));
+    c.ok(has(cat, "call web.search on your own turn") == k.route,
+         k.route ? "the Cumulo head is offered its web.search" : "the Z.ai head is not offered web.search");
+    // GET /api/connectors/catalog renders by the engine's rule too (check of abe4c6a8).
+    EngineThread eng(&rig);
+    eng.start();
+    ReplyBuffer replies;
+    WebApi api(&rig, &eng, &replies);
+    ApiResp out;
+    api.handle("GET", "/api/connectors/catalog", "", out);
+    c.ok(has(out.body, "call web.search on your own turn") == k.route,
+         k.route ? "the catalog endpoint offers the Cumulo head web.search"
+                 : "the catalog endpoint offers the Z.ai head no web.search");
+  }
   clearEnv();
 }
 
@@ -416,6 +486,8 @@ int main() {
   testProbeFlipsAndKeeps(c);
   testProbeGatesAndKeyReset(c);
   testResolvedHead(c);
+  testWebRouteAndPauses(c);
+  testWebRouteFollowsTheHead(c);
   testWebSurface(c);
   testCoalesceTagAndQueuedSave(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);

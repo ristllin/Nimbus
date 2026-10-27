@@ -232,18 +232,40 @@ TurnMemoryState& turnMem() {
 
 // L24: apply's first delivery marks the turn as answered, so a failed allocation
 // after it adds no apology on top of the answer (the ApplyCapture swap pattern).
+// CUM-826: a delivery that RETURNED (handed over) marks the fire as having spoken; one
+// that threw before anything was queued does not. When that delivery queued nothing and
+// the chat's history row is the owner's copy (needsRow, asked right after it returned),
+// the mark waits for that row to be written. Speech marks itself through the device's
+// sink (noteSpoke), only when something was heard or sent.
 struct AnswerMark {
   ApplyDeps& deps;
+  volatile bool& spoke;
+  const std::function<bool(const std::string&)>& needsRow;
+  bool rowPending = false;   // a delivery whose row is the copy: the next row marks it
   std::function<void(const std::string&, const std::string&)> inner;
-  explicit AnswerMark(ApplyDeps& d) : deps(d), inner(d.deliver) {
-    if (!inner) return;
-    deps.deliver = [this](const std::string& chat, const std::string& text) {
-      turnMem().applied = true;
-      inner(chat, text);
-    };
+  std::function<void(const std::string&, const std::string&)> innerCapture;
+  AnswerMark(ApplyDeps& d, volatile bool& spokeFlag, const std::function<bool(const std::string&)>& rowRule)
+      : deps(d), spoke(spokeFlag), needsRow(rowRule), inner(d.deliver), innerCapture(d.captureAssistant) {
+    if (inner) {
+      deps.deliver = [this](const std::string& chat, const std::string& text) {
+        turnMem().applied = true;   // the apology rule only
+        inner(chat, text);
+        if (needsRow && needsRow(chat)) rowPending = true;
+        else spoke = true;
+      };
+    }
+    if (innerCapture) {
+      deps.captureAssistant = [this](const std::string& chat, const std::string& text) {
+        innerCapture(chat, text);
+        if (!rowPending) return;
+        rowPending = false;
+        spoke = true;   // the row was the owner's copy, and it is written
+      };
+    }
   }
   ~AnswerMark() {
     if (inner) deps.deliver = std::move(inner);
+    if (innerCapture) deps.captureAssistant = std::move(innerCapture);
   }
   AnswerMark(const AnswerMark&) = delete;
   AnswerMark& operator=(const AnswerMark&) = delete;
@@ -266,6 +288,13 @@ void putBackTaken(TurnMemoryState& tm, JobEngine* jobs, Parked& parked, uint32_t
   tm.putBack = true;
 }
 
+// Nothing went out and nothing answered: no provider was asked (putBackTaken's rule:
+// once asked, a request may have left, billed and run tools), apply did not start
+// delivering and no tool replied. Only such a turn may end as a memory deferral a
+// retry repeats (F2). Whether the owner actually got model text is the engine's
+// separate spoke_ fact (CUM-826).
+bool nothingWentOut(const TurnMemoryState& tm, bool toolReplied) { return !tm.asked && !tm.applied && !toolReplied; }
+
 bool ownerWaits(TurnSource s) { return s == TurnSource::Owner || s == TurnSource::Serial; }
 // A turn whose setup cost at least this much internal SRAM logs its memory line.
 constexpr uint32_t kTurnMemoryLogCost = 1024;
@@ -283,6 +312,20 @@ static std::string providerLabel(const std::string& slug) {
 
 static void trimInPlace(std::string& s);
 
+// What holds provider `p` off now (head_switch.h HeadPause): the device's read, plus the
+// monthly budget check every turn makes. The head (Chat seam) for the [THIS TURN RUNS ON]
+// line; spawnPauseOf reads the Spawn seam for the sub-agent advice.
+static orch::HeadPause providerPauseOf(const TurnEngine::Deps& d, const std::string& p) {
+  orch::HeadPause hp = d.apply.headPause ? d.apply.headPause(p) : orch::HeadPause();
+  if (d.cfg.budget.overBudget && d.cfg.budget.overBudget(p)) hp.overBudget = true;
+  return hp;
+}
+static orch::HeadPause spawnPauseOf(const TurnEngine::Deps& d, const std::string& p) {
+  orch::HeadPause hp = d.spawnPause ? d.spawnPause(p) : orch::HeadPause();
+  if (d.cfg.budget.overBudget && d.cfg.budget.overBudget(p)) hp.overBudget = true;
+  return hp;
+}
+
 // The per-turn line for a request on host `h` (served_model.h runsOnLine): its asked model, the
 // concrete model it answered with this boot (else the alias resolved through its stored list),
 // and, when `h` is not the chosen head, why the chosen head is not answering.
@@ -295,11 +338,7 @@ static std::string runsOnText(const TurnEngine::Deps& d, const std::string& h, c
     concrete = b;
   }
   std::string fact;
-  if (!chosen.empty() && h != chosen) {
-    orch::HeadPause hp = d.apply.headPause ? d.apply.headPause(chosen) : orch::HeadPause();
-    if (d.cfg.budget.overBudget && d.cfg.budget.overBudget(chosen)) hp.overBudget = true;
-    fact = orch::headPauseFact(providerLabel(chosen), hp);
-  }
+  if (!chosen.empty() && h != chosen) fact = orch::headPauseFact(providerLabel(chosen), providerPauseOf(d, chosen));
   return orch::runsOnLine(h, asked, concrete, fact);
 }
 
@@ -399,7 +438,7 @@ void ProviderHosts::noteFailed(const std::string& host, const std::string& err) 
   failed(host, kind, status);
 }
 
-bool TurnEngine::deliver(const std::string& chatId, const std::string& text) {
+bool TurnEngine::deliver(const std::string& chatId, const std::string& text, bool modelText) {
   // Every ENGINE notice (failure replies, provider-switch and budget notices) goes
   // through here; a turn's own reply goes through ApplyDeps. A quiet background turn
   // (the nightly dream, the post-update awareness turn) has nobody waiting for it,
@@ -412,6 +451,10 @@ bool TurnEngine::deliver(const std::string& chatId, const std::string& text) {
     return false;
   }
   if (d_.deliver) d_.deliver(chatId, text);
+  // CUM-826: handed over, the model's text spoke - before the row can fail, unless the
+  // row is the owner's only copy (then after it is written).
+  const bool rowIsCopy = d_.deliveryNeedsRow && d_.deliveryNeedsRow(chatId);
+  if (modelText && !rowIsCopy) spoke_ = true;
   // Storm finding 2 (24 Oct): one history row per message the owner received.
   // A failed turn's honest refusal, the parked short answer, a rate-limit or
   // pre-turn local reply is a message the owner received, so it is captured as the
@@ -420,6 +463,7 @@ bool TurnEngine::deliver(const std::string& chatId, const std::string& text) {
   // notices into a queue it drains-and-discards, and the owner - who reads the
   // history rows on the web page - never saw a word.
   captureAssistantRow(chatId, text, "reply");
+  if (modelText && rowIsCopy) spoke_ = true;   // the row is the owner's copy: written now
   return true;
 }
 
@@ -710,6 +754,8 @@ std::string TurnEngine::jobsSummaryText() const {
 // (kDeviceBackendSync) - the old line named only mistral, so a cumulo, zai or
 // custom sub that blocked the device and lost its result on a timeout was a
 // surprise. No wait times here: each adapter owns its own.
+// CUM-821: a provider held off now (paused, parked, over its budget) is left out, so
+// "use openai for ... anything that needs the web" never names one that cannot answer.
 std::string TurnEngine::syncCapacityText() const {
   std::vector<std::string> sync, async;
   for (int i = 0; i < kDeviceBackendCount; i++) {
@@ -717,6 +763,7 @@ std::string TurnEngine::syncCapacityText() const {
     const bool keyed = !d_.cfg.provider.hasKey || d_.cfg.provider.hasKey(b) ||
                        (b == "custom" && d_.hosts.has("custom"));
     if (!keyed) continue;
+    if (orch::pauseHolds(spawnPauseOf(d_, b))) continue;
     (kDeviceBackendSync[i] ? sync : async).push_back(b);
   }
   auto list = [](const std::vector<std::string>& v, const char* last) {
@@ -879,14 +926,34 @@ static std::string availableModelsLine(const TurnEngine::Deps& d_, bool modelsTo
   return ctx;
 }
 
-// The catalogs that change only with the device config. They ride the END of the
+// The catalogs that change with the device config, a key verdict, or a provider pausing or
+// returning (CUM-821), never per turn. They ride the END of the
 // static prompt block (ComposeInputs::catalogs, prompt_layout.h), where a
 // provider reads them from its cache, instead of the per-turn input after the
 // volatile session counters.
-std::string TurnEngine::buildStableCatalogs(bool modelsTool) {
+// The sub-session priority list as configured, then the providers in it held off now (CUM-821:
+// on Lumi the list named openai and anthropic as if they could run while both were paused).
+// The marker stays OUTSIDE the value: the model may retune that value, and an echoed
+// "openai (paused)" would name no provider (the review of 4e9cf28f). Byte-identical while
+// nothing is held off.
+static std::string subPriorityText(const TurnEngine::Deps& d) {
+  const std::string pri = d.cfg.provider.subPriority ? d.cfg.provider.subPriority() : std::string();
+  std::string held;
+  for (size_t at = 0; at <= pri.size();) {
+    size_t comma = pri.find(',', at);
+    if (comma == std::string::npos) comma = pri.size();
+    std::string tok = pri.substr(at, comma - at);
+    trimInPlace(tok);
+    at = comma + 1;
+    if (tok.empty() || !orch::pauseHolds(spawnPauseOf(d, tok))) continue;
+    held += (held.empty() ? "" : ", ") + tok;
+  }
+  return held.empty() ? pri : pri + " (paused now: " + held + ")";
+}
+
+std::string TurnEngine::buildStableCatalogs(bool modelsTool, bool headCallsTools) {
   std::string ctx = "\n";
-  ctx += "[AVAILABLE PROVIDERS] sub-session priority: " +
-         (d_.cfg.provider.subPriority ? d_.cfg.provider.subPriority() : std::string()) + "\n";
+  ctx += "[AVAILABLE PROVIDERS] sub-session priority: " + subPriorityText(d_) + "\n";
   // The model the agent runs on is NOT named here: this block is cached and outlives a
   // failover, so a "[YOUR MODEL]" line named the configured head while a paused head's turns
   // ran elsewhere (Lumi, 26 Oct). Each request's input names its own host and model instead
@@ -897,7 +964,7 @@ std::string TurnEngine::buildStableCatalogs(bool modelsTool) {
   // static one - a skill edit re-caches only the shelf), not the static catalogs.
   // Per-provider capability + connector catalog (Phase C): what each provider's
   // turns/sub-agents can actually reach, so spawns are chosen knowingly.
-  if (d_.connectorsCatalog) ctx += d_.connectorsCatalog();
+  if (d_.connectorsCatalog) ctx += d_.connectorsCatalog(headCallsTools);
   return ctx;
 }
 
@@ -965,6 +1032,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   turnMem().asked = false;
   turnMem().putBack = false;
   toolReplied_ = false;   // before anything can throw: a stale flag would silence the apology
+  spoke_ = false;         // CUM-826: this turn's own "spoke" fact
   // Turn lifecycle guard: flags the in-flight state AND paints the head turn on
   // the ring as a live Running job ("head" key, blue comet in Full) so the user
   // SEES the device thinking - previously a text/voice turn gave no ring feedback
@@ -1216,7 +1284,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       std::any_of(specs.begin(), specs.end(), [](const orch::ToolRegistry::Spec& s) {
         return s.name == "models.list" && !loopToolHidden(s.name);
       });
-  ci.catalogs = buildStableCatalogs(modelsTool);
+  // The head's own web.search is a route only when THIS head's turn runs the tool loop
+  // (the Cumulo head does on a native upstream; check of c962b5d0).
+  const bool headCallsTools = d_.headRunsTools ? d_.headRunsTools(host) : headLoops;
+  ci.catalogs = buildStableCatalogs(modelsTool, ci.toolsOnWire && headCallsTools);
   ci.modelsPointer = modelsTool;   // the loop-off note names models.list (compose.cpp)
   // R3: the skills shelf (its own cached block; "" = none on this fabric).
   if (d_.skillsIndex) ci.skillsShelf = d_.skillsIndex();
@@ -1572,10 +1643,21 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     const std::string model = d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h) : std::string();
     const bool blind = photos && !photos->empty() && !(headToolsPtr && orch::headTakesImages(h, model));
     const std::string& in = inputsFor(h);
-    const bool r = d_.hosts.run(h, cv, instructions, blind ? photos->blindText(in) : in, outJson, err,
-                                headToolsPtr, &attempt);
-    tf.spend.add(h.c_str(),
-                 d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", attempt);
+    auto fileAttempt = [&] {
+      tf.spend.add(h.c_str(), d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", attempt);
+    };
+    bool r = false;
+    try {
+      r = d_.hosts.run(h, cv, instructions, blind ? photos->blindText(in) : in, outJson, err, headToolsPtr,
+                       &attempt);
+    } catch (const std::bad_alloc&) {
+      // A failed allocation after a round billed (the next request being built): the
+      // attempt's billed rounds are filed on the way out, so the turn's memory end
+      // meters them (F2: round 1 of a thrown head loop was never metered).
+      fileAttempt();
+      throw;
+    }
+    fileAttempt();
     if (r) {
       d_.hosts.noteAnswered(h);   // an answer ends a park and its billing episode
     } else {
@@ -1958,8 +2040,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
       const std::string fold = foldHeldNotices();   // L19-13 d: one message
       // deliver() captures the row: one message the owner received (salvage text
-      // plus any folded credit line), one history row.
-      deliver(chatId, fold.empty() ? so.text : so.text + "\n\n" + fold);
+      // plus any folded credit line), one history row. Salvaged text is the model's
+      // own: handed over, the fire spoke (CUM-826).
+      deliver(chatId, fold.empty() ? so.text : so.text + "\n\n" + fold, /*modelText=*/so.salvaged);
       err = "cut: " + err;
       fireTurnEnd(false, so.salvaged ? so.text.size() : 0);
       return false;
@@ -2084,7 +2167,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // delivered text is captured so the next turn sees what the owner saw.
     const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false);
     if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
-    deliver(chatId, so.text);   // deliver() captures the delivered text as the row
+    deliver(chatId, so.text, /*modelText=*/so.salvaged);   // captured as the row; salvaged text spoke
     err = (so.cut ? "cut: " : "parse: ") + perr.detail;
     // Lane T: the parse exit notes its synthetic device cause, so the chain and every
     // row name it (the provider answered; the device could not use the answer).
@@ -2160,7 +2243,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     agent::applyTurn(turn, chatId, held, st, spawned);
   } else {
     ApplyCapture capture(this, !turn.reply.empty());
-    const AnswerMark answered(d_.apply);
+    AnswerMark answered(d_.apply, spoke_, d_.deliveryNeedsRow);
     agent::applyTurn(turn, chatId, d_.apply, st, spawned);
   }
   parkMemResults(chatId);
@@ -2190,10 +2273,11 @@ void TurnEngine::endTurnAfterFailedAllocation(const std::string& chatId) {
   TurnMemoryState& tm = turnMem();
   TurnFacts& tf = facts();
   const bool ended = tm.started && tf.metered;   // fireTurnEnd ran for this turn
-  // A routine is deferred (fired again later) only when nothing was billed and
-  // nothing answered: a retry must never repeat a paid round or a sent reply. Then
-  // what the turn took is put back too, for the next turn.
-  tm.refused = !tm.applied && (!tm.started || tf.spend.empty());
+  // A routine is deferred (fired again later) only when nothing went out and nothing
+  // answered (nothingWentOut): a retry must never repeat a paid round or a sent reply
+  // (F2: the post-update turn ran twice and messaged the owner twice). Then what the
+  // turn took is put back too, for the next turn.
+  tm.refused = nothingWentOut(tm, toolReplied_);
   if (tm.refused) putBackTaken(tm, d_.jobs, pendingMemResults_, pendingMemSeq_);
   hlog::log("orchestrator: turn ended for memory - an allocation failed");
   const bool endOwed = !ended && tm.started;   // the start hook fired, its end did not
@@ -2451,6 +2535,16 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
                                                           const std::string& loopId,
                                                           bool quietOk, bool once,
                                                           bool ownerReminder) try {
+  // This fire's flags start clear before anything can throw: the handler below reads
+  // them to tell a fire whose turn never went out (a memory deferral) from one that
+  // asked a provider or reached the owner (never a deferral), and one whose turn was
+  // served (ok, whatever its bookkeeping did after) from one that failed. A previous
+  // owner turn's flags must never decide this fire (CUM-826).
+  spoke_ = false;
+  toolReplied_ = false;
+  fireServed_ = false;
+  turnMem().asked = false;
+  turnMem().applied = false;
   nimbus::orch::FireOutcome o;
   // CUM-404: gate a scheduled fire BEFORE the handshake alloc (round 0) on BOTH the
   // total-free backstop AND the largest-contiguous-block guard - fragmentation (a low
@@ -2555,6 +2649,12 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
     setTrigger("[routine \"" + name + "\" ran]", loopId.empty() ? std::string("loop") : "loop:" + loopId);
   turnMem().admitted = true;   // runTurn continues this record
   o.ok = runTurn(inputs, target, prompt, telegram);
+  // Recorded before any bookkeeping below can allocate: a served fire whose
+  // bookkeeping then fails still reports ok (the handler reads it).
+  fireServed_ = o.ok;
+  // CUM-826: whether model text reached the owner. A failed fire that did is not run
+  // again (a one-shot retires instead of its short retry): the retry would repeat it.
+  o.answered = spoke_;
   // 22 Oct amendment (SILENT-ROUTINE-COST): a quiet routine that ends silent
   // records WHY it stayed silent - the run still spent its provider rounds, and
   // without a row the spend reads as a lost turn. The still-pending trigger row
@@ -2590,14 +2690,41 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   }
   return o;
 } catch (const std::bad_alloc&) {
-  // L24: an allocation failed while the fire was set up (runTurn ends its own): a
-  // defer like any memory refusal, the fire's flags put back as its normal end does.
+  // L24: an allocation failed while the fire was set up, or after its turn ended
+  // (runTurn ends its own failures). The fire's flags are put back as its normal end
+  // does. It is a defer like any memory refusal only when its turn never went out
+  // (nothingWentOut, the turn's own rule); a turn that asked a provider or reached the
+  // owner is reported failed, never deferred, so it is not run again for memory.
   triggerPending_ = false;
   scheduledTurn_ = false;
   quietTurn_ = false;
   dreamTurn_ = false;
   turnSource_ = TurnSource::Owner;
   nimbus::orch::FireOutcome o;
+  o.answered = spoke_;
+  o.ok = fireServed_;   // served, then its bookkeeping failed: still a served fire
+  bool wentOut = o.ok;
+  try {   // the turn record is unreadable only if it never existed (nothing went out)
+    wentOut = wentOut || !nothingWentOut(turnMem(), toolReplied_);
+  } catch (...) {
+  }
+  if (wentOut) {
+    try {   // allocating from here on: a second failure still returns this outcome, not a defer
+      attribution_ = "turn";
+      o.tokens = lastTurnUsage_;
+      if (o.ok) {
+        o.detail = lastReply_;
+        o.held = std::move(heldReply_);
+        heldReply_.clear();
+        hlog::log("loops: scheduled turn served, then an allocation failed in its bookkeeping - reported ok");
+      } else {
+        o.error = "low memory: an allocation failed after the turn ran";
+        hlog::log("loops: scheduled turn ran, then an allocation failed - reported failed, not deferred");
+      }
+    } catch (...) {
+    }
+    return o;
+  }
   o.deferred = true;
   if (once || ownerReminder) o.retryAfterSec = kMemoryRetrySec;
   try {   // allocating from here on: a second failure still returns the defer

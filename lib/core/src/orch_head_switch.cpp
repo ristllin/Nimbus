@@ -16,7 +16,7 @@ struct PauseWords {
   const char* modelWhy;
   const char* modelUntil;
 };
-const PauseWords* pauseWords(uint8_t causes, ParkKind park, bool overBudget) {
+const PauseWords* pauseWords(uint8_t causes, ParkKind park, bool overBudget, int parkStatus = 0) {
   static const PauseWords kLimit{" is paused by your monthly limit", "when it lifts",
                                  " is paused by the owner's monthly limit", "when it lifts"};
   static const PauseWords kCeiling{" is paused by your overall spending limit", "when it lifts",
@@ -29,11 +29,14 @@ const PauseWords* pauseWords(uint8_t causes, ParkKind park, bool overBudget) {
                                "once its key is replaced"};
   static const PauseWords kBudget{" is over its monthly budget", "when its budget resets",
                                   " is over its monthly budget", "when its budget resets"};
+  // A 403 refuses one model or endpoint; the park lifts on its re-check, not a new key.
+  static const PauseWords kRefused{" refused a request (HTTP 403)", "when it is checked again",
+                                   " refused a request (HTTP 403)", "when it is checked again"};
   if (causes & kPauseProviderLimit) return &kLimit;
   if (causes & kPauseSpendCeiling) return &kCeiling;
   if (causes & kPauseOwner) return &kOwner;
   if (park == ParkKind::Billing) return &kCredit;
-  if (park == ParkKind::Auth) return &kKey;
+  if (park == ParkKind::Auth) return parkStatus == 403 ? &kRefused : &kKey;
   return overBudget ? &kBudget : nullptr;
 }
 }  // namespace
@@ -45,10 +48,40 @@ std::string headPauseNote(const std::string& label, uint8_t pauseCauses, ParkKin
          w->ownerUntil + ".";
 }
 
+std::string headPauseNote(const std::string& label, const HeadPause& p) {
+  const PauseWords* w = pauseWords(p.causes, p.park, p.overBudget, p.parkStatus);
+  if (!w) return std::string();
+  return label + w->ownerWhy + "; replies already fail over automatically and return to " + label + " " +
+         w->ownerUntil + ".";
+}
+
+bool pauseHolds(const HeadPause& p) { return pauseWords(p.causes, p.park, p.overBudget, p.parkStatus) != nullptr; }
+
+HeadPause parkPause(const std::string& provider, PaidSeam seam, uint32_t nowMs, bool dueIsOpen) {
+  ProviderPark& park = providerPark();
+  HeadPause hp;
+  ParkEntry e[ProviderPark::kMaxProviders];
+  const size_t n = park.snapshot(e, ProviderPark::kMaxProviders, nowMs);
+  for (size_t i = 0; i < n; ++i) {
+    if (provider != e[i].provider || !(e[i].seamMask & (1u << (uint8_t)seam))) continue;
+    if (dueIsOpen && e[i].recheckInMs == 0 && !e[i].probing) continue;
+    hp.park = e[i].kind;
+    hp.parkStatus = e[i].httpStatus;
+  }
+  hp.causes = park.pausedBy(provider.c_str());
+  return hp;
+}
+
 std::string headPauseFact(const std::string& label, const HeadPause& p) {
-  const PauseWords* w = pauseWords(p.causes, p.park, p.overBudget);
+  const PauseWords* w = pauseWords(p.causes, p.park, p.overBudget, p.parkStatus);
   if (!w) return std::string();
   return label + ", the chosen head," + w->modelWhy + " and returns automatically " + w->modelUntil + ".";
+}
+
+std::string providerPauseFact(const std::string& label, const HeadPause& p) {
+  const PauseWords* w = pauseWords(p.causes, p.park, p.overBudget, p.parkStatus);
+  if (!w) return std::string();
+  return label + w->modelWhy + " and returns automatically " + w->modelUntil + ".";
 }
 
 std::string headSwitchRefusal(const std::string& note, const std::string& targetLabel) {

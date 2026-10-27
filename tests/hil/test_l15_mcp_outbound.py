@@ -31,7 +31,7 @@ import time
 
 import pytest
 
-from connectors import new_marker, reply_text, run_turn, skip_if_unavailable
+from connectors import mcp_result_line, new_marker, reply_text, run_turn, skip_if_unavailable
 from test_l4_network import lan_ip_or_skip
 
 pytestmark = [pytest.mark.connectors, pytest.mark.agent, pytest.mark.net]
@@ -140,6 +140,11 @@ def test_device_mcp_echo_round_trip(device, net, secrets, require_secret):
             f"Use the echo tool from the hiltest_everything MCP server to echo exactly this text: {marker}",
         )
         skip_if_unavailable(turn, "device MCP (everything)")
+        # The reply alone proves nothing (the prompt carries the marker): the turn's own
+        # tool-loop transcript must hold the call's result with it.
+        assert mcp_result_line(turn, "hiltest_everything", "echo", marker), (
+            f"the turn never called mcp.hiltest_everything.echo; reply: {reply_text(turn)[:200]!r}"
+        )
         assert marker in reply_text(turn), f"echo marker did not round-trip; reply: {reply_text(turn)[:200]!r}"
     finally:
         _delete_connector(net, ip, name)

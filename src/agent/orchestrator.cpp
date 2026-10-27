@@ -415,7 +415,14 @@ static nimbus::orch::ContextBudget headBudget() {
 // a guest could prompt-inject the model into reproducing.)
 // Returns false ONLY when the outbound screen suppressed the message (a full reply
 // queue is logged, not "undelivered": the message still belongs in the history).
+// CUM-826: whether the last deliver() on this task queued no content of its own, so the
+// chat's history row is the owner's only copy: a routine's delivery to the web chat is
+// async (the open page re-renders its history), and a full reply queue or a suppressed
+// message queued nothing. The engine asks it right after a delivery returned
+// (deliveryNeedsRow): the fire then spoke only once that row is written. Turn task.
+static bool s_lastDeliveryNeedsRow = false;
 static bool deliver(const String& chatId, const String& text, bool system = false) {
+  s_lastDeliveryNeedsRow = true;   // until the sink took the content
   // Lane J (D-3): the owner's standing rules can switch on device-enforced
   // output filters. "Never use em dashes" is exactly the kind of rule a model
   // slips on in long formatted replies, so the rule ALSO strips them here, at
@@ -446,9 +453,11 @@ static bool deliver(const String& chatId, const String& text, bool system = fals
   // other: orchSendSink hands it to the web chat book as an ASYNC delivery (the open
   // page re-renders its history, where captureAssistant records it), never into the
   // legacy single slot or any turn's reply (agent::deliverToWebChat).
-  if (g_sinks.send && !g_sinks.send(chatId, body))
+  const bool queued = g_sinks.send && g_sinks.send(chatId, body);
+  if (g_sinks.send && !queued)
     alogf("orchestrator: reply queue full - dropped %d-byte message to %s",
           (int)body.length(), chatId.c_str());
+  s_lastDeliveryNeedsRow = !queued || (chatId == "web" && loops::firing());
   return true;
 }
 
@@ -669,6 +678,7 @@ static JobEngine::Deps buildJobDeps() {
   d.backendHue = [](const char* b) { return backendHue(b); };
   d.subPriority = [] { return std::string(store::subPriority().c_str()); };
   d.providerHasKey = [](const std::string& p) { return providerHasKey(String(p.c_str())); };
+  d.overBudget = [](const std::string& p) { return store::providerOverBudget(String(p.c_str())); };
   d.subModel = [](const std::string& p) {
     return std::string(store::subModel(String(p.c_str())).c_str());
   };
@@ -808,20 +818,22 @@ static JobEngine::Deps buildJobDeps() {
 
 // ---- the TurnEngine wiring --------------------------------------------------
 
-// What holds paid requests to `p` off now (nimbus::orch::HeadPause): the pause switch (the
-// owner, the overall ceiling, the provider's monthly limit), a refusal park on the chat seam,
-// the monthly budget check. The park's re-check request is never taken; the budget check is the
-// one every turn makes at its start.
-static nimbus::orch::HeadPause headPauseFor(const std::string& p) {
-  nimbus::orch::ProviderPark& park = nimbus::orch::providerPark();
-  nimbus::orch::HeadPause hp;
-  nimbus::orch::ParkEntry e[nimbus::orch::ProviderPark::kMaxProviders];
-  const size_t n = park.snapshot(e, nimbus::orch::ProviderPark::kMaxProviders, millis());
-  for (size_t i = 0; i < n; ++i)
-    if (p == e[i].provider && (e[i].seamMask & (1u << (uint8_t)nimbus::orch::PaidSeam::Chat))) hp.park = e[i].kind;
-  hp.causes = park.pausedBy(p.c_str());
+// What holds paid requests to `p` off now on `seam` (nimbus::orch::HeadPause): the pause switch
+// (the owner, the overall ceiling, the provider's monthly limit), a refusal park covering that
+// seam, the monthly budget check. The park's re-check request is never taken; the budget check is
+// the one every turn makes at its start. Chat for the head; Spawn for the catalog (providerPause).
+static nimbus::orch::HeadPause headPauseFor(const std::string& p,
+                                            nimbus::orch::PaidSeam seam = nimbus::orch::PaidSeam::Chat,
+                                            bool dueIsOpen = false) {
+  nimbus::orch::HeadPause hp = nimbus::orch::parkPause(p, seam, millis(), dueIsOpen);
   hp.overBudget = store::providerOverBudget(String(p.c_str()));
   return hp;
+}
+
+// The prompt's reads: a park whose re-check is due is open (the turn that makes the
+// re-check never reads its provider as paused).
+nimbus::orch::HeadPause providerPause(const std::string& p, nimbus::orch::PaidSeam seam) {
+  return headPauseFor(p, seam, /*dueIsOpen=*/true);
 }
 
 static agent::ApplyDeps buildApplyDeps() {
@@ -1171,6 +1183,7 @@ static TurnEngine::Deps buildTurnDeps() {
   d.deliver = [](const std::string& chatId, const std::string& text) {
     deliver(String(chatId.c_str()), String(text.c_str()));
   };
+  d.deliveryNeedsRow = [](const std::string&) { return s_lastDeliveryNeedsRow; };
   d.event = [](const attn::Event& e) { if (g_sinks.event) g_sinks.event(e); };
   d.fire = [](const char* cue) {
     if (strcmp(cue, "turnstart") == 0) ::sfx::fire(nimbus::sfx::Ev::TurnStart);   // "Roger that."
@@ -1297,7 +1310,13 @@ static TurnEngine::Deps buildTurnDeps() {
   d.mcpDispatch = [](const std::string& req, const nimbus::orch::Principal& who) {
     return memory::handleMcp(req, who);
   };
-  d.connectorsCatalog = [] { return std::string(connectors::catalog().c_str()); };
+  d.connectorsCatalog = [](bool headTools) { return std::string(connectors::catalog(headTools).c_str()); };
+  // [SPAWN CAPACITY] and the priority marking read the Spawn seam, as the catalog does
+  // (check of c962b5d0: unwired, they fell back to the Chat read).
+  d.spawnPause = [](const std::string& p) { return providerPause(p, nimbus::orch::PaidSeam::Spawn); };
+  // Whether this head's turn runs the tool loop (web.search on its own turn): the native
+  // hosts, and the Cumulo head when its pick's upstream is one; never Z.ai or custom.
+  d.headRunsTools = [](const std::string& h) { return nimbus::orch::headRunsToolLoop(h, cumuloPick()); };
   // W15: the ambient skills index - every turn NAMES the playbooks (id + one-line
   // desc) so the model pulls the procedure with skill.get instead of the recipes
   // riding every prompt. Lane I: the per-chat attach surface - the [ACTIVE
@@ -2238,6 +2257,7 @@ bool speakOnDevice(const String& text, bool capture, String* why) {
     alogf("speak: %s", nimbus::sfx::speakerFailText(playWhy.c_str()).c_str());
     return fail(playWhy);
   }
+  noteTurnSpoke();   // CUM-826: the owner hears it (before the history row, which can fail)
   // Capture spoken output so a voice-only reply is still in history ("what did you
   // just say?" works on stateless hosts once device history reads these rows). Skip
   // when the caller already records it (the tts device action captures in apply.cpp),
@@ -2278,10 +2298,13 @@ bool sendToChat(const String& chatId, const String& text, bool asVoice, std::str
     const voicereply::Outcome o = voicereply::deliver(cid, text);
     if (result) *result = o.toolText;
     if (o.notesSent > 0) {
+      // Noted before the history row (which can fail): a voice note reached the owner
+      // (the current chat or an allowlisted one), so the fire spoke (CUM-826).
+      noteTurnSpoke();
+      if (cid == cur && g_engine) g_engine->noteToolReplied();
       // Capture what reached the TARGET chat to its history.
       memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, o.spokenText, "",
                              withTurnTag("via:telegram"));
-      if (cid == cur && g_engine) g_engine->noteToolReplied();
     }
     return o.delivered;
   }
@@ -2289,13 +2312,20 @@ bool sendToChat(const String& chatId, const String& text, bool asVoice, std::str
   // The current turn's chat already got a real answer mid-loop - remember it so
   // applyTurn doesn't append a contentless "Done." as a second message.
   if (sent) {
+    // Queued for the owner (the current chat or an allowlisted one): the fire spoke
+    // (CUM-826), noted before the history row, which can fail.
+    noteTurnSpoke();
+    if (cid == cur && g_engine) g_engine->noteToolReplied();
     // reply.telegram output was invisible to history - capture it (to the TARGET
     // chat, so a cross-chat send lands in the right conversation).
     memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, text, "",
                            withTurnTag("via:telegram"));
-    if (cid == cur && g_engine) g_engine->noteToolReplied();
   }
   return sent;
+}
+
+void noteTurnSpoke() {
+  if (g_engine) g_engine->noteSpoke();
 }
 
 // ---- Local Loops: scheduled-turn executor -----------------------------------

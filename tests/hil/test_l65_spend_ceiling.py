@@ -16,8 +16,9 @@ override answered``.
 Legs (unit L, the TEST build, in order; each reads the state the previous one left):
   1. the crossing: SPENDSET just under, one fake turn, frozen; one notice in the web chat
   2. every seam refuses with zero requests: a serial turn, a web send (409 at once), a
-     spawn, image generation, a voice note (AUDIOINJECT, if the clip is on the card),
-     a routine (every 5 minutes), a one-time wakeup and the DREAM drill
+     spawn, image generation (the LAN endpoint answers -32003: it runs only in a turn),
+     a voice note (AUDIOINJECT, if the clip is on the card), a routine (every 5
+     minutes), a one-time wakeup and the DREAM drill
   3. Telegram: one notice in the owner chat (needs the bench bot; takes locks/tg-bot)
   4. a restart keeps the freeze and sends no second notice
   5. a full settings store (NVSFILL until full): the count still advances, the freeze holds
@@ -136,11 +137,20 @@ def _web_notices(words: str, floor: str = "") -> int:
     return n
 
 
-def _mcp(tool: str, args: dict) -> str:
+def _mcp_envelope(tool: str, args: dict) -> dict:
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}})
     r = _S.post(f"http://{_IP}/mcp", data=body, headers={"Content-Type": "application/json"}, timeout=20)
     assert r.status_code == 200, f"/mcp {tool} -> {r.status_code}: {r.text[:160]}"
-    return " ".join(c.get("text", "") for c in r.json().get("result", {}).get("content", []))
+    return r.json()
+
+
+def _mcp(tool: str, args: dict) -> str:
+    return " ".join(c.get("text", "") for c in _mcp_envelope(tool, args).get("result", {}).get("content", []))
+
+
+# The LAN endpoint's answer to a tool that waits on the network (image.generate among
+# them): it runs only in the device's own turns (nimbus::sys::turnOnlyToolRpcError).
+TURN_ONLY_RPC_ERROR = -32003
 
 
 def _mcp_as_owner(tool: str, args: dict) -> str:
@@ -235,13 +245,16 @@ def test_2_every_seam_refuses_with_zero_requests(board):
     # A spawn (the dispatch is refused at the wire before it leaves).
     _mcp("session.spawn", {"task": "list three fruits", "provider": "anthropic", "name": "l65"})
     log += _lines(device, 20.0)
-    # Image generation. The merged build made image.generate TURN-SCOPED: an
-    # out-of-turn /mcp call is refused for availability ("only available during a
-    # turn") - an even stronger zero-request proof (no request can leave without a
-    # turn), but it never consults the freeze gate, so the gate assert below drops
-    # the image-gen seam for the out-of-turn shape (item 2's leg 2 finding).
-    img = _mcp("image.generate", {"prompt": "a red circle"})
-    assert "spend ceiling" in img or "during a turn" in img, img[:300]
+    # Image generation. Since v4.6.1 (HFW) the LAN endpoint never starts a tool that
+    # waits on the network: image.generate answers JSON-RPC error -32003 ("runs only in
+    # the device's own turns") before any request, so the LAN cannot spend at all. It
+    # never reaches the freeze gate, so the gate assert below leaves the image-gen seam
+    # out. The gate itself (generateToBuffer consults it before any request) is pinned by
+    # the host suite (test/test_spend_seams, "image generation"), and the only path that
+    # reaches it on a device, a turn's tool call, is refused here before the turn starts
+    # (the serial TURN above).
+    img = _mcp_envelope("image.generate", {"prompt": "a red circle"})
+    assert (img.get("error") or {}).get("code") == TURN_ONLY_RPC_ERROR, f"LAN image.generate: {img!r}"[:300]
     # A routine (the owner's, every 5 minutes) and a one-time wakeup (2 minutes): each
     # fire is deferred (not a fire, no request). Wake-ups are set to run without asking
     # for the leg and the owner's mode is put back.
@@ -275,7 +288,7 @@ def test_2_every_seam_refuses_with_zero_requests(board):
     assert "scheduled routine refused" in log, "the routine fire was not refused"
     assert "TEST override answered" not in log, "a request reached the provider while frozen"
     gate1 = _spend(device)["gate"]
-    for seam in ("head", "dream", "wakeup", "routine"):  # image-gen: turn-scoped now (see above)
+    for seam in ("head", "dream", "wakeup", "routine"):  # image-gen: refused on the LAN first (see above)
         assert gate1[seam][1] > gate0.get(seam, (0, 0))[1], f"the {seam} seam was not refused: {gate1}"
 
 

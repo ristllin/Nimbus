@@ -9,9 +9,12 @@ streamed tunneled pages (``emitResFrame`` -> ``wsWriteAll``) with no slot, and o
 This guard encodes the class, deterministically and with no board:
 
   * every function in ``src/`` that opens a ``WiFiClientSecure`` connection takes
-    the slot itself (``acquireWork``), or is allowlisted below with the function
-    that holds the slot for it (and that holder is checked to take the slot and to
-    call it);
+    the slot itself before its first connect, with the scope guard
+    (``arbiter::WorkSlot slot(ms)``, a ``nimbus::HeldSlot`` over
+    ``acquireWork``/``releaseWork``, which gives the slot back on every path out) or
+    by hand (``acquireWork``, the non-turn sites ``test_held_slot`` lists), or is
+    allowlisted below with the function that holds the slot for it (and that holder
+    is checked to take the slot and to call it);
   * the Telegram poll task (``telegram.cpp``) is the one exception by design: its
     own session is serialized with turns by task (a turn runs on that task) and it
     closes its socket before any other TLS. The Telegram archive's downloads
@@ -22,7 +25,8 @@ This guard encodes the class, deterministically and with no board:
     per chunk (decided on the body: base64 makes a 7 KB poll a 9.5 KB frame, and a
     poll must not wait for a turn); ``wsWriteAll`` is used only for small frames
     (heartbeat, pong, hello, acks, small answers);
-  * the transport takes the slot before its traced exchange;
+  * the transport takes the slot with the guard before its traced exchange and gives
+    it back in exactly one place (the trace finish), never by hand;
   * the transport's retained-document guard measures what the parse kept
     (``measureJson``), never ``memoryUsage()``, which always returns 0 in
     ArduinoJson 7 and left the 512 KB guard unable to fire.
@@ -56,6 +60,30 @@ def _code(line: str) -> str:
 
 
 _TLS_CONNECT = re.compile(r"(?:\.|->)connect\s*\(")
+# Taking the work slot: the scope guard (arbiter::WorkSlot, or a nimbus::HeldSlot built
+# on acquireWork) or the hand-held call. A declaration only: `WorkSlot& s` or a
+# parameter does not take it.
+_TAKES_SLOT = re.compile(
+    r"\bacquireWork\s*\(|\bWorkSlot\s+\w+\s*[({]|\bHeldSlot\s+\w+\s*[({]\s*&?\s*(?:\w+::)*acquireWork\b"
+)
+
+
+def _strip(body: str) -> str:
+    """A body without string/char literals and // comments (a comment naming the guard
+    is not the guard)."""
+    return "\n".join(_code(line) for line in body.splitlines())
+
+
+def _takes_slot(body: str) -> bool:
+    return bool(_TAKES_SLOT.search(_strip(body)))
+
+
+def _slot_before_connect(body: str) -> bool:
+    """The slot is taken before the function's first TLS connect."""
+    code = _strip(body)
+    take, conn = _TAKES_SLOT.search(code), _TLS_CONNECT.search(code)
+    return bool(take) and (conn is None or take.start() < conn.start())
+
 
 # Functions that open a TLS connection while a CALLER holds the slot:
 # (file, helper) -> the call chain up to the function that takes the slot. The test
@@ -65,7 +93,9 @@ _HELD_BY_CALLER = {
     ("agent/provider_verify.cpp", "zaiHostAnswers"): ["zaiPickHost", "runOne"],
     ("agent/provider_verify.cpp", "mistralConnectorsIo"): ["syncMistralConnectors", "runOne"],
     ("agent/provider_verify.cpp", "syncCumuloFallbacks"): ["runOne"],
+    ("agent/provider_verify.cpp", "fetchAnthropicPage"): ["fetchModelList", "runOne"],
     ("agent/adapters/provider_file_fetch.cpp", "httpsGetToSink"): ["captureProviderFile"],
+    ("agent/adapters/audio_tts.cpp", "connectTts"): ["synthesizeToFile"],
     ("sys/ota_update.cpp", "httpsGetOnce"): ["httpsGetUrl", "fetchManifest", "checkRun"],
 }
 
@@ -116,22 +146,58 @@ def _fn_map(rel: str) -> dict:
     return {name: (line, body) for name, line, body in _functions((_SRC / rel).read_text())}
 
 
+def _tls_offenders(rel: str, text: str) -> list:
+    """The functions in one source file that open TLS without taking the slot first."""
+    offenders = []
+    for name, line, body in _functions(text):
+        tls = "WiFiClientSecure" in body or "g_ws" in body
+        if not tls or not _TLS_CONNECT.search(_strip(body)):
+            continue
+        if _slot_before_connect(body) or (rel, name) in _HELD_BY_CALLER:
+            continue
+        offenders.append(f"src/{rel}:{line} {name}() opens TLS without the work slot")
+    return offenders
+
+
 def test_every_tls_connect_takes_the_work_slot():
     offenders = []
     for path in sorted(_SRC.rglob("*.cpp")):
         rel = path.relative_to(_SRC).as_posix()
-        if rel in _TASK_SERIALIZED:
-            continue
-        for name, line, body in _functions(path.read_text()):
-            tls = "WiFiClientSecure" in body or "g_ws" in body
-            if not tls or not _TLS_CONNECT.search(body):
-                continue
-            if "acquireWork(" in body or (rel, name) in _HELD_BY_CALLER:
-                continue
-            offenders.append(f"src/{rel}:{line} {name}() opens TLS without the work slot")
+        if rel not in _TASK_SERIALIZED:
+            offenders += _tls_offenders(rel, path.read_text())
     assert not offenders, (
         "TLS connections outside the work slot (AGENTS.md 'No on-device concurrency'):\n  " + "\n  ".join(offenders)
     )
+
+
+_RAW = "bool fetchIt() {\n  WiFiClientSecure c;\n  return c.connect(\"h\", 443);\n}\n"
+_GUARDED = (
+    "bool fetchIt() {\n  arbiter::WorkSlot slot(10000);\n  if (!slot) return false;\n"
+    "  WiFiClientSecure c;\n  return c.connect(\"h\", 443);\n}\n"
+)
+
+
+def test_guard_flags_a_raw_connect_and_accepts_the_slot_forms():
+    """Counter-test: the guard still fails a connect with no slot, a slot named only in
+    a comment, and a slot taken after the connect; it accepts the scope guard, a
+    HeldSlot over acquireWork and the hand-held call."""
+    flagged = ["src/agent/x.cpp:1 fetchIt() opens TLS without the work slot"]
+    assert _tls_offenders("agent/x.cpp", _RAW) == flagged
+    commented = _RAW.replace("  WiFiClientSecure c;", "  // arbiter::WorkSlot slot(10000);\n  WiFiClientSecure c;")
+    assert _tls_offenders("agent/x.cpp", commented) == flagged
+    late = _RAW.replace(
+        "  return c.connect(\"h\", 443);",
+        "  bool ok = c.connect(\"h\", 443);\n  arbiter::WorkSlot slot(1);\n  return ok;",
+    )
+    assert _tls_offenders("agent/x.cpp", late) == flagged
+    held = _GUARDED.replace(
+        "arbiter::WorkSlot slot(10000);", "nimbus::HeldSlot slot(&arbiter::acquireWork, &arbiter::releaseWork, 1);"
+    )
+    by_hand = _GUARDED.replace(
+        "arbiter::WorkSlot slot(10000);\n  if (!slot) return false;", "if (!arbiter::acquireWork(1)) return false;"
+    )
+    for ok in (_GUARDED, held, by_hand):
+        assert _tls_offenders("agent/x.cpp", ok) == [], ok
 
 
 def test_archive_tls_runs_only_on_the_poll_task():
@@ -163,7 +229,7 @@ def test_allowlisted_helpers_are_called_by_a_slot_holder():
             assert caller in fns, f"{caller}() is gone from src/{rel}: update the chain for {helper}()"
             assert re.search(rf"\b{callee}\s*\(", fns[caller][1]), f"{caller}() no longer calls {callee}()"
             callee = caller
-        assert "acquireWork(" in fns[chain[-1]][1], f"{chain[-1]}() (holding the slot for {helper}) no longer takes it"
+        assert _takes_slot(fns[chain[-1]][1]), f"{chain[-1]}() (holding the slot for {helper}) no longer takes it"
 
 
 def test_relay_dial_and_big_frames_take_the_slot():
@@ -171,7 +237,7 @@ def test_relay_dial_and_big_frames_take_the_slot():
     dialers = [n for n, (_, b) in fns.items() if re.search(r"g_ws->connect\s*\(", b)]
     assert dialers, "the relay dial (g_ws->connect) moved: update this guard"
     for n in dialers:
-        assert "acquireWork(" in fns[n][1], f"relay {n}() dials the cloud without the TLS work slot"
+        assert _slot_before_connect(fns[n][1]), f"relay {n}() dials the cloud without the TLS work slot"
 
     assert "emitResFrame" in fns, "emitResFrame moved: update this guard"
     emit = fns["emitResFrame"][1]
@@ -198,7 +264,7 @@ def test_relay_never_holds_the_slot_across_the_loopback():
     fns = _fn_map("net/relay_client.cpp")
     for name in ("doLoopback", "replayReq", "handleReq"):
         assert name in fns, f"{name}() moved: update this guard"
-        assert "acquireWork(" not in fns[name][1], (
+        assert not _takes_slot(fns[name][1]), (
             f"{name}() takes the TLS slot: a tunneled handler can run an embed call that "
             "takes the slot itself, so the replay must never hold it"
         )
@@ -208,10 +274,17 @@ def test_transport_takes_the_slot_before_the_traced_exchange():
     text = (_SRC / "agent" / "transport_tls.cpp").read_text()
     fn = re.search(r"int execCore\([^)]*\)\s*\{(?P<b>.*?)\n  \}\n", text, re.S)
     assert fn, "transport execCore moved: update this guard"
-    b = fn.group("b")
-    a, t = b.find("acquireWork("), b.find("tracedExchange(")
-    assert 0 <= a < t, "the transport must take the work slot before its traced exchange"
-    assert b.count("releaseWork(") == 1, "the slot is released in exactly one place (the trace finish)"
+    b = _strip(fn.group("b"))
+    take = re.search(r"\barbiter::WorkSlot\s+slot\s*\(", b)
+    t = b.find("tracedExchange(")
+    assert take and 0 <= take.start() < t, (
+        "the transport must take the work slot (the guard) before its traced exchange"
+    )
+    assert b.count("slot.release()") == 1, "the slot is released in exactly one place (the trace finish)"
+    assert b.find("slot.release()") > t, "the slot is released in the trace finish, after the exchange starts"
+    assert "acquireWork(" not in b and "releaseWork(" not in b, (
+        "the transport holds the slot by hand again: an exception between the two would keep it (L24)"
+    )
 
 
 def test_retained_guard_measures_what_was_kept():

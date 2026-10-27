@@ -666,7 +666,7 @@ class LabRig {
     d.mcpDispatch = [this](const std::string& req, const orch::Principal& who) {
       return reg_.handleRpc(req, who);
     };
-    d.connectorsCatalog = [] { return std::string(); };
+    d.connectorsCatalog = [](bool) { return std::string(); };
     wireSkillsDeps(d);
     d.modelChoices = [this](const std::string& p) { return config().provider.modelChoices(p); };
     d.episodicCaptureUser = [this](const std::string& c, const std::string& t,

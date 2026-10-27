@@ -334,6 +334,12 @@ void deferLoop(LoopRecord& l, uint64_t nowEpoch, uint32_t deferSec) {
   l.nextRun = nowEpoch + (deferSec ? deferSec : 1);
 }
 
+std::string answeredFailureAlert(const LoopRecord& l) {
+  if (l.createdBy == CreatedBy::Owner)
+    return "A reminder you set was delivered, but its turn did not finish. It will not be sent again.";
+  return "A wakeup the assistant set for itself was delivered, but its turn did not finish. It will not run again.";
+}
+
 bool onCeilingSkip(LoopRecord& l, uint64_t nowEpoch) {
   const bool first = l.lastResult != LastResult::Skipped;
   l.lastResult = LastResult::Skipped;

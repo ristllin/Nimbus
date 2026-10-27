@@ -190,6 +190,15 @@ def _python_tools():
 
 
 _QUERY_TOKEN = re.compile(r"[?&]t=")
+# A device API path: a fragment that starts the path (`base + "/api/..."`, or the literal
+# tail of f"http://{ip}/api/...", optionally after a port) or a plain-http URL to a host
+# (the device's LAN API is http only). A third party's https API that happens to have an
+# /api/ segment (Z.ai's model list) and prose that mentions a route are not device calls.
+_DEVICE_API = re.compile(r"^(?::\d+)?/api/|http://[^\s/]*/api/")
+
+
+def _device_api_fragments(source):
+    return [text for text in _string_fragments(ast.parse(source)) if _DEVICE_API.search(text)]
 
 
 def _query_token_fragments(source):
@@ -214,11 +223,22 @@ def test_no_tool_puts_the_device_token_in_a_url():
     )
 
 
+def test_device_api_detection_ignores_third_party_apis_and_prose():
+    # Counter-test: every shape a device client builds is seen as one.
+    assert _device_api_fragments('url = f"http://{ip}/api/state"\n')
+    assert _device_api_fragments('url = f"http://{ip}:80/api/state"\n')
+    assert _device_api_fragments('get(base + "/api/files/upload", tok)\n')
+    assert _device_api_fragments('url = "http://192.168.4.1/api/state"\n')
+    # A third-party https API and a route named in prose are not device calls.
+    assert not _device_api_fragments('url = "https://api.z.ai/api/paas/v4/models"\n')
+    assert not _device_api_fragments('PLAN = """\n  # raising it over\n  #   /api/orch lets it run\n"""\n')
+
+
 def test_every_tool_that_calls_the_device_api_sends_the_token_header():
     clients, missing = [], []
     for path in _python_tools():
         fragments = list(_string_fragments(ast.parse(path.read_text(encoding="utf-8"))))
-        if not any("/api/" in text for text in fragments):
+        if not any(_DEVICE_API.search(text) for text in fragments):
             continue
         clients.append(path.name)
         if "X-Nimbus-Token" not in fragments:

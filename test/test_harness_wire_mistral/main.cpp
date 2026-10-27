@@ -560,7 +560,166 @@ static void test_sub_connector_attached_but_never_called() {
   TEST_ASSERT_EQUAL_STRING("Mon 12 Oct 09:00 Team Stand-up", env.reply);   // the text is untouched here
   // The sub's own system prompt forbids inventing records.
   TEST_ASSERT_TRUE(bodyHas(d, 0, "never invent events, messages, files or other records"));
+  // CUM-822: and sends public facts to web_search, a connector only for the owner's data.
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "You are an autonomous assistant agent. Name the source of each fact. "));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "Facts from the public web (weather, travel, news, prices, opening hours) "
+                                 "come from the web_search tool; use a connector (Notion, Gmail, Calendar, "
+                                 "Drive) only for the owner's own data in it."));
   TEST_ASSERT_TRUE(LogCapture::contains("mistral sub: connectors attached=1 calls=0 asked=Google Calendar"));
+}
+
+// CUM-822 (unit A, 27 Oct): a sub spawned with skill web_search and told "use the
+// web_search tool" still called the attached Notion once. A web_search spawn carries
+// Mistral's built-ins only; any other spawn keeps the owner's connectors.
+static void test_cum822_web_search_spawn_leaves_studio_connectors_off() {
+  for (const char* skill : {"web_search", "web_search_premium"}) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+        "{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"web_search\"},"
+        "{\"type\":\"message.output\",\"content\":\"16 C, showers (bbc.co.uk/weather)\"}]}"});
+    auto pd = gcalAttachedPd(d);
+    agent::Directive dir;
+    dir.task = "Use the web_search tool: today's weather in Cambridge.";
+    dir.instruction = dir.task;
+    dir.skill = skill;
+    char jobId[72] = {};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "m", dir, jobId));
+    TEST_ASSERT_TRUE_MESSAGE(bodyHas(d, 0, "{\"type\":\"web_search\"}"), skill);
+    TEST_ASSERT_FALSE_MESSAGE(bodyHas(d, 0, "\"connector\""), skill);
+    TEST_ASSERT_TRUE(LogCapture::contains("mistral sub: web_search spawn - 1 Studio connector(s) left off"));
+    agent::ResultEnvelope env{};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, jobId, env));
+    TEST_ASSERT_EQUAL(1, env.webRuns);
+    TEST_ASSERT_EQUAL(0, env.connectorCalls);
+  }
+  // Review of 4e9cf28f: a web_search task that also names a connector keeps THAT connector,
+  // so the CUM-536 provenance holds (asked Google Calendar, never ran: marked). Check of
+  // c962b5d0: Mistral answers weather through weather_search, which is a web run, never a
+  // run of the kept calendar.
+  for (const char* tool : {"web_search", "weather_search", "news_search", "web_fetch"}) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+        std::string("{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"") + tool +
+        "\"},"
+        "{\"type\":\"message.output\",\"content\":\"Rain at 9:00 (bbc.co.uk)\"}]}"});
+    auto pd = gcalAttachedPd(d);
+    agent::Directive dir;
+    dir.task = "Use the web_search tool: the weather for my Google Calendar events tomorrow.";
+    dir.instruction = dir.task;
+    dir.skill = "web_search";
+    char jobId[72] = {};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "m", dir, jobId));
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"connector_id\":\"google_calendar\""));
+    agent::ResultEnvelope env{};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, jobId, env));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("Google Calendar", env.connectorAsked, tool);
+    TEST_ASSERT_EQUAL_MESSAGE(0, env.connectorCalls, tool);
+    TEST_ASSERT_EQUAL_MESSAGE(1, env.webRuns, tool);
+    TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("mistral sub: connectors attached=1 calls=0 asked=Google Calendar"),
+                             tool);
+  }
+  // Counter-test: a connector spawn (and one with no skill) keeps the connector.
+  for (const char* skill : {"gcal", static_cast<const char*>(nullptr)}) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+        "{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"message.output\",\"content\":\"ok\"}]}"});
+    auto pd = gcalAttachedPd(d);
+    agent::Directive dir;
+    dir.task = "List my calendar events today.";
+    dir.instruction = dir.task;
+    dir.skill = skill;
+    char jobId[72] = {};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "m", dir, jobId));
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"connector_id\":\"google_calendar\""));
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "{\"type\":\"web_search\"}"));
+    agent::ResultEnvelope env{};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, jobId, env));
+  }
+}
+
+// CUM-822 (unit A, 27 Oct): Mistral returns a web search's sources as tool_reference
+// chunks, and the text-only read dropped them all, so "name the source of each fact"
+// still came back bare. The sub reply keeps each source inline, unique, at most six.
+static void test_cum822_sub_reply_keeps_web_sources() {
+  FakeProviderDeps d;
+  std::string refs;
+  for (int i = 0; i < 8; i++)
+    refs += ",{\"type\":\"tool_reference\",\"tool\":\"web_search\",\"title\":\"T\",\"url\":\"https://s" +
+            std::to_string(i) + ".example/p\",\"description\":\"d\"}";
+  d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"web_search\"},"
+      "{\"type\":\"message.output\",\"content\":["
+      "{\"type\":\"text\",\"text\":\"Open 10:00 to 17:00\"},"
+      "{\"type\":\"tool_reference\",\"tool\":\"web_search\",\"title\":\"A\",\"url\":\"https://a.example/h\"},"
+      "{\"type\":\"tool_reference\",\"tool\":\"web_search\",\"title\":\"A again\",\"url\":\"https://a.example/h\"},"
+      "{\"type\":\"tool_reference\",\"tool\":\"web_search\",\"title\":\"no url\"},"
+      "{\"type\":\"text\",\"text\":\". Free entry\"}" + refs + ","
+      "{\"type\":\"text\",\"text\":\".\"}]}]}"});
+  auto pd = d.contract();
+  agent::Directive dir;
+  dir.task = "Use the web_search tool and name the source of each fact: Fitzwilliam hours today.";
+  dir.instruction = dir.task;
+  dir.skill = "web_search";
+  char jobId[72] = {};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "m", dir, jobId));
+  agent::ResultEnvelope env{};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, jobId, env));
+  TEST_ASSERT_EQUAL_STRING(
+      "Open 10:00 to 17:00 (source: https://a.example/h). Free entry (source: https://s0.example/p, "
+      "https://s1.example/p, https://s2.example/p, https://s3.example/p, https://s4.example/p).",
+      env.reply);
+  // Mistral's web_search answers weather through "weather_search": a web run too.
+  FakeProviderDeps w;
+  w.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"weather_search\"},"
+      "{\"type\":\"message.output\",\"content\":\"Oxford: 12 C, showers\"}]}"});
+  auto pw = w.contract();
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pw, "m", dir, jobId));
+  agent::ResultEnvelope weather{};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pw, jobId, weather));
+  TEST_ASSERT_EQUAL(1, weather.webRuns);
+  TEST_ASSERT_EQUAL(1, weather.toolRuns);
+  // Counter-test: a reply with no references reads exactly as its text.
+  FakeProviderDeps p;
+  p.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"message.output\",\"content\":["
+      "{\"type\":\"text\",\"text\":\"plain \"},{\"type\":\"text\",\"text\":\"answer\"}]}]}"});
+  auto pp = p.contract();
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pp, "m", dir, jobId));
+  agent::ResultEnvelope plain{};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pp, jobId, plain));
+  TEST_ASSERT_EQUAL_STRING("plain answer", plain.reply);
+}
+
+// Check of abe4c6a8: Mistral's web built-ins are excluded by EXACT name. A custom Studio
+// connector whose tool carries "web_search" inside its own name ("brave_web_search") is that
+// connector's run, so no false NOT-called marker; it still counts as a web run.
+static void test_custom_connector_web_named_tool_is_its_run() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"brave_web_search\"},"
+      "{\"type\":\"message.output\",\"content\":\"Results (search.brave.com)\"}]}"});
+  auto pd = d.contract();
+  pd.attachMistral = [](JsonDocument& doc) {
+    JsonObject t = doc["tools"].add<JsonObject>();
+    t["type"] = "connector";
+    t["connector_id"] = "brave";
+    if (doc[nimbus::orch::kMistralIdentityProbe] | false) {
+      t["device_name"] = "brave";
+      t["device_type"] = "brave";
+    }
+  };
+  agent::Directive dir;
+  dir.task = "Search for the Elizabeth line status.";
+  dir.instruction = dir.task;
+  dir.skill = "brave";
+  char jobId[72] = {};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "m", dir, jobId));
+  agent::ResultEnvelope env{};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, jobId, env));
+  TEST_ASSERT_EQUAL(1, env.connectorCalls);
+  TEST_ASSERT_EQUAL(1, env.webRuns);
+  TEST_ASSERT_TRUE(LogCapture::contains("mistral sub: connectors attached=1 calls=1"));
 }
 
 static void test_sub_connector_called_counts_the_execution() {
@@ -1343,6 +1502,30 @@ static void test_r1_mistral_refused_image_resent_as_transcriptions() {
   TEST_ASSERT_TRUE(fx.set->rejected);
 }
 
+// RCA 27 Oct (A2): a Mistral list with no row for the head's exact id (-1) no longer turns
+// the head caption-only: the name rule sends the photos natively. If the guess is wrong,
+// the provider's refusal (422 naming the image) is the safety net: the round is re-sent
+// once with the transcriptions and the rest of the turn stays blind.
+static int noRowForTheModel(const char* host, const char*) { return std::string(host) == "mistral" ? -1 : -2; }
+static void test_r1_a_list_without_the_models_row_sends_images_and_a_refusal_falls_back() {
+  nimbus::orch::installImageInputLookup(&noRowForTheModel);
+  harness_test::PhotoTurn fx;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 422,
+                           "{\"object\":\"error\",\"message\":\"Image input is not supported for this model\","
+                           "\"type\":\"invalid_request_error\"}"});
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, chatFinalBody()});
+  std::string err;
+  const bool ok = misPhotoTurn(d, fx, "mistral-large-latest", err);
+  nimbus::orch::installImageInputLookup(nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "image_url"));   // native: the name rule, not captions
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "image_url"));
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "(machine transcription by anthropic: photo 2 shows a label)"));
+  TEST_ASSERT_TRUE(fx.set->rejected);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_reserved_toolname_renamed_and_inverted);
@@ -1362,6 +1545,9 @@ int main(int, char**) {
   RUN_TEST(test_sub_dispatch_captures_code_interpreter_file);
   RUN_TEST(test_sub_dispatch_file_only_no_prose);
   RUN_TEST(test_sub_connector_attached_but_never_called);
+  RUN_TEST(test_cum822_web_search_spawn_leaves_studio_connectors_off);
+  RUN_TEST(test_cum822_sub_reply_keeps_web_sources);
+  RUN_TEST(test_custom_connector_web_named_tool_is_its_run);
   RUN_TEST(test_sub_connector_called_counts_the_execution);
   RUN_TEST(test_sub_provenance_reads_the_task_not_the_context);
   RUN_TEST(test_sub_other_connectors_run_does_not_vouch);
@@ -1384,6 +1570,7 @@ int main(int, char**) {
   RUN_TEST(test_r1_image_url_parts_in_the_seeded_user_message);
   RUN_TEST(test_r1_mistral_model_without_image_input_reads_transcriptions);
   RUN_TEST(test_r1_mistral_refused_image_resent_as_transcriptions);
+  RUN_TEST(test_r1_a_list_without_the_models_row_sends_images_and_a_refusal_falls_back);
   UNITY_END();
   return 0;
 }

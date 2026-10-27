@@ -11,8 +11,10 @@
 #include "../support/fake_config.h"
 #include "../support/fake_platform.h"
 #include "nimbus/harness/engine.h"
+#include "nimbus/harness/turn_contract.h"   // kCutNothingSalvaged: the device's plain cut line
 #include "nimbus/harness/turn_memory.h"
 #include "nimbus/heap_watch.h"   // kSmallAllocInternalLimit
+#include "nimbus/orch/loops.h"   // CUM-826: the scheduler's own rules over a fire's outcome
 
 // L24 (no panic under combined memory starvation): a turn never spends the device's
 // last internal SRAM. On unit A (26 Oct) a turn admitted at ~17 KB internal free
@@ -72,6 +74,18 @@ struct Rig {
   bool throwInOwnerRow = false;   // the owner-row capture throws (before the turn)
   bool throwInReplyRow = false;   // the reply's history row throws (after the provider billed)
   std::string throwAt;            // the class table: the one hook that throws std::bad_alloc next
+  // F2: the head loop's round 1 bills (and, with roundReplies, its reply.telegram tells
+  // the owner) inside the host call, then round 2's request throws std::bad_alloc.
+  bool billThenThrow = false;
+  bool roundReplies = false;
+  std::string hostOut = kGoodTurn;   // what a served attempt answers
+  bool hostFails = false;            // every attempt fails with hostErr (hostOut is its partial turn)
+  std::string hostErr;
+  bool replyMidLoop = false;         // the turn's reply.telegram answers mid-loop (noteToolReplied)
+  bool webRowOnly = false;           // a delivery to "web" queues nothing: its row is the copy
+  bool speakHeard = false;           // the speech sink reports that the owner heard it
+  std::vector<std::string> spoken;   // what the speech sink was asked to say
+  bool histV2 = false;               // the turn-structured history (a scheduled fire's trigger row)
   void maybeThrow(const char* at) {
     if (throwAt != at) return;
     throwAt.clear();
@@ -105,8 +119,16 @@ struct Rig {
       contextSwitch.push_back(switchOn());
       return std::vector<agent::AttachPick>{};
     };
-    d.deliver = [this](const std::string& c, const std::string& t) { delivered.push_back({c, t}); };
+    d.deliver = [this](const std::string& c, const std::string& t) {
+      maybeThrow("deliver");   // the device's filters allocate before anything is queued
+      delivered.push_back({c, t});
+    };
     d.apply.deliver = d.deliver;
+    d.deliveryNeedsRow = [this](const std::string& c) { return webRowOnly && c == "web"; };
+    d.apply.speak = [this](const std::string& t) {   // the device's sink notes what was heard
+      spoken.push_back(t);
+      if (speakHeard) eng->noteSpoke();
+    };
     d.apply.captureAssistant = [this](const std::string& c, const std::string& t) {
       maybeThrow("reply");
       if (throwInReplyRow) {
@@ -130,6 +152,14 @@ struct Rig {
       in.hostLabel = "anthropic / model-anthropic";
       return in;
     };
+    d.histV2 = [this] { return histV2; };
+    d.historyRows = [](const std::string&, size_t, const std::string&) {
+      return std::vector<orch::EpisodicMessage>{};
+    };
+    d.captureUserRow = [](const std::string&, const std::string&, const std::string&) { return std::string("m1"); };
+    d.captureTrigger = [this](const std::string&, const std::string&, const std::string&) {
+      maybeThrow("trigger");   // a quiet routine's silent row, written after its turn ended
+    };
     d.hooks.onTurnStart = [this](const agent::TurnStartEv& ev) { starts.push_back(ev); };
     d.recall = [this](const std::string&, const orch::Principal&) {
       maybeThrow("recall");
@@ -145,15 +175,34 @@ struct Rig {
     };
     for (const char* h : {"openai", "anthropic", "mistral"})
       d.hosts.add(h, [this, h](std::string& conv, const std::string&, const std::string& inputs, std::string& out,
-                               std::string&, const agent::HeadTools*, orch::TokenUsage* usage) {
-        attempts.push_back({h, switchOn(), inputs});
-        maybeThrow("provider");
-        conv = "c1";
-        out = kGoodTurn;
-        if (usage) usage->add(100, 20);
-        return true;
+                               std::string& err, const agent::HeadTools*, orch::TokenUsage* usage) {
+        return hostAnswers(h, conv, inputs, out, err, usage);
       });
     eng.reset(new TurnEngine(std::move(d)));
+  }
+  // One provider attempt (every host answers the same way).
+  bool hostAnswers(const char* h, std::string& conv, const std::string& inputs, std::string& out, std::string& err,
+                   orch::TokenUsage* usage) {
+    attempts.push_back({h, switchOn(), inputs});
+    maybeThrow("provider");
+    if (billThenThrow) {
+      billThenThrow = false;
+      if (usage) usage->add(100, 20);   // round 1 billed
+      if (roundReplies) {               // its reply.telegram went out
+        delivered.push_back({"1001", "round one told the owner"});
+        eng->noteToolReplied();
+      }
+      throw std::bad_alloc();           // round 2's request is being built
+    }
+    if (replyMidLoop) {
+      delivered.push_back({"1001", "told the owner mid-loop"});
+      eng->noteToolReplied();
+    }
+    conv = "c1";
+    out = hostOut;
+    if (usage) usage->add(100, 20);
+    if (hostFails) err = hostErr;
+    return !hostFails;
   }
   bool anyDelivered(const char* needle) const {
     for (const auto& p : delivered)
@@ -643,6 +692,354 @@ static void test_a_memory_deferred_one_shot_retries_soon() {
   }
 }
 
+// F2 (v4.6.1 review): a failed allocation in the head loop after round 1 billed (and
+// its reply.telegram told the owner) is no memory refusal. The fire is not deferred
+// with an empty error (drainSystemTurn would restage the post-update turn, a routine
+// would fire again, a one-shot would retry: the owner messaged twice, round 1 billed
+// twice), and round 1's usage is metered once. Counter-test: a throw before any
+// provider request still defers, with nothing billed.
+static orch::FireOutcome fireScheduledOrBounded(Rig& r, bool bounded) {
+  if (bounded) return r.eng->injectBoundedTurn("1001", "[FIRMWARE UPDATED] v4.6.1", "firmware-update",
+                                               TurnEngine::TurnBounds{});
+  return r.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1");
+}
+
+static int meteredPromptTokens(const Rig& r) {
+  int billed = 0;
+  for (const auto& rec : r.cfg.recorded) billed += (int)rec.in;
+  return billed;
+}
+
+static void test_a_failed_allocation_after_a_billed_round_is_not_a_defer() {
+  for (int bounded = 0; bounded < 2; ++bounded) {
+    for (int replies = 0; replies < 2; ++replies) {
+      char why[48];
+      std::snprintf(why, sizeof why, "bounded=%d replies=%d", bounded, replies);
+      Rig r;
+      r.billThenThrow = true;
+      r.roundReplies = replies == 1;
+      const orch::FireOutcome o = fireScheduledOrBounded(r, bounded == 1);
+      TEST_ASSERT_FALSE_MESSAGE(r.billThenThrow, why);   // the host was asked and threw
+      TEST_ASSERT_FALSE_MESSAGE(o.ok, why);
+      TEST_ASSERT_FALSE_MESSAGE(o.deferred, why);
+      TEST_ASSERT_FALSE_MESSAGE(o.error.empty(), why);   // a failure the scheduler records, never a restage
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(0u, o.retryAfterSec, why);
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.attempts.size(), why);
+      TEST_ASSERT_EQUAL_MESSAGE(100, meteredPromptTokens(r), why);   // round 1, metered once
+      TEST_ASSERT_EQUAL_MESSAGE(100, (int)o.tokens.promptTokens, why);
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.ends.size(), why);
+      TEST_ASSERT_FALSE_MESSAGE(r.ends[0].ok, why);
+      TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered(kShortOfMemoryReply), why);
+      TEST_ASSERT_EQUAL_MESSAGE(replies, (int)r.delivered.size(), why);   // round 1's reply only
+      TEST_ASSERT_FALSE_MESSAGE(r.eng->turnInFlight(), why);
+      TEST_ASSERT_EQUAL_MESSAGE(0, PsramFirstScope::depth(), why);
+    }
+    Rig early;   // before any provider request: still a defer, nothing billed
+    early.throwAt = "context";
+    const orch::FireOutcome d = fireScheduledOrBounded(early, bounded == 1);
+    TEST_ASSERT_TRUE(early.throwAt.empty());
+    TEST_ASSERT_TRUE(d.deferred);
+    TEST_ASSERT_TRUE(d.error.empty());
+    TEST_ASSERT_EQUAL(0, (int)early.attempts.size());
+    TEST_ASSERT_EQUAL(0, meteredPromptTokens(early));
+  }
+}
+
+// CUM-826 (F2 follow-through): a one-shot wakeup or owner reminder whose turn reached
+// the owner and then failed is retired, never given its short retry (the owner would
+// get the message twice). One that failed before it said anything keeps its one retry;
+// a memory defer stays a defer. A recurring routine that reached the owner and failed
+// counts the failure and keeps its next slot (no early re-fire). The engine's
+// FireOutcome is run through the scheduler's own pure rules (nimbus/orch/loops.h).
+static void test_a_one_shot_that_answered_then_failed_is_retired_not_retried() {
+  for (int kind = 1; kind <= 2; ++kind) {   // a wakeup, an owner reminder
+    const bool once = kind == 1, reminder = kind == 2;
+    Rig a;
+    a.billThenThrow = true;
+    a.roundReplies = true;
+    const orch::FireOutcome o = a.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1", false, once, reminder);
+    TEST_ASSERT_TRUE(orch::fireWasAttempted(o));
+    TEST_ASSERT_FALSE(o.ok);
+    TEST_ASSERT_TRUE(o.answered);
+    orch::LoopRecord l;
+    l.sched.kind = orch::SchedKind::Once;
+    orch::onFireResult(l, o.ok, o.tokens, orch::fnv64(o.detail), 1000);
+    TEST_ASSERT_EQUAL(1, (int)l.consecFails);   // the failure is on the record
+    TEST_ASSERT_EQUAL((int)orch::OnceAfterFire::Retire, (int)orch::onceAfterFire(l, o));
+    TEST_ASSERT_FALSE(orch::retriesSoon(o));
+
+    Rig q;   // billed, failed, said nothing: one short retry, then retired
+    q.billThenThrow = true;
+    const orch::FireOutcome f = q.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1", false, once, reminder);
+    TEST_ASSERT_TRUE(orch::fireWasAttempted(f));
+    TEST_ASSERT_FALSE(f.answered);
+    orch::LoopRecord m;
+    m.sched.kind = orch::SchedKind::Once;
+    orch::onFireResult(m, f.ok, f.tokens, orch::fnv64(f.detail), 1000);
+    TEST_ASSERT_EQUAL((int)orch::OnceAfterFire::RetryShort, (int)orch::onceAfterFire(m, f));
+    orch::onFireResult(m, f.ok, f.tokens, orch::fnv64(f.detail), 1300);
+    TEST_ASSERT_EQUAL((int)orch::OnceAfterFire::Retire, (int)orch::onceAfterFire(m, f));
+
+    Rig d;   // a memory defer before any request: deferred, retried soon, nothing counted
+    d.throwAt = "context";
+    const orch::FireOutcome g = d.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1", false, once, reminder);
+    TEST_ASSERT_FALSE(orch::fireWasAttempted(g));
+    TEST_ASSERT_FALSE(g.answered);
+    TEST_ASSERT_EQUAL_UINT32(120u, g.retryAfterSec);
+  }
+  Rig r;   // a recurring routine
+  r.billThenThrow = true;
+  r.roundReplies = true;
+  const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1");
+  TEST_ASSERT_TRUE(o.answered);
+  orch::LoopRecord l;
+  l.sched.kind = orch::SchedKind::Interval;
+  orch::onFireResult(l, o.ok, o.tokens, orch::fnv64(o.detail), 1000);
+  TEST_ASSERT_EQUAL(1, (int)l.consecFails);
+  TEST_ASSERT_EQUAL((int)orch::OnceAfterFire::NotOnce, (int)orch::onceAfterFire(l, o));
+  TEST_ASSERT_FALSE(orch::retriesSoon(o));
+  Rig s;   // a served routine answered too, and is no failure
+  const orch::FireOutcome ok = s.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1");
+  TEST_ASSERT_TRUE(ok.ok);
+  TEST_ASSERT_TRUE(ok.answered);
+}
+
+// The fire's own handler (an allocation that fails after its turn ended, here the quiet
+// routine's silent row) reads the turn's result recorded before that bookkeeping: a
+// served routine is reported ok with its spend, so its consecFails stays put (a working
+// routine is never breaker-disabled by its bookkeeping). A turn that failed and then
+// hit the same failure is reported failed, never deferred. A failure in the fire's
+// setup, before the turn, is still a defer.
+static void test_a_failed_allocation_after_the_fire_ran_is_not_a_defer() {
+  Rig r;
+  r.histV2 = true;
+  r.hostOut = "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}";   // the quiet routine stays silent
+  r.throwAt = "trigger";
+  const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "tidy up", "Upkeep", "lp1", /*quietOk=*/true);
+  TEST_ASSERT_TRUE(r.throwAt.empty());   // the silent row was written after the turn and threw
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_FALSE(o.deferred);
+  TEST_ASSERT_FALSE(o.answered);   // it said nothing
+  TEST_ASSERT_EQUAL(100, meteredPromptTokens(r));
+  TEST_ASSERT_EQUAL(100, (int)o.tokens.promptTokens);
+  TEST_ASSERT_FALSE(r.eng->turnInFlight());
+  orch::LoopRecord l;
+  l.sched.kind = orch::SchedKind::Interval;
+  orch::onFireResult(l, o.ok, o.tokens, orch::fnv64(o.detail), 1000);
+  TEST_ASSERT_EQUAL(0, (int)l.consecFails);
+
+  Rig f;   // the turn failed, then the same bookkeeping failed: a failure, never a defer
+  f.histV2 = true;
+  f.hostOut = "";
+  f.hostFails = true;
+  f.hostErr = "HTTP 500 server error";
+  f.throwAt = "trigger";
+  const orch::FireOutcome g = f.eng->injectScheduledTurn("1001", "tidy up", "Upkeep", "lp1", /*quietOk=*/true);
+  TEST_ASSERT_TRUE(f.throwAt.empty());
+  TEST_ASSERT_FALSE(g.ok);
+  TEST_ASSERT_FALSE(g.deferred);
+  TEST_ASSERT_FALSE(g.error.empty());
+
+  Rig e;
+  e.histV2 = true;
+  e.throwAt = "context";
+  const orch::FireOutcome d = e.eng->injectScheduledTurn("1001", "tidy up", "Upkeep", "lp1", /*quietOk=*/true);
+  TEST_ASSERT_TRUE(d.deferred);
+  TEST_ASSERT_TRUE(d.error.empty());
+}
+
+static orch::FireOutcome fireOneShot(Rig& r, int kind) {
+  return r.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1", false, kind == 1, kind == 2);
+}
+
+static int onceVerdict(const orch::FireOutcome& o) {
+  orch::LoopRecord l;
+  l.sched.kind = orch::SchedKind::Once;
+  orch::onFireResult(l, o.ok, o.tokens, orch::fnv64(o.detail), 1000);
+  return (int)orch::onceAfterFire(l, o);
+}
+
+// CUM-826: a cut or unreadable answer the turn salvages and delivers to the owner IS
+// model text that reached them, on both salvage exits (the provider reported the cut;
+// the answer parsed as a cut turn). A one-shot whose fire failed that way retires,
+// never re-fires. Counter-test: nothing salvageable (the device's plain cut line) is no
+// answer, and the one-shot keeps its short retry.
+static void test_a_salvaged_reply_is_an_answer() {
+  static const char* kCut = "{\"reply\":\"First part of a long answer is complete. Second part was cut mi";
+  for (int kind = 1; kind <= 2; ++kind) {   // a wakeup, an owner reminder
+    for (int reported = 0; reported < 2; ++reported) {
+      char why[40];
+      std::snprintf(why, sizeof why, "kind=%d reported=%d", kind, reported);
+      Rig r;
+      r.hostOut = kCut;
+      r.hostFails = reported == 1;
+      r.hostErr = "cut at the output limit (12000 tokens)";
+      const orch::FireOutcome o = fireOneShot(r, kind);
+      TEST_ASSERT_FALSE_MESSAGE(o.ok, why);
+      TEST_ASSERT_TRUE_MESSAGE(r.anyDelivered("First part of a long answer is complete."), why);
+      TEST_ASSERT_TRUE_MESSAGE(o.answered, why);
+      TEST_ASSERT_EQUAL_MESSAGE((int)orch::OnceAfterFire::Retire, onceVerdict(o), why);
+    }
+    Rig n;   // nothing kept: the plain cut line is the device's, not an answer
+    n.hostOut = "";
+    n.hostFails = true;
+    n.hostErr = "cut at the output limit (12000 tokens)";
+    const orch::FireOutcome o = fireOneShot(n, kind);
+    TEST_ASSERT_TRUE(n.anyDelivered(agent::kCutNothingSalvaged));
+    TEST_ASSERT_FALSE(o.answered);
+    TEST_ASSERT_EQUAL((int)orch::OnceAfterFire::RetryShort, onceVerdict(o));
+  }
+}
+
+// A delivery that throws before anything was queued (the device's output filters
+// allocate first) reached nobody: the one-shot is not answered and keeps its one short
+// retry - never silently retired.
+static void test_a_delivery_that_throws_before_queueing_is_no_answer() {
+  for (int kind = 1; kind <= 2; ++kind) {
+    Rig r;
+    r.throwAt = "deliver";
+    const orch::FireOutcome o = fireOneShot(r, kind);
+    TEST_ASSERT_TRUE(r.throwAt.empty());
+    TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+    TEST_ASSERT_FALSE(r.anyDelivered("hello there"));
+    TEST_ASSERT_FALSE(o.ok);
+    TEST_ASSERT_FALSE(o.deferred);
+    TEST_ASSERT_FALSE(o.answered);
+    TEST_ASSERT_EQUAL((int)orch::OnceAfterFire::RetryShort, onceVerdict(o));
+  }
+}
+
+// A routine's delivery to the web chat queues nothing of its own: the open page
+// re-renders the chat's history, so the row IS the owner's copy (deliveryNeedsRow).
+// The fire spoke only once that row is written: a row that throws reached nobody, and
+// the one-shot keeps its short retry (no "was delivered" alert). The same for a
+// salvaged answer delivered there. Counter-tests: the row written is an answer, and a
+// Telegram chat's queued reply is an answer even when its row then throws.
+static void test_a_web_fire_spoke_only_once_its_row_was_written() {
+  static const char* kCut = "{\"reply\":\"First part of a long answer is complete. Second part was cut mi";
+  for (int kind = 1; kind <= 2; ++kind) {
+    for (int salvage = 0; salvage < 2; ++salvage) {
+      char why[32];
+      std::snprintf(why, sizeof why, "kind=%d salvage=%d", kind, salvage);
+      Rig r;
+      r.webRowOnly = true;
+      if (salvage) r.hostOut = kCut;
+      r.throwAt = "reply";   // the reply's history row
+      const orch::FireOutcome o =
+          r.eng->injectScheduledTurn("web", "say hi", "Morning", "lp1", false, kind == 1, kind == 2);
+      TEST_ASSERT_TRUE_MESSAGE(r.throwAt.empty(), why);
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), why);   // handed to the sink, which queued nothing
+      TEST_ASSERT_FALSE_MESSAGE(o.ok, why);
+      TEST_ASSERT_FALSE_MESSAGE(o.answered, why);
+      TEST_ASSERT_EQUAL_MESSAGE((int)orch::OnceAfterFire::RetryShort, onceVerdict(o), why);
+
+      Rig w;   // the row written: the owner can read it
+      w.webRowOnly = true;
+      if (salvage) w.hostOut = kCut;
+      const orch::FireOutcome a =
+          w.eng->injectScheduledTurn("web", "say hi", "Morning", "lp1", false, kind == 1, kind == 2);
+      TEST_ASSERT_TRUE_MESSAGE(a.answered, why);
+    }
+    Rig t;   // a Telegram chat: the reply was queued before its row threw
+    t.webRowOnly = true;
+    t.throwAt = "reply";
+    const orch::FireOutcome o = fireOneShot(t, kind);
+    TEST_ASSERT_TRUE(o.answered);
+    TEST_ASSERT_EQUAL((int)orch::OnceAfterFire::Retire, onceVerdict(o));
+  }
+}
+
+// Speech marks the fire only through the device's sink, when something was heard or a
+// voice note was sent: a sink that sent nothing leaves it unanswered (the one-shot
+// keeps its short retry); one that reports it heard is an answer.
+static void test_speech_is_an_answer_only_when_heard() {
+  static const char* kSpeakOnly =
+      "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\",\"device\":[{\"type\":\"tts\",\"text\":\"Time for tea.\"}]}";
+  for (int heard = 0; heard < 2; ++heard) {
+    Rig r;
+    r.cfg.tts = true;   // the owner's "Voice replies" toggle
+    r.hostOut = kSpeakOnly;
+    r.speakHeard = heard == 1;
+    r.throwAt = "reply";   // the spoken line's history row, written after the speech
+    const orch::FireOutcome o = fireOneShot(r, 2);
+    TEST_ASSERT_TRUE(r.throwAt.empty());
+    TEST_ASSERT_EQUAL(1, (int)r.spoken.size());
+    TEST_ASSERT_FALSE(o.ok);
+    TEST_ASSERT_EQUAL(heard == 1, o.answered);
+    TEST_ASSERT_EQUAL((int)(heard ? orch::OnceAfterFire::Retire : orch::OnceAfterFire::RetryShort), onceVerdict(o));
+  }
+}
+
+// The device seams that hand the model's text over outside apply note the spoke once
+// the hand-over succeeded, before any history row (source guards: device code).
+static void test_device_hand_overs_note_the_spoke() {
+  const std::string files = readSource("src/agent/files_subsystem.cpp");
+  const size_t send = files.find("agent::telegram::sendMediaSd(");
+  const size_t note = files.find("agent::orchestrator::noteTurnSpoke();", send);
+  TEST_ASSERT_TRUE_MESSAGE(send != std::string::npos && note != std::string::npos, "files.send notes the spoke");
+  TEST_ASSERT_TRUE(note < files.find("ToolResult::ok(\"queued \"", send));
+  const std::string main = readSource("src/main.cpp");
+  TEST_ASSERT_TRUE_MESSAGE(main.find("if (agent::voicereply::deliver(chat, text).notesSent > 0) "
+                                     "agent::orchestrator::noteTurnSpoke();") != std::string::npos,
+                           "the speak sink's Telegram fallback notes a note that arrived");
+  const std::string orch = readSource("src/agent/orchestrator.cpp");
+  const size_t played = orch.find("if (!::sfx::awaitReplyStart(");
+  const size_t heard = orch.find("noteTurnSpoke();", played);
+  TEST_ASSERT_TRUE(played != std::string::npos && heard < orch.find("if (capture) memory::captureMessage", played));
+  TEST_ASSERT_TRUE(orch.find("s_lastDeliveryNeedsRow = !queued || (chatId == \"web\" && loops::firing());") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(orch.find("d.deliveryNeedsRow = [](const std::string&) { return s_lastDeliveryNeedsRow; };") !=
+                   std::string::npos);
+}
+
+// The fire's flags are its own: a previous turn on the SAME engine (an owner turn whose
+// reply was delivered, one whose reply.telegram answered mid-loop, a served fire) never
+// decides a fire that then fails in its setup. It is a memory defer, not answered, not
+// served.
+static void test_a_previous_turns_flags_never_decide_a_fire() {
+  for (int variant = 0; variant < 3; ++variant) {
+    char why[24];
+    std::snprintf(why, sizeof why, "variant=%d", variant);
+    Rig r;
+    if (variant == 0) {   // applied (and spoke): an owner turn's reply was delivered
+      r.eng->handleMessage("hi", "Roy", "1001");
+      TEST_ASSERT_TRUE_MESSAGE(r.anyDelivered("hello there"), why);
+    } else if (variant == 1) {   // toolReplied_ (and spoke): reply.telegram answered, no reply
+      r.replyMidLoop = true;
+      r.hostOut = "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}";
+      r.eng->handleMessage("hi", "Roy", "1001");
+      TEST_ASSERT_TRUE_MESSAGE(r.anyDelivered("told the owner mid-loop"), why);
+      TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("hello there"), why);
+      r.replyMidLoop = false;
+    } else {   // a served fire
+      TEST_ASSERT_TRUE_MESSAGE(fireOneShot(r, 1).ok, why);
+    }
+    r.throwAt = "context";
+    const orch::FireOutcome o = fireOneShot(r, 2);
+    TEST_ASSERT_TRUE_MESSAGE(r.throwAt.empty(), why);
+    TEST_ASSERT_TRUE_MESSAGE(o.deferred, why);
+    TEST_ASSERT_FALSE_MESSAGE(o.ok, why);
+    TEST_ASSERT_FALSE_MESSAGE(o.answered, why);
+    TEST_ASSERT_TRUE_MESSAGE(o.error.empty(), why);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(120u, o.retryAfterSec, why);
+  }
+}
+
+// The same rule for an owner turn: round 1's reply already reached the owner, so no
+// short-of-memory reply rides on top of it, and round 1 is metered once.
+static void test_an_owner_turn_that_replied_then_failed_adds_nothing_and_meters_once() {
+  Rig r;
+  r.billThenThrow = true;
+  r.roundReplies = true;
+  r.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_FALSE(r.anyDelivered(kShortOfMemoryReply));
+  TEST_ASSERT_EQUAL(100, meteredPromptTokens(r));
+  TEST_ASSERT_EQUAL(r.starts.size(), r.ends.size());
+}
+
 // The short-of-memory reply goes out once even when its own history row fails to
 // allocate (the turn's handler must not say it again).
 static void test_a_failed_reply_row_does_not_send_the_short_reply_twice() {
@@ -708,6 +1105,16 @@ int main() {
   RUN_TEST(test_a_failed_allocation_before_the_request_puts_back_what_it_took);
   RUN_TEST(test_a_memory_refused_synthesis_defers_instead_of_dumping);
   RUN_TEST(test_a_memory_deferred_one_shot_retries_soon);
+  RUN_TEST(test_a_failed_allocation_after_a_billed_round_is_not_a_defer);
+  RUN_TEST(test_an_owner_turn_that_replied_then_failed_adds_nothing_and_meters_once);
+  RUN_TEST(test_a_one_shot_that_answered_then_failed_is_retired_not_retried);
+  RUN_TEST(test_a_failed_allocation_after_the_fire_ran_is_not_a_defer);
+  RUN_TEST(test_a_salvaged_reply_is_an_answer);
+  RUN_TEST(test_a_delivery_that_throws_before_queueing_is_no_answer);
+  RUN_TEST(test_a_previous_turns_flags_never_decide_a_fire);
+  RUN_TEST(test_a_web_fire_spoke_only_once_its_row_was_written);
+  RUN_TEST(test_speech_is_an_answer_only_when_heard);
+  RUN_TEST(test_device_hand_overs_note_the_spoke);
   RUN_TEST(test_a_failed_reply_row_does_not_send_the_short_reply_twice);
   RUN_TEST(test_a_memory_deferred_system_turn_is_staged_again);
   RUN_TEST(test_psram_first_restores_the_boot_spill_limit);
