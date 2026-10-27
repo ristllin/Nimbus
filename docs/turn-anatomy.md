@@ -442,8 +442,11 @@ claims. Replies that are mostly not English are not scanned. Provider-hosted too
 really ran this turn, what it could have done is not checked: the head's response
 listed a server-side tool run, or a sub-agent result's provider record names one. A
 connector run stands for claims of sending or changing something, any run for checking
-something and for a source such a tool may have read (a website, an app, a feed, a
-report, a receipt). An enabled connector that did not run backs nothing. Everything the
+something. For a source such a tool may have read (a website, an app, a feed, a
+report, a receipt), only the head's own server-side tools count: a sub-agent's reads
+are visible on this device in its result text, so what that text does not name is not
+backed whatever the sub ran (a weather-only result backs no "Source: National Rail
+Enquiries"). An enabled connector that did not run backs nothing. Everything the
 device does itself (memory, files, skills, notes, sub-agents, a Telegram voice message
 from its own bot) is always checked, and so is a source no hosted tool can read (a
 gauge, a sensor, a label, a watch).

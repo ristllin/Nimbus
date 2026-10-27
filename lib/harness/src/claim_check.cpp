@@ -391,7 +391,12 @@ bool ClaimCheck::hostedMayBack(const orch::ClaimGap& g) const {
     case orch::ClaimClass::Checked: return !g.deviceOnly;
     // A connector or a hosted search may have read a website, an app or a receipt
     // the device never saw; a gauge, a label or a watch it cannot have read (CUM-824).
-    case orch::ClaimClass::Source: return (g.source & orch::kSrcHostable) || !g.name.empty();
+    // But a sub-agent's reads are on this device: its fresh result says what it read,
+    // and a run record is not a source (the live check: a weather-only result that
+    // ran web_search still backs no "Source: National Rail Enquiries"). Only the
+    // head's own provider-hosted tools run where the device cannot see the reads.
+    case orch::ClaimClass::Source:
+      return orch::hostedRuns().any() && ((g.source & orch::kSrcHostable) || !g.name.empty());
     default: return false;
   }
 }

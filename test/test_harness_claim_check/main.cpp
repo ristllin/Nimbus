@@ -806,6 +806,43 @@ static void test_hosted_tools_leave_only_web_sources_unchecked() {
   }
 }
 
+// The live check (27 Oct, synthesis-carryover): a sub ran web_search, its fresh result
+// covered the weather and named BBC Weather, and the reply invented "Source: National
+// Rail Enquiries". A sub's reads are visible in its result text: what that text names
+// is backed, what it does not is corrected whatever the sub ran. Only the head's own
+// provider-hosted tools run where the device cannot see the reads (CUM-835); they
+// still exempt a named or a hostable source.
+static void test_a_sub_run_never_backs_a_source_its_result_does_not_name() {
+  const std::string weather = " [tools: 1, web: 1] [ran: web_search x1]: Reading weather today, 27 Oct "
+                              "(BBC Weather): 16 C with showers, a 60% chance of rain. "
+                              "Source: https://www.bbc.com/weather\n";
+  const std::string mail = " [tools: 1] [ran: gmail x1]: The plan went out to Sam this morning.\n";
+  const char* invented = "Trains between Reading and London Paddington are running normally. "
+                         "Source: National Rail Enquiries.";
+  const char* website = "According to the website, the trains are running normally.";
+  struct Case { const char* fresh; const char* sub; const char* reply; bool head; };
+  const Case cases[] = {
+      {weather.c_str(), " [tools: 1, web: 1] [ran: web_search x1]", invented, false},   // the live check
+      {mail.c_str(), " [tools: 1] [ran: gmail x1]", website, false},                   // no web read at all
+      {weather.c_str(), " [tools: 1, web: 1] [ran: web_search x1]", invented, true},    // the head's own run
+      {mail.c_str(), " [tools: 1] [ran: gmail x1]", website, true},
+      {weather.c_str(), nullptr, invented, false},                                     // nothing ran at all
+  };
+  for (const Case& c : cases) {
+    TurnInput t = inputsWith("", "", c.fresh, "", "the weather and trains?");
+    ClaimCheck cc;
+    cc.beginTurn();
+    if (c.head) nimbus::orch::noteHostedRun("web_search");
+    if (c.sub) t.parts.subRuns = nimbus::orch::runsInRecord(c.sub);
+    cc.setSources(t.inputs, "", t.parts);
+    const std::string why = std::string(c.reply) + " (head " + (c.head ? "web" : "-") + ", sub " +
+                            (c.sub ? c.sub : "-") + ")";
+    TEST_ASSERT_EQUAL_MESSAGE(c.head, cc.finalCheck(turnJson(c.reply)).empty(), why.c_str());
+  }
+  // What the fresh result names is backed with or without a run record (CUM-824's own row).
+  TEST_ASSERT_EQUAL_STRING("", checkSource("Source: BBC Weather.", inputsWith("", "", weather, "", "the weather?"), "").c_str());
+}
+
 // A store that hits its cap (a long tool result) may hold the words past it: the rules
 // that assert absence stand down rather than tell the owner something false.
 static void test_a_clipped_evidence_store_asserts_no_absence() {
@@ -1117,6 +1154,7 @@ int main(int, char**) {
   RUN_TEST(test_working_claims_need_a_health_read);
   RUN_TEST(test_a_named_source_needs_the_owner_or_a_result_naming_it);
   RUN_TEST(test_hosted_tools_leave_only_web_sources_unchecked);
+  RUN_TEST(test_a_sub_run_never_backs_a_source_its_result_does_not_name);
   RUN_TEST(test_a_clipped_evidence_store_asserts_no_absence);
   RUN_TEST(test_a_log_claim_needs_an_append_that_landed_a_row);
   RUN_TEST(test_a_quoted_memory_needs_words_the_turn_saw);

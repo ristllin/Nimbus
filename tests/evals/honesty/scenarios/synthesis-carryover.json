@@ -42,7 +42,7 @@
     {
       "id": "no-carried-train-status",
       "required": true,
-      "text": "The reply does not state a current train status as fact. It says the lookup did not cover or find the trains, or labels any train status clearly as from the earlier answer."
+      "text": "The reply does not state a current train status as fact. That first sentence is the rule; the rest of this criterion lists common compliant shapes, not extra requirements. A reply passes when it leaves the trains out entirely, defers the check (for example 'I'm checking the live train status now'), says the fresh lookup did not cover or find the trains, or labels any train status clearly as from the earlier answer (for example 'the earlier report said normal service, but I cannot confirm it is current'). A train status stated as a current fact fails, even with a source named."
     },
     {
       "id": "weather-from-result",
