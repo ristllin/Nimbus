@@ -260,60 +260,51 @@ static void test_real_refill_still_pauses_once() {
   TEST_ASSERT_EQUAL_INT((int)FoldDue::ThrashPaused, (int)fm.evaluateDue("m", kCompactBytes, kFoldMsgsThreshold));
 }
 
-// A pause the old guard set on hidden rows alone (no failure, no refill) lifts at
-// the next evaluation; a failure pause and a refill pause do not.
-static void test_false_thrash_pause_heals() {
-  // What v4.6.0 persisted on Lumi: paused with no failures, hidden rows due, the
-  // counters under the threshold. The current guard never pauses on hidden rows, so
-  // the state is built through the API: a refill pause, its counters zeroed by a
-  // skip, then a shift past the anchor - and read back from the blob, as after the OTA.
-  FakeIO io;
-  FoldStore fs;
-  fs.begin(&io);
-  fs.applyFold("c", "sum", 1000, "m00000010");
-  fs.noteMessage("c", 60000);
-  fs.noteTurn("c");
-  TEST_ASSERT_EQUAL_INT((int)FoldDue::ThrashPaused, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
-  fs.noteFoldSkipped("c");
-  fs.setSoftStart("c", "m00000040");
-  fs.noteTurn("c");   // the turn's blob write carries the shift
-  FakeIO io2;
-  io2.blob = io.blob;
-  FoldStore after;
-  after.begin(&io2);
-  TEST_ASSERT_TRUE(after.get("c").breakerPaused);
-  TEST_ASSERT_EQUAL_INT(0, after.get("c").breakerFails);
-  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)after.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
-  TEST_ASSERT_FALSE(after.get("c").breakerPaused);
-  FakeIO io3;   // the lift was persisted
-  io3.blob = io2.blob;
-  FoldStore reread;
-  reread.begin(&io3);
-  TEST_ASSERT_FALSE(reread.get("c").breakerPaused);
-  // A failure pause stays.
-  FakeIO io4;
-  FoldStore failed;
-  failed.begin(&io4);
-  failed.setSoftStart("f", "m00000040");
-  for (int i = 0; i < 3; i++) failed.noteFoldFailed("f");
-  TEST_ASSERT_EQUAL_INT((int)FoldDue::No, (int)failed.evaluateDue("f", kCompactBytes, kFoldMsgsThreshold));
-  TEST_ASSERT_TRUE(failed.get("f").breakerPaused);
-  // A refill pause stays, hidden rows or not.
-  FakeIO io5;
-  FoldStore refill;
-  refill.begin(&io5);
-  refill.applyFold("r", "sum", 1000, "m00000010");
-  refill.noteMessage("r", 60000);
-  refill.noteTurn("r");
-  TEST_ASSERT_EQUAL_INT((int)FoldDue::ThrashPaused, (int)refill.evaluateDue("r", kCompactBytes, 0));
-  refill.setSoftStart("r", "m00000040");
-  TEST_ASSERT_EQUAL_INT((int)FoldDue::No, (int)refill.evaluateDue("r", kCompactBytes, 0));
+// One slot as v4.6.0 wrote it (the blob format is unchanged): chatId, bytes, msgs,
+// epoch;thru, turns;softStart, fails, paused, summary. v4.6.0 wrote every pause as
+// paused=1; a v4.6.1 thrash pause is paused=2, which v4.6.0 still reads as paused.
+std::string legacySlot(const std::string& chat, uint32_t bytes, uint32_t turns, const std::string& paused) {
+  return chat + "\x1F" + std::to_string(bytes) + "\x1F" "3\x1F" "1000;m00000010\x1F" + std::to_string(turns) +
+         ";m00000040\x1F" "0\x1F" + paused + "\x1F" "sum\x1E";
 }
 
-// The pause v4.6.0 left on Lumi keeps collecting bytes while it waits for the
-// update: past the threshold it is still lifted, once per boot, and a pause this
-// boot sets itself on a real refill is never lifted (one notice, not a loop).
-static void test_false_pause_with_grown_counters_heals_once_per_boot() {
+// The pause v4.6.0 left on Lumi (paused=1, no failures, hidden rows due): lifted at the
+// first evaluation after the update, with the counters under the threshold and over it.
+static void test_legacy_false_pause_heals() {
+  for (uint32_t bytes : {500u, 60000u}) {
+    FakeIO io;
+    io.blob = legacySlot("c", bytes, 12, "1");
+    FoldStore fs;
+    fs.begin(&io);
+    TEST_ASSERT_TRUE(fs.get("c").breakerPaused);
+    TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
+    TEST_ASSERT_FALSE(fs.get("c").breakerPaused);
+    FakeIO io2;   // the lift was persisted
+    io2.blob = io.blob;
+    FoldStore reread;
+    reread.begin(&io2);
+    TEST_ASSERT_FALSE(reread.get("c").breakerPaused);
+  }
+}
+
+// ...but not within kThrashTurns of its fold: lifting it there would re-pause it in the
+// same evaluation and send a second notice right after the update.
+static void test_legacy_pause_not_lifted_within_thrash_turns() {
+  FakeIO io;
+  io.blob = legacySlot("c", 60000, kThrashTurns, "1");
+  FoldStore fs;
+  fs.begin(&io);
+  int pauses = 0;
+  for (int i = 0; i < 5; i++) pauses += fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold) == FoldDue::ThrashPaused;
+  TEST_ASSERT_EQUAL_INT(0, pauses);
+  TEST_ASSERT_TRUE(fs.get("c").breakerPaused);
+  fs.noteTurn("c");   // past the thrash window: re-checked now
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
+}
+
+// A pause v4.6.1 sets on a real refill is never lifted - not by hidden rows, not by a
+// restart (it is persisted as a v4.6.1 pause). A failure pause stays as well.
+static void test_v461_pause_survives_reboot() {
   FakeIO io;
   FoldStore fs;
   fs.begin(&io);
@@ -323,30 +314,29 @@ static void test_false_pause_with_grown_counters_heals_once_per_boot() {
   TEST_ASSERT_EQUAL_INT((int)FoldDue::ThrashPaused, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
   fs.setSoftStart("c", "m00000040");
   for (int i = 0; i < 6; i++) fs.noteTurn("c");
-  // This boot set the pause on a refill: hidden rows do not lift it.
-  for (int i = 0; i < 5; i++)
-    TEST_ASSERT_EQUAL_INT((int)FoldDue::No, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
-  // After the update (a fresh boot reads the blob): lifted once, counters and all.
-  FakeIO io2;
-  io2.blob = io.blob;
-  FoldStore after;
-  after.begin(&io2);
-  TEST_ASSERT_TRUE(after.get("c").bytesSinceFold >= kCompactBytes);
-  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)after.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
-  TEST_ASSERT_FALSE(after.get("c").breakerPaused);
-  // A real refill right after that fold pauses again, once, and stays paused.
-  after.applyFold("c", "sum2", 2000, "m00000050");
-  after.noteMessage("c", 60000);
-  after.noteTurn("c");
-  after.setSoftStart("c", "m00000070");
-  int paused = 0, dues = 0;
-  for (int i = 0; i < 10; i++) {
-    const FoldDue due = after.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold);
-    paused += due == FoldDue::ThrashPaused;
-    dues += due == FoldDue::Yes;
+  for (int boot = 0; boot < 3; boot++) {
+    FakeIO next;
+    next.blob = io.blob;
+    FoldStore after;
+    after.begin(&next);
+    int dues = 0;
+    for (int i = 0; i < 5; i++) dues += after.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold) != FoldDue::No;
+    TEST_ASSERT_EQUAL_INT(0, dues);
+    TEST_ASSERT_TRUE(after.get("c").breakerPaused);
+    io.blob = next.blob;
   }
-  TEST_ASSERT_EQUAL_INT(1, paused);
-  TEST_ASSERT_EQUAL_INT(0, dues);
+  // /compact (resume) still clears it.
+  fs.resume("c");
+  TEST_ASSERT_FALSE(fs.get("c").breakerPaused);
+  // A failure pause stays.
+  FakeIO io4;
+  FoldStore failed;
+  failed.begin(&io4);
+  failed.setSoftStart("f", "m00000040");
+  for (int i = 0; i < 3; i++) failed.noteFoldFailed("f");
+  for (int i = 0; i < 4; i++) failed.noteTurn("f");
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::No, (int)failed.evaluateDue("f", kCompactBytes, kFoldMsgsThreshold));
+  TEST_ASSERT_TRUE(failed.get("f").breakerPaused);
 }
 
 // A fold with no anchor (the pre-histV2 path) leaves no hidden rows behind, so the
@@ -374,8 +364,9 @@ int main(int, char**) {
   RUN_TEST(test_short_rows_shift_raises_no_thrash);
   RUN_TEST(test_fold_then_normal_turns_no_notice);
   RUN_TEST(test_real_refill_still_pauses_once);
-  RUN_TEST(test_false_thrash_pause_heals);
-  RUN_TEST(test_false_pause_with_grown_counters_heals_once_per_boot);
+  RUN_TEST(test_legacy_false_pause_heals);
+  RUN_TEST(test_legacy_pause_not_lifted_within_thrash_turns);
+  RUN_TEST(test_v461_pause_survives_reboot);
   RUN_TEST(test_anchorless_fold_clears_the_shift);
   return UNITY_END();
 }

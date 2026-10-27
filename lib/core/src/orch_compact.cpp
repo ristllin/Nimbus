@@ -356,6 +356,7 @@ void FoldStore::begin(FoldStoreIO* io) {
     s.f.softStart       = idSuffix(f[4]);
     s.f.breakerFails    = (uint8_t)toU32(f[5]);
     s.f.breakerPaused   = toU32(f[6]) != 0;
+    s.f.thrashPaused    = toU32(f[6]) == 2;
     s.f.summary         = capSummary(rec.substr(p));   // re-cap on load (defense)
     chats_.push_back(std::move(s));
   }
@@ -395,7 +396,7 @@ std::string FoldStore::encodeSlot(const Slot& s) {
   out += '\x1F'; out += std::to_string(s.f.turnsSinceFold);
   if (!s.f.softStart.empty()) out += ";" + cleanId(s.f.softStart);
   out += '\x1F'; out += std::to_string((unsigned)s.f.breakerFails);
-  out += '\x1F'; out += s.f.breakerPaused ? "1" : "0";
+  out += '\x1F'; out += s.f.breakerPaused ? (s.f.thrashPaused ? "2" : "1") : "0";
   out += '\x1F'; out += stripCtl(s.f.summary);
   out += '\x1E';
   return out;
@@ -490,13 +491,13 @@ bool refilled(const ChatFold& f, uint32_t bytesThreshold, uint32_t msgsThreshold
 bool hidesRows(const ChatFold& f) {
   return !f.softStart.empty() && (f.thru.empty() || rowIdAfter(f.softStart, f.thru));
 }
-// A pause with no failure behind it is a thrash pause. One whose chat is due on
-// hidden rows is what v4.6.0 set on Lumi's first histV2 catch-up (the guard no
-// longer pauses on them): lifted at once while the counters are under the
-// threshold, and once per boot after they have grown since (a pause this boot set
-// itself is a real refill and stays).
-bool liftsThrashPause(const ChatFold& f, bool refill, bool hidden) {
-  return f.breakerFails == 0 && hidden && (!refill || !f.pauseRechecked);
+// A pause an older image set (paused=1) with no failure behind it is a thrash pause
+// under the old guard; one whose chat is due on hidden rows is what v4.6.0 set on
+// Lumi's first histV2 catch-up, which the guard no longer pauses on: lifted, but
+// only past the thrash window (inside it the lift would re-pause at once and send a
+// second notice). A v4.6.1 thrash pause (a real refill) and a failure pause stay.
+bool liftsLegacyPause(const ChatFold& f, bool hidden) {
+  return f.breakerFails == 0 && !f.thrashPaused && hidden && f.turnsSinceFold > kThrashTurns;
 }
 }  // namespace
 
@@ -508,9 +509,8 @@ FoldDue FoldStore::evaluateDue(const std::string& chatId, uint32_t bytesThreshol
   const bool refill = refilled(s->f, bytesThreshold, msgsThreshold);
   const bool hidden = hidesRows(s->f);
   if (s->f.breakerPaused) {
-    if (!liftsThrashPause(s->f, refill, hidden)) return FoldDue::No;
+    if (!liftsLegacyPause(s->f, hidden)) return FoldDue::No;
     s->f.breakerPaused = false;
-    s->f.pauseRechecked = true;
     persist();
   }
   if (!refill && !hidden) return FoldDue::No;
@@ -522,7 +522,7 @@ FoldDue FoldStore::evaluateDue(const std::string& chatId, uint32_t bytesThreshol
   // rest up), so a backlog larger than one fold is folded again, never paused.
   if (refill && s->f.lastFoldEpoch != 0 && s->f.turnsSinceFold <= kThrashTurns) {
     s->f.breakerPaused = true;
-    s->f.pauseRechecked = true;   // a real refill: never lifted this boot
+    s->f.thrashPaused = true;   // a real refill: persisted, never lifted
     persist();
     return FoldDue::ThrashPaused;
   }
@@ -551,6 +551,7 @@ void FoldStore::applyFold(const std::string& chatId, const std::string& summary,
   s.f.lastFoldEpoch  = epoch;
   s.f.breakerFails   = 0;
   s.f.breakerPaused  = false;
+  s.f.thrashPaused   = false;
   persist();
 }
 
@@ -575,6 +576,7 @@ void FoldStore::resume(const std::string& chatId) {
   Slot* s = find(stripCtl(chatId));
   if (!s) return;
   s->f.breakerPaused = false;
+  s->f.thrashPaused  = false;
   s->f.breakerFails  = 0;
   persist();
 }

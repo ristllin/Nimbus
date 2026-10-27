@@ -138,6 +138,9 @@ struct ChatFold {
   uint32_t turnsSinceFold  = 0;    // thrash guard input (saturating)
   uint8_t  breakerFails    = 0;    // per-chat CompactBreaker persistence
   bool     breakerPaused   = false;
+  // The pause is a thrash pause v4.6.1 or later set (a real refill). Persisted as
+  // paused=2, which an older image reads as paused (non-zero) - rollback-safe.
+  bool     thrashPaused    = false;
   // H3 (turn-structured history): the newest row id the summary covers (the
   // history starts after it) and the overflow shift (rows up to it are neither
   // verbatim nor summarized until the next fold digests them). Both forward
@@ -149,9 +152,6 @@ struct ChatFold {
   // RAM only (L19-26, fold on content): a hash of the chat's last owner message,
   // so a re-served copy of it adds nothing toward the next fold.
   uint32_t lastOwnerHash = 0;
-  // RAM only: this boot already decided the chat's thrash pause (set it, or
-  // re-checked one an older image left), so evaluateDue does not lift it again.
-  bool pauseRechecked = false;
 };
 
 // Owner messages a chat may gather before a fold is due by count alone (the
@@ -202,9 +202,9 @@ class FoldStore {
   // Evaluate the auto-fold trigger. bytesThreshold==0 disables (manual only).
   // Also due when the history's overflow shift hides rows the summary does not
   // cover yet (softStart after thru).
-  // Returns ThrashPaused EXACTLY ONCE on the pause edge (alert seam). A pause
-  // with no failures behind it whose chat is due on hidden rows is lifted (once
-  // per boot when the counters are over the threshold too).
+  // Returns ThrashPaused EXACTLY ONCE on the pause edge (alert seam). A pause an
+  // older image set (paused=1, no failures) whose chat is due on hidden rows is
+  // lifted once it is past kThrashTurns; a v4.6.1 thrash pause is never lifted.
   FoldDue evaluateDue(const std::string& chatId, uint32_t bytesThreshold,
                       uint32_t msgsThreshold);
 
