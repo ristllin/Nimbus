@@ -13,8 +13,8 @@
 // compressed, and storing needs no buffer. Sizes and CRCs follow each file in a data
 // descriptor, so the archive is written in ONE pass, a chunk at a time, with no
 // file held in RAM; the central directory goes last. Pure and host-tested over the
-// archive's Fs seam (test/test_archive_web); the device fills a chunked HTTP
-// response from it, each read taking the card lock as every archive read does.
+// archive's Fs seam (test/test_archive_web); the device fills a card stream from it
+// (src/net/web_admission.h), each read only trying the card lock.
 namespace nimbus {
 namespace tgarc {
 
@@ -25,8 +25,8 @@ class DayZip {
   DayZip(Fs& fs, const std::string& chat, const std::string& day);
 
   // The next bytes into `buf` (at most `cap`); 0 once the ZIP is complete or a read
-  // failed (failed() then says so: the client gets a short, invalid file rather than
-  // a silently wrong one).
+  // failed (failed() then says so: the device cuts the download, so the client sees a
+  // failed download rather than a short or silently wrong file).
   size_t fill(uint8_t* buf, size_t cap);
 
   // The ZIP's size from the listed file sizes (exact unless a file changes while it

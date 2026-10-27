@@ -6,10 +6,11 @@
 #include <string>
 
 #include "webui.h"                       // nimbus::net::webAuthOk (token gate)
-#include "web_admission.h"               // big log files trickle or answer busy (internal SRAM)
+#include "web_admission.h"               // card streams; big log files trickle or answer busy
 #include "../sys/errlog.h"               // portable policy: planRetrieval, pathFor, names
 #include "../sys/errlog_fs.h"            // activeFs()/readRecent()/listJson()
 #include "../agent/memory_subsystem.h"   // agent::memory::WebLock (serializes card I/O)
+#include "nimbus/sys/web_guard.h"        // kWebFillerWaitMs: a card stream's try
 
 // Retrieval surface for the durable error log. Three routes, all token-gated:
 //   GET /api/errlog                 -> stream the active log file (attachment)
@@ -33,57 +34,41 @@ std::string qparam(AsyncWebServerRequest* r, const char* name, const char* def =
   return def;
 }
 
-// Chunk-stream a known log file straight off the card/flash - never buffers the whole
-// file in RAM. Mirrors the /api/files/dl pattern: the File is opened and every chunk
-// read under the card lock, and the handle's deleter closes it, so a client disconnect
-// mid-download still closes cleanly.
-void streamFile(AsyncWebServerRequest* r, const std::string& name) {
-  // The caller's WebLock is held (handleErrlog), so this one re-enters at once. The
-  // filler and the handle's deleter only try the card lock (web_guard.h).
-  agent::memory::WebLock card;
-  if (!card) return net::admission::sendCardBusy(r);
+// Stream a log file off the card/flash as a card stream (web_admission.h): never held
+// whole in RAM; the open (the tier's file count, the name check, the file) runs inside
+// the stream, so a download that starts or meets a tool's hold waits it out.
+void streamFile(AsyncWebServerRequest* r, const std::string& fileParam) {
   auto f = net::admission::cardFileHandle();
-  *f = nimbus::errlog::activeFs().open(nimbus::errlog::pathFor(name).c_str(), FILE_READ);
-  if (!*f) { r->send(404, "application/json", "{\"error\":\"no such log file\"}"); return; }
-  const size_t size = f->size();
-  AwsResponseFiller fill = net::admission::cardFileFiller(f);
-  // Internal-SRAM admission: a big log file trickles, or waits (busy) while memory is short.
-  if (!net::admission::admit(r, size, /*html=*/false, fill)) return;
-  AsyncWebServerResponse* res = r->beginChunkedResponse("text/plain", fill);
-  res->addHeader("Content-Disposition",
-                 String("attachment; filename=\"") + name.c_str() + "\"");
+  auto open = [f, fileParam](net::admission::CardOpen& o) -> nimbus::net::CardStep {
+    agent::memory::WebLock card(nimbus::sys::kWebFillerWaitMs);   // tried, never waited for
+    if (!card) return o.busy();
+    // Validate against the ACTIVE tier's retention count, so a flash-tier device rejects
+    // ?file=nimbus.log.2/.3 as a 400 bad name (those indices only exist on the SD tier).
+    const size_t maxFiles = nimbus::errlog::capsFor(nimbus::errlog::onSdTier()).maxFiles;
+    const nimbus::errlog::RetrievalPlan plan = nimbus::errlog::planRetrieval(false, fileParam, maxFiles);
+    if (plan.kind == nimbus::errlog::RetrievalKind::Reject)
+      return o.answer(400, "application/json", "{\"error\":\"bad file name\"}");
+    const std::string name = plan.kind == nimbus::errlog::RetrievalKind::File ? plan.file : nimbus::errlog::kBaseName;
+    *f = nimbus::errlog::activeFs().open(nimbus::errlog::pathFor(name).c_str(), FILE_READ);
+    if (!*f) return o.answer(404, "application/json", "{\"error\":\"no such log file\"}");
+    const size_t size = f->size();
+    o.header("Content-Disposition", String("attachment; filename=\"") + name.c_str() + "\"");
+    o.header("X-File-Bytes", String((unsigned long)size));
+    // Internal-SRAM admission: a big log file trickles, or answers busy while memory is short.
+    return o.ready(size);
+  };
+  AsyncWebServerResponse* res = net::admission::cardStream(r, "text/plain", open, net::admission::cardFileFill(f));
   res->addHeader("X-Content-Type-Options", "nosniff");
   res->addHeader("Cache-Control", "no-store");
-  res->addHeader("X-File-Bytes", String((unsigned long)size));
   r->send(res);
 }
 
 void handleErrlog(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
-  agent::memory::WebLock card;   // every branch reads the card: tried (web_guard.h)
+  if (!r->hasParam("list")) return streamFile(r, qparam(r, "file"));
+  agent::memory::WebLock card;   // the list reads the card: tried (web_guard.h)
   if (!card) return net::admission::sendCardBusy(r);
-  const bool wantList = r->hasParam("list");
-  const std::string fileParam = qparam(r, "file");
-  // Validate against the ACTIVE tier's retention count, so a flash-tier device rejects
-  // ?file=nimbus.log.2/.3 as a 400 bad name (those indices only exist on the SD tier).
-  const size_t maxFiles = nimbus::errlog::capsFor(nimbus::errlog::onSdTier()).maxFiles;
-  const nimbus::errlog::RetrievalPlan plan =
-      nimbus::errlog::planRetrieval(wantList, fileParam, maxFiles);
-  switch (plan.kind) {
-    case nimbus::errlog::RetrievalKind::List:
-      r->send(200, "application/json", String(nimbus::errlog::listJson().c_str()));
-      return;
-    case nimbus::errlog::RetrievalKind::Current:
-      streamFile(r, nimbus::errlog::kBaseName);
-      return;
-    case nimbus::errlog::RetrievalKind::File:
-      streamFile(r, plan.file);
-      return;
-    case nimbus::errlog::RetrievalKind::Reject:
-    default:
-      r->send(400, "application/json", "{\"error\":\"bad file name\"}");
-      return;
-  }
+  r->send(200, "application/json", String(nimbus::errlog::listJson().c_str()));
 }
 
 void handleRecent(AsyncWebServerRequest* r) {

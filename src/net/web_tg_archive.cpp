@@ -1,8 +1,8 @@
 // The Telegram archive over HTTP: list by chat and day (paged), one record or media
 // file, the restore tool's upload, and the read-only "telegram-<chat>" folders in
 // Memory & Files. Every route needs the owner token. Reads go through the archive's
-// card seam (memory::Lock per operation); a file streams in chunks, each read under
-// the lock, never held whole in RAM.
+// card seam (memory::Lock per operation); a file or a day's ZIP is a card stream
+// (web_admission.h): each read only tries the card lock, nothing is held whole in RAM.
 #include "web_tg_archive.h"
 
 #include <ESPAsyncWebServer.h>
@@ -16,7 +16,8 @@
 #include "errlog_routes.h"               // registerDeferredWebRoute
 #include "nimbus/net/archive_page.h"     // the day page byte budget (prism row 7)
 #include "nimbus/tg_archive_zip.h"       // Export day: one day as a streamed ZIP
-#include "web_admission.h"               // the internal-SRAM gate for big responses
+#include "web_admission.h"               // card streams; the internal-SRAM gate for big responses
+#include "nimbus/sys/web_guard.h"        // kWebFillerWaitMs: a card stream's try
 #include "nimbus/orch/file_store.h"      // fileKindName / fileKindForName (Memory & Files kinds)
 #include "nimbus/tg_archive.h"
 #include "webui.h"                       // webAuthOk
@@ -94,32 +95,38 @@ const char* inlineType(const char* ctype) {
   return nullptr;
 }
 
-// Stream one archive file. chat, day and name are validated by the caller.
+void impReapOwedLocked();   // below, with the import
+
+// Stream one archive file as a card stream (web_admission.h); chat, day and name are
+// validated by the caller. The open (the card's presence, an owed import abort, the
+// file) runs inside the stream. Up to 20 MB, through the internal-SRAM admission like
+// every big response.
 void streamItem(AsyncWebServerRequest* r, const std::string& chat, const std::string& day,
                 const std::string& name, bool wantInline) {
   const std::string path = arc::dayDirPath(chat, day) + "/" + name;
-  // The caller's WebLock is held, so this one re-enters at once; the filler and the
-  // handle's deleter only try the card lock (web_guard.h).
-  agent::memory::WebLock card;
-  if (!card) return admission::sendCardBusy(r);
-  auto f = admission::cardFileHandle();
-  *f = agent::memory::dataFs().open(path.c_str(), FILE_READ);
-  if (!*f || f->isDirectory()) { sendJson(r, 404, "{\"error\":\"not found\"}"); return; }
-  const size_t size = f->size();
   const char* ctype = contentTypeFor(name);
   const char* shown = wantInline ? inlineType(ctype) : nullptr;
-  // Up to 20 MB: through the internal-SRAM admission like every big response (prism,
-  // wave 1 row 6): it trickles, or answers busy when memory is short.
-  AwsResponseFiller fill = admission::cardFileFiller(f);
-  if (!admission::admit(r, size, /*html=*/false, fill)) return;
-  AsyncWebServerResponse* res = r->beginChunkedResponse(shown ? shown : ctype, fill);
+  auto f = admission::cardFileHandle();
+  auto open = [f, path](admission::CardOpen& o) -> CardStep {
+    agent::memory::WebLock card(nimbus::sys::kWebFillerWaitMs);   // tried, never waited for
+    if (!card) return o.busy();
+    impReapOwedLocked();   // an import cut while the card was busy: dropped now
+    if (!agent::tgarchive::available())
+      return o.answer(503, "application/json", "{\"error\":\"The archive needs the SD card.\"}");
+    *f = agent::memory::dataFs().open(path.c_str(), FILE_READ);
+    if (!*f || f->isDirectory()) return o.answer(404, "application/json", "{\"error\":\"not found\"}");
+    const size_t size = f->size();
+    o.header("X-File-Bytes", String((unsigned long)size));
+    return o.ready(size);
+  };
+  AsyncWebServerResponse* res =
+      admission::cardStream(r, shown ? shown : ctype, open, admission::cardFileFill(f));
   res->addHeader("Content-Disposition",
                  String(shown ? "inline" : "attachment") + "; filename=\"" + name.c_str() + "\"");
   res->addHeader("X-Content-Type-Options", "nosniff");
   res->addHeader("Content-Security-Policy",
                  "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox");
   res->addHeader("Cache-Control", "no-store");
-  res->addHeader("X-File-Bytes", String((unsigned long)size));
   r->send(res);
 }
 
@@ -185,8 +192,6 @@ String rowsJson(arc::Fs& fs, const std::string& chat, const std::string& day, si
   return out;
 }
 
-void impReapOwedLocked();   // below, with the import
-
 void handleList(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
   agent::memory::WebLock card;   // the archive is on the card: tried (web_guard.h)
@@ -216,13 +221,6 @@ void handleList(AsyncWebServerRequest* r) {
 
 void handleItem(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
-  agent::memory::WebLock card;   // the archive is on the card: tried (web_guard.h)
-  if (!card) return admission::sendCardBusy(r);
-  impReapOwedLocked();   // an import cut while the card was busy: dropped now
-  if (!agent::tgarchive::available()) {
-    sendJson(r, 503, "{\"error\":\"The archive needs the SD card.\"}");
-    return;
-  }
   const std::string chat = qp(r, "chat"), day = qp(r, "day"), name = qp(r, "name");
   if (!arc::validChatDir(chat) || !arc::validDay(day) || !arc::validItemName(name)) {
     sendJson(r, 400, "{\"error\":\"bad chat, day or name\"}");
@@ -233,40 +231,40 @@ void handleItem(AsyncWebServerRequest* r) {
 
 // ---- GET /api/tg/archive/zip (Export day) ----------------------------------------
 
-// One archived day as a ZIP, streamed (tg_archive_zip.h): no file is held in RAM,
-// each read takes the card lock, and the response goes through the admission gate.
+// One archived day as a ZIP (tg_archive_zip.h), streamed as a card stream: no file is
+// held in RAM and the day is listed inside the stream's open. The response goes
+// through the internal-SRAM admission.
 void handleZip(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
-  agent::memory::WebLock card;   // the archive is on the card: tried (web_guard.h)
-  if (!card) return admission::sendCardBusy(r);
-  impReapOwedLocked();   // an import cut while the card was busy: dropped now
-  if (!agent::tgarchive::available()) {
-    sendJson(r, 503, "{\"error\":\"The archive needs the SD card.\"}");
-    return;
-  }
   const std::string chat = qp(r, "chat"), day = qp(r, "day");
   if (!arc::validChatDir(chat) || !arc::validDay(day)) {
     sendJson(r, 400, "{\"error\":\"bad chat or day\"}");
     return;
   }
-  auto zip = std::make_shared<arc::DayZip>(agent::tgarchive::cardFs(), chat, day);
-  if (zip->fileCount() == 0) {
-    sendJson(r, 404, "{\"error\":\"nothing archived that day\"}");
-    return;
-  }
-  if (zip->tooLarge()) {
-    sendJson(r, 413, "{\"error\":\"That day is too large for one ZIP. Save its files one by one.\"}");
-    return;
-  }
-  AwsResponseFiller fill = [zip](uint8_t* buf, size_t maxLen, size_t) -> size_t {
-    agent::memory::WebLock card(nimbus::sys::kWebFillerWaitMs);   // every read is card I/O
-    if (!card) return RESPONSE_TRY_AGAIN;                        // busy: the next poll
-    return zip->fill(buf, maxLen);
+  auto zip = std::make_shared<std::unique_ptr<arc::DayZip>>();
+  auto open = [zip, chat, day](admission::CardOpen& o) -> CardStep {
+    agent::memory::WebLock card(nimbus::sys::kWebFillerWaitMs);   // the archive is on the card: tried
+    if (!card) return o.busy();
+    impReapOwedLocked();   // an import cut while the card was busy: dropped now
+    if (!agent::tgarchive::available())
+      return o.answer(503, "application/json", "{\"error\":\"The archive needs the SD card.\"}");
+    zip->reset(new arc::DayZip(agent::tgarchive::cardFs(), chat, day));
+    const arc::DayZip& z = **zip;
+    if (z.fileCount() == 0) return o.answer(404, "application/json", "{\"error\":\"nothing archived that day\"}");
+    if (z.tooLarge())
+      return o.answer(413, "application/json",
+                      "{\"error\":\"That day is too large for one ZIP. Save its files one by one.\"}");
+    o.header("Content-Disposition", String("attachment; filename=\"") + z.downloadName().c_str() + "\"");
+    return o.ready((size_t)z.estimatedBytes());
   };
-  if (!admission::admit(r, (size_t)zip->estimatedBytes(), /*html=*/false, fill)) return;
-  AsyncWebServerResponse* res = r->beginChunkedResponse("application/zip", fill);
-  res->addHeader("Content-Disposition",
-                 String("attachment; filename=\"") + zip->downloadName().c_str() + "\"");
+  auto fill = [zip](uint8_t* buf, size_t cap, size_t& n) -> CardStep {
+    agent::memory::WebLock card(nimbus::sys::kWebFillerWaitMs);   // every read is card I/O
+    if (!card) return CardStep::Busy;                             // a tool holds the card: the next pass
+    if (!*zip) return CardStep::Fail;
+    n = (*zip)->fill(buf, cap);
+    return zipFillStep(n, (*zip)->failed());   // a failed read cuts the download
+  };
+  AsyncWebServerResponse* res = admission::cardStream(r, "application/zip", open, fill);
   res->addHeader("X-Content-Type-Options", "nosniff");
   res->addHeader("Cache-Control", "no-store");
   r->send(res);
@@ -512,17 +510,13 @@ void tgArchiveAppendFiles(String& filesJson, const String& project) {
 bool tgArchiveServeFile(AsyncWebServerRequest* r, const std::string& project,
                         const std::string& name) {
   if (!tgArchiveIsItem(project, name)) return false;
-  agent::memory::WebLock card;   // re-enters the route's lock (web_guard.h)
-  if (!card) {
-    admission::sendCardBusy(r);
-    return true;
-  }
   const size_t slash = name.find('/');
   const std::string day = name.substr(0, slash), file = name.substr(slash + 1);
-  if (!agent::tgarchive::available() || !arc::validDay(day) || !arc::isMediaName(file)) {
+  if (!arc::validDay(day) || !arc::isMediaName(file)) {
     sendJson(r, 404, "{\"error\":\"not found\"}");
     return true;
   }
+  // The card's presence is checked inside the stream's open (a 503 answer).
   streamItem(r, folderChat(project), day, file, r->hasParam("inline") && r->getParam("inline")->value() == "1");
   return true;
 }

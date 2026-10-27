@@ -62,9 +62,10 @@ from device import ExpectTimeout
 try:  # the LAN client's transport; a connect or read failure while the board rejoins
     import requests
 
-    # A streamed page the board closed mid-body is retried too: a card file stream whose
-    # next chunk waits on a busy card stalls in the web library (its in-flight credits
-    # run out with nothing left to acknowledge) and is closed by the ack timeout (CUM-820).
+    # A streamed page the board cut mid-body is retried too: a card download waits out a
+    # tool's hold of the card, but one whose card waits pass 60 s is cut rather than
+    # ended short (nimbus/net/card_stream.h); firmware without card streams also ended
+    # them early on a short hold.
     TRANSIENT_NET_ERRORS: tuple = (
         requests.exceptions.ConnectionError,
         requests.exceptions.Timeout,

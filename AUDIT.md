@@ -10,7 +10,12 @@ action).
 Feedback vocabulary (all in `ui_js.h`):
 
 - `toast(msg)` - transient confirmation, sentence case, verb-led.
-- `failToast(e)` - "Sign in required" on 401, else "Couldn't save - try again".
+- `failToast(e)` - "Sign in required" on 401, the device's sentence on 400/507,
+  "Try again shortly - device busy" on a busy answer, else "Couldn't save - try again".
+- `cardJson` / `onCardBusy` / `cardFetch` - a busy answer (503 + Retry-After) keeps the
+  last view, shows "The SD card is busy right now. Retrying in a few seconds." and loads
+  again after Retry-After; a download or preview waits it out (toast "Waiting for the SD
+  card").
 - `jok(r)` - throws on a non-2xx so `.catch` fires instead of a false success.
 - `run({status,btn,pending,ok,error})` - the CUM-31 feedback-state driver: renders
   pending then exactly one of ok / none / error into a `[data-fb]` element.

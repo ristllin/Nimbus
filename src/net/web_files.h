@@ -11,12 +11,13 @@
 // "/api/files/dl" and returns the listing instead of the file.
 //   GET  /api/files/list[?project=]         index listing (JSON array)
 //   POST /api/files/upload?project=&name=   multipart/raw upload streamed to SD
-//   GET  /api/files/dl?project=&name=       download (chunked, lock-per-chunk)
+//   GET  /api/files/dl?project=&name=       download (a card stream: one lock try per read)
 //   POST /api/files/rm  project=&name=      delete file + index entry
 //
-// Concurrency: chunk writes/reads take memory::Lock per chunk (SD I/O is
-// serialized by that lock everywhere in this firmware); the lock is never held
-// across a network wait. One upload session at a time (files_subsystem enforces).
+// Concurrency: upload chunk writes take the card lock per chunk and a download's
+// reads only try it (SD I/O is serialized by that lock everywhere in this firmware);
+// the lock is never held across a network wait. One upload session at a time
+// (files_subsystem enforces).
 namespace nimbus::net {
 
 void registerFileRoutes(AsyncWebServer& server);

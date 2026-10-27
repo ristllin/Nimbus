@@ -7,7 +7,9 @@ watches, was blocked: a GET /api/state waited (``portMAX_DELAY``) for the shared
 lock (``agent::memory::lock``) in ``files::storageTruth`` while a turn's ``image.look``
 held that lock across a photo caption request. The fix (``nimbus/sys/web_guard.h``): a
 web request only tries for the card lock (``WebLock``) and answers degraded or 503 when
-a tool holds it, and a tool that waits on the network runs outside the dispatcher's lock.
+a tool holds it (a card download waits instead, up to its budget:
+test_l68_card_downloads.py), and a tool that waits on the network runs outside the
+dispatcher's lock.
 
 All legs are ``hil`` + ``net`` (console verbs over serial, ``/api/chat`` and
 ``/api/state`` over the LAN). ``TOOLSTALL <ms>`` makes the next tool call the dispatcher

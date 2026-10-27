@@ -16,9 +16,10 @@
 // (image.look) held it across two 60 s photo requests, and the watchdog reset it.
 //
 // So a web request never waits unbounded:
-//   - for the card lock: it tries for at most kWebLockWaitMs (a response filler, which
-//     the server calls again, kWebFillerWaitMs) and, when the lock is busy, answers
-//     degraded (a field marked busy) or 503 with Retry-After;
+//   - for the card lock: it tries for at most kWebLockWaitMs (a card download's step,
+//     which runs again at the next poll, kWebFillerWaitMs: nimbus/net/card_stream.h) and,
+//     when the lock is busy, answers degraded (a field marked busy) or 503 with
+//     Retry-After (a card download waits instead, up to its own budget);
 //   - for the network: the TLS work slot is waited for at most kWebSlotWaitMs, a whole
 //     exchange gets at most kWebNetBudgetMs, and every exchange one web request starts
 //     draws on one allowance (kWebNetAllowanceMs), so a request that chains exchanges
@@ -33,9 +34,9 @@ namespace nimbus::sys {
 
 // The longest a web handler tries for the card lock before it answers busy.
 inline constexpr uint32_t kWebLockWaitMs = 150;
-// A chunked response filler's try (the server calls a filler that answered "try
-// again" on its next poll) and the polled /api/state's (its last card figures serve a
-// busy answer), so neither needs to wait long.
+// A card download's try at each step (a step that finds the card held runs again at
+// the next acknowledgement or poll, nimbus/net/card_stream.h) and the polled
+// /api/state's (its last card figures serve a busy answer), so neither needs to wait long.
 inline constexpr uint32_t kWebFillerWaitMs = 20;
 // How old /api/state's internal flash figures may get: LittleFS walks the whole file
 // area to count them (about half a second), so the polled page measures them at most
@@ -68,7 +69,7 @@ static_assert(kWebLockWaitMs * kWebLockTriesPerRequest + kWebNetAllowanceMs <= c
               "a web request's bounded waits must leave a quarter of the watchdog");
 static_assert(kWebNetMinExchangeMs <= kWebNetBudgetMs && kWebNetMinExchangeMs * 2 / 5 + 1000 <= kWebNetMinExchangeMs,
               "the smallest exchange still fits a connect share and a one-second handshake");
-static_assert(kWebFillerWaitMs < kWebLockWaitMs, "a filler is called again: it waits less");
+static_assert(kWebFillerWaitMs < kWebLockWaitMs, "a card download's step runs again: it waits less");
 
 // How long a TLS user waits for the work slot: on the web task at most kWebSlotWaitMs,
 // elsewhere what it asked for.

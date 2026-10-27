@@ -103,11 +103,22 @@ tool call, which can include a long card scan. So every piece of card work the l
 does (the SD health probe, the held timeline rows, the battery history row, a timeline
 event such as an SD edge) tries for the lock for at most 20 ms and, when a tool holds
 it, skips that pass or parks the event for a later one. A web request tries for at most
-150 ms (a streaming download's next chunk and `GET /api/state`, 20 ms) and, when the
-lock stays busy,
+150 ms (`GET /api/state`, 20 ms) and, when the lock stays busy,
 `GET /api/state` answers at once with the last card figures it read and
 `"cardBusy": true`, while the other card routes answer `503` with `Retry-After: 5` and
-`{"error":"busy"}`. A tool call that holds the lock for 3 s or more is named in the
+`{"error":"busy"}`. A download read from the card (the durable log, a stored file, an
+archive item, an archived day as a ZIP) is a card stream instead: it tries the lock for
+20 ms at every step, from opening the file to each read, and while a tool holds the card
+it sends nothing and tries again at the server's next poll (every half second), so it
+waits out the hold and completes. Its waits add up to at most 60 s (10 s through the
+cloud tunnel, inside the tunnel's own read limit); past that, a download that has sent
+nothing answers `503` with `Retry-After`, and one already under way is cut, so it shows
+as failed, never as a short file that looks whole. The web page treats every `503` with
+`Retry-After` as busy: it keeps what it showed, says "The SD card is busy right now.
+Retrying in a few seconds." above the section ("The device is busy right now." when
+working memory is short), and loads it again after the `Retry-After`. A download or
+preview retries a busy answer up to twice, saying "Waiting for the SD card". A tool
+call that holds the lock for 3 s or more is named in the
 durable log (`memory: tool <name> held the card lock for <ms> ms`), and a loop pass of
 2 s or more is logged too (`loop: one pass took <ms> ms ...`). Earlier firmware waited
 for the lock: a tool call that held it past 8 s stopped the loop (fixed in v4.5.16), and

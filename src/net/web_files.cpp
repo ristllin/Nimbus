@@ -1,5 +1,5 @@
 #include "web_files.h"
-#include "web_admission.h"   // big downloads trickle or answer busy (internal SRAM)
+#include "web_admission.h"   // card streams; big downloads trickle or answer busy
 
 #include <memory>
 #include <string>
@@ -218,33 +218,31 @@ void registerFileRoutes(AsyncWebServer& server) {
         }
       });
 
-  // ---- GET /api/files/dl?project=&name= - chunked download ----------------------
+  // ---- GET /api/files/dl?project=&name= - streamed download ----------------------
   server.on("/api/files/dl", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
     const std::string project(qparam(r, "project").c_str());
     const String nameQ = qparam(r, "name");
     const std::string name(nameQ.c_str());
-    agent::memory::WebLock card;   // the open and its size: tried, never waited for (web_guard.h)
-    if (!card) return net::admission::sendCardBusy(r);
     if (tgArchiveServeFile(r, project, name)) return;   // a "telegram-<chat>" folder
-    const std::string path = files::absPath(project, name);
-    if (path.empty()) { sendJson(r, 404, "{\"error\":\"not found\"}"); return; }
 
-    // Open under the lock; stream chunk reads under the SAME lock (per chunk - SD
-    // I/O is serialized by memory::Lock across every task in this firmware, and
-    // the lock is never held across the network send of the chunk). The filler and
-    // the handle's deleter only try the lock (web_guard.h): a busy chunk is sent on
-    // the server's next poll, and the handle closes whether we reach EOF or the
-    // client disconnects mid-download.
+    // A card stream (web_admission.h): the lookup and the open run inside the stream,
+    // so a download that starts or meets a tool's hold waits it out.
     auto f = net::admission::cardFileHandle();
-    *f = agent::memory::dataFs().open(path.c_str(), FILE_READ);
-    if (!*f) { sendJson(r, 500, "{\"error\":\"SD open failed\"}"); return; }
-    const size_t size = f->size();
+    auto open = [f, project, name](net::admission::CardOpen& o) -> nimbus::net::CardStep {
+      agent::memory::WebLock card(nimbus::sys::kWebFillerWaitMs);   // tried, never waited for
+      if (!card) return o.busy();
+      const std::string path = files::absPath(project, name);
+      if (path.empty()) return o.answer(404, "application/json", "{\"error\":\"not found\"}");
+      *f = agent::memory::dataFs().open(path.c_str(), FILE_READ);
+      if (!*f) return o.answer(500, "application/json", "{\"error\":\"SD open failed\"}");
+      const size_t size = f->size();
+      o.header("X-File-Bytes", String((unsigned long)size));
+      // Internal-SRAM admission: a big file trickles, or answers busy while memory is short.
+      return o.ready(size);
+    };
     const char* ctype = contentTypeFor(nameQ);
-    AwsResponseFiller fill = net::admission::cardFileFiller(f);
-    // Internal-SRAM admission: a big file trickles, or waits (busy) while memory is short.
-    if (!net::admission::admit(r, size, /*html=*/false, fill)) return;
-    AsyncWebServerResponse* res = r->beginChunkedResponse(ctype, fill);
+    AsyncWebServerResponse* res = net::admission::cardStream(r, ctype, open, net::admission::cardFileFill(f));
     // ?inline=1 asks the browser to SHOW it rather than save it - the file
     // explorer's preview. Honored only for types that cannot execute (see
     // inlineViewable); anything else keeps the attachment disposition however
@@ -260,7 +258,6 @@ void registerFileRoutes(AsyncWebServer& server) {
     res->addHeader("Content-Security-Policy",
                    "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox");
     res->addHeader("Cache-Control", "no-store");
-    res->addHeader("X-File-Bytes", String((unsigned long)size));
     r->send(res);
   });
 

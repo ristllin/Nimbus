@@ -3,9 +3,12 @@
 #include <FS.h>
 
 #include <cstddef>
+#include <functional>
 #include <memory>
+#include <string>
 
 #include "nimbus/cloud/relay_heap.h"
+#include "nimbus/net/card_stream.h"
 
 // web_admission - internal-SRAM admission for the web server's big responses (panic
 // F2). The rule is portable and host-tested (nimbus/cloud/relay_heap.h
@@ -38,14 +41,55 @@ void sendCardBusy(AsyncWebServerRequest* r);
 // A chunked filler that trickles.
 AwsResponseFiller trickle(AwsResponseFiller inner);
 
-// The plain fillers the big routes stream with: an open card file (read under the
-// card lock; closed at EOF or error), or a buffer of `len` bytes. The card filler never
-// waits for the lock: busy, it asks the server to call again (web_guard.h).
-AwsResponseFiller cardFileFiller(std::shared_ptr<::File> f);
-// The shared handle those card files live in: its deleter closes the file under the
-// card lock when it is free (a read handle's close writes nothing to the card).
-std::shared_ptr<::File> cardFileHandle();
+// The plain filler the big in-memory routes stream with: a buffer of `len` bytes.
 AwsResponseFiller bufferFiller(std::shared_ptr<char> body, size_t len);
+
+// ---- card downloads (nimbus/net/card_stream.h) -------------------------------------
+//
+// A download read from the SD card (the durable log, a stored file, an archive item or
+// day) is a card stream, never a library filler: the library's in-flight credits run
+// out when a card read answers "try again" with nothing in flight, and the download
+// ends early (AsyncTCP's ack timeout). A card stream opens the file inside the stream
+// and reads it pass by pass; every step only tries the card lock (a WebLock with
+// kWebFillerWaitMs, web_guard.h) and answers Busy when a tool holds it, so a download
+// waits out a hold of any length up to kCardStreamWaitMs without the web task ever
+// waiting, then answers 503 (nothing sent yet) or is cut (reset).
+
+class CardStreamResponse;
+
+// What a card stream's open step answers. It runs on the web task, on the server's
+// first call and again on each poll while the card is held; it tries the card lock
+// itself and returns busy(), answer(...) or ready(...).
+class CardOpen {
+ public:
+  nimbus::net::CardStep busy() const { return nimbus::net::CardStep::Busy; }
+  // No stream: a whole small answer (an error, a list).
+  nimbus::net::CardStep answer(int code, const char* contentType, const String& body);
+  // A header for the stream's head; call before ready().
+  void header(const char* name, const String& value);
+  // The stream starts; `bodyBytes` (its size, or an estimate) goes through the memory
+  // admission: a big body trickles, or the answer is busy (503) when memory is short.
+  nimbus::net::CardStep ready(size_t bodyBytes);
+
+ private:
+  friend class CardStreamResponse;
+  CardOpen(CardStreamResponse& res, AsyncWebServerRequest* r) : res_(res), r_(r) {}
+  CardStreamResponse& res_;
+  AsyncWebServerRequest* r_;
+};
+using CardOpenFn = std::function<nimbus::net::CardStep(CardOpen&)>;
+// One read: up to `cap` bytes into `buf` (Data sets `n`), Busy, End or Fail.
+using CardFillFn = std::function<nimbus::net::CardStep(uint8_t* buf, size_t cap, size_t& n)>;
+
+// The response for a card download (send it with r->send()).
+AsyncWebServerResponse* cardStream(AsyncWebServerRequest* r, const char* contentType, CardOpenFn open,
+                                   CardFillFn fill);
+// The shared handle a card file lives in: its deleter closes the file under the card
+// lock when it is free (a read handle's close writes nothing to the card).
+std::shared_ptr<::File> cardFileHandle();
+// The read of an open card file: Busy while the card is held, End at the end of the
+// file, Fail on a read error before it (never a short download that looks whole).
+CardFillFn cardFileFill(std::shared_ptr<::File> f);
 // A built JSON body sent through the filler path, never the library's basic response:
 // that one's write() reports 0 when lwIP queued the bytes but could not output them yet
 // (tcp_output ERR_MEM while the packet buffers run short, as in a photo turn) and then

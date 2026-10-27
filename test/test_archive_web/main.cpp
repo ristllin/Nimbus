@@ -199,15 +199,16 @@ static std::string readFile(const char* path) {
   return out;
 }
 
-// The line of every streamed response in `src` that no admission check guards: a
-// beginChunkedResponse with no "if (!admission::admit(" between it and the end of
-// the previous function (a "}" at the start of a line).
+// The line of every card stream in `src` whose open step never reaches the admission
+// gate: an admission::cardStream( with no "o.ready(" (CardOpen::ready runs
+// admission::decide) between it and the end of the previous function (a "}" at the
+// start of a line).
 static std::vector<int> ungatedStreams(const std::string& src) {
   std::vector<int> out;
-  for (size_t at = src.find("beginChunkedResponse("); at != std::string::npos;
-       at = src.find("beginChunkedResponse(", at + 1)) {
+  for (size_t at = src.find("admission::cardStream("); at != std::string::npos;
+       at = src.find("admission::cardStream(", at + 1)) {
     const size_t fnStart = src.rfind("\n}", at);
-    const size_t gate = src.rfind("if (!admission::admit(", at);
+    const size_t gate = src.rfind("o.ready(", at);
     const bool gated = gate != std::string::npos && (fnStart == std::string::npos || gate > fnStart);
     if (!gated) out.push_back(1 + (int)std::count(src.begin(), src.begin() + at, '\n'));
   }
@@ -216,27 +217,30 @@ static std::vector<int> ungatedStreams(const std::string& src) {
 
 // Prism row 6: archive media (the archive item route and the Files download of a
 // Telegram chat folder both stream through streamItem) and the day ZIP go through the
-// admission gate, so a big file trickles or answers busy while memory is short. The
-// guard reads the route file itself; the counter-cases prove it sees an ungated
-// stream and does not credit a gate in another function.
+// admission gate, so a big file trickles or answers busy while memory is short. Both
+// are card streams (web_admission.h): the gate runs in their open step, which ends in
+// CardOpen::ready. The guard reads the route file itself; the counter-cases prove it
+// sees an ungated stream and does not credit a gate in another function.
 static void test_archive_streams_go_through_admission() {
   const std::string src = readFile("src/net/web_tg_archive.cpp");
   TEST_ASSERT_TRUE_MESSAGE(!src.empty(), "cannot read src/net/web_tg_archive.cpp (run from repo root)");
-  TEST_ASSERT_TRUE(src.find("beginChunkedResponse(") != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("admission::cardStream(") != std::string::npos);
+  // No library filler: a card read there ends the download early while a tool holds the card.
+  TEST_ASSERT_TRUE(src.find("beginChunkedResponse(") == std::string::npos);
   const std::vector<int> bad = ungatedStreams(src);
-  TEST_ASSERT_EQUAL_MESSAGE(0, (int)bad.size(), bad.empty() ? "" : "an archive stream skips admission::admit");
-  // One file filler for card files: the archive keeps no copy of its own.
-  TEST_ASSERT_TRUE(src.find("admission::cardFileFiller(") != std::string::npos);
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)bad.size(), bad.empty() ? "" : "an archive stream skips the admission gate");
+  // One read for card files: the archive keeps no copy of its own.
+  TEST_ASSERT_TRUE(src.find("admission::cardFileFill(") != std::string::npos);
   TEST_ASSERT_TRUE(src.find("->read(") == std::string::npos);
 
-  const std::string ungated = "void a() {\n  r->beginChunkedResponse(t, fill);\n}\n";
+  const std::string ungated = "void a() {\n  admission::cardStream(r, t, open, fill);\n}\n";
   TEST_ASSERT_EQUAL(1, (int)ungatedStreams(ungated).size());
   const std::string gateElsewhere =
-      "void a() {\n  if (!admission::admit(r, n, false, fill)) return;\n}\n"
-      "void b() {\n  r->beginChunkedResponse(t, fill);\n}\n";
+      "void a() {\n  return o.ready(n);\n}\n"
+      "void b() {\n  admission::cardStream(r, t, open, fill);\n}\n";
   TEST_ASSERT_EQUAL(1, (int)ungatedStreams(gateElsewhere).size());
-  const std::string gated = "void a() {\n  if (!admission::admit(r, n, false, fill)) return;\n"
-                            "  r->beginChunkedResponse(t, fill);\n}\n";
+  const std::string gated = "void a() {\n  auto open = [](CardOpen& o) { return o.ready(n); };\n"
+                            "  admission::cardStream(r, t, open, fill);\n}\n";
   TEST_ASSERT_EQUAL(0, (int)ungatedStreams(gated).size());
 }
 

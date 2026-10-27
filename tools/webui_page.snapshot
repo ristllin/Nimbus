@@ -95,6 +95,12 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{text-align:left
 .fb-bar.fb-indet>i{width:35%;background:var(--info);animation:fbslide 1.1s ease-in-out infinite}
 @keyframes fbslide{0%{margin-left:-35%}100%{margin-left:100%}}
 @media(prefers-reduced-motion:reduce){.fb-bar.fb-indet>i{animation:none;width:100%;opacity:.4}}
+/* Busy, retrying: the SD card (or the device) answered busy; the last view stays. */
+.cardbusy{font-size:12.5px;margin:6px 0;line-height:1.5}
+.cardbusy .fb-msg{color:var(--ink2)}
+.cardbusy .fb-dot{background:var(--amber);animation:cbpulse 1.4s ease-in-out infinite}
+@keyframes cbpulse{50%{opacity:.3}}
+@media(prefers-reduced-motion:reduce){.cardbusy .fb-dot{animation:none}}
 /* Chat file drop zone (CUM-57): highlight while a file is dragged over it. */
 #chatDrop.dropping{outline:2px dashed var(--teal);outline-offset:-6px;background:var(--teal-soft)}
 /* ---- Global search (CUM-62): sidebar trigger + command palette ---- */
@@ -1072,7 +1078,7 @@ html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:h
 <div class=sec>
 <h2>Allowed items <button class=qh type=button aria-expanded=false aria-label="About allowed items">?</button></h2>
 <p class="hint tip">The senders, types, and content patterns you approved. The scanner lets these through. Revoke any to screen it again.</p>
-<div id=safetyAllow class=hint>None yet</div>
+<div id=safetyAllow class=hint>loading&hellip;</div>
 </div>
 <div class=sec>
 <h2>Downloads <button class=qh type=button aria-expanded=false aria-label="About downloads">?</button></h2>
@@ -1505,10 +1511,10 @@ function runSearch(q){
   renderSearch(groups);
   if(q.length<2)return;
   const upd=(name,items)=>{if(seq!==_sSeq)return;const g=groups.find(x=>x.name===name);if(g){g.items=items;renderSearch(groups);}};
-  fetch('/api/files/list').then(r=>r.json()).then(d=>{
+  fetch('/api/files/list').then(cardJson).then(d=>{   // busy: the group stays as it was
     upd('Files',(d.files||[]).filter(f=>((f.project+'/'+f.name)||'').toLowerCase().indexOf(ql)>=0).slice(0,6)
       .map(f=>({label:f.project+'/'+f.name,cx:_fbytes(f.bytes),act:()=>{goDest('memory');_openGroup('Files');}})));}).catch(()=>{});
-  fetch('/api/mem/vector?limit=6&query='+encodeURIComponent(q)).then(r=>r.json()).then(d=>{
+  fetch('/api/mem/vector?limit=6&query='+encodeURIComponent(q)).then(cardJson).then(d=>{
     const rows=(d.items||d.results||d.rows||[]);
     upd('Memory',rows.slice(0,6).map(m=>({label:((m.text||m.content||m.summary||'memory')+'').slice(0,80),cx:'memory',act:()=>{goDest('memory');_openGroup('Long-term memory');}})));}).catch(()=>{});
   const jobs=(typeof ORCH!=='undefined'&&ORCH&&ORCH.jobs)||[];
@@ -2701,6 +2707,7 @@ function refusalText(j){const s=j&&j.error;
   return(typeof s==='string'&&/^[A-Z]/.test(s)&&s.indexOf(' ')>0&&s.length<=300)?s:'';}
 function jok(r){
   if(r.ok)return r.json();
+  busyGuard(r);   // busy (503 + Retry-After): rejects with CARD_BUSY, defined below
   if(r.status===400)return r.json().catch(()=>({})).then(j=>{_refuseErr=refusalText(j);throw 400;});
   if(r.status!==507)throw r.status;
   return r.json().catch(()=>({})).then(j=>{_saveErr=(j&&j.message)||STORAGE_FULL_MSG;throw 507;});
@@ -2712,14 +2719,73 @@ function hasServerText(e){return e===507||(e===400&&!!_refuseErr);}
 function saveFailText(e,dflt){
   if(e===507)return _saveErr||STORAGE_FULL_MSG;
   if(e===400&&_refuseErr)return _refuseErr;
+  if(e===CARD_BUSY)return 'Try again shortly - device busy';   // the card or memory, for a moment
   return dflt||'Couldn\'t save - try again';}
 // For callers that only see apply()/orchApply()'s false: the last failure's text.
 function lastFailText(dflt){return saveFailText(_lastFail,dflt);}
+// ---- Busy answers (503 + Retry-After) ----------------------------------------------
+// The device never waits for its SD card on the web server: while a tool holds the
+// card, a card-backed endpoint answers 503 with Retry-After and {"error":"busy"}, and a
+// device short of working memory answers 503 with Retry-After too. That is "busy,
+// retrying", never an error or an empty state: the last view stays, a busy note shows
+// above it, and the load runs again after Retry-After. cardJson reads an answer like
+// r.json(), and jok() like itself, but a busy one rejects with CARD_BUSY. (A 503 with
+// no Retry-After, such as "the archive needs the SD card", is an answer, not busy.)
+const CARD_BUSY='card-busy';
+let _busyMs=5000,_busyCard=true;
+function isBusy(r){return r.status===503&&!!r.headers.get('Retry-After');}
+function noteBusy(r){const s=parseInt(r.headers.get('Retry-After'),10);
+  _busyMs=Math.min(Math.max(isNaN(s)?5:s,2),30)*1000;
+  _busyCard=/json/.test(r.headers.get('Content-Type')||'');}
+function busyGuard(r){if(isBusy(r)){noteBusy(r);throw CARD_BUSY;}return r;}
+function cardJson(r){return busyGuard(r).json();}
+function busyWhat(){return _busyCard?'The SD card is busy right now.':'The device is busy right now.';}
+// The busy note for `anchor` (an id or a node): one line above it, or inside it when it
+// is an empty card (a panel that never loaded); on while busy, gone once data arrives.
+function _busyNoteOf(a){
+  const f=a.firstElementChild,p=a.previousElementSibling;
+  if(f&&f.classList.contains('cardbusy'))return f;
+  return (p&&p.classList.contains('cardbusy'))?p:null;
+}
+function cardBusyNote(anchor,on){
+  const a=(typeof anchor==='string')?$(anchor):anchor;if(!a||!a.parentNode)return;
+  let n=_busyNoteOf(a);
+  if(!on){if(n)n.remove();return;}
+  if(!n){
+    n=document.createElement('div');n.className='cardbusy fb-line';n.setAttribute('role','status');
+    n.innerHTML='<span class=fb-dot></span><span class=fb-msg></span>';
+    if(a.classList.contains('sec')&&!a.childNodes.length)a.appendChild(n);else a.parentNode.insertBefore(n,a);
+  }
+  n.lastChild.textContent=busyWhat()+' Retrying in a few seconds.';
+}
+// A loader's failure: a busy answer shows the note and runs `retry` once after
+// Retry-After (one timer per key, so a polled loader never stacks timers; the newest
+// retry wins, so a busy view the owner moved on from is not the one retried).
+// True when it was busy.
+const _busyTimers={},_busyRetry={};
+function onCardBusy(e,key,retry,anchor){
+  if(e!==CARD_BUSY)return false;
+  cardBusyNote(anchor,true);
+  _busyRetry[key]=retry;
+  if(!_busyTimers[key])_busyTimers[key]=setTimeout(()=>{delete _busyTimers[key];_busyRetry[key]();},_busyMs);
+  return true;
+}
+// A download, preview or detail fetch: waits out busy answers (`tries` more fetches,
+// each after Retry-After); onBusy() runs at the first so the page can say it waits.
+function cardFetch(url,onBusy,tries=2){
+  return fetch(url).then(r=>{
+    if(!isBusy(r)||tries<=0)return r;
+    noteBusy(r);if(onBusy)onBusy();
+    return new Promise(res=>setTimeout(res,_busyMs)).then(()=>cardFetch(url,null,tries-1));
+  });
+}
+function busyToast(){toast(_busyCard?'Waiting for the SD card':'Waiting for the device');}
 // Fetch plain text, surfacing the SERVER's reason on failure. The glass-box
 // endpoints answer 404 with a human sentence ("off: …", "nosd: …", "evicted: …")
-// precisely so the chat can say why instead of showing an empty panel.
+// precisely so the chat can say why instead of showing an empty panel. A busy card
+// is waited out first (cardFetch, defined below and hoisted).
 function _tfetch(url){
-  return fetch(url).then(r=>r.text().then(t=>{
+  return cardFetch(url).then(r=>r.text().then(t=>{
     if(r.ok)return t;
     const i=t.indexOf(': ');
     throw new Error((i>0?t.slice(i+2):t)||('Error '+r.status));
@@ -3608,7 +3674,8 @@ function fetchQAct(id,op){
 // Safety ACTIVITY surface (CUM-215): the scanner's blocked/suspected log, per-entry
 // owner actions (approve scoped / dismiss / report), and the scoped allowlist.
 var _safetyReport={available:false,copy:''};
-function loadSafety(){fetch('/api/safety').then(r=>r.json()).then(renderSafety).catch(function(){var b=$('safetyList');if(b&&/loading/i.test(b.textContent))b.innerHTML='<p class=hint>Could not load activity. Try again.</p>';});}
+function loadSafety(){fetch('/api/safety').then(cardJson).then(function(d){cardBusyNote('safetyList',false);renderSafety(d);}).catch(function(e){if(onCardBusy(e,'safety',loadSafety,'safetyList'))return;var b=$('safetyList');if(b&&/loading/i.test(b.textContent))b.innerHTML='<p class=hint>Could not load activity. Try again.</p>';
+  var a=$('safetyAllow');if(a&&/loading/i.test(a.textContent))a.textContent='Could not load. Try again.';});}
 // Reuse the one full HTML escaper (connEsc, defined below and hoisted): it also
 // escapes ' and ", so ids interpolated into inline handlers cannot break out (CUM-215).
 function renderSafety(d){
@@ -3692,10 +3759,10 @@ function safetyReport(id){
 function _safetyPoll(n){
   if(n<=0)return;
   setTimeout(function(){
-    fetch('/api/safety').then(r=>r.json()).then(function(d){
+    fetch('/api/safety').then(cardJson).then(function(d){
       renderSafety(d);
       if(d&&d.report&&d.report.pending)_safetyPoll(n-1);   // still in flight: keep polling
-    }).catch(function(){});
+    }).catch(function(e){if(e===CARD_BUSY)_safetyPoll(n-1);});   // busy: the next poll
   },1500);
 }
 if($('fetchpolsave'))$('fetchpolsave').onclick=()=>{
@@ -4492,6 +4559,7 @@ let _prefsSeen='';
 function loadPrefs(){
   const box=$('prefslist'); if(!box)return;
   fetch('/api/prefs').then(jok).then(d=>{
+    cardBusyNote(box,false);
     const now=JSON.stringify(d);
     if(now===_prefsSeen)return;   // the memory pane polls; an unchanged list must not re-render (a link the owner is clicking stays stable)
     _prefsSeen=now;
@@ -4509,7 +4577,7 @@ function loadPrefs(){
       const fd=new FormData();fd.append('action',a.dataset.pact);fd.append('id',a.dataset.pid);
       fetch('/api/prefs',{method:'POST',body:fd}).then(jok)
         .then(()=>loadPrefs()).catch(()=>{const m=$('prefsmsg');if(m)m.textContent='That did not work - try again.';});});
-  }).catch(()=>{box.innerHTML='<span class=hint>Standing rules unavailable.</span>';});
+  }).catch(e=>{if(!onCardBusy(e,'prefs',loadPrefs,box))box.innerHTML='<span class=hint>Standing rules unavailable.</span>';});
 }
 $('prefsadd')&&($('prefsadd').onclick=()=>{
   const t=$('prefsnew').value.trim(), m=$('prefsmsg'); if(m)m.textContent='';
@@ -4743,12 +4811,13 @@ function healthSkeleton(box){
  $('hpBeep').onclick=()=>P('/api/audio/beep','Speaker tone');
  $('hpLb').onclick=()=>P('/api/audio/loopback','Loopback test');
  $('hpSd').onclick=()=>{m.textContent='Probing the SD card…';
-   fetch('/api/sdprobe').then(r=>r.json()).then(x=>{m.textContent='SD: '+JSON.stringify(x);loadHealth();}).catch(()=>m.textContent='SD probe failed - try again');};
+   fetch('/api/sdprobe').then(cardJson).then(x=>{m.textContent='SD: '+JSON.stringify(x);loadHealth();}).catch(e=>m.textContent=e===CARD_BUSY?busyWhat()+' Try the probe again in a few seconds.':'SD probe failed - try again');};
 }
 function loadHealth(){
  if(!canPoll())return;
  const box=$('healthpanel'); if(!box)return;
  fetch('/api/health').then(jok).then(d=>{
+  cardBusyNote(box,false);
   healthSkeleton(box);
   $('hphead').innerHTML='- '+(d.ok||0)+' ok &middot; '+(d.degraded||0)+
     ' degraded &middot; '+(d.absent||0)+' absent';
@@ -4766,14 +4835,16 @@ function loadHealth(){
   $('healthlist').innerHTML=h;
   $('healthlist').querySelectorAll('[data-fix]').forEach(a=>{a.onclick=e=>{
     e.preventDefault();try{_goSub(a.dataset.fix);}catch(_){}};});
- }).catch(()=>{if(!$('healthlist'))box.innerHTML='<p class=hint>Health unavailable</p>';});
+ }).catch(e=>{if(onCardBusy(e,'health',loadHealth,box))return;
+  if(!$('healthlist'))box.innerHTML='<p class=hint>Health unavailable</p>';});
 }
 loadHealth();
 setInterval(loadHealth,8000);
 // ---- Memory dashboard (Part B Ph3/Ph4) ----
 function loadMemStats(){
   if(!canPoll())return;
-  fetch('/api/mem/stats').then(r=>r.json()).then(d=>{
+  fetch('/api/mem/stats').then(cardJson).then(d=>{
+    cardBusyNote('tierbanner',false);
     window._sdMissing=!!d.sdMissing;
     // CUM-405: when a card likely holds the real store but was not detected, report
     // sd=absent, not "0 memories" (which reads as data loss).
@@ -4804,7 +4875,10 @@ function loadMemStats(){
       if(ev&&ev.target&&ev.target.id==='emb_provider')populateEmbModels($('emb_provider').value,'');
       embWarn();};});
     embWarn();
-  }).catch(()=>{});
+  }).catch(e=>{
+    // Busy: the last figures stay; a first load says so in the badge too.
+    if(onCardBusy(e,'memstats',loadMemStats,'tierbanner')&&!$('memstat').textContent)$('memstat').textContent='SD card busy';
+  });
 }
 // Memory's embeddings in plain words (QW5: the panel read "embed no key", and a
 // device with no OpenAI key had memory off with nothing saying so). The device picks
@@ -4890,7 +4964,7 @@ function loadMemList(){
   if(q)_memOffset=0;   // search shows the top matches, not a browse page
   const url='/api/mem/vector?limit='+_memPageN+(q?('&query='+encodeURIComponent(q)):('&offset='+_memOffset));
   fetch(url)
-    .then(r=>r.json()).then(d=>{$('memvmsg').textContent=d.error?('Embedding error: '+d.error):'';window._memTotal=d.total||0;
+    .then(cardJson).then(d=>{cardBusyNote('memlist',false);$('memvmsg').textContent=d.error?('Embedding error: '+d.error):'';window._memTotal=d.total||0;
       // Row deletes can shrink the total below our browse offset, stranding the view
       // on an empty page - clamp to the last real page and refetch once (the offset
       // guard stops it looping when we're already clamped).
@@ -4907,12 +4981,14 @@ function loadMemList(){
         } else { pg.textContent='top '+(d.entries||[]).length+' matches'; pv.style.display=nx.style.display='none'; }
       }
     })
-    .catch(()=>{$('memvmsg').textContent='Search failed - try again.';});
+    .catch(e=>{if(onCardBusy(e,'memlist',loadMemList,'memlist')){$('memvmsg').textContent='';return;}
+      $('memvmsg').textContent='Search failed - try again.';});
 }
 // Per-namespace usage rollup (CUM-232): entries + pins per conversation vs quota.
 function loadNsUsage(){
   const host=$('nsUsage'); if(!host)return;
-  fetch('/api/mem/nsusage').then(r=>r.json()).then(d=>{
+  fetch('/api/mem/nsusage').then(cardJson).then(d=>{
+    cardBusyNote(host,false);
     const ns=d.namespaces||[];
     if(!ns.length){host.textContent='No memories yet.';return;}
     const esc=s=>(s||'').replace(/</g,'&lt;');
@@ -4925,7 +5001,7 @@ function loadNsUsage(){
         '<span>'+esc(u.label)+'</span>'+
         '<span class=hint>'+mem+pins+'</span></div>';
     }).join('');
-  }).catch(()=>{host.textContent='Usage unavailable - try again.';});
+  }).catch(e=>{if(!onCardBusy(e,'nsusage',loadNsUsage,host))host.textContent='Usage unavailable - try again.';});
 }
 function memPage(dir){_memOffset=Math.max(0,_memOffset+dir*_memPageN);loadMemList();}
 function memVecOp(op,id,confirm,okMsg){
@@ -4936,12 +5012,13 @@ function memVecOp(op,id,confirm,okMsg){
 }
 function loadScratch(){
   if(!canPoll())return;
-  fetch('/api/mem/scratchpad').then(r=>r.json()).then(d=>{
+  fetch('/api/mem/scratchpad').then(cardJson).then(d=>{
+    cardBusyNote('scratchview',false);
     let s='';
     if(d.active)s+='Now: '+d.active+'\n';
     ['short','mid','long'].forEach(t=>{if((d[t]||[]).length){s+=t+':\n';d[t].forEach(i=>s+='  - '+i+'\n');}});
     $('scratchview').textContent=s||'(empty)';
-  }).catch(()=>{});
+  }).catch(e=>{onCardBusy(e,'scratch',loadScratch,'scratchview');});
 }
 function loadMemCfg(){
   fetch('/api/mem/config').then(r=>r.json()).then(d=>{
@@ -5026,7 +5103,7 @@ function _fviewable(name){
 // callers can render pending/result feedback.
 function dlFile(project,name){
   const url='/api/files/dl?project='+encodeURIComponent(project)+'&name='+encodeURIComponent(name);
-  return fetch(url).then(r=>r.ok?r.blob():Promise.reject(r.status)).then(b=>{
+  return cardFetch(url,busyToast).then(r=>r.ok?r.blob():Promise.reject(r.status)).then(b=>{
     const u=URL.createObjectURL(b);
     const a=document.createElement('a');a.href=u;a.download=name;
     document.body.appendChild(a);a.click();a.remove();
@@ -5060,7 +5137,7 @@ function _fpreview(project,name,kind){
     box.appendChild(img);
     // Fetch the bytes (token in the header) and show them from an object URL, so
     // the <img src> never carries a ?t= token.
-    fetch(url).then(r=>r.ok?r.blob():Promise.reject(r.status)).then(b=>{
+    cardFetch(url,busyToast).then(r=>r.ok?r.blob():Promise.reject(r.status)).then(b=>{
       const u=URL.createObjectURL(b);img.onload=()=>URL.revokeObjectURL(u);img.src=u;
     }).catch(()=>{box.appendChild(document.createTextNode('Couldn\'t load that image.'));});
     return;
@@ -5070,7 +5147,7 @@ function _fpreview(project,name,kind){
                     'font-size:12px;margin:0;background:var(--raise2);padding:10px;border-radius:8px';
   pre.textContent='Loading...';
   box.appendChild(pre);
-  fetch(url).then(r=>r.ok?r.text():Promise.reject(r.status)).then(t=>{
+  cardFetch(url,()=>{pre.textContent=busyWhat()+' Waiting...';}).then(r=>r.ok?r.text():Promise.reject(r.status)).then(t=>{
     // A preview, not a file manager: 64 KB is far past what anyone reads in a
     // panel, and the rest is one click away via "get".
     const CAP=65536;
@@ -5085,7 +5162,7 @@ function _fpreview(project,name,kind){
 // archive). This group lists the chats and their days, shows a day's items, opens
 // a record or a photo in place, and saves a whole day as a ZIP. Every read carries
 // the token in the header (the fetch shim), never in a link.
-function _tgArcGet(url){return fetch(url).then(r=>r.ok?r.blob():Promise.reject(r.status));}
+function _tgArcGet(url){return cardFetch(url,busyToast).then(r=>r.ok?r.blob():Promise.reject(r.status));}
 function _tgArcSave(url,name){return _tgArcGet(url).then(b=>{const u=URL.createObjectURL(b);
   const a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();
   setTimeout(()=>URL.revokeObjectURL(u),0);});}
@@ -5108,9 +5185,12 @@ function _tgArcOpen(chat,day,name){const v=$('tgArcView');if(!v)return;
   _tgArcSave(_tgArcItemUrl(chat,day,name,0),name).catch(failToast);}
 function _tgArcLink(label,chat,day,name){const b=document.createElement('button');b.type='button';
   b.textContent=label;b.style.fontSize='11px';b.onclick=()=>_tgArcOpen(chat,day,name);return b;}
+// A busy retry repaints only the chat (and day) still selected.
+function _tgArcShown(chat,day){const c=$('tgArcChat'),d=$('tgArcDay');
+  return !!c&&c.value===chat&&(day===undefined||(!!d&&d.value===day));}
 function tgArcRows(chat,day,from){
   fetch('/api/tg/archive?chat='+encodeURIComponent(chat)+'&day='+encodeURIComponent(day)+'&from='+from).then(jok).then(d=>{
-    const box=$('tgArcRows');if(!box)return;if(!from)box.innerHTML='';
+    const box=$('tgArcRows');if(!box)return;cardBusyNote(box,false);if(!from)box.innerHTML='';
     (d.rows||[]).forEach(r=>{if(r.ev)return;   // a media status event rides its item
       const row=document.createElement('div');row.className='row tgArcRow';row.style.cssText='margin:3px 0;gap:8px;align-items:center';
       const t=document.createElement('span');t.className='hint';t.style.minWidth='150px';
@@ -5123,21 +5203,23 @@ function tgArcRows(chat,day,from){
     if(!box.children.length)box.innerHTML='<p class=hint>Nothing archived that day.</p>';
     const more=$('tgArcMore');more.style.display=d.more?'inline-block':'none';
     more.onclick=()=>tgArcRows(chat,day,d.next);
-  }).catch(failToast);}
+  }).catch(e=>{if(!onCardBusy(e,'tgrows',()=>{if(_tgArcShown(chat,day))tgArcRows(chat,day,from);},'tgArcRows'))failToast(e);});}
 function tgArcDays(chat){
   fetch('/api/tg/archive?chat='+encodeURIComponent(chat)+'&limit=200').then(jok).then(d=>{
+    cardBusyNote('tgArcRows',false);
     const sel=$('tgArcDay'),days=d.days||[];
     sel.innerHTML=days.map(x=>'<option>'+connEsc(x)+'</option>').join('');
     if(days.length)tgArcRows(chat,days[0],0);else $('tgArcRows').innerHTML='';
-  }).catch(failToast);}
+  }).catch(e=>{if(!onCardBusy(e,'tgdays',()=>{if(_tgArcShown(chat))tgArcDays(chat);},'tgArcRows'))failToast(e);});}
 function tgArcLoad(){
   fetch('/api/tg/archive').then(jok).then(d=>{
+    cardBusyNote('tgArcStat',false);
     const chats=d.chats||[],sel=$('tgArcChat');
     $('tgArcStat').textContent=chats.length?'Every message and file the bot receives, by chat and day.'
       :'Nothing archived yet. Messages and files the bot receives are kept here when an SD card is in.';
     sel.innerHTML=chats.map(c=>'<option value="'+connEsc(c.chat)+'">'+connEsc(c.chat)+' ('+c.days+(c.days==1?' day':' days')+')</option>').join('');
     if(chats.length)tgArcDays(chats[0].chat);else{$('tgArcDay').innerHTML='';$('tgArcRows').innerHTML='';}
-  }).catch(()=>{$('tgArcStat').textContent='Couldn\'t load the archive. Try again.';});}
+  }).catch(e=>{if(!onCardBusy(e,'tgarc',tgArcLoad,'tgArcStat'))$('tgArcStat').textContent='Couldn\'t load the archive. Try again.';});}
 function tgArcExport(){const chat=$('tgArcChat').value,day=$('tgArcDay').value;if(!chat||!day)return;
   toast('Preparing the export');
   _tgArcSave('/api/tg/archive/zip?chat='+encodeURIComponent(chat)+'&day='+encodeURIComponent(day),chat+'-'+day+'.zip')
@@ -5159,7 +5241,8 @@ function tgArcExport(){const chat=$('tgArcChat').value,day=$('tgArcDay').value;i
 function loadFiles(){
   const box=$('filesList'); if(!box)return;
   const proj=($('filesProj')&&$('filesProj').value.trim())||'';
-  fetch('/api/files/list'+(proj?('?project='+encodeURIComponent(proj)):'')).then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{
+  fetch('/api/files/list'+(proj?('?project='+encodeURIComponent(proj)):'')).then(jok).then(d=>{
+    cardBusyNote(box,false);
     if($('filesStat'))$('filesStat').textContent=d.present
       ?((d.count||0)+' files · '+_fbytes(d.bytes)+' used'+(d.freeBytes!==undefined?(' · '+_fbytes(d.freeBytes)+' free'):''))
       :'No SD card - insert a card to store files';
@@ -5189,7 +5272,7 @@ function loadFiles(){
       uiConfirm('Delete '+a.dataset.rmp+'/'+a.dataset.rmn+'?',{ok:'Delete',danger:true}).then(ok=>{ if(!ok)return;
       const fd=new FormData();fd.append('project',a.dataset.rmp);fd.append('name',a.dataset.rmn);
       fetch('/api/files/rm',{method:'POST',body:fd}).then(r=>r.ok?loadFiles():Promise.reject(r.status)).catch(()=>toast('Couldn\'t delete - try again'));});});
-  }).catch(()=>{box.innerHTML='<span class=hint>Files unavailable</span>';});
+  }).catch(e=>{if(!onCardBusy(e,'files',loadFiles,box))box.innerHTML='<span class=hint>Files unavailable</span>';});
 }
 $('filesRefresh')&&($('filesRefresh').onclick=loadFiles);
 $('filesProj')&&$('filesProj').addEventListener('keydown',e=>{if(e.key==='Enter')loadFiles();});
@@ -5250,6 +5333,7 @@ $('upBtn')&&($('upBtn').onclick=()=>{
 function loadSkills(){
   const box=$('skList'); if(!box)return;
   fetch('/api/skills/list').then(jok).then(d=>{
+    cardBusyNote(box,false);
     $('skStat').textContent=(d.sd?'SD ready - your skills load into new sessions automatically':'No SD card - skills live on internal flash (read-only built-ins)')
       +(d.auto?' - the assistant may approve its own skill changes':'');
     const auto=$('skAuto'); if(auto)auto.checked=!!d.auto;
@@ -5281,7 +5365,7 @@ function loadSkills(){
     skOp('a[data-skapprove]','/api/skills/approve','Skill approved');
     skOp('a[data-skdeny]','/api/skills/deny','Skill denied');
     skOp('a[data-skdiscard]','/api/skills/discard','Edit discarded');
-  }).catch(()=>{box.innerHTML='<span class=hint>Skills unavailable</span>';});
+  }).catch(e=>{if(!onCardBusy(e,'skills',loadSkills,box))box.innerHTML='<span class=hint>Skills unavailable</span>';});
 }
 // The D-4 switch: "the assistant may approve its own skill changes".
 $('skAuto')&&($('skAuto').onchange=()=>{
@@ -5293,11 +5377,13 @@ $('skAuto')&&($('skAuto').onchange=()=>{
 function loadSkillMd(){
   const id=$('skId').value.trim(); if(!id){toast('Enter a skill id first');return;}
   fetch('/api/skills/get?id='+encodeURIComponent(id)).then(jok).then(d=>{
+    cardBusyNote('skMsg',false);
     $('skMd').value=d.md||'';
     $('skNext').value=d.next_md||'';
     $('skNextWrap').style.display=d.next_md?'block':'none';
     $('skMsg').textContent=d.source==='builtin'?'Built-in skill (read-only) - Save stores an editable copy under the same id':'Loaded from the device';
-  }).catch(()=>{$('skMsg').textContent='Not found - Save creates it';});
+  }).catch(e=>{if(onCardBusy(e,'skmd',loadSkillMd,'skMsg')){$('skMsg').textContent='';return;}
+    $('skMsg').textContent='Not found - Save creates it';});
 }
 $('skLoad')&&($('skLoad').onclick=loadSkillMd);
 $('skSave')&&($('skSave').onclick=()=>{
@@ -5321,7 +5407,8 @@ $('skDel')&&($('skDel').onclick=()=>{
 const GRPLBL={registry:'Available now',device:'Device actions',
   skill:'Knowledge',connector:'Connectors'};
 function loadTools(){
-  fetch('/api/tools').then(r=>r.json()).then(d=>{
+  fetch('/api/tools').then(cardJson).then(d=>{
+    cardBusyNote('toollist',false);
     $('toolstat').textContent=(d.count||0)+' tools';
     const host=$('toollist'); host.innerHTML='';
     const byG={}; (d.tools||[]).forEach(t=>{(byG[t.group||'registry']=byG[t.group||'registry']||[]).push(t);});
@@ -5359,7 +5446,7 @@ function loadTools(){
       } else sp.innerHTML='<p class=hint>No skills installed</p>';
     }
     if(!(d.tools||[]).length) host.innerHTML='<p class=hint>No tools registered</p>';
-  }).catch(()=>{$('toolstat').textContent='Unavailable';});
+  }).catch(e=>{if(onCardBusy(e,'tools',loadTools,'toollist'))return;$('toolstat').textContent='Unavailable';});
 }
 
 // --- Audio diagnostics (Device tab): mic VU meter + speaker beep + acoustic loopback.
@@ -5631,6 +5718,7 @@ function loadChatHistory(){
   // fold into per-turn disclosures. The 'system' session (device timeline) and
   // media/log rows stay out of the chat pane.
   fetch('/api/mem/episodic?limit=200').then(jok).then(d=>{
+    cardBusyNote(log,false);
     // Store pages return newest-first; older pages (Load Older) go before, once each.
     const seen={},ms=[];
     _chatOlder.concat([d.messages||[]]).forEach(pg=>pg.slice().reverse().forEach(m=>{
@@ -5686,7 +5774,7 @@ function loadChatHistory(){
     if(!any)log.innerHTML='<p class=hint>No conversation yet - say something below, message the bot on Telegram, or hold the mic button to talk.</p>';
     _chatHistoryEdges(log,d);
     if(!_chatOlder.length)log.scrollTop=log.scrollHeight;
-  }).catch(()=>{});
+  }).catch(e=>{onCardBusy(e,'chathist',loadChatHistory,log);});
 }
 // Async results (CUM-482): a sub-agent synthesis, spawn acks and raw fallbacks are
 // delivered BETWEEN turns, into the chat history - never as any turn's reply. Poll
@@ -5945,7 +6033,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   // Long-term memory needs an embeddings key; the device picks a keyed provider
   // that can embed (Cumulo Nimbus, OpenAI or Mistral). Say plainly when none can.
   function memLine(cb){
-    fetch('/api/mem/stats').then(r=>r.json()).then(m=>{
+    fetch('/api/mem/stats').then(cardJson).then(m=>{   // busy: no line rather than a wrong one
       const prov=m&&m.embed&&m.embed.provider;
       cb(m&&m.embedAvailable?'Long-term memory: on, through '+esc(PROVLBL[prov]||prov)+'.'
         :'Long-term memory needs a Cumulo Nimbus, OpenAI or Mistral key (Anthropic and Z.ai can\'t create the embeddings it uses). Chat works without it; add one later under Assistant &rarr; Models.');

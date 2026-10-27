@@ -107,6 +107,12 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{text-align:left
 .fb-bar.fb-indet>i{width:35%;background:var(--info);animation:fbslide 1.1s ease-in-out infinite}
 @keyframes fbslide{0%{margin-left:-35%}100%{margin-left:100%}}
 @media(prefers-reduced-motion:reduce){.fb-bar.fb-indet>i{animation:none;width:100%;opacity:.4}}
+/* Busy, retrying: the SD card (or the device) answered busy; the last view stays. */
+.cardbusy{font-size:12.5px;margin:6px 0;line-height:1.5}
+.cardbusy .fb-msg{color:var(--ink2)}
+.cardbusy .fb-dot{background:var(--amber);animation:cbpulse 1.4s ease-in-out infinite}
+@keyframes cbpulse{50%{opacity:.3}}
+@media(prefers-reduced-motion:reduce){.cardbusy .fb-dot{animation:none}}
 /* Chat file drop zone (CUM-57): highlight while a file is dragged over it. */
 #chatDrop.dropping{outline:2px dashed var(--teal);outline-offset:-6px;background:var(--teal-soft)}
 /* ---- Global search (CUM-62): sidebar trigger + command palette ---- */

@@ -282,6 +282,9 @@ SRAM run beside it, so they yield instead of re-raising the floors:
 - **Big web responses** (over 16 KB: the web app page, file downloads, log files,
   stored blobs, episodic and vector pages) trickle, about two TCP segments in flight
   per connection, or answer 503 with Retry-After when internal free is under 20 KB.
+  A download read from the SD card takes that decision when its file opens, inside the
+  stream (see the card lock in [storage](orchestrator-storage.md)), and keeps its
+  staging buffer in PSRAM (internal memory only when PSRAM has no room).
   The cloud relay's own loopback request also gets the 503 while a turn is in flight
   (the cloud page retries it); a LAN browser trickles. Bodies up to 16 KB are served
   as before.
