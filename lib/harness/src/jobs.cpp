@@ -1853,6 +1853,9 @@ void JobEngine::countFinal(const Stopping& e) {
   u.cacheReadTokens = env_ref().cacheReadTokens;
   u.cacheWriteTokens = env_ref().cacheWriteTokens;
   u.responses = 1;
+  hlog::logf("orchestrator: %s counted at its end (%s in=%u out=%u, %u already counted)", e.jobId.c_str(),
+             e.backend.c_str(), (unsigned)env_ref().promptTokens, (unsigned)u.completionTokens,
+             (unsigned)e.prepaid);
   if (!u.empty() || u.cacheReadTokens || u.cacheWriteTokens) d_.recordSpawnUsage(e.backend, e.model, u);
 }
 

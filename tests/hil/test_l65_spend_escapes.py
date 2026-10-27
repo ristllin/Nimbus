@@ -300,7 +300,10 @@ def _cancel_under_freeze(device, prov: str, running) -> tuple:
     device.drain(quiet=0.3)
     before = LIMIT_CENTS + 100
     _seed(device, str(before))
-    lines = _collect(device, r"cancelled job .* counted", 90.0)
+    # Round 3: either the stop is confirmed with the run read back ("cancelled job ...
+    # counted"), or, for a session still running at that read, the stop list counts it
+    # when its poll finds it stopped ("... counted at its end").
+    lines = _collect(device, r"cancelled job .* counted|counted at its end", 120.0)
     for ln in lines:
         if any(k in ln for k in ("cancel", "stopping", "refused", "counted")):
             print(f"[l65q]   {ln}")
@@ -314,15 +317,16 @@ def _cancel_under_freeze(device, prov: str, running) -> tuple:
 def _grade_cancel(job: str, lines: list, path_part: str) -> re.Match:
     refused = [ln for ln in lines if "refused - spend ceiling" in ln and path_part in ln]
     assert not refused, f"the cancel was refused while paid calls were paused: {refused}"
+    rid = job.split(":", 1)[1]
     counted = next(
         (
-            re.search(r"cancelled job \S+ counted \((\w+) in=(\d+) out=(\d+)", ln)
+            re.search(r"(?:cancelled job \S+ counted|counted at its end) \((\w+) in=(\d+) out=(\d+)", ln)
             for ln in lines
-            if "cancelled job" in ln and job.split(":", 1)[1] in ln
+            if ("cancelled job" in ln or "counted at its end" in ln) and rid in ln
         ),
         None,
     )
-    assert counted, f"no 'cancelled job ... counted' line for {job}"
+    assert counted, f"no 'counted' line for {job}"
     return counted
 
 
