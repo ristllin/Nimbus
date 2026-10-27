@@ -71,7 +71,7 @@
 #include "nimbus/orch/servedby.h"       // CUM-236 turn-chip served-by disclosure
 #include "nimbus/orch/served_model.h"   // the model each provider really answered with
 #include "nimbus/orch/provider_slots.h" // kProviderSlots - every provider, for that list
-#include "nimbus/orch/head_switch.h"    // headPauseNote - why a head is closed
+#include "nimbus/orch/head_switch.h"    // HeadPause - what holds a head off
 #include "nimbus/orch/provider_park.h"  // the park the head pause reads
 #include "nimbus/orch/failure_rows.h"   // turnEndRowJson / errorEventText - lane T rows
 #include "nimbus/orch/trace_rows.h"    // the tool trace row + the lost-sidecar mark (L19-24)
@@ -778,21 +778,20 @@ static JobEngine::Deps buildJobDeps() {
 
 // ---- the TurnEngine wiring --------------------------------------------------
 
-// Why paid requests to `p` are held off now, as the sentence a refused head switch opens
-// with (nimbus::orch::headPauseNote), "" when it is open: the pause switch (the owner,
-// the overall ceiling, the provider's monthly limit), a refusal park on the chat seam,
-// the monthly budget check. The park's re-check request is never taken; the budget check
-// is the one every turn makes at its start.
-static std::string headPauseNoteFor(const std::string& p) {
+// What holds paid requests to `p` off now (nimbus::orch::HeadPause): the pause switch (the
+// owner, the overall ceiling, the provider's monthly limit), a refusal park on the chat seam,
+// the monthly budget check. The park's re-check request is never taken; the budget check is the
+// one every turn makes at its start.
+static nimbus::orch::HeadPause headPauseFor(const std::string& p) {
   nimbus::orch::ProviderPark& park = nimbus::orch::providerPark();
-  nimbus::orch::ParkKind kind = nimbus::orch::ParkKind::None;
+  nimbus::orch::HeadPause hp;
   nimbus::orch::ParkEntry e[nimbus::orch::ProviderPark::kMaxProviders];
   const size_t n = park.snapshot(e, nimbus::orch::ProviderPark::kMaxProviders, millis());
   for (size_t i = 0; i < n; ++i)
-    if (p == e[i].provider && (e[i].seamMask & (1u << (uint8_t)nimbus::orch::PaidSeam::Chat))) kind = e[i].kind;
-  const nimbus::orch::ProviderSlot* slot = nimbus::orch::findProviderSlot(p.c_str());
-  return nimbus::orch::headPauseNote(slot ? slot->label : p, park.pausedBy(p.c_str()), kind,
-                                       store::providerOverBudget(String(p.c_str())));
+    if (p == e[i].provider && (e[i].seamMask & (1u << (uint8_t)nimbus::orch::PaidSeam::Chat))) hp.park = e[i].kind;
+  hp.causes = park.pausedBy(p.c_str());
+  hp.overBudget = store::providerOverBudget(String(p.c_str()));
+  return hp;
 }
 
 static agent::ApplyDeps buildApplyDeps() {
@@ -843,7 +842,7 @@ static agent::ApplyDeps buildApplyDeps() {
   };
   // A pause never moves the owner's head (the policy is apply.cpp's): the facts.
   d.headHost = [] { return g_engine ? g_engine->headHost() : std::string(store::orchHost().c_str()); };
-  d.headPause = [](const std::string& p) { return headPauseNoteFor(p); };
+  d.headPause = [](const std::string& p) { return headPauseFor(p); };
   d.ownerMessage = [] {
     std::lock_guard<std::mutex> lk(g_turnOwnerMx);
     return g_turnOwner;

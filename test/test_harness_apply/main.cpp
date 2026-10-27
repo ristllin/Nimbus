@@ -265,8 +265,8 @@ static void test_tts_text_bounded_400() {
 // turn already ran on Mistral. The facts the device supplies, one owner message per turn.
 struct PausedHead {
   std::string head = "anthropic";
-  std::string clause = nimbus::orch::headPauseNote("Anthropic", nimbus::orch::kPauseProviderLimit,
-                                                    nimbus::orch::ParkKind::None, false);
+  nimbus::orch::HeadPause pause{nimbus::orch::kPauseProviderLimit, nimbus::orch::ParkKind::None, false};
+  std::string clause() const { return nimbus::orch::headPauseNote("Anthropic", pause); }
   std::string owner;
   uint32_t msg = 0;   // the owner message's number (0 = a turn the owner did not write)
   uint32_t now = 1000;
@@ -275,7 +275,7 @@ struct PausedHead {
 static ApplyDeps pausedDeps(Rec& r, PausedHead& h) {
   ApplyDeps d = makeDeps(r);
   d.headHost = [&h] { return h.head; };
-  d.headPause = [&h](const std::string& p) { return p == h.head ? h.clause : std::string(); };
+  d.headPause = [&h](const std::string& p) { return p == h.head ? h.pause : nimbus::orch::HeadPause(); };
   d.ownerMessage = [&h] {
     nimbus::orch::OwnerMessage m;
     m.text = h.owner;
@@ -345,8 +345,9 @@ static void test_a_paused_head_moves_only_on_the_owners_explicit_second_ask() {
   h.now += 60000;
   sum = switchTo(r, h, "mistral", "switch to mistral since anthropic is out of budget");
   TEST_ASSERT_TRUE_MESSAGE(sum.rfind("orch_model(no change) ", 0) == 0, sum.c_str());
-  TEST_ASSERT_TRUE_MESSAGE(sum.find("To make Mistral your main provider anyway, ask again") != std::string::npos,
-                           sum.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(
+      sum.find("To make Mistral your main provider anyway, say \"switch to Mistral\" again") != std::string::npos,
+      sum.c_str());
   h.now += 60000;
   sum = switchTo(r, h, "mistral", "ok, thanks");                                           // names nothing
   TEST_ASSERT_TRUE(sum.rfind("orch_model(no change) ", 0) == 0);
@@ -366,6 +367,29 @@ static void test_a_paused_head_moves_only_on_the_owners_explicit_second_ask() {
   TEST_ASSERT_EQUAL(1, (int)r.hostModelSet.size());
 }
 
+// HFM review, MEDIUM: the 26 Oct sequence, then the owner's natural follow-ups. A refusal the
+// MODEL started on its own (the owner never asked for Mistral) leaves nothing to confirm, and a
+// later message that only mentions Mistral, or says to keep Anthropic, confirms nothing: only
+// the owner's own words asking to switch to the target do, twice (the first is told why).
+static void test_lumis_sequence_never_moves_the_head() {
+  nimbus::orch::headSwitchGuard().reset();
+  Rec r;
+  PausedHead h;
+  for (const char* owner : {"Hmm I thought anthropic is out of budget", "ok, so mistral is answering for now?",
+                            "no, keep anthropic, mistral is fine meanwhile", "don't switch to mistral",
+                            "what does mistral cost?"}) {
+    h.now += 60000;
+    const std::string sum = switchTo(r, h, "mistral", owner);
+    TEST_ASSERT_TRUE_MESSAGE(sum.rfind("orch_model(no change) ", 0) == 0, owner);
+  }
+  TEST_ASSERT_EQUAL(0, (int)r.hostModelSet.size());
+  h.now += 60000;
+  TEST_ASSERT_TRUE(switchTo(r, h, "mistral", "switch to mistral please").rfind("orch_model(no change) ", 0) == 0);
+  h.now += 60000;
+  TEST_ASSERT_EQUAL_STRING("orch_model(mistral/good-latest) ",
+                           switchTo(r, h, "mistral", "yes, switch to Mistral").c_str());
+}
+
 // Unaffected: an open head, a model change within the paused head's own provider, and a
 // device that supplies no pause facts (host rigs).
 static void test_orch_model_is_unchanged_for_an_open_head_or_the_same_provider() {
@@ -373,7 +397,7 @@ static void test_orch_model_is_unchanged_for_an_open_head_or_the_same_provider()
   Rec r;
   PausedHead h;
   TEST_ASSERT_EQUAL_STRING("orch_model(anthropic/good-latest) ", switchTo(r, h, "anthropic", "opus please").c_str());
-  h.clause.clear();   // the limit lifted
+  h.pause = nimbus::orch::HeadPause();   // the limit lifted
   TEST_ASSERT_EQUAL_STRING("orch_model(mistral/good-latest) ", switchTo(r, h, "mistral", "use mistral").c_str());
   Rec r2;
   ApplyDeps bare = makeDeps(r2);   // no headPause: no guard
@@ -400,11 +424,11 @@ static void test_every_closed_head_keeps_the_head_and_backs_no_switch_claim() {
     nimbus::orch::headSwitchGuard().reset();
     Rec r;
     PausedHead h;
-    h.clause = nimbus::orch::headPauseNote("Anthropic", c.pause, c.park, c.over);
-    TEST_ASSERT_FALSE(h.clause.empty());
+    h.pause = nimbus::orch::HeadPause{c.pause, c.park, c.over};
+    TEST_ASSERT_FALSE(h.clause().empty());
     const std::string sum = switchTo(r, h, "mistral", "switch to mistral");
     TEST_ASSERT_TRUE_MESSAGE(sum.rfind("orch_model(no change) ", 0) == 0, sum.c_str());
-    TEST_ASSERT_TRUE(sum.find(h.clause + " To make Mistral") != std::string::npos);
+    TEST_ASSERT_TRUE(sum.find(h.clause() + " To make Mistral") != std::string::npos);
     nimbus::orch::FxKind k;
     bool landed = true;
     TEST_ASSERT_TRUE(nimbus::orch::deviceSummaryEffect(sum, k, landed));
@@ -1337,6 +1361,7 @@ int main(int, char**) {
   RUN_TEST(test_orch_model_keyless_provider_refused);
   RUN_TEST(test_orch_model_does_not_move_a_paused_head);
   RUN_TEST(test_a_paused_head_moves_only_on_the_owners_explicit_second_ask);
+  RUN_TEST(test_lumis_sequence_never_moves_the_head);
   RUN_TEST(test_orch_model_is_unchanged_for_an_open_head_or_the_same_provider);
   RUN_TEST(test_every_closed_head_keeps_the_head_and_backs_no_switch_claim);
   RUN_TEST(test_orch_model_id_in_the_store_applies);

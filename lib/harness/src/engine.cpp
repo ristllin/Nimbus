@@ -22,6 +22,7 @@
 #include "nimbus/orch/provider_slots.h"  // CUM-486: [AVAILABLE MODELS] walks the registry
 #include "nimbus/orch/connectors_wire.h"  // resolveHeadHost - the one head-host rule
 #include "nimbus/orch/servedby.h"        // CUM-236 served-by fallback disclosure
+#include "nimbus/orch/served_model.h"    // the per-turn line: the model this request runs on (HFM)
 #include "nimbus/orch/model_defaults.h"  // lane DEF: background turns run on the cheapest tier
 #include "nimbus/orch/spend_ceiling.h"   // lane DEF: the paid-call gate (monthly spend ceiling)
 #include "nimbus/orch/usage_ledger.h"    // ledgerDelta - a spend slot in ledger tokens
@@ -193,6 +194,26 @@ static std::string providerLabel(const std::string& slug) {
 }
 
 static void trimInPlace(std::string& s);
+
+// The per-turn line for a request on host `h` (served_model.h runsOnLine): its asked model, the
+// concrete model it answered with this boot (else the alias resolved through its stored list),
+// and, when `h` is not the chosen head, why the chosen head is not answering.
+static std::string runsOnText(const TurnEngine::Deps& d, const std::string& h, const std::string& chosen) {
+  const std::string asked = d.cfg.provider.orchModel ? d.cfg.provider.orchModel(h) : std::string();
+  std::string concrete = orch::servedModelFor(h, asked);
+  if (concrete.empty() && !asked.empty()) {
+    char b[orch::kModelKeyCap];
+    orch::resolveServedModel(h.c_str(), asked.c_str(), b, sizeof(b));
+    concrete = b;
+  }
+  std::string fact;
+  if (!chosen.empty() && h != chosen) {
+    orch::HeadPause hp = d.apply.headPause ? d.apply.headPause(chosen) : orch::HeadPause();
+    if (d.cfg.budget.overBudget && d.cfg.budget.overBudget(chosen)) hp.overBudget = true;
+    fact = orch::headPauseFact(providerLabel(chosen), hp);
+  }
+  return orch::runsOnLine(h, asked, concrete, fact);
+}
 
 // The head the next turn will ACTUALLY run on - the one resolution both the
 // turn core and the [YOUR MODEL] context line read: nimbus::orch::resolveHeadHost,
@@ -1401,6 +1422,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // mode; an unknown host string is treated as unavailable so it fails over.
   // With headToolsPtr set, every host runs the bounded multi-turn tool-use loop
   // instead of the single shot.
+  // The turn's input as each request sends it: the per-turn line for the host it runs on, then
+  // the input (lane HFM; the cached system prompt carries none of it). Rebuilt per host tried.
+  std::string turnInputs = inputs;
+  auto inputsFor = [&](const std::string& h) -> const std::string& {
+    turnInputs = runsOnText(d_, h, requestedHost) + inputs;
+    return turnInputs;
+  };
   auto runTurnHost = [&](const std::string& h, std::string& cv) -> bool {
     // Each attempt bills into its own counter and is filed under its own host and
     // the model configured for it now (lane T): a retry or a failover never books
@@ -1413,7 +1441,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     orch::TurnImages* photos = orch::activeTurnImages();
     const std::string model = d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h) : std::string();
     const bool blind = photos && !photos->empty() && !(headToolsPtr && orch::headTakesImages(h, model));
-    const bool r = d_.hosts.run(h, cv, instructions, blind ? photos->blindText(inputs) : inputs, outJson, err,
+    const std::string& in = inputsFor(h);
+    const bool r = d_.hosts.run(h, cv, instructions, blind ? photos->blindText(in) : in, outJson, err,
                                 headToolsPtr, &attempt);
     tf.spend.add(h.c_str(),
                  d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", attempt);
@@ -1630,7 +1659,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       hostList.push_back(alt);
     }
     ok = d_.hosts.fabric(
-        hostList, instructions, inputs, outJson, err, *headToolsPtr, &tf.spend,
+        hostList, instructions, inputsFor(host), outJson, err, *headToolsPtr, &tf.spend,
         [&](const std::string& from, const std::string& to) {
           // The notice carries the cause and its HTTP status (lastFabricSwitch).
           // A billing refusal or a refused key is told once per episode (shared with
@@ -1743,7 +1772,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.host = host;
     ev.convContinued = convContinued;
     ev.instructions = &lastInstructions_;   // the labelled form (layout::display)
-    ev.inputs = &inputs;
+    ev.inputs = &turnInputs;   // what the last request really sent
     ev.rawOut = &outJson;
     ev.transcriptBrief = &lastBrief_;
     ev.ok = ok && !outJson.empty();

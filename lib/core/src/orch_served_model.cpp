@@ -96,6 +96,16 @@ ServedModelNote lastServedModel() {
   return out;
 }
 
+std::string runsOnLine(const std::string& host, const std::string& asked, const std::string& concrete,
+                       const std::string& headFact) {
+  std::string line = "[THIS TURN RUNS ON] " + host;
+  if (!asked.empty()) line += " / " + (concrete.empty() ? asked : concrete);
+  if (!asked.empty() && !concrete.empty() && concrete != asked) line += " (asked for " + asked + ")";
+  line += ".";
+  if (!headFact.empty()) line += " " + headFact;
+  return line + " When asked which model you run, name this one only.\n";
+}
+
 void clearServedModels() {
   std::lock_guard<std::mutex> lk(g_mx);
   g_notes.reset();

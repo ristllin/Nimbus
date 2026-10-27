@@ -137,14 +137,14 @@ static std::string headPauseRefusal(const ValidatedAction& va, const ApplyDeps& 
   if (!d.headPause || !d.headHost) return std::string();
   const std::string head = d.headHost();
   if (head.empty() || head == va.orchProvider) return std::string();
-  const std::string closed = d.headPause(head);
+  const nimbus::orch::ProviderSlot* h = nimbus::orch::findProviderSlot(head.c_str());
+  const std::string headLabel = h ? h->label : head;
+  const std::string closed = nimbus::orch::headPauseNote(headLabel, d.headPause(head));
   const nimbus::orch::OwnerMessage owner = d.ownerMessage ? d.ownerMessage() : nimbus::orch::OwnerMessage();
   const uint32_t now = d.nowMs ? d.nowMs() : 0;
   if (nimbus::orch::headSwitchGuard().allow(head, closed, va.orchProvider, va.orchModel, owner, now))
     return std::string();
-  const nimbus::orch::ProviderSlot* h = nimbus::orch::findProviderSlot(head.c_str());
   const nimbus::orch::ProviderSlot* t = nimbus::orch::findProviderSlot(va.orchProvider.c_str());
-  const std::string headLabel = h ? h->label : head;
   // A turn the owner did not write learns no more than that the head stays.
   if (!owner.present()) return headLabel + " stays the main provider: only the owner can move it.";
   return nimbus::orch::headSwitchRefusal(closed, t ? t->label : va.orchProvider);

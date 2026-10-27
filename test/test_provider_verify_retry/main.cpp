@@ -10,6 +10,7 @@
 // CUM-537 gate: the workspace probe's queue and its yield-to-a-turn fetch, driven
 // through the same fake-exec seam the device wires to WiFiClientSecure.
 #include "../../src/agent/workspace_probe.h"
+#include "nimbus/orch/model_refresh.h"   // the refresh queue a deferred verify feeds (HFM)
 
 #include <string>
 #include <vector>
@@ -437,6 +438,62 @@ static void test_low_memory_defer_retries_verified_providers_too() {
   TEST_ASSERT_TRUE(onLowMemoryDefer(false).storeNumber);
 }
 
+// HFM review, HIGH: Lumi's resting largest block (7,156 B) never reaches the full verify's
+// 8,000 B, so every verify defers and the deferral retry fires at 2, 4, 8, 16, 16... min for
+// good. Each deferral asks for the model list. The exact loop, three hours of it, for a key
+// already verified: the list is refreshed ONCE (the hour holds a deferral's ask, and the
+// refresh that lands ends the deferral), and the retry is disarmed after it.
+static void test_a_deferred_verify_on_lumis_heap_refreshes_the_list_once() {
+  using nimbus::orch::ModelRefreshQueue;
+  DeferralRetry retry;
+  ModelRefreshQueue q;
+  int refreshes = 0, deferrals = 0;
+  auto deferNow = [&](uint32_t now) {   // the memory gate refused the verify (7,156 < 8,000)
+    ++deferrals;
+    retry.onDeferred(now);
+    q.request("cumulo", true, now, agent::provider_verify::deferredVerifyForcesRefresh(/*wasVerified=*/true));
+  };
+  deferNow(150000);   // the boot router-price refill (or one Verify press) arms it
+  for (uint32_t now = 151000; now < 3u * 3600u * 1000u; now += 1000) {
+    if (retry.due(now, false, true, false)) deferNow(now);
+    if (const char* due = q.due(false, true, false, true, now)) {
+      q.started(due, now);
+      ++refreshes;
+      q.finished(due, false, now + 3000);   // the list GET answered 200 and the list was stored
+      if (agent::provider_verify::refreshEndsDeferral(/*refreshOnly=*/true, /*result=*/1)) retry.clear();
+    }
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(1, refreshes, "a deferral loop refetched the list");
+  TEST_ASSERT_FALSE(retry.armed);
+  TEST_ASSERT_EQUAL(1, deferrals);
+}
+
+// A key NOT verified yet (just saved: the web marks it -1) may see another list: its
+// deferred verify forces the refresh past the hour. A refresh that does not answer 200 (no
+// list, a refused key) ends nothing.
+static void test_a_new_key_forces_the_refresh_and_only_a_200_ends_the_deferral() {
+  TEST_ASSERT_TRUE(agent::provider_verify::deferredVerifyForcesRefresh(false));
+  TEST_ASSERT_FALSE(agent::provider_verify::deferredVerifyForcesRefresh(true));
+  TEST_ASSERT_TRUE(agent::provider_verify::refreshEndsDeferral(true, 1));
+  TEST_ASSERT_FALSE(agent::provider_verify::refreshEndsDeferral(true, -1));
+  TEST_ASSERT_FALSE(agent::provider_verify::refreshEndsDeferral(true, 0));
+  TEST_ASSERT_FALSE(agent::provider_verify::refreshEndsDeferral(false, 1));   // a full verify: recordVerify's
+}
+
+// HFM review, MEDIUM: a refresh run on the Telegram poll task holds Telegram and every turn,
+// so it has one hard budget across connect, handshake, status, body and pages: each wait is
+// the smaller of its own cap and what is left, and nothing once it is spent (the clock wraps).
+static void test_the_inline_refresh_has_one_hard_budget() {
+  using agent::provider_verify::inlineWaitMs;
+  TEST_ASSERT_EQUAL_UINT32(8000, inlineWaitMs(1000, 1000 + 15000, 8000));
+  TEST_ASSERT_EQUAL_UINT32(3000, inlineWaitMs(13000, 1000 + 15000, 8000));
+  TEST_ASSERT_EQUAL_UINT32(0, inlineWaitMs(16000, 1000 + 15000, 8000));
+  TEST_ASSERT_EQUAL_UINT32(0, inlineWaitMs(20000, 1000 + 15000, 8000));
+  const uint32_t nearWrap = 0xFFFFFFFFu - 2000u;
+  TEST_ASSERT_EQUAL_UINT32(8000, inlineWaitMs(nearWrap, nearWrap + 15000u, 8000));
+  TEST_ASSERT_EQUAL_UINT32(11999, inlineWaitMs(1000, nearWrap + 15000u, 20000));   // until wrapped to 12,999
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_defer_reason_is_the_class_not_a_point);
@@ -455,5 +512,8 @@ int main() {
   RUN_TEST(test_recovery_rearms_once_per_deferral);
   RUN_TEST(test_hovering_heap_never_storms_verifies);
   RUN_TEST(test_low_memory_defer_retries_verified_providers_too);
+  RUN_TEST(test_a_deferred_verify_on_lumis_heap_refreshes_the_list_once);
+  RUN_TEST(test_a_new_key_forces_the_refresh_and_only_a_200_ends_the_deferral);
+  RUN_TEST(test_the_inline_refresh_has_one_hard_budget);
   return UNITY_END();
 }

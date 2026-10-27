@@ -306,14 +306,15 @@ static void test_an_updated_device_with_a_fragmented_heap_refreshes_every_list()
 }
 
 // A refresh that ran but left the list due (no answer, a cut list, a failed write) is
-// tried again on a growing delay - 2, 4, 8, 16, 32 minutes, then hourly - not after the
-// hourly window plus the next 6-hour passive pass; never before its time, and a landed
-// refresh ends the streak. A request meanwhile answers Pending.
+// tried again on a growing delay - 2, 4, 8, 16, 32, 60 minutes - not after the hourly
+// window plus the next 6-hour passive pass; never before its time; after six retries it is
+// left to the passive pass; a landed refresh ends the streak. A request meanwhile answers
+// Pending.
 static void test_a_failed_refresh_retries_with_backoff() {
   ModelRefreshQueue q;
   uint32_t now = 1000;
   TEST_ASSERT_EQUAL(RefreshAsk::Queued, q.request("mistral", true, now));
-  const uint32_t want[] = {2, 4, 8, 16, 32, 60, 60};
+  const uint32_t want[] = {2, 4, 8, 16, 32, 60};
   for (uint32_t minutes : want) {
     TEST_ASSERT_EQUAL_STRING("mistral", q.due(false, true, false, true, now));
     q.started("mistral", now);
@@ -323,6 +324,12 @@ static void test_a_failed_refresh_retries_with_backoff() {
     TEST_ASSERT_NULL(q.due(false, true, false, true, now + 5000 + minutes * 60000u - 1));
     now += 5000 + minutes * 60000u;
   }
+  TEST_ASSERT_EQUAL_STRING("mistral", q.due(false, true, false, true, now));
+  q.started("mistral", now);
+  TEST_ASSERT_EQUAL_UINT32(0u, q.finished("mistral", true, now + 5000));   // a 7th failure: given up
+  TEST_ASSERT_FALSE(q.queued("mistral"));
+  now += 6u * kHour;
+  TEST_ASSERT_EQUAL(RefreshAsk::Queued, q.request("mistral", true, now));   // the passive pass
   TEST_ASSERT_EQUAL_STRING("mistral", q.due(false, true, false, true, now));
   q.started("mistral", now);
   TEST_ASSERT_EQUAL_UINT32(0u, q.finished("mistral", false, now + 5000));   // landed
@@ -403,6 +410,26 @@ static void test_a_key_verify_skips_the_hour_and_the_retry_delay() {
   TEST_ASSERT_EQUAL_STRING("mistral", q.due(false, true, false, true, 5000));
 }
 
+// HFM review, LOW: a list that never lands (cut by the read deadline over a legacy merge, an
+// empty answer, a router that refuses) is tried six times (2 .. 60 min) and then left to the
+// next 6-hourly passive pass, never retried hourly for the whole uptime.
+static void test_a_refresh_that_never_lands_gives_up_after_six_tries() {
+  ModelRefreshQueue q;
+  uint32_t now = 1000;
+  q.request("cumulo", true, now);
+  int starts = 0;
+  for (int hour = 0; hour < 24 * 60; ++hour, now += 60000) {
+    if (const char* due = q.due(false, true, false, true, now)) {
+      q.started(due, now);
+      ++starts;
+      q.finished(due, true, now + 2000);
+    }
+  }
+  TEST_ASSERT_EQUAL(1 + 6, starts);   // the first try and six retries, in a day
+  TEST_ASSERT_FALSE(q.queued("cumulo"));
+  TEST_ASSERT_EQUAL(RefreshAsk::Queued, q.request("cumulo", true, now));   // the passive pass asks again
+}
+
 // A refresh waiting out its retry delay is not under way: the owner's page does not
 // poll on it (pending), and it is queued again once its time comes.
 static void test_a_waiting_retry_is_not_pending() {
@@ -452,6 +479,7 @@ int main(int, char**) {
   RUN_TEST(test_the_refresh_runs_where_it_fits);
   RUN_TEST(test_a_waiting_retry_is_not_pending);
   RUN_TEST(test_a_key_verify_skips_the_hour_and_the_retry_delay);
+  RUN_TEST(test_a_refresh_that_never_lands_gives_up_after_six_tries);
   RUN_TEST(test_miss_texts);
   return UNITY_END();
 }

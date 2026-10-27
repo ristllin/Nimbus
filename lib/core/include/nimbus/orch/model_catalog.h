@@ -393,7 +393,8 @@ bool isLatestAlias(const std::string& id);
 
 // What a store text says about `id` taking image input: 1 = its row's API-reported
 // capabilities include vision, 0 = they do not, -1 = no row for `id`, or its
-// capabilities are the id heuristic's (an OpenAI or Z.ai list, a legacy merge).
+// capabilities are the id heuristic's (an OpenAI or Z.ai list, a legacy merge), -2 = no
+// list at all (an empty store text).
 int storeImageInput(const std::string& provider, const std::string& storeText, const std::string& id);
 
 // Honest freshness for the prompt's model line: "(list from 2026-10-22, may miss newer

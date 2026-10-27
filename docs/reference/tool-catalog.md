@@ -440,11 +440,13 @@ passive refresh 10 minutes after boot and then every 6 hours, for a list that is
 missing, only the older build's lists merged at the update, a week old, or written by
 another firmware version. Whoever asks, a provider is refreshed at most once an hour;
 a refresh that ends with the list still due (no answer, a list cut short, a failed
-write) is tried again after 2 minutes, doubling up to an hour. A refresh needs only
-the memory one connection needs (the same floor as a turn request); when its own
-worker cannot start on a fragmented memory, it runs on the Telegram task between
-messages instead. A provider paused by a spend limit or parked by a refusal is still
-refreshed: the list request is free.
+write) is tried again after 2 minutes, doubling up to an hour, six times, then left to
+the next passive pass. A refresh needs only the memory one connection needs (the same
+floor as a turn request); when its own worker cannot start on a fragmented memory, it
+runs on the Telegram task between messages instead, within 15 seconds in all (one page,
+no extra connections; a list it cannot finish in that time is tried again later). A
+provider paused by a spend limit or parked by a refusal is still refreshed: the list
+request is free.
 
 ## `tenant.*` - people & roles
 
@@ -517,11 +519,14 @@ away from a head provider that is paused (a monthly or overall spending limit, o
 paused by the owner), out of credit, refusing its key or over its budget is refused
 too: the reply carries "Anthropic is paused by your monthly limit; replies already
 fail over automatically and return to Anthropic when it lifts. To make Mistral your
-main provider anyway, ask again or pick it under Assistant > Models." (The ending
-follows the cause: "once credit is added", "once its key is replaced".) The switch
-then applies only when the owner, in a later message within 30 minutes, names that
-provider or model again; a turn the owner did not write (a member, a guest, a
-routine) never confirms one and is told only that the head stays. Session ops (spawn /
+main provider anyway, say "switch to Mistral" again, or pick it under Assistant >
+Models." (The ending follows the cause: "once credit is added", "once its key is
+replaced".) Only an owner message that asks for that switch (it names the provider or
+model, uses a word such as switch, use or change, and does not say keep or don't)
+counts: such a refusal can be confirmed by the owner's next such message within 30
+minutes. A refusal the assistant drew on its own leaves nothing to confirm, and a turn
+the owner did not write (a member, a guest, a routine) never confirms one and is told
+only that the head stays. Session ops (spawn /
 terminate) are **not** device actions - they go through the turn's
 `session_ops[]` / `session.*`, never `device[]`.
 

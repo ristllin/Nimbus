@@ -59,6 +59,9 @@ class ModelRefreshQueue {
   // doubling per failure up to kRetryMaxMs (2, 4, 8, 16, 32, 60, 60... minutes).
   static constexpr uint32_t kRetryFirstMs = 2u * 60u * 1000u;
   static constexpr uint32_t kRetryMaxMs = 60u * 60u * 1000u;
+  // After this many retries in a row that did not land, the refresh is left to the next
+  // passive pass (6-hourly): a list that never lands is not refetched every hour forever.
+  static constexpr uint8_t kRetryTries = 6;
 
   // Ask for a refresh of `slug` at `nowMs`. A provider with no key gets NoKey; one
   // already queued (or running, or waiting for its retry) Pending; one started less
@@ -78,8 +81,9 @@ class ModelRefreshQueue {
 
   // `slug`'s refresh finished at `nowMs`. `failed` (the stored list is still due):
   // it is queued again for kRetryFirstMs from now, doubling per consecutive failure
-  // up to kRetryMaxMs, whatever the hourly window says. A landed refresh ends the
-  // streak. Returns the retry delay in ms (0 when it landed).
+  // up to kRetryMaxMs, whatever the hourly window says, kRetryTries times; then it is
+  // left to the passive pass. A landed refresh ends the streak. Returns the retry
+  // delay in ms (0 when it landed or gave up).
   uint32_t finished(const char* slug, bool failed, uint32_t nowMs);
 
   // A queued refresh that could not start (the verify task refused it): it stays

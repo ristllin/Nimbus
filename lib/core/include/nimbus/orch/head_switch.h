@@ -38,14 +38,36 @@ namespace orch {
 // seam; `overBudget` the device's monthly budget check.
 std::string headPauseNote(const std::string& label, uint8_t pauseCauses, ParkKind park, bool overBudget);
 
+// What holds a provider off, as the device reads it (the pause switch, its refusal park on
+// the chat seam, its monthly budget).
+struct HeadPause {
+  uint8_t  causes = 0;               // PauseCause bits
+  ParkKind park = ParkKind::None;
+  bool     overBudget = false;
+};
+inline std::string headPauseNote(const std::string& label, const HeadPause& p) {
+  return headPauseNote(label, p.causes, p.park, p.overBudget);
+}
+// The same fact for the model (the per-turn line): "Anthropic, the chosen head, is paused by the
+// owner's monthly limit and returns automatically when it lifts." "" when nothing holds it off.
+std::string headPauseFact(const std::string& label, const HeadPause& p);
+
 // The explanation for a refused switch, owner-facing and plain: the note, then
-// "To make <target> your main provider anyway, ask again or pick it under Assistant > Models."
+// 'To make <target> your main provider anyway, say "switch to <target>" again, or pick it
+// under Assistant > Models.'
 std::string headSwitchRefusal(const std::string& note, const std::string& targetLabel);
 
 // Does the owner's message name `provider` (its slug, display name or a model family
 // that only it serves: "claude", "gpt", "glm", ...) or `model` (its id, with or
 // without "-latest")? Case-insensitive.
 bool ownerNamesTarget(const std::string& ownerText, const std::string& provider, const std::string& model);
+// Does the owner's message ASK to switch to the target: it names it (ownerNamesTarget), carries
+// a switch word ("switch", "change", "move", "use", "make", "set", "pick", "choose", "go with")
+// and no word that keeps or declines ("keep", "stay", "no", "not", "don't", "do not", "never")?
+// Only such a message arms a refusal for confirmation, and only such a later one confirms it:
+// a refusal the model drew on its own ("Hmm I thought anthropic is out of budget") leaves
+// nothing to confirm, and a mention ("so mistral is answering?") confirms nothing.
+bool ownerAsksSwitchTo(const std::string& ownerText, const std::string& provider, const std::string& model);
 
 // Are a turn's words the owner's own? The owner's web, serial and voice channels, or a
 // chat whose role is admin; a member, a guest or a turn no person started never is.
@@ -66,9 +88,10 @@ class HeadSwitchGuard {
   // May orch_model move the head from `head` to `target` (`model`) now? `headClosed`
   // is headPauseNote for the head ("" = open); `owner` the owner's message this turn. True for
   // an open head or a switch within its own provider; else true only as the owner's
-  // confirmation: a refusal for the same target drawn by an EARLIER owner message (another
-  // number, so the same words sent again count), under kConfirmMs ago, and this message
-  // names the target. Only an owner message's refusal is recorded for confirmation.
+  // confirmation: a refusal for the same target drawn by an EARLIER owner message that asked
+  // for it (another number, so the same words sent again count), under kConfirmMs ago, and
+  // this message asks for it too (ownerAsksSwitchTo). A refusal is recorded for confirmation
+  // only when the owner's message asked for that switch.
   bool allow(const std::string& head, const std::string& headClosed, const std::string& target,
              const std::string& model, const OwnerMessage& owner, uint32_t nowMs);
   void reset();

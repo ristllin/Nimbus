@@ -315,6 +315,13 @@ it never leaves the ring lit for work that never started. If a provider *is* set
 but the call fails (a rejected key, a rate limit, a network drop, a spent budget),
 the reply names that real cause instead. The device never goes silent on a chat.
 
+The per-turn input opens with one line naming what the request runs on, so the model
+can answer "which model are you?" exactly: `[THIS TURN RUNS ON] mistral /
+mistral-large-2512 (asked for mistral-large-latest).`, and after a failover why the chosen
+head is not answering ("Anthropic, the chosen head, is paused by the owner's monthly limit
+and returns automatically when it lifts."). It rides the input, never the cached system
+prompt.
+
 ## Diagnosing a confusing reply
 
 Work through the blocks above in order: open that turn's **Turn anatomy** in the

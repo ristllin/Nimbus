@@ -118,8 +118,10 @@ bool takesImages(const std::string& host, const std::string& model, bool viaRout
   if (h == "anthropic") return m.empty() || startsWith(m, "claude-");
   if (h == "openai") return openaiTakesImages(m);
   // Mistral says per model; a direct head the device's list does not know yet (before the
-  // first fetch) reads the photos as their transcriptions, never by a guess from its name.
-  if (h == "mistral") return (f && !viaRouter) ? false : mistralTakesImages(m);
+  // first fetch) reads the photos as their transcriptions, never by a guess from its name. A
+  // device with no Mistral list at all (-2: a Cumulo-only device routing to Mistral) keeps the
+  // name rule, so intake and the renderer agree.
+  if (h == "mistral") return (f && !viaRouter && known == -1) ? false : mistralTakesImages(m);
   if (h == "cumulo") {
     const size_t slash = m.find('/');
     if (slash == std::string::npos || slash == 0) return false;

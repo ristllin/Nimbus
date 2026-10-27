@@ -162,8 +162,15 @@ static WorkspaceProbeQueue g_wsq;
 // the claim like g_wsOnly.
 static bool                g_refreshOnly = false;
 // The claimed run is on the CALLING task (runRefreshHere: the Telegram poll task), whose
-// own work waits while it runs: it waits a short time for the work slot, not 35 s.
+// own work waits while it runs: every wait of the run (the work slot, connect, handshake,
+// status, body) comes out of one hard budget, ending at g_inlineUntil (inlineWaitMs).
 static bool                g_inline = false;
+static uint32_t            g_inlineUntil = 0;
+static const uint32_t      kInlineBudgetMs = 15000;
+// A wait of the claimed run: its own cap, or what is left of the inline budget.
+static uint32_t runWaitMs(uint32_t capMs) {
+  return g_inline ? inlineWaitMs((uint32_t)millis(), g_inlineUntil, capMs) : capMs;
+}
 
 static void deferLowMemory(const String& provider, uint32_t max8);
 
@@ -234,6 +241,7 @@ bool runRefreshHere(const String& provider) {
   alogf("verify: %s model list refresh on the Telegram poll task (free %u, resting largest %u)",
         provider.c_str(), (unsigned)freeB, (unsigned)resting);
   nimbus::heapwatch::Scope verifying(nimbus::heapwatch::kVerify);
+  g_inlineUntil = (uint32_t)millis() + kInlineBudgetMs;
   g_inline = true;
   runOne();   // clears g_pending on every exit path
   g_inline = false;
@@ -318,7 +326,7 @@ static bool streamModelPage(WiFiClientSecure& client, nimbus::orch::ModelHarvest
                             std::string& lastId, ModelFetch& f) {
   nimbus::orch::ModelsBodyReader rd(&harvestCb, &h);
   char chunk[512];
-  const uint32_t deadline = millis() + kModelBodyMs;
+  const uint32_t deadline = millis() + runWaitMs(kModelBodyMs);   // inline: what is left of its budget
   while ((int32_t)(millis() - deadline) < 0 && rd.bytes() < kModelBodyMaxBytes && !rd.complete()) {
     const int n = client.read((uint8_t*)chunk, sizeof(chunk));
     if (n > 0) {
@@ -449,7 +457,9 @@ static void fetchModelList(const String& provider, WiFiClientSecure& client, con
   std::string lastId;
   bool more = streamModelPage(client, *h, lastId, f);
   tlsClose(client);
-  while (more && provider == "anthropic" && !h->cut && !lastId.empty() && f.pages < kModelPagesMax) {
+  // Further pages each open a connection: not on the Telegram task (the first page holds 100
+  // models; the store records that more were left unread).
+  while (more && !g_inline && provider == "anthropic" && !h->cut && !lastId.empty() && f.pages < kModelPagesMax) {
     const std::string after = lastId;
     more = fetchAnthropicPage(*h, key, after, lastId, f);
   }
@@ -599,7 +609,7 @@ static bool zaiHostAnswers(const char* h, const String& key) {
 static String zaiPickHost(const String& key) {
   const String pinned = store::zaiBase();
   if (pinned.length()) return pinned;
-  if (!key.length()) return String(ZAI_HOST_PRIMARY);
+  if (!key.length() || g_inline) return String(ZAI_HOST_PRIMARY);   // no probe connections on the Telegram task
   const char* cands[] = {ZAI_HOST_PRIMARY, ZAI_HOST_FALLBACK};
   for (const char* h : cands) {
     if (zaiHostAnswers(h, key)) {
@@ -772,6 +782,13 @@ static void recordVerify(const String& prov, int8_t result, const char* rsn = ""
 // it (a key revoked since the last verify, or a first verdict): an unchanged verdict
 // writes nothing to NVS, and a transient failure leaves verdict and reason alone.
 static void recordOutcome(const String& prov, int8_t result, const char* rsn, bool refreshOnly) {
+  // A list GET that answered 200 serves a low-memory deferral (the key works, the list is
+  // fresh): end it here too, or on a heap that never reaches the verify's floor it re-fires
+  // every 16 min for good (HFM review).
+  if (refreshEndsDeferral(refreshOnly, result)) {
+    const int ri = retryIdx(prov);
+    if (ri >= 0) g_retry[ri].clear();
+  }
   if (refreshOnly && (result == -1 || store::verifyResult(prov) == result)) return;
   recordVerify(prov, result, rsn);
 }
@@ -783,7 +800,8 @@ static void recordOutcome(const String& prov, int8_t result, const char* rsn, bo
 // how a verified provider's model list and router prices are refreshed, and that refresh
 // must not be dropped.
 static void deferLowMemory(const String& provider, uint32_t max8) {
-  const LowMemoryDefer act = onLowMemoryDefer(store::verifyResult(provider) == 1);
+  const bool wasVerified = store::verifyResult(provider) == 1;
+  const LowMemoryDefer act = onLowMemoryDefer(wasVerified);
   recordVerify(provider, -1, "low-memory");
   if (act.storeNumber) setDeferMax8(provider, max8);
   const int ri = retryIdx(provider);
@@ -791,8 +809,11 @@ static void deferLowMemory(const String& provider, uint32_t max8) {
   alogf("verify: %s deferred low-memory (resting largest %u, need %u)", provider.c_str(),
         (unsigned)max8, (unsigned)VERIFY_MIN_MAX8);
   // The model list needs only one connection: a key verify the device cannot run yet
-  // still refreshes the list (a no-op for telegram/tavily, which have no list).
-  (void)model_refresh::request(provider.c_str(), "verify");
+  // still refreshes the list (a no-op for telegram/tavily, which have no list). Only a key
+  // not verified yet skips the hourly window ("verify"); a verified key's deferral retries
+  // ask within it ("verify-deferred").
+  (void)model_refresh::request(provider.c_str(),
+                               deferredVerifyForcesRefresh(wasVerified) ? "verify" : "verify-deferred");
 }
 
 static void runOne() {
@@ -856,7 +877,7 @@ static void runOne() {
   // (CUM-451). The retry is cleared only on a DEFINITIVE verdict, in recordVerify().
   // Outlast one full Telegram long-poll cycle (30 s) so a verify queued behind
   // an orchestrator turn still lands instead of bouncing "tls busy".
-  if (!arbiter::acquireWork(g_inline ? 5000 : 35000)) {
+  if (!arbiter::acquireWork(g_inline ? runWaitMs(5000) : 35000)) {
     recordOutcome(provider, -1, "tlsbusy", refreshOnly);
     alogf("verify: %s tls busy", provider.c_str());
     g_pending = false;
@@ -872,9 +893,11 @@ static void runOne() {
   {
     WiFiClientSecure client;
     tlsSetup(client);
-    client.setHandshakeTimeout(12);
-    client.setConnectionTimeout(15000);  // F25: real socket bound (setTimeout inert)
-    if (client.connect(host, 443)) {
+    // Inline (the Telegram task): each wait comes out of the run's budget (runWaitMs).
+    const uint32_t connectMs = g_inline ? runWaitMs(8000) : 15000;
+    client.setHandshakeTimeout(g_inline ? (connectMs + 999) / 1000 : 12);
+    client.setConnectionTimeout(connectMs);  // F25: real socket bound (setTimeout inert)
+    if (connectMs && client.connect(host, 443)) {
       // Tavily: a minimal POST /search proves the key does real work; the others
       // stay GET-shaped.
       const char* body = isTav ? "{\"query\":\"ping\",\"max_results\":1}" : nullptr;
@@ -895,7 +918,7 @@ static void runOne() {
       if (body) req += body;
       client.print(req);
 
-      uint32_t deadline = millis() + 15000;  // read just the status line
+      uint32_t deadline = millis() + runWaitMs(15000);  // read just the status line
       String status;
       while ((int32_t)(millis() - deadline) < 0) {
         if (client.available()) {

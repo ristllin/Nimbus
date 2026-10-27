@@ -58,8 +58,12 @@ uint32_t ModelRefreshQueue::finished(const char* slug, bool failed, uint32_t now
     s.fails = 0;
     return 0;
   }
-  if (s.fails < 6) ++s.fails;   // 2 << 5 = 64 min: past the cap, no further doubling needed
-  const uint32_t delay = std::min(kRetryMaxMs, kRetryFirstMs << (s.fails - 1));
+  if (s.fails >= kRetryTries) {   // given up: the next passive pass asks again
+    s.fails = 0;
+    return 0;
+  }
+  ++s.fails;
+  const uint32_t delay = std::min(kRetryMaxMs, kRetryFirstMs << (s.fails - 1));   // 2 .. 32, then 60 min
   s.wanted = true;
   s.retry = true;
   s.retryAt = nowMs + delay;

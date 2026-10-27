@@ -378,6 +378,21 @@ static void test_the_providers_list_decides_image_input() {
   TEST_ASSERT_TRUE(headTakesImages("anthropic", "claude-haiku-5-5"));
 }
 
+// HFM review, LOW: a device that holds NO Mistral list at all (a Cumulo-only device whose head
+// routes to Mistral) keeps the name rule (the lookup says -2: no list), so intake and the
+// renderer agree; a Mistral list that does not know the model (-1) still means captions.
+static int lookupNoList(const char* host, const char* model) {
+  (void)model;
+  return std::string(host) == "mistral" ? -2 : -1;
+}
+static void test_no_list_at_all_keeps_the_name_rule() {
+  installImageInputLookup(&lookupNoList);
+  TEST_ASSERT_TRUE(headTakesImages("mistral", "mistral-small-latest"));
+  TEST_ASSERT_TRUE(headTakesImages("cumulo", "mistral/mistral-small-latest"));
+  TEST_ASSERT_FALSE(headTakesImages("mistral", "codestral-latest"));
+  installImageInputLookup(nullptr);
+}
+
 // The set knows its own photos (image.look on one the head already sees makes no call).
 static void test_the_set_holds_its_refs() {
   TurnImages set;
@@ -397,6 +412,7 @@ int main(int, char**) {
   RUN_TEST(test_head_takes_images_table);
   RUN_TEST(test_the_providers_list_decides_image_input);
   RUN_TEST(test_the_set_holds_its_refs);
+  RUN_TEST(test_no_list_at_all_keeps_the_name_rule);
   RUN_TEST(test_formats);
   RUN_TEST(test_sniff_by_magic);
   RUN_TEST(test_admission_and_fallbacks);

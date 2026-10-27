@@ -48,8 +48,8 @@ static void test_refusal_text() {
   const std::string t = headSwitchRefusal(headPauseNote("Anthropic", kPauseProviderLimit, ParkKind::None, false), "Mistral");
   TEST_ASSERT_EQUAL_STRING(
       "Anthropic is paused by your monthly limit; replies already fail over automatically and return to "
-      "Anthropic when it lifts. To make Mistral your main provider anyway, ask again or pick it under "
-      "Assistant > Models.",
+      "Anthropic when it lifts. To make Mistral your main provider anyway, say \"switch to Mistral\" again, "
+      "or pick it under Assistant > Models.",
       t.c_str());
   for (unsigned char c : t) TEST_ASSERT_TRUE(c >= 0x20 && c < 0x7f);
 }
@@ -93,7 +93,7 @@ static void test_guard() {
   TEST_ASSERT_FALSE(g.allow("anthropic", "closed", "mistral", "m", msg("switch to mistral, anthropic is out", 1), nearWrap));
   TEST_ASSERT_FALSE(g.allow("anthropic", "closed", "mistral", "m", msg("switch to mistral, anthropic is out", 1), 10));   // same message
   TEST_ASSERT_TRUE(g.allow("anthropic", "closed", "mistral", "m", msg("switch to mistral, anthropic is out", 2), 5000));  // same words, next message
-  TEST_ASSERT_FALSE(g.allow("anthropic", "closed", "mistral", "m", msg("yes, mistral for good again", 3), 6000));       // spent
+  TEST_ASSERT_FALSE(g.allow("anthropic", "closed", "mistral", "m", msg("yes, use mistral for good again", 3), 6000));   // spent
   // A refusal for another target replaces the one waiting.
   TEST_ASSERT_FALSE(g.allow("anthropic", "closed", "openai", "gpt-5.6-sol", msg("use gpt", 4), 7000));
   TEST_ASSERT_FALSE(g.allow("anthropic", "closed", "mistral", "m", msg("no, mistral", 5), 8000));
@@ -101,8 +101,35 @@ static void test_guard() {
   // message is a first ask.
   g.reset();
   TEST_ASSERT_FALSE(g.allow("anthropic", "closed", "mistral", "m", msg("", 0), 9000));
-  TEST_ASSERT_FALSE(g.allow("anthropic", "closed", "mistral", "m", msg("mistral then", 6), 10000));
-  TEST_ASSERT_TRUE(g.allow("anthropic", "closed", "mistral", "m", msg("yes, mistral", 7), 11000));
+  TEST_ASSERT_FALSE(g.allow("anthropic", "closed", "mistral", "m", msg("switch to mistral then", 6), 10000));
+  TEST_ASSERT_TRUE(g.allow("anthropic", "closed", "mistral", "m", msg("yes, switch to mistral", 7), 11000));
+}
+
+// An ASK: the target named, a switch word, nothing that keeps or declines. The 26 Oct words
+// and the owner's natural follow-ups are no ask; an explicit switch is.
+static void test_owner_asks_to_switch() {
+  for (const char* yes : {"switch to mistral since anthropic is out of budget", "yes, switch to Mistral",
+                          "use mistral for now", "make Mistral my main provider", "change the model to mistral-large-latest",
+                          "go with Mistral then"})
+    TEST_ASSERT_TRUE_MESSAGE(ownerAsksSwitchTo(yes, "mistral", "mistral-large-latest"), yes);
+  for (const char* no : {"Hmm I thought anthropic is out of budget", "ok, so mistral is answering for now?",
+                         "no, keep anthropic, mistral is fine meanwhile", "don't switch to mistral",
+                         "do not change to mistral", "what does mistral cost?", "switch to gpt", ""})
+    TEST_ASSERT_FALSE_MESSAGE(ownerAsksSwitchTo(no, "mistral", "mistral-large-latest"), no);
+}
+
+// The model's version of the note, for the per-turn line.
+static void test_pause_facts_for_the_model() {
+  HeadPause hp;
+  TEST_ASSERT_EQUAL_STRING("", headPauseFact("Anthropic", hp).c_str());
+  hp.causes = kPauseProviderLimit;
+  TEST_ASSERT_EQUAL_STRING(
+      "Anthropic, the chosen head, is paused by the owner's monthly limit and returns automatically when it lifts.",
+      headPauseFact("Anthropic", hp).c_str());
+  hp = HeadPause();
+  hp.park = ParkKind::Billing;
+  TEST_ASSERT_EQUAL_STRING("OpenAI, the chosen head, is out of credit and returns automatically once credit is added.",
+                           headPauseFact("OpenAI", hp).c_str());
 }
 
 int main(int, char**) {
@@ -112,5 +139,7 @@ int main(int, char**) {
   RUN_TEST(test_owner_channels);
   RUN_TEST(test_owner_names_the_target);
   RUN_TEST(test_guard);
+  RUN_TEST(test_owner_asks_to_switch);
+  RUN_TEST(test_pause_facts_for_the_model);
   return UNITY_END();
 }

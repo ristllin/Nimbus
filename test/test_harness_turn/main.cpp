@@ -989,6 +989,39 @@ static void test_lastturn_and_spend_line_name_the_model_that_answered() {
   nimbus::orch::clearServedModels();
 }
 
+// HFM review, MEDIUM (v4.6.1 ships without QW6's identity line): every request's per-turn
+// input names the host and concrete model it runs on, and, after a failover, why the chosen
+// head is not answering; the cached system prompt carries none of it.
+static void test_the_per_turn_input_names_the_model_this_turn_runs_on() {
+  nimbus::orch::installServedModelResolver(&lumiAliasResolver);
+  {
+    Rig r;
+    r.cfg.orchHost = "anthropic";
+    r.cfg.priority = "anthropic,mistral";
+    r.cfg.orchModels["mistral"] = "mistral-large-latest";
+    r.cfg.overBudgetHosts = {"anthropic"};
+    r.eng->runTurn("inputs", "1001", "");
+    TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+    TEST_ASSERT_EQUAL_STRING("mistral", r.attempts[0].host.c_str());
+    const std::string want =
+        "[THIS TURN RUNS ON] mistral / mistral-large-2512 (asked for mistral-large-latest). Anthropic, the "
+        "chosen head, is over its monthly budget and returns automatically when its budget resets. When asked "
+        "which model you run, name this one only.\n";
+    TEST_ASSERT_EQUAL_STRING((want + "inputs").c_str(), r.attempts[0].inputs.c_str());
+    TEST_ASSERT_TRUE(r.attempts[0].instructions.find("THIS TURN RUNS ON") == std::string::npos);
+  }
+  {
+    Rig r;   // no failover: the host and its model only
+    r.cfg.orchModels["anthropic"] = "claude-haiku-5-5";
+    r.eng->runTurn("inputs", "1001", "");
+    TEST_ASSERT_EQUAL_STRING(
+        "[THIS TURN RUNS ON] anthropic / claude-haiku-5-5. When asked which model you run, name this one only.\ninputs",
+        r.attempts[0].inputs.c_str());
+  }
+  nimbus::orch::installServedModelResolver(nullptr);
+  nimbus::orch::clearServedModels();
+}
+
 // Gate G5: only the attempt that served the turn names its model. A failed attempt
 // that echoed a model (captured on its HTTP 200, before the turn failed to parse) and
 // a host that then serves the turn WITHOUT an echo: the serving host's spend is filed
@@ -2282,7 +2315,11 @@ static void test_turn_debug_hook_success_and_failure() {
   TEST_ASSERT_TRUE(r.debug[0].convContinued);   // entered with a stored conversation
   TEST_ASSERT_TRUE(r.debug[0].ok);
   TEST_ASSERT_EQUAL_STRING(kGoodTurn, r.debug[0].rawOut.c_str());
-  TEST_ASSERT_EQUAL_STRING("the inputs", r.debug[0].inputs.c_str());
+  // What the request really sent: the per-turn line for its host (HFM), then the input.
+  TEST_ASSERT_EQUAL_STRING(
+      "[THIS TURN RUNS ON] anthropic / model-anthropic. When asked which model you run, name this one only.\n"
+      "the inputs",
+      r.debug[0].inputs.c_str());
 
   Rig r2;
   r2.cfg.keyed = {"anthropic"};
@@ -4676,6 +4713,7 @@ static void runFirstHalf() {
   RUN_TEST(test_failover_walks_priority_with_owner_notice);
   RUN_TEST(test_turn_spend_files_under_the_serving_model);
   RUN_TEST(test_lastturn_and_spend_line_name_the_model_that_answered);
+  RUN_TEST(test_the_per_turn_input_names_the_model_this_turn_runs_on);
   RUN_TEST(test_failed_attempt_echo_never_names_the_serving_model);
   RUN_TEST(test_cum477_unsent_request_reply_blames_memory_not_connection);
   RUN_TEST(test_prompt_round_cap_follows_the_configured_loop);

@@ -880,7 +880,7 @@ static void test_store_image_input_from_api_capabilities() {
   TEST_ASSERT_EQUAL_INT(-1, storeImageInput("mistral", mistral, "mistral-large-2512"));   // folded into its alias
   TEST_ASSERT_EQUAL_INT(1, storeImageInput("anthropic", storeOf("anthropic"), "claude-haiku-5-5"));
   TEST_ASSERT_EQUAL_INT(-1, storeImageInput("openai", storeOf("openai"), "gpt-5.6-sol"));
-  TEST_ASSERT_EQUAL_INT(-1, storeImageInput("mistral", "", "mistral-large-latest"));
+  TEST_ASSERT_EQUAL_INT(-2, storeImageInput("mistral", "", "mistral-large-latest"));   // no list at all
   TEST_ASSERT_EQUAL_INT(-1, storeImageInput("mistral", mistral, ""));
 }
 

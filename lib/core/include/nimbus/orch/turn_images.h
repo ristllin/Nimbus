@@ -63,8 +63,9 @@ const char* sniffImageMime(const uint8_t* bytes, size_t len);
 bool headTakesImages(const std::string& host, const std::string& model);
 
 // The device's image-input lookup: 1 = the provider's stored list says `model` takes
-// images, 0 = it says it does not, -1 = no row for it or the list does not say (the
-// name rule decides). Unset (host tests, the hosted daemon): the name rule alone.
+// images, 0 = it says it does not, -1 = no row for it or the list does not say, -2 = the
+// device holds no list of that provider (the name rule decides). Unset (host tests, the
+// hosted daemon): the name rule alone.
 using ImageInputLookup = int (*)(const char* host, const char* model);
 void installImageInputLookup(ImageInputLookup f);
 

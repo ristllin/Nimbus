@@ -91,6 +91,25 @@ struct LowMemoryDefer {
 };
 inline LowMemoryDefer onLowMemoryDefer(bool wasVerified) { return {true, !wasVerified}; }
 
+// A verify the memory gate deferred still gets its provider's model list (the refresh needs
+// one connection's memory only). Only a key not verified yet (just saved: the web marks it
+// -1) forces that refresh past the hourly window, since a new key may see another list. A
+// verified key's deferral keeps the hour: on a heap that never reaches the verify's floor
+// (Lumi: 7,156 B against 8,000 B) the deferral retry fires every 16 min for good, and a
+// forced refresh each time refetched the whole list on the Telegram task (HFM review).
+inline bool deferredVerifyForcesRefresh(bool wasVerified) { return !wasVerified; }
+// A refresh-only run whose list GET answered 200 serves what the deferral was waiting for (the
+// key works, the list is fresh): it ends the deferral, so the retry stops re-firing.
+inline bool refreshEndsDeferral(bool refreshOnly, int8_t result) { return refreshOnly && result == 1; }
+// One hard budget for a refresh run on the Telegram poll task (it holds Telegram and every
+// turn while it runs): each wait is the smaller of its own cap and what is left before
+// `untilMs`, 0 once the budget is spent. Wrap-safe.
+inline uint32_t inlineWaitMs(uint32_t nowMs, uint32_t untilMs, uint32_t capMs) {
+  const int32_t left = (int32_t)(untilMs - nowMs);
+  if (left <= 0) return 0;
+  return (uint32_t)left < capMs ? (uint32_t)left : capMs;
+}
+
 // Router prices after an upgrade (per-model prices, 2026-10 bench): the Cumulo
 // router's per-model prices are harvested only by a Cumulo verify, so a device that
 // upgraded with a verified Cumulo key priced every Cumulo model at a built-in

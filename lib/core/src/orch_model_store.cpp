@@ -725,6 +725,7 @@ std::string concreteModelName(const std::string& storeText, const std::string& a
 }
 
 int storeImageInput(const std::string& provider, const std::string& storeText, const std::string& id) {
+  if (storeText.empty()) return -2;   // no list at all on this device
   if (id.empty() || !cleanModelId(id)) return -1;
   const std::string key = "\n" + id + "\t";
   const size_t at = storeText.find(key);
