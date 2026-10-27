@@ -1010,8 +1010,11 @@ std::string outputsReply(const JsonDocument& doc, const Provenance& p, RunCounts
     if (strcmp(type, "tool.execution") == 0) {
       const char* nm = o["name"] | "";
       bump(runs.tools);
+      // A web tool (web_search, weather_search, news_search, web_fetch) is never a run of
+      // an attached connector: "the weather for my calendar events" that ran only
+      // weather_search must still read connector NOT called (CUM-536; check of c962b5d0).
       if (isWebTool(nm)) bump(runs.web);
-      if (nimbus::orch::countsAsConnectorRun(nm, p.askedId, p.attached)) bump(runs.connector);
+      else if (nimbus::orch::countsAsConnectorRun(nm, p.askedId, p.attached)) bump(runs.connector);
       continue;
     }
     if (strcmp(type, "message.output") == 0) reply = mistralSubReplyContent(o);   // string OR chunks, with sources

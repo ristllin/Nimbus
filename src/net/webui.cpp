@@ -1342,7 +1342,7 @@ static void buildOrchState(String& out) {
   d["midFail"]  = agent::store::midTurnFailover();
   d["codeSbx"]  = agent::store::codeSandbox();
   // How a PDF reaches the owner now (the one pdfRoute rule): the Code sandbox
-  // status line (openai | anthropic | device | nostore | sandboxoff | nokey).
+  // status line (the PdfRoute slugs in connectors_wire.h).
   d["pdfRoute"] = agent::connectors::pdfRouteSlug();
   d["orchTrace"] = agent::store::orchTrace();   // glass-box trace capture (A4)
   d["ttsOn"]    = agent::store::ttsEnabled();   // "Voice replies" toggle (P2.5)

@@ -212,8 +212,12 @@ class TurnEngine {
     std::function<std::string(bool headCallsTools)> connectorsCatalog;
     // What holds a provider off for SUB-AGENTS (the Spawn seam; device:
     // orchestrator::providerPause): [SPAWN CAPACITY] and the [AVAILABLE PROVIDERS]
-    // marking read it, so they agree with the catalog. Null = apply.headPause.
+    // marking read it, so they agree with the catalog. Null = no park is known (only
+    // the budget check): never the head's Chat read (check of c962b5d0).
     std::function<nimbus::orch::HeadPause(const std::string& provider)> spawnPause;
+    // Does a head on `host` run the tool loop (orch::headRunsToolLoop)? Decides whether
+    // the catalog offers the head's own web.search. Null = hosts.fabricSupports.
+    std::function<bool(const std::string& host)> headRunsTools;
     // W15: the ambient [SKILLS] index (device: skills::indexText) - one line per
     // capsule so the model can PULL a playbook with skill.get. A skill the
     // per-turn context never NAMES is a skill the model will never reach for.

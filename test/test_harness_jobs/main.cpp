@@ -1339,6 +1339,23 @@ static void test_cum822_web_results_carry_the_sources_and_no_stale_facts_line() 
   }
 }
 
+// Check of c962b5d0: a sub that ran only a web search (weather) for "the weather for my
+// calendar events" never called the calendar: its result opens with the NOT called marker
+// and counts as unverified, though a tool ran.
+static void test_cum536_marker_when_only_a_web_tool_ran() {
+  Rig r;
+  r.adapter.toolRuns = 1;
+  r.adapter.webRuns = 1;
+  r.adapter.connectorAsked = "Google Calendar";
+  r.adapter.connectorCalls = 0;
+  r.adapter.doneReply = "Mon 09:00 stand-up (rain).";
+  runOneDoneJob(r, sp("Use the web_search tool: the weather for my Google Calendar events tomorrow"));
+  bool unverified = false;
+  const std::string block = r.eng->takeFreshResults(&unverified);
+  TEST_ASSERT_TRUE(unverified);
+  TEST_ASSERT_TRUE_MESSAGE(block.find("NOT called") != std::string::npos, block.c_str());
+}
+
 static void test_done_arc_cleared_after_grace() {
   Rig r;
   r.eng->enqueueSpawn(sp(), "chat1");
@@ -2607,6 +2624,7 @@ int main(int, char**) {
   RUN_TEST(test_spend_ceiling_refuses_a_sub_dispatch_before_any_request);
   RUN_TEST(test_a_provider_at_its_limit_runs_no_helper);
   RUN_TEST(test_an_over_budget_provider_runs_no_helper);
+  RUN_TEST(test_cum536_marker_when_only_a_web_tool_ran);
   RUN_TEST(test_may_have_started_note_survives_the_chat_bound);
   RUN_TEST(test_an_unreadable_answer_may_have_run);
   RUN_TEST(test_spawn_note_budget_is_per_chat);

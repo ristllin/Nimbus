@@ -356,30 +356,43 @@ def _one_ask(board: str, i: int, question: str) -> list:
     return got
 
 
+def _pdf_files(board: str) -> set:
+    """The "<project>/<name>" of each .pdf in the Files listing (empty when unreadable)."""
+    try:
+        rows = _S.get(f"http://{board}/api/files/list", timeout=15).json().get("files") or []
+    except Exception:  # noqa: BLE001 - a busy page
+        return set()
+    return {f"{r.get('project')}/{r.get('name')}" for r in rows if str(r.get("name") or "").endswith(".pdf")}
+
+
 def _pdf_ask(board: str) -> list:
-    """The file ask: no spawn on a paused OpenAI or Anthropic; a saved file or an honest refusal."""
+    """The file ask: no spawn on a paused OpenAI or Anthropic. On the device/devicepaused route a
+    file must land (the writer's log line or a new .pdf in Files); a refusal counts only on the
+    paused/nostore routes and must say it is not possible."""
     _S.post(f"http://{board}/api/orch", data={"convReset": "1"}, timeout=10)
     time.sleep(3)
-    log0, ram0 = _log(board), _ram_log(board)
+    route = _S.get(f"http://{board}/api/orch", timeout=10).json().get("pdfRoute")
+    log0, ram0, files0 = _log(board), _ram_log(board), _pdf_files(board)
     replies = _ask(board, PDF_ASK)
     lines = _new_lines(log0, _log(board)) + _new_lines(ram0, _ram_log(board))
-    state = _S.get(f"http://{board}/api/orch", timeout=10).json()
+    new_files = sorted(_pdf_files(board) - files0)
     _evidence("pdf-replies.txt", "\n\n----- delivery -----\n\n".join(replies))
     _evidence("pdf-log.txt", "\n".join(lines))
-    _evidence("pdf-route.txt", f"pdfRoute={state.get('pdfRoute')}\n")
+    _evidence("pdf-route.txt", f"pdfRoute={route}\nnew files={new_files}\n")
     answer = "\n".join(replies)
     fails = [
         f"pdf: a sub-agent went to paused {p}"
         for p in FROZEN
         if any("spawned " in ln and f"({p}/" in ln for ln in lines)
     ]
-    if state.get("pdfRoute") in FROZEN:
-        fails.append(f"pdf: the route names paused {state.get('pdfRoute')}")
-    saved = re.search(r"\.pdf\b", answer, re.I) is not None
-    honest = re.search(r"not possible|can't|cannot|unable|paused", answer, re.I) is not None
-    if not (saved or honest):
-        fails.append(f"pdf: neither a saved file nor a plain refusal: {answer[:300]}")
-    print(f"[HFC] pdf: route {state.get('pdfRoute')}; {'PASS' if not fails else 'FAIL ' + json.dumps(fails)}")
+    if route in FROZEN:
+        fails.append(f"pdf: the route names paused {route}")
+    wrote = any("with the device PDF writer" in ln for ln in lines) or bool(new_files)
+    if route in ("device", "devicepaused") and not wrote:
+        fails.append(f"pdf: route {route} but no file landed (no writer line, no new .pdf): {answer[:300]}")
+    if route in ("paused", "nostore") and not re.search(r"not possible", answer, re.I):
+        fails.append(f"pdf: route {route} but the reply does not say it is not possible: {answer[:300]}")
+    print(f"[HFC] pdf: route {route}; new files {new_files}; {'PASS' if not fails else 'FAIL ' + json.dumps(fails)}")
     print(f"[HFC] pdf answer: {replies[-1][:400] if replies else '(none)'}")
     return fails
 

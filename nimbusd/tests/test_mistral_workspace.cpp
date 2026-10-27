@@ -240,6 +240,33 @@ static void testWebRouteAndPauses(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// (i) Check of c962b5d0: the head's web.search route follows whether THIS head runs the tool
+// loop, the device's rule (orch::headRunsToolLoop) on the rig's engine closure: a Z.ai head
+// runs single-shot (no route), a Cumulo-only head on the default openai upstream runs the
+// loop (the route stays: the one-key onboarding path).
+static void testWebRouteFollowsTheHead(ndtest::Ctx& c) {
+  std::printf("  -- (i) web.search is offered only to a head that runs the tool loop --\n");
+  const char* blob =
+      "[{\"name\":\"notion\",\"type\":\"notion\",\"prov\":\"mistral\",\"kind\":\"connector\","
+      "\"cid\":\"notion\",\"en\":1}]";
+  struct Case { const char* env; const char* prio; const char* head; bool route; };
+  const Case cases[] = {{"Z_AI_TOKEN", "zai", "zai", false}, {"CUMULO_API_KEY", "cumulo", "cumulo", true}};
+  for (const Case& k : cases) {
+    clearEnv();
+    setenv("TAVILY_API_KEY", "tv_TEST_KEY_2", 1);
+    setenv(k.env, "tk_TEST_KEY_8", 1);
+    FakeHttpTransport tx;
+    Config cfg;
+    NimbusdRig rig(cfg, opts(std::string("mws-i-") + k.head, k.prio), &tx);
+    c.eq(rig.connectors().replaceBlob(blob), "", "a Notion card");
+    c.eq(rig.hostBadge(), k.head, "the head resolves");
+    const std::string cat = rig.connectorsCatalog(rig.headRunsTools(rig.hostBadge()));
+    c.ok(has(cat, "call web.search on your own turn") == k.route,
+         k.route ? "the Cumulo head is offered its web.search" : "the Z.ai head is not offered web.search");
+  }
+  clearEnv();
+}
+
 static std::string get(WebApi& api, const std::string& path) {
   ApiResp out;
   api.handle("GET", path, "", out);
@@ -450,6 +477,7 @@ int main() {
   testProbeGatesAndKeyReset(c);
   testResolvedHead(c);
   testWebRouteAndPauses(c);
+  testWebRouteFollowsTheHead(c);
   testWebSurface(c);
   testCoalesceTagAndQueuedSave(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);

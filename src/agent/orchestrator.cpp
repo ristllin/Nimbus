@@ -806,15 +806,17 @@ static JobEngine::Deps buildJobDeps() {
 // seam, the monthly budget check. The park's re-check request is never taken; the budget check is
 // the one every turn makes at its start. Chat for the head; Spawn for the catalog (providerPause).
 static nimbus::orch::HeadPause headPauseFor(const std::string& p,
-                                            nimbus::orch::PaidSeam seam = nimbus::orch::PaidSeam::Chat) {
-  nimbus::orch::HeadPause hp =
-      nimbus::orch::parkPause(p, seam, millis(), /*dueIsOpen=*/seam != nimbus::orch::PaidSeam::Chat);
+                                            nimbus::orch::PaidSeam seam = nimbus::orch::PaidSeam::Chat,
+                                            bool dueIsOpen = false) {
+  nimbus::orch::HeadPause hp = nimbus::orch::parkPause(p, seam, millis(), dueIsOpen);
   hp.overBudget = store::providerOverBudget(String(p.c_str()));
   return hp;
 }
 
+// The prompt's reads: a park whose re-check is due is open (the turn that makes the
+// re-check never reads its provider as paused).
 nimbus::orch::HeadPause providerPause(const std::string& p, nimbus::orch::PaidSeam seam) {
-  return headPauseFor(p, seam);
+  return headPauseFor(p, seam, /*dueIsOpen=*/true);
 }
 
 static agent::ApplyDeps buildApplyDeps() {
@@ -1286,6 +1288,12 @@ static TurnEngine::Deps buildTurnDeps() {
     return memory::handleMcp(req, who);
   };
   d.connectorsCatalog = [](bool headTools) { return std::string(connectors::catalog(headTools).c_str()); };
+  // [SPAWN CAPACITY] and the priority marking read the Spawn seam, as the catalog does
+  // (check of c962b5d0: unwired, they fell back to the Chat read).
+  d.spawnPause = [](const std::string& p) { return providerPause(p, nimbus::orch::PaidSeam::Spawn); };
+  // Whether this head's turn runs the tool loop (web.search on its own turn): the native
+  // hosts, and the Cumulo head when its pick's upstream is one; never Z.ai or custom.
+  d.headRunsTools = [](const std::string& h) { return nimbus::orch::headRunsToolLoop(h, cumuloPick()); };
   // W15: the ambient skills index - every turn NAMES the playbooks (id + one-line
   // desc) so the model pulls the procedure with skill.get instead of the recipes
   // riding every prompt. Lane I: the per-chat attach surface - the [ACTIVE

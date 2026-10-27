@@ -54,7 +54,9 @@ try:  # keep `pytest --collect-only` clean on a host without requests
 except ImportError:  # pragma: no cover
     requests = None
 
-ROUTES = {"openai", "anthropic", "device", "nostore", "nocapture", "sandboxoff", "nokey"}
+# The PdfRoute slugs (connectors_wire.h is the one frozen list; devicepaused and paused: a
+# held-off sandbox provider, CUM-821).
+ROUTES = {"openai", "anthropic", "device", "devicepaused", "nostore", "nocapture", "paused", "sandboxoff", "nokey"}
 
 
 def _lan():

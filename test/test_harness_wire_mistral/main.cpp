@@ -593,11 +593,14 @@ static void test_cum822_web_search_spawn_leaves_studio_connectors_off() {
     TEST_ASSERT_EQUAL(0, env.connectorCalls);
   }
   // Review of 4e9cf28f: a web_search task that also names a connector keeps THAT connector,
-  // so the CUM-536 provenance holds (asked Google Calendar, never ran: marked).
-  {
+  // so the CUM-536 provenance holds (asked Google Calendar, never ran: marked). Check of
+  // c962b5d0: Mistral answers weather through weather_search, which is a web run, never a
+  // run of the kept calendar.
+  for (const char* tool : {"web_search", "weather_search", "news_search", "web_fetch"}) {
     FakeProviderDeps d;
     d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
-        "{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"web_search\"},"
+        std::string("{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"") + tool +
+        "\"},"
         "{\"type\":\"message.output\",\"content\":\"Rain at 9:00 (bbc.co.uk)\"}]}"});
     auto pd = gcalAttachedPd(d);
     agent::Directive dir;
@@ -609,9 +612,11 @@ static void test_cum822_web_search_spawn_leaves_studio_connectors_off() {
     TEST_ASSERT_TRUE(bodyHas(d, 0, "\"connector_id\":\"google_calendar\""));
     agent::ResultEnvelope env{};
     TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, jobId, env));
-    TEST_ASSERT_EQUAL_STRING("Google Calendar", env.connectorAsked);
-    TEST_ASSERT_EQUAL(0, env.connectorCalls);
-    TEST_ASSERT_TRUE(LogCapture::contains("mistral sub: connectors attached=1 calls=0 asked=Google Calendar"));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("Google Calendar", env.connectorAsked, tool);
+    TEST_ASSERT_EQUAL_MESSAGE(0, env.connectorCalls, tool);
+    TEST_ASSERT_EQUAL_MESSAGE(1, env.webRuns, tool);
+    TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("mistral sub: connectors attached=1 calls=0 asked=Google Calendar"),
+                             tool);
   }
   // Counter-test: a connector spawn (and one with no skill) keeps the connector.
   for (const char* skill : {"gcal", static_cast<const char*>(nullptr)}) {

@@ -501,6 +501,7 @@ String catalog(bool headCallsTools) {
   ps.mistralVerified   = store::verifyResult("mistral");
   ps.capProbe       = (int8_t)store::capProbe();   // W3b: off => no verified claims
   ps.currentHost    = currentHost();
+  ps.hostPause      = orchestrator::providerPause(ps.currentHost, nimbus::orch::PaidSeam::Chat);
   ps.mistralProbePending = provider_verify::workspaceProbePending();   // CUM-537
   // CUM-822: the head's own web.search is a route only for a head that can call tools.
   ps.webSearchTool  = headCallsTools && tavily::available() && !store::providerOverBudget("tavily");

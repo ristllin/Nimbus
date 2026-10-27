@@ -24,7 +24,7 @@ static const KnownConnector kKnown[] = {
      "- private repos otherwise return 'not accessible'); no Actions or Gists "
      "tools; releases are read-only. Mistral (Studio github_app): toolset "
      "unverified - confirm a write tool exists before promising it. It cannot "
-     "CLONE, BUILD, or RUN code - for that, spawn an anthropic sandbox sub."},
+     "CLONE, BUILD, or RUN code."},
     {"gmail", "Gmail", "openai,mistral", "connector", "connector_gmail",
      "OAuth refresh token (minted off-device)",
      "Read, search, draft, and label email.", "gmail",
@@ -1416,6 +1416,16 @@ static std::string connectorRowNote(const ConnectorInfo& c, const char* prov,
 }
 
 namespace {
+// A known connector's caps line. GitHub's names where clone, build and run work can go,
+// from the providers open now (check of c962b5d0: it sent that work to a paused anthropic).
+std::string capsText(const KnownConnector& k, bool antUp) {
+  std::string text = k.caps;
+  if (std::strcmp(k.id, "github") != 0) return text;
+  if (!text.empty() && text.back() == '.') text.pop_back();
+  return text + (antUp ? " - for that, spawn an anthropic sandbox sub."
+                       : " - and no open provider can run code now (see the rows).");
+}
+
 // CUM-821: a provider's display name ("OpenAI"), else its slug.
 std::string providerDisplay(const char* prov) {
   const ProviderSlot* s = findProviderSlot(prov);
@@ -1473,15 +1483,17 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
   const bool oaiUp = ps.openaiKeyed && oaiPaused.empty();
   const bool antUp = ps.anthropicKeyed && antPaused.empty();
   const bool misUp = ps.mistralKeyed && misPaused.empty();
-  const bool hostPaused = (host == "openai" && !oaiPaused.empty()) ||
-                          (host == "anthropic" && !antPaused.empty()) ||
-                          (host == "mistral" && !misPaused.empty());
-  if (hostKnown && hostPaused) {
+  // Where the head runs reads its own Chat seam (ps.hostPause), never the Spawn rows: a
+  // Chat-only 403 on the head moves every turn elsewhere (check of c962b5d0).
+  const std::string hostFact =
+      hostKnown ? providerPauseFact(providerDisplay(host.c_str()), ps.hostPause) : std::string();
+  const bool hostPaused = !hostFact.empty();
+  if (hostPaused) {
     // The turns of a paused head run elsewhere, named per request in [THIS TURN RUNS ON].
-    out += "Your chosen head, " + host + ", is PAUSED (see its row), so each turn runs on "
-           "another provider, named in the turn's [THIS TURN RUNS ON] line. Connectors on "
-           "that provider are callable on YOUR OWN turns; connectors on the other providers "
-           "are reachable only by spawning a sub-agent on that provider.\n";
+    out += "Your chosen head, " + host + ", is PAUSED for your own turns: " + hostFact +
+           " Each turn runs on another provider, named in the turn's [THIS TURN RUNS ON] line. "
+           "Connectors on that provider are callable on YOUR OWN turns; connectors on the other "
+           "providers are reachable only by spawning a sub-agent on that provider.\n";
   } else if (hostKnown) {
     out += "You are currently running on ";
     out += host;
@@ -1580,11 +1592,11 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
       if (ciCaps) continue;
       ciCaps = true;
     }
-    const char* caps = nullptr;
+    const KnownConnector* known = nullptr;
     for (int i = 0; i < kn; i++)
-      if (c.type == kk[i].id || c.name == kk[i].id) { caps = kk[i].caps; break; }
-    if (caps && caps[0]) {
-      capsBlock += "  - " + c.name + ": " + caps + "\n";
+      if (c.type == kk[i].id || c.name == kk[i].id) { known = &kk[i]; break; }
+    if (known && known->caps[0]) {
+      capsBlock += "  - " + c.name + ": " + capsText(*known, antUp) + "\n";
     } else if (c.kind == "mcp" && !c.url.empty()) {
       // A CUSTOM MCP the owner added (not in the built-in catalog): the model
       // used to see only its bare name with no idea what it does. Surface the
@@ -1767,9 +1779,13 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
                ? "; finished files land under Files on the device.\n"
                : ", but this device cannot collect them yet (see the PDF line).\n";
   } else {
-    out += "CODE SANDBOX: the hosted code_interpreter is off. The owner turns on Code "
-           "sandbox on the device web page (Assistant > Tools > Tool use); it runs on an "
-           "OpenAI or Mistral key.";
+    // The switch on, its providers paused: say so, never "turn it on" (check of c962b5d0).
+    const bool switchOn = (ps.openaiKeyed && codeInterpreterOnWire(cs, "openai")) ||
+                          (ps.mistralKeyed && codeInterpreterOnWire(cs, "mistral"));
+    out += switchOn ? "CODE SANDBOX: on, but the providers that run it are paused now (see their rows)."
+                    : "CODE SANDBOX: the hosted code_interpreter is off. The owner turns on Code "
+                      "sandbox on the device web page (Assistant > Tools > Tool use); it runs on an "
+                      "OpenAI or Mistral key.";
     if (antUp) out += " An anthropic sub always has its own sandbox.";
     out += "\n";
   }

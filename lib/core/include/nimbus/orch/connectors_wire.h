@@ -142,6 +142,10 @@ struct ProviderState {
   HeadPause openaiPause;
   HeadPause anthropicPause;
   HeadPause mistralPause;
+  // The chosen head's own (Chat seam) state: the "You are currently running on" and
+  // "(YOU are here)" lines read it, the rows above read the Spawn seam. A Chat-only 403
+  // on the head moves every turn elsewhere while its sub-agents still run.
+  HeadPause hostPause;
   // CUM-822: the head's own web.search tool (Tavily) is listed: its key is present and its
   // budget is open.
   bool webSearchTool = false;

@@ -1,5 +1,9 @@
 #include <unity.h>
 
+#include "nimbus/orch/head_switch.h"   // parkPause
+
+#include "nimbus/orch/router_route.h"   // headRunsToolLoop
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -121,6 +125,9 @@ struct Rig {
   std::string fabricLead;
   std::string fabricInstructions;
   std::function<orch::HeadPause(const std::string&)> headPause;   // ApplyDeps.headPause
+  std::function<orch::HeadPause(const std::string&)> spawnPause;  // TurnEngine::Deps.spawnPause
+  std::function<bool(const std::string&)> headRunsTools;          // TurnEngine::Deps.headRunsTools
+  std::vector<bool> catalogHeadTools;   // the headCallsTools flag each catalog render got
   std::vector<attn::Event> events;
   std::vector<std::string> cues;
   std::vector<agent::ComposeInputs> composeCalls;   // (count only)
@@ -237,7 +244,12 @@ struct Rig {
       return mcpResponse;
     };
     wireSkillAttachDeps(d);
-    d.connectorsCatalog = [](bool) { return std::string("## PROVIDERS & CONNECTORS\n"); };
+    d.connectorsCatalog = [this](bool headTools) {
+      catalogHeadTools.push_back(headTools);
+      return std::string("## PROVIDERS & CONNECTORS\n");
+    };
+    d.spawnPause = [this](const std::string& h) { return spawnPause ? spawnPause(h) : orch::HeadPause(); };
+    d.headRunsTools = [this](const std::string& h) { return headRunsTools ? headRunsTools(h) : true; };
     // W15: the rig advertises the skills index the way the device does
     // (skills::indexText -> agent::skillsIndexText over the capsule list), over the
     // device's REAL built-ins (CUM-523: a copied line drifted from the device text).
@@ -3908,7 +3920,7 @@ static void test_cum821_capacity_leaves_out_paused_providers() {
   {
     Rig r;   // the Lumi state: the pause switch holds openai and anthropic
     r.cfg.keyed = {"anthropic", "openai", "mistral"};
-    r.headPause = [](const std::string& h) {
+    r.spawnPause = [](const std::string& h) {
       orch::HeadPause p;
       if (h == "anthropic" || h == "openai") p.causes = nimbus::orch::kPauseProviderLimit;
       return p;
@@ -3947,7 +3959,7 @@ static void test_cum821_sub_priority_marks_paused_providers() {
   Rig r;
   r.cfg.keyed = {"anthropic", "openai", "mistral"};
   r.cfg.subPriority = "openai,mistral,anthropic";
-  r.headPause = [](const std::string& h) {
+  r.spawnPause = [](const std::string& h) {
     orch::HeadPause p;
     if (h == "openai") p.causes = nimbus::orch::kPauseProviderLimit;
     return p;
@@ -3964,6 +3976,67 @@ static void test_cum821_sub_priority_marks_paused_providers() {
   c.eng->handleMessage("hi", "Roy", "1001");
   TEST_ASSERT_TRUE(c.attempts.back().instructions.find(
                        "[AVAILABLE PROVIDERS] sub-session priority: openai, mistral,anthropic\n") != std::string::npos);
+}
+
+// Check of c962b5d0: [SPAWN CAPACITY] and the priority marking read the Spawn seam. A
+// Chat-only 403 (the head model refused) leaves the provider's sub-agents running, so it is
+// neither "(paused now: ...)" nor dropped from the capacity line; the head's Chat read is
+// never the fallback.
+static void test_cum821_spawn_reads_ignore_a_chat_only_403() {
+  orch::ProviderPark& park = orch::providerPark();
+  park.clear();
+  park.park("openai", orch::PaidSeam::Chat, 0, orch::ParkKind::Auth, 403, 1000);
+  Rig r;
+  r.cfg.keyed = {"anthropic", "openai", "mistral"};
+  r.cfg.subPriority = "openai,mistral,anthropic";
+  r.spawnPause = [](const std::string& h) { return orch::parkPause(h, orch::PaidSeam::Spawn, 1001, true); };
+  r.headPause = [](const std::string& h) { return orch::parkPause(h, orch::PaidSeam::Chat, 1001, false); };
+  r.eng->handleMessage("hi", "Roy", "1001");
+  const std::string& ins = r.attempts.back().instructions;
+  TEST_ASSERT_TRUE(ins.find("[AVAILABLE PROVIDERS] sub-session priority: openai,mistral,anthropic\n") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(ins.find("(paused now") == std::string::npos);
+  const std::string& in = r.attempts.back().inputs;
+  const size_t cap = in.find("[SPAWN CAPACITY]");
+  TEST_ASSERT_TRUE(cap != std::string::npos);
+  const std::string line = in.substr(cap, in.find('\n', cap) - cap);
+  TEST_ASSERT_TRUE_MESSAGE(line.find("openai") != std::string::npos, line.c_str());
+  // The device wires both reads (a missing wiring would silently change what the prompt says).
+  std::string src;
+  FILE* f = std::fopen("src/agent/orchestrator.cpp", "rb");
+  TEST_ASSERT_NOT_NULL(f);
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) src.append(buf, n);
+  std::fclose(f);
+  TEST_ASSERT_TRUE_MESSAGE(src.find("d.spawnPause = [](const std::string& p) { return providerPause(p, "
+                                    "nimbus::orch::PaidSeam::Spawn); };") != std::string::npos,
+                           "the device must wire TurnEngine::Deps::spawnPause to the Spawn seam");
+  TEST_ASSERT_TRUE_MESSAGE(src.find("d.headRunsTools = ") != std::string::npos,
+                           "the device must wire TurnEngine::Deps::headRunsTools");
+  park.clear();
+}
+
+// Check of c962b5d0: the head's own web.search is offered by whether THIS head runs the tool
+// loop (orch::headRunsToolLoop), not by fabric support: the Cumulo head on a native upstream
+// does (the one-key onboarding path), Z.ai, custom and a compat upstream do not.
+static void test_head_runs_tools_decides_the_web_search_route() {
+  TEST_ASSERT_TRUE(orch::headRunsToolLoop("openai", ""));
+  TEST_ASSERT_TRUE(orch::headRunsToolLoop("anthropic", ""));
+  TEST_ASSERT_TRUE(orch::headRunsToolLoop("mistral", ""));
+  TEST_ASSERT_TRUE(orch::headRunsToolLoop("cumulo", "gpt-5.6"));                 // bare id: openai
+  TEST_ASSERT_TRUE(orch::headRunsToolLoop("cumulo", "anthropic/claude-haiku-5-5"));
+  TEST_ASSERT_TRUE(orch::headRunsToolLoop("cumulo", "mistral/mistral-small-latest"));
+  TEST_ASSERT_FALSE(orch::headRunsToolLoop("cumulo", "zai/glm-5.3"));
+  TEST_ASSERT_FALSE(orch::headRunsToolLoop("zai", ""));
+  TEST_ASSERT_FALSE(orch::headRunsToolLoop("custom", ""));
+  for (bool runs : {true, false}) {
+    Rig r;
+    r.headRunsTools = [runs](const std::string&) { return runs; };
+    r.eng->handleMessage("hi", "Roy", "1001");
+    TEST_ASSERT_FALSE(r.catalogHeadTools.empty());
+    TEST_ASSERT_EQUAL(runs, (bool)r.catalogHeadTools.back());
+  }
 }
 
 // The conservation law at synthesis: a turn that succeeds with nothing to say
@@ -4826,6 +4899,8 @@ static void runFirstHalf() {
   RUN_TEST(test_lane_l_capacity_names_every_keyed_provider_by_its_mode);
   RUN_TEST(test_cum821_capacity_leaves_out_paused_providers);
   RUN_TEST(test_cum821_sub_priority_marks_paused_providers);
+  RUN_TEST(test_cum821_spawn_reads_ignore_a_chat_only_403);
+  RUN_TEST(test_head_runs_tools_decides_the_web_search_route);
   RUN_TEST(test_every_failed_turn_exit_carries_a_cause);
   RUN_TEST(test_owner_notice_names_the_first_cause);
   RUN_TEST(test_failure_notice_retry_advice_only_when_transient);

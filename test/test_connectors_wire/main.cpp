@@ -2496,10 +2496,12 @@ static void test_cum821_lumi_state_routes_web_and_long_work_only_to_mistral() {
 static void test_cum821_paused_chosen_head_is_not_you_are_here() {
   ProviderState ps = hfc::allKeyed("anthropic");
   ps.anthropicPause.causes = nimbus::orch::kPauseProviderLimit;
+  ps.hostPause = ps.anthropicPause;   // the device fills both (Spawn rows, Chat head)
   const std::string t = catalogText(hfc::lumiConnectors(), ps);
   TEST_ASSERT_TRUE(t.find("You are currently running on anthropic") == std::string::npos);
   TEST_ASSERT_TRUE(t.find("YOU are here") == std::string::npos);
-  TEST_ASSERT_TRUE(t.find("Your chosen head, anthropic, is PAUSED (see its row), so each turn runs on "
+  TEST_ASSERT_TRUE(t.find("Your chosen head, anthropic, is PAUSED for your own turns: Anthropic is paused by the "
+                          "owner's monthly limit and returns automatically when it lifts. Each turn runs on "
                           "another provider, named in the turn's [THIS TURN RUNS ON] line.") != std::string::npos);
   TEST_ASSERT_TRUE(t.find("- anthropic (your chosen head): PAUSED. Anthropic is paused by the owner's "
                           "monthly limit and returns automatically when it lifts.") != std::string::npos);
@@ -2507,6 +2509,7 @@ static void test_cum821_paused_chosen_head_is_not_you_are_here() {
   ProviderState m = hfc::allKeyed("mistral");
   m.mistralHeadCarriesStudio = false;
   m.mistralPause.overBudget = true;
+  m.hostPause.overBudget = true;
   const std::string tm = catalogText(hfc::lumiConnectors(), m);
   TEST_ASSERT_TRUE(tm.find("EXCEPTION: Mistral Studio connectors") == std::string::npos);
   TEST_ASSERT_TRUE(tm.find("- mistral (your chosen head): PAUSED.") != std::string::npos);
@@ -2660,6 +2663,55 @@ static void test_pdf_route_skips_a_paused_provider() {
   TEST_ASSERT_EQUAL_STRING("openai", pdfRoute(cs, open).slug);
 }
 
+// Check of c962b5d0: where the head runs reads its Chat seam. A Chat-only 403 on the head
+// (its head model refused) moves every turn elsewhere, while its sub-agents still run: the
+// intro says the head is paused for your own turns, its row and spawn line stay.
+static void test_head_location_reads_the_chat_seam() {
+  ProviderState ps = hfc::allKeyed("openai");
+  ps.hostPause.park = nimbus::orch::ParkKind::Auth;
+  ps.hostPause.parkStatus = 403;
+  const std::string t = catalogText(hfc::lumiConnectors(), ps);
+  TEST_ASSERT_TRUE(t.find("You are currently running on openai") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find("Your chosen head, openai, is PAUSED for your own turns: OpenAI refused a request (HTTP "
+                          "403) and returns automatically when it is checked again.") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("- openai (your chosen head): available, VERIFIED.") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("- spawn on openai:") != std::string::npos);
+  // Counter-test: an open head is "here".
+  TEST_ASSERT_TRUE(catalogText(hfc::lumiConnectors(), hfc::allKeyed("openai")).find("- openai (YOU are here)") !=
+                   std::string::npos);
+}
+
+// Check of c962b5d0: with Code sandbox on and its providers paused, the line says so (never
+// "turn on Code sandbox"); GitHub's clone/build/run work goes to an anthropic sandbox only
+// while Anthropic is open.
+static void test_sandbox_and_github_lines_follow_paused_providers() {
+  std::vector<ConnectorInfo> cs = {mk("code_interpreter", "openai", "builtin"),
+                                   mk("code_interpreter", "mistral", "builtin"),
+                                   mk("github", "openai", "mcp", "https://api.githubcopilot.com/mcp/")};
+  ProviderState ps = hfc::allKeyed("anthropic");
+  ps.openaiPause.causes = nimbus::orch::kPauseProviderLimit;
+  ps.mistralPause.causes = nimbus::orch::kPauseProviderLimit;
+  std::string t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("CODE SANDBOX: on, but the providers that run it are paused now (see their rows). An "
+                          "anthropic sub always has its own sandbox.") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("turns on Code sandbox") == std::string::npos);
+  ps.anthropicPause.causes = nimbus::orch::kPauseProviderLimit;
+  ps.openaiPause = nimbus::orch::HeadPause();   // github rides openai: its caps line shows
+  t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("It cannot CLONE, BUILD, or RUN code - and no open provider can run code now (see the "
+                          "rows).") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("spawn an anthropic sandbox sub") == std::string::npos);
+  ps.anthropicPause = nimbus::orch::HeadPause();
+  t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("It cannot CLONE, BUILD, or RUN code - for that, spawn an anthropic sandbox sub.") !=
+                   std::string::npos);
+  // The switch really off: the "turn it on" wording.
+  ProviderState off = hfc::allKeyed("anthropic");
+  TEST_ASSERT_TRUE(catalogText({mk("github", "openai", "mcp", "https://api.githubcopilot.com/mcp/")}, off)
+                       .find("CODE SANDBOX: the hosted code_interpreter is off. The owner turns on Code sandbox") !=
+                   std::string::npos);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_mistral_connector_id_shared_map);
@@ -2757,5 +2809,7 @@ int main() {
   RUN_TEST(test_cum822_web_facts_line_names_web_search_on_open_providers);
   RUN_TEST(test_cum822_no_connector_note_claims_priority_over_web_search);
   RUN_TEST(test_pdf_route_skips_a_paused_provider);
+  RUN_TEST(test_head_location_reads_the_chat_seam);
+  RUN_TEST(test_sandbox_and_github_lines_follow_paused_providers);
   return UNITY_END();
 }

@@ -320,8 +320,7 @@ static orch::HeadPause providerPauseOf(const TurnEngine::Deps& d, const std::str
   return hp;
 }
 static orch::HeadPause spawnPauseOf(const TurnEngine::Deps& d, const std::string& p) {
-  if (!d.spawnPause) return providerPauseOf(d, p);
-  orch::HeadPause hp = d.spawnPause(p);
+  orch::HeadPause hp = d.spawnPause ? d.spawnPause(p) : orch::HeadPause();
   if (d.cfg.budget.overBudget && d.cfg.budget.overBudget(p)) hp.overBudget = true;
   return hp;
 }
@@ -1284,7 +1283,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       std::any_of(specs.begin(), specs.end(), [](const orch::ToolRegistry::Spec& s) {
         return s.name == "models.list" && !loopToolHidden(s.name);
       });
-  ci.catalogs = buildStableCatalogs(modelsTool, ci.toolsOnWire && headLoops);
+  // The head's own web.search is a route only when THIS head's turn runs the tool loop
+  // (the Cumulo head does on a native upstream; check of c962b5d0).
+  const bool headCallsTools = d_.headRunsTools ? d_.headRunsTools(host) : headLoops;
+  ci.catalogs = buildStableCatalogs(modelsTool, ci.toolsOnWire && headCallsTools);
   ci.modelsPointer = modelsTool;   // the loop-off note names models.list (compose.cpp)
   // R3: the skills shelf (its own cached block; "" = none on this fabric).
   if (d_.skillsIndex) ci.skillsShelf = d_.skillsIndex();
