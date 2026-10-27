@@ -1,5 +1,8 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
+#include <ctime>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -66,6 +69,7 @@ std::string recentConversationBlock(const std::vector<nimbus::orch::EpisodicMess
 extern const char kAttTag[];       // "att:" + blob refs joined by '.', on the user row
 extern const char kSrcTag[];       // "src:" + source key (user row; a trigger row's source)
 extern const char kSentTag[];      // "sent:" + unix seconds the sender sent the item
+extern const char kAtTag[];        // "at:" + unix seconds the device stored an owner or trigger row
 extern const char kOutTag[];       // "out:" + reply | ask | tts, on an assistant row
 extern const char kSkillsTag[];   // "skills:" + ids joined by ',', on an assistant row (F1 honesty trail)
 extern const char kTriggerTag[];   // "ev:trigger" - a seedless turn's user half
@@ -77,6 +81,14 @@ bool hasTagItem(const std::string& tags, const char* item);
 // "a.b" -> {"a","b"} (att refs); "" -> {}.
 std::vector<std::string> splitRefs(const std::string& joined);
 
+// Minutes east of UTC valid at a unix time, DST included (an empty function = UTC). Local
+// days are told with the offset in force at each row's own time, never today's offset.
+using OffsetAt = std::function<int32_t(uint32_t unixSec)>;
+
+// A turn's local day (days since 1970-01-01 in the owner's zone) as historyTurns resolved it.
+constexpr int32_t kDayUnresolved = INT32_MIN;       // not resolved: tsHours with the caller's offset
+constexpr int32_t kDayNone = INT32_MIN + 1;         // stored before the clock was set: no date
+
 // One exchange as the history shows it. Strings are already rendered, so the
 // block form and the message form (G1) read the same bytes.
 struct HistTurn {
@@ -87,6 +99,12 @@ struct HistTurn {
   std::string did;         // "memory, file" / "nothing"; "" = no fx: tag (older rows)
   uint32_t tsHours = 0;    // the user half's hour (day markers)
   uint32_t sentUnix = 0;   // when the sender sent it (sent: tag; 0 = unknown)
+  uint32_t atUnix = 0;     // when the device stored it (at: tag; 0 = unknown)
+  // The day marker's local day, resolved by historyTurns to the second the row was stored (at:
+  // tag, else sent:, else its hour) with the offset valid then. kDayUnresolved: the render
+  // functions' fixed offset applies to tsHours instead.
+  int32_t localDay = kDayUnresolved;
+  int32_t sentOffMin = 0;  // minutes east of UTC when it was sent (the "sent hh:mm" label)
   uint32_t replyHours = 0; // the hour of the turn's last assistant row (0 = none)
   uint32_t repeats = 1;    // consecutive identical owner messages folded in (xN)
   size_t rows = 0;         // distinct rows the turn holds (the row budget)
@@ -96,8 +114,20 @@ struct HistTurn {
 struct HistoryOptions {
   std::string inFlightId;     // the turn's own user row: it and its media are [USER]
   std::string startAfter;     // rows with an id at or before this are not history
-  int32_t utcOffsetMin = 0;   // local day markers and send times
+  int32_t utcOffsetMin = 0;   // local day markers and send times (a fixed offset)
+  OffsetAt utcOffsetAt;       // the offset valid at a unix time; when set it replaces utcOffsetMin
 };
+
+// The offset source `o` names: utcOffsetAt when set, else the fixed utcOffsetMin.
+OffsetAt localZone(const HistoryOptions& o);
+// A fixed offset as an OffsetAt.
+OffsetAt fixedZone(int32_t utcOffsetMin);
+// Minutes east of UTC from the same instant broken down both ways (localtime_r and gmtime_r
+// of one time_t), day wrap and year wrap included. ESP32 newlib has no tm_gmtoff.
+int32_t utcOffsetFromTm(const std::tm& local, const std::tm& utc);
+// Minutes east of UTC in force at a unix time under the process time zone (TZ, as the
+// device applies its zone setting); 0 for a time before the clock was ever set.
+int32_t utcOffsetAtUnix(uint32_t unixSec);
 
 // Row ids are "m" + 8 hex digits from one boot-stable counter: compare as numbers.
 using nimbus::orch::rowIdAfter;
@@ -120,9 +150,13 @@ std::vector<HistTurn> historyTurns(const std::vector<nimbus::orch::EpisodicMessa
 
 // Two rows the reader may fold into one (xN): consecutive owner messages with
 // the same text and no attachment, sent close together on one day - with both
-// send times known, at most kRepeatWindowSec apart on the same local day
-// (`utcOffsetMin`; 0 = the UTC day); without them, in the same hour.
+// times known to the second (sent: or at: tag), at most kRepeatWindowSec apart
+// on the same local day (each time's own offset); without them, in the same
+// hour, unless that hour straddles a local midnight (half-hour zones). The
+// fixed-offset form: `utcOffsetMin` 0 = the UTC day.
 constexpr uint32_t kRepeatWindowSec = 120;
+bool isRepeatRow(const nimbus::orch::EpisodicMessage& newer,
+                 const nimbus::orch::EpisodicMessage& older, const OffsetAt& zone);
 bool isRepeatRow(const nimbus::orch::EpisodicMessage& newer,
                  const nimbus::orch::EpisodicMessage& older, int32_t utcOffsetMin = 0);
 
@@ -183,8 +217,9 @@ FoldSlice foldSlice(const std::vector<HistTurn>& turns, size_t keepBytes, size_t
                     bool manual, int32_t utcOffsetMin);
 
 // Consecutive identical owner rows (newest first) as one row with " (xN)" - the
-// fold input of a chat that has no turn-structured history yet.
+// fold input of a chat that has no turn-structured history yet. The same rule
+// as isRepeatRow: `zone` tells the owner's local days (empty = the UTC day).
 std::vector<nimbus::orch::EpisodicMessage> collapseRepeats(
-    const std::vector<nimbus::orch::EpisodicMessage>& newestFirst);
+    const std::vector<nimbus::orch::EpisodicMessage>& newestFirst, const OffsetAt& zone = OffsetAt());
 
 }  // namespace agent

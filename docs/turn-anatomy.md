@@ -257,12 +257,22 @@ called by the engine for every turn:
   `[did: nothing]`, so a promise reads differently from a deliverable.
 - **When.** A day marker (`(Thu 22 Oct)`) opens each new local day, and an item
   sent before the previous reply (a late or redelivered message) shows its send
-  time (`[image, sent 09:58]`).
+  time (`[image, sent 09:58]`). A day is the owner's local day, told for each turn
+  from the second the device stored its first row (the row's `at:` tag) with the UTC
+  offset that was in force at that moment. A change of clocks (summer time) never
+  moves an earlier turn to another day, so the history stays append-only, and a day
+  starts at the exact local midnight in half-hour and 45-minute zones too. Changing
+  the device's time zone re-tells every earlier turn in the new zone, once. A row
+  stored before this tag existed keeps only its hour: its day is told at the start
+  of that hour. A row stored before the clock was set has no date and opens no
+  marker.
 - **Repeats collapse.** Consecutive identical owner messages with nothing
   answered in between are one line with a count: `- user (x37): ...`. Only
   messages sent close together on one local day fold: within 2 minutes when
-  both carry their send time, else in the same hour. The same message sent
-  yesterday and again today stays two lines under their own days.
+  both carry a time to the second, else in the same hour (and never when that
+  hour holds a local midnight, as in a half-hour zone). The same message sent
+  yesterday and again today, or a minute either side of local midnight, stays
+  two lines under their own days.
 - **Append-only between boundaries.** A closed turn's bytes depend only on its
   own rows, so each turn's history continues the previous one byte for byte.
   The start moves only at a `/clear`, at a fold (the history starts after the

@@ -47,6 +47,9 @@ struct Rig {
   std::string turnTag;                     // the in-flight turn's id (rows' turn: tag)
   HistoryMarks marks;
   int shifts = 0;
+  uint32_t hour = kH;          // the hour rows are stored at
+  int32_t offMin = 0;          // the device's zone now: minutes east of UTC
+  agent::OffsetAt zone;        // ... or the offset valid at a unix time (DST); replaces offMin
   std::unique_ptr<TurnEngine> eng;
 
   std::string add(const std::string& chat, const std::string& role, MsgKind kind,
@@ -56,7 +59,7 @@ struct Rig {
     snprintf(id, sizeof(id), "m%08x", (unsigned)(++seq));
     m.id = id;
     m.sessionId = chat;
-    m.tsHours = kH;
+    m.tsHours = hour;
     m.role = role;
     m.kind = kind;
     m.text = text;
@@ -84,6 +87,8 @@ struct Rig {
     d.cfg = cfg.contract();
     d.platform = plat.contract();
     d.deliver = [](const std::string&, const std::string&) {};
+    d.utcOffsetMin = [this] { return zone ? zone((uint32_t)plat.epoch) : offMin; };
+    d.utcOffsetAt = [this](uint32_t t) { return zone ? zone(t) : offMin; };
     d.composeInputs = [](const std::string&) {
       agent::ComposeInputs in;
       in.devName = "Nimbus";
@@ -500,8 +505,154 @@ static void test_text_bucket_source_and_inject_without_ids() {
   TEST_ASSERT_TRUE(agent::history::inboundForBucket(web, 0, {}).src.empty());
 }
 
+namespace {
+constexpr uint32_t kSatEve = (kH - 9 + 22) * 3600u + 59 * 60 + 30;   // Sat 8 Nov 2025 22:59:30 UTC
+
+// Two identical owner rows 50 s apart across 23:00 UTC, no reply between (a failed turn),
+// each stamped the way the engine stamps it (at:), then one more owner turn.
+void dinnerEitherSideOf2300Utc(Rig& r) {
+  r.plat.epoch = kSatEve + 3600u;
+  for (uint32_t sec : {kSatEve, kSatEve + 50u}) {
+    r.hour = sec / 3600u;
+    r.add("123", "user", MsgKind::Message, "dinner 600", "from:Roy,at:" + std::to_string(sec));
+  }
+  r.hour = (kSatEve + 3600u) / 3600u;
+  r.eng->handleMessage("and now?", "Roy", "123");
+}
+}  // namespace
+
+// CUM-779: the history reader folds identical owner messages with the owner's local day,
+// not the UTC day. 22:59:30 and 23:00:20 UTC are 23:59:30 and 00:00:20 at UTC+1: two
+// messages under two days, never "(x2)" under one.
+static void test_identical_messages_either_side_of_local_midnight_are_two_messages() {
+  Rig plus1;
+  plus1.offMin = 60;
+  dinnerEitherSideOf2300Utc(plus1);
+  const std::string w = plus1.lastWindow();
+  TEST_ASSERT_EQUAL_MESSAGE(2, (int)count(w, "dinner 600"), w.c_str());
+  TEST_ASSERT_EQUAL(0, (int)count(w, "(x2)"));
+  TEST_ASSERT_TRUE_MESSAGE(w.find("(Sat 8 Nov) dinner 600") != std::string::npos, w.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(w.find("(Sun 9 Nov) dinner 600") != std::string::npos, w.c_str());
+  // Counter-test: at UTC the same two rows share a day and are one repeated message.
+  Rig utc;
+  dinnerEitherSideOf2300Utc(utc);
+  const std::string u = utc.lastWindow();
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)count(u, "dinner 600"), u.c_str());
+  TEST_ASSERT_TRUE(u.find("(x2) dinner 600") != std::string::npos);
+  // The per-time function is what the reader asks: "now" says UTC, the time says UTC+1.
+  Rig dst;
+  dst.zone = [](uint32_t) { return 60; };
+  dst.offMin = 0;
+  dinnerEitherSideOf2300Utc(dst);
+  TEST_ASSERT_EQUAL(2, (int)count(dst.lastWindow(), "dinner 600"));
+}
+
+// CUM-781 through the engine: the owner's clocks go back at 01:00 UTC on Sun 9 Nov (a
+// stand-in for a DST change). A row at 23:30 UTC on Saturday was 00:30 on Sunday when it was
+// stored, and the history still says so once the zone reads UTC.
+static void test_history_days_use_the_zone_in_force_when_the_row_was_stored() {
+  const uint32_t change = (kH - 9 + 25) * 3600u;   // Sun 9 Nov 2025 01:00 UTC
+  Rig r;
+  r.zone = [change](uint32_t t) { return t < change ? 60 : 0; };
+  const uint32_t a = change - 2 * 3600u - 1800u;   // 22:30 UTC Sat = 23:30 Sat local
+  const uint32_t early = change - 3600u - 1800u;   // 23:30 UTC Sat = 00:30 Sun local
+  const uint32_t b = change - 1u;                  // 00:59:59 UTC Sun = 01:59:59 Sun local
+  for (const auto& p : {std::make_pair(a, "first"), std::make_pair(early, "second"), std::make_pair(b, "third")}) {
+    r.hour = p.first / 3600u;
+    r.add("123", "user", MsgKind::Message, p.second, "from:Roy,at:" + std::to_string(p.first));
+  }
+  r.plat.epoch = change + 8 * 3600u;
+  r.hour = r.plat.epoch / 3600u;
+  r.eng->handleMessage("later", "Roy", "123");
+  const std::string w = r.lastWindow();
+  TEST_ASSERT_TRUE_MESSAGE(w.find("(Sat 8 Nov) first") != std::string::npos, w.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(w.find("(Sun 9 Nov) second") != std::string::npos, w.c_str());
+  TEST_ASSERT_EQUAL(1, (int)count(w, "(Sun 9 Nov)"));
+}
+
+// The whole chain with nothing seeded by hand: web-chat turns arrive while the clock reads a
+// chosen second, the engine stamps each owner row, and the next turn's history tells the days
+// with the zone in force at each stamp (the clocks go back at 01:00 UTC on Sun 9 Nov here).
+static void test_engine_stamped_turns_tell_their_own_days() {
+  const uint32_t change = (kH - 9 + 25) * 3600u;   // Sun 9 Nov 2025 01:00 UTC
+  Rig r;
+  r.zone = [change](uint32_t t) { return t < change ? 60 : 0; };
+  const std::pair<uint32_t, const char*> turns[] = {{change - 9000u, "first turn"},     // 22:30 UTC Sat = 23:30 local
+                                                    {change - 5400u, "second turn"},    // 23:30 UTC Sat = 00:30 local Sun
+                                                    {change + 3600u, "third turn"}};    // 02:00 UTC Sun = 02:00 local
+  for (const auto& t : turns) {
+    r.plat.epoch = t.first;
+    r.hour = t.first / 3600u;
+    r.eng->handleMessage(t.second, "Roy", "web");
+  }
+  r.plat.epoch = change + 8 * 3600u;
+  r.hour = r.plat.epoch / 3600u;
+  r.eng->handleMessage("and now?", "Roy", "web");
+  const std::string w = r.lastWindow();
+  TEST_ASSERT_TRUE_MESSAGE(w.find("(Sat 8 Nov) first turn") != std::string::npos, w.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(w.find("(Sun 9 Nov) second turn") != std::string::npos, w.c_str());
+  TEST_ASSERT_EQUAL(1, (int)count(w, "(Sun 9 Nov)"));   // the third turn opens no new day
+  TEST_ASSERT_TRUE(w.find("third turn") != std::string::npos);
+  // The same turns in a zone that never changes put the second turn on Saturday.
+  Rig fixedZone;
+  fixedZone.offMin = 0;
+  for (const auto& t : turns) {
+    fixedZone.plat.epoch = t.first;
+    fixedZone.hour = t.first / 3600u;
+    fixedZone.eng->handleMessage(t.second, "Roy", "web");
+  }
+  fixedZone.plat.epoch = change + 8 * 3600u;
+  fixedZone.hour = fixedZone.plat.epoch / 3600u;
+  fixedZone.eng->handleMessage("and now?", "Roy", "web");
+  TEST_ASSERT_TRUE(fixedZone.lastWindow().find("(Sun 9 Nov) second turn") == std::string::npos);
+}
+
+// The engine stamps when it stored an owner or trigger row, to the second, once the clock is
+// set; a boot-relative clock stamps nothing, and the history switch off stays untouched.
+static void test_engine_stamps_the_second_a_row_was_stored() {
+  Rig r;
+  r.plat.epoch = kH * 3600u + 1234u;
+  r.eng->handleMessage("hello", "Roy", "123");
+  auto rows = r.all("123");
+  TEST_ASSERT_EQUAL_STRING(std::to_string(kH * 3600u + 1234u).c_str(), agent::tagValue(rows[1].tags, agent::kAtTag).c_str());
+  agent::history::Inbound in;   // a Telegram turn keeps the sender's time too
+  in.chatId = "123";
+  in.src = "tg:77x1";
+  in.sentUnix = kH * 3600u + 1200u;
+  agent::history::noteInbound(in, "from telegram");
+  r.plat.epoch = kH * 3600u + 1300u;
+  r.eng->handleMessage("from telegram", "Roy", "123");
+  rows = r.all("123");
+  TEST_ASSERT_EQUAL_STRING(std::to_string(kH * 3600u + 1200u).c_str(), agent::tagValue(rows[1].tags, agent::kSentTag).c_str());
+  TEST_ASSERT_EQUAL_STRING(std::to_string(kH * 3600u + 1300u).c_str(), agent::tagValue(rows[1].tags, agent::kAtTag).c_str());
+  r.plat.epoch = kH * 3600u + 1400u;
+  r.eng->injectScheduledTurn("123", "check the trains", "commute", "l7", false, false, false);
+  rows = r.all("123");
+  size_t trigger = 0;
+  while (trigger < rows.size() && !agent::hasTagItem(rows[trigger].tags, agent::kTriggerTag)) trigger++;
+  TEST_ASSERT_TRUE(trigger < rows.size());
+  TEST_ASSERT_EQUAL_STRING(std::to_string(kH * 3600u + 1400u).c_str(), agent::tagValue(rows[trigger].tags, agent::kAtTag).c_str());
+  // No clock yet (0), or a boot-relative one: no stamp at all.
+  for (uint64_t epoch : {uint64_t(0), uint64_t(4000)}) {
+    Rig early;
+    early.plat.epoch = epoch;
+    early.eng->handleMessage("hello", "Roy", "123");
+    TEST_ASSERT_TRUE(early.all("123")[1].tags.find("at:") == std::string::npos);
+  }
+  // The switch off: the legacy capture gets the bare sender, as before.
+  Rig off;
+  off.v2 = false;
+  off.eng->handleMessage("hello", "Roy", "123");
+  TEST_ASSERT_EQUAL(1, (int)off.legacyCaptures.size());
+  TEST_ASSERT_TRUE(off.legacyCaptures[0].second.find("at:") == std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_identical_messages_either_side_of_local_midnight_are_two_messages);
+  RUN_TEST(test_history_days_use_the_zone_in_force_when_the_row_was_stored);
+  RUN_TEST(test_engine_stamped_turns_tell_their_own_days);
+  RUN_TEST(test_engine_stamps_the_second_a_row_was_stored);
   RUN_TEST(test_owner_row_tags_and_stored_text);
   RUN_TEST(test_image_row_is_capped_to_about_300_chars);
   RUN_TEST(test_exactly_once_capture_by_source);

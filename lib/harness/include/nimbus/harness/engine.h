@@ -269,6 +269,9 @@ class TurnEngine {
     std::function<void(const std::string& chatId, const std::string& softStart)> noteHistoryShift;
     // Minutes east of UTC for day markers and send times (unwired = UTC).
     std::function<int32_t()> utcOffsetMin;
+    // The same, valid at a unix time: DST and zone changes apply to each row at its own
+    // time. Unwired = utcOffsetMin for every row.
+    OffsetAt utcOffsetAt;
   };
 
   // Heap floors, defaulted to src/agent/agent_config.h's values so the

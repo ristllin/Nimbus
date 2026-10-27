@@ -573,7 +573,9 @@ remount, the promote, and the held rows on the card after a restart.
   *before* the LittleFS privacy-delete), an **inbound Telegram photo or document**,
   and the **on-device mic turn** (`/voice.pcm`). An inbound Telegram item's row is
   stamped with the time it was sent, not when it arrived, and tagged `sent:<epoch>`,
-  so a late or redelivered photo never reads as new. A spoken reply is recorded as a text
+  so a late or redelivered photo never reads as new. An owner or routine row also
+  carries `at:<epoch>`, the second the device stored it (once its clock is set), which
+  the conversation history uses to tell the owner's local day. A spoken reply is recorded as a text
   row, not a media sidecar. With no card this is a no-op. The resulting row
   appears in `/api/mem/episodic` as `{"kind":"audio","blob":"/mem/blobs/<hash>.<ext>"}`.
   Privacy note: raw inbound voice-note audio is retained on the card by design; erase the

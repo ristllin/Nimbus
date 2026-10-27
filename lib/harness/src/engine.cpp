@@ -2794,6 +2794,15 @@ std::string tagSafe(const std::string& v) {
   }
   return o;
 }
+
+// "at:<unix>" - when the device stores an owner or trigger row, to the second, so the
+// history tells its local day to the minute and a repeat apart from a habit. "" until the
+// clock is set (a boot-relative stamp has no date).
+std::string atItem(const TurnEngine::Deps& d) {
+  const uint64_t now = d.platform.nowEpoch ? d.platform.nowEpoch() : 0;
+  if (now < (uint64_t)nimbus::orch::kClockValidHours * 3600u || now > UINT32_MAX) return std::string();
+  return std::string(kAtTag) + std::to_string((unsigned long)now);
+}
 }  // namespace
 
 bool TurnEngine::histV2On() const {
@@ -2833,10 +2842,13 @@ constexpr int kHistoryMaxPages = 32;      // a flood of one repeated line folds 
 // The chat's rows after `startAfter`, newest first, a page at a time. An owner
 // row identical to the one read just before it folds into that row's count as
 // it is read, so a flood of one message holds one row of memory; reading stops
-// at the newest /clear, at `startAfter` and at `maxRows` distinct rows.
-void readHistory(const TurnEngine::Deps& d, const std::string& chatId, const std::string& startAfter,
+// at the newest /clear, at `o.startAfter` and at `maxRows` distinct rows. `o`'s zone tells the
+// owner's local days: two identical messages either side of LOCAL midnight are two messages.
+void readHistory(const TurnEngine::Deps& d, const std::string& chatId, const HistoryOptions& o,
                  size_t maxRows, std::vector<nimbus::orch::EpisodicMessage>& rows,
                  std::vector<uint32_t>& repeats) {
+  const std::string& startAfter = o.startAfter;
+  const OffsetAt zone = localZone(o);
   std::string before;
   for (int page = 0; page < kHistoryMaxPages; page++) {
     std::vector<nimbus::orch::EpisodicMessage> got = d.historyRows(chatId, kHistoryPageRows, before);
@@ -2844,7 +2856,7 @@ void readHistory(const TurnEngine::Deps& d, const std::string& chatId, const std
     if (full) before = got.back().id;
     for (auto& m : got) {
       if (isClearBoundary(m) || (!startAfter.empty() && !rowIdAfter(m.id, startAfter))) return;
-      if (!rows.empty() && isRepeatRow(rows.back(), m)) {
+      if (!rows.empty() && isRepeatRow(rows.back(), m, zone)) {
         repeats.back()++;
         continue;
       }
@@ -2863,13 +2875,14 @@ void readHistory(const TurnEngine::Deps& d, const std::string& chatId, const std
 void TurnEngine::setTrigger(const std::string& text, const std::string& src) {
   curUserRowId_.clear();   // a seedless turn has no owner row in flight
   triggerText_ = text;
-  triggerTags_ = std::string(kTriggerTag) + "," + kSrcTag + tagSafe(src);
+  const std::string at = atItem(d_);
+  triggerTags_ = std::string(kTriggerTag) + "," + kSrcTag + tagSafe(src) + (at.empty() ? "" : "," + at);
   triggerPending_ = histV2On();
 }
 
 namespace {
-// The owner row's tags: the sender, then what the channel noted (H1).
-std::string ownerRowTags(const std::string& fromTag, const history::Inbound& in) {
+// The owner row's tags: the sender, then what the channel noted (H1), then when it was stored.
+std::string ownerRowTags(const std::string& fromTag, const history::Inbound& in, const std::string& at) {
   std::string tags = fromTag;
   const auto add = [&tags](const std::string& item) { tags += (tags.empty() ? "" : ",") + item; };
   std::string refs;
@@ -2877,6 +2890,7 @@ std::string ownerRowTags(const std::string& fromTag, const history::Inbound& in)
   if (!refs.empty()) add(kAttTag + refs);
   if (!in.src.empty()) add(kSrcTag + tagSafe(in.src));
   if (in.sentUnix) add(kSentTag + std::to_string(in.sentUnix));
+  if (!at.empty()) add(at);
   return tags;
 }
 
@@ -2905,16 +2919,19 @@ bool TurnEngine::captureOwnerRow(const std::string& chatId, const std::string& t
   }
   // Stored once: the media rows keep their records, the owner row what was sent.
   curUserRowId_ = d_.captureUserRow(chatId, noted && !in.said.empty() ? in.said : text,
-                                    noted ? ownerRowTags(fromTag, in) : fromTag);
+                                    ownerRowTags(fromTag, in, atItem(d_)));
   return true;
 }
 
 std::vector<HistTurn> TurnEngine::loadTurns(const std::string& chatId, const HistoryOptions& o,
                                             size_t maxRows) const {
+  // The device's own zone, in force at each row's time, tells the days (day markers, repeats).
+  HistoryOptions zoned = o;
+  if (!zoned.utcOffsetAt) zoned.utcOffsetAt = d_.utcOffsetAt;
   std::vector<nimbus::orch::EpisodicMessage> rows;
   std::vector<uint32_t> repeats;
-  readHistory(d_, chatId, o.startAfter, maxRows, rows, repeats);
-  return historyTurns(rows, o, &repeats);
+  readHistory(d_, chatId, zoned, maxRows, rows, repeats);
+  return historyTurns(rows, zoned, &repeats);
 }
 
 std::string TurnEngine::historyBlock(const std::string& chatId, size_t highBytes) {

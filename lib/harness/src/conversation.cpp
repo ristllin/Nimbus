@@ -62,6 +62,7 @@ std::string recentConversationBlock(const std::vector<nimbus::orch::EpisodicMess
 const char kAttTag[] = "att:";
 const char kSrcTag[] = "src:";
 const char kSentTag[] = "sent:";
+const char kAtTag[] = "at:";
 const char kOutTag[] = "out:";
 const char kSkillsTag[] = "skills:";
 const char kTriggerTag[] = "ev:trigger";
@@ -96,13 +97,16 @@ bool isMediaRow(const EpisodicMessage& m) {
 
 bool isOwnerRow(const EpisodicMessage& m) { return m.kind == MsgKind::Message && m.role == "user"; }
 
+// The leading decimal digits of a tag value; a value past 32 bits saturates (it never wraps
+// into a plausible time).
 uint32_t toU32(const std::string& s) {
-  uint32_t v = 0;
+  uint64_t v = 0;
   for (char c : s) {
     if (c < '0' || c > '9') break;
     v = v * 10u + (uint32_t)(c - '0');
+    if (v > UINT32_MAX) return UINT32_MAX;
   }
-  return v;
+  return (uint32_t)v;
 }
 
 // ---- line breaks: a message must not be able to open a row or a header -------
@@ -162,31 +166,71 @@ std::string clipImageRow(const std::string& s) {
 // ---- time ---------------------------------------------------------------------
 using nimbus::orch::kClockValidHours;   // under it a row's hour is boot-relative: no date
 
+constexpr int64_t kNoDate = INT64_MIN;   // a turn stored before the clock was set
+
+int64_t floorDiv(int64_t a, int64_t b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
+
+// Minutes east of UTC at a unix time (an empty zone = UTC).
+int32_t zoneOffset(const OffsetAt& zone, uint32_t unixSec) { return zone ? zone(unixSec) : 0; }
+
 int64_t localDay(uint32_t tsHours, int32_t offMin) {
-  const int64_t mins = (int64_t)tsHours * 60 + offMin;
-  return mins >= 0 ? mins / 1440 : (mins - 1439) / 1440;
+  return floorDiv((int64_t)tsHours * 60 + offMin, 1440);
 }
 
-// The local day of a unix time in seconds (the send-time twin of localDay).
-int64_t localDaySec(uint32_t unix, int32_t offMin) {
-  return ((int64_t)unix + (int64_t)offMin * 60) / 86400;
+// The local day of a unix time in seconds, told with the offset valid at that time.
+int64_t localDaySec(uint32_t unix, const OffsetAt& zone) {
+  return floorDiv((int64_t)unix + (int64_t)zoneOffset(zone, unix) * 60, 86400);
+}
+
+// The second a row was sent or stored: the sent: tag (a replayed message keeps its sender's
+// time), else the at: tag. 0 = only its hour: a stamp before the clock was set, or one that
+// saturated (a garbled tag), tells nothing.
+uint32_t stampOf(uint32_t sentUnix, uint32_t atUnix) {
+  const auto real = [](uint32_t s) { return s >= nimbus::orch::kClockValidHours * 3600u && s != UINT32_MAX; };
+  if (real(sentUnix)) return sentUnix;
+  return real(atUnix) ? atUnix : 0u;
+}
+
+// The unix second a row's day marker is told at. The at: tag (the device's own clock) or the
+// sent: tag refines the stored hour; it never overrules it: a delivery hours late keeps the day
+// it arrived, and two clock reads an hour boundary apart still agree. Otherwise the hour's
+// first second. 0 = the row was stored before the clock was set: no date.
+uint32_t placedSecond(const EpisodicMessage& m) {
+  if (m.tsHours < kClockValidHours) return 0;
+  const int64_t first = (int64_t)m.tsHours * 3600;
+  const char* const keys[] = {kAtTag, kSentTag};
+  for (const char* key : keys) {
+    const int64_t s = toU32(tagValue(m.tags, key));
+    if (s >= first - 3600 && s < first + 7200) return (uint32_t)s;
+  }
+  return (uint32_t)first;
 }
 
 // Two identical owner messages are one repeated message (xN) only when they were
-// sent close together on the same day: with both send times known, at most
-// kRepeatWindowSec apart and on the same local day; without them, in the same hour
-// (a row without a send time keeps only its hour). A habitual "dinner 600" sent
-// yesterday and again today stays two messages under their own days.
-bool closeRepeat(uint32_t sentA, uint32_t sentB, uint32_t hourA, uint32_t hourB, int32_t offMin) {
-  if (sentA && sentB) {
-    const uint32_t gap = sentA > sentB ? sentA - sentB : sentB - sentA;
-    return gap <= kRepeatWindowSec && localDaySec(sentA, offMin) == localDaySec(sentB, offMin);
+// sent close together on the same day: with both times known to the second, at most
+// kRepeatWindowSec apart and on the same local day (each time under its own offset);
+// without them, in the same hour, and only when that hour holds no local midnight
+// (a half-hour zone's does), since a row without a time keeps only its hour. A habitual
+// "dinner 600" sent yesterday and again today stays two messages under their own days.
+bool closeRepeat(uint32_t secA, uint32_t secB, uint32_t hourA, uint32_t hourB, const OffsetAt& zone) {
+  if (secA && secB) {
+    const uint32_t gap = secA > secB ? secA - secB : secB - secA;
+    return gap <= kRepeatWindowSec && localDaySec(secA, zone) == localDaySec(secB, zone);
   }
-  return hourA == hourB;
+  if (hourA != hourB) return false;
+  const uint32_t first = hourA * 3600u;
+  return localDaySec(first, zone) == localDaySec(first + 3599u, zone);
 }
 
-std::string dayLabel(uint32_t tsHours, int32_t offMin) {
-  const nimbus::orch::CivilTime c = nimbus::orch::civilFromDays((uint32_t)localDay(tsHours, offMin));
+// The turn's local day number, kNoDate when it has none.
+int64_t turnDay(const HistTurn& t, int32_t fixedOffMin) {
+  if (t.localDay == kDayNone) return kNoDate;
+  if (t.localDay != kDayUnresolved) return t.localDay;
+  return t.tsHours < kClockValidHours ? kNoDate : localDay(t.tsHours, fixedOffMin);
+}
+
+std::string dayLabel(const HistTurn& t, int32_t offMin) {
+  const nimbus::orch::CivilTime c = nimbus::orch::civilFromDays((uint32_t)turnDay(t, offMin));
   char buf[24];
   snprintf(buf, sizeof(buf), "(%s %d %s)", nimbus::orch::wdayAbbr(c.wday), c.day, nimbus::orch::monthAbbr(c.month));
   return buf;
@@ -335,7 +379,7 @@ std::string assistantHalf(const Building& b, std::string& did, uint32_t& replyHo
   return joinAssistantText(replies, asks, spoken, turnSkills(b));
 }
 
-HistTurn finish(const Building& b) {
+HistTurn finish(const Building& b, const OffsetAt& zone) {
   HistTurn t;
   t.firstId = b.firstId;
   t.lastId = b.lastId;
@@ -349,8 +393,16 @@ HistTurn finish(const Building& b) {
   spillToPsram(t.did);
   const EpisodicMessage* head = b.userRow ? b.userRow : (b.media.empty() ? nullptr : b.media.front());
   if (!head && !b.asst.empty()) head = b.asst.front();
-  if (head) t.tsHours = head->tsHours;
-  if (b.userRow) t.sentUnix = toU32(tagValue(b.userRow->tags, kSentTag));
+  if (head) {
+    t.tsHours = head->tsHours;
+    const uint32_t at = placedSecond(*head);
+    t.localDay = at ? (int32_t)localDaySec(at, zone) : kDayNone;
+  }
+  if (b.userRow) {
+    t.sentUnix = toU32(tagValue(b.userRow->tags, kSentTag));
+    t.atUnix = toU32(tagValue(b.userRow->tags, kAtTag));
+    t.sentOffMin = t.sentUnix ? zoneOffset(zone, t.sentUnix) : 0;
+  }
   return t;
 }
 
@@ -499,12 +551,13 @@ class Grouper {
 
 // Consecutive turns that repeat one owner message with nothing answered in
 // between, sent close together on one day, become one turn with a count (L19-26).
-void collapseTurns(std::vector<HistTurn>& turns, int32_t offMin) {
+void collapseTurns(std::vector<HistTurn>& turns, const OffsetAt& zone) {
   std::vector<HistTurn> out;
   for (auto& t : turns) {
     HistTurn* last = out.empty() ? nullptr : &out.back();
     if (last && !last->seedless && !t.seedless && last->assistant.empty() && last->user == t.user &&
-        closeRepeat(last->sentUnix, t.sentUnix, last->tsHours, t.tsHours, offMin)) {
+        closeRepeat(stampOf(last->sentUnix, last->atUnix), stampOf(t.sentUnix, t.atUnix), last->tsHours,
+                    t.tsHours, zone)) {
       last->repeats += t.repeats;
       last->lastId = t.lastId;
       last->assistant = t.assistant;
@@ -522,7 +575,8 @@ void collapseTurns(std::vector<HistTurn>& turns, int32_t offMin) {
 std::string placedUser(const HistTurn& t, const HistTurn* prev, int32_t offMin) {
   const bool late = prev && t.sentUnix && prev->replyHours && t.sentUnix / 3600u < prev->replyHours;
   if (!late) return t.user;
-  const std::string sent = "sent " + clockLabel(t.sentUnix, offMin);
+  const int32_t sentOff = t.localDay == kDayUnresolved ? offMin : t.sentOffMin;   // the offset when it was sent
+  const std::string sent = "sent " + clockLabel(t.sentUnix, sentOff);
   const size_t close = t.user.find(']');
   const size_t nl = t.user.find('\n');
   if (!t.user.empty() && t.user[0] == '[' && close != std::string::npos && (nl == std::string::npos || close < nl))
@@ -531,8 +585,8 @@ std::string placedUser(const HistTurn& t, const HistTurn* prev, int32_t offMin) 
 }
 
 bool newDay(const HistTurn& t, const HistTurn* prev, int32_t offMin) {
-  if (t.tsHours < kClockValidHours) return false;
-  return !prev || prev->tsHours < kClockValidHours || localDay(prev->tsHours, offMin) != localDay(t.tsHours, offMin);
+  const int64_t day = turnDay(t, offMin);
+  return day != kNoDate && (!prev || turnDay(*prev, offMin) != day);
 }
 
 }  // namespace
@@ -566,12 +620,40 @@ void spillToPsram(std::string& s) {
   if (s.capacity() > std::string().capacity() && s.capacity() < kSpillBytes) s.reserve(kSpillBytes);
 }
 
-bool isRepeatRow(const EpisodicMessage& newer, const EpisodicMessage& older, int32_t utcOffsetMin) {
+OffsetAt fixedZone(int32_t utcOffsetMin) {
+  return [utcOffsetMin](uint32_t) { return utcOffsetMin; };
+}
+
+OffsetAt localZone(const HistoryOptions& o) { return o.utcOffsetAt ? o.utcOffsetAt : fixedZone(o.utcOffsetMin); }
+
+int32_t utcOffsetFromTm(const std::tm& local, const std::tm& utc) {
+  int days = local.tm_yday - utc.tm_yday;
+  if (days > 1) days = -1;        // local is still Dec 31, UTC already Jan 1
+  else if (days < -1) days = 1;   // and the reverse
+  return days * 1440 + (local.tm_hour - utc.tm_hour) * 60 + (local.tm_min - utc.tm_min);
+}
+
+int32_t utcOffsetAtUnix(uint32_t unixSec) {
+  const time_t t = (time_t)unixSec;
+  if (t < 1000000000) return 0;
+  std::tm local = {}, utc = {};
+  localtime_r(&t, &local);
+  gmtime_r(&t, &utc);
+  return utcOffsetFromTm(local, utc);
+}
+
+bool isRepeatRow(const EpisodicMessage& newer, const EpisodicMessage& older, const OffsetAt& zone) {
+  const auto stamp = [](const EpisodicMessage& m) {
+    return stampOf(toU32(tagValue(m.tags, kSentTag)), toU32(tagValue(m.tags, kAtTag)));
+  };
   return isOwnerRow(newer) && isOwnerRow(older) && !newer.text.empty() && newer.text == older.text &&
          tagValue(newer.tags, kAttTag).empty() && tagValue(older.tags, kAttTag).empty() &&
          !isClearBoundary(newer) && !isClearBoundary(older) &&
-         closeRepeat(toU32(tagValue(newer.tags, kSentTag)), toU32(tagValue(older.tags, kSentTag)),
-                     newer.tsHours, older.tsHours, utcOffsetMin);
+         closeRepeat(stamp(newer), stamp(older), newer.tsHours, older.tsHours, zone);
+}
+
+bool isRepeatRow(const EpisodicMessage& newer, const EpisodicMessage& older, int32_t utcOffsetMin) {
+  return isRepeatRow(newer, older, fixedZone(utcOffsetMin));
 }
 
 std::vector<HistTurn> historyTurns(const std::vector<EpisodicMessage>& newestFirst,
@@ -579,16 +661,17 @@ std::vector<HistTurn> historyTurns(const std::vector<EpisodicMessage>& newestFir
   Grouper g;
   for (const Live& r : liveRows(newestFirst, opt, repeats)) g.add(r);
   g.finishAll();
+  const OffsetAt zone = localZone(opt);
   std::vector<HistTurn> turns;
   turns.reserve(g.turns.size());
-  for (const Building& b : g.turns) turns.push_back(finish(b));
-  collapseTurns(turns, opt.utcOffsetMin);
+  for (const Building& b : g.turns) turns.push_back(finish(b, zone));
+  collapseTurns(turns, zone);
   return turns;
 }
 
 std::string renderTurnLines(const HistTurn& t, const HistTurn* prev, int32_t utcOffsetMin) {
   std::string out;
-  if (newDay(t, prev, utcOffsetMin)) out += dayLabel(t.tsHours, utcOffsetMin) + "\n";
+  if (newDay(t, prev, utcOffsetMin)) out += dayLabel(t, utcOffsetMin) + "\n";
   out += t.seedless ? "- system" : "- user";
   if (t.repeats > 1) out += " (x" + std::to_string((unsigned)t.repeats) + ")";
   out += ": " + indentBreaks(placedUser(t, prev, utcOffsetMin)) + "\n";
@@ -609,7 +692,7 @@ std::vector<HistMsg> renderHistory(const std::vector<HistTurn>& turns, const std
     const HistTurn& t = turns[i];
     const HistTurn* prev = i ? &turns[i - 1] : nullptr;
     std::string u;
-    if (newDay(t, prev, utcOffsetMin)) u += dayLabel(t.tsHours, utcOffsetMin) + " ";
+    if (newDay(t, prev, utcOffsetMin)) u += dayLabel(t, utcOffsetMin) + " ";
     if (t.repeats > 1) u += "(x" + std::to_string((unsigned)t.repeats) + ") ";
     out.push_back({true, u + placedUser(t, prev, utcOffsetMin)});
     std::string a = t.did.empty() ? std::string() : "[did: " + t.did + "] ";
@@ -694,11 +777,12 @@ FoldSlice foldSlice(const std::vector<HistTurn>& turns, size_t keepBytes, size_t
   return s;
 }
 
-std::vector<EpisodicMessage> collapseRepeats(const std::vector<EpisodicMessage>& newestFirst) {
+std::vector<EpisodicMessage> collapseRepeats(const std::vector<EpisodicMessage>& newestFirst,
+                                             const OffsetAt& zone) {
   std::vector<EpisodicMessage> out;
   uint32_t count = 1;
   for (const EpisodicMessage& m : newestFirst) {
-    if (!out.empty() && isRepeatRow(out.back(), m)) {
+    if (!out.empty() && isRepeatRow(out.back(), m, zone)) {
       count++;
       continue;
     }

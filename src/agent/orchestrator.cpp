@@ -1147,6 +1147,11 @@ static TurnEngine::Deps buildTurnDeps() {
   TurnEngine::Deps d;
   d.cfg = g_cfg;
   d.platform.nowMs    = [] { return (uint32_t)millis(); };
+  // Epoch seconds (0 until SNTP): the history stamps each owner and routine row with it (at:).
+  d.platform.nowEpoch = [] {
+    const time_t t = time(nullptr);
+    return t > 1000000000 ? (uint64_t)t : (uint64_t)0;
+  };
   d.platform.freeHeap = [] { return (uint32_t)ESP.getFreeHeap(); };
   // CUM-404: the real turn-admission signal - the largest contiguous INTERNAL block
   // (fragmentation, not total free, fails the mbedTLS handshake alloc). Same read the
@@ -1365,18 +1370,10 @@ static TurnEngine::Deps buildTurnDeps() {
   d.noteHistoryShift = [](const std::string& chatId, const std::string& softStart) {
     g_folds.setSoftStart(chatId, softStart);   // persisted with the turn's blob write
   };
-  // Minutes east of UTC from the device's own TZ (0 until the clock syncs).
-  d.utcOffsetMin = []() -> int32_t {
-    const time_t t = time(nullptr);
-    if (t < 1000000000) return 0;
-    struct tm lt, gt;
-    localtime_r(&t, &lt);
-    gmtime_r(&t, &gt);
-    int days = lt.tm_yday - gt.tm_yday;
-    if (days > 1) days = -1;        // local is Dec 31, UTC already Jan 1
-    else if (days < -1) days = 1;   // and the reverse
-    return (int32_t)(days * 1440 + (lt.tm_hour - gt.tm_hour) * 60 + (lt.tm_min - gt.tm_min));
-  };
+  // Minutes east of UTC from the device's own TZ, now and at any row's time (the TZ rule
+  // decides DST for a past time, so a row stored before a clock change keeps its offset).
+  d.utcOffsetMin = []() -> int32_t { return agent::utcOffsetAtUnix((uint32_t)time(nullptr)); };
+  d.utcOffsetAt = [](uint32_t unixSec) -> int32_t { return agent::utcOffsetAtUnix(unixSec); };
   d.firstAllowedChat = [] { return std::string(firstAllowedChat().c_str()); };
   d.journalGc = [] { g_journal.gc(); };
   // Clamped-tool-result spill (Context Fabric): the loop's truncation marker
@@ -2698,7 +2695,7 @@ static void compactTick() {
     // CUM-511: a fold summarizes only the live conversation - re-folding rows
     // from before a /clear would bring the cleared conversation straight back.
     // L19-26: a run of one repeated owner message is one line with its count.
-    rows = agent::collapseRepeats(agent::liveConversation(rows, std::string(), 0));
+    rows = agent::collapseRepeats(agent::liveConversation(rows, std::string(), 0), agent::utcOffsetAtUnix);
     // Fold-slice bytes derive from the head model's window (65536 at the 200K
     // anchor), bounded so summary + digest stay ONE whole provider string
     // (foldDigestCap; a 64 KB string goes null and the provider answers 400).
