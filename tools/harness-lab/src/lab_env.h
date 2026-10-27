@@ -44,6 +44,9 @@ class Env {
   }
 
   bool has(const char* name) const { return !get(name).empty(); }
+  // Forget a key the dotenv file gave (an eval leg that must run without a capability,
+  // such as web search on a head that has none on the device). The environment still wins.
+  void drop(const char* name) { file_.erase(name); }
 
   // Provider host ("openai"|"anthropic"|"mistral"|"zai") -> key.
   std::string providerKey(const std::string& host) const {

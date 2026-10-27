@@ -161,12 +161,24 @@ class LabRig {
 
   // One owner turn, start to finish, exactly as a Telegram message would run.
   TurnRecord say(const std::string& chatId, const std::string& text) {
+    return recordTurn(chatId, text, [&] { eng_->handleMessage(text, "Owner", chatId); });
+  }
+
+  // The synthesis turn the job engine runs when its sub-agents' results are parked
+  // (TurnEngine::maybeConsolidate), recorded like an owner turn.
+  TurnRecord synthesize(const std::string& chatId) {
+    return recordTurn(chatId, std::string(), [&] { eng_->maybeConsolidate(chatId); });
+  }
+
+  // Run one turn and record it: what was delivered, the prompt, the usage, the time.
+  template <typename Run>
+  TurnRecord recordTurn(const std::string& chatId, const std::string& userText, Run run) {
     resetSimHeap();   // each turn starts from the device's resting heap
     cur_ = TurnRecord{};
     cur_.chatId = chatId;
-    cur_.userText = text;
+    cur_.userText = userText;
     const auto t0 = std::chrono::steady_clock::now();
-    eng_->handleMessage(text, "Owner", chatId);
+    run();
     cur_.seconds = std::chrono::duration<double>(
                        std::chrono::steady_clock::now() - t0).count();
     cur_.systemPrompt = eng_->lastInstructions();
@@ -228,6 +240,15 @@ class LabRig {
   // Lane C2 (L19-35): give the job engine a journal (no fabric: spawns queue, never
   // dispatch) and rebuild the engines over it, as the device does after a restart.
   void attachJournal(orch::Journal* j) {
+    journal_ = j;
+    buildEngine();
+  }
+  // The eval drivers (tests/evals): a sub-agent fabric and a journal for the job
+  // engine, with the device's routing reads, and the engines rebuilt over them. A
+  // scripted adapter stands in for a provider's sub-agent run; everything after its
+  // envelope (the spawn ledger, [FRESH RESULTS], the synthesis turn) is the shipping code.
+  void attachSubAgents(agent::HeavyFabric* fabric, orch::Journal* j) {
+    fabric_ = fabric;
     journal_ = j;
     buildEngine();
   }
@@ -662,11 +683,29 @@ class LabRig {
     }
   }
 
+  // The journal (attachJournal) and, with attachSubAgents, the fabric and the routing reads a
+  // spawn needs, as the device wires them.
+  void wireJobs(agent::JobEngine::Deps& jd) {
+    jd.journal = journal_;
+    if (!fabric_) return;
+    jd.fabric = fabric_;
+    jd.subPriority = [this] { return opt_.priority; };
+    jd.providerHasKey = [this](const std::string& p) { return !env_.providerKey(p).empty(); };
+    jd.subModel = [this](const std::string& p) { return subModelFor(p); };
+    jd.modelChoices = [](const std::string& p) {
+      return std::string(nimbus::orch::staticModelChoices(p.c_str()));
+    };
+    jd.modelIsValid = [](const std::string& p, const std::string& m) {
+      const std::string list = std::string(",") + nimbus::orch::staticModelChoices(p.c_str()) + ",";
+      return !m.empty() && list.find("," + m + ",") != std::string::npos;
+    };
+  }
+
   void buildEngine() {
     agent::JobEngine::Deps jd;
     jd.platform = platform();
     jd.deliver = [this](const std::string& c, const std::string& t) { record(c, t); };
-    jd.journal = journal_;
+    wireJobs(jd);
     jobs_.reset(new agent::JobEngine(std::move(jd)));
 
     agent::TurnEngine::Deps d;
@@ -897,6 +936,7 @@ class LabRig {
 
   std::unique_ptr<agent::JobEngine>  jobs_;
   orch::Journal*                     journal_ = nullptr;   // attachJournal (C2)
+  agent::HeavyFabric*                fabric_ = nullptr;    // attachSubAgents (eval drivers)
   std::unique_ptr<agent::TurnEngine> eng_;
 
   std::string convId_, antEnv_, antAgents_, memory_, lastHost_;

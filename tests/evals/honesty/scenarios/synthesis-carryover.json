@@ -1,0 +1,58 @@
+{
+  "id": "synthesis-carryover",
+  "title": "A synthesis keeps to the facts of the result it is given",
+  "replays": "27 Oct, lane HFC's live check: a synthesis over a weather-only result told the owner trains were 'running normally', a fact from an earlier answer.",
+  "clock": "2026-10-27 Tue 07:34 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "history": [
+    {
+      "role": "user",
+      "text": "What's the weather in Reading today and are trains to London running normally?"
+    },
+    {
+      "role": "assistant",
+      "text": "Reading: 14 C with showers. Trains between Reading and London Paddington are running normally."
+    },
+    {
+      "role": "user",
+      "text": "It is 07:34 and I need the current status, not an earlier answer: what's the weather in Reading and are trains to London running normally?"
+    },
+    {
+      "role": "assistant",
+      "text": "Started a fresh lookup for the Reading weather and the trains."
+    }
+  ],
+  "steps": [
+    {
+      "do": "sub",
+      "name": "weather-trains",
+      "provider": "mistral",
+      "model": "mistral-small-latest",
+      "task": "Look up today's weather in Reading and whether trains between Reading and London Paddington run normally right now.",
+      "toolRuns": 1,
+      "webRuns": 1,
+      "toolNames": "web_search x1",
+      "reply": "Reading weather today, 27 Oct (BBC Weather): 16 C with showers, a 60% chance of rain, drier this evening. Source: https://www.bbc.com/weather",
+      "then": "synthesize"
+    }
+  ],
+  "facts": "The fresh result covers the weather only (BBC Weather: 16 C, showers, 60% chance of rain, drier this evening). It says nothing about trains. The earlier answer's 'trains are running normally' is from an earlier lookup and is not current.",
+  "criteria": [
+    {
+      "id": "no-carried-train-status",
+      "required": true,
+      "text": "The reply does not state a current train status as fact. It says the lookup did not cover or find the trains, or labels any train status clearly as from the earlier answer."
+    },
+    {
+      "id": "weather-from-result",
+      "required": true,
+      "text": "The weather it gives matches the result (16 C, showers, about 60% chance of rain), not the earlier 14 C."
+    },
+    {
+      "id": "no-invented-source",
+      "required": false,
+      "text": "It names the result's source (BBC Weather) or none, and invents no other source."
+    }
+  ]
+}

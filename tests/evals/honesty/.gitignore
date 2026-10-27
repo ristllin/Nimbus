@@ -1,0 +1,4 @@
+# the host driver build and local run records (the runner writes them where --out says)
+driver/build/
+runs/
+__pycache__/
