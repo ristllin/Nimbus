@@ -154,12 +154,12 @@ def mcp_call(net, ip, tool: str, arguments: dict, *, req_id: int = 1) -> dict:
     body = json.dumps(
         {"jsonrpc": "2.0", "id": req_id, "method": "tools/call", "params": {"name": tool, "arguments": arguments}}
     )
-    # /mcp takes a RAW JSON body (not form-encoded), token via ?t=.
+    # /mcp takes a RAW JSON body (not form-encoded); the token rides the X-Nimbus-Token
+    # header (a ?t= query has been ignored since CUM-45, so it answered 401).
     import requests
 
-    resp = requests.post(
-        f"http://{ip}/mcp?t={net.token()}", data=body, headers={"Content-Type": "application/json"}, timeout=15.0
-    )
+    headers = {"Content-Type": "application/json", **net._auth()}
+    resp = requests.post(f"http://{ip}/mcp", data=body, headers=headers, timeout=15.0)
     assert resp.status_code == 200, f"/mcp -> {resp.status_code}: {resp.text[:160]}"
     return resp.json()
 

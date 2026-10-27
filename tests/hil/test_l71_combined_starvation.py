@@ -66,13 +66,47 @@ def _identity(net) -> tuple:
     return boot.get("n"), crash.get("fp"), int(st.get("uptimeMs") or 0)
 
 
-def _replies(net) -> dict:
-    page = net.get_json("/api/mem/episodic?session=serial&kind=message&limit=20", timeout=10.0)
+# How long a history read keeps retrying a busy card before the leg fails on it.
+HISTORY_BUSY_BUDGET_S = 30.0
+
+
+def history_page(status: int, read_json) -> "dict | None":
+    """The chat-history page of one /api/mem/episodic answer, or None when the answer
+    is not one: since v4.6.1 (HFW) the route tries the card lock for 150 ms and answers
+    503 busy while a turn holds it, and the admission check answers a text/plain busy
+    under the ballast. A busy answer is "retry", never an empty history: read as {}, it
+    lowered the leg's id floor to nothing (every earlier reply counted as new) or
+    emptied the re-read of a reply that had landed."""
+    if status != 200:
+        return None
+    try:
+        page = read_json()
+    except ValueError:  # a text/plain busy answer
+        return None
+    return page if isinstance(page, dict) and isinstance(page.get("messages"), list) else None
+
+
+def assistant_rows(page: dict) -> dict:
     return {
         str(r.get("id")): str(r.get("text") or "")
-        for r in page.get("messages", [])
+        for r in page["messages"]
         if r.get("role") == "assistant" and r.get("kind", "message") == "message"
     }
+
+
+def _replies(net, budget_s: float = HISTORY_BUSY_BUDGET_S) -> dict:
+    """The serial chat's assistant replies, retried while the card is busy."""
+    end = time.time() + budget_s
+    while True:
+        r = net.get("/api/mem/episodic?session=serial&kind=message&limit=20", timeout=10.0)
+        page = history_page(r.status_code, r.json)
+        if page is not None:
+            return assistant_rows(page)
+        if time.time() >= end:
+            raise AssertionError(
+                f"/api/mem/episodic stayed busy for {budget_s:.0f}s: HTTP {r.status_code} {r.text[:120]!r}"
+            )
+        time.sleep(1.0)
 
 
 def _new_reply(net, before: dict, timeout: float) -> str:

@@ -1,27 +1,35 @@
-"""§L15b - Outbound MCP robustness on real silicon (the SRAM + big-payload leg).
+"""§L15b - Outbound MCP robustness on real silicon (the SRAM leg).
 
 The host suite (test/test_mcp_robustness) pins the PORTABLE guards - the tool
 budget, the transport-error classification, the per-server breaker isolation, the
-one-request-per-exchange serialization. What it CANNOT measure is the thing the
-owner actually asked about: does the device hold its scarce INTERNAL SRAM when
-several MCP servers are connected at once and one returns a big payload mid-turn?
-The native build is lib/core only; free-heap under load is a hardware fact. This
-leg proves it on glass.
+one-request-per-exchange serialization, and the over-cap reply refused with the
+honest "more data than the device can hold" line instead of a parse error
+(test_oversize_refused_with_honest_copy_not_parse_error). What it CANNOT measure is
+the thing the owner actually asked about: does the device hold its scarce INTERNAL
+SRAM when several MCP servers are connected at once and one of them is called
+mid-turn? The native build is lib/core only; free-heap under load is a hardware
+fact. This leg proves it on glass.
 
-What it asserts, deterministically, over the device's OWN /mcp seam (no LLM):
+What it asserts:
   * N device-dialed MCP servers discovered and resident at once, with internal
     heap still above the orchestrator turn floor.
-  * A response comfortably UNDER the size cap round-trips.
-  * A response OVER the cap is refused with the honest "more data than the device
-    can hold" line - and the device does NOT reboot (no watchdog, no OOM panic):
-    the big body lands in PSRAM and is capped, never an unbounded internal string.
+  * The LAN /mcp endpoint refuses a call to a connected server's tool (``mcp.*``)
+    with JSON-RPC error -32003 and never dials the server: since v4.6.1 a tool that
+    waits on the network runs only in the device's own turns, never on the web task
+    the watchdog watches (lib/core/src/sys_web_guard.cpp toolWaitsOnNetwork).
+  * An echo call round-trips through a real device turn with all N resident, and
+    internal heap is still above the turn floor after it.
 
-This is a MANUAL bench leg (hil + manual): it needs a real board and a reachable
-MCP server whose `echo` tool reflects its input, so a big argument forces a big
-reply. Run `PORT=3111 npx -y @modelcontextprotocol/server-everything streamableHttp`
+The oversize half moved to the host suite: the LAN endpoint can no longer carry a
+220 KB argument to the server (it refuses the call), and a model cannot write one
+into a tool call, so no seam on the device can produce an over-cap reply on demand.
+
+This is a MANUAL bench leg (hil + manual): it needs a real board with a live head
+(the echo runs in a turn) and a reachable MCP server whose `echo` tool reflects its
+input. Run `PORT=3111 npx -y @modelcontextprotocol/server-everything streamableHttp`
 on a LAN host and point NIMBUS_MCP_TEST_URL at http://<host>:3111/mcp (reachable
 FROM the device). The operator confirms on the glass that the panel never blanks
-or reboots during the oversize call.
+or reboots during the leg.
 
 Run:  python3 -m pytest tests/hil -m "manual and connectors" --allow-hardware \
          -k mcp_robustness -s
@@ -33,7 +41,7 @@ import time
 
 import pytest
 
-from connectors import mcp_call
+from connectors import mcp_call, new_marker, reply_text, run_turn, skip_if_unavailable
 from test_l4_network import lan_ip_or_skip
 from test_l15_mcp_outbound import (
     _add_device_mcp,
@@ -45,16 +53,13 @@ from test_l15_mcp_outbound import (
 
 pytestmark = [pytest.mark.hil, pytest.mark.manual, pytest.mark.connectors, pytest.mark.agent, pytest.mark.net]
 
-# Mirror of src/agent/agent_config.h ORCH_TURN_HARD_FLOOR (internal-heap turn floor)
-# and src/agent/connectors.cpp kMaxBodyBytes (the PSRAM response cap). Kept as
-# literals here on purpose: this test is the guard that the LIVE device honors them.
+# Mirror of src/agent/agent_config.h ORCH_TURN_HARD_FLOOR (internal-heap turn floor).
+# Kept as a literal here on purpose: this test is the guard that the LIVE device
+# honors it.
 _ORCH_TURN_HARD_FLOOR = 28000
-_MCP_BODY_CAP = 160 * 1024
-
-# An echo argument sized to sit clearly ABOVE the cap once wrapped in the reply
-# envelope ("Echo: <message>" + JSON-RPC/SSE framing), and one clearly BELOW it.
-_OVER_CAP_CHARS = 220 * 1024
-_UNDER_CAP_CHARS = 40 * 1024
+# The LAN endpoint's answer to a tool that waits on the network
+# (nimbus::sys::turnOnlyToolRpcError).
+_TURN_ONLY_RPC_ERROR = -32003
 
 
 def _state(net, ip) -> dict:
@@ -79,16 +84,7 @@ def _assert_internal_headroom(net, ip, where: str) -> dict:
     return st
 
 
-def _mcp_call_text(net, ip, tool: str, arguments: dict) -> str:
-    """Flatten a device /mcp tools/call envelope (result content OR error) to text."""
-    out = mcp_call(net, ip, tool, arguments)
-    if "error" in out:
-        return str(out["error"].get("message", out["error"]))
-    content = out.get("result", {}).get("content", []) or []
-    return "\n".join(c.get("text", "") for c in content if isinstance(c, dict))
-
-
-# ---- N connectors resident + one big payload mid-turn ------------------------
+# ---- N connectors resident + one call mid-turn --------------------------------
 @pytest.mark.manual
 def test_multi_connector_sram_and_big_payload(device, net, secrets, require_secret, require_manual):
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
@@ -110,41 +106,28 @@ def test_multi_connector_sram_and_big_payload(device, net, secrets, require_secr
         # Internal SRAM holds above the turn floor with all three resident.
         _assert_internal_headroom(net, ip, "three-connectors-resident")
 
-        # (2) A comfortably UNDER-cap echo round-trips (the "just under succeeds"
-        # half of the boundary), and internal heap is untouched.
-        marker = "under-cap-" + "u" * (_UNDER_CAP_CHARS - len("under-cap-"))
-        under = _mcp_call_text(net, ip, "mcp.hilrobust_a.echo", {"message": marker})
-        assert "under-cap-uuu" in under, f"under-cap echo did not round-trip: {under[:160]!r}"
-        _assert_internal_headroom(net, ip, "after-under-cap-call")
+        # (2) The LAN endpoint refuses a connected server's tool with -32003: it
+        # never dials the server from the web task (HFW, v4.6.1).
+        lan = mcp_call(net, ip, "mcp.hilrobust_a.echo", {"message": "from the LAN"})
+        assert (lan.get("error") or {}).get("code") == _TURN_ONLY_RPC_ERROR, f"LAN /mcp mcp.* call: {lan!r}"[:300]
 
-        # (3) An OVER-cap call: the HARD assertion (the task's HIL ask) is that the
-        # device holds its internal SRAM above the turn floor and does NOT reboot or
-        # OOM while a big payload moves through it - the big body rides PSRAM and is
-        # capped there, never an unbounded internal string. The honest cap line is a
-        # SOFT check: reproducing an over-cap reply needs a server/tool that returns
-        # more than the cap. Echo reflects its input, but the argument must first
-        # arrive through the inbound /mcp body limit, so if it did not cross the cap
-        # here we WARN + point at the deterministic host proof rather than false-fail.
-        over = _mcp_call_text(net, ip, "mcp.hilrobust_b.echo", {"message": "o" * _OVER_CAP_CHARS})
-        _assert_internal_headroom(net, ip, "after-over-cap-call")  # HARD: SRAM floor held
-        if "more data than the device can hold" in over:
-            pass  # SOFT check reproduced: the honest cap line surfaced on glass
-        else:
-            print(
-                "[l15-robustness] WARN: over-cap reply not reproduced on this run "
-                f"(reply {len(over)}B did not exceed the {_MCP_BODY_CAP}B cap - the inbound "
-                "/mcp body limit likely capped the argument first). The honest-copy path "
-                "is proven deterministically host-side (test/test_mcp_robustness: "
-                "test_oversize_refused_with_honest_copy_not_parse_error). Point a tool that "
-                "returns an over-cap reply at the device to reproduce it live.",
-                flush=True,
-            )
+        # (3) Another server's echo round-trips through a real device turn with all
+        # three resident, and internal heap still holds above the turn floor after it.
+        marker = new_marker("l15b-echo")
+        turn = run_turn(
+            net,
+            ip,
+            f"Use the echo tool from the hilrobust_b MCP server to echo exactly this text: {marker}",
+        )
+        skip_if_unavailable(turn, "device MCP (everything)")
+        assert marker in reply_text(turn), f"echo marker did not round-trip; reply: {reply_text(turn)[:200]!r}"
+        _assert_internal_headroom(net, ip, "after-the-echo-turn")
 
         # (4) Human confirmation: nothing blanked or rebooted on the glass. The
         # white-screen/wedge class (AGENTS.md) is only ever confirmed by an eyeball.
         require_manual.confirm(
-            "During the oversize MCP call, did the panel stay up (no blank screen, "
-            "no reboot, ring/menu still responsive)?"
+            "During the three-server discovery and the echo turn, did the panel stay up "
+            "(no blank screen, no reboot, ring/menu still responsive)?"
         )
     finally:
         for n in names:
