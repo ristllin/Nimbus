@@ -49,7 +49,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-import requests
+
+try:  # the bench's LAN client; collection and the host tests below run with pytest alone
+    import requests
+
+    NO_ANSWER: tuple = (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
+except ImportError:  # pragma: no cover - requests ships with the HIL environment
+    requests = None
+    NO_ANSWER = (TimeoutError, ConnectionError)
 
 _REPO = Path(__file__).resolve().parents[2]
 _SRC = _REPO / "src"
@@ -172,7 +179,7 @@ def patient_get_json(get, url, what, stats, params=None, policy=None):
         attempts += 1
         try:
             r = get(url, params=params, timeout=p.attempt_s)
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+        except NO_ANSWER:
             stats.timeouts += 1
             if p.now() - start >= p.budget_s:
                 pytest.fail(
@@ -308,6 +315,10 @@ class _Clock:
         return ReadPolicy(now=self.now, sleep=self.sleep)
 
 
+class _Answered(Exception):
+    """The fake response's raise_for_status: an answered error status."""
+
+
 class _Resp:
     def __init__(self, status=200, body=None):
         self.status_code, self._body = status, body or {}
@@ -317,7 +328,7 @@ class _Resp:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise requests.exceptions.HTTPError(f"{self.status_code}")
+            raise _Answered(f"{self.status_code}")
 
 
 def _scripted_get(clock, answers):
@@ -330,7 +341,7 @@ def _scripted_get(clock, answers):
         a = answers[min(len(calls), len(answers)) - 1]
         if a == "timeout":
             clock.t += timeout
-            raise requests.exceptions.ReadTimeout("read timed out")
+            raise NO_ANSWER[0]("read timed out")
         clock.t += 0.5
         return a
 
@@ -362,7 +373,7 @@ def test_patient_read_fails_past_the_budget_as_a_responsiveness_finding():
 def test_patient_read_never_retries_an_answered_error():
     clock, stats = _Clock(), ReadStats()
     get, calls = _scripted_get(clock, [_Resp(status=500)])
-    with pytest.raises(requests.exceptions.HTTPError):
+    with pytest.raises(_Answered):
         patient_get_json(get, "http://dev/api/state", "state", stats, policy=clock.policy())
     assert len(calls) == 1 and stats.reads == 0
 

@@ -39,7 +39,6 @@ import re
 import time
 
 import pytest
-import requests
 
 pytestmark = [pytest.mark.hil, pytest.mark.net]
 
@@ -189,6 +188,8 @@ def _long_file() -> bytes:
 
 @contextlib.contextmanager
 def _uploaded(storm, project, name, data):
+    import requests  # noqa: PLC0415 - the bench's LAN client; collection runs without it
+
     ip, tok = storm.net.ip, storm.net.token()
     url = f"http://{ip}/api/files/upload?project={project}&name={name}"
     up = requests.post(url, files={"file": (name, data)}, headers={"X-Nimbus-Token": tok}, timeout=30)

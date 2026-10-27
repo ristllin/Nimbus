@@ -25,12 +25,15 @@ from __future__ import annotations
 
 import re
 import time
+from typing import TYPE_CHECKING
 
 import pytest
-import requests
 
 import grading as g
 import kit
+
+if TYPE_CHECKING:
+    import requests
 
 pytestmark = [pytest.mark.hil, pytest.mark.net]
 
@@ -57,6 +60,8 @@ BOUNDS = g.Bounds(
 
 
 def _upload(storm, project: str, name: str, data: bytes, mime: str = "text/plain") -> requests.Response:
+    import requests  # noqa: PLC0415 - the bench's LAN client; collection runs without it
+
     url = f"http://{storm.net.ip}/api/files/upload?project={project}&name={name}"
     return requests.post(url, files={"file": (name, data, mime)}, headers=storm.net._auth(), timeout=30)
 

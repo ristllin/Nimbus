@@ -12,11 +12,11 @@ pytestmark = pytest.mark.host
 def test_scenario_runner_sends_the_token_header_and_no_query():
     import run_scenarios
 
-    dev = run_scenarios.Dev("192.0.2.10", "f" * 24)
     sent = []
 
     class Session:
-        headers = dev.s.headers
+        def __init__(self):
+            self.headers = {}
 
         def get(self, url, timeout=None):
             sent.append(("GET", url, dict(self.headers)))
@@ -24,7 +24,7 @@ def test_scenario_runner_sends_the_token_header_and_no_query():
         def post(self, url, data=None, timeout=None):
             sent.append(("POST", url, dict(self.headers)))
 
-    dev.s = Session()
+    dev = run_scenarios.Dev("192.0.2.10", "f" * 24, session=Session())
     dev.get("/api/state")
     dev.get("/api/mem/episodic?session=web&limit=5")
     dev.post("/api/chat", {"text": "hi"})

@@ -60,7 +60,6 @@ import time
 from pathlib import Path
 
 import pytest
-import requests
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -256,6 +255,8 @@ class _LanLoad:
         self.threads = [threading.Thread(target=self._loop, daemon=True) for _ in range(LOAD_THREADS)]
 
     def _loop(self) -> None:
+        import requests  # noqa: PLC0415 - the bench's LAN client; collection runs without it
+
         s = requests.Session()
         while not self.stop.is_set():
             try:

@@ -40,8 +40,8 @@ from typing import Optional
 
 try:
     import requests
-except ImportError:
-    sys.exit("pip3 install requests")
+except ImportError:  # importable without it (host tests); main() exits with the fix
+    requests = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -55,9 +55,9 @@ class Dev:
     the X-Nimbus-Token header: the firmware ignores a ?t= query since CUM-45 (a URL
     lands in logs and history), so a query token reads as signed out (401)."""
 
-    def __init__(self, ip: str, tok: str):
+    def __init__(self, ip: str, tok: str, session=None):
         self.ip, self.tok = ip, tok
-        self.s = requests.Session()
+        self.s = session if session is not None else requests.Session()
         self.s.headers["X-Nimbus-Token"] = tok
 
     def _u(self, path: str) -> str:
@@ -577,6 +577,8 @@ def preflight(dev: Dev, judge, want_build: str = "", need_sd: bool = True, allow
 
 # ------------------------------------------------------------------- main
 def main():
+    if requests is None:
+        sys.exit("pip3 install requests")
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="", help="comma-separated scenario ids")
     ap.add_argument(
