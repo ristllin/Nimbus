@@ -96,8 +96,9 @@ entry (owner msg | sub-agents finished | loop fired | post-OTA)   [tg_poll]
   → host pick (resolveHeadHost: a keyed orchHost, else the first keyed provider) + per-chat conv chain
   → budget gate → head tool loop (≤8 rounds / 600 s wall clock / heap re-gate
     / byte budgets; each round's socket timeout clamped to the REMAINING budget;
-    a round whose request would outgrow the 85 KB body budget folds the older
-    tool rounds to one-line stubs and runs again, so a long loop still answers)
+    a round whose request would outgrow the 85 KB body budget shrinks the
+    arguments of calls that already ran, folds the older tool rounds to one-line
+    stubs and runs again, so a long loop or a big write still answers)
       round: model → tool calls → registry dispatch (memory.*, web.search,
       device.control, files.*, loop.*, session terminate…) → results fed back;
       thinking + merged tool rows captured to episodic (glass box)
@@ -281,10 +282,10 @@ a quiet background turn; the next owner turn says it).
   tool rounds and a 4 KB tool-output budget, and single-shot (no tool loop)
   while the head runs on a fallback provider. It starts only after two minutes
   with no turn and two minutes after it was staged; an automatic fold also waits
-  for two quiet minutes (a fold a context overflow queued runs at once), so
-  neither starts between the messages of a conversation. A message that arrives
-  while either is already running waits for it to finish (the turn task is
-  single by design).
+  for two quiet minutes, but at most 6 turns or 10 minutes, then starts right
+  after a reply went out (a fold a context overflow queued runs at once). A
+  message that arrives while either is already running waits for it to finish
+  (the turn task is single by design).
 - **Scheduled-turn rails** (loops, dream, synthesis, post-OTA alike): refuse
   `reboot`, `ttsOn`, `devName`, `sleepOvr`/`brightOvr` and `loop.create`, enforced
   at both the apply layer and the tool-dispatch seam, because sub-agent results

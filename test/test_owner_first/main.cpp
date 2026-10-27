@@ -1,6 +1,7 @@
 #include <unity.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <memory>
 #include <set>
 #include <string>
@@ -55,11 +56,16 @@ struct Cycle {
   std::vector<uint32_t> latency;   // per answered message: reply time - arrival
   uint32_t systemStart = 0, systemEnd = 0, foldStart = 0;
   int systemTurns = 0, folds = 0;
+  int turns = 0, turnsAtFold = -1;   // owner and system turns ended, and the count when the fold began
+  bool turnThisCycle = false;        // a turn ended in this cycle (its reply not drained yet)
+  int foldsAfterTurnInCycle = 0;     // folds that started before the cycle's reply drain
 
   void ownerTurn(uint32_t arrival) {
     now += tm.ownerTurnMs;
     gate.noteTurnEnd(now);
     latency.push_back(now - arrival);
+    turns++;
+    turnThisCycle = true;
   }
   // The Telegram poll: a waiting message is answered at once; otherwise the long
   // poll waits until a message arrives or it times out.
@@ -85,15 +91,20 @@ struct Cycle {
       systemEnd = now;
       gate.noteTurnEnd(now);
       systemTurns++;
+      turns++;
+      turnThisCycle = true;
       foldDue = true;   // the turn grew the history past the fold trigger (Lumi)
     }
-    const bool foldOk = gated ? gate.backgroundMayStart(pageHeld, now) : true;
-    if (foldDue && foldOk) {
+    if (!foldDue) gate.noteFoldNotDue();
+    if (foldDue && (!gated || gate.foldMayStart(pageHeld, now))) {
       foldDue = false;
       foldStart = now;
+      turnsAtFold = turns;
+      foldsAfterTurnInCycle += turnThisCycle;
       now += tm.foldMs;
       folds++;
     }
+    gate.notePumpEnd();
   }
   void stage() {
     staged = true;
@@ -101,6 +112,7 @@ struct Cycle {
   }
   void runUntil(uint32_t end) {
     while (now < end) {
+      turnThisCycle = false;
       poll();
       pump();
       now += tm.pauseMs;
@@ -181,7 +193,7 @@ static void test_system_turn_runs_once_the_owner_is_quiet() {
   for (uint32_t l : c.latency) TEST_ASSERT_TRUE(l <= c.tm.ownerTurnMs + c.tm.pauseMs);
 }
 
-// An owner in a conversation is never queued behind a fold that came due: each
+// An owner in a short conversation is never queued behind a fold that came due: each
 // follow-up within two minutes of the last reply goes first, on a Telegram long-poll
 // loop and on a device without Telegram (web and voice only: no poll wait at all).
 // The fold runs once the owner has been quiet for two minutes.
@@ -191,9 +203,9 @@ static void test_owner_conversation_never_waits_behind_a_fold() {
     c.tm.longPollMs = longPoll;
     c.foldDue = true;   // the last turn pushed the chat past the fold trigger
     c.gate.noteTurnEnd(c.now);
-    for (int i = 0; i < 10; i++) c.arrivals.push_back(c.now + 20000 + (uint32_t)i * 100000);
+    for (int i = 0; i < 5; i++) c.arrivals.push_back(c.now + 20000 + (uint32_t)i * 100000);
     c.runUntil(c.now + 1800000);
-    TEST_ASSERT_EQUAL_INT(10, (int)c.latency.size());
+    TEST_ASSERT_EQUAL_INT(5, (int)c.latency.size());
     for (uint32_t l : c.latency) TEST_ASSERT_TRUE(l <= c.tm.ownerTurnMs + c.tm.pauseMs);
     const uint32_t lastReply = c.arrivals.back() + c.latency.back();
     TEST_ASSERT_EQUAL_INT(1, c.folds);
@@ -202,26 +214,106 @@ static void test_owner_conversation_never_waits_behind_a_fold() {
   }
 }
 
+// A brisk conversation still gets its fold (merge review): the rows a history shift
+// hid are in neither the summary nor the window until a fold takes them, so the wait
+// is bounded - at most kFoldMaxDeferTurns turns or kFoldMaxDeferMs - and the fold then
+// starts only in a pass after a poll with no turn ending (the last reply went out,
+// nothing runs). The owner waits behind it once, for at most one fold.
+static void test_brisk_conversation_gets_its_fold_within_the_bound() {
+  for (uint32_t gap : {40000u, 60000u, 100000u}) {   // a message every 40, 60 or 100 s
+    Cycle c;
+    c.tm.ownerTurnMs = 20000;
+    c.foldDue = true;
+    c.gate.noteTurnEnd(c.now);
+    const uint32_t dueAt = c.now;
+    for (int i = 0; i < 30; i++) c.arrivals.push_back(c.now + 5000 + (uint32_t)i * gap);
+    c.runUntil(c.arrivals.back() + 60000);
+    char msg[96];
+    std::snprintf(msg, sizeof msg, "gap %u s: folds=%d turnsAtFold=%d start=+%u s", (unsigned)(gap / 1000),
+                  c.folds, c.turnsAtFold, (unsigned)((c.foldStart - dueAt) / 1000));
+    TEST_MESSAGE(msg);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, c.folds, msg);
+    // With a gap in the chat (a poll that finds nothing) the fold takes it within the
+    // bound, after the last reply went out; with no gap at all, at twice the bound,
+    // right after a turn (that one reply arrives a fold later).
+    const bool gapless = gap < c.tm.ownerTurnMs + c.tm.longPollMs;
+    const uint32_t tier = gapless ? 2 : 1;
+    TEST_ASSERT_TRUE_MESSAGE(c.turnsAtFold <= (int)(tier * OwnerFirstGate::kFoldMaxDeferTurns) + 1 ||
+                                 c.foldStart - dueAt <= tier * OwnerFirstGate::kFoldMaxDeferMs + gap + c.tm.longPollMs,
+                             msg);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(gapless ? 1 : 0, c.foldsAfterTurnInCycle, msg);
+    for (uint32_t l : c.latency) TEST_ASSERT_TRUE_MESSAGE(l <= c.tm.ownerTurnMs + c.tm.foldMs + c.tm.pauseMs, msg);
+  }
+}
+
 // The gate's own rules, edge by edge.
 static void test_gate_rules() {
   const uint32_t q = OwnerFirstGate::kQuietMs;
   OwnerFirstGate g;
-  TEST_ASSERT_TRUE(g.backgroundMayStart(false, 5000));    // no turn yet this boot
-  TEST_ASSERT_FALSE(g.backgroundMayStart(true, 5000));    // a held inbound page waits too
+  TEST_ASSERT_TRUE(g.foldMayStart(false, 5000));    // no turn yet this boot
+  TEST_ASSERT_FALSE(g.foldMayStart(true, 5000));    // a held inbound page waits too
   g.noteTurnEnd(10000);
-  TEST_ASSERT_FALSE(g.backgroundMayStart(false, 10000 + q - 1));
-  TEST_ASSERT_TRUE(g.backgroundMayStart(false, 10000 + q));
+  g.notePumpEnd();
+  TEST_ASSERT_FALSE(g.foldMayStart(false, 10000 + q - 1));   // the wait starts here
+  TEST_ASSERT_TRUE(g.foldMayStart(false, 10000 + q));
+  // The bound by turns: deferred, then six turns end; it starts only in a pass that
+  // follows a poll with no turn ending.
+  OwnerFirstGate t;
+  uint32_t now = 1000;
+  t.noteTurnEnd(now);
+  t.notePumpEnd();
+  TEST_ASSERT_FALSE(t.foldMayStart(false, now));
+  for (uint32_t i = 0; i < OwnerFirstGate::kFoldMaxDeferTurns; i++) {
+    now += 30000;
+    t.noteTurnEnd(now);
+    TEST_ASSERT_FALSE(t.foldMayStart(false, now));   // a turn ended in this pass
+    t.notePumpEnd();
+  }
+  TEST_ASSERT_TRUE(t.foldMayStart(false, now + 1000));   // waited out, after a quiet pass
+  // The bound by time: one turn a minute for ten minutes.
+  OwnerFirstGate m;
+  now = 1000;
+  m.noteTurnEnd(now);
+  m.notePumpEnd();
+  TEST_ASSERT_FALSE(m.foldMayStart(false, now));
+  for (int i = 0; i < 3; i++) {
+    now += 59000;
+    m.noteTurnEnd(now);
+    m.notePumpEnd();
+    TEST_ASSERT_FALSE(m.foldMayStart(false, now + 1000));
+  }
+  TEST_ASSERT_TRUE(m.foldMayStart(false, 1000 + OwnerFirstGate::kFoldMaxDeferMs));
+  // A fold that stopped being due starts its own wait next time.
+  m.noteTurnEnd(now = 2000000);
+  m.notePumpEnd();
+  TEST_ASSERT_FALSE(m.foldMayStart(false, now + 1000));
+  m.noteFoldNotDue();
+  const uint32_t later = now + 1000 + OwnerFirstGate::kFoldMaxDeferMs;   // the old wait would be out
+  m.noteTurnEnd(later - 1000);
+  m.notePumpEnd();
+  TEST_ASSERT_FALSE(m.foldMayStart(false, later));   // a fresh wait starts instead
+  // No gap at all (a turn ends in every pass): at twice the bound it starts right
+  // after a turn, never inside one.
+  OwnerFirstGate b;
+  now = 1000;
+  b.noteTurnEnd(now);
+  TEST_ASSERT_FALSE(b.foldMayStart(false, now));
+  for (uint32_t i = 0; i + 1 < 2 * OwnerFirstGate::kFoldMaxDeferTurns; i++) {
+    b.notePumpEnd();
+    b.noteTurnEnd(now += 40000);
+    TEST_ASSERT_FALSE(b.foldMayStart(false, now));
+  }
+  b.notePumpEnd();
+  b.noteTurnEnd(now += 40000);
+  TEST_ASSERT_TRUE(b.foldMayStart(false, now));
   // The staged turn: quiet since it was staged and since the last turn.
   TEST_ASSERT_FALSE(g.systemTurnMayStart(false, 10000 + q, 10000 + q - 5));
   TEST_ASSERT_TRUE(g.systemTurnMayStart(false, 10000 + q, 5000));
   TEST_ASSERT_FALSE(g.systemTurnMayStart(true, 10000 + q, 5000));
-  g.noteTurnEnd(500000);
-  TEST_ASSERT_FALSE(g.systemTurnMayStart(false, 500000 + 1000, 1000));
   // millis() wraps: the quiet window still reads as elapsed time.
   OwnerFirstGate w;
   w.noteTurnEnd(0xFFFFFF00u);
-  TEST_ASSERT_FALSE(w.backgroundMayStart(false, 0xFFFFFF00u + q - 1));
-  TEST_ASSERT_TRUE(w.backgroundMayStart(false, 0xFFFFFF00u + q));
+  TEST_ASSERT_FALSE(w.systemTurnMayStart(false, 0xFFFFFF00u + q - 1, 0xFFFFFF00u - q));
   TEST_ASSERT_TRUE(w.systemTurnMayStart(false, 0xFFFFFF00u + q, 0xFFFFFF00u));
 }
 
@@ -397,6 +489,7 @@ int main(int, char**) {
   RUN_TEST(test_message_during_the_system_turn_skips_the_fold_queue);
   RUN_TEST(test_system_turn_runs_once_the_owner_is_quiet);
   RUN_TEST(test_owner_conversation_never_waits_behind_a_fold);
+  RUN_TEST(test_brisk_conversation_gets_its_fold_within_the_bound);
   RUN_TEST(test_gate_rules);
   RUN_TEST(test_bounded_turn_never_runs_the_owner_loop);
   RUN_TEST(test_bounded_turn_on_a_fallback_is_single_shot);

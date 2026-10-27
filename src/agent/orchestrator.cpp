@@ -128,8 +128,8 @@ static LittleFsMemoryStore   g_memStore;
 static LittleFsFoldStoreIO      g_foldIO;
 static nimbus::orch::FoldStore  g_folds;
 static char g_lastTurnChat[32]  = {};   // the chat compactTick() watches
-// An auto fold and the staged system turn start only after two quiet minutes
-// (owner_first.h): onTurnEnd feeds it, tg_poll only.
+// An auto fold and the staged system turn wait for the owner (owner_first.h): onTurnEnd
+// and pollJobs feed it, compactTick and drainSystemTurn ask it, tg_poll only.
 static nimbus::orch::OwnerFirstGate g_ownerFirst;
 // Hold-to-talk message lifecycle (CUM-456) - see voiceMessages() in the header.
 static std::atomic<uint32_t> s_voiceHandled{0};
@@ -1451,7 +1451,7 @@ static TurnEngine::Deps buildTurnDeps() {
   // purpose - sfx + the ring already cover those via the event/fire sinks.
   d.hooks.onTurnEnd = [](const TurnEndEv& ev) {
     nimbus::crash::turnEnded();   // the turn finished: no crash notice will name it
-    g_ownerFirst.noteTurnEnd(millis());   // background work waits for two quiet minutes
+    g_ownerFirst.noteTurnEnd(millis());   // background work waits for the owner
     // Hold-to-talk (CUM-456): the voice message's own turn answered? A salvaged
     // reply (parse failed, text recovered) still answered the owner; the honest
     // failure paths deliver their own line and pass 0 bytes.
@@ -2472,12 +2472,6 @@ static void compactTick() {
   portEXIT_CRITICAL(&g_foldSpin);
   if (!manual && g_lastTurnChat[0]) chat = g_lastTurnChat;
   if (chat.empty()) return;
-  // An auto fold does not start while the owner is in a conversation (owner_first.h:
-  // two quiet minutes). A manual /compact is owner work and an overflow fold is
-  // needed by the next turn: both run at once.
-  if (!manual && !g_folds.overflowQueued(chat) &&
-      !g_ownerFirst.backgroundMayStart(telegram::guardStatus().holding, millis()))
-    return;
 
   // Pseudo channels (web/serial/voice) hold ONE reply slot: any async fold
   // notice lands in it and offsets the request/reply pairing by one (live-
@@ -2499,7 +2493,16 @@ static void compactTick() {
                 /*system=*/true);
       return;
     }
-    if (due != FoldDue::Yes) return;
+    if (due != FoldDue::Yes) {
+      g_ownerFirst.noteFoldNotDue();
+      return;
+    }
+    // A due auto fold waits for the owner (owner_first.h: two quiet minutes, or at
+    // most 10 minutes / 6 turns and then right after a reply went out). A manual
+    // /compact is owner work and an overflow fold is needed by the next turn.
+    if (!g_folds.overflowQueued(chat) &&
+        !g_ownerFirst.foldMayStart(telegram::guardStatus().holding, millis()))
+      return;
   }
 
   nimbus::orch::ChatFold prev = g_folds.get(chat);
@@ -2648,6 +2651,7 @@ int pollJobs() {
   int n = g_jobs->pump();
   refreshSessionSnapshot();  // mirror the post-pump journal for AsyncTCP readers (F24)
   compactTick();             // v3.6.0 fold pump (after loops consumed their usage)
+  g_ownerFirst.notePumpEnd();   // the next pass follows this cycle's poll and reply drain
   return n;
 }
 

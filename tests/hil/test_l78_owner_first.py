@@ -19,8 +19,8 @@ Legs (each runnable alone, graded from the device log and the owner chat):
      sent). BLOCKED, not FAIL, on a unit whose base request is too small to reach the
      budget (a bench unit with fewer tools: 55 KB against Lumi's 70 KB).
   c  with compactKB at its floor (8), ten ordinary turns make a fold due; it runs
-     after two quiet minutes, three more turns follow, and no compaction-paused
-     notice reaches the owner.
+     within six turns or after two quiet minutes, three more turns follow, and no
+     compaction-paused notice reaches the owner.
 
 Run (candidate test-cyd build, one unit, its lock held):
   NIMBUS_PORT=... NIMBUS_TEST_IP=... NIMBUS_TEST_TOKEN=... NIMBUS_STORM_UNIT=<A|L> \\
@@ -272,7 +272,7 @@ def test_l78c_fold_then_normal_turns_no_notice(storm):
         storm.post_orch({"compactKB": "8"})
         try:
             lines, rows = _drive_turns(storm, uid, 10)
-            # The fold starts once the chat has been quiet for two minutes (owner_first.h).
+            # The fold starts within six turns or after two quiet minutes (owner_first.h).
             lines += _collect(storm, 240.0, lambda ls: any(FOLD_RE.search(x) for x in ls))
             more, more_rows = _drive_turns(storm, uid + 20, 3)
             lines += more + _collect(storm, 30.0, lambda ls: False)

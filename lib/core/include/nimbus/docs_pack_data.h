@@ -3924,9 +3924,12 @@ summary instead of an ever-growing transcript.)NIMBUSDOC"},
 - **What you see**: automatic compaction is silent - its record is the
   "Conversation compacted: … folded into a … summary" row in the chat history.
   An automatic fold waits until the chat has been quiet for two minutes, so it
-  never starts between the messages of a conversation; a message that arrives
-  while a fold is already running waits for it to finish. A fold that a context
-  overflow queued runs at once (the next turn needs it).
+  does not start between the messages of a conversation - for at most 6 turns or
+  10 minutes, after which it runs right after a reply went out (in a chat with no
+  pause at all, after 12 turns or 20 minutes, right after a turn), so a long
+  conversation still gets its summary. A message that arrives while a fold is
+  running waits for it to finish. A fold that a context overflow queued runs at
+  once (the next turn needs it).
   A manual `/compact` acknowledges immediately and then confirms with
   "✓ Compacted." (or tells you it couldn't, with the next step). The web chat
   never gets notices (they would desync the reply pairing).
@@ -3945,7 +3948,8 @@ summary instead of an ever-growing transcript.)NIMBUSDOC"},
   `/compact` always remains available and un-pauses it. A long backlog that
   takes more than one summary to catch up (the first summary of a long chat
   after an update) keeps folding, one summary at a time, and never alerts; a
-  pause an older version set on such a backlog lifts by itself.)NIMBUSDOC"},
+  pause an older version set on such a backlog lifts by itself, and a pause set
+  for a real refill stays across restarts until `/compact`.)NIMBUSDOC"},
   {"memory#3-conversation-compaction-the-fold-how-it-works-the-design-in-one-page", "3. Conversation compaction - the fold - How it works (the design, in one page) (1/2)",
    R"NIMBUSDOC(The device cannot edit provider-side conversation threads (they're opaque
 ids - and only OpenAI even has a cross-turn thread; Anthropic is stateless and
