@@ -317,10 +317,12 @@ the reply names that real cause instead. The device never goes silent on a chat.
 
 The per-turn input opens with one line naming what the request runs on, so the model
 can answer "which model are you?" exactly: `[THIS TURN RUNS ON] mistral /
-mistral-large-2512 (asked for mistral-large-latest).`, then, when the chosen head is not
-the one answering, why ("Anthropic, the chosen head, is paused by the owner's monthly limit
-and returns automatically when it lifts."), then "When asked which model you run, name this
-one only." The line is built for each request from the provider that request goes to: each
+mistral-large-2512 (asked for mistral-large-latest).` It ends one of two ways. When the
+chosen head is the one answering, it closes with "When asked which model you run, name
+this one only." When it is not, it says why ("Anthropic, the chosen head, is paused by
+the owner's monthly limit and returns automatically when it lifts.") and closes with
+"When asked which model you run, name this one and say why the chosen head is not running
+this turn." The line is built for each request from the provider that request goes to: each
 host a single-shot turn tries, the host a tool-loop turn starts on (after a paused head is
 skipped) and the host it moves to mid-turn. It rides the input, never the cached system
 prompt, which names no model at all.
