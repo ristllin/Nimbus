@@ -144,15 +144,19 @@ void recordChange(const BudgetPlan& p, const String& chat) {
 
 // ---- the state ----------------------------------------------------------------------
 
-// A provider's token or call budget reached (the usage ledger's "over", when its dollar
-// limit is not what stops it): turns and searches to it are refused too.
+// A provider's token or call budget used up (the ledger's own counters and limits, not
+// its "over" flag, which also carries the dollar limit): turns and searches to it are
+// refused too, so /usage and /model say so.
 void addUsageLimits(LimitsView& v) {
+  if (!v.loaded) return;
   JsonDocument d;
   if (deserializeJson(d, agent::store::providerBudgetJson()) != DeserializationError::Ok) return;
   for (JsonObjectConst e : d.as<JsonArrayConst>()) {
     const char* p = e["prov"] | "";
-    const nimbus::orch::LimitRow* r = v.row(p);
-    if (*p && (e["over"] | false) && !(r && r->atLimit())) v.pauses.push_back({p, 0, 0, true});
+    const uint64_t tokens = (e["in"] | (uint64_t)0) + (e["out"] | (uint64_t)0);
+    if (*p && nimbus::orch::usageBudgetReached(tokens, e["tokenLimit"] | (uint64_t)0, e["calls"] | (uint64_t)0,
+                                               e["callLimit"] | (uint64_t)0))
+      v.pauses.push_back({p, 0, 0, true});
   }
 }
 

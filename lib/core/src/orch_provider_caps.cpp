@@ -355,11 +355,17 @@ constexpr const char* kCapWhere = "open the device's web page, go to Assistant >
                                   "its monthly limit";
 }  // namespace
 
+// The provider as a noun before "spend" ("custom endpoint", never "your custom endpoint").
+std::string spendNoun(const std::string& slug) {
+  const std::string n = providerName(slug);
+  return n.rfind("your ", 0) == 0 ? n.substr(5) : n;
+}
+
 // Lane BUD: the notice ends with the one command that lifts the pause from the owner's
 // chat (budget_command.h), so a paused device away from its web page is never stuck.
 std::string providerFreezeText(const CapFacts& f) {
   const std::string name = providerName(f.provider);
-  std::string s = "Paid AI calls to " + name + " are paused. This month's estimated " + name +
+  std::string s = "Paid AI calls to " + name + " are paused. This month's estimated " + spendNoun(f.provider) +
                   " spend (" + formatUsd(f.spentMicro) + ") reached the " + formatUsd(f.capMicro) +
                   " monthly limit you set, so replies, helpers, memory, voice, photos and images "
                   "stop using " + name + "; other providers keep working.";
@@ -371,7 +377,7 @@ std::string providerFreezeText(const CapFacts& f) {
 
 std::string providerWarnText(const CapFacts& f) {
   const std::string name = providerName(f.provider);
-  return "This month's estimated " + name + " spend is " + formatUsd(f.spentMicro) + ", " +
+  return "This month's estimated " + spendNoun(f.provider) + " spend is " + formatUsd(f.spentMicro) + ", " +
          std::to_string(ProviderCaps::kWarnPercent) + "% of the " + formatUsd(f.capMicro) +
          " monthly limit you set. At the limit, paid calls to " + name +
          " pause until it is raised or the period ends. To change it, " + kCapWhere + ".";

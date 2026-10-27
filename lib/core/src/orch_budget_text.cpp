@@ -142,7 +142,7 @@ std::string overallAroundProvider(const BudgetPlan& p, const LimitsView& v, cons
   const bool toldOverall = p.targetFrozenBefore && !p.targetFrozenAfter;
   if (p.overallFrozenBefore && p.overallFrozenAfter && !toldOverall)
     return "Every provider stays paused: the overall ceiling is reached. Send " +
-           liftCommand(kBudgetAll, v.limitMicro, v.spentMicro) + " to raise it.";
+           liftCommand(kBudgetAll, v.limitMicro, v.spentMicro) + " and then /budget confirm to raise it.";
   return std::string();
 }
 
@@ -314,7 +314,8 @@ std::string budgetHelpText() {
          "/budget <provider> off - remove a provider's limit\n"
          "/budget confirm - apply the change just proposed (within " + minutesText() + "); /budget cancel drops it\n"
          "Providers: " + providers + ". A raise above " + formatUsd(BudgetBounds::kNoForceMaxMicro) + ", or to more than " +
-         std::to_string(BudgetBounds::kMaxRaiseFactor) + " times the limit, needs the word force after the amount.";
+         std::to_string(BudgetBounds::kMaxRaiseFactor) + " times the limit, needs the word force after the amount; "
+         "the reply says when a change needs it for another reason.";
 }
 
 std::string modelText(const ModelFacts& f) {

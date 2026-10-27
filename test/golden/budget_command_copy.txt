@@ -94,7 +94,7 @@ Spending commands:
 /budget all <USD> - set the overall monthly ceiling
 /budget <provider> off - remove a provider's limit
 /budget confirm - apply the change just proposed (within 2 minutes); /budget cancel drops it
-Providers: cumulo, openai, anthropic, mistral, zai, custom, tavily. A raise above $250.00, or to more than 10 times the limit, needs the word force after the amount.
+Providers: cumulo, openai, anthropic, mistral, zai, custom, tavily. A raise above $250.00, or to more than 10 times the limit, needs the word force after the amount; the reply says when a change needs it for another reason.
 [notice, provider limit, a raise that needs force]
 Paid AI calls to Anthropic are paused. This month's estimated Anthropic spend ($296.82) reached the $250.00 monthly limit you set, so replies, helpers, memory, voice, photos and images stop using Anthropic; other providers keep working. It resumes on 1 November, or as soon as the limit is raised on the device's web page (Assistant > Usage). Reply /budget anthropic 450 force and then /budget confirm to raise its monthly limit to $450.00.
 [notice, provider limit]

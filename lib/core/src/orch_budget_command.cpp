@@ -189,18 +189,26 @@ void planOverall(BudgetPlan& p, const LimitsView& v) {
   p.overallFrozenAfter = c.frozenWith(0);
 }
 
-// The "force" a change needs beyond the bounds ("" when none): a first provider limit
-// that turns the default overall ceiling off, and "off" when nothing would limit the
-// provider afterwards.
-std::string forceNeeded(const BudgetPlan& p) {
-  if (p.overall || p.req.force) return std::string();
-  const std::string name = capitalFirst(providerName(p.req.target));
+// The "force" a change needs ("" when none): for a provider, a first limit that turns the
+// default overall ceiling off and "off" when nothing would limit it afterwards; for every
+// target, a raise beyond the bounds (budgetNeedsForce).
+std::string providerForceNeeded(const BudgetPlan& p) {
   if (p.req.verb == BudgetVerb::Off && !p.overallActiveAfter)
-    return name + " would have no monthly stop at all: the overall ceiling is off." + forceAgain(p);
+    return capitalFirst(providerName(p.req.target)) + " would have no monthly stop at all: the overall ceiling is off." +
+           forceAgain(p);
   if (p.overallActiveBefore && !p.overallActiveAfter)
     return "A first provider limit turns the overall ceiling off, so every provider without a limit of its "
            "own would have no monthly stop." + forceAgain(p) +
            " To keep a ceiling as well, send /budget all <USD> afterwards.";
+  return std::string();
+}
+
+std::string forceNeeded(const BudgetPlan& p) {
+  if (p.req.force) return std::string();
+  if (!p.overall) {
+    const std::string why = providerForceNeeded(p);
+    if (!why.empty()) return why;
+  }
   if (p.req.verb == BudgetVerb::Set && budgetNeedsForce(p.fromMicro, p.toMicro))
     return p.toMicro > BudgetBounds::kNoForceMaxMicro
                ? formatUsd(p.toMicro) + " is above the " + formatUsd(BudgetBounds::kNoForceMaxMicro) +

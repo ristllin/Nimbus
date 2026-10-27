@@ -147,6 +147,14 @@ struct LimitsView {
   bool    usageLimited(const std::string& provider) const;
 };
 
+// A provider's token or call budget is used up for its period (the usage ledger's own
+// rule: a limit of 0 is none). The device reads the counters from the ledger's budget
+// list; until the provider's next paid call after its reset day they still hold the old
+// period's figures.
+inline bool usageBudgetReached(uint64_t tokens, uint64_t tokenLimit, uint64_t calls, uint64_t callLimit) {
+  return (tokenLimit && tokens >= tokenLimit) || (callLimit && calls >= callLimit);
+}
+
 // The store's state JSON into `out` (rows and the overall figures; pauses untouched).
 // False for a body that does not parse (out keeps loaded=false).
 bool limitsViewFromJson(const std::string& stateJson, LimitsView& out);

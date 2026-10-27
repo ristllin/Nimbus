@@ -306,7 +306,8 @@ static void test_the_overall_ceiling_plans() {
   both.rows = {{"mistral", 5 * kUsd, 1 * kUsd, false, "1 November"}};
   p = planBudgetChange(set("mistral", 8 * kUsd), both);
   TEST_ASSERT_TRUE(proposalText(p, both).find("Every provider stays paused: the overall ceiling is reached. Send "
-                                              "/budget all 31 to raise it.") != std::string::npos);
+                                              "/budget all 31 and then /budget confirm to raise it.") !=
+                   std::string::npos);
   // Same value: unchanged.
   LimitsView owner = defaultView(0);
   owner.ownerSet = true;
@@ -413,6 +414,48 @@ static void test_a_first_limit_that_turns_the_ceiling_off_needs_force() {
   TEST_ASSERT_TRUE(proposalText(p, owner).find("overall ceiling") == std::string::npos);
 }
 
+// The overall ceiling's bounds are the same rule: a raise of an owner-set ceiling beyond
+// 10x or above 250 USD needs force; turning a ceiling on (from off) never does.
+static void test_the_overall_ceiling_needs_force_for_a_big_raise() {
+  const uint64_t grid[] = {0, 1 * kUsd, 20 * kUsd, 25 * kUsd, 200 * kUsd, 250 * kUsd, 251 * kUsd, 5000 * kUsd};
+  for (uint64_t from : grid)
+    for (uint64_t to : grid) {
+      if (to == 0) continue;
+      LimitsView v = defaultView(0);
+      v.ownerSet = true;
+      v.limitMicro = from;
+      v.active = from > 0;
+      const BudgetPlan p = planBudgetChange(set("all", to), v);
+      if (from == to) {
+        TEST_ASSERT_TRUE(p.verdict == BudgetVerdict::Unchanged);
+        continue;
+      }
+      const bool expect = from > 0 && to > from && (to > 10 * from || to > 250 * kUsd);
+      TEST_ASSERT_TRUE_MESSAGE(p.verdict == (expect ? BudgetVerdict::NeedsForce : BudgetVerdict::Ok),
+                               (std::to_string(from) + "->" + std::to_string(to)).c_str());
+      TEST_ASSERT_TRUE(planBudgetChange(set("all", to, true), v).verdict == BudgetVerdict::Ok);
+    }
+  // The default ceiling raised to 5,000 USD in one step: the second word.
+  TEST_ASSERT_TRUE(planBudgetChange(set("all", 5000 * kUsd), defaultView(0)).why.find("send /budget all 5000 force.") !=
+                   std::string::npos);
+}
+
+// Token and call budgets are their own pause: counted from the ledger's counters, named
+// beside a dollar limit, never read as "resume" when a dollar raise leaves them in place.
+static void test_token_and_call_budgets_are_named() {
+  TEST_ASSERT_FALSE(usageBudgetReached(10, 0, 5, 0));        // no limits
+  TEST_ASSERT_TRUE(usageBudgetReached(1000, 1000, 0, 0));    // tokens at the limit
+  TEST_ASSERT_FALSE(usageBudgetReached(999, 1000, 0, 0));
+  TEST_ASSERT_TRUE(usageBudgetReached(0, 0, 50, 50));        // calls at the limit
+  LimitsView v = lumiView();
+  v.pauses.push_back({"anthropic", 0, 0, true});
+  TEST_ASSERT_TRUE(usageText(v).find("Anthropic (monthly limit reached and token or call limit reached)") !=
+                   std::string::npos);
+  const BudgetPlan p = planBudgetChange(set("anthropic", 400 * kUsd, true), v);
+  TEST_ASSERT_TRUE(proposalText(p, v).find("Anthropic stays paused for another reason: token or call limit reached.") !=
+                   std::string::npos);
+}
+
 // "off" with the overall ceiling off leaves the provider with no stop at all.
 static void test_off_with_nothing_else_limiting_needs_force() {
   const LimitsView v = lumiView();   // ceiling off, Anthropic keeps its limit
@@ -463,7 +506,7 @@ static void test_the_paused_web_chat_runs_only_model_free_commands() {
 
 static void checkWording(const std::string& text, const std::string& where) {
   TEST_ASSERT_TRUE_MESSAGE(printable(text), where.c_str());
-  for (const char* bad : {"the your", "The your", "s your custom", " Your "})
+  for (const char* bad : {"the your", "The your", "s your custom", " Your ", "estimated your"})
     TEST_ASSERT_TRUE_MESSAGE(text.find(bad) == std::string::npos, (where + ": " + text).c_str());
 }
 
@@ -476,7 +519,8 @@ static void test_every_provider_reads_right_in_every_line() {
   want.push_back("tavily");
   TEST_ASSERT_TRUE(budgetProviders() == want);
   const std::string doc = slurp("docs/spend-ceiling.md");
-  const std::string commands = doc.substr(doc.find("## Commands"), doc.find("\n## ", doc.find("## Commands") + 3));
+  const size_t from = doc.find("## Commands");
+  const std::string commands = doc.substr(from, doc.find("\n## ", from + 3) - from);
   for (const std::string& t : want) {
     TEST_ASSERT_EQUAL_STRING(t.c_str(), budgetTargetSlug(t).c_str());
     TEST_ASSERT_TRUE_MESSAGE(budgetHelpText().find(t) != std::string::npos, t.c_str());
@@ -499,6 +543,7 @@ static void test_every_provider_reads_right_in_every_line() {
     cf.spentMicro = 6 * kUsd;
     cf.periodKey = 2026 * 12 + 9;
     const std::string notice = providerFreezeText(cf);
+    checkWording(notice + "\n" + providerWarnText(cf), t + " notices");
     const size_t at = notice.find("Reply /budget ");
     TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, notice.c_str());
     const BudgetRequest r = parseBudgetArgs(parseCommand(notice.substr(at + 6)).args.substr(0, notice.substr(at + 6).find(" and then") - 8));
@@ -820,6 +865,8 @@ int main(int, char**) {
   RUN_TEST(test_every_pause_notice_ends_with_a_command_that_lifts_it);
   RUN_TEST(test_a_first_limit_that_turns_the_ceiling_off_needs_force);
   RUN_TEST(test_off_with_nothing_else_limiting_needs_force);
+  RUN_TEST(test_the_overall_ceiling_needs_force_for_a_big_raise);
+  RUN_TEST(test_token_and_call_budgets_are_named);
   RUN_TEST(test_only_a_confirm_cancel_or_new_change_keeps_a_waiting_one);
   RUN_TEST(test_the_paused_web_chat_runs_only_model_free_commands);
   RUN_TEST(test_every_provider_reads_right_in_every_line);
