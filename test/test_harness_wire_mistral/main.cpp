@@ -663,6 +663,17 @@ static void test_cum822_sub_reply_keeps_web_sources() {
       "Open 10:00 to 17:00 (source: https://a.example/h). Free entry (source: https://s0.example/p, "
       "https://s1.example/p, https://s2.example/p, https://s3.example/p, https://s4.example/p).",
       env.reply);
+  // Mistral's web_search answers weather through "weather_search": a web run too.
+  FakeProviderDeps w;
+  w.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"c\",\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"weather_search\"},"
+      "{\"type\":\"message.output\",\"content\":\"Oxford: 12 C, showers\"}]}"});
+  auto pw = w.contract();
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pw, "m", dir, jobId));
+  agent::ResultEnvelope weather{};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pw, jobId, weather));
+  TEST_ASSERT_EQUAL(1, weather.webRuns);
+  TEST_ASSERT_EQUAL(1, weather.toolRuns);
   // Counter-test: a reply with no references reads exactly as its text.
   FakeProviderDeps p;
   p.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,

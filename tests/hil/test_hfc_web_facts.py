@@ -213,7 +213,7 @@ def _check_sub(i: int, lastturn: str, lines: list) -> list:
     fails = []
     # The synthesis turn names each finished sub "(jobNNNN, <provider>/<model>)" (the durable
     # log can drop its "spawned" line under card-lock contention).
-    subs = re.findall(r"\((job\d+), ([a-z]+)/[^)]*\): finished", lastturn)
+    subs = re.findall(r"\((job\d+), ([a-z]+)/[^)]*\): finished just now", lastturn)
     if not subs or any(p != "mistral" for _, p in subs):
         fails.append(f"ask {i}: no sub on mistral alone ({subs})")
     fails += _check_tags(i, TAG.findall(lastturn))
@@ -233,7 +233,11 @@ def _left_off(job: str, lines: list) -> bool:
     a "left off" line among this ask's own lines stands for it."""
     left = [k for k, ln in enumerate(lines) if "web_search spawn - " in ln and "left off" in ln]
     at = next((k for k, ln in enumerate(lines) if f"spawned {job} " in ln), -1)
-    return any(at - 4 <= k < at for k in left) if at >= 0 else bool(left)
+    if at < 0:
+        return bool(left)
+    # The durable log dropped the line just before (card-lock contention): not a failure.
+    dropped = any("durable log dropped" in ln for ln in lines[max(0, at - 2) : at])
+    return dropped or any(at - 4 <= k < at for k in left)
 
 
 def _check_answer(i: int, replies: list) -> list:
@@ -242,8 +246,9 @@ def _check_answer(i: int, replies: list) -> list:
     fails = []
     if GAVE_UP.search(answer):
         fails.append(f"ask {i}: the answer gives up on the web or credits Notion: {answer[:300]}")
-    if not SOURCE.search(answer):
-        fails.append(f"ask {i}: the answer names no source: {answer[:300]}")
+    final = replies[-1] if replies else ""  # the synthesis reply (earlier ones may be stale slot text)
+    if not SOURCE.search(final):
+        fails.append(f"ask {i}: the answer names no source: {final[:300]}")
     return fails
 
 

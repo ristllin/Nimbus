@@ -188,7 +188,9 @@ Studio connectors stay off that request, except the one its task names (so "the
 weather for my calendar events" keeps the calendar and its not-called check), and
 a public-web lookup cannot wander into Notion. Mistral returns a web search's sources as separate reference parts of
 its answer; the device writes each one into the sub-agent's reply where it was
-cited ("... 10:00 to 17:00 (source: https://...)"), up to six per reply.
+cited ("... 10:00 to 17:00 (source: https://...)"), up to six per reply. A weather
+question runs Mistral's weather tool, which returns no links, so a weather answer can
+name only that service.
 
 ## What a spawn can carry
 

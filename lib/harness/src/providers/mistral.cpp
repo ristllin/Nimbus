@@ -992,9 +992,11 @@ struct RunCounts {
   uint16_t tools = 0;       // every tool.execution entry
   uint16_t web = 0;         // ...that was a web search or fetch
 };
+// weather_search: Mistral's web_search built-in answers a weather question through it
+// (usage "connectors":{"web_search_mcp":1}, probed 27 Oct; it returns no source urls).
 bool isWebTool(const char* name) {
   return strstr(name, "web_search") != nullptr || strstr(name, "web_fetch") != nullptr ||
-         strstr(name, "news_search") != nullptr;
+         strstr(name, "news_search") != nullptr || strstr(name, "weather_search") != nullptr;
 }
 void bump(uint16_t& n) { if (n < 0xFFFF) n++; }
 
