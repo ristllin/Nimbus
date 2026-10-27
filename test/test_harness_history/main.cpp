@@ -570,6 +570,27 @@ static void test_history_days_use_the_zone_in_force_when_the_row_was_stored() {
   TEST_ASSERT_EQUAL(1, (int)count(w, "(Sun 9 Nov)"));
 }
 
+// A run of unanswered identical messages 50 s apart is chained row by row as the history reads
+// it: one line "(xN)" however long the run is (350 s end to end here), never a split where the
+// older rows are measured from the newest.
+static void test_a_run_of_unanswered_repeats_is_one_line_through_the_engine() {
+  const uint32_t t0 = (kH - 9 + 10) * 3600u;   // Sat 8 Nov 2025 10:00 UTC
+  for (int n = 2; n <= 8; n++) {
+    Rig r;
+    r.plat.epoch = t0 + 3600u;
+    for (int i = 0; i < n; i++) {
+      const uint32_t sec = t0 + 50u * (uint32_t)i;
+      r.hour = sec / 3600u;
+      r.add("123", "user", MsgKind::Message, "ping", "from:Roy,at:" + std::to_string(sec));
+    }
+    r.hour = (t0 + 3600u) / 3600u;
+    r.eng->handleMessage("and now?", "Roy", "123");
+    const std::string w = r.lastWindow();
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)count(w, "ping"), w.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(w.find("(x" + std::to_string(n) + ") ping") != std::string::npos, w.c_str());
+  }
+}
+
 // The whole chain with nothing seeded by hand: web-chat turns arrive while the clock reads a
 // chosen second, the engine stamps each owner row, and the next turn's history tells the days
 // with the zone in force at each stamp (the clocks go back at 01:00 UTC on Sun 9 Nov here).
@@ -652,6 +673,7 @@ int main(int, char**) {
   RUN_TEST(test_identical_messages_either_side_of_local_midnight_are_two_messages);
   RUN_TEST(test_history_days_use_the_zone_in_force_when_the_row_was_stored);
   RUN_TEST(test_engine_stamped_turns_tell_their_own_days);
+  RUN_TEST(test_a_run_of_unanswered_repeats_is_one_line_through_the_engine);
   RUN_TEST(test_engine_stamps_the_second_a_row_was_stored);
   RUN_TEST(test_owner_row_tags_and_stored_text);
   RUN_TEST(test_image_row_is_capped_to_about_300_chars);

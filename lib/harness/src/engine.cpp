@@ -2849,6 +2849,7 @@ void readHistory(const TurnEngine::Deps& d, const std::string& chatId, const His
                  std::vector<uint32_t>& repeats) {
   const std::string& startAfter = o.startAfter;
   const OffsetAt zone = localZone(o);
+  RepeatStamp chain;   // the row just newer than the one being read: a run is chained row by row
   std::string before;
   for (int page = 0; page < kHistoryMaxPages; page++) {
     std::vector<nimbus::orch::EpisodicMessage> got = d.historyRows(chatId, kHistoryPageRows, before);
@@ -2856,11 +2857,13 @@ void readHistory(const TurnEngine::Deps& d, const std::string& chatId, const His
     if (full) before = got.back().id;
     for (auto& m : got) {
       if (isClearBoundary(m) || (!startAfter.empty() && !rowIdAfter(m.id, startAfter))) return;
-      if (!rows.empty() && isRepeatRow(rows.back(), m, zone)) {
+      if (!rows.empty() && isRepeatOf(rows.back(), chain, m, zone)) {
         repeats.back()++;
+        chain = repeatStampOf(m);
         continue;
       }
       if (rows.size() >= maxRows) return;
+      chain = repeatStampOf(m);
       rows.push_back(std::move(m));
       repeats.push_back(1);
       spillToPsram(rows.back().text);   // the kept rows ride PSRAM, the page is transient

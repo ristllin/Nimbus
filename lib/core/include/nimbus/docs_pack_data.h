@@ -4610,26 +4610,29 @@ called by the engine for every turn:)NIMBUSDOC"},
   starts at the exact local midnight in half-hour and 45-minute zones too. Changing
   the device's time zone re-tells every earlier turn in the new zone, once. A row
   stored before this tag existed keeps only its hour: its day is told at the start
-  of that hour. A row stored before the clock was set has no date and opens no
-  marker.
+  of that hour, and never earlier than the turn before it (days do not run
+  backwards, so a half-hour zone cannot repeat a day). A row stored before the
+  clock was set has no date and opens no marker.
 - **Repeats collapse.** Consecutive identical owner messages with nothing
   answered in between are one line with a count: `- user (x37): ...`. Only
-  messages sent close together on one local day fold: within 2 minutes when
-  both carry a time to the second, else in the same hour (and never when that
-  hour holds a local midnight, as in a half-hour zone). The same message sent
+  messages sent close together on one local day fold: within 2 minutes of the
+  message before it when both carry a time to the second, else in the same hour
+  (and never when that hour holds a local midnight, as in a half-hour zone). A
+  steady run, each message 50 seconds after the last, is one line however long it
+  grows, and an earlier line never changes as the run grows. The same message sent
   yesterday and again today, or a minute either side of local midnight, stays
   two lines under their own days.
 - **Append-only between boundaries.** A closed turn's bytes depend only on its
   own rows, so each turn's history continues the previous one byte for byte.
   The start moves only at a `/clear`, at a fold (the history starts after the
   newest row the summary covers) or at an overflow shift: past high water (the
-  byte budget, or 64 rows) the oldest whole turns drop until the rest fits half
-  of it, never one row per message, and never the newest turn or the last
+  byte budget, or 64 rows) the oldest whole turns drop until the rest fits half)NIMBUSDOC"},
+  {"turn-anatomy#the-three-parts-of-a-turn-3-conversation-history-no-transcript-replay-3", "The three parts of a turn - 3. Conversation history - no transcript replay (3/4)",
+   R"NIMBUSDOC(  of it, never one row per message, and never the newest turn or the last
   answered one. The shift is kept with the fold state (`/data/chatsum.txt`), so
   a restart renders the same history, and the rows it hid make the next fold
-  due.)NIMBUSDOC"},
-  {"turn-anatomy#the-three-parts-of-a-turn-3-conversation-history-no-transcript-replay-3", "The three parts of a turn - 3. Conversation history - no transcript replay (3/4)",
-   R"NIMBUSDOC(- **One message's cap.** A single message over 6 KB is clipped once, at a fixed
+  due.
+- **One message's cap.** A single message over 6 KB is clipped once, at a fixed
   cap, so its bytes never change as the history grows.
 - **The rows it holds ride PSRAM.** The history reads the chat's rows a page at
   a time, folds a run of identical owner rows into one as it reads, and keeps

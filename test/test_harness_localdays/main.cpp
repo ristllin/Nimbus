@@ -54,7 +54,8 @@ struct Chat {
   std::vector<EpisodicMessage> rows;   // oldest first
   int seq = 0;
 
-  std::string add(const std::string& role, const std::string& text, uint32_t sec, const std::string& tags) {
+  std::string add(const std::string& role, const std::string& text, uint32_t sec, const std::string& tags,
+                  MsgKind kind = MsgKind::Message, const std::string& blob = "") {
     EpisodicMessage m;
     char id[16];
     snprintf(id, sizeof(id), "m%08x", (unsigned)(++seq));
@@ -62,9 +63,10 @@ struct Chat {
     m.sessionId = "123";
     m.tsHours = sec / 3600u;
     m.role = role;
-    m.kind = MsgKind::Message;
+    m.kind = kind;
     m.text = text;
     m.tags = tags;
+    m.blobPath = blob;
     rows.push_back(m);
     return m.id;
   }
@@ -334,6 +336,80 @@ static void test_hour_only_repeats_do_not_fold_across_a_possible_midnight() {
   }
 }
 
+// A run of unanswered repeats is chained row by row (each compared with the row just newer than
+// it), so a growing run is always one group and an older group never re-splits: a message 50 s
+// after the last one joins the newest group or starts another, and nothing else changes. The
+// older rule measured from the newest row, so the run split anew at every message
+// ('ping', 'ping (x2)', 'ping (x3)', then 'ping' + 'ping (x3)').
+static void test_a_run_of_repeats_stays_one_group_and_never_re_splits() {
+  const uint32_t t0 = utc(2026, 10, 26, 10, 0, 0);
+  for (int n = 1; n <= 8; n++) {   // 50 s apart: 350 s end to end, far past the 120 s window
+    Chat c;
+    for (int i = 0; i < n; i++) c.user("ping", t0 + 50u * (uint32_t)i);
+    const auto turns = c.turns(agent::fixedZone(0));
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)turns.size(), std::to_string(n).c_str());
+    TEST_ASSERT_EQUAL((int)n, (int)turns[0].repeats);
+    const auto rows = agent::collapseRepeats(c.newestFirst(), agent::fixedZone(0));
+    TEST_ASSERT_EQUAL(1, (int)rows.size());
+    if (n > 1) TEST_ASSERT_EQUAL_STRING(("ping (x" + std::to_string(n) + ")").c_str(), rows[0].text.c_str());
+  }
+  // A gap past the window ends the chain; the run before it is closed and never changes again.
+  const uint32_t at[] = {0, 50, 100, 230, 280, 330, 380};   // groups: 3 and 4
+  Chat c;
+  std::vector<std::string> before;
+  for (const uint32_t s : at) {
+    c.user("ping", t0 + s);
+    const auto turns = c.turns(agent::fixedZone(0));
+    std::vector<std::string> now;
+    for (size_t k = 0; k < turns.size(); k++)
+      now.push_back(agent::renderTurnLines(turns[k], k ? &turns[k - 1] : nullptr, 0));
+    const size_t closed = now.size() > before.size() ? before.size() : (before.empty() ? 0 : before.size() - 1);
+    for (size_t k = 0; k < closed; k++) TEST_ASSERT_EQUAL_STRING(before[k].c_str(), now[k].c_str());
+    before = now;
+  }
+  const auto last = c.turns(agent::fixedZone(0));
+  TEST_ASSERT_EQUAL(2, (int)last.size());
+  TEST_ASSERT_EQUAL(3, (int)last[0].repeats);
+  TEST_ASSERT_EQUAL(4, (int)last[1].repeats);
+}
+
+// Days never run backwards. A turn whose first row has no stamp (an on-device voice row, a reply
+// nobody asked for) is told at the start of its hour, which in a half-hour zone is the day before
+// the stamped turn that precedes it: 18:40 UTC is 00:10 the next day in India, 18:00 UTC is 23:30.
+static void test_days_never_run_backwards_for_a_turn_without_a_stamp() {
+  const uint32_t a = utc(2026, 10, 26, 18, 40, 0);   // Tue 27 Oct 00:10 in India
+  Chat c;
+  c.user("stamped one", a);
+  c.add("user", "[voice note] ok", a + 300, "from:Roy", MsgKind::Audio, "/mem/blobs/00000000abc00007.ogg");
+  c.add("assistant", "unprompted", a + 400, "fx:none,out:reply,turn:m7fffffff");   // no owner row asked
+  c.user("stamped two", a + 900);
+  const auto turns = c.turns(agent::fixedZone(330));
+  TEST_ASSERT_EQUAL(4, (int)turns.size());
+  const int32_t tue = (int32_t)daysFromCivil(2026, 10, 27);
+  for (const auto& t : turns) TEST_ASSERT_EQUAL_INT32(tue, t.localDay);
+  const std::string w = c.block(agent::fixedZone(330));
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)count(w, "(Tue 27 Oct)"), w.c_str());
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)count(w, "(Mon 26 Oct)"), w.c_str());
+  // The class: whatever mix of stamped and unstamped turns, the days never decrease.
+  Chat mix;
+  uint32_t s = utc(2026, 10, 25, 12, 0, 0);
+  for (int i = 0; i < 60; i++, s += 1777u) {
+    if (i % 3 == 1) mix.add("user", "[voice note]", s, "from:Roy", MsgKind::Audio, "/mem/blobs/00000000abc0" + std::to_string(10 + i) + ".ogg");
+    else mix.user("m" + std::to_string(i), s, i % 3 != 2);
+  }
+  for (const int32_t off : {330, 345, -210, 60, 0}) {
+    const auto t = mix.turns(agent::fixedZone(off));
+    for (size_t k = 1; k < t.size(); k++)
+      TEST_ASSERT_TRUE_MESSAGE(t[k].localDay >= t[k - 1].localDay, std::to_string(off).c_str());
+  }
+  // A turn stored before the clock was set stays undated and does not lift the floor.
+  Chat boot;
+  boot.user("early", 5 * 3600u, false);
+  boot.user("later", a);
+  const auto bt = boot.turns(agent::fixedZone(0));
+  TEST_ASSERT_EQUAL_INT32(agent::kDayNone, bt[0].localDay);
+}
+
 // What may fold: the 120 s window is closed at its edge (120 s folds, 121 s does not), a replay
 // keeps the sender's time (same sent:, minutes apart in store time, still one message), the
 // day marker follows the second the device stored the row (at:) even when sent: disagrees, and
@@ -519,6 +595,8 @@ int main(int, char**) {
   RUN_TEST(test_repeat_fold_never_crosses_local_midnight);
   RUN_TEST(test_repeat_fold_across_the_clock_change_inside_one_day);
   RUN_TEST(test_hour_only_repeats_do_not_fold_across_a_possible_midnight);
+  RUN_TEST(test_a_run_of_repeats_stays_one_group_and_never_re_splits);
+  RUN_TEST(test_days_never_run_backwards_for_a_turn_without_a_stamp);
   RUN_TEST(test_repeat_window_edge_and_stamp_sources);
   RUN_TEST(test_the_process_zone_rule_gives_the_offset_in_force_at_each_time);
   RUN_TEST(test_history_stays_append_only_across_a_clock_change);

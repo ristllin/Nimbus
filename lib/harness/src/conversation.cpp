@@ -553,21 +553,36 @@ class Grouper {
 // between, sent close together on one day, become one turn with a count (L19-26).
 void collapseTurns(std::vector<HistTurn>& turns, const OffsetAt& zone) {
   std::vector<HistTurn> out;
+  RepeatStamp chain;   // the newest turn folded into out.back(): the next one is compared with it
   for (auto& t : turns) {
+    const RepeatStamp mine{stampOf(t.sentUnix, t.atUnix), t.tsHours};
     HistTurn* last = out.empty() ? nullptr : &out.back();
     if (last && !last->seedless && !t.seedless && last->assistant.empty() && last->user == t.user &&
-        closeRepeat(stampOf(last->sentUnix, last->atUnix), stampOf(t.sentUnix, t.atUnix), last->tsHours,
-                    t.tsHours, zone)) {
+        closeRepeat(chain.sec, mine.sec, chain.hour, mine.hour, zone)) {
       last->repeats += t.repeats;
       last->lastId = t.lastId;
       last->assistant = t.assistant;
       last->did = t.did;
       last->replyHours = t.replyHours;
+      chain = mine;
       continue;
     }
+    chain = mine;
     out.push_back(std::move(t));
   }
   turns.swap(out);
+}
+
+// A turn without a stamp on its first row (an on-device voice row, a reply nobody asked for) is
+// told at the start of its hour, which in a half-hour zone can fall on the day before the turn
+// that precedes it. Days never run backwards: the marker would step back a day and repeat.
+void keepDaysForward(std::vector<HistTurn>& turns) {
+  int32_t floorDay = kDayNone;   // below every real day
+  for (HistTurn& t : turns) {
+    if (t.localDay == kDayNone) continue;   // no date stays no date
+    if (t.localDay < floorDay) t.localDay = floorDay;
+    else floorDay = t.localDay;
+  }
 }
 
 // The user half as this position renders it: an item sent before the previous
@@ -642,14 +657,21 @@ int32_t utcOffsetAtUnix(uint32_t unixSec) {
   return utcOffsetFromTm(local, utc);
 }
 
+RepeatStamp repeatStampOf(const EpisodicMessage& m) {
+  return {stampOf(toU32(tagValue(m.tags, kSentTag)), toU32(tagValue(m.tags, kAtTag))), m.tsHours};
+}
+
+bool isRepeatOf(const EpisodicMessage& kept, const RepeatStamp& newer, const EpisodicMessage& older,
+                const OffsetAt& zone) {
+  const RepeatStamp then = repeatStampOf(older);
+  return isOwnerRow(kept) && isOwnerRow(older) && !kept.text.empty() && kept.text == older.text &&
+         tagValue(kept.tags, kAttTag).empty() && tagValue(older.tags, kAttTag).empty() &&
+         !isClearBoundary(kept) && !isClearBoundary(older) &&
+         closeRepeat(newer.sec, then.sec, newer.hour, then.hour, zone);
+}
+
 bool isRepeatRow(const EpisodicMessage& newer, const EpisodicMessage& older, const OffsetAt& zone) {
-  const auto stamp = [](const EpisodicMessage& m) {
-    return stampOf(toU32(tagValue(m.tags, kSentTag)), toU32(tagValue(m.tags, kAtTag)));
-  };
-  return isOwnerRow(newer) && isOwnerRow(older) && !newer.text.empty() && newer.text == older.text &&
-         tagValue(newer.tags, kAttTag).empty() && tagValue(older.tags, kAttTag).empty() &&
-         !isClearBoundary(newer) && !isClearBoundary(older) &&
-         closeRepeat(stamp(newer), stamp(older), newer.tsHours, older.tsHours, zone);
+  return isRepeatOf(newer, repeatStampOf(newer), older, zone);
 }
 
 bool isRepeatRow(const EpisodicMessage& newer, const EpisodicMessage& older, int32_t utcOffsetMin) {
@@ -666,6 +688,7 @@ std::vector<HistTurn> historyTurns(const std::vector<EpisodicMessage>& newestFir
   turns.reserve(g.turns.size());
   for (const Building& b : g.turns) turns.push_back(finish(b, zone));
   collapseTurns(turns, zone);
+  keepDaysForward(turns);
   return turns;
 }
 
@@ -781,13 +804,16 @@ std::vector<EpisodicMessage> collapseRepeats(const std::vector<EpisodicMessage>&
                                              const OffsetAt& zone) {
   std::vector<EpisodicMessage> out;
   uint32_t count = 1;
+  RepeatStamp chain;   // the row just newer than the one being read
   for (const EpisodicMessage& m : newestFirst) {
-    if (!out.empty() && isRepeatRow(out.back(), m, zone)) {
+    if (!out.empty() && isRepeatOf(out.back(), chain, m, zone)) {
       count++;
+      chain = repeatStampOf(m);
       continue;
     }
     if (count > 1) out.back().text += " (x" + std::to_string((unsigned)count) + ")";
     count = 1;
+    chain = repeatStampOf(m);
     out.push_back(m);
   }
   if (count > 1 && !out.empty()) out.back().text += " (x" + std::to_string((unsigned)count) + ")";

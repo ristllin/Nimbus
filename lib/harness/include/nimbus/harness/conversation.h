@@ -157,6 +157,20 @@ std::vector<HistTurn> historyTurns(const std::vector<nimbus::orch::EpisodicMessa
 constexpr uint32_t kRepeatWindowSec = 120;
 bool isRepeatRow(const nimbus::orch::EpisodicMessage& newer,
                  const nimbus::orch::EpisodicMessage& older, const OffsetAt& zone);
+// A run of repeats is chained: each row is compared with the row just newer than it, so a new
+// message can only join the newest group or start another, and an older group never re-splits
+// as the run grows (a closed turn's bytes depend only on its own rows). The chain carries the
+// time of the row just newer than the one being compared: its sent:/at: second (0 = only its
+// hour) and its hour.
+struct RepeatStamp {
+  uint32_t sec = 0;
+  uint32_t hour = 0;
+};
+RepeatStamp repeatStampOf(const nimbus::orch::EpisodicMessage& m);
+// isRepeatRow with the newer side's time given by the chain: `kept` is the row that stands for
+// the run (its text and attachments decide), `newer` the time of the row read just before `older`.
+bool isRepeatOf(const nimbus::orch::EpisodicMessage& kept, const RepeatStamp& newer,
+                const nimbus::orch::EpisodicMessage& older, const OffsetAt& zone);
 bool isRepeatRow(const nimbus::orch::EpisodicMessage& newer,
                  const nimbus::orch::EpisodicMessage& older, int32_t utcOffsetMin = 0);
 
