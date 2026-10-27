@@ -138,7 +138,8 @@ static void testFoodLedgerRidesTheHostedTurn(ndtest::Ctx& c) {
     rig.files().seed(where, row);
     rig.say("owner", "I ate lunch, log it please");
     c.ok(!tx.seen.empty(), "the ledger turn dispatched");
-    c.ok(has(tx.seen[0].body, "[TODAY'S FOOD LEDGER"), "the ledger block rides the VN turn");
+    c.ok(has(tx.seen[0].body, "[TODAY'S FOOD LEDGER - "),
+         "the ledger data block rides the VN turn");
     c.ok(has(tx.seen[0].body, nimbus::orch::kFoodLedgerProject) &&
              has(tx.seen[0].body, nimbus::orch::kFoodLedgerOwnerName),
          "the block names the owner's ledger file");
@@ -155,7 +156,43 @@ static void testFoodLedgerRidesTheHostedTurn(ndtest::Ctx& c) {
     NimbusdRig rig(cfg, opts("hp-food2"), &tx);
     rig.say("owner", "what's on the agenda?");
     c.ok(!tx.seen.empty(), "the plain turn dispatched");
-    c.ok(!has(tx.seen[0].body, "[TODAY'S FOOD LEDGER"), "no ledger block without a ledger");
+    c.ok(!has(tx.seen[0].body, "[TODAY'S FOOD LEDGER - "), "no ledger block without a ledger");
+    clearEnv();
+  }
+  // A member's turn NEVER carries the owner's ledger (the review's finding D: the
+  // hosted store is owner-only, so the honest answer for an approved member is
+  // no block - never the owner's rows in the member's prompt).
+  {
+    clearEnv();
+    setenv("CUMULO_API_KEY", "cumulo_sk_test_FOOD3", 1);
+    FakeHttpTransport tx;
+    for (int i = 0; i < 4; i++) tx.script.push_back(Exchange{"", "", 500, "{}"});
+    Config cfg;
+    NimbusdRig rig(cfg, opts("hp-food3"), &tx);
+    rig.files().seed(where, row);
+    {
+      EngineThread eng(&rig);
+      eng.start();
+      ReplyBuffer replies;
+      WebApi api(&rig, &eng, &replies);
+      ApiResp out;
+      api.handle("POST", "/api/orch", "tgAllow=444", out);
+      c.eqi(out.status, 200, "the member chat is approved");
+      eng.stop();
+    }
+    rig.say("444", "I ate lunch, log it please");
+    c.ok(!tx.seen.empty(), "the member turn dispatched");
+    // The data block is what leaks the owner's rows: its head is
+    // "[TODAY'S FOOD LEDGER - <file>". The food playbook sentence
+    // "[TODAY'S FOOD LEDGER] in this turn's context..." is generic coaching text
+    // and may legitimately ride any food turn - it carries no owner data, so the
+    // assertions target the data block and the rows/file, never the playbook phrase.
+    c.ok(!has(tx.seen[0].body, "[TODAY'S FOOD LEDGER - "),
+         "an approved member's turn carries NO ledger data block");
+    c.ok(!has(tx.seen[0].body, "date,time,food,amount_unit,kcal,note"),
+         "none of the owner's ledger rows ride the member's turn");
+    c.ok(!has(tx.seen[0].body, nimbus::orch::kFoodLedgerOwnerName),
+         "the member's turn never names the owner's ledger file");
     clearEnv();
   }
 }

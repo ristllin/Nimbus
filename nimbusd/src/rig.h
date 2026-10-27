@@ -2241,8 +2241,14 @@ class NimbusdRig {
     d.journalGc = [] {};
     // Lane CTX (CUM-840): today's food ledger over the VN's own POSIX files store,
     // the same scan the device runs - the hosted turn's per-turn block and the fold
-    // read the real path, not the desk device's card.
-    d.foodLedger = [this](const std::string&) {
+    // read the real path, not the desk device's card. The hosted store is
+    // OWNER-ONLY (posix_files.h), so a member's turn carries NO ledger: serving
+    // the owner's rows to an approved member's prompt would be a cross-principal
+    // disclosure (the review's finding D). The device serves per-principal
+    // (food_ledger_device.cpp); here an empty ledger is the honest answer for
+    // every non-owner chat.
+    d.foodLedger = [this](const std::string& chat) {
+      if (!access_->principalFor(chat).owner) return orch::FoodLedger{};
       const std::string where =
           std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodLedgerOwnerName;
       return orch::scanFoodLedger(files_->get(where), files_->has(where),
