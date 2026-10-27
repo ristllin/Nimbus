@@ -8,6 +8,8 @@
 #include <utility>
 #include <vector>
 
+#include "nimbus/exchange_trace.h"   // heapwatch::kBodySliceBytes: the one slice constant (4,096 B)
+
 // HttpTransport - the seam that makes the provider adapters portable. The
 // harness builds a complete request (headers + one contiguous body - the
 // serialize-into-one-buffer-then-single-write rule that keeps TLS records off
@@ -135,10 +137,19 @@ inline size_t bodyRead(const HttpRequest& r, size_t off, uint8_t* out, size_t wa
 // photo uploads and 0.6 MB inline bodies took the largest block to 7 KB and failed an
 // allocation now and then (af=1..4; one body cut at 36,864 B and resent).
 constexpr uint32_t kSliceHeadroom = 12288;
+// The DMA-capable pool's floor (the photo-DMA regression, bench unit L): the send's
+// own per-record AES chunks (2 x 1,600 B DMA) and pbufs allocate from the
+// MALLOC_CAP_DMA pool, while a fragmented heap's INTERNAL reading is carried by
+// the ~7.6 KB of free internal memory ABOVE SOC_DMA_HIGH that DMA cannot reach
+// (measured on unit L: internal free 19,072 B of which DMA free 11,408 B). A
+// floor the resting pool clears (6 KB < the 7,668 B the 21.5 KB leg rests at)
+// waits only while a slice's predecessors still hold their pbufs, and keeps
+// room for one record's chunks.
+constexpr uint32_t kDmaChunkFloor = 6144;
 constexpr uint32_t kSliceWaitStepMs = 10;
 constexpr uint32_t kSliceWaitMaxMs = 1500;
-inline bool sliceShouldWait(uint32_t largestFree, uint32_t waitedMs) {
-  return largestFree < kSliceHeadroom && waitedMs < kSliceWaitMaxMs;
+inline bool sliceShouldWait(uint32_t largestFree, uint32_t waitedMs, uint32_t floor = kSliceHeadroom) {
+  return largestFree < floor && waitedMs < kSliceWaitMaxMs;
 }
 
 // Waiting only helps while it is working (v4.6.1). A wait helps only while the
@@ -185,24 +196,50 @@ inline uint32_t paceCapMs(uint32_t timeoutMs) {
   return share < kRequestPaceMaxMs ? share : kRequestPaceMaxMs;
 }
 
+// A body-sized drain budget on top of the flat cap. A send's per-slice AES
+// chunks and pbufs land in the DMA-capable pool; each slice's wait is what lets
+// the previous slice's acknowledged segments go back (one stall window per
+// slice, the measured round trip). The flat 2 s cap covers ~20 slices: a
+// photo body (70+) at low memory - the Lumi-like shapes the photo legs
+// reproduce - would exhaust it halfway and stream the rest into allocation
+// failures (the v4.6.1 photo-DMA regression: esp-aes 1,600 B chunk allocs
+// failed mid-body). The budget scales the cap with the body's own slice
+// count; the deadline's tenth stays the ceiling (a small deadline keeps the
+// original min(share, 2 s) cap).
+inline uint32_t paceCapForBody(uint32_t timeoutMs, size_t bodyBytes) {
+  uint32_t share = timeoutMs / kPaceDeadlineShare;
+  share -= share % kSliceWaitStepMs;   // whole steps: the last step never crosses the cap
+  const size_t slices = bodyBytes ? (bodyBytes + nimbus::heapwatch::kBodySliceBytes - 1) / nimbus::heapwatch::kBodySliceBytes : 0;
+  const uint64_t need = (uint64_t)kRequestPaceMaxMs + (uint64_t)slices * kSliceStallMs;
+  const uint32_t budget = need > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)need;
+  return budget < share ? budget : share;
+}
+
 // One slice's wait. Before each step the caller passes next() a fresh sample of the
-// largest free block, the exchange's wait before this slice and its cap (paceCapMs);
-// true means wait one more kSliceWaitStepMs (already counted in waitedMs). Any new high
-// counts as growth (the smallest measured step of a draining block was 512 B); a heap
-// that creeps upward is bounded by the slice bound and the exchange's cap.
+// largest free block and of FREE internal memory, the exchange's wait before this
+// slice and its cap (paceCapForBody); true means wait one more kSliceWaitStepMs
+// (already counted in waitedMs). Any new high counts as growth (the smallest
+// measured step of a draining block was 512 B) - of the LARGEST, or of FREE: on a
+// heap that is fragmented but draining (the Lumi-like photo shapes), the largest
+// block never moves while the acknowledged segments return their pbufs and FREE
+// climbs; a stall window with neither is a heap where waiting helps nothing, and
+// the slice goes out (the stall rule's latency case, kept).
 struct SliceWait {
   uint32_t waitedMs = 0;   // this slice's wait so far
   uint32_t best = 0;       // the largest block seen during it
-  uint32_t grewAtMs = 0;   // waitedMs when `best` last grew
+  uint32_t bestFree = 0;   // the most free seen during it (the drain signal)
+  uint32_t grewAtMs = 0;   // waitedMs when either last grew
+  uint32_t floor = kSliceHeadroom;   // the pool's protective floor (kSliceHeadroom, or kDmaChunkFloor)
 
-  bool next(uint32_t largestFree, uint32_t requestPacedMs, uint32_t capMs) {
-    if (!sliceShouldWait(largestFree, waitedMs)) return false;           // room, or the slice bound
+  bool next(uint32_t largestFree, uint32_t freeNow, uint32_t requestPacedMs, uint32_t capMs) {
+    if (!sliceShouldWait(largestFree, waitedMs, floor)) return false;   // room, or the slice bound
     if (requestPacedMs + waitedMs >= capMs) return false;               // the exchange's cap
-    if (largestFree > best) {
-      best = largestFree;
+    if (largestFree > best || freeNow > bestFree) {
+      if (largestFree > best) best = largestFree;
+      if (freeNow > bestFree) bestFree = freeNow;
       grewAtMs = waitedMs;
     }
-    if (waitedMs - grewAtMs >= kSliceStallMs) return false;             // no new high for a window
+    if (waitedMs - grewAtMs >= kSliceStallMs) return false;             // neither grew for a window
     waitedMs += kSliceWaitStepMs;
     return true;
   }
@@ -212,11 +249,15 @@ struct SliceWait {
 // first: `capMs` is the exchange's cap (paceCapMs of its timeout), `largest()` samples
 // the largest free internal block, `sleep(ms)` waits, `expired()` is the exchange's
 // deadline (asked first: next() counts the step it grants). Adds the wait to
-// `pacedMs`, the exchange's total, and returns it.
-template <class Largest, class Sleep, class Expired>
-uint32_t paceSlice(uint32_t& pacedMs, uint32_t capMs, Largest largest, Sleep sleep, Expired expired) {
+// `pacedMs`, the exchange's total, and returns it. `floorMs` is the pool the
+// caller samples (kSliceHeadroom for the internal heap, kDmaChunkFloor when
+// the samples come from the DMA-capable pool).
+template <class Largest, class Free, class Sleep, class Expired>
+uint32_t paceSlice(uint32_t& pacedMs, uint32_t capMs, uint32_t floorMs, Largest largest, Free free8, Sleep sleep,
+                   Expired expired) {
   SliceWait w;
-  while (!expired() && w.next(largest(), pacedMs, capMs)) sleep(kSliceWaitStepMs);
+  w.floor = floorMs;
+  while (!expired() && w.next(largest(), free8(), pacedMs, capMs)) sleep(kSliceWaitStepMs);
   pacedMs += w.waitedMs;
   return w.waitedMs;
 }

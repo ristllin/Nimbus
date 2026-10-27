@@ -1,5 +1,6 @@
 #include "transport_tls.h"
 
+#include <esp_memory_utils.h>   // esp_ptr_dma_capable: which bodies encrypt in place
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 
@@ -117,7 +118,7 @@ struct TlsIo {
   uint32_t deadline;   // F25: the WHOLE operation (connect retries + I/O) rides one clock
   std::string parseWhy;   // the parser's reason when readBody() fails
   std::string tooLarge;   // set when the body parsed whole but was over the retained cap
-  uint8_t* slice = nullptr;   // R1: one PSRAM slice a spliced body is encoded into
+  uint8_t* slice = nullptr;   // R1: one PSRAM slice buffer a spliced/external body is encoded into
   uint32_t pacedMs = 0;       // time spent waiting for internal headroom between slices
 
   ~TlsIo() {
@@ -127,13 +128,21 @@ struct TlsIo {
   }
 
   // R1 (http.h paceSlice): let the TCP window drain before the next slice when the
-  // internal heap is short, instead of failing an allocation mid-body; only while the
-  // largest block is still growing, and never past the exchange's cap: 2 s, at most a
-  // tenth of its deadline (v4.6.1).
+  // pool is short, instead of failing an allocation mid-body. THE POOL IS THE
+  // DMA-CAPABLE ONE (photo-DMA regression): the record's own 1,600 B esp-aes
+  // chunks and the TCP pbufs allocate from MALLOC_CAP_DMA, while a fragmented
+  // heap's INTERNAL readings are carried by the ~7.6 KB of free internal memory
+  // above SOC_DMA_HIGH that DMA cannot reach - waiting on that reading starved
+  // the chunks the slices themselves needed (bench unit L, the 21.5 KB photo
+  // leg: internal largest 7,156 B steady while the DMA pool fragmented below
+  // 1,600 B and every esp-aes chunk alloc failed). A drain shows in FREE even
+  // where the largest never moves, and the cap scales with the body.
   void paceForHeadroom() {
-    auto largest = [] { return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); };
+    auto largest = [] { return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_8BIT); };
+    auto free8 = [] { return (uint32_t)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_8BIT); };
     auto sleep = [](uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms)); };
-    paceSlice(pacedMs, paceCapMs(req.timeoutMs), largest, sleep, [this] { return expired(); });
+    paceSlice(pacedMs, paceCapForBody(req.timeoutMs, bodyLength(req)), kDmaChunkFloor, largest, free8,
+              sleep, [this] { return expired(); });
   }
 
   bool expired() const { return (int32_t)(millis() - deadline) >= 0; }
@@ -172,13 +181,19 @@ struct TlsIo {
     if (off == 0) nimbus::crash::testPanicPoint();   // L39: an armed panic lands here, before any body byte
 #endif
     if (off > 0) paceForHeadroom();
-    if (req.splices.empty()) return client->write((const uint8_t*)req.body.data() + off, want);
-    // R1: a body with photos spliced in (http.h BodySplice) is never assembled: each
-    // slice is encoded from the photo's one PSRAM copy into one PSRAM slice buffer,
-    // so a 2 MB album costs 4 KB of working memory, never internal heap.
+    // In place only when the AES engine can read the bytes directly (a plain body
+    // in internal DMA-capable memory, the ordinary small request): zero copies.
+    // Everything else - a spliced body (the photo's PSRAM copy) or a body string
+    // the >=128 B PSRAM spill parked outside - is encoded through ONE PSRAM
+    // slice buffer, so a 2 MB album costs 4 KB of working memory, never
+    // internal heap (R1: the per-record AES chunks that bounce such bytes through
+    // DMA buffers are transient and small, and the pacing below holds room for
+    // them).
+    if (req.splices.empty() && esp_ptr_dma_capable(req.body.data()))
+      return client->write((const uint8_t*)req.body.data() + off, want);
+    if (want > nimbus::heapwatch::kBodySliceBytes) want = nimbus::heapwatch::kBodySliceBytes;
     if (!slice) slice = (uint8_t*)heap_caps_malloc(nimbus::heapwatch::kBodySliceBytes, MALLOC_CAP_SPIRAM);
     if (!slice) return 0;   // no PSRAM for the slice: the body fails "after N of M", typed by the caller
-    if (want > nimbus::heapwatch::kBodySliceBytes) want = nimbus::heapwatch::kBodySliceBytes;
     const size_t n = bodyRead(req, off, slice, want);
     return n ? client->write(slice, n) : 0;
   }
