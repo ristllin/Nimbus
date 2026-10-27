@@ -375,6 +375,7 @@ static void renderOaiInput(const nimbus::orch::Transcript& tr, ArduinoJson::Json
   namespace orch = nimbus::orch;
   using Kind = orch::TranscriptItem::Kind;
   const auto& e = tr.entries();
+  imageparts::LookRender looks(tr, sees, imageparts::Dialect::OpenAIResponses);
   // A request that does not show the turn's photos reads their machine
   // transcriptions in place of their labels (R1).
   for (const auto& it : e) {
@@ -413,18 +414,14 @@ static void renderOaiInput(const nimbus::orch::Transcript& tr, ArduinoJson::Json
       fc["name"]      = e[ci].name;
       wire::putModelStr(fc["arguments"], e[ci].text, e[ci].name.c_str());
     }
-    std::vector<size_t> looks;
     for (size_t ri : results) {
       JsonObject o = in.add<JsonObject>();
       o["type"]    = "function_call_output";
       o["call_id"] = e[ri].id;
-      const int look = imageparts::lookedFor(tr.images(), e[ri]);
-      if (look >= 0) {
-        if (sees) looks.push_back((size_t)look);
-        wire::putModelStr(o["output"],
-                          imageparts::lookText(*tr.images(), (size_t)look, sees,
-                                               imageparts::Dialect::OpenAIResponses),
-                          e[ri].name.c_str());
+      std::string lookWords;
+      size_t j = 0;
+      if (looks.render(e[ri], lookWords, j) != imageparts::LookRender::Show::NotALook) {
+        wire::putModelStr(o["output"], lookWords, e[ri].name.c_str());
         continue;
       }
       // No is_error field on function_call_output - encode failure in the text.
@@ -432,8 +429,7 @@ static void renderOaiInput(const nimbus::orch::Transcript& tr, ArduinoJson::Json
                         e[ri].isError ? (std::string("ERROR: ") + e[ri].text) : e[ri].text,
                         e[ri].name.c_str());
     }
-    if (!looks.empty())
-      imageparts::putLookMessage(in, *tr.images(), looks, imageparts::Dialect::OpenAIResponses);
+    looks.putMessage(in);
   }
 }
 
@@ -624,7 +620,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     int code = oaiResponses(pd, std::move(body), roundMs, resp, filter, splices.empty() ? nullptr : &splices);
     if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
     if (code != 200 && !splices.empty() && imageparts::refusedImages(code, resp["error"]["message"] | "") &&
-        imageparts::rejectAndRetry(tr.images(), "orchTurn(oai-loop)", code)) {
+        imageparts::rejectAndRetry(tr.images(), "orchTurn(oai-loop)", code, "openai")) {
       // The provider refused the photos themselves: this round again, reading their
       // transcriptions (the fallback captioner), and so does the rest of the turn.
       imgs = nullptr;
@@ -638,7 +634,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       code = oaiResponses(pd, std::move(body), roundMs, resp, filter);
       if (code <= 0) { wire::transportFailure(pd, t1, roundMs, out); return out; }
     }
-    if (code == 200 && imgs) imgs->sent = true;   // the head has seen the turn's photos
+    imageparts::noteSent(imgs, code);   // a 2xx: the head has seen the turn's photos
     if (code != 200) {
       const std::string e = wire::httpErrLine("resp", code, resp["error"]["message"] | "");
       wire::httpFailure(out, code, e,

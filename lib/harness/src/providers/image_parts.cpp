@@ -83,7 +83,7 @@ orch::TurnImages* shown(const orch::Transcript& tr, const std::string& host, con
   // The latest render decides what the head has: image.look on these photos answers without a
   // second request only while the host in use sees them (a failover to a blind host reads them
   // as transcriptions again).
-  imgs->shown = !imgs->rejected && orch::headTakesImages(host, model);
+  imgs->shown = !imgs->refusedBy(host) && orch::headTakesImages(host, model);
   return imgs->shown ? imgs : nullptr;
 }
 
@@ -110,12 +110,14 @@ struct Hit {
   size_t len;
 };
 
-// The seeded photos' markers (strict: a missing one fails the request).
+// The seeded photos' markers (strict: a missing one fails the request). A photo with
+// an Anthropic file id has no marker in an Anthropic request, but a request to another
+// host after a failover writes it inline: its marker is spliced whenever present.
 bool photoHits(const std::string& body, const orch::TurnImages& imgs, std::vector<Hit>& hits, std::string& err) {
   for (size_t i = 0; i < imgs.items.size(); ++i) {
-    if (!inlineImage(imgs.items[i])) continue;
     const std::string mk = imgs.marker(i);
     const size_t at = body.find(mk);
+    if (at == std::string::npos && !inlineImage(imgs.items[i])) continue;
     if (at == std::string::npos) {
       err = "image " + std::to_string(i + 1) + " is missing from the request";
       hlog::logf("wire: %s", err.c_str());
@@ -142,20 +144,16 @@ void cutHits(std::string& body, std::vector<Hit>& hits, BodySplices& out) {
 }
 }  // namespace
 
-bool spliceMarkers(std::string& body, const orch::TurnImages& imgs, BodySplices& out, std::string& err) {
-  return spliceAll(body, &imgs, true, out, err);
-}
-
 bool spliceAll(std::string& body, const orch::TurnImages* imgs, bool photos, BodySplices& out, std::string& err) {
   if (!imgs) return true;
   std::vector<Hit> hits;
   if (photos && !photoHits(body, *imgs, hits, err)) return false;
   for (size_t j = 0; j < imgs->looked.size(); ++j) {
-    const orch::TurnImage& it = imgs->looked[j].img;
-    if (!inlineImage(it)) continue;
+    const orch::TurnImage& it = imgs->looked[j].img;   // a file id or not: the marker decides
     const std::string mk = imgs->lookMarker(j);
-    const size_t at = body.find(mk);
-    if (at != std::string::npos) hits.push_back({at, &it, mk.size()});
+    // Every occurrence: a marker left in the body would reach the provider as text.
+    for (size_t at = body.find(mk); at != std::string::npos; at = body.find(mk, at + mk.size()))
+      hits.push_back({at, &it, mk.size()});
   }
   cutHits(body, hits, out);
   return true;
@@ -165,41 +163,65 @@ bool spliceAll(std::string& body, const orch::TurnImages* imgs, bool photos, Bod
 
 bool sees(const orch::Transcript& tr, const std::string& host, const std::string& model) {
   const orch::TurnImages* imgs = tr.images();
-  return imgs && !imgs->rejected && orch::headTakesImages(host, model);
+  return imgs && !imgs->refusedBy(host) && orch::headTakesImages(host, model);
 }
 
+namespace {
+// The looked photo a transcript entry shows again (-1 = none): an image.look result
+// (lookResultText) naming a photo of the set's `looked`.
 int lookedFor(const orch::TurnImages* imgs, const orch::TranscriptItem& result) {
   if (!imgs || imgs->looked.empty() || result.kind != orch::TranscriptItem::Kind::ToolResult || result.isError)
     return -1;
   if (result.name != "image.look" && result.name != "image_look") return -1;
   return imgs->lookedIndex(orch::lookResultRef(result.text));
 }
+}  // namespace
 
-std::string lookText(orch::TurnImages& imgs, size_t j, bool showing, Dialect d) {
-  if (!showing) return imgs.lookAnswer(j);
-  const std::string& tag = imgs.looked[j].img.tag;
-  return d == Dialect::Anthropic
+LookRender::LookRender(const orch::Transcript& tr, bool seesImages, Dialect dialect)
+    : imgs(tr.images()), sees(seesImages), d(dialect) {}
+
+LookRender::Show LookRender::render(const orch::TranscriptItem& result, std::string& text, size_t& j) {
+  const int look = lookedFor(imgs, result);
+  if (look < 0) return Show::NotALook;
+  j = (size_t)look;
+  if (!sees) {
+    text = imgs->lookAnswer(j);
+    return Show::Text;
+  }
+  const std::string& tag = imgs->looked[j].img.tag;
+  if (std::find(attached.begin(), attached.end(), j) != attached.end()) {   // the same photo asked again
+    text = tag + " The photo is shown above in this conversation: answer from what you see in it.";
+    return Show::Text;
+  }
+  attached.push_back(j);
+  if (d != Dialect::Anthropic) pending.push_back(j);
+  text = d == Dialect::Anthropic
              ? tag + " The photo is attached to this result as an image: answer from what you see in it."
              : tag + " The photo follows in the next message as an image: answer from what you see in it.";
+  return Show::Attach;
 }
 
-void putLookResult(ArduinoJson::JsonObject toolResult, orch::TurnImages& imgs, size_t j) {
+void LookRender::putResult(ArduinoJson::JsonObject toolResult, const std::string& text, size_t j) const {
   ArduinoJson::JsonArray c = toolResult["content"].to<ArduinoJson::JsonArray>();
-  putText(c, lookText(imgs, j, true, Dialect::Anthropic), Dialect::Anthropic);
-  putImage(c, imgs.looked[j].img, imgs.lookMarker(j), Dialect::Anthropic);
+  putText(c, text, Dialect::Anthropic);
+  putImage(c, imgs->looked[j].img, imgs->lookMarker(j), Dialect::Anthropic);
 }
 
-void putLookMessage(ArduinoJson::JsonArray msgs, const orch::TurnImages& imgs, const std::vector<size_t>& js,
-                    Dialect d) {
-  if (js.empty()) return;
+void LookRender::putMessage(ArduinoJson::JsonArray msgs) {
+  if (pending.empty()) return;
   ArduinoJson::JsonObject m = msgs.add<ArduinoJson::JsonObject>();
   if (d == Dialect::OpenAIResponses) m["type"] = "message";
   m["role"] = "user";
   ArduinoJson::JsonArray parts = m["content"].to<ArduinoJson::JsonArray>();
-  for (size_t j : js) {
-    putText(parts, imgs.looked[j].img.tag + " (the photo image.look shows you again)", d);
-    putImage(parts, imgs.looked[j].img, imgs.lookMarker(j), d);
+  for (size_t j : pending) {
+    putText(parts, imgs->looked[j].img.tag + " (the photo image.look shows you again)", d);
+    putImage(parts, imgs->looked[j].img, imgs->lookMarker(j), d);
   }
+  pending.clear();
+}
+
+void noteSent(orch::TurnImages* imgs, int httpStatus) {
+  if (imgs && httpStatus == 200) imgs->sent = true;
 }
 
 bool refusedImages(int httpStatus, const std::string& errText) {
@@ -209,11 +231,11 @@ bool refusedImages(int httpStatus, const std::string& errText) {
   return e.find("image") != std::string::npos;
 }
 
-bool rejectAndRetry(orch::TurnImages* imgs, const char* who, int httpStatus) {
-  if (!imgs || imgs->rejected) return false;
+bool rejectAndRetry(orch::TurnImages* imgs, const char* who, int httpStatus, const std::string& host) {
+  if (!imgs || imgs->refusedBy(host)) return false;
   imgs->rejected = true;
-  imgs->shown = false;
-  imgs->sent = false;   // refused: no request of this turn shows them again
+  imgs->rejectedBy = host;
+  imgs->shown = false;   // `sent` stays: a request that showed them earlier was answered
   hlog::logf("%s: the provider refused the photos (HTTP %d) - re-sent with their transcriptions", who,
              httpStatus);
   return true;
@@ -241,91 +263,76 @@ void queueDelete(const orch::WorkingString& id) {
   }
   q.push_back(id);
 }
-void queueDeletes(orch::TurnImages& imgs) {
-  for (auto& it : imgs.items) {
-    if (it.fileId.empty() || it.fileHost != "anthropic") continue;
-    queueDelete(orch::workingCopy(it.fileId));
-    it.fileId.clear();
-    it.fileHost.clear();
-  }
-}
-
 // ---- re-attach: the kept file ids -------------------------------------------------
 struct FileRef {
   orch::WorkingString ref, id;
   orch::WorkingString chat;   // the per-chat cache key of the turn it was uploaded in
-  uint8_t idle = 0;   // head loops since it last rode a request
-  bool used = false;  // rode a request in the current loop
+  uint32_t usedMs = 0;        // when it last rode a request (the device clock)
+  uint32_t keptMs = 0;        // when it was kept (its upload's turn): the provider's expiry runs from about then
 };
 orch::WorkingVector<FileRef>& fileRefs() {
   static orch::WorkingVector<FileRef> v;
   return v;
 }
-orch::WorkingString& loopChat() {
-  static orch::WorkingString c;
-  return c;
+struct LoopNow {
+  orch::WorkingString chat;   // the loop in flight's chat (its cache key)
+  uint32_t ms = 0;            // its clock
+};
+LoopNow& loopNow() {
+  static LoopNow n;
+  return n;
 }
 
 // The kept file of `ref` for the loop's chat (nullptr = none).
 FileRef* findRef(const std::string& ref) {
   for (auto& f : fileRefs())
-    if (!ref.empty() && f.ref == ref.c_str() && f.chat == loopChat()) return &f;
+    if (!ref.empty() && f.ref == ref.c_str() && f.chat == loopNow().chat) return &f;
   return nullptr;
 }
 
-// Keep the turn's uploads for re-attach (their deletion is queued once unused); a set
-// the provider refused, or a photo with no valid ref, is deleted as before.
+void touch(FileRef& f) { f.usedMs = loopNow().ms; }
+
+// Keep an upload for re-attach; at the bound the longest unused one is deleted.
 void keepRef(const std::string& ref, const std::string& id) {
   auto& v = fileRefs();
-  if (v.size() >= kMaxFileRefs) {   // the bound: the longest unused goes
-    auto oldest =
-        std::max_element(v.begin(), v.end(), [](const FileRef& a, const FileRef& b) { return a.idle < b.idle; });
+  if (v.size() >= kMaxFileRefs) {
+    const uint32_t now = loopNow().ms;
+    auto oldest = std::max_element(v.begin(), v.end(), [now](const FileRef& a, const FileRef& b) {
+      return now - a.usedMs < now - b.usedMs;
+    });
     queueDelete(oldest->id);
     v.erase(oldest);
   }
   FileRef f;
   f.ref = orch::workingCopy(ref);
   f.id = orch::workingCopy(id);
-  f.chat = loopChat();
-  f.used = true;
+  f.chat = loopNow().chat;
+  touch(f);
+  f.keptMs = f.usedMs;
   v.push_back(f);
 }
 
-void keepUploads(orch::TurnImages& imgs) {
+// The loop's uploads: kept for re-attach (`keep`), else deleted. A set the provider
+// refused, or a photo with no valid ref, is always deleted.
+void settleUploads(orch::TurnImages& imgs, bool keep) {
   for (auto& it : imgs.items) {
     if (it.fileId.empty() || it.fileHost != "anthropic") continue;
     const FileRef* have = findRef(it.ref);
-    if (!imgs.rejected && orch::validRef(it.ref) && !have) keepRef(it.ref, it.fileId);
+    if (keep && !imgs.refusedBy("anthropic") && orch::validRef(it.ref) && !have) keepRef(it.ref, it.fileId);
     else if (!have || have->id != it.fileId.c_str()) queueDelete(orch::workingCopy(it.fileId));
     it.fileId.clear();
     it.fileHost.clear();
   }
 }
 
-// One head loop ended: an id that rode no request ages; past kFileRefIdleTurns its
-// deletion is queued.
-void ageFileRefs() {
-  auto& v = fileRefs();
-  for (size_t i = 0; i < v.size();) {
-    FileRef& f = v[i];
-    f.idle = f.used ? 0 : (uint8_t)(f.idle + 1);
-    f.used = false;
-    if (f.idle > kFileRefIdleTurns) {
-      queueDelete(f.id);
-      v.erase(v.begin() + (long)i);
-      continue;
-    }
-    ++i;
-  }
-}
-
 // The photo labels of a history text, in order: each bracket that names a ref with a
-// kept id, once per ref.
+// kept id not attached yet in this request (`done`): a photo rides its first, original
+// message once, however often its label is repeated later.
 struct Label {
   std::string tag;
-  const FileRef* file;
+  FileRef* file;
 };
-std::vector<Label> keptLabels(const std::string& text) {
+std::vector<Label> keptLabels(const std::string& text, std::vector<FileRef*>& done) {
   std::vector<Label> out;
   for (size_t at = text.find("[image"); at != std::string::npos; at = text.find("[image", at + 1)) {
     const size_t close = text.find(']', at);
@@ -334,40 +341,46 @@ std::vector<Label> keptLabels(const std::string& text) {
     const size_t r = tag.find(" ref=");
     if (r == std::string::npos || r + 5 + 16 > tag.size()) continue;
     const std::string ref = tag.substr(r + 5, 16);
-    const FileRef* f = orch::validRef(ref) ? findRef(ref) : nullptr;
-    if (!f) continue;
-    bool dup = false;
-    for (const Label& l : out) dup = dup || l.file == f;
-    if (!dup) out.push_back({tag, f});
+    FileRef* f = orch::validRef(ref) ? findRef(ref) : nullptr;
+    if (!f || std::find(done.begin(), done.end(), f) != done.end()) continue;
+    done.push_back(f);
+    out.push_back({tag, f});
   }
   return out;
 }
+
 }  // namespace
 
-void setLoopChat(const std::string& chatKey) { loopChat() = orch::workingCopy(chatKey); }
+void setLoopChat(const std::string& chatKey, uint32_t nowMs) {
+  loopNow().chat = orch::workingCopy(chatKey);
+  loopNow().ms = nowMs;
+}
 
 std::string fileRefFor(const std::string& ref) {
   const FileRef* f = findRef(ref);
   return f ? orch::plainCopy(f->id) : std::string();
 }
 
-void useFileRef(orch::TurnImage& it) {
-  FileRef* f = findRef(it.ref);
-  if (!f) return;
-  f->used = true;
-  it.fileId = orch::plainCopy(f->id);
-  it.fileHost = "anthropic";
+void useFileRefs(orch::TurnImages& imgs) {
+  for (orch::LookedImage& l : imgs.looked) {
+    FileRef* f = findRef(l.img.ref);
+    if (!f) continue;
+    touch(*f);
+    l.img.fileId = orch::plainCopy(f->id);
+    l.img.fileHost = "anthropic";
+  }
 }
 
 int reattachHistory(ArduinoJson::JsonArray messages, size_t count) {
   if (fileRefs().empty()) return 0;
   int added = 0;
+  std::vector<FileRef*> done;
   for (size_t i = 0; i < count && i < messages.size(); ++i) {
     ArduinoJson::JsonObject m = messages[i];
     if (strcmp(m["role"] | "", "user") != 0 || !m["content"].is<ArduinoJson::JsonArray>()) continue;
     ArduinoJson::JsonArray c = m["content"].as<ArduinoJson::JsonArray>();
     if (c.size() != 1) continue;   // one text block (prompt_layout's history shape)
-    const std::vector<Label> kept = keptLabels(c[0]["text"] | "");
+    const std::vector<Label> kept = keptLabels(c[0]["text"] | "", done);
     if (kept.empty()) continue;
     JsonDocument textBlock;   // the text block, cache point and all, copied out first
     textBlock.set(c[0]);
@@ -380,7 +393,7 @@ int reattachHistory(ArduinoJson::JsonArray messages, size_t count) {
       p["type"] = "image";
       p["source"]["type"] = "file";
       p["source"]["file_id"] = l.file->id.c_str();
-      const_cast<FileRef*>(l.file)->used = true;
+      touch(*l.file);
       ++added;
     }
     parts.add(textBlock.as<ArduinoJson::JsonObjectConst>());
@@ -388,10 +401,24 @@ int reattachHistory(ArduinoJson::JsonArray messages, size_t count) {
   return added;
 }
 
-void forgetFileRefs() {
-  if (!fileRefs().empty()) hlog::logf("anthropic: %u kept photo file(s) refused - re-sent without them",
-                                      (unsigned)fileRefs().size());
-  fileRefs().clear();
+void forgetFileRefs(orch::TurnImages* imgs, const std::string& errText) {
+  // The refusal names the file it could not find: only that one goes (the others still
+  // ride their messages); a refusal naming none of them takes them all.
+  auto& v = fileRefs();
+  const auto named = [&errText](const FileRef& f) { return errText.find(f.id.c_str()) != std::string::npos; };
+  const bool one = !errText.empty() && std::any_of(v.begin(), v.end(), named);
+  for (size_t i = 0; i < v.size();) {
+    if (one && !named(v[i])) {
+      ++i;
+      continue;
+    }
+    queueDelete(v[i].id);   // a gone id settles as 404; a live one is not left at the provider
+    if (imgs)
+      for (orch::LookedImage& l : imgs->looked)
+        if (l.img.fileId == v[i].id.c_str()) l.img.fileId.clear();
+    hlog::logf("anthropic: kept photo file %s refused - deleted, the round re-sent without it", v[i].id.c_str());
+    v.erase(v.begin() + (long)i);
+  }
 }
 
 void dropFileRefs() {
@@ -409,18 +436,7 @@ bool bodyHasFileRef(const std::string& body) { return body.find("\"source\":{\"t
 
 LoopImages::LoopImages(orch::Transcript& tr) : tr_(tr) { tr.setImages(orch::activeTurnImages()); }
 LoopImages::~LoopImages() {
-  if (tr_.images()) {
-    if (tr_.images()->uploadOnce) keepUploads(*tr_.images());
-    else queueDeletes(*tr_.images());
-  }
-  ageFileRefs();
-}
-
-bool anyFileRef(const orch::TurnImages* imgs) {
-  if (!imgs) return false;
-  for (const auto& it : imgs->items)
-    if (!it.fileId.empty() && it.fileHost == "anthropic") return true;
-  return false;
+  if (tr_.images()) settleUploads(*tr_.images(), tr_.images()->uploadOnce);
 }
 
 // ---- upload once (Anthropic Files API) ---------------------------------------------
@@ -473,7 +489,11 @@ int antUploadImages(const ProviderDeps& pd, orch::TurnImages& imgs) {
     if (!it.fileId.empty() || !it.bytes || !it.len) continue;
     const std::string kBoundary = boundaryFor(it, imgs.nonce);
     if (kBoundary.empty()) continue;
+    // The provider deletes the upload by itself after kUploadExpiryS whatever happens
+    // here (a restart loses the RAM ledger of kept ids), so no photo is left there for long.
     std::string body = std::string("--") + kBoundary +
+                       "\r\nContent-Disposition: form-data; name=\"expires_in_seconds\"\r\n\r\n" +
+                       std::to_string(kUploadExpiryS) + "\r\n--" + kBoundary +
                        "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + it.ref + "." +
                        extOf(it.mime) + "\"\r\nContent-Type: " + it.mime + "\r\n\r\n";
     BodySplices sp{BodySplice{body.size(), it.bytes, it.len, false}};
@@ -532,7 +552,41 @@ int deletePendingUploads(const ProviderDeps& pd, int max) {
 }
 
 namespace imageparts {
+namespace {
 
+// A kept file past its use: unused for kKeptUploadIdleMs, or near the provider's own
+// expiry (a reference to it would soon be refused).
+constexpr uint32_t kKeptMaxAgeMs = kUploadExpiryS * 1000u - 20u * 60u * 1000u;
+bool keptExpired(const FileRef& f, uint32_t nowMs) {
+  return nowMs - f.usedMs > kKeptUploadIdleMs || nowMs - f.keptMs > kKeptMaxAgeMs;
+}
+
+// Queue the deletion of every kept file past its use.
+int expireKept(uint32_t nowMs) {
+  auto& v = fileRefs();
+  int n = 0;
+  for (size_t i = 0; i < v.size();) {
+    if (!keptExpired(v[i], nowMs)) {
+      ++i;
+      continue;
+    }
+    queueDelete(v[i].id);
+    v.erase(v.begin() + (long)i);
+    ++n;
+  }
+  return n;
+}
+
+}  // namespace
 }  // namespace imageparts
+
+bool keptUploadsDue(uint32_t nowMs) {
+  for (const auto& f : imageparts::fileRefs())
+    if (imageparts::keptExpired(f, nowMs)) return true;
+  return false;
+}
+
+int tendKeptUploads(uint32_t nowMs) { return imageparts::expireKept(nowMs); }
+
 }  // namespace providers
 }  // namespace agent

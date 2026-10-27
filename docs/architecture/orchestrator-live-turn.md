@@ -325,8 +325,10 @@ when that is less; after that every slice goes out at once (`http.h` `SliceWait`
 uploaded once (the Files API, raw bytes) and every round references it by file_id.
 Bounds: 10 photos, 512 KB each, 2 MB per turn (looked photos included); a photo past
 them, an animated GIF, a format no head reads, a host without image input, and a
-provider that refuses the image parts all fall back to the caption step, whose text is
-labelled `(transcribed by <provider>)` so the head knows it has not seen the photo. A photo
+provider that refuses the image parts (for the rest of the turn on that provider; a
+failover to another host still sends them) all fall back to the caption step, whose
+text is labelled `(transcribed by <provider>)` so the head knows it has not seen the
+photo. A photo
 nobody could read says why, one label per cause (`(not read: openai out of credit
 (HTTP 429))`, `(not read: too large)`, `(not read: device low on memory)`), never the
 provider's own words; the prompt explains the family in one line.
@@ -338,17 +340,20 @@ parks that provider through the one shared park (every seam, not just photos) an
 walk moves on in the same photo; a server error or a dropped connection moves on
 without parking; the owner gets one notice per episode, shared with every seam. It is
 only ever asked for a host that cannot see images: a photo the head saw gets no caption
-call at all.
+call at all. A turn that runs as a single shot (the tool loop off, or deferred when the
+device is low on memory at the turn's start) counts as such a host: it sends no photo,
+so its photos are read by the caption step.
 
 **What the conversation keeps of a photo.** The head writes the photo's record itself:
 with its answer it calls `image.note {ref, note}`, one line of what matters in the photo
 (a pure write: sent with the final answer it costs no extra round). The photo's stored
 row is written as `(kept; image.look shows it)` before the turn runs and settled when the
 turn ends, before it is ever sent as history: `(seen; note: ...)` with the head's note,
-`(seen in its turn; image.look shows it again)` without one, or a blind host's
-transcription. A history message is never rewritten after it was sent, so the cached
-prefix holds; the only late rewrite left is a blind host's photo nobody could read, read
-again once its provider is open after a refusal (the episodic overlay,
+`(seen in its turn; image.look shows it again)` without one (an answered request
+carried the photo), or a blind host's transcription when only such a host served the
+turn. A history message is never rewritten after it was sent, so the cached prefix
+holds; the only late rewrite left is a photo that only a blind host met and nobody could
+read, read again once its provider is open after a refusal (the episodic overlay,
 `nimbus/orch/row_overlay.h`).
 
 **Earlier photos come back as pixels.** `image.look {ref, question}` reads the photo's
@@ -359,11 +364,14 @@ results (`[label, image]`). Only a host that cannot see images reads one caption
 request's answer to the question instead (made once). At most 4 photos per turn come back
 this way, inside the same byte bounds; a routine, which holds no photo set, gets the
 caption answer. On Anthropic with a direct key a recent photo also rides its own
-history message: the file uploaded in its turn is kept (at most 16, RAM only; one unused
-for 24 head loops is deleted, one per poll cycle) and while its label is in the history
-window the message carries it as a file reference before the message text, the same
-bytes every turn. A refusal of a kept file forgets them all and the round is sent
-again without them. Mistral and OpenAI have no file references: they view an earlier
+history message: the file uploaded in its turn is kept for that chat (at most 16, RAM
+only) and while its label is in the history window its first message carries it as a
+file reference before the message text, the same bytes every turn. A kept file unused
+for an hour, or 100 minutes old, is deleted (the poll task's idle step, one deletion
+per cycle), and every upload asks the provider to delete it by itself two hours after
+it was made, so one a restart left behind is gone by then. A refusal of a kept file
+deletes the file it names (all of them when it names none) and the round is sent again
+without it. Mistral and OpenAI have no file references: they view an earlier
 photo through `image.look` only, never by re-sending it every turn. What the caption
 step bills rides the next turn's per-host spend record. `device.status` carries
 `visionLastErr`.

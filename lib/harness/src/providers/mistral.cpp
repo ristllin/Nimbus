@@ -304,6 +304,7 @@ static void renderMistralMessages(const nimbus::orch::Transcript& tr,
     }
   }
   const auto& e = tr.entries();
+  imageparts::LookRender looks(tr, sees, imageparts::Dialect::MistralChat);
   for (const auto& it : e) {
     if (it.kind != Kind::User) continue;
     JsonObject u = msgs.add<JsonObject>();
@@ -343,25 +344,22 @@ static void renderMistralMessages(const nimbus::orch::Transcript& tr,
       fn["name"]      = mistralSafeName(e[ci].name);
       wire::putModelStr(fn["arguments"], e[ci].text, e[ci].name.c_str());
     }
-    std::vector<size_t> looks;
     for (size_t ri : results) {
       JsonObject m = msgs.add<JsonObject>();
       m["role"]         = "tool";
       m["tool_call_id"] = mistralCallId(e[ri].id);
       m["name"]         = mistralSafeName(e[ri].name);
-      const int look = imageparts::lookedFor(tr.images(), e[ri]);
-      if (look >= 0) {
-        if (sees) looks.push_back((size_t)look);
-        wire::putModelStr(m["content"],
-                          imageparts::lookText(*tr.images(), (size_t)look, sees, imageparts::Dialect::MistralChat),
-                          e[ri].name.c_str());
+      std::string lookWords;
+      size_t j = 0;
+      if (looks.render(e[ri], lookWords, j) != imageparts::LookRender::Show::NotALook) {
+        wire::putModelStr(m["content"], lookWords, e[ri].name.c_str());
         continue;
       }
       wire::putModelStr(m["content"],
                         e[ri].isError ? (std::string("ERROR: ") + e[ri].text) : e[ri].text,
                         e[ri].name.c_str());
     }
-    if (!looks.empty()) imageparts::putLookMessage(msgs, *tr.images(), looks, imageparts::Dialect::MistralChat);
+    looks.putMessage(msgs);
   }
 }
 
@@ -607,13 +605,13 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
                                 resp, filter, roundMs, &quota, splices.empty() ? nullptr : &splices);
       if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
       if (code != 200 && !splices.empty() && imageparts::refusedImages(code, mistralErrText(resp)) &&
-          imageparts::rejectAndRetry(tr.images(), "orchTurn(mistral-loop)", code)) {
+          imageparts::rejectAndRetry(tr.images(), "orchTurn(mistral-loop)", code, "mistral")) {
         imgs = nullptr;   // this round again, reading the transcriptions (and the rest of the turn)
         sees = false;
         --attempt;
         continue;
       }
-      if (code == 200 && imgs) imgs->sent = true;   // the head has seen the turn's photos
+      imageparts::noteSent(imgs, code);   // a 2xx: the head has seen the turn's photos
       if (code != 200 && *effort && !effortRetried &&
           misRefusedEffort(code, mistralErrText(resp) + " " + (const char*)(resp["code"] | ""))) {
         hlog::logf("orchTurn(mistral-loop): %s refused reasoning_effort (HTTP %d) - one retry without it",

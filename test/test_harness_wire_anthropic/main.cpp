@@ -1121,7 +1121,7 @@ static void test_r1_anthropic_uploads_once_and_references_file_ids() {
                              headerOf(d.http.seen[r], "anthropic-beta").c_str());
   }
   // Lane IMG: the uploads are kept for re-attach (nothing deleted yet); dropping them
-  // (re-attach off, or unused for kFileRefIdleTurns loops) queues their deletion.
+  // (re-attach switched off) queues their deletion.
   TEST_ASSERT_EQUAL(2, (int)providers::imageparts::fileRefCount());
   TEST_ASSERT_EQUAL(0, (int)providers::pendingUploadDeletes());
   providers::imageparts::dropFileRefs();
@@ -1251,6 +1251,7 @@ static void test_r1_refused_images_are_resent_as_transcriptions() {
   }
   TEST_ASSERT_TRUE(fx.set->rejected);
   TEST_ASSERT_FALSE(fx.set->shown);   // image.look reads them again: the head no longer has them
+  TEST_ASSERT_FALSE(fx.set->sent);    // no request that showed them was answered
   // A 400 about something else is not an image refusal: no blind re-send.
   TEST_ASSERT_FALSE(providers::imageparts::refusedImages(400, "max_tokens: must be at most 64000"));
   TEST_ASSERT_FALSE(providers::imageparts::refusedImages(500, "image service down"));
@@ -1409,6 +1410,97 @@ static void test_img_failover_from_a_blind_host_still_sends_the_pixels() {
   TEST_ASSERT_EQUAL(2, (int)d.http.spliced[1].size());
   TEST_ASSERT_EQUAL(2, fx.transcribed);   // no second reading
   TEST_ASSERT_TRUE(fx.set->sent);         // the head saw them: the rows settle as seen
+}
+
+// The class rule under every dialect: one request attaches each looked photo once,
+// however many results name it (two looks in one round on Mistral or OpenAI, or in two
+// rounds anywhere); a result that is not a look, an error, or another tool's text that
+// quotes the record is never a look.
+static void test_img_look_render_attaches_each_photo_once_in_every_dialect() {
+  using LR = providers::imageparts::LookRender;
+  using D = providers::imageparts::Dialect;
+  for (D d : {D::Anthropic, D::OpenAIResponses, D::MistralChat}) {
+    nimbus::orch::TurnImages set;
+    set.nonce = "n";
+    nimbus::orch::LookedImage l;
+    l.img.ref = "00112233445566ff";
+    l.img.tag = "[image ref=00112233445566ff]";
+    l.img.mime = "image/jpeg";
+    set.looked.push_back(l);
+    nimbus::orch::Transcript tr;
+    tr.setImages(&set);
+    nimbus::orch::TranscriptItem r;
+    r.kind = nimbus::orch::TranscriptItem::Kind::ToolResult;
+    r.name = "image_look";
+    r.text = nimbus::orch::lookResultText("00112233445566ff");
+    LR looks(tr, true, d);
+    std::string text;
+    size_t j = 9;
+    TEST_ASSERT_TRUE(looks.render(r, text, j) == LR::Show::Attach);
+    TEST_ASSERT_EQUAL(0, (int)j);
+    TEST_ASSERT_TRUE(looks.render(r, text, j) == LR::Show::Text);
+    TEST_ASSERT_NOT_NULL(strstr(text.c_str(), "shown above"));
+    JsonDocument doc;
+    JsonArray msgs = doc.to<JsonArray>();
+    looks.putMessage(msgs);
+    TEST_ASSERT_EQUAL(d == D::Anthropic ? 0 : 1, (int)msgs.size());
+    if (d != D::Anthropic) TEST_ASSERT_EQUAL(2, (int)msgs[0]["content"].size());   // one label, one image
+    nimbus::orch::TranscriptItem other = r;
+    other.name = "web_search";
+    TEST_ASSERT_TRUE(looks.render(other, text, j) == LR::Show::NotALook);
+    nimbus::orch::TranscriptItem failed = r;
+    failed.isError = true;
+    TEST_ASSERT_TRUE(looks.render(failed, text, j) == LR::Show::NotALook);
+    LR blind(tr, false, d);
+    TEST_ASSERT_TRUE(blind.render(r, text, j) == LR::Show::Text);
+    TEST_ASSERT_EQUAL_STRING("[image ref=00112233445566ff] (not read: no provider could read it)", text.c_str());
+  }
+}
+
+// A photo uploaded for an Anthropic round keeps its file id for the turn; when the turn
+// fails over to a host without file references (Mistral, OpenAI) that request writes it
+// inline, and its marker is spliced, never sent as text. Seeded photos and looked
+// photos alike.
+static void test_img_file_ids_never_leave_a_marker_on_another_host() {
+  harness_test::PhotoTurn fx;
+  fx.set->items[0].fileId = "file_seed";
+  fx.set->items[0].fileHost = "anthropic";
+  nimbus::orch::LookedImage l;
+  static const uint8_t px[] = {0xFF, 0xD8, 0xFF, 0xDB, 1, 2};
+  l.img.ref = "00112233445566ff";
+  l.img.tag = "[image ref=00112233445566ff]";
+  l.img.mime = "image/jpeg";
+  l.img.bytes = px;
+  l.img.len = sizeof px;
+  l.img.fileId = "file_look";
+  l.img.fileHost = "anthropic";
+  fx.set->looked.push_back(l);
+  JsonDocument doc;
+  JsonArray msgs = doc.to<JsonArray>();
+  JsonObject seed = msgs.add<JsonObject>();
+  seed["role"] = "user";
+  seed["content"] = "the turn";
+  providers::imageparts::putParts(seed, *fx.set, providers::imageparts::Dialect::MistralChat);
+  nimbus::orch::Transcript tr;
+  tr.setImages(fx.set.get());
+  nimbus::orch::TranscriptItem r;
+  r.kind = nimbus::orch::TranscriptItem::Kind::ToolResult;
+  r.name = "image_look";
+  r.text = nimbus::orch::lookResultText("00112233445566ff");
+  providers::imageparts::LookRender looks(tr, true, providers::imageparts::Dialect::MistralChat);
+  std::string text;
+  size_t j = 0;
+  TEST_ASSERT_TRUE(looks.render(r, text, j) == providers::imageparts::LookRender::Show::Attach);
+  looks.putMessage(msgs);
+  std::string body;
+  serializeJson(doc, body);
+  agent::BodySplices sp;
+  std::string err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::imageparts::spliceAll(body, fx.set.get(), true, sp, err), err.c_str());
+  TEST_ASSERT_EQUAL(3, (int)sp.size());   // both seeded photos (one with a file id) and the looked one
+  TEST_ASSERT_TRUE(body.find("nimg:") == std::string::npos);
+  TEST_ASSERT_TRUE(body.find("nlook:") == std::string::npos);
+  TEST_ASSERT_TRUE(body.find("file_") == std::string::npos);   // no Anthropic id on another host
 }
 
 // ---- lane IMG: recent photos re-attached as file references ---------------------
@@ -1574,57 +1666,127 @@ static void test_img_history_prefix_is_append_only_except_across_a_fold() {
   providers::imageparts::dropFileRefs();
 }
 
-// A kept id unused for kFileRefIdleTurns head loops is deleted; the bound drops the
-// longest unused first; a refusal of a kept file forgets them all and the round is
-// re-sent without them (once).
-static void test_img_kept_files_age_out_and_a_refusal_forgets_them() {
-  {
-    auto set = std::unique_ptr<nimbus::orch::TurnImages>(new nimbus::orch::TurnImages());
-    set->uploadOnce = true;
-    nimbus::orch::TurnImage it;
-    it.ref = "0123456789abcdef";
-    it.fileId = "file_old";
-    it.fileHost = "anthropic";
-    set->items.push_back(it);
-    const nimbus::orch::ActiveTurnImages active(set.get());
-    nimbus::orch::Transcript tr;
-    const providers::imageparts::LoopImages loop(tr);
-  }
-  TEST_ASSERT_EQUAL(1, (int)providers::imageparts::fileRefCount());
-  const size_t before = providers::pendingUploadDeletes();
-  for (uint8_t i = 0; i <= providers::imageparts::kFileRefIdleTurns; ++i) {
-    TEST_ASSERT_EQUAL(1, (int)providers::imageparts::fileRefCount());
-    const nimbus::orch::ActiveTurnImages none(nullptr);
-    nimbus::orch::Transcript tr;
-    const providers::imageparts::LoopImages loop(tr);
-  }
-  TEST_ASSERT_EQUAL(0, (int)providers::imageparts::fileRefCount());
-  TEST_ASSERT_EQUAL((int)before + 1, (int)providers::pendingUploadDeletes());
+// Keep one upload for the loop's chat at the loop's clock (what a photo turn on a direct
+// key leaves behind).
+static void keepOne(const char* ref, const char* id, uint32_t nowMs) {
+  providers::imageparts::setLoopChat("", nowMs);
+  auto set = std::unique_ptr<nimbus::orch::TurnImages>(new nimbus::orch::TurnImages());
+  set->uploadOnce = true;
+  nimbus::orch::TurnImage it;
+  it.ref = ref;
+  it.fileId = id;
+  it.fileHost = "anthropic";
+  set->items.push_back(it);
+  const nimbus::orch::ActiveTurnImages active(set.get());
+  nimbus::orch::Transcript tr;
+  const providers::imageparts::LoopImages loop(tr);
+}
 
-  // A refused kept file: forgotten, the round re-sent without it.
+// Nothing kept is left at the provider for long: every upload asks the provider to
+// delete it by itself after kUploadExpiryS (so one a restart orphaned goes too); a kept
+// file unused for an hour is deleted (exactly an hour is still kept); a refusal of a
+// kept file deletes them all and the round is re-sent without them (once).
+static void test_img_kept_files_are_never_left_behind() {
   {
-    auto set = std::unique_ptr<nimbus::orch::TurnImages>(new nimbus::orch::TurnImages());
-    set->uploadOnce = true;
-    nimbus::orch::TurnImage it;
-    it.ref = "0123456789abcdef";
-    it.fileId = "file_gone";
-    it.fileHost = "anthropic";
-    set->items.push_back(it);
-    const nimbus::orch::ActiveTurnImages active(set.get());
-    nimbus::orch::Transcript tr;
-    const providers::imageparts::LoopImages loop(tr);
+    harness_test::PhotoTurn fx;
+    fx.set->uploadOnce = true;
+    FakeProviderDeps u;
+    u.http.script.push_back({"api.anthropic.com", "/v1/files", 200, "{\"id\":\"file_e1\"}"});
+    u.http.script.push_back({"api.anthropic.com", "/v1/files", 200, "{\"id\":\"file_e2\"}"});
+    u.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+    bool ok = false;
+    std::string err;
+    antPhotoTurn(u, fx, "claude-haiku-5-5", ok, err);
+    TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+    for (size_t i = 0; i < 2; ++i) {
+      const std::string& body = u.http.seen[i].body;
+      const size_t at = body.find("name=\"expires_in_seconds\"\r\n\r\n7200\r\n");
+      TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, "the upload carries the provider-side expiry");
+      TEST_ASSERT_TRUE(at < body.find("name=\"file\""));   // a form field before the file part
+    }
+    providers::imageparts::dropFileRefs();
   }
+  keepOne("0123456789abcdef", "file_kept", 1000);
   FakeProviderDeps d;
-  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 400,
+  auto pd = d.contract();
+  const size_t queued0 = providers::pendingUploadDeletes();
+  TEST_ASSERT_FALSE(providers::keptUploadsDue(1000 + providers::imageparts::kKeptUploadIdleMs));
+  TEST_ASSERT_TRUE(providers::keptUploadsDue(1001 + providers::imageparts::kKeptUploadIdleMs));
+  TEST_ASSERT_EQUAL(1, providers::tendKeptUploads(1001 + providers::imageparts::kKeptUploadIdleMs));
+  TEST_ASSERT_EQUAL(0, (int)providers::imageparts::fileRefCount());
+  TEST_ASSERT_EQUAL((int)queued0 + 1, (int)providers::pendingUploadDeletes());
+  TEST_ASSERT_FALSE(providers::keptUploadsDue(2 * providers::imageparts::kKeptUploadIdleMs));
+
+  // A refused kept file: deleted, the round re-sent without it.
+  keepOne("0123456789abcdef", "file_gone", 5000);
+  FakeProviderDeps r;
+  r.http.script.push_back({"api.anthropic.com", "/v1/messages", 400,
                            "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":"
                            "\"messages.0.content.1.image.source.file_id: File not found: file_gone\"}}"});
-  const std::string body = antHistoryTurn(d, promptWithHistory({kPhotoRow}));
-  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
-  TEST_ASSERT_TRUE(bodyHas(d, 0, "file_gone"));
-  TEST_ASSERT_FALSE(bodyHas(d, 1, "file_gone"));
-  TEST_ASSERT_EQUAL_STRING("managed-agents-2026-04-01", headerOf(d.http.seen[1], "anthropic-beta").c_str());
+  antHistoryTurn(r, promptWithHistory({kPhotoRow}));
+  TEST_ASSERT_EQUAL(2, (int)r.http.seen.size());
+  TEST_ASSERT_TRUE(bodyHas(r, 0, "file_gone"));
+  TEST_ASSERT_FALSE(bodyHas(r, 1, "file_gone"));
+  TEST_ASSERT_EQUAL_STRING("managed-agents-2026-04-01", headerOf(r.http.seen[1], "anthropic-beta").c_str());
   TEST_ASSERT_EQUAL(0, (int)providers::imageparts::fileRefCount());
-  (void)body;
+  TEST_ASSERT_EQUAL((int)queued0 + 2, (int)providers::pendingUploadDeletes());
+  // Drain the queue (each id settles: deleted or already gone).
+  const int left = (int)providers::pendingUploadDeletes();
+  for (int i = 0; i < left; ++i) d.http.script.push_back({"api.anthropic.com", "/v1/files/", 404, "{}"});
+  TEST_ASSERT_EQUAL(left, providers::deletePendingUploads(pd, left));
+  TEST_ASSERT_EQUAL(0, (int)providers::pendingUploadDeletes());
+}
+
+// The same photo looked at twice in one turn is attached once: the second result says
+// it is above, so its splice marker is never written twice (a marker left in the body
+// would reach the provider as text and the request would be refused).
+static void test_img_look_twice_attaches_the_photo_once() {
+  harness_test::LookRig look;
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antLookBody()});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antLookBody()});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  bool ok = false;
+  std::string err;
+  antLookTurn(d, look, "claude-haiku-5-5", ok, err);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(3, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL(2, look.looks);
+  JsonDocument req;
+  TEST_ASSERT_FALSE(deserializeJson(req, reqBody(d, 2), DeserializationOption::NestingLimit(64)));
+  int images = 0;
+  bool cached = false;
+  harness_test::walkParts(req["messages"], "image", images, cached);
+  TEST_ASSERT_EQUAL(1, images);
+  TEST_ASSERT_EQUAL(1, (int)d.http.spliced[2].size());
+  TEST_ASSERT_FALSE(bodyHas(d, 2, "nlook:"));
+  TEST_ASSERT_EQUAL_STRING(
+      "[image ref=00112233445566ff] The photo is shown above in this conversation: answer from what you see in it.",
+      str(req["messages"][4]["content"][0]["content"]));
+}
+
+// The belt under the render rule: should the same look marker ever reach a body
+// twice (a fold replay, a hand-built request), spliceAll cuts EVERY occurrence -
+// a marker left in the body would reach the provider as text and be refused.
+static void test_img_splice_all_cuts_every_occurrence_of_a_look_marker() {
+  harness_test::LookRig look;
+  nimbus::orch::TurnImages set;
+  set.nonce = "l00k";
+  nimbus::orch::LookedImage l;
+  l.img.ref = look.ref;
+  l.img.mime = "image/jpeg";
+  l.img.bytes = look.photo.data();
+  l.img.len = look.photo.size();
+  l.img.tag = "[image ref=" + look.ref + "]";
+  set.looked.push_back(l);
+  const std::string marker = set.lookMarker(0);
+  std::string body = "first result " + marker + " middle " + marker + " tail";
+  agent::BodySplices sp;
+  std::string err;
+  TEST_ASSERT_TRUE(providers::imageparts::spliceAll(body, &set, false, sp, err));
+  TEST_ASSERT_EQUAL(2, (int)sp.size());
+  TEST_ASSERT_TRUE(body.find(marker) == std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("first result  middle  tail", body.c_str());
 }
 
 // A kept file belongs to the chat it was uploaded in: a label naming its ref in
@@ -1726,7 +1888,11 @@ int main(int, char**) {
   RUN_TEST(test_img_failover_from_a_blind_host_still_sends_the_pixels);
   RUN_TEST(test_img_reattach_rides_the_history_message_with_a_stable_prefix);
   RUN_TEST(test_img_history_prefix_is_append_only_except_across_a_fold);
-  RUN_TEST(test_img_kept_files_age_out_and_a_refusal_forgets_them);
+  RUN_TEST(test_img_kept_files_are_never_left_behind);
+  RUN_TEST(test_img_look_twice_attaches_the_photo_once);
+  RUN_TEST(test_img_splice_all_cuts_every_occurrence_of_a_look_marker);
+  RUN_TEST(test_img_look_render_attaches_each_photo_once_in_every_dialect);
+  RUN_TEST(test_img_file_ids_never_leave_a_marker_on_another_host);
   RUN_TEST(test_img_kept_files_stay_in_their_chat);
   UNITY_END();
   return 0;

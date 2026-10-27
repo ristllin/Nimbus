@@ -79,9 +79,9 @@ bool native();
 void setUploadOnce(bool on);
 bool uploadOnce();
 
-// The idle step of the poll task (between cycles, never inside a turn): one queued
-// deletion of an uploaded photo, or one re-read of a photo a blind host could not
-// read. True when it ran one.
+// The idle step of the poll task (between cycles, never inside a turn): a kept photo
+// upload unused for an hour queued for deletion, one queued deletion of an uploaded
+// photo, or one re-read of a photo a blind host could not read.
 bool idleDue();
 void idleStep();
 

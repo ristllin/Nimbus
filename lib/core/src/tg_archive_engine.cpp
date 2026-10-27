@@ -697,6 +697,9 @@ void Archive::finishJob(const Job& j, const char* st, uint32_t& counter, uint64_
   ++counter;
   if (!appendLine(indexPathOf(j.chat, j.day), eventRow(j.base, jobName(j), st, bytes, err)))
     ++stats_.writeErrors;
+  // The full size landed: the turn's smaller copy has done its job (the photo the head
+  // saw is kept in the memory store), so the item is one file on the card again.
+  if (std::strcmp(st, "ok") == 0) fs_.remove(itemPath(j.chat, j.day, turnCopyName(j.base, j.ext)));
 }
 
 // A source error: the job goes to the back of the queue (others proceed) until it

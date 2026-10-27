@@ -175,12 +175,20 @@ struct ProviderDeps {
 // provider's image parts, or their machine transcriptions when the model cannot see
 // them. On an Anthropic head with a direct key each photo is uploaded once per turn
 // (the Files API) and referenced by file_id in every round; when the loop ends the
-// uploads are queued for deletion, which the device runs one at a time on its idle
-// step (deletePendingUploads), never inside a turn and never before the reply.
+// uploads are kept for re-attach (below) or queued for deletion, which the device runs
+// one at a time on its idle step (deletePendingUploads), never inside a turn and never
+// before the reply.
 size_t pendingUploadDeletes();
 // Delete up to `max` queued uploads; returns how many were settled (deleted, gone,
 // or refused for good). A transient failure keeps the id for a later call.
 int deletePendingUploads(const ProviderDeps& pd, int max = 1);
+// Lane IMG: an Anthropic head keeps a turn's uploads to re-attach the photos to their
+// history messages in later turns (RAM only; every upload also expires at the provider
+// two hours after it was made). The idle step tends them: an upload unused for an hour
+// is queued for deletion. Due: there is such work now.
+bool keptUploadsDue(uint32_t nowMs);
+// Queue the deletion of every kept upload unused for an hour; returns how many.
+int tendKeptUploads(uint32_t nowMs);
 
 // ---- head-orchestrator turns (std::string space) ----------------------------
 // Same contract as the engine's ProviderTurnFn: send system(instructions) +

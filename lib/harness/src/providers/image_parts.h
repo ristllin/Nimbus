@@ -27,7 +27,7 @@
 // it cannot read or hides one from a host that can.
 //
 // The bytes never become a JSON string: the part carries a marker (TurnImages::
-// marker) and spliceMarkers() cuts it out of the serialized body and records a splice
+// marker) and spliceAll() cuts it out of the serialized body and records a splice
 // (http.h BodySplice) that the transport base64-encodes slice by slice at send time.
 namespace agent {
 namespace providers {
@@ -54,12 +54,10 @@ std::string userText(const nimbus::orch::Transcript& tr, const std::string& text
 void putParts(ArduinoJson::JsonObject m, const nimbus::orch::TurnImages& imgs, Dialect d);
 
 // After serialization: cut every inline image's marker out of `body` and record its
-// splice. false (err set) when an inline image's marker is missing: the request
-// would carry the photo's label but not the photo.
-bool spliceMarkers(std::string& body, const nimbus::orch::TurnImages& imgs, BodySplices& out,
-                   std::string& err);
-// The same over the whole set: the seeded photos when `photos` (strict, as above),
-// and every looked photo whose marker the body carries (a round folded away shows none).
+// splice (http.h BodySplice): the seeded photos when `photos` (strict: false, err set,
+// when one is missing, since the request would carry the photo's label but not the
+// photo), and every occurrence of each looked photo's marker (a round folded away shows
+// none). nullptr = nothing to splice.
 bool spliceAll(std::string& body, const nimbus::orch::TurnImages* imgs, bool photos, BodySplices& out,
                std::string& err);
 
@@ -67,26 +65,45 @@ bool spliceAll(std::string& body, const nimbus::orch::TurnImages* imgs, bool pho
 // Does a request on this host show images this turn (its model takes image input and
 // no provider refused them)? The looked photos follow the same rule as the seeded ones.
 bool sees(const nimbus::orch::Transcript& tr, const std::string& host, const std::string& model);
-// The looked photo a transcript entry shows again (-1 = none): an image.look result
-// (lookResultText) naming a photo of the set's `looked`.
-int lookedFor(const nimbus::orch::TurnImages* imgs, const nimbus::orch::TranscriptItem& result);
-// The text a request renders for that result: where the photo is (`showing`, in the
-// dialect's words), else a blind host's reading of it (made once).
-std::string lookText(nimbus::orch::TurnImages& imgs, size_t j, bool showing, Dialect d);
-// Anthropic: the tool_result's content as [text, image].
-void putLookResult(ArduinoJson::JsonObject toolResult, nimbus::orch::TurnImages& imgs, size_t j);
-// OpenAI and Mistral: one user message after a round's results, [label, image] for
-// each looked photo `js` of the round.
-void putLookMessage(ArduinoJson::JsonArray msgs, const nimbus::orch::TurnImages& imgs, const std::vector<size_t>& js,
-                    Dialect d);
+
+// One request's rendering of image.look results: each looked photo is attached once per
+// request, at its first result (Anthropic inside that tool result; OpenAI and Mistral in
+// one user message after the round's results, putMessage); a later look at the same
+// photo says it is above, so a marker is never written twice. A host that cannot see
+// images reads the caption step's answer instead (made once).
+class LookRender {
+ public:
+  enum class Show : uint8_t { NotALook, Text, Attach };
+  LookRender(const nimbus::orch::Transcript& tr, bool sees, Dialect d);
+  // The rendering of transcript entry `result`: NotALook, or its words in `text` and
+  // Attach (photo `j` goes with it) or Text (words only).
+  Show render(const nimbus::orch::TranscriptItem& result, std::string& text, size_t& j);
+  // Anthropic: the tool_result's content as [text, image j].
+  void putResult(ArduinoJson::JsonObject toolResult, const std::string& text, size_t j) const;
+  // OpenAI and Mistral: the round's attached photos as one user message, [label, image]
+  // each (nothing when the round attached none).
+  void putMessage(ArduinoJson::JsonArray msgs);
+
+ private:
+  nimbus::orch::TurnImages* imgs;
+  bool sees;
+  Dialect d;
+  std::vector<size_t> attached;   // looked photos already in this request
+  std::vector<size_t> pending;    // this round's, for putMessage
+};
+
+// A 200 answer to a request that showed the turn's photos: the head has seen them
+// (every wire path treats only 200 as success).
+void noteSent(nimbus::orch::TurnImages* imgs, int httpStatus);
 
 // A refusal of the image parts themselves (HTTP 400/422 naming the image, or 413:
 // the request was too large to take): the round is re-sent with the transcriptions.
 bool refusedImages(int httpStatus, const std::string& errText);
 
-// The step's one blind retry after refusedImages: marks the set rejected for the
-// rest of the turn and logs it. Returns true when the caller should re-send.
-bool rejectAndRetry(nimbus::orch::TurnImages* imgs, const char* who, int httpStatus);
+// The step's one blind retry after refusedImages: marks the set refused by `host` for
+// the rest of the turn ("" = every host) and logs it. Returns true when the caller
+// should re-send. Another host a failover reaches still gets the pixels.
+bool rejectAndRetry(nimbus::orch::TurnImages* imgs, const char* who, int httpStatus, const std::string& host = "");
 
 // The turn input for a request path that cannot show photos (a single-shot head):
 // the photos of the turn in flight read as their machine transcriptions.
@@ -113,8 +130,6 @@ inline constexpr const char* kAntFilesBeta = "files-api-2025-04-14";
 // it. Direct keys only (a router head stays inline). A failed upload leaves that
 // photo inline (logged). Returns the count uploaded.
 int antUploadImages(const ProviderDeps& pd, nimbus::orch::TurnImages& imgs);
-// Any photo of the set rides as a file reference (the request needs kAntFilesBeta).
-bool anyFileRef(const nimbus::orch::TurnImages* imgs);
 // A serialized request carries a file image source (it needs kAntFilesBeta): the
 // turn's photos, a re-attached history photo or a looked photo by file_id.
 bool bodyHasFileRef(const std::string& body);
@@ -125,25 +140,31 @@ bool bodyHasFileRef(const std::string& body);
 // as a file reference: [label, image, ..., the message text], the text block last (it
 // keeps the message's cache point), so every later turn sends the same bytes for that
 // message and the cached prefix holds across turns. A photo whose id is no longer kept
-// (a restart, the bound) renders as its label only; the head can still image.look it.
-// An id unused for kFileRefIdleTurns head loops is deleted (the idle step).
+// (a restart, the bound, an hour unused) renders as its label only; the head can still
+// image.look it. Kept ids belong to the chat they were uploaded in. The device's idle
+// step deletes an id unused for kKeptUploadIdleMs or near the provider's expiry
+// (providers.h keptUploadsDue / tendKeptUploads), and every upload asks the provider to
+// delete it by itself after kUploadExpiryS, so one a restart left behind (the ids live
+// in RAM) is gone by then.
 inline constexpr size_t kMaxFileRefs = 16;
-inline constexpr uint8_t kFileRefIdleTurns = 24;
-// The chat the head loop in flight serves (its prompt's per-chat cache key): an upload
-// is kept for that chat and re-attached only in its turns, so a label typed in another
-// chat never shows that chat a photo it was not sent.
-void setLoopChat(const std::string& chatKey);
+inline constexpr uint32_t kKeptUploadIdleMs = 60u * 60u * 1000u;   // the longest cache TTL
+inline constexpr uint32_t kUploadExpiryS = 2u * 60u * 60u;         // the API takes 3,600 or more
+// The chat the head loop in flight serves (its prompt's per-chat cache key) and its
+// clock: an upload is kept for that chat and re-attached only in its turns, so a label
+// typed in another chat never shows that chat a photo it was not sent.
+void setLoopChat(const std::string& chatKey, uint32_t nowMs = 0);
 // The kept file id of photo `ref` for the loop's chat ("" = none).
 std::string fileRefFor(const std::string& ref);
 // Re-attach the kept photos of the first `count` messages (the history). Returns the
 // images added.
 int reattachHistory(ArduinoJson::JsonArray messages, size_t count);
-// A looked photo with a kept id rides as that file reference (no bytes re-sent).
-void useFileRef(nimbus::orch::TurnImage& it);
+// The set's looked photos with a kept id ride as that file reference (no bytes re-sent).
+void useFileRefs(nimbus::orch::TurnImages& imgs);
 // The provider refused a request that carried kept ids (a changed key, an expired
-// file): forget them all (nothing to delete) so the round is re-sent without them.
-void forgetFileRefs();
-// Queue the deletion of every kept id (re-attach switched off).
+// file): delete the one its error names, or all when it names none (a gone id settles
+// as 404), and clear the looked photos' ids, so the round is re-sent without them.
+void forgetFileRefs(nimbus::orch::TurnImages* imgs = nullptr, const std::string& errText = "");
+// Queue the deletion of every kept id.
 void dropFileRefs();
 size_t fileRefCount();
 // A refusal of a file reference itself (HTTP 400/404 naming a file).

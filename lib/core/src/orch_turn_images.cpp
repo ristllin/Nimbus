@@ -200,26 +200,28 @@ std::string TurnImages::blindText(const std::string& text) {
   return unplaced.empty() ? out : out + unplaced;
 }
 
-const char* admitImage(const TurnImages& set, const uint8_t* bytes, size_t len, const char*& why) {
-  why = "";
+namespace {
+// The checks every photo of a turn passes (its size, the turn's bytes, its format by its
+// bytes); `why` already set (a count limit) skips them.
+const char* admitBytes(const TurnImages& set, const uint8_t* bytes, size_t len, const char*& why) {
   const char* mime = sniffImageMime(bytes, len);
-  if (set.items.size() >= kTurnImageMax) why = "the turn's photo limit";
-  else if (len > kImagePartBytes) why = "too large";
+  if (*why) return "";
+  if (len > kImagePartBytes) why = "too large";
   else if (set.bytes() + len > kTurnImageBytes) why = "over the turn's photo budget";
   else if (!*mime) why = "not an image by its bytes";
   else if (animatedGif(bytes, len)) why = "an animated GIF";
   return *why ? "" : mime;
 }
+}  // namespace
+
+const char* admitImage(const TurnImages& set, const uint8_t* bytes, size_t len, const char*& why) {
+  why = set.items.size() >= kTurnImageMax ? "the turn's photo limit" : "";
+  return admitBytes(set, bytes, len, why);
+}
 
 const char* admitLook(const TurnImages& set, const uint8_t* bytes, size_t len, const char*& why) {
-  why = "";
-  const char* mime = sniffImageMime(bytes, len);
-  if (set.looked.size() >= kTurnLookMax) why = "the turn's limit of photos looked at again";
-  else if (len > kImagePartBytes) why = "too large";
-  else if (set.bytes() + len > kTurnImageBytes) why = "over the turn's photo budget";
-  else if (!*mime) why = "not an image by its bytes";
-  else if (animatedGif(bytes, len)) why = "an animated GIF";
-  return *why ? "" : mime;
+  why = set.looked.size() >= kTurnLookMax ? "the turn's limit of photos looked at again" : "";
+  return admitBytes(set, bytes, len, why);
 }
 
 namespace {
@@ -238,18 +240,42 @@ std::string lookResultRef(const std::string& text) {
   return validRef(ref) ? ref : std::string();
 }
 
-std::string settledRow(const TurnImages& set, size_t i) {
-  if (i >= set.items.size()) return std::string();
+namespace {
+enum class Settle : uint8_t { Keep, Note, Reading, Seen };
+Settle settleOf(const TurnImages& set, size_t i) {
+  if (i >= set.items.size()) return Settle::Keep;
   const TurnImage& it = set.items[i];
+  // The head saw the pixels (an answered request carried them): its own words, or "seen",
+  // whatever a blind host on another round read or failed to read.
+  if (set.sent) return it.note.empty() ? Settle::Seen : Settle::Note;
+  if (!it.fallback.empty()) return Settle::Reading;   // only a blind host read it: its transcription
+  return Settle::Keep;                                 // never shown or read: intake's row stays
+}
+}  // namespace
+
+std::string settledRow(const TurnImages& set, size_t i) {
+  const Settle how = settleOf(set, i);
+  if (how == Settle::Keep) return std::string();
+  const TurnImage& it = set.items[i];
+  if (how == Settle::Reading) return it.fallback;
   MediaLabel l;
-  if (set.sent && !it.note.empty()) {   // the head's own words, from the photo it saw
-    l.cls = MediaClass::Noted;
-    l.detail = it.note;
-    return it.tag + mediaSuffix(l);
+  l.cls = how == Settle::Note ? MediaClass::Noted : MediaClass::Seen;
+  l.detail = it.note;
+  return it.tag + mediaSuffix(l);
+}
+
+bool settledNeedsReread(const TurnImages& set, size_t i) {
+  return settleOf(set, i) == Settle::Reading && set.items[i].retryRead;
+}
+
+const char* settledHow(const TurnImages& set, size_t i) {
+  switch (settleOf(set, i)) {
+    case Settle::Note: return "the head's note";
+    case Settle::Reading: return "read for a host that cannot see images";
+    case Settle::Seen: return "seen";
+    case Settle::Keep: break;
   }
-  if (!it.fallback.empty()) return it.fallback;   // a blind host read its transcription
-  if (set.sent) return it.tag + kSeenSuffix;
-  return std::string();   // never shown or read: the row keeps what intake stored
+  return "kept as stored";
 }
 
 TurnImage attachedImage(const MediaLabel& label, const uint8_t* bytes, size_t len, const std::string& mime) {

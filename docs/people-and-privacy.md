@@ -132,18 +132,21 @@ data is still there.
 
 ## Photos and files sent to the device
 
-**A photo becomes a description.** When someone sends a picture, the device
-looks at it once and writes down what it sees; that description is what enters
-the conversation. The original is kept on the SD card so it can be viewed
-again later, while the conversation carries a sentence rather than the image
-itself.
+**The assistant sees the photo itself.** When someone sends a picture, the
+assistant's model receives the image and keeps a one-line note of what matters in
+it; that note is what the conversation keeps. The original is kept on the SD card,
+and the assistant can view it again later. If the model in use cannot see images, a
+second model describes the photo instead, and the assistant is told it has not seen
+it. With an Anthropic key, a recent photo is kept at Anthropic so later replies can
+still see it: it is deleted an hour after it was last used, and Anthropic deletes it by
+itself two hours after the upload in any case.
 
 **Media needs an SD card.** With no card the device says so and suggests
 describing the file in words instead. It will not half-accept something it
 cannot keep.
 
-If no vision provider is configured, the photo is still stored and
-acknowledged - the conversation simply does not gain a description.
+If no provider can read images, the photo is still stored and acknowledged:
+the conversation simply does not gain a description.
 
 ## Viewing files in the web UI
 

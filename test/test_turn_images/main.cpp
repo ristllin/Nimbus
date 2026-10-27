@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "nimbus/harness/http.h"
+#include "nimbus/orch/caps.h"            // kImageRowMaxChars - the history's photo row
 #include "nimbus/orch/model_catalog.h"   // mistralVisionByName, classifyModel: the one Mistral vision rule
 #include "nimbus/orch/turn_images.h"
 
@@ -391,39 +392,58 @@ static void test_look_answer_made_once() {
                            bare->lookAnswer(0).c_str());
 }
 
-// Property over every case of a photo's turn (seen or not, a note or not, a blind
-// host's reading or not): the settled row is the head's note only for a photo it saw,
-// a blind host's reading otherwise, "seen" for a photo seen with no note, and nothing
-// (the intake row stays) for a photo the turn never showed or read. No case asks for a
-// caption: the settled row is built from what the turn already has.
+// One cell of the grid: the row, the re-read flag and the settle word the turn's
+// state must produce, with no caption call anywhere.
+static void checkSettledCase(int sent, int noted, int read, int failed) {
+  int transcribed = 0;
+  auto set = twoPhotos(nullptr, &transcribed);
+  if (failed)
+    set->transcribe = [](TurnImage& it) {
+      it.retryRead = true;
+      return it.tag + " (not read: mistral out of credit (HTTP 402))";
+    };
+  set->sent = sent;
+  if (noted) TEST_ASSERT_TRUE(set->setNote("0123456789abcdef", "pasta, about 600 kcal"));
+  if (read) set->fallbackOf(0);
+  transcribed = 0;
+  const std::string row = settledRow(*set, 0);
+  char what[64];
+  snprintf(what, sizeof what, "sent=%d noted=%d read=%d failed=%d", sent, noted, read, failed);
+  TEST_ASSERT_EQUAL_MESSAGE(0, transcribed, what);
+  std::string want;
+  if (sent && noted) want = "[image 1/2 ref=0123456789abcdef] (seen; note: pasta, about 600 kcal)";
+  else if (sent) want = "[image 1/2 ref=0123456789abcdef] (seen in its turn; image.look shows it again)";
+  else if (read && failed) want = "[image 1/2 ref=0123456789abcdef] (not read: mistral out of credit (HTTP 402))";
+  else if (read) want = "[image 1/2 ref=0123456789abcdef] (machine transcription by anthropic: photo 1)";
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), row.c_str(), what);
+  TEST_ASSERT_EQUAL_MESSAGE(!sent && read && failed, settledNeedsReread(*set, 0), what);
+  TEST_ASSERT_TRUE_MESSAGE(*settledHow(*set, 0), what);
+}
+
+// Property over every case of a photo's turn (an answered request showed it or not, a
+// note or not, a blind host's reading or not, that reading failed for a passing reason
+// or not): a photo the head saw keeps the head's own words (its note, or "seen"),
+// whatever a blind host on another round read or failed to read; a blind host's reading
+// is the row only when nothing showed the photo, and only a failed one of those is read
+// again later; a photo the turn never showed or read keeps the intake row. No case asks
+// for a caption: the settled row is built from what the turn already has.
 static void test_settled_row_property() {
   for (int sent = 0; sent < 2; ++sent)
     for (int noted = 0; noted < 2; ++noted)
-      for (int read = 0; read < 2; ++read) {
-        int transcribed = 0;
-        auto set = twoPhotos(nullptr, &transcribed);
-        set->sent = sent;
-        if (noted) TEST_ASSERT_TRUE(set->setNote("0123456789abcdef", "pasta, about 600 kcal"));
-        if (read) set->fallbackOf(0);
-        transcribed = 0;
-        const std::string row = settledRow(*set, 0);
-        char what[64];
-        snprintf(what, sizeof what, "sent=%d noted=%d read=%d", sent, noted, read);
-        TEST_ASSERT_EQUAL_MESSAGE(0, transcribed, what);
-        if (sent && noted)
-          TEST_ASSERT_EQUAL_STRING_MESSAGE("[image 1/2 ref=0123456789abcdef] (seen; note: pasta, about 600 kcal)",
-                                           row.c_str(), what);
-        else if (read)
-          TEST_ASSERT_EQUAL_STRING_MESSAGE(
-              "[image 1/2 ref=0123456789abcdef] (machine transcription by anthropic: photo 1)", row.c_str(), what);
-        else if (sent)
-          TEST_ASSERT_EQUAL_STRING_MESSAGE("[image 1/2 ref=0123456789abcdef] (seen in its turn; image.look shows it again)",
-                                           row.c_str(), what);
-        else
-          TEST_ASSERT_EQUAL_STRING_MESSAGE("", row.c_str(), what);
-      }
+      for (int read = 0; read < 2; ++read)
+        for (int failed = 0; failed < 2; ++failed) checkSettledCase(sent, noted, read, failed);
   auto set = twoPhotos();
   TEST_ASSERT_EQUAL_STRING("", settledRow(*set, 2).c_str());   // out of range
+  TEST_ASSERT_FALSE(settledNeedsReread(*set, 2));
+}
+
+// A full-length note keeps its row inside the history's photo row (the label plus
+// kImageRowMaxChars), so the history never cuts the head's own note.
+static void test_a_full_note_fits_the_history_row() {
+  MediaLabel l;
+  l.cls = MediaClass::Noted;
+  l.detail = std::string(kImageNoteMax, 'a');
+  TEST_ASSERT_TRUE(mediaSuffix(l).size() <= kImageRowMaxChars);
 }
 
 // A turn that brought no photo still gets a set (image.look can show it an earlier
@@ -454,14 +474,18 @@ static void test_intake_never_decides_by_the_configured_head() {
   size_t n;
   while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) src.append(buf, n);
   std::fclose(f);
-  const size_t at = src.find("static bool attachNative(");
-  TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, "attachNative not found");
-  const size_t end = src.find("\n}\n", at);
-  TEST_ASSERT_TRUE(end != std::string::npos);
-  const std::string body = src.substr(at, end - at);
+  // Every intake function a photo passes through, from the fetch to the stored row.
+  std::string intake;
+  for (const char* fn : {"static bool attachNative(", "static void describeStaged(", "static bool processMedia("}) {
+    const size_t at = src.find(fn);
+    TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, fn);
+    const size_t end = src.find("\n}\n", at);
+    TEST_ASSERT_TRUE(end != std::string::npos);
+    intake += src.substr(at, end - at);
+  }
   for (const char* banned : {"nativeHead(", "headTakesImages(", "resolvedOrchHost(", "orchModel("})
-    TEST_ASSERT_TRUE_MESSAGE(body.find(banned) == std::string::npos, banned);
-  TEST_ASSERT_TRUE(body.find("admitImage(") != std::string::npos);   // the guard reads the real body
+    TEST_ASSERT_TRUE_MESSAGE(intake.find(banned) == std::string::npos, banned);
+  TEST_ASSERT_TRUE(intake.find("admitImage(") != std::string::npos);   // the guard reads the real bodies
 }
 
 // ---- the slot ----------------------------------------------------------------------
@@ -622,6 +646,7 @@ int main(int, char**) {
   RUN_TEST(test_look_result_text_round_trips_only_exactly);
   RUN_TEST(test_look_answer_made_once);
   RUN_TEST(test_settled_row_property);
+  RUN_TEST(test_a_full_note_fits_the_history_row);
   RUN_TEST(test_turn_without_photos_gets_an_empty_set);
   RUN_TEST(test_intake_never_decides_by_the_configured_head);
   return UNITY_END();

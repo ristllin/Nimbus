@@ -12,7 +12,9 @@ photos are card files staged over HTTP, the lane D helpers in test_l48_albums), 
 Lumi's memory (FAULT sram_ballast down to a largest internal block of about 7.7 KB and
 at most 33 KB free, the release bench recipe), with the head named by
 ``NIMBUS_IMG_HEAD`` ("anthropic:claude-haiku-5-5" by default, or
-"mistral:mistral-large-latest"); the head, the ballast and the allowlist are restored.
+"mistral:mistral-large-latest"); ``NIMBUS_IMG_MODE=inline`` turns the upload (and so
+the re-attach) off, so an Anthropic head views the photo again through image.look only.
+The head, the photo mode, the ballast and the allowlist are restored.
 
 * ``test_img_photo_turn_then_look_again``: a label photo (a number only a reader of the
   pixels can know) goes to the head as an image ("attached for the head"); no caption
@@ -61,6 +63,7 @@ LUMI_LARGEST = 7700
 LUMI_FREE = 33000
 IDLE_WATCH_S = 45  # the old record call ran in the idle steps right after the reply
 LABEL_VALUE = "58213"
+CORNER_CODE = "Q7K"  # small print in the corner: what a note or a first reply is unlikely to carry
 
 
 # ---- pure helpers (host-tested) ---------------------------------------------------
@@ -116,6 +119,11 @@ def label_photo(value: str, seed: int) -> bytes:
     d.rectangle([14, 14, 626, 406], outline=(20, 20, 20), width=6)
     d.text((40, 60), "LOT", fill=(10, 10, 10), font=font)
     d.text((40, 220), value, fill=(10, 10, 10), font=font)
+    try:
+        small = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 34)
+    except OSError:
+        small = ImageFont.load_default()
+    d.text((520, 350), CORNER_CODE, fill=(10, 10, 10), font=small)
     d.point([(seed % 640, 412)], fill=(0, 0, 0))
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=80)
@@ -131,8 +139,10 @@ def _orch(net) -> dict:
 
 def _mem(net) -> Dict[str, int]:
     st = net.get_json("/api/state", timeout=8.0)
-    return {"free": int((st.get("mem") or {}).get("intFree") or st.get("heap") or 0),
-            "largest": int((st.get("mem") or {}).get("intLargest") or 0)}
+    return {
+        "free": int((st.get("mem") or {}).get("intFree") or st.get("heap") or 0),
+        "largest": int((st.get("mem") or {}).get("intLargest") or 0),
+    }
 
 
 @pytest.fixture
@@ -167,10 +177,15 @@ def img_head(device, net, owner_chat):  # noqa: F811 - the lane D fixture, impor
     host, model = head_spec(os.environ.get("NIMBUS_IMG_HEAD", ""))
     before = _orch(net)
     prev_model = ((before.get("providers") or {}).get(host) or {}).get("orchModel", "")
-    _http(lambda: net.post("/api/orch", {"orchHost": host, "orchLoop": "1", f"orchM_{host}": model}, timeout=8.0),
-          "pinning the head")
+    _http(
+        lambda: net.post("/api/orch", {"orchHost": host, "orchLoop": "1", f"orchM_{host}": model}, timeout=8.0),
+        "pinning the head",
+    )
     device.cmd("IMGMODE native", "IMGMODE native=", timeout=8.0)
-    device.cmd("IMGMODE upload", "IMGMODE native=", timeout=8.0)
+    # NIMBUS_IMG_MODE=inline: no upload, so no re-attach either; an Anthropic head then
+    # views the photo again through image.look only.
+    mode = os.environ.get("NIMBUS_IMG_MODE", "upload")
+    device.cmd(f"IMGMODE {'inline' if mode == 'inline' else 'upload'}", "IMGMODE native=", timeout=8.0)
     spend = spend_state(device.cmd("SPENDSET?", "SPENDSET {", timeout=8.0))
     lifted = bool(spend.get("frozen"))
     if lifted:  # another leg spent the bench ceiling: room for this leg, the limit back after
@@ -180,6 +195,7 @@ def img_head(device, net, owner_chat):  # noqa: F811 - the lane D fixture, impor
     finally:
         if lifted:
             device.cmd(f"SPENDSET limit {spend.get('limitCents')}", "SPENDSET limit", timeout=8.0)
+        device.cmd("IMGMODE upload", "IMGMODE native=", timeout=8.0)
         restore = {"orchHost": before.get("orchHost", ""), "orchLoop": str(int(before.get("orchLoop", 1)))}
         if prev_model:
             restore[f"orchM_{host}"] = prev_model
@@ -239,17 +255,10 @@ def _archive_status(net, chat: int, uid: int) -> Optional[str]:
 # ---- legs ---------------------------------------------------------------------------
 
 
-@pytest.mark.hil
-@pytest.mark.net
-@pytest.mark.agent
-def test_img_photo_turn_then_look_again(device, net, img_head, lumi_heap):
-    chat, host = img_head["chat"], img_head["host"]
-    print(f"head {host}/{img_head['model']} at Lumi's heap {lumi_heap}")
+def _photo_turn(device, net, chat: int, uid: int) -> Tuple[List[str], str]:
+    """Turn 1: a label photo the head sees itself. Returns the console lines and the ref."""
     item = _stage_label(net, LABEL_VALUE, seed=int(time.time()) % 100000)
-    uid = tb.first_update_id() + 7100
-
-    # Turn 1: the photo, seen by the head itself.
-    lines = _inject(device, album_page(uid, chat, [item], caption=f"what does this label say? one line ({uid})"))
+    lines = _inject(device, album_page(uid, chat, [item], caption=f"what is the big number on this label? ({uid})"))
     lines += _idle_lines(device, IDLE_WATCH_S)
     print("\n".join(ln for ln in lines if "telegram:" in ln or "vision" in ln or "turn spend" in ln))
     assert ATTACHED_RE.search("\n".join(lines)), "the photo was not attached for the head"
@@ -259,32 +268,48 @@ def test_img_photo_turn_then_look_again(device, net, img_head, lumi_heap):
     assert settled[0][2] in ("the head's note", "seen"), settled
     st = _archive_status(net, chat, uid)
     assert st == "ok", f"the archive item reads {st!r} at turn time"
-    cr = [head_cache_read(lines, host)]
-    ref = None
-    for row in _episodic(net, 40):
-        m = REF_RE.search(row.get("text", ""))
-        if m and row.get("kind") == "image":
-            ref = m.group(1)
-            print("stored row:", row.get("text", "")[:200])
-            break
-    assert ref, "no stored row for the photo"
+    rows = [r for r in _episodic(net, 40) if r.get("kind") == "image" and REF_RE.search(r.get("text", ""))]
+    assert rows, "no stored row for the photo"
+    print("stored row:", rows[0].get("text", "")[:200])
+    return lines, REF_RE.search(rows[0]["text"]).group(1)
 
-    # Turn 2: look at it again - the pixels come back, no caption request.
-    t2 = f"look at that photo again yourself and tell me the number on it ({uid + 1})"
-    lines2 = _inject(device, tb.page([tb.text_update(uid + 1, chat, t2)]))
-    lines2 += _idle_lines(device, 10)
-    print("\n".join(ln for ln in lines2 if "vision" in ln or "turn spend" in ln or "anthropic:" in ln))
-    looks = [m.groups() for m in map(LOOK_RE.search, lines2) if m]
-    reattached = [ln for ln in lines2 if REATTACH_RE.search(ln)]
-    assert looks or reattached, "the photo was not viewed again (no image.look image, no re-attached file)"
+
+def _look_turn(device, net, chat: int, uid: int, ref: str) -> List[str]:
+    """Turn 2: the head views the photo again (image.look returns the pixels, or on
+    Anthropic the kept file rides its history message); no caption request."""
+    t2 = (
+        "Look at that photo again yourself with image.look (do not rely on your earlier reply) and tell me "
+        f"the small code printed in its bottom-right corner ({uid})"
+    )
+    lines = _inject(device, tb.page([tb.text_update(uid, chat, t2)]))
+    lines += _idle_lines(device, 10)
+    keep = ("vision", "turn spend", "anthropic:", "headloop", "tool")
+    print("\n".join(ln for ln in lines if any(k in ln for k in keep)))
+    looks = [m.groups() for m in map(LOOK_RE.search, lines) if m]
+    reattached = [ln for ln in lines if REATTACH_RE.search(ln)]
     print(f"viewed again: image.look {looks}, re-attached {reattached[:1]}")
-    if looks:
-        assert looks[0][0] == ref, (looks, ref)
-    assert not caption_calls(lines2), f"a caption request was made on a seeing head: {caption_calls(lines2)}"
-    text = _reply(net, LABEL_VALUE)
-    assert text, f"no reply named the label value {LABEL_VALUE}"
-    cr.append(head_cache_read(lines2, host))
+    assert looks or reattached, "the photo was not viewed again (no image.look image, no re-attached file)"
+    if os.environ.get("NIMBUS_IMG_MODE") == "inline":
+        assert looks, "with nothing re-attached the photo must come back through image.look"
+    assert not looks or looks[0][0] == ref, (looks, ref)
+    assert not caption_calls(lines), f"a caption request was made on a seeing head: {caption_calls(lines)}"
+    text = _reply(net, CORNER_CODE)
+    if not text:
+        print("replies:", [r.get("text", "")[:160] for r in _episodic(net, 6) if r.get("role") == "assistant"])
+    assert text, f"no reply named the corner code {CORNER_CODE}"
+    return lines
 
+
+@pytest.mark.hil
+@pytest.mark.net
+@pytest.mark.agent
+def test_img_photo_turn_then_look_again(device, net, img_head, lumi_heap):
+    chat, host = img_head["chat"], img_head["host"]
+    print(f"head {host}/{img_head['model']} at Lumi's heap {lumi_heap}")
+    uid = tb.first_update_id() + 7100
+    lines, ref = _photo_turn(device, net, chat, uid)
+    lines2 = _look_turn(device, net, chat, uid + 1, ref)
+    cr = [head_cache_read(lines, host), head_cache_read(lines2, host)]
     if host != "anthropic":
         print(f"cache reads (informational on {host}): {cr}")
         return

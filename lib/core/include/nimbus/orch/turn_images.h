@@ -51,8 +51,9 @@ constexpr size_t kImagePartBytes = 512u * 1024;         // one photo (tg::kPhoto
 constexpr size_t kTurnImageBytes = 2u * 1024u * 1024u;  // every photo of one turn, raw
                                                         // (looked photos included)
 constexpr size_t kTurnLookMax = 4;                      // photos image.look shows again per turn
-constexpr size_t kImageNoteMax = 300;                   // bytes of the head's note of one photo
-                                                        // (the history keeps about this much)
+constexpr size_t kImageNoteMax = 270;                   // bytes of the head's note of one photo:
+                                                        // with " (seen; note: ...)" it fits the
+                                                        // history's 300-character photo row
 
 // The MIME type a head takes as an image part ("image/jpeg", "image/png",
 // "image/webp", "image/gif"), "" for anything else. "image/jpg" reads as JPEG.
@@ -98,6 +99,7 @@ struct TurnImage {
   std::string fileId;     // an upload-once provider file id ("" = sent inline)
   std::string fileHost;   // the provider that file lives at
   std::string note;       // the head's own note of it (image.note, this turn; "" = none)
+  std::string context;    // the sender's words with it (a blind host's reading uses them)
   bool retryRead = false; // its fallback reading failed for a passing reason (re-read later)
 };
 
@@ -130,14 +132,18 @@ class TurnImages {
   // Frees the bytes (device: PSRAM). Run once, from the destructor.
   std::function<void(TurnImages&)> release;
 
-  // A provider refused the image parts this turn (HTTP 400 naming the image): every
-  // later request of the turn reads the transcription instead.
+  // A provider refused the image parts this turn (HTTP 400 naming the image, 413):
+  // every later request to that host reads the transcription instead; another host
+  // still gets the pixels.
   bool rejected = false;
+  std::string rejectedBy;   // the host that refused ("" = every host: an old caller)
+  // Does `host` refuse the parts this turn?
+  bool refusedBy(const std::string& host) const { return rejected && (rejectedBy.empty() || rejectedBy == host); }
   // A request of this turn carried the photos as image parts: the head has them in
   // front of it, so image.look on one of them makes no second provider call.
   bool shown = false;
-  // Sticky: some request of this turn carried the photos as image parts (the head saw
-  // them), whatever host served the last round.
+  // Some request of this turn that carried the photos as image parts was answered (a
+  // 2xx: the head saw them), whatever host served the last round; never cleared.
   bool sent = false;
   // Is `ref` one of this turn's photos?
   bool holds(const std::string& ref) const;
@@ -188,11 +194,17 @@ std::string lookResultText(const std::string& ref);
 // The ref such a result names ("" when `text` is not one).
 std::string lookResultRef(const std::string& text);
 
-// What photo i's stored row says once its turn is over: the head's note
-// ("[image 1/2 ref=...] (seen; note: ...)"), else a blind host's reading (its
-// transcription or why there is none), else "seen in its turn" when a request showed
-// it; "" when the turn never showed or read it (the row keeps what intake stored).
+// What photo i's stored row says once its turn is over. When an answered request
+// showed it (sent): the head's note ("[image 1/2 ref=...] (seen; note: ...)"), or "seen
+// in its turn" with no note. Otherwise a blind host's reading (its transcription or why
+// there is none), or "" when the turn never showed or read it (the row keeps what
+// intake stored).
 std::string settledRow(const TurnImages& set, size_t i);
+// What settledRow chose for photo i, in the log's words ("the head's note", "seen", ...).
+const char* settledHow(const TurnImages& set, size_t i);
+// Photo i's row is a blind host's reading that failed for a passing reason: read it
+// again once a provider is open. Never for a photo the head saw (its row is its own).
+bool settledNeedsReread(const TurnImages& set, size_t i);
 
 // The image part for photo `label` (its bracket and its attached segment) over `bytes`.
 TurnImage attachedImage(const MediaLabel& label, const uint8_t* bytes, size_t len, const std::string& mime);

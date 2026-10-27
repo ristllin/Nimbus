@@ -103,7 +103,7 @@ std::string readingSegment(const std::string& tag, const CaptionResult& r) {
 // failed for a passing reason (a refusal, a closed provider, no answer) is read again
 // once a provider is open (the turn's end queues it).
 std::string transcribeFor(nimbus::orch::TurnImage& it) {
-  const CaptionResult r = read(it.bytes, it.len, it.mime.c_str(), String(), CaptionKind::Fallback);
+  const CaptionResult r = read(it.bytes, it.len, it.mime.c_str(), String(it.context.c_str()), CaptionKind::Fallback);
   it.retryRead = r.text.empty() && rereadLater(r.fail);
   return readingSegment(it.tag, r);
 }
@@ -123,6 +123,7 @@ void queueReread(const nimbus::orch::TurnImages& set, const nimbus::orch::TurnIm
   r.ref = nimbus::orch::workingCopy(it.ref);
   r.mime = nimbus::orch::workingCopy(it.mime);
   r.tag = nimbus::orch::workingCopy(it.tag);
+  r.context = nimbus::orch::workingCopy(it.context);
   r.len = it.len;
   recordQueue().push(r);
 }
@@ -135,18 +136,23 @@ void queueReread(const nimbus::orch::TurnImages& set, const nimbus::orch::TurnIm
 void settleRows(nimbus::orch::TurnImages& set) {
   for (size_t i = 0; i < set.items.size(); ++i) {
     const nimbus::orch::TurnImage& it = set.items[i];
-    if (it.retryRead) queueReread(set, it);
+    if (nimbus::orch::settledNeedsReread(set, i)) queueReread(set, it);
     const std::string row = nimbus::orch::settledRow(set, i);
     if (row.empty() || set.chatId.empty()) continue;
     const bool ok = memory::replaceMediaRowText(set.chatId.c_str(), it.ref, String(row.c_str()));
     alogf("vision: photo %d/%d row %s (%s)", it.k, it.n, ok ? "settled" : "has no row to settle",
-          !it.note.empty() && set.sent ? "the head's note" : set.sent ? "seen" : "read for a blind host");
+          nimbus::orch::settledHow(set, i));
   }
 }
 
-// The set's end (its release hook): the rows, then the bytes.
+// The set's end (its release hook, run from a destructor): the rows, then the bytes,
+// which are freed whatever the rows' card work met (nothing may escape a destructor).
 void endOfTurn(nimbus::orch::TurnImages& set) {
-  settleRows(set);
+  try {
+    settleRows(set);
+  } catch (...) {
+    alogf("vision: the photo rows were not settled (out of memory) - they keep their stored text");
+  }
   freeBytes(set);
 }
 
@@ -269,7 +275,7 @@ bool chatHasPhoto(const std::string& ns, const std::string& ref) {
 // second time (on 26 Oct such a second read held the turn for two minutes and failed).
 static bool shownThisTurn(const std::string& ref) {
   const nimbus::orch::TurnImages* cur = nimbus::orch::activeTurnImages();
-  return cur && cur->shown && !cur->rejected && cur->holds(ref);
+  return cur && cur->shown && cur->holds(ref);   // shown: the host in use sees them (and did not refuse)
 }
 
 // image.look on a turn's set (R1): the photo joins the set's looked photos and every
@@ -297,6 +303,38 @@ static std::string showAgain(nimbus::orch::TurnImages& set, const std::string& r
   return nimbus::orch::lookResultText(ref);
 }
 
+// The stored copy of photo `ref` read into PSRAM: a photo ("jpg") or an image sent as a
+// file ("bin"); `ext` "" tries both. The card lock is held only around the read.
+static uint8_t* loadStoredPhoto(const std::string& ref, const std::string& ext, size_t& len, const char*& why) {
+  why = "";
+  for (const char* e : {"jpg", "bin"}) {
+    if (!ext.empty() && ext != e) continue;
+    const std::string path = nimbus::orch::blobPath("/mem/blobs", ref, e);
+    memory::Lock lk;
+    if (!memory::dataFs().exists(path.c_str())) continue;
+    return loadToPsram(path.c_str(), memory::dataFs(), nimbus::orch::kImagePartBytes, len, why);
+  }
+  return nullptr;
+}
+
+// May this caller look at photo `ref`? A card is needed (earlier photos live there); a
+// caller that is not the owner looks only at its own chat's photos, and an unnamed chat
+// (empty ns) is the most restrictive case, never "any chat".
+static bool lookAllowed(const std::string& ref, const std::string& ns, bool owner, std::string& err) {
+  if (!memory::haveSd()) err = "no memory card: earlier photos are not kept";
+  else if (!owner && (ns.empty() || !chatHasPhoto(ns, ref))) err = "no photo with that ref in this chat";
+  return err.empty();
+}
+
+// One caption request answering `question` about the photo in `buf` (freed here).
+static std::string captionAnswer(uint8_t* buf, size_t len, const char* mime, const std::string& question,
+                                 std::string& err) {
+  const CaptionResult r = read(buf, len, mime, String(), CaptionKind::Question, String(question.c_str()));
+  free(buf);
+  if (r.text.empty()) err = "the photo could not be read: " + r.words;
+  return r.text;
+}
+
 std::string look(const std::string& ref, const std::string& question, const std::string& ns, bool owner,
                  std::string& err) {
   if (!lookArgsValid(ref, question, err)) return std::string();
@@ -305,26 +343,10 @@ std::string look(const std::string& ref, const std::string& question, const std:
            "answer from what you see in it.";
   nimbus::orch::TurnImages* set = nimbus::orch::activeTurnImages();
   if (set && set->lookedIndex(ref) >= 0) return nimbus::orch::lookResultText(ref);   // already shown again
-  if (!memory::haveSd()) {
-    err = "no memory card: earlier photos are not kept";
-    return std::string();
-  }
-  // A caller that is not the owner looks only at its own chat's photos; an unnamed
-  // chat (empty ns) is the most restrictive case, never "any chat".
-  if (!owner && (ns.empty() || !chatHasPhoto(ns, ref))) {
-    err = "no photo with that ref in this chat";
-    return std::string();
-  }
+  if (!lookAllowed(ref, ns, owner, err)) return std::string();
   size_t len = 0;
   const char* why = "";
-  uint8_t* buf = nullptr;
-  for (const char* ext : {"jpg", "bin"}) {
-    const std::string path = nimbus::orch::blobPath("/mem/blobs", ref, ext);
-    memory::Lock lk;
-    if (!memory::dataFs().exists(path.c_str())) continue;
-    buf = loadToPsram(path.c_str(), memory::dataFs(), nimbus::orch::kImagePartBytes, len, why);
-    break;
-  }
+  uint8_t* buf = loadStoredPhoto(ref, std::string(), len, why);
   if (!buf) {
     err = why[0] ? std::string("the photo could not be read: ") + why : "no stored photo with that ref";
     return std::string();
@@ -337,14 +359,8 @@ std::string look(const std::string& ref, const std::string& question, const std:
   }
   // The pixels, when a turn holds a set (the owner's turns): the head views the photo
   // itself. Otherwise (a routine, the turn's limits reached) one caption request.
-  if (set && g_native) {
-    const std::string shown = showAgain(*set, ref, question, buf, len);
-    if (!shown.empty()) return shown;
-  }
-  const CaptionResult r = read(buf, len, mime, String(), CaptionKind::Question, String(question.c_str()));
-  free(buf);
-  if (r.text.empty()) err = "the photo could not be read: " + r.words;
-  return r.text;
+  const std::string shown = set && g_native ? showAgain(*set, ref, question, buf, len) : std::string();
+  return shown.empty() ? captionAnswer(buf, len, mime, question, err) : shown;
 }
 
 std::string note(const std::string& ref, const std::string& text, std::string& err) {
@@ -401,11 +417,17 @@ void setUploadOnce(bool on) { g_uploadOnce = on; }
 bool uploadOnce() { return g_uploadOnce; }
 
 bool idleDue() {
-  if (providers::pendingUploadDeletes()) return true;
-  return recordQueue().due((uint32_t)millis(), available()) != nullptr;
+  const uint32_t now = (uint32_t)millis();
+  if (providers::pendingUploadDeletes() || providers::keptUploadsDue(now)) return true;
+  return recordQueue().due(now, available()) != nullptr;
 }
 
 void idleStep() {
+  const uint32_t now = (uint32_t)millis();
+  if (providers::keptUploadsDue(now)) {   // a kept photo unused for an hour: queue its deletion
+    providers::tendKeptUploads(now);
+    return;
+  }
   if (providers::pendingUploadDeletes()) {
     providers::deletePendingUploads(deviceProviderDeps(), 1);
     return;
@@ -414,18 +436,10 @@ void idleStep() {
   if (!due) return;
   const PendingRecord rec = *due;   // settle() reorders the queue
   size_t len = 0;
-  const char* why = "could not be fetched";
-  uint8_t* buf = nullptr;
-  for (const char* ext : {"jpg", "bin"}) {   // a photo, or an image sent as a file
-    if (!rec.ext.empty() && rec.ext != ext) continue;
-    const std::string path = nimbus::orch::blobPath("/mem/blobs", nimbus::orch::plainCopy(rec.ref), ext);
-    memory::Lock lk;   // the card: one reader at a time (the idle step holds no turn)
-    if (!memory::dataFs().exists(path.c_str())) continue;
-    buf = loadToPsram(path.c_str(), memory::dataFs(), nimbus::orch::kImagePartBytes, len, why);
-    break;
-  }
+  const char* why = "";
+  uint8_t* buf = loadStoredPhoto(nimbus::orch::plainCopy(rec.ref), nimbus::orch::plainCopy(rec.ext), len, why);
   if (!buf) {
-    alogf("vision: record for %s skipped: %s", rec.ref.c_str(), why);
+    alogf("vision: record for %s skipped: %s", rec.ref.c_str(), why[0] ? why : "could not be fetched");
     recordQueue().settle(rec.ref, true, (uint32_t)millis());   // nothing to read: give up
     return;
   }

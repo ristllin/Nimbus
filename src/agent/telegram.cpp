@@ -1580,7 +1580,7 @@ static bool failedSegment(nimbus::orch::MediaLabel& label, const char* why, int 
 // gets the photo. False (the caption step reads it now) when the format is not one a
 // head reads, an animated GIF, the turn's photo budget is spent, PSRAM is short, or
 // the bench switched native input off.
-static bool attachNative(const InboundFile& in, nimbus::orch::MediaLabel& label) {
+static bool attachNative(const InboundFile& in, const String& ctx, nimbus::orch::MediaLabel& label) {
   const char* mime = in.slot.mime[0] ? in.slot.mime : "image/jpeg";
   if (!agent::vision::native() || !nimbus::orch::imagePartMime(mime)[0]) return false;
   nimbus::orch::TurnImages* set = agent::vision::turnSet(true);
@@ -1596,6 +1596,7 @@ static bool attachNative(const InboundFile& in, nimbus::orch::MediaLabel& label)
     return false;
   }
   set->items.push_back(nimbus::orch::attachedImage(label, buf, len, real));
+  set->items.back().context = ctx.c_str();   // a blind host's reading gets the sender's words
   label.cls = nimbus::orch::MediaClass::Attached;
   alogf("telegram: media %d/%d attached for the head (%u bytes)", label.k, label.n, (unsigned)len);
   return true;
@@ -1670,8 +1671,9 @@ static void describeStaged(const InboundFile& in, size_t turn, size_t k, size_t 
     return;
   }
   label.kind = nimbus::orch::MediaKind::Image;
-  if (attachNative(in, label)) return;
-  transcribeStaged(in, visionContext(turn, k, n), label, fail);
+  const String ctx = visionContext(turn, k, n);
+  if (attachNative(in, ctx, label)) return;
+  transcribeStaged(in, ctx, label, fail);
 }
 
 // The photo's stored row (R1): a photo kept for the head is stored as kept (for
@@ -1687,14 +1689,14 @@ static std::string rowSegment(const nimbus::orch::MediaLabel& label) {
 // Queue the re-read of a photo the caption step could not read at intake, once a
 // provider is open again (a refusal, a closed provider or no answer). A photo kept for
 // the head is never queued: no caption call is made for a photo the head sees.
-static void queueRecord(const MediaSlot& m, const nimbus::orch::MediaLabel& label, agent::vision::ReadFail fail,
+static void queueReread(const MediaSlot& m, const nimbus::orch::MediaLabel& label, agent::vision::ReadFail fail,
                         const String& ctx, size_t len, const char* ext) {
   if (!agent::vision::rereadLater(fail)) return;
   agent::vision::PendingRecord r;
   r.chatId = m.chatId;
   r.ref = nimbus::orch::workingCopy(label.ref);
   r.mime = m.mime[0] ? m.mime : "image/jpeg";
-  nimbus::orch::MediaLabel bracket = label;
+  nimbus::orch::MediaLabel bracket = label;   // the bracket alone, from the one formatter
   bracket.cls = nimbus::orch::MediaClass::Pending;
   const std::string seg = nimbus::orch::mediaSegment(bracket);
   r.tag = nimbus::orch::workingCopy(seg.substr(0, seg.find(']') + 1));
@@ -1745,7 +1747,7 @@ static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string&
       m.chatId, "user", photo ? nimbus::orch::MsgKind::Image : nimbus::orch::MsgKind::File,
       String(row.c_str()), localPath, photo ? "jpg" : "bin", m.date);
   if (g_slots[slot].media.kept && image)
-    queueRecord(m, label, fail, visionContext(turn, k, n), total, photo ? "jpg" : "bin");
+    queueReread(m, label, fail, visionContext(turn, k, n), total, photo ? "jpg" : "bin");
   // The full store as a fact the owner already has, in this turn's text only (the
   // stored row and the history keep the label): the head answers the photo instead
   // of explaining the store again.

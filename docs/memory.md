@@ -679,7 +679,7 @@ file the archive wants, it becomes the media file and nothing is downloaded twic
 If it is another size (a turn reads Telegram's 800 px photo, the archive keeps the
 largest), it is kept as `<update_id>.turn.<ext>` with its own status line, so the
 item is on the card at turn time, and the full-size file is still downloaded later,
-with its own status line. Both copies are kept.
+with its own status line; once it lands, the smaller copy is removed.
 
 The outbound sequence continues from the names already in the day folder, so a
 restart or a clock jump never reuses one.

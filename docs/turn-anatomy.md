@@ -251,7 +251,8 @@ called by the engine for every turn:
   their own). A photo the head saw itself keeps the head's own note
   (`image.note`, written with its answer): its row reads `(seen; note: ...)`, or
   `(seen in its turn; image.look shows it again)` with no note, settled when its
-  turn ends and never rewritten once sent. `image.look` puts the photo back in
+  turn ends and never rewritten once sent (only a photo that a blind host alone met and
+  nobody could read is read again later). `image.look` puts the photo back in
   front of the head as an image; on Anthropic a recent photo also rides its own
   history message as a file reference (the same bytes every turn). A voice note's transcript is the user row. Rows captured before
   this rule render once too (a repeated description or a `ref=` label is

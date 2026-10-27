@@ -1691,6 +1691,7 @@ static void test_adopt_keeps_the_turn_copy_of_another_rendition() {
   drain(a, src);
   TEST_ASSERT_EQUAL_INT(1, src.opens);
   TEST_ASSERT_TRUE(card.files[dir + "41.jpg"] == src.files["big"]);
+  TEST_ASSERT_FALSE(card.files.count(dir + "41.turn.jpg"));   // the full size replaces the turn's copy
   JsonDocument up = parseLine(card.lines(idx("9", "2026-10-18")).back());
   TEST_ASSERT_EQUAL_STRING("ok", up["st"] | "");
   TEST_ASSERT_EQUAL_STRING("41.jpg", up["file"] | "");

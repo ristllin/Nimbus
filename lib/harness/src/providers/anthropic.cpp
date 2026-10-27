@@ -841,6 +841,7 @@ static void renderAntMessages(const nimbus::orch::Transcript& tr, ArduinoJson::J
   namespace orch = nimbus::orch;
   using Kind = orch::TranscriptItem::Kind;
   const auto& e = tr.entries();
+  imageparts::LookRender looks(tr, sees, imageparts::Dialect::Anthropic);
   // The seeded user turn (pinned; always first). A request that does not show the
   // turn's photos reads their machine transcriptions in place of their labels (R1).
   for (const auto& it : e) {
@@ -912,15 +913,17 @@ static void renderAntMessages(const nimbus::orch::Transcript& tr, ArduinoJson::J
         JsonObject trr = uc.add<JsonObject>();
         trr["type"]        = "tool_result";
         trr["tool_use_id"] = e[ri].id;
-        const int look = imageparts::lookedFor(tr.images(), e[ri]);
-        if (look >= 0 && sees)
-          imageparts::putLookResult(trr, *tr.images(), (size_t)look);
-        else if (look >= 0)
-          wire::putModelStr(trr["content"],
-                            imageparts::lookText(*tr.images(), (size_t)look, false, imageparts::Dialect::Anthropic),
-                            e[ri].name.c_str());
-        else
-          wire::putModelStr(trr["content"], e[ri].text, e[ri].name.c_str());
+        std::string lookWords;
+        size_t j = 0;
+        switch (looks.render(e[ri], lookWords, j)) {
+          case imageparts::LookRender::Show::Attach: looks.putResult(trr, lookWords, j); break;
+          case imageparts::LookRender::Show::Text:
+            wire::putModelStr(trr["content"], lookWords, e[ri].name.c_str());
+            break;
+          case imageparts::LookRender::Show::NotALook:
+            wire::putModelStr(trr["content"], e[ri].text, e[ri].name.c_str());
+            break;
+        }
         if (e[ri].isError) trr["is_error"] = true;
       }
     }
@@ -1153,13 +1156,12 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     // Kept photo files are this key's: a router head never references them; and this
     // chat's: an upload is kept for, and re-attached in, the chat it came from.
     const bool direct = !pd.routerBase || pd.routerBase().empty();
-    imageparts::setLoopChat(parts.cache.key);
+    imageparts::setLoopChat(parts.cache.key, pd.nowMs ? pd.nowMs() : 0);
     JsonDocument conv = makeDoc(pd);
     JsonArray msgs;
     auto render = [&]() {
       msgs = conv.to<JsonArray>();
-      if (direct && sees)
-        for (orch::LookedImage& l : tr.images()->looked) imageparts::useFileRef(l.img);
+      if (direct && sees) imageparts::useFileRefs(*tr.images());
       renderAntMessages(tr, msgs, imgs != nullptr, sees, thinkingByCall.get());
       // R3: the per-turn block (the final-round notice included) LEADS the
       // seeded user message, so the system blocks and the history stay
@@ -1244,18 +1246,17 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
       if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
       if (code != 200 && fileRefs && imageparts::fileRefCount() > 0 &&
           imageparts::refusedFileRefs(code, resp["error"]["message"] | "")) {
-        // A kept photo file is gone (a changed key, a file deleted by hand): forget the
-        // kept ids and send this round again without them (once: none are left).
-        imageparts::forgetFileRefs();
-        if (tr.images())
-          for (orch::LookedImage& l : tr.images()->looked) l.img.fileId.clear();
+        // A kept photo file is gone (a changed key, a file deleted by hand): forget it
+        // (or all of them when the refusal names none) and send this round again; each
+        // refusal removes at least one kept id, so this ends.
+        imageparts::forgetFileRefs(tr.images(), resp["error"]["message"] | "");
         render();
         --attempt;
         continue;
       }
       const bool carried = imgs || (sees && !tr.images()->looked.empty());   // photos rode this request
       if (code != 200 && carried && imageparts::refusedImages(code, resp["error"]["message"] | "") &&
-          imageparts::rejectAndRetry(tr.images(), "orchTurn(ant-loop)", code)) {
+          imageparts::rejectAndRetry(tr.images(), "orchTurn(ant-loop)", code, "anthropic")) {
         // The provider refused the photos themselves: this round again, reading their
         // transcriptions (the fallback captioner), and so does the rest of the turn.
         imgs = nullptr;
@@ -1264,7 +1265,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
         --attempt;
         continue;
       }
-      if (code == 200 && imgs) imgs->sent = true;   // the head has seen the turn's photos
+      imageparts::noteSent(imgs, code);   // a 2xx: the head has seen the turn's photos
       if (code != 200) {
         const std::string e = wire::httpErrLine("messages", code, resp["error"]["message"] | "");
         wire::httpFailure(out, code, e, e + " " + (const char*)(resp["error"]["type"] | ""));

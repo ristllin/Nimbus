@@ -612,6 +612,25 @@ static void test_g1_all_write_siblings_accept_the_final_turn() {
   TEST_ASSERT_TRUE(has(tr.renderBrief(4096), "[result] memory_write"));
 }
 
+// Lane IMG: image.note (the head's record of a photo it saw) is a pure write too, so
+// sent with the final answer it costs no second round.
+static void test_img_photo_note_with_the_final_turn_costs_no_round() {
+  Fake f;
+  HeadStep fin = stepFinished("{\"reply\":\"A plate of pasta, about 600 kcal.\"}");
+  fin.toolCalls.push_back(HeadToolCall{"n1", "image_note", "{\"ref\":\"0123456789abcdef\",\"note\":\"pasta\"}"});
+  f.script = {fin, stepFinished("{\"reply\":\"never used\"}")};
+  f.dispatchOutput = "noted";
+  Transcript tr;
+  HeadLoopHooks h = f.hooks();
+  h.transcript = &tr;
+  HeadLoopConfig cfg;
+  HeadOutcome o = runHeadLoop(cfg, h);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"A plate of pasta, about 600 kcal.\"}", o.finalTurn.c_str());
+  TEST_ASSERT_EQUAL(1, (int)f.dispatched.size());
+  TEST_ASSERT_EQUAL(1, (int)f.priorSeen.size());   // no second model round
+}
+
 // A failed batched call: the premature reply ("saved") is never delivered; the
 // failure goes back to the model and its second answer is the one that stands.
 static void test_cum506_a_failed_sibling_discards_the_premature_reply() {
@@ -818,6 +837,7 @@ int main(int, char**) {
   RUN_TEST(test_final_checks_chain_into_one_correction);
   RUN_TEST(test_cum506_siblings_of_the_final_turn_run_before_any_reply);
   RUN_TEST(test_g1_all_write_siblings_accept_the_final_turn);
+  RUN_TEST(test_img_photo_note_with_the_final_turn_costs_no_round);
   RUN_TEST(test_cum506_a_failed_sibling_discards_the_premature_reply);
   RUN_TEST(test_cum506_siblings_on_the_last_round_reach_the_forced_final);
   RUN_TEST(test_cum506_forced_round_siblings_are_not_run);
