@@ -217,13 +217,24 @@ def cleanup(unit: Unit) -> None:
             step()
 
 
+@dataclass
+class Bench:
+    """The leg's bench context: who holds the lock, where the secrets and locks live,
+    an open HTTP session, and whether the lock is already held by the caller."""
+
+    who: str = "food coach device leg"
+    dirs: tuple = (None, None)  # (secrets dir, locks dir); None takes the program layout
+    session: object = None
+    held: bool = False
+
+
 @contextlib.contextmanager
-def leg_session(unit_id: str, model: str, directive: str, who: str, dirs=(None, None), session=None, held=False):
-    """Hold the unit's bench lock, set it up for the leg, and put everything back.
-    `dirs` is (secrets dir, locks dir); None takes the program layout."""
-    with bench_lock(unit_id, who, dirs[1], held):
-        ip, token = read_unit(unit_id, dirs[0])
-        unit = Unit(ip, token, session)
+def leg_session(unit_id: str, model: str, directive: str, bench: Bench = None):
+    """Hold the unit's bench lock, set it up for the leg, and put everything back."""
+    bench = bench or Bench()
+    with bench_lock(unit_id, bench.who, bench.dirs[1], bench.held):
+        ip, token = read_unit(unit_id, bench.dirs[0])
+        unit = Unit(ip, token, bench.session)
         info = unit.json("/api/state")
         if info.get("mode") != 1:
             raise UnitRefused("the unit is not in Orchestrator mode")

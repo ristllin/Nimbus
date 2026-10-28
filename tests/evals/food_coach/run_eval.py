@@ -111,7 +111,10 @@ def _run_device(args, cfg: dict, scenarios: list[dict], common: dict, budget: fc
     deadline = time.time() + args.max_minutes * 60
     try:
         with device_leg.leg_session(
-            args.unit, args.model, directive, "QW7 food coach device leg", held=args.lock_held
+            args.unit,
+            args.model,
+            directive,
+            device_leg.Bench(who="QW7 food coach device leg", held=args.lock_held),
         ) as (
             unit,
             info,
