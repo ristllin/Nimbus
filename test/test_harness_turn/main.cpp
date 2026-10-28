@@ -1192,9 +1192,61 @@ static void test_failed_attempt_echo_never_names_the_serving_model() {
 static void test_prompt_round_cap_follows_the_configured_loop() {
   Rig r;
   r.cfg.rounds = 3;
+  r.jobs->addFreshResult("job0000", "modelX", "sub result");   // live data: the configured cap
   r.eng->handleMessage("hi", "Roy", "1001");
   TEST_ASSERT_EQUAL(1, (int)r.debug.size());
   TEST_ASSERT_TRUE(r.debug[0].instructions.find("several rounds (at most 3)") != std::string::npos);
+  // EFF (26 Oct analysis): a PLAIN conversational turn - no fresh results, no
+  // parked memory results, no photo, no running session, none of the unattended
+  // shapes - states the tighter shape cap, and the loop is bound by the same
+  // number (the prompt never promises rounds the loop would not run).
+  Rig chat;
+  chat.cfg.rounds = 3;
+  chat.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, (int)chat.debug.size());
+  TEST_ASSERT_TRUE(chat.debug[0].instructions.find("several rounds (at most 2)") != std::string::npos);
+}
+
+// EFF (26 Oct analysis): the turn's tool surface. With no live session, the
+// session tools whose whole contract is a RUNNING sub-agent leave the prompt's
+// tool list AND the wire - one `specs` list feeds both, so "advertised ==
+// callable" cannot drift. On the wire that is session.list and
+// session.terminate (spawn/poll/tell are already loopToolHidden - they work
+// through the session_ops field); every other tool stays, and the registry
+// keeps every registration (test_action_rules pins them).
+static void test_no_live_session_trims_the_session_tools_from_the_turn() {
+  Rig r;
+  r.cfg.toolLoop = false;   // the roster renders in the prompt (tools off the wire): observable
+  for (const char* n : {"session.spawn", "session.poll", "session.tell", "session.list",
+                        "session.terminate", "memory.search"})
+    r.specs.push_back(orch::ToolRegistry::Spec{n, "a description", "{}"});
+  r.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, (int)r.debug.size());
+  const std::string& in = r.debug[0].instructions;
+  TEST_ASSERT_TRUE_MESSAGE(in.find("memory_search") != std::string::npos, "other tools stay");
+  for (const char* gone : {"session_list", "session_terminate"})
+    TEST_ASSERT_TRUE_MESSAGE(in.find(gone) == std::string::npos, gone);
+}
+
+// Any journal entry - even a spawn still QUEUED - restores the full session
+// surface: a queued sub can still be listed and terminated.
+static void test_a_live_session_restores_the_session_tools() {
+  Rig r(true);
+  r.cfg.toolLoop = false;   // the roster renders in the prompt (tools off the wire): observable
+  for (const char* n : {"session.spawn", "session.poll", "session.tell", "session.list",
+                        "session.terminate"})
+    r.specs.push_back(orch::ToolRegistry::Spec{n, "a description", "{}"});
+  orch::Spawn sp;
+  sp.task = "research the commute";
+  sp.provider = "anthropic";
+  r.jobs->enqueueSpawn(sp, "1001");
+  r.jobs->pump();   // dispatched: the journal holds the session
+  TEST_ASSERT_EQUAL(1, (int)r.jobs->sessionInfos().size());
+  r.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, (int)r.debug.size());
+  const std::string& in = r.debug[0].instructions;
+  for (const char* back : {"session_list", "session_terminate"})
+    TEST_ASSERT_TRUE_MESSAGE(in.find(back) != std::string::npos, back);
 }
 
 // ---- CUM-477: a send the router loop could not finish is a memory failure ----
@@ -5003,6 +5055,8 @@ static void runFirstHalf() {
   RUN_TEST(test_failed_attempt_echo_never_names_the_serving_model);
   RUN_TEST(test_cum477_unsent_request_reply_blames_memory_not_connection);
   RUN_TEST(test_prompt_round_cap_follows_the_configured_loop);
+  RUN_TEST(test_no_live_session_trims_the_session_tools_from_the_turn);
+  RUN_TEST(test_a_live_session_restores_the_session_tools);
   RUN_TEST(test_cum544_timeout_fails_over_without_same_host_retry);
   RUN_TEST(test_cum542_web_page_chat_is_the_web_ui);
   RUN_TEST(test_cum544_all_timeouts_say_no_answer_in_time);

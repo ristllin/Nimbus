@@ -1202,6 +1202,23 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                                  return telegram ? s.name == "files.send" : isTelegramOnlyTool(s.name);
                                }),
                 specs.end());
+  // EFF (token burn, 26 Oct analysis): the turn's tool surface. The session tools
+  // whose whole contract is a RUNNING sub-agent (poll its reply, tell it something,
+  // list them, terminate one) can only answer "not running" on a turn with no live
+  // session - [ACTIVE SESSIONS] already told the model exactly that. Dropping them
+  // here is provable, not guessed: nothing they could act on exists this turn.
+  // session.spawn stays (starting work is always meaningful), the registry keeps
+  // every registration (test_action_rules pins them), and a session this turn
+  // starts is live for the NEXT turn's full set. Rendering only: `specs` is the
+  // one list the prompt's tool list, the wire and the dispatch map all read.
+  const bool liveSessions = d_.jobs && !d_.jobs->sessionInfos().empty();
+  if (!liveSessions)
+    specs.erase(std::remove_if(specs.begin(), specs.end(),
+                               [](const orch::ToolRegistry::Spec& s) {
+                                 return s.name == "session.poll" || s.name == "session.tell" ||
+                                        s.name == "session.list" || s.name == "session.terminate";
+                               }),
+                specs.end());
   // The nightly dream reads and writes memory, nothing else (lane M): no files,
   // sessions, web, routines or replies at 03:30. The same `specs` feed the prompt's
   // tool list and the loop's callable set, and the dispatch below refuses any other
@@ -1294,6 +1311,22 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   ci.toolsOnWire = d_.cfg.loop.toolLoopOn && d_.cfg.loop.toolLoopOn();
   ci.loopRounds = d_.cfg.loop.rounds ? d_.cfg.loop.rounds() : kLoopRoundsDefault;
   if (bounds_) ci.loopRounds = std::min(ci.loopRounds, bounds_->maxRounds);   // a bounded turn's cap
+  // EFF (token burn, 26 Oct analysis): a PLAIN conversational turn - the owner's
+  // message and nothing else: no photo in flight, no fresh or parked results, no
+  // running session, none of the unattended shapes - gets a small tool-round
+  // budget (the HFT awareness-turn bound's number). The 17:57 meal chat spent 8
+  // model rounds re-deriving an answer the history already held. The wall-clock
+  // loopDeadline stays the outer bound; the loop's honest final-round notice
+  // tells the model why its tools went away; any live-data fact restores the full
+  // budget. The prompt states the same cap from ci.loopRounds, so it stays honest.
+  const bool conversational =
+      !bounds_ && !scheduledTurn_ && !quietTurn_ && !dreamTurn_ && !freshInTurn_ && !liveSessions &&
+      (!orch::activeTurnImages() || orch::activeTurnImages()->items.empty()) &&
+      turnMem().memBody.empty();   // the taken [MEMORY RESULTS] block (never user text)
+  if (conversational) {
+    ci.loopRounds = std::min(ci.loopRounds, 2);
+    hlog::logf("orchestrator: plain conversational turn - tool rounds capped at %d", (int)ci.loopRounds);
+  }
   // CUM-523: the turn's one sample (unwired = true, wording unchanged). It also
   // narrows the manifest's Telegram flag, so the capability line never offers a
   // channel the tool list just withheld.
