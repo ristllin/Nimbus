@@ -999,7 +999,7 @@ class Window:
         self.bench.sent_texts += [str(r.get("text") or "") for r in self.sent or []]
         return self
 
-    def notices(self, notice_re) -> int:
+    def notices(self, notice_re, exclude_re=None) -> int:
         """Owner notices of the window, on the owner's channel: in bot mode the Telegram
         record (every outbound text with the leg's notice words: a failed turn's notice is
         sent to the chat and never written to its history), else the chats' history
