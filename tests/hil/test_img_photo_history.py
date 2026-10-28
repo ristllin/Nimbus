@@ -22,8 +22,9 @@ The head, the photo mode, the ballast and the allowlist are restored.
   settled by the turn ("row settled"); the archive item reads ok at turn time. A
   follow-up "look at that photo again" turn views the pixels again ("image.look ...
   goes to the head as an image", still no caption request) and the reply counts the
-  dots printed on the label - a count a one-line note does not carry, so the head
-  must read the pixels, not its own record. On Anthropic a third turn follows, and
+  RED dots printed on the label - a count a one-line note does not carry and the
+  shared bench chat's history cannot answer (earlier runs drew only black dots), so
+  the head must read the pixels, not its own record. On Anthropic a third turn follows, and
   every turn's per-round cache read sits at or above the first turn's (the history,
   the re-attached photo included, is read from the cache; a turn's total also scales
   with its round count, so the comparison is per round).
@@ -72,7 +73,7 @@ LABEL_VALUE = "58213"
 DOTS_MIN, DOTS_MAX = (
     5,
     8,
-)  # the countable dots on the label (per-run random): a count a one-line note does not carry, in the range a vision model counts reliably (run7: mistral-large read the pixels and still miscounted 15 small dots as 13 - past ten, counting is not a property a model has)
+)  # the dots on the label (per-run random), in the range a vision model counts reliably (run7: mistral-large read the pixels and still miscounted 15 small dots as 13 - past ten, counting is not a property a model has)
 
 
 # ---- pure helpers (host-tested) ---------------------------------------------------
@@ -114,10 +115,14 @@ def head_spec(value: str) -> Tuple[str, str]:
     return host, model or "claude-haiku-5-5"
 
 
-def label_photo(value: str, seed: int, dots: int = 0) -> bytes:
+def label_photo(value: str, seed: int, dots: int = 0, red: int = 0) -> bytes:
     """A JPEG label with a large number (only a reader of the pixels can know it)
-    and, when `dots` > 0, a row of that many filled dots along the bottom (a count
-    one note line does not carry), kept under the turn's 80 KB pick budget."""
+    and, when `dots` > 0, a row of that many filled dots along the bottom: the
+    first `red` of them RED, the rest black. The RED COUNT is the leg's truth - a
+    count a one-line note does not carry, that no earlier bench run's
+    conversation or memory can answer (the shared chat's history says "13 filled
+    dots" from the runs that drew black dots; red ones never existed until now),
+    in the range a vision model counts reliably. Kept under the 80 KB pick budget."""
     from PIL import Image, ImageDraw, ImageFont
 
     img = Image.new("RGB", (640, 420), (250, 248, 240))
@@ -130,7 +135,7 @@ def label_photo(value: str, seed: int, dots: int = 0) -> bytes:
     d.text((40, 60), "LOT", fill=(10, 10, 10), font=font)
     d.text((40, 220), value, fill=(10, 10, 10), font=font)
     for i in range(dots):  # large and well separated (see evidence/hil/dots-preview-8.jpg)
-        d.ellipse([30 + i * 52, 344, 62 + i * 52, 376], fill=(30, 30, 30))
+        d.ellipse([30 + i * 52, 344, 62 + i * 52, 376], fill=(180, 30, 30) if i < red else (30, 30, 30))
     d.point([(seed % 640, 412)], fill=(0, 0, 0))
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=80)
@@ -209,10 +214,10 @@ def img_head(device, net, owner_chat):  # noqa: F811 - the lane D fixture, impor
         _http(lambda: net.post("/api/orch", restore, timeout=8.0), "restoring the head")
 
 
-def _stage_label(net, value: str, seed: int, dots: int = 0) -> Tuple[str, int]:
+def _stage_label(net, value: str, seed: int, dots: int = 0, red: int = 0) -> Tuple[str, int]:
     import requests
 
-    data = label_photo(value, seed, dots)
+    data = label_photo(value, seed, dots, red)
     name = f"img{seed}.jpg"
     url = f"http://{net.ip}/api/files/upload?project=l48&name={name}"
     files = {"file": (name, data, "image/jpeg")}
@@ -281,11 +286,13 @@ def _inject_retrying(device, page_of, uid: int) -> List[str]:
 
 
 def _photo_turn(device, net, chat: int, uid: int) -> Tuple[List[str], str, int]:
-    """Turn 1: a label photo the head sees itself. Returns the console lines, the ref and
-    the number of dots printed on it (turn 2's truth: a count a one-line note of the
-    label does not carry, so the head must view the photo again)."""
+    """Turn 1: a label photo the head sees itself. Returns the console lines, the ref
+    and the number of RED dots printed on it (turn 2's truth: a count a one-line
+    note does not carry and the shared bench chat's history cannot answer, so the
+    head must view the photo again)."""
     dots = random.randint(DOTS_MIN, DOTS_MAX)
-    item = _stage_label(net, LABEL_VALUE, seed=int(time.time()) % 100000, dots=dots)
+    red = random.randint(2, dots - 1)
+    item = _stage_label(net, LABEL_VALUE, seed=int(time.time()) % 100000, dots=dots, red=red)
     lines = _inject_retrying(
         device,
         lambda u: album_page(u, chat, [item], caption=f"what is the big number on this label? ({u})"),
@@ -304,17 +311,18 @@ def _photo_turn(device, net, chat: int, uid: int) -> Tuple[List[str], str, int]:
     rows = [r for r in _episodic(net, 40) if r.get("kind") == "image" and REF_RE.search(r.get("text", ""))]
     assert rows, "no stored row for the photo"
     print("stored row:", rows[0].get("text", "")[:200])
-    return lines, REF_RE.search(rows[0]["text"]).group(1), dots
+    return lines, REF_RE.search(rows[0]["text"]).group(1), red
 
 
-def _look_turn(device, net, chat: int, uid: int, ref: str, dots: int) -> List[str]:
+def _look_turn(device, net, chat: int, uid: int, ref: str, red: int) -> List[str]:
     """Turn 2: the head views the photo again (image.look returns the pixels, or on
-    Anthropic the kept file rides its history message) and counts what only a reader
-    of the pixels can count; no caption request."""
-    truth = f"dots: {dots}"
+    Anthropic the kept file rides its history message) and counts what only a
+    reader of the pixels can count; no caption request."""
+    truth = f"red: {red}"
     t2 = (
-        "Look at that photo again yourself with image.look (do not answer from memory or your note) and "
-        "count exactly how many filled dots are printed in its bottom row. "
+        "Look at that photo again yourself with image.look (do not answer from memory, your note or "
+        "earlier chats - count on the image you are shown) and count exactly how many RED dots are "
+        "printed in its bottom row (ignore the black ones). "
         f"Start your reply with '{truth}'. ({uid})"
     )
     lines = _inject_retrying(device, lambda u: tb.page([tb.text_update(u, chat, t2)]), uid)
@@ -332,7 +340,7 @@ def _look_turn(device, net, chat: int, uid: int, ref: str, dots: int) -> List[st
     text = _reply(net, truth)
     if not text:
         print("replies:", [r.get("text", "")[:160] for r in _episodic(net, 6) if r.get("role") == "assistant"])
-    assert text, f"no reply named the dot count ({dots})"
+    assert text, f"no reply named the red-dot count ({red})"
     return lines
 
 
@@ -348,8 +356,8 @@ def test_img_photo_turn_then_look_again(device, net, img_head, lumi_heap):
     # reported as "13 filled dots", the count from runs 7/8's history). /clear yes
     # is the owner's own command (drops the conversation, keeps memory and files).
     _inject(device, tb.page([tb.text_update(uid - 100, chat, "/clear yes")]))
-    lines, ref, dots = _photo_turn(device, net, chat, uid)
-    lines2 = _look_turn(device, net, chat, uid + 1, ref, dots)
+    lines, ref, red = _photo_turn(device, net, chat, uid)
+    lines2 = _look_turn(device, net, chat, uid + 1, ref, red)
     if host != "anthropic":
         print(f"cache reads (informational on {host}): {[head_cache_read(l, host) for l in (lines, lines2)]}")
         return
