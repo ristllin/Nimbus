@@ -935,6 +935,45 @@ static std::string describe(Wire w, const std::string& body) {
   }
   return out;
 }
+// EFF (the 26 Oct analysis): the golden cache-read bound. The live legs
+// (tools/prompt-cache-live cache-replay per provider; evidence/cache-read-*.jsonl)
+// verify each provider READS >= 90% of the golden prefix on turn 2 round 0
+// (measured: anthropic 10489/10566, openai 5424/5513, mistral 7344 vs a 7225
+// byte-share estimate). This is the HOST pin of the property that read depends
+// on: the request's stable prefix (the tools, the static and shelf blocks, the
+// history) is at least 90% of the round-0 body, per provider, at the
+// device-shaped worst case - so a layout change that bloats the per-turn tail
+// past the bound fails here, not in the field. In-turn rounds append tool
+// results to the tail; their share varies with tool output by design.
+static void test_turn_two_prefix_share_golden_bound() {
+  const std::vector<nimbus::orch::ToolRegistry::Spec> specs = deviceShapedSpecs();
+  const std::string ins = worstCasePrompt();
+  auto ser = [](JsonVariantConst v) {
+    std::string s;
+    serializeJson(v, s);
+    return s.size();
+  };
+  for (Wire w : {Wire::AntLoop, Wire::OaiLoop, Wire::MisLoop}) {
+    const auto bodies = runTurn(w, ins, "log my lunch", &specs);
+    JsonDocument doc = parse(bodies[0]);
+    size_t prefix = ser(doc["tools"]);
+    size_t moving = 0;
+    if (w == Wire::AntLoop) prefix += ser(doc["system"]);
+    const JsonArrayConst ms =
+        (w == Wire::OaiLoop ? doc["input"] : doc["messages"]).as<JsonArrayConst>();
+    for (size_t i = 0; i < ms.size(); i++) {
+      if (i + 1 == ms.size()) moving = ser(ms[i]);
+      else prefix += ser(ms[i]);
+    }
+    const size_t total = prefix + moving;
+    char msg[160];
+    std::snprintf(msg, sizeof msg, "%s: prefix %zu B of %zu B on the wire (%zu%%)", wireName(w),
+                  prefix, total, total ? prefix * 100 / total : 100);
+    TEST_MESSAGE(msg);
+    TEST_ASSERT_TRUE_MESSAGE(total > 0 && prefix * 10 >= total * 9, msg);
+  }
+}
+
 static void test_golden_layout_per_provider() {
   const std::unique_ptr<Turn> t = turnAt(10);
   const std::string ins = agent::composeInstructions(t->ci);
@@ -966,6 +1005,7 @@ int main(int, char**) {
   RUN_TEST(test_ttl_order_counter_a_short_point_before_a_long_one_is_invalid);
   RUN_TEST(test_ttl_table_picks_one_hour_for_a_slow_chat);
   RUN_TEST(test_turn_gaps_track_chats_in_ram);
+  RUN_TEST(test_turn_two_prefix_share_golden_bound);
   RUN_TEST(test_golden_layout_per_provider);
   return UNITY_END();
 }
