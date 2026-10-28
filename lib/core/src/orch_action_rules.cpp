@@ -87,6 +87,7 @@ const ActionRuleRow kRows[] = {
     {"files.stat", R::Open, "look up a file"},
     {"image.generate", R::TurnOnly, "make an image"},
     {"image.look", R::TurnOnly, "look at a photo"},
+    {"image.note", R::TurnOnly, "note a photo"},   // the head records what a photo showed
     // ---- docs, routines, replies, skills, people (src/agent/memory_subsystem.cpp) ----
     {"docs.list", R::Open, "browse the docs"},
     {"docs.read", R::Open, "read the docs"},

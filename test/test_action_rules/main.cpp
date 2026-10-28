@@ -176,6 +176,7 @@ const Expect kExpect[] = {
     {"files.stat", kOpen},
     {"image.generate", kTurn},
     {"image.look", kTurn},
+    {"image.note", kTurn},
     // docs, routines, replies, skills, people
     {"docs.list", kOpen},
     {"docs.read", kOpen},
