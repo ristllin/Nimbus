@@ -343,6 +343,11 @@ def test_img_photo_turn_then_look_again(device, net, img_head, lumi_heap):
     chat, host = img_head["chat"], img_head["host"]
     print(f"head {host}/{img_head['model']} at Lumi's heap {lumi_heap}")
     uid = tb.first_update_id() + 7100
+    # A clean chat first: the runs before this one left their turns in the shared
+    # bench chat, and the head reads them (run 11: a photo drawn with 5-8 dots was
+    # reported as "13 filled dots", the count from runs 7/8's history). /clear yes
+    # is the owner's own command (drops the conversation, keeps memory and files).
+    _inject(device, tb.page([tb.text_update(uid - 100, chat, "/clear yes")]))
     lines, ref, dots = _photo_turn(device, net, chat, uid)
     lines2 = _look_turn(device, net, chat, uid + 1, ref, dots)
     if host != "anthropic":
