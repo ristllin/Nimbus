@@ -368,9 +368,15 @@ def _turn_on_real_model(be, text: str, timeout: float = 120.0) -> str:
         _opost(be.net, be.ip, be.tok, {"orchHost": "custom", "convReset": "1"})
 
 
-def _tool_rows(be) -> list:
+def _tool_rows(be, text: str = "") -> list:
+    # The episodic page's rows ride the "messages" key ("entries" is the vector
+    # browse page's). "text" narrows the answer so a read under the l24 ballast
+    # stays a small body: the serve policy answers 503 to any body over 16 KB
+    # while free is under 20 KB, and this unit's serial page crossed 16 KB.
     q = f"/api/mem/episodic?session={TURN_CHAT}&limit=50&t={be.tok}"
-    rows = be.net.get_json(q, ip=be.ip, timeout=8.0).get("entries", [])
+    if text:
+        q += f"&text={text}"
+    rows = be.net.get_json(q, ip=be.ip, timeout=8.0).get("messages", [])
     return [str(e.get("text", "")) for e in rows]
 
 
@@ -436,7 +442,7 @@ def test_l24_a_lost_trace_sidecar_marks_the_row(custom_backend):  # noqa: F811 (
         _turn_on_real_model(
             be, "CALL the device.log tool with scan_kb 64 and lines 60 now, then tell me what the oldest lines say."
         )
-        rows = _tool_rows(be)
+        rows = _tool_rows(be, "device")
         clipped = [r for r in rows if r.startswith("device.log(")]
         assert clipped, "the head never read the device log"
         assert any(LOST_SIDECAR in r for r in clipped), "no lost-sidecar mark on the clipped row under starvation"
@@ -449,7 +455,7 @@ def test_l24_a_lost_trace_sidecar_marks_the_row(custom_backend):  # noqa: F811 (
     # The counter-test: with the ballast gone the same read parks its sidecar.
     blob_fails = _state_int(be, "blobWriteFails")
     _turn_on_real_model(be, "CALL the device.log tool again with scan_kb 64 and lines 60, and tell me what changed.")
-    rows = _tool_rows(be)
+    rows = _tool_rows(be, "device")
     clipped = [r for r in rows if r.startswith("device.log(")]
     assert clipped and not any(LOST_SIDECAR in r for r in clipped[-2:]), "the mark appears without starvation"
     assert _state_int(be, "blobWriteFails") == blob_fails, "blobWriteFails moved without starvation"
