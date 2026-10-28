@@ -1322,7 +1322,14 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   const bool conversational =
       !bounds_ && !scheduledTurn_ && !quietTurn_ && !dreamTurn_ && !freshInTurn_ && !liveSessions &&
       (!orch::activeTurnImages() || orch::activeTurnImages()->items.empty()) &&
-      turnMem().memBody.empty();   // the taken [MEMORY RESULTS] block (never user text)
+      turnMem().memBody.empty() &&   // the taken [MEMORY RESULTS] block (never user text)
+      !ledger_.hasRows();   // PRISM row 1: the [TODAY'S FOOD LEDGER] block is live data
+  // (a person's rows today ride the prompt, day_context.cpp). The pre-5.0.0 eval
+  // showed the capped coach answering the day total from MEMORY instead of
+  // spending a round re-reading the ledger, and fronting preambles after a
+  // wasted round (mistral-large 34/35 pre-cap -> 30/35 capped, qty-pressed
+  // below target; sonnet held). A turn with rows keeps the full budget; the
+  // cap still holds for every chat with no rows today.
   if (conversational) {
     ci.loopRounds = std::min(ci.loopRounds, 2);
     hlog::logf("orchestrator: plain conversational turn - tool rounds capped at %d", (int)ci.loopRounds);

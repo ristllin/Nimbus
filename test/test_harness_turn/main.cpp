@@ -137,6 +137,9 @@ struct Rig {
   std::vector<std::string> recallQueries;
   std::vector<std::string> recallResult{"[92%] owner likes tea"};
   std::string recallDegraded;   // lane P: the cause when recall was keyword-only
+  // PRISM row 1: today's ledger as the device closure serves it (empty = no
+  // ledger file: the plain-chat turns below stay conversational).
+  nimbus::orch::FoodLedger foodLedger;
   std::vector<orch::ToolRegistry::Spec> specs;      // advertised registry tools
   std::vector<std::string> mcpRequests;
   std::string mcpResponse =
@@ -240,6 +243,7 @@ struct Rig {
       recallQueries.push_back(q);
       return nimbus::orch::RecallOut{recallResult, recallDegraded};
     };
+    d.foodLedger = [this](const std::string&) { return foodLedger; };
     d.composeInputs = [this](const std::string&) {
       agent::ComposeInputs in;
       in.hw = hw;
@@ -262,15 +266,7 @@ struct Rig {
     };
     d.spawnPause = [this](const std::string& h) { return spawnPause ? spawnPause(h) : orch::HeadPause(); };
     d.headRunsTools = [this](const std::string& h) { return headRunsTools ? headRunsTools(h) : true; };
-    // W15: the rig advertises the skills index the way the device does
-    // (skills::indexText -> agent::skillsIndexText over the capsule list), over the
-    // device's REAL built-ins (CUM-523: a copied line drifted from the device text).
-    d.skillsIndex = [] {
-      std::vector<agent::SkillIndexEntry> es;
-      for (size_t i = 0; i < agent::builtinSkillCount(); ++i)
-        es.push_back({agent::builtinSkill(i).id, agent::builtinSkill(i).desc, false});
-      return agent::skillsIndexText(es);
-    };
+    wireSkillsIndex(d);
     d.modelChoices = [this](const std::string& p) {
       if (modelChoicesFn) return modelChoicesFn(p);
       return "model-" + p + "-a,model-" + p + "-b";
@@ -367,6 +363,18 @@ struct Rig {
     };
     d.hosts.fabricSupports = [](const std::string& h) {
       return h == "openai" || h == "anthropic" || h == "mistral";
+    };
+  }
+
+  // W15: the rig advertises the skills index the way the device does
+  // (skills::indexText -> agent::skillsIndexText over the capsule list), over the
+  // device's REAL built-ins (CUM-523: a copied line drifted from the device text).
+  void wireSkillsIndex(TurnEngine::Deps& d) {
+    d.skillsIndex = [] {
+      std::vector<agent::SkillIndexEntry> es;
+      for (size_t i = 0; i < agent::builtinSkillCount(); ++i)
+        es.push_back({agent::builtinSkill(i).id, agent::builtinSkill(i).desc, false});
+      return agent::skillsIndexText(es);
     };
   }
 
@@ -1205,6 +1213,39 @@ static void test_prompt_round_cap_follows_the_configured_loop() {
   chat.eng->handleMessage("hi", "Roy", "1001");
   TEST_ASSERT_EQUAL(1, (int)chat.debug.size());
   TEST_ASSERT_TRUE(chat.debug[0].instructions.find("several rounds (at most 2)") != std::string::npos);
+}
+
+// PRISM row 1 (pre-5.0.0, the food-coach lift): the [TODAY'S FOOD LEDGER] block
+// is LIVE data, like a fresh result or a photo. A person turn whose ledger has
+// rows today keeps the FULL round budget: the capped coach answered the day
+// total from memory instead of spending a round re-reading the ledger (the
+// eval: mistral-large 34/35 pre-cap -> 30/35 under the cap, qty-pressed below
+// target). No rows today (the common chat): the turn stays conversational and
+// capped, so the cap's savings hold.
+static void test_ledger_rows_keep_the_full_round_budget() {
+  Rig r;
+  r.cfg.rounds = 3;
+  r.foodLedger.today = "2026-10-28";
+  r.foodLedger.zone = "GMT";
+  r.foodLedger.project = nimbus::orch::kFoodLedgerProject;
+  r.foodLedger.name = nimbus::orch::kFoodLedgerOwnerName;
+  r.foodLedger.exists = true;
+  r.foodLedger.header = "date,meal,food,amount_unit,kcal,note";
+  r.foodLedger.rows.push_back("2026-10-28,breakfast,2 eggs,2 eggs,180,");
+  r.foodLedger.rowsToday = 1;
+  r.eng->handleMessage("what's today's food total?", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, (int)r.debug.size());
+  TEST_ASSERT_TRUE_MESSAGE(r.debug[0].instructions.find("several rounds (at most 3)") !=
+                               std::string::npos,
+                           "a turn with ledger rows keeps the configured budget");
+  // The same shape with no rows today is still a plain conversational turn.
+  Rig plain;
+  plain.cfg.rounds = 3;
+  plain.foodLedger.today = "2026-10-28";   // a set clock, an empty day
+  plain.eng->handleMessage("what's today's food total?", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, (int)plain.debug.size());
+  TEST_ASSERT_TRUE(plain.debug[0].instructions.find("several rounds (at most 2)") !=
+                   std::string::npos);
 }
 
 // EFF (26 Oct analysis): the turn's tool surface. With no live session, the
@@ -5055,6 +5096,7 @@ static void runFirstHalf() {
   RUN_TEST(test_failed_attempt_echo_never_names_the_serving_model);
   RUN_TEST(test_cum477_unsent_request_reply_blames_memory_not_connection);
   RUN_TEST(test_prompt_round_cap_follows_the_configured_loop);
+  RUN_TEST(test_ledger_rows_keep_the_full_round_budget);
   RUN_TEST(test_no_live_session_trims_the_session_tools_from_the_turn);
   RUN_TEST(test_a_live_session_restores_the_session_tools);
   RUN_TEST(test_cum544_timeout_fails_over_without_same_host_retry);
