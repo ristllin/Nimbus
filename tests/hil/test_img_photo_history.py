@@ -267,7 +267,8 @@ def _photo_turn(device, net, chat: int, uid: int) -> Tuple[List[str], str, int]:
     item = _stage_label(net, LABEL_VALUE, seed=int(time.time()) % 100000, dots=dots)
     lines = _inject(device, album_page(uid, chat, [item], caption=f"what is the big number on this label? ({uid})"))
     lines += _idle_lines(device, IDLE_WATCH_S)
-    print("\n".join(ln for ln in lines if "telegram:" in ln or "vision" in ln or "turn spend" in ln))
+    keep1 = ("telegram:", "vision", "turn spend", "orchestrator", "refused", "memory:", "heap")
+    print("\n".join(ln for ln in lines if any(k in ln for k in keep1)))
     assert ATTACHED_RE.search("\n".join(lines)), "the photo was not attached for the head"
     assert not caption_calls(lines), f"a caption request was made for a photo the head saw: {caption_calls(lines)}"
     settled = [m.groups() for m in map(SETTLED_RE.search, lines) if m]
@@ -293,7 +294,7 @@ def _look_turn(device, net, chat: int, uid: int, ref: str, dots: int) -> List[st
     )
     lines = _inject(device, tb.page([tb.text_update(uid, chat, t2)]))
     lines += _idle_lines(device, 10)
-    keep = ("vision", "turn spend", "anthropic:", "headloop", "tool")
+    keep = ("vision", "turn spend", "anthropic:", "headloop", "tool", "orchestrator", "refused", "memory:", "heap")
     print("\n".join(ln for ln in lines if any(k in ln for k in keep)))
     looks = [m.groups() for m in map(LOOK_RE.search, lines) if m]
     reattached = [ln for ln in lines if REATTACH_RE.search(ln)]
