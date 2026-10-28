@@ -257,9 +257,19 @@ String failWords() { return g_failWords; }
 
 namespace {
 // Is the photo `ref` in chat `ns`'s recent rows (the photos and files it sent)?
+// The conversation rows are keyed by the routing chat id; the principal's ns is
+// the DATA namespace ("chat:<id>" for a member, nsForChat). Translate before the
+// lookup or a member's own photos would never be found ("no photo with that ref
+// in this chat" for a photo this chat sent - found on hardware by the IMG lane's
+// look-again leg). The owner's check is skipped upstream (owner=true), so only
+// the member form needs it.
+std::string chatIdOfNs(const std::string& ns) {
+  return ns.rfind("chat:", 0) == 0 ? ns.substr(5) : ns;
+}
+
 bool chatHasPhoto(const std::string& ns, const std::string& ref) {
   nimbus::orch::MsgQuery q;
-  q.sessionId = ns;
+  q.sessionId = chatIdOfNs(ns);
   q.haveKind = true;
   q.kind = nimbus::orch::MsgKind::Image;
   q.alsoKinds = {nimbus::orch::MsgKind::File};
