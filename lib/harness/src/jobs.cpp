@@ -502,22 +502,16 @@ std::string JobEngine::takeFreshResultsFor(const FreshScope& scope, bool* unveri
 
 std::string JobEngine::takeFreshResults(bool* unverified) { return takeFresh(nullptr, unverified); }
 
-// Take the parked results in `scope` (every one when null), rendered as the seed; the
-// rest stay parked for their own chat's turn.
-std::string JobEngine::takeFresh(const FreshScope* scope, bool* unverified) {
-  std::vector<FreshResult> taken, kept;
-  for (auto& f : fresh_) (scope && !inScope(f, *scope) ? kept : taken).push_back(std::move(f));
-  fresh_ = std::move(kept);
-  if (unverified) {
-    *unverified = false;
-    for (const auto& f : taken) *unverified = *unverified || f.unverified;
-  }
-  if (taken.empty()) return "";
+// The seed body over the results a turn just took: full text until the block budget,
+// then one-line stubs whose full text stays fetchable with results.get (the sub-results
+// are already in the ring). Split out of takeFresh (lizard: the merged scope split and
+// the CUM-822 web header pushed it over the CCN cap); behavior unchanged.
+static std::string freshSeedBody(const std::vector<JobEngine::FreshResult>& taken) {
   std::string b = "[FRESH RESULTS] (sub-agents that just finished)\n";
   // CUM-822 (unit A, 27 Oct): a synthesis over a weather-only web result told the owner
   // trains were "running normally", a fact from an earlier answer, and dropped sources.
   bool web = false;
-  for (const auto& f : fresh_) web = web || (f.web && !f.failed);
+  for (const auto& f : taken) web = web || (f.web && !f.failed);
   if (web)
     b += "For a result tagged web: keep the sources it names and state only facts it "
          "contains, never facts from earlier answers.\n";
@@ -548,6 +542,21 @@ std::string JobEngine::takeFresh(const FreshScope* scope, bool* unverified) {
   if (stubbed)
     b += "(" + std::to_string(stubbed) +
          " result(s) summarized - fetch full text with results.get)\n";
+  return b;
+}
+
+// Take the parked results in `scope` (every one when null), rendered as the seed; the
+// rest stay parked for their own chat's turn.
+std::string JobEngine::takeFresh(const FreshScope* scope, bool* unverified) {
+  std::vector<FreshResult> taken, kept;
+  for (auto& f : fresh_) (scope && !inScope(f, *scope) ? kept : taken).push_back(std::move(f));
+  fresh_ = std::move(kept);
+  if (unverified) {
+    *unverified = false;
+    for (const auto& f : taken) *unverified = *unverified || f.unverified;
+  }
+  if (taken.empty()) return "";
+  const std::string b = freshSeedBody(taken);
   drainedBeforeTake_ = drained_;   // restoreFresh puts the clock back with the results
   drained_ = false;   // single reset point: EVERY consumer (batch consolidation, a user
                       // turn folding results in, the raw fallback) clears the stuck
