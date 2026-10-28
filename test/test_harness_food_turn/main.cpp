@@ -215,12 +215,15 @@ static void test_follow_ups_get_the_playbook() {
 }
 
 // The ledger's figures are sources: a total quoted from it is not corrected; a
-// figure from nowhere still is (counter-test).
+// figure from nowhere still is (counter-test). Rebase (HON, 28 Oct): the quoted
+// total now credits the ledger itself - lane HON's source rule asks for a source
+// this turn's texts name, and no label was seen this turn; the counter keeps a
+// source noun so the figure check still fires on a figure from nowhere.
 static void test_ledger_figures_are_claim_sources() {
   Rig r;
-  r.reply = "{\"reply\":\"The label says 1315 kcal for today.\",\"memory\":\"\",\"ask\":\"\"}";
+  r.reply = "{\"reply\":\"The ledger says 1315 kcal for today.\",\"memory\":\"\",\"ask\":\"\"}";
   r.eng->handleMessage("what's my total?", "Roy", "1001");
-  TEST_ASSERT_EQUAL_STRING("The label says 1315 kcal for today.", r.delivered.back().c_str());
+  TEST_ASSERT_EQUAL_STRING("The ledger says 1315 kcal for today.", r.delivered.back().c_str());
   Rig c;
   c.reply = "{\"reply\":\"The label says 2402 kcal for today.\",\"memory\":\"\",\"ask\":\"\"}";
   c.eng->handleMessage("what's my total?", "Roy", "1001");
