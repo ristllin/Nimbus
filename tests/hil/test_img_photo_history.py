@@ -262,16 +262,20 @@ def _archive_status(net, chat: int, uid: int) -> Optional[str]:
 # ---- legs ---------------------------------------------------------------------------
 
 
-def _inject_retrying(device, page: str) -> List[str]:
-    """_inject, retrying once after the honest low-memory refusal: at Lumi's ballast
-    the ~89 KB Mistral request build is heap-luck (the device refuses honestly and
-    leaves the heap to recover; the same turn succeeds on the next attempt)."""
-    lines = _inject(device, page)
+def _inject_retrying(device, page_of, uid: int) -> List[str]:
+    """_inject, retrying after the honest low-memory refusal with a FRESH update id:
+    at Lumi's ballast the ~89 KB Mistral request build is heap-luck (the device
+    refuses honestly and leaves the heap to recover; the same turn succeeds on the
+    next attempt). The device dedupes update ids, so each attempt injects its own.
+
+    `page_of(uid)` builds the page for that update id."""
+    lines = _inject(device, page_of(uid))
     attempts = 1
     while attempts < 3 and any("low memory" in ln for ln in lines):
         print(f"[leg] low-memory refusal (attempt {attempts}) - waiting 12 s and trying again")
         time.sleep(12)
-        lines = _inject(device, page)
+        uid += 1000 * attempts
+        lines = _inject(device, page_of(uid))
         attempts += 1
     return lines
 
@@ -283,7 +287,9 @@ def _photo_turn(device, net, chat: int, uid: int) -> Tuple[List[str], str, int]:
     dots = random.randint(DOTS_MIN, DOTS_MAX)
     item = _stage_label(net, LABEL_VALUE, seed=int(time.time()) % 100000, dots=dots)
     lines = _inject_retrying(
-        device, album_page(uid, chat, [item], caption=f"what is the big number on this label? ({uid})")
+        device,
+        lambda u: album_page(u, chat, [item], caption=f"what is the big number on this label? ({u})"),
+        uid,
     )
     lines += _idle_lines(device, IDLE_WATCH_S)
     keep1 = ("telegram:", "vision", "turn spend", "orchestrator", "refused", "memory:", "heap")
@@ -311,7 +317,7 @@ def _look_turn(device, net, chat: int, uid: int, ref: str, dots: int) -> List[st
         "count exactly how many filled dots are printed in its bottom row. "
         f"Start your reply with '{truth}'. ({uid})"
     )
-    lines = _inject_retrying(device, tb.page([tb.text_update(uid, chat, t2)]))
+    lines = _inject_retrying(device, lambda u: tb.page([tb.text_update(u, chat, t2)]), uid)
     lines += _idle_lines(device, 10)
     keep = ("vision", "turn spend", "anthropic:", "headloop", "tool", "orchestrator", "refused", "memory:", "heap")
     print("\n".join(ln for ln in lines if any(k in ln for k in keep)))
@@ -346,7 +352,9 @@ def test_img_photo_turn_then_look_again(device, net, img_head, lumi_heap):
     # cache read scales with its round count, so the fair comparison is the per-round
     # average: every later turn's must sit at or above the first turn's.
     lines3 = _inject_retrying(
-        device, tb.page([tb.text_update(uid + 2, chat, f"thanks, and the first word on it? ({uid + 2})")])
+        device,
+        lambda u: tb.page([tb.text_update(u, chat, f"thanks, and the first word on it? ({u})")]),
+        uid + 2,
     )
     assert not caption_calls(lines3)
     per = []
