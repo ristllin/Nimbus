@@ -141,8 +141,8 @@ struct TlsIo {
     auto largest = [] { return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_8BIT); };
     auto free8 = [] { return (uint32_t)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_8BIT); };
     auto sleep = [](uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms)); };
-    paceSlice(pacedMs, paceCapForBody(req.timeoutMs, bodyLength(req)), kDmaChunkFloor, largest, free8,
-              sleep, [this] { return expired(); });
+    paceSlice(pacedMs, paceCapForBody(req.timeoutMs, bodyLength(req)), kDmaChunkFloor,
+              SliceIo{largest, free8, sleep, [this] { return expired(); }});
   }
 
   bool expired() const { return (int32_t)(millis() - deadline) >= 0; }

@@ -246,18 +246,28 @@ struct SliceWait {
 };
 
 // One slice's whole wait, as the device transport runs it before every slice after the
-// first: `capMs` is the exchange's cap (paceCapMs of its timeout), `largest()` samples
-// the largest free internal block, `sleep(ms)` waits, `expired()` is the exchange's
-// deadline (asked first: next() counts the step it grants). Adds the wait to
-// `pacedMs`, the exchange's total, and returns it. `floorMs` is the pool the
-// caller samples (kSliceHeadroom for the internal heap, kDmaChunkFloor when
-// the samples come from the DMA-capable pool).
+// first: `capMs` is the exchange's cap (paceCapMs of its timeout), `io.largest()` samples
+// the largest free block of the pool, `io.free8()` its free bytes, `io.sleep(ms)` waits,
+// `io.expired()` is the exchange's deadline (asked first: next() counts the step it
+// grants). Adds the wait to `pacedMs`, the exchange's total, and returns it. `floorMs` is
+// the pool the caller samples (kSliceHeadroom for the internal heap, kDmaChunkFloor when
+// the samples come from the DMA-capable pool). The four seams ride one small bundle so
+// the helper stays inside the repo's argument gate.
 template <class Largest, class Free, class Sleep, class Expired>
-uint32_t paceSlice(uint32_t& pacedMs, uint32_t capMs, uint32_t floorMs, Largest largest, Free free8, Sleep sleep,
-                   Expired expired) {
+struct SliceIo {
+  Largest largest;
+  Free free8;
+  Sleep sleep;
+  Expired expired;
+};
+template <class Largest, class Free, class Sleep, class Expired>
+SliceIo(Largest, Free, Sleep, Expired)->SliceIo<Largest, Free, Sleep, Expired>;
+
+template <class Io>
+uint32_t paceSlice(uint32_t& pacedMs, uint32_t capMs, uint32_t floorMs, Io io) {
   SliceWait w;
   w.floor = floorMs;
-  while (!expired() && w.next(largest(), free8(), pacedMs, capMs)) sleep(kSliceWaitStepMs);
+  while (!io.expired() && w.next(io.largest(), io.free8(), pacedMs, capMs)) io.sleep(kSliceWaitStepMs);
   pacedMs += w.waitedMs;
   return w.waitedMs;
 }

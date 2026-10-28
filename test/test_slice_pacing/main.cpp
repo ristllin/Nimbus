@@ -46,7 +46,8 @@ static uint32_t paceOne(const Heap& heap, uint32_t slice, uint32_t requestPacedM
     clock += ms;
     TEST_ASSERT_TRUE_MESSAGE(++steps <= kSliceWaitMaxMs / kSliceWaitStepMs, "a slice waited past its bound");
   };
-  const uint32_t w = agent::paceSlice(paced, capMs, floorMs, largest, freeNow, sleep, [] { return false; });
+  const uint32_t w = agent::paceSlice(paced, capMs, floorMs,
+                                     agent::SliceIo{largest, freeNow, sleep, [] { return false; }});
   TEST_ASSERT_EQUAL_UINT32(clock, w);
   TEST_ASSERT_EQUAL_UINT32(requestPacedMs + w, paced);
   return w;
@@ -293,11 +294,12 @@ static void test_the_deadline_ends_the_wait_and_counts_only_slept_steps() {
   auto freeNow = [] { return 40000u; };
   auto sleep = [&](uint32_t ms) { clock += ms; };
   auto expired = [&] { return clock >= 30; };
-  TEST_ASSERT_EQUAL_UINT32(30, agent::paceSlice(paced, kRequestPaceMaxMs, agent::kSliceHeadroom, largest, freeNow, sleep, expired));
+  TEST_ASSERT_EQUAL_UINT32(30, agent::paceSlice(paced, kRequestPaceMaxMs, agent::kSliceHeadroom,
+                                                 agent::SliceIo{largest, freeNow, sleep, expired}));
   TEST_ASSERT_EQUAL_UINT32(330, paced);
   // Already past the deadline: no wait, nothing added.
-  TEST_ASSERT_EQUAL_UINT32(0, agent::paceSlice(paced, kRequestPaceMaxMs, agent::kSliceHeadroom, largest, freeNow, sleep,
-                                               [] { return true; }));
+  TEST_ASSERT_EQUAL_UINT32(0, agent::paceSlice(paced, kRequestPaceMaxMs, agent::kSliceHeadroom,
+                                               agent::SliceIo{largest, freeNow, sleep, [] { return true; }}));
   TEST_ASSERT_EQUAL_UINT32(330, paced);
 }
 
@@ -320,8 +322,9 @@ static void test_pacing_never_eats_the_deadline() {
     TEST_ASSERT_EQUAL_UINT32(0, cap % kSliceWaitStepMs);
     uint32_t paced = 0, clock = 0;
     for (uint32_t off = 4096; off < 245 * 1024; off += 4096)
-      agent::paceSlice(paced, cap, agent::kSliceHeadroom, [&] { return stuck(0, clock); }, [] { return 40000u; },
-                       [&](uint32_t ms) { clock += ms; }, [] { return false; });
+      agent::paceSlice(paced, cap, agent::kSliceHeadroom,
+                       agent::SliceIo{[&] { return stuck(0, clock); }, [] { return 40000u; },
+                                      [&](uint32_t ms) { clock += ms; }, [] { return false; }});
     TEST_ASSERT_EQUAL_UINT32(cap, paced);   // the stuck heap spends the whole cap, never more
     TEST_ASSERT_TRUE(paced * kPaceDeadlineShare <= timeout);
     TEST_ASSERT_EQUAL_UINT32(clock, paced);
@@ -353,8 +356,9 @@ static void test_the_dma_pool_floor_waits_for_the_slice_drain() {
   uint32_t paced = 0, clock = 0;
   const uint32_t cap = agent::paceCapForBody(120000, 280550);
   for (uint32_t off = 4096; off < 280550; off += 4096)
-    agent::paceSlice(paced, cap, floor, [&] { return stuck(0, clock); }, [&] { return 11000u + clock; },
-                     [&](uint32_t ms) { clock += ms; }, [] { return false; });
+    agent::paceSlice(paced, cap, floor,
+                     agent::SliceIo{[&] { return stuck(0, clock); }, [&] { return 11000u + clock; },
+                                    [&](uint32_t ms) { clock += ms; }, [] { return false; }});
   TEST_ASSERT_EQUAL_UINT32(cap, paced);
 }
 
