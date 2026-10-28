@@ -32,7 +32,7 @@ import pytest
 import test_l43_nvs_reserve as l43
 from device import ExpectTimeout
 
-NOTICE_TEXT = "settings storage is almost full"
+NOTICE_TEXT = "settings storage is full"
 CAPTURED_LOG = "storage-full notice captured for the web chat (no Telegram owner)"
 REPEAT_LOG = "storage-full notice already in the web chat today: not repeated"
 

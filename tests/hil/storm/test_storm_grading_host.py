@@ -152,6 +152,27 @@ def test_notice_lines():
     assert len(g.log_notices(g.parse_log(log))) == 3
 
 
+def test_qw2_web_chat_notice_lines():
+    """28 Oct re-baseline: QW2's owner_notice rework delivers a no-token (web-only)
+    device's notices to the web chat and words the log line "captured for the web
+    chat (no Telegram owner)" - a DELIVERED notice, so told_once must count it. The
+    episode dedup ("already in the web chat today: not repeated") and a full reply
+    queue ("dropped") are not deliveries and stay uncounted."""
+    log = "\n".join(
+        [
+            "1 1 - telegram: storage-full notice captured for the web chat (no Telegram owner)",
+            "2 2 - telegram: storage-full notice (file store) captured for the web chat (no Telegram owner)",
+            "3 3 - telegram: guard notice (duplicate) captured for the web chat (no Telegram owner)",
+            "4 4 - telegram: storage-full notice already in the web chat today: not repeated",
+            "5 5 - telegram: guard notice (duplicate) dropped: reply queue full",
+            "6 6 - telegram: storage-full notice sent to the owner",
+        ]
+    )
+    found = g.log_notices(g.parse_log(log))
+    assert len(found) == 4   # the two storage deliveries, the guard delivery, the pre-QW2 wording
+    assert not any("not repeated" in t or "dropped" in t for t in found)
+
+
 def test_turns_requests_and_parks():
     log = "\n".join(
         [

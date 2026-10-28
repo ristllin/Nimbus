@@ -385,10 +385,24 @@ class StormBench:
         return self._retry(lambda: self.net.get_json("/api/orch", timeout=8.0), "reading /api/orch")
 
     def chat_rows(self, limit: int = 60) -> Dict[str, dict]:
-        """The owner chat's messages by id (newest ``limit``)."""
+        """The owner chat's messages by id (newest ``limit``), plus the web chat's
+        device-event rows keyed "web:<id>". QW2's notice rework delivers a web-only
+        (no-token) device's owner notices to the "web" session as tagged device-event
+        rows (the pre-QW2 pump captured them into ownerChat(), which a leg's allowlist
+        points at the leg chat): the told-once grades must see them, so both sessions
+        are read and the diff keys stay distinct per session."""
         q = f"/api/mem/episodic?session={self.chat}&limit={limit}"
         page = self._retry(lambda: self.net.get_json(q, timeout=10.0), "reading the owner chat")
-        return {str(r.get("id")): r for r in page.get("messages", []) if r.get("kind", "message") == "message"}
+        rows = {str(r.get("id")): r for r in page.get("messages", []) if r.get("kind", "message") == "message"}
+        wq = f"/api/mem/episodic?session=web&limit={limit}"
+        try:
+            web = self.net.get_json(wq, timeout=10.0)
+        except Exception:  # noqa: BLE001 - a busy unit: the leg's retry loop covers the leg chat
+            web = {}
+        for r in web.get("messages", []) if isinstance(web, dict) else []:
+            if r.get("kind", "message") == "message":
+                rows[f"web:{r.get('id')}"] = r
+        return rows
 
     @staticmethod
     def _retry(call, what: str, tries: int = 5):
@@ -834,13 +848,16 @@ ANSWER_RE = re.compile(r"pong|mock says hi|held reply", re.I)
 # The replay legs' two notice classes (run 3, 24 Oct). The SUBJECT a replay leg
 # grades is the storm breaker's own notice: the re-served page the duplicate guard
 # skipped. The drive's own side effect - the settings store the kit itself filled -
-# honestly raises the once-per-boot "settings storage is almost full" notice, a
-# different class the owner must hear; grading the two as one told_once failed a
-# correct episode on the bot unit (2 notices). The storage notice is recorded per
-# run (extra["storageNotices"], once per boot, so at most 2 with the leg's restart)
-# and does not count toward the replay leg's bound.
+# honestly raises the once-per-boot "settings storage is full" notice, a different
+# class the owner must hear; grading the two as one told_once failed a correct
+# episode on the bot unit (2 notices). The storage notice is recorded per run
+# (extra["storageNoticeAlive"], the 28 Oct ruling's leg-a baseline) and does not
+# count toward the replay leg's bound.
 REPLAY_NOTICE_RE = re.compile(r"duplicate|already|again|repeat|paused|could not be processed", re.I)
 STORAGE_NOTICE_RE = re.compile(r"storage|settings", re.I)
+# The 24 h episode dedup (QW2): a delivery the web chat already holds today is NOT
+# repeated - the log line proves the raise happened, so it keeps the store non-silent.
+STORAGE_DEDUP_RE = re.compile(r"storage-full notice.*not repeated", re.I)
 # Lines the drive itself causes on every delivery: not part of the device's behaviour.
 DRIVE_LINES = ("injected page", "TGINJECT", "test inject")
 
@@ -896,11 +913,14 @@ def replay_storm(bench: StormBench, leg: str, copies: int, restart_at: Optional[
             "logNotices": g.log_notices(lines),
             "inboundLogged": len(g.inbound_texts(lines, bench.chat)),
             "telegramSent": [str(r.get("text") or "")[:120] for r in w.sent] if w.sent is not None else None,
-            # The drive's own side effect (the filled settings store), recorded but
-            # not graded: once per boot, so at most 2 with the leg's mid-episode restart.
+            # The drive's own side effect (the filled settings store), the 28 Oct
+            # leg-a baseline: delivered storage notices (web chat or owner chat) plus
+            # honest episode dedups both prove the raise - the full store is not silent.
             "storageNotices": w.notices(STORAGE_NOTICE_RE),
+            "storageDedups": sum(1 for ln in lines if STORAGE_DEDUP_RE.search(ln.text)),
         }
     )
+    m.extra["storageNoticeAlive"] = m.extra["storageNotices"] + m.extra["storageDedups"]
     if not bench.control:
         m.extra["guard"] = guard_line(bench)
     probe = bench.fresh_message(ANSWER_RE, f"storm {leg} fresh {uid}: reply with the single word pong", uid + 7)
@@ -979,8 +999,10 @@ class Window:
     def notices(self, notice_re) -> int:
         """Owner notices of the window, on the owner's channel: in bot mode the Telegram
         record (every outbound text with the leg's notice words: a failed turn's notice is
-        sent to the chat and never written to its history), else the chat's history
-        notices plus the notices the device logged as queued."""
+        sent to the chat and never written to its history), else the chats' history
+        notices (the leg chat's rows and, since QW2's notice rework, the web chat's
+        device-event rows - chat_rows reads both) plus the notices the device logged as
+        delivered (queued, sent, or captured for the web chat)."""
         if self.sent is not None:
             archived = sum(1 for r in self.sent if notice_re.search(str(r.get("text") or "")))
             # The archive lives on the card: when the card drops out (low memory) the sends

@@ -65,10 +65,18 @@ OVERRIDE_RE = re.compile(r"provider: TEST override answered (?P<host>[^/\s]+)\S*
 PARKED_RE = re.compile(r"provider: (?P<host>\S+) parked for every seam")
 # A Telegram message line ("telegram: msg from <name> (chat <id>): <text>").
 TG_MSG_RE = re.compile(r"telegram: msg from .*? \(chat (?P<chat>-?\d+)\): (?P<text>.*)$")
-# Notices the device logs when it queues one for the owner outside a turn's reply.
+# Notices the device logs when it delivers one to the owner outside a turn's reply.
+# Both word generations count (the golden re-bless lesson, 28 Oct): the pre-QW2 pump
+# ("queued for the owner"/"sent to the owner") and QW2's owner_notice rework, which
+# reroutes a no-token (web-only) device's notices to the web chat and words it
+# "captured for the web chat (no Telegram owner)" - the notice is still DELIVERED, so
+# it is still a told-once notice. "not repeated" (the episode dedup) and "dropped"
+# (the queue was full) are NOT deliveries and stay uncounted.
 NOTICE_LOG_RE = re.compile(
     r"telegram: guard notice \((?P<kind>\w+)\) queued for the owner"
-    r"|telegram: storage-full notice sent to the owner"
+    r"|telegram: guard notice \((?P<kind2>\w+)\) captured for the web chat"
+    r"|telegram: storage-full notice(?: \((?P<which>[^)]+)\))? sent to the owner"
+    r"|telegram: storage-full notice(?: \((?P<which2>[^)]+)\))? captured for the web chat"
     r"|crash: owner notice queued"
 )
 
