@@ -1169,8 +1169,9 @@ static void sendOwnerNotice(nimbus::net::OwnerNotice kind, bool (*take)(), const
     alogf("telegram: storage-full notice captured for the owner%s (no token: the queue discards)", which);
 }
 
-// The once-per-boot "settings storage is almost full" notice (raised by any failed
-// NVS write, nimbus::sys::takeStorageNotice).
+// The once-per-boot "settings storage is full" notice (raised by any failed NVS write
+// and by the free-entry count dropping below the reserve; taken once per boot, and the
+// web route keeps it once per episode - nimbus::sys::takeStorageNotice).
 static void sendStorageNotice() {
   sendOwnerNotice(nimbus::net::OwnerNotice::Storage, [] { return nimbus::sys::takeStorageNotice(); },
                   nimbus::store::kStorageNoticeText, "");

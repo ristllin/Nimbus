@@ -46,7 +46,7 @@ static void test_tags() {
 // another notice under the same tag, or a near-miss tag, does not count.
 static void test_same_notice_row() {
   using nimbus::net::sameNoticeRow;
-  const std::string text = "Nimbus: settings storage is almost full, so some changes may not be saved.";
+  const std::string text = "Nimbus: settings storage is full, so background saves are paused and some changes may not be saved.";
   TEST_ASSERT_TRUE(sameNoticeRow("ev:storage", text, "ev:storage", text));
   TEST_ASSERT_TRUE(sameNoticeRow("from:x,ev:storage", text, "ev:storage", text));
   TEST_ASSERT_FALSE(sameNoticeRow("ev:storagex", text, "ev:storage", text));

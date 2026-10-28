@@ -132,6 +132,7 @@ size_t recentPersistFails(nimbus::store::RecentFails::Entry* out, size_t max) {
   return n;
 }
 
+void raiseStorageNotice() { s_storageNotice.raise(); }
 bool takeStorageNotice() { return s_storageNotice.take(); }
 
 SaveScope::SaveScope() : since_(0), sinceFile_(0), task_(currentTask()) {

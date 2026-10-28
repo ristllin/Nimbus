@@ -113,7 +113,7 @@ bool notePersist(bool ok, const char* key);
 // A FILE store's write (the usage ledger, the scratchpad, the per-model prices: flash
 // files, not settings storage) reports here (prism row 22): a failure still makes a
 // SaveScope answer 507 and is logged once a minute per key, but it is NOT a settings-
-// storage failure: it never raises the "settings storage is almost full" notice and
+// storage failure: it never raises the "settings storage is full" notice and
 // never lands in nvs.recentFails / nvs.fails. Returns the verdict unchanged.
 bool noteFilePersist(bool ok, const char* key);
 
@@ -142,8 +142,13 @@ String   lastPersistFailKey();
 // The newest failed writes (key, sequence number, time), newest first, for /api/state
 // nvs.recentFails. Returns how many entries were copied (at most `max`).
 size_t recentPersistFails(nimbus::store::RecentFails::Entry* out, size_t max);
-// The once-per-boot "settings storage is almost full" owner notice. A failed write
-// raises it; the Telegram poll task takes it (true exactly once) and sends the notice.
+// The once-per-boot "settings storage is full" owner notice. Two triggers raise it
+// (whichever comes first; OnceNotice dedups to one notice per boot, the delivery side
+// dedups per episode): a failed write (notePersist) and the free-entry count dropping
+// below the reserve (the store's eviction path, src/agent/store.cpp) - the reserve
+// keeps owner settings saving, so without that trigger a full store would stay silent.
+// The Telegram poll task takes it (true exactly once) and sends the notice.
+void raiseStorageNotice();
 bool takeStorageNotice();
 
 }  // namespace nimbus::sys

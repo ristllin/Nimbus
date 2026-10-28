@@ -2279,7 +2279,8 @@ constexpr const char* kEvImageWords[] = {
 };
 constexpr const char* kEvFailureWords[] = {
     "failed", "failure", "refused", "out of credit", "http 4", "http 5", "unavailable", "parked",
-    "not stored", "storage full", "storage is almost full", "write failed", "low memory", "did not answer",
+    "not stored", "storage full", "storage is almost full", "settings storage is full",
+    "background saves are paused", "write failed", "low memory", "did not answer",
 };
 constexpr const char* kEvBillingWords[] = {
     "out of credit", "credit balance", "no credits", "insufficient_quota", "billing", "payment required",

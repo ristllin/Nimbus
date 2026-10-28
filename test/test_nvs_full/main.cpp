@@ -890,6 +890,34 @@ static void test_failures_feed_the_ring_and_the_notice() {
   TEST_ASSERT_TRUE(tg.find("sendStorageNotice();") != std::string::npos);
 }
 
+// The 28 Oct storm-leg-a finding: with the reserve, a full settings store has no
+// failing write any more (owner saves stay shrink-safe, background saves pause), so the
+// failed-write trigger alone left the owner untold. The store's reserve path must
+// raise the notice on the way past the reserve (once per boot via OnceNotice, once per
+// episode at delivery), and the failed-write trigger must stay (defense in depth).
+static void test_reserve_below_raises_the_storage_notice() {
+  const std::string store = readFile("src/agent/store.cpp");
+  const size_t starved = store.find("if (starved && !s_starvedLogged) {");
+  TEST_ASSERT_TRUE_MESSAGE(starved != std::string::npos, "the reserve path moved");
+  const size_t end = store.find("\n  }\n", starved);
+  TEST_ASSERT_TRUE(end != std::string::npos);
+  const std::string body = store.substr(starved, end - starved);
+  TEST_ASSERT_TRUE_MESSAGE(body.find("below the reserve after eviction") != std::string::npos,
+                           "the starved branch is not the reserve log");
+  TEST_ASSERT_TRUE_MESSAGE(body.find("nimbus::sys::raiseStorageNotice();") != std::string::npos,
+                           "the reserve-below trigger no longer raises the notice");
+  const std::string cfg = readFile("src/sys/config_nvs.cpp");
+  TEST_ASSERT_TRUE(cfg.find("void raiseStorageNotice() { s_storageNotice.raise(); }") != std::string::npos);
+  const std::string note = cfg.substr(cfg.find("bool notePersist(bool ok, const char* key) {"));
+  TEST_ASSERT_TRUE(note.find("s_storageNotice.raise();") != std::string::npos);   // defense in depth
+  size_t raisers = 0;
+  for (const auto& e : std::filesystem::recursive_directory_iterator("src")) {
+    if (!e.is_regular_file()) continue;
+    raisers += countOf(readFile(e.path().generic_string().c_str()), "raiseStorageNotice();");
+  }
+  TEST_ASSERT_EQUAL_size_t(2, raisers);   // the store.cpp trigger call and the config_nvs.h declaration
+}
+
 // GET /api/nvs/stats counts entries the way the partition does: the listing's string
 // arithmetic agrees with the full-partition fake above for every size up to the
 // connectors cap, and an int is one entry.
@@ -2352,6 +2380,7 @@ int main(int, char**) {
   RUN_TEST(test_recent_fails_ring);
   RUN_TEST(test_storage_notice_once_per_boot);
   RUN_TEST(test_failures_feed_the_ring_and_the_notice);
+  RUN_TEST(test_reserve_below_raises_the_storage_notice);
   RUN_TEST(test_listing_entry_math_matches_the_partition_model);
   RUN_TEST(test_nvs_stats_names_never_values);
   RUN_TEST(test_every_defined_key_has_a_class);

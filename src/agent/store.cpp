@@ -1072,6 +1072,11 @@ void nvsMaintain(uint32_t nowMs) {
                   "%u entries stay free",
                   (unsigned)avail, (unsigned)kReserve,
                   (unsigned)nimbus::store::kNvsStarvedFloorEntries);
+    // No silent full store (the 28 Oct storm-leg-a finding): the reserve keeps owner
+    // settings saving, so nothing fails here - raise the owner notice on the way past
+    // the reserve instead. OnceNotice dedups it to one per boot, the delivery side to
+    // one per episode; a failed write still raises it too (defense in depth).
+    nimbus::sys::raiseStorageNotice();
   }
 }
 

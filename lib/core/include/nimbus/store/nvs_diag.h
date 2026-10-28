@@ -97,11 +97,13 @@ class OnceNotice {
 };
 
 // What the owner reads (AGENTS.md section 6: what happened, then the one next step;
-// plain words; the device is "it"). The device name is prefixed by the sender.
+// plain words; the device is "it"). The device name is prefixed by the sender. Both
+// triggers tell the same truth: below the reserve background saves pause (the owner's
+// own settings still save), and a failed write means a change did not land.
 inline constexpr char kStorageNoticeText[] =
-    "settings storage is almost full, so some changes may not be saved. To free "
-    "space, open the device web page and remove connectors or provider keys you "
-    "don't use.";
+    "settings storage is full, so background saves are paused and some changes may "
+    "not be saved. To free space, open the device web page and remove connectors or "
+    "provider keys you don't use.";
 
 // ---- the NVS listing --------------------------------------------------------------
 // One NVS entry is 32 bytes. An int of any width takes one entry. A string takes one
