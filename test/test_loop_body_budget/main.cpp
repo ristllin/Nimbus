@@ -311,12 +311,28 @@ static void test_lumi_shape_on_every_loop_wire() {
     std::snprintf(msg, sizeof msg, "%s: ok=%d requests=%zu round0=%zu largest=%zu refit=%d err=%s", host, (int)ok,
                   d.http.seen.size(), d.http.seen.empty() ? 0 : d.http.seen[0].body.size(), largest,
                   (int)LogCapture::contains("B budget - folded"), err.c_str());
-    TEST_MESSAGE(msg);
-    TEST_ASSERT_TRUE_MESSAGE(ok, msg);
-    TEST_ASSERT_TRUE_MESSAGE(out.find("done") != std::string::npos, msg);
-    TEST_ASSERT_EQUAL_INT_MESSAGE(9, (int)d.http.seen.size(), msg);   // 8 tool rounds + the answer, no extra
-    TEST_ASSERT_TRUE_MESSAGE(d.http.seen[0].body.size() >= 62000, msg);   // the scenario really is Lumi-sized
-    for (const auto& r : d.http.seen) TEST_ASSERT_TRUE_MESSAGE(r.body.size() <= providers::kWireBodyMax, msg);
+    // DIAGNOSTIC BRANCH (CI run 40640475595): each stage names itself on stderr
+    // (unbuffered - survives a crash) and every assert carries its stage marker,
+    // so the CI log says exactly which assertion fires. Remove once the CI red
+    // is root-caused.
+    char stage[160];
+    std::snprintf(stage, sizeof stage, "DIAG %s %s", h.c_str(), msg);
+    std::fprintf(stderr, "%s A1 ok\n", stage);
+    TEST_ASSERT_TRUE_MESSAGE(ok, (std::string(msg) + " A1 ok").c_str());
+    std::fprintf(stderr, "%s A2 out=\"%s\"\n", stage, out.substr(0, 80).c_str());
+    TEST_ASSERT_TRUE_MESSAGE(out.find("done") != std::string::npos,
+                             (std::string(msg) + " A2 out has no done").c_str());
+    std::fprintf(stderr, "%s A3 requests=%zu\n", stage, d.http.seen.size());
+    TEST_ASSERT_EQUAL_INT_MESSAGE(9, (int)d.http.seen.size(),
+                                  (std::string(msg) + " A3 requests").c_str());   // 8 tool rounds + the answer
+    std::fprintf(stderr, "%s A4 round0=%zu\n", stage, d.http.seen[0].body.size());
+    TEST_ASSERT_TRUE_MESSAGE(d.http.seen[0].body.size() >= 62000,
+                             (std::string(msg) + " A4 round0").c_str());   // the scenario is Lumi-sized
+    for (size_t i = 0; i < d.http.seen.size(); i++) {
+      std::fprintf(stderr, "%s A5 req%zu size=%zu\n", stage, i, d.http.seen[i].body.size());
+      TEST_ASSERT_TRUE_MESSAGE(d.http.seen[i].body.size() <= providers::kWireBodyMax,
+                               (std::string(msg) + " A5 req" + std::to_string(i) + " over budget").c_str());
+    }
     // The newest whole page, index-free (a CI flake, run 40631977181): request k
     // replays round k's result as its newest, and the fold never touches the
     // newest round - whichever older rounds the budget arithmetic happens to
@@ -324,10 +340,16 @@ static void test_lumi_shape_on_every_loop_wire() {
     // pins every request's newest round, a stronger shape than one exact index.
     for (size_t k = 1; k < d.http.seen.size(); k++) {
       const std::string mark = "|end" + std::to_string(k) + "|";
-      TEST_ASSERT_TRUE_MESSAGE(d.http.seen[k].body.find(mark) != std::string::npos, msg);
+      const size_t at = d.http.seen[k].body.find(mark);
+      std::fprintf(stderr, "%s A6 req%zu mark=%s at=%zu size=%zu\n", stage, k, mark.c_str(), at,
+                   d.http.seen[k].body.size());
+      TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos,
+                               (std::string(msg) + " A6 req" + std::to_string(k) + " lacks " + mark).c_str());
     }
     refitSeen = refitSeen || LogCapture::contains("B budget - folded");
+    std::fprintf(stderr, "%s A7 host done\n", stage);
   }
+  std::fprintf(stderr, "DIAG final refitSeen=%d\n", (int)refitSeen);
   TEST_ASSERT_TRUE(refitSeen);
 }
 
