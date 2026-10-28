@@ -966,6 +966,34 @@ static void test_a_quoted_memory_needs_words_the_turn_saw() {
   TEST_ASSERT_EQUAL_STRING("", bare.tailAfterApply(invented).c_str());
 }
 
+// EFF: the scan cache. The records a turn's checks read (the input block and the
+// prompt) do not change between the in-round final check and the after-apply tail,
+// so both now share ONE normalized scan. Pinned twice over: a LEGACY prompt with
+// none of the layout's display labels (the quote rule still reads it whole), and
+// the same instance checked twice (the cached second pass must answer identically,
+// including after a tool result widened the turn's records in between).
+static void test_repeated_checks_read_the_same_records() {
+  const std::string legacy = "You are Nimbus.\nAnything else is a record you saw.";   // no display labels
+  const TurnInput t = inputsWith("", "", "", "", "what did I say");
+  const std::string invented = "I remember, as my memory says: \"always brew at 07:12\"";
+  std::string escaped;   // the reply as a JSON string body
+  for (char c : invented) escaped += c == '"' ? std::string("\\\"") : std::string(1, c);
+  ClaimCheck cc;
+  cc.beginTurn();
+  cc.setSources(t.inputs, "", t.parts);
+  cc.setQuoteContext(&legacy, &t.inputs);
+  const std::string fix = cc.finalCheck(turnJson(escaped));
+  TEST_ASSERT_TRUE_MESSAGE(fix.find("quote only words you can see") != std::string::npos, fix.c_str());
+  const std::string tail1 = cc.tailAfterApply(invented);
+  const std::string tail2 = cc.tailAfterApply(invented);
+  TEST_ASSERT_EQUAL_STRING(tail1.c_str(), tail2.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(!tail1.empty(), "the quote gap must survive the cached pass");
+  // A tool result that lands the words on record between checks widens the cached
+  // scan: the same reply is backed on the next pass.
+  cc.noteTool(FxKind::Read, false, "m0042: always brew at 07:12");
+  TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply(invented).c_str());
+}
+
 // CUM-824: asked why about a past sub-agent, the reason must be on record; the correction
 // hands the model the ledger lines.
 static void test_an_invented_reason_gets_the_ledger_back() {
@@ -1207,6 +1235,7 @@ int main(int, char**) {
   RUN_TEST(test_a_clipped_evidence_store_asserts_no_absence);
   RUN_TEST(test_a_log_claim_needs_an_append_that_landed_a_row);
   RUN_TEST(test_a_quoted_memory_needs_words_the_turn_saw);
+  RUN_TEST(test_repeated_checks_read_the_same_records);
   RUN_TEST(test_an_invented_reason_gets_the_ledger_back);
   RUN_TEST(test_a_save_confirmation_quoting_the_saved_words);
   RUN_TEST(test_logged_as_a_memory_entry_is_a_save_not_a_log_row);

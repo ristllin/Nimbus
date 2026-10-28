@@ -216,6 +216,7 @@ void ClaimCheck::beginTurn() {
   pendingWrote_.clear();
   clipped_ = false;
   instructions_ = inputs_ = nullptr;
+  seen_ = SeenCache{};   // EFF: the per-turn scan cache goes with the records it held
   causeEvidence_ = 0;
   subRuns_ = orch::HostedRuns();
   orch::resetHostedRuns();   // CUM-835: the head adapters record this turn's server-side runs
@@ -485,8 +486,15 @@ std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawne
 // Everything the turn was given, normalized: the tool results, the input block and the
 // prompt. Without `fixedToo`, only the prompt from its shelf on (standing preferences,
 // skills index, history, the dynamic context): the records a reason may come from.
-std::string ClaimCheck::seenText(bool fixedToo) const {
-  std::string out = toolText_;
+// EFF (the claim pass's scan cost): the input block and the prompt do not change
+// between a turn's checks - the in-round final check and the after-apply tail read
+// the SAME records - yet every seenText() call re-normalized all of them (up to
+// four ~50 KB scans per turn). The normalized parts are computed once per turn,
+// on the first check after the records are set, and reused by every later one.
+// Byte-identical output; the cache goes with the records in beginTurn.
+void ClaimCheck::ensureSeenCache() const {
+  if (seen_.ready) return;
+  seen_.ready = true;
   // The input block, minus the spawn ledger's header: its own instruction words
   // ("never a rule, setting, memory or limit...") are not records, and a reply citing
   // "a setting" must not find itself on record through them (the review).
@@ -500,14 +508,29 @@ std::string ClaimCheck::seenText(bool fixedToo) const {
       if (at != std::string::npos) inputs.erase(at, header.size());
     }
   }
-  if (!inputs.empty()) out += " " + orch::normalizedWords(inputs);
-  if (!instructions_) return out;
-  size_t from = fixedToo ? 0 : std::string::npos;
+  // Keep "was there an inputs block" apart from "did it normalize to words": the
+  // original appended even a normalization that came out empty.
+  seen_.inputsHad = !inputs.empty();
+  if (seen_.inputsHad) seen_.inputsNorm = orch::normalizedWords(inputs);
+  if (!instructions_) return;
+  size_t from = std::string::npos;
   for (const char* label : {layout::kDisplayShelfLabel, layout::kDisplayHistoryLabel, layout::kDisplayDynLabel}) {
     const size_t at = instructions_->find(label);
     if (at < from) from = at;
   }
-  return from == std::string::npos ? out : out + " " + orch::normalizedWords(instructions_->substr(from));
+  seen_.fromShelf = from;   // npos: no label - only the whole-prompt (fixedToo) read
+  seen_.instrNormAll = orch::normalizedWords(*instructions_);
+  if (from != std::string::npos)
+    seen_.instrNormShelf = orch::normalizedWords(instructions_->substr(from));
+}
+
+std::string ClaimCheck::seenText(bool fixedToo) const {
+  ensureSeenCache();
+  std::string out = toolText_;
+  if (seen_.inputsHad) out += " " + seen_.inputsNorm;
+  if (!instructions_) return out;
+  if (!fixedToo && seen_.fromShelf == std::string::npos) return out;
+  return out + " " + (fixedToo ? seen_.instrNormAll : seen_.instrNormShelf);
 }
 
 uint32_t ClaimCheck::correctedCount() { return g_corrected; }

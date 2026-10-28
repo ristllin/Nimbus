@@ -154,6 +154,18 @@ class ClaimCheck {
   std::string seenText(bool fixedToo) const;   // what a quote (fixedToo) or a reason may come from
   void noteToolText(const std::string& output);
 
+  // EFF: the normalized scan cache (claim_check.cpp ensureSeenCache) - the records
+  // every check of one turn reads, normalized once instead of per check.
+  struct SeenCache {
+    bool ready = false;
+    bool inputsHad = false;      // an inputs block was set (its words may still be empty)
+    std::string inputsNorm;     // it, normalized, minus the spawn ledger's header
+    size_t fromShelf = 0;       // the prompt's first shelf/history/dyn label; npos = none
+    std::string instrNormAll;   // the whole prompt, normalized (the quote rule reads it all)
+    std::string instrNormShelf; // the prompt from its shelf on (the reason rule's records)
+  };
+  mutable SeenCache seen_;
+  void ensureSeenCache() const;
   nimbus::orch::TurnEffects fx_;
   std::string sources_;
   std::string recalled_;
