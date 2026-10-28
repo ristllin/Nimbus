@@ -913,6 +913,30 @@ static void test_a_log_claim_needs_an_append_that_landed_a_row() {
     if (!a.backs)
       TEST_ASSERT_EQUAL_STRING("\n\n(Correction: no row was added to a log file this turn.)", cc.tailAfterApply(reply).c_str());
   }
+  // The review r2 K1 shape, end to end: correcting a line of a free-text log is a
+  // whole-file save (artifact.save; the device's receipt is "saved p/n (N bytes)"), the
+  // one way to change a line. A save that rewrites a line and a save that adds one both
+  // back the claim; a failed save or no save at all still gets the correction.
+  const char* daylogReply = "I've corrected the day log: 3pm not 4pm.";
+  const char* txt = R"({"project":"notes","name":"daylog.txt","text":"07:00 up\n15:00 3pm not 4pm"})";
+  struct Save { const char* out; bool error; bool backs; };
+  const Save saves[] = {
+      {"saved notes/daylog.txt (214 bytes)", false, true},                  // a line rewritten
+      {"saved notes/daylog.txt (230 bytes)", false, true},                  // a line added
+      {"that project/name belongs to someone else - choose another name", true, false},
+      {"", false, false},                                                  // no save at all
+  };
+  for (const Save& s : saves) {
+    ClaimCheck cc;
+    cc.beginTurn();
+    if (s.out[0])
+      cc.noteTool(agent::fxKindForTool("artifact.save"), s.error, s.out,
+                  ClaimCheck::toolCallFlags("artifact.save", txt));
+    TEST_ASSERT_EQUAL_MESSAGE(s.backs, cc.finalCheck(turnJson(daylogReply)).empty(), s.out);
+    if (!s.backs)
+      TEST_ASSERT_EQUAL_STRING("\n\n(Correction: no row was added to a log file this turn.)",
+                               cc.tailAfterApply(daylogReply).c_str());
+  }
 }
 
 // CUM-824: a quote presented as a memory must be words the turn saw: the prompt (with its
@@ -1073,6 +1097,31 @@ static void test_logged_as_a_memory_entry_is_a_save_not_a_log_row() {
     cc.noteToolArgs("files.append", R"({"project":"notes","name":"daylog.txt","text":"dentist moved to 3pm"})");
     cc.noteTool(FxKind::FileWrite, false, "appended 1 row to notes/daylog.txt (now 88 bytes)", nimbus::orch::kFxLogRow);
     TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("I've logged it in your day log: dentist moved to 3pm.").c_str());
+  }
+  // The review r2 cousin: a memory "entry" is not a log file noun for the updated-class
+  // cues either - a real memory.update backs "updated the entry in your memory", and a
+  // tracker "entry" still asks for the row (a keyed append or a text-file save backs it).
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources(t.inputs, "", t.parts);
+    cc.noteTool(FxKind::MemUpdate, false, "stored memory m1a2b");
+    TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("I've updated the entry in your memory.").c_str());
+  }
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources(t.inputs, "", t.parts);
+    cc.noteTool(FxKind::FileWrite, false,
+                "replaced 1 row, added 0 rows in fitness/tracker.csv\n- steps: 9000", nimbus::orch::kFxLogRow);
+    TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("I've updated the entry in your tracker.").c_str());
+  }
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources(t.inputs, "", t.parts);
+    TEST_ASSERT_EQUAL_STRING("\n\n(Correction: no row was added to a log file this turn.)",
+                             cc.tailAfterApply("I've updated the entry in your tracker.").c_str());
   }
 }
 

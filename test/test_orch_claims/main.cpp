@@ -952,11 +952,11 @@ static void test_held_out_synthetic_set() {
 static void test_a_correction_of_the_record_needs_a_files_effect() {
   const char* replies[] = {
       "I updated the day log with the new time.",
-      "I corrected the entry for the dentist visit.",
       "I adjusted the totals after recounting.",
       "The day log has been updated.",
       "I amended the ledger with the refund.",
       "I logged it in your food log.",
+      "I corrected the entry in your tracker.",
   };
   // CUM-782: a log claim needs a row that landed in a log file (kFxLogRow); any other
   // file write (a saved artifact, a fetched file, a PDF, an image) backs none of them.
@@ -979,6 +979,13 @@ static void test_a_correction_of_the_record_needs_a_files_effect() {
   // Without a record near, "corrected" is any save; "updated the settings" is a change.
   TEST_ASSERT_FALSE(gapOf(gapsFor("I corrected it for you.", mem), ClaimClass::Saved));
   TEST_ASSERT_FALSE(gapOf(gapsFor("I updated the model settings for you.", cfg), ClaimClass::Changed));
+  // A memory "entry" is a save, not a log file row (CUM-837, the review r2): "corrected
+  // the entry" is backed by any landed save (a memory write, a file save), and still
+  // corrected when nothing landed.
+  const char* entry = "I corrected the entry for the dentist visit.";
+  TEST_ASSERT_TRUE(gapOf(gapsFor(entry, none), ClaimClass::Saved));
+  TEST_ASSERT_FALSE(gapOf(gapsFor(entry, mem), ClaimClass::Saved));
+  TEST_ASSERT_FALSE(gapOf(gapsFor(entry, file), ClaimClass::Saved));
 }
 
 // 23 Oct (lane H follow-up 02, CUM-652): "switched", "set" and "turned on"
@@ -1318,7 +1325,10 @@ static void test_log_row_needs_a_counted_row() {
       {"replaced 0 rows, added 2 rows in food/2026-10-27.csv", true},
       {"replaced 0 rows, added 0 rows in food/2026-10-27.csv (no change: the rows were already as sent)", false},
       {"appended 0 rows to food/2026-10-27.csv (now 310 bytes)", false},
-      {"saved notes/plan.md (120 bytes)", false},
+      // A whole-file save of a text document that landed is the free-text log's
+      // rewrite (the review r2 K1 shape): the save's own receipt keeps the flag.
+      {"saved notes/plan.md (120 bytes)", true},
+      {"saved notes/daylog.txt (214 bytes)", true},
   };
   for (const Case& c : cases) {
     TurnEffects fx;

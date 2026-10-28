@@ -394,7 +394,7 @@ claims in ten classes:
 
 | Class | Example | Backed by |
 |---|---|---|
-| saved | "Logged.", "Noted." | a memory write, file write, skill save or scratchpad write; a log claim ("updated the day log", "corrected the entry", "logged it in your food log") needs a row that landed in a `.csv` or `.log` file: a `files.append` whose result counts at least one row appended, added or replaced (any other file write backs none) |
+| saved | "Logged.", "Noted." | a memory write, file write, skill save or scratchpad write; a log claim ("updated the day log", "logged it in your food log") needs a row or a rewrite that landed: a `files.append` of any extension whose result counts at least one row appended, added or replaced, or a whole-file `artifact.save` of a `.txt`/`.md` document whose save receipt landed (correcting a line of a free-text log is a save). A memory "entry" is a save, never a log file row |
 | deliverable | "written and waiting", "saved as plan.md" | a file or skill written this turn |
 | spawned | "I started three research sub-agents" | that many accepted spawns |
 | sent | "sent", "reminder set", "read it aloud" | a send, a schedule, speech; for a voice message ("I sent you a voice message", "Voice note sent"), only a voice send whose result names Telegram's `message_id`; any other Telegram send (text, document, photo) is the same: a queued send with no `message_id` backs no "sent", and the line says the message is queued, not delivered |

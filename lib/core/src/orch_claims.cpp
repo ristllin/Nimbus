@@ -1267,9 +1267,12 @@ bool faultWordInSentence(const Scan& sc, size_t i, size_t len) {
   return false;
 }
 
-// Records a correction is carried into ("updated the log", "the entry is corrected").
-constexpr const char* kRecordNouns[] = {"log",   "logs",  "entry", "entries", "ledger", "total",
-                                        "totals", "tally", "diary", "tracker", "record"};
+// Records a correction is carried into ("updated the log", "the diary is corrected").
+// A memory "entry" or "record" is a save the turn can back (kSavedBacks), not a log
+// file row (CUM-837, the review r2: "updated the entry in your memory" after a real
+// memory.update must not ask for a log row).
+constexpr const char* kRecordNouns[] = {"log",   "logs",  "ledger", "total",
+                                        "totals", "tally", "diary", "tracker"};
 
 bool recordNounNear(const Scan& sc, size_t i, size_t len) {
   // Five after: "logged it in your food log" (CUM-782).

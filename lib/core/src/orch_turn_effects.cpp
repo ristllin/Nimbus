@@ -293,10 +293,14 @@ static bool queuedWrite(FxKind base, const std::string& out) {
 }
 
 // CUM-782: a log claim needs a row that landed, which only the append's own count shows.
+// A whole-file save that landed ("saved p/n (N bytes)", artifact.save of a text document)
+// rewrote the log it names: the review's K1 shape, correcting a line of a free-text log,
+// which no append can do. The save's own receipt is that rewrite's proof.
 static uint8_t logRowFlags(uint8_t flags, FxKind k, const std::string& output) {
-  if ((flags & kFxLogRow) && (k != FxKind::FileWrite || fxAppendedRows(output) < 1))
-    return (uint8_t)(flags & ~kFxLogRow);
-  return flags;
+  if (!(flags & kFxLogRow)) return flags;
+  const bool landed =
+      k == FxKind::FileWrite && (startsWith(output, "saved ") || fxAppendedRows(output) >= 1);
+  return landed ? flags : (uint8_t)(flags & ~kFxLogRow);
 }
 
 void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::string& output,

@@ -287,8 +287,9 @@ uint8_t ClaimCheck::toolCallFlags(const std::string& regName, const std::string&
   // (.txt and .md logs are logs too, not only .csv/.log).
   if (regName == "files.append") return orch::kFxLogRow;
   // An artifact.save that rewrites a text document also updates a log (the review: the
-  // free-text day log is corrected by rewriting the file): its landed-row proof is the
-  // same count (recordToolEffect keeps the flag only when the result counts rows).
+  // free-text day log is corrected by rewriting the file): its proof is its own landed
+  // receipt (recordToolEffect keeps the flag when the result counts rows or the save
+  // landed, "saved p/n (N bytes)").
   if (regName == "artifact.save") return savedTextFileRow(argsJson);
   const bool memory = regName == "memory.write" || regName == "memory.update";
   const bool telegram = regName == "reply.telegram" || regName == "files.send";

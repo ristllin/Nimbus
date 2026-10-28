@@ -63,8 +63,9 @@ enum : uint8_t {
   kFxTelegram  = 1u << 4,   // a Telegram send (reply.telegram, files.send): backed only by a receipt
   kFxQueued    = 1u << 5,   // a memory write the store queued (not stored yet)
   kFxHealth    = 1u << 6,   // a read of the device's own state (device.status, system.health, ...)
-  kFxLogRow    = 1u << 7,   // a files.append into a .csv or .log file whose result counts at
-                            // least one row that landed: the only backing of a log claim (CUM-782)
+  kFxLogRow    = 1u << 7,   // a files.append of any extension, or an artifact.save of a .txt/.md
+                            // document, whose result counts a row or a rewrite that landed:
+                            // the only backing of a log claim (CUM-782)
 };
 
 struct Effect {
@@ -130,9 +131,11 @@ class TurnEffects {
 // way) records the delivered part as landed and the rest as failed.
 // A memory write the store only queued ("queued memory <id>, not stored yet") is not
 // stored, whatever the call's success flag says: it records as failed with kFxQueued.
-// A files.append call into a log file arrives with kFxLogRow (the claim check sets it
+// A files.append call of any extension arrives with kFxLogRow (the claim check sets it
 // from the call's file name); it keeps the flag only when the result counts a landed row
 // ("appended 2 rows to ...", "replaced 1 row, added 0 rows in ..."), never on "no change".
+// An artifact.save of a .txt/.md document keeps it on its own landed receipt ("saved
+// p/n (N bytes)"): a whole-file save is the one way to correct a line of a free-text log.
 // A device action's summary ("applied: cfg ", "applied: cfg(no change) ",
 // "applied: tts ") records what it really did (deviceSummaryEffect).
 void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::string& output,
