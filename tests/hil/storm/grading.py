@@ -228,6 +228,17 @@ def log_notices(lines: Iterable[LogLine], exclude_re: "Optional[re.Pattern[str]]
     ]
 
 
+def delivery_count(rows: int, logged: int) -> int:
+    """Owner notice deliveries from two evidence surfaces: every delivery captures a
+    history row AND logs a delivery line, so a delivery that survives on both
+    surfaces must count ONCE (the pre-QW2 sum double-counted it whenever the
+    durable-log tap caught the line - leg b, the 28 Oct re-run). Each surface also
+    loses deliveries on its own (a lost row write, a dropped log line), so the
+    delivery count is the MAX of the two: the best lower bound, and exactly the
+    delivery count when either surface is complete."""
+    return max(rows, logged)
+
+
 def inbound_texts(lines: Iterable[LogLine], chat: Optional[int] = None) -> List[str]:
     """Telegram message texts the device took in (optionally from one chat)."""
     out = []

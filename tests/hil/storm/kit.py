@@ -1026,7 +1026,16 @@ class Window:
                 answers = len(self.replies(notice_re, exclude_re)["answers"])
                 return max(archived, sends - answers)
             return archived
-        return len(self.replies(notice_re, exclude_re)["notices"]) + len(g.log_notices(self.lines, exclude_re))
+        # One delivery, two surfaces: the device captures the notice row AND logs its
+        # delivery line, and both surfaces reach the kit now (chat_rows reads the web
+        # session, NOTICE_LOG_RE counts the QW2 wordings) - the old sum double-counted
+        # a single delivery whenever the durable-log tap caught the line (leg b, the
+        # 28 Oct re-run). Each surface independently undercounts (a lost row write, a
+        # dropped log line), so the delivery count is the MAX: the best lower bound,
+        # and exactly the delivery count when either surface is complete.
+        rows = len(self.replies(notice_re, exclude_re)["notices"])
+        logged = len(g.log_notices(self.lines, exclude_re))
+        return g.delivery_count(rows, logged)
 
     def replies(self, notice_re, exclude_re=None) -> dict:
         return g.classify_replies(self.rows, ANSWER_RE, notice_re, exclude_re)

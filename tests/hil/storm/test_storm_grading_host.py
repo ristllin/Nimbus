@@ -205,6 +205,19 @@ def test_the_replay_bound_excludes_the_storage_notice_class():
     assert len(g.log_notices(g.parse_log(log))) == 2  # unfiltered keeps both classes
 
 
+def test_one_delivery_on_two_surfaces_counts_once():
+    """28 Oct re-run, leg b: one guard delivery appeared as the captured web-chat row
+    AND the delivery log line, and the old row+line sum graded 2 (exactly 1 bound).
+    The surfaces are lower bounds on deliveries (a delivery can lose its row write or
+    its log line), so the count is their max."""
+    assert g.delivery_count(1, 1) == 1  # both surfaces saw the same delivery
+    assert g.delivery_count(2, 1) == 2  # one surface lost a delivery
+    assert g.delivery_count(1, 2) == 2
+    assert g.delivery_count(0, 1) == 1  # the row write was lost: the line still proves it
+    assert g.delivery_count(1, 0) == 1  # the log line was dropped: the row still proves it
+    assert g.delivery_count(0, 0) == 0
+
+
 def test_turns_requests_and_parks():
     log = "\n".join(
         [
