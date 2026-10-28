@@ -69,7 +69,10 @@ LUMI_LARGEST = 7700
 LUMI_FREE = 33000
 IDLE_WATCH_S = 45  # the old record call ran in the idle steps right after the reply
 LABEL_VALUE = "58213"
-DOTS_MIN, DOTS_MAX = 11, 15  # the countable dots on the label (per-run random): a count a one-line note does not carry
+DOTS_MIN, DOTS_MAX = (
+    5,
+    8,
+)  # the countable dots on the label (per-run random): a count a one-line note does not carry, in the range a vision model counts reliably (run7: mistral-large read the pixels and still miscounted 15 small dots as 13 - past ten, counting is not a property a model has)
 
 
 # ---- pure helpers (host-tested) ---------------------------------------------------
@@ -126,8 +129,8 @@ def label_photo(value: str, seed: int, dots: int = 0) -> bytes:
     d.rectangle([14, 14, 626, 406], outline=(20, 20, 20), width=6)
     d.text((40, 60), "LOT", fill=(10, 10, 10), font=font)
     d.text((40, 220), value, fill=(10, 10, 10), font=font)
-    for i in range(dots):
-        d.ellipse([30 + i * 40, 352, 50 + i * 40, 372], fill=(30, 30, 30))
+    for i in range(dots):  # large and well separated (see evidence/hil/dots-preview-8.jpg)
+        d.ellipse([30 + i * 52, 344, 62 + i * 52, 376], fill=(30, 30, 30))
     d.point([(seed % 640, 412)], fill=(0, 0, 0))
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=80)
