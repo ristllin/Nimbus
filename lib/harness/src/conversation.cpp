@@ -178,8 +178,8 @@ int64_t localDay(uint32_t tsHours, int32_t offMin) {
 }
 
 // The local day of a unix time in seconds, told with the offset valid at that time.
-int64_t localDaySec(uint32_t unix, const OffsetAt& zoneAt) {
-  return floorDiv((int64_t)unix + (int64_t)zoneOffset(zoneAt, unix) * 60, 86400);
+int64_t localDaySec(uint32_t unixSec, const OffsetAt& zoneAt) {
+  return floorDiv((int64_t)unixSec + (int64_t)zoneOffset(zoneAt, unixSec) * 60, 86400);
 }
 
 // The second a row was sent or stored: the sent: tag (a replayed message keeps its sender's
