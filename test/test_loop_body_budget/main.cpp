@@ -302,7 +302,10 @@ void lumiRig(FakeProviderDeps& d, FakeProviderDeps::ToolRig& rig, const std::str
     HeadToolResult r;
     r.id = c.id;
     r.name = c.name;
-    r.output = "entry " + std::to_string(++n) + " " + std::string(2600, 'e') + " |end" + std::to_string(n) + "|";
+    ++n;   // sequenced out of the marker expression: ++n and n unsequenced in one
+           // expression is UB, and on x86-64 the marker read the OLD value, so every
+           // result was labeled |end{n-1}| and the whole marker layout shifted by one
+    r.output = "entry " + std::to_string(n) + " " + std::string(2600, 'e') + " |end" + std::to_string(n) + "|";
     return r;
   };
 }
