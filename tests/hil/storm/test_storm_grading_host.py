@@ -169,7 +169,7 @@ def test_qw2_web_chat_notice_lines():
         ]
     )
     found = g.log_notices(g.parse_log(log))
-    assert len(found) == 4   # the two storage deliveries, the guard delivery, the pre-QW2 wording
+    assert len(found) == 4  # the two storage deliveries, the guard delivery, the pre-QW2 wording
     assert not any("not repeated" in t or "dropped" in t for t in found)
 
 

@@ -41,8 +41,10 @@ def test_storm_a_settings_full(storm):
                 # honestly deduped by the 24 h episode rule when the owner was already
                 # told today - both prove the raise). Candidate images only.
                 alive = m.extra.get("storageNoticeAlive", 0)
-                print(f"[storm] storage notice alive: {alive} "
-                      f"(delivered {m.extra.get('storageNotices')}, deduped {m.extra.get('storageDedups')})")
+                print(
+                    f"[storm] storage notice alive: {alive} "
+                    f"(delivered {m.extra.get('storageNotices')}, deduped {m.extra.get('storageDedups')})"
+                )
                 assert alive >= 1, (
                     "the full settings store stayed silent: the storage notice was neither "
                     f"delivered nor deduped ({m.extra.get('storageNotices')}/"
