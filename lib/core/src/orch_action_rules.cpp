@@ -91,6 +91,8 @@ const ActionRuleRow kRows[] = {
     {"docs.list", R::Open, "browse the docs"},
     {"docs.read", R::Open, "read the docs"},
     {"docs.search", R::Open, "search the docs"},
+    // lane CTX: the food coach's plan arithmetic - stateless, it writes nothing
+    {"food.portions", R::Open, "portion a meal"},
     {"loop.create", R::OwnerAttended, "set up a routine"},
     {"loop.cancel", R::OwnerAttended, "cancel a routine"},
     {"loop.list", R::Owner, "see the routines"},
