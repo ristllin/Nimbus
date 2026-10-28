@@ -252,6 +252,12 @@ class _EsptoolRig(Device):
 
 
 def _patch_esptool(monkeypatch, returncode):
+    # The candidates are pinned too: esptool_hard_reset only calls subprocess.run
+    # for a candidate esptool_commands() finds ON THIS HOST, and a CI runner with
+    # no esptool (no PATH copy, no module, no ~/.platformio) yields none - the
+    # mock was never called and a returncode=0 "success" read as False. With the
+    # list pinned, the loop runs the mock deterministically on any host.
+    monkeypatch.setattr("device.esptool_commands", lambda: [["esptool"]])
     monkeypatch.setattr(
         "device.subprocess.run",
         lambda *a, **k: SimpleNamespace(returncode=returncode, stdout="", stderr=""),
