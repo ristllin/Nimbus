@@ -747,6 +747,8 @@ static void test_custom_connector_web_named_tool_is_its_run() {
   TEST_ASSERT_EQUAL(1, env.connectorCalls);
   TEST_ASSERT_EQUAL(1, env.webRuns);
   TEST_ASSERT_TRUE(LogCapture::contains("mistral sub: connectors attached=1 calls=1"));
+}
+
 // The review, MED-10: a Mistral web built-in answers through an execution of its own
 // name (a weather question runs weather_search; HFC's probe). The built-in is never
 // listed idle next to its own run: the tally says the web search ran, not
