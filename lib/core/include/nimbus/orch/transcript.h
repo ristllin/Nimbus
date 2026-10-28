@@ -78,6 +78,12 @@ class Transcript {
   // A call and its result fold together or not at all (an unanswered tool_use
   // 400s on Anthropic). Returns the replay bytes reclaimed.
   size_t trimToolOutputs(size_t maxTotalToolBytes);
+  // The budget refit's second rung: fold older rounds down to half `cap` and
+  // NEVER clip the newest round, whatever the byte accounting says (trimToolOutputs
+  // skips its clip only when the fold lands the replay exactly on the cap; a host
+  // whose accounting sits a byte over would clip the results the model has not seen
+  // yet one rung early). Clipping the newest round is the third rung's last resort.
+  size_t foldOlderRounds(size_t cap);
   // The heading the folded lines sit under in the seeded message.
   static const char kFoldNote[];
 

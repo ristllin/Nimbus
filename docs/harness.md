@@ -98,7 +98,10 @@ entry (owner msg | sub-agents finished | loop fired | post-OTA)   [tg_poll]
     / byte budgets; each round's socket timeout clamped to the REMAINING budget;
     a round whose request would outgrow the 85 KB body budget shrinks the
     arguments of calls that already ran, folds the older tool rounds to one-line
-    stubs and runs again, so a long loop or a big write still answers)
+    stubs and runs again - never clipping the newest round's results, the ones
+    the model has not seen yet; only a round that still does not fit after all
+    of that gets its newest results clipped - so a long loop or a big write
+    still answers)
       round: model → tool calls → registry dispatch (memory.*, web.search,
       device.control, files.*, loop.*, session terminate…) → results fed back;
       thinking + merged tool rows captured to episodic (glass box)

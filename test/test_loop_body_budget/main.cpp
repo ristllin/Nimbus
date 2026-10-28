@@ -317,7 +317,15 @@ static void test_lumi_shape_on_every_loop_wire() {
     TEST_ASSERT_EQUAL_INT_MESSAGE(9, (int)d.http.seen.size(), msg);   // 8 tool rounds + the answer, no extra
     TEST_ASSERT_TRUE_MESSAGE(d.http.seen[0].body.size() >= 62000, msg);   // the scenario really is Lumi-sized
     for (const auto& r : d.http.seen) TEST_ASSERT_TRUE_MESSAGE(r.body.size() <= providers::kWireBodyMax, msg);
-    TEST_ASSERT_TRUE_MESSAGE(d.http.seen[7].body.find("|end7|") != std::string::npos, msg);   // newest whole
+    // The newest whole page, index-free (a CI flake, run 40631977181): request k
+    // replays round k's result as its newest, and the fold never touches the
+    // newest round - whichever older rounds the budget arithmetic happens to
+    // fold can shift with the host; the newest round's survival cannot. This
+    // pins every request's newest round, a stronger shape than one exact index.
+    for (size_t k = 1; k < d.http.seen.size(); k++) {
+      const std::string mark = "|end" + std::to_string(k) + "|";
+      TEST_ASSERT_TRUE_MESSAGE(d.http.seen[k].body.find(mark) != std::string::npos, msg);
+    }
     refitSeen = refitSeen || LogCapture::contains("B budget - folded");
   }
   TEST_ASSERT_TRUE(refitSeen);

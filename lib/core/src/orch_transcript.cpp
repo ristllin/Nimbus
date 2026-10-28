@@ -207,6 +207,12 @@ size_t Transcript::trimToolOutputs(size_t maxTotalToolBytes) {
   return before - replayBytes_;
 }
 
+size_t Transcript::foldOlderRounds(size_t cap) {
+  const size_t before = replayBytes_;
+  foldOldRounds(newestRound(), cap / 2);
+  return before - replayBytes_;
+}
+
 std::string Transcript::renderBrief(size_t maxBytes) const {
   std::string out;
   size_t omitted = 0;

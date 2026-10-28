@@ -278,9 +278,12 @@ bool refitToBudget(const HeadStep& sr, const HeadLoopHooks& hooks, int round) {
   const size_t want = (size - budget) + (have > newest ? kBudgetRefitSlack : kBudgetClipSlack);
   const size_t cap = have > want ? have - want : 1;   // trimToolOutputs(0) means no cap
   size_t freed = tr.stubArguments(kArgStubOver);
-  // trimToolOutputs(newest) folds every older round and never clips the newest:
-  // it folds down to half its cap, and the newest round alone is over that.
-  if (freed == 0 && cap < newest) freed = tr.trimToolOutputs(newest);
+  // foldOlderRounds(newest) folds every older round and never clips the newest:
+  // the fold lands the replay exactly on the cap, but a host whose byte
+  // accounting sits one byte over must not clip the results the model has not
+  // seen yet (a CI run clipped |end7| that way) - a still-over re-run refuses
+  // again and the third rung clips with the honest last-resort cap.
+  if (freed == 0 && cap < newest) freed = tr.foldOlderRounds(newest);
   if (freed == 0) freed = tr.trimToolOutputs(cap);
   if (hooks.log)
     hooks.log("headloop: round " + std::to_string(round) + " body " + std::to_string(size) + " B over the " +

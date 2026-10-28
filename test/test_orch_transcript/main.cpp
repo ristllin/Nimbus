@@ -100,6 +100,41 @@ static void test_trim_folds_with_hysteresis() {
   }
 }
 
+// The budget refit's second rung (a CI clip, run 40631977181): foldOlderRounds
+// folds older rounds and NEVER clips the newest round, however far the replay
+// sits over the cap once the folding is done - trimToolOutputs skips its clip
+// only when the fold lands the replay exactly on the cap, so a host whose
+// byte accounting sits one byte over would clip the results the model has not
+// seen one rung early. The cap path (the third rung's honest last resort, and
+// the steady-state replay cap) still clips a newest round that alone exceeds
+// the room.
+static void test_fold_older_rounds_never_clips_the_newest() {
+  Transcript t;
+  t.addUser("u");
+  for (int i = 0; i < 4; i++) {
+    const std::string id = "id" + std::to_string(i);
+    t.addToolCall(call(id.c_str(), "web_search", "{\"q\":\"x\"}"), i, "anthropic");
+    t.addToolResult(res(id.c_str(), "web_search", std::string(2000, (char)('a' + i))), i);
+  }
+  const size_t perRound = t.toolBytes() / 4;   // four identical rounds
+  TEST_ASSERT_TRUE(t.foldOlderRounds(perRound) > 0);
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)perRound, (uint32_t)t.toolBytes(),
+                                   "the fold freed the older rounds only");
+  TEST_ASSERT_EQUAL_STRING(std::string(2000, (char)('a' + 3)).c_str(),
+                           t.entries().back().text.c_str());   // newest verbatim
+  requireAnswered(t);
+  Transcript c;
+  c.addUser("u");
+  for (int i = 0; i < 4; i++) {
+    const std::string id = "id" + std::to_string(i);
+    c.addToolCall(call(id.c_str(), "web_search", "{\"q\":\"x\"}"), i, "anthropic");
+    c.addToolResult(res(id.c_str(), "web_search", std::string(2000, (char)('a' + i))), i);
+  }
+  TEST_ASSERT_TRUE(c.trimToolOutputs(perRound / 2) > 0);   // the newest alone is over half a round
+  TEST_ASSERT_TRUE(c.toolBytes() <= perRound / 2);
+  TEST_ASSERT_TRUE(c.entries().back().text.size() < 2000);   // the cap path clipped it
+}
+
 // Counter-test: under the cap nothing is rewritten at all, however many rounds.
 static void test_trim_under_cap_is_append_only() {
   Transcript t;
@@ -207,6 +242,7 @@ int main(int, char**) {
   RUN_TEST(test_empty_prose_not_recorded);
   RUN_TEST(test_trim_folds_with_hysteresis);
   RUN_TEST(test_trim_under_cap_is_append_only);
+  RUN_TEST(test_fold_older_rounds_never_clips_the_newest);
   RUN_TEST(test_trim_counts_call_arguments);
   RUN_TEST(test_trim_clips_the_newest_with_a_visible_marker);
   RUN_TEST(test_trim_noop_under_budget);
