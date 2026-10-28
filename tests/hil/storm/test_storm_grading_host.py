@@ -173,6 +173,38 @@ def test_qw2_web_chat_notice_lines():
     assert not any("not repeated" in t or "dropped" in t for t in found)
 
 
+def test_the_replay_bound_excludes_the_storage_notice_class():
+    """28 Oct re-run: the storage notice's new wording ("...background saves are
+    paused...") matches the replay legs' notice words too, so the kit's own
+    settings-fill side effect broke the exactly-one guard bound (2-3 notices). The
+    classes are separated explicitly now: rows and log lines of the storage class
+    never count toward a replay leg's notice bound."""
+    import re as _re
+
+    storage_row = {
+        "role": "assistant",
+        "text": "Nimbus: settings storage is full, so background saves are paused and some changes may not be saved.",
+    }
+    guard_row = {
+        "role": "assistant",
+        "text": "Nimbus: Telegram delivered a message again that was already answered, so the repeat was skipped.",
+    }
+    answer_row = {"role": "assistant", "text": "pong"}
+    replay_re = _re.compile(r"duplicate|already|again|repeat|paused|could not be processed", _re.I)
+    storage_re = _re.compile(r"storage|settings", _re.I)
+    split = g.classify_replies([storage_row, guard_row, answer_row], _re.compile(r"pong", _re.I), replay_re, storage_re)
+    assert split["notices"] == [guard_row["text"]]  # the storage row is another class
+    assert split["answers"] == ["pong"]
+    log = "\n".join(
+        [
+            "1 1 - telegram: storage-full notice captured for the web chat (no Telegram owner)",
+            "2 2 - telegram: guard notice (duplicate) captured for the web chat (no Telegram owner)",
+        ]
+    )
+    assert len(g.log_notices(g.parse_log(log), storage_re)) == 1  # only the guard line
+    assert len(g.log_notices(g.parse_log(log))) == 2  # unfiltered keeps both classes
+
+
 def test_turns_requests_and_parks():
     log = "\n".join(
         [

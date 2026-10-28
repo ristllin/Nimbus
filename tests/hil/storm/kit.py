@@ -850,9 +850,12 @@ ANSWER_RE = re.compile(r"pong|mock says hi|held reply", re.I)
 # skipped. The drive's own side effect - the settings store the kit itself filled -
 # honestly raises the once-per-boot "settings storage is full" notice, a different
 # class the owner must hear; grading the two as one told_once failed a correct
-# episode on the bot unit (2 notices). The storage notice is recorded per run
-# (extra["storageNoticeAlive"], the 28 Oct ruling's leg-a baseline) and does not
-# count toward the replay leg's bound.
+# episode on the bot unit (2 notices). The classes are separated EXPLICITLY now
+# (notices exclude STORAGE_NOTICE_RE, in rows and log lines alike): the 28 Oct
+# wording ("...saves are paused...") matches REPLAY_NOTICE_RE too, and the old
+# separation was only the wording's coincidence. The storage notice is recorded
+# per run (extra["storageNoticeAlive"], the 28 Oct ruling's leg-a baseline) and
+# does not count toward the replay leg's bound.
 REPLAY_NOTICE_RE = re.compile(r"duplicate|already|again|repeat|paused|could not be processed", re.I)
 STORAGE_NOTICE_RE = re.compile(r"storage|settings", re.I)
 # The 24 h episode dedup (QW2): a delivery the web chat already holds today is NOT
@@ -900,7 +903,7 @@ def replay_storm(bench: StormBench, leg: str, copies: int, restart_at: Optional[
         paid_turns=g.paid_turns(lines),
         provider_requests=w.requests(),
         parked_requests=0,
-        notices=w.notices(REPLAY_NOTICE_RE),
+        notices=w.notices(REPLAY_NOTICE_RE, exclude_re=STORAGE_NOTICE_RE),
         identical_peak=peak,
         identical_line=peak_line[:160],
     )
@@ -1002,21 +1005,31 @@ class Window:
         sent to the chat and never written to its history), else the chats' history
         notices (the leg chat's rows and, since QW2's notice rework, the web chat's
         device-event rows - chat_rows reads both) plus the notices the device logged as
-        delivered (queued, sent, or captured for the web chat)."""
+        delivered (queued, sent, or captured for the web chat). ``exclude_re`` drops
+        another notice class (the replay legs exclude the storage notice: the kit's own
+        settings-fill side effect, a different class recorded separately)."""
+
+        def not_excluded(text: str) -> bool:
+            return exclude_re is None or not exclude_re.search(text)
+
         if self.sent is not None:
-            archived = sum(1 for r in self.sent if notice_re.search(str(r.get("text") or "")))
+            archived = sum(
+                1
+                for r in self.sent
+                if notice_re.search(str(r.get("text") or "")) and not_excluded(str(r.get("text") or ""))
+            )
             # The archive lives on the card: when the card drops out (low memory) the sends
             # are only in the device log. Each send there that is not an answer the chat
             # history holds is a notice.
             sends = g.telegram_sends(self.lines, self.bench.chat)
             if sends > len(self.sent):
-                answers = len(self.replies(notice_re)["answers"])
+                answers = len(self.replies(notice_re, exclude_re)["answers"])
                 return max(archived, sends - answers)
             return archived
-        return len(self.replies(notice_re)["notices"]) + len(g.log_notices(self.lines))
+        return len(self.replies(notice_re, exclude_re)["notices"]) + len(g.log_notices(self.lines, exclude_re))
 
-    def replies(self, notice_re) -> dict:
-        return g.classify_replies(self.rows, ANSWER_RE, notice_re)
+    def replies(self, notice_re, exclude_re=None) -> dict:
+        return g.classify_replies(self.rows, ANSWER_RE, notice_re, exclude_re)
 
     def requests(self, host: str = "api.anthropic.com") -> int:
         """Provider requests in the window: the mock's count on the control image, the

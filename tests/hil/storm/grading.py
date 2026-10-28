@@ -218,9 +218,14 @@ def owner_turn_failed(lines: Iterable[LogLine]) -> bool:
     return any(t["outcome"].upper() == "FAIL" and t["src"] in ("owner", "") for t in turn_ends(lines))
 
 
-def log_notices(lines: Iterable[LogLine]) -> List[str]:
-    """The owner notices the device logged as queued or sent outside a turn's reply."""
-    return [ln.text for ln in lines if NOTICE_LOG_RE.search(ln.text)]
+def log_notices(lines: Iterable[LogLine], exclude_re: "Optional[re.Pattern[str]]" = None) -> List[str]:
+    """The owner notices the device logged as delivered outside a turn's reply.
+    ``exclude_re`` drops another notice class (see classify_replies)."""
+    return [
+        ln.text
+        for ln in lines
+        if NOTICE_LOG_RE.search(ln.text) and (exclude_re is None or not exclude_re.search(ln.text))
+    ]
 
 
 def inbound_texts(lines: Iterable[LogLine], chat: Optional[int] = None) -> List[str]:
@@ -238,15 +243,26 @@ def new_rows(before: Dict[str, dict], after: Dict[str, dict]) -> List[dict]:
     return [after[k] for k in sorted(after) if k not in before]
 
 
-def classify_replies(rows: Iterable[dict], answer_re: "re.Pattern[str]", notice_re: "re.Pattern[str]") -> dict:
+def classify_replies(
+    rows: Iterable[dict],
+    answer_re: "re.Pattern[str]",
+    notice_re: "re.Pattern[str]",
+    exclude_re: "Optional[re.Pattern[str]]" = None,
+) -> dict:
     """The assistant messages of a window split into answers (the leg's expected
-    answer), notices (the leg's notice words) and other replies."""
+    answer), notices (the leg's notice words) and other replies. ``exclude_re``
+    marks another notice CLASS that must not count toward this leg's notice bound
+    (the replay legs' subject is the duplicate guard's notice; the kit's own
+    settings-fill side effect - the storage notice - is a different class, recorded
+    separately in the metrics, never part of the replay bound)."""
     out = {"answers": [], "notices": [], "other": []}
     for r in rows:
         if r.get("role") != "assistant":
             continue
         text = str(r.get("text") or "")
-        if notice_re.search(text):
+        if exclude_re is not None and exclude_re.search(text):
+            out["other"].append(text)
+        elif notice_re.search(text):
             out["notices"].append(text)
         elif answer_re.search(text):
             out["answers"].append(text)
