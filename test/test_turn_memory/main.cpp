@@ -125,6 +125,12 @@ struct Rig {
     };
     d.apply.deliver = d.deliver;
     d.deliveryNeedsRow = [this](const std::string& c) { return webRowOnly && c == "web"; };
+    // RBAC (round 1): this suite's chats are the owner's, as the device's tenant
+    // table answers for them - the deny-all default would refuse the owner's own
+    // device actions (the CUM-826 speech test's tts) that ran before the rule.
+    d.apply.principalFor = [](const std::string& chat) {
+      return orch::principalForRole(chat, orch::Role::Admin);
+    };
     d.apply.speak = [this](const std::string& t) {   // the device's sink notes what was heard
       spoken.push_back(t);
       if (speakHeard) eng->noteSpoke();
