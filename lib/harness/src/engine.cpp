@@ -3020,19 +3020,19 @@ constexpr int kHistoryMaxPages = 32;      // a flood of one repeated line folds 
 
 // True when `m` ends the window (a /clear, or the row the window starts after). The row the
 // window starts after is context only: its local day becomes `o.dayFloor`.
-bool windowEnds(const nimbus::orch::EpisodicMessage& m, HistoryOptions& o, const OffsetAt& zone) {
+bool windowEnds(const nimbus::orch::EpisodicMessage& m, HistoryOptions& o, const OffsetAt& zoneAt) {
   if (isClearBoundary(m)) return true;
   if (o.startAfter.empty() || rowIdAfter(m.id, o.startAfter)) return false;
-  if (m.id == o.startAfter) o.dayFloor = rowLocalDay(m, zone);
+  if (m.id == o.startAfter) o.dayFloor = rowLocalDay(m, zoneAt);
   return true;
 }
 
 // True when `m` is one more of the run `rows.back()` stands for. The in-flight row never starts
 // or absorbs a run: it is dropped from the history, and its count with it.
 bool joinsRun(const std::vector<nimbus::orch::EpisodicMessage>& rows, const HistoryOptions& o,
-              const RepeatStamp& chain, const OffsetAt& zone, const nimbus::orch::EpisodicMessage& m) {
+              const RepeatStamp& chain, const OffsetAt& zoneAt, const nimbus::orch::EpisodicMessage& m) {
   if (rows.empty() || rows.back().id == o.inFlightId) return false;
-  return isRepeatOf(rows.back(), chain, m, zone);
+  return isRepeatOf(rows.back(), chain, m, zoneAt);
 }
 
 // The chat's rows after `startAfter`, newest first, a page at a time. An owner
@@ -3042,7 +3042,7 @@ bool joinsRun(const std::vector<nimbus::orch::EpisodicMessage>& rows, const Hist
 // owner's local days: two identical messages either side of LOCAL midnight are two messages.
 void readHistory(const TurnEngine::Deps& d, const std::string& chatId, HistoryOptions& o, size_t maxRows,
                  std::vector<nimbus::orch::EpisodicMessage>& rows, std::vector<uint32_t>& repeats) {
-  const OffsetAt zone = localZone(o);
+  const OffsetAt zoneAt = localZone(o);
   RepeatStamp chain;   // the row just newer than the one being read: a run is chained row by row
   std::string before;
   for (int page = 0; page < kHistoryMaxPages; page++) {
@@ -3050,9 +3050,9 @@ void readHistory(const TurnEngine::Deps& d, const std::string& chatId, HistoryOp
     const bool full = got.size() >= kHistoryPageRows;
     if (full) before = got.back().id;
     for (auto& m : got) {
-      if (windowEnds(m, o, zone)) return;
+      if (windowEnds(m, o, zoneAt)) return;
       if (isJobDelivery(m.tags)) continue;   // never conversation: transparent to a run of repeats
-      if (joinsRun(rows, o, chain, zone, m)) {
+      if (joinsRun(rows, o, chain, zoneAt, m)) {
         repeats.back()++;
         chain = repeatStampOf(m);
         continue;

@@ -126,7 +126,7 @@ struct HistoryOptions {
 
 // The local day a row is told at (its at:/sent: second refining its hour, the offset valid
 // then); kDayNone for a row stored before the clock was set.
-int32_t rowLocalDay(const nimbus::orch::EpisodicMessage& m, const OffsetAt& zone);
+int32_t rowLocalDay(const nimbus::orch::EpisodicMessage& m, const OffsetAt& zoneAt);
 
 // The offset source `o` names: utcOffsetAt when set, else the fixed utcOffsetMin.
 OffsetAt localZone(const HistoryOptions& o);
@@ -166,7 +166,7 @@ std::vector<HistTurn> historyTurns(const std::vector<nimbus::orch::EpisodicMessa
 // fixed-offset form: `utcOffsetMin` 0 = the UTC day.
 constexpr uint32_t kRepeatWindowSec = 120;
 bool isRepeatRow(const nimbus::orch::EpisodicMessage& newer,
-                 const nimbus::orch::EpisodicMessage& older, const OffsetAt& zone);
+                 const nimbus::orch::EpisodicMessage& older, const OffsetAt& zoneAt);
 // A run of repeats is chained: each row is compared with the row just newer than it, so a new
 // message can only join the newest group or start another, and an older group never re-splits
 // as the run grows (a closed turn's bytes depend only on its own rows). The chain carries the
@@ -180,7 +180,7 @@ RepeatStamp repeatStampOf(const nimbus::orch::EpisodicMessage& m);
 // isRepeatRow with the newer side's time given by the chain: `kept` is the row that stands for
 // the run (its text and attachments decide), `newer` the time of the row read just before `older`.
 bool isRepeatOf(const nimbus::orch::EpisodicMessage& kept, const RepeatStamp& newer,
-                const nimbus::orch::EpisodicMessage& older, const OffsetAt& zone);
+                const nimbus::orch::EpisodicMessage& older, const OffsetAt& zoneAt);
 bool isRepeatRow(const nimbus::orch::EpisodicMessage& newer,
                  const nimbus::orch::EpisodicMessage& older, int32_t utcOffsetMin = 0);
 
@@ -271,8 +271,8 @@ FoldSlice foldSlice(const std::vector<HistTurn>& turns, size_t keepBytes, size_t
 
 // Consecutive identical owner rows (newest first) as one row with " (xN)" - the
 // fold input of a chat that has no turn-structured history yet. The same rule
-// as isRepeatRow: `zone` tells the owner's local days (empty = the UTC day).
+// as isRepeatRow: `zoneAt` tells the owner's local days (empty = the UTC day).
 std::vector<nimbus::orch::EpisodicMessage> collapseRepeats(
-    const std::vector<nimbus::orch::EpisodicMessage>& newestFirst, const OffsetAt& zone = OffsetAt());
+    const std::vector<nimbus::orch::EpisodicMessage>& newestFirst, const OffsetAt& zoneAt = OffsetAt());
 
 }  // namespace agent

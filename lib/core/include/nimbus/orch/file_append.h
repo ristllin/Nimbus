@@ -138,7 +138,7 @@ class CsvUpsertStream {
   CsvUpsertStream(const std::string& keyCol, const std::string& sumCol, const std::string& today);
   // The time zone `today` is in ("GMT"; "UTC, no time zone is set"), named in an
   // after-today refusal so the model can tell the owner why. Optional; before begin().
-  void setZone(const std::string& zone) { zone_ = zone; }
+  void setZone(const std::string& zoneAt) { zone_ = zoneAt; }
   // replace: "all" - a key naming several stored rows (an older log's repeated
   // corrections) replaces the first and sets the others aside as "#superseded: "
   // rows instead of refusing. Optional; before begin().

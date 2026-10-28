@@ -828,8 +828,8 @@ LogDay logDayOf(time_t now, bool tzSet) {
 // ---- the reply ------------------------------------------------------------------
 
 std::string renderDayTotal(const DayTotal& d, const std::string& sumCol, bool isToday,
-                           const std::string& zone) {
-  std::string out = isToday ? "today's " + sumCol + " (" + d.date + (zone.empty() ? "" : ", " + zone) + "): "
+                           const std::string& zoneAt) {
+  std::string out = isToday ? "today's " + sumCol + " (" + d.date + (zoneAt.empty() ? "" : ", " + zoneAt) + "): "
                             : sumCol + " on " + d.date + ": ";
   out += numText(d.total);
   if (d.rows == 0) out += " - no rows are dated " + d.date;
@@ -855,7 +855,7 @@ std::string renderChange(const RowChange& c, const std::string& sumCol) {
 }  // namespace
 
 std::string renderUpsertReply(const CsvUpsert& up, const std::string& where,
-                              const std::string& sumCol, const std::string& zone) {
+                              const std::string& sumCol, const std::string& zoneAt) {
   std::string out = "replaced " + std::to_string(up.replaced) + (up.replaced == 1 ? " row" : " rows") +
                     ", added " + std::to_string(up.appended) + (up.appended == 1 ? " row" : " rows") +
                     " in " + where + (up.changed ? "" : " (no change: the rows were already as sent)") + "\n";
@@ -867,7 +867,7 @@ std::string renderUpsertReply(const CsvUpsert& up, const std::string& where,
                                 " was cut mid-write; it is kept as a #cut: row and not counted - log it again in full\n";
   }
   for (size_t i = 0; i < up.days.size(); i++)
-    out += renderDayTotal(up.days[i], sumCol, i == 0 && up.hasTotal, zone) + "\n";
+    out += renderDayTotal(up.days[i], sumCol, i == 0 && up.hasTotal, zoneAt) + "\n";
   if (up.undated > 0) out += renderUndated(up.undated) + "\n";
   if (!up.noTotal.empty()) out += "[no day total: " + up.noTotal + "]\n";
   return out;

@@ -170,16 +170,16 @@ constexpr int64_t kNoDate = INT64_MIN;   // a turn stored before the clock was s
 
 int64_t floorDiv(int64_t a, int64_t b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
 
-// Minutes east of UTC at a unix time (an empty zone = UTC).
-int32_t zoneOffset(const OffsetAt& zone, uint32_t unixSec) { return zone ? zone(unixSec) : 0; }
+// Minutes east of UTC at a unix time (an empty zoneAt = UTC).
+int32_t zoneOffset(const OffsetAt& zoneAt, uint32_t unixSec) { return zoneAt ? zoneAt(unixSec) : 0; }
 
 int64_t localDay(uint32_t tsHours, int32_t offMin) {
   return floorDiv((int64_t)tsHours * 60 + offMin, 1440);
 }
 
 // The local day of a unix time in seconds, told with the offset valid at that time.
-int64_t localDaySec(uint32_t unix, const OffsetAt& zone) {
-  return floorDiv((int64_t)unix + (int64_t)zoneOffset(zone, unix) * 60, 86400);
+int64_t localDaySec(uint32_t unix, const OffsetAt& zoneAt) {
+  return floorDiv((int64_t)unix + (int64_t)zoneOffset(zoneAt, unix) * 60, 86400);
 }
 
 // The second a row was sent or stored: the sent: tag (a replayed message keeps its sender's
@@ -216,14 +216,14 @@ uint32_t placedSecond(const EpisodicMessage& m, bool* stamped = nullptr) {
 // without them, in the same hour, and only when that hour holds no local midnight
 // (a half-hour zone's does), since a row without a time keeps only its hour. A habitual
 // "dinner 600" sent yesterday and again today stays two messages under their own days.
-bool closeRepeat(uint32_t secA, uint32_t secB, uint32_t hourA, uint32_t hourB, const OffsetAt& zone) {
+bool closeRepeat(uint32_t secA, uint32_t secB, uint32_t hourA, uint32_t hourB, const OffsetAt& zoneAt) {
   if (secA && secB) {
     const uint32_t gap = secA > secB ? secA - secB : secB - secA;
-    return gap <= kRepeatWindowSec && localDaySec(secA, zone) == localDaySec(secB, zone);
+    return gap <= kRepeatWindowSec && localDaySec(secA, zoneAt) == localDaySec(secB, zoneAt);
   }
   if (hourA != hourB) return false;
   const uint32_t first = hourA * 3600u;
-  return localDaySec(first, zone) == localDaySec(first + 3599u, zone);
+  return localDaySec(first, zoneAt) == localDaySec(first + 3599u, zoneAt);
 }
 
 // The turn's local day number, kNoDate when it has none.
@@ -387,7 +387,7 @@ std::string assistantHalf(const Building& b, std::string& did, uint32_t& replyHo
   return joinAssistantText(replies, asks, spoken, turnSkills(b));
 }
 
-HistTurn finish(const Building& b, const OffsetAt& zone) {
+HistTurn finish(const Building& b, const OffsetAt& zoneAt) {
   HistTurn t;
   t.firstId = b.firstId;
   t.lastId = b.lastId;
@@ -405,14 +405,14 @@ HistTurn finish(const Building& b, const OffsetAt& zone) {
     t.tsHours = head->tsHours;
     bool stamped = false;
     const uint32_t at = placedSecond(*head, &stamped);
-    t.localDay = at ? (int32_t)localDaySec(at, zone) : kDayNone;
+    t.localDay = at ? (int32_t)localDaySec(at, zoneAt) : kDayNone;
     t.dayStamped = stamped;
   }
-  if (b.lastRow) t.lastDay = rowLocalDay(*b.lastRow, zone);
+  if (b.lastRow) t.lastDay = rowLocalDay(*b.lastRow, zoneAt);
   if (b.userRow) {
     t.sentUnix = toU32(tagValue(b.userRow->tags, kSentTag));
     t.atUnix = toU32(tagValue(b.userRow->tags, kAtTag));
-    t.sentOffMin = t.sentUnix ? zoneOffset(zone, t.sentUnix) : 0;
+    t.sentOffMin = t.sentUnix ? zoneOffset(zoneAt, t.sentUnix) : 0;
   }
   return t;
 }
@@ -562,14 +562,14 @@ class Grouper {
 
 // Consecutive turns that repeat one owner message with nothing answered in
 // between, sent close together on one day, become one turn with a count (L19-26).
-void collapseTurns(std::vector<HistTurn>& turns, const OffsetAt& zone) {
+void collapseTurns(std::vector<HistTurn>& turns, const OffsetAt& zoneAt) {
   std::vector<HistTurn> out;
   RepeatStamp chain;   // the newest turn folded into out.back(): the next one is compared with it
   for (auto& t : turns) {
     const RepeatStamp mine{stampOf(t.sentUnix, t.atUnix), t.tsHours};
     HistTurn* last = out.empty() ? nullptr : &out.back();
     if (last && !last->seedless && !t.seedless && last->assistant.empty() && last->user == t.user &&
-        closeRepeat(chain.sec, mine.sec, chain.hour, mine.hour, zone)) {
+        closeRepeat(chain.sec, mine.sec, chain.hour, mine.hour, zoneAt)) {
       last->repeats += t.repeats;
       last->lastId = t.lastId;
       last->assistant = t.assistant;
@@ -652,9 +652,9 @@ void spillToPsram(std::string& s) {
   if (s.capacity() > std::string().capacity() && s.capacity() < kSpillBytes) s.reserve(kSpillBytes);
 }
 
-int32_t rowLocalDay(const EpisodicMessage& m, const OffsetAt& zone) {
+int32_t rowLocalDay(const EpisodicMessage& m, const OffsetAt& zoneAt) {
   const uint32_t at = placedSecond(m);
-  return at ? (int32_t)localDaySec(at, zone) : kDayNone;
+  return at ? (int32_t)localDaySec(at, zoneAt) : kDayNone;
 }
 
 OffsetAt fixedZone(int32_t utcOffsetMin) {
@@ -684,16 +684,16 @@ RepeatStamp repeatStampOf(const EpisodicMessage& m) {
 }
 
 bool isRepeatOf(const EpisodicMessage& kept, const RepeatStamp& newer, const EpisodicMessage& older,
-                const OffsetAt& zone) {
+                const OffsetAt& zoneAt) {
   const RepeatStamp then = repeatStampOf(older);
   return isOwnerRow(kept) && isOwnerRow(older) && !kept.text.empty() && kept.text == older.text &&
          tagValue(kept.tags, kAttTag).empty() && tagValue(older.tags, kAttTag).empty() &&
          !isClearBoundary(kept) && !isClearBoundary(older) &&
-         closeRepeat(newer.sec, then.sec, newer.hour, then.hour, zone);
+         closeRepeat(newer.sec, then.sec, newer.hour, then.hour, zoneAt);
 }
 
-bool isRepeatRow(const EpisodicMessage& newer, const EpisodicMessage& older, const OffsetAt& zone) {
-  return isRepeatOf(newer, repeatStampOf(newer), older, zone);
+bool isRepeatRow(const EpisodicMessage& newer, const EpisodicMessage& older, const OffsetAt& zoneAt) {
+  return isRepeatOf(newer, repeatStampOf(newer), older, zoneAt);
 }
 
 bool isRepeatRow(const EpisodicMessage& newer, const EpisodicMessage& older, int32_t utcOffsetMin) {
@@ -705,11 +705,11 @@ std::vector<HistTurn> historyTurns(const std::vector<EpisodicMessage>& newestFir
   Grouper g;
   for (const Live& r : liveRows(newestFirst, opt, repeats)) g.add(r);
   g.finishAll();
-  const OffsetAt zone = localZone(opt);
+  const OffsetAt zoneAt = localZone(opt);
   std::vector<HistTurn> turns;
   turns.reserve(g.turns.size());
-  for (const Building& b : g.turns) turns.push_back(finish(b, zone));
-  collapseTurns(turns, zone);
+  for (const Building& b : g.turns) turns.push_back(finish(b, zoneAt));
+  collapseTurns(turns, zoneAt);
   keepDaysForward(turns, opt.dayFloor);
   return turns;
 }
@@ -866,12 +866,12 @@ FoldSlice foldSlice(const std::vector<HistTurn>& turns, size_t keepBytes, size_t
 }
 
 std::vector<EpisodicMessage> collapseRepeats(const std::vector<EpisodicMessage>& newestFirst,
-                                             const OffsetAt& zone) {
+                                             const OffsetAt& zoneAt) {
   std::vector<EpisodicMessage> out;
   uint32_t count = 1;
   RepeatStamp chain;   // the row just newer than the one being read
   for (const EpisodicMessage& m : newestFirst) {
-    if (!out.empty() && isRepeatOf(out.back(), chain, m, zone)) {
+    if (!out.empty() && isRepeatOf(out.back(), chain, m, zoneAt)) {
       count++;
       chain = repeatStampOf(m);
       continue;
