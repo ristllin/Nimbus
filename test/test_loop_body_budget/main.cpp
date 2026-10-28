@@ -136,6 +136,27 @@ struct GrowingLoop {
     return nimbus::orch::runHeadLoop(cfg, h);
   }
 };
+// Does any sent request body hold `mark` verbatim (the whole-page contract's
+// "the model received this round's result whole at least once")?
+static bool anyBodyHas(const FakeProviderDeps& d, const std::string& mark) {
+  for (const auto& r : d.http.seen)
+    if (r.body.find(mark) != std::string::npos) return true;
+  return false;
+}
+
+// Which |endN| markers each sent request carries, so a lost-round failure names
+// itself: "req0: - req1: 1 2 req2: 1 2 3 ...".
+static std::string markerLayout(const FakeProviderDeps& d) {
+  std::string layout;
+  for (size_t i = 0; i < d.http.seen.size(); i++) {
+    std::string has;
+    for (size_t m = 1; m <= 8; m++)
+      if (d.http.seen[i].body.find("|end" + std::to_string(m) + "|") != std::string::npos)
+        has += " " + std::to_string(m);
+    layout += " req" + std::to_string(i) + ":" + (has.empty() ? " -" : has);
+  }
+  return layout;
+}
 }  // namespace
 
 // Lumi's shape: a 70 KB base and results that push the body past the budget.
@@ -317,14 +338,20 @@ static void test_lumi_shape_on_every_loop_wire() {
     TEST_ASSERT_EQUAL_INT_MESSAGE(9, (int)d.http.seen.size(), msg);   // 8 tool rounds + the answer, no extra
     TEST_ASSERT_TRUE_MESSAGE(d.http.seen[0].body.size() >= 62000, msg);   // the scenario really is Lumi-sized
     for (const auto& r : d.http.seen) TEST_ASSERT_TRUE_MESSAGE(r.body.size() <= providers::kWireBodyMax, msg);
-    // The newest whole page, index-free (a CI flake, run 40631977181): request k
-    // replays round k's result as its newest, and the fold never touches the
-    // newest round - whichever older rounds the budget arithmetic happens to
-    // fold can shift with the host; the newest round's survival cannot. This
-    // pins every request's newest round, a stronger shape than one exact index.
-    for (size_t k = 1; k < d.http.seen.size(); k++) {
+    // The whole-page contract (CUM-848's guard, restated on the CI evidence of
+    // runs 40631977181/40640475595: a host's fold can repack WHICH request first
+    // carries a round's result, so "request k carries round k" was expectation
+    // rigidity, not the contract): every round's result must reach the model
+    // WHOLE at least once - a result no request ever carries whole is an unseen
+    // result the ladder lost, exactly the clip the fold may never take. A
+    // failure dumps the marker layout so a genuine loss names itself.
+    for (size_t k = 1; k < d.http.seen.size() && k <= 8; k++) {
       const std::string mark = "|end" + std::to_string(k) + "|";
-      TEST_ASSERT_TRUE_MESSAGE(d.http.seen[k].body.find(mark) != std::string::npos, msg);
+      if (anyBodyHas(d, mark)) continue;
+      TEST_ASSERT_TRUE_MESSAGE(false, (std::string(msg) + " A6 round " + std::to_string(k) +
+                                       "'s result never reached the model whole (" + mark +
+                                       " in no request); markers per request:" + markerLayout(d))
+                                      .c_str());
     }
     refitSeen = refitSeen || LogCapture::contains("B budget - folded");
   }
