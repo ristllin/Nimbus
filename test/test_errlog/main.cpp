@@ -674,12 +674,28 @@ static void test_drop_marker_only_when_dropped() {
   TEST_ASSERT_EQUAL_INT(1, (int)std::count(m.begin(), m.end(), '\n'));
 }
 
+// The 2026-10-29 Lumi panic pin (fw v4.6.1, the dream-end row write): a durable line
+// refused by the FILE-write context guard - errlog_fs skips the FILE touch when the
+// CPU interrupt level is raised, because newlib's lock_acquire_generic ABORTS on a
+// recursive FILE lock acquired in that state - rides the SAME bounded marker as a
+// card-lock contention drop: one accounting, one wording, the exact count, so the
+// next successful write always records what was missed, whatever refused it.
+static void test_context_guard_drop_rides_the_contention_marker() {
+  const std::string m = dropMarkerLine(9, 200, 2);
+  TEST_ASSERT_FALSE(m.empty());
+  TEST_ASSERT_TRUE(m.find("dropped 2 line(s)") != std::string::npos);
+  TEST_ASSERT_TRUE(m.find("card-lock contention or an unsafe write context") != std::string::npos);
+  TEST_ASSERT_EQUAL_CHAR('\n', m.back());
+  TEST_ASSERT_EQUAL_INT(1, (int)std::count(m.begin(), m.end(), '\n'));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_persists_durably_scopes_to_warn_error_and_tags);
   RUN_TEST(test_info_burst_zero_durable_warn_one);
   RUN_TEST(test_wear_counter_tracks_bytes_written);
   RUN_TEST(test_drop_marker_only_when_dropped);
+  RUN_TEST(test_context_guard_drop_rides_the_contention_marker);
   RUN_TEST(test_format_line_shape);
   RUN_TEST(test_format_line_null_cat_is_dash);
   RUN_TEST(test_sanitize_strips_control_and_newlines);

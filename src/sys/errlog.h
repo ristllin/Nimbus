@@ -211,12 +211,15 @@ inline constexpr char kBoot[]    = "boot";     // boot / lifecycle
 // under card-lock contention since the last successful write. Returns empty when none
 // were dropped (so no marker is emitted). errlog_fs writes it at the next successful
 // durable write, so a drop is never a silent loss - it survives reboot in the log
-// itself, bounded to at most one marker per successful write.
+// itself, bounded to at most one marker per successful write. The two drop reasons
+// share the one marker: card-lock contention, and the FILE-write context guard (the
+// 2026-10-29 Lumi panic class - a write refused at a raised CPU interrupt level
+// would otherwise abort inside newlib's recursive FILE lock).
 inline std::string dropMarkerLine(uint32_t seq, uint32_t ms, uint32_t dropped) {
   if (dropped == 0) return {};
   return formatLine(seq, ms, cat::kStorage,
                     std::string("durable log dropped ") + std::to_string(dropped) +
-                    " line(s) under card-lock contention (best-effort)");
+                        " line(s) under card-lock contention or an unsafe write context (best-effort)");
 }
 
 // ---- the rotating write engine: one held handle -------------------------------
