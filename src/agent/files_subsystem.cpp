@@ -25,6 +25,7 @@
 #include "nimbus/orch/blob_store.h"      // BlobHasher (streamed content hash)
 #include "nimbus/orch/episodic.h"     // textMatchScore (files.search)
 #include "nimbus/orch/file_append.h"  // files.append + the files.read tail view
+#include "nimbus/orch/file_edit.h"    // files.edit: the streaming text substitution
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
 #include "nimbus/orch/provider_caps.h"  // LocalDate - the upsert's today
@@ -645,6 +646,23 @@ static bool commitAppend(const std::string& project, const std::string& name, si
   return true;
 }
 
+// The index entry after an edit rewrote the file to `newSize` bytes. The entry
+// keeps its owner and creation time (still the same file); the content hash is
+// unknown until the next whole write and a provider copy is stale now.
+static bool commitEdit(const std::string& project, const std::string& name, size_t newSize,
+                       std::string& err) {
+  const nimbus::orch::FileEntry* old = g_store.find(project, name);
+  if (!old) { err = "not found"; return false; }
+  nimbus::orch::FileEntry e = *old;
+  e.bytes = uint32_t(newSize);
+  e.hash = 0;
+  e.providerTag.clear();
+  e.providerFileId.clear();
+  if (!g_store.add(e, err)) return false;
+  persistIndex();
+  return true;
+}
+
 // files.append with a key: the keyed CSV upsert (G1, rows 32/33). The model
 // sends only the new rows; the device merges them by key and reports the day
 // total, so a log update is one call instead of a read plus a whole-file save.
@@ -730,6 +748,151 @@ static nimbus::orch::ToolResult appendRows(const std::string& project, const std
                         " to " + project + "/" + name + " (now " + std::to_string((unsigned)(size + n)) +
                         " bytes)" +
                         (plan.repairedCut ? "; its last row was incomplete and is left as it was" : ""));
+}
+
+// files.edit (v4.6.2): the surgical edit of a stored TEXT document. The only
+// way to change a byte used to be the whole-file rewrite (files.read plus
+// artifact.save - every stored byte over the prompt twice, a whole-file buffer
+// on the device); the edit substitutes an exact span in place. Bounded
+// streaming, one Lock held throughout: scan-count the matches, decide, then
+// substitute into the part file and rename it over the original - the
+// original is untouched until the substituted file is fully written and
+// size-verified, so ANY refusal (a cap, no match, quota, a short write)
+// leaves it exactly as it was.
+// Pass 1 of files.edit: count the matches without emitting anything (a
+// bounded stream; the file is never held whole). "" from countDocMatches means
+// the file could not be read.
+static std::string countDocMatches(const std::string& path, const std::string& find,
+                                   const std::string& replace, size_t& oldSize,
+                                   size_t& matches) {
+  fs::FS& fs = memory::dataFs();
+  File f = fs.open(path.c_str(), FILE_READ);
+  if (!f) return "SD open failed";
+  oldSize = f.size();
+  nimbus::orch::TextEditStream scan(find, replace, true);
+  std::string discard;
+  char buf[512];
+  for (;;) {
+    const size_t got = f.read((uint8_t*)buf, sizeof buf);
+    if (got == 0) break;
+    scan.feed(buf, got, discard);
+  }
+  f.close();
+  scan.finish(discard);
+  matches = scan.found();
+  return std::string();
+}
+
+// Pass 2 of files.edit: stream the substitution into the part file, verify its
+// size, and rename it over the original. The original is untouched until the
+// substituted file is fully written and size-verified, so any failure here
+// (a short write, a rename failure) leaves it exactly as it was.
+static std::string substituteDoc(const std::string& path, const std::string& find,
+                                 const std::string& replace, size_t apply, size_t newSize) {
+  fs::FS& fs = memory::dataFs();
+  fs.remove(kPartPath);
+  File src = fs.open(path.c_str(), FILE_READ);
+  if (!src) return "SD open failed";
+  File dst = fs.open(kPartPath, FILE_WRITE);
+  if (!dst) { src.close(); return "SD open failed"; }
+  nimbus::orch::TextEditStream sub(find, replace, false);
+  sub.setApplyLimit(apply);
+  std::string out;
+  out.reserve(512 + replace.size());
+  char buf[512];
+  bool writeOk = true;
+  for (;;) {
+    const size_t got = src.read((uint8_t*)buf, sizeof buf);
+    if (got == 0) break;
+    out.clear();
+    sub.feed(buf, got, out);
+    if (!out.empty() && dst.write((const uint8_t*)out.data(), out.size()) != out.size()) {
+      writeOk = false;
+      break;
+    }
+  }
+  src.close();
+  if (writeOk) {
+    out.clear();
+    sub.finish(out);
+    if (!out.empty() && dst.write((const uint8_t*)out.data(), out.size()) != out.size())
+      writeOk = false;
+  }
+  dst.close();
+  {   // Verify the substituted file is exactly the size the decision promised.
+    File chk = fs.open(kPartPath, FILE_READ);
+    const size_t on = chk ? chk.size() : 0;
+    if (chk) chk.close();
+    if (!writeOk || on != newSize) {
+      fs.remove(kPartPath);
+      return "SD short write: the file is unchanged";
+    }
+  }
+  fs.remove(path.c_str());
+  if (!fs.rename(kPartPath, path.c_str())) {
+    fs.remove(kPartPath);
+    return "SD rename failed: the file is unchanged";
+  }
+  return std::string();
+}
+
+// files.edit's argument precheck, before anything is opened: "" when the
+// edit may proceed to the gates.
+static std::string editPrecheck(const std::string& project, const std::string& name,
+                                const std::string& find, const std::string& replace,
+                                const nimbus::orch::EditPolicy& pol) {
+  if (project.empty() || name.empty() || find.empty()) return "need 'project', 'name' and 'find'";
+  if (!textDocName(name))
+    return "files.edit edits a text document (.csv, .log, .md, .txt, .json)";
+  return nimbus::orch::validateEdit(find.size(), replace.size(), pol);
+}
+
+// files.edit (v4.6.2): the surgical edit of a stored TEXT document. The only
+// way to change a byte used to be the whole-file rewrite (files.read plus
+// artifact.save - every stored byte over the prompt twice, a whole-file buffer
+// on the device); the edit substitutes an exact span in place. Bounded
+// streaming, one Lock held throughout: scan-count the matches, decide, then
+// substitute into the part file and rename it over the original.
+static nimbus::orch::ToolResult editDoc(const std::string& project, const std::string& name,
+                                        const std::string& find, const std::string& replace,
+                                        const nimbus::orch::EditPolicy& pol,
+                                        const nimbus::orch::Principal& who) {
+  using nimbus::orch::ToolResult;
+  if (const std::string bad = editPrecheck(project, name, find, replace, pol); !bad.empty())
+    return ToolResult::fail(bad);
+  memory::Lock g;
+  const std::string gate = appendGate(project, name, who);
+  if (!gate.empty()) return ToolResult::fail(gate);
+  if (!g_store.find(project, name)) return ToolResult::fail("not found");   // an edit never creates
+  const std::string path = pathOf(project, name);
+  size_t oldSize = 0, matches = 0;
+  if (const std::string err = countDocMatches(path, find, replace, oldSize, matches); !err.empty())
+    return ToolResult::fail(err);
+  const nimbus::orch::EditDecision d =
+      nimbus::orch::decideEdit(find.size(), replace.size(), pol, matches);
+  if (!d.ok) return ToolResult::fail(d.err);
+  const size_t newSize = size_t((int64_t)oldSize + d.sizeDelta);
+  {   // the same quota rules as artifact.save: an edit's growth is a write
+    const std::string refusal =
+        appendRefusal(project, name, d.sizeDelta > 0 ? size_t(d.sizeDelta) : 0, newSize, who);
+    if (!refusal.empty()) return ToolResult::fail(refusalForHead(refusal));
+  }
+  if (const std::string err = substituteDoc(path, find, replace, size_t(d.apply), newSize);
+      !err.empty())
+    return ToolResult::fail(err);
+  std::string err;
+  if (!commitEdit(project, name, newSize, err)) {
+    memory::dataFs().remove(path.c_str());
+    return ToolResult::fail(err);
+  }
+  alogf("files: edit %s/%s replaced %d of %u match(es) (%u B -> %u B)", project.c_str(),
+        name.c_str(), d.apply, (unsigned)matches, (unsigned)oldSize, (unsigned)newSize);
+  std::string msg = "edited " + project + "/" + name + ": replaced " + std::to_string(d.apply) +
+                    " of " + std::to_string(matches) + " match" +
+                    (matches == 1 ? "" : "es") + " (now " + std::to_string(newSize) + " bytes)";
+  if (matches > (size_t)d.apply)
+    msg += "; " + std::to_string(matches - d.apply) + " more remain (all: true replaces them)";
+  return ToolResult::ok(msg);
 }
 
 std::string readDocText(const std::string& project, const std::string& name,
@@ -1250,6 +1413,23 @@ void registerTools() {
                               argStr(a, "key"), argStr(a, "sum"), who);
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"},"key":{"type":"string"},"sum":{"type":"string"}},"required":["project","name","text"]})");
+
+  reg.add("files.edit",
+          "Edit a saved TEXT document surgically: find an exact text span (a phrase, or a whole "
+          "line's text) and replace it - never read and re-save the whole file. Replaces the "
+          "FIRST match by default; 'all': true replaces every match, 'count' replaces the first "
+          "N. The reply says how many matches were found and how many were replaced, so nothing "
+          "happens silently. A no-match says so and changes nothing. An empty 'replace' deletes "
+          "the span. The file's other bytes keep their exact order (a CSV's rows stay rows). "
+          "Max 2 KB find, 4 KB replacement, 200 matches per call.",
+          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
+            nimbus::orch::EditPolicy pol;
+            pol.all = a["all"].as<bool>();
+            if (a["count"].is<int>()) pol.count = a["count"].as<int>();
+            return editDoc(argStr(a, "project"), argStr(a, "name"), argStr(a, "find"),
+                          argStr(a, "replace"), pol, who);
+          },
+          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"find":{"type":"string"},"replace":{"type":"string"},"all":{"type":"boolean"},"count":{"type":"integer"}},"required":["project","name","find"]})");
 
   reg.add("files.share",
           "Share one of your saved files with everyone who can talk to this "

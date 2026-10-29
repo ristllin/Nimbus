@@ -273,6 +273,7 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 | `files.read` | Read a stored TEXT document's content, paged; with `tail`, only the last rows of a log or CSV. | `project` (**required**), `name` (**required**), `offset` (number), `tail` (number of rows, max 200) | live |
 | `files.search` | Search the CONTENT of saved text documents for words; returns the best matches with a snippet, ranked by how many of the words each document holds, then by how often they occur. | `query` (**required**), `project` (optional filter) | live |
 | `files.append` | Add rows to the END of a text document (a log, a CSV); creates it when missing. Only the new rows are written. With `key`, a keyed CSV upsert: a row whose key matches an existing one UPDATES it instead of adding a duplicate. | `project` (**required**), `name` (**required**, a text extension), `text` (**required**, max 4 KB per call), `key` (optional, the column whose value identifies a row), `sum` (optional, a numeric column - the reply carries its total for today) | live |
+| `files.edit` | Edit a saved text document surgically: find an exact text span (a phrase, or a whole line's text) and replace it - instead of reading and re-saving the whole file. Replaces the first match by default; `all: true` for every match, `count` for the first N. The reply says how many matches were found and replaced; a no-match changes nothing. | `project` (**required**), `name` (**required**, a text extension), `find` (**required**, max 2 KB), `replace` (optional, max 4 KB; empty deletes the span), `all` (boolean, default false), `count` (integer, default 1, max 200) | live |
 | `artifact.save` | Persist a TEXT artifact (report, summary, document) into the durable store. | `project` (**required**), `name` (**required**, with extension `.md`/`.txt`/`.csv`/`.json`), `text` (**required**, max ~24 KB per call) | live |
 | `files.share` | Share one of your saved files read-only with everyone, or stop sharing it. | `project` (**required**), `name` (**required**), `share` (boolean, default true) | live |
 | `files.send` | Send a stored file to the owner on Telegram - images go as an inline photo, other files as a document. | `project` (**required**), `name` (**required**), `chat_id` (optional) | live |
@@ -291,6 +292,14 @@ Notes:
   new rows (line ends normalized, a final line end added). When the file's last
   row was cut mid-write, the new rows start on a fresh line and the result says
   so. It follows the same ownership and quota rules as `artifact.save`.
+- `files.edit` changes only the matched spans; every other byte keeps its exact
+  position, so a CSV's rows stay rows. It never creates a file (`not found` is
+  the answer), never reads the file into the model's context, and streams the
+  substitution on the device into a temp sibling that is renamed over the
+  original only after it is fully written and size-verified - any refusal (a
+  cap, no match, quota, a short write) leaves the stored file untouched. It
+  follows the same ownership, lock and quota rules as `artifact.save` (an
+  edit's growth counts against the caller's file-storage quota).
 - The keyed upsert (a `key` column) is the one exception to "never rewrites":
   the merge happens on the device, so only the new rows cross the model's
   context - never a whole-file read plus a whole-file save. The reply names how
