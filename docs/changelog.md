@@ -10,7 +10,7 @@ installs it when you approve ([how updates work](ota.md)).
 
 A fix release for the crash and the file-editing gap reported on 29 October.
 
-- **No more crash at the dream's end.** The nightly maintenance pass could stop the device dead when its timeline note landed at a moment the system was already running at a raised interrupt level. That write is now held safely and lands on the next turn instead - the device never aborts, and nothing about normal turns changes.
+- **No more crash at the dream's end.** The nightly maintenance pass could stop the device dead when its timeline note landed at a moment the system was already running at a raised interrupt level. That write is now held safely and lands on the next turn instead, and nothing about normal turns changes.
 - **files.edit.** The assistant can now change one line of a text document without reading and rewriting the whole file - it finds the text, replaces it, and leaves everything else untouched. Cheaper on memory and tokens, and it says honestly what it found and replaced.
 
 ## v4.6.1 - Faster replies, no web-page restarts, the real model named
