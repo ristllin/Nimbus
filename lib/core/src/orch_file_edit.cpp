@@ -107,8 +107,10 @@ void TextEditStream::finish(std::string& out) {
     return;
   }
   scan(out, true);
-  // A partial span at the end of the file is not a match: emit it as it is.
-  out += carry_;
+  // A partial span at the end of the file is not a match: emit it as it is -
+  // and the scan pass emits nothing at all, its unsettled tail included (the
+  // header's contract).
+  if (!countOnly_) out += carry_;
   carry_.clear();
 }
 

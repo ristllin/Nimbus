@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <cstdio>
 #include <string>
 
 #include "nimbus/orch/file_edit.h"
@@ -124,10 +125,15 @@ static void test_counting_is_non_overlapping_and_chunk_safe() {
   for (size_t chunk = 1; chunk <= 8; chunk++)
     TEST_ASSERT_EQUAL(1, (int)streamAll("xxabcdyy", "abcd", "", true, 0, chunk).found);
   TEST_ASSERT_EQUAL(3, (int)streamAll("a-b-a-b-a", "a", "", true, 0, 3).found);
-  // Counting emits nothing.
-  Run r = streamAll("one two one", "one", "", true, 0, 3);
-  TEST_ASSERT_EQUAL(2, (int)r.found);
+  // Counting emits nothing - not even the final non-matching tail: finish()'s
+  // post-scan append is guarded, the header's "countOnly leaves out alone"
+  // (prism v4.6.2 row 3; an unguarded finish leaked up to find.size()-1 bytes).
+  Run r = streamAll("one tail", "one", "", true, 0, 3);
+  TEST_ASSERT_EQUAL(1, (int)r.found);
   TEST_ASSERT_EQUAL(0, (int)r.out.size());
+  Run r2 = streamAll("one two one", "one", "", true, 0, 3);
+  TEST_ASSERT_EQUAL(2, (int)r2.found);
+  TEST_ASSERT_EQUAL(0, (int)r2.out.size());
 }
 
 // ---- the matcher: replacing ---------------------------------------------------
@@ -228,6 +234,38 @@ static void test_a_whole_line_is_just_a_longer_span() {
   TEST_ASSERT_EQUAL_STRING("# Title\nreplaced line\nnew tail\n", r.out.c_str());
 }
 
+// ---- the device wiring pin ---------------------------------------------------
+// files.edit and the web upload session share the ONE scratch slot
+// /mem/files/.part; every writer of the slot refuses an active session through
+// uploadActiveLocked() (files_subsystem.cpp's own convention). The edit's
+// arbitration rides the shared gate - editDoc calls appendGate, whose body
+// carries the uploadActiveLocked() check - and it must run BEFORE
+// substituteDoc consumes the slot (the one Lock held through the edit keeps a
+// session from starting mid-flight). The device source is scanned because the
+// device code does not build on the host (the test_tool_taint /
+// test_store_full pattern).
+static void test_the_edit_gates_the_upload_slot_before_touching_it() {
+  std::FILE* f = std::fopen("src/agent/files_subsystem.cpp", "rb");
+  if (!f) { TEST_FAIL_MESSAGE("src/agent/files_subsystem.cpp unreadable"); return; }
+  std::string src;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) src.append(buf, n);
+  std::fclose(f);
+  // The shared gate carries the upload-session check.
+  const size_t gateAt = src.find("std::string appendGate(");
+  TEST_ASSERT_TRUE(gateAt != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("uploadActiveLocked()", gateAt) != std::string::npos);
+  // editDoc runs the gate before substituteDoc touches the slot.
+  const size_t editAt = src.find("ToolResult editDoc(");
+  TEST_ASSERT_TRUE(editAt != std::string::npos);
+  const size_t gateCall = src.find("appendGate(project, name, who)", editAt);
+  const size_t subCall = src.find("substituteDoc(path", editAt);
+  TEST_ASSERT_TRUE(gateCall != std::string::npos);
+  TEST_ASSERT_TRUE(subCall != std::string::npos);
+  TEST_ASSERT_TRUE(gateCall < subCall);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_validate_the_caps_and_the_policy);
@@ -243,5 +281,6 @@ int main() {
   RUN_TEST(test_every_chunk_split_agrees_with_the_whole);
   RUN_TEST(test_editing_a_row_of_a_log_by_its_exact_span);
   RUN_TEST(test_a_whole_line_is_just_a_longer_span);
+  RUN_TEST(test_the_edit_gates_the_upload_slot_before_touching_it);
   return UNITY_END();
 }

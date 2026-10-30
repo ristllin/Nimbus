@@ -861,6 +861,11 @@ static nimbus::orch::ToolResult editDoc(const std::string& project, const std::s
   if (const std::string bad = editPrecheck(project, name, find, replace, pol); !bad.empty())
     return ToolResult::fail(bad);
   memory::Lock g;
+  // appendGate ARBITRATES THE UPLOAD SESSION'S .part SLOT before substituteDoc
+  // consumes it: its uploadActiveLocked() check refuses an active session ("an
+  // upload is in progress - try again") - the same check every writer of the
+  // slot makes - and the one Lock held below keeps a session from starting
+  // mid-edit (prism v4.6.2 row 1; pinned by test_file_edit's slot-gate scan).
   const std::string gate = appendGate(project, name, who);
   if (!gate.empty()) return ToolResult::fail(gate);
   if (!g_store.find(project, name)) return ToolResult::fail("not found");   // an edit never creates
