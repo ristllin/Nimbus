@@ -190,6 +190,21 @@ static void test_begin_wires_the_one_time_migration() {
   // The header bootstrap (candidate 3b): an append creates a CSV only when the
   // store holds none, and only then must it carry the header row first.
   TEST_ASSERT_TRUE(contains(src, "const bool csvCreate = size == 0 && fileKindIsCsv(name);"));
+  // PRISM v4.6.3 row 1: the size guard runs BEFORE the bounded read, and an
+  // oversized legacy log is left entirely alone (no fold, no orphan removal -
+  // the read's silent truncation would drop the tail's latest generations).
+  const size_t fn = src.find("void migrateLegacyMealLog()");
+  const size_t guard = src.find("legacyBytes > kFoldCap", fn);
+  const size_t read = src.find("readWhole(kLegacyProject, kLegacyName, kFoldCap)", fn);
+  TEST_ASSERT_TRUE(fn != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(guard != std::string::npos && read != std::string::npos &&
+                               guard < read,
+                           "the size guard must run before the bounded read");
+  TEST_ASSERT_TRUE(contains(src, "too large to fold safely, left in place"));
+  // A fold that folded nothing also leaves the orphan alone (the old
+  // out.empty() check was dead: the planner always emits the header).
+  TEST_ASSERT_TRUE(contains(src, "m.folded == 0"));
+  TEST_ASSERT_FALSE(contains(src, "m.out.empty()"));
 }
 
 int main() {
