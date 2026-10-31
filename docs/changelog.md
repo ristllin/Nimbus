@@ -6,6 +6,12 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v4.6.4 - Compaction works on every Mistral model again
+
+A fix release for the broken compaction reported on 31 October.
+
+- **A model that refuses the built-in connectors no longer breaks the conversation summary.** Switching the assistant to mistral-large-4-0 made every compaction attempt die with "does not support builtin connectors" - retried forever, so the conversation summary went stale and answers degraded. The turn is now retried once without the server-side connectors (your own tools are unaffected - they run on the device), the refusal is remembered, and compaction completes.
+
 ## v4.6.3 - Log corrections that land, and a ledger that heals itself
 
 A fix release for the correction loop reported on 30 October.
