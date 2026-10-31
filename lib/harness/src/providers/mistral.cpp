@@ -387,6 +387,26 @@ bool misRefusedEffort(int code, const std::string& text) {
   return (code == 400 || code == 422) &&
          (text.find("reasoning_effort") != std::string::npos || text.find("3051") != std::string::npos);
 }
+
+// The builtin-connectors refusal (mistral-large-4-0, 31 Oct: every conversations
+// turn died "Model ... does not support builtin connectors" - the fold retried it
+// in a loop). The turn's own tools are client-side and unaffected; only the
+// server-side builtins are dropped. Remembered per model like the effort refusal.
+uint32_t g_misNoConnectors[4] = {};
+bool misConnectorsRefusedBefore(const std::string& model) {
+  const uint32_t fp = nimbus::orch::parkKeyFingerprint(model);
+  for (uint32_t m : g_misNoConnectors)
+    if (m && m == fp) return true;
+  return false;
+}
+void misRememberNoConnectors(const std::string& model) {
+  if (model.empty() || misConnectorsRefusedBefore(model)) return;
+  static size_t next = 0;
+  g_misNoConnectors[next++ % 4] = nimbus::orch::parkKeyFingerprint(model);
+}
+bool misRefusedConnectors(int code, const std::string& text) {
+  return (code == 400 || code == 422) && text.find("builtin connectors") != std::string::npos;
+}
 }  // namespace
 // The chat-completions tools array: orch_turn first (shapes only, F6c - the
 // field docs ride the prompt), then every registry tool under its safe name.
@@ -706,9 +726,11 @@ static bool mistralCarriesStudio(const JsonDocument& d) {
 // the connectors into its body (`body`); a CONTINUED one carries the set pinned at
 // its creation, which the current attach reproduces (the attach reads only the
 // saved connector set, and the device resets the Mistral conversation on every
-// connector save), probed into a scratch doc that is never sent.
+// connector save), probed into a scratch doc that is never sent. A model in the
+// connectors-refused set carries none - the probe answers honestly false.
 static bool mistralHeadCarriesStudio(const ProviderDeps& pd, const std::string& convId,
-                                     const JsonDocument& body) {
+                                     const std::string& model, const JsonDocument& body) {
+  if (misConnectorsRefusedBefore(model)) return false;
   if (convId.empty()) return mistralCarriesStudio(body);
   if (!pd.attachMistral) return false;
   JsonDocument probe;
@@ -802,14 +824,18 @@ static bool mistralHeadBody(const ProviderDeps& pd, const std::string& convId,
   JsonDocument d;
   d["store"]  = true;
   wire::putFieldStr(d["inputs"], inputs, "the user message");
+  const std::string model = pd.orchModel ? pd.orchModel("mistral") : std::string();
   if (convId.empty()) {                // new conversation: pins model + instructions
-    d["model"]        = pd.orchModel ? pd.orchModel("mistral") : std::string();
+    d["model"]        = model;
     wire::putFieldStr(d["instructions"], instructions, "the system prompt");
     // Studio-authenticated built-in connectors (web_search, code_interpreter,
     // ...) pin on conversation creation and run server-side on every turn.
-    if (pd.attachMistral) pd.attachMistral(d);
+    // A model that refused them earlier (HTTP 400 "does not support builtin
+    // connectors") is not asked again - the turn's tools are client-side, so
+    // the turn still runs, it just loses the server-side builtins.
+    if (pd.attachMistral && !misConnectorsRefusedBefore(model)) pd.attachMistral(d);
   }
-  out.studio = mistralHeadCarriesStudio(pd, convId, d);
+  out.studio = mistralHeadCarriesStudio(pd, convId, model, d);
   if (out.studio && convId.empty()) {
     const std::string note = mistralSchemaLessNote();
     if (note.empty()) { out.err = "schema parse"; return false; }
@@ -851,6 +877,10 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
   const std::string path = convId.length()
       ? std::string("/v1/conversations/") + convId
       : std::string("/v1/conversations");
+  // The single-shot body's only tools entries are the attach's (builtins ride as
+  // their tool type, Studio connectors as "connector"), so a "tools" substring
+  // means the connectors rode this request.
+  const bool carriesAttachTools = hb.body.find("\"tools\"") != std::string::npos;
   JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
   HeaderList quota;
   const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
@@ -858,6 +888,23 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
                             MISTRAL_TIMEOUT_MS, &quota);
   if (code <= 0)   { err = wire::headTransportError(pd, t0, MISTRAL_TIMEOUT_MS); return false; }
   if (code == 404 && convId.length()) { convId = ""; err = "conversation gone"; return false; }
+  // A model that refuses the builtin connectors (HTTP 400) gets exactly one
+  // rebuilt-and-retried request without them: the fold had died here on every
+  // turn (mistral-large-4-0, 31 Oct), each failure repeating the same 400.
+  if (code != 200 && carriesAttachTools && misRefusedConnectors(code, mistralErrText(doc))) {
+    const std::string model = pd.orchModel ? pd.orchModel("mistral") : std::string();
+    misRememberNoConnectors(model);
+    hlog::logf("orchTurn(mistral): %s refused builtin connectors (HTTP %d) - one retry without them",
+               model.c_str(), code);
+    if (!mistralHeadBody(pd, convId, layout::flat(instructions), imageparts::blindInputs(inputs), hb)) {
+      err = hb.err;
+      return false;
+    }
+    doc = makeDoc(pd);
+    code = mistralRequest(pd, "POST", path, std::move(hb.body), doc, filter,
+                          MISTRAL_TIMEOUT_MS, &quota);
+    if (code <= 0)   { err = wire::headTransportError(pd, t0, MISTRAL_TIMEOUT_MS); return false; }
+  }
   if (code != 200) {
     err = mistralHttpErr("conversations", code, quota, mistralErrText(doc));
     hlog::logf("orchTurn(mistral): %s", err.c_str());
@@ -1050,8 +1097,9 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
     doc["model"]        = subModel;
     doc["instructions"] = MISTRAL_AGENT_SYS;
     // Studio connectors ride the conversation and run server-side (auto tool_choice
-    // - no forcing, so no 422). Free-text result (no response_format schema).
-    if (pd.attachMistral) pd.attachMistral(doc);
+    // - no forcing, so no 422). A model that refused the builtins is not asked
+    // again (the head path remembers the refusal; the sub gets the same skip).
+    if (pd.attachMistral && !misConnectorsRefusedBefore(subModel)) pd.attachMistral(doc);
     prov = provenanceOf(pd, doc, d);   // what the task asks for, from the whole attach
     if (webSearchSpawn(d)) {
       const size_t dropped = dropStudioConnectors(doc, prov.askedId);
