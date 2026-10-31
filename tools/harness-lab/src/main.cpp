@@ -23,6 +23,7 @@
 #include "lab_options.h"
 #include "lab_rig.h"
 #include "honesty_eval.h"
+#include "photo_eval.h"
 #include "lane_h_live.h"
 #include "lane_l_live.h"
 #include "scenarios.h"
@@ -59,6 +60,9 @@ void usage() {
       "                            --head-model=<id> --reps=<n> --out=<json>\n"
       "                            all three: --effort=<low|...|none> pins Anthropic effort\n"
       "                            (none or adapter = the adapter's own effort)\n"
+      "  photo-eval                the food-photo accuracy driver: one meal-analysis turn\n"
+      "                            per photo in --dir's manifest (photos.json), replies\n"
+      "                            recorded verbatim to --out; scoring happens outside\n"
       "\n"
       "Options:\n"
       "  --host=<openai|anthropic|mistral>   force the provider (default: priority order)\n"
@@ -150,6 +154,7 @@ int main(int argc, char** argv) {
   std::string forceHost, forceModel;
   lab::SubOptions sub;
   lab::LaneLOptions laneL;   // --reps is shared: the lane L suites and the honesty eval
+  lab::PhotoEvalOptions pe;
   std::string only;
 
   // The environment first (NIMBUS_LAB_*), so every flag below overrides it.
@@ -183,6 +188,9 @@ int main(int argc, char** argv) {
     else if (a.rfind("--only=", 0) == 0)     only = a.substr(7);
     else if (a.rfind("--timeout=", 0) == 0)  sub.timeoutS = std::stoi(a.substr(10));
     else if (a.rfind("--record=", 0) == 0)   sub.recordDir = opt.recordDir = a.substr(9);
+    else if (a.rfind("--dir=", 0) == 0)      pe.dir = a.substr(6);
+    else if (a.rfind("--out=", 0) == 0)      pe.out = a.substr(6);
+    else if (a.rfind("--prompt=", 0) == 0)   pe.prompt = a.substr(9);
     else if (laneLFlag(a, laneL)) {
       // --effort is also a run pin (chat, scenarios): both read it, and the
       // suites' "none" is the pin's "adapter".
@@ -294,6 +302,8 @@ int main(int argc, char** argv) {
     if (laneL.reps < 1 || laneL.reps > 20) { std::fprintf(stderr, "--reps must be 1..20\n"); return 2; }
     return lab::runHonestyEval(env, opt, laneL.reps, only);
   }
+
+  if (cmd == "photo-eval") return lab::cmdPhotoEval(env, opt, pe);
 
   if (cmd == "scenarios") {
     std::vector<std::string> names(args.begin() + 1, args.end());
