@@ -202,7 +202,15 @@ const Part kLogRows[] = {
      "   to the ledger if you keep one), then reply with the row you added. Several\n"
      "   rows for one meal go in ONE call, one row per line.\n"
      "8. If files.append says the last row was incomplete, the file was cut\n"
-     "   mid-write: say so, and check the tail before adding that row again.\n"},
+     "   mid-write: say so, and check the tail before adding that row again.\n"
+     "9. A keyed write that refuses because the file has no header or no key\n"
+     "   column means appends can never correct that file: every append would\n"
+     "   add a duplicate row. To remove or rewrite rows, or to give the file a\n"
+     "   header, use files.edit (read the tail first, then edit the exact span),\n"
+     "   or files.read the whole file and artifact.save the corrected file with\n"
+     "   a header row first. Never say a row was removed, replaced or deduplicated\n"
+     "   unless the tool result says it was (a keyed update says 'updated N rows';\n"
+     "   files.edit says 'replaced N').\n"},
 };
 
 // ONE table: the index entry and the body together, so they cannot drift.

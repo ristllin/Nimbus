@@ -33,6 +33,7 @@ constexpr FxInfo kFxInfo[] = {
     {"read", "read", "lookups"},
     {"sub_sourced", "read", "sub-agent results with a lookup behind them"},
     {"sub_unsourced", "", "sub-agent results with NO lookup behind them"},
+    {"file_replace", "file", "stored rows replaced by key (or a files.edit)"},
 };
 static_assert(sizeof(kFxInfo) / sizeof(kFxInfo[0]) == (size_t)FxKind::kCount,
               "every FxKind needs a row in kFxInfo");
@@ -281,6 +282,36 @@ static bool queuedWrite(FxKind base, const std::string& out) {
          (startsWith(out, "queued memory ") || startsWith(out, "queued update for "));
 }
 
+// v4.6.3 (the 30 Oct ledger investigation): the stored rows a tool result says
+// were REPLACED - the keyed upsert's "updated N row(s), appended M in ..." or
+// files.edit's "edited p/n: replaced A of B match(es)". 0 when the result says
+// none (a plain append, an upsert that only added): those land FileWrite alone.
+static int replacedRowsIn(const std::string& out) {
+  for (const char* marker : {"updated ", "replaced "}) {
+    const size_t at = out.find(marker);
+    if (at == std::string::npos) continue;
+    const int n = std::atoi(out.c_str() + at + std::strlen(marker));
+    if (n > 0) return n;
+  }
+  return 0;
+}
+
+// What a LANDED effect additionally is: a pin that changed nothing (a memory
+// that was already pinned), and a file write that actually REPLACED stored
+// content - the keyed upsert's "updated N row(s)" or files.edit's "replaced A
+// of B". The remove/replace/dedup claim verbs (claims.cpp) are backed by
+// FileReplace alone: a result that replaced nothing (a plain append, an
+// upsert that only added) must not back "I removed it" (v4.6.3, the 30 Oct
+// ledger investigation).
+static void recordLandedRefinements(TurnEffects& fx, FxKind base, FxKind k,
+                                    const std::string& output, bool stored) {
+  if (k == FxKind::MemWrite && !stored && contains(output, "it is already pinned"))
+    fx.add(FxKind::MemPinNoop, true);
+  if (base != FxKind::FileWrite) return;
+  const int n = replacedRowsIn(output);
+  if (n > 0) fx.add(FxKind::FileReplace, true, std::string(), (uint8_t)(n > 255 ? 255 : n));
+}
+
 void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::string& output,
                       uint8_t flags) {
   if (queuedWrite(base, output)) {   // queued is not stored, success flag or not
@@ -316,8 +347,7 @@ void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::str
   const bool stored = startsWith(output, "stored memory ");
   if (!stored) flags &= (uint8_t)~kFxPermanent;
   fx.add(k, true, fxRefFromOutput(output), 1, flags);
-  if (k == FxKind::MemWrite && !stored && contains(output, "it is already pinned"))
-    fx.add(FxKind::MemPinNoop, true);
+  recordLandedRefinements(fx, base, k, output, stored);
 }
 
 }  // namespace orch

@@ -26,6 +26,7 @@
 #include "nimbus/orch/episodic.h"     // textMatchScore (files.search)
 #include "nimbus/orch/file_append.h"  // files.append + the files.read tail view
 #include "nimbus/orch/file_edit.h"    // files.edit: the streaming text substitution
+#include "nimbus/orch/ledger_migrate.h"  // v4.6.3: the legacy meal-log fold
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
 #include "nimbus/orch/provider_caps.h"  // LocalDate - the upsert's today
@@ -146,6 +147,8 @@ void registerTools();   // fwd (bottom)
 
 }  // namespace
 
+void migrateLegacyMealLog();   // fwd: the one-time legacy meal-log fold (below)
+
 void begin() {
   memory::Lock g;
   if (g_begun) return;
@@ -207,6 +210,7 @@ void begin() {
     persistIndex();
   }
   fs.remove(kPartPath);   // stale partial from a crash mid-upload
+  migrateLegacyMealLog();   // v4.6.3: the one-time fold into the designed ledger
   alogf("files: ready (%u files, %llu KB)", unsigned(g_store.count()),
         (unsigned long long)(g_store.totalBytes() / 1024));
   registerTools();
@@ -527,6 +531,42 @@ static std::string readWhole(const std::string& project, const std::string& name
   return out;
 }
 
+// v4.6.3 (the 30 Oct Lumi investigation): the one-time fold of the legacy meal
+// log into the designed ledger. The investigated device held an ad-hoc log
+// (nutrition/meal_log.csv: headerless, five generations of the same days in
+// four schemas) whose keyed writes all refused and whose "corrections" all
+// appended duplicates. The designed ledger (ONE file, one row per meal,
+// corrections by key) is where meals belong; this folds the legacy file's
+// final figures into it once at boot and removes the legacy file, so the
+// model stops appending to an unfixable orphan. Caller holds the Lock (begin).
+void migrateLegacyMealLog() {
+  constexpr const char* kLegacyProject = "nutrition";
+  constexpr const char* kLegacyName = "meal_log.csv";
+  if (!g_store.find(kLegacyProject, kLegacyName)) return;
+  if (g_store.find(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName)) {
+    alogf("files: legacy %s/%s left alone (a designed ledger already exists)", kLegacyProject,
+          kLegacyName);
+    return;
+  }
+  const std::string legacy = readWhole(kLegacyProject, kLegacyName, 256 * 1024);
+  const nimbus::orch::LedgerMigration m = nimbus::orch::planLedgerMigration(legacy);
+  if (!m.ok || m.out.empty()) {
+    alogf("files: legacy meal log not migrated (nothing foldable)");
+    return;
+  }
+  std::string err;
+  if (!saveText(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, m.out, err,
+                std::string())) {
+    alogf("files: legacy meal log migration failed: %s", err.c_str());
+    return;
+  }
+  memory::dataFs().remove(pathOf(kLegacyProject, kLegacyName).c_str());
+  g_store.remove(kLegacyProject, kLegacyName);
+  persistIndex();
+  alogf("files: migrated the legacy meal log into %s/%s (%d rows folded, %d dropped)",
+        nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, m.folded, m.dropped);
+}
+
 // files.read {tail}: the last rows of a text document, read from the END of the
 // file - never the whole file (file_append.h). The window starts one byte early so
 // tailRows can tell a row that starts exactly at the window from a partial one.
@@ -726,7 +766,12 @@ static nimbus::orch::ToolResult appendRows(const std::string& project, const std
   size_t size = 0;
   char last = '\0';
   fileEnd(path, size, last);
-  const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(text, size, last);
+  // v4.6.3: an append that would CREATE a keyed-eligible CSV must carry its
+  // header row first (a headerless CSV can never be updated by key - the 30
+  // Oct investigation's duplicate loop). A non-CSV or an existing file is
+  // unchanged: the bootstrap is only about creation.
+  const bool csvCreate = size == 0 && fileKindIsCsv(name);
+  const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(text, size, last, csvCreate);
   if (!plan.ok) return ToolResult::fail(plan.err);
   const std::string refusal = appendRefusal(project, name, plan.bytes.size(), size + plan.bytes.size(), who);
   if (!refusal.empty()) return ToolResult::fail(refusalForHead(refusal));

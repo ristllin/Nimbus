@@ -5,7 +5,23 @@
 
 namespace nimbus::orch {
 
-AppendPlan planAppend(const std::string& text, size_t fileBytes, char lastByte) {
+// v4.6.3 (the 30 Oct investigation): the first row of a NEW CSV must be its
+// header (the column names, no data). A data row first would grow the file up
+// headerless: keyed writes refuse forever after (no key column to name), so
+// every later "correction" would append a duplicate - the exact loop the
+// investigation documented. "" when the first row is a header.
+static std::string csvCreateHeaderRefusal(const std::string& body) {
+  const size_t nl = body.find('\n');
+  const std::string first = body.substr(0, nl == std::string::npos ? body.size() : nl);
+  if (first.find_first_of("0123456789") == std::string::npos) return std::string();
+  return "creating a CSV needs its header row first (the column names, no data - e.g. "
+         "date,meal,items,kcal,protein_g for the food log): a headerless CSV cannot be "
+         "updated by key later, so corrections would duplicate - send the header row "
+         "first, then the data rows";
+}
+
+AppendPlan planAppend(const std::string& text, size_t fileBytes, char lastByte,
+                       bool csvCreate) {
   AppendPlan p;
   std::string body;
   body.reserve(text.size() + 2);
@@ -20,6 +36,13 @@ AppendPlan planAppend(const std::string& text, size_t fileBytes, char lastByte) 
   if (body.find_first_not_of(" \t\n") == std::string::npos) {
     p.err = "need 'text': one or more rows to add";
     return p;
+  }
+  if (csvCreate) {
+    const std::string refuse = csvCreateHeaderRefusal(body);
+    if (!refuse.empty()) {
+      p.err = refuse;
+      return p;
+    }
   }
   if (body.back() != '\n') body += '\n';
   if (body.size() > kAppendMaxBytes) {   // counted as written, final line end included
@@ -185,7 +208,14 @@ UpsertHeader upsertColumns(const std::vector<std::string>& fresh,
   if (!rows.empty()) {
     header = splitCsvRow(rows.front());
     if (columnIndex(header, keyCol) < 0) {
-      h.err = "the stored file has no column '" + keyCol + "' - its header differs";
+      // v4.6.3 (the 30 Oct investigation): the stored file's "header" is often
+      // a data row (the file was created headerless), so every keyed write
+      // refuses and every "correction" appends a duplicate. Name the way out:
+      // the rewrite tools - an append can never fix a headerless file.
+      h.err = "the stored file has no column '" + keyCol + "' - its header differs (a file "
+              "created without a header row reads its first data row as the header); fix the "
+              "file with files.edit, or files.read it and artifact.save the whole corrected "
+              "file with a header row first";
       return h;
     }
   } else {

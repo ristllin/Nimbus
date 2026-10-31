@@ -610,6 +610,17 @@ static void test_crash_notice_copy_for_every_kind() {
       crashNotice("Lumi", &photo, "12:30").c_str());
   TEST_ASSERT_EQUAL_STRING("Nimbus restarted after a crash. Nothing was in progress, so nothing was lost.",
                            crashNotice("", nullptr, "").c_str());
+  // v4.6.3 (the 29 Oct boba mechanism): a crashed MESSAGE turn may already
+  // have done its work (the row was logged before the reply died), so the
+  // receipt says check first - never "send it again", which logged the same
+  // meal twice on 29 Oct.
+  TurnJournal message;
+  message.kind = "message";
+  TEST_ASSERT_EQUAL_STRING(
+      "Lumi restarted after a crash while answering your message from 21:55. The reply was "
+      "lost; the message arrived and its work may be done - check before re-sending.",
+      crashNotice("Lumi", &message, "21:55").c_str());
+  TEST_ASSERT_FALSE(contains(crashNotice("Lumi", &message, "21:55"), "send it again"));
 }
 
 // ---- the restart notice: what the owner hears, and when -------------------------------

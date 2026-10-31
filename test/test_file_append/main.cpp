@@ -177,6 +177,39 @@ static void test_g1_upsert_reports_the_day_total() {
   TEST_ASSERT_TRUE(u2.todayTotal > 299.9 && u2.todayTotal < 300.1);
 }
 
+
+// v4.6.3 (the 30 Oct investigation): creating a keyed-eligible CSV without a
+// header row is refused with the fix named - a headerless CSV can never be
+// updated by key, so every later "correction" would append a duplicate (the
+// exact loop the investigation documented). A header row (no digits) passes;
+// an existing file never hits the bootstrap; a non-CSV never does either.
+static void test_csv_creation_needs_its_header_row_first() {
+  // A data row first: refused, and the reason names the header and the way out.
+  nimbus::orch::AppendPlan p =
+      nimbus::orch::planAppend("2026-10-30,breakfast,Yogurt,175,30\n", 0, '\0', true);
+  TEST_ASSERT_FALSE(p.ok);
+  TEST_ASSERT_TRUE(p.err.find("header row first") != std::string::npos);
+  TEST_ASSERT_TRUE(p.err.find("cannot be updated by key") != std::string::npos);
+  // The header row first (column names, no digits): the append plans normally.
+  p = nimbus::orch::planAppend("date,meal,items,kcal,protein_g\n", 0, '\0', true);
+  TEST_ASSERT_TRUE(p.ok);
+  TEST_ASSERT_EQUAL(1, p.rows);
+  // Header AND rows in one call: fine (the header is the first row).
+  p = nimbus::orch::planAppend(
+      "date,meal,items,kcal,protein_g\n2026-10-30,breakfast,Yogurt,175,30\n", 0, '\0', true);
+  TEST_ASSERT_TRUE(p.ok);
+  TEST_ASSERT_EQUAL(2, p.rows);
+  // An existing file never hits the bootstrap: csvCreate is the CALLER's
+  // "this append creates the file" (the device passes it only when the store
+  // holds no such file); for a stored file the caller passes false and the
+  // append keeps its old semantics.
+  p = nimbus::orch::planAppend("2026-10-30,lunch,Soup,260,14\n", 41, '\n', false);
+  TEST_ASSERT_TRUE(p.ok);
+  // A non-CSV create is none of this rule's business.
+  p = nimbus::orch::planAppend("2026-10-30 something happened today\n", 0, '\0', false);
+  TEST_ASSERT_TRUE(p.ok);
+}
+
 static void test_g1_upsert_refuses_a_header_mismatch() {
   const std::string ex = "date,kcal\n2026-10-23,450\n";
   // The text's header has no 'meal' column.
@@ -214,6 +247,7 @@ int main(int, char**) {
   RUN_TEST(test_g1_keyed_upsert_updates_by_key_and_appends_new);
   RUN_TEST(test_g1_upsert_reports_the_day_total);
   RUN_TEST(test_g1_upsert_refuses_a_header_mismatch);
+  RUN_TEST(test_csv_creation_needs_its_header_row_first);
   RUN_TEST(test_g1_day_total_matches_only_today);
   return UNITY_END();
 }

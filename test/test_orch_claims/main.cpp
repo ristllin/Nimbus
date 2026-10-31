@@ -429,6 +429,61 @@ static void test_gap_matrix_every_class_against_every_effect_kind() {
   }
 }
 
+// v4.6.3 (the 30 Oct ledger investigation): a remove/replace/dedup claim on a
+// log is backed ONLY by a stored row that was actually replaced - the keyed
+// upsert's "updated N row(s)" with N>0, or a files.edit's "replaced A of B".
+// The day's replies ("The black beans entry is now removed from the log",
+// "Replaced today's log with your figures", "fixed and deduplicated") all
+// passed against plain appends: a row landed, nothing was replaced.
+static void test_remove_replace_dedup_claims_need_a_replaced_row() {
+  const char* replies[] = {
+      "The black beans entry is now removed from the log.",
+      "I replaced today's log with your figures.",
+      "The meal log is now fixed and deduplicated.",
+      "The duplicate rows are deleted from the ledger.",
+  };
+  // Without a record noun within reach it is not a save claim at all.
+  const ClaimScan noLog = scanClaims("I removed the packaging tape from the box.");
+  TEST_ASSERT_FALSE(hasClass(noLog, ClaimClass::Saved));
+  // A plain append backs none of them: the gap names exactly what did not
+  // happen - the replacement, not the save.
+  TurnEffects append;
+  recordToolEffect(append, FxKind::FileWrite, false,
+                   "appended 1 row to food/food-log.csv (now 150 bytes)");
+  TEST_ASSERT_FALSE(append.anyOk(FxKind::FileReplace));
+  for (const char* r : replies) {
+    const auto gaps = gapsFor(r, append);
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gaps, ClaimClass::Saved), r);
+  }
+  const std::string tail = claimTail(gapsFor(replies[0], append));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, tail.find("no stored row was replaced"));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, tail.find("an append adds a new row"));
+  // An upsert that only ADDED (replaced 0) backs nothing either.
+  TurnEffects addOnly;
+  recordToolEffect(addOnly, FxKind::FileWrite, false,
+                   "updated 0 rows, appended 1 row in food/food-log.csv");
+  TEST_ASSERT_FALSE(addOnly.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_TRUE(gapOf(gapsFor(replies[0], addOnly), ClaimClass::Saved));
+  // A keyed upsert that replaced rows backs them all.
+  TurnEffects upsert;
+  recordToolEffect(upsert, FxKind::FileWrite, false,
+                   "updated 1 row, appended 0 rows in food/food-log.csv");
+  TEST_ASSERT_TRUE(upsert.anyOk(FxKind::FileReplace));
+  for (const char* r : replies)
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(r, upsert), ClaimClass::Saved), r);
+  // A files.edit that substituted backs them too (an edit CAN remove a row).
+  TurnEffects edit;
+  recordToolEffect(edit, FxKind::FileWrite, false,
+                   "edited food/food-log.csv: replaced 1 of 3 matches (now 412 bytes)");
+  TEST_ASSERT_TRUE(edit.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_FALSE(gapOf(gapsFor(replies[0], edit), ClaimClass::Saved));
+  // An edit that found nothing records no replace (its no-match is an error).
+  TurnEffects noMatch;
+  recordToolEffect(noMatch, FxKind::FileWrite, true,
+                   "no match for the find text - nothing changed");
+  TEST_ASSERT_FALSE(noMatch.anyOk(FxKind::FileReplace));
+}
+
 static void test_pin_noop_does_not_back_pinned_and_says_so() {
   TurnEffects fx;
   recordToolEffect(fx, FxKind::MemPin, false,
@@ -995,6 +1050,7 @@ int main(int, char**) {
   RUN_TEST(test_other_person_past_and_adjective_are_not_claims);
   RUN_TEST(test_spawn_claims_need_a_sub_agent_noun_and_respect_clause_negation);
   RUN_TEST(test_gap_matrix_every_class_against_every_effect_kind);
+  RUN_TEST(test_remove_replace_dedup_claims_need_a_replaced_row);
   RUN_TEST(test_pin_noop_does_not_back_pinned_and_says_so);
   RUN_TEST(test_pin_noop_disclosed_in_the_reply_needs_no_correction);
   RUN_TEST(test_pin_call_backs_a_confirmed_pin_state);
