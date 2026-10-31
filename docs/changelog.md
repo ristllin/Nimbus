@@ -6,6 +6,14 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v4.6.3 - Log corrections that land, and a ledger that heals itself
+
+A fix release for the correction loop reported on 30 October.
+
+- **Corrections are checked against what actually happened.** Saying "removed", "replaced" or "deduplicated" now requires the tool result that says a stored row was really replaced - a plain append no longer backs the claim, and the reply says so honestly.
+- **The meal ledger heals itself.** An old headerless meal log folds into the proper ledger on the next start - your final figures win - and creating a headerless log that corrections cannot target is refused with the header it needs, so the silent-append loop cannot recur.
+- **A lost reply tells you.** If a crash ever eats a reply again, the boot notice says the message arrived and its work may be done - check before re-sending, so nothing gets logged twice.
+
 ## v4.6.2 - The dream crash fixed, files.edit added
 
 A fix release for the crash and the file-editing gap reported on 29 October.
