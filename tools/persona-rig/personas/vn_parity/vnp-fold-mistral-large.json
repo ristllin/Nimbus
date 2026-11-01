@@ -17,7 +17,7 @@
    "id": "fold",
    "steps": [
     {
-     "say": "For this conversation only, the codeword is PERSIMMON-77. Just acknowledge it in one short sentence; do not store it in long-term memory.",
+     "say": "The codeword for this conversation is PERSIMMON-77. Acknowledge it in one short sentence.",
      "expect": [
       {
        "turn_resolved": true
@@ -77,6 +77,17 @@
       },
       {
        "body_contains": "ev:compact"
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/lastturn"
+     },
+     "expect": [
+      {
+       "body_regex": "CONVERSATION SUMMARY[^\\n]*PERSIMMON-77"
       }
      ]
     }

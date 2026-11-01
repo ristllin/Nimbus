@@ -333,3 +333,25 @@ test('hosted: an attached photo goes with the next message', async ({ page }) =>
   await page.locator('#chatSend').click();
   await expect.poll(() => sent, { timeout: 8000 }).toContain('att=chat%2Fp.png');
 });
+
+// (10) A read during a turn answers a plain 503. The page waits and asks again: a chat
+//      opened in that moment used to stay empty until the next message.
+test('hosted: a busy history read is retried, and a photo row reads as a photo', async ({ page }) => {
+  await markHosted(page);
+  await routeHosted(page);
+  await seedToken(page);
+  let reads = 0;
+  await page.route('**/api/mem/episodic**', (r) => {
+    reads += 1;
+    if (reads === 1) return r.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"instance busy - try again"}' });
+    return r.fulfill({ contentType: 'application/json', body: JSON.stringify({ messages: [
+      { id: 'm2', session: 'owner', channel: 'web', role: 'user', kind: 'message', tags: '',
+        text: '[image 1/1 ref=add8683db7bb777d] They wrote: What color?' },
+    ] }) });
+  });
+  await page.route('**/api/chat**', (r) => r.fulfill({ contentType: 'application/json', body: '{"async":0,"busy":0}' }));
+  await openApp(page);
+  await page.locator('.tab[data-p=chat]').click();
+  await expect(page.locator('#chatLog')).toContainText('[photo] What color?', { timeout: 15000 });
+  await expect(page.locator('#chatLog')).not.toContainText('add8683db7bb777d');
+});
