@@ -12,6 +12,7 @@
 #include "nimbus/harness/prompt_layout.h"   // the display labels: where the fixed instructions end
 #include "nimbus/orch/device_actions.h"
 #include "nimbus/orch/food_ledger.h"   // scanFoodTargets: a target this turn stored
+#include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/tool_taint.h"
 
 namespace agent {
@@ -204,6 +205,7 @@ orch::FxKind fxKindForTool(const std::string& n) {
 }
 
 void ClaimCheck::beginTurn() {
+  laterWork_ = false;
   fx_.reset();
   sources_.clear();
   recalled_.clear();
@@ -533,7 +535,8 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
   int staleAge = 0;
   const std::string stale =
       routineDay_.empty() ? std::string() : orch::staleStatusIn(said, routineDay_, orch::kStaleStatusDays, &staleAge);
-  if (gaps.empty() && food.empty() && stale.empty()) {
+  const std::string later = unbackedPromise(said, pending);
+  if (gaps.empty() && food.empty() && stale.empty() && later.empty()) {
     hlog::logf("claims: ok n=%u", (unsigned)orch::scanClaims(said).claims.size());
     return std::string();
   }
@@ -544,9 +547,12 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
   if (!stale.empty())
     more += "\"" + stale + "\" cites data " + std::to_string(staleAge) + " days old as if it were the state of things. "
             "Do not: ask for an update, or use something newer, or leave it out.\n";
+  if (!later.empty()) hlog::log("claims: a promise of later work with nothing behind it -> correction round");
   if (gaps.empty()) {
     hlog::log("claims: figures unbacked -> correction round");
-    return "[CLAIM CHECK] " + more;
+    std::string out = "[CLAIM CHECK] " + more;
+    if (!later.empty()) out += "\n" + orch::laterCorrection(later);
+    return out;
   }
   hlog::logf("claims: %s unbacked -> correction round", orch::claimClassSlug(gaps[0].cls));
   std::string fix = orch::claimCorrection(gaps, pending);
@@ -556,7 +562,15 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
   const size_t nl = ledger_.find('\n');
   const bool reason = std::any_of(gaps.begin(), gaps.end(), [](const orch::ClaimGap& g) { return orch::isUnrecordedReason(g); });
   if (reason && nl != std::string::npos) fix += "\nThe spawn ledger records only:\n" + ledger_.substr(nl + 1);
+  if (!later.empty()) fix += "\n" + orch::laterCorrection(later);
   return fix;
+}
+
+std::string ClaimCheck::unbackedPromise(const std::string& reply, const orch::TurnEffects& fx) const {
+  if (laterWork_ || fx.anyOk(orch::FxKind::Spawn) || fx.anyOk(orch::FxKind::Schedule)) return std::string();
+  size_t b = 0, e = 0;
+  if (!orch::laterPromiseSpan(reply, &b, &e)) return std::string();
+  return reply.substr(b, e - b);
 }
 
 std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawned) {
@@ -568,10 +582,13 @@ std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawne
   int staleAge = 0;
   if (!routineDay_.empty() && !orch::staleStatusIn(reply, routineDay_, orch::kStaleStatusDays, &staleAge).empty())
     tail += orch::staleStatusNote(staleAge);
+  const bool later = !unbackedPromise(reply, fx_).empty();
+  if (later) tail += std::string("\n\n") + orch::kLaterPromiseLine;
   if (tail.empty()) return tail;
   g_tailed++;
   for (const orch::ClaimGap& g : gaps) hlog::logf("claims: tail %s", orch::claimClassSlug(g.cls));
   if (!food.empty()) hlog::log("claims: tail food figures");
+  if (later) hlog::log("claims: tail later-promise");
   return tail;
 }
 

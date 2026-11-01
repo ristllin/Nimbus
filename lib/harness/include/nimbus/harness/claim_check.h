@@ -140,6 +140,10 @@ class ClaimCheck {
   nimbus::orch::TurnEffects& effects() { return fx_; }
   const nimbus::orch::TurnEffects& effects() const { return fx_; }
 
+  // Work is still running for this chat as the turn starts (a live sub-agent): a reply
+  // that says it will report back has something behind it.
+  void setLaterWork(bool live) { laterWork_ = live; }
+
   // The final-answer check (validateFinal): "" when the reply's claims are
   // backed by the ledger plus the turn's own fields, else the correction text.
   // `skipSpawned` leaves the spawn class to another check of the same chain.
@@ -152,6 +156,10 @@ class ClaimCheck {
   // backed), one line per gap class; `skipSpawned` as above.
   std::string tailAfterApply(const std::string& reply, bool skipSpawned = false);
 
+  // The sentence of `reply` promising later work with nothing behind it ("" = none): no
+  // live sub-agent, and no sub-agent or routine in `fx`.
+  std::string unbackedPromise(const std::string& reply, const nimbus::orch::TurnEffects& fx) const;
+
   // Pending effects a final turn carries in its own fields (exposed for tests).
   static void addPending(nimbus::orch::TurnEffects& fx, const nimbus::orch::Turn& t);
   // The effect an allowed device[] element has (apply records it); false for a
@@ -163,6 +171,7 @@ class ClaimCheck {
   static uint32_t tailedCount();
 
  private:
+  bool laterWork_ = false;   // a sub-agent was live as the turn started
   std::vector<nimbus::orch::ClaimGap> gapsFor(const std::string& reply,
                                               const nimbus::orch::TurnEffects& fx,
                                               bool skipSpawned) const;

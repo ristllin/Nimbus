@@ -23,8 +23,6 @@ bool startsWith(const std::string& s, const char* p) { return s.rfind(p, 0) == 0
 // The newest part of a text (a long reply's end is what the next message answers).
 std::string tail(const std::string& s, size_t n) { return s.size() <= n ? s : s.substr(s.size() - n); }
 
-bool isSummaryMessage(const HistMsg& m) { return startsWith(m.text, kSummaryUserHead) || m.text == kSummaryAck; }
-
 // Was the exchange just before this message about food? A short follow-up ("brine",
 // "I think your calc is off") answers the question the last reply asked.
 bool lastExchangeAboutFood(const ComposeInputs& ci) {
@@ -39,6 +37,8 @@ bool lastExchangeAboutFood(const ComposeInputs& ci) {
 bool personChat(const std::string& chatId) { return !chatId.empty() && chatId != "system"; }
 
 }  // namespace
+
+bool isSummaryMessage(const HistMsg& m) { return startsWith(m.text, kSummaryUserHead) || m.text == kSummaryAck; }
 
 std::string TurnEngine::loadFoodLedger(const std::string& chatId) {
   ledger_ = nimbus::orch::FoodLedger();

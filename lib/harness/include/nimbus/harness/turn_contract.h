@@ -71,8 +71,9 @@ struct SalvageOutcome {
   bool cut = false;
   bool claimsSpawn = false;   // the salvaged text claims sub-agents (none started)
 };
+// `workBehind`: a sub-agent is live for this chat, so "I'll report back" stands.
 SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseDetail,
-                               bool reportedCut);
+                               bool reportedCut, bool workBehind = false);
 // The plain lines for an answer with nothing salvageable.
 extern const char kCutNothingSalvaged[];
 extern const char kUnreadableNothingSalvaged[];

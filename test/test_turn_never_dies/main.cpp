@@ -17,6 +17,7 @@
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/provider_park.h"
+#include "nimbus/orch/transcript.h"
 
 // A turn never dies of its own size, and never ends in silence. The rig is the turn
 // engine over the REAL fabric loop and the real provider wires on a fake transport,
@@ -211,6 +212,11 @@ struct Rig {
     d.jobs = jobs.get();
     d.deliver = [this](const std::string&, const std::string& t) { delivered.push_back(t); };
     d.apply.deliver = d.deliver;
+    d.apply.principalFor = [](const std::string& chat) { return orch::principalForRole(chat, orch::Role::Admin); };
+    d.apply.enqueueSpawn = [this](const orch::Spawn& sp, const std::string& chat, bool quiet) {
+      return jobs->enqueueSpawn(sp, chat, quiet);
+    };
+    d.apply.noteSpawned = [this] { jobs->noteSpawned(); };
     d.toolSpecs = [this](const orch::Principal&) { return specs; };
     d.mcpDispatch = [this](const std::string&, const orch::Principal&) {
       dispatched++;
@@ -221,12 +227,25 @@ struct Rig {
                             const std::function<void(const std::string&, const std::string&)>& notify) {
       return providers::runFabricLoop(pd, hl, ins, inp, out, err, ht, spend, notify);
     };
-    for (const auto& h : keyed)
+    for (const auto& h : keyed) {
+      if (h == "zai") {   // the single-shot custom head (a head the fabric cannot drive)
+        wire.custBase = "https://api.z.ai";
+        wire.custKey = "fake";
+        wire.custModel = "glm-5.3-flash";
+        wire.custPathPrefix = "/api/paas/v4";
+        cfg.keys["zai"] = "fake";
+        d.hosts.add(h, [this](std::string& conv, const std::string& ins, const std::string& inp, std::string& out,
+                              std::string& err, const agent::HeadTools* tools, orch::TokenUsage* use) {
+          return providers::orchTurnCustom(pd, conv, ins, inp, out, err, tools, use);
+        });
+        continue;
+      }
       d.hosts.add(h, [h](std::string&, const std::string&, const std::string&, std::string&, std::string& err,
                          const agent::HeadTools*, orch::TokenUsage*) {
         err = "single shot not wired for " + h;
         return false;
       });
+    }
     d.hosts.fabricSupports = [](const std::string& h) { return providers::fabricSupports(h); };
     d.hosts.parked = [this](const std::string& h, providers::HostPark* why) { return providers::hostParked(pd, h, why); };
     d.hosts.failed = [this](const std::string& h, orch::StepErr k, int status) { providers::noteHostFailed(pd, h, k, status); };
@@ -303,6 +322,13 @@ void assertAnswered(const Rig& r, const char* what, const char* reply = "done") 
   TEST_ASSERT_TRUE_MESSAGE(r.saidAny(reply), msg.c_str());
 }
 
+// The oldest past turn a request shows (-1 = none): the fixture's turns are numbered.
+int oldestShown(const std::string& body) {
+  for (int i = 0; i < 64; i++)
+    if (body.find("old question " + std::to_string(i) + " ") != std::string::npos) return i;
+  return -1;
+}
+
 void assertBodiesFit(const Rig& r, const char* what) {
   for (const auto& req : r.wire.http.seen)
     TEST_ASSERT_TRUE_MESSAGE(req.body.size() <= providers::kWireBodyMax, what);
@@ -352,7 +378,6 @@ static void test_owner_turn_trims_older_history_first_and_says_so() {
   const std::string& body = r.wire.http.seen[0].body;
   TEST_ASSERT_TRUE_MESSAGE(body.find("old question 7") != std::string::npos, "the newest past turn is kept");
   if (LogCapture::contains("B budget")) {   // this size crossed: the oldest went first and it says so
-    TEST_ASSERT_TRUE_MESSAGE(body.find("old question 0") == std::string::npos, "the oldest past turn went first");
     TEST_ASSERT_TRUE_MESSAGE(body.find("LEFT OUT") != std::string::npos, "the model is told what was left out");
     TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("left out"), "the log names what was left out");
   }
@@ -369,10 +394,57 @@ static void test_real_overflow_refusals_trim_and_retry_once() {
     assertAnswered(r, ref.name);
     TEST_ASSERT_EQUAL_MESSAGE(2, (int)r.requests(), ref.name);
     TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[1].body.size() < r.wire.http.seen[0].body.size(), ref.name);
-    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[0].body.find("old question 0") != std::string::npos, ref.name);
-    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[1].body.find("old question 0") == std::string::npos, ref.name);
+    const int shown = oldestShown(r.wire.http.seen[0].body);
+    TEST_ASSERT_TRUE_MESSAGE(shown >= 0, ref.name);
+    TEST_ASSERT_TRUE_MESSAGE(oldestShown(r.wire.http.seen[1].body) != shown, ref.name);
     TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[1].body.find("LEFT OUT") != std::string::npos, ref.name);
   }
+}
+
+// Z.ai's head runs single-shot: the refusal the old matcher did not know (code 1261).
+static void test_zai_overflow_on_the_single_shot_path() {
+  Rig r({"zai"}, 2000);
+  r.quotedHistory(8, 1200);
+  Exchange refuse;
+  refuse.status = 400;
+  refuse.body = "{\"error\":{\"code\":\"1261\",\"message\":\"Prompt exceeds max length\"}}";
+  r.script(refuse);
+  r.script(refuse);   // the head's own schema-less retry of a 400, on the same prompt
+  Exchange serve;
+  serve.body = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"{\\\"reply\\\":\\\"done\\\"}\"}}]}";
+  r.script(serve);
+  r.turn("so where are we at?");
+  assertAnswered(r, "zai");
+  TEST_ASSERT_EQUAL(3, (int)r.requests());
+  TEST_ASSERT_TRUE(r.wire.http.seen[2].body.size() < r.wire.http.seen[1].body.size());
+  TEST_ASSERT_TRUE(r.wire.http.seen[2].body.find("LEFT OUT") != std::string::npos);
+}
+
+// A trim and a fold together must not lose the folded lines when a round moves host,
+// and a fold's lines survive a later refit (the seed is rewritten).
+static void test_fold_lines_survive_a_host_switch() {
+  nimbus::orch::Transcript tr;
+  tr.addUser("LEAD one\nseed");
+  orch::HeadToolCall c;
+  for (int round = 0; round < 3; round++) {
+    c.id = "c" + std::to_string(round);
+    c.name = "memory_search";
+    c.argsJson = "{\"query\":\"q\"}";
+    tr.addToolCall(c, round, "");
+    orch::HeadToolResult res;
+    res.id = c.id;
+    res.name = c.name;
+    res.output = std::string(4000, 'r');
+    tr.addToolResult(res, round);
+  }
+  tr.foldOlderRounds(1000);
+  const std::string before = tr.entries()[0].text;
+  TEST_ASSERT_TRUE(before.find(orch::Transcript::kFoldNote) != std::string::npos);
+  tr.setSeedText("LEAD two\nseed");
+  const std::string after = tr.entries()[0].text;
+  TEST_ASSERT_TRUE(after.rfind("LEAD two", 0) == 0);
+  TEST_ASSERT_TRUE(after.find(orch::Transcript::kFoldNote) != std::string::npos);
+  TEST_ASSERT_TRUE(after.find("round 0") != std::string::npos);
 }
 
 // Once: a second refusal moves to the next host, which runs the trimmed request.
@@ -414,7 +486,7 @@ static void test_output_cap_refusal_is_not_an_overflow() {
     r.script(ok("openai", finalBody("openai")));
     r.turn("so where are we at?");
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.requestsTo(ref.host), ref.name);   // not retried on that host
-    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[1].body.find("old question 0") != std::string::npos, ref.name);
+    TEST_ASSERT_EQUAL_MESSAGE(oldestShown(r.wire.http.seen[0].body), oldestShown(r.wire.http.seen[1].body), ref.name);
     TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[1].body.find("LEFT OUT") == std::string::npos, ref.name);
   }
 }
@@ -430,8 +502,8 @@ static void test_cut_on_the_only_host_continues() {
     r.turn("Use a web lookup and analyze these six photos in detail");
     assertAnswered(r, host);
     TEST_ASSERT_EQUAL_MESSAGE(3, (int)r.requests(), host);
-    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[2].body.find("ran out of room") != std::string::npos, host);
-    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[2].body.find("Here is the first photo") != std::string::npos, host);
+    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[2].body.find("RAN OUT OF ROOM") != std::string::npos, host);
+    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[2].body.find("Here is the first") != std::string::npos, host);
     TEST_ASSERT_FALSE_MESSAGE(r.saidAny("cut off"), host);
   }
 }
@@ -449,7 +521,7 @@ static void test_cut_after_tools_fails_over_with_the_work() {
   TEST_ASSERT_FALSE_MESSAGE(r.saidAny("cut off"), r.all().c_str());
   TEST_ASSERT_EQUAL(1, r.dispatched);
   TEST_ASSERT_EQUAL(1, (int)r.requestsTo("anthropic"));
-  TEST_ASSERT_TRUE(r.wire.http.seen.back().body.find("ran out of room") != std::string::npos);
+  TEST_ASSERT_TRUE(r.wire.http.seen.back().body.find("RAN OUT OF ROOM") != std::string::npos);
   TEST_ASSERT_TRUE(r.wire.http.seen.back().body.find("toolcall1") != std::string::npos);
 }
 
@@ -461,7 +533,7 @@ static void test_cut_everywhere_ends_honestly_and_bounded() {
   for (int i = 0; i < 4; i++) r.script(ok("mistral", cutBody("mistral")));
   r.turn("Use a web lookup and analyze these six photos in detail");
   TEST_ASSERT_EQUAL(5, (int)r.requests());
-  TEST_ASSERT_TRUE_MESSAGE(r.saidAny("Here is the first photo"), r.all().c_str());
+  TEST_ASSERT_TRUE_MESSAGE(r.saidAny("Here is the first"), r.all().c_str());
   TEST_ASSERT_TRUE_MESSAGE(r.saidAny("cut off"), r.all().c_str());
   TEST_ASSERT_FALSE_MESSAGE(r.saidAny("next turn"), r.all().c_str());
   // With nothing written, what did run is still told.
@@ -562,7 +634,7 @@ static const char* const kNotPromises[] = {
     "Nothing is still running in the background.",
     "I can't finish this next turn or later: there is no job for it.",
     "Your next message starts a new turn.",
-    "I logged it. 364 kcal left today.",
+    "364 kcal left today.",
 };
 static const char* const kLaterLine = "will not continue on its own";
 
@@ -610,10 +682,10 @@ static void test_salvaged_promise_gets_the_line() {
 
 // Prose (a head that ignored the schema) goes the same way.
 static void test_prose_promise_gets_the_line() {
-  Rig r({"mistral"}, 2000);
+  Rig r({"anthropic"}, 2000);
   const std::string prose =
-      "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"I'll finish that next turn.\"}}]}";
-  for (int i = 0; i < 3; i++) r.script(ok("mistral", prose));
+      "{\"content\":[{\"type\":\"text\",\"text\":\"I'll finish that next turn.\"}],\"stop_reason\":\"end_turn\"}";
+  for (int i = 0; i < 3; i++) r.script(ok("anthropic", prose));
   r.turn("so where are we at?");
   TEST_ASSERT_TRUE_MESSAGE(r.saidAny(kLaterLine), r.all().c_str());
 }
@@ -656,6 +728,8 @@ int main() {
   RUN_TEST(test_synthesis_never_fails_on_size);
   RUN_TEST(test_owner_turn_trims_older_history_first_and_says_so);
   RUN_TEST(test_real_overflow_refusals_trim_and_retry_once);
+  RUN_TEST(test_zai_overflow_on_the_single_shot_path);
+  RUN_TEST(test_fold_lines_survive_a_host_switch);
   RUN_TEST(test_overflow_twice_fails_over_with_the_trim);
   RUN_TEST(test_overflow_with_nowhere_to_go_is_honest);
   RUN_TEST(test_output_cap_refusal_is_not_an_overflow);

@@ -213,6 +213,11 @@ struct HeadLoopConfig {
   // its HeadTools cfg to runHeadLoop verbatim, so no provider can forget to
   // forward it. Null => no check, byte-identical to before.
   std::function<std::string(const std::string& finalTurn)> validateFinal;
+  // The check that holds on the forced final round too, where validateFinal does not
+  // run: an answer that is not one (template filler, reply_guard.h) gets ONE more
+  // tool-less round, with the text as the result of its orch_turn call. Separate from
+  // validateFinal's budget: at most once per turn. Null => no check.
+  std::function<std::string(const std::string& finalTurn)> forcedFinalCheck;
 };
 
 // One final-answer check: "" when the turn is fine, else the correction text.
@@ -252,6 +257,12 @@ struct HeadLoopHooks {
   // the wire is byte-identical whether or not this is set.
   Transcript* transcript = nullptr;
   std::function<void(const std::string&)> log;       // optional trace
+  // Optional: give up prompt and input bytes when a request does not fit and the
+  // transcript has nothing left to fold (nimbus/harness/turn_fit.h). `lastResort` false =
+  // older history only; true = the rest of the ladder. The hook rebuilds what the next
+  // step renders. Returns the bytes given up, 0 = nothing left. Null => the transcript
+  // is all a refit can shrink.
+  std::function<size_t(size_t want, bool lastResort)> fitPrompt;
   // Optional round-prose observer (Glass Box A4): fired once per step whose
   // HeadStep.text is non-empty, BEFORE tool dispatch - the device persists it
   // as a kind=llm_response episodic row. Observer-only; never affects the loop.
@@ -272,6 +283,15 @@ struct HeadOutcome {
   bool        prose = false;   // ok, and finalTurn is a prose answer (HeadStep::prose)
   int         corrections = 0; // final-answer correction rounds run (validateFinal; 0 or 1)
 };
+
+// A provider refused the request for its size (compact.h isContextOverflowError): nothing
+// ran, so the turn gives up `want` bytes along the whole ladder at once, in order, since
+// it gets one retry: arguments of calls that ran, older tool rounds, older history
+// (`fitPrompt`), the turn's photos as images (`dropImages`: they are outside the byte
+// budget but not outside the window), the newest results, the rest of the prompt ladder.
+// Returns the bytes given up. `fitPrompt` and `dropImages` may be null.
+size_t trimForOverflow(Transcript& tr, size_t want, const std::function<size_t(size_t, bool)>& fitPrompt,
+                       const std::function<size_t()>& dropImages);
 
 // Drive the bounded ReAct loop to a terminal orch_turn. Always returns (never
 // throws): terminates within maxRounds+1 model calls. See the header comment for

@@ -81,19 +81,50 @@ uint32_t compactThreshold(uint32_t ctxTokens, uint32_t reservedOutTokens,
 
 bool isContextOverflowError(const std::string& err) {
   const std::string e = lower(err);
-  // Known provider wordings; substring-matched so HTTP-status prefixes and
-  // wrapper text ("messages HTTP 400: ...") don't hide them.
+  // Each provider's real wording, recorded 1 Nov 2026 (lane OVF) and substring-matched
+  // so HTTP-status prefixes and wrapper text ("messages HTTP 400: ...") don't hide them.
   static const char* const kMarkers[] = {
-      "context_length_exceeded",       // OpenAI error code
-      "maximum context length",        // OpenAI message
-      "prompt is too long",            // Anthropic
+      "context_length_exceeded",       // OpenAI's code, and Mistral-compatible relays
+      "maximum context length",        // Mistral ("Prompt N > M maximum context length"), older OpenAI
+      "prompt is too long",            // Anthropic ("prompt is too long: N tokens > M maximum")
       "too many total text bytes",     // Anthropic (alternate wording)
-      "exceeds the maximum",           // Mistral / generic
-      "context window",                // generic guard (both directions of phrasing)
+      "prompt exceeds max length",     // Z.ai (code 1261)
+      "prompt_too_long",               // Mistral's error type
+      "context window",                // OpenAI ("exceeds the context window of this model")
+      "exceed context limit",          // Anthropic ("input length and max_tokens exceed context limit")
+      "too large for model",           // Mistral (older wording)
   };
   for (const char* m : kMarkers)
     if (e.find(m) != std::string::npos) return true;
-  return false;
+  // A generic line counts only when it is about the input: a refused max_tokens is an
+  // output cap, never an overflow, and trimming history would not help it.
+  if (e.find("exceeds the maximum") == std::string::npos) return false;
+  static const char* const kOutputCap[] = {"max_tokens", "max_output", "max_completion", "completion token", "output token"};
+  for (const char* m : kOutputCap)
+    if (e.find(m) != std::string::npos) return false;
+  return e.find("token") != std::string::npos || e.find("prompt") != std::string::npos ||
+         e.find("input") != std::string::npos;
+}
+
+size_t overflowTrimBytes(const std::string& err, size_t totalBytes) {
+  // "<used> [tokens] > <limit>": Anthropic's and Mistral's lines say how far over it is.
+  size_t percent = kOverflowTrimPercent;
+  for (size_t gt = err.find(" > "); gt != std::string::npos; gt = err.find(" > ", gt + 1)) {
+    size_t a = gt;
+    if (a >= 7 && err.compare(a - 7, 7, " tokens") == 0) a -= 7;
+    size_t from = a;
+    while (from > 0 && err[from - 1] >= '0' && err[from - 1] <= '9') from--;
+    const size_t limitAt = gt + 3;
+    size_t to = limitAt;
+    while (to < err.size() && err[to] >= '0' && err[to] <= '9') to++;
+    if (from == a || to == limitAt) continue;
+    const uint64_t used = std::strtoull(err.c_str() + from, nullptr, 10);
+    const uint64_t limit = std::strtoull(err.c_str() + limitAt, nullptr, 10);
+    if (used > limit && used > 0) percent = (size_t)((used - limit) * 100 / used) + kOverflowTrimMargin;
+    break;
+  }
+  if (percent > 100) percent = 100;
+  return totalBytes / 100 * percent;
 }
 
 // Text-only by contract: the reply field carries the summary; the engine ignores

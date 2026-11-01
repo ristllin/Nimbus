@@ -263,6 +263,14 @@ bool rejectAndRetry(orch::TurnImages* imgs, const char* who, int httpStatus, con
   return true;
 }
 
+size_t readAsText(orch::TurnImages* imgs, const std::string& host) {
+  if (!imgs || imgs->empty() || imgs->refusedBy(host)) return 0;
+  constexpr size_t kBytesPerImage = 4096;   // about a window's cost of one photo, in prompt bytes
+  const size_t n = imgs->items.size();
+  rejectAndRetry(imgs, "fabric: the request overflowed", 400, host);
+  return n * kBytesPerImage;
+}
+
 std::string blindInputs(const std::string& inputs) {
   orch::TurnImages* imgs = orch::activeTurnImages();
   return imgs && !imgs->empty() ? imgs->blindText(inputs) : inputs;

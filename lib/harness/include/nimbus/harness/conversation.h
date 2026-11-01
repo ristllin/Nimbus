@@ -195,6 +195,8 @@ struct HistMsg {
   bool user = true;
   std::string text;
 };
+// One of the summary pair's two messages (what a fold left), which every trim keeps longest.
+bool isSummaryMessage(const HistMsg& m);
 // The summary pair's two messages (renderHistory writes them; readers find the pair
 // by them).
 extern const char kSummaryUserHead[];   // "[CONVERSATION SUMMARY - compacted earlier; ...]\n"

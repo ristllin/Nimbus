@@ -37,8 +37,8 @@ class Transcript {
  public:
   void addUser(std::string text);
   // Replace the seeded user message's text (the fabric's per-host lead line when a round
-  // moves to another host: the request names the host it really runs on). No-op before
-  // addUser.
+  // moves to another host: the request names the host it really runs on), keeping the
+  // lines of any rounds already folded into it. No-op before addUser.
   void setSeedText(std::string text);
   // The photos the seeded user message carries (R1, turn_images.h): each renderer
   // puts them into that message, the newest user message of the request, as its

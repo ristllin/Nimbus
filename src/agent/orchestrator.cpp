@@ -1666,7 +1666,7 @@ static TurnEngine::Deps buildTurnDeps() {
       g_lastTurnChat[sizeof(g_lastTurnChat) - 1] = 0;
       g_folds.noteTurn(ev.chatId);
       publishFoldStatus(ev.chatId);
-      if (!ev.ok && anyContextOverflow(ev)) {
+      if ((!ev.ok && anyContextOverflow(ev)) || ev.trimmedForSize) {
         g_folds.markOverflow(ev.chatId);   // next compactTick() folds this chat
         alogf("fold: context-overflow classified on %s - fold queued", ev.chatId.c_str());
       }

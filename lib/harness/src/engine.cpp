@@ -3,7 +3,11 @@
 #include "nimbus/harness/prompt_layout.h"
 #include "nimbus/harness/turn_anatomy.h"   // measureHistory / providerChainHeld (/api/lastturn)
 
+#include "nimbus/harness/turn_fit.h"   // what a request gives up when it does not fit
+#include "nimbus/orch/body_budget.h"   // parseBodyBudgetError - the wire budget's refusal
 #include "nimbus/orch/budget.h"    // deriveBudget - per-turn caps from the head model's window
+#include "nimbus/orch/compact.h"   // isContextOverflowError - a provider's window refusal
+#include "nimbus/orch/reply_guard.h"   // filler, work-shaped messages
 #include "nimbus/orch/compact.h"   // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary (runFold)
 #include "nimbus/orch/connector_grant.h"   // whose connectors a turn's requests carry (CUM-828)
 
@@ -108,6 +112,18 @@ nimbus::orch::ErrorClass errorClassOf(nimbus::orch::StepErr k) {
 // offered only when it can help: a cause in transit (transport, server error or
 // overload, rate limit, timeout). A refused request (bad request, auth, billing, a
 // rejected model, a cut answer) comes back the same, so it gets the plain cause.
+// The refits a request gets on a path with no in-loop refit: the rungs of turn_fit.h.
+constexpr int kSingleShotRefits = 6;
+
+// The bytes a refusal of the request's size asks for; 0 when `err` is no such refusal, or
+// when it is a provider's window and this is not the first try (trim and retry once).
+size_t sizeRefusalBytes(const std::string& err, size_t totalBytes, int tries) {
+  size_t budget = 0, size = 0;
+  if (nimbus::orch::parseBodyBudgetError(err, budget, size)) return size > budget ? size - budget + 512 : 0;
+  if (tries == 0 && nimbus::orch::isContextOverflowError(err)) return nimbus::orch::overflowTrimBytes(err, totalBytes);
+  return 0;
+}
+
 struct OwnerCause {
   std::string text;
   bool        transient = false;
@@ -122,6 +138,9 @@ bool transientKind(nimbus::orch::StepErr k) {
 OwnerCause ownerCause(const std::string& host, const std::string& why) {
   if (why.empty()) return {"the provider gave no response", true};
   if (router_refusal::isRefusalCause(why)) return {why, false};   // an owner sentence with its fix
+  // A context overflow that outlived its trim-and-retry: a plain cause, never the raw
+  // refusal. The chat's fold runs next, so asking again can work.
+  if (nimbus::orch::isContextOverflowError(why)) return {"this conversation is too long for " + host + " right now", true};
   int status = 0;
   const nimbus::orch::StepErr k = nimbus::orch::classifyStepError(why, &status);
   const bool untyped = status == 0 && k == nimbus::orch::StepErr::Transport &&
@@ -529,6 +548,12 @@ std::string TurnEngine::foldHeldNotices() {
 
 void TurnEngine::deliverFailure(const std::string& chatId, const std::string& head, int activeJobs,
                                 const std::string& advice, bool nothingRan) {
+  if (rawResultsFollow_) {
+    hlog::logf("orchestrator: %s (the raw results follow)", head.c_str());
+    const std::string held = foldHeldNotices();
+    if (!held.empty()) deliver(chatId, held);
+    return;
+  }
   std::string text = head;
   if (nothingRan) {
     text += " Your message was not answered.";
@@ -1223,6 +1248,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // starts is live for the NEXT turn's full set. Rendering only: `specs` is the
   // one list the prompt's tool list, the wire and the dispatch map all read.
   const bool liveSessions = d_.jobs && !d_.jobs->sessionInfos().empty();
+  claims_.setLaterWork(liveSessions || (d_.jobs && d_.jobs->activeCount() > 0));   // "I'll report back" stands
   if (!liveSessions)
     specs.erase(std::remove_if(specs.begin(), specs.end(),
                                [](const orch::ToolRegistry::Spec& s) {
@@ -1348,6 +1374,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       !bounds_ && !scheduledTurn_ && !quietTurn_ && !dreamTurn_ && !freshInTurn_ && !liveSessions &&
       (!orch::activeTurnImages() || orch::activeTurnImages()->items.empty()) &&
       turnMem().memBody.empty() &&   // the taken [MEMORY RESULTS] block (never user text)
+      !orch::asksForWork(userText) &&   // VN, 1 Nov: "Use a web lookup..." is a real task, not chat
       !ledger_.hasRows();   // PRISM row 1: the [TODAY'S FOOD LEDGER] block is live data
   // (a person's rows today ride the prompt, day_context.cpp). The pre-5.0.0 eval
   // showed the capped coach answering the day total from MEMORY instead of
@@ -1641,7 +1668,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     headTools.cfg.validateFinal = orch::chainFinalChecks({
         [pseudo](const std::string& finalTurn) { return turnShapeCorrection(finalTurn, pseudo.get()); },
         [this](const std::string& finalTurn) { return claims_.finalCheck(finalTurn, /*skipSpawned=*/true); },
+        [&userText](const std::string& finalTurn) { return orch::placeholderCheck(finalTurn, userText); },
     });
+    // The forced round too: no real answer means one more tool-less round (VN, 1 Nov: the
+    // literal "placeholder" went to the owner). The turn's end holds the line after it.
+    headTools.cfg.forcedFinalCheck = [&userText](const std::string& finalTurn) {
+      return orch::placeholderCheck(finalTurn, userText);
+    };
     headTools.cfg.maxRounds          = ci.loopRounds;   // user-tunable (P6); the prompt states the same cap
     headTools.cfg.deadlineMs         =
         (uint32_t)(d_.cfg.loop.deadlineS ? d_.cfg.loop.deadlineS() : 600) * 1000U;
@@ -1667,6 +1700,21 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   }
   turnMem().gate.phase("tools", freeHeap(), largestFreeBlock());
 
+  // What the request gives up when it does not fit, and what it says about it (turn_fit.h).
+  TurnFit fit(ci, inputs, headToolsPtr ? &headTools : nullptr);
+  auto takeFit = [&]() {
+    instructions = fit.instructions();
+    lastInstructions_ = layout::display(instructions);
+  };
+  if (headToolsPtr)
+    headTools.fitPrompt = [&](size_t want, bool lastResort, std::string& ins, std::string& inp) -> size_t {
+      const size_t freed = fit.shrink(want, lastResort);
+      if (!freed) return 0;
+      takeFit();
+      ins = instructions;
+      inp = fit.inputs();
+      return freed;
+    };
   std::string outJson, err;
   // Lifecycle hook: turn end - fired exactly once on EVERY exit path below
   // (budget refusal, provider failure, parse fail, success), observer-only.
@@ -1722,6 +1770,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.attribution = attribution_;
     ev.spend = &tf.spend;
     ev.chain = okFlag ? nullptr : &tf.chain;
+    ev.trimmedForSize = fit.trimmed();
     d_.hooks.onTurnEnd(ev);
   };
   // L24: under the floor at its provider request the turn ends before asking, with
@@ -1750,7 +1799,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // the input (lane HFM; the cached system prompt carries none of it). Rebuilt per host tried.
   std::string turnInputs = inputs;
   auto inputsFor = [&](const std::string& h) -> const std::string& {
-    turnInputs = runsOnText(d_, h, requestedHost) + inputs;
+    turnInputs = runsOnText(d_, h, requestedHost) + (fit.trimmed() ? fit.inputs() : inputs);
     return turnInputs;
   };
   auto runTurnHost = [&](const std::string& h, std::string& cv) -> bool {
@@ -2049,6 +2098,26 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     inputsFor(host);   // the debug capture shows the input as the final host's requests carried it
   } else {
     ok = !startPastParkedHead() && runTurnHost(host, convId);
+    // No in-loop refit on this path (a single-shot head, a loop without the fabric). Nothing
+    // ran, so the request is fitted and sent again: until it fits for the wire budget, once
+    // for a provider's window. The ladder below takes over from there, on the trimmed prompt.
+    for (int tries = 0; !ok && *loopDispatched == 0 && tries < kSingleShotRefits; ++tries) {
+      const size_t want = sizeRefusalBytes(err, instructions.size() + inputs.size(), tries);
+      if (!want) break;
+      size_t freed = fit.shrink(want, false);
+      if (freed < want) freed += fit.shrink(want - freed, true);
+      if (!freed) break;
+      takeFit();
+      hlog::logf("orchestrator: %s refused the request for its size - gave up %u B, sending it again", host.c_str(),
+                 (unsigned)freed);
+      turnStartMs_ = nowMs();   // a live attempt, not a stuck turn (see the retry below)
+      convId = "";
+      ok = runTurnHost(host, convId);
+    }
+  }
+  if (fit.trimmed()) {
+    const std::string line = fit.ownerLine();
+    if (!line.empty()) holdNotice(line);
   }
   // Retry/failover ONLY when no loop tool executed: a replay re-runs the whole tool
   // loop, duplicating side effects (memory writes, spawns). Once tools ran, a failed
@@ -2161,13 +2230,21 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // a provider fault. Salvage what it wrote (when the adapter kept the partial
     // turn) with the honest marker, capture it, and record the cut.
     if (orch::isCutError(err)) {
-      const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true);
+      const bool workBehind = d_.jobs && d_.jobs->activeCount() > 0;
+      const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true, workBehind);
       if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
       const std::string fold = foldHeldNotices();   // L19-13 d: one message
+      // With no text to keep, what the turn did run is still told (Lumi, 31 Oct: four
+      // tools ran, then "how did you fail without getting back to me?").
+      std::string said = so.text;
+      if (!so.salvaged) {
+        const std::string work = workDoneLine(lastBrief_);
+        if (!work.empty()) said += " " + work;
+      }
       // deliver() captures the row: one message the owner received (salvage text
       // plus any folded credit line), one history row. Salvaged text is the model's
       // own: handed over, the fire spoke (CUM-826).
-      deliver(chatId, fold.empty() ? so.text : so.text + "\n\n" + fold, /*modelText=*/so.salvaged);
+      deliver(chatId, fold.empty() ? said : said + "\n\n" + fold, /*modelText=*/so.salvaged);
       err = "cut: " + err;
       fireTurnEnd(false, so.salvaged ? so.text.size() : 0);
       return false;
@@ -2290,7 +2367,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // fenced, possibly cut short), and only its top-level reply/ask - never the
     // raw text and never a nested field. A cut answer gets the honest marker; the
     // delivered text is captured so the next turn sees what the owner saw.
-    const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false);
+    const SalvageOutcome so =
+        salvageForOwner(outJson, perr.detail, /*reportedCut=*/false, d_.jobs && d_.jobs->activeCount() > 0);
     if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
     deliver(chatId, so.text, /*modelText=*/so.salvaged);   // captured as the row; salvaged text spoke
     err = (so.cut ? "cut: " : "parse: ") + perr.detail;
@@ -2306,6 +2384,18 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // the screen) ever gets reasoning, tool-call markup or a wrapper tag.
   turn.reply = orch::cleanReplyMarkup(turn.reply);
   turn.ask = orch::cleanReplyMarkup(turn.ask);
+  // Template filler is not an answer, on any provider and any path (a single shot, a prose
+  // head, a forced round that repeated it): the turn failed, and nothing in it is applied.
+  if (orch::isPlaceholderReply(turn.reply, userText)) {
+    hlog::logf("orchestrator: %s answered with template filler (%u B) - not delivered", host.c_str(),
+               (unsigned)turn.reply.size());
+    err = "placeholder: the model wrote template filler instead of an answer";
+    tf.chain.note(host, err);
+    deliverFailure(chatId, "That didn't finish - " + providerLabel(host) + " did not write an answer.",
+                   d_.jobs ? d_.jobs->activeCount() : 0, "ask again to retry", *loopDispatched == 0);
+    fireTurnEnd(false, 0);
+    return false;
+  }
   // Lane L (formatting F1): fields recovered from leaked tool markup carry
   // actions, and quoted external content (a mail body, a web page) can carry
   // the same markers - so they apply only on an attended owner turn that read
@@ -2509,7 +2599,11 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
     lastTurnSpoke_ = false;
     setTrigger("[sub-agent results arrived]", "synth");
     turnMem().admitted = true;   // runTurn continues this record
+    // CUM-886: a failed synthesis is followed by the raw results, which say what happened:
+    // no second message saying "Your message was not answered" to nobody.
+    rawResultsFollow_ = !ownerRaw.empty();
     ok = runTurn(inputs, chatId, "");
+    rawResultsFollow_ = false;
   } catch (const std::bad_alloc&) {   // before its turn began: nothing was asked or billed
     try {
       putBackTaken(turnMem(), d_.jobs, pendingMemResults_, pendingMemSeq_);

@@ -713,6 +713,7 @@ class TurnEngine {
   uint32_t    pendingFallbackMs_ = 0;  // nowMs() when it was recorded
   std::string loopName_;               // the scheduled turn in flight (its routine name)
 
+  bool rawResultsFollow_ = false;   // a failed synthesis: the raw results are the message
   // histV2 (conversation.h): the in-flight user row, a seedless turn's trigger
   // row (written before its first assistant row), and the out: kind of the
   // assistant row being captured.

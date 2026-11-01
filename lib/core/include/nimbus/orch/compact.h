@@ -58,11 +58,16 @@ inline bool shouldCompact(uint32_t chainTokens, uint32_t threshold) {
 }
 
 // ---- reactive provider-error classification ---------------------------------
-// True when a provider error string indicates the CONTEXT WINDOW was exceeded -
-// the reactive force-compact path. Matched case-insensitively on the known
-// wordings (OpenAI "context_length_exceeded"/"maximum context length",
-// Anthropic "prompt is too long", Mistral "too large for model"/"context").
+// True when a provider error string indicates the CONTEXT WINDOW was exceeded: the
+// trim-and-retry path of a head turn (lib/harness loop_common) and the reactive
+// force-compact path. Matched case-insensitively on each provider's recorded wording
+// (test_orch_compact). An output cap refused ("max_tokens is too large") is not one.
 bool isContextOverflowError(const std::string& err);
+// How many bytes of a request totalling `totalBytes` a trim gives up for that refusal:
+// from the two figures a line names ("N tokens > M") plus a margin, else a fixed share.
+inline constexpr size_t kOverflowTrimPercent = 40;
+inline constexpr size_t kOverflowTrimMargin = 10;
+size_t overflowTrimBytes(const std::string& err, size_t totalBytes);
 
 // ---- circuit breaker ---------------------------------------------------------
 // 3 consecutive compaction failures pause AUTO compaction (manual stays allowed)

@@ -28,6 +28,10 @@ void Transcript::addUser(std::string text) {
 void Transcript::setSeedText(std::string text) {
   for (TranscriptItem& it : e_)
     if (it.kind == TranscriptItem::Kind::User && it.round == -1) {
+      // The folded rounds' lines live at the seed's end: a new lead or a trimmed input
+      // does not lose them (a fold, then a host switch, used to).
+      const size_t fold = it.text.find(kFoldNote);
+      if (fold != std::string::npos) text += "\n\n" + it.text.substr(fold);
       it.text = std::move(text);
       return;
     }
