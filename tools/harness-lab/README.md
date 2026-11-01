@@ -149,6 +149,12 @@ permanently-broken `web.search` ship, so each scenario asserts an outcome.
 | `dream` | a quiet consolidation turn is allowed to say nothing |
 | `parity` | every keyed provider handles a plain turn and a tool turn |
 | `skills-e2e` | a read skill attaches across turns ([ACTIVE SKILLS] in the follow-ups' INPUT), edits stage as SKILL.next.md with the live file untouched, the owner's skill survives a delete request, and a new save passes the lint |
+| `ovf-overflow` | a request swollen past the model's real window: the provider really refuses, the turn trims, retries once and answers |
+| `ovf-round0` | a synthesis turn over the wire budget before its first request still answers, and says what it left out |
+| `ovf-cut` | a round cut twice by real output limits runs on with the note, or on the next host with `--priority` |
+| `ovf-cut-natural` | an answer longer than the adapter's own caps, nothing forced |
+| `ovf-placeholder`, `ovf-promise` | filler or a next-turn promise swapped into a real answer: the correction request is accepted by the real provider (`--rounds=1` for the forced round) |
+| `ovf-album` | six photos in one turn end with an answer (`NIMBUS_LAB_PHOTOS`) |
 | `photo-eval` | not a scenario: the `nimbus-lab photo-eval --dir=<manifest dir> --out=<results dir>` command runs one meal-analysis turn per photo in `photos.json` and records the replies verbatim; scoring happens outside the driver. `--shared-chat` keeps every photo in one chat (kept photos ride their history messages), `--no-drain` leaves uploads in the delete queue so a long run reaches inline photos next to them |
 | `meal-eval` | the food log is written where it is read: an owner-stated figure and a correction land as files.append rows, never a claimed update without the effect |
 

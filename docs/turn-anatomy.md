@@ -394,6 +394,26 @@ also shows whether a `[MEMORY RESULTS]` or `[FRESH RESULTS]` block led the input
 exactly which memories were recalled, and - in section 4 - every tool call the
 model made mid-turn with its arguments and result.
 
+## An answer that is not one
+
+Template filler where an answer belongs ("placeholder", "<reply>", "your reply here", only
+dots) gets one more round, on the forced final round too, and is never delivered: a model
+that repeats it ends the turn with "That didn't finish". A word the owner's message holds
+is an answer.
+
+A reply that promises later work ("I'll finish this next turn", "I'll report back") has
+to have something behind it: a sub-agent running or started this turn, or a routine or
+wakeup set this turn. Nothing else continues after a final answer. Without one the model
+gets one correction round, and a reply that still promises reaches the owner with a plain
+line saying nothing is running for it. The check sits on every path that delivers the
+model's words: the served reply, the forced final round, a prose answer, a cut or
+unreadable answer.
+
+A plain chat line runs at most 2 tool rounds, stated in the per-turn block so the cached
+static block does not change between turns. A message that asks for work keeps the
+configured rounds: an action or lookup verb where a request starts, a link, a word such as
+web, search, file or calendar, more than 240 bytes, or text this check cannot read.
+
 ## The claim check
 
 Before a reply goes out, the device compares what it says the turn did with what

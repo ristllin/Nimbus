@@ -191,8 +191,9 @@ serves:
   `status:"incomplete"`, the custom head `finish_reason:"length"` - and a cut
   answer is never run or delivered as complete. A cut round is retried once in
   the same step with a body that differs (more room, effort one step lower),
-  never an identical one; still cut, it fails as a Cut. Thinking is never
-  disabled (a 400 on Opus 5.5 and Fable 5.1); effort is the lever.
+  never an identical one; still cut, it fails as a Cut, and the fabric takes over
+  (below). Thinking is never disabled (a 400 on Opus 5.5 and Fable 5.1); effort is
+  the lever.
 - **Mistral built-ins**: chat/completions forbids tool_choice forcing alongside
   the Studio built-in connectors, so loop rounds drop the built-ins and the
   registry's `web.search` covers the gap. (The single-shot Conversations path
@@ -206,15 +207,16 @@ serves:
   the conversation. Only OpenAI's encrypted reasoning items are replayed, and
   only because a reasoning model requires them under `store:false`.
 
-## Context overflow (reactive)
+## Context overflow
 
-A provider rejecting a request for size is recognized by wording
-(`isContextOverflowError`: OpenAI `context_length_exceeded` / "maximum context
-length", Anthropic "prompt is too long", Mistral "exceeds the maximum", plus a
-generic "context window" guard). The turn itself recovers through the normal
-zero-tools fresh-thread retry below; additionally the chat is marked fold-due,
-so the next pump pass compacts it ([memory.md](memory.md)) instead of
-letting the failure recur.
+A provider rejecting a request for size is recognized by its wording
+(`isContextOverflowError`, recorded from each API: Anthropic "prompt is too long: N tokens
+> M maximum", OpenAI `context_length_exceeded` and "exceeds the context window", Mistral "Prompt
+N > M maximum context length" with type `invalid_request_prompt_too_long`, Z.ai code 1261
+"Prompt exceeds max length"). A refused `max_tokens` names a limit too and is not one. The
+turn trims and retries once (below), and the chat is marked fold-due, so the next pump pass
+compacts it ([memory.md](memory.md)) instead of letting it recur. Mistral answers a request far
+over a small tier's limit with a 429, which is handled as a rate limit.
 
 ## Mid-turn provider failover
 
@@ -242,6 +244,42 @@ retry and failover happen INSIDE a single logical round:
    round on the shared transcript. Up to two switches; the host list is the
    current provider plus up to two keyed, in-budget alternates from
    `providerPriority`.
+
+A **Cut** round gets a note in its seeded message: it ran out of room, what it wrote
+first, and to answer in far fewer words. It then switches host, or, with nowhere to
+go, runs once more on the same host. If that is cut too, the owner gets what it wrote
+with the plain cut marker. Tools that ran before the cut are never run again.
+
+A provider's **context-window refusal** (`isContextOverflowError`, each provider's
+recorded wording; a refused `max_tokens` is not one) is trimmed and retried once on
+the same host, then follows the Rejected row above with the trimmed request. It is
+never a raw provider line to the owner.
+
+**What a request gives up when it does not fit.** The same ladder answers a body over
+the wire budget (`kWireBodyMax`, refused before the send and refitted until it fits)
+and a window refusal (one pass, so it walks as far as the refusal's figures ask). In
+order:
+
+1. the arguments of calls that already ran, then older tool rounds folded to one line;
+2. older history, oldest first (the summary and the newest turn stay);
+3. the turn's photos as images, for a window refusal only (photos sit outside the byte
+   budget): that host reads their transcriptions;
+4. the newest tool results, clipped;
+5. the `[FRESH RESULTS]` and `[MEMORY RESULTS]` blocks, clipped, both ends kept;
+6. recalled memories, then the attached food playbook;
+7. the newest past turns as whole pairs, then the summary;
+8. the middle of the turn input;
+9. every registry tool (orch_turn alone rides, and the model is told to answer now);
+10. the skills list and standing preferences.
+
+Whatever went is said: the request's input opens with `[LEFT OUT TO FIT THIS REQUEST]`,
+the log has a `turn fit:` line, and the owner hears it when it touches what they asked
+about (results, the latest messages, part of their message, the tools). The chat's fold
+is queued for the next idle moment. A failed synthesis turn sends only the raw results,
+not a second failure message as well.
+
+A head the fabric cannot drive, and a tool loop with mid-turn failover off, get the same
+ladder from the engine while no tool has run, on the prompt and the input.
 
 Nothing re-dispatches on a switch: every tool the loop already ran is in the
 transcript as a result, so the next provider's renderer just reads it. A
