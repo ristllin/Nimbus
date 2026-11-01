@@ -163,7 +163,7 @@ void synthesisOverBudget(LabRig& rig, const Report& r) {
     if (q.body.size() > largest) largest = q.body.size();
     saidLeftOut = saidLeftOut || q.body.find("LEFT OUT TO FIT") != std::string::npos;
   };
-  rig.jobs().addFreshResult("job0008", "openai/gpt-5.2",
+  rig.jobs().addFreshResult("job0008", "research-sub",
                             std::string("The soup is pumpkin, about 180 kcal a bowl. ") + std::string(7000, 'r'));
   auto t = rig.synthesize(chat);
   rig.shim().onRequest = nullptr;
