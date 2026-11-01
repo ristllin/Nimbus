@@ -1,0 +1,89 @@
+{
+  "description": "Parity eval: the owner's real daily use, one instance per model, hard assertions on every step and the optional judge. A mistral key rides every row that has none of its own because a hosted instance embeds memory through it. Cells that fail are reported, not excused.",
+  "vars": {"suffix": "7741"},
+  "truth": {"py_latest": {"url": "https://www.python.org/downloads/", "regex": "Download Python (3\\.\\d+\\.\\d+)"}},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0"},
+    {"name": "mistral-small-latest", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-small-latest"},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3"},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash"},
+    {"name": "claude-sonnet-5-5", "host": "anthropic", "key": "ANTHROPIC_API_KEY", "model": "claude-sonnet-5-5"}
+  ],
+  "persona": {
+    "name": "parity-${name}",
+    "keys": {"mistral": "MISTRAL_API_KEY", "${host}": "${key}"},
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "timezone": "Europe/London",
+    "monthly_cap_cents": 600,
+    "scenarios": [
+      {"id": "chat", "steps": [
+        {"say": "What is 17 times 3? Answer with just the number.", "expect": [
+          {"turn_resolved": true}, {"reply_regex": "\\b51\\b"}, {"no_error_reply": true}]}
+      ]},
+      {"id": "memory", "steps": [
+        {"say": "Please remember permanently: my sister's cat is named Zorblax${suffix}. Confirm when stored.", "settle_s": 5, "expect": [
+          {"turn_resolved": true}, {"no_error_reply": true}, {"no_fabricated_action": true},
+          {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}}]},
+        {"http": {"method": "POST", "path": "/api/orch", "form": {"clearConv": "1"}}, "expect": [{"http_status": 200}]},
+        {"say": "What is my sister's cat called?", "expect": [
+          {"turn_resolved": true}, {"reply_contains": "Zorblax${suffix}"}, {"no_error_reply": true}]}
+      ]},
+      {"id": "unknown_fact", "needs": ["memory"], "steps": [
+        {"say": "What is my brother's dog called?", "expect": [
+          {"turn_resolved": true}, {"no_error_reply": true},
+          {"reply_not_contains": "Zorblax"},
+          {"reply_regex": "(?i)(don.?t|do not|couldn.?t|could not|no record|not (sure|find|found|stored|saved|know)|haven.?t|no (memory|information|mention)|unknown)"}]}
+      ]},
+      {"id": "plan_file", "steps": [
+        {"say": "Save a file named plan.txt in project food with exactly this text: Daily target: 150 to 160 g protein and 2400 kcal. No dairy after 8 pm. Then confirm.", "expect": [
+          {"turn_resolved": true}, {"no_error_reply": true}, {"no_fabricated_action": true},
+          {"file_contains": {"project": "food", "name": "plan.txt", "text": "2400 kcal"}}]},
+        {"http": {"method": "POST", "path": "/api/orch", "form": {"clearConv": "1"}}, "expect": [{"http_status": 200}]},
+        {"say": "Read my food plan file food/plan.txt. What is my daily protein target?", "expect": [
+          {"turn_resolved": true}, {"no_error_reply": true}, {"tool_called": "files_read"},
+          {"reply_regex": "150"}, {"reply_regex": "160"}, {"reply_not_regex": "\\b250\\b"}]}
+      ]},
+      {"id": "food_coach", "needs": ["plan_file"], "steps": [
+        {"say": "Today so far: breakfast oats, 234 kcal and 8 g protein. Lunch chicken salad, 420 kcal and 38 g protein. Snack yogurt, 120 kcal and 12 g protein. Using food/plan.txt, how many calories do I have left today, and how much protein is still to go to reach the bottom of my target?", "expect": [
+          {"turn_resolved": true}, {"no_error_reply": true}, {"tool_called": "files_read"},
+          {"reply_regex": "1,?626"}, {"reply_regex": "\\b92\\b"}, {"reply_not_contains": "broccoli"}]}
+      ]},
+      {"id": "edit_file", "needs": ["plan_file"], "steps": [
+        {"say": "Add this line to food/plan.txt and keep everything else as it is: Rest day every Sunday.", "expect": [
+          {"turn_resolved": true}, {"no_error_reply": true}, {"no_fabricated_action": true},
+          {"file_contains": {"project": "food", "name": "plan.txt", "text": "Rest day every Sunday"}},
+          {"file_contains": {"project": "food", "name": "plan.txt", "text": "2400 kcal"}}]}
+      ]},
+      {"id": "multi_tool", "needs": ["plan_file"], "steps": [
+        {"say": "Read food/plan.txt, then save a one-line summary of it as food/summary.txt that mentions the protein target. Tell me what you wrote.", "expect": [
+          {"turn_resolved": true}, {"no_error_reply": true}, {"no_fabricated_action": true},
+          {"tool_called": "files_read"},
+          {"file_contains": {"project": "food", "name": "summary.txt", "text": "protein"}}]}
+      ]},
+      {"id": "follow_up", "steps": [
+        {"say": "My favorite tea is rooibos with a slice of orange.", "expect": [{"turn_resolved": true}, {"no_error_reply": true}]},
+        {"say": "Which tea did I just mention, and what goes in it?", "expect": [
+          {"turn_resolved": true}, {"reply_contains": "rooibos"}, {"reply_contains": "orange"}, {"no_error_reply": true}]}
+      ]},
+      {"id": "web", "steps": [
+        {"say": "Use a web lookup to find the latest stable Python 3 release. Tell me the version number and the URL you used.", "timeout_s": 300, "settle_s": 10, "expect": [
+          {"turn_resolved": true}, {"no_error_reply": true}, {"tool_called": "web_search"},
+          {"reply_contains": "${py_latest}"}, {"reply_regex": "https?://"}]}
+      ]},
+      {"id": "spawn", "steps": [
+        {"say": "Start a sub-agent to work out the 10th Fibonacci number. Do not work it out yourself. Report what it found.", "await_reply_regex": "\\b55\\b", "timeout_s": 300, "settle_s": 5, "expect": [
+          {"log_regex": "spawned job"}, {"reply_regex": "\\b55\\b"}, {"no_error_reply": true}]}
+      ]},
+      {"id": "long_answer", "steps": [
+        {"say": "Write a complete 7-day high-protein meal plan: for each day from Monday to Sunday give breakfast, lunch and dinner with calories and protein per meal, then a shopping list.", "timeout_s": 300, "expect": [
+          {"turn_resolved": true}, {"no_error_reply": true}, {"reply_contains": "Sunday"}, {"reply_regex": "(?i)shopping"},
+          {"log_not_regex": "cut at the output limit"}, {"log_not_regex": "cut \\("}]}
+      ]},
+      {"id": "capability_truth", "steps": [
+        {"say": "Remind me every morning at 8 to take my vitamins.", "expect": [
+          {"turn_resolved": true}, {"no_error_reply": true}, {"no_fabricated_action": true}]}
+      ]}
+    ]
+  }
+}

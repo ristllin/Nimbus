@@ -9,6 +9,7 @@
 //   nimbus-lab reply-markup           turn-contract live suite L-L1 (lane_l_live.cpp)
 //   nimbus-lab spawn-e2e              turn-contract live suite L-L2 (lane_l_live.cpp)
 //   nimbus-lab models-live [leg]      models on demand live suite (lane_h_live.cpp)
+//   nimbus-lab mg-live [leg]          Mistral and GLM live legs (lane_mg_live.cpp)
 //
 // Flags: --host=<h> --model=<m> --verbose --no-tools --no-embed, plus the run pins
 // (--effort --max-tokens --ceiling-ms --rounds --fault --record; see lab_options.h
@@ -26,6 +27,7 @@
 #include "photo_eval.h"
 #include "lane_h_live.h"
 #include "lane_l_live.h"
+#include "lane_mg_live.h"
 #include "scenarios.h"
 #include "selftest.h"
 #include "sub_cmd.h"
@@ -297,6 +299,7 @@ int main(int argc, char** argv) {
 
   if (cmd == "reply-markup" || cmd == "spawn-e2e")
     return runLaneL(cmd, env, laneL, opt.verboseHttp, sub.timeoutS);
+  if (cmd == "mg-live") return lab::cmdMgLive(env, args.size() > 1 ? args[1] : "all");
   if (cmd == "models-live") {
     laneL.verbose = opt.verboseHttp;
     return lab::cmdModelsLive(env, laneL, args.size() > 1 ? args[1] : "all");
