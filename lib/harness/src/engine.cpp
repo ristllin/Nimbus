@@ -2957,7 +2957,7 @@ bool TurnEngine::recheckParkedHost() {
     if (d_.cfg.provider.hasKey && !d_.cfg.provider.hasKey(h)) continue;
     if (d_.cfg.budget.overBudget && d_.cfg.budget.overBudget(h)) continue;
     if (d_.hosts.isParked(h)) continue;   // the park moved on since the snapshot
-    hlog::logf("park: %s re-check due and nothing else is calling it - asking with one small request", h.c_str());
+    hlog::logf("park: asking %s with one small request: nothing else is calling it", h.c_str());
     std::string convId, outJson, err;
     orch::TokenUsage u;
     const bool ok = d_.hosts.run(h, convId, orch::ORCH_PARK_RECHECK_PROMPT, "ok", outJson, err, /*tools=*/nullptr, &u);

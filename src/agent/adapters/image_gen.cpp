@@ -57,7 +57,7 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
   // here costs no provider call.
   uint8_t* buf = (uint8_t*)ps_malloc(kGenMaxBytes);
   if (!buf) {
-    if (gv.probe) gate::handBack("openai");
+    gate::handBack("openai");
     errOut = "out of memory";
     alog("imagegen: ps_malloc failed");
     return nullptr;

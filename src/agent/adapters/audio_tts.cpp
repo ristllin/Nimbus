@@ -317,8 +317,9 @@ size_t synthesizeToFile(const String& text, const char* outPath,
   }
   // L19-8: a provider the one park closed (out of credit or a refused key learned on
   // any seam, or paused) gets no request; the turn's text reply still reaches the owner.
-  if (!gate::check(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key).open) {
-    setWhy(why, "the voice provider is paused");
+  const nimbus::orch::ParkVerdict gv = gate::check(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key);
+  if (!gv.open) {
+    setWhy(why, gate::words(prov.slug.c_str(), gv));
     return 0;
   }
 
@@ -334,6 +335,7 @@ size_t synthesizeToFile(const String& text, const char* outPath,
 
   arbiter::WorkSlot slot(10000);
   if (!slot) {
+    gate::handBack(prov.slug.c_str());
     alog("tts: arbiter busy");
     setWhy(why, "the network was busy");
     return 0;

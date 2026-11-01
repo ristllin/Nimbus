@@ -47,6 +47,13 @@ repos:
         types: [text]
         exclude: '^test/support/fixtures/|^website/static/vendor/'
 
+      - id: router-contract-fresh
+        name: router refusal contract fixture matches its generator
+        entry: python3 tools/router_contract/gen_contract_header.py --check
+        language: system
+        pass_filenames: false
+        files: '^(tools/router_contract/|test/test_router_refusal_contract/)'
+
       - id: no-escaped-em-dash
         name: no escaped em dash forms (lane J, see tools/check_no_escaped_em_dash.sh)
         # The literal-character hook above cannot see \xE2\x80\x94-style escapes;

@@ -354,10 +354,14 @@ answers by the same shared rule):
 | Router answer | What happens |
 |---|---|
 | The picked model is not offered (`model_not_priced`, a 404 for the model or its upstream, or the upstream's own 400 "Invalid model" for an id it does not run) | The same turn is answered on the last router model that worked, else (none, or it is refused too) on the router default, each tried once and never the same model twice (`openai/gpt-5.6` is the default `gpt-5.6`); the reply opens with a line naming the refused model and the fix, and once that answer lands the pick moves to the model in use (unless the owner chose another model meanwhile), so GET /api/orch shows it and the next turn answers |
-| That upstream is paused or its route is not allowed (`funding_cap_reached`, `provider_disabled`, `endpoint_not_allowed`) | The turn is answered on the router default with a line saying so; the pick is kept |
+| That upstream is paused, out of quota or failing, or its route is not allowed (the refusal contract's `fail_over` reasons, `endpoint_not_allowed`) | The turn is answered on the router default with a line saying so; the pick is kept, and the upstream is not asked again until its `retryAfterMs` passes |
 | A provider built-in tool is not offered on a paying key (`native_tool_not_metered`) | "That didn't finish - the Cumulo router does not run provider built-in tools on this account. Remove them under Connectors." |
-| Credits or a plan are missing (402) | "That didn't finish - the Cumulo router needs credits or a plan for this account. Add credits in the portal." |
-| Rate limited (429) | the engine's rate-limit reply |
+| The wallet is empty, or credits or a plan are missing (`insufficient_credits`, `credits_or_subscription_required`) | "That didn't finish - the Cumulo router needs credits or a plan for this account. Add credits in the portal." |
+| This device reached its monthly limit (`budget_exceeded`) | "That didn't finish - the Cumulo router stopped at this device's monthly limit. Raise it in the portal." |
+| The account is suspended (`account_suspended`) | "That didn't finish - the Cumulo router says this account is suspended. Contact support." |
+| The clamp: the wallet has credits and this call's worst case does not fit (`insufficient_credits_for_call`) | One resend capped at what fits, served with a note that the reply was kept short; when no useful cap fits, "That didn't finish - the Cumulo router says this request is larger than the remaining credits allow." |
+| Rate limited, or the wallet held by other calls (`rate_limited`, `credits_held_in_flight`) | One resend after `retryAfterMs` when that is 6 seconds or less, else the engine's rate-limit reply |
+| A reason this image does not know, or a 402 with none | "That didn't finish - the Cumulo router refused this request. Try again shortly." Nothing parks |
 
 Only a refusal of an attempt's first request is answered again on another model,
 so a tool that already ran is never repeated (a request that got no answer is not

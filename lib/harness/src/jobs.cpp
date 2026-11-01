@@ -241,10 +241,12 @@ static const char kRouterSlug[] = "cumulo";
 
 // L19-8: the one per-provider park closes a provider for spawns too (out of credit
 // or a refused key, learned on any seam, or the pause switch). The spawn seam has no
-// key text at hand, so a key change reaches it through the seams that do.
+// key text at hand, so a key change reaches it through the seams that do. A READ: the
+// catalog and the picker ask about providers they then do not call, so a due re-check
+// reads open and stays due; the wire claims it when a dispatch really leaves.
 static bool spawnSeamOpen(const std::string& provider, uint32_t nowMs, std::string* why = nullptr) {
   const orch::ParkVerdict v =
-      orch::providerPark().available(provider.c_str(), orch::PaidSeam::Spawn, 0, nowMs);
+      orch::providerPark().peek(provider.c_str(), orch::PaidSeam::Spawn, 0, nowMs);
   if (!v.open && why) *why = orch::parkWords(provider.c_str(), v);
   return v.open;
 }

@@ -1990,6 +1990,7 @@ class NimbusdRig {
                  std::chrono::steady_clock::now().time_since_epoch()).count();
     };
     pd.monoMs = pd.nowMs;   // lane QW4: a request's held time (the no-answer estimate)
+    pd.delayMs = [](uint32_t ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); };   // a router's retryAfterMs
     pd.freeHeap = [this] { return mem_.freeBytes(); };
     // Connector attach seams (CUM-424): BYOK heads advertise the instance's
     // configured connectors exactly as a device with direct keys does
@@ -2430,6 +2431,14 @@ class NimbusdRig {
   // then the router-style OpenAI-compatible heads (cumulo, Z.ai) that a keyed VN with
   // no direct key still runs on.
   void registerHeads(agent::TurnEngine::Deps& d) {
+    // The park hears every head's answer: a served one ends an episode, a failed one
+    // re-arms a due re-check. `parked` stays unset on purpose: a hosted head is asked on
+    // every turn, so a client who tops up is answered on the next message and a refusal
+    // keeps its words (each refusal is free). The other seams wait on the park.
+    d.hosts.failed = [this](const std::string& h, orch::StepErr kind, int httpStatus) {
+      agent::providers::noteHostFailed(providerDeps(), h, kind, httpStatus);
+    };
+    d.hosts.answered = [](const std::string& h) { agent::providers::unparkHost(h); };
     for (const char* h : {"openai", "anthropic", "mistral"}) {
       if (cfg_.providerKey(h).empty()) continue;
       const std::string host = h;

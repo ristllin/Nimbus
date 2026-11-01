@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "nimbus/orch/health_rows.h"   // parksJson: the park in /api/orch
 #include "embed_check.h"
 #include "engine_thread.h"
 #include "multipart_form.h"
@@ -636,6 +637,7 @@ class WebApi {
     const StateSnapshot s = eng_->snapshot();
     JsonDocument d;
     d["running"] = true;
+    nimbus::orch::parksJson(nimbus::orch::providerPark(), NimbusdRig::steadyMs(), d["parks"].to<JsonArray>());
     JsonObject provs = d["providers"].to<JsonObject>();
     // Walk the CANONICAL provider registry (lib/core provider_slots.h) so this GET,
     // the device UI, and orchPost all read the SAME slug/label/keyField table. The

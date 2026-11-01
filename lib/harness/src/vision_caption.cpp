@@ -404,6 +404,7 @@ CaptionResult askOne(const CaptionDeps& d, const std::string& p, const Route& ro
   r.model = route.model;
   HttpRequest req;
   if (!buildCaptionRequest(route.wire, route.model, key, in, route.host, req)) {
+    orch::providerPark().releaseProbe(p.c_str());   // nothing goes out: a re-check stays due
     r.fail = ReadFail::Unsupported;
     r.words = failWords(r.fail, p, 0);
     return r;

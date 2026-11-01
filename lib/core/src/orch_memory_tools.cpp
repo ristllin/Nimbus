@@ -85,7 +85,7 @@ EmbedFail classifyHttpToken(const std::string& raw, std::string& detail) {
   const RouterAnswer router = readRouterAnswer(raw);
   if (router.reason == "budget_exceeded" || router.reason == "account_suspended") return EmbedFail::AccountHeld;
   if (router.action() == RouterAction::RetryCapped) return EmbedFail::CallTooLarge;
-  if (router.action() == RouterAction::FailOver && router.reason != "endpoint_not_allowed") return EmbedFail::RouterHeld;
+  if (router.action() == RouterAction::FailOver) return EmbedFail::RouterHeld;
   if (isBillingRefusal(status, raw)) return EmbedFail::OutOfCredit;
   if (raw.find("endpoint_not_allowed") != std::string::npos) return EmbedFail::RouteNotAllowed;
   if (status == 429 || raw.find("rate_limited") != std::string::npos) return EmbedFail::RateLimited;

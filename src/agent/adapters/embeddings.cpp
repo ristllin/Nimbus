@@ -135,8 +135,8 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
       std::string(provider.c_str()), std::string(model.c_str()), std::string(text.c_str()), dims);
 
   // Busy here means nothing went out: a re-check this call got is handed back, not spent.
-  const auto busy = [&provider, &gv, &err] {
-    if (gv.probe) gate::handBack(provider.c_str());
+  const auto busy = [&provider, &err] {
+    gate::handBack(provider.c_str());
     err = "tls busy";
     return std::vector<int8_t>{};
   };

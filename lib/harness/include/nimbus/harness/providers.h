@@ -296,6 +296,9 @@ struct HostPark {
 // it will not call). The one probe is claimed by the wire when the request really leaves
 // (wire::exchange), so it cannot be spent on a host nobody called.
 bool hostParked(const ProviderDeps& pd, const std::string& host, HostPark* why = nullptr);
+// The park's re-check outcome lines reach the one log (idempotent; the wire and the
+// fabric call it, so a seam that only ever sends still logs them).
+void wireParkLog();
 void parkHost(const ProviderDeps& pd, const std::string& host, nimbus::orch::StepErr kind,
               int httpStatus);
 // A failed round there: parks on a billing or auth refusal; re-arms an existing

@@ -249,6 +249,7 @@ in the same change.
 | `website/scripts/migrate-docs.mjs` | `website/docs/{quick-start,guides,reference,contributing}/**` (regenerated on deploy; **not committed**) |
 | `tools/webui_concat_check.py` | `tools/webui_page.snapshot` (byte capture of the assembled web UI) |
 | `tools/make_manifest.py` | the signed OTA release manifest (golden-tested against the on-device signer) |
+| `tools/router_contract/gen_contract_header.py` | `test/test_router_refusal_contract/contract_rows.h` (from `tools/router_contract/router-refusal-contract.md`, a verbatim copy of the cloud repo's contract) |
 
 ### Frozen strings and wire numbers
 

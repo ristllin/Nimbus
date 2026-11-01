@@ -3053,6 +3053,7 @@ function ringSimStart(){
 // warn (amber) = a router/environment problem, unk (neutral) = transient/unknown.
 const VFYREASON={
   nocredits:      {cls:'bad', txt:'Needs credits or subscription'},
+  suspended:      {cls:'bad', txt:'Account suspended'},
   router_outdated:{cls:'warn',txt:'Router needs an update'},
   'low-memory':   {cls:'unk', txt:'Verification deferred'},
   connectfail:    {cls:'unk', txt:'Couldn\'t reach the provider'},
@@ -3145,6 +3146,7 @@ function vfyOutcome(p,pv){
   if(pv.verify===0)return {ok:false,txt:lbl+' rejected this key. Check that you copied all of it, or create a new key'+at+'.'};
   const r=pv.vfyReason;
   if(r==='nocredits')return {ok:false,txt:'The key works, but the '+lbl+' account has no credit. Add credit'+at+', then tap Save & Verify.'};
+  if(r==='suspended')return {ok:false,txt:'The key works, but the '+lbl+' account is suspended. Credits do not lift this: contact support.'};
   if(r==='router_outdated')return {ok:false,txt:'The Cumulo Nimbus service needs an update before it can check keys. Your key is saved; try again later.'};
   if(r==='low-memory')return {ok:false,wait:true,txt:DEFER_MSG};
   if(r==='connectfail')return {ok:false,txt:'Couldn\'t reach '+lbl+'. Check that the device\'s Wi-Fi has internet, then tap Save & Verify.'};

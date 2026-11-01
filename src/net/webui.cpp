@@ -18,6 +18,7 @@
 #include "webui.h"
 
 #include <algorithm>   // std::min (heapMin vs the low-water mark)
+#include "nimbus/orch/health_rows.h"   // parksJson: the park in /api/orch
 #include "nimbus/orch/connectors_wire.h"   // /api/test/connwire grid seam
 
 #include "version.h"  // NIMBUS_FW_VERSION/BUILD -> /api/state fw/build
@@ -1328,6 +1329,7 @@ static void buildOrchState(String& out) {
   const int mode = s_wc.currentMode ? s_wc.currentMode()
                                     : (int)solide::memory::getInt("mode", 0);
   d["running"]  = (mode == 1);
+  nimbus::orch::parksJson(nimbus::orch::providerPark(), (uint32_t)millis(), d["parks"].to<JsonArray>());
   d["hasTg"]    = agent::store::telegramToken().length() > 0;
   // CUM-308: a token verified once (getMe) can be revoked later while the poll
   // loop keeps 401ing. authRejected() is the live debounced verdict; when it trips

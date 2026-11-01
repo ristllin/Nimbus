@@ -269,8 +269,35 @@ the wall clock when it is set, so a restart neither sends one more doomed reques
 nor repeats the owner notice. The **pause switch** on the same record holds a
 provider (or every provider) off every seam until the cause that set it lifts it -
 the spend ceiling uses it; the pause itself is not saved by the park (its owner
-re-applies it at boot). The health report's **Providers** row lists every closed
-provider and when it is checked again.
+re-applies it at boot). The health report's **Providers** row and `GET /api/orch`
+(`parks`) list every closed provider, why, and when it is checked again.
+
+**The Cumulo router is read by its reason, never its status.** Its refusal contract
+(`lib/core/include/nimbus/orch/router_refusals.h`, a copy of the contract in
+`tools/router_contract/`) names what each reason means for a device:
+
+| Router answer | What the device does |
+|---|---|
+| `insufficient_credits`, `credits_or_subscription_required` (no money), `budget_exceeded` (this device's own limit), `account_suspended`, `missing_router_key`, `invalid_router_key` | The only answers that park: every seam, the owner told once, in words true of that reason ("Add credits" only for the first two) |
+| `insufficient_credits_for_call` (the clamp: the wallet has credits, this call's worst case does not fit) | One resend with the output capped at `maxAffordableOutputTokens` when that is at least 256; otherwise this call fails with "this request is larger than the remaining credits allow". A short reply opens with a note saying why, at most once every 6 hours |
+| `rate_limited`, `credits_held_in_flight`, `router_internal_error` | One resend of the same request after `retryAfterMs` when that is 6 seconds or less, else the engine's own reply |
+| `fail_over` reasons (`upstream_*`, `provider_*`, `fallback_exhausted`, `funding_cap_reached`, `router_disabled`, `ceiling_reached`) | That upstream cools for `retryAfterMs`; the turn answers on the router default, or fails over to the next provider. The wallet is never blamed |
+| Any other reason, or a 402 with none | This call fails. Never a park |
+
+A clamp, a held wallet or an upstream's failure also shows the account stands, so any
+of them ends a billing or key park outright.
+
+**A re-check is a real request.** A reader (a failover candidate list, the sub-agent
+catalog, a status surface) asks `peek`, which never takes the park's one re-check; the
+request that leaves claims it (`wire::exchange`, or `available` at a device seam). A seam
+that got it and then sends nothing hands it back. A parked provider nothing else calls,
+such as Cumulo last in the priority list behind a head that answers every turn, is asked
+by the idle re-check (`TurnEngine::recheckParkedHost`, on the fold's pump) with one short
+request: a refusal is free and an answer ends the park, so a provider recovers by itself.
+Every re-check logs one outcome: `park: <provider> re-check answered - open again`,
+`refused again (...)`, `failed without a verdict`, `got no answer in time`, or `handed
+back`. A hosted instance keeps asking its head on every turn, so a client who tops up is
+answered on the next message.
 
 **Out of credit or a refused key: told once, answered once, then quiet.** A turn
 that fails for billing or on a refused key - the provider refused, or the park ended

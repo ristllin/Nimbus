@@ -289,7 +289,11 @@ int scanVerdict(const std::string& headText, const std::string& url,
   String body; serializeJson(d, body);
 
   arbiter::WorkSlot slot(15000);
-  if (!slot) { reason = "device busy"; return -1; }
+  if (!slot) {
+    gate::handBack(p.slug.c_str());
+    reason = "device busy";
+    return -1;
+  }
   WiFiClientSecure c;
   tlsSetup(c);
   c.setHandshakeTimeout(15);

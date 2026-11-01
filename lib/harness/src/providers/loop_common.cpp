@@ -235,12 +235,16 @@ orch::ParkKind parkKindOf(orch::StepErr k) {
 }
 }  // namespace
 
-bool hostParked(const ProviderDeps& pd, const std::string& host, HostPark* why) {
-  static const bool kLogWired = [] {   // the park's re-check outcomes reach the one log
+void wireParkLog() {
+  static const bool kWired = [] {
     orch::providerPark().setLog([](const char* line) { hlog::logf("%s", line); });
     return true;
   }();
-  (void)kLogWired;
+  (void)kWired;
+}
+
+bool hostParked(const ProviderDeps& pd, const std::string& host, HostPark* why) {
+  wireParkLog();
   const orch::ParkVerdict v =
       orch::providerPark().peek(host.c_str(), orch::PaidSeam::Chat, keyFpOf(pd, host), nowOf(pd));
   if (v.keyChanged) hlog::logf("fabric: %s un-parked (its key changed)", host.c_str());

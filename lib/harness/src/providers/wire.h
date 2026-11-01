@@ -100,13 +100,15 @@ inline FabricErr subTransportErr(const ProviderDeps& pd, uint32_t sentAtMs, uint
 }
 
 // ---- the one per-provider park, fed by every harness request (L19-8) -------------
-// The provider a request host belongs to: the four API hosts, the Cumulo router (a
-// routed request's host is the router's), else "" (a LAN endpoint, a test host).
-inline std::string parkProviderOf(const ProviderDeps& pd, const std::string& host) {
+// The provider a request belongs to: the four API hosts, the Cumulo router (a routed
+// request's host is the router's, and its path says so whatever deps carried it: a
+// sub-agent's has no router override), else "" (a LAN endpoint, a test host).
+inline std::string parkProviderOf(const ProviderDeps& pd, const std::string& host, const std::string& path) {
   if (host == "api.anthropic.com") return "anthropic";
   if (host == "api.openai.com") return "openai";
   if (host == "api.mistral.ai") return "mistral";
   if (host == "api.z.ai" || host == "open.bigmodel.cn") return "zai";
+  if (path.rfind("/router/", 0) == 0) return "cumulo";
   std::string base = pd.routerBase ? pd.routerBase() : std::string();
   const size_t sch = base.find("://");
   if (sch != std::string::npos) base = base.substr(sch + 3);
@@ -120,10 +122,10 @@ inline std::string parkProviderOf(const ProviderDeps& pd, const std::string& hos
 // forget. A 403 is left to the typed seams (it may name one model or endpoint), and
 // a success is noted only where a model call succeeded (a free session poll that
 // answers 200 says nothing about the account's credit).
-inline void noteParkRefusal(const ProviderDeps& pd, const std::string& host, int status,
+inline void noteParkRefusal(const ProviderDeps& pd, const std::string& host, const std::string& path, int status,
                             const JsonDocument& doc) {
   if (status < 400) return;
-  const std::string prov = parkProviderOf(pd, host);
+  const std::string prov = parkProviderOf(pd, host, path);
   if (prov.empty()) return;
   std::string text;
   serializeJson(doc, text);
@@ -394,7 +396,7 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
       const JsonDocument wide = routerRefusalFilter(pd, filter);
       deserializeJson(doc, ovBody, DeserializationOption::Filter(wide));
       hlog::logf("provider: TEST override answered %s%s with HTTP %d", host, path.c_str(), ovStatus);
-      noteParkRefusal(pd, host, ovStatus, doc);
+      noteParkRefusal(pd, host, path, ovStatus, doc);
       return meterAfter.status = ovStatus;
     }
   }
@@ -418,7 +420,8 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   // host/fake it filter-parses the scripted body string. Either way only the
   // filter-retained fields land in `doc`. Empty/garbage bodies leave doc cleared.
   std::string terr;
-  const std::string parkProv = parkProviderOf(pd, host);
+  const std::string parkProv = parkProviderOf(pd, host, req.path);
+  wireParkLog();
   // The one re-check request of a parked provider is THIS request, claimed as it leaves:
   // nothing that merely reads the park can spend it (CUM-889).
   if (paidRequest && !parkProv.empty() &&
@@ -437,7 +440,7 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
     if (paidRequest && nimbus::orch::sentWithoutAnswer(status, terr))
       meterUnanswered(pd, host, req, pd.monoMs ? pd.monoMs() - sentAt : 0);
     lastExchange().allocFailed = terr.find("alloc failed") != std::string::npos;
-    noteParkRefusal(pd, host, status, doc);
+    noteParkRefusal(pd, host, req.path, status, doc);
     if (sends > 0 || !viaRouter || status < 400 || !terr.empty() || !prepareRouterResend(pd, req, doc)) break;
     doc.clear();
   }

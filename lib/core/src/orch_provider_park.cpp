@@ -303,8 +303,9 @@ void ProviderPark::parkLocked(Rec& r, PaidSeam seam, ParkKind kind, int httpStat
                               ParkCause cause) {
   const bool wasRecheck = r.kind != ParkKind::None && (r.probing || laterOrEqual(nowMs, r.recheckAtMs));
   // A billing refusal and a refused key (401) hold for every seam; a 403 names one
-  // model or endpoint the key may not use, so it closes only the seam that met it.
-  const bool everySeam = kind == ParkKind::Billing || httpStatus != 403;
+  // model or endpoint the key may not use, so it closes only the seam that met it. The
+  // router's account_suspended is a 403 about the whole account.
+  const bool everySeam = kind == ParkKind::Billing || httpStatus != 403 || cause == ParkCause::Suspended;
   if (r.kind == ParkKind::None) r.sinceEpoch = epochNow();
   // The first refusal of a kind names it; a billing park is never downgraded.
   const bool upgrade = r.kind == ParkKind::None || (kind == ParkKind::Billing && r.kind != ParkKind::Billing);
