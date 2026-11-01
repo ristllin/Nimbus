@@ -124,7 +124,14 @@ bool hasWord(const std::vector<Tok>& toks, std::initializer_list<const char*> se
 // A figure in this sentence is not stated as fact: a question, a hypothetical, a future.
 bool hypothetical(const std::string& low, const std::vector<Tok>& toks) {
   if (low.find('?') != std::string::npos) return true;
-  return hasWord(toks, {"if", "would", "could", "might", "may", "suppose", "unless", "should", "will", "i'll", "once", "want"});
+  // Up to the first figure: "you're short by 102 g, more if ..." still states it.
+  for (const Tok& t : toks) {
+    if (t.number && t.unit != Unit::None) return false;
+    if (!t.number && oneOf(t.word, {"if", "would", "could", "might", "may", "suppose", "unless", "should", "will", "i'll",
+                                    "once", "want"}))
+      return true;
+  }
+  return false;
 }
 
 // A figure the sentence takes back ("the 250 g figure was my error", "not the 250 g").
