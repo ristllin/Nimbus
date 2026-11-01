@@ -90,6 +90,14 @@ worker, not extra parallelism. The queue's internal-SRAM backing is released
 once it drains (a `std::vector().swap` back to the baseline reserve), so a deep
 fan-out costs that memory only transiently.
 
+**A refused spawn moves on before anyone hears about it.** A provider that refuses
+a dispatch in a way that surely started nothing hands the work to the next open sub
+provider, at most twice, and the ack names the provider and model that took it. A
+task that may have run (a timeout, an answer that could not be read) is never started
+a second time, and a connector or file task stays where its connector or file lives.
+A Mistral sub on a model that refuses the built-in tools (`mistral-large-4-0`) runs on
+`mistral-medium-latest` with those tools, and its reply says so.
+
 **The head hears the real reason a spawn did not start.** Every refusal (queue
 full, no keyed provider, a provider that refused the dispatch with its reason -
 the key refused, the provider unreachable, a model it does not offer, a provider
@@ -240,8 +248,9 @@ Facts from the public web (weather, travel and train status, news, prices, openi
 hours) come from web search, and the head is told which open provider has it: a
 Mistral sub with the `web_search` skill (the task says "use the web_search tool
 and name the source of each fact"), an OpenAI sub (hosted web search), an
-Anthropic sub (web search and fetch), or the head's own `web.search` tool when a
-Tavily key is set and the head can call tools. Every route asks for the source of
+Anthropic sub (web search and fetch), or the head's own `web.search` tool when the
+head can call tools and a Tavily key is set, or else a Mistral or Z.ai key (the
+tool then runs that provider's own search). Every route asks for the source of
 each fact, and the reply names the sources. The head is told that connectors hold
 only the owner's own data and are not for public facts.
 

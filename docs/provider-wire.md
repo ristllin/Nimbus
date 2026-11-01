@@ -34,8 +34,8 @@ channel:
 |---|---|---|---|
 | **OpenAI** (Responses API) | `text.format` `json_schema`, `strict:true` | `orch_turn` function tool, `strict:true` parameters | **Yes**, both channels - the model cannot emit an out-of-schema `orch_turn` |
 | **Anthropic** (Messages API) | the `orch_turn` tool with `tool_choice:auto` - never forced (Sonnet 5.5, Opus 5.5 and Fable 5.1 answer a forced `tool_choice` with a 400); a prose answer is delivered as the reply. The compaction fold offers no tool: its reply is the summary | `orch_turn` offered alongside the registry tools (`tool_choice:auto`) | **No** - the strict-grammar budget rejects a schema this size, so descriptions are stripped and the schema is advisory; its top-level `required` list is just `reply` and the tool description says to OMIT fields the turn is not using (the device parser treats every other field as optional), so the head stops re-emitting unchanged fields as empty values. The device parser + validator are the enforcement |
-| **Mistral** | Conversations API, `response_format.json_schema`, `strict:true` | chat/completions, `orch_turn` function tool (no `strict` flag; the schema's shapes only - the field descriptions ride the prompt, so 10 KB of them no longer ride every round) | single-shot **yes**; loop **advisory** - the device parser + validator enforce it |
-| **Z.ai** (direct, or Cumulo with the zai upstream) | chat/completions, `response_format:{type:"json_object"}` + a JSON-only instruction | none (single-shot head) | **No** - Z.ai answers `json_schema` requests with plain Markdown, so the head asks for `json_object`; a reply that is still prose is delivered as the reply (nothing else rides it) |
+| **Mistral** | Conversations API, `response_format.json_schema`, `strict:true`. The compaction fold is a plain chat completion with no format: its reply is the summary | chat/completions, `orch_turn` function tool (no `strict` flag; the schema's shapes only - the field descriptions ride the prompt, so 10 KB of them no longer ride every round) | single-shot **yes**; loop **advisory** - the device parser + validator enforce it |
+| **Z.ai** (direct, or Cumulo with the zai upstream) | chat/completions, `response_format:{type:"json_object"}` + a JSON-only instruction | chat/completions, `orch_turn` function tool with `tool_choice:"required"`; the forced final round offers only `orch_turn` | **No** - Z.ai answers `json_schema` requests with plain Markdown, so a single shot asks for `json_object`; the loop's schema is advisory. A reply that is still prose is delivered as the reply (nothing else rides it) |
 | **Custom** (LAN / proxy) | chat/completions, `response_format.json_schema`, `strict:true` (schema-less retry on 400) | none (single-shot head) | when the backend supports it |
 
 **"Strict at the wire, lenient at the parser."** Regardless of provider,
@@ -176,12 +176,15 @@ serves:
   `max_tokens` and its reasoning effort. Anthropic rounds get 8,192 tokens with
   `output_config.effort` pinned (medium; low for the fold) on the families that
   accept it, clamped so a generation at the family's slowest measured rate still
-  finishes inside the round's 120 s; Mistral rounds get 4,096, and a Mistral head
-  that can reason (the models whose `/v1/models` entry says
-  `capabilities.reasoning`: Small 2603+, Medium, Magistral, Large 4) gets
-  `reasoning_effort:"none"`, retried once without the field if the model refuses it
-  (HTTP 400 code 3051, or 422); OpenAI sends no output cap (reasoning would starve
-  the answer). Under the time clamp the first attempt takes three quarters of what
+  finishes inside the round's 120 s; Mistral rounds get 6,000 tokens (12,000 on the
+  retry) on Large 4, Medium, Small and Magistral and 4,096 on older models, and a
+  Mistral head that can reason (the models whose `/v1/models` entry says
+  `capabilities.reasoning`) gets the lowest `reasoning_effort` it takes: `"low"` on
+  Large 4 and the hosted GLM, which refuse `"none"`, and `"none"` on the others,
+  which refuse `"low"`. A refused value is retried once without the field (HTTP 400
+  code 3051, or 422); with no field Large 4 thinks at its default and runs out of
+  output. Z.ai rounds get 3,000 (4,000 on the retry) inside their 50 s. OpenAI sends
+  no output cap (reasoning would starve the answer). Under the time clamp the first attempt takes three quarters of what
   the round's time allows (never under 3,000 tokens) and the retry after a cut the
   whole fit, at least a third more - a full 120 s round on claude-opus-5 is 4,125
   then 5,500, so every capped round, a Claude id that takes no effort included, has a
@@ -467,9 +470,13 @@ Z.ai request the device makes (the head, direct or through the Cumulo router's
 `zai` upstream, and every Z.ai sub-agent) carries `reasoning_effort: "low"`; a
 Virtual Nimbus's Z.ai heads (direct and through the router) do the same through
 the same code.
-A head request gets 50 s; if Z.ai has not answered by then, the turn fails over
-to the next provider straight away (no same-host retry) and the notice says Z.ai
-did not answer in time.
+A head request gets 50 s and 3,000 output tokens (4,000 on the retry after a cut);
+if Z.ai has not answered by then, the turn fails over to the next provider straight
+away (no same-host retry) and the notice says Z.ai did not answer in time.
+
+A GLM head runs the same tool loop as the other providers, and Z.ai is a host of
+the mid-turn failover. The compaction fold is a plain completion with no response
+format: its reply is the summary.
 
 ## Cumulo Nimbus router
 

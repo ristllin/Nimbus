@@ -128,8 +128,9 @@ Strong at conversation and reasoning.
 
 ## Z.ai
 
-Conversation and tools only. For voice, images, or memory embeddings, add a second
-key (see [What works with which provider](setup-wizard.md#what-works-with-which-provider)).
+Conversation, tools and web lookups. Z.ai's search can run months behind, so a
+Mistral or Tavily key gives fresher answers. For voice, images, or memory embeddings,
+add a second key (see [What works with which provider](setup-wizard.md#what-works-with-which-provider)).
 
 1. **Create an account.** Sign up at [z.ai](https://z.ai).
 2. **Billing (required).** Add credit to your account.

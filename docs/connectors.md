@@ -347,8 +347,9 @@ Mistral turns.
 > round), which Mistral rejects alongside built-in connectors - a documented
 > provider limitation. Those attach on the single-shot Conversations turn and on
 > sub-agent dispatch instead. So on loop turns the Orchestrator has only its
-> registry tools (the Tavily `web.search` tool when configured) and should
-> delegate connector work to a Mistral sub-agent.
+> registry tools (`web.search` runs on Tavily when configured, else on Mistral's
+> own search as a separate request) and should delegate connector work to a
+> Mistral sub-agent.
 
 ---
 

@@ -483,13 +483,16 @@ result point at the Files list on the device web page instead of naming it.
 
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
-| `web.search` | Search the live web; returns an answer plus top results (title, url, snippet). | `query` (string, **required**), `max_results` (integer, default 5) | live (when a web-search key is set) |
+| `web.search` | Search the live web; returns an answer plus top results (title, url, snippet). | `query` (string, **required**), `max_results` (integer, default 5) | live (with a Tavily, Mistral or Z.ai key) |
 
 Note: always registered, and listed (to the model, in `/api/tools` and in MCP
-`tools/list`) exactly while a web-search (Tavily) key is configured. A key added
+`tools/list`) exactly while one of its routes can run: a Tavily key, else a
+Mistral key (its built-in search, which answered freshest), else a Z.ai key (its
+search can run months behind, so each result carries its date). A key added
 in the web app takes effect on the next turn, no restart; without one a call
 refuses and says the key is missing. The key is human-set, never
-model-writable. A monthly call budget can gate it. The provider-gated tools are
+model-writable. A monthly call budget can gate Tavily; past it the tool moves to
+the provider's search. The provider-gated tools are
 one table, `kGatedTools` in `lib/core/include/nimbus/orch/tool_gates.h`.
 
 ## `models.list` - the provider model lists
