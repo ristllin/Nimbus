@@ -2605,7 +2605,6 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
     // no second message saying "Your message was not answered" to nobody.
     rawResultsFollow_ = !ownerRaw.empty();
     ok = runTurn(inputs, chatId, "");
-    rawResultsFollow_ = false;
   } catch (const std::bad_alloc&) {   // before its turn began: nothing was asked or billed
     try {
       putBackTaken(turnMem(), d_.jobs, pendingMemResults_, pendingMemSeq_);
@@ -2613,6 +2612,7 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
     } catch (...) {
     }
   }
+  rawResultsFollow_ = false;
   triggerPending_ = false;
   unverifiedTurn_ = false;
   freshInTurn_ = false;

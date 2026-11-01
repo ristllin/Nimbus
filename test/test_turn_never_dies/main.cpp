@@ -240,8 +240,9 @@ struct Rig {
         });
         continue;
       }
-      d.hosts.add(h, [h](std::string&, const std::string&, const std::string&, std::string&, std::string& err,
-                         const agent::HeadTools*, orch::TokenUsage*) {
+      d.hosts.add(h, [this, h](std::string& conv, const std::string& ins, const std::string& inp, std::string& out,
+                               std::string& err, const agent::HeadTools* tools, orch::TokenUsage* use) {
+        if (h == "mistral") return providers::orchTurnMistral(pd, conv, ins, inp, out, err, tools, use);
         err = "single shot not wired for " + h;
         return false;
       });
@@ -381,6 +382,45 @@ static void test_owner_turn_trims_older_history_first_and_says_so() {
     TEST_ASSERT_TRUE_MESSAGE(body.find("LEFT OUT") != std::string::npos, "the model is told what was left out");
     TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("left out"), "the log names what was left out");
   }
+}
+
+// The tool loop without the fabric (mid-turn failover off): the same request fits.
+static void test_round0_over_budget_without_the_fabric() {
+  int crossed = 0;
+  for (size_t tools : {45000u, 50000u, 55000u, 60000u}) {
+    Rig r({"mistral"}, tools, /*fabric=*/false);
+    r.quotedHistory(8, 1500);
+    r.jobs->addFreshResult("job0008", "openai/gpt-5.2", std::string(7000, 'r') + " the findings");
+    r.script(ok("mistral", finalBody("mistral", "synthesis done")));
+    r.eng->maybeConsolidate("1001");
+    assertAnswered(r, "no fabric", "synthesis done");
+    assertBodiesFit(r, "no fabric");
+    crossed += LogCapture::contains("turn fit:") ? 1 : 0;
+    LogCapture::install();
+  }
+  TEST_ASSERT_TRUE(crossed > 0);
+}
+
+// A failed synthesis sends the raw results alone: no message saying "Your message was not
+// answered" to nobody (CUM-886's second half).
+static void test_failed_synthesis_sends_only_the_raw_results() {
+  Rig r({"mistral"}, 2000);
+  r.jobs->addFreshResult("job0008", "openai/gpt-5.2", "the findings");
+  Exchange down;
+  down.status = 0;
+  down.err = "no response";
+  r.script(down);
+  r.script(down);
+  r.eng->maybeConsolidate("1001");
+  TEST_ASSERT_TRUE_MESSAGE(r.saidAny("the findings"), r.all().c_str());
+  TEST_ASSERT_FALSE_MESSAGE(r.saidAny("didn't finish"), r.all().c_str());
+  TEST_ASSERT_FALSE_MESSAGE(r.saidAny("not answered"), r.all().c_str());
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), r.all().c_str());
+  // The next owner turn's failure still speaks: the flag does not outlive the synthesis.
+  r.script(down);
+  r.script(down);
+  r.turn("so where are we at?");
+  TEST_ASSERT_TRUE_MESSAGE(r.saidAny("didn't finish"), r.all().c_str());
 }
 
 // ---- 2. Each provider's overflow refusal: trim and retry once ----------------------
@@ -523,6 +563,20 @@ static void test_cut_after_tools_fails_over_with_the_work() {
   TEST_ASSERT_EQUAL(1, (int)r.requestsTo("anthropic"));
   TEST_ASSERT_TRUE(r.wire.http.seen.back().body.find("RAN OUT OF ROOM") != std::string::npos);
   TEST_ASSERT_TRUE(r.wire.http.seen.back().body.find("toolcall1") != std::string::npos);
+}
+
+// A round that recovered from its cut is served: a later round's failure is about itself,
+// not a replay of that old partial.
+static void test_a_recovered_cut_is_forgotten() {
+  Rig r({"mistral"}, 2000);
+  r.script(ok("mistral", cutBody("mistral")));
+  r.script(ok("mistral", cutBody("mistral")));
+  r.script(ok("mistral", toolBody("mistral", 1)));   // the note worked: a tool round
+  r.script(refused("mistral", 401, "{\"message\":\"Unauthorized\"}"));
+  r.turn("Use a web lookup and analyze these six photos in detail");
+  TEST_ASSERT_FALSE_MESSAGE(r.saidAny("Here is the first"), r.all().c_str());
+  TEST_ASSERT_FALSE_MESSAGE(r.saidAny("cut off"), r.all().c_str());
+  TEST_ASSERT_EQUAL(1, r.dispatched);
 }
 
 // Every way out still cut: the honest marker with what was written, no promise, and a
@@ -749,6 +803,8 @@ int main() {
   UNITY_BEGIN();
   RUN_TEST(test_synthesis_never_fails_on_size);
   RUN_TEST(test_owner_turn_trims_older_history_first_and_says_so);
+  RUN_TEST(test_round0_over_budget_without_the_fabric);
+  RUN_TEST(test_failed_synthesis_sends_only_the_raw_results);
   RUN_TEST(test_real_overflow_refusals_trim_and_retry_once);
   RUN_TEST(test_zai_overflow_on_the_single_shot_path);
   RUN_TEST(test_fold_lines_survive_a_host_switch);
@@ -757,6 +813,7 @@ int main() {
   RUN_TEST(test_output_cap_refusal_is_not_an_overflow);
   RUN_TEST(test_cut_on_the_only_host_continues);
   RUN_TEST(test_cut_after_tools_fails_over_with_the_work);
+  RUN_TEST(test_a_recovered_cut_is_forgotten);
   RUN_TEST(test_cut_everywhere_ends_honestly_and_bounded);
   RUN_TEST(test_forced_placeholder_is_sent_back_once);
   RUN_TEST(test_placeholder_never_reaches_the_owner);

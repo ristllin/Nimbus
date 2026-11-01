@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdio>
 #include <functional>
+#include <memory>
 #include <new>   // std::bad_alloc: a thrown round still files what the loop billed
 
 #include "nimbus/harness/log.h"
@@ -470,7 +471,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   };
   // Per host and per run of failures: one trim-and-retry, one more round after a cut.
   bool overflowTried = false, cutRerun = false;
-  orch::HeadStep savedCut;
+  std::unique_ptr<orch::HeadStep> savedCut;   // the round's last cut (off the stack: it is big)
   // The time the turn has left when a round runs again inside this step: the budget the
   // controller passed was for the first attempt.
   auto remainingMs = [&pd](uint32_t budgetMs, uint32_t since) -> uint32_t {
@@ -527,7 +528,8 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
                              before, hostUse[hostIdx]);
       if (sr.ok) {
         unparkHost(hostList[hostIdx]);
-        overflowTried = false;
+        overflowTried = cutRerun = false;
+        savedCut.reset();   // this round is served: a later failure is not about that cut
         return sr;
       }
       // A round too big to SEND never left the device: the controller folds older
@@ -591,7 +593,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       // next host, is told what happened and answers in less room; with nowhere to go
       // the round runs once more here (Lumi, 31 Oct: the only open host, 3m56s, no answer).
       if (sr2.kind == orch::StepErr::Cut) {
-        savedCut = sr2;
+        savedCut.reset(new orch::HeadStep(sr2));
         orch::Salvage kept;
         orch::salvageTurnText(sr2.finalTurn, kept);
         cutNote = orch::cutRetryNote(sr2.error, kept.reply.empty() ? sr2.text : kept.reply);
@@ -605,7 +607,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       }
       // Exhausted: the controller fails soft to the caller. What a cut round wrote outlives
       // a later failure of another kind: the owner gets those words, not a bare cause.
-      if (nowhereToGo) return savedCut.cut.empty() ? sr2 : savedCut;
+      if (nowhereToGo) return savedCut ? *savedCut : sr2;
       const std::string from = hostList[hostIdx];
       const std::string to   = hostList[nextIdx];
       orch::HeadStepFn next = makeStep(nextIdx);

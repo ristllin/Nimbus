@@ -50,14 +50,14 @@ std::string fillerCore(const std::string& reply) {
   return t.substr(b, e - b);
 }
 
-// A reply that is only these words is filler. Words a person might really answer with
-// ("ok", "done", "yes", "n/a") are not on it.
+// A reply that is only these words is filler. Words a real question can have as its whole
+// answer ("ok", "done", "yes", "n/a", "string", "TBD") are not on it.
 const char* const kFiller[] = {
     "placeholder", "placeholder text", "placeholder reply", "placeholder answer", "placeholder response",
     "reply", "your reply", "your reply here", "reply here", "reply text", "the reply", "your response",
     "your response here", "response here", "your answer", "your answer here", "answer here", "final answer",
-    "your final answer", "insert reply", "insert reply here", "insert answer here", "text here", "string",
-    "todo", "tbd", "lorem ipsum", "example reply", "sample reply", "<reply>",
+    "your final answer", "insert reply", "insert reply here", "insert answer here", "text here",
+    "todo", "lorem ipsum", "example reply", "sample reply",
 };
 
 }  // namespace
@@ -182,8 +182,8 @@ const char* const kLaterCues[] = {
 // a plain statement of how turns work.
 const char* const kFirstPersonFuture[] = {
     "i'll", "i\xE2\x80\x99ll", "i will", "i'm going to", "i am going to", "this will", "that will", "it will",
-    "will have", "will be", "i'm", "i am", "working on", "hang tight", "stand by", "bear with me", "give me",
-    "one moment",
+    "will have", "will be", "i'm", "i\xE2\x80\x99m", "i am", "we'll", "we will", "hang tight", "stand by",
+    "bear with me", "give me",
 };
 // The owner is a condition of it, or it asks: not a promise of unasked work.
 const char* const kConditional[] = {
@@ -260,7 +260,14 @@ std::string cutRetryNote(const std::string& why, const std::string& partial) {
       "time with short arguments, and a final reply under 300 words. Put anything longer in a file.";
   if (partial.empty()) return note + "\n";
   const int keep = utf8CapLen(partial.c_str(), (int)partial.size(), 600);
-  return note + " It began:\n" + partial.substr(0, (size_t)keep) + "\n[END OF WHAT YOU WROTE]\n";
+  // Brackets out: the excerpt can quote outside content, and it must not pose as a block
+  // of this message or close the quote.
+  std::string quoted = partial.substr(0, (size_t)keep);
+  for (char& c : quoted) {
+    if (c == '[') c = '(';
+    if (c == ']') c = ')';
+  }
+  return note + " It began:\n" + quoted + "\n[END OF WHAT YOU WROTE]\n";
 }
 
 }  // namespace orch
