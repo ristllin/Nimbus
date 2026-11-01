@@ -214,6 +214,51 @@ static void test_all_refused_gives_the_typed_billing_result() {
   TEST_ASSERT_EQUAL(429, e.status);
 }
 
+// The router's clamp on a photo (a Cumulo-only device): one resend with the output capped at
+// what fits, the photo's splice moved with the edit, nothing parked. A second refusal fails
+// this photo with the real reason. The empty wallet parks, with its own words.
+static void test_router_clamp_on_a_photo_resends_capped() {
+  Rig r;
+  r.prio = "cumulo";
+  r.keyed = {"cumulo"};
+  const std::string clamp =
+      "{\"error\":\"insufficient_credits_for_call\",\"reason\":\"insufficient_credits_for_call\","
+      "\"charged\":false,\"retryable\":false,\"maxAffordableOutputTokens\":300,\"retryHint\":\"lower_max_output\"}";
+  r.http.script.push_back({"", "/router/", 402, clamp});
+  r.http.script.push_back({"", "/router/", 200, chatOk("a clear photo of a cat, read in full")});
+  vision::CaptionDeps d = r.deps();
+  d.routerHost = [] { return std::string("router.test"); };
+  d.routerSelection = [] { return std::string("openai/gpt-6"); };
+  vision::CaptionRequest in;
+  in.bytes = r.photo;
+  in.len = sizeof r.photo;
+  in.mime = "image/jpeg";
+  vision::CaptionResult res = vision::caption(d, in);
+  TEST_ASSERT_EQUAL_MESSAGE(vision::ReadFail::None, res.fail, res.words.c_str());
+  TEST_ASSERT_EQUAL(2, r.http.seen.size());
+  JsonDocument second;
+  TEST_ASSERT_FALSE((bool)deserializeJson(second, r.http.seen[1].body));
+  const int cap = second["max_completion_tokens"] | (second["max_tokens"] | -1);
+  TEST_ASSERT_EQUAL(300, cap);
+  TEST_ASSERT_NOT_NULL(strstr(r.http.seen[1].body.c_str(), "base64,"));   // the photo landed inside its string
+  TEST_ASSERT_FALSE(parked("cumulo", orch::PaidSeam::Chat, r.now));
+
+  vision::clearLastError();
+  r.http.script.push_back({"", "/router/", 402, clamp});
+  r.http.script.push_back({"", "/router/", 402, clamp});
+  res = vision::caption(d, in);
+  TEST_ASSERT_EQUAL(4, r.http.seen.size());   // never a loop
+  TEST_ASSERT_NOT_NULL(strstr(res.words.c_str(), "larger than the remaining credits"));
+  TEST_ASSERT_FALSE(parked("cumulo", orch::PaidSeam::Chat, r.now));
+
+  r.http.script.push_back(
+      {"", "/router/", 402, "{\"error\":\"insufficient_credits\",\"reason\":\"insufficient_credits\",\"charged\":false}"});
+  res = vision::caption(d, in);
+  TEST_ASSERT_EQUAL(vision::ReadFail::Billing, res.fail);
+  TEST_ASSERT_NOT_NULL_MESSAGE(strstr(res.words.c_str(), "credit balance is empty"), res.words.c_str());
+  TEST_ASSERT_TRUE(parked("cumulo", orch::PaidSeam::Chat, r.now));
+}
+
 // The monthly spend ceiling (lane DEF): a frozen device sends no caption request at all.
 static void test_spend_freeze_sends_nothing() {
   Rig rig;
@@ -439,6 +484,7 @@ static void test_fail_words_per_class() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_billing_429_parks_walks_on_and_notices_once);
+  RUN_TEST(test_router_clamp_on_a_photo_resends_capped);
   RUN_TEST(test_5xx_and_connect_failure_walk_on_without_parking);
   RUN_TEST(test_walk_is_sticky_per_page);
   RUN_TEST(test_closed_provider_is_skipped_with_no_request);
