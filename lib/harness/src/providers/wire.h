@@ -116,7 +116,8 @@ inline std::string parkProviderOf(const ProviderDeps& pd, const std::string& hos
   return !base.empty() && base == host ? "cumulo" : std::string();
 }
 
-// An answered request that refused for billing (every 402, the shared token table)
+// An answered request that refused for billing (a provider's every 402, the shared token
+// table; the router by its reason)
 // or with a refused key (401) closes the provider for EVERY seam, whatever called
 // it: the head, a fold, a sub-agent dispatch or poll. One place, so no adapter can
 // forget. A 403 is left to the typed seams (it may name one model or endpoint), and
@@ -142,8 +143,8 @@ inline void noteParkRefusal(const ProviderDeps& pd, const std::string& host, con
     // stands ends a park outright; otherwise a due re-check waits another interval.
     if (prov == "cumulo" && nimbus::orch::routerAnswerProvesAccount(nimbus::orch::readRouterAnswer(text)))
       nimbus::orch::providerPark().noteSuccess(prov.c_str(), nimbus::orch::PaidSeam::Chat);
-    else if (kind == nimbus::orch::ParkKind::None)
-      nimbus::orch::providerPark().noteFailure(prov.c_str(), now);
+    else if (kind == nimbus::orch::ParkKind::None && nimbus::orch::providerPark().isProbing(prov.c_str()))
+      nimbus::orch::providerPark().noteFailure(prov.c_str(), now);   // a poll says nothing: only the probe's own answer
     return;
   }
   const std::string key = prov == "cumulo" ? (pd.routerKey ? pd.routerKey() : std::string())

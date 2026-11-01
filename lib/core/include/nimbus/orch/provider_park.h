@@ -256,6 +256,8 @@ class ProviderPark {
   bool shortAnswerDue(const char* provider);
   // Is a refusal holding this provider on any seam? (The wire's cheap first question.)
   bool isParked(const char* provider);
+  // Is its one re-check request out now?
+  bool isProbing(const char* provider);
   // What the router said this park is for (Unspecified for any other refusal).
   ParkCause causeOf(const char* provider);
   // How long until the provider's re-check request (0 when it is due, or when the

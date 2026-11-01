@@ -544,6 +544,13 @@ bool ProviderPark::isParked(const char* provider) {
   return r && r->kind != ParkKind::None;
 }
 
+bool ProviderPark::isProbing(const char* provider) {
+  if (!validName(provider)) return false;
+  std::lock_guard<std::recursive_mutex> lk(mx_);
+  const Rec* r = find(provider);
+  return r && r->kind != ParkKind::None && r->probing;
+}
+
 ParkCause ProviderPark::causeOf(const char* provider) {
   if (!validName(provider)) return ParkCause::Unspecified;
   std::lock_guard<std::recursive_mutex> lk(mx_);

@@ -192,6 +192,9 @@ applies. Only `/api/files/upload` takes a file part; anywhere else one is refuse
 | `clearConv`, `clearMem`, `convReset` | Clear conversation (a `/clear` boundary: the next turn carries no earlier conversation, the history is kept), erase the running notes, reset provider threads |
 | keys, `orchM_<slug>`, `subM_<slug>`, `tgAllow` | provider keys (the device's own key rule and sentences: spaces around a key are dropped and it is stored without them, and a key with a space, a line break or another hidden character inside, or of a length that provider never issues, is refused; the instance's secrets file holds provider keys only, and a key an earlier build stored with spaces around it loads trimmed and is rewritten trimmed), head and sub-agent model picks, the Telegram allowlist |
 
+`GET /api/orch` also lists `parks`: each provider a refusal holds closed, with `kind`,
+`status`, `why` in plain words and `recheckInS` until its next check.
+
 The device knobs a hosted instance does not offer (tool-loop limits, TLS slots,
 mid-turn failover, trace, the custom endpoint) are reported by `GET /api/orch` at
 their hosted values, so the page's whole-form **Save Changes** round-trips them as a

@@ -9,6 +9,7 @@
 #include "../support/fake_config.h"
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
+#include "../../lib/harness/src/providers/wire.h"   // exchange - the one request seam
 #include "contract_rows.h"   // GENERATED from the cloud repo's contract
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/providers.h"
@@ -743,6 +744,19 @@ static void test_the_wire_claims_the_probe_when_the_request_leaves() {
   TEST_ASSERT_TRUE(anySeamClosed("cumulo", h.wire.now));
 }
 
+// A free poll answered 429 while a re-check is due says nothing about the account: the
+// re-check stays due, so a job polling a parked provider cannot starve its recovery.
+static void test_a_poll_does_not_push_the_recheck_back() {
+  RouterHead h;
+  providerPark().noteAnswer("cumulo", PaidSeam::Chat, 0, 402, refusalBody("insufficient_credits"), h.wire.now);
+  h.wire.now += orch::ProviderPark::kRecheckMs + 1;
+  h.script(429, "{\"error\":\"rate_limited\",\"reason\":\"rate_limited\"}");
+  JsonDocument doc, filter;
+  providers::wire::exchange(h.pd, "router.test", 443, true, "GET", "/router/openai/v1/responses/r1", {}, "", 1000, doc, filter);
+  TEST_ASSERT_EQUAL_UINT(1, h.wire.http.seen.size());
+  TEST_ASSERT_TRUE(providerPark().claimProbe("cumulo", PaidSeam::Chat, h.wire.now));   // still due
+}
+
 // A refusal that shows the account stands ends a park at once: after a wallet refill the
 // clamp is as good a verdict as a served call, and so is an upstream's failure.
 static void test_an_answer_past_the_wallet_ends_the_park() {
@@ -793,6 +807,7 @@ int main(int, char**) {
   RUN_TEST(test_the_idle_recheck_stays_quiet_when_it_should);
   RUN_TEST(test_the_probe_token);
   RUN_TEST(test_the_wire_claims_the_probe_when_the_request_leaves);
+  RUN_TEST(test_a_poll_does_not_push_the_recheck_back);
   RUN_TEST(test_an_answer_past_the_wallet_ends_the_park);
   return UNITY_END();
 }
