@@ -10,7 +10,6 @@
 #include <string>
 #include <vector>
 
-#include "nimbus/harness/providers.h"
 #include "nimbus/harness/vision_caption.h"
 #include "nimbus/orch/blob_store.h"
 #include "nimbus/orch/media_label.h"
@@ -164,9 +163,7 @@ int cmdPhotoEval(const Env& env, const LabRig::Options& opt, const PhotoEvalOpti
                 t.ok ? "ok" : "FAILED", t.seconds, t.tokensIn, t.tokensOut);
     // The device's idle step: an upload the turn is done with is deleted now, so a long
     // run neither fills the delete queue nor leaves photos at the provider.
-    const agent::providers::ProviderDeps pd = rig.providerDeps();
-    while (!pe.noDrain && agent::providers::pendingUploadDeletes() && agent::providers::deletePendingUploads(pd) > 0) {
-    }
+    if (!pe.noDrain) rig.drainUploadDeletes();
     if (n == 1 && !t.systemPrompt.empty()) {
       std::ofstream sp(pe.out + "/system_prompt.txt");
       sp << t.systemPrompt;

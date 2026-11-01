@@ -149,7 +149,7 @@ permanently-broken `web.search` ship, so each scenario asserts an outcome.
 | `dream` | a quiet consolidation turn is allowed to say nothing |
 | `parity` | every keyed provider handles a plain turn and a tool turn |
 | `skills-e2e` | a read skill attaches across turns ([ACTIVE SKILLS] in the follow-ups' INPUT), edits stage as SKILL.next.md with the live file untouched, the owner's skill survives a delete request, and a new save passes the lint |
-| `photo-eval` | not a scenario: the `nimbus-lab photo-eval --dir=<manifest dir> --out=<results dir>` command runs one meal-analysis turn per photo in `photos.json` and records the replies verbatim; scoring happens outside the driver |
+| `photo-eval` | not a scenario: the `nimbus-lab photo-eval --dir=<manifest dir> --out=<results dir>` command runs one meal-analysis turn per photo in `photos.json` and records the replies verbatim; scoring happens outside the driver. `--shared-chat` keeps every photo in one chat (kept photos ride their history messages), `--no-drain` leaves uploads in the delete queue so a long run reaches inline photos next to them |
 | `meal-eval` | the food log is written where it is read: an owner-stated figure and a correction land as files.append rows, never a claimed update without the effect |
 
 Scenarios needing a Tavily key **skip loudly**. A silent skip reads as a pass,

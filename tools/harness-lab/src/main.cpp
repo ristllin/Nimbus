@@ -63,6 +63,8 @@ void usage() {
       "  photo-eval                the food-photo accuracy driver: one meal-analysis turn\n"
       "                            per photo in --dir's manifest (photos.json), replies\n"
       "                            recorded verbatim to --out; scoring happens outside\n"
+      "                            --shared-chat keeps every photo in one chat; --no-drain\n"
+      "                            leaves uploads queued, so a long run reaches inline photos\n"
       "\n"
       "Options:\n"
       "  --host=<openai|anthropic|mistral>   force the provider (default: priority order)\n"

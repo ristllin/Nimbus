@@ -259,6 +259,12 @@ class LabRig {
   // scenario sets the shape it needs (for example the NVSFILL-0 shape).
   nimbus::orch::StorageState& storageState() { return deviceStorage_; }
   CurlHttpTransport& http() { return http_; }
+  // The device's idle step, all at once: delete the uploads a finished turn queued.
+  void drainUploadDeletes() {
+    const agent::providers::ProviderDeps pd = providerDeps();
+    while (agent::providers::pendingUploadDeletes() && agent::providers::deletePendingUploads(pd) > 0) {
+    }
+  }
   // The top of the transport chain: what every lab request goes through.
   agent::HttpTransport& net() { return wire_; }
   const agent::FaultPlan& faults() const { return faultPlan_; }
