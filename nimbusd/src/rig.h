@@ -1814,6 +1814,14 @@ class NimbusdRig {
       blocked.detail = "blocked: chat not approved";
       return blocked;
     }
+    // A routine into a member's chat waits while another person's sub-agent work is in
+    // flight, like that member's own message: a defer, not a failure.
+    if (turnMustWait(r.chatId)) {
+      orch::FireOutcome wait;
+      wait.deferred = true;
+      wait.retryAfterSec = 60;
+      return wait;
+    }
     orch::FireOutcome o = eng_->injectScheduledTurn(r.chatId, r.prompt, r.name, r.id, false, r.once, r.ownerReminder);
     if (!cur_.deliveries.empty()) cur_.reply = cur_.deliveries.back();
     cur_.ok = o.ok;
@@ -2644,6 +2652,25 @@ class NimbusdRig {
     return ins;
   }
 
+  // The turn's input holds people's words, so only its own fixed lines are swapped.
+  static std::string hostedInput(std::string inp) {
+    static const char* const kSwap[][2] = {
+        {"sub-agents run one at a time INSIDE the device: each holds it for its whole run and must finish "
+         "within the device's wait",
+         "sub-agents run one at a time on this instance: each holds it for its whole run and must finish "
+         "within its wait"},
+        {"sub-agents run in parallel on the provider while the device collects them",
+         "sub-agents run in parallel on the provider while this instance collects them"},
+        {"from the device's own job table", "from this instance's own job table"},
+        {"(the device does one network call at a time", "(this instance does one network call at a time"},
+    };
+    for (const auto& sw : kSwap) {
+      const size_t at = inp.find(sw[0]);
+      if (at != std::string::npos) inp.replace(at, std::strlen(sw[0]), sw[1]);
+    }
+    return inp;
+  }
+
   // The apply layer's deps (device buildApplyDeps): delivery, the turn principal,
   // running memory and the sub-agent session ops. Split from buildEngine so each
   // stays within the complexity gate.
@@ -2757,7 +2784,7 @@ class NimbusdRig {
                                      orch::TokenUsage* usage) -> bool {
         auto pd = headProviderDeps();
         const std::string ins = hostedPrompt(rawIns);
-        const std::string inp = hostedPrompt(rawInp);
+        const std::string inp = hostedInput(rawInp);
         if (host == "anthropic")
           return agent::providers::orchTurnAnthropic(pd, conv, ins, inp, out, err, tools, usage);
         if (host == "openai")
@@ -2773,7 +2800,7 @@ class NimbusdRig {
                                       std::string& out, std::string& err, const agent::HeadTools* tools,
                                       orch::TokenUsage* usage) -> bool {
         const std::string hosted = hostedPrompt(ins);
-        const std::string turnInput = hostedPrompt(inp);
+        const std::string turnInput = hostedInput(inp);
         HeadCall c{conv, hosted, turnInput, tools};
         HeadOut o{out, err, usage};
         return cumuloTurn(c, o);
@@ -2794,7 +2821,7 @@ class NimbusdRig {
                                std::string& out, std::string& err, const agent::HeadTools* tools,
                                orch::TokenUsage* usage) -> bool {
       auto pd = depsFn();
-      return agent::providers::orchTurnCustom(pd, conv, hostedPrompt(ins), hostedPrompt(inp), out, err, tools, usage);
+      return agent::providers::orchTurnCustom(pd, conv, hostedPrompt(ins), hostedInput(inp), out, err, tools, usage);
     });
   }
 

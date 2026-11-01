@@ -2763,13 +2763,14 @@ function lastFailText(dflt){return saveFailText(_lastFail,dflt);}
 // no Retry-After, such as "the archive needs the SD card", is an answer, not busy.)
 const CARD_BUSY='card-busy';
 let _busyMs=5000,_busyCard=true;
-function isBusy(r){return r.status===503&&!!r.headers.get('Retry-After');}
+// A hosted instance answers any read during a turn with a plain 503: the same wait.
+function isBusy(r){return r.status===503&&(HOSTED||!!r.headers.get('Retry-After'));}
 function noteBusy(r){const s=parseInt(r.headers.get('Retry-After'),10);
   _busyMs=Math.min(Math.max(isNaN(s)?5:s,2),30)*1000;
   _busyCard=/json/.test(r.headers.get('Content-Type')||'');}
 function busyGuard(r){if(isBusy(r)){noteBusy(r);throw CARD_BUSY;}return r;}
 function cardJson(r){return busyGuard(r).json();}
-function busyWhat(){return _busyCard?'The SD card is busy right now.':'The device is busy right now.';}
+function busyWhat(){return HOSTED?'The assistant is busy right now.':_busyCard?'The SD card is busy right now.':'The device is busy right now.';}
 // The busy note for `anchor` (an id or a node): one line above it, or inside it when it
 // is an empty card (a panel that never loaded); on while busy, gone once data arrives.
 function _busyNoteOf(a){
@@ -2809,7 +2810,7 @@ function cardFetch(url,onBusy,tries=2){
     return new Promise(res=>setTimeout(res,_busyMs)).then(()=>cardFetch(url,null,tries-1));
   });
 }
-function busyToast(){toast(_busyCard?'Waiting for the SD card':'Waiting for the device');}
+function busyToast(){toast(HOSTED?'Waiting for the assistant':_busyCard?'Waiting for the SD card':'Waiting for the device');}
 // Fetch plain text, surfacing the SERVER's reason on failure. The glass-box
 // endpoints answer 404 with a human sentence ("off: …", "nosd: …", "evicted: …")
 // precisely so the chat can say why instead of showing an empty panel. A busy card
@@ -5762,6 +5763,11 @@ function _chatHistoryEdges(log,d){
   if(d.indexComplete===false){const dv=line('Older history is still being indexed: '+(d.total||0)+' rows so far.');
     dv.id='chatIndexing';log.insertBefore(dv,log.firstChild);}
 }
+// What the owner sent, for their own bubble: a stored photo's label reads as a photo, not
+// its content hash, and the turn's framing around their words goes.
+function _chatSaid(t){
+  return String(t==null?'':t).replace(/\[(image|file) [^\]]*ref=[0-9a-f]{16}[^\]]*\]/g,(m,k)=>k==='image'?'[photo]':'[file]').replace(/\]\s*They wrote: /g,'] ');
+}
 function loadChatHistory(){
   const log=$('chatLog'); if(!log||_chatBusy)return;
   // No kind filter: message rows render as bubbles, tool_output/llm_response rows
@@ -5810,7 +5816,7 @@ function loadChatHistory(){
       const tid=m.role==='user'?m.id:_turnId(m);
       if(m.role==='user')liveTid=m.id;   // newest user row wins: the turn that may still be in flight
       if(m.role!=='user'&&tid&&byTurn[tid]){_traceGroup(log,byTurn[tid]);delete byTurn[tid];}
-      const bub=_chatBubble(m.role==='user'?'u':'a',m.text,m.role==='user'?_chatMeta(m):undefined);
+      const bub=_chatBubble(m.role==='user'?'u':'a',m.role==='user'?_chatSaid(m.text):m.text,m.role==='user'?_chatMeta(m):undefined);
       if(m.role!=='user'&&tid&&endByTurn[tid]){_turnChip(bub,endByTurn[tid]);delete endByTurn[tid];}
       any=true;
     });

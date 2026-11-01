@@ -265,6 +265,7 @@ class EngineThread {
       if (held_.size() >= kHeldMax) {
         std::fprintf(stderr, "[nimbusd] held-turn queue full - dropped a message for %s\n",
                      held_.front().chat.c_str());
+        if (held_.front().ended) held_.front().ended();   // whoever waits on it stops waiting
         held_.pop_front();
       }
       held_.push_back(m);

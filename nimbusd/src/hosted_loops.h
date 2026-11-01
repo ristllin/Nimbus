@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/skill_store.h"   // skillTurnTainted: this turn read outside content
 #include "nimbus/orch/loop_delivery.h"
 #include "nimbus/orch/loops.h"
 #include "nimbus/orch/spend_ceiling.h"   // isSpendFrozenError
@@ -122,7 +123,9 @@ class HostedLoops {
     l.sched = spec;
     l.createdBy = byAgent ? nimbus::orch::CreatedBy::Agent : nimbus::orch::CreatedBy::Owner;
     l.enabled = true;
-    l.approved = nimbus::orch::autoApproved(spec.kind, byAgent, askFirst_);
+    // A turn that read outside content (a web page, a transcribed photo) does not arm
+    // anything by itself: its wake-up waits for the owner, as "ask me first" does.
+    l.approved = nimbus::orch::autoApproved(spec.kind, byAgent, askFirst_ || agent::skillTurnTainted());
     l.nextRun = nextRunFor(l, epoch());
     loops_.push_back(l);
     persist();
@@ -259,11 +262,13 @@ class HostedLoops {
     o["at"] = at;
     o["weekMask"] = l.sched.weekMask;
   }
-  static std::string genId() {
+  std::string genId() {
     static std::mt19937 rng{std::random_device{}()};
-    char b[10];
-    snprintf(b, sizeof b, "lp%06x", (unsigned)(rng() & 0xFFFFFF));
-    return b;
+    for (;;) {
+      char b[10];
+      snprintf(b, sizeof b, "lp%06x", (unsigned)(rng() & 0xFFFFFF));
+      if (!find(b)) return b;
+    }
   }
   int armedWakeups() const {
     int n = 0;

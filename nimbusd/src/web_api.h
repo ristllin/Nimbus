@@ -1345,11 +1345,13 @@ class WebApi {
       const std::string item = att.substr(from, nl - from);
       from = nl + 1;
       const size_t slash = item.find('/');
-      if (slash == std::string::npos || slash == 0 || slash + 1 >= item.size()) continue;
+      if (slash == std::string::npos) continue;
       PhotoIn in;
       in.project = item.substr(0, slash);
       in.name = item.substr(slash + 1);
-      out.push_back(in);
+      // The one traversal gate Files uses: anything else is not a Files entry.
+      if (nimbus::orch::FileStore::validSegment(in.project, 24) && nimbus::orch::FileStore::validSegment(in.name, 48))
+        out.push_back(in);
     }
     return out;
   }

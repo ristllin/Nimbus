@@ -80,7 +80,7 @@ inline size_t collectTgPhotos(const std::vector<nimbus::tg::Update>& ups, size_t
   for (; i < ups.size(); i++) {
     const nimbus::tg::Update& u = ups[i];
     const bool same = i == first || (!head.mediaGroupId.empty() && u.mediaGroupId == head.mediaGroupId && u.chatId == head.chatId);
-    if (!same || !isTgPhoto(u.attachment)) break;
+    if (!same || !isTgPhoto(u.attachment) || photos.size() >= nimbus::orch::kTurnImageMax) break;
     if (caption.empty()) caption = u.text;
     photos.push_back(fetchTgPhoto(u.attachment, io));
   }

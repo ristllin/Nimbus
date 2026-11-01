@@ -279,8 +279,11 @@ static void testToolRows(ndtest::Ctx& c) {
   Config cfg2;
   NimbusdRig rig2(cfg2, o2, &tx);
   rig2.say("owner", "start it");
-  rig2.pumpJobs();
-  c.ok(rig2.activeJobCount() >= 0, "the watcher's job count reads");
+  Exchange done;
+  done.expectPathContains = "/chat/completions";
+  done.status = 0;   // the sub-agent's call fails: the job's own state is what is read
+  tx.script.push_back(done);
+  c.ok(rig2.jobsBusy(), "a started sub-agent is background work");
   clearEnv();
 }
 
@@ -338,12 +341,30 @@ static void testEmbeddings(ndtest::Ctx& c) {
   }
   {
     // Stored vectors keep their space: a Mistral-width store never moves to OpenAI.
+    auto o = embedOpts("vp-d5");
+    {
+      setenv("MISTRAL_API_KEY", "mistral-test-key-000000000000000000", 1);
+      FakeHttpTransport tx;
+      Config cfg;
+      NimbusdRig rig(cfg, o, &tx);
+      orch::VecEntry e;
+      e.id = "k1";
+      e.content = "kept";
+      e.importance = 0.9f;
+      e.ttlHours = -1;
+      e.vec.assign(1024, 0);
+      e.vec[3] = 127;
+      c.ok(rig.vectors().add(e), "a Mistral-width memory is stored");
+      rig.persist();
+      clearEnv();
+    }
     setenv("OPENAI_API_KEY", "sk-test-openai-only-000000000000", 1);
     FakeHttpTransport tx;
     Config cfg;
-    auto o = embedOpts("vp-d5");
     NimbusdRig rig(cfg, o, &tx);
-    c.eq(rig.embedProvider(), "openai", "the empty store moved");
+    c.eq(rig.embedProvider(), "mistral", "stored vectors keep their provider");
+    c.eqi(rig.embedWidth(), 1024, "and their width");
+    c.eqi(rig.vectors().size(), 1, "and the memory");
     clearEnv();
   }
 }
@@ -387,6 +408,11 @@ static void testRoutines(ndtest::Ctx& c) {
     const std::string armed = rig.callTool("wakeup.set", R"({"minutes":5,"note":"check the report"})");
     c.ok(has(armed, "wakeup armed"), "a wake-up arms with no approval");
     c.ok(has(rig.callTool("wakeup.set", R"({"minutes":1,"note":"too soon"})"), "between 2 and"), "the floor holds");
+    {
+      const agent::SkillTurnScope tainted(true);   // this turn read outside content
+      c.ok(has(rig.callTool("wakeup.set", R"({"minutes":5,"note":"planted"})"), "pending the owner's approval"),
+           "a wake-up from a turn that read outside content waits for the owner");
+    }
 
     // A member's conversation may not touch routines.
     const orch::Principal member = orch::principalForRole("2001", orch::Role::User);
@@ -513,7 +539,7 @@ static void testPhotos(ndtest::Ctx& c) {
     Web web(rig);
     c.ok(has(web.call("POST", "/api/chat", "att=chat%2Fred.png").body, "\"turn\""), "a photo with no words is a message");
     c.eqi(web.call("POST", "/api/chat", "").status, 400, "nothing at all is still refused");
-    c.eqi(web.call("POST", "/api/chat", "att=..%2F..%2Fsecrets.env").status, 200, "a path outside Files is taken as a name");
+    c.eqi(web.call("POST", "/api/chat", "att=..%2F..%2Fsecrets.env").status, 400, "a path outside Files is no attachment");
   }
   setenv("OPENAI_API_KEY", "sk-test-openai-photo-00000000000", 1);
   {
@@ -556,12 +582,16 @@ static void testPhotos(ndtest::Ctx& c) {
     c.ok(!tx.spliced.empty() && tx.spliced[0].empty(), "bytes that are no image are never sent as one");
     c.ok(!tx.seen.empty() && has(tx.seen[0].body, "(not read:"), "the head reads why");
     tx.script.push_back(fin);
+    // Past the route's check, the store's own gate: a real file beside Files is not read.
+    fsutil::writeFileAtomic(rig.memDir() + "/secret-beside-files.png", pngPixel());
     PhotoIn outside;
     outside.project = "..";
-    outside.name = "../secrets.env";
+    outside.name = "secret-beside-files.png";
     tx.script.push_back(fin);
+    const size_t splicesBefore = tx.spliced.size();
     rig.sayWithPhotos("owner", "and this", {outside});
     c.ok(has(tx.seen.back().body, "not found in Files"), "a path outside Files reads nothing");
+    c.ok(tx.spliced.size() > splicesBefore && tx.spliced.back().empty(), "and sends nothing");
     PhotoIn missing;
     missing.project = "chat";
     missing.name = "missing.png";

@@ -112,6 +112,7 @@ class TelegramChannel {
     agent::HttpResponse file;
     std::string e;
     if (!http_ || !http_->exec(req, file, e) || file.status != 200) { err = "the download failed"; return false; }
+    if (file.body.size() > maxBytes) { err = "too large"; return false; }   // Telegram may omit file_size
     out = file.body;
     return true;
   }
