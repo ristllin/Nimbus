@@ -39,6 +39,7 @@ MOVED = {
     "src/sys/ota_update.cpp": ("g_manifest",),
     "src/sfx/sound_fx.cpp": ("g_reply", "g_jobs"),
     "src/agent/budget_command.cpp": ("g_st",),
+    "src/agent/store.cpp": ("g_modelStore",),
 }
 
 
@@ -124,6 +125,7 @@ def test_built_image_holds_only_references():
                     "agent::telegram",
                     "agent::connectors",
                     "agent::budget",
+                    "agent::store",
                     "otaupd::",
                     "sfx::(anonymous namespace)",
                 )

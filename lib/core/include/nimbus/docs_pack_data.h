@@ -891,10 +891,11 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 - `files.edit` changes only the matched spans; every other byte keeps its exact
   position, so a CSV's rows stay rows. It never creates a file (`not found` is
   the answer), never reads the file into the model's context, and streams the
-  substitution on the device into a temp sibling that is renamed over the)NIMBUSDOC"},
+  substitution on the device into a temp sibling that replaces the original)NIMBUSDOC"},
   {"tool-catalog#files-artifact-save-durable-artifact-store-5", "`files.*` & `artifact.save` - durable artifact store (5/5)",
-   R"NIMBUSDOC(  original only after it is fully written and size-verified - any refusal (a
-  cap, no match, quota, a short write) leaves the stored file untouched. It
+   R"NIMBUSDOC(  only after it is fully written and size-verified, the same way as any
+  whole-file write - any refusal (a cap, no match, quota, a short write) leaves
+  the stored file untouched. It
   follows the same ownership, lock and quota rules as `artifact.save` (an
   edit's growth counts against the caller's file-storage quota).
 - `files.read` with `tail` reads only the end of the file (about 7.5 KB) and
@@ -3974,8 +3975,8 @@ the Telegram pending slots (voice, attachment, media, unknown-chat approvals): a
 An object that needs its constructor moves the same way with
 `nimbus::psramObject<T>(args...)`: it is built in place in PSRAM where the
 function-local static was, once, and never destroyed (a device never runs exit
-handlers), under the same rules plus no lock or atomic member. The job engine and the
-turn engine live there (about 3.1 KB), and the provider park keeps its record table
+handlers), under the same rules plus no lock or atomic member. The job engine, the
+turn engine (about 3.1 KB together) and the model store's slots live there, and the provider park keeps its record table
 in PSRAM through `setRecordMemory`, so only its locks and hooks stay internal.
 `tests/hil/test_psram_statics_host.py` fails if one moves back inline, and the
 release gate's static DRAM check (`tools/release_gate/check_static_dram.py`) fails an

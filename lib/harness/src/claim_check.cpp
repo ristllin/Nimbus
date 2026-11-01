@@ -312,12 +312,13 @@ void ClaimCheck::noteToolArgs(const std::string& regName, const std::string& arg
   // memory.write is the turn's own record, whatever the reply quotes (the review).
   pendingWrote_.clear();
   if (regName != "memory.write" && regName != "memory.update" && regName != "files.append" &&
-      regName != "artifact.save")
+      regName != "artifact.save" && regName != "files.edit")
     return;
   JsonDocument d;
   if (deserializeJson(d, argsJson) != DeserializationError::Ok) return;
   const char* text = d["text"] | (const char*)nullptr;
   if (!text) text = d["content"] | (const char*)nullptr;
+  if (!text) text = d["replace"] | (const char*)nullptr;   // files.edit: what the span now says
   if (!text || !*text) return;
   pendingWrote_ = " " + orch::normalizedWords(text);
 }

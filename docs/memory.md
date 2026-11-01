@@ -152,8 +152,8 @@ the Telegram pending slots (voice, attachment, media, unknown-chat approvals): a
 An object that needs its constructor moves the same way with
 `nimbus::psramObject<T>(args...)`: it is built in place in PSRAM where the
 function-local static was, once, and never destroyed (a device never runs exit
-handlers), under the same rules plus no lock or atomic member. The job engine and the
-turn engine live there (about 3.1 KB), and the provider park keeps its record table
+handlers), under the same rules plus no lock or atomic member. The job engine, the
+turn engine (about 3.1 KB together) and the model store's slots live there, and the provider park keeps its record table
 in PSRAM through `setRecordMemory`, so only its locks and hooks stay internal.
 `tests/hil/test_psram_statics_host.py` fails if one moves back inline, and the
 release gate's static DRAM check (`tools/release_gate/check_static_dram.py`) fails an
