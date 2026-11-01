@@ -112,7 +112,7 @@ $(BUILD) $(BUILD)/core:
 # The offline Python tool tests (stdlib unittest, no network): one per
 # tools/test_*.py, e.g. the connectors e2e's 429 matcher pinned to the engine's
 # reply table.
-PY_TESTS  := $(wildcard $(CURDIR)/tools/test_*.py)
+PY_TESTS  := $(wildcard $(CURDIR)/tools/test_*.py) $(wildcard $(REPO)/tools/persona-rig/test_*.py)
 
 # Run every test binary and Python tool test; fail the whole target if any
 # returns non-zero.

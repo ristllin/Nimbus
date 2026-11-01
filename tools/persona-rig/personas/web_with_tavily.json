@@ -1,0 +1,26 @@
+{
+  "description": "The web lookup again, on an instance that also holds a Tavily key (the portal's optional key).",
+  "vars": {"py_latest": "3.15.2"},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0"},
+    {"name": "mistral-small-latest", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-small-latest"},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3"},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash"},
+    {"name": "claude-haiku-5-5", "host": "anthropic", "key": "ANTHROPIC_API_KEY", "model": "claude-haiku-5-5"},
+    {"name": "gpt-6-luna", "host": "openai", "key": "OPENAI_API_KEY", "model": "gpt-6-luna"}
+  ],
+  "persona": {
+    "name": "tav-${name}",
+    "keys": {"${host}": "${key}"},
+    "instance_env_keys": ["TAVILY_API_KEY"],
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "scenarios": [
+      {"id": "web", "steps": [
+        {"say": "Use a web lookup to find the latest stable Python 3 release listed on python.org/downloads. Tell me the version number and the URL you used.",
+         "timeout_s": 300, "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"reply_contains": "${py_latest}"}, {"no_error_reply": true}, {"tool_called": "web_search"}]}
+      ]}
+    ]
+  }
+}
