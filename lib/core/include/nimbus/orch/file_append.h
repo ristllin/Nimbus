@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include <ctime>
 #include <functional>
 #include <string>
@@ -102,9 +103,15 @@ std::string renderTail(const TailView& v, const std::string& name, size_t fileBy
 //   - a stored row starting with '#' is a comment: kept, never matched or counted.
 // Fields follow CSV quoting: "chicken, rice" is one field, "" inside quotes is a
 // quote; a comma inside a balanced pair of parentheses is also part of its field
-// (a migrated ledger's "Boba tea (no sugar, honey tapioca)"). A stored row with more fields than the header (an unquoted comma) is kept
-// but never matched or counted, and the total says so; so is a row with no
-// YYYY-MM-DD date. A key compares without case or surrounding spaces. The replies
+// (a migrated ledger's "Boba tea (no sugar, honey tapioca)"). A stored row with more
+// fields than the header (a bare comma in its free text) is read when exactly one set of
+// figures fits: its free-text column holds the extra fields, its date and figures land
+// where the header names them, and none of the extra fields is a bare number. Otherwise,
+// like a row with no YYYY-MM-DD date, it is kept but never matched or counted, and the
+// total says so. A key compares without case or surrounding spaces. A day's total counts
+// meal rows and nothing else: the header pasted again is no row, a row that states a total
+// is never summed (and refused as a new row), and in a food log (a kcal or protein sum) a
+// row repeating an earlier row's words that day counts once, with the last figures. The replies
 // never quote a stored row's free text (only dates, the model's own keys, plain
 // numbers and a header of plain labels), so the tool's output stays the device's own.
 
@@ -114,6 +121,9 @@ struct DayTotal {
   double total = 0;
   int rows = 0;       // rows dated `date` that were counted
   int unread = 0;     // rows dated `date` whose sum field is not a plain number
+  int totalRows = 0;  // rows dated `date` that state a total ("total", "daily total"): never summed
+  int repeats = 0;    // rows dated `date` that repeat an earlier row's food: counted once
+  std::vector<std::pair<uint32_t, double>> seen;   // a food log's counted rows: their words and figure
 };
 
 // What one new row did to the file.

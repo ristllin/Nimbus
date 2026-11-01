@@ -1,8 +1,10 @@
 #include "nimbus/orch/file_append.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <initializer_list>
 #include <vector>
 
 #include "nimbus/mem_cap.h"   // utf8CapLen - a quoted row is cut on a character boundary
@@ -326,6 +328,192 @@ int dateColumnOf(const std::vector<std::string>& header, const std::vector<std::
   return rows.empty() ? byName : -1;
 }
 
+// A figure as a stored row may hold it: a plain number, or a quoted one with thousands
+// separators ("1,045": a bare comma never reaches a single field). New rows stay plain.
+bool figureOf(const std::string& f, double& v) {
+  if (plainNumber(f, v)) return true;
+  std::string joined;
+  size_t digits = 0, groups = 0;
+  size_t p = (!f.empty() && (f[0] == '-' || f[0] == '+')) ? 1 : 0;
+  if (p) joined += f[0];
+  for (; p < f.size() && (isDigit(f[p]) || f[p] == ','); p++) {
+    if (f[p] != ',') {
+      joined += f[p];
+      digits++;
+      continue;
+    }
+    if (groups == 0 ? (digits == 0 || digits > 3) : digits != 3) return false;
+    digits = 0;
+    groups++;
+  }
+  if (groups == 0 || digits != 3) return false;
+  return plainNumber(joined + f.substr(p), v);
+}
+
+bool holdsAnyOf(const std::string& lowerName, std::initializer_list<const char*> parts) {
+  for (const char* part : parts)
+    if (lowerName.find(part) != std::string::npos) return true;
+  return false;
+}
+
+// A column that holds figures, by its name.
+bool numericColumn(const std::string& name) {
+  const std::string n = lowered(name);
+  return holdsAnyOf(n, {"kcal", "calorie", "protein", "carb", "fibre", "fiber", "sugar", "gram", "weight", "qty",
+                        "amount", "price", "cost"}) ||
+         n == "fat" || n == "fat_g" || (n.size() > 2 && n.compare(n.size() - 2, 2, "_g") == 0);
+}
+
+// A column that holds words, by its name.
+bool textColumn(const std::string& name) {
+  const std::string n = lowered(name);
+  return holdsAnyOf(n, {"item", "food", "desc", "meal", "dish", "what"}) || n == "name" || n == "note" || n == "notes";
+}
+
+// Which column most likely holds a bare comma: the free text of a row (items), then any
+// other, last the short label a keyed write names a row by (meal).
+int absorbRank(const std::string& name) {
+  const std::string n = lowered(name);
+  if (holdsAnyOf(n, {"meal", "key", "category", "type"})) return 0;
+  return holdsAnyOf(n, {"item", "food", "desc", "dish", "what", "note"}) ? 2 : 1;
+}
+
+// A column whose total counts what was eaten: a row repeated in it is one meal logged twice.
+bool foodFigureColumn(const std::string& name) {
+  return holdsAnyOf(lowered(name), {"kcal", "calorie", "protein"});
+}
+
+// Digits and a point, no unit: never a word of free text.
+bool bareNumber(const std::string& f) {
+  double v = 0;
+  if (f.empty() || !plainNumber(f, v)) return false;
+  for (char c : f)
+    if (isLetter(c)) return false;
+  return true;
+}
+
+// One reading of a wider row: `extra` more fields than the header, all held by column `at`.
+std::vector<std::string> widenedReading(const std::vector<std::string>& all, size_t width, size_t at) {
+  const size_t extra = all.size() - width;
+  std::vector<std::string> out;
+  out.reserve(width);
+  for (size_t c = 0; c < width; c++) {
+    if (c < at) {
+      out.push_back(all[c]);
+    } else if (c > at) {
+      out.push_back(all[c + extra]);
+    } else {
+      std::string joined = all[at];
+      for (size_t i = 1; i <= extra; i++) joined += ", " + all[at + i];
+      out.push_back(joined);
+    }
+  }
+  return out;
+}
+
+// Which columns of this log hold figures: by name, the sum column, or a figure in the row before.
+std::vector<size_t> figureColumns(const std::vector<std::string>& header, int sumIdx,
+                                  const std::vector<std::string>& prev) {
+  std::vector<size_t> out;
+  double v = 0;
+  for (size_t c = 0; c < header.size(); c++)
+    if ((int)c == sumIdx || numericColumn(header[c]) || (c < prev.size() && bareNumber(prev[c]) && figureOf(prev[c], v)))
+      out.push_back(c);
+  return out;
+}
+
+// May column `at` hold the extra fields? It is free text (not the date, not a figure), the
+// date and every figure land where they belong, and no absorbed field is a bare number (that
+// is a shifted figure or another schema, never words).
+bool wideReadingFits(const std::vector<std::string>& all, const std::vector<std::string>& reading, size_t at,
+                     int dateIdx, const std::vector<size_t>& figures) {
+  if ((int)at == dateIdx || std::find(figures.begin(), figures.end(), at) != figures.end()) return false;
+  if (dateIdx >= 0 && isoDay(reading[(size_t)dateIdx]).empty()) return false;
+  double v = 0;
+  for (size_t c : figures)
+    if (!reading[c].empty() && !figureOf(reading[c], v)) return false;
+  const size_t extra = all.size() - reading.size();
+  for (size_t i = at; i <= at + extra; i++)
+    if (bareNumber(all[i])) return false;
+  return true;
+}
+
+// A stored row wider than its header: a bare comma in its free text (a plain append takes
+// any row). On 31 Oct every row with a comma in its items was left out of the day's sum:
+// the receipt said 256 over rows summing to 2,369. The row is read when exactly one set of
+// figures fits; otherwise it stays wide, is never a number and the total says so.
+bool readWideRow(const std::string& row, const std::vector<std::string>& header, int dateIdx, int sumIdx,
+                 const std::vector<std::string>& prev, std::vector<std::string>& out) {
+  bool quotes = true;
+  const std::vector<std::string> all = csvFields(row, &quotes, kMaxColumns);
+  const size_t width = header.size();
+  if (!quotes || width == 0 || all.size() <= width || all.size() > kMaxColumns) return false;
+  const std::vector<size_t> figures = figureColumns(header, sumIdx, prev);
+  bool found = false;
+  int bestRank = -1;
+  std::vector<std::string> best;
+  for (size_t at = 0; at < width; at++) {
+    std::vector<std::string> reading = widenedReading(all, width, at);
+    if (!wideReadingFits(all, reading, at, dateIdx, figures)) continue;
+    if (found) {
+      for (size_t c : figures)
+        if (reading[c] != best[c]) return false;   // two readings, two sets of figures: no figure
+    }
+    const int rank = absorbRank(header[at]);
+    if (rank > bestRank) {
+      bestRank = rank;
+      best = std::move(reading);
+    }
+    found = true;
+  }
+  if (found) out = std::move(best);
+  return found;
+}
+
+// A stored row's fields as its header names them (a wide row read, when it can be).
+std::vector<std::string> rowFields(const std::string& row, bool* quotes, const std::vector<std::string>& header,
+                                   int dateIdx, int sumIdx, const std::vector<std::string>& prev) {
+  std::vector<std::string> f = csvFields(row, quotes, header.size());
+  if (f.size() > header.size()) readWideRow(row, header, dateIdx, sumIdx, prev, f);
+  return f;
+}
+
+// Words where the header names words: a bare number there means the row's columns are off
+// (another schema, a narrow row), so its other numbers cannot be trusted either.
+bool shiftedRow(const std::vector<std::string>& f, const std::vector<std::string>& header) {
+  for (size_t c = 0; c < f.size() && c < header.size(); c++)
+    if (textColumn(header[c]) && bareNumber(f[c])) return true;
+  return false;
+}
+
+// A row that states a total ("daily total") instead of a thing eaten or spent.
+bool statesTotal(const std::vector<std::string>& f, int dateIdx, int sumIdx) {
+  for (size_t c = 0; c < f.size(); c++) {
+    if ((int)c == dateIdx || (int)c == sumIdx) continue;
+    const std::string cell = keyText(f[c]);
+    for (const char* word : {"total", "totals", "subtotal", "day total", "daily total", "grand total", "running total",
+                             "total so far", "today total", "todays total", "today's total"})
+      if (cell == word) return true;
+  }
+  return false;
+}
+
+// What makes a row the same food as another of its day: its words (never its figures or date).
+uint32_t rowWordsHash(const std::vector<std::string>& f, int dateIdx, int sumIdx) {
+  uint32_t h = 2166136261u;
+  bool any = false;
+  double v = 0;
+  for (size_t c = 0; c < f.size(); c++) {
+    if ((int)c == dateIdx || (int)c == sumIdx || figureOf(f[c], v)) continue;
+    const std::string cell = keyText(f[c]);
+    if (cell.empty()) continue;
+    any = true;
+    for (char ch : cell) h = (h ^ (uint8_t)ch) * 16777619u;
+    h = (h ^ 0x1f) * 16777619u;
+  }
+  return any ? h : 0;
+}
+
 // A final row that had no line end: is it PROVABLY cut by a power loss? Only
 // then: a quote left open, fewer fields than the header, or no plain number in
 // the sum column or in a column that holds one in the row before. A well-formed
@@ -334,9 +522,9 @@ bool provablyCut(const std::vector<std::string>& f, bool quotesOk, size_t width,
                  const std::vector<std::string>& prev, int sumIdx) {
   if (!quotesOk || f.size() < width) return true;
   double v = 0;
-  if (sumIdx >= 0 && (size_t)sumIdx < f.size() && !plainNumber(f[(size_t)sumIdx], v)) return true;
+  if (sumIdx >= 0 && (size_t)sumIdx < f.size() && !figureOf(f[(size_t)sumIdx], v)) return true;
   for (size_t i = 0; i < prev.size() && i < f.size(); i++)
-    if (plainNumber(prev[i], v) && !plainNumber(f[i], v)) return true;
+    if (figureOf(prev[i], v) && !figureOf(f[i], v)) return true;
   return false;
 }
 
@@ -384,19 +572,37 @@ std::string quoteRow(const std::string& row) {
 
 std::string rowNo(size_t n) { return "row " + std::to_string((unsigned)n); }
 
-// Count one row into `d` when it is dated d.date: its sum field must be a plain
-// number in a row no wider than the header (a wider row has a shifted column).
-void tallyInto(DayTotal& d, const std::vector<std::string>& f, size_t width, int dateIdx,
+// Count one row into `d` when it is dated d.date. Counted: a meal row whose sum field reads
+// as a number. Not counted, and said: a row whose columns cannot be trusted (`unread`), a
+// row that states a total (`totalRows`). A food log's row repeating an earlier row's words
+// is one meal logged twice: the last figures count, once (`repeats`).
+void tallyInto(DayTotal& d, const std::vector<std::string>& f, const std::vector<std::string>& header, int dateIdx,
                int sumIdx) {
   if (dateIdx < 0 || sumIdx < 0 || f.size() <= (size_t)dateIdx) return;
   if (isoDay(f[(size_t)dateIdx]) != d.date) return;
-  double v = 0;
-  if (f.size() <= width && f.size() > (size_t)sumIdx && plainNumber(f[(size_t)sumIdx], v)) {
-    d.total += v;
-    d.rows++;
-  } else {
-    d.unread++;
+  if (statesTotal(f, dateIdx, sumIdx)) {
+    d.totalRows++;
+    return;
   }
+  double v = 0;
+  if (f.size() > header.size() || f.size() <= (size_t)sumIdx || shiftedRow(f, header) ||
+      !figureOf(f[(size_t)sumIdx], v)) {
+    d.unread++;
+    return;
+  }
+  const uint32_t words = foodFigureColumn(header[(size_t)sumIdx]) ? rowWordsHash(f, dateIdx, sumIdx) : 0;
+  if (words) {
+    for (auto& seen : d.seen) {
+      if (seen.first != words) continue;
+      d.total += v - seen.second;
+      seen.second = v;
+      d.repeats++;
+      return;
+    }
+    d.seen.emplace_back(words, v);
+  }
+  d.total += v;
+  d.rows++;
 }
 
 std::string numText(double v) {
@@ -428,8 +634,8 @@ bool CsvUpsertStream::fail(const std::string& why) {
 // Date plus key (the date alone when the key IS the date column). "" = the row
 // has no date or no key (never matched).
 std::string CsvUpsertStream::identity(const std::vector<std::string>& f) const {
-  // A row wider than the header has a shifted column (an unquoted comma): its
-  // date and key cannot be trusted, so it is never matched (nor counted).
+  // A row still wider than the header (readWideRow could not read it) has a shifted
+  // column: its date and key cannot be trusted, so it is never matched (nor counted).
   if (keyIdx_ < 0 || dateIdx_ < 0 || f.size() <= (size_t)keyIdx_ || f.size() <= (size_t)dateIdx_ ||
       f.size() > header_.size())
     return std::string();
@@ -472,6 +678,9 @@ bool CsvUpsertStream::checkNewRow(size_t n, NewRow& row) {
   if (sumIdx_ >= 0 && !plainNumber(row.fields[(size_t)sumIdx_], v))
     return fail(rowNo(n) + "'s '" + sumCol_ + "' value '" + row.fields[(size_t)sumIdx_] +
                 "' is not a plain number - write one number, like 450");
+  if (statesTotal(row.fields, dateIdx_, sumIdx_))
+    return fail(rowNo(n) + " states a total - the device adds up a day's rows itself, so send only what was "
+                "eaten or spent; nothing was written");
   row.id = identity(row.fields);
   for (size_t i = 0; i < rows_.size(); i++)
     if (rows_[i].id == row.id)
@@ -641,7 +850,12 @@ bool CsvUpsertStream::feedData(const std::string& row, bool complete, std::strin
     return true;
   }
   bool quotes = true;
-  const std::vector<std::string> f = csvFields(row, &quotes, header_.size());
+  const std::vector<std::string> f = rowFields(row, &quotes, header_, dateIdx_, sumIdx_, prev_);
+  if (sameHeader(f, header_)) {   // the header pasted again mid-file: kept, never a row
+    out = row + "\n";
+    if (!complete) r_.changed = true;
+    return true;
+  }
   NewRow* hit = match(identity(f));
   if (!complete && provablyCut(f, quotes, header_.size(), prev_, sumIdx_)) {
     feedCut(f, row, hit, out);
@@ -668,7 +882,7 @@ bool CsvUpsertStream::feed(const std::string& row, bool complete, std::string& o
 }
 
 void CsvUpsertStream::tally(const std::vector<std::string>& f) {
-  for (DayTotal& d : r_.days) tallyInto(d, f, header_.size(), dateIdx_, sumIdx_);
+  for (DayTotal& d : r_.days) tallyInto(d, f, header_, dateIdx_, sumIdx_);
 }
 
 bool CsvUpsertStream::finish(std::string& out) {
@@ -780,8 +994,10 @@ void CsvDayTally::feed(const std::string& row, bool complete) {
   if (!sawHeader_) return readHeader(row);
   if (sumIdx_ < 0 || day_.empty() || isCommentRow(row) || isBlankRow(row)) return;
   bool quotes = true;
-  const std::vector<std::string> f = csvFields(row, &quotes, width_);
+  const int dateAt = dateIdx_ >= 0 ? dateIdx_ : dateColumnByName(header_);
+  const std::vector<std::string> f = rowFields(row, &quotes, header_, dateAt, sumIdx_, prev_);
   if (!complete && provablyCut(f, quotes, width_, prev_, sumIdx_)) return;   // a cut row never counts
+  if (sameHeader(f, header_)) return;   // the header pasted again mid-file: never a row
   if (f.size() == width_) prev_ = f;
   if (dateIdx_ < 0) dateIdx_ = dateColumnOf(header_, {f});   // the first data row settles it
   const std::string day = dateIdx_ >= 0 && f.size() > (size_t)dateIdx_ ? isoDay(f[(size_t)dateIdx_]) : std::string();
@@ -789,7 +1005,7 @@ void CsvDayTally::feed(const std::string& row, bool complete) {
     undated_++;
     return;
   }
-  tallyInto(t_, f, width_, dateIdx_, sumIdx_);
+  tallyInto(t_, f, header_, dateIdx_, sumIdx_);
   if (dayRow_ && day == day_) dayRow_(row);
 }
 
@@ -890,13 +1106,24 @@ std::string renderDayTotal(const DayTotal& d, const std::string& sumCol, bool is
                            const std::string& zoneAt) {
   std::string out = isToday ? "today's " + sumCol + " (" + d.date + (zoneAt.empty() ? "" : ", " + zoneAt) + "): "
                             : sumCol + " on " + d.date + ": ";
-  out += numText(d.total);
-  if (d.rows == 0) out += " - no rows are dated " + d.date;
-  else out += " from " + std::to_string(d.rows) + (d.rows == 1 ? " row" : " rows");
-  if (d.unread > 0)
-    out += "; " + std::to_string(d.unread) + (d.unread == 1 ? " row" : " rows") + " dated " + d.date +
-           (d.unread == 1 ? " is not counted: its '" : " are not counted: their '") + sumCol +
-           "' field could not be read (not a plain number, or an unquoted comma shifted it)";
+  const std::string rowsWord = std::to_string(d.rows) + (d.rows == 1 ? " row" : " rows");
+  if (d.unread > 0) {
+    // No figure that looks like the day's: what was read, and that the rest was not.
+    out += "not known - " + numText(d.total) + " counted from " + rowsWord + ", but " + std::to_string(d.unread) +
+           (d.unread == 1 ? " more row" : " more rows") + " dated " + d.date + (d.unread == 1 ? " has" : " have") +
+           " no readable '" + sumCol + "' (not a number, or its columns are shifted); fix " +
+           (d.unread == 1 ? "it" : "them") + " with files.edit before stating a total";
+  } else {
+    out += numText(d.total);
+    if (d.rows == 0) out += " - no rows are dated " + d.date;
+    else out += " from " + rowsWord;
+  }
+  if (d.totalRows > 0)
+    out += "; " + std::to_string(d.totalRows) + (d.totalRows == 1 ? " total row is" : " total rows are") +
+           " not counted (the device adds up the rows itself)";
+  if (d.repeats > 0)
+    out += "; " + std::to_string(d.repeats) + (d.repeats == 1 ? " row repeats" : " rows repeat") +
+           " an earlier row of that day and counted once (the last figures)";
   return out;
 }
 
