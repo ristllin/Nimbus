@@ -1494,7 +1494,33 @@ static void test_connectors_refusal_retried_once_without_them() {
     TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr),
                              err.c_str());
     TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
-    TEST_ASSERT_FALSE(bodyHas(d, 0, "\"connectors\""));
+    TEST_ASSERT_FALSE(bodyHas(d, 0, "\"tools\""));   // the wire key builtins and Studio connectors ride
+  }
+  // A sub-agent on that model skips them too, and pays no doomed 400 of its own.
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("c-conn3")});
+    auto pd = pdWith(d);
+    agent::Directive dir;
+    dir.instruction = "do it";
+    dir.model = "mistral-large-4-0";
+    char jobId[72] = {};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "sub-mistral", dir, jobId));
+    TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"model\":\"mistral-large-4-0\""));
+    TEST_ASSERT_FALSE(bodyHas(d, 0, "\"tools\""));
+  }
+  // Remembered per model: a sub-agent on another model still gets them.
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("c-conn4")});
+    auto pd = pdWith(d);
+    agent::Directive dir;
+    dir.instruction = "do it";
+    char jobId[72] = {};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "sub-mistral", dir, jobId));
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"model\":\"sub-mistral\""));
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"tools\""));
   }
   // A different 400 is not a connectors refusal: the turn fails as before.
   {

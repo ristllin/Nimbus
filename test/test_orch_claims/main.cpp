@@ -444,7 +444,7 @@ static void test_gap_matrix_every_class_against_every_effect_kind() {
 
 // v4.6.3 (the 30 Oct ledger investigation): a remove/replace/dedup claim on a
 // log is backed ONLY by a stored row that was actually replaced - the keyed
-// upsert's "updated N row(s)" with N>0, or a files.edit's "replaced A of B".
+// upsert's "replaced N row(s)" with N>0, or a files.edit's "replaced A of B".
 // The day's replies ("The black beans entry is now removed from the log",
 // "Replaced today's log with your figures", "fixed and deduplicated") all
 // passed against plain appends: a row landed, nothing was replaced.
