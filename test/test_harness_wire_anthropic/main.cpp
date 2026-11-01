@@ -1255,6 +1255,18 @@ static void test_r1_refused_images_are_resent_as_transcriptions() {
   // A 400 about something else is not an image refusal: no blind re-send.
   TEST_ASSERT_FALSE(providers::imageparts::refusedImages(400, "max_tokens: must be at most 64000"));
   TEST_ASSERT_FALSE(providers::imageparts::refusedImages(500, "image service down"));
+  // Matched by cause (the class: every refusal wording a provider really uses reads as a
+  // photo refusal; nothing else blinds a seeing head for the rest of the turn).
+  for (const char* cause : {"image exceeds 5 MB maximum", "messages.0.content.1.image.source.base64: invalid",
+                            "Invalid image_url", "invalid_image_format", "image_parse_error",
+                            "This model does not support images", "Image input is not supported",
+                            "too many image parts", "vision input is not available", "bad data URL"})
+    TEST_ASSERT_TRUE_MESSAGE(providers::imageparts::refusedImages(400, cause), cause);
+  for (const char* other : {"Model mistral-large-4-0 does not support builtin connectors",
+                            "connectors: web_search, image, images are not available for this model",
+                            "tools.2.type: expected one of web_search, code_interpreter, image_generation",
+                            "unknown field imagery", "document_library is not enabled", "reimaged"})
+    TEST_ASSERT_FALSE_MESSAGE(providers::imageparts::refusedImages(422, other), other);
   TEST_ASSERT_TRUE(providers::imageparts::refusedImages(413, "request_too_large"));
   TEST_ASSERT_TRUE(providers::imageparts::refusedImages(422, "Invalid Image URL"));
 }
