@@ -4577,6 +4577,10 @@ static std::vector<ExitCase> exitCases() {
   // L24: the turn's setup left internal SRAM under the turn floor: no provider
   // request, the device's own cause (turn_memory.h).
   v.push_back({"setup memory", "device", "turn floor", [](Rig& r) { r.plat.heap = 7000; }});
+  // Lane OVF: template filler where an answer belongs is a failed turn, on every path.
+  v.push_back({"filler", "anthropic", "placeholder", [](Rig& r) {
+                 r.scripts["anthropic"] = {{true, "{\"reply\":\"placeholder\",\"memory\":\"\",\"ask\":\"\"}", "", 0, "", 0, 0}};
+               }});
   return v;
 }
 
@@ -4615,7 +4619,7 @@ static void test_every_failed_turn_exit_carries_a_cause() {
   const std::string src = readSource("lib/harness/src/engine.cpp");
   const size_t exits = countOf(src, "fireTurnEnd(false");
   const char* names[] = {"budget", "cut", "unsent", "low memory", "billing", "429", "generic", "parse",
-                         "spend ceiling", "no key", "setup memory"};
+                         "spend ceiling", "no key", "setup memory", "filler"};
   for (const char* n : names) {
     bool covered = false;
     for (const ExitCase& c : cases) covered = covered || std::strncmp(c.exitName, n, std::strlen(n)) == 0;

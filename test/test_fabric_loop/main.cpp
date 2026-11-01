@@ -509,10 +509,10 @@ static void test_cum477_fabric_allocates_nothing_per_listed_host() {
 }
 
 
-// CUM-621: a round still cut after its in-step retry hands back the cut orch_turn
-// it carried, so the engine salvages the finished part with its honest marker
-// instead of sending the bare cut line (the other hosts are not asked: Cut switches,
-// but a single-host list has nowhere to go).
+// CUM-621: a round still cut after its recovery hands back the cut orch_turn it
+// carried, so the engine salvages the finished part with its honest marker instead of
+// sending the bare cut line. Lane OVF: a single-host list has nowhere to go, so the round
+// runs once more with the note first (two more requests, cut again here).
 static void test_cum621_a_cut_hands_back_its_partial_turn() {
   FakeProviderDeps d;
   const std::string cut =
@@ -520,6 +520,8 @@ static void test_cum621_a_cut_hands_back_its_partial_turn() {
       "\"input\":{\"reply\":\"Here is the first half of the plan\"}}],\"stop_reason\":\"max_tokens\"}";
   d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, cut});
   d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, cut});   // the retry with more room
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, cut});   // the round once more, with the note
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, cut});   // its retry with more room
   auto pd = d.contract();
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
@@ -528,6 +530,26 @@ static void test_cum621_a_cut_hands_back_its_partial_turn() {
   TEST_ASSERT_EQUAL((int)nimbus::orch::StepErr::Cut, (int)nimbus::orch::classifyStepError(err));
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"Here is the first half of the plan\"}", out.c_str());
   TEST_ASSERT_EQUAL(0, (int)rig.dispatched.size());   // nothing from a cut response runs
+  TEST_ASSERT_EQUAL(4, (int)d.http.seen.size());
+}
+
+// The rerun fails another way: what the cut round wrote is still what comes back.
+static void test_a_cut_outlives_a_later_failure() {
+  FakeProviderDeps d;
+  const std::string cut =
+      "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_fin\",\"name\":\"orch_turn\","
+      "\"input\":{\"reply\":\"Here is the first half\"}}],\"stop_reason\":\"max_tokens\"}";
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, cut});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, cut});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 400, "{\"error\":{\"message\":\"refused\"}}"});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string out, err;
+  TEST_ASSERT_FALSE(providers::runFabricLoop(pd, {"anthropic"}, "SYS", "USER", out, err, rig.ht, nullptr, nullptr));
+  TEST_ASSERT_EQUAL((int)nimbus::orch::StepErr::Cut, (int)nimbus::orch::classifyStepError(err));
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"Here is the first half\"}", out.c_str());
+  TEST_ASSERT_EQUAL(3, (int)d.http.seen.size());
 }
 
 // ---- lane DEF: the monthly spend ceiling mid-turn ---------------------------------
@@ -721,6 +743,7 @@ int main(int, char**) {
   RUN_TEST(test_brief_reaches_onbrief_with_calls_and_results);
   RUN_TEST(test_brief_delivered_even_when_the_turn_fails);
   RUN_TEST(test_cum621_a_cut_hands_back_its_partial_turn);
+  RUN_TEST(test_a_cut_outlives_a_later_failure);
   RUN_TEST(test_all_hosts_down_fails_soft_with_error);
   RUN_TEST(test_fabric_reports_every_failed_host_in_order);
   RUN_TEST(test_failure_after_billed_rounds_files_them);

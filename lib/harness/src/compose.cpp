@@ -446,13 +446,16 @@ std::string composeInstructions(const ComposeInputs& in) {
   // Per-turn (the loop is gated on this turn's heap), so it rides the dynamic
   // block, never the cached capability list.
   std::string loopNote;
-  if (in.loopOn)
+  if (in.loopOn) {
     loopNote =
         "You may call these tools MID-TURN - several rounds if needed - and you see "
         "each result before deciding your next step. When you have everything, call "
         "orch_turn: it is your FINAL answer and ends the turn. Prefer calling "
         "memory_search live over the deferred mem_query field.\n";
-  else {
+    if (in.loopRoundsNow > 0 && in.loopRoundsNow < in.loopRounds)
+      loopNote += "This turn you may call tools over several rounds (at most " + std::to_string(in.loopRoundsNow) +
+                  "), not more.\n";
+  } else {
     loopNote =
         "The mid-turn tool loop is OFF right now (setting or low memory), so these "
         "tools are NOT callable this turn. The turn contract still covers memory "

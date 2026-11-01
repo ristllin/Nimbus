@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <functional>
 #include <regex>
 #include <string>
 
@@ -134,6 +135,26 @@ inline std::string scrubSecrets(std::string s) {
   s = std::regex_replace(s, kPatterns[2], "$1[redacted]");
   return s;
 }
+
+// A scenario's own hand on the wire (scenarios_ovf.cpp): what a request carries on its way
+// out and what its answer says on the way back. Pass-through when unset.
+class ShimTransport : public agent::HttpTransport {
+ public:
+  explicit ShimTransport(agent::HttpTransport* inner) : inner_(inner) {}
+  std::function<void(agent::HttpRequest&)> onRequest;
+  std::function<void(const agent::HttpRequest&, agent::HttpResponse&)> onResponse;
+
+  bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
+    agent::HttpRequest r = req;
+    if (onRequest) onRequest(r);
+    const bool ok = inner_->exec(r, out, err);
+    if (ok && onResponse) onResponse(r, out);
+    return ok;
+  }
+
+ private:
+  agent::HttpTransport* inner_;
+};
 
 class RecordingTransport : public agent::HttpTransport {
  public:

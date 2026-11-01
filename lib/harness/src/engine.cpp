@@ -1361,7 +1361,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // (a cached-manifest property), never this turn's heap gate.
   ci.toolsOnWire = d_.cfg.loop.toolLoopOn && d_.cfg.loop.toolLoopOn();
   ci.loopRounds = d_.cfg.loop.rounds ? d_.cfg.loop.rounds() : kLoopRoundsDefault;
-  if (bounds_) ci.loopRounds = std::min(ci.loopRounds, bounds_->maxRounds);   // a bounded turn's cap
+  int roundsNow = ci.loopRounds;
+  if (bounds_) roundsNow = std::min(roundsNow, bounds_->maxRounds);   // a bounded turn's cap
   // EFF (token burn, 26 Oct analysis): a PLAIN conversational turn - the owner's
   // message and nothing else: no photo in flight, no fresh or parked results, no
   // running session, none of the unattended shapes - gets a small tool-round
@@ -1383,9 +1384,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // below target; sonnet held). A turn with rows keeps the full budget; the
   // cap still holds for every chat with no rows today.
   if (conversational) {
-    ci.loopRounds = std::min(ci.loopRounds, 2);
-    hlog::logf("orchestrator: plain conversational turn - tool rounds capped at %d", (int)ci.loopRounds);
+    roundsNow = std::min(roundsNow, 2);
+    hlog::logf("orchestrator: plain conversational turn - tool rounds capped at %d", roundsNow);
   }
+  ci.loopRoundsNow = roundsNow;
   // CUM-523: the turn's one sample (unwired = true, wording unchanged). It also
   // narrows the manifest's Telegram flag, so the capability line never offers a
   // channel the tool list just withheld.
@@ -1675,7 +1677,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     headTools.cfg.forcedFinalCheck = [&userText](const std::string& finalTurn) {
       return orch::placeholderCheck(finalTurn, userText);
     };
-    headTools.cfg.maxRounds          = ci.loopRounds;   // user-tunable (P6); the prompt states the same cap
+    headTools.cfg.maxRounds          = roundsNow;   // user-tunable (P6); the prompt states the same cap
     headTools.cfg.deadlineMs         =
         (uint32_t)(d_.cfg.loop.deadlineS ? d_.cfg.loop.deadlineS() : 600) * 1000U;
     headTools.cfg.roundMinHeap       = t_.loopMinHeap;                 // total-free backstop - not tunable

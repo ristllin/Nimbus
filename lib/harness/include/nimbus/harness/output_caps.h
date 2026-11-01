@@ -73,6 +73,9 @@ uint32_t slowestTokensPerSecond(const std::string& host, const std::string& mode
 // void here and a bool elsewhere would be two functions with one mangled name).
 bool setTestFirstAttemptCap(uint32_t tokens);
 uint32_t testFirstAttemptCap();
+// Test builds: the next `rounds` capped rounds get `tokens` on BOTH attempts, so a real
+// model is cut twice and the fabric's own recovery runs (lane OVF's live leg).
+bool setTestCutRounds(int rounds, uint32_t tokens);
 
 }  // namespace providers
 }  // namespace agent

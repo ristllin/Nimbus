@@ -470,6 +470,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   };
   // Per host and per run of failures: one trim-and-retry, one more round after a cut.
   bool overflowTried = false, cutRerun = false;
+  orch::HeadStep savedCut;
   // The time the turn has left when a round runs again inside this step: the budget the
   // controller passed was for the first attempt.
   auto remainingMs = [&pd](uint32_t budgetMs, uint32_t since) -> uint32_t {
@@ -590,6 +591,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       // next host, is told what happened and answers in less room; with nowhere to go
       // the round runs once more here (Lumi, 31 Oct: the only open host, 3m56s, no answer).
       if (sr2.kind == orch::StepErr::Cut) {
+        savedCut = sr2;
         orch::Salvage kept;
         orch::salvageTurnText(sr2.finalTurn, kept);
         cutNote = orch::cutRetryNote(sr2.error, kept.reply.empty() ? sr2.text : kept.reply);
@@ -601,8 +603,9 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
           continue;
         }
       }
-      if (nowhereToGo)
-        return sr2;   // exhausted - the controller fails soft to the caller
+      // Exhausted: the controller fails soft to the caller. What a cut round wrote outlives
+      // a later failure of another kind: the owner gets those words, not a bare cause.
+      if (nowhereToGo) return savedCut.cut.empty() ? sr2 : savedCut;
       const std::string from = hostList[hostIdx];
       const std::string to   = hostList[nextIdx];
       orch::HeadStepFn next = makeStep(nextIdx);

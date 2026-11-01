@@ -11,6 +11,7 @@
 #include "nimbus/harness/websearch.h"
 #include "scenarios_turn_record.h"
 #include "scenarios_albums.h"
+#include "scenarios_ovf.h"
 #include "scenarios_photos.h"
 #include "scenarios_g0.h"   // the turn-structured history legs (histV2)
 #include "scenarios_c2.h"   // lane C2: finished jobs after a restart (L19-35)
@@ -399,6 +400,15 @@ void scStoreFullPhotos(LabRig& rig, Ctx& c) { storefull::storeFullPhotos(rig, st
 void scCacheGaps(LabRig& rig, Ctx& c) { caching::cacheGaps(rig, histReport(c)); }
 void scFoldBudget(LabRig& rig, Ctx& c) { caching::foldBudget(rig, histReport(c)); }
 
+// Lane OVF: a turn never dies of its size or ends in silence (scenarios_ovf.cpp).
+ovf::Report ovfReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
+void scOvfOverflow(LabRig& rig, Ctx& c) { ovf::overflowRefusal(rig, ovfReport(c)); }
+void scOvfRound0(LabRig& rig, Ctx& c) { ovf::synthesisOverBudget(rig, ovfReport(c)); }
+void scOvfCut(LabRig& rig, Ctx& c) { ovf::cutContinues(rig, ovfReport(c)); }
+void scOvfPlaceholder(LabRig& rig, Ctx& c) { ovf::forcedPlaceholder(rig, ovfReport(c)); }
+void scOvfPromise(LabRig& rig, Ctx& c) { ovf::promiseCorrected(rig, ovfReport(c)); }
+void scOvfAlbum(LabRig& rig, Ctx& c) { ovf::albumOfSix(rig, ovfReport(c)); }
+
 struct Scenario {
   const char* name;
   const char* what;
@@ -436,6 +446,12 @@ const Scenario kScenarios[] = {
     {"albums-one-turn", "an album and its follow-up are one turn whose reply covers every photo", scAlbumsOneTurn, false},
     {"history-cache",  "facts, a photo and a routine ride the history once; a replay storm is one row", scHistoryCache, false},
     {"episodic-dates", "memory_episodic rows carry their dates: today's unread photo reads as today's", scEpisodicDates, false},
+    {"ovf-overflow",    "a provider's real overflow refusal: trim, retry once, answer", scOvfOverflow, false},
+    {"ovf-round0",      "a synthesis over the wire budget at round 0 still answers", scOvfRound0, false},
+    {"ovf-cut",         "a round really cut twice runs on with the note (or on the next host)", scOvfCut, false},
+    {"ovf-placeholder", "a filler answer on the forced round goes back once, the wire takes it", scOvfPlaceholder, false},
+    {"ovf-promise",     "a next-turn promise goes back once, the wire takes it", scOvfPromise, false},
+    {"ovf-album",       "six real photos in one turn end with an answer (NIMBUS_LAB_PHOTOS)", scOvfAlbum, false},
     {"photos-native",  "three label photos go to the head as images; the reply reads their values", scPhotosNative, false},
     {"photo-label-honesty", "a photo unread for billing: the head names the cause, no resend, no blame", scPhotoLabelHonesty, false},
     {"caption-scoring", "the fallback caption step per keyed provider: fields exact, no empty caption", scCaptionScoring, false},

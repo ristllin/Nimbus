@@ -51,7 +51,11 @@ struct ComposeInputs {
   // heap). True = the tools ride the request itself, so the manifest points at
   // the request's tool list instead of listing them again (orch_world.cpp).
   bool toolsOnWire = false;
-  int loopRounds = kLoopRoundsDefault;  // the loop's round cap, as the prompt states it
+  int loopRounds = kLoopRoundsDefault;  // the configured round cap: the static block states it
+  // This turn's cap when it is tighter (a plain chat line, a bounded turn; 0 = the configured
+  // one). It rides the dynamic block: turns of different shapes must not re-write the cached
+  // static block (lane OVF: a chat and a task alternating would miss the cache every turn).
+  int loopRoundsNow = 0;
   // CUM-523: false = this turn has no Telegram chat it can deliver to (the engine
   // sets it from its one HarnessConfig::telegramDeliverable sample). Default true: a caller that
   // does not say (nimbusd, host rigs) keeps the Telegram wording unchanged.

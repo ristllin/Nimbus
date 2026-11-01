@@ -13,6 +13,8 @@ namespace {
 
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
 uint32_t g_testFirstAttemptCap = 0;   // test and host builds only (setTestFirstAttemptCap)
+int g_testCutRounds = 0;              // ... (setTestCutRounds)
+uint32_t g_testCutTokens = 0;
 #endif
 
 // A Claude id's line and version: "claude-opus-4-5" -> ("opus", 45),
@@ -174,6 +176,11 @@ OutputCap outputCapFor(const std::string& host, const std::string& model, RoundK
   clampToTime(c, roundMs, slowestTokensPerSecond(host, model));
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
   if (g_testFirstAttemptCap && c.maxTokens) c.maxTokens = g_testFirstAttemptCap;
+  if (g_testCutRounds > 0 && c.maxTokens) {
+    g_testCutRounds--;
+    c.maxTokens = g_testCutTokens;
+    c.retryTokens = g_testCutTokens + 16;   // a retry that differs, and is cut again
+  }
 #endif
   return c;
 }
@@ -184,6 +191,11 @@ bool setTestFirstAttemptCap(uint32_t tokens) {
   return true;
 }
 uint32_t testFirstAttemptCap() { return g_testFirstAttemptCap; }
+bool setTestCutRounds(int rounds, uint32_t tokens) {
+  g_testCutRounds = rounds;
+  g_testCutTokens = tokens;
+  return true;
+}
 #endif
 
 }  // namespace providers

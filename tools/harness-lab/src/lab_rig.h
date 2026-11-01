@@ -267,6 +267,7 @@ class LabRig {
   }
   // The top of the transport chain: what every lab request goes through.
   agent::HttpTransport& net() { return wire_; }
+  ShimTransport& shim() { return shim_; }
   const agent::FaultPlan& faults() const { return faultPlan_; }
   const RecordingTransport& recorder() const { return rec_; }
   LabFiles& files() { return files_; }
@@ -605,7 +606,7 @@ class LabRig {
 
   agent::providers::ProviderDeps providerDeps() {
     agent::providers::ProviderDeps pd;
-    pd.http = &wire_;
+    pd.http = &shim_;
     pd.key = [this](const char* h) { return env_.providerKey(h); };
     pd.orchModel = [this](const char* h) { return modelFor(h); };
     pd.toolLoopOn = [this] { return opt_.toolLoop; };
@@ -939,6 +940,7 @@ class LabRig {
   RecordingTransport rec_;
   agent::FaultInjectingTransport fault_;
   WireOverrideTransport wire_;
+  ShimTransport shim_{&wire_};
 
   orch::VectorMemory vec_;
   orch::Scratchpad   scratch_;

@@ -416,7 +416,7 @@ static void test_zai_overflow_on_the_single_shot_path() {
   r.turn("so where are we at?");
   assertAnswered(r, "zai");
   TEST_ASSERT_EQUAL(3, (int)r.requests());
-  TEST_ASSERT_TRUE(r.wire.http.seen[2].body.size() < r.wire.http.seen[1].body.size());
+  TEST_ASSERT_TRUE(r.wire.http.seen[2].body.size() < r.wire.http.seen[0].body.size());
   TEST_ASSERT_TRUE(r.wire.http.seen[2].body.find("LEFT OUT") != std::string::npos);
 }
 
@@ -603,7 +603,7 @@ static void test_a_real_task_keeps_its_rounds_and_chat_stays_capped() {
     r.script(ok("mistral", finalBody("mistral")));
     r.turn(t);
     std::string msg = std::string("a task keeps its rounds: ") + t;
-    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[0].body.find("several rounds (at most 5)") != std::string::npos, msg.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[0].body.find("several rounds (at most 2)") == std::string::npos, msg.c_str());
   }
   static const char* const kChat[] = {
       "hi", "so where are we at?", "thanks", "Did you teach me about draft models?", "why do you think so?",
@@ -712,6 +712,28 @@ static void test_a_job_behind_the_promise_stands() {
   TEST_ASSERT_EQUAL(2, (int)r.requests());
 }
 
+// A chat line and a task alternating must not re-write the cached static block: its round
+// figure is the configured one, this turn's tighter cap rides the dynamic block.
+static void test_turn_shape_does_not_touch_the_cached_static_block() {
+  Rig r({"mistral"}, 2000);
+  r.cfg.rounds = 5;
+  r.script(ok("mistral", finalBody("mistral")));
+  r.script(ok("mistral", finalBody("mistral")));
+  r.turn("hi");
+  r.turn("search the web for the current price of a Raspberry Pi 5");
+  const auto sysOf = [](const std::string& body) {
+    JsonDocument d;
+    deserializeJson(d, body);
+    return std::string(d["messages"][0]["content"] | "");
+  };
+  const std::string a = sysOf(r.wire.http.seen[0].body), b = sysOf(r.wire.http.seen[1].body);
+  TEST_ASSERT_TRUE(!a.empty());
+  TEST_ASSERT_TRUE_MESSAGE(a == b, "the system message changed between a chat turn and a task turn");
+  TEST_ASSERT_TRUE(a.find("(at most 5)") != std::string::npos);
+  TEST_ASSERT_TRUE(r.wire.http.seen[0].body.find("(at most 2)") != std::string::npos);
+  TEST_ASSERT_TRUE(r.wire.http.seen[1].body.find("(at most 2)") == std::string::npos);
+}
+
 // True statements about what is not happening are never corrected.
 static void test_not_promises_are_left_alone() {
   for (const char* p : kNotPromises) {
@@ -739,6 +761,7 @@ int main() {
   RUN_TEST(test_forced_placeholder_is_sent_back_once);
   RUN_TEST(test_placeholder_never_reaches_the_owner);
   RUN_TEST(test_a_real_task_keeps_its_rounds_and_chat_stays_capped);
+  RUN_TEST(test_turn_shape_does_not_touch_the_cached_static_block);
   RUN_TEST(test_promise_gets_one_correction_round);
   RUN_TEST(test_stubborn_or_forced_promise_gets_the_line);
   RUN_TEST(test_salvaged_promise_gets_the_line);
