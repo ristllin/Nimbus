@@ -521,6 +521,16 @@ static void noteUnspoken(const std::string& why, bool noted, const std::string& 
   if (st.pendingMemResults) *st.pendingMemResults += "[DEVICE] tts was not spoken: " + why + outcome + "\n";
 }
 
+// Did the turn change something the owner would call done? A lookup or the model's own
+// scratchpad is not an action: a turn with only those has not answered anything.
+static bool landedChange(const nimbus::orch::TurnEffects& fx) {
+  using K = nimbus::orch::FxKind;
+  for (const K k : {K::MemWrite, K::MemUpdate, K::MemPin, K::MemDelete, K::FileWrite, K::FileReplace, K::SkillSave,
+                    K::Spawn, K::Send, K::Speak, K::Schedule, K::Config})
+    if (fx.anyOk(k)) return true;
+  return false;
+}
+
 void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
                ApplyState& st, bool& spawnedOut) {
   // Who this turn is, once (CUM-813): the chat's principal (v3.7.0: every memory tool
@@ -920,7 +930,7 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
     // empty model reply hears that, on every channel (GLM answered "What is my sister's
     // cat called?" with "Done.", VN reality check 1 Nov).
     const bool acted = !t.device.empty() || !t.mem_write.empty() || !t.session_ops.empty() ||
-                       (st.claims && !st.claims->effects().empty());
+                       (st.claims && landedChange(st.claims->effects()));
     const bool waiting = !st.scheduledTurn && !st.quietFallback &&
                          nimbus::orch::currentTurnRole() == nimbus::orch::TurnRole::Owner;
     if (!acted && waiting && d.deliver) d.deliver(chatId, kEmptyAnswer);

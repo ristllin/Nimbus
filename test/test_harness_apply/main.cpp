@@ -765,6 +765,21 @@ static void test_empty_turn_stays_silent_when_nobody_waits() {
   }
 }
 
+// A lookup or a scratchpad note is not an action: that turn still answered nothing.
+static void test_a_lookup_alone_is_not_an_action() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  ApplyState st = makeState(r);
+  agent::ClaimCheck claims;
+  claims.effects().add(nimbus::orch::FxKind::Read, true);
+  claims.effects().add(nimbus::orch::FxKind::Scratch, true);
+  st.claims = &claims;
+  bool spawned = false;
+  agent::applyTurn(Turn{}, "1001", d, st, spawned);
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING(agent::kEmptyAnswer, r.delivered[0].second.c_str());
+}
+
 static void test_turn_that_acted_still_signals_completion() {
   Rec r;
   ApplyDeps d = makeDeps(r);
@@ -2364,6 +2379,7 @@ int main(int, char**) {
   RUN_TEST(test_tell_poll_nudge_does_not_mention_await);
   RUN_TEST(test_empty_turn_never_reads_as_done);
   RUN_TEST(test_empty_turn_stays_silent_when_nobody_waits);
+  RUN_TEST(test_a_lookup_alone_is_not_an_action);
   RUN_TEST(test_turn_that_acted_still_signals_completion);
   RUN_TEST(test_completion_suppressed_after_spawn);
   RUN_TEST(test_spawn_quiet_flag_tracks_scheduled_turn);
