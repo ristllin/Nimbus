@@ -253,7 +253,7 @@ inline const std::vector<FixedKnob>& fixedKnobs() {
 // blank on every Save Changes); a non-empty value would set something a hosted
 // instance does not store from the page.
 inline bool keepIfEmptyField(const std::string& f) {
-  return f == "custKey" || f == "tgToken" || f == "tavKey" || f == "clr_custKey";
+  return f == "custKey" || f == "tgToken" || f == "clr_custKey";
 }
 inline std::string normBool(const std::string& v) {
   return (v == "1" || v == "true" || v == "on") ? "1" : "0";
@@ -267,7 +267,8 @@ enum class Verdict { Apply, NoOp, Refuse };
 inline bool appliedOrchField(const std::string& f) {
   static const char* kApplied[] = {"orchHost", "provPrio", "subPrio", "sysPrompt", "clearConv",
                                    "clearMem", "convReset", "orchLoop", "tgAllow",
-                                   "spendCeil"};   // lane DEF: the monthly spend ceiling
+                                   "spendCeil",    // lane DEF: the monthly spend ceiling
+                                   "tavKey", "clr_tavKey"};   // the web search key
   for (const char* a : kApplied)
     if (f == a) return true;
   for (const auto& slot : nimbus::orch::kProviderSlots) {

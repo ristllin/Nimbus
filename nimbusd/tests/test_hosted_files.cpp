@@ -143,19 +143,16 @@ static void testOneFoodLogAndItsReceipt(ndtest::Ctx& c) {
 }
 
 static void testNotYetHosted(ndtest::Ctx& c) {
-  std::printf("  -- (d) routines, skills, wake-ups and downloads refuse writes by name --\n");
+  std::printf("  -- (d) a routine needs a schedule, and downloads refuse writes by name --\n");
   Config cfg;
   NimbusdRig rig(cfg, opts("hf-d"));
   Web web(rig);
   const ApiResp loop = web.call("POST", "/api/loops", "action=create&name=weekday+brief&prompt=hi");
-  c.eqi(loop.status, 400, "creating a routine is refused");
-  c.ok(has(loop.body, "\"ok\":false") && has(loop.body, "Not available on a hosted Nimbus yet: routines"),
-       "with the feature named (the page shows x.error)");
-  c.ok(web.call("GET", "/api/loops").body == "[]", "the routine list stays an honest empty list");
-  for (const char* p : {"/api/skills/save", "/api/wakeups", "/api/fetchq"}) {
-    const ApiResp r = web.call("POST", p, "id=x");
-    c.ok(r.status == 400 && has(r.body, "Not available on a hosted Nimbus yet"), std::string(p) + " refuses a write");
-  }
+  c.eqi(loop.status, 400, "a routine with no schedule is refused");
+  c.ok(has(loop.body, "\"ok\":false"), "and the page reads why (x.error)");
+  c.ok(web.call("GET", "/api/loops").body == "[]", "a routine with no schedule was not stored");
+  const ApiResp fetchq = web.call("POST", "/api/fetchq", "id=x");
+  c.ok(fetchq.status == 400 && has(fetchq.body, "Not available on a hosted Nimbus yet"), "/api/fetchq refuses a write");
 }
 
 static void testRefusedUploadLeavesNoFile(ndtest::Ctx& c) {

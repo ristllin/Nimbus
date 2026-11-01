@@ -233,7 +233,7 @@ static void testUnknownKeyFieldRefused(ndtest::Ctx& c) {
   c.ok(api.handle("POST", "/api/orch", "custKey=&orchLoop=1", save),
        "a Save Changes payload with a blank custKey is handled");
   c.eqi(save.status, 200, "a blank custKey rides Save Changes (not refused as unknown)");
-  for (const char* f : {"custKey", "tavKey"}) {
+  for (const char* f : {"custKey"}) {
     ApiResp typed;
     api.handle("POST", "/api/orch", std::string(f) + "=typed_value", typed);
     c.eqi(typed.status, 400, std::string("a typed ") + f + " is refused");

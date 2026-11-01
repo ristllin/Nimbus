@@ -1018,11 +1018,11 @@ class WebApi {
 
   // The settings and actions one POST carries, validated before anything applies.
   struct OrchWrites {
-    Writes keys, models, subs;
+    Writes keys, models, subs, tavily;   // tavily: at most one, the web search key
     std::vector<std::function<void(HostedSettings&)>> settings;
     bool clearConv = false, clearMem = false, convReset = false;
     bool empty() const {
-      return keys.empty() && models.empty() && subs.empty() && settings.empty() && !clearConv &&
+      return keys.empty() && models.empty() && subs.empty() && tavily.empty() && settings.empty() && !clearConv &&
              !clearMem && !convReset;
     }
   };
@@ -1069,6 +1069,10 @@ class WebApi {
       if (hosted::orchFieldVerdict(f, formValue(body, f)) == hosted::Verdict::Refuse)
         return hosted::notAvailable(f);
     collectWrites(body, w.keys, w.models);
+    formWrite(body, "tavKey", "tavily", w.tavily);
+    for (const auto& t : w.tavily)
+      if (!t.second.empty() && NimbusdRig::storableKey(t.second).empty())
+        return "That key is not valid. Paste just the key and save again.";
     for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++) {
       const std::string slug = nimbus::orch::kProviderSlots[i].slug;
       formWrite(body, "subM_" + slug, slug, w.subs);
@@ -1099,6 +1103,7 @@ class WebApi {
   // nothing in the settings changed - SettingsStore applies only what persists).
   std::string applyOrchWrites(const OrchWrites& w) {
     int applied = applyKeyWrites(w.keys);
+    for (const auto& t : w.tavily) applied += rig_->applyTavilyKey(t.second) ? 1 : 0;
     for (const auto& m : w.models) applied += rig_->applyOrchModel(m.first, m.second) ? 1 : 0;
     for (const auto& m : w.subs) applied += rig_->applySubModel(m.first, m.second) ? 1 : 0;
     if (!w.settings.empty()) {
@@ -1110,7 +1115,7 @@ class WebApi {
     if (w.clearMem) { rig_->clearRunningMemory(); applied++; }
     if (w.convReset) { rig_->resetConversations(); applied++; }
     const char* note = "Saved and applied.";
-    if (!w.keys.empty()) note = "Key saved and applied.";
+    if (!w.keys.empty() || !w.tavily.empty()) note = "Key saved and applied.";
     else if (!w.models.empty()) note = "Model saved and applied.";
     JsonDocument d;
     d["ok"] = true;

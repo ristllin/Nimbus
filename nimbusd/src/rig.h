@@ -208,6 +208,7 @@ class NimbusdRig {
     seedTelegramAllowlist();
     buildMemory();
     loadSecrets();   // in-app provider keys persisted from a prior session (CUM-279)
+    registerWebSearchTool();   // a web search key saved on the page earlier
     applyEmbedPick();   // memory follows the keys this instance holds
     loadModels();    // in-app model picks persisted from a prior session (CUM-425)
     loadSubModels(); // in-app sub-agent model picks (device subM_<slug>)
@@ -1020,6 +1021,17 @@ class NimbusdRig {
     ++keyGen_;
     return true;
   }
+  // The web search key from the page (device parity, Assistant > Tools > Web search),
+  // durable with the provider keys; web.search is offered from the next turn on, and
+  // goes when the key is cleared. Engine thread. False when the key cannot be stored.
+  bool applyTavilyKey(const std::string& posted) {
+    const std::string key = storableKey(posted);
+    if (!posted.empty() && key.empty()) return false;
+    cfg_.setOverride("TAVILY_API_KEY", key);
+    saveSecrets();
+    registerWebSearchTool();
+    return true;
+  }
   // Set (or clear, when `model` is empty) a per-head model pick from the running UI
   // (device parity: store::setOrchModel, "" -> provider default). The hosted head
   // has no live-harvested choice list to validate against, so the gate is shape,
@@ -1134,6 +1146,7 @@ class NimbusdRig {
   }
   // The env names the secrets file may hold: the in-app provider keys, nothing else.
   static bool secretsName(const std::string& name) {
+    if (name == "TAVILY_API_KEY") return true;   // the web search key, set on the page like the device
     return nimbus::orch::anySlotWhere([&name](const char* slug) { return name == Config::providerEnvName(slug); });
   }
   // A secrets-file line's stored form: the provider key it holds (storableKey), or
