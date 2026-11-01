@@ -55,6 +55,8 @@ from persona_schema import (  # noqa: E402, F401  (the rig's public loading surf
 DOCKER = os.environ.get("DOCKER_BIN", "docker")
 HTTP_TIMEOUT_S = 60
 CONFIG_PAUSE_S = 0.2  # the web app's pace between saves
+BUSY_WAIT_S = 120  # how long a read waits out the daemon's 503 "instance busy"
+BUSY_POLL_S = 1
 # A persona that names no ceiling still gets this one, not the daemon's 20 USD default.
 DEFAULT_CAP_CENTS = 200
 # The whole run, judge included, stops here unless --max-cents says otherwise.
@@ -305,8 +307,16 @@ class Instance:
             return {}
 
     def get_json_strict(self, path: str) -> dict:
-        """For the snapshots a verdict rests on: an unreadable answer stops the persona."""
+        """For the snapshots a verdict rests on: an unreadable answer stops the persona.
+
+        A 503 is the daemon's "busy, try again": a turn is running, or it has just started
+        and is loading its stores. That is a wait, not a failure.
+        """
+        end = time.time() + BUSY_WAIT_S
         status, body = self.get(path)
+        while status == 503 and time.time() < end:
+            time.sleep(BUSY_POLL_S)
+            status, body = self.get(path)
         if status != 200:
             raise RuntimeError(f"GET {path} answered {status}")
         return json.loads(body)
@@ -426,8 +436,8 @@ class Capture:
 
     def note_turn(self):
         """/api/lastturn is one slot that a later turn overwrites: keep every turn seen in it."""
-        text = self.inst.get("/api/lastturn")[1]
-        if text != self.anatomy and text not in self.turns_seen:
+        status, text = self.inst.get("/api/lastturn")
+        if status == 200 and text != self.anatomy and text not in self.turns_seen:
             self.turns_seen.append(text)
 
     def fill(self, rec: dict):

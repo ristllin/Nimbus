@@ -32,6 +32,7 @@ KEY_FIELDS = {"openai": "oaiKey", "anthropic": "antKey", "mistral": "mistKey", "
 # What a persona may ask of a key: the verdict /api/orch must report before any turn runs.
 KEY_VERDICTS = ("verified", "rejected", "nocredits")
 NUMBER = (int, float)
+MIN_CAP_CENTS = 100  # the daemon answers ok to a lower ceiling and holds 1 USD (parseCeilingCents)
 
 PERSONA_FIELDS = {
     "name": str,
@@ -228,6 +229,8 @@ def _validate_scenario(sc: dict, earlier: set, where: str):
 
 
 def _validate_providers(p: dict, name: str):
+    if p.get("monthly_cap_cents", MIN_CAP_CENTS) < MIN_CAP_CENTS:
+        raise PersonaError(f"{name}: monthly_cap_cents below {MIN_CAP_CENTS}: the daemon would raise it to that")
     for slug in [*p.get("keys", {}), *p.get("models", {}).get("head", {}), *p.get("models", {}).get("sub", {})]:
         if slug not in KEY_FIELDS:
             raise PersonaError(f"{name}: unknown provider {slug!r}, one of {sorted(KEY_FIELDS)}")

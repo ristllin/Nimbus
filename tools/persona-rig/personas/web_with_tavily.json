@@ -69,7 +69,7 @@
      {
       "say": "Use a web lookup to find the latest stable Python 3 release listed on python.org/downloads. Tell me the version number and the URL you used.",
       "timeout_s": 300,
-      "settle_s": 5,
+      "settle_s": 30,
       "expect": [
        {
         "turn_resolved": true

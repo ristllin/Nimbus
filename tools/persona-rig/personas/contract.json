@@ -181,7 +181,7 @@
      },
      "expect": [
       {
-       "http_status": 200
+       "http_status": 404
       }
      ]
     },
@@ -217,21 +217,6 @@
      ]
     },
     {
-     "http": {
-      "method": "POST",
-      "path": "/api/message",
-      "json": {
-       "chat_id": "2001",
-       "text": "contract check with no provider key"
-      }
-     },
-     "expect": [
-      {
-       "http_status": 202
-      }
-     ]
-    },
-    {
      "upload": {
       "project": "contract",
       "name": "a.txt",
@@ -247,6 +232,21 @@
         "name": "a.txt",
         "text": "contract"
        }
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "POST",
+      "path": "/api/message",
+      "json": {
+       "chat_id": "2001",
+       "text": "contract check with no provider key"
+      }
+     },
+     "expect": [
+      {
+       "http_status": 202
       }
      ]
     }

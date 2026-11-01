@@ -24,6 +24,7 @@ import grade  # noqa: E402
 import persona_rig as pr  # noqa: E402
 
 pr.CONFIG_PAUSE_S = 0
+pr.BUSY_POLL_S = 0.01
 
 # Split so no secret-shaped literal sits in the repo (GH013 and gitleaks).
 FAKE_KEY = "sk" + "-" + "persona-rig-self-test-key-0123456789"
@@ -38,6 +39,7 @@ class FakeNimbusd:
         self.spawn_turns_unresolved = set()
         self.settings = {}
         self.transient_failures = 0
+        self.busy_reads = 0  # how many engine reads answer 503, as after a real restart
         self.lock = threading.Lock()
 
     def push(self, role, text):
@@ -151,6 +153,9 @@ def make_handler(fake: FakeNimbusd, token: str):
                     "/api/tenant": fake.tenant,
                     "/api/mem/stats": lambda: {"vectors": fake.vectors},
                 }
+                if url.path == "/api/mem/episodic" and fake.busy_reads > 0:
+                    fake.busy_reads -= 1
+                    return self._send(503, {"error": "instance busy - try again"})
                 if url.path == "/api/files/dl":
                     data = fake.files.get((q["project"][0], q["name"][0]))
                     return self._send(200, data) if data is not None else self._send(404, {"error": "not found"})
@@ -209,6 +214,7 @@ class FakeBackend:
 
     def restart(self, _name):
         self.fake.log.clear()  # the daemon's log is an in-memory tail: a restart empties it
+        self.fake.busy_reads = 3  # and its engine answers 503 while it loads its stores
         return self.server.server_address[1]
 
     def logs(self, _name):
@@ -734,6 +740,7 @@ class Schema(unittest.TestCase):
         self.refused("api_min", scenarios=[sc(say("x", {"api_min": {"path": "/a"}}))])
         self.refused("http_status", scenarios=[sc({"http": {"path": "/a"}, "expect": [{"http_status": "200"}]})])
         self.refused("bad regex", scenarios=[sc(say("x", {"reply_regex": "("}))])
+        self.refused("below 100", monthly_cap_cents=50)
         self.refused("provider", keys={"mistrall": "K"})
         self.refused("host", host="mistrall")
 
@@ -1150,6 +1157,16 @@ class RunOptions(unittest.TestCase):
         self.assertIn("container restarted", log)
         self.assertEqual((ev / "unit" / "api-log.txt").read_text().count("turn spend:"), 1)
         self.assertEqual(results[0]["provider_usage"]["fake"]["in"], 200)
+
+    def test_a_read_that_stays_busy_stops_the_persona_instead_of_reading_as_zero(self):
+        fake = FakeNimbusd()
+        fake.busy_reads = 10**6
+        original = pr.BUSY_WAIT_S
+        pr.BUSY_WAIT_S = 0.05
+        self.addCleanup(setattr, pr, "BUSY_WAIT_S", original)
+        results, _b, _e = self.run_it([persona()], fake)
+        self.assertFalse(results[0]["pass"])
+        self.assertIn("503", results[0]["error"])
 
     def test_scenarios_start_on_a_cleared_conversation(self):
         fake = FakeNimbusd()

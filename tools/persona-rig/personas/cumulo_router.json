@@ -23,7 +23,7 @@
    "cumulo": "${verdict}"
   },
   "host": "cumulo",
-  "monthly_cap_cents": 50,
+  "monthly_cap_cents": 100,
   "scenarios": [
    {
     "id": "chat",
