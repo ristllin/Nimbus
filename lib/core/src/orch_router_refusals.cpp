@@ -48,15 +48,8 @@ bool skipString(const std::string& s, size_t& i) {
   return false;
 }
 
-// Past one JSON value. False when it never ends.
-bool skipValue(const std::string& s, size_t& i) {
-  skipWs(s, i);
-  if (i >= s.size()) return false;
-  if (s[i] == '"') return skipString(s, i);
-  if (s[i] != '{' && s[i] != '[') {
-    while (i < s.size() && s[i] != ',' && s[i] != '}' && s[i] != ']') ++i;
-    return i < s.size();
-  }
+// At an opening brace or bracket: past its match. False when it never closes.
+bool skipContainer(const std::string& s, size_t& i) {
   int depth = 0;
   while (i < s.size()) {
     const char c = s[i];
@@ -70,6 +63,16 @@ bool skipValue(const std::string& s, size_t& i) {
     if (depth == 0) return true;
   }
   return false;
+}
+
+// Past one JSON value. False when it never ends.
+bool skipValue(const std::string& s, size_t& i) {
+  skipWs(s, i);
+  if (i >= s.size()) return false;
+  if (s[i] == '"') return skipString(s, i);
+  if (s[i] == '{' || s[i] == '[') return skipContainer(s, i);
+  while (i < s.size() && s[i] != ',' && s[i] != '}' && s[i] != ']') ++i;
+  return i < s.size();
 }
 
 // Calls `fn(key, valueStart, valueEnd)` for each member of the object at `i`; stops when

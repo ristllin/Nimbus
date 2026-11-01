@@ -112,8 +112,8 @@ static bool parked(const char* provider) {
 // A park whose re-check fell due: the clock on a live rig cannot be moved, so the record
 // is written as if it were parked a whole interval ago.
 static void parkDue(const char* provider, orch::ParkCause cause) {
-  orch::providerPark().park(provider, orch::PaidSeam::Chat, 0, orch::ParkKind::Billing, 402,
-                            NimbusdRig::steadyMs() - orch::ProviderPark::kRecheckMs - 1, cause);
+  orch::providerPark().park(provider, orch::PaidSeam::Chat, 0, orch::ProviderPark::Refusal{orch::ParkKind::Billing, 402, cause},
+                            NimbusdRig::steadyMs() - orch::ProviderPark::kRecheckMs - 1);
 }
 
 struct Harness {
@@ -220,8 +220,9 @@ static void testEmptyWalletParksAndRecovers(ndtest::Ctx& c) {
 
   // A top-up on a hosted instance: the very next message is answered and ends the park.
   orch::providerPark().clear();
-  orch::providerPark().park("cumulo", orch::PaidSeam::Chat, 0, orch::ParkKind::Billing, 402, NimbusdRig::steadyMs(),
-                            orch::ParkCause::WalletEmpty);
+  orch::providerPark().park("cumulo", orch::PaidSeam::Chat, 0,
+                            orch::ProviderPark::Refusal{orch::ParkKind::Billing, 402, orch::ParkCause::WalletEmpty},
+                            NimbusdRig::steadyMs());
   c.ok(parked("cumulo"), "parked, not due");
   const TurnRecord t4 = h.rig.say("owner", "topped up");
   c.ok(has(t4.reply, "ok") && !parked("cumulo"), "the next message is served and ends the park");

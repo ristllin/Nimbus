@@ -7,6 +7,7 @@ test_router_refusal_contract then fails until lib/core's table agrees with it.
 
 Usage: python3 tools/router_contract/gen_contract_header.py [--check]
 """
+
 import json
 import pathlib
 import re
@@ -50,8 +51,14 @@ def render():
     ]
     for reason, http, retry, action in rows(text):
         lines.append(f'    {{"{reason}", {http}, {"true" if retry == "yes" else "false"}, "{action}"}},')
-    lines += ["};", "struct ContractBody {", "  const char* reason;", "  const char* json;", "};",
-              "static const ContractBody kContractBodies[] = {"]
+    lines += [
+        "};",
+        "struct ContractBody {",
+        "  const char* reason;",
+        "  const char* json;",
+        "};",
+        "static const ContractBody kContractBodies[] = {",
+    ]
     for reason, body in bodies(text):
         lines.append(f"    {{{cxx(reason)}, {cxx(body)}}},")
     lines += ["};", ""]

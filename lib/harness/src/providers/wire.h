@@ -148,8 +148,8 @@ inline void noteParkRefusal(const ProviderDeps& pd, const std::string& host, con
   }
   const std::string key = prov == "cumulo" ? (pd.routerKey ? pd.routerKey() : std::string())
                                            : (pd.key ? pd.key(prov.c_str()) : std::string());
-  nimbus::orch::providerPark().park(prov.c_str(), nimbus::orch::PaidSeam::Chat,
-                                    nimbus::orch::parkKeyFingerprint(key), kind, status, now, cause);
+  nimbus::orch::providerPark().park(prov.c_str(), nimbus::orch::PaidSeam::Chat, nimbus::orch::parkKeyFingerprint(key),
+                                    nimbus::orch::ProviderPark::Refusal{kind, status, cause}, now);
   hlog::logf("provider: %s parked for every seam (%s, HTTP %d)", prov.c_str(),
              nimbus::orch::parkKindSlug(kind), status);
 }

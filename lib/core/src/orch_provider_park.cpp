@@ -405,15 +405,19 @@ void ProviderPark::releaseProbe(const char* provider) {
 }
 
 void ProviderPark::park(const char* provider, PaidSeam seam, uint32_t keyFp, ParkKind kind, int httpStatus,
-                        uint32_t nowMs, ParkCause cause) {
-  if (kind == ParkKind::None || !validName(provider)) return;
+                        uint32_t nowMs) {
+  park(provider, seam, keyFp, Refusal{kind, httpStatus, ParkCause::Unspecified}, nowMs);
+}
+
+void ProviderPark::park(const char* provider, PaidSeam seam, uint32_t keyFp, const Refusal& refusal, uint32_t nowMs) {
+  if (refusal.kind == ParkKind::None || !validName(provider)) return;
   FlushOnExit flushAfter{*this};   // after the lock below is released
   std::lock_guard<std::recursive_mutex> lk(mx_);
   loadLocked(nowMs);
   Rec* r = ensure(provider);
   if (keyFp && r->keyFp && keyFp != r->keyFp) endEpisode(*r);   // the old key's park is over
   if (keyFp) r->keyFp = keyFp;
-  parkLocked(*r, seam, kind, httpStatus, nowMs, cause);
+  parkLocked(*r, seam, refusal.kind, refusal.httpStatus, nowMs, refusal.cause);
   saveLocked();
 }
 
@@ -431,7 +435,7 @@ ParkKind ProviderPark::noteAnswer(const char* provider, PaidSeam seam, uint32_t 
       noteFailure(provider, nowMs);
     return kind;
   }
-  park(provider, seam, keyFp, kind, httpStatus, nowMs, parkCauseFor(text));
+  park(provider, seam, keyFp, Refusal{kind, httpStatus, parkCauseFor(text)}, nowMs);
   return kind;
 }
 
@@ -610,6 +614,14 @@ size_t ProviderPark::snapshot(ParkEntry* out, size_t cap, uint32_t nowMs) {
 // refused turn went out): an older image reads any non-zero value as "told". <cause> (a
 // ParkCause, only when the router named one) came later: an older image stops reading
 // before it, and a line without it reads as Unspecified.
+namespace {
+unsigned noticedCode(bool answered, bool noticed) { return answered ? 2u : (noticed ? 1u : 0u); }
+void appendCause(char* line, size_t cap, int len, ParkCause cause) {
+  if (cause == ParkCause::Unspecified || len <= 0 || (size_t)len >= cap) return;
+  std::snprintf(line + len, cap - (size_t)len, " %u", (unsigned)cause);
+}
+}  // namespace
+
 std::string ProviderPark::serialize(uint32_t nowMs) const {
   std::lock_guard<std::recursive_mutex> lk(mx_);
   std::string out = "PK1\n";
@@ -623,10 +635,9 @@ std::string ProviderPark::serialize(uint32_t nowMs) const {
     const int len = std::snprintf(line, sizeof(line), "%s %u %d %u %lu %lu %lu %u %lu %08lx", r.provider,
                                   (unsigned)r.kind, r.httpStatus, (unsigned)r.seamMask, (unsigned long)inS,
                                   (unsigned long)(epoch && inS ? epoch + inS : 0u), (unsigned long)r.sinceEpoch,
-                                  r.answered ? 2u : (r.noticed ? 1u : 0u), (unsigned long)r.warnedDay,
+                                  noticedCode(r.answered, r.noticed), (unsigned long)r.warnedDay,
                                   (unsigned long)r.keyFp);
-    if (len > 0 && r.cause != ParkCause::Unspecified && (size_t)len < sizeof(line))
-      std::snprintf(line + len, sizeof(line) - (size_t)len, " %u", (unsigned)r.cause);
+    appendCause(line, sizeof(line), len, r.cause);
     out += line;
     out += '\n';
   }

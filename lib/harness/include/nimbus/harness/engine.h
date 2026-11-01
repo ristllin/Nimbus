@@ -526,6 +526,8 @@ class TurnEngine {
   std::string syncCapacityText() const;
   // A billing refusal's owner notice: once per episode (billingNoticeDue, shared
   // with the embedding seam), held without taking the latch on a quiet turn.
+  bool recheckableHost(const std::string& host) const;   // recheckParkedHost's gates
+  void askParkedHost(const std::string& host);           // its one small request
   void deliverBillingNotice(const std::string& chatId, const std::string& host,
                             const std::string& text);
   // L19-13 d: a provider-switch notice raised while a turn runs is HELD, not sent:

@@ -2934,6 +2934,16 @@ bool TurnEngine::canFoldNow() const {
   return !foldHostCandidates().empty();
 }
 
+namespace {
+// Its re-check is due and a chat answer would settle it. A park on one seam (a 403 for one
+// model or endpoint) is that seam's to re-check: a chat answer says nothing about it.
+bool parkEntryDueForChat(const nimbus::orch::ParkEntry& e) {
+  namespace orch = nimbus::orch;
+  const bool chatSeam = e.seamMask & (1u << (uint8_t)orch::PaidSeam::Chat);
+  return e.kind != orch::ParkKind::None && !e.paused && !e.probing && e.recheckInMs == 0 && chatSeam;
+}
+}  // namespace
+
 // The idle re-check (CUM-889): a parked provider that nothing else calls (Cumulo last in
 // the priority list on a device whose head answers every turn) still recovers by itself.
 // A host whose re-check is due gets one small real request, the fold's way (no turn state
@@ -2949,27 +2959,35 @@ bool TurnEngine::recheckParkedHost() {
   orch::ParkEntry e[orch::ProviderPark::kMaxProviders];
   const size_t n = orch::providerPark().snapshot(e, orch::ProviderPark::kMaxProviders, nowMs());
   for (size_t i = 0; i < n; ++i) {
-    const bool due = e[i].kind != orch::ParkKind::None && !e[i].paused && !e[i].probing && e[i].recheckInMs == 0;
+    if (!parkEntryDueForChat(e[i])) continue;
     const std::string h = e[i].provider;
-    // A park on one seam (a 403 for one model or endpoint) is that seam's to re-check:
-    // a chat answer says nothing about it.
-    if (!due || !(e[i].seamMask & (1u << (uint8_t)orch::PaidSeam::Chat)) || !d_.hosts.has(h)) continue;
-    if (d_.cfg.provider.hasKey && !d_.cfg.provider.hasKey(h)) continue;
-    if (d_.cfg.budget.overBudget && d_.cfg.budget.overBudget(h)) continue;
-    if (d_.hosts.isParked(h)) continue;   // the park moved on since the snapshot
-    hlog::logf("park: asking %s with one small request: nothing else is calling it", h.c_str());
-    std::string convId, outJson, err;
-    orch::TokenUsage u;
-    const bool ok = d_.hosts.run(h, convId, orch::ORCH_PARK_RECHECK_PROMPT, "ok", outJson, err, /*tools=*/nullptr, &u);
-    orch::TurnSpend& spend = facts().spend;
-    spend.clear();
-    spend.add(h.c_str(), d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", u);
-    meterSpend(spend, "recheck");
-    if (ok) d_.hosts.noteAnswered(h);
-    else d_.hosts.noteFailed(h, err);
+    if (!recheckableHost(h)) continue;
+    askParkedHost(h);
     return true;
   }
   return false;
+}
+
+// The host can be asked now: registered, keyed, in budget and not closed since the snapshot.
+bool TurnEngine::recheckableHost(const std::string& h) const {
+  if (!d_.hosts.has(h)) return false;
+  if (d_.cfg.provider.hasKey && !d_.cfg.provider.hasKey(h)) return false;
+  if (d_.cfg.budget.overBudget && d_.cfg.budget.overBudget(h)) return false;
+  return !d_.hosts.isParked(h);
+}
+
+void TurnEngine::askParkedHost(const std::string& h) {
+  namespace orch = nimbus::orch;
+  hlog::logf("park: asking %s with one small request: nothing else is calling it", h.c_str());
+  std::string convId, outJson, err;
+  orch::TokenUsage u;
+  const bool ok = d_.hosts.run(h, convId, orch::ORCH_PARK_RECHECK_PROMPT, "ok", outJson, err, /*tools=*/nullptr, &u);
+  orch::TurnSpend& spend = facts().spend;
+  spend.clear();
+  spend.add(h.c_str(), d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", u);
+  meterSpend(spend, "recheck");
+  if (ok) d_.hosts.noteAnswered(h);
+  else d_.hosts.noteFailed(h, err);
 }
 
 TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,

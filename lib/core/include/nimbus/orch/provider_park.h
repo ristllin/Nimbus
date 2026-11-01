@@ -224,7 +224,14 @@ class ProviderPark {
                       const std::string& text, uint32_t nowMs);
   // Park for a refusal the caller already typed (the chat fabric's step kinds).
   void park(const char* provider, PaidSeam seam, uint32_t keyFp, ParkKind kind, int httpStatus,
-            uint32_t nowMs, ParkCause cause = ParkCause::Unspecified);
+            uint32_t nowMs);
+  // The same for a router refusal that names what it is for.
+  struct Refusal {
+    ParkKind kind;
+    int httpStatus;
+    ParkCause cause;
+  };
+  void park(const char* provider, PaidSeam seam, uint32_t keyFp, const Refusal& refusal, uint32_t nowMs);
   // A request on `seam` succeeded: the episode ends (the park and the notice latch)
   // when the park covers that seam (a 403 closed only its own seam, so a success
   // elsewhere proves nothing about it). True when something ended.
