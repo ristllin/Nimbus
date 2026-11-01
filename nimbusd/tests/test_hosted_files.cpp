@@ -11,7 +11,9 @@
 //       printed "Created" for a routine that never existed), and still answer an
 //       honest empty GET;
 //   (e) an upload the store refuses (the 257th file) leaves no bytes on the disk,
-//       so the volume never holds a file the panel cannot show or delete.
+//       so the volume never holds a file the panel cannot show or delete;
+//   (f) files.read refuses a binary file in words instead of handing its bytes to the
+//       provider request.
 // Offline: no provider traffic at all.
 #include <sys/stat.h>
 
@@ -238,6 +240,35 @@ static void testKeyedCorrectionBacksItsClaim(ndtest::Ctx& c) {
   c.ok(gaps(replaceClaim, same) > 0, "so a replace claim over it is corrected");
 }
 
+// files.read of a binary file used to put its bytes in the tool result, and the next
+// request was unreadable on every provider: the turn died with "That didn't finish".
+static void testBinaryReadIsRefused(ndtest::Ctx& c) {
+  std::printf("  -- (g) files.read refuses a binary file, by name and by content --\n");
+  Config cfg;
+  NimbusdRig rig(cfg, opts("hf-g"));
+  Web web(rig);
+  const std::string png("\x89PNG\r\n\x1a\n\0\0\0\rIHDR\x01\x02\x03\xff\xfe", 21);
+  web.call("POST", "/api/files/upload?project=chat&name=photo.png", multipart("photo.png", png));
+  web.call("POST", "/api/files/upload?project=chat&name=disguised.txt", multipart("disguised.txt", png));
+  web.call("POST", "/api/files/upload?project=chat&name=sound.mp3", multipart("sound.mp3", "ID3 not really audio"));
+  web.call("POST", "/api/files/upload?project=chat&name=notes.yaml", multipart("notes.yaml", "plain: text\nkey: 1\n"));
+  web.call("POST", "/api/files/upload?project=chat&name=accents.txt", multipart("accents.txt", "caf\xC3\xA9 cr\xC3\xA8me\n"));
+  for (const char* name : {"photo.png", "disguised.txt", "sound.mp3"}) {
+    const std::string args = std::string(R"({"project":"chat","name":")") + name + R"("})";
+    const std::string got = rig.callTool("files.read", args);
+    c.ok(has(got, "not a text file"), (std::string("refused in words: ") + name).c_str());
+    c.ok(!has(got, "PNG") && !has(got, "ID3"), (std::string("none of its bytes in the result: ") + name).c_str());
+    const std::string tail = rig.callTool("files.read", std::string(R"({"project":"chat","tail":3,"name":")") + name + R"("})");
+    c.ok(has(tail, "not a text file"), (std::string("the tail view refuses it too: ") + name).c_str());
+  }
+  c.ok(has(rig.callTool("files.read", R"({"project":"chat","name":"notes.yaml"})"), "plain: text"),
+       "a text file with any other extension still reads");
+  c.ok(has(rig.callTool("files.read", R"({"project":"chat","name":"accents.txt"})"), "caf\xC3\xA9"),
+       "UTF-8 text still reads");
+  // The download is untouched: refusing the tool is not losing the file.
+  c.ok(web.call("GET", "/api/files/dl?project=chat&name=photo.png").body == png, "the download still has its bytes");
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== hosted files + not-yet-hosted surfaces (CUM-543, offline) ===\n");
@@ -248,6 +279,7 @@ int main() {
   testNotYetHosted(c);
   testRefusedUploadLeavesNoFile(c);
   testKeyedCorrectionBacksItsClaim(c);
+  testBinaryReadIsRefused(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

@@ -500,6 +500,42 @@ void test_load_collapses_case_variant_rows_to_owner_control() {
   TEST_ASSERT_TRUE(st3.readableBy(*e3, "chat:alice", false));
 }
 
+// Is a stored file readable as text for the model? By kind, then by content.
+static void test_text_readable_rule() {
+  using nimbus::orch::fileReadableAsText;
+  const std::string png("\x89PNG\r\n\x1a\n\0\0\0\rIHDR", 16);
+  TEST_ASSERT_FALSE(fileReadableAsText("photo.png", "looks like text"));   // the name decides first
+  TEST_ASSERT_FALSE(fileReadableAsText("photo.JPG", "looks like text"));
+  TEST_ASSERT_FALSE(fileReadableAsText("clip.mp3", "looks like text"));
+  TEST_ASSERT_FALSE(fileReadableAsText("disguised.txt", png));             // the content decides next
+  TEST_ASSERT_FALSE(fileReadableAsText("noext", png));
+  TEST_ASSERT_TRUE(fileReadableAsText("notes.md", "# plain\nrow one\n"));
+  TEST_ASSERT_TRUE(fileReadableAsText("notes.yaml", "a: 1\n"));
+  TEST_ASSERT_TRUE(fileReadableAsText("empty.txt", ""));
+  TEST_ASSERT_TRUE(fileReadableAsText("accents.txt", "caf\xC3\xA9 \xE2\x82\xAC 12\n"));
+  TEST_ASSERT_TRUE(fileReadableAsText("tabs.csv", "a\tb\r\nc\td\r\n"));
+  // One stray byte in long text is a text file with a blemish, not a binary one: the
+  // wire layer repairs and escapes it. A NUL is never text; a run of noise is not either.
+  std::string blemish(4000, 'a');
+  blemish[100] = '\x01';
+  blemish[200] = '\xFF';
+  TEST_ASSERT_TRUE(fileReadableAsText("log.txt", blemish));
+  std::string nul(4000, 'a');
+  nul[3000] = '\0';
+  TEST_ASSERT_FALSE(fileReadableAsText("log.txt", nul));
+  std::string noise;
+  for (int i = 0; i < 1000; i++) noise += (char)((i % 16) + 1);
+  TEST_ASSERT_FALSE(fileReadableAsText("noise.txt", noise));
+  std::string latin(1000, 'a');   // Latin-1 text: mostly ASCII, some bytes not UTF-8
+  for (int i = 0; i < 1000; i += 25) latin[(size_t)i] = '\xE9';
+  TEST_ASSERT_TRUE(fileReadableAsText("latin.txt", latin));
+  // Only the head of a file is looked at, so a big file costs the same: noise after
+  // the sample does not change the answer.
+  std::string late(nimbus::orch::kTextSniffBytes + 16, 'a');
+  late[nimbus::orch::kTextSniffBytes + 8] = '\0';
+  TEST_ASSERT_TRUE(fileReadableAsText("late.txt", late));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_sd_quota_and_supported_card);
@@ -521,5 +557,6 @@ int main() {
   RUN_TEST(test_food_ledger_names_are_reserved);
   RUN_TEST(test_identity_is_case_blind_like_fat);
   RUN_TEST(test_load_collapses_case_variant_rows_to_owner_control);
+  RUN_TEST(test_text_readable_rule);
   return UNITY_END();
 }

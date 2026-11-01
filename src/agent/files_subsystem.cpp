@@ -1824,6 +1824,9 @@ void registerTools() {
             std::string text = readWhole(project, name, 256 * 1024, &readOk);
             if (!readOk)   // a card or memory fault is said, never shown as an empty file
               return nimbus::orch::ToolResult::fail("the file could not be read - try again");
+            // A text name is a claim, not proof: the same rule as the hosted files.read.
+            if (!nimbus::orch::fileReadableAsText(name, text))
+              return nimbus::orch::ToolResult::fail(nimbus::orch::kNotTextRefusal);
             const size_t total = text.size();
             if (offset >= total && total > 0)
               return nimbus::orch::ToolResult::ok(

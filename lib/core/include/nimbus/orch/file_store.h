@@ -33,6 +33,16 @@ enum class FileKind : uint8_t { Doc = 0, Image = 1, Audio = 2, Data = 3 };
 const char* fileKindName(FileKind k);          // "doc" / "image" / "audio" / "data"
 FileKind    fileKindForName(const std::string& name);  // by extension; Data if unknown
 
+// Can a stored file go to the model as text? No when its name says image or audio, or
+// when its head (the first kTextSniffBytes) holds a NUL or more than one control byte
+// in ten. Text with a stray bad byte stays readable: the wire layer repairs and escapes
+// it (nimbus/utf8.h, nimbus/json_strict.h). Every files.read path asks this one rule.
+inline constexpr size_t kTextSniffBytes = 4096;
+bool fileReadableAsText(const std::string& name, const std::string& bytes);
+// What files.read says when the rule answers no. Model-facing.
+inline constexpr const char* kNotTextRefusal =
+    "this is not a text file (an image, audio or other binary data), so its contents cannot be read here";
+
 struct FileEntry {
   std::string project;         // sanitized segment (folder under /mem/files)
   std::string name;            // sanitized segment (human name, extension kept)

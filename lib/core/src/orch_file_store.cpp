@@ -34,6 +34,19 @@ FileKind fileKindForName(const std::string& name) {
   return FileKind::Data;
 }
 
+bool fileReadableAsText(const std::string& name, const std::string& bytes) {
+  const FileKind kind = fileKindForName(name);
+  if (kind == FileKind::Image || kind == FileKind::Audio) return false;
+  const size_t n = bytes.size() < kTextSniffBytes ? bytes.size() : kTextSniffBytes;
+  size_t controls = 0;
+  for (size_t i = 0; i < n; i++) {
+    const unsigned char c = (unsigned char)bytes[i];
+    if (c == 0) return false;
+    if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') controls++;
+  }
+  return controls * 10 <= n;
+}
+
 // ---- path safety ------------------------------------------------------------
 
 bool FileStore::validSegment(const std::string& s, size_t maxLen) {

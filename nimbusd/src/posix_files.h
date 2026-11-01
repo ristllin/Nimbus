@@ -94,6 +94,8 @@ class PosixFiles {
               std::string body;
               if (!read(p, n, body))
                 return nimbus::orch::ToolResult::fail("no such file: " + p + "/" + n);
+              if (!nimbus::orch::fileReadableAsText(n, body))
+                return nimbus::orch::ToolResult::fail(nimbus::orch::kNotTextRefusal);
               if (a["tail"].is<float>() && a["tail"].as<double>() >= 1)
                 return nimbus::orch::ToolResult::ok(tailWithTotal(n, body, a));
               return nimbus::orch::ToolResult::ok(body);
