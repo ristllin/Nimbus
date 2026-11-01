@@ -149,6 +149,21 @@ static void test_a_made_up_target_cannot_become_its_own_source() {
   TEST_ASSERT_EQUAL_STRING("", ok.tailAfterApply("Stored it.").c_str());
 }
 
+static void test_stale_status_only_on_a_routine() {
+  const char* reply = "That's 7 consecutive days as of 2026-10-14; I don't yet have an update.";
+  ClaimCheck owner;
+  owner.beginTurn();
+  owner.setSources("", "", TurnSources{});
+  TEST_ASSERT_EQUAL_STRING("", owner.tailAfterApply(reply).c_str());   // an owner may ask about the past
+  ClaimCheck routine;
+  routine.beginTurn();
+  routine.setSources("", "", TurnSources{});
+  routine.setRoutineDay("2026-11-01");
+  TEST_ASSERT_TRUE(routine.finalCheck(turnJson(reply)).find("18 days old") != std::string::npos);
+  TEST_ASSERT_TRUE(routine.tailAfterApply(reply).find("(Note: that comes from a record 18 days old") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("", routine.finalCheck(turnJson("Did you do your lesson today?")).c_str());
+}
+
 static void test_tail_after_apply_uses_the_real_outcomes() {
   // The final check saw a mem_write item (pending), so "Logged" passed; apply
   // then recorded the write as refused: the owner gets the correction line.
@@ -1392,6 +1407,7 @@ int main(int, char**) {
   RUN_TEST(test_food_target_has_a_source_or_a_correction);
   RUN_TEST(test_food_day_total_is_read_after_the_turns_writes);
   RUN_TEST(test_a_made_up_target_cannot_become_its_own_source);
+  RUN_TEST(test_stale_status_only_on_a_routine);
   RUN_TEST(test_tail_after_apply_uses_the_real_outcomes);
   RUN_TEST(test_scratchpad_durability_fresh_device_and_full_nvs);
   RUN_TEST(test_a_hosted_run_this_turn_leaves_what_it_could_back_unchecked);

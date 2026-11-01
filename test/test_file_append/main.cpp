@@ -685,6 +685,45 @@ static void test_receipt_a_correction_replaces_a_wide_row() {
   TEST_ASSERT_TRUE_MESSAGE(up.err.find("adds up") != std::string::npos, up.err.c_str());
 }
 
+// The same food across days (CUM-864): the reply names the earlier figure; dates and figures only.
+static void test_same_food_earlier_day_at_a_far_figure() {
+  const std::string head = "date,meal,items,kcal,protein_g\n";
+  const std::string file = head + "2026-10-29,drink,Boba tea (no sugar; honey tapioca),225,1\n2026-10-30,lunch,chicken salad,500,40\n";
+  CsvUpsert up = planCsvUpsert(file, head + "2026-11-01,drink2,boba black tea no sugar + tapioca pearls,90,0.5\n", "meal", "kcal", "2026-11-01");
+  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+  std::string reply = renderUpsertReply(up, "food/food-log.csv", "kcal", "GMT");
+  TEST_ASSERT_TRUE_MESSAGE(reply.find("a row dated 2026-10-29 holds the same food at 225 kcal; this row says 90") != std::string::npos, reply.c_str());
+  TEST_ASSERT_TRUE(reply.find("honey") == std::string::npos);   // a stored row's words never ride the reply
+  // Within a quarter, or another food, or the same day: nothing.
+  up = planCsvUpsert(file, head + "2026-11-01,drink2,boba tea no sugar + tapioca,240,1\n", "meal", "kcal", "2026-11-01");
+  TEST_ASSERT_TRUE(renderUpsertReply(up, "f", "kcal", "").find("same food") == std::string::npos);
+  up = planCsvUpsert(file, head + "2026-11-01,drink2,green tea,2,0\n", "meal", "kcal", "2026-11-01");
+  TEST_ASSERT_TRUE(renderUpsertReply(up, "f", "kcal", "").find("same food") == std::string::npos);
+  up = planCsvUpsert(file, head + "2026-10-30,dinner,chicken salad,900,40\n", "meal", "kcal", "2026-10-30");
+  TEST_ASSERT_TRUE(renderUpsertReply(up, "f", "kcal", "").find("same food") == std::string::npos);
+  // The newest earlier row decides: a corrected figure is the one to match.
+  const std::string two = head + "2026-10-20,drink,cappuccino,120,6\n2026-10-30,drink,cappuccino,66,3\n";
+  up = planCsvUpsert(two, head + "2026-11-01,drink,cappucino,70,3\n", "meal", "kcal", "2026-11-01");
+  TEST_ASSERT_TRUE(renderUpsertReply(up, "f", "kcal", "").find("same food") == std::string::npos);
+  up = planCsvUpsert(two, head + "2026-11-01,drink,cappucino,110,3\n", "meal", "kcal", "2026-11-01");
+  TEST_ASSERT_TRUE(renderUpsertReply(up, "f", "kcal", "").find("2026-10-30 holds the same food at 66") != std::string::npos);
+  // A log that is not food says nothing.
+  const std::string money = "date,what,items,cost\n2026-10-20,x,coffee,3\n";
+  up = planCsvUpsert(money, "date,what,items,cost\n2026-11-01,x,coffee,9\n", "what", "cost", "2026-11-01");
+  TEST_ASSERT_TRUE(renderUpsertReply(up, "f", "cost", "").find("same food") == std::string::npos);
+}
+
+static void test_food_words_the_class() {
+  const auto w = [](const char* s) { return foodWordsOf(s); };
+  TEST_ASSERT_TRUE(sameFoodWords(w("Boba tea (no sugar, honey tapioca)"), w("boba black tea, no sugar, tapioca pearls ~70 g")));
+  TEST_ASSERT_TRUE(sameFoodWords(w("1 cappucino"), w("cappuccino (100 ml full milk)")));
+  TEST_ASSERT_TRUE(sameFoodWords(w("2 eggs + toast"), w("eggs + toast")));
+  TEST_ASSERT_FALSE(sameFoodWords(w("chicken salad"), w("chicken sandwich")));
+  TEST_ASSERT_FALSE(sameFoodWords(w("eggs"), w("3 eggs + bun + avocado + bacon")));
+  TEST_ASSERT_FALSE(sameFoodWords(w(""), w("eggs")));
+  TEST_ASSERT_FALSE(sameFoodWords(w("500 g"), w("500 g")));
+}
+
 // Every new row is checked before anything is written: a date that is not
 // YYYY-MM-DD, a date after today, an empty key, a sum that is not a plain
 // number, two rows naming the same date and meal, a header-only text.
@@ -1194,6 +1233,8 @@ int main(int, char**) {
   RUN_TEST(test_qw3_correction_never_double_counts);
   RUN_TEST(test_qw3_header_mismatch_is_refused_not_misindexed);
   RUN_TEST(test_qw3_quoted_fields_and_honest_totals);
+  RUN_TEST(test_same_food_earlier_day_at_a_far_figure);
+  RUN_TEST(test_food_words_the_class);
   RUN_TEST(test_receipt_the_31_oct_file_sums_to_its_rows);
   RUN_TEST(test_receipt_a_bare_comma_never_changes_the_sum_property);
   RUN_TEST(test_receipt_a_shifted_row_is_no_figure_never_a_wrong_one);

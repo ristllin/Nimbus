@@ -8,6 +8,8 @@
 #include "nimbus/harness/builtin_skills.h"   // kFoodLogSkillId, kFoodCoachSkillId, builtinSkillBody
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/log.h"              // hlog
+#include "nimbus/harness/skill_attach.h"     // kSkillAttachCap
+#include "nimbus/harness/skill_md.h"         // skillUtf8Prefix
 #include "nimbus/harness/providers.h"        // providers::kWireBodyMax - the request body budget
 #include "nimbus/orch/food_ledger.h"
 #include "nimbus/orch/orch_schema.h"         // ORCH_SCHEMA_BODY - the final-answer tool
@@ -67,6 +69,7 @@ void TurnEngine::applyFoodContext(ComposeInputs& ci, const std::string& userText
   ci.foodLedger = nimbus::orch::renderLedgerBlock(ledger_, food);
   ci.foodPlaybook.clear();
   if (!food) return;
+  if (d_.foodRecall && personChat(curChat_)) ci.foodLedger += d_.foodRecall(curChat_, userText);
   // Which playbook: logging when the owner reports food, the coach when they ask (or
   // complain), both when the words do not say. One already in [ACTIVE SKILLS] is left
   // out. Not noted in the row's skills: tag: the playbooks are device context like the
@@ -84,6 +87,21 @@ void TurnEngine::applyFoodContext(ComposeInputs& ci, const std::string& userText
     std::string body = d_.skillBody ? d_.skillBody(p.id) : std::string();   // an owner's approved edit wins
     if (body.empty()) body = builtinSkillBody(p.id, turnTelegram_, turnFileSend_);
     ci.foodPlaybook += body;
+  }
+  // The owner's own method for a meal rides a logging turn (1 Nov: "Dont you have a skill guiding
+  // you?" - it was on the shelf and never opened). The first approved skill about food, unless a
+  // chat already holds it; its tail stays one skill.get away.
+  if (!asks && d_.foodSkills && d_.skillBody) {
+    for (const std::string& id : d_.foodSkills()) {
+      if (std::any_of(attachPicks_.begin(), attachPicks_.end(), [&id](const AttachPick& a) { return a.id == id; })) break;
+      const std::string body = d_.skillBody(id);
+      if (body.empty()) continue;
+      ci.foodPlaybook += "[SKILL " + id + " - the owner's approved method, follow it for this meal]\n" +
+                         skillUtf8Prefix(body, kSkillAttachCap);
+      if (body.size() > kSkillAttachCap) ci.foodPlaybook += "\n[the rest: skill.get " + id + "]";
+      ci.foodPlaybook += "\n";
+      break;
+    }
   }
   // The message's plain intent, last, nearest the message (eaten: log it; a request: no row).
   if (!ci.foodPlaybook.empty()) ci.foodPlaybook += nimbus::orch::renderFoodIntentHint(intent);

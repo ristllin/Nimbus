@@ -279,7 +279,18 @@ const Part kFoodLog[] = {
      "7. A photo nobody could read: say so in the reply, with the reason given. When\n"
      "   the owner's words describe the meal, estimate from them and say the estimate\n"
      "   comes from their description; otherwise ask for a short description and log\n"
-     "   nothing yet. Never describe what only the photo could show.\n"},
+     "   nothing yet. Never describe what only the photo could show.\n"
+     "8. Where a figure comes from, in this order: the owner's own numbers; a label in\n"
+     "   the photo; for a named restaurant, chain or packaged product, its published\n"
+     "   nutrition (look it up before estimating, and the photo only tells which dish,\n"
+     "   extras and leftovers); an earlier row of the same food in the ledger, per unit;\n"
+     "   only then a photo estimate. Say in a few words which one you used.\n"
+     "9. The same food gets the same figures: when a line or the files.append reply\n"
+     "   shows an earlier row of it, keep that per-unit figure unless the portion or\n"
+     "   recipe differs. Off by more than a quarter: say so and say which you kept.\n"
+     "10. A photo estimate: name each item, get grams from a visible scale (plate, hand,\n"
+     "   pack), use per-100 g values, and count oil, butter and sauce. Protein you do not\n"
+     "   know stays an empty cell, never 0, and is said to be unknown.\n"},
 };
 
 // The food coach (lane CTX, the food-coach eval's findings): attached to a food turn
@@ -315,7 +326,12 @@ const Part kFoodCoach[] = {
      "   covers them too. Answer with exactly the amounts it returns, one line per\n"
      "   food with its kcal, and its Total line; add nothing on top. Nothing the owner\n"
      "   did not name (cooking oil, rice, potatoes, a side) goes in; at most one\n"
-     "   optional extra may be offered after the total.\n"},
+     "   optional extra may be offered after the total.\n"
+     "6. Daily targets and what is left: the ledger block's \"Left today\" line, worked\n"
+     "   out by the device. With no target stored, read it first (the [FOOD TARGETS] line\n"
+     "   says where) or ask; a target you cannot point to is not stated, and your own\n"
+     "   earlier replies are not a source. A row with no protein figure means protein\n"
+     "   known and protein unknown are said apart: \"at most\", never \"you need\".\n"},
 };
 
 // ONE table: the index entry and the body together, so they cannot drift.

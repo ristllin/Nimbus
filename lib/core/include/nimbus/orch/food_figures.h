@@ -52,6 +52,13 @@ std::vector<FoodGap> foodFigureGaps(const std::string& reply, const FoodFacts& f
 // The targets alone, with no ledger: a memory about to be written, a targets row.
 std::vector<FoodGap> unsourcedFoodTargets(const std::string& text, const std::string& sourceNumbers);
 
+// A routine citing old data as if it were the state of things (1 Nov, a daily check-in: "7
+// consecutive days as of 2026-10-14", 18 days stale). A sentence with a status word and a date older
+// than `maxAgeDays` before `today` (YYYY-MM-DD). Checked on scheduled turns only: an owner who asks
+// about the past may be told about it. Returns the first such sentence, its age through `ageDays`.
+inline constexpr int kStaleStatusDays = 7;
+std::string staleStatusIn(const std::string& reply, const std::string& today, int maxAgeDays, int* ageDays);
+
 // The text of the one correction round.
 std::string foodGapCorrection(const std::vector<FoodGap>& gaps, const FoodFacts& facts);
 // The owner's lines, one per kind, each on its own paragraph ("" when no gaps).

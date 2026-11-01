@@ -1271,6 +1271,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     if (ledger_.targets.protein > 0) sources.targets += std::to_string((long)ledger_.targets.protein);
     claims_.setSources(inputs + ledgerBlock, rec, sources);
     claims_.setFoodFacts([this, chatId]() { return currentFoodFacts(chatId); });
+    if (turnSource_ == TurnSource::Loop && d_.platform.nowEpoch)
+      claims_.setRoutineDay(nimbus::orch::logDayOf((time_t)d_.platform.nowEpoch(), true).date);
     claims_.setQuoteContext(&lastInstructions_, &inputs);   // filled at compose, below
   }
   // W10 (prism): the speaker line is for a REAL human message only. The device
@@ -2735,7 +2737,8 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
         "with one short line that says what it is and, if you changed anything, what "
         "you did.\n\n"
       : "\n[SCHEDULED LOOP]\nYour recurring task \"" + name + "\" is firing on its schedule. "
-        "There is no new owner message - do the task now and reply to the owner concisely.\n\n";
+        "There is no new owner message - do the task now and reply to the owner concisely. A record "
+        "older than a week is history, not the state of things: ask for an update instead of citing it.\n\n";
   // CUM-523: a one-shot (wakeup / reminder) is answered where it was set. Saying
   // so stops the model sending a "separate alert" down another channel - the web
   // reminder's turn did exactly that on a Telegram-less device.

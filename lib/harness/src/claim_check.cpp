@@ -211,6 +211,7 @@ void ClaimCheck::beginTurn() {
   targetsClipped_ = false;
   wroteTargets_.clear();
   foodFacts_ = nullptr;
+  routineDay_.clear();
   sourceNames_ = 0;
   sourceWords_.clear();
   toolText_.clear();
@@ -523,19 +524,27 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
   const std::vector<orch::ClaimGap> gaps = gapsFor(said, pending, skipSpawned);
   orch::FoodFacts facts;
   const std::vector<orch::FoodGap> food = foodGaps(said, facts);
-  if (gaps.empty() && food.empty()) {
+  int staleAge = 0;
+  const std::string stale =
+      routineDay_.empty() ? std::string() : orch::staleStatusIn(said, routineDay_, orch::kStaleStatusDays, &staleAge);
+  if (gaps.empty() && food.empty() && stale.empty()) {
     hlog::logf("claims: ok n=%u", (unsigned)orch::scanClaims(said).claims.size());
     return std::string();
   }
   corrected_ = true;
   g_corrected++;
+  std::string more;
+  if (!food.empty()) more += orch::foodGapCorrection(food, facts);
+  if (!stale.empty())
+    more += "\"" + stale + "\" cites data " + std::to_string(staleAge) + " days old as if it were the state of things. "
+            "Do not: ask for an update, or use something newer, or leave it out.\n";
   if (gaps.empty()) {
-    hlog::log("claims: food figures unbacked -> correction round");
-    return "[CLAIM CHECK] " + orch::foodGapCorrection(food, facts);
+    hlog::log("claims: figures unbacked -> correction round");
+    return "[CLAIM CHECK] " + more;
   }
   hlog::logf("claims: %s unbacked -> correction round", orch::claimClassSlug(gaps[0].cls));
   std::string fix = orch::claimCorrection(gaps, pending);
-  if (!food.empty()) fix += "\n" + orch::foodGapCorrection(food, facts);
+  if (!more.empty()) fix += "\n" + more;
   // A reason about a past sub-agent: the ledger lines (device-authored) are what the
   // records show.
   const size_t nl = ledger_.find('\n');
@@ -549,7 +558,10 @@ std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawne
   const std::vector<orch::ClaimGap> gaps = gapsFor(reply, fx_, skipSpawned);
   orch::FoodFacts facts;
   const std::vector<orch::FoodGap> food = foodGaps(reply, facts);
-  const std::string tail = (gaps.empty() ? std::string() : orch::claimTail(gaps)) + orch::foodGapTail(food, facts);
+  std::string tail = (gaps.empty() ? std::string() : orch::claimTail(gaps)) + orch::foodGapTail(food, facts);
+  int staleAge = 0;
+  if (!routineDay_.empty() && !orch::staleStatusIn(reply, routineDay_, orch::kStaleStatusDays, &staleAge).empty())
+    tail += "\n\n(Note: that comes from a record " + std::to_string(staleAge) + " days old; the device has nothing newer.)";
   if (tail.empty()) return tail;
   g_tailed++;
   for (const orch::ClaimGap& g : gaps) hlog::logf("claims: tail %s", orch::claimClassSlug(g.cls));

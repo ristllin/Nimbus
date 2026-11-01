@@ -346,6 +346,68 @@ std::string statedTarget(const FoodGap& g) { return num(g.stated) + (g.protein ?
 
 }  // namespace
 
+namespace {
+
+// Days since 1970 of a civil date (Howard Hinnant's algorithm).
+int daysOf(int y, int m, int d) {
+  y -= m <= 2;
+  const int era = (y >= 0 ? y : y - 399) / 400;
+  const int yoe = y - era * 400;
+  const int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + doe - 719468;
+}
+
+int monthOf(const std::string& w) {
+  static const char* const kMonths[] = {"jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"};
+  if (w.size() < 3) return 0;
+  for (int i = 0; i < 12; i++)
+    if (w.compare(0, 3, kMonths[i]) == 0) return i + 1;
+  return 0;
+}
+
+// Every date in a sentence, as days since 1970: 2026-10-14, 14 Oct, Oct 14, 14 October 2026.
+std::vector<int> datesIn(const std::vector<Tok>& toks, const std::string& low, int todayYear) {
+  std::vector<int> out;
+  for (size_t p = 0; p + 10 <= low.size(); p++) {
+    bool iso = true;
+    for (size_t i = 0; i < 10 && iso; i++) iso = (i == 4 || i == 7) ? low[p + i] == '-' : isDigit(low[p + i]);
+    if (iso) out.push_back(daysOf(std::atoi(low.c_str() + p), std::atoi(low.c_str() + p + 5), std::atoi(low.c_str() + p + 8)));
+  }
+  for (size_t i = 0; i < toks.size(); i++) {
+    const int month = toks[i].number ? 0 : monthOf(toks[i].word);
+    if (!month || toks[i].word.size() > 9 || (toks[i].word == "may" && !(i > 0 && toks[i - 1].number))) continue;
+    const Tok* day = i > 0 && toks[i - 1].number ? &toks[i - 1] : (i + 1 < toks.size() && toks[i + 1].number ? &toks[i + 1] : nullptr);
+    if (!day || day->value < 1 || day->value > 31 || day->value != (int)day->value) continue;
+    out.push_back(daysOf(todayYear, month, (int)day->value));
+  }
+  return out;
+}
+
+}  // namespace
+
+std::string staleStatusIn(const std::string& reply, const std::string& today, int maxAgeDays, int* ageDays) {
+  if (today.size() < 10) return std::string();
+  const int year = std::atoi(today.c_str());
+  const int now = daysOf(year, std::atoi(today.c_str() + 5), std::atoi(today.c_str() + 8));
+  for (const std::string& sentence : sentencesOf(reply)) {
+    const std::string low = folded(sentence);
+    const std::vector<Tok> toks = tokensOf(low);
+    if (low.find('?') != std::string::npos) continue;
+    const bool status = hasWord(toks, {"streak", "consecutive", "currently", "latest", "running", "still", "current"}) ||
+                        low.find("in a row") != std::string::npos || low.find("so far") != std::string::npos ||
+                        low.find("as of") != std::string::npos || low.find("you've been") != std::string::npos;
+    if (!status) continue;
+    for (int d : datesIn(toks, low, year)) {
+      if (d > now) d = d - 365;   // "14 Dec" read in January is last year's
+      if (now - d <= maxAgeDays) continue;
+      if (ageDays) *ageDays = now - d;
+      return excerptOf(sentence);
+    }
+  }
+  return std::string();
+}
+
 std::vector<FoodGap> unsourcedFoodTargets(const std::string& text, const std::string& sourceNumbers) {
   std::vector<FoodGap> out;
   const std::vector<double> sources = parseNumbers(sourceNumbers);

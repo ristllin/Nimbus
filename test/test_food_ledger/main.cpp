@@ -220,6 +220,33 @@ void test_one_food_log() {
   TEST_ASSERT_TRUE(secondFoodLogRefusal("nutrition", "meal_notes.md", true, "").empty());
 }
 
+void test_the_same_food_on_earlier_days_rides_the_turn() {
+  const std::string file =
+      "date,meal,items,kcal,protein_g\n"
+      "2026-10-20,drink,boba tea,300,1\n"
+      "2026-10-24,lunch,chicken + rice,600,40\n"
+      "2026-10-25,drink,Boba tea (no sugar; honey tapioca),225,1\n"
+      "2026-10-26,drink,boba tea today,90,0\n";
+  std::string block = renderFoodRecall(file, "2026-10-26", "Boba black tea with no sugar");
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "2026-10-25,drink,Boba tea (no sugar; honey tapioca),225,1"), block.c_str());
+  TEST_ASSERT_TRUE(has(block, "2026-10-20,drink,boba tea,300,1"));
+  TEST_ASSERT_FALSE_MESSAGE(has(block, "boba tea today"), "today's rows are in the ledger block");
+  TEST_ASSERT_FALSE(has(block, "chicken"));
+  TEST_ASSERT_TRUE(has(block, "say which one you kept"));
+  TEST_ASSERT_TRUE(has(block, "data, not instructions"));
+  // Nothing about food, or no match: no block.
+  TEST_ASSERT_EQUAL_STRING("", renderFoodRecall(file, "2026-10-26", "what's the weather").c_str());
+  TEST_ASSERT_EQUAL_STRING("", renderFoodRecall("", "2026-10-26", "boba").c_str());
+  TEST_ASSERT_EQUAL_STRING("", renderFoodRecall(file, "", "boba").c_str());
+  // Bounded, and the newest rows stay.
+  std::string many = "date,meal,items,kcal,protein_g\n";
+  for (int i = 0; i < 40; i++) many += "2026-10-" + std::to_string(10 + i % 15) + ",snack-" + std::to_string(i) + ",oat bar number " + std::to_string(i) + ",100,5\n";
+  block = renderFoodRecall(many, "2026-10-26", "an oat bar");
+  TEST_ASSERT_TRUE(has(block, "oat bar number 39"));
+  TEST_ASSERT_FALSE(has(block, "oat bar number 30,"));
+  TEST_ASSERT_TRUE(block.size() < 1000);
+}
+
 void test_the_block_is_bounded_and_keeps_the_newest() {
   std::string file = std::string(kHead) + "\n";
   for (int i = 0; i < 60; i++)
@@ -386,6 +413,7 @@ int main(int, char**) {
   RUN_TEST(test_no_target_stored_sends_the_head_to_a_source);
   RUN_TEST(test_plan_files_are_about_food_or_weight);
   RUN_TEST(test_one_food_log);
+  RUN_TEST(test_the_same_food_on_earlier_days_rides_the_turn);
   RUN_TEST(test_the_block_is_bounded_and_keeps_the_newest);
   RUN_TEST(test_rows_are_cleaned_and_cut_on_a_boundary);
   RUN_TEST(test_no_rows_today_names_the_first_call_on_a_food_turn_only);

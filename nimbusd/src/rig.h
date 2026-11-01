@@ -2266,6 +2266,11 @@ class NimbusdRig {
       if (l.targets.kcal <= 0 && l.targets.protein <= 0) l.planFiles = files_->foodPlanFiles();
       return l;
     };
+    d.foodRecall = [this](const std::string& chat, const std::string& message) {
+      if (!access_->principalFor(chat).owner) return std::string();
+      return orch::renderFoodRecall(files_->get(std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodLedgerOwnerName),
+                                    orch::logDayOf(std::time(nullptr), true).date, message);
+    };
 
     d.hooks.onToolCall = [this](const orch::HeadToolCall& c) {
       cur_.toolCalls.push_back(c.name + "(" + trunc(c.argsJson, 200) + ")");

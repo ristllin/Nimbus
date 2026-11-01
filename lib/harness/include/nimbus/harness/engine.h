@@ -305,6 +305,12 @@ class TurnEngine {
     // device: the canonical file streamed through FoodLedgerScan under the turn's
     // read boundary). It rides the per-turn block and the fold. Nullable => none.
     std::function<nimbus::orch::FoodLedger(const std::string& chatId)> foodLedger;
+    // The person's earlier ledger rows of the foods a message names (renderFoodRecall /
+    // FoodRecallScan), asked on a food turn: the same food gets the same figures across days.
+    std::function<std::string(const std::string& chatId, const std::string& message)> foodRecall;
+    // The approved stored skills about food (foodSkillId, by id): the one that guides a logged
+    // meal rides that turn, so the owner's own method is consulted, not just listed.
+    std::function<std::vector<std::string>()> foodSkills;
   };
 
   // Heap floors, defaulted to src/agent/agent_config.h's values so the

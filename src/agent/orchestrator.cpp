@@ -1419,6 +1419,11 @@ static TurnEngine::Deps buildTurnDeps() {
     const String cid(chatId.c_str());
     return agent::foodledger::today(chatId, nimbus::orch::principalForRole(chatId, roleOfChat(cid)));
   };
+  d.foodRecall = [](const std::string& chatId, const std::string& message) {
+    const String cid(chatId.c_str());
+    return agent::foodledger::recall(chatId, nimbus::orch::principalForRole(chatId, roleOfChat(cid)), message);
+  };
+  d.foodSkills = [] { return skills::foodSkillIds(); };
   d.firstAllowedChat = [] { return std::string(firstAllowedChat().c_str()); };
   d.journalGc = [] { g_journal.gc(); };
   // Clamped-tool-result spill (Context Fabric): the loop's truncation marker

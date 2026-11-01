@@ -175,6 +175,8 @@ class SkillStore {
 
   // Built-ins and stored skills, a stored one replacing a built-in of the same id.
   std::vector<SkillMeta> list();
+  // The approved stored skills whose id says they are about food (a built-in is attached anyway).
+  std::vector<std::string> approvedFoodSkills();
   bool find(const std::string& id, SkillMeta& out);
   std::string indexText();
 

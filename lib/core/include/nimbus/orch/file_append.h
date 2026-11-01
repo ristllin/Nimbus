@@ -133,6 +133,9 @@ struct RowChange {
   bool replaced = false;
   std::string was;    // the replaced row's sum figure ("" = none or not a plain number)
   int superseded = 0; // more stored rows of this identity set aside (replace: "all")
+  std::string sameFoodDate;   // the newest earlier day with the same food at a far-off figure ("" = none)
+  double sameFoodFigure = 0;  // that row's figure
+  double figure = 0;          // this row's
 };
 
 struct CsvUpsert {
@@ -184,6 +187,9 @@ class CsvUpsertStream {
     bool used = false;   // it replaced a stored row
     std::string was;     // that row's sum figure
     int superseded = 0;  // more stored rows of its identity set aside
+    std::vector<std::string> foodWords;   // a food log: the words of its items
+    std::string sameFoodDate;
+    double figure = 0, sameFoodFigure = 0;
   };
   bool fail(const std::string& why);
   bool parseHeader(const std::string& line);
@@ -200,10 +206,11 @@ class CsvUpsertStream {
   void countUndated(const std::vector<std::string>& f);
   std::string identity(const std::vector<std::string>& f) const;
   void tally(const std::vector<std::string>& f);
+  void watchSameFood(const std::vector<std::string>& f);
   std::string keyCol_, sumCol_, today_, zone_;
   std::vector<std::string> header_;
   std::string headerRaw_;
-  int keyIdx_ = -1, sumIdx_ = -1, dateIdx_ = -1;
+  int keyIdx_ = -1, sumIdx_ = -1, dateIdx_ = -1, itemsIdx_ = -1;
   std::vector<NewRow> rows_;
   std::vector<std::string> prev_;   // the last well-formed stored row (judges a cut last row)
   bool begun_ = false, sawHeader_ = false, failed_ = false, supersede_ = false;
@@ -217,6 +224,13 @@ class CsvUpsertStream {
 CsvUpsert planCsvUpsert(const std::string& existing, const std::string& newText,
                         const std::string& keyCol, const std::string& sumCol,
                         const std::string& today, bool supersede = false);
+
+// The same food twice (CUM-864: one drink, 225 kcal on 29 Oct and 90 on 1 Nov, each with its own
+// confident sum). A keyed food log's reply names an earlier day's row of the same food when its
+// figure is off by more than a quarter. The words: lowercase, singular, no sizes or filler.
+std::vector<std::string> foodWordsOf(const std::string& text);
+// Enough of the words in common to be one food: at least two (or the only ones) and most of the shorter list.
+bool sameFoodWords(const std::vector<std::string>& a, const std::vector<std::string>& b);
 
 // The columns of a CSV's header row (no byte order mark, spaces trimmed).
 std::vector<std::string> csvHeaderOf(const std::string& row);

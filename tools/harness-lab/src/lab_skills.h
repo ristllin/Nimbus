@@ -25,6 +25,7 @@ class LabSkills {
 
   // The engine deps (the same wiring src/agent/orchestrator.cpp does).
   std::string indexText() { return store_.indexText(); }
+  std::vector<std::string> foodSkillIds() { return store_.approvedFoodSkills(); }
   std::vector<agent::AttachPick> picksFor(const std::string& chatId);
   std::string attachBody(const std::string& id) { return store_.liveBody(id, agent::SkillSide{}); }
   void noteUsed(const std::string& chat, const std::string& id);

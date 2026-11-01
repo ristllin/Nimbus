@@ -660,6 +660,7 @@ bool CsvUpsertStream::parseNewRow(size_t n, const std::string& raw, NewRow& row)
                 " - put a field that holds a comma in double quotes");
   row.key = row.fields[(size_t)keyIdx_];
   if (keyText(row.key).empty()) return fail(rowNo(n) + " has no value in '" + keyCol_ + "'");
+  if (itemsIdx_ >= 0) row.foodWords = foodWordsOf(row.fields[(size_t)itemsIdx_]);
   return true;
 }
 
@@ -714,6 +715,9 @@ bool CsvUpsertStream::parseHeader(const std::string& line) {
   keyIdx_ = columnIndex(header_, keyCol_);
   if (keyIdx_ < 0) return fail("the text's header has no column '" + keyCol_ + "'");
   sumIdx_ = sumCol_.empty() ? -1 : columnIndex(header_, sumCol_);
+  if (sumIdx_ >= 0 && foodFigureColumn(sumCol_))
+    for (size_t c = 0; c < header_.size() && itemsIdx_ < 0; c++)
+      if (absorbRank(header_[c]) == 2) itemsIdx_ = (int)c;
   if (!sumCol_.empty() && sumIdx_ < 0) return fail("the text's header has no column '" + sumCol_ + "'");
   return true;
 }
@@ -867,6 +871,7 @@ bool CsvUpsertStream::feedData(const std::string& row, bool complete, std::strin
     out = row + "\n";
     countUndated(f);
     tally(f);
+    watchSameFood(f);
     return true;
   }
   if (hit->used) return secondMatch(*hit, row, out);
@@ -879,6 +884,28 @@ bool CsvUpsertStream::feed(const std::string& row, bool complete, std::string& o
   if (failed_ || !begun_) return false;
   storedRows_++;
   return sawHeader_ ? feedData(row, complete, out) : feedHeader(row, complete, out);
+}
+
+// A stored row of another day with the same food as a new row: the newest one whose figure is
+// off by more than a quarter is named in the reply. Dates and figures only, never its words.
+void CsvUpsertStream::watchSameFood(const std::vector<std::string>& f) {
+  if (itemsIdx_ < 0 || sumIdx_ < 0 || dateIdx_ < 0 || f.size() != header_.size()) return;
+  double was = 0;
+  if (!figureOf(f[(size_t)sumIdx_], was) || was <= 0 || statesTotal(f, dateIdx_, sumIdx_)) return;
+  const std::string day = isoDay(f[(size_t)dateIdx_]);
+  if (day.empty()) return;
+  std::vector<std::string> words;
+  for (NewRow& n : rows_) {
+    double now = 0;
+    if (day >= n.date || (!n.sameFoodDate.empty() && day < n.sameFoodDate) || !plainNumber(n.fields[(size_t)sumIdx_], now) || now <= 0)
+      continue;
+    if (words.empty()) words = foodWordsOf(f[(size_t)itemsIdx_]);
+    if (!sameFoodWords(n.foodWords, words)) continue;
+    const double far = now > was ? now / was : was / now;
+    n.sameFoodDate = far > 1.25 ? day : std::string();
+    n.figure = now;
+    n.sameFoodFigure = was;
+  }
 }
 
 void CsvUpsertStream::tally(const std::vector<std::string>& f) {
@@ -894,7 +921,7 @@ bool CsvUpsertStream::finish(std::string& out) {
     r_.changed = true;
   }
   for (NewRow& n : rows_) {
-    r_.changes.push_back({n.date, n.key, n.used, n.was, n.superseded});
+    r_.changes.push_back({n.date, n.key, n.used, n.was, n.superseded, n.sameFoodDate, n.sameFoodFigure, n.figure});
     if (n.used) continue;
     out += n.raw + "\n";
     outRows_++;
@@ -1052,6 +1079,51 @@ std::string csvDayTotalLine(const std::string& fileText, const std::string& sumC
   return line;
 }
 
+std::vector<std::string> foodWordsOf(const std::string& text) {
+  static const char* const kFiller[] = {
+      "and", "with", "the", "for", "from", "plus", "half", "small", "medium", "large", "cup", "cups", "slice", "piece",
+      "pack", "pot", "bowl", "side", "one", "two", "three", "four", "full", "whole", "about", "approx", "est", "photo",
+      "estimate", "estimated", "label", "kcal", "protein", "gram", "grams", "per", "total", "each", "extra", "lunch",
+      "dinner", "breakfast", "snack", "drink", "brunch", "some", "this", "that", "not", "had", "ate"};
+  std::vector<std::string> out;
+  std::string w;
+  const auto flush = [&]() {
+    if (w.size() > 3 && w.back() == 's' && w[w.size() - 2] != 's') w.pop_back();
+    bool keep = w.size() >= 3;
+    for (const char* f : kFiller) keep = keep && w != f;
+    if (keep && std::find(out.begin(), out.end(), w) == out.end()) out.push_back(w);
+    w.clear();
+  };
+  for (char c : text) {
+    if (isLetter(c) || (unsigned char)c >= 0x80) w += lowerAscii(c);
+    else flush();
+  }
+  flush();
+  return out;
+}
+
+namespace {
+bool sameFoodWord(const std::string& a, const std::string& b) {
+  if (a == b) return true;
+  if (a.size() < 7 || b.size() < 7) return false;   // "cappucino": the owner's thumbs
+  return a.compare(0, 6, b, 0, 6) == 0;
+}
+}  // namespace
+
+bool sameFoodWords(const std::vector<std::string>& a, const std::vector<std::string>& b) {
+  if (a.empty() || b.empty()) return false;
+  size_t shared = 0;
+  for (const std::string& x : a)
+    for (const std::string& y : b)
+      if (sameFoodWord(x, y)) {
+        shared++;
+        break;
+      }
+  const size_t lo = std::min(a.size(), b.size()), hi = std::max(a.size(), b.size());
+  if (shared * 10 < lo * 6) return false;
+  return shared >= 2 || (shared == 1 && lo == 1 && hi <= 2);
+}
+
 std::vector<std::string> csvHeaderOf(const std::string& row) { return csvFields(withoutBom(row)); }
 
 std::vector<std::string> csvStoredRow(const std::string& row, const std::vector<std::string>& header) {
@@ -1159,11 +1231,19 @@ namespace {
 // What one new row did, as reply lines.
 std::string renderChange(const RowChange& c, const std::string& sumCol) {
   const std::string what = (c.date.empty() ? std::string() : c.date + " ") + "'" + c.key + "'";
-  if (!c.replaced) return "- added " + what + "\n";
-  std::string out = "- replaced " + what + (c.was.empty() ? std::string() : " (was " + c.was + " " + sumCol + ")") + "\n";
-  if (c.superseded > 0)
-    out += "- set aside " + std::to_string(c.superseded) + " more " + (c.superseded == 1 ? "row" : "rows") + " of " +
-           what + " as #superseded: (not counted)\n";
+  std::string out;
+  if (!c.replaced) {
+    out = "- added " + what + "\n";
+  } else {
+    out = "- replaced " + what + (c.was.empty() ? std::string() : " (was " + c.was + " " + sumCol + ")") + "\n";
+    if (c.superseded > 0)
+      out += "- set aside " + std::to_string(c.superseded) + " more " + (c.superseded == 1 ? "row" : "rows") + " of " +
+             what + " as #superseded: (not counted)\n";
+  }
+  if (!c.sameFoodDate.empty())
+    out += "- a row dated " + c.sameFoodDate + " holds the same food at " + numText(c.sameFoodFigure) + " " + sumCol +
+           "; this row says " + numText(c.figure) + ". Use the earlier figure per unit unless the portion or recipe "
+           "differs: re-send this row, and tell the owner which figure you kept and why\n";
   return out;
 }
 }  // namespace

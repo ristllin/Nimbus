@@ -158,6 +158,28 @@ inline constexpr const char kFoldTodayLine[] = "[TODAY] ";
 inline constexpr const char kFoldTotalsLine[] = "Totals for ";
 std::string renderFoldDay(const FoodLedger& l);
 
+// The ledger's own earlier rows of the foods this message names, so the same food gets the same
+// figures across days: rows from other days whose items share a food word with the message, newest
+// first, at most kRecallRows and kRecallBytes. Feed every stored row in order, then render. A file
+// of any size: only the kept rows are held.
+inline constexpr size_t kRecallRows = 5;
+inline constexpr size_t kRecallBytes = 600;
+class FoodRecallScan {
+ public:
+  FoodRecallScan(const std::string& today, const std::string& message);
+  void feed(const std::string& row);
+  // "" when nothing matched.
+  std::string render() const;
+
+ private:
+  std::string today_;
+  std::vector<std::string> words_, header_, kept_;
+  std::string headerRow_;
+  int items_ = -1;
+};
+// The whole-text form (nimbusd, the lab, the tests).
+std::string renderFoodRecall(const std::string& fileText, const std::string& today, const std::string& message);
+
 // Is this text about food: a meal, eating or drinking, calories or protein, a food
 // named, or a weight in grams? Lexical and cheap, for deciding which turns get the
 // food playbook and the empty-ledger line; a miss costs a skill read, never data.

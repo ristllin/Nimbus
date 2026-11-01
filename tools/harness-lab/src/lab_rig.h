@@ -638,6 +638,7 @@ class LabRig {
   void wireSkillsDeps(agent::TurnEngine::Deps& d) {
     d.skillsIndex = [this] { return skills_.indexText(); };
     d.skillsPicks = [this](const std::string& chat) { return skills_.picksFor(chat); };
+    d.foodSkills = [this] { return skills_.foodSkillIds(); };
     d.skillBody = [this](const std::string& id) { return skills_.attachBody(id); };
     d.skillUsed = [this](const std::string& chat, const std::string& id) {
       skills_.noteUsed(chat, id);
@@ -760,6 +761,10 @@ class LabRig {
           files_.get(std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodTargetsOwnerName));
       if (l.targets.kcal <= 0 && l.targets.protein <= 0) l.planFiles = files_.foodPlanFiles();
       return l;
+    };
+    d.foodRecall = [this](const std::string&, const std::string& message) {
+      return orch::renderFoodRecall(files_.get(std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodLedgerOwnerName),
+                                    orch::logDayOf(std::time(nullptr), true).date, message);
     };
 
     // The glass box, for free: on the host these hooks are just callbacks.

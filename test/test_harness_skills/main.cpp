@@ -497,8 +497,12 @@ static void test_food_playbooks_state_their_rules() {
                            "Never a second row for one meal", "A photo nobody could read: say so in the reply",
                            "a field never holds a bare comma"})
     TEST_ASSERT_TRUE_MESSAGE(f.find(must) != std::string::npos, must);
+  for (const char* must : {"its published\n   nutrition (look it up before estimating", "The same food gets the same figures",
+                           "stays an empty cell, never 0"})
+    TEST_ASSERT_TRUE_MESSAGE(f.find(must) != std::string::npos, must);
   const std::string c = agent::builtinSkillBody(agent::kFoodCoachSkillId, true);
-  for (const char* must : {"Totals come from [TODAY'S FOOD LEDGER]", "list the ledger's rows",
+  for (const char* must : {"a target you cannot point to is not stated", "your own\n   earlier replies are not a source",
+                           "Totals come from [TODAY'S FOOD LEDGER]", "list the ledger's rows",
                            "Only meals the owner says they ate go in the ledger", "never\n   memory",
                            "write no\n   row", "Answer what was asked, first", "not a heading, a list, an apology\n   or an agreement (the one exception is the [THIS MESSAGE] line's own)",
                            "one entry per food the owner says\n   they have",

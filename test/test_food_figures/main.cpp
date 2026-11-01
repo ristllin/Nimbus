@@ -178,6 +178,27 @@ static void test_the_correction_round_names_the_way_out() {
   TEST_ASSERT_TRUE_MESSAGE(fix.find("files.read") != std::string::npos, fix.c_str());
 }
 
+// ---- a routine citing old data as the state of things (1 Nov, the 14 Oct streak) ----------
+static void test_a_stale_status_in_a_routine() {
+  int age = 0;
+  const char* real = "You've been doing one lesson daily. That's 7 consecutive days as of 2026-10-14; I don't yet have an update.";
+  TEST_ASSERT_TRUE(staleStatusIn(real, "2026-11-01", kStaleStatusDays, &age).find("consecutive") != std::string::npos);
+  TEST_ASSERT_EQUAL_INT(18, age);
+  for (const char* stale : {"Your streak was 7 days on 14 Oct.", "As of Oct 14 you are running well.", "Currently at 80 kg (14 October).",
+                            "Your latest figure, from 2026-10-01, is 5 km."}) {
+    TEST_ASSERT_FALSE_MESSAGE(staleStatusIn(stale, "2026-11-01", kStaleStatusDays, &age).empty(), stale);
+  }
+  for (const char* fine : {"Your streak was 7 days on 30 Oct.", "That's 7 consecutive days as of 2026-10-29.",
+                           "Did you do your lesson today?", "Your streak on 14 Oct, is it still going?",
+                           "The treaty of 14 Oct 1066 changed the map.", "Here is a nugget about verbs.", "May your day be good, still."}) {
+    TEST_ASSERT_TRUE_MESSAGE(staleStatusIn(fine, "2026-11-01", kStaleStatusDays, &age).empty(), fine);
+  }
+  // Across a year boundary.
+  TEST_ASSERT_TRUE(staleStatusIn("Your streak was 7 days on 30 Dec.", "2027-01-02", kStaleStatusDays, &age).empty());
+  TEST_ASSERT_FALSE(staleStatusIn("Your streak was 7 days on 1 Dec.", "2027-01-02", kStaleStatusDays, &age).empty());
+  TEST_ASSERT_TRUE(staleStatusIn("Your streak was 7 days on 1 Dec.", "", kStaleStatusDays, &age).empty());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_the_31_oct_250_g_target);
@@ -189,5 +210,6 @@ int main(int, char**) {
   RUN_TEST(test_property_every_target_word);
   RUN_TEST(test_a_target_in_a_memory_needs_a_source);
   RUN_TEST(test_the_correction_round_names_the_way_out);
+  RUN_TEST(test_a_stale_status_in_a_routine);
   return UNITY_END();
 }

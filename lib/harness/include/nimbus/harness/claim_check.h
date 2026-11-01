@@ -106,6 +106,8 @@ class ClaimCheck {
   void setFoodFacts(std::function<nimbus::orch::FoodFacts()> facts) { foodFacts_ = std::move(facts); }
   // The owner's own earlier messages in this request: a daily target's source.
   void noteOwnerHistory(const std::string& ownerRows);
+  // A scheduled turn: `today` (YYYY-MM-DD) turns on the stale-status rule (food_figures.h).
+  void setRoutineDay(const std::string& today) { routineDay_ = today; }
   // A memory about to be stored states a daily target nothing this turn holds: true, with the
   // sentence. Apply refuses it: a made-up figure must not become its own source.
   bool unsourcedFoodTarget(const std::string& text, std::string* excerpt) const;
@@ -189,6 +191,7 @@ class ClaimCheck {
   bool targetsClipped_ = false;  // that list hit its cap: the target rule stands down
   std::string wroteTargets_;     // the text of this turn's writes to the food targets file
   std::function<nimbus::orch::FoodFacts()> foodFacts_;
+  std::string routineDay_;       // set on a scheduled turn: the stale-status rule applies
   uint32_t sourceNames_ = 0;     // SourceEvidence bits this turn names (CUM-824)
   std::string sourceWords_;      // the words those sources hold, for a source named by name
   std::string toolText_;         // the tool results in normalizedWords form (bounded)
