@@ -23,6 +23,7 @@
 #include "adapters/image_gen.h"   // CUM-508: imagegen::available() opens image.generate's gate
 #include "nimbus/speaker_reply.h"   // speakerFailText - reply.speak's honest failure
 #include "adapters/tavily.h"
+#include "transport_tls.h"   // deviceProviderDeps: web.search on the provider's own search
 #include "nimbus/harness/websearch.h"  // registerWebSearchTool (portable, host-tested)
 #include "nimbus/orch/tool_gates.h"     // CUM-508: the provider-gated tool table
 #include "memory_restore.h"               // CUM-406: portable restore parse/apply core

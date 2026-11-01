@@ -242,15 +242,15 @@ static void testWebRouteAndPauses(ndtest::Ctx& c) {
 
 // (i) Check of c962b5d0: the head's web.search route follows whether THIS head runs the tool
 // loop, the device's rule (orch::headRunsToolLoop) on the rig's engine closure: a Z.ai head
-// runs single-shot (no route), a Cumulo-only head on the default openai upstream runs the
-// loop (the route stays: the one-key onboarding path).
+// and a Cumulo-only head on the default openai upstream both run the loop (the route stays:
+// the one-key onboarding path). The unit table in test_harness_turn holds the negative case.
 static void testWebRouteFollowsTheHead(ndtest::Ctx& c) {
   std::printf("  -- (i) web.search is offered only to a head that runs the tool loop --\n");
   const char* blob =
       "[{\"name\":\"notion\",\"type\":\"notion\",\"prov\":\"mistral\",\"kind\":\"connector\","
       "\"cid\":\"notion\",\"en\":1}]";
   struct Case { const char* env; const char* prio; const char* head; bool route; };
-  const Case cases[] = {{"Z_AI_TOKEN", "zai", "zai", false}, {"CUMULO_API_KEY", "cumulo", "cumulo", true}};
+  const Case cases[] = {{"Z_AI_TOKEN", "zai", "zai", true}, {"CUMULO_API_KEY", "cumulo", "cumulo", true}};
   for (const Case& k : cases) {
     clearEnv();
     setenv("TAVILY_API_KEY", "tv_TEST_KEY_2", 1);
@@ -262,7 +262,7 @@ static void testWebRouteFollowsTheHead(ndtest::Ctx& c) {
     c.eq(rig.hostBadge(), k.head, "the head resolves");
     const std::string cat = rig.connectorsCatalog(rig.headRunsTools(rig.hostBadge()));
     c.ok(has(cat, "call web.search on your own turn") == k.route,
-         k.route ? "the Cumulo head is offered its web.search" : "the Z.ai head is not offered web.search");
+         k.route ? "the head is offered its web.search" : "the head is not offered web.search");
     // GET /api/connectors/catalog renders by the engine's rule too (check of abe4c6a8).
     EngineThread eng(&rig);
     eng.start();
@@ -271,8 +271,8 @@ static void testWebRouteFollowsTheHead(ndtest::Ctx& c) {
     ApiResp out;
     api.handle("GET", "/api/connectors/catalog", "", out);
     c.ok(has(out.body, "call web.search on your own turn") == k.route,
-         k.route ? "the catalog endpoint offers the Cumulo head web.search"
-                 : "the catalog endpoint offers the Z.ai head no web.search");
+         k.route ? "the catalog endpoint offers the head web.search"
+                 : "the catalog endpoint offers the head no web.search");
   }
   clearEnv();
 }

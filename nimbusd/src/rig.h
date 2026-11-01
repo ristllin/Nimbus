@@ -782,6 +782,12 @@ class NimbusdRig {
                                          bool dueIsOpen = true) {
     return nimbus::orch::parkPause(p, seam, steadyMs(), dueIsOpen);
   }
+  // A provider with a built-in web search holds a key and is open (hostedWebSearchAvailable's rule).
+  bool providerSearchOpen() const {
+    for (const char* h : {"mistral", kZaiSlug})
+      if (providerKeyed(h) && !nimbus::orch::pauseHolds(pauseOf(h, nimbus::orch::PaidSeam::Chat))) return true;
+    return false;
+  }
   // Does a head on `h` run the tool loop (web.search on its own turn)? The device's rule:
   // native hosts and Z.ai, the Cumulo head on one of those upstreams, never custom.
   bool headRunsTools(const std::string& h) const { return nimbus::orch::headRunsToolLoop(h, cumuloModel()); }
@@ -797,8 +803,7 @@ class NimbusdRig {
     ps.anthropicPause = pauseOf("anthropic", nimbus::orch::PaidSeam::Spawn);
     ps.mistralPause = pauseOf("mistral", nimbus::orch::PaidSeam::Spawn);
     ps.hostPause = pauseOf(hostBadge(), nimbus::orch::PaidSeam::Chat);
-    ps.webSearchTool =
-        headCallsTools && (!tavilyKey_.empty() || agent::providers::hostedWebSearchAvailable(providerDeps()));
+    ps.webSearchTool = headCallsTools && (!tavilyKey_.empty() || providerSearchOpen());
     ps.capProbe = 0;   // no verify cache: report key presence, never claim "verified"
     ps.currentHost = hostBadge();
     ps.mistralHeadCarriesStudio = false;   // Studio connectors ride subs only (headDeps)
@@ -1605,7 +1610,7 @@ class NimbusdRig {
     agent::websearch::registerWebSearchTool(reg_, wd);
     nimbus::orch::applyToolGates(reg_, [this](nimbus::orch::ToolGate g) {
       if (g == nimbus::orch::ToolGate::WebSearchKey)
-        return !tavilyKey_.empty() || agent::providers::hostedWebSearchAvailable(providerDeps());
+        return !tavilyKey_.empty() || providerSearchOpen();
       return true;   // image.generate is not registered on a hosted instance
     });
   }

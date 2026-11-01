@@ -37,6 +37,7 @@
 #include "engine_thread.h"
 #include "loopback_server.h"
 #include "nimbus/harness/rate_limit.h"
+#include "nimbus/harness/turn_contract.h"   // kEmptyAnswer
 #include "reply_buffer.h"
 #include "rig.h"
 #include "sub_fabric.h"

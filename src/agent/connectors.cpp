@@ -13,6 +13,7 @@
 #include "files_subsystem.h"         // files::available - the file routes need an SD card
 #include "pdf_tool.h"                // the device PDF writer (one of the PDF routes)
 #include "adapters/tavily.h"         // tavily::available - the head's own web.search
+#include "transport_tls.h"           // deviceProviderDeps: the provider's own web search
 
 #include <LittleFS.h>
 

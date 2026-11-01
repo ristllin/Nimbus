@@ -345,20 +345,27 @@ static void expectZaiHeadPolicy(ndtest::Ctx& c, const agent::HttpRequest& r) {
 }
 
 static void testZaiKeepsCustomPath(ndtest::Ctx& c) {
-  std::printf("  -- (g) zai keeps single-shot chat completions with json_object --\n");
+  std::printf("  -- (g) zai runs the tool loop over its compat path --\n");
   clearProviderEnv();
   setenv("CUMULO_API_KEY", kKey, 1);
   FakeHttpTransport tx;
-  tx.script.push_back(ex("/router/zai/chat/completions", 200, chatBody("glm here")));
+  tx.script.push_back(ex("/router/zai/chat/completions", 200,
+                         "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"content\":\"\","
+                         "\"tool_calls\":[{\"id\":\"call_1\",\"function\":{\"name\":\"orch_turn\","
+                         "\"arguments\":\"{\\\"reply\\\":\\\"glm here\\\"}\"}}]}}],"
+                         "\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}"));
   Config cfg;
   NimbusdRig rig(cfg, baseOpt("rh-g", true), &tx);
   rig.applyOrchModel("cumulo", "zai/glm-5.3");
   const TurnRecord t = rig.say("owner", "hello");
-  c.eqi((long)tx.seen.size(), 1, "single shot (no tool loop on this path)");
+  c.eqi((long)tx.seen.size(), 1, "the one round that finishes");
   if (!tx.seen.empty()) {
-    c.eq(tx.seen[0].path, "/router/zai/chat/completions", "the zai path has no /v1");
-    c.ok(has(tx.seen[0].body, "\"model\":\"glm-5.3\""), "the bare model id");
-    expectZaiHeadPolicy(c, tx.seen[0]);   // the router's zai upstream rides the one seam
+    const agent::HttpRequest& r = tx.seen[0];
+    c.eq(r.path, "/router/zai/chat/completions", "the zai path has no /v1");
+    c.ok(has(r.body, "\"model\":\"glm-5.3\""), "the bare model id");
+    c.ok(has(r.body, "\"tool_choice\":\"required\""), "the tool loop, on the router's zai upstream too");
+    c.ok(has(r.body, "\"reasoning_effort\":\"low\""), "bounded reasoning (CUM-544)");
+    c.eqi((long)r.timeoutMs, (long)agent::providers::kZaiHeadTimeoutMs, "the 50 s Z.ai head budget (CUM-544)");
   }
   c.ok(has(t.reply, "glm here"), "the answer reaches the owner");
   clearProviderEnv();

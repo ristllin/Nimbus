@@ -1643,6 +1643,7 @@ static void test_effort_table_matches_the_recording() {
 // CUM-823: web.search with no Tavily key runs Mistral's built-in search on a model that
 // takes it, whatever the head is. Recorded shape: evidence/probes/web-mistral-*.
 static void test_web_search_runs_on_mistral_builtin() {
+  providers::clearHostParks();
   FakeProviderDeps d;
   d.http.script.push_back(
       {"api.mistral.ai", "/v1/conversations", 200,
@@ -1665,6 +1666,7 @@ static void test_web_search_runs_on_mistral_builtin() {
 
 // A failed Mistral search falls to Z.ai; with neither key nothing is sent and it says so.
 static void test_web_search_walks_to_zai_then_says_why() {
+  providers::clearHostParks();
   {
     FakeProviderDeps d;
     d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 500, "{\"message\":\"boom\"}"});
