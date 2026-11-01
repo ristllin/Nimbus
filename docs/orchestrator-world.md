@@ -295,7 +295,7 @@ and the tool result says which:
 |---|---|
 | `stored` | Embedded and in long-term memory. |
 | `duplicate` | The same fact is already stored. |
-| `queued` | Kept on the device, not stored yet; stored automatically when embeddings work again. Keyword search already finds it (marked `pending, not stored yet`). |
+| `queued` | Kept on the device, not stored yet; stored automatically when embeddings work again. `memory.search` already finds it by its words, whether or not embeddings are back (marked `pending, not stored yet`). |
 | `refused` | Not stored, with the reason: nothing to embed, the conversation's memory limit, the queue is full, or the device could not write the queue to storage. |
 
 The queue holds at most 64 facts or 48 KB, and 16 per member conversation; when

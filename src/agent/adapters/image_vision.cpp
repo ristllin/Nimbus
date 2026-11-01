@@ -338,21 +338,31 @@ static bool lookAllowed(const std::string& ref, const std::string& ns, bool owne
   return err.empty();
 }
 
+// Is this photo's reading still to come? Queued for the idle step, or, in the turn that
+// holds it, queued when that turn ends. (The bytes of a photo are stored before its
+// turn runs, so a ref always names a photo; what can be late is its reading.)
+static bool readingWaits(const std::string& ref) {
+  if (recordQueue().holds(ref)) return true;
+  const nimbus::orch::TurnImages* set = nimbus::orch::activeTurnImages();
+  if (!set) return false;
+  for (const nimbus::orch::TurnImage& it : set->items)
+    if (it.ref == ref && it.retryRead) return true;
+  return false;
+}
+
 // One caption request answering `question` about the photo in `buf` (freed here).
-static std::string captionAnswer(uint8_t* buf, size_t len, const char* mime, const std::string& question,
-                                 std::string& err) {
+static std::string captionAnswer(uint8_t* buf, size_t len, const char* mime, const std::string& ref,
+                                 const std::string& question, std::string& err) {
   const CaptionResult r = read(buf, len, mime, String(), CaptionKind::Question, String(question.c_str()));
   free(buf);
-  if (r.text.empty()) err = "the photo could not be read: " + r.words;
+  if (r.text.empty()) err = lookFailedWords(readingWaits(ref), r.words);
   return r.text;
 }
 
 std::string look(const std::string& ref, const std::string& question, const std::string& ns, bool owner,
                  std::string& err) {
   if (!lookArgsValid(ref, question, err)) return std::string();
-  if (shownThisTurn(ref))
-    return "This photo came with the current message and is already in front of you as an image: "
-           "answer from what you see in it.";
+  if (shownThisTurn(ref)) return nimbus::orch::kLookAlreadyShown;
   nimbus::orch::TurnImages* set = nimbus::orch::activeTurnImages();
   if (set && set->lookedIndex(ref) >= 0) return nimbus::orch::lookResultText(ref);   // already shown again
   if (!lookAllowed(ref, ns, owner, err)) return std::string();
@@ -360,7 +370,7 @@ std::string look(const std::string& ref, const std::string& question, const std:
   const char* why = "";
   uint8_t* buf = loadStoredPhoto(ref, std::string(), len, why);
   if (!buf) {
-    err = why[0] ? std::string("the photo could not be read: ") + why : "no stored photo with that ref";
+    err = why[0] ? lookFailedWords(readingWaits(ref), why) : "no stored photo with that ref";
     return std::string();
   }
   const char* mime = nimbus::orch::sniffImageMime(buf, len);
@@ -372,7 +382,7 @@ std::string look(const std::string& ref, const std::string& question, const std:
   // The pixels, when a turn holds a set (the owner's turns): the head views the photo
   // itself. Otherwise (a routine, the turn's limits reached) one caption request.
   const std::string shown = set && g_native ? showAgain(*set, ref, question, buf, len) : std::string();
-  return shown.empty() ? captionAnswer(buf, len, mime, question, err) : shown;
+  return shown.empty() ? captionAnswer(buf, len, mime, ref, question, err) : shown;
 }
 
 std::string note(const std::string& ref, const std::string& text, std::string& err) {

@@ -130,7 +130,9 @@ turn:
   - OpenAI: the static part and the shelf as developer messages with explicit
     cache breakpoints, the history as message items with the third breakpoint on
     the last user item, then the user message led by the per-turn part, and the
-    per-chat `prompt_cache_key`;
+    per-chat `prompt_cache_key`. Only gpt-5.6 and later take the breakpoints; every
+    other model gets the same messages without them, and a model that still refuses
+    one is sent the round again without it;
   - Mistral: one system message (static plus shelf), the history messages, then
     the user message led by the per-turn part, and the per-chat
     `prompt_cache_key`;

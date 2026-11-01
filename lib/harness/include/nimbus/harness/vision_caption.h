@@ -176,6 +176,8 @@ class RecordQueue {
   void settle(const PendingRecord::Str& ref, bool ok, uint32_t nowMs);
   size_t size() const { return items_.size(); }
   void clear() { items_.clear(); }
+  // Is this photo waiting for its reading?
+  bool holds(const std::string& ref) const;
 
  private:
   // Oldest first. A vector, not an array: the records live on the heap (PSRAM on the
@@ -183,6 +185,11 @@ class RecordQueue {
   nimbus::orch::WorkingVector<PendingRecord> items_;
 };
 RecordQueue& recordQueue();
+
+// What image.look answers when it has no reading to give: `queued` (the photo's reading
+// is waiting for a provider) says it has not been read yet, and it need not be sent
+// again; otherwise that it could not be read, and why.
+std::string lookFailedWords(bool queued, const std::string& reason);
 
 // The label words of a typed failure ("too large", "openai out of credit (HTTP 429)").
 std::string failWords(ReadFail f, const std::string& provider, int status);

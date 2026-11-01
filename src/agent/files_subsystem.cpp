@@ -2154,8 +2154,9 @@ void registerTools() {
   reg.add("image.look",
           "View a photo sent earlier yourself: it comes back to you as an image. ref = the 16 hex "
           "characters in its [image ... ref=...] label in the conversation; question = what you "
-          "want to check in it (used only when you cannot see images). Use it whenever the "
-          "photo's note or your earlier reply does not answer what you are asked.",
+          "want to check in it, asked openly (\"what is on the plate?\"), never naming what you "
+          "think it shows (used only when you cannot see images). Use it whenever the photo's "
+          "note or your earlier reply does not answer what you are asked.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
             if (!agent::orchestrator::turnInFlight())
               return nimbus::orch::ToolResult::fail("image.look is only available during a turn");

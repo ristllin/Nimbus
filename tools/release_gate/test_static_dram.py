@@ -3,6 +3,7 @@
 Run: python3 -m pytest tools/release_gate
 """
 
+import json
 import os
 import re
 import struct
@@ -179,3 +180,18 @@ def test_merge_cli_says_its_marker_and_exit_code(tmp_path, capsys):
 def test_merge_required_default_is_what_the_battery_builds():
     ceilings = dram.load_ceilings()
     assert {ceilings[v]["env"] for v in merge.DEFAULT_REQUIRED} == {"esp32s3", "esp32s3-cyd"}
+
+
+# The baseline is the last measured tree, so a report's "+N B" is growth since then and not
+# since v4.5.15 (the release line and main merged, lane MB: 91,195 B and 91,275 B). The
+# ceilings did not move: moving one needs the bench heap A/B.
+MEASURED = {"nimbus-tft": 91195, "freenove-28": 91275, "freenove-35": 91275, "freenove-40": 91275}
+UNCHANGED_CEILINGS = {"nimbus-tft": 91635, "freenove-28": 91723, "freenove-35": 91723, "freenove-40": 91723}
+
+
+def test_the_baseline_is_the_measured_merge_and_the_ceilings_did_not_move():
+    variants = json.load(open(dram.CEILINGS))["variants"]
+    for name, row in variants.items():
+        assert row["baseline"] == MEASURED[name], name
+        assert row["ceiling"] == UNCHANGED_CEILINGS[name], f"{name}: a raised ceiling needs the bench heap A/B"
+        assert row["baseline"] <= row["ceiling"], name

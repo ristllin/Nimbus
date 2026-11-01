@@ -5,8 +5,9 @@ Static DRAM (the ELF's .dram0.bss plus .dram0.data) is internal SRAM the heap ne
 gets back: every byte it grows is a byte less for a turn's TLS handshake. v4.5.14 grew
 it by about 4.5 KB over v4.5.13 without anyone noticing until a bench A/B; v4.5.15
 recovered 6.3 KB. This gate makes growth a visible, deliberate decision: each shipped
-variant has a recorded baseline (the v4.5.15 ELF) and a ceiling (baseline plus a small
-allowance) in static_dram_ceilings.json, and an image over its ceiling fails.
+variant has a recorded baseline (the last measured tree, re-based at release boundaries)
+and a ceiling (the v4.5.15 ELF plus a small allowance) in static_dram_ceilings.json, and
+an image over its ceiling fails.
 
 Raising a ceiling is an owner-visible change: it needs the bench heap A/B (idle and
 request-start free heap, before and after) in the PR, never just "it grew".

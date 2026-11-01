@@ -649,6 +649,15 @@ static void test_the_set_holds_its_refs() {
   TEST_ASSERT_FALSE(set.shown);
 }
 
+// The look at a photo the head already has: a no-op for the bytes, so the words are the
+// whole effect. They send it back to the pixels, not to its own first read.
+static void test_look_at_a_shown_photo_asks_for_a_fresh_read() {
+  const std::string w = nimbus::orch::kLookAlreadyShown;
+  TEST_ASSERT_TRUE(w.find("already in front of you") != std::string::npos);
+  TEST_ASSERT_TRUE(w.find("your first read") != std::string::npos);
+  TEST_ASSERT_TRUE(w.find("correct it") != std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_spliced_body_reads_back_at_every_offset);
@@ -674,6 +683,7 @@ int main(int, char**) {
   RUN_TEST(test_looked_photos_limits_markers_and_bytes);
   RUN_TEST(test_look_result_text_round_trips_only_exactly);
   RUN_TEST(test_look_answer_made_once);
+  RUN_TEST(test_look_at_a_shown_photo_asks_for_a_fresh_read);
   RUN_TEST(test_settled_row_property);
   RUN_TEST(test_a_full_note_fits_the_history_row);
   RUN_TEST(test_turn_without_photos_gets_an_empty_set);

@@ -481,6 +481,59 @@ static void test_fail_words_per_class() {
                            vision::failWords(vision::ReadFail::Billing, "openai", 429).c_str());
 }
 
+// The head's question can carry its own first guess (28 Oct: "the beef and black-bean
+// stir-fry, the portion of rice" for a plate of chicken and lentils). A second model that
+// is simply asked about the stir-fry confirms the stir-fry, and the wrong read locks in.
+// The reader is told what the question is, before it reads the question.
+static void test_question_prompt_does_not_inherit_the_heads_guess() {
+  vision::CaptionRequest in;
+  const uint8_t bytes[] = {0xFF, 0xD8, 0xFF};
+  in.bytes = bytes;
+  in.len = sizeof(bytes);
+  in.mime = "image/jpeg";
+  in.kind = vision::CaptionKind::Question;
+  in.question = "how many grams is the beef and black-bean stir-fry?";
+  agent::HttpRequest req;
+  TEST_ASSERT_TRUE(vision::buildCaptionRequest("openai", "gpt-6-luna", "k", in, "", req));
+  const size_t guard = req.body.find("may be wrong");
+  const size_t asked = req.body.find("Question: how many grams");
+  TEST_ASSERT_TRUE_MESSAGE(guard != std::string::npos, req.body.c_str());
+  TEST_ASSERT_TRUE(asked != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(guard < asked, "the warning comes before the question");
+  TEST_ASSERT_TRUE(req.body.find("what the photo shows") != std::string::npos);
+  // A plain reading has no question and gets none of these words.
+  in.kind = vision::CaptionKind::Fallback;
+  in.question.clear();
+  agent::HttpRequest plain;
+  TEST_ASSERT_TRUE(vision::buildCaptionRequest("openai", "gpt-6-luna", "k", in, "", plain));
+  TEST_ASSERT_TRUE(plain.body.find("may be wrong") == std::string::npos);
+}
+
+// image.look of a photo whose reading is still queued (the 31 Oct window: the record was
+// written 15 s after the turn that needed it): the head hears that, never a plain failure
+// it would pass on as "the lookup failed", and is not sent to ask for the photo again.
+static void test_look_while_the_record_is_queued_says_so() {
+  vision::RecordQueue& q = vision::recordQueue();
+  q.clear();
+  vision::PendingRecord r;
+  r.ref = nimbus::orch::workingCopy("00112233445566ff");
+  r.chatId = nimbus::orch::workingCopy("7");
+  r.len = 100;
+  TEST_ASSERT_FALSE(q.holds("00112233445566ff"));
+  TEST_ASSERT_TRUE(q.push(r));
+  TEST_ASSERT_TRUE(q.holds("00112233445566ff"));
+  TEST_ASSERT_FALSE(q.holds("ffeeddccbbaa9988"));
+  const std::string waiting = vision::lookFailedWords(true, "openai paused");
+  TEST_ASSERT_TRUE(waiting.find("not been read yet") != std::string::npos);
+  TEST_ASSERT_TRUE(waiting.find("need not be sent again") != std::string::npos);
+  TEST_ASSERT_TRUE(waiting.find("could not be read") == std::string::npos);
+  // Nothing queued: the failure stays a failure, with its reason.
+  TEST_ASSERT_EQUAL_STRING("the photo could not be read: openai paused",
+                           vision::lookFailedWords(false, "openai paused").c_str());
+  q.settle(r.ref, true, 0);
+  TEST_ASSERT_FALSE(q.holds("00112233445566ff"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_billing_429_parks_walks_on_and_notices_once);
@@ -499,5 +552,7 @@ int main(int, char**) {
   RUN_TEST(test_error_line_keeps_host_model_code_inside_the_cap);
   RUN_TEST(test_overlong_reply_is_a_logged_failure);
   RUN_TEST(test_fail_words_per_class);
+  RUN_TEST(test_question_prompt_does_not_inherit_the_heads_guess);
+  RUN_TEST(test_look_while_the_record_is_queued_says_so);
   return UNITY_END();
 }

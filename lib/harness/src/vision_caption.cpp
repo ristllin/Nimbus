@@ -63,8 +63,10 @@ const char* kMemoryPrompt =
     "Write a short record of this photo for a memory search: one or two plain sentences on "
     "what it shows, then any key text or numbers in it copied exactly. No preamble.";
 const char* kQuestionPrompt =
-    "Answer the question below about this photo. Copy any text you rely on exactly. If the "
-    "photo does not show the answer, say so plainly.";
+    "Say in one line what the photo shows, in your own words, then answer the question below. "
+    "The question may name what someone guessed is in the photo, and that guess may be wrong: "
+    "if the photo disagrees, say so and answer from the photo. Copy any text you rely on "
+    "exactly. If the photo does not show the answer, say so plainly.";
 
 std::string promptOf(const CaptionRequest& in) {
   std::string p = in.kind == CaptionKind::Memory     ? kMemoryPrompt
@@ -589,6 +591,19 @@ const PendingRecord* RecordQueue::due(uint32_t nowMs, bool providerOpen) const {
   for (size_t i = items_.size(); i-- > 0;)   // newest first
     if ((int32_t)(nowMs - items_[i].notBeforeMs) >= 0) return &items_[i];
   return nullptr;
+}
+
+bool RecordQueue::holds(const std::string& ref) const {
+  for (const PendingRecord& r : items_)
+    if (ref == r.ref.c_str()) return true;
+  return false;
+}
+
+std::string lookFailedWords(bool queued, const std::string& reason) {
+  if (queued)
+    return "this photo has not been read yet: its reading is waiting for a provider (" + reason +
+           ") and lands in its row by itself. Say it has not been read yet; it need not be sent again";
+  return "the photo could not be read: " + reason;
 }
 
 void RecordQueue::settle(const PendingRecord::Str& ref, bool ok, uint32_t nowMs) {

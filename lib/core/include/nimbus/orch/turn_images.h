@@ -187,6 +187,9 @@ const char* admitImage(const TurnImages& set, const uint8_t* bytes, size_t len, 
 // per-photo and per-turn byte limits.
 const char* admitLook(const TurnImages& set, const uint8_t* bytes, size_t len, const char*& why);
 
+// image.look's answer for a photo of this message the head already has as an image.
+extern const char kLookAlreadyShown[];
+
 // image.look's result in the turn's record for a photo shown again. Each renderer
 // writes its own words over it (the photo attached, or a blind host's reading), so the
 // record names only the ref: "[image ref=<16 hex>] shown to you again".
