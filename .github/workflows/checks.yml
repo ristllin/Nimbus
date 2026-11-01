@@ -118,6 +118,9 @@ jobs:
         # Every device client sends the X-Nimbus-Token header, never a ?t= query
         # (dropped by the device since CUM-45); a local fake device, no network.
         run: python3 -m pytest tools/test_device_http_auth.py
+      - name: Persona rig self test (no docker, no keys)
+        # Personas are graded by this rig; a grader that cannot fail proves nothing.
+        run: python3 -m pytest tools/persona-rig
 
   # HIL suite must stay importable/collectable on a device-less box (the repo's
   # own contract: `pytest tests/hil --collect-only` clean with no hardware).

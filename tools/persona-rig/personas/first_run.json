@@ -1,0 +1,19 @@
+{
+  "name": "first-run-keyless",
+  "description": "A brand-new instance, as a client first meets it: no key at all, then a key of the right shape that the provider rejects. Costs nothing.",
+  "scenarios": [
+    {"id": "no-key", "steps": [
+      {"http": {"method": "GET", "path": "/api/state"}, "expect": [{"http_status": 200}, {"body_contains": "\"provVerified\":false"}]},
+      {"say": "Hello, are you there?", "timeout_s": 60,
+       "expect": [{"turn_resolved": true}, {"reply_regex": "key|provider"}, {"reply_not_contains": "Done."}]}
+    ]},
+    {"id": "wrong-key", "steps": [
+      {"http": {"method": "POST", "path": "/api/orch", "form": {"mistKey": "abcdefghijklmnopqrstuvwxyz012345"}},
+       "expect": [{"http_status": 200}]},
+      {"sleep": 6},
+      {"http": {"method": "GET", "path": "/api/orch"}, "expect": [{"body_regex": "\"mistral\":\\{[^}]*\"verify\":0"}]},
+      {"say": "Hello, are you there?", "timeout_s": 60,
+       "expect": [{"turn_resolved": true}, {"reply_regex": "key|sign"}, {"reply_not_contains": "Done."}]}
+    ]}
+  ]
+}

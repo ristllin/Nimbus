@@ -1,0 +1,256 @@
+{
+ "name": "contract-live",
+ "description": "Every route and field the rig relies on, against a real image, with no key and no turn. Free. The self test holds the same list against the daemon's source.",
+ "timezone": "Europe/London",
+ "display_name": "Contract",
+ "directive": "Contract check.",
+ "monthly_cap_cents": 100,
+ "models": {
+  "head": {
+   "mistral": "mistral-small-latest"
+  },
+  "sub": {
+   "mistral": "mistral-small-latest"
+  }
+ },
+ "host": "mistral",
+ "members": [
+  {
+   "chat": "2001",
+   "name": "Sam",
+   "role": "user"
+  }
+ ],
+ "scenarios": [
+  {
+   "id": "routes",
+   "steps": [
+    {
+     "http": {
+      "method": "GET",
+      "path": "/readyz"
+     },
+     "expect": [
+      {
+       "http_status": 200
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/state"
+     },
+     "expect": [
+      {
+       "http_status": 200
+      },
+      {
+       "body_contains": "\"spentCents\""
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/orch"
+     },
+     "expect": [
+      {
+       "http_status": 200
+      },
+      {
+       "body_regex": "\"sessIn\".*\"sessOut\".*\"turns\""
+      },
+      {
+       "body_contains": "\"limitCents\":100"
+      },
+      {
+       "body_contains": "\"orchModel\":\"mistral-small-latest\""
+      },
+      {
+       "body_contains": "\"vts\""
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/config"
+     },
+     "expect": [
+      {
+       "http_status": 200
+      },
+      {
+       "body_contains": "\"devTz\":\"Europe/London\""
+      },
+      {
+       "body_contains": "\"devName\":\"Contract\""
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/telegram"
+     },
+     "expect": [
+      {
+       "http_status": 200
+      },
+      {
+       "body_regex": "\"allow\":\\[\\{\"id\":\"2001\""
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/tenant"
+     },
+     "expect": [
+      {
+       "http_status": 200
+      },
+      {
+       "body_regex": "\"tenants\":\\[\\{\"id\":\"2001\",\"role\":\"user\""
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/replies?after=0"
+     },
+     "expect": [
+      {
+       "http_status": 200
+      },
+      {
+       "body_contains": "\"lastSeq\""
+      },
+      {
+       "body_contains": "\"turnInFlight\""
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/mem/episodic?limit=1"
+     },
+     "expect": [
+      {
+       "http_status": 200
+      },
+      {
+       "body_contains": "\"messages\""
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/mem/stats"
+     },
+     "expect": [
+      {
+       "http_status": 200
+      },
+      {
+       "body_contains": "\"vectors\""
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/log"
+     },
+     "expect": [
+      {
+       "http_status": 200
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/lastturn"
+     },
+     "expect": [
+      {
+       "http_status": 404
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/chat?turn=1"
+     },
+     "expect": [
+      {
+       "http_status": 200
+      },
+      {
+       "body_contains": "\"pending\""
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "POST",
+      "path": "/api/orch",
+      "form": {
+       "clearConv": "1"
+      }
+     },
+     "expect": [
+      {
+       "http_status": 200
+      },
+      {
+       "body_contains": "\"ok\":true"
+      }
+     ]
+    },
+    {
+     "upload": {
+      "project": "contract",
+      "name": "a.txt",
+      "text": "contract"
+     },
+     "expect": [
+      {
+       "http_status": 200
+      },
+      {
+       "file_contains": {
+        "project": "contract",
+        "name": "a.txt",
+        "text": "contract"
+       }
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "POST",
+      "path": "/api/message",
+      "json": {
+       "chat_id": "2001",
+       "text": "contract check with no provider key"
+      }
+     },
+     "expect": [
+      {
+       "http_status": 202
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

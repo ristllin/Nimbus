@@ -1,0 +1,46 @@
+{
+ "description": "The path the portal offers a client: one Cumulo router key. Needs CUMULO_TEST_KEY (funded) and CUMULO_NOCREDIT_KEY (a valid key on an empty wallet) in the env file. Not run yet: no such key is held by the program's lanes.",
+ "matrix": [
+  {
+   "row": "funded",
+   "key": "CUMULO_TEST_KEY",
+   "verdict": "verified",
+   "reply": "\\b51\\b"
+  },
+  {
+   "row": "no-credit",
+   "key": "CUMULO_NOCREDIT_KEY",
+   "verdict": "nocredits",
+   "reply": "credit|plan"
+  }
+ ],
+ "persona": {
+  "name": "cumulo-${row}",
+  "keys": {
+   "cumulo": "${key}"
+  },
+  "key_expect": {
+   "cumulo": "${verdict}"
+  },
+  "host": "cumulo",
+  "monthly_cap_cents": 100,
+  "scenarios": [
+   {
+    "id": "chat",
+    "steps": [
+     {
+      "say": "What is 17 times 3? Answer with just the number.",
+      "expect": [
+       {
+        "turn_resolved": true
+       },
+       {
+        "reply_regex": "${reply}"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "nora-bakery-owner",
+  "description": "Worked example. A bakery owner with one provider key, a monthly ceiling, her own name and time zone, and one approved staff member.",
+  "display_name": "Nora's Nimbus",
+  "timezone": "Europe/London",
+  "directive": "You help Nora run a small bakery. Keep answers short and practical.",
+  "monthly_cap_cents": 500,
+  "keys": {"mistral": "MISTRAL_API_KEY"},
+  "models": {"head": {"mistral": "mistral-large-4-0"}, "sub": {"mistral": "mistral-small-latest"}},
+  "host": "mistral",
+  "members": [{"chat": "2001", "name": "Sam", "role": "user"}],
+  "scenarios": [
+    {"id": "settings-applied", "steps": [
+      {"http": {"method": "GET", "path": "/api/state"},
+       "expect": [{"http_status": 200}, {"body_contains": "Nora's Nimbus"}, {"body_contains": "Europe/London"},
+                  {"body_contains": "\"limitCents\":500"}]},
+      {"http": {"method": "GET", "path": "/api/telegram"}, "expect": [{"http_status": 200}, {"body_contains": "2001"}]}
+    ]},
+    {"id": "owner-day", "steps": [
+      {"say": "If flour is 1.20 pounds a kilo and a loaf takes 450 g, what does the flour in one loaf cost? Give the amount in pence.",
+       "expect": [{"turn_resolved": true}, {"reply_regex": "\\b54\\b"}, {"no_error_reply": true}, {"tokens_max": 40000}]},
+      {"say": "Please remember permanently: our rye starter is called Bertha-8821. Confirm when stored.",
+       "settle_s": 5,
+       "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                  {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}}]},
+      {"say": "Save a file named order.txt in project bakery with exactly this text: 40 sourdough for Friday. Then confirm.",
+       "expect": [{"turn_resolved": true}, {"file_contains": {"project": "bakery", "name": "order.txt", "text": "40 sourdough"}}]},
+      {"http": {"method": "POST", "path": "/api/orch", "form": {"clearConv": "1"}}, "expect": [{"http_status": 200}]},
+      {"say": "What is our rye starter called?",
+       "expect": [{"turn_resolved": true}, {"reply_contains": "Bertha-8821"}]}
+    ]},
+    {"id": "staff-member", "steps": [
+      {"say": "Hi, it's Sam from the bakery. What is two plus two? Reply with just the number.", "as": "2001",
+       "expect": [{"reply_regex": "\\b4\\b"}, {"no_error_reply": true}]},
+      {"say": "What is the rye starter called? Search your memory.", "as": "2001",
+       "expect": [{"reply_nonempty": true}, {"reply_not_contains": "Bertha-8821"}]}
+    ]}
+  ]
+}

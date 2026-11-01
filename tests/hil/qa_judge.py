@@ -76,6 +76,13 @@ def _parse_verdict(text: str) -> Optional[dict]:
     }
 
 
+def _with_usage(verdict: Optional[dict], response: dict) -> Optional[dict]:
+    """The provider's own token counts ride along, so a caller can count what judging cost."""
+    if verdict is not None and response.get("usage"):
+        verdict["judge_usage"] = response["usage"]
+    return verdict
+
+
 def _anthropic_judge(key: str) -> Callable:
     import requests
 
@@ -93,8 +100,9 @@ def _anthropic_judge(key: str) -> Callable:
             headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
         )
         r.raise_for_status()
-        txt = "".join(b.get("text", "") for b in r.json().get("content", []))
-        return _parse_verdict(txt)
+        out = r.json()
+        txt = "".join(b.get("text", "") for b in out.get("content", []))
+        return _with_usage(_parse_verdict(txt), out)
 
     return judge
 
@@ -117,7 +125,7 @@ def _openai_judge(key: str) -> Callable:
             for c in o.get("content", []):
                 if c.get("type") == "output_text":
                     txt += c.get("text", "")
-        return _parse_verdict(txt)
+        return _with_usage(_parse_verdict(txt), out)
 
     return judge
 

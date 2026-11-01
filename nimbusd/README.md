@@ -106,6 +106,13 @@ not retried. It recognizes those replies by the engine's own 429 copy
 (`lib/harness/src/rate_limit.cpp`), which `tools/test_vn_connectors_e2e.py`
 pins as part of `make test`.
 
+### Persona rig (live, paid)
+
+`tools/persona-rig/` starts isolated containers of this image, configures each like a
+person with their own keys, models, caps and members, runs scripted turns, and grades them
+with hard assertions. Its README holds the persona format. Its self test runs under
+`make test` with no docker, network or keys.
+
 ## Configuration
 
 Secrets come from the environment (a mounted Secret in k8s); non-secret settings

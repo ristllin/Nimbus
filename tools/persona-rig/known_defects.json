@@ -1,0 +1,18 @@
+{
+  "no-fold": {"title": "A hosted instance never folds a conversation and carries only the last 12 rows", "report": "defect 1"},
+  "web-chat-hang": {"title": "The web chat hangs on a spawn-only turn and hides sub-agent results until a reload", "report": "defect 2"},
+  "glm-no-tools": {"title": "A GLM head has no tool loop; an empty model reply becomes Done.", "report": "defect 3"},
+  "glm-mem-write-dropped": {"title": "A GLM head's mem_write with the wrong field name is dropped with no log line", "report": "defect 3"},
+  "memory-needs-mistral-key": {"title": "Memory is queued, not stored, on an instance with no embedding route", "report": "defect 6"},
+  "binary-read-kills-turn": {"title": "files.read on a binary file breaks the provider request and ends the turn", "report": "defect 7"},
+  "noted-correction": {"title": "A plain Noted gets (Correction: that has not been saved.)", "report": "defect 8"},
+  "no-web-lookup": {"title": "No web lookup without a Tavily key", "report": "defect 9"},
+  "web-answer-quality": {"title": "The Tavily answer misses the current release for this model", "report": "defect 9"},
+  "placeholder-reply": {"title": "A forced final answer can deliver placeholder; the conversational cap throttles real tasks", "report": "defect 10"},
+  "no-routines": {"title": "Routines do not exist on a hosted instance", "report": "defect 11"},
+  "no-image-path": {"title": "A hosted instance has no image path", "report": "defect 12"},
+  "no-tool-trace": {"title": "nimbusd records no tool_output rows and reports no jobs", "report": "defect 13"},
+  "dead-controls": {"title": "Restart and Power off are shown on a hosted instance and do nothing", "report": "defect 14"},
+  "mistral-model-list": {"title": "The Mistral picker lists foreign models and omits mistral-small-latest", "report": "defect 15"},
+  "spawn-double-ack": {"title": "A spawn is acknowledged twice", "report": "defect 16"}
+}
