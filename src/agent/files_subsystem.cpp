@@ -1190,8 +1190,6 @@ static nimbus::orch::ToolResult appendRows(const AppendArgs& a, const nimbus::or
     return ToolResult::fail("need 'project', 'name' and 'text'");
   if (!textDocName(a.name))
     return ToolResult::fail("files.append adds rows to a text document (.csv, .log, .md, .txt, .json)");
-  const std::string second = nimbus::orch::secondFoodLogRefusal(a.project, a.name, who.owner, who.ns);
-  if (!second.empty()) return ToolResult::fail(second);
   if (!a.key.empty()) return upsertRows(a, who);
   memory::Lock g;
   const std::string gate = appendGate(a.project, a.name, who);
@@ -1938,6 +1936,8 @@ void registerTools() {
             args.key = argStr(a, "key");
             args.sum = argStr(a, "sum");
             args.replaceAll = argStr(a, "replace") == "all";
+            const std::string second = nimbus::orch::secondFoodLogRefusal(args.project, args.name, who.owner, who.ns);
+            if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
             return appendRows(args, who);
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"},"key":{"type":"string"},"sum":{"type":"string"},"replace":{"type":"string","enum":["all"]}},"required":["project","name","text"]})");

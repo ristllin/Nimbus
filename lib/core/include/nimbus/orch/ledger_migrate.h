@@ -65,10 +65,9 @@ struct LedgerMigration {
 // stays theirs and stays where it is: the fold must not move it into the owner's prompt.
 bool legacyLogFoldable(const FileStore& store, const FileEntry& legacy);
 
-// Fold `legacyText` into ledger shape. `existingLedger` is the designed
-// ledger's current text when one exists (its rows are kept, and per (day,
-// meal) key they count as the LATEST generation, so designed rows are never
-// overwritten by stale legacy ones), or "" when none exists yet.
+// Fold `legacyText` into ledger shape. `existingLedger` is the designed ledger's current text when
+// one exists: it stays byte for byte and wins its (day, meal) keys, and only legacy rows of other
+// keys are added after it. A ledger in other columns takes nothing (folded 0). "" when none exists.
 LedgerMigration planLedgerMigration(const std::string& legacyText,
                                     const std::string& existingLedger = std::string());
 

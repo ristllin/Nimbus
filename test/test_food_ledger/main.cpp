@@ -218,6 +218,8 @@ void test_one_food_log() {
   TEST_ASSERT_TRUE(secondFoodLogRefusal("tracking", "weight-log.csv", true, "").empty());
   TEST_ASSERT_TRUE(secondFoodLogRefusal("runs", "log.csv", true, "").empty());
   TEST_ASSERT_TRUE(secondFoodLogRefusal("nutrition", "meal_notes.md", true, "").empty());
+  TEST_ASSERT_TRUE(secondFoodLogRefusal("home", "meal-plan.csv", true, "").empty());
+  TEST_ASSERT_TRUE(secondFoodLogRefusal("charity", "foodbank-donors.csv", true, "").empty());
 }
 
 void test_the_same_food_on_earlier_days_rides_the_turn() {

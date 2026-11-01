@@ -342,6 +342,15 @@ static void test_a_headered_legacy_file_folds_into_an_existing_ledger() {
   const FoodLedger l = scanFoodLedger(m.out, true, LogDay{"2026-11-01", "GMT"}, kFoodLedgerProject, kFoodLedgerOwnerName);
   TEST_ASSERT_EQUAL_INT(90 + 517 + 923, (int)l.kcal);
   TEST_ASSERT_EQUAL_INT(1, l.proteinUnknown);
+  // The ledger stays byte for byte: a quoted comma, two rows of one meal.
+  const std::string kept = "date,meal,items,kcal,protein_g\n2026-10-30,lunch,\"chicken, rice\",600,30\n2026-10-30,lunch,berries,57,1\n";
+  const LedgerMigration both = planLedgerMigration(legacy, kept);
+  TEST_ASSERT_EQUAL_INT(0, (int)both.out.find(kept));
+  TEST_ASSERT_FALSE_MESSAGE(contains(both.out, "stale copy"), both.out.c_str());
+  // A ledger in other columns takes nothing, and loses nothing.
+  const LedgerMigration other = planLedgerMigration(legacy, "date,time,food,kcal\n2026-10-30,12:00,soup,300\n");
+  TEST_ASSERT_TRUE(other.ok);
+  TEST_ASSERT_EQUAL_INT(0, other.folded);
   // A meal column, and a time for the row with no meal.
   const LedgerMigration named = planLedgerMigration(
       "timestamp,meal,food,kcal,protein\n2026-11-01 12:30,lunch,soup,300,10\n", std::string());
@@ -362,6 +371,9 @@ static void test_begin_wires_the_one_time_migration() {
   // A legacy file is folded once, into the ledger when one exists, and then removed.
   TEST_ASSERT_TRUE(contains(src, "g_store.find(nimbus::orch::kLedgerProject, "
                                  "nimbus::orch::kLedgerName)"));
+  // The one food log: files.append and artifact.save both ask before writing.
+  TEST_ASSERT_TRUE(contains(src, "secondFoodLogRefusal(args.project, args.name, who.owner, who.ns)"));
+  TEST_ASSERT_TRUE(contains(src, "secondFoodLogRefusal(project, name, who.owner, who.ns)"));
   // The header bootstrap (candidate 3b): an append creates a CSV only when the
   // store holds none, and only then must it carry the header row first.
   TEST_ASSERT_TRUE(contains(src, "const bool csvCreate = size == 0 && fileKindIsCsv(a.name);"));

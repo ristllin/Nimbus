@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 
 #include <cstdio>
+#include <ctime>
 #include <string>
 
 #include "engine_thread.h"
@@ -108,6 +109,35 @@ static void testTraversalRefused(ndtest::Ctx& c) {
   const ApiResp r = web.call("POST", "/api/files/upload?project=..&name=passwd", multipart("passwd", "x"));
   c.eqi(r.status, 400, "a '..' project is refused");
   c.ok(has(web.call("GET", "/api/files/list").body, "\"count\":0"), "nothing was stored");
+}
+
+// The hosted tools take the same food log rules as the device: one log, the same receipt.
+static void testOneFoodLogAndItsReceipt(ndtest::Ctx& c) {
+  std::printf("  -- one food log, the same receipt --\n");
+  const std::string dir = ndtest::scratchDir("hf-food");
+  ndtest::rmTree(dir);
+  mkdir(dir.c_str(), 0755);
+  PosixFiles files(dir);
+  nimbus::orch::ToolRegistry reg;
+  files.registerTools(reg);
+  nimbus::orch::Principal owner = nimbus::orch::principalForRole("1", nimbus::orch::Role::Admin);
+  owner.owner = true;
+  const auto call = [&](const char* name, const std::string& json) {
+    JsonDocument d;
+    deserializeJson(d, json);
+    return reg.dispatch(name, d.as<JsonObjectConst>(), owner);
+  };
+  const auto refused = call("files.append", "{\"project\":\"nutrition\",\"name\":\"meal_log.csv\",\"text\":\"date,meal,kcal\\n\"}");
+  c.ok(!refused.success && has(refused.error, "food/food-log.csv"), "a second food log is refused with the one to use");
+  const auto saved = call("artifact.save", "{\"project\":\"nutrition\",\"name\":\"meal_log.csv\",\"text\":\"date,meal,kcal\\n\"}");
+  c.ok(!saved.success && has(saved.error, "food/food-log.csv"), "a whole-file save of one too");
+  const std::string today = nimbus::orch::logDayOf(std::time(nullptr), true).date;
+  const auto first = call("files.append", "{\"project\":\"food\",\"name\":\"food-log.csv\",\"key\":\"meal\",\"sum\":\"kcal\",\"text\":\"date,meal,items,kcal,protein_g\\n" + today + ",lunch,soup,300,10\"}");
+  c.ok(first.success && has(first.output, "added 1 row") && has(first.output, "300 from 1 row"), "the keyed write answers with the device's receipt");
+  // A plain append with a bare comma in its items: the sum reads it.
+  call("files.append", "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"" + today + ",dinner,steak, mash,900,\"}");
+  const auto tail = call("files.read", "{\"project\":\"food\",\"name\":\"food-log.csv\",\"tail\":5,\"sum\":\"kcal\"}");
+  c.ok(has(tail.output, "1200 from 2 rows"), "files.read {tail, sum} gives the day's total, a bare comma included");
 }
 
 static void testNotYetHosted(ndtest::Ctx& c) {
@@ -214,6 +244,7 @@ int main() {
   testUploadListDownload(c);
   testRemove(c);
   testTraversalRefused(c);
+  testOneFoodLogAndItsReceipt(c);
   testNotYetHosted(c);
   testRefusedUploadLeavesNoFile(c);
   testKeyedCorrectionBacksItsClaim(c);

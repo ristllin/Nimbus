@@ -894,18 +894,20 @@ void CsvUpsertStream::watchSameFood(const std::vector<std::string>& f) {
   if (!figureOf(f[(size_t)sumIdx_], was) || was <= 0 || statesTotal(f, dateIdx_, sumIdx_)) return;
   const std::string day = isoDay(f[(size_t)dateIdx_]);
   if (day.empty()) return;
-  std::vector<std::string> words;
+  const std::vector<std::string> words = foodWordsOf(f[(size_t)itemsIdx_]);
   for (NewRow& n : rows_) {
-    double now = 0;
-    if (day >= n.date || (!n.sameFoodDate.empty() && day < n.sameFoodDate) || !plainNumber(n.fields[(size_t)sumIdx_], now) || now <= 0)
-      continue;
-    if (words.empty()) words = foodWordsOf(f[(size_t)itemsIdx_]);
-    if (!sameFoodWords(n.foodWords, words)) continue;
-    const double far = now > was ? now / was : was / now;
-    n.sameFoodDate = far > 1.25 ? day : std::string();
-    n.figure = now;
-    n.sameFoodFigure = was;
+    if (day < n.date && (n.sameFoodDate.empty() || day >= n.sameFoodDate) && sameFoodWords(n.foodWords, words))
+      noteSameFood(n, day, was);
   }
+}
+
+void CsvUpsertStream::noteSameFood(NewRow& n, const std::string& day, double was) const {
+  double now = 0;
+  if (!plainNumber(n.fields[(size_t)sumIdx_], now) || now <= 0) return;
+  const double far = now > was ? now / was : was / now;
+  n.sameFoodDate = far > 1.25 ? day : std::string();
+  n.figure = now;
+  n.sameFoodFigure = was;
 }
 
 void CsvUpsertStream::tally(const std::vector<std::string>& f) {
@@ -1017,6 +1019,12 @@ void CsvDayTally::readHeader(const std::string& row) {
   sumIdx_ = sumCol_.empty() ? -1 : columnIndex(header_, sumCol_);
 }
 
+// The row's day; the first data row settles which column holds it.
+std::string CsvDayTally::rowDay(const std::vector<std::string>& f) {
+  if (dateIdx_ < 0) dateIdx_ = dateColumnOf(header_, {f});
+  return dateIdx_ >= 0 && f.size() > (size_t)dateIdx_ ? isoDay(f[(size_t)dateIdx_]) : std::string();
+}
+
 void CsvDayTally::feed(const std::string& row, bool complete) {
   if (!sawHeader_) return readHeader(row);
   if (sumIdx_ < 0 || day_.empty() || isCommentRow(row) || isBlankRow(row)) return;
@@ -1026,8 +1034,7 @@ void CsvDayTally::feed(const std::string& row, bool complete) {
   if (!complete && provablyCut(f, quotes, width_, prev_, sumIdx_)) return;   // a cut row never counts
   if (sameHeader(f, header_)) return;   // the header pasted again mid-file: never a row
   if (f.size() == width_) prev_ = f;
-  if (dateIdx_ < 0) dateIdx_ = dateColumnOf(header_, {f});   // the first data row settles it
-  const std::string day = dateIdx_ >= 0 && f.size() > (size_t)dateIdx_ ? isoDay(f[(size_t)dateIdx_]) : std::string();
+  const std::string day = rowDay(f);
   if (day.empty()) {
     undated_++;
     return;
@@ -1084,7 +1091,8 @@ std::vector<std::string> foodWordsOf(const std::string& text) {
       "and", "with", "the", "for", "from", "plus", "half", "small", "medium", "large", "cup", "cups", "slice", "piece",
       "pack", "pot", "bowl", "side", "one", "two", "three", "four", "full", "whole", "about", "approx", "est", "photo",
       "estimate", "estimated", "label", "kcal", "protein", "gram", "grams", "per", "total", "each", "extra", "lunch",
-      "dinner", "breakfast", "snack", "drink", "brunch", "some", "this", "that", "not", "had", "ate"};
+      "dinner", "breakfast", "snack", "drink", "brunch", "some", "this", "that", "not", "had", "ate", "milk", "sugar", "sweet",
+      "hot", "cold", "fresh", "plain", "black"};
   std::vector<std::string> out;
   std::string w;
   const auto flush = [&]() {
@@ -1110,15 +1118,16 @@ bool sameFoodWord(const std::string& a, const std::string& b) {
 }
 }  // namespace
 
+bool foodWordIn(const std::string& word, const std::vector<std::string>& words) {
+  for (const std::string& w : words)
+    if (sameFoodWord(word, w)) return true;
+  return false;
+}
+
 bool sameFoodWords(const std::vector<std::string>& a, const std::vector<std::string>& b) {
   if (a.empty() || b.empty()) return false;
   size_t shared = 0;
-  for (const std::string& x : a)
-    for (const std::string& y : b)
-      if (sameFoodWord(x, y)) {
-        shared++;
-        break;
-      }
+  for (const std::string& x : a) shared += foodWordIn(x, b) ? 1 : 0;
   const size_t lo = std::min(a.size(), b.size()), hi = std::max(a.size(), b.size());
   if (shared * 10 < lo * 6) return false;
   return shared >= 2 || (shared == 1 && lo == 1 && hi <= 2);

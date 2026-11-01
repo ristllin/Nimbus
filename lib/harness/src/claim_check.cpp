@@ -252,6 +252,7 @@ void ClaimCheck::setSources(const std::string& inputs, const std::string& recall
   targetNums_ = orch::figureNumbers(orch::ownerStatementsOf(parts.owner) + " " + parts.rules + " " + parts.targets + " " +
                                         parts.memory + " " + recalled + " " + parts.fresh,
                                     kSourceNumbersMax);
+  targetsClipped_ = targetNums_.size() + 32 >= kSourceNumbersMax;
   ownerText_ = parts.owner.substr(0, kOwnerTextMax);
   ledger_ = parts.ledger;
   subRuns_ = parts.subRuns;
@@ -361,7 +362,7 @@ void ClaimCheck::noteTool(nimbus::orch::FxKind kind, bool isError, const std::st
   if (!isError && (flags & orch::kFxHealth)) causeEvidence_ |= orch::kEvHealthRead;
   if (!isError) {
     const std::string read = orch::figureNumbers(output, kSourceNumbersMax);
-    targetsClipped_ = targetsClipped_ || targetNums_.size() + read.size() + 1 > kSourceNumbersMax;
+    targetsClipped_ = targetsClipped_ || output.size() > kEvidenceTextMax || targetNums_.size() + read.size() + 1 > kSourceNumbersMax;
     if (!targetsClipped_ && !read.empty()) targetNums_ += " " + read;
   }
   if (isError || sources_.size() >= kSourceNumbersMax) return;

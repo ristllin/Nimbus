@@ -322,32 +322,28 @@ FinalMap foldWinners(const GenMap& keyed) {
   return merged;
 }
 
-// The designed ledger's own rows overlay the fold: they are the LATEST
-// generation of their keys (written after the legacy file), so a designed row
-// is never overwritten by a stale legacy one.
-void overlayLedger(const std::string& existingLedger, FinalMap& merged) {
-  size_t eat = 0;
-  while (eat < existingLedger.size()) {
-    const size_t nl = existingLedger.find('\n', eat);
-    std::string line =
-        existingLedger.substr(eat, (nl == std::string::npos ? existingLedger.size() : nl) - eat);
-    eat = nl == std::string::npos ? existingLedger.size() : nl + 1;
+// The designed ledger's own rows stay exactly as stored and win their keys: a legacy row of the
+// same day and meal is older than the row written to the ledger. Only legacy rows of other keys
+// are added. (Rewriting the ledger from a parse would lose what the parse cannot hold: a quoted
+// comma, two rows of one meal.)
+void dropLedgerKeys(const std::string& existingLedger, FinalMap& merged) {
+  std::vector<std::string> header;
+  size_t at = 0;
+  while (at < existingLedger.size()) {
+    const size_t nl = existingLedger.find('\n', at);
+    std::string line = existingLedger.substr(at, (nl == std::string::npos ? existingLedger.size() : nl) - at);
+    at = nl == std::string::npos ? existingLedger.size() : nl + 1;
     if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (line.empty() || headerWord(line.substr(0, line.find(',')))) continue;
-    const std::vector<std::string> f = splitCsv(line);
-    if (f.size() < 5) continue;
-    double kcal = 0, protein = 0;
-    if (!isNum(f[3], kcal)) continue;
-    Final out;
-    out.proteinKnown = isNum(f[4], protein);   // a blank protein stays unknown
-    out.items = f[2];
-    out.kcal = kcal;
-    out.protein = protein;
-    merged[{f[0], f[1]}] = out;
+    if (line.empty() || line[0] == '#') continue;
+    if (header.empty()) {
+      header = csvHeaderOf(line);
+      continue;
+    }
+    const std::vector<std::string> f = csvStoredRow(line, header);
+    if (f.size() >= 2) merged.erase({isoDayOf(f[0]), f[1]});
   }
 }
 
-// Sort by day, then by the eating order of meals, and render the whole file.
 // The items cell of a ledger row. It stays plain when every reader takes it as one field: no
 // quote, and any comma shielded by parentheses that close. Otherwise it goes in quotes.
 std::string itemsCell(const std::string& items) {
@@ -371,7 +367,8 @@ std::string itemsCell(const std::string& items) {
   return out + "\"";
 }
 
-std::string renderLedger(const FinalMap& merged, int& folded) {
+// Sort by day, then by the eating order of meals, and render the whole file.
+std::string renderLedger(const FinalMap& merged, int& folded, const std::string& existingLedger) {
   std::vector<std::pair<LedgerKey, Final>> rows(merged.begin(), merged.end());
   std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
     if (a.first.first != b.first.first) return a.first.first < b.first.first;
@@ -379,7 +376,8 @@ std::string renderLedger(const FinalMap& merged, int& folded) {
     if (ra != rb) return ra < rb;
     return a.first.second < b.first.second;
   });
-  std::string out = std::string(kLedgerHeader) + "\n";
+  std::string out = existingLedger.empty() ? std::string(kLedgerHeader) + "\n" : existingLedger;
+  if (!out.empty() && out.back() != '\n') out += '\n';
   for (const auto& kv : rows) {
     out += kv.first.first + "," + kv.first.second + "," + itemsCell(kv.second.items) + "," +
            numText(kv.second.kcal) + "," + (kv.second.proteinKnown ? numText(kv.second.protein) : std::string()) + "\n";
@@ -395,8 +393,18 @@ LedgerMigration planLedgerMigration(const std::string& legacyText,
   LedgerMigration m;
   const GenMap keyed = groupLegacy(legacyText, m);
   FinalMap merged = foldWinners(keyed);
-  if (!existingLedger.empty()) overlayLedger(existingLedger, merged);
-  m.out = renderLedger(merged, m.folded);
+  if (!existingLedger.empty()) {
+    // A ledger in other columns cannot take these rows: nothing is folded, nothing is lost.
+    const size_t eol = existingLedger.find('\n');
+    std::string first = existingLedger.substr(0, eol);
+    if (!first.empty() && first.back() == '\r') first.pop_back();
+    if (first != kLedgerHeader) {
+      m.ok = true;
+      return m;
+    }
+    dropLedgerKeys(existingLedger, merged);
+  }
+  m.out = renderLedger(merged, m.folded, existingLedger);
   m.ok = true;
   return m;
 }

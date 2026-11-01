@@ -8,6 +8,7 @@
 #include "nimbus/orch/claims.h"
 #include "nimbus/orch/file_append.h"
 #include "nimbus/orch/food_ledger.h"
+#include "nimbus/orch/ledger_migrate.h"
 #include "nimbus/orch/turn_effects.h"
 #if __has_include("nimbus/orch/food_figures.h")
 #define HAS_FOOD_FIGURES 1
@@ -27,6 +28,18 @@ static void runSum(JsonObjectConst in, JsonObject out) {
   out["block"] = block;
   double total = 0;
   if (csvDayTotal(file, "kcal", day, total)) out["receipt"] = total;
+}
+
+// A stored legacy log folded into the ledger, then the day read: what the owner sees after the first start.
+static void runFold(JsonObjectConst in, JsonObject out) {
+  const LedgerMigration m = planLedgerMigration(std::string(in["file"] | ""), std::string(in["ledger"] | ""));
+  const std::string day = in["day"] | "";
+  const FoodLedger l = scanFoodLedger(m.out, true, LogDay{day, "GMT"}, kFoodLedgerProject, kFoodLedgerOwnerName);
+  out["kcal"] = l.kcal;
+  out["protein"] = l.protein;
+  out["rows"] = l.kcalRows;
+  out["folded"] = m.folded;
+  out["dropped"] = m.dropped;
 }
 
 static void runAppend(JsonObjectConst in, JsonObject out) {
@@ -80,6 +93,7 @@ int main() {
     o["id"] = in["id"] | "";
     if (kind == "sum") runSum(in.as<JsonObjectConst>(), o);
     else if (kind == "append") runAppend(in.as<JsonObjectConst>(), o);
+    else if (kind == "fold") runFold(in.as<JsonObjectConst>(), o);
     else runReply(in.as<JsonObjectConst>(), o);
     serializeJson(out, std::cout);
     std::cout << "\n";

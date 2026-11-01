@@ -268,5 +268,17 @@
   "want": {
    "has": "a row dated 2026-10-29 holds the same food at 225 kcal"
   }
+ },
+ {
+  "id": "fold-headered-legacy",
+  "kind": "fold",
+  "seen": "31 Oct to 1 Nov: every meal in a second, hand-keyed file next to the ledger, invisible to every receipt",
+  "file": "key,date,items,kcal,protein_g\n2026-11-01-drink,2026-11-01,cappuccino,66,3.3\n2026-11-01-lunch,2026-11-01,3 eggs, 1 bun,517,27.1\n2026-11-01-lunch2,2026-11-01,steak, mash, sauce,923,\n2026-11-01-total,2026-11-01,total,1506,30\n",
+  "ledger": "date,meal,items,kcal,protein_g\n2026-10-30,lunch,soup,300,10\n",
+  "day": "2026-11-01",
+  "want": {
+   "kcal": 1506,
+   "protein": 30.4
+  }
  }
 ]

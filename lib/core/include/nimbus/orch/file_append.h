@@ -207,6 +207,7 @@ class CsvUpsertStream {
   std::string identity(const std::vector<std::string>& f) const;
   void tally(const std::vector<std::string>& f);
   void watchSameFood(const std::vector<std::string>& f);
+  void noteSameFood(NewRow& n, const std::string& day, double was) const;
   std::string keyCol_, sumCol_, today_, zone_;
   std::vector<std::string> header_;
   std::string headerRaw_;
@@ -231,6 +232,8 @@ CsvUpsert planCsvUpsert(const std::string& existing, const std::string& newText,
 std::vector<std::string> foodWordsOf(const std::string& text);
 // Enough of the words in common to be one food: at least two (or the only ones) and most of the shorter list.
 bool sameFoodWords(const std::vector<std::string>& a, const std::vector<std::string>& b);
+// One of the words, spelling slips allowed ("cappucino").
+bool foodWordIn(const std::string& word, const std::vector<std::string>& words);
 
 // The columns of a CSV's header row (no byte order mark, spaces trimmed).
 std::vector<std::string> csvHeaderOf(const std::string& row);
@@ -260,6 +263,7 @@ class CsvDayTally {
 
  private:
   void readHeader(const std::string& row);
+  std::string rowDay(const std::vector<std::string>& f);
   std::function<void(const std::string& row)> dayRow_;
   std::string sumCol_, day_;
   std::vector<std::string> header_, prev_;

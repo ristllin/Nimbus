@@ -195,35 +195,49 @@ std::string foodTargetsName(bool owner, const std::string& chatId) {
   return ledger.empty() ? std::string() : "food-targets" + ledger.substr(8);
 }
 
-FoodTargets scanFoodTargets(const std::string& fileText) {
-  FoodTargets t;
+namespace {
+struct TargetColumns {
   std::vector<std::string> header;
   int metric = -1, target = -1, source = -1;
+};
+
+TargetColumns targetColumns(const std::string& row) {
+  TargetColumns c;
+  c.header = csvHeaderOf(row);
+  for (size_t i = 0; i < c.header.size(); i++) {
+    const std::string n = lowerAscii(c.header[i]);
+    if (n == "metric") c.metric = (int)i;
+    if (n == "target") c.target = (int)i;
+    if (n == "source") c.source = (int)i;
+  }
+  return c;
+}
+
+// One stored row into `t`: the last row of a metric wins; no source or no figure, no target.
+void readTargetRow(const TargetColumns& c, const std::string& row, FoodTargets& t) {
+  if (c.metric < 0 || c.target < 0 || c.source < 0) return;
+  const std::vector<std::string> f = csvStoredRow(row, c.header);
+  if (f.size() != c.header.size() || f[(size_t)c.source].empty()) return;
+  double v = 0;
+  if (!csvFigure(f[(size_t)c.target], v) || v <= 0) return;
+  const std::string m = lowerAscii(f[(size_t)c.metric]);
+  if (m.find("kcal") != std::string::npos || m.find("calorie") != std::string::npos) {
+    t.kcal = v;
+    t.kcalSource = shownRow(f[(size_t)c.source]);
+  } else if (m.find("protein") != std::string::npos) {
+    t.protein = v;
+    t.proteinSource = shownRow(f[(size_t)c.source]);
+  }
+}
+}  // namespace
+
+FoodTargets scanFoodTargets(const std::string& fileText) {
+  FoodTargets t;
+  TargetColumns columns;
   RowSplitter rows([&](const std::string& row, bool) {
     if (row.find_first_not_of(" \t\r") == std::string::npos) return true;
-    if (header.empty()) {
-      header = csvHeaderOf(row);
-      for (size_t i = 0; i < header.size(); i++) {
-        const std::string n = lowerAscii(header[i]);
-        if (n == "metric") metric = (int)i;
-        if (n == "target") target = (int)i;
-        if (n == "source") source = (int)i;
-      }
-      return true;
-    }
-    if (metric < 0 || target < 0 || source < 0) return true;
-    const std::vector<std::string> f = csvStoredRow(row, header);
-    if (f.size() != header.size() || f[(size_t)source].empty()) return true;   // no source: no target
-    double v = 0;
-    if (!csvFigure(f[(size_t)target], v) || v <= 0) return true;
-    const std::string m = lowerAscii(f[(size_t)metric]);
-    if (m.find("kcal") != std::string::npos || m.find("calorie") != std::string::npos) {
-      t.kcal = v;
-      t.kcalSource = shownRow(f[(size_t)source]);
-    } else if (m.find("protein") != std::string::npos) {
-      t.protein = v;
-      t.proteinSource = shownRow(f[(size_t)source]);
-    }
+    if (columns.header.empty()) columns = targetColumns(row);
+    else readTargetRow(columns, row, t);
     return true;
   });
   rows.push(fileText.data(), fileText.size());
@@ -232,24 +246,34 @@ FoodTargets scanFoodTargets(const std::string& fileText) {
 }
 
 bool looksLikeFoodPlan(const std::string& project, const std::string& name) {
-  const std::string n = lowerAscii(name), p = lowerAscii(project);
+  const std::string n = lowerAscii(name);
   if (n.find("plan") == std::string::npos || n.rfind("result-", 0) == 0) return false;
+  const std::string p = lowerAscii(project);
   for (const char* word : {"food", "meal", "nutrition", "diet", "calorie", "weight", "health", "fitness"})
     if (n.find(word) != std::string::npos || p.find(word) != std::string::npos) return true;
   return false;
 }
 
+namespace {
+bool holdsAny(const std::string& text, std::initializer_list<const char*> words) {
+  for (const char* w : words)
+    if (text.find(w) != std::string::npos) return true;
+  return false;
+}
+
+// Is this .csv a second food log by its name and place? A plan or a recipe list is not.
+bool namesAFoodLog(const std::string& n, const std::string& p) {
+  if (holdsAny(n, {"plan", "recipe", "shopping"})) return false;
+  const bool logWord = holdsAny(n, {"log", "diary", "journal", "track", "intake"});
+  if (holdsAny(n, {"meal", "calorie", "kcal"}) || (logWord && n.find("food") != std::string::npos)) return true;
+  return logWord && holdsAny(p, {"nutrition", "food", "meal"});
+}
+}  // namespace
+
 std::string secondFoodLogRefusal(const std::string& project, const std::string& name, bool owner,
                                  const std::string& ns) {
-  if (!isCsvName(name)) return std::string();
-  const std::string n = lowerAscii(name), p = lowerAscii(project);
-  if (p == kFoodLedgerProject) return std::string();   // the ledger's own place
-  const bool namesFood = n.find("meal") != std::string::npos || n.find("food") != std::string::npos ||
-                         n.find("calorie") != std::string::npos || n.find("kcal") != std::string::npos;
-  const bool logInFoodPlace = n.find("log") != std::string::npos &&
-                              (p.find("nutrition") != std::string::npos || p.find("food") != std::string::npos ||
-                               p.find("meal") != std::string::npos);
-  if (!namesFood && !logInFoodPlace) return std::string();
+  const std::string p = lowerAscii(project);
+  if (!isCsvName(name) || p == kFoodLedgerProject || !namesAFoodLog(lowerAscii(name), p)) return std::string();
   static const char kMemberNs[] = "chat:";   // nsForChat (vector_memory.h)
   const std::string ledger = owner || ns.rfind(kMemberNs, 0) != 0
                                  ? std::string(kFoodLedgerOwnerName)
@@ -347,26 +371,27 @@ FoodLedger scanFoodLedger(const std::string& fileText, bool exists, const LogDay
 FoodRecallScan::FoodRecallScan(const std::string& today, const std::string& message)
     : today_(today), words_(foodWordsOf(message)) {}
 
+void FoodRecallScan::readHeader(const std::string& row) {
+  header_ = csvHeaderOf(row);
+  headerRow_ = shownRow(row);
+  for (size_t c = 0; c < header_.size() && items_ < 0; c++) {
+    const std::string n = lowerAscii(header_[c]);
+    if (n.find("item") != std::string::npos || n.find("food") != std::string::npos || n.find("desc") != std::string::npos)
+      items_ = (int)c;
+  }
+}
+
 void FoodRecallScan::feed(const std::string& row) {
   if (today_.empty() || words_.empty() || row.find_first_not_of(" \t\r") == std::string::npos || row[0] == '#') return;
   if (header_.empty()) {
-    header_ = csvHeaderOf(row);
-    headerRow_ = shownRow(row);
-    for (size_t c = 0; c < header_.size() && items_ < 0; c++) {
-      const std::string n = lowerAscii(header_[c]);
-      if (n.find("item") != std::string::npos || n.find("food") != std::string::npos || n.find("desc") != std::string::npos)
-        items_ = (int)c;
-    }
+    readHeader(row);
     return;
   }
-  if (items_ < 0) return;
+  if (items_ < 0 || row.rfind(today_, 0) == 0) return;
   const std::vector<std::string> f = csvStoredRow(row, header_);
-  if (f.size() != header_.size() || csvStatesTotal(f) || row.rfind(today_, 0) == 0) return;
+  if (f.size() != header_.size() || csvStatesTotal(f)) return;
   const std::vector<std::string> items = foodWordsOf(f[(size_t)items_]);
-  bool named = false;
-  for (const std::string& w : words_) named = named || sameFoodWords({w}, std::vector<std::string>{items.begin(), items.end()}) ||
-                                              std::find(items.begin(), items.end(), w) != items.end();
-  if (!named) return;
+  if (std::none_of(words_.begin(), words_.end(), [&items](const std::string& w) { return foodWordIn(w, items); })) return;
   kept_.push_back(shownRow(row));
   if (kept_.size() > kRecallRows) kept_.erase(kept_.begin());
 }

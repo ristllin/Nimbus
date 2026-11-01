@@ -172,6 +172,7 @@ class FoodRecallScan {
   std::string render() const;
 
  private:
+  void readHeader(const std::string& row);
   std::string today_;
   std::vector<std::string> words_, header_, kept_;
   std::string headerRow_;

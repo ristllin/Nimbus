@@ -572,6 +572,8 @@ class TurnEngine {
   // playbooks.
   std::string loadFoodLedger(const std::string& chatId);
   nimbus::orch::FoodFacts currentFoodFacts(const std::string& chatId) const;
+  std::string ownerFoodSkillBlock(bool asks) const;
+  std::string foodRecallBlock(const std::string& userText) const;
   void applyFoodContext(ComposeInputs& ci, const std::string& userText) const;
   // The fold's day: [TODAY] and the ledger's view for this chat ("" = no clock).
   std::string foldDayContext(const std::string& chatId) const;

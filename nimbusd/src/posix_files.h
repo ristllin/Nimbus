@@ -74,11 +74,9 @@ class PosixFiles {
               const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text");
               if (p.empty() || n.empty())
                 return nimbus::orch::ToolResult::fail("need 'project' and 'name'");
-              const std::string second = nimbus::orch::secondFoodLogRefusal(p, n, true, std::string());
-              if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
-              std::string err;
+              std::string err = nimbus::orch::secondFoodLogRefusal(p, n, true, std::string());
               const bool replacing = store_.find(p, n) != nullptr;
-              if (!save(p, n, t, err)) return nimbus::orch::ToolResult::fail(err);
+              if (!err.empty() || !save(p, n, t, err)) return nimbus::orch::ToolResult::fail(err);
               return nimbus::orch::ToolResult::ok("saved " + p + "/" + n + " (" + std::to_string(t.size()) + " bytes)" +
                                                   (replacing ? std::string(", ") + nimbus::orch::kSaveReplacedNote
                                                              : std::string()));
@@ -96,12 +94,8 @@ class PosixFiles {
               std::string body;
               if (!read(p, n, body))
                 return nimbus::orch::ToolResult::fail("no such file: " + p + "/" + n);
-              if (a["tail"].is<float>() && a["tail"].as<double>() >= 1) {
-                std::string text = tailOf(n, body, (size_t)a["tail"].as<double>());
-                const std::string sum = str(a, "sum");
-                if (!sum.empty()) text += nimbus::orch::csvDayTotalLine(body, sum, todayStr(), std::string());
-                return nimbus::orch::ToolResult::ok(text);
-              }
+              if (a["tail"].is<float>() && a["tail"].as<double>() >= 1)
+                return nimbus::orch::ToolResult::ok(tailWithTotal(n, body, a));
               return nimbus::orch::ToolResult::ok(body);
             },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
@@ -122,17 +116,7 @@ class PosixFiles {
                                 key = str(a, "key"), sum = str(a, "sum");
               if (p.empty() || n.empty())
                 return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
-              const std::string second = nimbus::orch::secondFoodLogRefusal(p, n, true, std::string());
-              if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
-              if (!key.empty()) {
-                UpsertOut out;
-                if (!upsert(p, n, t, key, sum, out))
-                  return nimbus::orch::ToolResult::fail(out.err);
-                return nimbus::orch::ToolResult::ok(out.note);
-              }
-              std::string err, note;
-              if (!append(p, n, t, err, note)) return nimbus::orch::ToolResult::fail(err);
-              return nimbus::orch::ToolResult::ok(note);
+              return appendTool(p, n, t, key, sum);
             },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"},"text":{"type":"string"},)"
@@ -344,6 +328,29 @@ class PosixFiles {
     out.note = nimbus::orch::renderUpsertReply(up, p + "/" + n, sum,
                                                nimbus::orch::logDayOf(time(nullptr), true).zone);
     return true;
+  }
+
+  // files.append: the one food log first, then the keyed upsert or a plain append.
+  nimbus::orch::ToolResult appendTool(const std::string& p, const std::string& n, const std::string& t,
+                                      const std::string& key, const std::string& sum) {
+    const std::string second = nimbus::orch::secondFoodLogRefusal(p, n, true, std::string());
+    if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
+    if (!key.empty()) {
+      UpsertOut out;
+      if (!upsert(p, n, t, key, sum, out)) return nimbus::orch::ToolResult::fail(out.err);
+      return nimbus::orch::ToolResult::ok(out.note);
+    }
+    std::string err, note;
+    if (!append(p, n, t, err, note)) return nimbus::orch::ToolResult::fail(err);
+    return nimbus::orch::ToolResult::ok(note);
+  }
+
+  // files.read {tail, sum}: the tail view, and the day's total when a sum column is named.
+  std::string tailWithTotal(const std::string& n, const std::string& body, ArduinoJson::JsonObjectConst a) {
+    std::string text = tailOf(n, body, (size_t)a["tail"].as<double>());
+    const std::string sum = str(a, "sum");
+    if (!sum.empty()) text += nimbus::orch::csvDayTotalLine(body, sum, todayStr(), std::string());
+    return text;
   }
 
   // The tail view over a whole body (the device reads only the window; on disk the

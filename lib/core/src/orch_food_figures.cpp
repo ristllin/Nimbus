@@ -165,35 +165,48 @@ struct Stated {
   Unit unit = Unit::None;
 };
 
-// The number a target word at `i` names: before it ("2,400 kcal target"), else after it
-// ("protein target: 150 g", "target of 2,400 kcal"). Ranges keep both ends.
-std::vector<Stated> figuresOfTarget(const std::vector<Tok>& toks, size_t i, bool macros) {
+// The figure just before a target word ("2,400 kcal target", "150-160 g band").
+std::vector<Stated> figureBefore(const std::vector<Tok>& toks, size_t i, bool macros) {
   std::vector<Stated> out;
   for (size_t back = i; back > 0 && i - back <= 5; back--) {
     const Tok& t = toks[back - 1];
-    if (t.number) {
-      if (!foodUnit(t, macros)) break;
+    if (!t.number) {
+      if (!skipBefore(t)) break;
+      continue;
+    }
+    if (foodUnit(t, macros)) {
       out.push_back({t.value, t.unit});
       if (back >= 2 && toks[back - 2].number && toks[back - 2].unit == Unit::None)
         out.push_back({toks[back - 2].value, t.unit});
-      return out;
     }
-    if (!skipBefore(t)) break;
-  }
-  for (size_t fwd = i + 1; fwd < toks.size() && fwd - i <= 5; fwd++) {
-    const Tok& t = toks[fwd];
-    if (t.number) {
-      if (t.unit == Unit::None && fwd + 1 < toks.size() && toks[fwd + 1].number && foodUnit(toks[fwd + 1], macros)) {
-        out.push_back({t.value, toks[fwd + 1].unit});
-        out.push_back({toks[fwd + 1].value, toks[fwd + 1].unit});
-      } else if (foodUnit(t, macros)) {
-        out.push_back({t.value, t.unit});
-      }
-      return out;
-    }
-    if (!skipAfter(t)) break;
+    break;
   }
   return out;
+}
+
+// The figure just after one ("protein target: 150 g", "target of 150-160 g").
+std::vector<Stated> figureAfter(const std::vector<Tok>& toks, size_t i, bool macros) {
+  std::vector<Stated> out;
+  for (size_t fwd = i + 1; fwd < toks.size() && fwd - i <= 5; fwd++) {
+    const Tok& t = toks[fwd];
+    if (!t.number) {
+      if (!skipAfter(t)) break;
+      continue;
+    }
+    if (t.unit == Unit::None && fwd + 1 < toks.size() && toks[fwd + 1].number && foodUnit(toks[fwd + 1], macros)) {
+      out.push_back({t.value, toks[fwd + 1].unit});
+      out.push_back({toks[fwd + 1].value, toks[fwd + 1].unit});
+    } else if (foodUnit(t, macros)) {
+      out.push_back({t.value, t.unit});
+    }
+    break;
+  }
+  return out;
+}
+
+std::vector<Stated> figuresOfTarget(const std::vector<Tok>& toks, size_t i, bool macros) {
+  std::vector<Stated> out = figureBefore(toks, i, macros);
+  return out.empty() ? figureAfter(toks, i, macros) : out;
 }
 
 bool nearSource(double v, const std::vector<double>& sources, double tolerance) {
@@ -265,34 +278,46 @@ bool leftAt(const std::vector<Tok>& toks, size_t i) {
   return false;
 }
 
-void leftGaps(const std::string& sentence, const std::vector<Tok>& toks, const FoodFacts& facts,
-              const std::vector<double>& sources, bool taken, std::vector<FoodGap>& out) {
+struct LeftCheck {
+  const std::string& sentence;
+  const FoodFacts& facts;
+  const std::vector<double>& sources;
+  bool taken;   // the sentence takes its figure back
+};
+
+bool saysAtMost(const std::string& low) {
+  return low.find("at most") != std::string::npos || low.find("up to") != std::string::npos ||
+         low.find("unknown") != std::string::npos || low.find("not known") != std::string::npos;
+}
+
+// One figure said to be left: a firm need over an unknown row, or a target nothing holds.
+void leftGapOf(const LeftCheck& c, const Tok& t, std::vector<FoodGap>& out) {
+  const bool isProtein = t.unit == Unit::Gram;
+  FoodGap g;
+  g.excerpt = excerptOf(c.sentence);
+  g.protein = isProtein;
+  if (isProtein && c.facts.proteinUnknown > 0) {
+    if (saysAtMost(folded(c.sentence))) return;
+    g.kind = FoodGapKind::ProteinLeftUnknown;
+    g.stated = t.value;
+    out.push_back(g);
+    return;
+  }
+  if (c.taken || (!isProtein && !c.facts.kcalKnown)) return;   // taken back, or the total line covers it
+  const double implied = t.value + (isProtein ? c.facts.protein : c.facts.kcal);
+  const double tolerance = t.approx ? std::fmax(implied * 0.03, 2.0) : 2.0;
+  if (nearSource(implied, c.sources, tolerance)) return;
+  g.kind = FoodGapKind::UnsourcedTarget;
+  g.implied = true;
+  g.stated = implied;
+  out.push_back(g);
+}
+
+void leftGaps(const LeftCheck& c, const std::vector<Tok>& toks, std::vector<FoodGap>& out) {
   const bool protein = hasWord(toks, {"protein", "floor"});
-  const std::string low = folded(sentence);
   for (size_t i = 0; i < toks.size(); i++) {
     const Tok& t = toks[i];
-    if (!t.number || t.unit == Unit::None || (t.unit == Unit::Gram && !protein) || !leftAt(toks, i)) continue;
-    const bool isProtein = t.unit == Unit::Gram;
-    FoodGap g;
-    g.excerpt = excerptOf(sentence);
-    g.protein = isProtein;
-    if (isProtein && facts.proteinUnknown > 0 && low.find("at most") == std::string::npos &&
-        low.find("up to") == std::string::npos && low.find("unknown") == std::string::npos &&
-        low.find("not known") == std::string::npos) {
-      g.kind = FoodGapKind::ProteinLeftUnknown;
-      g.stated = t.value;
-      out.push_back(g);
-      continue;
-    }
-    if (taken || (!isProtein && !facts.kcalKnown)) continue;   // taken back, or the total line covers it
-    if (isProtein && facts.proteinUnknown > 0) continue;
-    const double implied = t.value + (isProtein ? facts.protein : facts.kcal);
-    const double tolerance = t.approx ? std::fmax(implied * 0.03, 2.0) : 2.0;
-    if (nearSource(implied, sources, tolerance)) continue;
-    g.kind = FoodGapKind::UnsourcedTarget;
-    g.implied = true;
-    g.stated = implied;
-    out.push_back(g);
+    if (t.number && t.unit != Unit::None && (t.unit != Unit::Gram || protein) && leftAt(toks, i)) leftGapOf(c, t, out);
   }
 }
 
@@ -309,47 +334,51 @@ bool dayTotalCue(const std::string& low) {
   return false;
 }
 
+// The kcal figure of a sentence about the whole of today, against the ledger. False = fine.
+bool kcalTotalOff(const Tok& t, const FoodFacts& facts, const std::vector<double>& sources) {
+  const double tol = t.approx ? std::fmax(facts.kcal * 0.02, 2.0) : 1.0;
+  if (facts.kcalKnown && std::fabs(t.value - facts.kcal) <= tol) return false;
+  // No rows today: only a figure the owner or a record gave may stand (30 Oct: yesterday's
+  // 2,524 carried into a day with nothing logged yet).
+  return !(facts.rows == 0 && facts.kcalKnown && nearSource(t.value, sources, 1.0));
+}
+
+bool proteinTotalOff(const Tok& t, const FoodFacts& facts) {
+  const double tol = t.approx ? std::fmax(facts.protein * 0.05, 1.0) : 0.5;
+  return std::fabs(t.value - facts.protein) > tol;
+}
+
+// The figures a whole-day sentence states: the first kcal and the first "g protein".
+void dayFigures(const std::vector<Tok>& toks, const Tok*& kcal, const Tok*& protein) {
+  for (size_t i = 0; i < toks.size(); i++) {
+    const Tok& t = toks[i];
+    if (!t.number || leftAt(toks, i)) continue;
+    if (t.unit == Unit::Kcal && !kcal) kcal = &t;
+    if (t.unit == Unit::Gram && !protein && i + 2 < toks.size() && toks[i + 2].word == "protein") protein = &t;
+  }
+}
+
 void dayTotalGaps(const std::string& sentence, const std::vector<Tok>& toks, const FoodFacts& facts,
                   const std::vector<double>& sources, std::vector<FoodGap>& out) {
   const std::string low = folded(sentence);
   if (!dayTotalCue(low) || mealSentence(low) ||
       hasWord(toks, {"yesterday", "tomorrow", "last", "after", "plus", "then", "before", "drafted", "was"}))
     return;
-  bool sawKcal = false, sawProtein = false;
-  for (size_t i = 0; i < toks.size(); i++) {
-    const Tok& t = toks[i];
-    if (!t.number) continue;
-    if (t.unit == Unit::Kcal && !sawKcal) {
-      sawKcal = true;
-      if (i + 1 < toks.size() && leftAt(toks, i)) continue;
-      const double tol = t.approx ? std::fmax(facts.kcal * 0.02, 2.0) : 1.0;
-      if (facts.kcalKnown && std::fabs(t.value - facts.kcal) <= tol) continue;
-      // No rows today: only a figure the owner or a record gave may stand (30 Oct: yesterday's
-      // 2,524 carried into a day with nothing logged yet).
-      if (facts.rows == 0 && facts.kcalKnown && nearSource(t.value, sources, 1.0)) continue;
-      FoodGap g;
-      g.kind = FoodGapKind::WrongDayTotal;
-      g.excerpt = excerptOf(sentence);
-      g.stated = t.value;
-      g.truth = facts.kcal;
-      out.push_back(g);
-      return;
-    }
-    const bool proteinNext = i + 2 < toks.size() && toks[i + 2].word == "protein";
-    if (t.unit == Unit::Gram && proteinNext && !sawProtein) {
-      sawProtein = true;
-      if (leftAt(toks, i)) continue;
-      const double tol = t.approx ? std::fmax(facts.protein * 0.05, 1.0) : 0.5;
-      if (std::fabs(t.value - facts.protein) <= tol) continue;
-      FoodGap g;
-      g.kind = FoodGapKind::WrongDayTotal;
-      g.protein = true;
-      g.excerpt = excerptOf(sentence);
-      g.stated = t.value;
-      g.truth = facts.protein;
-      out.push_back(g);
-      return;
-    }
+  const Tok* kcal = nullptr;
+  const Tok* protein = nullptr;
+  dayFigures(toks, kcal, protein);
+  FoodGap g;
+  g.kind = FoodGapKind::WrongDayTotal;
+  g.excerpt = excerptOf(sentence);
+  if (kcal && kcalTotalOff(*kcal, facts, sources)) {
+    g.stated = kcal->value;
+    g.truth = facts.kcal;
+    out.push_back(g);
+  } else if (protein && facts.rows > 0 && proteinTotalOff(*protein, facts)) {
+    g.protein = true;
+    g.stated = protein->value;
+    g.truth = facts.protein;
+    out.push_back(g);
   }
 }
 
@@ -383,20 +412,28 @@ int monthOf(const std::string& w) {
   return 0;
 }
 
-// Every date in a sentence, as days since 1970: 2026-10-14, 14 Oct, Oct 14, 14 October 2026.
-std::vector<int> datesIn(const std::vector<Tok>& toks, const std::string& low, int todayYear) {
-  std::vector<int> out;
+void isoDatesIn(const std::string& low, std::vector<int>& out) {
   for (size_t p = 0; p + 10 <= low.size(); p++) {
     bool iso = true;
     for (size_t i = 0; i < 10 && iso; i++) iso = (i == 4 || i == 7) ? low[p + i] == '-' : isDigit(low[p + i]);
     if (iso) out.push_back(daysOf(std::atoi(low.c_str() + p), std::atoi(low.c_str() + p + 5), std::atoi(low.c_str() + p + 8)));
   }
+}
+
+// The day number next to a month name at `i` (14 Oct, Oct 14), or null.
+const Tok* dayOfMonthAt(const std::vector<Tok>& toks, size_t i) {
+  const Tok* day = i > 0 && toks[i - 1].number ? &toks[i - 1] : (i + 1 < toks.size() && toks[i + 1].number ? &toks[i + 1] : nullptr);
+  return day && day->value >= 1 && day->value <= 31 && day->value == (int)day->value ? day : nullptr;
+}
+
+// Every date in a sentence, as days since 1970: 2026-10-14, 14 Oct, Oct 14, 14 October 2026.
+std::vector<int> datesIn(const std::vector<Tok>& toks, const std::string& low, int todayYear) {
+  std::vector<int> out;
+  isoDatesIn(low, out);
   for (size_t i = 0; i < toks.size(); i++) {
     const int month = toks[i].number ? 0 : monthOf(toks[i].word);
     if (!month || toks[i].word.size() > 9 || (toks[i].word == "may" && !(i > 0 && toks[i - 1].number))) continue;
-    const Tok* day = i > 0 && toks[i - 1].number ? &toks[i - 1] : (i + 1 < toks.size() && toks[i + 1].number ? &toks[i + 1] : nullptr);
-    if (!day || day->value < 1 || day->value > 31 || day->value != (int)day->value) continue;
-    out.push_back(daysOf(todayYear, month, (int)day->value));
+    if (const Tok* day = dayOfMonthAt(toks, i)) out.push_back(daysOf(todayYear, month, (int)day->value));
   }
   return out;
 }
@@ -447,7 +484,7 @@ std::vector<FoodGap> foodFigureGaps(const std::string& reply, const FoodFacts& f
     const size_t before = out.size();
     if (!taken) targetGaps(sentence, toks, sources, out);
     if (!facts.have) continue;
-    if (out.size() == before) leftGaps(sentence, toks, facts, sources, taken, out);
+    if (out.size() == before) leftGaps(LeftCheck{sentence, facts, sources, taken}, toks, out);
     dayTotalGaps(sentence, toks, facts, sources, out);
   }
   return out;
