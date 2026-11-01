@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from grade import ASSERTIONS, grade_step  # noqa: E402
 
 DOCKER = os.environ.get("DOCKER_BIN", "docker")
+HTTP_TIMEOUT_S = 60
 STEP_KINDS = ("say", "http", "upload", "restart", "sleep")
 FILLER_WORDS = "harbor lantern quartz meadow copper violet ember thistle marble willow".split()
 
@@ -229,7 +230,7 @@ class Instance:
     def __init__(self, base: str, token: str):
         self.base, self.token = base.rstrip("/"), token
 
-    def call(self, method: str, path: str, form=None, data=None, ctype=None, timeout=30):
+    def call(self, method: str, path: str, form=None, data=None, ctype=None):
         """(status, text). A transport failure reads as status 0, never as a raise."""
         if form is not None:
             data = urllib.parse.urlencode(form).encode()
@@ -239,7 +240,7 @@ class Instance:
         if ctype:
             req.add_header("Content-Type", ctype)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as r:
                 return r.status, r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode("utf-8", "replace")
@@ -268,16 +269,18 @@ class Instance:
             time.sleep(0.5)
         raise RuntimeError(f"instance not ready after {timeout_s} s")
 
-    def upload(self, project: str, name: str, content: bytes, timeout=60):
+    def upload(self, project: str, name: str, content: bytes):
         boundary = uuid.uuid4().hex
         body = (
-            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
-            "Content-Type: application/octet-stream\r\n\r\n"
-        ).encode() + content + f"\r\n--{boundary}--\r\n".encode()
-        q = urllib.parse.urlencode({"project": project, "name": name})
-        return self.call(
-            "POST", f"/api/files/upload?{q}", data=body, ctype=f"multipart/form-data; boundary={boundary}", timeout=timeout
+            (
+                f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
+                "Content-Type: application/octet-stream\r\n\r\n"
+            ).encode()
+            + content
+            + f"\r\n--{boundary}--\r\n".encode()
         )
+        q = urllib.parse.urlencode({"project": project, "name": name})
+        return self.call("POST", f"/api/files/upload?{q}", data=body, ctype=f"multipart/form-data; boundary={boundary}")
 
 
 # --------------------------------------------------------------------- capture
@@ -469,7 +472,11 @@ def run_http(inst: Instance, step: dict, rec: dict):
 
 def run_upload(inst: Instance, step: dict, rec: dict):
     u = step["upload"]
-    content = solid_png(tuple(u["png_rgb"])) if "png_rgb" in u else base64.b64decode(u.get("b64", "")) or u.get("text", "").encode()
+    content = (
+        solid_png(tuple(u["png_rgb"]))
+        if "png_rgb" in u
+        else base64.b64decode(u.get("b64", "")) or u.get("text", "").encode()
+    )
     status, body = inst.upload(u.get("project", ""), u["name"], content)
     rec["http"] = {"status": status, "body": body}
 
@@ -477,9 +484,10 @@ def run_upload(inst: Instance, step: dict, rec: dict):
 class Runner:
     """One persona on one container, start to teardown."""
 
-    def __init__(self, persona: dict, backend, env_values: dict, evidence: Path, judge=None, keep=False):
+    def __init__(self, persona: dict, backend, env_values: dict, evidence: Path, options=None):
         self.p, self.backend, self.env_values = persona, backend, env_values
-        self.judge, self.keep = judge, keep
+        options = options or {}
+        self.judge, self.keep = options.get("judge"), options.get("keep", False)
         self.dir = evidence / persona["name"]
         self.dir.mkdir(parents=True, exist_ok=True)
         self.token = pysecrets.token_urlsafe(24)
@@ -511,14 +519,22 @@ class Runner:
 
     def _config_call(self, label: str, path: str, form: dict):
         status, body = self.inst.call("POST", path, form=form)
-        self.summary["config"].append({"step": label, "status": status, "body": self.scrub(body)[:400], "ok": status < 300})
+        self.summary["config"].append(
+            {"step": label, "status": status, "body": self.scrub(body)[:400], "ok": status < 300}
+        )
         return status
 
     def _config_forms(self) -> list:
         """The web app's own posts, one at a time so a refusal names one setting."""
         p, forms = self.p, []
         for slug, key_env in p.get("keys", {}).items():
-            field = {"openai": "oaiKey", "anthropic": "antKey", "mistral": "mistKey", "zai": "zaiKey", "cumulo": "cumuloKey"}[slug]
+            field = {
+                "openai": "oaiKey",
+                "anthropic": "antKey",
+                "mistral": "mistKey",
+                "zai": "zaiKey",
+                "cumulo": "cumuloKey",
+            }[slug]
             forms.append((f"key {slug}", "/api/orch", {field: self.env_values.get(key_env, "")}))
         models = p.get("models", {})
         for slug, model in models.get("head", {}).items():
@@ -615,7 +631,9 @@ class Runner:
             self.summary["configured"] = configured
             for sc in self.p["scenarios"]:
                 if not configured:
-                    self.summary["scenarios"].append({"id": sc["id"], "pass": False, "failed": [{"check": "configure"}]})
+                    self.summary["scenarios"].append(
+                        {"id": sc["id"], "pass": False, "failed": [{"check": "configure"}]}
+                    )
                 elif not only or sc["id"] in only:
                     self.summary["scenarios"].append(self.run_scenario(sc))
         except Exception as e:  # the record must say what stopped the persona
@@ -650,18 +668,20 @@ def make_judge_from_env(env_values: dict, avoid: str = ""):
         return None
 
 
-def run_all(personas: list, backend, env_values: dict, evidence: Path, parallel=1, judge=None, only=None, keep=False) -> list:
+def run_all(personas: list, backend, env_values: dict, evidence: Path, options=None) -> list:
+    """options: parallel (default 1), judge, only (scenario ids), keep."""
+    options = options or {}
     lock = threading.Lock()
     results = []
 
     def one(p):
-        summary = Runner(p, backend, env_values, evidence, judge=judge, keep=keep).run(only)
+        summary = Runner(p, backend, env_values, evidence, options).run(options.get("only"))
         with lock:
             results.append(summary)
             verdict = "PASS" if summary["pass"] else "FAIL"
             print(f"{verdict} {p['name']}", flush=True)
 
-    with ThreadPoolExecutor(max_workers=max(1, parallel)) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, options.get("parallel", 1))) as pool:
         list(pool.map(one, personas))
     return results
 
@@ -689,7 +709,8 @@ def main(argv=None) -> int:
     evidence = Path(a.evidence)
     evidence.mkdir(parents=True, exist_ok=True)
     only = set(a.only.split(",")) if a.only else None
-    results = run_all(personas, DockerBackend(a.image), env_values, evidence, a.parallel, judge, only, a.keep)
+    options = {"parallel": a.parallel, "judge": judge, "only": only, "keep": a.keep}
+    results = run_all(personas, DockerBackend(a.image), env_values, evidence, options)
     (evidence / "run-summary.json").write_text(json.dumps(results, indent=1, ensure_ascii=False))
     return 0 if results and all(r["pass"] for r in results) else 1
 

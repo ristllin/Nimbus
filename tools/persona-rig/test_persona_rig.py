@@ -104,7 +104,9 @@ def make_handler(fake: FakeNimbusd, token: str):
                     "/api/chat": lambda: fake.reply_for(int(q["turn"][0])),
                     "/api/mem/episodic": lambda: {"messages": []},
                     "/api/log": lambda: "\n".join(fake.log),
-                    "/api/lastturn": lambda: "===== 4. TOOL LOOP =====\n[tool] files_read {\"a\":1}\n[result] files_read ok\n",
+                    "/api/lastturn": lambda: (
+                        "===== 4. TOOL LOOP =====\n[tool] files_read {\"a\":1}\n[result] files_read ok\n"
+                    ),
                     "/api/orch": fake.orch,
                     "/api/state": fake.state,
                     "/api/mem/stats": lambda: {"vectors": fake.vectors},
@@ -191,7 +193,11 @@ def persona(**over):
             {
                 "id": "basic",
                 "steps": [
-                    {"say": "hello there", "settle_s": 0, "expect": [{"turn_resolved": True}, {"reply_contains": "hello"}]},
+                    {
+                        "say": "hello there",
+                        "settle_s": 0,
+                        "expect": [{"turn_resolved": True}, {"reply_contains": "hello"}],
+                    },
                 ],
             }
         ],
@@ -206,9 +212,21 @@ class Loading(unittest.TestCase):
             ({"name": "x", "scenarios": []}, "no scenarios"),
             ({"name": "bad name!", "scenarios": [{"id": "a", "steps": [{"sleep": 0}]}]}, "bad persona name"),
             ({"name": "x", "scenarios": [{"id": "a", "steps": []}]}, "no steps"),
-            ({"name": "x", "scenarios": [{"id": "a", "steps": [{"sleep": 0}]}, {"id": "a", "steps": [{"sleep": 0}]}]}, "repeated"),
+            (
+                {
+                    "name": "x",
+                    "scenarios": [{"id": "a", "steps": [{"sleep": 0}]}, {"id": "a", "steps": [{"sleep": 0}]}],
+                },
+                "repeated",
+            ),
             ({"name": "x", "scenarios": [{"id": "a", "steps": [{"sleep": 0, "say": "hi"}]}]}, "exactly one"),
-            ({"name": "x", "scenarios": [{"id": "a", "steps": [{"say": "hi", "expect": [{"reply_contians": "typo"}]}]}]}, "unknown assertion"),
+            (
+                {
+                    "name": "x",
+                    "scenarios": [{"id": "a", "steps": [{"say": "hi", "expect": [{"reply_contians": "typo"}]}]}],
+                },
+                "unknown assertion",
+            ),
         ]
         for p, why in bad:
             with self.assertRaises(pr.PersonaError, msg=why) as ctx:
@@ -239,7 +257,10 @@ class Loading(unittest.TestCase):
         self.assertNotEqual(steps[0]["say"][10:], steps[1]["say"][10:], "filler must differ between turns")
 
     def test_missing_var_is_refused(self):
-        doc = {"matrix": [{"a": "1"}], "persona": {"name": "p", "note": "${nope}", "scenarios": [{"id": "s", "steps": [{"sleep": 0}]}]}}
+        doc = {
+            "matrix": [{"a": "1"}],
+            "persona": {"name": "p", "note": "${nope}", "scenarios": [{"id": "s", "steps": [{"sleep": 0}]}]},
+        }
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "m.json"
             path.write_text(json.dumps(doc))
@@ -342,9 +363,7 @@ class Helpers(unittest.TestCase):
 
     def test_tools_come_from_the_anatomy_section_only(self):
         text = "[tool] not_this {}\n===== 4. TOOL LOOP =====\n[tool] files_read {\"a\":1}\n[result] files_read hi\n"
-        self.assertEqual(
-            pr.tools_from_anatomy(text), [{"name": "files_read", "args": '{"a":1}', "result": "hi"}]
-        )
+        self.assertEqual(pr.tools_from_anatomy(text), [{"name": "files_read", "args": '{"a":1}', "result": "hi"}])
         self.assertEqual(pr.tools_from_anatomy("no section"), [])
 
     def test_spend_lines_parse(self):
@@ -415,9 +434,16 @@ class EndToEnd(unittest.TestCase):
         summary, fake, backend, texts = self.run_persona(persona())
         self.assertTrue(summary["pass"], summary)
         posts = [f"{path} {urllib.parse.unquote(body)}" for path, body in fake.config_posts]
-        for want in ("/api/orch orchM_mistral=fake-model", "/api/orch subM_mistral=fake-sub", "/api/orch orchHost=mistral",
-                     "/api/orch spendCeil=500", "/api/config devTz=Europe/London", "/api/config devName=Unit",
-                     "/api/telegram/add id=1001&name=Ann", "/api/tenant id=1001&role=user"):
+        for want in (
+            "/api/orch orchM_mistral=fake-model",
+            "/api/orch subM_mistral=fake-sub",
+            "/api/orch orchHost=mistral",
+            "/api/orch spendCeil=500",
+            "/api/config devTz=Europe/London",
+            "/api/config devName=Unit",
+            "/api/telegram/add id=1001&name=Ann",
+            "/api/tenant id=1001&role=user",
+        ):
             self.assertIn(want, posts)
         self.assertTrue(any(p.startswith("/api/orch mistKey=") for p in posts))
         self.assertEqual(len(backend.stopped), 1, "the container is removed at the end")
@@ -436,13 +462,19 @@ class EndToEnd(unittest.TestCase):
             self.assertNotIn(token, body, name)
 
     def test_a_failed_assertion_fails_the_persona(self):
-        p = persona(scenarios=[{"id": "s", "steps": [{"say": "hi", "settle_s": 0, "expect": [{"reply_contains": "banana"}]}]}])
+        p = persona(
+            scenarios=[{"id": "s", "steps": [{"say": "hi", "settle_s": 0, "expect": [{"reply_contains": "banana"}]}]}]
+        )
         summary, _f, _b, _t = self.run_persona(p)
         self.assertFalse(summary["pass"])
         self.assertEqual(summary["scenarios"][0]["failed"][0]["check"], "reply_contains")
 
     def test_an_error_reply_is_caught(self):
-        p = persona(scenarios=[{"id": "s", "steps": [{"say": "broken turn", "settle_s": 0, "expect": [{"no_error_reply": True}]}]}])
+        p = persona(
+            scenarios=[
+                {"id": "s", "steps": [{"say": "broken turn", "settle_s": 0, "expect": [{"no_error_reply": True}]}]}
+            ]
+        )
         self.assertFalse(self.run_persona(p)[0]["pass"])
 
     def test_a_refused_setting_stops_the_persona(self):
@@ -453,9 +485,26 @@ class EndToEnd(unittest.TestCase):
         self.assertFalse(any("hello there" in row["text"] for row in fake.ring), "nothing was spent after a refusal")
 
     def test_a_turn_that_never_resolves_is_recorded_and_graded_from_the_ring(self):
-        p = persona(scenarios=[{"id": "s", "steps": [
-            {"say": "start a sub-agent", "await_reply_regex": r"\b55\b", "settle_s": 0, "timeout_s": 10,
-             "expect": [{"turn_resolved": False}, {"reply_regex": r"\b55\b"}, {"log_regex": "spawned job"}]}]}])
+        p = persona(
+            scenarios=[
+                {
+                    "id": "s",
+                    "steps": [
+                        {
+                            "say": "start a sub-agent",
+                            "await_reply_regex": r"\b55\b",
+                            "settle_s": 0,
+                            "timeout_s": 10,
+                            "expect": [
+                                {"turn_resolved": False},
+                                {"reply_regex": r"\b55\b"},
+                                {"log_regex": "spawned job"},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        )
         summary, _f, _b, texts = self.run_persona(p)
         self.assertTrue(summary["pass"], summary)
         rec = json.loads(texts["unit/s/step-00.json"])
@@ -463,17 +512,41 @@ class EndToEnd(unittest.TestCase):
         self.assertFalse(rec["timed_out"], "the wait ended on the ring, not the deadline")
 
     def test_member_turn_upload_http_and_restart_steps(self):
-        p = persona(scenarios=[{"id": "s", "steps": [
-            {"say": "please remember this", "as": "1001", "settle_s": 0,
-             "expect": [{"reply_contains": "Saved"}, {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}}]},
-            {"upload": {"project": "chat", "name": "a.png", "png_rgb": [1, 2, 3]}, "expect": [{"http_status": 200}]},
-            {"upload": {"project": "chat", "name": "b.txt", "text": "plain words"},
-             "expect": [{"http_status": 200}, {"file_contains": {"project": "chat", "name": "b.txt", "text": "plain words"}}]},
-            {"http": {"method": "POST", "path": "/api/loops", "form": {"action": "create"}},
-             "expect": [{"http_status": 400}, {"body_contains": "routines"}]},
-            {"restart": True},
-            {"say": "still there", "settle_s": 0, "expect": [{"reply_contains": "still there"}]},
-        ]}])
+        p = persona(
+            scenarios=[
+                {
+                    "id": "s",
+                    "steps": [
+                        {
+                            "say": "please remember this",
+                            "as": "1001",
+                            "settle_s": 0,
+                            "expect": [
+                                {"reply_contains": "Saved"},
+                                {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}},
+                            ],
+                        },
+                        {
+                            "upload": {"project": "chat", "name": "a.png", "png_rgb": [1, 2, 3]},
+                            "expect": [{"http_status": 200}],
+                        },
+                        {
+                            "upload": {"project": "chat", "name": "b.txt", "text": "plain words"},
+                            "expect": [
+                                {"http_status": 200},
+                                {"file_contains": {"project": "chat", "name": "b.txt", "text": "plain words"}},
+                            ],
+                        },
+                        {
+                            "http": {"method": "POST", "path": "/api/loops", "form": {"action": "create"}},
+                            "expect": [{"http_status": 400}, {"body_contains": "routines"}],
+                        },
+                        {"restart": True},
+                        {"say": "still there", "settle_s": 0, "expect": [{"reply_contains": "still there"}]},
+                    ],
+                }
+            ]
+        )
         summary, _f, _b, _t = self.run_persona(p)
         self.assertTrue(summary["pass"], summary)
 

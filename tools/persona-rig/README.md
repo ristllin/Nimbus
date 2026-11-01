@@ -141,4 +141,5 @@ Keys and the instance token are scrubbed from every file. Spend comes from the d
 | `personas/worked_example.json` | one small complete persona: read this first |
 | `personas/capability_matrix.json` | the capability script (chat, memory, restart, files, sub-agent, web, image, a binary file read, routine, a long conversation) on six models |
 | `personas/web_with_tavily.json` | the web lookup on an instance that also holds a Tavily key |
+| `personas/first_run.json` | a new instance with no key, then with a rejected key (costs nothing) |
 | `personas/embed_switch.json` | an OpenAI-only owner moves memory to OpenAI embeddings, then stores a memory |
