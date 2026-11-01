@@ -2606,7 +2606,7 @@ class NimbusdRig {
          "within its wait"},
         {"sub-agents run in parallel on the provider while the device collects them",
          "sub-agents run in parallel on the provider while this instance collects them"},
-        {"queued on the device while embeddings are down", "queued on this instance while embeddings are down"},
+        {"queued on the device", "queued on this instance"},
         {"the device confirms or corrects a save claim", "this instance confirms or corrects a save claim"},
         {"head orchestrator of a personal-assistant device.", "head orchestrator of a personal assistant."},
         {"You speak with people over Telegram/voice and can act on the device.",
@@ -2633,8 +2633,9 @@ class NimbusdRig {
         {"Connectivity: WiFi", "Connectivity: online"},
     };
     for (const auto& sw : kSwap) {
-      const size_t at = ins.find(sw[0]);
-      if (at != std::string::npos) ins.replace(at, std::strlen(sw[0]), sw[1]);
+      const size_t from = std::strlen(sw[0]), to = std::strlen(sw[1]);
+      for (size_t at = ins.find(sw[0]); at != std::string::npos; at = ins.find(sw[0], at + to))
+        ins.replace(at, from, sw[1]);
     }
     return ins;
   }
