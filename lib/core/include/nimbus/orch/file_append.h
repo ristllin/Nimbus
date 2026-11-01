@@ -150,6 +150,8 @@ struct CsvUpsert {
   double todayTotal = 0;   // the sum column over today's rows
   std::vector<RowChange> changes;   // one per new row, in the text's order
   std::vector<DayTotal> days;       // today first (when known), then each other date written
+  DayTotal protein;                 // a food log with a protein column: today's protein, read the same way
+  std::string proteinCol;           // that column ("" = none: no line in the reply)
   bool cut = false;                 // the stored last row was cut mid-write
   std::string cutDate;              // its date, when it has one
   bool cutReplaced = false;         // a new row replaced it (else it is now a #cut: row)
@@ -193,6 +195,7 @@ class CsvUpsertStream {
   };
   bool fail(const std::string& why);
   bool parseHeader(const std::string& line);
+  void findFoodColumns();
   bool parseNewRow(size_t n, const std::string& raw, NewRow& row);
   bool findDateColumn(const std::vector<NewRow>& rows);
   bool checkNewRow(size_t n, NewRow& row);
@@ -211,7 +214,7 @@ class CsvUpsertStream {
   std::string keyCol_, sumCol_, today_, zone_;
   std::vector<std::string> header_;
   std::string headerRaw_;
-  int keyIdx_ = -1, sumIdx_ = -1, dateIdx_ = -1, itemsIdx_ = -1;
+  int keyIdx_ = -1, sumIdx_ = -1, dateIdx_ = -1, itemsIdx_ = -1, proteinIdx_ = -1;
   std::vector<NewRow> rows_;
   std::vector<std::string> prev_;   // the last well-formed stored row (judges a cut last row)
   bool begun_ = false, sawHeader_ = false, failed_ = false, supersede_ = false;

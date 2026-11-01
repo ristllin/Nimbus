@@ -707,6 +707,10 @@ static void test_same_food_earlier_day_at_a_far_figure() {
   TEST_ASSERT_TRUE(renderUpsertReply(up, "f", "kcal", "").find("same food") == std::string::npos);
   up = planCsvUpsert(two, head + "2026-11-01,drink,cappucino,110,3\n", "meal", "kcal", "2026-11-01");
   TEST_ASSERT_TRUE(renderUpsertReply(up, "f", "kcal", "").find("2026-10-30 holds the same food at 66") != std::string::npos);
+  // The reply gives today's protein too, known and unknown apart: the head adds up nothing.
+  up = planCsvUpsert(head + "2026-11-01,lunch,soup,300,10\n2026-11-01,tea,x,5,\n", head + "2026-11-01,dinner,steak,600,50\n", "meal", "kcal", "2026-11-01");
+  reply = renderUpsertReply(up, "f", "kcal", "");
+  TEST_ASSERT_TRUE_MESSAGE(reply.find("today's protein_g: 60 from 2 rows, and 1 row has no figure") != std::string::npos, reply.c_str());
   // A log that is not food says nothing.
   const std::string money = "date,what,items,cost\n2026-10-20,x,coffee,3\n";
   up = planCsvUpsert(money, "date,what,items,cost\n2026-11-01,x,coffee,9\n", "what", "cost", "2026-11-01");

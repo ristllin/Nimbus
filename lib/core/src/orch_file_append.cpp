@@ -645,6 +645,20 @@ std::string CsvUpsertStream::identity(const std::vector<std::string>& f) const {
   return keyIdx_ == dateIdx_ ? day : day + "\x1f" + key;
 }
 
+// A food log's free text (the same-food note) and its protein column (today's protein in the reply).
+void CsvUpsertStream::findFoodColumns() {
+  for (size_t c = 0; c < header_.size(); c++) {
+    if (itemsIdx_ < 0 && absorbRank(header_[c]) == 2) itemsIdx_ = (int)c;
+    if (proteinIdx_ < 0 && (int)c != sumIdx_ && holdsAnyOf(lowered(header_[c]), {"protein"})) proteinIdx_ = (int)c;
+  }
+  if (proteinIdx_ < 0 || today_.empty()) {
+    proteinIdx_ = -1;
+    return;
+  }
+  r_.protein.date = today_;
+  r_.proteinCol = header_[(size_t)proteinIdx_];
+}
+
 // The shape of one new row: no comment, closed quotes, the header's width, a key.
 bool CsvUpsertStream::parseNewRow(size_t n, const std::string& raw, NewRow& row) {
   if (isCommentRow(raw)) return fail(rowNo(n) + " starts with # (a comment row) - start it with its first column");
@@ -715,9 +729,7 @@ bool CsvUpsertStream::parseHeader(const std::string& line) {
   keyIdx_ = columnIndex(header_, keyCol_);
   if (keyIdx_ < 0) return fail("the text's header has no column '" + keyCol_ + "'");
   sumIdx_ = sumCol_.empty() ? -1 : columnIndex(header_, sumCol_);
-  if (sumIdx_ >= 0 && foodFigureColumn(sumCol_))
-    for (size_t c = 0; c < header_.size() && itemsIdx_ < 0; c++)
-      if (absorbRank(header_[c]) == 2) itemsIdx_ = (int)c;
+  if (sumIdx_ >= 0 && foodFigureColumn(sumCol_)) findFoodColumns();
   if (!sumCol_.empty() && sumIdx_ < 0) return fail("the text's header has no column '" + sumCol_ + "'");
   return true;
 }
@@ -912,6 +924,7 @@ void CsvUpsertStream::noteSameFood(NewRow& n, const std::string& day, double was
 
 void CsvUpsertStream::tally(const std::vector<std::string>& f) {
   for (DayTotal& d : r_.days) tallyInto(d, f, header_, dateIdx_, sumIdx_);
+  if (proteinIdx_ >= 0) tallyInto(r_.protein, f, header_, dateIdx_, proteinIdx_);
 }
 
 bool CsvUpsertStream::finish(std::string& out) {
@@ -1257,6 +1270,17 @@ std::string renderChange(const RowChange& c, const std::string& sumCol) {
 }
 }  // namespace
 
+// Today's protein beside the kcal, so the head never adds it up. A row with no figure is unknown.
+std::string renderProteinTotal(const CsvUpsert& up) {
+  const DayTotal& p = up.protein;
+  std::string out = "today's " + up.proteinCol + ": " + numText(p.total) + " from " + std::to_string(p.rows) +
+                    (p.rows == 1 ? " row" : " rows");
+  if (p.unread > 0)
+    out += ", and " + std::to_string(p.unread) + (p.unread == 1 ? " row has" : " rows have") +
+           " no figure, so that is what is known, not the day's protein";
+  return out;
+}
+
 std::string renderUpsertReply(const CsvUpsert& up, const std::string& where,
                               const std::string& sumCol, const std::string& zoneAt) {
   std::string out = "replaced " + std::to_string(up.replaced) + (up.replaced == 1 ? " row" : " rows") +
@@ -1271,6 +1295,7 @@ std::string renderUpsertReply(const CsvUpsert& up, const std::string& where,
   }
   for (size_t i = 0; i < up.days.size(); i++)
     out += renderDayTotal(up.days[i], sumCol, i == 0 && up.hasTotal, zoneAt) + "\n";
+  if (up.hasTotal && !up.proteinCol.empty()) out += renderProteinTotal(up) + "\n";
   if (up.undated > 0) out += renderUndated(up.undated) + "\n";
   if (!up.noTotal.empty()) out += "[no day total: " + up.noTotal + "]\n";
   return out;

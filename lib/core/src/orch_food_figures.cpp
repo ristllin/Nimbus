@@ -165,6 +165,8 @@ struct Stated {
   Unit unit = Unit::None;
 };
 
+bool leftAt(const std::vector<Tok>& toks, size_t i);
+
 // The figure just before a target word ("2,400 kcal target", "150-160 g band").
 std::vector<Stated> figureBefore(const std::vector<Tok>& toks, size_t i, bool macros) {
   std::vector<Stated> out;
@@ -193,6 +195,7 @@ std::vector<Stated> figureAfter(const std::vector<Tok>& toks, size_t i, bool mac
       if (!skipAfter(t)) break;
       continue;
     }
+    if (leftAt(toks, fwd)) break;   // "against your targets: 472 kcal left of 2,400"
     if (t.unit == Unit::None && fwd + 1 < toks.size() && toks[fwd + 1].number && foodUnit(toks[fwd + 1], macros)) {
       out.push_back({t.value, toks[fwd + 1].unit});
       out.push_back({toks[fwd + 1].value, toks[fwd + 1].unit});
