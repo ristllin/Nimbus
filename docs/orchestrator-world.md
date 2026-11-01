@@ -288,7 +288,10 @@ added once for both.
 hosted Virtual Nimbus) a `memory.write` (or `memory.update`) the embedder cannot serve is kept as text in
 a small pending queue and stored automatically once embeddings work again, with
 the same rules as a direct write (namespace, memory limit, time to live, pins),
-under the writer's role at that time. Every write ends in exactly one outcome,
+under the writer's role at that time. With no key at all that can embed (only
+Anthropic or Z.ai keys), the same queue is how memory works until one is added: the
+fact is kept as text and found by keyword, the tool result says so, and no later
+confirmation is sent. Every write ends in exactly one outcome,
 and the tool result says which:
 
 | Outcome | Meaning |

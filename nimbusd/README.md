@@ -33,6 +33,10 @@ New code lives only in this directory:
 | `src/router_head.h` | the Cumulo head's view of a router refusal (`RouterTap`), the honest copy for each kind and the ladder that answers a refused pick, named from the rule the device's cumulo head shares (`lib/harness/.../router_refusal.h`) |
 | `src/hosted_settings.h` | the owner's settings (durable, thread-safe) and the apply-or-refuse rule for every field the web app posts |
 | `src/embed_check.h` | the embedding settings' live check: run on the engine thread, never awaited past 5 s, its result kept for the next Verify or Save |
+| `src/hosted_fold.h` | where a conversation's fold state lives: the shared `FoldStore` over one file on the volume |
+| `src/hosted_loops.h` | routines and wake-ups over the shared core (`nimbus/orch/loops.h`, `loop_delivery.h`): the file, the clock, one due fire per sweep, the device's tools |
+| `src/hosted_skills.h` | skills over the shared `SkillStore` on the volume, with the device's `skill.*` tools |
+| `src/hosted_photos.h` | photos to the head as images, the settled row, `image.look` and `image.note`, over the shared `TurnImages` and caption walk |
 | `src/engine_thread.h` | the concurrency layer: one engine thread + request mailbox + a snapshot for lock-free reads |
 | `src/http_control.h` | the 127.0.0.1-only control surface (serves the web app + logo, health, replies, message, MCP, backup; delegates `/api/*` to `WebApi`), web-token gated |
 | `src/web_api.h` | the `/api/*` surface the web app calls, answered with honest Virtual Nimbus semantics (real chat/memory/providers; hardware panels honestly virtual) |
@@ -52,6 +56,12 @@ New code lives only in this directory:
 /data/mem/embed.txt          the embedding provider/model/width saved from the web app
 /data/mem/settings.json      the owner's settings from the web app (routing, directive, time zone, name, tool loop)
 /data/mem/submodels.txt      per-provider sub-agent model picks
+/data/mem/chatsum.txt        each chat's conversation summary, its anchor and fold counters
+/data/mem/loops.json         routines and wake-ups (the device's file format)
+/data/mem/wakeup_mode        the "Wake-ups: ask me first" switch
+/data/mem/skills/<id>/       skills (SKILL.md, and SKILL.next.md for an edit waiting for approval)
+/data/mem/photos/<ref>.bin   photos by content hash, for image.look (the newest 512)
+/data/mem/rowtext.txt        a photo row's settled text
 /data/mem/files/             file artifacts + .index
 /data/mem/telegram.txt       Telegram allowlist, display names, consumed legacy seed and the
                              RBAC roles + limits, in ONE atomically written file
@@ -148,6 +158,16 @@ web app's embedding settings work as on the device: `POST /api/mem/embedverify`
 makes one real call and saves nothing, `POST /api/mem/embedcfg` refuses a model
 switch while memories exist unless the owner erases them (`reset=1`).
 
+**Memory follows the key (device parity, `nimbus/orch/embed_pick.h`).** With no
+stored vectors and no key for the configured provider, the instance moves to one it
+holds: an OpenAI-only instance embeds with OpenAI at 256 wide. The pick runs at start,
+on every key save and every 10 s for a changed verdict; stored vectors keep their
+space, and a provider that works is never overridden. Anthropic has no embeddings
+API and no Z.ai route is wired, so an Anthropic-only or Z.ai-only instance keeps a
+memory as text, found by keyword (at most 64, 16 per person), and the assistant is
+told exactly that and that no confirmation follows. A key added later embeds the waiting
+ones.
+
 That call can take the whole 30 s embed timeout, and one HTTP thread serves every
 request (`/healthz` included), so it runs on the engine thread and Verify and Save
 wait for it at most 5 s (`src/embed_check.h`). Past that, Verify answers `202
@@ -199,7 +219,7 @@ The device knobs a hosted instance does not offer (tool-loop limits, TLS slots,
 mid-turn failover, trace, the custom endpoint) are reported by `GET /api/orch` at
 their hosted values, so the page's whole-form **Save Changes** round-trips them as a
 no-op (a blank number field is "unchanged"); posting any other value, or any field not listed above (sound, voice, ring,
-display, battery, mode, budgets, a typed bot or Tavily key), answers
+display, battery, mode, budgets, a typed bot key), answers
 `400 {"ok":false,"error":"Not available on a hosted Nimbus: <field>"}` and nothing
 in that post applies, and a value the instance volume cannot store changes nothing
 (500). Env values (`NIMBUSD_ORCH_HOST`, `NIMBUSD_PRIORITY`, `TZ`, ...) are the
@@ -220,10 +240,49 @@ Telegram message still says Telegram.
 `dl`, `rm`, `rmproject`) works on the instance disk: it is the same store the
 assistant's `files.*` tools read, so an upload is readable by the assistant (one
 upload up to 1 MB; downloads are served as `application/octet-stream`). An upload
-the store refuses (256 files, or the store is full) writes nothing to the disk. Routines,
-skills, wake-ups and URL downloads have no hosted engine yet: their lists answer an
-honest empty GET and a write answers `400 "Not available on a hosted Nimbus yet:
-<feature>"`.
+the store refuses (256 files, or the store is full) writes nothing to the disk. URL
+downloads have no hosted engine yet: their list answers an honest empty GET and a write
+answers `400 "Not available on a hosted Nimbus yet: downloads"`.
+
+**Routines, wake-ups and skills.** `/api/loops`, `/api/wakeups` and `/api/skills/*`
+answer as on the device, over the same core: one due fire per 20 s sweep, the advance
+stored before the fire, no burst after a restart (a recurring routine takes its next
+slot; an armed wake-up whose time passed fires once), the same breakers and caps. The
+assistant has `loop.*`, `wakeup.set` and `skill.*`: its recurring routine and its new
+skill wait for the owner's approval on the page. A routine runs as a turn with no owner
+message and reaches the page without a reload. There is no nightly dream on a hosted
+instance.
+
+**The conversation (device parity).** The history rides as real messages
+(`histV2`, `NIMBUSD_HISTV2=0` restores the old 12-row text window). A chat past 48 KB of
+new rows, or one whose history has been shifted, gets a summary through the same
+engine calls as the device (`FoldStore`, `runFold`, `historyFoldSlice`), when the owner
+pauses or at most 6 turns later; the summary rides every later turn. `/compact` asks
+for one now and `/clear yes` drops it. A tool call leaves a `tool_output` row and each
+turn a summary row, so the chat's tool disclosure works; `GET /api/orch` lists running
+sub-agents under `jobs`.
+
+**The web chat contract.** `GET /api/chat?turn=N` answers as on the device: `pending`
+while the turn is queued or running, `done` once it is over (empty for a turn that
+only started sub-agents), `gone` for an id it does not know. `?watch=1` and every other
+body carry `{async, busy}`: the page's watcher reloads the history when `async` moves,
+so a sub-agent's result appears with no reload. A turn with a reply gets no separate
+"On it." for the sub-agents it started.
+
+**Photos.** The page's Attach and drag-and-drop upload to Files > chat; a photo then goes
+with the next message (`POST /api/chat` field `att`, one `project/name` per line), and
+the page shrinks one over 450 KB to a JPEG first. A Telegram photo or album is one
+turn. The head sees it as an image part; a head that cannot read an image gets a
+transcription from a provider that can, or a label saying nobody could read it. The
+row keeps the head's note (`image.note`), and `image.look` shows a stored photo again.
+A bare voice note, video or file on Telegram gets one plain answer saying what the bot
+reads.
+
+**Web search.** The instance's page takes a Tavily key on the same field as the device
+(Assistant > Tools > Web search), durable with the provider keys; `web.search` is
+offered from the next turn. With no such key, an OpenAI or Anthropic key reaches the web
+through the provider's own search on a sub-agent, and a Mistral key does when its
+`web_search` built-in is on.
 
 **Commands.** `/clear` (then `/clear yes`) clears the conversation exactly like the
 button, `/help` lists the commands, and any other slash command gets a fixed reply:
@@ -421,7 +480,7 @@ provider with no key runs the configured sub-agent order, since only the owner
 picks a spawn's model on the owner's key. One the provider refuses with HTTP 429
 also names the quota window, read the same way as a head turn's 429.
 Not wired yet on a hosted
-instance: skill capsules, document attachments, auto-saving a sub's result into a
+instance: document attachments, auto-saving a sub's result into a
 project, and provider file capture (the engine passes the task through and notes
 attachments instead of splicing them).
 

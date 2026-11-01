@@ -399,8 +399,7 @@ class NimbusdRig {
   // A turn that brings photos: the same turn as say(), with the photos offered to the
   // head as images (hosted_photos.h). A chat the owner has not approved gets no turn.
   TurnRecord sayWithPhotos(const std::string& chatId, const std::string& text, const std::vector<PhotoIn>& photos) {
-    if (photos.empty() || !access_->mayConverse(chatId) || !access_->principalFor(chatId).owner)
-      return say(chatId, text);
+    if (photos.empty() || !access_->mayConverse(chatId)) return say(chatId, text);
     return say(chatId, photos_->offerTurn(chatId, "Owner", text, photos));
   }
 
@@ -732,7 +731,10 @@ class NimbusdRig {
   }
   void noteFoldPumpEnd() { ownerFirst_.notePumpEnd(); }
   // Routines: one due fire per sweep (engine thread, between turns).
-  void loopsTick(const std::function<void(bool)>& busy) { loops_.tick(eng_ && eng_->turnInFlight(), busy); }
+  void loopsTick(const std::function<void(bool)>& busy) {
+    if (tzMoved_.exchange(false)) loops_.onTzChanged();
+    loops_.tick(eng_ && eng_->turnInFlight(), busy);
+  }
   HostedLoops& routines() { return loops_; }
   HostedSkills& skills() { return *skills_; }
   // The chat's anchored summary ("" = never folded): diagnostics and the tests.
@@ -1075,7 +1077,10 @@ class NimbusdRig {
     const std::string tzBefore = settings_.get().devTz;
     if (!settings_.update(fn)) return false;
     const std::string tzAfter = settings_.get().devTz;
-    if (tzAfter != tzBefore) hosted::applyTz(tzAfter.empty() ? envTz_ : tzAfter);
+    if (tzAfter != tzBefore) {
+      hosted::applyTz(tzAfter.empty() ? envTz_ : tzAfter);
+      tzMoved_.store(true);   // routines are the engine thread's: its next tick rebases them
+    }
     return true;
   }
   // The time zone /api/state shows: the owner's, else the operator's TZ, else UTC.
@@ -3260,6 +3265,7 @@ class NimbusdRig {
   std::string envTz_;            // the operator's TZ at start ("" = none)
   std::string curUserRowId_;     // the in-flight user row (excluded from the window)
   HostedLoops loops_;            // routines and wake-ups
+  std::atomic<bool> tzMoved_{false};
   std::unique_ptr<HostedSkills> skills_;
   std::string turnTag_;          // "turn:<row id>" of the turn in flight ("" between turns)
   std::map<std::string, std::string> traceArgs_;   // call id -> args, until its result

@@ -12,6 +12,7 @@
 #include "nimbus/orch/loops.h"
 #include "nimbus/orch/spend_ceiling.h"   // isSpendFrozenError
 #include "nimbus/orch/tool_registry.h"
+#include "hosted_settings.h"             // tzMutex: every local-time read here takes it
 #include "posix_fs.h"
 
 // hosted_loops - routines and wake-ups on a hosted instance, over the same pure core
@@ -79,6 +80,21 @@ class HostedLoops {
     settle(req.id, o, now, prevLastRun);
   }
   void setTickSec(uint32_t s) { tickSec_ = s; }
+  // The owner moved the time zone (device onTzChanged): wall-clock schedules take the
+  // next occurrence on the new clock, a due fire keeps its slot, and the daily counters
+  // adopt the new day with no change in either direction.
+  void onTzChanged() {
+    const uint64_t now = epoch();
+    const uint32_t day = localDay(now);
+    for (auto& l : loops_) {
+      if (l.sched.kind != nimbus::orch::SchedKind::Interval && l.sched.kind != nimbus::orch::SchedKind::Once &&
+          !(l.nextRun != 0 && l.nextRun <= now))
+        l.nextRun = nextRunFor(l, now);
+      nimbus::orch::adoptLocalDay(l, day);
+    }
+    dev_.dayNumber = day;
+    persist();
+  }
   bool firing() const { return firing_; }
 
   Created create(const std::string& name, const std::string& prompt, const std::string& chatId,
@@ -202,7 +218,10 @@ class HostedLoops {
   static nimbus::orch::CivilTime civilLocal(uint64_t e) {
     time_t t = (time_t)e;
     struct tm lt{};
-    localtime_r(&t, &lt);
+    {
+      std::lock_guard<std::mutex> lk(hosted::tzMutex());
+      localtime_r(&t, &lt);
+    }
     nimbus::orch::CivilTime c;
     c.year = lt.tm_year + 1900;
     c.month = lt.tm_mon + 1;
@@ -222,6 +241,7 @@ class HostedLoops {
     lt.tm_min = c.min;
     lt.tm_sec = c.sec;
     lt.tm_isdst = -1;
+    std::lock_guard<std::mutex> lk(hosted::tzMutex());
     return (uint64_t)mktime(&lt);
   }
   static uint32_t localDay(uint64_t e) {

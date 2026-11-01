@@ -99,7 +99,9 @@ ago.
 **Attach files** by dropping them onto the conversation or with the **Attach**
 button - images, text, Markdown, CSV, logs, JSON, and PDF. The upload shows a
 progress bar and then lands as a message in the log, saved to Files under the
-`chat` project, so the assistant can work with it.
+`chat` project, so the assistant can work with it. On a hosted Virtual Nimbus a
+photo goes with your next message and the assistant looks at it; a large photo is
+made smaller first.
 
 ---
 

@@ -14,6 +14,7 @@
 #include "nimbus/harness/skill_md.h"
 #include "nimbus/harness/skill_store.h"
 #include "nimbus/orch/tool_registry.h"
+#include "hosted_settings.h"             // localTime: the zone lock
 #include "posix_fs.h"
 
 // hosted_skills - skills on a hosted instance: the portable SkillStore and AttachTable
@@ -93,14 +94,7 @@ class HostedSkills {
     return (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now().time_since_epoch()).count();
   }
-  static std::string stamp() {
-    time_t t = time(nullptr);
-    struct tm lt{};
-    localtime_r(&t, &lt);
-    char buf[20];
-    strftime(buf, sizeof buf, "%Y-%m-%d %H:%M", &lt);
-    return buf;
-  }
+  static std::string stamp() { return hosted::localTime(time(nullptr), "%Y-%m-%d %H:%M"); }
   bool scheduled() const { return h_.inScheduledTurn && h_.inScheduledTurn(); }
 
   PosixSkillFs fs_;

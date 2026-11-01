@@ -40,7 +40,7 @@ RUN git clone --depth 1 --branch ${ARDUINOJSON_REF} https://github.com/bblanchon
 WORKDIR /src/nimbusd
 # make clean first: the build context may carry a host (macOS) build/ dir, and a
 # stale Mach-O object would fail the Linux link with "file format not recognized".
-RUN make clean && make daemon && make test
+RUN make clean && make -j"$(nproc)" daemon && make -j"$(nproc)" test
 
 FROM debian:12-slim AS runtime
 # curl (not just libcurl4) is required by the HEALTHCHECK below and by the release

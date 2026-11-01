@@ -1,4 +1,9 @@
 #pragma once
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -142,6 +147,7 @@ class HostedPhotos {
     label.ref = ref;
     const std::string path = nimbus::orch::blobPath(dir_, ref, "bin");
     const bool kept = fsutil::writeFileAtomic(path, bytes);
+    prune();
     const char* why = "";
     const char* real = nimbus::orch::admitImage(set, (const uint8_t*)bytes.data(), bytes.size(), why);
     if (*real) {
@@ -161,6 +167,24 @@ class HostedPhotos {
       h_.captureRow(chat, nimbus::orch::mediaSegment(stored), path);
     }
     return seg;
+  }
+  // The stored copies are bounded: past kKeep photos the oldest goes (image.look then
+  // says it has no stored copy; its row and note stay).
+  static constexpr size_t kKeep = 512;
+  void prune() {
+    DIR* d = opendir(dir_.c_str());
+    if (!d) return;
+    std::vector<std::pair<time_t, std::string>> files;
+    while (struct dirent* e = readdir(d)) {
+      if (e->d_name[0] == '.') continue;
+      const std::string path = dir_ + "/" + e->d_name;
+      struct stat st{};
+      if (::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode)) files.push_back({st.st_mtime, path});
+    }
+    closedir(d);
+    if (files.size() <= kKeep) return;
+    std::sort(files.begin(), files.end());
+    for (size_t i = 0; i < files.size() - kKeep; i++) ::unlink(files[i].second.c_str());
   }
   agent::vision::CaptionDeps captionDeps() const {
     agent::vision::CaptionDeps d;
