@@ -627,6 +627,17 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
           // (19 Oct: "Roy's Telegram client had a stuck outbox" was stopped only
           // by the embedding outage).
           std::string unbacked;
+          if (st.claims && st.claims->unsourcedFoodTarget(w.content, &unbacked)) {
+            hlog::logf("orchestrator: mem_write refused - a target with no source: %s", memExcerpt(unbacked).c_str());
+            st.memRefused++;
+            nimbus::orch::recordToolEffect(st.claims->effects(), nimbus::orch::FxKind::MemWrite, true,
+                                           "refused: that daily target has no source this turn", 0);
+            if (st.pendingMemResults)
+              *st.pendingMemResults += "[MEMORY] mem_write \"" + memExcerpt(w.content) +
+                                       "\" -> NOT stored: it states a daily target nothing this turn holds (\"" +
+                                       unbacked + "\"); read it from the plan or ask the owner\n";
+            continue;
+          }
           if (st.claims && nimbus::orch::unbackedCause(w.content, st.claims->causeEvidence(), &unbacked)) {
             hlog::logf("orchestrator: mem_write refused - unbacked cause: %s", memExcerpt(unbacked).c_str());
             st.memRefused++;

@@ -44,6 +44,19 @@ std::string TurnEngine::loadFoodLedger(const std::string& chatId) {
   return nimbus::orch::renderLedgerBlock(ledger_, /*foodTurn=*/false);
 }
 
+nimbus::orch::FoodFacts TurnEngine::currentFoodFacts(const std::string& chatId) const {
+  nimbus::orch::FoodFacts facts;
+  if (!d_.foodLedger || !personChat(chatId)) return facts;
+  const nimbus::orch::FoodLedger l = d_.foodLedger(chatId);   // after this turn's writes
+  facts.have = l.exists && l.error.empty() && l.hasRows() && l.hasKcal;
+  facts.kcalKnown = l.kcalUnread == 0;
+  facts.kcal = l.kcal;
+  facts.rows = l.kcalRows;
+  facts.protein = l.protein;
+  facts.proteinUnknown = l.proteinUnknown;
+  return facts;
+}
+
 void TurnEngine::applyFoodContext(ComposeInputs& ci, const std::string& userText) const {
   using nimbus::orch::FoodIntent;
   // A food turn: the message is about food, or follows a food exchange, or asks

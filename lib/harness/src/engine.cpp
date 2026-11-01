@@ -1051,6 +1051,7 @@ TurnSources TurnEngine::claimSources(const std::string& chatId, const std::strin
     parts.subRuns.add(nimbus::orch::runsInRecord(f.provenance));   // CUM-835
   }
   parts.memory = turnMem().memBody;
+  parts.rules = ci.standingPrefs;
   if (d_.jobs) parts.ledger = d_.jobs->spawnLedgerText(chatId);
   for (const HistMsg& m : ci.history)
     if (m.user) parts.histOwner += m.text + "\n";
@@ -1264,7 +1265,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // history's USER rows name the previous message's photo or label (the review).
     // Lane CTX: the ledger shown is a source. Its words ride the composed prompt
     // (lastInstructions_, set at compose below), so the quote rule sees them too.
-    claims_.setSources(inputs + loadFoodLedger(chatId), rec, claimSources(chatId, userText, ci));
+    const std::string ledgerBlock = loadFoodLedger(chatId);
+    TurnSources sources = claimSources(chatId, userText, ci);
+    if (ledger_.targets.kcal > 0) sources.targets += std::to_string((long)ledger_.targets.kcal) + " ";
+    if (ledger_.targets.protein > 0) sources.targets += std::to_string((long)ledger_.targets.protein);
+    claims_.setSources(inputs + ledgerBlock, rec, sources);
+    claims_.setFoodFacts([this, chatId]() { return currentFoodFacts(chatId); });
     claims_.setQuoteContext(&lastInstructions_, &inputs);   // filled at compose, below
   }
   // W10 (prism): the speaker line is for a REAL human message only. The device
@@ -1299,6 +1305,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                                      // text window was the histV1 shape
   } else if (!ci.chatSummary.empty()) {
     ci.history = renderHistory({}, ci.chatSummary, 0);   // the summary pair alone
+  }
+  {
+    // The owner's own earlier messages may state a target (the summary pair is not theirs).
+    std::string ownerRows;
+    for (const HistMsg& m : ci.history)
+      if (m.user && m.text.rfind(kSummaryUserHead, 0) != 0) ownerRows += m.text + "\n";
+    claims_.noteOwnerHistory(ownerRows);
   }
   turnMem().gate.phase("history", freeHeap(), largestFreeBlock());
   // R3: this chat's TTL table choice and its per-chat cache key.

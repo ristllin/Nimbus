@@ -26,10 +26,12 @@
 // RAM only, one turn long. Portable, host-tested (test_harness_claim_check).
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "nimbus/orch/claims.h"
+#include "nimbus/orch/food_figures.h"
 #include "nimbus/orch/hosted_runs.h"
 #include "nimbus/orch/turn.h"
 #include "nimbus/orch/turn_effects.h"
@@ -58,6 +60,8 @@ struct TurnSources {
   // never the assistant's replies): a follow-up about the label or photo of the
   // previous message credits a source the owner really gave (the review).
   std::string histOwner;
+  std::string rules;    // the owner's standing rules as this turn sees them (a daily target's source)
+  std::string targets;  // the figures of the person's stored food targets
   bool webRead = false; // a result's provider record shows a web search or fetch
   nimbus::orch::HostedRuns subRuns;   // the tools those results' provider records name (CUM-835)
 };
@@ -96,6 +100,15 @@ class ClaimCheck {
     instructions_ = instructions;
     inputs_ = inputs;
   }
+  // What the device holds of today's food, read when a reply states food figures
+  // (food_figures.h: targets need a source, the day total is the ledger's). Unset: only
+  // the targets are checked.
+  void setFoodFacts(std::function<nimbus::orch::FoodFacts()> facts) { foodFacts_ = std::move(facts); }
+  // The owner's own earlier messages in this request: a daily target's source.
+  void noteOwnerHistory(const std::string& ownerRows);
+  // A memory about to be stored states a daily target nothing this turn holds: true, with the
+  // sentence. Apply refuses it: a made-up figure must not become its own source.
+  bool unsourcedFoodTarget(const std::string& text, std::string* excerpt) const;
   // A head tool ran: its effect class (the shared tool table) and its result.
   // The result text joins the figure sources (bounded).
   void noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
@@ -154,6 +167,7 @@ class ClaimCheck {
   void recordGaps(const std::string& reply, std::vector<nimbus::orch::ClaimGap>& kept) const;
   std::string seenText(bool fixedToo) const;   // what a quote (fixedToo) or a reason may come from
   void noteToolText(const std::string& output);
+  std::vector<nimbus::orch::FoodGap> foodGaps(const std::string& reply, nimbus::orch::FoodFacts& facts) const;
 
   // EFF: the normalized scan cache (claim_check.cpp ensureSeenCache) - the records
   // every check of one turn reads, normalized once instead of per check.
@@ -171,6 +185,10 @@ class ClaimCheck {
   std::string sources_;
   std::string recalled_;
   std::string ownerNums_;        // the numbers the owner's own message holds (CUM-824)
+  std::string targetNums_;       // the numbers a daily target may come from (food_figures.h)
+  bool targetsClipped_ = false;  // that list hit its cap: the target rule stands down
+  std::string wroteTargets_;     // the text of this turn's writes to the food targets file
+  std::function<nimbus::orch::FoodFacts()> foodFacts_;
   uint32_t sourceNames_ = 0;     // SourceEvidence bits this turn names (CUM-824)
   std::string sourceWords_;      // the words those sources hold, for a source named by name
   std::string toolText_;         // the tool results in normalizedWords form (bounded)

@@ -565,6 +565,7 @@ class TurnEngine {
   // then, once the history is known, fill the per-turn ledger and (a food turn) the
   // playbooks.
   std::string loadFoodLedger(const std::string& chatId);
+  nimbus::orch::FoodFacts currentFoodFacts(const std::string& chatId) const;
   void applyFoodContext(ComposeInputs& ci, const std::string& userText) const;
   // The fold's day: [TODAY] and the ledger's view for this chat ("" = no clock).
   std::string foldDayContext(const std::string& chatId) const;

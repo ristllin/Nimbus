@@ -16,6 +16,8 @@
 #include "nimbus/orch/tool_taint.h"
 
 using agent::ClaimCheck;
+using agent::TurnSources;
+using nimbus::orch::FoodFacts;
 using nimbus::orch::FxKind;
 using nimbus::orch::HeadLoopConfig;
 using nimbus::orch::HeadLoopHooks;
@@ -70,6 +72,81 @@ static void test_unbacked_claim_gets_one_correction_with_the_record() {
   TEST_ASSERT_EQUAL(before + 1, ClaimCheck::correctedCount());
   // A turn that cannot be read is the shape check's case, not this one's.
   TEST_ASSERT_EQUAL_STRING("", cc.finalCheck("{not json").c_str());
+}
+
+// ---- food figures: the turn's records, the correction round, the owner's line -------------
+static void test_food_target_has_a_source_or_a_correction() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  TurnSources parts;
+  parts.owner = "How much protein is left?";
+  parts.rules = "Standing rule: 2,400 kcal a day.";
+  cc.setSources("", "", parts);
+  FoodFacts facts;
+  facts.have = true;
+  facts.kcal = 2036;
+  facts.protein = 211.7;
+  cc.setFoodFacts([facts]() { return facts; });
+  const char* reply = "You have 38.3 g protein left from your 250 g daily protein target.";
+  const std::string fix = cc.finalCheck(turnJson(reply));
+  TEST_ASSERT_EQUAL(0, (int)fix.find("[CLAIM CHECK]"));
+  TEST_ASSERT_TRUE_MESSAGE(fix.find("250 g protein") != std::string::npos, fix.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(cc.tailAfterApply(reply).find("no source for a daily target of 250 g protein") != std::string::npos,
+                           "the owner's line");
+  // The plan read this turn is a source; the rewrite passes.
+  cc.noteTool(FxKind::Read, false, "Protein: 150-160 g/day, with 150 g as the minimum. Calories: 2,400 kcal.");
+  TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson("The plan says 150 g is the protein target.")).c_str());
+  TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("The 2,400 kcal target comes from your standing rule.").c_str());
+  // An earlier reply of the assistant, a summary and the prompt are no source of a target.
+  ClaimCheck hist;
+  hist.beginTurn();
+  TurnSources noSource;
+  hist.setSources("The assistant said: your 250 g protein target stands.", "", noSource);
+  TEST_ASSERT_TRUE(hist.tailAfterApply("Your 250 g protein target stands.").find("no source") != std::string::npos);
+}
+
+static void test_food_day_total_is_read_after_the_turns_writes() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  cc.setSources("", "", TurnSources{});
+  int reads = 0;
+  cc.setFoodFacts([&reads]() {
+    reads++;
+    FoodFacts f;
+    f.have = true;
+    f.kcal = reads > 1 ? 2369 : 1912;   // the row this turn wrote lands between the checks
+    return f;
+  });
+  TEST_ASSERT_TRUE(cc.finalCheck(turnJson("Today's total is 2,369 kcal.")).find("the ledger has today at 1912 kcal") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("Today's total is 2,369 kcal.").c_str());
+  // No food words, no card read.
+  const int before = reads;
+  TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("The train leaves at 7.").c_str());
+  TEST_ASSERT_EQUAL(before, reads);
+}
+
+static void test_a_made_up_target_cannot_become_its_own_source() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  TurnSources parts;
+  parts.owner = "log this";
+  cc.setSources("", "", parts);
+  std::string why;
+  TEST_ASSERT_TRUE(cc.unsourcedFoodTarget("Your 250 g daily protein target (stable preference)", &why));
+  TEST_ASSERT_TRUE(why.find("250 g") != std::string::npos);
+  TEST_ASSERT_FALSE(cc.unsourcedFoodTarget("Boba tea is 225 kcal per cup.", nullptr));
+  // A row written to the targets file is held to it too.
+  cc.noteToolArgs("files.append", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":\"2026-11-01,protein_g,250,the plan\"}");
+  cc.noteTool(FxKind::FileWrite, false, "replaced 0 rows, added 1 row in food/food-targets.csv");
+  TEST_ASSERT_TRUE(cc.tailAfterApply("Stored it.").find("no source for a daily target of 250 g protein") != std::string::npos);
+  // Read first, stored second: clean.
+  ClaimCheck ok;
+  ok.beginTurn();
+  ok.setSources("", "", parts);
+  ok.noteTool(FxKind::Read, false, "Protein: 150 g a day.");
+  ok.noteToolArgs("files.append", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":\"2026-11-01,protein_g,150,the plan\"}");
+  ok.noteTool(FxKind::FileWrite, false, "replaced 0 rows, added 1 row in food/food-targets.csv");
+  TEST_ASSERT_EQUAL_STRING("", ok.tailAfterApply("Stored it.").c_str());
 }
 
 static void test_tail_after_apply_uses_the_real_outcomes() {
@@ -1312,6 +1389,9 @@ int main(int, char**) {
   RUN_TEST(test_a_spoken_claim_is_checked_even_with_hosted_tools);
   RUN_TEST(test_a_running_total_reply_is_not_corrected_but_a_save_claim_is);
   RUN_TEST(test_unbacked_claim_gets_one_correction_with_the_record);
+  RUN_TEST(test_food_target_has_a_source_or_a_correction);
+  RUN_TEST(test_food_day_total_is_read_after_the_turns_writes);
+  RUN_TEST(test_a_made_up_target_cannot_become_its_own_source);
   RUN_TEST(test_tail_after_apply_uses_the_real_outcomes);
   RUN_TEST(test_scratchpad_durability_fresh_device_and_full_nvs);
   RUN_TEST(test_a_hosted_run_this_turn_leaves_what_it_could_back_unchecked);

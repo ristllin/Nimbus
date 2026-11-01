@@ -10,6 +10,7 @@
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/prompt_layout.h"   // the display labels: where the fixed instructions end
 #include "nimbus/orch/device_actions.h"
+#include "nimbus/orch/food_ledger.h"   // scanFoodTargets: a target this turn stored
 #include "nimbus/orch/tool_taint.h"
 
 namespace agent {
@@ -206,6 +207,10 @@ void ClaimCheck::beginTurn() {
   sources_.clear();
   recalled_.clear();
   ownerNums_.clear();
+  targetNums_.clear();
+  targetsClipped_ = false;
+  wroteTargets_.clear();
+  foodFacts_ = nullptr;
   sourceNames_ = 0;
   sourceWords_.clear();
   toolText_.clear();
@@ -239,6 +244,12 @@ void ClaimCheck::setSources(const std::string& inputs, const std::string& recall
   // The owner's own history rows hold the figures their previous message gave (a
   // photo's description numbers): a follow-up crediting them credits the owner (HIGH-2).
   ownerNums_ = orch::figureNumbers(parts.owner + " " + parts.histOwner, kSourceNumbersMax);
+  // A daily target's sources (food_figures.h): what the owner said, what is stored, what the
+  // turn read. Never the assistant's earlier replies, the fold summary or the composed prompt:
+  // that is how a made-up figure repeats itself into fact.
+  targetNums_ = orch::figureNumbers(parts.owner + " " + parts.rules + " " + parts.targets + " " + parts.memory + " " +
+                                        recalled + " " + parts.fresh,
+                                    kSourceNumbersMax);
   ownerText_ = parts.owner.substr(0, kOwnerTextMax);
   ledger_ = parts.ledger;
   subRuns_ = parts.subRuns;
@@ -322,6 +333,9 @@ void ClaimCheck::noteToolArgs(const std::string& regName, const std::string& arg
   if (!text) text = d["replace"] | (const char*)nullptr;   // files.edit: what the span now says
   if (!text || !*text) return;
   pendingWrote_ = " " + orch::normalizedWords(text);
+  // A write to the food targets file states a target: it needs a source like a reply does.
+  if (regName == "files.append" && std::string(d["name"] | "").rfind("food-targets", 0) == 0)
+    wroteTargets_ += std::string(text) + "\n";
 }
 
 void ClaimCheck::noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
@@ -342,6 +356,11 @@ void ClaimCheck::noteTool(nimbus::orch::FxKind kind, bool isError, const std::st
   }
   pendingWrote_.clear();
   if (!isError && (flags & orch::kFxHealth)) causeEvidence_ |= orch::kEvHealthRead;
+  if (!isError) {
+    const std::string read = orch::figureNumbers(output, kSourceNumbersMax);
+    targetsClipped_ = targetsClipped_ || targetNums_.size() + read.size() + 1 > kSourceNumbersMax;
+    if (!targetsClipped_ && !read.empty()) targetNums_ += " " + read;
+  }
   if (isError || sources_.size() >= kSourceNumbersMax) return;
   const std::string more = orch::figureNumbers(output, kSourceNumbersMax - sources_.size());
   if (more.empty()) return;
@@ -451,6 +470,47 @@ std::vector<orch::ClaimGap> ClaimCheck::gapsFor(const std::string& reply,
   return kept;
 }
 
+// The food figures of a reply against the device's records (food_figures.h). The ledger is
+// read only for a reply that speaks of them, after the turn's own writes.
+std::vector<orch::FoodGap> ClaimCheck::foodGaps(const std::string& reply, orch::FoodFacts& facts) const {
+  std::vector<orch::FoodGap> gaps;
+  if (reply.find("kcal") != std::string::npos || reply.find("calorie") != std::string::npos ||
+      reply.find("protein") != std::string::npos) {
+    if (foodFacts_) facts = foodFacts_();
+    gaps = orch::foodFigureGaps(reply, facts, targetNums_);
+  }
+  // The targets this turn stored: a target row is read for its figure.
+  if (!wroteTargets_.empty()) {
+    const orch::FoodTargets wrote = orch::scanFoodTargets(std::string(orch::kFoodTargetsHeader) + "\n" + wroteTargets_);
+    for (const auto& w : {std::make_pair(wrote.kcal, false), std::make_pair(wrote.protein, true)}) {
+      if (w.first <= 0) continue;
+      const std::string line = (w.second ? "Stored protein target " + std::to_string((long)w.first) + " g."
+                                         : "Stored daily target " + std::to_string((long)w.first) + " kcal.");
+      const std::vector<orch::FoodGap> more = orch::unsourcedFoodTargets(line, targetNums_);
+      gaps.insert(gaps.end(), more.begin(), more.end());
+    }
+  }
+  if (targetsClipped_)   // a tool result past the cap may hold the number
+    gaps.erase(std::remove_if(gaps.begin(), gaps.end(),
+                              [](const orch::FoodGap& g) { return g.kind == orch::FoodGapKind::UnsourcedTarget; }),
+               gaps.end());
+  return gaps;
+}
+
+void ClaimCheck::noteOwnerHistory(const std::string& ownerRows) {
+  const std::string more = orch::figureNumbers(ownerRows, kSourceNumbersMax);
+  targetsClipped_ = targetsClipped_ || targetNums_.size() + more.size() + 1 > kSourceNumbersMax;
+  if (!targetsClipped_ && !more.empty()) targetNums_ += " " + more;
+}
+
+bool ClaimCheck::unsourcedFoodTarget(const std::string& text, std::string* excerpt) const {
+  if (targetsClipped_) return false;
+  const std::vector<orch::FoodGap> gaps = orch::unsourcedFoodTargets(text, targetNums_);
+  if (gaps.empty()) return false;
+  if (excerpt) *excerpt = gaps[0].excerpt;
+  return true;
+}
+
 std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSpawned) {
   orch::Turn t;
   orch::ParseError err;
@@ -459,14 +519,21 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
   addPending(pending, t);
   const std::string said = t.ask.empty() ? t.reply : t.reply + "\n\n" + t.ask;   // one message
   const std::vector<orch::ClaimGap> gaps = gapsFor(said, pending, skipSpawned);
-  if (gaps.empty()) {
+  orch::FoodFacts facts;
+  const std::vector<orch::FoodGap> food = foodGaps(said, facts);
+  if (gaps.empty() && food.empty()) {
     hlog::logf("claims: ok n=%u", (unsigned)orch::scanClaims(said).claims.size());
     return std::string();
   }
   corrected_ = true;
   g_corrected++;
+  if (gaps.empty()) {
+    hlog::log("claims: food figures unbacked -> correction round");
+    return "[CLAIM CHECK] " + orch::foodGapCorrection(food, facts);
+  }
   hlog::logf("claims: %s unbacked -> correction round", orch::claimClassSlug(gaps[0].cls));
   std::string fix = orch::claimCorrection(gaps, pending);
+  if (!food.empty()) fix += "\n" + orch::foodGapCorrection(food, facts);
   // A reason about a past sub-agent: the ledger lines (device-authored) are what the
   // records show.
   const size_t nl = ledger_.find('\n');
@@ -478,11 +545,13 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
 std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawned) {
   if (reply.find_first_not_of(" \t\r\n") == std::string::npos) return std::string();
   const std::vector<orch::ClaimGap> gaps = gapsFor(reply, fx_, skipSpawned);
-  if (gaps.empty()) return std::string();
-  const std::string tail = orch::claimTail(gaps);
+  orch::FoodFacts facts;
+  const std::vector<orch::FoodGap> food = foodGaps(reply, facts);
+  const std::string tail = (gaps.empty() ? std::string() : orch::claimTail(gaps)) + orch::foodGapTail(food, facts);
   if (tail.empty()) return tail;
   g_tailed++;
   for (const orch::ClaimGap& g : gaps) hlog::logf("claims: tail %s", orch::claimClassSlug(g.cls));
+  if (!food.empty()) hlog::log("claims: tail food figures");
   return tail;
 }
 
