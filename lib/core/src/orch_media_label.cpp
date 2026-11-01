@@ -43,6 +43,21 @@ std::string mediaTag(const MediaLabel& l) {
 }
 
 const char kAttachedSuffix[] = " (attached: the photo itself is in this message)";
+const char kMediaNoCard[] = "no memory card in the device";
+const char kMediaTooLarge[] = "too large";
+const char kMediaOverQuota[] = "over the sender's storage limit";
+
+std::string mediaRefusedReply(const std::string& why, bool many) {
+  if (why == kMediaNoCard)
+    return "This device can't keep photos or files without a memory card. Describe it in words instead.";
+  if (why == kMediaTooLarge)
+    return many ? "Those files are too large to take. Send smaller ones."
+                : "That file is too large to take. Send a smaller one.";
+  if (why == kMediaOverQuota)
+    return "Your file storage on this device is full. Ask the owner to raise it, or delete something first.";
+  return many ? "Couldn't fetch those files. Try sending them again." : "Couldn't fetch that file. Try sending it again.";
+}
+
 const char kSeenSuffix[] = " (seen in its turn; image.look shows it again)";
 
 namespace {

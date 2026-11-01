@@ -1437,7 +1437,7 @@ static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& w
   char proj[48];
   snprintf(proj, sizeof(proj), "chat-%s", in.slot.chatId);
   std::string ferr;
-  if (agent::files::saveStream(proj, fname, LittleFS, in.lfsPath, ferr, who.ns)) return Kept::Stored;
+  if (agent::files::saveStream(proj, fname, LittleFS, in.lfsPath, ferr, who.ns, in.hash)) return Kept::Stored;
   alogf("telegram: attach store failed: %s", ferr.c_str());
   if (!agent::files::noteRefusal(ferr)) return Kept::Failed;
   sendFileStoreNotice();   // the episode's first refusal: queued before this turn's reply
@@ -1461,9 +1461,9 @@ static nimbus::orch::Principal senderOf(const char* chatId) {
 // Telegram's size hint can read low, so the real size is checked again after.
 static const char* refusalOf(const MediaSlot& m, const nimbus::orch::Principal& who) {
   if (!tgPathSafe(m.fileId)) return "unreadable file id";
-  if (!agent::memory::haveSd()) return "no memory card in the device";
-  if (m.size && m.size > nimbus::tg::kPhotoBudget) return "too large";
-  if (files::wouldExceedQuota(who, m.size ? m.size : 1)) return "over the sender's storage limit";
+  if (!agent::memory::haveSd()) return nimbus::orch::kMediaNoCard;
+  if (m.size && m.size > nimbus::tg::kPhotoBudget) return nimbus::orch::kMediaTooLarge;
+  if (files::wouldExceedQuota(who, m.size ? m.size : 1)) return nimbus::orch::kMediaOverQuota;
   return "";
 }
 
@@ -1725,15 +1725,18 @@ static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string&
   size_t total = 0;
   alogf("telegram: media %d/%d fetch start (update %ld)", label.k, label.n, (long)m.updateId);
   why = fetchToLfs(m, localPath, nimbus::tg::kPhotoBudget, total);
-  if (!why[0] && files::wouldExceedQuota(who, (uint32_t)total)) {
+  const std::string contentHash = why[0] ? std::string() : hashFile(localPath);
+  // The bytes are here, so a copy this sender already keeps is not charged twice.
+  if (!why[0] && !files::holdsSameContent(m.chatId, contentHash, who.ns) &&
+      files::wouldExceedQuota(who, (uint32_t)total)) {
     LittleFS.remove(localPath);
-    why = "over the sender's storage limit";
+    why = nimbus::orch::kMediaOverQuota;
   }
   if (why[0]) return failedSegment(label, why, slot, seg);
   alogf("telegram: attachment downloaded %u bytes", (unsigned)total);
   downloading.end();
   const bool image = photo || nimbus::orch::imagePartMime(m.mime)[0];
-  const InboundFile in{m, localPath, hashFile(localPath), photo, image};
+  const InboundFile in{m, localPath, contentHash, photo, image};
   agent::vision::ReadFail fail;
   describeStaged(in, turn, k, n, label, fail);
   seg = nimbus::orch::mediaSegment(label);
@@ -1762,17 +1765,7 @@ static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string&
 static void mediaFailed(const char* chatId, size_t count) {
   const char* why = "";
   for (size_t i = 0; i < s_turnMedia && !why[0]; ++i) why = g_slots[s_turnSlots[i]].why ? g_slots[s_turnSlots[i]].why : "";
-  const bool many = count > 1;
-  String text;
-  if (!strcmp(why, "no memory card in the device"))
-    text = "This device can't keep photos or files without a memory card. Describe it in words instead.";
-  else if (!strcmp(why, "too large"))
-    text = many ? "Those files are too large to take. Send smaller ones." : "That file is too large to take. Send a smaller one.";
-  else if (!strcmp(why, "over the sender's storage limit"))
-    text = "Your file storage on this device is full. Ask the owner to raise it, or delete something first.";
-  else
-    text = many ? "Couldn't fetch those files. Try sending them again." : "Couldn't fetch that file. Try sending it again.";
-  sendNow(chatId, text.c_str());
+  sendNow(chatId, nimbus::orch::mediaRefusedReply(why, count > 1).c_str());
 }
 
 // An item the poison guard skips (fetching or describing it crashed the device twice):

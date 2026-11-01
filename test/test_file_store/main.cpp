@@ -536,6 +536,28 @@ static void test_text_readable_rule() {
   TEST_ASSERT_TRUE(fileReadableAsText("late.txt", late));
 }
 
+// A photo received twice is one file: the second copy costs nothing against the sender's
+// limit, and the rule cannot be used to read or claim anyone else's file.
+static void test_same_content_finds_only_the_senders_own_copy() {
+  nimbus::orch::FileStore st;
+  nimbus::orch::FileEntry e;
+  e.project = "chat-7"; e.name = "photo-1.jpg"; e.bytes = 2000; e.hash = 0xABCD; e.owner = "7";
+  std::string err;
+  TEST_ASSERT_TRUE(st.add(e, err));
+  TEST_ASSERT_NOT_NULL(st.sameContent("chat-7", 0xABCD, "7"));
+  TEST_ASSERT_EQUAL_STRING("photo-1.jpg", st.sameContent("chat-7", 0xABCD, "7")->name.c_str());
+  TEST_ASSERT_NULL(st.sameContent("chat-7", 0xABCE, "7"));   // other bytes
+  TEST_ASSERT_NULL(st.sameContent("chat-8", 0xABCD, "7"));   // another chat's project
+  TEST_ASSERT_NULL(st.sameContent("chat-7", 0xABCD, "8"));   // another sender
+  TEST_ASSERT_NULL(st.sameContent("chat-7", 0, "7"));        // no hash known decides nothing
+  nimbus::orch::FileEntry unknown = e;
+  unknown.name = "edited.txt"; unknown.hash = 0;             // an edited file: hash unknown
+  TEST_ASSERT_TRUE(st.add(unknown, err));
+  TEST_ASSERT_NULL(st.sameContent("chat-7", 0, "7"));
+  // The quota is what the rule protects: one copy, one charge.
+  TEST_ASSERT_EQUAL_UINT32(4000, st.bytesFor("7"));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_sd_quota_and_supported_card);
@@ -558,5 +580,6 @@ int main() {
   RUN_TEST(test_identity_is_case_blind_like_fat);
   RUN_TEST(test_load_collapses_case_variant_rows_to_owner_control);
   RUN_TEST(test_text_readable_rule);
+  RUN_TEST(test_same_content_finds_only_the_senders_own_copy);
   return UNITY_END();
 }

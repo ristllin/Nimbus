@@ -136,6 +136,17 @@ class FileStore {
     }
     return n;
   }
+  // This sender's stored file in `project` with exactly these bytes (nullptr = none; a
+  // hash of 0 is "unknown" and matches nothing). A photo received twice stays one file,
+  // so a re-sent album does not eat the sender's limit.
+  const FileEntry* sameContent(const std::string& project, uint64_t hash, const std::string& ns) const {
+    if (!hash) return nullptr;
+    for (const auto& e : entries_) {
+      const bool mine = e.owner.empty() ? ns == kOwnerNs : e.owner == ns;
+      if (e.hash == hash && e.project == project && mine) return &e;
+    }
+    return nullptr;
+  }
   // Refuse a write that would overwrite an entry the caller does not own, or create
   // another person's food ledger (lane CTX: a member could otherwise create the
   // owner's food/food-log.csv first and write into the owner's prompt).

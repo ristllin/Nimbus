@@ -507,12 +507,23 @@ bool writeBusy() { memory::Lock g; return uploadActiveLocked(); }
 
 // ---- direct ops ----------------------------------------------------------------
 
+bool holdsSameContent(const char* chatId, const std::string& contentHash, const std::string& ns) {
+  memory::Lock g;
+  if (!available()) return false;
+  return g_store.sameContent(std::string("chat-") + chatId, strtoull(contentHash.c_str(), nullptr, 16), ns) != nullptr;
+}
+
 bool saveStream(const std::string& project, const std::string& name,
                 fs::FS& srcFs, const char* srcPath, std::string& err,
-                const std::string& ownerNs) {
+                const std::string& ownerNs, const std::string& contentHash) {
   memory::Lock g;
   if (!available()) { err = "no SD card - artifact store absent"; return false; }
   if (uploadActiveLocked()) { err = "an upload is in progress - try again"; return false; }
+  const uint64_t hash = strtoull(contentHash.c_str(), nullptr, 16);
+  if (const auto* same = g_store.sameContent(project, hash, ownerNs)) {
+    alogf("files: %s/%s is a copy of %s - not stored again", project.c_str(), name.c_str(), same->name.c_str());
+    return true;
+  }
   File src = srcFs.open(srcPath, FILE_READ);
   if (!src) { err = "couldn't read the staged file"; return false; }
   const size_t total = src.size();
@@ -539,6 +550,7 @@ bool saveStream(const std::string& project, const std::string& name,
   e.bytes = (uint32_t)written;
   e.createdAt = nowEpoch();
   e.kind = nimbus::orch::fileKindForName(name);
+  e.hash = hash;
   return commitPart(e, err);
 }
 
