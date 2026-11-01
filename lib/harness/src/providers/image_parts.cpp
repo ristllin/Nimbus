@@ -228,7 +228,24 @@ bool refusedImages(int httpStatus, const std::string& errText) {
   if (httpStatus == 413) return true;
   if (httpStatus != 400 && httpStatus != 422) return false;
   const std::string e = lower(errText);
-  return e.find("image") != std::string::npos;
+  // Only an IMAGE-CAUSE refusal counts: the bare word "image" also appears in
+  // unrelated error bodies (e.g. a connectors refusal naming the tools array),
+  // and matching it marked a seeing head blind for the whole boot when a
+  // connectors 400 rode the same turn. The image input's own vocabulary:
+  // "image_url", "image input", "image part(s)", "vision input", "data url".
+  for (const char* w : {"image_url", "image input", "image part", "vision input", "data url"}) {
+    if (e.find(w) != std::string::npos) return true;
+  }
+  // A lone "image" token, never a longer word (document_library) and never
+  // "images" in a connectors/Tools listing.
+  size_t p = e.find("image");
+  while (p != std::string::npos) {
+    const char pre = p == 0 ? ' ' : e[p - 1];
+    const char post = p + 5 < e.size() ? e[p + 5] : ' ';
+    if (!std::isalnum((unsigned char)pre) && !std::isalnum((unsigned char)post)) return true;
+    p = e.find("image", p + 1);
+  }
+  return false;
 }
 
 bool rejectAndRetry(orch::TurnImages* imgs, const char* who, int httpStatus, const std::string& host) {
