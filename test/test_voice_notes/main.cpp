@@ -345,6 +345,15 @@ static void test_speech_cut_keeps_whole_characters() {
     TEST_ASSERT_EQUAL(0, (int)((s.text.size() - pad) % 4));   // whole emoji only
     TEST_ASSERT_TRUE(e.compare(0, s.text.size(), s.text) == 0);
   }
+  // The job announcement's bound (180 bytes, no sentence end in reach): the same rule at every
+  // offset, so a spoken snippet never ends inside a character whichever bound a caller passes.
+  for (int pad = 0; pad < 8; pad++) {
+    std::string e(pad, 'q');
+    for (int i = 0; i < 100; i++) e += "\xF0\x9F\x98\x80";
+    s = cutForSpeech(e, 180);
+    TEST_ASSERT_TRUE(s.text.size() <= 180 && !s.text.empty());
+    TEST_ASSERT_EQUAL(0, (int)((s.text.size() - pad) % 4));
+  }
 }
 
 // QW6 (CODEREVIEW voice-model-seams): a raw body that ended by the server's close, with no

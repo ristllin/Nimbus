@@ -1228,28 +1228,32 @@ static void test_an_idle_tally_name_is_not_a_source_word() {
     cc.beginTurn();
     cc.setSources(t.inputs, "", t.parts);
     TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply(reply).c_str());
+  }
+}
+
 // QW6: a hosted tool (a connector, a hosted search) cannot drive this device's speaker, so an
-// unbacked "read it aloud" is corrected whether or not the head had hosted tools; a plain
-// "sent" claim still is not (it may have been an email the device cannot see).
+// unbacked "read it aloud" is corrected whether or not one ran this turn; a plain "sent" claim
+// beside a connector run still is not (it may have been an email the device cannot see).
 static void test_a_spoken_claim_is_checked_even_with_hosted_tools() {
   for (int hosted = 0; hosted < 2; hosted++) {
     ClaimCheck failed;
     failed.beginTurn();
-    failed.setHostedTools(hosted != 0);
+    if (hosted) nimbus::orch::noteHostedRun("gmail");
     failed.noteTool(FxKind::Speak, true, "volume 0", 0);   // a failed speak
     TEST_ASSERT_EQUAL_STRING_MESSAGE("\n\n(Correction: that was not spoken aloud.)",
                                      failed.tailAfterApply("I read it aloud for you.").c_str(), hosted ? "hosted" : "plain");
     ClaimCheck spoke;
     spoke.beginTurn();
-    spoke.setHostedTools(hosted != 0);
+    if (hosted) nimbus::orch::noteHostedRun("gmail");
     spoke.noteTool(FxKind::Speak, false, "spoken on device speaker", 0);
     TEST_ASSERT_EQUAL_STRING("", spoke.tailAfterApply("I read it aloud for you.").c_str());
   }
   // The counter-test: a plain send claim with hosted tools is still not checked.
   ClaimCheck sent;
   sent.beginTurn();
-  sent.setHostedTools(true);
+  nimbus::orch::noteHostedRun("gmail");
   TEST_ASSERT_EQUAL_STRING("", sent.tailAfterApply("I sent it to you.").c_str());
+  sent.beginTurn();   // leaves no run behind for the next test
 }
 
 // CUM-771 through the whole check (the in-turn round and the owner tail): a reply that reports a

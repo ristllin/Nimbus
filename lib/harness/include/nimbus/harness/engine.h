@@ -462,7 +462,8 @@ class TurnEngine {
   void noteToolReplied(const std::string& text = std::string()) {
     toolReplied_ = true;
     spoke_ = true;
-    if (!text.empty() && toolReplyTexts_.size() < kToolReplyKeep) toolReplyTexts_.push_back(text.substr(0, 2048));
+    if (!text.empty() && toolReplyTexts_.size() < kToolReplyKeep)
+      toolReplyTexts_.emplace_back(text.data(), text.size() < kToolReplyBytes ? text.size() : kToolReplyBytes);
   }
   // CUM-826: the model's text reached the owner on a path the engine does not see (a
   // tool sent it to another allowlisted chat of the owner). Called once the send was
@@ -609,7 +610,8 @@ class TurnEngine {
   volatile bool spoke_ = false;
   bool fireServed_ = false;   // the fire's runTurn returned true (recorded before its bookkeeping)
   static constexpr size_t kToolReplyKeep = 8;
-  std::vector<std::string> toolReplyTexts_;   // ...and what it said (this turn; ApplyState::toolReplyTexts)
+  static constexpr size_t kToolReplyBytes = 2048;
+  decltype(ApplyState::toolReplyTexts) toolReplyTexts_;   // ...and what it said (this turn)
   volatile bool turnTelegram_ = true;   // CUM-523: this turn's one Telegram sample (read cross-task)
   volatile bool turnFileSend_ = true;   // CUM-523: and whether files.send can deliver on it
   bool scheduledTurn_ = false;          // a Local Loops / synthesis (unattended) turn is running

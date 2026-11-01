@@ -10,6 +10,7 @@
 #include "nimbus/orch/device_actions.h"
 #include "nimbus/orch/head_switch.h"     // OwnerMessage - who may confirm a head switch
 #include "nimbus/orch/memory_tools.h"   // kMemOutcome* codes
+#include "nimbus/orch/psram_alloc.h"    // WorkingString - what a turn already sent, off the internal heap
 #include "nimbus/orch/speak_outcome.h"   // how a spoken reply ended
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/turn.h"
@@ -152,8 +153,9 @@ struct ApplyState {
   // message (history keeps exactly this). Empty when nothing is to be sent in its place.
   std::string unspokenText;
   // What reply.telegram already sent to THIS turn's chat (text, or the voiced text of a voice
-  // message): a failed tts never sends that text a second time.
-  std::vector<std::string> toolReplyTexts;
+  // message): a failed tts never sends that text a second time. In working memory (PSRAM on the
+  // device): up to 8 texts of 2 KB must not sit on the internal heap for the rest of a turn.
+  std::vector<nimbus::orch::WorkingString, nimbus::orch::WorkingAllocator<nimbus::orch::WorkingString>> toolReplyTexts;
   std::string lastReply;             // out: captured for loops' semantic-repeat hash
   ScratchOutcome scratchOutcome = ScratchOutcome::Skipped;   // out: the inline scratchpad write
   // Lane S, the claim check: apply records each real outcome in its ledger (a

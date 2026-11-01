@@ -1254,10 +1254,10 @@ static void test_tts_is_asked_for_the_turns_chat() {
   ApplyDeps d = makeDeps(r, /*tts=*/true);
   ApplyState st = makeState(r);
   bool spawned = false;
-  agent::applyTurn(turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}"), "5551234", d, st, spawned);
+  agent::applyTurn(turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}"), "1001", d, st, spawned);
   agent::applyDeviceElement("{\"type\":\"tts\",\"text\":\"again\"}", false, "web", d, nullptr);
   TEST_ASSERT_EQUAL(2, (int)r.spokenChats.size());
-  TEST_ASSERT_EQUAL_STRING("5551234", r.spokenChats[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("1001", r.spokenChats[0].c_str());
   TEST_ASSERT_EQUAL_STRING("web", r.spokenChats[1].c_str());
 }
 
@@ -1297,17 +1297,30 @@ static void test_tts_only_turn_that_was_not_spoken_delivers_the_text() {
   TEST_ASSERT_EQUAL(1, (int)r.captured.size());
   TEST_ASSERT_EQUAL_STRING(r.delivered[0].second.c_str(), r.captured[0].c_str());
   TEST_ASSERT_TRUE(r.delivered[0].second.rfind("The kettle is ready.", 0) == 0);   // no stray leading newline
-  // Anyone else's chat gets the text and that it could not be spoken, not the device's reasons.
-  Rec guest;
-  guest.volume = 0;
-  ApplyDeps dGuest = makeDeps(guest, /*tts=*/true);   // no principal hook: a deny-all principal
-  ApplyState stGuest = makeState(guest);
-  agent::applyTurn(turnWithDevice("{\"type\":\"tts\",\"text\":\"The kettle is ready.\"}"), "7788", dGuest,
-                   stGuest, spawned);
-  TEST_ASSERT_EQUAL(1, (int)guest.delivered.size());
-  TEST_ASSERT_TRUE(guest.delivered[0].second.find("The kettle is ready.") != std::string::npos);
-  TEST_ASSERT_TRUE(guest.delivered[0].second.find("(Note: that could not be spoken aloud.)") != std::string::npos);
-  TEST_ASSERT_TRUE(guest.delivered[0].second.find("volume") == std::string::npos);
+  // Anyone else's chat never reaches the speaker (the device.tts rule), but a tts-only turn still
+  // answers: the text, the rule's own line, and none of the device's reasons.
+  for (const char* chat : {"2002", "3003", "7788"}) {
+    Rec guest;
+    guest.volume = 0;
+    ApplyDeps dGuest = makeDeps(guest, /*tts=*/true);
+    ApplyState stGuest = makeState(guest);
+    agent::applyTurn(turnWithDevice("{\"type\":\"tts\",\"text\":\"The kettle is ready.\"}"), chat, dGuest,
+                     stGuest, spawned);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)guest.spokenChats.size(), chat);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)guest.delivered.size(), chat);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("The kettle is ready.\nOnly the device's owner can speak aloud on the device.",
+                                     guest.delivered[0].second.c_str(), chat);
+    TEST_ASSERT_TRUE_MESSAGE(guest.delivered[0].second.find("volume") == std::string::npos, chat);
+    // A routine's refusal still tells nobody the text, and a reply is not doubled.
+    Rec busy;
+    ApplyDeps dBusy = makeDeps(busy, /*tts=*/true);
+    ApplyState stBusy = makeState(busy);
+    Turn withReply = turnWithDevice("{\"type\":\"tts\",\"text\":\"The kettle is ready.\"}");
+    withReply.reply = "It is ready.";
+    agent::applyTurn(withReply, chat, dBusy, stBusy, spawned);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("It is ready.\nOnly the device's owner can speak aloud on the device.",
+                                     busy.delivered[0].second.c_str(), chat);
+  }
   // Voice replies switched off keep the owner's ruling: a silent no-op, no text injected.
   Rec off;
   ApplyDeps dOff = makeDeps(off, /*tts=*/false);
@@ -1328,26 +1341,20 @@ static void test_a_failed_tts_beside_any_reply_tells_the_owner() {
       "\xE5\xB7\xB2\xE7\xBB\x8F\xE8\xAF\xBB\xE7\xBB\x99\xE4\xBD\xA0\xE5\x90\xAC\xE4\xBA\x86\xE3\x80\x82",   // Chinese
       "The kettle is ready.",                       // claims nothing
   };
-  for (const char* reply : replies)
-    for (int admin = 0; admin < 2; admin++) {
-      Rec r;
-      r.volume = 0;
-      ApplyDeps d = makeDeps(r, /*tts=*/true);
-      if (admin)
-        d.principalFor = [](const std::string& chat) {
-          return nimbus::orch::principalForRole(chat, nimbus::orch::Role::Admin);
-        };
-      Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"The kettle is ready.\"}");
-      t.reply = reply;
-      agent::ClaimCheck cc;
-      cc.beginTurn();
-      const std::string out = applyChecked(r, d, t, cc);
-      const std::string want = std::string(reply) + (admin ? "\n\n(Note: that could not be spoken aloud: the speaker "
-                                                           "volume is 0, so speech would play as silence.)"
-                                                         : "\n\n(Note: that could not be spoken aloud.)");
-      TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), out.c_str(), reply);
-      TEST_ASSERT_EQUAL_STRING_MESSAGE(out.c_str(), r.captured[0].c_str(), reply);   // history = what was delivered
-    }
+  for (const char* reply : replies) {
+    Rec r;
+    r.volume = 0;
+    ApplyDeps d = makeDeps(r, /*tts=*/true);
+    Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"The kettle is ready.\"}");
+    t.reply = reply;
+    agent::ClaimCheck cc;
+    cc.beginTurn();
+    const std::string out = applyChecked(r, d, t, cc);
+    const std::string want = std::string(reply) + "\n\n(Note: that could not be spoken aloud: the speaker "
+                                                  "volume is 0, so speech would play as silence.)";
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), out.c_str(), reply);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(out.c_str(), r.captured[0].c_str(), reply);   // history = what was delivered
+  }
   // A reply that does claim it (in any of the claim check's wordings) gets the claim check's own
   // line, and not a second note.
   for (const char* claim : {"I read it aloud for you.", "Done, I said it out loud for you.",
@@ -1371,7 +1378,7 @@ static void test_a_failed_tts_beside_any_reply_tells_the_owner() {
   ApplyState stAsk = makeState(ask);
   bool spawned = false;
   agent::applyTurn(tAsk, "1001", dAsk, stAsk, spawned);
-  TEST_ASSERT_EQUAL_STRING("Shall I read it again?\n\n(Note: that could not be spoken aloud.)",
+  TEST_ASSERT_EQUAL_STRING("Shall I read it again?\n\n(Note: that could not be spoken aloud: the speaker volume is 0, so speech would play as silence.)",
                            ask.delivered[0].second.c_str());
   Rec sched;
   sched.volume = 0;
@@ -1419,17 +1426,17 @@ static void test_a_failed_tts_does_not_resend_what_reply_telegram_sent() {
     ApplyDeps d = makeDeps(r, /*tts=*/true);
     ApplyState st = makeState(r);
     st.toolRepliedThisTurn = true;
-    st.toolReplyTexts.push_back(same ? "  The kettle\nis ready.  " : "Something else entirely.");
+    st.toolReplyTexts.emplace_back(same ? "  The kettle\nis ready.  " : "Something else entirely.");
     bool spawned = false;
     agent::applyTurn(turnWithDevice("{\"type\":\"tts\",\"text\":\"The kettle is ready.\"}"), "1001", d, st,
                      spawned);
     if (same) {
       TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
-      TEST_ASSERT_TRUE(r.pendingMem.find("the owner already has that text") != std::string::npos);
+      TEST_ASSERT_TRUE(r.pendingMem.find("the sender already has that text") != std::string::npos);
     } else {
       TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
       TEST_ASSERT_TRUE(r.delivered[0].second.rfind("The kettle is ready.", 0) == 0);
-      TEST_ASSERT_TRUE(r.pendingMem.find("its text was sent to the owner in writing") != std::string::npos);
+      TEST_ASSERT_TRUE(r.pendingMem.find("its text was sent to the sender in writing") != std::string::npos);
     }
   }
 }

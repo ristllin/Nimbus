@@ -1561,6 +1561,8 @@ static void test_hosted_runs_read_back_from_what_the_device_records() {
   TEST_ASSERT_EQUAL_UINT16(6, hostedRuns().total);  // and leaves this one alone
   resetHostedRuns();
   TEST_ASSERT_FALSE(hostedRuns().any());
+}
+
 // ---- QW6: spoken claims and the voice receipt -------------------------------------------
 
 static const uint8_t kVoiceSend = (uint8_t)(kFxTelegram | kFxVoice);
@@ -1778,7 +1780,7 @@ static void test_a_real_save_claim_still_gets_its_correction() {
     TurnEffects none;
     TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(reply, none), ClaimClass::Saved), reply);
     TurnEffects saved;
-    saved.add(FxKind::FileWrite, true);   // a real write backs it
+    saved.add(FxKind::FileWrite, true, std::string(), 1, kFxLogRow);   // a landed row backs it (a log claim needs one)
     TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(reply, saved), ClaimClass::Saved), reply);
   }
   TEST_ASSERT_EQUAL_STRING("(Correction: that has not been saved.)",

@@ -473,42 +473,40 @@ static std::string squash(const std::string& s) {
 static bool alreadySent(const ApplyState& st, const std::string& text) {
   const std::string want = squash(text);
   if (want.empty()) return false;
-  for (const std::string& sent : st.toolReplyTexts)
-    if (squash(sent).find(want) != std::string::npos) return true;
+  for (const nimbus::orch::WorkingString& sent : st.toolReplyTexts)
+    if (squash(nimbus::orch::plainCopy(sent)).find(want) != std::string::npos) return true;
   return false;
 }
 
-// A tts the device could not voice ("tts(not-spoken: <why>) "). The owner must hear of it in the
-// same turn whatever the reply says or which language it is in (22 Oct family: a confident "I read
-// it aloud" and silence), so on an attended turn that carries a reply or ask a short note rides
-// it (unless the claim check's own line already says so: applyTurn decides), and a turn that has
-// nothing else for the owner sends the text instead, with the reason. A routine tells nobody (it
-// was silent before); the head always hears of it next turn, in words that say what the owner got.
-static void noteUnspoken(const std::string& summary, const std::string& actionJson, const Turn& t,
-                         ApplyState& st, bool admin) {
-  const size_t lead = sizeof(kTtsNotSpoken) - 1;
-  const std::string why = summary.size() > lead + 2 ? summary.substr(lead, summary.size() - lead - 2) : "";
+// A tts that was not voiced. The sender must hear of it in the same turn whatever the reply says
+// or which language it is in (22 Oct family: a confident "I read it aloud" and silence), so on an
+// attended turn that carries a reply or ask a short note rides it (unless the claim check's own
+// line already says so: applyTurn decides), and a turn that has nothing else to send delivers the
+// text instead, with the reason. A routine tells nobody (it was silent before); the head always
+// hears of it next turn, in words that say what the sender got. `noted`: the caller rule's own
+// line is already on the reply (riskNote), so no second note is added. Only the owner's chats
+// reach the sink (the device.tts rule), so `why` never reaches anyone else as a note.
+static void noteUnspoken(const std::string& why, bool noted, const std::string& actionJson, const Turn& t,
+                         ApplyState& st) {
   hlog::logf("orchestrator: tts not spoken: %s", why.c_str());
-  // The device's reasons name its internals (a router host, a key, a volume): only the owner's
-  // chats get them; anyone else is told it could not be spoken.
-  const std::string plain = "(Note: that could not be spoken aloud" + (admin ? ": " + why : std::string()) + ".)";
+  const std::string plain = noted ? std::string() : "\n\n(Note: that could not be spoken aloud: " + why + ".)";
   std::string outcome = " - nobody was told (a routine); give it in text if the owner still needs it";
   if (!st.scheduledTurn) {
     if (!t.reply.empty() || !t.ask.empty()) {
-      if (st.unspokenNote.empty()) st.unspokenNote = "\n\n" + plain;
-      outcome = " - the owner was told it could not be spoken";
+      if (st.unspokenNote.empty()) st.unspokenNote = plain;
+      outcome = " - the sender was told it could not be spoken";
     } else {
       JsonDocument dd;
       std::string text;
       if (!deserializeJson(dd, actionJson))
         text = nimbus::orch::validateAction(dd.as<ArduinoJson::JsonVariantConst>()).text;
       if (text.empty()) {
-        outcome = " - the owner did not hear it";
+        outcome = " - the sender did not hear it";
       } else if (alreadySent(st, text)) {
-        outcome = " - the owner already has that text from your reply.telegram";
+        outcome = " - the sender already has that text from your reply.telegram";
       } else {
-        if (st.unspokenText.empty()) st.unspokenText = text + "\n\n" + plain;
-        outcome = " - its text was sent to the owner in writing";
+        if (st.unspokenText.empty()) st.unspokenText = text + plain;
+        outcome = " - its text was sent to the sender in writing";
       }
     }
   }
@@ -574,8 +572,12 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
       if (k == nimbus::orch::FxKind::Speak) nimbus::orch::recordSpeakSummary(st.claims->effects(), one);
       else st.claims->effects().add(k, deviceElementLanded(one));
     }
-    if (one.rfind(kTtsNotSpoken, 0) == 0)
-      noteUnspoken(one, da.json, t, st, who.perms().manageTenants);
+    if (one.rfind(kTtsNotSpoken, 0) == 0) {
+      const size_t lead = sizeof(kTtsNotSpoken) - 1;
+      noteUnspoken(one.size() > lead + 2 ? one.substr(lead, one.size() - lead - 2) : std::string(), false, da.json, t, st);
+    } else if (dev.refusedWhole && one.rfind("tts-refused(", 0) == 0) {
+      noteUnspoken(dev.refusals, true, da.json, t, st);   // a tts-only turn must not lose its answer
+    }
   }
   if (!devSummary.empty()) hlog::logf("orchestrator: device[%s]", devSummary.c_str());
 

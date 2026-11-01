@@ -473,8 +473,9 @@ static void ttsAnnounce(const String& text) {
     char c = text[i];
     if (c == '.' || c == '!' || c == '?' || c == '\n') { end = i + 1; break; }
   }
+  // No sentence end in reach: the speech cut's rule, never in the middle of a character.
   String snippet = (end > 0) ? text.substring(0, end)
-                             : text.substring(0, min((int)text.length(), 180));
+                             : String(nimbus::orch::cutForSpeech(std::string(text.c_str()), 180).text.c_str());
   g_sinks.speak(String(), snippet);   // no chat: the owner chat if the speaker cannot play it
 }
 
