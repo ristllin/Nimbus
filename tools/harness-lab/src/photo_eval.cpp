@@ -123,7 +123,9 @@ int cmdPhotoEval(const Env& env, const LabRig::Options& opt, const PhotoEvalOpti
               pe.out.c_str());
   int n = 0;
   for (const ManifestPhoto& ph : photos) {
-    const std::string chat = "photoeval";
+    // A fresh chat per photo: one turn, no history, exactly the device's first
+    // look at a photo. A shared chat would leak one photo's answer into the next.
+    const std::string chat = "pe-" + std::to_string(n + 1);
     auto set = std::unique_ptr<orch::TurnImages>(new orch::TurnImages());
     const std::string turn = singlePhotoTurn(chat, ph, *set);
     // The fallback for a head without image input, exactly as the device wires it.
