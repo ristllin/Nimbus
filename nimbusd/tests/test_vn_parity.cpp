@@ -481,6 +481,13 @@ static std::string pngPixel() {
   return std::string((const char*)kPng, sizeof kPng);
 }
 
+static PhotoIn inFiles(const std::string& name) {
+  PhotoIn p;
+  p.project = "chat";
+  p.name = name;
+  return p;
+}
+
 // The head loop's final answer (photos ride a head that runs the loop).
 static Exchange loopFinal(const std::string& reply) {
   Exchange e;
@@ -499,6 +506,15 @@ static NimbusdRig::Options loopOpts(const std::string& tag) {
 static void testPhotos(ndtest::Ctx& c) {
   std::printf("  -- (g) photos --\n");
   clearEnv();
+  {
+    Config cfg;
+    FakeHttpTransport tx;
+    NimbusdRig rig(cfg, opts("vp-g0"), &tx);
+    Web web(rig);
+    c.ok(has(web.call("POST", "/api/chat", "att=chat%2Fred.png").body, "\"turn\""), "a photo with no words is a message");
+    c.eqi(web.call("POST", "/api/chat", "").status, 400, "nothing at all is still refused");
+    c.eqi(web.call("POST", "/api/chat", "att=..%2F..%2Fsecrets.env").status, 200, "a path outside Files is taken as a name");
+  }
   setenv("OPENAI_API_KEY", "sk-test-openai-photo-00000000000", 1);
   {
     FakeHttpTransport tx;
@@ -508,7 +524,7 @@ static void testPhotos(ndtest::Ctx& c) {
     NimbusdRig rig(cfg, loopOpts("vp-g"), &tx);
     std::string err;
     c.ok(rig.files().put("chat", "red.png", pngPixel(), err), "the upload is in Files");
-    const TurnRecord t = rig.sayWithPhotos("owner", "what color is this?", {PhotoIn{"chat", "red.png", ""}});
+    const TurnRecord t = rig.sayWithPhotos("owner", "what color is this?", {inFiles("red.png")});
     c.ok(has(t.reply, "red"), "the turn answered");
     c.ok(!tx.spliced.empty() && !tx.spliced[0].empty(), "the bytes went as an image part");
     c.ok(!tx.seen.empty() && has(tx.seen[0].body, "what color is this?"), "with the sender's words");
@@ -536,11 +552,20 @@ static void testPhotos(ndtest::Ctx& c) {
     NimbusdRig rig(cfg, loopOpts("vp-g2"), &tx);
     std::string err;
     rig.files().put("chat", "notes.png", std::string("this is plain text, not a photo"), err);
-    rig.sayWithPhotos("owner", "look", {PhotoIn{"chat", "notes.png", ""}});
+    rig.sayWithPhotos("owner", "look", {inFiles("notes.png")});
     c.ok(!tx.spliced.empty() && tx.spliced[0].empty(), "bytes that are no image are never sent as one");
     c.ok(!tx.seen.empty() && has(tx.seen[0].body, "(not read:"), "the head reads why");
     tx.script.push_back(fin);
-    rig.sayWithPhotos("owner", "look again", {PhotoIn{"chat", "missing.png", ""}});
+    PhotoIn outside;
+    outside.project = "..";
+    outside.name = "../secrets.env";
+    tx.script.push_back(fin);
+    rig.sayWithPhotos("owner", "and this", {outside});
+    c.ok(has(tx.seen.back().body, "not found in Files"), "a path outside Files reads nothing");
+    PhotoIn missing;
+    missing.project = "chat";
+    missing.name = "missing.png";
+    rig.sayWithPhotos("owner", "look again", {missing});
     c.ok(has(tx.seen.back().body, "not found in Files"), "a missing file says so");
   }
   clearEnv();
@@ -555,7 +580,7 @@ static void testPhotos(ndtest::Ctx& c) {
     NimbusdRig rig(cfg, opts("vp-g3"), &tx);
     std::string err;
     rig.files().put("chat", "red.png", pngPixel(), err);
-    rig.sayWithPhotos("owner", "what color?", {PhotoIn{"chat", "red.png", ""}});
+    rig.sayWithPhotos("owner", "what color?", {inFiles("red.png")});
     c.ok(!tx.spliced.empty() && tx.spliced[0].empty(), "a blind head gets no image part");
     c.ok(!tx.seen.empty() && has(tx.seen[0].body, "(not read"), "and is told nobody read it");
   }
