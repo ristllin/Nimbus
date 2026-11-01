@@ -56,6 +56,8 @@ inline bool started(ReplyState s) { return s == ReplyState::Playing || s == Repl
 std::string speakerFailText(const std::string& why);
 // Why the speaker driver would not start, from what the heap reports.
 std::string speakerOpenFailReason(size_t largestDmaBlock);
+// Why the speaker was not opened at all: too little memory for it and the radio.
+std::string speakerLowMemoryReason(size_t freeDma);
 
 }  // namespace sfx
 }  // namespace nimbus

@@ -88,6 +88,15 @@ static void test_tickets_are_distinct_and_never_zero() {
   }
 }
 
+// The low-memory reason fits the ticket's record whole at any size the heap can report.
+static void test_a_low_memory_refusal_is_reported_whole() {
+  ReplyTicket t{};
+  const uint32_t a = t.queue();
+  const std::string why = speakerLowMemoryReason(4294967295u);
+  t.failed(a, why.c_str());
+  TEST_ASSERT_EQUAL_STRING(why.c_str(), t.why(a).c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_clip_that_opens_the_speaker_is_spoken);
@@ -95,5 +104,6 @@ int main(int, char**) {
   RUN_TEST(test_replaced_and_unqueued_clips_are_not_spoken);
   RUN_TEST(test_a_zeroed_ticket_tracks_nothing);
   RUN_TEST(test_tickets_are_distinct_and_never_zero);
+  RUN_TEST(test_a_low_memory_refusal_is_reported_whole);
   return UNITY_END();
 }

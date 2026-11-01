@@ -120,6 +120,16 @@ static bool parseWavHeader(File& f, uint32_t& rate, uint32_t& dataLen) {
 // Open the speaker, or log why it would not start and tell the hook. Every player in
 // this file opens through here, so a failed open is never swallowed.
 static bool openSpeaker(uint32_t rate, OpenHook onOpen) {
+  // What the owner asked for fails honestly when the open cannot leave the radio room
+  // (nimbus/speaker_memory.h), rather than take the last DMA memory and maybe fail anyway.
+  const uint32_t dmaFree = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+  const uint32_t dmaLargest = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+  if (!nimbus::sfx::speakerMemoryOk(nimbus::sfx::SoundKind::Asked, dmaFree, dmaLargest)) {
+    const std::string lowWhy = nimbus::sfx::speakerLowMemoryReason(dmaFree);
+    agent::alogf("speaker: %s", nimbus::sfx::speakerFailText(lowWhy).c_str());
+    if (onOpen) onOpen(false, lowWhy.c_str());
+    return false;
+  }
   if (solide::audio::spkOpen(rate)) {
     if (onOpen) onOpen(true, "");
     return true;

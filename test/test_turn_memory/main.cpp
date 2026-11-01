@@ -7,6 +7,7 @@
 #include <memory>
 #include <new>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../support/fake_config.h"

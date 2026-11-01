@@ -15,12 +15,14 @@
 #include <solide/ring.h>   // ring::Status - the JobState vocabulary for edge mapping
 
 #include "../sys/agent_log.h"
+#include "../sys/heap_watch.h"    // allocFails - did a failed open really run out of memory
 #include "../sys/ps_json.h"       // PsramJsonAllocator (manifest parse off internal heap)
 #include "../sys/psram_static.h"  // the reply record lives in PSRAM, not internal .bss
 #include "../agent/store.h"
 #include "../agent/memory_subsystem.h"  // memory::haveSd()
 #include "nimbus/fault.h"
 #include "nimbus/sfx_paths.h"
+#include "nimbus/speaker_memory.h"  // CueGate - when the speaker may open (host-tested)
 #include "nimbus/speaker_reply.h"   // ReplyTicket - the spoken reply's outcome (host-tested)
 
 #include "sfx_basic_data.h"  // generated: the embedded basic PCM (THE one include site)
@@ -109,14 +111,39 @@ bool playEmbedded(Ev e) {
 // basic -> silence. Every step is fall-through; "nothing played" is a valid,
 // silent outcome. /sfx/custom/ is the owner's local override folder: drop
 // <slug>-<n>.wav files there (numbered from 0) and they win over everything.
-void resolveAndPlay(Ev e) {
-  if (!speakerUsable() || g_muted) return;   // re-check at play time (queue delay)
+bool resolveAndPlay(Ev e) {
+  if (!speakerUsable() || g_muted) return false;   // re-check at play time (queue delay)
   if (sdUsable()) {
-    if (playFromPool(e, "custom", g_counts[(int)e][kPoolCustom])) return;
-    if (playFromPool(e, g_theme, g_counts[(int)e][kPoolTheme])) return;
-    if (playFromPool(e, "general", g_counts[(int)e][kPoolGeneral])) return;
+    if (playFromPool(e, "custom", g_counts[(int)e][kPoolCustom])) return true;
+    if (playFromPool(e, g_theme, g_counts[(int)e][kPoolTheme])) return true;
+    if (playFromPool(e, "general", g_counts[(int)e][kPoolGeneral])) return true;
   }
-  playEmbedded(e);
+  return playEmbedded(e);
+}
+
+// One event's sound, when memory allows (nimbus/speaker_memory.h: a failed open is not worth
+// trying, it takes the radio's buffers while it fails). sfx task only.
+nimbus::sfx::CueGate g_cueGate;
+
+uint32_t dmaFreeNow() { return (uint32_t)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL); }
+uint32_t dmaLargestNow() { return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL); }
+
+void playEvent(const Item& it) {
+  using nimbus::sfx::SoundKind;
+  const uint32_t dmaFree = dmaFreeNow();
+  const uint32_t dmaLargest = dmaLargestNow();
+  if (!g_cueGate.allow(it.forced ? SoundKind::Asked : SoundKind::Cue, dmaFree, dmaLargest, millis())) {
+    if (g_cueGate.logDue(millis())) {
+      agent::alogf("sfx: %u sound(s) skipped, low memory (DMA free %u, largest %u, hold %u s)",
+                   (unsigned)g_cueGate.skipped(), (unsigned)dmaFree, (unsigned)dmaLargest,
+                   (unsigned)(g_cueGate.holdMs() / 1000));
+      g_cueGate.clearSkipped();
+    }
+    return;
+  }
+  const uint32_t failsBefore = nimbus::heapwatch::allocFails();
+  const bool played = resolveAndPlay((Ev)it.ev);
+  g_cueGate.finished(played, nimbus::heapwatch::allocFails() != failsBefore, millis());
 }
 
 // Read NVS config into the live engine state and recount SD variants. Runs
@@ -186,7 +213,7 @@ void sfxTask(void*) {
         // replaced). Muted/faulted checks re-run here, not just at post time.
         playReply(it);
       } else {
-        resolveAndPlay((Ev)it.ev);
+        playEvent(it);
       }
     } else
       sfxsync::tick();
