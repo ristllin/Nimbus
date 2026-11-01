@@ -754,7 +754,10 @@ class Schema(unittest.TestCase):
         self.refused("must be text", env={"A": 1})
         self.refused("must be text", models={"head": {"mistral": 5}})
         self.refused("instance_env_keys", instance_env_keys=[5])
-        self.refused("true or false", scenarios=[sc(say("x", {"reply_contains": "x", "known_defect": "no-fold", "may_pass": "no"}))])
+        self.refused(
+            "true or false",
+            scenarios=[sc(say("x", {"reply_contains": "x", "known_defect": "no-fold", "may_pass": "no"}))],
+        )
         self.refused("is text", scenarios=[sc(say("x", {"reply_contains": "x", "known_defect": ["no-fold"]}))])
 
     def test_wrong_types_are_refused_not_raised_later(self):
@@ -908,14 +911,16 @@ class Contract(unittest.TestCase):
     def read(self, path):
         return (self.REPO / path).read_text(errors="replace")
 
+    def renaming(self, token, path):
+        return lambda p: self.read(p).replace(token, "renamed") if p == path else self.read(p)
+
     def test_everything_the_rig_relies_on_is_in_the_daemon_source(self):
         self.assertEqual(pr.contract_missing(self.read), [])
 
     def test_a_rename_of_any_entry_is_caught_in_its_own_file(self):
         for path, tokens in pr.CONTRACT.items():
             for token in tokens:
-                broken = lambda p, _t=token, _f=path: self.read(p).replace(_t, "renamed") if p == _f else self.read(p)
-                self.assertEqual(pr.contract_missing(broken), [f"{path}: {token}"])
+                self.assertEqual(pr.contract_missing(self.renaming(token, path)), [f"{path}: {token}"])
 
     def test_a_field_only_the_served_page_names_does_not_count(self):
         self.assertFalse(any("webui_page" in path or "include/web" in path for path in pr.CONTRACT))
@@ -1090,7 +1095,9 @@ class Judge(unittest.TestCase):
         p = persona(keys={host: "FAKE_MISTRAL"}, models={"head": {host: "m"}}, host=host)
         with tempfile.TemporaryDirectory() as d:
             ev = Path(d)
-            summary = pr.run_all([p], FakeBackend(FakeNimbusd()), {"FAKE_MISTRAL": FAKE_KEY}, ev, {"judge_factory": factory})[0]
+            summary = pr.run_all(
+                [p], FakeBackend(FakeNimbusd()), {"FAKE_MISTRAL": FAKE_KEY}, ev, {"judge_factory": factory}
+            )[0]
             on_disk = json.loads((ev / "unit" / "summary.json").read_text())
         return seen, summary, on_disk
 
@@ -1117,9 +1124,7 @@ class Judge(unittest.TestCase):
 
 class ToolTrace(unittest.TestCase):
     def test_results_pair_with_their_own_call_by_name(self):
-        text = (
-            "===== 4. TOOL LOOP\n[tool] a {1}\n[tool] b {2}\n[result] b two\n[result] a one\n"
-        )
+        text = "===== 4. TOOL LOOP\n[tool] a {1}\n[tool] b {2}\n[result] b two\n[result] a one\n"
         self.assertEqual(
             pr.tools_from_anatomy(text),
             [{"name": "a", "args": "{1}", "result": "one"}, {"name": "b", "args": "{2}", "result": "two"}],

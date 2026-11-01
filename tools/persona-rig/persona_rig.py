@@ -698,7 +698,9 @@ class Runner:
             rows.append(("name", p["display_name"], cfg.get("devName")))
         if p.get("members"):
             allowed = {str(m.get("id")) for m in self.inst.get_json_strict("/api/telegram").get("allow", [])}
-            roles = {str(t.get("id")): t.get("role") for t in self.inst.get_json_strict("/api/tenant").get("tenants", [])}
+            roles = {
+                str(t.get("id")): t.get("role") for t in self.inst.get_json_strict("/api/tenant").get("tenants", [])
+            }
             for m in p["members"]:
                 rows.append((f"member {m['chat']}", m["chat"], m["chat"] if m["chat"] in allowed else None))
                 if m.get("role"):
@@ -1088,7 +1090,10 @@ def run_all(personas: list, backend, env_values: dict, evidence: Path, options=N
             results.append(summary)
             verdict = "PASS" if summary["pass"] else "FAIL"
             known = len(summary.get("known_defects", []))
-            print(f"{verdict} {p['name']}{' (resumed)' if done else ''}{f' known defects: {known}' if known else ''}", flush=True)
+            print(
+                f"{verdict} {p['name']}{' (resumed)' if done else ''}{f' known defects: {known}' if known else ''}",
+                flush=True,
+            )
 
     with ThreadPoolExecutor(max_workers=max(1, options.get("parallel", 1))) as pool:
         list(pool.map(one, personas))
