@@ -4,12 +4,13 @@ Run: python3 -m pytest tools/release_gate
 """
 
 import os
+import re
 
 import check_critical_sections as cs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# The 29 Oct 2026 crash's own shape, as v4.6.1 shipped it.
+# The shape the 29 Oct 2026 crash's frames point at, as v4.6.1 shipped it.
 V461_SINK = """
 static void orchDeviceSink(const nimbus::orch::ValidatedAction& a) {
   using nimbus::orch::ActionKind;
@@ -56,6 +57,11 @@ def test_every_forbidden_call_fails_in_every_section_shape():
         'agent::alog("x");',
         'alogif("x");',
         'alogw("x");',
+        'agent::alogc(kNvs, "x");',
+        'agent::alogcf(kNvs, "x %d", 1);',
+        "agent::alogLevelf(lvl, fmt, 1);",
+        "agent::logPersist(red, nullptr, lvl);",
+        "logSerial(red);",
         'Serial.print("x");',
         'log_e("x");',
         'ESP_LOGW(TAG, "x");',
@@ -81,6 +87,17 @@ def test_every_forbidden_call_fails_in_every_section_shape():
     for call in calls:
         for shape in shapes:
             assert lines(shape.format(call)) == [1], shape.format(call)
+
+
+def test_every_log_entry_point_in_agent_log_is_forbidden():
+    """A new entry point in agent_log.h must fail the scan the day it lands, not when it first crashes."""
+    with open(os.path.join(cs.REPO, "src/sys/agent_log.h"), encoding="utf-8") as f:
+        src = f.read()
+    sinks = src[src.index("inline void logSerial") :]
+    names = re.findall(r"^\s*inline\s+\w+\s+(\w+)\s*\(", sinks, re.M)
+    assert {"alog", "alogf", "alogcf", "alogLevelf", "logPersist", "logSerial"} <= set(names)
+    for name in names:
+        assert lines(f"void f() {{ net::ConfigLockGuard lk; agent::{name}(a); }}") == [1], name
 
 
 def test_a_guard_ends_with_its_scope():

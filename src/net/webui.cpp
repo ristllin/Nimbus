@@ -3814,7 +3814,17 @@ void beginWeb(const WebConfig& wc) {
     if (authBlocked(r)) return;
     String slug;
     if (const AsyncWebParameter* p = r->getParam("slug", true)) slug = p->value();
-    const bool ok = ::sfx::play(slug.c_str());
+    String lowMemory;
+    const bool ok = ::sfx::play(slug.c_str(), &lowMemory);
+    if (ok && lowMemory.length()) {   // told now, not queued to fail silently
+      JsonDocument d;
+      d["ok"] = false;
+      d["error"] = lowMemory;
+      String s;
+      serializeJson(d, s);
+      r->send(503, "application/json", s);
+      return;
+    }
     r->send(ok ? 200 : 400, "application/json",
             ok ? "{\"ok\":true}" : "{\"error\":\"unknown slug\"}");
   });

@@ -1,5 +1,6 @@
 #include "sound_fx.h"
 #include "sfx_sync.h"
+#include "speaker_turn.h"  // whose turn on the speaker; the memory check reads after taking it
 #include "music.h"   // streamMp3File (MP3 reply playback) + stopForSpeech (I2S duck)
 
 #include <Arduino.h>
@@ -42,6 +43,9 @@ constexpr int kMaxVariants = 8;   // variants per (slug, pool) the resolver cons
 // transients, so 12 KB gives comfortable margin (matches the async_tcp TLS stack).
 // See begin() for the full rationale + the bench validation note.
 constexpr uint32_t kSfxStackBytes = 12288;
+// How long a spoken reply waits for a track it stopped to close. A track leaves at its next
+// chunk, so this only runs out with the card lock stuck. Under the reply tool's own 10 s wait.
+constexpr uint32_t kReplyTurnWaitMs = 5000;
 
 struct Item {
   uint8_t ev;
@@ -107,43 +111,67 @@ bool playEmbedded(Ev e) {
   return false;
 }
 
-// The resolver: SD custom pool -> SD theme pool -> SD general pool -> embedded
-// basic -> silence. Every step is fall-through; "nothing played" is a valid,
-// silent outcome. /sfx/custom/ is the owner's local override folder: drop
-// <slug>-<n>.wav files there (numbered from 0) and they win over everything.
-bool resolveAndPlay(Ev e) {
-  if (!speakerUsable() || g_muted) return false;   // re-check at play time (queue delay)
-  if (sdUsable()) {
-    if (playFromPool(e, "custom", g_counts[(int)e][kPoolCustom])) return true;
-    if (playFromPool(e, g_theme, g_counts[(int)e][kPoolTheme])) return true;
-    if (playFromPool(e, "general", g_counts[(int)e][kPoolGeneral])) return true;
+// One tier of the resolver: SD custom pool -> SD theme pool -> SD general pool -> embedded
+// basic. /sfx/custom/ is the owner's local override folder: drop <slug>-<n>.wav files there
+// (numbered from 0) and they win over everything.
+constexpr int kClipTiers = 4;
+bool playTier(Ev e, int tier, bool sd) {
+  switch (tier) {
+    case 0: return sd && playFromPool(e, "custom", g_counts[(int)e][kPoolCustom]);
+    case 1: return sd && playFromPool(e, g_theme, g_counts[(int)e][kPoolTheme]);
+    case 2: return sd && playFromPool(e, "general", g_counts[(int)e][kPoolGeneral]);
+    default: return playEmbedded(e);
   }
-  return playEmbedded(e);
+}
+
+// The resolver. Every missing clip falls through and "nothing played" is a valid, silent outcome.
+// A failed allocation ends the walk: the next tier would be one more open (nimbus/speaker_memory.h).
+nimbus::sfx::ClipResult resolveAndPlay(Ev e) {
+  if (!speakerUsable() || g_muted) return {false, false};   // re-check at play time (queue delay)
+  const bool sd = sdUsable();
+  return nimbus::sfx::playFirstTier(
+      kClipTiers, [e, sd](int tier) { return playTier(e, tier, sd); }, [] { return (uint32_t)nimbus::heapwatch::allocFails(); });
 }
 
 // One event's sound, when memory allows (nimbus/speaker_memory.h: a failed open is not worth
 // trying, it takes the radio's buffers while it fails). sfx task only.
-nimbus::sfx::CueGate g_cueGate;
+nimbus::sfx::CueGate g_cueGate(speakerProfileHere());
 
 uint32_t dmaFreeNow() { return (uint32_t)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL); }
 uint32_t dmaLargestNow() { return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL); }
 
+// A sound the owner asked for did not play: the log says so, since nothing else will.
+void askedNotPlayed(const Item& it, const char* why) {
+  if (!g_cueGate.askedLineDue(millis())) return;
+  agent::alogf("sfx: %s did not play: %s", nimbus::sfx::slug((Ev)it.ev), why);
+}
+
+void cueRefused(uint32_t dmaFree, uint32_t dmaLargest) {
+  if (!g_cueGate.logDue(millis())) return;
+  agent::alogf("sfx: %u sound(s) skipped, low memory (DMA free %u, largest %u, hold %u s)",
+               (unsigned)g_cueGate.skipped(), (unsigned)dmaFree, (unsigned)dmaLargest,
+               (unsigned)(g_cueGate.holdMs() / 1000));
+  g_cueGate.clearSkipped();
+}
+
 void playEvent(const Item& it) {
   using nimbus::sfx::SoundKind;
+  SpeakerTurn turn;
+  if (!turn.take(0)) {   // a track is on the speaker
+    if (it.forced) askedNotPlayed(it, "a track is playing");
+    return;
+  }
   const uint32_t dmaFree = dmaFreeNow();
   const uint32_t dmaLargest = dmaLargestNow();
   if (!g_cueGate.allow(it.forced ? SoundKind::Asked : SoundKind::Cue, dmaFree, dmaLargest, millis())) {
-    if (g_cueGate.logDue(millis())) {
-      agent::alogf("sfx: %u sound(s) skipped, low memory (DMA free %u, largest %u, hold %u s)",
-                   (unsigned)g_cueGate.skipped(), (unsigned)dmaFree, (unsigned)dmaLargest,
-                   (unsigned)(g_cueGate.holdMs() / 1000));
-      g_cueGate.clearSkipped();
-    }
+    if (it.forced) askedNotPlayed(it, nimbus::sfx::speakerLowMemoryReason(dmaFree).c_str());
+    else cueRefused(dmaFree, dmaLargest);
     return;
   }
-  const uint32_t failsBefore = nimbus::heapwatch::allocFails();
-  const bool played = resolveAndPlay((Ev)it.ev);
-  g_cueGate.finished(played, nimbus::heapwatch::allocFails() != failsBefore, millis());
+  const nimbus::sfx::ClipResult r = resolveAndPlay((Ev)it.ev);
+  g_cueGate.finished(r.played, r.allocFailed, millis());
+  if (it.forced && !r.played)
+    askedNotPlayed(it, r.allocFailed ? "the speaker could not open, out of memory" : "no clip, or the speaker would not open");
 }
 
 // Read NVS config into the live engine state and recount SD variants. Runs
@@ -192,6 +220,12 @@ void playReply(const Item& it) {
   // serializes it with a whole-clip mutex), so an active track would make the
   // reply queue behind minutes of audio. Duck music first: a spoken reply wins.
   music::stopForSpeech();
+  // The track gives its buffers back only when it has closed: read the memory after that.
+  SpeakerTurn turn;
+  if (!turn.take(kReplyTurnWaitMs)) {
+    replyOpened(false, "the playing track did not stop in time");
+    return;
+  }
   const bool played = it.mp3 ? music::streamMp3File(LittleFS, "/reply.mp3", replyOpened)
                              : music::streamWavFile(LittleFS, "/reply.wav", replyOpened);
   if (!played) agent::alogf("sfx: %s did not play to its end", it.mp3 ? "/reply.mp3" : "/reply.wav");
@@ -334,10 +368,18 @@ bool awaitReplyStart(uint32_t ticket, uint32_t timeoutMs, String* why) {
   }
 }
 
-bool play(const char* s) {
+bool play(const char* s, String* lowMemory) {
   Ev e;
   if (!g_began || !nimbus::sfx::parseSlug(s, e)) return false;
   if (!speakerUsable() || g_muted) return true;   // known slug, muted - "handled"
+  if (lowMemory) {   // the caller can answer the owner: say it now, queue nothing
+    const uint32_t dmaFree = dmaFreeNow();
+    if (!nimbus::sfx::speakerMemoryOk(speakerProfileHere(), nimbus::sfx::SoundKind::Asked, dmaFree, dmaLargestNow())) {
+      *lowMemory = nimbus::sfx::speakerLowMemoryReason(dmaFree).c_str();
+      agent::alogif("sfx: %s not played: %s", s, lowMemory->c_str());
+      return true;
+    }
+  }
   Item it{(uint8_t)e, true};
   xQueueSend(g_q, &it, 0);
   return true;

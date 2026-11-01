@@ -28,6 +28,8 @@ namespace {
 constexpr size_t kInternalLimit = 128;
 size_t g_live = 0;                       // live bytes in blocks within the limit
 size_t g_peak = 0;
+size_t g_liveBlocks = 0;                 // how many: a 4 B block costs the device 16 B or more
+size_t g_peakBlocks = 0;
 bool   g_on = false;
 
 struct Head {
@@ -42,6 +44,7 @@ void* counted(size_t n) {
   if (g_on && n <= kInternalLimit) {
     g_live += n;
     if (g_live > g_peak) g_peak = g_live;
+    if (++g_liveBlocks > g_peakBlocks) g_peakBlocks = g_liveBlocks;
   }
   return static_cast<Head*>(raw) + 1;
 }
@@ -49,7 +52,10 @@ void* counted(size_t n) {
 void uncounted(void* p) {
   if (!p) return;
   Head* h = static_cast<Head*>(p) - 1;
-  if (g_on && h->n <= kInternalLimit && g_live >= h->n) g_live -= h->n;
+  if (g_on && h->n <= kInternalLimit && g_live >= h->n) {
+    g_live -= h->n;
+    if (g_liveBlocks > 0) --g_liveBlocks;
+  }
   std::free(h);
 }
 }  // namespace
@@ -76,6 +82,7 @@ using namespace nimbus::orch;
 
 namespace {
 const char* const kDefault = "openai/gpt-5.6";
+constexpr size_t kMaxBlocks = 64;
 
 // One router body shaped like the live list: <upstream>/<model> rows with a price, the model
 // names long enough that no std::string keeps them in the object.
@@ -101,6 +108,7 @@ std::string routerBody(int rows) {
 struct Pass {
   size_t kept = 0;
   size_t peak = 0;
+  size_t peakBlocks = 0;
 };
 
 // provider_verify.cpp's fetch for the router, its pure steps in its order: the rows, then
@@ -111,7 +119,7 @@ Pass runFetch(const std::string& body) {
   h.provider = "cumulo";
   h.now = 0;
   harvestBody(h, body.data(), body.size());
-  g_live = g_peak = 0;
+  g_live = g_peak = g_liveBlocks = g_peakBlocks = 0;
   g_on = true;
   finishHarvest(h);
   size_t more = h.overflow + agent::router_catalog::protectHeads(h.rows, kDefault);
@@ -129,6 +137,7 @@ Pass runFetch(const std::string& body) {
   Pass p;
   p.kept = h.rows.size();
   p.peak = g_peak;
+  p.peakBlocks = g_peakBlocks;
   return p;
 }
 }  // namespace
@@ -152,9 +161,23 @@ static void test_small_block_peak_is_small_at_the_live_list_size() {
   TEST_ASSERT_LESS_THAN_size_t(2048, p.peak);
 }
 
+// Bytes alone miss a block per row of a few bytes each, such as a version key's vector of ints: 155
+// of them read as about 1 KB here and cost about 2.5 KB on the device, with allocator headers. So
+// the number of blocks may not follow the rows either: the kept row count is over 100, and this
+// stays far under it.
+static void test_small_block_count_is_not_per_row() {
+  const Pass few = runFetch(routerBody(155));
+  const Pass many = runFetch(routerBody(310));
+  std::printf("small blocks peak: %u blocks at %u rows, %u blocks at %u rows\n", (unsigned)few.peakBlocks,
+              (unsigned)few.kept, (unsigned)many.peakBlocks, (unsigned)many.kept);
+  TEST_ASSERT_LESS_THAN_size_t(kMaxBlocks, few.peakBlocks);
+  TEST_ASSERT_LESS_THAN_size_t(kMaxBlocks, many.peakBlocks);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_small_block_peak_does_not_grow_with_the_rows);
   RUN_TEST(test_small_block_peak_is_small_at_the_live_list_size);
+  RUN_TEST(test_small_block_count_is_not_per_row);
   return UNITY_END();
 }

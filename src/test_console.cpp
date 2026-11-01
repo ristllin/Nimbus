@@ -668,9 +668,10 @@ void dispatch(String line) {
     // Play a sound clip by event slug (bypasses the level gate - a test
     // affordance; still respects the speaker fault + voice mute).
     String slug = line.substring(4); slug.trim();
-    const bool ok = ::sfx::play(slug.c_str());
+    String lowMemory;
+    const bool ok = ::sfx::play(slug.c_str(), &lowMemory);
     Serial.printf("SFX %s -> %s (level=%u theme=%s tier=%s vol=%u)\n", slug.c_str(),
-                  ok ? "queued" : "unknown slug", ::sfx::level(), ::sfx::theme(),
+                  !ok ? "unknown slug" : lowMemory.length() ? lowMemory.c_str() : "queued", ::sfx::level(), ::sfx::theme(),
                   ::sfx::tierStr(), agent::store::sfxVolume());
     return;
   }

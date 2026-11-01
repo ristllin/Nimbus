@@ -3,9 +3,10 @@
 
 A portMUX critical section runs with the CPU's interrupt level raised. Newlib's recursive
 FILE lock aborts at a raised level, so one durable log line under a spinlock restarts the
-device. That is the 29 Oct 2026 crash (fingerprint 2419bf4a): orchDeviceSink logged its
-"lights" line inside net::ConfigLockGuard, and every "lights" action of a turn could take
-the device down. Nothing caught it because no test ran that action on hardware.
+device. The 29 Oct 2026 crash (fingerprint 2419bf4a) aborted in that lock. Its frames, solved
+against a build that does not match by call-graph alignment, point at orchDeviceSink's "lights"
+line inside net::ConfigLockGuard. That reading awaits the matching ELF and a board check, but the
+shape is fatal whichever line was the trigger.
 
 The scan reads src/ and lib/ for the three critical-section shapes:
     portENTER_CRITICAL(&m) ... portEXIT_CRITICAL(&m)    (any _ISR or _SAFE spelling, same mux)
@@ -34,7 +35,7 @@ EXTENSIONS = (".cpp", ".cc", ".c", ".h", ".hpp")
 # flash file systems, NVS, the blocking primitives, and the subsystems that do those inside.
 FORBIDDEN = re.compile(
     r"\b("
-    r"alog[iwe]?f?|log_[evwid]|ESP_LOG[EWIDV]|printf|fprintf|fwrite|fread|fopen|fclose|fflush|"
+    r"alog\w*|logPersist|logSerial|emitRedacted|log_[evwid]|ESP_LOG[EWIDV]|printf|fprintf|fwrite|fread|fopen|fclose|fflush|"
     r"captureEvent|xSemaphoreTake\w*|xQueueSend\w*|xQueueReceive\w*|vTaskDelay\w*|delay"
     r")\s*\("
     r"|\b(Serial|SD|LittleFS|Preferences)\s*\."
@@ -164,11 +165,13 @@ def main(argv: "list[str] | None" = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     roots = tuple(args) if args else DEFAULT_ROOTS
     found: List[Finding] = []
-    files = 0
+    files = sections = 0
     for path in source_files(roots):
         files += 1
         with open(path, encoding="utf-8", errors="replace") as f:
-            found.extend(scan_source(os.path.relpath(path, REPO), f.read()))
+            src = f.read()
+        sections += sum(1 for _ in regions(blank_comments_and_strings(src)))
+        found.extend(scan_source(os.path.relpath(path, REPO), src))
     for fd in found:
         print(f"FAIL {fd.path}:{fd.line}: inside a critical section: {fd.text}")
     if files == 0:
@@ -177,7 +180,7 @@ def main(argv: "list[str] | None" = None) -> int:
     if found:
         print(f"FAIL critical sections: {len(found)} call(s) that can abort or block with interrupts masked")
         return 1
-    print(f"PASS critical sections: {files} files, nothing logs or blocks inside a spinlock")
+    print(f"PASS critical sections: {files} files, {sections} sections, nothing logs or blocks inside a spinlock")
     return 0
 
 

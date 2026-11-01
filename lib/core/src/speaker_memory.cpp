@@ -4,9 +4,9 @@ namespace nimbus {
 namespace sfx {
 
 bool CueGate::allow(SoundKind kind, uint32_t dmaFree, uint32_t dmaLargest, uint32_t nowMs) {
-  if (kind == SoundKind::Asked) return speakerMemoryOk(kind, dmaFree, dmaLargest);
+  if (kind == SoundKind::Asked) return speakerMemoryOk(profile_, kind, dmaFree, dmaLargest);
   const bool holding = holdMs_ != 0 && (uint32_t)(nowMs - holdFrom_) < holdMs_;
-  if (!holding && speakerMemoryOk(kind, dmaFree, dmaLargest)) return true;
+  if (!holding && speakerMemoryOk(profile_, kind, dmaFree, dmaLargest)) return true;
   ++skipped_;
   return false;
 }
@@ -26,6 +26,13 @@ bool CueGate::logDue(uint32_t nowMs) {
   if (logged_ && (uint32_t)(nowMs - lastLog_) < kLogEveryMs) return false;
   logged_ = true;
   lastLog_ = nowMs;
+  return true;
+}
+
+bool CueGate::askedLineDue(uint32_t nowMs) {
+  if (askedLogged_ && (uint32_t)(nowMs - lastAskedLine_) < kAskedLogEveryMs) return false;
+  askedLogged_ = true;
+  lastAskedLine_ = nowMs;
   return true;
 }
 
