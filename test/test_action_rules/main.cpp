@@ -847,8 +847,8 @@ static void test_results_ring_scoped_by_caller_class() {
 }
 
 // Every product that runs the job engine tells it who a chat is: with no principalFor a
-// sub-agent counts as the owner's (host rigs only), so a product that forgets it would
-// hand the owner's connectors to a member's sub-agent.
+// With no principalFor a job engine treats no chat as the owner's (it fails closed), so a
+// product that forgets it would quietly take the owner's connectors and results away.
 static void test_every_product_wires_the_spawn_principal() {
   const std::string device = readFile("src/agent/orchestrator.cpp");
   const size_t jd = device.find("static JobEngine::Deps buildJobDeps()");

@@ -322,6 +322,7 @@ class LRig {
 
   void buildJobs(bool withFabric) {
     agent::JobEngine::Deps jd;
+    jd.principalFor = [](const std::string& chat) { return orch::principalForRole(chat, orch::Role::Admin); };
     jd.platform.nowMs = nowMs;
     jd.platform.freeHeap = [] { return (uint32_t)4u * 1024u * 1024u; };
     jd.deliver = [this](const std::string& c, const std::string& t) { delivered_.push_back({c, t}); };
