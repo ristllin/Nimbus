@@ -100,20 +100,8 @@ class HostedLoops {
     nimbus::orch::SchedSpec spec;
     std::string perr;
     if (!nimbus::orch::parseSpec(schedule, caps_, spec, perr)) { r.err = perr; return r; }
-    if (byAgent && inScheduled && spec.kind != nimbus::orch::SchedKind::Once) {
-      r.err = "a scheduled loop cannot create loops";
-      return r;
-    }
-    if (spec.kind == nimbus::orch::SchedKind::Once && armedWakeups() >= nimbus::orch::kWakeupMaxPending) {
-      r.err = "you already have " + std::to_string(nimbus::orch::kWakeupMaxPending) +
-              " wakeups armed - cancel one (loop.cancel) or let one fire first";
-      return r;
-    }
-    if ((int)loops_.size() >= caps_.maxCount) {
-      r.err = "too many loops (max " + std::to_string(caps_.maxCount) + ")";
-      return r;
-    }
-    if (prompt.empty()) { r.err = "prompt is required"; return r; }
+    r.err = createRefusal(spec, prompt, byAgent && inScheduled);
+    if (!r.err.empty()) return r;
     nimbus::orch::LoopRecord l;
     l.id = genId();
     l.name = name.substr(0, nimbus::orch::kLoopNameMax);
@@ -213,6 +201,16 @@ class HostedLoops {
   void registerTools(nimbus::orch::ToolRegistry& reg);
 
  private:
+  // Why this routine may not be created ("" = it may).
+  std::string createRefusal(const nimbus::orch::SchedSpec& spec, const std::string& prompt, bool agentInScheduled) const {
+    const bool once = spec.kind == nimbus::orch::SchedKind::Once;
+    if (agentInScheduled && !once) return "a scheduled loop cannot create loops";
+    if (once && armedWakeups() >= nimbus::orch::kWakeupMaxPending)
+      return "you already have " + std::to_string(nimbus::orch::kWakeupMaxPending) +
+             " wakeups armed - cancel one (loop.cancel) or let one fire first";
+    if ((int)loops_.size() >= caps_.maxCount) return "too many loops (max " + std::to_string(caps_.maxCount) + ")";
+    return prompt.empty() ? std::string("prompt is required") : std::string();
+  }
   static uint64_t epoch() { return (uint64_t)time(nullptr); }
   static nimbus::orch::CivilTime civilLocal(uint64_t e) {
     time_t t = (time_t)e;
