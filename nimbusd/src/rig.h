@@ -2525,6 +2525,21 @@ class NimbusdRig {
                                     orch::logDayOf(std::time(nullptr), true).date, message);
     };
 
+    wireTurnHooks(d);
+    wireApply(d);
+
+    registerHeads(d);
+    // A rebuild (a key or model save) must not zero the session usage (CUM-546):
+    // the counters live in the TurnEngine, so carry the old engine's totals over.
+    if (eng_) {
+      carriedUsage_ += eng_->sessionUsage();
+      carriedTurns_ += eng_->turnCount();
+    }
+    eng_.reset(new agent::TurnEngine(std::move(d)));
+  }
+
+  // What each turn leaves behind: its identity, its tool rows, its end-of-turn accounting.
+  void wireTurnHooks(agent::TurnEngine::Deps& d) {
     d.hooks.onTurnStart = [this](const agent::TurnStartEv&) {
       // The turn's identity is its user row's id (the chat view joins a bubble to its
       // tool rows by it); a seedless turn mints one from the same counter.
@@ -2558,17 +2573,6 @@ class NimbusdRig {
       lastFallback_ = ev.fallback;
       lastServedBy_ = ev.host + (ev.servedModel.empty() ? std::string() : (" " + ev.servedModel));
     };
-
-    wireApply(d);
-
-    registerHeads(d);
-    // A rebuild (a key or model save) must not zero the session usage (CUM-546):
-    // the counters live in the TurnEngine, so carry the old engine's totals over.
-    if (eng_) {
-      carriedUsage_ += eng_->sessionUsage();
-      carriedTurns_ += eng_->turnCount();
-    }
-    eng_.reset(new agent::TurnEngine(std::move(d)));
   }
 
   // What the prompt says about THIS instance (CUM-542): the real clock in the owner's

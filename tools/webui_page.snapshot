@@ -1362,7 +1362,7 @@ function applyHostedChrome(){
     const ms=$('mode');   // the Mode row in Mode & identity: its select, its hint and its label
     if(ms){const tip=ms.previousElementSibling,lb=tip&&tip.previousElementSibling;
       [ms,tip,lb].forEach(el=>{if(el)el.style.display='none';});}
-    const lede=document.querySelector('#pane-device .plede')||document.querySelector('#pane-dev .plede');
+    const lede=document.querySelector('#pane-set .plede');
     if(lede)lede.textContent='Identity, software version and connectivity, all in one place.';
   }catch(e){}
 }

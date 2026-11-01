@@ -520,6 +520,32 @@ PendingEmbed pendingFrom(const MemoryContext& ctx, const VecEntry& e, const Writ
   return p;
 }
 
+// No key here can embed at all: this is how memory works until one is added, not an
+// outage, and nothing will ever report back. The model says what is true now.
+std::string keptAsTextWords(const std::string& id, bool update) {
+  return std::string(update ? "update kept as text for " : "kept as text: memory ") + id +
+         ". This assistant holds no key that can create embeddings (only OpenAI, Mistral or Cumulo Nimbus keys "
+         "can), so it is found by its words, not by meaning, until the owner adds one. Tell the owner exactly "
+         "that if they ask. No later confirmation will come, so do not promise one.";
+}
+
+// The result of a write that reached the queue.
+ToolResult queuedResult(const MemoryContext& ctx, const PendingEmbed& p, const EmbedTry& t, const std::string& note,
+                        const std::string& cause) {
+  // Report what is queued now (a coalesced entry keeps the stronger intent).
+  const PendingEmbed* queued = ctx.pending->find(p.id);
+  const bool update = (queued ? queued->op : p.op) == PendingOp::Update;
+  if (t.kind == EmbedFail::NoKey) return withCode(ToolResult::ok(keptAsTextWords(p.id, update) + note), kMemOutcomeQueued, ctx);
+  return withCode(
+      ToolResult::ok(std::string(update ? "queued update for " : "queued memory ") + p.id +
+                     (update ? ", not changed yet: " : ", not stored yet: ") + cause +
+                     ". It is kept on the device and " +
+                     (update ? "applied" : "stored") +
+                     " automatically when embeddings work again; keyword search finds it "
+                     "meanwhile. Until then, do not say it is saved." + note),
+      kMemOutcomeQueued, ctx);
+}
+
 // Put a write the embedder cannot serve now into the durable queue. "queued" is
 // claimed only after the queue reached storage; a full queue or a failed persist
 // refuses honestly and nothing queued is evicted.
@@ -553,26 +579,7 @@ ToolResult enqueueOrRefuse(const MemoryContext& ctx, PendingEmbed p, const Embed
       if (ctx.persistPending) ctx.persistPending();
       break;
   }
-  // Report what is queued now (a coalesced entry keeps the stronger intent).
-  const PendingEmbed* queued = ctx.pending->find(p.id);
-  const bool update = (queued ? queued->op : p.op) == PendingOp::Update;
-  // No key here can embed at all: this is how memory works until one is added, not an
-  // outage, and nothing will ever report back. The model says what is true now.
-  if (t.kind == EmbedFail::NoKey)
-    return withCode(ToolResult::ok(std::string(update ? "update kept as text for " : "kept as text: memory ") + p.id +
-                                   ". This assistant holds no key that can create embeddings (only OpenAI, "
-                                   "Mistral or Cumulo Nimbus keys can), so it is found by its words, not by "
-                                   "meaning, until the owner adds one. Tell the owner exactly that if they ask. "
-                                   "No later confirmation will come, so do not promise one." + note),
-                    kMemOutcomeQueued, ctx);
-  return withCode(
-      ToolResult::ok(std::string(update ? "queued update for " : "queued memory ") + p.id +
-                     (update ? ", not changed yet: " : ", not stored yet: ") + cause +
-                     ". It is kept on the device and " +
-                     (update ? "applied" : "stored") +
-                     " automatically when embeddings work again; keyword search finds it "
-                     "meanwhile. Until then, do not say it is saved." + note),
-      kMemOutcomeQueued, ctx);
+  return queuedResult(ctx, p, t, note, cause);
 }
 
 // Store an embedded entry: the end of every successful write. A duplicate keeps

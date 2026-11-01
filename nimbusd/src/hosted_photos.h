@@ -69,13 +69,16 @@ class HostedPhotos {
                         const std::vector<PhotoIn>& photos) {
     auto set = std::unique_ptr<nimbus::orch::TurnImages>(new nimbus::orch::TurnImages());
     adopt(*set);
-    set->chatId = chat;
     nimbus::orch::MessageBatcher b;
     b.addMedia(chat, from, caption, 0, (int)photos.size());
     std::vector<std::string> refs;
     for (size_t i = 0; i < photos.size(); i++) {
       std::string ref;
-      const std::string seg = takePhoto(*set, chat, caption, photos[i], (int)i + 1, (int)photos.size(), ref);
+      nimbus::orch::MediaLabel label;
+      label.k = (int)i + 1;
+      label.n = (int)photos.size();
+      set->chatId = chat;
+      const std::string seg = takePhoto(*set, caption, photos[i], label, ref);
       b.setMediaText(0, i, seg);
       refs.push_back(ref);
     }
@@ -132,11 +135,8 @@ class HostedPhotos {
     if (h_.log) h_.log(line);
   }
   // Keep one photo and write its row; returns its segment in the turn's text.
-  std::string takePhoto(nimbus::orch::TurnImages& set, const std::string& chat, const std::string& caption,
-                        const PhotoIn& p, int k, int n, std::string& ref) {
-    nimbus::orch::MediaLabel label;
-    label.k = k;
-    label.n = n;
+  std::string takePhoto(nimbus::orch::TurnImages& set, const std::string& caption, const PhotoIn& p,
+                        nimbus::orch::MediaLabel label, std::string& ref) {
     std::string bytes = p.bytes;
     if (bytes.empty() && (!p.why.empty() || !h_.fetchFile || !h_.fetchFile(p.project, p.name, bytes))) {
       label.cls = nimbus::orch::MediaClass::FetchFailed;
@@ -164,7 +164,7 @@ class HostedPhotos {
     if (kept && h_.captureRow) {
       nimbus::orch::MediaLabel stored = label;
       if (*real) stored.cls = nimbus::orch::MediaClass::Pending;
-      h_.captureRow(chat, nimbus::orch::mediaSegment(stored), path);
+      h_.captureRow(set.chatId, nimbus::orch::mediaSegment(stored), path);
     }
     return seg;
   }

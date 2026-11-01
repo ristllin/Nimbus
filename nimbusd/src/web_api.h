@@ -80,8 +80,7 @@ class WebApi {
     const std::string& body = multipart ? fields : rawBody;
     return tryStatus(method, base, body, out) ||
            tryChat(method, base, path, body, out) ||
-           tryRoutines(method, base, path, body, out) ||
-           trySkills(method, base, path, body, out) ||
+           tryAssistantWork(method, base, path, body, out) ||
            tryMemory(method, base, path, body, out) ||
            tryConnectors(method, base, body, out) ||
            tryTelegram(method, base, body, out) ||
@@ -185,11 +184,15 @@ class WebApi {
     return tryStubsExtra(get, base, out);
   }
 
+  bool tryAssistantWork(const std::string& m, const std::string& base, const std::string& path,
+                        const std::string& body, ApiResp& out) {
+    return tryRoutines(m, base, body, out) || trySkills(m, base, path, body, out);
+  }
+
   // ---- routines and wake-ups (device /api/loops, /api/wakeups, same bodies) -----------
   // The table is the engine thread's, so a write runs there: refused with a retry
   // while a turn is running, never dropped behind an "ok".
-  bool tryRoutines(const std::string& m, const std::string& base, const std::string& path,
-                   const std::string& body, ApiResp& out) {
+  bool tryRoutines(const std::string& m, const std::string& base, const std::string& body, ApiResp& out) {
     if (base != "/api/loops" && base != "/api/wakeups") return false;
     const bool wakeups = base == "/api/wakeups";
     if (m == "GET") {
@@ -1101,11 +1104,15 @@ class WebApi {
   // the engine; the clears touch the conversation and memory stores).
   // Returns "" when the settings could not be stored (the caller answers 500;
   // nothing in the settings changed - SettingsStore applies only what persists).
-  std::string applyOrchWrites(const OrchWrites& w) {
+  int applyKeysAndModels(const OrchWrites& w) {
     int applied = applyKeyWrites(w.keys);
     for (const auto& t : w.tavily) applied += rig_->applyTavilyKey(t.second) ? 1 : 0;
     for (const auto& m : w.models) applied += rig_->applyOrchModel(m.first, m.second) ? 1 : 0;
     for (const auto& m : w.subs) applied += rig_->applySubModel(m.first, m.second) ? 1 : 0;
+    return applied;
+  }
+  std::string applyOrchWrites(const OrchWrites& w) {
+    int applied = applyKeysAndModels(w);
     if (!w.settings.empty()) {
       if (!rig_->updateSettings([&w](HostedSettings& s) { for (const auto& fn : w.settings) fn(s); }))
         return std::string();

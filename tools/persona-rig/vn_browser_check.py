@@ -11,6 +11,7 @@ Writes screenshots and a JSON of what it saw; exits 0 only when every check pass
 
 Paid: real provider turns on the cheap model. Needs the python playwright package.
 """
+
 import argparse
 import json
 import secrets
@@ -61,8 +62,11 @@ def check(results: list, name: str, ok: bool, seen: str = ""):
 def spawn_turns(page, out: Path, results: list):
     """Defect 2: the spawn-only turn, the message behind it, the result with no reload."""
     t0 = time.time()
-    send(page, "Start a sub-agent to work out 12 squared. Do not work it out yourself. "
-               "Leave your own reply field empty: the sub-agent's result reaches me by itself.")
+    send(
+        page,
+        "Start a sub-agent to work out 12 squared. Do not work it out yourself. "
+        "Leave your own reply field empty: the sub-agent's result reaches me by itself.",
+    )
     time.sleep(2)
     send(page, "What is 2 plus 2? Reply with just the number.")
     page.screenshot(path=str(out / "01-two-messages-sent.png"))
@@ -79,7 +83,9 @@ def spawn_turns(page, out: Path, results: list):
     )
     page.screenshot(path=str(out / "03-held-message-answered.png"))
     check(results, "the message sent behind it was not lost", got4, " | ".join(bubbles(page)[-6:]))
-    pending = page.evaluate("[...document.querySelectorAll('#chatLog > *')].filter(e => e.innerText.trim() === '…').length")
+    pending = page.evaluate(
+        "[...document.querySelectorAll('#chatLog > *')].filter(e => e.innerText.trim() === '…').length"
+    )
     check(results, "no bubble is left waiting", pending == 0, f"pending bubbles: {pending}; {time.time() - t0:.0f} s")
 
 
@@ -88,7 +94,9 @@ def photo_turn(page, out: Path, results: list):
     png = out / "green.png"
     png.write_bytes(solid_png((20, 200, 40)))
     page.set_input_files("#chatFile", str(png))
-    page.wait_for_function("() => /Attached green\\.png/.test(document.getElementById('chatLog').innerText)", timeout=30000)
+    page.wait_for_function(
+        "() => /Attached green\\.png/.test(document.getElementById('chatLog').innerText)", timeout=30000
+    )
     page.screenshot(path=str(out / "04-photo-attached.png"))
     send(page, "What color is this image? One word.")
     got = wait_text(page, r"\bgreen\b", 180)
@@ -108,16 +116,26 @@ def dead_controls(page, out: Path, results: list):
     page.screenshot(path=str(out / "07-device.png"), full_page=True)
     check(results, "Device has no Power group", not page.is_visible("#deviceRestart"))
     check(results, "there is no mode switch", not page.is_visible("#modehdr"))
-    shown = page.eval_on_selector_all("details.setgroup > summary", "els => els.filter(e => e.offsetParent).map(e => e.innerText)")
+    shown = page.eval_on_selector_all(
+        "details.setgroup > summary", "els => els.filter(e => e.offsetParent).map(e => e.innerText)"
+    )
     for gone in ("Display", "Ring", "Sound", "Power", "Danger zone"):
         check(results, f"no {gone} group", not any(t.startswith(gone) for t in shown), str(shown))
 
 
 def routines_page(page, inst, out: Path, results: list):
     """Defect 11: the Routines form works, it does not answer a refusal."""
-    status, body = inst.call("POST", "/api/loops", form={
-        "action": "create", "name": "stretch", "prompt": "Remind me to stretch.", "chatId": "owner",
-        "schedule": json.dumps({"kind": "daily", "at": "09:00"})})
+    status, body = inst.call(
+        "POST",
+        "/api/loops",
+        form={
+            "action": "create",
+            "name": "stretch",
+            "prompt": "Remind me to stretch.",
+            "chatId": "owner",
+            "schedule": json.dumps({"kind": "daily", "at": "09:00"}),
+        },
+    )
     check(results, "a routine is created on the instance", status == 200 and '"ok":true' in body, body)
     page.evaluate("goDest('assistant')")
     time.sleep(2)
