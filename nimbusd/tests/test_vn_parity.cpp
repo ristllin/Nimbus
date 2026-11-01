@@ -597,8 +597,18 @@ static void testNoDeviceWording(ndtest::Ctx& c) {
   rig.say("owner", "hello");
   c.ok(!tx.seen.empty(), "a request went out");
   if (!tx.seen.empty()) {
-    const std::string& b = tx.seen[0].body;
-    for (const char* banned : {"INSIDE the device", "the device's wait", "while the device collects", "ESP32"})
+    // The prompt and the turn's input. The reply schema's field notes and the tool
+    // descriptions come from shared text and still say "the device".
+    JsonDocument d;
+    deserializeJson(d, tx.seen[0].body);
+    const std::string b = std::string(d["instructions"] | "") + std::string(d["inputs"] | "");
+    c.ok(!b.empty(), "the prompt is in the request");
+    for (const char* banned :
+         {"INSIDE the device", "the device's wait", "while the device collects", "ESP32", "personal-assistant device",
+          "act on the device", "The device checks", "the device web page", "the device's web page",
+          "the device inserts", "saved on the device", "the device refuses", "routines exist on this device",
+          "saved to the device", "documentation is on the device", "the device's own job table",
+          "the device does one network call", "queued on the device", "the device confirms"})
       c.ok(!has(b, banned), std::string("no \"") + banned + "\"");
   }
   clearEnv();
