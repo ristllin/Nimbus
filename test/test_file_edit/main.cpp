@@ -3,7 +3,9 @@
 #include <cstdio>
 #include <string>
 
+#include "nimbus/orch/file_append.h"   // kKeyedMaxBytes
 #include "nimbus/orch/file_edit.h"
+#include "nimbus/orch/turn_effects.h"
 
 // files.edit's portable rules (file_edit.h): the decision (caps, policy,
 // honest counts) and the streaming matcher (bounded carry, chunk-straddling
@@ -54,6 +56,17 @@ std::string expectOut(const std::string& src, const std::string& find,
 }
 
 }  // namespace
+
+static std::string readSubsystem() {
+  std::FILE* f = std::fopen("src/agent/files_subsystem.cpp", "rb");
+  if (!f) { TEST_FAIL_MESSAGE("src/agent/files_subsystem.cpp unreadable"); return std::string(); }
+  std::string src;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) src.append(buf, n);
+  std::fclose(f);
+  return src;
+}
 
 void setUp() {}
 void tearDown() {}
@@ -289,6 +302,72 @@ static void test_the_edit_commits_through_the_swap() {
   TEST_ASSERT_TRUE(body.find("remove(path") == std::string::npos);
 }
 
+// files.edit holds the card lock across two whole-file passes and a rewrite, so it has the
+// keyed path's ceiling: a bigger file is refused with the way out, before a byte is read.
+static void test_a_file_over_the_ceiling_is_refused_with_the_way_out() {
+  TEST_ASSERT_EQUAL_STRING("", editSizeRefusal(0).c_str());
+  TEST_ASSERT_EQUAL_STRING("", editSizeRefusal(kKeyedMaxBytes).c_str());
+  const std::string over = editSizeRefusal(kKeyedMaxBytes + 1);
+  TEST_ASSERT_TRUE(over.find("over 1 MB") != std::string::npos);
+  TEST_ASSERT_TRUE(over.find("nothing was changed") != std::string::npos);
+  TEST_ASSERT_TRUE(over.find("new file") != std::string::npos);
+  TEST_ASSERT_FALSE(editSizeRefusal(8u * 1024 * 1024).empty());   // the store's largest file
+
+  const std::string src = readSubsystem();
+  const size_t count = src.find("static std::string countDocMatches(");
+  TEST_ASSERT_TRUE(count != std::string::npos);
+  const size_t size = src.find("oldSize = f.size();", count);
+  const size_t refuse = src.find("editSizeRefusal(oldSize)", count);
+  const size_t read = src.find("f.read(", count);
+  TEST_ASSERT_TRUE(size != std::string::npos && refuse != std::string::npos && read != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(size < refuse && refuse < read, "the ceiling runs before the first read");
+}
+
+// The reply is the claim check's evidence. Replacing a span with the same text changed
+// nothing, so it must back no removal or replacement, and no log row; a real edit must.
+static void test_a_replacement_identical_to_the_find_text_is_no_change() {
+  TEST_ASSERT_TRUE(editChangesNothing("2026-10-30,lunch,Rice,400\n", "2026-10-30,lunch,Rice,400\n"));
+  TEST_ASSERT_FALSE(editChangesNothing("2026-10-30,lunch,Rice,400\n", "2026-10-30,lunch,Rice,400"));
+  TEST_ASSERT_FALSE(editChangesNothing("Rice", ""));
+  // The class: when the spans differ, the substitution changes the bytes. This is why the
+  // one comparison above is the whole no-op case.
+  const std::string text = "abab abab\n";
+  const char* spans[] = {"a", "b", "ab", "ba", "abab", " ", "\n"};
+  for (const char* f : spans)
+    for (const char* r : spans) {
+      const Run run = streamAll(text, f, r, false, 1, 3);
+      TEST_ASSERT_EQUAL_MESSAGE(std::string(f) == r, run.out == text, f);
+    }
+
+  EditDecision d = decideEdit(4, 4, EditPolicy{}, 3);
+  TEST_ASSERT_TRUE(d.ok);
+  const std::string same = renderEditNoChange("food/food-log.csv", d);
+  TEST_ASSERT_TRUE_MESSAGE(same.find("(no change") != std::string::npos, same.c_str());
+  TurnEffects none;
+  recordToolEffect(none, FxKind::FileWrite, false, same, kFxLogRow);
+  TEST_ASSERT_FALSE(none.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_FALSE(none.anyOkWith(FxKind::FileWrite, kFxLogRow));
+
+  const std::string real = renderEditReply("food/food-log.csv", d, 90);
+  TEST_ASSERT_EQUAL_STRING("edited food/food-log.csv: replaced 1 of 3 matches (now 90 bytes); 2 more remain (all: true replaces them)",
+                           real.c_str());
+  TurnEffects landed;
+  recordToolEffect(landed, FxKind::FileWrite, false, real, kFxLogRow);
+  TEST_ASSERT_TRUE(landed.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_TRUE(landed.anyOkWith(FxKind::FileWrite, kFxLogRow));
+
+  // The device runs the check before the file is touched, and answers in these words.
+  const std::string src = readSubsystem();
+  const size_t edit = src.find("ToolResult editDoc(");
+  TEST_ASSERT_TRUE(edit != std::string::npos);
+  const size_t noop = src.find("editChangesNothing(find, replace)", edit);
+  const size_t sub = src.find("substituteDoc(path", edit);
+  TEST_ASSERT_TRUE(noop != std::string::npos && sub != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(noop < sub, "a no-op must not rewrite the file");
+  TEST_ASSERT_TRUE(src.find("renderEditNoChange(", edit) != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("renderEditReply(", edit) != std::string::npos);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_validate_the_caps_and_the_policy);
@@ -306,5 +385,7 @@ int main() {
   RUN_TEST(test_a_whole_line_is_just_a_longer_span);
   RUN_TEST(test_the_edit_gates_the_upload_slot_before_touching_it);
   RUN_TEST(test_the_edit_commits_through_the_swap);
+  RUN_TEST(test_a_file_over_the_ceiling_is_refused_with_the_way_out);
+  RUN_TEST(test_a_replacement_identical_to_the_find_text_is_no_change);
   return UNITY_END();
 }

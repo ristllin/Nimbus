@@ -52,6 +52,21 @@ std::string validateEdit(size_t findLen, size_t replaceLen, const EditPolicy& po
 EditDecision decideEdit(size_t findLen, size_t replaceLen, const EditPolicy& pol,
                         size_t matches);
 
+// The ceiling on the stored file, kKeyedMaxBytes (file_append.h): an edit holds the store
+// lock across two whole-file passes and a rewrite, so a bigger file is refused with the
+// way out instead of stalling every other card user. "" when the file may be edited.
+std::string editSizeRefusal(size_t fileBytes);
+
+// A replacement identical to the find text changes no byte (spans that differ always do),
+// so the file is not touched and the reply says so: renderEditNoChange's "(no change" is
+// what the claim check honors, and such a call backs no removal, replacement or log row.
+bool editChangesNothing(const std::string& find, const std::string& replace);
+std::string renderEditNoChange(const std::string& where, const EditDecision& d);
+
+// The reply to an edit that landed: "edited p/n: replaced A of B match(es) (now N bytes)",
+// which the claim check reads as the replacement's proof (turn_effects).
+std::string renderEditReply(const std::string& where, const EditDecision& d, size_t newSize);
+
 // The streaming matcher. Feed the file through it in chunks of any size - the
 // carries never exceed one chunk plus (find.size() - 1) unsettled bytes, so a
 // match that straddles a chunk boundary is found exactly where it lies.

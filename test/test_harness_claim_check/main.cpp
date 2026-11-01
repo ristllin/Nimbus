@@ -9,6 +9,7 @@
 #include "../support/mock_claim_turns.h"
 #include "nimbus/harness/apply.h"
 #include "nimbus/harness/claim_check.h"
+#include "nimbus/orch/file_edit.h"
 #include "nimbus/orch/head_loop.h"
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/spawn_claim.h"
@@ -920,10 +921,17 @@ static void test_a_log_claim_needs_an_append_that_landed_a_row() {
   }
   // files.edit changes a log in place: its landed receipt backs the claim, a no-match
   // (an error, nothing changed) does not.
+  nimbus::orch::EditDecision oneMatch;
+  oneMatch.ok = true;
+  oneMatch.matches = 1;
+  oneMatch.apply = 1;
+  const std::string noChangeEdit = nimbus::orch::renderEditNoChange("food/2026-10-27.csv", oneMatch);
   struct Edit { const char* out; bool error; bool backs; };
   const Edit edits[] = {
       {"edited food/2026-10-27.csv: replaced 1 of 1 match (now 310 bytes)", false, true},
       {"no match for the find text - nothing changed", true, false},
+      // A replacement identical to the find text: the file was not touched.
+      {noChangeEdit.c_str(), false, false},
   };
   for (const Edit& e : edits) {
     ClaimCheck cc;

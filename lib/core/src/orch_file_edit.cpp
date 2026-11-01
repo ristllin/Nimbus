@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "nimbus/orch/file_append.h"   // kKeyedMaxBytes
+
 namespace nimbus::orch {
 
 // The caps and the policy shape, before anything is opened: "" when the edit
@@ -43,6 +45,28 @@ EditDecision decideEdit(size_t findLen, size_t replaceLen, const EditPolicy& pol
   d.sizeDelta = ((int64_t)replaceLen - (int64_t)findLen) * (int64_t)d.apply;
   d.ok = true;
   return d;
+}
+
+std::string editSizeRefusal(size_t fileBytes) {
+  if (fileBytes <= kKeyedMaxBytes) return std::string();
+  return "the file is over 1 MB, too large to edit in place - start a new file for new text "
+         "(like notes-2.md); nothing was changed";
+}
+
+bool editChangesNothing(const std::string& find, const std::string& replace) { return find == replace; }
+
+std::string renderEditNoChange(const std::string& where, const EditDecision& d) {
+  return "edited " + where + ": found " + std::to_string(d.matches) + " match" + (d.matches == 1 ? "" : "es") +
+         " (no change: the replacement is the same text, the file was not touched)";
+}
+
+std::string renderEditReply(const std::string& where, const EditDecision& d, size_t newSize) {
+  std::string msg = "edited " + where + ": replaced " + std::to_string(d.apply) + " of " +
+                    std::to_string(d.matches) + " match" + (d.matches == 1 ? "" : "es") + " (now " +
+                    std::to_string(newSize) + " bytes)";
+  if (d.matches > (size_t)d.apply)
+    msg += "; " + std::to_string(d.matches - d.apply) + " more remain (all: true replaces them)";
+  return msg;
 }
 
 TextEditStream::TextEditStream(const std::string& find, const std::string& replace,

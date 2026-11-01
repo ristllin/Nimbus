@@ -18,8 +18,8 @@ namespace nimbus::orch {
 
 // One append call carries at most this much text (a few rows, never a file).
 inline constexpr size_t kAppendMaxBytes = 4096;
-// The largest stored log a keyed update or a day total streams (about 20,000
-// rows): each pass holds the store lock, so a bigger file is refused with the
+// The largest stored log a keyed update, a day total or a files.edit streams (about
+// 20,000 rows): each pass holds the store lock, so a bigger file is refused with the
 // way out (start a new log) instead of stalling every other card user.
 inline constexpr size_t kKeyedMaxBytes = 1024 * 1024;
 // The tail view: default and maximum row counts, and the window read from the

@@ -1231,6 +1231,10 @@ static std::string countDocMatches(const std::string& path, const std::string& f
   File f = fs.open(path.c_str(), FILE_READ);
   if (!f) return "SD open failed";
   oldSize = f.size();
+  if (const std::string big = nimbus::orch::editSizeRefusal(oldSize); !big.empty()) {
+    f.close();
+    return big;
+  }
   nimbus::orch::TextEditStream scan(find, replace, true);
   std::string discard;
   char buf[512];
@@ -1351,6 +1355,9 @@ static nimbus::orch::ToolResult editDoc(const std::string& project, const std::s
   const nimbus::orch::EditDecision d =
       nimbus::orch::decideEdit(find.size(), replace.size(), pol, matches);
   if (!d.ok) return ToolResult::fail(d.err);
+  const std::string where = project + "/" + name;
+  if (nimbus::orch::editChangesNothing(find, replace))
+    return ToolResult::ok(nimbus::orch::renderEditNoChange(where, d));
   const size_t newSize = size_t((int64_t)oldSize + d.sizeDelta);
   {   // the same quota rules as artifact.save: an edit's growth is a write
     const std::string refusal =
@@ -1364,12 +1371,7 @@ static nimbus::orch::ToolResult editDoc(const std::string& project, const std::s
   if (!commitEdit(project, name, newSize, err)) return ToolResult::fail(err);
   alogf("files: edit %s/%s replaced %d of %u match(es) (%u B -> %u B)", project.c_str(),
         name.c_str(), d.apply, (unsigned)matches, (unsigned)oldSize, (unsigned)newSize);
-  std::string msg = "edited " + project + "/" + name + ": replaced " + std::to_string(d.apply) +
-                    " of " + std::to_string(matches) + " match" +
-                    (matches == 1 ? "" : "es") + " (now " + std::to_string(newSize) + " bytes)";
-  if (matches > (size_t)d.apply)
-    msg += "; " + std::to_string(matches - d.apply) + " more remain (all: true replaces them)";
-  return ToolResult::ok(msg);
+  return ToolResult::ok(nimbus::orch::renderEditReply(where, d, newSize));
 }
 
 std::string readDocText(const std::string& project, const std::string& name,
@@ -1925,7 +1927,7 @@ void registerTools() {
           "N. The reply says how many matches were found and how many were replaced, so nothing "
           "happens silently. A no-match says so and changes nothing. An empty 'replace' deletes "
           "the span. The file's other bytes keep their exact order (a CSV's rows stay rows). "
-          "Max 2 KB find, 4 KB replacement, 200 matches per call.",
+          "Max 2 KB find, 4 KB replacement, 200 matches per call, 1 MB file.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
             nimbus::orch::EditPolicy pol;
             pol.all = a["all"].as<bool>();
