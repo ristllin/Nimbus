@@ -44,6 +44,9 @@ class ReplyBuffer {
     std::lock_guard<std::mutex> lk(mu_);
     const uint64_t seq = ++lastSeq_;
     entries_.push_back(Entry{seq, (uint64_t)time(nullptr), role, text, chat, turnId});
+    // A reply no web turn is waiting for (a sub-agent's result, its acknowledgement, a
+    // routine's message): the page's watcher re-reads the history when this moves.
+    if (role == "assistant" && turnId == 0) asyncSeq_++;
     while (entries_.size() > cap_) entries_.pop_front();
     return seq;
   }
@@ -54,6 +57,19 @@ class ReplyBuffer {
     return lastSeq_;
   }
 
+  // How many replies arrived outside any web turn (device WebChatBook::asyncSeq).
+  uint32_t asyncSeq() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return asyncSeq_;
+  }
+
+  // A web turn finished running. Turns run strictly in order, so the newest id is
+  // enough: every turn at or below it is over.
+  void noteTurnEnded(uint64_t turnId) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (turnId > endedTurn_) endedTurn_ = turnId;
+  }
+
   // Number of retained entries (for tests).
   size_t size() const {
     std::lock_guard<std::mutex> lk(mu_);
@@ -62,9 +78,9 @@ class ReplyBuffer {
 
   // Outcome of matching a web turn against the ring (CUM-293):
   //   Own   - this turn delivered at least one reply; outText is its LAST (final) one.
-  //   Later - this turn delivered nothing, but a LATER web turn already has, which (by
-  //           the strict-FIFO one-turn-at-a-time engine) proves this turn ran and
-  //           produced nothing; its bubble resolves to an honest empty.
+  //   Later - this turn delivered nothing and it is over: the engine said so, or a LATER
+  //           web turn already delivered, which (by the strict-FIFO one-turn-at-a-time
+  //           engine) proves the same. Its bubble resolves to an honest empty.
   //   None  - neither yet; this turn is still in flight.
   enum class TurnMatch { None, Own, Later };
 
@@ -83,7 +99,8 @@ class ReplyBuffer {
       if (turnId != 0 && e.turnId == turnId) { outText = e.text; own = true; }  // last wins
       else if (e.turnId > turnId) later = true;
     }
-    return own ? TurnMatch::Own : (later ? TurnMatch::Later : TurnMatch::None);
+    if (own) return TurnMatch::Own;
+    return (later || (turnId != 0 && turnId <= endedTurn_)) ? TurnMatch::Later : TurnMatch::None;
   }
 
   // A JSON array of the retained entries with seq > afterSeq, oldest first.
@@ -132,6 +149,8 @@ class ReplyBuffer {
   mutable std::mutex   mu_;
   std::deque<Entry>    entries_;
   uint64_t             lastSeq_ = 0;
+  uint64_t             endedTurn_ = 0;   // newest web turn the engine finished
+  uint32_t             asyncSeq_ = 0;    // replies outside any web turn
   size_t               cap_;
 };
 

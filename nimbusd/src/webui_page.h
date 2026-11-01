@@ -1372,6 +1372,11 @@ function applyHostedChrome(){
       body.appendChild(n);}
     document.querySelectorAll('[data-go=device]').forEach(b=>{
       if((b.textContent||'').indexOf('Check for updates')===0)b.style.display='none';});
+    // No restart or power control on a hosted instance: the platform runs it. Home's
+    // two buttons and the whole Power group go, never a button that answers an error.
+    ['homeRestart','homePowerOff'].forEach(id=>{const el=$(id); if(el)el.style.display='none';});
+    const pw=$('deviceRestart'), group=pw&&pw.closest('details');
+    if(group)group.style.display='none';
   }catch(e){}
 }
 applyHostedChrome();
@@ -4922,7 +4927,7 @@ function embStateText(d){
     const need=(prov==='openai'||prov==='cumulo')?'an OpenAI or Cumulo Nimbus key':(PROVNOUN[prov]||'a key for it');
     return {warn:true,txt:'Your stored memories were made with '+lbl+', and this device has no key that can add to them. Add '+need+' on Assistant > Models, or change the embedding model below (that erases the stored memories).'};
   }
-  return {warn:true,txt:'Long-term memory is off: it needs a Cumulo Nimbus, OpenAI or Mistral key to store and search memories (Anthropic and Z.ai can\'t create embeddings). Add one on Assistant > Models. Chat works without it.'};
+  return {warn:true,txt:'Long-term memory search by meaning is off: it needs a Cumulo Nimbus, OpenAI or Mistral key (Anthropic and Z.ai can\'t create embeddings). New memories are kept as text and found by keyword until you add one on Assistant > Models. Chat works without it.'};
 }
 // Supported embedding providers/models (owner: dropdown, not free text - only show
 // what the device can actually call). Curated; the live verify on save is the real gate.
@@ -5822,7 +5827,6 @@ function loadChatHistory(){
 // appears without the owner sending another message. Every 4 s while background
 // work may still deliver; otherwise every 30 s, so a reminder or routine that fires
 // into an idle open page (CUM-505) still shows up on its own.
-// Watches only a device that reports `busy`; a hosted instance keeps its own flow.
 let _chatWatchT=0,_chatAsync=-1,_chatWatchUntil=0;
 function _chatWatch(d,arm){
   if(!d||typeof d.busy!=='number')return;
@@ -5850,6 +5854,7 @@ function _chatWatchPoll(){
 // fills ITS OWN bubble; a prior turn's reply can never render under a newer message.
 let _chatQ=[];        // FIFO of {text,pend} awaiting their POST + poll cycle
 let _chatBusy=false;  // a turn is mid POST+poll (one outstanding at a time)
+let _chatAtt=[];      // hosted: "project/name" of photos the next message brings
 function _chatIdle(){$('chatMsg').textContent='';}
 function _chatPump(){
   if(_chatBusy)return;
@@ -5860,7 +5865,8 @@ function _chatPump(){
   // Done with this turn: free the slot, re-sync from the canonical store only when
   // nothing is queued behind us (so a still-pending bubble is never wiped), pump next.
   const done=resync=>{_chatBusy=false; if(resync&&!_chatQ.length)setTimeout(loadChatHistory,900); _chatPump();};
-  fetch('/api/chat',{method:'POST',body:new URLSearchParams({text:job.text})})
+  const form={text:job.text}; if(job.att)form.att=job.att;
+  fetch('/api/chat',{method:'POST',body:new URLSearchParams(form)})
     .then(r=>r.ok?r.json():r.json().then(e=>Promise.reject(e.error||r.status)))
     .then(p=>{
       const turn=p&&p.turn;   // match this turn's own reply by id (never "latest")
@@ -5891,21 +5897,39 @@ function _chatPump(){
     .catch(err=>{pend.textContent='✗ '+err;pend.style.opacity=1;done(false);});
 }
 function sendChatTurn(){
-  const t=$('chatInput'),v=(t.value||'').trim(); if(!v)return;
-  _chatBubble('u',v,'web'); t.value='';
+  const t=$('chatInput'),v=(t.value||'').trim(); if(!v&&!_chatAtt.length)return;
+  if(v)_chatBubble('u',v,'web'); t.value='';
   const pend=_chatBubble('a','…'); pend.style.opacity=.6;   // honest pending, even mid-turn
-  _chatQ.push({text:v,pend:pend});
+  _chatQ.push({text:v,pend:pend,att:_chatAtt.join('\n')});
+  _chatAtt=[];
   _chatPump();
 }
 $('chatSend')&&($('chatSend').onclick=sendChatTurn);
 loadChatHistory();
-if(!HOSTED)_chatWatchPoll();   // research already running when the page opened
+_chatWatchPoll();   // research already running when the page opened
 $('chatInput')&&$('chatInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChatTurn();}});
 
 // ---- Chat file upload: file picker + drag-and-drop (CUM-57) -----------------
 // Files upload to the shared artifact store (/api/files/upload) with a real
 // progress bar via the feedback helper, and land as a chat bubble so the
 // assistant can reference them. Reuses uploadFile() (token in the header).
+// A hosted photo larger than one image part is sent as a smaller JPEG: a phone photo is
+// many megabytes, and the head reads text at this size. A format the browser cannot
+// draw (HEIC) goes as it is, and the assistant says why it could not read it.
+function _chatShrink(f){
+  const max=450*1024; if(f.size<=max)return Promise.resolve(f);
+  return new Promise(res=>{const u=URL.createObjectURL(f),im=new Image();
+    im.onerror=()=>{URL.revokeObjectURL(u);res(f);};
+    im.onload=()=>{URL.revokeObjectURL(u);
+      const tryAt=(side,q)=>{const k=Math.min(1,side/Math.max(im.width,im.height)),c=document.createElement('canvas');
+        c.width=Math.round(im.width*k);c.height=Math.round(im.height*k);
+        c.getContext('2d').drawImage(im,0,0,c.width,c.height);
+        c.toBlob(b=>{if(!b){res(f);return;}
+          if(b.size>max&&side>640){tryAt(Math.round(side*.75),q);return;}
+          res(new File([b],f.name.replace(/\.[^.]*$/,'')+'.jpg',{type:'image/jpeg'}));},'image/jpeg',q);};
+      tryAt(1600,.82);};
+    im.src=u;});
+}
 function chatUpload(files){
   const list=Array.from(files||[]).filter(Boolean); if(!list.length)return;
   const proj='chat';
@@ -5914,10 +5938,14 @@ function chatUpload(files){
   let i=0;
   const next=()=>{
     if(i>=list.length)return;   // leave the last file's result state on screen
-    const f=list[i++];
+    const f=list[i++], photo=HOSTED&&/^image\//.test(f.type||'');
+    let name=f.name;
     run({status:'chatUpMsg',pending:'Uploading '+f.name+'…',
-      work:()=>uploadFile(f,proj,pct=>fbState('chatUpMsg','pending','Uploading '+f.name+'… '+pct+'%',pct)),
-      ok:()=>{if(typeof _chatBubble==='function')_chatBubble('u','Attached '+f.name+' (in Files > '+proj+'). Ask me about it.','web');
+      work:()=>(photo?_chatShrink(f):Promise.resolve(f)).then(up=>{name=up.name;
+        return uploadFile(up,proj,pct=>fbState('chatUpMsg','pending','Uploading '+f.name+'… '+pct+'%',pct));}),
+      // Hosted: a photo goes to the assistant as an image with the next message.
+      ok:()=>{if(photo)_chatAtt.push(proj+'/'+name);
+        if(typeof _chatBubble==='function')_chatBubble('u',photo?'Attached '+f.name+'. It goes with your next message.':'Attached '+f.name+' (in Files > '+proj+'). Ask me about it.','web');
         return 'Attached '+f.name+'.';},
       error:s=>'Upload of '+f.name+' failed'+(s?(' ('+s+')'):'')+' - check the file and try again.'})
       .then(next).catch(next);   // keep going even if one file fails

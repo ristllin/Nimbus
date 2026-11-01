@@ -70,6 +70,7 @@ nimbusd::NimbusdRig::Options buildOptions(const nimbusd::Config& cfg) {
   // in the app later turns memory on without a restart. NIMBUSD_EMBEDDINGS=0 turns
   // embeddings off entirely. The web app's embedding settings, once saved, win
   // over these defaults (<data>/mem/embed.txt).
+  opt.histV2 = cfg.getInt("NIMBUSD_HISTV2", 1) != 0;
   opt.embedHost = cfg.get("NIMBUSD_EMBED_HOST", "mistral");
   opt.embeddings = cfg.getInt("NIMBUSD_EMBEDDINGS", 1) != 0;
   opt.embedModel = cfg.get("NIMBUSD_EMBED_MODEL", "mistral-embed");
@@ -107,8 +108,9 @@ void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replie
     // answers (currentWebTurn, 0 for Telegram/non-web) so the web chat surface
     // pairs each turn to its own reply by id, not ring position (CUM-293).
     replies.push("assistant", text, chat, eng.currentWebTurn());
+    // The web chat has no Telegram side: only a real chat id goes to the bot.
     nimbusd::TelegramChannel* s = sender->load(std::memory_order_acquire);
-    if (s) { std::string e; s->sendMessage(chat, text, e); }
+    if (s && chat != nimbusd::kWebChatId) { std::string e; s->sendMessage(chat, text, e); }
   });
 }
 

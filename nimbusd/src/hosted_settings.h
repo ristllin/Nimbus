@@ -243,7 +243,7 @@ inline const std::vector<FixedKnob>& fixedKnobs() {
   static const std::vector<FixedKnob> k = {
       {"midFail", "0", true},       {"codeSbx", "0", true},     {"orchTrace", "0", true},
       {"tlsVerify", "1", true},     {"loopRounds", "12", false}, {"loopDeadline", "600", false},
-      {"compactKB", "0", false},    {"tlsSlots", "1", false},   {"capProbe", "1", false},
+      {"compactKB", "48", false},    {"tlsSlots", "1", false},   {"capProbe", "1", false},
       {"capProbeH", "24", false},   {"custBase", "", false},    {"custModel", "", false},
       {"custConv", "openai", false},
   };

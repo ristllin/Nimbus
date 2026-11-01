@@ -43,6 +43,8 @@ struct StateSnapshot {
   uint32_t lastTokensOut = 0;
   bool     providerConfigured = false;  // any provider key present (CUM-211 honest state)
   std::string lastHost;
+  std::string sessionsJson = "[]";      // running and queued sub-agents (device sessionsJson)
+  int         activeJobs = 0;           // ...how many, for the page's watcher
   bool        lastFallback = false;     // served-by of the most recent turn (CUM-236)
   std::string lastServedBy;
   std::string devName;
@@ -76,8 +78,10 @@ class EngineThread {
   // for non-web producers (Telegram, the /message control path).
   // A member's message that arrives while another person's sub-agent work is in
   // flight waits in held_ and runs once that work is reported (runOrHold).
-  void postMessage(const std::string& chatId, const std::string& text, uint64_t webTurn = 0) {
-    post([this, msg = Held{chatId, text, webTurn}] { runOrHold(msg); });
+  // `ended` runs on the engine thread once the turn has finished, whatever it delivered.
+  void postMessage(const std::string& chatId, const std::string& text, uint64_t webTurn = 0,
+                   std::function<void()> ended = nullptr, std::vector<PhotoIn> photos = {}) {
+    post([this, msg = Held{chatId, text, webTurn, std::move(ended), std::move(photos)}] { runOrHold(msg); });
   }
 
   // The web turn id currently being run, or 0 when the running task is not a web
@@ -194,6 +198,8 @@ class EngineThread {
         busy_.store(false);
       }
       if (running_.load()) pumpJobs();   // never start a sub dispatch while stopping
+      if (running_.load()) foldTick();   // the conversation fold, between turns
+      if (running_.load()) routinesTick();   // at most one due routine or wake-up
       if (running_.load()) rig_->drainTick();   // memory writes queued during an embedding outage
       if (running_.load()) rig_->spendTick();   // lane DEF: the month rollover and owed notices
       // A parked provider nothing else is calling. It blocks this thread, so it waits for
@@ -221,12 +227,34 @@ class EngineThread {
     busy_.store(false);
   }
 
+  // The conversation fold (device compactTick, after the job pump). A fold that runs
+  // is a paid call on this thread, so it is marked in flight like a turn.
+  void foldTick() {
+    const auto mark = [this](bool on) {
+      busy_.store(on);
+      snapInFlight(on);
+    };
+    try { rig_->foldTick(mark); } catch (...) { mark(false); }
+    rig_->noteFoldPumpEnd();
+  }
+
+  // Routines (device: loops::checkDue on the job pump). A fire is a turn on this thread.
+  void routinesTick() {
+    const auto mark = [this](bool on) {
+      busy_.store(on);
+      snapInFlight(on);
+    };
+    try { rig_->loopsTick(mark); } catch (...) { mark(false); }
+  }
+
   // A turn runs now, or waits in held_ while another person's sub-agent work is in
   // flight (the rig's turnMustWait). Bounded: past kHeldMax the oldest waiting
   // message is dropped with a log line rather than growing without limit.
   struct Held {
     std::string chat, text;
     uint64_t webTurn = 0;
+    std::function<void()> ended;   // the turn finished (the web chat stops waiting)
+    std::vector<PhotoIn> photos;   // shown to the head as images
   };
   static constexpr size_t kHeldMax = 64;
   void runOrHold(const Held& m) {
@@ -243,8 +271,9 @@ class EngineThread {
       return;
     }
     curWebTurn_.store(m.webTurn, std::memory_order_release);
-    rig_->say(m.chat, m.text);
+    rig_->sayWithPhotos(m.chat, m.text, m.photos);
     curWebTurn_.store(0, std::memory_order_release);
+    if (m.ended) m.ended();
   }
   // Re-queue, in arrival order, every held message that may run now (each becomes
   // an ordinary task, so it is marked in flight like any turn).
@@ -282,6 +311,8 @@ class EngineThread {
     s.lastFallback = rig_->lastFallback();
     s.lastServedBy = rig_->lastServedBy();
     s.devName = rig_->settings().devName;
+    s.sessionsJson = rig_->sessionsJson();
+    s.activeJobs = rig_->activeJobCount();
     {
       std::lock_guard<std::mutex> lk(snapMu_);
       s.turnInFlight = snap_.turnInFlight;  // preserve the in-flight flag

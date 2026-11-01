@@ -765,7 +765,11 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
       return;
     }
     if (!d.enqueueSpawn) return;   // host rig with no job engine
-    const bool ok = d.enqueueSpawn(s, chatId, st.scheduledTurn);
+    // A turn with a reply has already told the owner what it started: its spawns
+    // send no "On it." of their own (a spawn-only turn keeps the ack, its only word).
+    nimbus::orch::Spawn spawn = s;
+    if (!t.reply.empty()) spawn.note.clear();
+    const bool ok = d.enqueueSpawn(spawn, chatId, st.scheduledTurn);
     if (st.claims) st.claims->effects().add(ok ? nimbus::orch::FxKind::Spawn
                                                : nimbus::orch::FxKind::SpawnRefused, ok);
     if (!ok) return;

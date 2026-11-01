@@ -24,7 +24,11 @@
 #include "connectors_store.h"
 #include "daemon_config.h"
 #include "daemon_http.h"
+#include "hosted_fold.h"
+#include "hosted_loops.h"
+#include "hosted_photos.h"
 #include "hosted_settings.h"
+#include "hosted_skills.h"
 #include "nimbus/docs_pack.h"
 #include "nimbus/harness/conversation.h"
 #include "nimbus/harness/dream.h"
@@ -34,21 +38,29 @@
 #include "nimbus/harness/turn_anatomy.h"   // the /api/lastturn page head
 #include "nimbus/harness/turn_contract.h"
 #include "nimbus/harness/websearch.h"
+#include "nimbus/orch/action_rules.h"  // who may call what, on every route
+#include "nimbus/orch/budget.h"       // the fold slice bytes (deriveBudget)
 #include "nimbus/orch/tool_gates.h"
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/command.h"
+#include "nimbus/orch/embed_pick.h"     // which keyed provider long-term memory embeds with
 #include "nimbus/orch/embedding.h"
 #include "nimbus/orch/episodic_log.h"
+#include "nimbus/orch/failure_rows.h"    // the turn-end row the chat's turn view reads
 #include "nimbus/orch/key_shape.h"
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/model_choices.h"
+#include "nimbus/orch/owner_first.h"     // a due automatic fold waits for the owner
 #include "nimbus/orch/pending_embed.h"   // memory writes that survive an embedding outage
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/router_route.h"
 #include "nimbus/orch/scratchpad.h"
+#include "nimbus/orch/servedby.h"        // the turn row's served-by disclosure
 #include "nimbus/orch/tool_registry.h"
+#include "nimbus/orch/trace_rows.h"      // the row one tool call leaves
 #include "nimbus/orch/vector_memory.h"
+#include "nimbus/orch/wire_limits.h"     // foldDigestCap
 #include "posix_files.h"
 #include "posix_fs.h"
 #include "posix_platform.h"
@@ -156,6 +168,9 @@ class NimbusdRig {
     // restart.
     bool        embeddings = true;
     bool        verboseHttp = false;
+    // The turn-structured history (device histV2, on by default); 0 restores the old
+    // text window and the single turn-capture row.
+    bool        histV2 = true;
     std::string embedModel = "mistral-embed";
     std::string embedHost = "mistral";
     int         embedDims = 1024;
@@ -193,6 +208,7 @@ class NimbusdRig {
     seedTelegramAllowlist();
     buildMemory();
     loadSecrets();   // in-app provider keys persisted from a prior session (CUM-279)
+    applyEmbedPick();   // memory follows the keys this instance holds
     loadModels();    // in-app model picks persisted from a prior session (CUM-425)
     loadSubModels(); // in-app sub-agent model picks (device subM_<slug>)
     conns_.setPath(memDir() + "/connectors.json");
@@ -326,6 +342,7 @@ class NimbusdRig {
   }
   // The engine thread's idle tick: at most one step every 5 s, never while parked.
   void drainTick() {
+    embedPickTick();
     if (pending_.empty() || park_.blocked(steadyMs())) return;
     const uint32_t now = steadyMs();
     if (lastDrainMs_ && now - lastDrainMs_ < 5000) return;
@@ -378,6 +395,14 @@ class NimbusdRig {
     return cur_;
   }
 
+  // A turn that brings photos: the same turn as say(), with the photos offered to the
+  // head as images (hosted_photos.h). A chat the owner has not approved gets no turn.
+  TurnRecord sayWithPhotos(const std::string& chatId, const std::string& text, const std::vector<PhotoIn>& photos) {
+    if (photos.empty() || !access_->mayConverse(chatId) || !access_->principalFor(chatId).owner)
+      return say(chatId, text);
+    return say(chatId, photos_->offerTurn(chatId, "Owner", text, photos));
+  }
+
   // The slash commands a hosted instance answers itself. /clear is the device's
   // light two-step (it explains and asks; "/clear yes" clears); /help lists them;
   // the device commands that need hardware or a routines engine say so; anything
@@ -388,14 +413,24 @@ class NimbusdRig {
     const std::string& v = cmd.verb;
     if (v == "help" || v == "start") {
       record(chat, "Commands on this instance:\n/clear - forget this conversation (keeps memory and files)\n"
-                   "/help - this list\nTo chat, write without the slash.");
+                   "/compact - summarize this conversation now\n/help - this list\n"
+                   "To chat, write without the slash.");
       return true;
     }
     if (v == "clear") {
       commandClear(chat, cmd.args);
       return true;
     }
-    for (const char* d : {"update", "loops", "loop", "remind", "compact", "skill", "fetch", "mcp", "play"}) {
+    if (v == "compact") {
+      commandCompact(chat);
+      return true;
+    }
+    if (v == "loops" || v == "loop" || v == "skill") {
+      record(chat, "Routines and skills are managed on this instance's page, under Assistant. You can also ask "
+                   "the assistant to set one up.");
+      return true;
+    }
+    for (const char* d : {"update", "remind", "fetch", "mcp", "play"}) {
       if (v != d) continue;
       record(chat, "/" + v + " is not available on a hosted Nimbus yet.");
       return true;
@@ -407,6 +442,21 @@ class NimbusdRig {
     record(chat, (plain ? "There is no /" + v + " command." : std::string("There is no such command.")) +
                      " Send /help for the list, or write without the slash to chat.");
     return true;
+  }
+  // /compact (device parity): the summary runs on the next engine tick and answers
+  // with its own result, on this chat's channel.
+  void commandCompact(const std::string& chat) {
+    if (!access_->principalFor(chat).owner) {
+      record(chat, "Only the owner can compact this conversation.");
+      return;
+    }
+    const orch::ChatFold f = folds_.get(chat);
+    if (f.msgsSinceFold == 0 && f.summary.empty()) {
+      record(chat, "Nothing to compact yet.");
+      return;
+    }
+    manualFoldChat_ = chat;
+    record(chat, "Compacting this conversation. A message follows when it is done.");
   }
   void commandClear(const std::string& chat, std::string arg) {
     if (!access_->principalFor(chat).owner) {
@@ -470,12 +520,39 @@ class NimbusdRig {
   orch::VectorMemory& vectors() { return vec_; }
   orch::Scratchpad& scratchpad() { return scratch_; }
   orch::MemConfig& memConfig() { return memCfg_; }
-  orch::EpisodicStore& episodic() { return *epi_; }
+  orch::EpisodicStore& episodic() { return overlay_; }
   const Config& cfg() const { return cfg_; }
   // The instance's honest memory picture (the container's free/cap heap), for the
   // web app's "Free RAM" tile - a real hosted-process figure, never faked HW SRAM.
   uint32_t freeHeapBytes() const { return mem_.freeBytes(); }
   uint32_t heapCapBytes() const { return mem_.capBytes(); }
+  // Memory follows the keys this instance holds (device parity, nimbus/orch/embed_pick.h):
+  // an OpenAI-only instance embeds with OpenAI instead of queueing every write for a
+  // Mistral key it will never get. Stored vectors keep their space; a working provider
+  // is never overridden; the Cumulo key carries either direct route (embedRoute).
+  // Runs on start, on every key save, and every 10 s for a verdict that changed.
+  void applyEmbedPick() {
+    if (!opt_.embeddings) return;
+    const bool hasVectors = vec_.size() > 0;
+    const orch::EmbedPick p = orch::pickEmbedProvider(
+        orch::EmbedConfig{opt_.embedHost, opt_.embedModel, opt_.embedDims}, usableEmbedKeys(!hasVectors), hasVectors,
+        vec_.dims());
+    if (p.act != orch::EmbedPickAct::Switch) return;
+    memLog("memory: embeddings now via " + p.pick.provider + " (" + p.pick.model + ", " +
+           std::to_string(p.pick.dims) + " wide); " + opt_.embedHost + " has no usable key");
+    opt_.embedHost = p.pick.provider;
+    opt_.embedModel = p.pick.model;
+    opt_.embedDims = p.pick.dims;
+    if (!hasVectors && p.pick.dims != vec_.dims()) vec_.configure(p.pick.dims);
+    park_.clear();   // a new provider: try embeddings again at once
+    saveEmbedCfg();
+  }
+  void embedPickTick() {
+    const uint32_t now = steadyMs();
+    if (lastPickMs_ && now - lastPickMs_ < 10000) return;
+    lastPickMs_ = now;
+    applyEmbedPick();
+  }
   // Whether an embedding call can run right now (the master switch plus a route
   // with a key: direct, or through the Cumulo router). Engine thread only.
   bool embedAvailable() const {
@@ -607,6 +684,58 @@ class NimbusdRig {
   // disk before the first pump) is work too, or nothing would ever ask them again.
   bool jobsBusy() const { return jobs_ && jobs_->hasBackgroundWork(); }
   agent::JobEngine& jobs() { return *jobs_; }
+  // The running and queued sub-agents, for GET /api/orch and the page's watcher
+  // (device sessionsJson). Engine thread: the snapshot publishes it.
+  std::string sessionsJson() const {
+    JsonDocument d;
+    JsonArray a = d.to<JsonArray>();
+    if (jobs_)
+      for (const auto& s : jobs_->sessionInfos()) {
+        JsonObject o = a.add<JsonObject>();
+        o["tag"] = s.id;
+        o["backend"] = s.provider;
+        o["model"] = s.model;
+        o["category"] = s.title;
+        o["state"] = s.state;
+      }
+    std::string out;
+    serializeJson(d, out);
+    return out;
+  }
+  // Background work that may still deliver to the chat (device chatActivity).
+  int activeJobCount() const { return jobs_ ? (int)jobs_->sessionInfos().size() : 0; }
+
+  // ---- the conversation fold (device compactTick, over the same engine calls) ---
+  // One step per engine-thread tick: nothing runs unless the shared store says the
+  // chat is due, and a due automatic fold waits for a quiet moment (OwnerFirstGate).
+  // The summary is stored first, then the provider chain reset, then the boundary row:
+  // the write order the engine's runFold documents. A pseudo notice is never sent on
+  // an automatic fold; its record is the ev:compact row and the log.
+  // `busy` marks the thread in flight around a fold that really runs.
+  void foldTick(const std::function<void(bool)>& busy) {
+    if (!eng_ || !eng_->canFoldNow()) return;
+    std::string chat;
+    bool manual = false;
+    if (!manualFoldChat_.empty()) {
+      chat.swap(manualFoldChat_);
+      manual = true;
+    } else {
+      chat = lastTurnChat_;
+    }
+    if (chat.empty()) return;
+    if (manual) folds_.resume(chat);
+    else if (!foldDue(chat)) return;
+    busy(true);
+    runFoldFor(chat, manual);
+    busy(false);
+  }
+  void noteFoldPumpEnd() { ownerFirst_.notePumpEnd(); }
+  // Routines: one due fire per sweep (engine thread, between turns).
+  void loopsTick(const std::function<void(bool)>& busy) { loops_.tick(eng_ && eng_->turnInFlight(), busy); }
+  HostedLoops& routines() { return loops_; }
+  HostedSkills& skills() { return *skills_; }
+  // The chat's anchored summary ("" = never folded): diagnostics and the tests.
+  orch::ChatFold foldState(const std::string& chat) const { return folds_.get(chat); }
 
   // ---- Mistral workspace probe (device parity: provider_verify syncMistralConnectors)
   // A Mistral Studio connector is usable once the key's workspace LISTS it as active
@@ -886,6 +1015,7 @@ class NimbusdRig {
       std::lock_guard<std::mutex> lk(wsMu_);
       ws_ = nimbus::orch::MistralWorkspace();
     }
+    applyEmbedPick();             // memory follows the keys this instance now holds
     buildEngine();                // re-register heads for the new key set
     ++keyGen_;
     return true;
@@ -953,6 +1083,9 @@ class NimbusdRig {
     if (eng_) eng_->clearChatConv(chat);
     memory_.erase(chat);
     scratch_.setActiveTask("");
+    // A clear is not a fold: empty summary, zeroed counters, epoch 0 (device parity).
+    folds_.applyFold(chat, std::string(), 0);
+    if (skills_) skills_->dropChat(chat);
     flush();
   }
   // "Erase the assistant's memory" (device requestMemoryClear): every chat's
@@ -1567,6 +1700,9 @@ class NimbusdRig {
     epi_.reset(new orch::AppendLogEpisodicStore(epiFs_, episodicDir(), /*recentCap=*/256));
     epi_->hydrate();  // rebuild index/cache from the day-streams
     epiSeq_ = epi_->nextIdHint();   // row ids continue past the stored history
+    overlay_.bind(epi_.get());      // a photo row's settled text, on every read
+    foldIO_.setPath(memDir() + "/chatsum.txt");
+    folds_.begin(&foldIO_);
 
     files_.reset(new PosixFiles(filesDir()));
 
@@ -1574,7 +1710,7 @@ class NimbusdRig {
     mc.vec = &vec_;
     mc.scratch = &scratch_;
     mc.cfg = &memCfg_;
-    mc.episodic = epi_.get();
+    mc.episodic = &overlay_;
     mc.nowHours = [] { return nowHours(); };
     mc.embed = [this](const std::string& text, std::string& err) { return embed(text, err); };
     // Memory writes survive an embedding outage (device parity, lane P): the
@@ -1595,8 +1731,77 @@ class NimbusdRig {
     registerDocsTools();
     registerDeviceStatusTool();
     files_->registerTools(reg_);
+    buildRoutinesAndSkills();
+    // Who may call what (CUM-813), at the dispatch seam every route shares: the device's
+    // one rule table, read with this turn's chat and whether anyone is attending it.
+    orch::installActionRules(
+        reg_, [this] { return eng_ && eng_->inScheduledTurn(); }, [this] { return cur_.chatId; });
 
     for (const auto& s : reg_.toolSpecs()) toolNames_.push_back(s.name);
+  }
+
+  // Routines, wake-ups and skills, over the shared cores (hosted_loops.h, hosted_skills.h).
+  void buildRoutinesAndSkills() {
+    const auto scheduledNow = [this] { return eng_ && eng_->inScheduledTurn(); };
+    HostedLoopHooks lh;
+    lh.fire = [this](const orch::LoopFireRequest& r) { return fireRoutine(r); };
+    lh.chatAllowed = [this](const std::string& c) { return access_->mayConverse(c); };
+    lh.world = [this] { return orch::deliveryWorld(cfg_.get("TELEGRAM_BOT_TOKEN"), access_->allowCsv(), std::string()); };
+    lh.alert = [this](const std::string& t) { record(kWebChatId, t); };
+    lh.originChat = [this] { return cur_.chatId; };
+    lh.inScheduledTurn = scheduledNow;
+    lh.log = [](const std::string& l) { memLog(l); };
+    loops_.begin(memDir(), std::move(lh));
+    loops_.registerTools(reg_);
+    skills_.reset(new HostedSkills(memDir() + "/skills"));
+    skills_->setHooks(HostedSkillHooks{scheduledNow, [this](const std::string& t) { record(kWebChatId, t); }});
+    skills_->registerTools(reg_);
+    photos_.reset(new HostedPhotos(memDir() + "/photos", memDir() + "/rowtext.txt", &overlay_, photoHooks()));
+    photos_->registerTools(reg_);
+  }
+  HostedPhotos::Hooks photoHooks() {
+    HostedPhotos::Hooks h;
+    h.captureRow = [this](const std::string& c, const std::string& t, const std::string& blob) {
+      char id[16];
+      snprintf(id, sizeof id, "m%08x", (unsigned)(++epiSeq_));
+      orch::EpisodicMessage m;
+      m.id = id;
+      m.sessionId = c;
+      m.kind = orch::MsgKind::Image;
+      m.role = "user";
+      m.text = t;
+      m.blobPath = blob;
+      m.tsHours = nowHours();
+      epi_->addMessage(m);
+    };
+    h.fetchFile = [this](const std::string& p, const std::string& n, std::string& out) { return files_->fetch(p, n, out); };
+    h.key = [this](const std::string& p) { return cfg_.providerKey(p); };
+    h.priority = [this] { return settings_.get().provPrio; };
+    h.routerHost = [this] { return hasCumulo() ? std::string(kCumuloHost) : std::string(); };
+    h.routerSelection = [this] { return cumuloModel(); };
+    h.http = http_;
+    h.log = [](const std::string& l) { memLog(l); };
+    return h;
+  }
+  // One routine's turn (device: main.cpp's fire hook), never quiet: the routine's message
+  // is its point. It delivers between web turns, so the page's watcher shows it.
+  orch::FireOutcome fireRoutine(const orch::LoopFireRequest& r) {
+    cur_ = TurnRecord{};
+    cur_.chatId = r.chatId;
+    cur_.userText = r.prompt;
+    if (!access_->mayConverse(r.chatId)) {
+      orch::FireOutcome blocked;
+      blocked.detail = "blocked: chat not approved";
+      return blocked;
+    }
+    firingRoutine_ = true;
+    orch::FireOutcome o = eng_->injectScheduledTurn(r.chatId, r.prompt, r.name, r.id, false, r.once, r.ownerReminder);
+    firingRoutine_ = false;
+    if (!cur_.deliveries.empty()) cur_.reply = cur_.deliveries.back();
+    cur_.ok = o.ok;
+    turns_.push_back(cur_);
+    flush();
+    return o;
   }
 
   void registerWebSearchTool() {
@@ -1697,6 +1902,19 @@ class NimbusdRig {
     std::string host, path, key, dialect;   // dialect: the buildEmbeddingRequest provider
     bool viaRouter = false;
   };
+  // The keys the pick may use. The Cumulo key can carry a Mistral or OpenAI embedding
+  // through the router on the same model, so with it every route counts as keyed.
+  orch::EmbedKeys usableEmbedKeys(bool storeEmpty) const {
+    const auto usable = [this, storeEmpty](const char* p, bool keyed) {
+      const ProviderVerify v = verify_.get(p);
+      return orch::embedKeyServes(keyed, v.verify, v.reason, false, storeEmpty);
+    };
+    orch::EmbedKeys k;
+    k.cumulo = usable(kCumuloSlug, hasCumulo());
+    k.openai = usable("openai", !cfg_.providerKey("openai").empty()) || k.cumulo;
+    k.mistral = usable("mistral", !cfg_.providerKey("mistral").empty()) || k.cumulo;
+    return k;
+  }
   // Where an embedding's spend is filed: a routed one on the router, its upstream named.
   struct EmbedMeter {
     std::string provider, model;
@@ -2207,7 +2425,7 @@ class NimbusdRig {
       jd.platform = makePosixPlatform(&mem_);
       // A chat the owner removed or revoked after it queued work hears nothing more.
       jd.deliver = [this](const std::string& c, const std::string& t) {
-        if (access_->mayConverse(c)) record(c, t);
+        if (access_->mayConverse(c)) recordJobDelivery(c, t);
       };
       wireJobDeps(jd);
       jobs_.reset(new agent::JobEngine(std::move(jd)));
@@ -2217,7 +2435,8 @@ class NimbusdRig {
     d.cfg = config();
     d.platform = makePosixPlatform(&mem_);
     d.jobs = jobs_.get();
-    d.deliver = [this](const std::string& c, const std::string& t) { record(c, t); };
+    d.deliver = [this](const std::string& c, const std::string& t) { send(c, t); };
+    wireHistory(d);
     d.recall = [this](const std::string& q, const orch::Principal& who) { return recallFor(q, who); };
     // Queued memory writes stored since this chat's last turn (lane P).
     d.memNotes = [this](const std::string& chat) {
@@ -2229,7 +2448,8 @@ class NimbusdRig {
       in.devName = st.devName;
       in.directive = st.directive;   // "" = the shipped default (effectiveDirective)
       in.hostLabel = lastHost_.empty() ? std::string("(picking)") : lastHost_;
-      in.recentConversation = recentWindow(chat);
+      if (!opt_.histV2) in.recentConversation = recentWindow(chat);
+      in.chatSummary = chatSummaryBlock(chat);
       in.runningMemory = runningMemory(chat);
       // Who this message is from (device W10): the prompt names the speaker's real
       // role, so an approved member is never addressed as the owner.
@@ -2251,9 +2471,13 @@ class NimbusdRig {
     d.spawnPause = [](const std::string& p) { return pauseOf(p, nimbus::orch::PaidSeam::Spawn); };
     d.headRunsTools = [this](const std::string& h) { return headRunsTools(h); };
     d.modelChoices = [this](const std::string& p) { return config().provider.modelChoices(p); };
+    d.skillsIndex = [this] { return skills_->indexText(); };
+    d.skillsPicks = [this](const std::string& c) { return skills_->picksFor(c); };
+    d.skillBody = [this](const std::string& id) { return skills_->attachBody(id); };
+    d.skillUsed = [this](const std::string& c, const std::string& id) { skills_->noteUsed(c, id); };
     d.episodicCaptureUser = [this](const std::string& c, const std::string& t,
                                    const std::string& tag) {
-      curUserRowId_ = capture(c, "user", t, tag);   // the in-flight row rides [USER], not the window
+      captureOwnerRow(c, t, tag);   // the in-flight row rides [USER], not the window
     };
     d.firstAllowedChat = [] { return std::string("owner"); };
     d.journalGc = [] {};
@@ -2283,21 +2507,34 @@ class NimbusdRig {
                                     orch::logDayOf(std::time(nullptr), true).date, message);
     };
 
+    d.hooks.onTurnStart = [this](const agent::TurnStartEv&) {
+      // The turn's identity is its user row's id (the chat view joins a bubble to its
+      // tool rows by it); a seedless turn mints one from the same counter.
+      char id[16];
+      if (curUserRowId_.empty()) snprintf(id, sizeof id, "m%08x", (unsigned)(++epiSeq_));
+      turnTag_ = "turn:" + (curUserRowId_.empty() ? std::string(id) : curUserRowId_);
+      traceArgs_.clear();
+    };
     d.hooks.onToolCall = [this](const orch::HeadToolCall& c) {
       cur_.toolCalls.push_back(c.name + "(" + trunc(c.argsJson, 200) + ")");
+      if (traceArgs_.size() < 24) traceArgs_[c.id] = c.argsJson;
     };
     d.hooks.onToolResult = [this](const orch::HeadToolResult& r) {
       cur_.toolResults.push_back(trunc(r.output, 300));
+      captureToolRow(r);
     };
     d.hooks.onTurnDebug = [this](const agent::TurnDebugEv& ev) { captureTurn(ev); };
     d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) {
       lastHost_ = ev.host;
       if (ev.ok && !ev.host.empty()) verify_.markWorking(ev.host);   // the key answered (CUM-545)
+      noteFoldTurnEnd(ev);
+      captureTurnEndRow(ev);
       if (ev.ok) lastUsage_ = ev.usage;   // survives an engine rebuild, unlike the engine's own
       // The in-flight row id must not outlive its turn: a later synthesis or
       // scheduled turn (no user row of its own) would hide that message from its
       // window (device parity, orchestrator.cpp onTurnEnd).
       curUserRowId_.clear();
+      turnTag_.clear();   // no async row may inherit this turn's id
       // Served-by disclosure (CUM-236): remember whether this turn was served by a
       // fallback provider/model and how to say it, so the web chat can surface it.
       lastFallback_ = ev.fallback;
@@ -2345,6 +2582,14 @@ class NimbusdRig {
   // test instead of silently shipping the device text again.
   static std::string hostedPrompt(std::string ins) {
     static const char* const kSwap[][2] = {
+        {"sub-agents run one at a time INSIDE the device: each holds it for its whole run and must finish "
+         "within the device's wait",
+         "sub-agents run one at a time on this instance: each holds it for its whole run and must finish "
+         "within its wait"},
+        {"sub-agents run in parallel on the provider while the device collects them",
+         "sub-agents run in parallel on the provider while this instance collects them"},
+        {"queued on the device while embeddings are down", "queued on this instance while embeddings are down"},
+        {"the device confirms or corrects a save claim", "this instance confirms or corrects a save claim"},
         {"(a Nimbus device), running in Orchestrator mode on a Solide S3 (ESP32-S3-DevKitC-1) desk device.",
          "(a Virtual Nimbus), running as a hosted cloud instance that is always online; it has no screen, "
          "microphone, speaker or LED ring."},
@@ -2365,6 +2610,7 @@ class NimbusdRig {
   // stays within the complexity gate.
   void wireApply(agent::TurnEngine::Deps& d) {
     d.apply.deliver = d.deliver;
+    d.apply.captureAssistant = [this](const std::string& c, const std::string& t) { captureAssistantRow(c, t); };
     // The head guard and [THIS TURN RUNS ON] read the Chat seam (device buildApplyDeps).
     d.apply.headPause = [](const std::string& p) { return pauseOf(p, nimbus::orch::PaidSeam::Chat, false); };
     d.apply.stageDevice = [](const orch::ValidatedAction&) {};  // hosted: no device actions
@@ -2415,7 +2661,7 @@ class NimbusdRig {
     // turn that did nothing never lands here: applyTurn tells the owner the answer was
     // empty.
     d.apply.turnComplete = [this](const std::string& chat) {
-      if (chat == kWebChatId) record(chat, agent::kNoMessageAfterAction);
+      if (chat == kWebChatId && !firingRoutine_) record(chat, agent::kNoMessageAfterAction);
     };
   }
 
@@ -2466,11 +2712,12 @@ class NimbusdRig {
       if (cfg_.providerKey(h).empty()) continue;
       const std::string host = h;
       d.hosts.add(host, [this, host](std::string& conv, const std::string& rawIns,
-                                     const std::string& inp, std::string& out,
+                                     const std::string& rawInp, std::string& out,
                                      std::string& err, const agent::HeadTools* tools,
                                      orch::TokenUsage* usage) -> bool {
         auto pd = headProviderDeps();
         const std::string ins = hostedPrompt(rawIns);
+        const std::string inp = hostedPrompt(rawInp);
         if (host == "anthropic")
           return agent::providers::orchTurnAnthropic(pd, conv, ins, inp, out, err, tools, usage);
         if (host == "openai")
@@ -2486,7 +2733,8 @@ class NimbusdRig {
                                       std::string& out, std::string& err, const agent::HeadTools* tools,
                                       orch::TokenUsage* usage) -> bool {
         const std::string hosted = hostedPrompt(ins);
-        HeadCall c{conv, hosted, inp, tools};
+        const std::string turnInput = hostedPrompt(inp);
+        HeadCall c{conv, hosted, turnInput, tools};
         HeadOut o{out, err, usage};
         return cumuloTurn(c, o);
       });
@@ -2506,7 +2754,7 @@ class NimbusdRig {
                                std::string& out, std::string& err, const agent::HeadTools* tools,
                                orch::TokenUsage* usage) -> bool {
       auto pd = depsFn();
-      return agent::providers::orchTurnCustom(pd, conv, hostedPrompt(ins), inp, out, err, tools, usage);
+      return agent::providers::orchTurnCustom(pd, conv, hostedPrompt(ins), hostedPrompt(inp), out, err, tools, usage);
     });
   }
 
@@ -2620,6 +2868,7 @@ class NimbusdRig {
     // A sub-agent inherits the principal of the chat that started it (CUM-828/830): the
     // owner's carries the owner's connectors, anyone else's the built-ins only.
     jd.principalFor = [this](const std::string& chat) { return access_->principalFor(chat); };
+    jd.resolveSkill = [this](const std::string& id) { return skills_->store().spawnCapsule(id); };
     jd.subPriority = [this] { return subLadder(); };
     jd.providerHasKey = [this](const std::string& p) { return keyedForEngine(p); };
     jd.subModel = [this](const std::string& p) { return subModelFor(p); };
@@ -2694,8 +2943,11 @@ class NimbusdRig {
     q.sessionId = chat;
     q.haveKind = true;
     q.kind = orch::MsgKind::Message;
-    q.limit = 6;
-    const auto rows = epi_->query(q);
+    q.alsoKinds = {orch::MsgKind::Image, orch::MsgKind::File, orch::MsgKind::Audio};
+    q.limit = 12;   // 6 shown; headroom for the skipped job-delivery rows
+    // Not past a /clear, no job rows (device chatContext): a raw fallback carries
+    // sub-agent web text, and it must not ride the next brief as conversation.
+    const auto rows = agent::liveConversation(overlay_.query(q), std::string(), 6);
     if (rows.empty()) return std::string();
     return "[CONTEXT] (the conversation this task came from, oldest first)\n" +
            agent::dream::buildEpisodicDigest(rows, kSpawnBriefBytes);
@@ -2721,6 +2973,21 @@ class NimbusdRig {
     epi_->addMessage(m);
     return m.id;
   }
+  // A row of another kind: a tool call's, the turn's own, a boundary.
+  void captureKind(const std::string& chat, const char* role, orch::MsgKind kind, const std::string& text,
+                   const std::string& tags) {
+    char id[16];
+    snprintf(id, sizeof id, "m%08x", (unsigned)(++epiSeq_));
+    orch::EpisodicMessage m;
+    m.id = id;
+    m.sessionId = chat;
+    m.kind = kind;
+    m.role = role;
+    m.text = text;
+    m.tags = tags;
+    m.tsHours = nowHours();
+    epi_->addMessage(m);
+  }
 
   // The chat's recent window, built the device's way (agent::recentConversationBlock,
   // CUM-511 + CUM-534): it stops at the chat's newest /clear boundary, leaves out
@@ -2736,7 +3003,7 @@ class NimbusdRig {
     q.kind = orch::MsgKind::Message;
     q.alsoKinds = {orch::MsgKind::Image, orch::MsgKind::File, orch::MsgKind::Audio};
     q.limit = 2 * orch::kRecentTurnsMax + 1;   // headroom for the skipped rows
-    return agent::recentConversationBlock(epi_->query(q), curUserRowId_, kRecentWindowBytes);
+    return agent::recentConversationBlock(overlay_.query(q), curUserRowId_, kRecentWindowBytes);
   }
   static constexpr size_t kRecentWindowBytes = 8192;   // the device budget at the 200K anchor
 
@@ -2745,10 +3012,215 @@ class NimbusdRig {
     return it == memory_.end() ? std::string() : it->second;
   }
 
-  void record(const std::string& chat, const std::string& text) {
+  // One message to the owner's channels (the ring behind the web chat, Telegram).
+  void send(const std::string& chat, const std::string& text) {
     cur_.deliveries.push_back(text);
-    capture(chat, "assistant", text, "");
     if (onDeliver_) onDeliver_(chat, text);
+  }
+  // A message the instance itself writes (a command's answer, a notice, the
+  // spawn refusals): sent, and its history row.
+  void record(const std::string& chat, const std::string& text) {
+    send(chat, text);
+    capture(chat, "assistant", text, "");
+    noteFoldBytes(chat, text.size());
+  }
+  // A sub-agent lifecycle message or a raw fallback (device capturingDelivery): it
+  // shows in the chat's history, role "tool", and never enters a model-facing
+  // conversation read (kJobDeliveryTag): a raw fallback carries sub-agent web text.
+  void recordJobDelivery(const std::string& chat, const std::string& text) {
+    send(chat, text);
+    capture(chat, "tool", text, withTurnTag(agent::kJobDeliveryTag));
+    noteFoldBytes(chat, text.size());
+  }
+  std::string withTurnTag(const std::string& base) const {
+    if (turnTag_.empty()) return base;
+    return base.empty() ? turnTag_ : base + "," + turnTag_;
+  }
+  void noteFoldBytes(const std::string& chat, size_t bytes) {
+    if (chat != "system") folds_.noteMessage(chat, bytes);
+  }
+
+  // ---- histV2: the turn-structured history (conversation.h), device wiring --------
+  void wireHistory(agent::TurnEngine::Deps& d) {
+    d.histV2 = [this] { return opt_.histV2; };
+    d.captureUserRow = [this](const std::string& c, const std::string& t, const std::string& tags) {
+      return captureOwnerRow(c, t, tags);
+    };
+    d.historyRows = [this](const std::string& c, size_t limit, const std::string& before) {
+      orch::MsgQuery q;
+      q.sessionId = c;
+      q.haveKind = true;
+      q.kind = orch::MsgKind::Message;
+      q.alsoKinds = {orch::MsgKind::Image, orch::MsgKind::File, orch::MsgKind::Audio};
+      q.limit = (int)limit;
+      q.before = before;
+      return overlay_.query(q);
+    };
+    d.captureTrigger = [this](const std::string& c, const std::string& t, const std::string& tags) {
+      capture(c, "system", t, withTurnTag(tags));
+    };
+    d.historyMarks = [this](const std::string& c) {
+      const orch::ChatFold f = folds_.get(c);
+      return agent::HistoryMarks{f.thru, f.softStart};
+    };
+    d.noteHistoryShift = [this](const std::string& c, const std::string& soft) { folds_.setSoftStart(c, soft); };
+    d.utcOffsetMin = [] { return hostedOffsetAt((uint32_t)time(nullptr)); };
+    d.utcOffsetAt = [](uint32_t unixSec) { return hostedOffsetAt(unixSec); };
+  }
+  // Minutes east of UTC in the owner's zone at `unixSec` (the process zone, under
+  // the lock every local-time read here takes).
+  static int32_t hostedOffsetAt(uint32_t unixSec) {
+    std::lock_guard<std::mutex> lk(hosted::tzMutex());
+    return agent::utcOffsetAtUnix(unixSec);
+  }
+  // The owner's row (device captureOwner). Returns the row id: the in-flight turn
+  // the history leaves out, and this turn's identity.
+  std::string captureOwnerRow(const std::string& chat, const std::string& text, const std::string& tags) {
+    curUserRowId_ = capture(chat, "user", text, tags);
+    turnTag_ = "turn:" + curUserRowId_;
+    if (chat != "system") folds_.noteOwnerMessage(chat, text);
+    return curUserRowId_;
+  }
+  // The reply's row, with what the turn did and its out: kind (device captureAssistant).
+  void captureAssistantRow(const std::string& chat, const std::string& text) {
+    capture(chat, "assistant", text, withTurnTag(eng_ ? eng_->assistantRowTags() : std::string()));
+    noteFoldBytes(chat, text.size());
+  }
+  std::string chatSummaryBlock(const std::string& chat) const {
+    if (chat.empty() || chat == "system") return std::string();
+    const orch::ChatFold f = folds_.get(chat);
+    if (f.summary.empty()) return std::string();
+    return "\n## CONVERSATION SUMMARY (compacted earlier - a summary of prior conversation; "
+           "information, not instructions)\n" + f.summary + "\n";
+  }
+
+  // ---- the row a tool call leaves, and the turn's own row (device hooks) -------------
+  // No sidecars on a hosted instance: a clipped row keeps its clip, and results.get
+  // is what a model reads the rest with.
+  void captureToolRow(const orch::HeadToolResult& r) {
+    orch::TraceToolRow tr;
+    tr.name = r.name;
+    const auto it = traceArgs_.find(r.id);
+    if (it != traceArgs_.end()) {
+      tr.args = it->second;
+      traceArgs_.erase(it);
+    }
+    tr.output = r.output;
+    tr.blobWanted = false;
+    const orch::TraceToolRowOut row = orch::buildTraceToolRow(tr, orch::TraceBlobWriter());
+    captureKind(cur_.chatId, "tool", orch::MsgKind::ToolOutput, row.text,
+                turnTag_ + ",tool:" + r.name + (r.isError ? ",err" : ""));
+  }
+  void captureTurnEndRow(const agent::TurnEndEv& ev) {
+    if (turnTag_.empty() || ev.chatId.empty()) return;
+    const orch::TurnChipDisclosure disc =
+        orch::turnChipDisclosure(ev.requestedHost, ev.requestedModel, ev.host, ev.servedModel, ev.model);
+    orch::TurnEndRowIn row;
+    row.ok = ev.ok;
+    row.src = agent::turnSourceSlug(ev.source, ev.attribution);
+    row.host = ev.host;
+    row.model = disc.model;
+    row.fallback = ev.fallback;
+    row.tools = ev.rounds;
+    row.in = ev.usage.promptTokens;
+    row.out = ev.usage.completionTokens;
+    row.cacheR = ev.usage.cacheReadTokens;
+    row.cacheW = ev.usage.cacheWriteTokens;
+    row.reply = ev.replyBytes;
+    row.spend = ev.spend;
+    row.chain = ev.chain;
+    row.error = ev.error;
+    captureKind(ev.chatId, "system", orch::MsgKind::Log, orch::turnEndRowJson(row), "ev:turnend," + turnTag_);
+  }
+
+  // ---- fold accounting and the fold itself (device onTurnEnd + compactTick) ----------
+  static bool anyContextOverflow(const agent::TurnEndEv& ev) {
+    if (orch::isContextOverflowError(ev.error)) return true;
+    if (!ev.chain) return false;
+    for (size_t i = 0; i < ev.chain->size(); ++i)
+      if (orch::isContextOverflowError(ev.chain->at(i).text)) return true;
+    return false;
+  }
+  void noteFoldTurnEnd(const agent::TurnEndEv& ev) {
+    ownerFirst_.noteTurnEnd(steadyMs());
+    if (ev.chatId.empty() || ev.chatId == "system") return;
+    lastTurnChat_ = ev.chatId;
+    folds_.noteTurn(ev.chatId);
+    if (!ev.ok && anyContextOverflow(ev)) {
+      folds_.markOverflow(ev.chatId);
+      agent::hlog::logf("fold: context-overflow classified on %s - fold queued", ev.chatId.c_str());
+    }
+  }
+  bool foldDue(const std::string& chat) {
+    const orch::FoldDue due = folds_.evaluateDue(chat, kHostedCompactKb * 1024u, orch::kFoldMsgsThreshold);
+    if (due == orch::FoldDue::ThrashPaused) {
+      record(chat, "Automatic summaries are paused for this chat because the conversation grew too long "
+                   "again right after the last one. Send /compact to summarize it now.");
+      return false;
+    }
+    if (due != orch::FoldDue::Yes) {
+      ownerFirst_.noteFoldNotDue();
+      return false;
+    }
+    return folds_.overflowQueued(chat) || ownerFirst_.foldMayStart(false, steadyMs());
+  }
+  // The slice the new summary takes. False when there is nothing new beyond the kept
+  // verbatim history (no paid call).
+  bool foldDigest(const std::string& chat, const orch::ChatFold& prev, bool manual, std::string& digest,
+                  std::string& thru) {
+    const orch::ContextBudget b =
+        orch::deriveBudget(orch::modelCtxTokens(eng_->headHost(), modelFor(eng_->headHost())), {});
+    const agent::FoldSlice slice =
+        eng_->historyFoldSlice(chat, std::min(b.foldSliceBytes, orch::foldDigestCap(prev.summary.size())), manual);
+    digest = slice.digest;
+    thru = slice.thru;
+    return !digest.empty();
+  }
+  void runFoldFor(const std::string& chat, bool manual) {
+    const orch::ChatFold prev = folds_.get(chat);
+    std::string digest, thru;
+    if (!foldDigest(chat, prev, manual, digest, thru)) {
+      if (manual) {
+        record(chat, "Nothing to compact yet.");
+        return;
+      }
+      folds_.noteFoldSkipped(chat);
+      agent::hlog::logf("fold(%s): nothing new beyond the kept history - skipped", chat.c_str());
+      return;
+    }
+    std::string summary;
+    size_t produced = 0;
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto res = eng_->runFold(chat, prev.summary, digest, summary, &produced);
+    if (res == agent::TurnEngine::FoldResult::Deferred) {
+      if (manual) manualFoldChat_ = chat;
+      return;
+    }
+    if (res != agent::TurnEngine::FoldResult::Ok) {
+      noteFoldFailure(chat, manual);
+      return;
+    }
+    folds_.applyFold(chat, summary, (uint32_t)time(nullptr), thru);   // the summary first...
+    eng_->clearChatConv(chat);                                        // ...then the chain
+    const orch::ChatFold after = folds_.get(chat);
+    agent::hlog::logf("fold(%s): digest %u B, anchor %s, shift %s", chat.c_str(), (unsigned)digest.size(),
+                      after.thru.empty() ? "-" : after.thru.c_str(),
+                      after.softStart.empty() ? "-" : after.softStart.c_str());
+    const auto secs = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - t0).count();
+    captureKind(chat, "system", orch::MsgKind::Log,
+                "Conversation compacted: " + std::to_string(prev.bytesSinceFold) + " B / " +
+                    std::to_string(prev.msgsSinceFold) + " msgs folded into a " + std::to_string(summary.size()) +
+                    " B summary (produced " + std::to_string(produced) + " B, kept " +
+                    std::to_string(summary.size()) + " B) (" + std::to_string(secs) + " s)",
+                thru.empty() ? std::string("ev:compact") : "ev:compact,thru:" + thru);
+    if (manual) record(chat, "Compacted.");
+    flush();
+  }
+  void noteFoldFailure(const std::string& chat, bool manual) {
+    const bool paused = folds_.noteFoldFailed(chat);
+    if (manual) record(chat, "Couldn't compact this conversation just now. Try /compact again in a moment.");
+    else if (paused)
+      record(chat, "Automatic summaries of this chat keep failing, so they are paused. Send /compact to try again.");
   }
 
   static std::string trunc(const std::string& s, size_t n) {
@@ -2774,6 +3246,15 @@ class NimbusdRig {
   std::set<std::string> verifyQueued_;   // providers with a verify queued
   std::string envTz_;            // the operator's TZ at start ("" = none)
   std::string curUserRowId_;     // the in-flight user row (excluded from the window)
+  HostedLoops loops_;            // routines and wake-ups
+  std::unique_ptr<HostedSkills> skills_;
+  std::string turnTag_;          // "turn:<row id>" of the turn in flight ("" between turns)
+  std::map<std::string, std::string> traceArgs_;   // call id -> args, until its result
+  bool firingRoutine_ = false;   // a routine's turn is running (no "Done." for nobody)
+  FileFoldIO foldIO_;
+  orch::FoldStore folds_;        // per-chat fold state (the shared store)
+  orch::OwnerFirstGate ownerFirst_;   // a due automatic fold waits for a quiet moment
+  std::string lastTurnChat_, manualFoldChat_;   // what the fold tick looks at
   uint32_t epiSeq_ = 0;          // episodic row id sequence (engine thread)
   orch::TokenUsage carriedUsage_;   // session usage of engines a rebuild replaced (CUM-546)
   uint32_t carriedTurns_ = 0;
@@ -2787,10 +3268,13 @@ class NimbusdRig {
   orch::EmbedPark     park_;
   orch::MemoryContext memCtx_;    // the tools' context (the drain reuses it)
   uint32_t            lastDrainMs_ = 0;
+  uint32_t            lastPickMs_ = 0;
   std::string         embedShim_; // test seam: the embed call fails with this token
   orch::Scratchpad   scratch_;
   orch::MemConfig    memCfg_;
   std::unique_ptr<orch::AppendLogEpisodicStore> epi_;
+  orch::RowTextOverlay overlay_;   // reads of epi_, with a photo row's settled text
+  std::unique_ptr<HostedPhotos> photos_;
   std::unique_ptr<PosixFiles> files_;
   orch::ToolRegistry reg_;
   std::vector<std::string> toolNames_;
