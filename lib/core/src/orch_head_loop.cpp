@@ -275,17 +275,10 @@ size_t newestRoundBytes(const Transcript& tr) {
 // tool rounds folded to one-line stubs, then - only when nothing else frees room -
 // the newest round's results clipped (why it matters: body_budget.h). True when
 // something was reclaimed and a re-run can fit.
-bool refitToBudget(const HeadStep& sr, const HeadLoopHooks& hooks, int round) {
-  size_t budget = 0, size = 0;
-  if (sr.ok || !hooks.transcript || !parseBodyBudgetError(sr.error, budget, size) || size <= budget)
-    return false;
-  Transcript& tr = *hooks.transcript;
-  const size_t have = tr.toolBytes();
-  const size_t newest = newestRoundBytes(tr);
-  const size_t over = size - budget;
-  const size_t want = over + (have > newest ? kBudgetRefitSlack : kBudgetClipSlack);
-  const size_t cap = have > want ? have - want : 1;   // trimToolOutputs(0) means no cap
-  const char* what = "the replayed tool rounds";
+// The next rung of the ladder that gives anything up; `what` names it for the log.
+size_t refitOneRung(Transcript& tr, const HeadLoopHooks& hooks, size_t want, size_t cap, size_t newest,
+                    const char*& what) {
+  what = "the replayed tool rounds";
   size_t freed = tr.stubArguments(kArgStubOver);
   // foldOlderRounds(newest) folds every older round and never clips the newest:
   // the fold lands the replay exactly on the cap, but a host whose byte
@@ -293,11 +286,29 @@ bool refitToBudget(const HeadStep& sr, const HeadLoopHooks& hooks, int round) {
   // seen yet (a CI run clipped |end7| that way) - a still-over re-run refuses
   // again and the third rung clips with the honest last-resort cap.
   if (freed == 0 && cap < newest) freed = tr.foldOlderRounds(newest);
+  if (freed) return freed;
   // Round 0, or nothing left to fold: the prompt's older history before any result
   // the model has not read (Lumi, 1 Nov: 90519 B at round 0 with 0 B to fold).
-  if (freed == 0 && hooks.fitPrompt && (freed = hooks.fitPrompt(want, false)) != 0) what = "the older history";
-  if (freed == 0) freed = tr.trimToolOutputs(cap);
-  if (freed == 0 && hooks.fitPrompt && (freed = hooks.fitPrompt(want, true)) != 0) what = "the prompt and input";
+  if (hooks.fitPrompt && (freed = hooks.fitPrompt(want, false)) != 0) {
+    what = "the older history";
+    return freed;
+  }
+  if ((freed = tr.trimToolOutputs(cap)) != 0) return freed;
+  if (hooks.fitPrompt && (freed = hooks.fitPrompt(want, true)) != 0) what = "the prompt and input";
+  return freed;
+}
+
+bool refitToBudget(const HeadStep& sr, const HeadLoopHooks& hooks, int round) {
+  size_t budget = 0, size = 0;
+  if (sr.ok || !hooks.transcript || !parseBodyBudgetError(sr.error, budget, size) || size <= budget)
+    return false;
+  Transcript& tr = *hooks.transcript;
+  const size_t have = tr.toolBytes();
+  const size_t newest = newestRoundBytes(tr);
+  const size_t want = (size - budget) + (have > newest ? kBudgetRefitSlack : kBudgetClipSlack);
+  const size_t cap = have > want ? have - want : 1;   // trimToolOutputs(0) means no cap
+  const char* what = "";
+  const size_t freed = refitOneRung(tr, hooks, want, cap, newest, what);
   if (hooks.log)
     hooks.log("headloop: round " + std::to_string(round) + " body " + std::to_string(size) + " B over the " +
               std::to_string(budget) + " B budget - folded " + std::to_string(freed) + " B of " + what +
