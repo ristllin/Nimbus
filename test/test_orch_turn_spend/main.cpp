@@ -367,6 +367,32 @@ static void test_served_notes_are_bounded_and_newest_wins() {
   TEST_ASSERT_EQUAL_STRING("", nimbus::orch::lastServedModel().host.c_str());
 }
 
+// QW6 on HFM's line: when the device knows only a "-latest" alias (no list names the model behind
+// it yet), the line says it is an alias and forbids a version from memory (Lumi, 26 Oct: "Mistral
+// Large 2"); a resolved alias, a plain id and HFM2's two endings are unchanged.
+static void test_the_line_forbids_a_guessed_version_only_for_an_unresolved_alias() {
+  using nimbus::orch::runsOnLine;
+  const std::string only = " When asked which model you run, name this one only.\n";
+  const std::string why =
+      " When asked which model you run, name this one and say why the chosen head is not running this turn.\n";
+  const std::string alias = std::string(" ") + nimbus::orch::kRunsOnAliasNote;
+  TEST_ASSERT_EQUAL_STRING(("[THIS TURN RUNS ON] mistral / mistral-large-latest." + alias + only).c_str(),
+                           runsOnLine("mistral", "mistral-large-latest", "", "").c_str());
+  TEST_ASSERT_EQUAL_STRING(("[THIS TURN RUNS ON] mistral / mistral-large-latest." + alias + only).c_str(),
+                           runsOnLine("mistral", "mistral-large-latest", "mistral-large-latest", "").c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      ("[THIS TURN RUNS ON] mistral / mistral-large-2512 (asked for mistral-large-latest)." + only).c_str(),
+      runsOnLine("mistral", "mistral-large-latest", "mistral-large-2512", "").c_str());
+  TEST_ASSERT_EQUAL_STRING(("[THIS TURN RUNS ON] anthropic / claude-haiku-5-5." + only).c_str(),
+                           runsOnLine("anthropic", "claude-haiku-5-5", "", "").c_str());
+  const std::string fact = "Anthropic, the chosen head, is out of credit and returns automatically once credit is added.";
+  TEST_ASSERT_EQUAL_STRING(("[THIS TURN RUNS ON] mistral / mistral-small-latest." + alias + " " + fact + why).c_str(),
+                           runsOnLine("mistral", "mistral-small-latest", "", fact).c_str());
+  TEST_ASSERT_EQUAL_STRING(("[THIS TURN RUNS ON] openai / gpt-5.6-sol (asked for gpt-5.6). " + fact + why).c_str(),
+                           runsOnLine("openai", "gpt-5.6", "gpt-5.6-sol", fact).c_str());
+  TEST_ASSERT_EQUAL_STRING(("[THIS TURN RUNS ON] custom." + only).c_str(), runsOnLine("custom", "", "", "").c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_property_every_response_filed_once_under_its_host);
@@ -377,5 +403,6 @@ int main() {
   RUN_TEST(test_openai_cache_write_tokens_parsed);
   RUN_TEST(test_each_slot_names_the_model_that_answered);
   RUN_TEST(test_served_notes_are_bounded_and_newest_wins);
+  RUN_TEST(test_the_line_forbids_a_guessed_version_only_for_an_unresolved_alias);
   return UNITY_END();
 }

@@ -21,7 +21,8 @@ Legs (the head is the LAN mock unless noted, so the replies are fixed and cost n
   T3  voice replies switched off: the same reply is corrected, nothing is delivered for a
       tts-only turn is NOT asserted here (the owner's ruling: a silent no-op, host-tested).
   T4  the speaker cannot play (``FAULT speaker``), so the action falls back to Telegram: a text of
-      about 900 characters in a script with 2-byte letters is cut on a character boundary, voiced
+      about 1,000 characters whose 400-byte bound falls inside a 2-byte letter, in a long word with
+      no space or sentence end to cut at, is cut hard just before that letter (399 bytes), voiced
       as one voice message whose Telegram message id is in the log, Telegram confirms the message
       exists, and the reply says the spoken version was shortened (and is NOT corrected: a voice
       message with a receipt backs "read it aloud").
@@ -109,22 +110,27 @@ RUNS_ON_RE = re.compile(
     re.M,
 )
 LASTTURN_HOST_RE = re.compile(r"^host: (\S+)$", re.M)
+ALIAS_NOTE = "That is an alias: add no version, size or family from memory."  # served_model.h kRunsOnAliasNote
 
 
 def runs_on(page: str) -> dict:
     """The per-turn line of a /api/lastturn page: its host, its model (the concrete id when the
-    device knows one), the model asked for (the same when they do not differ) and the chosen-head
-    fact ("" when the chosen head ran the turn). {} when the page holds no line."""
+    device knows one), the model asked for (the same when they do not differ), whether it carries
+    the unresolved-alias note, and the chosen-head fact ("" when the chosen head ran the turn).
+    {} when the page holds no line."""
     m = RUNS_ON_RE.search(page)
     if not m:
         return {}
     rest = m.group("rest")
     cut = rest.find(" When asked which model you run")
+    fact = (rest[:cut] if cut >= 0 else rest).strip()
+    alias = fact.startswith(ALIAS_NOTE)
     return {
         "host": m.group("host"),
         "model": m.group("model"),
         "asked": m.group("asked") or m.group("model"),
-        "fact": (rest[:cut] if cut >= 0 else rest).strip(),
+        "alias": alias,
+        "fact": fact[len(ALIAS_NOTE) :].strip() if alias else fact,
     }
 
 
@@ -147,10 +153,21 @@ def closed_head_named_honestly(reply: str, head_model: str, real_model: str) -> 
 
 
 def valid_utf8_prefix(prefix: str, whole: str) -> bool:
-    """`prefix` is a prefix of `whole` that does not end inside a character (Python strings
-    are code points, so a prefix of the decoded text is whole characters by construction; the
-    UTF-8 byte length is what the device bounds)."""
+    """`prefix` is a prefix of `whole` within the device's 400-byte bound. (A decoded Python
+    string is whole characters by construction; hard_cut_inside_a_letter is what shows the device
+    did not cut inside one.)"""
     return whole.startswith(prefix) and len(prefix.encode("utf-8")) <= 400
+
+
+def hard_cut_inside_a_letter(prefix: str, whole: str) -> bool:
+    """The voiced prefix stopped at a multi-byte letter that straddles the 400-byte bound: it is
+    under 400 bytes, the next character of the whole text is multi-byte and runs past byte 400.
+    A byte cut would have kept a dangling lead byte (the decoded row would not be a prefix)."""
+    if not whole.startswith(prefix) or len(prefix) >= len(whole):
+        return False
+    size = len(prefix.encode("utf-8"))
+    nxt = len(whole[len(prefix)].encode("utf-8"))
+    return size < 400 and nxt > 1 and size + nxt > 400
 
 
 def ran_host(lines: list) -> str:
@@ -400,9 +417,15 @@ def test_t4_the_fallback_delivers_a_cut_text_with_a_receipt(telegram_fallback):
     assert len(whole.encode("utf-8")) > 800
     log, tts_lines, reply, voiced, t0 = _long_turn_with_retry(be, whole[:24])
     assert tts_lines, f"no device[tts...] line; tail: {log[-15:]}"
-    # history holds what was voiced (the cut text), as its own row: a whole character prefix of the text
+    # history holds what was voiced (the cut text), as its own row: a whole character prefix of the text,
+    # cut hard just before the 2-byte letter that straddles the 400-byte bound (the text has no space or
+    # sentence end to cut at there), so a byte cut would have split that letter
     assert len(voiced) == 1 and valid_utf8_prefix(voiced[0], whole), (
         f"the voiced row is not a cut of the text: {voiced!r}"
+    )
+    assert hard_cut_inside_a_letter(voiced[0], whole), (
+        f"the cut is not the hard one before the straddling letter: {len(voiced[0].encode('utf-8'))} B, "
+        f"next {whole[len(voiced[0]) : len(voiced[0]) + 1]!r}"
     )
     m = TG_FALLBACK_RE.search(tts_lines[-1])
     assert m, f"the action did not report a Telegram delivery: {tts_lines}"

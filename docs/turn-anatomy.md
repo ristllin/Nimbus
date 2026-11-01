@@ -361,7 +361,9 @@ The per-turn input opens with one line naming what the request runs on, so the m
 can answer "which model are you?" exactly: `[THIS TURN RUNS ON] mistral /
 mistral-large-2512 (asked for mistral-large-latest).` The model is the one that provider
 last answered with for that alias since the device started (else the alias resolved through
-its stored list), and "(asked for ...)" appears only when the two differ. When the chosen
+its stored list), and "(asked for ...)" appears only when the two differ. When the device knows
+only a `-latest` alias (no list names the model behind it yet), the line adds "That is an
+alias: add no version, size or family from memory." When the chosen
 head is not the one answering and something holds it off, one sentence says what and when
 it comes back: paused by the owner, by the owner's monthly limit or by the overall spending
 limit, out of credit, its key refused, a request refused with HTTP 403 (back when it is

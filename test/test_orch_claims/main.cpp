@@ -1738,6 +1738,8 @@ static void test_a_reported_total_or_an_estimate_is_not_a_save_claim() {
       "(1,652 logged so far)",
       "Your total is 1,652 kcal logged so far today.",
       "You are at 1,652 kcal logged, with 700 left.",
+      "You're at 1,652 kcal logged so far today.",
+      "So far you're at 1,652 kcal logged.",
   };
   for (const char* reply : replies) {
     TurnEffects none;   // nothing was saved this turn
@@ -1766,6 +1768,11 @@ static void test_a_real_save_claim_still_gets_its_correction() {
       "52 kcal logged, so you're at 1,652 kcal logged so far.",                          // the first one is fresh
       "Logged 156 kcal for the eggs, you're at 1,652 kcal logged so far.",
       "You're on 1,652 kcal and 52 kcal logged.",
+      // The assistant as the participle's subject beside a total (QW6 rebase review): a save claim.
+      "You're at 1,652 kcal after I logged the eggs.",
+      "You're at 1,652 kcal and I've logged 156 kcal for the eggs.",
+      "You're at 1,652 kcal so far and I have logged the eggs.",
+      "So far you're at 1,652 kcal, and we logged the eggs.",
   };
   for (const char* reply : replies) {
     TurnEffects none;
