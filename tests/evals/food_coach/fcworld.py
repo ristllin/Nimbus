@@ -61,11 +61,15 @@ def ledger_rows(rows: list[list]) -> list[list]:
     return [[m, " + ".join(items), k, p] for m, items, k, p in meals.values()]
 
 
-def build_log_csv(rows: list[list], today: dt.date, columns: str) -> str:
-    """The ledger text the device holds for `today`; `rows` are ledger rows."""
+def build_log_csv(rows: list[list], today: dt.date, columns: str, earlier: list[list] | None = None) -> str:
+    """The ledger text the device holds for `today`; `rows` are ledger rows. A protein of None
+    is an empty cell (unknown, not 0 g). `earlier` rows carry their days_ago first."""
     out = [columns]
+    for days_ago, meal, items, kcal, protein in earlier or []:
+        day = today - dt.timedelta(days=days_ago)
+        out.append(f"{day.isoformat()},{meal},{items},{_num(kcal)},{_num_or_blank(protein)}")
     for meal, items, kcal, protein in rows:
-        out.append(f"{today.isoformat()},{meal},{items},{_num(kcal)},{_num(protein)}")
+        out.append(f"{today.isoformat()},{meal},{items},{_num(kcal)},{_num_or_blank(protein)}")
     return "\n".join(out) + "\n"
 
 
@@ -80,10 +84,14 @@ def _num(x: float) -> str:
     return str(int(x)) if float(x).is_integer() else f"{x:.1f}"
 
 
+def _num_or_blank(x: float | None) -> str:
+    return "" if x is None else _num(x)
+
+
 def fact_values(scn: dict, cfg: dict) -> dict:
     """The numbers the scenario's facts may mention."""
     rows = world_rows(scn)
-    kcal, protein = sum(r[2] for r in rows), sum(r[3] for r in rows)
+    kcal, protein = sum(r[2] for r in rows), sum(r[3] or 0 for r in rows)
     t = cfg["targets"]
     remaining = t["kcal"] - kcal
     return {
@@ -168,9 +176,16 @@ def run_payload(scn: dict, cfg: dict, today: dt.date) -> dict:
     return {
         "profile": {"directive": directive, "clock": True},
         "seed": {
-            "files": [{"path": LOG_PATH, "text": build_log_csv(world_rows(scn), today, log_sets()["columns"])}],
+            "files": [
+                {
+                    "path": LOG_PATH,
+                    "text": build_log_csv(world_rows(scn), today, log_sets()["columns"], world.get("earlier_rows")),
+                }
+            ]
+            + world.get("extra_files", []),
             "skills": skill_seed(world.get("skills", [])),
-            "memory": memory_seed(cfg),
+            # A scenario about where a target comes from starts with none in memory.
+            "memory": [] if world.get("no_memory_targets") else memory_seed(cfg),
             "history": world.get("history", []),
             "prefs": world.get("prefs", []),
             "summary": world.get("summary", ""),

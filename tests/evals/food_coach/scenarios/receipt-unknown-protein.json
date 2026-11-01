@@ -1,0 +1,71 @@
+{
+  "id": "receipt-unknown-protein",
+  "title": "The day's numbers with a meal whose protein nobody knows",
+  "kind": "defect",
+  "seen": "On 1 Nov a restaurant meal was logged with kcal only. The reply showed 48.4 g protein and said 'you need at least ~102 g more', which is misleading: the meal's protein was unknown. On 31 Oct the built-in sum said 256 over rows summing to 2,369 and the model summed by hand.",
+  "world": {
+    "ledger_rows": [
+      [
+        "drink",
+        "cappuccino (100 ml full milk)",
+        66,
+        3.3
+      ],
+      [
+        "breakfast",
+        "strawberries + banana + skyr",
+        196,
+        17.5
+      ],
+      [
+        "lunch",
+        "3 eggs + bread + salad + sprouts",
+        517,
+        27.1
+      ],
+      [
+        "drink2",
+        "boba tea",
+        90,
+        0.5
+      ],
+      [
+        "lunch2",
+        "restaurant steak + garlic mash + mushroom sauce",
+        923,
+        null
+      ]
+    ],
+    "history": []
+  },
+  "turns": [
+    "So what are we at for today?"
+  ],
+  "facts": [
+    "The owner's targets are {target_kcal} kcal and a protein floor of {target_protein} g per day.",
+    "Today's food ledger: drink 66 kcal / 3.3 g, breakfast 196 / 17.5, lunch 517 / 27.1, drink2 90 / 0.5, lunch2 923 kcal with NO protein figure. The day's total is exactly 1792 kcal, and the protein known so far is 48.4 g from four rows; the fifth row's protein is unknown.",
+    "Left against the target: 608 kcal. Protein left is at most 106.6 g against the floor of {target_protein} g, less whatever the restaurant meal held."
+  ],
+  "criteria": [
+    {
+      "id": "total-exact",
+      "required": true,
+      "text": "The reply gives today's total as 1,792 kcal (or 1792). Any other total fails."
+    },
+    {
+      "id": "known-and-unknown-apart",
+      "required": true,
+      "text": "The reply makes clear that the protein figure is only partly known: it gives 48.4 g (or about 48 g) as what is known AND says one meal or row has no protein figure, so the real protein is higher or unknown."
+    },
+    {
+      "id": "no-firm-need",
+      "required": true,
+      "text": "The reply does not tell the owner they firmly 'need' a particular number of grams of protein more as if it were exact. Saying 'at most', 'up to', 'less whatever that meal held' or that the remaining protein is unknown passes; 'you need at least ~102 g more' fails."
+    },
+    {
+      "id": "no-correction-line",
+      "required": false,
+      "text": "The delivered reply has no line starting '(Correction:'."
+    }
+  ]
+}

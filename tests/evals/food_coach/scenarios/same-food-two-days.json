@@ -1,0 +1,49 @@
+{
+  "id": "same-food-two-days",
+  "title": "The same food gets the same estimate across days",
+  "kind": "defect",
+  "seen": "The same no-milk boba: 225 kcal on 29 Oct, 90 kcal on 1 Nov, each with its own confident sum and no word about the other.",
+  "world": {
+    "earlier_rows": [
+      [
+        3,
+        "drink",
+        "Boba tea no milk no sugar + honey tapioca",
+        225,
+        1
+      ]
+    ],
+    "ledger_rows": [
+      [
+        "breakfast",
+        "skyr + berries",
+        147,
+        17.2
+      ]
+    ],
+    "history": []
+  },
+  "turns": [
+    "Had a boba black tea, no sugar, no milk. The tapioca was sweet though"
+  ],
+  "facts": [
+    "Three days ago the ledger logged the same drink (boba tea, no milk, no sugar, honey tapioca) at 225 kcal and 1 g protein. That row is in the ledger file."
+  ],
+  "criteria": [
+    {
+      "id": "logged",
+      "required": true,
+      "text": "The tool calls show a files.append writing a row for the boba tea to food/food-log.csv."
+    },
+    {
+      "id": "consistent",
+      "required": true,
+      "text": "The row's kcal is between 170 and 280 (the earlier 225, give or take a quarter), OR the reply says plainly that this differs from the earlier 225 kcal and says which figure it kept and why."
+    },
+    {
+      "id": "estimate-honest",
+      "required": false,
+      "text": "The reply states the figure as an estimate or as reused from the earlier row."
+    }
+  ]
+}

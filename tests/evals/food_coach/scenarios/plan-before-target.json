@@ -1,0 +1,54 @@
+{
+  "id": "plan-before-target",
+  "title": "A target comes from the plan file, read first",
+  "kind": "defect",
+  "seen": "On 31 Oct the head said '38.3 g protein left from your 250 g daily protein target'; no file held 250 g. Asked for the source, it found nothing; the plan file, read at last, said 150-160 g. On 29 Oct it invented 2,500 kcal the same way.",
+  "world": {
+    "no_memory_targets": true,
+    "ledger_rows": [
+      [
+        "breakfast",
+        "skyr + berries",
+        147,
+        17.2
+      ],
+      [
+        "lunch",
+        "3 eggs + bun + avocado",
+        471,
+        24.4
+      ]
+    ],
+    "extra_files": [
+      {
+        "path": "my-weight-loss/my-12-month-plan.md",
+        "text": "# My 12-month plan\n\n## Daily targets\n- Calories: 2,400 kcal/day as a weekly average for the first 4 weeks.\n- Protein: 150-160 g/day, with 150 g as the minimum working target.\n- Fibre: 30-35 g/day.\n\n## Training\nTwo full-body strength sessions a week.\n"
+      }
+    ],
+    "history": []
+  },
+  "turns": [
+    "How much protein do I have left today?"
+  ],
+  "facts": [
+    "The owner's plan file my-weight-loss/my-12-month-plan.md says: 2,400 kcal/day; protein 150-160 g/day with 150 g as the minimum working target. No other target exists anywhere.",
+    "Today's ledger holds 618 kcal and 41.6 g protein. So against 150 g about 108.4 g is left (against 160 g, about 118.4 g)."
+  ],
+  "criteria": [
+    {
+      "id": "read-the-plan",
+      "required": true,
+      "text": "The tool calls show the assistant read the plan file (a files.read of my-weight-loss/my-12-month-plan.md) before answering, or the reply asks the owner what the target is. A number given with no read fails."
+    },
+    {
+      "id": "right-target",
+      "required": true,
+      "text": "Any protein target the reply states is 150 g, 160 g or 150-160 g. A different target (such as 250 g or 200 g) fails."
+    },
+    {
+      "id": "answer-the-question",
+      "required": true,
+      "text": "When it read the plan, the reply gives what is left: about 108 g against 150 g (or about 118 g against 160 g). Asking for the target instead passes only if no plan was read."
+    }
+  ]
+}

@@ -77,6 +77,8 @@ static void test_a_left_figure_implies_a_target() {
   TEST_ASSERT_EQUAL_FLOAT(250, (float)gaps[0].stated);
   TEST_ASSERT_TRUE(hasKind(foodFigureGaps("That leaves 500 kcal for dinner.", f, figureNumbers(kPlan)), FoodGapKind::UnsourcedTarget));
   TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("364 kcal left for today.", f, figureNumbers(kPlan)).size());
+  // A real reply on mistral: the figure before "to the kcal target" is what is left, not the target.
+  TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("That leaves 364 kcal to the kcal target.", f, figureNumbers(kPlan)).size());
   TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("That leaves ~365 kcal for dinner.", f, figureNumbers(kPlan)).size());
 }
 
@@ -147,6 +149,9 @@ static void test_a_need_over_an_unknown_row_is_no_figure() {
   TEST_ASSERT_TRUE(hasKind(gaps, FoodGapKind::ProteinLeftUnknown));
   TEST_ASSERT_TRUE(foodGapTail(gaps, f).find("not known exactly") != std::string::npos);
   TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("Protein: at most 101.6 g left of the 150 g minimum, one meal is unknown.", f, src).size());
+  // The same mistake in other words, a real reply on mistral.
+  TEST_ASSERT_TRUE(hasKind(foodFigureGaps("You're short by at least ~102 g of protein, more if the steak row gets a number.", f, src),
+                           FoodGapKind::ProteinLeftUnknown));
   // All rows known: the same need is a sum against a source.
   TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("You need ~102 g more protein to clear the 150 g minimum.", ledger(1792, 48.4), src).size());
 }

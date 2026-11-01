@@ -140,12 +140,17 @@ bool macroSentence(const std::vector<Tok>& toks) {
 // Is this number a daily figure the sentence can be read about?
 bool foodUnit(const Tok& t, bool macros) { return t.unit == Unit::Kcal || (t.unit == Unit::Gram && macros); }
 
-bool skipBetween(const Tok& t) {
-  return t.number ? false
-                  : oneOf(t.word, {"g", "gm", "gram", "grams", "kcal", "kcals", "cal", "cals", "calorie", "calories",
-                                   "daily", "day", "per", "protein", "fat", "fibre", "fiber", "carb", "carbs", "plan's",
-                                   "of", "is", "at", "was", "to", "for", "set", "a", "the", "your", "my", "as", "minimum",
-                                   "stated", "current", "working", "original", "it", "that"});
+// What may stand between a figure and the target word it names: "2,400 kcal daily target".
+bool skipBefore(const Tok& t) {
+  return !t.number && oneOf(t.word, {"g", "gm", "gram", "grams", "kcal", "kcals", "cal", "cals", "calorie", "calories", "daily",
+                                     "day", "per", "protein", "fat", "fibre", "fiber", "carb", "carbs", "stated", "current",
+                                     "working", "original", "minimum"});
+}
+
+// "target of 2,400 kcal", "protein target: 150 g", "adjusted it to 2,500".
+bool skipAfter(const Tok& t) {
+  return skipBefore(t) || (!t.number && oneOf(t.word, {"of", "is", "at", "was", "to", "for", "set", "a", "the", "your", "my",
+                                                       "as", "it", "that", "plan's"}));
 }
 
 struct Stated {
@@ -166,7 +171,7 @@ std::vector<Stated> figuresOfTarget(const std::vector<Tok>& toks, size_t i, bool
         out.push_back({toks[back - 2].value, t.unit});
       return out;
     }
-    if (!skipBetween(t)) break;
+    if (!skipBefore(t)) break;
   }
   for (size_t fwd = i + 1; fwd < toks.size() && fwd - i <= 5; fwd++) {
     const Tok& t = toks[fwd];
@@ -179,7 +184,7 @@ std::vector<Stated> figuresOfTarget(const std::vector<Tok>& toks, size_t i, bool
       }
       return out;
     }
-    if (!skipBetween(t)) break;
+    if (!skipAfter(t)) break;
   }
   return out;
 }
@@ -246,7 +251,7 @@ bool leftAt(const std::vector<Tok>& toks, size_t i) {
   for (size_t b = i; b > 0 && i - b < 4; b--) {
     const Tok& t = toks[b - 1];
     if (t.number) break;
-    if (oneOf(t.word, {"leaves", "leaving", "remaining", "need", "needs", "needed"})) return true;
+    if (oneOf(t.word, {"leaves", "leaving", "remaining", "need", "needs", "needed", "short"})) return true;
   }
   return false;
 }

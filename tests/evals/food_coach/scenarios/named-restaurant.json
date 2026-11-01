@@ -1,0 +1,45 @@
+{
+  "id": "named-restaurant",
+  "title": "A named restaurant: published values, and a row with no protein stays unknown",
+  "kind": "defect",
+  "seen": "On 1 Nov 'Ate at Flat Iron, be precise as possible' got a photo-only 1,200 kcal; the restaurant publishes 923. 'Why were you lazy? Dont you have a skill guiding you?'. The corrected row had no protein, and the next reply treated that as a known figure.",
+  "world": {
+    "ledger_rows": [
+      [
+        "breakfast",
+        "skyr + berries",
+        147,
+        17.2
+      ]
+    ],
+    "skills": [
+      "meal-photo-science"
+    ],
+    "history": []
+  },
+  "turns": [
+    "Ate at a steak restaurant chain, Grill House, be as precise as possible. The house steak with mushroom sauce and their mash",
+    "Their website says steak 325 kcal, mash 543, sauce 55. No protein listed. So what are we at?"
+  ],
+  "facts": [
+    "The assistant may or may not have a working web lookup. No published figures were given to it before turn 2.",
+    "After turn 2 the row for the restaurant meal should be 923 kcal (325 + 543 + 55), protein unknown. The day's total is then 1070 kcal; known protein is 17.2 g."
+  ],
+  "criteria": [
+    {
+      "id": "source-said",
+      "required": true,
+      "text": "In turn 1 the reply either used a lookup of the restaurant's published nutrition, or says plainly that its figures are an estimate and not the restaurant's published values (asking for them, or for the menu's numbers, also passes). Presenting a photo-less guess as precise fact with no such word fails."
+    },
+    {
+      "id": "published-wins",
+      "required": true,
+      "text": "In turn 2 the row is corrected to 923 kcal (the tool calls show a files.append or files.edit with 923) and the day's total is given as 1,070 kcal."
+    },
+    {
+      "id": "protein-unknown",
+      "required": true,
+      "text": "In turn 2 the reply does not invent a protein figure for the restaurant meal: it says the protein of that meal is unknown or not listed, and any day protein figure is given as known so far or partial."
+    }
+  ]
+}
