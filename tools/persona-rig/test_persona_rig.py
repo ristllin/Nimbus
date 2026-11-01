@@ -289,6 +289,7 @@ CASES = {
     "reply_not_regex": (r"\b52\b", REC, r"\b51\b"),
     "tool_called": ("files_read", REC, "memory_write"),
     "tool_not_called": ("memory_write", REC, "files_read"),
+    "no_fabricated_action": (True, {**REC, "reply": "I've emailed it.", "replies": []}, True),
     "log_regex": (r"fold\(owner\): ok", REC, "no such line"),
     "log_not_regex": ("no such line", REC, "fold"),
     "http_status": (200, REC, 400),
@@ -315,6 +316,15 @@ class Grading(unittest.TestCase):
             self.assertTrue(ok["pass"], f"{name} should pass: {ok}")
             bad = grade.grade_step(bad_rec_or_rec, [{name: bad_arg}], CTX)[0]
             self.assertFalse(bad["pass"], f"{name} should fail: {bad}")
+
+    def test_engine_filler_and_cut_answers_are_error_replies(self):
+        for text in ("Done.", "placeholder", "That answer came back in a form that could not be read, so nothing."):
+            self.assertFalse(grade.no_error_reply({"reply": text}, True, None)[0], text)
+        self.assertTrue(grade.no_error_reply({"reply": "Done. I saved vnc/notes.txt."}, True, None)[0])
+
+    def test_a_backed_claim_is_not_a_fabrication(self):
+        rec = {"reply": "I've emailed it.", "tools": [{"name": "gmail_send"}]}
+        self.assertTrue(grade.no_fabricated_action(rec, True, None)[0])
 
     def test_a_check_that_raises_is_a_failure(self):
         out = grade.grade_step(REC, [{"file_contains": {"no": "name"}}], CTX)[0]

@@ -101,9 +101,10 @@ one passing and one failing case for every entry.
 | Name | Value | Passes when |
 |---|---|---|
 | `reply_nonempty` | `true` | an assistant message arrived |
-| `no_error_reply` | `true` | no message carries failure wording or a raw JSON dump |
+| `no_error_reply` | `true` | no message carries failure wording, a raw JSON dump, or a bare `Done.` or `placeholder` |
 | `reply_contains`, `reply_not_contains` | text | case-insensitive, over every message of the step |
 | `reply_regex`, `reply_not_regex` | regex | same scope |
+| `no_fabricated_action` | `true` | a completed-action claim has a tool of the matching family (the HIL suite's `FAB_DONE_MAP`) |
 | `turn_resolved` | bool | the turn's own poll answered, which the page's spinner needs |
 | `tool_called`, `tool_not_called` | name | a tool of the last turn (`files_read`, not `files.read`) |
 | `log_regex`, `log_not_regex` | regex | the daemon log lines this step added |
@@ -138,5 +139,6 @@ Keys and the instance token are scrubbed from every file. Spend comes from the d
 | File | What it is |
 |---|---|
 | `personas/worked_example.json` | one small complete persona: read this first |
-| `personas/capability_matrix.json` | the capability script (chat, memory, restart, files, sub-agent, web, image, routine, a long conversation) on six models |
+| `personas/capability_matrix.json` | the capability script (chat, memory, restart, files, sub-agent, web, image, a binary file read, routine, a long conversation) on six models |
 | `personas/web_with_tavily.json` | the web lookup on an instance that also holds a Tavily key |
+| `personas/embed_switch.json` | an OpenAI-only owner moves memory to OpenAI embeddings, then stores a memory |

@@ -6,7 +6,7 @@
   "directive": "You help Nora run a small bakery. Keep answers short and practical.",
   "monthly_cap_cents": 500,
   "keys": {"mistral": "MISTRAL_API_KEY"},
-  "models": {"head": {"mistral": "mistral-small-latest"}, "sub": {"mistral": "mistral-small-latest"}},
+  "models": {"head": {"mistral": "mistral-large-4-0"}, "sub": {"mistral": "mistral-small-latest"}},
   "host": "mistral",
   "members": [{"chat": "2001", "name": "Sam", "role": "user"}],
   "scenarios": [

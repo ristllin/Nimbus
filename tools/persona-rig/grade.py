@@ -13,13 +13,15 @@ from __future__ import annotations
 
 import json
 import re
+import sys
+from pathlib import Path
 
 # What the engine says when a turn did not produce a real answer. A reply holding one
 # of these was delivered, but it is a failure notice, not an answer.
 ERROR_REPLY_RE = re.compile(
     r"that didn'?t finish|couldn'?t start that agent|needs credits|no provider key|"
     r"rate limit|try again (later|in)|something went wrong|ran out of|request failed|"
-    r"\bHTTP \d{3}\b|^\s*\{\s*\"",
+    r"\bHTTP \d{3}\b|^\s*\{\s*\"|could not be read|\A\s*(done|placeholder)\.?\s*\Z",
     re.I | re.M,
 )
 
@@ -100,6 +102,25 @@ def log_not_regex(rec, arg, _ctx):
     return m is None, _seen(m.group(0)) if m else f"no match in {len(text)} log bytes"
 
 
+def _fabrication_map() -> list:
+    """The HIL suite's claim families: (claim phrases, tool names that back them)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "hil"))
+    from scenarios_complex import FAB_DONE_MAP
+
+    return FAB_DONE_MAP
+
+
+def no_fabricated_action(rec, _arg, _ctx):
+    """A completed-action claim ("email sent") needs a tool of the matching family this turn."""
+    text = _reply_text(rec).lower()
+    names = " ".join(_tool_names(rec)).lower()
+    for phrases, families in _fabrication_map():
+        for phrase in phrases:
+            if phrase in text and not any(f in names for f in families):
+                return False, f"claims {phrase!r} with tools: {_tool_names(rec)}"
+    return True, f"tools: {_tool_names(rec)}"
+
+
 def http_status(rec, arg, _ctx):
     got = rec.get("http", {}).get("status")
     return got == arg, f"status {got}"
@@ -172,6 +193,7 @@ ASSERTIONS = {
     "reply_not_regex": reply_not_regex,
     "tool_called": tool_called,
     "tool_not_called": tool_not_called,
+    "no_fabricated_action": no_fabricated_action,
     "log_regex": log_regex,
     "log_not_regex": log_not_regex,
     "http_status": http_status,
