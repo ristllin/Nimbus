@@ -2044,7 +2044,7 @@ static const char kSayWhy[] =
 // The cached prompt carries no model claim of any shape (v4.6.1): not the line, not the old
 // static identity sentence, not the old catalog line, not the chosen-head fact.
 static void assertNoModelClaim(const std::string& instructions, const char* tag) {
-  for (const char* claim : {"THIS TURN RUNS ON", "Your brain right now", "[YOUR MODEL]", "the chosen head"})
+  for (const char* claim : {"THIS TURN RUNS ON", "Your brain right now", "[YOUR MODEL]", "the chosen head", "That is an alias"})
     TEST_ASSERT_TRUE_MESSAGE(instructions.find(claim) == std::string::npos, tag);
 }
 
@@ -2229,6 +2229,39 @@ static void test_the_per_turn_line_names_the_open_host_while_the_head_is_capped(
                                               kOnlyThis),
                                tag.c_str());
     }
+  nimbus::orch::clearServedModels();
+}
+
+// QW6R, on EFF's plain conversational turn (the shape most owner messages take): what the provider
+// answered with changes between two turns, and only the input may change. The cached prompt stays
+// byte for byte, the line carries the new id, and an unresolved "-latest" alias adds the no-guessing
+// note in the input alone.
+static void test_runtime_model_facts_change_the_input_and_never_the_cached_prompt() {
+  for (int fabric = 0; fabric < 2; fabric++) {
+    const char* tag = fabric ? "fabric" : "single shot";
+    nimbus::orch::clearServedModels();
+    Rig r;
+    r.cfg.toolLoop = fabric != 0;
+    r.cfg.midFail = fabric != 0;
+    r.cfg.orchModels["anthropic"] = "acme-large-latest";
+    r.eng->handleMessage("hi", "Roy", "1001");
+    TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("plain conversational turn"), tag);
+    const std::string aliasOnly = firstInput(r, fabric != 0);
+    TEST_ASSERT_TRUE_MESSAGE(startsWith(aliasOnly, std::string("[THIS TURN RUNS ON] anthropic / acme-large-latest. ") +
+                                                       nimbus::orch::kRunsOnAliasNote + kOnlyThis),
+                             (std::string(tag) + ": " + aliasOnly.substr(0, 200)).c_str());
+    const std::string first = r.debug.back().instructions;
+    assertNoModelClaim(first, tag);
+    nimbus::orch::noteServedModel("anthropic", "acme-large-latest", "acme-large-2512");
+    r.attempts.clear();
+    r.eng->handleMessage("hi", "Roy", "1001");
+    const std::string resolved = firstInput(r, fabric != 0);
+    TEST_ASSERT_TRUE_MESSAGE(startsWith(resolved, std::string("[THIS TURN RUNS ON] anthropic / acme-large-2512 (asked "
+                                                              "for acme-large-latest).") +
+                                                      kOnlyThis),
+                             (std::string(tag) + ": " + resolved.substr(0, 200)).c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(first.c_str(), r.debug.back().instructions.c_str(), tag);
+  }
   nimbus::orch::clearServedModels();
 }
 
@@ -5373,6 +5406,7 @@ static void runSecondHalf() {
   RUN_TEST(test_the_per_turn_line_names_the_open_host_while_the_head_is_parked);
   RUN_TEST(test_the_per_turn_line_names_a_403_head_with_its_recheck);
   RUN_TEST(test_the_per_turn_line_names_the_open_host_while_the_head_is_capped);
+  RUN_TEST(test_runtime_model_facts_change_the_input_and_never_the_cached_prompt);
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);
   RUN_TEST(test_owner_reminder_gets_reminder_framing_not_wakeup);

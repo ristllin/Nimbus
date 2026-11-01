@@ -122,7 +122,7 @@ def test_the_expected_words_are_the_ones_the_firmware_produces():
     assert "(Note: the spoken version was shortened to the first " in notes
     m = SHORTENED_RE.search("(Note: the spoken version was shortened to the first 380 of its 895 characters.)")
     assert (m.group(1), m.group(2)) == ("380", "895")
-    assert '"(Note: that could not be spoken aloud" + (admin ? ": " + why : std::string()) + ".)"' in apply_cpp
+    assert '"\\n\\n(Note: that could not be spoken aloud: " + why + ".)"' in apply_cpp
 
 
 def device_speech_cut(text: str, max_bytes: int = 400) -> str:

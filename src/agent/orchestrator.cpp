@@ -1800,6 +1800,7 @@ static void registerDeviceControl() {
         std::string out = "applied: " + dev.summary;
         if (!dev.refusals.empty()) out += "\nnot applied: " + dev.refusals;
         if (!risk.empty()) out += risk;
+        out += dev.replyNote;   // the head relays it: this path has no reply of its own to ride
         return nimbus::orch::ToolResult::ok(out);
       },
       R"JS({"type":"object","properties":{"action":{"type":"object","description":"one device[] element, verbatim (config/led/lights/tts)"}},"required":["action"]})JS");

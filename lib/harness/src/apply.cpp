@@ -396,7 +396,7 @@ void applyStaged(const ValidatedAction& va, const char* name, const ApplyDeps& d
 
 DeviceOutcome applyDeviceAction(const std::string& json, const nimbus::orch::Principal& who,
                                 bool unattended, const std::string& chatId, const ApplyDeps& d,
-                                std::string* riskNote, std::string* replyNote) {
+                                std::string* riskNote) {
   // One device[] element: validate + check WHO asked + policy-strip + execute.
   // Shared by the end-of-turn device[] loop below AND the mid-turn
   // `device.control` registry tool, so both paths carry the IDENTICAL security
@@ -435,7 +435,7 @@ DeviceOutcome applyDeviceAction(const std::string& json, const nimbus::orch::Pri
     // whenever the owner seemed nearby (voice input), and this gate bypass meant there was
     // NO way to mute it. When OFF the action is a silent no-op - the text reply still
     // delivers on its own channel.
-    case ActionKind::Tts:       out.summary += applyTts(va, chatId, d, replyNote ? replyNote : riskNote); break;
+    case ActionKind::Tts:       out.summary += applyTts(va, chatId, d, &out.replyNote); break;
     case ActionKind::Led:       applyStaged(va, "led", d, out); break;
     case ActionKind::Lights:    applyStaged(va, "lights", d, out); break;
     // Reboot reaches here only on the owner's attended turn: a scheduled loop must
@@ -451,7 +451,10 @@ DeviceOutcome applyDeviceAction(const std::string& json, const nimbus::orch::Pri
 std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
                                const std::string& chatId, const ApplyDeps& d,
                                std::string* riskNote, std::string* replyNote) {
-  return applyDeviceAction(json, d.whoFor(chatId), scheduledTurn, chatId, d, riskNote, replyNote).summary;
+  const DeviceOutcome out = applyDeviceAction(json, d.whoFor(chatId), scheduledTurn, chatId, d, riskNote);
+  if (replyNote) *replyNote += out.replyNote;
+  else if (riskNote) *riskNote += out.replyNote;
+  return out.summary;
 }
 
 // Two texts compared as the owner would read them: runs of whitespace collapsed.
@@ -552,8 +555,9 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // mid-turn `device.control` tool's engine).
   std::string devSummary;
   for (const auto& da : t.device) {
-    const DeviceOutcome dev = applyDeviceAction(da.json, who, st.scheduledTurn, chatId, d, &st.riskNote, &st.replyNote);
+    const DeviceOutcome dev = applyDeviceAction(da.json, who, st.scheduledTurn, chatId, d, &st.riskNote);
     const std::string& one = dev.summary;
+    st.replyNote += dev.replyNote;
     devSummary += one;
     // A part the caller rule refused reaches the head next turn in plain words:
     // nothing is dropped in silence (CUM-813).

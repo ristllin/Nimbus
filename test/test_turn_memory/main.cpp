@@ -131,9 +131,11 @@ struct Rig {
     d.apply.principalFor = [](const std::string& chat) {
       return orch::principalForRole(chat, orch::Role::Admin);
     };
-    d.apply.speak = [this](const std::string& t) {   // the device's sink notes what was heard
+    d.apply.speak = [this](const std::string&, const std::string& t) {   // the device's sink notes what was heard
       spoken.push_back(t);
-      if (speakHeard) eng->noteSpoke();
+      if (!speakHeard) return orch::SpeakOutcome::failed("the speaker could not play it");
+      eng->noteSpoke();
+      return orch::SpeakOutcome::spoke();
     };
     d.apply.captureAssistant = [this](const std::string& c, const std::string& t) {
       maybeThrow("reply");
@@ -957,8 +959,9 @@ static void test_a_web_fire_spoke_only_once_its_row_was_written() {
 }
 
 // Speech marks the fire only through the device's sink, when something was heard or a
-// voice note was sent: a sink that sent nothing leaves it unanswered (the one-shot
-// keeps its short retry); one that reports it heard is an answer.
+// voice note was sent: a sink that sent nothing leaves it unanswered, and writes no spoken
+// row (so nothing can fail after it); one that reports it heard is an answer, whatever
+// fails after it.
 static void test_speech_is_an_answer_only_when_heard() {
   static const char* kSpeakOnly =
       "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\",\"device\":[{\"type\":\"tts\",\"text\":\"Time for tea.\"}]}";
@@ -967,13 +970,13 @@ static void test_speech_is_an_answer_only_when_heard() {
     r.cfg.tts = true;   // the owner's "Voice replies" toggle
     r.hostOut = kSpeakOnly;
     r.speakHeard = heard == 1;
-    r.throwAt = "reply";   // the spoken line's history row, written after the speech
+    r.throwAt = "reply";   // the spoken line's history row, written after the speech (nothing voiced: none)
     const orch::FireOutcome o = fireOneShot(r, 2);
-    TEST_ASSERT_TRUE(r.throwAt.empty());
+    TEST_ASSERT_EQUAL(heard == 1, r.throwAt.empty());
     TEST_ASSERT_EQUAL(1, (int)r.spoken.size());
-    TEST_ASSERT_FALSE(o.ok);
+    TEST_ASSERT_EQUAL(heard == 0, o.ok);
     TEST_ASSERT_EQUAL(heard == 1, o.answered);
-    TEST_ASSERT_EQUAL((int)(heard ? orch::OnceAfterFire::Retire : orch::OnceAfterFire::RetryShort), onceVerdict(o));
+    if (heard) TEST_ASSERT_EQUAL((int)orch::OnceAfterFire::Retire, onceVerdict(o));
   }
 }
 
@@ -986,8 +989,7 @@ static void test_device_hand_overs_note_the_spoke() {
   TEST_ASSERT_TRUE_MESSAGE(send != std::string::npos && note != std::string::npos, "files.send notes the spoke");
   TEST_ASSERT_TRUE(note < files.find("ToolResult::ok(\"queued \"", send));
   const std::string main = readSource("src/main.cpp");
-  TEST_ASSERT_TRUE_MESSAGE(main.find("if (agent::voicereply::deliver(chat, text).notesSent > 0) "
-                                     "agent::orchestrator::noteTurnSpoke();") != std::string::npos,
+  TEST_ASSERT_TRUE_MESSAGE(main.find("if (o.notesSent > 0) agent::orchestrator::noteTurnSpoke();") != std::string::npos,
                            "the speak sink's Telegram fallback notes a note that arrived");
   const std::string orch = readSource("src/agent/orchestrator.cpp");
   const size_t played = orch.find("if (!::sfx::awaitReplyStart(");

@@ -219,6 +219,7 @@ struct DeviceOutcome {
   std::string summary;      // the token(s): "cfg ", "reboot-refused(scheduled) ", ...
   bool refusedWhole = false;   // the caller rule refused the element as a whole
   std::string refusals;     // every part the caller rule refused, in plain words ("" = none)
+  std::string replyNote;    // a note that only rides a message the owner already gets (speech cut short)
 };
 
 // Validate + check who asked + policy-strip + execute ONE device[] element (raw
@@ -227,16 +228,15 @@ struct DeviceOutcome {
 // caller's Principal (the turn's chat, or the tool dispatch's), `unattended` the
 // turn's flag (routine, wakeup, dream, results synthesis, system turn); the rule
 // table (nimbus/orch/action_rules.h) decides each action and config knob. Appends
-// any owner-visible note to *riskNote when non-null. A note that must only ride a message
-// the owner is already getting (speech cut short) goes to *replyNote when given, else to
-// *riskNote.
+// any owner-visible note to *riskNote when non-null.
 DeviceOutcome applyDeviceAction(const std::string& json, const nimbus::orch::Principal& who,
                                 bool unattended, const std::string& chatId, const ApplyDeps& d,
-                                std::string* riskNote, std::string* replyNote = nullptr);
+                                std::string* riskNote);
 
 // The same for the turn's own chat (the caller is d.whoFor(chatId)), returning the
 // summary token(s): a convenience for host rigs and tests (the firmware calls
 // applyDeviceAction).
+// DeviceOutcome::replyNote goes to *replyNote when given, else to *riskNote.
 std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
                                const std::string& chatId, const ApplyDeps& d,
                                std::string* riskNote, std::string* replyNote = nullptr);
