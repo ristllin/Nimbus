@@ -559,7 +559,8 @@ std::string renderFoodIntentHint(FoodIntent intent) {
              "otherwise open with one sentence that gives the numbers.\n";
     case FoodIntent::Complaint:
       return "[THIS MESSAGE] says something you gave was wrong: the reply opens with one short sentence "
-             "owning it, then the corrected answer; write no row.\n";
+             "owning it, then the corrected answer at once: no list of what went wrong, no apology after it, no other "
+             "mistake brought up; write no row.\n";
     case FoodIntent::Unclear: break;
   }
   return std::string();

@@ -290,7 +290,9 @@ const Part kFoodLog[] = {
      "   recipe differs. Off by more than a quarter: say so and say which you kept.\n"
      "10. A photo estimate: name each item, get grams from a visible scale (plate, hand,\n"
      "   pack), use per-100 g values, and count oil, butter and sauce. Protein you do not\n"
-     "   know stays an empty cell, never 0, and is said to be unknown.\n"},
+     "   know stays an empty cell, never 0, and is said to be unknown. When published or\n"
+     "   owner's figures replace an estimate and give no protein, the cell goes empty:\n"
+     "   your old estimate does not stay next to them.\n"},
 };
 
 // The food coach (lane CTX, the food-coach eval's findings): attached to a food turn
