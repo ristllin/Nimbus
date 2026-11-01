@@ -410,8 +410,9 @@ static void test_gap_matrix_every_class_against_every_effect_kind() {
       {ClaimClass::Saved, "Logged it.",
        {FxKind::MemWrite, FxKind::MemUpdate, FxKind::MemPin, FxKind::FileWrite, FxKind::SkillSave,
         FxKind::Scratch}},
-      // R4: a note is also backed by a scratchpad write (even a RAM-only one).
-      {ClaimClass::Saved, "Noted.",
+      // R4: a note is also backed by a scratchpad write (even a RAM-only one). The bare
+      // "Noted." was this case until the claim corpus: it is an acknowledgement now.
+      {ClaimClass::Saved, "Noted in your memory.",
        {FxKind::MemWrite, FxKind::MemUpdate, FxKind::MemPin, FxKind::FileWrite, FxKind::SkillSave,
         FxKind::Scratch, FxKind::ScratchRamOnly}},
       {ClaimClass::Deliverable, "The packing list is written and waiting whenever you want it.",
@@ -686,7 +687,7 @@ static void test_durability_against_the_scratchpad_outcome() {
   TEST_ASSERT_TRUE(gapOf(gaps, ClaimClass::Durable));
   TEST_ASSERT_NOT_EQUAL(std::string::npos, claimTail(gaps).find("until the next restart"));
   // "noted" alone is backed by the RAM-only write (R4): it IS noted, until restart.
-  TEST_ASSERT_EQUAL(0, (int)gapsFor("Noted.", ram).size());
+  TEST_ASSERT_EQUAL(0, (int)gapsFor("Noted in your memory.", ram).size());
   // A durable store that landed the same turn may be what "survives" refers to
   // (a permanent memory written alongside a RAM-only note): precision first.
   for (FxKind store : {FxKind::MemWrite, FxKind::MemUpdate, FxKind::MemPin, FxKind::FileWrite,
@@ -720,6 +721,32 @@ static void test_spawn_count_must_be_met() {
     fx.add(FxKind::SpawnRefused, false);
     TEST_ASSERT_EQUAL_MESSAGE(n < 6, gapOf(gapsFor(reply, fx), ClaimClass::Spawned), reply);
   }
+}
+
+// ---- the real replies: tests/evals/claim_corpus/noted.json --------------------------------
+static void test_claim_corpus_noted() {
+  std::FILE* f = std::fopen("tests/evals/claim_corpus/noted.json", "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, "the corpus is read from the project root");
+  std::string text;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+  std::fclose(f);
+  JsonDocument doc;
+  TEST_ASSERT_TRUE(deserializeJson(doc, text) == DeserializationError::Ok);
+  int rows = 0;
+  for (JsonObjectConst row : doc.as<JsonArrayConst>()) {
+    const std::string owner = row["owner"] | "", reply = row["reply"] | "";
+    const bool expect = row["claim"] | false;
+    const ClaimScan scan = scanClaims(reply, ownerAskedHow(owner), ownerAskedKeep(owner));
+    TurnEffects none;
+    ClaimEvidence ev;
+    ev.fx = &none;
+    const bool gap = !claimGaps(reply, scan, ev).empty();
+    TEST_ASSERT_EQUAL_MESSAGE(expect, gap, reply.c_str());
+    rows++;
+  }
+  TEST_ASSERT_TRUE(rows >= 15);
 }
 
 static void test_lane_n_zai_shape_noted_with_nothing_stored() {
@@ -1918,6 +1945,7 @@ int main(int, char**) {
   RUN_TEST(test_never_decay_needs_a_pin_or_a_permanent_write);
   RUN_TEST(test_spawn_count_must_be_met);
   RUN_TEST(test_lane_n_zai_shape_noted_with_nothing_stored);
+  RUN_TEST(test_claim_corpus_noted);
   RUN_TEST(test_figure_property_over_random_tables);
   RUN_TEST(test_owner_reported_figures_may_come_from_recalled_memories_label_figures_may_not);
   RUN_TEST(test_unsourced_result_needs_a_hedge_or_a_lookup);

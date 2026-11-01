@@ -39,6 +39,7 @@ enum CueFlag : uint32_t {
   kSrcOn      = 1u << 16,  // source: "on the <noun>" credits it ("on the label"; never "on the menu")
   kSrcHeading = 1u << 17,  // source: an instrument naming a reading by itself ("Rain gauge: 3.0 mm")
   kSrcName    = 1u << 18,  // source: credits the NAME after it ("Source: National Rail Enquiries")
+  kAck        = 1u << 21,  // saved: an acknowledgement unless it says or was asked to keep it (bareAck)
 };
 
 // What a source credited by name looks like (kSrcName cues keep it in Cue::backs).
@@ -103,7 +104,7 @@ constexpr Cue kCues[] = {
     {C::Saved, "logged", kLogFileObject | kLogSense, 0},
     {C::Saved, "logged", kLogSense, kSavedBacks},
     {C::Saved, "saved", 0, kSavedBacks},
-    {C::Saved, "noted", 0, kNotedBacks},
+    {C::Saved, "noted", kAck, kNotedBacks},
     {C::Saved, "stored", 0, kSavedBacks},
     {C::Saved, "recorded", kSelf | kNoPassive | kLogSense, kSavedBacks},
     {C::Saved, "added to memory", 0, kSavedBacks},
@@ -712,6 +713,8 @@ struct Scan {
   // The owner asked how something works or is done ("how do I ...?"): an instrument a
   // reply EXPLAINS is not claimed as read (precision over recall, the review).
   bool ownerAskedHow = false;
+  // The owner asked for something to be kept ("remember ..."): "Noted." then answers that.
+  bool ownerAskedKeep = false;
   explicit Scan(const std::string& str) : s(str), n(str.size() < kScanMax ? str.size() : kScanMax) {}
 };
 
@@ -1293,9 +1296,34 @@ bool reportedTotal(const Scan& sc, size_t i) {
   return !assistantIsSubject(sc, i) && figureBefore(sc, i) && (progressAfter(sc, i) || progressBefore(sc, i));
 }
 
-// A save cue in a reference: a system log noun, a standing total, a qualified participle, or
-// earlier work named in the sentence.
+// "Noted." is how a model says "I read that". On a hosted instance it drew "(Correction: that
+// has not been saved.)" on 18 of 20 turns of a long chat, and nobody had asked for anything to be
+// saved. It claims a save only when the owner asked for one, or its own sentence speaks of
+// keeping it ("Noted, I'll remember"), and not when that sentence takes it back ("noted for this
+// conversation only, not stored"). tests/evals/claim_corpus/noted.json holds the real replies.
+constexpr const char* kKeepWords[] = {"remember", "remembered", "memory", "memories", "stored", "store", "storing", "saved",
+                                      "save", "saving", "permanent", "permanently", "forever", "file", "notes", "log", "logged"};
+constexpr const char* kNotKept[] = {"not", "nothing", "no", "never", "won't", "don't", "isn't"};
+constexpr const char* kAckLead[] = {"ok", "okay", "got", "it", "understood", "acknowledged", "sure", "right", "thanks", "yes", "alright", "all"};
+bool bareAck(const Scan& sc, size_t i) {
+  if (sc.ownerAskedKeep) return false;
+  bool keep = false, not_ = false;
+  const uint16_t sent = sc.toks[i].sent;
+  bool opens = true;   // it opens its sentence, after at most an acknowledging word or two
+  for (size_t k = 0; k < sc.toks.size(); k++) {
+    const Tok& t = sc.toks[k];
+    if (t.sent != sent) continue;
+    keep = keep || tokIn(sc.s, t, kKeepWords);
+    not_ = not_ || tokIn(sc.s, t, kNotKept);
+    if (k < i && !tokIn(sc.s, t, kAckLead)) opens = false;
+  }
+  return keep ? not_ : opens;
+}
+
+// A save cue in a reference: an acknowledgement that asks to be kept, a system log noun, a
+// standing total, a qualified participle, or earlier work named in the sentence.
 bool saveReference(const Scan& sc, size_t i, const Cue& cue) {
+  if ((cue.flags & kAck) && bareAck(sc, i)) return true;
   if ((cue.flags & kLogSense) && (logNounBefore(sc, i) || reportedTotal(sc, i))) return true;
   if (participleLed(cue) && qualifiedParticiple(sc, i)) return true;
   return (cue.cls == C::Saved || cue.cls == C::Deliverable) && earlierInSentence(sc, i);
@@ -2376,10 +2404,11 @@ ClaimCueInfo claimCue(size_t i) {
                       (c.flags & kVoicedVerb) != 0};
 }
 
-ClaimScan scanClaims(const std::string& reply, bool ownerAskedHow) {
+ClaimScan scanClaims(const std::string& reply, bool ownerAskedHow, bool ownerAskedKeep) {
   ClaimScan out;
   Scan sc(reply);
   sc.ownerAskedHow = ownerAskedHow;
+  sc.ownerAskedKeep = ownerAskedKeep;
   if (mostlyNonEnglish(reply, sc.n)) {
     out.skippedNonEnglish = true;
     return out;
@@ -2900,6 +2929,23 @@ bool ownerAskedHow(const std::string& ownerText) {
     if (pad.find(q) != std::string::npos) return true;
   return pad.rfind(" how do", 0) == 0 || pad.rfind(" how is", 0) == 0 || pad.rfind(" how to", 0) == 0 ||
          pad.rfind(" how are", 0) == 0;
+}
+
+bool ownerAskedKeep(const std::string& ownerText) {
+  const std::string pad = " " + normalizedWords(ownerText) + " ";
+  for (const char* q : {" remember ", " forget ", " make a note ", " note that ", " note this ", " note it ", " note down ",
+                        " write this down ", " write that down ", " write it down ", " jot ", " save this ", " save that ",
+                        " save it ", " store this ", " store that ", " store it ", " keep this ", " keep that ", " log this ",
+                        " log that ", " log it "}) {
+    const bool forget = std::strcmp(q, " forget ") == 0;   // "forget" asks to keep only when negated
+    for (size_t at = pad.find(q); at != std::string::npos; at = pad.find(q, at + 1)) {
+      const std::string before = pad.substr(at > 8 ? at - 8 : 0, at > 8 ? 8 : at);
+      const bool negated = before.find(" not") != std::string::npos || before.find("dont") != std::string::npos ||
+                           before.find(" don t") != std::string::npos || before.find("never") != std::string::npos;
+      if (negated == forget) return true;
+    }
+  }
+  return false;
 }
 
 // The sentence names one of `subjects` (" "-separated): a single word as a word, a

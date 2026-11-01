@@ -217,6 +217,7 @@ void ClaimCheck::beginTurn() {
   ownerText_.clear();
   ledger_.clear();
   ownerAskedHow_ = false;
+  ownerAskedKeep_ = false;
   wroteText_.clear();
   pendingWrote_.clear();
   clipped_ = false;
@@ -254,6 +255,7 @@ void ClaimCheck::setSources(const std::string& inputs, const std::string& recall
   ledger_ = parts.ledger;
   subRuns_ = parts.subRuns;
   ownerAskedHow_ = orch::ownerAskedHow(parts.owner);
+  ownerAskedKeep_ = orch::ownerAskedKeep(parts.owner);
   sourceNames_ = namedSources(parts, recalled);
   bool clipped = false;
   sourceWords_ = orch::sourceWordsOf(parts.owner + "\n" + parts.fresh + "\n" + parts.memory + "\n" +
@@ -453,7 +455,7 @@ std::vector<orch::ClaimGap> ClaimCheck::gapsFor(const std::string& reply,
   ev.sources = &sourceNames_;
   ev.owner = &ownerNums_;
   ev.sourceWords = &sourceWords_;
-  const orch::ClaimScan scan = orch::scanClaims(reply, ownerAskedHow_);
+  const orch::ClaimScan scan = orch::scanClaims(reply, ownerAskedHow_, ownerAskedKeep_);
   if (scan.skippedNonEnglish) hlog::log("claims: skipped (non-English)");
   std::vector<orch::ClaimGap> gaps = orch::claimGaps(reply, scan, ev);
   std::vector<orch::ClaimGap> kept;

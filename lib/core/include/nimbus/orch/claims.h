@@ -24,7 +24,9 @@
 //       it ("it may have been lost, or saved elsewhere");
 //   R3  spawn backing comes from the enqueue result, never the dispatch log
 //       (dispatch runs after the turn ends);
-//   R4  a scratchpad write backs "noted", and also brings the durability check;
+//   R4  a scratchpad write backs "noted", and also brings the durability check; a bare
+//       "Noted." claims nothing unless the owner asked for something to be kept, or its
+//       own sentence speaks of keeping it (a plain acknowledgement, bareAck);
 //   R5  text inside quotes or code is skipped (the head often quotes the owner);
 //   R6  English only: a reply that is mostly non-ASCII letters is not scanned;
 //   R7  a running total is a report, not a save: "logged" beside a figure with a progress
@@ -123,7 +125,9 @@ struct ClaimScan {
 // the owner asked how something works or is done, so an instrument an answer explains
 // is not claimed as read (precision over recall).
 static constexpr size_t kScanMax = 16384;
-ClaimScan scanClaims(const std::string& reply, bool ownerAskedHow = false);
+// `ownerAskedKeep`: the owner asked for something to be kept, so a bare "Noted." answers that;
+// otherwise it is an acknowledgement, not a save claim (ownerAskedKeep below).
+ClaimScan scanClaims(const std::string& reply, bool ownerAskedHow = false, bool ownerAskedKeep = false);
 
 // The quotes a reply presents as a record, and whether one is missing from everything
 // the turn was given (`seen`) or, loosely, from the owner's own words this turn.
@@ -274,6 +278,8 @@ bool recordQuoteGap(const std::string& reply, const std::string& seen, const std
 // asksWhy says whether the owner's text asks why.
 bool asksWhy(const std::string& ownerText);
 bool ownerAskedHow(const std::string& ownerText);
+// Did the owner ask for something to be kept ("remember ...", "make a note ...", "save this")?
+bool ownerAskedKeep(const std::string& ownerText);
 // The gap unrecordedReasonGap returns (the correction then carries the spawn ledger).
 bool isUnrecordedReason(const ClaimGap& g);
 bool unrecordedReasonGap(const std::string& reply, const std::string& records, const std::string& question,

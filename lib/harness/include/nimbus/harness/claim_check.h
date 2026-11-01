@@ -196,6 +196,7 @@ class ClaimCheck {
   std::string ledger_;           // the spawn ledger block this turn read
   bool ownerAskedHow_ = false;   // the owner asked how something works: an explained
                                  // instrument is not claimed as read (the review)
+  bool ownerAskedKeep_ = false;  // the owner asked for something to be kept: "Noted." answers that
   std::string wroteText_;        // the words this turn's own memory/file writes saved: a
                                  // save confirmation quoting them is the turn's record
   std::string pendingWrote_;     // noteToolArgs' stash until noteTool lands the write
