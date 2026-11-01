@@ -21,6 +21,7 @@
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/provider_park.h"
 #include "nimbus/orch/router_refusals.h"
+#include "nimbus/orch/voice_route.h"
 
 // The router refusal contract, over the whole table, on every seam the park closes: the
 // reason decides, never the status. Then the clamp's capped resend on the wire, and the
@@ -193,6 +194,14 @@ static void test_add_credits_only_when_it_is_true() {
     if (cause.empty()) continue;
     TEST_ASSERT_TRUE_MESSAGE(rf::isRefusalCause(cause), c.reason);
     TEST_ASSERT_EQUAL_INT_MESSAGE((int)orch::StepErr::Rejected, (int)orch::classifyStepError(cause), c.reason);
+  }
+  // Voice has its own lines over the same table.
+  for (const ContractRow& c : kContractRows) {
+    const std::string line = orch::voiceRefusalStatus(c.reason);
+    const bool emptyWallet = std::strcmp(c.reason, "insufficient_credits") == 0 ||
+                             std::strcmp(c.reason, "credits_or_subscription_required") == 0;
+    TEST_ASSERT_EQUAL_MESSAGE(emptyWallet, has(line, "dd credits"), c.reason);
+    TEST_ASSERT_FALSE_MESSAGE(has(line, "out of credit"), c.reason);
   }
   rf::RouterRefusal r;
   r.status = 402;
