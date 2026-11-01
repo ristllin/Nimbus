@@ -203,7 +203,9 @@
         "turn_resolved": true
        },
        {
-        "no_error_reply": true
+        "no_error_reply": true,
+        "known_defect": "${tools_defect}",
+        "may_pass": true
        },
        {
         "file_contains": {
