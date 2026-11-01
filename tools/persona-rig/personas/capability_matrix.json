@@ -1,0 +1,87 @@
+{
+  "description": "The Virtual Nimbus capability script: one instance per model, holding one provider key.",
+  "vars": {"py_latest": "3.15.2", "suffix": "4417"},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0"},
+    {"name": "mistral-small-latest", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-small-latest"},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3"},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash"},
+    {"name": "claude-haiku-5-5", "host": "anthropic", "key": "ANTHROPIC_API_KEY", "model": "claude-haiku-5-5"},
+    {"name": "gpt-6-luna", "host": "openai", "key": "OPENAI_API_KEY", "model": "gpt-6-luna"}
+  ],
+  "persona": {
+    "name": "cap-${name}",
+    "keys": {"${host}": "${key}"},
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "timezone": "Europe/London",
+    "scenarios": [
+      {"id": "chat", "steps": [
+        {"say": "What is 17 times 3? Answer with just the number.",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b51\\b"}, {"no_error_reply": true}]}
+      ]},
+      {"id": "memory", "steps": [
+        {"say": "Please remember permanently: my sister's cat is named Zorblax${suffix}. Confirm when stored.",
+         "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                    {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}}]},
+        {"http": {"method": "POST", "path": "/api/orch", "form": {"clearConv": "1"}},
+         "expect": [{"http_status": 200}]},
+        {"say": "What is my sister's cat called?",
+         "expect": [{"turn_resolved": true}, {"reply_contains": "Zorblax${suffix}"}, {"no_error_reply": true}]}
+      ]},
+      {"id": "restart", "steps": [
+        {"restart": true},
+        {"say": "After that restart: what is my sister's cat called? Check your memory if you need to.",
+         "expect": [{"turn_resolved": true}, {"reply_contains": "Zorblax${suffix}"}, {"no_error_reply": true}]}
+      ]},
+      {"id": "files", "steps": [
+        {"say": "Save a file named notes.txt in project vnc with exactly this text: hello-file-${suffix}. Then confirm.",
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                    {"file_contains": {"project": "vnc", "name": "notes.txt", "text": "hello-file-${suffix}"}}]},
+        {"http": {"method": "POST", "path": "/api/orch", "form": {"clearConv": "1"}},
+         "expect": [{"http_status": 200}]},
+        {"say": "Read the file vnc/notes.txt and tell me exactly what it says.",
+         "expect": [{"turn_resolved": true}, {"tool_called": "files_read"}, {"reply_contains": "hello-file-${suffix}"}]}
+      ]},
+      {"id": "spawn", "steps": [
+        {"say": "Start a sub-agent to work out the 10th Fibonacci number. Do not work it out yourself. Report what it found.",
+         "await_reply_regex": "\\b55\\b", "timeout_s": 300, "settle_s": 5,
+         "expect": [{"log_regex": "spawned job"}, {"reply_regex": "\\b55\\b"}, {"no_error_reply": true}]}
+      ]},
+      {"id": "web", "steps": [
+        {"say": "Use a web lookup to find the latest stable Python 3 release listed on python.org/downloads. Tell me the version number and the URL you used.",
+         "timeout_s": 300, "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"reply_contains": "${py_latest}"}, {"no_error_reply": true}]}
+      ]},
+      {"id": "image", "steps": [
+        {"upload": {"project": "chat", "name": "sample.png", "png_rgb": [20, 200, 40]}, "expect": [{"http_status": 200}]},
+        {"say": "Attached sample.png (in Files > chat). What color is this image? If you cannot actually see it, say so.",
+         "expect": [{"turn_resolved": true}, {"reply_contains": "green"}]}
+      ]},
+      {"id": "routine", "steps": [
+        {"http": {"method": "POST", "path": "/api/loops",
+                  "form": {"action": "create", "name": "stretch", "prompt": "Remind me to stretch.", "chatId": "owner",
+                           "schedule": "{\"kind\":\"daily\",\"at\":\"09:00\"}"}},
+         "expect": [{"http_status": 200}, {"body_contains": "\"ok\":true"}]},
+        {"http": {"method": "GET", "path": "/api/loops"}, "expect": [{"body_contains": "stretch"}]},
+        {"say": "Set up a daily routine: every day at 09:00 remind me to stretch. Then tell me plainly what you did.",
+         "expect": [{"turn_resolved": true},
+                    {"reply_not_regex": "(i('ve| have)|i) (set up|created|scheduled|added)\\b(?!.*(can'?t|cannot|not))"},
+                    {"reply_not_regex": "only (its|the|an) admin|from the device web page"}]},
+        {"http": {"method": "POST", "path": "/api/loops", "form": {"action": "delete", "id": "stretch"}},
+         "expect": [{"http_status": 200}, {"body_contains": "\"ok\":true"}]}
+      ]},
+      {"id": "fold", "steps": [
+        {"say": "For this conversation only, the codeword is PERSIMMON-${suffix}. Just acknowledge it in one short sentence; do not store it in long-term memory.",
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true}]},
+        {"say": "Note $i of a long working session. Reply in one short sentence acknowledging the note.",
+         "repeat": 18, "pad": 3000, "settle_s": 2,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true}, {"log_not_regex": "fold\\(.*failed|no summary in reply"}]},
+        {"say": "Earlier in this conversation I told you a codeword. What was it? Answer with the codeword only.",
+         "expect": [{"turn_resolved": true}, {"reply_contains": "PERSIMMON-${suffix}"}]},
+        {"http": {"method": "GET", "path": "/api/log"}, "expect": [{"body_regex": "fold\\(owner\\): ok"}]}
+      ]}
+    ]
+  }
+}
