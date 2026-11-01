@@ -59,6 +59,10 @@ std::vector<FoodGap> unsourcedFoodTargets(const std::string& text, const std::st
 inline constexpr int kStaleStatusDays = 7;
 std::string staleStatusIn(const std::string& reply, const std::string& today, int maxAgeDays, int* ageDays);
 
+// The owner's words a target may come from: a statement, not a question or a complaint about a
+// figure ("Why 2500?", "You hallucinate the 250g"), which must not source the figure it disputes.
+std::string ownerStatementsOf(const std::string& text);
+
 // The text of the one correction round.
 std::string foodGapCorrection(const std::vector<FoodGap>& gaps, const FoodFacts& facts);
 // The owner's lines, one per kind, each on its own paragraph ("" when no gaps).

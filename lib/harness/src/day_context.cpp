@@ -50,7 +50,7 @@ nimbus::orch::FoodFacts TurnEngine::currentFoodFacts(const std::string& chatId) 
   nimbus::orch::FoodFacts facts;
   if (!d_.foodLedger || !personChat(chatId)) return facts;
   const nimbus::orch::FoodLedger l = d_.foodLedger(chatId);   // after this turn's writes
-  facts.have = l.exists && l.error.empty() && l.hasRows() && l.hasKcal;
+  facts.have = l.exists && l.error.empty() && l.hasKcal;
   facts.kcalKnown = l.kcalUnread == 0;
   facts.kcal = l.kcal;
   facts.rows = l.kcalRows;

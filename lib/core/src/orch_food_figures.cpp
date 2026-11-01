@@ -308,7 +308,7 @@ bool dayTotalCue(const std::string& low) {
 }
 
 void dayTotalGaps(const std::string& sentence, const std::vector<Tok>& toks, const FoodFacts& facts,
-                  std::vector<FoodGap>& out) {
+                  const std::vector<double>& sources, std::vector<FoodGap>& out) {
   const std::string low = folded(sentence);
   if (!dayTotalCue(low) || mealSentence(low) ||
       hasWord(toks, {"yesterday", "tomorrow", "last", "after", "plus", "then", "before", "drafted", "was"}))
@@ -322,6 +322,9 @@ void dayTotalGaps(const std::string& sentence, const std::vector<Tok>& toks, con
       if (i + 1 < toks.size() && leftAt(toks, i)) continue;
       const double tol = t.approx ? std::fmax(facts.kcal * 0.02, 2.0) : 1.0;
       if (facts.kcalKnown && std::fabs(t.value - facts.kcal) <= tol) continue;
+      // No rows today: only a figure the owner or a record gave may stand (30 Oct: yesterday's
+      // 2,524 carried into a day with nothing logged yet).
+      if (facts.rows == 0 && facts.kcalKnown && nearSource(t.value, sources, 1.0)) continue;
       FoodGap g;
       g.kind = FoodGapKind::WrongDayTotal;
       g.excerpt = excerptOf(sentence);
@@ -443,7 +446,19 @@ std::vector<FoodGap> foodFigureGaps(const std::string& reply, const FoodFacts& f
     if (!taken) targetGaps(sentence, toks, sources, out);
     if (!facts.have) continue;
     if (out.size() == before) leftGaps(sentence, toks, facts, sources, taken, out);
-    dayTotalGaps(sentence, toks, facts, out);
+    dayTotalGaps(sentence, toks, facts, sources, out);
+  }
+  return out;
+}
+
+std::string ownerStatementsOf(const std::string& text) {
+  std::string out;
+  for (const std::string& sentence : sentencesOf(text)) {
+    const std::string low = folded(sentence);
+    const std::vector<Tok> toks = tokensOf(low);
+    if (low.find('?') != std::string::npos || retracted(toks) || hasWord(toks, {"why", "where", "how", "hallucinate", "hallucinating", "invent"}))
+      continue;
+    out += sentence + "\n";
   }
   return out;
 }
@@ -488,6 +503,8 @@ std::string foodGapTail(const std::vector<FoodGap>& gaps, const FoodFacts& facts
       total = true;
       if (!facts.kcalKnown && !g.protein)
         out += "\n\n(Correction: a row of today's food log cannot be read, so today's total is not known yet.)";
+      else if (facts.rows == 0)
+        out += "\n\n(Correction: the food log has no rows for today yet.)";
       else
         out += "\n\n(Correction: the food log has today at " + num(g.truth) + (g.protein ? " g protein.)" : " kcal.)");
     } else if (g.kind == FoodGapKind::ProteinLeftUnknown && !protein) {

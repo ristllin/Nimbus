@@ -249,8 +249,8 @@ void ClaimCheck::setSources(const std::string& inputs, const std::string& recall
   // A daily target's sources (food_figures.h): what the owner said, what is stored, what the
   // turn read. Never the assistant's earlier replies, the fold summary or the composed prompt:
   // that is how a made-up figure repeats itself into fact.
-  targetNums_ = orch::figureNumbers(parts.owner + " " + parts.rules + " " + parts.targets + " " + parts.memory + " " +
-                                        recalled + " " + parts.fresh,
+  targetNums_ = orch::figureNumbers(orch::ownerStatementsOf(parts.owner) + " " + parts.rules + " " + parts.targets + " " +
+                                        parts.memory + " " + recalled + " " + parts.fresh,
                                     kSourceNumbersMax);
   ownerText_ = parts.owner.substr(0, kOwnerTextMax);
   ledger_ = parts.ledger;
@@ -501,7 +501,7 @@ std::vector<orch::FoodGap> ClaimCheck::foodGaps(const std::string& reply, orch::
 }
 
 void ClaimCheck::noteOwnerHistory(const std::string& ownerRows) {
-  const std::string more = orch::figureNumbers(ownerRows, kSourceNumbersMax);
+  const std::string more = orch::figureNumbers(orch::ownerStatementsOf(ownerRows), kSourceNumbersMax);
   targetsClipped_ = targetsClipped_ || targetNums_.size() + more.size() + 1 > kSourceNumbersMax;
   if (!targetsClipped_ && !more.empty()) targetNums_ += " " + more;
 }

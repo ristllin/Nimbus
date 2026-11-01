@@ -82,6 +82,17 @@ static void test_a_left_figure_implies_a_target() {
   TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("That leaves ~365 kcal for dinner.", f, figureNumbers(kPlan)).size());
 }
 
+// The owner disputing a figure does not source it; the owner stating one does.
+static void test_a_question_about_a_figure_is_no_source() {
+  const FoodFacts f = ledger(1779, 153);
+  for (const char* disputed : {"Why 2500? Cant you verify the plan we built?", "2500 is the daily goal?? Are you sure?",
+                               "You hallucinate the 2500 out of the blue."}) {
+    const auto gaps = foodFigureGaps("The 2,500 kcal target is from the plan.", f, figureNumbers(ownerStatementsOf(disputed)));
+    TEST_ASSERT_TRUE_MESSAGE(hasKind(gaps, FoodGapKind::UnsourcedTarget), disputed);
+  }
+  TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("The 2,500 kcal target stands.", f, figureNumbers(ownerStatementsOf("Make my target 2500 kcal."))).size());
+}
+
 // Precision: what these replies must never be corrected for.
 static void test_not_claims() {
   const FoodFacts f = ledger(2036, 211.7);
@@ -135,6 +146,13 @@ static void test_the_day_total_is_the_ledgers() {
   const auto gaps = foodFigureGaps("Today's total is 2,369 kcal.", unread, "");
   TEST_ASSERT_TRUE(hasKind(gaps, FoodGapKind::WrongDayTotal));
   TEST_ASSERT_TRUE(foodGapTail(gaps, unread).find("not known yet") != std::string::npos);
+  // No rows today (30 Oct, 06:00: yesterday's 2,524 carried in), unless the figure is the owner's.
+  FoodFacts empty;
+  empty.have = true;
+  const auto carried = foodFigureGaps("Today's total is 2,524 kcal and 194.1 g protein.", empty, "");
+  TEST_ASSERT_TRUE(hasKind(carried, FoodGapKind::WrongDayTotal));
+  TEST_ASSERT_TRUE(foodGapTail(carried, empty).find("no rows for today") != std::string::npos);
+  TEST_ASSERT_FALSE(hasKind(foodFigureGaps("Today's total is 1,500 kcal.", empty, "1500"), FoodGapKind::WrongDayTotal));
   // With no ledger read, nothing is held against the reply but the targets.
   FoodFacts none;
   TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("Today's total is 3,989 kcal.", none, "").size());
@@ -209,6 +227,7 @@ int main(int, char**) {
   RUN_TEST(test_the_31_oct_250_g_target);
   RUN_TEST(test_the_29_oct_2500_kcal_target);
   RUN_TEST(test_a_left_figure_implies_a_target);
+  RUN_TEST(test_a_question_about_a_figure_is_no_source);
   RUN_TEST(test_not_claims);
   RUN_TEST(test_the_day_total_is_the_ledgers);
   RUN_TEST(test_a_need_over_an_unknown_row_is_no_figure);
