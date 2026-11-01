@@ -1814,9 +1814,7 @@ class NimbusdRig {
       blocked.detail = "blocked: chat not approved";
       return blocked;
     }
-    firingRoutine_ = true;
     orch::FireOutcome o = eng_->injectScheduledTurn(r.chatId, r.prompt, r.name, r.id, false, r.once, r.ownerReminder);
-    firingRoutine_ = false;
     if (!cur_.deliveries.empty()) cur_.reply = cur_.deliveries.back();
     cur_.ok = o.ok;
     turns_.push_back(cur_);
@@ -2694,11 +2692,12 @@ class NimbusdRig {
     // Device parity (orchestrator turnComplete): a turn that did something but ends with
     // no reply, no spawn and no tool reply still confirms it finished on the SYNCHRONOUS
     // channel (the web chat), instead of leaving the page waiting out its poll with
-    // nothing. Async channels (Telegram, /api/message) stay silent, as on the device. A
-    // turn that did nothing never lands here: applyTurn tells the owner the answer was
-    // empty.
+    // nothing. Async channels (Telegram, /api/message) stay silent, as on the device, and
+    // so does an unattended turn (a routine, a sub-agent summary): nobody is waiting on
+    // its poll. A turn that did nothing never lands here: applyTurn tells the owner the
+    // answer was empty.
     d.apply.turnComplete = [this](const std::string& chat) {
-      if (chat == kWebChatId && !firingRoutine_) record(chat, agent::kNoMessageAfterAction);
+      if (chat == kWebChatId && !(eng_ && eng_->inScheduledTurn())) record(chat, agent::kNoMessageAfterAction);
     };
   }
 
@@ -3288,7 +3287,6 @@ class NimbusdRig {
   std::unique_ptr<HostedSkills> skills_;
   std::string turnTag_;          // "turn:<row id>" of the turn in flight ("" between turns)
   std::map<std::string, std::string> traceArgs_;   // call id -> args, until its result
-  bool firingRoutine_ = false;   // a routine's turn is running (no "Done." for nobody)
   FileFoldIO foldIO_;
   orch::FoldStore folds_;        // per-chat fold state (the shared store)
   orch::OwnerFirstGate ownerFirst_;   // a due automatic fold waits for a quiet moment

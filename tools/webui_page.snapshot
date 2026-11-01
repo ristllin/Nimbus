@@ -1353,11 +1353,17 @@ function applyHostedChrome(){
       body.appendChild(n);}
     document.querySelectorAll('[data-go=device]').forEach(b=>{
       if((b.textContent||'').indexOf('Check for updates')===0)b.style.display='none';});
-    // No restart or power control on a hosted instance: the platform runs it. Home's
-    // two buttons and the whole Power group go, never a button that answers an error.
-    ['homeRestart','homePowerOff'].forEach(id=>{const el=$(id); if(el)el.style.display='none';});
-    const pw=$('deviceRestart'), group=pw&&pw.closest('details');
-    if(group)group.style.display='none';
+    // A hosted instance has no restart, power, screen, ring, sound or card to erase, and
+    // only one mode: those controls go, never a button that answers an error.
+    ['homeRestart','homePowerOff','modehdr'].forEach(id=>{const el=$(id); if(el)el.style.display='none';});
+    document.querySelectorAll('.mobmode').forEach(el=>{el.style.display='none';});
+    document.querySelectorAll('details.setgroup').forEach(g=>{const s=g.querySelector('summary'),t=s?s.textContent:'';
+      if(['Display','Ring','Sound','Power','Danger zone'].some(x=>t.indexOf(x)===0))g.style.display='none';});
+    const ms=$('mode');   // the Mode row in Mode & identity: its select, its hint and its label
+    if(ms){const tip=ms.previousElementSibling,lb=tip&&tip.previousElementSibling;
+      [ms,tip,lb].forEach(el=>{if(el)el.style.display='none';});}
+    const lede=document.querySelector('#pane-device .plede')||document.querySelector('#pane-dev .plede');
+    if(lede)lede.textContent='Identity, software version and connectivity, all in one place.';
   }catch(e){}
 }
 applyHostedChrome();

@@ -107,6 +107,10 @@ def dead_controls(page, out: Path, results: list):
     time.sleep(1)
     page.screenshot(path=str(out / "07-device.png"), full_page=True)
     check(results, "Device has no Power group", not page.is_visible("#deviceRestart"))
+    check(results, "there is no mode switch", not page.is_visible("#modehdr"))
+    shown = page.eval_on_selector_all("details.setgroup > summary", "els => els.filter(e => e.offsetParent).map(e => e.innerText)")
+    for gone in ("Display", "Ring", "Sound", "Power", "Danger zone"):
+        check(results, f"no {gone} group", not any(t.startswith(gone) for t in shown), str(shown))
 
 
 def routines_page(page, inst, out: Path, results: list):
@@ -127,6 +131,8 @@ def trace_disclosure(page, inst, out: Path, results: list):
     wait_text(page, r"note\.txt|saved", 120)
     time.sleep(3)
     page.reload()
+    page.wait_for_load_state("load")
+    page.evaluate("goDest('chat')")
     time.sleep(3)
     page.screenshot(path=str(out / "09-chat-with-tool-trace.png"), full_page=True)
     _, body = inst.get("/api/mem/episodic?limit=50")

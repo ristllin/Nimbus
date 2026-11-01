@@ -265,6 +265,12 @@ test('hosted: Home and Device show no restart or power control', async ({ page }
   await page.locator('.tab[data-p=device]').click();
   await expect(page.locator('#deviceRestart')).toBeHidden();
   await expect(page.locator('#powerOff')).toBeHidden();
+  await expect(page.locator('#modehdr')).toBeHidden();
+  // A device-only group is gone; what a hosted instance really has stays.
+  const groups = await page.locator('#pane-device details.setgroup:visible > summary, details.setgroup:visible > summary').allTextContents();
+  for (const gone of ['Display', 'Ring', 'Sound', 'Power', 'Danger zone'])
+    expect(groups.some((t) => t.startsWith(gone))).toBe(false);
+  expect(groups.some((t) => t.startsWith('Software update'))).toBe(true);
 });
 
 // (8) A spawn-only turn: the placeholder goes, the next message is sent, and the result
