@@ -499,6 +499,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     // no provider refused them this turn (inline data URLs, spliced at send time).
     orch::TurnImages* imgs = imageparts::shown(tr, "openai", model);
     bool sees = imageparts::sees(tr, "openai", model);   // image.look's photos too
+    bool breakpoints = layout::openAITakesBreakpoints(model);
     auto renderInput = [&]() {
       JsonArray in = req["input"].to<JsonArray>();
       // A split prompt (prompt_layout.h): the static block and the shelf as
@@ -506,7 +507,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       // message items (a breakpoint on the last user item), then the user seed
       // led by the per-turn block. The request then starts with the same bytes
       // on every turn of a day.
-      if (round.split) layout::putOpenAIInput(in, round);
+      if (round.split) layout::putOpenAIInput(in, round, breakpoints);
       renderOaiInput(tr, in, imgs != nullptr, sees);
       // The SEEDED user message (this turn's own, after the history): the
       // per-turn block leads it and the photos ride it. Index, not "first
@@ -619,6 +620,27 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
     int code = oaiResponses(pd, std::move(body), roundMs, resp, filter, splices.empty() ? nullptr : &splices);
     if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
+    if (breakpoints && layout::breakpointRefused(code, resp["error"]["message"] | "")) {
+      // A model the gate trusted refuses the cache hint: never a failed turn for a
+      // hint. This round again without it; the next round asks the gate again, and a
+      // refusal costs nothing (decided before any output). Nothing is remembered: no
+      // new static RAM for a case the gate should not reach.
+      hlog::logf("orchTurn(oai-loop): %s refuses prompt_cache_breakpoint - sent again without it", model.c_str());
+      breakpoints = false;
+      renderInput();
+      body.clear();
+      splices = BodySplices();
+      if (!wire::serializeChecked(req, body, out.error) ||
+          !bodyWithinBudget(body, out.error) ||
+          !imageparts::spliceAll(body, sees ? tr.images() : nullptr, imgs != nullptr, splices, out.error)) {
+        out.ok = false;
+        return out;
+      }
+      resp.clear();
+      const uint32_t t1 = pd.nowMs ? pd.nowMs() : 0;
+      code = oaiResponses(pd, std::move(body), roundMs, resp, filter, splices.empty() ? nullptr : &splices);
+      if (code <= 0) { wire::transportFailure(pd, t1, roundMs, out); return out; }
+    }
     if (code != 200 && !splices.empty() && imageparts::refusedImages(code, resp["error"]["message"] | "") &&
         imageparts::rejectAndRetry(tr.images(), "orchTurn(oai-loop)", code, "openai")) {
       // The provider refused the photos themselves: this round again, reading their
@@ -779,7 +801,7 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
     layout::putCacheKey(d.as<ArduinoJson::JsonObject>(), parts);
     if (parts.split) {
       JsonArray in = d["input"].to<JsonArray>();
-      layout::putOpenAIInput(in, parts);
+      layout::putOpenAIInput(in, parts, layout::openAITakesBreakpoints(d["model"] | ""));
       JsonObject u = in.add<JsonObject>();
       u["type"] = "message";
       u["role"] = "user";

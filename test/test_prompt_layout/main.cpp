@@ -418,6 +418,9 @@ static std::vector<std::string> runTurn(Wire w, const std::string& instructions,
   const bool loop = w == Wire::AntLoop || w == Wire::OaiLoop || w == Wire::MisLoop;
   scriptWire(d, w);
   auto pd = d.contract();
+  // A model that takes OpenAI's cache breakpoints: the layout under test is that wire.
+  if (w == Wire::OaiLoop || w == Wire::OaiSingle)
+    pd.orchModel = [](const char*) { return std::string("gpt-5.6-luna"); };
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
   for (const auto& s : (extraSpecs ? *extraSpecs : kNoSpecs)) rig.ht.specs.push_back(s);

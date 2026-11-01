@@ -171,7 +171,16 @@ bool anthropicTtlOrderValid(ArduinoJson::JsonVariantConst request);
 // caching) on the static block, the shelf and the last history user message;
 // the request's implicit breakpoint takes the fourth write. The caller then adds
 // the user message from userWithDynamic().
-void putOpenAIInput(ArduinoJson::JsonArray input, const PromptParts& p);
+void putOpenAIInput(ArduinoJson::JsonArray input, const PromptParts& p, bool breakpoints);
+// Does this model take prompt_cache_breakpoint? gpt-5.6 and later do; every other model
+// answers HTTP 400 and the turn fails (live probe across the account's model list, 1 Nov:
+// gpt-4o, gpt-4.1, gpt-5 through gpt-5.5, o3, gpt-live-1 refuse it). The automatic
+// prefix cache and prompt_cache_key work on all of them. A router's "openai/<model>"
+// reads as <model>.
+bool openAITakesBreakpoints(const std::string& model);
+// Is this error text the refusal of that field? (A model the gate named wrongly: the
+// round goes again without the hint.)
+bool breakpointRefused(int httpStatus, const std::string& errText);
 // Cache breakpoints in an OpenAI request body (at most 3 explicit ones).
 int countOpenAIBreakpoints(ArduinoJson::JsonVariantConst request);
 // The request's cache key field (prompt_cache_key) when the turn has one.
