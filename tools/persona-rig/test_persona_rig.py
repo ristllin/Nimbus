@@ -104,7 +104,8 @@ def make_handler(fake: FakeNimbusd, token: str):
                     "/api/chat": lambda: fake.reply_for(int(q["turn"][0])),
                     "/api/mem/episodic": lambda: {"messages": []},
                     "/api/log": lambda: "\n".join(fake.log),
-                    "/api/lastturn": lambda: (
+                    "/api/lastturn": lambda: f"turn {fake.turn_counter}\n===== 4. TOOL LOOP =====\n"
+                    '[tool] files_read {"a":1}\n[result] files_read ok\n',
                         "===== 4. TOOL LOOP =====\n[tool] files_read {\"a\":1}\n[result] files_read ok\n"
                     ),
                     "/api/orch": fake.orch,
@@ -170,7 +171,7 @@ class FakeBackend:
         return self.server.server_address[1]
 
     def logs(self, _name):
-        return f"[nimbusd] boot with key {FAKE_KEY}\n"
+        return f"[nimbusd] boot with key {FAKE_KEY} and token {self.token}\n"
 
     def stop(self, name):
         self.stopped.append(name)
@@ -240,7 +241,7 @@ class Loading(unittest.TestCase):
             "persona": {
                 "name": "p-${m}",
                 "keys": {"${host}": "K"},
-                "scenarios": [{"id": "s", "steps": [{"say": "${fact} note $i", "repeat": 2, "pad": 100}]}],
+                "scenarios": [{"id": "s", "steps": [{"say": "${fact} note $i", "repeat": 2, "pad": 100, "expect": [{"reply_nonempty": True}]}]}],
             },
         }
         with tempfile.TemporaryDirectory() as d:
@@ -272,6 +273,40 @@ class Loading(unittest.TestCase):
         self.assertTrue(files, "the rig ships at least one persona")
         for f in files:
             self.assertTrue(pr.load_personas(str(f)), f.name)
+
+
+class LoadingGuards(unittest.TestCase):
+    def test_a_bare_dollar_is_text_and_only_the_counter_expands(self):
+        doc = {
+            "matrix": [{"m": "a"}],
+            "persona": {
+                "name": "p-${m}",
+                "scenarios": [
+                    {"id": "s", "steps": [{"say": "costs $5, note $i", "repeat": 1, "expect": [{"reply_regex": "x$"}]}]}
+                ],
+            },
+        }
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "m.json"
+            path.write_text(json.dumps(doc))
+            step = pr.load_personas(str(path))[0]["scenarios"][0]["steps"][0]
+        self.assertEqual(step["say"], "costs $5, note 1")
+        self.assertEqual(step["expect"], [{"reply_regex": "x$"}])
+
+    def test_a_turn_without_expect_and_a_path_shaped_id_are_refused(self):
+        bad = [
+            {"name": "x", "scenarios": [{"id": "s", "steps": [{"say": "hi"}]}]},
+            {"name": "x", "scenarios": [{"id": "../../x", "steps": [{"sleep": 0}]}]},
+        ]
+        for p in bad:
+            with self.assertRaises(pr.PersonaError):
+                pr.validate_persona(p)
+
+    def test_a_run_that_would_prove_less_than_it_says_is_refused(self):
+        p = persona()
+        for personas, only in (([], None), ([p, p], None), ([p], {"tpyo"})):
+            with self.assertRaises(pr.PersonaError):
+                pr.run_all(personas, FakeBackend(FakeNimbusd()), {}, Path("."), {"only": only})
 
 
 class Ctx:
@@ -346,6 +381,19 @@ class Grading(unittest.TestCase):
     def test_a_backed_claim_is_not_a_fabrication(self):
         rec = {"reply": "I've emailed it.", "tools": [{"name": "gmail_send"}]}
         self.assertTrue(grade.no_fabricated_action(rec, True, None)[0])
+
+    def test_no_trace_and_no_usage_fail_instead_of_passing(self):
+        no_trace = {**REC, "tools": None}
+        for item in ({"tool_not_called": "x"}, {"tool_called": "x"}, {"no_fabricated_action": True}):
+            self.assertFalse(grade.grade_step(no_trace, [item], CTX)[0]["pass"], item)
+        self.assertFalse(grade.grade_step({}, [{"tokens_max": 5}], CTX)[0]["pass"])
+
+    def test_file_absent_needs_a_real_404(self):
+        class Down:
+            def file_bytes(self, *_a):
+                return 0, "connection refused"
+
+        self.assertFalse(grade.file_absent({}, {"name": "n"}, Down())[0])
 
     def test_a_check_that_raises_is_a_failure(self):
         out = grade.grade_step(REC, [{"file_contains": {"no": "name"}}], CTX)[0]
@@ -426,7 +474,7 @@ class EndToEnd(unittest.TestCase):
         backend = FakeBackend(fake)
         with tempfile.TemporaryDirectory() as d:
             ev = Path(d)
-            results = pr.run_all([p], backend, env or {"FAKE_MISTRAL": FAKE_KEY}, ev)
+            results = pr.run_all([p], backend, {"FAKE_MISTRAL": FAKE_KEY} if env is None else env, ev)
             texts = {str(f.relative_to(ev)): f.read_text() for f in ev.rglob("*") if f.is_file()}
         return results[0], fake, backend, texts
 
@@ -453,13 +501,61 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(rec["spend_lines"][0]["provider"], "fake")
 
     def test_no_secret_reaches_any_evidence_file(self):
-        _summary, fake, backend, texts = self.run_persona(persona())
+        fake = FakeNimbusd()
+        backend = FakeBackend(fake)
+        with tempfile.TemporaryDirectory() as d:
+            ev = Path(d)
+            rc = pr.run_and_write([persona()], backend, {"FAKE_MISTRAL": FAKE_KEY}, ev)
+            self.assertEqual(rc, 0)
+            self.assertTrue((ev / "run-summary.json").is_file())
+            texts = {str(f.relative_to(ev)): f.read_text() for f in ev.rglob("*") if f.is_file()}
         token = backend.started[0][1]["NIMBUSD_WEB_TOKEN"]
         self.assertGreater(len(texts), 3)
         self.assertTrue(any(FAKE_KEY in body for _path, body in fake.config_posts), "the key really was posted")
         for name, body in texts.items():
             self.assertNotIn(FAKE_KEY, body, name)
             self.assertNotIn(token, body, name)
+
+    def test_a_missing_key_name_stops_before_any_container(self):
+        summary, _f, backend, _t = self.run_persona(persona(), env={})
+        self.assertFalse(summary["pass"])
+        self.assertIn("FAKE_MISTRAL", summary["error"])
+        self.assertEqual(backend.started, [])
+
+    def test_a_rejected_key_stops_the_persona(self):
+        class Rejecting(FakeNimbusd):
+            def orch(self):
+                return {**super().orch(), "providers": {"mistral": {"verify": 0, "vts": 1}}}
+
+        fake = Rejecting()
+        with tempfile.TemporaryDirectory() as d:
+            results = pr.run_all([persona()], FakeBackend(fake), {"FAKE_MISTRAL": FAKE_KEY}, Path(d))
+        self.assertFalse(results[0]["pass"])
+        self.assertFalse(any("hello there" in row["text"] for row in fake.ring))
+
+    def test_a_refused_turn_fails_even_if_its_checks_would_not(self):
+        rec = {"send": [500, "boom"], "timed_out": True}
+        self.assertEqual([c["check"] for c in pr._implicit_checks(rec)], ["turn_sent", "turn_finished"])
+        self.assertEqual(pr._implicit_checks({"send": [200, ""], "timed_out": False}), [])
+
+    def test_a_persona_where_nothing_ran_does_not_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            ev = Path(d)
+            p = persona(scenarios=[{"id": "a", "steps": [{"sleep": 0}]}, {"id": "b", "steps": [{"sleep": 0}]}])
+            q = persona(name="other", scenarios=[{"id": "c", "steps": [{"sleep": 0}]}])
+            rs = pr.run_all([p, q], FakeBackend(FakeNimbusd()), {"FAKE_MISTRAL": FAKE_KEY}, ev, {"only": {"c"}})
+        self.assertFalse(next(r for r in rs if r["persona"] == "unit")["pass"], "no scenario ran for it")
+
+    def test_failing_logs_still_remove_the_container(self):
+        class Broken(FakeBackend):
+            def logs(self, _name):
+                raise OSError("docker gone")
+
+        backend = Broken(FakeNimbusd())
+        with tempfile.TemporaryDirectory() as d:
+            results = pr.run_all([persona()], backend, {"FAKE_MISTRAL": FAKE_KEY}, Path(d))
+        self.assertFalse(results[0]["pass"])
+        self.assertEqual(len(backend.stopped), 1)
 
     def test_a_failed_assertion_fails_the_persona(self):
         p = persona(

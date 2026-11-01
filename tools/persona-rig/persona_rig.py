@@ -25,7 +25,6 @@ import json
 import os
 import re
 import secrets as pysecrets
-import string
 import struct
 import subprocess
 import sys
@@ -53,23 +52,27 @@ class PersonaError(ValueError):
     """A persona file that cannot run. Refused at load, before anything is spent."""
 
 
-class _Template(string.Template):
-    delimiter = "$"
-    idpattern = r"[a-z_][a-z0-9_]*"
+PLACEHOLDER = re.compile(r"\$\{([a-z_][a-z0-9_]*)\}")
+SAFE_NAME = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}"
+
+
+def _fill(text: str, values: dict, where: str) -> str:
+    def one(m):
+        if m.group(1) not in values:
+            raise PersonaError(f"{where}: no value for ${{{m.group(1)}}}")
+        return str(values[m.group(1)])
+
+    return PLACEHOLDER.sub(one, text)
 
 
 def _substitute(node, values: dict, where: str):
+    """${x} from the matrix row, in values and object keys. A bare $ is plain text."""
     if isinstance(node, str):
-        try:
-            return _Template(node).substitute(values)
-        except KeyError as e:
-            raise PersonaError(f"{where}: no value for ${{{e.args[0]}}}") from e
-        except ValueError as e:
-            raise PersonaError(f"{where}: bad placeholder in {node[:60]!r}: {e}") from e
+        return _fill(node, values, where)
     if isinstance(node, list):
         return [_substitute(n, values, where) for n in node]
     if isinstance(node, dict):
-        return {_substitute(k, values, where): _substitute(v, values, where) for k, v in node.items()}
+        return {_fill(k, values, where): _substitute(v, values, where) for k, v in node.items()}
     return node
 
 
@@ -95,7 +98,7 @@ def _expand_repeats(steps: list) -> list:
             continue
         body = {k: v for k, v in step.items() if k not in ("repeat", "pad")}
         for i in range(1, count + 1):
-            one = _substitute(body, {"i": str(i)}, "repeat")
+            one = {**body, "say": body["say"].replace("$i", str(i))}
             if step.get("pad"):
                 one["say"] = f"{one['say']}\n\n{filler(step['pad'], i * 101)}"
             out.append(one)
@@ -106,6 +109,8 @@ def _validate_step(step: dict, where: str):
     kinds = [k for k in STEP_KINDS if k in step]
     if len(kinds) != 1:
         raise PersonaError(f"{where}: a step needs exactly one of {STEP_KINDS}, got {kinds}")
+    if "say" in step and not step.get("expect"):
+        raise PersonaError(f"{where}: a turn with no expect proves nothing")
     for item in step.get("expect", []):
         if not isinstance(item, dict) or len(item) != 1:
             raise PersonaError(f"{where}: an expect item is one name and one value: {item!r}")
@@ -117,15 +122,15 @@ def _validate_step(step: dict, where: str):
 def validate_persona(p: dict) -> dict:
     """Refuse what would silently test nothing: no name, no scenario, no step, a bad check."""
     name = p.get("name", "")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}", name):
+    if not re.fullmatch(SAFE_NAME, name):
         raise PersonaError(f"bad persona name {name!r}")
     if not p.get("scenarios"):
         raise PersonaError(f"{name}: no scenarios")
     seen = set()
     for sc in p["scenarios"]:
         sid = sc.get("id", "")
-        if not sid or sid in seen:
-            raise PersonaError(f"{name}: scenario id missing or repeated: {sid!r}")
+        if not re.fullmatch(SAFE_NAME, sid) or sid in seen:
+            raise PersonaError(f"{name}: scenario id bad or repeated: {sid!r}")
         seen.add(sid)
         if not sc.get("steps"):
             raise PersonaError(f"{name}/{sid}: no steps")
@@ -145,8 +150,7 @@ def load_personas(path: str) -> list:
     out = []
     for row in raw["matrix"]:
         values = {**raw.get("vars", {}), **row}
-        # "$i" stays literal here: a repeat fills it in when it expands.
-        out.append(validate_persona(_substitute(raw["persona"], {**values, "i": "$i"}, path)))
+        out.append(validate_persona(_substitute(raw["persona"], values, path)))
     return out
 
 
@@ -257,6 +261,13 @@ class Instance:
         except ValueError:
             return {}
 
+    def get_json_strict(self, path: str) -> dict:
+        """For the snapshots a verdict rests on: an unreadable answer stops the persona."""
+        status, body = self.get(path)
+        if status != 200:
+            raise RuntimeError(f"GET {path} answered {status}")
+        return json.loads(body)
+
     def file_bytes(self, project: str, name: str):
         q = urllib.parse.urlencode({"project": project, "name": name})
         return self.get(f"/api/files/dl?{q}")
@@ -341,21 +352,22 @@ class Capture:
 
     def __init__(self, inst: Instance):
         self.inst = inst
-        self.seq = self.seen_ids = self.log_lines = self.usage = self.spent = None
+        self.seq = self.seen_ids = self.log_lines = self.anatomy = self.usage = self.spent = None
         self.mark()
 
     def _episodic(self) -> list:
-        return self.inst.get_json("/api/mem/episodic?limit=400").get("messages", [])
+        return self.inst.get_json_strict("/api/mem/episodic?limit=400").get("messages", [])
 
     def _usage(self) -> tuple:
-        u = self.inst.get_json("/api/orch").get("usage", {})
-        cents = self.inst.get_json("/api/state").get("spend", {}).get("spentCents", 0)
-        return {"in": u.get("sessIn", 0), "out": u.get("sessOut", 0), "turns": u.get("turns", 0)}, cents
+        u = self.inst.get_json_strict("/api/orch")["usage"]
+        cents = self.inst.get_json_strict("/api/state")["spend"]["spentCents"]
+        return {"in": u["sessIn"], "out": u["sessOut"], "turns": u["turns"]}, cents
 
     def mark(self):
-        self.seq = self.inst.get_json("/api/replies?after=0").get("lastSeq", 0)
+        self.seq = self.inst.get_json_strict("/api/replies?after=0")["lastSeq"]
         self.seen_ids = {m.get("id") for m in self._episodic()}
         self.log_lines = self.inst.get("/api/log")[1].splitlines()
+        self.anatomy = self.inst.get("/api/lastturn")[1]
         self.usage, self.spent = self._usage()
 
     def replies(self) -> tuple:
@@ -374,7 +386,8 @@ class Capture:
         rec["log"] = self._log_delta()
         rec["spend_lines"] = spend_lines(rec["log"])
         rec["lastturn"] = self.inst.get("/api/lastturn")[1]
-        rec["tools"] = tools_from_anatomy(rec["lastturn"])
+        # One global slot: unchanged means no turn completed, so there is no trace to read.
+        rec["tools"] = None if rec["lastturn"] == self.anatomy else tools_from_anatomy(rec["lastturn"])
         usage, spent = self._usage()
         rec["usage_delta"] = {k: usage[k] - self.usage.get(k, 0) for k in usage}
         rec["spent_cents_delta"] = spent - self.spent
@@ -481,6 +494,16 @@ def run_upload(inst: Instance, step: dict, rec: dict):
     rec["http"] = {"status": status, "body": body}
 
 
+def _implicit_checks(rec: dict) -> list:
+    """A turn that was never accepted, or ran out of time, fails whatever else it asked."""
+    out = []
+    if "send" in rec and not 200 <= rec["send"][0] < 300:
+        out.append({"check": "turn_sent", "arg": True, "pass": False, "seen": f"send answered {rec['send'][0]}"})
+    if rec.get("timed_out"):
+        out.append({"check": "turn_finished", "arg": True, "pass": False, "seen": "ran out of time"})
+    return out
+
+
 class Runner:
     """One persona on one container, start to teardown."""
 
@@ -505,6 +528,13 @@ class Runner:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self.scrub(text))
 
+    def _require_keys(self):
+        """A key name missing from the env file would post a blank key and waste the run."""
+        names = [*self.p.get("keys", {}).values(), *self.p.get("instance_env_keys", [])]
+        missing = [n for n in names if not self.env_values.get(n)]
+        if missing:
+            raise RuntimeError(f"no value in the env file for: {', '.join(missing)}")
+
     def _container_env(self) -> dict:
         env = {"NIMBUSD_WEB_TOKEN": self.token, **self.p.get("env", {})}
         for name in self.p.get("instance_env_keys", []):
@@ -520,7 +550,7 @@ class Runner:
     def _config_call(self, label: str, path: str, form: dict):
         status, body = self.inst.call("POST", path, form=form)
         self.summary["config"].append(
-            {"step": label, "status": status, "body": self.scrub(body)[:400], "ok": status < 300}
+            {"step": label, "status": status, "body": self.scrub(body)[:400], "ok": 200 <= status < 300}
         )
         return status
 
@@ -562,29 +592,32 @@ class Runner:
         ok = True
         for label, path, form in self._config_forms():
             status = self._config_call(label, path, form)
-            ok = ok and status < 300
+            ok = ok and 200 <= status < 300
             time.sleep(0.2)
         self._write("config.json", json.dumps(self.summary["config"], indent=1))
         return ok
 
     def wait_verified(self, timeout_s: float = 60):
-        """A saved key verifies in the background; the model pick unlocks on the verdict."""
+        """A saved key verifies in the background. A rejected or unchecked key stops the persona."""
         slugs = list(self.p.get("keys", {}))
         end = time.time() + timeout_s
+        provs = {}
         while slugs and time.time() < end:
             provs = self.inst.get_json("/api/orch").get("providers", {})
             if all(provs.get(s, {}).get("vts", 0) for s in slugs):  # vts: a verdict has landed
                 break
             time.sleep(1)
-        orch = self.inst.call("GET", "/api/orch")[1]
-        self._write("orch-after-config.json", orch)
+        self._write("orch-after-config.json", self.inst.call("GET", "/api/orch")[1])
+        unverified = [s for s in slugs if provs.get(s, {}).get("verify") != 1]
+        if unverified:
+            raise RuntimeError(f"key not verified for: {', '.join(unverified)}")
 
     def _judge_step(self, step: dict, rec: dict):
         if not self.judge or "say" not in step or not step.get("judge", True):
             return
         passed = all(r["pass"] for r in rec["checks"])
         oracle = {"passed": passed, "checks": [{"check": r["check"], "pass": r["pass"]} for r in rec["checks"]]}
-        tools = [t["name"] for t in rec.get("tools", [])]
+        tools = [t["name"] for t in rec.get("tools") or []]
         try:
             rec["judge"] = self.judge(step["say"][:1500], rec.get("reply", ""), f"tools: {tools}", oracle)
         except Exception as e:  # a soft signal never fails a step
@@ -604,7 +637,7 @@ class Runner:
             self.inst.wait_ready()
         else:
             time.sleep(step["sleep"])
-        rec["checks"] = grade_step(rec, step.get("expect", []), self.inst)
+        rec["checks"] = _implicit_checks(rec) + grade_step(rec, step.get("expect", []), self.inst)
         self._judge_step(step, rec)
         return rec
 
@@ -625,6 +658,7 @@ class Runner:
 
     def run(self, only=None) -> dict:
         try:
+            self._require_keys()
             self.start()
             configured = self.configure()
             self.wait_verified()
@@ -642,15 +676,26 @@ class Runner:
             self._finish()
         return self.summary
 
-    def _finish(self):
+    def _record_end(self):
         self.summary["finished"] = _utc()
-        self.summary["pass"] = "error" not in self.summary and all(s.get("pass") for s in self.summary["scenarios"])
-        self._write("container.log", self.backend.logs(self.name))
-        if self.inst:
-            self._write("api-log.txt", self.inst.get("/api/log")[1])
+        ran = self.summary["scenarios"]
+        self.summary["pass"] = "error" not in self.summary and bool(ran) and all(s.get("pass") for s in ran)
         self._write("summary.json", json.dumps(self.summary, indent=1, ensure_ascii=False))
-        if not self.keep:
-            self.backend.stop(self.name)
+
+    def _finish(self):
+        """The verdict is on disk first, and the container always goes last (it holds real keys)."""
+        self._record_end()
+        try:
+            self._write("container.log", self.backend.logs(self.name))
+            if self.inst:
+                self._write("api-log.txt", self.inst.get("/api/log")[1])
+        except Exception as e:  # lost logs must not leave a keyed container running
+            self.summary["pass"] = False
+            self.summary["error"] = self.scrub(f"logs: {type(e).__name__}: {e}")
+            self._write("summary.json", json.dumps(self.summary, indent=1, ensure_ascii=False))
+        finally:
+            if not self.keep:
+                self.backend.stop(self.name)
 
 
 def _utc() -> str:
@@ -658,24 +703,41 @@ def _utc() -> str:
 
 
 def make_judge_from_env(env_values: dict, avoid: str = ""):
-    """The independent judge from tests/hil/qa_judge.py (needs requests); None when unavailable."""
+    """The independent judge from tests/hil/qa_judge.py. Needs requests and a key; raises otherwise."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "hil"))
-    try:
-        from qa_judge import make_judge
+    from qa_judge import make_judge
 
-        return make_judge(env_values, avoid_provider=avoid)
-    except ImportError:
-        return None
+    judge = make_judge(env_values, avoid_provider=avoid)
+    if judge is None:
+        raise RuntimeError("--judge needs ANTHROPIC_API_KEY or OPENAI_API_KEY in the env file")
+    return judge
+
+
+def _check_run(personas: list, only) -> None:
+    """Refuse a run that would prove less than it says."""
+    names = [p["name"] for p in personas]
+    if not names:
+        raise PersonaError("no persona to run")
+    if len(set(names)) != len(names):
+        raise PersonaError(f"persona names repeat: {sorted(names)}")
+    known = {sc["id"] for p in personas for sc in p["scenarios"]}
+    unknown = set(only or ()) - known
+    if unknown:
+        raise PersonaError(f"--only names no scenario: {sorted(unknown)}")
 
 
 def run_all(personas: list, backend, env_values: dict, evidence: Path, options=None) -> list:
     """options: parallel (default 1), judge, only (scenario ids), keep."""
     options = options or {}
+    _check_run(personas, options.get("only"))
     lock = threading.Lock()
     results = []
 
     def one(p):
-        summary = Runner(p, backend, env_values, evidence, options).run(options.get("only"))
+        try:
+            summary = Runner(p, backend, env_values, evidence, options).run(options.get("only"))
+        except Exception as e:  # one persona's crash must not lose the others' results
+            summary = {"persona": p["name"], "pass": False, "scenarios": [], "error": f"{type(e).__name__}: {e}"}
         with lock:
             results.append(summary)
             verdict = "PASS" if summary["pass"] else "FAIL"
@@ -684,6 +746,14 @@ def run_all(personas: list, backend, env_values: dict, evidence: Path, options=N
     with ThreadPoolExecutor(max_workers=max(1, options.get("parallel", 1))) as pool:
         list(pool.map(one, personas))
     return results
+
+
+def run_and_write(personas: list, backend, env_values: dict, evidence: Path, options=None) -> int:
+    """The whole run, its scrubbed run-summary.json, and the exit code."""
+    results = run_all(personas, backend, env_values, evidence, options)
+    scrub = Scrubber(env_values.values())
+    (evidence / "run-summary.json").write_text(scrub(json.dumps(results, indent=1, ensure_ascii=False)))
+    return 0 if results and all(r["pass"] for r in results) else 1
 
 
 def main(argv=None) -> int:
@@ -710,9 +780,7 @@ def main(argv=None) -> int:
     evidence.mkdir(parents=True, exist_ok=True)
     only = set(a.only.split(",")) if a.only else None
     options = {"parallel": a.parallel, "judge": judge, "only": only, "keep": a.keep}
-    results = run_all(personas, DockerBackend(a.image), env_values, evidence, options)
-    (evidence / "run-summary.json").write_text(json.dumps(results, indent=1, ensure_ascii=False))
-    return 0 if results and all(r["pass"] for r in results) else 1
+    return run_and_write(personas, DockerBackend(a.image), env_values, evidence, options)
 
 
 if __name__ == "__main__":

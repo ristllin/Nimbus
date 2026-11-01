@@ -33,7 +33,8 @@ def _reply_text(rec: dict) -> str:
 
 
 def _tool_names(rec: dict) -> list:
-    return [t.get("name", "") for t in rec.get("tools", [])]
+    """Raises when no trace exists (no turn completed), so a tool check fails, never passes."""
+    return [t.get("name", "") for t in rec["tools"]]
 
 
 def _dig(obj, dotted: str):
@@ -148,8 +149,8 @@ def turn_resolved(rec, arg, _ctx):
 
 
 def tokens_max(rec, arg, _ctx):
-    u = rec.get("usage_delta", {})
-    got = int(u.get("in", 0)) + int(u.get("out", 0))
+    u = rec["usage_delta"]
+    got = int(u["in"]) + int(u["out"])
     return got <= arg, f"{got} tokens"
 
 
@@ -161,7 +162,7 @@ def file_contains(_rec, arg, ctx):
 
 def file_absent(_rec, arg, ctx):
     status, body = ctx.file_bytes(arg.get("project", ""), arg["name"])
-    return status != 200, f"status {status}: {_seen(body)}"
+    return status == 404, f"status {status}: {_seen(body)}"
 
 
 def api_min(_rec, arg, ctx):

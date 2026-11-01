@@ -65,11 +65,13 @@ A **matrix file** runs one template many times:
 ```
 
 `${x}` fills from the matrix row, then `vars`, in values and object keys. An unknown `${x}`
-is refused at load.
+is refused at load. A bare `$` is plain text, so regexes and prices need no escaping.
 
 ## Steps
 
-A step has exactly one action, plus an optional `expect` list.
+A step has exactly one action, plus an `expect` list (required on a `say`). A turn that is
+refused or runs out of time fails on its own, whatever its list says. A key name missing from
+the env file, or a key the provider rejects, stops the persona before any turn is paid for.
 
 | Action | Meaning |
 |---|---|
