@@ -1,3 +1,4 @@
+#define NIMBUS_JOBS_TEST_SEAM   // the unscoped results API (jobs.h)
 #include <unity.h>
 
 #include <cstring>
@@ -123,6 +124,9 @@ struct Rig {
 
   void build() {   // (re)construct the engine over the current journal
     JobEngine::Deps d;
+    d.principalFor = [](const std::string& chat) {   // these suites run as the device's owner
+      return nimbus::orch::principalForRole(chat, nimbus::orch::Role::Admin);
+    };
     d.platform = plat.contract();
     d.fabric = &fabric;
     d.journal = journal.get();
@@ -2849,6 +2853,25 @@ static void test_cum830_session_rows_name_who_started_them() {
   TEST_ASSERT_FALSE(rows[1].byOwner);
 }
 
+// A host that never wired principalFor cannot say who a chat is, so no chat gets the
+// owner's scope: no owner connectors, and only its own results (it used to read as the
+// owner, for every chat).
+static void test_unwired_host_fails_closed() {
+  JobEngine::Deps d;
+  JobEngine unwired(std::move(d));
+  TEST_ASSERT_FALSE(unwired.freshScopeFor("somebody").owner);
+  TEST_ASSERT_FALSE(unwired.freshScopeFor("").owner);
+  // Wired: the role decides; the device's own work (no chat) is the owner's.
+  JobEngine::Deps w;
+  w.principalFor = [](const std::string& chat) {
+    return nimbus::orch::principalForRole(chat, chat == "owner" ? nimbus::orch::Role::Admin : nimbus::orch::Role::User);
+  };
+  JobEngine wired(std::move(w));
+  TEST_ASSERT_TRUE(wired.freshScopeFor("owner").owner);
+  TEST_ASSERT_FALSE(wired.freshScopeFor("member").owner);
+  TEST_ASSERT_TRUE(wired.freshScopeFor("").owner);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_lane_l_spawn_model_coercion_only_lands_on_a_listed_model);
@@ -2940,6 +2963,7 @@ int main(int, char**) {
   RUN_TEST(test_cum830_fresh_results_stay_with_the_chat_that_started_them);
   RUN_TEST(test_cum830_the_raw_fallback_delivers_each_chats_results_to_it);
   RUN_TEST(test_cum830_session_rows_name_who_started_them);
+  RUN_TEST(test_unwired_host_fails_closed);
   UNITY_END();
   return 0;
 }

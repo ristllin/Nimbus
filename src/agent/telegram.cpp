@@ -2915,6 +2915,7 @@ bool approvePending(const String& chatId, const String& name) {
   }
   pendingRemove(chatId.c_str());
   reloadAllowlist();
+  agent::orchestrator::tenantApproved(std::string(chatId.c_str()), isOwner(chatId));
   return true;
 }
 

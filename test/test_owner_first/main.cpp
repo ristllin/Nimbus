@@ -373,6 +373,9 @@ struct MiniRig {
 
   MiniRig() {
     JobEngine::Deps jd;
+    jd.principalFor = [](const std::string& chat) {   // this rig's chats are the owner's
+      return nimbus::orch::principalForRole(chat, nimbus::orch::Role::Admin);
+    };
     jd.platform = plat.contract();
     jd.deliver = [this](const std::string&, const std::string& t) { delivered.push_back(t); };
     jobs.reset(new JobEngine(std::move(jd)));

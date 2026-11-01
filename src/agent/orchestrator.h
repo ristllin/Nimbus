@@ -226,6 +226,9 @@ bool tenantQuotaOf(const std::string& chatId, nimbus::orch::Quota& out);
 // Upsert / remove. All persist on success. `err` carries a human-readable
 // reason on refusal - "that is the only admin" is the one that matters.
 bool tenantSetRole(const std::string& chatId, nimbus::orch::Role r, std::string& err);
+// An approval: the chat's row, written now (nimbus::orch::noteApproved). Best effort: with
+// a full table, or a write that did not land, the allowlist fallback still answers User.
+void tenantApproved(const std::string& chatId, bool telegramOwner);
 bool tenantSetQuota(const std::string& chatId, const nimbus::orch::Quota& q,
                     std::string& err);
 bool tenantRemove(const std::string& chatId, std::string& err);

@@ -2592,6 +2592,18 @@ bool tenantSetRole(const std::string& chatId, nimbus::orch::Role r, std::string&
   return true;
 }
 
+void tenantApproved(const std::string& chatId, bool telegramOwner) {
+  TenantLock lk;
+  std::string err;
+  if (!nimbus::orch::noteApproved(g_tenants, chatId, telegramOwner, err)) {
+    if (!err.empty()) alogf("rbac: approved %s without a row: %s", chatId.c_str(), err.c_str());
+    return;
+  }
+  if (LittleFsTenantStoreIO::saveChecked(g_tenants.dump())) return;
+  g_tenants.load(LittleFsTenantStoreIO::load());   // RAM never disagrees with storage
+  alogf("rbac: approved %s, its row did not persist", chatId.c_str());
+}
+
 bool tenantSetQuota(const std::string& chatId, const nimbus::orch::Quota& q,
                     std::string& err) {
   TenantLock lk;

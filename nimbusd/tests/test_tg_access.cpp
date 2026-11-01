@@ -446,9 +446,9 @@ static void testTenantGuards(ndtest::Ctx& c) {
         "no role for a chat that was never approved (no pre-seeding)");
   c.eqi(f.call("POST", "/api/tenant", "id=555&role=user").status, 409, "the last admin cannot be demoted");
   c.eqi(f.call("POST", "/api/tenant", "id=666&remove=1").status, 409, "an approved chat's row is not removed");
-  c.eqi(f.call("POST", "/api/tenant", "id=666&vectors=50").status, 404,
-        "a limit needs a tenant row first (device parity: the role chip creates it)");
-  c.eqi(f.call("POST", "/api/tenant", "id=666&role=user").status, 200, "the role chip writes the row");
+  c.eqi(f.call("POST", "/api/tenant", "id=777&vectors=50").status, 404,
+        "a limit needs a tenant row (a chat that was never approved has none)");
+  c.eqi(f.call("POST", "/api/tenant", "id=666&role=user").status, 200, "the role chip still answers");
   c.eqi(f.call("POST", "/api/tenant", "id=666&ttl=-1").status, 400, "a negative limit is refused");
   c.eqi(f.call("POST", "/api/tenant", "id=666&vectors=50").status, 200, "a limit is set");
   c.ok(has(f.call("GET", "/api/tenant").body, "{\"id\":\"666\",\"role\":\"user\",\"vectors\":50"),
@@ -488,6 +488,26 @@ static void testNoRoleRevival(ndtest::Ctx& c) {
   c.ok(junk.allowEmpty() && junk.admit("555") == Admit::Unlisted, "an unreadable file is an empty allowlist");
 }
 
+// An approval writes the chat's row, on the hosted surface as on the device (it used to
+// write none and the chat resolved by the allowlist fallback).
+static void testApprovalWritesTheRow(ndtest::Ctx& c) {
+  std::printf("  -- an approval writes the tenant row --\n");
+  clearEnv();
+  Fx f("tga-row");
+  std::string err;
+  auto rowOf = [&f](const std::string& id) {
+    for (const auto& t : f.acc().tenants())
+      if (t.chatId == id) return true;
+    return false;
+  };
+  c.ok(f.acc().approve("5551001", "Alice", err), "the approval lands");
+  c.ok(rowOf("5551001"), "the chat has a row now");
+  c.ok(f.acc().roleOf("5551001") == nimbus::orch::Role::User, "as a User");
+  c.ok(f.acc().setRole("5551001", nimbus::orch::Role::Guest, err), "an explicit role can be set");
+  c.ok(f.acc().approve("5551001", "Alice", err), "approving again lands");
+  c.ok(f.acc().roleOf("5551001") == nimbus::orch::Role::Guest, "and leaves the explicit role alone");
+}
+
 int main() {
   ndtest::Ctx c;
   c.suite = "telegram trust (device model)";
@@ -507,6 +527,7 @@ int main() {
   for (const char* t : {"tga-b", "tga-c", "tga-d", "tga-e", "tga-e2", "tga-e3", "tga-f", "tga-g", "tga-h",
                         "tga-i", "tga-j", "tga-k", "tga-l"})
     ndtest::rmTree(ndtest::scratchDir(t));
+  testApprovalWritesTheRow(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

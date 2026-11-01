@@ -216,7 +216,7 @@ class TelegramAccess {
       if (!inAllow(s, id)) s.allow.push_back(id);
       if (!nm.empty()) s.names[id] = nm;
       std::string e;
-      if (s.tenants.known(id) && s.tenants.roleOf(id) == Role::Unknown) s.tenants.setRole(id, Role::User, e);
+      nimbus::orch::noteApproved(s.tenants, id, false, e);   // a full table: the allowlist still says User
       return true;
     }, err);
     if (ok) dropPending(id);

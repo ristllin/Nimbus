@@ -291,8 +291,6 @@ owner's password.
 - The unattended column does not tell an owner's routine from a summary of the
   owner's own sub-agents fed by outside text, so such a summary keeps the owner's
   everyday actions (the ring, the speaker, music, a wakeup, the scratchpad).
-- A chat approved from the pending list gets no tenant row until someone sets its
-  role, so it resolves by the allowlist (a user once the table has an admin).
 - A Mistral head conversation pins the connectors it started with: a chat whose role
   changes keeps its open conversation's connectors until that conversation is reset.
 - A routine that runs on the web chat or voice and names the owner's Telegram chat

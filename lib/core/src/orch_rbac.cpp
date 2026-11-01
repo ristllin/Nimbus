@@ -54,6 +54,15 @@ Role roleWithoutRow(bool allowListed, bool telegramOwner, bool tableHasAdmin) {
   return telegramOwner && !tableHasAdmin ? Role::Admin : Role::User;
 }
 
+bool noteApproved(TenantStore& table, const std::string& chatId, bool telegramOwner, std::string& err) {
+  if (table.known(chatId)) {
+    if (table.roleOf(chatId) != Role::Unknown) return false;
+  } else if (telegramOwner && table.adminCount() == 0) {
+    return false;
+  }
+  return table.setRole(chatId, Role::User, err);
+}
+
 Quota defaultQuotaFor(Role r) {
   Quota q;
   switch (r) {

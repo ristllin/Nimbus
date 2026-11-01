@@ -99,6 +99,9 @@ struct Rig {
 
   Rig() {
     JobEngine::Deps jd;   // fresh sub-agent results and spawn notes (no fabric: nothing dispatches)
+    jd.principalFor = [](const std::string& chat) {   // this rig's chats are the owner's
+      return nimbus::orch::principalForRole(chat, nimbus::orch::Role::Admin);
+    };
     jd.platform = plat.contract();
     jd.deliver = [this](const std::string& c, const std::string& t) { delivered.push_back({c, t}); };
     jobs.reset(new JobEngine(std::move(jd)));

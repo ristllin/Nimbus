@@ -2481,7 +2481,7 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
   turnMem().beginEntry();
   // Snapshot the fresh block BEFORE consumption: if the synthesis turn fails
   // (provider outage / failover exhausted), the results must still reach the
-  // owner RAW - takeFreshResults() frees the entries, so without this snapshot a
+  // owner RAW - takeFreshResultsFor() frees the entries, so without this snapshot a
   // failed turn silently destroyed completed sub-agent work (review finding,
   // 2026-07-13: the "60 s fallback" only covers the PRE-consumption defer case).
   // The owner gets the HUMAN rendering (CUM-480), never the model-facing seed.

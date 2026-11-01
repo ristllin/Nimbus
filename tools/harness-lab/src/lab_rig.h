@@ -694,6 +694,8 @@ class LabRig {
   // spawn needs, as the device wires them.
   void wireJobs(agent::JobEngine::Deps& jd) {
     jd.journal = journal_;
+    // A sub-agent inherits its chat's principal, as d.apply.principalFor below says.
+    jd.principalFor = [this](const std::string& chat) { return orch::principalForRole(chat, role()); };
     if (!fabric_) return;
     jd.fabric = fabric_;
     jd.subPriority = [this] { return opt_.priority; };

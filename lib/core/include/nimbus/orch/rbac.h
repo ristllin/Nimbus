@@ -136,5 +136,13 @@ class TenantStore {
   std::vector<Tenant> tenants_;
 };
 
+// An approval (the pending list, /api/telegram/add): the chat's row, written now. Without
+// one a chat resolves by the allowlist fallback, so a later change to who is first on
+// that list could promote it. An explicit role stands; a revoked row is lifted to User
+// (approving again is an explicit grant); the chat the Telegram owner rule names on a
+// table with no admin keeps that rule and gets no row. True when the table changed (the
+// caller persists); false with `err` set when a full table refused.
+bool noteApproved(TenantStore& table, const std::string& chatId, bool telegramOwner, std::string& err);
+
 }  // namespace orch
 }  // namespace nimbus

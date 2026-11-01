@@ -1,3 +1,5 @@
+// The unscoped results API below is declared for this file and the job tests only.
+#define NIMBUS_JOBS_TEST_SEAM
 #include "nimbus/harness/jobs.h"
 
 #include <algorithm>   // remove_if - expire timed-out dispatch times
@@ -445,7 +447,10 @@ void JobEngine::addFreshResult(const char* tag, const char* model, const std::st
 }
 
 bool JobEngine::chatIsOwner(const std::string& chatId) const {
-  if (chatId.empty() || !d_.principalFor) return true;   // the device's own, or an unwired host
+  // Unwired: nothing can say who this is, so it is nobody's owner (no connectors, only
+  // its own chat's results). A host that runs sub-agents wires principalFor.
+  if (!d_.principalFor) return false;
+  if (chatId.empty()) return true;   // the device's own work, on a chat of no one
   return orch::connectorGrantFor(d_.principalFor(chatId)) == orch::ConnectorGrant::Owner;
 }
 
