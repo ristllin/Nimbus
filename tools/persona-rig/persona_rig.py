@@ -55,6 +55,7 @@ from persona_schema import (  # noqa: E402, F401  (the rig's public loading surf
 )
 
 DOCKER = os.environ.get("DOCKER_BIN", "docker")
+BUSY_RETRY_S = 120  # how long a snapshot read waits out the instance's honest busy
 HTTP_TIMEOUT_S = 60
 CONFIG_PAUSE_S = 0.2  # the web app's pace between saves
 BUSY_WAIT_S = 120  # how long a read waits out the daemon's 503 "instance busy"
@@ -662,7 +663,7 @@ class Runner:
 
     def wait_verified(self, timeout_s: float = 60):
         """A saved key verifies in the background. The verdict must be the one the persona expects."""
-        slugs = list(self.p.get("keys", {}))
+        slugs = [s for s in self.p.get("keys", {}) if s != "tavily"]  # no verify for the search key
         end = time.time() + timeout_s
         provs = {}
         while slugs and time.time() < end:
