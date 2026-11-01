@@ -396,6 +396,8 @@ class HostedLoops {
     nimbus::orch::onFireResult(*l, o.ok, o.tokens, nimbus::orch::fnv64(o.detail), now);
     nimbus::orch::noteFireError(*l, o.ok, o.error);
     dev_.tokensToday += o.tokens.total();
+    say("loops: fired '" + l->name + "' ok=" + (o.ok ? "1" : "0") + " tokens=" + std::to_string(o.tokens.total()) +
+        " next=" + std::to_string(l->nextRun));
     if (settleOnce(*l, o, now)) return;
     if (nimbus::orch::retriesSoon(o)) l->nextRun = now + o.retryAfterSec;
     if (nimbus::orch::isSemanticRepeat(*l, caps_.maxRepeats))
@@ -403,8 +405,6 @@ class HostedLoops {
     else if (!o.ok && nimbus::orch::breakerTrips(*l, caps_.maxConsecFails, false))
       pause(*l, nimbus::orch::PauseReason::ConsecFails, "Routine '" + l->name + "' is paused after repeated failures.");
     persist();
-    say("loops: fired '" + l->name + "' ok=" + (o.ok ? "1" : "0") + " tokens=" + std::to_string(o.tokens.total()) +
-        " next=" + std::to_string(l->nextRun));
   }
 
   std::vector<nimbus::orch::LoopRecord> loops_;
