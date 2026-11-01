@@ -715,11 +715,17 @@ static std::string csvHeader(File& f, const std::string& window, size_t start) {
 // appended duplicates. The designed ledger (ONE file, one row per meal,
 // corrections by key) is where meals belong; this folds the legacy file's
 // final figures into it once at boot and removes the legacy file, so the
-// model stops appending to an unfixable orphan. Caller holds the Lock (begin).
+// model stops appending to an unfixable orphan. Only the owner's file folds, and the
+// file goes only when all its figures reached the ledger. Caller holds the Lock (begin).
 void migrateLegacyMealLog() {
   constexpr const char* kLegacyProject = "nutrition";
   constexpr const char* kLegacyName = "meal_log.csv";
-  if (!g_store.find(kLegacyProject, kLegacyName)) return;
+  const nimbus::orch::FileEntry* legacyEntry = g_store.find(kLegacyProject, kLegacyName);
+  if (!legacyEntry) return;
+  if (!nimbus::orch::legacyLogFoldable(g_store, *legacyEntry)) {
+    alogf("files: legacy %s/%s left alone (it is not the owner's file)", kLegacyProject, kLegacyName);
+    return;
+  }
   if (g_store.find(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName)) {
     alogf("files: legacy %s/%s left alone (a designed ledger already exists)", kLegacyProject,
           kLegacyName);
@@ -756,6 +762,13 @@ void migrateLegacyMealLog() {
   if (!saveText(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, m.out, err,
                 std::string())) {
     alogf("files: legacy meal log migration failed: %s", err.c_str());
+    return;
+  }
+  // A dropped data row has no other copy: the source stays. The designed ledger now
+  // exists, so the next boot leaves it alone and this runs once either way.
+  if (!m.sourceFullyFolded()) {
+    alogf("files: migrated the legacy meal log into %s/%s (%d rows folded), %d rows unread: source kept",
+          nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, m.folded, m.droppedData);
     return;
   }
   memory::dataFs().remove(pathOf(kLegacyProject, kLegacyName).c_str());

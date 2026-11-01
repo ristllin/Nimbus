@@ -2,6 +2,8 @@
 #include <cstddef>
 #include <string>
 
+#include "nimbus/orch/file_store.h"
+
 // ledger_migrate - the one-time fold of a legacy meal log into the designed
 // food ledger (v4.6.3, the 30 Oct Lumi investigation).
 //
@@ -18,7 +20,11 @@
 //     then a meal word (breakfast, lunch, ...) or an item, then numbers it can
 //     read kcal and protein from - the schemas the real file used:
 //     <ts, meal, item, grams, kcal, protein>, <ts, item, amount, kcal, protein>,
-//     <date, meal, item, grams, kcal, protein>, <ts, item, kcal, protein>;
+//     <date, meal, item, grams, kcal, protein>, <ts, item, kcal, protein>,
+//     with an item holding a comma in double quotes or inside parentheses;
+//   - a quantity cell (grams, amount) has to start with a number: an item split
+//     at a comma it did not quote shifts the columns after it, and the row drops
+//     instead of reading grams as kcal;
 //   - a row with no meal word takes its meal from the time of day (before
 //     11:00 breakfast, before 15:30 lunch, before 20:00 dinner, else evening);
 //   - rows group by (day, meal); a GENERATION is the rows of one timestamp -
@@ -28,8 +34,11 @@
 //   - within the winning generation, rows naming the same item are generations
 //     of that item: the LAST wins (three appends of one drink collapse to one);
 //   - the ledger row joins the surviving items with "; " (never a comma - the
-//     ledger is comma-separated) and sums their kcal and protein.
-// A row that maps to nothing is dropped and counted, never guessed.
+//     ledger is comma-separated) and sums their kcal and protein. An item that
+//     keeps a comma of its own is written so that every ledger reader sees one
+//     field (in quotes, unless parentheses that close already shield it).
+// A row that maps to nothing is dropped and counted, never guessed, and a source
+// with a dropped data row is kept (sourceFullyFolded).
 namespace nimbus::orch {
 
 // The designed ledger's place and shape. These match the main branch's
@@ -45,7 +54,16 @@ struct LedgerMigration {
   std::string out;      // the whole new ledger file ("" = nothing to write)
   int folded = 0;       // ledger rows written
   int dropped = 0;      // legacy rows that mapped to nothing
+  int droppedData = 0;  // of those, the rows that are not a header: figures the ledger lacks
+
+  // The source file may go only when this holds: a dropped data row has no other copy.
+  bool sourceFullyFolded() const { return ok && folded > 0 && droppedData == 0; }
 };
+
+// Only a legacy file the device owner controls folds, into the owner's ledger. A member
+// can hold a file of that name in their own namespace (the name is not reserved); it
+// stays theirs and stays where it is: the fold must not move it into the owner's prompt.
+bool legacyLogFoldable(const FileStore& store, const FileEntry& legacy);
 
 // Fold `legacyText` into ledger shape. `existingLedger` is the designed
 // ledger's current text when one exists (its rows are kept, and per (day,

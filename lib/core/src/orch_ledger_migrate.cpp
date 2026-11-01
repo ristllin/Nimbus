@@ -67,25 +67,85 @@ void splitStamp(const std::string& f, std::string& day, std::string& time) {
   time = at == std::string::npos || at + 1 >= f.size() ? std::string() : f.substr(at + 1);
 }
 
-// Split one legacy row. A comma INSIDE parentheses does not split: the real
-// file's item names carry them ("Boba tea (no sugar, honey tapioca)") - a
-// blind split truncates the item and misreads the columns after it.
-std::vector<std::string> splitCsv(const std::string& line) {
-  std::vector<std::string> out;
-  std::string cur;
-  int depth = 0;
-  for (char c : line) {
-    if (c == ',' && depth == 0) {
-      out.push_back(cur);
-      cur.clear();
+// One quoted cell, `at` just past its opening quote, left on the separator after it.
+// False when the quote never closes or text follows it: the row's columns are unknowable.
+bool readQuotedCell(const std::string& line, size_t& at, std::string& cell) {
+  for (; at < line.size(); at++) {
+    if (line[at] != '"') {
+      cell += line[at];
+    } else if (at + 1 < line.size() && line[at + 1] == '"') {
+      cell += '"';   // "" inside quotes is one quote
+      at++;
     } else {
-      if (c == '(') depth++;
-      if (c == ')' && depth > 0) depth--;
-      cur += c;
+      at = line.find_first_not_of(' ', at + 1);
+      if (at == std::string::npos) at = line.size();
+      return at == line.size() || line[at] == ',';
     }
   }
-  out.push_back(cur);
-  return out;
+  return false;
+}
+
+// One plain cell, left on the separator after it. A comma INSIDE parentheses does not
+// split: the real file's item names carry them ("Boba tea (no sugar, honey tapioca)") - a
+// blind split truncates the item and misreads the columns after it. Blanks stay: a cell
+// that starts with one is the tail of an item split at its comma (quantityCell).
+void readPlainCell(const std::string& line, size_t& at, std::string& cell) {
+  int depth = 0;
+  for (; at < line.size(); at++) {
+    const char c = line[at];
+    if (c == ',' && depth == 0) return;
+    if (c == '(') depth++;
+    if (c == ')' && depth > 0) depth--;
+    cell += c;
+  }
+}
+
+// Split one legacy row. A cell in double quotes may hold commas (a model writing standard
+// CSV quotes such an item). Empty when a quote leaves the row's columns unknowable, which
+// no schema maps.
+std::vector<std::string> splitCsv(const std::string& line) {
+  std::vector<std::string> out;
+  size_t at = 0;
+  for (;;) {
+    std::string cell;
+    const size_t text = line.find_first_not_of(' ', at);
+    if (text != std::string::npos && line[text] == '"') {
+      at = text + 1;
+      if (!readQuotedCell(line, at, cell)) return {};
+    } else {
+      readPlainCell(line, at, cell);
+    }
+    out.push_back(cell);
+    if (at >= line.size()) return out;
+    at++;   // the separator
+  }
+}
+
+// A quantity column ("150", "150 g", "1 cup"). An item split at a comma it did not quote
+// shifts every column after it, and the figures would still read as numbers (grams as kcal):
+// this cell is where the shift shows, and the row then drops. The schemas have open tails
+// (fixture: nine columns), so a column count cannot show it.
+bool quantityCell(const std::string& f) {
+  return !f.empty() && ((f[0] >= '0' && f[0] <= '9') || f[0] == '.');
+}
+
+// <stamp, meal, item, grams, kcal, protein[, ...]>
+bool foldMealRow(const std::vector<std::string>& f, FoldRow& r) {
+  if (f.size() < 6 || !quantityCell(f[3])) return false;
+  r.meal = f[1];
+  r.item = f[2];
+  return isNum(f[4], r.kcal) && isNum(f[5], r.protein);
+}
+
+// <stamp, item, kcal, protein> or <stamp, item, amount, kcal, protein[, ...]>: the meal
+// comes from the time of day.
+bool foldTimedRow(const std::vector<std::string>& f, const std::string& time, FoldRow& r) {
+  const size_t figures = f.size() == 4 ? 2 : 3;
+  if (figures == 3 && !quantityCell(f[2])) return false;
+  r.item = f[1];
+  if (!isNum(f[figures], r.kcal) || !isNum(f[figures + 1], r.protein)) return false;
+  r.meal = mealOfTime(time);
+  return !r.meal.empty();
 }
 
 // One legacy line mapped, or why it cannot be.
@@ -93,29 +153,17 @@ bool foldRow(const std::string& line, FoldRow& r) {
   const std::vector<std::string> f = splitCsv(line);
   if (f.size() < 4) return false;
   if (f[0].find_first_of("0123456789") == std::string::npos) return false;   // a header or prose
-  if (headerWord(f[0])) return false;
   std::string time;
   splitStamp(f[0], r.day, time);
   if (r.day.size() != 10 || r.day[4] != '-') return false;                  // no real date
   r.ts = f[0];
-  if (mealWord(f[1])) {
-    // <stamp, meal, item, grams, kcal, protein[, ...]>
-    if (f.size() < 6) return false;
-    r.meal = f[1];
-    r.item = f[2];
-    if (!isNum(f[4], r.kcal) || !isNum(f[5], r.protein)) return false;
-    return true;
-  }
-  r.item = f[1];
-  if (f.size() == 4) {
-    // <stamp, item, kcal, protein>
-    if (!isNum(f[2], r.kcal) || !isNum(f[3], r.protein)) return false;
-  } else {
-    // <stamp, item, amount, kcal, protein[, ...]>
-    if (!isNum(f[3], r.kcal) || !isNum(f[4], r.protein)) return false;
-  }
-  r.meal = mealOfTime(time);
-  return !r.meal.empty();
+  return mealWord(f[1]) ? foldMealRow(f, r) : foldTimedRow(f, time, r);
+}
+
+// A header row holds no figures: dropping one loses nothing.
+bool headerRow(const std::string& line) {
+  const std::vector<std::string> f = splitCsv(line);
+  return !f.empty() && headerWord(f[0]);
 }
 
 // The meals in eating order; an unknown word sorts last, alphabetically.
@@ -148,7 +196,7 @@ using FinalMap = std::map<LedgerKey, Final>;
 // Parse and group the legacy rows: (day, meal) -> timestamp (one append's
 // generation) -> item -> the row that wins (rows arrive in file order, so the
 // later row replaces the earlier). Unmappable rows are counted, never guessed.
-GenMap groupLegacy(const std::string& legacyText, size_t& dropped) {
+GenMap groupLegacy(const std::string& legacyText, LedgerMigration& m) {
   GenMap keyed;
   size_t pos = 0;
   size_t at = 0;
@@ -161,7 +209,8 @@ GenMap groupLegacy(const std::string& legacyText, size_t& dropped) {
     if (line.empty()) continue;
     FoldRow r;
     if (!foldRow(line, r)) {
-      dropped++;
+      m.dropped++;
+      if (!headerRow(line)) m.droppedData++;
       continue;
     }
     Gen& g = keyed[{r.day, r.meal}][r.ts];
@@ -222,6 +271,29 @@ void overlayLedger(const std::string& existingLedger, FinalMap& merged) {
 }
 
 // Sort by day, then by the eating order of meals, and render the whole file.
+// The items cell of a ledger row. It stays plain when every reader takes it as one field: no
+// quote, and any comma shielded by parentheses that close. Otherwise it goes in quotes.
+std::string itemsCell(const std::string& items) {
+  int depth = 0;
+  bool plain = items.find('"') == std::string::npos;
+  bool comma = false;
+  for (char c : items) {
+    if (c == ',') {
+      comma = true;
+      plain = plain && depth > 0;
+    }
+    if (c == '(') depth++;
+    if (c == ')' && depth > 0) depth--;
+  }
+  if (plain && (!comma || depth == 0)) return items;
+  std::string out = "\"";
+  for (char c : items) {
+    if (c == '"') out += '"';
+    out += c;
+  }
+  return out + "\"";
+}
+
 std::string renderLedger(const FinalMap& merged, int& folded) {
   std::vector<std::pair<LedgerKey, Final>> rows(merged.begin(), merged.end());
   std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
@@ -232,7 +304,7 @@ std::string renderLedger(const FinalMap& merged, int& folded) {
   });
   std::string out = std::string(kLedgerHeader) + "\n";
   for (const auto& kv : rows) {
-    out += kv.first.first + "," + kv.first.second + "," + kv.second.items + "," +
+    out += kv.first.first + "," + kv.first.second + "," + itemsCell(kv.second.items) + "," +
            numText(kv.second.kcal) + "," + numText(kv.second.protein) + "\n";
     folded++;
   }
@@ -244,14 +316,16 @@ std::string renderLedger(const FinalMap& merged, int& folded) {
 LedgerMigration planLedgerMigration(const std::string& legacyText,
                                     const std::string& existingLedger) {
   LedgerMigration m;
-  size_t dropped = 0;
-  const GenMap keyed = groupLegacy(legacyText, dropped);
+  const GenMap keyed = groupLegacy(legacyText, m);
   FinalMap merged = foldWinners(keyed);
   if (!existingLedger.empty()) overlayLedger(existingLedger, merged);
   m.out = renderLedger(merged, m.folded);
-  m.dropped = (int)dropped;
   m.ok = true;
   return m;
+}
+
+bool legacyLogFoldable(const FileStore& store, const FileEntry& legacy) {
+  return store.ownedBy(legacy, kOwnerNs, false);
 }
 
 }  // namespace nimbus::orch

@@ -160,6 +160,145 @@ static void test_a_comma_inside_parentheses_stays_in_the_item() {
   TEST_ASSERT_TRUE(contains(m.out, "2026-10-29,evening,Tea drink (no sugar, honey tapioca),225,1"));
 }
 
+// A model writing standard CSV quotes an item that holds a comma. The quote keeps the
+// columns where they are in every schema, and the ledger row quotes it again so that
+// every reader of the ledger sees one item and the true figures.
+static void test_a_quoted_item_keeps_its_comma_and_its_columns() {
+  const LedgerMigration m = planLedgerMigration(
+      "2026-10-30T12:00:00,lunch,\"Rice, beans\",200,400,20\n"          // ts, meal, item, grams, kcal, protein
+      "2026-10-30T19:00:00,dinner,Pasta,150,500,18\n"
+      "2026-10-30 08:30,\"Eggs, toast\",2 pieces,300,16\n"              // ts, item, amount, kcal, protein
+      "2026-10-29 21:00,\"Tea, \"\"chai\"\" style\",60,2\n"             // ts, item, kcal, protein
+      "2026-10-29,breakfast, \"Oats, milk\" ,250,310,11\n");            // blanks around the quotes
+  TEST_ASSERT_TRUE(m.ok);
+  TEST_ASSERT_EQUAL_MESSAGE(5, m.folded, m.out.c_str());
+  TEST_ASSERT_EQUAL(0, m.dropped);
+  TEST_ASSERT_TRUE_MESSAGE(contains(m.out, "2026-10-30,lunch,\"Rice, beans\",400,20\n"), m.out.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(contains(m.out, "2026-10-30,dinner,Pasta,500,18\n"), m.out.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(contains(m.out, "2026-10-30,breakfast,\"Eggs, toast\",300,16\n"), m.out.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(contains(m.out, "2026-10-29,evening,\"Tea, \"\"chai\"\" style\",60,2\n"), m.out.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(contains(m.out, "2026-10-29,breakfast,\"Oats, milk\",310,11\n"), m.out.c_str());
+
+  // The day's readers take every row: nothing is left out of the total.
+  LogDay day;
+  day.date = "2026-10-30";
+  day.zone = "GMT";
+  const FoodLedger l = scanFoodLedger(m.out, true, day, kLedgerProject, kLedgerName);
+  TEST_ASSERT_EQUAL(3, l.kcalRows);
+  TEST_ASSERT_EQUAL(0, l.kcalUnread);
+  TEST_ASSERT_TRUE(l.kcal > 1199.9 && l.kcal < 1200.1);
+  TEST_ASSERT_TRUE(l.protein > 53.9 && l.protein < 54.1);
+  // A keyed correction finds the row by its meal.
+  const CsvUpsert fix = planCsvUpsert(m.out, std::string(kLedgerHeader) + "\n2026-10-30,lunch,Rice,350,15\n",
+                                      "meal", "kcal", "2026-10-30");
+  TEST_ASSERT_TRUE_MESSAGE(fix.ok, fix.err.c_str());
+  TEST_ASSERT_EQUAL(1, fix.replaced);
+}
+
+// A comma the item did not quote shifts every later column. A row that shifted shows it
+// in its quantity cell, and it drops: grams must never be read as kcal.
+static void test_an_unquoted_comma_never_shifts_the_figures() {
+  const char* shifted[] = {
+      "2026-10-30T12:00:00,lunch,Rice, beans,200,400,20\n",    // the meal-word schema
+      "2026-10-30T12:00:00,lunch,Rice, 2 eggs,200,400,20\n",   // a digit after the comma's blank
+      "2026-10-30 08:30,Rice, beans,200,400,20\n",             // the amount schema
+      "2026-10-30 08:30,Rice, beans,400,20\n",                 // the shortest schema
+      "2026-10-30T12:00:00,lunch,\"Rice, beans,200,400,20\n",  // a quote that never closes
+      "2026-10-30T12:00:00,lunch,\"Rice\" beans,200,400,20\n", // text after a closing quote
+  };
+  for (const char* row : shifted) {
+    const LedgerMigration m = planLedgerMigration(row);
+    TEST_ASSERT_TRUE(m.ok);
+    TEST_ASSERT_EQUAL_MESSAGE(0, m.folded, row);
+    TEST_ASSERT_EQUAL_MESSAGE(1, m.dropped, row);
+    TEST_ASSERT_EQUAL_MESSAGE(1, m.droppedData, row);
+  }
+  // An item that needs no quotes stays as it was, a parenthesized comma included, and a
+  // comma the parentheses cannot shield (they never close) is quoted on the way out.
+  const LedgerMigration kept = planLedgerMigration(
+      "2026-10-30,lunch,Tea (no sugar, honey),100,50,1\n"
+      "2026-10-30,dinner,\"Soup (large, hot\",100,70,2\n");
+  TEST_ASSERT_EQUAL(2, kept.folded);
+  TEST_ASSERT_TRUE_MESSAGE(contains(kept.out, "2026-10-30,lunch,Tea (no sugar, honey),50,1\n"), kept.out.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(contains(kept.out, "2026-10-30,dinner,\"Soup (large, hot\",70,2\n"), kept.out.c_str());
+  CsvDayTally tally("kcal", "2026-10-30");
+  RowSplitter rows([&](const std::string& row, bool complete) {
+    tally.feed(row, complete);
+    return true;
+  });
+  rows.push(kept.out.data(), kept.out.size());
+  rows.end();
+  TEST_ASSERT_EQUAL(2, tally.total().rows);
+  TEST_ASSERT_EQUAL(0, tally.total().unread);
+}
+
+// The source file goes only when every row of figures reached the ledger: a dropped data
+// row has no other copy. A header row holds no figures, so it never keeps the file.
+static void test_the_source_goes_only_when_every_data_row_folded() {
+  const LedgerMigration clean = planLedgerMigration(
+      "timestamp,meal,item,grams,kcal,protein\n"
+      "2026-10-30,lunch,Soup,300,260,14\n");
+  TEST_ASSERT_EQUAL(1, clean.folded);
+  TEST_ASSERT_EQUAL(1, clean.dropped);
+  TEST_ASSERT_EQUAL(0, clean.droppedData);
+  TEST_ASSERT_TRUE(clean.sourceFullyFolded());
+  TEST_ASSERT_TRUE(planLedgerMigration(kFixture).sourceFullyFolded());   // its two drops are headers
+
+  const LedgerMigration lost = planLedgerMigration(
+      "2026-10-30,lunch,Soup,300,260,14\n"
+      "2026-10-30 19:00,Rice, beans,200,400,20\n");
+  TEST_ASSERT_EQUAL(1, lost.folded);
+  TEST_ASSERT_EQUAL(1, lost.droppedData);
+  TEST_ASSERT_FALSE(lost.sourceFullyFolded());
+  TEST_ASSERT_FALSE(planLedgerMigration("not a csv row at all\n").sourceFullyFolded());
+  TEST_ASSERT_FALSE(planLedgerMigration("").sourceFullyFolded());
+}
+
+// A member can create nutrition/meal_log.csv in their own namespace (the name is not
+// reserved). It must never become the owner's ledger: only a file the owner controls
+// folds. Every owner a stored entry can carry, the shape of the index on a real device.
+static void test_only_the_owners_legacy_log_folds() {
+  FileStore store{FileStore::Limits{}};
+  struct Row { const char* owner; bool folds; };
+  const Row rows[] = {
+      {"", true},             // a file from before namespaces is the owner's
+      {kOwnerNs, true},
+      {"chat:12345", false},  // a member or guest
+      {kSharedNs, false},
+      {kMcpNs, false},
+  };
+  for (const Row& r : rows) {
+    FileEntry e;
+    e.project = "nutrition";
+    e.name = "meal_log.csv";
+    e.owner = r.owner;
+    TEST_ASSERT_EQUAL_MESSAGE(r.folds, legacyLogFoldable(store, e), r.owner);
+  }
+}
+
+// The device wiring of the two rules above, in the order they must run: the owner check
+// before a byte is read, and the remove of the source only past the fully-folded check.
+static void test_the_fold_checks_the_owner_and_keeps_an_unfolded_source() {
+  std::FILE* f = std::fopen("src/agent/files_subsystem.cpp", "rb");
+  if (!f) { TEST_FAIL_MESSAGE("src/agent/files_subsystem.cpp unreadable"); return; }
+  std::string src;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) src.append(buf, n);
+  std::fclose(f);
+  const size_t fn = src.find("void migrateLegacyMealLog()");
+  TEST_ASSERT_TRUE(fn != std::string::npos);
+  const size_t owner = src.find("legacyLogFoldable(g_store,", fn);
+  const size_t read = src.find("readWhole(kLegacyProject, kLegacyName, kFoldCap)", fn);
+  const size_t save = src.find("saveText(nimbus::orch::kLedgerProject", fn);
+  const size_t whole = src.find("m.sourceFullyFolded()", fn);
+  const size_t remove = src.find("remove(pathOf(kLegacyProject, kLegacyName)", fn);
+  TEST_ASSERT_TRUE(owner != std::string::npos && read != std::string::npos);
+  TEST_ASSERT_TRUE(save != std::string::npos && whole != std::string::npos && remove != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(owner < read, "the owner check must run before the read");
+  TEST_ASSERT_TRUE_MESSAGE(save < whole && whole < remove, "the source goes only past the fully-folded check");
+}
+
 // Headers, prose and short rows drop and are counted - never guessed.
 static void test_unmappable_rows_drop_and_count() {
   const LedgerMigration m = planLedgerMigration(
@@ -251,6 +390,11 @@ int main() {
   RUN_TEST(test_the_designed_ledger_wins_its_keys);
   RUN_TEST(test_unmappable_rows_drop_and_count);
   RUN_TEST(test_a_comma_inside_parentheses_stays_in_the_item);
+  RUN_TEST(test_a_quoted_item_keeps_its_comma_and_its_columns);
+  RUN_TEST(test_an_unquoted_comma_never_shifts_the_figures);
+  RUN_TEST(test_the_source_goes_only_when_every_data_row_folded);
+  RUN_TEST(test_only_the_owners_legacy_log_folds);
+  RUN_TEST(test_the_fold_checks_the_owner_and_keeps_an_unfolded_source);
   RUN_TEST(test_a_migrated_ledger_is_read_by_the_ledger_readers);
   RUN_TEST(test_begin_wires_the_one_time_migration);
   return UNITY_END();
