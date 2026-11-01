@@ -1126,39 +1126,56 @@ std::string outputsReply(const JsonDocument& doc, const Provenance& p, RunCounts
 }
 }  // namespace
 
+// The Conversations request of one sub-agent on `subModel`. `prov` is decided from it.
+static std::string subRequestBody(const ProviderDeps& pd, const std::string& subModel, const Directive& d,
+                                  Provenance& prov) {
+  JsonDocument doc;
+  doc["store"]        = true;
+  wire::putFieldStr(doc["inputs"], d.instruction ? std::string(d.instruction) : std::string(),
+                    "the sub-agent task");
+  doc["model"]        = subModel;
+  doc["instructions"] = MISTRAL_AGENT_SYS;
+  // Studio connectors ride the conversation and run server-side (auto tool_choice
+  // - no forcing, so no 422).
+  if (pd.attachMistral) pd.attachMistral(doc);
+  prov = provenanceOf(pd, doc, d);   // what the task asks for, from the whole attach
+  if (webSearchSpawn(d)) {
+    const size_t dropped = dropStudioConnectors(doc, prov.askedId);
+    if (dropped)
+      hlog::logf("mistral sub: web_search spawn - %u Studio connector(s) left off", (unsigned)dropped);
+    std::vector<nimbus::orch::AttachedConnector> kept;   // the log and run counts read the wire
+    for (const auto& a : prov.attached)
+      if (!prov.askedId.empty() && a.id == prov.askedId) kept.push_back(a);
+    prov.attached = std::move(kept);
+  }
+  return serializeBody(doc);
+}
+
+// CUM-887: a model that refuses built-in connectors (mistral-large-4-0, code 3004) cannot
+// carry a sub-agent's tools. The tools are the point of a sub, so the run moves to this
+// model, which takes them (probed live 1 Nov), and the reply names it. A sub with no tools
+// to carry stays on the model it was given.
+static const char kMistralToolsSubModel[] = "mistral-medium-latest";
+static bool attachCarriesTools(const ProviderDeps& pd) {
+  if (!pd.attachMistral) return false;
+  JsonDocument probe;
+  pd.attachMistral(probe);
+  return probe["tools"].as<JsonArrayConst>().size() > 0;
+}
+
 FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
                           const Directive& d, char outJobId[72]) {
   if (!pd.key || pd.key("mistral").empty()) return FabricErr::Auth;
   const int slot = freeSlot();
   if (slot < 0) return FabricErr::RemoteFail;   // cache full: journal backs off
 
-  std::string body;
-  std::string subModel;   // the model the run named (lane DEF: its spend is metered under it)
+  // The model the run names (lane DEF: its spend is metered under it).
+  const std::string askedModel = (d.model && d.model[0]) ? std::string(d.model) : model;
+  std::string subModel = askedModel;
+  if (misConnectorsRefusedBefore(subModel) && attachCarriesTools(pd)) subModel = kMistralToolsSubModel;
   Provenance prov;   // CUM-536: decided from the request, applied to the response
-  {
-    JsonDocument doc;
-    doc["store"]        = true;
-    wire::putFieldStr(doc["inputs"], d.instruction ? std::string(d.instruction) : std::string(),
-                      "the sub-agent task");
-    subModel            = (d.model && d.model[0]) ? std::string(d.model) : model;
-    doc["model"]        = subModel;
-    doc["instructions"] = MISTRAL_AGENT_SYS;
-    // Studio connectors ride the conversation and run server-side (auto tool_choice
-    // - no forcing, so no 422). A model that refused the builtins is not asked
-    // again (the head path remembers the refusal; the sub gets the same skip).
-    if (pd.attachMistral && !misConnectorsRefusedBefore(subModel)) pd.attachMistral(doc);
-    prov = provenanceOf(pd, doc, d);   // what the task asks for, from the whole attach
-    if (webSearchSpawn(d)) {
-      const size_t dropped = dropStudioConnectors(doc, prov.askedId);
-      if (dropped)
-        hlog::logf("mistral sub: web_search spawn - %u Studio connector(s) left off", (unsigned)dropped);
-      std::vector<nimbus::orch::AttachedConnector> kept;   // the log and run counts read the wire
-      for (const auto& a : prov.attached)
-        if (!prov.askedId.empty() && a.id == prov.askedId) kept.push_back(a);
-      prov.attached = std::move(kept);
-    }
-    body = serializeBody(doc);
-  }
+  std::string body = subRequestBody(pd, subModel, d, prov);
+  const size_t requestChars = body.size();
 
   JsonDocument filter;
   filter["conversation_id"] = true;
@@ -1174,7 +1191,6 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   JsonDocument doc = makeDoc(pd);   // response -> PSRAM; execJson streams it off the socket
   HeaderList quota;                 // a 429's x-ratelimit-*: which window refused
   const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
-  const size_t requestChars = body.size();
   int code = mistralRequest(pd, "POST", "/v1/conversations", std::move(body), doc, filter,
                             kSyncSubCeilingMs, &quota);
   // A Mistral sub runs INSIDE this blocking POST, so a slow sub outlasts the read
@@ -1182,6 +1198,17 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   // went out may have run it: either is "may have started", never the misleading
   // "couldn't start".
   if (code <= 0) return wire::subTransportErr(pd, t0, kSyncSubCeilingMs);
+  if (subModel != kMistralToolsSubModel && misRefusedConnectors(code, mistralErrText(doc))) {
+    misRememberNoConnectors(subModel);
+    hlog::logf("mistral sub: %s refused built-in connectors (HTTP %d) - the run moves to %s",
+               subModel.c_str(), code, kMistralToolsSubModel);
+    subModel = kMistralToolsSubModel;
+    body = subRequestBody(pd, subModel, d, prov);
+    doc = makeDoc(pd);
+    code = mistralRequest(pd, "POST", "/v1/conversations", std::move(body), doc, filter,
+                          kSyncSubCeilingMs, &quota);
+    if (code <= 0) return wire::subTransportErr(pd, t0, kSyncSubCeilingMs);
+  }
   if (code == 401) return FabricErr::Auth;
   if (code == 429) {
     // Classified exactly like a head turn's 429 (CUM-465): the headers' window,
@@ -1206,6 +1233,9 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   const int droppedFiles = mistralParseFileRefs(doc, files);
   // A run may produce only a file with no prose; that is still a success.
   if (reply.empty() && files.empty()) return FabricErr::RemoteFail;
+  if (subModel != askedModel)
+    reply += "\n[note: this ran on " + subModel + " because " + askedModel +
+             " cannot use Mistral's built-in tools]";
   if (droppedFiles > 0)
     reply += "\n[note: the run produced " + std::to_string(droppedFiles) +
              " more file(s) beyond the " + std::to_string(nimbus::orch::kMaxArtifacts) +

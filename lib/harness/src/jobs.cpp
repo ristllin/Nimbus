@@ -285,17 +285,26 @@ bool JobEngine::subProviderRuns(const std::string& p, std::string* closedWhy) co
 }
 
 std::string JobEngine::firstSubProvider(std::string* closedWhy) const {
+  return nextSubProvider({}, closedWhy);
+}
+
+// The first sub provider in the configured order, past the ones in `tried`, that is
+// keyed and open.
+std::string JobEngine::nextSubProvider(const std::vector<std::string>& tried, std::string* closedWhy) const {
+  auto runs = [&](const std::string& p) {
+    return std::find(tried.begin(), tried.end(), p) == tried.end() && subProviderRuns(p, closedWhy);
+  };
   std::string prio = d_.subPriority ? d_.subPriority() : std::string();
   size_t start = 0;
   while (start < prio.length()) {
     size_t comma = prio.find(',', start);
     if (comma == std::string::npos) comma = prio.length();
     const std::string p = trimmedSlug(prio.substr(start, comma - start));
-    if (subProviderRuns(p, closedWhy)) return p;
+    if (runs(p)) return p;
     start = comma + 1;
   }
   for (const char* r : {kRouterSlug, "zai"})
-    if (subProviderRuns(r, closedWhy)) return r;
+    if (runs(r)) return r;
   return "";
 }
 
@@ -1216,6 +1225,44 @@ bool JobEngine::spillWholeReply(const orch::JobRecord& rec, const std::string& w
   return !path.empty();
 }
 
+// CUM-887: the refused provider's words were "try again, or use another provider", and
+// using another provider is the device's job. Only errors that surely started nothing
+// move: a Timeout or an unreadable answer may have run and billed, so a second copy never
+// starts. A connector lives on its provider and a file task runs where its file can come
+// back, so those two stay. At most two moves; on success `provider`, `model` and `jobId`
+// name the run that started.
+bool JobEngine::spawnMoved(const PendingSpawn& p, FabricErr err, std::string& provider, std::string& model,
+                           Directive& d, char* jobId, orch::ConnectorGrant grant) {
+  if (err == FabricErr::Timeout || err == FabricErr::ParseFail) return false;
+  if (!orch::paidCallAllowed(orch::SpendSeam::Sub)) return false;   // the ceiling refuses every provider alike
+  if (!connectorHost(p).empty() || (p.skill[0] && nimbus::orch::isFileSkill(p.skill))) return false;
+  std::vector<std::string> tried{provider};
+  for (int moves = 0; moves < 2; moves++) {
+    const std::string alt = nextSubProvider(tried);
+    if (alt.empty()) return false;
+    tried.push_back(alt);
+    ManagedAgentAdapter* a = d_.fabric->adapterFor(alt.c_str());
+    if (!a) continue;
+    std::string altModel;
+    if (!coerceSpawnModel(p, alt, altModel)) continue;
+    keepUnseenRun(d.tag, p, model);   // lane QW4 round 3: a run the refused attempt could not stop
+    hlog::logf("orchestrator: spawn on %s failed %d - moves to %s/%s", provider.c_str(), (int)err, alt.c_str(),
+               altModel.c_str());
+    d.model = altModel.length() ? altModel.c_str() : nullptr;
+    FabricErr next;
+    {
+      const orch::ConnectorGrantScope scope(grant);
+      next = a->dispatch(d, jobId);
+    }
+    if (next != FabricErr::Ok) continue;
+    ledgerSwapped(p, provider + " refused it; runs on " + alt + "/" + altModel);
+    provider = alt;
+    model = altModel;
+    return true;
+  }
+  return false;
+}
+
 void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   if (!d_.fabric) return;
   std::string chatId = p.chatId;
@@ -1309,6 +1356,14 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   {
     const orch::ConnectorGrantScope scope(grant);   // every request the dispatch builds
     err = a->dispatch(d, jobId);
+  }
+  if (err != FabricErr::Ok) {
+    // CUM-887: a refusal that surely started nothing moves the work on. If nothing takes
+    // it, the first refusal below is the one the owner hears.
+    if (spawnMoved(p, err, provider, model, d, jobId, grant)) {
+      err = FabricErr::Ok;
+      a = d_.fabric->adapterFor(provider.c_str());
+    }
   }
   if (err != FabricErr::Ok) {
     hlog::logf("orchestrator: spawn failed %d (prov=%s model=%s cat=%s)",

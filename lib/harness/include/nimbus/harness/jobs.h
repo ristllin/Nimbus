@@ -545,6 +545,10 @@ class JobEngine {
   std::string firstSubProvider() const;
   // ...and the park's words for the first keyed provider it skipped as closed.
   std::string firstSubProvider(std::string* closedWhy) const;
+  std::string nextSubProvider(const std::vector<std::string>& tried, std::string* closedWhy = nullptr) const;
+  // A dispatch refused with `err` moves to the next open sub provider (CUM-887).
+  bool spawnMoved(const PendingSpawn& p, FabricErr err, std::string& provider, std::string& model, Directive& d,
+                  char* jobId, nimbus::orch::ConnectorGrant grant);
   bool subProviderRuns(const std::string& provider, std::string* closedWhy) const;
   uint32_t nowMs() const { return d_.platform.nowMs ? d_.platform.nowMs() : 0; }
   uint32_t freeHeap() const { return d_.platform.freeHeap ? d_.platform.freeHeap() : 0xFFFFFFFFu; }

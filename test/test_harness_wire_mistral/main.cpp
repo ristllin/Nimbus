@@ -1533,6 +1533,66 @@ static void test_connectors_refusal_retried_once_without_them() {
   }
 }
 
+// CUM-887 (Lumi, 1 Nov): "spawn failed 8 (prov=mistral model=mistral-large-4-0 cat=research)".
+// The built-in web tools ride a sub-agent's Conversations request, and that model refuses
+// them with this body (recorded live, evidence/probes). The work moves to a Mistral model
+// that keeps the tools, the reply says which model ran, and the refusal is paid once.
+static const char* kSubConnectorsRefused =
+    "{\"object\":\"Error\",\"message\":\"Model mistral-large-4-1 currently does not support builtin connectors.\","
+    "\"type\":\"invalid_request_error\",\"code\":3004}";
+static void test_a_sub_on_a_model_refusing_builtins_keeps_its_tools() {
+  const std::vector<orch::ConnectorInfo> cs = {{"web_search", "mistral", "builtin", "", "", "", true}};
+  const std::string model = "mistral-large-4-1";   // fresh for this test: the refusal memory is per boot
+  auto run = [&](FakeProviderDeps& d, std::string& reply) {
+    auto pd = d.contract();
+    pd.attachMistral = [cs](JsonDocument& doc) { orch::attachMistralWire(doc, cs, false); };
+    agent::Directive dir;
+    dir.category = "research";
+    dir.instruction = "find it";
+    char job[72] = {};
+    const agent::FabricErr e = providers::mistralDispatch(pd, model, dir, job);
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)e);
+    agent::ResultEnvelope env{};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, job, env));
+    reply = env.reply;
+  };
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 400, kSubConnectorsRefused});
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("c-sub1")});
+    std::string reply;
+    run(d, reply);
+    TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(bodyHas(d, 0, ("\"model\":\"" + model + "\"").c_str()));
+    TEST_ASSERT_TRUE(bodyHas(d, 1, "\"web_search\""));          // the tools stayed
+    TEST_ASSERT_FALSE(bodyHas(d, 1, model.c_str()));            // on another model
+    TEST_ASSERT_TRUE_MESSAGE(reply.find("mistral-medium-latest") != std::string::npos, reply.c_str());
+  }
+  {  // Remembered: the next spawn goes straight there, and no 400 is paid.
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("c-sub2")});
+    std::string reply;
+    run(d, reply);
+    TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"web_search\""));
+    TEST_ASSERT_FALSE(bodyHas(d, 0, model.c_str()));
+  }
+  {  // With no tools to keep, the owner's model runs as asked (nothing asked it to move).
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("c-sub3")});
+    auto pd = d.contract();
+    pd.attachMistral = nullptr;
+    agent::Directive dir;
+    dir.category = "research";
+    dir.instruction = "find it";
+    char job[72] = {};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, model, dir, job));
+    TEST_ASSERT_TRUE(bodyHas(d, 0, model.c_str()));
+    agent::ResultEnvelope env{};
+    providers::mistralPoll(pd, job, env);
+  }
+}
+
 // The class: the table agrees with the recorded /v1/models capabilities.reasoning
 // bit for EVERY chat model Mistral lists (a new model with no table row fails here).
 static void test_cum616_effort_table_matches_the_recorded_model_list() {
@@ -1771,6 +1831,7 @@ int main(int, char**) {
   RUN_TEST(test_cum616_effort_none_only_on_models_that_reason);
   RUN_TEST(test_cum616_refused_effort_retried_once_without_it);
   RUN_TEST(test_connectors_refusal_retried_once_without_them);
+  RUN_TEST(test_a_sub_on_a_model_refusing_builtins_keeps_its_tools);
   RUN_TEST(test_cum616_effort_table_matches_the_recorded_model_list);
   RUN_TEST(test_r1_image_url_parts_in_the_seeded_user_message);
   RUN_TEST(test_r1_mistral_model_without_image_input_reads_transcriptions);

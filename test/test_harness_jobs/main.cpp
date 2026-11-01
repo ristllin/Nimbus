@@ -496,7 +496,7 @@ static void test_a_zai_sub_that_outruns_its_post_may_have_started() {
     Rig r;
     CompatAdapter zai;
     r.fabric.registerAdapter(&zai);
-    r.keyed.insert("zai");
+    r.keyed = {"zai"};   // no alternate: a fast refusal with one would move (CUM-887)
     // Slow: the request went out and nothing came back for 29 s. Fast: the connect
     // failed at once, so nothing was sent.
     zai.deps.http.script.push_back(slow ? harness_test::transportCut(29000)
@@ -1516,7 +1516,7 @@ static void test_spawn_429_names_the_daily_window() {
                {"x-ratelimit-remaining-custom-day", "0"}};
   mistral.fake.http.script.push_back(e);
   r.fabric.registerAdapter(&mistral);
-  r.keyed.insert("mistral");
+  r.keyed = {"mistral"};   // no alternate: a refusal with one would move (CUM-887)
   orch::Spawn s = sp("list today's calendar events");
   s.provider = "mistral";
   r.eng->enqueueSpawn(s, "chat1");
@@ -1578,6 +1578,65 @@ static void test_spawn_refusal_copy_every_window() {
                            refuse(agent::FabricErr::Timeout, std::nullopt).c_str());
   TEST_ASSERT_EQUAL(0, (int)r.adapter.dispatched.size());
   TEST_ASSERT_EQUAL(0, r.eng->activeJobCount());
+}
+
+// CUM-887: a spawn the provider refused moves to the next open sub provider instead of
+// telling the owner to try again. The class: every error that surely started nothing
+// moves; the two that may have run (Timeout, ParseFail) never start a second copy; a
+// connector task stays on the provider that hosts its connector.
+static void test_a_refused_spawn_moves_to_the_next_provider() {
+  for (int e = (int)agent::FabricErr::Network; e <= (int)agent::FabricErr::ParseFail; e++) {
+    const agent::FabricErr err = agent::FabricErr(e);
+    const bool mayHaveRun = err == agent::FabricErr::Timeout || err == agent::FabricErr::ParseFail;
+    Rig r;
+    FakeAdapter other;
+    other.backend = "openai";
+    r.fabric.registerAdapter(&other);
+    r.adapter.dispatchErr = err;
+    r.eng->enqueueSpawn(sp("look this up"), "chat1");
+    r.eng->pump();
+    TEST_ASSERT_EQUAL_MESSAGE(mayHaveRun ? 0 : 1, (int)other.dispatched.size(), std::to_string(e).c_str());
+    if (mayHaveRun) continue;
+    TEST_ASSERT_EQUAL(1, r.eng->activeJobCount());
+    for (const auto& d : r.delivered)
+      TEST_ASSERT_TRUE_MESSAGE(d.second.find("Couldn't start") == std::string::npos, d.second.c_str());
+    TEST_ASSERT_EQUAL_STRING("", r.eng->takeSpawnNotes("chat1").c_str());
+  }
+}
+
+// With nothing to move to, the owner hears the first refusal's reason, once.
+static void test_a_refused_spawn_with_no_alternate_says_why() {
+  Rig r;
+  FakeAdapter other;
+  other.backend = "openai";
+  other.dispatchErr = agent::FabricErr::BadRequest;
+  r.fabric.registerAdapter(&other);
+  r.adapter.dispatchErr = agent::FabricErr::RemoteFail;
+  r.eng->enqueueSpawn(sp("look this up"), "chat1");
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING("Couldn't start that agent on anthropic: anthropic had an error. Try again, or use "
+                           "another provider.", r.delivered[0].second.c_str());
+  TEST_ASSERT_EQUAL(0, r.eng->activeJobCount());
+}
+
+// A connector lives on one provider, and a file task runs where its file can come back:
+// another provider cannot do that work, so the refusal stands.
+static void test_a_refused_connector_spawn_stays_put() {
+  Rig r;
+  FakeAdapter other;
+  other.backend = "openai";
+  r.fabric.registerAdapter(&other);
+  r.connectorProv["gcal"] = "anthropic";
+  r.adapter.dispatchErr = agent::FabricErr::RemoteFail;
+  orch::Spawn s = sp("fetch my calendar");
+  s.provider = "";
+  s.skill = "gcal";
+  r.eng->enqueueSpawn(s, "chat1");
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(0, (int)other.dispatched.size());
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_TRUE(r.delivered[0].second.find("Couldn't start that agent on anthropic") != std::string::npos);
 }
 
 static void test_notfound_expired_message() {
@@ -2928,6 +2987,9 @@ int main(int, char**) {
   RUN_TEST(test_done_arc_cleared_after_grace);
   RUN_TEST(test_error_delivers_failure_and_holds_attn_window);
   RUN_TEST(test_transient_backoff_doubles_then_resets);
+  RUN_TEST(test_a_refused_spawn_moves_to_the_next_provider);
+  RUN_TEST(test_a_refused_spawn_with_no_alternate_says_why);
+  RUN_TEST(test_a_refused_connector_spawn_stays_put);
   RUN_TEST(test_notfound_expired_message);
   RUN_TEST(test_spawn_429_names_the_daily_window);
   RUN_TEST(test_spawn_refusal_copy_every_window);
