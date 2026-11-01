@@ -532,6 +532,14 @@ bool ProviderPark::shortAnswerDue(const char* provider) {
   return true;
 }
 
+bool ProviderPark::isParked(const char* provider) {
+  if (!validName(provider)) return false;
+  std::lock_guard<std::recursive_mutex> lk(mx_);
+  loadLocked(lastNowMs_);
+  const Rec* r = find(provider);
+  return r && r->kind != ParkKind::None;
+}
+
 ParkCause ProviderPark::causeOf(const char* provider) {
   if (!validName(provider)) return ParkCause::Unspecified;
   std::lock_guard<std::recursive_mutex> lk(mx_);

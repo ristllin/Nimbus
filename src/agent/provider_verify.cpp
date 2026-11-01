@@ -616,7 +616,10 @@ static void meterProbe(const String& provider, const String& model, int code,
 static void noteProbeAnswer(const String& provider, int code, const std::string& raw) {
   const bool parkable = code == 401 || (code >= 200 && code < 300) ||
                         nimbus::orch::parkKindFor(code, raw) == nimbus::orch::ParkKind::Billing;
-  if (code <= 0 || !parkable) return;
+  if (code <= 0 || !parkable) {   // no verdict on the account: a re-check waits another interval
+    nimbus::orch::providerPark().noteFailure(provider.c_str(), (uint32_t)millis());
+    return;
+  }
   gate::noteAnswer(provider.c_str(), nimbus::orch::PaidSeam::Chat, probeKey(provider), code,
                    raw.c_str());
 }
@@ -673,12 +676,14 @@ static void probeSelectedModels(const String& provider) {
     return;
   // Last, so a parked provider's one re-check is never taken by a pass with nothing to send.
   if (!paidProbeAllowed(provider)) return;
+  bool sent = false;
   bool changed = false;
   for (int i = 0; i < nc; ++i) {
     nimbus::orch::ModelInfo* found = nullptr;
     for (auto& mi : cat)
       if (mi.id == cands[i].c_str()) { found = &mi; break; }
     if (!found) continue;
+    sent = true;
     const nimbus::orch::ProbeVerdict v = probeModel(provider, cands[i]);
     if (v == nimbus::orch::ProbeVerdict::Unknown) continue;
     found->usable = (v == nimbus::orch::ProbeVerdict::Usable);
@@ -689,6 +694,7 @@ static void probeSelectedModels(const String& provider) {
   }
   if (changed && !store::setModelStoreText(provider, nimbus::orch::serializeModelStore(meta, cat)))
     alogf("verify: %s probe verdicts not stored (file write failed)", provider.c_str());
+  if (!sent) gate::handBack(provider.c_str());
 }
 
 // Does a Z.ai candidate host answer the models list for this token? One quick GET

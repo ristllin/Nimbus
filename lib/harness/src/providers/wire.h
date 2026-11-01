@@ -424,7 +424,7 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   wireParkLog();
   // The one re-check request of a parked provider is THIS request, claimed as it leaves:
   // nothing that merely reads the park can spend it (CUM-889).
-  if (paidRequest && !parkProv.empty() &&
+  if (paidRequest && !parkProv.empty() && nimbus::orch::providerPark().isParked(parkProv.c_str()) &&
       nimbus::orch::providerPark().claimProbe(parkProv.c_str(), nimbus::orch::PaidSeam::Chat,
                                               pd.nowMs ? pd.nowMs() : 0))
     hlog::logf("fabric: %s re-check due - one probe request (%s)", parkProv.c_str(), path.c_str());

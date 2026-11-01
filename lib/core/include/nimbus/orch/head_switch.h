@@ -43,9 +43,9 @@ std::string headPauseNote(const std::string& label, uint8_t pauseCauses, ParkKin
 struct HeadPause {
   uint8_t  causes = 0;               // PauseCause bits
   ParkKind park = ParkKind::None;
-  ParkCause cause = ParkCause::Unspecified;   // what the router said the park is for
   bool     overBudget = false;
   int      parkStatus = 0;           // the park's HTTP status: a 403 lifts on the re-check, not a new key
+  ParkCause cause = ParkCause::Unspecified;   // what the router said the park is for
 };
 std::string headPauseNote(const std::string& label, const HeadPause& p);
 // Is anything holding the provider off?
