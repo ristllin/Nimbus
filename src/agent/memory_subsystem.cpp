@@ -1588,6 +1588,7 @@ void begin() {
                   r.outcome == agent::SkillOutcome::Replaced ||
                   r.outcome == agent::SkillOutcome::EditProposed)
                 out = agent::skillProposalNotice(id, r);   // plain words for the reply too
+              out += agent::skillSaveNotes(r);
               // The 17 Oct sibling case: a save that created a near-duplicate names the
               // existing skill so the next save can edit it instead.
               if (!r.similar.empty())

@@ -419,6 +419,44 @@ static void test_store_pending_cap_counts_skills_and_edits() {
 // T5: every invalid inject value, unknown key, missing desc, empty or over-cap body is
 // refused on the assistant's save (the error says what to fix); the owner's save is
 // accepted with warnings; the valid sets are accepted (counter-test).
+// A skill past what one turn carries (1 Nov: 4803 B, every edit refused, the learning loop dead):
+// it saves whole with a way to read it, the attached part says where the rest is, and only past
+// what a skill can hold is it refused, with how much to cut and where the rest can go.
+static void test_a_skill_can_grow_past_what_one_turn_carries() {
+  MemFs fs;
+  SkillStore st = storeOn(fs);
+  const SkillCaller agent = SkillCaller::agentCall(true, false, false);
+  const std::string head = "---\ntitle: T\ndesc: when to read it\n---\n";
+  for (const size_t bytes : {agent::kSkillInjectCap + 1, (size_t)4803, (size_t)7000}) {
+    const std::string body(bytes, 'x');
+    SkillResult r = st.save("grower", head + body, agent, /*selfApprove=*/true);
+    TEST_ASSERT_TRUE_MESSAGE(r.ok, r.err.c_str());
+    TEST_ASSERT_EQUAL_INT(1, (int)r.warnings.size());
+    TEST_ASSERT_TRUE_MESSAGE(r.warnings[0].find("skill.get grower") != std::string::npos, r.warnings[0].c_str());
+    TEST_ASSERT_TRUE(r.warnings[0].find(std::to_string(bytes)) != std::string::npos);
+    // Read whole, not cut at what one turn carries; the next edit works too.
+    TEST_ASSERT_TRUE(st.liveBody("grower", agent::SkillSide{}).find(body) != std::string::npos);
+    TEST_ASSERT_TRUE_MESSAGE(st.save("grower", head + body + "y", agent, true).ok, "the next edit");
+  }
+  // The tool's reply carries the note, so the assistant learns where the cut falls.
+  TEST_ASSERT_TRUE(agent::skillSaveNotes(st.save("grower", head + std::string(5000, 'q'), agent, true)).find("first 4096") != std::string::npos);
+  // Under the cap: no note.
+  TEST_ASSERT_EQUAL_INT(0, (int)st.save("small", head + "short", agent, true).warnings.size());
+  TEST_ASSERT_EQUAL_STRING("", agent::skillSaveNotes(st.save("small", head + "short2", agent, true)).c_str());
+  // Past what a skill holds: the bytes to cut, the way forward, nothing written.
+  const int writes = fs.writes;
+  const SkillResult over = st.save("grower", head + std::string(9000, 'z'), agent, true);
+  TEST_ASSERT_FALSE(over.ok);
+  TEST_ASSERT_TRUE_MESSAGE(over.err.find("over the 8 KB") != std::string::npos, over.err.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(over.err.find("grower-more") != std::string::npos, over.err.c_str());
+  TEST_ASSERT_TRUE(over.err.find("nothing was saved") != std::string::npos);
+  TEST_ASSERT_EQUAL_INT(writes, fs.writes);
+  // Just under the cap as sent, over it with the device's own header: refused the same way.
+  const SkillResult close = st.save("near", head + std::string(8192 - head.size(), 'a'), agent, true);
+  TEST_ASSERT_FALSE(close.ok);
+  TEST_ASSERT_TRUE_MESSAGE(close.err.find("nothing was saved") != std::string::npos, close.err.c_str());
+}
+
 static void test_lint_rejects_every_invalid_inject() {
   std::mt19937 rng(23);
   std::vector<std::string> bad = {
@@ -462,8 +500,10 @@ static void test_lint_rejects_every_invalid_inject() {
                    std::string::npos);
   TEST_ASSERT_TRUE(st.save("k", "---\ndesc: d\n---\n   \n", agent, false).err.find("empty") !=
                    std::string::npos);
-  TEST_ASSERT_TRUE(st.save("k", "---\ndesc: d\n---\n" + std::string(4097, 'x'), agent, false)
-                       .err.find("4096") != std::string::npos);
+  // Over what one turn carries it saves, and says where the cut falls (this was a refusal, and a
+  // skill that reached it could never be edited again: test_a_skill_can_grow_past_what_one_turn_carries).
+  const SkillResult big = st.save("big", "---\ndesc: d\n---\n" + std::string(4097, 'x'), agent, false);
+  TEST_ASSERT_TRUE(big.ok && !big.warnings.empty() && big.warnings[0].find("4096") != std::string::npos);
   TEST_ASSERT_TRUE(st.save("k", "---\ndesc: d\n---\n" + std::string(4096, 'x'), agent, false).ok);
 }
 
@@ -882,6 +922,7 @@ void runStoreTests() {
   RUN_TEST(test_store_owner_skill_cannot_be_overwritten_then_deleted);
   RUN_TEST(test_store_self_approve_switch_default_off);
   RUN_TEST(test_store_pending_cap_counts_skills_and_edits);
+  RUN_TEST(test_a_skill_can_grow_past_what_one_turn_carries);
   RUN_TEST(test_lint_rejects_every_invalid_inject);
   RUN_TEST(test_store_sibling_skill_is_named);
   RUN_TEST(test_frontmatter_roundtrip_property);

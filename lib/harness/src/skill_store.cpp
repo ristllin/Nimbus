@@ -86,11 +86,27 @@ std::vector<std::string> lintSkillSave(const SkillMd& written, const SkillMd& me
                   "every turn)");
   if (merged.body.find_first_not_of(" \t\r\n") == std::string::npos)
     out.push_back("the skill text is empty");
-  if (merged.body.size() > kSkillInjectCap)
-    out.push_back("the text is " + std::to_string(merged.body.size()) +
-                  " bytes; a skill is cut at 4096 bytes when it is attached or given to a "
-                  "sub-agent, so shorten it");
   return out;
+}
+
+// A skill may grow past what one turn carries (on 1 Nov a 4803 B skill refused every edit, so
+// the assistant could no longer keep what it learned). It is saved whole: an attached copy or a
+// sub-agent's sees its first 4096 bytes and skill.get reads all of it. So the saver is told what
+// the attached part ends with, once; the rules belong first.
+std::vector<std::string> skillGrowthNotes(const std::string& id, const SkillMd& doc) {
+  std::vector<std::string> out;
+  if (doc.body.size() <= kSkillInjectCap) return out;
+  out.push_back("the text is " + std::to_string(doc.body.size()) + " bytes: an attached copy or a sub-agent sees its first " +
+                std::to_string(kSkillInjectCap) + ", and skill.get " + id +
+                " reads it all, so keep the rules in the first part and the detail after them");
+  return out;
+}
+
+// Past the most one skill holds: how much to cut, and where the rest can go.
+std::string skillTooLarge(const std::string& id, size_t bytes, size_t cap) {
+  return "skill too large: " + std::to_string(bytes) + " bytes, " + std::to_string(bytes - cap) + " over the " +
+         std::to_string(cap / 1024) + " KB a skill holds - nothing was saved. Cut that much, or move the detail to a "
+         "second skill (skill.save " + id.substr(0, 18) + "-more) and name it in this one's first lines so it is read when needed";
 }
 
 // ---- the store -------------------------------------------------------------------
@@ -297,7 +313,10 @@ std::string SkillStore::spawnCapsule(const std::string& id) {
 bool SkillStore::write(const std::string& path, const SkillMd& doc, std::string& err) {
   const std::string text = composeSkillMd(doc);
   if (text.size() > cfg_.fileCap) {
-    err = "skill too large (" + std::to_string(cfg_.fileCap / 1024) + " KB max)";
+    err = "skill too large: with its header it is " + std::to_string(text.size()) + " bytes, " +
+          std::to_string(text.size() - cfg_.fileCap) + " over the " + std::to_string(cfg_.fileCap / 1024) +
+          " KB a skill holds - nothing was saved. Cut that much, or move the detail to a second skill and name it in "
+          "this one's first lines";
     return false;
   }
   if (!fs_.writeAtomic(path, text)) {
@@ -339,8 +358,7 @@ SkillResult SkillStore::save(const std::string& id, const std::string& md, const
                              bool selfApprove) {
   if (!validId(id)) return refused("bad id (a-z 0-9 - _ , max 23 chars)");
   if (md.empty()) return refused("empty skill");
-  if (md.size() > cfg_.fileCap)
-    return refused("skill too large (" + std::to_string(cfg_.fileCap / 1024) + " KB max)");
+  if (md.size() > cfg_.fileCap) return refused(skillTooLarge(id, md.size(), cfg_.fileCap));
   const Stored cur = load(id, cfg_.fileCap);
   if (!cur.have && cfg_.maxStored && storedCount() >= cfg_.maxStored)
     return refused("this device already holds " + std::to_string(cfg_.maxStored) +
@@ -362,6 +380,7 @@ SkillResult SkillStore::saveOwner(const std::string& id, const SkillMd& in, cons
   // A proposed edit stays (now stale: approve refuses it, deny drops it).
   r = done(cur.have ? SkillOutcome::Replaced : SkillOutcome::Created, doc.rev);
   r.warnings = lintSkillSave(in, doc);
+  for (const std::string& note : skillGrowthNotes(id, doc)) r.warnings.push_back(note);
   return r;
 }
 
@@ -387,7 +406,9 @@ SkillResult SkillStore::saveAgent(const std::string& id, const SkillMd& in, cons
                    "approve or deny some first (/skill list)");
   // The switch applies only on an attended admin turn that read no outside content.
   const bool live = selfApprove && !who.tainted;
-  return agentWrite(id, merged, cur, live);
+  SkillResult r = agentWrite(id, merged, cur, live);
+  if (r.ok) r.warnings = skillGrowthNotes(id, merged);
+  return r;
 }
 
 SkillResult SkillStore::agentWrite(const std::string& id, SkillMd doc, const Stored& cur, bool live) {
