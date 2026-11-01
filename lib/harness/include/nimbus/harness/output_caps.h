@@ -50,6 +50,11 @@ struct OutputCap {
 OutputCap outputCapFor(const std::string& host, const std::string& model, RoundKind kind,
                        uint32_t roundMs = 0);
 
+// The one note a person hears when they pick a model the parity eval found unfit for
+// daily use ("" for the others). Plain words, for the reply. Evidence:
+// docs/quick-start/provider-keys.md and the lane's parity table.
+const char* modelFitNote(const std::string& provider, const std::string& model);
+
 // Whether a Claude model accepts output_config.effort (Opus 4.5+, Sonnet 4.6+,
 // Haiku 5+, every Fable and Mythos). Unknown ids: no (omitting it is today's wire).
 bool anthropicTakesEffort(const std::string& model);

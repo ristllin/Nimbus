@@ -368,12 +368,13 @@ static bool zaiLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& 
   return bodyWithinBudget(body, err);
 }
 
-// An answer that came back as text instead of an orch_turn call. On a tool round it is a
-// stall (the controller asks once more). On the forced round it IS the answer: the whole
-// reply as one orch_turn object runs as one, and anything else reaches the owner as prose
-// (no device action, memory write or spawn rides it).
-static void zaiFinishFromText(nimbus::orch::HeadStep& out, bool allowTools) {
-  if (allowTools || out.finished || !out.toolCalls.empty() || out.text.empty()) return;
+// An answer that came back as text instead of an orch_turn call IS the answer: glm-5.3
+// does this despite tool_choice "required", and the forced round that followed gave back an
+// orch_turn with no reply, having already answered (parity eval, 1 Nov). The whole reply as
+// one orch_turn object runs as one, and anything else reaches the owner as prose (no device
+// action, memory write or spawn rides it, and the reply's claims are still checked).
+static void zaiFinishFromText(nimbus::orch::HeadStep& out) {
+  if (out.finished || !out.toolCalls.empty() || out.text.empty()) return;
   bool whole = false;
   const std::string obj = nimbus::orch::leadingJsonObject(out.text, &whole);
   out.finished = true;
@@ -446,7 +447,7 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
       if (zaiRefusedRound(resp, out)) return out;
       std::string cutWhy;
       if (readChatRound(resp, out, cutWhy, kZaiDialect)) {
-        zaiFinishFromText(out, allowTools);
+        zaiFinishFromText(out);
         return out;
       }
       if (attempt == 0 && cap.hasRetry()) {

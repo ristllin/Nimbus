@@ -1,4 +1,5 @@
 #include "nimbus/harness/apply.h"
+#include "nimbus/harness/output_caps.h"     // modelFitNote
 #include "nimbus/harness/turn_contract.h"   // kEmptyAnswer
 #include "nimbus/orch/model_defaults.h"     // currentTurnRole
 
@@ -583,6 +584,15 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
     if (one.rfind("orch_model(invalid) ", 0) == 0 && st.pendingMemResults)
       *st.pendingMemResults += "[DEVICE] orch_model not applied: " + one.substr(20) +
                                "- call models.list for the ids it offers\n";
+    // The owner just chose a head the parity eval found unfit for daily use: said once, here.
+    if (one.rfind("orch_model(", 0) == 0 && deviceElementLanded(one)) {
+      const size_t slash = one.find('/');
+      const size_t close = one.find(')');
+      if (slash != std::string::npos && close != std::string::npos && slash < close) {
+        const char* fit = providers::modelFitNote(one.substr(11, slash - 11), one.substr(slash + 1, close - slash - 1));
+        if (*fit) st.riskNote += std::string("\n\n") + fit;
+      }
+    }
     static const std::string kKept = "orch_model(no change) ";
     if (one.rfind(kKept, 0) == 0 && st.pendingMemResults)
       *st.pendingMemResults += "[DEVICE] orch_model not applied, the head stays: " + one.substr(kKept.size()) + "\n";
@@ -929,11 +939,11 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
     // "Done." is true only of a turn that did something: an owner who asked and got an
     // empty model reply hears that, on every channel (GLM answered "What is my sister's
     // cat called?" with "Done.", VN reality check 1 Nov).
-    const bool acted = !t.device.empty() || !t.mem_write.empty() || !t.session_ops.empty() ||
-                       (st.claims && landedChange(st.claims->effects()));
+    const bool acted = !t.device.empty() || !t.mem_write.empty() || (st.claims && landedChange(st.claims->effects()));
     const bool waiting = !st.scheduledTurn && !st.quietFallback &&
                          nimbus::orch::currentTurnRole() == nimbus::orch::TurnRole::Owner;
-    if (!acted && waiting && d.deliver) d.deliver(chatId, kEmptyAnswer);
+    // A session op speaks for itself below (a stop, or the refusal of one).
+    if (waiting && d.deliver && t.session_ops.empty()) d.deliver(chatId, acted ? kNoMessageAfterAction : kEmptyAnswer);
     else if (d.turnComplete) d.turnComplete(chatId);
   }
   // (ApplyState.quietFallback / the quietOk plumbing are now vestigial - a later

@@ -778,7 +778,7 @@ static void test_zai_head_runs_the_tool_loop() {
   TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"memory.search\""));
   TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"orch_turn\""));
   TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"reasoning_effort\":\"low\""));
-  TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"max_tokens\":3000"));
+  TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"max_tokens\":2400"));
   TEST_ASSERT_FALSE(bodyHas(r.d, 0, "response_format"));
   TEST_ASSERT_FALSE(bodyHas(r.d, 0, "Respond with ONLY"));
   TEST_ASSERT_TRUE(bodyHas(r.d, 1, "\"tool_call_id\":\"call_-712\""));   // the provider's own id replays as is
@@ -796,6 +796,26 @@ static void test_zai_forced_final_offers_only_the_terminal() {
   TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"name\":\"orch_turn\""));
   TEST_ASSERT_FALSE(bodyHas(r.d, 0, "\"name\":\"memory.search\""));
   TEST_ASSERT_FALSE(bodyHas(r.d, 0, "\"required\"}"));
+}
+
+// A round answered in text IS the answer, on a tool round too: no second request is paid
+// for a forced round that has nothing left to say.
+static void test_zai_text_on_a_tool_round_is_the_answer() {
+  ZaiRig r;
+  r.d.http.script.push_back({"api.z.ai", kPath, 200, chatBody("It is called Pixel.")});
+  std::string out, err;
+  TEST_ASSERT_TRUE_MESSAGE(r.run(out, err), err.c_str());
+  TEST_ASSERT_EQUAL_STRING("It is called Pixel.", out.c_str());
+  TEST_ASSERT_EQUAL(1, (int)r.d.http.seen.size());
+}
+
+// An orch_turn with no reply field reads as an empty reply, not an unreadable answer.
+static void test_zai_final_with_no_reply_field_is_an_empty_reply() {
+  ZaiRig r;
+  r.d.http.script.push_back({"api.z.ai", kPath, 200, toolCallBody("orch_turn", "{\\\"ask\\\":\\\"\\\"}")});
+  std::string out, err;
+  TEST_ASSERT_TRUE_MESSAGE(r.run(out, err), err.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(out.find("\"reply\":\"\"") != std::string::npos, out.c_str());
 }
 
 // A forced final round answered in text IS the answer; as a whole orch_turn it runs as one.
@@ -821,7 +841,7 @@ static void test_zai_forced_final_text_is_the_answer() {
 static void test_zai_cut_round_retries_with_room_then_fails_as_cut() {
   const std::string cut =
       "{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"partial\"}}],"
-      "\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":3000}}";
+      "\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":2400}}";
   ZaiRig r;
   r.d.http.script.push_back({"api.z.ai", kPath, 200, cut});
   r.d.http.script.push_back({"api.z.ai", kPath, 200, cut});
@@ -829,8 +849,8 @@ static void test_zai_cut_round_retries_with_room_then_fails_as_cut() {
   TEST_ASSERT_FALSE(r.run(out, err));
   TEST_ASSERT_TRUE_MESSAGE(err.find("cut at the output limit") != std::string::npos, err.c_str());
   TEST_ASSERT_EQUAL(2, (int)r.d.http.seen.size());
-  TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"max_tokens\":3000"));
-  TEST_ASSERT_TRUE(bodyHas(r.d, 1, "\"max_tokens\":4000"));
+  TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"max_tokens\":2400"));
+  TEST_ASSERT_TRUE(bodyHas(r.d, 1, "\"max_tokens\":3000"));
 }
 
 // Z.ai's content filter ends a round with no answer: a failed round, never an empty reply.
@@ -900,6 +920,8 @@ int main(int, char**) {
   RUN_TEST(test_l19_14_custom_head_first_write_failure_is_unsent);
   RUN_TEST(test_zai_head_runs_the_tool_loop);
   RUN_TEST(test_zai_forced_final_offers_only_the_terminal);
+  RUN_TEST(test_zai_text_on_a_tool_round_is_the_answer);
+  RUN_TEST(test_zai_final_with_no_reply_field_is_an_empty_reply);
   RUN_TEST(test_zai_forced_final_text_is_the_answer);
   RUN_TEST(test_zai_cut_round_retries_with_room_then_fails_as_cut);
   RUN_TEST(test_zai_filtered_round_fails_the_step);

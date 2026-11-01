@@ -68,9 +68,9 @@ OutputCap anthropicCap(const std::string& model, RoundKind kind) {
 OutputCap mistralCap(const std::string& model) {
   OutputCap c;
   // A model that thinks spends its output budget on it, and a cut ends the turn badly.
-  // Lanes measured live 1 Nov: Large 4 at "low" wrote a 1,800-token guide in 18 s, and
-  // with no effort field it was cut at 4,000. Small and Medium run near 200 tok/s. The
-  // older Large (65 tok/s, Lumi 13-14 Oct) keeps about 60 s of output.
+  // Measured live 1 Nov: Large 4 at "low" wrote a 1,800-token guide in 18 s, and with no
+  // effort field it was cut at 4,000. The time clamp below holds these inside the 60 s
+  // at which Mistral's gateway closes a request (kMistralRoundMs).
   const std::string m = startsWith(model, "mistral/") ? model.substr(8) : model;
   const bool fast = startsWith(m, "mistral-large-4") || startsWith(m, "mistral-small") ||
                     startsWith(m, "mistral-medium") || startsWith(m, "magistral-");
@@ -83,12 +83,13 @@ OutputCap mistralCap(const std::string& model) {
   return c;
 }
 
-// GLM always reasons and Z.ai's gateway cuts a request near 60 s, so a round has about
-// 50 s: 3,000 tokens first (measured 67 to 73 tok/s, 1 Nov), a little more on the retry.
+// GLM always reasons and Z.ai's gateway closes a request at 60 s (60.6 s, no response,
+// both GLM models, 1 Nov). Measured 61 to 73 tok/s, so about 2,400 tokens fit a round of
+// 50 s, and the retry after a cut keeps a little more.
 OutputCap zaiCap() {
   OutputCap c;
-  c.maxTokens = 3000;
-  c.retryTokens = 4000;
+  c.maxTokens = 2400;
+  c.retryTokens = 3000;
   c.effort = "low";
   c.retryEffort = "low";
   return c;
@@ -122,6 +123,14 @@ void clampToTime(OutputCap& c, uint32_t roundMs, uint32_t rate) {
 }
 
 }  // namespace
+
+const char* modelFitNote(const std::string& provider, const std::string& model) {
+  if (provider != "mistral" && provider != "cumulo") return "";
+  const std::string m = startsWith(model, "mistral/") ? model.substr(8) : model;
+  if (!startsWith(m, "mistral-small")) return "";
+  return "Mistral Small is quick and cheap for chat, but it can say a file was changed without changing it and "
+         "it stalls on food math. For daily use, pick Mistral Large 4.";
+}
 
 const char* roundKindSlug(RoundKind k) {
   switch (k) {
@@ -182,12 +191,13 @@ uint32_t slowestTokensPerSecond(const std::string& host, const std::string& mode
     return 40;   // fable, mythos, unknown: the slowest tier
   }
   if (host == "mistral") {
-    if (startsWith(model, "mistral-small") || startsWith(model, "ministral")) return 90;
-    if (startsWith(model, "mistral-medium")) return 70;
-    if (startsWith(model, "mistral-large-4")) return 90;   // 101 to 210 tok/s, 1 Nov
+    if (startsWith(model, "mistral-small") || startsWith(model, "ministral")) return 130;   // 156 to 198, 1 Nov
+    if (startsWith(model, "mistral-medium")) return 130;   // 196, 1 Nov
+    if (startsWith(model, "mistral-large-4")) return 100;   // 101 to 210, 1 Nov
     return 55;
   }
-  return 50;   // glm-5.3 73, glm-5.3-flash 67 (1 Nov)
+  if (host == "zai") return 60;   // 61 to 73, 1 Nov
+  return 50;
 }
 
 OutputCap outputCapFor(const std::string& host, const std::string& model, RoundKind kind,

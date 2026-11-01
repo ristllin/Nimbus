@@ -54,8 +54,7 @@ std::string turnShapeCorrection(const std::string& finalTurn, const PseudoSpawns
 std::string emptyAnswerCorrection(const std::string& finalTurn, const PseudoSpawns* pseudo);
 
 // What the owner reads when a turn still ends with no answer: never a made-up "Done."
-// kEmptyAnswer: nothing happened. kNoMessageAfterAction: the turn acted and said nothing
-// (a synchronous channel must still resolve its poll).
+// kEmptyAnswer: nothing happened. kNoMessageAfterAction: the turn acted and said nothing.
 extern const char kEmptyAnswer[];
 extern const char kNoMessageAfterAction[];
 

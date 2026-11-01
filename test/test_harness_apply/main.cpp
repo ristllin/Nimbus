@@ -780,7 +780,7 @@ static void test_a_lookup_alone_is_not_an_action() {
   TEST_ASSERT_EQUAL_STRING(agent::kEmptyAnswer, r.delivered[0].second.c_str());
 }
 
-static void test_turn_that_acted_still_signals_completion() {
+static void test_turn_that_acted_says_so_without_inventing_done() {
   Rec r;
   ApplyDeps d = makeDeps(r);
   ApplyState st = makeState(r);
@@ -790,9 +790,21 @@ static void test_turn_that_acted_still_signals_completion() {
   t.mem_write.push_back(w);
   bool spawned = false;
   agent::applyTurn(t, "1001", d, st, spawned);
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING(agent::kNoMessageAfterAction, r.delivered[0].second.c_str());
+  TEST_ASSERT_EQUAL(0, (int)r.turnCompletes.size());
+}
+
+// A background turn that acted still resolves through the completion signal, unheard.
+static void test_background_turn_signals_completion_only() {
+  const nimbus::orch::BackgroundTurnScope background;
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  agent::applyTurn(Turn{}, "1001", d, st, spawned);
   TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
   TEST_ASSERT_EQUAL(1, (int)r.turnCompletes.size());
-  TEST_ASSERT_EQUAL_STRING("1001", r.turnCompletes[0].c_str());
 }
 
 // A spawn or a tool-reply already stands on its own -> no completion signal needed.
@@ -2380,7 +2392,8 @@ int main(int, char**) {
   RUN_TEST(test_empty_turn_never_reads_as_done);
   RUN_TEST(test_empty_turn_stays_silent_when_nobody_waits);
   RUN_TEST(test_a_lookup_alone_is_not_an_action);
-  RUN_TEST(test_turn_that_acted_still_signals_completion);
+  RUN_TEST(test_turn_that_acted_says_so_without_inventing_done);
+  RUN_TEST(test_background_turn_signals_completion_only);
   RUN_TEST(test_completion_suppressed_after_spawn);
   RUN_TEST(test_spawn_quiet_flag_tracks_scheduled_turn);
   RUN_TEST(test_done_suppressed_after_spawn_or_tool_reply);

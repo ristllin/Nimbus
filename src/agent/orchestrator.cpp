@@ -974,7 +974,7 @@ static agent::ApplyDeps buildApplyDeps() {
     // nobody is polling for it, so it stays silent there as well (no 03:30 "Done.").
     if (loops::firing()) return;
     if (chatId == "web" || chatId == "voice" || chatId == "serial")
-      deliver(String(chatId.c_str()), String(kNoMessageAfterAction));
+      deliver(String(chatId.c_str()), String(kNoMessageAfterAction));   // a background turn only
   };
   d.emitAsk = [] { emitAsk(); };
   d.captureAssistant = [](const std::string& chatId, const std::string& text) {

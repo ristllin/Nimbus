@@ -520,9 +520,10 @@ static void test_timeout_switches_without_retry_fast_cut_retries() {
 
 static void test_every_request_deadline_comes_from_the_policy() {
   for (uint32_t budget : {0u, 5000u, 60000u, 119999u, 120000u, 600000u, UINT32_MAX}) {
-    const uint32_t want = budget >= providers::kHeadRoundCeilingMs ? providers::kHeadRoundCeilingMs
-                        : budget < providers::kMinRoundMs ? providers::kMinRoundMs : budget;
     for (const char* host : {"anthropic", "openai", "mistral"}) {
+      // Each host's own ceiling: Mistral's gateway closes a request at 60 s.
+      const uint32_t ceiling = !strcmp(host, "mistral") ? providers::kMistralRoundMs : providers::kHeadRoundCeilingMs;
+      const uint32_t want = budget >= ceiling ? ceiling : budget < providers::kMinRoundMs ? providers::kMinRoundMs : budget;
       FakeProviderDeps d;
       d.http.script.push_back({"", "", 200, !strcmp(host, "anthropic") ? antFinal()
                                            : !strcmp(host, "openai")    ? oaiFinal() : misFinal()});
@@ -538,7 +539,7 @@ static void test_every_request_deadline_comes_from_the_policy() {
       TEST_ASSERT_EQUAL_UINT32_MESSAGE(want, d.http.seen[0].timeoutMs, host);
     }
   }
-  // The single shots get the head ceiling (Mistral used to get 60 s).
+  // The single shots get the same ceilings.
   for (const char* host : {"anthropic", "openai", "mistral"}) {
     FakeProviderDeps d;
     d.http.script.push_back({"", "", 0, ""});
@@ -547,7 +548,8 @@ static void test_every_request_deadline_comes_from_the_policy() {
     if (!strcmp(host, "anthropic")) providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, nullptr, nullptr);
     else if (!strcmp(host, "openai")) providers::orchTurnOpenAI(pd, conv, "S", "U", out, err, nullptr, nullptr);
     else providers::orchTurnMistral(pd, conv, "S", "U", out, err, nullptr, nullptr);
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(providers::kHeadRoundCeilingMs, d.http.seen[0].timeoutMs, host);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(!strcmp(host, "mistral") ? providers::kMistralRoundMs : providers::kHeadRoundCeilingMs,
+                                     d.http.seen[0].timeoutMs, host);
   }
   // The engine's stuck-turn reaper (loop deadline + 120 s) must outlast the
   // largest single request ceiling.

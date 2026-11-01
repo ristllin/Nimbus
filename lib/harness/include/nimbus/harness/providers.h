@@ -429,6 +429,11 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
 inline constexpr uint32_t kHeadRoundCeilingMs = 120000;   // anthropic, openai, mistral, custom heads
 inline constexpr uint32_t kSyncSubCeilingMs   = 120000;   // a sub that runs inside its POST
 inline constexpr uint32_t kMinRoundMs         = 8000;     // a near-exhausted final round still gets a shot
+// Mistral's gateway closes a non-streamed request at 60 s: measured 1 Nov on
+// mistral-large-4-0 and mistral-medium-latest (60.1 s, no response). A deadline just past
+// it reads the close as a timeout, so the turn fails over at once. At 120 s the close read
+// as a dead network and paid a same-host retry for another 60 s (the 3m56s album, 31 Oct).
+inline constexpr uint32_t kMistralRoundMs     = 65000;
 
 // ---- Z.ai (GLM) wire policy (CUM-544) ---------------------------------------
 // ONE place for every Z.ai request path: the direct BYOK head, the Cumulo

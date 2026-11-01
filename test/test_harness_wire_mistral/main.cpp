@@ -1703,6 +1703,20 @@ static void test_web_search_walks_to_zai_then_says_why() {
   }
 }
 
+// The class behind a slow failure: every Mistral head request's deadline sits just past the
+// gateway's 60 s close, so a close reads as a timeout (no same-host retry), and a capped
+// round's first attempt fits inside it at the model's measured rate.
+static void test_mistral_rounds_fit_the_gateway() {
+  TEST_ASSERT_TRUE(providers::kMistralRoundMs > 60000 && providers::kMistralRoundMs < 70000);
+  for (const char* model : {"mistral-large-4-0", "mistral-small-latest", "mistral-medium-latest", "mistral-large-latest"}) {
+    const providers::OutputCap c =
+        providers::outputCapFor("mistral", model, providers::RoundKind::ToolRound, providers::kMistralRoundMs);
+    const uint32_t seconds = c.maxTokens / providers::slowestTokensPerSecond("mistral", model);
+    TEST_ASSERT_TRUE_MESSAGE(seconds <= 60, model);
+    TEST_ASSERT_TRUE_MESSAGE(c.retryTokens > c.maxTokens, model);
+  }
+}
+
 // The class: the table agrees with the recorded /v1/models capabilities.reasoning
 // bit for EVERY chat model Mistral lists (a new model with no table row fails here).
 static void test_cum616_effort_table_matches_the_recorded_model_list() {
@@ -1944,6 +1958,7 @@ int main(int, char**) {
   RUN_TEST(test_a_sub_on_a_model_refusing_builtins_keeps_its_tools);
   RUN_TEST(test_web_search_runs_on_mistral_builtin);
   RUN_TEST(test_web_search_walks_to_zai_then_says_why);
+  RUN_TEST(test_mistral_rounds_fit_the_gateway);
   RUN_TEST(test_fold_is_a_plain_completion);
   RUN_TEST(test_effort_table_matches_the_recording);
   RUN_TEST(test_cum616_effort_table_matches_the_recorded_model_list);

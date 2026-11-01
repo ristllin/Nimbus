@@ -38,13 +38,10 @@ namespace providers {
 
 // Every Mistral request is non-streamed: nothing arrives until the model (and any
 // connector the Conversations API runs server-side inside the POST) has finished.
-// So the deadline is the whole round, and Mistral gets the same 120 s ceiling as
-// every other provider (the one time policy, providers.h). It ran at 60 s since
-// the first release, while OpenAI and Anthropic moved to 120 s after exactly this
-// failure: a slow round read as a dead network, was retried for another 60 s and
-// only then failed over. tg_poll is not watchdog-subscribed, so a bounded wait is
-// safe at either value.
-static const uint32_t MISTRAL_TIMEOUT_MS = kHeadRoundCeilingMs;
+// So the deadline is the whole round, and it sits just past the 60 s at which Mistral's
+// own gateway closes the request (kMistralRoundMs, providers.h). tg_poll is not
+// watchdog-subscribed, so a bounded wait is safe at any value.
+static const uint32_t MISTRAL_TIMEOUT_MS = kMistralRoundMs;
 static const char* kMistralHost = "api.mistral.ai";   // mirrors agent_config.h MISTRAL_HOST
 
 // Mistral's Conversations API reserves its built-in connector function names;
@@ -528,6 +525,19 @@ static bool misLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& 
 // Read one chat-completions reply into `out`. Returns false when the reply is cut
 // (finish_reason "length" / "model_length", or a tool call whose arguments do not
 // parse as JSON - a cut argument string must never be dispatched or become the turn).
+// These heads' schema is advisory, and a model can send an orch_turn with no reply field
+// (glm-5.3, parity eval 1 Nov). The parser reads that as unusable and the owner hears
+// "nothing in it was carried out" after a tool already saved the file. It is an empty reply,
+// which has its own honest path (the final-answer check, then kEmptyAnswer).
+static std::string withReplyField(const std::string& args) {
+  JsonDocument d;
+  if (deserializeJson(d, args, DeserializationOption::NestingLimit(16)) || !d.is<JsonObject>() ||
+      d["reply"].is<const char*>())
+    return args;
+  d["reply"] = "";
+  return serializeBody(d);
+}
+
 bool readChatRound(const JsonDocument& resp, nimbus::orch::HeadStep& out, std::string& cutWhy,
                    const ChatDialect& dialect) {
   JsonObjectConst m = resp["choices"][0]["message"].as<JsonObjectConst>();
@@ -553,7 +563,7 @@ bool readChatRound(const JsonDocument& resp, nimbus::orch::HeadStep& out, std::s
       // side effects too (the controller runs them before accepting it).
       if (!out.finished) {
         out.finished  = true;
-        out.finalTurn = args;
+        out.finalTurn = withReplyField(args);
       }
       continue;
     }
@@ -592,8 +602,8 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     (void)prior;   // the transcript already carries every result
     orch::HeadStep out;
     // F25 + the one time policy: this round's socket timeout is the turn's
-    // remaining budget, at most the 120 s head ceiling.
-    const uint32_t roundMs = wire::clampRoundMs(budgetMs, kHeadRoundCeilingMs);
+    // remaining budget, at most Mistral's round ceiling.
+    const uint32_t roundMs = wire::clampRoundMs(budgetMs, kMistralRoundMs);
     if (tr.toolBytes() > kReplayToolBytes) tr.trimToolOutputs(kReplayToolBytes);
     const std::string model = pd.orchModel ? pd.orchModel("mistral") : std::string();
     const OutputCap cap = outputCapFor("mistral", model,
@@ -855,7 +865,7 @@ static bool mistralHeadBody(const ProviderDeps& pd, const std::string& convId,
 static bool mistralFold(const ProviderDeps& pd, const std::string& inputs, std::string& outJson,
                         std::string& err, nimbus::orch::TokenUsage* usage) {
   const std::string model = pd.orchModel ? pd.orchModel("mistral") : std::string();
-  const OutputCap cap = outputCapFor("mistral", model, RoundKind::Fold, kHeadRoundCeilingMs);
+  const OutputCap cap = outputCapFor("mistral", model, RoundKind::Fold, kMistralRoundMs);
   JsonDocument filter;
   chatRoundFilter(filter);
   keepMistralError(filter);
