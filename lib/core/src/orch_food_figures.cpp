@@ -251,7 +251,7 @@ bool leftAt(const std::vector<Tok>& toks, size_t i) {
   // "Remaining for 2,400 kcal target": the target itself, not what is left of it.
   for (size_t f = i + 1; f < toks.size() && f <= i + 3; f++)
     if (!toks[f].number && oneOf(toks[f].word, {"target", "goal", "minimum", "budget", "limit", "allowance", "floor"})) return false;
-  for (size_t f = i + 1; f < toks.size() && f <= i + 3; f++) {
+  for (size_t f = i + 1; f < toks.size() && f <= i + 4; f++) {
     const Tok& t = toks[f];
     if (t.number) break;
     if (oneOf(t.word, {"left", "remaining", "spare", "more", "remain", "remains", "go"})) return true;
