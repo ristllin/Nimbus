@@ -4462,8 +4462,8 @@ static void test_cum821_spawn_reads_ignore_a_chat_only_403() {
 // Check of c962b5d0: the head's own web.search is offered by whether THIS head runs the tool
 // loop (orch::headRunsToolLoop), not by fabric support: the Cumulo head on a native upstream
 // does (the one-key onboarding path), Z.ai does, and custom does not.
-// VN reality check, 1 Nov: an empty reply on a turn that changed nothing gets one correction
-// round on every provider. A turn that did something, or that a tool answered, is left alone.
+// VN reality check, 1 Nov: an empty reply gets one correction round on every provider. A turn
+// a spawn or a tool answers is left alone (the engine's closure holds the rest of the rule).
 static void test_empty_answer_gets_one_correction() {
   const std::string empty = "{\"reply\":\"\",\"ask\":\"\",\"memory\":\"\",\"device\":[],\"mem_write\":[],"
                             "\"mem_query\":[\"sister cat\"],\"session_ops\":[]}";
@@ -4472,8 +4472,9 @@ static void test_empty_answer_gets_one_correction() {
   TEST_ASSERT_TRUE(fix.find("call the tool") != std::string::npos);
   TEST_ASSERT_EQUAL_STRING("", agent::emptyAnswerCorrection("{\"reply\":\"Pixel\"}", nullptr).c_str());
   TEST_ASSERT_EQUAL_STRING("", agent::emptyAnswerCorrection("{\"reply\":\"\",\"ask\":\"Which one?\"}", nullptr).c_str());
-  TEST_ASSERT_EQUAL_STRING(
-      "", agent::emptyAnswerCorrection("{\"reply\":\"\",\"mem_write\":[{\"content\":\"x\"}]}", nullptr).c_str());
+  // A write with no words is still no answer: the owner who said something hears back.
+  TEST_ASSERT_TRUE(agent::emptyAnswerCorrection("{\"reply\":\"\",\"mem_write\":[{\"content\":\"x\"}]}", nullptr)
+                       .rfind("[TURN CHECK]", 0) == 0);
   TEST_ASSERT_EQUAL_STRING(
       "", agent::emptyAnswerCorrection(
               "{\"reply\":\"\",\"session_ops\":[{\"op\":\"spawn\",\"task\":\"t\",\"name\":\"n\"}]}", nullptr)

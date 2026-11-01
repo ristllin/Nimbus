@@ -21,6 +21,7 @@
 #include "adapters/mistral_adapter.h"   // orchTurnMistral - Mistral host (Conversations)
 #include "transport_tls.h"              // deviceProviderDeps - head-custom host (Stage H)
 #include "nimbus/harness/providers.h"   // providers::orchTurnCustom
+#include "nimbus/harness/turn_contract.h"   // kNoMessageAfterAction
 #include "loops_subsystem.h"            // loops::checkDue - Local Loops tick (on tg_poll)
 #include "dream_subsystem.h"            // DREAMING: noteTurnEnd (idle-gate quiet clock)
 #include "connectors.h"                 // per-provider connector catalog + attach
@@ -973,7 +974,7 @@ static agent::ApplyDeps buildApplyDeps() {
     // nobody is polling for it, so it stays silent there as well (no 03:30 "Done.").
     if (loops::firing()) return;
     if (chatId == "web" || chatId == "voice" || chatId == "serial")
-      deliver(String(chatId.c_str()), String("Done."));
+      deliver(String(chatId.c_str()), String(kNoMessageAfterAction));
   };
   d.emitAsk = [] { emitAsk(); };
   d.captureAssistant = [](const std::string& chatId, const std::string& text) {

@@ -1687,10 +1687,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         [pseudo](const std::string& finalTurn) { return turnShapeCorrection(finalTurn, pseudo.get()); },
         [this](const std::string& finalTurn) { return claims_.finalCheck(finalTurn, /*skipSpawned=*/true); },
         [&userText](const std::string& finalTurn) { return orch::placeholderCheck(finalTurn, userText); },
-        // An empty reply that changes nothing gets one more try, on every provider, and
-        // never on a turn with nothing to say: scheduled, quiet, or one a tool answered.
+        // An empty reply gets one more try, on every provider. Only a turn with nothing to
+        // say goes without one: scheduled, quiet, or one a tool or a sub-agent answers.
         [this, pseudo](const std::string& finalTurn) {
-          if (scheduledTurn_ || quietTurn_ || toolReplied_ || !claims_.effects().empty()) return std::string();
+          const orch::TurnEffects& fx = claims_.effects();
+          if (scheduledTurn_ || quietTurn_ || toolReplied_ || fx.anyOk(orch::FxKind::Spawn) ||
+              fx.anyOk(orch::FxKind::Send) || fx.anyOk(orch::FxKind::Speak))
+            return std::string();
           return emptyAnswerCorrection(finalTurn, pseudo.get());
         },
     });

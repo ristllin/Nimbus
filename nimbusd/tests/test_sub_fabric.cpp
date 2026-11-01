@@ -173,14 +173,21 @@ static void testMistralSpawnEndToEnd(ndtest::Ctx& c) {
   clearEnv();
 }
 
-// (b) no silent drop: a spawn that cannot run says so.
-static void testUnkeyedSpawnSaysSo(ndtest::Ctx& c) {
-  std::printf("  -- (b) a spawn on an unkeyed provider gets an honest message --\n");
+// (b) a spawn on an unkeyed provider moves to one with a key: nothing goes to the unkeyed
+// provider, and the owner is not told to add a key another provider makes unnecessary.
+static void testUnkeyedSpawnMoves(ndtest::Ctx& c) {
+  std::printf("  -- (b) a spawn on an unkeyed provider moves to one with a key --\n");
   clearEnv();
   FakeHttpTransport tx;
   tx.script.push_back(headTurn(
       "{\"reply\":\"Starting a researcher.\",\"memory\":\"\",\"ask\":\"\",\"session_ops\":[{\"op\":\"spawn\","
       "\"id\":null,\"task\":\"research X\",\"provider\":\"openai\",\"model\":null}]}"));
+  Exchange sub;
+  sub.expectHost = "api.mistral.ai";
+  sub.status = 200;
+  sub.body = "{\"conversation_id\":\"c1\",\"outputs\":[{\"type\":\"message.output\",\"content\":\"found X\"}]}";
+  tx.script.push_back(sub);
+  tx.script.push_back(headTurn("{\"reply\":\"It found X.\",\"memory\":\"\",\"ask\":\"\"}"));
   Config cfg;
   NimbusdRig rig(cfg, opts("fab-b"), &tx);
   rig.applyProviderKey("mistral", "mk_TEST_FAB_2");
@@ -189,10 +196,10 @@ static void testUnkeyedSpawnSaysSo(ndtest::Ctx& c) {
   EngineThread eng(&rig);
   eng.start();
   eng.postMessage("web", "research X on openai");
-  c.ok(inbox.waitFor("Couldn't start that agent on openai.", 8000),
-       "the unkeyed openai spawn is reported, not dropped");
+  c.ok(inbox.waitFor("mistral/", 8000), "the ack names the provider that took it");
+  c.ok(!inbox.waitFor("Couldn't start", 50), "the owner is not told to add a key");
   eng.stop();
-  c.eqi((long)tx.seen.size(), 1, "no request was sent to the unkeyed provider");
+  for (const auto& r : tx.seen) c.ok(r.host != "api.openai.com", "no request went to the unkeyed provider");
   clearEnv();
 }
 
@@ -740,7 +747,7 @@ int main() {
   c.suite = "sub-agent fabric (device parity)";
   std::printf("=== %s ===\n", c.suite);
   testMistralSpawnEndToEnd(c);
-  testUnkeyedSpawnSaysSo(c);
+  testUnkeyedSpawnMoves(c);
   testSpawn429NamesTheWindow(c);
   testJournalReattaches(c);
   testBackgroundWorkIsNotATurn(c);

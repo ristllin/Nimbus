@@ -434,7 +434,12 @@ providers::ProviderDeps deviceProviderDeps() {
     if (!strcmp(host, "cumulo"))    return std::string(store::cumuloKey().c_str());
     return std::string();
   };
-  pd.orchModel = [](const char* host) { return std::string(store::orchModel(host).c_str()); };
+  pd.orchModel = [](const char* host) {
+    String m = store::orchModel(host);
+    // The Z.ai head's default when nothing is picked: the fabric files spend under this.
+    if (!m.length() && !strcmp(host, "zai")) m = ZAI_MODEL;
+    return std::string(m.c_str());
+  };
   pd.toolLoopOn = [] { return store::orchToolLoop(); };
   // The Z.ai head's endpoint, key and policy: its own head and its fabric rounds.
   pd.zaiHead = [](providers::ProviderDeps& z) {

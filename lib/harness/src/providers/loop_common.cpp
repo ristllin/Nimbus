@@ -12,6 +12,7 @@
 #include "image_parts.h"   // R1: LoopImages - the turn's photos seed the transcript
 #include "nimbus/orch/compact.h"   // isContextOverflowError - a provider's window refusal
 #include "nimbus/orch/head_loop.h"
+#include "nimbus/orch/head_switch.h"     // parkPause: reading the park without asking it
 #include "nimbus/orch/provider_park.h"   // the one per-provider park every seam shares
 #include "nimbus/orch/reply_guard.h"   // cutRetryNote - what a cut round is told
 #include "nimbus/orch/transcript.h"
@@ -216,8 +217,11 @@ orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx) {
 
 // ---- web search hosted by the provider (providers.h) -----------------------------
 namespace {
+// A read of the park (parkPause), not an ask (hostParked): this runs on every tool
+// listing, and asking would spend a parked provider's one re-check on nothing.
 bool searchHostOpen(const ProviderDeps& pd, const char* host) {
-  return pd.key && !pd.key(host).empty() && !hostParked(pd, host);
+  return pd.key && !pd.key(host).empty() &&
+         !orch::pauseHolds(orch::parkPause(host, orch::PaidSeam::Chat, pd.nowMs ? pd.nowMs() : 0, /*dueIsOpen=*/true));
 }
 }  // namespace
 

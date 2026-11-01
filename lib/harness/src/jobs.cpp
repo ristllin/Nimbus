@@ -1184,11 +1184,30 @@ bool JobEngine::routeSpawn(const PendingSpawn& p, std::string& provider, std::st
     refuseConnector(p, provider, host);
     return false;
   }
-  if (keyless && !routed) {
+  if (keyless && !routed && !movedOffKeyless(p, host, provider, model, a)) {
     refuseKeyless(p, provider, model);
     return false;
   }
   return coerceSpawnModel(p, provider, model);
+}
+
+// CUM-887's class, before any request: GLM named openai on an instance with no openai key
+// (parity eval, 1 Nov), and the owner was told to add a key while two other providers could
+// do the work. The spawn moves to a provider holding its own key, its model left to the
+// coercion there. A connector or file task stays, and the router's own rule stands (a model
+// it does not offer is refused by name): only a direct key takes the work.
+bool JobEngine::movedOffKeyless(const PendingSpawn& p, const std::string& host, std::string& provider,
+                                std::string& model, ManagedAgentAdapter*& a) {
+  if (!host.empty() || (p.skill[0] && nimbus::orch::isFileSkill(p.skill))) return false;
+  const std::string alt = nextSubProvider({provider, kRouterSlug});
+  ManagedAgentAdapter* altAdapter = alt.empty() ? nullptr : d_.fabric->adapterFor(alt.c_str());
+  if (!altAdapter) return false;
+  hlog::logf("orchestrator: spawn moved %s -> %s (%s has no key)", provider.c_str(), alt.c_str(), provider.c_str());
+  ledgerSwapped(p, provider + " has no key here; runs on " + alt);
+  provider = alt;
+  model.clear();
+  a = altAdapter;
+  return true;
 }
 
 // L19-36: save the whole reply (`whole`, longer than the envelope) to the job's

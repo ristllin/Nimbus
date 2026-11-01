@@ -158,7 +158,7 @@ void registerWebSearchTool(nimbus::orch::ToolRegistry& reg, const WebSearchToolD
             Result r = deps.search(q, k);
             // Lane QW4 (CUM-776): a call the provider may have billed counts, answered
             // or not.
-            if ((r.ok || r.billed) && !r.hosted && deps.recordCall) deps.recordCall();
+            if ((r.ok || r.billed) && deps.recordCall && !r.hosted) deps.recordCall();
             // Report the ACTUAL cause - one catch-all string used to send the model
             // retrying a search that could never work.
             if (!r.ok) return ToolResult::fail("web search failed: " + r.err);

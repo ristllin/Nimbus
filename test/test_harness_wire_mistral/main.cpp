@@ -1647,7 +1647,10 @@ static void test_web_search_runs_on_mistral_builtin() {
   FakeProviderDeps d;
   d.http.script.push_back(
       {"api.mistral.ai", "/v1/conversations", 200,
-       "{\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"web_search\"},{\"type\":\"message.output\",\"content\":["
+       "{\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"web_search\",\"info\":{\"result\":"
+       "\"{\\\"a1\\\":{\\\"url\\\":\\\"https://www.python.org/downloads/\\\",\\\"title\\\":\\\"Download\\\","
+       "\\\"snippets\\\":[\\\"Latest Python 3 Release 3.15.2\\\"]}}\"}},"
+       "{\"type\":\"message.output\",\"content\":["
        "{\"type\":\"text\",\"text\":\"Python 3.15.2\"},{\"type\":\"tool_reference\",\"tool\":\"web_search\","
        "\"title\":\"Download\",\"url\":\"https://www.python.org/downloads/\"}]}],"
        "\"usage\":{\"prompt_tokens\":806,\"completion_tokens\":63,\"connectors\":{\"web_search\":1}}}"});
@@ -1659,7 +1662,8 @@ static void test_web_search_runs_on_mistral_builtin() {
   TEST_ASSERT_TRUE(r.hosted);
   TEST_ASSERT_TRUE(r.digest.find("3.15.2") != std::string::npos);
   TEST_ASSERT_TRUE(r.digest.find("https://www.python.org/downloads/") != std::string::npos);
-  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"mistral-small-latest\""));
+  TEST_ASSERT_TRUE(r.digest.find("Latest Python 3 Release 3.15.2") != std::string::npos);   // the source's own words
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"mistral-medium-latest\""));
   TEST_ASSERT_FALSE(bodyHas(d, 0, "mistral-large-4-0"));
   TEST_ASSERT_TRUE(bodyHas(d, 0, "\"type\":\"web_search\""));
 }

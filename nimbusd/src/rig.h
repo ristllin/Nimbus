@@ -32,6 +32,7 @@
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/turn_anatomy.h"   // the /api/lastturn page head
+#include "nimbus/harness/turn_contract.h"
 #include "nimbus/harness/websearch.h"
 #include "nimbus/orch/tool_gates.h"
 #include "nimbus/orch/caps.h"
@@ -2414,7 +2415,7 @@ class NimbusdRig {
     // turn that did nothing never lands here: applyTurn tells the owner the answer was
     // empty.
     d.apply.turnComplete = [this](const std::string& chat) {
-      if (chat == kWebChatId) record(chat, "Done.");
+      if (chat == kWebChatId) record(chat, agent::kNoMessageAfterAction);
     };
   }
 

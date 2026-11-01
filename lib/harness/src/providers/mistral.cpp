@@ -8,6 +8,7 @@
 #include "nimbus/harness/prompt_layout.h"  // static / summary / per-turn parts
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"  // 429 -> the quota window that refused (CUM-460)
+#include "nimbus/mem_cap.h"       // utf8CapLen: a source's words, cut on a character
 #include "nimbus/orch/compact.h"   // ORCH_COMPACT_PROMPT: the fold is a plain completion (CUM-890)
 #include "nimbus/orch/connectors_wire.h"  // connector provenance (CUM-536)
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
@@ -1329,10 +1330,36 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   return FabricErr::Ok;
 }
 
-// web.search on Mistral's built-in search: one Conversations request on the model that
-// runs it cheapest, whatever the head is (mistral-large-4-0 refuses the tool). The digest
-// is the answer with its sources written inline.
-static const char kMistralSearchModel[] = "mistral-small-latest";
+// web.search on Mistral's built-in search: one Conversations request, whatever the head is
+// (mistral-large-4-0 refuses the tool). Medium answered the current release 3 of 6 live and
+// Small 0 of 6 (evidence/probes/search-model-compare.txt), so the digest also carries the
+// sources' own words for the head to read, not only the model's summary of them.
+static const char kMistralSearchModel[] = "mistral-medium-latest";
+static constexpr size_t kSearchSourceWords = 320;   // bytes of one source's snippets
+static constexpr size_t kSearchSources = 5;
+
+// The sources of one web_search execution: info.result is a JSON string, an object of
+// {"url","title","snippets":[...]} rows.
+static void appendSearchSources(const ProviderDeps& pd, const char* result, std::string& out) {
+  JsonDocument d = makeDoc(pd);
+  if (!result || deserializeJson(d, result)) return;
+  size_t n = 0;
+  for (JsonPairConst row : d.as<JsonObjectConst>()) {
+    if (n++ >= kSearchSources) break;
+    JsonObjectConst r = row.value().as<JsonObjectConst>();
+    out += std::string("- ") + (const char*)(r["title"] | "(untitled)") + " | " + (const char*)(r["url"] | "") + "\n";
+    std::string words;
+    for (JsonVariantConst s : r["snippets"].as<JsonArrayConst>()) {
+      words += (const char*)(s | "");
+      words += " ";
+      if (words.size() > kSearchSourceWords) break;
+    }
+    if (words.empty()) continue;
+    const int keep = nimbus::utf8CapLen(words.data(), (int)words.size(), (int)kSearchSourceWords);
+    out += "  " + words.substr(0, (size_t)keep) + "\n";
+  }
+}
+
 static const char kSearchInstructions[] =
     "You are a web research tool. Search the web and answer the query with the facts you "
     "found. Name the source of each fact. Give dates where they matter. Under 150 words.";
@@ -1350,7 +1377,8 @@ websearch::Result mistralWebSearch(const ProviderDeps& pd, const std::string& qu
   JsonDocument filter;
   JsonObject oi = filter["outputs"].add<JsonObject>();
   oi["type"] = true;
-  oi["content"] = true;   // type, text and the tool_reference urls: not the raw result
+  oi["content"] = true;   // type, text and the tool_reference urls
+  oi["info"]["result"] = true;
   filter["usage"] = true;
   keepMistralError(filter);
   JsonDocument doc = makeDoc(pd);
@@ -1368,9 +1396,12 @@ websearch::Result mistralWebSearch(const ProviderDeps& pd, const std::string& qu
     return res;
   }
   res.billed = true;
-  std::string reply;
-  for (JsonObjectConst o : doc["outputs"].as<JsonArrayConst>())
-    if (strcmp(o["type"] | "", "message.output") == 0) reply = mistralSubReplyContent(o);
+  std::string reply, sources;
+  for (JsonObjectConst o : doc["outputs"].as<JsonArrayConst>()) {
+    const char* type = o["type"] | "";
+    if (strcmp(type, "message.output") == 0) reply = mistralSubReplyContent(o);
+    if (strcmp(type, "tool.execution") == 0) appendSearchSources(pd, o["info"]["result"] | "", sources);
+  }
   const uint32_t runs = doc["usage"]["connectors"]["web_search"] | 1u;
   nimbus::orch::meterSubAnswer("mistral", kMistralSearchModel, doc["usage"].as<ArduinoJson::JsonVariantConst>(),
                                requestChars, reply.size(), runs);
@@ -1380,6 +1411,7 @@ websearch::Result mistralWebSearch(const ProviderDeps& pd, const std::string& qu
   }
   res.ok = true;
   res.digest = "Answer: " + reply;
+  if (!sources.empty()) res.digest += "\nSources, in their own words:\n" + sources;
   return res;
 }
 

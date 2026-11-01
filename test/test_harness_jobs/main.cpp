@@ -1604,6 +1604,24 @@ static void test_a_refused_spawn_moves_to_the_next_provider() {
   }
 }
 
+// The same before any request: a head that names a provider with no key, on a device
+// where another provider holds one (glm-5.3-flash named openai, parity eval 1 Nov).
+static void test_a_spawn_on_a_keyless_provider_moves_to_one_with_a_key() {
+  Rig r;
+  FakeAdapter other;
+  other.backend = "openai";
+  r.fabric.registerAdapter(&other);
+  r.keyed = {"openai"};
+  orch::Spawn s = sp("work out the 10th Fibonacci number");   // names anthropic
+  r.eng->enqueueSpawn(s, "chat1");
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(0, (int)r.adapter.dispatched.size());
+  TEST_ASSERT_EQUAL(1, (int)other.dispatched.size());
+  for (const auto& d : r.delivered)
+    TEST_ASSERT_TRUE_MESSAGE(d.second.find("Couldn't start") == std::string::npos, d.second.c_str());
+  TEST_ASSERT_EQUAL_STRING("", r.eng->takeSpawnNotes("chat1").c_str());
+}
+
 // With nothing to move to, the owner hears the first refusal's reason, once.
 static void test_a_refused_spawn_with_no_alternate_says_why() {
   Rig r;
@@ -2988,6 +3006,7 @@ int main(int, char**) {
   RUN_TEST(test_error_delivers_failure_and_holds_attn_window);
   RUN_TEST(test_transient_backoff_doubles_then_resets);
   RUN_TEST(test_a_refused_spawn_moves_to_the_next_provider);
+  RUN_TEST(test_a_spawn_on_a_keyless_provider_moves_to_one_with_a_key);
   RUN_TEST(test_a_refused_spawn_with_no_alternate_says_why);
   RUN_TEST(test_a_refused_connector_spawn_stays_put);
   RUN_TEST(test_notfound_expired_message);
