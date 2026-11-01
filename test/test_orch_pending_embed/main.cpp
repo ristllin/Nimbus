@@ -759,6 +759,59 @@ static void test_queued_fact_found_by_keyword_inside_boundary() {
   }
 }
 
+// The queued write's own words promise that search finds it meanwhile. That has to hold
+// after the embedder recovers and before the drain ran, when memory.search takes the
+// semantic path: on 28 Oct a member's exact sentence came back "No relevant memories
+// found" in that window, and it was read as an RBAC refusal (the l18 bench leg).
+static void test_queued_fact_found_after_the_embedder_recovers() {
+  Rig r;
+  const Principal alice = principalForRole("alice", Role::User);
+  const Principal bob = principalForRole("bob", Role::User);
+  const Principal revoked = principalForRole("alice", Role::Unknown);
+  const char* kSecret = "Alice keeps the locker code for Pier 9 written as LOCKER-77";
+  r.failWith = "tls busy";
+  const std::string args = std::string(R"({"content":")") + kSecret + R"("})";
+  const ToolResult w = r.call("memory.write", args.c_str(), alice);
+  TEST_ASSERT_TRUE_MESSAGE(has(w.output, "not stored yet"), w.output.c_str());
+  r.failWith.clear();   // the embedder is back; nothing has drained the queue yet
+  TEST_ASSERT_EQUAL(1, (int)r.pending.size());
+
+  const std::string query = std::string(R"({"query":")") + kSecret + R"("})";
+  const ToolResult mine = r.call("memory.search", query.c_str(), alice);
+  TEST_ASSERT_TRUE_MESSAGE(has(mine.output, "LOCKER-77"), mine.output.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(mine.output, "[pending, not stored yet]"), mine.output.c_str());
+
+  // The read boundary holds in the new path, whatever the words: another member, and
+  // the writer herself once revoked.
+  const ToolResult other = r.call("memory.search", query.c_str(), bob);
+  TEST_ASSERT_FALSE_MESSAGE(has(other.output, "LOCKER-77"), other.output.c_str());
+  const ToolResult gone = r.call("memory.search", query.c_str(), revoked);
+  TEST_ASSERT_FALSE_MESSAGE(has(gone.output, "LOCKER-77"), gone.output.c_str());
+
+  // A query that shares no word with it does not surface it.
+  const ToolResult far = r.call("memory.search", R"({"query":"weather tomorrow"})", alice);
+  TEST_ASSERT_FALSE_MESSAGE(has(far.output, "LOCKER-77"), far.output.c_str());
+
+  // Stored rows still lead, and n_results still bounds the whole answer.
+  r.call("memory.write", R"({"content":"Alice stores her locker spare key at the office"})", alice);
+  const ToolResult one = r.call("memory.search", R"({"query":"locker","n_results":1})", alice);
+  TEST_ASSERT_TRUE_MESSAGE(has(one.output, "Found 1 memories"), one.output.c_str());
+}
+
+// What a member may do: the rule the l18 leg's setup depends on, stated once. A User
+// writes and reads its own memory; an Unknown does neither.
+static void test_member_memory_write_is_allowed_by_role() {
+  Rig r;
+  const Principal member = principalForRole("918001", Role::User);
+  const ToolResult w = r.call("memory.write", R"({"content":"member note about the locker"})", member);
+  TEST_ASSERT_TRUE_MESSAGE(w.success && has(w.output, "stored memory"), w.output.c_str());
+  const ToolResult s = r.call("memory.search", R"({"query":"member note about the locker"})", member);
+  TEST_ASSERT_TRUE_MESSAGE(has(s.output, "member note"), s.output.c_str());
+  const Principal unknown = principalForRole("918009", Role::Unknown);
+  const ToolResult denied = r.call("memory.write", R"({"content":"should not land"})", unknown);
+  TEST_ASSERT_FALSE_MESSAGE(has(denied.output, "stored memory"), denied.output.c_str());
+}
+
 static void test_update_during_outage_keeps_old_until_drain() {
   Rig r;
   TEST_ASSERT_EQUAL_STRING(kMemOutcomeStored, r.write("I take my coffee black", owner()).code.c_str());
@@ -961,5 +1014,7 @@ int main(int, char**) {
   RUN_TEST(test_lexical_recall_bounds_and_tags);
   RUN_TEST(test_coalesced_update_keeps_intent_and_delete_covers_queue);
   RUN_TEST(test_an_unwritable_engine_drains_nothing);
+  RUN_TEST(test_queued_fact_found_after_the_embedder_recovers);
+  RUN_TEST(test_member_memory_write_is_allowed_by_role);
   return UNITY_END();
 }

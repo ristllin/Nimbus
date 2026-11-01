@@ -15,14 +15,22 @@ Bench legs (``hil`` + ``net``, unit A, test build, the live head on Anthropic
    asks the head to read the device log. Every run ends with a reply in the chat history
    (served, or the honest short-of-memory reply) and the device never restarts: the boot
    number and the stored crash fingerprint stay the same.
-2. The same with the squeeze arriving inside the setup, three runs in a row: once the
-   turn task has taken the turn, the ballast takes internal free down to 6.5 KB, under
-   the 12 KB turn floor. Every run ends with exactly the honest reply ("I'm short of
-   memory right now. Please try again in a minute.") as the chat's history row, no
-   provider request (the console says the turn ended for memory before it), no restart.
-   A run whose squeeze missed the setup window (it landed before admission, or after the
-   provider request on a unit whose recall is off) is honest too and checked for a
-   restart, but repeated, at most twice: it does not exercise this path.
+2. Under the turn floor from the start, three runs in a row: the ballast takes internal
+   free down to 6.5 KB (the floor is 12 KB) before the turn is asked for. Every run ends
+   with exactly the honest reply ("I'm short of memory right now. Please try again in a
+   minute.") as the chat's history row, no provider request (the console says the turn
+   ended for memory before it), no restart.
+3. The squeeze arriving at some point during the turn, three runs in a row. Where it lands
+   is a race with the setup, and the setup has grown faster, so the leg asserts the class:
+   whatever the moment, the turn ends in one reply that is an answer or an honest memory
+   ending (classify_end), never silence, a raw dump or a restart.
+
+Why leg 2 no longer squeezes after the turn starts (the 28 Oct RED, ruled on 1 Nov): the
+leg squeezed 0.2 s after the turn task took the turn and expected the refusal. The setup
+now finishes before that lands: the request check read 17,756 B free and 7,156 B largest,
+above the 12,000/5,000 floor, so admitting the turn was correct. The squeeze then hit the
+request body, which ended honestly ("the device ran out of working memory", no panic, no
+retry storm). The firmware did what it promises; the leg's timing was stale.
 
 The unit's monthly spend count is seeded for the legs when its ceiling is reached and put
 back after (SPENDSET, test builds); the head and the ballast are restored in a finally.
@@ -53,6 +61,29 @@ BALLAST_RE = re.compile(r"FAULT sram_ballast=(\d+) held=(\d+) intFree=(\d+) intL
 OVERALL_RE = re.compile(
     r'"limitCents":(\d+),"spentCents":(\d+),"frozen":(true|false)(?:,"ownerSet":\w+,"active":(true|false))?'
 )
+
+
+# The honest endings of a turn that ran short of memory, by their fixed opening words
+# (engine.cpp, orch_head_loop.cpp). A turn that outran the squeeze just answers.
+MEMORY_ENDINGS = (
+    "That didn't finish - the device ran out of working memory",
+    "That didn't finish - the device could not finish sending its request",
+)
+# What must never reach a person, under any pressure.
+NOT_A_REPLY = ('{"reply"', '"session_ops"', '"mem_write"', "placeholder")
+
+
+def classify_end(reply: str) -> str:
+    """How a squeezed turn ended: "refused" (before any provider request), "memory" (an
+    honest ending part way), "served" (an answer), or "bad" (nothing a person can read)."""
+    text = (reply or "").strip()
+    if not text or any(mark in text for mark in NOT_A_REPLY):
+        return "bad"
+    if text == SHORT_REPLY:
+        return "refused"
+    if text.startswith(MEMORY_ENDINGS):
+        return "memory"
+    return "served"
 
 
 def _state(net) -> dict:
@@ -180,8 +211,9 @@ def starvation(device, net):
             _restore_spend(device, seeded)
 
 
-def _episode(device, net, squeeze: bool) -> str:
-    """One run of the recipe; returns the turn's reply row. Fails on a restart."""
+def _episode(device, net, squeeze: bool, first: bool = False) -> str:
+    """One run of the recipe; returns the turn's reply row. Fails on a restart. `squeeze`
+    takes internal free under the turn floor during the turn, `first` before it starts."""
     boot0, fp0, up0 = _identity(net)
     free = int(_state(net).get("heap") or 0)
     assert free > 0, "the state carries no internal free figure"
@@ -194,15 +226,19 @@ def _episode(device, net, squeeze: bool) -> str:
         f"the ballast left {free_after} B free, not the recipe's {LEAVE_FREE} B"
     )
     before = _replies(net)
+    tighter = hold + max(0, free_after - SQUEEZE_FREE)
     try:
+        if first:
+            _ballast(device, tighter)
         device.cmd(f"TURN {PROMPT}", expect="TURN <-", timeout=6.0)
-        if squeeze:
-            try:  # the turn task took the turn: admission is the next step
-                device.expect("local turn from serial", timeout=15.0)
-            except Exception:  # noqa: BLE001 - a drained line: squeeze on the clock instead
-                pass
-            time.sleep(SQUEEZE_DELAY_S)
-            _ballast(device, hold + max(0, free_after - SQUEEZE_FREE))
+        if squeeze or first:
+            if not first:
+                try:  # the turn task took the turn
+                    device.expect("local turn from serial", timeout=15.0)
+                except Exception:  # noqa: BLE001 - a drained line: squeeze on the clock instead
+                    pass
+                time.sleep(SQUEEZE_DELAY_S)
+                _ballast(device, tighter)
             try:  # the turn's end on the console (a drained line just means it already passed)
                 device.expect_re(r"turn ended for memory|turn host=", timeout=60.0)
             except Exception:  # noqa: BLE001 - the reply row below is the graded evidence
@@ -225,14 +261,16 @@ def test_l71_l24_recipe_runs_three_times_without_a_panic(device, net, starvation
         assert reply.strip(), "an empty reply row"
 
 
-def test_l71_setup_squeeze_ends_honestly_three_times(device, net, starvation):
-    done, missed = 0, 0
-    while done < RUNS:
+def test_l71_under_the_floor_from_the_start_is_refused_three_times(device, net, starvation):
+    for i in range(RUNS):
+        reply = _episode(device, net, squeeze=False, first=True)
+        print(f"\n[l71] under the floor run {i + 1}/{RUNS}: {reply[:120]!r}")
+        assert reply == SHORT_REPLY, f"run {i + 1}: not the honest short-of-memory reply: {reply[:160]!r}"
+
+
+def test_l71_a_squeeze_during_the_turn_ends_honestly_three_times(device, net, starvation):
+    for i in range(RUNS):
         reply = _episode(device, net, squeeze=True)
-        print(f"\n[l71] squeeze run {done + 1}/{RUNS}: {reply[:120]!r}")
-        if reply != SHORT_REPLY and missed < 2:
-            missed += 1  # honest too and no restart (checked), but not the setup's path
-            print("[l71] the squeeze missed the setup window: repeating this run")
-            continue
-        assert reply == SHORT_REPLY, f"run {done + 1}: not the honest short-of-memory reply: {reply[:160]!r}"
-        done += 1
+        kind = classify_end(reply)
+        print(f"\n[l71] squeeze run {i + 1}/{RUNS} ({kind}): {reply[:120]!r}")
+        assert kind != "bad", f"run {i + 1}: nothing a person can read: {reply[:160]!r}"

@@ -862,6 +862,27 @@ std::vector<std::string> lexicalHits(const VectorMemory& vec, const PendingEmbed
   return out;
 }
 
+// The caller's queued facts that share a word with `lq`, best first: what a semantic
+// search cannot see until the drain gives them a vector. The same read boundary and
+// the same "not stored yet" words as the keyword search.
+std::vector<std::string> queuedHits(const PendingEmbeds* pending, const LexQuery& lq,
+                                    const std::vector<std::string>& allow, size_t k) {
+  std::vector<std::string> out;
+  if (!pending || k == 0) return out;
+  LexHits best;
+  best.reserve(std::min(k, pending->size()) + 1);
+  uint32_t seq = 0;
+  pending->forEachEntry([&](const PendingEmbed& p) {
+    ++seq;
+    if (!nsAllowsEntry(p.ns, allow)) return;
+    const int sc = lexCoverage(p.content, lq);
+    if (sc > 0) keepBest(best, k, LexHit{sc, seq, &p.content, -1});
+  });
+  out.reserve(best.size());
+  for (const LexHit& h : best) out.push_back(lexHitText(h));
+  return out;
+}
+
 ToolResult lexicalSearchFallback(const MemoryContext& ctx, const std::string& query,
                                  int k, const Principal& who, const std::string& reasonWords) {
   const std::string label = "keyword match, embeddings unavailable: " + reasonWords;
@@ -899,13 +920,24 @@ ToolResult doSearch(const MemoryContext& ctx, JsonObjectConst a, const Principal
   const std::vector<int8_t>& qv = t.vec;
 
   auto hits = ctx.vec->search(qv, k, ctx.nowHours(), readSetFor(who));   // TTL + v3.7.0 read boundary
+  // A fact still queued has no vector yet (its write said search finds it meanwhile, and
+  // the embedder may be back before the drain has run): up to half the answer, at least
+  // one line, so a busy store cannot crowd out what the caller just wrote.
+  const std::vector<std::string> waiting =
+      queuedHits(ctx.pending, lexParse(query), readSetFor(who), (size_t)std::max(1, k / 2));
+  const int room = k - (int)waiting.size();
   // Apply the user/model relevance threshold (similarity = 1 - distance).
   float thr = ctx.cfg ? ctx.cfg->relevanceThreshold : 0.0f;
   std::string out;
   int n = 0;
   for (const auto& h : hits) {
+    if (n >= room) break;
     if ((1.0f - h.distance) < thr) continue;
     out += "- [" + std::to_string((int)(h.importance * 100)) + "%] " + h.content + "\n";
+    n++;
+  }
+  for (const auto& w : waiting) {
+    out += "- " + w + "\n";
     n++;
   }
   if (n == 0) return ToolResult::ok("No relevant memories found.");
