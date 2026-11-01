@@ -71,7 +71,7 @@ class FakeNimbusd:
 
     def orch(self):
         return {
-            "providers": {"mistral": {"verify": 1}},
+            "providers": {"mistral": {"verify": 1, "vts": 1}},
             "usage": {"sessIn": 100 * self.turn_counter, "sessOut": 10 * self.turn_counter, "turns": self.turn_counter},
         }
 

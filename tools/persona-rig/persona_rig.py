@@ -557,7 +557,7 @@ class Runner:
         end = time.time() + timeout_s
         while slugs and time.time() < end:
             provs = self.inst.get_json("/api/orch").get("providers", {})
-            if all(provs.get(s, {}).get("verify", 0) != 0 for s in slugs):
+            if all(provs.get(s, {}).get("vts", 0) for s in slugs):  # vts: a verdict has landed
                 break
             time.sleep(1)
         orch = self.inst.call("GET", "/api/orch")[1]
