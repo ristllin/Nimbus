@@ -388,15 +388,17 @@ the heavy-connector-write restart, 2026-07).
   threshold; cheap and not worth lowering it for the whole device. During a turn
   they go to PSRAM (above), because a turn's setup made thousands of them. The same
   goes for a provider verify or a model-list refresh on its worker: one string per
-  row of the Cumulo router's list, three times over, took internal free to 968 B on a
-  live device (fixed in 5.0.0). Anything that keeps a string per row of a list gives it a
-  block over 128 B (`assignOffInternal`, `keptId`);
-  `test/test_refresh_small_blocks` counts them.
-- **The speaker's DMA buffers** - opening the speaker takes 8 x 1024 B of DMA-capable
-  SRAM until the clip ends. A cue opens only with those and 8 KB for the radio free,
-  and a failed open holds the cues back (one minute, doubling to 16); a spoken reply or
-  a track keeps a 3.2 KB reserve and says when it cannot play
-  (`nimbus/speaker_memory.h`).
+  row of the Cumulo router's list, three times over, is most of what took internal free to
+  968 B on a live device. 5.0.0 moves those blocks to PSRAM; the new low on a board is still
+  to be measured. Anything that keeps a string per row of a list gives it a block over 128 B
+  (`assignOffInternal`, `keptId`); `test/test_refresh_small_blocks` counts them.
+- **The speaker's DMA buffers** - opening the speaker takes DMA-capable SRAM until the
+  clip ends: 8 x 1024 B on a raw I2S board (Solide S3), 16 x 1024 B on the ES8311 codec
+  boards (Freenove), whose one channel carries both directions. A cue opens only with
+  those and a reserve for the radio free (8 KB raw, 3.2 KB codec), and a failed open holds
+  the cues back (one minute, doubling to 16). A spoken reply or a track keeps a smaller
+  reserve (3.2 KB raw, 1.6 KB codec) and says when it cannot play. One sound holds the
+  speaker at a time, and the memory is read on its turn (`nimbus/speaker_memory.h`).
 - **FreeRTOS task stacks** - e.g. `tg_poll` (24 KB, `POLL_STACK_BYTES`), which
   runs the whole turn. Internal by nature. The response parse is bounded to
   `NestingLimit(64)` (`kResponseNestingLimit`), well within this stack.

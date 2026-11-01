@@ -24,7 +24,7 @@ A fix release for the correction loop reported on 30 October.
 
 A fix release for the crash and the file-editing gap reported on 29 October.
 
-- **The 29 October crash stopped.** A log write refused at a raised interrupt level no longer stops the device. The fix's first account blamed the nightly dream; the real trigger was a "lights" action, found and fixed at its source in 5.0.0.
+- **The 29 October crash stopped.** A log write refused at a raised interrupt level no longer stops the device. The fix's first account blamed the nightly dream. A later reading of the crash frames points to a log line written during a "lights" action instead; that reading is not yet confirmed against the matching build, and 5.0.0 moves the line out of the lock either way.
 - **files.edit.** The assistant can now change one line of a text document without reading and rewriting the whole file - it finds the text, replaces it, and leaves everything else untouched. Cheaper on memory and tokens, and it says honestly what it found and replaced.
 
 ## v4.6.1 - Faster replies, no web-page restarts, the real model named

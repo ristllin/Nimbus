@@ -247,12 +247,13 @@ void append(const std::string& redacted, const char* cat) {
   // The 2026-10-29 Lumi panic class (fw v4.6.1, tg_poll): every newlib stdio
   // operation on a FILE takes the FILE's recursive lock, and IDF newlib's
   // lock_acquire_generic ABORTS when that acquire runs with the CPU's interrupt
-  // level raised ("recursive mutexes make no sense in ISR context"). The crash
-  // itself was a log line written under a spinlock (orchDeviceSink's lights line,
-  // under the config lock); tools/release_gate/check_critical_sections.py now fails
-  // on that shape. This refusal stays as the defense for one the scan cannot see,
-  // a helper that logs: the line is already in the RAM tail + Serial, and the same
-  // drop counters make the next successful write record the miss - never an abort.
+  // level raised ("recursive mutexes make no sense in ISR context"). The crash's
+  // frames point at a log line written under a spinlock (orchDeviceSink's lights line,
+  // under the config lock), a reading still to be confirmed against the matching build;
+  // tools/release_gate/check_critical_sections.py now fails on that shape. This refusal
+  // stays as the defense for one the scan cannot see, a helper that logs: the line is
+  // already in the RAM tail + Serial, and the same drop counters make the next successful
+  // write record the miss - never an abort.
   if (!xPortCanYield()) {
     g_durableSkipped.fetch_add(1);    // total, for reporting
     g_skipUnpersisted.fetch_add(1);   // delta, recorded to disk at the next successful write

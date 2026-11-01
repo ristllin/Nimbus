@@ -21,9 +21,9 @@
 //
 // Memory: these steps run on a worker beside the Telegram task, outside any turn, where
 // a plain block under 128 B stays in internal SRAM. One string per row in three vectors
-// took internal free from 21 KB to 968 B on Lumi, so every per-row string and version
-// key here is given a block big enough for PSRAM (keptId, kVersionKeyInts;
-// test/test_refresh_small_blocks fails on a per-row small block).
+// is most of what took internal free from 21 KB to 968 B on Lumi, so every per-row string
+// and version key here is given a block big enough for PSRAM (keptId, kVersionKeyInts;
+// test/test_refresh_small_blocks fails on a per-row small block, by bytes and by count).
 
 #include <cctype>
 #include <cstddef>

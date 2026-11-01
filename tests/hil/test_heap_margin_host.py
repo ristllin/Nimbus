@@ -55,7 +55,8 @@ def test_an_asked_sound_checks_memory_before_it_opens_the_speaker():
     """Every player in music.cpp opens through openSpeaker, and it asks first."""
     src = (ROOT / "src/sfx/music.cpp").read_text()
     body = body_of(src, "static bool openSpeaker(uint32_t rate, OpenHook onOpen) {")
-    assert body.index("speakerMemoryOk(") < body.index("solide::audio::spkOpen(")
+    assert body.index("roomToOpen(") < body.index("solide::audio::spkOpen(")
+    assert "speakerMemoryOk(" in body_of(src, "static bool roomToOpen(uint32_t& dmaFree) {")
     outside = src.replace(body, "")
     assert "solide::audio::spkOpen(" not in outside
 
