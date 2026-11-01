@@ -217,8 +217,10 @@ static void test_an_unquoted_comma_never_shifts_the_figures() {
   // comma the parentheses cannot shield (they never close) is quoted on the way out.
   const LedgerMigration kept = planLedgerMigration(
       "2026-10-30,lunch,Tea (no sugar, honey),100,50,1\n"
-      "2026-10-30,dinner,\"Soup (large, hot\",100,70,2\n");
-  TEST_ASSERT_EQUAL(2, kept.folded);
+      "2026-10-30,dinner,\"Soup (large, hot\",100,70,2\n"
+      "2026-10-30,breakfast,\"Oats (large\",100,30,3\n");   // no comma: the readers' open paren shields nothing
+  TEST_ASSERT_EQUAL(3, kept.folded);
+  TEST_ASSERT_TRUE_MESSAGE(contains(kept.out, "2026-10-30,breakfast,Oats (large,30,3\n"), kept.out.c_str());
   TEST_ASSERT_TRUE_MESSAGE(contains(kept.out, "2026-10-30,lunch,Tea (no sugar, honey),50,1\n"), kept.out.c_str());
   TEST_ASSERT_TRUE_MESSAGE(contains(kept.out, "2026-10-30,dinner,\"Soup (large, hot\",70,2\n"), kept.out.c_str());
   CsvDayTally tally("kcal", "2026-10-30");
@@ -228,8 +230,9 @@ static void test_an_unquoted_comma_never_shifts_the_figures() {
   });
   rows.push(kept.out.data(), kept.out.size());
   rows.end();
-  TEST_ASSERT_EQUAL(2, tally.total().rows);
+  TEST_ASSERT_EQUAL(3, tally.total().rows);
   TEST_ASSERT_EQUAL(0, tally.total().unread);
+  TEST_ASSERT_TRUE(tally.total().total > 149.9 && tally.total().total < 150.1);
 }
 
 // The source file goes only when every row of figures reached the ledger: a dropped data
