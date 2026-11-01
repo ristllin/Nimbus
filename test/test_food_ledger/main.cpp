@@ -249,6 +249,14 @@ void test_the_same_food_on_earlier_days_rides_the_turn() {
   TEST_ASSERT_TRUE(block.size() < 1000);
 }
 
+void test_figures_that_correct_a_meal_are_not_a_plain_request() {
+  for (const char* m : {"Their website says steak 325 kcal, mash 543, sauce 55. No protein listed. So what are we at?",
+                        "The label says 190 kcal, can you fix it?", "It should be 450 kcal, right?"})
+    TEST_ASSERT_EQUAL_MESSAGE(int(FoodIntent::Unclear), int(foodIntentOf(m)), m);
+  // A request with figures stays a request: a plan must not be logged as a meal.
+  TEST_ASSERT_EQUAL(int(FoodIntent::Ask), int(foodIntentOf("Plan my dinner. About 1,000 kcal and 60 g protein left today.")));
+}
+
 void test_the_block_is_bounded_and_keeps_the_newest() {
   std::string file = std::string(kHead) + "\n";
   for (int i = 0; i < 60; i++)
@@ -415,6 +423,7 @@ int main(int, char**) {
   RUN_TEST(test_no_target_stored_sends_the_head_to_a_source);
   RUN_TEST(test_plan_files_are_about_food_or_weight);
   RUN_TEST(test_one_food_log);
+  RUN_TEST(test_figures_that_correct_a_meal_are_not_a_plain_request);
   RUN_TEST(test_the_same_food_on_earlier_days_rides_the_turn);
   RUN_TEST(test_the_block_is_bounded_and_keeps_the_newest);
   RUN_TEST(test_rows_are_cleaned_and_cut_on_a_boundary);

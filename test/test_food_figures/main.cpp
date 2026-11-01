@@ -82,6 +82,8 @@ static void test_a_left_figure_implies_a_target() {
   TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("That leaves ~365 kcal for dinner.", f, figureNumbers(kPlan)).size());
   TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("Remaining to target: ~364 kcal.", f, figureNumbers(kPlan)).size());
   TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("Against your targets: 364 kcal left of 2,400.", f, figureNumbers(kPlan)).size());
+  TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("The protein floor is met with 40 g to spare.", f, figureNumbers(kPlan)).size());
+  TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("Just shy: 364 kcal to spare.", f, figureNumbers(kPlan)).size());
   TEST_ASSERT_TRUE(hasKind(foodFigureGaps("Remaining to target: ~90 kcal.", f, figureNumbers(kPlan)), FoodGapKind::UnsourcedTarget));
 }
 

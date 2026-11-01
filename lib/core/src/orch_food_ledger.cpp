@@ -534,12 +534,17 @@ const char* const kEatenPhrases[] = {"i had", "i've had", "ive had", "just had",
 const char* const kAskPhrases[] = {"how much", "how many", "tell me", "what should", "should i", "can i",
                                    "plan my", "plan a", "planning", "suggest", "give me", "what's my",
                                    "whats my", "what is my", "list"};
+const char* const kCorrectionPhrases[] = {"website says", "site says", "menu says", "label says", "app says",
+                                          "published", "should be", "it was actually", "was actually"};
 const char* const kComplaintPhrases[] = {"you invented", "didn't say", "didnt say", "that's wrong",
                                          "thats wrong", "you got it wrong", "not what i said"};
 }  // namespace
 
 FoodIntent foodIntentOf(const std::string& text) {
   const std::string s = lowerAscii(text);
+  // Figures that correct a logged meal, even with a question on the end ("their website says 325
+  // kcal... so what are we at?"): not a plain request, so "write no row" must not reach it.
+  if (words::anyPhrase(s, kCorrectionPhrases) && hasFoodQuantity(s)) return FoodIntent::Unclear;
   const bool eaten = words::anyPhrase(s, kEatenPhrases);
   // A report of food eaten wins over a complaint in the same words ("that's wrong,
   // I had the pasta"): the meal still has to be logged.
