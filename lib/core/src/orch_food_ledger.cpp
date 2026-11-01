@@ -71,7 +71,7 @@ std::string proteinText(const FoodLedger& l) {
   if (l.proteinUnknown == 0) return ", " + num(l.protein) + " g protein";
   return "; protein: " + num(l.protein) + " g known from " + rowsWord(l.proteinRows) + ", " +
          rowsWord(l.proteinUnknown) + " with no protein figure, so the day's protein is unknown (at least " +
-         num(l.protein) + " g)";
+         num(l.protein) + " g), and how much more is needed is at most a figure, never a firm \"you need\"";
 }
 
 std::string totalsText(const FoodLedger& l) {

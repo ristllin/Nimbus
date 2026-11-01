@@ -254,8 +254,8 @@ bool leftAt(const std::vector<Tok>& toks, size_t i) {
   for (size_t f = i + 1; f < toks.size() && f <= i + 3; f++) {
     const Tok& t = toks[f];
     if (t.number) break;
-    if (oneOf(t.word, {"left", "remaining", "spare", "more", "remain", "remains"})) return true;
-    if (!oneOf(t.word, {"g", "gm", "gram", "grams", "kcal", "kcals", "cal", "cals", "calorie", "calories", "protein", "of", "to"})) break;
+    if (oneOf(t.word, {"left", "remaining", "spare", "more", "remain", "remains", "go"})) return true;
+    if (!oneOf(t.word, {"g", "gm", "gram", "grams", "kcal", "kcals", "cal", "cals", "calorie", "calories", "protein", "of", "to", "still"})) break;
   }
   for (size_t b = i; b > 0 && i - b < 4; b--) {
     const Tok& t = toks[b - 1];
@@ -485,8 +485,9 @@ std::string foodGapCorrection(const std::vector<FoodGap>& gaps, const FoodFacts&
         break;
       case FoodGapKind::ProteinLeftUnknown:
         out += "- \"" + g.excerpt + "\": " + std::to_string(facts.proteinUnknown) +
-               " of today's rows have no protein figure, so what is left is at most a number, not a need. Say what is "
-               "known and that the rest is unknown, or ask for the missing figure.\n";
+               " of today's rows have no protein figure, so the real figure is lower by an unknown amount. Do not write "
+               "\"you need\" or \"still to go\": say \"at most\" that many grams, or say only what is known and that the "
+               "rest is unknown, and ask for the missing figure.\n";
         break;
     }
   }

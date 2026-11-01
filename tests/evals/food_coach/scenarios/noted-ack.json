@@ -17,7 +17,7 @@
     {
       "id": "no-false-correction",
       "required": true,
-      "text": "The delivered reply has no line saying '(Correction: that has not been saved.)' or anything like it."
+      "text": "The delivered reply has no device line added after it in parentheses, such as '(Correction: that has not been saved.)'. What the assistant itself says about not saving anything is fine."
     },
     {
       "id": "short",
