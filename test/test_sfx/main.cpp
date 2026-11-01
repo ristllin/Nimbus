@@ -141,8 +141,8 @@ static void test_a_sound_opens_only_with_the_buffers_and_the_reserve_free() {
       TEST_ASSERT_TRUE(speakerMemoryOk(p, kind, floor, kSpeakerDmaMinLargest));
     }
   }
-  // Lumi at rest, the three figures on record (v4.6.4, state polls of 1 Nov 2026).
-  for (const uint32_t rest : {21764u, 21876u, 22148u}) {
+  // Lumi at rest, the figures on record (v4.6.4, state polls of 1 Nov 2026).
+  for (const uint32_t rest : {21696u, 21764u, 21876u, 22148u}) {
     TEST_ASSERT_TRUE(speakerMemoryOk(kCodecSpeaker, SoundKind::Cue, rest, 9716));
     TEST_ASSERT_TRUE(speakerMemoryOk(kCodecSpeaker, SoundKind::Asked, rest, 9716));
   }

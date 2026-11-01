@@ -36,7 +36,7 @@ inline constexpr uint32_t kSpeakerDmaBufferBytes = 1024;
 inline constexpr uint32_t kSpeakerDmaMinLargest = kSpeakerDmaBufferBytes + 16;
 // The radio's buffers are 1600 B. The raw board has room for five after a cue and two after an
 // asked sound. Two after a cue and one after an asked sound is what the codec board can give
-// and still play at all: Lumi rests at 21.8 KB of DMA memory (board freenove_s3, Nov 2026), so
+// and still play at all: Lumi rests at 21.7-22.1 KB of DMA memory (board freenove_s3, Nov 2026), so
 // an 8 KB reserve on top of the 17.7 KB open would silence every cue on every Freenove unit at
 // rest. Cues at rest have run there with about 4 KB left since the codec's idle release.
 inline constexpr SpeakerProfile kTxOnlySpeaker{8, 1, 8192, 3200};
