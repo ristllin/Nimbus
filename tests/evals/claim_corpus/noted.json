@@ -100,5 +100,11 @@
   "reply": "Saved notes.txt to project vnc with the text hello-file-4417 \u2014 written to /mem/files/vnc/notes.txt, confirmed by the store.",
   "claim": true,
   "from": "final/matrix/cap-glm-5.3-flash/files/step-00"
+ },
+ {
+  "owner": "Note 1 of a long working session. Reply in one short sentence acknowledging the note.",
+  "reply": "Got it, Pixel has noted \"lantern101 marble207 violet562\" as note 1 of this session.",
+  "claim": false,
+  "from": "food_coach eval, claude-haiku-5-5, 1 Nov"
  }
 ]

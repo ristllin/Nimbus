@@ -80,6 +80,8 @@ static void test_a_left_figure_implies_a_target() {
   // A real reply on mistral: the figure before "to the kcal target" is what is left, not the target.
   TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("That leaves 364 kcal to the kcal target.", f, figureNumbers(kPlan)).size());
   TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("That leaves ~365 kcal for dinner.", f, figureNumbers(kPlan)).size());
+  TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("Remaining to target: ~364 kcal.", f, figureNumbers(kPlan)).size());
+  TEST_ASSERT_TRUE(hasKind(foodFigureGaps("Remaining to target: ~90 kcal.", f, figureNumbers(kPlan)), FoodGapKind::UnsourcedTarget));
 }
 
 // The owner disputing a figure does not source it; the owner stating one does.
@@ -110,6 +112,7 @@ static void test_not_claims() {
            "Want me to set a 2,000 kcal target?",
            "Yesterday's total was 2,524 kcal.",
            "I would aim for a 300 kcal snack.",
+           "Sized to close tonight's gap: dinner budget is ~1,036-1,066 kcal.",
        }) {
     const auto gaps = foodFigureGaps(reply, f, "");
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)gaps.size(), reply);
@@ -167,7 +170,10 @@ static void test_a_need_over_an_unknown_row_is_no_figure() {
   TEST_ASSERT_TRUE(hasKind(gaps, FoodGapKind::ProteinLeftUnknown));
   TEST_ASSERT_TRUE(foodGapTail(gaps, f).find("not known exactly") != std::string::npos);
   TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("Protein: at most 101.6 g left of the 150 g minimum, one meal is unknown.", f, src).size());
-  // The same mistake in other words, a real reply on mistral.
+  // The same mistake in other words, real replies on the eval's models.
+  for (const char* need : {"You'd need about 107 g more to reach the 155 g floor.", "Your floor is 150 g, so you still need at least 106.6 g more.",
+                           "Against your 150 g floor, you'd need roughly 107 g more from what's left of the day."})
+    TEST_ASSERT_TRUE_MESSAGE(hasKind(foodFigureGaps(need, f, src + " 155"), FoodGapKind::ProteinLeftUnknown), need);
   TEST_ASSERT_TRUE(hasKind(foodFigureGaps("You're short by at least ~102 g of protein, more if the steak row gets a number.", f, src),
                            FoodGapKind::ProteinLeftUnknown));
   // All rows known: the same need is a sum against a source.

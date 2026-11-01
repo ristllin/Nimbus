@@ -1317,7 +1317,10 @@ bool bareAck(const Scan& sc, size_t i) {
     not_ = not_ || tokIn(sc.s, t, kNotKept);
     if (k < i && !tokIn(sc.s, t, kAckLead)) opens = false;
   }
-  return keep ? not_ : opens;
+  // "Pixel has noted that": the assistant naming itself, the same acknowledgement.
+  const bool named = i >= 2 && sc.toks[i - 1].sent == sent && tokIs(sc.s, sc.toks[i - 1], "has") &&
+                     !tokIn(sc.s, sc.toks[i - 2], kSelfSubjects);
+  return keep ? not_ : opens || named;
 }
 
 // A save cue in a reference: an acknowledgement that asks to be kept, a system log noun, a

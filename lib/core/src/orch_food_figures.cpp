@@ -141,7 +141,7 @@ bool retracted(const std::vector<Tok>& toks) {
 }
 
 bool macroSentence(const std::vector<Tok>& toks) {
-  return hasWord(toks, {"protein", "fat", "fibre", "fiber", "carb", "carbs", "macros"});
+  return hasWord(toks, {"protein", "fat", "fibre", "fiber", "carb", "carbs", "macros", "floor"});
 }
 
 // Is this number a daily figure the sentence can be read about?
@@ -227,7 +227,9 @@ void targetGaps(const std::string& sentence, const std::vector<Tok>& toks, const
   const bool macros = macroSentence(toks);
   for (size_t i = 0; i < toks.size(); i++) {
     if (toks[i].number) continue;
-    const bool word = oneOf(toks[i].word, {"target", "targets", "goal", "goals", "budget", "allowance", "aim", "minimum", "limit"});
+    bool word = oneOf(toks[i].word, {"target", "targets", "goal", "goals", "budget", "allowance", "aim", "minimum", "limit", "floor"});
+    // "dinner budget is ~1,036 kcal" is what is left for a meal, "remaining to target: 90 kcal" what is left.
+    if (word && i > 0 && oneOf(toks[i - 1].word, {"breakfast", "lunch", "dinner", "snack", "meal", "remaining", "to", "left"})) word = false;
     // "we adjusted it to 2,500", "finalised at 2,500 kcal": a target by another name.
     const bool settled = i + 1 < toks.size() && oneOf(toks[i].word, {"adjusted", "raised", "lowered", "changed"});
     if (!word && !settled) continue;
@@ -248,7 +250,7 @@ void targetGaps(const std::string& sentence, const std::vector<Tok>& toks, const
 bool leftAt(const std::vector<Tok>& toks, size_t i) {
   // "Remaining for 2,400 kcal target": the target itself, not what is left of it.
   for (size_t f = i + 1; f < toks.size() && f <= i + 3; f++)
-    if (!toks[f].number && oneOf(toks[f].word, {"target", "goal", "minimum", "budget", "limit", "allowance"})) return false;
+    if (!toks[f].number && oneOf(toks[f].word, {"target", "goal", "minimum", "budget", "limit", "allowance", "floor"})) return false;
   for (size_t f = i + 1; f < toks.size() && f <= i + 3; f++) {
     const Tok& t = toks[f];
     if (t.number) break;
@@ -265,7 +267,7 @@ bool leftAt(const std::vector<Tok>& toks, size_t i) {
 
 void leftGaps(const std::string& sentence, const std::vector<Tok>& toks, const FoodFacts& facts,
               const std::vector<double>& sources, bool taken, std::vector<FoodGap>& out) {
-  const bool protein = hasWord(toks, {"protein"});
+  const bool protein = hasWord(toks, {"protein", "floor"});
   const std::string low = folded(sentence);
   for (size_t i = 0; i < toks.size(); i++) {
     const Tok& t = toks[i];
