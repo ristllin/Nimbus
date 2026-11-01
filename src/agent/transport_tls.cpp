@@ -436,6 +436,20 @@ providers::ProviderDeps deviceProviderDeps() {
   };
   pd.orchModel = [](const char* host) { return std::string(store::orchModel(host).c_str()); };
   pd.toolLoopOn = [] { return store::orchToolLoop(); };
+  // The Z.ai head's endpoint, key and policy: its own head and its fabric rounds.
+  pd.zaiHead = [](providers::ProviderDeps& z) {
+    z.customBase       = [] { String b = store::zaiBase();
+                              return std::string((b.length() ? b : String(ZAI_HOST_PRIMARY)).c_str()); };
+    z.customPathPrefix = [] { return std::string(ZAI_BASE_PATH); };
+    z.customKey        = [] { return std::string(store::zaiKey().c_str()); };
+    z.customConv       = [] { return std::string("openai"); };
+    z.customModel      = [] { String m = store::orchModel("zai");
+                              return std::string((m.length() ? m : String(ZAI_MODEL)).c_str()); };
+    // CUM-495: a single shot uses json_object, since Z.ai answers 200 but IGNORES
+    // json_schema. CUM-544: GLM always reasons; reasoning_effort "low" + the 50 s budget
+    // keep a substantive turn inside Z.ai's ~60 s gateway cut.
+    providers::applyZaiHeadPolicy(z);
+  };
   pd.antEnvId = [] { return std::string(store::antEnvId().c_str()); };
   pd.setAntEnvId = [](const std::string& v) { store::setAntEnvId(v.c_str()); };
   pd.antAgentMap = [] { return std::string(store::antAgentMap().c_str()); };

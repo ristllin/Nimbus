@@ -498,7 +498,8 @@ String catalog(bool headCallsTools) {
   ps.hostPause      = orchestrator::providerPause(ps.currentHost, nimbus::orch::PaidSeam::Chat);
   ps.mistralProbePending = provider_verify::workspaceProbePending();   // CUM-537
   // CUM-822: the head's own web.search is a route only for a head that can call tools.
-  ps.webSearchTool  = headCallsTools && tavily::available() && !store::providerOverBudget("tavily");
+  ps.webSearchTool  = headCallsTools && ((tavily::available() && !store::providerOverBudget("tavily")) ||
+                                         providers::hostedWebSearchAvailable(deviceProviderDeps()));
   std::string out = nimbus::orch::catalogText(portableList(), ps).c_str();
   // N4: reconcile + discover device-dialed MCP servers on the turn path (WiFi is
   // up here), then append their live status so the model plans around them.

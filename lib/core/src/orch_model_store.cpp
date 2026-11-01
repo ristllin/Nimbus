@@ -658,7 +658,14 @@ bool shortListed(const std::string& provider, const std::string& id) {
     return isFlagshipFamily("openai", id) && id.find("-202") == std::string::npos;
   if (provider == "anthropic") return id.rfind("claude-", 0) == 0;
   if (provider == "zai") return id.rfind("glm", 0) == 0;
-  return provider == "mistral";
+  // Mistral's own chat lines: its API also serves other vendors' models (glm-5-2,
+  // deepseek-*), Labs models a key cannot run, and voice and code models. The short list
+  // is what a person picks a head from (VN reality check, 1 Nov: the cheap model was
+  // missing and the list opened on glm-5-2). A stored pick still runs; this is the offer.
+  if (provider != "mistral") return false;
+  for (const char* p : {"mistral-large", "mistral-medium", "mistral-small", "magistral-", "ministral-"})
+    if (id.rfind(p, 0) == 0) return true;
+  return false;
 }
 bool preferredFirst(const std::string& provider, const std::string& id) {
   if (provider == "mistral")

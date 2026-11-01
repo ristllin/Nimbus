@@ -25,7 +25,7 @@ namespace nimbus {
 namespace orch {
 
 enum class ToolGate : uint8_t {
-  WebSearchKey,  // a Tavily key is configured
+  WebSearchKey,  // a Tavily key, or a provider key with a built-in web search
   ImageKey,      // an image provider key (OpenAI) is configured
 };
 
@@ -38,7 +38,7 @@ struct GatedTool {
 inline constexpr GatedTool kGatedTools[] = {
     {"web.search", ToolGate::WebSearchKey,
      "web search is not set up on this device (no web-search key); the owner can "
-     "add a Tavily key in the web app"},
+     "add a Tavily, Mistral or Z.ai key in the web app"},
     {"image.generate", ToolGate::ImageKey,
      "image generation is not set up on this device (no OpenAI key); the owner can "
      "add one in the web app"},

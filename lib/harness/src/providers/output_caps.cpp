@@ -67,15 +67,30 @@ OutputCap anthropicCap(const std::string& model, RoundKind kind) {
 
 OutputCap mistralCap(const std::string& model) {
   OutputCap c;
-  // About 60 s of output at the slowest measured Mistral rate (65 tok/s, Lumi
-  // 13-14 Oct), inside the 120 s round ceiling; the retry gets half again.
-  c.maxTokens = 4096;
-  c.retryTokens = 6144;
-  // A head round answers; it does not reason (Mistral documents "high" and
-  // "none"). Only models that take the field get it, and the cut retry keeps it.
-  const bool effort = mistralTakesEffort(model);
-  c.effort = effort ? "none" : "";
+  // A model that thinks spends its output budget on it, and a cut ends the turn badly.
+  // Lanes measured live 1 Nov: Large 4 at "low" wrote a 1,800-token guide in 18 s, and
+  // with no effort field it was cut at 4,000. Small and Medium run near 200 tok/s. The
+  // older Large (65 tok/s, Lumi 13-14 Oct) keeps about 60 s of output.
+  const std::string m = startsWith(model, "mistral/") ? model.substr(8) : model;
+  const bool fast = startsWith(m, "mistral-large-4") || startsWith(m, "mistral-small") ||
+                    startsWith(m, "mistral-medium") || startsWith(m, "magistral-");
+  c.maxTokens = fast ? 6000 : 4096;
+  c.retryTokens = fast ? 12000 : 6144;
+  // Only models that take the field get it, at the lowest value each takes, and the cut
+  // retry keeps it.
+  c.effort = mistralHeadEffort(model);
   c.retryEffort = c.effort;
+  return c;
+}
+
+// GLM always reasons and Z.ai's gateway cuts a request near 60 s, so a round has about
+// 50 s: 3,000 tokens first (measured 67 to 73 tok/s, 1 Nov), a little more on the retry.
+OutputCap zaiCap() {
+  OutputCap c;
+  c.maxTokens = 3000;
+  c.retryTokens = 4000;
+  c.effort = "low";
+  c.retryEffort = "low";
   return c;
 }
 
@@ -143,6 +158,16 @@ bool mistralTakesEffort(const std::string& model) {
   return false;
 }
 
+const char* mistralHeadEffort(const std::string& model) {
+  if (!mistralTakesEffort(model)) return "";
+  const std::string m = startsWith(model, "mistral/") ? model.substr(8) : model;
+  // These refuse "none" with 400 code 3051 and list low, medium and high (recorded
+  // 1 Nov). With the field dropped they think at their default and get cut.
+  for (const char* p : {"mistral-large-4", "zai-glm", "glm-"})
+    if (startsWith(m, p)) return "low";
+  return "none";   // every other reasoning model refuses "low" (the same recording)
+}
+
 uint32_t slowestTokensPerSecond(const std::string& host, const std::string& model) {
   // Floors about 25-30% under the rates measured live on 18 Oct over a whole
   // non-streamed request (evidence/rate-probe.json in the lane notes): Haiku 5.5
@@ -159,9 +184,10 @@ uint32_t slowestTokensPerSecond(const std::string& host, const std::string& mode
   if (host == "mistral") {
     if (startsWith(model, "mistral-small") || startsWith(model, "ministral")) return 90;
     if (startsWith(model, "mistral-medium")) return 70;
+    if (startsWith(model, "mistral-large-4")) return 90;   // 101 to 210 tok/s, 1 Nov
     return 55;
   }
-  return 50;
+  return 50;   // glm-5.3 73, glm-5.3-flash 67 (1 Nov)
 }
 
 OutputCap outputCapFor(const std::string& host, const std::string& model, RoundKind kind,
@@ -169,9 +195,10 @@ OutputCap outputCapFor(const std::string& host, const std::string& model, RoundK
   OutputCap c;
   if (host == "anthropic") c = anthropicCap(model, kind);
   else if (host == "mistral") c = mistralCap(model);
+  else if (host == "zai") c = zaiCap();
   // OpenAI: no max_output_tokens - reasoning tokens count toward it and would
   // starve the answer; completeness is read from status:"incomplete" instead.
-  // Custom / Z.ai: the head sends no cap either; finish_reason "length" is read.
+  // Custom: the head sends no cap either; finish_reason "length" is read.
   else return c;
   clampToTime(c, roundMs, slowestTokensPerSecond(host, model));
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)

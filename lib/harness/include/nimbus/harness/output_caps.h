@@ -62,6 +62,11 @@ bool anthropicTakesEffort(const std::string& model);
 // carries a "mistral/" prefix.
 bool mistralTakesEffort(const std::string& model);
 
+// The reasoning_effort a head round sends on this Mistral model ("" = none): the lowest
+// value the model takes. Large 4 and the hosted GLM refuse "none"; Small, Medium,
+// Magistral and the Vibe aliases refuse "low" (recorded 1 Nov).
+const char* mistralHeadEffort(const std::string& model);
+
 // The family's slowest calibrated output rate, tokens per second (the time clamp).
 uint32_t slowestTokensPerSecond(const std::string& host, const std::string& model);
 

@@ -1216,15 +1216,23 @@ void begin() {
     registerResultTools(g_reg, rh);
   }
 
-  // web.search (Tavily) - gives the orchestrator + external MCP clients a live-web
+  // web.search (Tavily, else the provider's own) - gives the orchestrator + external MCP clients a live-web
   // capability (the key is human-set, never model-writable). The handler does one
   // blocking HTTPS round-trip via the TLS arbiter. CUM-508: registered ALWAYS;
   // whether it is listed is the live key gate installed below, so a key saved
   // after boot works on the next turn (it used to need a restart).
   {
     agent::websearch::WebSearchToolDeps wd;
-    wd.search = [](const std::string& q, int k) { return agent::tavily::search(q, k); };
-    wd.overBudget = [] { return agent::store::providerOverBudget("tavily"); };
+    // No Tavily key, or its month is used up: the provider's own search (CUM-823).
+    wd.search = [](const std::string& q, int k) {
+      if (agent::tavily::available() && !agent::store::providerOverBudget("tavily"))
+        return agent::tavily::search(q, k);
+      return agent::providers::hostedWebSearch(agent::deviceProviderDeps(), q, k);
+    };
+    wd.overBudget = [] {
+      return agent::store::providerOverBudget("tavily") &&
+             !agent::providers::hostedWebSearchAvailable(agent::deviceProviderDeps());
+    };
     wd.recordCall = [] { agent::store::recordProviderCall("tavily"); };
     agent::websearch::registerWebSearchTool(g_reg, wd);
   }
@@ -1234,7 +1242,9 @@ void begin() {
   // later (files subsystem); gates are keyed by name, so order does not matter.
   nimbus::orch::applyToolGates(g_reg, [](nimbus::orch::ToolGate g) {
     switch (g) {
-      case nimbus::orch::ToolGate::WebSearchKey: return agent::tavily::available();
+      case nimbus::orch::ToolGate::WebSearchKey:
+        return agent::tavily::available() ||
+               agent::providers::hostedWebSearchAvailable(agent::deviceProviderDeps());
       case nimbus::orch::ToolGate::ImageKey:     return agent::imagegen::available();
     }
     return false;

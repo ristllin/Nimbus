@@ -28,7 +28,7 @@ namespace orch = nimbus::orch;
 // host custom" with zero HTTP, and custom inside providerPriority no longer
 // truncates a real failover ladder mid-switch.
 bool fabricSupports(const std::string& host) {
-  return host == "anthropic" || host == "openai" || host == "mistral";
+  return host == "anthropic" || host == "openai" || host == "mistral" || host == "zai";
 }
 
 // ---- CUM-477: one same-host resend for a request that never left -------------
@@ -212,6 +212,36 @@ orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx) {
     }
     return sr2;
   };
+}
+
+// ---- web search hosted by the provider (providers.h) -----------------------------
+namespace {
+bool searchHostOpen(const ProviderDeps& pd, const char* host) {
+  return pd.key && !pd.key(host).empty() && !hostParked(pd, host);
+}
+}  // namespace
+
+bool hostedWebSearchAvailable(const ProviderDeps& pd) {
+  return searchHostOpen(pd, "mistral") || (pd.zaiHead && searchHostOpen(pd, "zai"));
+}
+
+websearch::Result hostedWebSearch(const ProviderDeps& pd, const std::string& query, int maxResults) {
+  websearch::Result res;
+  res.hosted = true;
+  res.err = "no provider with a built-in web search has a key";
+  if (searchHostOpen(pd, "mistral")) {
+    res = mistralWebSearch(pd, query);
+    if (res.ok) return res;
+    hlog::logf("web.search: mistral failed (%s)", res.err.c_str());
+  }
+  if (pd.zaiHead && searchHostOpen(pd, "zai")) {
+    ProviderDeps zai = pd;
+    pd.zaiHead(zai);
+    const bool billedBefore = res.billed;
+    res = zaiWebSearch(zai, query, maxResults);
+    res.billed = res.billed || billedBefore;
+  }
+  return res;
 }
 
 // ---- the host park: the chat seam of the one per-provider park ------------------
@@ -546,8 +576,8 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   // the device could not finish sending is resent once on the same host after a
   // bounded wait for the heap, and reads as low memory when the heap never comes
   // back - so the fabric's own retry and any switch come after that wait. One
-  // context per host in fixed storage sized to the three hosts the fabric speaks
-  // (fabricSupports; the engine passes at most three), alive for the whole loop:
+  // context per host in fixed storage sized to the hosts one turn walks (the engine
+  // passes at most three of the fabric's four), alive for the whole loop:
   // each wrapped step holds only its pointer, and nothing is allocated for them.
   // A host switched away from drops its step at once (it holds a copy of the deps).
   constexpr size_t kMaxHosts = 3;
@@ -570,6 +600,11 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
     if (h == "anthropic") return wrap(i, antLoopStep(pd, ins, ht, use, tr), "orchTurn(ant-loop)");
     if (h == "openai")    return wrap(i, oaiLoopStep(pd, ins, ht, use, tr), "orchTurn(oai-loop)");
     if (h == "mistral")   return wrap(i, misLoopStep(pd, ins, ht, use, tr), "orchTurn(mistral-loop)");
+    if (h == "zai" && pd.zaiHead) {
+      ProviderDeps zai = pd;   // the step keeps its own copy, as every step does
+      pd.zaiHead(zai);
+      return wrap(i, zaiLoopStep(zai, ins, ht, use, tr), "orchTurn(zai-loop)");
+    }
     return nullptr;
   };
 

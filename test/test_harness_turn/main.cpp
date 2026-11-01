@@ -3099,9 +3099,22 @@ static void test_runfold_gates_and_failure() {
   empty.outJson = "{\"reply\":\"\",\"ask\":\"\",\"memory\":\"\",\"device\":[],"
                   "\"mem_write\":[],\"mem_query\":[],\"session_ops\":[]}";
   r.scripts["anthropic"] = {empty};
-  r.scriptIdx["anthropic"] = 0;
+  r.scripts["openai"] = {empty};
+  r.scripts["mistral"] = {empty};
   TEST_ASSERT_TRUE(r.eng->runFold("1001", "", "d", sum) == FR::Failed);
   TEST_ASSERT_EQUAL_STRING("", sum.c_str());
+  TEST_ASSERT_TRUE(LogCapture::contains("no summary in reply on anthropic (the reply field was empty"));
+  // CUM-890: an answer with no summary in it is no fold, and the next host gets the job.
+  TEST_ASSERT_EQUAL(3, (int)r.attempts.size());
+  r.attempts.clear();
+  r.scripts.clear(); r.scriptIdx.clear();
+  Rig::Script good;
+  good.outJson = "1. Decisions\nKeep it short.";
+  r.scripts["anthropic"] = {empty};
+  r.scripts["openai"] = {good};
+  TEST_ASSERT_TRUE(r.eng->runFold("1001", "", "d", sum) == FR::Ok);
+  TEST_ASSERT_EQUAL_STRING("1. Decisions\nKeep it short.", sum.c_str());
+  TEST_ASSERT_EQUAL(2, (int)r.attempts.size());
 }
 
 // canFoldNow is the PRE-notice gate (prism v3.6.0 HIGH): the device must be able
@@ -4448,7 +4461,25 @@ static void test_cum821_spawn_reads_ignore_a_chat_only_403() {
 
 // Check of c962b5d0: the head's own web.search is offered by whether THIS head runs the tool
 // loop (orch::headRunsToolLoop), not by fabric support: the Cumulo head on a native upstream
-// does (the one-key onboarding path), Z.ai, custom and a compat upstream do not.
+// does (the one-key onboarding path), Z.ai does, and custom does not.
+// VN reality check, 1 Nov: an empty reply on a turn that changed nothing gets one correction
+// round on every provider. A turn that did something, or that a tool answered, is left alone.
+static void test_empty_answer_gets_one_correction() {
+  const std::string empty = "{\"reply\":\"\",\"ask\":\"\",\"memory\":\"\",\"device\":[],\"mem_write\":[],"
+                            "\"mem_query\":[\"sister cat\"],\"session_ops\":[]}";
+  const std::string fix = agent::emptyAnswerCorrection(empty, nullptr);
+  TEST_ASSERT_TRUE(fix.rfind("[TURN CHECK]", 0) == 0);
+  TEST_ASSERT_TRUE(fix.find("call the tool") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("", agent::emptyAnswerCorrection("{\"reply\":\"Pixel\"}", nullptr).c_str());
+  TEST_ASSERT_EQUAL_STRING("", agent::emptyAnswerCorrection("{\"reply\":\"\",\"ask\":\"Which one?\"}", nullptr).c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "", agent::emptyAnswerCorrection("{\"reply\":\"\",\"mem_write\":[{\"content\":\"x\"}]}", nullptr).c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "", agent::emptyAnswerCorrection(
+              "{\"reply\":\"\",\"session_ops\":[{\"op\":\"spawn\",\"task\":\"t\",\"name\":\"n\"}]}", nullptr)
+              .c_str());
+}
+
 static void test_head_runs_tools_decides_the_web_search_route() {
   TEST_ASSERT_TRUE(orch::headRunsToolLoop("openai", ""));
   TEST_ASSERT_TRUE(orch::headRunsToolLoop("anthropic", ""));
@@ -4456,8 +4487,8 @@ static void test_head_runs_tools_decides_the_web_search_route() {
   TEST_ASSERT_TRUE(orch::headRunsToolLoop("cumulo", "gpt-5.6"));                 // bare id: openai
   TEST_ASSERT_TRUE(orch::headRunsToolLoop("cumulo", "anthropic/claude-haiku-5-5"));
   TEST_ASSERT_TRUE(orch::headRunsToolLoop("cumulo", "mistral/mistral-small-latest"));
-  TEST_ASSERT_FALSE(orch::headRunsToolLoop("cumulo", "zai/glm-5.3"));
-  TEST_ASSERT_FALSE(orch::headRunsToolLoop("zai", ""));
+  TEST_ASSERT_TRUE(orch::headRunsToolLoop("cumulo", "zai/glm-5.3"));   // GLM runs the loop (VN reality check)
+  TEST_ASSERT_TRUE(orch::headRunsToolLoop("zai", ""));
   TEST_ASSERT_FALSE(orch::headRunsToolLoop("custom", ""));
   for (bool runs : {true, false}) {
     Rig r;
@@ -5334,6 +5365,7 @@ static void runFirstHalf() {
   RUN_TEST(test_cum821_capacity_leaves_out_paused_providers);
   RUN_TEST(test_cum821_sub_priority_marks_paused_providers);
   RUN_TEST(test_cum821_spawn_reads_ignore_a_chat_only_403);
+  RUN_TEST(test_empty_answer_gets_one_correction);
   RUN_TEST(test_head_runs_tools_decides_the_web_search_route);
   RUN_TEST(test_every_failed_turn_exit_carries_a_cause);
   RUN_TEST(test_owner_notice_names_the_first_cause);

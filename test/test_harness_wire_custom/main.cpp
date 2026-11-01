@@ -4,8 +4,11 @@
 
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
+#include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
+#include "nimbus/orch/compact.h"          // ORCH_COMPACT_PROMPT: the fold's prose path
+#include "nimbus/orch/head_loop.h"
 #include "nimbus/orch/provider_slots.h"   // CUM-544: the effort rule over every slot
 
 // Stage H wire suite - the custom/proxy provider: base-URL parsing (http/https,
@@ -716,6 +719,157 @@ static void test_l19_14_custom_head_first_write_failure_is_unsent() {
   TEST_ASSERT_EQUAL((int)nimbus::orch::StepErr::Unsent, (int)nimbus::orch::classifyStepError(err));
 }
 
+// ---- the Z.ai head's tool loop (VN reality check, 1 Nov) -----------------------------
+// GLM answered "Done." to "What is my sister's cat called?" because this head never sent
+// a tool. The wire below is the one probed live 1 Nov (evidence/probes/zai-loop-*).
+namespace {
+struct ZaiRig {
+  FakeProviderDeps d;
+  agent::HeadTools ht;
+  std::vector<std::string> ran;
+  agent::providers::ProviderDeps pd;
+  ZaiRig() {
+    d.custBase = "https://api.z.ai";
+    d.custKey = "tok";
+    d.custModel = "glm-5.3";
+    pd = d.contract();
+    pd.customPathPrefix = [] { return std::string("/api/paas/v4"); };
+    pd.toolLoopOn = [] { return true; };
+    providers::applyZaiHeadPolicy(pd);
+    ht.specs.push_back(orch::ToolRegistry::Spec{
+        "memory.search", "Search memory", "{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}}}"});
+    ht.dispatch = [this](const orch::HeadToolCall& c) {
+      ran.push_back(c.name);
+      orch::HeadToolResult r;
+      r.id = c.id;
+      r.name = c.name;
+      r.output = "Ana's cat is called Pixel";
+      return r;
+    };
+    ht.cfg.maxRounds = 4;
+    ht.cfg.deadlineMs = 600000;
+    ht.cfg.maxToolResultBytes = 4096;
+    ht.cfg.maxTotalToolBytes = 24576;
+  }
+  bool run(std::string& out, std::string& err) {
+    std::string conv;
+    return providers::orchTurnCustom(pd, conv, "SYS", "USER", out, err, &ht, nullptr);
+  }
+};
+std::string toolCallBody(const char* name, const char* args) {
+  return std::string("{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"content\":\"\",\"tool_calls\":["
+                     "{\"id\":\"call_-712\",\"type\":\"function\",\"function\":{\"name\":\"") +
+         name + "\",\"arguments\":\"" + args + "\"}}]}}],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":6}}";
+}
+const char* const kPath = "/api/paas/v4/chat/completions";
+}  // namespace
+
+static void test_zai_head_runs_the_tool_loop() {
+  ZaiRig r;
+  r.d.http.script.push_back({"api.z.ai", kPath, 200, toolCallBody("memory.search", "{\\\"q\\\":\\\"cat\\\"}")});
+  r.d.http.script.push_back({"api.z.ai", kPath, 200, toolCallBody("orch_turn", "{\\\"reply\\\":\\\"Pixel\\\"}")});
+  std::string out, err;
+  TEST_ASSERT_TRUE_MESSAGE(r.run(out, err), err.c_str());
+  TEST_ASSERT_EQUAL(1, (int)r.ran.size());
+  TEST_ASSERT_EQUAL_STRING("memory.search", r.ran[0].c_str());
+  TEST_ASSERT_TRUE(out.find("Pixel") != std::string::npos);
+  TEST_ASSERT_EQUAL(2, (int)r.d.http.seen.size());
+  TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"tool_choice\":\"required\""));   // "any" is a 400 on glm-5.3
+  TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"memory.search\""));
+  TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"orch_turn\""));
+  TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"reasoning_effort\":\"low\""));
+  TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"max_tokens\":3000"));
+  TEST_ASSERT_FALSE(bodyHas(r.d, 0, "response_format"));
+  TEST_ASSERT_FALSE(bodyHas(r.d, 0, "Respond with ONLY"));
+  TEST_ASSERT_TRUE(bodyHas(r.d, 1, "\"tool_call_id\":\"call_-712\""));   // the provider's own id replays as is
+  TEST_ASSERT_TRUE(bodyHas(r.d, 1, "Pixel"));
+}
+
+// The forced final round offers ONLY orch_turn: glm-5.3-flash ignored a named tool_choice
+// and called another tool (recorded 1 Nov), and a tool withdrawn in words is still callable.
+static void test_zai_forced_final_offers_only_the_terminal() {
+  ZaiRig r;
+  r.ht.cfg.maxRounds = 0;
+  r.d.http.script.push_back({"api.z.ai", kPath, 200, toolCallBody("orch_turn", "{\\\"reply\\\":\\\"ok\\\"}")});
+  std::string out, err;
+  TEST_ASSERT_TRUE_MESSAGE(r.run(out, err), err.c_str());
+  TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"name\":\"orch_turn\""));
+  TEST_ASSERT_FALSE(bodyHas(r.d, 0, "\"name\":\"memory.search\""));
+  TEST_ASSERT_FALSE(bodyHas(r.d, 0, "\"required\"}"));
+}
+
+// A forced final round answered in text IS the answer; as a whole orch_turn it runs as one.
+static void test_zai_forced_final_text_is_the_answer() {
+  {
+    ZaiRig r;
+    r.ht.cfg.maxRounds = 0;
+    r.d.http.script.push_back({"api.z.ai", kPath, 200, chatBody("It is called Pixel.")});
+    std::string out, err;
+    TEST_ASSERT_TRUE_MESSAGE(r.run(out, err), err.c_str());
+    TEST_ASSERT_EQUAL_STRING("It is called Pixel.", out.c_str());
+  }
+  {
+    ZaiRig r;
+    r.ht.cfg.maxRounds = 0;
+    r.d.http.script.push_back({"api.z.ai", kPath, 200, chatBody("{\\\"reply\\\":\\\"Pixel\\\"}")});
+    std::string out, err;
+    TEST_ASSERT_TRUE_MESSAGE(r.run(out, err), err.c_str());
+    TEST_ASSERT_EQUAL_STRING("{\"reply\":\"Pixel\"}", out.c_str());
+  }
+}
+
+static void test_zai_cut_round_retries_with_room_then_fails_as_cut() {
+  const std::string cut =
+      "{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"partial\"}}],"
+      "\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":3000}}";
+  ZaiRig r;
+  r.d.http.script.push_back({"api.z.ai", kPath, 200, cut});
+  r.d.http.script.push_back({"api.z.ai", kPath, 200, cut});
+  std::string out, err;
+  TEST_ASSERT_FALSE(r.run(out, err));
+  TEST_ASSERT_TRUE_MESSAGE(err.find("cut at the output limit") != std::string::npos, err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)r.d.http.seen.size());
+  TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"max_tokens\":3000"));
+  TEST_ASSERT_TRUE(bodyHas(r.d, 1, "\"max_tokens\":4000"));
+}
+
+// Z.ai's content filter ends a round with no answer: a failed round, never an empty reply.
+static void test_zai_filtered_round_fails_the_step() {
+  ZaiRig r;
+  r.d.http.script.push_back(
+      {"api.z.ai", kPath, 200, "{\"choices\":[{\"finish_reason\":\"sensitive\",\"message\":{\"content\":\"\"}}]}"});
+  std::string out, err;
+  TEST_ASSERT_FALSE(r.run(out, err));
+  TEST_ASSERT_TRUE_MESSAGE(err.find("sensitive") != std::string::npos, err.c_str());
+  TEST_ASSERT_EQUAL(1, (int)r.d.http.seen.size());
+}
+
+// The counter-test: a LAN head keeps its single shot, whatever the engine passes.
+static void test_lan_custom_head_stays_single_shot() {
+  ZaiRig r;
+  r.pd.customToolLoop = false;
+  r.pd.customJsonMode = nullptr;
+  r.pd.customReasoningEffort = nullptr;
+  r.d.http.script.push_back({"api.z.ai", kPath, 200, chatBody("{\\\"reply\\\":\\\"hi\\\"}")});
+  std::string out, err;
+  TEST_ASSERT_TRUE_MESSAGE(r.run(out, err), err.c_str());
+  TEST_ASSERT_FALSE(bodyHas(r.d, 0, "\"tools\""));
+  TEST_ASSERT_TRUE(bodyHas(r.d, 0, "response_format"));
+  TEST_ASSERT_EQUAL(0, (int)r.ran.size());
+}
+
+// CUM-890's class on this head: the fold asks for prose, so no format and no JSON nudge.
+static void test_zai_fold_is_plain_prose() {
+  ZaiRig r;
+  r.d.http.script.push_back({"api.z.ai", kPath, 200, chatBody("1. Decisions\\nNone.")});
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnCustom(r.pd, conv, orch::ORCH_COMPACT_PROMPT, "digest", out, err, nullptr,
+                                                     nullptr), err.c_str());
+  TEST_ASSERT_FALSE(bodyHas(r.d, 0, "response_format"));
+  TEST_ASSERT_FALSE(bodyHas(r.d, 0, "Respond with ONLY"));
+  TEST_ASSERT_TRUE(out.find("Decisions") != std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_keyless_on_http);
@@ -744,6 +898,13 @@ int main(int, char**) {
   RUN_TEST(test_cum477_custom_head_never_resends_what_went_out);
   RUN_TEST(test_cum477_custom_head_heap_that_stays_low_is_memory);
   RUN_TEST(test_l19_14_custom_head_first_write_failure_is_unsent);
+  RUN_TEST(test_zai_head_runs_the_tool_loop);
+  RUN_TEST(test_zai_forced_final_offers_only_the_terminal);
+  RUN_TEST(test_zai_forced_final_text_is_the_answer);
+  RUN_TEST(test_zai_cut_round_retries_with_room_then_fails_as_cut);
+  RUN_TEST(test_zai_filtered_round_fails_the_step);
+  RUN_TEST(test_lan_custom_head_stays_single_shot);
+  RUN_TEST(test_zai_fold_is_plain_prose);
   UNITY_END();
   return 0;
 }

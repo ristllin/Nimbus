@@ -603,6 +603,32 @@ static void test_oct_2026_openai_fixture_and_shutdown_dates() {
   TEST_ASSERT_FALSE(rowOffered(*nano, RoleOrchestrator, parseIsoTime("2027-04-02")));
 }
 
+// VN reality check, defect 15. The short list a person picks a head from holds the
+// provider's own chat lines, the cheap model included, on the real recorded lists.
+static void test_mistral_and_zai_short_lists_on_the_recorded_lists() {
+  auto listOf = [](const char* provider) {
+    FILE* f = fopen((std::string("test/support/fixtures/models_2026-10/") + provider + ".json").c_str(), "rb");
+    TEST_ASSERT_NOT_NULL(f);
+    std::string body;
+    char b[4096];
+    size_t n;
+    while ((n = fread(b, 1, sizeof(b), f)) > 0) body.append(b, n);
+    fclose(f);
+    const ModelHarvest h = harvestOf(provider, body, kOct22);
+    return directChoices(provider, h.rows, kOct22);
+  };
+  const std::string mistral = listOf("mistral");
+  for (const char* want : {"mistral-small-latest", "mistral-large-4-0", "mistral-large-latest", "mistral-medium-latest"})
+    TEST_ASSERT_TRUE_MESSAGE(csvHasId(mistral, want), mistral.c_str());
+  for (const char* foreign : {"glm-", "zai-glm", "deepseek", "labs-", "voxtral", "codestral", "mistral-code"})
+    TEST_ASSERT_TRUE_MESSAGE(mistral.find(foreign) == std::string::npos, mistral.c_str());
+  const std::string zai = listOf("zai");
+  TEST_ASSERT_TRUE_MESSAGE(csvHasId(zai, "glm-5.3"), zai.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(csvHasId(zai, "glm-5.3-flash"), zai.c_str());
+  // The current line leads: an old GLM never sits ahead of the newest.
+  TEST_ASSERT_TRUE_MESSAGE(zai.find("glm-4") == std::string::npos || zai.find("glm-4") > zai.find("glm-5.3"), zai.c_str());
+}
+
 // has_more: Anthropic's real pages at limit=5. Each page says whether more follow
 // and the cursor; reading them in turn yields the whole list, the same 14 models as
 // one limit=1000 read, in order.
@@ -921,6 +947,7 @@ int main(int, char**) {
   RUN_TEST(test_probe_verdict_on_the_live_oct_2026_answers);
   RUN_TEST(test_mistral_aliases_resolve_to_their_dated_model);
   RUN_TEST(test_store_image_input_from_api_capabilities);
+  RUN_TEST(test_mistral_and_zai_short_lists_on_the_recorded_lists);
   UNITY_END();
   return 0;
 }

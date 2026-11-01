@@ -5,12 +5,20 @@
 #include <functional>
 #include <string>
 
+#include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/prompt_layout.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/orch/compact.h"           // ORCH_COMPACT_PROMPT: the fold asks for prose
+#include "nimbus/orch/head_loop.h"         // runHeadLoop - the Z.ai head's tool loop
 #include "nimbus/orch/orch_schema.h"       // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - usage extraction
 #include "nimbus/orch/seam_meter.h"        // meterSubAnswer - a sub's spend (lane DEF)
 #include "nimbus/orch/reply_text.h"
+#include "nimbus/orch/transcript.h"
+#include "nimbus/orch/turn.h"              // leadingJsonObject
+#include "chat_loop.h"
+#include "image_parts.h"
+#include "loop_common.h"
 #include "wire.h"
 
 // Custom / proxy - the PORTABLE wire half of the pre-split
@@ -28,7 +36,8 @@
 //
 // NEW (Stage H): orchTurnCustom - the HEAD on the custom endpoint (single-shot
 // chat-completions structured turn), so a fully keyless LAN setup can run the
-// whole orchestrator.
+// whole orchestrator. A Z.ai head runs the same deps through the tool loop
+// (zaiLoopStep) when the engine passes tools.
 
 namespace agent {
 namespace providers {
@@ -208,7 +217,7 @@ FabricErr customCancel(const ProviderDeps& pd, const char* jobId) {
 // ---- NEW: the HEAD on the custom endpoint -----------------------------------
 
 // How a head request asks for the orch_turn shape (CUM-495).
-enum class HeadFormat { Schema, Object, None };
+enum class HeadFormat { Schema, Object, None, Prose };
 
 // The chat-completions body for one head attempt. Schema = response_format
 // json_schema (strict) carrying the canonical orch schema; Object =
@@ -229,7 +238,7 @@ static bool customHeadBody(const ProviderDeps& pd, const std::string& instructio
   JsonObject sys = msgs.add<JsonObject>();
   sys["role"] = "system";
   wire::putFieldStr(sys["content"],
-                    fmt == HeadFormat::Schema
+                    fmt == HeadFormat::Schema || fmt == HeadFormat::Prose
                         ? instructions
                         : instructions + "\nRespond with ONLY the JSON object for your "
                                          "orch_turn - no prose, no code fences.",
@@ -305,8 +314,9 @@ static nimbus::orch::HeadStep runCustomHead(CustomHead& h) {
     sentAt = pd.nowMs ? pd.nowMs() : 0;
     const bool withFormat = (h.attempt == 0);
     HeadBody hb;
-    if (!customHeadBody(pd, *h.instructions, *h.inputs, withFormat ? h.first : HeadFormat::None, hb,
-                        h.withEffort)) {
+    // The fold's prose has no format to drop, and a retry asking for JSON would undo it.
+    const HeadFormat fmt = withFormat || h.first == HeadFormat::Prose ? h.first : HeadFormat::None;
+    if (!customHeadBody(pd, *h.instructions, *h.inputs, fmt, hb, h.withEffort)) {
       st.ok = false;
       st.error = hb.err;
       return st;
@@ -325,6 +335,161 @@ static nimbus::orch::HeadStep runCustomHead(CustomHead& h) {
   return st;
 }
 
+// ---- the Z.ai head's tool loop -----------------------------------------------
+// VN reality check, 1 Nov: GLM "answered" a memory question "Done." because this head
+// was single-shot on the device and on nimbusd alike. The real API takes the loop the
+// same way as Mistral's (probed 1 Nov, evidence/probes/zai-*): dotted tool names, foreign
+// call ids, tool_choice "required". It differs in one place: "any" is a 400, and a named
+// tool_choice is ignored by glm-5.3-flash, so the forced final round offers only orch_turn.
+static std::string zaiSameName(const std::string& s2) { return s2; }
+static const ChatDialect kZaiDialect{zaiSameName, zaiSameName, zaiSameName};
+
+static bool zaiLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& tr,
+                        const layout::PromptParts& p, const HeadTools& ht, bool allowTools, uint32_t maxTokens,
+                        std::string& body, std::string& err) {
+  JsonDocument req = wire::makeDoc(pd);
+  req["model"] = s(pd.customModel);
+  if (maxTokens) req["max_tokens"] = maxTokens;
+  const std::string effort = s(pd.customReasoningEffort);
+  if (!effort.empty()) req["reasoning_effort"] = effort;
+  JsonArray msgs = req["messages"].to<JsonArray>();
+  renderChatMessages(tr, msgs, p.stat + p.shelf, /*showingImages=*/false, p.split ? &p : nullptr, /*sees=*/false,
+                     kZaiDialect);
+  seedChatUserMessage(msgs, p, nullptr);
+  if (!putChatTools(pd, req["tools"].to<JsonArray>(), &ht, kZaiDialect, /*onlyFinal=*/!allowTools, err)) return false;
+  if (allowTools) {
+    req["tool_choice"] = "required";
+  } else {
+    JsonObject tc = req["tool_choice"].to<JsonObject>();
+    tc["type"] = "function";
+    tc["function"]["name"] = "orch_turn";
+  }
+  if (!wire::serializeChecked(req, body, err)) return false;
+  return bodyWithinBudget(body, err);
+}
+
+// An answer that came back as text instead of an orch_turn call. On a tool round it is a
+// stall (the controller asks once more). On the forced round it IS the answer: the whole
+// reply as one orch_turn object runs as one, and anything else reaches the owner as prose
+// (no device action, memory write or spawn rides it).
+static void zaiFinishFromText(nimbus::orch::HeadStep& out, bool allowTools) {
+  if (allowTools || out.finished || !out.toolCalls.empty() || out.text.empty()) return;
+  bool whole = false;
+  const std::string obj = nimbus::orch::leadingJsonObject(out.text, &whole);
+  out.finished = true;
+  out.prose = !whole;
+  out.finalTurn = whole ? obj : out.text;
+  hlog::logf("orchTurn(zai-loop): final round answered in text (%u B)", (unsigned)out.text.size());
+}
+
+// Z.ai ends a round "sensitive" (its content filter) or "network_error" with no usable
+// text: not an answer, so the fabric moves the round on. True when the round failed.
+static bool zaiRefusedRound(const JsonDocument& resp, nimbus::orch::HeadStep& out) {
+  const std::string fr = resp["choices"][0]["finish_reason"] | "";
+  if (fr != "sensitive" && fr != "network_error") return false;
+  out = nimbus::orch::HeadStep();
+  out.ok = false;
+  out.error = "the provider stopped the reply (finish_reason=" + fr + ")";
+  out.kind = fr == "sensitive" ? nimbus::orch::StepErr::Rejected : nimbus::orch::StepErr::Transport;
+  hlog::logf("orchTurn(zai-loop): %s", out.error.c_str());
+  return true;
+}
+
+nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& instructions,
+                                     const HeadTools& ht, nimbus::orch::TokenUsage* usage,
+                                     nimbus::orch::Transcript& tr) {
+  namespace orch = nimbus::orch;
+  std::string sys;
+  wire::putFieldStr(sys, instructions, "the system prompt");
+  const layout::PromptParts parts = layout::split(sys);
+  return [&ht, usage, &tr, pd, parts](bool allowTools, const std::vector<orch::HeadToolResult>& prior,
+                                      uint32_t budgetMs, const std::string& capReason) -> orch::HeadStep {
+    (void)prior;   // the transcript already carries every result
+    orch::HeadStep out;
+    const size_t kReplayToolBytes = 24576;   // the measured wire-ceiling bound (Mistral's)
+    const uint32_t ceiling = pd.customHeadTimeoutMs ? pd.customHeadTimeoutMs : kHeadRoundCeilingMs;
+    const uint32_t roundMs = wire::clampRoundMs(budgetMs, ceiling);
+    if (tr.toolBytes() > kReplayToolBytes) tr.trimToolOutputs(kReplayToolBytes);
+    const OutputCap cap = outputCapFor("zai", s(pd.customModel),
+                                       allowTools ? RoundKind::ToolRound : RoundKind::FinalRound, roundMs);
+    layout::PromptParts round = parts;
+    std::string& tail = round.split ? round.dyn : round.stat;
+    tail = wire::roundInstructions(tail, capReason);
+    JsonDocument filter;
+    chatRoundFilter(filter);
+    filter["error"]["message"] = true;
+    filter["message"] = true;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      out = orch::HeadStep();
+      const uint32_t maxTokens = attempt ? cap.retryTokens : cap.maxTokens;
+      std::string body;
+      if (!zaiLoopBody(pd, tr, round, ht, allowTools, maxTokens, body, out.error)) {
+        out.ok = false;
+        out.kind = orch::StepErr::BadRequest;
+        return out;
+      }
+      JsonDocument resp = wire::makeDoc(pd);
+      const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
+      const int code = custRequest(pd, "POST", "/v1/chat/completions", std::move(body), /*anthropicAuth=*/false, resp,
+                                   filter, roundMs);
+      if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
+      if (code != 200) {
+        const char* em = resp["error"]["message"] | "";
+        if (!em[0]) em = resp["message"] | "";
+        const std::string e = wire::httpErrLine("chat", code, em);
+        wire::httpFailure(out, code, e, e);
+        hlog::logf("orchTurn(zai-loop): %s", e.c_str());
+        return out;
+      }
+      if (usage) *usage += orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
+      orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
+      if (zaiRefusedRound(resp, out)) return out;
+      std::string cutWhy;
+      if (readChatRound(resp, out, cutWhy, kZaiDialect)) {
+        zaiFinishFromText(out, allowTools);
+        return out;
+      }
+      if (attempt == 0 && cap.hasRetry()) {
+        hlog::logf("orchTurn(zai-loop): cut (%s) at %u tokens - one retry with %u", cutWhy.c_str(),
+                   (unsigned)maxTokens, (unsigned)cap.retryTokens);
+        continue;
+      }
+      wire::cutFailure(out, cutWhy, maxTokens);
+      return out;
+    }
+    return out;   // not reached: the second attempt always returns
+  };
+}
+
+static bool runZaiLoop(const ProviderDeps& pd, std::string& convId, const std::string& instructions,
+                       const std::string& inputs, std::string& outJson, std::string& err, const HeadTools& ht,
+                       nimbus::orch::TokenUsage* usage) {
+  namespace orch = nimbus::orch;
+  orch::Transcript tr;
+  tr.addUser(inputs);
+  const imageparts::LoopImages photos(tr);   // a photo reads as its transcription: GLM here is blind
+  const orch::HeadStepFn inner = zaiLoopStep(pd, instructions, ht, usage, tr);
+  const ResendCtx resend{&pd, &ht.cfg, &inner, "orchTurn(zai-loop)"};
+  orch::HeadLoopHooks hooks;
+  hooks.step     = resendUnsentOnce(&resend);
+  hooks.dispatch = ht.dispatch;
+  hooks.nowMs    = pd.nowMs;
+  hooks.freeHeap = pd.freeHeap;
+  hooks.largestBlock = pd.largestBlock;
+  hooks.log      = [](const std::string& m) { hlog::logf("%s", m.c_str()); };
+  hooks.onText   = ht.onRoundText;
+  hooks.spill    = ht.spill;
+  hooks.transcript = &tr;
+  orch::HeadOutcome res = runHeadLoop(ht.cfg, hooks);
+  hlog::logf("orchTurn(zai-loop): rounds=%d cap=%s ok=%d heap=%u", res.rounds, res.capReason.c_str(), (int)res.ok,
+             (unsigned)(pd.freeHeap ? pd.freeHeap() : 0));
+  if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));
+  if (!res.ok) return wire::loopFailed(res, outJson, err);
+  outJson = res.finalTurn;
+  convId  = "chat";
+  return true;
+}
+
 // One single-shot structured turn over the OpenAI chat-completions dialect:
 // messages = [system(instructions), user(inputs)], response_format json_schema
 // (strict) carrying the canonical orch schema - or, when pd.customJsonMode() is
@@ -332,11 +497,11 @@ static nimbus::orch::HeadStep runCustomHead(CustomHead& h) {
 // ignores json_schema, like Z.ai GLM). Backends that don't know response_format
 // answer 400 - then retry ONCE schema-less with the nudge; the engine's lenient
 // parseHeadReply + salvage absorb dialect wobble (prose becomes the reply).
-// Stateless (convId = "chat" marker). v1 deliberately has NO tool loop -
+// Stateless (convId = "chat" marker). A LAN head deliberately has NO tool loop -
 // `tools` advertises nothing (a small LAN model can't wedge itself in a
 // forced-tool ReAct loop); when the engine passes it (the tool loop is on) its
 // round floor drives the one resend of a request that never left (CUM-477), the
-// same seam every other head's loop runs through.
+// same seam every other head's loop runs through. A Z.ai head runs runZaiLoop.
 bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
                     const std::string& instructions, const std::string& inputs,
                     std::string& outJson, std::string& err,
@@ -349,6 +514,8 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
     err = "head-custom supports openai/mistral chat-completions only";
     return false;
   }
+  if (pd.customToolLoop && tools && tools->dispatch && pd.toolLoopOn && pd.toolLoopOn())
+    return runZaiLoop(pd, convId, instructions, inputs, outJson, err, *tools, usage);
 
   JsonDocument filter;
   JsonObject ch = filter["choices"].add<JsonObject>();
@@ -360,8 +527,12 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
   filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
   JsonDocument doc = wire::makeDoc(pd);  // response doc -> PSRAM (retained turn content)
-  const HeadFormat first = (pd.customJsonMode && pd.customJsonMode() == "object")
-                               ? HeadFormat::Object : HeadFormat::Schema;
+  // CUM-890's class: the fold's reply IS the summary, and a format built for an orch_turn
+  // lets a model answer with an empty reply field.
+  const bool fold = instructions == nimbus::orch::ORCH_COMPACT_PROMPT;
+  const HeadFormat first = fold ? HeadFormat::Prose
+                                : (pd.customJsonMode && pd.customJsonMode() == "object") ? HeadFormat::Object
+                                                                                        : HeadFormat::Schema;
   const uint32_t timeoutMs = pd.customHeadTimeoutMs ? pd.customHeadTimeoutMs : CUST_HEAD_TIMEOUT_MS;
   // One system message: the layout flat (prompt_layout.h). Its order (static,
   // summary, per-turn) still gives a prefix-caching backend a stable prefix.
@@ -411,6 +582,82 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
   return true;
 }
 
+// ---- web.search on Z.ai's built-in search --------------------------------------
+// `pd` is already pointed at Z.ai. Its index ran months behind and leaned on Chinese-language
+// sources (live 1 Nov), so the digest keeps each result's date for the head to weigh.
+static std::string zaiSearchDigest(const JsonDocument& doc, int maxResults) {
+  std::string out = "Answer: " + nimbus::orch::chatContentText(doc["choices"][0]["message"]["content"]) +
+                    "\nSources (check the dates, this index can lag):\n";
+  int n = 0;
+  for (JsonObjectConst r : doc["web_search"].as<JsonArrayConst>()) {
+    if (n++ >= maxResults) break;
+    out += "- ";
+    out += (const char*)(r["title"] | "(untitled)");
+    out += " | ";
+    out += (const char*)(r["link"] | "");
+    const char* date = r["publish_date"] | "";
+    if (date[0]) out += std::string(" | ") + date;
+    out += "\n";
+  }
+  return out;
+}
+
+websearch::Result zaiWebSearch(const ProviderDeps& pd, const std::string& query, int maxResults) {
+  websearch::Result res;
+  res.hosted = true;
+  const char* const model = "glm-5.3-flash";
+  JsonDocument req;
+  req["model"] = model;
+  req["max_tokens"] = 800;
+  req["reasoning_effort"] = kZaiReasoningEffort;
+  JsonArray msgs = req["messages"].to<JsonArray>();
+  JsonObject sys = msgs.add<JsonObject>();
+  sys["role"] = "system";
+  sys["content"] = "You are a web research tool. Answer the query from the search results, naming the source and "
+                   "date of each fact. Answer in the language of the query. Under 150 words.";
+  JsonObject u = msgs.add<JsonObject>();
+  u["role"] = "user";
+  wire::putFieldStr(u["content"], query, "the search query");
+  JsonObject t = req["tools"].to<JsonArray>().add<JsonObject>();
+  t["type"] = "web_search";
+  t["web_search"]["enable"] = true;
+  t["web_search"]["search_result"] = true;
+  JsonDocument filter;
+  filter["choices"][0]["message"]["content"] = true;
+  JsonObject wf = filter["web_search"].add<JsonObject>();
+  wf["title"] = true;
+  wf["link"] = true;
+  wf["publish_date"] = true;
+  filter["error"]["message"] = true;
+  filter["usage"] = true;
+  JsonDocument doc = wire::makeDoc(pd);
+  std::string body = serializeBody(req);
+  const size_t requestChars = body.size();
+  const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
+  const int code = custRequest(pd, "POST", "/v1/chat/completions", std::move(body), /*anthropicAuth=*/false, doc, filter,
+                               kZaiHeadTimeoutMs);
+  if (code <= 0) {
+    res.err = wire::headTransportError(pd, t0, kZaiHeadTimeoutMs);
+    res.billed = wire::lastExchange().noResponse;
+    return res;
+  }
+  if (code != 200) {
+    res.err = wire::httpErrLine("search", code, doc["error"]["message"] | "");
+    return res;
+  }
+  res.billed = true;
+  const std::string answer = nimbus::orch::chatContentText(doc["choices"][0]["message"]["content"]);
+  nimbus::orch::meterSubAnswer("zai", model, doc["usage"].as<ArduinoJson::JsonVariantConst>(), requestChars,
+                               answer.size(), 1);
+  if (answer.empty()) {
+    res.err = "the search came back with no text";
+    return res;
+  }
+  res.ok = true;
+  res.digest = zaiSearchDigest(doc, maxResults < 1 ? 5 : maxResults);
+  return res;
+}
+
 // ---- Z.ai (GLM) wire policy (CUM-544) ---------------------------------------
 
 const char* reasoningEffortFor(const std::string& upstream) {
@@ -423,6 +670,7 @@ void applyZaiHeadPolicy(ProviderDeps& pd) {
   pd.customJsonMode        = [] { return std::string("object"); };
   pd.customReasoningEffort = [] { return std::string(kZaiReasoningEffort); };
   pd.customHeadTimeoutMs   = kZaiHeadTimeoutMs;
+  pd.customToolLoop        = true;
 }
 
 void configureRouterCompatHead(ProviderDeps& pd, const std::string& upstream,

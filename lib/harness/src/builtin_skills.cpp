@@ -117,7 +117,7 @@ const Part kToolsGuide[] = {
      "session.spawn/list/terminate: delegate heavy/long work to a cloud sub-agent. A\n"
      "spawn's `skill` field names a capsule from skill.list - owner-authored (SD)\n"
      "capsules are INJECTED into that sub-agent's instructions at spawn.\n"
-     "web.search: live web lookups (only if a Tavily key is set).\n"
+     "web.search: live web lookups (with a Tavily, Mistral or Z.ai key).\n"
      "system.health: your own hardware/subsystem status.\n"
      "skill.list/skill.get: task playbooks and knowledge capsules - read the matching one "
      "BEFORE a task it covers; once read it stays attached to the chat ([ACTIVE SKILLS]).\n"

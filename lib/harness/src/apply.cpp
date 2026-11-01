@@ -1,4 +1,6 @@
 #include "nimbus/harness/apply.h"
+#include "nimbus/harness/turn_contract.h"   // kEmptyAnswer
+#include "nimbus/orch/model_defaults.h"     // currentTurnRole
 
 #include <algorithm>
 #include <cctype>
@@ -914,7 +916,15 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
     // its poll only on a delivered message, so a reply-less device/spawn turn would
     // otherwise wait out the timeout and show a FALSE failure. Signal completion there;
     // the device wiring no-ops it for Telegram (see orchestrator turnComplete).
-    if (d.turnComplete) d.turnComplete(chatId);
+    // "Done." is true only of a turn that did something: an owner who asked and got an
+    // empty model reply hears that, on every channel (GLM answered "What is my sister's
+    // cat called?" with "Done.", VN reality check 1 Nov).
+    const bool acted = !t.device.empty() || !t.mem_write.empty() || !t.session_ops.empty() ||
+                       (st.claims && !st.claims->effects().empty());
+    const bool waiting = !st.scheduledTurn && !st.quietFallback &&
+                         nimbus::orch::currentTurnRole() == nimbus::orch::TurnRole::Owner;
+    if (!acted && waiting && d.deliver) d.deliver(chatId, kEmptyAnswer);
+    else if (d.turnComplete) d.turnComplete(chatId);
   }
   // (ApplyState.quietFallback / the quietOk plumbing are now vestigial - a later
   // cleanup can drop them; they no longer change behavior.)

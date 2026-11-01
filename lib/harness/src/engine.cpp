@@ -1687,6 +1687,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         [pseudo](const std::string& finalTurn) { return turnShapeCorrection(finalTurn, pseudo.get()); },
         [this](const std::string& finalTurn) { return claims_.finalCheck(finalTurn, /*skipSpawned=*/true); },
         [&userText](const std::string& finalTurn) { return orch::placeholderCheck(finalTurn, userText); },
+        // An empty reply that changes nothing gets one more try, on every provider, and
+        // never on a turn with nothing to say: scheduled, quiet, or one a tool answered.
+        [this, pseudo](const std::string& finalTurn) {
+          if (scheduledTurn_ || quietTurn_ || toolReplied_ || !claims_.effects().empty()) return std::string();
+          return emptyAnswerCorrection(finalTurn, pseudo.get());
+        },
     });
     // The forced round too: no real answer means one more tool-less round (VN, 1 Nov: the
     // literal "placeholder" went to the owner). The turn's end holds the line after it.
@@ -3187,6 +3193,7 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
   // turn). The turn's spend table is free here: a fold never runs while a turn does.
   orch::TurnSpend& foldSpend = facts().spend;
   foldSpend.clear();
+  orch::Turn t;
   for (const auto& h : hostsToTry) {
     std::string convId;
     outJson.clear(); err.clear();
@@ -3194,19 +3201,28 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
     ok = d_.hosts.run(h, convId, orch::ORCH_COMPACT_PROMPT, inputs,
                       outJson, err, /*tools=*/nullptr, &u);
     foldSpend.add(h.c_str(), d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", u);
-    if (ok) { d_.hosts.noteAnswered(h); host = h; usage = u; break; }
-    d_.hosts.noteFailed(h, err);
-    hlog::logf("fold(%s): %s failed: %s", chatId.c_str(), h.c_str(), err.c_str());
+    if (!ok) {
+      d_.hosts.noteFailed(h, err);
+      hlog::logf("fold(%s): %s failed: %s", chatId.c_str(), h.c_str(), err.c_str());
+      continue;
+    }
+    d_.hosts.noteAnswered(h);
+    // Same lenient read as a head turn (CUM-495): a prose summary IS the summary. An
+    // answer with no summary in it is no fold: the next host gets the job (CUM-890),
+    // and the log says what came back.
+    t = orch::Turn();
+    orch::ParseError perr;
+    if (orch::parseHeadReply(outJson, t, perr) != orch::ReplyShape::Unusable && !t.reply.empty()) {
+      host = h;
+      usage = u;
+      break;
+    }
+    ok = false;
+    hlog::logf("fold(%s): no summary in reply on %s (%s, %u B answered)", chatId.c_str(), h.c_str(),
+               perr.detail.empty() ? "the reply field was empty" : perr.detail.c_str(), (unsigned)outJson.size());
   }
   meterSpend(foldSpend, "compact");
   if (!ok) return FoldResult::Failed;
-  orch::Turn t;
-  orch::ParseError perr;
-  // Same lenient read as a head turn (CUM-495): a prose summary IS the summary.
-  if (orch::parseHeadReply(outJson, t, perr) == orch::ReplyShape::Unusable || t.reply.empty()) {
-    hlog::logf("fold(%s): no summary in reply (%s)", chatId.c_str(), perr.detail.c_str());
-    return FoldResult::Failed;
-  }
   // The reply IS the summary; every other field of the turn is deliberately
   // ignored (no applyTurn - device actions, mem writes, spawns are all inert).
   // The summary feeds every later prompt: a leaked tag here would come back in

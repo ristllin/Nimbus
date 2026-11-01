@@ -1077,9 +1077,9 @@ static void setCumuloRouterHost() {
 // pd (base = cumuloBase, key = cumuloKey, orchModel = the bare model) dispatches
 // to that upstream's orchTurn*, which picks the tool loop vs a single shot from
 // `tools` + the loop toggle; wire::applyRouter reroutes every request through
-// /router/<upstream>, and every request passes the refusal tap. zai (and any name
-// the native fabric does not drive) stays the single-shot chat-completions path
-// (orchTurnCustom over /router/<upstream>).
+// /router/<upstream>, and every request passes the refusal tap. zai runs its own tool
+// loop, and any name the native fabric does not drive stays the single-shot
+// chat-completions path (both orchTurnCustom over /router/<upstream>).
 static bool cumuloAttempt(const std::string& sel, CumuloCall& c) {
   const nimbus::orch::RouterRoute rr = nimbus::orch::resolveRouterRoute(sel);
   const std::string upstream = rr.upstream;
@@ -1728,11 +1728,10 @@ static TurnEngine::Deps buildTurnDeps() {
       return providers::orchTurnCustom(deviceProviderDeps(), cv, ins, inp, out, err,
                                        tools, usage);
     });
-  // CUM-242: the router providers as first-class orchestrator HEADS. Same
-  // single-shot chat-completions turn as the custom head (orchTurnCustom), but
-  // over a FIXED base + path prefix and the router key, so a device holding only
-  // a verified Cumulo (or Z.ai) key runs the whole assistant - the flagship "one
-  // key, one balance" path. Registered UNCONDITIONALLY (unlike custom's boot-time
+  // CUM-242: the router providers as first-class orchestrator HEADS, over a FIXED base
+  // + path prefix and the router key, so a device holding only a verified Cumulo (or
+  // Z.ai) key runs the whole assistant - the flagship "one key, one balance" path. The
+  // Z.ai head runs the tool loop through orchTurnCustom (pd.customToolLoop). Registered UNCONDITIONALLY (unlike custom's boot-time
   // hasCustom() gate) so a key added AFTER boot works with no reboot: selection is
   // gated live by routerFallbackHost()/hasKey() (both check the key at turn time),
   // and orchTurnCustom refuses honestly if the base/key is somehow empty.
@@ -1746,18 +1745,7 @@ static TurnEngine::Deps buildTurnDeps() {
                         std::string& out, std::string& err, const agent::HeadTools* tools,
                         nimbus::orch::TokenUsage* usage) {
     providers::ProviderDeps pd = deviceProviderDeps();
-    pd.customBase       = [] { String b = store::zaiBase();
-                               return std::string((b.length() ? b : String(ZAI_HOST_PRIMARY)).c_str()); };
-    pd.customPathPrefix = [] { return std::string(ZAI_BASE_PATH); };
-    pd.customKey        = [] { return std::string(store::zaiKey().c_str()); };
-    pd.customConv       = [] { return std::string("openai"); };
-    pd.customModel      = [] { String m = store::orchModel("zai");
-                               return std::string((m.length() ? m : String(ZAI_MODEL)).c_str()); };
-    // CUM-495: Z.ai answers 200 but IGNORES response_format json_schema, so
-    // json_object + the JSON-only nudge (a prose reply still reaches the owner via
-    // parseHeadReply). CUM-544: GLM always reasons; reasoning_effort "low" + the
-    // 50 s budget keep a substantive turn inside Z.ai's ~60 s gateway cut.
-    providers::applyZaiHeadPolicy(pd);
+    pd.zaiHead(pd);
     return providers::orchTurnCustom(pd, cv, ins, inp, out, err, tools, usage);
   });
   return d;

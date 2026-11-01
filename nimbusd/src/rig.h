@@ -33,6 +33,7 @@
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/turn_anatomy.h"   // the /api/lastturn page head
 #include "nimbus/harness/websearch.h"
+#include "nimbus/orch/tool_gates.h"
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/command.h"
 #include "nimbus/orch/embedding.h"
@@ -736,8 +737,10 @@ class NimbusdRig {
   // a spawn accepts (jd.modelIsValid): the harvested router catalog, else nothing
   // (the prompt then names the configured sub model).
   std::string modelChoicesFor(const std::string& h) const {
-    const std::string harvested =
-        catalogCsv(verify_.get(h).models, nimbus::orch::RoleOrchestrator, 8);
+    const std::vector<nimbus::orch::ModelInfo> rows = verify_.get(h).models;
+    // The device's short list for a direct provider (one rule: the picker, the prompt).
+    const std::string harvested = h == kCumuloSlug ? catalogCsv(rows, nimbus::orch::RoleOrchestrator, 8)
+                                                   : nimbus::orch::directChoices(h, rows, 0);
     if (!harvested.empty() || h == kCumuloSlug) return harvested;
     return nimbus::orch::staticModelChoices(h.c_str());
   }
@@ -780,7 +783,7 @@ class NimbusdRig {
     return nimbus::orch::parkPause(p, seam, steadyMs(), dueIsOpen);
   }
   // Does a head on `h` run the tool loop (web.search on its own turn)? The device's rule:
-  // native hosts, the Cumulo head on a native upstream, never Z.ai or custom.
+  // native hosts and Z.ai, the Cumulo head on one of those upstreams, never custom.
   bool headRunsTools(const std::string& h) const { return nimbus::orch::headRunsToolLoop(h, cumuloModel()); }
   // The provider state the catalog and the capability scope read. `headCallsTools`:
   // the head runs a tool loop, so web.search (a Tavily key) is a web route (CUM-822).
@@ -794,7 +797,8 @@ class NimbusdRig {
     ps.anthropicPause = pauseOf("anthropic", nimbus::orch::PaidSeam::Spawn);
     ps.mistralPause = pauseOf("mistral", nimbus::orch::PaidSeam::Spawn);
     ps.hostPause = pauseOf(hostBadge(), nimbus::orch::PaidSeam::Chat);
-    ps.webSearchTool = headCallsTools && !tavilyKey_.empty();
+    ps.webSearchTool =
+        headCallsTools && (!tavilyKey_.empty() || agent::providers::hostedWebSearchAvailable(providerDeps()));
     ps.capProbe = 0;   // no verify cache: report key presence, never claim "verified"
     ps.currentHost = hostBadge();
     ps.mistralHeadCarriesStudio = false;   // Studio connectors ride subs only (headDeps)
@@ -1591,22 +1595,19 @@ class NimbusdRig {
 
   void registerWebSearchTool() {
     tavilyKey_ = cfg_.get("TAVILY_API_KEY");
-    if (tavilyKey_.empty()) return;
-    reg_.add("web.search",
-             "Search the live web for up-to-date information. Returns an answer plus "
-             "top results (title, url, snippet).",
-             [this](ArduinoJson::JsonObjectConst a,
-                    const orch::Principal&) -> orch::ToolResult {
-               std::string q = a["query"].is<const char*>()
-                                   ? std::string(a["query"].as<const char*>()) : std::string();
-               if (q.empty()) return orch::ToolResult::fail("missing 'query'");
-               int k = a["max_results"].is<int>() ? a["max_results"].as<int>() : 5;
-               auto r = agent::websearch::search(*http_, tavilyKey_, q, k);
-               if (!r.ok) return orch::ToolResult::fail("web search failed: " + r.err);
-               return orch::ToolResult::ok(r.digest);
-             },
-             R"({"type":"object","properties":{"query":{"type":"string"},)"
-             R"("max_results":{"type":"integer"}},"required":["query"]})");
+    // Tavily when the instance holds its key, else the provider's own search (CUM-823).
+    // Listed exactly while one of them can run: a key added in-app counts at once.
+    agent::websearch::WebSearchToolDeps wd;
+    wd.search = [this](const std::string& q, int k) {
+      if (!tavilyKey_.empty()) return agent::websearch::search(*http_, tavilyKey_, q, k);
+      return agent::providers::hostedWebSearch(providerDeps(), q, k);
+    };
+    agent::websearch::registerWebSearchTool(reg_, wd);
+    nimbus::orch::applyToolGates(reg_, [this](nimbus::orch::ToolGate g) {
+      if (g == nimbus::orch::ToolGate::WebSearchKey)
+        return !tavilyKey_.empty() || agent::providers::hostedWebSearchAvailable(providerDeps());
+      return true;   // image.generate is not registered on a hosted instance
+    });
   }
 
   // The on-device docs pack (docs.search / docs.read) through the real portable
@@ -1977,6 +1978,7 @@ class NimbusdRig {
     pd.key = [this](const char* h) { return cfg_.providerKey(h); };
     pd.orchModel = [this](const char* h) { return modelFor(h); };
     pd.toolLoopOn = [this] { return settings_.get().toolLoop; };
+    pd.zaiHead = [this](agent::providers::ProviderDeps& z) { pointAtZai(z); };
     pd.antEnvId = [this] { return antEnv_; };
     pd.setAntEnvId = [this](const std::string& v) { antEnv_ = v; };
     pd.antAgentMap = [this] { return antAgents_; };
@@ -2060,9 +2062,9 @@ class NimbusdRig {
   // for the openai upstream): the SAME portable split the device head and the
   // sub-session adapter use (resolveRouterRoute). anthropic/openai/mistral run the
   // upstream's native head (its real tool loop when `tools` is set and the loop is
-  // on); zai and any upstream the native fabric does not drive keep the single-shot
-  // chat-completions path over /router/<upstream> with json_object (GLM behind the
-  // router ignores json_schema, CUM-495).
+  // on); zai runs its own tool loop over /router/zai, and any upstream the native fabric
+  // does not drive keeps the single-shot chat-completions path over /router/<upstream>
+  // with json_object (GLM behind the router ignores json_schema, CUM-495).
   //
   // Every router selector shares the engine's ONE conversation slot for the
   // "cumulo" host, so the marker an upstream leaves is stored tagged with that
@@ -2106,8 +2108,8 @@ class NimbusdRig {
     if (rr.upstream == "openai")
       return agent::providers::orchTurnOpenAI(pd, conv, ins, inp, o.out, o.err, tools, o.usage);
     // zai / any other upstream: the device's ONE seam (CUM-544) - base and key from
-    // the router override above, /router/<upstream>, json_object, and for zai the
-    // bounded reasoning effort + 50 s head budget.
+    // the router override above, /router/<upstream>, json_object for a single shot, and
+    // for zai the tool loop, the bounded reasoning effort and the 50 s head budget.
     agent::providers::configureRouterCompatHead(pd, rr.upstream, rr.model);
     return agent::providers::orchTurnCustom(pd, conv, ins, inp, o.out, o.err, tools, o.usage);
   }
@@ -2173,17 +2175,20 @@ class NimbusdRig {
   // the same base/path/conv - so a keyed VN talks to Z.ai byte-for-byte like a device.
   // NIMBUSD_ZAI_BASE overrides the host (the device's api.z.ai/open.bigmodel.cn probe
   // has no hosted equivalent). The model is the in-app pick else the GLM default.
-  agent::providers::ProviderDeps zaiProviderDeps() {
-    auto pd = providerDeps();
+  void pointAtZai(agent::providers::ProviderDeps& pd) {
     const std::string base = cfg_.get("NIMBUSD_ZAI_BASE");
     pd.customBase       = [base] { return base.empty() ? std::string(kZaiHost) : base; };
     pd.customPathPrefix = [] { return std::string(kZaiPathPrefix); };
     pd.customKey        = [this] { return cfg_.providerKey(kZaiSlug); };
     pd.customConv       = [] { return std::string(kZaiConv); };
     pd.customModel      = [this] { return modelFor(kZaiSlug); };
-    // CUM-544: the ONE Z.ai head policy the device heads use (json_object,
-    // reasoning_effort "low", the 50 s head budget under Z.ai's gateway cut).
+    // CUM-544: the ONE Z.ai head policy the device heads use (the tool loop, reasoning_effort
+    // "low", the 50 s head budget under Z.ai's gateway cut).
     agent::providers::applyZaiHeadPolicy(pd);
+  }
+  agent::providers::ProviderDeps zaiProviderDeps() {
+    auto pd = providerDeps();
+    pointAtZai(pd);
     return pd;
   }
 
@@ -2397,10 +2402,12 @@ class NimbusdRig {
     d.apply.noteSpawned = [this] {
       if (jobs_) jobs_->noteSpawned();
     };
-    // Device parity (orchestrator turnComplete): a turn that ends with no reply, no
-    // spawn and no tool reply still confirms it finished on the SYNCHRONOUS channel
-    // (the web chat), instead of leaving the page waiting out its poll with nothing.
-    // Async channels (Telegram, /api/message) stay silent, as on the device.
+    // Device parity (orchestrator turnComplete): a turn that did something but ends with
+    // no reply, no spawn and no tool reply still confirms it finished on the SYNCHRONOUS
+    // channel (the web chat), instead of leaving the page waiting out its poll with
+    // nothing. Async channels (Telegram, /api/message) stay silent, as on the device. A
+    // turn that did nothing never lands here: applyTurn tells the owner the answer was
+    // empty.
     d.apply.turnComplete = [this](const std::string& chat) {
       if (chat == kWebChatId) record(chat, "Done.");
     };
@@ -2478,14 +2485,14 @@ class NimbusdRig {
         return cumuloTurn(c, o);
       });
     // CUM-445: the Z.ai direct-BYOK head, when Z_AI_TOKEN is present. It runs through
-    // orchTurnCustom (OpenAI-compatible, single-shot), NOT the loop above whose else-
-    // branch is Mistral - routing a Z.ai key there would post it to Mistral, exactly
+    // orchTurnCustom (OpenAI-compatible, with its own tool loop), NOT the loop above whose
+    // else-branch is Mistral - routing a Z.ai key there would post it to Mistral, exactly
     // the silent-misroute class the UI comment ("wrote a cumulo key into Mistral") warns
     // against.
     if (hostAvailable(kZaiSlug)) addCustomHead(d, kZaiSlug, [this] { return zaiProviderDeps(); });
   }
 
-  // Register one OpenAI-compatible single-shot head (Z.ai) that resolves its wire
+  // Register one OpenAI-compatible head (Z.ai) that resolves its wire
   // deps from `depsFn` at turn time.
   void addCustomHead(agent::TurnEngine::Deps& d, const std::string& slug,
                      std::function<agent::providers::ProviderDeps()> depsFn) {

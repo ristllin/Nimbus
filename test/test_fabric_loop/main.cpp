@@ -123,6 +123,42 @@ static void test_midturn_failover_carries_results_no_redispatch() {
 // caller at all). The brief must carry the user seed, the call WITH its args,
 // and the result - and must arrive even when the turn FAILED, since a failed
 // turn's middle is exactly what needs debugging.
+// The VN reality check's class: Z.ai is a fabric host like the others. A round that dies
+// on Mistral re-runs on Z.ai against the shared transcript, with nothing dispatched twice,
+// and a surface with no Z.ai step (no zaiHead) fails the switch honestly.
+static void test_zai_is_a_fabric_host() {
+  TEST_ASSERT_TRUE(providers::fabricSupports("zai"));
+  TEST_ASSERT_FALSE(providers::fabricSupports("custom"));
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200,
+                           "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"content\":\"\",\"tool_calls\":["
+                           "{\"id\":\"abc123def\",\"function\":{\"name\":\"memory_search\",\"arguments\":\"{}\"}}]}}]}"});
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 0, ""});   // round 1 dies
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 0, ""});   // same-host retry dies
+  d.http.script.push_back({"api.z.ai", "/api/paas/v4/chat/completions", 200,
+                           "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"content\":\"\",\"tool_calls\":["
+                           "{\"id\":\"call_-1\",\"function\":{\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"ok\\\"}\"}}]}}]}"});
+  auto pd = d.contract();
+  pd.zaiHead = [](providers::ProviderDeps& z) {
+    z.customBase = [] { return std::string("https://api.z.ai"); };
+    z.customPathPrefix = [] { return std::string("/api/paas/v4"); };
+    z.customKey = [] { return std::string("tok"); };
+    z.customConv = [] { return std::string("openai"); };
+    z.customModel = [] { return std::string("glm-5.3"); };
+    providers::applyZaiHeadPolicy(z);
+  };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string out, err;
+  orch::TurnSpend sp;
+  const bool ok = providers::runFabricLoop(pd, {"mistral", "zai"}, "SYS", "USER", out, err, rig.ht, &sp, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(1, (int)rig.dispatched.size());
+  TEST_ASSERT_TRUE(out.find("ok") != std::string::npos);
+  TEST_ASSERT_TRUE(bodyHas(d, 3, "\"tool_call_id\""));
+  TEST_ASSERT_TRUE(bodyHas(d, 3, "tool-ok"));
+}
+
 static void test_brief_reaches_onbrief_with_calls_and_results() {
   FakeProviderDeps d;
   // One host, two rounds: a tool call, then the terminal orch_turn.
@@ -740,6 +776,7 @@ int main(int, char**) {
   RUN_TEST(test_hfm_input_lead_follows_a_mid_turn_move);
   RUN_TEST(test_hfm_no_input_lead_keeps_the_input);
   RUN_TEST(test_midturn_failover_carries_results_no_redispatch);
+  RUN_TEST(test_zai_is_a_fabric_host);
   RUN_TEST(test_brief_reaches_onbrief_with_calls_and_results);
   RUN_TEST(test_brief_delivered_even_when_the_turn_fails);
   RUN_TEST(test_cum621_a_cut_hands_back_its_partial_turn);

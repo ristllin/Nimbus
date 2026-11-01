@@ -8,6 +8,7 @@
 #include "nimbus/harness/prompt_layout.h"  // static / summary / per-turn parts
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"  // 429 -> the quota window that refused (CUM-460)
+#include "nimbus/orch/compact.h"   // ORCH_COMPACT_PROMPT: the fold is a plain completion (CUM-890)
 #include "nimbus/orch/connectors_wire.h"  // connector provenance (CUM-536)
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
 #include "nimbus/orch/hosted_runs.h"  // noteHostedRun - a head's server-side tool runs (CUM-835)
@@ -19,6 +20,7 @@
 #include "nimbus/orch/sub_provenance.h"    // ToolTally - the sub's tools by name (CUM-824)
 #include "nimbus/orch/transcript.h"   // Transcript - the canonical turn record (Stage 2)
 #include "nimbus/orch/reply_text.h"
+#include "chat_loop.h"    // the chat-completions loop wire, shared with the Z.ai head
 #include "image_parts.h"   // R1: the turn's photos as image parts of the seeded user message
 #include "wire.h"
 
@@ -270,6 +272,21 @@ std::string mistralCallId(const std::string& id) {
   return out;
 }
 
+static const ChatDialect kMistralDialect{mistralCallId, mistralSafeName, mistralUnsafeName};
+
+void chatRoundFilter(JsonDocument& filter) {
+  JsonObject ch = filter["choices"].add<JsonObject>();
+  ch["finish_reason"] = true;                      // the completeness gate
+  JsonObject msg = ch["message"].to<JsonObject>();
+  msg["content"] = true;
+  JsonObject tcf = msg["tool_calls"].add<JsonObject>();
+  tcf["id"] = true;
+  tcf["function"]["name"] = true;
+  tcf["function"]["arguments"] = true;
+  filter["usage"] = true;   // whole usage object -> per-round token accounting
+  filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
+}
+
 // Render the chat-completions messages[] from the canonical transcript:
 // system (per-round instructions), the user seed, then per tool-carrying round
 // an assistant message ({content?, tool_calls[]}) answered by role:"tool"
@@ -280,12 +297,9 @@ std::string mistralCallId(const std::string& id) {
 // images (a user message after tool messages is accepted: probed live 27 Oct on
 // mistral-small-latest and mistral-large-latest); a blind host reads a caption's
 // answer in the tool message instead.
-static void renderMistralMessages(const nimbus::orch::Transcript& tr,
-                                  ArduinoJson::JsonArray msgs,
-                                  const std::string& sysText,
-                                  bool showingImages,
-                                  const layout::PromptParts* parts = nullptr,
-                                  bool sees = false) {
+void renderChatMessages(const nimbus::orch::Transcript& tr, ArduinoJson::JsonArray msgs,
+                        const std::string& sysText, bool showingImages, const layout::PromptParts* parts,
+                        bool sees, const ChatDialect& dialect) {
   namespace orch = nimbus::orch;
   using Kind = orch::TranscriptItem::Kind;
   {
@@ -338,17 +352,17 @@ static void renderMistralMessages(const nimbus::orch::Transcript& tr,
     JsonArray tc = a["tool_calls"].to<JsonArray>();
     for (size_t ci : calls) {
       JsonObject t = tc.add<JsonObject>();
-      t["id"]   = mistralCallId(e[ci].id);
+      t["id"]   = dialect.callId(e[ci].id);
       t["type"] = "function";
       JsonObject fn = t["function"].to<JsonObject>();
-      fn["name"]      = mistralSafeName(e[ci].name);
+      fn["name"]      = dialect.wireName(e[ci].name);
       wire::putModelStr(fn["arguments"], e[ci].text, e[ci].name.c_str());
     }
     for (size_t ri : results) {
       JsonObject m = msgs.add<JsonObject>();
       m["role"]         = "tool";
-      m["tool_call_id"] = mistralCallId(e[ri].id);
-      m["name"]         = mistralSafeName(e[ri].name);
+      m["tool_call_id"] = dialect.callId(e[ri].id);
+      m["name"]         = dialect.wireName(e[ri].name);
       std::string lookWords;
       size_t j = 0;
       if (looks.render(e[ri], lookWords, j) != imageparts::LookRender::Show::NotALook) {
@@ -427,8 +441,8 @@ bool misRefusedConnectors(int code, const std::string& text) {
 }  // namespace
 // The chat-completions tools array: orch_turn first (shapes only, F6c - the
 // field docs ride the prompt), then every registry tool under its safe name.
-static bool misPutLoopTools(const ProviderDeps& pd, JsonArray tools,
-                            const agent::HeadTools* ht, std::string& err) {
+bool putChatTools(const ProviderDeps& pd, JsonArray tools, const agent::HeadTools* ht,
+                  const ChatDialect& dialect, bool onlyFinal, std::string& err) {
   {
     JsonObject ot = tools.add<JsonObject>();
     ot["type"] = "function";
@@ -444,13 +458,14 @@ static bool misPutLoopTools(const ProviderDeps& pd, JsonArray tools,
     mistralStripDescriptions(sd.as<ArduinoJson::JsonVariant>());
     fn["parameters"] = sd;
   }
+  if (onlyFinal) return true;
   for (const auto& sp : ht->specs) {
     JsonObject t = tools.add<JsonObject>();
     t["type"] = "function";
     JsonObject fn = t["function"].to<JsonObject>();
-    // Reserved-name rename kept on chat-completions for one consistent wire
-    // (mistralUnsafeName inverts it before dispatch).
-    fn["name"] = mistralSafeName(sp.name);
+    // Mistral keeps its reserved-name rename on chat-completions for one consistent
+    // wire (the dialect inverts it before dispatch).
+    fn["name"] = dialect.wireName(sp.name);
     fn["description"] = sp.description;
     JsonDocument ssd = makeDoc(pd);
     if (deserializeJson(ssd, sp.schemaJson, DeserializationOption::NestingLimit(16)) ==
@@ -465,8 +480,7 @@ static bool misPutLoopTools(const ProviderDeps& pd, JsonArray tools,
 // The SEEDED user message (the turn's own, after the history): the per-turn
 // block leads it and the photos ride it. Index, not "first user": the history
 // messages are users too.
-void misSeedUserMessage(JsonArray msgs, const layout::PromptParts& p,
-                        nimbus::orch::TurnImages* imgs) {
+void seedChatUserMessage(JsonArray msgs, const layout::PromptParts& p, nimbus::orch::TurnImages* imgs) {
   const size_t seedIdx = 1 + (p.split ? p.history.size() : 0);
   if (msgs.size() <= seedIdx || strcmp(msgs[seedIdx]["role"] | "", "user")) return;
   JsonObject m = msgs[seedIdx];
@@ -488,10 +502,10 @@ static bool misLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& 
     // the user seed. R3: prompt_cache_key keeps one chat's turns on one cache.
     const layout::PromptParts& p = *a.round;
     layout::putCacheKey(req.as<ArduinoJson::JsonObject>(), p);
-    renderMistralMessages(tr, msgs, p.stat + p.shelf, a.imgs != nullptr, p.split ? &p : nullptr, a.sees);
-    misSeedUserMessage(msgs, p, a.imgs);
+    renderChatMessages(tr, msgs, p.stat + p.shelf, a.imgs != nullptr, p.split ? &p : nullptr, a.sees, kMistralDialect);
+    seedChatUserMessage(msgs, p, a.imgs);
   }
-  if (!misPutLoopTools(pd, req["tools"].to<JsonArray>(), a.ht, err)) return false;
+  if (!putChatTools(pd, req["tools"].to<JsonArray>(), a.ht, kMistralDialect, false, err)) return false;
   if (a.allowTools) {
     // "any": chat-completions' force-a-tool value (the Conversations API's
     // "required" dialect does NOT apply here). The model must call SOME tool
@@ -513,7 +527,8 @@ static bool misLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& 
 // Read one chat-completions reply into `out`. Returns false when the reply is cut
 // (finish_reason "length" / "model_length", or a tool call whose arguments do not
 // parse as JSON - a cut argument string must never be dispatched or become the turn).
-static bool misReadRound(const JsonDocument& resp, nimbus::orch::HeadStep& out, std::string& cutWhy) {
+bool readChatRound(const JsonDocument& resp, nimbus::orch::HeadStep& out, std::string& cutWhy,
+                   const ChatDialect& dialect) {
   JsonObjectConst m = resp["choices"][0]["message"].as<JsonObjectConst>();
   const std::string fr = resp["choices"][0]["finish_reason"] | "";
   if (fr == "length" || fr == "model_length") cutWhy = fr;
@@ -543,7 +558,7 @@ static bool misReadRound(const JsonDocument& resp, nimbus::orch::HeadStep& out, 
     }
     nimbus::orch::HeadToolCall call;
     call.id       = t["id"] | "";
-    call.name     = mistralUnsafeName(nm);   // invert the reserved-name rename
+    call.name     = dialect.registryName(nm);   // invert any rename on the wire
     call.argsJson = (args.length() && args != "null") ? args : "{}";
     out.toolCalls.push_back(call);
   }
@@ -589,17 +604,8 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     tail = wire::roundInstructions(tail, capReason);
 
     JsonDocument filter;
-    JsonObject ch = filter["choices"].add<JsonObject>();
-    ch["finish_reason"] = true;                      // the completeness gate
-    JsonObject msg = ch["message"].to<JsonObject>();
-    msg["content"] = true;
-    JsonObject tcf = msg["tool_calls"].add<JsonObject>();
-    tcf["id"] = true;
-    tcf["function"]["name"] = true;
-    tcf["function"]["arguments"] = true;
+    chatRoundFilter(filter);
     keepMistralError(filter);   // every error-envelope shape (message, detail, error)
-    filter["usage"] = true;   // whole usage object -> per-round token accounting
-    filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
     bool effortRetried = false;   // the one retry without reasoning_effort (CUM-616)
     // R1: the photos ride the seeded user message when this model takes images and
@@ -652,7 +658,7 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
       if (usage) *usage += orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
       orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
       std::string cutWhy;
-      if (misReadRound(resp, out, cutWhy)) return out;   // finished, a tool round, or prose (stall)
+      if (readChatRound(resp, out, cutWhy, kMistralDialect)) return out;   // finished, a tool round, or prose (stall)
       if (attempt == 0 && cap.hasRetry()) {
         hlog::logf("orchTurn(mistral-loop): cut (%s) at %u tokens - one retry with %u",
                    cutWhy.c_str(), (unsigned)maxTokens, (unsigned)cap.retryTokens);
@@ -840,12 +846,75 @@ static bool mistralHeadBody(const ProviderDeps& pd, const std::string& convId,
   return bodyWithinBudget(out.body, out.err);   // R3: the stated body budget
 }
 
+// CUM-890: the compaction fold (its instructions ARE ORCH_COMPACT_PROMPT) asks for prose
+// and offers no tool. Under the strict orch_turn schema mistral-small-latest filled the
+// shape and left reply empty, 2 of 2 live, and mistral-large-4-0 spent 4,194 tokens
+// thinking about a 1 KB summary. So the fold is a plain chat completion: no schema, no
+// connectors, the table's effort, and its reply IS the summary.
+static bool mistralFold(const ProviderDeps& pd, const std::string& inputs, std::string& outJson,
+                        std::string& err, nimbus::orch::TokenUsage* usage) {
+  const std::string model = pd.orchModel ? pd.orchModel("mistral") : std::string();
+  const OutputCap cap = outputCapFor("mistral", model, RoundKind::Fold, kHeadRoundCeilingMs);
+  JsonDocument filter;
+  chatRoundFilter(filter);
+  keepMistralError(filter);
+  bool effortRetried = false;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    JsonDocument req = makeDoc(pd);
+    req["model"] = model;
+    const uint32_t maxTokens = attempt ? cap.retryTokens : cap.maxTokens;
+    if (maxTokens) req["max_tokens"] = maxTokens;
+    const char* effort = misEffortRefusedBefore(model) ? "" : cap.effort;
+    if (*effort) req["reasoning_effort"] = effort;
+    JsonArray msgs = req["messages"].to<JsonArray>();
+    JsonObject sys = msgs.add<JsonObject>();
+    sys["role"] = "system";
+    sys["content"] = nimbus::orch::ORCH_COMPACT_PROMPT;
+    JsonObject u = msgs.add<JsonObject>();
+    u["role"] = "user";
+    wire::putFieldStr(u["content"], inputs, "the conversation to summarize");
+    std::string body;
+    if (!wire::serializeChecked(req, body, err) || !bodyWithinBudget(body, err)) return false;
+    JsonDocument resp = makeDoc(pd);
+    HeaderList quota;
+    const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
+    const int code = mistralRequest(pd, "POST", "/v1/chat/completions", std::move(body), resp, filter,
+                                    MISTRAL_TIMEOUT_MS, &quota);
+    if (code <= 0) { err = wire::headTransportError(pd, t0, MISTRAL_TIMEOUT_MS); return false; }
+    if (code != 200 && *effort && !effortRetried &&
+        misRefusedEffort(code, mistralErrText(resp) + " " + (const char*)(resp["code"] | ""))) {
+      misRememberNoEffort(model);
+      effortRetried = true;
+      --attempt;
+      continue;
+    }
+    if (code != 200) {
+      err = mistralHttpErr("fold", code, quota, mistralErrText(resp));
+      hlog::logf("orchTurn(mistral): %s", err.c_str());
+      return false;
+    }
+    if (usage) *usage += nimbus::orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
+    nimbus::orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
+    const std::string fr = resp["choices"][0]["finish_reason"] | "";
+    if ((fr == "length" || fr == "model_length") && attempt == 0 && cap.hasRetry()) continue;
+    if (fr == "length" || fr == "model_length") {
+      err = "cut at the output limit (" + std::to_string(maxTokens) + " tokens)";
+      return false;
+    }
+    outJson = nimbus::orch::chatContentText(resp["choices"][0]["message"]["content"]);
+    if (outJson.empty()) { err = "the fold came back with no text"; return false; }
+    return true;
+  }
+  return false;
+}
+
 bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
                      const std::string& instructions, const std::string& inputs,
                      std::string& outJson, std::string& err,
                      const HeadTools* tools, nimbus::orch::TokenUsage* usage) {
   outJson.clear(); err.clear();
   if (!pd.key || pd.key("mistral").empty()) { err = "no Mistral key"; return false; }
+  if (instructions == nimbus::orch::ORCH_COMPACT_PROMPT) return mistralFold(pd, inputs, outJson, err, usage);
 
   // Multi-turn tool-use loop (opt-in): falls through to the single-shot strict
   // structured turn below when the knob is off or no tools were supplied.
@@ -1258,6 +1327,60 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
                prov.asked.empty() ? "-" : prov.asked.c_str());
   snprintf(outJobId, 72, "mistral:%s", s_cache[slot].id);
   return FabricErr::Ok;
+}
+
+// web.search on Mistral's built-in search: one Conversations request on the model that
+// runs it cheapest, whatever the head is (mistral-large-4-0 refuses the tool). The digest
+// is the answer with its sources written inline.
+static const char kMistralSearchModel[] = "mistral-small-latest";
+static const char kSearchInstructions[] =
+    "You are a web research tool. Search the web and answer the query with the facts you "
+    "found. Name the source of each fact. Give dates where they matter. Under 150 words.";
+websearch::Result mistralWebSearch(const ProviderDeps& pd, const std::string& query) {
+  websearch::Result res;
+  res.hosted = true;
+  JsonDocument req;
+  req["store"] = false;
+  req["model"] = kMistralSearchModel;
+  req["instructions"] = kSearchInstructions;
+  wire::putFieldStr(req["inputs"], query, "the search query");
+  req["tools"].to<JsonArray>().add<JsonObject>()["type"] = "web_search";
+  std::string body = serializeBody(req);
+  const size_t requestChars = body.size();
+  JsonDocument filter;
+  JsonObject oi = filter["outputs"].add<JsonObject>();
+  oi["type"] = true;
+  oi["content"] = true;   // type, text and the tool_reference urls: not the raw result
+  filter["usage"] = true;
+  keepMistralError(filter);
+  JsonDocument doc = makeDoc(pd);
+  HeaderList quota;
+  const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
+  const int code = mistralRequest(pd, "POST", "/v1/conversations", std::move(body), doc, filter,
+                                  kSyncSubCeilingMs, &quota);
+  if (code <= 0) {
+    res.err = wire::headTransportError(pd, t0, kSyncSubCeilingMs);
+    res.billed = wire::lastExchange().noResponse;
+    return res;
+  }
+  if (code != 200) {
+    res.err = mistralHttpErr("search", code, quota, mistralErrText(doc));
+    return res;
+  }
+  res.billed = true;
+  std::string reply;
+  for (JsonObjectConst o : doc["outputs"].as<JsonArrayConst>())
+    if (strcmp(o["type"] | "", "message.output") == 0) reply = mistralSubReplyContent(o);
+  const uint32_t runs = doc["usage"]["connectors"]["web_search"] | 1u;
+  nimbus::orch::meterSubAnswer("mistral", kMistralSearchModel, doc["usage"].as<ArduinoJson::JsonVariantConst>(),
+                               requestChars, reply.size(), runs);
+  if (reply.empty()) {
+    res.err = "the search came back with no text";
+    return res;
+  }
+  res.ok = true;
+  res.digest = "Answer: " + reply;
+  return res;
 }
 
 FabricErr mistralPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env) {

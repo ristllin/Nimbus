@@ -28,6 +28,8 @@ struct Result {
   // Lane QW4 (CUM-776): the provider may have billed the call: it answered 2xx (whole or
   // not), or the request went out and no answer came back. Counted like a search.
   bool        billed = false;
+  // The provider's own search ran instead of Tavily: not a Tavily call on its budget.
+  bool        hosted = false;
 };
 
 // One search round-trip. `maxResults` is clamped to [1,10].

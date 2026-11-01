@@ -253,7 +253,7 @@ bool buildCaptionRequest(const std::string& provider, const std::string& model, 
     txt["type"] = "text";
   } else {   // mistral
     req["max_tokens"] = cap;
-    if (providers::mistralTakesEffort(model)) req["reasoning_effort"] = "none";   // Mistral's low setting
+    if (providers::mistralTakesEffort(model)) req["reasoning_effort"] = providers::mistralHeadEffort(model);
     img["type"] = "image_url";
     img["image_url"] = std::string("data:") + mime + ";base64," + kMarker;
     txt = content.add<JsonObject>();

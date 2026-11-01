@@ -596,14 +596,14 @@ static void testRemovedChatReportDropped(ndtest::Ctx& c) {
   clearEnv();
 }
 
-// (g) device parity: a turn with no reply and no spawn still completes on the
-// synchronous web chat ("Done."), never on an async channel.
-static void testReplyLessTurnCompletesOnWeb(ndtest::Ctx& c) {
-  std::printf("  -- (g) a reply-less turn says Done. on the web chat only --\n");
+// (g) an empty model reply that did nothing is never "Done.": the owner hears the answer
+// was empty, on the web chat and on an approved async chat alike (VN reality check, 1 Nov).
+static void testReplyLessTurnIsNeverDone(ndtest::Ctx& c) {
+  std::printf("  -- (g) a reply-less turn that did nothing says so, and never says Done. --\n");
   clearEnv();
   FakeHttpTransport tx;
-  tx.script.push_back(headTurn("{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}"));
-  tx.script.push_back(headTurn("{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}"));
+  for (int i = 0; i < 4; i++)
+    tx.script.push_back(headTurn("{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}"));
   Config cfg;
   NimbusdRig rig(cfg, opts("fab-g"), &tx);
   rig.applyProviderKey("mistral", "mk_TEST_FAB_6");
@@ -613,11 +613,8 @@ static void testReplyLessTurnCompletesOnWeb(ndtest::Ctx& c) {
   rig.telegramAccess().approve("12345", "", err);   // an approved async (Telegram) chat
   rig.say(kWebChatId, "hello");
   rig.say("12345", "hello");
-  c.eqi((long)got.size(), 1, "exactly one completion delivered");
-  if (!got.empty()) {
-    c.eq(got[0].first, kWebChatId, "it went to the web chat");
-    c.eq(got[0].second, "Done.", "it says Done.");
-  }
+  c.eqi((long)got.size(), 2, "both chats hear it");
+  for (const auto& g : got) c.eq(g.second, agent::kEmptyAnswer, "it says the answer was empty");
   clearEnv();
 }
 
@@ -754,7 +751,7 @@ int main() {
   testHeldTurnRunsAfterReport(c);
   testSpawnFromOtherNamespaceRefused(c);
   testRemovedChatReportDropped(c);
-  testReplyLessTurnCompletesOnWeb(c);
+  testReplyLessTurnIsNeverDone(c);
   testZaiSubCarriesLowEffort(c);
   testCutSubMayHaveStarted(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);

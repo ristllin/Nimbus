@@ -49,6 +49,13 @@ int mergePseudoSpawns(nimbus::orch::Turn& t, const PseudoSpawns& p);
 // form). `pseudo` (nullable) counts spawn items already salvaged this turn.
 std::string turnShapeCorrection(const std::string& finalTurn, const PseudoSpawns* pseudo);
 
+// The empty-answer final check: "" unless the final orch_turn has no reply and no ask and
+// changes nothing, then the model-facing correction text.
+std::string emptyAnswerCorrection(const std::string& finalTurn, const PseudoSpawns* pseudo);
+
+// What the owner reads when a turn still ends with no answer: never a made-up "Done."
+extern const char kEmptyAnswer[];
+
 // The leak-repair gate: clear every field the parser recovered from leaked tool
 // markup (device actions, memory writes and queries, spawns, the scratchpad, and
 // a recovered memory note or ask). Only the cut reply stays. Every dropped spawn

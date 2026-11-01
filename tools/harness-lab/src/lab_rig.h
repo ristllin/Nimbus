@@ -610,6 +610,14 @@ class LabRig {
     pd.key = [this](const char* h) { return env_.providerKey(h); };
     pd.orchModel = [this](const char* h) { return modelFor(h); };
     pd.toolLoopOn = [this] { return opt_.toolLoop; };
+    pd.zaiHead = [this](agent::providers::ProviderDeps& z) {
+      z.customBase = [] { return std::string(kLabZaiHost); };
+      z.customPathPrefix = [] { return std::string(kLabZaiPath); };
+      z.customKey = [this] { return env_.providerKey("zai"); };
+      z.customConv = [] { return std::string("openai"); };
+      z.customModel = [this] { return modelFor("zai"); };
+      agent::providers::applyZaiHeadPolicy(z);
+    };
     pd.antEnvId = [this] { return antEnv_; };
     pd.setAntEnvId = [this](const std::string& v) { antEnv_ = v; };
     pd.antAgentMap = [this] { return antAgents_; };
@@ -626,16 +634,11 @@ class LabRig {
     return pd;
   }
 
-  // The Z.ai head: the custom/OpenAI-compatible single-shot turn pointed at
-  // Z.ai, with the same head policy the device and nimbusd apply.
+  // The Z.ai head: the custom/OpenAI-compatible deps pointed at Z.ai, with the same
+  // head policy the device and nimbusd apply.
   agent::providers::ProviderDeps zaiProviderDeps() {
     auto pd = providerDeps();
-    pd.customBase = [] { return std::string(kLabZaiHost); };
-    pd.customPathPrefix = [] { return std::string(kLabZaiPath); };
-    pd.customKey = [this] { return env_.providerKey("zai"); };
-    pd.customConv = [] { return std::string("openai"); };
-    pd.customModel = [this] { return modelFor("zai"); };
-    agent::providers::applyZaiHeadPolicy(pd);
+    pd.zaiHead(pd);
     return pd;
   }
 
@@ -652,12 +655,12 @@ class LabRig {
     };
   }
 
-  // The device's host adapters (fabric failover, Z.ai single-shot, the three
+  // The device's host adapters (fabric failover, the Z.ai head, the three other
   // loop hosts), split out of buildEngine to stay under the complexity gate.
   void wireHosts(agent::TurnEngine::Deps& d) {
     // The device's mid-turn failover: LOOP turns run the engine-owned fabric over
     // the same deps (a failed round re-runs on the next host against the shared
-    // transcript). Z.ai is single-shot only, as on the device.
+    // transcript), as on the device.
     d.hosts.fabric = [this](const std::vector<std::string>& hostList, const std::string& ins,
                             const std::string& inp, std::string& out, std::string& err,
                             const agent::HeadTools& ht, orch::TurnSpend* spend,

@@ -167,6 +167,21 @@ std::string turnShapeCorrection(const std::string& finalTurn, const PseudoSpawns
   return out;
 }
 
+std::string emptyAnswerCorrection(const std::string& finalTurn, const PseudoSpawns* pseudo) {
+  orch::Turn t;
+  orch::ParseError e;
+  if (orch::parseHeadReply(finalTurn, t, e) == orch::ReplyShape::Unusable) return std::string();
+  if (!t.reply.empty() || !t.ask.empty() || !t.device.empty() || !t.mem_write.empty() || !t.session_ops.empty() ||
+      !t.spawn.empty() || (pseudo && !pseudo->items.empty()))
+    return std::string();
+  return "[TURN CHECK] This orch_turn has an empty reply and changes nothing, so the owner would get no answer. "
+         "If you need to look something up, call the tool for it now (a mem_query field runs too late to help "
+         "this turn). Then send the orch_turn again with your answer in reply, or say plainly what you could "
+         "not find. Do not mention this check to the owner.";
+}
+
+const char kEmptyAnswer[] = "The model returned an empty answer. Try asking again.";
+
 const char kCutNothingSalvaged[] =
     "That answer was cut off before it finished, so nothing in it was carried out. Ask again, "
     "or ask for a shorter answer.";

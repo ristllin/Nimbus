@@ -11,6 +11,7 @@
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
+#include "nimbus/orch/compact.h"           // ORCH_COMPACT_PROMPT: the fold
 #include "nimbus/orch/connectors_wire.h"   // CUM-536: the real Mistral attach + identity probe
 #include "nimbus/orch/hosted_runs.h"   // CUM-835: what a head response ran server-side
 #include "nimbus/orch/orch_schema.h"
@@ -1593,6 +1594,109 @@ static void test_a_sub_on_a_model_refusing_builtins_keeps_its_tools() {
   }
 }
 
+// CUM-890: "fold: no summary in reply ()". Under the strict orch_turn schema
+// mistral-small-latest answered {"reply":"",...} 2 of 2 live (evidence/probes/fold-conv-*).
+// The fold is a plain completion: no schema, no connectors, thinking chunks ignored.
+static void test_fold_is_a_plain_completion() {
+  const std::vector<orch::ConnectorInfo> cs = {{"web_search", "mistral", "builtin", "", "", "", true}};
+  FakeProviderDeps d;
+  d.http.script.push_back(
+      {"api.mistral.ai", "/v1/chat/completions", 200,
+       "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":[{\"type\":\"thinking\",\"thinking\":["
+       "{\"type\":\"text\",\"text\":\"hmm\"}]},{\"type\":\"text\",\"text\":\"1. Decisions\\nNone.\"}]}}],"
+       "\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}"});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+  pd.attachMistral = [cs](JsonDocument& doc) { orch::attachMistralWire(doc, cs, false); };
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(
+      providers::orchTurnMistral(pd, conv, orch::ORCH_COMPACT_PROMPT, "digest", out, err, nullptr, nullptr), err.c_str());
+  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "response_format"));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "\"tools\""));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"reasoning_effort\":\"low\""));
+  TEST_ASSERT_EQUAL_STRING("1. Decisions\nNone.", out.c_str());
+}
+
+// The class behind the routine 6,050-token cut: every reasoning model gets an effort it
+// accepts. Large 4 refused "none", the refusal dropped the field, and with no field it
+// thinks at its default and runs out of room. Recorded live 1 Nov
+// (evidence/probes/mistral-effort-matrix.txt): the value each accepts of none and low.
+static void test_effort_table_matches_the_recording() {
+  struct Row { const char* model; const char* accepts; };
+  const Row rows[] = {{"mistral-large-4-0", "low"},      {"mistral-large-4", "low"},
+                      {"mistral-medium-latest", "none"}, {"mistral-small-latest", "none"},
+                      {"magistral-medium-latest", "none"}, {"mistral-vibe-cli-latest", "none"},
+                      {"zai-glm-5-3", "low"},            {"zai-glm-5-3-flash", "low"},
+                      {"mistral-large-latest", ""}};
+  for (const Row& r : rows) {
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(r.accepts, providers::mistralHeadEffort(r.model), r.model);
+    for (const providers::RoundKind k : {providers::RoundKind::ToolRound, providers::RoundKind::FinalRound,
+                                         providers::RoundKind::SingleShot, providers::RoundKind::Fold}) {
+      const providers::OutputCap c = providers::outputCapFor("mistral", r.model, k, providers::kHeadRoundCeilingMs);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(r.accepts, c.effort, r.model);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(r.accepts, c.retryEffort, r.model);
+    }
+  }
+}
+
+// CUM-823: web.search with no Tavily key runs Mistral's built-in search on a model that
+// takes it, whatever the head is. Recorded shape: evidence/probes/web-mistral-*.
+static void test_web_search_runs_on_mistral_builtin() {
+  FakeProviderDeps d;
+  d.http.script.push_back(
+      {"api.mistral.ai", "/v1/conversations", 200,
+       "{\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"web_search\"},{\"type\":\"message.output\",\"content\":["
+       "{\"type\":\"text\",\"text\":\"Python 3.15.2\"},{\"type\":\"tool_reference\",\"tool\":\"web_search\","
+       "\"title\":\"Download\",\"url\":\"https://www.python.org/downloads/\"}]}],"
+       "\"usage\":{\"prompt_tokens\":806,\"completion_tokens\":63,\"connectors\":{\"web_search\":1}}}"});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+  TEST_ASSERT_TRUE(providers::hostedWebSearchAvailable(pd));
+  const auto r = providers::hostedWebSearch(pd, "latest python", 5);
+  TEST_ASSERT_TRUE_MESSAGE(r.ok, r.err.c_str());
+  TEST_ASSERT_TRUE(r.hosted);
+  TEST_ASSERT_TRUE(r.digest.find("3.15.2") != std::string::npos);
+  TEST_ASSERT_TRUE(r.digest.find("https://www.python.org/downloads/") != std::string::npos);
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"mistral-small-latest\""));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "mistral-large-4-0"));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"type\":\"web_search\""));
+}
+
+// A failed Mistral search falls to Z.ai; with neither key nothing is sent and it says so.
+static void test_web_search_walks_to_zai_then_says_why() {
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 500, "{\"message\":\"boom\"}"});
+    d.http.script.push_back(
+        {"api.z.ai", "/api/paas/v4/chat/completions", 200,
+         "{\"choices\":[{\"message\":{\"content\":\"Python 3.14.3\"}}],\"web_search\":[{\"title\":\"T\","
+         "\"link\":\"https://x.example\",\"publish_date\":\"2026-03-19\"}],\"usage\":{\"prompt_tokens\":9}}"});
+    d.keys["zai"] = "tok";
+    auto pd = d.contract();
+    pd.zaiHead = [](providers::ProviderDeps& z) {
+      z.customBase = [] { return std::string("https://api.z.ai"); };
+      z.customPathPrefix = [] { return std::string("/api/paas/v4"); };
+      z.customKey = [] { return std::string("tok"); };
+      z.customConv = [] { return std::string("openai"); };
+    };
+    const auto r = providers::hostedWebSearch(pd, "latest python", 5);
+    TEST_ASSERT_TRUE_MESSAGE(r.ok, r.err.c_str());
+    TEST_ASSERT_TRUE(r.digest.find("https://x.example") != std::string::npos);
+    TEST_ASSERT_TRUE(r.digest.find("2026-03-19") != std::string::npos);   // its date rides along
+  }
+  {
+    FakeProviderDeps d;
+    d.keys.clear();
+    auto pd = d.contract();
+    TEST_ASSERT_FALSE(providers::hostedWebSearchAvailable(pd));
+    const auto r = providers::hostedWebSearch(pd, "latest python", 5);
+    TEST_ASSERT_FALSE(r.ok);
+    TEST_ASSERT_EQUAL(0, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(r.err.find("no provider") != std::string::npos);
+  }
+}
+
 // The class: the table agrees with the recorded /v1/models capabilities.reasoning
 // bit for EVERY chat model Mistral lists (a new model with no table row fails here).
 static void test_cum616_effort_table_matches_the_recorded_model_list() {
@@ -1832,6 +1936,10 @@ int main(int, char**) {
   RUN_TEST(test_cum616_refused_effort_retried_once_without_it);
   RUN_TEST(test_connectors_refusal_retried_once_without_them);
   RUN_TEST(test_a_sub_on_a_model_refusing_builtins_keeps_its_tools);
+  RUN_TEST(test_web_search_runs_on_mistral_builtin);
+  RUN_TEST(test_web_search_walks_to_zai_then_says_why);
+  RUN_TEST(test_fold_is_a_plain_completion);
+  RUN_TEST(test_effort_table_matches_the_recording);
   RUN_TEST(test_cum616_effort_table_matches_the_recorded_model_list);
   RUN_TEST(test_r1_image_url_parts_in_the_seeded_user_message);
   RUN_TEST(test_r1_mistral_model_without_image_input_reads_transcriptions);

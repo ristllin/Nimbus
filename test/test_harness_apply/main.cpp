@@ -1,5 +1,8 @@
 #include <unity.h>
 
+#include "nimbus/harness/turn_contract.h"   // kEmptyAnswer
+#include "nimbus/orch/model_defaults.h"     // BackgroundTurnScope
+
 #include <algorithm>
 #include <cstdio>
 #include <map>
@@ -725,18 +728,55 @@ static void test_lane_l_an_ask_the_reply_already_ends_with_is_not_repeated() {
   }
 }
 
-static void test_empty_turn_signals_completion_not_done() {
-  // The hardcoded "Done." ack was removed: an empty reply delivers NO message at the
-  // harness level (async channels stay silent). Instead it signals turnComplete, and
-  // the DEVICE wiring resolves only the synchronous channels (web/voice/serial) - so
-  // a reply-less turn never false-fails a web/voice poll, and Telegram stays silent.
+static void test_empty_turn_never_reads_as_done() {
+  // VN reality check, 1 Nov: "What is my sister's cat called?" got "Done." because an
+  // empty model reply signalled completion. A turn that did nothing tells the owner the
+  // answer was empty, on every channel; the completion signal is for a turn that acted.
   Rec r;
   ApplyDeps d = makeDeps(r);
   ApplyState st = makeState(r);
   bool spawned = false;
   agent::applyTurn(Turn{}, "1001", d, st, spawned);
-  TEST_ASSERT_EQUAL(0, (int)r.delivered.size());          // no fabricated message
-  TEST_ASSERT_EQUAL(1, (int)r.turnCompletes.size());      // completion signalled once
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING(agent::kEmptyAnswer, r.delivered[0].second.c_str());
+  TEST_ASSERT_EQUAL(0, (int)r.turnCompletes.size());
+}
+
+// The counter-tests: scheduled and background turns stay silent (the owner's complaint
+// about routines pinging), and a turn that acted still gets the completion signal.
+static void test_empty_turn_stays_silent_when_nobody_waits() {
+  {
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r);
+    st.scheduledTurn = true;
+    bool spawned = false;
+    agent::applyTurn(Turn{}, "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
+  }
+  {
+    const nimbus::orch::BackgroundTurnScope background;
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r);
+    bool spawned = false;
+    agent::applyTurn(Turn{}, "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
+  }
+}
+
+static void test_turn_that_acted_still_signals_completion() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  ApplyState st = makeState(r);
+  Turn t;
+  nimbus::orch::MemWrite w;
+  w.content = "the cat is called Pixel";
+  t.mem_write.push_back(w);
+  bool spawned = false;
+  agent::applyTurn(t, "1001", d, st, spawned);
+  TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL(1, (int)r.turnCompletes.size());
   TEST_ASSERT_EQUAL_STRING("1001", r.turnCompletes[0].c_str());
 }
 
@@ -2322,7 +2362,9 @@ int main(int, char**) {
   RUN_TEST(test_lane_l_an_ask_the_reply_already_ends_with_is_not_repeated);
   RUN_TEST(test_mem_write_is_stored_before_the_reply_is_delivered);
   RUN_TEST(test_tell_poll_nudge_does_not_mention_await);
-  RUN_TEST(test_empty_turn_signals_completion_not_done);
+  RUN_TEST(test_empty_turn_never_reads_as_done);
+  RUN_TEST(test_empty_turn_stays_silent_when_nobody_waits);
+  RUN_TEST(test_turn_that_acted_still_signals_completion);
   RUN_TEST(test_completion_suppressed_after_spawn);
   RUN_TEST(test_spawn_quiet_flag_tracks_scheduled_turn);
   RUN_TEST(test_done_suppressed_after_spawn_or_tool_reply);
