@@ -170,20 +170,32 @@ def tokens_max(rec, arg, _ctx):
     return got <= arg, f"{got} tokens"
 
 
+class InstanceUnreachable(RuntimeError):
+    """The instance did not answer, so the check learned nothing. Never a known defect."""
+
+
+def _answered(status: int, body: str):
+    if status in (0, 503):
+        raise InstanceUnreachable(f"status {status}: {_seen(body)}")
+
+
 def file_contains(_rec, arg, ctx):
     """{"project": "p", "name": "n", "text": "x"}: read through the Files panel's own route."""
     status, body = ctx.file_bytes(arg.get("project", ""), arg["name"])
-    return status == 200 and arg.get("text", "") in body, f"status {status}: {_seen(body)}"
+    _answered(status, body)
+    return status == 200 and arg["text"] in body, f"status {status}: {_seen(body)}"
 
 
 def file_absent(_rec, arg, ctx):
     status, body = ctx.file_bytes(arg.get("project", ""), arg["name"])
+    _answered(status, body)
     return status == 404, f"status {status}: {_seen(body)}"
 
 
 def api_min(_rec, arg, ctx):
     """{"path": "/api/mem/stats", "field": "vectors", "min": 1}: a number the API reports."""
     status, body = ctx.get(arg["path"])
+    _answered(status, body)
     try:
         got = _dig(json.loads(body), arg["field"])
     except ValueError:
@@ -194,6 +206,7 @@ def api_min(_rec, arg, ctx):
 def api_equals(_rec, arg, ctx):
     """{"path": "/api/orch", "field": "orchHost", "value": "mistral"}: a value the API reports."""
     status, body = ctx.get(arg["path"])
+    _answered(status, body)
     try:
         got = _dig(json.loads(body), arg["field"])
     except ValueError:
@@ -232,7 +245,6 @@ ASSERTIONS = {
 # instead of raising mid-run and reading as a failed check (or worse, a passing one).
 _NUM = (int, float)
 _TOOL_FIELD = {"tool": str, "regex": str}
-_FILE = {"project": str, "name": str, "text": str}
 ARG_SHAPES = {
     "reply_nonempty": bool,
     "no_error_reply": bool,
@@ -253,13 +265,13 @@ ARG_SHAPES = {
     "body_regex": str,
     "turn_resolved": bool,
     "tokens_max": _NUM,
-    "file_contains": _FILE,
-    "file_absent": _FILE,
+    "file_contains": {"project": str, "name": str, "text": str},
+    "file_absent": {"project": str, "name": str},
     "api_min": {"path": str, "field": str, "min": _NUM},
     "api_equals": {"path": str, "field": str, "value": object},
 }
 REGEX_ARGS = {"reply_regex", "reply_not_regex", "log_regex", "log_not_regex", "body_regex"}
-OPTIONAL_ARG_FIELDS = {"project", "text"}
+OPTIONAL_ARG_FIELDS = {"project"}
 # Checks that read the running instance: they cannot be re-graded from a stored step.
 LIVE_CHECKS = {"file_contains", "file_absent", "api_min", "api_equals"}
 
@@ -282,7 +294,10 @@ def _check_arg_fields(arg, shape: dict):
     if missing:
         return f"is missing {missing}"
     bad = [k for k, v in arg.items() if not _plain_type(v, shape[k])]
-    return f"has a wrong type in {bad}: {arg!r}" if bad else ""
+    if bad:
+        return f"has a wrong type in {bad}: {arg!r}"
+    empty = [k for k, v in arg.items() if v == "" and k != "project"]
+    return f"has an empty {empty}, so it cannot fail" if empty else ""
 
 
 def check_arg(name: str, arg) -> str:
@@ -292,6 +307,8 @@ def check_arg(name: str, arg) -> str:
         return _check_arg_fields(arg, shape)
     if not _plain_type(arg, shape):
         return f"takes a value like {shape}, got {arg!r}"
+    if arg == "":
+        return "is empty, so it cannot fail"
     if name in REGEX_ARGS:
         try:
             re.compile(arg)
@@ -301,11 +318,12 @@ def check_arg(name: str, arg) -> str:
 
 
 def _grade_one(rec: dict, name: str, arg, ctx) -> tuple:
+    """(passed, what was seen, whether the check itself broke)."""
     try:
         ok, seen = ASSERTIONS[name](rec, arg, ctx)
     except Exception as e:  # a broken check is a failed check, never a pass
-        ok, seen = False, f"check raised {type(e).__name__}: {e}"
-    return bool(ok), seen
+        return False, f"check raised {type(e).__name__}: {e}", True
+    return bool(ok), seen, False
 
 
 def grade_step(rec: dict, expect: list, ctx) -> list:
@@ -313,9 +331,11 @@ def grade_step(rec: dict, expect: list, ctx) -> list:
     results = []
     for item in expect:
         name = next(k for k in item if k not in ("known_defect", "may_pass"))
-        ok, seen = _grade_one(rec, name, item[name], ctx)
+        ok, seen, broke = _grade_one(rec, name, item[name], ctx)
         row = {"check": name, "arg": item[name], "pass": ok, "seen": seen}
-        if item.get("known_defect"):
+        if broke:
+            row["broke"] = True  # no trace, or a dead instance: a marker never excuses this
+        elif item.get("known_defect"):
             row.update(known_defect=item["known_defect"], may_pass=bool(item.get("may_pass")))
         results.append(row)
     return results
@@ -327,7 +347,7 @@ def regrade_step(rec: dict) -> list:
     for row in rec.get("checks", []):
         if row["check"] not in ASSERTIONS or row["check"] in LIVE_CHECKS:
             continue
-        ok, _seen = _grade_one(rec, row["check"], row["arg"], None)
+        ok, _text, _broke = _grade_one(rec, row["check"], row["arg"], None)
         if ok != row["pass"]:
             flips.append((row["check"], row["pass"], ok))
     return flips

@@ -26,14 +26,15 @@ Options:
 | `--only id,id` | run only these scenario ids, plus the scenarios they name in `needs` |
 | `--parallel N` | run N personas at once, one container each |
 | `--provider-limit N` | at most N turns at once per head provider, however many personas run (default 2) |
-| `--max-cents N` | stop starting paid turns at this total for the run, judge included (default 500) |
-| `--retries N` | run a turn again after a provider's 429 or 5xx, with a growing wait (default 2); every try is kept in the step file |
-| `--resume` | skip personas this evidence directory already finished; run the rest from their start |
+| `--max-cents N` | stop starting paid turns and judge calls at this total for the run (default 500). A step already running finishes, so a run can pass it by that step's cost, per parallel persona |
+| `--retries N` | run a turn again after a provider's 429 or 5xx, with a growing wait (default 2), only when no tool ran yet, so a retry repeats no side effect. The failed message stays in the conversation. Every try is kept in the step file |
+| `--resume` | skip personas this evidence directory finished with the same persona and image tag; run the rest from their start |
 | `--judge` | add the independent LLM judge from `tests/hil/qa_judge.py`, on a provider other than the persona's head. A recorded soft signal that never changes a verdict (needs `requests`) |
 | `--keep` | leave the containers and volumes for inspection |
 
 `persona_rig.py regrade --evidence DIR` re-grades every stored step with today's graders and
-exits 1 when a stored verdict would change. Checks that read a live instance are skipped.
+exits 1 when a stored verdict would change, or when it found no step or an unreadable one. Checks
+that read a live instance are skipped, and so are moved-aside runs.
 
 A rerun into the same evidence directory moves the persona's older run aside as
 `<persona>.prev-<time>`, so old step files never read as new ones.
@@ -95,8 +96,9 @@ that goes stale:
 {"truth": {"py_latest": {"url": "https://www.python.org/downloads/", "regex": "Download Python (3\\.\\d+\\.\\d+)"}}}
 ```
 
-The value fills `${py_latest}`, and the raw body and its hash go to `<evidence>/truth/`. A source that
-does not answer stops the run before anything is spent.
+The value fills `${py_latest}`, and the raw body and its hash go to `<evidence>/truth/`. The source is
+a plain public page: http or https, no query string. A source that does not answer stops the run
+before anything is spent.
 
 A scenario takes:
 
@@ -105,7 +107,6 @@ A scenario takes:
 | `id`, `steps` | required |
 | `needs` | earlier scenario ids it builds on; `--only` brings them along |
 | `continue_conversation` | `true` keeps the conversation of the scenario before. By default each scenario after the first starts with the page's Clear, so one scenario's chat cannot answer the next. Long-term memory and files stay |
-| `known_defect`, `may_pass` | see Known defects |
 
 ## Known defects
 
@@ -114,7 +115,6 @@ defect-hitting persona in the repo. An id must be a row of `known_defects.json`.
 
 ```json
 {"tool_called": "files_read", "known_defect": "glm-no-tools"}
-{"id": "routine", "known_defect": "no-routines", "steps": []}
 ```
 
 - A marked check that fails is recorded under `known_failures`, the persona still passes, and the
@@ -122,7 +122,8 @@ defect-hitting persona in the repo. An id must be a row of `known_defects.json`.
 - A marked check that passes **fails the persona** (`xpass`): the defect looks fixed, so remove the
   marker. Add `"may_pass": true` where the defect depends on what the model chose to do.
 - An empty `known_defect` marks nothing, so a matrix row can switch a marker off.
-- A refused turn, a turn that ran out of time, and a persona that stopped are never excused.
+- A marker sits on one check, never on a scenario. A refused turn, a turn that ran out of time, a
+  check that broke (no trace, a dead instance) and a persona that stopped are never excused.
 
 ## Steps
 

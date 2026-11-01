@@ -39,6 +39,7 @@ class FakeNimbusd:
         self.spawn_turns_unresolved = set()
         self.settings = {}
         self.transient_failures = 0
+        self.last_turn_failed = False
         self.busy_reads = 0  # how many engine reads answer 503, as after a real restart
         self.lock = threading.Lock()
 
@@ -52,8 +53,10 @@ class FakeNimbusd:
         turn = self.push("user", text)
         self.log.append("turn spend: ok owner | fake/fake-model in=100 out=10 cR=0 cW=0 n=1 id=fake-model")
         self.turn_counter += 1
+        self.last_turn_failed = False
         if "flaky" in text and self.transient_failures > 0:
             self.transient_failures -= 1
+            self.last_turn_failed = True
             self.log.append("orchTurn(mistral-loop): HTTP 429 rate limited")
             self.push("assistant", "That didn't finish - try again later.")
         elif "sub-agent" in text:
@@ -144,7 +147,7 @@ def make_handler(fake: FakeNimbusd, token: str):
                     "/api/log": lambda: "\n".join(fake.log),
                     "/api/lastturn": lambda: (
                         f"turn {fake.turn_counter}\n===== 4. TOOL LOOP =====\n"
-                        '[tool] files_read {"a":1}\n[result] files_read ok\n'
+                        + ('[tool] files_read {"a":1}\n[result] files_read ok\n' if not fake.last_turn_failed else "")
                     ),
                     "/api/orch": fake.orch,
                     "/api/state": fake.state,
@@ -449,7 +452,9 @@ class Grading(unittest.TestCase):
             def file_bytes(self, *_a):
                 return 0, "connection refused"
 
-        self.assertFalse(grade.file_absent({}, {"name": "n"}, Down())[0])
+        rows = grade.grade_step({}, [{"file_absent": {"name": "n"}}], Down())
+        self.assertFalse(rows[0]["pass"])
+        self.assertTrue(rows[0]["broke"])
 
     def test_a_check_that_raises_is_a_failure(self):
         out = grade.grade_step(REC, [{"file_contains": {"no": "name"}}], CTX)[0]
@@ -731,6 +736,27 @@ class Schema(unittest.TestCase):
             self.refused("unknown field", scenarios=[sc(say(**{bad: 5}))])
         self.refused("unknown field", scenarios=[sc(say(), knwon_defect="no-fold")])
 
+    def test_repeat_and_pad_are_checked_before_they_expand(self):
+        self.refused("at least 1", scenarios=[sc(say(repeat=0))])
+        self.refused("at least 1", scenarios=[sc(say(repeat=-2))])
+        self.refused("only works with repeat", scenarios=[sc(say(pad=100))])
+        self.refused("repeat needs a say step", scenarios=[sc({"sleep": 0, "repeat": 2})])
+
+    def test_a_check_that_cannot_fail_is_refused(self):
+        for check in ({"reply_contains": ""}, {"reply_regex": ""}, {"tool_called": ""}, {"body_contains": ""}):
+            self.refused("cannot fail", scenarios=[sc(say("x", check))])
+        self.refused("cannot fail", scenarios=[sc(say("x", {"file_contains": {"name": "n", "text": ""}}))])
+        self.refused("missing", scenarios=[sc(say("x", {"file_contains": {"name": "n"}}))])
+        self.refused("cannot fail", scenarios=[sc(say("x", {"tool_args_regex": {"tool": "a", "regex": ""}}))])
+
+    def test_nested_values_and_markers_are_typed(self):
+        self.refused("must be text", keys={"mistral": 5})
+        self.refused("must be text", env={"A": 1})
+        self.refused("must be text", models={"head": {"mistral": 5}})
+        self.refused("instance_env_keys", instance_env_keys=[5])
+        self.refused("true or false", scenarios=[sc(say("x", {"reply_contains": "x", "known_defect": "no-fold", "may_pass": "no"}))])
+        self.refused("is text", scenarios=[sc(say("x", {"reply_contains": "x", "known_defect": ["no-fold"]}))])
+
     def test_wrong_types_are_refused_not_raised_later(self):
         self.refused("monthly_cap_cents", monthly_cap_cents="500")
         self.refused("timeout_s", scenarios=[sc(say(timeout_s="60"))])
@@ -755,7 +781,6 @@ class Schema(unittest.TestCase):
 
     def test_a_marker_must_name_a_registered_defect(self):
         self.refused("known_defects.json", scenarios=[sc(say("x", {"reply_contains": "x", "known_defect": "nope"}))])
-        self.refused("known_defects.json", scenarios=[sc({"sleep": 0}, known_defect="nope")])
         self.refused("needs a known_defect", scenarios=[sc(say("x", {"reply_contains": "x", "may_pass": True}))])
 
     def test_the_report_defects_are_registered(self):
@@ -854,6 +879,19 @@ class Truth(unittest.TestCase):
         self.assertIn(b"3.99.1", body)
         self.assertIn("UNFETCHED", dry[0]["scenarios"][0]["steps"][0]["expect"][0]["reply_contains"])
 
+    def test_a_source_must_be_a_public_page_and_the_regex_must_capture(self):
+        cases = [
+            {"url": "file:///etc/passwd", "regex": "(x)"},
+            {"url": self.url + "?key=abc", "regex": "(x)"},
+            {"url": self.url, "regex": "no group"},
+            {"url": self.url, "regex": "(x)", "extra": 1},
+        ]
+        for spec in cases:
+            with tempfile.TemporaryDirectory() as d, self.assertRaises(pr.PersonaError, msg=str(spec)):
+                path = Path(d) / "m.json"
+                path.write_text(json.dumps({**self.doc("(x)"), "truth": {"latest": spec}}))
+                pr.load_personas(str(path), Path(d) / "truth")
+
     def test_a_source_that_does_not_answer_the_regex_stops_the_run(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "m.json"
@@ -867,36 +905,54 @@ class Contract(unittest.TestCase):
 
     REPO = HERE.parents[1]
 
+    def read(self, path):
+        return (self.REPO / path).read_text(errors="replace")
+
     def test_everything_the_rig_relies_on_is_in_the_daemon_source(self):
-        source = pr.contract_source(self.REPO)
-        self.assertGreater(len(source), 100000, "the daemon source was not found")
-        self.assertEqual(pr.contract_missing(source), [])
+        self.assertEqual(pr.contract_missing(self.read), [])
 
-    def test_a_rename_on_any_row_is_caught(self):
-        source = pr.contract_source(self.REPO)
-        for needle in ('"/api/orch"', '"spendCeil"', "===== 4. TOOL LOOP", '"limitCents\\"'):
-            self.assertTrue(needle in source or needle.replace('\\"', '"') in source, needle)
-            broken = source.replace(needle, "renamed").replace(needle.replace('\\"', '"'), "renamed")
-            self.assertTrue(pr.contract_missing(broken), needle)
+    def test_a_rename_of_any_entry_is_caught_in_its_own_file(self):
+        for path, tokens in pr.CONTRACT.items():
+            for token in tokens:
+                broken = lambda p, _t=token, _f=path: self.read(p).replace(_t, "renamed") if p == _f else self.read(p)
+                self.assertEqual(pr.contract_missing(broken), [f"{path}: {token}"])
 
-    def test_the_web_page_alone_does_not_satisfy_the_contract(self):
-        self.assertIn("webui_page.h", pr.CONTRACT_SKIP)
+    def test_a_field_only_the_served_page_names_does_not_count(self):
+        self.assertFalse(any("webui_page" in path or "include/web" in path for path in pr.CONTRACT))
+
+    def _contract_text(self):
+        return " ".join(t for tokens in pr.CONTRACT.values() for t in tokens)
 
     def test_every_form_the_rig_posts_is_in_the_contract(self):
         p = persona(directive="d", env={"A": "b"})
         runner = pr.Runner(p, FakeBackend(FakeNimbusd()), {"FAKE_MISTRAL": FAKE_KEY}, Path(tempfile.mkdtemp()))
-        fields = set(pr.CONTRACT["form_fields"]) | {"id", "name", "role"}
+        text = self._contract_text()
         for _label, path, form in runner._config_forms():
-            self.assertTrue(path in pr.CONTRACT["routes"] or path.startswith("/api/telegram/"), path)
+            self.assertIn(f'"{path.rsplit("/add", 1)[0]}', text)
             for field in form:
-                self.assertTrue(field in fields or field.split("_")[0] + "_" in fields, field)
+                prefix = field.split("_")[0] + "_"
+                self.assertTrue(f'"{field}"' in text or f'"{prefix}"' in text, field)
+
+    def test_every_route_the_rig_reads_is_in_the_contract(self):
+        text = self._contract_text()
+        source = (HERE / "persona_rig.py").read_text().split("def contract_missing")[1]
+        for route in set(re.findall(r'"(/(?:api/[a-z/_]+[a-z]|readyz))[?"]', source)):
+            self.assertIn(f'"{route.removesuffix("add")}"', text, route)
 
     def test_every_fake_route_is_in_the_contract(self):
         import inspect
 
-        fake_routes = set(re.findall(r'"(/(?:api/[a-z/]+|readyz))"', inspect.getsource(make_handler)))
-        known = set(pr.CONTRACT["routes"]) | {"/api/loops"}
-        self.assertEqual(sorted(fake_routes - known), [])
+        text = self._contract_text()
+        for route in set(re.findall(r'"(/(?:api/[a-z/]+|readyz))"', inspect.getsource(make_handler))) - {"/api/loops"}:
+            self.assertIn(f'"{route}"', text, route)
+
+
+class DeadInstance:
+    def file_bytes(self, _project, _name):
+        return 0, "ConnectionError"
+
+    def get(self, _path):
+        return 503, "busy"
 
 
 class Markers(unittest.TestCase):
@@ -927,18 +983,22 @@ class Markers(unittest.TestCase):
         checks = [{"reply_contains": "banana", "known_defect": "no-fold"}, {"reply_contains": "kiwi"}]
         self.assertFalse(self.run_one(persona(scenarios=[sc(say("hi", *checks))]))["pass"])
 
-    def test_a_scenario_marker_covers_its_checks_and_goes_stale_too(self):
-        marked = sc(say("hi", {"reply_contains": "banana"}), known_defect="no-routines")
-        self.assertTrue(self.run_one(persona(scenarios=[marked]))["pass"])
-        stale = sc(say("hi", {"reply_contains": "hi"}), known_defect="no-routines")
-        self.assertFalse(self.run_one(persona(scenarios=[stale]))["pass"])
+    def test_a_marker_on_a_scenario_is_refused(self):
+        with self.assertRaises(pr.PersonaError):
+            persona(scenarios=[sc(say("hi"), known_defect="no-routines")])
 
-    def test_a_marker_never_excuses_a_turn_that_was_refused_or_timed_out(self):
-        rec = {"checks": [{"check": "turn_finished", "arg": True, "pass": False, "seen": "ran out of time"}]}
+    def test_a_marker_never_excuses_a_refused_turn_or_a_check_that_broke(self):
+        broke = grade.grade_step({"reply": "x"}, [{"tool_called": "y", "known_defect": "no-routines"}], None)
+        self.assertTrue(broke[0]["broke"])
+        self.assertNotIn("known_defect", broke[0])
+        dead = grade.grade_step({}, [{"file_absent": {"name": "n"}, "known_defect": "no-routines"}], DeadInstance())
+        self.assertTrue(dead[0]["broke"])
+        rec = {"checks": [*broke, *dead, {"check": "turn_finished", "arg": True, "pass": False, "seen": "out of time"}]}
         out = {"failed": [], "known_failures": [], "xpass": []}
         runner = pr.Runner(persona(), FakeBackend(FakeNimbusd()), {"FAKE_MISTRAL": FAKE_KEY}, Path(tempfile.mkdtemp()))
-        runner._classify({"known_defect": "no-routines"}, 0, rec, out)
-        self.assertEqual(len(out["failed"]), 1)
+        runner._classify(0, rec, out)
+        self.assertEqual(len(out["failed"]), 3)
+        self.assertEqual(out["known_failures"], [])
 
     def test_an_empty_marker_from_a_matrix_row_marks_nothing(self):
         check = {"reply_contains": "banana", "known_defect": "", "may_pass": True}
@@ -990,8 +1050,25 @@ class SpendLimits(unittest.TestCase):
             pr.run_all([persona()], FakeBackend(FakeNimbusd()), {"FAKE_MISTRAL": FAKE_KEY}, Path(d), options)
         self.assertEqual(limits.snapshot()["judge_cents"], 500)
 
+    def test_the_judge_is_not_called_past_the_ceiling(self):
+        calls = []
+        limits = pr.RunLimits(max_cents=0.5)
+        limits.add(1)
+        runner = pr.Runner(
+            persona(),
+            FakeBackend(FakeNimbusd()),
+            {"FAKE_MISTRAL": FAKE_KEY},
+            Path(tempfile.mkdtemp()),
+            {"limits": limits, "judge_factory": lambda _a: lambda *x: calls.append(x)},
+        )
+        rec = {"checks": [], "reply": "x"}
+        runner._judge_step({"say": "x"}, rec)
+        self.assertEqual(calls, [])
+        self.assertIn("skipped", rec["judge"]["rationale"])
+
     def test_a_judge_call_with_no_usage_counts_a_high_figure_and_a_failed_call_counts_nothing(self):
         self.assertEqual(pr.judge_cents({"satisfied": True, "score": 1, "judge_model": "gpt-5.5"}), 2)
+        self.assertEqual(pr.judge_cents(None), 2, "billed, but its answer could not be parsed")
         self.assertEqual(pr.judge_cents({"satisfied": None, "score": None, "judge_model": "gpt-5.5"}), 0)
         self.assertEqual(pr.judge_cents({"rationale": "judge unavailable"}), 0)
 
@@ -1071,6 +1148,9 @@ class ToolTrace(unittest.TestCase):
 
             get_json_strict = get_json
 
+            def text_strict(self, path, also_ok=()):
+                return self.get(path)[1]
+
         slot = Slot()
         cap = pr.Capture(slot)
         slot.text = "===== 4. TOOL LOOP\n[tool] head_tool {}\n"
@@ -1106,6 +1186,12 @@ class RunOptions(unittest.TestCase):
         self.assertFalse(results[0]["pass"])
         self.assertEqual(fake.turn_counter, 3)
 
+    def test_a_turn_that_ran_a_tool_is_not_retried(self):
+        rec = {"reply": "That didn't finish", "log": "HTTP 429", "tools": [{"name": "files_write"}]}
+        self.assertFalse(pr._transient_failure(rec), "another try would repeat the write")
+        self.assertTrue(pr._transient_failure({**rec, "tools": []}))
+        self.assertTrue(pr._transient_failure({**rec, "tools": None}))
+
     def test_a_failure_with_no_provider_error_is_not_retried(self):
         fake = FakeNimbusd()
         p = persona(scenarios=[sc(say("broken turn", {"reply_nonempty": True}))])
@@ -1136,6 +1222,22 @@ class RunOptions(unittest.TestCase):
         _r, third, _e = self.run_it([persona()], ev=ev, resume=True)
         self.assertEqual(len(third.started), 1, "a persona that stopped runs again")
         self.assertTrue(list(ev.glob("unit.prev-*")), "the older run is kept, not mixed in")
+
+    def test_resume_runs_again_after_the_persona_changed_or_on_a_corrupt_summary(self):
+        ev = Path(tempfile.mkdtemp())
+        self.run_it([persona()], ev=ev)
+        _r, edited, _e = self.run_it([persona(timezone="UTC")], ev=ev, resume=True)
+        self.assertEqual(len(edited.started), 1)
+        (ev / "unit" / "summary.json").write_text("{truncated")
+        _r, corrupt, _e = self.run_it([persona(timezone="UTC")], ev=ev, resume=True)
+        self.assertEqual(len(corrupt.started), 1)
+
+    def test_a_persona_with_none_of_the_only_ids_starts_no_container(self):
+        p = persona(scenarios=[sc({"sleep": 0}, id="a")])
+        q = persona(name="other", scenarios=[sc({"sleep": 0}, id="c")])
+        results, backend, _e = self.run_it([p, q], only={"c"})
+        self.assertEqual(len(backend.started), 1)
+        self.assertFalse(next(r for r in results if r["persona"] == "unit")["pass"])
 
     def test_only_brings_the_scenarios_it_needs(self):
         p = persona(
@@ -1182,6 +1284,24 @@ class RunOptions(unittest.TestCase):
         self.assertEqual(len(clears), 1, "before b only: a starts clean and c asked to continue")
         self.assertEqual([s["isolated"] for s in results[0]["scenarios"]], [False, True, False])
         self.assertEqual(json.loads((ev / "unit" / "b" / "reset.json").read_text())["status"], 200)
+
+    def test_a_failed_clear_fails_the_scenario_and_runs_none_of_it(self):
+        fake = FakeNimbusd()
+        p = persona(scenarios=[sc(say("one"), id="a"), sc(say("refuse-me-not two"), id="b")])
+        original = pr.Instance.call
+
+        def refuse_clear(inst, method, path, form=None, data=None, ctype=None):
+            if form and "clearConv" in form:
+                return 503, "busy"
+            return original(inst, method, path, form=form, data=data, ctype=ctype)
+
+        pr.Instance.call = refuse_clear
+        self.addCleanup(setattr, pr.Instance, "call", original)
+        results, _b, _e = self.run_it([p], fake)
+        row = results[0]["scenarios"][1]
+        self.assertFalse(row["pass"])
+        self.assertEqual(row["failed"][0]["check"], "conversation_reset")
+        self.assertEqual(fake.turn_counter, 1, "the second scenario's turn was not paid for")
 
     def test_a_setting_that_did_not_take_stops_the_persona_before_any_turn(self):
         class Coercing(FakeNimbusd):
@@ -1263,6 +1383,19 @@ class Regrade(unittest.TestCase):
             out = io.StringIO()
             self.assertEqual(pr.regrade(Path(d), out), 1)
         self.assertIn("no_error_reply: stored True, now False", out.getvalue())
+
+    def test_no_steps_a_corrupt_step_and_superseded_runs(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(pr.regrade(Path(d), io.StringIO()), 1, "nothing checked is not a clean result")
+            self.write(d, [{"check": "no_error_reply", "arg": True, "pass": False, "seen": ""}])
+            old = Path(d) / "p.prev-1" / "s"
+            old.mkdir(parents=True)
+            (old / "step-00.json").write_text(
+                json.dumps({"reply": "Done.", "checks": [{"check": "no_error_reply", "arg": True, "pass": True}]})
+            )
+            self.assertEqual(pr.regrade(Path(d), io.StringIO()), 0, "a moved-aside run is not this run")
+            (Path(d) / "p" / "s" / "step-01.json").write_text("{cut")
+            self.assertEqual(pr.regrade(Path(d), io.StringIO()), 1)
 
     def test_agreement_and_live_checks_read_clean(self):
         with tempfile.TemporaryDirectory() as d:

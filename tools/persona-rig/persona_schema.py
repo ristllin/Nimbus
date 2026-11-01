@@ -56,8 +56,6 @@ SCENARIO_FIELDS = {
     "steps": list,
     "needs": list,
     "continue_conversation": bool,
-    "known_defect": str,
-    "may_pass": bool,
 }
 ACTION_FIELDS = {"say": str, "http": dict, "upload": dict, "restart": bool, "sleep": NUMBER}
 SAY_FIELDS = {
@@ -170,6 +168,8 @@ def known_defects() -> dict:
 
 def _check_marker(item: dict, where: str):
     defect = item.get("known_defect", "")
+    if not isinstance(defect, str) or not isinstance(item.get("may_pass", False), bool):
+        raise PersonaError(f"{where}: known_defect is text and may_pass is true or false: {item!r}")
     if defect and defect not in known_defects():
         raise PersonaError(f"{where}: {defect!r} is not in known_defects.json")
     if "may_pass" in item and "known_defect" not in item:  # empty: a matrix row switched the marker off
@@ -213,28 +213,48 @@ def _validate_step(step: dict, where: str):
         _validate_expect(item, step, where)
 
 
+def _check_repeat(step: dict, where: str):
+    if "repeat" in step and ("say" not in step or step["repeat"] < 1):
+        raise PersonaError(f"{where}: repeat needs a say step and a count of at least 1")
+    if "pad" in step and "repeat" not in step:
+        raise PersonaError(f"{where}: pad only works with repeat")
+
+
 def _validate_scenario(sc: dict, earlier: set, where: str):
     _check_fields(sc, SCENARIO_FIELDS, where)
     for need in sc.get("needs", []):
         if need not in earlier:
             raise PersonaError(f"{where}: needs {need!r}, which no earlier scenario provides")
-    _check_marker(sc, where)
     if not sc.get("steps"):
         raise PersonaError(f"{where}: no steps")
     for n, step in enumerate(sc["steps"]):
         _check_fields(step, STEP_FIELDS, f"{where}#{n}")
+        _check_repeat(step, f"{where}#{n}")
     sc["steps"] = _expand_repeats(sc["steps"])
     for n, step in enumerate(sc["steps"]):
         _validate_step(step, f"{where}#{n}")
 
 
+def _check_text_values(obj: dict, where: str):
+    bad = [k for k, v in obj.items() if not isinstance(v, str)]
+    if bad:
+        raise PersonaError(f"{where}: {bad} must be text")
+
+
 def _validate_providers(p: dict, name: str):
     if p.get("monthly_cap_cents", MIN_CAP_CENTS) < MIN_CAP_CENTS:
         raise PersonaError(f"{name}: monthly_cap_cents below {MIN_CAP_CENTS}: the daemon would raise it to that")
-    for slug in [*p.get("keys", {}), *p.get("models", {}).get("head", {}), *p.get("models", {}).get("sub", {})]:
+    models = p.get("models", {})
+    _check_fields(models, MODEL_ROLES, f"{name} models")
+    _check_text_values(p.get("keys", {}), f"{name} keys")
+    _check_text_values(p.get("env", {}), f"{name} env")
+    for role in models.values():
+        _check_text_values(role, f"{name} models")
+    if not all(isinstance(k, str) for k in p.get("instance_env_keys", [])):
+        raise PersonaError(f"{name}: instance_env_keys must list text")
+    for slug in [*p.get("keys", {}), *models.get("head", {}), *models.get("sub", {})]:
         if slug not in KEY_FIELDS:
             raise PersonaError(f"{name}: unknown provider {slug!r}, one of {sorted(KEY_FIELDS)}")
-    _check_fields(p.get("models", {}), MODEL_ROLES, f"{name} models")
     if p.get("host") and p["host"] not in KEY_FIELDS:
         raise PersonaError(f"{name}: unknown host {p['host']!r}, one of {sorted(KEY_FIELDS)}")
     for slug, verdict in p.get("key_expect", {}).items():
@@ -271,6 +291,11 @@ def fetch_truth(var: str, spec: dict, truth_dir: Path) -> str:
     Without this a graded value is a number someone typed in once. A source that cannot
     be read stops the run: nothing has been spent yet.
     """
+    _check_fields(spec, {"url": str, "regex": str}, f"truth {var}")
+    if not re.match(r"https?://[^?]+$", spec.get("url", "")):
+        raise PersonaError(f"truth {var}: the source is a plain public web page, with no query string")
+    if re.compile(spec.get("regex", "")).groups < 1:
+        raise PersonaError(f"truth {var}: the regex needs one group: the value")
     req = urllib.request.Request(spec["url"], headers={"User-Agent": "Mozilla/5.0 persona-rig"})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:

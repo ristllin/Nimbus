@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -75,94 +76,62 @@ JUDGE_FALLBACK_CENTS = 2  # one call, when the provider reported no usage
 # Everything the rig relies on nimbusd to keep. test_persona_rig.py checks each entry against
 # the daemon's source, so a rename fails CI instead of failing every live persona at configure.
 CONTRACT = {
-    "routes": [
-        "/readyz",
-        "/api/chat",
-        "/api/message",
-        "/api/replies",
-        "/api/mem/episodic",
-        "/api/mem/stats",
-        "/api/log",
-        "/api/lastturn",
-        "/api/orch",
-        "/api/state",
-        "/api/config",
-        "/api/telegram",
-        "/api/telegram/",
-        "/api/tenant",
-        "/api/files/dl",
-        "/api/files/upload",
+    "nimbusd/src/http_control.h": ['"/readyz"', '"/api/message"', '"/api/replies"', '"chat_id"', '"text"', '"after"'],
+    "nimbusd/src/reply_buffer.h": ["lastSeq"],
+    "nimbusd/src/tg_web.h": ['"/api/telegram"', '"/api/telegram/"', '"/api/tenant"', '"add"', '"allow"', '"tenants"']
+    + ['"id"', '"name"', '"role"'],
+    "nimbusd/src/hosted_settings.h": ['"orchHost"', '"sysPrompt"', '"clearConv"', '"spendCeil"', '"orchM_"', '"subM_"']
+    + ['"devTz"', '"devName"'],
+    "lib/core/include/nimbus/orch/provider_slots.h": [f'"{field}"' for field in KEY_FIELDS.values()],
+    "nimbusd/src/spend_ceiling_vn.h": ["limitCents", "spentCents"],
+    "nimbusd/src/provider_verify.h": ['"nocredits"'],
+    "nimbusd/src/web_api.h": [
+        '"/api/chat"',
+        '"/api/orch"',
+        '"/api/state"',
+        '"/api/config"',
+        '"/api/log"',
+        '"/api/lastturn"',
+        '"/api/mem/stats"',
+        '"/api/mem/episodic"',
+        '"/api/files/dl"',
+        '"/api/files/upload"',
+        '"providers"',
+        '"verify"',
+        '"vts"',
+        '"vfyReason"',
+        '"orchModel"',
+        '"subModel"',
+        '"directive"',
+        '"usage"',
+        '"sessIn"',
+        '"sessOut"',
+        '"turns"',
+        '"ceiling"',
+        '"spend"',
+        '"pending"',
+        '"reply"',
+        '"turn"',
+        '"text"',
+        '"messages"',
+        '"limit"',
+        '"project"',
+        '"name"',
+        '"file"',
     ],
-    "form_fields": [
-        *KEY_FIELDS.values(),
-        "orchM_",
-        "subM_",
-        "orchHost",
-        "sysPrompt",
-        "spendCeil",
-        "clearConv",
-        "devTz",
-        "devName",
-        "text",
-        "add",
-    ],
-    "json_fields": [
-        "providers",
-        "verify",
-        "vts",
-        "vfyReason",
-        "orchModel",
-        "subModel",
-        "directive",
-        "usage",
-        "sessIn",
-        "sessOut",
-        "turns",
-        "ceiling",
-        "limitCents",
-        "spentCents",
-        "spend",
-        "replies",
-        "lastSeq",
-        "turnInFlight",
-        "pending",
-        "reply",
-        "turn",
-        "allow",
-        "tenants",
-        "messages",
-    ],
-    "text": ["===== 4. TOOL LOOP", "[tool] ", "[result] ", "turn spend: ", "nocredits"],
+    "nimbusd/src/rig.h": ["===== 4. TOOL LOOP"],
+    "lib/core/src/orch_transcript.cpp": ['"[tool] "', '"[result] "'],
+    "lib/harness/src/engine.cpp": ['"turn spend: '],
 }
-CONTRACT_SOURCES = (
-    "nimbusd/src/*.h",
-    "nimbusd/src/*.cpp",
-    "lib/harness/src/*.cpp",
-    "lib/core/src/*.cpp",
-    "lib/core/include/nimbus/orch/provider_slots.h",
-)
-CONTRACT_SKIP = {"webui_page.h"}  # the served page: its JS names these fields whether the daemon does or not
 
 
-def contract_missing(source: str) -> list:
-    """Contract entries the daemon's source no longer holds. Fields may sit in a raw JSON string."""
-    out = [f"route {r}" for r in CONTRACT["routes"] if f'"{r}"' not in source]
-    for kind in ("form_fields", "json_fields"):
-        for name in CONTRACT[kind]:
-            if f'"{name}"' not in source and f'\\"{name}\\"' not in source and f'"{name}\\"' not in source:
-                out.append(f"{kind} {name}")
-    out += [f"text {t!r}" for t in CONTRACT["text"] if t not in source]
+def contract_missing(read) -> list:
+    """Contract entries the daemon's source no longer holds, each in its own file. read(path) gives a file's text."""
+    out = []
+    for path, tokens in CONTRACT.items():
+        text = read(path)
+        out += [f"{path}: {t}" for t in tokens if t not in text]
     return out
-
-
-def contract_source(repo: Path) -> str:
-    """The daemon's source as one text, for contract_missing."""
-    parts = []
-    for pattern in CONTRACT_SOURCES:
-        for path in sorted(repo.glob(pattern)):
-            if path.name not in CONTRACT_SKIP:
-                parts.append(path.read_text(errors="replace"))
-    return "\n".join(parts)
 
 
 def read_env_file(path: str) -> dict:
@@ -321,6 +290,17 @@ class Instance:
             raise RuntimeError(f"GET {path} answered {status}")
         return json.loads(body)
 
+    def text_strict(self, path: str, also_ok=()) -> str:
+        """A plain-text read a verdict rests on: waits out busy, and an error is never read as log text."""
+        end = time.time() + BUSY_WAIT_S
+        status, body = self.get(path)
+        while status == 503 and time.time() < end:
+            time.sleep(BUSY_POLL_S)
+            status, body = self.get(path)
+        if status != 200 and status not in also_ok:
+            raise RuntimeError(f"GET {path} answered {status}")
+        return body
+
     def file_bytes(self, project: str, name: str):
         q = urllib.parse.urlencode({"project": project, "name": name})
         return self.get(f"/api/files/dl?{q}")
@@ -421,8 +401,8 @@ class Capture:
     def mark(self):
         self.seq = self.inst.get_json_strict("/api/replies?after=0")["lastSeq"]
         self.seen_ids = {m.get("id") for m in self._episodic()}
-        self.log_lines = self.inst.get("/api/log")[1].splitlines()
-        self.anatomy = self.inst.get("/api/lastturn")[1]
+        self.log_lines = self.inst.text_strict("/api/log").splitlines()
+        self.anatomy = self.inst.text_strict("/api/lastturn", also_ok=(404,))  # 404: no turn has run yet
         self.usage, self.spent = self._usage()
 
     def replies(self) -> tuple:
@@ -432,7 +412,7 @@ class Capture:
         return [r.get("text", "") for r in rows if r.get("role") == "assistant"], bool(d.get("turnInFlight"))
 
     def _log_delta(self) -> str:
-        return "\n".join(overlap_tail(self.log_lines, self.inst.get("/api/log")[1].splitlines()))
+        return "\n".join(overlap_tail(self.log_lines, self.inst.text_strict("/api/log").splitlines()))
 
     def note_turn(self):
         """/api/lastturn is one slot that a later turn overwrites: keep every turn seen in it."""
@@ -562,10 +542,10 @@ IMPLICIT_CHECKS = {"turn_sent", "turn_finished", "conversation_reset"}
 
 
 def _transient_failure(rec: dict) -> bool:
-    """The turn failed and the daemon logged a provider failure worth another try."""
+    """The turn failed on a provider error before any tool ran, so another try repeats no side effect."""
     text = "\n".join([rec.get("reply") or "", *rec.get("replies", [])])
     failed = not text.strip() or ERROR_REPLY_RE.search(text) is not None
-    return failed and TRANSIENT_RE.search(rec.get("log", "")) is not None
+    return failed and not rec.get("tools") and TRANSIENT_RE.search(rec.get("log", "")) is not None
 
 
 def _implicit_checks(rec: dict) -> list:
@@ -736,6 +716,9 @@ class Runner:
     def _judge_step(self, step: dict, rec: dict):
         if not self.judge or "say" not in step or not step.get("judge", True):
             return
+        if self.limits.total() >= self.limits.max_cents:
+            rec["judge"] = {"rationale": "judge skipped: the run's ceiling is reached"}
+            return
         passed = all(r["pass"] for r in rec["checks"])
         oracle = {"passed": passed, "checks": [{"check": r["check"], "pass": r["pass"]} for r in rec["checks"]]}
         tools = [t["name"] for t in rec.get("tools") or []]
@@ -744,6 +727,7 @@ class Runner:
         except Exception as e:  # a soft signal never fails a step
             rec["judge"] = {"rationale": f"judge unavailable: {type(e).__name__}"}
         self.limits.add(judge_cents(rec["judge"]), "judge")
+        rec["judge"] = rec["judge"] or {"rationale": "judge answer could not be parsed"}
 
     def _say(self, step: dict, rec: dict):
         """One turn, and again after a backoff when the provider itself failed. Every try is kept."""
@@ -758,8 +742,9 @@ class Runner:
                 tries.append(one)
                 time.sleep(self.backoff_s * (attempt + 1))
         rec.update(one)
-        if tries:
+        if tries:  # a failed try can bill: the step owns every try's spend
             rec["earlier_tries"] = tries
+            rec["spent_cents_delta"] += sum(t["spent_cents_delta"] for t in tries)
 
     def _restart(self):
         self._sync_turn_log()
@@ -776,7 +761,7 @@ class Runner:
 
     def _sync_turn_log(self):
         """/api/log is an in-memory tail that a restart empties, so the rig keeps the whole life on disk."""
-        lines = self.inst.get("/api/log")[1].splitlines()
+        lines = self.inst.text_strict("/api/log").splitlines()
         new = overlap_tail(self.log_seen, lines)
         if self.log_seen and lines and len(new) == len(lines):
             new = [f"[rig {_utc()}] the daemon's log tail wrapped: lines may be missing here", *new]
@@ -804,43 +789,38 @@ class Runner:
         self.counted_cents += delta
         return rec
 
-    def _reset_conversation(self, sc: dict, out: dict):
+    def _reset_conversation(self, sc: dict, out: dict) -> bool:
         """Scenarios share an instance, not a conversation: the page's Clear before each one."""
-        self._wait_idle()
+        idle = self._wait_idle()
         status, body = self.inst.call("POST", "/api/orch", form={"clearConv": "1"})
-        self._write(f"{sc['id']}/reset.json", json.dumps({"at": _utc(), "status": status, "body": body}))
-        if not 200 <= status < 300:
-            out["failed"].append(
-                {"step": -1, "check": "conversation_reset", "arg": True, "pass": False, "seen": f"answered {status}"}
-            )
+        self._write(f"{sc['id']}/reset.json", json.dumps({"at": _utc(), "idle": idle, "status": status, "body": body}))
+        if idle and 200 <= status < 300:
+            return True
+        seen = f"idle {idle}, clear answered {status}"
+        out["failed"].append({"step": -1, "check": "conversation_reset", "arg": True, "pass": False, "seen": seen})
+        return False
 
-    def _wait_idle(self, timeout_s: float = 90):
+    def _wait_idle(self, timeout_s: float = 90) -> bool:
         """A sub-agent still running from the last scenario would answer into the next one."""
         end = time.time() + timeout_s
         while time.time() < end:
-            state = self.inst.get_json("/api/replies?after=0")
-            if not state.get("turnInFlight"):
-                return
+            if not self.inst.get_json_strict("/api/replies?after=0").get("turnInFlight"):
+                return True
             time.sleep(1)
+        return False
 
-    def _classify(self, sc: dict, n: int, rec: dict, out: dict):
+    def _classify(self, n: int, rec: dict, out: dict):
         """A marked failure is the known defect still there. A marked pass means it is gone: say so."""
         for raw in rec["checks"]:
             row = {"step": n, **self._scrubbed(raw)}
-            defect = raw.get("known_defect") or ("" if raw["check"] in IMPLICIT_CHECKS else sc.get("known_defect", ""))
-            if not raw["pass"] and defect:
-                out["known_failures"].append({**row, "known_defect": defect})
+            if not raw["pass"] and raw.get("known_defect"):
+                out["known_failures"].append(row)
             elif not raw["pass"]:
                 out["failed"].append(row)
             elif raw.get("known_defect") and not raw.get("may_pass"):
                 out["xpass"].append(row)
 
-    def run_scenario(self, sc: dict, first: bool = True) -> dict:
-        out = {"id": sc["id"], "steps": len(sc["steps"]), "failed": [], "known_failures": [], "xpass": []}
-        out.update(tokens_in=0, tokens_out=0, cents=0, isolated=False)
-        if not first and not sc.get("continue_conversation"):
-            self._reset_conversation(sc, out)
-            out["isolated"] = True
+    def _run_steps(self, sc: dict, out: dict):
         verdicts = []
         for n, step in enumerate(sc["steps"]):
             rec = self._run_step(step)
@@ -848,15 +828,22 @@ class Runner:
             out["tokens_in"] += rec.get("usage_delta", {}).get("in", 0)
             out["tokens_out"] += rec.get("usage_delta", {}).get("out", 0)
             out["cents"] += rec.get("spent_cents_delta", 0)
-            self._classify(sc, n, rec, out)
-            if rec.get("judge"):
+            self._classify(n, rec, out)
+            if rec.get("judge") and "judge_provider" in rec["judge"]:
                 verdicts.append((n, rec["judge"]))
-        if sc.get("known_defect") and not sc.get("may_pass") and not out["known_failures"]:
-            out["xpass"].append({"step": -1, "check": "scenario", "known_defect": sc["known_defect"]})
-        out["pass"] = not out["failed"] and not out["xpass"]
-        out["verdict"] = _scenario_verdict(out)
         if verdicts:
             out["judge"] = judge_summary(verdicts, head_provider(self.p))
+
+    def run_scenario(self, sc: dict, first: bool = True) -> dict:
+        out = {"id": sc["id"], "steps": len(sc["steps"]), "failed": [], "known_failures": [], "xpass": []}
+        out.update(tokens_in=0, tokens_out=0, cents=0, isolated=False)
+        ready = True
+        if not first and not sc.get("continue_conversation"):
+            ready = out["isolated"] = self._reset_conversation(sc, out)
+        if ready:  # a failed Clear would run, and pay for, a polluted conversation
+            self._run_steps(sc, out)
+        out["pass"] = not out["failed"] and not out["xpass"]
+        out["verdict"] = _scenario_verdict(out)
         return out
 
     def _scrubbed(self, check: dict) -> dict:
@@ -873,9 +860,12 @@ class Runner:
                 first = False
 
     def run(self, only=None) -> dict:
+        self.summary["fingerprint"] = persona_fingerprint(self.p, getattr(self.backend, "image", ""))
         try:
             self.limits.check()
             self._require_keys()
+            if with_needs(self.p["scenarios"], only) == set():
+                raise RuntimeError("none of the --only scenarios is in this persona")
             self.start()
             configured = self.configure()
             self.wait_verified()
@@ -945,6 +935,11 @@ def head_provider(p: dict) -> str:
     return p.get("host") or next(iter(p.get("keys", {})), "none")
 
 
+def persona_fingerprint(p: dict, image: str) -> str:
+    """What --resume compares: an edited persona or another image is not the same run."""
+    return hashlib.sha256(json.dumps([p, image], sort_keys=True).encode()).hexdigest()
+
+
 def key_verdict(pv: dict) -> str:
     """What /api/orch says of a key (nimbusd/src/provider_verify.h)."""
     if not pv.get("vts"):
@@ -988,10 +983,12 @@ def provider_usage(rows: list) -> dict:
 
 def judge_cents(verdict) -> float:
     """From the usage the judge's provider reported; a fixed high figure when there is none."""
-    if not isinstance(verdict, dict) or "judge_model" not in verdict:
+    if verdict is None:
+        return JUDGE_FALLBACK_CENTS  # the call was billed and its answer could not be parsed
+    if "judge_model" not in verdict:
         return 0
     if verdict.get("satisfied") is None and verdict.get("score") is None:
-        return 0  # the call failed: nothing was billed
+        return 0  # the call itself failed: nothing was billed
     usage = verdict.get("judge_usage") or {}
     tokens_in = usage.get("input_tokens")
     tokens_out = usage.get("output_tokens")
@@ -1056,19 +1053,21 @@ def _check_run(personas: list, only) -> None:
         raise PersonaError(f"--only names no scenario: {sorted(unknown)}")
 
 
-def _finished_summary(evidence: Path, p: dict, only):
-    """--resume: an earlier run's summary, when it finished this persona with nothing left to run.
+def _finished_summary(evidence: Path, p: dict, only, image: str):
+    """--resume: an earlier run's summary, when it finished this same persona with nothing left to run.
 
     Resume works per persona. A scenario cannot pick up on a fresh instance without what the
     ones before it built, so a persona that stopped part way runs again from its start.
     """
-    path = evidence / p["name"] / "summary.json"
-    if not path.exists():
+    try:
+        summary = json.loads((evidence / p["name"] / "summary.json").read_text())
+    except (OSError, ValueError):
         return None
-    summary = json.loads(path.read_text())
     ran = {s.get("id") for s in summary.get("scenarios", [])}
-    wanted = with_needs(p["scenarios"], only) or {sc["id"] for sc in p["scenarios"]}
-    return summary if "finished" in summary and "error" not in summary and wanted <= ran else None
+    wanted = with_needs(p["scenarios"], only)
+    wanted = {sc["id"] for sc in p["scenarios"]} if wanted is None else wanted
+    same = summary.get("fingerprint") == persona_fingerprint(p, image)
+    return summary if same and "finished" in summary and "error" not in summary and wanted <= ran else None
 
 
 def run_all(personas: list, backend, env_values: dict, evidence: Path, options=None) -> list:
@@ -1079,7 +1078,8 @@ def run_all(personas: list, backend, env_values: dict, evidence: Path, options=N
     results = []
 
     def one(p):
-        done = _finished_summary(evidence, p, options.get("only")) if options.get("resume") else None
+        image = getattr(backend, "image", "")
+        done = _finished_summary(evidence, p, options.get("only"), image) if options.get("resume") else None
         try:
             summary = done or Runner(p, backend, env_values, evidence, options).run(options.get("only"))
         except Exception as e:  # one persona's crash must not lose the others' results
@@ -1113,15 +1113,22 @@ def run_and_write(personas: list, backend, env_values: dict, evidence: Path, opt
 
 def regrade(evidence: Path, out=sys.stdout) -> int:
     """Re-grade every stored step with today's graders. Exit 1 when a stored verdict would change."""
-    flips = checked = 0
+    flips = checked = unreadable = 0
     for path in sorted(evidence.rglob("step-*.json")):
-        rec = json.loads(path.read_text())
+        if any(".prev-" in part for part in path.parts):
+            continue
+        try:
+            rec = json.loads(path.read_text())
+        except (OSError, ValueError):
+            unreadable += 1
+            print(f"{path.relative_to(evidence)}: unreadable", file=out)
+            continue
         checked += 1
         for check, stored, now in regrade_step(rec):
             flips += 1
             print(f"{path.relative_to(evidence)} {check}: stored {stored}, now {now}", file=out)
-    print(f"regrade: {checked} steps, {flips} verdicts would change", file=out)
-    return 1 if flips else 0
+    print(f"regrade: {checked} steps, {flips} verdicts would change, {unreadable} unreadable", file=out)
+    return 0 if checked and not flips and not unreadable else 1
 
 
 def _parser() -> argparse.ArgumentParser:
