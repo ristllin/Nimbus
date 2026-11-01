@@ -173,7 +173,9 @@ static void test_a_need_over_an_unknown_row_is_no_figure() {
   // The same mistake in other words, real replies on the eval's models.
   for (const char* need : {"You'd need about 107 g more to reach the 155 g floor.", "Your floor is 150 g, so you still need at least 106.6 g more.",
                            "Against your 150 g floor, you'd need roughly 107 g more from what's left of the day.",
-                           "Against your 150 g floor, that's at least 106.6 g still to go."})
+                           "Against your 150 g floor, that's at least 106.6 g still to go.",
+                           "Against your 150 g floor, you're at least 106.6 g short, and the steak will narrow that gap.",
+                           "Protein stands at at least 48.4 g, i.e. at least 106.6 g below your 150 g floor."})
     TEST_ASSERT_TRUE_MESSAGE(hasKind(foodFigureGaps(need, f, src + " 155"), FoodGapKind::ProteinLeftUnknown), need);
   TEST_ASSERT_TRUE(hasKind(foodFigureGaps("You're short by at least ~102 g of protein, more if the steak row gets a number.", f, src),
                            FoodGapKind::ProteinLeftUnknown));

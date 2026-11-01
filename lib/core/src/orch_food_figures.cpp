@@ -267,7 +267,7 @@ bool leftAt(const std::vector<Tok>& toks, size_t i) {
   for (size_t f = i + 1; f < toks.size() && f <= i + 4; f++) {
     const Tok& t = toks[f];
     if (t.number) break;
-    if (oneOf(t.word, {"left", "remaining", "spare", "more", "remain", "remains", "go"})) return true;
+    if (oneOf(t.word, {"left", "remaining", "spare", "more", "remain", "remains", "go", "short", "below", "under"})) return true;
     if (!oneOf(t.word, {"g", "gm", "gram", "grams", "kcal", "kcals", "cal", "cals", "calorie", "calories", "protein", "of", "to", "still"})) break;
   }
   for (size_t b = i; b > 0 && i - b < 4; b--) {

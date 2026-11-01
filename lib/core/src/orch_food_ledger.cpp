@@ -71,7 +71,7 @@ std::string proteinText(const FoodLedger& l) {
   if (l.proteinUnknown == 0) return ", " + num(l.protein) + " g protein";
   return "; protein: " + num(l.protein) + " g known from " + rowsWord(l.proteinRows) + ", " +
          rowsWord(l.proteinUnknown) + " with no protein figure, so the day's protein is unknown (at least " +
-         num(l.protein) + " g), and how much more is needed is at most a figure, never a firm \"you need\"";
+         num(l.protein) + " g). So the gap to any target is AT MOST a figure: never \"you need\", \"at least N g short\" or \"N g to go\"";
 }
 
 std::string totalsText(const FoodLedger& l) {
