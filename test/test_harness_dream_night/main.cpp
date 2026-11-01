@@ -150,7 +150,10 @@ struct Rig {
     d.apply.emitAsk = [this] { asks++; };
     d.apply.fire = [this](const char*) { cues++; };
     d.apply.turnComplete = [this](const std::string&) { completes++; };
-    d.apply.speak = [this](const std::string&) { speaks++; };
+    d.apply.speak = [this](const std::string&, const std::string&) {
+      speaks++;
+      return orch::SpeakOutcome::spoke();
+    };
     d.apply.captureAssistant = [this](const std::string&, const std::string&) { captures++; };
     d.apply.enqueueSpawn = [this](const orch::Spawn&, const std::string&, bool) { spawns++; return true; };
     d.apply.stageDevice = [this](const orch::ValidatedAction&) { deviceActions++; };

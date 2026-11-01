@@ -57,7 +57,7 @@ enum class FxKind : uint8_t {
 // Stable machine slug per kind (log lines, tests). Never empty.
 const char* fxSlug(FxKind k);
 
-enum : uint8_t {
+enum : uint16_t {
   kFxPermanent = 1u << 0,   // a memory write that asked for permanent storage
   kFxPending   = 1u << 1,   // derived from the turn's fields before apply ran
   kFxVoice     = 1u << 2,   // a send asked for as a Telegram voice message (voice:true)
@@ -68,12 +68,13 @@ enum : uint8_t {
   kFxLogRow    = 1u << 7,   // a files.append of any extension, or an artifact.save of a .txt/.md
                             // document, whose result counts a row or a rewrite that landed:
                             // the only backing of a log claim (CUM-782)
+  kFxUnconfirmed = 1u << 8, // a voice send whose upload went out but Telegram did not answer usably: it may have arrived
 };
 
 struct Effect {
   FxKind  kind = FxKind::Read;
   bool    ok = false;       // the effect landed (false: refused or failed)
-  uint8_t flags = 0;        // kFx* bits
+  uint16_t flags = 0;       // kFx* bits
   uint8_t count = 1;        // how many (spawn items, lookups) this entry stands for
   char    ref[24] = {};     // a memory id, a file name tail or a job tag; "" when none
 };
@@ -86,7 +87,7 @@ class TurnEffects {
   // Record one effect. Returns false (and sets overflowed()) once kMax entries
   // are held; the entry is then dropped, never a reason to fail the turn.
   bool add(FxKind k, bool ok, const std::string& ref = std::string(), uint8_t count = 1,
-           uint8_t flags = 0);
+           uint16_t flags = 0);
   size_t size() const { return v_.size(); }
   // Every effect, in the order they landed (the summary's refs walk these).
   const std::vector<Effect, WorkingAllocator<Effect>>& all() const { return v_; }
@@ -99,7 +100,7 @@ class TurnEffects {
   int countFailed(FxKind k) const;
   bool anyOk(FxKind k) const { return countOk(k) > 0; }
   // True when an ok entry of kind k carries `flag`.
-  bool anyOkWith(FxKind k, uint8_t flag) const;
+  bool anyOkWith(FxKind k, uint16_t flag) const;
   // Drop the pending entries (kFxPending) - apply replaces them with outcomes.
   void dropPending();
 
@@ -139,9 +140,9 @@ class TurnEffects {
 // An artifact.save of a .txt/.md document keeps it on its own landed receipt ("saved
 // p/n (N bytes)"): a whole-file save is the one way to correct a line of a free-text log.
 // A device action's summary ("applied: cfg ", "applied: cfg(no change) ",
-// "applied: tts ") records what it really did (deviceSummaryEffect).
+// "applied: tts ") records what it really did (deviceSummaryEffect; recordSpeakSummary for tts).
 void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::string& output,
-                      uint8_t flags = 0);
+                      uint16_t flags = 0);
 
 // The id/name a tool result names, or "" ("stored memory m1a2b" -> "m1a2b").
 std::string fxRefFromOutput(const std::string& output);
@@ -169,12 +170,23 @@ bool sendDelivered(const TurnEffects& fx);
 // True when a Telegram send this turn was accepted but carries no receipt (queued).
 bool sendQueuedOnly(const TurnEffects& fx);
 
+// What a `tts` device action's summary says really happened (apply.cpp applyDeviceAction):
+//   "tts "                          spoken on the device speaker: a Speak that landed;
+//   "tts(telegram message_id N) "   delivered as a Telegram voice message: a Send that
+//                                   carries Telegram's receipt (kFxTelegram | kFxVoice | kFxReceipt);
+//   anything else ("tts(not-spoken: <why>) ", "tts(voice-off) ", "tts(no-sink) "): nothing was
+//   voiced, a Speak that failed - and, when the Telegram fallback went out but Telegram never
+//   confirmed it (the summary opens with kTtsUnconfirmedLead), also a failed voice Send flagged
+//   kFxUnconfirmed (it may have arrived).
+// A tool error (isError) records the failed Speak whatever the summary says.
+void recordSpeakSummary(TurnEffects& fx, const std::string& summary, bool isError = false);
+
 // What one device-action summary did (apply.cpp applyDeviceAction's tokens): its
 // effect kind and whether it landed. A config change lands only when a knob survived
 // the caller rule strip and a stored value changed ("cfg "); "cfg(no change) " and
-// "cfg(nothing) " change nothing. A voice-off or sink-less tts, a sink-less led, a
-// refused reboot and an invalid, keyless or refused model switch land nothing either. False
-// when the summary names no action the ledger records.
+// "cfg(nothing) " change nothing. A sink-less led, a refused reboot and an invalid,
+// keyless or refused model switch land nothing either. False when the summary names no
+// action the ledger records (a tts is recorded by recordSpeakSummary, not here).
 bool deviceSummaryEffect(const std::string& summary, FxKind& kind, bool& landed);
 
 }  // namespace orch

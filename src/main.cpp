@@ -58,6 +58,7 @@
 #include "agent/orchestrator.h"
 #include "agent/prefs_subsystem.h"   // lane J: standing rules (seed + store)
 #include "agent/spend_ceiling_store.h"        // lane DEF: the monthly spend ceiling (gate, notices)
+#include "nimbus/harness/config.h"   // agent::voiceFallbackChatOf - where a spoken reply may fall back to
 #include "nimbus/harness/jobs.h"   // agent::keyFromTag - ring keys derive from session tags (CUM-243 reaper)
 #include "nimbus/harness/web_chat.h"   // CUM-482: per-turn web chat reply pairing
 #include <esp_random.h>   // esp_random() - the web chat turn-id seed (unique across restarts)
@@ -81,6 +82,7 @@
 #include "agent/store.h"
 #include "agent/telegram.h"
 #include "agent/voice_reply.h"          // orchSpeakSink - the speaker's Telegram fallback, receipted
+#include "nimbus/orch/voice_notes.h"    // voiceReasonUnconfirmed: an upload Telegram never confirmed
 #include "sys/tls_arbiter.h"
 #include "sys/heap_watch.h"   // failed-allocation ring, low-water ladder, spawn gate
 #include "sys/sd_dma_bounce.h"   // the card's reserved DMA buffer (before the mount)
@@ -965,29 +967,53 @@ static void spendNoticePump() {
   }
 }
 
+// The chat a spoken reply falls back to when the speaker cannot play it: the chat the turn is
+// in when that is a Telegram chat (a guest's request is never voiced into the owner's chat),
+// else the owner's chat (web, serial and voice turns are the owner's: the same rule device
+// notices use, not merely the first allowlist entry). "" when there is none.
+static String voiceFallbackChat(const String& turnChat) {
+  return String(agent::voiceFallbackChatOf(std::string(turnChat.c_str()),
+                                           std::string(agent::telegram::ownerChat().c_str()))
+                    .c_str());
+}
+
 // SpeakSink: voice the `tts` device action's text. Prefer the on-device speaker
 // (that is what the action promises and what the world prompt now tells the model),
 // and fall back to a Telegram voice message only when the speaker could not play it
 // (no speaker, synth failed, or the speaker did not open) - so the action is no
-// longer a silent no-op on a device with no Telegram allowlist. Runs on the poll task
-// between long-polls (single-TLS: the Telegram socket is closed), so the TTS synth +
-// upload are safe. reply.telegram voice:true never comes here: it goes straight to
-// Telegram (voice_reply.h).
-static void orchSpeakSink(const String& text) {
-  if (text.length() == 0) return;
+// longer a silent no-op on a device with no Telegram allowlist (voiceFallbackChat picks the
+// chat). Runs on the poll task between long-polls (single-TLS: the Telegram socket is closed),
+// so the TTS synth + upload are safe. reply.telegram voice:true never comes here: it goes
+// straight to Telegram (voice_reply.h). The answer is how it really ended (speaker, Telegram
+// message id, or why not): the turn records that and nothing else (QW6).
+static nimbus::orch::SpeakOutcome orchSpeakSink(const String& turnChat, const String& text) {
+  using nimbus::orch::SpeakOutcome;
+  if (text.length() == 0) return SpeakOutcome::failed("there was nothing to say");
   // Test build only: AUDIOINJECT keeps text-to-speech off for its voice turn. The
   // production stub is a constant false, so this line compiles to nothing there.
-  if (tc::ttsMuted()) return;
+  if (tc::ttsMuted()) return SpeakOutcome::failed("text-to-speech is muted for this test");
   // capture=false: the tts device action records the spoken text to history itself
   // (apply.cpp captureAssistant), so speakOnDevice must not also capture it. It notes
   // the turn spoke once the speaker started (CUM-826).
-  if (agent::orchestrator::speakOnDevice(text, /*capture=*/false)) return;   // played on the speaker
-  String allow = agent::store::telegramAllowlist();
-  int c = allow.indexOf(','); String chat = (c > 0) ? allow.substring(0, c) : allow; chat.trim();
-  if (chat.length() == 0) return;
-  // Logs the receipt, or why nothing arrived. A note that reached the owner's chat is
-  // the turn speaking (CUM-826); nothing heard and nothing sent is not.
-  if (agent::voicereply::deliver(chat, text).notesSent > 0) agent::orchestrator::noteTurnSpoke();
+  String speakerWhy;
+  if (agent::orchestrator::speakOnDevice(text, /*capture=*/false, &speakerWhy))
+    return SpeakOutcome::spoke();   // played on the speaker
+  const std::string noSpeaker =
+      speakerWhy.length() ? std::string(speakerWhy.c_str()) : std::string("the speaker could not play it");
+  const String chat = voiceFallbackChat(turnChat);
+  if (chat.length() == 0) return SpeakOutcome::failed(noSpeaker + "; no Telegram chat to send it to");
+  const agent::voicereply::Outcome o = agent::voicereply::deliver(chat, text);   // logs the receipt, or why not
+  // A note that reached the owner's chat is the turn speaking (CUM-826); nothing heard and
+  // nothing sent is not.
+  if (o.notesSent > 0) agent::orchestrator::noteTurnSpoke();
+  if (o.delivered && !o.receipt.empty())
+    return SpeakOutcome::delivered(o.receipt, std::string(o.spokenText.c_str()));
+  const std::string why = o.why.empty() ? std::string("no receipt") : o.why;
+  if (nimbus::orch::voiceReasonUnconfirmed(why))   // the upload went out; Telegram never confirmed it
+    return SpeakOutcome::failed(noSpeaker + "; Telegram sent no confirmation (" +
+                                    nimbus::orch::voiceReasonDetail(why) + ")",
+                                /*unconfirmed=*/true);
+  return SpeakOutcome::failed(noSpeaker + "; the Telegram voice message did not arrive: " + why);
 }
 
 // Lane QW4: a Telegram message the device left unanswered because the overall spend

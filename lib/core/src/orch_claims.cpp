@@ -184,6 +184,11 @@ constexpr Cue kCues[] = {
     {C::Sent, "read it aloud", 0, kSpeakBacks},
     {C::Sent, "read aloud", kSelf, kSpeakBacks},
     {C::Sent, "reading it aloud", 0, kSpeakBacks},
+    // Other ways to say the same (merge review): "said it out loud", "I spoke it aloud", "played it on
+    // the speaker". Each needs the assistant as subject. "played it" alone is no cue: music plays too.
+    {C::Sent, "out loud", kSelf, kSpeakBacks},
+    {C::Sent, "aloud", kSelf, kSpeakBacks},
+    {C::Sent, "on the speaker", kSelf, kSpeakBacks},
     {C::Sent, "reminder set", kAnySubject, kSchedBacks},
     {C::Sent, "reminder is set", kAnySubject, kSchedBacks},
     {C::Sent, "set a reminder", kSelf, kSchedBacks},
@@ -1230,10 +1235,54 @@ bool sendReference(const Scan& sc, size_t i, size_t len, const Cue& cue) {
   return false;
 }
 
-// A save cue in a reference: a system log noun, a qualified participle, or
+// Words that make a figure beside "logged" a standing total, not a save. They only count in the
+// participle's OWN clause: right after it ("1,600 logged so far", "logged to date") or before the
+// figure ("You're at 1,600 kcal logged", "Today so far is 1,600 kcal logged"). A comma, a dash or a
+// bracket ends the clause, so "156 kcal logged, so you're at 1,652 so far" keeps its save claim, and
+// "you're on a roll" is no progress phrase at all.
+constexpr const char* kProgressAfter[] = {"so far", "to date"};
+constexpr const char* kProgressBefore[] = {"so far", "you're at", "you are at"};
+
+bool hasDigit(const Scan& sc, const Tok& t) {
+  for (uint32_t p = t.b; p < t.b + t.len; p++)
+    if (isDigit((unsigned char)sc.s[p])) return true;
+  return false;
+}
+
+bool figureBefore(const Scan& sc, size_t i) {
+  for (size_t d = 1; d <= 4 && d <= i && sameClause(sc, i - d, i); d++)
+    if (hasDigit(sc, sc.toks[i - d])) return true;
+  return false;
+}
+
+bool progressAfter(const Scan& sc, size_t i) {
+  if (i + 2 >= sc.toks.size() || !sameClause(sc, i + 2, i)) return false;
+  for (const char* phrase : kProgressAfter)
+    if (matchPhrase(sc, i + 1, phrase, nullptr)) return true;
+  return false;
+}
+
+bool progressBefore(const Scan& sc, size_t i) {
+  for (size_t k = i; k-- > 0 && sameClause(sc, k, i);)
+    for (const char* phrase : kProgressBefore)
+      if (matchPhrase(sc, k, phrase, nullptr)) return true;
+  return false;
+}
+
+// "(1,600 logged so far)", "You're at 1,600 kcal logged, so 800 are left", "Today so far is 1,600 kcal
+// and 88 g protein logged" (CUM-771): a figure within four words before the participle and a progress
+// phrase in the participle's own clause, adjacent to it as above, state what is ALREADY on record - the
+// owner's running total - and claim no save of this turn. "Logged: cappuccino, 52 kcal", "Cappuccino
+// logged: 52 kcal", "52 kcal logged." and a fresh figure with the total in another clause ("2 eggs,
+// 156 kcal logged, so you're at 1,652 kcal so far") carry no such phrase and stay claims.
+bool reportedTotal(const Scan& sc, size_t i) {
+  return figureBefore(sc, i) && (progressAfter(sc, i) || progressBefore(sc, i));
+}
+
+// A save cue in a reference: a system log noun, a standing total, a qualified participle, or
 // earlier work named in the sentence.
 bool saveReference(const Scan& sc, size_t i, const Cue& cue) {
-  if ((cue.flags & kLogSense) && logNounBefore(sc, i)) return true;
+  if ((cue.flags & kLogSense) && (logNounBefore(sc, i) || reportedTotal(sc, i))) return true;
   if (participleLed(cue) && qualifiedParticiple(sc, i)) return true;
   return (cue.cls == C::Saved || cue.cls == C::Deliverable) && earlierInSentence(sc, i);
 }
@@ -1820,6 +1869,8 @@ enum GapVariant : uint8_t {
   kGapQuote = 15,            // a quote presented as a memory or record that nothing holds (CUM-824)
   kGapCauseUnrecorded = 16,  // a reason, asked why, that nothing on record holds (CUM-824)
   kGapNoReplace = 17,        // a remove/replace/dedup claim with no replaced row behind it
+  kGapNotSpoken = 18,        // "read it aloud" with nothing spoken and no voice message delivered
+  kGapVoiceUnconfirmed = 19, // a voice message whose upload went out but Telegram did not confirm
 };
 
 // Phrases that make a send claim a voice-message claim: the delivery itself named as
@@ -1890,6 +1941,16 @@ bool savedGap(const Cue& cue, const TurnEffects& fx, uint8_t* variant) {
   if (fx.anyOk(FxKind::ScratchRamOnly) && fx.countFailed(FxKind::MemWrite) == 0) *variant = kGapRamOnly;
   else if (failedWritesQueued(fx)) *variant = kGapQueued;
   return true;
+}
+
+// True when a voice send failed after its upload went out (kFxUnconfirmed): Telegram may
+// have accepted it, so the line must not say nothing was delivered.
+bool voiceUnconfirmed(const TurnEffects& fx) {
+  for (size_t i = 0; i < fx.size(); i++) {
+    const Effect& e = fx.at(i);
+    if (e.kind == FxKind::Send && !e.ok && (e.flags & kFxUnconfirmed)) return true;
+  }
+  return false;
 }
 
 // A delivery claim: a Telegram send backs it only with Telegram's receipt; a send
@@ -2109,9 +2170,14 @@ struct GapCheck {
   }
   bool effectGap(const Cue& cue, const Claim& cl, ClaimGap& g) {
     if (cue.cls == C::Cause) return causeGap(cue, ev.causeEvidence, &g.variant);
-    if (voiceClaim(cue, cl)) {
-      if (voiceDelivered(*ev.fx)) return false;
-      g.variant = kGapNoVoiceReceipt;
+    // A voice-message claim and a spoken claim ("read it aloud") are the device's own: a hosted
+    // tool cannot send its Telegram voice message or drive its speaker, so they are checked
+    // whatever tools the head had. A spoken claim is backed by speech that played on the speaker
+    // or by a voice message with Telegram's receipt; a voice-message claim only by the receipt.
+    const bool speaks = cue.cls == C::Sent && cue.backs == kSpeakBacks;
+    if (speaks || voiceClaim(cue, cl)) {
+      if (voiceDelivered(*ev.fx) || (speaks && backedBy(*ev.fx, kSpeakBacks))) return false;
+      g.variant = voiceUnconfirmed(*ev.fx) ? kGapVoiceUnconfirmed : speaks ? kGapNotSpoken : kGapNoVoiceReceipt;
       g.deviceOnly = true;
       return true;
     }
@@ -2168,6 +2234,9 @@ const char* savedWhat(uint8_t variant) {
 const char* sentWhat(uint8_t variant) {
   if (variant == kGapNoVoiceReceipt)
     return "no voice message reached Telegram (no delivery receipt with a message_id)";
+  if (variant == kGapVoiceUnconfirmed)
+    return "Telegram did not confirm the voice message (no delivery receipt); it may not have arrived";
+  if (variant == kGapNotSpoken) return "nothing was spoken aloud";
   return variant == kGapNoReceipt
              ? "the Telegram send was only queued: no delivery receipt (message_id) came back, so it "
                "is not known to have arrived"
@@ -2912,6 +2981,9 @@ std::string savedTail(uint8_t variant) {
 // The send-class tail: no voice receipt, a queued Telegram send, or nothing sent.
 std::string sentTail(uint8_t variant) {
   if (variant == kGapNoVoiceReceipt) return "(Correction: no voice message was delivered.)";
+  if (variant == kGapVoiceUnconfirmed)
+    return "(Note: Telegram did not confirm the voice message, so it may not have arrived.)";
+  if (variant == kGapNotSpoken) return "(Correction: that was not spoken aloud.)";
   return variant == kGapNoReceipt
              ? "(Note: that is queued for Telegram; the device has no delivery receipt for it yet.)"
              : "(Correction: that has not been sent.)";
@@ -2951,6 +3023,12 @@ std::string claimTailLine(const ClaimGap& g) {
     case C::Source: return sourceTail(g);
     default: return std::string();
   }
+}
+
+bool tailCarriesSpeechGap(const std::string& tail) {
+  for (uint8_t v : {(uint8_t)kGapNoVoiceReceipt, (uint8_t)kGapVoiceUnconfirmed, (uint8_t)kGapNotSpoken})
+    if (tail.find(sentTail(v)) != std::string::npos) return true;
+  return false;
 }
 
 // The statement inside a line, without its "(Correction: " or "(Note: " lead,

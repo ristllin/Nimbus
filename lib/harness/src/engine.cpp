@@ -993,7 +993,7 @@ std::string TurnEngine::buildStableCatalogs(bool modelsTool, bool headCallsTools
 struct TurnEngine::ApplyCapture {
   TurnEngine* e = nullptr;
   std::function<void(const std::string&, const std::string&)> capture;
-  std::function<void(const std::string&)> speak;
+  std::function<orch::SpeakOutcome(const std::string&, const std::string&)> speak;
 
   ApplyCapture(TurnEngine* eng, bool hasReply) {
     if (!eng->histV2On() || !eng->d_.apply.captureAssistant) return;
@@ -1012,9 +1012,10 @@ struct TurnEngine::ApplyCapture {
       e->outKind_.clear();
     };
     if (speak)
-      e->d_.apply.speak = [this](const std::string& text) {
-        e->nextSpoken_ = true;
-        speak(text);
+      e->d_.apply.speak = [this](const std::string& chat, const std::string& text) {
+        const orch::SpeakOutcome o = speak(chat, text);
+        e->nextSpoken_ = o.ok();   // apply captures the tts line next, only when something was voiced
+        return o;
       };
   }
   ~ApplyCapture() {
@@ -1090,6 +1091,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // meant an allowlisted chat. No second closure: the static config stays as it was.
   turnFileSend_ = telegram && (!isTelegramChat(chatId) || telegramOn(std::string()));
   toolReplied_ = false;
+  toolReplyTexts_.clear();
   lastBrief_.clear();  // per-turn: a single-shot turn must not inherit the last loop's brief
   heldNotices_.clear();   // L19-13 d: this turn's switch notices start empty
   // Lane L: sub-agent results folded into this turn are external content (the
@@ -2294,6 +2296,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   st.scheduledTurn       = scheduledTurn_;
   st.quietFallback       = quietTurn_;
   st.toolRepliedThisTurn = toolReplied_;
+  st.toolReplyTexts      = toolReplyTexts_;
   st.riskNote            = riskNote_;
   PendingMem& parked     = pendingMemResults_[chatId];   // this chat's next turn only
   st.pendingMemResults   = &parked.body;

@@ -16,6 +16,7 @@
 #include "nimbus/orch/seam_meter.h"  // meterSpeech - its spend (lane DEF)
 #include "nimbus/audio_req.h"       // core::parseErrorCode (host-tested refusal parse)
 #include "nimbus/orch/provider_error.h"  // providerErrLine - the one error-line shape (CUM-620)
+#include "nimbus/orch/clip_probe.h"      // the raw body's own framing: a cut stream ends mid-frame
 #include "nimbus/orch/voice_notes.h"     // ttsDeadlineMs - the read window sized to the text
 
 #include <strings.h>                     // strncasecmp (Content-Length)
@@ -188,14 +189,21 @@ void streamMistral(WiFiClientSecure& c, File& f, uint32_t deadline, nimbus::orch
 }
 
 // OpenAI and the router: the raw audio body, until the server closes or the stated
-// length arrives (the end), or the window passes or a write fails (cut).
-void streamRaw(WiFiClientSecure& c, File& f, uint32_t deadline, nimbus::orch::ClipRead& rd) {
+// length arrives (the end), or the window passes or a write fails (cut). The bytes also
+// walk through `probe`: with no stated length a reset or a proxy cut ends the stream just
+// like a clean close, and only the audio's own framing tells them apart (clipWhole).
+void streamRaw(WiFiClientSecure& c, File& f, uint32_t deadline, nimbus::orch::ClipRead& rd,
+               nimbus::orch::ClipProbe& probe) {
   uint8_t buf[512];
   rd.writesOk = true;
   while (rd.writesOk && (int32_t)(millis() - deadline) < 0) {
     if (c.available()) {
       const int r = c.read(buf, sizeof(buf));
-      if (r > 0) { rd.writesOk = (size_t)f.write(buf, r) == (size_t)r; rd.bytes += r; }
+      if (r > 0) {
+        rd.writesOk = (size_t)f.write(buf, r) == (size_t)r;
+        rd.bytes += r;
+        probe.feed(buf, (size_t)r);
+      }
     } else if (!c.connected()) {
       rd.endSeen = true;
       return;
@@ -212,6 +220,8 @@ struct TtsRequest {
   const String& body;
   const char*   outPath;
   uint32_t      deadline;
+  bool          wav;         // the raw body is a WAV (else an MP3): which framing the probe reads
+  size_t        textChars;   // spoken characters (speechChars): the least audio a clip can hold
 };
 
 // What one request produced: the bytes of a whole clip (0 = none), and whether the
@@ -255,16 +265,25 @@ TtsResult requestAndStream(WiFiClientSecure& c, const TtsProvider& prov, const T
   nimbus::orch::ClipRead rd;
   rd.mistral = prov.mistral;
   rd.contentLength = contentLength;
-  if (prov.mistral) streamMistral(c, f, deadline, rd);
-  else streamRaw(c, f, deadline, rd);
+  rd.textChars = rq.textChars;
+  if (prov.mistral) {
+    streamMistral(c, f, deadline, rd);
+  } else {
+    nimbus::orch::ClipProbe probe(rq.wav ? nimbus::orch::ClipFormat::Wav : nimbus::orch::ClipFormat::Mp3);
+    streamRaw(c, f, deadline, rd, probe);
+    rd.shapeReadable = probe.readable();
+    rd.shapeEnds = probe.endsOnBoundary();
+    rd.clipMs = probe.durationMs();
+  }
   f.close();
   const char* name = prov.mistral ? "mistral" : "openai";
   if (!nimbus::orch::clipWhole(rd)) {
     // A cut clip is never used (22 Oct: a clip cut at the 25 s window was logged as
     // written and queued as whole). Remove it so nothing can pick it up.
     LittleFS.remove(outPath);
-    alogf("tts: %s %s -> %s, removed", name, nimbus::orch::clipTruncatedText(rd.bytes).c_str(), outPath);
-    setWhy(why, nimbus::orch::clipTruncatedText(rd.bytes).c_str());
+    const std::string cut = nimbus::orch::clipCutText(rd);
+    alogf("tts: %s %s -> %s, removed", name, cut.c_str(), outPath);
+    setWhy(why, cut.c_str());
     return res;
   }
   alogf("tts: %s wrote %u bytes -> %s", name, (unsigned)rd.bytes, outPath);
@@ -334,7 +353,8 @@ size_t synthesizeToFile(const String& text, const char* outPath,
     alogf("tts: connect %s failed heap=%u", prov.host.c_str(), ESP.getFreeHeap());
     setWhy(why, String("could not reach ") + prov.host);
   } else {
-    res = requestAndStream(c, prov, TtsRequest{body, outPath, deadline}, why);
+    res = requestAndStream(c, prov,
+                           TtsRequest{body, outPath, deadline, needWav, nimbus::orch::speechChars(text.c_str())}, why);
   }
   tlsClose(c);
   slot.release();

@@ -460,7 +460,7 @@ A Telegram voice reply always goes to Telegram, never to the speaker: text of up
 synthesized, uploaded at once and checked against Telegram's answer. The result names
 Telegram's `message_id` for every voice message that arrived ("delivered to Telegram
 as a voice message (message_id 812, 210 KB)"); when one did not, it says why and that
-nothing (or only some) was delivered, so the reply can fall back to text. `reply.telegram` is
+nothing (or only some) was delivered, so the reply can fall back to text; when the upload went out and only Telegram's answer was missing, it says the message "may not have arrived" instead. `reply.telegram` is
 offered only on a turn that can deliver over Telegram: the bot is running and
 either a chat is allowlisted, or public mode is on and the message itself came in
 over Telegram. `files.send` delivers only to an allowlisted chat, so it is offered
@@ -591,7 +591,7 @@ Device actions are **not** registry tools - they arrive as the turn's
 | `config` | benign, owner-friendly knobs (allow-listed keys only) | e.g. `ledBrightness`, `priority` (routing *preference*), `posture`, `profile`, `theme`, `attnHoldMs`, `sfxLvlN`/`sfxLvlO`, `sfxVol`, `sfxTheme`, `sttProv`, `ttsProv`, `ttsVoice`, `ttsOn`, `sleepOvr`, `brightOvr`, `devName` | live (rails enforced) |
 | `orch_model` | switch the head's own provider + model at runtime | `provider` (`openai` \| `anthropic` \| `mistral` \| `zai` \| `cumulo`), `model` (an id that provider lists in `models.list`) | live |
 | `reboot` | restart the device | (none) | live |
-| `tts` | speak text aloud on the device speaker (Telegram audio fallback) | `text` | live |
+| `tts` | speak text aloud on the device speaker (Telegram audio fallback) | `text` (at most 400 bytes are voiced, cut at a sentence end or a space and never inside a character; the reply says when the spoken version was shortened) | live |
 
 Rails: a `config` action carrying any protected key (secrets, the auth
 allow-list, provider routing/priority, the routines blob (`loops`) or the budget governors - see
@@ -629,7 +629,22 @@ terminate) are **not** device actions - they go through the turn's
 On-device speech plays through the built-in speaker. Both the `reply.speak` tool
 (mid-turn) and the end-of-turn `device[]` `tts` action synthesize the reply and
 play it on the speaker; `tts` falls back to a Telegram voice message when the
-speaker could not play it. A spoken Telegram message is also available via
+speaker could not play it - to the chat the turn is in when that is a Telegram chat,
+else to the owner's chat. The `tts` action reports what really happened: played on
+the speaker, delivered to Telegram with its `message_id`, or not spoken with the reason
+(a speaker volume of 0 plays silence, so it is refused; `device.control` answers
+`tts(not-spoken: ...)` and the next turn is told). Only what was voiced is written to
+history, and a reply that says it was read aloud when it was not gets a correction
+line. A `tts` that could not be spoken is always reported in the same turn, whatever
+the reply says or which language it is in: a reply or question gets a short note
+(the reason for the owner's chats, none for anyone else) unless the claim check's own
+line already says so, and a turn whose only output was that `tts` delivers the text with
+the reason, unless the turn already sent that text with `reply.telegram`. A routine says
+nothing (the head hears of it next turn). The note "the spoken version was shortened"
+rides a reply or question only: a routine or a turn that only spoke sends no message
+for it. A Telegram fallback that went out but that
+Telegram never confirmed says the voice message "may not have arrived" instead of
+that it failed. A spoken Telegram message is also available via
 `reply.telegram` `voice:true`, which never uses the speaker. The speaker plays WAV directly and decodes MP3 with
 the bundled decoder, so the reply speaks whether the configured voice provider
 emits WAV (OpenAI) or MP3 (Mistral).

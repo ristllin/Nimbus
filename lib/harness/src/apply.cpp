@@ -10,6 +10,7 @@
 #include "nimbus/orch/provider_slots.h"  // the orch_model provider enum
 #include "nimbus/orch/head_switch.h"     // a pause never moves the owner's head
 #include "nimbus/orch/spawn_claim.h"
+#include "nimbus/orch/voice_notes.h"      // cutForSpeech: the tts action's bound
 
 // Lifted from src/agent/orchestrator.cpp applyTurn (Stage E). Every summary
 // token, refusal string, and risk note moved BYTE-IDENTICAL - grep-diff the
@@ -121,10 +122,11 @@ bool replyAlreadyAsks(const std::string& reply, const std::string& ask) {
   return !q.empty() && asksTheSame(q, ask);
 }
 
-// Did one device element's summary say it ran? A voice-off tts, a sink-less
-// led, a refused reboot or an invalid / keyless model switch backs no claim.
+// Did one device element's summary say it ran? A sink-less led, a refused reboot or an
+// invalid / keyless model switch backs no claim. (A tts is recorded by recordSpeakSummary:
+// the speaker and a Telegram receipt differ.)
 static bool deviceElementLanded(const std::string& one) {
-  if (one == "tts " || one == "led " || one == "lights " || one == "reboot ") return true;
+  if (one == "led " || one == "lights " || one == "reboot ") return true;
   if (one.size() >= 4 && one.compare(one.size() - 4, 4, "cfg ") == 0) return true;
   return one.rfind("orch_model(", 0) == 0 && one.find("(invalid)") == std::string::npos &&
          one.find("(no-key)") == std::string::npos && one.find("(no change)") == std::string::npos &&
@@ -150,6 +152,65 @@ static std::string headPauseRefusal(const ValidatedAction& va, const ApplyDeps& 
   // A turn the owner did not write learns no more than that the head stays.
   if (!owner.present()) return headLabel + " stays the main provider: only the owner can move it.";
   return nimbus::orch::headSwitchRefusal(closed, t ? t->label : va.orchProvider);
+}
+
+// A reason as it rides a summary token and the log: printable ASCII, one line, bounded.
+static std::string oneLine(const std::string& s) {
+  constexpr size_t kMax = 120;
+  std::string out;
+  for (char c : s) {
+    if (out.size() >= kMax) break;
+    const unsigned char u = (unsigned char)c;
+    out += (u >= 0x20 && u < 0x7F) ? c : ' ';
+  }
+  const size_t e = out.find_last_not_of(' ');
+  return e == std::string::npos ? std::string() : out.substr(0, e + 1);
+}
+
+static const char kTtsNotSpoken[] = "tts(not-spoken: ";
+static const char kVolumeZeroWhy[] = "the speaker volume is 0, so speech would play as silence";
+
+static std::string ttsNotSpoken(const std::string& why) {
+  return kTtsNotSpoken + oneLine(why.empty() ? std::string("no reason was given") : why) + ") ";
+}
+
+// Why the sink could not voice it, in the words of the summary. A Telegram fallback that went
+// out unconfirmed opens with the fixed lead the ledger reads (it may have arrived).
+static std::string notSpokenWhy(const nimbus::orch::SpeakOutcome& o) {
+  if (o.via == nimbus::orch::SpeakOutcome::Via::Telegram) return "Telegram gave no message id";
+  if (o.unconfirmed) return std::string(nimbus::orch::kTtsUnconfirmedLead) + "; " + o.why;
+  return o.why;
+}
+
+// The summary token of a tts that cannot run at all, or "" when it can: voice replies
+// off (the owner's switch: a silent no-op), no sink, or a speaker that would play silence.
+static std::string ttsRefusal(const ValidatedAction& va, const ApplyDeps& d) {
+  if (!d.ttsEnabled) return "tts(voice-off) ";
+  if (!d.speak || va.text.empty()) return "tts(no-sink) ";
+  if (d.speakerVolume && d.speakerVolume() == 0) return ttsNotSpoken(kVolumeZeroWhy);
+  return std::string();
+}
+
+// The tts device action: voice the text and report what REALLY happened (summary token
+// byte-identical for a spoken reply, "tts "). Never "spoken" on the strength of the
+// request: the sink answers with the speaker, a Telegram receipt, or why not. A text
+// over the bound is cut on a character boundary and the reply says so (shortNote: it rides
+// a reply, never a message of its own).
+static std::string applyTts(const ValidatedAction& va, const std::string& chatId,
+                            const ApplyDeps& d, std::string* shortNote) {
+  using nimbus::orch::SpeakOutcome;
+  const std::string refused = ttsRefusal(va, d);
+  if (!refused.empty()) return refused;
+  const nimbus::orch::SpeechCut cut = nimbus::orch::cutForSpeech(va.text);
+  if (cut.text.empty()) return ttsNotSpoken("there was nothing to say");
+  const SpeakOutcome o = d.speak(chatId, cut.text);
+  if (!o.ok()) return ttsNotSpoken(notSpokenWhy(o));
+  const bool viaTelegram = o.via == SpeakOutcome::Via::Telegram;
+  // Capture what was voiced to history so "what did you just say?" works even when the
+  // turn had no text reply - and only what was voiced.
+  if (d.captureAssistant) d.captureAssistant(chatId, o.said.empty() ? cut.text : o.said);
+  if (cut.shortened && shortNote) *shortNote += "\n\n" + nimbus::orch::speechShortenedNote(cut);
+  return viaTelegram ? "tts(telegram message_id " + o.receipt + ") " : std::string("tts ");
 }
 
 // Why an orch_model the device refused names no model it can switch to, in the
@@ -290,23 +351,6 @@ void applyConfig(const ValidatedAction& va, const ActionCaller& c, const ApplyDe
   out.summary += (changed || (d.stageDevice && stagedKnobs)) ? "cfg " : "cfg(no change) ";
 }
 
-void applyTts(const ValidatedAction& va, const std::string& chatId, const ApplyDeps& d, DeviceOutcome& out) {
-  // EXPLICIT tts action - but ONLY when the owner's "Voice replies" toggle is
-  // ON (default ON for a speaker board, N12). Field bug (P2.5): the model
-  // reliably chose to speak whenever the owner seemed nearby (voice input),
-  // and this gate bypass meant there was NO way to mute it. When OFF the action
-  // is a silent no-op - the text reply still delivers on its own channel.
-  if (!d.ttsEnabled) { out.summary += "tts(voice-off) "; return; }
-  if (!d.speak || va.text.empty()) { out.summary += "tts(no-sink) "; return; }
-  std::string s = va.text;
-  if (s.size() > 400) s = s.substr(0, 400);   // bound the synth/upload
-  d.speak(s);
-  // Capture spoken output to history so "what did you just say?" works even
-  // when the turn had no text reply (the tts action was previously invisible).
-  if (d.captureAssistant) d.captureAssistant(chatId, s);
-  out.summary += "tts ";
-}
-
 void applyOrchModel(const ValidatedAction& va, const ApplyDeps& d, std::string* riskNote, DeviceOutcome& out) {
   std::string paused;   // why a pause keeps the head where it is ("" = it does not)
   // The agent reroutes its OWN provider host + model (owner: "switch to opus").
@@ -352,7 +396,7 @@ void applyStaged(const ValidatedAction& va, const char* name, const ApplyDeps& d
 
 DeviceOutcome applyDeviceAction(const std::string& json, const nimbus::orch::Principal& who,
                                 bool unattended, const std::string& chatId, const ApplyDeps& d,
-                                std::string* riskNote) {
+                                std::string* riskNote, std::string* replyNote) {
   // One device[] element: validate + check WHO asked + policy-strip + execute.
   // Shared by the end-of-turn device[] loop below AND the mid-turn
   // `device.control` registry tool, so both paths carry the IDENTICAL security
@@ -386,7 +430,12 @@ DeviceOutcome applyDeviceAction(const std::string& json, const nimbus::orch::Pri
   }
   switch (va.kind) {
     case ActionKind::Config:    applyConfig(va, c, d, riskNote, out); break;
-    case ActionKind::Tts:       applyTts(va, chatId, d, out); break;
+    // EXPLICIT tts action - but ONLY when the owner's "Voice replies" toggle is ON (default
+    // ON for a speaker board, N12). Field bug (P2.5): the model reliably chose to speak
+    // whenever the owner seemed nearby (voice input), and this gate bypass meant there was
+    // NO way to mute it. When OFF the action is a silent no-op - the text reply still
+    // delivers on its own channel.
+    case ActionKind::Tts:       out.summary += applyTts(va, chatId, d, replyNote ? replyNote : riskNote); break;
     case ActionKind::Led:       applyStaged(va, "led", d, out); break;
     case ActionKind::Lights:    applyStaged(va, "lights", d, out); break;
     // Reboot reaches here only on the owner's attended turn: a scheduled loop must
@@ -401,8 +450,69 @@ DeviceOutcome applyDeviceAction(const std::string& json, const nimbus::orch::Pri
 
 std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
                                const std::string& chatId, const ApplyDeps& d,
-                               std::string* riskNote) {
-  return applyDeviceAction(json, d.whoFor(chatId), scheduledTurn, chatId, d, riskNote).summary;
+                               std::string* riskNote, std::string* replyNote) {
+  return applyDeviceAction(json, d.whoFor(chatId), scheduledTurn, chatId, d, riskNote, replyNote).summary;
+}
+
+// Two texts compared as the owner would read them: runs of whitespace collapsed.
+static std::string squash(const std::string& s) {
+  std::string out;
+  bool gap = false;
+  for (char c : s) {
+    if (c == ' ' || c == '\n' || c == '\t' || c == '\r') { gap = !out.empty(); continue; }
+    if (gap) out += ' ';
+    gap = false;
+    out += c;
+  }
+  return out;
+}
+
+// Did this turn already send the owner that text (reply.telegram, or the voiced text of a
+// voice message)? Then a failed tts must not send it a second time - and a different text is
+// never taken for a duplicate, so nothing is dropped.
+static bool alreadySent(const ApplyState& st, const std::string& text) {
+  const std::string want = squash(text);
+  if (want.empty()) return false;
+  for (const std::string& sent : st.toolReplyTexts)
+    if (squash(sent).find(want) != std::string::npos) return true;
+  return false;
+}
+
+// A tts the device could not voice ("tts(not-spoken: <why>) "). The owner must hear of it in the
+// same turn whatever the reply says or which language it is in (22 Oct family: a confident "I read
+// it aloud" and silence), so on an attended turn that carries a reply or ask a short note rides
+// it (unless the claim check's own line already says so: applyTurn decides), and a turn that has
+// nothing else for the owner sends the text instead, with the reason. A routine tells nobody (it
+// was silent before); the head always hears of it next turn, in words that say what the owner got.
+static void noteUnspoken(const std::string& summary, const std::string& actionJson, const Turn& t,
+                         ApplyState& st, bool admin) {
+  const size_t lead = sizeof(kTtsNotSpoken) - 1;
+  const std::string why = summary.size() > lead + 2 ? summary.substr(lead, summary.size() - lead - 2) : "";
+  hlog::logf("orchestrator: tts not spoken: %s", why.c_str());
+  // The device's reasons name its internals (a router host, a key, a volume): only the owner's
+  // chats get them; anyone else is told it could not be spoken.
+  const std::string plain = "(Note: that could not be spoken aloud" + (admin ? ": " + why : std::string()) + ".)";
+  std::string outcome = " - nobody was told (a routine); give it in text if the owner still needs it";
+  if (!st.scheduledTurn) {
+    if (!t.reply.empty() || !t.ask.empty()) {
+      if (st.unspokenNote.empty()) st.unspokenNote = "\n\n" + plain;
+      outcome = " - the owner was told it could not be spoken";
+    } else {
+      JsonDocument dd;
+      std::string text;
+      if (!deserializeJson(dd, actionJson))
+        text = nimbus::orch::validateAction(dd.as<ArduinoJson::JsonVariantConst>()).text;
+      if (text.empty()) {
+        outcome = " - the owner did not hear it";
+      } else if (alreadySent(st, text)) {
+        outcome = " - the owner already has that text from your reply.telegram";
+      } else {
+        if (st.unspokenText.empty()) st.unspokenText = text + "\n\n" + plain;
+        outcome = " - its text was sent to the owner in writing";
+      }
+    }
+  }
+  if (st.pendingMemResults) *st.pendingMemResults += "[DEVICE] tts was not spoken: " + why + outcome + "\n";
 }
 
 void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
@@ -444,7 +554,7 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // mid-turn `device.control` tool's engine).
   std::string devSummary;
   for (const auto& da : t.device) {
-    const DeviceOutcome dev = applyDeviceAction(da.json, who, st.scheduledTurn, chatId, d, &st.riskNote);
+    const DeviceOutcome dev = applyDeviceAction(da.json, who, st.scheduledTurn, chatId, d, &st.riskNote, &st.replyNote);
     const std::string& one = dev.summary;
     devSummary += one;
     // A part the caller rule refused reaches the head next turn in plain words:
@@ -460,8 +570,12 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
     if (one.rfind(kKept, 0) == 0 && st.pendingMemResults)
       *st.pendingMemResults += "[DEVICE] orch_model not applied, the head stays: " + one.substr(kKept.size()) + "\n";
     nimbus::orch::FxKind k;
-    if (st.claims && ClaimCheck::deviceActionEffect(da.json, k))
-      st.claims->effects().add(k, deviceElementLanded(one));
+    if (st.claims && ClaimCheck::deviceActionEffect(da.json, k)) {
+      if (k == nimbus::orch::FxKind::Speak) nimbus::orch::recordSpeakSummary(st.claims->effects(), one);
+      else st.claims->effects().add(k, deviceElementLanded(one));
+    }
+    if (one.rfind(kTtsNotSpoken, 0) == 0)
+      noteUnspoken(one, da.json, t, st, who.perms().manageTenants);
   }
   if (!devSummary.empty()) hlog::logf("orchestrator: device[%s]", devSummary.c_str());
 
@@ -739,8 +853,21 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
                 : std::string();
   // The corrections (spawn line, claim lines) also ride the captured text.
   const std::string correctionTail = (spawnLine.empty() ? "" : "\n\n" + spawnLine) + claimTail;
-  const std::string riskTail = riskNote + correctionTail;
+  // The speech notes ride a message the owner is getting anyway, never one of their own: a routine
+  // or a reply-less turn that only spoke (and was cut short) sends nothing for it. A failed tts's
+  // note is left out when the claim check's own line already tells the owner.
+  const bool carries = t.reply.length() || t.ask.length();
+  std::string replyNotes;
+  if (carries) {
+    replyNotes = st.replyNote;
+    if (!st.unspokenNote.empty() && !nimbus::orch::tailCarriesSpeechGap(claimTail)) replyNotes += st.unspokenNote;
+  }
+  const std::string unspokenText = carries ? std::string() : st.unspokenText;
+  const std::string riskTail = riskNote + replyNotes + correctionTail;
   st.riskNote.clear();
+  st.replyNote.clear();
+  st.unspokenNote.clear();
+  st.unspokenText.clear();
   if (askAppended) {
     if (d.deliver) d.deliver(chatId, t.reply + riskTail + "\n\n" + t.ask);
     if (raiseAsk) d.emitAsk();
@@ -751,6 +878,9 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   } else if (t.ask.length()) {
     if (d.deliver) d.deliver(chatId, t.ask + riskTail);
     if (raiseAsk) d.emitAsk();
+  } else if (!unspokenText.empty()) {
+    // A tts nothing could voice and nothing else to say: the text goes out with the reason.
+    if (d.deliver) d.deliver(chatId, unspokenText + riskTail);
   } else if (riskTail.length()) {
     // No reply/ask, but a risk switch flipped or a spawn did not start - the
     // note must still land (never silent).
@@ -774,7 +904,8 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // Episodic auto-capture (Q2): record the assistant's turn output AS
   // DELIVERED - the spawn and claim corrections included - so a later turn reads
   // the corrected text, not the model's.
-  st.delivered = t.reply.length() ? t.reply + correctionTail : std::string();
+  // (The speech notes ride them: the owner got them in the same message.)
+  st.delivered = t.reply.length() ? t.reply + replyNotes + correctionTail : std::string();
   // One row per message the owner received (lane FSN, storm leg g): an appended ask
   // rides the reply's row, as it rode the reply's message, so history, the web chat
   // after a reload and the storm leg see one message per turn. The model-facing
@@ -783,7 +914,9 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   if (d.captureAssistant) {
     if (askAppended)           d.captureAssistant(chatId, st.delivered + "\n\n" + t.ask);
     else if (t.reply.length()) d.captureAssistant(chatId, st.delivered);
-    else if (t.ask.length())   d.captureAssistant(chatId, t.ask + correctionTail);
+    else if (t.ask.length())   d.captureAssistant(chatId, t.ask + replyNotes + correctionTail);
+    // The text a failed tts sent in its place: history holds what the owner got.
+    else if (!unspokenText.empty()) d.captureAssistant(chatId, unspokenText + correctionTail);
   }
 }
 

@@ -3,6 +3,9 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "nimbus/orch/speak_outcome.h"   // the tts summary words
+#include "nimbus/orch/voice_notes.h"   // kVoiceMayNotHaveArrived
+
 namespace nimbus {
 namespace orch {
 
@@ -95,7 +98,7 @@ void TurnEffects::reset() {
   overflow_ = false;
 }
 
-bool TurnEffects::add(FxKind k, bool ok, const std::string& ref, uint8_t count, uint8_t flags) {
+bool TurnEffects::add(FxKind k, bool ok, const std::string& ref, uint8_t count, uint16_t flags) {
   if (k >= FxKind::kCount) return false;
   if (v_.size() >= kMax) {
     overflow_ = true;
@@ -126,7 +129,7 @@ int TurnEffects::countFailed(FxKind k) const {
   return n;
 }
 
-bool TurnEffects::anyOkWith(FxKind k, uint8_t flag) const {
+bool TurnEffects::anyOkWith(FxKind k, uint16_t flag) const {
   for (const Effect& e : v_)
     if (e.kind == k && e.ok && (e.flags & flag)) return true;
   return false;
@@ -257,11 +260,6 @@ bool deviceSummaryEffect(const std::string& sum, FxKind& kind, bool& landed) {
   kind = FxKind::Config;
   if (sum.find("cfg(") != std::string::npos) { landed = false; return true; }   // no change, nothing
   if (endsWith(sum, "cfg ")) { landed = true; return true; }
-  if (startsWith(sum, "tts")) {
-    kind = FxKind::Speak;
-    landed = sum == "tts ";
-    return true;
-  }
   if (startsWith(sum, "led") || startsWith(sum, "lights") || startsWith(sum, "reboot")) {
     landed = sum == "led " || sum == "lights " || sum == "reboot ";
     return true;
@@ -274,17 +272,40 @@ bool deviceSummaryEffect(const std::string& sum, FxKind& kind, bool& landed) {
   return false;   // skip, protected-BLOCKED, unsupported: no action ran
 }
 
+// A voice send that failed after its upload went out ("... may not have arrived ...")
+// records as unconfirmed: the correction then says it was not confirmed, not that
+// nothing was delivered.
+static uint16_t withUnconfirmed(const std::string& output, uint16_t flags) {
+  return (flags & kFxVoice) && contains(output, kVoiceMayNotHaveArrived)
+             ? (uint16_t)(flags | kFxUnconfirmed)
+             : flags;
+}
+
 // A send: its receipt, if the result names one. A voice send without a receipt did
 // not arrive (it records as failed); one that went out as text is a plain send.
-static void recordSend(TurnEffects& fx, const std::string& output, uint8_t flags) {
-  if ((flags & kFxVoice) && contains(output, "as text")) flags &= (uint8_t)~kFxVoice;
+static void recordSend(TurnEffects& fx, const std::string& output, uint16_t flags) {
+  if ((flags & kFxVoice) && contains(output, "as text")) flags &= (uint16_t)~kFxVoice;
   const std::string id = fxReceiptId(output);
   if (!id.empty()) flags |= kFxReceipt;
   if ((flags & kFxVoice) && id.empty()) {
-    fx.add(FxKind::Send, false, std::string(), 1, flags);
+    fx.add(FxKind::Send, false, std::string(), 1, withUnconfirmed(output, flags));
     return;
   }
   fx.add(FxKind::Send, true, id.empty() ? fxRefFromOutput(output) : id, 1, flags);
+}
+
+void recordSpeakSummary(TurnEffects& fx, const std::string& summary, bool isError) {
+  constexpr uint16_t kVoiceSend = kFxTelegram | kFxVoice;
+  if (!isError && startsWith(summary, kTtsTelegramLead)) {
+    recordSend(fx, summary, kVoiceSend);   // its receipt (the id after "message_id"), or none: nothing arrived
+    return;
+  }
+  fx.add(FxKind::Speak, !isError && summary == kTtsSpoken);
+  // The Telegram fallback went out but Telegram never confirmed it (HTTP 0, an unreadable
+  // answer): it may have arrived, so a "voice message sent" line says it was not confirmed.
+  // apply.cpp opens that summary with kTtsUnconfirmedLead, ahead of any length cap.
+  if (!isError && startsWith(summary, (std::string(kTtsNotSpokenLead) + kTtsUnconfirmedLead).c_str()))
+    fx.add(FxKind::Send, false, std::string(), 1, (uint16_t)(kVoiceSend | kFxUnconfirmed));
 }
 
 // "queued memory <id>, not stored yet" / "queued update for <id>, not changed yet".
@@ -314,11 +335,11 @@ static int replacedRowsIn(const std::string& out) {
 // rewrote the log it names: the review's K1 shape, correcting a line of a free-text log,
 // which no append can do. The save's own receipt is that rewrite's proof, and so is an
 // edit that replaced a span (files.edit changes a log in place).
-static uint8_t logRowFlags(uint8_t flags, FxKind k, const std::string& output) {
+static uint16_t logRowFlags(uint16_t flags, FxKind k, const std::string& output) {
   if (!(flags & kFxLogRow)) return flags;
   const bool landed = k == FxKind::FileWrite && (startsWith(output, "saved ") || fxAppendedRows(output) >= 1 ||
                                                  replacedRowsIn(output) >= 1);
-  return landed ? flags : (uint8_t)(flags & ~kFxLogRow);
+  return landed ? flags : (uint16_t)(flags & ~kFxLogRow);
 }
 
 // What a LANDED effect additionally is: a pin that changed nothing (a memory
@@ -337,20 +358,28 @@ static void recordLandedRefinements(TurnEffects& fx, FxKind base, FxKind k,
   if (n > 0) fx.add(FxKind::FileReplace, true, std::string(), (uint8_t)(n > 255 ? 255 : n));
 }
 
+// device.control's answer after "applied: ": the first line is the summary, a risk note
+// may follow it.
+static void recordDeviceControl(TurnEffects& fx, const std::string& answer, bool isError) {
+  const size_t nl = answer.find('\n');
+  const std::string sum = answer.substr(0, nl);
+  FxKind k;
+  bool landed = false;
+  // A tts action's summary ("tts ", "tts(...") - not a config summary that merely starts with
+  // the letters ("ttsOn cfg " is a setting that changed).
+  if (sum == kTtsSpoken || startsWith(sum, "tts(")) recordSpeakSummary(fx, sum, isError);
+  else if (deviceSummaryEffect(sum, k, landed)) fx.add(k, landed && !isError);
+  else fx.add(FxKind::Read, !isError);
+}
+
 void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::string& output,
-                      uint8_t flags) {
+                      uint16_t flags) {
   if (queuedWrite(base, output)) {   // queued is not stored, success flag or not
-    fx.add(base, false, std::string(), 1, (uint8_t)(flags | kFxQueued));
+    fx.add(base, false, std::string(), 1, (uint16_t)(flags | kFxQueued));
     return;
   }
   if (base == FxKind::Config && startsWith(output, "applied: ")) {   // device.control
-    // The summary is the first line; a risk note may follow it.
-    const size_t nl = output.find('\n');
-    const std::string sum = output.substr(9, nl == std::string::npos ? std::string::npos : nl - 9);
-    FxKind k;
-    bool landed = false;
-    if (deviceSummaryEffect(sum, k, landed)) fx.add(k, landed && !isError);
-    else fx.add(FxKind::Read, !isError);
+    recordDeviceControl(fx, output.substr(9), isError);
     return;
   }
   if (isError) {
@@ -358,8 +387,8 @@ void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::str
     // ("only 2 of the 3 voice messages reached Telegram (message_id 811, 812) ..."),
     // so they back a claim about them; the rest is recorded as failed.
     const std::string id = base == FxKind::Send ? fxReceiptId(output) : std::string();
-    if (!id.empty()) fx.add(FxKind::Send, true, id, 1, (uint8_t)(flags | kFxReceipt));
-    fx.add(base, false, std::string(), 1, flags);
+    if (!id.empty()) fx.add(FxKind::Send, true, id, 1, (uint16_t)(flags | kFxReceipt));
+    fx.add(base, false, std::string(), 1, withUnconfirmed(output, flags));
     return;
   }
   if (base == FxKind::Send) {
@@ -371,7 +400,7 @@ void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::str
   // A memory is pinned by a write only when the write stored it; a duplicate
   // says whether the existing one was already pinned (a pin that changed nothing).
   const bool stored = startsWith(output, "stored memory ");
-  if (!stored) flags &= (uint8_t)~kFxPermanent;
+  if (!stored) flags &= (uint16_t)~kFxPermanent;
   fx.add(k, true, fxRefFromOutput(output), 1, flags);
   recordLandedRefinements(fx, base, k, output, stored);
 }

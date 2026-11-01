@@ -475,7 +475,7 @@ static void ttsAnnounce(const String& text) {
   }
   String snippet = (end > 0) ? text.substring(0, end)
                              : text.substring(0, min((int)text.length(), 180));
-  g_sinks.speak(snippet);
+  g_sinks.speak(String(), snippet);   // no chat: the owner chat if the speaker cannot play it
 }
 
 // hostForPrompt moved to the harness (agent::hostForPrompt over ProviderConfig,
@@ -883,7 +883,10 @@ static agent::ApplyDeps buildApplyDeps() {
   if (g_sinks.device)
     d.stageDevice = [](const orch::ValidatedAction& va) { g_sinks.device(va); };
   if (g_sinks.speak)
-    d.speak = [](const std::string& s) { g_sinks.speak(String(s.c_str())); };
+    d.speak = [](const std::string& chat, const std::string& s) {
+      return g_sinks.speak(String(chat.c_str()), String(s.c_str()));
+    };
+  d.speakerVolume = [] { return (int)store::sfxVolume(); };   // live: a tts at volume 0 plays silence
   d.modelIsValid = [](const std::string& p, const std::string& m) {
     return modelIsValid(String(p.c_str()), m.c_str());
   };
@@ -2332,7 +2335,7 @@ bool sendToChat(const String& chatId, const String& text, bool asVoice, std::str
       // Noted before the history row (which can fail): a voice note reached the owner
       // (the current chat or an allowlisted one), so the fire spoke (CUM-826).
       noteTurnSpoke();
-      if (cid == cur && g_engine) g_engine->noteToolReplied();
+      if (cid == cur && g_engine) g_engine->noteToolReplied(std::string(o.spokenText.c_str()));
       // Capture what reached the TARGET chat to its history.
       memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, o.spokenText, "",
                              withTurnTag("via:telegram"));
@@ -2346,7 +2349,7 @@ bool sendToChat(const String& chatId, const String& text, bool asVoice, std::str
     // Queued for the owner (the current chat or an allowlisted one): the fire spoke
     // (CUM-826), noted before the history row, which can fail.
     noteTurnSpoke();
-    if (cid == cur && g_engine) g_engine->noteToolReplied();
+    if (cid == cur && g_engine) g_engine->noteToolReplied(std::string(text.c_str()));
     // reply.telegram output was invisible to history - capture it (to the TARGET
     // chat, so a cross-chat send lands in the right conversation).
     memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, text, "",

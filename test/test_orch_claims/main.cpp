@@ -16,7 +16,9 @@
 #include "nimbus/orch/claims.h"
 #include "nimbus/orch/file_append.h"
 #include "nimbus/orch/hosted_runs.h"
+#include "nimbus/orch/speak_outcome.h"
 #include "nimbus/orch/sub_provenance.h"
+#include "nimbus/orch/voice_notes.h"
 #include "nimbus/orch/turn_effects.h"
 
 using namespace nimbus::orch;
@@ -808,7 +810,7 @@ static void test_unsourced_result_needs_a_hedge_or_a_lookup() {
 static void test_tail_one_calm_line_per_class_ascii_no_em_dash() {
   std::vector<ClaimGap> all;
   for (int c = 0; c < (int)ClaimClass::kCount; c++)
-    for (uint8_t v = 0; v < 4; v++) {
+    for (uint8_t v = 0; v < 16; v++) {   // every GapVariant, incl. not spoken / voice not confirmed
       ClaimGap g;
       g.cls = (ClaimClass)c;
       g.variant = v;
@@ -1559,6 +1561,221 @@ static void test_hosted_runs_read_back_from_what_the_device_records() {
   TEST_ASSERT_EQUAL_UINT16(6, hostedRuns().total);  // and leaves this one alone
   resetHostedRuns();
   TEST_ASSERT_FALSE(hostedRuns().any());
+// ---- QW6: spoken claims and the voice receipt -------------------------------------------
+
+static const uint8_t kVoiceSend = (uint8_t)(kFxTelegram | kFxVoice);
+
+// "read it aloud" / "spoken": backed by a reply that played on the speaker OR a Telegram
+// voice message carrying Telegram's receipt, and by nothing else: not a voice send without
+// a receipt, not a text send, not a failed speak. The gap says it was not spoken.
+static void test_spoken_claims_need_the_speaker_or_a_voice_receipt() {
+  const char* replies[] = {"I read it aloud for you.", "I have read aloud the summary.",
+                           "The summary was spoken.", "I am reading it aloud now.",
+                           // other wordings of the same claim (merge review)
+                           "Done, I said it out loud for you.", "I spoke it aloud just now.",
+                           "I played it on the speaker.", "I read it out loud for you."};
+  struct Row { const char* what; TurnEffects fx; bool backed; };
+  std::vector<Row> rows;
+  { TurnEffects fx; fx.add(FxKind::Speak, true); rows.push_back({"spoke", fx, true}); }
+  { TurnEffects fx; fx.add(FxKind::Send, true, "41", 1, (uint8_t)(kVoiceSend | kFxReceipt)); rows.push_back({"voice receipt", fx, true}); }
+  { TurnEffects fx; fx.add(FxKind::Send, false, "", 1, kVoiceSend); rows.push_back({"voice send without a receipt", fx, false}); }
+  { TurnEffects fx; fx.add(FxKind::Send, true, "42", 1, (uint8_t)(kFxTelegram | kFxReceipt)); rows.push_back({"text receipt", fx, false}); }
+  { TurnEffects fx; fx.add(FxKind::Speak, false); rows.push_back({"failed speak", fx, false}); }
+  { TurnEffects fx; rows.push_back({"nothing", fx, false}); }
+  for (const char* reply : replies)
+    for (const Row& row : rows) {
+      const std::vector<ClaimGap> gaps = gapsFor(reply, row.fx);
+      const std::string what = std::string(row.what) + ": " + reply;
+      TEST_ASSERT_EQUAL_MESSAGE(!row.backed, gapOf(gaps, ClaimClass::Sent), what.c_str());
+      if (!row.backed) {
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("(Correction: that was not spoken aloud.)",
+                                         claimTailLine(gaps[0]).c_str(), row.what);
+        TEST_ASSERT_TRUE_MESSAGE(claimCorrection(gaps, row.fx).find("nothing was spoken aloud") != std::string::npos,
+                                 row.what);
+      }
+    }
+}
+
+// What a tts device action's summary records: the speaker is a Speak, a Telegram delivery
+// is a receipted voice Send, and every other summary spoke nothing. A tool error always
+// records the failed Speak. The same through the device.control tool's "applied: " line.
+static void test_a_tts_summary_records_what_really_happened() {
+  { TurnEffects fx; recordSpeakSummary(fx, "tts ");
+    TEST_ASSERT_EQUAL(1, (int)fx.size()); TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Speak && fx.at(0).ok); }
+  { TurnEffects fx; recordSpeakSummary(fx, "tts(telegram message_id 41) ");
+    TEST_ASSERT_EQUAL(1, (int)fx.size());
+    TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Send && fx.at(0).ok);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)(kVoiceSend | kFxReceipt), fx.at(0).flags);
+    TEST_ASSERT_EQUAL_STRING("41", fx.at(0).ref);
+    TEST_ASSERT_TRUE(voiceDelivered(fx)); }
+  { TurnEffects fx; recordSpeakSummary(fx, "tts(telegram message_id ) ");   // no id: no receipt
+    TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Send && !fx.at(0).ok);
+    TEST_ASSERT_FALSE(voiceDelivered(fx)); }
+  for (const char* sum : {"tts(not-spoken: the speaker volume is 0, so speech would play as silence) ",
+                          "tts(voice-off) ", "tts(no-sink) ", "tts", ""}) {
+    TurnEffects fx; recordSpeakSummary(fx, sum);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)fx.size(), sum);
+    TEST_ASSERT_TRUE_MESSAGE(fx.at(0).kind == FxKind::Speak && !fx.at(0).ok, sum);
+  }
+  {   // an upload Telegram never confirmed may have arrived: a failed Speak, and a failed unconfirmed voice Send
+    TurnEffects fx;
+    recordSpeakSummary(fx, std::string("tts(not-spoken: ") + kTtsUnconfirmedLead +
+                           "; the speaker is marked faulty; Telegram sent no confirmation (HTTP 0)) ");
+    TEST_ASSERT_EQUAL(2, (int)fx.size());
+    TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Speak && !fx.at(0).ok);
+    TEST_ASSERT_TRUE(fx.at(1).kind == FxKind::Send && !fx.at(1).ok && (fx.at(1).flags & kFxUnconfirmed));
+    TEST_ASSERT_FALSE(voiceDelivered(fx));
+  }
+  {   // a refused one is only a failed Speak
+    TurnEffects fx;
+    recordSpeakSummary(fx, "tts(not-spoken: the speaker is marked faulty; the Telegram voice message did not "
+                           "arrive: Telegram did not accept it (Bad Request: chat not found)) ");
+    TEST_ASSERT_EQUAL(1, (int)fx.size());
+  }
+  { TurnEffects fx; recordSpeakSummary(fx, "tts ", /*isError=*/true);
+    TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Speak && !fx.at(0).ok); }
+  { TurnEffects fx; recordSpeakSummary(fx, "tts(telegram message_id 41) ", /*isError=*/true);
+    TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Speak && !fx.at(0).ok); }
+  // A config summary that merely STARTS with the letters is a setting, not speech: "ttsOn cfg " is
+  // a changed stored value (a Config that landed), "ttsOn cfg(no change) " changed nothing.
+  for (const char* sum : {"ttsOn cfg ", "ttsOff cfg ", "ttsOn-refused(scheduled) cfg(no change) "}) {
+    const bool landed = std::strstr(sum, "no change") == nullptr;
+    TurnEffects fx;
+    recordToolEffect(fx, FxKind::Config, false, std::string("applied: ") + sum);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)fx.size(), sum);
+    TEST_ASSERT_TRUE_MESSAGE(fx.at(0).kind == FxKind::Config, sum);
+    TEST_ASSERT_EQUAL_MESSAGE(landed, fx.at(0).ok, sum);
+    TEST_ASSERT_EQUAL_MESSAGE(landed, gapsFor("I switched voice replies on.", fx).empty(), sum);
+  }
+  // Through device.control's tool result: the first line is the summary, a note may follow.
+  { TurnEffects fx; recordToolEffect(fx, FxKind::Config, false, "applied: tts \n(Note: the spoken version was shortened.)");
+    TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Speak && fx.at(0).ok); }
+  { TurnEffects fx; recordToolEffect(fx, FxKind::Config, false, "applied: tts(telegram message_id 9) ");
+    TEST_ASSERT_TRUE(voiceDelivered(fx)); }
+  { TurnEffects fx; recordToolEffect(fx, FxKind::Config, false, "applied: tts(not-spoken: the speaker is marked faulty) ");
+    TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Speak && !fx.at(0).ok); }
+  { TurnEffects fx; recordToolEffect(fx, FxKind::Config, true, "applied: tts ");
+    TEST_ASSERT_FALSE(fx.at(0).ok); }
+}
+
+// A provider's or Telegram's error text must never read as a delivery receipt: a failure whose
+// reason says "message_id 7" (a hostile router, a odd description) records no delivered send.
+static void test_a_failure_reason_cannot_forge_a_receipt() {
+  const char* reasons[] = {"the router said message_id 7", "Telegram did not accept it (message_id 812 invalid)",
+                           "Message_id 5 and message_id 6", "HTTP 0 message_id 9"};
+  for (const char* why : reasons) {
+    TurnEffects fx;
+    recordToolEffect(fx, FxKind::Send, true, voiceFailedText({}, 1, why), kVoiceSend);
+    TEST_ASSERT_FALSE_MESSAGE(voiceDelivered(fx), why);
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor("I sent you a voice message.", fx), ClaimClass::Sent), why);
+  }
+}
+
+// A voice send whose upload went out but whose answer Telegram never gave usably may have
+// arrived: the owner line says it was not confirmed, not that nothing was delivered. A
+// refusal, and a failed synthesis, keep "no voice message was delivered".
+static void test_an_unconfirmed_voice_send_is_not_called_undelivered() {
+  const std::string unconfirmed =
+      voiceFailedText({}, 1, "Telegram did not accept it (HTTP 0)");
+  const std::string refused =
+      voiceFailedText({}, 1, "Telegram did not accept it (Bad Request: chat not found)");
+  const std::string noClip = voiceFailedText({}, 1, "text-to-speech failed: no audio came back");
+  const char* replies[] = {"I sent you a voice message.", "Voice message sent."};
+  for (const char* reply : replies) {
+    TurnEffects a;
+    recordToolEffect(a, FxKind::Send, true, unconfirmed, kVoiceSend);
+    TEST_ASSERT_EQUAL(1, (int)a.size());
+    TEST_ASSERT_TRUE(!a.at(0).ok && (a.at(0).flags & kFxUnconfirmed));
+    std::vector<ClaimGap> gaps = gapsFor(reply, a);
+    TEST_ASSERT_EQUAL(1, (int)gaps.size());
+    TEST_ASSERT_EQUAL_STRING("(Note: Telegram did not confirm the voice message, so it may not have arrived.)",
+                             claimTailLine(gaps[0]).c_str());
+    TEST_ASSERT_TRUE(gaps[0].deviceOnly);
+    for (const std::string& why : {refused, noClip}) {
+      TurnEffects b;
+      recordToolEffect(b, FxKind::Send, true, why, kVoiceSend);
+      TEST_ASSERT_FALSE(b.at(0).flags & kFxUnconfirmed);
+      gaps = gapsFor(reply, b);
+      TEST_ASSERT_EQUAL_STRING("(Correction: no voice message was delivered.)", claimTailLine(gaps[0]).c_str());
+    }
+    // A partial send whose later note is unconfirmed still backs the delivered one.
+    TurnEffects p;
+    recordToolEffect(p, FxKind::Send, true, voiceFailedText({{811, 1000}}, 3, "Telegram did not accept it (HTTP 0)"),
+                     kVoiceSend);
+    TEST_ASSERT_TRUE(voiceDelivered(p));
+    TEST_ASSERT_TRUE(gapsFor(reply, p).empty());
+  }
+  // The flag is only ever set on a voice send.
+  TurnEffects t;
+  recordToolEffect(t, FxKind::Send, true, unconfirmed, kFxTelegram);
+  TEST_ASSERT_FALSE(t.at(0).flags & kFxUnconfirmed);
+}
+
+// ---- CUM-771: a reply that states a total, an estimate or a plan claims no save --------------------
+
+// Replies the base image corrected with "(Correction: that has not been saved.)" although they
+// claimed nothing: they report what is ALREADY logged ("1,600 kcal logged so far") and offer or
+// plan the rest (lane QW7's qty-vague eval, 26 Oct; the last row is a reply the owner got on
+// 24 Oct and was never corrected). None of them asserts that a save, log or update happened.
+static void test_a_reported_total_or_an_estimate_is_not_a_save_claim() {
+  const char* replies[] = {
+      "For 2,400 kcal you have 800 left (1,600 logged so far).\n\n- **Mozzarella:** 4 slices (100 g), about "
+      "280 kcal and 22 g protein.\n\nThese are estimates. Nothing is logged yet. Tell me what you actually eat "
+      "and I'll add it.",
+      "You're at 1,600 kcal logged, so 800 kcal are left.\n\n- **Pasta salad:** about 325 g, roughly 420 "
+      "kcal.\n\nBoth figures are estimates, since I haven't weighed anything.\n\nWant me to log this once "
+      "you've eaten?",
+      "Today so far is 1,600 kcal and 88 g protein logged, so you have about 800 kcal left under your 2,400 kcal "
+      "target.\n\nYou said earlier that dinner would have no cheese, so I want to check: has that changed? I "
+      "haven't logged anything yet. Tell me what you actually eat and I'll add it to the food log.",
+      "Morning tally (blind estimate, bread protein assumed since brand unknown):\n- 2 bread slices @ 120 kcal "
+      "each = 240 kcal, ~8g protein\n- Mozzarella slice: 64 kcal / 4.7g (your number)\n\nMorning total: "
+      "~475-505 kcal, ~25-28g protein.\n\nGood that the weekend session is locked in, no more \"maybe "
+      "Sunday.\" I'll check back to log it once it's done.",
+      "I'd suggest 250 g of pasta and 6 slices. Logging it once you confirm is fine.",
+      // Pure running totals: the progress words are in the participle's own clause, adjacent to it.
+      "That is 1,652 kcal logged to date.",
+      "(1,652 logged so far)",
+      "Your total is 1,652 kcal logged so far today.",
+      "You are at 1,652 kcal logged, with 700 left.",
+  };
+  for (const char* reply : replies) {
+    TurnEffects none;   // nothing was saved this turn
+    TEST_ASSERT_TRUE_MESSAGE(gapsFor(reply, none).empty(), reply);
+    TEST_ASSERT_FALSE_MESSAGE(hasClass(scanClaims(reply), ClaimClass::Saved), reply);
+  }
+}
+
+// The counter-cases: a reply that asserts a save still is one, with or without a figure, and a
+// standing total beside a real claim does not hide it. With nothing saved each gets the line.
+static void test_a_real_save_claim_still_gets_its_correction() {
+  const char* replies[] = {
+      "Logged: cappuccino, 52 kcal / 3.6g protein. First item on today's log.",           // 23 Oct, Lumi
+      "Cappuccino logged: 52 kcal / 3.6g protein (standing rule).\n\nRunning morning total: ~527-557 kcal.",
+      "52 kcal logged.",
+      "Done: 2 eggs, 156 kcal logged. You have about 800 kcal left.",
+      "I logged 52 kcal for the cappuccino.",
+      "Logged the cappuccino (52 kcal). You're at 1,652 kcal logged so far.",             // claim + a total
+      "Updated the day log: 1,652 kcal so far.",
+      // One sentence that mixes a FRESH figure with a total (merge review): the progress words sit in
+      // another clause, or are no progress words, so the save claim stands.
+      "2 eggs, 156 kcal logged, so you're at 1,652 kcal so far.",
+      "3 eggs logged - you're on a roll!",
+      "2 eggs, 156 kcal logged; you are at 1,652 kcal so far.",
+      "156 kcal logged and you're at 1,652 so far.",
+      "52 kcal logged, so you're at 1,652 kcal logged so far.",                          // the first one is fresh
+      "Logged 156 kcal for the eggs, you're at 1,652 kcal logged so far.",
+      "You're on 1,652 kcal and 52 kcal logged.",
+  };
+  for (const char* reply : replies) {
+    TurnEffects none;
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(reply, none), ClaimClass::Saved), reply);
+    TurnEffects saved;
+    saved.add(FxKind::FileWrite, true);   // a real write backs it
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(reply, saved), ClaimClass::Saved), reply);
+  }
+  TEST_ASSERT_EQUAL_STRING("(Correction: that has not been saved.)",
+                           claimTailLine(gapsFor("Logged: cappuccino, 52 kcal / 3.6g protein.", TurnEffects())[0]).c_str());
 }
 
 int main(int, char**) {
@@ -1575,6 +1792,12 @@ int main(int, char**) {
   RUN_TEST(test_every_cue_inside_quotes_or_code_is_not_a_claim);
   RUN_TEST(test_a_correction_of_the_record_needs_a_files_effect);
   RUN_TEST(test_switch_claims_need_a_setting_that_changed);
+  RUN_TEST(test_spoken_claims_need_the_speaker_or_a_voice_receipt);
+  RUN_TEST(test_a_tts_summary_records_what_really_happened);
+  RUN_TEST(test_an_unconfirmed_voice_send_is_not_called_undelivered);
+  RUN_TEST(test_a_failure_reason_cannot_forge_a_receipt);
+  RUN_TEST(test_a_reported_total_or_an_estimate_is_not_a_save_claim);
+  RUN_TEST(test_a_real_save_claim_still_gets_its_correction);
   RUN_TEST(test_non_english_reply_is_not_scanned);
   RUN_TEST(test_other_person_past_and_adjective_are_not_claims);
   RUN_TEST(test_spawn_claims_need_a_sub_agent_noun_and_respect_clause_negation);

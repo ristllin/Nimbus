@@ -114,6 +114,19 @@ inline bool isTelegramChat(const std::string& chatId) {
   return nimbus::orch::deliveryChannelOf(chatId) == nimbus::orch::DeliveryChannel::Telegram;
 }
 
+// QW6: where a spoken reply's Telegram fallback goes (the `tts` action when the speaker cannot
+// play it): the chat the turn came in on when that is a Telegram chat (a numeric chat id: a
+// guest's request is never voiced into the owner's chat), else `ownerChat` - a web, voice or
+// serial turn has no Telegram chat of its own, and neither has a device origin such as "system"
+// or any other id that is not a chat number. "" when there is no owner chat either.
+inline std::string voiceFallbackChatOf(const std::string& turnChat, const std::string& ownerChat) {
+  size_t i = (!turnChat.empty() && turnChat[0] == '-') ? 1 : 0;
+  bool numeric = i < turnChat.size() && turnChat.size() - i <= 20;
+  for (; numeric && i < turnChat.size(); ++i)
+    numeric = turnChat[i] >= '0' && turnChat[i] <= '9';
+  return numeric ? turnChat : ownerChat;
+}
+
 // CUM-523: the per-turn rule for HarnessConfig::telegramDeliverable. The bot runs
 // and either a chat is allowlisted (a target any turn can reach) or the owner
 // opted into public mode and this turn came in over Telegram (its own chat is the

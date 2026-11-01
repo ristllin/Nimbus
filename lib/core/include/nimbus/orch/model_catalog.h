@@ -381,8 +381,10 @@ bool rowOffered(const ModelInfo& m, uint16_t role, uint32_t now);
 // The short list a direct provider's prompt line and quick picks show, from its store
 // rows: offered chat models the provider's own filter keeps (openai/zai: the current
 // flagship generations; anthropic: claude-*; mistral: chat + tools), not deprecated,
-// newest first, at most kDirectChoicesMax. "" when nothing qualifies. The router's is
-// router_catalog::storeChoices.
+// newest first, at most kDirectChoicesMax. When the filter keeps none of the offered rows
+// the list is the offered rows themselves (then including deprecated ones), so it is empty
+// only when the store offers nothing: every id in it passes the one selectable check. The
+// router's is router_catalog::storeChoices.
 inline constexpr size_t kDirectChoicesMax = 8;
 std::string directChoices(const std::string& provider, const std::vector<ModelInfo>& rows,
                           uint32_t now);

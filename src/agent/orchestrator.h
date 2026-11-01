@@ -8,6 +8,7 @@
 #include "nimbus/attention.h"
 #include "nimbus/orch/device_actions.h"  // ValidatedAction (DeviceSink payload)
 #include "nimbus/orch/rbac.h"            // Role / TenantStore (v3.7.0)
+#include "nimbus/orch/speak_outcome.h"    // SpeakOutcome (SpeakSink's answer)
 #include "nimbus/orch/world.h"  // SessionInfo (session.list / running-sessions digest)
 #include "nimbus/orch/token_usage.h"  // TokenUsage - Phase 0 cost seam (lastTurnUsage)
 #include "nimbus/orch/loops.h"        // FireOutcome - Local Loops scheduled-turn result
@@ -44,9 +45,12 @@ using EventSink = void (*)(const nimbus::attn::Event& e);
 // drop instead of losing the owner's reply silently.
 using SendSink = bool (*)(const String& chatId, const String& text);
 
-// Speak a short result aloud (opt-in). LIVE-GATED + bench-broken: the audio path
-// is unverified here - see the note in orchestrator.cpp. Nullable.
-using SpeakSink = void (*)(const String& text);
+// Voice a short text (the `tts` device action, a job-result announcement). `chatId` is the
+// chat the turn is in ("" for a job announcement): the Telegram fallback goes there when it
+// is a Telegram chat, else to the owner chat (telegram::ownerChat). Answers how it ended: played on the
+// speaker, delivered to Telegram with a message id, or not voiced with the reason - the turn
+// records exactly that, never the request. Nullable.
+using SpeakSink = nimbus::orch::SpeakOutcome (*)(const String& chatId, const String& text);
 
 // Execute a VALIDATED device action (led / lights / reboot - the ring/power side
 // effects the orchestrator itself must not own, per the §3.6 split). Called on the
