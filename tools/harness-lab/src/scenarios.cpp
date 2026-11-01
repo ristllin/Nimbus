@@ -405,6 +405,7 @@ ovf::Report ovfReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
 void scOvfOverflow(LabRig& rig, Ctx& c) { ovf::overflowRefusal(rig, ovfReport(c)); }
 void scOvfRound0(LabRig& rig, Ctx& c) { ovf::synthesisOverBudget(rig, ovfReport(c)); }
 void scOvfCut(LabRig& rig, Ctx& c) { ovf::cutContinues(rig, ovfReport(c)); }
+void scOvfCutNatural(LabRig& rig, Ctx& c) { ovf::cutNatural(rig, ovfReport(c)); }
 void scOvfPlaceholder(LabRig& rig, Ctx& c) { ovf::forcedPlaceholder(rig, ovfReport(c)); }
 void scOvfPromise(LabRig& rig, Ctx& c) { ovf::promiseCorrected(rig, ovfReport(c)); }
 void scOvfAlbum(LabRig& rig, Ctx& c) { ovf::albumOfSix(rig, ovfReport(c)); }
@@ -449,6 +450,7 @@ const Scenario kScenarios[] = {
     {"ovf-overflow",    "a provider's real overflow refusal: trim, retry once, answer", scOvfOverflow, false},
     {"ovf-round0",      "a synthesis over the wire budget at round 0 still answers", scOvfRound0, false},
     {"ovf-cut",         "a round really cut twice runs on with the note (or on the next host)", scOvfCut, false},
+    {"ovf-cut-natural", "an answer too long for the real output caps still ends with an answer", scOvfCutNatural, false},
     {"ovf-placeholder", "a filler answer on the forced round goes back once, the wire takes it", scOvfPlaceholder, false},
     {"ovf-promise",     "a next-turn promise goes back once, the wire takes it", scOvfPromise, false},
     {"ovf-album",       "six real photos in one turn end with an answer (NIMBUS_LAB_PHOTOS)", scOvfAlbum, false},

@@ -11,6 +11,7 @@
 //                    so the provider really refuses; the trim drops it and the turn answers
 //   ovf-round0       a synthesis turn whose first request is over the wire budget
 //   ovf-cut          a round cut twice by real output limits, then the fabric's recovery
+//   ovf-cut-natural  an answer too long for the adapter's own output caps, no forcing
 //   ovf-placeholder  the forced round's answer is swapped for filler on its way back; the
 //                    correction pair must be a request the real provider accepts
 //   ovf-promise      the same with Lumi's "next turn" sentence
@@ -29,6 +30,7 @@ struct Report {
 void overflowRefusal(LabRig& rig, const Report& r);
 void synthesisOverBudget(LabRig& rig, const Report& r);
 void cutContinues(LabRig& rig, const Report& r);
+void cutNatural(LabRig& rig, const Report& r);
 void forcedPlaceholder(LabRig& rig, const Report& r);
 void promiseCorrected(LabRig& rig, const Report& r);
 void albumOfSix(LabRig& rig, const Report& r);

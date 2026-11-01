@@ -98,12 +98,13 @@ size_t TurnFit::dropPlaybook() {
 size_t TurnFit::dropNewestHistory(size_t want) {
   auto& h = ci_.history;
   size_t freed = 0;
-  // Newest past turns from the oldest of them; the summary pair goes last.
+  // Past turns go whole, as user and assistant pairs (a history that opens on an assistant
+  // message is a refusal on some wires), the oldest of them first; the summary pair last.
   const size_t first = (h.size() >= 2 && isSummaryMessage(h[0])) ? 2 : 0;
-  while (h.size() > first && freed < want) {
-    freed += h[first].text.size();
-    h.erase(h.begin() + (long)first);
-    newestDropped_++;
+  while (h.size() >= first + 2 && freed < want) {
+    freed += h[first].text.size() + h[first + 1].text.size();
+    h.erase(h.begin() + (long)first, h.begin() + (long)first + 2);
+    newestDropped_ += 2;
   }
   if (freed < want && !h.empty()) {
     for (const auto& m : h) freed += m.text.size();

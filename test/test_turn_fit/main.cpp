@@ -102,6 +102,9 @@ static void test_the_ladder_order_to_the_end() {
   TEST_ASSERT_TRUE(fit.shrink(3000, true) >= 3000);
   TEST_ASSERT_TRUE(ci.foodPlaybook.empty());
   TEST_ASSERT_FALSE(tools.specs.empty());
+  // Past turns go whole: the history still opens on a user message and alternates.
+  TEST_ASSERT_TRUE(ci.history.size() % 2 == 0);
+  for (size_t i = 0; i < ci.history.size(); i++) TEST_ASSERT_EQUAL(i % 2 == 0, ci.history[i].user);
   // Everything: the input keeps both ends, the tools go, the owner's rules go last.
   TEST_ASSERT_TRUE(fit.shrink(1000000, true) > 0);
   TEST_ASSERT_TRUE(ci.history.empty());

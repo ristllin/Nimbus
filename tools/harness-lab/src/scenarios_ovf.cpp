@@ -77,6 +77,13 @@ int refusedCalls(LabRig& rig) {
   return n;
 }
 
+// The requests after the last 200: a refusal of the correction round would be the last call.
+bool lastCallServed(LabRig& rig) {
+  for (auto it = rig.http().calls.rbegin(); it != rig.http().calls.rend(); ++it)
+    if (isProviderHost(it->host) && it->path.find("/embeddings") == std::string::npos) return it->status == 200;
+  return false;
+}
+
 int headCalls(LabRig& rig) {
   int n = 0;
   for (const auto& c : rig.http().calls)
@@ -143,12 +150,18 @@ void synthesisOverBudget(LabRig& rig, const Report& r) {
     a.text = "old answer " + std::to_string(i) + " " + heavy;
     rig.addRow(a);
   }
-  // The history's weight alone does not reach 85 KB on this rig's short tool list; a long
-  // standing rules block rides the same prompt, so the first body really crosses it.
-  rig.registry();
+  // The lab's tool list is shorter than the device's 53 tools: these make up the difference,
+  // so the first request really crosses the wire budget the way Lumi's did.
+  for (int i = 0; i < 44; i++)
+    rig.registry().add("ovf.extra_" + std::to_string(i), std::string(760, 'd'),
+                       [](ArduinoJson::JsonObjectConst, const orch::Principal&) { return orch::ToolResult::ok("ok"); },
+                       "{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}}}");
   size_t largest = 0;
-  rig.shim().onRequest = [&largest](agent::HttpRequest& q) {
-    if (isHead(q) && q.body.size() > largest) largest = q.body.size();
+  bool saidLeftOut = false;
+  rig.shim().onRequest = [&largest, &saidLeftOut](agent::HttpRequest& q) {
+    if (!isHead(q)) return;
+    if (q.body.size() > largest) largest = q.body.size();
+    saidLeftOut = saidLeftOut || q.body.find("LEFT OUT TO FIT") != std::string::npos;
   };
   rig.jobs().addFreshResult("job0008", "openai/gpt-5.2",
                             std::string("The soup is pumpkin, about 180 kcal a bowl. ") + std::string(7000, 'r'));
@@ -156,6 +169,7 @@ void synthesisOverBudget(LabRig& rig, const Report& r) {
   rig.shim().onRequest = nullptr;
   printCalls(rig, r);
   r.note("largest request " + std::to_string(largest) + " B; reply: " + t.reply.substr(0, 300));
+  r.check(saidLeftOut, "the first body really crossed the budget, and the request says what it left out");
   r.check(largest <= agent::providers::kWireBodyMax, "every request sent was inside the wire budget");
   r.check(!t.reply.empty() && t.reply.find("didn't finish") == std::string::npos, "the synthesis answered");
   r.check(t.reply.find("raw findings") == std::string::npos, "not the raw fallback");
@@ -173,18 +187,34 @@ void cutContinues(LabRig& rig, const Report& r) {
   r.check(t.reply.find("next turn") == std::string::npos, "no next-turn promise");
 }
 
+void cutNatural(LabRig& rig, const Report& r) {
+  auto t = rig.say("ovf-cut-natural",
+                   "Write the complete 9000-word history of tea, from its origins to today, in your reply. Every "
+                   "century gets its own long section. Do not save it to a file and do not shorten it.");
+  printCalls(rig, r);
+  r.note("seconds " + std::to_string((int)t.seconds) + " tokens out " + std::to_string(t.tokensOut) + "; reply starts: " +
+         t.reply.substr(0, 300) + " ... reply ends: " +
+         (t.reply.size() > 300 ? t.reply.substr(t.reply.size() - 300) : std::string()));
+  r.check(!t.reply.empty(), "the owner got an answer");
+  r.check(t.reply.find("didn't finish") == std::string::npos, "no failure reply");
+  r.check(t.reply.find("next turn") == std::string::npos ||
+              t.reply.find("will not continue on its own") != std::string::npos,
+          "no bare next-turn promise");
+}
+
 void forcedPlaceholder(LabRig& rig, const Report& r) {
   int swapped = 0;
   rig.shim().onResponse = [&swapped](const agent::HttpRequest& q, agent::HttpResponse& out) {
     if (!isHead(q) || swapped || out.status != 200) return;
     if (swapFinalReply(out.body, "placeholder")) swapped++;
   };
-  auto t = rig.say("ovf-placeholder", "What is the capital of Japan? One word.");
+  // With --rounds=1 this is the forced round: the search runs, then the tools are gone.
+  auto t = rig.say("ovf-placeholder", "Search your memory for Japan, then tell me its capital in one word.");
   rig.shim().onResponse = nullptr;
   printCalls(rig, r);
   r.note("reply: " + t.reply);
   r.check(swapped == 1, "the first final answer was filler on its way back");
-  r.check(refusedCalls(rig) == 0, "the provider accepted the correction pair");
+  r.check(lastCallServed(rig), "the provider accepted the request after the correction");
   r.check(t.reply.find("placeholder") == std::string::npos, "the owner never saw it");
   r.check(t.reply.find("Tokyo") != std::string::npos, "the real answer reached the owner");
 }
@@ -195,12 +225,12 @@ void promiseCorrected(LabRig& rig, const Report& r) {
     if (!isHead(q) || swapped || out.status != 200) return;
     if (swapFinalReply(out.body, "I'll work out the capital of Japan and tell you in the next turn.")) swapped++;
   };
-  auto t = rig.say("ovf-promise", "What is the capital of Japan? One word.");
+  auto t = rig.say("ovf-promise", "Search your memory for Japan, then tell me its capital in one word.");
   rig.shim().onResponse = nullptr;
   printCalls(rig, r);
   r.note("reply: " + t.reply);
   r.check(swapped == 1, "the first final answer was the promise on its way back");
-  r.check(refusedCalls(rig) == 0, "the provider accepted the correction pair");
+  r.check(lastCallServed(rig), "the provider accepted the request after the correction");
   r.check(t.reply.find("next turn") == std::string::npos ||
               t.reply.find("will not continue on its own") != std::string::npos,
           "no bare promise reached the owner");
