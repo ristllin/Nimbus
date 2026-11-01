@@ -173,7 +173,8 @@ class LabFiles {
                                        const std::string& t) {
     const std::string path = p + "/" + n;
     const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(
-        t, files_[path].size(), files_[path].empty() ? '\0' : files_[path].back());
+        t, files_[path].size(), files_[path].empty() ? '\0' : files_[path].back(),
+        files_[path].empty() && n.size() > 4 && n.compare(n.size() - 4, 4, ".csv") == 0);
     if (!plan.ok) return nimbus::orch::ToolResult::fail(plan.err);
     files_[path] += plan.bytes;
     return nimbus::orch::ToolResult::ok(

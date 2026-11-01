@@ -286,7 +286,8 @@ uint8_t ClaimCheck::toolCallFlags(const std::string& regName, const std::string&
   // count (fxAppendedRows, in recordToolEffect) is the proof a row exists - the flag is
   // asked for on every append and kept only when a row lands, whatever the extension
   // (.txt and .md logs are logs too, not only .csv/.log).
-  if (regName == "files.append") return orch::kFxLogRow;
+  // A files.edit changes a text document in place: its proof is its own "replaced A of B".
+  if (regName == "files.append" || regName == "files.edit") return orch::kFxLogRow;
   // An artifact.save that rewrites a text document also updates a log (the review: the
   // free-text day log is corrected by rewriting the file): its proof is its own landed
   // receipt (recordToolEffect keeps the flag when the result counts rows or the save

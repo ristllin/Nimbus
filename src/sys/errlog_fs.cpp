@@ -244,6 +244,22 @@ void append(const std::string& redacted, const char* cat) {
   // RAM tail + Serial keep every line; only the flash write is dropped.
   if (g_suspended) return;
 
+  // The 2026-10-29 Lumi panic class (fw v4.6.1, tg_poll, the dream-end row):
+  // every newlib stdio operation on a FILE takes the FILE's recursive lock, and
+  // IDF newlib's lock_acquire_generic ABORTS when that acquire runs with the
+  // CPU's interrupt level raised (its "recursive mutexes make no sense in ISR
+  // context" abort - reached from task code when a critical section's unmask
+  // leaked earlier on this task's stack, or from an exception frame). The
+  // durable window between this line's last heap use and the FILE write is
+  // exactly where that abort landed. Refuse the FILE touch in that context:
+  // the line is already in the RAM tail + Serial, and the same drop counters
+  // make the next successful write record the miss - never an abort.
+  if (!xPortCanYield()) {
+    g_durableSkipped.fetch_add(1);    // total, for reporting
+    g_skipUnpersisted.fetch_add(1);   // delta, recorded to disk at the next successful write
+    return;
+  }
+
   // Durable phase: best-effort. Take the shared card lock only briefly; if the card is
   // contended (e.g. a big memory persist in flight) SKIP rather than stall the caller
   // (loop/AsyncTCP) and risk a WDT reset. The line is already captured in RAM + Serial.

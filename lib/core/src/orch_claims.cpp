@@ -77,6 +77,13 @@ constexpr uint32_t kCheckBacks = fxBit(FxKind::Read) | fxBit(FxKind::SubSourced)
 constexpr uint32_t kSwitchBacks = fxBit(FxKind::Config) | fxBit(FxKind::Schedule);
 // A named source (CUM-824): any subject, no plain-future exemption for the credit itself.
 constexpr uint32_t kSrc = kAnySubject | kSourceNoun;
+// v4.6.3 (the 30 Oct ledger investigation): a remove/replace/dedup claim on a
+// log is backed ONLY by a stored row that was actually replaced - the keyed
+// upsert (replaced>0) or a files.edit. The day's replies said "removed",
+// "Replaced today's log", "fixed and deduplicated" over plain appends: the row
+// landed, nothing was replaced, and the claim check passed because any file
+// write backed the class. A plain append (FileWrite) backs nothing here.
+constexpr uint32_t kReplaceBacks = fxBit(FxKind::FileReplace);
 constexpr uint32_t kDurableStoreBacks = fxBit(FxKind::MemWrite) | fxBit(FxKind::MemUpdate) |
                                         fxBit(FxKind::MemPin) | fxBit(FxKind::FileWrite) |
                                         fxBit(FxKind::SkillSave);
@@ -114,6 +121,17 @@ constexpr Cue kCues[] = {
     {C::Saved, "adjusted", kLogObject, 0},
     {C::Saved, "amended", kLogObject, 0},
     {C::Saved, "corrected", kSelf | kNoPassive, kSavedBacks},
+    // a removal/replacement/dedup claim on a log (v4.6.3): only a stored row
+    // that was actually replaced backs it - the same log-object reach, a much
+    // narrower back ("The black beans entry is now removed from the log",
+    // "Replaced today's log with your figures", "fixed and deduplicated").
+    // "deduplicated" carries no log-noun gate: deduplication is inherently a
+    // records operation, and the real reply put its noun out of the reach
+    // ("The meal log is now fixed and deduplicated").
+    {C::Saved, "removed", kLogObject, kReplaceBacks},
+    {C::Saved, "replaced", kLogObject, kReplaceBacks},
+    {C::Saved, "deduplicated", 0, kReplaceBacks},
+    {C::Saved, "deleted", kLogObject, kReplaceBacks},
     // ---- a deliverable that exists outside the reply
     {C::Deliverable, "written and waiting", kAnySubject, kFileBacks},
     {C::Deliverable, "drafted and waiting", kAnySubject, kFileBacks},
@@ -1801,6 +1819,7 @@ enum GapVariant : uint8_t {
   kGapNoLogRow = 14,         // a log claim with no row landed in a .csv or .log file (CUM-782)
   kGapQuote = 15,            // a quote presented as a memory or record that nothing holds (CUM-824)
   kGapCauseUnrecorded = 16,  // a reason, asked why, that nothing on record holds (CUM-824)
+  kGapNoReplace = 17,        // a remove/replace/dedup claim with no replaced row behind it
 };
 
 // Phrases that make a send claim a voice-message claim: the delivery itself named as
@@ -1852,6 +1871,15 @@ bool failedWritesQueued(const TurnEffects& fx) {
 }
 
 bool savedGap(const Cue& cue, const TurnEffects& fx, uint8_t* variant) {
+  if (cue.backs == kReplaceBacks) {
+    // The removal/replacement verbs, ahead of the log-row rule below (their log noun
+    // must not let a landed append back them): the turn may well have written rows;
+    // what did not happen is the REPLACEMENT, and the line must say exactly that
+    // (v4.6.3, the 30 Oct ledger investigation).
+    if (backedBy(fx, kReplaceBacks)) return false;
+    *variant = kGapNoReplace;
+    return true;
+  }
   // CUM-782: only a landed row backs a log claim ("logged", "updated the log").
   if (cue.flags & (kLogObject | kLogFileObject)) {
     if (fx.anyOkWith(FxKind::FileWrite, kFxLogRow)) return false;
@@ -2129,6 +2157,9 @@ const char* savedWhat(uint8_t variant) {
   if (variant == kGapNoLogRow)
     return "no row landed in a log file this turn; only a files.append (or a file saved again) that adds or "
            "replaces a row updates a log";
+  if (variant == kGapNoReplace)
+    return "no stored row was replaced this turn; only a keyed files.append that reports a replaced row, or a "
+           "files.edit, removes or replaces one";
   if (variant == kGapQueued) return "the memory write was only queued; it is not stored yet";
   return variant == kGapRamOnly ? "it was kept in RAM only; saving failed" : "nothing was saved";
 }
@@ -2870,6 +2901,9 @@ std::string savedTail(uint8_t variant) {
   if (variant == kGapNoLogRow) return "(Correction: no row was added to a log file this turn.)";
   if (variant == kGapQueued)
     return "(Correction: that has not been saved yet; it is waiting on the device to be stored.)";
+  if (variant == kGapNoReplace)
+    return "(Correction: no stored row was replaced this turn - an append adds a new row; a "
+           "removal or dedup needs a keyed update (files.append with a key) or files.edit.)";
   return variant == kGapRamOnly
              ? "(Note: this is kept only until the next restart; saving it permanently failed.)"
              : "(Correction: that has not been saved.)";

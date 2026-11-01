@@ -6,6 +6,27 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v4.6.4 - Compaction works on every Mistral model again
+
+A fix release for the broken compaction reported on 31 October.
+
+- **A model that refuses the built-in connectors no longer breaks the conversation summary.** Switching the assistant to mistral-large-4-0 made every compaction attempt die with "does not support builtin connectors" - retried forever, so the conversation summary went stale and answers degraded. The turn is now retried once without the server-side connectors (your own tools are unaffected - they run on the device), the refusal is remembered, and compaction completes.
+
+## v4.6.3 - Log corrections that land, and a ledger that heals itself
+
+A fix release for the correction loop reported on 30 October.
+
+- **Corrections are checked against what actually happened.** Saying "removed", "replaced" or "deduplicated" now requires the tool result that says a stored row was really replaced - a plain append no longer backs the claim, and the reply says so honestly.
+- **The meal ledger heals itself.** An old headerless meal log folds into the proper ledger on the next start - your final figures win - and creating a headerless log that corrections cannot target is refused with the header it needs, so the silent-append loop cannot recur.
+- **A lost reply tells you.** If a crash ever eats a reply again, the boot notice says the message arrived and its work may be done - check before re-sending, so nothing gets logged twice.
+
+## v4.6.2 - The dream crash fixed, files.edit added
+
+A fix release for the crash and the file-editing gap reported on 29 October.
+
+- **No more crash at the dream's end.** The nightly maintenance pass could stop the device dead when its timeline note landed at a moment the system was already running at a raised interrupt level. That write is now held safely and lands on the next turn instead, and nothing about normal turns changes.
+- **files.edit.** The assistant can now change one line of a text document without reading and rewriting the whole file - it finds the text, replaces it, and leaves everything else untouched. Cheaper on memory and tokens, and it says honestly what it found and replaced.
+
 ## v4.6.1 - Faster replies, no web-page restarts, the real model named
 
 A fix release for problems seen in the first hours of v4.6.0.

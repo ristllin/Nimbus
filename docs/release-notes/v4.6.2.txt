@@ -1,0 +1,1 @@
+No more crash at the dream's end, and files.edit: fix one line without rewriting the whole file

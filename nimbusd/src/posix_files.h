@@ -221,6 +221,12 @@ class PosixFiles {
     return true;
   }
 
+  // The device's rule (files_subsystem.cpp appendRows): an append that creates a CSV
+  // carries its header row first, or the file can never be updated by key.
+  static bool createsCsv(const std::string& cur, const std::string& n) {
+    return cur.empty() && n.size() > 4 && n.compare(n.size() - 4, 4, ".csv") == 0;
+  }
+
   bool append(const std::string& p, const std::string& n, const std::string& text,
               std::string& err, std::string& note) {
     if (!nimbus::orch::FileStore::validSegment(p, 24) ||
@@ -232,7 +238,7 @@ class PosixFiles {
     const nimbus::orch::FileEntry* old = store_.find(p, n);
     if (old) read(p, n, cur);
     const nimbus::orch::AppendPlan plan =
-        nimbus::orch::planAppend(text, cur.size(), cur.empty() ? '\0' : cur.back());
+        nimbus::orch::planAppend(text, cur.size(), cur.empty() ? '\0' : cur.back(), createsCsv(cur, n));
     if (!plan.ok) {
       err = plan.err;
       return false;

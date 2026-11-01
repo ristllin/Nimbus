@@ -49,6 +49,8 @@ enum class FxKind : uint8_t {
   Read,            // a lookup ran (memory search, file read, web search, ...)
   SubSourced,      // a sub-agent result whose run made at least one tool call
   SubUnsourced,    // a live-data sub-agent result with no lookup behind it
+  FileReplace,     // a stored row/content was REPLACED (a keyed upsert with
+                   // replaced>0, or a files.edit) - not a plain append
   kCount
 };
 

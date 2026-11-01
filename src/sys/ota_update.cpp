@@ -15,6 +15,7 @@
 #include <solide/memory.h>
 
 #include "../agent/agent_config.h"
+#include "psram_static.h"          // g_manifest in PSRAM (the static-DRAM gate recovery)
 #include "net_util.h"              // tlsSetup (CA bundle / setInsecure) + tlsClose
 #include "../agent/store.h"
 #include "agent_log.h"             // alogf - poll-task hand-over + stack high-water lines
@@ -102,7 +103,12 @@ static std::atomic<bool> g_taskRunning{false};
 static void setLastError(const char* e) {
   snprintf(g_lastError, sizeof g_lastError, "%s", e ? e : "");
 }
-static nimbus::ota::ManifestInfo g_manifest;   // last good parse (install uses it)
+// The last good parse (install uses it): 592 B of plain manifest text in PSRAM
+// (psram_static.h), not internal DRAM - the release static-DRAM gate's recovery.
+// Task context only (Telegram/web), never DMA, never read before main; only the
+// 4-byte reference stays in .bss. The host guard test_psram_statics_host.py keeps
+// it moved.
+static nimbus::ota::ManifestInfo& g_manifest = ::nimbus::psramObject<nimbus::ota::ManifestInfo>();
 static bool   g_haveManifest = false;
 
 static EventHook g_hook = nullptr;

@@ -1453,6 +1453,60 @@ static void test_cum616_refused_effort_retried_once_without_it() {
   TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
 }
 
+// ---- the builtin-connectors refusal: one retry without them, then remembered ----
+// Recorded 31 Oct (Lumi errlog, the fold): mistral-large-4-0 refused EVERY
+// conversations turn with this body, so the fold (compaction) retried the same
+// 400 forever and the conversation summary went stale. The turn's tools are
+// client-side; only the server-side builtins are dropped.
+static const char* kConnectorsRefused =
+    "{\"object\":\"error\",\"message\":\"Model mistral-large-4-0 currently does not support builtin connectors.\","
+    "\"type\":\"invalid_request\",\"param\":null,\"code\":\"2003\",\"raw_status_code\":400}";
+
+static void test_connectors_refusal_retried_once_without_them() {
+  const std::vector<orch::ConnectorInfo> cs = {
+      {"web_search", "mistral", "builtin", "", "", "", true}};
+  auto pdWith = [&cs](FakeProviderDeps& d) {
+    auto pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+    pd.attachMistral = [cs](JsonDocument& doc) { orch::attachMistralWire(doc, cs, false); };
+    return pd;
+  };
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 400, kConnectorsRefused});
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("c-conn1")});
+    auto pd = pdWith(d);
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr),
+                             err.c_str());
+    TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"tools\""));                 // the first try carries them
+    TEST_ASSERT_FALSE(bodyHas(d, 1, "\"tools\""));                // the one retry does not
+    TEST_ASSERT_TRUE(LogCapture::contains("refused builtin connectors"));
+    TEST_ASSERT_TRUE(out.find("hello there") != std::string::npos);
+  }
+  // Remembered for the boot: the next turn sends no connectors and no 400 is paid.
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("c-conn2")});
+    auto pd = pdWith(d);
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr),
+                             err.c_str());
+    TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+    TEST_ASSERT_FALSE(bodyHas(d, 0, "\"connectors\""));
+  }
+  // A different 400 is not a connectors refusal: the turn fails as before.
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 400, "{\"message\":\"Invalid model\"}"});
+    auto pd = pdWith(d);
+    std::string conv, out, err;
+    TEST_ASSERT_FALSE(providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr));
+    TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+  }
+}
+
 // The class: the table agrees with the recorded /v1/models capabilities.reasoning
 // bit for EVERY chat model Mistral lists (a new model with no table row fails here).
 static void test_cum616_effort_table_matches_the_recorded_model_list() {
@@ -1690,6 +1744,7 @@ int main(int, char**) {
   RUN_TEST(test_loop_429_zero_per_minute_plan);
   RUN_TEST(test_cum616_effort_none_only_on_models_that_reason);
   RUN_TEST(test_cum616_refused_effort_retried_once_without_it);
+  RUN_TEST(test_connectors_refusal_retried_once_without_them);
   RUN_TEST(test_cum616_effort_table_matches_the_recorded_model_list);
   RUN_TEST(test_r1_image_url_parts_in_the_seeded_user_message);
   RUN_TEST(test_r1_mistral_model_without_image_input_reads_transcriptions);

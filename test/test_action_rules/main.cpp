@@ -164,6 +164,7 @@ const Expect kExpect[] = {
     // files
     {"artifact.save", kOpen},
     {"files.append", kOpen},
+    {"files.edit", kOpen},
     {"files.fetch", kOpen},
     {"files.list", kOpen},
     {"files.pdf", kOpen},

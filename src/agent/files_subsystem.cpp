@@ -28,6 +28,8 @@
 #include "nimbus/orch/episodic.h"     // textMatchScore (files.search)
 #include "nimbus/orch/file_append.h"  // files.append + the files.read tail view
 #include "nimbus/orch/file_swap.h"    // whole-file replace without a moment the file is gone
+#include "nimbus/orch/file_edit.h"    // files.edit: the streaming text substitution
+#include "nimbus/orch/ledger_migrate.h"  // v4.6.3: the legacy meal-log fold
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
 #include "nimbus/orch/provider_caps.h"  // LocalDate - the upsert's today
@@ -278,6 +280,8 @@ void registerTools();   // fwd (bottom)
 
 }  // namespace
 
+void migrateLegacyMealLog();   // fwd: the one-time legacy meal-log fold (below)
+
 void begin() {
   memory::Lock g;
   if (g_begun) return;
@@ -344,6 +348,7 @@ void begin() {
   reindexRecovered(swapped);
   reindexRecovered(g_keptAside);   // the owner sees it in the Files list
   fs.remove(kPartPath);   // stale partial from a crash mid-upload
+  migrateLegacyMealLog();   // v4.6.3: the one-time fold into the designed ledger
   alogf("files: ready (%u files, %llu KB)", unsigned(g_store.count()),
         (unsigned long long)(g_store.totalBytes() / 1024));
   registerTools();
@@ -700,6 +705,63 @@ static std::string csvHeader(File& f, const std::string& window, size_t start) {
   std::string h = first.substr(0, first.find('\n'));
   if (!h.empty() && h.back() == '\r') h.pop_back();
   return h;
+}
+
+// v4.6.3 (the 30 Oct Lumi investigation): the one-time fold of the legacy meal
+// log into the designed ledger. The investigated device held an ad-hoc log
+// (nutrition/meal_log.csv: headerless, five generations of the same days in
+// four schemas) whose keyed writes all refused and whose "corrections" all
+// appended duplicates. The designed ledger (ONE file, one row per meal,
+// corrections by key) is where meals belong; this folds the legacy file's
+// final figures into it once at boot and removes the legacy file, so the
+// model stops appending to an unfixable orphan. Caller holds the Lock (begin).
+void migrateLegacyMealLog() {
+  constexpr const char* kLegacyProject = "nutrition";
+  constexpr const char* kLegacyName = "meal_log.csv";
+  if (!g_store.find(kLegacyProject, kLegacyName)) return;
+  if (g_store.find(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName)) {
+    alogf("files: legacy %s/%s left alone (a designed ledger already exists)", kLegacyProject,
+          kLegacyName);
+    return;
+  }
+  // PRISM v4.6.3 row 1: the fold reads the file through a bounded read
+  // (kFoldCap, below). A file OVER that cap must be left ENTIRELY alone: the
+  // read would silently take only its head, and under append order the tail
+  // holds the owner's LATEST generations - exactly the final figures the fold
+  // exists to keep - and the orphan would then be removed. Never fold what
+  // was not fully read.
+  constexpr size_t kFoldCap = 256 * 1024;
+  size_t legacyBytes = 0;
+  {   // the index names the file; the card may have lost it - nothing to fold
+    File f = memory::dataFs().open(pathOf(kLegacyProject, kLegacyName).c_str(), FILE_READ);
+    if (!f) return;
+    legacyBytes = f.size();
+    f.close();
+  }
+  if (legacyBytes > kFoldCap) {
+    alogf("files: legacy %s/%s is %u KB - too large to fold safely, left in place",
+          kLegacyProject, kLegacyName, (unsigned)(legacyBytes / 1024));
+    return;
+  }
+  const std::string legacy = readWhole(kLegacyProject, kLegacyName, kFoldCap);
+  const nimbus::orch::LedgerMigration m = nimbus::orch::planLedgerMigration(legacy);
+  // A fold that folded NOTHING also leaves the orphan alone: its rows were
+  // unmappable, and removing the file would still lose the raw record.
+  if (!m.ok || m.folded == 0) {
+    alogf("files: legacy meal log not migrated (nothing foldable), left in place");
+    return;
+  }
+  std::string err;
+  if (!saveText(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, m.out, err,
+                std::string())) {
+    alogf("files: legacy meal log migration failed: %s", err.c_str());
+    return;
+  }
+  memory::dataFs().remove(pathOf(kLegacyProject, kLegacyName).c_str());
+  g_store.remove(kLegacyProject, kLegacyName);
+  persistIndex();
+  alogf("files: migrated the legacy meal log into %s/%s (%d rows folded, %d dropped)",
+        nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, m.folded, m.dropped);
 }
 
 // files.read {tail}: the last rows of a text document, read from the END of the
@@ -1122,7 +1184,11 @@ static nimbus::orch::ToolResult appendRows(const AppendArgs& a, const nimbus::or
   char last = '\0';
   if (!fileEnd(path, g_store.find(a.project, a.name) != nullptr, size, last))
     return ToolResult::fail("the card read failed - nothing was added; try again");
-  const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(a.text, size, last);
+  // v4.6.3: an append that would CREATE a CSV must carry its header row first (a
+  // headerless CSV can never be updated by key: the 30 Oct investigation's duplicate
+  // loop). A non-CSV or an existing file is unchanged.
+  const bool csvCreate = size == 0 && fileKindIsCsv(a.name);
+  const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(a.text, size, last, csvCreate);
   if (!plan.ok) return ToolResult::fail(plan.err);
   if (plan.repairedCut && fileKindIsCsv(a.name)) {
     CsvTail t;
@@ -1131,6 +1197,165 @@ static nimbus::orch::ToolResult appendRows(const AppendArgs& a, const nimbus::or
     if (t.lastStart > 0 && nimbus::orch::csvLastRowCut(t.header, t.prev, t.last)) return appendCutAside(a, size, t, who);
   }
   return appendBytes(a, size, plan, who);
+}
+
+// files.edit (v4.6.2): the surgical edit of a stored TEXT document. The only
+// way to change a byte used to be the whole-file rewrite (files.read plus
+// artifact.save - every stored byte over the prompt twice, a whole-file buffer
+// on the device); the edit substitutes an exact span in place. Bounded
+// streaming, one Lock held throughout: scan-count the matches, decide, then
+// substitute into the part file and swap it in like every whole-file replace
+// (commitPart, file_swap.h) - the original is untouched until the substituted
+// file is fully written and size-verified, and it is kept on any failure.
+// Pass 1 of files.edit: count the matches without emitting anything (a
+// bounded stream; the file is never held whole). "" from countDocMatches means
+// the file could not be read.
+static std::string countDocMatches(const std::string& path, const std::string& find,
+                                   const std::string& replace, size_t& oldSize,
+                                   size_t& matches) {
+  fs::FS& fs = memory::dataFs();
+  File f = fs.open(path.c_str(), FILE_READ);
+  if (!f) return "SD open failed";
+  oldSize = f.size();
+  nimbus::orch::TextEditStream scan(find, replace, true);
+  std::string discard;
+  char buf[512];
+  for (;;) {
+    const size_t got = f.read((uint8_t*)buf, sizeof buf);
+    if (got == 0) break;
+    scan.feed(buf, got, discard);
+  }
+  f.close();
+  scan.finish(discard);
+  matches = scan.found();
+  return std::string();
+}
+
+// Pass 2 of files.edit: stream the substitution into the part file and verify
+// its size. The stored file is not touched here: "" leaves a finished .part for
+// commitEdit to swap in, anything else leaves no .part.
+static std::string substituteDoc(const std::string& path, const std::string& find,
+                                 const std::string& replace, size_t apply, size_t newSize) {
+  fs::FS& fs = memory::dataFs();
+  fs.remove(kPartPath);
+  File src = fs.open(path.c_str(), FILE_READ);
+  if (!src) return "SD open failed";
+  File dst = fs.open(kPartPath, FILE_WRITE);
+  if (!dst) { src.close(); return "SD open failed"; }
+  nimbus::orch::TextEditStream sub(find, replace, false);
+  sub.setApplyLimit(apply);
+  std::string out;
+  out.reserve(512 + replace.size());
+  char buf[512];
+  bool writeOk = true;
+  for (;;) {
+    const size_t got = src.read((uint8_t*)buf, sizeof buf);
+    if (got == 0) break;
+    out.clear();
+    sub.feed(buf, got, out);
+    if (!out.empty() && dst.write((const uint8_t*)out.data(), out.size()) != out.size()) {
+      writeOk = false;
+      break;
+    }
+  }
+  src.close();
+  if (writeOk) {
+    out.clear();
+    sub.finish(out);
+    if (!out.empty() && dst.write((const uint8_t*)out.data(), out.size()) != out.size())
+      writeOk = false;
+  }
+  dst.close();
+  {   // Verify the substituted file is exactly the size the decision promised.
+    File chk = fs.open(kPartPath, FILE_READ);
+    const size_t on = chk ? chk.size() : 0;
+    if (chk) chk.close();
+    if (!writeOk || on != newSize) {
+      fs.remove(kPartPath);
+      return "SD short write: the file is unchanged";
+    }
+  }
+  return std::string();
+}
+
+// Swap the finished .part in over project/name. The entry keeps its owner and creation
+// time (still the same file); the content hash is unknown until the next whole write,
+// and an uploaded provider copy is stale now.
+static bool commitEdit(const std::string& project, const std::string& name, size_t newSize,
+                       std::string& err) {
+  const nimbus::orch::FileEntry* old = g_store.find(project, name);
+  if (!old) {
+    memory::dataFs().remove(kPartPath);
+    err = "not found";
+    return false;
+  }
+  nimbus::orch::FileEntry e = *old;
+  e.bytes = uint32_t(newSize);
+  e.hash = 0;
+  e.providerTag.clear();
+  e.providerFileId.clear();
+  return commitPart(e, err);
+}
+
+// files.edit's argument precheck, before anything is opened: "" when the
+// edit may proceed to the gates.
+static std::string editPrecheck(const std::string& project, const std::string& name,
+                                const std::string& find, const std::string& replace,
+                                const nimbus::orch::EditPolicy& pol) {
+  if (project.empty() || name.empty() || find.empty()) return "need 'project', 'name' and 'find'";
+  if (!textDocName(name))
+    return "files.edit edits a text document (.csv, .log, .md, .txt, .json)";
+  return nimbus::orch::validateEdit(find.size(), replace.size(), pol);
+}
+
+// files.edit (v4.6.2): the surgical edit of a stored TEXT document. The only
+// way to change a byte used to be the whole-file rewrite (files.read plus
+// artifact.save - every stored byte over the prompt twice, a whole-file buffer
+// on the device); the edit substitutes an exact span in place. Bounded
+// streaming, one Lock held throughout: scan-count the matches, decide, then
+// substitute into the part file and swap it in.
+static nimbus::orch::ToolResult editDoc(const std::string& project, const std::string& name,
+                                        const std::string& find, const std::string& replace,
+                                        const nimbus::orch::EditPolicy& pol,
+                                        const nimbus::orch::Principal& who) {
+  using nimbus::orch::ToolResult;
+  if (const std::string bad = editPrecheck(project, name, find, replace, pol); !bad.empty())
+    return ToolResult::fail(bad);
+  memory::Lock g;
+  // appendGate ARBITRATES THE UPLOAD SESSION'S .part SLOT before substituteDoc
+  // consumes it: its uploadActiveLocked() check refuses an active session ("an
+  // upload is in progress - try again") - the same check every writer of the
+  // slot makes - and the one Lock held below keeps a session from starting
+  // mid-edit (prism v4.6.2 row 1; pinned by test_file_edit's slot-gate scan).
+  const std::string gate = appendGate(project, name, who);
+  if (!gate.empty()) return ToolResult::fail(gate);
+  if (!g_store.find(project, name)) return ToolResult::fail("not found");   // an edit never creates
+  const std::string path = pathOf(project, name);
+  size_t oldSize = 0, matches = 0;
+  if (const std::string err = countDocMatches(path, find, replace, oldSize, matches); !err.empty())
+    return ToolResult::fail(err);
+  const nimbus::orch::EditDecision d =
+      nimbus::orch::decideEdit(find.size(), replace.size(), pol, matches);
+  if (!d.ok) return ToolResult::fail(d.err);
+  const size_t newSize = size_t((int64_t)oldSize + d.sizeDelta);
+  {   // the same quota rules as artifact.save: an edit's growth is a write
+    const std::string refusal =
+        appendRefusal(project, name, d.sizeDelta > 0 ? size_t(d.sizeDelta) : 0, newSize, who);
+    if (!refusal.empty()) return ToolResult::fail(refusalForHead(refusal));
+  }
+  if (const std::string err = substituteDoc(path, find, replace, size_t(d.apply), newSize);
+      !err.empty())
+    return ToolResult::fail(err);
+  std::string err;
+  if (!commitEdit(project, name, newSize, err)) return ToolResult::fail(err);
+  alogf("files: edit %s/%s replaced %d of %u match(es) (%u B -> %u B)", project.c_str(),
+        name.c_str(), d.apply, (unsigned)matches, (unsigned)oldSize, (unsigned)newSize);
+  std::string msg = "edited " + project + "/" + name + ": replaced " + std::to_string(d.apply) +
+                    " of " + std::to_string(matches) + " match" +
+                    (matches == 1 ? "" : "es") + " (now " + std::to_string(newSize) + " bytes)";
+  if (matches > (size_t)d.apply)
+    msg += "; " + std::to_string(matches - d.apply) + " more remain (all: true replaces them)";
+  return ToolResult::ok(msg);
 }
 
 std::string readDocText(const std::string& project, const std::string& name,
@@ -1675,6 +1900,23 @@ void registerTools() {
             return appendRows(args, who);
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"},"key":{"type":"string"},"sum":{"type":"string"},"replace":{"type":"string","enum":["all"]}},"required":["project","name","text"]})");
+
+  reg.add("files.edit",
+          "Edit a saved TEXT document surgically: find an exact text span (a phrase, or a whole "
+          "line's text) and replace it - never read and re-save the whole file. Replaces the "
+          "FIRST match by default; 'all': true replaces every match, 'count' replaces the first "
+          "N. The reply says how many matches were found and how many were replaced, so nothing "
+          "happens silently. A no-match says so and changes nothing. An empty 'replace' deletes "
+          "the span. The file's other bytes keep their exact order (a CSV's rows stay rows). "
+          "Max 2 KB find, 4 KB replacement, 200 matches per call.",
+          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
+            nimbus::orch::EditPolicy pol;
+            pol.all = a["all"].as<bool>();
+            if (a["count"].is<int>()) pol.count = a["count"].as<int>();
+            return editDoc(argStr(a, "project"), argStr(a, "name"), argStr(a, "find"),
+                          argStr(a, "replace"), pol, who);
+          },
+          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"find":{"type":"string"},"replace":{"type":"string"},"all":{"type":"boolean"},"count":{"type":"integer"}},"required":["project","name","find"]})");
 
   reg.add("files.share",
           "Share one of your saved files with everyone who can talk to this "

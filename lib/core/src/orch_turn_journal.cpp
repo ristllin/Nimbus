@@ -96,9 +96,18 @@ std::string crashNotice(const std::string& deviceName, const TurnJournal* j,
   if (!j) return msg + ". Nothing was in progress, so nothing was lost.";
   const std::string from = hhmm.empty() ? std::string() : " from " + hhmm;
   const char* noun = requestNoun(j->kind);
-  if (noun[0])
+  if (noun[0]) {
+    // v4.6.3 (the 29 Oct boba mechanism): a crashed MESSAGE turn was already
+    // received and may have partly done its work (a row may be logged) before
+    // the crash took the reply. Telling the owner to send it again is what
+    // logged the same meal twice; the receipt says what may already be done.
+    if (j->kind == "message")
+      return msg + " while answering your " + noun + from +
+             ". The reply was lost; the message arrived and its work may be done - check "
+             "before re-sending.";
     return msg + " while answering your " + noun + from +
            ". That reply was lost, so please send it again if you still need it.";
+  }
   if (j->kind == "routine")
     return msg + " while running a routine" + from + ". That run did not finish.";
   return msg + " during a background task" + from + ". That task did not finish.";

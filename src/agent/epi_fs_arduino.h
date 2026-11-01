@@ -1,4 +1,5 @@
 #pragma once
+#include <Arduino.h>   // xPortCanYield - the FILE-write context guard
 #include <FS.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -27,6 +28,13 @@ class ArduinoEpiFs : public nimbus::orch::EpiFs {
     // FAULT sd_io: emulate a card that vanished mid-write (present at mount, now
     // failing) so the sudden-loss demote path is testable without a physical pull.
     if (nimbus::fault::active(nimbus::fault::SD_IO)) return -1;
+    // The 2026-10-29 Lumi panic class (see errlog_fs.cpp's append guard): a FILE
+    // touch at a raised CPU interrupt level aborts inside newlib's recursive FILE
+    // lock. Refusing here rides the store's designed SD-loss path - the row is
+    // held (RAM recent-window + the held queue) and the next append flushes the
+    // held rows in arrival order; one refusal sample cannot demote the card (the
+    // tracker needs a streak of 2).
+    if (!xPortCanYield()) return -1;
     File f = fs_.open(path.c_str(), FILE_APPEND);
     if (!f) return -1;
     long off = (long)f.size();  // existing size == start offset of this append

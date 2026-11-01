@@ -207,6 +207,8 @@ static void test_scratch_outcomes_and_permanent_tool_writes() {
   TEST_ASSERT_EQUAL((int)nimbus::orch::kFxPermanent,
                     (int)ClaimCheck::toolCallFlags("memory.write", R"({"content":"x","permanent":true})"));
   TEST_ASSERT_EQUAL(0, (int)ClaimCheck::toolCallFlags("memory.write", R"({"content":"x"})"));
+  TEST_ASSERT_EQUAL((int)nimbus::orch::kFxLogRow, (int)ClaimCheck::toolCallFlags("files.append", R"({"name":"x.csv"})"));
+  TEST_ASSERT_EQUAL((int)nimbus::orch::kFxLogRow, (int)ClaimCheck::toolCallFlags("files.edit", R"({"name":"x.csv"})"));
   TEST_ASSERT_EQUAL(0, (int)ClaimCheck::toolCallFlags("files.read", R"({"permanent":true})"));
   ClaimCheck pin;
   pin.beginTurn();
@@ -887,7 +889,10 @@ static void test_a_log_claim_needs_an_append_that_landed_a_row() {
   const nimbus::orch::ToolTaintRow* rows = nimbus::orch::toolTaintTable(n);
   int writers = 0;
   for (size_t i = 0; i < n; i++) {
-    if (rows[i].effect != nimbus::orch::ToolEffect::FileWrite || std::string(rows[i].name) == "files.append") continue;
+    // files.append and files.edit prove a log change by their own receipts (the table below).
+    const std::string writer = rows[i].name;
+    if (rows[i].effect != nimbus::orch::ToolEffect::FileWrite || writer == "files.append" || writer == "files.edit")
+      continue;
     writers++;
     ClaimCheck cc;
     cc.beginTurn();
@@ -912,6 +917,19 @@ static void test_a_log_claim_needs_an_append_that_landed_a_row() {
     TEST_ASSERT_EQUAL_MESSAGE(a.backs, cc.finalCheck(turnJson(reply)).empty(), a.out);
     if (!a.backs)
       TEST_ASSERT_EQUAL_STRING("\n\n(Correction: no row was added to a log file this turn.)", cc.tailAfterApply(reply).c_str());
+  }
+  // files.edit changes a log in place: its landed receipt backs the claim, a no-match
+  // (an error, nothing changed) does not.
+  struct Edit { const char* out; bool error; bool backs; };
+  const Edit edits[] = {
+      {"edited food/2026-10-27.csv: replaced 1 of 1 match (now 310 bytes)", false, true},
+      {"no match for the find text - nothing changed", true, false},
+  };
+  for (const Edit& e : edits) {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.noteTool(agent::fxKindForTool("files.edit"), e.error, e.out, ClaimCheck::toolCallFlags("files.edit", csv));
+    TEST_ASSERT_EQUAL_MESSAGE(e.backs, cc.finalCheck(turnJson(reply)).empty(), e.out);
   }
   // The review r2 K1 shape, end to end: correcting a line of a free-text log is a
   // whole-file save (artifact.save; the device's receipt is "saved p/n (N bytes)"), the

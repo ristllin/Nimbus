@@ -233,7 +233,15 @@ const Part kLogRows[] = {
      "   to the ledger if you keep one), then reply with the row you wrote. Several\n"
      "   rows for one meal go in ONE call, one row per line.\n"
      "11. If a reply says the stored last row was cut mid-write, say so and log\n"
-     "   that row again in full.\n"},
+     "   that row again in full.\n"
+     "12. A keyed write refused because the stored file has no header or no key\n"
+     "   column means appends can never correct that file: every append would add\n"
+     "   a duplicate row. To remove or rewrite rows, or to give the file a header,\n"
+     "   use files.edit (read the tail first, then edit the exact span), or\n"
+     "   files.read the whole file and artifact.save the corrected file with a\n"
+     "   header row first. Never say a row was removed, replaced or deduplicated\n"
+     "   unless the tool result says it was (a keyed update and files.edit both say\n"
+     "   replaced N).\n"},
 };
 
 // The food playbooks (lane CTX). On 26 Oct the head never opened a playbook, logged

@@ -181,6 +181,95 @@ static void test_g1_upsert_reports_the_day_total() {
   TEST_ASSERT_TRUE(u2.todayTotal > 299.9 && u2.todayTotal < 300.1);
 }
 
+
+// v4.6.3 (the 30 Oct investigation): creating a keyed-eligible CSV without a
+// header row is refused with the fix named - a headerless CSV can never be
+// updated by key, so every later "correction" would append a duplicate (the
+// exact loop the investigation documented). A header row (no digits) passes;
+// an existing file never hits the bootstrap; a non-CSV never does either.
+static void test_csv_creation_needs_its_header_row_first() {
+  // A data row first: refused, and the reason names the header and the way out.
+  nimbus::orch::AppendPlan p =
+      nimbus::orch::planAppend("2026-10-30,breakfast,Yogurt,175,30\n", 0, '\0', true);
+  TEST_ASSERT_FALSE(p.ok);
+  TEST_ASSERT_TRUE(p.err.find("header row first") != std::string::npos);
+  TEST_ASSERT_TRUE(p.err.find("cannot be updated by key") != std::string::npos);
+  // The header row first (column names, no digits): the append plans normally.
+  p = nimbus::orch::planAppend("date,meal,items,kcal,protein_g\n", 0, '\0', true);
+  TEST_ASSERT_TRUE(p.ok);
+  TEST_ASSERT_EQUAL(1, p.rows);
+  // Header AND rows in one call: fine (the header is the first row).
+  p = nimbus::orch::planAppend(
+      "date,meal,items,kcal,protein_g\n2026-10-30,breakfast,Yogurt,175,30\n", 0, '\0', true);
+  TEST_ASSERT_TRUE(p.ok);
+  TEST_ASSERT_EQUAL(2, p.rows);
+  // An existing file never hits the bootstrap: csvCreate is the CALLER's
+  // "this append creates the file" (the device passes it only when the store
+  // holds no such file); for a stored file the caller passes false and the
+  // append keeps its old semantics.
+  p = nimbus::orch::planAppend("2026-10-30,lunch,Soup,260,14\n", 41, '\n', false);
+  TEST_ASSERT_TRUE(p.ok);
+  // A non-CSV create is none of this rule's business.
+  p = nimbus::orch::planAppend("2026-10-30 something happened today\n", 0, '\0', false);
+  TEST_ASSERT_TRUE(p.ok);
+}
+
+// The merge-back obligation: a migrated ledger holds items with a comma inside
+// parentheses and no quotes (ledger_migrate.h, on devices since v4.6.3). Every reader
+// of a stored row must keep such an item in one field, or the row drops out of every
+// total and can never be corrected by key. An unbalanced '(' shields nothing.
+static void test_a_comma_inside_parentheses_stays_in_its_field() {
+  const std::string h = "date,meal,items,kcal,protein_g\n";
+  const std::string row = "2026-10-29,evening,Boba tea (no sugar, honey tapioca),300,1\n";
+  double total = 0;
+  TEST_ASSERT_TRUE(nimbus::orch::csvDayTotal(h + row, "kcal", "2026-10-29", total));
+  TEST_ASSERT_TRUE(total > 299.9 && total < 300.1);
+  // The tally counts it and reports nothing unread.
+  nimbus::orch::CsvDayTally tally("kcal", "2026-10-29");
+  tally.feed("date,meal,items,kcal,protein_g", true);
+  tally.feed("2026-10-29,evening,Boba tea (no sugar, honey tapioca),300,1", true);
+  tally.feed("2026-10-29,lunch,Soup (a, b (c, d)),100,2", true);
+  TEST_ASSERT_EQUAL(2, tally.total().rows);
+  TEST_ASSERT_EQUAL(0, tally.total().unread);
+  // A keyed correction replaces it in place.
+  const nimbus::orch::CsvUpsert fix = nimbus::orch::planCsvUpsert(
+      h + row, h + "2026-10-29,evening,Boba tea (no sugar),250,1\n", "meal", "kcal", "2026-10-29");
+  TEST_ASSERT_TRUE_MESSAGE(fix.ok, fix.err.c_str());
+  TEST_ASSERT_EQUAL(1, fix.replaced);
+  TEST_ASSERT_EQUAL(0, fix.appended);
+  TEST_ASSERT_TRUE(fix.todayTotal > 249.9 && fix.todayTotal < 250.1);
+  // The model may write one too: it is one field, not a refused row.
+  const nimbus::orch::CsvUpsert fresh = nimbus::orch::planCsvUpsert(
+      h, h + "2026-10-29,lunch,Rice (white, cooked),200,4\n", "meal", "kcal", "2026-10-29");
+  TEST_ASSERT_TRUE_MESSAGE(fresh.ok, fresh.err.c_str());
+  TEST_ASSERT_EQUAL(1, fresh.appended);
+  // An unbalanced '(' keeps today's reading: the comma splits, so the row is too wide
+  // for the header and is refused, never silently swallowed into one field.
+  const nimbus::orch::CsvUpsert open = nimbus::orch::planCsvUpsert(
+      h, h + "2026-10-29,lunch,Rice (white, cooked,200,4\n", "meal", "kcal", "2026-10-29");
+  TEST_ASSERT_FALSE(open.ok);
+  TEST_ASSERT_TRUE(open.err.find("double quotes") != std::string::npos);
+  // A power cut inside the parentheses still reads as a cut row, not a whole one.
+  TEST_ASSERT_TRUE(nimbus::orch::csvLastRowCut("date,meal,items,kcal,protein_g", "2026-10-29,lunch,Soup,100,2",
+                                               "2026-10-29,dinner,Rice (white, coo"));
+}
+
+// A keyed write onto a file created without a header row names the way out: an
+// append can never fix it (v4.6.3). A stored header that holds the key column keeps
+// the plain "send the stored header" refusal.
+static void test_a_headerless_stored_file_refusal_names_the_rewrite_tools() {
+  const std::string text = "date,meal,kcal\n2026-10-30,lunch,200\n";
+  const nimbus::orch::CsvUpsert headerless =
+      nimbus::orch::planCsvUpsert("2026-10-30 08:00,Yogurt,175\n", text, "meal", "kcal", "2026-10-30");
+  TEST_ASSERT_FALSE(headerless.ok);
+  TEST_ASSERT_TRUE(headerless.err.find("files.edit") != std::string::npos);
+  TEST_ASSERT_TRUE(headerless.err.find("artifact.save") != std::string::npos);
+  const nimbus::orch::CsvUpsert reordered =
+      nimbus::orch::planCsvUpsert("meal,date,kcal\nlunch,2026-10-30,100\n", text, "meal", "kcal", "2026-10-30");
+  TEST_ASSERT_FALSE(reordered.ok);
+  TEST_ASSERT_TRUE(reordered.err.find("files.edit") == std::string::npos);
+}
+
 static void test_g1_upsert_refuses_a_header_mismatch() {
   const std::string ex = "date,kcal\n2026-10-23,450\n";
   // The text's header has no 'meal' column.
@@ -937,6 +1026,9 @@ int main(int, char**) {
   RUN_TEST(test_g1_keyed_upsert_updates_by_key_and_appends_new);
   RUN_TEST(test_g1_upsert_reports_the_day_total);
   RUN_TEST(test_g1_upsert_refuses_a_header_mismatch);
+  RUN_TEST(test_csv_creation_needs_its_header_row_first);
+  RUN_TEST(test_a_comma_inside_parentheses_stays_in_its_field);
+  RUN_TEST(test_a_headerless_stored_file_refusal_names_the_rewrite_tools);
   RUN_TEST(test_g1_day_total_matches_only_today);
   RUN_TEST(test_qw3_keyed_update_never_touches_another_day);
   RUN_TEST(test_qw3_no_update_drops_or_moves_a_row);

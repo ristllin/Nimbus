@@ -34,6 +34,7 @@ constexpr FxInfo kFxInfo[] = {
     {"read", "read", "lookups"},
     {"sub_sourced", "read", "sub-agent results with a lookup behind them"},
     {"sub_unsourced", "", "sub-agent results with NO lookup behind them"},
+    {"file_replace", "file", "stored rows replaced by key (or a files.edit)"},
 };
 static_assert(sizeof(kFxInfo) / sizeof(kFxInfo[0]) == (size_t)FxKind::kCount,
               "every FxKind needs a row in kFxInfo");
@@ -292,15 +293,47 @@ static bool queuedWrite(FxKind base, const std::string& out) {
          (startsWith(out, "queued memory ") || startsWith(out, "queued update for "));
 }
 
+// v4.6.3 (the 30 Oct ledger investigation): the stored content a tool result says was
+// REPLACED: the keyed upsert's "replaced N row(s), added M row(s) in p/n" or files.edit's
+// "edited p/n: replaced A of B match(es)". 0 when the result says none (a plain append,
+// an upsert that only added, a re-send that changed nothing): those land FileWrite alone.
+// Anchored to the two replies, so a file named "replaced 3.csv" in a plain append's
+// receipt replaces nothing.
+static int replacedRowsIn(const std::string& out) {
+  if (contains(out, "(no change")) return 0;
+  if (startsWith(out, "replaced ")) return std::atoi(out.c_str() + 9);
+  if (!startsWith(out, "edited ")) return 0;
+  static const char kEdit[] = ": replaced ";
+  const size_t at = out.find(kEdit);
+  return at == std::string::npos ? 0 : std::atoi(out.c_str() + at + sizeof(kEdit) - 1);
+}
+
 // CUM-782: a log claim needs a row that landed, which only the append's own count shows.
 // A whole-file save that landed ("saved p/n (N bytes)", artifact.save of a text document)
 // rewrote the log it names: the review's K1 shape, correcting a line of a free-text log,
-// which no append can do. The save's own receipt is that rewrite's proof.
+// which no append can do. The save's own receipt is that rewrite's proof, and so is an
+// edit that replaced a span (files.edit changes a log in place).
 static uint8_t logRowFlags(uint8_t flags, FxKind k, const std::string& output) {
   if (!(flags & kFxLogRow)) return flags;
-  const bool landed =
-      k == FxKind::FileWrite && (startsWith(output, "saved ") || fxAppendedRows(output) >= 1);
+  const bool landed = k == FxKind::FileWrite && (startsWith(output, "saved ") || fxAppendedRows(output) >= 1 ||
+                                                 replacedRowsIn(output) >= 1);
   return landed ? flags : (uint8_t)(flags & ~kFxLogRow);
+}
+
+// What a LANDED effect additionally is: a pin that changed nothing (a memory
+// that was already pinned), and a file write that actually REPLACED stored
+// content - the keyed upsert's "replaced N row(s)" or files.edit's "replaced A
+// of B". The remove/replace/dedup claim verbs (claims.cpp) are backed by
+// FileReplace alone: a result that replaced nothing (a plain append, an
+// upsert that only added) must not back "I removed it" (v4.6.3, the 30 Oct
+// ledger investigation).
+static void recordLandedRefinements(TurnEffects& fx, FxKind base, FxKind k,
+                                    const std::string& output, bool stored) {
+  if (k == FxKind::MemWrite && !stored && contains(output, "it is already pinned"))
+    fx.add(FxKind::MemPinNoop, true);
+  if (base != FxKind::FileWrite) return;
+  const int n = replacedRowsIn(output);
+  if (n > 0) fx.add(FxKind::FileReplace, true, std::string(), (uint8_t)(n > 255 ? 255 : n));
 }
 
 void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::string& output,
@@ -339,8 +372,7 @@ void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::str
   const bool stored = startsWith(output, "stored memory ");
   if (!stored) flags &= (uint8_t)~kFxPermanent;
   fx.add(k, true, fxRefFromOutput(output), 1, flags);
-  if (k == FxKind::MemWrite && !stored && contains(output, "it is already pinned"))
-    fx.add(FxKind::MemPinNoop, true);
+  recordLandedRefinements(fx, base, k, output, stored);
 }
 
 }  // namespace orch

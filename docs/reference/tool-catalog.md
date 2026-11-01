@@ -316,6 +316,7 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 | `files.read` | Read a stored TEXT document's content, paged; with `tail`, only the last rows of a log or CSV, and with `sum` a day's total of that column. | `project` (**required**), `name` (**required**), `offset` (number), `tail` (number of rows, max 200), `sum` (optional, a numeric column), `date` (optional, `YYYY-MM-DD`; default today) | live |
 | `files.search` | Search the CONTENT of saved text documents for words; returns the best matches with a snippet, ranked by how many of the words each document holds, then by how often they occur. | `query` (**required**), `project` (optional filter) | live |
 | `files.append` | Add rows to a text document (a log, a CSV); creates it when missing. Without `key`, the rows go on the end and nothing stored is rewritten. With `key`, a keyed CSV update: a row is its date plus its key, so the same date and key again replaces that row (a correction) and other days are never touched. | `project` (**required**), `name` (**required**, a text extension), `text` (**required**, max 4 KB per call; with `key`, the stored header row first), `key` (optional, the column that tells one day's rows apart, such as `meal`; the log needs a date column), `sum` (optional, a numeric column - the reply carries the day totals), `replace` (optional, `"all"`: when the key names several stored rows that are one item logged twice, this row replaces them) | live |
+| `files.edit` | Edit a saved text document surgically: find an exact text span (a phrase, or a whole line's text) and replace it - instead of reading and re-saving the whole file. Replaces the first match by default; `all: true` for every match, `count` for the first N. The reply says how many matches were found and replaced; a no-match changes nothing. | `project` (**required**), `name` (**required**, a text extension), `find` (**required**, max 2 KB), `replace` (optional, max 4 KB; empty deletes the span), `all` (boolean, default false), `count` (integer, default 1, max 200) | live |
 | `artifact.save` | Persist a TEXT artifact (report, summary, document) into the durable store. | `project` (**required**), `name` (**required**, with extension `.md`/`.txt`/`.csv`/`.json`), `text` (**required**, max ~24 KB per call) | live |
 | `files.share` | Share one of your saved files read-only with everyone, or stop sharing it. | `project` (**required**), `name` (**required**), `share` (boolean, default true) | live (the owner shares only in a message they write) |
 | `files.send` | Send a stored file to the owner on Telegram - images go as an inline photo, other files as a document. With no `chat_id` it goes to the turn's own Telegram chat; from the web chat, voice or serial to the owner's chat (the owner only, writing now). | `project` (**required**), `name` (**required**), `chat_id` (optional) | live |
@@ -368,6 +369,15 @@ Notes:
   write to that file is refused ("an earlier file replace is not finished -
   restart the device") until the backup is restored, and a backup larger than
   the file it would leave is kept as `<name>.recovered`, never deleted.
+- `files.edit` changes only the matched spans; every other byte keeps its exact
+  position, so a CSV's rows stay rows. It never creates a file (`not found` is
+  the answer), never reads the file into the model's context, and streams the
+  substitution on the device into a temp sibling that replaces the original
+  only after it is fully written and size-verified, the same way as any
+  whole-file write - any refusal (a cap, no match, quota, a short write) leaves
+  the stored file untouched. It
+  follows the same ownership, lock and quota rules as `artifact.save` (an
+  edit's growth counts against the caller's file-storage quota).
 - `files.read` with `tail` reads only the end of the file (about 7.5 KB) and
   returns the last complete rows, oldest first, plus a CSV's header row when it
   is not among them; an incomplete last row is reported, not hidden.

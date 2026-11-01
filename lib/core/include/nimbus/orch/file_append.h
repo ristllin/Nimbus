@@ -40,7 +40,12 @@ struct AppendPlan {
   bool repairedCut = false;
   int rows = 0;          // rows in `bytes`
 };
-AppendPlan planAppend(const std::string& text, size_t fileBytes, char lastByte);
+// csvCreate: this append would CREATE a keyed-eligible CSV (.csv, no stored
+// file). Its first row must then be the header (the column names) - a
+// headerless CSV can never be updated by key, so every later "correction"
+// would append a duplicate (v4.6.3, the 30 Oct investigation's loop).
+AppendPlan planAppend(const std::string& text, size_t fileBytes, char lastByte,
+                      bool csvCreate = false);
 
 // The tail view over the last bytes of a file. `window` is the end of the file;
 // `windowStart` is its offset in the file (0 = the window is the whole file).
@@ -87,7 +92,8 @@ std::string renderTail(const TailView& v, const std::string& name, size_t fileBy
 //     never matches or counts again;
 //   - a stored row starting with '#' is a comment: kept, never matched or counted.
 // Fields follow CSV quoting: "chicken, rice" is one field, "" inside quotes is a
-// quote. A stored row with more fields than the header (an unquoted comma) is kept
+// quote; a comma inside a balanced pair of parentheses is also part of its field
+// (a migrated ledger's "Boba tea (no sugar, honey tapioca)"). A stored row with more fields than the header (an unquoted comma) is kept
 // but never matched or counted, and the total says so; so is a row with no
 // YYYY-MM-DD date. A key compares without case or surrounding spaces. The replies
 // never quote a stored row's free text (only dates, the model's own keys, plain

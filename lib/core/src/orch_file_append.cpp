@@ -9,7 +9,23 @@
 
 namespace nimbus::orch {
 
-AppendPlan planAppend(const std::string& text, size_t fileBytes, char lastByte) {
+// v4.6.3 (the 30 Oct investigation): the first row of a NEW CSV must be its
+// header (the column names, no data). A data row first would grow the file up
+// headerless: keyed writes refuse forever after (no key column to name), so
+// every later "correction" would append a duplicate - the exact loop the
+// investigation documented. "" when the first row is a header.
+static std::string csvCreateHeaderRefusal(const std::string& body) {
+  const size_t nl = body.find('\n');
+  const std::string first = body.substr(0, nl == std::string::npos ? body.size() : nl);
+  if (first.find_first_of("0123456789") == std::string::npos) return std::string();
+  return "creating a CSV needs its header row first (the column names, no data - e.g. "
+         "date,meal,items,kcal,protein_g for the food log): a headerless CSV cannot be "
+         "updated by key later, so corrections would duplicate - send the header row "
+         "first, then the data rows";
+}
+
+AppendPlan planAppend(const std::string& text, size_t fileBytes, char lastByte,
+                       bool csvCreate) {
   AppendPlan p;
   std::string body;
   body.reserve(text.size() + 2);
@@ -24,6 +40,13 @@ AppendPlan planAppend(const std::string& text, size_t fileBytes, char lastByte) 
   if (body.find_first_not_of(" \t\n") == std::string::npos) {
     p.err = "need 'text': one or more rows to add";
     return p;
+  }
+  if (csvCreate) {
+    const std::string refuse = csvCreateHeaderRefusal(body);
+    if (!refuse.empty()) {
+      p.err = refuse;
+      return p;
+    }
   }
   if (body.back() != '\n') body += '\n';
   if (body.size() > kAppendMaxBytes) {   // counted as written, final line end included
@@ -133,8 +156,22 @@ bool readQuoted(const std::string& row, size_t& p, std::string& field) {
   return false;
 }
 
-// One field from `p` up to (not including) the next separator. False when a
-// quote never closes or text follows a closing quote.
+// The ')' closing the '(' at `open`, within this row; npos when it never closes.
+size_t closingParen(const std::string& row, size_t open) {
+  int depth = 0;
+  for (size_t i = open; i < row.size(); i++) {
+    if (row[i] == '(') depth++;
+    else if (row[i] == ')' && --depth == 0) return i;
+  }
+  return std::string::npos;
+}
+
+// One field from `p` up to (not including) the next separator. A comma inside a
+// balanced pair of parentheses stays in the field: the migrated ledger holds items
+// like "Boba tea (no sugar, honey tapioca)" (ledger_migrate.h), and a split there
+// would leave that row out of every total. An unbalanced '(' shields nothing, so a
+// cut row still reads short. False when a quote never closes or text follows a
+// closing quote.
 bool readField(const std::string& row, size_t& p, std::string& field) {
   while (p < row.size() && isBlank(row[p])) p++;
   if (p < row.size() && row[p] == '"') {
@@ -144,15 +181,23 @@ bool readField(const std::string& row, size_t& p, std::string& field) {
     return p >= row.size() || row[p] == ',';
   }
   const size_t b = p;
-  while (p < row.size() && row[p] != ',') p++;
+  bool parens = true;   // one failed scan ends them for this field: no row costs more than linear per field
+  while (p < row.size() && row[p] != ',') {
+    if (row[p] == '(' && parens) {
+      const size_t close = closingParen(row, p);
+      if (close != std::string::npos) p = close;
+      else parens = false;
+    }
+    p++;
+  }
   size_t e = p;
   while (e > b && isBlank(row[e - 1])) e--;
   field.assign(row, b, e - b);
   return true;
 }
 
-// The fields of one CSV row: commas separate, a field in double quotes may hold
-// commas, spaces around a field are trimmed. `ok` false when a quote is left open
+// The fields of one CSV row: commas separate, a field in double quotes or a balanced
+// pair of parentheses may hold commas, spaces around a field are trimmed. `ok` false when a quote is left open
 // or text follows a closing quote (the rest of the row is then one field). At
 // most `maxFields` + 1 fields come back (a row of thousands of commas costs no
 // more): the extra one stands for "wider than that", the rest of the row.
@@ -506,12 +551,21 @@ bool CsvUpsertStream::feedHeader(const std::string& row, bool complete, std::str
   const std::vector<std::string> stored = csvFields(withoutBom(row));
   if (sameHeader(stored, header_)) return true;
   const std::string plain = stored.size() <= kMaxColumns ? plainHeader(stored) : std::string();
-  return fail("the text's header (" + quoteRow(headerRaw_) + ") differs from the stored header (" +
-              (!plain.empty() ? plain
-                              : (stored.size() > kMaxColumns ? std::string("too many")
-                                                             : std::to_string((unsigned)stored.size())) +
-                                    " columns; read it with files.read {project, name, tail: 1}") +
-              ") - send the stored header and its column order");
+  const std::string refusal =
+      "the text's header (" + quoteRow(headerRaw_) + ") differs from the stored header (" +
+      (!plain.empty() ? plain
+                      : (stored.size() > kMaxColumns ? std::string("too many")
+                                                     : std::to_string((unsigned)stored.size())) +
+                            " columns; read it with files.read {project, name, tail: 1}") +
+      ") - send the stored header and its column order";
+  if (columnIndex(stored, keyCol_) >= 0) return fail(refusal);
+  // v4.6.3 (the 30 Oct investigation): the stored "header" is often a data row (the file
+  // was created headerless), so every keyed write refuses and every correction appends a
+  // duplicate. Name the way out: an append can never fix such a file.
+  return fail(refusal + ". If the stored file has no '" + keyCol_ +
+              "' column at all (a file created without a header row reads its first data row as "
+              "the header), fix it with files.edit, or files.read it and artifact.save the whole "
+              "corrected file with a header row first");
 }
 
 CsvUpsertStream::NewRow* CsvUpsertStream::match(const std::string& id) {
