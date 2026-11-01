@@ -97,10 +97,11 @@ class TurnMemoryGate {
   const char* firstUnder_ = nullptr;
 };
 
-// PSRAM-first small allocations for the length of a turn. The device installs the
-// switch once (orchestrator.cpp: the spill limit 0 while on, 128 B when off); with
-// none installed (host builds) the scope only counts. Scopes nest: the outermost
-// one switches. Turn task only (turns are serialized).
+// PSRAM-first small allocations for the length of a turn or of a worker that does a
+// turn's kind of work (a provider verify, a model-list refresh). The device installs
+// the switch once (orchestrator.cpp: the spill limit 0 while on, 128 B when off); with
+// none installed (host builds) the scope only counts. Scopes nest and may overlap
+// across tasks: the first one in switches on, the last one out switches off.
 void setPsramFirstSwitch(std::function<void(bool on)> sw);
 class PsramFirstScope {
  public:

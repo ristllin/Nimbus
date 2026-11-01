@@ -32,6 +32,7 @@
 #include "workspace_probe.h"       // CUM-537 probe queue + yielding fetch (host-tested)
 #include "model_refresh.h"         // a deferred LLM verify still gets its model list
 #include "nimbus/orch/model_refresh.h"  // kRefreshMinLargest - a list refresh's floor
+#include "nimbus/harness/turn_memory.h"  // PsramFirstScope - a worker's small blocks off internal SRAM
 
 // The Arduino core's loop task (cores/esp32/main.cpp): the device's own re-checks start
 // there (lane QW4, askedByOwner).
@@ -917,6 +918,9 @@ static void deferLowMemory(const String& provider, uint32_t max8) {
 }
 
 static void runOne() {
+  // Small blocks to PSRAM for the whole run, as a turn does (turn_memory.h): this worker's own
+  // stack took 8.5 KB of the 31 KB at rest, and the rest of the run lives on what is left.
+  const PsramFirstScope psramFirst;
   if (g_wsOnly) { runWorkspaceProbeOnly(); g_pending = false; return; }   // CUM-537
   String provider = g_provider;
   const bool refreshOnly = g_refreshOnly;   // R5: the model list only

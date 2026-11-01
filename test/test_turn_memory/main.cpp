@@ -1,6 +1,7 @@
 #include <unity.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -398,6 +399,29 @@ static void test_psram_first_scope_nests_and_restores() {
   TEST_ASSERT_EQUAL(2, (int)switchCalls().size());   // one on, one off
   TEST_ASSERT_TRUE(switchCalls()[0]);
   TEST_ASSERT_FALSE(switchCalls()[1]);
+}
+
+// A turn and a list-refresh worker overlap on two tasks: whatever the order, the switch is
+// on while any scope lives and comes back off with the last one (a lost count would leave the
+// whole device PSRAM-first, or turn a running turn's PSRAM-first off under it).
+static void test_psram_first_scopes_overlap_across_tasks() {
+  auto hammer = [] {
+    for (int i = 0; i < 20000; ++i) {
+      PsramFirstScope s;
+      if (PsramFirstScope::depth() < 1) std::abort();
+    }
+  };
+  std::thread a(hammer), b(hammer);
+  a.join();
+  b.join();
+  TEST_ASSERT_EQUAL(0, PsramFirstScope::depth());
+  TEST_ASSERT_FALSE(switchOn());
+  TEST_ASSERT_FALSE(switchCalls().empty());
+  bool last = false;
+  for (bool on : switchCalls()) {   // strictly on, off, on, off: never two in a row
+    TEST_ASSERT_TRUE(on != last);
+    last = on;
+  }
 }
 
 // A whole owner turn runs with its small blocks in PSRAM: from the owner row's
@@ -1126,5 +1150,6 @@ int main() {
   RUN_TEST(test_a_failed_reply_row_does_not_send_the_short_reply_twice);
   RUN_TEST(test_a_memory_deferred_system_turn_is_staged_again);
   RUN_TEST(test_psram_first_restores_the_boot_spill_limit);
+  RUN_TEST(test_psram_first_scopes_overlap_across_tasks);
   return UNITY_END();
 }

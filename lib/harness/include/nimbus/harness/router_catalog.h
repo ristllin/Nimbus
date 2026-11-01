@@ -18,6 +18,12 @@
 //     picks) is capped by count and bytes and always holds the router default.
 // Header-only and Arduino-free so test/test_router_catalog pins it on the host, and
 // nimbusd (which builds from lib/ alone) bounds its catalog by the same rule.
+//
+// Memory: these steps run on a worker beside the Telegram task, outside any turn, where
+// a plain block under 128 B stays in internal SRAM. One string per row in three vectors
+// took internal free from 21 KB to 968 B on Lumi, so every per-row string and version
+// key here is given a block big enough for PSRAM (keptId, kVersionKeyInts;
+// test/test_refresh_small_blocks fails on a per-row small block).
 
 #include <cctype>
 #include <cstddef>
@@ -109,7 +115,18 @@ inline bool routerChatModel(const std::string& id) {
 // billing - claude-3-*, gpt-4o - come after).
 inline bool routerFlagship(const std::string& id) { return nimbus::orch::routerFlagshipSelector(id); }
 
+// `id` in a block that is not internal SRAM on the device (assignOffInternal), for a
+// string kept once per row of an untrusted list.
+inline std::string keptId(const std::string& id) {
+  std::string out;
+  nimbus::orch::assignOffInternal(out, id.data(), id.size());
+  return out;
+}
+
 namespace detail {
+
+// Room a version key reserves: one 128 B block, so a key per row costs no internal SRAM.
+inline constexpr size_t kVersionKeyInts = nimbus::orch::kPsramStringFloor / sizeof(int);
 
 // The ordering key of a model id within its upstream: its version numbers
 // ("claude-opus-4-8" -> {4,8}, "gpt-5.6-sol" -> {5,6}, "gpt-6-astra" -> {6}) and
@@ -130,6 +147,7 @@ inline VersionKey versionKey(const std::string& model) {
     while (j < model.size() && isdigit((unsigned char)model[j])) ++j;
     const bool size = j < model.size() && (model[j] == 'b' || model[j] == 'B');
     if (j - i <= 2 && !size) {
+      if (k.v.empty()) k.v.reserve(kVersionKeyInts);
       k.v.push_back(std::atoi(model.substr(i, j - i).c_str()));
       lastEnd = j;
     }
@@ -159,7 +177,7 @@ inline bool newerFirst(const VersionKey& ka, const VersionKey& kb) {
 // binary search - no pairwise scan (the list comes from an untrusted router body).
 inline std::vector<size_t> candidates(const std::vector<std::string>& canon) {
   std::vector<std::string> key(canon.size());
-  for (size_t i = 0; i < canon.size(); ++i) key[i] = nimbus::orch::sameModelKey(canon[i]);
+  for (size_t i = 0; i < canon.size(); ++i) key[i] = keptId(nimbus::orch::sameModelKey(canon[i]));
   std::vector<size_t> byKey(canon.size());
   for (size_t i = 0; i < byKey.size(); ++i) byKey[i] = i;
   std::sort(byKey.begin(), byKey.end(), [&](size_t a, size_t b) {
@@ -276,7 +294,7 @@ inline std::vector<size_t> keepOrder(const std::vector<std::string>& ids,
                                      const std::string& defaultSel, size_t* dropped = nullptr) {
   std::vector<std::string> canon;
   canon.reserve(ids.size());
-  for (const std::string& id : ids) canon.push_back(routable(id) ? canonical(id) : std::string());
+  for (const std::string& id : ids) canon.push_back(routable(id) ? keptId(canonical(id)) : std::string());
   const std::vector<size_t> cand = detail::candidates(canon);
   std::vector<size_t> order;
   const std::string def = canonical(defaultSel);
@@ -348,7 +366,7 @@ inline void raiseToSpellingPrice(std::vector<nimbus::orch::ModelInfo>& cat, cons
   std::vector<std::pair<std::string, size_t>> keyed;
   keyed.reserve(ids.size());
   for (size_t i = 0; i < ids.size(); ++i)
-    if (cat[i].priced) keyed.emplace_back(nimbus::orch::sameModelKey(canonical(ids[i])), i);
+    if (cat[i].priced) keyed.emplace_back(keptId(nimbus::orch::sameModelKey(canonical(ids[i]))), i);
   std::sort(keyed.begin(), keyed.end());
   for (size_t i : order) {
     const std::string k = nimbus::orch::sameModelKey(canonical(ids[i]));
@@ -386,7 +404,7 @@ inline size_t protectHeads(std::vector<nimbus::orch::ModelInfo>& cat, const std:
   detail::keepRunnableRows(cat);
   std::vector<std::string> ids;
   ids.reserve(cat.size());
-  for (const auto& m : cat) ids.push_back(selectorOf(m));
+  for (const auto& m : cat) ids.push_back(keptId(selectorOf(m)));
   size_t dropped = 0;
   std::vector<size_t> order = keepOrder(ids, defaultSel, &dropped);
   detail::raiseToSpellingPrice(cat, ids, order);
@@ -420,7 +438,7 @@ inline std::string storeChoices(const std::vector<nimbus::orch::ModelInfo>& rows
   ids.reserve(rows.size());
   for (const auto& m : rows)
     if (nimbus::orch::rowOffered(m, nimbus::orch::RoleOrchestrator, now) && routerChatModel(selectorOf(m)))
-      ids.push_back(selectorOf(m));
+      ids.push_back(keptId(selectorOf(m)));
   const Shortlist sl = shortlist(ids, defaultSel);
   const std::string def = canonical(defaultSel);
   if (def.empty()) return sl.csv;
