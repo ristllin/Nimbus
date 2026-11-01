@@ -104,9 +104,9 @@ def make_handler(fake: FakeNimbusd, token: str):
                     "/api/chat": lambda: fake.reply_for(int(q["turn"][0])),
                     "/api/mem/episodic": lambda: {"messages": []},
                     "/api/log": lambda: "\n".join(fake.log),
-                    "/api/lastturn": lambda: f"turn {fake.turn_counter}\n===== 4. TOOL LOOP =====\n"
-                    '[tool] files_read {"a":1}\n[result] files_read ok\n',
-                        "===== 4. TOOL LOOP =====\n[tool] files_read {\"a\":1}\n[result] files_read ok\n"
+                    "/api/lastturn": lambda: (
+                        f"turn {fake.turn_counter}\n===== 4. TOOL LOOP =====\n"
+                        '[tool] files_read {"a":1}\n[result] files_read ok\n'
                     ),
                     "/api/orch": fake.orch,
                     "/api/state": fake.state,
@@ -241,7 +241,14 @@ class Loading(unittest.TestCase):
             "persona": {
                 "name": "p-${m}",
                 "keys": {"${host}": "K"},
-                "scenarios": [{"id": "s", "steps": [{"say": "${fact} note $i", "repeat": 2, "pad": 100, "expect": [{"reply_nonempty": True}]}]}],
+                "scenarios": [
+                    {
+                        "id": "s",
+                        "steps": [
+                            {"say": "${fact} note $i", "repeat": 2, "pad": 100, "expect": [{"reply_nonempty": True}]}
+                        ],
+                    }
+                ],
             },
         }
         with tempfile.TemporaryDirectory() as d:
