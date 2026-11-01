@@ -185,7 +185,12 @@ static void checkHardware(ndtest::Ctx& c, DaemonHttpTransport& cl, int port, con
   Out wifi = G(cl, port, "/api/wifi", tok);
   c.ok(wifi.status == 200 && has(wifi.body, "platform"),
        "wifi honestly reports platform-managed networking");
+  // A real route on the engine thread now: a read during a turn answers an honest busy.
   Out loops = G(cl, port, "/api/loops", tok);
+  for (int i = 0; i < 100 && loops.status == 503; i++) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    loops = G(cl, port, "/api/loops", tok);
+  }
   c.ok(loops.status == 200 && loops.body == "[]", "loops returns a well-formed empty list");
 }
 
