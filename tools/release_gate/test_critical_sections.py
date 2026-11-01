@@ -89,12 +89,13 @@ def test_a_guard_ends_with_its_scope():
 
 
 def test_a_section_ends_at_its_own_exit():
-    assert lines('void f() {\n  portENTER_CRITICAL(&m);\n  x = 1;\n  portEXIT_CRITICAL(&m);\n  alogf("after");\n}\n') == []
-    # Another mux's exit does not close it.
     assert (
-        lines('void f() {\n  portENTER_CRITICAL(&m);\n  portEXIT_CRITICAL(&n);\n  alogf("in");\n  portEXIT_CRITICAL(&m);\n}\n')
-        == [4]
+        lines('void f() {\n  portENTER_CRITICAL(&m);\n  x = 1;\n  portEXIT_CRITICAL(&m);\n  alogf("after");\n}\n') == []
     )
+    # Another mux's exit does not close it.
+    assert lines(
+        'void f() {\n  portENTER_CRITICAL(&m);\n  portEXIT_CRITICAL(&n);\n  alogf("in");\n  portEXIT_CRITICAL(&m);\n}\n'
+    ) == [4]
 
 
 def test_an_early_exit_in_a_block_does_not_end_the_section():

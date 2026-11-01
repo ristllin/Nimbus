@@ -20,11 +20,11 @@ A fix release for the correction loop reported on 30 October.
 - **The meal ledger heals itself.** An old headerless meal log folds into the proper ledger on the next start - your final figures win - and creating a headerless log that corrections cannot target is refused with the header it needs, so the silent-append loop cannot recur.
 - **A lost reply tells you.** If a crash ever eats a reply again, the boot notice says the message arrived and its work may be done - check before re-sending, so nothing gets logged twice.
 
-## v4.6.2 - The dream crash fixed, files.edit added
+## v4.6.2 - The 29 October crash stopped, files.edit added
 
 A fix release for the crash and the file-editing gap reported on 29 October.
 
-- **No more crash at the dream's end.** The nightly maintenance pass could stop the device dead when its timeline note landed at a moment the system was already running at a raised interrupt level. That write is now held safely and lands on the next turn instead, and nothing about normal turns changes.
+- **The 29 October crash stopped.** A log write refused at a raised interrupt level no longer stops the device. The fix's first account blamed the nightly dream; the real trigger was a "lights" action, found and fixed at its source in 5.0.0.
 - **files.edit.** The assistant can now change one line of a text document without reading and rewriting the whole file - it finds the text, replaces it, and leaves everything else untouched. Cheaper on memory and tokens, and it says honestly what it found and replaced.
 
 ## v4.6.1 - Faster replies, no web-page restarts, the real model named

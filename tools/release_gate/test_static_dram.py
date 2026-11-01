@@ -137,7 +137,7 @@ def test_merge_passes_when_both_images_are_this_commits_and_under(tmp_path):
 
 def test_merge_fails_over_a_ceiling_on_either_image(tmp_path):
     built(tmp_path, "esp32s3")
-    built(tmp_path, "esp32s3-cyd", bss=701)   # 1101 B: one over
+    built(tmp_path, "esp32s3-cyd", bss=701)  # 1101 B: one over
     assert not merge.check_tree(str(tmp_path), MERGE_REQ, MERGE_CEIL, MERGE_ID)
 
 
@@ -147,7 +147,7 @@ def test_merge_fails_on_a_missing_required_image(tmp_path):
 
 
 def test_merge_fails_on_a_stale_required_image(tmp_path):
-    built(tmp_path, "esp32s3", build_id="v5.0.0-2-g99999999")   # under its ceiling, last commit's
+    built(tmp_path, "esp32s3", build_id="v5.0.0-2-g99999999")  # under its ceiling, last commit's
     built(tmp_path, "esp32s3-cyd")
     assert not merge.check_tree(str(tmp_path), MERGE_REQ, MERGE_CEIL, MERGE_ID)
 
@@ -155,9 +155,9 @@ def test_merge_fails_on_a_stale_required_image(tmp_path):
 def test_merge_checks_an_optional_image_only_when_this_commit_built_it(tmp_path):
     built(tmp_path, "esp32s3")
     built(tmp_path, "esp32s3-cyd")
-    built(tmp_path, "esp32s3-cyd-35", bss=9000, build_id="v5.0.0-2-g99999999")   # stale: not judged
+    built(tmp_path, "esp32s3-cyd-35", bss=9000, build_id="v5.0.0-2-g99999999")  # stale: not judged
     assert merge.check_tree(str(tmp_path), MERGE_REQ, MERGE_CEIL, MERGE_ID)
-    built(tmp_path, "esp32s3-cyd-35", bss=9000)                                  # this commit's: judged
+    built(tmp_path, "esp32s3-cyd-35", bss=9000)  # this commit's: judged
     assert not merge.check_tree(str(tmp_path), MERGE_REQ, MERGE_CEIL, MERGE_ID)
 
 

@@ -19,6 +19,7 @@
 #include "nimbus/fault.h"
 #include "nimbus/orch/media.h"
 #include "nimbus/orch/tool_registry.h"
+#include "nimbus/speaker_memory.h"             // speakerMemoryOk - room for the speaker and the radio
 #include "nimbus/speaker_reply.h"              // speakerOpenFailReason - a failed open, said plainly
 #include "nimbus/tts_catalog.h"             // core::downmixStereoToMono (host-tested)
 

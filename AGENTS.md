@@ -197,6 +197,14 @@ Providers parallelize **remotely** - the device still polls them one at a time -
 deep fan-out scales **sequentially over waves**, never concurrently. "Run providers
 closer together" means reduce idle poll latency, nothing more.
 
+### ⛔ Nothing logs, touches a file or blocks inside a spinlock
+
+A `portMUX` critical section, `net::ConfigLockGuard` included, masks interrupts, and newlib's
+recursive FILE lock aborts at a raised level. One `alogf` under the config lock restarted a
+live device: the durable log's write was the abort (29 Oct 2026, a "lights" action). Copy
+under the lock, log after it. `tools/release_gate/check_critical_sections.py` fails on one
+written inside a section. It does not follow calls, so check what a helper does.
+
 ### Byte-locked wire codecs
 
 The `nimbus-notify` frame codec and the on-device QR encoder are **byte-locked** to

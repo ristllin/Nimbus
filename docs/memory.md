@@ -345,6 +345,10 @@ task's serve), so the device also keeps evidence of its own:
   in RTC memory, so after a panic, watchdog or software reset the next boot logs
   `heap: <n> alloc failure(s) before the last reset` with the newest records.
 - `mem.restingLargest`: the largest internal block at rest (the verify gate's input).
+- Reading `intFree`, `intLargest` and `largest=` in the log: "internal" includes the RTC
+  fast block (about 7.4 KB, `intFree - dmaFree`), and a `largest=7156` is that block, not
+  main SRAM. It can hold a task stack but no DMA buffer, so a Wi-Fi or speaker buffer can
+  fail with several KB of "internal" free. For what those buffers can use, read `dmaFree`.
 - `mem.tlsOverlaps`: concurrent work-TLS seen (it stays 0 under the single slot).
 - `mem.loopStackMin`, `mem.panelStackMin`, `mem.vrelStackMin`: worst free stack of
   the main loop, the display render task and the voice-release watcher;
@@ -382,7 +386,17 @@ the heavy-connector-write restart, 2026-07).
   restart.
 - **Small (< 128 B) allocations outside a turn** - stay internal by the extmem
   threshold; cheap and not worth lowering it for the whole device. During a turn
-  they go to PSRAM (above), because a turn's setup made thousands of them.
+  they go to PSRAM (above), because a turn's setup made thousands of them. The same
+  goes for a provider verify or a model-list refresh on its worker: one string per
+  row of the Cumulo router's list, three times over, took internal free to 968 B on a
+  live device (fixed in 5.0.0). Anything that keeps a string per row of a list gives it a
+  block of 128 B or more (`assignOffInternal`, `keptId`);
+  `test/test_refresh_small_blocks` counts them.
+- **The speaker's DMA buffers** - opening the speaker takes 8 x 1024 B of DMA-capable
+  SRAM until the clip ends. A cue opens only with those and 8 KB for the radio free,
+  and a failed open holds the cues back (one minute, doubling to 16); a spoken reply or
+  a track keeps a 3.2 KB reserve and says when it cannot play
+  (`nimbus/speaker_memory.h`).
 - **FreeRTOS task stacks** - e.g. `tg_poll` (24 KB, `POLL_STACK_BYTES`), which
   runs the whole turn. Internal by nature. The response parse is bounded to
   `NestingLimit(64)` (`kResponseNestingLimit`), well within this stack.

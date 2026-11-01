@@ -7,7 +7,7 @@
 // audio.cpp: 8 descriptors, 256 stereo 16-bit frames). They must be DMA-capable, so only the
 // main internal SRAM serves them; the 7.4 KB RTC block counted in "internal free" does not.
 // On Lumi during photo turns (1 Nov 2026) a sound's open took internal free to about 11 KB:
-// 7.4 KB of RTC and 3.4 KB of main SRAM, in pieces under 1 KB. The ninth block failed, the open
+// 7.4 KB of RTC and 3.4 KB of main SRAM, in pieces under 1 KB. The next buffer failed, the open
 // gave up, and for that moment the radio's own buffers had nothing left either. A sound is
 // decoration, so the rule is to not try:
 //   - a cue opens only when the buffers fit and kCueDmaReserve stays free for the radio;
