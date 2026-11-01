@@ -91,6 +91,22 @@ def tool_not_called(rec, arg, _ctx):
     return not any(arg in n for n in names), f"tools: {names}"
 
 
+def _tool_field_regex(rec, arg, field):
+    """{"tool": "files_write", "regex": "x"}: a call of that tool whose args or result match."""
+    rows = [t for t in rec["tools"] if arg["tool"] in t.get("name", "")]
+    hit = any(re.search(arg["regex"], t.get(field, ""), re.I | re.S) for t in rows)
+    return hit, f"{field} of {arg['tool']}: {[_seen(t.get(field, ''), 200) for t in rows]}"
+
+
+def tool_args_regex(rec, arg, _ctx):
+    return _tool_field_regex(rec, arg, "args")
+
+
+def tool_result_regex(rec, arg, _ctx):
+    """The daemon folds each anatomy line at 200 characters, so only a result's start can match."""
+    return _tool_field_regex(rec, arg, "result")
+
+
 def log_regex(rec, arg, _ctx):
     text = rec.get("log", "")
     m = re.search(arg, text, re.I)
@@ -194,6 +210,8 @@ ASSERTIONS = {
     "reply_not_regex": reply_not_regex,
     "tool_called": tool_called,
     "tool_not_called": tool_not_called,
+    "tool_args_regex": tool_args_regex,
+    "tool_result_regex": tool_result_regex,
     "no_fabricated_action": no_fabricated_action,
     "log_regex": log_regex,
     "log_not_regex": log_not_regex,
@@ -210,14 +228,106 @@ ASSERTIONS = {
 }
 
 
+# What each assertion takes, checked when a persona loads, so a wrong value is refused
+# instead of raising mid-run and reading as a failed check (or worse, a passing one).
+_NUM = (int, float)
+_TOOL_FIELD = {"tool": str, "regex": str}
+_FILE = {"project": str, "name": str, "text": str}
+ARG_SHAPES = {
+    "reply_nonempty": bool,
+    "no_error_reply": bool,
+    "reply_contains": str,
+    "reply_not_contains": str,
+    "reply_regex": str,
+    "reply_not_regex": str,
+    "tool_called": str,
+    "tool_not_called": str,
+    "tool_args_regex": _TOOL_FIELD,
+    "tool_result_regex": _TOOL_FIELD,
+    "no_fabricated_action": bool,
+    "log_regex": str,
+    "log_not_regex": str,
+    "http_status": int,
+    "body_contains": str,
+    "body_not_contains": str,
+    "body_regex": str,
+    "turn_resolved": bool,
+    "tokens_max": _NUM,
+    "file_contains": _FILE,
+    "file_absent": _FILE,
+    "api_min": {"path": str, "field": str, "min": _NUM},
+    "api_equals": {"path": str, "field": str, "value": object},
+}
+REGEX_ARGS = {"reply_regex", "reply_not_regex", "log_regex", "log_not_regex", "body_regex"}
+OPTIONAL_ARG_FIELDS = {"project", "text"}
+# Checks that read the running instance: they cannot be re-graded from a stored step.
+LIVE_CHECKS = {"file_contains", "file_absent", "api_min", "api_equals"}
+
+
+def _plain_type(value, kind) -> bool:
+    if kind is object:
+        return True
+    if kind is bool or isinstance(value, bool):
+        return isinstance(value, bool) and kind is bool
+    return isinstance(value, kind)
+
+
+def _check_arg_fields(arg, shape: dict):
+    if not isinstance(arg, dict):
+        return f"takes {sorted(shape)}, got {arg!r}"
+    unknown = sorted(set(arg) - set(shape))
+    if unknown:
+        return f"has unknown fields {unknown}"
+    missing = sorted(set(shape) - set(arg) - OPTIONAL_ARG_FIELDS)
+    if missing:
+        return f"is missing {missing}"
+    bad = [k for k, v in arg.items() if not _plain_type(v, shape[k])]
+    return f"has a wrong type in {bad}: {arg!r}" if bad else ""
+
+
+def check_arg(name: str, arg) -> str:
+    """Empty when the value fits the assertion, else what is wrong with it."""
+    shape = ARG_SHAPES[name]
+    if isinstance(shape, dict):
+        return _check_arg_fields(arg, shape)
+    if not _plain_type(arg, shape):
+        return f"takes a value like {shape}, got {arg!r}"
+    if name in REGEX_ARGS:
+        try:
+            re.compile(arg)
+        except re.error as e:
+            return f"has a bad regex: {e}"
+    return ""
+
+
+def _grade_one(rec: dict, name: str, arg, ctx) -> tuple:
+    try:
+        ok, seen = ASSERTIONS[name](rec, arg, ctx)
+    except Exception as e:  # a broken check is a failed check, never a pass
+        ok, seen = False, f"check raised {type(e).__name__}: {e}"
+    return bool(ok), seen
+
+
 def grade_step(rec: dict, expect: list, ctx) -> list:
     """Run a step's assertions; a check that raises fails, it never skips."""
     results = []
     for item in expect:
-        name, arg = next(iter(item.items()))
-        try:
-            ok, seen = ASSERTIONS[name](rec, arg, ctx)
-        except Exception as e:  # a broken check is a failed check, never a pass
-            ok, seen = False, f"check raised {type(e).__name__}: {e}"
-        results.append({"check": name, "arg": arg, "pass": bool(ok), "seen": seen})
+        name = next(k for k in item if k not in ("known_defect", "may_pass"))
+        ok, seen = _grade_one(rec, name, item[name], ctx)
+        row = {"check": name, "arg": item[name], "pass": ok, "seen": seen}
+        if item.get("known_defect"):
+            row.update(known_defect=item["known_defect"], may_pass=bool(item.get("may_pass")))
+        results.append(row)
     return results
+
+
+def regrade_step(rec: dict) -> list:
+    """Stored verdicts that today's graders would change: [(check, stored, now)]. Live checks are skipped."""
+    flips = []
+    for row in rec.get("checks", []):
+        if row["check"] not in ASSERTIONS or row["check"] in LIVE_CHECKS:
+            continue
+        ok, _seen = _grade_one(rec, row["check"], row["arg"], None)
+        if ok != row["pass"]:
+            flips.append((row["check"], row["pass"], ok))
+    return flips

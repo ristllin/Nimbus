@@ -6,8 +6,10 @@ end to end here, and the graders are proven able to fail. Runs under `make -C ni
 and the CI python gates (pytest collects it; `python3 test_persona_rig.py` also works).
 """
 
+import io
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -21,6 +23,8 @@ sys.path.insert(0, str(HERE))
 import grade  # noqa: E402
 import persona_rig as pr  # noqa: E402
 
+pr.CONFIG_PAUSE_S = 0
+
 # Split so no secret-shaped literal sits in the repo (GH013 and gitleaks).
 FAKE_KEY = "sk" + "-" + "persona-rig-self-test-key-0123456789"
 
@@ -32,6 +36,8 @@ class FakeNimbusd:
         self.ring, self.seq, self.log, self.files = [], 0, [], {}
         self.config_posts, self.vectors, self.turn_counter = [], 0, 0
         self.spawn_turns_unresolved = set()
+        self.settings = {}
+        self.transient_failures = 0
         self.lock = threading.Lock()
 
     def push(self, role, text):
@@ -44,7 +50,11 @@ class FakeNimbusd:
         turn = self.push("user", text)
         self.log.append("turn spend: ok owner | fake/fake-model in=100 out=10 cR=0 cW=0 n=1 id=fake-model")
         self.turn_counter += 1
-        if "sub-agent" in text:
+        if "flaky" in text and self.transient_failures > 0:
+            self.transient_failures -= 1
+            self.log.append("orchTurn(mistral-loop): HTTP 429 rate limited")
+            self.push("assistant", "That didn't finish - try again later.")
+        elif "sub-agent" in text:
             self.spawn_turns_unresolved.add(turn)
             self.log.append("orchestrator: spawned job0000 -> fake")
             self.push("assistant", "On it.")
@@ -70,10 +80,36 @@ class FakeNimbusd:
         return {"spend": {"spentCents": self.turn_counter}}
 
     def orch(self):
-        return {
-            "providers": {"mistral": {"verify": 1, "vts": 1}},
-            "usage": {"sessIn": 100 * self.turn_counter, "sessOut": 10 * self.turn_counter, "turns": self.turn_counter},
+        slugs = ("mistral", "cumulo", "zai", "anthropic", "openai")
+        rows = {
+            s: {
+                "verify": 1,
+                "vts": 1,
+                "orchModel": self.settings.get(f"orchM_{s}", ""),
+                "subModel": self.settings.get(f"subM_{s}", ""),
+            }
+            for s in slugs
         }
+        return {
+            "providers": rows,
+            "orchHost": self.settings.get("orchHost", ""),
+            "directive": self.settings.get("sysPrompt", ""),
+            "usage": {
+                "sessIn": 100 * self.turn_counter,
+                "sessOut": 10 * self.turn_counter,
+                "turns": self.turn_counter,
+                "ceiling": {"limitCents": int(self.settings.get("spendCeil", 2000))},
+            },
+        }
+
+    def config(self):
+        return {"devTz": self.settings.get("devTz", ""), "devName": self.settings.get("devName", "")}
+
+    def telegram(self):
+        return {"allow": [{"id": self.settings["id"]}] if "id" in self.settings else []}
+
+    def tenant(self):
+        return {"tenants": [{"id": self.settings.get("id"), "role": self.settings.get("role")}]}
 
 
 def make_handler(fake: FakeNimbusd, token: str):
@@ -110,6 +146,9 @@ def make_handler(fake: FakeNimbusd, token: str):
                     ),
                     "/api/orch": fake.orch,
                     "/api/state": fake.state,
+                    "/api/config": fake.config,
+                    "/api/telegram": fake.telegram,
+                    "/api/tenant": fake.tenant,
                     "/api/mem/stats": lambda: {"vectors": fake.vectors},
                 }
                 if url.path == "/api/files/dl":
@@ -148,6 +187,7 @@ def make_handler(fake: FakeNimbusd, token: str):
                     return self._send(400, {"ok": False, "error": "Not available on a hosted Nimbus yet: routines"})
                 fake.config_posts.append((url.path, raw.decode()))
                 refused = "refuse-me" in raw.decode()
+                fake.settings.update({k: v[0] for k, v in urllib.parse.parse_qs(raw.decode()).items()})
                 return self._send(400 if refused else 200, {"ok": not refused})
 
     return Handler
@@ -168,6 +208,7 @@ class FakeBackend:
         return self.server.server_address[1]
 
     def restart(self, _name):
+        self.fake.log.clear()  # the daemon's log is an in-memory tail: a restart empties it
         return self.server.server_address[1]
 
     def logs(self, _name):
@@ -336,7 +377,7 @@ class Ctx:
 REC = {
     "reply": "The answer is 51.",
     "replies": ["The answer is 51."],
-    "tools": [{"name": "files_read"}],
+    "tools": [{"name": "files_read", "args": '{"name":"notes.txt"}', "result": "hello-file"}],
     "log": "fold(owner): ok on mistral",
     "http": {"status": 200, "body": '{"ok":true}'},
     "usage_delta": {"in": 100, "out": 10},
@@ -352,6 +393,8 @@ CASES = {
     "reply_not_regex": (r"\b52\b", REC, r"\b51\b"),
     "tool_called": ("files_read", REC, "memory_write"),
     "tool_not_called": ("memory_write", REC, "files_read"),
+    "tool_args_regex": ({"tool": "files_read", "regex": "notes"}, REC, {"tool": "files_read", "regex": "other"}),
+    "tool_result_regex": ({"tool": "files_read", "regex": "hello"}, REC, {"tool": "files_write", "regex": "hello"}),
     "no_fabricated_action": (True, {**REC, "reply": "I've emailed it.", "replies": []}, True),
     "log_regex": (r"fold\(owner\): ok", REC, "no such line"),
     "log_not_regex": ("no such line", REC, "fold"),
@@ -652,6 +695,569 @@ class EndToEnd(unittest.TestCase):
         )
         summary, _f, _b, _t = self.run_persona(p)
         self.assertTrue(summary["pass"], summary)
+
+
+def sc(*steps, **over):
+    return {"id": over.pop("id", "s"), "steps": list(steps), **over}
+
+
+def say(text="hello there", *expect, **over):
+    return {"say": text, "settle_s": 0, "expect": list(expect) or [{"reply_nonempty": True}], **over}
+
+
+class Schema(unittest.TestCase):
+    """A typo must stop the run. On defaults it would spend real money and could still pass."""
+
+    def refused(self, why, **over):
+        with self.assertRaises(pr.PersonaError) as ctx:
+            persona(**over)
+        self.assertIn(why, str(ctx.exception))
+
+    def test_a_mistyped_persona_field_is_refused_with_the_likely_spelling(self):
+        for bad, right in (("monthly_cap", "monthly_cap_cents"), ("timezon", "timezone"), ("membrs", "members")):
+            with self.assertRaises(pr.PersonaError) as ctx:
+                pr.validate_persona({"name": "x", bad: 1, "scenarios": [sc({"sleep": 0})]})
+            self.assertIn(f"unknown field {bad!r}", str(ctx.exception))
+            self.assertIn(right, str(ctx.exception))
+
+    def test_a_mistyped_step_or_scenario_field_is_refused(self):
+        for bad in ("timout_s", "settel_s"):
+            self.refused("unknown field", scenarios=[sc(say(**{bad: 5}))])
+        self.refused("unknown field", scenarios=[sc(say(), knwon_defect="no-fold")])
+
+    def test_wrong_types_are_refused_not_raised_later(self):
+        self.refused("monthly_cap_cents", monthly_cap_cents="500")
+        self.refused("timeout_s", scenarios=[sc(say(timeout_s="60"))])
+        self.refused("repeat", scenarios=[sc(say(repeat="3"))])
+        self.refused("tokens_max", scenarios=[sc(say("x", {"tokens_max": "9"}))])
+        self.refused("api_min", scenarios=[sc(say("x", {"api_min": {"path": "/a", "field": "b", "min": "1"}}))])
+        self.refused("api_min", scenarios=[sc(say("x", {"api_min": {"path": "/a"}}))])
+        self.refused("http_status", scenarios=[sc({"http": {"path": "/a"}, "expect": [{"http_status": "200"}]})])
+        self.refused("bad regex", scenarios=[sc(say("x", {"reply_regex": "("}))])
+        self.refused("provider", keys={"mistrall": "K"})
+        self.refused("host", host="mistrall")
+
+    def test_a_say_field_on_another_action_is_refused(self):
+        self.refused("only a say step", scenarios=[sc({"http": {"path": "/a"}, "timeout_s": 5})])
+
+    def test_turn_resolved_cannot_be_asked_of_a_member_turn(self):
+        self.refused("no turn id", scenarios=[sc(say("x", {"turn_resolved": True}, **{"as": "1001"}))])
+
+    def test_needs_must_name_an_earlier_scenario(self):
+        self.refused("no earlier scenario", scenarios=[sc({"sleep": 0}, needs=["later"])])
+
+    def test_a_marker_must_name_a_registered_defect(self):
+        self.refused("known_defects.json", scenarios=[sc(say("x", {"reply_contains": "x", "known_defect": "nope"}))])
+        self.refused("known_defects.json", scenarios=[sc({"sleep": 0}, known_defect="nope")])
+        self.refused("needs a known_defect", scenarios=[sc(say("x", {"reply_contains": "x", "may_pass": True}))])
+
+    def test_the_report_defects_are_registered(self):
+        rows = pr.known_defects()
+        self.assertTrue({"no-fold", "glm-no-tools", "no-routines", "binary-read-kills-turn"} <= set(rows))
+        self.assertTrue(all(r["title"] and r["report"] for r in rows.values()))
+
+    def _load_matrix(self, doc):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "m.json"
+            path.write_text(json.dumps(doc))
+            return pr.load_personas(str(path))
+
+    def test_a_matrix_row_can_drive_numbers_and_whole_scenarios(self):
+        doc = {
+            "vars": {"cap": 300},
+            "matrix": [
+                {"n": "a", "turns": 2, "wait": 5, "floor": 7, "extra": [sc({"sleep": 0}, id="only-a")]},
+                {"n": "b", "turns": 3, "wait": 9, "floor": 1, "extra": [sc({"sleep": 1}, id="only-b")]},
+            ],
+            "persona": {
+                "name": "p-${n}",
+                "monthly_cap_cents": "${cap}",
+                "scenarios": "${extra}",
+            },
+        }
+        a, b = self._load_matrix(doc)
+        self.assertEqual(a["monthly_cap_cents"], 300)
+        self.assertEqual(a["scenarios"][0]["id"], "only-a")
+        self.assertEqual(b["scenarios"][0]["id"], "only-b")
+        doc["matrix"] = [{"n": "a", "turns": 2, "wait": 5, "floor": 7}]
+        doc["persona"]["scenarios"] = [
+            sc(
+                say(
+                    "note $i",
+                    {"tokens_max": "${floor}"},
+                    {"api_min": {"path": "/a", "field": "b", "min": "${floor}"}},
+                    repeat="${turns}",
+                    timeout_s="${wait}",
+                )
+            )
+        ]
+        steps = self._load_matrix(doc)[0]["scenarios"][0]["steps"]
+        self.assertEqual(len(steps), 2)
+        self.assertEqual(steps[0]["timeout_s"], 5)
+        self.assertEqual(steps[0]["expect"][0]["tokens_max"], 7)
+        self.assertEqual(steps[0]["expect"][1]["api_min"]["min"], 7)
+
+    def test_a_number_inside_text_stays_text_and_a_text_number_is_refused(self):
+        doc = {
+            "matrix": [{"n": 7}],
+            "persona": {"name": "p-${n}", "scenarios": [sc(say("turn ${n}", repeat="${n}x"))]},
+        }
+        with self.assertRaises(pr.PersonaError):
+            self._load_matrix(doc)
+        doc["persona"]["scenarios"] = [sc(say("turn ${n}"))]
+        self.assertEqual(self._load_matrix(doc)[0]["scenarios"][0]["steps"][0]["say"], "turn 7")
+
+
+class Truth(unittest.TestCase):
+    def setUp(self):
+        class Page(BaseHTTPRequestHandler):
+            def log_message(self, *_a):
+                pass
+
+            def do_GET(self):
+                body = b"<a>Download Python 3.99.1</a>"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Page)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/"
+
+    def doc(self, regex):
+        return {
+            "truth": {"latest": {"url": self.url, "regex": regex}},
+            "matrix": [{"n": "a"}],
+            "persona": {"name": "p-${n}", "scenarios": [sc(say("x", {"reply_contains": "${latest}"}))]},
+        }
+
+    def test_the_value_and_its_raw_source_are_kept(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "m.json"
+            path.write_text(json.dumps(self.doc(r"Download Python (3\.\d+\.\d+)")))
+            ps = pr.load_personas(str(path), Path(d) / "truth")
+            record = json.loads((Path(d) / "truth" / "latest.json").read_text())
+            body = (Path(d) / "truth" / "latest.body").read_bytes()
+            dry = pr.load_personas(str(path))
+        self.assertEqual(ps[0]["scenarios"][0]["steps"][0]["expect"][0]["reply_contains"], "3.99.1")
+        self.assertEqual(record["value"], "3.99.1")
+        self.assertIn(b"3.99.1", body)
+        self.assertIn("UNFETCHED", dry[0]["scenarios"][0]["steps"][0]["expect"][0]["reply_contains"])
+
+    def test_a_source_that_does_not_answer_the_regex_stops_the_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "m.json"
+            path.write_text(json.dumps(self.doc("no such words (x)")))
+            with self.assertRaises(pr.PersonaError):
+                pr.load_personas(str(path), Path(d) / "truth")
+
+
+class Contract(unittest.TestCase):
+    """The rig against the daemon's own source, so a rename fails here and not on every live persona."""
+
+    REPO = HERE.parents[1]
+
+    def test_everything_the_rig_relies_on_is_in_the_daemon_source(self):
+        source = pr.contract_source(self.REPO)
+        self.assertGreater(len(source), 100000, "the daemon source was not found")
+        self.assertEqual(pr.contract_missing(source), [])
+
+    def test_a_rename_on_any_row_is_caught(self):
+        source = pr.contract_source(self.REPO)
+        for needle in ('"/api/orch"', '"spendCeil"', "===== 4. TOOL LOOP", '"limitCents\\"'):
+            self.assertTrue(needle in source or needle.replace('\\"', '"') in source, needle)
+            broken = source.replace(needle, "renamed").replace(needle.replace('\\"', '"'), "renamed")
+            self.assertTrue(pr.contract_missing(broken), needle)
+
+    def test_the_web_page_alone_does_not_satisfy_the_contract(self):
+        self.assertIn("webui_page.h", pr.CONTRACT_SKIP)
+
+    def test_every_form_the_rig_posts_is_in_the_contract(self):
+        p = persona(directive="d", env={"A": "b"})
+        runner = pr.Runner(p, FakeBackend(FakeNimbusd()), {"FAKE_MISTRAL": FAKE_KEY}, Path(tempfile.mkdtemp()))
+        fields = set(pr.CONTRACT["form_fields"]) | {"id", "name", "role"}
+        for _label, path, form in runner._config_forms():
+            self.assertTrue(path in pr.CONTRACT["routes"] or path.startswith("/api/telegram/"), path)
+            for field in form:
+                self.assertTrue(field in fields or field.split("_")[0] + "_" in fields, field)
+
+    def test_every_fake_route_is_in_the_contract(self):
+        import inspect
+
+        fake_routes = set(re.findall(r'"(/(?:api/[a-z/]+|readyz))"', inspect.getsource(make_handler)))
+        known = set(pr.CONTRACT["routes"]) | {"/api/loops"}
+        self.assertEqual(sorted(fake_routes - known), [])
+
+
+class Markers(unittest.TestCase):
+    def run_one(self, p, **options):
+        with tempfile.TemporaryDirectory() as d:
+            return pr.run_all([p], FakeBackend(FakeNimbusd()), {"FAKE_MISTRAL": FAKE_KEY}, Path(d), options)[0]
+
+    def test_a_marked_failure_does_not_fail_the_persona_and_is_listed(self):
+        check = {"reply_contains": "banana", "known_defect": "no-fold"}
+        summary = self.run_one(persona(scenarios=[sc(say("hi", check))]))
+        self.assertTrue(summary["pass"], summary)
+        row = summary["scenarios"][0]
+        self.assertEqual(row["verdict"], "known_defect")
+        self.assertEqual(row["known_failures"][0]["known_defect"], "no-fold")
+        self.assertEqual(summary["known_defects"], ["no-fold"])
+
+    def test_a_marked_check_that_passes_fails_until_the_marker_goes(self):
+        check = {"reply_contains": "hi", "known_defect": "no-fold"}
+        summary = self.run_one(persona(scenarios=[sc(say("hi", check))]))
+        self.assertFalse(summary["pass"])
+        self.assertEqual(summary["scenarios"][0]["xpass"][0]["check"], "reply_contains")
+
+    def test_may_pass_is_for_a_defect_that_comes_and_goes(self):
+        check = {"reply_contains": "hi", "known_defect": "no-fold", "may_pass": True}
+        self.assertTrue(self.run_one(persona(scenarios=[sc(say("hi", check))]))["pass"])
+
+    def test_an_unmarked_failure_beside_a_marked_one_still_fails(self):
+        checks = [{"reply_contains": "banana", "known_defect": "no-fold"}, {"reply_contains": "kiwi"}]
+        self.assertFalse(self.run_one(persona(scenarios=[sc(say("hi", *checks))]))["pass"])
+
+    def test_a_scenario_marker_covers_its_checks_and_goes_stale_too(self):
+        marked = sc(say("hi", {"reply_contains": "banana"}), known_defect="no-routines")
+        self.assertTrue(self.run_one(persona(scenarios=[marked]))["pass"])
+        stale = sc(say("hi", {"reply_contains": "hi"}), known_defect="no-routines")
+        self.assertFalse(self.run_one(persona(scenarios=[stale]))["pass"])
+
+    def test_a_marker_never_excuses_a_turn_that_was_refused_or_timed_out(self):
+        rec = {"checks": [{"check": "turn_finished", "arg": True, "pass": False, "seen": "ran out of time"}]}
+        out = {"failed": [], "known_failures": [], "xpass": []}
+        runner = pr.Runner(persona(), FakeBackend(FakeNimbusd()), {"FAKE_MISTRAL": FAKE_KEY}, Path(tempfile.mkdtemp()))
+        runner._classify({"known_defect": "no-routines"}, 0, rec, out)
+        self.assertEqual(len(out["failed"]), 1)
+
+    def test_an_empty_marker_from_a_matrix_row_marks_nothing(self):
+        check = {"reply_contains": "banana", "known_defect": "", "may_pass": True}
+        self.assertFalse(self.run_one(persona(scenarios=[sc(say("hi", check))]))["pass"])
+
+
+class SpendLimits(unittest.TestCase):
+    def test_a_persona_with_no_cap_gets_the_rig_default_not_the_daemons(self):
+        p = persona()
+        del p["monthly_cap_cents"]
+        fake = FakeNimbusd()
+        with tempfile.TemporaryDirectory() as d:
+            pr.run_all([p], FakeBackend(fake), {"FAKE_MISTRAL": FAKE_KEY}, Path(d))
+        self.assertEqual(int(fake.settings["spendCeil"]), pr.DEFAULT_CAP_CENTS)
+        self.assertLess(pr.DEFAULT_CAP_CENTS, 500)
+
+    def test_the_shipped_paid_personas_name_a_cap(self):
+        for path in (HERE / "personas").glob("*.json"):
+            for p in pr.load_personas(str(path)):
+                if p.get("keys") and not p["name"].startswith("first-run"):
+                    self.assertIn("monthly_cap_cents", p, p["name"])
+
+    def test_the_run_ceiling_stops_the_next_turn(self):
+        fake = FakeNimbusd()
+        limits = pr.RunLimits(max_cents=1)
+        p = persona(scenarios=[sc(say("one"), say("two"), say("three"))])
+        with tempfile.TemporaryDirectory() as d:
+            ev = Path(d)
+            rc = pr.run_and_write([p], FakeBackend(fake), {"FAKE_MISTRAL": FAKE_KEY}, ev, {"limits": limits})
+            totals = json.loads((ev / "run-totals.json").read_text())
+        self.assertEqual(rc, 1)
+        self.assertEqual(fake.turn_counter, 1, "the fake bills one cent per turn, so one turn ran")
+        self.assertEqual(totals["turns_cents"], 1)
+
+    def test_a_ceiling_already_reached_starts_no_container(self):
+        backend = FakeBackend(FakeNimbusd())
+        limits = pr.RunLimits(max_cents=0)
+        with tempfile.TemporaryDirectory() as d:
+            results = pr.run_all([persona()], backend, {"FAKE_MISTRAL": FAKE_KEY}, Path(d), {"limits": limits})
+        self.assertFalse(results[0]["pass"])
+        self.assertEqual(backend.started, [])
+
+    def test_judge_spend_counts_toward_the_ceiling(self):
+        usage = {"input_tokens": 1000000, "output_tokens": 0}
+        verdict = {"satisfied": True, "honest": True, "score": 1, "judge_provider": "openai", "judge_model": "gpt-5.5"}
+        limits = pr.RunLimits(max_cents=1000)
+        options = {"limits": limits, "judge_factory": lambda _a: lambda *_x: {**verdict, "judge_usage": usage}}
+        with tempfile.TemporaryDirectory() as d:
+            pr.run_all([persona()], FakeBackend(FakeNimbusd()), {"FAKE_MISTRAL": FAKE_KEY}, Path(d), options)
+        self.assertEqual(limits.snapshot()["judge_cents"], 500)
+
+    def test_a_judge_call_with_no_usage_counts_a_high_figure_and_a_failed_call_counts_nothing(self):
+        self.assertEqual(pr.judge_cents({"satisfied": True, "score": 1, "judge_model": "gpt-5.5"}), 2)
+        self.assertEqual(pr.judge_cents({"satisfied": None, "score": None, "judge_model": "gpt-5.5"}), 0)
+        self.assertEqual(pr.judge_cents({"rationale": "judge unavailable"}), 0)
+
+
+class Judge(unittest.TestCase):
+    def run_with(self, host, provider):
+        seen = []
+
+        def factory(avoid):
+            seen.append(avoid)
+            return lambda *_a: {
+                "satisfied": False,
+                "honest": True,
+                "score": 0.4,
+                "judge_provider": provider,
+                "judge_model": "gpt-5.5",
+            }
+
+        p = persona(keys={host: "FAKE_MISTRAL"}, models={"head": {host: "m"}}, host=host)
+        with tempfile.TemporaryDirectory() as d:
+            ev = Path(d)
+            summary = pr.run_all([p], FakeBackend(FakeNimbusd()), {"FAKE_MISTRAL": FAKE_KEY}, ev, {"judge_factory": factory})[0]
+            on_disk = json.loads((ev / "unit" / "summary.json").read_text())
+        return seen, summary, on_disk
+
+    def test_the_judge_avoids_the_personas_own_provider_and_summary_says_who_judged(self):
+        seen, summary, on_disk = self.run_with("anthropic", "openai")
+        self.assertEqual(seen, ["anthropic"])
+        self.assertEqual(summary["judge"]["provider"], ["openai"])
+        self.assertTrue(summary["judge"]["independent"])
+        self.assertEqual(summary["judge"]["unsatisfied"], 1)
+        self.assertEqual(on_disk["judge"]["min_score"], 0.4)
+        self.assertEqual(on_disk["scenarios"][0]["judge"]["unsatisfied_steps"], [0])
+
+    def test_a_judge_on_the_same_provider_reads_as_not_independent(self):
+        self.assertFalse(self.run_with("anthropic", "anthropic")[1]["judge"]["independent"])
+
+    def test_the_real_factory_passes_the_provider_to_avoid(self):
+        calls = []
+        real = pr.make_judge_from_env
+        pr.make_judge_from_env = lambda env, avoid="": calls.append(avoid) or (lambda *_a: None)
+        self.addCleanup(setattr, pr, "make_judge_from_env", real)
+        pr._judge_factory({})("anthropic")
+        self.assertEqual(calls, ["", "anthropic"])
+
+
+class ToolTrace(unittest.TestCase):
+    def test_results_pair_with_their_own_call_by_name(self):
+        text = (
+            "===== 4. TOOL LOOP\n[tool] a {1}\n[tool] b {2}\n[result] b two\n[result] a one\n"
+        )
+        self.assertEqual(
+            pr.tools_from_anatomy(text),
+            [{"name": "a", "args": "{1}", "result": "one"}, {"name": "b", "args": "{2}", "result": "two"}],
+        )
+
+    def test_a_turn_later_overwritten_in_the_slot_keeps_its_tools(self):
+        class Slot:
+            def __init__(self):
+                self.text = "old"
+
+            def get(self, path):
+                if path == "/api/lastturn":
+                    return 200, self.text
+                if path.startswith("/api/replies"):
+                    return 200, json.dumps({"lastSeq": 0, "replies": []})
+                if path == "/api/orch":
+                    return 200, json.dumps({"usage": {"sessIn": 0, "sessOut": 0, "turns": 0}})
+                if path == "/api/state":
+                    return 200, json.dumps({"spend": {"spentCents": 0}})
+                if path == "/api/log":
+                    return 200, ""
+                return 200, json.dumps({"messages": []})
+
+            def get_json(self, path):
+                return json.loads(self.get(path)[1])
+
+            get_json_strict = get_json
+
+        slot = Slot()
+        cap = pr.Capture(slot)
+        slot.text = "===== 4. TOOL LOOP\n[tool] head_tool {}\n"
+        cap.note_turn()
+        slot.text = "===== 4. TOOL LOOP\n[tool] synth_tool {}\n"
+        rec = {}
+        cap.fill(rec)
+        self.assertEqual([t["name"] for t in rec["tools"]], ["head_tool", "synth_tool"])
+        self.assertEqual(len(rec["lastturn_earlier"]), 1)
+
+
+class RunOptions(unittest.TestCase):
+    def run_it(self, personas, fake=None, ev=None, **options):
+        backend = FakeBackend(fake or FakeNimbusd())
+        ev = ev or Path(tempfile.mkdtemp())
+        return pr.run_all(personas, backend, {"FAKE_MISTRAL": FAKE_KEY}, ev, options), backend, ev
+
+    def test_a_provider_429_retries_and_keeps_the_failed_try(self):
+        fake = FakeNimbusd()
+        fake.transient_failures = 1
+        p = persona(scenarios=[sc(say("flaky turn", {"no_error_reply": True}))])
+        results, _b, ev = self.run_it([p], fake, backoff_s=0)
+        self.assertTrue(results[0]["pass"], results[0])
+        rec = json.loads((ev / "unit" / "s" / "step-00.json").read_text())
+        self.assertEqual(len(rec["earlier_tries"]), 1)
+        self.assertIn("HTTP 429", rec["earlier_tries"][0]["log"])
+
+    def test_a_429_that_never_clears_still_fails_after_its_tries(self):
+        fake = FakeNimbusd()
+        fake.transient_failures = 9
+        p = persona(scenarios=[sc(say("flaky turn", {"no_error_reply": True}))])
+        results, _b, _e = self.run_it([p], fake, backoff_s=0, retries=2)
+        self.assertFalse(results[0]["pass"])
+        self.assertEqual(fake.turn_counter, 3)
+
+    def test_a_failure_with_no_provider_error_is_not_retried(self):
+        fake = FakeNimbusd()
+        p = persona(scenarios=[sc(say("broken turn", {"reply_nonempty": True}))])
+        self.run_it([p], fake, backoff_s=0)
+        self.assertEqual(fake.turn_counter, 1)
+
+    def test_turns_are_gated_per_provider(self):
+        limits = pr.RunLimits(provider_limit=1)
+        mistral = limits.turn_slot("mistral")
+        self.assertIs(mistral, limits.turn_slot("mistral"))
+        self.assertTrue(mistral.acquire(blocking=False))
+        self.assertFalse(limits.turn_slot("mistral").acquire(blocking=False), "one turn at a time")
+        self.assertTrue(limits.turn_slot("zai").acquire(blocking=False), "another provider is not held up")
+        mistral.release()
+
+    def test_resume_skips_a_finished_persona_and_reruns_one_that_stopped(self):
+        ev = Path(tempfile.mkdtemp())
+        p = persona()
+        _r, first, _e = self.run_it([p], ev=ev)
+        self.assertEqual(len(first.started), 1)
+        results, second, _e = self.run_it([persona()], ev=ev, resume=True)
+        self.assertEqual(second.started, [], "the finished persona did not run again")
+        self.assertTrue(results[0]["pass"])
+        summary_path = ev / "unit" / "summary.json"
+        summary = json.loads(summary_path.read_text())
+        summary["error"] = "stopped part way"
+        summary_path.write_text(json.dumps(summary))
+        _r, third, _e = self.run_it([persona()], ev=ev, resume=True)
+        self.assertEqual(len(third.started), 1, "a persona that stopped runs again")
+        self.assertTrue(list(ev.glob("unit.prev-*")), "the older run is kept, not mixed in")
+
+    def test_only_brings_the_scenarios_it_needs(self):
+        p = persona(
+            scenarios=[
+                sc(say("remember this", {"reply_nonempty": True}), id="memory"),
+                sc({"restart": True}, say("still there"), id="restart", needs=["memory"]),
+                sc(say("other"), id="other"),
+            ]
+        )
+        results, _b, _e = self.run_it([p], only={"restart"})
+        self.assertEqual([s["id"] for s in results[0]["scenarios"]], ["memory", "restart"])
+
+    def test_the_turn_log_survives_a_restart_and_says_so(self):
+        p = persona(scenarios=[sc(say("before"), {"restart": True}, say("after"))])
+        results, _b, ev = self.run_it([p])
+        self.assertTrue(results[0]["pass"], results[0])
+        log = (ev / "unit" / "turn-log.txt").read_text()
+        self.assertEqual(log.count("turn spend:"), 2, "both turns, though the daemon's own log lost the first")
+        self.assertIn("container restarted", log)
+        self.assertEqual((ev / "unit" / "api-log.txt").read_text().count("turn spend:"), 1)
+        self.assertEqual(results[0]["provider_usage"]["fake"]["in"], 200)
+
+    def test_scenarios_start_on_a_cleared_conversation(self):
+        fake = FakeNimbusd()
+        p = persona(
+            scenarios=[
+                sc(say("one"), id="a"),
+                sc(say("two"), id="b"),
+                sc(say("three"), id="c", continue_conversation=True),
+            ]
+        )
+        results, _b, ev = self.run_it([p], fake)
+        clears = [b for _path, b in fake.config_posts if "clearConv" in b]
+        self.assertEqual(len(clears), 1, "before b only: a starts clean and c asked to continue")
+        self.assertEqual([s["isolated"] for s in results[0]["scenarios"]], [False, True, False])
+        self.assertEqual(json.loads((ev / "unit" / "b" / "reset.json").read_text())["status"], 200)
+
+    def test_a_setting_that_did_not_take_stops_the_persona_before_any_turn(self):
+        class Coercing(FakeNimbusd):
+            def orch(self):
+                d = super().orch()
+                d["providers"]["mistral"]["orchModel"] = "some-other-model"
+                return d
+
+        fake = Coercing()
+        results, _b, _e = self.run_it([persona()], fake)
+        self.assertFalse(results[0]["pass"])
+        self.assertIn("some-other-model", results[0]["error"])
+        self.assertEqual(fake.turn_counter, 0)
+
+    def test_every_setting_is_read_back(self):
+        results, _b, _e = self.run_it([persona(directive="be brief")])
+        got = {r["setting"]: r["got"] for r in results[0]["config_readback"]}
+        self.assertEqual(got["head model mistral"], "fake-model")
+        self.assertEqual(got["sub model mistral"], "fake-sub")
+        self.assertEqual(got["time zone"], "Europe/London")
+        self.assertEqual(got["monthly ceiling"], 500)
+        self.assertEqual(got["directive"], "be brief")
+        self.assertEqual(got["member 1001"], "1001")
+        self.assertEqual(got["member role 1001"], "user")
+
+    def _with_verdict(self, verify, reason=""):
+        class Verdict(FakeNimbusd):
+            def orch(self):
+                d = super().orch()
+                d["providers"]["cumulo"].update(verify=verify, vfyReason=reason)
+                return d
+
+        return Verdict()
+
+    def test_a_persona_can_expect_a_rejected_or_no_credit_key(self):
+        for verify, reason, want in ((0, "", "rejected"), (-1, "nocredits", "nocredits")):
+            p = persona(keys={"cumulo": "FAKE_MISTRAL"}, key_expect={"cumulo": want}, models={}, host="cumulo")
+            results, _b, _e = self.run_it([p], self._with_verdict(verify, reason))
+            self.assertTrue(results[0]["pass"], results[0])
+
+    def test_a_key_that_works_fails_a_persona_expecting_a_refusal(self):
+        p = persona(keys={"cumulo": "FAKE_MISTRAL"}, key_expect={"cumulo": "rejected"}, models={}, host="cumulo")
+        results, _b, _e = self.run_it([p])
+        self.assertFalse(results[0]["pass"])
+
+    def test_a_made_up_key_needs_no_env_entry_and_never_reaches_the_evidence(self):
+        fake = self._with_verdict(0)
+        p = persona(keys={"cumulo": "RIG_FAKE_CUMULO"}, key_expect={"cumulo": "rejected"}, models={}, host="cumulo")
+        ev = Path(tempfile.mkdtemp())
+        results = pr.run_all([p], FakeBackend(fake), {}, ev)
+        self.assertTrue(results[0]["pass"], results[0])
+        posted = fake.settings["cumuloKey"]
+        self.assertGreaterEqual(len(posted), 32)
+        for f in ev.rglob("*"):
+            if f.is_file():
+                self.assertNotIn(posted, f.read_text(), f)
+
+    def test_a_cumulo_persona_file_loads_and_runs_on_the_fake(self):
+        ps = pr.load_personas(str(HERE / "personas" / "cumulo_router.json"))
+        self.assertEqual({p["key_expect"]["cumulo"] for p in ps}, {"verified", "nocredits"})
+        funded = next(p for p in ps if p["key_expect"]["cumulo"] == "verified")
+        env = {"CUMULO_TEST_KEY": FAKE_KEY}
+        fake = FakeNimbusd()
+        results = pr.run_all([funded], FakeBackend(fake), env, Path(tempfile.mkdtemp()))
+        self.assertEqual(fake.settings["cumuloKey"], FAKE_KEY)
+        self.assertFalse(results[0]["pass"], "the fake does not do arithmetic, so the check can fail")
+
+
+class Regrade(unittest.TestCase):
+    def write(self, d, checks):
+        rec = {"reply": "Done.", "replies": ["Done."], "checks": checks}
+        path = Path(d) / "p" / "s"
+        path.mkdir(parents=True)
+        (path / "step-00.json").write_text(json.dumps(rec))
+
+    def test_a_stored_verdict_todays_graders_would_change_is_reported(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.write(d, [{"check": "no_error_reply", "arg": True, "pass": True, "seen": ""}])
+            out = io.StringIO()
+            self.assertEqual(pr.regrade(Path(d), out), 1)
+        self.assertIn("no_error_reply: stored True, now False", out.getvalue())
+
+    def test_agreement_and_live_checks_read_clean(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.write(
+                d,
+                [
+                    {"check": "no_error_reply", "arg": True, "pass": False, "seen": ""},
+                    {"check": "api_min", "arg": {"path": "/a", "field": "b", "min": 1}, "pass": True, "seen": ""},
+                    {"check": "turn_finished", "arg": True, "pass": False, "seen": ""},
+                ],
+            )
+            self.assertEqual(pr.regrade(Path(d), io.StringIO()), 0)
 
 
 if __name__ == "__main__":

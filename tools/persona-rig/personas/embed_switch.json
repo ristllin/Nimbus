@@ -1,20 +1,89 @@
 {
-  "name": "embed-switch-openai",
-  "description": "The fix an OpenAI-only owner has: point memory at OpenAI embeddings in the web app, then store a memory.",
-  "keys": {"openai": "OPENAI_API_KEY"},
-  "models": {"head": {"openai": "gpt-6-luna"}, "sub": {"openai": "gpt-6-luna"}},
-  "host": "openai",
-  "scenarios": [
-    {"id": "switch", "steps": [
-      {"http": {"method": "GET", "path": "/api/mem/stats"}, "expect": [{"http_status": 200}, {"body_contains": "\"embedAvailable\":false"}]},
-      {"http": {"method": "POST", "path": "/api/mem/embedverify", "form": {"provider": "openai", "model": "text-embedding-3-small", "dims": "0"}},
-       "expect": [{"http_status": 200}]},
-      {"http": {"method": "POST", "path": "/api/mem/embedcfg", "form": {"provider": "openai", "model": "text-embedding-3-small", "dims": "0"}},
-       "expect": [{"http_status": 200}]},
-      {"say": "Please remember permanently: my sister's cat is named Zorblax5518. Confirm when stored.",
-       "settle_s": 5,
-       "expect": [{"turn_resolved": true}, {"no_error_reply": true},
-                  {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}}]}
-    ]}
-  ]
+ "name": "embed-switch-openai",
+ "description": "The fix an OpenAI-only owner has: point memory at OpenAI embeddings in the web app, then store a memory.",
+ "keys": {
+  "openai": "OPENAI_API_KEY"
+ },
+ "models": {
+  "head": {
+   "openai": "gpt-6-luna"
+  },
+  "sub": {
+   "openai": "gpt-6-luna"
+  }
+ },
+ "host": "openai",
+ "monthly_cap_cents": 100,
+ "scenarios": [
+  {
+   "id": "switch",
+   "steps": [
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/mem/stats"
+     },
+     "expect": [
+      {
+       "http_status": 200
+      },
+      {
+       "body_contains": "\"embedAvailable\":false"
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "POST",
+      "path": "/api/mem/embedverify",
+      "form": {
+       "provider": "openai",
+       "model": "text-embedding-3-small",
+       "dims": "0"
+      }
+     },
+     "expect": [
+      {
+       "http_status": 200
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "POST",
+      "path": "/api/mem/embedcfg",
+      "form": {
+       "provider": "openai",
+       "model": "text-embedding-3-small",
+       "dims": "0"
+      }
+     },
+     "expect": [
+      {
+       "http_status": 200
+      }
+     ]
+    },
+    {
+     "say": "Please remember permanently: my sister's cat is named Zorblax5518. Confirm when stored.",
+     "settle_s": 5,
+     "expect": [
+      {
+       "turn_resolved": true
+      },
+      {
+       "no_error_reply": true
+      },
+      {
+       "api_min": {
+        "path": "/api/mem/stats",
+        "field": "vectors",
+        "min": 1
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
 }

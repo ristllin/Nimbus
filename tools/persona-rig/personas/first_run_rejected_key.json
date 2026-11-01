@@ -1,0 +1,33 @@
+{
+ "name": "first-run-rejected-key",
+ "description": "A key of the right shape that the provider refuses, posted the way the web app does. The rig makes the key up, so this costs nothing and holds no secret.",
+ "keys": {
+  "mistral": "RIG_FAKE_MISTRAL"
+ },
+ "key_expect": {
+  "mistral": "rejected"
+ },
+ "host": "mistral",
+ "scenarios": [
+  {
+   "id": "rejected",
+   "steps": [
+    {
+     "say": "Hello, are you there?",
+     "timeout_s": 60,
+     "expect": [
+      {
+       "turn_resolved": true
+      },
+      {
+       "reply_regex": "key|sign"
+      },
+      {
+       "reply_not_contains": "Done."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

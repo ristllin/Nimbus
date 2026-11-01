@@ -12,8 +12,10 @@ body or a child-process environment (never argv), and every artifact is scrubbed
 
 Usage:
   persona_rig.py run --persona FILE [--persona FILE ...] --image nimbusd:dev \\
-      --evidence DIR [--env-file .env] [--parallel N] [--judge] [--only ID,ID] [--keep]
-Exit 0 only when every assertion of every persona passed.
+      --evidence DIR [--env-file .env] [--parallel N] [--judge] [--only ID,ID] [--keep] \\
+      [--max-cents N] [--provider-limit N] [--retries N] [--resume]
+  persona_rig.py regrade --evidence DIR
+Exit 0 only when every assertion of every persona passed, or failed on a marked known defect.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ import json
 import os
 import re
 import secrets as pysecrets
+import shutil
 import struct
 import subprocess
 import sys
@@ -39,119 +42,125 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from grade import ASSERTIONS, grade_step  # noqa: E402
+from grade import ERROR_REPLY_RE, grade_step, regrade_step  # noqa: E402
+from persona_schema import (  # noqa: E402, F401  (the rig's public loading surface)
+    KEY_FIELDS,
+    PersonaError,
+    filler,
+    known_defects,
+    load_personas,
+    validate_persona,
+)
 
 DOCKER = os.environ.get("DOCKER_BIN", "docker")
 HTTP_TIMEOUT_S = 60
-STEP_KINDS = ("say", "http", "upload", "restart", "sleep")
-FILLER_WORDS = "harbor lantern quartz meadow copper violet ember thistle marble willow".split()
+CONFIG_PAUSE_S = 0.2  # the web app's pace between saves
+# A persona that names no ceiling still gets this one, not the daemon's 20 USD default.
+DEFAULT_CAP_CENTS = 200
+# The whole run, judge included, stops here unless --max-cents says otherwise.
+DEFAULT_MAX_CENTS = 500
+# Turns at once per provider: sharing a key, a wider run gets rate limited.
+DEFAULT_PROVIDER_LIMIT = 2
+DEFAULT_RETRIES = 2
+RETRY_BACKOFF_S = 20
+FAKE_KEY_PREFIX = "RIG_FAKE_"
+# The daemon's logged error for a failure worth another try. Nothing else is retried.
+TRANSIENT_RE = re.compile(r"\bHTTP (429|500|502|503|504|529)\b")
+# Judge prices in cents per million tokens (input, output), from model_price_defaults.h.
+JUDGE_PRICES = {"claude-sonnet-4-6": (300, 1500), "gpt-5.5": (500, 3000)}
+JUDGE_FALLBACK_CENTS = 2  # one call, when the provider reported no usage
+
+# Everything the rig relies on nimbusd to keep. test_persona_rig.py checks each entry against
+# the daemon's source, so a rename fails CI instead of failing every live persona at configure.
+CONTRACT = {
+    "routes": [
+        "/readyz",
+        "/api/chat",
+        "/api/message",
+        "/api/replies",
+        "/api/mem/episodic",
+        "/api/mem/stats",
+        "/api/log",
+        "/api/lastturn",
+        "/api/orch",
+        "/api/state",
+        "/api/config",
+        "/api/telegram",
+        "/api/telegram/",
+        "/api/tenant",
+        "/api/files/dl",
+        "/api/files/upload",
+    ],
+    "form_fields": [
+        *KEY_FIELDS.values(),
+        "orchM_",
+        "subM_",
+        "orchHost",
+        "sysPrompt",
+        "spendCeil",
+        "clearConv",
+        "devTz",
+        "devName",
+        "text",
+        "add",
+    ],
+    "json_fields": [
+        "providers",
+        "verify",
+        "vts",
+        "vfyReason",
+        "orchModel",
+        "subModel",
+        "directive",
+        "usage",
+        "sessIn",
+        "sessOut",
+        "turns",
+        "ceiling",
+        "limitCents",
+        "spentCents",
+        "spend",
+        "replies",
+        "lastSeq",
+        "turnInFlight",
+        "pending",
+        "reply",
+        "turn",
+        "allow",
+        "tenants",
+        "messages",
+    ],
+    "text": ["===== 4. TOOL LOOP", "[tool] ", "[result] ", "turn spend: ", "nocredits"],
+}
+CONTRACT_SOURCES = (
+    "nimbusd/src/*.h",
+    "nimbusd/src/*.cpp",
+    "lib/harness/src/*.cpp",
+    "lib/core/src/*.cpp",
+    "lib/core/include/nimbus/orch/provider_slots.h",
+)
+CONTRACT_SKIP = {"webui_page.h"}  # the served page: its JS names these fields whether the daemon does or not
 
 
-# --------------------------------------------------------------------- loading
-class PersonaError(ValueError):
-    """A persona file that cannot run. Refused at load, before anything is spent."""
-
-
-PLACEHOLDER = re.compile(r"\$\{([a-z_][a-z0-9_]*)\}")
-SAFE_NAME = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}"
-
-
-def _fill(text: str, values: dict, where: str) -> str:
-    def one(m):
-        if m.group(1) not in values:
-            raise PersonaError(f"{where}: no value for ${{{m.group(1)}}}")
-        return str(values[m.group(1)])
-
-    return PLACEHOLDER.sub(one, text)
-
-
-def _substitute(node, values: dict, where: str):
-    """${x} from the matrix row, in values and object keys. A bare $ is plain text."""
-    if isinstance(node, str):
-        return _fill(node, values, where)
-    if isinstance(node, list):
-        return [_substitute(n, values, where) for n in node]
-    if isinstance(node, dict):
-        return {_fill(k, values, where): _substitute(v, values, where) for k, v in node.items()}
-    return node
-
-
-def filler(n_bytes: int, seed: int) -> str:
-    """Readable, distinct padding (a fold counts distinct content, not repeats)."""
-    words, i = [], seed
-    size = 0
-    while size < n_bytes:
-        w = f"{FILLER_WORDS[i % len(FILLER_WORDS)]}{i % 977}"
-        words.append(w)
-        size += len(w) + 1
-        i = i * 31 + 7
-    return " ".join(words)
-
-
-def _expand_repeats(steps: list) -> list:
-    """A step with "repeat": N becomes N steps; "$i" counts from 1 and "pad" adds filler."""
-    out = []
-    for step in steps:
-        count = step.get("repeat")
-        if not count:
-            out.append(step)
-            continue
-        body = {k: v for k, v in step.items() if k not in ("repeat", "pad")}
-        for i in range(1, count + 1):
-            one = {**body, "say": body["say"].replace("$i", str(i))}
-            if step.get("pad"):
-                one["say"] = f"{one['say']}\n\n{filler(step['pad'], i * 101)}"
-            out.append(one)
+def contract_missing(source: str) -> list:
+    """Contract entries the daemon's source no longer holds. Fields may sit in a raw JSON string."""
+    out = [f"route {r}" for r in CONTRACT["routes"] if f'"{r}"' not in source]
+    for kind in ("form_fields", "json_fields"):
+        for name in CONTRACT[kind]:
+            if f'"{name}"' not in source and f'\\"{name}\\"' not in source and f'"{name}\\"' not in source:
+                out.append(f"{kind} {name}")
+    out += [f"text {t!r}" for t in CONTRACT["text"] if t not in source]
     return out
 
 
-def _validate_step(step: dict, where: str):
-    kinds = [k for k in STEP_KINDS if k in step]
-    if len(kinds) != 1:
-        raise PersonaError(f"{where}: a step needs exactly one of {STEP_KINDS}, got {kinds}")
-    if "say" in step and not step.get("expect"):
-        raise PersonaError(f"{where}: a turn with no expect proves nothing")
-    for item in step.get("expect", []):
-        if not isinstance(item, dict) or len(item) != 1:
-            raise PersonaError(f"{where}: an expect item is one name and one value: {item!r}")
-        name = next(iter(item))
-        if name not in ASSERTIONS:
-            raise PersonaError(f"{where}: unknown assertion {name!r}")
-
-
-def validate_persona(p: dict) -> dict:
-    """Refuse what would silently test nothing: no name, no scenario, no step, a bad check."""
-    name = p.get("name", "")
-    if not re.fullmatch(SAFE_NAME, name):
-        raise PersonaError(f"bad persona name {name!r}")
-    if not p.get("scenarios"):
-        raise PersonaError(f"{name}: no scenarios")
-    seen = set()
-    for sc in p["scenarios"]:
-        sid = sc.get("id", "")
-        if not re.fullmatch(SAFE_NAME, sid) or sid in seen:
-            raise PersonaError(f"{name}: scenario id bad or repeated: {sid!r}")
-        seen.add(sid)
-        if not sc.get("steps"):
-            raise PersonaError(f"{name}/{sid}: no steps")
-        sc["steps"] = _expand_repeats(sc["steps"])
-        for n, step in enumerate(sc["steps"]):
-            _validate_step(step, f"{name}/{sid}#{n}")
-    return p
-
-
-def load_personas(path: str) -> list:
-    """One persona, or {"vars": {...}, "matrix": [{...}], "persona": {...}} expanding to many."""
-    raw = json.loads(Path(path).read_text())
-    if "matrix" not in raw:
-        return [validate_persona(raw)]
-    if not raw["matrix"]:
-        raise PersonaError(f"{path}: empty matrix")
-    out = []
-    for row in raw["matrix"]:
-        values = {**raw.get("vars", {}), **row}
-        out.append(validate_persona(_substitute(raw["persona"], values, path)))
-    return out
+def contract_source(repo: Path) -> str:
+    """The daemon's source as one text, for contract_missing."""
+    parts = []
+    for pattern in CONTRACT_SOURCES:
+        for path in sorted(repo.glob(pattern)):
+            if path.name not in CONTRACT_SKIP:
+                parts.append(path.read_text(errors="replace"))
+    return "\n".join(parts)
 
 
 def read_env_file(path: str) -> dict:
@@ -183,6 +192,40 @@ class Scrubber:
         for v in self.values:
             text = text.replace(v, "[REDACTED]")
         return self.KEY_SHAPED.sub("[REDACTED]", text)
+
+
+class BudgetExhausted(RuntimeError):
+    """The run's own ceiling is reached: no further paid turn starts."""
+
+
+class RunLimits:
+    """Shared by every persona of a run: the spend ceiling and the per-provider turn gate."""
+
+    def __init__(self, max_cents: float = DEFAULT_MAX_CENTS, provider_limit: int = DEFAULT_PROVIDER_LIMIT):
+        self.max_cents, self.provider_limit = max_cents, max(1, provider_limit)
+        self.lock = threading.Lock()
+        self.spent = {"turns": 0.0, "judge": 0.0}
+        self.gates = {}
+
+    def add(self, cents: float, source: str = "turns"):
+        with self.lock:
+            self.spent[source] += cents
+
+    def total(self) -> float:
+        with self.lock:
+            return sum(self.spent.values())
+
+    def check(self):
+        if self.total() >= self.max_cents:
+            raise BudgetExhausted(f"run spend {self.total():.1f} cents reached --max-cents {self.max_cents}")
+
+    def turn_slot(self, provider: str):
+        with self.lock:
+            return self.gates.setdefault(provider, threading.BoundedSemaphore(self.provider_limit))
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            return {"max_cents": self.max_cents, **{f"{k}_cents": round(v, 2) for k, v in self.spent.items()}}
 
 
 # ---------------------------------------------------------------------- docker
@@ -307,19 +350,20 @@ def solid_png(rgb: tuple, size: int = 64) -> bytes:
 
 
 def tools_from_anatomy(anatomy: str) -> list:
-    """The tool calls of the last completed turn, read from /api/lastturn's tool-loop section.
+    """The tool calls of one completed turn, read from /api/lastturn's tool-loop section.
 
     The hosted episodic store keeps no tool_output rows, so the anatomy is the only trace. It
-    is one global slot: a synthesis turn overwrites it, so check a spawn by its side effects.
+    shows head-turn tools only, never a sub-agent's, and the daemon cuts each result short.
     """
     at = anatomy.find("===== 4.")
     if at < 0:
         return []
-    calls = re.findall(r"^\[tool\] (\S+) ?(.*)$", anatomy[at:], re.M)
-    results = re.findall(r"^\[result\] (\S+) ?(.*)$", anatomy[at:], re.M)
-    out = [{"name": name, "args": args[:400]} for name, args in calls]
-    for row, (_name, text) in zip(out, results):
-        row["result"] = text[:400]
+    section = anatomy[at:]
+    out = [{"name": name, "args": args[:400]} for name, args in re.findall(r"^\[tool\] (\S+) ?(.*)$", section, re.M)]
+    for name, text in re.findall(r"^\[result\] (\S+) ?(.*)$", section, re.M):
+        waiting = next((row for row in out if row["name"] == name and "result" not in row), None)
+        if waiting:
+            waiting["result"] = text[:400]
     return out
 
 
@@ -353,6 +397,7 @@ class Capture:
     def __init__(self, inst: Instance):
         self.inst = inst
         self.seq = self.seen_ids = self.log_lines = self.anatomy = self.usage = self.spent = None
+        self.turns_seen = []
         self.mark()
 
     def _episodic(self) -> list:
@@ -379,15 +424,23 @@ class Capture:
     def _log_delta(self) -> str:
         return "\n".join(overlap_tail(self.log_lines, self.inst.get("/api/log")[1].splitlines()))
 
+    def note_turn(self):
+        """/api/lastturn is one slot that a later turn overwrites: keep every turn seen in it."""
+        text = self.inst.get("/api/lastturn")[1]
+        if text != self.anatomy and text not in self.turns_seen:
+            self.turns_seen.append(text)
+
     def fill(self, rec: dict):
         rec["replies"], _ = self.replies()
         rows = [m for m in self._episodic() if m.get("id") not in self.seen_ids]
         rec["episodic"] = rows
         rec["log"] = self._log_delta()
         rec["spend_lines"] = spend_lines(rec["log"])
-        rec["lastturn"] = self.inst.get("/api/lastturn")[1]
-        # One global slot: unchanged means no turn completed, so there is no trace to read.
-        rec["tools"] = None if rec["lastturn"] == self.anatomy else tools_from_anatomy(rec["lastturn"])
+        self.note_turn()
+        rec["lastturn"] = self.turns_seen[-1] if self.turns_seen else self.anatomy
+        rec["lastturn_earlier"] = self.turns_seen[:-1]
+        # Nothing new in the slot means no turn completed, so there is no trace to read.
+        rec["tools"] = [t for a in self.turns_seen for t in tools_from_anatomy(a)] if self.turns_seen else None
         usage, spent = self._usage()
         rec["usage_delta"] = {k: usage[k] - self.usage.get(k, 0) for k in usage}
         rec["spent_cents_delta"] = spent - self.spent
@@ -438,13 +491,14 @@ def _await_step(inst: Instance, cap: Capture, step: dict, turn_id, rec: dict, de
             reply, rec["last_poll"] = _poll_turn(inst, turn_id)
             if reply is not None:
                 rec["reply_s"] = round(time.time() - rec["_started"], 1)
+        cap.note_turn()
         texts, busy = cap.replies()
         calm = quiet.update(texts, busy) >= quiet_s
         answered = reply is not None or bool(texts)
         if answered and calm and _settled(step, texts):
             break
         time.sleep(1)
-    rec["turn_resolved"] = reply is not None
+    rec["turn_resolved"] = None if turn_id is None else reply is not None
     rec["timed_out"] = time.time() >= deadline
     rec["reply"] = reply or ""
 
@@ -494,6 +548,16 @@ def run_upload(inst: Instance, step: dict, rec: dict):
     rec["http"] = {"status": status, "body": body}
 
 
+IMPLICIT_CHECKS = {"turn_sent", "turn_finished", "conversation_reset"}
+
+
+def _transient_failure(rec: dict) -> bool:
+    """The turn failed and the daemon logged a provider failure worth another try."""
+    text = "\n".join([rec.get("reply") or "", *rec.get("replies", [])])
+    failed = not text.strip() or ERROR_REPLY_RE.search(text) is not None
+    return failed and TRANSIENT_RE.search(rec.get("log", "")) is not None
+
+
 def _implicit_checks(rec: dict) -> list:
     """A turn that was never accepted, or ran out of time, fails whatever else it asked."""
     out = []
@@ -508,16 +572,27 @@ class Runner:
     """One persona on one container, start to teardown."""
 
     def __init__(self, persona: dict, backend, env_values: dict, evidence: Path, options=None):
-        self.p, self.backend, self.env_values = persona, backend, env_values
+        self.p, self.backend = persona, backend
+        self.env_values = {**env_values, **self._fake_keys()}
         options = options or {}
-        self.judge, self.keep = options.get("judge"), options.get("keep", False)
-        self.dir = evidence / persona["name"]
-        self.dir.mkdir(parents=True, exist_ok=True)
+        self.keep = options.get("keep", False)
+        self.limits = options.get("limits") or RunLimits()
+        self.retries = options.get("retries", DEFAULT_RETRIES)
+        self.backoff_s = options.get("backoff_s", RETRY_BACKOFF_S)
+        factory = options.get("judge_factory")
+        self.judge = factory(head_provider(persona)) if factory else None
+        self.dir = _fresh_dir(evidence / persona["name"])
         self.token = pysecrets.token_urlsafe(24)
         self.name = f"nimbusrig-{persona['name'].lower()}-{uuid.uuid4().hex[:6]}"
         self.scrub = Scrubber([self.token, *self._secret_values()])
         self.inst = None
+        self.counted_cents = 0
+        self.log_seen = []
         self.summary = {"persona": persona["name"], "started": _utc(), "scenarios": [], "config": []}
+
+    def _fake_keys(self) -> dict:
+        """A key name starting RIG_FAKE_ is made up here: a key the provider will refuse, with no secret."""
+        return {n: pysecrets.token_hex(16) for n in self.p.get("keys", {}).values() if n.startswith(FAKE_KEY_PREFIX)}
 
     def _secret_values(self) -> list:
         names = [*self.p.get("keys", {}).values(), *self.p.get("instance_env_keys", [])]
@@ -558,14 +633,7 @@ class Runner:
         """The web app's own posts, one at a time so a refusal names one setting."""
         p, forms = self.p, []
         for slug, key_env in p.get("keys", {}).items():
-            field = {
-                "openai": "oaiKey",
-                "anthropic": "antKey",
-                "mistral": "mistKey",
-                "zai": "zaiKey",
-                "cumulo": "cumuloKey",
-            }[slug]
-            forms.append((f"key {slug}", "/api/orch", {field: self.env_values.get(key_env, "")}))
+            forms.append((f"key {slug}", "/api/orch", {KEY_FIELDS[slug]: self.env_values.get(key_env, "")}))
         models = p.get("models", {})
         for slug, model in models.get("head", {}).items():
             forms.append((f"head model {slug}", "/api/orch", {f"orchM_{slug}": model}))
@@ -575,8 +643,8 @@ class Runner:
             forms.append(("primary provider", "/api/orch", {"orchHost": p["host"]}))
         if p.get("directive"):
             forms.append(("directive", "/api/orch", {"sysPrompt": p["directive"]}))
-        if "monthly_cap_cents" in p:
-            forms.append(("monthly ceiling", "/api/orch", {"spendCeil": str(p["monthly_cap_cents"])}))
+        cap = p.get("monthly_cap_cents", DEFAULT_CAP_CENTS)
+        forms.append(("monthly ceiling", "/api/orch", {"spendCeil": str(cap)}))
         if p.get("timezone"):
             forms.append(("time zone", "/api/config", {"devTz": p["timezone"]}))
         if p.get("display_name"):
@@ -593,12 +661,12 @@ class Runner:
         for label, path, form in self._config_forms():
             status = self._config_call(label, path, form)
             ok = ok and 200 <= status < 300
-            time.sleep(0.2)
+            time.sleep(CONFIG_PAUSE_S)
         self._write("config.json", json.dumps(self.summary["config"], indent=1))
         return ok
 
     def wait_verified(self, timeout_s: float = 60):
-        """A saved key verifies in the background. A rejected or unchecked key stops the persona."""
+        """A saved key verifies in the background. The verdict must be the one the persona expects."""
         slugs = list(self.p.get("keys", {}))
         end = time.time() + timeout_s
         provs = {}
@@ -608,9 +676,52 @@ class Runner:
                 break
             time.sleep(1)
         self._write("orch-after-config.json", self.inst.call("GET", "/api/orch")[1])
-        unverified = [s for s in slugs if provs.get(s, {}).get("verify") != 1]
-        if unverified:
-            raise RuntimeError(f"key not verified for: {', '.join(unverified)}")
+        wanted = self.p.get("key_expect", {})
+        wrong = {s: key_verdict(provs.get(s, {})) for s in slugs}
+        wrong = {s: v for s, v in wrong.items() if v != wanted.get(s, "verified")}
+        if wrong:
+            raise RuntimeError(f"key verdict not as expected: {wrong}")
+
+    def _readback_rows(self) -> list:
+        """(setting, what the persona asked for, what the instance now reports)."""
+        p = self.p
+        orch = self.inst.get_json_strict("/api/orch")
+        provs = orch.get("providers", {})
+        rows = []
+        for role, field in (("head", "orchModel"), ("sub", "subModel")):
+            for slug, model in p.get("models", {}).get(role, {}).items():
+                rows.append((f"{role} model {slug}", model, provs.get(slug, {}).get(field)))
+        if p.get("host"):
+            rows.append(("primary provider", p["host"], orch.get("orchHost")))
+        if p.get("directive"):
+            rows.append(("directive", p["directive"], orch.get("directive")))
+        cap = p.get("monthly_cap_cents", DEFAULT_CAP_CENTS)
+        rows.append(("monthly ceiling", cap, orch.get("usage", {}).get("ceiling", {}).get("limitCents")))
+        return rows + self._readback_identity()
+
+    def _readback_identity(self) -> list:
+        p, rows = self.p, []
+        cfg = self.inst.get_json_strict("/api/config")
+        if p.get("timezone"):
+            rows.append(("time zone", p["timezone"], cfg.get("devTz")))
+        if p.get("display_name"):
+            rows.append(("name", p["display_name"], cfg.get("devName")))
+        if p.get("members"):
+            allowed = {str(m.get("id")) for m in self.inst.get_json_strict("/api/telegram").get("allow", [])}
+            roles = {str(t.get("id")): t.get("role") for t in self.inst.get_json_strict("/api/tenant").get("tenants", [])}
+            for m in p["members"]:
+                rows.append((f"member {m['chat']}", m["chat"], m["chat"] if m["chat"] in allowed else None))
+                if m.get("role"):
+                    rows.append((f"member role {m['chat']}", m["role"], roles.get(m["chat"])))
+        return rows
+
+    def assert_config(self):
+        """Read every setting back. A saved answer is not the same as a setting that took."""
+        rows = self._readback_rows()
+        self.summary["config_readback"] = [{"setting": s, "want": w, "got": g} for s, w, g in rows]
+        wrong = [f"{s}: wanted {w!r}, instance reports {g!r}" for s, w, g in rows if w != g]
+        if wrong:
+            raise RuntimeError("settings did not apply: " + "; ".join(wrong))
 
     def _judge_step(self, step: dict, rec: dict):
         if not self.judge or "say" not in step or not step.get("judge", True):
@@ -622,73 +733,181 @@ class Runner:
             rec["judge"] = self.judge(step["say"][:1500], rec.get("reply", ""), f"tools: {tools}", oracle)
         except Exception as e:  # a soft signal never fails a step
             rec["judge"] = {"rationale": f"judge unavailable: {type(e).__name__}"}
+        self.limits.add(judge_cents(rec["judge"]), "judge")
+
+    def _say(self, step: dict, rec: dict):
+        """One turn, and again after a backoff when the provider itself failed. Every try is kept."""
+        self.limits.check()
+        tries = []
+        with self.limits.turn_slot(head_provider(self.p)):
+            for attempt in range(self.retries + 1):
+                one = {k: rec[k] for k in ("step", "at")}
+                run_say(self.inst, step, one)
+                if attempt == self.retries or not _transient_failure(one):
+                    break
+                tries.append(one)
+                time.sleep(self.backoff_s * (attempt + 1))
+        rec.update(one)
+        if tries:
+            rec["earlier_tries"] = tries
+
+    def _restart(self):
+        self._sync_turn_log()
+        port = self.backend.restart(self.name)
+        self.inst = Instance(f"http://127.0.0.1:{port}", self.token)
+        self.inst.wait_ready()
+        self.log_seen = []
+        self._append_turn_log([f"[rig {_utc()}] container restarted: the daemon's log starts again here"])
+
+    def _append_turn_log(self, lines: list):
+        path = self.dir / "turn-log.txt"
+        with path.open("a") as f:
+            f.write(self.scrub("\n".join(lines)) + "\n")
+
+    def _sync_turn_log(self):
+        """/api/log is an in-memory tail that a restart empties, so the rig keeps the whole life on disk."""
+        lines = self.inst.get("/api/log")[1].splitlines()
+        new = overlap_tail(self.log_seen, lines)
+        if self.log_seen and lines and len(new) == len(lines):
+            new = [f"[rig {_utc()}] the daemon's log tail wrapped: lines may be missing here", *new]
+        if new:
+            self._append_turn_log(new)
+        self.log_seen = lines
 
     def _run_step(self, step: dict) -> dict:
         rec = {"step": {k: v for k, v in step.items() if k != "expect"}, "at": _utc()}
         if "say" in step:
-            run_say(self.inst, step, rec)
+            self._say(step, rec)
         elif "http" in step:
             run_http(self.inst, step, rec)
         elif "upload" in step:
             run_upload(self.inst, step, rec)
         elif "restart" in step:
-            port = self.backend.restart(self.name)
-            self.inst = Instance(f"http://127.0.0.1:{port}", self.token)
-            self.inst.wait_ready()
+            self._restart()
         else:
             time.sleep(step["sleep"])
         rec["checks"] = _implicit_checks(rec) + grade_step(rec, step.get("expect", []), self.inst)
         self._judge_step(step, rec)
+        self._sync_turn_log()
+        delta = rec.get("spent_cents_delta", 0)
+        self.limits.add(delta)
+        self.counted_cents += delta
         return rec
 
-    def run_scenario(self, sc: dict) -> dict:
-        out = {"id": sc["id"], "steps": len(sc["steps"]), "failed": [], "tokens_in": 0, "tokens_out": 0, "cents": 0}
+    def _reset_conversation(self, sc: dict, out: dict):
+        """Scenarios share an instance, not a conversation: the page's Clear before each one."""
+        self._wait_idle()
+        status, body = self.inst.call("POST", "/api/orch", form={"clearConv": "1"})
+        self._write(f"{sc['id']}/reset.json", json.dumps({"at": _utc(), "status": status, "body": body}))
+        if not 200 <= status < 300:
+            out["failed"].append(
+                {"step": -1, "check": "conversation_reset", "arg": True, "pass": False, "seen": f"answered {status}"}
+            )
+
+    def _wait_idle(self, timeout_s: float = 90):
+        """A sub-agent still running from the last scenario would answer into the next one."""
+        end = time.time() + timeout_s
+        while time.time() < end:
+            state = self.inst.get_json("/api/replies?after=0")
+            if not state.get("turnInFlight"):
+                return
+            time.sleep(1)
+
+    def _classify(self, sc: dict, n: int, rec: dict, out: dict):
+        """A marked failure is the known defect still there. A marked pass means it is gone: say so."""
+        for raw in rec["checks"]:
+            row = {"step": n, **self._scrubbed(raw)}
+            defect = raw.get("known_defect") or ("" if raw["check"] in IMPLICIT_CHECKS else sc.get("known_defect", ""))
+            if not raw["pass"] and defect:
+                out["known_failures"].append({**row, "known_defect": defect})
+            elif not raw["pass"]:
+                out["failed"].append(row)
+            elif raw.get("known_defect") and not raw.get("may_pass"):
+                out["xpass"].append(row)
+
+    def run_scenario(self, sc: dict, first: bool = True) -> dict:
+        out = {"id": sc["id"], "steps": len(sc["steps"]), "failed": [], "known_failures": [], "xpass": []}
+        out.update(tokens_in=0, tokens_out=0, cents=0, isolated=False)
+        if not first and not sc.get("continue_conversation"):
+            self._reset_conversation(sc, out)
+            out["isolated"] = True
+        verdicts = []
         for n, step in enumerate(sc["steps"]):
             rec = self._run_step(step)
             self._write(f"{sc['id']}/step-{n:02d}.json", json.dumps(rec, indent=1, ensure_ascii=False))
             out["tokens_in"] += rec.get("usage_delta", {}).get("in", 0)
             out["tokens_out"] += rec.get("usage_delta", {}).get("out", 0)
             out["cents"] += rec.get("spent_cents_delta", 0)
-            out["failed"] += [{"step": n, **self._scrubbed(c)} for c in rec["checks"] if not c["pass"]]
-        out["pass"] = not out["failed"]
+            self._classify(sc, n, rec, out)
+            if rec.get("judge"):
+                verdicts.append((n, rec["judge"]))
+        if sc.get("known_defect") and not sc.get("may_pass") and not out["known_failures"]:
+            out["xpass"].append({"step": -1, "check": "scenario", "known_defect": sc["known_defect"]})
+        out["pass"] = not out["failed"] and not out["xpass"]
+        out["verdict"] = _scenario_verdict(out)
+        if verdicts:
+            out["judge"] = judge_summary(verdicts, head_provider(self.p))
         return out
 
     def _scrubbed(self, check: dict) -> dict:
         return json.loads(self.scrub(json.dumps(check)))
 
+    def _run_scenarios(self, configured: bool, only):
+        wanted = with_needs(self.p["scenarios"], only)
+        first = True
+        for sc in self.p["scenarios"]:
+            if not configured:
+                self.summary["scenarios"].append({"id": sc["id"], "pass": False, "failed": [{"check": "configure"}]})
+            elif wanted is None or sc["id"] in wanted:
+                self.summary["scenarios"].append(self.run_scenario(sc, first))
+                first = False
+
     def run(self, only=None) -> dict:
         try:
+            self.limits.check()
             self._require_keys()
             self.start()
             configured = self.configure()
             self.wait_verified()
             self.summary["configured"] = configured
-            for sc in self.p["scenarios"]:
-                if not configured:
-                    self.summary["scenarios"].append(
-                        {"id": sc["id"], "pass": False, "failed": [{"check": "configure"}]}
-                    )
-                elif not only or sc["id"] in only:
-                    self.summary["scenarios"].append(self.run_scenario(sc))
+            if configured:
+                self.assert_config()
+            self._run_scenarios(configured, only)
         except Exception as e:  # the record must say what stopped the persona
             self.summary["error"] = self.scrub(f"{type(e).__name__}: {e}")
         finally:
             self._finish()
         return self.summary
 
+    def _spend_summary(self):
+        """Provider-reported tokens from the whole turn log, and spend after the last step (late sub-agents)."""
+        path = self.dir / "turn-log.txt"
+        log = path.read_text() if path.exists() else ""
+        self.summary["provider_usage"] = provider_usage(spend_lines(log))
+        total = self.inst.get_json("/api/state").get("spend", {}).get("spentCents", self.counted_cents)
+        self.limits.add(max(0, total - self.counted_cents))
+        self.summary["ledger_cents"] = total
+
     def _record_end(self):
         self.summary["finished"] = _utc()
         ran = self.summary["scenarios"]
         self.summary["pass"] = "error" not in self.summary and bool(ran) and all(s.get("pass") for s in ran)
+        self.summary["known_defects"] = sorted({f["known_defect"] for s in ran for f in s.get("known_failures", [])})
+        judged = [s["judge"] for s in ran if s.get("judge")]
+        if judged:
+            self.summary["judge"] = merge_judges(judged)
         self._write("summary.json", json.dumps(self.summary, indent=1, ensure_ascii=False))
 
     def _finish(self):
         """The verdict is on disk first, and the container always goes last (it holds real keys)."""
         self._record_end()
         try:
-            self._write("container.log", self.backend.logs(self.name))
             if self.inst:
+                self._sync_turn_log()
+                self._spend_summary()
+                self._write("summary.json", json.dumps(self.summary, indent=1, ensure_ascii=False))
                 self._write("api-log.txt", self.inst.get("/api/log")[1])
+            self._write("container.log", self.backend.logs(self.name))
         except Exception as e:  # lost logs must not leave a keyed container running
             self.summary["pass"] = False
             self.summary["error"] = self.scrub(f"logs: {type(e).__name__}: {e}")
@@ -702,8 +921,109 @@ def _utc() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _fresh_dir(path: Path) -> Path:
+    """A rerun never mixes with an older run: stale step files would read as this run's evidence."""
+    if path.exists() and any(path.iterdir()):
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
+        shutil.move(str(path), f"{path}.prev-{stamp}-{uuid.uuid4().hex[:4]}")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def head_provider(p: dict) -> str:
+    """The provider a persona's head runs on: its host, else its first key."""
+    return p.get("host") or next(iter(p.get("keys", {})), "none")
+
+
+def key_verdict(pv: dict) -> str:
+    """What /api/orch says of a key (nimbusd/src/provider_verify.h)."""
+    if not pv.get("vts"):
+        return "unchecked"
+    if pv.get("verify") == 1:
+        return "verified"
+    if pv.get("verify") == 0:
+        return "rejected"
+    return pv.get("vfyReason") or "unverifiable"
+
+
+def with_needs(scenarios: list, only):
+    """The scenarios to run: --only plus what they build on. A fresh instance holds no earlier state."""
+    if not only:
+        return None
+    by_id = {sc["id"]: sc for sc in scenarios}
+    wanted, todo = set(), [i for i in only if i in by_id]
+    while todo:
+        sid = todo.pop()
+        if sid not in wanted:
+            wanted.add(sid)
+            todo += by_id[sid].get("needs", [])
+    return wanted
+
+
+def _scenario_verdict(out: dict) -> str:
+    if not out["pass"]:
+        return "fail"
+    return "known_defect" if out["known_failures"] else "pass"
+
+
+def provider_usage(rows: list) -> dict:
+    out = {}
+    for row in rows:
+        one = out.setdefault(row["provider"], {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0, "calls": 0})
+        for k in ("in", "out", "cache_read", "cache_write"):
+            one[k] += row[k]
+        one["calls"] += 1
+    return out
+
+
+def judge_cents(verdict) -> float:
+    """From the usage the judge's provider reported; a fixed high figure when there is none."""
+    if not isinstance(verdict, dict) or "judge_model" not in verdict:
+        return 0
+    if verdict.get("satisfied") is None and verdict.get("score") is None:
+        return 0  # the call failed: nothing was billed
+    usage = verdict.get("judge_usage") or {}
+    tokens_in = usage.get("input_tokens")
+    tokens_out = usage.get("output_tokens")
+    if tokens_in is None or tokens_out is None:
+        return JUDGE_FALLBACK_CENTS
+    price_in, price_out = JUDGE_PRICES.get(verdict["judge_model"], max(JUDGE_PRICES.values()))
+    return (tokens_in * price_in + tokens_out * price_out) / 1e6
+
+
+def judge_summary(verdicts: list, head: str) -> dict:
+    """What summary.json says of the judge: who judged, whether independently, what it flagged."""
+    usable = [v for _n, v in verdicts if v.get("score") is not None]
+    providers = sorted({v.get("judge_provider", "") for _n, v in verdicts} - {""})
+    return {
+        "provider": providers,
+        "model": sorted({v.get("judge_model", "") for _n, v in verdicts} - {""}),
+        "independent": bool(providers) and head not in providers,
+        "steps": len(verdicts),
+        "unavailable": len(verdicts) - len(usable),
+        "min_score": min((v["score"] for v in usable), default=None),
+        "dishonest_steps": [n for n, v in verdicts if v.get("honest") is False],
+        "unsatisfied_steps": [n for n, v in verdicts if v.get("satisfied") is False],
+        "cents": round(sum(judge_cents(v) for _n, v in verdicts), 3),
+    }
+
+
+def merge_judges(rows: list) -> dict:
+    scores = [r["min_score"] for r in rows if r["min_score"] is not None]
+    return {
+        "provider": sorted({p for r in rows for p in r["provider"]}),
+        "independent": all(r["independent"] for r in rows),
+        "steps": sum(r["steps"] for r in rows),
+        "unavailable": sum(r["unavailable"] for r in rows),
+        "min_score": min(scores, default=None),
+        "dishonest": sum(len(r["dishonest_steps"]) for r in rows),
+        "unsatisfied": sum(len(r["unsatisfied_steps"]) for r in rows),
+        "cents": round(sum(r["cents"] for r in rows), 3),
+    }
+
+
 def make_judge_from_env(env_values: dict, avoid: str = ""):
-    """The independent judge from tests/hil/qa_judge.py. Needs requests and a key; raises otherwise."""
+    """The independent judge from tests/hil/qa_judge.py, on a provider other than `avoid` when one has a key."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "hil"))
     from qa_judge import make_judge
 
@@ -726,22 +1046,39 @@ def _check_run(personas: list, only) -> None:
         raise PersonaError(f"--only names no scenario: {sorted(unknown)}")
 
 
+def _finished_summary(evidence: Path, p: dict, only):
+    """--resume: an earlier run's summary, when it finished this persona with nothing left to run.
+
+    Resume works per persona. A scenario cannot pick up on a fresh instance without what the
+    ones before it built, so a persona that stopped part way runs again from its start.
+    """
+    path = evidence / p["name"] / "summary.json"
+    if not path.exists():
+        return None
+    summary = json.loads(path.read_text())
+    ran = {s.get("id") for s in summary.get("scenarios", [])}
+    wanted = with_needs(p["scenarios"], only) or {sc["id"] for sc in p["scenarios"]}
+    return summary if "finished" in summary and "error" not in summary and wanted <= ran else None
+
+
 def run_all(personas: list, backend, env_values: dict, evidence: Path, options=None) -> list:
-    """options: parallel (default 1), judge, only (scenario ids), keep."""
-    options = options or {}
+    """options: parallel (default 1), judge_factory, only (scenario ids), keep, limits, retries, resume."""
+    options = {"limits": RunLimits(), **(options or {})}
     _check_run(personas, options.get("only"))
     lock = threading.Lock()
     results = []
 
     def one(p):
+        done = _finished_summary(evidence, p, options.get("only")) if options.get("resume") else None
         try:
-            summary = Runner(p, backend, env_values, evidence, options).run(options.get("only"))
+            summary = done or Runner(p, backend, env_values, evidence, options).run(options.get("only"))
         except Exception as e:  # one persona's crash must not lose the others' results
             summary = {"persona": p["name"], "pass": False, "scenarios": [], "error": f"{type(e).__name__}: {e}"}
         with lock:
             results.append(summary)
             verdict = "PASS" if summary["pass"] else "FAIL"
-            print(f"{verdict} {p['name']}", flush=True)
+            known = len(summary.get("known_defects", []))
+            print(f"{verdict} {p['name']}{' (resumed)' if done else ''}{f' known defects: {known}' if known else ''}", flush=True)
 
     with ThreadPoolExecutor(max_workers=max(1, options.get("parallel", 1))) as pool:
         list(pool.map(one, personas))
@@ -749,14 +1086,35 @@ def run_all(personas: list, backend, env_values: dict, evidence: Path, options=N
 
 
 def run_and_write(personas: list, backend, env_values: dict, evidence: Path, options=None) -> int:
-    """The whole run, its scrubbed run-summary.json, and the exit code."""
+    """The whole run, its scrubbed run-summary.json and run-totals.json, and the exit code."""
+    options = {"limits": RunLimits(), **(options or {})}
     results = run_all(personas, backend, env_values, evidence, options)
     scrub = Scrubber(env_values.values())
     (evidence / "run-summary.json").write_text(scrub(json.dumps(results, indent=1, ensure_ascii=False)))
+    totals = {
+        **options["limits"].snapshot(),
+        "personas": len(results),
+        "passed": sum(1 for r in results if r["pass"]),
+        "known_defects": sorted({d for r in results for d in r.get("known_defects", [])}),
+    }
+    (evidence / "run-totals.json").write_text(json.dumps(totals, indent=1))
     return 0 if results and all(r["pass"] for r in results) else 1
 
 
-def main(argv=None) -> int:
+def regrade(evidence: Path, out=sys.stdout) -> int:
+    """Re-grade every stored step with today's graders. Exit 1 when a stored verdict would change."""
+    flips = checked = 0
+    for path in sorted(evidence.rglob("step-*.json")):
+        rec = json.loads(path.read_text())
+        checked += 1
+        for check, stored, now in regrade_step(rec):
+            flips += 1
+            print(f"{path.relative_to(evidence)} {check}: stored {stored}, now {now}", file=out)
+    print(f"regrade: {checked} steps, {flips} verdicts would change", file=out)
+    return 1 if flips else 0
+
+
+def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     run = sub.add_parser("run")
@@ -769,17 +1127,40 @@ def main(argv=None) -> int:
     run.add_argument("--only", default="")
     run.add_argument("--names", default="", help="comma list: run only these persona names")
     run.add_argument("--keep", action="store_true", help="leave containers and volumes for inspection")
-    a = ap.parse_args(argv)
-    personas = [p for path in a.persona for p in load_personas(path)]
+    run.add_argument("--max-cents", type=float, default=DEFAULT_MAX_CENTS, help="stop paid turns at this run total")
+    run.add_argument("--provider-limit", type=int, default=DEFAULT_PROVIDER_LIMIT, help="turns at once per provider")
+    run.add_argument("--retries", type=int, default=DEFAULT_RETRIES, help="more tries on a provider's 429 or 5xx")
+    run.add_argument("--resume", action="store_true", help="skip personas this evidence dir already finished")
+    grade_cmd = sub.add_parser("regrade")
+    grade_cmd.add_argument("--evidence", required=True)
+    return ap
+
+
+def _judge_factory(env_values: dict):
+    make_judge_from_env(env_values)  # no key at all stops the run here, not after containers start
+    return lambda avoid: make_judge_from_env(env_values, avoid)
+
+
+def main(argv=None) -> int:
+    a = _parser().parse_args(argv)
+    if a.cmd == "regrade":
+        return regrade(Path(a.evidence))
+    evidence = Path(a.evidence)
+    evidence.mkdir(parents=True, exist_ok=True)
+    personas = [p for path in a.persona for p in load_personas(path, evidence / "truth")]
     if a.names:
         wanted = set(a.names.split(","))
         personas = [p for p in personas if p["name"] in wanted]
     env_values = read_env_file(a.env_file)
-    judge = make_judge_from_env(env_values) if a.judge else None
-    evidence = Path(a.evidence)
-    evidence.mkdir(parents=True, exist_ok=True)
-    only = set(a.only.split(",")) if a.only else None
-    options = {"parallel": a.parallel, "judge": judge, "only": only, "keep": a.keep}
+    options = {
+        "parallel": a.parallel,
+        "judge_factory": _judge_factory(env_values) if a.judge else None,
+        "only": set(a.only.split(",")) if a.only else None,
+        "keep": a.keep,
+        "limits": RunLimits(a.max_cents, a.provider_limit),
+        "retries": a.retries,
+        "resume": a.resume,
+    }
     return run_and_write(personas, DockerBackend(a.image), env_values, evidence, options)
 
 
