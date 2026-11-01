@@ -49,11 +49,18 @@ struct HeadPause {
 std::string headPauseNote(const std::string& label, const HeadPause& p);
 // Is anything holding the provider off?
 bool pauseHolds(const HeadPause& p);
-// What holds `provider` off on `seam` now: the pause switch and a refusal park that covers
-// that seam (ProviderPark snapshot). The head guard and [THIS TURN RUNS ON] read Chat; the
-// catalog, spawn lines, web routes, [SPAWN CAPACITY] and the PDF route read Spawn, with
-// `dueIsOpen` (a park whose re-check is due is open: the next request is that re-check, so
-// the turn that makes it never reads its provider as PAUSED). The caller adds overBudget.
+// What `park` holds `provider` off for on `seam` now: the pause switch's causes and a refusal
+// park that covers that seam, with its HTTP status (a 403 on another seam only is no hold here).
+// It reads a snapshot, so it never takes the re-check request a seam may be due. With `dueIsOpen`
+// a park whose re-check is due is open: the next request is that re-check, so the turn that makes
+// it never reads its provider as PAUSED. `overBudget` is left false: the monthly budget check is
+// the caller's (the device's store, the engine's budget hook). The one reader: the device asks
+// it through parkPause, host tests pass their own park.
+HeadPause headPauseIn(ProviderPark& park, const std::string& provider, PaidSeam seam, uint32_t nowMs,
+                      bool dueIsOpen);
+// headPauseIn on the process-wide park. The head guard and [THIS TURN RUNS ON] read Chat; the
+// catalog, spawn lines, web routes, [SPAWN CAPACITY] and the PDF route read Spawn with
+// `dueIsOpen`. The caller adds overBudget.
 HeadPause parkPause(const std::string& provider, PaidSeam seam, uint32_t nowMs, bool dueIsOpen);
 // The same fact for the model (the per-turn line): "Anthropic, the chosen head, is paused by the
 // owner's monthly limit and returns automatically when it lifts." "" when nothing holds it off.

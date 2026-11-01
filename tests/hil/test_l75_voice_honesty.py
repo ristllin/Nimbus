@@ -5,7 +5,10 @@ nothing". Lane VOICE made ``reply.telegram`` voice:true honest. The review found
 in the end-of-turn ``tts`` device action, which reported "spoken" and wrote history whether the
 speaker played, played silence (volume 0), failed, or Telegram refused the fallback, and which cut
 text at 400 BYTES, possibly inside a character, without a word. The owner's "What model are you
-running?" (25 Oct) was answered from a prompt that named the raw pinned or first-priority host.
+running?" (25 Oct) was answered from a prompt that named the raw pinned or first-priority host;
+since v4.6.1 each request's input opens with "[THIS TURN RUNS ON] <host> / <model>" for the host
+that request goes to (plus why the chosen head is not running, when it is not), and the cached
+prompt names no model. The I legs check that line on /api/lastturn and the answer built on it.
 
 Legs (the head is the LAN mock unless noted, so the replies are fixed and cost nothing):
 
@@ -24,13 +27,14 @@ Legs (the head is the LAN mock unless noted, so the replies are fixed and cost n
       message with a receipt backs "read it aloud").
   T5  the same fallback to a chat Telegram does not know: ``tts(not-spoken: ...)`` with the
       refusal, and the reply is corrected.
-  I1  "What model are you running?" with the pinned host lacking a key: the answer names the
-      host and model the turn really ran on (the old prompt named the pin).
+  I1  "What model are you running?" with the pinned host lacking a key: the turn's per-turn line
+      names the host it really ran on, and the answer names that model (the concrete id the line
+      carries, or the alias it was asked for), never the pin's.
   I2  the same question right after a provider failover (the head answered 529 once, then
-      recovered): exact.
-  I3  the same question while the head is closed for credit (parked): the open host that
-      answers is named; the closed head may be mentioned only as the chosen head that is not
-      running (the prompt tells the model it returns by itself).
+      recovered): the line and the answer name the host that ran.
+  I3  the same question while the head is closed for credit (parked): the line names the open
+      host that answers and says the chosen head is out of credit; the answer names that model,
+      and the closed head may be mentioned only as the chosen head that is not running.
 
 Conditions: unit L or unit A in Orchestrator mode with the test console image, the LAN mock
 (``custom_backend``), the DEDICATED test bot for T4/T5 (the ``bench`` fixture takes the bench's
@@ -94,6 +98,39 @@ def normalized(text: str) -> str:
 def names_model(reply: str, model: str) -> bool:
     """The reply names the model: its id, or its words (the model may say 'GPT 5.6 Luna')."""
     return bool(model) and normalized(model) in normalized(reply)
+
+
+# The per-turn line a request's input opens with (served_model.h runsOnLine), as /api/lastturn
+# shows the input the turn's last request sent. The model id may hold dots ("gpt-5.6-luna"), so its
+# closing dot is the one followed by a space or the end of the line.
+RUNS_ON_RE = re.compile(
+    r"^\[THIS TURN RUNS ON\] (?P<host>[\w.-]+) / (?P<model>\S+?)(?: \(asked for (?P<asked>\S+?)\))?\.(?= |$)"
+    r"(?P<rest>.*)$",
+    re.M,
+)
+LASTTURN_HOST_RE = re.compile(r"^host: (\S+)$", re.M)
+
+
+def runs_on(page: str) -> dict:
+    """The per-turn line of a /api/lastturn page: its host, its model (the concrete id when the
+    device knows one), the model asked for (the same when they do not differ) and the chosen-head
+    fact ("" when the chosen head ran the turn). {} when the page holds no line."""
+    m = RUNS_ON_RE.search(page)
+    if not m:
+        return {}
+    rest = m.group("rest")
+    cut = rest.find(" When asked which model you run")
+    return {
+        "host": m.group("host"),
+        "model": m.group("model"),
+        "asked": m.group("asked") or m.group("model"),
+        "fact": (rest[:cut] if cut >= 0 else rest).strip(),
+    }
+
+
+def names_line_model(reply: str, line: dict) -> bool:
+    """The reply names the model the line gave: the concrete id or the alias it was asked for."""
+    return bool(line) and (names_model(reply, line["model"]) or names_model(reply, line["asked"]))
 
 
 DETOUR_RE = re.compile(
@@ -444,6 +481,19 @@ def _providers(be) -> dict:
     return be.orch().get("providers") or {}
 
 
+def _ran_line(be, ran: str) -> dict:
+    """The per-turn line of the turn that just ran on `ran`, from /api/lastturn (a single global
+    slot: its header must name the same host, or another turn wrote it since)."""
+    page = be.net.get("/api/lastturn", ip=be.ip, timeout=10.0).text
+    head = LASTTURN_HOST_RE.search(page)
+    assert head and head.group(1) == ran, f"/api/lastturn is another turn's (host {head and head.group(1)!r})"
+    line = runs_on(page)
+    print(f"[live line] {line}")
+    assert line, "the turn's input carries no [THIS TURN RUNS ON] line"
+    assert line["host"] == ran, f"the line names {line['host']!r}, the turn ran on {ran!r}"
+    return line
+
+
 @pytest.fixture
 def live_head(custom_backend):  # noqa: F811
     """The unit's own head (not the mock): the pin and the cheap models restored afterwards."""
@@ -473,9 +523,11 @@ def test_i1_the_answer_names_the_host_the_turn_ran_on_not_the_pin(live_head):
     reply, log = _live_turn(be, ASK_MODEL)
     ran = ran_host(log)
     assert ran and ran != pin, f"the turn did not run on a keyed host: host={ran!r} pin={pin!r}; {log[-8:]}"
+    line = _ran_line(be, ran)
     real = str(provs[ran].get("orchModel") or "")
+    assert line["asked"] == real, f"the line names {line['asked']!r}, {ran} is set to {real!r}"
     pinned_model = str(provs[pin].get("orchModel") or "")
-    assert names_model(reply, real), f"the reply does not name the model that ran ({ran} / {real}): {reply!r}"
+    assert names_line_model(reply, line), f"the reply does not name the model that ran ({line}): {reply!r}"
     assert not names_model(reply, pinned_model) or normalized(pinned_model) in normalized(real), (
         f"the reply names the keyless pin's model {pinned_model!r}: {reply!r}"
     )
@@ -499,11 +551,12 @@ def test_i2_the_answer_after_a_failover_is_exact(live_head):
     )
     reply, log = _live_turn(be, ASK_MODEL)
     ran = ran_host(log)
-    real = str(provs[ran or head].get("orchModel") or "")
-    assert names_model(reply, real), (
-        f"after a failover the reply does not name the model that ran ({ran} / {real}): {reply!r}"
+    assert ran, f"no turn end line; log: {log[-8:]}"
+    line = _ran_line(be, ran)
+    assert names_line_model(reply, line), (
+        f"after a failover the reply does not name the model that ran ({line}): {reply!r}"
     )
-    print(f"[I2] PASS failover turn: {first!r}; then ran={ran}/{real}; reply {reply!r}")
+    print(f"[I2] PASS failover turn: {first!r}; then ran={ran} line={line}; reply {reply!r}")
 
 
 def test_i3_the_answer_names_the_open_host_while_the_head_is_closed(live_head):
@@ -519,13 +572,17 @@ def test_i3_the_answer_names_the_open_host_while_the_head_is_closed(live_head):
         reply, log = _live_turn(be, ASK_MODEL)
         alt = parked_start(log)
         assert alt, f"the turn did not start past the parked head; log: {log[-12:]}"
-        real = str(provs[alt].get("orchModel") or "")
-        assert names_model(reply, real), f"the reply does not name the open host's model ({alt} / {real}): {reply!r}"
+        line = _ran_line(be, ran_host(log) or alt)
+        assert line["host"] == alt, f"the line names {line['host']!r}, the turn started on {alt!r}"
+        assert "the chosen head" in line["fact"] and "out of credit" in line["fact"], (
+            f"the line does not say why the chosen head is not running: {line}"
+        )
+        assert names_line_model(reply, line), f"the reply does not name the open host's model ({line}): {reply!r}"
         head_model = str(provs["anthropic"].get("orchModel") or "")
-        assert closed_head_named_honestly(reply, head_model, real), (
+        assert closed_head_named_honestly(reply, head_model, line["model"]), (
             f"the reply names the closed head as running: {reply!r}"
         )
-        print(f"[I3] PASS head closed, ran on {alt}/{real}; reply {reply!r}")
+        print(f"[I3] PASS head closed, ran on {alt} line={line}; reply {reply!r}")
     finally:
         be.device.cmd("PROVFAULT off", expect="PROVFAULT", timeout=5.0)
         # a park is kept on flash (it survives a restart): end it, or the next leg finds the head closed

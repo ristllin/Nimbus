@@ -20,11 +20,13 @@ from test_l75_voice_honesty import (
     SPOKEN_LINE,
     TG_FALLBACK_RE,
     VOLUME_ZERO,
+    names_line_model,
     names_model,
     new_lines,
     normalized,
     parked_start,
     ran_host,
+    runs_on,
     valid_utf8_prefix,
 )
 
@@ -51,6 +53,35 @@ def test_model_names_meet_across_spellings():
     assert names_model("GPT 5.6 Luna, from OpenAI.", "gpt-5.6-luna")
     assert not names_model("I'm running on OpenAI.", "claude-haiku-5-5")
     assert not names_model("anything", "")
+
+
+def test_the_per_turn_line_is_read_from_the_lastturn_page():
+    page = (
+        "host: mistral\nmodel: mistral-large-2512 (asked for mistral-large-latest)\n...\n"
+        "===== 2. INPUT - the per-turn message block =====\n(...)\n\n"
+        "[THIS TURN RUNS ON] mistral / mistral-large-2512 (asked for mistral-large-latest). Anthropic, the chosen "
+        "head, is out of credit and returns automatically once credit is added. When asked which model you run, "
+        "name this one and say why the chosen head is not running this turn.\n[ACTIVE SESSIONS]\n"
+    )
+    line = runs_on(page)
+    assert line == {
+        "host": "mistral",
+        "model": "mistral-large-2512",
+        "asked": "mistral-large-latest",
+        "fact": "Anthropic, the chosen head, is out of credit and returns automatically once credit is added.",
+    }
+    plain = runs_on("[THIS TURN RUNS ON] openai / gpt-5.6-luna. When asked which model you run, name this one only.\n")
+    assert plain == {"host": "openai", "model": "gpt-5.6-luna", "asked": "gpt-5.6-luna", "fact": ""}
+    assert runs_on("Your brain right now: openai / gpt-5.6-luna.") == {}
+    assert names_line_model("I run on Mistral Large 2512.", line)
+    assert names_line_model("mistral-large-latest, via Mistral.", line)
+    assert not names_line_model("Mistral Large 2.", line)
+    assert not names_line_model("anything", {})
+    # The line's words are the firmware's (orch_served_model.cpp runsOnLine).
+    served = _src("lib/core/src/orch_served_model.cpp")
+    assert '"[THIS TURN RUNS ON] " + host' in served and '" (asked for " + asked + ")"' in served
+    assert served.count(" When asked which model you run, name this one") == 2
+    assert '"host: " + ev.host + "\\n"' in _src("lib/harness/src/turn_anatomy.cpp")
 
 
 def test_the_ran_host_and_the_parked_start_come_from_the_devices_own_lines():
