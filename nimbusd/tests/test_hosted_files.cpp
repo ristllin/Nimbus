@@ -19,6 +19,8 @@
 #include <string>
 
 #include "engine_thread.h"
+#include "nimbus/orch/claims.h"
+#include "nimbus/orch/turn_effects.h"
 #include "reply_buffer.h"
 #include "rig.h"
 #include "test_util.h"
@@ -146,6 +148,66 @@ static void testRefusedUploadLeavesNoFile(ndtest::Ctx& c) {
   c.ok(web.call("GET", "/api/files/dl?project=bulk&name=f3.txt").body == "new bytes", "with the new bytes");
 }
 
+// The text of a tools/call answer (rig.callTool returns the whole JSON-RPC envelope).
+static std::string toolText(const std::string& rpc) {
+  JsonDocument d;
+  deserializeJson(d, rpc);
+  return std::string(d["result"]["content"][0]["text"] | "");
+}
+
+// A true "removed from the log" must not draw a correction on a hosted client: the
+// keyed files.append reply has to read as a replacement to the same claim check the
+// device runs. The merge-back shipped nimbusd's own "updated N rows" wording past a
+// reader that only knows the device's reply, and no test here drove the keyed path.
+static void testKeyedCorrectionBacksItsClaim(ndtest::Ctx& c) {
+  namespace orch = nimbus::orch;
+  std::printf("  -- (f) a keyed correction backs its claim --\n");
+  Config cfg;
+  NimbusdRig rig(cfg, opts("hf-f"));
+  const std::string head = "date,meal,items,kcal,protein_g\n";
+  auto keyed = [&](const std::string& rows) {
+    JsonDocument args;
+    args["project"] = "food";
+    args["name"] = "food-log.csv";
+    args["text"] = head + rows;
+    args["key"] = "meal";
+    args["sum"] = "kcal";
+    std::string json;
+    serializeJson(args, json);
+    return toolText(rig.callTool("files.append", json));
+  };
+  auto effects = [](const std::string& reply) {
+    orch::TurnEffects fx;
+    orch::recordToolEffect(fx, orch::FxKind::FileWrite, false, reply, orch::kFxLogRow);
+    return fx;
+  };
+  auto gaps = [](const std::string& claim, const orch::TurnEffects& fx) {
+    orch::ClaimEvidence ev;
+    ev.fx = &fx;
+    return orch::claimGaps(claim, orch::scanClaims(claim), ev).size();
+  };
+  const std::string replaceClaim = "The black beans entry is now removed from the log.";
+  const std::string logClaim = "I logged it in your food log.";
+
+  const std::string first = keyed("2026-10-30,lunch,black beans,300,10\n");
+  const orch::TurnEffects added = effects(first);
+  c.ok(has(first, "added 1 row"), "a new row reads as added: " + first);
+  c.ok(!added.anyOk(orch::FxKind::FileReplace), "a row that only landed replaced nothing");
+  c.eqi((long)gaps(logClaim, added), 0, "but it backs the log claim");
+  c.ok(gaps(replaceClaim, added) > 0, "and it does not back a replace claim");
+
+  const std::string fixed = keyed("2026-10-30,lunch,rice,250,6\n");
+  const orch::TurnEffects replaced = effects(fixed);
+  c.ok(replaced.anyOk(orch::FxKind::FileReplace), "a keyed correction records a replacement: " + fixed);
+  c.ok(replaced.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "and a landed log row");
+  c.eqi((long)gaps(replaceClaim, replaced), 0, "the true replace claim draws no correction");
+  c.eqi((long)gaps(logClaim, replaced), 0, "the true log claim draws no correction");
+
+  const orch::TurnEffects same = effects(keyed("2026-10-30,lunch,rice,250,6\n"));
+  c.ok(!same.anyOk(orch::FxKind::FileReplace), "a re-send that changed nothing replaced nothing");
+  c.ok(gaps(replaceClaim, same) > 0, "so a replace claim over it is corrected");
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== hosted files + not-yet-hosted surfaces (CUM-543, offline) ===\n");
@@ -154,6 +216,7 @@ int main() {
   testTraversalRefused(c);
   testNotYetHosted(c);
   testRefusedUploadLeavesNoFile(c);
+  testKeyedCorrectionBacksItsClaim(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

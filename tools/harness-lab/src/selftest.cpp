@@ -8,9 +8,11 @@
 #include <string>
 #include <vector>
 
+#include "lab_files.h"
 #include "lab_options.h"
 #include "lab_wire.h"
 #include "nimbus/harness/fault_transport.h"
+#include "nimbus/orch/turn_effects.h"
 
 namespace lab {
 namespace {
@@ -126,6 +128,43 @@ void testFaultChain() {
   check(echo.seen.size() == 2, "the injected request never reached the network");
 }
 
+// The lab's keyed files.append reads as a replacement to the device's claim check, so a
+// lab run judges a keyed correction the way the firmware does.
+void testKeyedReply() {
+  std::puts("keyed reply");
+  namespace orch = nimbus::orch;
+  LabFiles files;
+  orch::ToolRegistry reg;
+  files.registerTools(reg);
+  auto keyed = [&](const std::string& row) {
+    JsonDocument rpc;
+    rpc["jsonrpc"] = "2.0";
+    rpc["id"] = 1;
+    rpc["method"] = "tools/call";
+    rpc["params"]["name"] = "files.append";
+    JsonObject a = rpc["params"]["arguments"].to<JsonObject>();
+    a["project"] = "food";
+    a["name"] = "food-log.csv";
+    a["text"] = "date,meal,items,kcal,protein_g\n" + row + "\n";
+    a["key"] = "meal";
+    a["sum"] = "kcal";
+    std::string in;
+    serializeJson(rpc, in);
+    JsonDocument out;
+    deserializeJson(out, reg.handleRpc(in, orch::principalForRole("owner", orch::Role::Admin)));
+    return std::string(out["result"]["content"][0]["text"] | "");
+  };
+  orch::TurnEffects added, replaced, same;
+  orch::recordToolEffect(added, orch::FxKind::FileWrite, false, keyed("2026-10-30,lunch,black beans,300,10"), orch::kFxLogRow);
+  check(!added.anyOk(orch::FxKind::FileReplace), "a new row replaced nothing");
+  check(added.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "a new row is a landed log row");
+  orch::recordToolEffect(replaced, orch::FxKind::FileWrite, false, keyed("2026-10-30,lunch,rice,250,6"), orch::kFxLogRow);
+  check(replaced.anyOk(orch::FxKind::FileReplace), "a keyed correction records a replacement");
+  check(replaced.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "a keyed correction is a landed log row");
+  orch::recordToolEffect(same, orch::FxKind::FileWrite, false, keyed("2026-10-30,lunch,rice,250,6"), orch::kFxLogRow);
+  check(!same.anyOk(orch::FxKind::FileReplace), "a re-send that changed nothing replaced nothing");
+}
+
 }  // namespace
 
 int cmdSelftest() {
@@ -133,6 +172,7 @@ int cmdSelftest() {
   testOptions();
   testScrub();
   testFaultChain();
+  testKeyedReply();
   std::printf("%s\n", g_fail ? "LAB SELFTEST FAILED" : "lab selftest passed");
   return g_fail ? 1 : 0;
 }

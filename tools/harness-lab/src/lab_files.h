@@ -157,16 +157,9 @@ class LabFiles {
           nimbus::orch::planCsvUpsert(files_[p + "/" + n], t, key, sum, todayStr());
       if (!up.ok) return nimbus::orch::ToolResult::fail(up.err);
       if (up.changed) files_[p + "/" + n] = up.out;
-      std::string note = "updated " + std::to_string(up.replaced) +
-                         (up.replaced == 1 ? " row" : " rows") + ", appended " +
-                         std::to_string(up.appended) +
-                         (up.appended == 1 ? " row" : " rows") + " in " + p + "/" + n;
-      if (up.hasTotal) {
-        char buf[48];
-        std::snprintf(buf, sizeof buf, "%g", up.todayTotal);
-        note += "; today's " + sum + ": " + buf;
-      }
-      return nimbus::orch::ToolResult::ok(note);
+      // The device's own reply, word for word: the claim check reads it (turn_effects).
+      return nimbus::orch::ToolResult::ok(nimbus::orch::renderUpsertReply(
+          up, p + "/" + n, sum, nimbus::orch::logDayOf(std::time(nullptr), true).zone));
     }
     return appendPlain(p, n, t);
   }

@@ -317,14 +317,9 @@ class PosixFiles {
       if (!store_.add(e, out.err)) return false;
       fsutil::writeFileAtomic(indexPath(), store_.dump());
     }
-    out.note = "updated " + std::to_string(up.replaced) +
-               (up.replaced == 1 ? " row" : " rows") + ", appended " +
-               std::to_string(up.appended) + (up.appended == 1 ? " row" : " rows") + " in " + p + "/" + n;
-    if (up.hasTotal) {
-      char tot[32];
-      std::snprintf(tot, sizeof tot, "%g", up.todayTotal);
-      out.note += "; today's " + sum + ": " + tot;
-    }
+    // The device's own reply, word for word: the claim check reads it (turn_effects).
+    out.note = nimbus::orch::renderUpsertReply(up, p + "/" + n, sum,
+                                               nimbus::orch::logDayOf(time(nullptr), true).zone);
     return true;
   }
 
