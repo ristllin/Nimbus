@@ -44,6 +44,7 @@ HealthRow providersRow(ProviderPark& park, uint32_t nowMs) {
     v.paused = e[i].paused;
     v.httpStatus = e[i].httpStatus;
     v.recheckInMs = e[i].recheckInMs;
+    v.cause = e[i].cause;
     if (!d.empty()) d += "; ";
     d += parkWords(e[i].provider, v);
   }

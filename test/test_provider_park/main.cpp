@@ -109,7 +109,7 @@ const Refusal kRefusals[] = {
     {429, "{\"error\":{\"code\":\"insufficient_quota\"}}", true, true},                        // OpenAI quota
     {400, "{\"error\":{\"message\":\"Your credit balance is too low to access the Anthropic API.\"}}", true, true},
     {402, "{}", true, true},                                                                  // every 402
-    {429, "{\"error\":\"ceiling_reached\"}", true, true},                                     // the router's cap
+    {429, "{\"error\":\"ceiling_reached\"}", false, false},                                   // the platform's cap, not this account's
     {401, "{\"error\":{\"message\":\"invalid x-api-key\"}}", true, true},                     // a refused key
     {403, "{\"error\":{\"message\":\"model not allowed for this project\"}}", true, false},   // one model / endpoint
     {429, "{\"error\":{\"message\":\"Rate limit reached for requests per minute\"}}", false, false},   // counter-test

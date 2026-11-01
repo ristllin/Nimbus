@@ -159,6 +159,10 @@ StepErr classifyStepError(const std::string& err, int* httpStatus) {
   };
   for (const auto& d : kDevice)
     if (err.rfind(d.prefix, 0) == 0) return d.kind;
+  // A Cumulo head's own cause (router_refusal.h): the router refused this call and the
+  // sentence says why. Nothing to retry and nothing to park here (the wire parked on the
+  // reason if it was one that parks); another host may still serve it.
+  if (err.rfind(kRouterCausePrefix, 0) == 0) return StepErr::Rejected;
   if (isParkedRefusal(err))   // the park's own refusal (parkedRefusalError): its kind is in the words
     return err.find(kParkedKeyWords) != std::string::npos ? StepErr::Auth : StepErr::Billing;
   if (err.find("out of memory") != std::string::npos) return StepErr::LowMemory;

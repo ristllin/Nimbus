@@ -56,7 +56,12 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
   // the SD during the read (see the header). Allocate before the TLS so a failure
   // here costs no provider call.
   uint8_t* buf = (uint8_t*)ps_malloc(kGenMaxBytes);
-  if (!buf) { errOut = "out of memory"; alog("imagegen: ps_malloc failed"); return nullptr; }
+  if (!buf) {
+    if (gv.probe) gate::handBack("openai");
+    errOut = "out of memory";
+    alog("imagegen: ps_malloc failed");
+    return nullptr;
+  }
 
   arbiter::WorkSlot slot(10000);
   if (!slot) { free(buf); errOut = "device busy"; alog("imagegen: arbiter busy"); return nullptr; }

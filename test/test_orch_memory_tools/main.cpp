@@ -722,7 +722,10 @@ static void test_embed_reason_classes_are_distinct_and_honest() {
     {"empty text",                   EmbedFail::BadRequest,      "no text"},
     {"parse: bad json",             EmbedFail::BadResponse,      "malformed"},
     {"HTTP 500",                     EmbedFail::ProviderError,   "500"},
-    {"HTTP 402 funding_cap_reached", EmbedFail::OutOfCredit,     "credit"},
+    {"HTTP 402 insufficient_credits", EmbedFail::OutOfCredit,    "credit"},
+    {"HTTP 402 funding_cap_reached", EmbedFail::RouterHeld,      "cannot serve"},
+    {"HTTP 402 insufficient_credits_for_call", EmbedFail::CallTooLarge, "larger than"},
+    {"HTTP 402 budget_exceeded",     EmbedFail::AccountHeld,     "monthly limit"},
     {"HTTP 429 rate_limited",        EmbedFail::RateLimited,     "rate limited"},
     {"HTTP 403 endpoint_not_allowed",EmbedFail::RouteNotAllowed, "not allowed"},
     // CUM-469: a width mismatch is a config mismatch, not a malformed reply.
@@ -946,7 +949,7 @@ static void test_archive_search_falls_back_to_keyword() {
                           R"({"content":"coffee please","ttl":"session"})").success);
   g_now = 100 + 24;
   TEST_ASSERT_EQUAL_INT(1, g_vec.pruneExpired(g_now));   // -> archived
-  g_embedFail = true; g_embedErr = "HTTP 402 funding_cap_reached";
+  g_embedFail = true; g_embedErr = "HTTP 402 insufficient_credits";
   ToolResult r = callAs(reg, admin, "memory.archive", R"({"action":"search","query":"coffee"})");
   TEST_ASSERT_TRUE(r.success);
   TEST_ASSERT_TRUE(has(r.output, "keyword match, embeddings unavailable"));

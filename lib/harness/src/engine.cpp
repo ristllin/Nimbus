@@ -513,7 +513,10 @@ std::string TurnEngine::foldHeldNotices() {
   std::string out;
   for (const HeldNotice& n : heldNotices_) {
     if (n.latchHost.empty()) continue;   // a switch notice: its cause is in the final notice
-    const std::string line = n.kind == orch::StepErr::Auth
+    const orch::ParkCause cause = orch::providerPark().causeOf(n.latchHost.c_str());
+    const std::string line = cause != orch::ParkCause::Unspecified
+                                 ? std::string(orch::parkCauseFix(cause)) + "."
+                             : n.kind == orch::StepErr::Auth
                                  ? "Update " + providerLabel(n.latchHost) + "'s key under Assistant > Models."
                                  : "Add credit on " + n.latchHost + "'s billing page.";
     if (out.find(line) == std::string::npos) out += (out.empty() ? "" : " ") + line;
@@ -553,12 +556,17 @@ void TurnEngine::deliverFailure(const std::string& chatId, const std::string& he
 // them).
 void TurnEngine::deliverParkedRefusal(const std::string& chatId, const std::string& host, orch::StepErr kind,
                                       int activeJobs, bool nothingRan) {
-  const bool key = kind == orch::StepErr::Auth;
+  // A park the router named keeps the router's reason: a suspended account is not a bad
+  // key, a key's own budget is not an empty wallet.
+  const orch::ParkCause cause = orch::providerPark().causeOf(host.c_str());
+  const bool key = kind == orch::StepErr::Auth && cause == orch::ParkCause::Unspecified;
   const std::string label = providerLabel(host);
   const std::string notice =
-      key ? "That didn't finish - " + label + " rejected its key. Update it under Assistant > Models."
-          : "That didn't finish - " + label +
-                " says the account is out of credit. Add credit on its billing page, or switch providers.";
+      cause != orch::ParkCause::Unspecified
+          ? "That didn't finish - " + orch::parkCauseNotice(label, cause, std::string())
+      : key ? "That didn't finish - " + label + " rejected its key. Update it under Assistant > Models."
+            : "That didn't finish - " + label +
+                  " says the account is out of credit. Add credit on its billing page, or switch providers.";
   if (holdingNotices()) {
     deliverFailure(chatId, notice, activeJobs, "", nothingRan);
     return;
@@ -1949,7 +1957,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       if (d_.hosts.isParked(alt)) continue;
       hlog::logf("orchestrator: %s is parked (%s) - starting on %s", host.c_str(),
                  orch::stepErrSlug(why.kind), alt.c_str());
-      if (why.kind == orch::StepErr::Billing)   // told already, unless a quiet turn held it
+      if (why.cause != orch::ParkCause::Unspecified)
+        holdNotice("\xE2\x9A\xA0\xEF\xB8\x8F " + orch::parkCauseNotice(providerLabel(host), why.cause, alt), host, why.kind);
+      else if (why.kind == orch::StepErr::Billing)   // told already, unless a quiet turn held it
         holdNotice("\xE2\x9A\xA0\xEF\xB8\x8F " + orch::billingNotice(host, why.httpStatus, alt), host, why.kind);
       else if (why.kind == orch::StepErr::Auth)
         holdNotice("\xE2\x9A\xA0\xEF\xB8\x8F " + orch::keyNotice(host, why.httpStatus, alt), host, why.kind);
@@ -2922,6 +2932,44 @@ bool TurnEngine::canFoldNow() const {
   if (!turnHeapOk(freeHeap(), largestFreeBlock(), t_.autoTurnMinHeap, t_.turnMinLargestBlock))
     return false;
   return !foldHostCandidates().empty();
+}
+
+// The idle re-check (CUM-889): a parked provider that nothing else calls (Cumulo last in
+// the priority list on a device whose head answers every turn) still recovers by itself.
+// A host whose re-check is due gets one small real request, the fold's way (no turn state
+// touched, single shot, no tools, metered), and its answer goes to the park like any
+// other: answered ends the park, a refusal re-parks quietly, anything else waits another
+// interval. A refusal bills nothing and an answer ends the episode, so a parked provider
+// costs at most one short reply per recovery.
+bool TurnEngine::recheckParkedHost() {
+  namespace orch = nimbus::orch;
+  if (turnInFlight_ || !turnHeapOk(freeHeap(), largestFreeBlock(), t_.autoTurnMinHeap, t_.turnMinLargestBlock))
+    return false;
+  if (!orch::paidCallAllowed(orch::SpendSeam::Fold)) return false;
+  orch::ParkEntry e[orch::ProviderPark::kMaxProviders];
+  const size_t n = orch::providerPark().snapshot(e, orch::ProviderPark::kMaxProviders, nowMs());
+  for (size_t i = 0; i < n; ++i) {
+    const bool due = e[i].kind != orch::ParkKind::None && !e[i].paused && !e[i].probing && e[i].recheckInMs == 0;
+    const std::string h = e[i].provider;
+    // A park on one seam (a 403 for one model or endpoint) is that seam's to re-check:
+    // a chat answer says nothing about it.
+    if (!due || !(e[i].seamMask & (1u << (uint8_t)orch::PaidSeam::Chat)) || !d_.hosts.has(h)) continue;
+    if (d_.cfg.provider.hasKey && !d_.cfg.provider.hasKey(h)) continue;
+    if (d_.cfg.budget.overBudget && d_.cfg.budget.overBudget(h)) continue;
+    if (d_.hosts.isParked(h)) continue;   // the park moved on since the snapshot
+    hlog::logf("park: %s re-check due and nothing else is calling it - asking with one small request", h.c_str());
+    std::string convId, outJson, err;
+    orch::TokenUsage u;
+    const bool ok = d_.hosts.run(h, convId, orch::ORCH_PARK_RECHECK_PROMPT, "ok", outJson, err, /*tools=*/nullptr, &u);
+    orch::TurnSpend& spend = facts().spend;
+    spend.clear();
+    spend.add(h.c_str(), d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", u);
+    meterSpend(spend, "recheck");
+    if (ok) d_.hosts.noteAnswered(h);
+    else d_.hosts.noteFailed(h, err);
+    return true;
+  }
+  return false;
 }
 
 TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,

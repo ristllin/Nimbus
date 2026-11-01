@@ -109,6 +109,8 @@ bool isContextOverflowError(const std::string& err) {
 // that morning's meal estimates; facts came back as "today" on later days. The
 // rules below date every fact (CUM-783), drop rules that belonged to a passing
 // situation, and copy the device's food ledger instead of re-adding meals.
+const char* const ORCH_PARK_RECHECK_PROMPT = "Reply with the single word ok.";
+
 const char* const ORCH_COMPACT_PROMPT =
     "You are compacting a long-running conversation between an owner and their "
     "assistant device into an anchored summary. Your reply IS the summary - plain "

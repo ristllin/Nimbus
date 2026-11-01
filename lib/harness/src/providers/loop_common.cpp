@@ -236,12 +236,16 @@ orch::ParkKind parkKindOf(orch::StepErr k) {
 }  // namespace
 
 bool hostParked(const ProviderDeps& pd, const std::string& host, HostPark* why) {
+  static const bool kLogWired = [] {   // the park's re-check outcomes reach the one log
+    orch::providerPark().setLog([](const char* line) { hlog::logf("%s", line); });
+    return true;
+  }();
+  (void)kLogWired;
   const orch::ParkVerdict v =
-      orch::providerPark().available(host.c_str(), orch::PaidSeam::Chat, keyFpOf(pd, host), nowOf(pd));
-  if (v.probe) hlog::logf("fabric: %s re-check due - one probe request", host.c_str());
+      orch::providerPark().peek(host.c_str(), orch::PaidSeam::Chat, keyFpOf(pd, host), nowOf(pd));
   if (v.keyChanged) hlog::logf("fabric: %s un-parked (its key changed)", host.c_str());
   if (v.open) return false;
-  if (why) *why = HostPark{stepKindOf(v), v.httpStatus, v.paused};
+  if (why) *why = HostPark{stepKindOf(v), v.httpStatus, v.paused, v.cause};
   return true;
 }
 
@@ -305,8 +309,7 @@ bool testStatusOverride(const std::string& host, int& status, std::string& body)
 
 namespace {
 // With every host of a turn closed: the one to ask (only a host whose re-check fell
-// due since the first walk: asking the park again here is what hands it its one
-// probe), else `count`; and the first closed by a refusal (out of credit or a refused
+// due since the first walk: its request is the probe), else `count`; and the first closed by a refusal (out of credit or a refused
 // key), whose kind and status name the turn's refusal when nothing is asked.
 struct ClosedPick {
   size_t ask;

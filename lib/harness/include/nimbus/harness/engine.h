@@ -75,7 +75,8 @@ class ProviderHosts {
   // Lane K's billing and auth park on the paths outside the fabric loop: the
   // single-shot ladder and the context fold skip a parked host and feed the park
   // with every answer and failure, so a refused host is asked once per episode on
-  // every path, not once per turn. The device binds these to providers::hostParked,
+  // every path, not once per turn. `parked` is a read, never a claim of the re-check: the
+  // wire claims it when the request leaves. The device binds these to providers::hostParked,
   // noteHostFailed and unparkHost over its ProviderDeps (the park's key and model
   // fingerprint is the fabric's). Unset = no host is ever parked.
   std::function<bool(const std::string& host, providers::HostPark* why)> parked;
@@ -403,6 +404,10 @@ class TurnEngine {
   // have been paid, and a persistent defer (low heap, month-long budget cap)
   // otherwise repeats them every pump pass - an owner-visible notice loop.
   bool canFoldNow() const;
+  // The idle re-check: when a parked provider's re-check is due, one small real request
+  // on the caller's task (the fold pump: the same single task, the same one TLS slot).
+  // True when a request went out. Cheap when nothing is due, so a pump may call it often.
+  bool recheckParkedHost();
   // Keyed, in-budget fold hosts (orchHost first, then priority; <=3). Public so
   // tests can pin the ladder order without scripting a provider.
   std::vector<std::string> foldHostCandidates() const;

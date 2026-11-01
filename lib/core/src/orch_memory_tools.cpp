@@ -64,6 +64,7 @@ const char kScratchRamOnlyNote[] = "; kept until restart only (saving failed)";
 // in step with what embeddings.cpp emits and the test that iterates the classes.
 namespace {
 bool rawStartsWith(const std::string& s, const char* p) { return s.rfind(p, 0) == 0; }
+constexpr const char* kRouterRefusedWord = "router_refused";
 
 // The status portion of an "HTTP ..." token. A billing refusal (the ONE table
 // shared with the chat head, billing_refusal.h) is OutOfCredit; a 429 without a
@@ -77,10 +78,15 @@ EmbedFail classifyHttpToken(const std::string& raw, std::string& detail) {
     code += c;
   }
   const int status = code.empty() ? 0 : std::atoi(code.c_str());
-  // The router's monthly cap (HTTP 429 ceiling_reached) is a billing refusal too;
-  // it is checked beside the shared table, which does not carry it yet.
-  if (isBillingRefusal(status, raw) || raw.find("ceiling_reached") != std::string::npos)
-    return EmbedFail::OutOfCredit;
+  if (raw.find(kRouterRefusedWord) != std::string::npos) {   // a reason this image does not know
+    detail = code;
+    return EmbedFail::ProviderError;
+  }
+  const RouterAnswer router = readRouterAnswer(raw);
+  if (router.reason == "budget_exceeded" || router.reason == "account_suspended") return EmbedFail::AccountHeld;
+  if (router.action() == RouterAction::RetryCapped) return EmbedFail::CallTooLarge;
+  if (router.action() == RouterAction::FailOver && router.reason != "endpoint_not_allowed") return EmbedFail::RouterHeld;
+  if (isBillingRefusal(status, raw)) return EmbedFail::OutOfCredit;
   if (raw.find("endpoint_not_allowed") != std::string::npos) return EmbedFail::RouteNotAllowed;
   if (status == 429 || raw.find("rate_limited") != std::string::npos) return EmbedFail::RateLimited;
   detail = code;
@@ -133,6 +139,18 @@ EmbedFail classifyEmbedFail(const std::string& raw, std::string& detail) {
   return EmbedFail::Unknown;
 }
 
+std::string embedRefusalToken(int status, const std::string& body, const std::string& code, bool viaRouter) {
+  const std::string http = "HTTP " + std::to_string(status);
+  if (!viaRouter) {
+    if (status == 401 || status == 403) return "key rejected";
+    return code.empty() ? http : http + " " + code;
+  }
+  const RouterAnswer a = readRouterAnswer(body);
+  if (a.row) return a.action() == RouterAction::ParkAuth && status == 401 ? "key rejected" : http + " " + a.reason;
+  if (a.reason.empty() && status == 401) return "key rejected";   // the body did not survive: a dead key reads as one
+  return http + " " + kRouterRefusedWord;   // the contract: an unknown reason is a per-call failure
+}
+
 std::string embedFailWords(EmbedFail kind, const std::string& detail) {
   // The two detail-bearing classes are explicit; the rest are a flat table.
   if (kind == EmbedFail::NoKey)
@@ -161,6 +179,9 @@ std::string embedFailWords(EmbedFail kind, const std::string& detail) {
     {EmbedFail::NoModel,         "no embeddings model configured"},
     {EmbedFail::BadRequest,      "no text to embed"},
     {EmbedFail::Unknown,         "unavailable"},
+    {EmbedFail::CallTooLarge,    "this request is larger than the remaining credits allow"},
+    {EmbedFail::RouterHeld,      "the Cumulo router cannot serve embeddings right now"},
+    {EmbedFail::AccountHeld,     "the Cumulo account is suspended or reached its monthly limit"},
   };
   for (const auto& e : kW) if (e.k == kind) return e.w;
   return "unavailable";

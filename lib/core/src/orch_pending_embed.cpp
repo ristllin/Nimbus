@@ -267,8 +267,11 @@ ParkRule parkRuleFor(EmbedFail kind) {
       ParkRule::Long,      // NoModel
       ParkRule::NoChange,  // BadRequest: nothing to embed says nothing about the provider
       ParkRule::Backoff,   // Unknown
+      ParkRule::Backoff,   // CallTooLarge: a smaller wallet state may fit; never the long park
+      ParkRule::Backoff,   // RouterHeld
+      ParkRule::Long,      // AccountHeld
   };
-  static_assert(sizeof kRules / sizeof kRules[0] == (size_t)EmbedFail::Unknown + 1,
+  static_assert(sizeof kRules / sizeof kRules[0] == (size_t)kEmbedFailLast + 1,
                 "every EmbedFail needs a park rule");
   const size_t i = (size_t)kind;
   return i < sizeof kRules / sizeof kRules[0] ? kRules[i] : ParkRule::Backoff;

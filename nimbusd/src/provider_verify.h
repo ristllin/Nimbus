@@ -10,6 +10,7 @@
 
 #include "nimbus/harness/http.h"
 #include "nimbus/orch/model_catalog.h"
+#include "nimbus/orch/router_refusals.h"
 
 // provider_verify - an honest "verified" badge and model catalog per provider on a
 // hosted instance (CUM-545, device parity with src/agent/provider_verify.cpp).
@@ -54,10 +55,17 @@ inline bool probeTarget(const std::string& slug, const std::string& key, const P
 
 // The device's verdict for a model-list status: 1 verified, 0 rejected, -1 could
 // not verify (with the badge's reason token: 402 = no credits or plan; a 404 from
-// the router's /router/models = a router that predates it).
-inline int8_t probeVerdict(const std::string& slug, int status, std::string& reason) {
+// the router's /router/models = a router that predates it; account_suspended, whose body
+// says so, = suspended).
+inline int8_t probeVerdict(const std::string& slug, int status, std::string& reason,
+                           const std::string& body = std::string()) {
   reason.clear();
   if (status == 200) return 1;
+  // The key is fine and an admin suspended the account: not a rejected key.
+  if (slug == "cumulo" && nimbus::orch::readRouterAnswer(body).reason == "account_suspended") {
+    reason = "suspended";
+    return -1;
+  }
   if (status == 401 || status == 403) return 0;
   if (status == 402) reason = "nocredits";
   else if (status == 404 && slug == "cumulo") reason = "router_outdated";

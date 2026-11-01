@@ -26,6 +26,7 @@
 #include "../sys/tls_arbiter.h"   // one work TLS at a time (coexists with Telegram's)
 #include "orchestrator.h"         // turnInFlight - never re-verify beside a live turn
 #include "provider_gate.h"        // lane QW4: the probe asks the park and tells it the answer
+#include "nimbus/orch/router_refusals.h"   // readRouterAnswer: a refusal's reason
 #include "nimbus/orch/seam_meter.h"   // lane QW4: meterSeamAnswerBody - the probe is counted
 #include "nimbus/orch/spend_guard.h"  // lane QW4: verifyProbeAllowed, httpBodyOf
 #include "provider_verify_retry.h" // pure backoff policy (host-tested)
@@ -573,6 +574,19 @@ static int readProbeResponse(WiFiClientSecure& client, String& errBody, size_t m
   return code;
 }
 
+// The rest of a refused answer (headers then the refusal body), bounded, read for its
+// reason. The status line was already consumed.
+static bool routerSaysSuspended(WiFiClientSecure& client) {
+  String raw;
+  const uint32_t deadline = millis() + 3000;
+  while ((int32_t)(millis() - deadline) < 0 && raw.length() < 1500) {
+    if (client.available()) raw += (char)client.read();
+    else if (!client.connected()) break;
+    else delay(2);
+  }
+  return nimbus::orch::readRouterAnswer(std::string(raw.c_str(), raw.length())).reason == "account_suspended";
+}
+
 // The key a probe of `provider` carries (the park is keyed by it).
 static String probeKey(const String& provider) {
   if (provider == "openai") return store::openaiKey();
@@ -646,7 +660,6 @@ static bool paidProbeAllowed(const String& provider) {
 // verdict leaves the model as-is for a later retry; a definitive verdict marks the
 // model probed and sets usable, so an unusable selection stops appearing.
 static void probeSelectedModels(const String& provider) {
-  if (!paidProbeAllowed(provider)) return;
   String cands[2];
   int nc = 0;
   const String om = store::orchModel(provider);
@@ -658,6 +671,8 @@ static void probeSelectedModels(const String& provider) {
   std::vector<nimbus::orch::ModelInfo> cat;
   if (!nimbus::orch::parseModelStore(provider.c_str(), store::modelStoreText(provider), meta, &cat))
     return;
+  // Last, so a parked provider's one re-check is never taken by a pass with nothing to send.
+  if (!paidProbeAllowed(provider)) return;
   bool changed = false;
   for (int i = 0; i < nc; ++i) {
     nimbus::orch::ModelInfo* found = nullptr;
@@ -1070,6 +1085,12 @@ static void runOne() {
       if (result == -1) {
         if (code == 402)                             rsn = "nocredits";
         else if (code == 404 && provider == "cumulo") rsn = "router_outdated";
+      }
+      // An admin suspended the account: the key is fine, and "rejected" would send the
+      // owner after the wrong thing. The body says so (the contract's account_suspended).
+      if (code == 403 && provider == "cumulo" && routerSaysSuspended(client)) {
+        result = -1;
+        rsn = "suspended";
       }
       // NVS-priority (CUM-77 item 6 follow-on): a definitive verdict is tiny and
       // load-bearing. Before CUM-479 the catalog blob written below lived in NVS and

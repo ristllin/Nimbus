@@ -15,6 +15,7 @@
 #include "nimbus/orch/spend_ceiling.h"    // paidCallAllowed - the monthly spend ceiling (lane DEF)
 #include "nimbus/orch/provider_error.h"   // oneLineText
 #include "nimbus/orch/provider_park.h"    // the one per-provider park
+#include "nimbus/orch/router_refusals.h"   // the clamp on a photo: reason and capped resend
 #include "nimbus/orch/reply_text.h"       // messagesContentText, chatContentText
 #include "nimbus/orch/token_usage_json.h"
 #include "nimbus/orch/turn_images.h"   // kImagePartBytes - the record queue's size budget
@@ -86,6 +87,7 @@ std::string errorText(const JsonDocument& doc) {
   if (doc["error"].is<const char*>()) t += std::string(doc["error"].as<const char*>()) + " ";
   JsonVariantConst m = doc["message"];
   if (m.is<const char*>()) t += std::string(m.as<const char*>()) + " ";
+  if (doc["reason"].is<const char*>()) t += std::string(doc["reason"].as<const char*>()) + " ";
   if (doc["code"].is<const char*>()) t += std::string(doc["code"].as<const char*>()) + " ";
   return t;
 }
@@ -178,6 +180,7 @@ Route routeOf(const CaptionDeps& d, const std::string& provider) {
 
 std::string closedWords(const std::string& provider, const orch::ParkVerdict& v) {
   if (v.paused) return "paid requests to " + provider + " are paused";
+  if (v.cause != orch::ParkCause::Unspecified) return provider + orch::parkCauseWhy(v.cause);
   if (v.kind == orch::ParkKind::Billing)
     return provider + " out of credit" + (v.httpStatus ? " (HTTP " + std::to_string(v.httpStatus) + ")" : "");
   if (v.kind == orch::ParkKind::Auth) return provider + " refused the key";
@@ -316,6 +319,8 @@ JsonDocument answerFilter() {
   filter["message"] = true;
   filter["code"] = true;
   filter["type"] = true;
+  filter["reason"] = true;   // a router refusal: the reason decides, and says what fits
+  filter["maxAffordableOutputTokens"] = true;
   return filter;
 }
 
@@ -366,6 +371,29 @@ void readRefusal(const HttpRequest& req, const Route& route, const JsonDocument&
            : k == orch::ParkKind::Auth  ? ReadFail::Auth
                                         : ReadFail::ProviderError;
   r.words = failWords(r.fail, r.provider, r.status);
+  const orch::ParkCause cause = orch::providerPark().causeOf(r.provider.c_str());
+  if (k != orch::ParkKind::None && cause != orch::ParkCause::Unspecified) r.words = r.provider + orch::parkCauseWhy(cause);
+  if (orch::readRouterAnswer(errorText(doc)).action() == orch::RouterAction::RetryCapped)
+    r.words = "this request is larger than the remaining credits allow";
+}
+
+// The router's clamp on a photo: the wallet holds credits, this call's worst case does
+// not fit, and the answer says what would. Resends once with the output capped there, the
+// photo's splice moved with the edit. False when no useful cap fits.
+bool capCaptionRequest(HttpRequest& req, const JsonDocument& doc) {
+  std::string said;
+  serializeJson(doc, said);
+  const orch::RouterAnswer a = orch::readRouterAnswer(said);
+  if (a.action() != orch::RouterAction::RetryCapped ||
+      a.maxAffordableOutputTokens < (int64_t)orch::kRouterCapFloorTokens)
+    return false;
+  orch::CapEdit edits[orch::kCapEditMax];
+  size_t n = 0;
+  if (!orch::capOutputTokens(req.body, req.path, (uint32_t)a.maxAffordableOutputTokens, edits, n)) return false;
+  for (BodySplice& sp : req.splices) sp.at = orch::applyCapEdits(sp.at, edits, n);
+  hlog::logf("vision: %s clamped - resending once with the output capped at %u", req.host.c_str(),
+             (unsigned)a.maxAffordableOutputTokens);
+  return true;
 }
 
 // Ask one open provider for the photo.
@@ -384,6 +412,11 @@ CaptionResult askOne(const CaptionDeps& d, const std::string& p, const Route& ro
   std::string terr;
   r.requests = 1;
   r.status = send(d, req, doc, terr);
+  if (p == "cumulo" && r.status == 402 && capCaptionRequest(req, doc)) {
+    doc.clear();
+    r.requests = 2;
+    r.status = send(d, req, doc, terr);
+  }
   if (r.status <= 0) {
     orch::providerPark().noteFailure(p.c_str(), now);
     r.status = 0;

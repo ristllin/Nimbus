@@ -27,6 +27,10 @@ nimbus::orch::ParkVerdict check(const char* provider, nimbus::orch::PaidSeam sea
 nimbus::orch::ParkKind noteAnswer(const char* provider, nimbus::orch::PaidSeam seam, const String& key,
                                   int status, const char* text);
 
+// The seam got the re-check (`verdict.probe`) and will send nothing after all (the TLS
+// slot was busy, memory ran short): the re-check stays due for the next caller.
+void handBack(const char* provider);
+
 // Plain words for a closed verdict ("" for an open one).
 String words(const char* provider, const nimbus::orch::ParkVerdict& v);
 

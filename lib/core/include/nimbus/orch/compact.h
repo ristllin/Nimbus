@@ -86,6 +86,9 @@ struct CompactBreaker {
 // when a previous summary exists it is UPDATED, not replaced (opencode pattern),
 // so cost stays bounded no matter how long a chat lives.
 extern const char* const ORCH_COMPACT_PROMPT;
+// The idle re-check of a parked provider: the shortest request that proves the account
+// can be served.
+extern const char* const ORCH_PARK_RECHECK_PROMPT;
 
 // Assemble the compaction call's input: the previous anchored summary (may be
 // empty) + the new episodic digest since the last compaction. digest should

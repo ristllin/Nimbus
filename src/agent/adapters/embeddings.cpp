@@ -9,6 +9,7 @@
 #include "../../sys/tls_arbiter.h"
 #include "nimbus/orch/embedding.h"       // portable build/parse (host-tested)
 #include "nimbus/orch/vector_memory.h"   // quantize
+#include "nimbus/orch/memory_tools.h"    // embedRefusalToken - the err token classifyEmbedFail reads
 #include "nimbus/audio_req.h"            // core::parseErrorCode (host-tested refusal parse)
 #include "nimbus/harness/providers.h"    // testStatusOverride - the bench's scripted answer (test builds)
 #include "../provider_gate.h"            // the one per-provider park (L19-8)
@@ -60,16 +61,16 @@ bool resolveProvider(const String& provider, String& host, String& path, String&
 // and the park told (a billing or key refusal closes the provider for every seam).
 void failFromStatus(const String& provider, const String& key, int code, const char* body, String& err) {
   gate::noteAnswer(provider.c_str(), nimbus::orch::PaidSeam::Embeddings, key, code, body);
-  if (code == 401 || code == 403) { err = "key rejected"; return; }
-  err = String("HTTP ") + code;
-  // A non-200 body may be a router/provider refusal {"error":"<code>"}. Append
-  // the machine code (bounded, secret-safe: parseErrorCode returns only the code
-  // field, and the memory tools echo just the numeric status unless it is a known
-  // refusal code) so funding_cap_reached / rate_limited / endpoint_not_allowed map
-  // to plain words upstream.
+  // A non-200 body may be a router/provider refusal {"error":"<code>"}. The machine code
+  // rides the token (bounded, secret-safe: parseErrorCode returns only the code field,
+  // and the memory tools echo just the numeric status unless it is a known refusal code),
+  // so a router refusal maps to its own plain words upstream. Over the router the reason
+  // decides, a 403 included: model_not_priced is not a rejected key.
   bool jok = false;
   std::string rc = core::parseErrorCode(body, &jok);
-  if (jok && !rc.empty()) { if (rc.size() > 48) rc.resize(48); err += String(" ") + rc.c_str(); }
+  if (!jok) rc.clear();
+  if (rc.size() > 48) rc.resize(48);
+  err = nimbus::orch::embedRefusalToken(code, body ? body : "", rc, nimbus::orch::embedRouteFor(provider.c_str()).viaCumuloRouter).c_str();
   alogf("embed: HTTP %d %s", code, rc.c_str());
 }
 
@@ -91,8 +92,10 @@ bool webDnsReady(const String& host) {
 // same class the refusal itself would have been.
 String closedToken(const nimbus::orch::ParkVerdict& v) {
   if (v.paused) return "paused";
+  if (v.cause == nimbus::orch::ParkCause::KeyBudget) return "HTTP 402 budget_exceeded";
+  if (v.cause == nimbus::orch::ParkCause::Suspended) return "HTTP 403 account_suspended";
   if (v.kind == nimbus::orch::ParkKind::Auth) return "key rejected";
-  return "HTTP 402 parked";   // every 402 reads as billing (OutOfCredit), whatever its body
+  return "HTTP 402 parked";   // a provider's 402 with no reason reads as billing (OutOfCredit)
 }
 }  // namespace
 
@@ -131,10 +134,16 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
   std::string body = nimbus::orch::buildEmbeddingRequest(
       std::string(provider.c_str()), std::string(model.c_str()), std::string(text.c_str()), dims);
 
+  // Busy here means nothing went out: a re-check this call got is handed back, not spent.
+  const auto busy = [&provider, &gv, &err] {
+    if (gv.probe) gate::handBack(provider.c_str());
+    err = "tls busy";
+    return std::vector<int8_t>{};
+  };
   const bool web = nimbus::sys::onWebTask();   // the web task: its network budget (web_guard.h)
-  if (web && !webDnsReady(host)) { err = "tls busy"; return {}; }
+  if (web && !webDnsReady(host)) return busy();
   arbiter::WorkSlot slot(12000);
-  if (!slot) { err = "tls busy"; return {}; }
+  if (!slot) return busy();
 
   std::vector<int8_t> out;
   {
@@ -145,7 +154,7 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
     // shares, the reply read against the same clock.
     const nimbus::sys::WebNetShare share =
         web ? nimbus::sys::webNetShare(nimbus::sys::webNetLeftNow()) : nimbus::sys::WebNetShare{};
-    if (web && !share.go) { slot.release(); err = "tls busy"; return {}; }
+    if (web && !share.go) { slot.release(); return busy(); }
     const uint32_t startedMs = millis();
     WiFiClientSecure client;
     tlsSetup(client);

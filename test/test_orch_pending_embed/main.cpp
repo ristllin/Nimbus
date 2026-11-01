@@ -363,8 +363,18 @@ static void test_billing_refusals_classify_as_out_of_credit() {
       {"HTTP 429 insufficient_quota", EmbedFail::OutOfCredit},
       {"HTTP 402", EmbedFail::OutOfCredit},                           // every 402 is billing
       {"HTTP 402 something_new", EmbedFail::OutOfCredit},
-      {"HTTP 429 ceiling_reached", EmbedFail::OutOfCredit},           // router monthly cap
-      {"HTTP 402 funding_cap_reached", EmbedFail::OutOfCredit},
+      {"HTTP 402 insufficient_credits", EmbedFail::OutOfCredit},
+      {"HTTP 402 credits_or_subscription_required", EmbedFail::OutOfCredit},
+      // The router refusal contract: the platform's own limits and the clamp are not this
+      // account's wallet, and a key's budget or a suspension is not an empty one.
+      {"HTTP 429 ceiling_reached", EmbedFail::RouterHeld},
+      {"HTTP 402 funding_cap_reached", EmbedFail::RouterHeld},
+      {"HTTP 429 upstream_quota_exhausted", EmbedFail::RouterHeld},
+      {"HTTP 402 insufficient_credits_for_call", EmbedFail::CallTooLarge},
+      {"HTTP 402 budget_exceeded", EmbedFail::AccountHeld},
+      {"HTTP 403 account_suspended", EmbedFail::AccountHeld},
+      {"HTTP 429 credits_held_in_flight", EmbedFail::RateLimited},
+      {"HTTP 402 router_refused", EmbedFail::ProviderError},
       // Counter-tests: a plain rate limit stays a rate limit; a 500 stays a 500.
       {"HTTP 429 rate_limited", EmbedFail::RateLimited},
       {"HTTP 429", EmbedFail::RateLimited},

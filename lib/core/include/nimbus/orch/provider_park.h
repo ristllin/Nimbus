@@ -28,11 +28,21 @@
 //     it lifts it.
 // A rate limit, a server error, a timeout or a network failure closes nothing.
 //
-// Re-check: kRecheckMs after the refusal one request is let through (the probe, on
-// whichever seam asks first; it may ask again within kProbeLeaseMs while it builds the
-// request). Its success ends the episode; a refusal re-parks quietly (no second
-// notice); any other failure, or no answer within the lease, re-arms the wait. A
-// changed key is a new start: the park and its notice latch end at once.
+// The Cumulo router names its reason, and only the contract's park_billing and park_auth
+// reasons close it (router_refusals.h): a clamp on a funded wallet, a throttle or an
+// upstream failure is about one call, and never closes a provider.
+//
+// Re-check: kRecheckMs after the refusal one request is let through (the probe; it may
+// ask again within kProbeLeaseMs while it builds the request). available() and
+// claimProbe() hand it out, and only a caller about to send asks those: a reader (a
+// candidate list, a catalog line, a status surface) uses peek(), which never does, so
+// the probe is not spent on a host nobody then calls. A caller that gets it and then
+// sends nothing hands it back (releaseProbe). A provider nothing else calls is asked by
+// the idle re-check (TurnEngine::recheckParkedHost), so it recovers by itself. Its
+// success ends the episode; a refusal re-parks quietly (no second notice); any other
+// failure, or no answer within the lease, re-arms the wait. Every one of those outcomes
+// is logged (setLog). A changed key is a new start: the park and its notice latch end at
+// once.
 //
 // Durable: the parks, their re-check times (wall clock when known), the notice
 // latch (with its one short answer) and the daily spend-warning latch are saved to a
@@ -65,8 +75,30 @@ enum class ParkKind : uint8_t {
 const char* parkKindSlug(ParkKind k);   // "none" | "billing" | "auth"
 
 // The kind a provider's answer parks for: Billing for any billing refusal
-// (isBillingRefusal), Auth for 401 and 403, else None (nothing parks).
+// (isBillingRefusal), Auth for 401 and 403, else None (nothing parks). A body carrying a
+// reason of the router's table is decided by that reason.
 ParkKind parkKindFor(int httpStatus, const std::string& text);
+// The same for the answer of a named provider. "cumulo" takes the contract whole: only
+// its park reasons close it. A reason it does not know, or a 402 with none, is a per-call
+// failure; a 401 whose body did not survive still reads as the key.
+ParkKind parkKindForProvider(const char* provider, int httpStatus, const std::string& text);
+
+// What the router said a park is for, so the words can be true of it. The numbers are
+// persisted: append-only. Unspecified is every other provider's refusal.
+enum class ParkCause : uint8_t {
+  Unspecified = 0,
+  WalletEmpty = 1,   // insufficient_credits: the only answer that means an empty wallet
+  NeedsPlan = 2,     // credits_or_subscription_required
+  KeyBudget = 3,     // budget_exceeded: this key's own monthly budget; the wallet may hold credits
+  Suspended = 4,     // account_suspended: credits do not lift it
+};
+ParkCause parkCauseFor(const std::string& text);
+// " says the credit balance is empty", " has hit this device's monthly budget", ...; ""
+// for Unspecified.
+const char* parkCauseWhy(ParkCause c);
+// The one next step, a sentence with no full stop: "Add credits in the portal"; "" for
+// Unspecified.
+const char* parkCauseFix(ParkCause c);
 
 // ---- the pause switch ----------------------------------------------------------
 // Bit flags: why paid requests to a provider are held off. Causes are independent:
@@ -88,6 +120,8 @@ struct ParkVerdict {
   int      httpStatus = 0;         // the refusal's HTTP status (0 = none)
   uint32_t recheckInMs = 0;        // time until the re-check request (refusals only)
   bool     keyChanged = false;     // open because the key changed: the park just ended
+  ParkCause cause = ParkCause::Unspecified;   // closed by the router: what it said
+  bool     due = false;            // peek(): open because the re-check is due (not yet claimed)
 };
 
 // Plain words for a closed verdict: "openai says the account is out of credit
@@ -97,6 +131,11 @@ std::string parkWords(const char* provider, const ParkVerdict& v);
 // The short form for a 48-character screen line: "openai is out of credit. Add
 // credit.", "openai refused the key.", "Paid requests are paused." ("" when open).
 std::string parkShortWords(const char* provider, const ParkVerdict& v);
+
+// The owner's words for a park the router named (`cause` not Unspecified): what it said
+// and the one next step, "Cumulo Nimbus says this account is suspended. Contact support;
+// until then, openai answers." "" for Unspecified (the caller keeps its own words).
+std::string parkCauseNotice(const std::string& provider, ParkCause cause, const std::string& next);
 
 // The owner's words for a refused key (a 401, or a 403 for a model or endpoint), the
 // counterpart of billingNotice: "anthropic rejected its key (HTTP 401). Update it
@@ -137,6 +176,7 @@ struct ParkEntry {
   bool     answered = false;   // ...and the one short answer to a refused turn went out
   uint32_t warnedDay = 0;      // the last day the daily spend warning went out
   uint8_t  paused = 0;         // the pause switch's causes
+  ParkCause cause = ParkCause::Unspecified;   // what the router said it is for
 };
 
 class ProviderPark {
@@ -149,6 +189,10 @@ class ProviderPark {
   static constexpr uint32_t kProbeLeaseMs = 150u * 1000u;
 
   void setStorage(ParkStorage s);
+  // Where the re-check's outcome lines go (the harness wires its log). Called outside
+  // the state lock.
+  using LogSink = void (*)(const char* line);
+  void setLog(LogSink sink);
 
   // Where the records live (kMaxProviders of them, allocated on the first question):
   // the device passes a PSRAM-first allocator, so the park keeps only its locks and
@@ -162,6 +206,16 @@ class ProviderPark {
   // A paused provider is closed whatever its park; a parked one is closed until
   // its re-check is due, then open once as the probe.
   ParkVerdict available(const char* provider, PaidSeam seam, uint32_t keyFp, uint32_t nowMs);
+  // The same answer for a reader that may send nothing: never hands out the probe (a due
+  // re-check reads open, with `due` set). A changed key still ends its park, and a lease
+  // that ran out still re-arms: both are facts, whoever asks.
+  ParkVerdict peek(const char* provider, PaidSeam seam, uint32_t keyFp, uint32_t nowMs);
+  // A request is leaving for `provider` on `seam` now: when its re-check is due, this
+  // request is the probe. The harness wire asks this at the moment it sends, so the
+  // token cannot be taken by anything that does not send. True when it became the probe.
+  bool claimProbe(const char* provider, PaidSeam seam, uint32_t nowMs);
+  // A seam that got the probe and is sending nothing after all: the re-check stays due.
+  void releaseProbe(const char* provider);
 
   // A request was answered with a non-2xx `httpStatus`; `text` is everything the
   // provider said (message, type, code). Parks on a billing or key refusal and
@@ -170,7 +224,7 @@ class ProviderPark {
                       const std::string& text, uint32_t nowMs);
   // Park for a refusal the caller already typed (the chat fabric's step kinds).
   void park(const char* provider, PaidSeam seam, uint32_t keyFp, ParkKind kind, int httpStatus,
-            uint32_t nowMs);
+            uint32_t nowMs, ParkCause cause = ParkCause::Unspecified);
   // A request on `seam` succeeded: the episode ends (the park and the notice latch)
   // when the park covers that seam (a 403 closed only its own seam, so a success
   // elsewhere proves nothing about it). True when something ended.
@@ -193,6 +247,8 @@ class ProviderPark {
   // again): true exactly once until the episode ends; every later refused turn of
   // the episode is answered with nothing. Saved with the notice latch.
   bool shortAnswerDue(const char* provider);
+  // What the router said this park is for (Unspecified for any other refusal).
+  ParkCause causeOf(const char* provider);
   // How long until the provider's re-check request (0 when it is due, or when the
   // provider is not parked). Reads only: it never hands out the probe.
   uint32_t recheckInMs(const char* provider);
@@ -231,6 +287,7 @@ class ProviderPark {
     bool     answered = false;   // the episode's one short answer went out (implies noticed)
     uint32_t warnedDay = 0;
     uint8_t  paused = 0;
+    ParkCause cause = ParkCause::Unspecified;
   };
   // The record table: allocated on first use through recordAlloc_ (under mx_).
   struct Span {
@@ -247,7 +304,9 @@ class ProviderPark {
   Rec* ensure(const char* provider);
   void dropIfEmpty(Rec& r);
   void endEpisode(Rec& r);
-  void parkLocked(Rec& r, PaidSeam seam, ParkKind kind, int httpStatus, uint32_t nowMs);
+  void parkLocked(Rec& r, PaidSeam seam, ParkKind kind, int httpStatus, uint32_t nowMs, ParkCause cause);
+  ParkVerdict askLocked(const char* provider, PaidSeam seam, uint32_t keyFp, uint32_t nowMs, bool claim);
+  void noteOutcome(const Rec& r, const std::string& what);   // emitted on flush()
   void loadLocked(uint32_t nowMs);
   void saveLocked();   // marks the state for the file; flush() writes it
   // Writes the file when the state changed, OUTSIDE the state lock (a seam on another
@@ -264,6 +323,8 @@ class ProviderPark {
   mutable std::recursive_mutex mx_;
   std::mutex  saveMx_;
   bool        dirty_ = false;
+  LogSink     log_ = nullptr;
+  std::string pendingLog_;   // outcome lines, one per '\n': written by flush(), off the lock
   Rec*        recs_ = nullptr;   // kMaxProviders records (device: PSRAM)
   RecordAlloc recordAlloc_ = nullptr;
   uint8_t     pausedAll_ = 0;

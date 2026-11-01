@@ -288,9 +288,13 @@ struct HostPark {
   nimbus::orch::StepErr kind = nimbus::orch::StepErr::None;
   int httpStatus = 0;
   uint8_t paused = 0;
+  nimbus::orch::ParkCause cause = nimbus::orch::ParkCause::Unspecified;   // what the router said
 };
 // Closed now? `why` (optional) receives the refusal or pause that closed it. A host
-// whose key changed since it was parked is open again (a new start).
+// whose key changed since it was parked is open again (a new start). A READ: a host whose
+// re-check is due reads open, and asking takes nothing (a candidate list asks about hosts
+// it will not call). The one probe is claimed by the wire when the request really leaves
+// (wire::exchange), so it cannot be spent on a host nobody called.
 bool hostParked(const ProviderDeps& pd, const std::string& host, HostPark* why = nullptr);
 void parkHost(const ProviderDeps& pd, const std::string& host, nimbus::orch::StepErr kind,
               int httpStatus);

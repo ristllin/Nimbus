@@ -176,6 +176,7 @@ class NimbusdRig {
       http_ = ownedHttp_.get();
     }
     tap_.setInner(http_);   // the cumulo head's view of the transport (router refusals)
+    tap_.setClock(steadyMs);
     installLog(opt_.verboseHttp);
     // Lane DEF: an instance that already ran an earlier release has its memory dir.
     struct stat st;
@@ -315,6 +316,11 @@ class NimbusdRig {
     if (k == SpendCeilingVn::Kind::None) return;
     record(chat, text);
     ceiling_->delivered(ch, k);
+  }
+  // The engine thread's idle tick: a parked provider nothing else is calling is asked
+  // here, so it recovers by itself. recheckParkedHost is a no-op until one is due.
+  void recheckTick() {
+    if (eng_) eng_->recheckParkedHost();
   }
   // The engine thread's idle tick: at most one step every 5 s, never while parked.
   void drainTick() {
@@ -694,7 +700,7 @@ class NimbusdRig {
     std::string err;
     const int status = http_->exec(req, resp, err) ? resp.status : 0;
     std::string reason;
-    verify_.record(slug, probeVerdict(slug, status, reason), reason);
+    verify_.record(slug, probeVerdict(slug, status, reason, resp.body), reason);
     if (status == 200) {
       std::vector<nimbus::orch::ModelInfo> cat;
       nimbus::orch::parseModelsList(slug, resp.body, cat);
@@ -1776,13 +1782,11 @@ class NimbusdRig {
       err = "connect failed";
       return {};
     }
-    if (resp.status == 401 || resp.status == 403)    { err = "key rejected"; return {}; }
     if (resp.status < 200 || resp.status >= 300) {
-      // Device parity (embeddings.cpp): append the provider's machine code, so a
-      // billing refusal (429 credit_balance_exhausted) classifies as billing.
-      err = "HTTP " + std::to_string(resp.status);
-      const std::string code = errorCodeOf(resp.body);
-      if (!code.empty()) err += " " + code;
+      // Device parity (embeddings.cpp): the shared token, the provider's machine code
+      // appended, so a billing refusal classifies as billing and a router refusal by
+      // its reason.
+      err = orch::embedRefusalToken(resp.status, resp.body, errorCodeOf(resp.body), route.viaRouter);
       return {};
     }
     // Lane DEF: an answered embedding is billed (its reported usage, else an estimate).
@@ -2138,6 +2142,7 @@ class NimbusdRig {
       return false;
     }
     lastGoodCumulo_ = r.used;
+    if (eng_ && eng_->turnInFlight()) agent::router_refusal::settleClamp(tap_.refusal(), steadyMs(), o.out);
     if (!r.fellBack()) return true;
     // A background compaction call (the fold runs through this same head, with no
     // turn in flight) gets the answer only: no notice prefixed into the summary,
@@ -2155,6 +2160,7 @@ class NimbusdRig {
   void noteRefusal(RefusalKind kind, const std::string& selector, HeadOut& o) {
     if (kind == RefusalKind::Auth) verify_.record(kCumuloSlug, 0, "");
     if (kind == RefusalKind::Account) verify_.record(kCumuloSlug, -1, "nocredits");
+    if (kind == RefusalKind::Suspended) verify_.record(kCumuloSlug, -1, "suspended");
     const std::string cause = refusalCause(kind, selector);
     if (!cause.empty()) o.err = cause;
   }
