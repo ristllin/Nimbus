@@ -3,6 +3,7 @@
 #include <string>
 
 #include "nimbus/harness/compose.h"
+#include "nimbus/orch/head_loop.h"   // FitScope
 
 // turn_fit - what a turn's request gives up when it does not fit, in a defined order,
 // and what it says about it.
@@ -16,10 +17,12 @@
 //
 //   older history   oldest past turns first; the summary and the newest turn stay
 //   then, only when that is not enough:
+//   recalled        the memories recall put in the prompt (a tool can search them again)
+//   playbook        the food playbook (a tool can read the skill again)
 //   results         the [FRESH RESULTS] and [MEMORY RESULTS] blocks clipped, largest first
-//   recalled        the memories recall put in the prompt
-//   playbook        the food playbook (the model can read the skill again)
-//   newest history  the last past turns, then the summary
+//   newest history  the last past turns as whole pairs, then the summary
+//                   (those two swap on a turn with nobody's message in it: a synthesis
+//                   or a routine exists for its results)
 //   input           the turn input's middle (its head and its newest words stay)
 //   tools           every registry tool: orch_turn alone rides, and the model answers now
 //   shelf           the skills index and the standing preferences, the owner's rules: last
@@ -37,9 +40,10 @@ class TurnFit {
   // `ci` and `tools` outlive this object (the turn's); nullptr tools = a single shot.
   TurnFit(ComposeInputs& ci, const std::string& inputs, HeadTools* tools);
 
-  // Give up at least `want` bytes if the ladder allows it. Without `lastResort` only
-  // older history goes. Returns the bytes given up; 0 = nothing left on those rungs.
-  size_t shrink(size_t want, bool lastResort);
+  // Give up bytes within `scope` (head_loop.h FitScope): the older history; the next rung
+  // that has anything; or the rungs in order until `want` is met. Returns the bytes given
+  // up; 0 = nothing left there.
+  size_t shrink(size_t want, nimbus::orch::FitScope scope);
 
   // The prompt recomposed from what is left. Valid after shrink() gave something up.
   const std::string& instructions() const { return instructions_; }
@@ -64,6 +68,8 @@ class TurnFit {
   size_t dropShelf();
   size_t clipInput(size_t want);
   size_t dropTools();
+  size_t runRung(int rung, size_t want);
+  size_t walkLadder(size_t want, bool whole);
 
   ComposeInputs& ci_;
   HeadTools* tools_;

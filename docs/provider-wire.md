@@ -265,9 +265,10 @@ order:
 3. the turn's photos as images, for a window refusal only (photos sit outside the byte
    budget): that host reads their transcriptions;
 4. the newest tool results, clipped;
-5. the `[FRESH RESULTS]` and `[MEMORY RESULTS]` blocks, clipped, both ends kept;
-6. recalled memories, then the attached food playbook;
-7. the newest past turns as whole pairs, then the summary;
+5. recalled memories, then the attached food playbook (a tool can read both again);
+6. the `[FRESH RESULTS]` and `[MEMORY RESULTS]` blocks, clipped, both ends kept;
+7. the newest past turns as whole pairs, then the summary. On a turn with nobody's message
+   in it (a synthesis, a routine) 7 comes before 6, since the results are what it is for;
 8. the middle of the turn input;
 9. every registry tool (orch_turn alone rides, and the model is told to answer now);
 10. the skills list and standing preferences.

@@ -229,6 +229,11 @@ FinalCheck chainFinalChecks(std::vector<FinalCheck> checks);
 // tool-call id rule, and valid on every other wire.
 extern const char kFinalCheckCallId[];
 
+// How far a refit may go on the prompt side. A refusal of the byte budget can check its
+// work (the next build measures it), so it takes one rung at a time and gives up no more
+// than it must. A provider's window refusal gets one retry, so it takes the whole ladder.
+enum class FitScope : uint8_t { OlderHistory, NextRung, Ladder };
+
 // Forward decl: transcript.h includes THIS header (it uses HeadToolCall/Result),
 // so the dependency runs one way only - hooks hold a pointer, never a value.
 class Transcript;
@@ -258,11 +263,10 @@ struct HeadLoopHooks {
   Transcript* transcript = nullptr;
   std::function<void(const std::string&)> log;       // optional trace
   // Optional: give up prompt and input bytes when a request does not fit and the
-  // transcript has nothing left to fold (nimbus/harness/turn_fit.h). `lastResort` false =
-  // older history only; true = the rest of the ladder. The hook rebuilds what the next
-  // step renders. Returns the bytes given up, 0 = nothing left. Null => the transcript
-  // is all a refit can shrink.
-  std::function<size_t(size_t want, bool lastResort)> fitPrompt;
+  // transcript has nothing left to fold (nimbus/harness/turn_fit.h). The hook rebuilds what
+  // the next step renders. Returns the bytes given up, 0 = nothing left on that scope.
+  // Null => the transcript is all a refit can shrink.
+  std::function<size_t(size_t want, FitScope scope)> fitPrompt;
   // Optional round-prose observer (Glass Box A4): fired once per step whose
   // HeadStep.text is non-empty, BEFORE tool dispatch - the device persists it
   // as a kind=llm_response episodic row. Observer-only; never affects the loop.
@@ -290,7 +294,7 @@ struct HeadOutcome {
 // (`fitPrompt`), the turn's photos as images (`dropImages`: they are outside the byte
 // budget but not outside the window), the newest results, the rest of the prompt ladder.
 // Returns the bytes given up. `fitPrompt` and `dropImages` may be null.
-size_t trimForOverflow(Transcript& tr, size_t want, const std::function<size_t(size_t, bool)>& fitPrompt,
+size_t trimForOverflow(Transcript& tr, size_t want, const std::function<size_t(size_t, FitScope)>& fitPrompt,
                        const std::function<size_t()>& dropImages);
 
 // Drive the bounded ReAct loop to a terminal orch_turn. Always returns (never

@@ -98,6 +98,8 @@ size_t TurnFit::dropPlaybook() {
 size_t TurnFit::dropNewestHistory(size_t want) {
   auto& h = ci_.history;
   size_t freed = 0;
+  // The wire writes a quoted text at up to twice its size, so this rung stops at what it can
+  // measure and the next body build says whether it was enough.
   // Past turns go whole, as user and assistant pairs (a history that opens on an assistant
   // message is a refusal on some wires), the oldest of them first; the summary pair last.
   const size_t first = (h.size() >= 2 && isSummaryMessage(h[0])) ? 2 : 0;
@@ -143,19 +145,43 @@ size_t TurnFit::dropTools() {
   return freed;
 }
 
-size_t TurnFit::shrink(size_t want, bool lastResort) {
-  size_t freed = 0;
-  if (!lastResort) {
-    freed = dropOlderHistory(want);
-  } else {
-    freed = clipResults(want);
-    if (freed < want) freed += dropRecalled();
-    if (freed < want) freed += dropPlaybook();
-    if (freed < want) freed += dropNewestHistory(want - freed);
-    if (freed < want) freed += clipInput(want - freed);
-    if (freed < want) freed += dropTools();
-    if (freed < want) freed += dropShelf();
+namespace {
+enum Rung : int { kRecalled, kPlaybook, kResults, kNewest, kInput, kTools, kShelf };
+// What a tool can read back goes first. Then a turn with nobody's message in it (a synthesis,
+// a routine) exists for its results: the past turns go before they do. An owner's turn is the
+// other way round: "its pumpkin soup" means nothing without the last exchange, and a clipped
+// result can be fetched again.
+constexpr int kOwnerOrder[] = {kRecalled, kPlaybook, kResults, kNewest, kInput, kTools, kShelf};
+constexpr int kUnattendedOrder[] = {kRecalled, kPlaybook, kNewest, kResults, kInput, kTools, kShelf};
+}  // namespace
+
+size_t TurnFit::runRung(int rung, size_t want) {
+  switch (rung) {
+    case kRecalled: return dropRecalled();
+    case kPlaybook: return dropPlaybook();
+    case kResults:  return clipResults(want);
+    case kNewest:   return dropNewestHistory(want);
+    case kInput:    return clipInput(want);
+    case kTools:    return dropTools();
+    case kShelf:    return dropShelf();
+    default:        return 0;
   }
+}
+
+size_t TurnFit::walkLadder(size_t want, bool whole) {
+  const int* order = ci_.speakerPresent ? kOwnerOrder : kUnattendedOrder;
+  size_t freed = 0;
+  for (size_t i = 0; i < sizeof(kOwnerOrder) / sizeof(kOwnerOrder[0]); i++) {
+    freed += runRung(order[i], want > freed ? want - freed : 0);
+    if (whole ? freed >= want : freed > 0) break;
+  }
+  return freed;
+}
+
+size_t TurnFit::shrink(size_t want, nimbus::orch::FitScope scope) {
+  using nimbus::orch::FitScope;
+  const size_t freed = scope == FitScope::OlderHistory ? dropOlderHistory(want)
+                                                       : walkLadder(want, scope == FitScope::Ladder);
   if (!freed) return 0;
   trimmed_ = true;
   instructions_ = composeInstructions(ci_);
@@ -193,7 +219,7 @@ std::string TurnFit::inputs() const {
 std::string TurnFit::ownerLine() const {
   std::string s;
   if (resultBlocksClipped_) addPart(s, "part of the results");
-  if (newestDropped_) addPart(s, "the latest messages");
+  if (newestDropped_ && ci_.speakerPresent) addPart(s, "the latest messages");
   if (inputBytesCut_) addPart(s, "part of this message");
   if (toolsDropped_) addPart(s, "its tools");
   if (s.empty()) return s;

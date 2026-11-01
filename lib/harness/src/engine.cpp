@@ -113,7 +113,7 @@ nimbus::orch::ErrorClass errorClassOf(nimbus::orch::StepErr k) {
 // overload, rate limit, timeout). A refused request (bad request, auth, billing, a
 // rejected model, a cut answer) comes back the same, so it gets the plain cause.
 // The refits a request gets on a path with no in-loop refit: the rungs of turn_fit.h.
-constexpr int kSingleShotRefits = 6;
+constexpr int kSingleShotRefits = 10;
 
 // The bytes a refusal of the request's size asks for; 0 when `err` is no such refusal, or
 // when it is a provider's window and this is not the first try (trim and retry once).
@@ -1709,8 +1709,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     lastInstructions_ = layout::display(instructions);
   };
   if (headToolsPtr)
-    headTools.fitPrompt = [&](size_t want, bool lastResort, std::string& ins, std::string& inp) -> size_t {
-      const size_t freed = fit.shrink(want, lastResort);
+    headTools.fitPrompt = [&](size_t want, orch::FitScope scope, std::string& ins, std::string& inp) -> size_t {
+      const size_t freed = fit.shrink(want, scope);
       if (!freed) return 0;
       takeFit();
       ins = instructions;
@@ -2103,11 +2103,17 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // No in-loop refit on this path (a single-shot head, a loop without the fabric). Nothing
     // ran, so the request is fitted and sent again: until it fits for the wire budget, once
     // for a provider's window. The ladder below takes over from there, on the trimmed prompt.
+    size_t budget = 0, size = 0;   // the wire budget's figures, read to tell the two refusals apart
     for (int tries = 0; !ok && *loopDispatched == 0 && tries < kSingleShotRefits; ++tries) {
       const size_t want = sizeRefusalBytes(err, instructions.size() + inputs.size(), tries);
       if (!want) break;
-      size_t freed = fit.shrink(want, false);
-      if (freed < want) freed += fit.shrink(want - freed, true);
+      // A window refusal has one retry, so it takes the whole ladder; the wire budget's next
+      // build checks the work, so it gives up one rung at a time.
+      size_t freed = fit.shrink(want, orch::FitScope::OlderHistory);
+      if (freed < want && !orch::parseBodyBudgetError(err, budget, size))
+        freed += fit.shrink(want - freed, orch::FitScope::Ladder);
+      else if (!freed)
+        freed = fit.shrink(want, orch::FitScope::NextRung);
       if (!freed) break;
       takeFit();
       hlog::logf("orchestrator: %s refused the request for its size - gave up %u B, sending it again", host.c_str(),

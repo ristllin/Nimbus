@@ -250,9 +250,10 @@ namespace {
 constexpr size_t kBudgetRefitSlack = 4096;
 constexpr size_t kBudgetClipSlack = 512;
 // Refits per round: big arguments, older rounds, older history, the newest round's clip,
-// the rest of the prompt ladder, and more for a rung whose estimate fell short (a text the
-// wire escapes to twice its size, stub lines that ate the room a fold made).
-constexpr int kBudgetRefits = 8;
+// each rung of the prompt ladder (turn_fit.h), and a few for a rung whose estimate fell short
+// (stub lines that ate the room a fold made). Each is one body build, and none of them
+// sends anything.
+constexpr int kBudgetRefits = 14;
 // Arguments over this many bytes shrink to a stub (a write of a document, not a query).
 constexpr size_t kArgStubOver = 512;
 
@@ -289,12 +290,12 @@ size_t refitOneRung(Transcript& tr, const HeadLoopHooks& hooks, size_t want, siz
   if (freed) return freed;
   // Round 0, or nothing left to fold: the prompt's older history before any result
   // the model has not read (Lumi, 1 Nov: 90519 B at round 0 with 0 B to fold).
-  if (hooks.fitPrompt && (freed = hooks.fitPrompt(want, false)) != 0) {
+  if (hooks.fitPrompt && (freed = hooks.fitPrompt(want, FitScope::OlderHistory)) != 0) {
     what = "the older history";
     return freed;
   }
   if ((freed = tr.trimToolOutputs(cap)) != 0) return freed;
-  if (hooks.fitPrompt && (freed = hooks.fitPrompt(want, true)) != 0) what = "the prompt and input";
+  if (hooks.fitPrompt && (freed = hooks.fitPrompt(want, FitScope::NextRung)) != 0) what = "the prompt and input";
   return freed;
 }
 
@@ -326,19 +327,19 @@ HeadStep stepWithRefit(const HeadLoopHooks& hooks, bool allowTools, const std::v
 }
 }  // namespace
 
-size_t trimForOverflow(Transcript& tr, size_t want, const std::function<size_t(size_t, bool)>& fitPrompt,
+size_t trimForOverflow(Transcript& tr, size_t want, const std::function<size_t(size_t, FitScope)>& fitPrompt,
                        const std::function<size_t()>& dropImages) {
   size_t freed = tr.stubArguments(kArgStubOver);
   const size_t newest = newestRoundBytes(tr);
   if (freed < want) freed += tr.foldOlderRounds(newest);
-  if (freed < want && fitPrompt) freed += fitPrompt(want - freed, false);
+  if (freed < want && fitPrompt) freed += fitPrompt(want - freed, FitScope::OlderHistory);
   if (freed < want && dropImages) freed += dropImages();
   if (freed < want) {
     const size_t have = tr.toolBytes();
     const size_t rest = want - freed;
     freed += tr.trimToolOutputs(have > rest ? have - rest : 1);
   }
-  if (freed < want && fitPrompt) freed += fitPrompt(want - freed, true);
+  if (freed < want && fitPrompt) freed += fitPrompt(want - freed, FitScope::Ladder);
   return freed;
 }
 

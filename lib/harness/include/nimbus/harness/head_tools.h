@@ -60,10 +60,11 @@ struct HeadTools {
   std::function<std::string(const std::string& host)> inputLead;
 
   // Optional prompt side of a refit (turn_fit.h, lane OVF): give up at least `want` bytes
-  // (`lastResort` false = older history only) and hand back the prompt and the input the
-  // next request sends. Returns the bytes given up, 0 = nothing left. The engine may also
-  // empty `specs` on the last rung. Null = only the transcript can shrink.
-  std::function<size_t(size_t want, bool lastResort, std::string& instructions, std::string& inputs)> fitPrompt;
+  // within `scope` and hand back the prompt and the input the next request sends. Returns
+  // the bytes given up, 0 = nothing left there. The engine may also empty `specs` on a late
+  // rung. Null = only the transcript can shrink.
+  std::function<size_t(size_t want, nimbus::orch::FitScope scope, std::string& instructions, std::string& inputs)>
+      fitPrompt;
 };
 
 }  // namespace agent

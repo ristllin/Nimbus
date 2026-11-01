@@ -12,6 +12,7 @@
 using agent::ComposeInputs;
 using agent::HistMsg;
 using agent::TurnFit;
+using nimbus::orch::FitScope;
 
 void setUp() { harness_test::LogCapture::install(); }
 void tearDown() { agent::hlog::setSink(nullptr); }
@@ -48,7 +49,7 @@ static bool hasQ(const ComposeInputs& ci, int i) {
 static void test_older_history_goes_first_and_alone() {
   ComposeInputs ci = baseInputs();
   TurnFit fit(ci, inputWithResults(), nullptr);
-  const size_t freed = fit.shrink(2500, /*lastResort=*/false);
+  const size_t freed = fit.shrink(2500, FitScope::OlderHistory);
   TEST_ASSERT_TRUE(freed >= 2500);
   TEST_ASSERT_FALSE(hasQ(ci, 0));
   TEST_ASSERT_FALSE(hasQ(ci, 1));
@@ -68,45 +69,87 @@ static void test_older_history_goes_first_and_alone() {
 static void test_older_history_rung_runs_out() {
   ComposeInputs ci = baseInputs();
   TurnFit fit(ci, inputWithResults(), nullptr);
-  TEST_ASSERT_TRUE(fit.shrink(1000000, false) > 0);
+  TEST_ASSERT_TRUE(fit.shrink(1000000, FitScope::OlderHistory) > 0);
   TEST_ASSERT_TRUE(hasQ(ci, 5));   // still kept
-  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)fit.shrink(1000, false));   // nothing left on the rung
+  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)fit.shrink(1000, FitScope::OlderHistory));   // nothing left on the rung
 }
 
-static void test_results_are_clipped_before_memories_and_keep_both_ends() {
+// What a tool can read back goes before anything it cannot.
+static void test_memories_and_playbook_go_before_results() {
   ComposeInputs ci = baseInputs();
+  ci.speakerPresent = true;
   TurnFit fit(ci, inputWithResults(), nullptr);
-  TEST_ASSERT_TRUE(fit.shrink(3000, /*lastResort=*/true) >= 3000);
+  TEST_ASSERT_TRUE(fit.shrink(1000, FitScope::Ladder) >= 1000);
+  TEST_ASSERT_TRUE(ci.recalled.empty());
+  TEST_ASSERT_FALSE(ci.foodPlaybook.empty());
+  TEST_ASSERT_TRUE(fit.inputs().find("cut to fit") == std::string::npos);
+  TEST_ASSERT_TRUE(hasQ(ci, 5));
+  TEST_ASSERT_TRUE(fit.ownerLine().empty());
+}
+
+// An owner's turn keeps the last exchange and clips the results, both ends kept.
+static void test_owner_turn_clips_results_before_the_newest_turn() {
+  ComposeInputs ci = baseInputs();
+  ci.speakerPresent = true;
+  TurnFit fit(ci, inputWithResults(), nullptr);
+  TEST_ASSERT_TRUE(fit.shrink(6000, FitScope::Ladder) >= 6000);
   const std::string in = fit.inputs();
   TEST_ASSERT_TRUE(in.find("RESULTHEAD") != std::string::npos);
   TEST_ASSERT_TRUE(in.find("RESULTTAIL") != std::string::npos);
   TEST_ASSERT_TRUE(in.find("cut to fit this request") != std::string::npos);
   TEST_ASSERT_TRUE(in.find("[SYSTEM]\nsynthesize") != std::string::npos);
-  TEST_ASSERT_FALSE(ci.recalled.empty());   // the next rung did not run
   TEST_ASSERT_TRUE(hasQ(ci, 5));
   TEST_ASSERT_TRUE(fit.ownerLine().find("part of the results") != std::string::npos);
 }
 
+// A synthesis exists for its results: the past turns go first, and that is no news to the owner.
+static void test_synthesis_keeps_results_over_the_newest_turn() {
+  ComposeInputs ci = baseInputs();
+  ci.speakerPresent = false;
+  TurnFit fit(ci, inputWithResults(), nullptr);
+  TEST_ASSERT_TRUE(fit.shrink(6000, FitScope::Ladder) >= 6000);
+  TEST_ASSERT_TRUE(fit.inputs().find("cut to fit") == std::string::npos);
+  TEST_ASSERT_FALSE(hasQ(ci, 0));
+  TEST_ASSERT_TRUE(fit.ownerLine().empty());
+}
+
+// The wire budget's scope: one rung at a time, nothing past the first that had anything.
+static void test_next_rung_stops_at_the_first_that_gives() {
+  ComposeInputs ci = baseInputs();
+  ci.speakerPresent = false;
+  TurnFit fit(ci, inputWithResults(), nullptr);
+  TEST_ASSERT_TRUE(fit.shrink(1000000, FitScope::NextRung) > 0);
+  TEST_ASSERT_TRUE(ci.recalled.empty());
+  TEST_ASSERT_FALSE(ci.foodPlaybook.empty());
+  TEST_ASSERT_TRUE(fit.shrink(1000000, FitScope::NextRung) > 0);
+  TEST_ASSERT_TRUE(ci.foodPlaybook.empty());
+  TEST_ASSERT_TRUE(hasQ(ci, 5));
+  TEST_ASSERT_TRUE(fit.shrink(1000000, FitScope::NextRung) > 0);
+  TEST_ASSERT_TRUE(ci.history.empty());
+  TEST_ASSERT_TRUE(fit.inputs().find("cut to fit") == std::string::npos);
+}
+
 static void test_the_ladder_order_to_the_end() {
   ComposeInputs ci = baseInputs();
+  ci.speakerPresent = true;
   agent::HeadTools tools;
   tools.specs.push_back({"memory_search", std::string(40000, 'd'), "{}"});
   const std::string huge = "OWNERHEAD " + std::string(40000, 'o') + " OWNERTAIL";
   TurnFit fit(ci, huge, &tools);
-  // A small ask past the results: memories go, and history stays.
-  TEST_ASSERT_TRUE(fit.shrink(1000, true) >= 1000);
+  // A small ask: the memories go, and history stays.
+  TEST_ASSERT_TRUE(fit.shrink(1000, FitScope::Ladder) >= 1000);
   TEST_ASSERT_TRUE(ci.recalled.empty());
   TEST_ASSERT_FALSE(ci.foodPlaybook.empty());
   TEST_ASSERT_TRUE(hasQ(ci, 5));
-  // More: the playbook, then the newest turns.
-  TEST_ASSERT_TRUE(fit.shrink(3000, true) >= 3000);
+  // More: the playbook, then the past turns (this input has no results block).
+  TEST_ASSERT_TRUE(fit.shrink(3000, FitScope::Ladder) >= 3000);
   TEST_ASSERT_TRUE(ci.foodPlaybook.empty());
   TEST_ASSERT_FALSE(tools.specs.empty());
   // Past turns go whole: the history still opens on a user message and alternates.
   TEST_ASSERT_TRUE(ci.history.size() % 2 == 0);
   for (size_t i = 0; i < ci.history.size(); i++) TEST_ASSERT_EQUAL(i % 2 == 0, ci.history[i].user);
   // Everything: the input keeps both ends, the tools go, the owner's rules go last.
-  TEST_ASSERT_TRUE(fit.shrink(1000000, true) > 0);
+  TEST_ASSERT_TRUE(fit.shrink(1000000, FitScope::Ladder) > 0);
   TEST_ASSERT_TRUE(ci.history.empty());
   TEST_ASSERT_TRUE(tools.specs.empty());
   TEST_ASSERT_TRUE(ci.standingPrefs.empty());
@@ -116,15 +159,18 @@ static void test_the_ladder_order_to_the_end() {
   TEST_ASSERT_TRUE(in.size() < 8000);
   TEST_ASSERT_TRUE(in.find("Your tools did not fit") != std::string::npos);
   TEST_ASSERT_TRUE(fit.ownerLine().find("its tools") != std::string::npos);
-  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)fit.shrink(1000, true));   // the ladder ends; it never spins
+  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)fit.shrink(1000, FitScope::Ladder));   // the ladder ends; it never spins
 }
 
 static void test_clips_stay_valid_utf8() {
   ComposeInputs ci = baseInputs();
+  ci.recalled.clear();
+  ci.foodPlaybook.clear();
+  ci.speakerPresent = true;
   std::string input = "[FRESH RESULTS]\n";
   for (int i = 0; i < 3000; i++) input += "\xE2\x82\xAC";
   TurnFit fit(ci, input, nullptr);
-  TEST_ASSERT_TRUE(fit.shrink(4000, true) > 0);
+  TEST_ASSERT_TRUE(fit.shrink(4000, FitScope::Ladder) > 0);
   const std::string in = fit.inputs();
   for (size_t i = 0; i < in.size();) {
     const unsigned char c = (unsigned char)in[i];
@@ -139,7 +185,10 @@ int main() {
   UNITY_BEGIN();
   RUN_TEST(test_older_history_goes_first_and_alone);
   RUN_TEST(test_older_history_rung_runs_out);
-  RUN_TEST(test_results_are_clipped_before_memories_and_keep_both_ends);
+  RUN_TEST(test_memories_and_playbook_go_before_results);
+  RUN_TEST(test_owner_turn_clips_results_before_the_newest_turn);
+  RUN_TEST(test_synthesis_keeps_results_over_the_newest_turn);
+  RUN_TEST(test_next_rung_stops_at_the_first_that_gives);
   RUN_TEST(test_the_ladder_order_to_the_end);
   RUN_TEST(test_clips_stay_valid_utf8);
   return UNITY_END();

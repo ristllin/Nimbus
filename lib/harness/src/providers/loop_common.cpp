@@ -447,9 +447,9 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
 
   // The prompt side of a refit (turn_fit.h): what the next request renders changes, so
   // the host's step is rebuilt on it. Never runs while `cur` is on the stack.
-  auto fitPromptNow = [&](size_t want, bool lastResort) -> size_t {
+  auto fitPromptNow = [&](size_t want, orch::FitScope scope) -> size_t {
     if (!ht.fitPrompt) return 0;
-    const size_t freed = ht.fitPrompt(want, lastResort, fitInstructions, fitInputs);
+    const size_t freed = ht.fitPrompt(want, scope, fitInstructions, fitInputs);
     if (!freed) return 0;
     fitted = true;
     tr.setSeedText(seedFor(hostIdx));

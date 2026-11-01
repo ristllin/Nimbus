@@ -366,6 +366,27 @@ static void test_synthesis_never_fails_on_size() {
   TEST_ASSERT_TRUE(crossed > 3);   // the matrix really crosses the budget
 }
 
+// The results are what a synthesis is for: at Lumi's size they go out whole, the past turns
+// pay. The owner hears nothing about it, since nothing they asked about was cut.
+static void test_synthesis_at_lumis_size_keeps_its_results_whole() {
+  int crossed = 0;
+  for (size_t tools = 44000; tools <= 58000; tools += 2000) {
+    Rig r({"mistral"}, tools);
+    r.quotedHistory(8, 1500);
+    const std::string result = "START " + std::string(5000, 'r') + " END";
+    r.jobs->addFreshResult("job0008", "research-sub", result);
+    r.script(ok("mistral", finalBody("mistral", "synthesis done")));
+    r.eng->maybeConsolidate("1001");
+    assertAnswered(r, "lumi size", "synthesis done");
+    crossed += r.wire.http.seen[0].body.find("LEFT OUT") != std::string::npos ? 1 : 0;
+    const bool whole = r.wire.http.seen[0].body.find("cut to fit") == std::string::npos;
+    if (tools > 56000) continue;   // past this the past turns are not enough, and the results do pay
+    TEST_ASSERT_TRUE_MESSAGE(whole, "the result is whole");
+    TEST_ASSERT_FALSE_MESSAGE(r.saidAny("did not fit"), r.all().c_str());
+  }
+  TEST_ASSERT_TRUE(crossed > 0);
+}
+
 // The same on an owner turn, and what the turn leaves out is said: the model reads
 // it in the request, the log names it.
 static void test_owner_turn_trims_older_history_first_and_says_so() {
@@ -852,6 +873,7 @@ static void test_not_promises_are_left_alone() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_synthesis_never_fails_on_size);
+  RUN_TEST(test_synthesis_at_lumis_size_keeps_its_results_whole);
   RUN_TEST(test_owner_turn_trims_older_history_first_and_says_so);
   RUN_TEST(test_round0_over_budget_without_the_fabric);
   RUN_TEST(test_failed_synthesis_sends_only_the_raw_results);
