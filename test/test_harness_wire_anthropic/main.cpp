@@ -1694,6 +1694,35 @@ static void keepOne(const char* ref, const char* id, uint32_t nowMs) {
   const providers::imageparts::LoopImages loop(tr);
 }
 
+// The bench of 31 Oct: 14 of 62 photo turns died with HTTP 400 "not valid JSON". Once
+// the upload queue was full, the turn's photo went inline while older photos rode their
+// history message as kept files, and the bytes landed outside their JSON string. Both
+// at once is the case; each alone was tested.
+static void test_img_inline_photo_with_kept_files_is_valid_json() {
+  keepOne("0123456789abcdef", "file_kept_a", 1000);
+  keepOne("fedcba9876543210", "file_kept_b", 1000);
+  harness_test::PhotoTurn fx;   // inline: uploadOnce is off, as with a full delete queue
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("claude-haiku-5-5"); };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  const nimbus::orch::ActiveTurnImages active(fx.set.get());
+  std::string conv, out, err;
+  const std::string prompt = promptWithHistory({kPhotoRow});
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnAnthropic(pd, conv, prompt, fx.text, out, err, &rig.ht, nullptr), err.c_str());
+  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+  const std::string& body = d.http.seen[0].body;
+  JsonDocument doc;
+  const DeserializationError e = deserializeJson(doc, body, DeserializationOption::NestingLimit(32));
+  TEST_ASSERT_TRUE_MESSAGE(e == DeserializationError::Ok, body.substr(0, 400).c_str());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, ("\"data\":\"" + harness_test::b64Of(fx.a) + "\"").c_str()));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, ("\"data\":\"" + harness_test::b64Of(fx.b) + "\"").c_str()));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "file_kept_a"));
+  providers::imageparts::dropFileRefs();
+}
+
 // Nothing kept is left at the provider for long: every upload asks the provider to
 // delete it by itself after kUploadExpiryS (so one a restart orphaned goes too); a kept
 // file unused for an hour is deleted (exactly an hour is still kept); a refusal of a
@@ -1900,6 +1929,7 @@ int main(int, char**) {
   RUN_TEST(test_img_failover_from_a_blind_host_still_sends_the_pixels);
   RUN_TEST(test_img_reattach_rides_the_history_message_with_a_stable_prefix);
   RUN_TEST(test_img_history_prefix_is_append_only_except_across_a_fold);
+  RUN_TEST(test_img_inline_photo_with_kept_files_is_valid_json);
   RUN_TEST(test_img_kept_files_are_never_left_behind);
   RUN_TEST(test_img_look_twice_attaches_the_photo_once);
   RUN_TEST(test_img_splice_all_cuts_every_occurrence_of_a_look_marker);

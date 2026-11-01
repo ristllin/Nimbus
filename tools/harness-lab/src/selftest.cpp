@@ -70,6 +70,32 @@ void testWirePins() {
   raw.exec(orig, out, err);
   check(echo.seen.back().body == orig.body, "with no pins the body is byte-identical");
 
+  // A pin that changes the body's length must move the splices with it: on 31 Oct the
+  // effort pin left an inline photo's base64 3 bytes late, outside its JSON string, and
+  // 14 of 62 bench turns died with HTTP 400 (reported then as a progressive-JPEG defect).
+  {
+    const uint8_t a[4] = {1, 2, 3, 4}, b[5] = {5, 6, 7, 8, 9};
+    agent::HttpRequest r;
+    r.method = "POST";
+    r.host = "api.anthropic.com";
+    r.path = "/v1/messages";
+    r.body = R"({"model":"m","output_config":{"effort":"medium"},"messages":[{"data":""},{"data":""}]})";
+    const size_t at1 = r.body.find(R"("data":")") + 8;
+    const size_t at2 = r.body.find(R"("data":")", at1) + 8;
+    r.splices.push_back(agent::BodySplice{at1, a, sizeof(a), true});
+    r.splices.push_back(agent::BodySplice{at2, b, sizeof(b), true});
+    WirePins lowOnly{"low", 0, 0};
+    WireOverrideTransport pinned(&echo, &lowOnly);
+    pinned.exec(r, out, err);
+    const std::string wire = agent::materializeBody(echo.seen.back());
+    JsonDocument dd;
+    check(!deserializeJson(dd, wire), "a pinned body with photos spliced in is still valid JSON");
+    check(std::string(dd["output_config"]["effort"] | "") == "low", "the pin landed");
+    check(std::string(dd["messages"][0]["data"] | "") == "AQIDBA==", "the first photo is in its own string");
+    check(std::string(dd["messages"][1]["data"] | "") == "BQYHCAk=", "the second photo is in its own string");
+    check(echo.seen.back().splices.size() == 2, "the splices survive the rewrite");
+  }
+
   agent::HttpRequest tg;
   tg.method = "POST";
   tg.host = "api.telegram.org";

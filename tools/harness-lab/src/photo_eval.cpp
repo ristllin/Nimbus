@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/providers.h"
 #include "nimbus/harness/vision_caption.h"
 #include "nimbus/orch/blob_store.h"
 #include "nimbus/orch/media_label.h"
@@ -124,8 +125,10 @@ int cmdPhotoEval(const Env& env, const LabRig::Options& opt, const PhotoEvalOpti
   int n = 0;
   for (const ManifestPhoto& ph : photos) {
     // A fresh chat per photo: one turn, no history, exactly the device's first
-    // look at a photo. A shared chat would leak one photo's answer into the next.
-    const std::string chat = "pe-" + std::to_string(n + 1);
+    // look at a photo. A shared chat would leak one photo's answer into the next, and
+    // --shared-chat does exactly that, for the path a long real chat takes: kept photos
+    // riding their history messages.
+    const std::string chat = pe.sharedChat ? std::string("photoeval") : "pe-" + std::to_string(n + 1);
     auto set = std::unique_ptr<orch::TurnImages>(new orch::TurnImages());
     const std::string turn = singlePhotoTurn(chat, ph, *set);
     // The fallback for a head without image input, exactly as the device wires it.
@@ -159,6 +162,11 @@ int cmdPhotoEval(const Env& env, const LabRig::Options& opt, const PhotoEvalOpti
     results.flush();
     std::printf("  [%d] %s (%s): %s, %.1fs, %u in / %u out\n", ++n, ph.file.c_str(), ph.kind.c_str(),
                 t.ok ? "ok" : "FAILED", t.seconds, t.tokensIn, t.tokensOut);
+    // The device's idle step: an upload the turn is done with is deleted now, so a long
+    // run neither fills the delete queue nor leaves photos at the provider.
+    const agent::providers::ProviderDeps pd = rig.providerDeps();
+    while (!pe.noDrain && agent::providers::pendingUploadDeletes() && agent::providers::deletePendingUploads(pd) > 0) {
+    }
     if (n == 1 && !t.systemPrompt.empty()) {
       std::ofstream sp(pe.out + "/system_prompt.txt");
       sp << t.systemPrompt;

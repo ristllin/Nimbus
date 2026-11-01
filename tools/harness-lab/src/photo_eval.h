@@ -13,6 +13,9 @@ struct PhotoEvalOptions {
   std::string dir;    // the manifest directory: photos.json + the JPEGs
   std::string out;    // output directory for results.jsonl
   std::string prompt; // empty = the manifest's per-photo prompt
+  bool sharedChat = false;   // every photo in one chat (--shared-chat), not a fresh one each
+  bool noDrain = false;      // uploads wait in the delete queue (--no-drain): past its
+                             // bound a turn's photo goes inline next to kept files
 };
 
 int cmdPhotoEval(const Env& env, const LabRig::Options& opt, const PhotoEvalOptions& pe);

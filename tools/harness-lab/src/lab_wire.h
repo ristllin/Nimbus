@@ -59,17 +59,45 @@ class WireOverrideTransport : public agent::HttpTransport {
     if (pins_->ceilingMs && r.timeoutMs > pins_->ceilingMs) r.timeoutMs = pins_->ceilingMs;
     if (r.method != "POST" || !isProviderHost(r.host) || r.body.empty()) return;
     if (pins_->effort.empty() && !pins_->maxTokens) return;
+    // The photos' splice offsets point into the body being rewritten: tokens hold their
+    // places through the parse, and the offsets are read back from the new text.
+    const std::string withTokens = markSplices(r);
     JsonDocument d;
-    if (deserializeJson(d, r.body, DeserializationOption::NestingLimit(agent::kResponseNestingLimit)) ||
+    if (deserializeJson(d, withTokens, DeserializationOption::NestingLimit(agent::kResponseNestingLimit)) ||
         !d.is<JsonObject>())
       return;
     const bool changed = r.host == "api.anthropic.com" ? pinAnthropic(r.path, d) : pinCapOnly(r.path, d);
     if (!changed) return;
     r.body.clear();
     serializeJson(d, r.body);
+    unmarkSplices(r);
   }
 
  private:
+  static std::string spliceToken(size_t i) { return "\x7f" "labsplice" + std::to_string(i) + "\x7f"; }
+  // The body with a token at each splice (ascending offsets, http.h).
+  static std::string markSplices(const agent::HttpRequest& r) {
+    std::string out;
+    size_t from = 0;
+    for (size_t i = 0; i < r.splices.size(); ++i) {
+      out.append(r.body, from, r.splices[i].at - from);
+      out += spliceToken(i);
+      from = r.splices[i].at;
+    }
+    out.append(r.body, from, std::string::npos);
+    return out;
+  }
+  // Each token out of the rewritten body; its place is the splice's new offset.
+  static void unmarkSplices(agent::HttpRequest& r) {
+    for (size_t i = 0; i < r.splices.size(); ++i) {
+      const std::string t = spliceToken(i);
+      const size_t at = r.body.find(t);
+      if (at == std::string::npos) continue;
+      r.body.erase(at, t.size());
+      r.splices[i].at = at;
+    }
+  }
+
   // Messages API: effort (a model without effort support answers 400; run it with
   // --effort=adapter) and the output cap.
   bool pinAnthropic(const std::string& path, JsonDocument& d) const {

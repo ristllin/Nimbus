@@ -190,6 +190,8 @@ int main(int argc, char** argv) {
     else if (a.rfind("--record=", 0) == 0)   sub.recordDir = opt.recordDir = a.substr(9);
     else if (a.rfind("--dir=", 0) == 0)      pe.dir = a.substr(6);
     else if (a.rfind("--prompt=", 0) == 0)   pe.prompt = a.substr(9);
+    else if (a == "--shared-chat")           pe.sharedChat = true;
+    else if (a == "--no-drain")              pe.noDrain = true;
     else if (laneLFlag(a, laneL)) {
       // --effort is also a run pin (chat, scenarios): both read it, and the
       // suites' "none" is the pin's "adapter".
