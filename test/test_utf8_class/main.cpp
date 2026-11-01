@@ -8,7 +8,8 @@
 //   1. the helpers (validate, repair, boundary-safe window and cuts);
 //   2. the tool-result boundary: EVERY registry tool's text is valid UTF-8 and
 //      under the string ceiling, whatever the tool returned;
-//   3. every provider renderer turns invalid tool text into a valid body;
+//   3. every provider renderer turns invalid tool text into a valid body, and every
+//      raw control byte (a binary file's) into its JSON escape;
 //   4. serializeChecked refuses an invalid body before the send and names the tool;
 //   5. every sub-agent reply writer cuts the 16 KB envelope UTF-8-safe, with a marker.
 #include <unity.h>
@@ -291,6 +292,134 @@ static void test_every_renderer_sends_a_valid_body() {
   }
 }
 
+// ---- 3b. raw control bytes: the other half of "a request a provider can read" ------
+//
+// 1 Nov: files.read of a PNG on a hosted instance killed the turn on every provider.
+// Valid UTF-8 is not enough: JSON forbids a raw byte under 0x20 inside a string, and
+// the serializer escapes only NUL and \b \f \n \r \t. Anthropic, OpenAI, Mistral and
+// Z.ai all refuse the raw byte (400/422) and accept \u00XX, so the serializer is where
+// the class closes: any tool, memory row, file or sender text, on every provider.
+
+// The request as a strict provider reads it: no raw control byte, and it parses.
+static bool strictlyReadable(const std::string& body, std::string& why) {
+  for (size_t i = 0; i < body.size(); i++)
+    if ((unsigned char)body[i] < 0x20) {
+      why = "raw control byte " + std::to_string((int)(unsigned char)body[i]) + " at " + std::to_string(i);
+      return false;
+    }
+  JsonDocument d;
+  if (deserializeJson(d, body, ArduinoJson::DeserializationOption::NestingLimit(32))) {
+    why = "does not parse";
+    return false;
+  }
+  return true;
+}
+
+// A PNG's first bytes: 0x89 is invalid UTF-8, the rest are control bytes and NULs.
+static std::string pngBytes() {
+  return std::string("\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\x01\0\0\0\x01\0\x08\x06\0\0\0\x5c\x72\xa8\x66", 33);
+}
+
+static orch::Transcript binaryTranscript(const std::string& output) {
+  orch::Transcript tr = poisonedTranscript();
+  orch::HeadToolCall c;
+  c.id = "tu_2";
+  c.name = "files_read";
+  c.argsJson = "{\"project\":\"chat\",\"name\":\"photo.png\"}";
+  tr.addAssistantText("", 1, "");
+  tr.addToolCall(c, 1, "");
+  orch::HeadToolResult res;
+  res.id = "tu_2";
+  res.name = "files_read";
+  res.output = output;
+  tr.addToolResult(res, 1);
+  return tr;
+}
+
+// Every provider's body, with every control byte in a tool result.
+static void test_every_renderer_escapes_control_bytes() {
+  struct P {
+    const char* host;
+    std::string reply;
+    orch::HeadStepFn (*make)(const providers::ProviderDeps&, const std::string&,
+                             const agent::HeadTools&, orch::TokenUsage*, orch::Transcript&);
+  };
+  const P ps[] = {
+      {"anthropic", antFinal(), providers::antLoopStep},
+      {"openai", oaiFinal(), providers::oaiLoopStep},
+      {"mistral", misFinal(), providers::misLoopStep},
+  };
+  std::string everyControl = pngBytes();
+  for (int c = 0; c < 0x20; c++) everyControl += (char)c;
+  everyControl += "tail";
+  for (const P& p : ps) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, p.reply});
+    providers::ProviderDeps pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    orch::Transcript tr = binaryTranscript(everyControl);
+    const std::string instr = "SYS";
+    orch::HeadStep st = p.make(pd, instr, rig.ht, nullptr, tr)(true, {}, 60000, "");
+    TEST_ASSERT_TRUE_MESSAGE(st.ok, (std::string(p.host) + ": " + st.error).c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)d.http.seen.size(), p.host);
+    std::string why;
+    const bool readable = strictlyReadable(d.http.seen[0].body, why);
+    TEST_ASSERT_TRUE_MESSAGE(readable, (std::string(p.host) + ": " + why).c_str());
+    // The bytes are escaped, not dropped: the text around them is all there.
+    TEST_ASSERT_TRUE_MESSAGE(d.http.seen[0].body.find("\\u0001") != std::string::npos, p.host);
+    TEST_ASSERT_TRUE_MESSAGE(d.http.seen[0].body.find("tail") != std::string::npos, p.host);
+  }
+}
+
+// Both serializers, one control byte at a time, in a value and in a key. The counter-
+// test: ArduinoJson's own serializeJson leaves these bytes raw, so the check above can
+// see the bug it guards.
+static void test_serializers_escape_every_control_byte() {
+  int rawFromLibrary = 0;
+  for (int c = 0; c < 0x20; c++) {
+    JsonDocument d;
+    std::string text = "a";
+    text += (char)c;
+    text += "b";
+    d["value"] = text;
+    d[std::string("k") + (char)c] = 1;
+    std::string plain;
+    serializeJson(d, plain);
+    std::string why;
+    if (!strictlyReadable(plain, why)) rawFromLibrary++;
+
+    std::string body = wire::serializeBody(d);
+    TEST_ASSERT_TRUE_MESSAGE(strictlyReadable(body, why), why.c_str());
+    std::string checked, err;
+    TEST_ASSERT_TRUE_MESSAGE(wire::serializeChecked(d, checked, err), err.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(strictlyReadable(checked, why), why.c_str());
+    TEST_ASSERT_EQUAL_STRING(body.c_str(), checked.c_str());
+    // Lossless: what the provider decodes is the original text.
+    JsonDocument back;
+    TEST_ASSERT_FALSE(deserializeJson(back, checked));
+    const JsonString v = back["value"].as<JsonString>();
+    TEST_ASSERT_EQUAL_size_t(text.size(), v.size());
+    TEST_ASSERT_EQUAL_MEMORY(text.data(), v.c_str(), text.size());
+  }
+  // 32 control bytes minus the six the library already escapes (NUL \b \t \n \f \r).
+  TEST_ASSERT_EQUAL_INT(26, rawFromLibrary);
+}
+
+// A body with nothing to escape is byte-identical to the library's: the cache prefix
+// of every request stays as it was.
+static void test_clean_body_is_unchanged() {
+  JsonDocument d;
+  d["model"] = "m";
+  d["messages"][0]["content"] = "line one\nline two\ttabbed \"quoted\" \xE2\x82\xAC";
+  std::string plain;
+  serializeJson(d, plain);
+  TEST_ASSERT_EQUAL_STRING(plain.c_str(), wire::serializeBody(d).c_str());
+  std::string checked, err;
+  TEST_ASSERT_TRUE(wire::serializeChecked(d, checked, err));
+  TEST_ASSERT_EQUAL_STRING(plain.c_str(), checked.c_str());
+}
+
 // ---- 4. serializeChecked ----------------------------------------------------------
 
 static void test_serialize_checked_names_the_tool_per_provider_shape() {
@@ -502,6 +631,9 @@ int main(int, char**) {
   RUN_TEST(test_copy_cap_and_clip_every_cap);
   RUN_TEST(test_every_registry_tool_output_is_valid_utf8);
   RUN_TEST(test_every_renderer_sends_a_valid_body);
+  RUN_TEST(test_every_renderer_escapes_control_bytes);
+  RUN_TEST(test_serializers_escape_every_control_byte);
+  RUN_TEST(test_clean_body_is_unchanged);
   RUN_TEST(test_serialize_checked_names_the_tool_per_provider_shape);
   RUN_TEST(test_serialize_checked_string_guard);
   RUN_TEST(test_put_helpers);

@@ -2,6 +2,8 @@
 
 #include <ArduinoJson.h>
 
+#include "nimbus/json_strict.h"
+
 using ArduinoJson::DeserializationError;
 using ArduinoJson::JsonArrayConst;
 using ArduinoJson::JsonDocument;
@@ -21,7 +23,7 @@ std::string buildEmbeddingRequest(const std::string& provider, const std::string
     d["encoding_format"] = "float";
   }
   std::string out;
-  serializeJson(d, out);
+  nimbus::serializeStrictJson(d, out);
   return out;
 }
 

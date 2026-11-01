@@ -1,4 +1,5 @@
 #include "nimbus/harness/websearch.h"
+#include "nimbus/json_strict.h"
 
 #include "nimbus/orch/spend_ceiling.h"   // lane DEF: the paid-call gate
 #include "nimbus/orch/spend_guard.h"     // lane QW4: sentWithoutAnswer - a sent search counts
@@ -84,7 +85,7 @@ Result search(HttpTransport& http, const std::string& apiKey,
     d["max_results"]    = maxResults;
     d["include_answer"] = true;
     d["search_depth"]   = "basic";
-    serializeJson(d, req.body);
+    nimbus::serializeStrictJson(d, req.body);
   }
 
   JsonDocument filter;

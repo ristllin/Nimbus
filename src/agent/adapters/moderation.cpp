@@ -1,4 +1,5 @@
 #include "moderation.h"
+#include "nimbus/json_strict.h"
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -51,7 +52,9 @@ static ClassifierVerdict classifyMistral(const std::string& text, uint32_t acqui
   JsonDocument d;
   d["model"] = "mistral-moderation-latest";
   d["input"].add(text);   // array of one
-  String body; serializeJson(d, body);
+  std::string strict;
+  nimbus::serializeStrictJson(d, strict);
+  String body(strict.c_str());
 
   arbiter::WorkSlot slot(acquireMs);
   if (!slot) { alog("moderation: device busy (TLS slot)"); return ClassifierVerdict::Error; }

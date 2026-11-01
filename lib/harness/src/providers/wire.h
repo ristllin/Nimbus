@@ -22,6 +22,7 @@
 #include "nimbus/orch/spend_ceiling.h"  // lane DEF: the paid-call gate before any request
 #include "nimbus/orch/token_usage_json.h"   // lane QW4: tokenUsageFromJson - that usage read
 #include "nimbus/orch/wire_limits.h"   // kJsonStrGuard - the provider-bound string ceiling
+#include "nimbus/json_strict.h"        // serializeStrictJson: no raw control byte leaves
 #include "nimbus/utf8.h"               // utf8Valid / utf8Repair / boundary-safe cuts
 
 // wire.h - INTERNAL helpers shared by the four portable provider files. Not part
@@ -767,8 +768,7 @@ inline FabricErr rateLimitedByText(const Directive& d, const char* who, const ch
 // the device the string's storage lands in PSRAM via the >=128 B malloc spill).
 inline std::string serializeBody(const JsonDocument& d) {
   std::string out;
-  out.reserve(measureJson(d));
-  serializeJson(d, out);
+  nimbus::serializeStrictJson(d, out);
   return out;
 }
 
@@ -932,8 +932,7 @@ inline bool serializeChecked(const JsonDocument& d, std::string& out, std::strin
     hlog::logf("wire: %s", err.c_str());
     return false;
   }
-  out.reserve(measureJson(d));
-  serializeJson(d, out);
+  nimbus::serializeStrictJson(d, out);
   return true;
 }
 

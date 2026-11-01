@@ -1,4 +1,5 @@
 #include "audio_tts.h"
+#include "nimbus/json_strict.h"
 
 #include <ArduinoJson.h>
 #include <LittleFS.h>
@@ -327,8 +328,9 @@ size_t synthesizeToFile(const String& text, const char* outPath,
   // OpenAI honors response_format (wav for the speaker, mp3 for Telegram). Mistral
   // ignores it and always returns MP3 (base64 in JSON), so don't send the field.
   if (!prov.mistral) doc["response_format"] = (format && format[0]) ? format : "mp3";
-  String body;
-  serializeJson(doc, body);
+  std::string strict;
+  nimbus::serializeStrictJson(doc, strict);
+  String body(strict.c_str());
 
   arbiter::WorkSlot slot(10000);
   if (!slot) {

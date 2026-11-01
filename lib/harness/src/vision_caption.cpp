@@ -1,4 +1,5 @@
 #include "nimbus/harness/vision_caption.h"
+#include "nimbus/json_strict.h"
 
 #include <ArduinoJson.h>
 
@@ -258,7 +259,7 @@ bool buildCaptionRequest(const std::string& provider, const std::string& model, 
   }
   txt["text"] = promptOf(in);
   std::string body;
-  serializeJson(req, body);
+  nimbus::serializeStrictJson(req, body);
   const size_t at = body.find(kMarker);
   if (at == std::string::npos) return false;
   body.erase(at, std::strlen(kMarker));
