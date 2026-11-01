@@ -1772,7 +1772,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.attribution = attribution_;
     ev.spend = &tf.spend;
     ev.chain = okFlag ? nullptr : &tf.chain;
-    ev.trimmedForSize = fit.trimmed();
+    ev.trimmedForSize = fit.historyTrimmed();
     d_.hooks.onTurnEnd(ev);
   };
   // L24: under the floor at its provider request the turn ends before asking, with

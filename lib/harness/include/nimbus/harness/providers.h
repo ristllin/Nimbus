@@ -54,8 +54,9 @@ namespace providers {
 // a body over it is REFUSED before the send (fail closed, named, the way
 // serializeChecked refuses an over-long string): a component that escapes
 // its cap costs one honest turn, not a TLS stall (lane O3's memory pressure).
-// Inside a tool loop the refusal is recoverable: nothing was sent, so the loop
-// folds older tool rounds and runs the round again (orch_head_loop.cpp).
+// The refusal is recoverable: nothing was sent, so the turn gives up what it can in a
+// defined order (older tool rounds, then history and the rest, turn_fit.h) and runs the
+// round again (orch_head_loop.cpp).
 // Photos splice in AFTER the check: they are their own bounded channel.
 inline constexpr size_t kWireBodyMax = 85000;
 static_assert(kWireBodyMax % 1000 == 0, "bodyBudgetError states the budget in whole KB");

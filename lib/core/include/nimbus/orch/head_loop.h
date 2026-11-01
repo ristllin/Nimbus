@@ -294,8 +294,8 @@ size_t trimForOverflow(Transcript& tr, size_t want, const std::function<size_t(s
                        const std::function<size_t()>& dropImages);
 
 // Drive the bounded ReAct loop to a terminal orch_turn. Always returns (never
-// throws): terminates within maxRounds+1 model calls. See the header comment for
-// the safety contract.
+// throws): terminates within maxRounds+1 model calls, plus at most one correction round
+// and one on the forced round. See the header comment for the safety contract.
 HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks);
 
 }  // namespace orch

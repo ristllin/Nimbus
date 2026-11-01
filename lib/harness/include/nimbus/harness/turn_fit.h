@@ -46,6 +46,9 @@ class TurnFit {
   // The input as the request should send it: the note, then what is left of the input.
   std::string inputs() const;
   bool trimmed() const { return trimmed_; }
+  // Conversation history was left out: the chat needs its fold (other cuts would come back
+  // the same after one, and a fold is a paid call).
+  bool historyTrimmed() const { return historyDropped_ > 0 || newestDropped_ > 0; }
 
   // What was left out, for the model; "" = nothing.
   std::string note() const;

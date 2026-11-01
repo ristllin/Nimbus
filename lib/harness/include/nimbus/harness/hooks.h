@@ -39,8 +39,8 @@ inline const char* turnSourceSlug(TurnSource s, const std::string& attribution) 
 struct TurnStartEv { TurnSource source; std::string chatId; };
 struct TurnEndEv {
   bool ok = false;
-  // The request did not fit and was trimmed (turn_fit.h): the chat needs its fold even
-  // though the turn was answered.
+  // The request did not fit and conversation history was left out (turn_fit.h): the chat
+  // needs its fold even though the turn was answered.
   bool trimmedForSize = false;
   std::string host;
   nimbus::orch::TokenUsage usage;   // the turn's billed total (every host) - spend->total()

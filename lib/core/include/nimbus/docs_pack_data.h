@@ -2038,9 +2038,12 @@ with the problems named and the array form shown. The claim check joins the same
 chain: an answer whose reply claims an effect that neither this turn's tools nor
 its own items back (a file written, a memory saved, a pin, a check, a figure from
 a source) is sent back with the claims and the turn's record; sub-agent claims are
-left to the shape check. At most one correction round runs per turn, shared by both
-checks, never on the forced final round, never for a cut answer and never for a
-prose answer (which carries no spawn).)NIMBUSDOC"},
+left to the shape check. A reply that promises later work with nothing behind it, and
+a reply that is template filler, join the chain too. At most one correction round runs
+per turn, shared by all of them, never on the forced final round, never for a cut answer
+and never for a prose answer (which carries no spawn). The one exception is filler: it
+gets one more tool-less round on the forced final round as well
+(`HeadLoopConfig::forcedFinalCheck`), and is never delivered.)NIMBUSDOC"},
   {"turn-contract#contract-shape", "Contract shape",
    R"NIMBUSDOC(```json
 {

@@ -12,6 +12,7 @@
 #include "../support/fake_fabric.h"
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
+#include "../support/image_turn_fixture.h"
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/jobs.h"
 #include "nimbus/harness/providers.h"
@@ -487,6 +488,26 @@ static void test_fold_lines_survive_a_host_switch() {
   TEST_ASSERT_TRUE(after.find("round 0") != std::string::npos);
 }
 
+// Photos count against a window but not against the byte budget: an overflow the history
+// cannot pay for reads them as their transcriptions, on this host, on the retry.
+static void test_overflow_gives_up_the_photos_after_older_history() {
+  const Refusal& ref = kOverflow[0];
+  Rig r({ref.host}, 200);
+  r.cfg.orchModels[ref.host] = "claude-haiku-5-5";   // a model that takes images
+  r.pd.orchModel = [](const char*) { return std::string("claude-haiku-5-5"); };
+  harness_test::PhotoTurn photos;
+  const std::string turn = photos.text;
+  orch::offerTurnImages("1001", turn, std::move(photos.set));
+  r.script(refused(ref.host, ref.status, ref.body));
+  r.script(ok(ref.host, finalBody(ref.host)));
+  r.turn(turn.c_str());
+  assertAnswered(r, "photos");
+  TEST_ASSERT_EQUAL(2, (int)r.requests());
+  TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[0].body.find("\"type\":\"image\"") != std::string::npos, "the first shows them");
+  TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[1].body.find("\"type\":\"image\"") == std::string::npos, "the retry does not");
+  TEST_ASSERT_TRUE(r.wire.http.seen[1].body.find("machine transcription") != std::string::npos);
+}
+
 // Once: a second refusal moves to the next host, which runs the trimmed request.
 static void test_overflow_twice_fails_over_with_the_trim() {
   const Refusal& ref = kOverflow[2];
@@ -744,6 +765,35 @@ static void test_prose_promise_gets_the_line() {
   TEST_ASSERT_TRUE_MESSAGE(r.saidAny(kLaterLine), r.all().c_str());
 }
 
+// A synthesis turn and a scheduled routine: nobody waits on them, and the line still rides.
+static void test_unattended_promise_gets_the_line() {
+  const char* p = "I'll finish the rest of the summary next turn.";
+  Rig r({"mistral"}, 2000);
+  r.jobs->addFreshResult("job0008", "openai/gpt-5.2", "the findings");
+  r.script(ok("mistral", finalBody("mistral", p)));
+  r.script(ok("mistral", finalBody("mistral", p)));
+  r.eng->maybeConsolidate("1001");
+  TEST_ASSERT_TRUE_MESSAGE(r.saidAny(kLaterLine), r.all().c_str());
+  Rig s({"mistral"}, 2000);
+  s.script(ok("mistral", finalBody("mistral", p)));
+  s.script(ok("mistral", finalBody("mistral", p)));
+  s.eng->injectScheduledTurn("1001", "Write the morning brief.", "brief");
+  TEST_ASSERT_TRUE_MESSAGE(s.saidAny(kLaterLine), s.all().c_str());
+}
+
+// The single-shot head and an answer the device cannot parse as a turn: the same line.
+static void test_unreadable_promise_gets_the_line() {
+  Rig r({"zai"}, 2000);
+  Exchange serve;
+  serve.body =
+      "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"{\\\"reply\\\":\\\"I'll finish that next "
+      "turn.\\\",\\\"memory\\\":\"}}]}";
+  r.script(serve);
+  r.turn("so where are we at?");
+  TEST_ASSERT_TRUE_MESSAGE(r.saidAny("I'll finish that next turn."), r.all().c_str());
+  TEST_ASSERT_TRUE_MESSAGE(r.saidAny(kLaterLine), r.all().c_str());
+}
+
 // A job behind the words: the same sentence is true, so it stands.
 static void test_a_job_behind_the_promise_stands() {
   Rig r({"mistral"}, 2000);
@@ -808,6 +858,7 @@ int main() {
   RUN_TEST(test_real_overflow_refusals_trim_and_retry_once);
   RUN_TEST(test_zai_overflow_on_the_single_shot_path);
   RUN_TEST(test_fold_lines_survive_a_host_switch);
+  RUN_TEST(test_overflow_gives_up_the_photos_after_older_history);
   RUN_TEST(test_overflow_twice_fails_over_with_the_trim);
   RUN_TEST(test_overflow_with_nowhere_to_go_is_honest);
   RUN_TEST(test_output_cap_refusal_is_not_an_overflow);
@@ -823,6 +874,8 @@ int main() {
   RUN_TEST(test_stubborn_or_forced_promise_gets_the_line);
   RUN_TEST(test_salvaged_promise_gets_the_line);
   RUN_TEST(test_prose_promise_gets_the_line);
+  RUN_TEST(test_unattended_promise_gets_the_line);
+  RUN_TEST(test_unreadable_promise_gets_the_line);
   RUN_TEST(test_a_job_behind_the_promise_stands);
   RUN_TEST(test_not_promises_are_left_alone);
   return UNITY_END();
