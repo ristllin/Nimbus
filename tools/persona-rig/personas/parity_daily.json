@@ -17,6 +17,12 @@
       "model": "mistral-large-4-0"
     },
     {
+      "name": "mistral-medium-latest",
+      "host": "mistral",
+      "key": "MISTRAL_API_KEY",
+      "model": "mistral-medium-latest"
+    },
+    {
       "name": "mistral-small-latest",
       "host": "mistral",
       "key": "MISTRAL_API_KEY",
@@ -406,7 +412,7 @@
         "id": "long_answer",
         "steps": [
           {
-            "say": "Write a complete guide to my week-long hiking trip in the Scottish Highlands: for each day from Monday to Sunday give the route idea, the distance, what to watch out for and a short weather plan, then a full packing list.",
+            "say": "Write out in this chat, not in a file, a complete guide to my week-long hiking trip in the Scottish Highlands: for each day from Monday to Sunday give the route idea, the distance, what to watch out for and a short weather plan, then a full packing list.",
             "timeout_s": 300,
             "expect": [
               {
