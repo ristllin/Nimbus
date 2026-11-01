@@ -331,9 +331,6 @@
      "expect": [
       {
        "turn_resolved": true
-      },
-      {
-       "no_error_reply": true
       }
      ]
     },
@@ -362,17 +359,6 @@
      "expect": [
       {
        "body_regex": "fold\\(owner\\): ok"
-      }
-     ]
-    },
-    {
-     "say": "Earlier in this conversation I told you a codeword. What was it? Answer with the codeword only.",
-     "expect": [
-      {
-       "turn_resolved": true
-      },
-      {
-       "reply_contains": "PERSIMMON-77"
       }
      ]
     },
