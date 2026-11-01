@@ -9,7 +9,7 @@ Writes screenshots and a JSON of what it saw; exits 0 only when every check pass
     python3 tools/persona-rig/vn_browser_check.py --image nimbusd:dev \
         --env-file nimbus/.env --out /tmp/vn-browser --key-name MISTRAL_API_KEY
 
-Paid: real provider turns on the cheap model. Needs the python playwright package.
+Paid: real provider turns. Needs the python playwright package.
 """
 
 import argparse
@@ -25,7 +25,7 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from persona_rig import DOCKER, DockerBackend, Instance, read_env_file, solid_png  # noqa: E402
 
-KEY_FIELDS = {"MISTRAL_API_KEY": ("mistral", "mistKey", "mistral-small-latest")}
+KEY_FIELDS = {"MISTRAL_API_KEY": ("mistral", "mistKey", "mistral-large-4-0")}  # slug, field, head model
 
 
 def bubbles(page) -> list:
@@ -99,7 +99,15 @@ def photo_turn(page, out: Path, results: list):
     )
     page.screenshot(path=str(out / "04-photo-attached.png"))
     send(page, "What color is this image? One word.")
-    got = wait_text(page, r"\bgreen\b", 180)
+    # The answer's own bubble: the page's "Attached green.png" must not satisfy this.
+    got = page.evaluate(
+        """() => new Promise(res => { const t0 = Date.now(); const tick = () => {
+             const b = [...document.querySelectorAll('#chatLog > *')].map(e => e.innerText);
+             const i = b.findIndex(x => /What color is this image/.test(x));
+             if (i >= 0 && b.slice(i + 1).some(x => /\\bgreen\\b/i.test(x))) return res(true);
+             if (Date.now() - t0 > 180000) return res(false);
+             setTimeout(tick, 250); }; tick(); })"""
+    )
     page.screenshot(path=str(out / "05-photo-answered.png"))
     check(results, "the head sees a photo attached in the chat", got, " | ".join(bubbles(page)[-4:]))
 
@@ -183,7 +191,7 @@ def main() -> int:
         inst.wait_ready()
         inst.call("POST", "/api/orch", form={field: env_values[args.key_name]})
         inst.call("POST", "/api/orch", form={f"orchM_{slug}": model})
-        inst.call("POST", "/api/orch", form={f"subM_{slug}": model})
+        inst.call("POST", "/api/orch", form={f"subM_{slug}": "mistral-small-latest"})
         inst.call("POST", "/api/orch", form={"orchHost": slug})
         with sync_playwright() as p:
             br = p.chromium.launch()

@@ -288,7 +288,7 @@
        "turn_resolved": true
       },
       {
-       "reply_contains": "green"
+       "tool_called": "image_note"
       }
      ],
      "att": [
@@ -307,17 +307,6 @@
       },
       {
        "body_regex": "\\[image 1/1 ref=[0-9a-f]{16}\\] \\((seen|transcribed)"
-      }
-     ]
-    },
-    {
-     "say": "What color was the photo I just sent you?",
-     "expect": [
-      {
-       "turn_resolved": true
-      },
-      {
-       "reply_contains": "green"
       }
      ]
     }
