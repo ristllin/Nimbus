@@ -36,8 +36,11 @@ nimbus::orch::FoodLedger today(const std::string& chatId, const nimbus::orch::Pr
   l.zone = day.zone;
   l.project = kFoodLedgerProject;
   l.name = foodLedgerName(who.owner, chatId);
-  if (l.today.empty() || l.name.empty() || !who.valid() || !files::available() || !ownLedger(l.name, who))
-    return l;
+  if (l.today.empty() || l.name.empty() || !who.valid() || !files::available()) return l;
+  // The person's targets, or where they could read them (a small file; the index is RAM).
+  l.targets = scanFoodTargets(files::readDocText(l.project, foodTargetsName(who.owner, chatId), who));
+  if (l.targets.kcal <= 0 && l.targets.protein <= 0) l.planFiles = files::foodPlanFiles(who);
+  if (!ownLedger(l.name, who)) return l;
   const std::string path = files::absPath(l.project, l.name);
   if (path.empty()) return l;
   l.exists = true;

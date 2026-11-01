@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "nimbus/orch/file_append.h"  // planAppend + the tail view (files.append)
+#include "nimbus/orch/food_ledger.h"  // the one food log, plan files
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
 #include "nimbus/orch/file_append.h"  // planAppend/tailRows (CUM-644)
@@ -103,6 +104,8 @@ class LabFiles {
     if (!nimbus::orch::FileStore::validSegment(p, 24) ||
         !nimbus::orch::FileStore::validSegment(n, 48))
       return nimbus::orch::ToolResult::fail("invalid project or name");
+    const std::string second = nimbus::orch::secondFoodLogRefusal(p, n, true, std::string());
+    if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
     // A full store refuses as the device does (files_subsystem refusalForHead).
     if (full_ != Full::No)
       return nimbus::orch::ToolResult::fail(
@@ -132,16 +135,7 @@ class LabFiles {
       if (eol != std::string::npos) header = file.substr(0, eol);
       std::string text = nimbus::orch::renderTail(v, n, file.size(), header);
       const std::string sum = str(a, "sum");
-      if (!sum.empty()) {
-        double total = 0;
-        if (nimbus::orch::csvDayTotal(it->second, sum, todayStr(), total)) {
-          char buf[48];
-          std::snprintf(buf, sizeof buf, "%g", total);
-          text += "today's " + sum + ": " + buf + "\n";
-        } else {
-          text += "[no day total: the file has no date column or no column '" + sum + "']\n";
-        }
-      }
+      if (!sum.empty()) text += nimbus::orch::csvDayTotalLine(it->second, sum, todayStr(), std::string());
       return nimbus::orch::ToolResult::ok(text);
     }
     return nimbus::orch::ToolResult::ok(it->second);
@@ -152,6 +146,8 @@ class LabFiles {
                       t = str(a, "text"), key = str(a, "key"), sum = str(a, "sum");
     if (p.empty() || n.empty() || t.empty())
       return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
+    const std::string second = nimbus::orch::secondFoodLogRefusal(p, n, true, std::string());
+    if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
     if (!key.empty()) {
       const nimbus::orch::CsvUpsert up =
           nimbus::orch::planCsvUpsert(files_[p + "/" + n], t, key, sum, todayStr());
@@ -197,6 +193,17 @@ class LabFiles {
   void setFull(Full f) { full_ = f; }
   size_t count() const { return files_.size(); }
   bool has(const std::string& path) const { return files_.count(path) > 0; }
+  // Files that look like the owner's food or weight plan (food_ledger.h).
+  std::vector<std::string> foodPlanFiles() const {
+    std::vector<std::string> out;
+    for (const auto& f : files_) {
+      const size_t slash = f.first.find('/');
+      if (slash != std::string::npos && out.size() < nimbus::orch::kMaxPlanFiles &&
+          nimbus::orch::looksLikeFoodPlan(f.first.substr(0, slash), f.first.substr(slash + 1)))
+        out.push_back(f.first);
+    }
+    return out;
+  }
   std::string get(const std::string& path) const {
     auto it = files_.find(path);
     return it == files_.end() ? std::string() : it->second;

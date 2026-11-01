@@ -101,6 +101,125 @@ void test_property_matches_the_day_total() {
   }
 }
 
+// ---- known and unknown protein, targets, the second log (the week of 28 Oct) --------
+
+static const char k1Nov[] =
+    "date,meal,items,kcal,protein_g\n"
+    "2026-10-26,drink,cappuccino,66,3.3\n"
+    "2026-10-26,breakfast,berries + yogurt,196,17.5\n"
+    "2026-10-26,lunch,eggs + bread,517,27.1\n"
+    "2026-10-26,drink2,boba tea,90,0.5\n"
+    "2026-10-26,lunch2,steak + mash + sauce,923,\n";
+
+void test_a_blank_protein_is_unknown_not_zero() {
+  FoodLedger l = scan(k1Nov);
+  EQ_NUM(1792, l.kcal);
+  TEST_ASSERT_FLOAT_WITHIN(0.001, 48.4, (float)l.protein);
+  TEST_ASSERT_EQUAL_INT(4, l.proteinRows);
+  TEST_ASSERT_EQUAL_INT(1, l.proteinUnknown);
+  const std::string block = renderLedgerBlock(l, true);
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "protein: 48.4 g known from 4 rows, 1 row with no protein figure"), block.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "unknown (at least 48.4 g)"), block.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(has(block, "1792 kcal from 5 rows, 48.4 g protein"), "a bare total hides the unknown row");
+  // With a target the device does the sum, and "left" is at most, never a number to chase.
+  l.targets.protein = 150;
+  l.targets.proteinSource = "plan.md";
+  l.targets.kcal = 2400;
+  l.targets.kcalSource = "plan.md";
+  const std::string left = renderLedgerBlock(l, true);
+  TEST_ASSERT_TRUE_MESSAGE(has(left, "608 kcal left of 2400"), left.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(left, "protein: at most 101.6 g left of 150"), left.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(left, "less whatever the 1 row with no figure held"), left.c_str());
+  // All known: a plain figure.
+  FoodLedger known = scan("date,meal,items,kcal,protein_g\n2026-10-26,lunch,x,500,40\n");
+  known.targets = l.targets;
+  const std::string plain = renderLedgerBlock(known, false);
+  TEST_ASSERT_TRUE_MESSAGE(has(plain, "1900 kcal left of 2400"), plain.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(plain, "protein: 110 g left of 150"), plain.c_str());
+  TEST_ASSERT_FALSE(has(plain, "at most"));
+  // Over the target, the sum says over.
+  known.targets.kcal = 400;
+  TEST_ASSERT_TRUE(has(renderLedgerBlock(known, false), "100 kcal over 400"));
+}
+
+void test_a_kcal_total_that_cannot_be_read_is_no_figure() {
+  const FoodLedger l = scan("date,meal,items,kcal,protein_g\n2026-10-26,lunch,x,500,40\n2026-10-26,dinner,y,about 900,40\n");
+  const std::string block = renderLedgerBlock(l, true);
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "kcal not known (500 counted from 1 row, 1 row unreadable)"), block.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "state no day total until then"), block.c_str());
+}
+
+void test_targets_come_from_a_file_with_a_source() {
+  const FoodTargets t = scanFoodTargets(
+      "date,metric,target,source\n"
+      "2026-10-20,kcal,2500,an old plan\n"
+      "2026-10-26,kcal,2400,roy-weight-loss/plan.md\n"
+      "2026-10-26,protein_g,150,roy-weight-loss/plan.md\n"
+      "2026-10-26,fibre_g,30,roy-weight-loss/plan.md\n");
+  EQ_NUM(2400, t.kcal);
+  TEST_ASSERT_EQUAL_STRING("roy-weight-loss/plan.md", t.kcalSource.c_str());
+  EQ_NUM(150, t.protein);
+  // No source, no target; junk never becomes one.
+  const FoodTargets none = scanFoodTargets("date,metric,target,source\n2026-10-26,protein_g,250,\n2026-10-26,kcal,lots,plan\n");
+  EQ_NUM(0, none.protein);
+  EQ_NUM(0, none.kcal);
+  EQ_NUM(0, scanFoodTargets("").kcal);
+  EQ_NUM(0, scanFoodTargets("metric\nkcal\n").kcal);
+  // The member's file sits beside the member's ledger, and only that member may write it.
+  TEST_ASSERT_EQUAL_STRING("food-targets.csv", foodTargetsName(true, "42").c_str());
+  TEST_ASSERT_EQUAL_STRING("food-targets-42.csv", foodTargetsName(false, "42").c_str());
+  TEST_ASSERT_TRUE(ledgerNameWritable("food", "food-targets-42.csv", "chat:42", false));
+  TEST_ASSERT_FALSE(ledgerNameWritable("food", "food-targets.csv", "chat:42", false));
+  TEST_ASSERT_FALSE(ledgerNameWritable("FOOD", "FOOD-TARGETS-7.CSV", "chat:42", false));
+}
+
+void test_no_target_stored_sends_the_head_to_a_source() {
+  FoodLedger l = scan(k1Nov);
+  l.planFiles = {"weight/my-plan.md"};
+  std::string block = renderLedgerBlock(l, true);
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "[FOOD TARGETS] None is stored."), block.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "files.read weight/my-plan.md"), block.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "food-targets.csv"), block.c_str());
+  // The same on the day's first food turn, and not on a turn that is not about food.
+  FoodLedger empty = scan(std::string(kHead) + "\n2026-10-25,lunch,x,1,1\n");
+  TEST_ASSERT_TRUE(has(renderLedgerBlock(empty, true), "[FOOD TARGETS] None is stored."));
+  TEST_ASSERT_FALSE(has(renderLedgerBlock(l, false), "[FOOD TARGETS]"));
+  TEST_ASSERT_TRUE(renderLedgerBlock(empty, false).empty());
+  // Stored targets end the prompt for a source.
+  l.targets.kcal = 2400;
+  l.targets.kcalSource = "plan";
+  TEST_ASSERT_FALSE(has(renderLedgerBlock(l, true), "[FOOD TARGETS]"));
+}
+
+void test_plan_files_are_about_food_or_weight() {
+  TEST_ASSERT_TRUE(looksLikeFoodPlan("roy-weight-loss", "roy-12-month-plan-2026-10-14.md"));
+  TEST_ASSERT_TRUE(looksLikeFoodPlan("health", "meal_planning.md"));
+  TEST_ASSERT_FALSE(looksLikeFoodPlan("work", "q4-plan.md"));
+  TEST_ASSERT_FALSE(looksLikeFoodPlan("roy-weight-loss", "research-synthesis.md"));
+}
+
+// The second log: the class is every name that says "food log" outside the ledger's place.
+void test_one_food_log() {
+  const struct {
+    const char* project;
+    const char* name;
+  } second[] = {{"nutrition", "meal_log.csv"}, {"meals", "log.csv"},          {"tracking", "food-log.csv"},
+                {"x", "Calorie_Log.CSV"},      {"nutrition", "daily-log.csv"}, {"x", "kcal.csv"}};
+  for (const auto& c : second) {
+    const std::string why = secondFoodLogRefusal(c.project, c.name, true, "");
+    TEST_ASSERT_TRUE_MESSAGE(has(why, "food/food-log.csv"), c.name);
+    TEST_ASSERT_TRUE_MESSAGE(has(why, "nothing was written"), c.name);
+  }
+  // A member is sent to that member's ledger.
+  TEST_ASSERT_TRUE(has(secondFoodLogRefusal("nutrition", "meal_log.csv", false, "chat:42"), "food/food-log-42.csv"));
+  // The ledger's place, other logs, other kinds of file: untouched.
+  TEST_ASSERT_TRUE(secondFoodLogRefusal("food", "food-log.csv", true, "").empty());
+  TEST_ASSERT_TRUE(secondFoodLogRefusal("food", "food-targets.csv", true, "").empty());
+  TEST_ASSERT_TRUE(secondFoodLogRefusal("tracking", "weight-log.csv", true, "").empty());
+  TEST_ASSERT_TRUE(secondFoodLogRefusal("runs", "log.csv", true, "").empty());
+  TEST_ASSERT_TRUE(secondFoodLogRefusal("nutrition", "meal_notes.md", true, "").empty());
+}
+
 void test_the_block_is_bounded_and_keeps_the_newest() {
   std::string file = std::string(kHead) + "\n";
   for (int i = 0; i < 60; i++)
@@ -157,7 +276,7 @@ void test_no_rows_today_names_the_first_call_on_a_food_turn_only() {
   // No meal or kcal column to key by: the owner is told, not sent a call that fails.
   const std::string bare = renderLedgerBlock(scan("date,food,notes\n2026-10-25,oats,x\n"), true);
   TEST_ASSERT_TRUE_MESSAGE(has(bare, "no meal or kcal column to key by"), bare.c_str());
-  TEST_ASSERT_FALSE(has(bare, "\"key\""));
+  TEST_ASSERT_FALSE(has(bare, "\"sum\""));   // the keyed call on the ledger; only the targets' own call may follow
 }
 
 void test_an_unreadable_ledger_never_shows_a_total() {
@@ -261,6 +380,12 @@ int main(int, char**) {
   RUN_TEST(test_today_rows_and_totals_only);
   RUN_TEST(test_a_correction_never_counts_twice);
   RUN_TEST(test_property_matches_the_day_total);
+  RUN_TEST(test_a_blank_protein_is_unknown_not_zero);
+  RUN_TEST(test_a_kcal_total_that_cannot_be_read_is_no_figure);
+  RUN_TEST(test_targets_come_from_a_file_with_a_source);
+  RUN_TEST(test_no_target_stored_sends_the_head_to_a_source);
+  RUN_TEST(test_plan_files_are_about_food_or_weight);
+  RUN_TEST(test_one_food_log);
   RUN_TEST(test_the_block_is_bounded_and_keeps_the_newest);
   RUN_TEST(test_rows_are_cleaned_and_cut_on_a_boundary);
   RUN_TEST(test_no_rows_today_names_the_first_call_on_a_food_turn_only);

@@ -753,8 +753,13 @@ class LabRig {
     // (the lab is single-owner, so every chat reads the owner's file).
     d.foodLedger = [this](const std::string&) {
       const std::string where = std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodLedgerOwnerName;
-      return orch::scanFoodLedger(files_.get(where), files_.has(where), orch::logDayOf(std::time(nullptr), true),
-                                  orch::kFoodLedgerProject, orch::kFoodLedgerOwnerName);
+      orch::FoodLedger l = orch::scanFoodLedger(files_.get(where), files_.has(where),
+                                                orch::logDayOf(std::time(nullptr), true), orch::kFoodLedgerProject,
+                                                orch::kFoodLedgerOwnerName);
+      l.targets = orch::scanFoodTargets(
+          files_.get(std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodTargetsOwnerName));
+      if (l.targets.kcal <= 0 && l.targets.protein <= 0) l.planFiles = files_.foodPlanFiles();
+      return l;
     };
 
     // The glass box, for free: on the host these hooks are just callbacks.

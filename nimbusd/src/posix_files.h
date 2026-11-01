@@ -74,6 +74,8 @@ class PosixFiles {
               const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text");
               if (p.empty() || n.empty())
                 return nimbus::orch::ToolResult::fail("need 'project' and 'name'");
+              const std::string second = nimbus::orch::secondFoodLogRefusal(p, n, true, std::string());
+              if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
               std::string err;
               const bool replacing = store_.find(p, n) != nullptr;
               if (!save(p, n, t, err)) return nimbus::orch::ToolResult::fail(err);
@@ -87,18 +89,23 @@ class PosixFiles {
 
     addOwnerOnly(reg, "files.read",
             "Read a stored file's contents. Pass 'tail' (a row count) to read only the "
-            "last rows of a log or CSV.",
+            "last rows of a log or CSV; with 'sum' (a numeric column) the tail also "
+            "reports that column's total for today.",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
               const std::string p = str(a, "project"), n = str(a, "name");
               std::string body;
               if (!read(p, n, body))
                 return nimbus::orch::ToolResult::fail("no such file: " + p + "/" + n);
-              if (a["tail"].is<float>() && a["tail"].as<double>() >= 1)
-                return nimbus::orch::ToolResult::ok(tailOf(n, body, (size_t)a["tail"].as<double>()));
+              if (a["tail"].is<float>() && a["tail"].as<double>() >= 1) {
+                std::string text = tailOf(n, body, (size_t)a["tail"].as<double>());
+                const std::string sum = str(a, "sum");
+                if (!sum.empty()) text += nimbus::orch::csvDayTotalLine(body, sum, todayStr(), std::string());
+                return nimbus::orch::ToolResult::ok(text);
+              }
               return nimbus::orch::ToolResult::ok(body);
             },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
-            R"("name":{"type":"string"},"tail":{"type":"number"}},"required":["project","name"]})");
+            R"("name":{"type":"string"},"tail":{"type":"number"},"sum":{"type":"string"}},"required":["project","name"]})");
 
     // The device's files.append (file_append.h): the new rows go on the end of the
     // file; nothing stored is rewritten. With 'key' it is the keyed CSV upsert
@@ -115,6 +122,8 @@ class PosixFiles {
                                 key = str(a, "key"), sum = str(a, "sum");
               if (p.empty() || n.empty())
                 return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
+              const std::string second = nimbus::orch::secondFoodLogRefusal(p, n, true, std::string());
+              if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
               if (!key.empty()) {
                 UpsertOut out;
                 if (!upsert(p, n, t, key, sum, out))
@@ -152,6 +161,20 @@ class PosixFiles {
   }
   size_t count() const { return store_.count(); }
   uint64_t totalBytes() const { return store_.totalBytes(); }
+
+  // Files that look like the owner's food or weight plan (food_ledger.h), newest first.
+  std::vector<std::string> foodPlanFiles() const {
+    std::vector<const nimbus::orch::FileEntry*> found;
+    for (const auto* e : store_.list(std::string()))
+      if (nimbus::orch::looksLikeFoodPlan(e->project, e->name)) found.push_back(e);
+    std::sort(found.begin(), found.end(), [](const nimbus::orch::FileEntry* a, const nimbus::orch::FileEntry* b) {
+      return a->createdAt > b->createdAt;
+    });
+    std::vector<std::string> out;
+    for (const auto* e : found)
+      if (out.size() < nimbus::orch::kMaxPlanFiles) out.push_back(e->project + "/" + e->name);
+    return out;
+  }
 
   // ---- the web app's Files panel (device /api/files/*, CUM-543) ----
   // The listing in the device's shape (web_files.cpp + files_subsystem listJson).

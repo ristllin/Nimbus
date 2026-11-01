@@ -62,12 +62,23 @@ std::string num(double v) {
 
 std::string rowsWord(int n) { return std::to_string(n) + (n == 1 ? " row" : " rows"); }
 
-// "1234 kcal from 4 rows, 98 g protein" - every figure the device read.
+// "1234 kcal from 4 rows, 98 g protein" - every figure the device read. A row with no
+// protein figure is not 0 g: what is known and what is not are stated apart (1 Nov: a
+// row with blank protein left 48.4 g on show and "you need ~102 g more" in the reply).
+std::string proteinText(const FoodLedger& l) {
+  if (!l.hasProtein) return std::string();
+  if (l.proteinUnknown == 0) return ", " + num(l.protein) + " g protein";
+  return "; protein: " + num(l.protein) + " g known from " + rowsWord(l.proteinRows) + ", " +
+         rowsWord(l.proteinUnknown) + " with no protein figure, so the day's protein is unknown (at least " +
+         num(l.protein) + " g)";
+}
+
 std::string totalsText(const FoodLedger& l) {
   if (!l.hasKcal) return rowsWord(l.rowsToday) + "; this ledger has no kcal column, so there is no kcal total";
-  std::string out = num(l.kcal) + " kcal from " + rowsWord(l.kcalRows);
-  if (l.hasProtein) out += ", " + num(l.protein) + " g protein";
-  return out;
+  if (l.kcalUnread > 0)
+    return "kcal not known (" + num(l.kcal) + " counted from " + rowsWord(l.kcalRows) + ", " + rowsWord(l.kcalUnread) +
+           " unreadable)" + proteinText(l);
+  return num(l.kcal) + " kcal from " + rowsWord(l.kcalRows) + proteinText(l);
 }
 
 std::string notesText(const FoodLedger& l) {
@@ -78,7 +89,61 @@ std::string notesText(const FoodLedger& l) {
            " not shown; the totals count them.)\n";
   if (l.kcalUnread > 0)
     out += "(" + rowsWord(l.kcalUnread) + " of today " + (l.kcalUnread == 1 ? "has" : "have") +
-           " no plain kcal number and " + (l.kcalUnread == 1 ? "is" : "are") + " not in the kcal total.)\n";
+           " no plain kcal number and " + (l.kcalUnread == 1 ? "is" : "are") +
+           " not in the kcal total: fix " + (l.kcalUnread == 1 ? "it" : "them") +
+           " with files.edit, and state no day total until then.)\n";
+  if (l.kcalTotalRows > 0)
+    out += "(" + rowsWord(l.kcalTotalRows) + " of today state" + (l.kcalTotalRows == 1 ? "s" : "") +
+           " a total and " + (l.kcalTotalRows == 1 ? "is" : "are") + " not counted; the device adds up the rows.)\n";
+  if (l.kcalRepeats > 0)
+    out += "(" + rowsWord(l.kcalRepeats) + " of today repeat" + (l.kcalRepeats == 1 ? "s" : "") +
+           " an earlier row and counted once, with the last figures.)\n";
+  return out;
+}
+
+// What is left of a target: "608 kcal left of 2400". Over it, by how much.
+std::string leftOf(double target, double soFar, const char* unit) {
+  if (soFar > target) return num(soFar - target) + " " + unit + " over " + num(target);
+  return num(target - soFar) + " " + unit + " left of " + num(target);
+}
+
+// The device's own sum against the stored targets. "" when there are none.
+std::string leftText(const FoodLedger& l) {
+  const FoodTargets& t = l.targets;
+  std::string out;
+  if (t.kcal > 0 && l.hasKcal) {
+    if (l.kcalUnread > 0) out += "kcal left: not known";
+    else out += leftOf(t.kcal, l.kcal, "kcal");
+    out += " (target from " + t.kcalSource + ")";
+  }
+  if (t.protein > 0 && l.hasProtein) {
+    if (!out.empty()) out += "; ";
+    if (l.proteinUnknown > 0)
+      out += "protein: at most " + (l.protein >= t.protein ? std::string("0 g left of ") + num(t.protein)
+                                                           : leftOf(t.protein, l.protein, "g")) +
+             ", less whatever the " + rowsWord(l.proteinUnknown) + " with no figure held";
+    else
+      out += "protein: " + leftOf(t.protein, l.protein, "g");
+    out += " (target from " + t.proteinSource + ")";
+  }
+  return out.empty() ? out : "Left today, worked out by the device: " + out + ".\n";
+}
+
+// With no target stored, on a food turn: where one comes from, and that none is stated before.
+std::string noTargetsText(const FoodLedger& l) {
+  if (l.targets.kcal > 0 || l.targets.protein > 0) return std::string();
+  std::string out = "[FOOD TARGETS] None is stored. State no daily target and no \"left\" figure from memory of this "
+                    "chat: first read one from ";
+  if (!l.planFiles.empty()) {
+    out += "the owner's plan (files.read ";
+    for (size_t i = 0; i < l.planFiles.size(); i++) out += (i ? " or " : "") + l.planFiles[i];
+    out += "), ";
+  }
+  const std::string where = l.project + "\",\"name\":\"" +
+                            (l.name.rfind("food-log", 0) == 0 ? "food-targets" + l.name.substr(8) : l.name);
+  out += "their standing rules, their long-term memory or their own words, or ask. Then store it once so the device "
+         "does the sum: files.append {\"project\":\"" + where + "\",\"key\":\"metric\",\"text\":\"" +
+         kFoodTargetsHeader + "\\n" + l.today + ",kcal,<number>,<the file or words it came from>\"} (protein_g the same way).\n";
   return out;
 }
 
@@ -114,11 +179,84 @@ bool ledgerNameWritable(const std::string& project, const std::string& name, con
   // Compared without case: the card's FAT file system opens FOOD/FOOD-LOG.CSV as
   // food/food-log.csv.
   const std::string n = lowerAscii(name);
-  if (owner || lowerAscii(project) != kFoodLedgerProject || n.rfind("food-log", 0) != 0) return true;
+  const bool targets = n.rfind("food-targets", 0) == 0;
+  if (owner || lowerAscii(project) != kFoodLedgerProject || !(targets || n.rfind("food-log", 0) == 0)) return true;
   static const char kMemberNs[] = "chat:";   // nsForChat (vector_memory.h)
   if (ns.rfind(kMemberNs, 0) != 0) return false;
-  const std::string mine = foodLedgerName(false, ns.substr(sizeof(kMemberNs) - 1));
+  const std::string chat = ns.substr(sizeof(kMemberNs) - 1);
+  const std::string mine = targets ? foodTargetsName(false, chat) : foodLedgerName(false, chat);
   return !mine.empty() && name == mine;
+}
+
+std::string foodTargetsName(bool owner, const std::string& chatId) {
+  if (owner) return kFoodTargetsOwnerName;
+  const std::string ledger = foodLedgerName(false, chatId);
+  return ledger.empty() ? std::string() : "food-targets" + ledger.substr(8);
+}
+
+FoodTargets scanFoodTargets(const std::string& fileText) {
+  FoodTargets t;
+  std::vector<std::string> header;
+  int metric = -1, target = -1, source = -1;
+  RowSplitter rows([&](const std::string& row, bool) {
+    if (row.find_first_not_of(" \t\r") == std::string::npos) return true;
+    if (header.empty()) {
+      header = csvHeaderOf(row);
+      for (size_t i = 0; i < header.size(); i++) {
+        const std::string n = lowerAscii(header[i]);
+        if (n == "metric") metric = (int)i;
+        if (n == "target") target = (int)i;
+        if (n == "source") source = (int)i;
+      }
+      return true;
+    }
+    if (metric < 0 || target < 0 || source < 0) return true;
+    const std::vector<std::string> f = csvStoredRow(row, header);
+    if (f.size() != header.size() || f[(size_t)source].empty()) return true;   // no source: no target
+    double v = 0;
+    if (!csvFigure(f[(size_t)target], v) || v <= 0) return true;
+    const std::string m = lowerAscii(f[(size_t)metric]);
+    if (m.find("kcal") != std::string::npos || m.find("calorie") != std::string::npos) {
+      t.kcal = v;
+      t.kcalSource = shownRow(f[(size_t)source]);
+    } else if (m.find("protein") != std::string::npos) {
+      t.protein = v;
+      t.proteinSource = shownRow(f[(size_t)source]);
+    }
+    return true;
+  });
+  rows.push(fileText.data(), fileText.size());
+  rows.end();
+  return t;
+}
+
+bool looksLikeFoodPlan(const std::string& project, const std::string& name) {
+  const std::string n = lowerAscii(name), p = lowerAscii(project);
+  if (n.find("plan") == std::string::npos || n.rfind("result-", 0) == 0) return false;
+  for (const char* word : {"food", "meal", "nutrition", "diet", "calorie", "weight", "health", "fitness"})
+    if (n.find(word) != std::string::npos || p.find(word) != std::string::npos) return true;
+  return false;
+}
+
+std::string secondFoodLogRefusal(const std::string& project, const std::string& name, bool owner,
+                                 const std::string& ns) {
+  if (!isCsvName(name)) return std::string();
+  const std::string n = lowerAscii(name), p = lowerAscii(project);
+  if (p == kFoodLedgerProject) return std::string();   // the ledger's own place
+  const bool namesFood = n.find("meal") != std::string::npos || n.find("food") != std::string::npos ||
+                         n.find("calorie") != std::string::npos || n.find("kcal") != std::string::npos;
+  const bool logInFoodPlace = n.find("log") != std::string::npos &&
+                              (p.find("nutrition") != std::string::npos || p.find("food") != std::string::npos ||
+                               p.find("meal") != std::string::npos);
+  if (!namesFood && !logInFoodPlace) return std::string();
+  static const char kMemberNs[] = "chat:";   // nsForChat (vector_memory.h)
+  const std::string ledger = owner || ns.rfind(kMemberNs, 0) != 0
+                                 ? std::string(kFoodLedgerOwnerName)
+                                 : foodLedgerName(false, ns.substr(sizeof(kMemberNs) - 1));
+  return "the food log is one file, " + std::string(kFoodLedgerProject) + "/" + ledger +
+         " - nothing was written to " + project + "/" + name + ". Log it with files.append {\"project\":\"" +
+         kFoodLedgerProject + "\",\"name\":\"" + ledger + "\",\"key\":\"meal\",\"sum\":\"kcal\",\"text\":\"" +
+         kFoodLedgerHeader + "\\n<date>,<meal>,<items>,<kcal>,<protein_g>\"}";
 }
 
 FoodLedgerScan::FoodLedgerScan(const std::string& today) : today_(today) {}
@@ -174,9 +312,15 @@ void FoodLedgerScan::finish(FoodLedger& out) const {
     out.kcal = kcal_->total().total;
     out.kcalRows = kcal_->total().rows;
     out.kcalUnread = kcal_->total().unread;
+    out.kcalTotalRows = kcal_->total().totalRows;
+    out.kcalRepeats = kcal_->total().repeats;
   }
   out.hasProtein = protein_ != nullptr;
-  if (protein_) out.protein = protein_->total().total;
+  if (protein_) {
+    out.protein = protein_->total().total;
+    out.proteinRows = protein_->total().rows;
+    out.proteinUnknown = protein_->total().unread;
+  }
 }
 
 FoodLedger scanFoodLedger(const std::string& fileText, bool exists, const LogDay& day,
@@ -211,7 +355,7 @@ std::string renderLedgerBlock(const FoodLedger& l, bool foodTurn) {
   if (!l.hasRows()) {
     if (!foodTurn) return std::string();
     return head + ": no rows yet today. The first meal the owner says they ate is logged with " + firstCall(l) +
-           ".]\n";
+           ".]\n" + leftText(l) + noTargetsText(l);
   }
   std::string out = head +
                     ". The device's record of today's meals: today's totals come from here, never "
@@ -220,6 +364,8 @@ std::string renderLedgerBlock(const FoodLedger& l, bool foodTurn) {
   for (const std::string& r : l.rows) out += r + "\n";
   out += notesText(l);
   out += "Today so far (" + l.today + "): " + totalsText(l) + ".\n";
+  out += leftText(l);
+  if (foodTurn) out += noTargetsText(l);
   return out;
 }
 
@@ -230,6 +376,7 @@ std::string renderLedgerForFold(const FoodLedger& l) {
   for (const std::string& r : l.rows) out += r + "\n";
   out += notesText(l);
   out += kFoldTotalsLine + l.today + ": " + totalsText(l) + ".\n";
+  out += leftText(l);
   return out;
 }
 

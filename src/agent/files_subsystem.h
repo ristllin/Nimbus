@@ -5,6 +5,7 @@
 #include "nimbus/orch/tool_registry.h"   // Principal - the per-caller data boundary
 
 #include <string>
+#include <vector>
 
 // files_subsystem - device glue for E1 "Files + artifacts" (docs/ROADMAP.md).
 //
@@ -155,6 +156,9 @@ std::string absPath(const std::string& project, const std::string& name);
 // files.read tool, so an attach ref can't cross a tenant boundary.
 std::string readDocText(const std::string& project, const std::string& name,
                         const nimbus::orch::Principal& who);
+// Up to nimbus::orch::kMaxPlanFiles "project/name" this person may read that look like a
+// food or weight plan (food_ledger.h), newest first: where a target comes from.
+std::vector<std::string> foodPlanFiles(const nimbus::orch::Principal& who);
 // Auto-persist a finished sub-agent's reply as <project>/<name>-<tag>.md.
 // Sanitizes the agent-assigned name (validSegment, fallback = tag), enforces a
 // per-project cap, stamps ownerNs. Returns the outcome line for the fresh

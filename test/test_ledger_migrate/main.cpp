@@ -317,6 +317,37 @@ static void test_unmappable_rows_drop_and_count() {
 // The device wiring (a source pin: the device code does not build on host -
 // the test_tool_taint/test_store_full pattern): begin() runs the one-time
 // migration - the legacy file folds into the designed ledger and is removed.
+// 31 Oct: the head rebuilt the legacy file with a header, keyed by hand, next to the designed
+// ledger, and logged every later meal there. Those rows fold in too: dated keys, a bare comma
+// in the items, a total row, a blank protein (unknown, never 0 g), and the ledger's own rows
+// keep their keys.
+static void test_a_headered_legacy_file_folds_into_an_existing_ledger() {
+  const std::string legacy =
+      "key,date,items,kcal,protein_g\n"
+      "2026-11-01-drink,2026-11-01,cappuccino,66,3.3\n"
+      "2026-11-01-lunch,2026-11-01,3 eggs, 1 bun,517,27.1\n"
+      "2026-11-01-lunch2,2026-11-01,steak, mash, sauce,923,\n"
+      "2026-11-01-drink,2026-11-01,cappuccino large,90,4\n"
+      "2026-11-01-total,2026-11-01,total,1200,50\n"
+      "2026-10-30-lunch,2026-10-30,stale copy,1,1\n";
+  const std::string ledger = "date,meal,items,kcal,protein_g\n2026-10-30,lunch,the real lunch,600,30\n";
+  const LedgerMigration m = planLedgerMigration(legacy, ledger);
+  TEST_ASSERT_TRUE(m.ok);
+  TEST_ASSERT_TRUE_MESSAGE(contains(m.out, "2026-10-30,lunch,the real lunch,600,30\n"), m.out.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(contains(m.out, "stale copy"), m.out.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(contains(m.out, "2026-11-01,drink,cappuccino large,90,4\n"), m.out.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(contains(m.out, "2026-11-01,lunch,3 eggs; 1 bun,517,27.1\n"), m.out.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(contains(m.out, "2026-11-01,lunch2,steak; mash; sauce,923,\n"), m.out.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(contains(m.out, "1200"), "a total row is no meal");
+  const FoodLedger l = scanFoodLedger(m.out, true, LogDay{"2026-11-01", "GMT"}, kFoodLedgerProject, kFoodLedgerOwnerName);
+  TEST_ASSERT_EQUAL_INT(90 + 517 + 923, (int)l.kcal);
+  TEST_ASSERT_EQUAL_INT(1, l.proteinUnknown);
+  // A meal column, and a time for the row with no meal.
+  const LedgerMigration named = planLedgerMigration(
+      "timestamp,meal,food,kcal,protein\n2026-11-01 12:30,lunch,soup,300,10\n", std::string());
+  TEST_ASSERT_TRUE_MESSAGE(contains(named.out, "2026-11-01,lunch,soup,300,10\n"), named.out.c_str());
+}
+
 static void test_begin_wires_the_one_time_migration() {
   std::FILE* f = std::fopen("src/agent/files_subsystem.cpp", "rb");
   if (!f) { TEST_FAIL_MESSAGE("src/agent/files_subsystem.cpp unreadable"); return; }
@@ -328,7 +359,7 @@ static void test_begin_wires_the_one_time_migration() {
   TEST_ASSERT_TRUE(contains(src, "migrateLegacyMealLog()"));
   TEST_ASSERT_TRUE(contains(src, "planLedgerMigration"));
   TEST_ASSERT_TRUE(contains(src, "kLedgerProject"));
-  // The one-time shape: no migration once the ledger exists.
+  // A legacy file is folded once, into the ledger when one exists, and then removed.
   TEST_ASSERT_TRUE(contains(src, "g_store.find(nimbus::orch::kLedgerProject, "
                                  "nimbus::orch::kLedgerName)"));
   // The header bootstrap (candidate 3b): an append creates a CSV only when the
@@ -399,6 +430,7 @@ int main() {
   RUN_TEST(test_only_the_owners_legacy_log_folds);
   RUN_TEST(test_the_fold_checks_the_owner_and_keeps_an_unfolded_source);
   RUN_TEST(test_a_migrated_ledger_is_read_by_the_ledger_readers);
+  RUN_TEST(test_a_headered_legacy_file_folds_into_an_existing_ledger);
   RUN_TEST(test_begin_wires_the_one_time_migration);
   return UNITY_END();
 }

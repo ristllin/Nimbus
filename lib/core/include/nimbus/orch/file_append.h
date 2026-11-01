@@ -218,6 +218,17 @@ CsvUpsert planCsvUpsert(const std::string& existing, const std::string& newText,
                         const std::string& keyCol, const std::string& sumCol,
                         const std::string& today, bool supersede = false);
 
+// The columns of a CSV's header row (no byte order mark, spaces trimmed).
+std::vector<std::string> csvHeaderOf(const std::string& row);
+// The columns of a stored row as `header` names them, read the way the day total reads
+// it: a bare comma in its free text is folded back. Empty when its columns cannot be
+// trusted (a broken quote, wider than the header with no single reading).
+std::vector<std::string> csvStoredRow(const std::string& row, const std::vector<std::string>& header);
+// A cell read as the day total reads a figure: a plain number or a quoted "1,045".
+bool csvFigure(const std::string& cell, double& out);
+// Does this stored row state a total instead of a thing eaten? (never counted)
+bool csvStatesTotal(const std::vector<std::string>& fields);
+
 // One day's total as a stream (the files.read tail view): feed every row of the
 // file in order, header first.
 class CsvDayTally {
@@ -249,6 +260,11 @@ class CsvDayTally {
 // `today`. False when the file has no date column or no such sum column.
 bool csvDayTotal(const std::string& fileText, const std::string& sumCol,
                  const std::string& today, double& out);
+
+// One day's total as the reply states it, over a whole text (nimbusd, the lab): the same
+// words as the device's files.read {tail, sum} and the upsert reply.
+std::string csvDayTotalLine(const std::string& fileText, const std::string& sumCol, const std::string& today,
+                            const std::string& zone);
 
 // Rows out of bytes read in chunks: push() each chunk, then end(). Each complete
 // row (its line end, and a CR before it, stripped) goes to onRow(row, true); a

@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <initializer_list>
 #include <map>
 #include <vector>
+
+#include "nimbus/orch/file_append.h"   // csvHeaderOf, csvStoredRow, csvFigure: read as the day total reads
 
 namespace nimbus::orch {
 namespace {
@@ -18,6 +21,7 @@ struct FoldRow {
   std::string item;
   double kcal = 0;
   double protein = 0;
+  bool proteinKnown = true;   // false: the row's protein cell is blank, not 0 g
 };
 
 bool isNum(const std::string& s, double& out) {
@@ -166,6 +170,69 @@ bool headerRow(const std::string& line) {
   return !f.empty() && headerWord(f[0]);
 }
 
+// ---- a legacy file with a header row (31 Oct: the head rebuilt it keyed by hand) ---------
+struct LegacyHeader {
+  std::vector<std::string> names;
+  int date = -1, key = -1, item = -1, kcal = -1, protein = -1;
+  bool usable() const { return kcal >= 0 && protein >= 0 && (date >= 0 || key >= 0) && (key >= 0 || item >= 0); }
+};
+
+bool nameHolds(const std::string& name, std::initializer_list<const char*> parts) {
+  for (const char* p : parts)
+    if (name.find(p) != std::string::npos) return true;
+  return false;
+}
+
+std::string lowerText(std::string s) {
+  for (char& c : s)
+    if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+  return s;
+}
+
+LegacyHeader readLegacyHeader(const std::string& line) {
+  LegacyHeader h;
+  h.names = csvHeaderOf(line);
+  for (size_t i = 0; i < h.names.size(); i++) {
+    const std::string n = lowerText(h.names[i]);
+    const int c = (int)i;
+    if (h.date < 0 && nameHolds(n, {"date", "day", "time"})) h.date = c;
+    else if (h.key < 0 && nameHolds(n, {"meal", "key", "entry", "slot"})) h.key = c;
+    else if (h.item < 0 && nameHolds(n, {"item", "food", "desc", "what", "dish"})) h.item = c;
+    else if (h.kcal < 0 && nameHolds(n, {"kcal", "calorie"})) h.kcal = c;
+    else if (h.protein < 0 && nameHolds(n, {"protein"})) h.protein = c;
+  }
+  return h;
+}
+
+// "2026-11-01-drink" names the day and the meal; a plain "drink" only the meal.
+void splitDatedKey(const std::string& key, std::string& day, std::string& meal) {
+  const bool dated = key.size() > 11 && isoDayOf(key.substr(0, 10)) == key.substr(0, 10) && key[10] == '-';
+  if (dated && day.empty()) day = key.substr(0, 10);
+  meal = dated ? key.substr(11) : key;
+}
+
+// One row by its header's names. A total row and a row whose figures cannot be read map
+// to nothing; a blank protein stays unknown.
+bool foldHeaderedRow(const LegacyHeader& h, const std::string& line, size_t pos, FoldRow& r) {
+  const std::vector<std::string> f = csvStoredRow(line, h.names);
+  if (f.size() != h.names.size() || csvStatesTotal(f)) return false;
+  if (h.date >= 0) r.day = isoDayOf(f[(size_t)h.date]);
+  splitDatedKey(h.key >= 0 ? f[(size_t)h.key] : std::string(), r.day, r.meal);
+  if (r.day.empty() || !csvFigure(f[(size_t)h.kcal], r.kcal)) return false;
+  r.item = h.item >= 0 ? f[(size_t)h.item] : r.meal;
+  if (r.item.empty()) r.item = r.meal;
+  std::replace(r.item.begin(), r.item.end(), ',', ';');   // the ledger is comma-separated
+  if (r.meal.empty()) {
+    std::string day, time;
+    if (h.date >= 0) splitStamp(f[(size_t)h.date], day, time);
+    r.meal = mealOfTime(time);
+    if (r.meal.empty()) return false;
+  }
+  r.proteinKnown = h.protein >= 0 && csvFigure(f[(size_t)h.protein], r.protein);
+  r.ts = std::to_string(pos);   // keyed by hand: the last row of a meal is its last word
+  return true;
+}
+
 // The meals in eating order; an unknown word sorts last, alphabetically.
 int mealRank(const std::string& m) {
   for (size_t i = 0; i < sizeof(kMealWords) / sizeof(kMealWords[0]); i++)
@@ -190,6 +257,7 @@ using GenMap = std::map<LedgerKey, std::map<std::string, Gen>>;
 struct Final {
   std::string items;
   double kcal = 0, protein = 0;
+  bool proteinKnown = true;
 };
 using FinalMap = std::map<LedgerKey, Final>;
 
@@ -200,15 +268,22 @@ GenMap groupLegacy(const std::string& legacyText, LedgerMigration& m) {
   GenMap keyed;
   size_t pos = 0;
   size_t at = 0;
+  LegacyHeader header;
   while (at < legacyText.size()) {
     const size_t nl = legacyText.find('\n', at);
-    const std::string line =
+    std::string line =
         legacyText.substr(at, (nl == std::string::npos ? legacyText.size() : nl) - at);
     at = nl == std::string::npos ? legacyText.size() : nl + 1;
+    if (!line.empty() && line.back() == '\r') line.pop_back();
     const size_t thisPos = pos++;
     if (line.empty()) continue;
+    if (thisPos == 0 && line.find_first_of("0123456789") == std::string::npos) {
+      header = readLegacyHeader(line);   // the first row names its columns
+      if (header.usable()) continue;
+    }
     FoldRow r;
-    if (!foldRow(line, r)) {
+    const bool read = header.usable() ? foldHeaderedRow(header, line, thisPos, r) : foldRow(line, r);
+    if (!read) {
       m.dropped++;
       if (!headerRow(line)) m.droppedData++;
       continue;
@@ -240,6 +315,7 @@ FinalMap foldWinners(const GenMap& keyed) {
       out.items += it.first;
       out.kcal += it.second.kcal;
       out.protein += it.second.protein;
+      out.proteinKnown = out.proteinKnown && it.second.proteinKnown;
     }
     merged[kv.first] = out;
   }
@@ -261,8 +337,9 @@ void overlayLedger(const std::string& existingLedger, FinalMap& merged) {
     const std::vector<std::string> f = splitCsv(line);
     if (f.size() < 5) continue;
     double kcal = 0, protein = 0;
-    if (!isNum(f[3], kcal) || !isNum(f[4], protein)) continue;
+    if (!isNum(f[3], kcal)) continue;
     Final out;
+    out.proteinKnown = isNum(f[4], protein);   // a blank protein stays unknown
     out.items = f[2];
     out.kcal = kcal;
     out.protein = protein;
@@ -305,7 +382,7 @@ std::string renderLedger(const FinalMap& merged, int& folded) {
   std::string out = std::string(kLedgerHeader) + "\n";
   for (const auto& kv : rows) {
     out += kv.first.first + "," + kv.first.second + "," + itemsCell(kv.second.items) + "," +
-           numText(kv.second.kcal) + "," + numText(kv.second.protein) + "\n";
+           numText(kv.second.kcal) + "," + (kv.second.proteinKnown ? numText(kv.second.protein) : std::string()) + "\n";
     folded++;
   }
   return out;

@@ -48,12 +48,35 @@ std::string foodLedgerName(bool owner, const std::string& chatId);
 
 // May the person with namespace `ns` write project/name (the file store asks on every
 // write)? The ledger names are reserved: in project food, a name that starts with
-// "food-log" belongs to one person - food-log.csv to the owner, food-log-<id>.csv to
-// the member whose chat id it names - so nobody can create another person's ledger
-// before their first meal (compared without case, as the card's file system opens
+// "food-log" or "food-targets" belongs to one person - food-log.csv to the owner,
+// food-log-<id>.csv to the member whose chat id it names - so nobody can create another
+// person's ledger before their first meal (compared without case, as the card's file system opens
 // names). Every other name: true. The device owner: always true.
 bool ledgerNameWritable(const std::string& project, const std::string& name, const std::string& ns,
                         bool owner);
+
+// The owner's daily targets, as a stored file with a source for each figure. On 29 and 31
+// Oct the head invented targets (250 g protein, 2,500 kcal) that no file held and did the
+// "left today" sum itself. A target the device holds is shown with its source and the
+// device does the sum; with none, the block says where to read one before stating it
+// (food_figures.h then holds the reply to that). The file is a keyed CSV, one row per
+// metric and date; the last row of a metric wins, and a row without a source counts for
+// nothing. A member's targets sit next to that member's ledger.
+inline constexpr const char kFoodTargetsOwnerName[] = "food-targets.csv";
+inline constexpr const char kFoodTargetsHeader[] = "date,metric,target,source";
+std::string foodTargetsName(bool owner, const std::string& chatId);
+struct FoodTargets {
+  double kcal = 0;              // 0 = none stored
+  double protein = 0;
+  std::string kcalSource, proteinSource;
+};
+FoodTargets scanFoodTargets(const std::string& fileText);
+
+// The files that look like the owner's plan, in the order given, at most `kMaxPlanFiles`:
+// a name holding "plan" somewhere about food, weight or health. Where a block can send
+// the head before it states a target.
+inline constexpr size_t kMaxPlanFiles = 3;
+bool looksLikeFoodPlan(const std::string& project, const std::string& name);
 
 // Today's ledger as the prompt and the fold read it.
 struct FoodLedger {
@@ -70,8 +93,14 @@ struct FoodLedger {
   double kcal = 0;
   int kcalRows = 0;      // rows counted in kcal
   int kcalUnread = 0;    // rows dated today whose kcal is not a plain number
+  int kcalTotalRows = 0; // rows dated today that state a total: not counted
+  int kcalRepeats = 0;   // rows dated today that repeat a meal: counted once
   bool hasProtein = false;
   double protein = 0;
+  int proteinRows = 0;     // rows with a protein figure
+  int proteinUnknown = 0;  // rows dated today with no protein figure: not "0 g", unknown
+  FoodTargets targets;     // the person's stored targets (surfaces fill it)
+  std::vector<std::string> planFiles;   // "project/name" of plan files (surfaces fill it; only without targets)
   std::string mealColumn;  // the stored header's meal column (the keyed write's key; "" = none)
   std::string kcalColumn;  // its kcal column ("" = none)
   bool hasRows() const { return rowsToday > 0; }
@@ -144,6 +173,14 @@ enum class FoodIntent : uint8_t { Unclear = 0, Eaten, Ask, Complaint };
 FoodIntent foodIntentOf(const std::string& text);
 // The one-line hint for a clear intent ("" for Unclear).
 std::string renderFoodIntentHint(FoodIntent intent);
+
+// The food log is ONE file. A .csv whose name says it is a meal or food log, anywhere but
+// the ledger's place, would be a second one the per-turn block never reads: from 31 Oct to
+// 1 Nov the head logged every meal to nutrition/meal_log.csv next to an empty ledger, so
+// no receipt ever saw them and it did the day's sums itself. Why this write is refused
+// (with the one call to use instead), or "" when it may go ahead.
+std::string secondFoodLogRefusal(const std::string& project, const std::string& name, bool owner,
+                                 const std::string& ns);
 
 // Does this text ask about the ledger itself: its list, a total, a sum or an
 // earlier estimate ("give me the list", "your calc is off", "you estimated

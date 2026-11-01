@@ -726,11 +726,10 @@ void migrateLegacyMealLog() {
     alogf("files: legacy %s/%s left alone (it is not the owner's file)", kLegacyProject, kLegacyName);
     return;
   }
-  if (g_store.find(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName)) {
-    alogf("files: legacy %s/%s left alone (a designed ledger already exists)", kLegacyProject,
-          kLegacyName);
-    return;
-  }
+  // A designed ledger may already exist: on 31 Oct the head rebuilt the legacy file next
+  // to it and logged every later meal there. Those rows fold in too; the ledger's own rows
+  // keep their keys.
+  const bool ledgerStored = g_store.find(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName) != nullptr;
   // PRISM v4.6.3 row 1: the fold reads the file through a bounded read
   // (kFoldCap, below). A file OVER that cap must be left ENTIRELY alone: the
   // read would silently take only its head, and under append order the tail
@@ -751,7 +750,9 @@ void migrateLegacyMealLog() {
     return;
   }
   const std::string legacy = readWhole(kLegacyProject, kLegacyName, kFoldCap);
-  const nimbus::orch::LedgerMigration m = nimbus::orch::planLedgerMigration(legacy);
+  const std::string stored =
+      ledgerStored ? readWhole(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, kFoldCap) : std::string();
+  const nimbus::orch::LedgerMigration m = nimbus::orch::planLedgerMigration(legacy, stored);
   // A fold that folded NOTHING also leaves the orphan alone: its rows were
   // unmappable, and removing the file would still lose the raw record.
   if (!m.ok || m.folded == 0) {
@@ -1189,6 +1190,8 @@ static nimbus::orch::ToolResult appendRows(const AppendArgs& a, const nimbus::or
     return ToolResult::fail("need 'project', 'name' and 'text'");
   if (!textDocName(a.name))
     return ToolResult::fail("files.append adds rows to a text document (.csv, .log, .md, .txt, .json)");
+  const std::string second = nimbus::orch::secondFoodLogRefusal(a.project, a.name, who.owner, who.ns);
+  if (!second.empty()) return ToolResult::fail(second);
   if (!a.key.empty()) return upsertRows(a, who);
   memory::Lock g;
   const std::string gate = appendGate(a.project, a.name, who);
@@ -1446,6 +1449,23 @@ int removeProject(const std::string& project) {
   persistIndex();
   if (g_store.hasRoom()) g_full.room();   // the owner made room: a full-store episode ends
   return (int)names.size();
+}
+
+std::vector<std::string> foodPlanFiles(const nimbus::orch::Principal& who) {
+  memory::Lock g;
+  std::vector<const nimbus::orch::FileEntry*> found;
+  for (const auto* e : g_store.list(std::string())) {
+    if (nimbus::orch::looksLikeFoodPlan(e->project, e->name) && g_store.readableBy(*e, who.ns, who.owner, false))
+      found.push_back(e);
+  }
+  std::sort(found.begin(), found.end(),
+            [](const nimbus::orch::FileEntry* a, const nimbus::orch::FileEntry* b) { return a->createdAt > b->createdAt; });
+  std::vector<std::string> out;
+  for (const auto* e : found) {
+    if (out.size() == nimbus::orch::kMaxPlanFiles) break;
+    out.push_back(e->project + "/" + e->name);
+  }
+  return out;
 }
 
 String listJson(const String& project, const std::string& ns, bool owner,
@@ -1873,6 +1893,8 @@ void registerTools() {
               return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
             if (text.size() > 24 * 1024)
               return nimbus::orch::ToolResult::fail("text too large (max 24 KB per call)");
+            const std::string second = nimbus::orch::secondFoodLogRefusal(project, name, who.owner, who.ns);
+            if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
             std::string err;
             // (project,name) is the identity and add() REPLACES - so a write
             // that lands on another principal's artifact would DESTROY it.

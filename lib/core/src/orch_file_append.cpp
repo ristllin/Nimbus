@@ -1037,6 +1037,34 @@ bool csvDayTotal(const std::string& fileText, const std::string& sumCol,
   return true;
 }
 
+std::string csvDayTotalLine(const std::string& fileText, const std::string& sumCol, const std::string& today,
+                            const std::string& zone) {
+  CsvDayTally tally(sumCol, today);
+  RowSplitter rows([&](const std::string& row, bool complete) {
+    tally.feed(row, complete);
+    return true;
+  });
+  rows.push(fileText.data(), fileText.size());
+  rows.end();
+  if (!tally.ok()) return "[no day total: " + tally.whyNot() + "]\n";
+  std::string line = renderDayTotal(tally.total(), sumCol, true, zone) + "\n";
+  if (tally.undated() > 0) line += renderUndated(tally.undated()) + "\n";
+  return line;
+}
+
+std::vector<std::string> csvHeaderOf(const std::string& row) { return csvFields(withoutBom(row)); }
+
+std::vector<std::string> csvStoredRow(const std::string& row, const std::vector<std::string>& header) {
+  bool quotes = true;
+  std::vector<std::string> f = rowFields(row, &quotes, header, dateColumnByName(header), -1, {});
+  if (!quotes || f.size() > header.size()) f.clear();
+  return f;
+}
+
+bool csvFigure(const std::string& cell, double& out) { return figureOf(cell, out); }
+
+bool csvStatesTotal(const std::vector<std::string>& fields) { return statesTotal(fields, -1, -1); }
+
 StreamEnd streamRows(size_t size, const ReadFn& read, RowSplitter& rows) {
   char buf[512];
   size_t got = 0;
