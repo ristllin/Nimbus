@@ -201,6 +201,9 @@ device web page.
 | `skill.delete` | Delete a skill capsule you authored (`created_by: agent`). | `id` (string, **required**) | live (admin-only) |
 
 Notes:
+- A skill holds up to 8 KB. An attached copy or a sub-agent sees its first 4096 bytes and
+  `skill.get` reads it all; the save reply says so when it applies, and a refusal says how many
+  bytes to cut and that the detail can move to a second skill.
 - `skill.save` and `skill.delete` require an admin conversation and are refused
   in scheduled/unattended turns.
 - A skill the model saves is server-stamped `created_by: agent`, `approved:
@@ -228,7 +231,8 @@ Notes:
 The two food playbooks are also attached without a read: on a turn about food the
 device adds `food-log` when the owner reports food eaten, `food-coach` when they ask
 for an amount or a plan, and both when the words say neither (see
-[turn-anatomy.md](../turn-anatomy.md)).
+[turn-anatomy.md](../turn-anatomy.md)). An approved stored skill whose id says it is about
+food (meal, food, nutrition, diet, calorie) rides a logged meal the same way.
 
 ## `food.*` - the portion calculator
 

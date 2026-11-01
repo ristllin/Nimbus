@@ -89,6 +89,28 @@ or a plan, `food-coach` (answer first, only the foods the owner has, amounts fro
 the `food.portions` calculator). The model never rebuilds a day's total from
 memory or the conversation; the fold summary copies the ledger's dated totals.
 
+The food log is one file: a write to another CSV named as a meal or food log is
+refused with the call to use instead, and a log left at `nutrition/meal_log.csv`
+folds into the ledger at the next start. The day's sum counts meal rows and nothing
+else: a bare comma in a row's items is read back into the items, a row that states
+a total is never summed, a pasted header is no row, and a meal logged twice counts
+once with its last figures. A row the device cannot read for certain leaves the
+day's total "not known" until it is fixed. A meal with no protein figure stays
+unknown, so the day shows protein known and unknown apart.
+
+Daily targets live in `food/food-targets.csv` (`date,metric,target,source`), a row
+per metric with where it came from. With targets stored the block shows what is left,
+worked out by the device; with none, a food turn is told to read them first and which
+plan files it could read. The reply is then checked before delivery
+(`food_figures.h`): a stated target, or a "left" figure that implies one, needs its
+number in something the turn read or the owner said (the assistant's earlier replies
+and the fold summary are not sources); a stated day total must be the ledger's; "you
+need X g" over a row of unknown protein is not a figure. One correction round, then a
+calm line on the reply. On a food turn the earlier rows of the foods the message names
+ride along, and a keyed write says when an earlier day's row of the same food holds a
+figure off by more than a quarter, so the same food keeps the same estimate. An
+approved stored skill about food rides a logged meal.
+
 ### 1.2 Scratchpad - model-owned working goals
 A set of goal tiers (short-term / mid-term / long-term goals plus an
 active-task line), which the model rewrites as it works:

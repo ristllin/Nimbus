@@ -48,6 +48,7 @@ struct Rig {
   int seq = 0;
   std::string file = kLedgerFile;
   bool fileExists = true;
+  std::string skillText;   // the owner's stored food skill ("" = none)
   std::string reply = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
   std::vector<std::string> instructions, inputs, delivered;
   std::string turnTag;
@@ -97,7 +98,15 @@ struct Rig {
       in.devName = "Lumi";
       return in;
     };
-    d.skillBody = [](const std::string& id) { return agent::builtinSkillBody(id, true); };
+    d.skillBody = [this](const std::string& id) {
+      return id == "meal-photo-science" ? skillText : agent::builtinSkillBody(id, true);
+    };
+    d.foodSkills = [this] {
+      return skillText.empty() ? std::vector<std::string>{} : std::vector<std::string>{"meal-photo-science"};
+    };
+    d.foodRecall = [this](const std::string&, const std::string& message) {
+      return renderFoodRecall(file, kToday.date, message);
+    };
     d.foodLedger = [this](const std::string&) {
       return scanFoodLedger(file, fileExists, kToday, kFoodLedgerProject, kFoodLedgerOwnerName);
     };
@@ -232,6 +241,78 @@ static void test_ledger_figures_are_claim_sources() {
 
 // The fold's input closes with the date and today's ledger, so the summary dates
 // its facts and carries the day's totals.
+// The week's defects at the turn: the plan pointer, the earlier rows, the owner's method, and a
+// made-up target that cannot reach the owner unmarked.
+static void test_a_food_turn_with_no_target_is_sent_to_a_source() {
+  Rig r;
+  r.eng->handleMessage("how many calories are left for today?", "Roy", "1001");
+  const std::string dyn = r.last().dyn;
+  TEST_ASSERT_TRUE_MESSAGE(has(dyn, "[FOOD TARGETS] None is stored."), dyn.c_str());
+  TEST_ASSERT_TRUE(has(dyn, "a target you cannot point to is not stated"));
+  // A plain question stays free of it.
+  Rig plain;
+  plain.eng->handleMessage("is it raining at the office?", "Roy", "1001");
+  TEST_ASSERT_FALSE(has(plain.last().dyn, "[FOOD TARGETS]"));
+}
+
+static void test_the_earlier_rows_of_a_named_food_ride_the_turn() {
+  Rig r;
+  r.eng->handleMessage("I had some pasta for dinner", "Roy", "1001");
+  const std::string dyn = r.last().dyn;
+  TEST_ASSERT_TRUE_MESSAGE(has(dyn, "[THE SAME FOOD ON EARLIER DAYS"), dyn.c_str());
+  TEST_ASSERT_TRUE(has(dyn, "2026-10-25,dinner,pasta,800,30"));
+  Rig plain;
+  plain.eng->handleMessage("is it raining at the office?", "Roy", "1001");
+  TEST_ASSERT_FALSE(has(plain.last().dyn, "[THE SAME FOOD ON EARLIER DAYS"));
+}
+
+static void test_the_owners_food_skill_rides_a_logged_meal() {
+  Rig r;
+  r.skillText = "Blinded estimate first, then the label.";
+  r.eng->handleMessage("I ate a bagel with cream cheese", "Roy", "1001");
+  std::string dyn = r.last().dyn;
+  TEST_ASSERT_TRUE_MESSAGE(has(dyn, "[SKILL meal-photo-science - the owner's approved method"), dyn.c_str());
+  TEST_ASSERT_TRUE(has(dyn, "Blinded estimate first"));
+  // An answer about food does not carry the logging method.
+  r.eng->handleMessage("how many calories are left for today?", "Roy", "1001");
+  TEST_ASSERT_FALSE(has(r.last().dyn, "Blinded estimate first"));
+  // Past what one turn carries: the first part, and where the rest is.
+  r.skillText = std::string(5000, 'x');
+  r.eng->handleMessage("I ate a bagel", "Roy", "1001");
+  TEST_ASSERT_TRUE(has(r.last().dyn, "[the rest: skill.get meal-photo-science]"));
+}
+
+static void test_a_made_up_target_reaches_the_owner_marked() {
+  Rig r;
+  r.reply = "{\"reply\":\"You have 38.3 g protein left from your 250 g daily protein target.\",\"memory\":\"\",\"ask\":\"\"}";
+  r.eng->handleMessage("how much protein is left?", "Roy", "1001");
+  TEST_ASSERT_FALSE(r.delivered.empty());
+  TEST_ASSERT_TRUE_MESSAGE(has(r.delivered.back(), "(Correction: the device has no source for a daily target of 250 g protein."),
+                           r.delivered.back().c_str());
+  // The owner's own earlier word is a source; the assistant's is not.
+  Rig told;
+  told.turn((uint32_t)(kNow / 3600) - 2, "my protein target is 150 g", "Got it.");
+  told.reply = "{\"reply\":\"Your 150 g protein target stands.\",\"memory\":\"\",\"ask\":\"\"}";
+  told.eng->handleMessage("what is my protein target?", "Roy", "1001");
+  TEST_ASSERT_FALSE_MESSAGE(has(told.delivered.back(), "no source"), told.delivered.back().c_str());
+  Rig said;
+  said.turn((uint32_t)(kNow / 3600) - 2, "what is my protein target?", "Your 250 g protein target stands.");
+  said.reply = "{\"reply\":\"Your 250 g protein target stands.\",\"memory\":\"\",\"ask\":\"\"}";
+  said.eng->handleMessage("are you sure?", "Roy", "1001");
+  TEST_ASSERT_TRUE_MESSAGE(has(said.delivered.back(), "no source"), said.delivered.back().c_str());
+}
+
+static void test_the_day_total_in_a_reply_is_checked_against_the_ledger() {
+  Rig r;
+  r.reply = "{\"reply\":\"Today's total is now 3,989 kcal.\",\"memory\":\"\",\"ask\":\"\"}";
+  r.eng->handleMessage("so what are we at for today?", "Roy", "1001");
+  TEST_ASSERT_TRUE_MESSAGE(has(r.delivered.back(), "(Correction: the food log has today at 1315 kcal.)"), r.delivered.back().c_str());
+  Rig ok;
+  ok.reply = "{\"reply\":\"Today's total is now 1,315 kcal.\",\"memory\":\"\",\"ask\":\"\"}";
+  ok.eng->handleMessage("so what are we at for today?", "Roy", "1001");
+  TEST_ASSERT_FALSE_MESSAGE(has(ok.delivered.back(), "Correction"), ok.delivered.back().c_str());
+}
+
 static void test_the_fold_carries_the_day() {
   Rig r;
   std::string summary;
@@ -326,6 +407,11 @@ int main(int, char**) {
   RUN_TEST(test_no_rows_today);
   RUN_TEST(test_follow_ups_get_the_playbook);
   RUN_TEST(test_ledger_figures_are_claim_sources);
+  RUN_TEST(test_a_food_turn_with_no_target_is_sent_to_a_source);
+  RUN_TEST(test_the_earlier_rows_of_a_named_food_ride_the_turn);
+  RUN_TEST(test_the_owners_food_skill_rides_a_logged_meal);
+  RUN_TEST(test_a_made_up_target_reaches_the_owner_marked);
+  RUN_TEST(test_the_day_total_in_a_reply_is_checked_against_the_ledger);
   RUN_TEST(test_the_fold_carries_the_day);
   RUN_TEST(test_the_whole_day_is_in_the_history);
   RUN_TEST(test_the_request_stays_under_the_body_budget);
