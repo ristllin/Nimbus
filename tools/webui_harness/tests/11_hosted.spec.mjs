@@ -253,3 +253,77 @@ test('hosted: a degraded provider row offers a resolve link', async ({ page }) =
   await fix.click();   // jumps to the Assistant > Models subtab
   await expect(page.locator('.subtab[data-sp=llm]')).toHaveClass(/on/);
 });
+
+// (7) No control that only answers an error: Restart and Power off are the platform's.
+test('hosted: Home and Device show no restart or power control', async ({ page }) => {
+  await markHosted(page);
+  await routeHosted(page);
+  await seedToken(page);
+  await openApp(page);
+  await expect(page.locator('#homeRestart')).toBeHidden();
+  await expect(page.locator('#homePowerOff')).toBeHidden();
+  await page.locator('.tab[data-p=device]').click();
+  await expect(page.locator('#deviceRestart')).toBeHidden();
+  await expect(page.locator('#powerOff')).toBeHidden();
+});
+
+// (8) A spawn-only turn: the placeholder goes, the next message is sent, and the result
+//     appears with no reload (the hosted page used to hold every later message).
+test('hosted: a spawn-only turn frees the queue and the result appears by itself', async ({ page }) => {
+  await markHosted(page);
+  await routeHosted(page);
+  await seedToken(page);
+  let landed = false;
+  let watches = 0;
+  const posts = [];
+  await page.route('**/api/mem/episodic**', (r) => {
+    const ms = [{ id: 'm1', session: 'owner', channel: 'web', role: 'user', kind: 'message', text: 'start it', tags: '' }];
+    if (landed) ms.unshift({ id: 'm2', session: 'owner', channel: 'web', role: 'assistant', kind: 'message', text: 'RESULT: 144', tags: '' });
+    return r.fulfill({ contentType: 'application/json', body: JSON.stringify({ messages: ms }) });
+  });
+  await page.route('**/api/chat**', (route) => {
+    const req = route.request();
+    const json = (b) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(b) });
+    if (req.method() === 'POST') {
+      posts.push(req.postData());
+      return json({ pending: true, turn: posts.length });
+    }
+    const u = new URL(req.url());
+    if (u.searchParams.get('watch')) {
+      watches += 1;
+      if (watches >= 2) landed = true;
+      return json({ async: landed ? 2 : 1, busy: landed ? 0 : 1 });
+    }
+    return json({ reply: '', pending: false, done: true, async: 1, busy: 1 });
+  });
+  await openApp(page);
+  await page.locator('.tab[data-p=chat]').click();
+  await page.locator('#chatInput').fill('start it');
+  await page.locator('#chatSend').click();
+  await page.locator('#chatInput').fill('and this');
+  await page.locator('#chatSend').click();
+  await expect.poll(() => posts.length, { timeout: 8000 }).toBe(2);
+  await expect(page.locator('#chatLog')).toContainText('RESULT: 144', { timeout: 15000 });
+});
+
+// (9) A photo goes with the next message on a hosted page, named by its Files entry.
+test('hosted: an attached photo goes with the next message', async ({ page }) => {
+  await markHosted(page);
+  await routeHosted(page);
+  await seedToken(page);
+  let sent = '';
+  await page.route('**/api/files/upload**', (r) => r.fulfill({ contentType: 'application/json', body: '{"ok":true}' }));
+  await page.route('**/api/chat**', (route) => {
+    const req = route.request();
+    if (req.method() === 'POST') sent = req.postData() || '';
+    return route.fulfill({ contentType: 'application/json',
+      body: JSON.stringify(req.method() === 'POST' ? { pending: true, turn: 1 } : { reply: 'green', pending: false, done: true, async: 0, busy: 0 }) });
+  });
+  await openApp(page);
+  await page.locator('.tab[data-p=chat]').click();
+  await page.setInputFiles('#chatFile', { name: 'p.png', mimeType: 'image/png', buffer: Buffer.from('89504e470d0a1a0a', 'hex') });
+  await expect(page.locator('#chatLog')).toContainText('It goes with your next message');
+  await page.locator('#chatInput').fill('what color?');
+  await page.locator('#chatSend').click();
+  await expect.poll(() => sent, { timeout: 8000 }).toContain('att=chat%2Fp.png');
+});
