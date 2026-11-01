@@ -32,6 +32,7 @@
 #include "nimbus/orch/ledger_migrate.h"  // v4.6.3: the legacy meal-log fold
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
+#include "nimbus/orch/turn_effects.h"  // kSaveReplacedNote: the save receipt
 #include "nimbus/orch/provider_caps.h"  // LocalDate - the upsert's today
 #include "nimbus/orch/spend_ceiling.h"  // paidCallAllowed - the scan's gate before the download (lane QW4)
 #include "nimbus/orch/tool_registry.h"
@@ -626,7 +627,7 @@ static bool textDocName(const std::string& name) {
 }
 
 static bool fileKindIsCsv(const std::string& name) {
-  return name.size() > 4 && strcasecmp(name.c_str() + name.size() - 4, ".csv") == 0;
+  return nimbus::orch::isCsvName(name);
 }
 
 // Bounded SD read of one doc through a PSRAM buffer (never internal SRAM). `ok`
@@ -1871,10 +1872,13 @@ void registerTools() {
             if (!g_store.writeAllowed(project, name, who.ns, who.owner))
               return nimbus::orch::ToolResult::fail(
                   "that project/name belongs to someone else - choose another name");
+            const bool replacing = g_store.find(project, name) != nullptr;
             if (!saveText(project, name, text, err, who.ns))
               return nimbus::orch::ToolResult::fail(refusalForHead(err));
             return nimbus::orch::ToolResult::ok("saved " + project + "/" + name + " (" +
-                                                std::to_string(text.size()) + " bytes)");
+                                                std::to_string(text.size()) + " bytes)" +
+                                                (replacing ? std::string(", ") + nimbus::orch::kSaveReplacedNote
+                                                           : std::string()));
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"}},"required":["project","name","text"]})");
 

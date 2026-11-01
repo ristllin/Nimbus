@@ -166,22 +166,14 @@ size_t closingParen(const std::string& row, size_t open) {
   return std::string::npos;
 }
 
-// One field from `p` up to (not including) the next separator. A comma inside a
-// balanced pair of parentheses stays in the field: the migrated ledger holds items
-// like "Boba tea (no sugar, honey tapioca)" (ledger_migrate.h), and a split there
-// would leave that row out of every total. An unbalanced '(' shields nothing, so a
-// cut row still reads short. False when a quote never closes or text follows a
-// closing quote.
-bool readField(const std::string& row, size_t& p, std::string& field) {
-  while (p < row.size() && isBlank(row[p])) p++;
-  if (p < row.size() && row[p] == '"') {
-    p++;
-    if (!readQuoted(row, p, field)) return false;
-    while (p < row.size() && isBlank(row[p])) p++;
-    return p >= row.size() || row[p] == ',';
-  }
+// An unquoted field from `p` up to the next separator. A comma inside a balanced pair of
+// parentheses stays in the field: the migrated ledger holds items like "Boba tea (no sugar,
+// honey tapioca)" (ledger_migrate.h), and a split there would leave that row out of every
+// total. An unbalanced '(' shields nothing, so a cut row still reads short, and `parens`
+// goes false: the row scans for a close at most once in vain, so a row of open parentheses
+// costs linear time.
+void readPlainField(const std::string& row, size_t& p, std::string& field, bool& parens) {
   const size_t b = p;
-  bool parens = true;   // one failed scan ends them for this field: no row costs more than linear per field
   while (p < row.size() && row[p] != ',') {
     if (row[p] == '(' && parens) {
       const size_t close = closingParen(row, p);
@@ -193,6 +185,19 @@ bool readField(const std::string& row, size_t& p, std::string& field) {
   size_t e = p;
   while (e > b && isBlank(row[e - 1])) e--;
   field.assign(row, b, e - b);
+}
+
+// One field from `p` up to (not including) the next separator. False when a quote never
+// closes or text follows a closing quote.
+bool readField(const std::string& row, size_t& p, std::string& field, bool& parens) {
+  while (p < row.size() && isBlank(row[p])) p++;
+  if (p < row.size() && row[p] == '"') {
+    p++;
+    if (!readQuoted(row, p, field)) return false;
+    while (p < row.size() && isBlank(row[p])) p++;
+    return p >= row.size() || row[p] == ',';
+  }
+  readPlainField(row, p, field, parens);
   return true;
 }
 
@@ -204,7 +209,7 @@ bool readField(const std::string& row, size_t& p, std::string& field) {
 std::vector<std::string> csvFields(const std::string& row, bool* ok = nullptr,
                                    size_t maxFields = kMaxColumns) {
   std::vector<std::string> out;
-  bool good = true;
+  bool good = true, parens = true;
   size_t p = 0;
   while (true) {
     if (out.size() == maxFields) {   // wider than the cap: the rest as one field
@@ -212,7 +217,7 @@ std::vector<std::string> csvFields(const std::string& row, bool* ok = nullptr,
       break;
     }
     std::string field;
-    if (!readField(row, p, field)) {
+    if (!readField(row, p, field, parens)) {
       good = false;
       field.assign(row, p < row.size() ? p : row.size(), std::string::npos);
       p = row.size();

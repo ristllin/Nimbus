@@ -153,6 +153,12 @@ std::string fxReceiptId(const std::string& output);
 // True when an ok send this turn carries a voice message's receipt.
 bool voiceDelivered(const TurnEffects& fx);
 
+// What artifact.save's receipt says when it replaced a stored file ("saved p/n (N bytes), "
+// plus this): the rewrite the logging playbook names for a row no key can reach. It backs the
+// remove/replace/dedup claims like a keyed replacement does. A save that created the file
+// replaced nothing and does not say this.
+inline constexpr const char kSaveReplacedNote[] = "replacing the stored copy";
+
 // The rows a files.append result says landed: "appended N row(s) ..." is N, "replaced R
 // row(s), added A row(s) ..." is R + A; 0 for any other text (or "no change").
 int fxAppendedRows(const std::string& output);

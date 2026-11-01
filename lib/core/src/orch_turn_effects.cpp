@@ -294,13 +294,14 @@ static bool queuedWrite(FxKind base, const std::string& out) {
 }
 
 // v4.6.3 (the 30 Oct ledger investigation): the stored content a tool result says was
-// REPLACED: the keyed upsert's "replaced N row(s), added M row(s) in p/n" or files.edit's
-// "edited p/n: replaced A of B match(es)". 0 when the result says none (a plain append,
+// REPLACED: the keyed upsert's "replaced N row(s), added M row(s) in p/n", files.edit's
+// "edited p/n: replaced A of B match(es)" or a whole-file save over a stored file. 0 when the result says none (a plain append,
 // an upsert that only added, a re-send that changed nothing): those land FileWrite alone.
 // Anchored to the two replies, so a file named "replaced 3.csv" in a plain append's
 // receipt replaces nothing.
 static int replacedRowsIn(const std::string& out) {
   if (contains(out, "(no change")) return 0;
+  if (startsWith(out, "saved ") && contains(out, kSaveReplacedNote)) return 1;
   if (startsWith(out, "replaced ")) return std::atoi(out.c_str() + 9);
   if (!startsWith(out, "edited ")) return 0;
   static const char kEdit[] = ": replaced ";

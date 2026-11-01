@@ -249,6 +249,16 @@ static void test_a_comma_inside_parentheses_stays_in_its_field() {
       h, h + "2026-10-29,lunch,Rice (white, cooked,200,4\n", "meal", "kcal", "2026-10-29");
   TEST_ASSERT_FALSE(open.ok);
   TEST_ASSERT_TRUE(open.err.find("double quotes") != std::string::npos);
+  // Thousands of open parentheses cost linear time and read as plain commas.
+  std::string opens = "2026-10-29,lunch,";
+  for (int i = 0; i < 4000; i++) opens += "(,";
+  const nimbus::orch::CsvUpsert wide = nimbus::orch::planCsvUpsert(h, h + opens + "\n", "meal", "kcal", "2026-10-29");
+  TEST_ASSERT_FALSE(wide.ok);
+  // One rule for a CSV name across the device, nimbusd and the lab.
+  TEST_ASSERT_TRUE(nimbus::orch::isCsvName("log.csv"));
+  TEST_ASSERT_TRUE(nimbus::orch::isCsvName("Log.CSV"));
+  TEST_ASSERT_FALSE(nimbus::orch::isCsvName(".csv"));
+  TEST_ASSERT_FALSE(nimbus::orch::isCsvName("log.txt"));
   // A power cut inside the parentheses still reads as a cut row, not a whole one.
   TEST_ASSERT_TRUE(nimbus::orch::csvLastRowCut("date,meal,items,kcal,protein_g", "2026-10-29,lunch,Soup,100,2",
                                                "2026-10-29,dinner,Rice (white, coo"));

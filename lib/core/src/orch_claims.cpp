@@ -2158,8 +2158,8 @@ const char* savedWhat(uint8_t variant) {
     return "no row landed in a log file this turn; only a files.append (or a file saved again) that adds or "
            "replaces a row updates a log";
   if (variant == kGapNoReplace)
-    return "no stored row was replaced this turn; only a keyed files.append that reports a replaced row, or a "
-           "files.edit, removes or replaces one";
+    return "no stored row was replaced this turn; only a keyed files.append that reports a replaced row, a "
+           "files.edit or a whole-file save over the stored file removes or replaces one";
   if (variant == kGapQueued) return "the memory write was only queued; it is not stored yet";
   return variant == kGapRamOnly ? "it was kept in RAM only; saving failed" : "nothing was saved";
 }

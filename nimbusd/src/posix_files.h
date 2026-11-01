@@ -11,6 +11,7 @@
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/provider_caps.h"  // LocalDate - the upsert's today
 #include "nimbus/orch/tool_registry.h"
+#include "nimbus/orch/turn_effects.h"  // kSaveReplacedNote: the save receipt
 #include "posix_fs.h"
 
 // posix_files - the daemon's files.* / artifact.save tool surface, disk-backed.
@@ -74,9 +75,11 @@ class PosixFiles {
               if (p.empty() || n.empty())
                 return nimbus::orch::ToolResult::fail("need 'project' and 'name'");
               std::string err;
+              const bool replacing = store_.find(p, n) != nullptr;
               if (!save(p, n, t, err)) return nimbus::orch::ToolResult::fail(err);
-              return nimbus::orch::ToolResult::ok("saved " + p + "/" + n + " (" +
-                                                  std::to_string(t.size()) + " bytes)");
+              return nimbus::orch::ToolResult::ok("saved " + p + "/" + n + " (" + std::to_string(t.size()) + " bytes)" +
+                                                  (replacing ? std::string(", ") + nimbus::orch::kSaveReplacedNote
+                                                             : std::string()));
             },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"},"text":{"type":"string"}},)"
@@ -221,12 +224,6 @@ class PosixFiles {
     return true;
   }
 
-  // The device's rule (files_subsystem.cpp appendRows): an append that creates a CSV
-  // carries its header row first, or the file can never be updated by key.
-  static bool createsCsv(const std::string& cur, const std::string& n) {
-    return cur.empty() && n.size() > 4 && n.compare(n.size() - 4, 4, ".csv") == 0;
-  }
-
   bool append(const std::string& p, const std::string& n, const std::string& text,
               std::string& err, std::string& note) {
     if (!nimbus::orch::FileStore::validSegment(p, 24) ||
@@ -238,7 +235,8 @@ class PosixFiles {
     const nimbus::orch::FileEntry* old = store_.find(p, n);
     if (old) read(p, n, cur);
     const nimbus::orch::AppendPlan plan =
-        nimbus::orch::planAppend(text, cur.size(), cur.empty() ? '\0' : cur.back(), createsCsv(cur, n));
+        nimbus::orch::planAppend(text, cur.size(), cur.empty() ? '\0' : cur.back(),
+                                 cur.empty() && nimbus::orch::isCsvName(n));   // the device's create rule
     if (!plan.ok) {
       err = plan.err;
       return false;

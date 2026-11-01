@@ -189,7 +189,6 @@ int main(int argc, char** argv) {
     else if (a.rfind("--timeout=", 0) == 0)  sub.timeoutS = std::stoi(a.substr(10));
     else if (a.rfind("--record=", 0) == 0)   sub.recordDir = opt.recordDir = a.substr(9);
     else if (a.rfind("--dir=", 0) == 0)      pe.dir = a.substr(6);
-    else if (a.rfind("--out=", 0) == 0)      pe.out = a.substr(6);
     else if (a.rfind("--prompt=", 0) == 0)   pe.prompt = a.substr(9);
     else if (laneLFlag(a, laneL)) {
       // --effort is also a run pin (chat, scenarios): both read it, and the
@@ -303,7 +302,10 @@ int main(int argc, char** argv) {
     return lab::runHonestyEval(env, opt, laneL.reps, only);
   }
 
-  if (cmd == "photo-eval") return lab::cmdPhotoEval(env, opt, pe);
+  if (cmd == "photo-eval") {
+    pe.out = laneL.out;   // --out= is the suites' flag (laneLFlag); this driver reads the same one
+    return lab::cmdPhotoEval(env, opt, pe);
+  }
 
   if (cmd == "scenarios") {
     std::vector<std::string> names(args.begin() + 1, args.end());

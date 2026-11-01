@@ -221,7 +221,7 @@ const Part kLogRows[] = {
      "   GMT): 976 from 2 rows), and files.read {project, name, tail: 5, sum:\n"
      "   \"kcal\", date: \"2026-10-24\"} gives any day's. If the owner's stated total\n"
      "   and the file's disagree, say both.\n"
-     "9. Never say a figure was logged, updated or corrected without the\n"
+     "9. Never say a figure was logged, updated, corrected or removed without the\n"
      "   files.append reply that shows it (replaced or added). A refused\n"
      "   files.append wrote nothing: fix what it names and send again, or tell\n"
      "   the owner. If it says the log already holds 2 or more rows for that date\n"
@@ -234,14 +234,7 @@ const Part kLogRows[] = {
      "   rows for one meal go in ONE call, one row per line.\n"
      "11. If a reply says the stored last row was cut mid-write, say so and log\n"
      "   that row again in full.\n"
-     "12. A keyed write refused because the stored file has no header or no key\n"
-     "   column means appends can never correct that file: every append would add\n"
-     "   a duplicate row. To remove or rewrite rows, or to give the file a header,\n"
-     "   use files.edit (read the tail first, then edit the exact span), or\n"
-     "   files.read the whole file and artifact.save the corrected file with a\n"
-     "   header row first. Never say a row was removed, replaced or deduplicated\n"
-     "   unless the tool result says it was (a keyed update and files.edit both say\n"
-     "   replaced N).\n"},
+     "12. A log with no header row: fix it with files.edit (the refusal says how).\n"},
 };
 
 // The food playbooks (lane CTX). On 26 Oct the head never opened a playbook, logged

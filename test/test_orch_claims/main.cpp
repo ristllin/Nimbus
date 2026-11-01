@@ -539,6 +539,16 @@ static void test_replace_claims_hold_against_the_real_keyed_reply_and_log_row_fl
   TEST_ASSERT_TRUE(edit.anyOkWith(FxKind::FileWrite, kFxLogRow));
   TEST_ASSERT_FALSE(gapOf(gapsFor(claim, edit), ClaimClass::Saved));
   TEST_ASSERT_FALSE(gapOf(gapsFor("I updated the log.", edit), ClaimClass::Saved));
+  // The playbook's other rewrite: a whole-file save over the stored file backs the removal.
+  // A save that created the file, or one with no such note, replaced nothing.
+  TurnEffects rewrite, created;
+  recordToolEffect(rewrite, FxKind::FileWrite, false,
+                   std::string("saved food/food-log.csv (90 bytes), ") + kSaveReplacedNote);
+  TEST_ASSERT_TRUE(rewrite.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_FALSE(gapOf(gapsFor(claim, rewrite), ClaimClass::Saved));
+  recordToolEffect(created, FxKind::FileWrite, false, "saved food/food-log.csv (90 bytes)");
+  TEST_ASSERT_FALSE(created.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_TRUE(gapOf(gapsFor(claim, created), ClaimClass::Saved));
   // A plain append into a file whose name holds the marker words replaces nothing.
   TurnEffects named;
   recordToolEffect(named, FxKind::FileWrite, false, "appended 1 row to replaced 3/edited 2.csv (now 9 bytes)", kFxLogRow);

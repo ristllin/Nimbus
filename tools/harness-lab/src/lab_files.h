@@ -12,6 +12,7 @@
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
 #include "nimbus/orch/file_append.h"  // planAppend/tailRows (CUM-644)
+#include "nimbus/orch/turn_effects.h"  // kSaveReplacedNote: the save's receipt
 #include "nimbus/orch/tool_registry.h"
 
 // Host stand-in for the device's SD-backed artifact tools
@@ -106,9 +107,10 @@ class LabFiles {
     if (full_ != Full::No)
       return nimbus::orch::ToolResult::fail(
           std::string(nimbus::orch::FileStore::kErrTooManyFiles) + nimbus::orch::kStoreFullToolNote);
+    const bool replacing = files_.count(p + "/" + n) > 0;
     files_[p + "/" + n] = t;
-    return nimbus::orch::ToolResult::ok("saved " + p + "/" + n + " (" +
-                                        std::to_string(t.size()) + " bytes)");
+    return nimbus::orch::ToolResult::ok("saved " + p + "/" + n + " (" + std::to_string(t.size()) + " bytes)" +
+                                        (replacing ? std::string(", ") + nimbus::orch::kSaveReplacedNote : std::string()));
   }
 
   nimbus::orch::ToolResult readTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
@@ -174,7 +176,7 @@ class LabFiles {
     const std::string path = p + "/" + n;
     const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(
         t, files_[path].size(), files_[path].empty() ? '\0' : files_[path].back(),
-        files_[path].empty() && n.size() > 4 && n.compare(n.size() - 4, 4, ".csv") == 0);
+        files_[path].empty() && nimbus::orch::isCsvName(n));
     if (!plan.ok) return nimbus::orch::ToolResult::fail(plan.err);
     files_[path] += plan.bytes;
     return nimbus::orch::ToolResult::ok(

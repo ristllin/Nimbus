@@ -40,6 +40,15 @@ struct AppendPlan {
   bool repairedCut = false;
   int rows = 0;          // rows in `bytes`
 };
+// A .csv file name, in any case: the one rule the device, nimbusd and the lab share.
+inline bool isCsvName(const std::string& name) {
+  if (name.size() <= 4) return false;
+  std::string ext = name.substr(name.size() - 4);
+  for (char& c : ext)
+    if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+  return ext == ".csv";
+}
+
 // csvCreate: this append would CREATE a keyed-eligible CSV (.csv, no stored
 // file). Its first row must then be the header (the column names) - a
 // headerless CSV can never be updated by key, so every later "correction"
