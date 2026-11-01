@@ -390,7 +390,7 @@ the heavy-connector-write restart, 2026-07).
   goes for a provider verify or a model-list refresh on its worker: one string per
   row of the Cumulo router's list, three times over, took internal free to 968 B on a
   live device (fixed in 5.0.0). Anything that keeps a string per row of a list gives it a
-  block of 128 B or more (`assignOffInternal`, `keptId`);
+  block over 128 B (`assignOffInternal`, `keptId`);
   `test/test_refresh_small_blocks` counts them.
 - **The speaker's DMA buffers** - opening the speaker takes 8 x 1024 B of DMA-capable
   SRAM until the clip ends. A cue opens only with those and 8 KB for the radio free,

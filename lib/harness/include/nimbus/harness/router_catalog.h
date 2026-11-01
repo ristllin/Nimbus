@@ -125,8 +125,9 @@ inline std::string keptId(const std::string& id) {
 
 namespace detail {
 
-// Room a version key reserves: one 128 B block, so a key per row costs no internal SRAM.
-inline constexpr size_t kVersionKeyInts = nimbus::orch::kPsramStringFloor / sizeof(int);
+// Room a version key reserves: one block just over the 128 B the device keeps internal
+// (a block of exactly 128 B stays there), so a key per row costs no internal SRAM.
+inline constexpr size_t kVersionKeyInts = nimbus::orch::kPsramStringFloor / sizeof(int) + 1;
 
 // The ordering key of a model id within its upstream: its version numbers
 // ("claude-opus-4-8" -> {4,8}, "gpt-5.6-sol" -> {5,6}, "gpt-6-astra" -> {6}) and

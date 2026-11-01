@@ -2,11 +2,11 @@
 //
 // Why this exists: Lumi's internal SRAM low-water mark fell to 968 B during the Cumulo
 // router's list refresh (10 minutes after each update, on the 8 KB verify task). On the device
-// a plain block under 128 B stays in internal SRAM; only a turn sends small blocks to PSRAM.
-// protectHeads and keepOrder held three vectors of one string per row, under 128 B each:
+// a plain block of 128 B or less stays in internal SRAM; only a turn sends small blocks to PSRAM.
+// protectHeads and keepOrder held three vectors of one string per row, each under that limit:
 // 155 rows x 3 x ~36 B, about 17 KB out of the ~22 KB the worker had left.
 //
-// The test counts live blocks under the device's 128 B limit through a whole fetch's pure steps
+// The test counts live blocks within the device's 128 B limit through a whole fetch's pure steps
 // (the same order as provider_verify's storeModelHarvest) and fails when that peak grows with
 // the row count. Portable: a host std::string keeps a few more characters in the object than
 // the device's does, which only makes this host count lower, and the row ids here are longer
@@ -23,8 +23,10 @@
 #include "nimbus/orch/model_catalog.h"
 
 namespace {
-constexpr size_t kInternalLimit = 128;   // nimbus::heapwatch::kSmallAllocInternalLimit
-size_t g_live = 0;                       // live bytes in blocks under the limit
+// nimbus::heapwatch::kSmallAllocInternalLimit. IDF's malloc keeps a block of this size or less
+// in internal SRAM: heap_caps_malloc_default, `size <= malloc_alwaysinternal_limit`.
+constexpr size_t kInternalLimit = 128;
+size_t g_live = 0;                       // live bytes in blocks within the limit
 size_t g_peak = 0;
 bool   g_on = false;
 
@@ -37,7 +39,7 @@ void* counted(size_t n) {
   void* raw = std::malloc(n + sizeof(Head));
   if (!raw) return nullptr;
   static_cast<Head*>(raw)->n = n;
-  if (g_on && n < kInternalLimit) {
+  if (g_on && n <= kInternalLimit) {
     g_live += n;
     if (g_live > g_peak) g_peak = g_live;
   }
@@ -47,7 +49,7 @@ void* counted(size_t n) {
 void uncounted(void* p) {
   if (!p) return;
   Head* h = static_cast<Head*>(p) - 1;
-  if (g_on && h->n < kInternalLimit && g_live >= h->n) g_live -= h->n;
+  if (g_on && h->n <= kInternalLimit && g_live >= h->n) g_live -= h->n;
   std::free(h);
 }
 }  // namespace
@@ -102,7 +104,7 @@ struct Pass {
 };
 
 // provider_verify.cpp's fetch for the router, its pure steps in its order: the rows, then
-// storeModelHarvest. Peak of the blocks under the limit, past the rows' own (which the row
+// storeModelHarvest. Peak of the blocks within the limit, past the rows' own (which the row
 // bound and the harvest's off-internal rule already keep to PSRAM on the device).
 Pass runFetch(const std::string& body) {
   ModelHarvest h;
