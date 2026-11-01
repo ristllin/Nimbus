@@ -421,8 +421,15 @@ static void test_write_during_outage_is_queued_for_every_failure_class() {
     seen[(int)classifyEmbedFail(raw, d)] = true;
     TEST_ASSERT_TRUE_MESSAGE(w.success, raw);
     TEST_ASSERT_EQUAL_STRING_MESSAGE(kMemOutcomeQueued, w.code.c_str(), raw);
-    TEST_ASSERT_TRUE_MESSAGE(has(w.output, "not stored yet"), raw);
-    TEST_ASSERT_TRUE_MESSAGE(has(w.output, "embeddings:"), raw);
+    if (classifyEmbedFail(raw, d) == EmbedFail::NoKey) {
+      // No key can embed: not an outage. It says what is true now and promises nothing.
+      TEST_ASSERT_TRUE_MESSAGE(has(w.output, "kept as text"), raw);
+      TEST_ASSERT_TRUE_MESSAGE(has(w.output, "No later confirmation"), raw);
+      TEST_ASSERT_FALSE_MESSAGE(has(w.output, "automatically"), raw);
+    } else {
+      TEST_ASSERT_TRUE_MESSAGE(has(w.output, "not stored yet"), raw);
+      TEST_ASSERT_TRUE_MESSAGE(has(w.output, "embeddings:"), raw);
+    }
     TEST_ASSERT_EQUAL_INT(0, r.vec.size());
     TEST_ASSERT_EQUAL_INT(1, (int)r.pending.size());
     TEST_ASSERT_TRUE(r.persistPendingCalls >= 1);   // durable before it answered
