@@ -400,7 +400,9 @@ class NimbusdRig {
   // head as images (hosted_photos.h). A chat the owner has not approved gets no turn.
   TurnRecord sayWithPhotos(const std::string& chatId, const std::string& text, const std::vector<PhotoIn>& photos) {
     if (photos.empty() || !access_->mayConverse(chatId)) return say(chatId, text);
-    return say(chatId, photos_->offerTurn(chatId, "Owner", text, photos));
+    TurnRecord t = say(chatId, photos_->offerTurn(chatId, "Owner", text, photos));
+    orch::dropTurnImages();   // a turn that never started (a held or refused one) frees them
+    return t;
   }
 
   // The slash commands a hosted instance answers itself. /clear is the device's

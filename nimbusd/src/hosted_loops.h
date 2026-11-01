@@ -73,13 +73,10 @@ class HostedLoops {
     uint64_t prevLastRun = 0;
     if (!selectAndClaim(now, req, prevLastRun)) return;
     if (busy) busy(true);
-    firing_ = true;
     const nimbus::orch::FireOutcome o = h_.fire ? h_.fire(req) : nimbus::orch::FireOutcome{};
-    firing_ = false;
     if (busy) busy(false);
     settle(req.id, o, now, prevLastRun);
   }
-  void setTickSec(uint32_t s) { tickSec_ = s; }
   // The owner moved the time zone (device onTzChanged): wall-clock schedules take the
   // next occurrence on the new clock, a due fire keeps its slot, and the daily counters
   // adopt the new day with no change in either direction.
@@ -95,7 +92,6 @@ class HostedLoops {
     dev_.dayNumber = day;
     persist();
   }
-  bool firing() const { return firing_; }
 
   Created create(const std::string& name, const std::string& prompt, const std::string& chatId,
                  ArduinoJson::JsonObjectConst schedule, bool byAgent, bool inScheduled) {
@@ -348,6 +344,9 @@ class HostedLoops {
     if (!due) return false;
     const nimbus::orch::Delivery dl = deliveryFor(*due, world);
     req = nimbus::orch::buildFireRequest(*due, dl, now);
+    // The shared rule names the device's web chat; a hosted page chats as "owner".
+    if (nimbus::orch::deliveryChannelOf(req.chatId) == nimbus::orch::DeliveryChannel::Web)
+      req.chatId = nimbus::orch::kHostedWebChatId;
     prevLastRun = due->lastRun;
     const nimbus::orch::FireClaim before = nimbus::orch::claimSnapshot(*due, dev_);
     nimbus::orch::claimFire(*due, dev_, now, nextRunFor(*due, now));
@@ -414,10 +413,9 @@ class HostedLoops {
   HostedLoopHooks h_;
   std::string path_, modePath_;
   bool askFirst_ = false;
-  bool firing_ = false;
   uint32_t ceilingAlertDay_ = 0;
   uint64_t lastTick_ = 0;
-  uint32_t tickSec_ = 20;   // the device's sweep
+  static constexpr uint32_t tickSec_ = 20;   // the device's sweep
 };
 
 inline void HostedLoops::registerTools(nimbus::orch::ToolRegistry& reg) {

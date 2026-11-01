@@ -404,7 +404,7 @@ static void testRoutines(ndtest::Ctx& c) {
     seed[0].id = "lpwake1";
     seed[0].name = "wakeup";
     seed[0].prompt = "CHECK-THE-REPORT";
-    seed[0].chatId = "owner";
+    seed[0].chatId = "";   // the Routines form posts no chat: the owner's default
     seed[0].sched.kind = orch::SchedKind::Once;
     seed[0].sched.intervalSec = 300;
     seed[0].createdBy = orch::CreatedBy::Agent;
@@ -431,6 +431,13 @@ static void testRoutines(ndtest::Ctx& c) {
     c.eqi(marks, 1, "the thread was marked busy around the fire");
     c.ok(!has(rig.routines().json(), "lpwake1"), "a one-shot is gone after it fired");
     c.ok(has(rig.routines().json(), "lprecur"), "the recurring routine stays");
+    orch::MsgQuery q;
+    q.sessionId = kWebChatId;
+    q.haveKind = true;
+    q.kind = orch::MsgKind::Message;
+    bool inPage = false;
+    for (const auto& m : rig.episodic().query(q)) inPage = inPage || has(m.text, "Your report is ready");
+    c.ok(inPage, "a routine with no chat lands in the page's own conversation");
   }
   clearEnv();
 }
