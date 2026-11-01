@@ -63,7 +63,7 @@ run on defaults and pass.
 }
 ```
 
-- `keys` maps a provider slug (`mistral`, `zai`, `anthropic`, `openai`, `cumulo`) to the
+- `keys` maps a provider slug (`mistral`, `zai`, `anthropic`, `openai`, `cumulo`, or `tavily` for the web search key) to the
   **name** of a key in the env file. The value is posted the way the web app posts a key.
 - `key_expect` is the verdict a key must get before any turn runs: `verified` (the default),
   `rejected`, or `nocredits`. A key name starting `RIG_FAKE_` needs no env entry: the rig makes
@@ -151,6 +151,7 @@ A `say` step also takes:
 | `repeat` | none | expand into N steps; `$i` in the text counts from 1 |
 | `pad` | none | with `repeat`: add this many bytes of distinct filler to each turn |
 | `judge` | true | false leaves this step out of `--judge` |
+| `att` | none | a list of `project/name` Files entries the message brings as photos |
 
 A member's turn has no turn id, so `turn_resolved` is refused on it.
 
@@ -234,3 +235,4 @@ against a real image, with no key and no turn: run it when you build a new image
 | `personas/cumulo_router.json` | one Cumulo router key, funded and with no credits. Needs `CUMULO_TEST_KEY` and `CUMULO_NOCREDIT_KEY` |
 | `personas/contract.json` | every route the rig relies on, against a real image (costs nothing) |
 | `personas/embed_switch.json` | an OpenAI-only owner moves memory to OpenAI embeddings, then stores a memory |
+| `personas/vn_parity/*.json` | what a hosted instance had to gain to match the device: the conversation fold, the chat that never hangs, memory that follows the key, routines, wake-ups, skills, photos, the tool trace, the web search key |

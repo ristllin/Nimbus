@@ -91,6 +91,31 @@ class TelegramChannel {
     return true;
   }
 
+  // Download one file by its Telegram id (getFile, then the file host). A file over
+  // `maxBytes` is refused by its reported size, before any bytes move.
+  bool fetchFile(const std::string& fileId, size_t maxBytes, std::string& out, std::string& err) {
+    agent::HttpResponse resp;
+    if (!call("getFile?file_id=" + fileId, "", resp, err)) return false;
+    if (resp.status != 200) { err = "the download failed"; return false; }
+    const std::string path = jsonStr(resp.body, "file_path");
+    if (path.empty()) { err = "the download failed"; return false; }
+    const size_t at = resp.body.find("\"file_size\":");
+    if (at != std::string::npos && (size_t)std::strtoull(resp.body.c_str() + at + 12, nullptr, 10) > maxBytes) {
+      err = "too large";
+      return false;
+    }
+    agent::HttpRequest req;
+    req.method = "GET";
+    req.host = "api.telegram.org";
+    req.path = "/file/bot" + token_ + "/" + path;
+    req.timeoutMs = 30000;
+    agent::HttpResponse file;
+    std::string e;
+    if (!http_ || !http_->exec(req, file, e) || file.status != 200) { err = "the download failed"; return false; }
+    out = file.body;
+    return true;
+  }
+
   int32_t offset() const { return offset_; }
 
  private:

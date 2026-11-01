@@ -33,6 +33,7 @@ namespace nimbusd {
 struct PhotoIn {
   std::string project, name;
   std::string bytes;
+  std::string why;   // set when the channel could not fetch it: what the head is told
 };
 
 class HostedPhotos {
@@ -74,7 +75,9 @@ class HostedPhotos {
       refs.push_back(ref);
     }
     const std::string routed(b.render(0).c_str());
-    agent::history::noteInbound(agent::history::inboundForBucket(b, 0, refs), routed);
+    agent::history::Inbound note = agent::history::inboundForBucket(b, 0, refs);
+    note.src.clear();   // no channel update behind it: two equal uploads are two messages
+    agent::history::noteInbound(note, routed);
     nimbus::orch::offerTurnImages(chat, routed, std::move(set));
     return routed;
   }
@@ -130,9 +133,9 @@ class HostedPhotos {
     label.k = k;
     label.n = n;
     std::string bytes = p.bytes;
-    if (bytes.empty() && (!h_.fetchFile || !h_.fetchFile(p.project, p.name, bytes))) {
+    if (bytes.empty() && (!p.why.empty() || !h_.fetchFile || !h_.fetchFile(p.project, p.name, bytes))) {
       label.cls = nimbus::orch::MediaClass::FetchFailed;
-      label.detail = "not found in Files";
+      label.detail = p.why.empty() ? "not found in Files" : p.why;
       return nimbus::orch::mediaSegment(label);
     }
     ref = nimbus::orch::blobHash(bytes);

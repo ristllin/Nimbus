@@ -1,0 +1,51 @@
+{
+ "name": "vnp-web-key",
+ "description": "A client who pastes a Tavily key on the instance's own page.",
+ "keys": {
+  "mistral": "MISTRAL_API_KEY",
+  "tavily": "TAVILY_API_KEY"
+ },
+ "models": {
+  "head": {
+   "mistral": "mistral-large-4-0"
+  },
+  "sub": {
+   "mistral": "mistral-small-latest"
+  }
+ },
+ "host": "mistral",
+ "monthly_cap_cents": 500,
+ "scenarios": [
+  {
+   "id": "web-key",
+   "steps": [
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/orch"
+     },
+     "expect": [
+      {
+       "body_contains": "\"hasTav\":true"
+      }
+     ]
+    },
+    {
+     "say": "Use your web.search tool to find the latest stable Python 3 release listed on python.org/downloads. Tell me the version number and the URL you used.",
+     "expect": [
+      {
+       "turn_resolved": true
+      },
+      {
+       "tool_called": "web_search"
+      },
+      {
+       "reply_regex": "3\\.\\d+\\.\\d+"
+      }
+     ],
+     "timeout_s": 300
+    }
+   ]
+  }
+ ]
+}

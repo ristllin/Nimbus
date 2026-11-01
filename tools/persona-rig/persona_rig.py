@@ -46,6 +46,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from grade import ERROR_REPLY_RE, grade_step, regrade_step  # noqa: E402
 from persona_schema import (  # noqa: E402, F401  (the rig's public loading surface)
     KEY_FIELDS,
+    SEARCH_KEY_FIELDS,
     PersonaError,
     filler,
     known_defects,
@@ -81,7 +82,7 @@ CONTRACT = {
     "nimbusd/src/tg_web.h": ['"/api/telegram"', '"/api/telegram/"', '"/api/tenant"', '"add"', '"allow"', '"tenants"']
     + ['"id"', '"name"', '"role"'],
     "nimbusd/src/hosted_settings.h": ['"orchHost"', '"sysPrompt"', '"clearConv"', '"spendCeil"', '"orchM_"', '"subM_"']
-    + ['"devTz"', '"devName"'],
+    + ['"devTz"', '"devName"', '"tavKey"'],
     "lib/core/include/nimbus/orch/provider_slots.h": [f'"{field}"' for field in KEY_FIELDS.values()],
     "nimbusd/src/spend_ceiling_vn.h": ["limitCents", "spentCents"],
     "nimbusd/src/provider_verify.h": ['"nocredits"'],
@@ -499,7 +500,10 @@ def _send_turn(inst: Instance, step: dict, rec: dict):
         payload = json.dumps({"chat_id": str(step["as"]), "text": step["say"]}).encode()
         rec["send"] = inst.call("POST", "/api/message", data=payload, ctype="application/json")
         return None
-    rec["send"] = inst.call("POST", "/api/chat", form={"text": step["say"]})
+    form = {"text": step["say"]}
+    if step.get("att"):
+        form["att"] = "\n".join(step["att"])
+    rec["send"] = inst.call("POST", "/api/chat", form=form)
     try:
         return json.loads(rec["send"][1]).get("turn")
     except ValueError:
@@ -623,7 +627,8 @@ class Runner:
         """The web app's own posts, one at a time so a refusal names one setting."""
         p, forms = self.p, []
         for slug, key_env in p.get("keys", {}).items():
-            forms.append((f"key {slug}", "/api/orch", {KEY_FIELDS[slug]: self.env_values.get(key_env, "")}))
+            field = KEY_FIELDS.get(slug) or SEARCH_KEY_FIELDS[slug]
+            forms.append((f"key {slug}", "/api/orch", {field: self.env_values.get(key_env, "")}))
         models = p.get("models", {})
         for slug, model in models.get("head", {}).items():
             forms.append((f"head model {slug}", "/api/orch", {f"orchM_{slug}": model}))

@@ -29,6 +29,8 @@ FILLER_WORDS = "harbor lantern quartz meadow copper violet ember thistle marble 
 STEP_KINDS = ("say", "http", "upload", "restart", "sleep")
 # The form field a provider's key is posted in.
 KEY_FIELDS = {"openai": "oaiKey", "anthropic": "antKey", "mistral": "mistKey", "zai": "zaiKey", "cumulo": "cumuloKey"}
+# The web search key rides its own form field (hosted_settings.h), not a provider slot.
+SEARCH_KEY_FIELDS = {"tavily": "tavKey"}
 # What a persona may ask of a key: the verdict /api/orch must report before any turn runs.
 KEY_VERDICTS = ("verified", "rejected", "nocredits")
 NUMBER = (int, float)
@@ -252,7 +254,10 @@ def _validate_providers(p: dict, name: str):
         _check_text_values(role, f"{name} models")
     if not all(isinstance(k, str) for k in p.get("instance_env_keys", [])):
         raise PersonaError(f"{name}: instance_env_keys must list text")
-    for slug in [*p.get("keys", {}), *models.get("head", {}), *models.get("sub", {})]:
+    for slug in p.get("keys", {}):
+        if slug not in KEY_FIELDS and slug not in SEARCH_KEY_FIELDS:
+            raise PersonaError(f"{name}: unknown key {slug!r}, one of {sorted({*KEY_FIELDS, *SEARCH_KEY_FIELDS})}")
+    for slug in [*models.get("head", {}), *models.get("sub", {})]:
         if slug not in KEY_FIELDS:
             raise PersonaError(f"{name}: unknown provider {slug!r}, one of {sorted(KEY_FIELDS)}")
     if p.get("host") and p["host"] not in KEY_FIELDS:

@@ -16,7 +16,8 @@
 //   (g) photos reach a seeing head as image parts and settle their row; a blind head
 //       and a file that is no image are told plainly;
 //   (h) the web search key is set on the page and survives a restart;
-//   (i) nothing in a hosted turn's prompt calls the instance a device.
+//   (i) nothing in a hosted turn's prompt calls the instance a device;
+//   (j) a Telegram photo or album reaches one turn, and the rest gets an answer.
 #include <chrono>
 #include <cstdio>
 #include <string>
@@ -27,6 +28,7 @@
 #include "reply_buffer.h"
 #include "rig.h"
 #include "test_util.h"
+#include "tg_inbound.h"
 #include "web_api.h"
 
 using namespace nimbusd;
@@ -501,7 +503,7 @@ static void testPhotos(ndtest::Ctx& c) {
     c.ok(rig.files().put("chat", "red.png", pngPixel(), err), "the upload is in Files");
     const TurnRecord t = rig.sayWithPhotos("owner", "what color is this?", {PhotoIn{"chat", "red.png", ""}});
     c.ok(has(t.reply, "red"), "the turn answered");
-    c.ok(!tx.seen.empty() && !tx.seen[0].splices.empty(), "the bytes went as an image part");
+    c.ok(!tx.spliced.empty() && !tx.spliced[0].empty(), "the bytes went as an image part");
     c.ok(!tx.seen.empty() && has(tx.seen[0].body, "what color is this?"), "with the sender's words");
     orch::MsgQuery q;
     q.haveKind = true;
@@ -528,7 +530,7 @@ static void testPhotos(ndtest::Ctx& c) {
     std::string err;
     rig.files().put("chat", "notes.png", std::string("this is plain text, not a photo"), err);
     rig.sayWithPhotos("owner", "look", {PhotoIn{"chat", "notes.png", ""}});
-    c.ok(!tx.seen.empty() && tx.seen[0].splices.empty(), "bytes that are no image are never sent as one");
+    c.ok(!tx.spliced.empty() && tx.spliced[0].empty(), "bytes that are no image are never sent as one");
     c.ok(!tx.seen.empty() && has(tx.seen[0].body, "(not read:"), "the head reads why");
     tx.script.push_back(fin);
     rig.sayWithPhotos("owner", "look again", {PhotoIn{"chat", "missing.png", ""}});
@@ -547,7 +549,7 @@ static void testPhotos(ndtest::Ctx& c) {
     std::string err;
     rig.files().put("chat", "red.png", pngPixel(), err);
     rig.sayWithPhotos("owner", "what color?", {PhotoIn{"chat", "red.png", ""}});
-    c.ok(!tx.seen.empty() && tx.seen[0].splices.empty(), "a blind head gets no image part");
+    c.ok(!tx.spliced.empty() && tx.spliced[0].empty(), "a blind head gets no image part");
     c.ok(!tx.seen.empty() && has(tx.seen[0].body, "(not read"), "and is told nobody read it");
   }
   clearEnv();
@@ -602,9 +604,68 @@ static void testNoDeviceWording(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// One Telegram photo update as parsed from the wire.
+static nimbus::tg::Update tgPhoto(const std::string& chat, const std::string& text, const std::string& group, const char* id) {
+  nimbus::tg::Update u;
+  u.chatId = chat;
+  u.text = text;
+  u.mediaGroupId = group;
+  u.attachment.kind = nimbus::tg::Attachment::Kind::Photo;
+  u.attachment.fileId = id;
+  return u;
+}
+
+static void testTelegramPhotos(ndtest::Ctx& c) {
+  std::printf("  -- (j) a Telegram photo or album reaches one turn --\n");
+  clearEnv();
+  const std::string dir = ndtest::scratchDir("vp-j");
+  ndtest::rmTree(dir);
+  fsutil::mkdirs(dir);
+  TelegramAccess access(dir);
+  std::string err;
+  access.setAllowCsv("123", err);
+  TgInboundIo io;
+  int turns = 0, fetched = 0;
+  std::vector<PhotoIn> got;
+  std::string caption, sent;
+  io.turn = [&](const std::string&, const std::string&) { turns++; };
+  io.send = [&](const std::string&, const std::string& t) { sent = t; };
+  io.photoTurn = [&](const std::string&, const std::string& t, const std::vector<PhotoIn>& p) {
+    turns++;
+    caption = t;
+    got = p;
+  };
+  io.fetchFile = [&](const std::string& id, std::string& bytes, std::string& e) {
+    fetched++;
+    if (id == "gone") {
+      e = "too large";
+      return false;
+    }
+    bytes = pngPixel();
+    return true;
+  };
+  routeTelegramUpdates({tgPhoto("123", "dinner", "alb", "a"), tgPhoto("123", "", "alb", "b"), tgPhoto("123", "", "alb", "gone")},
+                       access, io, 1000);
+  c.eqi(turns, 1, "an album is one turn");
+  c.eqi((long)got.size(), 3, "with all its photos");
+  c.eq(caption, "dinner", "and its caption");
+  c.ok(got.size() == 3 && got[2].why == "too large", "a photo that could not be fetched says why");
+  turns = 0;
+  fetched = 0;
+  routeTelegramUpdates({tgPhoto("999", "not approved", "", "x")}, access, io, 1000);
+  c.eqi(turns, 0, "an unapproved chat gets no turn");
+  c.eqi(fetched, 0, "and its file is never downloaded");
+  nimbus::tg::Update voice;
+  voice.chatId = "123";
+  voice.attachment.kind = nimbus::tg::Attachment::Kind::Voice;
+  routeTelegramUpdates({voice}, access, io, 1000);
+  c.ok(has(sent, "text and photos"), "a voice note is told what this bot reads, never silence");
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== a hosted instance does what the device does (offline) ===\n");
+  testTelegramPhotos(c);
   testHistoryAndFold(c);
   testWebChatContract(c);
   testToolRows(c);

@@ -1339,7 +1339,10 @@ class WebApi {
       from = nl + 1;
       const size_t slash = item.find('/');
       if (slash == std::string::npos || slash == 0 || slash + 1 >= item.size()) continue;
-      out.push_back(PhotoIn{item.substr(0, slash), item.substr(slash + 1), std::string()});
+      PhotoIn in;
+      in.project = item.substr(0, slash);
+      in.name = item.substr(slash + 1);
+      out.push_back(in);
     }
     return out;
   }

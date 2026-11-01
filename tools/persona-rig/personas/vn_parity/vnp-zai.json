@@ -1,0 +1,74 @@
+{
+ "name": "vnp-zai",
+ "description": "Z.ai-only client: no embedding route and a blind head.",
+ "keys": {
+  "zai": "Z_AI_TOKEN"
+ },
+ "models": {
+  "head": {
+   "zai": "glm-5.3-flash"
+  },
+  "sub": {
+   "zai": "glm-5.3-flash"
+  }
+ },
+ "host": "zai",
+ "timezone": "Europe/London",
+ "monthly_cap_cents": 500,
+ "scenarios": [
+  {
+   "id": "memory-state",
+   "steps": [
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/mem/stats"
+     },
+     "expect": [
+      {
+       "body_contains": "\"embedAvailable\":false"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "photo-blind",
+   "steps": [
+    {
+     "upload": {
+      "project": "chat",
+      "name": "sample.png",
+      "png_rgb": [
+       20,
+       200,
+       40
+      ]
+     },
+     "expect": [
+      {
+       "http_status": 200
+      }
+     ]
+    },
+    {
+     "say": "What color is this image? If you cannot actually see it, say so plainly.",
+     "expect": [
+      {
+       "turn_resolved": true
+      },
+      {
+       "reply_regex": "(can'?t|cannot|unable|not able|couldn'?t|could not|no way).{0,80}(see|view|read|image|photo)|not read"
+      },
+      {
+       "reply_not_contains": "green"
+      }
+     ],
+     "att": [
+      "chat/sample.png"
+     ]
+    }
+   ]
+  }
+ ]
+}

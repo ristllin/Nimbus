@@ -223,6 +223,12 @@ int runDaemon(nimbusd::Config& cfg) {
       // The refusal rides the POLL transport, which this thread owns.
       nimbusd::TgInboundIo io;
       io.turn = [&eng](const std::string& chat, const std::string& text) { eng.postMessage(chat, text); };
+      io.photoTurn = [&eng](const std::string& chat, const std::string& text, const std::vector<nimbusd::PhotoIn>& photos) {
+        eng.postMessage(chat, text, 0, nullptr, photos);
+      };
+      io.fetchFile = [&tgPoll](const std::string& id, std::string& bytes, std::string& e) {
+        return tgPoll->fetchFile(id, nimbus::orch::kImagePartBytes, bytes, e);
+      };
       io.send = [&tgPoll](const std::string& chat, const std::string& text) {
         std::string e;
         if (!tgPoll->sendMessage(chat, text, e)) logLine("telegram: refusal to " + chat + " not sent: " + e);
