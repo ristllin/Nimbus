@@ -219,6 +219,46 @@ static void test_cum835_head_tool_executions_are_noted() {
   TEST_ASSERT_EQUAL_UINT16(0, orch::hostedRuns().total);
 }
 
+// RCAD fix pass: the live fold repro (evidence/rcad-fold-repro-2026-11-02, private)
+// shows the Conversations API returns message.output content as a chunk ARRAY even
+// under the strict schema: a thinking chunk plus the text chunk. mistralOutputContent
+// must read ONLY the text chunk - the thinking text is dropped by the parser, not
+// absent at the wire - so the turn JSON is exactly the text chunk.
+static void test_head_conversations_chunk_array_drops_thinking() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"conv_1\",\"outputs\":[{\"type\":\"message.output\","
+      "\"content\":["
+      "{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"private plan at the wire\"}]},"
+      "{\"type\":\"text\",\"text\":\"{\\\"reply\\\":\\\"hello there\\\",\\\"memory\\\":\\\"\\\"}\"}]}],"
+      "\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20}}"});
+  auto pd = d.contract();
+  std::string conv, out, err;
+  bool ok = providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL_STRING("conv_1", conv.c_str());
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"hello there\",\"memory\":\"\"}", out.c_str());  // thinking left out
+}
+
+// Same wire shape with the v4.6.4 fold failure condition: the text chunk is a
+// schema-valid orch_turn with an EMPTY reply. The read must surface that empty
+// reply verbatim (the engine's "no summary in reply ()"), never substitute the
+// thinking text for it.
+static void test_head_conversations_empty_reply_text_chunk_surfaces() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"conv_1\",\"outputs\":[{\"type\":\"message.output\","
+      "\"content\":["
+      "{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"the summary goes here in thinking\"}]},"
+      "{\"type\":\"text\",\"text\":\"{\\\"reply\\\":\\\"\\\",\\\"memory\\\":\\\"the summary\\\"}\"}]}],"
+      "\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20}}"});
+  auto pd = d.contract();
+  std::string conv, out, err;
+  bool ok = providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"\",\"memory\":\"the summary\"}", out.c_str());
+}
+
 static void test_continuation_sends_no_model_or_instructions() {
   FakeProviderDeps d;
   d.http.script.push_back({"api.mistral.ai", "/v1/conversations/conv_1", 200,
@@ -2001,6 +2041,8 @@ int main(int, char**) {
   RUN_TEST(test_reserved_toolname_renamed_and_inverted);
   RUN_TEST(test_new_conversation_request_shape);
   RUN_TEST(test_cum835_head_tool_executions_are_noted);
+  RUN_TEST(test_head_conversations_chunk_array_drops_thinking);
+  RUN_TEST(test_head_conversations_empty_reply_text_chunk_surfaces);
   RUN_TEST(test_continuation_sends_no_model_or_instructions);
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_loop_chat_completions_stateless);
