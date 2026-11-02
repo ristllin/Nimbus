@@ -1458,7 +1458,7 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
                              " \xC2\xB7 " + rec.backend + "/" + rec.model + "]";
   if (!durable)
     deliverNotDurableAck(p, chatId, suffix);
-  else if (!p.quiet && p.note[0] && activeCount() <= 2)
+  else if (!p.quiet && activeCount() <= 2)
     deliver(chatId, std::string(p.note) + suffix);
   emitJobState(tag, rec.backend, orch::JobState::Queued);
 }
