@@ -41,6 +41,7 @@ struct Rig {
   uint32_t nowH = 500000;
   bool synced = true;
   std::string failWith;     // non-empty: the embedder fails with this raw token
+  bool holdsKey = false;    // a key that can embed is held (it may not reach the stored space)
   int embedCalls = 0;
   bool persistPendingOk = true;
   int persistPendingCalls = 0;
@@ -51,6 +52,7 @@ struct Rig {
   explicit Rig(bool bindQueue = true) {
     vec.configure(kDims);
     ctx.vec = &vec;
+    ctx.holdsEmbedKey = [this] { return holdsKey; };
     ctx.embed = [this](const std::string& text, std::string& err) -> std::vector<int8_t> {
       embedCalls++;
       if (!failWith.empty()) { err = failWith; return {}; }
@@ -486,15 +488,17 @@ static void test_no_key_words_tell_the_two_cases_apart() {
   TEST_ASSERT_FALSE(has(w.output, "device"));
   Rig held;
   held.failWith = "no embeddings key for mistral";
-  held.ctx.holdsEmbedKey = [] { return true; };
+  held.holdsKey = true;
   ToolResult x = held.write("my locker code is 4417", owner());
   TEST_ASSERT_TRUE(has(x.output, "kept as text"));
   TEST_ASSERT_FALSE(has(x.output, "holds no key"));
   TEST_ASSERT_TRUE(has(x.output, "made with mistral"));
   TEST_ASSERT_TRUE(has(x.output, "a Mistral key"));
   TEST_ASSERT_TRUE(has(x.output, "erase the stored memories"));
-  held.failWith = "no embeddings key for openai";
-  ToolResult y = held.write("my gate code is 88", owner());
+  Rig heldOpenAi;
+  heldOpenAi.failWith = "no embeddings key for openai";
+  heldOpenAi.holdsKey = true;
+  ToolResult y = heldOpenAi.write("my gate code is 88", owner());
   TEST_ASSERT_TRUE(has(y.output, "an OpenAI or Cumulo Nimbus key"));
   // At the cap: refused, and still the honest answer.
   Rig full;

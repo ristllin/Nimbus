@@ -46,7 +46,8 @@ make them one. Each person's role is shown on their chip; click it to cycle
 
 Text and photos are read. A photo, or a whole album, is one message: the assistant
 looks at it if its model can, and otherwise says it could not. A voice note, a video
-or a file with no words gets one line saying what the bot reads.
+or a file gets one line saying what the bot reads. If it came with words, the assistant
+answers those too, and says what it could not open.
 
 Things to know before you approve someone:
 

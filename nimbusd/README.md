@@ -208,6 +208,7 @@ applies. Only `/api/files/upload` takes a file part; anywhere else one is refuse
 | `orchHost`, `provPrio`, `subPrio` | primary provider and the fallback orders (unknown names are dropped; an empty order is refused) |
 | `sysPrompt` | the directive (up to 1500 characters; blank = the shipped default) |
 | `orchLoop` | the head tool loop |
+| `orchTrace` | activity recording, on by default: off stops new tool and turn rows (the chat's tool disclosure) |
 | `devName`, `devTz` (`/api/config`) | the name and the time zone (a POSIX string with zone names of 3 to 16 characters, or a zone name such as `Europe/London`; `/api/state` clock and the prompt's clock follow it at once) |
 | `clearConv`, `clearMem`, `convReset` | Clear conversation (a `/clear` boundary: the next turn carries no earlier conversation, the history is kept), erase the running notes, reset provider threads |
 | keys, `orchM_<slug>`, `subM_<slug>`, `tgAllow` | provider keys (the device's own key rule and sentences: spaces around a key are dropped and it is stored without them, and a key with a space, a line break or another hidden character inside, or of a length that provider never issues, is refused; the instance's secrets file holds provider keys only, and a key an earlier build stored with spaces around it loads trimmed and is rewritten trimmed), head and sub-agent model picks, the Telegram allowlist |
@@ -216,9 +217,9 @@ applies. Only `/api/files/upload` takes a file part; anywhere else one is refuse
 `status`, `why` in plain words and `recheckInS` until its next check.
 
 The device knobs a hosted instance does not offer (tool-loop limits, TLS slots,
-mid-turn failover, trace, the custom endpoint) are reported by `GET /api/orch` at
-their hosted values, so the page's whole-form **Save Changes** round-trips them as a
-no-op (a blank number field is "unchanged"); posting any other value, or any field not listed above (sound, voice, ring,
+mid-turn failover, the custom endpoint) are hidden on its page and reported by
+`GET /api/orch` at their hosted values, so the page's whole-form **Save Changes**
+round-trips them as a no-op (a blank number field is "unchanged"); posting any other value, or any field not listed above (sound, voice, ring,
 display, battery, mode, budgets, a typed bot key), answers
 `400 {"ok":false,"error":"Not available on a hosted Nimbus: <field>"}` and nothing
 in that post applies, and a value the instance volume cannot store changes nothing
@@ -269,18 +270,30 @@ body carry `{async, busy}`: the page's watcher reloads the history when `async` 
 so a sub-agent's result appears with no reload. A turn with a reply gets no separate
 "On it." for the sub-agents it started.
 
-**Photos.** The page's Attach and drag-and-drop upload to Files > chat; a photo then goes
-with the next message (`POST /api/chat` field `att`, one `project/name` per line), and
-the page shrinks one over 450 KB to a JPEG first. A Telegram photo or album is one
-turn. The head sees it as an image part; a head that cannot read an image gets a
-transcription from a provider that can, or a label saying nobody could read it. The
-row keeps the head's note (`image.note`), and `image.look` shows a stored photo again.
-A bare voice note, video or file on Telegram gets one plain answer saying what the bot
-reads.
+**Photos.** The page's Attach and drag-and-drop upload to Files > chat under a unique
+name starting `att-`, so any browser file name works and two photos never overwrite; a
+photo then goes with the next message (`POST /api/chat` field `att`, one `project/name`
+per line), and the page shrinks one over 450 KB to a JPEG first. The turn removes that
+Files entry once it has the bytes, and one never sent is swept after a day, so photos do
+not use up the 256 entries Files holds. A Telegram photo or album is one turn, and the
+bytes waiting for their turn share a 32 MB bound in RAM: past it a photo reaches its turn
+as the reason, not the bytes, and the message itself is kept. The head sees a photo as an
+image part; a head that cannot read an image gets a transcription from a provider that
+can, or a label saying nobody could read it. The row keeps the head's note
+(`image.note`), and `image.look` shows a stored photo again. A voice note, video or file
+on Telegram gets one plain answer saying what the bot reads. When it came with words,
+those words also run as a turn, and the head is told what did not reach it.
+
+**What the page leaves out.** Voice, a custom endpoint, the Safety sub-page (no scanner,
+downloads or guest moderation), standing rules, the fixed tool settings and skill
+self-approval are hidden rather than left to answer a refusal, and the search box drops
+their entries. `tools/persona-rig/vn_browser_check.py --walk-only` changes every control
+a real instance shows and fails on a refusal: run it after adding a control.
 
 **Web search.** The instance's page takes a Tavily key on the same field as the device
 (Assistant > Tools > Web search), durable with the provider keys; `web.search` is
-offered from the next turn. With no such key, an OpenAI or Anthropic key reaches the web
+offered from the next turn. The key is not checked when it is saved, and the page says
+only that it is saved: a refused search is what tells the owner. With no such key, an OpenAI or Anthropic key reaches the web
 through the provider's own search on a sub-agent, and a Mistral key does when its
 `web_search` built-in is on.
 

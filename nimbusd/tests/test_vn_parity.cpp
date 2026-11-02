@@ -897,6 +897,17 @@ static void testHeldPhotoBytesBounded(ndtest::Ctx& c) {
   TelegramAccess access(dir);
   std::string err;
   access.setAllowCsv("123", err);
+  {
+    PhotoBudget b;
+    auto most = b.hold(std::string(kPhotoHoldMaxBytes - 10, 'x'));
+    c.ok(most != nullptr, "bytes under the bound are held");
+    c.ok(b.hold(std::string(11, 'y')) == nullptr, "one byte past the bound is refused");
+    c.eqi((long)b.used(), (long)(kPhotoHoldMaxBytes - 10), "and a refusal counts nothing");
+    auto rest = b.hold(std::string(10, 'z'));
+    c.ok(rest != nullptr && !b.hasRoom(), "exactly at the bound there is no room left");
+    most.reset();
+    c.eqi((long)b.used(), 10, "the last copy letting go gives its bytes back");
+  }
   c.eqi((long)photoBudget().used(), 0, "nothing held at the start");
   TgInboundIo io;
   const std::string big(nimbus::orch::kImagePartBytes, 'x');
@@ -1130,6 +1141,7 @@ static void testHeldAndRoutineGuards(ndtest::Ctx& c) {
   std::printf("  -- (o) the guards around held turns and routines --\n");
   clearEnv();
   setenv("CUMULO_API_KEY", "cumulo_sk_test_GUARDS", 1);
+  setenv("TELEGRAM_BOT_TOKEN", "123456:TESTGUARDS", 1);   // a member's chat is deliverable
   {
     // A routine due into a member's chat while the owner's work is unreported defers.
     const auto o = opts("vp-o");
@@ -1163,10 +1175,12 @@ static void testHeldAndRoutineGuards(ndtest::Ctx& c) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     c.ok(rig.turnMustWait("666"), "the owner's unreported work makes a member wait");
+    tx.script.push_back(headTurn("for Sam"));   // what a turn beside that work would read
     const size_t seen = tx.seen.size();
     rig.loopsTick([](bool) {});
     c.eqi((long)tx.seen.size(), (long)seen, "a routine into that member's chat sends nothing while it waits");
     c.ok(has(rig.routines().json(), "lpmember"), "and is kept for its next try, not spent");
+    tx.script.clear();
   }
   clearEnv();
   {

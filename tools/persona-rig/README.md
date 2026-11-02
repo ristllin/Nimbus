@@ -211,7 +211,9 @@ which comes from `/api/lastturn`:
 Read `turn-log.txt` for what a turn did. The daemon keeps its turn log in memory and a restart
 empties it, so the rig copies it after every step and before a restart.
 
-Keys and the instance token are scrubbed from every file. Spend comes from the daemon's own
+A run never overwrites earlier evidence: a persona directory or `run-summary.json` already
+at that path moves aside as `<name>.replaced-<time>`. Keys and the instance token are
+scrubbed from every file. Spend comes from the daemon's own
 `turn spend:` lines, which carry provider-reported tokens, and `spend.spentCents` in `/api/state`.
 The judge's spend comes from the usage its provider reports.
 
