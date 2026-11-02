@@ -823,6 +823,16 @@ static nimbus::orch::ToolResult readTail(const std::string& project, const std::
   File f = memory::dataFs().open(path.c_str(), FILE_READ);
   if (!f) return nimbus::orch::ToolResult::fail("SD open failed");
   const size_t size = f.size();
+  // A text name is a claim, not proof: the head of the file answers, as on a whole read.
+  std::string head(std::min(size, nimbus::orch::kTextSniffBytes), '\0');
+  if (f.read((uint8_t*)&head[0], head.size()) != head.size()) {
+    f.close();
+    return nimbus::orch::ToolResult::fail("the file could not be read - try again");
+  }
+  if (!nimbus::orch::fileReadableAsText(name, head)) {
+    f.close();
+    return nimbus::orch::ToolResult::fail(nimbus::orch::kNotTextRefusal);
+  }
   const size_t start = size > nimbus::orch::kTailWindowBytes ? size - nimbus::orch::kTailWindowBytes - 1 : 0;
   std::string window(size - start, '\0');
   const bool seeked = f.seek(start);

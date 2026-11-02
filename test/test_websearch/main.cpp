@@ -155,6 +155,18 @@ void test_request_shape(void) {
   TEST_ASSERT_TRUE(req.body.find("secret-key") == std::string::npos);
 }
 
+// A query is model-authored text: a raw control byte must not make the body invalid.
+void test_a_control_byte_in_the_query_leaves_escaped(void) {
+  FakeHttpTransport http;
+  http.script.push_back(Exchange{"api.tavily.com", "/search", 200, kSmallBody, ""});
+  const std::string query = std::string("capital \x1B of\x01 France") + '\x1F';
+  agent::websearch::search(http, "k", query, 3);
+  TEST_ASSERT_EQUAL_size_t(1, http.seen.size());
+  const std::string& b = http.seen[0].body;
+  for (char c : b) TEST_ASSERT_TRUE_MESSAGE((unsigned char)c >= 0x20, b.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(b.find("\\u001b of\\u0001 France\\u001f") != std::string::npos, b.c_str());
+}
+
 void test_max_results_is_clamped(void) {
   for (int req : {0, -5, 99}) {
     FakeHttpTransport http;
@@ -286,5 +298,6 @@ int main(int, char**) {
   RUN_TEST(test_results_without_an_answer_are_usable);
   RUN_TEST(test_digest_honours_max_results);
   RUN_TEST(test_missing_fields_do_not_produce_garbage);
+  RUN_TEST(test_a_control_byte_in_the_query_leaves_escaped);
   return UNITY_END();
 }

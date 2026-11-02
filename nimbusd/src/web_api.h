@@ -980,7 +980,7 @@ class WebApi {
     // per-provider limits of its own, so off means no monthly ceiling at all).
     const std::string v = formValue(body, "spendCeil");
     const uint64_t micro = v == "off" ? 0 : nimbus::orch::parseCeilingCents(v);
-    if (micro == 0 && v != "off") return refuse("spend ceiling must be a positive whole number of cents, or off");
+    if (micro == 0 && v != "off") return refuse(nimbus::orch::kCeilingFieldRefusal);
     if (!rig_->spendCeiling().setLimitMicro(micro))
       return ApiResp{507, "application/json", R"({"error":"storage_full","note":"Couldn't save the ceiling."})"};
     return okJson(R"({"ok":true,"applied":1})");

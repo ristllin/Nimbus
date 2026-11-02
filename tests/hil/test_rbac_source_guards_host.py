@@ -21,7 +21,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 WIRE = ROOT / "lib/core/src/orch_connectors_wire.cpp"
 SEAM = "NIMBUS_JOBS_TEST_SEAM"
 SEAM_DEFINERS = {"lib/harness/src/jobs.cpp", "test/test_harness_jobs/main.cpp"}
-SOURCE_DIRS = ("lib", "src", "include", "nimbusd", "tools", "test")
+SOURCE_DIRS = ("lib", "src", "include", "nimbusd", "tools", "test", ".github")
+CODE_SUFFIXES = {".cpp", ".c", ".cc", ".h", ".hpp"}
+BUILD_SUFFIXES = {".ini", ".mk", ".py", ".sh", ".cmake", ".yml", ".yaml", ".json", ".toml"}
+BUILD_NAMES = {"Makefile", "CMakeLists.txt", "Dockerfile", "platformio.ini"}
+SKIPPED_DIRS = {"node_modules", "build", ".pio", "__pycache__"}
 
 
 def attach_builders(source: str) -> dict:
@@ -52,13 +56,20 @@ def test_the_guard_sees_a_builder_that_skips_the_grant():
 
 
 def seam_definers(root: pathlib.Path) -> set:
+    """Who switches the test seam on. In code that takes a #define (an #ifdef is the seam
+    itself). In a build file, the root's platformio.ini included, any mention at all: a
+    flag can be spelled -D, CPPDEFINES, add_definitions or an environment variable."""
     found = set()
-    for top in SOURCE_DIRS:
-        for path in (root / top).rglob("*"):
-            if path.suffix not in {".cpp", ".h", ".hpp", ".ini"} or not path.is_file():
-                continue
-            if re.search(rf"^\s*#\s*define\s+{SEAM}\b|-D\s*{SEAM}\b", path.read_text(errors="replace"), re.M):
-                found.add(path.relative_to(root).as_posix())
+    paths = [p for top in SOURCE_DIRS for p in (root / top).rglob("*")] + list(root.glob("*"))
+    for path in paths:
+        if not path.is_file() or SKIPPED_DIRS & set(path.relative_to(root).parts):
+            continue
+        is_build = path.name in BUILD_NAMES or path.suffix in BUILD_SUFFIXES
+        if not is_build and path.suffix not in CODE_SUFFIXES:
+            continue
+        text = path.read_text(errors="replace")
+        if SEAM in text and (is_build or re.search(rf"^\s*#\s*define\s+{SEAM}\b", text, re.M)):
+            found.add(path.relative_to(root).as_posix())
     return found
 
 
@@ -70,3 +81,32 @@ def test_the_seam_guard_sees_a_new_definer(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "agent.cpp").write_text(f"#define {SEAM}\n")
     assert seam_definers(tmp_path) == {"src/agent.cpp"}
+
+
+# Every route a build flag can take: the root's platformio.ini, a Makefile, a PlatformIO
+# extra script, a workflow.
+@pytest.mark.parametrize(
+    "path,text",
+    [
+        ("platformio.ini", f"build_flags = -D{SEAM}\n"),
+        ("platformio.ini", f"build_flags =\n  -D {SEAM}=1\n"),
+        ("nimbusd/Makefile", f"CXXFLAGS += -D{SEAM}\n"),
+        ("tools/harness-lab/Makefile", f"CXXFLAGS += -D{SEAM}\n"),
+        ("tools/flags.mk", f"X = -D{SEAM}\n"),
+        ("tools/pio_extra.py", f'env.Append(CPPDEFINES=["{SEAM}"])\n'),
+        ("nimbusd/CMakeLists.txt", f"add_definitions(-D{SEAM})\n"),
+        ("nimbusd/Dockerfile", f"ENV CXXFLAGS=-D{SEAM}\n"),
+        (".github/workflows/checks.yml", f"env:\n  PLATFORMIO_BUILD_FLAGS: -D{SEAM}\n"),
+    ],
+)
+def test_the_seam_guard_sees_the_build_flag_route(tmp_path, path, text):
+    target = tmp_path / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text)
+    assert seam_definers(tmp_path) == {path}
+
+
+def test_the_seam_guard_leaves_a_plain_mention_in_code_alone(tmp_path):
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "jobs.h").write_text(f"#ifdef {SEAM}\nvoid peek();\n#endif  // {SEAM}\n")
+    assert seam_definers(tmp_path) == set()

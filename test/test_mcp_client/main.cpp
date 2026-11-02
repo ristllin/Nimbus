@@ -511,6 +511,16 @@ static void test_parse_notification_kinds() {
   TEST_ASSERT_EQUAL((int)NotifyKind::None, (int)n4.kind);
 }
 
+// A tool's arguments can hold any byte (a pasted log): a raw control byte would make the
+// whole request invalid JSON for a strict server.
+static void test_a_control_byte_in_the_arguments_leaves_escaped() {
+  const std::string body = buildToolsCall("search", "{\"q\":\"a\\u001bb\\u0001\"}");
+  for (char c : body) TEST_ASSERT_TRUE_MESSAGE((unsigned char)c >= 0x20, body.c_str());
+  JsonDocument d;
+  TEST_ASSERT_FALSE(deserializeJson(d, body));
+  TEST_ASSERT_EQUAL_STRING("a\x1b" "b\x01", d["params"]["arguments"]["q"].as<const char*>());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_real_server_initialize);
@@ -558,5 +568,6 @@ int main() {
   RUN_TEST(test_parse_prompts_get_flattens_roles);
   RUN_TEST(test_rich_parsers_share_error_frontend);
   RUN_TEST(test_parse_notification_kinds);
+  RUN_TEST(test_a_control_byte_in_the_arguments_leaves_escaped);
   return UNITY_END();
 }

@@ -33,6 +33,7 @@
 #include "nimbus/telegram_offset.h"   // nimbus::core::TgOffsetCursor (host-tested)
 #include "nimbus/tg_updates.h"        // nimbus::tg::parseUpdates (host-tested filtered parse)
 #include "nimbus/orch/msg_batch.h"    // CUM-398 rapid-message batcher + drainPages (host-tested)
+#include "nimbus/orch/loop_delivery.h"  // telegramOwnerOf: the owner rule from given lists (host-tested)
 #include "nimbus/orch/media_label.h"  // the one inbound media label (host-tested)
 #include "nimbus/orch/store_full.h"   // a full file store is said once (host-tested)
 #include "nimbus/orch/blob_store.h"   // BlobHasher: the content hash of an inbound file
@@ -2921,7 +2922,11 @@ bool approvePending(const String& chatId, const String& name) {
   }
   pendingRemove(chatId.c_str());
   reloadAllowlist();
-  agent::orchestrator::tenantApproved(std::string(chatId.c_str()), isOwner(chatId));
+  // The owner rule from the lists just stored: this runs on the web task, and the poll
+  // task's copies (isOwner) neither hold this chat yet nor may be read from here.
+  const std::string id(chatId.c_str());
+  agent::orchestrator::tenantApproved(
+      id, nimbus::orch::telegramOwnerOf(std::string(al.c_str()), std::string(store::telegramOwners().c_str()), id));
   return true;
 }
 

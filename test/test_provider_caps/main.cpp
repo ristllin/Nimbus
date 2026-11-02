@@ -282,7 +282,7 @@ static void test_the_daily_warning_once_a_day_per_channel() {
   // The owner's field keeps a sub-dollar warning (the overall ceiling's floor is 1 USD).
   TEST_ASSERT_EQUAL_UINT64(250000, parseCeilingCents("25", 10000));
   TEST_ASSERT_EQUAL_UINT64(10000, parseCeilingCents("1", 10000));
-  TEST_ASSERT_EQUAL_UINT64(kUsd, parseCeilingCents("25"));
+  TEST_ASSERT_EQUAL_UINT64(0, parseCeilingCents("25"));   // the overall ceiling's own floor refuses it
   TEST_ASSERT_EQUAL_UINT64(0, parseCeilingCents("-5", 10000));
   TEST_ASSERT_EQUAL_UINT64(0, parseCeilingCents("0.5", 10000));
   TEST_ASSERT_EQUAL_UINT64(SpendCeiling::kMaxLimitMicro, parseCeilingCents("999999999999999999999", 10000));

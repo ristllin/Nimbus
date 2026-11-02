@@ -10,6 +10,7 @@
 #include "../provider_gate.h"  // the one per-provider park (L19-8)
 #include "version.h"   // NIMBUS_FW_VERSION - the fetch User-Agent
 #include "../../sys/agent_log.h"
+#include "nimbus/json_strict.h"
 #include "nimbus/orch/reply_text.h"
 #include "nimbus/orch/seam_meter.h"   // meterSeamAnswer - the scan's spend (lane DEF)
 #include "nimbus/orch/spend_ceiling.h"   // paidCallAllowed - the scan's gate (lane QW4)
@@ -286,7 +287,11 @@ int scanVerdict(const std::string& headText, const std::string& url,
   else d["max_tokens"] = 60;
   JsonObject m = d["messages"].add<JsonObject>();
   m["role"] = "user"; m["content"] = prompt;
-  String body; serializeJson(d, body);
+  // The prompt holds a fetched page: any byte at all, and a raw control byte would make
+  // the whole request invalid JSON.
+  std::string strict;
+  nimbus::serializeStrictJson(d, strict);
+  String body(strict.c_str());
 
   arbiter::WorkSlot slot(15000);
   if (!slot) {

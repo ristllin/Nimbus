@@ -798,6 +798,30 @@ static void test_queued_fact_found_after_the_embedder_recovers() {
   TEST_ASSERT_TRUE_MESSAGE(has(one.output, "Found 1 memories"), one.output.c_str());
 }
 
+// n_results 1 with one weak queued word match: the best stored row keeps the line. The
+// queue gets at most half the answer, and "half of one" must not mean all of it.
+static void test_a_queued_match_never_takes_the_only_line_from_a_stored_row() {
+  Rig r;
+  const Principal who = principalForRole("alice", Role::User);
+  TEST_ASSERT_TRUE(has(r.call("memory.write", R"({"content":"my coffee order is a flat white"})", who).output, "stored memory"));
+  r.failWith = "tls busy";
+  TEST_ASSERT_TRUE(has(r.call("memory.write", R"({"content":"buy coffee filters tomorrow"})", who).output, "not stored yet"));
+  r.failWith.clear();
+  const ToolResult best = r.call("memory.search", R"({"query":"what is my coffee order","n_results":1})", who);
+  TEST_ASSERT_TRUE_MESSAGE(has(best.output, "flat white"), best.output.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(has(best.output, "filters"), best.output.c_str());
+  // Two lines: one of each, so the queued fact is not lost to a busy store.
+  const ToolResult two = r.call("memory.search", R"({"query":"what is my coffee order","n_results":2})", who);
+  TEST_ASSERT_TRUE_MESSAGE(has(two.output, "flat white") && has(two.output, "filters"), two.output.c_str());
+  // Nothing stored for this reader: the queued fact has the line to itself.
+  const Principal bob = principalForRole("bob", Role::User);
+  r.failWith = "tls busy";
+  r.call("memory.write", R"({"content":"bob parks the blue canoe at the lake"})", bob);
+  r.failWith.clear();
+  const ToolResult alone = r.call("memory.search", R"({"query":"blue canoe","n_results":1})", bob);
+  TEST_ASSERT_TRUE_MESSAGE(has(alone.output, "canoe"), alone.output.c_str());
+}
+
 // What a member may do: the rule the l18 leg's setup depends on, stated once. A User
 // writes and reads its own memory; an Unknown does neither.
 static void test_member_memory_write_is_allowed_by_role() {
@@ -1015,6 +1039,7 @@ int main(int, char**) {
   RUN_TEST(test_coalesced_update_keeps_intent_and_delete_covers_queue);
   RUN_TEST(test_an_unwritable_engine_drains_nothing);
   RUN_TEST(test_queued_fact_found_after_the_embedder_recovers);
+  RUN_TEST(test_a_queued_match_never_takes_the_only_line_from_a_stored_row);
   RUN_TEST(test_member_memory_write_is_allowed_by_role);
   return UNITY_END();
 }

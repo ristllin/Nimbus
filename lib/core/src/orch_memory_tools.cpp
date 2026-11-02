@@ -899,15 +899,19 @@ ToolResult lexicalSearchFallback(const MemoryContext& ctx, const std::string& qu
 // The semantic answer: the stored rows nearest `qv`, then the caller's queued facts. A
 // fact still queued has no vector yet (its write said search finds it meanwhile, and the
 // embedder may be back before the drain has run): up to half the answer, at least one
-// line, so a busy store cannot crowd out what the caller just wrote.
+// line, so a busy store cannot crowd out what the caller just wrote. One word in common
+// is all a queued fact needs, so it never takes the last line from a stored row that
+// passes the threshold: with n_results 1 the best stored row answers.
 ToolResult semanticAnswer(const MemoryContext& ctx, const std::string& query, const std::vector<int8_t>& qv,
                           int k, const Principal& who) {
   auto hits = ctx.vec->search(qv, k, ctx.nowHours(), readSetFor(who));   // TTL + v3.7.0 read boundary
-  const std::vector<std::string> waiting =
-      queuedHits(ctx.pending, lexParse(query), readSetFor(who), (size_t)std::max(1, k / 2));
-  const int room = k - (int)waiting.size();
   // Apply the user/model relevance threshold (similarity = 1 - distance).
   float thr = ctx.cfg ? ctx.cfg->relevanceThreshold : 0.0f;
+  const bool storedHit = std::any_of(hits.begin(), hits.end(), [thr](const auto& h) { return (1.0f - h.distance) >= thr; });
+  const int queuedLines = storedHit ? std::min(std::max(1, k / 2), k - 1) : std::max(1, k / 2);
+  const std::vector<std::string> waiting =
+      queuedHits(ctx.pending, lexParse(query), readSetFor(who), (size_t)std::max(0, queuedLines));
+  const int room = k - (int)waiting.size();
   std::string out;
   int n = 0;
   for (const auto& h : hits) {

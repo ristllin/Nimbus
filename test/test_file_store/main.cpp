@@ -554,8 +554,31 @@ static void test_same_content_finds_only_the_senders_own_copy() {
   unknown.name = "edited.txt"; unknown.hash = 0;             // an edited file: hash unknown
   TEST_ASSERT_TRUE(st.add(unknown, err));
   TEST_ASSERT_NULL(st.sameContent("chat-7", 0, "7"));
-  // The quota is what the rule protects: one copy, one charge.
+}
+
+// The charge the rule protects, through the store the way the receive path drives it
+// (src/agent/files_subsystem.cpp saveStream; the wiring is pinned by
+// tests/hil/test_device_wiring_host.py): an album re-sent whole adds no bytes, and only
+// new bytes spend the limit.
+static void test_a_resent_album_costs_nothing_against_the_limit() {
+  nimbus::orch::FileStore st;
+  std::string err;
+  const auto receive = [&](const char* name, uint64_t hash) {
+    if (st.sameContent("chat-7", hash, "7")) return false;   // a copy: not stored again
+    nimbus::orch::FileEntry e;
+    e.project = "chat-7"; e.name = name; e.bytes = 2000; e.hash = hash; e.owner = "7";
+    TEST_ASSERT_TRUE(st.add(e, err));
+    return true;
+  };
+  TEST_ASSERT_TRUE(receive("photo-1.jpg", 0xA1));
+  TEST_ASSERT_TRUE(receive("photo-2.jpg", 0xA2));
   TEST_ASSERT_EQUAL_UINT32(4000, st.bytesFor("7"));
+  TEST_ASSERT_FALSE(receive("photo-3.jpg", 0xA1));   // the same two photos, new update ids
+  TEST_ASSERT_FALSE(receive("photo-4.jpg", 0xA2));
+  TEST_ASSERT_EQUAL_UINT32(4000, st.bytesFor("7"));
+  TEST_ASSERT_NULL(st.find("chat-7", "photo-3.jpg"));
+  TEST_ASSERT_TRUE(receive("photo-5.jpg", 0xA3));    // new bytes are charged as ever
+  TEST_ASSERT_EQUAL_UINT32(6000, st.bytesFor("7"));
 }
 
 int main() {
@@ -581,5 +604,6 @@ int main() {
   RUN_TEST(test_load_collapses_case_variant_rows_to_owner_control);
   RUN_TEST(test_text_readable_rule);
   RUN_TEST(test_same_content_finds_only_the_senders_own_copy);
+  RUN_TEST(test_a_resent_album_costs_nothing_against_the_limit);
   return UNITY_END();
 }

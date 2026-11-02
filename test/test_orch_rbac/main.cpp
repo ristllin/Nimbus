@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/loop_delivery.h"
 #include "nimbus/orch/rbac.h"
 
 using namespace nimbus::orch;
@@ -204,6 +205,30 @@ static void test_approval_writes_the_row() {
   TEST_ASSERT_FALSE(err.empty());
 }
 
+// The device's approval judges the owner rule from the lists it just wrote, not from the
+// poll task's copy (which does not hold this chat yet): on a fresh device the first chat
+// approved IS the owner and keeps that rule. It used to be written down as a User: the
+// table then had no admin, and the owner could not change a setting from Telegram.
+static void test_first_approval_on_a_fresh_device_keeps_the_owner_rule() {
+  TenantStore t;
+  std::string err;
+  std::string allow = "111";   // what the approval just stored
+  TEST_ASSERT_TRUE(telegramOwnerOf(allow, "", "111"));
+  TEST_ASSERT_FALSE(noteApproved(t, "111", telegramOwnerOf(allow, "", "111"), err));
+  TEST_ASSERT_FALSE(t.known("111"));
+  TEST_ASSERT_EQUAL((int)Role::Admin, (int)roleWithoutRow(true, true, t.adminCount() > 0));
+  allow += ",222";             // the second chat is a member, in writing
+  TEST_ASSERT_FALSE(telegramOwnerOf(allow, "", "222"));
+  TEST_ASSERT_TRUE(noteApproved(t, "222", telegramOwnerOf(allow, "", "222"), err));
+  TEST_ASSERT_EQUAL((int)Role::User, (int)t.roleOf("222"));
+  // An explicit owners list decides, and only for a chat that is on the allowlist.
+  TEST_ASSERT_TRUE(telegramOwnerOf("111,222", "222", "222"));
+  TEST_ASSERT_FALSE(telegramOwnerOf("111,222", "222", "111"));
+  TEST_ASSERT_FALSE(telegramOwnerOf("111", "222", "222"));
+  TEST_ASSERT_FALSE(telegramOwnerOf("", "", "111"));
+  TEST_ASSERT_FALSE(telegramOwnerOf("111", "", ""));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_role_permissions_matrix);
@@ -215,5 +240,6 @@ int main(int, char**) {
   RUN_TEST(test_store_roundtrip_and_tolerant_load);
   RUN_TEST(test_legacy_adoption_changes_nobody_by_surprise);
   RUN_TEST(test_approval_writes_the_row);
+  RUN_TEST(test_first_approval_on_a_fresh_device_keeps_the_owner_rule);
   return UNITY_END();
 }

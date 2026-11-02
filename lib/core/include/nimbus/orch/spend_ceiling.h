@@ -125,11 +125,17 @@ struct SpendCeiling {
   void settle();   // frozen follows spent >= limit; an edge resets the notices
 };
 
-// The owner's ceiling field (whole cents, as the web page posts it) in micro-USD,
-// clamped to [floorMicro, kMaxLimitMicro]; 0 for anything that is not a positive whole
-// number (empty, signs, letters, a fraction). The daily warning passes a one-cent floor.
+// The owner's ceiling field (whole cents, as the web page posts it) in micro-USD, held
+// at kMaxLimitMicro; 0, meaning refused, for an amount under floorMicro and for anything
+// that is not a positive whole number (empty, signs, letters, a fraction). A cap raised
+// past what the owner asked for and answered ok would be wrong in the expensive
+// direction, so an amount under the floor is refused, never raised to it. The daily
+// warning passes a one-cent floor.
 uint64_t parseCeilingCents(const std::string& field,
                            uint64_t floorMicro = SpendCeiling::kMinLimitMicro);
+// What the web surfaces answer when that field is refused. Owner-facing.
+inline constexpr const char* kCeilingFieldRefusal =
+    "The spend ceiling must be 1 USD (100 cents) or more, in whole cents, or off.";
 
 // ---- owner-facing copy (plain words, ASCII; goldens in test/golden/) ----------------
 

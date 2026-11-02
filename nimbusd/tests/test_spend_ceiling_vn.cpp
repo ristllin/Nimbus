@@ -197,6 +197,14 @@ static void checkWeb(ndtest::Ctx& c, const std::string& dataDir) {
   Out o = req(cl, port, "GET", "/api/orch", tok, "");
   c.ok(has(o.body, "\"ceiling\":{\"limitCents\":2000"), "/api/orch usage carries the ceiling meter");
   c.ok(req(cl, port, "POST", "/api/orch", tok, "spendCeil=0").status == 400, "a ceiling of 0 is refused");
+  // Under the floor is refused and changes nothing: it used to answer ok and become 1 USD.
+  for (const char* low : {"1", "50", "99"}) {
+    Out under = req(cl, port, "POST", "/api/orch", tok, std::string("spendCeil=") + low);
+    c.ok(under.status == 400 && has(under.body, "1 USD"), std::string("spendCeil=") + low + " is refused: " + under.body);
+    c.ok(has(rig.spendCeiling().stateJson(), "\"limitCents\":2000"), "and the ceiling did not move");
+  }
+  Out floor = req(cl, port, "POST", "/api/orch", tok, "spendCeil=100");
+  c.ok(floor.status == 200 && has(rig.spendCeiling().stateJson(), "\"limitCents\":100"), "the floor itself applies: " + floor.body);
   Out p = req(cl, port, "POST", "/api/orch", tok, "spendCeil=5000");
   c.ok(p.status == 200 && has(p.body, "\"applied\":1"), "POST spendCeil=5000 applies: " + p.body);
   c.ok(has(rig.spendCeiling().stateJson(), "\"limitCents\":5000"), "the ceiling is now 50 USD");

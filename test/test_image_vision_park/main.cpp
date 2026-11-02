@@ -509,6 +509,29 @@ static void test_question_prompt_does_not_inherit_the_heads_guess() {
   TEST_ASSERT_TRUE(plain.body.find("may be wrong") == std::string::npos);
 }
 
+// The question reaches a caption request verbatim from a model's tool argument: a raw
+// control byte must leave escaped on every caption wire, and the photo's splice must
+// still land inside its own string (the escape moves the offsets).
+static void test_a_control_byte_in_the_question_leaves_escaped() {
+  vision::CaptionRequest in;
+  const uint8_t bytes[] = {0xFF, 0xD8, 0xFF};
+  in.bytes = bytes;
+  in.len = sizeof(bytes);
+  in.mime = "image/jpeg";
+  in.kind = vision::CaptionKind::Question;
+  in.question = std::string("how many\x1B grams\x01") + '\x1F';
+  for (const char* provider : {"anthropic", "openai", "mistral"}) {
+    agent::HttpRequest req;
+    TEST_ASSERT_TRUE(vision::buildCaptionRequest(provider, vision::captionModel(provider), "k", in, "", req));
+    for (char c : req.body) TEST_ASSERT_TRUE_MESSAGE((unsigned char)c >= 0x20, provider);
+    TEST_ASSERT_TRUE_MESSAGE(req.body.find("how many\\u001b grams\\u0001\\u001f") != std::string::npos, provider);
+    TEST_ASSERT_EQUAL_size_t(1, req.splices.size());
+    const std::string before = req.body.substr(0, req.splices[0].at);
+    const bool inItsString = before.rfind("base64,") == before.size() - 7 || before.rfind("\"data\":\"") == before.size() - 8;
+    TEST_ASSERT_TRUE_MESSAGE(inItsString, provider);
+  }
+}
+
 // image.look of a photo whose reading is still queued (the 31 Oct window: the record was
 // written 15 s after the turn that needed it): the head hears that, never a plain failure
 // it would pass on as "the lookup failed", and is not sent to ask for the photo again.
@@ -546,6 +569,7 @@ int main(int, char**) {
   RUN_TEST(test_spend_freeze_sends_nothing);
   RUN_TEST(test_quiet_turn_leaves_the_notice_latch);
   RUN_TEST(test_request_builder_per_provider);
+  RUN_TEST(test_a_control_byte_in_the_question_leaves_escaped);
   RUN_TEST(test_caption_models_are_current);
   RUN_TEST(test_sender_text_cannot_move_the_photo);
   RUN_TEST(test_look_args);

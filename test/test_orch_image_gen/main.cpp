@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include <ArduinoJson.h>
+
 #include <string>
 
 #include "nimbus/orch/image_gen.h"
@@ -49,6 +51,18 @@ static void test_body_defaults_to_gpt_image_1() {
   TEST_ASSERT_NOT_EQUAL(std::string::npos, h.find("\"quality\":\"high\""));
 }
 
+// A prompt is model-authored text: a raw control byte (an ESC from a pasted terminal log)
+// would make the whole body invalid JSON and fail the tool with a 400.
+static void test_body_has_no_raw_control_byte() {
+  const std::string prompt = std::string("cube \x1B[31m red\x01") + '\x1F';
+  const std::string b = imageGenRequestBody(prompt, "", "");
+  for (char c : b) TEST_ASSERT_TRUE_MESSAGE((unsigned char)c >= 0x20, b.c_str());
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, b.find("\\u001b[31m"));
+  ArduinoJson::JsonDocument d;
+  TEST_ASSERT_FALSE(deserializeJson(d, b));
+  TEST_ASSERT_EQUAL_STRING(prompt.c_str(), d["prompt"].as<const char*>());
+}
+
 static void test_body_escapes_prompt_and_dalle_no_quality() {
   // A prompt with a quote/backslash must be valid JSON (ArduinoJson escapes it).
   std::string b = imageGenRequestBody("say \"hi\"\\n", "dall-e-2", "512x512");
@@ -65,5 +79,6 @@ int main(int, char**) {
   RUN_TEST(test_size_model_families_differ);
   RUN_TEST(test_body_defaults_to_gpt_image_1);
   RUN_TEST(test_body_escapes_prompt_and_dalle_no_quality);
+  RUN_TEST(test_body_has_no_raw_control_byte);
   return UNITY_END();
 }

@@ -556,7 +556,7 @@ void spendSet(String arg) {
     String c = arg.substring(6);
     c.trim();
     const uint64_t micro = nimbus::orch::parseCeilingCents(std::string(c.c_str()));
-    if (micro == 0) { reply("SPENDSET usage: SPENDSET limit <cents>"); return; }
+    if (micro == 0) { reply("SPENDSET usage: SPENDSET limit <cents, 100 or more>"); return; }
     const bool ok = agent::spend::setLimitMicro(micro);
     Serial.printf("SPENDSET limit %s %s\n", c.c_str(), ok ? "stored" : "NOT stored");
   } else if (arg.length() && arg != "?" && !spendSeed(arg)) {
