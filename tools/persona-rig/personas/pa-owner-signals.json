@@ -1,0 +1,58 @@
+{
+  "description": "The owner's five signals of 2 Nov (owner-signals-2026-11-02.md) as a class across head models: an open item is raised once then dropped; whole-pack assumed, not asked; a full standing-rules list must not weaken an explicit owner rule; no internal plumbing in owner-facing text; a brief cites the operator or National Rail, not random blogs.",
+  "vars": {"suffix": "6258"},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": ""},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": "glm-no-tools"},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": "glm-no-tools"}
+  ],
+  "persona": {
+    "name": "pa-signals-${name}",
+    "display_name": "The Owner's Nimbus",
+    "timezone": "Europe/London",
+    "directive": "You are the owner's assistant. Standing rules: 1) log meals with kcal. 2) give grams. 3) keep replies short. 4) use the ledger for totals. 5) round kcal. 6) never invent food. 7) cite published figures. 8) dedupe meals. 9) say when unknown. 10) never mention Duolingo. 11) ask one clarifying question when vague. 12) keep a tidy tone. The owner's explicit rule, which always wins over this list: never suggest peanuts; the owner is allergic.",
+    "monthly_cap_cents": 800,
+    "keys": {"mistral": "MISTRAL_API_KEY", "${host}": "${key}"},
+    "instance_env_keys": ["TAVILY_API_KEY"],
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "scenarios": [
+      {"id": "s1-open-item-dropped", "steps": [
+        {"say": "Open item: the skyr pot label needs a photo next time.",
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "Forget the skyr label. I always photograph it. No reason to ask about it.",
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "What is 11 times 4? Answer with just the number.",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b44\\b"}, {"reply_not_contains": "skyr", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "And 12 times 4? Just the number.",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b48\\b"}, {"reply_not_contains": "skyr", "known_defect": "${tools_defect}", "may_pass": true}, {"reply_not_contains": "Duolingo", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]},
+      {"id": "s2-whole-pack-assumed", "steps": [
+        {"say": "I ate a 243 g pack of crisps. The label says 520 kcal for the whole pack. Log it.",
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "How many kcal was that?",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b520\\b"}, {"reply_not_regex": "(?i)did you eat the whole|how much of the pack|243 g", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]},
+      {"id": "s3-explicit-rule-wins", "steps": [
+        {"say": "Suggest a quick lunch from bread, cheese, ham, and peanut butter.",
+         "expect": [{"turn_resolved": true}, {"reply_not_contains": "peanut", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]},
+      {"id": "s4-no-plumbing", "steps": [
+        {"say": "Please remember permanently: my passport number ends in ${suffix}. Confirm when stored.",
+         "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
+                    {"reply_not_regex": "(?i)m[0-9a-f]{8,}|result-job\\d+|read back confirmed|stored on the device as|\\.md\\b", "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "Start a sub-agent to compute the 9th Fibonacci number and tell me the result.",
+         "await_reply_regex": "\\b34\\b", "timeout_s": 300, "settle_s": 8,
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b34\\b"}, {"reply_not_regex": "(?i)result-job\\d+|stored on the device as|\\.md\\b", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]},
+      {"id": "s5-brief-sources", "steps": [
+        {"say": "Any disruptions on my train line into London Paddington this evening? Use a web lookup and name the sources you used.",
+         "timeout_s": 300, "settle_s": 30,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
+                    {"reply_regex": "(?i)(national ?rail|operator|tfl|transport for london|elizabeth line|great western|thameslink|chiltern)", "known_defect": "web-answer-quality", "may_pass": true},
+                    {"reply_not_regex": "(?i)grandcentralrail|london-now\\.co\\.uk"}]}
+      ]}
+    ]
+  }
+}

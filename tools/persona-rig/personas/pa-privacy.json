@@ -1,0 +1,59 @@
+{
+  "description": "A privacy-minded user: asks what is stored, then asks to delete one memory, one file, and finally everything; each deletion must be real and visible over the API.",
+  "vars": {"suffix": "4488"},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": ""},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": "glm-no-tools"},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": "glm-no-tools"}
+  ],
+  "persona": {
+    "name": "pa-privacy-${name}",
+    "display_name": "Sara's Nimbus",
+    "timezone": "Europe/Stockholm",
+    "directive": "You help Sara. She cares about what you store and how to delete it. Answer plainly.",
+    "monthly_cap_cents": 600,
+    "keys": {"mistral": "MISTRAL_API_KEY", "${host}": "${key}"},
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "scenarios": [
+      {"id": "what-is-stored", "steps": [
+        {"say": "Please remember permanently: my blood type is O-negative-${suffix}. Confirm when stored.",
+         "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
+                    {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "Save a file named notes.txt in project personal with exactly: therapy-${suffix}.",
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
+                    {"file_contains": {"project": "personal", "name": "notes.txt", "text": "therapy-${suffix}"}, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "What do you remember about me, and what files do you hold for me? List them.",
+         "expect": [{"turn_resolved": true}, {"reply_nonempty": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"http": {"method": "GET", "path": "/api/mem/vector?limit=50"},
+         "expect": [{"http_status": 200}, {"body_contains": "O-negative-${suffix}"}]},
+        {"http": {"method": "GET", "path": "/api/files/list?project=personal"},
+         "expect": [{"http_status": 200}, {"body_contains": "notes.txt"}]}
+      ]},
+      {"id": "delete-one-memory", "needs": ["what-is-stored"], "steps": [
+        {"say": "Delete the memory about my blood type. Confirm when it is gone.",
+         "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"http": {"method": "GET", "path": "/api/mem/vector?limit=50"},
+         "expect": [{"http_status": 200}, {"body_not_contains": "O-negative-${suffix}", "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]},
+      {"id": "delete-one-file", "needs": ["what-is-stored"], "steps": [
+        {"say": "Delete the file personal/notes.txt. Confirm when it is gone.",
+         "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"http": {"method": "GET", "path": "/api/files/list?project=personal"},
+         "expect": [{"http_status": 200}, {"body_not_contains": "notes.txt", "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]},
+      {"id": "erase-everything", "needs": ["what-is-stored"], "steps": [
+        {"say": "Erase everything you have stored about me: all memories and all files.",
+         "settle_s": 8, "timeout_s": 300,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"http": {"method": "GET", "path": "/api/mem/stats"},
+         "expect": [{"http_status": 200}, {"api_equals": {"path": "/api/mem/stats", "field": "vectors", "value": 0}, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"http": {"method": "GET", "path": "/api/files/list?project=personal"},
+         "expect": [{"http_status": 200}, {"body_not_contains": "notes.txt", "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]}
+    ]
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "description": "BYOK on OpenAI alone: only an OpenAI key. The owner moves memory to OpenAI embeddings in the web app (the documented fix), then stores a memory. Chat, file, sub-agent, web without Tavily.",
+  "vars": {"suffix": "6634"},
+  "matrix": [
+    {"name": "gpt-6-luna", "host": "openai", "key": "OPENAI_API_KEY", "model": "gpt-6-luna"}
+  ],
+  "persona": {
+    "name": "pa-byok-openai-${name}",
+    "display_name": "Omar's Nimbus",
+    "timezone": "Europe/Paris",
+    "monthly_cap_cents": 400,
+    "keys": {"${host}": "${key}"},
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "scenarios": [
+      {"id": "chat", "steps": [
+        {"say": "What is 6 times 9? Answer with just the number.",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b54\\b"}, {"no_error_reply": true}]}
+      ]},
+      {"id": "embed-switch-then-memory", "steps": [
+        {"http": {"method": "GET", "path": "/api/mem/stats"},
+         "expect": [{"http_status": 200}, {"body_contains": "\"embedAvailable\":false"}]},
+        {"http": {"method": "POST", "path": "/api/mem/embedverify", "form": {"provider": "openai", "model": "text-embedding-3-small", "dims": "0"}},
+         "expect": [{"http_status": 200}]},
+        {"http": {"method": "POST", "path": "/api/mem/embedcfg", "form": {"provider": "openai", "model": "text-embedding-3-small", "dims": "0"}},
+         "expect": [{"http_status": 200}]},
+        {"http": {"method": "GET", "path": "/api/mem/stats"},
+         "expect": [{"http_status": 200}, {"body_contains": "\"embedAvailable\":true"}]},
+        {"say": "Please remember permanently: my bike lock code is 4-7-${suffix}. Confirm when it is stored.",
+         "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true}, {"no_fabricated_action": true},
+                    {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}}]},
+        {"http": {"method": "POST", "path": "/api/orch", "form": {"clearConv": "1"}}, "expect": [{"http_status": 200}]},
+        {"say": "What is my bike lock code?",
+         "expect": [{"turn_resolved": true}, {"reply_contains": "4-7-${suffix}"}, {"no_error_reply": true}]}
+      ]},
+      {"id": "file-and-spawn", "steps": [
+        {"say": "Save a file named gym.txt in project health with exactly: leg-day-${suffix}. Then confirm.",
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                    {"file_contains": {"project": "health", "name": "gym.txt", "text": "leg-day-${suffix}"}}]},
+        {"say": "Start a sub-agent to work out the 14th Fibonacci number. Do not work it out yourself. Report what it found.",
+         "await_reply_regex": "\\b377\\b", "timeout_s": 300, "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"log_regex": "spawned job"}, {"reply_regex": "\\b377\\b"}, {"no_error_reply": true}]}
+      ]},
+      {"id": "web-no-tavily", "steps": [
+        {"say": "Use a web lookup to find the latest stable Python 3 release on python.org/downloads. Tell me the version and the URL you used.",
+         "timeout_s": 300, "settle_s": 30,
+         "expect": [{"turn_resolved": true}, {"reply_contains": "${py_latest}", "known_defect": "no-web-lookup", "may_pass": true}, {"no_error_reply": true, "known_defect": "placeholder-reply", "may_pass": true}]}
+      ]}
+    ]
+  },
+  "truth": {"py_latest": {"url": "https://www.python.org/downloads/", "regex": "Download Python (3\\.\\d+\\.\\d+)"}}
+}

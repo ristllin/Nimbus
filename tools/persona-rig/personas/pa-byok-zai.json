@@ -1,0 +1,46 @@
+{
+  "description": "BYOK on Z.ai alone: the instance holds only a Z.ai key, so memory has no embedding route and web runs on Z.ai's own search. Chat, memory honesty, a file, a sub-agent, web.",
+  "vars": {"suffix": "8842"},
+  "matrix": [
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "mem_defect": "glm-mem-write-dropped", "tools_defect": "glm-no-tools"},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "mem_defect": "glm-mem-write-dropped", "tools_defect": "glm-no-tools"}
+  ],
+  "persona": {
+    "name": "pa-byok-zai-${name}",
+    "display_name": "Wei's Nimbus",
+    "timezone": "Asia/Shanghai",
+    "monthly_cap_cents": 400,
+    "keys": {"${host}": "${key}"},
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "scenarios": [
+      {"id": "chat", "steps": [
+        {"say": "What is 8 times 7? Answer with just the number.",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b56\\b"}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]},
+      {"id": "memory-honesty", "steps": [
+        {"say": "Please remember permanently: my lucky number is 88-${suffix}. Confirm when it is stored.",
+         "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
+                    {"no_fabricated_action": true},
+                    {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}, "known_defect": "${mem_defect}", "may_pass": true}]},
+        {"http": {"method": "POST", "path": "/api/orch", "form": {"clearConv": "1"}}, "expect": [{"http_status": 200}]},
+        {"say": "What is my lucky number?",
+         "expect": [{"turn_resolved": true}, {"reply_contains": "88-${suffix}", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]},
+      {"id": "file-and-spawn", "steps": [
+        {"say": "Save a file named todo.txt in project life with exactly: call-mum-${suffix}. Then confirm.",
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
+                    {"file_contains": {"project": "life", "name": "todo.txt", "text": "call-mum-${suffix}"}, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "Start a sub-agent to work out the 11th Fibonacci number. Do not work it out yourself. Report what it found.",
+         "await_reply_regex": "\\b89\\b", "timeout_s": 300, "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"log_regex": "spawned job"}, {"reply_regex": "\\b89\\b"}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]},
+      {"id": "web-zai-search", "steps": [
+        {"say": "Use a web lookup to find the latest stable Python 3 release on python.org/downloads. Tell me the version and the URL you used.",
+         "timeout_s": 300, "settle_s": 30,
+         "expect": [{"turn_resolved": true}, {"reply_regex": "3\\.\\d+\\.\\d+", "known_defect": "web-answer-quality", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]}
+    ]
+  }
+}

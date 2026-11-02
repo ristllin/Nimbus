@@ -1,0 +1,43 @@
+{
+  "description": "BYOK on Mistral alone: the instance holds only a Mistral key. Chat, memory (Mistral embeds), a file, a sub-agent, and web with no Tavily key.",
+  "vars": {"suffix": "5521"},
+  "truth": {"py_latest": {"url": "https://www.python.org/downloads/", "regex": "Download Python (3\\.\\d+\\.\\d+)"}},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0"}
+  ],
+  "persona": {
+    "name": "pa-byok-mistral-${name}",
+    "display_name": "Ravi's Nimbus",
+    "timezone": "Asia/Kolkata",
+    "monthly_cap_cents": 400,
+    "keys": {"${host}": "${key}"},
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "scenarios": [
+      {"id": "chat-memory", "steps": [
+        {"say": "What is 9 times 6? Answer with just the number.",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b54\\b"}, {"no_error_reply": true}]},
+        {"say": "Please remember permanently: my favourite chai is masala chai-${suffix}. Confirm when stored.",
+         "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true}, {"no_fabricated_action": true},
+                    {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}}]},
+        {"http": {"method": "POST", "path": "/api/orch", "form": {"clearConv": "1"}}, "expect": [{"http_status": 200}]},
+        {"say": "What chai do I like?",
+         "expect": [{"turn_resolved": true}, {"reply_contains": "masala chai-${suffix}"}, {"no_error_reply": true}]}
+      ]},
+      {"id": "file-and-spawn", "steps": [
+        {"say": "Save a file named plan.txt in project work with exactly: ship-${suffix}. Then confirm.",
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                    {"file_contains": {"project": "work", "name": "plan.txt", "text": "ship-${suffix}"}}]},
+        {"say": "Start a sub-agent to work out the 12th Fibonacci number. Do not work it out yourself. Report what it found.",
+         "await_reply_regex": "\\b144\\b", "timeout_s": 300, "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"log_regex": "spawned job"}, {"reply_regex": "\\b144\\b"}, {"no_error_reply": true}]}
+      ]},
+      {"id": "web-no-tavily", "steps": [
+        {"say": "Use a web lookup to find the latest stable Python 3 release on python.org/downloads. Tell me the version and the URL you used.",
+         "timeout_s": 300, "settle_s": 30,
+         "expect": [{"turn_resolved": true}, {"reply_contains": "${py_latest}", "known_defect": "no-web-lookup", "may_pass": true}, {"no_error_reply": true, "known_defect": "placeholder-reply", "may_pass": true}]}
+      ]}
+    ]
+  }
+}

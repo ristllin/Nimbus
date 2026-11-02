@@ -1,0 +1,33 @@
+{
+  "description": "A long conversation forcing compaction: a codeword at the start, twenty padded working notes, then the codeword must still be recallable after the fold, and the fold must have logged ok.",
+  "vars": {"suffix": "8123"},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": ""},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": "glm-no-tools"},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": "glm-no-tools"}
+  ],
+  "persona": {
+    "name": "pa-long-${name}",
+    "display_name": "Ada's Nimbus",
+    "timezone": "Europe/London",
+    "monthly_cap_cents": 900,
+    "keys": {"mistral": "MISTRAL_API_KEY", "${host}": "${key}"},
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "scenarios": [
+      {"id": "fold", "steps": [
+        {"say": "For this conversation only, the codeword is PERSIMMON-${suffix}. Acknowledge it in one short sentence; do not store it in long-term memory.",
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "Note $i of a long working session. Reply in one short sentence acknowledging the note.",
+         "repeat": 20, "pad": 3200, "settle_s": 2, "timeout_s": 300,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
+                    {"log_not_regex": "fold\\(.*failed|no summary in reply"}]},
+        {"sleep": 5},
+        {"http": {"method": "GET", "path": "/api/log"},
+         "expect": [{"http_status": 200}, {"body_regex": "fold\\(owner\\): ok"}]},
+        {"say": "Earlier in this conversation I told you a codeword. What was it? Answer with the codeword only.",
+         "expect": [{"turn_resolved": true}, {"reply_contains": "PERSIMMON-${suffix}", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]}
+    ]
+  }
+}

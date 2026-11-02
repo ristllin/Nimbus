@@ -1,0 +1,37 @@
+{
+  "description": "A user hitting the spend ceiling: the monthly ceiling is at the 1 USD floor, turns run until the estimated spend reaches it, the frozen reply must say plainly that paid calls are paused at the ceiling and how to raise it, and raising the ceiling through the web app must restore answers.",
+  "vars": {"suffix": "2093"},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": ""},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": "glm-no-tools"},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": "glm-no-tools"}
+  ],
+  "persona": {
+    "name": "pa-ceiling-${name}",
+    "display_name": "Nia's Nimbus",
+    "timezone": "Europe/London",
+    "monthly_cap_cents": 100,
+    "keys": {"mistral": "MISTRAL_API_KEY", "${host}": "${key}"},
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "scenarios": [
+      {"id": "burn-to-ceiling", "steps": [
+        {"say": "Working note $i. Reply in one short sentence.", "repeat": 24, "pad": 6000, "settle_s": 2, "timeout_s": 300,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"http": {"method": "GET", "path": "/api/state"},
+         "expect": [{"http_status": 200}, {"api_equals": {"path": "/api/state", "field": "spend.frozen", "value": true}}]}
+      ]},
+      {"id": "frozen-reply", "needs": ["burn-to-ceiling"], "steps": [
+        {"say": "What is 6 times 7? Answer with just the number.",
+         "timeout_s": 120,
+         "expect": [{"turn_resolved": true}, {"reply_regex": "(?i)ceiling|paused"}]}
+      ]},
+      {"id": "raise-and-recover", "needs": ["frozen-reply"], "steps": [
+        {"http": {"method": "POST", "path": "/api/orch", "form": {"spendCeil": "600"}},
+         "expect": [{"http_status": 200}]},
+        {"say": "What is 6 times 7? Answer with just the number.",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b42\\b"}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]}
+    ]
+  }
+}
