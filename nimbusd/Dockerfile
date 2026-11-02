@@ -19,9 +19,10 @@ WORKDIR /src
 COPY lib ./lib
 COPY include ./include
 COPY nimbusd ./nimbusd
-# The daemon's test suite reuses the host suite's shared fakes (test/support/);
-# without them `make test` cannot build in the image and the release build fails.
-COPY test/support ./test/support
+# The daemon's test suite reuses the host suite (test/support/ fakes and the
+# generated contract headers under test/test_router_refusal_contract/); without
+# them `make test` cannot build in the image and the release build fails.
+COPY test ./test
 # Header-only deps the Makefile expects: ArduinoJson (pinned v7) as the native
 # libdep, and the solide-drivers portable headers as a sibling checkout.
 ARG ARDUINOJSON_REF=v7.4.3
