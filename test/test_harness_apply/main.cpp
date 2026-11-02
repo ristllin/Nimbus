@@ -417,6 +417,26 @@ static std::string switchTo(Rec& r, PausedHead& h, const char* provider, const c
 // The owner's words on Lumi ("Hmm I thought anthropic is out of budget") and the DoD's
 // "switch to mistral since anthropic is out of budget": the head stays, nothing is
 // written, the explanation rides the reply, and the next turn's feedback says so.
+// The parity eval's class: the owner picks a head it found unfit for daily use and hears so,
+// in the reply, once. Another pick says nothing.
+static void test_picking_mistral_small_says_what_it_is_for() {
+  auto replyFor = [](const char* model) {
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    d.modelIsValid = [](const std::string&, const std::string&) { return true; };
+    ApplyState st = makeState(r);
+    Turn t = turnWithDevice((std::string("{\"type\":\"orch_model\",\"provider\":\"mistral\",\"model\":\"") + model + "\"}").c_str());
+    t.reply = "Switched.";
+    bool spawned = false;
+    agent::applyTurn(t, "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL(1, (int)r.hostModelSet.size());
+    return r.delivered.empty() ? std::string() : r.delivered[0].second;
+  };
+  const std::string small = replyFor("mistral-small-latest");
+  TEST_ASSERT_TRUE_MESSAGE(small.find("For daily use, pick Mistral Large 4.") != std::string::npos, small.c_str());
+  TEST_ASSERT_EQUAL_STRING("Switched.", replyFor("mistral-large-4-0").c_str());
+}
+
 static void test_orch_model_does_not_move_a_paused_head() {
   nimbus::orch::headSwitchGuard().reset();
   for (const char* owner : {"Hmm I thought anthropic is out of budget",
@@ -2379,6 +2399,7 @@ int main(int, char**) {
   RUN_TEST(test_orch_model_valid_and_keyed_applies);
   RUN_TEST(test_orch_model_invalid_model_refused);
   RUN_TEST(test_orch_model_keyless_provider_refused);
+  RUN_TEST(test_picking_mistral_small_says_what_it_is_for);
   RUN_TEST(test_orch_model_does_not_move_a_paused_head);
   RUN_TEST(test_a_paused_head_moves_only_on_the_owners_explicit_second_ask);
   RUN_TEST(test_lumis_sequence_never_moves_the_head);
