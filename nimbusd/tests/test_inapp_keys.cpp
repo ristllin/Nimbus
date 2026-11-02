@@ -18,6 +18,7 @@
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "../../test/support/fake_http.h"
 #include "engine_thread.h"
@@ -98,6 +99,133 @@ static void testKeyIsDurable(ndtest::Ctx& c) {
     NimbusdRig rig(cfg, opt);
     c.ok(rig.hostAvailable("openai"),
          "the in-app key survived the restart (loaded from secrets)");
+  }
+  clearProviderEnv();
+}
+
+// (b2) A portal key and an in-app key for one provider: the one saved last wins. The
+// portal's save restarts the pod with a new env value; an in-app save writes the override.
+static void testLastSaveWins(ndtest::Ctx& c) {
+  std::printf("  -- (b2) portal key vs in-app key: last save wins --\n");
+  clearProviderEnv();
+  NimbusdRig::Options opt = baseOpt("inapp-lastsave");
+  const char* env = "MISTRAL_API_KEY";
+  auto effective = [&]() {
+    Config cfg;                       // a brand-new rig == a pod restart
+    NimbusdRig rig(cfg, opt);
+    return rig.engineKey("mistral");
+  };
+  ::setenv(env, "portal_key_A", 1);
+  c.eq(effective(), std::string("portal_key_A"), "a portal key with no in-app key is used");
+  {
+    Config cfg;
+    NimbusdRig rig(cfg, opt);
+    c.ok(rig.applyProviderKey("mistral", "inapp_key_B"), "save a key in the app");
+    c.eq(rig.engineKey("mistral"), std::string("inapp_key_B"), "the in-app save takes effect at once");
+  }
+  c.eq(effective(), std::string("inapp_key_B"), "a restart with the same portal key keeps the in-app key");
+  ::setenv(env, "portal_key_C", 1);
+  c.eq(effective(), std::string("portal_key_C"), "a later portal save wins over the in-app key");
+  c.eq(effective(), std::string("portal_key_C"), "and stays won on the next restart");
+  {
+    Config cfg;
+    NimbusdRig rig(cfg, opt);
+    c.ok(rig.applyProviderKey("mistral", "inapp_key_D"), "a later in-app save");
+  }
+  c.eq(effective(), std::string("inapp_key_D"), "a later in-app save wins again");
+  ::unsetenv(env);
+  c.eq(effective(), std::string(""), "removing the key in the portal removes it, in-app copy too");
+  clearProviderEnv();
+}
+
+// (b4) The portal states which key answers (cumulo repo, packages/shared/src/hosted-keys.ts,
+// HEAD ORDER). This is that order. If it moves on purpose, the portal's catalog moves with it.
+static void testHeadOrderThePortalStates(ndtest::Ctx& c) {
+  std::printf("  -- (b4) the head order the portal states --\n");
+  struct Case {
+    std::vector<const char*> envs;
+    const char* head;
+    const char* why;
+  };
+  const std::vector<Case> cases = {
+      {{"Z_AI_TOKEN"}, "zai", "Z.ai alone answers with Z.ai"},
+      {{"Z_AI_TOKEN", "CUMULO_API_KEY"}, "cumulo", "a Cumulo key runs ahead of Z.ai"},
+      {{"MISTRAL_API_KEY", "CUMULO_API_KEY"}, "mistral", "Mistral runs ahead of a Cumulo key"},
+      {{"OPENAI_API_KEY", "CUMULO_API_KEY"}, "openai", "OpenAI runs ahead of a Cumulo key"},
+      {{"ANTHROPIC_API_KEY", "CUMULO_API_KEY"}, "anthropic", "Anthropic runs ahead of a Cumulo key"},
+      {{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "MISTRAL_API_KEY"}, "mistral", "Mistral is first"},
+      {{"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}, "openai", "then OpenAI"},
+      {{"ANTHROPIC_API_KEY", "Z_AI_TOKEN"}, "anthropic", "Anthropic runs ahead of Z.ai"},
+  };
+  int i = 0;
+  for (const Case& t : cases) {
+    clearProviderEnv();
+    for (const char* env : t.envs) ::setenv(env, "a_test_key", 1);
+    Config cfg;
+    NimbusdRig rig(cfg, baseOpt("inapp-head-" + std::to_string(i++)));
+    c.eq(rig.hostBadge(), std::string(t.head), t.why);
+  }
+  clearProviderEnv();
+}
+
+// (b2b) A portal save of the value it already holds changes no env, so it cannot beat an
+// in-app key. The portal says so and names the way out: remove it there, then save it.
+static void testSameValueResave(ndtest::Ctx& c) {
+  std::printf("  -- (b2b) the portal saves the same value again --\n");
+  clearProviderEnv();
+  NimbusdRig::Options opt = baseOpt("inapp-resave");
+  const char* env = "MISTRAL_API_KEY";
+  auto effective = [&]() {
+    Config cfg;
+    NimbusdRig rig(cfg, opt);
+    return rig.engineKey("mistral");
+  };
+  ::setenv(env, "portal_key_K1", 1);
+  {
+    Config cfg;
+    NimbusdRig rig(cfg, opt);
+    c.ok(rig.applyProviderKey("mistral", "inapp_key_K2"), "a key saved in the app over K1");
+  }
+  c.eq(effective(), std::string("inapp_key_K2"), "the in-app key is used");
+  ::setenv(env, "portal_key_K1", 1);  // the same value again: no change reaches the daemon
+  c.eq(effective(), std::string("inapp_key_K2"), "re-saving the same value does not take over");
+  ::unsetenv(env);
+  c.eq(effective(), std::string(""), "Remove in the portal drops the in-app key too");
+  ::setenv(env, "portal_key_K1", 1);
+  c.eq(effective(), std::string("portal_key_K1"), "and saving it again uses it");
+  c.eq(effective(), std::string("portal_key_K1"), "and it stays on the next restart");
+  // The other way out, the one the panel names on an image without the rule.
+  {
+    Config cfg;
+    NimbusdRig rig(cfg, opt);
+    c.ok(rig.applyProviderKey("mistral", "inapp_key_K3"), "another key saved in the app");
+    c.eq(rig.engineKey("mistral"), std::string("inapp_key_K3"), "it is used");
+    c.ok(rig.applyProviderKey("mistral", ""), "and removed in the app");
+    c.eq(rig.engineKey("mistral"), std::string("portal_key_K1"), "so the portal's is used again");
+  }
+  clearProviderEnv();
+}
+
+// (b3) A secrets file from before the basis existed: nothing can be proven changed, so the
+// in-app key stays, and the current env becomes the basis for next time.
+static void testLastSaveWinsUpgrade(ndtest::Ctx& c) {
+  std::printf("  -- (b3) upgrade: an older secrets file keeps its key --\n");
+  clearProviderEnv();
+  NimbusdRig::Options opt = baseOpt("inapp-lastsave-upgrade");
+  ::mkdir(opt.dataDir.c_str(), 0700);
+  ::mkdir((opt.dataDir + "/mem").c_str(), 0700);
+  fsutil::writeFileAtomic(opt.dataDir + "/mem/secrets.env", "OPENAI_API_KEY=sk_test_OLDFILE\n");
+  ::setenv("OPENAI_API_KEY", "sk_test_PORTAL1", 1);
+  {
+    Config cfg;
+    NimbusdRig rig(cfg, opt);
+    c.eq(rig.engineKey("openai"), std::string("sk_test_OLDFILE"), "the older in-app key still wins");
+  }
+  ::setenv("OPENAI_API_KEY", "sk_test_PORTAL2", 1);
+  {
+    Config cfg;
+    NimbusdRig rig(cfg, opt);
+    c.eq(rig.engineKey("openai"), std::string("sk_test_PORTAL2"), "the next portal save wins");
   }
   clearProviderEnv();
 }
@@ -502,6 +630,10 @@ int main() {
   std::printf("=== %s ===\n", c.suite);
   testApplyTakesEffect(c);
   testKeyIsDurable(c);
+  testLastSaveWins(c);
+  testSameValueResave(c);
+  testHeadOrderThePortalStates(c);
+  testLastSaveWinsUpgrade(c);
   testClearRemovesKey(c);
   testWebPostAppliesKey(c);
   testEveryFieldNameApplies(c);

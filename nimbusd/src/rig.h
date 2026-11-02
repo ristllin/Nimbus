@@ -233,6 +233,9 @@ class NimbusdRig {
   // In-app provider keys (CUM-279): durable, owner-only. The instance disk plays the
   // device's NVS role, so a key set in the UI survives a process/pod restart.
   std::string secretsPath() const { return memDir() + "/secrets.env"; }
+  // For each in-app key: a fingerprint of the portal's value when it was saved (see
+  // dropOverridesThePortalReplaced).
+  std::string secretsBasisPath() const { return memDir() + "/secrets.basis"; }
   // In-app model picks (CUM-425): durable like the keys, but not secret material,
   // so they live in their own plain file (slug=model lines).
   std::string modelsPath() const { return memDir() + "/models.txt"; }
@@ -1628,8 +1631,62 @@ class NimbusdRig {
       trimmed = true;
       std::fprintf(stderr, "[nimbusd] secrets: %s had spaces around it; stored trimmed\n", k.c_str());
     }
-    if (trimmed) saveSecrets();
+    const bool dropped = dropOverridesThePortalReplaced();
+    if (trimmed || dropped || !basisExists()) saveSecrets();
   }
+
+  // A key can be saved in two places: the portal (it arrives as this process's env, on the
+  // restart that save causes) and the app (an override in secrets.env). The rule is that
+  // the one saved last wins. An in-app key records the portal's value it was saved over,
+  // as a fingerprint; a different value now means the portal saved since, so the override
+  // goes. That includes the portal removing the key. A file with no basis yet (from before
+  // this rule) proves nothing, so its keys stay and the current env becomes the basis.
+  static std::string envFingerprint(const std::string& name) {
+    const char* e = std::getenv(name.c_str());
+    uint64_t h = 14695981039346656037ULL;   // FNV-1a: stable across builds; 0600 like the keys
+    for (const char* p = e ? e : ""; *p; ++p) {
+      h ^= static_cast<unsigned char>(*p);
+      h *= 1099511628211ULL;
+    }
+    char out[17];
+    std::snprintf(out, sizeof(out), "%016llx", static_cast<unsigned long long>(h));
+    return out;
+  }
+  bool basisExists() const {
+    struct stat st{};
+    return ::stat(secretsBasisPath().c_str(), &st) == 0;
+  }
+  bool dropOverridesThePortalReplaced() {
+    std::string blob;
+    if (!fsutil::readFile(secretsBasisPath(), blob)) return false;
+    std::istringstream is(blob);
+    std::string line;
+    bool dropped = false;
+    while (std::getline(is, line)) {
+      const size_t eq = line.find('=');
+      if (eq == std::string::npos) continue;
+      const std::string name = line.substr(0, eq);
+      if (line.substr(eq + 1) == envFingerprint(name)) continue;
+      const auto current = cfg_.overrides();
+      if (current.find(name) == current.end()) continue;
+      cfg_.setOverride(name, "");
+      dropped = true;
+      std::fprintf(stderr, "[nimbusd] secrets: %s was saved in the portal after the in-app key; using the portal's\n", name.c_str());
+    }
+    return dropped;
+  }
+  void writeSecretsBasis() {
+    std::string blob;
+    for (const auto& kv : cfg_.overrides()) blob += kv.first + "=" + envFingerprint(kv.first) + "\n";
+    const std::string tmp = secretsBasisPath() + ".tmp";
+    const int fd = ::open(tmp.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);
+    if (fd < 0) return;
+    const ssize_t n = ::write(fd, blob.data(), blob.size());
+    ::close(fd);
+    if (n != (ssize_t)blob.size()) { ::unlink(tmp.c_str()); return; }
+    if (::rename(tmp.c_str(), secretsBasisPath().c_str()) != 0) ::unlink(tmp.c_str());
+  }
+
   // Persist the current in-app overrides to the owner-only secrets file. Written
   // 0600 from creation (never a world-readable window - the general atomic writer
   // creates 0644 then chmods, which leaves a race and a 0644 file if the process
@@ -1649,7 +1706,8 @@ class NimbusdRig {
     const ssize_t n = ::write(fd, blob.data(), blob.size());
     ::close(fd);
     if (n != (ssize_t)blob.size()) { ::unlink(tmp.c_str()); return; }
-    if (::rename(tmp.c_str(), secretsPath().c_str()) != 0) ::unlink(tmp.c_str());
+    if (::rename(tmp.c_str(), secretsPath().c_str()) != 0) { ::unlink(tmp.c_str()); return; }
+    writeSecretsBasis();
   }
 
   // ---- in-app model picks: durable overrides (CUM-425) ----------------------
