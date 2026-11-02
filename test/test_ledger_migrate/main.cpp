@@ -261,6 +261,32 @@ static void test_an_unquoted_comma_never_shifts_the_figures() {
   TEST_ASSERT_TRUE(tally.total().total > 149.9 && tally.total().total < 150.1);
 }
 
+// A row whose protein cell exceeds its kcal cell cannot be a meal's figures: protein is
+// 4 kcal/g, so protein_g <= kcal/4 <= kcal. A four-field row of shape <ts, item, amount,
+// kcal> (the amount schema without its protein cell) lands exactly there - grams read as
+// kcal - so it drops and counts, and the source is kept: the misread never reaches the
+// ledger and the raw row is never deleted.
+static void test_a_row_whose_protein_exceeds_its_kcal_drops_and_keeps_the_source() {
+  const LedgerMigration m = planLedgerMigration("2026-10-31 20:15,Chicken breast,200,330\n");
+  TEST_ASSERT_TRUE(m.ok);
+  TEST_ASSERT_EQUAL(0, m.folded);
+  TEST_ASSERT_EQUAL(1, m.dropped);
+  TEST_ASSERT_EQUAL(1, m.droppedData);
+  TEST_ASSERT_FALSE(m.sourceFullyFolded());
+  TEST_ASSERT_EQUAL_STRING("date,meal,items,kcal,protein_g\n", m.out.c_str());
+  // A physically possible row still folds (coffee: 64 kcal, 3.2 g protein).
+  const LedgerMigration ok = planLedgerMigration("2026-10-30 19:27,Coffee,64,3.2\n");
+  TEST_ASSERT_EQUAL(1, ok.folded);
+  TEST_ASSERT_TRUE(contains(ok.out, "2026-10-30,dinner,Coffee,64,3.2"));
+  // ...and so does a row whose figures sit exactly on the bound (protein == kcal only at 0).
+  const LedgerMigration zero = planLedgerMigration("2026-10-30 19:27,Water,0,0\n");
+  TEST_ASSERT_EQUAL(1, zero.folded);
+  // A five-field amount row is a different, unambiguous schema: it folds as before.
+  const LedgerMigration five = planLedgerMigration("2026-10-31 20:15,Chicken breast,200,330,40\n");
+  TEST_ASSERT_EQUAL(1, five.folded);
+  TEST_ASSERT_TRUE(contains(five.out, "2026-10-31,evening,Chicken breast,330,40"));
+}
+
 // The source file goes only when every row of figures reached the ledger: a dropped data
 // row has no other copy. A header row holds no figures, so it never keeps the file.
 static void test_the_source_goes_only_when_every_data_row_folded() {
@@ -363,12 +389,19 @@ static void test_the_fold_checks_the_owner_and_keeps_an_unfolded_source() {
   const size_t save = src.find("saveText(nimbus::orch::kLedgerProject", fn);
   const size_t whole = src.find("m.sourceFullyFolded()", fn);
   const size_t marks = src.find("markLegacyFolded(legacy)", fn);
-  TEST_ASSERT_TRUE_MESSAGE(marks != std::string::npos && marks > whole, "a kept source is marked as folded");
+  const size_t markfail = src.find("could not be marked as folded", fn);
   const size_t remove = src.find("remove(pathOf(kLegacyProject, kLegacyName)", fn);
   TEST_ASSERT_TRUE(owner != std::string::npos && read != std::string::npos);
   TEST_ASSERT_TRUE(save != std::string::npos && whole != std::string::npos && remove != std::string::npos);
+  TEST_ASSERT_TRUE(marks != std::string::npos && markfail != std::string::npos);
   TEST_ASSERT_TRUE_MESSAGE(owner < read, "the owner check must run before the read");
-  TEST_ASSERT_TRUE_MESSAGE(save < whole && whole < remove, "the source goes only past the fully-folded check");
+  // The fold-once mark is durable BEFORE the ledger is written: a kept source that is not
+  // marked would fold again at every boot and re-add rows the owner removed since, and a
+  // failed mark write must leave nothing written (the fold retries at the next boot).
+  TEST_ASSERT_TRUE_MESSAGE(whole < marks && marks < save,
+                           "the kept source is marked before the ledger is saved");
+  TEST_ASSERT_TRUE_MESSAGE(markfail < save, "a failed mark write returns before any ledger write");
+  TEST_ASSERT_TRUE_MESSAGE(save < remove, "the source goes only past the fully-folded check");
 }
 
 // Headers, prose and short rows drop and are counted - never guessed.
@@ -510,6 +543,7 @@ int main() {
   RUN_TEST(test_a_comma_inside_parentheses_stays_in_the_item);
   RUN_TEST(test_a_quoted_item_keeps_its_comma_and_its_columns);
   RUN_TEST(test_an_unquoted_comma_never_shifts_the_figures);
+  RUN_TEST(test_a_row_whose_protein_exceeds_its_kcal_drops_and_keeps_the_source);
   RUN_TEST(test_the_source_goes_only_when_every_data_row_folded);
   RUN_TEST(test_a_kept_source_folds_once_even_with_a_ledger);
   RUN_TEST(test_only_the_owners_legacy_log_folds);

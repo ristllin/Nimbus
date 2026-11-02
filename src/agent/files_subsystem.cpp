@@ -786,19 +786,27 @@ void migrateLegacyMealLog() {
     return;
   }
   std::string err;
+  // A dropped data row has no other copy: the source stays. Its last row then says it has
+  // been folded, so the next boot leaves it alone and this runs once either way: the ledger
+  // existing no longer stops the fold, and a kept source must not refill a row removed since.
+  // The mark is therefore written BEFORE the ledger: a kept source that is not durably
+  // marked would fold again at every boot and re-add rows the owner removed since. If the
+  // mark write fails, nothing is written at all and the fold retries at the next boot.
+  const bool keepSource = !m.sourceFullyFolded();
+  if (keepSource &&
+      !saveText(kLegacyProject, kLegacyName, nimbus::orch::markLegacyFolded(legacy), err, legacyOwner)) {
+    alogf("files: the kept legacy meal log could not be marked as folded: %s - nothing written, the fold retries at the next boot",
+          err.c_str());
+    return;
+  }
   if (!saveText(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, m.out, err,
                 std::string())) {
     alogf("files: legacy meal log migration failed: %s", err.c_str());
     return;
   }
-  // A dropped data row has no other copy: the source stays. Its last row then says it has
-  // been folded, so the next boot leaves it alone and this runs once either way: the ledger
-  // existing no longer stops the fold, and a kept source must not refill a row removed since.
-  if (!m.sourceFullyFolded()) {
-    alogf("files: migrated the legacy meal log into %s/%s (%d rows folded), %d rows unread: source kept",
+  if (keepSource) {
+    alogf("files: migrated the legacy meal log into %s/%s (%d rows folded), %d rows unread: source kept (marked as folded)",
           nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, m.folded, m.droppedData);
-    if (!saveText(kLegacyProject, kLegacyName, nimbus::orch::markLegacyFolded(legacy), err, legacyOwner))
-      alogf("files: the kept legacy meal log could not be marked as folded: %s", err.c_str());
     return;
   }
   memory::dataFs().remove(pathOf(kLegacyProject, kLegacyName).c_str());

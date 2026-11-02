@@ -106,6 +106,7 @@ def tool_result_regex(rec, arg, _ctx):
     """The daemon folds each anatomy line at 200 characters, so only a result's start can match."""
     return _tool_field_regex(rec, arg, "result")
 
+
 def write_result_regex(rec, arg, _ctx):
     """What a memory write answered, by either path: a tool call's result, or the log line
     of the reply's mem_write field (which reaches the head only on the next turn)."""

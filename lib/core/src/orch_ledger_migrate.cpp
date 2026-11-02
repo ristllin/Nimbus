@@ -148,6 +148,12 @@ bool foldTimedRow(const std::vector<std::string>& f, const std::string& time, Fo
   if (figures == 3 && !quantityCell(f[2])) return false;
   r.item = f[1];
   if (!isNum(f[figures], r.kcal) || !isNum(f[figures + 1], r.protein)) return false;
+  // A four-field row is read as <stamp, item, kcal, protein>, but the same shape also
+  // holds <stamp, item, amount, kcal> (the amount schema without its protein cell), and
+  // nothing in the shape tells them apart. What does: protein is 4 kcal/g, so a real row
+  // has protein_g <= kcal/4 <= kcal. A row whose second figure exceeds its first cannot
+  // be schema D - it is the other schema read wrong (grams as kcal) - and drops.
+  if (figures == 2 && r.protein > r.kcal) return false;
   r.meal = mealOfTime(time);
   return !r.meal.empty();
 }

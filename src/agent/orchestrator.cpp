@@ -26,6 +26,7 @@
 #include "dream_subsystem.h"            // DREAMING: noteTurnEnd (idle-gate quiet clock)
 #include "connectors.h"                 // per-provider connector catalog + attach
 #include "nimbus/orch/action_rules.h"   // who may run each tool and device action (CUM-813)
+#include "nimbus/orch/loop_delivery.h"  // telegramOwnerOf: the owner rule from NVS lists (host-tested)
 #include "model_refresh.h"   // R5: the orch_model miss answer
 #include "provider_verify.h"            // queueWorkspaceProbeIfStale() at boot (CUM-537)
 #include "nimbus/orch/connectors_wire.h" // portable attach*Wire (builtinsOnly cumulo route)
@@ -138,7 +139,9 @@ static std::mutex   g_turnOwnerMx;                // device.control may also run
 static HarnessConfig g_cfg;
 
 static orch::OrchMemory      g_mem;
-static orch::Journal         g_journal;
+// PSRAM (psram_static.h): about 1.7 KB that internal RAM no longer holds. Task
+// context only (single-writer on tg_poll), no lock member, so psramObject applies.
+static orch::Journal&        g_journal = ::nimbus::psramObject<orch::Journal>();
 static LittleFsMemoryStore   g_memStore;
 // v3.6.0 fold state (plans/compaction-plan.md). All accessed on tg_poll ONLY
 // (capture hooks, onTurnEnd, pollJobs, handleMessage) - no lock needed.
@@ -2547,8 +2550,15 @@ nimbus::orch::Role roleOfChat(const String& chatId) {
   // No row at all: while no Admin row exists, the chat the Telegram owner rule names
   // is the owner (a freshly onboarded owner may change the device before the table
   // holds a row); otherwise an allow-listed chat is a User; anyone else is Unknown
-  // until approved (nimbus::orch::roleWithoutRow).
-  return nimbus::orch::roleWithoutRow(isChatAllowed(chatId), agent::telegram::isOwner(chatId), tableHasAdmin);
+  // until approved (nimbus::orch::roleWithoutRow). The owner rule reads NVS
+  // (thread-safe), never telegram's poll-task-owned g_owners/g_allowlist: roleOfChat
+  // also runs on the web task (the /api/test seams), and the poll task reassigns those
+  // Strings on every allowlist reload.
+  return nimbus::orch::roleWithoutRow(
+      isChatAllowed(chatId),
+      nimbus::orch::telegramOwnerOf(std::string(store::telegramAllowlist().c_str()),
+                                     std::string(store::telegramOwners().c_str()), id),
+      tableHasAdmin);
 }
 
 // ---- tenant mutations (locked; every surface goes through these) -------------

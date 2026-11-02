@@ -111,6 +111,13 @@ repos:
       - id: ruff-check
         files: '^(tools|tests|evals)/.*\.py$'
       - id: ruff-format
+        # --check, never a modifying run: pre-commit evaluates WORKING-TREE files, so a
+        # hook that rewrites them can leave an uncommitted fix behind, and the local
+        # battery then passes on the fixed working tree while CI - a clean checkout of
+        # the committed blob - fails (GitHub run 41474171062, tools/persona-rig). With
+        # --check the hook never writes, so local and CI judge the same bytes and the
+        # divergence cannot recur; a lane formats with `ruff format` and commits it.
+        args: [--check]
         files: '^(tools|tests|evals)/.*\.py$'
 
   - repo: local

@@ -5585,6 +5585,35 @@ static void test_the_empty_answer_correction_is_wired_with_its_exclusions() {
   }
 }
 
+// roleOfChat runs on the turn task AND on the web task (the token-gated /api/test seams
+// call it from async_tcp), so its no-row fallback must resolve the Telegram owner rule
+// from NVS, never from telegram's poll-task-owned g_owners/g_allowlist Strings: the poll
+// task reassigns those on every allowlist reload, and a web-task read of a String being
+// freed is a use-after-free. telegramOwnerOf is the host-tested owner rule over given
+// lists (the same one approvePending uses on the web task).
+static void test_roleofchat_reads_the_owner_rule_from_nvs_not_the_poll_tasks_strings() {
+  std::string src;
+  FILE* f = std::fopen("src/agent/orchestrator.cpp", "rb");
+  TEST_ASSERT_NOT_NULL(f);
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) src.append(buf, n);
+  std::fclose(f);
+  const size_t fn = src.find("nimbus::orch::Role roleOfChat(const String& chatId) {");
+  TEST_ASSERT_TRUE(fn != std::string::npos);
+  const size_t fallback = src.find("roleWithoutRow(", fn);
+  TEST_ASSERT_TRUE(fallback != std::string::npos);
+  const size_t segEnd = src.find("\n}", fallback);
+  TEST_ASSERT_TRUE(segEnd != std::string::npos);
+  const std::string seg = src.substr(fallback, segEnd - fallback);
+  TEST_ASSERT_TRUE_MESSAGE(seg.find("agent::telegram::isOwner") == std::string::npos,
+                           "roleOfChat must not read the poll task's g_owners/g_allowlist");
+  TEST_ASSERT_TRUE_MESSAGE(seg.find("telegramOwnerOf") != std::string::npos &&
+                               seg.find("store::telegramAllowlist()") != std::string::npos &&
+                               seg.find("store::telegramOwners()") != std::string::npos,
+                           "the owner rule comes from NVS via telegramOwnerOf");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_cum828_a_turns_requests_carry_its_chats_grant);
@@ -5592,6 +5621,7 @@ int main(int, char**) {
   runFirstHalf();
   runSecondHalf();
   RUN_TEST(test_the_empty_answer_correction_is_wired_with_its_exclusions);
+  RUN_TEST(test_roleofchat_reads_the_owner_rule_from_nvs_not_the_poll_tasks_strings);
   UNITY_END();
   return 0;
 }

@@ -33,6 +33,7 @@ MOVED = {
         "engine",
         "turnEngine",
         "journalStore",
+        "g_journal",
     ),
     "src/agent/connectors.cpp": ("s_inRedirect", "s_inCode", "s_snapVerify", "s_snapErr", "s_snapAuthUrl"),
     "src/agent/telegram.cpp": ("g_media", "s_pending"),
