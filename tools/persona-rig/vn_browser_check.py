@@ -25,7 +25,7 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from persona_rig import DOCKER, DockerBackend, Instance, read_env_file, solid_png  # noqa: E402
 
-KEY_FIELDS = {"MISTRAL_API_KEY": ("mistral", "mistKey", "mistral-large-4-0")}  # slug, field, head model
+KEY_FIELDS = {"MISTRAL_API_KEY": ("mistral", "mistKey", "mistral-medium-latest")}  # slug, field, head model
 
 
 def bubbles(page) -> list:

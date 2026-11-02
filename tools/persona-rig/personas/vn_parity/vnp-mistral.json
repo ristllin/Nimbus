@@ -62,7 +62,7 @@
        "reply_regex": "\\b56\\b"
       },
       {
-       "reply_not_contains": "On it."
+       "reply_not_regex": "\\S[\\s\\S]*On it\\."
       }
      ],
      "await_reply_regex": "\\b56\\b",
