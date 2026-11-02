@@ -176,16 +176,17 @@ void refitAfterATool(LabRig& rig, const Report& r) {
     const size_t at = q.body.find(kSwell);
     if (at != std::string::npos) q.body.replace(at, sizeof(kSwell) - 1, pad);
   };
-  rig.shim().onResponse = [&signature](const agent::HttpRequest& q, agent::HttpResponse& resp) {
-    if (!isHead(q) || !signature.empty()) return;
+  rig.shim().onResponse = [&signature, &heads](const agent::HttpRequest& q, agent::HttpResponse& resp) {
+    if (!isHead(q) || heads != 1) return;   // the tool round the refused request replays
     JsonDocument d;
     if (deserializeJson(d, resp.body)) return;
     for (JsonObject c : d["content"].as<JsonArray>())
       if (std::string(c["type"] | "") == "thinking") signature = std::string(c["signature"] | "");
   };
   auto t = rig.say(chat,
-                   "Think carefully step by step about what to look for, then search your memory for 'pumpkin soup' "
-                   "with the memory search tool, and after that tell me in one short sentence what you found.");
+                   "Work out in your head, carefully and step by step, which is larger: 17 * 23 + 19 * 31, or 29 * 37 "
+                   "- 11 * 13. Then search your memory with the memory search tool for the larger number, and after that "
+                   "tell me in one short sentence what you found.");
   rig.shim().onRequest = nullptr;
   rig.shim().onResponse = nullptr;
   printCalls(rig, r);
