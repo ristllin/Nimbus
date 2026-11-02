@@ -26,7 +26,7 @@ Build: `pio run -e test` (solide_s3 / Nimbus-4) and `pio run -e test-cyd` (Freen
    endpoints; keep a BLE scan/notify active. (Measuring heap under load, not turn quality,
    so mock turns are the right tool and cost $0.)
 5. Sample for ~10-15 min:
-   `python3 tests/hil/sram_sampler.py --ip <ip> --token "$NIMBUS_ADMIN_TOKEN" \
+   `python3 tests/hil/sram_sampler.py --ip <ip> --token-file <token file> \
        --minutes 15 --interval 20 --label <before|after> --out n7_<board>_<phase>.jsonl`
 6. Release the lock.
 7. Diff: `python3 tests/hil/sram_sampler.py --diff n7_<board>_before.jsonl n7_<board>_after.jsonl`
@@ -35,7 +35,7 @@ Build: `pio run -e test` (solide_s3 / Nimbus-4) and `pio run -e test-cyd` (Freen
 
 ## 24 h soak (CUM-36, orchestrator-run - exceeds the 45 min lock)
 On the AFTER build, both boards, with turns+web+BLE active for 24 h:
-`python3 tests/hil/sram_sampler.py --ip <ip> --token "$NIMBUS_ADMIN_TOKEN" \
+`python3 tests/hil/sram_sampler.py --ip <ip> --token-file <token file> \
     --hours 24 --interval 60 --out n7_<board>_soak.jsonl`
 Pass = no downward drift in intFree/intLargest/heapMin (no leak), no reset, floors held.
 Then refresh the `docs/memory.md` measured matrix with the observed numbers.

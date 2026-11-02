@@ -6,14 +6,21 @@ forbidden board is on the bus. Nothing here opens a port.
 
 import importlib.util
 import os
+import sys
 
 Import("env")  # noqa: F821  (platformio construction environment)
 
 
+PROJECT_DIR = env["PROJECT_DIR"]  # noqa: F821
+
+
 def _load_guard():
-    path = os.path.join(env["PROJECT_DIR"], "tools", "bench_guard.py")  # noqa: F821
+    if "bench_guard" in sys.modules:
+        return sys.modules["bench_guard"]
+    path = os.path.join(PROJECT_DIR, "tools", "bench_guard.py")
     spec = importlib.util.spec_from_file_location("bench_guard", path)
     module = importlib.util.module_from_spec(spec)
+    sys.modules["bench_guard"] = module
     spec.loader.exec_module(module)
     return module
 

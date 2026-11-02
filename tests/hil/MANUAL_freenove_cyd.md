@@ -13,7 +13,8 @@ on its last frame). Prefer the **on-screen / by-ear** bring-up sketches below,
 which need no console. If you do need the console (`STATUS`, `SELFTEST`), flash
 `test-cyd`, open the monitor once right after upload, and avoid re-opening.
 
-MAC-verify the port before every flash: it is `28:84:85:42:18:fc`.
+MAC-verify the port before every flash: run `python3 tools/bench_guard.py list` and compare the
+full MAC. A port name is not an identity, and the guard refuses the two boards that are never a bench target.
 
 ```bash
 pio run -e <env> -t upload --upload-port /dev/cu.usbmodemXXXX
