@@ -326,10 +326,18 @@ bool isReservedId(const String& id) {
   return isReservedStd(std::string(id.c_str()));
 }
 
+// Standing work for a chat: an enabled, approved, non-reserved loop that DELIVERS
+// to that chat (the same resolveDelivery a fire uses). An owner-default loop
+// (empty chatId) delivers to the owner's Telegram, or the web chat when no owner
+// Telegram exists - never to another chat: counting it for a member's chat told
+// the promise check the member's "I'll report back" was backed, silencing the
+// correction for a report that never reaches them.
 bool hasStanding(const std::string& chatId) {
   Lock lk;
+  const orch::DeliveryWorld world = readDeliveryWorld();
   for (const auto& l : g_loops)
-    if (l.enabled && l.approved && !isReservedStd(l.id) && (l.chatId.empty() || l.chatId == chatId)) return true;
+    if (l.enabled && l.approved && !isReservedStd(l.id) && deliveryFor(l, world).target == chatId)
+      return true;
   return false;
 }
 
