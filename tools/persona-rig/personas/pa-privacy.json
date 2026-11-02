@@ -32,7 +32,7 @@
          "expect": [{"http_status": 200}, {"body_contains": "notes.txt"}]}
       ]},
       {"id": "delete-one-memory", "needs": ["what-is-stored"], "steps": [
-        {"say": "Delete the memory about my blood type. Confirm when it is gone.",
+        {"say": "Delete the memory about my medical marker. Confirm when it is gone.",
          "settle_s": 5,
          "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
         {"http": {"method": "GET", "path": "/api/mem/vector?limit=50"},
