@@ -1303,6 +1303,14 @@ bool reportedTotal(const Scan& sc, size_t i) {
 // conversation only, not stored"). tests/evals/claim_corpus/noted.json holds the real replies.
 constexpr const char* kKeepWords[] = {"remember", "remembered", "memory", "memories", "stored", "store", "storing", "saved",
                                       "save", "saving", "permanent", "permanently", "forever", "file", "notes", "log", "logged"};
+// A promise that it lasts past this reply: the same claim in other words ("noted for future chats").
+constexpr const char* kKeepPhrases[] = {"from now on", "next time", "going forward", "future chats", "future chat", "future", "i've set",
+                                        "i have set", "set that", "set it", "i will use", "i'll use"};
+bool keepPhraseAt(const Scan& sc, size_t k) {
+  for (const char* phrase : kKeepPhrases)
+    if (matchPhrase(sc, k, phrase, nullptr)) return true;
+  return false;
+}
 constexpr const char* kNotKept[] = {"not", "nothing", "no", "never", "won't", "don't", "isn't"};
 constexpr const char* kAckLead[] = {"ok", "okay", "got", "it", "understood", "acknowledged", "sure", "right", "thanks", "yes", "alright", "all"};
 bool bareAck(const Scan& sc, size_t i) {
@@ -1313,7 +1321,7 @@ bool bareAck(const Scan& sc, size_t i) {
   for (size_t k = 0; k < sc.toks.size(); k++) {
     const Tok& t = sc.toks[k];
     if (t.sent != sent) continue;
-    keep = keep || tokIn(sc.s, t, kKeepWords);
+    keep = keep || tokIn(sc.s, t, kKeepWords) || keepPhraseAt(sc, k);
     not_ = not_ || tokIn(sc.s, t, kNotKept);
     if (k < i && !tokIn(sc.s, t, kAckLead)) opens = false;
   }
@@ -1323,11 +1331,29 @@ bool bareAck(const Scan& sc, size_t i) {
   return keep ? not_ : opens || named;
 }
 
+// "logged" that names what is in the log, not a row this reply wrote: "from 5 logged items", "the
+// total is unknown until that's logged", "48.4 g is logged". "Lunch is logged." with nothing written
+// is the claim itself.
+constexpr const char* kLoggedThings[] = {"items", "item", "rows", "row", "meals", "meal", "foods", "food", "entries", "entry", "figures", "figure"};
+constexpr const char* kLoggedLater[] = {"until", "till", "once", "when", "after", "unless", "if", "before"};
+constexpr const char* kFigureUnits[] = {"g", "gm", "gram", "grams", "kcal", "kcals", "cal", "cals", "calories"};
+bool loggedReference(const Scan& sc, size_t i) {
+  const uint16_t sent = sc.toks[i].sent;
+  const bool opens = i == 0 || sc.toks[i - 1].sent != sent;
+  if (!opens && i + 1 < sc.toks.size() && sameClause(sc, i, i + 1) && tokIn(sc.s, sc.toks[i + 1], kLoggedThings) &&
+      !subjectOrAux(sc, sc.toks[i - 1]))
+    return true;
+  for (size_t d = 1; d <= 3 && d <= i && sameClause(sc, i - d, i); d++)
+    if (tokIn(sc.s, sc.toks[i - d], kLoggedLater)) return true;
+  return i >= 2 && sameClause(sc, i - 2, i) && tokIs(sc.s, sc.toks[i - 1], "is") && tokIn(sc.s, sc.toks[i - 2], kFigureUnits);
+}
+
 // A save cue in a reference: an acknowledgement that asks to be kept, a system log noun, a
-// standing total, a qualified participle, or earlier work named in the sentence.
+// standing total, a logged thing named, a qualified participle, or earlier work named in the
+// sentence.
 bool saveReference(const Scan& sc, size_t i, const Cue& cue) {
   if ((cue.flags & kAck) && bareAck(sc, i)) return true;
-  if ((cue.flags & kLogSense) && (logNounBefore(sc, i) || reportedTotal(sc, i))) return true;
+  if ((cue.flags & kLogSense) && (logNounBefore(sc, i) || reportedTotal(sc, i) || loggedReference(sc, i))) return true;
   if (participleLed(cue) && qualifiedParticiple(sc, i)) return true;
   return (cue.cls == C::Saved || cue.cls == C::Deliverable) && earlierInSentence(sc, i);
 }

@@ -197,7 +197,7 @@ static void test_stale_status_only_on_a_routine() {
   routine.setSources("", "", TurnSources{});
   routine.setRoutineDay("2026-11-01");
   TEST_ASSERT_TRUE(routine.finalCheck(turnJson(reply)).find("18 days old") != std::string::npos);
-  TEST_ASSERT_TRUE(routine.tailAfterApply(reply).find("(Note: that comes from a record 18 days old") != std::string::npos);
+  TEST_ASSERT_TRUE(routine.tailAfterApply(reply).find("(Note: that cites a date 18 days old.") != std::string::npos);
   TEST_ASSERT_EQUAL_STRING("", routine.finalCheck(turnJson("Did you do your lesson today?")).c_str());
 }
 

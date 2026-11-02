@@ -392,7 +392,9 @@ static void test_begin_wires_the_one_time_migration() {
   while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) src.append(buf, n);
   std::fclose(f);
   TEST_ASSERT_TRUE(contains(src, "migrateLegacyMealLog()"));
-  TEST_ASSERT_TRUE(contains(src, "planLedgerMigration"));
+  // The device goes through the gate that checks both files were read whole, never around it.
+  TEST_ASSERT_TRUE(contains(src, "planLedgerFold"));
+  TEST_ASSERT_FALSE(contains(src, "planLedgerMigration("));
   TEST_ASSERT_TRUE(contains(src, "kLedgerProject"));
   // A legacy file is folded once, into the ledger when one exists, and then removed.
   TEST_ASSERT_TRUE(contains(src, "g_store.find(nimbus::orch::kLedgerProject, "

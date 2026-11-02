@@ -72,6 +72,9 @@ LedgerMigration planLedgerMigration(const std::string& legacyText,
                                     const std::string& existingLedger = std::string());
 
 // The fold replaces the ledger and deletes the legacy file, so it runs only on text read whole.
+// The sizes are the files' on the card; a read that came back shorter, or a file over the read cap,
+// is ok=false with nothing to write, and both files stay as they are.
+inline constexpr size_t kLedgerFoldCap = 256 * 1024;
 LedgerMigration planLedgerFold(const std::string& legacyText, size_t legacyOnDisk, bool ledgerStored,
                                const std::string& ledgerText, size_t ledgerOnDisk);
 

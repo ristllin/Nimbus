@@ -1525,6 +1525,16 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
           return done(r);
         }
       }
+      // A daily target nothing this turn holds is never stored (food_figures.h).
+      {
+        std::string refusal = claims_.targetWriteRefusal(regName, call.argsJson);
+        if (!refusal.empty()) {
+          r.isError = true;
+          r.output = std::move(refusal);
+          hlog::logf("claims: refused a targets write (%s)", regName.c_str());
+          return done(r);
+        }
+      }
       JsonDocument rq;
       rq["jsonrpc"] = "2.0";
       rq["id"] = 1;

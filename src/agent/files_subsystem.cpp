@@ -717,6 +717,15 @@ static std::string csvHeader(File& f, const std::string& window, size_t start) {
 // final figures into it once at boot and removes the legacy file, so the
 // model stops appending to an unfixable orphan. Only the owner's file folds, and the
 // file goes only when all its figures reached the ledger. Caller holds the Lock (begin).
+// A file's size on the card, 0 when it cannot be opened.
+static size_t fileBytes(const char* project, const char* name) {
+  File f = memory::dataFs().open(pathOf(project, name).c_str(), FILE_READ);
+  if (!f) return 0;
+  const size_t n = f.size();
+  f.close();
+  return n;
+}
+
 void migrateLegacyMealLog() {
   constexpr const char* kLegacyProject = "nutrition";
   constexpr const char* kLegacyName = "meal_log.csv";
@@ -735,24 +744,28 @@ void migrateLegacyMealLog() {
   // read would silently take only its head, and under append order the tail
   // holds the owner's LATEST generations - exactly the final figures the fold
   // exists to keep - and the orphan would then be removed. Never fold what
-  // was not fully read.
-  constexpr size_t kFoldCap = 256 * 1024;
-  size_t legacyBytes = 0;
-  {   // the index names the file; the card may have lost it - nothing to fold
-    File f = memory::dataFs().open(pathOf(kLegacyProject, kLegacyName).c_str(), FILE_READ);
-    if (!f) return;
-    legacyBytes = f.size();
-    f.close();
-  }
+  // was not fully read. The ledger is held to the same rule: the fold replaces it
+  // and deletes the legacy file, so a short read of either (a badly seated card, a ledger
+  // past the cap) leaves both as they are (planLedgerFold).
+  constexpr size_t kFoldCap = nimbus::orch::kLedgerFoldCap;
+  const size_t legacyBytes = fileBytes(kLegacyProject, kLegacyName);
+  if (legacyBytes == 0) return;   // the index names the file; the card may have lost it - nothing to fold
   if (legacyBytes > kFoldCap) {
     alogf("files: legacy %s/%s is %u KB - too large to fold safely, left in place",
           kLegacyProject, kLegacyName, (unsigned)(legacyBytes / 1024));
     return;
   }
+  const size_t ledgerBytes = ledgerStored ? fileBytes(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName) : 0;
   const std::string legacy = readWhole(kLegacyProject, kLegacyName, kFoldCap);
-  const std::string stored =
-      ledgerStored ? readWhole(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, kFoldCap) : std::string();
-  const nimbus::orch::LedgerMigration m = nimbus::orch::planLedgerMigration(legacy, stored);
+  const std::string stored = ledgerStored && ledgerBytes <= kFoldCap
+                                 ? readWhole(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, kFoldCap)
+                                 : std::string();
+  const nimbus::orch::LedgerMigration m =
+      nimbus::orch::planLedgerFold(legacy, legacyBytes, ledgerStored, stored, ledgerBytes);
+  if (!m.err.empty()) {
+    alogf("files: legacy meal log not folded (%s), both files left in place", m.err.c_str());
+    return;
+  }
   // A fold that folded NOTHING also leaves the orphan alone: its rows were
   // unmappable, and removing the file would still lose the raw record.
   if (!m.ok || m.folded == 0) {

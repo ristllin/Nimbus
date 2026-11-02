@@ -413,8 +413,18 @@ bool legacyLogFoldable(const FileStore& store, const FileEntry& legacy) {
   return store.ownedBy(legacy, kOwnerNs, false);
 }
 
-LedgerMigration planLedgerFold(const std::string& legacyText, size_t, bool, const std::string& ledgerText, size_t) {
-  return planLedgerMigration(legacyText, ledgerText);
+LedgerMigration planLedgerFold(const std::string& legacyText, size_t legacyOnDisk, bool ledgerStored,
+                               const std::string& ledgerText, size_t ledgerOnDisk) {
+  LedgerMigration m;
+  if (legacyOnDisk > kLedgerFoldCap || (ledgerStored && ledgerOnDisk > kLedgerFoldCap)) {
+    m.err = "too large to fold safely";
+    return m;
+  }
+  if (legacyText.size() != legacyOnDisk || (ledgerStored && ledgerText.size() != ledgerOnDisk)) {
+    m.err = "a file could not be read whole";
+    return m;
+  }
+  return planLedgerMigration(legacyText, ledgerStored ? ledgerText : std::string());
 }
 
 }  // namespace nimbus::orch

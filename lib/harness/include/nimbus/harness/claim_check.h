@@ -191,7 +191,6 @@ class ClaimCheck {
   std::string ownerNums_;        // the numbers the owner's own message holds (CUM-824)
   std::string targetNums_;       // the numbers a daily target may come from (food_figures.h)
   bool targetsClipped_ = false;  // that list hit its cap: the target rule stands down
-  std::string wroteTargets_;     // the text of this turn's writes to the food targets file
   std::function<nimbus::orch::FoodFacts()> foodFacts_;
   std::string routineDay_;       // set on a scheduled turn: the stale-status rule applies
   uint32_t sourceNames_ = 0;     // SourceEvidence bits this turn names (CUM-824)

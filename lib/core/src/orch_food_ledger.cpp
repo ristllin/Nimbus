@@ -235,7 +235,7 @@ FoodTargets scanFoodTargets(const std::string& fileText) {
   FoodTargets t;
   TargetColumns columns;
   RowSplitter rows([&](const std::string& row, bool) {
-    if (row.find_first_not_of(" \t\r") == std::string::npos) return true;
+    if (row.find_first_not_of(" \t\r") == std::string::npos || row[0] == '#') return true;   // a set-aside row is never counted
     if (columns.header.empty()) columns = targetColumns(row);
     else readTargetRow(columns, row, t);
     return true;
@@ -261,12 +261,26 @@ bool holdsAny(const std::string& text, std::initializer_list<const char*> words)
   return false;
 }
 
-// Is this .csv a second food log by its name and place? A plan or a recipe list is not.
+// The name with its log words and separators out: nothing left means it is only "a log".
+bool onlyALog(std::string stem) {
+  for (const char* w : {"tracker", "tracking", "track", "ledger", "log", "diary", "journal", "intake", "daily", "my"}) {
+    size_t at;
+    while ((at = stem.find(w)) != std::string::npos) stem.erase(at, std::string(w).size());
+  }
+  return stem.find_first_not_of("-_ 0123456789") == std::string::npos;
+}
+
+// Is this .csv a second food log by its name and place? It has to say both food and log (or sit in a
+// food project and say nothing but log). A log of something else, a list or a reference is not one.
 bool namesAFoodLog(const std::string& n, const std::string& p) {
-  if (holdsAny(n, {"plan", "recipe", "shopping"})) return false;
-  const bool logWord = holdsAny(n, {"log", "diary", "journal", "track", "intake"});
-  if (holdsAny(n, {"meal", "calorie", "kcal"}) || (logWord && n.find("food") != std::string::npos)) return true;
-  return logWord && holdsAny(p, {"nutrition", "food", "meal"});
+  const std::string stem = n.substr(0, n.size() - 4);
+  if (holdsAny(stem, {"plan", "recipe", "shopping", "idea", "reference", "usual", "favorite", "favourite", "burn", "weight", "water", "step",
+                      "supplement", "exercise", "workout", "sleep"}))
+    return false;
+  if (stem == "meal" || stem == "meals" || stem == "kcal" || stem == "calories" || stem == "food") return true;
+  const bool logWord = holdsAny(stem, {"log", "diary", "journal", "track", "intake", "ledger"});
+  if (logWord && holdsAny(stem, {"food", "meal", "calorie", "kcal", "nutrition", "protein"})) return true;
+  return logWord && onlyALog(stem) && holdsAny(p, {"nutrition", "food", "meal"});
 }
 }  // namespace
 

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 
 #include "nimbus/harness/jobs.h"   // kLedgerRanLead: how a ledger line names what a sub ran
@@ -209,7 +210,6 @@ void ClaimCheck::beginTurn() {
   ownerNums_.clear();
   targetNums_.clear();
   targetsClipped_ = false;
-  wroteTargets_.clear();
   foodFacts_ = nullptr;
   routineDay_.clear();
   sourceNames_ = 0;
@@ -337,9 +337,6 @@ void ClaimCheck::noteToolArgs(const std::string& regName, const std::string& arg
   if (!text) text = d["replace"] | (const char*)nullptr;   // files.edit: what the span now says
   if (!text || !*text) return;
   pendingWrote_ = " " + orch::normalizedWords(text);
-  // A write to the food targets file states a target: it needs a source like a reply does.
-  if (regName == "files.append" && std::string(d["name"] | "").rfind("food-targets", 0) == 0)
-    wroteTargets_ += std::string(text) + "\n";
 }
 
 void ClaimCheck::noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
@@ -478,21 +475,9 @@ std::vector<orch::ClaimGap> ClaimCheck::gapsFor(const std::string& reply,
 // read only for a reply that speaks of them, after the turn's own writes.
 std::vector<orch::FoodGap> ClaimCheck::foodGaps(const std::string& reply, orch::FoodFacts& facts) const {
   std::vector<orch::FoodGap> gaps;
-  if (reply.find("kcal") != std::string::npos || reply.find("calorie") != std::string::npos ||
-      reply.find("protein") != std::string::npos) {
+  if (orch::speaksOfFood(reply)) {
     if (foodFacts_) facts = foodFacts_();
     gaps = orch::foodFigureGaps(reply, facts, targetNums_);
-  }
-  // The targets this turn stored: a target row is read for its figure.
-  if (!wroteTargets_.empty()) {
-    const orch::FoodTargets wrote = orch::scanFoodTargets(std::string(orch::kFoodTargetsHeader) + "\n" + wroteTargets_);
-    for (const auto& w : {std::make_pair(wrote.kcal, false), std::make_pair(wrote.protein, true)}) {
-      if (w.first <= 0) continue;
-      const std::string line = (w.second ? "Stored protein target " + std::to_string((long)w.first) + " g."
-                                         : "Stored daily target " + std::to_string((long)w.first) + " kcal.");
-      const std::vector<orch::FoodGap> more = orch::unsourcedFoodTargets(line, targetNums_);
-      gaps.insert(gaps.end(), more.begin(), more.end());
-    }
   }
   if (targetsClipped_)   // a tool result past the cap may hold the number
     gaps.erase(std::remove_if(gaps.begin(), gaps.end(),
@@ -515,7 +500,25 @@ bool ClaimCheck::unsourcedFoodTarget(const std::string& text, std::string* excer
   return true;
 }
 
-std::string ClaimCheck::targetWriteRefusal(const std::string&, const std::string&) const { return ""; }
+// A stored target is a source on every later turn, so a figure with nothing behind it never lands,
+// by any tool that can write the file. FAT opens "Food-Targets.csv" as the same file.
+std::string ClaimCheck::targetWriteRefusal(const std::string& regName, const std::string& argsJson) const {
+  if ((regName != "files.append" && regName != "files.edit" && regName != "artifact.save") || targetsClipped_) return std::string();
+  JsonDocument d;
+  if (deserializeJson(d, argsJson) != DeserializationError::Ok) return std::string();
+  std::string name = d["name"] | "";
+  for (char& c : name) c = (char)std::tolower((unsigned char)c);
+  if (name.rfind("food-targets", 0) != 0) return std::string();
+  const char* text = d["text"] | (const char*)nullptr;
+  if (!text) text = d["content"] | (const char*)nullptr;
+  if (!text) text = d["replace"] | (const char*)nullptr;
+  double figure = 0;
+  if (!text || !orch::unsourcedTargetWrite(text, targetNums_, &figure)) return std::string();
+  char shown[32];
+  std::snprintf(shown, sizeof shown, "%.10g", figure);
+  return "a daily target of " + std::string(shown) + " in " + name + " needs a source and nothing this turn holds it - nothing was written. "
+         "Read it from the owner's plan with files.read or memory search, or ask them, then store it with where it came from.";
+}
 
 std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSpawned) {
   orch::Turn t;
@@ -564,7 +567,7 @@ std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawne
   std::string tail = (gaps.empty() ? std::string() : orch::claimTail(gaps)) + orch::foodGapTail(food, facts);
   int staleAge = 0;
   if (!routineDay_.empty() && !orch::staleStatusIn(reply, routineDay_, orch::kStaleStatusDays, &staleAge).empty())
-    tail += "\n\n(Note: that comes from a record " + std::to_string(staleAge) + " days old; the device has nothing newer.)";
+    tail += orch::staleStatusNote(staleAge);
   if (tail.empty()) return tail;
   g_tailed++;
   for (const orch::ClaimGap& g : gaps) hlog::logf("claims: tail %s", orch::claimClassSlug(g.cls));

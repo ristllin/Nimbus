@@ -24,6 +24,9 @@ static void runSum(JsonObjectConst in, JsonObject out) {
   out["protein"] = l.protein;
   out["rows"] = l.kcalRows;
   out["unread"] = l.kcalUnread;
+#ifdef HAS_FOOD_FIGURES
+  out["protein_unknown"] = l.proteinUnknown;
+#endif
   const std::string block = renderLedgerBlock(l, true);
   out["block"] = block;
   double total = 0;
@@ -69,13 +72,13 @@ static void runReply(JsonObjectConst in, JsonObject out) {
     facts.protein = f["protein"] | 0.0;
     facts.rows = f["rows"] | 1;
     facts.proteinUnknown = f["protein_unknown"] | 0;
+    facts.kcalKnown = f["kcal_known"] | true;
   }
   const std::string sources = figureNumbers(std::string(in["sources"] | "") + " " + ownerStatementsOf(owner), 4096);
   tail += foodGapTail(foodFigureGaps(reply, facts, sources), facts);
   const std::string routine = in["routine_day"] | "";
   int age = 0;
-  if (!routine.empty() && !staleStatusIn(reply, routine, kStaleStatusDays, &age).empty())
-    tail += "\n\n(Note: that comes from a record " + std::to_string(age) + " days old; the device has nothing newer.)";
+  if (!routine.empty() && !staleStatusIn(reply, routine, kStaleStatusDays, &age).empty()) tail += staleStatusNote(age);
 #endif
   out["tail"] = tail;
 }

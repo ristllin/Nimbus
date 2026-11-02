@@ -38,7 +38,6 @@ static void test_the_31_oct_250_g_target() {
   const std::string rules = figureNumbers("Standing rule: 2,400 kcal a day.");
   for (const char* reply : {
            "You have 38.3 g protein left from your **250 g daily protein target**.",
-           "Remaining for 2,400 kcal target: 364 kcal, 38.3 g protein left.",
            "Your protein goal is 250 g.",
            "Protein target: 250 g.",
        }) {
@@ -48,6 +47,11 @@ static void test_the_31_oct_250_g_target() {
     TEST_ASSERT_TRUE_MESSAGE(tail.find("(Correction: the device has no source for a daily target of 250 g protein.") !=
                                  std::string::npos, tail.c_str());
   }
+  // With no target named, the line names what the reply did say; the correction round names the sum.
+  const auto implied = foodFigureGaps("Remaining for 2,400 kcal target: 364 kcal, 38.3 g protein left.", f, rules);
+  TEST_ASSERT_TRUE(hasKind(implied, FoodGapKind::UnsourcedTarget));
+  TEST_ASSERT_TRUE(foodGapTail(implied, f).find("daily target behind that 38.3 g protein left") != std::string::npos);
+  TEST_ASSERT_TRUE(foodGapCorrection(implied, f).find("250 g protein") != std::string::npos);
   // The same words, the plan read: nothing to correct.
   const std::string read = figureNumbers(kPlan);
   TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("Your protein goal is 150 g.", f, read).size());
@@ -101,11 +105,14 @@ static void test_a_question_about_a_figure_is_no_source() {
 // Precision: what these replies must never be corrected for.
 static void test_not_claims() {
   const FoodFacts f = ledger(2036, 211.7);
+  // The 250 g is taken back. The 150-160 it stands against is a stated goal and needs its source.
+  const char* flag = "One flag: the plan's protein goal is 150-160 g/day, not the 250 g mentioned earlier.";
+  TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps(flag, f, figureNumbers(kPlan)).size());
+  TEST_ASSERT_EQUAL_FLOAT(150, (float)foodFigureGaps(flag, f, "")[0].stated);
   for (const char* reply : {
            "What is your daily protein target?",
            "If your daily target is 2,500 kcal, the drafted total leaves 721 kcal remaining.",
            "The 250 g figure was my error; it is not in the plan.",
-           "One flag: the plan's protein goal is 150-160 g/day, not the 250 g mentioned earlier.",
            "You're right, there is no 250 g target, and I'm sorry.",
            "A draft model identical to the target does not give an infinite speedup.",
            "Goal weight is 93.6 kg.",
@@ -314,7 +321,7 @@ static void test_comparisons_and_advice_are_not_a_left_figure() {
                              "A scoop of whey adds 25 g more protein."}) {
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, gapsOf(advice, blank, src), advice);
   }
-  TEST_ASSERT_TRUE(hasKind(foodFigureGaps("You need about 102 g more, no problem.", blank, src), FoodGapKind::ProteinLeftUnknown));
+  TEST_ASSERT_TRUE(hasKind(foodFigureGaps("You need about 102 g more protein, no problem.", blank, src), FoodGapKind::ProteinLeftUnknown));
   // The firm need is still read: the sum against a target nothing holds.
   TEST_ASSERT_TRUE(hasKind(foodFigureGaps("You still need 38.3 g protein.", ledger(211.7, 211.7), "150 2400"), FoodGapKind::UnsourcedTarget));
   TEST_ASSERT_TRUE(hasKind(foodFigureGaps("Protein stands at 90 g, 38 g under your target.", f, ""), FoodGapKind::UnsourcedTarget));

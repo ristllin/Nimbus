@@ -21,7 +21,10 @@
 // One correction round with the model, then one calm owner line per kind (claim_check.cpp).
 //
 // The same scanner rules as claims.h: deterministic, one pass, precision first. A question, a
-// hypothetical, a future, a negated or retracted figure and another day's total are not claims.
+// hypothetical, a future, a negated or retracted figure and another day's total are not claims. A
+// negation counts only where it binds to its figure. Neither is a figure for one meal, a comparison,
+// or what is left after a meal the reply proposes: a false correction is the same complaint as a
+// wrong figure. The owner's line never holds a number the reply did not say.
 // English only (the caller's scan decides). Portable, host-tested (test_food_figures).
 namespace nimbus::orch {
 
@@ -41,6 +44,7 @@ struct FoodGap {
   FoodGapKind kind = FoodGapKind::UnsourcedTarget;
   std::string excerpt;   // the sentence, at most ~100 bytes
   double stated = 0;     // the figure the reply states (or, for a "left" figure, the target it implies)
+  double left = 0;       // UnsourcedTarget, implied: the "left" figure the reply states
   double truth = 0;      // WrongDayTotal: the ledger's figure
   bool protein = false;  // the figure is grams of protein, not kcal
   bool implied = false;  // UnsourcedTarget: a "left" figure implied it
@@ -54,8 +58,10 @@ std::vector<FoodGap> unsourcedFoodTargets(const std::string& text, const std::st
 
 // A routine citing old data as if it were the state of things (1 Nov, a daily check-in: "7
 // consecutive days as of 2026-10-14", 18 days stale). A sentence with a status word and a date older
-// than `maxAgeDays` before `today` (YYYY-MM-DD). Checked on scheduled turns only: an owner who asks
-// about the past may be told about it. Returns the first such sentence, its age through `ageDays`.
+// than `maxAgeDays` before `today` (YYYY-MM-DD). An upcoming date is not old, and a date that starts
+// or ends a span ("since", "until") is not the age of the data. Checked on scheduled turns only: an
+// owner who asks about the past may be told about it. Returns the first such sentence, its age through
+// `ageDays`.
 inline constexpr int kStaleStatusDays = 7;
 std::string staleStatusIn(const std::string& reply, const std::string& today, int maxAgeDays, int* ageDays);
 
