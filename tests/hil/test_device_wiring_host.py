@@ -202,8 +202,12 @@ PROVIDER_BUILDERS = (
     "lib/harness/src/vision_caption.cpp",
     "lib/harness/src/websearch.cpp",
 )
-# A bare serialize that does not build a request, by file: an upstream's error kept for the log.
-NOT_A_REQUEST = {"src/agent/adapters/url_fetch.cpp": {"serializeJson(resp, said)"}}
+# A bare serialize that does not build a request, by file: an upstream's answer, kept for the
+# log or read back as text (the router's clamp on a photo, capCaptionRequest).
+NOT_A_REQUEST = {
+    "src/agent/adapters/url_fetch.cpp": {"serializeJson(resp, said)"},
+    "lib/harness/src/vision_caption.cpp": {"serializeJson(doc, said)"},
+}
 
 
 def bare_serializes(source: str) -> set:
@@ -236,6 +240,23 @@ def test_every_provider_builder_writes_strict_json():
 )
 def test_the_device_adapters_are_in_the_class(adapter):
     assert (ROOT / "src/agent/adapters" / adapter).is_file()
+
+
+def test_reading_the_routers_answer_is_exempt_and_building_a_caption_body_is_not(tmp_path):
+    # The exemption names the one read, so the caption request itself stays in the class.
+    for p in PROVIDER_BUILDERS:
+        (tmp_path / p).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / p).write_text("nimbus::serializeStrictJson(d, out);\n")
+    (tmp_path / "src/agent/adapters").mkdir(parents=True)
+    caption = "lib/harness/src/vision_caption.cpp"
+    (tmp_path / caption).write_text("std::string said;\nserializeJson(doc, said);\n")
+    assert raw_builders(tmp_path) == {}
+    (tmp_path / caption).write_text("serializeJson(doc, said);\nserializeJson(d, body);\n")
+    assert raw_builders(tmp_path) == {caption: {"serializeJson(d, body)"}}
+    # And the read it names is what the source holds: an answer, inside the clamp.
+    source = read(caption)
+    clamp = source[source.index("bool capCaptionRequest(") :]
+    assert "serializeJson(doc, said);\n  const orch::RouterAnswer a = orch::readRouterAnswer(said);" in clamp
 
 
 def test_the_strict_writer_is_used_where_it_is_claimed():
