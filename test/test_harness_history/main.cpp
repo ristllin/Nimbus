@@ -483,8 +483,8 @@ static void test_album_from_the_batcher_is_captured_once_with_its_refs() {
   }
   const nimbus::orch::PsString routed = b.render(0);
   const std::string text(routed.c_str(), routed.size());
-  const agent::history::Inbound in = agent::history::inboundForBucket(b, 0, stored);
-  TEST_ASSERT_EQUAL_STRING("tg:703x4", in.src.c_str());
+  const agent::history::Inbound in = agent::history::inboundForBucket(b, 0, stored, 42);
+  TEST_ASSERT_EQUAL_STRING("tg:42:703x4", in.src.c_str());
   TEST_ASSERT_EQUAL(2, (int)in.refs.size());
   TEST_ASSERT_TRUE(in.said.find("a red bicycle") == std::string::npos);
   TEST_ASSERT_TRUE(in.said.find("[image 1/3 ref=00000000abc00011]") != std::string::npos);
@@ -498,12 +498,12 @@ static void test_album_from_the_batcher_is_captured_once_with_its_refs() {
     if (m.role == "user" && m.kind == MsgKind::Message) {
       owner++;
       TEST_ASSERT_EQUAL_STRING("00000000abc00011.00000000abc00012", agent::tagValue(m.tags, agent::kAttTag).c_str());
-      TEST_ASSERT_EQUAL_STRING("tg:703x4", agent::tagValue(m.tags, agent::kSrcTag).c_str());
+      TEST_ASSERT_EQUAL_STRING("tg:42:703x4", agent::tagValue(m.tags, agent::kSrcTag).c_str());
       TEST_ASSERT_TRUE(m.text.find("a bowl of ramen") == std::string::npos);   // stored once
     }
   TEST_ASSERT_EQUAL(1, owner);
   // The page served again (the same bucket after a restart): dropped, no paid call.
-  agent::history::noteInbound(agent::history::inboundForBucket(b, 0, stored), text);
+  agent::history::noteInbound(agent::history::inboundForBucket(b, 0, stored, 42), text);
   r.eng->handleMessage(text, "Roy", "123");
   TEST_ASSERT_EQUAL(1, (int)r.instructions.size());
   // The next turn's history: every description once, in place.
@@ -519,13 +519,50 @@ static void test_album_from_the_batcher_is_captured_once_with_its_refs() {
 static void test_text_bucket_source_and_inject_without_ids() {
   nimbus::orch::MessageBatcher b;
   b.add("555", "Roy", "hello", 9001);
-  agent::history::Inbound in = agent::history::inboundForBucket(b, 0, {});
-  TEST_ASSERT_EQUAL_STRING("tg:9001x1", in.src.c_str());
+  agent::history::Inbound in = agent::history::inboundForBucket(b, 0, {}, 42);
+  TEST_ASSERT_EQUAL_STRING("tg:42:9001x1", in.src.c_str());
   TEST_ASSERT_TRUE(in.said.empty());   // nothing stored: the routed text is what was sent
   TEST_ASSERT_TRUE(in.refs.empty());
   nimbus::orch::MessageBatcher web;
   web.add("web", "web", "from the web chat");
-  TEST_ASSERT_TRUE(agent::history::inboundForBucket(web, 0, {}).src.empty());
+  TEST_ASSERT_TRUE(agent::history::inboundForBucket(web, 0, {}, 42).src.empty());
+}
+
+// The source tag is namespaced by bot: update ids are per-bot, so after a token
+// rotation the new bot's ids restart low and collide with the old bot's stored
+// rows. The class rule: a tag from one bot never matches a row from another,
+// and the dedup drop (H7) never eats the new bot's first messages; the SAME
+// bot's replay is still dropped exactly once.
+static void test_source_tag_is_namespaced_by_bot() {
+  // The property, over every pairing: different bots, same (id, count) - the
+  // tags differ. Same bot - stable across calls (a restart re-derives it).
+  for (int64_t a : {0LL, 1LL, 42LL, 7000000001LL}) {
+    for (int64_t b : {0LL, 1LL, 42LL, 7000000001LL}) {
+      nimbus::orch::MessageBatcher x, y;
+      x.add("555", "Roy", "hi", 7);
+      y.add("555", "Roy", "hi", 7);
+      const std::string ta = agent::history::inboundForBucket(x, 0, {}, a).src;
+      const std::string tb = agent::history::inboundForBucket(y, 0, {}, b).src;
+      if (a == b) TEST_ASSERT_EQUAL_STRING(ta.c_str(), tb.c_str());
+      else TEST_ASSERT_TRUE(ta != tb);
+    }
+  }
+  // The consequence the rule exists for: the old bot's row is in the chat's
+  // history, and the new bot serves the same update id. Not a duplicate: the
+  // turn runs. The new bot's own replay still drops.
+  Rig r;
+  auto deliver = [&](int64_t bot, const char* text) {
+    nimbus::orch::MessageBatcher b;
+    b.add("555", "Roy", text, 1);
+    agent::history::noteInbound(agent::history::inboundForBucket(b, 0, {}, bot), text);
+    r.eng->handleMessage(text, "Roy", "555");
+  };
+  deliver(111, "message from the old bot");
+  TEST_ASSERT_EQUAL(1, (int)r.instructions.size());
+  deliver(222, "message from the new bot");   // same update id 1, different bot
+  TEST_ASSERT_EQUAL(2, (int)r.instructions.size());
+  deliver(222, "message from the new bot");   // the new bot's own replay
+  TEST_ASSERT_EQUAL(2, (int)r.instructions.size());
 }
 
 namespace {
@@ -845,6 +882,7 @@ int main(int, char**) {
   RUN_TEST(test_stale_note_never_applies_to_another_turn);
   RUN_TEST(test_album_from_the_batcher_is_captured_once_with_its_refs);
   RUN_TEST(test_text_bucket_source_and_inject_without_ids);
+  RUN_TEST(test_source_tag_is_namespaced_by_bot);
   RUN_TEST(test_seedless_turn_trigger_row);
   RUN_TEST(test_assistant_rows_carry_out_kinds);
   RUN_TEST(test_an_unspoken_tts_leaves_no_spoken_row);

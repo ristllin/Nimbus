@@ -118,7 +118,9 @@ class HostedPhotos {
       refs.push_back(ref);
     }
     const std::string routed(b.render(0).c_str());
-    agent::history::Inbound note = agent::history::inboundForBucket(b, 0, refs);
+    // No channel update id behind a hosted upload (the note's src is cleared
+    // below), so the bot namespace is a placeholder.
+    agent::history::Inbound note = agent::history::inboundForBucket(b, 0, refs, 0);
     note.src.clear();   // no channel update behind it: two equal uploads are two messages
     agent::history::noteInbound(note, routed);
     nimbus::orch::offerTurnImages(chat, routed, std::move(set));

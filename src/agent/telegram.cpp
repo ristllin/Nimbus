@@ -2120,7 +2120,8 @@ static void noteHistory(const nimbus::orch::PsString& text) {
     const TurnMedia& t = g_slots[s_turnSlots[j]].media;
     if (t.kept && t.k >= 1 && (size_t)t.k <= refs.size()) refs[(size_t)t.k - 1] = t.ref;
   }
-  agent::history::Inbound in = agent::history::inboundForBucket(g_batch, i, refs);
+  agent::history::Inbound in = agent::history::inboundForBucket(
+      g_batch, i, refs, nimbus::core::tgBotIdOf(g_token.c_str()));
   if (g_batch.voiceAt(i) && !voiceRef.empty()) in.refs.push_back(voiceRef);
   const std::string routed(text.c_str(), text.size());
   // A crossed turn's note is for the model, not the record: the row keeps what was sent.
