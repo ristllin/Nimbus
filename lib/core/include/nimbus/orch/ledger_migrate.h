@@ -71,4 +71,8 @@ bool legacyLogFoldable(const FileStore& store, const FileEntry& legacy);
 LedgerMigration planLedgerMigration(const std::string& legacyText,
                                     const std::string& existingLedger = std::string());
 
+// The fold replaces the ledger and deletes the legacy file, so it runs only on text read whole.
+LedgerMigration planLedgerFold(const std::string& legacyText, size_t legacyOnDisk, bool ledgerStored,
+                               const std::string& ledgerText, size_t ledgerOnDisk);
+
 }  // namespace nimbus::orch

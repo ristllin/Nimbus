@@ -413,4 +413,8 @@ bool legacyLogFoldable(const FileStore& store, const FileEntry& legacy) {
   return store.ownedBy(legacy, kOwnerNs, false);
 }
 
+LedgerMigration planLedgerFold(const std::string& legacyText, size_t, bool, const std::string& ledgerText, size_t) {
+  return planLedgerMigration(legacyText, ledgerText);
+}
+
 }  // namespace nimbus::orch

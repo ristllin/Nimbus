@@ -111,6 +111,8 @@ class ClaimCheck {
   // A memory about to be stored states a daily target nothing this turn holds: true, with the
   // sentence. Apply refuses it: a made-up figure must not become its own source.
   bool unsourcedFoodTarget(const std::string& text, std::string* excerpt) const;
+  // A write to the food targets file with a figure nothing this turn holds: the refusal, or "".
+  std::string targetWriteRefusal(const std::string& regName, const std::string& argsJson) const;
   // A head tool ran: its effect class (the shared tool table) and its result.
   // The result text joins the figure sources (bounded).
   void noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,

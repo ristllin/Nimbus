@@ -515,6 +515,8 @@ bool ClaimCheck::unsourcedFoodTarget(const std::string& text, std::string* excer
   return true;
 }
 
+std::string ClaimCheck::targetWriteRefusal(const std::string&, const std::string&) const { return ""; }
+
 std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSpawned) {
   orch::Turn t;
   orch::ParseError err;

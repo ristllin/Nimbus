@@ -135,18 +135,55 @@ static void test_a_made_up_target_cannot_become_its_own_source() {
   TEST_ASSERT_TRUE(cc.unsourcedFoodTarget("Your 250 g daily protein target (stable preference)", &why));
   TEST_ASSERT_TRUE(why.find("250 g") != std::string::npos);
   TEST_ASSERT_FALSE(cc.unsourcedFoodTarget("Boba tea is 225 kcal per cup.", nullptr));
-  // A row written to the targets file is held to it too.
-  cc.noteToolArgs("files.append", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":\"2026-11-01,protein_g,250,the plan\"}");
-  cc.noteTool(FxKind::FileWrite, false, "replaced 0 rows, added 1 row in food/food-targets.csv");
-  TEST_ASSERT_TRUE(cc.tailAfterApply("Stored it.").find("no source for a daily target of 250 g protein") != std::string::npos);
-  // Read first, stored second: clean.
+  // A row for the targets file is refused before it lands, by every tool that can write it.
+  for (const auto& call : {std::make_pair("files.append", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":\"2026-11-01,protein_g,250,the plan\"}"),
+                           std::make_pair("files.append", "{\"project\":\"food\",\"name\":\"Food-Targets.csv\",\"text\":\"2026-11-01,protein_g,250,the plan\"}"),
+                           std::make_pair("files.edit", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"find\":\"2200\",\"replace\":\"250\"}"),
+                           std::make_pair("files.edit", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"find\":\"x\",\"replace\":\"2026-11-01,protein_g,250,made up\"}"),
+                           std::make_pair("artifact.save", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"content\":\"date,metric,target,source\\n2026-11-01,protein_g,250,the plan\\n\"}")}) {
+    const std::string refused = cc.targetWriteRefusal(call.first, call.second);
+    TEST_ASSERT_TRUE_MESSAGE(refused.find("nothing was written") != std::string::npos, call.second);
+    TEST_ASSERT_TRUE_MESSAGE(refused.find("250") != std::string::npos, call.second);
+  }
+  // Other files and other tools are none of its business.
+  TEST_ASSERT_EQUAL_STRING("", cc.targetWriteRefusal("files.append", "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"2026-11-01,lunch,soup,250,20\"}").c_str());
+  TEST_ASSERT_EQUAL_STRING("", cc.targetWriteRefusal("memory.write", "{\"text\":\"250\"}").c_str());
+  // Read first, stored second: clean, by any of them.
   ClaimCheck ok;
   ok.beginTurn();
   ok.setSources("", "", parts);
   ok.noteTool(FxKind::Read, false, "Protein: 150 g a day.");
+  TEST_ASSERT_EQUAL_STRING("", ok.targetWriteRefusal("files.append", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":\"2026-11-01,protein_g,150,the plan\"}").c_str());
+  TEST_ASSERT_EQUAL_STRING("", ok.targetWriteRefusal("files.edit", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"find\":\"250\",\"replace\":\"150\"}").c_str());
   ok.noteToolArgs("files.append", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":\"2026-11-01,protein_g,150,the plan\"}");
   ok.noteTool(FxKind::FileWrite, false, "replaced 0 rows, added 1 row in food/food-targets.csv");
   TEST_ASSERT_EQUAL_STRING("", ok.tailAfterApply("Stored it.").c_str());
+  // The owner's own figure: said with a no in front of it, it is theirs to store.
+  ClaimCheck owner;
+  owner.beginTurn();
+  TurnSources said;
+  said.owner = "No, my target is 2,200 kcal a day.";
+  owner.setSources("", "", said);
+  TEST_ASSERT_EQUAL_STRING("", owner.targetWriteRefusal("files.append", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":\"2026-11-01,kcal,2200,the owner\"}").c_str());
+  TEST_ASSERT_FALSE(owner.unsourcedFoodTarget("Roy's daily target is 2,200 kcal.", nullptr));
+  TEST_ASSERT_EQUAL_STRING("", owner.tailAfterApply("Got it, your daily target is 2,200 kcal.").c_str());
+}
+
+// A reply whose food words are capitalized is read like any other.
+static void test_capitalized_food_words_reach_the_check() {
+  FoodFacts facts;
+  facts.have = true;
+  facts.kcal = 1000;
+  facts.rows = 2;
+  facts.protein = 90;
+  for (const char* reply : {"Protein left: 38.3 g (target 250 g)", "**Protein:** 90 g so far, 38 g left of your 128 g target",
+                            "Calories: 1,000 so far, target 2,500 kcal"}) {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources("", "", TurnSources{});
+    cc.setFoodFacts([facts]() { return facts; });
+    TEST_ASSERT_TRUE_MESSAGE(cc.tailAfterApply(reply).find("no source") != std::string::npos, reply);
+  }
 }
 
 static void test_stale_status_only_on_a_routine() {
@@ -1407,6 +1444,7 @@ int main(int, char**) {
   RUN_TEST(test_food_target_has_a_source_or_a_correction);
   RUN_TEST(test_food_day_total_is_read_after_the_turns_writes);
   RUN_TEST(test_a_made_up_target_cannot_become_its_own_source);
+  RUN_TEST(test_capitalized_food_words_reach_the_check);
   RUN_TEST(test_stale_status_only_on_a_routine);
   RUN_TEST(test_tail_after_apply_uses_the_real_outcomes);
   RUN_TEST(test_scratchpad_durability_fresh_device_and_full_nvs);

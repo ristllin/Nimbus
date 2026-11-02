@@ -222,6 +222,30 @@ void test_one_food_log() {
   TEST_ASSERT_TRUE(secondFoodLogRefusal("charity", "foodbank-donors.csv", true, "").empty());
 }
 
+// A log of something else is not a second food log, wherever it sits.
+void test_a_log_of_something_else_is_not_a_second_food_log() {
+  for (const char* other : {"weight-log.csv", "water-intake.csv", "steps-tracker.csv", "supplements-log.csv", "sleep-diary.csv",
+                            "usual-meals.csv", "calorie-reference.csv", "meal-ideas.csv", "calorie-burn.csv", "workout-log.csv"}) {
+    TEST_ASSERT_TRUE_MESSAGE(secondFoodLogRefusal("nutrition", other, true, "").empty(), other);
+    TEST_ASSERT_TRUE_MESSAGE(secondFoodLogRefusal("home", other, true, "").empty(), other);
+  }
+  for (const char* log : {"food-log-2.csv", "food-diary.csv", "meal-tracker.csv", "calorie-intake.csv", "food-ledger.csv", "meals.csv", "protein-log.csv"}) {
+    TEST_ASSERT_FALSE_MESSAGE(secondFoodLogRefusal("home", log, true, "").empty(), log);
+  }
+  for (const char* bare : {"log.csv", "diary.csv", "daily-log.csv", "intake.csv", "my_log.csv", "tracker.csv"}) {
+    TEST_ASSERT_FALSE_MESSAGE(secondFoodLogRefusal("nutrition", bare, true, "").empty(), bare);
+    TEST_ASSERT_TRUE_MESSAGE(secondFoodLogRefusal("runs", bare, true, "").empty(), bare);
+  }
+}
+
+// A row the device set aside is kept and never counted, in the targets file too.
+void test_a_set_aside_target_row_is_not_a_target() {
+  const FoodTargets t = scanFoodTargets("date,metric,target,source\n2026-11-01,kcal,2200,owner\n#superseded: 2026-11-01,kcal,2400,plan\n#cut: 2026-11-01,protein_g,250,plan\n");
+  EQ_NUM(2200, t.kcal);
+  TEST_ASSERT_EQUAL_STRING("owner", t.kcalSource.c_str());
+  EQ_NUM(0, t.protein);
+}
+
 void test_the_same_food_on_earlier_days_rides_the_turn() {
   const std::string file =
       "date,meal,items,kcal,protein_g\n"
@@ -424,6 +448,8 @@ int main(int, char**) {
   RUN_TEST(test_plan_files_are_about_food_or_weight);
   RUN_TEST(test_one_food_log);
   RUN_TEST(test_figures_that_correct_a_meal_are_not_a_plain_request);
+  RUN_TEST(test_a_log_of_something_else_is_not_a_second_food_log);
+  RUN_TEST(test_a_set_aside_target_row_is_not_a_target);
   RUN_TEST(test_the_same_food_on_earlier_days_rides_the_turn);
   RUN_TEST(test_the_block_is_bounded_and_keeps_the_newest);
   RUN_TEST(test_rows_are_cleaned_and_cut_on_a_boundary);

@@ -63,6 +63,14 @@ std::string staleStatusIn(const std::string& reply, const std::string& today, in
 // figure ("Why 2500?", "You hallucinate the 250g"), which must not source the figure it disputes.
 std::string ownerStatementsOf(const std::string& text);
 
+// The owner's line on a stale status: what the device can say about it.
+std::string staleStatusNote(int ageDays);
+// Does this text speak of food figures at all? Any case: "Protein:", "Calories".
+bool speaksOfFood(const std::string& text);
+// The first target figure in a write to the food targets file that nothing this turn holds: a whole
+// row, part of one (files.edit) or a bare figure. A date or a source's words are no target figure.
+bool unsourcedTargetWrite(const std::string& text, const std::string& sourceNumbers, double* figure);
+
 // The text of the one correction round.
 std::string foodGapCorrection(const std::vector<FoodGap>& gaps, const FoodFacts& facts);
 // The owner's lines, one per kind, each on its own paragraph ("" when no gaps).

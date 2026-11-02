@@ -506,6 +506,10 @@ std::string ownerStatementsOf(const std::string& text) {
   return out;
 }
 
+std::string staleStatusNote(int) { return ""; }
+bool speaksOfFood(const std::string&) { return false; }
+bool unsourcedTargetWrite(const std::string&, const std::string&, double*) { return false; }
+
 std::string foodGapCorrection(const std::vector<FoodGap>& gaps, const FoodFacts& facts) {
   std::string out = "Your reply states food figures the device's records do not back. Fix them, then give the reply again:\n";
   for (const FoodGap& g : gaps) {

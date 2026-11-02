@@ -63,6 +63,32 @@ bool contains(const std::string& h, const char* needle) {
 
 }  // namespace
 
+// The fold replaces the ledger and deletes the legacy file, so it runs only on text read whole.
+static void test_the_fold_stands_down_on_anything_not_read_whole() {
+  const std::string legacy =
+      "date,meal,items,kcal,protein_g\n2026-10-31,lunch,soup,300,20\n";
+  const std::string ledger = "date,meal,items,kcal,protein_g\n2026-11-01,breakfast,eggs,200,12\n2026-11-01,lunch,rice,500,9\n";
+  // Whole on both sides: it folds and the ledger stays byte for byte.
+  LedgerMigration whole = planLedgerFold(legacy, legacy.size(), true, ledger, ledger.size());
+  TEST_ASSERT_TRUE(whole.ok);
+  TEST_ASSERT_EQUAL_INT(1, whole.folded);
+  TEST_ASSERT_EQUAL_INT(0, whole.out.rfind(ledger, 0));
+  // No ledger yet: nothing to lose.
+  TEST_ASSERT_TRUE(planLedgerFold(legacy, legacy.size(), false, "", 0).ok);
+  // A short read of the ledger, an empty read of a ledger that has bytes, a ledger over the
+  // read cap, a short read of the legacy file: nothing is written and nothing is deleted.
+  const std::string prefix = ledger.substr(0, ledger.size() - 12);
+  for (const LedgerMigration& m : {planLedgerFold(legacy, legacy.size(), true, prefix, ledger.size()),
+                                   planLedgerFold(legacy, legacy.size(), true, "", ledger.size()),
+                                   planLedgerFold(legacy, legacy.size(), true, ledger, ledger.size() + 300000),
+                                   planLedgerFold(legacy.substr(0, 20), legacy.size(), true, ledger, ledger.size())}) {
+    TEST_ASSERT_FALSE(m.ok);
+    TEST_ASSERT_EQUAL_INT(0, m.folded);
+    TEST_ASSERT_TRUE(m.out.empty());
+    TEST_ASSERT_FALSE(m.err.empty());
+  }
+}
+
 // The whole fixture folds to the owner's final figures: every (day, meal)
 // keeps ONLY its last generation, the same item inside a generation keeps
 // only its last row, and the phantom/duplicate/garbage generations drop.
@@ -429,6 +455,7 @@ static void test_a_migrated_ledger_is_read_by_the_ledger_readers() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_the_fixture_folds_to_the_final_figures);
+  RUN_TEST(test_the_fold_stands_down_on_anything_not_read_whole);
   RUN_TEST(test_same_item_rows_collapse_to_the_last);
   RUN_TEST(test_the_last_generation_wins);
   RUN_TEST(test_distinct_items_of_one_meal_coexist);

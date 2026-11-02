@@ -234,6 +234,283 @@ static void test_a_stale_status_in_a_routine() {
   TEST_ASSERT_TRUE(staleStatusIn("Your streak was 7 days on 1 Dec.", "", kStaleStatusDays, &age).empty());
 }
 
+// ---- review fix pass: what the scanner must not read, and what it must --------------------
+
+static int gapsOf(const char* reply, const FoodFacts& f, const std::string& src) {
+  return (int)foodFigureGaps(reply, f, src).size();
+}
+
+// The figure a day-total sentence is about is the one its cue binds to, never just the first one.
+static void test_a_right_day_total_after_a_meal_figure_is_right() {
+  FoodFacts f = ledger(1482, 90);
+  f.rows = 3;
+  for (const char* right : {
+           "Logged lunch at 650 kcal, which puts today's total at 1,482 kcal.",
+           "Lunch is 650 kcal, so today is now at 1,482 kcal.",
+           "Added the 650 kcal lunch; day total 1,482 kcal.",
+           "Lunch 650 kcal, so far today 1,482 kcal and 90 g protein.",
+       }) {
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, gapsOf(right, f, "2400 150"), right);
+  }
+  // The same sentence with the wrong total still draws the correction, against the bound figure.
+  const auto wrong = foodFigureGaps("Logged lunch at 650 kcal, which puts today's total at 1,382 kcal.", f, "");
+  TEST_ASSERT_TRUE(hasKind(wrong, FoodGapKind::WrongDayTotal));
+  TEST_ASSERT_EQUAL_FLOAT(1382, (float)wrong[0].stated);
+  TEST_ASSERT_TRUE(hasKind(foodFigureGaps("Lunch is 650 kcal, so today is now at 3,989 kcal.", f, ""), FoodGapKind::WrongDayTotal));
+}
+
+// A loose cue with a plan or advice after it holds no day total.
+static void test_a_plan_or_advice_sentence_about_today_is_no_day_total() {
+  const FoodFacts f = ledger(1482, 90);
+  FoodFacts empty;
+  empty.have = true;
+  for (const char* plan : {"Today is a rest day, so your plan says 2,100 kcal.", "For today: dinner of 500 kcal fits.",
+                           "Today: your plan gives you 2,100 kcal, you're at 1482.", "Lunch today is 650 kcal.",
+                           "Dinner of 500 kcal logged today."}) {
+    TEST_ASSERT_FALSE_MESSAGE(hasKind(foodFigureGaps(plan, f, "2100"), FoodGapKind::WrongDayTotal), plan);
+  }
+  // Real replies, head5-haiku plan-earlier rep1, no-inventory-guard rep1, complaint-recovery rep5.
+  const FoodFacts at1400 = ledger(1400, 95);
+  for (const char* real : {"Dinner plan, 992 kcal and 88 g protein against the 1,000 kcal and 60 g protein left today:",
+                           "Going by your figure of about 1000 kcal and 60 g protein left: the ledger shows 1400 kcal and 95 g protein so far today."}) {
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)foodFigureGaps(real, at1400, "2400 155").size(), real);
+  }
+  TEST_ASSERT_FALSE(hasKind(foodFigureGaps("Today is a rest day, so your plan says 2,100 kcal.", empty, "2100"), FoodGapKind::WrongDayTotal));
+}
+
+// A day total the reply projects, over a meal it proposes.
+static void test_a_projected_day_total_is_not_todays() {
+  const FoodFacts f = ledger(1500, 90);
+  for (const char* projected : {
+           "A 700 kcal dinner brings today's total to 2,200 kcal.",
+           "Adding the 700 kcal pasta takes today's total to 2,200 kcal.",
+           "Dinner at 700 kcal puts the day total at 2,200 kcal.",
+       }) {
+    TEST_ASSERT_FALSE_MESSAGE(hasKind(foodFigureGaps(projected, f, "2400 155"), FoodGapKind::WrongDayTotal), projected);
+  }
+  // Below the ledger it is no projection, and a logged meal is no projection at all.
+  TEST_ASSERT_TRUE(hasKind(foodFigureGaps("Dinner at 700 kcal puts the day total at 1,200 kcal.", f, ""), FoodGapKind::WrongDayTotal));
+  TEST_ASSERT_TRUE(hasKind(foodFigureGaps("Logged the 700 kcal dinner, which brings today's total to 2,200 kcal.", f, ""), FoodGapKind::WrongDayTotal));
+}
+
+// "more", "need" and "under" in ordinary coaching are no statement of what is left.
+static void test_comparisons_and_advice_are_not_a_left_figure() {
+  const FoodFacts f = ledger(1482, 90);
+  const std::string src = "2100 150";
+  for (const char* advice : {
+           "That's 300 kcal more than yesterday.",
+           "A scoop of whey adds 25 g more protein.",
+           "Dinner needs 40 g protein to land the day.",
+           "Add 200 kcal more at dinner.",
+           "Chicken breast needs 30 g of protein.",
+           "Add a 25 g protein shake for 25 g more protein.",
+           "Stay under 600 kcal at dinner.",
+           "That leaves room for a 300 kcal snack.",
+       }) {
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, gapsOf(advice, f, src), advice);
+  }
+  const FoodFacts blank = ledger(1482, 90, 1);
+  for (const char* advice : {"Chicken breast needs 30 g of protein.", "Add a 25 g protein shake for 25 g more protein.",
+                             "A scoop of whey adds 25 g more protein."}) {
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, gapsOf(advice, blank, src), advice);
+  }
+  TEST_ASSERT_TRUE(hasKind(foodFigureGaps("You need about 102 g more, no problem.", blank, src), FoodGapKind::ProteinLeftUnknown));
+  // The firm need is still read: the sum against a target nothing holds.
+  TEST_ASSERT_TRUE(hasKind(foodFigureGaps("You still need 38.3 g protein.", ledger(211.7, 211.7), "150 2400"), FoodGapKind::UnsourcedTarget));
+  TEST_ASSERT_TRUE(hasKind(foodFigureGaps("Protein stands at 90 g, 38 g under your target.", f, ""), FoodGapKind::UnsourcedTarget));
+}
+
+// A meal the reply proposes is on top of the ledger: what is left after it is not a target. The
+// replies are real: head5-haiku qty-vague reps 1, 3, 5 and qty-pressed rep 4, ledger 1600 and 88.
+static void test_left_after_a_proposed_meal_is_no_target() {
+  const FoodFacts f = ledger(1600, 88);
+  const std::string src = "2400 155 800 67";
+  for (const char* real : {
+           "Max out with 320 g cooked pasta and 4 mozzarella slices (25 g each): 786 kcal, leaving 14 kcal of your 800 left.",
+           "That brings today to 2,386 kcal against your 2,400 target.",
+           "Protein would reach about 129 g, still 26 g short of your 155 g floor.",
+           "Protein stays about 22.5 g short of your 155 g floor (you have 67 g left to cover).",
+           "That leaves protein about 25 g short of your 155 g floor (67 g still needed today).",
+           "Protein stays well short: today is at 88 g, so this brings you to about 119 g against your 155 g floor.",
+           "440 g cooked pasta and 1 slice of mozzarella (25 g) gets you to about 765 of your 800 kcal left, so about 2,365 kcal for the day against your 2,400 target.",
+       }) {
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, gapsOf(real, f, src), real);
+  }
+  const FoodFacts g = ledger(1500, 90);
+  for (const char* projected : {"After the pasta you'll have 200 kcal left.", "The pasta at 700 kcal leaves you 200 kcal for the rest of the day."}) {
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, gapsOf(projected, g, "2400 155"), projected);
+    // No target in anything the turn read: the left figure still has nothing behind it.
+    TEST_ASSERT_TRUE_MESSAGE(hasKind(foodFigureGaps(projected, g, ""), FoodGapKind::UnsourcedTarget), projected);
+  }
+  // More left than the named target allows is a wrong sum, whatever the sentence names.
+  TEST_ASSERT_TRUE(hasKind(foodFigureGaps("That leaves 1,500 kcal against your 2,400 kcal target.", g, "2400"), FoodGapKind::UnsourcedTarget));
+}
+
+// Advice for one meal is not a daily target.
+static void test_a_per_meal_figure_is_no_daily_target() {
+  const FoodFacts f = ledger(1500, 90);
+  for (const char* meal : {"Aim for 40 g protein at dinner.", "Keep dinner to a 600 kcal limit.", "Your lunch goal is 40 g protein.",
+                           "A goal of 40 g protein at dinner works.", "Cap breakfast at 400 kcal.", "Minimum 30 g protein per meal."}) {
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, gapsOf(meal, f, "2400 155"), meal);
+  }
+  for (const char* daily : {"Your 2,500 kcal target leaves room for dinner.", "Your daily limit is 2,500 kcal, so dinner can be big.",
+                            "Aim for 250 g protein."}) {
+    TEST_ASSERT_TRUE_MESSAGE(hasKind(foodFigureGaps(daily, f, "2400 155"), FoodGapKind::UnsourcedTarget), daily);
+  }
+}
+
+// A negation takes back the figure it binds to, not every figure in its sentence.
+static void test_a_negation_binds_to_its_figure() {
+  const FoodFacts f = ledger(1482, 90);
+  for (const char* invented : {"No worries, your protein target is 250 g and you have 160 g left.",
+                               "Not bad: 1,018 kcal left of your 2,500 kcal budget.", "You're not at your 2,500 kcal target yet.",
+                               "Sorry, your target is 2,500 kcal.", "Your target is 2,500 kcal, not 2,400."}) {
+    TEST_ASSERT_TRUE_MESSAGE(hasKind(foodFigureGaps(invented, f, "2400"), FoodGapKind::UnsourcedTarget), invented);
+    TEST_ASSERT_TRUE_MESSAGE(!unsourcedFoodTargets(invented, "2400").empty(), invented);
+  }
+  for (const char* back : {"The 250 g protein figure was my error.", "There is no 250 g protein target.", "It is not the 2,500 kcal target.",
+                           "The 2,500 kcal target isn't in your plan.", "I never had a source for that 2,500 kcal target, it is wrong."}) {
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, gapsOf(back, f, "2400"), back);
+  }
+}
+
+// The owner stating a figure is a source whatever else the sentence holds; a figure they dispute is not.
+static void test_the_owners_own_figure_survives_a_no_or_a_sorry() {
+  struct {
+    const char* owner;
+    const char* source;
+    const char* notSource;
+  } cases[] = {
+      {"No, my target is 2,200 kcal a day.", "2200", nullptr},
+      {"My protein target is 150 g, not 250.", "150", "250"},
+      {"I'm trying not to go over 2,000 kcal.", "2000", nullptr},
+      {"Sorry, I meant 2,200 kcal is my daily target.", "2200", nullptr},
+      {"Remember this: my protein target is 150 g and I have no flexibility on it.", "150", nullptr},
+      {"No, that's wrong, my target is 2,200 kcal.", "2200", nullptr},
+      {"2500 is wrong, it's 2,200.", "2200", "2500"},
+      {"My target is 2,200, why did you say 2500?", "2200", "2500"},
+      {"I never said 2500. It's 2,200.", "2200", "2500"},
+      {"It's not 2500.", nullptr, "2500"},
+      {"You made up 2500.", nullptr, "2500"},
+      {"Is it 2500, or 2400?", nullptr, "2500"},
+  };
+  const FoodFacts f = ledger(1500, 90);
+  for (const auto& c : cases) {
+    const std::string src = figureNumbers(ownerStatementsOf(c.owner));
+    if (c.source) {
+      const std::string reply = std::string("Your daily target is ") + c.source + " kcal.";
+      TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)foodFigureGaps(reply, f, src).size(), c.owner);
+    }
+    if (c.notSource) {
+      const std::string reply = std::string("Your daily target is ") + c.notSource + " kcal.";
+      TEST_ASSERT_TRUE_MESSAGE(hasKind(foodFigureGaps(reply, f, src), FoodGapKind::UnsourcedTarget), c.owner);
+    }
+  }
+}
+
+// The class of rewordings: a daily target by any name, each both ways.
+static void test_rewordings_of_a_target_are_the_same_target() {
+  const FoodFacts f = ledger(2036, 211.7);
+  const std::string rules = "2400 150 160";
+  struct {
+    const char* reply;
+    const char* sourced;   // the same shape with a figure the plan holds
+  } shapes[] = {
+      {"Your daily protein is 250 g.", "Your daily protein is 150 g."},
+      {"Daily protein: 250 g.", "Daily protein: 150 g."},
+      {"You should eat 2,500 kcal a day.", "You should eat 2,400 kcal a day."},
+      {"Your daily calories are 2,500.", "Your daily calories are 2,400."},
+      {"Your plan calls for 250 g protein per day.", "Your plan calls for 150 g protein per day."},
+      {"250 g protein is what the plan asks for.", "150 g protein is what the plan asks for."},
+      {"Your quota is 250 g of protein.", "Your quota is 150 g of protein."},
+      {"The ceiling is 2,500 kcal.", "The ceiling is 2,400 kcal."},
+      {"You need 250 g protein today.", "You need 150 g protein today."},
+      {"Your calorie target is 2,500.", "Your calorie target is 2,400."},
+  };
+  for (const auto& s : shapes) {
+    const auto gaps = foodFigureGaps(s.reply, f, rules);
+    TEST_ASSERT_TRUE_MESSAGE(hasKind(gaps, FoodGapKind::UnsourcedTarget), s.reply);
+    const std::string tail = foodGapTail(gaps, f);
+    const bool kcal = std::string(s.reply).find("2,500") != std::string::npos;
+    TEST_ASSERT_TRUE_MESSAGE(tail.find(kcal ? "2500 kcal" : "250 g protein") != std::string::npos, tail.c_str());
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)foodFigureGaps(s.sourced, f, rules).size(), s.sourced);
+  }
+  TEST_ASSERT_TRUE(hasKind(foodFigureGaps("You're 38.3 g short of 250 g.", f, rules), FoodGapKind::UnsourcedTarget));
+  // Not a target: what happened, and a rate with no prescription.
+  for (const char* history : {"You've averaged 1,900 kcal a day this week.", "You ate 2,500 kcal a day last week.",
+                              "Your daily protein so far is 90 g.", "A 500 kcal a day deficit.", "This shake has 30 g protein."}) {
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)foodFigureGaps(history, ledger(1000, 90), "").size(), history);
+  }
+}
+
+// The owner's line names what the reply said, never a sum the device made up.
+static void test_the_owners_line_holds_no_number_the_reply_never_said() {
+  const FoodFacts f = ledger(2036, 211.7);
+  const auto left = foodFigureGaps("You have 38.3 g protein left today.", f, "150");
+  const std::string tail = foodGapTail(left, f);
+  TEST_ASSERT_TRUE_MESSAGE(tail.find("38.3 g protein") != std::string::npos, tail.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(tail.find("250") == std::string::npos, tail.c_str());
+  // The model is still told the sum, so it can see what it implied.
+  TEST_ASSERT_TRUE(foodGapCorrection(left, f).find("250 g protein") != std::string::npos);
+  const std::string need = foodGapTail(foodFigureGaps("You need 250 g protein today.", f, "150"), f);
+  TEST_ASSERT_TRUE_MESSAGE(need.find("461.7") == std::string::npos, need.c_str());
+}
+
+// A day's protein over a row with no figure: the known part is a floor, not the day.
+static void test_a_day_protein_over_an_unknown_row_is_at_least_the_known_part() {
+  const FoodFacts f = ledger(1500, 48.4, 1);
+  TEST_ASSERT_EQUAL_INT(0, gapsOf("Today so far: 1,500 kcal and about 90 g protein, since the burger has roughly 40 g.", f, ""));
+  TEST_ASSERT_EQUAL_INT(0, gapsOf("Today so far: 1,500 kcal and 48.4 g protein.", f, ""));
+  const auto low = foodFigureGaps("Today so far: 1,500 kcal and 30 g protein.", f, "");
+  TEST_ASSERT_TRUE(hasKind(low, FoodGapKind::WrongDayTotal));
+  const std::string tail = foodGapTail(low, f);
+  TEST_ASSERT_TRUE_MESSAGE(tail.find("at least 48.4 g protein") != std::string::npos, tail.c_str());
+  TEST_ASSERT_TRUE(foodGapCorrection(low, f).find("at least 48.4 g protein") != std::string::npos);
+}
+
+// Upcoming dates, start dates and words that begin like a month are not stale data.
+static void test_a_stale_status_reads_only_what_is_old() {
+  int age = 0;
+  for (const char* fine : {"Your current plan runs until 30 Nov.", "You're still on track for the 25 Nov appointment.",
+                           "Latest: the review is due on 2026-11-20.", "Still 3 weeks to your 15 Dec holiday.",
+                           "Your current streak is 12 days in a row; you marked 5 sessions this week.",
+                           "Still decided 3 things, running well.", "You're currently on day 33 of the plan you started on 2026-10-01.",
+                           "You've been logging meals since 2026-10-01, nice.", "Your gym membership is currently active until 2026-12-31."}) {
+    TEST_ASSERT_TRUE_MESSAGE(staleStatusIn(fine, "2026-11-02", kStaleStatusDays, &age).empty(), fine);
+  }
+  // Still stale: "as of" outranks a start word, and a plain old date.
+  TEST_ASSERT_FALSE(staleStatusIn("7 days in a row since 2026-10-07, as of 2026-10-14.", "2026-11-02", kStaleStatusDays, &age).empty());
+  TEST_ASSERT_FALSE(staleStatusIn("Your streak was 7 days on 14 October.", "2026-11-02", kStaleStatusDays, &age).empty());
+  TEST_ASSERT_EQUAL_INT(19, age);
+  // A date far ahead with no year is last year's.
+  TEST_ASSERT_FALSE(staleStatusIn("Your streak was 7 days on 20 Nov.", "2026-01-02", kStaleStatusDays, &age).empty());
+  // The owner's line claims only what the device knows.
+  TEST_ASSERT_TRUE(staleStatusNote(19).find("19 days old") != std::string::npos);
+  TEST_ASSERT_TRUE(staleStatusNote(19).find("nothing newer") == std::string::npos);
+}
+
+static void test_speaks_of_food_ignores_case() {
+  TEST_ASSERT_TRUE(speaksOfFood("Protein left: 38.3 g (target 250 g)"));
+  TEST_ASSERT_TRUE(speaksOfFood("CALORIES: 2,500"));
+  TEST_ASSERT_TRUE(speaksOfFood("2,500 Kcal"));
+  TEST_ASSERT_FALSE(speaksOfFood("Your dentist is at 3pm."));
+}
+
+// A write to the targets file: its figures are checked before anything lands.
+static void test_a_targets_write_names_its_unsourced_figure() {
+  double figure = 0;
+  TEST_ASSERT_TRUE(unsourcedTargetWrite("2026-11-01,protein_g,250,the plan", "2400 150", &figure));
+  TEST_ASSERT_EQUAL_FLOAT(250, (float)figure);
+  TEST_ASSERT_TRUE(unsourcedTargetWrite("date,metric,target,source\n2026-11-01,kcal,2500,plan\n", "2400", &figure));
+  TEST_ASSERT_EQUAL_FLOAT(2500, (float)figure);
+  TEST_ASSERT_TRUE(unsourcedTargetWrite("kcal,2500,plan", "2400", &figure));
+  TEST_ASSERT_TRUE(unsourcedTargetWrite("2500", "2400", &figure));
+  TEST_ASSERT_TRUE(unsourcedTargetWrite("2026-11-01,kcal,\"2,500\",plan", "2400", &figure));
+  TEST_ASSERT_FALSE(unsourcedTargetWrite("2026-11-01,kcal,2400,the plan says 2400 kcal in 2026", "2400", &figure));
+  TEST_ASSERT_FALSE(unsourcedTargetWrite("date,metric,target,source", "", &figure));
+  TEST_ASSERT_FALSE(unsourcedTargetWrite("the owner's plan", "", &figure));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_the_31_oct_250_g_target);
@@ -247,5 +524,19 @@ int main(int, char**) {
   RUN_TEST(test_a_target_in_a_memory_needs_a_source);
   RUN_TEST(test_the_correction_round_names_the_way_out);
   RUN_TEST(test_a_stale_status_in_a_routine);
+  RUN_TEST(test_a_right_day_total_after_a_meal_figure_is_right);
+  RUN_TEST(test_a_plan_or_advice_sentence_about_today_is_no_day_total);
+  RUN_TEST(test_a_projected_day_total_is_not_todays);
+  RUN_TEST(test_comparisons_and_advice_are_not_a_left_figure);
+  RUN_TEST(test_left_after_a_proposed_meal_is_no_target);
+  RUN_TEST(test_a_per_meal_figure_is_no_daily_target);
+  RUN_TEST(test_a_negation_binds_to_its_figure);
+  RUN_TEST(test_the_owners_own_figure_survives_a_no_or_a_sorry);
+  RUN_TEST(test_rewordings_of_a_target_are_the_same_target);
+  RUN_TEST(test_the_owners_line_holds_no_number_the_reply_never_said);
+  RUN_TEST(test_a_day_protein_over_an_unknown_row_is_at_least_the_known_part);
+  RUN_TEST(test_a_stale_status_reads_only_what_is_old);
+  RUN_TEST(test_speaks_of_food_ignores_case);
+  RUN_TEST(test_a_targets_write_names_its_unsourced_figure);
   return UNITY_END();
 }

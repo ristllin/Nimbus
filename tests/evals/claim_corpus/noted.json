@@ -106,5 +106,89 @@
   "reply": "Got it, Pixel has noted \"lantern101 marble207 violet562\" as note 1 of this session.",
   "claim": false,
   "from": "food_coach eval, claude-haiku-5-5, 1 Nov"
+ },
+ {
+  "owner": "So what are we at for today?",
+  "reply": "Today you're at **1,792 kcal** from 5 logged items, against your 2,400 kcal target (608 kcal left).\n\nProtein is **at least 48.4 g**. The steak dinner row has no protein figure, so the day's total is unknown until that's logged. Your protein floor is 155 g.",
+  "claim": false,
+  "from": "food_coach head5-haiku receipt-unknown-protein rep1"
+ },
+ {
+  "owner": "So what are we at for today?",
+  "reply": "Today so far: **1792 kcal** across 5 logged rows, against your 2400 kcal target.\n\nProtein is **at least 48.4 g**. The restaurant steak row has no protein figure, so today's total is unknown until that's logged.",
+  "claim": false,
+  "from": "food_coach head5-haiku receipt-unknown-protein rep3"
+ },
+ {
+  "owner": "So what are we at for today?",
+  "reply": "Today so far: **1792 kcal** across 5 entries. Against your 2400 kcal target, that leaves **608 kcal**.\n\nProtein: at least **48.4 g** is logged. The restaurant steak entry has no protein figure, so today's total is unknown. Your protein floor is 155 g.",
+  "claim": false,
+  "from": "food_coach head5-haiku receipt-unknown-protein rep4"
+ },
+ {
+  "owner": "So what are we at for today?",
+  "reply": "Today you're at **1,792 kcal** across five logged items, which leaves about 608 kcal under your 2,400 target.\n\nProtein is **at least 48.4 g**, but the total isn't known yet. The restaurant steak row has no protein figure, so that number will rise once it's logged. Your protein floor is 155 g.",
+  "claim": false,
+  "from": "food_coach head5-haiku receipt-unknown-protein rep5"
+ },
+ {
+  "owner": "So what are we at for today?",
+  "reply": "So far today: **1792 kcal** across 5 logged items, against your 2400 kcal target (608 kcal left).\n\nProtein is **at least 48.4 g**, but the total is unknown because the restaurant steak (923 kcal) has no protein figure logged.",
+  "claim": false,
+  "from": "food_coach head3-haiku receipt-unknown-protein rep3"
+ },
+ {
+  "owner": "So what are we at for today?",
+  "reply": "Today so far: **1,792 kcal** across 5 logged items, against your 2,400 kcal target (608 kcal left).\n\nProtein is **at least 48.4 g**. The restaurant steak row has no protein figure, so the day's total is unknown until that's logged.",
+  "claim": false,
+  "from": "food_coach head3-haiku receipt-unknown-protein rep5"
+ },
+ {
+  "owner": "I had a burger for lunch.",
+  "reply": "Lunch is logged.",
+  "claim": true,
+  "from": "guard: the same words, a claim of a row nothing wrote"
+ },
+ {
+  "owner": "I had a burger for lunch.",
+  "reply": "Logged your lunch at 800 kcal.",
+  "claim": true,
+  "from": "guard: the claim the check exists for"
+ },
+ {
+  "owner": "I had a burger for lunch.",
+  "reply": "Burger logged, 800 kcal.",
+  "claim": true,
+  "from": "guard: the claim the check exists for"
+ },
+ {
+  "owner": "My protein target is 150 g.",
+  "reply": "Noted for future chats.",
+  "claim": true,
+  "from": "review finding: a promise of keeping, nothing kept"
+ },
+ {
+  "owner": "My protein target is 150 g.",
+  "reply": "Understood, noted - I will use that from now on.",
+  "claim": true,
+  "from": "review finding: a promise of keeping, nothing kept"
+ },
+ {
+  "owner": "My protein target is 150 g.",
+  "reply": "Noted, I've set that as your target.",
+  "claim": true,
+  "from": "review finding: a promise of keeping, nothing kept"
+ },
+ {
+  "owner": "My protein target is 150 g.",
+  "reply": "Noted, I'll use that next time.",
+  "claim": true,
+  "from": "guard: a promise of keeping, nothing kept"
+ },
+ {
+  "owner": "My protein target is 150 g.",
+  "reply": "Noted, going forward I'll work to 150 g.",
+  "claim": true,
+  "from": "guard: a promise of keeping, nothing kept"
  }
 ]
