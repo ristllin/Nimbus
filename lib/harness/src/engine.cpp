@@ -1732,7 +1732,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       takeFit();
       ins = d_.requestPrompt ? d_.requestPrompt(instructions) : instructions;
       // The fabric leads each request itself (inputLead); a single host's loop gets it here.
-      inp = headTools.inputLead ? fit.inputs() : requestInputs();
+      inp = headTools.inputLead || !requestInputs ? fit.inputs() : requestInputs();
       return freed;
     };
   std::string outJson, err;

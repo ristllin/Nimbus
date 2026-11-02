@@ -181,6 +181,7 @@ struct Rig {
   std::string toolOutput = "ok";
   bool standing = false;   // a routine or wakeup stands for this chat
   std::vector<bool> trimmedForSize;   // one per turn end
+  std::string failedPath;             // the last turn end's failure chain, host by host
   std::vector<std::string> recalledHits;
   int seq = 0;
   std::string turnTag;
@@ -277,7 +278,10 @@ struct Rig {
       return out;
     };
     d.standingWork = [this](const std::string&) { return standing; };
-    d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) { trimmedForSize.push_back(ev.trimmedForSize); };
+    d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) {
+      trimmedForSize.push_back(ev.trimmedForSize);
+      failedPath = ev.chain ? ev.chain->path() : std::string();
+    };
     eng.reset(new TurnEngine(std::move(d)));
   }
   ~Rig() { providers::clearHostParks(); }
@@ -974,6 +978,15 @@ static void test_an_unrecovered_cut_stays_the_cause() {
   r.turn(kWorkTurn);
   TEST_ASSERT_TRUE_MESSAGE(r.saidAny("Here is the first"), r.all().c_str());
   TEST_ASSERT_TRUE_MESSAGE(r.saidAny("cut off"), r.all().c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral -> anthropic", r.failedPath.c_str());
+  // The cut is the last thing that happened: the chain still has it, whatever failed first.
+  Rig last({"mistral", "anthropic"}, 2000);
+  last.script(overloaded("mistral"));
+  last.script(overloaded("mistral"));
+  for (int i = 0; i < 4; i++) last.script(ok("anthropic", cutBody("anthropic")));
+  last.turn(kWorkTurn);
+  TEST_ASSERT_TRUE_MESSAGE(last.saidAny("cut off"), last.all().c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral -> anthropic", last.failedPath.c_str());
 }
 
 // A round that runs again inside one step only has the time the turn has left: the first

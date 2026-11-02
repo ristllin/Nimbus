@@ -458,14 +458,6 @@ class RoundRecovery {
   std::string heldHost_, heldCause_;
 };
 
-// The time the turn has left when a round runs again inside one step: the budget the controller
-// passed was for the first attempt.
-uint32_t remainingBudgetMs(const ProviderDeps& pd, uint32_t budgetMs, uint32_t since) {
-  if (budgetMs == UINT32_MAX || !pd.nowMs) return budgetMs;
-  const uint32_t used = pd.nowMs() - since;
-  return used >= budgetMs ? 0u : budgetMs - used;
-}
-
 void loopHooks(orch::HeadLoopHooks& hooks, const ProviderDeps& pd, const HeadTools& ht, orch::Transcript& tr,
                RoundRecovery& rec) {
   hooks.dispatch = ht.dispatch;
@@ -503,7 +495,7 @@ bool runHostLoop(const HostLoop& loop, const std::string& instructions, const st
                    const std::string& capReason) -> orch::HeadStep {
     const uint32_t stepStart = pd.nowMs ? pd.nowMs() : 0;
     for (;;) {
-      orch::HeadStep sr = send(allowTools, prior, remainingBudgetMs(pd, budgetAtEntry, stepStart), capReason);
+      orch::HeadStep sr = send(allowTools, prior, budgetLeft(pd, budgetAtEntry, stepStart), capReason);
       if (sr.ok) {
         rec.served();
         return sr;
@@ -652,7 +644,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
                               const std::string& capReason) -> orch::HeadStep {
     const uint32_t stepStart = pd.nowMs ? pd.nowMs() : 0;
     for (;;) {
-      const uint32_t budgetMs = remainingBudgetMs(pd, budgetAtEntry, stepStart);
+      const uint32_t budgetMs = budgetLeft(pd, budgetAtEntry, stepStart);   // a rerun has only what is left
       // Lane DEF2: a host whose own monthly limit was reached during this turn (its billed
       // rounds count at once) is not asked again: the round moves to the next open host,
       // quietly (the owner hears about the limit once, from the limits store), and the
