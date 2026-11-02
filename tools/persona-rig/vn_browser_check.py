@@ -195,7 +195,8 @@ def main() -> int:
         inst.call("POST", "/api/orch", form={"orchHost": slug})
         with sync_playwright() as p:
             br = p.chromium.launch()
-            page = br.new_context(viewport={"width": 1100, "height": 900}).new_page()
+            ctx = br.new_context(viewport={"width": 1100, "height": 900}, extra_http_headers={"X-Nimbus-Token": token})
+            page = ctx.new_page()
             errors: list = []
             page.on("pageerror", lambda e: errors.append(str(e)))
             page.goto(f"http://127.0.0.1:{port}/")
