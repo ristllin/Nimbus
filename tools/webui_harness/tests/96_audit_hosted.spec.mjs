@@ -85,7 +85,8 @@ for (const dest of ['home', 'memory', 'device']) {
   });
 }
 
-const SUBTABS = ['llm', 'connectors', 'tools', 'skills', 'routines', 'usage', 'safety'];
+// No Safety here: a hosted instance has no scanner, downloads or guest moderation.
+const SUBTABS = ['llm', 'connectors', 'tools', 'skills', 'routines', 'usage'];
 for (const sp of SUBTABS) {
   test(`hosted assistant ${sp}`, async ({ page }, testInfo) => {
     await seedToken(page);

@@ -504,6 +504,26 @@ test('hosted: Assistant shows no control the instance refuses or ignores', async
   await expect(page.locator('#searchOverlay')).not.toContainText('factory reset');
 });
 
+// (11a) The lines that would be untrue here read in the instance's own words.
+test('hosted: Memory, Chat and Device make no claim about a card, a mic or Wi-Fi', async ({ page }) => {
+  await markHosted(page);
+  await routeHosted(page);
+  await seedToken(page);
+  await page.route('**/api/mem/episodic**', (r) => r.fulfill({ contentType: 'application/json', body: '{"messages":[]}' }));
+  await openApp(page);
+  await page.locator('.tab[data-p=chat]').click();
+  await expect(page.locator('#chatLog')).toContainText('No conversation yet', { timeout: 8000 });
+  await expect(page.locator('#chatLog')).not.toContainText('mic');
+  await page.locator('.tab[data-p=memory]').click();
+  const mem = await page.locator('#pane-mem').innerText();
+  expect(mem).toContain('stored on its own volume');
+  expect(mem).not.toContain('SD card');
+  await page.locator('.tab[data-p=device]').click();
+  const dev = await page.locator('#pane-set').textContent();
+  expect(dev).toContain('Set by the platform');
+  expect(dev).not.toContain('once Wi-Fi connects');
+});
+
 // (11b) Counter-test: the hide is hosted-gated. The device keeps every one of them.
 test('device mode keeps the controls a hosted instance hides', async ({ page }) => {
   await seedToken(page);

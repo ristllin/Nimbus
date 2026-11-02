@@ -1384,6 +1384,19 @@ function applyHostedChrome(){
     if(trLb)[].forEach.call(trLb.childNodes,n=>{if(n.nodeType===3&&/thinking/.test(n.textContent))n.textContent=' Record tool calls ';});
     const trTip=trLb&&trLb.nextElementSibling;
     if(trTip&&trTip.classList.contains('tip'))trTip.textContent='Keeps a record of what the assistant did on each turn - each tool call and its result - viewable in the chat. Stored on this instance. Turning it off stops new records.';
+    // The lines that would be untrue on a hosted instance, in its own words.
+    const HOSTED_WORDS=[
+      ['On-device storage','Instance storage'],
+      ['What the device knows and the files it has made, stored on its SD card, not in a cloud.','What this instance knows and the files it has made, stored on its own volume.'],
+      ['Token usage reported by your providers, tracked since the device last restarted.','Token usage reported by your providers, tracked since this instance last restarted.'],
+      ['Message the device from Telegram.','Message this instance from Telegram.'],
+      ['Who can message this device ','Who can message this instance '],
+      ['the live on-device tool surface','the live tool surface'],
+      ['Device clock','Clock'],
+      ['Set automatically from the internet once Wi-Fi connects: there is no manual clock. Until it syncs, daily and weekly routines wait.','Set by the platform: there is no manual clock.'],
+    ];
+    const tw=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+    for(let n=tw.nextNode();n;n=tw.nextNode())HOSTED_WORDS.forEach(w=>{if(n.nodeValue.indexOf(w[0])>=0)n.nodeValue=n.nodeValue.replace(w[0],w[1]);});
   }catch(e){}
 }
 applyHostedChrome();
@@ -5846,7 +5859,7 @@ function loadChatHistory(){
     // or a seedless routine/synthesis turn with no chat bubble - and is dropped, not
     // stacked as a wall of collapsed "N tool calls" rows the owner cannot place.
     if(liveTid&&byTurn[liveTid])_traceGroup(log,byTurn[liveTid]);
-    if(!any)log.innerHTML='<p class=hint>No conversation yet - say something below, message the bot on Telegram, or hold the mic button to talk.</p>';
+    if(!any)log.innerHTML=HOSTED?'<p class=hint>No conversation yet - say something below, or message the bot on Telegram.</p>':'<p class=hint>No conversation yet - say something below, message the bot on Telegram, or hold the mic button to talk.</p>';
     _chatHistoryEdges(log,d);
     if(!_chatOlder.length)log.scrollTop=log.scrollHeight;
   }).catch(e=>{onCardBusy(e,'chathist',loadChatHistory,log);});
