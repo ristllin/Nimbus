@@ -100,6 +100,14 @@ inline FabricErr subTransportErr(const ProviderDeps& pd, uint32_t sentAtMs, uint
   return elapsedMs >= (deadlineMs / 10) * 9 ? FabricErr::Timeout : FabricErr::Network;
 }
 
+// A synchronous sub's non-200 that is not a key or quota refusal. A gateway that lost its
+// upstream (502, 504) leaves the run going: Mistral's and Z.ai's close at 60 s while the
+// model writes on, so it may have run and billed. Any other status is the API's own word
+// that the request failed.
+inline FabricErr subHttpErr(int code) {
+  return code == 502 || code == 504 ? FabricErr::Timeout : FabricErr::RemoteFail;
+}
+
 // ---- the one per-provider park, fed by every harness request (L19-8) -------------
 // The provider a request belongs to: the four API hosts, the Cumulo router (a routed
 // request's host is the router's, and its path says so whatever deps carried it: a

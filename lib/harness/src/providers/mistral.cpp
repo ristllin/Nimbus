@@ -549,6 +549,22 @@ static std::string withReplyField(const std::string& args) {
   return serializeBody(d);
 }
 
+// A long answer in the round's text, with only a pointer or a digest of it in orch_turn:
+// Large 4 wrote a whole guide there and "written out in full above" in reply, and the owner
+// got no guide, because only the reply is delivered (parity eval, 2 Nov). Text this long and
+// at least twice the reply is the answer; shorter text is a remark on the way to one.
+static std::string withLongProseAsReply(const std::string& turn, const std::string& prose) {
+  static constexpr size_t kAnswerBytes = 1200;
+  if (prose.size() < kAnswerBytes) return turn;
+  JsonDocument d;
+  if (deserializeJson(d, turn, DeserializationOption::NestingLimit(16)) || !d.is<JsonObject>()) return turn;
+  if (std::strlen(d["reply"] | "") * 2 > prose.size()) return turn;
+  hlog::logf("orchTurn: the round's text (%u B) is the answer, not the reply (%u B)", (unsigned)prose.size(),
+             (unsigned)std::strlen(d["reply"] | ""));
+  d["reply"] = prose;
+  return serializeBody(d);
+}
+
 bool readChatRound(const JsonDocument& resp, nimbus::orch::HeadStep& out, std::string& cutWhy,
                    const ChatDialect& dialect) {
   JsonObjectConst m = resp["choices"][0]["message"].as<JsonObjectConst>();
@@ -584,6 +600,7 @@ bool readChatRound(const JsonDocument& resp, nimbus::orch::HeadStep& out, std::s
     call.argsJson = (args.length() && args != "null") ? args : "{}";
     out.toolCalls.push_back(call);
   }
+  if (out.finished && cutWhy.empty()) out.finalTurn = withLongProseAsReply(out.finalTurn, prose);
   return cutWhy.empty();
 }
 
@@ -1336,7 +1353,7 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   }
   if (code != 200) {
     hlog::logf("mistral dispatch HTTP %d: %s", code, mistralErrText(doc).c_str());
-    return FabricErr::RemoteFail;
+    return wire::subHttpErr(code);
   }
   RunCounts runs;
   std::string reply = outputsReply(doc, prov, runs);
@@ -1347,8 +1364,9 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   // Capture any code_interpreter-produced files (poll -> env.artifacts[]).
   std::vector<MistralFileRef> files;
   const int droppedFiles = mistralParseFileRefs(doc, files);
-  // A run may produce only a file with no prose; that is still a success.
-  if (reply.empty() && files.empty()) return FabricErr::RemoteFail;
+  // A run may produce only a file with no prose; that is still a success. A run with
+  // neither finished and billed: unreadable, not refused, so no second copy starts.
+  if (reply.empty() && files.empty()) return FabricErr::ParseFail;
   if (subModel != askedModel)
     reply += "\n[note: this ran on " + subModel + " because " + askedModel +
              " cannot use Mistral's built-in tools]";

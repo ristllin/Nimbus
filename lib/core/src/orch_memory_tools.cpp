@@ -452,11 +452,13 @@ struct WriteSpec {
   bool standing = false;   // lane J: an every-reply rule, routed to the standing rules
 };
 
+constexpr const char* kContentAliases[] = {"fact", "text", "memory", "note", "value"};
+
 WriteSpec specFromArgs(const MemoryContext& ctx, JsonObjectConst a, double defImportance) {
   WriteSpec w;
   w.content = strArg(a, "content");
   // The same names a model reaches for in mem_write[] (orch_turn.cpp): read, not dropped.
-  for (const char* name : {"fact", "text", "memory", "note", "value"})
+  for (const char* name : kContentAliases)
     if (w.content.empty()) w.content = strArg(a, name);
   double imp = defImportance;
   numArg(a, "importance", imp);
@@ -1346,6 +1348,10 @@ void registerMemoryTools(ToolRegistry& reg, const MemoryContext& ctx) {
           R"("importance":{"type":"number"},"permanent":{"type":"boolean"},)"
           R"("ttl":{"type":"string","enum":["session","days","weeks","months","permanent"]},)"
           R"("source":{"type":"string"}},"required":["content"]})");
+  // Read, though not offered: the aliases, and applyTurn's routing flag on every mem_write[].
+  reg.alsoReads("memory.write", {"standing"});
+  reg.alsoReads("memory.write", {kContentAliases[0], kContentAliases[1], kContentAliases[2], kContentAliases[3],
+                                 kContentAliases[4]});
 
   reg.add("memory.search",
           "Search your long-term memory for facts relevant to a query.",
@@ -1361,6 +1367,9 @@ void registerMemoryTools(ToolRegistry& reg, const MemoryContext& ctx) {
           R"({"type":"object","properties":{"content":{"type":"string"},"old":{"type":"string"},)"
           R"("id":{"type":"string"},"importance":{"type":"number"},"permanent":{"type":"boolean"},)"
           R"("ttl":{"type":"string","enum":["session","days","weeks","months","permanent"]}},"required":["content"]})");
+  reg.alsoReads("memory.update", {"query", "source"});
+  reg.alsoReads("memory.update", {kContentAliases[0], kContentAliases[1], kContentAliases[2], kContentAliases[3],
+                                  kContentAliases[4]});
 
   reg.add("memory.pin",
           "Pin a memory (never forgotten), unpin it (let it decay/expire again), or delete it. Identify it by exact content or id. Pinning only stops decay; it does not put a memory into every prompt.",

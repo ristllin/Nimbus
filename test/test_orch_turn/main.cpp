@@ -718,6 +718,31 @@ static void test_head_reply_turn_followed_by_more_text_never_acts() {
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"a } b \\\" { c\"}", obj.c_str());
 }
 
+// The text of a mem_write item never loses a sibling string: GLM's {"key":"sister_cat",
+// "value":"Pixel"} must not store a bare "Pixel" that nothing retrieves and that the
+// reply reports as saved. The known fields stay fields.
+static void test_mem_write_keeps_the_strings_beside_its_text() {
+  const char* const cases[][2] = {
+      {R"({"key":"sister_cat","value":"Pixel"})", "sister_cat: Pixel"},
+      {R"({"subject":"sister's cat","note":"Pixel"})", "sister's cat: Pixel"},
+      {R"({"topic":"pets","fact":"the cat is Pixel"})", "pets: the cat is Pixel"},
+      {R"({"content":"the cat is Pixel","category":"pets"})", "pets: the cat is Pixel"},
+      {R"({"content":"plain","ttl":"days"})", "plain"},
+      {R"({"fact":"plain","importance":0.9,"permanent":true,"standing":false,"source":"self"})", "plain"},
+  };
+  for (const auto& c : cases) {
+    const std::string j = std::string(R"({"reply":"ok","mem_write":[)") + c[0] + "]}";
+    Turn t; ParseError e;
+    TEST_ASSERT_TRUE_MESSAGE(parseTurn(j, t, e), c[0]);
+    TEST_ASSERT_EQUAL_MESSAGE(1u, t.mem_write.size(), c[0]);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(c[1], t.mem_write[0].content.c_str(), c[0]);
+  }
+  // An alias beside content is a sibling too, not a second copy of the text lost.
+  Turn t; ParseError e;
+  TEST_ASSERT_TRUE(parseTurn(R"({"reply":"ok","mem_write":[{"content":"a","note":"b"}]})", t, e));
+  TEST_ASSERT_EQUAL_STRING("b: a", t.mem_write[0].content.c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_full_valid_turn_roundtrips);
@@ -758,5 +783,6 @@ int main() {
   RUN_TEST(test_head_reply_json_lookalikes_are_unusable);
   RUN_TEST(test_head_reply_prose_quoting_json_never_acts);
   RUN_TEST(test_head_reply_turn_followed_by_more_text_never_acts);
+  RUN_TEST(test_mem_write_keeps_the_strings_beside_its_text);
   return UNITY_END();
 }

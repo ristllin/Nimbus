@@ -185,6 +185,7 @@ struct ApplyState {
   int memStored = 0;
   int memQueued = 0;
   int memRefused = 0;
+  int memDuplicate = 0;   // a write that matched a stored fact: landed, nothing new
   // v3.7.0: may THIS turn's chat read/write the shared namespace? The device
   // sets it for the owner's chats and the token-authenticated local surfaces;
   // a Telegram member never gets it. Combined with the turn's chatId it forms

@@ -1309,6 +1309,38 @@ static void test_episodic_rows_carry_their_date() {
   g_now = 100;
 }
 
+// The real tools: everything specFromArgs and doUpdate read is read, so no result says it
+// was not. The first case is the exact call applyTurn makes for every mem_write[] item, and
+// the aliases are the names GLM used (11 of 12 writes, VNC gap pass).
+static void test_memory_tools_never_report_what_they_read() {
+  const char* const calls[][2] = {
+      {"memory.write", R"({"content":"the teal mug","importance":0.5,"permanent":false,"standing":false,"ttl":"days"})"},
+      {"memory.write", R"({"content":"the coffee order","standing":true})"},
+      {"memory.write", R"({"fact":"the ship date is friday"})"},
+      {"memory.write", R"({"text":"alpha one"})"},
+      {"memory.write", R"({"memory":"bravo two"})"},
+      {"memory.write", R"({"note":"charlie three"})"},
+      {"memory.write", R"({"value":"delta four"})"},
+      {"memory.update", R"({"content":"the teal mug is blue","old":"teal mug","source":"self"})"},
+      {"memory.update", R"({"fact":"the coffee order is tea","query":"coffee order"})"},
+  };
+  for (const auto& c : calls) {
+    ToolRegistry reg = buildServer();
+    const ToolResult r = call(reg, c[0], c[1]);
+    const std::string text = r.success ? r.output : r.error;
+    TEST_ASSERT_TRUE_MESSAGE(text.find("not read") == std::string::npos, (std::string(c[1]) + " -> " + text).c_str());
+  }
+  // The fact under an alias really is stored, and a name nobody reads is still named.
+  ToolRegistry reg = buildServer();
+  const ToolResult r = call(reg, "memory.write", R"({"fact":"the coffee order","subject":"drinks"})");
+  TEST_ASSERT_TRUE_MESSAGE(r.success, r.error.c_str());
+  TEST_ASSERT_EQUAL_INT(1, g_vec.size());
+  TEST_ASSERT_TRUE_MESSAGE(r.output.find("not read: subject:") != std::string::npos, r.output.c_str());
+  // The names stay out of what the model is offered.
+  for (const auto& s : reg.toolSpecs())
+    if (s.name == "memory.write") TEST_ASSERT_TRUE(s.schemaJson.find("standing") == std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_update_replaces_matching_fact);
@@ -1366,5 +1398,6 @@ int main(int, char**) {
   RUN_TEST(test_scratchpad_change_reports_a_ram_only_save);
   RUN_TEST(test_scratchpad_note_follows_the_flash_file_not_nvs);
   RUN_TEST(test_an_unwritable_engine_refuses_and_counts_every_write);
+  RUN_TEST(test_memory_tools_never_report_what_they_read);
   return UNITY_END();
 }

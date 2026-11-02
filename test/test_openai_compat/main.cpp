@@ -306,6 +306,34 @@ static void test_chunk_list_content_reads_as_the_answer() {
   TEST_ASSERT_EQUAL_STRING("hi-ant", env2.reply);
 }
 
+// A compat sub (the hosted Z.ai and router subs) agrees with Mistral's and custom's: a billed
+// 200 with nothing in it, or a gateway that lost the upstream, may have run.
+static void test_compat_sub_errors_say_whether_it_may_have_run() {
+  const struct { int status; const char* body; agent::FabricErr want; } cases[] = {
+      {200, "{\"choices\":[{\"message\":{\"content\":\"\"}}],\"usage\":{\"prompt_tokens\":9}}", agent::FabricErr::ParseFail},
+      {502, "{\"error\":{\"message\":\"bad gateway\"}}", agent::FabricErr::Timeout},
+      {504, "{\"error\":{\"message\":\"gateway timeout\"}}", agent::FabricErr::Timeout},
+      {500, "{\"error\":{\"message\":\"boom\"}}", agent::FabricErr::RemoteFail},
+      {503, "{\"error\":{\"message\":\"overloaded\"}}", agent::FabricErr::RemoteFail},
+      {400, "{\"error\":{\"message\":\"bad\"}}", agent::FabricErr::RemoteFail},
+  };
+  for (const auto& k : cases) {
+    FakeProviderDeps rig;
+    rig.http.script.push_back({"", "", k.status, k.body});
+    agent::providers::ProviderDeps pd = rig.contract();
+    CompatEndpoint ep;
+    ep.host = "api.z.ai";
+    ep.basePath = "/api/paas/v4";
+    ep.key = "tok";
+    ep.model = "glm-5.3";
+    ep.backendTag = "zai";
+    ep.wire = CompatWire::OpenAIChat;
+    char jobId[72] = {};
+    TEST_ASSERT_EQUAL_MESSAGE((int)k.want, (int)openaiCompatDispatch(pd, ep, makeDirective(), jobId),
+                              std::to_string(k.status).c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_openai_wire_hits_chat_completions);
@@ -317,6 +345,7 @@ int main(int, char**) {
   RUN_TEST(test_cum544_zai_sub_carries_low_effort);
   RUN_TEST(test_cum538_a_sub_that_outruns_its_post_is_a_timeout);
   RUN_TEST(test_compat_sub_deadline_by_endpoint);
+  RUN_TEST(test_compat_sub_errors_say_whether_it_may_have_run);
   UNITY_END();
   return 0;
 }

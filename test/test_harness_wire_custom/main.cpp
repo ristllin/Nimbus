@@ -890,6 +890,106 @@ static void test_zai_fold_is_plain_prose() {
   TEST_ASSERT_TRUE(out.find("Decisions") != std::string::npos);
 }
 
+// The Z.ai picker offers older GLM models too, and a model that refuses reasoning_effort
+// answers on the loop as it did on the single shot: one retry without the field, and later
+// rounds do not pay the refusal again. Any other 400 fails as it did.
+static void test_zai_loop_retries_without_a_refused_effort() {
+  ZaiRig r;
+  r.d.custModel = "glm-4.5-refuses-effort";
+  r.d.http.script.push_back({"api.z.ai", kPath, 400, "{\"error\":{\"message\":\"reasoning_effort is not supported\"}}"});
+  r.d.http.script.push_back({"api.z.ai", kPath, 200, toolCallBody("memory.search", "{\\\"q\\\":\\\"cat\\\"}")});
+  r.d.http.script.push_back({"api.z.ai", kPath, 200, toolCallBody("orch_turn", "{\\\"reply\\\":\\\"Pixel\\\"}")});
+  std::string out, err;
+  TEST_ASSERT_TRUE_MESSAGE(r.run(out, err), err.c_str());
+  TEST_ASSERT_TRUE(out.find("Pixel") != std::string::npos);
+  TEST_ASSERT_EQUAL(3, (int)r.d.http.seen.size());
+  TEST_ASSERT_TRUE(bodyHas(r.d, 0, "reasoning_effort"));
+  TEST_ASSERT_FALSE(bodyHas(r.d, 1, "reasoning_effort"));
+  TEST_ASSERT_FALSE(bodyHas(r.d, 2, "reasoning_effort"));
+}
+
+static void test_zai_loop_fails_on_any_other_400() {
+  ZaiRig r;
+  r.d.http.script.push_back({"api.z.ai", kPath, 400, "{\"error\":{\"message\":\"messages too long\"}}"});
+  std::string out, err;
+  TEST_ASSERT_FALSE(r.run(out, err));
+  TEST_ASSERT_EQUAL(1, (int)r.d.http.seen.size());
+}
+
+// A long answer written in the round's text, with a short orch_turn beside it, reaches the
+// owner: Large 4 wrote a whole guide there and put "written out in full above" in reply
+// (parity eval, 2 Nov), and nothing above ever arrived. The other fields of the turn stay.
+static void test_a_long_answer_in_the_round_text_reaches_the_owner() {
+  std::string guide;
+  for (int i = 0; i < 60; i++) guide += "Monday route idea and the weather plan for the day. ";
+  const std::string body = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"" + guide +
+                           "\",\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"orch_turn\","
+                           "\"arguments\":\"{\\\"reply\\\":\\\"The guide is written out in full above.\\\","
+                           "\\\"ask\\\":\\\"Which day first?\\\"}\"}}]}}],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":9}}";
+  {
+    ZaiRig r;
+    r.d.http.script.push_back({"api.z.ai", kPath, 200, body});
+    std::string out, err;
+    TEST_ASSERT_TRUE_MESSAGE(r.run(out, err), err.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(out.find("Monday route idea") != std::string::npos, out.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(out.find("written out in full above") == std::string::npos, out.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(out.find("Which day first?") != std::string::npos, out.c_str());
+  }
+  // The counter-test: a short remark before the real answer is not the answer.
+  {
+    ZaiRig r;
+    const std::string shortProse =
+        "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"Let me answer that.\","
+        "\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"orch_turn\","
+        "\"arguments\":\"{\\\"reply\\\":\\\"Pixel\\\"}\"}}]}}]}";
+    r.d.http.script.push_back({"api.z.ai", kPath, 200, shortProse});
+    std::string out, err;
+    TEST_ASSERT_TRUE_MESSAGE(r.run(out, err), err.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(out.find("Pixel") != std::string::npos, out.c_str());
+    TEST_ASSERT_TRUE(out.find("Let me answer") == std::string::npos);
+  }
+  // Nor does long prose displace a reply that already carries the answer.
+  {
+    ZaiRig r;
+    std::string reply;
+    for (int i = 0; i < 40; i++) reply += "Tuesday's route and what to pack for it. ";
+    const std::string both = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"" + guide +
+                             "\",\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"orch_turn\","
+                             "\"arguments\":\"{\\\"reply\\\":\\\"" + reply + "\\\"}\"}}]}}]}";
+    r.d.http.script.push_back({"api.z.ai", kPath, 200, both});
+    std::string out, err;
+    TEST_ASSERT_TRUE_MESSAGE(r.run(out, err), err.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(out.find("Tuesday's route") != std::string::npos, out.c_str());
+  }
+}
+
+// The two synchronous subs here agree with Mistral's: a billed 200 with nothing in it, or a
+// gateway that lost the upstream, may have run. A refusal is a refusal.
+static void test_custom_sub_errors_say_whether_it_may_have_run() {
+  const struct { int status; const char* body; agent::FabricErr want; } cases[] = {
+      {200, "{\"choices\":[{\"message\":{\"content\":\"\"}}],\"usage\":{\"prompt_tokens\":9}}", agent::FabricErr::ParseFail},
+      {502, "{\"error\":{\"message\":\"bad gateway\"}}", agent::FabricErr::Timeout},
+      {504, "{\"error\":{\"message\":\"gateway timeout\"}}", agent::FabricErr::Timeout},
+      {500, "{\"error\":{\"message\":\"boom\"}}", agent::FabricErr::RemoteFail},
+      {503, "{\"error\":{\"message\":\"overloaded\"}}", agent::FabricErr::RemoteFail},
+      {400, "{\"error\":{\"message\":\"bad\"}}", agent::FabricErr::RemoteFail},
+  };
+  for (const auto& k : cases) {
+    FakeProviderDeps d;
+    d.custBase = "https://api.z.ai";
+    d.custKey = "tok";
+    d.custModel = "glm-5.3";
+    auto pd = d.contract();
+    pd.customPathPrefix = [] { return std::string("/api/paas/v4"); };
+    d.http.script.push_back({"api.z.ai", kPath, k.status, k.body});
+    agent::Directive dir;
+    dir.category = "research";
+    dir.instruction = "find it";
+    char job[72] = {};
+    TEST_ASSERT_EQUAL_MESSAGE((int)k.want, (int)providers::customDispatch(pd, dir, job), std::to_string(k.status).c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_keyless_on_http);
@@ -927,6 +1027,10 @@ int main(int, char**) {
   RUN_TEST(test_zai_filtered_round_fails_the_step);
   RUN_TEST(test_lan_custom_head_stays_single_shot);
   RUN_TEST(test_zai_fold_is_plain_prose);
+  RUN_TEST(test_zai_loop_retries_without_a_refused_effort);
+  RUN_TEST(test_zai_loop_fails_on_any_other_400);
+  RUN_TEST(test_a_long_answer_in_the_round_text_reaches_the_owner);
+  RUN_TEST(test_custom_sub_errors_say_whether_it_may_have_run);
   UNITY_END();
   return 0;
 }

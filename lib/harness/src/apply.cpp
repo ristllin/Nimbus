@@ -570,11 +570,13 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // security core; the per-element work is the shared applyDeviceAction (also the
   // mid-turn `device.control` tool's engine).
   std::string devSummary;
+  bool deviceLanded = false;
   for (const auto& da : t.device) {
     const DeviceOutcome dev = applyDeviceAction(da.json, who, st.scheduledTurn, chatId, d, &st.riskNote);
     const std::string& one = dev.summary;
     st.replyNote += dev.replyNote;
     devSummary += one;
+    deviceLanded = deviceLanded || deviceElementLanded(one);
     // A part the caller rule refused reaches the head next turn in plain words:
     // nothing is dropped in silence (CUM-813).
     if (!dev.refusals.empty() && st.pendingMemResults)
@@ -698,6 +700,7 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
               if (d.fire) d.fire("memsaved");   // heavy tier: "Orders received."
               break;
             case MemWriteOutcome::Duplicate:
+              st.memDuplicate++;
               memMutated = true;   // the existing memory's importance was bumped
               break;
             case MemWriteOutcome::Queued:
@@ -939,7 +942,9 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
     // "Done." is true only of a turn that did something: an owner who asked and got an
     // empty model reply hears that, on every channel (GLM answered "What is my sister's
     // cat called?" with "Done.", VN reality check 1 Nov).
-    const bool acted = !t.device.empty() || !t.mem_write.empty() || (st.claims && landedChange(st.claims->effects()));
+    // Landed, not attempted: a refused switch or an unstored fact finished nothing.
+    const bool acted = deviceLanded || st.memStored > 0 || st.memDuplicate > 0 ||
+                       (st.claims && landedChange(st.claims->effects()));
     const bool waiting = !st.scheduledTurn && !st.quietFallback &&
                          nimbus::orch::currentTurnRole() == nimbus::orch::TurnRole::Owner;
     // A session op speaks for itself below (a stop, or the refusal of one).

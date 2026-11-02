@@ -172,7 +172,7 @@ FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJob
   if (code <= 0) return wire::subTransportErr(pd, t0, CUST_TIMEOUT_MS);
   if (code == 401 || code == 403) return FabricErr::Auth;
   if (code == 429) return wire::rateLimitedByText(d, "custom", doc["error"]["message"] | "");
-  if (code != 200)               { hlog::logf("custom: HTTP %d", code); return FabricErr::RemoteFail; }
+  if (code != 200)               { hlog::logf("custom: HTTP %d", code); return wire::subHttpErr(code); }
 
   std::string reply = anthropic ? nimbus::orch::messagesContentText(doc["content"])
                                 : nimbus::orch::chatContentText(doc["choices"][0]["message"]["content"]);
@@ -350,13 +350,36 @@ struct ZaiRound {
   const HeadTools& ht;
   bool allowTools;
   uint32_t maxTokens;
+  bool withEffort;
 };
+
+// The picker offers older GLM models too. One that refuses reasoning_effort answers without
+// it, as the single shot's retry does (CUM-544), and later rounds do not pay the refusal
+// again: remembered for this boot as a fingerprint, like Mistral's (a collision only means
+// one more model skips the field).
+static uint32_t g_zaiNoEffort[2] = {};
+static bool zaiEffortRefusedBefore(const std::string& model) {
+  const uint32_t fp = nimbus::orch::parkKeyFingerprint(model);
+  for (uint32_t m : g_zaiNoEffort)
+    if (m && m == fp) return true;
+  return false;
+}
+static void zaiRememberNoEffort(const std::string& model) {
+  static size_t next = 0;
+  if (!model.empty() && !zaiEffortRefusedBefore(model))
+    g_zaiNoEffort[next++ % 2] = nimbus::orch::parkKeyFingerprint(model);
+}
+static bool zaiRefusedEffort(int code, const JsonDocument& resp) {
+  if (code != 400 && code != 422) return false;
+  const std::string text = std::string(resp["error"]["message"] | "") + " " + (const char*)(resp["message"] | "");
+  return text.find("reasoning") != std::string::npos;
+}
 static bool zaiLoopBody(const ProviderDeps& pd, const ZaiRound& a, std::string& body, std::string& err) {
   JsonDocument req = wire::makeDoc(pd);
   req["model"] = s(pd.customModel);
   if (a.maxTokens) req["max_tokens"] = a.maxTokens;
   const std::string effort = s(pd.customReasoningEffort);
-  if (!effort.empty()) req["reasoning_effort"] = effort;
+  if (!effort.empty() && a.withEffort) req["reasoning_effort"] = effort;
   JsonArray msgs = req["messages"].to<JsonArray>();
   const layout::PromptParts& p = a.parts;
   const std::string sysText = p.stat + p.shelf;
@@ -450,8 +473,9 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
     for (int attempt = 0; attempt < 2; ++attempt) {
       out = orch::HeadStep();
       const uint32_t maxTokens = attempt ? cap.retryTokens : cap.maxTokens;
+      const bool withEffort = !zaiEffortRefusedBefore(s(pd.customModel));
       std::string body;
-      if (!zaiLoopBody(pd, ZaiRound{tr, round, ht, allowTools, maxTokens}, body, out.error)) {
+      if (!zaiLoopBody(pd, ZaiRound{tr, round, ht, allowTools, maxTokens, withEffort}, body, out.error)) {
         out.ok = false;
         out.kind = orch::StepErr::BadRequest;
         return out;
@@ -461,6 +485,13 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
       const int code = custRequest(pd, "POST", "/v1/chat/completions", std::move(body), /*anthropicAuth=*/false, resp,
                                    filter, roundMs);
       if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
+      if (withEffort && zaiRefusedEffort(code, resp)) {
+        hlog::logf("orchTurn(zai-loop): %s refused reasoning_effort (HTTP %d) - one retry without it",
+                   s(pd.customModel).c_str(), code);
+        zaiRememberNoEffort(s(pd.customModel));
+        --attempt;   // the same attempt again, without the field
+        continue;
+      }
       if (code != 200) { zaiHttpFailure(code, resp, out); return out; }
       std::string cutWhy;
       if (zaiRoundDone(resp, usage, out, cutWhy)) return out;

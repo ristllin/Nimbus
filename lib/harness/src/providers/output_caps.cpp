@@ -70,7 +70,8 @@ OutputCap mistralCap(const std::string& model) {
   // A model that thinks spends its output budget on it, and a cut ends the turn badly.
   // Measured live 1 Nov: Large 4 at "low" wrote a 1,800-token guide in 18 s, and with no
   // effort field it was cut at 4,000. The time clamp below holds these inside the 60 s
-  // at which Mistral's gateway closes a request (kMistralRoundMs).
+  // at which Mistral's gateway closes a request (kMistralRoundMs), so a real round gets
+  // less than these figures: test_mistral_caps_are_the_documented_numbers pins what it gets.
   const std::string m = startsWith(model, "mistral/") ? model.substr(8) : model;
   const bool fast = startsWith(m, "mistral-large-4") || startsWith(m, "mistral-small") ||
                     startsWith(m, "mistral-medium") || startsWith(m, "magistral-");

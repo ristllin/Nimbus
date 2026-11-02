@@ -5547,12 +5547,51 @@ static void test_cum830_a_turn_reads_only_its_own_chats_results() {
   TEST_ASSERT_TRUE(r.jobs->hasFreshResultsFor(r.jobs->freshScopeFor("1001")));
 }
 
+// The empty-answer correction as the engine wires it, not the pure function: an owner's
+// empty reply gets the round, and a turn with nothing to say does not, because that round
+// is paid for.
+static void test_the_empty_answer_correction_is_wired_with_its_exclusions() {
+  const std::string empty = "{\"reply\":\"\",\"ask\":\"\",\"memory\":\"\"}";
+  {  // An owner who asked.
+    Rig r;
+    Rig::Script s;
+    s.checkFinal = true;
+    s.outJson = empty;
+    r.scripts["anthropic"] = {s};
+    r.eng->handleMessage("what is my sister's cat called?", "Roy", "1001");
+    TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
+    TEST_ASSERT_TRUE_MESSAGE(r.finalChecks[0].rfind("[TURN CHECK]", 0) == 0, r.finalChecks[0].c_str());
+    TEST_ASSERT_TRUE_MESSAGE(r.finalChecks[0].find("empty reply") != std::string::npos, r.finalChecks[0].c_str());
+  }
+  {  // A scheduled turn has nobody waiting: no paid round.
+    Rig r;
+    Rig::Script s;
+    s.checkFinal = true;
+    s.outJson = empty;
+    r.scripts["anthropic"] = {s};
+    r.eng->injectScheduledTurn("", "the routine's prompt", "morning");
+    TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
+    TEST_ASSERT_EQUAL_STRING("", r.finalChecks[0].c_str());
+  }
+  {  // An answer with words costs no round.
+    Rig r;
+    Rig::Script s;
+    s.checkFinal = true;
+    s.outJson = "{\"reply\":\"Pixel.\"}";
+    r.scripts["anthropic"] = {s};
+    r.eng->handleMessage("what is my sister's cat called?", "Roy", "1001");
+    TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
+    TEST_ASSERT_EQUAL_STRING("", r.finalChecks[0].c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_cum828_a_turns_requests_carry_its_chats_grant);
   RUN_TEST(test_cum830_a_turn_reads_only_its_own_chats_results);
   runFirstHalf();
   runSecondHalf();
+  RUN_TEST(test_the_empty_answer_correction_is_wired_with_its_exclusions);
   UNITY_END();
   return 0;
 }

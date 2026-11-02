@@ -338,14 +338,29 @@ bool normalizeSessionOps(JsonObject root, Turn& rep) {
 // A mem_write item's text. GLM sent `fact` or `text` on 11 of 12 writes and every one was
 // dropped in silence (VNC gap pass, 1 Nov), so the reply claimed a save that never happened.
 // The common names are read, and an item with no text is reported: the final-answer check
-// sends " arrived as ... not used" back to the model, and the log shows it.
+// sends " arrived as ... not used" back to the model, and the log shows it. The strings
+// beside the text lead it: {"key":"sister_cat","value":"Pixel"} is no use stored as "Pixel"
+// (nothing retrieves it), and the reply would still say it was saved.
+std::string memWriteLead(JsonObjectConst m, const char* textName) {
+  std::string lead;
+  for (JsonPairConst kv : m) {
+    const char* k = kv.key().c_str();
+    bool ownField = std::strcmp(k, textName) == 0;
+    for (const char* known : {"ttl", "source"}) ownField = ownField || std::strcmp(k, known) == 0;
+    if (ownField || !kv.value().is<const char*>() || !*kv.value().as<const char*>()) continue;
+    lead += (lead.empty() ? "" : ", ") + std::string(kv.value().as<const char*>());
+  }
+  return lead;
+}
+
 std::string memWriteText(JsonObjectConst m, Turn& rep) {
   for (const char* name : {"content", "fact", "text", "memory", "note", "value"}) {
     JsonVariantConst v = m[name];
     if (!v.is<const char*>() || !*v.as<const char*>()) continue;
     if (std::strcmp(name, "content") != 0)
       rep.parseNotes.push_back(std::string("mem_write text arrived as ") + name + "; repaired");
-    return v.as<const char*>();
+    const std::string lead = memWriteLead(m, name);
+    return lead.empty() ? std::string(v.as<const char*>()) : lead + ": " + v.as<const char*>();
   }
   std::string fields;
   for (JsonPairConst kv : m) fields += (fields.empty() ? "" : ",") + capUtf8(kv.key().c_str(), 24);

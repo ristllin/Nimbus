@@ -1912,6 +1912,88 @@ static void test_r1_a_list_without_the_models_row_sends_images_and_a_refusal_fal
   TEST_ASSERT_TRUE(fx.set->rejected);
 }
 
+// A sub that ran and billed with nothing to show, or that a gateway lost mid-run, may have
+// run, so it must not read as a refusal: the spawn move starts a second billed copy on one.
+static void test_a_mistral_sub_error_says_whether_it_may_have_run() {
+  const struct { int status; const char* body; agent::FabricErr want; } cases[] = {
+      {200, "{\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"web_search\"}],\"usage\":{\"prompt_tokens\":9}}",
+       agent::FabricErr::ParseFail},
+      {200, "{\"outputs\":[],\"usage\":{\"prompt_tokens\":9}}", agent::FabricErr::ParseFail},
+      {502, "{\"message\":\"bad gateway\"}", agent::FabricErr::Timeout},
+      {504, "{\"message\":\"gateway timeout\"}", agent::FabricErr::Timeout},
+      {500, "{\"message\":\"boom\"}", agent::FabricErr::RemoteFail},
+      {503, "{\"message\":\"overloaded\"}", agent::FabricErr::RemoteFail},
+      {400, "{\"message\":\"bad\"}", agent::FabricErr::RemoteFail},
+  };
+  for (const auto& k : cases) {
+    providers::clearHostParks();
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", k.status, k.body});
+    auto pd = d.contract();
+    agent::Directive dir;
+    dir.category = "research";
+    dir.instruction = "find it";
+    char job[72] = {};
+    TEST_ASSERT_EQUAL_MESSAGE((int)k.want, (int)providers::mistralDispatch(pd, "mistral-medium-latest", dir, job),
+                              std::to_string(k.status).c_str());
+  }
+}
+
+// The exact numbers a round gets at the real 65 s deadline, and the page that states them.
+// Large 4's retry is 5,500: the time clamp holds it, so effort "low" is what stops the cut.
+static void test_mistral_caps_are_the_documented_numbers() {
+  std::ifstream f("docs/provider-wire.md");
+  TEST_ASSERT_TRUE(f.good());
+  const std::string doc((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  auto withComma = [](uint32_t n) { return std::to_string(n / 1000) + "," + (n % 1000 < 100 ? "0" : "") + (n % 1000 < 10 ? "0" : "") + std::to_string(n % 1000); };
+  const struct { const char* model; uint32_t first, retry; const char* words; } rows[] = {
+      {"mistral-large-4-0", 4125, 5500, "Large 4 gets %1 tokens (%2 on the retry)"},
+      {"mistral-medium-latest", 5361, 7150, "Medium and Small get %1 (%2)"},
+      {"mistral-small-latest", 5361, 7150, "Medium and Small get %1 (%2)"},
+      {"mistral-large-latest", 3000, 4000, "older models %1 (%2)"},
+  };
+  for (const auto& r : rows) {
+    const providers::OutputCap c =
+        providers::outputCapFor("mistral", r.model, providers::RoundKind::ToolRound, providers::kMistralRoundMs);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(r.first, c.maxTokens, r.model);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(r.retry, c.retryTokens, r.model);
+    std::string want = r.words;
+    want.replace(want.find("%1"), 2, withComma(r.first));
+    want.replace(want.find("%2"), 2, withComma(r.retry));
+    TEST_ASSERT_TRUE_MESSAGE(doc.find(want) != std::string::npos, want.c_str());
+  }
+}
+
+// A long answer in the round's text on the Mistral wire (the case that was measured).
+static void test_a_long_mistral_answer_in_the_round_text_reaches_the_owner() {
+  std::string guide;
+  for (int i = 0; i < 60; i++) guide += "Monday route idea and the weather plan for the day. ";
+  FakeProviderDeps d;
+  d.http.script.push_back(
+      {"api.mistral.ai", "/v1/chat/completions", 200,
+       "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"content\":\"" + guide +
+           "\",\"tool_calls\":[{\"id\":\"c1\",\"function\":{\"name\":\"orch_turn\","
+           "\"arguments\":\"{\\\"reply\\\":\\\"The guide is written out in full above.\\\"}\"}}]}}],"
+           "\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":9}}"});
+  auto pd = d.contract();
+  pd.toolLoopOn = [] { return true; };
+  agent::HeadTools ht;
+  ht.dispatch = [](const orch::HeadToolCall& c) {
+    orch::HeadToolResult r;
+    r.id = c.id;
+    r.name = c.name;
+    return r;
+  };
+  ht.cfg.maxRounds = 4;
+  ht.cfg.deadlineMs = 600000;
+  ht.cfg.maxToolResultBytes = 4096;
+  ht.cfg.maxTotalToolBytes = 24576;
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &ht, nullptr), err.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(out.find("Monday route idea") != std::string::npos, out.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(out.find("written out in full above") == std::string::npos, out.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_reserved_toolname_renamed_and_inverted);
@@ -1968,6 +2050,9 @@ int main(int, char**) {
   RUN_TEST(test_r1_a_list_without_the_models_row_sends_images_and_a_refusal_falls_back);
   RUN_TEST(test_img_look_photo_follows_the_tool_message);
   RUN_TEST(test_img_look_blind_mistral_reads_the_answer);
+  RUN_TEST(test_a_mistral_sub_error_says_whether_it_may_have_run);
+  RUN_TEST(test_mistral_caps_are_the_documented_numbers);
+  RUN_TEST(test_a_long_mistral_answer_in_the_round_text_reaches_the_owner);
   UNITY_END();
   return 0;
 }

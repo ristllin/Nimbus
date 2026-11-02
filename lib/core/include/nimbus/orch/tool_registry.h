@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 
 #include <functional>
+#include <initializer_list>
 #include <string>
 
 #include "nimbus/orch/rbac.h"            // Role / Perms / Quota
@@ -108,6 +109,9 @@ struct Tool {
   // plus a description of the owner's admin surface. `adminOnly` keeps such a
   // tool out of a non-admin turn's list, restoring "advertised == callable".
   bool adminOnly = false;
+  // Comma-separated argument names the handler reads that the schema does not offer the
+  // model (an alias, a first-party flag). They are read, so they are not "unknown".
+  std::string alsoReads;
 };
 
 class ToolRegistry {
@@ -243,6 +247,9 @@ class ToolRegistry {
   // For the capability manifest (the tool summaries): stable order = add
   // order.
   std::vector<ToolInfo> manifest() const;
+
+  // Argument names `name`'s handler reads that its schema does not offer the model.
+  void alsoReads(const std::string& name, std::initializer_list<const char*> args);
 
   // A tool's full advertisement material (name + description + arguments JSON-Schema),
   // for building a provider function-`tools[]` array so the tool is genuinely CALLABLE

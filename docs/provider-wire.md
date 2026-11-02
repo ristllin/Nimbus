@@ -178,8 +178,8 @@ serves:
   accept it, clamped so a generation at the family's slowest measured rate still
   finishes inside the round's 120 s; Mistral's gateway closes a non-streamed request
   at 60 s, so its rounds have a 65 s deadline and the close reads as a timeout (no
-  same-host retry). Inside that, Large 4 gets about 4,950 tokens (6,050 on the retry),
-  Medium and Small about 5,360 (7,150) and older models 3,000 (4,000), and a Mistral
+  same-host retry). Inside that, Large 4 gets 4,125 tokens (5,500 on the retry),
+  Medium and Small get 5,361 (7,150) and older models 3,000 (4,000), and a Mistral
   head that can reason (the models whose `/v1/models` entry says
   `capabilities.reasoning`) gets the lowest `reasoning_effort` it takes: `"low"` on
   Large 4 and the hosted GLM, which refuse `"none"`, and `"none"` on the others,

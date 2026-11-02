@@ -558,7 +558,7 @@ class JobEngine {
     nimbus::orch::ConnectorGrant grant;
   };
   bool spawnMayMove(const PendingSpawn& p, FabricErr err) const;
-  bool spawnMoved(const PendingSpawn& p, FabricErr err, SpawnAttempt& at);
+  bool spawnMoved(const PendingSpawn& p, FabricErr& err, SpawnAttempt& at);
   bool subProviderRuns(const std::string& provider, std::string* closedWhy) const;
   uint32_t nowMs() const { return d_.platform.nowMs ? d_.platform.nowMs() : 0; }
   uint32_t freeHeap() const { return d_.platform.freeHeap ? d_.platform.freeHeap() : 0xFFFFFFFFu; }

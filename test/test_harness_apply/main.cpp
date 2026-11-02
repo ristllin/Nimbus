@@ -2370,6 +2370,63 @@ static void test_rbac_an_unapproved_chat_starts_no_sub_agent() {
   }
 }
 
+// "Finished." is true only of an action that landed. Every attempted action below was
+// refused or changed nothing, so the owner hears that the answer was empty.
+static void test_a_refused_action_never_reads_as_finished() {
+  for (const char* chat : {"1001", "2002"}) {
+    for (const char* json : {"{\"reboot\":true}", "{\"type\":\"orch_model\",\"provider\":\"keyless\",\"model\":\"good-1\"}",
+                             "{\"type\":\"orch_model\",\"provider\":\"mistral\",\"model\":\"bad-1\"}"}) {
+      if (std::string(chat) == "1001" && std::string(json) == "{\"reboot\":true}") continue;   // the owner's lands
+      Rec r;
+      ApplyDeps d = makeDeps(r);
+      ApplyState st = makeState(r);
+      bool spawned = false;
+      agent::applyTurn(turnWithDevice(json), chat, d, st, spawned);
+      for (const auto& m : r.delivered)
+        TEST_ASSERT_TRUE_MESSAGE(m.second.find("Finished") == std::string::npos, json);
+    }
+  }
+  {  // Every write refused (the memory tool says no): no save happened.
+    Rec r;
+    r.memSuccess = false;
+    r.memCode = "refused";
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r);
+    Turn t;
+    nimbus::orch::MemWrite w;
+    w.content = "the cat is called Pixel";
+    t.mem_write.push_back(w);
+    bool spawned = false;
+    agent::applyTurn(t, "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+    TEST_ASSERT_EQUAL_STRING(agent::kEmptyAnswer, r.delivered[0].second.c_str());
+  }
+  {  // A host with no memory store: the same.
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    d.memDispatch = nullptr;
+    ApplyState st = makeState(r);
+    Turn t;
+    nimbus::orch::MemWrite w;
+    w.content = "the cat is called Pixel";
+    t.mem_write.push_back(w);
+    bool spawned = false;
+    agent::applyTurn(t, "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+    TEST_ASSERT_EQUAL_STRING(agent::kEmptyAnswer, r.delivered[0].second.c_str());
+  }
+  {  // The counter-test: an owner's reboot lands, and that is finished.
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r);
+    bool spawned = false;
+    agent::applyTurn(turnWithDevice("{\"reboot\":true}"), "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL(1, (int)r.staged.size());
+    TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+    TEST_ASSERT_EQUAL_STRING(agent::kNoMessageAfterAction, r.delivered[0].second.c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_scheduled_turn_refuses_reboot);
@@ -2450,6 +2507,7 @@ int main(int, char**) {
   RUN_TEST(test_rbac_only_the_owners_turn_raises_the_needs_you_light);
   RUN_TEST(test_rbac_a_refused_action_backs_no_claim);
   RUN_TEST(test_rbac_an_unapproved_chat_starts_no_sub_agent);
+  RUN_TEST(test_a_refused_action_never_reads_as_finished);
   UNITY_END();
   return 0;
 }

@@ -1244,19 +1244,23 @@ bool JobEngine::spillWholeReply(const orch::JobRecord& rec, const std::string& w
   return !path.empty();
 }
 
+// A Timeout or an unreadable answer may have run and billed.
+static bool mayHaveRun(FabricErr err) { return err == FabricErr::Timeout || err == FabricErr::ParseFail; }
+
 // CUM-887: the refused provider's words were "try again, or use another provider", and
 // using another provider is the device's job. Only errors that surely started nothing
-// move: a Timeout or an unreadable answer may have run and billed, so a second copy never
-// starts. A connector lives on its provider and a file task runs where its file can come
-// back, so those two stay. At most two moves; on success `provider`, `model` and `jobId`
-// name the run that started.
+// move, on the first attempt and on every later one, so a second copy never starts after
+// a run that may have billed. A connector lives on its provider and a file task runs where
+// its file can come back, so those two stay. At most two moves; on success `provider`,
+// `model` and `jobId` name the run that started. A later attempt that may have run ends
+// the walk with `err`, `provider` and `model` naming it: that is what the owner must hear.
 bool JobEngine::spawnMayMove(const PendingSpawn& p, FabricErr err) const {
-  if (err == FabricErr::Timeout || err == FabricErr::ParseFail) return false;
+  if (mayHaveRun(err)) return false;
   if (!orch::paidCallAllowed(orch::SpendSeam::Sub)) return false;   // the ceiling refuses every provider alike
   return connectorHost(p).empty() && !(p.skill[0] && nimbus::orch::isFileSkill(p.skill));
 }
 
-bool JobEngine::spawnMoved(const PendingSpawn& p, FabricErr err, SpawnAttempt& at) {
+bool JobEngine::spawnMoved(const PendingSpawn& p, FabricErr& err, SpawnAttempt& at) {
   if (!spawnMayMove(p, err)) return false;
   std::vector<std::string> tried{at.provider};
   for (int moves = 0; moves < 2; moves++) {
@@ -1275,11 +1279,12 @@ bool JobEngine::spawnMoved(const PendingSpawn& p, FabricErr err, SpawnAttempt& a
       const orch::ConnectorGrantScope scope(at.grant);
       next = a->dispatch(at.d, at.jobId);
     }
-    if (next != FabricErr::Ok) continue;
-    ledgerSwapped(p, at.provider + " refused it; runs on " + alt + "/" + altModel);
+    if (next != FabricErr::Ok && !mayHaveRun(next)) continue;
+    if (next == FabricErr::Ok) ledgerSwapped(p, at.provider + " refused it; runs on " + alt + "/" + altModel);
+    else err = next;
     at.provider = alt;
     at.model = altModel;
-    return true;
+    return next == FabricErr::Ok;
   }
   return false;
 }
@@ -1380,12 +1385,14 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   }
   if (err != FabricErr::Ok) {
     // CUM-887: a refusal that surely started nothing moves the work on. If nothing takes
-    // it, the first refusal below is the one the owner hears.
+    // it, the first refusal below is the one the owner hears, with the wait it asked for.
+    const RateLimit firstWindow = window;
     SpawnAttempt attempt{provider, model, d, jobId, grant};
     if (spawnMoved(p, err, attempt)) {
       err = FabricErr::Ok;
       a = d_.fabric->adapterFor(provider.c_str());
     }
+    window = firstWindow;
   }
   if (err != FabricErr::Ok) {
     hlog::logf("orchestrator: spawn failed %d (prov=%s model=%s cat=%s)",

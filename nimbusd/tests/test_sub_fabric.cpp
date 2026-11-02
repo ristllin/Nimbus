@@ -626,6 +626,38 @@ static void testReplyLessTurnIsNeverDone(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// The correction as the daemon runs it, on the tool loop: the head answers empty, the next
+// request carries the check, and the owner hears the answer that came back. The single-shot
+// leg above never reaches this path.
+static void testEmptyLoopAnswerGetsOneCorrection(ndtest::Ctx& c) {
+  std::printf("  -- (g2) on the tool loop an empty answer gets one correction, a routine none --\n");
+  auto round = [](const std::string& reply) {
+    Exchange e;
+    e.body = "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"tool_calls\":[{\"id\":\"c1\",\"function\":"
+             "{\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"" + reply + "\\\"}\"}}]}}],"
+             "\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":2}}";
+    return e;
+  };
+  clearEnv();
+  FakeHttpTransport tx;
+  tx.script.push_back(round(""));
+  tx.script.push_back(round("Pixel"));
+  Config cfg;
+  NimbusdRig::Options o = opts("fab-g2");
+  o.toolLoop = true;
+  NimbusdRig rig(cfg, o, &tx);
+  rig.applyProviderKey("mistral", "mk_TEST_FAB_7");
+  std::vector<std::pair<std::string, std::string>> got;
+  rig.setDeliver([&got](const std::string& ch, const std::string& t) { got.push_back({ch, t}); });
+  rig.say(kWebChatId, "what is my sister's cat called?");
+  c.eqi((long)tx.seen.size(), 2, "the empty answer costs exactly one more round");
+  c.ok(tx.seen.size() == 2 && tx.seen[1].body.find("[TURN CHECK]") != std::string::npos,
+       "the second round carries the check");
+  c.eqi((long)got.size(), 1, "one answer reaches the owner");
+  if (!got.empty()) c.eq(got[0].second, "Pixel", "the corrected answer is what the owner hears");
+  clearEnv();
+}
+
 // CUM-544: a hosted Z.ai sub-agent carries the same bounded reasoning effort as the
 // Z.ai head and the device's Z.ai subs (glm-5.x always reasons and otherwise
 // outruns the 30 s dispatch): direct, and the router's zai upstream. Another
@@ -760,6 +792,7 @@ int main() {
   testSpawnFromOtherNamespaceRefused(c);
   testRemovedChatReportDropped(c);
   testReplyLessTurnIsNeverDone(c);
+  testEmptyLoopAnswerGetsOneCorrection(c);
   testZaiSubCarriesLowEffort(c);
   testCutSubMayHaveStarted(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);

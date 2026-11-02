@@ -2949,6 +2949,135 @@ static void test_unwired_host_fails_closed() {
   TEST_ASSERT_TRUE(wired.freshScopeFor("").owner);
 }
 
+// A sub that may have run on the SECOND attempt stops the walk too: the first attempt's
+// refusal let the work move, and that attempt may have billed, so no third copy starts,
+// and the owner and the head hear about the run that may be going, not the first refusal.
+static void test_a_moved_spawn_that_may_have_run_starts_no_third_copy() {
+  for (const agent::FabricErr second : {agent::FabricErr::Timeout, agent::FabricErr::ParseFail}) {
+    Rig r;
+    FakeAdapter next, third;
+    next.backend = "openai";
+    next.dispatchErr = second;
+    third.backend = "zai";
+    r.fabric.registerAdapter(&next);
+    r.fabric.registerAdapter(&third);
+    r.keyed = {"anthropic", "openai", "zai"};
+    r.adapter.dispatchErr = agent::FabricErr::Auth;
+    r.eng->enqueueSpawn(sp("look this up"), "chat1");
+    r.eng->pump();
+    TEST_ASSERT_EQUAL(0, (int)third.dispatched.size());
+    TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+    TEST_ASSERT_TRUE_MESSAGE(r.delivered[0].second.find("The agent on openai") == 0, r.delivered[0].second.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(r.delivered[0].second.find("may have run") != std::string::npos,
+                             r.delivered[0].second.c_str());
+    const std::string note = r.eng->takeSpawnNotes("chat1");
+    TEST_ASSERT_TRUE_MESSAGE(note.find("Do not spawn it again") != std::string::npos, note.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(note.find("openai") != std::string::npos, note.c_str());
+    TEST_ASSERT_EQUAL(0, r.eng->activeJobCount());
+  }
+  // The counter-test: a second attempt that surely started nothing still walks on.
+  Rig r;
+  FakeAdapter next, third;
+  next.backend = "openai";
+  next.dispatchErr = agent::FabricErr::RemoteFail;
+  third.backend = "zai";
+  r.fabric.registerAdapter(&next);
+  r.fabric.registerAdapter(&third);
+  r.keyed = {"anthropic", "openai", "zai"};
+  r.adapter.dispatchErr = agent::FabricErr::Auth;
+  r.eng->enqueueSpawn(sp("look this up"), "chat1");
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(1, (int)third.dispatched.size());
+  TEST_ASSERT_EQUAL(1, r.eng->activeJobCount());
+}
+
+// When nothing takes the work the owner hears the first refusal, so the wait it names is
+// the wait that provider asked for, whatever a later provider's 429 said.
+static void test_the_first_refusal_keeps_its_own_window() {
+  Rig r;
+  FakeAdapter next;
+  next.backend = "openai";
+  next.dispatchErr = agent::FabricErr::RateLimited;
+  next.dispatchWindow = agent::RateLimit::DailyUtc;
+  r.fabric.registerAdapter(&next);
+  r.adapter.dispatchErr = agent::FabricErr::RateLimited;
+  r.adapter.dispatchWindow = agent::RateLimit::PerMinute;
+  r.eng->enqueueSpawn(sp("look this up"), "chat1");
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  const std::string want = std::string("Couldn't start that agent on anthropic. ") +
+                           agent::rateLimitReply(agent::RateLimit::PerMinute);
+  TEST_ASSERT_EQUAL_STRING(want.c_str(), r.delivered[0].second.c_str());
+}
+
+// A Mistral sub that ran and returned nothing billed the run: it is not a refusal, on the
+// real adapter's wire, so the same task never starts on the next provider.
+static void test_a_mistral_sub_that_ran_and_said_nothing_does_not_move() {
+  Rig r;
+  WireMistral mistral;
+  harness_test::Exchange e;
+  e.status = 200;
+  e.body = "{\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"web_search\"}],"
+           "\"usage\":{\"prompt_tokens\":900,\"completion_tokens\":40}}";
+  mistral.fake.http.script.push_back(e);
+  FakeAdapter next;
+  next.backend = "openai";
+  r.fabric.registerAdapter(&mistral);
+  r.fabric.registerAdapter(&next);
+  r.keyed = {"mistral", "openai"};
+  orch::Spawn s = sp("research this");
+  s.provider = "mistral";
+  r.eng->enqueueSpawn(s, "chat1");
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(1, (int)mistral.fake.http.seen.size());
+  TEST_ASSERT_EQUAL(0, (int)next.dispatched.size());
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_TRUE_MESSAGE(r.delivered[0].second.find("may have run") != std::string::npos,
+                           r.delivered[0].second.c_str());
+  TEST_ASSERT_TRUE(r.eng->takeSpawnNotes("chat1").find("Do not spawn it again") != std::string::npos);
+}
+
+// A file task runs where its file can come back: a refusal stands, and a keyless provider
+// is refused rather than moved, for every file skill.
+static void test_a_file_task_stays_on_its_provider() {
+  for (const char* skill : {"code_interpreter", "deliver-pdf"}) {
+    {
+      Rig r;
+      FakeAdapter other;
+      other.backend = "openai";
+      r.fabric.registerAdapter(&other);
+      r.adapter.dispatchErr = agent::FabricErr::RemoteFail;
+      orch::Spawn s = sp("build the report");
+      s.skill = skill;
+      r.eng->enqueueSpawn(s, "chat1");
+      r.eng->pump();
+      TEST_ASSERT_EQUAL_MESSAGE(0, (int)other.dispatched.size(), skill);
+      TEST_ASSERT_EQUAL_MESSAGE(0, r.eng->activeJobCount(), skill);
+    }
+    {
+      Rig r;
+      FakeAdapter other;
+      other.backend = "openai";
+      r.fabric.registerAdapter(&other);
+      r.keyed = {"openai"};   // the named provider, anthropic, has no key
+      orch::Spawn s = sp("build the report");
+      s.skill = skill;
+      r.eng->enqueueSpawn(s, "chat1");
+      r.eng->pump();
+      TEST_ASSERT_EQUAL_MESSAGE(0, (int)other.dispatched.size(), skill);
+    }
+  }
+  // The counter-test: the same refusal with no file skill moves.
+  Rig r;
+  FakeAdapter other;
+  other.backend = "openai";
+  r.fabric.registerAdapter(&other);
+  r.adapter.dispatchErr = agent::FabricErr::RemoteFail;
+  r.eng->enqueueSpawn(sp("build the report"), "chat1");
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(1, (int)other.dispatched.size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_lane_l_spawn_model_coercion_only_lands_on_a_listed_model);
@@ -3044,7 +3173,14 @@ int main(int, char**) {
   RUN_TEST(test_cum830_fresh_results_stay_with_the_chat_that_started_them);
   RUN_TEST(test_cum830_the_raw_fallback_delivers_each_chats_results_to_it);
   RUN_TEST(test_cum830_session_rows_name_who_started_them);
+<<<<<<< HEAD
   RUN_TEST(test_unwired_host_fails_closed);
+=======
+  RUN_TEST(test_a_moved_spawn_that_may_have_run_starts_no_third_copy);
+  RUN_TEST(test_the_first_refusal_keeps_its_own_window);
+  RUN_TEST(test_a_mistral_sub_that_ran_and_said_nothing_does_not_move);
+  RUN_TEST(test_a_file_task_stays_on_its_provider);
+>>>>>>> f82534fa (lane MG wip: fix pass: a run that may have billed never starts another copy, a tool's own arguments are never reported unread, open schemas flag nothing, a long answer in round text reaches the owner, the wiring tests)
   UNITY_END();
   return 0;
 }

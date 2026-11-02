@@ -121,7 +121,7 @@ FabricErr compatHttpErr(int code, const Directive& d, const JsonDocument& out,
   if ((code == 401 || code == 403) && !routerSaysNotTheKey) return FabricErr::Auth;
   if (code == 429) return wire::rateLimitedByText(d, backendTag, out["error"]["message"] | "");
   hlog::logf("%s: HTTP %d", backendTag, code);
-  return FabricErr::RemoteFail;
+  return wire::subHttpErr(code);
 }
 }  // namespace
 
