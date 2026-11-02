@@ -386,7 +386,7 @@ class Ctx:
 REC = {
     "reply": "The answer is 51.",
     "replies": ["The answer is 51."],
-    "tools": [{"name": "files_read", "args": '{"name":"notes.txt"}', "result": "hello-file"}],
+    "tools": [{"name": "files_read", "args": '{"name":"notes.txt"}', "result": "hello-file kept as text: memory m1"}],
     "log": "fold(owner): ok on mistral",
     "http": {"status": 200, "body": '{"ok":true}'},
     "usage_delta": {"in": 100, "out": 10},
@@ -405,7 +405,7 @@ CASES = {
     "tool_args_regex": ({"tool": "files_read", "regex": "notes"}, REC, {"tool": "files_read", "regex": "other"}),
     "tool_result_regex": ({"tool": "files_read", "regex": "hello"}, REC, {"tool": "files_write", "regex": "hello"}),
     "no_fabricated_action": (True, {**REC, "reply": "I've emailed it.", "replies": []}, True),
-    "write_result_regex": ("kept as text", {**REC, "tools": [{"name": "memory_write", "result": "kept as text: memory m1"}]}, "stored memory"),
+    "write_result_regex": ("kept as text", REC, "stored memory"),
     "log_regex": (r"fold\(owner\): ok", REC, "no such line"),
     "log_not_regex": ("no such line", REC, "fold"),
     "http_status": (200, REC, 400),
@@ -771,7 +771,7 @@ class Schema(unittest.TestCase):
         self.refused("http_status", scenarios=[sc({"http": {"path": "/a"}, "expect": [{"http_status": "200"}]})])
         self.refused("bad regex", scenarios=[sc(say("x", {"reply_regex": "("}))])
         self.refused("below 100", monthly_cap_cents=50)
-        self.refused("provider", keys={"mistrall": "K"})
+        self.refused("unknown key", keys={"mistrall": "K"})
         self.refused("host", host="mistrall")
 
     def test_a_say_field_on_another_action_is_refused(self):
