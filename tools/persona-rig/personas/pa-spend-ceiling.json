@@ -16,7 +16,7 @@
     "host": "${host}",
     "scenarios": [
       {"id": "burn-to-ceiling", "steps": [
-        {"say": "Working note $i. Reply in one short sentence.", "repeat": 24, "pad": 6000, "settle_s": 2, "timeout_s": 300,
+        {"say": "Working note $i. Reply in one short sentence.", "repeat": 30, "pad": 60000, "settle_s": 2, "timeout_s": 300,
          "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
         {"http": {"method": "GET", "path": "/api/state"},
          "expect": [{"http_status": 200}, {"api_equals": {"path": "/api/state", "field": "spend.frozen", "value": true}}]}
