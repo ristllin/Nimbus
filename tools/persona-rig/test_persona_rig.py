@@ -837,6 +837,40 @@ class Schema(unittest.TestCase):
         self.assertTrue({"no-fold", "glm-no-tools", "no-routines", "binary-read-kills-turn"} <= set(rows))
         self.assertTrue(all(r["title"] and r["report"] for r in rows.values()))
 
+    def test_a_no_embedding_route_class_is_only_used_where_no_row_asserts_memory_hard(self):
+        # Root-cause honesty for memory excuses: a class marked root_cause
+        # "no-embedding-route" may only sit on a host where no persona asserts the same
+        # /api/mem/stats check hard. One hard vectors>=1 pass on a host proves that host
+        # has an embedding route, so excusing under this class there mislabels the
+        # failure and would mis-route a recurrence to the wrong defect bucket.
+        defects = pr.known_defects()
+        no_route = {n for n, d in defects.items() if d.get("root_cause") == "no-embedding-route"}
+        self.assertIn("memory-needs-mistral-key", no_route)
+        hard_hosts, excused = set(), []
+        # Only the run set: run-round.sh globs pa-*.json, so the older parity scripts in
+        # personas/ are not part of the lane's rounds and are not checked here.
+        for path in sorted((HERE / "personas").glob("pa-*.json")):
+            for p in pr.load_personas(str(path)):
+                host = p.get("host", "")
+                for sc in p["scenarios"]:
+                    for st in sc["steps"]:
+                        for item in st.get("expect", []):
+                            api = item.get("api_min") or {}
+                            if not str(api.get("path", "")).startswith("/api/mem/stats"):
+                                continue
+                            kd = item.get("known_defect", "")
+                            if kd in no_route:
+                                excused.append((path.name, host, kd))
+                            elif not kd:
+                                hard_hosts.add(host)
+        for fname, host, kd in excused:
+            self.assertNotIn(
+                host,
+                hard_hosts,
+                f"{fname}: {kd} excuses a memory check on host {host!r}, but another persona "
+                "of that host asserts the same check hard, so the host has an embedding route",
+            )
+
     def _load_matrix(self, doc):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "m.json"

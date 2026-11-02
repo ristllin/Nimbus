@@ -2,7 +2,7 @@
   "description": "A Telegram-first user: the hosted bot token arrives as instance environment (the way the platform passes it), the owner's chat is on the allow list, an approved chat can talk, and a stranger's message never gets a turn.",
   "vars": {"suffix": "6690"},
   "matrix": [
-    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": "", "mem_defect": "memory-needs-mistral-key"},
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": "", "mem_defect": "member-memory-write-dropped"},
     {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": "glm-no-tools", "mem_defect": ""},
     {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": "glm-no-tools", "mem_defect": ""}
   ],

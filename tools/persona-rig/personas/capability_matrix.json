@@ -60,7 +60,7 @@
    "host": "openai",
    "key": "OPENAI_API_KEY",
    "model": "gpt-6-luna",
-   "memory_defect": "memory-needs-mistral-key",
+   "memory_defect": "",
    "tools_defect": "",
    "binary_defect": "binary-read-kills-turn"
   }
