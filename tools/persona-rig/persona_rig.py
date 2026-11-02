@@ -511,11 +511,33 @@ def _send_turn(inst: Instance, step: dict, rec: dict):
         return None
 
 
+def _ceiling_refusal(send) -> str | None:
+    """The spend-ceiling gate answers at once with 409 spend_ceiling: the notice IS the reply."""
+    if not send or send[0] != 409:
+        return None
+    try:
+        body = json.loads(send[1])
+    except ValueError:
+        return None
+    return body.get("error", "") if body.get("code") == "spend_ceiling" else None
+
+
 def run_say(inst: Instance, step: dict, rec: dict):
     cap = Capture(inst)
     rec["_started"] = time.time()
     deadline = rec["_started"] + step.get("timeout_s", 240)
     turn_id = _send_turn(inst, step, rec)
+    refusal = _ceiling_refusal(rec.get("send")) if turn_id is None else None
+    if refusal is not None:
+        cap.fill(rec)
+        rec["ceiling_refusal"] = refusal
+        rec["last_poll"] = f"{rec['send'][0]} {rec['send'][1]}"
+        rec["reply"] = refusal
+        rec["replies"] = [refusal]
+        rec["turn_resolved"] = True
+        rec["timed_out"] = False
+        rec["total_s"] = round(time.time() - rec.pop("_started"), 1)
+        return
     _await_step(inst, cap, step, turn_id, rec, deadline)
     cap.fill(rec)
     if not rec["reply"] and rec["replies"]:
@@ -556,7 +578,7 @@ def _transient_failure(rec: dict) -> bool:
 def _implicit_checks(rec: dict) -> list:
     """A turn that was never accepted, or ran out of time, fails whatever else it asked."""
     out = []
-    if "send" in rec and not 200 <= rec["send"][0] < 300:
+    if "send" in rec and not 200 <= rec["send"][0] < 300 and "ceiling_refusal" not in rec:
         out.append({"check": "turn_sent", "arg": True, "pass": False, "seen": f"send answered {rec['send'][0]}"})
     if rec.get("timed_out"):
         out.append({"check": "turn_finished", "arg": True, "pass": False, "seen": "ran out of time"})

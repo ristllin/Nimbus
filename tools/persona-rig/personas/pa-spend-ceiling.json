@@ -2,9 +2,9 @@
   "description": "A user hitting the spend ceiling: the monthly ceiling is at the 1 USD floor, turns run until the estimated spend reaches it, the frozen reply must say plainly that paid calls are paused at the ceiling and how to raise it, and raising the ceiling through the web app must restore answers.",
   "vars": {"suffix": "2093"},
   "matrix": [
-    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": "", "burn_repeat": 20},
-    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": "glm-no-tools", "burn_repeat": 36},
-    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": "glm-no-tools", "burn_repeat": 420}
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": "", "burn_repeat": 40},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": "glm-no-tools", "burn_repeat": 46},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": "glm-no-tools", "burn_repeat": 48}
   ],
   "persona": {
     "name": "pa-ceiling-${name}",

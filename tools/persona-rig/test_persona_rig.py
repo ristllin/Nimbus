@@ -183,6 +183,15 @@ def make_handler(fake: FakeNimbusd, token: str):
             with fake.lock:
                 if url.path == "/api/chat":
                     text = urllib.parse.parse_qs(raw.decode())["text"][0]
+                    if "frozen" in text:  # the spend-ceiling gate answers at once, never queues
+                        return self._send(
+                            409,
+                            {
+                                "error": "Paid AI calls are paused: this month's spend ceiling is reached. "
+                                "Raise it on Assistant > Usage.",
+                                "code": "spend_ceiling",
+                            },
+                        )
                     return self._send(200, {"pending": True, "turn": fake.run_turn(text)})
                 if url.path == "/api/message":
                     fake.run_turn(json.loads(raw)["text"])
@@ -599,6 +608,34 @@ class EndToEnd(unittest.TestCase):
         rec = {"send": [500, "boom"], "timed_out": True}
         self.assertEqual([c["check"] for c in pr._implicit_checks(rec)], ["turn_sent", "turn_finished"])
         self.assertEqual(pr._implicit_checks({"send": [200, ""], "timed_out": False}), [])
+
+    def test_a_ceiling_refusal_is_the_engines_at_once_answer(self):
+        p = persona(
+            scenarios=[
+                {
+                    "id": "s",
+                    "steps": [
+                        {
+                            "say": "frozen turn",
+                            "settle_s": 0,
+                            "timeout_s": 3,
+                            "expect": [
+                                {"turn_resolved": True},
+                                {"reply_regex": "(?i)paused"},
+                                {"no_error_reply": True},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        )
+        summary, _f, _b, texts = self.run_persona(p)
+        self.assertTrue(summary["pass"], summary)
+        rec = json.loads(texts["unit/s/step-00.json"])
+        self.assertEqual(rec["send"][0], 409, "the record keeps the real refusal status")
+        self.assertIn("ceiling_refusal", rec)
+        self.assertTrue(rec["turn_resolved"])
+        self.assertEqual(pr._implicit_checks(rec), [], "a ceiling refusal is an answer, not a failed send")
 
     def test_a_persona_where_nothing_ran_does_not_pass(self):
         with tempfile.TemporaryDirectory() as d:

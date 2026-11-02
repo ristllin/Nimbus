@@ -32,7 +32,7 @@
       {"id": "follow-up-from-file", "needs": ["spawn-and-report"], "steps": [
         {"http": {"method": "POST", "path": "/api/orch", "form": {"clearConv": "1"}}, "expect": [{"http_status": 200}]},
         {"say": "What did the sub-agent write into research/fib.txt? Read the file and tell me.",
-         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b55\\b"}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b55\\b", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
       ]}
     ]
   }
