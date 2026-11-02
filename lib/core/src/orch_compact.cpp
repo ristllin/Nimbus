@@ -648,6 +648,8 @@ void FoldStore::markOverflow(const std::string& chatId) {
   persist();
 }
 
+void FoldStore::noteHistoryTrimmed(const std::string& chatId) { markOverflow(chatId); }
+
 void FoldStore::resume(const std::string& chatId) {
   Slot* s = find(stripCtl(chatId));
   if (!s) return;

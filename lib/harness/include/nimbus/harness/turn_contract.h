@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "nimbus/orch/head_loop.h"
+#include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/turn.h"
 
 // turn_contract - the engine's half of the turn-contract fixes (lane L):
@@ -71,9 +72,9 @@ struct SalvageOutcome {
   bool cut = false;
   bool claimsSpawn = false;   // the salvaged text claims sub-agents (none started)
 };
-// `workBehind`: a sub-agent is live for this chat, so "I'll report back" stands.
-SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseDetail,
-                               bool reportedCut, bool workBehind = false);
+// `behind`: what stands behind a promise in the kept text (reply_guard.h).
+SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseDetail, bool reportedCut,
+                               nimbus::orch::LaterWork behind = nimbus::orch::LaterWork::None);
 // The plain lines for an answer with nothing salvageable.
 extern const char kCutNothingSalvaged[];
 extern const char kUnreadableNothingSalvaged[];

@@ -66,6 +66,31 @@ static void test_older_history_goes_first_and_alone() {
   TEST_ASSERT_TRUE(fit.instructions().find("Q5 ") != std::string::npos);
 }
 
+// A chat's fold pays only when real conversation went, not when a sliver did to make room for
+// a large payload, and not when something else was cut.
+static void test_history_trimmed_says_when_a_fold_can_help() {
+  ComposeInputs big = baseInputs();
+  for (auto& m : big.history)
+    if (!agent::isSummaryMessage(m)) m.text += std::string(4000, 'x');
+  TurnFit bigFit(big, inputWithResults(), nullptr);
+  TEST_ASSERT_FALSE(bigFit.historyTrimmed());
+  bigFit.shrink(20000, FitScope::OlderHistory);
+  TEST_ASSERT_TRUE(bigFit.historyTrimmed());
+
+  ComposeInputs small = baseInputs();
+  TurnFit smallFit(small, inputWithResults(), nullptr);
+  smallFit.shrink(1500, FitScope::OlderHistory);   // one pair of 1 KB messages
+  TEST_ASSERT_TRUE(smallFit.trimmed());
+  TEST_ASSERT_FALSE_MESSAGE(smallFit.historyTrimmed(), "a sliver of history is no reason for a paid fold");
+
+  ComposeInputs other = baseInputs();
+  other.history.clear();
+  TurnFit otherFit(other, inputWithResults(), nullptr);
+  otherFit.shrink(3000, FitScope::Ladder);
+  TEST_ASSERT_TRUE(otherFit.trimmed());
+  TEST_ASSERT_FALSE(otherFit.historyTrimmed());
+}
+
 static void test_older_history_rung_runs_out() {
   ComposeInputs ci = baseInputs();
   TurnFit fit(ci, inputWithResults(), nullptr);
@@ -188,6 +213,7 @@ int main() {
   RUN_TEST(test_memories_and_playbook_go_before_results);
   RUN_TEST(test_owner_turn_clips_results_before_the_newest_turn);
   RUN_TEST(test_synthesis_keeps_results_over_the_newest_turn);
+  RUN_TEST(test_history_trimmed_says_when_a_fold_can_help);
   RUN_TEST(test_next_rung_stops_at_the_first_that_gives);
   RUN_TEST(test_the_ladder_order_to_the_end);
   RUN_TEST(test_clips_stay_valid_utf8);

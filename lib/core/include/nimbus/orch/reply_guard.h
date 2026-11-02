@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 // reply_guard - what a head's answer must never be, and how honest the turn's shape is.
@@ -36,9 +37,15 @@ std::string placeholderCheck(const std::string& finalTurnJson, const std::string
 // brief, or words this reader cannot judge. False only for what reads as plain chat.
 bool asksForWork(const std::string& ownerText);
 
-// The sentence holding a promise of later work, as a byte span; false when there is
-// none. `begin`/`end` may be null.
-bool laterPromiseSpan(const std::string& reply, size_t* begin = nullptr, size_t* end = nullptr);
+// What stands behind a promise of later work. Live: a sub-agent is running for this chat, so
+// every such promise is true. Standing: a routine or a wakeup is set, so a promise to report
+// back is true, and a promise of more work on the next turn still is not.
+enum class LaterWork : uint8_t { None, Standing, Live };
+
+// The sentence holding a promise of later work that `behind` does not back, as a byte span;
+// false when there is none. `begin`/`end` may be null.
+bool laterPromiseSpan(const std::string& reply, size_t* begin = nullptr, size_t* end = nullptr,
+                      LaterWork behind = LaterWork::None);
 
 // The owner line a promise with nothing behind it gets, and the correction it gets while
 // a round can still run (model-facing; `excerpt` is the sentence).

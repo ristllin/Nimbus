@@ -175,7 +175,7 @@ const char kUnreadableNothingSalvaged[] =
     "out. Ask again.";
 
 SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseDetail,
-                               bool reportedCut, bool workBehind) {
+                               bool reportedCut, orch::LaterWork behind) {
   SalvageOutcome o;
   orch::Salvage sv;
   orch::salvageTurnText(raw, sv);
@@ -194,7 +194,7 @@ SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseD
   o.text = o.cut ? text + "\n\n" + orch::kSalvageCutMarker : text;
   if (o.claimsSpawn) o.text += std::string("\n\n") + orch::kSpawnNotStartedLine;
   // This path skips apply and its claim tail: a promise in the kept text gets its line here.
-  if (!workBehind && orch::laterPromiseSpan(text)) o.text += std::string("\n\n") + orch::kLaterPromiseLine;
+  if (orch::laterPromiseSpan(text, nullptr, nullptr, behind)) o.text += std::string("\n\n") + orch::kLaterPromiseLine;
   return o;
 }
 

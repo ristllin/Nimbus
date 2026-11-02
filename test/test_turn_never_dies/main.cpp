@@ -16,6 +16,7 @@
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/jobs.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/harness/turn_contract.h"
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/provider_park.h"
 #include "nimbus/orch/transcript.h"
@@ -177,6 +178,9 @@ struct Rig {
   std::unique_ptr<agent::JobEngine> jobs;
   std::unique_ptr<TurnEngine> eng;
   int dispatched = 0;
+  std::string toolOutput = "ok";
+  bool standing = false;   // a routine or wakeup stands for this chat
+  std::vector<bool> trimmedForSize;   // one per turn end
   std::vector<std::string> recalledHits;
   int seq = 0;
   std::string turnTag;
@@ -221,7 +225,7 @@ struct Rig {
     d.toolSpecs = [this](const orch::Principal&) { return specs; };
     d.mcpDispatch = [this](const std::string&, const orch::Principal&) {
       dispatched++;
-      return std::string("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}");
+      return "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + toolOutput + "\"}]}}";
     };
     d.hosts.fabric = [this](const std::vector<std::string>& hl, const std::string& ins, const std::string& inp,
                             std::string& out, std::string& err, const agent::HeadTools& ht, orch::TurnSpend* spend,
@@ -244,8 +248,8 @@ struct Rig {
       d.hosts.add(h, [this, h](std::string& conv, const std::string& ins, const std::string& inp, std::string& out,
                                std::string& err, const agent::HeadTools* tools, orch::TokenUsage* use) {
         if (h == "mistral") return providers::orchTurnMistral(pd, conv, ins, inp, out, err, tools, use);
-        err = "single shot not wired for " + h;
-        return false;
+        if (h == "anthropic") return providers::orchTurnAnthropic(pd, conv, ins, inp, out, err, tools, use);
+        return providers::orchTurnOpenAI(pd, conv, ins, inp, out, err, tools, use);
       });
     }
     d.hosts.fabricSupports = [](const std::string& h) { return providers::fabricSupports(h); };
@@ -272,6 +276,8 @@ struct Rig {
       out.hits = recalledHits;
       return out;
     };
+    d.standingWork = [this](const std::string&) { return standing; };
+    d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) { trimmedForSize.push_back(ev.trimmedForSize); };
     eng.reset(new TurnEngine(std::move(d)));
   }
   ~Rig() { providers::clearHostParks(); }
@@ -331,6 +337,31 @@ int oldestShown(const std::string& body) {
   return -1;
 }
 
+// A provider's window refusal only just over the limit: the first trim cannot use up the
+// whole ladder, so what bounds the retries is the guard itself.
+const char* const kNearOverflowMistral =
+    "{\"object\":\"error\",\"message\":\"Prompt 1100000 > 1048576 maximum context length\",\"type\":"
+    "\"invalid_request_prompt_too_long\",\"param\":null,\"code\":\"3059\",\"raw_status_code\":400}";
+const char* const kNearOverflowAnthropic =
+    "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long: "
+    "1100000 tokens > 1000000 maximum\"}}";
+// A refusal so far over that everything on the ladder goes.
+const char* const kFarOverflowMistral =
+    "{\"object\":\"error\",\"message\":\"Prompt 1000000 > 10 maximum context length\",\"type\":"
+    "\"invalid_request_prompt_too_long\",\"param\":null,\"code\":\"3059\",\"raw_status_code\":400}";
+
+Exchange overloaded(const std::string& host) { return refused(host, 503, "{\"message\":\"Service unavailable\"}"); }
+
+// An Anthropic round that thought, then called a tool. The signature is validated, so it
+// must come back byte for byte.
+std::string thinkingToolBody() {
+  return "{\"content\":[{\"type\":\"thinking\",\"thinking\":\"why\",\"signature\":\"SIGNED-ROUND-0\"},"
+         "{\"type\":\"tool_use\",\"id\":\"toolcall1\",\"name\":\"memory_search\",\"input\":{\"query\":\"x\"}}],"
+         "\"stop_reason\":\"tool_use\"}";
+}
+
+const char* const kWorkTurn = "Use a web lookup and analyze these six photos in detail";
+
 void assertBodiesFit(const Rig& r, const char* what) {
   for (const auto& req : r.wire.http.seen)
     TEST_ASSERT_TRUE_MESSAGE(req.body.size() <= providers::kWireBodyMax, what);
@@ -387,23 +418,132 @@ static void test_synthesis_at_lumis_size_keeps_its_results_whole() {
   TEST_ASSERT_TRUE(crossed > 0);
 }
 
-// The same on an owner turn, and what the turn leaves out is said: the model reads
-// it in the request, the log names it.
+// The same on an owner turn, and what the turn leaves out is said: the model reads it in
+// the request, the log names it. The sweep must really cross the wire budget.
 static void test_owner_turn_trims_older_history_first_and_says_so() {
   const char* host = "mistral";
-  Rig r({host}, 52000);
-  r.quotedHistory(8, 1500);
-  r.script(ok(host, finalBody(host)));
-  r.turn("so where are we at?");
-  assertAnswered(r, "owner turn");
-  TEST_ASSERT_EQUAL(1, (int)r.requests());
-  assertBodiesFit(r, "owner turn");
-  const std::string& body = r.wire.http.seen[0].body;
-  TEST_ASSERT_TRUE_MESSAGE(body.find("old question 7") != std::string::npos, "the newest past turn is kept");
-  if (LogCapture::contains("B budget")) {   // this size crossed: the oldest went first and it says so
+  int crossed = 0;
+  for (size_t tools = 44000; tools <= 72000; tools += 2000) {
+    LogCapture::install();
+    Rig r({host}, tools);
+    r.quotedHistory(8, 1500);
+    r.script(ok(host, finalBody(host)));
+    r.turn("so where are we at?");
+    assertAnswered(r, "owner turn");
+    TEST_ASSERT_EQUAL(1, (int)r.requests());
+    assertBodiesFit(r, "owner turn");
+    if (!LogCapture::contains("B budget")) continue;
+    crossed++;
+    const std::string& body = r.wire.http.seen[0].body;
+    TEST_ASSERT_TRUE_MESSAGE(body.find("old question 7") != std::string::npos, "the newest past turn is kept");
+    TEST_ASSERT_TRUE_MESSAGE(body.find("old question 0") == std::string::npos, "the oldest past turn goes first");
     TEST_ASSERT_TRUE_MESSAGE(body.find("LEFT OUT") != std::string::npos, "the model is told what was left out");
     TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("left out"), "the log names what was left out");
+    TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("of the older history"), "the history rung did it");
   }
+  TEST_ASSERT_TRUE_MESSAGE(crossed > 0, "the sweep never crossed the wire budget on an owner turn");
+}
+
+// What touches the owner's question is told to the owner, in the delivered text.
+static void test_owner_is_told_what_was_left_out() {
+  Rig r({"mistral"}, 2000);
+  r.quotedHistory(8, 1200);
+  r.script(refused("mistral", 400, kFarOverflowMistral));
+  r.script(ok("mistral", finalBody("mistral")));
+  r.turn("so where are we at?");
+  TEST_ASSERT_EQUAL(2, (int)r.requests());
+  TEST_ASSERT_TRUE_MESSAGE(r.saidAny("done"), r.all().c_str());
+  TEST_ASSERT_TRUE_MESSAGE(r.saidAny("written without"), r.all().c_str());
+}
+
+// A chat's fold is a paid call: it is queued only when conversation history went, and the
+// engine says so on the turn's end.
+static void test_turn_end_says_when_history_went() {
+  Rig plain({"mistral"}, 2000);
+  plain.quotedHistory(2, 200);
+  plain.script(ok("mistral", finalBody("mistral")));
+  plain.turn("so where are we at?");
+  TEST_ASSERT_EQUAL(1, (int)plain.trimmedForSize.size());
+  TEST_ASSERT_FALSE_MESSAGE(plain.trimmedForSize[0], "nothing was trimmed");
+
+  Rig went({"mistral"}, 2000);
+  went.quotedHistory(8, 1200);
+  went.script(refused("mistral", 400, kFarOverflowMistral));
+  went.script(ok("mistral", finalBody("mistral")));
+  went.turn("so where are we at?");
+  TEST_ASSERT_TRUE_MESSAGE(went.trimmedForSize.back(), "history went");
+
+  // The results were clipped and no history was there to go: a fold would not help.
+  Rig clipped({"mistral"}, 2000);
+  clipped.jobs->addFreshResult("job0008", "research-sub", std::string(20000, 'r'));
+  clipped.script(refused("mistral", 400, kFarOverflowMistral));
+  clipped.script(ok("mistral", finalBody("mistral", "synthesis done")));
+  clipped.eng->maybeConsolidate("1001");
+  TEST_ASSERT_TRUE_MESSAGE(clipped.saidAny("synthesis done"), clipped.all().c_str());
+  TEST_ASSERT_FALSE_MESSAGE(clipped.trimmedForSize.back(), "only results were clipped");
+}
+
+// A tool round the model has already read gives way before the owner's earlier messages:
+// the order provider-wire.md and trimForOverflow state, on the wire budget's path too.
+static void test_budget_refit_folds_read_rounds_before_the_conversation() {
+  int late = 0;
+  for (const char* host : {"mistral", "anthropic", "openai"})
+    for (size_t tools = 26000; tools <= 72000; tools += 2000) {
+      LogCapture::install();
+      Rig r({host}, tools);
+      r.toolOutput = std::string(5000, 't');
+      r.quotedHistory(8, 1500);
+      for (int i = 1; i <= 3; i++) r.script(ok(host, toolBody(host, i)));
+      r.script(ok(host, finalBody(host)));
+      r.turn(kWorkTurn);
+      assertBodiesFit(r, "read rounds");
+      for (const std::string& line : LogCapture::lines()) {
+        if (line.find("B budget") == std::string::npos) continue;
+        if (line.rfind("headloop: round 2", 0) != 0 && line.rfind("headloop: round 3", 0) != 0) break;
+        late++;
+        TEST_ASSERT_TRUE_MESSAGE(line.find("replayed tool rounds") != std::string::npos, line.c_str());
+        break;
+      }
+    }
+  TEST_ASSERT_TRUE_MESSAGE(late > 0, "no case crossed the budget with older rounds to fold");
+}
+
+// The signed thinking of a round that ran rides every later request, whatever a refit did
+// to the prompt (Anthropic refuses a replayed tool call without it).
+static void test_a_refit_keeps_the_signed_thinking() {
+  for (bool fabric : {true, false}) {
+    Rig r({"anthropic"}, 2000, fabric);
+    r.quotedHistory(8, 1200);
+    r.script(ok("anthropic", thinkingToolBody()));
+    r.script(refused("anthropic", 400, kNearOverflowAnthropic));
+    r.script(ok("anthropic", finalBody("anthropic")));
+    r.turn(kWorkTurn);
+    const char* what = fabric ? "fabric" : "host loop";
+    assertAnswered(r, what);
+    TEST_ASSERT_EQUAL_MESSAGE(3, (int)r.requests(), what);
+    TEST_ASSERT_EQUAL_MESSAGE(1, r.dispatched, what);
+    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[1].body.find("SIGNED-ROUND-0") != std::string::npos, what);
+    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[2].body.find("LEFT OUT") != std::string::npos, what);
+    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[2].body.find("SIGNED-ROUND-0") != std::string::npos, what);
+  }
+  // The wire budget's prompt rung at round 1 rebuilds the step the same way.
+  int crossed = 0;
+  for (bool fabric : {true, false})
+    for (size_t tools = 30000; tools <= 74000; tools += 2000) {
+      LogCapture::install();
+      Rig r({"anthropic"}, tools, fabric);
+      r.toolOutput = std::string(4000, 't');
+      r.quotedHistory(8, 1500);
+      r.script(ok("anthropic", thinkingToolBody()));
+      r.script(ok("anthropic", finalBody("anthropic")));
+      r.turn(kWorkTurn);
+      if (r.requests() < 2 || !LogCapture::contains("headloop: round 1")) continue;
+      if (!LogCapture::contains("of the older history")) continue;
+      crossed++;
+      TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[1].body.find("SIGNED-ROUND-0") != std::string::npos,
+                               fabric ? "budget fabric" : "budget host loop");
+    }
+  TEST_ASSERT_TRUE_MESSAGE(crossed > 0, "no case refitted the prompt at round 1");
 }
 
 // The tool loop without the fabric (mid-turn failover off): the same request fits.
@@ -573,6 +713,125 @@ static void test_output_cap_refusal_is_not_an_overflow() {
   }
 }
 
+// Once means once: a refusal only just over the limit leaves rungs to give up, so nothing but
+// the guard stops the loop from going back for each of them (Z.ai takes 27 s per refusal).
+static void test_overflow_retries_once_only() {
+  Rig r({"mistral"}, 2000);
+  r.quotedHistory(8, 1200);
+  for (int i = 0; i < 12; i++) r.script(refused("mistral", 400, kNearOverflowMistral));
+  r.turn("so where are we at?");
+  TEST_ASSERT_EQUAL(2, (int)r.requests());
+  TEST_ASSERT_TRUE_MESSAGE(r.saidAny("didn't finish"), r.all().c_str());
+}
+
+// A loop is never run twice: re-sending the turn would repeat what its tools did. The refusal
+// is only just over and older rounds pay for the trim, so the prompt was never touched and
+// only the engine's guard stands between the second refusal and a re-run of the whole loop.
+static void test_no_rerun_after_tools_ran_without_the_fabric() {
+  for (const char* host : {"mistral", "anthropic", "openai"}) {
+    Rig r({host}, 200, /*fabric=*/false);
+    r.toolOutput = std::string(4000, 't');
+    for (int i = 1; i <= 3; i++) r.script(ok(host, toolBody(host, i)));
+    const char* body = std::string(host) == "anthropic"
+                           ? kNearOverflowAnthropic
+                           : std::string(host) == "mistral"
+                                 ? kNearOverflowMistral
+                                 : "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\","
+                                   "\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\"}}";
+    r.script(refused(host, 400, body));
+    r.script(refused(host, 400, body));
+    for (int i = 0; i < 6; i++) r.script(ok(host, toolBody(host, 4)));   // what a re-run would be served
+    r.turn(kWorkTurn);
+    TEST_ASSERT_EQUAL_MESSAGE(3, r.dispatched, host);
+    TEST_ASSERT_EQUAL_MESSAGE(5, (int)r.requests(), host);
+    TEST_ASSERT_TRUE_MESSAGE(r.saidAny("didn't finish"), r.all().c_str());
+  }
+}
+
+// A round that recovered from its size is served: a later failure is told as itself.
+static void test_a_recovered_overflow_is_not_the_cause() {
+  Rig r({"mistral"}, 2000);
+  r.quotedHistory(8, 1200);
+  r.script(ok("mistral", toolBody("mistral", 1)));
+  r.script(refused("mistral", 400, kNearOverflowMistral));
+  r.script(ok("mistral", toolBody("mistral", 2)));
+  r.script(overloaded("mistral"));
+  r.script(overloaded("mistral"));
+  r.turn(kWorkTurn);
+  TEST_ASSERT_EQUAL(2, r.dispatched);
+  TEST_ASSERT_TRUE_MESSAGE(r.saidAny("didn't finish"), r.all().c_str());
+  TEST_ASSERT_FALSE_MESSAGE(r.saidAny("too long"), r.all().c_str());
+}
+
+// One trim per run of failures, not one per turn: a retry served by the same-host resend ends
+// the run too, so a later round that outgrows the window gets its own.
+static void test_a_later_overflow_gets_its_own_trim() {
+  Rig r({"mistral"}, 2000);
+  r.quotedHistory(8, 1200);
+  r.script(refused("mistral", 400, kNearOverflowMistral));
+  r.script(overloaded("mistral"));
+  r.script(ok("mistral", toolBody("mistral", 1)));   // the same-host resend serves it
+  r.script(refused("mistral", 400, kNearOverflowMistral));
+  r.script(ok("mistral", finalBody("mistral")));
+  r.turn(kWorkTurn);
+  assertAnswered(r, "later overflow");
+  TEST_ASSERT_EQUAL(5, (int)r.requests());
+  TEST_ASSERT_EQUAL(1, r.dispatched);
+}
+
+// A tool loop with no fabric is what the hosted Virtual Nimbus and every router head run: the
+// same recovery, on each wire, after a tool ran.
+static void test_host_loop_recovers_mid_turn() {
+  for (const char* host : {"mistral", "anthropic", "openai"}) {
+    // Overflow after a tool ran: trimmed and answered on the same turn.
+    Rig o({host}, 2000, /*fabric=*/false);
+    o.quotedHistory(8, 1200);
+    o.script(ok(host, toolBody(host, 1)));
+    const Refusal* ref = nullptr;
+    for (const Refusal& k : kOverflow)
+      if (std::string(k.host) == host) ref = &k;
+    o.script(refused(host, ref->status, ref->body));
+    o.script(ok(host, finalBody(host)));
+    o.turn(kWorkTurn);
+    assertAnswered(o, host);
+    TEST_ASSERT_EQUAL_MESSAGE(1, o.dispatched, host);
+    TEST_ASSERT_EQUAL_MESSAGE(3, (int)o.requests(), host);
+    TEST_ASSERT_TRUE_MESSAGE(o.wire.http.seen[2].body.find("LEFT OUT") != std::string::npos, host);
+    TEST_ASSERT_TRUE_MESSAGE(o.wire.http.seen[2].body.find("THIS TURN RUNS ON") != std::string::npos, host);
+    // Cut after a tool ran: the round runs once more with the note, and the note goes when
+    // the round is served.
+    Rig c({host}, 2000, /*fabric=*/false);
+    c.script(ok(host, toolBody(host, 1)));
+    c.script(ok(host, cutBody(host)));
+    c.script(ok(host, cutBody(host)));
+    c.script(ok(host, toolBody(host, 2)));
+    c.script(ok(host, finalBody(host)));
+    c.turn(kWorkTurn);
+    assertAnswered(c, host);
+    TEST_ASSERT_EQUAL_MESSAGE(2, c.dispatched, host);
+    TEST_ASSERT_EQUAL_MESSAGE(5, (int)c.requests(), host);
+    TEST_ASSERT_TRUE_MESSAGE(c.wire.http.seen[3].body.find("RAN OUT OF ROOM") != std::string::npos, host);
+    TEST_ASSERT_TRUE_MESSAGE(c.wire.http.seen[4].body.find("RAN OUT OF ROOM") == std::string::npos, host);
+    // Over the wire budget after a tool ran, with only the prompt left to give.
+    int crossed = 0;
+    for (size_t tools = 30000; tools <= 74000; tools += 4000) {
+      LogCapture::install();
+      Rig b({host}, tools, /*fabric=*/false);
+      b.toolOutput = std::string(4000, 't');
+      b.quotedHistory(8, 1500);
+      b.script(ok(host, toolBody(host, 1)));
+      b.script(ok(host, finalBody(host)));
+      b.turn(kWorkTurn);
+      if (b.dispatched != 1 || !LogCapture::contains("headloop: round 1")) continue;
+      crossed++;
+      assertAnswered(b, host);
+      assertBodiesFit(b, host);
+      TEST_ASSERT_EQUAL_MESSAGE(1, b.dispatched, host);
+    }
+    TEST_ASSERT_TRUE_MESSAGE(crossed > 0, host);
+  }
+}
+
 // ---- 3. A cut step continues, then fails over; on multi-tool turns too -------------
 // Lumi 31 Oct: the only open host cut twice. The round runs once more with the note.
 static void test_cut_on_the_only_host_continues() {
@@ -641,6 +900,95 @@ static void test_cut_everywhere_ends_honestly_and_bounded() {
   n.turn("Use a web lookup and analyze these six photos in detail");
   TEST_ASSERT_TRUE_MESSAGE(n.saidAny("Already done this turn"), n.all().c_str());
   TEST_ASSERT_FALSE_MESSAGE(n.saidAny("next turn"), n.all().c_str());
+}
+
+// The note is about the round that was cut. Once it is served, later rounds (the final answer
+// to a long album above all) are not told to answer in 300 words.
+static void test_the_cut_note_goes_when_the_round_is_served() {
+  Rig r({"mistral"}, 2000);
+  r.script(ok("mistral", cutBody("mistral")));
+  r.script(ok("mistral", cutBody("mistral")));
+  r.script(ok("mistral", toolBody("mistral", 1)));
+  r.script(ok("mistral", finalBody("mistral")));
+  r.turn(kWorkTurn);
+  assertAnswered(r, "note");
+  TEST_ASSERT_EQUAL(4, (int)r.requests());
+  TEST_ASSERT_TRUE(r.wire.http.seen[2].body.find("RAN OUT OF ROOM") != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[3].body.find("RAN OUT OF ROOM") == std::string::npos, "a served round's note stayed");
+  TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[3].body.find("300 words") == std::string::npos, "a served round's note stayed");
+}
+
+// A cut the next host recovered, served only by the same-host resend: the round is served all
+// the same. The later failure is about itself: no stale partial, no stale cause.
+static void test_a_round_served_by_the_resend_forgets_its_cut() {
+  Rig r({"mistral", "anthropic"}, 2000);
+  r.script(ok("mistral", cutBody("mistral")));
+  r.script(ok("mistral", cutBody("mistral")));
+  r.script(overloaded("anthropic"));
+  r.script(ok("anthropic", toolBody("anthropic", 1)));   // the same-host resend serves the round
+  r.script(overloaded("anthropic"));
+  r.script(overloaded("anthropic"));
+  r.turn(kWorkTurn);
+  TEST_ASSERT_EQUAL(1, r.dispatched);
+  TEST_ASSERT_FALSE_MESSAGE(r.saidAny("Here is the first"), r.all().c_str());
+  TEST_ASSERT_FALSE_MESSAGE(r.saidAny("cut off"), r.all().c_str());
+  TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[4].body.find("RAN OUT OF ROOM") == std::string::npos, "the note outlived the round");
+}
+
+// A recovered cut is not why a later round failed, on one host or after a switch.
+static void test_a_recovered_cut_is_not_the_cause() {
+  Rig one({"mistral"}, 2000);
+  one.script(ok("mistral", cutBody("mistral")));
+  one.script(ok("mistral", cutBody("mistral")));
+  one.script(ok("mistral", toolBody("mistral", 1)));
+  one.script(overloaded("mistral"));
+  one.script(overloaded("mistral"));
+  one.turn(kWorkTurn);
+  TEST_ASSERT_TRUE_MESSAGE(one.saidAny("didn't finish"), one.all().c_str());
+  TEST_ASSERT_FALSE_MESSAGE(one.saidAny("ran out of room"), one.all().c_str());
+
+  Rig two({"mistral", "anthropic"}, 2000);
+  two.script(ok("mistral", cutBody("mistral")));
+  two.script(ok("mistral", cutBody("mistral")));
+  two.script(ok("anthropic", toolBody("anthropic", 1)));
+  two.script(overloaded("anthropic"));
+  two.script(overloaded("anthropic"));
+  two.turn(kWorkTurn);
+  TEST_ASSERT_TRUE_MESSAGE(two.saidAny("didn't finish"), two.all().c_str());
+  TEST_ASSERT_FALSE_MESSAGE(two.saidAny("ran out of room"), two.all().c_str());
+}
+
+// A cut nothing recovered is still the turn's cause.
+static void test_an_unrecovered_cut_stays_the_cause() {
+  Rig r({"mistral", "anthropic"}, 2000);
+  r.script(ok("mistral", cutBody("mistral")));
+  r.script(ok("mistral", cutBody("mistral")));
+  r.script(refused("anthropic", 400, "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"nope\"}}"));
+  r.turn(kWorkTurn);
+  TEST_ASSERT_TRUE_MESSAGE(r.saidAny("Here is the first"), r.all().c_str());
+  TEST_ASSERT_TRUE_MESSAGE(r.saidAny("cut off"), r.all().c_str());
+}
+
+// A round that runs again inside one step only has the time the turn has left: the first
+// attempts of a slow album took most of it.
+static void test_a_rerun_gets_the_time_that_is_left() {
+  for (bool fabric : {true, false}) {
+    Rig r({"anthropic"}, 2000, fabric);
+    r.pd.nowMs = [&r] { return r.wire.now; };
+    r.cfg.deadlineS = 600;
+    Exchange slow = ok("anthropic", cutBody("anthropic"));
+    slow.takesMs = 270000;
+    r.script(slow);
+    r.script(slow);
+    r.script(ok("anthropic", finalBody("anthropic")));
+    r.turn(kWorkTurn);
+    assertAnswered(r, "slow");
+    TEST_ASSERT_EQUAL(3, (int)r.requests());
+    const uint32_t last = r.wire.http.seen[2].timeoutMs;
+    char what[64];
+    snprintf(what, sizeof what, "fabric=%d rerun timeout %u ms", (int)fabric, (unsigned)last);
+    TEST_ASSERT_TRUE_MESSAGE(last > 0 && last <= 60000, what);
+  }
 }
 
 // ---- 4. Never a placeholder; a real task keeps its rounds --------------------------
@@ -731,6 +1079,10 @@ static const char* const kNotPromises[] = {
     "I can't finish this next turn or later: there is no job for it.",
     "Your next message starts a new turn.",
     "364 kcal left today.",
+    "I'm seeing fries in the background, so I logged the burger only.",
+    "I'm logging the toast; the coffee in the background is not counted.",
+    "I'm glad you're still working on your protein target, it will pay off.",
+    "I'm proud that you keep working on your goals.",
 };
 static const char* const kLaterLine = "will not continue on its own";
 
@@ -837,6 +1189,70 @@ static void test_a_job_behind_the_promise_stands() {
   TEST_ASSERT_EQUAL(2, (int)r.requests());
 }
 
+// A routine or a wakeup set in an earlier turn watches for the owner: "I'll let you know when
+// it arrives" is true, on the routine's own run and when the owner asks. It does not make a
+// promise of more work on the next turn true.
+static void test_a_routine_behind_the_promise_stands() {
+  const char* watch = "Not arrived yet. I'll let you know when it does.";
+  Rig asked({"mistral"}, 2000);
+  asked.standing = true;
+  asked.script(ok("mistral", finalBody("mistral", watch)));
+  asked.turn("any news?");
+  TEST_ASSERT_EQUAL(1, (int)asked.requests());
+  TEST_ASSERT_TRUE_MESSAGE(asked.saidAny("let you know"), asked.all().c_str());
+  TEST_ASSERT_FALSE_MESSAGE(asked.saidAny(kLaterLine), asked.all().c_str());
+
+  Rig run({"mistral"}, 2000);
+  run.script(ok("mistral", finalBody("mistral", watch)));
+  run.eng->injectScheduledTurn("1001", "Check the parcel and tell me when it arrives.", "parcel", "lp123456");
+  TEST_ASSERT_EQUAL(1, (int)run.requests());
+  TEST_ASSERT_FALSE_MESSAGE(run.saidAny(kLaterLine), run.all().c_str());
+
+  // A wakeup that has fired has nothing left behind it.
+  Rig once({"mistral"}, 2000);
+  once.script(ok("mistral", finalBody("mistral", watch)));
+  once.script(ok("mistral", finalBody("mistral", watch)));
+  once.eng->injectScheduledTurn("1001", "Check the parcel.", "parcel", "lp123456", /*quietOk=*/false, /*once=*/true);
+  TEST_ASSERT_TRUE_MESSAGE(once.saidAny(kLaterLine), once.all().c_str());
+
+  // The dimension it must not swallow: a routine does not finish this turn's work later.
+  Rig busy({"mistral"}, 2000);
+  busy.standing = true;
+  busy.script(ok("mistral", finalBody("mistral", "I'll rewrite the whole file next turn.")));
+  busy.script(ok("mistral", finalBody("mistral", "That is not done. Ask me to continue.")));
+  busy.turn("so where are we at?");
+  TEST_ASSERT_TRUE_MESSAGE(busy.saidAny("That is not done"), busy.all().c_str());
+
+  // The salvage path reads the same.
+  const agent::SalvageOutcome s =
+      agent::salvageForOwner("{\"reply\":\"I'll let you know when it does.\"", "truncated", true, orch::LaterWork::Standing);
+  TEST_ASSERT_TRUE(s.text.find(kLaterLine) == std::string::npos);
+  const agent::SalvageOutcome n =
+      agent::salvageForOwner("{\"reply\":\"I'll finish it next turn.\"", "truncated", true, orch::LaterWork::Standing);
+  TEST_ASSERT_TRUE(n.text.find(kLaterLine) != std::string::npos);
+}
+
+// The latch for a key or credit notice is one per episode: when a synthesis takes it, the
+// notice goes out, or the owner is never told why summaries stopped.
+static void test_failed_synthesis_keeps_the_next_step_notice() {
+  struct Case { int status; const char* body; const char* words; };
+  const Case cases[] = {
+      {402, "{\"message\":\"Payment required: add credit to continue.\"}", "Add credit"},
+      {401, "{\"message\":\"Unauthorized\"}", "rejected its key"},
+  };
+  for (const Case& c : cases) {
+    orch::providerPark().clear();
+    Rig r({"mistral"}, 2000);
+    r.jobs->addFreshResult("job0008", "openai/gpt-5.2", "the findings");
+    r.script(refused("mistral", c.status, c.body));
+    r.eng->maybeConsolidate("1001");
+    TEST_ASSERT_TRUE_MESSAGE(r.saidAny("the findings"), r.all().c_str());
+    TEST_ASSERT_TRUE_MESSAGE(r.saidAny(c.words), r.all().c_str());
+    TEST_ASSERT_FALSE_MESSAGE(r.saidAny("not answered"), r.all().c_str());
+    orch::providerPark().clear();
+  }
+}
+
 // A chat line and a task alternating must not re-write the cached static block: its round
 // figure is the configured one, this turn's tighter cap rides the dynamic block.
 static void test_turn_shape_does_not_touch_the_cached_static_block() {
@@ -875,6 +1291,10 @@ int main() {
   RUN_TEST(test_synthesis_never_fails_on_size);
   RUN_TEST(test_synthesis_at_lumis_size_keeps_its_results_whole);
   RUN_TEST(test_owner_turn_trims_older_history_first_and_says_so);
+  RUN_TEST(test_owner_is_told_what_was_left_out);
+  RUN_TEST(test_turn_end_says_when_history_went);
+  RUN_TEST(test_budget_refit_folds_read_rounds_before_the_conversation);
+  RUN_TEST(test_a_refit_keeps_the_signed_thinking);
   RUN_TEST(test_round0_over_budget_without_the_fabric);
   RUN_TEST(test_failed_synthesis_sends_only_the_raw_results);
   RUN_TEST(test_real_overflow_refusals_trim_and_retry_once);
@@ -884,10 +1304,20 @@ int main() {
   RUN_TEST(test_overflow_twice_fails_over_with_the_trim);
   RUN_TEST(test_overflow_with_nowhere_to_go_is_honest);
   RUN_TEST(test_output_cap_refusal_is_not_an_overflow);
+  RUN_TEST(test_overflow_retries_once_only);
+  RUN_TEST(test_no_rerun_after_tools_ran_without_the_fabric);
+  RUN_TEST(test_a_recovered_overflow_is_not_the_cause);
+  RUN_TEST(test_a_later_overflow_gets_its_own_trim);
+  RUN_TEST(test_host_loop_recovers_mid_turn);
   RUN_TEST(test_cut_on_the_only_host_continues);
   RUN_TEST(test_cut_after_tools_fails_over_with_the_work);
   RUN_TEST(test_a_recovered_cut_is_forgotten);
   RUN_TEST(test_cut_everywhere_ends_honestly_and_bounded);
+  RUN_TEST(test_the_cut_note_goes_when_the_round_is_served);
+  RUN_TEST(test_a_round_served_by_the_resend_forgets_its_cut);
+  RUN_TEST(test_a_recovered_cut_is_not_the_cause);
+  RUN_TEST(test_an_unrecovered_cut_stays_the_cause);
+  RUN_TEST(test_a_rerun_gets_the_time_that_is_left);
   RUN_TEST(test_forced_placeholder_is_sent_back_once);
   RUN_TEST(test_placeholder_never_reaches_the_owner);
   RUN_TEST(test_a_real_task_keeps_its_rounds_and_chat_stays_capped);
@@ -899,6 +1329,8 @@ int main() {
   RUN_TEST(test_unattended_promise_gets_the_line);
   RUN_TEST(test_unreadable_promise_gets_the_line);
   RUN_TEST(test_a_job_behind_the_promise_stands);
+  RUN_TEST(test_a_routine_behind_the_promise_stands);
+  RUN_TEST(test_failed_synthesis_keeps_the_next_step_notice);
   RUN_TEST(test_not_promises_are_left_alone);
   return UNITY_END();
 }

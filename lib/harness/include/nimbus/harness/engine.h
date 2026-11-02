@@ -295,6 +295,9 @@ class TurnEngine {
     // shift's advance (persisted with the turn).
     std::function<HistoryMarks(const std::string& chatId)> historyMarks;
     std::function<void(const std::string& chatId, const std::string& softStart)> noteHistoryShift;
+    // A routine or wakeup is set for this chat (a promise to report back has something
+    // behind it). Unwired = none.
+    std::function<bool(const std::string& chatId)> standingWork;
     // Minutes east of UTC for day markers and send times (unwired = UTC).
     std::function<int32_t()> utcOffsetMin;
     // The same, valid at a unix time: DST and zone changes apply to each row at its own

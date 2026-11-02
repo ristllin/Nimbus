@@ -231,6 +231,33 @@ static void test_fold_then_normal_turns_no_notice() {
   TEST_ASSERT_TRUE(dues <= d.shifts + 1);  // at most one fold per history shift
 }
 
+// A turn that left out history to fit asks for a fold. Soon after a fold that is not a refill:
+// no pause, no false "grew too long" alert, however many large turns come in a row.
+static void test_trimmed_turns_never_trip_the_thrash_guard() {
+  FakeIO io;
+  FoldStore fs;
+  fs.begin(&io);
+  fs.noteTurn("c");
+  fs.noteHistoryTrimmed("c");   // no fold yet: it is due
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
+  fs.applyFold("c", "summary", 1000, "m00000010");
+  int paused = 0, dues = 0;
+  for (int turn = 0; turn < 40; turn++) {
+    fs.noteTurn("c");
+    fs.noteHistoryTrimmed("c");
+    const FoldDue due = fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold);
+    if (due == FoldDue::ThrashPaused) paused++;
+    if (due == FoldDue::Yes) {
+      dues++;
+      fs.applyFold("c", "summary", 1000 + (uint32_t)turn, "m" + std::to_string(10000000 + turn));
+    }
+  }
+  TEST_ASSERT_EQUAL_INT(0, paused);
+  TEST_ASSERT_FALSE(fs.get("c").breakerPaused);
+  TEST_ASSERT_TRUE_MESSAGE(dues > 0, "a chat that keeps losing history is still folded");
+  TEST_ASSERT_TRUE_MESSAGE(dues <= 40 / ((int)kThrashTurns + 1), "at most one paid fold per thrash window");
+}
+
 // Counter-test (the dimension the guard no longer reads): a real refill - the
 // restarted counters over the threshold again right after a fold - still pauses,
 // exactly once, and stays paused.
@@ -368,5 +395,6 @@ int main(int, char**) {
   RUN_TEST(test_legacy_pause_not_lifted_within_thrash_turns);
   RUN_TEST(test_v461_pause_survives_reboot);
   RUN_TEST(test_anchorless_fold_clears_the_shift);
+  RUN_TEST(test_trimmed_turns_never_trip_the_thrash_guard);
   return UNITY_END();
 }

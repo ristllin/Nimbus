@@ -2238,7 +2238,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // a provider fault. Salvage what it wrote (when the adapter kept the partial
     // turn) with the honest marker, capture it, and record the cut.
     if (orch::isCutError(err)) {
-      const bool workBehind = d_.jobs && d_.jobs->activeCount() > 0;
+      const orch::LaterWork workBehind = d_.jobs && d_.jobs->activeCount() > 0 ? orch::LaterWork::Live : orch::LaterWork::None;
       const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true, workBehind);
       if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
       const std::string fold = foldHeldNotices();   // L19-13 d: one message
@@ -2376,7 +2376,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // raw text and never a nested field. A cut answer gets the honest marker; the
     // delivered text is captured so the next turn sees what the owner saw.
     const SalvageOutcome so =
-        salvageForOwner(outJson, perr.detail, /*reportedCut=*/false, d_.jobs && d_.jobs->activeCount() > 0);
+        salvageForOwner(outJson, perr.detail, /*reportedCut=*/false,
+                        d_.jobs && d_.jobs->activeCount() > 0 ? orch::LaterWork::Live : orch::LaterWork::None);
     if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
     deliver(chatId, so.text, /*modelText=*/so.salvaged);   // captured as the row; salvaged text spoke
     err = (so.cut ? "cut: " : "parse: ") + perr.detail;

@@ -223,7 +223,8 @@ bool sentencePromises(const std::string& s) {
 
 }  // namespace
 
-bool laterPromiseSpan(const std::string& reply, size_t* begin, size_t* end) {
+bool laterPromiseSpan(const std::string& reply, size_t* begin, size_t* end, LaterWork behind) {
+  if (behind == LaterWork::Live) return false;
   // The reply as written: no scan past the claim scan's bound.
   const std::string t = lowered(reply.size() > 16384 ? reply.substr(0, 16384) : reply);
   size_t from = 0;

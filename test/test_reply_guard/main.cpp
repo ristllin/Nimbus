@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <cstdio>
 #include <string>
 
 #include "nimbus/harness/turn_contract.h"
@@ -65,6 +66,38 @@ static void test_work_and_chat() {
 }
 
 // ---- promises ----------------------------------------------------------------------
+// Ordinary food, photo, coaching and everyday replies with a promise's words in them. "In the
+// background" is often a place in a photo, "still working on" is often the owner's goal, and
+// a next turn or round can be on a road or in a contest.
+static const char* const kOrdinaryReplies[] = {
+    "I'm seeing fries in the background, so I logged the burger only.",
+    "I'm logging the toast; the coffee in the background is not counted.",
+    "I'm counting the rice, and the salad in the background is a side.",
+    "I'll count the burger and leave the fries in the background out.",
+    "I'll describe the people in the background too.",
+    "I am sure that is a mug in the background.",
+    "There is a plate in the background, it will not count.",
+    "I'm glad you're still working on your protein target, it will pay off.",
+    "I'm proud that you keep working on your goals.",
+    "I'm sure you'll keep working on it.",
+    "Keep working on it and it will pay off.",
+    "I will remember that you are still working on the essay.",
+    "That will keep working on its own.",
+    "It will be the next turn on the left.",
+    "I'll take the next turn on the right in the directions.",
+    "The next round of interviews will be on Friday.",
+    "I'm rooting for you in the next round.",
+    "I'm happy to report back that your order shipped.",
+    "I'm here to circle back to your question about iron.",
+    "It will take one moment to boil.",
+    "I'm sure it was only one moment.",
+    "I stand by that estimate.",
+    "I will stand by that number.",
+    "Your doctor will report back with the results.",
+    "It will let you know when the transfer lands.",
+    "Hold it in the background of the shot, it will look better.",
+};
+
 static void test_promises() {
   for (const char* p : {
            "The earlier total-row update failed. I'll rewrite the whole file to correct it next turn.",
@@ -76,6 +109,22 @@ static void test_promises() {
            "Give me a moment while I look.",
            "I\xE2\x80\x99ll finish this next turn.",
            "All set. I'm still working on the rest.",
+           "Next turn I'll finish the list.",
+           "I'm checking the shelf now and will report back.",
+           "I'll run this in the background.",
+           "I'm running that in the background.",
+           "This will keep going in the background.",
+           "In the background, I'll keep checking the archive.",
+           "I'll keep working on it.",
+           "I am working on it.",
+           "I will continue working on your plan.",
+           "One moment while I look.",
+           "Just one moment.",
+           "Please stand by.",
+           "Hang tight.",
+           "Bear with me.",
+           "I'm finishing that next turn.",
+           "I'll let you know when it does.",
        })
     TEST_ASSERT_TRUE_MESSAGE(laterPromiseSpan(p), p);
   for (const char* p : {
@@ -100,6 +149,39 @@ static void test_promises() {
   TEST_ASSERT_EQUAL_STRING(" I'll finish the rest next turn.", t.substr(b, e - b).c_str());
 }
 
+static void test_ordinary_replies_are_not_promises() {
+  int flagged = 0;
+  for (const char* p : kOrdinaryReplies)
+    if (laterPromiseSpan(p)) {
+      printf("flagged: %s\n", p);
+      flagged++;
+    }
+  TEST_ASSERT_EQUAL_INT(0, flagged);
+}
+
+// What stands behind a promise decides which words are true.
+static void test_what_stands_behind_a_promise() {
+  const char* watch = "I'll let you know when it arrives.";
+  const char* work = "I'll finish the file next turn.";
+  for (const char* p : {watch, work}) {
+    TEST_ASSERT_TRUE_MESSAGE(laterPromiseSpan(p, nullptr, nullptr, LaterWork::None), p);
+    TEST_ASSERT_FALSE_MESSAGE(laterPromiseSpan(p, nullptr, nullptr, LaterWork::Live), p);
+  }
+  TEST_ASSERT_FALSE(laterPromiseSpan(watch, nullptr, nullptr, LaterWork::Standing));
+  TEST_ASSERT_TRUE(laterPromiseSpan(work, nullptr, nullptr, LaterWork::Standing));
+  for (const char* p : {"I'll keep you posted.", "I will report back on Friday.", "I'll get back to you.",
+                        "I'll circle back.", "I'll follow up with you.", "I'll ping you when it lands.",
+                        "I'll update you when it lands."})
+    TEST_ASSERT_FALSE_MESSAGE(laterPromiseSpan(p, nullptr, nullptr, LaterWork::Standing), p);
+  for (const char* p : {"I'll check it in the background.", "I'm still working on it.", "Hang tight."})
+    TEST_ASSERT_TRUE_MESSAGE(laterPromiseSpan(p, nullptr, nullptr, LaterWork::Standing), p);
+}
+
+// The correction runs with tools allowed: it must not read as an order to do everything again.
+static void test_the_correction_does_not_repeat_work() {
+  TEST_ASSERT_TRUE(laterCorrection("I'll log it next turn.").find("Do not repeat") != std::string::npos);
+}
+
 // The device's own failure lines never promise anything (the whole reply path's other half).
 static void test_device_copy_makes_no_promise() {
   for (const char* c : {kSalvageCutMarker, agent::kCutNothingSalvaged, agent::kUnreadableNothingSalvaged, kLaterPromiseLine})
@@ -111,7 +193,7 @@ static void test_salvage_carries_the_line() {
   TEST_ASSERT_TRUE(s.salvaged);
   TEST_ASSERT_TRUE(s.text.find(kLaterPromiseLine) != std::string::npos);
   const agent::SalvageOutcome w =
-      agent::salvageForOwner("{\"reply\":\"I'll finish the rest next turn.\"", "truncated", true, /*workBehind=*/true);
+      agent::salvageForOwner("{\"reply\":\"I'll finish the rest next turn.\"", "truncated", true, LaterWork::Live);
   TEST_ASSERT_TRUE(w.text.find(kLaterPromiseLine) == std::string::npos);
 }
 
@@ -174,6 +256,9 @@ int main() {
   RUN_TEST(test_salvage_keeps_no_filler);
   RUN_TEST(test_work_and_chat);
   RUN_TEST(test_promises);
+  RUN_TEST(test_ordinary_replies_are_not_promises);
+  RUN_TEST(test_what_stands_behind_a_promise);
+  RUN_TEST(test_the_correction_does_not_repeat_work);
   RUN_TEST(test_device_copy_makes_no_promise);
   RUN_TEST(test_salvage_carries_the_line);
   RUN_TEST(test_cut_note);
