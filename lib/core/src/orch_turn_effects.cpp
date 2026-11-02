@@ -397,6 +397,9 @@ void recordToolEffect(TurnEffects& fx, FxKind base, bool isError, const std::str
   }
   const FxKind k = refineKind(base, output);
   flags = logRowFlags(flags, k, output);
+  // media.play answers success with an error body when there are no tracks: only the player's own
+  // state says music started.
+  if (!contains(output, "\"state\":\"playing\"")) flags &= (uint16_t)~kFxMusic;
   // A memory is pinned by a write only when the write stored it; a duplicate
   // says whether the existing one was already pinned (a pin that changed nothing).
   const bool stored = startsWith(output, "stored memory ");

@@ -69,6 +69,7 @@ enum : uint16_t {
                             // document, whose result counts a row or a rewrite that landed:
                             // the only backing of a log claim (CUM-782)
   kFxUnconfirmed = 1u << 8, // a voice send whose upload went out but Telegram did not answer usably: it may have arrived
+  kFxMusic     = 1u << 9,   // a media.play whose result says the player is playing
 };
 
 struct Effect {

@@ -169,7 +169,8 @@ void noteRefusal(WiFiClientSecure& c, const TtsProvider& prov, int status, uint3
 }
 
 // Mistral: {"audio_data":"<base64 mp3>"} - skip to the value, stream-decode it.
-// b64decodeToFile's clean flag: the closing quote arrived AND every byte was written.
+// b64decodeToFile's clean flag: the closing quote arrived AND every byte was written. A cut
+// stream and a failed write are told apart (noteMistralValue), so each gets its own reason.
 void streamMistral(WiFiClientSecure& c, File& f, uint32_t deadline, nimbus::orch::ClipRead& rd) {
   String head;
   const char* MARK = "\"audio_data\":\"";
@@ -178,9 +179,9 @@ void streamMistral(WiFiClientSecure& c, File& f, uint32_t deadline, nimbus::orch
       head += (char)c.read();
       const int idx = head.indexOf(MARK);
       if (idx < 0) continue;
-      bool clean = false;
-      rd.bytes = b64decodeToFile(c, f, head.substring(idx + strlen(MARK)), deadline, &clean);
-      rd.endSeen = rd.writesOk = clean;
+      bool clean = false, wroteAll = false;
+      const size_t bytes = b64decodeToFile(c, f, head.substring(idx + strlen(MARK)), deadline, &clean, &wroteAll);
+      nimbus::orch::noteMistralValue(rd, bytes, clean, wroteAll);
       return;
     }
     if (!c.connected()) return;

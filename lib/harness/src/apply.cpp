@@ -508,7 +508,10 @@ static void noteUnspoken(const std::string& why, bool noted, const std::string& 
       } else if (alreadySent(st, text)) {
         outcome = " - the sender already has that text from your reply.telegram";
       } else {
-        if (st.unspokenText.empty()) st.unspokenText = text + plain;
+        if (st.unspokenText.empty()) {
+          st.unspokenText = text;
+          st.unspokenNote = plain;
+        }
         outcome = " - its text was sent to the sender in writing";
       }
     }
@@ -852,9 +855,14 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // A reply that already ends with a question carries the ask: it is not
   // appended again, and only what is delivered is checked and captured.
   const bool askAppended = t.reply.length() && t.ask.length() && !replyAlreadyAsks(t.reply, t.ask);
+  const bool carries = t.reply.length() || t.ask.length();
+  // The text of a tts nothing could voice, when it is all the turn has to say: it goes out in writing
+  // as the turn's message, so it is checked like a reply.
+  const std::string unspokenText = carries ? std::string() : st.unspokenText;
   const std::string claimTail =
       st.claims ? st.claims->tailAfterApply(askAppended ? t.reply + "\n\n" + t.ask
-                                                        : (t.reply.length() ? t.reply : t.ask),
+                                                        : (t.reply.length() ? t.reply
+                                                                            : (t.ask.length() ? t.ask : unspokenText)),
                                             /*skipSpawned=*/!spawnLine.empty())
                 : std::string();
   // The corrections (spawn line, claim lines) also ride the captured text.
@@ -862,13 +870,10 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // The speech notes ride a message the owner is getting anyway, never one of their own: a routine
   // or a reply-less turn that only spoke (and was cut short) sends nothing for it. A failed tts's
   // note is left out when the claim check's own line already tells the owner.
-  const bool carries = t.reply.length() || t.ask.length();
-  std::string replyNotes;
-  if (carries) {
-    replyNotes = st.replyNote;
-    if (!st.unspokenNote.empty() && !nimbus::orch::tailCarriesSpeechGap(claimTail)) replyNotes += st.unspokenNote;
-  }
-  const std::string unspokenText = carries ? std::string() : st.unspokenText;
+  const std::string unspokenNote =
+      nimbus::orch::tailCarriesSpeechGap(claimTail) ? std::string() : st.unspokenNote;
+  const std::string replyNotes = carries ? st.replyNote + unspokenNote : std::string();
+  const std::string written = unspokenText.empty() ? std::string() : unspokenText + unspokenNote;
   const std::string riskTail = riskNote + replyNotes + correctionTail;
   st.riskNote.clear();
   st.replyNote.clear();
@@ -884,9 +889,9 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   } else if (t.ask.length()) {
     if (d.deliver) d.deliver(chatId, t.ask + riskTail);
     if (raiseAsk) d.emitAsk();
-  } else if (!unspokenText.empty()) {
+  } else if (!written.empty()) {
     // A tts nothing could voice and nothing else to say: the text goes out with the reason.
-    if (d.deliver) d.deliver(chatId, unspokenText + riskTail);
+    if (d.deliver) d.deliver(chatId, written + riskTail);
   } else if (riskTail.length()) {
     // No reply/ask, but a risk switch flipped or a spawn did not start - the
     // note must still land (never silent).
@@ -922,7 +927,7 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
     else if (t.reply.length()) d.captureAssistant(chatId, st.delivered);
     else if (t.ask.length())   d.captureAssistant(chatId, t.ask + replyNotes + correctionTail);
     // The text a failed tts sent in its place: history holds what the owner got.
-    else if (!unspokenText.empty()) d.captureAssistant(chatId, unspokenText + correctionTail);
+    else if (!written.empty()) d.captureAssistant(chatId, written + correctionTail);
   }
 }
 

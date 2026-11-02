@@ -174,6 +174,12 @@ bool clipWhole(const ClipRead& r) {
   return framingFault(r) == Fault::None;
 }
 
+void noteMistralValue(ClipRead& r, size_t bytes, bool clean, bool wroteAll) {
+  r.bytes = bytes;
+  r.endSeen = clean;
+  r.writesOk = wroteAll;
+}
+
 std::string clipTruncatedText(size_t bytes) {
   return "truncated at " + std::to_string((unsigned long long)bytes) +
          " B (the speech audio did not arrive whole)";

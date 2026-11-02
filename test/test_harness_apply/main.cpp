@@ -353,6 +353,21 @@ static void test_tts_cut_prefers_a_sentence_end() {
   const std::string& said = r.spoken[0];
   TEST_ASSERT_TRUE(said.size() <= 400);
   TEST_ASSERT_EQUAL_CHAR('.', said.back());
+  // The text above ends a sentence at its last space, so a plain "last space" cut passes too. Here
+  // a sentence ends near byte 300 and only words follow: the owner hears that sentence end, not
+  // speech that stops mid-sentence near byte 399.
+  std::string head;
+  while (head.size() < 250) head += "This is one sentence of the update. ";
+  head += "This is where it ends.";
+  std::string longer = head;
+  while (longer.size() < 700) longer += " and more words after it";
+  Rec r2;
+  ApplyDeps d2 = makeDeps(r2, /*tts=*/true);
+  ApplyState st2 = makeState(r2);
+  Turn t2 = turnWithDevice(("{\"tts\":\"" + longer + "\"}").c_str());
+  t2.reply = "ok";
+  agent::applyTurn(t2, "1001", d2, st2, spawned);
+  TEST_ASSERT_EQUAL_STRING(head.c_str(), r2.spoken[0].c_str());
 }
 
 // ---- a pause never moves the owner's head (26 Oct 2026, Lumi) -------------------
@@ -1330,6 +1345,42 @@ static void test_tts_only_turn_that_was_not_spoken_delivers_the_text() {
   TEST_ASSERT_EQUAL(0, (int)off.delivered.size());
 }
 
+// Independent review: the text of a failed tts-only turn goes out as the turn's message, so it is
+// checked like a reply. The same words in t.reply get the same correction.
+static void test_the_text_of_a_failed_tts_only_turn_gets_the_claim_check() {
+  const std::string note = "\n\n(Note: that could not be spoken aloud: the speaker volume is 0, so speech would play as silence.)";
+  const std::string rule = "\nOnly the device's owner can speak aloud on the device.";
+  const std::string unsaved = "\n\n(Correction: that has not been saved.)";
+  const std::string unspoken = "\n\n(Correction: that was not spoken aloud.)";
+  struct Row { const char* chat; const char* text; std::string want; };
+  const Row rows[] = {
+      {"1001", "Done, I saved that to your memory.", "Done, I saved that to your memory." + note + unsaved},
+      {"2002", "Done, I saved that to your memory.", "Done, I saved that to your memory." + rule + unsaved},
+      {"1001", "The kettle is ready.", "The kettle is ready." + note},
+      // The claim line already says it was not spoken: no second note, as beside a reply.
+      {"1001", "I read it aloud for you.", "I read it aloud for you." + unspoken},
+  };
+  for (const Row& row : rows) {
+    Rec r;
+    r.volume = 0;
+    ApplyDeps d = makeDeps(r, /*tts=*/true);
+    const std::string json = std::string("{\"type\":\"tts\",\"text\":\"") + row.text + "\"}";
+    agent::ClaimCheck cc;
+    cc.beginTurn();
+    ApplyState st = makeState(r);
+    st.claims = &cc;
+    bool spawned = false;
+    agent::applyTurn(turnWithDevice(json.c_str()), row.chat, d, st, spawned);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), row.text);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(row.want.c_str(), r.delivered[0].second.c_str(), row.text);
+    // History holds what arrived, the riders of the turn's message included.
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.captured.size(), row.text);
+    TEST_ASSERT_TRUE_MESSAGE(r.captured[0].find(row.text) == 0, row.text);
+    TEST_ASSERT_EQUAL_MESSAGE(row.want.find("Correction") != std::string::npos,
+                              r.captured[0].find("Correction") != std::string::npos, row.text);
+  }
+}
+
 // Merge review: a failed tts beside a reply reaches the owner in the same turn whatever the reply
 // says or which language it is in (the claim check only knows a few English phrasings). The note
 // is plain; the reason is for the owner's chats. A claim line that already says it is not repeated.
@@ -2254,6 +2305,7 @@ int main(int, char**) {
   RUN_TEST(test_tts_is_asked_for_the_turns_chat);
   RUN_TEST(test_a_scheduled_tts_that_was_not_spoken_stays_quiet);
   RUN_TEST(test_tts_only_turn_that_was_not_spoken_delivers_the_text);
+  RUN_TEST(test_the_text_of_a_failed_tts_only_turn_gets_the_claim_check);
   RUN_TEST(test_a_failed_tts_beside_any_reply_tells_the_owner);
   RUN_TEST(test_the_shortened_note_never_goes_out_alone);
   RUN_TEST(test_a_failed_tts_does_not_resend_what_reply_telegram_sent);

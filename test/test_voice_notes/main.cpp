@@ -320,6 +320,23 @@ static void test_speech_cut_keeps_whole_characters() {
   TEST_ASSERT_TRUE(s.shortened);
   TEST_ASSERT_EQUAL_CHAR('.', s.text.back());
   TEST_ASSERT_TRUE(s.text.size() <= kTtsActionMaxBytes);
+  // The repeated text above ends a sentence at its last space, so a plain "last space" cut passes
+  // too. Here the last sentence end is well before the last space: only the preference finds it.
+  std::string late;
+  while (late.size() < 150) late += "An opening sentence. ";
+  const std::string lateHead = late + "This one ends the part worth hearing.";
+  late = lateHead;
+  while (late.size() < 700) late += " and then more words without any end";
+  s = cutForSpeech(late);
+  TEST_ASSERT_TRUE(s.shortened);
+  TEST_ASSERT_EQUAL_STRING(lateHead.c_str(), s.text.c_str());
+  // A sentence end in the front third is too short a clip: the last space wins there.
+  std::string early = "Short start.";
+  while (early.size() < 700) early += " more words without any end";
+  s = cutForSpeech(early);
+  TEST_ASSERT_TRUE(s.shortened);
+  TEST_ASSERT_TRUE(s.text.size() > kTtsActionMaxBytes * 2 / 3);
+  TEST_ASSERT_TRUE(s.text.back() != ' ' && early.compare(0, s.text.size() + 1, s.text + " ") == 0);
   // No sentence end: a word boundary, not a word cut in half.
   std::string words;
   while (words.size() < 500) words += "alpha beta gamma ";
@@ -487,6 +504,29 @@ static void test_clip_cut_words_match_the_facts() {
                            clipCutText(brief).c_str());
 }
 
+// Independent review: a Mistral stream cut by a dropped connection or the read window was reported
+// as a failed flash write, so the owner heard the storage was failing when the network dropped.
+// Every outcome of the decode, through the same function streamMistral calls.
+static void test_a_cut_mistral_stream_is_not_called_a_flash_failure() {
+  struct Row { bool clean, wroteAll; size_t bytes; bool whole; std::string why; };
+  const std::string flash = "the speech audio could not be saved (a flash write failed after 20000 B)";
+  const Row rows[] = {
+      {true, true, 20000, true, ""},                          // the closing quote, all written
+      {false, true, 20000, false, clipTruncatedText(20000)},  // dropped socket or the window ran out
+      {false, false, 20000, false, flash},                    // a write failed mid-stream
+      {false, false, 0, false, clipTruncatedText(0)},         // nothing decoded: no write to blame
+      {false, true, 0, false, clipTruncatedText(0)},
+  };
+  for (const Row& row : rows) {
+    ClipRead r;
+    r.mistral = true;
+    noteMistralValue(r, row.bytes, row.clean, row.wroteAll);
+    TEST_ASSERT_EQUAL(row.bytes, r.bytes);
+    TEST_ASSERT_EQUAL(row.whole, clipWhole(r));
+    if (!row.whole) TEST_ASSERT_EQUAL_STRING(row.why.c_str(), clipCutText(r).c_str());
+  }
+}
+
 // QW6 rebase review: the bench leg T4's text (tests/hil/mock_llm.py _LONG_TTS) is built so the
 // device must cut HARD inside a run of 2-byte letters: no sentence end or space from byte 133 to the
 // bound, and a 2-byte letter straddling byte 400. The cut backs off to that letter's start (399 B);
@@ -530,5 +570,6 @@ int main(int, char**) {
   RUN_TEST(test_only_spoken_characters_set_the_audio_floor);
   RUN_TEST(test_emoji_and_symbols_are_not_spoken_but_scripts_are);
   RUN_TEST(test_clip_cut_words_match_the_facts);
+  RUN_TEST(test_a_cut_mistral_stream_is_not_called_a_flash_failure);
   return UNITY_END();
 }

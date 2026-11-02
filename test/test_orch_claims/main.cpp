@@ -89,7 +89,7 @@ static std::string coreFor(const ClaimCueInfo& c) {
                                                                      : w + " BBC Weather, rain today";
       return c.needsCredit ? "the " + w + " says it is 3.0 mm" : "rain 3.0 mm " + w;
     default:
-      return w;
+      return c.needsVoicedVerb ? "said it " + w : w;
   }
 }
 
@@ -810,7 +810,7 @@ static void test_unsourced_result_needs_a_hedge_or_a_lookup() {
 static void test_tail_one_calm_line_per_class_ascii_no_em_dash() {
   std::vector<ClaimGap> all;
   for (int c = 0; c < (int)ClaimClass::kCount; c++)
-    for (uint8_t v = 0; v < 16; v++) {   // every GapVariant, incl. not spoken / voice not confirmed
+    for (uint8_t v = 0; v < kGapVariantCount; v++) {   // every GapVariant, incl. not spoken / voice not confirmed
       ClaimGap g;
       g.cls = (ClaimClass)c;
       g.variant = v;
@@ -825,11 +825,56 @@ static void test_tail_one_calm_line_per_class_ascii_no_em_dash() {
       TEST_ASSERT_EQUAL(std::string::npos, line.find('!'));
     }
   const std::string tail = claimTail(all);
-  // One line per class, however many gaps of it.
+  // One line per class, however many gaps of it. The send class alone says each different thing:
+  // plain, no voice message, queued, not spoken, voice not confirmed (the test below says why).
   int lines = 0;
   for (size_t p = tail.find("\n\n("); p != std::string::npos; p = tail.find("\n\n(", p + 1)) lines++;
-  TEST_ASSERT_EQUAL((int)ClaimClass::kCount, lines);
+  TEST_ASSERT_EQUAL((int)ClaimClass::kCount - 1 + 5, lines);
   TEST_ASSERT_EQUAL_STRING("", claimTail({}).c_str());
+}
+
+// Independent review: "I read it aloud and emailed the summary to Sam" got only the speech line, so
+// the owner believed the email went out; the other order lost the speech line. Each claim of the
+// send class that says a different thing keeps its own line, in either order, and the same line
+// never repeats.
+static void test_a_speech_gap_does_not_hide_a_send_gap_in_the_same_reply() {
+  const std::string spoken = "(Correction: that was not spoken aloud.)";
+  const std::string unsent = "(Correction: that has not been sent.)";
+  const std::string noVoice = "(Correction: no voice message was delivered.)";
+  const char* both[] = {"I read it aloud and emailed the summary to Sam.",
+                        "I emailed the summary to Sam and read it aloud.",
+                        "I read it aloud, and I sent you the file on Telegram.",
+                        "I sent you the file on Telegram, and I read it aloud."};
+  TurnEffects none;
+  for (const char* reply : both) {
+    const std::string tail = claimTail(gapsFor(reply, none));
+    TEST_ASSERT_TRUE_MESSAGE(tail.find(spoken) != std::string::npos, reply);
+    TEST_ASSERT_TRUE_MESSAGE(tail.find(unsent) != std::string::npos, reply);
+    // Whichever half is backed loses its line, and only that one.
+    TurnEffects spoke;
+    spoke.add(FxKind::Speak, true);
+    const std::string afterSpeech = claimTail(gapsFor(reply, spoke));
+    TEST_ASSERT_TRUE_MESSAGE(afterSpeech.find(spoken) == std::string::npos, reply);
+    TEST_ASSERT_TRUE_MESSAGE(afterSpeech.find(unsent) != std::string::npos, reply);
+    TurnEffects sent;
+    sent.add(FxKind::Send, true);
+    const std::string afterSend = claimTail(gapsFor(reply, sent));
+    TEST_ASSERT_TRUE_MESSAGE(afterSend.find(spoken) != std::string::npos, reply);
+    TEST_ASSERT_TRUE_MESSAGE(afterSend.find(unsent) == std::string::npos, reply);
+  }
+  // A verb after "and" shares the assistant's subject, and only the assistant's.
+  for (const char* other : {"I know you emailed Sam and forwarded it.", "I saw that Sam read it and shared it."})
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(other, none), ClaimClass::Sent), other);
+  const std::string mixed = claimTail(gapsFor("I sent you a voice message and emailed Sam.", none));
+  TEST_ASSERT_TRUE(mixed.find(noVoice) != std::string::npos && mixed.find(unsent) != std::string::npos);
+  // Two claims that fail the same way are one line.
+  TEST_ASSERT_EQUAL_STRING(("\n\n" + unsent).c_str(),
+                           claimTail(gapsFor("I emailed Sam and I forwarded it to Ana.", none)).c_str());
+  // Every other class keeps its one line, whichever gaps it holds.
+  ClaimGap plain, ram;
+  plain.cls = ram.cls = ClaimClass::Saved;
+  ram.variant = 1;
+  TEST_ASSERT_EQUAL_STRING(("\n\n" + claimTailLine(plain)).c_str(), claimTail({plain, ram}).c_str());
 }
 
 static void test_correction_names_claims_and_the_ledger_and_stays_bounded() {
@@ -1598,6 +1643,51 @@ static void test_spoken_claims_need_the_speaker_or_a_voice_receipt() {
     }
 }
 
+// Independent review: "on the speaker", "out loud" and "aloud" put a false "not spoken aloud" on a
+// truthful music reply and on figures of speech. They claim speech only after a verb of saying or
+// playing in their clause; music that really started backs the playing verbs and nothing else.
+static void test_a_speech_cue_needs_a_verb_of_speech_and_music_backs_only_playing() {
+  const char* notClaims[] = {"I laughed out loud at that one.", "I wondered aloud whether that was right.",
+                             "I was thinking out loud.", "I read your note and laughed out loud.",
+                             "I checked it on the speaker."};
+  TurnEffects none;
+  for (const char* reply : notClaims) TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(reply, none), ClaimClass::Sent), reply);
+  // The class: every such cue, with a verb that says nothing about the speaker.
+  int voiced = 0;
+  for (size_t i = 0; i < claimCueCount(); i++) {
+    const ClaimCueInfo c = claimCue(i);
+    if (!c.needsVoicedVerb) continue;
+    voiced++;
+    const std::string s = "Done, I laughed " + cueWords(c.phrase) + " for you.";
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(s, none), ClaimClass::Sent), s.c_str());
+  }
+  TEST_ASSERT_EQUAL(3, voiced);
+  const char* playing[] = {"Done, I played it on the speaker.", "I played it on the speaker.",
+                           "I put it on the speaker.", "I've played it on the speaker.",
+                           "I'm playing it on the speaker now."};
+  const char* speaking[] = {"I read it on the speaker.", "I said it out loud.", "I spoke it aloud just now.",
+                            "I read it out loud for you."};
+  const std::string status = R"({"state":"playing","current":"song.wav","index":0,"count":1,"repeat":false,"tracks":["song.wav"]})";
+  TurnEffects music;
+  recordToolEffect(music, FxKind::Config, false, status, kFxMusic);
+  for (const char* reply : playing) {
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)gapsFor(reply, music).size(), reply);
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(reply, none), ClaimClass::Sent), reply);
+  }
+  for (const char* reply : speaking) TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(reply, music), ClaimClass::Sent), reply);
+  // Only the player's own "playing" counts: no tracks, a pause, a stop or a failed call back nothing.
+  struct Row { bool isError; std::string out; };
+  const Row dead[] = {{false, R"({"error":"no tracks in /music"})"},
+                      {false, R"({"state":"paused","current":"song.wav"})"},
+                      {false, R"({"state":"stopped","current":""})"},
+                      {true, "invalid track name (SD /music, .wav or .mp3)"}};
+  for (const Row& row : dead) {
+    TurnEffects fx;
+    recordToolEffect(fx, FxKind::Config, row.isError, row.out, kFxMusic);
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor("I played it on the speaker.", fx), ClaimClass::Sent), row.out.c_str());
+  }
+}
+
 // What a tts device action's summary records: the speaker is a Speak, a Telegram delivery
 // is a receipted voice Send, and every other summary spoke nothing. A tool error always
 // records the failed Speak. The same through the device.control tool's "applied: " line.
@@ -1802,6 +1892,7 @@ int main(int, char**) {
   RUN_TEST(test_a_correction_of_the_record_needs_a_files_effect);
   RUN_TEST(test_switch_claims_need_a_setting_that_changed);
   RUN_TEST(test_spoken_claims_need_the_speaker_or_a_voice_receipt);
+  RUN_TEST(test_a_speech_cue_needs_a_verb_of_speech_and_music_backs_only_playing);
   RUN_TEST(test_a_tts_summary_records_what_really_happened);
   RUN_TEST(test_an_unconfirmed_voice_send_is_not_called_undelivered);
   RUN_TEST(test_a_failure_reason_cannot_forge_a_receipt);
@@ -1826,6 +1917,7 @@ int main(int, char**) {
   RUN_TEST(test_owner_reported_figures_may_come_from_recalled_memories_label_figures_may_not);
   RUN_TEST(test_unsourced_result_needs_a_hedge_or_a_lookup);
   RUN_TEST(test_tail_one_calm_line_per_class_ascii_no_em_dash);
+  RUN_TEST(test_a_speech_gap_does_not_hide_a_send_gap_in_the_same_reply);
   RUN_TEST(test_correction_names_claims_and_the_ledger_and_stays_bounded);
   RUN_TEST(test_excerpt_is_bounded_and_valid_utf8);
   RUN_TEST(test_no_ledger_means_no_gaps_and_huge_replies_are_bounded);

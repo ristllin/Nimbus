@@ -60,7 +60,7 @@ std::string voiceBudgetText();
 // (shapeReadable false) gets no verdict, so an odd but whole clip is never refused.
 struct ClipRead {
   bool   mistral = false;
-  bool   endSeen = false;        // the closing quote, or the server's close / the full length
+  bool   endSeen = false;        // the whole Mistral value, or the server's close / the full length
   bool   writesOk = false;       // every decoded byte was written to flash
   long   contentLength = -1;     // the raw body's stated length (-1: none; unused for Mistral)
   size_t bytes = 0;              // audio bytes written
@@ -70,6 +70,10 @@ struct ClipRead {
   size_t   textChars = 0;         // spoken characters (speechChars) of the text the clip voices
 };
 bool clipWhole(const ClipRead& r);
+// What decoding Mistral's audio value found: `clean` (the closing quote arrived and every byte was
+// written), `wroteAll` (flash took every decoded byte). A stream the network cut is not a failed
+// write: only `wroteAll` says the flash failed.
+void noteMistralValue(ClipRead& r, size_t bytes, bool clean, bool wroteAll);
 // The failure for a cut clip: "truncated at 543843 B (the speech audio did not arrive whole)".
 std::string clipTruncatedText(size_t bytes);
 // The failure for a clip clipWhole refused, with the reason the facts give: a flash write that

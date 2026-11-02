@@ -278,10 +278,11 @@ uint8_t savedTextFileRow(const std::string& argsJson) {
              : 0;
 }
 
-uint8_t ClaimCheck::toolCallFlags(const std::string& regName, const std::string& argsJson) {
+uint16_t ClaimCheck::toolCallFlags(const std::string& regName, const std::string& argsJson) {
   // A read of the device's own state (L19-11): the only thing that can confirm
   // "it is working" (kEvHealthRead comes from the ledger, never from text).
   if (regName == "device.status" || regName == "system.health") return orch::kFxHealth;
+  if (regName == "media.play") return orch::kFxMusic;   // kept only if the result says it is playing
   // CUM-782 + the review: a files.append only writes text documents, and the landed-row
   // count (fxAppendedRows, in recordToolEffect) is the proof a row exists - the flag is
   // asked for on every append and kept only when a row lands, whatever the extension
@@ -324,7 +325,7 @@ void ClaimCheck::noteToolArgs(const std::string& regName, const std::string& arg
 }
 
 void ClaimCheck::noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
-                          uint8_t flags) {
+                          uint16_t flags) {
   orch::recordToolEffect(fx_, kind, isError, output, flags);
   causeEvidence_ |= orch::causeEvidenceOf(output);
   if (!isError) {

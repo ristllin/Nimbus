@@ -34,6 +34,7 @@ enum CueFlag : uint32_t {
   kLogObject  = 1u << 14,  // saved: a log, entry, ledger or total within reach ("updated the log")
   kLogFileObject = 1u << 19,  // saved: a log or file noun within reach ("logged it in your day log"), narrower
                               // than kLogObject: a memory "entry" is a save, not a log file (CUM-837)
+  kVoicedVerb = 1u << 20,  // sent: only after a verb of saying or playing ("said it out loud", never "laughed out loud")
   kSourceNoun = 1u << 15,  // source: a noun that counts only when the reply credits it (sourceCredited)
   kSrcOn      = 1u << 16,  // source: "on the <noun>" credits it ("on the label"; never "on the menu")
   kSrcHeading = 1u << 17,  // source: an instrument naming a reading by itself ("Rain gauge: 3.0 mm")
@@ -185,10 +186,12 @@ constexpr Cue kCues[] = {
     {C::Sent, "read aloud", kSelf, kSpeakBacks},
     {C::Sent, "reading it aloud", 0, kSpeakBacks},
     // Other ways to say the same (merge review): "said it out loud", "I spoke it aloud", "played it on
-    // the speaker". Each needs the assistant as subject. "played it" alone is no cue: music plays too.
-    {C::Sent, "out loud", kSelf, kSpeakBacks},
-    {C::Sent, "aloud", kSelf, kSpeakBacks},
-    {C::Sent, "on the speaker", kSelf, kSpeakBacks},
+    // the speaker". Each needs the assistant as subject and a verb of saying or playing just before
+    // it: "laughed out loud" and "wondered aloud" are figures of speech. "played it" alone is no
+    // cue, and music that really started backs the playing verbs (kPlayVerbs).
+    {C::Sent, "out loud", kSelf | kVoicedVerb, kSpeakBacks},
+    {C::Sent, "aloud", kSelf | kVoicedVerb, kSpeakBacks},
+    {C::Sent, "on the speaker", kSelf | kVoicedVerb, kSpeakBacks},
     {C::Sent, "reminder set", kAnySubject, kSchedBacks},
     {C::Sent, "reminder is set", kAnySubject, kSchedBacks},
     {C::Sent, "set a reminder", kSelf, kSchedBacks},
@@ -1298,11 +1301,29 @@ bool saveReference(const Scan& sc, size_t i, const Cue& cue) {
   return (cue.cls == C::Saved || cue.cls == C::Deliverable) && earlierInSentence(sc, i);
 }
 
+// A send verb right after "and" or "then" shares the assistant's subject ("I read it aloud and
+// emailed the summary to Sam"), unless someone else or a subordinate clause comes in between
+// ("I know you emailed Sam and forwarded it", "I saw that Sam read it and shared it").
+constexpr const char* kSubordinators[] = {"that", "who", "which", "what", "how", "when", "if", "as",
+                                          "while", "because", "since", "though", "although"};
+
+bool sharesSelfSubject(const Scan& sc, size_t i) {
+  if (i == 0 || (!tokIs(sc.s, sc.toks[i - 1], "and") && !tokIs(sc.s, sc.toks[i - 1], "then"))) return false;
+  for (size_t k = i - 1; k-- > 0 && sc.toks[k].sent == sc.toks[i].sent;) {
+    if (tokIn(sc.s, sc.toks[k], kSelfSubjects)) return true;
+    if (tokIn(sc.s, sc.toks[k], kSubordinators)) return false;
+    // "sent you the file": before a determiner "you" is the object, not someone else acting.
+    if (tokIn(sc.s, sc.toks[k], kOtherSubjects) && !tokIn(sc.s, sc.toks[k + 1], kDeterminers)) return false;
+  }
+  return false;
+}
+
 bool passesScope(const Scan& sc, size_t i, size_t len, const Cue& cue) {
   if (outOfScope(sc, i, len, cue) || notOurAct(sc, i, len, cue) || saveReference(sc, i, cue) ||
       sendReference(sc, i, len, cue))
     return false;
-  return !(cue.flags & kSelf) || selfContext(sc, i, (cue.flags & kNoPassive) != 0);
+  return !(cue.flags & kSelf) || selfContext(sc, i, (cue.flags & kNoPassive) != 0) ||
+         (cue.cls == C::Sent && sharesSelfSubject(sc, i));
 }
 
 // "saved as a permanent note" names a kind of record (a save claim), not a
@@ -1316,6 +1337,25 @@ bool namesAKind(const Scan& sc, size_t i, size_t len, const Cue& cue) {
 // its clause; *num gets the count it states.
 bool spawnRejected(const Scan& sc, size_t i, size_t len, const Cue& cue, int* num) {
   return (cue.flags & kSpawnVerb) && (clauseNegated(sc, i) || !spawnNounNear(sc, i, i + len, num));
+}
+
+// What makes "aloud", "out loud" and "on the speaker" a claim of speech or sound: the verb just
+// before it in its clause, not past a clause join ("read your note and laughed out loud").
+constexpr const char* kSayVerbs[] = {"said", "saying", "spoke", "speaking", "read", "reading", "recited", "voiced"};
+constexpr const char* kPlayVerbs[] = {"played", "playing", "put"};
+constexpr size_t kVoicedVerbBefore = 4;
+
+template <size_t N>
+bool verbJustBefore(const Scan& sc, size_t i, const char* const (&verbs)[N]) {
+  for (size_t d = 1; d <= kVoicedVerbBefore && d <= i && sameClause(sc, i - d, i); d++) {
+    if (tokIn(sc.s, sc.toks[i - d], kClauseJoins)) return false;
+    if (tokIn(sc.s, sc.toks[i - d], verbs)) return true;
+  }
+  return false;
+}
+
+bool voicedVerbMissing(const Scan& sc, size_t i, const Cue& cue) {
+  return (cue.flags & kVoicedVerb) && !verbJustBefore(sc, i, kSayVerbs) && !verbJustBefore(sc, i, kPlayVerbs);
 }
 
 // Fault words: in a cause's sentence they make "your phone" a cause ("your Telegram
@@ -1753,14 +1793,26 @@ bool contextMissing(const Scan& sc, size_t i, size_t len, const Cue& cue) {
   return (cue.flags & kLogObject) && !recordNounNear(sc, i, len);
 }
 
+bool voiceNounNear(const Scan& sc, size_t i);
+
+// One clause holds one claim per class, except the send class: "read it aloud and emailed the
+// summary" and "sent a voice message and emailed Sam" need different things behind them, and the
+// first must not stand in for the second.
+uint8_t sendShape(const Scan& sc, size_t i, const Cue& cue) {
+  if (cue.cls != C::Sent) return 0;
+  if (cue.backs != kSendBacks) return cue.backs == kSpeakBacks ? 1 : 2;
+  return voiceNounNear(sc, i) ? 3 : 4;
+}
+
 void addClaim(const Scan& sc, size_t i, size_t c, int num, ClaimScan& out) {
   Claim cl;
   cl.cls = kCues[c].cls;
   cl.cue = (uint16_t)c;
+  cl.shape = sendShape(sc, i, kCues[c]);
   cl.count = (uint8_t)(num > 0 && num < 256 ? num : 0);
   claimSpan(sc, i, (kCues[c].flags & kFigure) != 0 || kCues[c].cls == C::Source, cl.begin, cl.end);
   for (const Claim& o : out.claims)
-    if (o.cls == cl.cls && o.begin == cl.begin) return;
+    if (o.cls == cl.cls && o.begin == cl.begin && o.shape == cl.shape) return;
   out.claims.push_back(cl);
 }
 
@@ -1776,7 +1828,7 @@ void matchAt(const Scan& sc, size_t i, ClaimScan& out) {
     int num = 0;
     const size_t len = matchPhrase(sc, i, cue.phrase, &num);
     if (!len || contextMissing(sc, i, len, cue) || !passesScope(sc, i, len, cue)) continue;
-    if (spawnRejected(sc, i, len, cue, &num) || namesAKind(sc, i, len, cue)) continue;
+    if (spawnRejected(sc, i, len, cue, &num) || namesAKind(sc, i, len, cue) || voicedVerbMissing(sc, i, cue)) continue;
     addClaim(sc, i, c, num, out);
     if (cue.flags & (kLogObject | kLogFileObject)) return;
   }
@@ -1883,6 +1935,7 @@ enum GapVariant : uint8_t {
   kGapNotSpoken = 18,        // "read it aloud" with nothing spoken and no voice message delivered
   kGapVoiceUnconfirmed = 19, // a voice message whose upload went out but Telegram did not confirm
 };
+static_assert(kGapVoiceUnconfirmed + 1 == kGapVariantCount, "a new gap variant raises kGapVariantCount (claims.h)");
 
 // Phrases that make a send claim a voice-message claim: the delivery itself named as
 // spoken audio. A lone "voice" or "audio" is not enough ("sent you the recording of
@@ -1893,6 +1946,12 @@ constexpr const char* kVoiceNouns[] = {
     "audio version",  "spoken version", "as audio",       "as spoken audio",
 };
 constexpr int kVoiceBefore = 4, kVoiceAfter = 8;
+
+bool musicPlaying(const TurnEffects& fx) {
+  for (const Effect& e : fx.all())
+    if (e.ok && (e.flags & kFxMusic)) return true;
+  return false;
+}
 
 bool backedBy(const TurnEffects& fx, uint32_t mask) {
   for (unsigned k = 0; k < (unsigned)FxKind::kCount; k++)
@@ -2179,8 +2238,17 @@ struct GapCheck {
     const size_t k = cueToken(sc, cue, cl);
     return k < sc.toks.size() && voiceNounNear(sc, k);
   }
+  // "I played it on the speaker" after a media.play the player confirmed: true of music, whatever
+  // was or was not said. A speech verb ("I said it out loud") still needs speech.
+  bool musicBacks(const Cue& cue, const Claim& cl) {
+    if (!(cue.flags & kVoicedVerb) || !musicPlaying(*ev.fx)) return false;
+    ensureTokens();
+    const size_t k = cueToken(sc, cue, cl);
+    return k < sc.toks.size() && verbJustBefore(sc, k, kPlayVerbs);
+  }
   bool effectGap(const Cue& cue, const Claim& cl, ClaimGap& g) {
     if (cue.cls == C::Cause) return causeGap(cue, ev.causeEvidence, &g.variant);
+    if (musicBacks(cue, cl)) return false;
     // A voice-message claim and a spoken claim ("read it aloud") are the device's own: a hosted
     // tool cannot send its Telegram voice message or drive its speaker, so they are checked
     // whatever tools the head had. A spoken claim is backed by speech that played on the speaker
@@ -2302,7 +2370,8 @@ size_t claimCueCount() { return kCueCount; }
 ClaimCueInfo claimCue(size_t i) {
   const Cue& c = kCues[i < kCueCount ? i : 0];
   return ClaimCueInfo{c.cls, c.phrase, (c.flags & kSelf) != 0, (c.flags & kFaultCtx) != 0,
-                      (c.flags & kLogObject) != 0, (c.flags & kSourceNoun) != 0, (c.flags & kSrcName) != 0};
+                      (c.flags & kLogObject) != 0, (c.flags & kSourceNoun) != 0, (c.flags & kSrcName) != 0,
+                      (c.flags & kVoicedVerb) != 0};
 }
 
 ClaimScan scanClaims(const std::string& reply, bool ownerAskedHow) {
@@ -3057,7 +3126,10 @@ std::string claimTail(const std::vector<ClaimGap>& gaps) {
       if ((size_t)g.cls != c) continue;
       const std::string line = claimTailLine(g);
       if (!line.empty() && out.find(statementOf(line)) == std::string::npos) out += "\n\n" + line;
-      break;   // one line per class
+      // One line per class. The send class alone covers claims a correction cannot merge: "not
+      // spoken aloud" says nothing about the email in the same reply, so each of its lines stays
+      // (the repeat check above keeps it to one line per different thing).
+      if (g.cls != C::Sent) break;
     }
   }
   return out;

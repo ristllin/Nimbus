@@ -492,6 +492,22 @@ static void test_a_write_that_does_not_land_under_a_saved_reply_gets_one_correct
 // "claims: ok n=1" let it through; nothing reached Telegram. A voice claim is backed
 // only by a voice send whose result names Telegram's message_id, with or without
 // hosted tools (a connector never sends this device's voice message).
+// The whole seam the head loop uses, from the tool's name: media.play is the only media call that
+// backs "played it on the speaker".
+static void test_a_played_claim_is_backed_by_media_play_through_the_tool_seam() {
+  const std::string playing = R"({"state":"playing","current":"song.wav","index":0,"count":1,"repeat":false,"tracks":["song.wav"]})";
+  const std::string stopped = R"({"state":"stopped","current":"","index":-1,"count":0,"repeat":false,"tracks":[]})";
+  struct Row { const char* tool; const std::string& out; bool backed; };
+  const Row rows[] = {{"media.play", playing, true}, {"media.pause", playing, false}, {"media.stop", stopped, false}};
+  for (const Row& row : rows) {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.noteTool(agent::fxKindForTool(row.tool), false, row.out, ClaimCheck::toolCallFlags(row.tool, "{}"));
+    const std::string tail = cc.tailAfterApply("Done, I played it on the speaker.", false);
+    TEST_ASSERT_EQUAL_MESSAGE(row.backed, tail.empty(), row.tool);
+  }
+}
+
 static void test_voice_claim_needs_a_telegram_receipt() {
   using nimbus::orch::kFxVoice;
   const std::string voiceArgs = R"({"text":"Here is your evening summary.","voice":true})";
@@ -1324,6 +1340,7 @@ int main(int, char**) {
   RUN_TEST(test_repeated_checks_read_the_same_records);
   RUN_TEST(test_an_invented_reason_gets_the_ledger_back);
   RUN_TEST(test_a_save_confirmation_quoting_the_saved_words);
+  RUN_TEST(test_a_played_claim_is_backed_by_media_play_through_the_tool_seam);
   RUN_TEST(test_logged_as_a_memory_entry_is_a_save_not_a_log_row);
   RUN_TEST(test_a_followup_about_the_previous_photo_credits_the_label);
   RUN_TEST(test_an_idle_tally_name_is_not_a_source_word);

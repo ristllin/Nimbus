@@ -99,7 +99,7 @@ class ClaimCheck {
   // A head tool ran: its effect class (the shared tool table) and its result.
   // The result text joins the figure sources (bounded).
   void noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
-                uint8_t flags = 0);
+                uint16_t flags = 0);
   // The arguments of the same call, right before noteTool: the words a memory or file
   // write saved join the quote rule's seen text when the write lands, so a save
   // confirmation quoting them is never corrected as an invented record (the review).
@@ -108,7 +108,7 @@ class ClaimCheck {
   // written or updated with permanent:true, kFxVoice for reply.telegram
   // voice:true, kFxHealth for a read of the device's own state, kFxLogRow for a
   // files.append into a .csv or .log file, kept only if its result counts a row).
-  static uint8_t toolCallFlags(const std::string& regName, const std::string& argsJson);
+  static uint16_t toolCallFlags(const std::string& regName, const std::string& argsJson);
   // Sub-agent results this turn read: how many had a lookup behind them and how
   // many were live-data results with none.
   void noteFresh(int sourced, int unsourced);

@@ -111,6 +111,7 @@ struct Claim {
   uint32_t   begin = 0;    // byte span of the clause (or table row) holding the claim
   uint32_t   end = 0;
   uint8_t    count = 0;    // a number the claim states ("six sub-agents"); 0 = none
+  uint8_t    shape = 0;    // send class: what backs it (speech, a voice receipt, a send, a schedule)
 };
 
 struct ClaimScan {
@@ -205,6 +206,9 @@ std::string sourceWordsOf(const std::string& text, size_t cap = 8192, bool* clip
 std::string sourceNoun(uint32_t bit);
 
 
+// How many gap variants exist (kGap* in orch_claims.cpp): a test walks every one.
+constexpr uint8_t kGapVariantCount = 20;
+
 struct ClaimGap {
   ClaimClass  cls = ClaimClass::Saved;
   std::string excerpt;     // the claim's clause, at most ~100 bytes, valid UTF-8
@@ -288,8 +292,9 @@ bool replyHedgesUnchecked(const std::string& reply);
 // the turn's recorded effects, and says to do the work now or rewrite the reply.
 std::string claimCorrection(const std::vector<ClaimGap>& gaps, const TurnEffects& fx);
 
-// Owner-facing tail: one calm line per gap class, each on its own paragraph, in
-// a fixed class order. "" when there are no gaps.
+// Owner-facing tail: one calm line per gap class, each on its own paragraph, in a fixed class
+// order. The send class gets one line per different thing it says, so a speech correction never
+// hides an unbacked send in the same reply. "" when there are no gaps.
 std::string claimTail(const std::vector<ClaimGap>& gaps);
 // The tail line for one class (exposed for tests and for lines shared with other
 // rails); `g` supplies the figure numbers.
@@ -309,6 +314,7 @@ struct ClaimCueInfo {
   bool        needsCredit;      // a source noun that counts only when the reply credits it
                                 // ("the gauge says", "per the label", "Rain gauge: 3.0 mm")
   bool        namesASource;     // credits the name after it ("Source: BBC Weather")
+  bool        needsVoicedVerb;  // counts only after a verb of saying or playing ("said it out loud")
 };
 size_t claimCueCount();
 ClaimCueInfo claimCue(size_t i);

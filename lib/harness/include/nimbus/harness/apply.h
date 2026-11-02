@@ -148,9 +148,9 @@ struct ApplyState {
   // Speech notes that only ride a message the owner already gets and never go out alone, so a
   // routine or a reply-less turn cannot send a note by itself:
   std::string replyNote;             //   the spoken version was shortened
-  std::string unspokenNote;          //   a tts could not be spoken, on a turn with a reply or ask
-  // A tts-only turn whose text could not be spoken: its text plus the reason, sent as the turn's
-  // message (history keeps exactly this). Empty when nothing is to be sent in its place.
+  std::string unspokenNote;          //   a tts could not be spoken (it rides the reply, the ask or the text below)
+  // A tts-only turn whose text could not be spoken: the text, sent as the turn's message and
+  // claim-checked like a reply (history keeps what went out). Empty when nothing is to be sent.
   std::string unspokenText;
   // What reply.telegram already sent to THIS turn's chat (text, or the voiced text of a voice
   // message): a failed tts never sends that text a second time. In working memory (PSRAM on the
