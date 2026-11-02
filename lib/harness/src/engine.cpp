@@ -1580,6 +1580,17 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
           return done(r);
         }
       }
+      // A labelled food-ledger row that fails the label's own arithmetic, or that
+      // asserts a brand/detail no turn source holds, is never stored (food_label.h).
+      {
+        std::string refusal = claims_.labelRowRefusal(regName, call.argsJson);
+        if (!refusal.empty()) {
+          r.isError = true;
+          r.output = std::move(refusal);
+          hlog::logf("claims: refused a ledger row (%s)", regName.c_str());
+          return done(r);
+        }
+      }
       JsonDocument rq;
       rq["jsonrpc"] = "2.0";
       rq["id"] = 1;

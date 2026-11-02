@@ -114,6 +114,11 @@ class ClaimCheck {
   bool unsourcedFoodTarget(const std::string& text, std::string* excerpt) const;
   // A write to the food targets file with a figure nothing this turn holds: the refusal, or "".
   std::string targetWriteRefusal(const std::string& regName, const std::string& argsJson) const;
+  // A write to the person's food ledger (food/food-log*.csv) of a labelled row: the
+  // store-time label gate (food_label.h) - a row whose figures fail the label's own
+  // arithmetic is refused and names the figure in doubt, and a brand or detail no
+  // turn source holds is refused unless the row is marked [assumed]. The refusal, or "".
+  std::string labelRowRefusal(const std::string& regName, const std::string& argsJson) const;
   // A head tool ran: its effect class (the shared tool table) and its result.
   // The result text joins the figure sources (bounded).
   void noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
@@ -209,8 +214,13 @@ class ClaimCheck {
   std::string routineDay_;       // set on a scheduled turn: the stale-status rule applies
   uint32_t sourceNames_ = 0;     // SourceEvidence bits this turn names (CUM-824)
   std::string sourceWords_;      // the words those sources hold, for a source named by name
+  std::string turnInputs_;       // the turn's input block (bounded): the label reads a
+                                 // ledger row is checked against (food_label.h)
+  bool turnInputsClipped_ = false;  // the input block was past its cap: the label gate stands down
   std::string toolText_;         // the tool results in normalizedWords form (bounded)
   std::string ownerText_;        // the owner's message (bounded): a why-question's reasons
+  std::string ownerWords_;       // the owner's own words this turn (message + their history
+                                 // rows), normalizedWords form: what backs "you told me"
   std::string ledger_;           // the spawn ledger block this turn read
   bool ownerAskedHow_ = false;   // the owner asked how something works: an explained
                                  // instrument is not claimed as read (the review)

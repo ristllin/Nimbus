@@ -1442,6 +1442,32 @@ static void test_a_quoted_memory_must_be_words_the_turn_saw() {
   TEST_ASSERT_TRUE(recordQuoteGap(invented, seen, nullptr, true));
 }
 
+// Lane LABEL, 2 Nov: an unquoted "you told me / confirmed / photographed ..." with no
+// owner message saying it is a gap; one whose words the owner did say is not.
+static void test_an_owner_action_claim_needs_a_backing_message() {
+  const std::string owner = normalizedWords("4 frives please. Always assume whole unless told otherwise.");
+  ClaimGap g;
+  // The 2 Nov defence: "You told me about the 4 fries" - no owner message says fries.
+  TEST_ASSERT_TRUE(ownerActionGap("Not made up: you told me about the 4 fries earlier.", owner, &g));
+  TEST_ASSERT_EQUAL(ClaimClass::Source, g.cls);
+  TEST_ASSERT_TRUE(g.excerpt.find("you told me about the 4 fries") != std::string::npos);
+  TEST_ASSERT_TRUE(claimTail(std::vector<ClaimGap>{g}).find("no message from you this turn says that") != std::string::npos);
+  // "the M&S pack you photographed" - the owner never photographed an M&S pack.
+  TEST_ASSERT_TRUE(ownerActionGap("It is the M&S pack you photographed at 13:08.", owner, nullptr));
+  TEST_ASSERT_TRUE(ownerActionGap("You confirmed the whole pack was eaten.", owner, nullptr));
+  // Backed: the owner did say frives, and did say whole.
+  TEST_ASSERT_FALSE(ownerActionGap("You told me about the 4 frives.", owner, nullptr));
+  TEST_ASSERT_FALSE(ownerActionGap("You said to assume whole unless told otherwise.", owner, nullptr));
+  // No content words after the phrase: not checked (precision first).
+  TEST_ASSERT_FALSE(ownerActionGap("You told me so.", owner, nullptr));
+  // A quote after the phrase is the record-quote rule's, not this one's.
+  TEST_ASSERT_FALSE(ownerActionGap("You told me \"4 fries\" earlier.", owner, nullptr));
+  // Inside quotes: the owner being quoted back.
+  TEST_ASSERT_FALSE(ownerActionGap("He said \"you told me about the fries\" to me.", owner, nullptr));
+  // No owner words at all: nothing to check against.
+  TEST_ASSERT_FALSE(ownerActionGap("You told me about the 4 fries.", "", nullptr));
+}
+
 // Asked why, a reason must be built from words on record (the eval's mistral-large-latest
 // on "Why notion?", 27 Oct: three invented reasons in three runs).
 static void test_a_reason_asked_for_needs_words_on_record() {
@@ -1982,6 +2008,7 @@ int main(int, char**) {
   RUN_TEST(test_source_evidence_names_whole_words_and_links);
   RUN_TEST(test_a_source_named_by_name_needs_its_words_in_a_source);
   RUN_TEST(test_a_quoted_memory_must_be_words_the_turn_saw);
+  RUN_TEST(test_an_owner_action_claim_needs_a_backing_message);
   RUN_TEST(test_a_reason_asked_for_needs_words_on_record);
   RUN_TEST(test_log_row_needs_a_counted_row);
   RUN_TEST(test_tool_tally_names_counts_and_idle_tools);

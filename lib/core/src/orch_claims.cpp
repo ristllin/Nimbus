@@ -2002,8 +2002,9 @@ enum GapVariant : uint8_t {
   kGapNoReplace = 17,        // a remove/replace/dedup claim with no replaced row behind it
   kGapNotSpoken = 18,        // "read it aloud" with nothing spoken and no voice message delivered
   kGapVoiceUnconfirmed = 19, // a voice message whose upload went out but Telegram did not confirm
+  kGapOwnerAction = 20,      // "you told me/confirmed/photographed ..." with no owner message saying it (lane LABEL)
 };
-static_assert(kGapVoiceUnconfirmed + 1 == kGapVariantCount, "a new gap variant raises kGapVariantCount (claims.h)");
+static_assert(kGapOwnerAction + 1 == kGapVariantCount, "a new gap variant raises kGapVariantCount (claims.h)");
 
 // Phrases that make a send claim a voice-message claim: the delivery itself named as
 // spoken audio. A lone "voice" or "audio" is not enough ("sent you the recording of
@@ -3074,6 +3075,105 @@ bool unrecordedReasonGap(const std::string& reply, const std::string& records, c
   return false;
 }
 
+// ---- owner-action claims (lane LABEL, 2 Nov) ----------------------------------
+// An unquoted claim about what the owner did or said this turn ("you told me about the
+// 4 fries", "the M&S pack you photographed", "you confirmed it"): the clause after the
+// phrase must be the owner's own - at least one content word (five letters or more, not
+// a stop word) of it must appear in the owner's words this turn. A phrase that introduces
+// a quote is the record-quote rule's, and a phrase inside quotes is the owner being
+// quoted back, so both are skipped here. `ownerWords` is the owner's own words this turn
+// (their message and their earlier rows in the window), normalizedWords form.
+constexpr const char* kOwnerActionPhrases[] = {
+    "you told me", "you confirmed", "you photographed", "you said", "you wrote",
+    "you sent", "you showed", "you mentioned", "your message said",
+};
+
+// A word of the claim against the owner's words: the whole word, or its stem with the
+// word boundary kept ("frives" backs "frives", never "fries" - the 2 Nov near-match).
+bool ownerWordOnRecord(const std::string& w, const std::string& hay) {
+  if (hay.find(" " + w + " ") != std::string::npos) return true;
+  for (const char* suf : {"ing", "ed", "es", "s"}) {
+    const size_t n = std::strlen(suf);
+    if (w.size() > n + 3 && w.compare(w.size() - n, n, suf) == 0 &&
+        hay.find(" " + w.substr(0, w.size() - n) + " ") != std::string::npos)
+      return true;
+  }
+  return false;
+}
+
+// Words of the owner-action phrases themselves: they carry the claim, not its content.
+bool ownerActionPhraseWord(const std::string& w) {
+  for (const char* p : kOwnerActionPhrases)
+    for (const char* tok = p; *tok;) {
+      const char* sp = std::strchr(tok, ' ');
+      const std::string word(tok, sp ? (size_t)(sp - tok) : std::strlen(tok));
+      if (w == word) return true;
+      if (!sp) break;
+      tok = sp + 1;
+    }
+  return false;
+}
+
+bool ownerActionGap(const std::string& reply, const std::string& ownerWords, ClaimGap* out) {
+  if (ownerWords.empty()) return false;
+  const std::string hay = " " + ownerWords + " ";
+  // The owner sent a photo this turn: "you photographed/sent/showed" is then backed.
+  const bool ownerSentPhoto = hay.find(" image ") != std::string::npos || hay.find(" photo ") != std::string::npos;
+  // Folded in place, one byte per byte, so the offsets stay the reply's.
+  std::string low;
+  low.reserve(reply.size() < kScanMax ? reply.size() : kScanMax);
+  for (size_t p = 0; p < reply.size() && p < kScanMax; ++p) {
+    const unsigned char c = (unsigned char)reply[p];
+    low += (c >= 'A' && c <= 'Z') ? (char)(c | 0x20) : (char)c;
+  }
+  const std::vector<std::pair<size_t, size_t>> quotes = quoteSpans(reply);
+  auto inQuotes = [&](size_t p) {
+    for (const auto& q : quotes)
+      if (p >= q.first && p < q.second) return true;
+    return false;
+  };
+  const std::vector<std::pair<size_t, size_t>> sentences = sentenceSpans(reply);
+  for (const char* phrase : kOwnerActionPhrases) {
+    const size_t n = std::strlen(phrase);
+    for (size_t p = low.find(phrase); p != std::string::npos; p = low.find(phrase, p + 1)) {
+      const bool startOk = p == 0 || !wordish((unsigned char)low[p - 1]);
+      const bool endOk = p + n >= low.size() || !wordish((unsigned char)low[p + n]);
+      if (!startOk || !endOk || inQuotes(p)) continue;
+      // The whole sentence the phrase sits in, minus the phrase itself.
+      size_t sb = 0, se = low.size();
+      for (const auto& sp : sentences)
+        if (p >= sp.first && p < sp.second) { sb = sp.first; se = sp.second; break; }
+      bool introducesQuote = false;
+      for (const auto& q : quotes)
+        if (q.first >= p && q.first < se) { introducesQuote = true; break; }
+      if (introducesQuote) continue;   // the quoted-record rule checks that one
+      std::string ns = normalizedWords(low.substr(sb, p - sb) + " " + low.substr(p + n, se - p - n)) + " ";
+      bool any = false, missing = false;
+      for (size_t b = 0, w; (w = ns.find(' ', b)) != std::string::npos; b = w + 1) {
+        const std::string word = ns.substr(b, w - b);
+        if (word.size() < 5 || reasonStop(word) || ownerActionPhraseWord(word)) continue;
+        if (ownerSentPhoto && (word == "photographed" || word == "photo" || word == "sent" ||
+                               word == "showed" || word == "attached"))
+          continue;
+        any = true;
+        if (!ownerWordOnRecord(word, hay)) missing = true;
+      }
+      // "You photographed/sent/showed" with no photo in the owner's message this turn is
+      // itself the unbacked claim, whatever the rest of the sentence says.
+      const bool photoPhrase = std::strcmp(phrase, "you photographed") == 0 ||
+                               std::strcmp(phrase, "you sent") == 0 || std::strcmp(phrase, "you showed") == 0;
+      if ((any && missing) || (photoPhrase && !ownerSentPhoto)) {
+        if (out) {
+          *out = spanGap(reply, sb, se, ClaimClass::Source, kGapOwnerAction);
+          out->name = phrase;
+        }
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 std::string sourceNoun(uint32_t bit) {
   for (size_t i = 0; i < sizeof(kSourceNouns) / sizeof(kSourceNouns[0]); i++)
     if (bit & (1u << i)) return kSourceNouns[i];
@@ -3188,6 +3288,8 @@ std::string sentTail(uint8_t variant) {
 // The source-class tail: a quote no record holds, a name, or a noun (with the owner's figures).
 static std::string sourceTail(const ClaimGap& g) {
   if (g.variant == kGapQuote) return "(Correction: the device has no record of those words.)";
+  if (g.variant == kGapOwnerAction)
+    return "(Correction: no message from you this turn says that, so I am not treating it as something you said.)";
   if (!g.name.empty())
     return "(Correction: nothing the device read this turn came from " + g.name + ", so that source is not confirmed.)";
   const std::string from = "(Correction: the device read nothing from " + sourceNoun(g.source) + " this turn";

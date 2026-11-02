@@ -211,7 +211,7 @@ std::string sourceNoun(uint32_t bit);
 
 
 // How many gap variants exist (kGap* in orch_claims.cpp): a test walks every one.
-constexpr uint8_t kGapVariantCount = 20;
+constexpr uint8_t kGapVariantCount = 21;
 
 struct ClaimGap {
   ClaimClass  cls = ClaimClass::Saved;
@@ -268,6 +268,13 @@ bool recordQuoteGap(const std::string& reply, const std::string& seen, ClaimGap*
 // tuesday night") is the turn's own record, not an invented one (the review, HIGH-1).
 bool recordQuoteGap(const std::string& reply, const std::string& seen, const std::string& ownerText,
                     ClaimGap* out, bool memoryOnly = false);
+// An unquoted claim about what the owner did or said this turn ("you told me about the
+// 4 fries", "the M&S pack you photographed", "you confirmed it") with no backing message:
+// no content word of the clause after the phrase appears in `ownerWords` (the owner's
+// own words this turn, normalizedWords form). Quoted claims are recordQuoteGap's.
+// Lane LABEL, 2 Nov: the head defended a made-up row with "you told me about the 4
+// fries" and "the M&S pack you photographed" - neither was in any owner message.
+bool ownerActionGap(const std::string& reply, const std::string& ownerWords, ClaimGap* out);
 // A reason given when the owner asks why (CUM-824, the eval's mistral-large-latest on
 // "Why notion?": "because the standing rule I recalled said to check your Notion commute
 // dashboard", "because I recalled you had set up a Notion database", none of it on

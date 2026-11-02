@@ -1443,6 +1443,72 @@ static void test_a_running_total_reply_is_not_corrected_but_a_save_claim_is() {
   }
 }
 
+// ---- the store-time label gate on a food-ledger row (lane LABEL, 2 Nov) -------------------
+// The 13:08 photo's label: 41.0 g protein per serving, 31.3 per 100 g, net 131 g.
+static const char kLabel904[] =
+    "[image 1/1 ref=aaaa] Nutritional values Per 100g Per serving\n"
+    "Energy kJ/kcal 750/179 982/235\n"
+    "Fat 5.6g 7.3g\n"
+    "Carbohydrate 0.9g 1.2g\n"
+    "Protein 31.3g 41.0g\n"
+    "131g e";
+
+static void test_label_row_gate_refuses_the_43_g_row() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  TurnSources parts;
+  parts.owner = std::string("[image 1/1 ref=aaaa] ") + kLabel904;
+  cc.setSources(parts.owner, "", parts);
+  const std::string bad =
+      "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"date,meal,items,kcal,protein_g\\n"
+      "2026-11-02,snack2,\\\"Grilled Chicken Breast Side, full 131 g pack eaten whole [label per serving = whole pack: "
+      "235 kcal, 4.3 g protein]\\\",235,4.3\"}";
+  const std::string refused = cc.labelRowRefusal("files.append", bad);
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("do not add up") != std::string::npos, refused.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("4.3") != std::string::npos, refused.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("Nothing was written") != std::string::npos, refused.c_str());
+  // The correct row passes; the [unverified: ...] path passes.
+  const std::string good =
+      "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"date,meal,items,kcal,protein_g\\n"
+      "2026-11-02,snack2,\\\"Grilled Chicken Breast Side, full 131 g pack eaten whole [label per serving = whole pack: "
+      "235 kcal, 41.0 g protein]\\\",235,41.0\"}";
+  TEST_ASSERT_EQUAL_STRING("", cc.labelRowRefusal("files.append", good).c_str());
+  const std::string unver =
+      "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"2026-11-02,snack2,\\\"Grilled Chicken Breast Side "
+      "[label per serving = whole pack: 235 kcal, 4.3 g protein] [unverified: protein per serving]\\\",235,4.3\"}";
+  TEST_ASSERT_EQUAL_STRING("", cc.labelRowRefusal("files.append", unver).c_str());
+  // Other files and other tools are none of its business.
+  TEST_ASSERT_EQUAL_STRING("", cc.labelRowRefusal("files.append", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":\"x,4.3\"}").c_str());
+  TEST_ASSERT_EQUAL_STRING("", cc.labelRowRefusal("files.append", "{\"project\":\"notes\",\"name\":\"food-log-notes.md\",\"text\":\"4.3 g protein\"}").c_str());
+  TEST_ASSERT_EQUAL_STRING("", cc.labelRowRefusal("memory.write", "{\"text\":\"4.3 g protein\"}").c_str());
+}
+
+static void test_label_row_gate_refuses_an_unsupported_brand() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  TurnSources parts;
+  parts.owner = "chimichurri beef bowl frive 388 g 557 kcal 38.7 g protein per serving";
+  cc.setSources(parts.owner, "", parts);
+  const std::string row =
+      "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"2026-11-02,dinner,\\\"M&S Chimichurri Beef Bowl, "
+      "full 388 g pack [label per serving = whole pack: 557 kcal, 38.7 g protein]\\\",557,38.7\"}";
+  const std::string refused = cc.labelRowRefusal("files.append", row);
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("m s") != std::string::npos, refused.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("[assumed") != std::string::npos, refused.c_str());
+  // The owner's own words back the brand: it may land.
+  ClaimCheck ok;
+  ok.beginTurn();
+  TurnSources said;
+  said.owner = "the M&S pack you photographed, 388 g";
+  ok.setSources(said.owner, "", said);
+  TEST_ASSERT_EQUAL_STRING("", ok.labelRowRefusal("files.append", row).c_str());
+  // Marked [assumed], it may land too.
+  const std::string assumed =
+      "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"2026-11-02,dinner,\\\"M&S Chimichurri Beef Bowl "
+      "[assumed: brand M&S]\\\",557,38.7\"}";
+  TEST_ASSERT_EQUAL_STRING("", cc.labelRowRefusal("files.append", assumed).c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_promised_confirmation_gets_the_tail);
@@ -1488,5 +1554,7 @@ int main(int, char**) {
   RUN_TEST(test_logged_as_a_memory_entry_is_a_save_not_a_log_row);
   RUN_TEST(test_a_followup_about_the_previous_photo_credits_the_label);
   RUN_TEST(test_an_idle_tally_name_is_not_a_source_word);
+  RUN_TEST(test_label_row_gate_refuses_the_43_g_row);
+  RUN_TEST(test_label_row_gate_refuses_an_unsupported_brand);
   return UNITY_END();
 }

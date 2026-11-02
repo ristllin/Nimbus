@@ -101,6 +101,23 @@ once with its last figures. A row the device cannot read for certain leaves the
 day's total "not known" until it is fixed. A meal with no protein figure stays
 unknown, so the day shows protein known and unknown apart.
 
+A labelled row is checked before it lands. A write to the ledger whose row carries
+label figures is checked against the label's own arithmetic - energy against
+4P + 4C + 9F, and per-100 g times net weight against per-serving - and against the
+turn's real inputs: a row whose figures fail the check is refused and names the
+figure in doubt (re-read the label once; if it still disagrees, the row may land
+marked `[unverified: <figure>]`), and a brand or detail no owner message, label read
+or tool result this turn holds is refused unless the row is marked `[assumed: ...]`.
+A food or pack photo sent with no question means eaten whole: the per-serving
+(whole pack) figures are logged, said in one line with the undo (re-send the row
+with 0 kcal), and the device never asks whether the whole pack was eaten. When a
+second vision provider read the same label this turn, the two reads are compared and
+each disagreement is surfaced with both values, never averaged. And the owner's
+word beats the log: a stored row is not evidence against the owner - when they
+dispute something, the reply shows the row's source and corrects it, and a claim
+that the owner said, confirmed or photographed something needs a real message of
+theirs behind it (the claim check refuses an unbacked one before delivery).
+
 Daily targets live in `food/food-targets.csv` (`date,metric,target,source`), a row
 per metric with where it came from. With targets stored the block shows what is left,
 worked out by the device; with none, a food turn is told to read them first and which

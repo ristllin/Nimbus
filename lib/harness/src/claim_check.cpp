@@ -11,6 +11,7 @@
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/prompt_layout.h"   // the display labels: where the fixed instructions end
 #include "nimbus/orch/device_actions.h"
+#include "nimbus/orch/food_label.h"    // labelRowGate, unsupportedDetails: the ledger row gate
 #include "nimbus/orch/food_ledger.h"   // scanFoodTargets: a target this turn stored
 #include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/tool_taint.h"
@@ -216,6 +217,9 @@ void ClaimCheck::beginTurn() {
   routineDay_.clear();
   sourceNames_ = 0;
   sourceWords_.clear();
+  ownerWords_.clear();
+  turnInputs_.clear();
+  turnInputsClipped_ = false;
   toolText_.clear();
   ownerText_.clear();
   ledger_.clear();
@@ -233,6 +237,10 @@ void ClaimCheck::beginTurn() {
 }
 
 void ClaimCheck::setSources(const std::string& inputs, const std::string& recalled, const TurnSources& parts) {
+  // The raw input block (bounded): the label reads a ledger row's figures are checked
+  // against at store time (food_label.h). Past the cap the gate stands down.
+  turnInputsClipped_ = inputs.size() > kEvidenceTextMax;
+  turnInputs_ = inputs.substr(0, kEvidenceTextMax);
   sources_ = orch::figureNumbers(inputs, kSourceNumbersMax);
   {
     // The owner's own history rows ground a follow-up's figures too (the previous
@@ -256,6 +264,10 @@ void ClaimCheck::setSources(const std::string& inputs, const std::string& recall
                                     kSourceNumbersMax);
   targetsClipped_ = targetNums_.size() + 32 >= kSourceNumbersMax;
   ownerText_ = parts.owner.substr(0, kOwnerTextMax);
+  // The owner's own words (their message and their rows in the window), normalized:
+  // the only thing that backs "you told me", "you confirmed", "you photographed".
+  ownerWords_ = orch::normalizedWords(parts.owner + " " + parts.histOwner);
+  if (ownerWords_.size() > kSourceWordsMax) ownerWords_.resize(kSourceWordsMax);
   ledger_ = parts.ledger;
   subRuns_ = parts.subRuns;
   ownerAskedHow_ = orch::ownerAskedHow(parts.owner);
@@ -470,6 +482,9 @@ std::vector<orch::ClaimGap> ClaimCheck::gapsFor(const std::string& reply,
   bool already = false;
   for (const orch::ClaimGap& g : kept) already = already || g.cls == orch::ClaimClass::Checked;
   if (!already && orch::unsourcedResultGap(reply, fx, &unsourced)) kept.push_back(unsourced);
+  // "You told me / confirmed / photographed ..." with no owner message saying it (lane LABEL).
+  orch::ClaimGap ownerAction;
+  if (!clipped_ && orch::ownerActionGap(reply, ownerWords_, &ownerAction)) kept.push_back(ownerAction);
   return kept;
 }
 
@@ -520,6 +535,54 @@ std::string ClaimCheck::targetWriteRefusal(const std::string& regName, const std
   std::snprintf(shown, sizeof shown, "%.10g", figure);
   return "a daily target of " + std::string(shown) + " in " + name + " needs a source and nothing this turn holds it - nothing was written. "
          "Read it from the owner's plan with files.read or memory search, or ask them, then store it with where it came from.";
+}
+
+namespace {
+
+// The write targets the person's food ledger (food/food-log*.csv), lowercased.
+bool isFoodLedgerFile(const std::string& project, const std::string& name) {
+  return project == orch::kFoodLedgerProject && name.rfind("food-log", 0) == 0 &&
+         name.size() >= 4 && name.compare(name.size() - 4, 4, ".csv") == 0;
+}
+
+// The row text a ledger write carries, whichever field the tool puts it in.
+const char* rowTextOf(const JsonDocument& d) {
+  const char* text = d["text"] | (const char*)nullptr;
+  if (!text) text = d["content"] | (const char*)nullptr;
+  if (!text) text = d["replace"] | (const char*)nullptr;
+  return text;
+}
+
+}  // namespace
+
+// The store-time gate on a labelled food-ledger row (2 Nov, lane LABEL): a row whose
+// figures fail the label's own arithmetic (Atwater, per-100 g x net weight) is refused
+// and names the figure in doubt; a brand or detail no owner message, label read or tool
+// result this turn holds is refused unless the row is marked [assumed]. The gate reads
+// the turn's input block (the label reads) and its source words; both past their caps
+// the gate stands down rather than refuse on partial evidence.
+std::string ClaimCheck::labelRowRefusal(const std::string& regName, const std::string& argsJson) const {
+  if ((regName != "files.append" && regName != "files.edit" && regName != "artifact.save") ||
+      turnInputsClipped_ || clipped_)
+    return std::string();
+  JsonDocument d;
+  if (deserializeJson(d, argsJson) != DeserializationError::Ok) return std::string();
+  std::string project = d["project"] | "";
+  std::string name = d["name"] | "";
+  for (char& c : project) c = (char)std::tolower((unsigned char)c);
+  for (char& c : name) c = (char)std::tolower((unsigned char)c);
+  if (!isFoodLedgerFile(project, name)) return std::string();
+  const char* text = rowTextOf(d);
+  if (!text) return std::string();
+  const std::string gate = orch::labelRowGate(text, turnInputs_);
+  if (!gate.empty()) return gate;
+  // The raw input block, not sourceWords_: that form drops words under 3 letters, and
+  // a brand like "M&S" normalizes to the short words "m s".
+  const std::string unsup = orch::unsupportedDetails(text, turnInputs_);
+  if (!unsup.empty())
+    return "the row names " + unsup + " and no owner message, label read or tool result this turn holds it - nothing was written. "
+           "Take the brand or detail from the owner's words or this turn's label read, or store the row marked [assumed: <detail>].";
+  return std::string();
 }
 
 std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSpawned) {
