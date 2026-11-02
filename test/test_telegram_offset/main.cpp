@@ -698,6 +698,26 @@ static void test_retry_and_long_poll_across_the_millis_wrap() {
   TEST_ASSERT_EQUAL_INT(30, c.longPollS(30, t0 + 61000u));
 }
 
+// The bot id inside a token: the digits before the first ':', and nothing else.
+// The class: every well-formed token yields its id, and every malformed shape
+// (empty, no colon, non-digit prefix, absurdly long id) yields 0 - a store keyed
+// by bot id must never mistake a malformed token for a known bot.
+static void test_bot_id_of_token() {
+  using nimbus::core::tgBotIdOf;
+  TEST_ASSERT_EQUAL_INT64(123, tgBotIdOf("123:ABC-DEF"));
+  TEST_ASSERT_EQUAL_INT64(7000000001LL, tgBotIdOf("7000000001:GHI"));
+  TEST_ASSERT_EQUAL_INT64(0, tgBotIdOf(""));
+  TEST_ASSERT_EQUAL_INT64(0, tgBotIdOf("123"));          // no colon: not a token
+  TEST_ASSERT_EQUAL_INT64(0, tgBotIdOf("abc:DEF"));      // no id prefix
+  TEST_ASSERT_EQUAL_INT64(0, tgBotIdOf("123x:DEF"));    // not digits before the colon
+  TEST_ASSERT_EQUAL_INT64(0, tgBotIdOf(nullptr));
+  TEST_ASSERT_EQUAL_INT64(0, tgBotIdOf("123456789012:DEF"));  // not a bot id shape
+  // Same bot, regenerated token: the id (and so the stored state keyed on it) is
+  // the same, which is exactly the case where a rotation must NOT reset.
+  TEST_ASSERT_EQUAL_INT64(tgBotIdOf("123:OLD"), tgBotIdOf("123:NEW"));
+  TEST_ASSERT_NOT_EQUAL(tgBotIdOf("123:OLD"), tgBotIdOf("456:OLD"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_confirms_with_plus_one);
@@ -715,5 +735,6 @@ int main(int, char**) {
   RUN_TEST(test_command_page_restart_reruns_at_most_the_bucket_in_flight);
   RUN_TEST(test_command_page_on_a_full_store_writes_once);
   RUN_TEST(test_retry_and_long_poll_across_the_millis_wrap);
+  RUN_TEST(test_bot_id_of_token);
   return UNITY_END();
 }

@@ -118,6 +118,63 @@ int main() {
          "a numeric chat id is sent unquoted");
   }
 
+  // ---- 6. a token rotation resets the offset: the stored offset belongs to a bot --
+  {
+    // Bot 111 confirms up to 5002, then the owner rotates to a different bot.
+    ndtest::rmTree(dir);
+    {
+      FakeTg tg;
+      tg.queue.push_back({200, R"({"ok":true,"result":[
+        {"update_id":5001,"message":{"chat":{"id":555},"from":{"first_name":"Roy"},"text":"hi"}}
+      ]})"});
+      TelegramChannel ch("111:OLD-SECRET", &tg, offsetPath);
+      std::vector<nimbus::tg::Update> ups;
+      std::string err;
+      c.ok(ch.poll(0, ups, err), "poll succeeds");
+      c.eqi(ch.offset(), 5002, "offset advanced and persisted for bot 111");
+    }
+    // A restart with a DIFFERENT bot must not reuse bot 111's offset: getUpdates
+    // with offset 5002 on the new bot answers ok with an empty result forever and
+    // silently drops every message (the rotation failure this closes).
+    {
+      FakeTg tg;
+      tg.queue.push_back({200, R"({"ok":true,"result":[
+        {"update_id":1,"message":{"chat":{"id":555},"from":{"first_name":"Roy"},"text":"new bot"}}
+      ]})"});
+      TelegramChannel ch("222:NEW-SECRET", &tg, offsetPath);
+      c.eqi(ch.offset(), 0, "a different bot starts at offset 0, not the old bot's offset");
+      std::vector<nimbus::tg::Update> ups;
+      std::string err;
+      c.ok(ch.poll(0, ups, err), "poll succeeds");
+      c.ok(tg.paths[0].find("offset=0") != std::string::npos,
+           "the new bot's first poll asks from 0, so its messages are served");
+      c.eqi(ch.offset(), 2, "the new bot's own update advances its own offset");
+    }
+    // The same bot with a regenerated secret keeps its offset: update ids continue
+    // on that bot, so a reset here would needlessly re-serve its unconfirmed page.
+    {
+      FakeTg tg;
+      tg.queue.push_back({200, R"({"ok":true,"result":[]})"});
+      TelegramChannel ch("222:ROTATED-SECRET", &tg, offsetPath);
+      c.eqi(ch.offset(), 2, "the same bot id keeps the offset across a secret rotation");
+    }
+    // A pre-fingerprint offset file (bare number, no bot id) belongs to no known
+    // bot: an upgrade must not trust it against today's token.
+    ndtest::rmTree(dir);
+    fsutil::writeFileAtomic(offsetPath, "4821");
+    {
+      FakeTg tg;
+      tg.queue.push_back({200, R"({"ok":true,"result":[]})"});
+      TelegramChannel ch("333:SECRET", &tg, offsetPath);
+      c.eqi(ch.offset(), 0, "a pre-fingerprint offset file is not trusted for any bot");
+      std::vector<nimbus::tg::Update> ups;
+      std::string err;
+      ch.poll(0, ups, err);
+      c.ok(tg.paths[0].find("offset=0") != std::string::npos,
+           "the first poll after the upgrade asks from 0");
+    }
+  }
+
   ndtest::rmTree(dir);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
