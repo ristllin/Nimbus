@@ -21,29 +21,34 @@ def load_records(label_dir: Path) -> list[dict]:
     return [fcrun.with_device_lines(r) for r in recs if "skipped" not in r]
 
 
+def _failed_counts(mine: list[dict], key: str) -> dict:
+    counts: dict = {}
+    for r in mine:
+        for cid in r["verdict"].get(key, []):
+            counts[cid] = counts.get(cid, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _count(mine: list[dict], test) -> int:
+    return sum(1 for r in mine if test(r))
+
+
 def _scenario_row(scn: dict, recs: list[dict], target: int) -> dict:
     mine = [r for r in recs if r["scenario"] == scn["id"]]
-    failed: dict = {}
-    advisory: dict = {}
-    for r in mine:
-        for cid in r["verdict"]["failed"]:
-            failed[cid] = failed.get(cid, 0) + 1
-        for cid in r["verdict"].get("advisory_failed", []):
-            advisory[cid] = advisory.get(cid, 0) + 1
     agree = [r["verdict"]["judges_agree"] for r in mine if r["verdict"]["judges_agree"] is not None]
-    passes = sum(1 for r in mine if r["verdict"]["pass"])
+    passes = _count(mine, lambda r: r["verdict"]["pass"])
     return {
         "title": scn["title"],
         "kind": scn["kind"],
         "runs": len(mine),
         "pass": passes,
-        "pass_strict": sum(1 for r in mine if r["verdict"]["pass_strict"]),
-        "errors": sum(1 for r in mine if r["verdict"]["errored"]),
+        "pass_strict": _count(mine, lambda r: r["verdict"]["pass_strict"]),
+        "errors": _count(mine, lambda r: r["verdict"]["errored"]),
         "meets_target": passes >= target,
-        "failed_criteria": dict(sorted(failed.items())),
-        "advisory_failed": dict(sorted(advisory.items())),
+        "failed_criteria": _failed_counts(mine, "failed"),
+        "advisory_failed": _failed_counts(mine, "advisory_failed"),
         "judges_agree": f"{sum(agree)}/{len(agree)}" if agree else "n/a",
-        "device_lines": sum(1 for r in mine if r.get("device_lines")),
+        "device_lines": _count(mine, lambda r: r.get("device_lines")),
     }
 
 

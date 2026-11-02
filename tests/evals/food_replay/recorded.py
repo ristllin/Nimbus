@@ -26,7 +26,13 @@ DEVICE_LINE = re.compile(r"\s*\((?:Correction|Note):[^)]*\)")
 LEDGER = "food/food-log.csv"
 # The lines these checks add. The driver holds no record of what a run's tools did, so with tool calls in the
 # turn it cannot judge the others (a save claim, a lookup).
-FOOD_LINES = ("no source for a daily target", "the food log has", "a row of today's food log", "has no protein figure", "cites a date")
+FOOD_LINES = (
+    "no source for a daily target",
+    "the food log has",
+    "a row of today's food log",
+    "has no protein figure",
+    "cites a date",
+)
 
 
 def strip_device_lines(text: str) -> str:

@@ -462,7 +462,9 @@ def test_a_device_line_on_the_delivered_reply_fails_the_run():
     assert rec["device_lines"] == ["(Correction: the food log has today at 1400 kcal.)"]
     # Counted once, on a saved record read twice, and a clean reply is untouched.
     assert fcrun.with_device_lines(rec)["verdict"]["failed"] == [fcrun.DEVICE_LINE_ID]
-    clean = fcrun.with_device_lines({"turns": [{"reply": "Fine (a note in the model's own words)."}], "verdict": dict(verdict)})
+    clean = fcrun.with_device_lines(
+        {"turns": [{"reply": "Fine (a note in the model's own words)."}], "verdict": dict(verdict)}
+    )
     assert clean["verdict"]["pass"] is True and clean["device_lines"] == []
 
 
@@ -472,7 +474,14 @@ def test_the_report_counts_device_lines(tmp_path):
         "scenario": scn,
         "rep": 1,
         "turns": [{"reply": "Fine.\\n\\n(Note: that cites a date 9 days old. Check it is still current.)"}],
-        "verdict": {"pass": True, "pass_strict": True, "failed": [], "advisory_failed": [], "judges_agree": None, "errored": False},
+        "verdict": {
+            "pass": True,
+            "pass_strict": True,
+            "failed": [],
+            "advisory_failed": [],
+            "judges_agree": None,
+            "errored": False,
+        },
         "cost_usd": {"head": {"total": 0.0, "by": {}}, "judges": 0.0},
     }
     (tmp_path / scn).mkdir()
