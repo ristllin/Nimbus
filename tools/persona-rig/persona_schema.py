@@ -243,17 +243,8 @@ def _check_text_values(obj: dict, where: str):
         raise PersonaError(f"{where}: {bad} must be text")
 
 
-def _validate_providers(p: dict, name: str):
-    if p.get("monthly_cap_cents", MIN_CAP_CENTS) < MIN_CAP_CENTS:
-        raise PersonaError(f"{name}: monthly_cap_cents below {MIN_CAP_CENTS}: the daemon would raise it to that")
-    models = p.get("models", {})
-    _check_fields(models, MODEL_ROLES, f"{name} models")
+def _validate_keys(p: dict, name: str, models: dict):
     _check_text_values(p.get("keys", {}), f"{name} keys")
-    _check_text_values(p.get("env", {}), f"{name} env")
-    for role in models.values():
-        _check_text_values(role, f"{name} models")
-    if not all(isinstance(k, str) for k in p.get("instance_env_keys", [])):
-        raise PersonaError(f"{name}: instance_env_keys must list text")
     for slug in p.get("keys", {}):
         if slug not in KEY_FIELDS and slug not in SEARCH_KEY_FIELDS:
             raise PersonaError(f"{name}: unknown key {slug!r}, one of {sorted({*KEY_FIELDS, *SEARCH_KEY_FIELDS})}")
@@ -265,10 +256,27 @@ def _validate_providers(p: dict, name: str):
     for slug, verdict in p.get("key_expect", {}).items():
         if slug not in p.get("keys", {}) or verdict not in KEY_VERDICTS:
             raise PersonaError(f"{name}: key_expect {slug}={verdict!r} needs a key and one of {KEY_VERDICTS}")
+
+
+def _validate_members(p: dict, name: str):
     for member in p.get("members", []):
         _check_fields(member, MEMBER_FIELDS, f"{name} member")
         if not member.get("chat"):
             raise PersonaError(f"{name}: a member needs a chat id")
+
+
+def _validate_providers(p: dict, name: str):
+    if p.get("monthly_cap_cents", MIN_CAP_CENTS) < MIN_CAP_CENTS:
+        raise PersonaError(f"{name}: monthly_cap_cents below {MIN_CAP_CENTS}: the daemon would raise it to that")
+    models = p.get("models", {})
+    _check_fields(models, MODEL_ROLES, f"{name} models")
+    _check_text_values(p.get("env", {}), f"{name} env")
+    for role in models.values():
+        _check_text_values(role, f"{name} models")
+    if not all(isinstance(k, str) for k in p.get("instance_env_keys", [])):
+        raise PersonaError(f"{name}: instance_env_keys must list text")
+    _validate_keys(p, name, models)
+    _validate_members(p, name)
 
 
 def validate_persona(p: dict) -> dict:

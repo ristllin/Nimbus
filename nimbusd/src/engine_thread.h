@@ -197,21 +197,27 @@ class EngineThread {
         }
         busy_.store(false);
       }
-      if (running_.load()) pumpJobs();   // never start a sub dispatch while stopping
-      if (running_.load()) foldTick();   // the conversation fold, between turns
-      if (running_.load()) routinesTick();   // at most one due routine or wake-up
-      if (running_.load()) rig_->drainTick();   // memory writes queued during an embedding outage
-      if (running_.load()) rig_->spendTick();   // lane DEF: the month rollover and owed notices
-      // A parked provider nothing else is calling. It blocks this thread, so it waits for
-      // a quiet moment: a client's next message comes first (device parity, owner_first.h).
-      if (running_.load() && ownerFirst_.parkRecheckMayStart(false, NimbusdRig::steadyMs())) rig_->recheckTick();
-      if (running_.load()) releaseHeld();
+      if (running_.load()) pumpPeriodic();
       // Refresh the snapshot (cheap) so uptime/state stay current.
       refreshSnapshot();
     }
     // Drain any remaining fire-and-forget tasks so a queued turn is not lost on
     // a clean shutdown (MCP promises left unset simply resolve as the future
     // dies - the HTTP handler treats that as a 503).
+  }
+
+  // Periodic work between tasks: jobs, fold, routines, memory, spend, parked
+  // recheck, held release. Each step is skipped while stopping.
+  void pumpPeriodic() {
+    if (running_.load()) pumpJobs();   // never start a sub dispatch while stopping
+    if (running_.load()) foldTick();   // the conversation fold, between turns
+    if (running_.load()) routinesTick();   // at most one due routine or wake-up
+    if (running_.load()) rig_->drainTick();   // memory writes queued during an embedding outage
+    if (running_.load()) rig_->spendTick();   // lane DEF: the month rollover and owed notices
+    // A parked provider nothing else is calling. It blocks this thread, so it waits for
+    // a quiet moment: a client's next message comes first (device parity, owner_first.h).
+    if (running_.load() && ownerFirst_.parkRecheckMayStart(false, NimbusdRig::steadyMs())) rig_->recheckTick();
+    if (running_.load()) releaseHeld();
   }
 
   // Sub-agent jobs (device parity: the orchestrator's pollJobs on every loop pass):
