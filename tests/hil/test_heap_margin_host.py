@@ -43,7 +43,12 @@ def test_every_verify_and_list_refresh_runs_psram_first():
 def test_an_event_sound_asks_the_gate_on_its_turn_before_it_opens_the_speaker():
     src = (ROOT / "src/sfx/sound_fx.cpp").read_text()
     body = body_of(src, "void playEvent(const Item& it) {")
-    assert body.index("turn.take(0)") < body.index("dmaFreeNow()") < body.index("g_cueGate.allow(") < body.index("resolveAndPlay(")
+    assert (
+        body.index("turn.take(0)")
+        < body.index("dmaFreeNow()")
+        < body.index("g_cueGate.allow(")
+        < body.index("resolveAndPlay(")
+    )
     assert "g_cueGate.finished(" in body
     assert "playEvent(it);" in body_of(src, "void sfxTask(void*) {")
     # The one call of the resolver is the gated one.
@@ -77,7 +82,9 @@ def test_a_reply_reads_memory_only_after_the_track_it_stopped_has_closed():
     """stopForSpeech only asks the track to leave. A reading before it closes counts the track's own buffers."""
     fx = (ROOT / "src/sfx/sound_fx.cpp").read_text()
     body = body_of(fx, "void playReply(const Item& it) {")
-    assert body.index("music::stopForSpeech()") < body.index("turn.take(kReplyTurnWaitMs)") < body.index("streamMp3File(")
+    assert (
+        body.index("music::stopForSpeech()") < body.index("turn.take(kReplyTurnWaitMs)") < body.index("streamMp3File(")
+    )
 
 
 def test_a_track_plays_only_on_its_turn_and_a_refusal_stops_the_queue():
