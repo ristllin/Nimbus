@@ -296,10 +296,10 @@ bool mealWord(const std::string& w) {
   return oneOf(w, {"breakfast", "lunch", "dinner", "supper", "brunch", "snack", "snacks", "meal", "meals", "tonight", "shake"});
 }
 
-// A meal is named. "meal plan" names a plan.
+// A meal is named. "meal plan" names a plan; "dinner plan" names the dinner.
 bool namesAMeal(const std::vector<Tok>& toks) {
   for (size_t i = 0; i < toks.size(); i++)
-    if (mealWord(toks[i].word) && !(i + 1 < toks.size() && toks[i + 1].word == "plan")) return true;
+    if (mealWord(toks[i].word) && !(toks[i].word == "meal" && i + 1 < toks.size() && toks[i + 1].word == "plan")) return true;
   return false;
 }
 
@@ -412,6 +412,10 @@ void targetGaps(const std::string& sentence, const std::vector<Tok>& toks, const
   }
 }
 
+bool isUnitWord(const Tok& t) {
+  return oneOf(t.word, {"g", "gm", "gram", "grams", "kcal", "kcals", "cal", "cals", "calorie", "calories"});
+}
+
 bool targetWordWithin(const std::vector<Tok>& toks, size_t from, size_t count) {
   for (size_t f = from; f < toks.size() && f < from + count; f++)
     if (!toks[f].number && oneOf(toks[f].word, {"target", "goal", "minimum", "budget", "limit", "allowance", "floor"})) return true;
@@ -442,6 +446,14 @@ bool leftAfter(const std::vector<Tok>& toks, size_t i) {
   return false;
 }
 
+// "775 kcal of 800 left, 40 g protein", "the 60 g protein you have left: 170 g salad": this "left" already
+// has its figure, and the next one is about something else. "Protein left: 38 g" has none.
+bool leftHasItsFigure(const std::vector<Tok>& toks, size_t left) {
+  size_t j = left;
+  while (j > 0 && !toks[j - 1].number && (isUnitWord(toks[j - 1]) || oneOf(toks[j - 1].word, {"protein", "you", "have", "you've", "still"}))) j--;
+  return j > 0 && toks[j - 1].number;
+}
+
 // Before it: "leaves you 31 kcal", "short by at least 102 g", "you still need about 102 g".
 bool leftBefore(const std::vector<Tok>& toks, size_t i) {
   bool plain = true;   // "short by at least": nothing else between, or "short: today is at 88 g" reads as left
@@ -449,7 +461,8 @@ bool leftBefore(const std::vector<Tok>& toks, size_t i) {
     const Tok& t = toks[b - 1];
     if (t.number) return false;
     if (t.word == "short") return plain;
-    if (oneOf(t.word, {"leaves", "leaving", "remaining", "left"})) return true;
+    if (oneOf(t.word, {"leaves", "leaving", "remaining"})) return true;
+    if (t.word == "left") return !leftHasItsFigure(toks, b - 1);
     if (t.word == "need" || t.word == "needed") return needsMore(toks, i, b - 1);
     if (!oneOf(t.word, {"you", "me", "us", "only", "just", "about", "around", "roughly", "approximately", "at", "least", "most", "over",
                         "protein", "up", "to", "still", "with", "a", "an", "the", "is", "today", "for", "by", "another", "of", "target"}))
@@ -487,7 +500,8 @@ bool projectedLeft(const std::vector<Tok>& toks, size_t i) {
   for (size_t b = 0; b < i; b++) {
     if (toks[b].number ? toks[b].unit == toks[i].unit
                        : oneOf(toks[b].word, {"after", "adding", "add", "plus", "then", "brings", "bringing", "takes", "taking", "puts",
-                                              "putting", "gets", "stays", "stay", "this", "that", "which", "with"}))
+                                              "putting", "gets", "stays", "stay", "this", "that", "which", "with", "dropping", "drop",
+                                              "removing", "skipping", "swapping", "without"}))
       return true;
   }
   return false;
@@ -618,7 +632,8 @@ bool bindDayFigures(const std::string& low, const std::vector<Tok>& toks, DayFig
     const size_t pos = low.find(cue);
     if (pos == std::string::npos) continue;
     const size_t start = tokensOf(low.substr(0, pos)).size();
-    if (start > 0 && mealWord(toks[start - 1].word)) continue;   // "Lunch today is 650 kcal"
+    // "Lunch today is 650 kcal", "the 800 kcal left today: 795 kcal in total".
+    if (start > 0 && (mealWord(toks[start - 1].word) || oneOf(toks[start - 1].word, {"left", "remaining"}))) continue;
     d.cue = start;
     if (boundAfter(toks, tokensOf(low.substr(0, pos + std::string(cue).size())).size(), d)) return true;
     if (!namesAMeal(toks) && boundBefore(toks, start, d)) return true;

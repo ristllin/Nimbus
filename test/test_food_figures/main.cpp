@@ -340,6 +340,17 @@ static void test_left_after_a_proposed_meal_is_no_target() {
            "That leaves protein about 25 g short of your 155 g floor (67 g still needed today).",
            "Protein stays well short: today is at 88 g, so this brings you to about 119 g against your 155 g floor.",
            "440 g cooked pasta and 1 slice of mozzarella (25 g) gets you to about 765 of your 800 kcal left, so about 2,365 kcal for the day against your 2,400 target.",
+           // qty-vague and plan-earlier on haiku and mistral: "left today:" is what is left, then the plan.
+           "340 g cooked pasta and 5 x 25 g mozzarella (125 g) uses up the 800 kcal left today: 795 kcal in total.",
+           "Dinner fits the 800 kcal left today: 794 kcal and 85.6 g protein, against 67 g left.",
+           "Dinner sized to the 800 kcal and 67 g protein you have left today: 170 g salad (tomato, lettuce, cucumber) with protein.",
+           "Corrected below, sized to the 800 kcal and 67 g protein left today (2,400 kcal / 155 g protein targets minus the ledger's 1,600 kcal / 88 g so far):",
+           "The bread takes half of it. Dropping it leaves about 420 kcal to fill.",
+           "- Total: 795 kcal of 800 left, 44.5 g protein (22.5 g short of the 67 g protein left against your 155 g floor)",
+           // qty-pressed rep3 and plan-stated: the figure after "left," is the plan's protein, not what is left.
+           "Total: 775 kcal of 800 left, 40.1 g protein",
+           "Total: 790 kcal of your 800 left, 112.8 g protein.",
+           "Here is a dinner plan that uses 790 of the 800 kcal left and gives about 109 g protein, well above the 67 g target.",
        }) {
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, gapsOf(real, f, src), real);
   }
