@@ -1431,7 +1431,7 @@ class TestEvidenceIsKept(unittest.TestCase):
             (run / "summary.json").write_text("second run")
             pr.keep_earlier_run(run)
             self.assertEqual(len(list(Path(tmp).glob("persona.replaced-*"))), 2)
-            pr.keep_earlier_run(run)   # nothing there now: a no-op
+            pr.keep_earlier_run(run)  # nothing there now: a no-op
             self.assertEqual(len(list(Path(tmp).glob("persona.replaced-*"))), 2)
 
 

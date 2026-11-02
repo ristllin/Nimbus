@@ -525,11 +525,31 @@ static void testRoutines(ndtest::Ctx& c) {
            "a wake-up from a turn that read outside content waits for the owner");
     }
 
-    // A member's conversation may not touch routines.
+    // A member's conversation may not touch routines or wake-ups. Each route's refusal
+    // is asserted by its own words, and a leaked list would carry routine ids - the old
+    // "only"/"owner" substring check passed on a leaked list, whose JSON names the owner.
     const orch::Principal member = orch::principalForRole("2001", orch::Role::User);
-    const std::string memberCall = rig.registry().handleRpc(
-        R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"loop.list","arguments":{}}})", member);
-    c.ok(has(memberCall, "only") || has(memberCall, "owner"), "a member cannot list routines");
+    const auto memberTool = [&rig, &member](const char* name, const char* args) {
+      return rig.registry().handleRpc(
+          std::string(R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":")") + name +
+              R"(","arguments":)" + args + "}}",
+          member);
+    };
+    // The dispatch-level action rules refuse first (shared lib/core table), so the
+    // assertion pins the refusal's own words, not "only"/"owner" substrings that a
+    // leaked list also carries, and checks no routine id leaks into the answer.
+    const std::string listCall = memberTool("loop.list", "{}");
+    c.ok(has(listCall, "can see the routines") && has(listCall, "only the"), "a member cannot list routines");
+    c.ok(!has(listCall, "\"approved\"") && !has(listCall, "\"schedule\""),
+         "and no routine list leaks into the answer");
+    c.ok(has(memberTool("loop.create",
+                        R"({"name":"x","prompt":"y","schedule":{"kind":"interval","every_seconds":300}})"),
+             "can set up a routine"),
+         "a member cannot create a routine");
+    c.ok(has(memberTool("loop.cancel", R"({"id":"lp1"})"), "can cancel a routine"),
+         "a member cannot cancel a routine");
+    c.ok(has(memberTool("wakeup.set", R"({"minutes":5,"note":"x"})"), "can set a wakeup"),
+         "a member cannot arm a wake-up");
   }
   {
     // A wake-up whose time has come fires one turn, framed as one, then it is gone. A
