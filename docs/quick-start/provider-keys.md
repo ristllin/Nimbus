@@ -128,8 +128,8 @@ Strong at conversation and reasoning.
 
 ## Picking a model for daily use
 
-Measured on one script of everyday jobs (memory, files, a food plan, web lookups, helpers,
-a long answer). Details: `coverage/MG-PARITY-2026-11-02.md` in the program notes.
+Measured on one script of everyday jobs: memory, files, a food plan, web lookups, helpers
+and a long answer.
 
 - **Mistral Large 4** and **GLM-5.3** handle daily use. A very long answer on GLM is
   limited to about 1,800 words, because Z.ai closes a request after 60 seconds.
