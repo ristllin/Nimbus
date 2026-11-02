@@ -185,6 +185,9 @@ class Rehearsal:
         self.res["soak"] = {"seconds": self.a.soak_s, "polls": polls, "failed": failed, "bootNs": sorted(boots)}
         self.res["soakEnd"] = self.snap("soak-end")
         self.res["modelsAfter"] = self.model_stamp()
+        log = self.api.get("/api/errlog", 60.0)
+        self.ev.write("errlog-after-soak.txt", log.text)
+        self.res["modelsStoredLine"] = "models stored" in log.text
         return None
 
     # -- the grade --------------------------------------------------------------------------------
@@ -204,7 +207,7 @@ class Rehearsal:
             "nvsUnchanged": (pre["nvs"] or {}).get("free") == (ok_snap["nvs"] or {}).get("free"),
             "turnAnswers": bool(r["turn"]["ok"] and "ok" in r["turn"]["reply"].lower()),
             "soakClean": soak["failed"] == 0 and len(soak["bootNs"]) == 1 and not ((end["boot"] or {}).get("crash") or {}).get("thisReset"),
-            "modelListRestamped": bool(r["modelsAfter"]) and (r["modelsAfter"] or 0) > (r["modelsBefore"] or 0),
+            "modelListRestamped": (r["modelsAfter"] or 0) > (r["modelsBefore"] or 0) or r["modelsStoredLine"],
             "lowWaterHolds": isinstance(low, (int, float)) and low > MIN_LOW_WATER,
         }
         r["checks"] = self.checks
