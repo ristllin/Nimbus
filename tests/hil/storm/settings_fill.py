@@ -23,9 +23,9 @@ Fillers, in order, each logged with the free bytes after it, until the store rep
 
 Usage (never prints the token)::
 
-    settings_fill.py fill    --ip 192.168.50.61 --token-file unitL_webtok.txt --snapshot snap.json
-    settings_fill.py restore --ip 192.168.50.61 --token-file unitL_webtok.txt --snapshot snap.json
-    settings_fill.py free    --ip 192.168.50.61 --token-file unitL_webtok.txt
+    settings_fill.py fill    --ip 192.168.50.61 --token-file unitF1_webtok.txt --snapshot snap.json
+    settings_fill.py restore --ip 192.168.50.61 --token-file unitF1_webtok.txt --snapshot snap.json
+    settings_fill.py free    --ip 192.168.50.61 --token-file unitF1_webtok.txt
 """
 
 from __future__ import annotations
