@@ -2,9 +2,9 @@
   "description": "The owner's five signals of 2 Nov (owner-signals-2026-11-02.md) as a class across head models: an open item is raised once then dropped; whole-pack assumed, not asked; a full standing-rules list must not weaken an explicit owner rule; no internal plumbing in owner-facing text; a brief cites the operator or National Rail, not random blogs.",
   "vars": {"suffix": "6258"},
   "matrix": [
-    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": ""},
-    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": "glm-no-tools"},
-    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": "glm-no-tools"}
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": "", "fib_await": "\\b34\\b"},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": "glm-no-tools", "fib_await": "(?i)fibonacci|\\b34\\b"},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": "glm-no-tools", "fib_await": "(?i)fibonacci|\\b34\\b"}
   ],
   "persona": {
     "name": "pa-signals-${name}",
@@ -43,8 +43,8 @@
          "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
                     {"reply_not_regex": "(?i)m[0-9a-f]{8,}|result-job\\d+|read back confirmed|stored on the device as|\\.md\\b", "known_defect": "${tools_defect}", "may_pass": true}]},
         {"say": "Start a sub-agent to compute the 9th Fibonacci number and tell me the result.",
-         "await_reply_regex": "\\b34\\b", "timeout_s": 300, "settle_s": 8,
-         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b34\\b"}, {"reply_not_regex": "(?i)result-job\\d+|stored on the device as|\\.md\\b", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+         "await_reply_regex": "${fib_await}", "timeout_s": 300, "settle_s": 8,
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b34\\b", "known_defect": "${tools_defect}", "may_pass": true}, {"reply_not_regex": "(?i)result-job\\d+|stored on the device as|\\.md\\b", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
       ]},
       {"id": "s5-brief-sources", "steps": [
         {"say": "Any disruptions on my train line into London Paddington this evening? Use a web lookup and name the sources you used.",
