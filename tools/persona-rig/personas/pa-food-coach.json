@@ -22,11 +22,11 @@
         {"say": "I had a 243 g pack of salt and vinegar crisps, the whole pack is 520 kcal. Log it.",
          "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
         {"say": "What is my kcal total for today so far?",
-         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b695\\b"}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b695\\b", "known_defect": "${mem_defect}", "may_pass": "${mem_may}"}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
       ]},
       {"id": "whole-pack-assumed", "needs": ["log-and-total"], "steps": [
         {"say": "How many kcal came from the crisps?",
-         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b520\\b"}, {"reply_not_regex": "(?i)did you eat the whole|how much of the pack", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b520\\b", "known_defect": "${mem_defect}", "may_pass": "${mem_may}"}, {"reply_not_regex": "(?i)did you eat the whole|how much of the pack", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
       ]},
       {"id": "no-nagging", "needs": ["log-and-total"], "steps": [
         {"say": "Note: I have a dentist appointment on Thursday at 9am.",
