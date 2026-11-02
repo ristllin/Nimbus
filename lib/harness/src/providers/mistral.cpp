@@ -565,6 +565,14 @@ static std::string withLongProseAsReply(const std::string& turn, const std::stri
   return serializeBody(d);
 }
 
+// A tool call's arguments arrive as a JSON string or an object: normalized to a string.
+static std::string chatToolArgs(JsonObjectConst call) {
+  if (call["function"]["arguments"].is<const char*>()) return call["function"]["arguments"].as<const char*>();
+  std::string args;
+  serializeJson(call["function"]["arguments"], args);
+  return args;
+}
+
 bool readChatRound(const JsonDocument& resp, nimbus::orch::HeadStep& out, std::string& cutWhy,
                    const ChatDialect& dialect) {
   JsonObjectConst m = resp["choices"][0]["message"].as<JsonObjectConst>();
@@ -575,12 +583,7 @@ bool readChatRound(const JsonDocument& resp, nimbus::orch::HeadStep& out, std::s
   if (!prose.empty()) out.text = prose;
   for (JsonObjectConst t : m["tool_calls"].as<JsonArrayConst>()) {
     const char* nm = t["function"]["name"] | "";
-    // arguments may arrive as a JSON string OR an object - normalize to string.
-    std::string args;
-    if (t["function"]["arguments"].is<const char*>())
-      args = t["function"]["arguments"].as<const char*>();
-    else
-      serializeJson(t["function"]["arguments"], args);
+    const std::string args = chatToolArgs(t);
     JsonDocument probe;
     if (!args.empty() && args != "null" && deserializeJson(probe, args) != DeserializationError::Ok &&
         cutWhy.empty())

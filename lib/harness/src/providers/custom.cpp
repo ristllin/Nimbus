@@ -369,10 +369,14 @@ static void zaiRememberNoEffort(const std::string& model) {
   if (!model.empty() && !zaiEffortRefusedBefore(model))
     g_zaiNoEffort[next++ % 2] = nimbus::orch::parkKeyFingerprint(model);
 }
-static bool zaiRefusedEffort(int code, const JsonDocument& resp) {
-  if (code != 400 && code != 422) return false;
+// True when this answer refused the field, so the attempt goes again without it.
+static bool zaiDropRefusedEffort(const std::string& model, bool withEffort, int code, const JsonDocument& resp) {
+  if (!withEffort || (code != 400 && code != 422)) return false;
   const std::string text = std::string(resp["error"]["message"] | "") + " " + (const char*)(resp["message"] | "");
-  return text.find("reasoning") != std::string::npos;
+  if (text.find("reasoning") == std::string::npos) return false;
+  hlog::logf("orchTurn(zai-loop): %s refused reasoning_effort (HTTP %d) - one retry without it", model.c_str(), code);
+  zaiRememberNoEffort(model);
+  return true;
 }
 static bool zaiLoopBody(const ProviderDeps& pd, const ZaiRound& a, std::string& body, std::string& err) {
   JsonDocument req = wire::makeDoc(pd);
@@ -485,10 +489,7 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
       const int code = custRequest(pd, "POST", "/v1/chat/completions", std::move(body), /*anthropicAuth=*/false, resp,
                                    filter, roundMs);
       if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
-      if (withEffort && zaiRefusedEffort(code, resp)) {
-        hlog::logf("orchTurn(zai-loop): %s refused reasoning_effort (HTTP %d) - one retry without it",
-                   s(pd.customModel).c_str(), code);
-        zaiRememberNoEffort(s(pd.customModel));
+      if (zaiDropRefusedEffort(s(pd.customModel), withEffort, code, resp)) {
         --attempt;   // the same attempt again, without the field
         continue;
       }
