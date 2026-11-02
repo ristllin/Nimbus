@@ -27,10 +27,14 @@ from __future__ import annotations
 
 import argparse
 import glob
+import os
 import re
 import statistics
 import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bench_guard  # noqa: E402 - the forbidden-device guard, a sibling of this tool
 
 # Imported lazily-tolerantly, NOT with sys.exit(): derive() below is pure
 # arithmetic and is unit-tested on machines that have no pyserial and no board.
@@ -59,6 +63,7 @@ class Console:
     def __init__(self, port: str, baud: int = 115200, settle: float = 3.0):
         if serial is None:
             raise RuntimeError("pyserial is required to talk to the board: pip install pyserial")
+        bench_guard.check_port(port, "tcal_wizard")
         s = serial.Serial()
         s.port = port
         s.baudrate = baud

@@ -11,12 +11,16 @@ reset (protocol-equivalent to unplug/replug) does the same thing in software:
     python3 tools/usb_reset.py                  # reset THE ONLY S3, or fail if >1
     python3 tools/usb_reset.py --skip AA:BB     # reset the S3 that is NOT ...AA:BB
     python3 tools/usb_reset.py --serial CC:DD   # reset the S3 whose serial ~matches
-    python3 tools/usb_reset.py --all            # reset every S3 on the bus
+    python3 tools/usb_reset.py --all            # reset every S3 on the bus that is not forbidden
 
 ⚠ With TWO boards attached (same VID:PID), a bare reset used to hit the FIRST
 match - the WRONG board - leaving the target wedged (a WEDGED board reports NO
 serial string, so the target is often the one you must skip/pick BY the other's
 MAC). Always disambiguate with --skip/--serial when >1 board is present.
+
+Forbidden boards (tools/bench_guard.py: the owner's other project and Lumi) are never reset, whichever form is used:
+--skip and --all leave them out and --serial naming one is refused. A board with no serial could be a wedged forbidden
+board, so it is reset only with --anonymous-ok or NIMBUS_BENCH_ANON_OK=1, after checking by eye that neither is plugged.
 
 Then immediately catch it into the bootloader if you need to flash:
     esptool --chip esp32s3 --port /dev/cu.usbmodem101 \
@@ -39,6 +43,9 @@ import ctypes.util
 import os
 import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bench_guard  # noqa: E402 - the forbidden-device guard, a sibling of this tool
 
 # pyusb (usb.*) is imported lazily (load_usb_backend), so the pure select_targets()
 # below - and the host tests that cover its MAC-safety and the setup error paths - can
@@ -154,6 +161,23 @@ def _norm(s: str) -> str:
 
 
 def select_targets(serials, *, all_=False, serial=None, skip=None):
+    """The boards a reset may touch: _select_by_flags, then every forbidden board taken out, whichever flag chose
+    it. Returns ``(indices, error)``. If only forbidden boards were chosen, the error says so and nothing is reset."""
+    sel, err = _select_by_flags(serials, all_=all_, serial=serial, skip=skip)
+    labels = {i: bench_guard.forbidden_label(serials[i]) for i in sel}
+    kept = [i for i in sel if not labels[i]]
+    if sel and not kept:
+        names = ", ".join(sorted({label for label in labels.values() if label}))
+        return [], f"refused: that is {names}; a forbidden board is never reset (tools/bench_guard.py)"
+    return kept, err
+
+
+def anonymous_targets(serials, sel) -> "list[int]":
+    """The chosen boards with no serial string: a wedged board could be a forbidden one."""
+    return [i for i in sel if not serials[i]]
+
+
+def _select_by_flags(serials, *, all_=False, serial=None, skip=None):
     """MAC-safe target selection (pure, host-tested). ``serials`` is the serial
     string of each attached S3, in order (a WEDGED board reports '' - no readable
     serial). Returns ``(indices, error)``: ``indices`` are the positions to reset;
@@ -199,6 +223,11 @@ def main(argv: "list[str] | None" = None) -> int:
         help="also reset an S3 enumerating under a non-JTAG product id "
         "(an app's own USB CDC) - re-enumerates it, does NOT reboot it",
     )
+    ap.add_argument(
+        "--anonymous-ok",
+        action="store_true",
+        help="also reset a board with no serial string, after checking by eye that no forbidden board is plugged in",
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -231,6 +260,13 @@ def main(argv: "list[str] | None" = None) -> int:
             for d in devs:
                 print(f"  bus={d.bus} addr={d.address} serial={_serial(d)!r}")
             return 2
+        return 1
+    anonymous = anonymous_targets(serials, sel)
+    if anonymous and not (args.anonymous_ok or os.environ.get(bench_guard.ANON_ENV) == "1"):
+        print(
+            f"refused: {len(anonymous)} board(s) report no serial and could be a wedged forbidden board. "
+            f"Check by eye that neither is plugged in, then pass --anonymous-ok or set {bench_guard.ANON_ENV}=1."
+        )
         return 1
     targets = [devs[i] for i in sel]
     rc = 0

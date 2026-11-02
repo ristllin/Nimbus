@@ -22,6 +22,7 @@ ignore = [
 [lint.per-file-ignores]
 # PlatformIO extra_script: `env` is injected by SCons (Import("env") magic).
 "tools/git_version.py" = ["F821"]
+"tools/pio_upload_guard.py" = ["F821"]
 
 [format]
 # Keep formatting close to what's already there.

@@ -14,9 +14,17 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import os
 import sys
 import time
-import serial
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bench_guard  # noqa: E402 - the forbidden-device guard, a sibling of this tool
+
+try:
+    import serial
+except ImportError:
+    serial = None  # _open_and_boot needs it; the guard and the framing stay importable
 
 
 _NOISE = ("[E][", "[W][", "[I][", "Preferences", "nvs_get_str")
@@ -42,6 +50,9 @@ def _readsig(ser, deadline):
 
 def _open_and_boot(a):
     """Open the native-USB port (no reset toggles) and wait for boot + SD mount."""
+    bench_guard.check_port(a.port, "fsput_stream")
+    if serial is None:
+        raise SystemExit("pyserial is required: pip install pyserial")
     ser = serial.Serial()
     ser.port = a.port
     ser.baudrate = a.baud
@@ -147,7 +158,7 @@ def _fstat_verify(ser, a, data, sha) -> bool:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", default="/dev/cu.usbmodem101")
+    ap.add_argument("--port", required=True)
     ap.add_argument("--src", required=True)
     ap.add_argument("--dst", required=True, help="absolute SD path, e.g. /music/long.mp3")
     ap.add_argument("--baud", type=int, default=115200)

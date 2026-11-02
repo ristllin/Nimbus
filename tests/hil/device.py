@@ -35,6 +35,7 @@ import sys
 import time
 from typing import List, Optional, Pattern
 
+import port_guard
 from redact import Secret
 
 try:
@@ -429,6 +430,7 @@ class Device:
         script = os.path.join(os.path.dirname(__file__), "..", "..", "tools", "usb_reset.py")
         skip_serial = skip_serial or os.environ.get("NIMBUS_HIL_OTHER_SERIAL")
         target_serial = target_serial or os.environ.get("NIMBUS_HIL_TARGET_SERIAL")
+        port_guard.check_mac(target_serial, "HIL bus reset")  # usb_reset.py refuses it too; say so before starting it
         for argv in bus_reset_argvs(script, target_serial, skip_serial):
             try:
                 if subprocess.run(argv, capture_output=True, text=True, timeout=25).returncode == 0:
@@ -446,7 +448,15 @@ class Device:
         spurious reboot, sometimes a WEDGED USB peripheral that only a physical
         replug recovers (this was the root cause behind the 'orchestrator hard
         hang' brick and every zombie-port episode; observed live 2026-07-02).
-        Clearing dtr/rts BEFORE open makes attach a pure listen."""
+        Clearing dtr/rts BEFORE open makes attach a pure listen.
+
+        A forbidden board is refused here, before any open (tools/bench_guard.py), and that
+        refusal is never retried. A port with no serial string reads as lost: the callers' reopen
+        loops wait for the serial to come back, which it does when a re-enumeration settles."""
+        try:
+            port_guard.check_port(port, "HIL harness")
+        except port_guard.AnonymousPort as exc:
+            raise DeviceLostError(str(exc)) from exc
         ser = serial.Serial()
         ser.port = port
         ser.baudrate = baud
@@ -1093,6 +1103,7 @@ class Device:
         port = self.port or self._pinned_port
         if not port:
             return False
+        port_guard.check_port(port, "HIL esptool reset")
         self.close()
         base = ["--chip", "esp32s3", "--port", port, "--before", "default-reset", "--after", "hard-reset", "chip_id"]
         ok = False
@@ -1193,8 +1204,12 @@ class Device:
                 "flash refused: set NIMBUS_HIL_FLASH_OK=1 to arm flashing "
                 "(double interlock - board is single-owner/bricked)"
             )
+        port = self.port or self._pinned_port
+        if not port:
+            raise DeviceError("flash refused: name the board with --port, a flash never picks a port by itself")
+        port_guard.check_port(port, "HIL flash")
         repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        subprocess.run(["pio", "run", "-e", env, "-t", "upload"], cwd=repo_root, check=True)
+        subprocess.run(["pio", "run", "-e", env, "-t", "upload", "--upload-port", port], cwd=repo_root, check=True)
         self.reopen_after_reenumerate()
         self.wait_ready()
 

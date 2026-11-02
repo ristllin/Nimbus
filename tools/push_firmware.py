@@ -22,10 +22,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import struct
 import sys
 import time
 import zlib
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bench_guard  # noqa: E402 - the forbidden-device guard, a sibling of this tool
 
 try:
     import serial  # pyserial
@@ -61,6 +65,7 @@ def _wait_reply(ser, timeout_s):
 
 
 def _open_port(port, baud):
+    bench_guard.check_port(port, "push_firmware")
     ser = serial.Serial()
     ser.port = port
     ser.baudrate = baud

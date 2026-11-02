@@ -34,6 +34,9 @@ import tempfile
 import time
 import zlib
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bench_guard  # noqa: E402 - the forbidden-device guard, a sibling of this tool
+
 
 UART_GLOBS = (
     "/dev/cu.usbserial-*",
@@ -120,12 +123,17 @@ def enumerate_esp_ports() -> list[dict]:
     by what it *is*, not just its device-node name. Only ports whose vendor is a
     known UART bridge or the ESP32-S3 native USB are returned. There is no
     name-glob fallback: without pyserial this raises PyserialMissing instead of
-    discovering boards blind (CUM-487)."""
+    discovering boards blind (CUM-487). A forbidden board (tools/bench_guard.py) is
+    left out, so a scan can never pick it."""
     list_ports = _pyserial("serial.tools.list_ports")
     boards = []
     for info in list_ports.comports():
         vid = info.vid
         if vid not in (*BRIDGE_VIDS, VID_ESP32S3_NATIVE):
+            continue
+        label = bench_guard.forbidden_label(getattr(info, "serial_number", None))
+        if label:
+            print(f"Leaving out {info.device}: that is {label}.", file=sys.stderr)
             continue
         boards.append({"port": info.device, "vid": vid, "pid": info.pid, "product": info.product or ""})
     return sorted(boards, key=lambda b: b["port"])
@@ -322,6 +330,7 @@ def identify(port: str) -> bool:
     (serial ``IDENTIFY``); a board not running Nimbus simply will not answer, and
     we say so rather than fail. Returns True if the board acknowledged."""
     serial = _pyserial()
+    bench_guard.check_port(port, "setup_device")
     try:
         with serial.Serial(port, 115200, timeout=0.25) as conn:
             time.sleep(0.3)
@@ -528,6 +537,7 @@ def resolve_port(args: argparse.Namespace) -> tuple[str, int | None, str]:
     if args.port:
         if os.name != "nt" and not Path(args.port).exists():
             raise RuntimeError(f"Serial port does not exist: {args.port}")
+        bench_guard.check_port(args.port, "setup_device")
         for cand in enumerate_esp_ports():
             if cand["port"] == args.port:
                 return args.port, cand["vid"], cand["product"]
@@ -597,6 +607,8 @@ def inspect_board(esptool: list[str], port: str) -> tuple[str, str, str | None, 
         ]
         result = run_checked(command, capture=True)
         mac = extract_mac(result.stdout)
+        # A UART bridge hides the MAC from the USB listing; esptool has just read it.
+        bench_guard.check_mac(mac, "setup_device")
         if mac is None:
             raise RuntimeError("Connected to the board, but could not read its factory MAC.")
         data = nvs_path.read_bytes()
@@ -641,6 +653,11 @@ def serial_bootstrap(
         print("Stopped: PlatformIO's Python environment has no pyserial.", file=sys.stderr)
         return 1
 
+    try:
+        bench_guard.check_port(port, "setup_device")
+    except bench_guard.ForbiddenDevice as exc:
+        print(f"Stopped: {exc}", file=sys.stderr)
+        return 1
     connection = serial.Serial()
     connection.port = port
     connection.baudrate = 115200
@@ -765,6 +782,7 @@ def verify_panel_after_flash(port: str, timeout: float = 20.0) -> str:
     hiccup: it raises PyserialMissing rather than skip the check (CUM-487); main()
     guarantees pyserial before it flashes anything."""
     serial = _pyserial()
+    bench_guard.check_port(port, "setup_device")
     connection = serial.Serial()
     connection.port = port
     connection.baudrate = 115200
@@ -837,6 +855,7 @@ def probe_for_freenove(port: str, timeout: float = 8.0) -> str:
     PyserialMissing, so the setup step fails (exit 1, production firmware still put
     back) instead of skipping the probe (CUM-487)."""
     serial = _pyserial()
+    bench_guard.check_port(port, "setup_device")
     connection = serial.Serial()
     connection.port = port
     connection.baudrate = 115200
@@ -1081,6 +1100,7 @@ class InstallOutcome:
 
 
 def _upload(pio: str, env: str, port: str) -> None:
+    bench_guard.check_port(port, "setup_device")
     run_checked([pio, "run", "-e", env, "-t", "upload", "--upload-port", port])
 
 
