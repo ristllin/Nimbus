@@ -273,7 +273,7 @@ static void test_a_plan_or_advice_sentence_about_today_is_no_day_total() {
   empty.have = true;
   for (const char* plan : {"Today is a rest day, so your plan says 2,100 kcal.", "For today: dinner of 500 kcal fits.",
                            "Today: your plan gives you 2,100 kcal, you're at 1482.", "Lunch today is 650 kcal.",
-                           "Dinner of 500 kcal logged today."}) {
+                           "Dinner of 500 kcal logged today.", "Your budget today is 918 kcal.", "Your budget for today is 2,100 kcal."}) {
     TEST_ASSERT_FALSE_MESSAGE(hasKind(foodFigureGaps(plan, f, "2100"), FoodGapKind::WrongDayTotal), plan);
   }
   // Real replies, head5-haiku plan-earlier rep1, no-inventory-guard rep1, complaint-recovery rep5.
@@ -359,7 +359,9 @@ static void test_left_after_a_proposed_meal_is_no_target() {
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, gapsOf(real, f, src), real);
   }
   const FoodFacts g = ledger(1500, 90);
-  for (const char* projected : {"After the pasta you'll have 200 kcal left.", "The pasta at 700 kcal leaves you 200 kcal for the rest of the day."}) {
+  TEST_ASSERT_EQUAL_INT(0, gapsOf("Your run burned 300 kcal, so you have 1,200 kcal left.", g, "2400"));
+  for (const char* projected : {"After the pasta you'll have 200 kcal left.", "The pasta at 700 kcal leaves you 200 kcal for the rest of the day.",
+                                "You should have about 200 kcal left after dinner."}) {
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, gapsOf(projected, g, "2400 155"), projected);
     // No target in anything the turn read: the left figure still has nothing behind it.
     TEST_ASSERT_TRUE_MESSAGE(hasKind(foodFigureGaps(projected, g, ""), FoodGapKind::UnsourcedTarget), projected);
@@ -391,7 +393,10 @@ static void test_a_negation_binds_to_its_figure() {
     TEST_ASSERT_TRUE_MESSAGE(!unsourcedFoodTargets(invented, "2400").empty(), invented);
   }
   for (const char* back : {"The 250 g protein figure was my error.", "There is no 250 g protein target.", "It is not the 2,500 kcal target.",
-                           "The 2,500 kcal target isn't in your plan.", "I never had a source for that 2,500 kcal target, it is wrong."}) {
+                           "The 2,500 kcal target isn't in your plan.", "I never had a source for that 2,500 kcal target, it is wrong.",
+                           // The honest reply after a complaint must not be corrected for the figure it disowns.
+                           "I can't find a 2,500 kcal target anywhere.", "I don't see any 2,500 kcal target in your plan.",
+                           "I have no record of a 2,500 kcal target."}) {
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, gapsOf(back, f, "2400"), back);
   }
 }
@@ -458,9 +463,17 @@ static void test_rewordings_of_a_target_are_the_same_target() {
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)foodFigureGaps(s.sourced, f, rules).size(), s.sourced);
   }
   TEST_ASSERT_TRUE(hasKind(foodFigureGaps("You're 38.3 g short of 250 g.", f, rules), FoodGapKind::UnsourcedTarget));
+  for (const char* told : {"Eat 2,500 kcal a day.", "Stick to 2,500 kcal a day.", "Keep to 2,500 kcal today.", "Stay under 2,500 kcal today.",
+                           "Your target today is 2,500 kcal.", "Your goal for today: 2,500 kcal.", "Protein floor today: 250 g."}) {
+    TEST_ASSERT_TRUE_MESSAGE(hasKind(foodFigureGaps(told, f, rules), FoodGapKind::UnsourcedTarget), told);
+  }
+  // A meal or a sum is still no target.
+  TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("Keep dinner to 900 kcal today.", f, rules).size());
+  TEST_ASSERT_EQUAL_INT(0, (int)foodFigureGaps("Stay under 2,400 kcal today.", f, rules).size());
   // Not a target: what happened, and a rate with no prescription.
   for (const char* history : {"You've averaged 1,900 kcal a day this week.", "You ate 2,500 kcal a day last week.",
-                              "Your daily protein so far is 90 g.", "A 500 kcal a day deficit.", "This shake has 30 g protein."}) {
+                              "Your daily protein so far is 90 g.", "A 500 kcal a day deficit.", "This shake has 30 g protein.",
+                              "Most people need about 2,000 kcal a day.", "Men generally need 2,500 kcal a day."}) {
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)foodFigureGaps(history, ledger(1000, 90), "").size(), history);
   }
 }

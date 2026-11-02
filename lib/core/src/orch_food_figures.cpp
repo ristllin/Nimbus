@@ -157,7 +157,8 @@ bool hypothetical(const std::string& low, const std::vector<Tok>& toks) {
 }
 
 bool negationWord(const Tok& t) {
-  return !t.number && oneOf(t.word, {"not", "no", "never", "isn't", "wasn't", "aren't", "didn't", "don't", "doesn't", "without"});
+  return !t.number && oneOf(t.word, {"not", "no", "never", "nothing", "isn't", "wasn't", "aren't", "didn't", "don't", "doesn't", "can't",
+                                     "cannot", "couldn't", "without"});
 }
 
 // The sentence takes its figures back, whole: "the 250 g figure was my error". Not "no" or "not" or
@@ -167,15 +168,16 @@ bool retracted(const std::string& low, const std::vector<Tok>& toks) {
          low.find("made up") != std::string::npos;
 }
 
-// A negation that binds to this figure: "not the 250 g", "no 250 g target", "no target of 250",
-// "never said 2500". "You're not at your 2,500 kcal target" says there is one.
+// A negation that binds to this figure: "not the 250 g", "no 250 g target", "no target of 250", "never
+// said 2500", "I can't find a 2,500 kcal target". "You're not at your 2,500 kcal target" says there is one.
 bool negatedBefore(const std::vector<Tok>& toks, size_t i) {
   for (size_t b = i; b > 0 && i - b < 4; b--) {
     const Tok& t = toks[b - 1];
     if (t.number) return false;
     if (negationWord(t)) return true;
     if (!oneOf(t.word, {"the", "a", "an", "any", "that", "this", "about", "around", "such", "actually", "really", "target", "goal",
-                        "floor", "minimum", "budget", "limit", "of", "your", "my", "said", "say", "told", "mentioned", "gave", "give"}))
+                        "floor", "minimum", "budget", "limit", "of", "for", "your", "my", "said", "say", "told", "mentioned", "gave", "give",
+                        "see", "find", "found", "saw", "have", "has", "hold", "holds", "record", "source", "sign", "mention", "evidence"}))
       return false;
   }
   return false;
@@ -218,7 +220,7 @@ bool skipBefore(const Tok& t) {
 // "target of 2,400 kcal", "protein target: 150 g", "adjusted it to 2,500".
 bool skipAfter(const Tok& t) {
   return skipBefore(t) || (!t.number && oneOf(t.word, {"of", "is", "are", "at", "was", "to", "for", "set", "a", "the", "your", "my",
-                                                       "as", "it", "that", "plan's", "about", "around", "roughly"}));
+                                                       "as", "it", "that", "plan's", "about", "around", "roughly", "today"}));
 }
 
 struct Stated {
@@ -390,8 +392,11 @@ bool rateAfter(const std::vector<Tok>& toks, size_t i, bool firm) {
 // What happened ("you've averaged", "a deficit") is no prescription.
 std::vector<Stated> prescribedTargets(const std::vector<Tok>& toks, bool macros) {
   std::vector<Stated> out;
-  const bool firm = hasWord(toks, {"should", "must", "need"});
-  if ((!firm && !hasWord(toks, {"eat", "plan", "plan's", "calls", "recommended", "recommend", "requires"})) || namesAMeal(toks) ||
+  const bool told = !toks.empty() && oneOf(toks[0].word, {"eat", "stick", "keep", "stay"});   // "Stick to 2,500 kcal a day."
+  const bool firm = told || hasWord(toks, {"should", "must", "need"});
+  // About this person: "most people need about 2,000 kcal a day" is general knowledge.
+  const bool theirs = told || hasWord(toks, {"you", "you'd", "you'll", "you're", "your", "plan", "plan's"});
+  if (!theirs || (!firm && !hasWord(toks, {"eat", "plan", "plan's", "calls", "recommended", "recommend", "requires"})) || namesAMeal(toks) ||
       hasWord(toks, {"average", "averages", "averaged", "averaging", "ate", "eaten", "burn", "burns", "burned", "deficit", "surplus", "maintenance",
                      "tdee", "yesterday"}))
     return out;
@@ -518,6 +523,7 @@ bool saysAtMost(const std::string& low) {
 // or a word that points at one ("That leaves ...", "After the pasta ...", "Protein stays ...").
 bool projectedLeft(const std::vector<Tok>& toks, size_t i) {
   if (i + 2 < toks.size() && toks[i + 2].word == "short") return true;   // too small a "short" takes a meal into account
+  if (hasWord(toks, {"after", "once"})) return true;                     // "200 kcal left after dinner"
   for (size_t b = 0; b < i; b++) {
     if (toks[b].number ? toks[b].unit == toks[i].unit
                        : oneOf(toks[b].word, {"after", "adding", "add", "plus", "then", "brings", "bringing", "takes", "taking", "puts",
@@ -560,6 +566,8 @@ void leftGapOf(const LeftCheck& c, const std::vector<Tok>& toks, size_t i, std::
     return;
   }
   if (c.taken || negatedFigure(toks, i) || (!isProtein && !c.facts.kcalKnown)) return;   // taken back, or the total line covers it
+  // A workout eaten back moves the sum by a figure the ledger does not hold.
+  if (!isProtein && hasWord(toks, {"burn", "burns", "burned", "burnt", "workout", "exercise"})) return;
   const double implied = t.value + (isProtein ? c.facts.protein : c.facts.kcal);
   const double tolerance = t.approx ? std::fmax(implied * 0.03, 2.0) : 2.0;
   if (nearSource(implied, c.sources, tolerance) || leftOfAKnownTarget(toks, i, implied, c.sources)) return;
@@ -601,7 +609,9 @@ bool mealSentence(const std::string& low) {
 // to, never just the first in the sentence ("Logged lunch at 650 kcal, which puts today's total at 1,482").
 constexpr const char* const kDayCues[] = {"today's total", "total today", "total for today", "totals for today", "today's log", "today now",
                                           "so far today", "today so far", "day so far", "day total", "day's total", "logged today",
-                                          "total so far", "totals so far", "today is ", "today (", "today:", "today you", "today stands"};
+                                          "total so far", "totals so far"};
+// These say only "today": with a target word before them they read that target ("Your budget today is 918 kcal").
+constexpr const char* const kLooseDayCues[] = {"today is ", "today (", "today:", "today you", "today stands"};
 
 struct DayFigures {
   const Tok* kcal = nullptr;
@@ -648,17 +658,32 @@ bool boundBefore(const std::vector<Tok>& toks, size_t start, DayFigures& d) {
   return d.kcal || d.protein;
 }
 
-bool bindDayFigures(const std::string& low, const std::vector<Tok>& toks, DayFigures& d) {
-  for (const char* cue : kDayCues) {
-    const size_t pos = low.find(cue);
-    if (pos == std::string::npos) continue;
-    const size_t start = tokensOf(low.substr(0, pos)).size();
-    // "Lunch today is 650 kcal", "the 800 kcal left today: 795 kcal in total".
-    if (start > 0 && (mealWord(toks[start - 1].word) || oneOf(toks[start - 1].word, {"left", "remaining"}))) continue;
-    d.cue = start;
-    if (boundAfter(toks, tokensOf(low.substr(0, pos + std::string(cue).size())).size(), d)) return true;
-    if (!namesAMeal(toks) && boundBefore(toks, start, d)) return true;
+bool bindAtCue(const std::string& low, const std::vector<Tok>& toks, const char* cue, DayFigures& d) {
+  const size_t pos = low.find(cue);
+  if (pos == std::string::npos) return false;
+  const size_t start = tokensOf(low.substr(0, pos)).size();
+  // "Lunch today is 650 kcal", "the 800 kcal left today: 795 kcal in total".
+  if (start > 0 && (mealWord(toks[start - 1].word) || oneOf(toks[start - 1].word, {"left", "remaining"}))) return false;
+  d.cue = start;
+  if (boundAfter(toks, tokensOf(low.substr(0, pos + std::string(cue).size())).size(), d)) return true;
+  return !namesAMeal(toks) && boundBefore(toks, start, d);
+}
+
+// "Your budget for today is 2,100 kcal": a target word reached before any figure.
+bool opensWithATarget(const std::vector<Tok>& toks) {
+  for (const Tok& t : toks) {
+    if (t.number) return false;
+    if (oneOf(t.word, {"target", "targets", "goal", "goals", "budget", "allowance", "limit", "quota", "ceiling", "floor"})) return true;
   }
+  return false;
+}
+
+bool bindDayFigures(const std::string& low, const std::vector<Tok>& toks, DayFigures& d) {
+  for (const char* cue : kDayCues)
+    if (bindAtCue(low, toks, cue, d)) return true;
+  if (opensWithATarget(toks)) return false;
+  for (const char* cue : kLooseDayCues)
+    if (bindAtCue(low, toks, cue, d)) return true;
   return false;
 }
 
