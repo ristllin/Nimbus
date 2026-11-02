@@ -760,6 +760,9 @@ static void test_empty_turn_never_reads_as_done() {
   TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
   TEST_ASSERT_EQUAL_STRING(agent::kEmptyAnswer, r.delivered[0].second.c_str());
   TEST_ASSERT_EQUAL(0, (int)r.turnCompletes.size());
+  // The words themselves: neither of the two lines can be a bare "Done."
+  for (const char* line : {agent::kEmptyAnswer, agent::kNoMessageAfterAction})
+    TEST_ASSERT_TRUE_MESSAGE(std::string(line).find("Done") == std::string::npos, line);
 }
 
 // The counter-tests: scheduled and background turns stay silent (the owner's complaint

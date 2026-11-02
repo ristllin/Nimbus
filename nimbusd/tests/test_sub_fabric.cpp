@@ -630,7 +630,7 @@ static void testReplyLessTurnIsNeverDone(ndtest::Ctx& c) {
 // request carries the check, and the owner hears the answer that came back. The single-shot
 // leg above never reaches this path.
 static void testEmptyLoopAnswerGetsOneCorrection(ndtest::Ctx& c) {
-  std::printf("  -- (g2) on the tool loop an empty answer gets one correction, a routine none --\n");
+  std::printf("  -- (g2) on the tool loop an empty answer gets one correction --\n");
   auto round = [](const std::string& reply) {
     Exchange e;
     e.body = "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"tool_calls\":[{\"id\":\"c1\",\"function\":"

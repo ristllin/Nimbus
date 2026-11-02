@@ -93,8 +93,11 @@ fan-out costs that memory only transiently.
 **A refused spawn moves on before anyone hears about it.** A provider that refuses
 a dispatch in a way that surely started nothing hands the work to the next open sub
 provider, at most twice, and the ack names the provider and model that took it. A
-task that may have run (a timeout, an answer that could not be read) is never started
-a second time, and a connector or file task stays where its connector or file lives.
+task that may have run (a timeout, a 502 or 504 from a gateway that lost the run, an
+answer that came back empty or could not be read) is never started again, on the first
+attempt or a later one, and the owner hears about that run. If nothing takes the work,
+the owner hears the first refusal and the wait it named. A connector or file task stays
+where its connector or file lives.
 A Mistral sub on a model that refuses the built-in tools (`mistral-large-4-0`) runs on
 `mistral-medium-latest` with those tools, and its reply says so.
 

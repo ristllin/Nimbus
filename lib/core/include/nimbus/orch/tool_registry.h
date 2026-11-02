@@ -111,7 +111,7 @@ struct Tool {
   bool adminOnly = false;
   // Comma-separated argument names the handler reads that the schema does not offer the
   // model (an alias, a first-party flag). They are read, so they are not "unknown".
-  std::string alsoReads;
+  std::string alsoReads{};
 };
 
 class ToolRegistry {

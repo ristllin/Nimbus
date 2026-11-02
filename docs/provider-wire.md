@@ -199,6 +199,10 @@ serves:
   never an identical one; still cut, it fails as a Cut, and the fabric takes over
   (below). Thinking is never disabled (a 400 on Opus 5.5 and Fable 5.1); effort is
   the lever.
+- **A long answer in the round's text**: Mistral and Z.ai can write the answer as the
+  round's text with only a pointer or a digest of it in `orch_turn`, and only `reply` is
+  delivered. Text of at least 1,200 bytes and at least twice the reply replaces it; the
+  turn's other fields stay.
 - **Mistral built-ins**: chat/completions forbids tool_choice forcing alongside
   the Studio built-in connectors, so loop rounds drop the built-ins and the
   registry's `web.search` covers the gap. (The single-shot Conversations path
@@ -478,8 +482,9 @@ Z.ai has not answered by then, the turn fails over to the next provider straight
 away (no same-host retry) and the notice says Z.ai did not answer in time.
 
 A GLM head runs the same tool loop as the other providers, and Z.ai is a host of
-the mid-turn failover. An answer it sends as text instead of an `orch_turn` call is
-delivered as the reply. The compaction fold is a plain completion with no response
+the mid-turn failover. A model that refuses `reasoning_effort` gets one retry without
+it, remembered for this boot, on the loop and the single shot alike. An answer it sends
+as text instead of an `orch_turn` call is delivered as the reply. The compaction fold is a plain completion with no response
 format: its reply is the summary.
 
 ## Cumulo Nimbus router

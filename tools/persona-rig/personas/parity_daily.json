@@ -422,10 +422,43 @@
                 "no_error_reply": true
               },
               {
+                "reply_regex": "(?i)\\bmon(day)?\\b"
+              },
+              {
+                "reply_regex": "(?i)\\btue(s|sday)?\\b"
+              },
+              {
+                "reply_regex": "(?i)\\bwed(s|nesday)?\\b"
+              },
+              {
+                "reply_regex": "(?i)\\bthu(r|rs|rsday)?\\b"
+              },
+              {
+                "reply_regex": "(?i)\\bfri(day)?\\b"
+              },
+              {
+                "reply_regex": "(?i)\\bsat(urday)?\\b"
+              },
+              {
                 "reply_regex": "(?i)\\bsun(day)?\\b"
               },
               {
                 "reply_regex": "(?i)packing"
+              },
+              {
+                "reply_regex": "(?s)^.{2500,}$"
+              },
+              {
+                "reply_regex": "(?is)(?:.*?\\b\\d+(?:[.,]\\d+)?\\s*(?:km|kilomet|mi\\b|miles?)){7}"
+              },
+              {
+                "reply_regex": "(?is)(?:.*?\\b(?:weather|rain|wind|windy|cloud|forecast|storm|mist|snow|sun|showers?|fog)\\b){7}"
+              },
+              {
+                "reply_not_regex": "(?i)((written|set|laid|spelled) out[^.\\n]{0,30}\\babove\\b|see above|(guide|details?|plan) above)"
+              },
+              {
+                "log_not_regex": "down -> failover"
               },
               {
                 "log_not_regex": "cut at the output limit"
@@ -433,7 +466,8 @@
               {
                 "log_not_regex": "cut \\("
               }
-            ]
+            ],
+            "description": "A real guide reached the owner, written by this row's own model: every day named, a distance and a weather line per day, a packing list, and enough of it to be a guide. Both days and the word packing are in the prompt, so a restatement or a stub must not pass, and a reply that points at text it never sent must not either."
           }
         ]
       },

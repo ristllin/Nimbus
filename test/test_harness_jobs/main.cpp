@@ -3173,14 +3173,11 @@ int main(int, char**) {
   RUN_TEST(test_cum830_fresh_results_stay_with_the_chat_that_started_them);
   RUN_TEST(test_cum830_the_raw_fallback_delivers_each_chats_results_to_it);
   RUN_TEST(test_cum830_session_rows_name_who_started_them);
-<<<<<<< HEAD
   RUN_TEST(test_unwired_host_fails_closed);
-=======
   RUN_TEST(test_a_moved_spawn_that_may_have_run_starts_no_third_copy);
   RUN_TEST(test_the_first_refusal_keeps_its_own_window);
   RUN_TEST(test_a_mistral_sub_that_ran_and_said_nothing_does_not_move);
   RUN_TEST(test_a_file_task_stays_on_its_provider);
->>>>>>> f82534fa (lane MG wip: fix pass: a run that may have billed never starts another copy, a tool's own arguments are never reported unread, open schemas flag nothing, a long answer in round text reaches the owner, the wiring tests)
   UNITY_END();
   return 0;
 }
