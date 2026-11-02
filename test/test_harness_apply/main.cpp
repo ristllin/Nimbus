@@ -1543,6 +1543,8 @@ static void test_the_shortened_note_never_goes_out_alone() {
     Rec r;
     ApplyDeps d = makeDeps(r, /*tts=*/true);
     ApplyState st = makeState(r, scheduled != 0);
+    agent::ClaimCheck cc;   // the landed speak is recorded in the effects, so the turn counts as acted
+    st.claims = &cc;
     bool spawned = false;
     agent::applyTurn(turnWithDevice(json.c_str()), "1001", d, st, spawned);
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.spoken.size(), scheduled ? "scheduled" : "reply-less");
