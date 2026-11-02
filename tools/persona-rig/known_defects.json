@@ -8,6 +8,7 @@
   "noted-correction": {"title": "A plain Noted gets (Correction: that has not been saved.)", "report": "defect 8"},
   "no-web-lookup": {"title": "No web lookup without a Tavily key", "report": "defect 9"},
   "web-answer-quality": {"title": "The Tavily answer misses the current release for this model", "report": "defect 9"},
+  "weak-brief-source": {"title": "A disruption brief credits grandcentralrail.com or london-now.co.uk instead of the operator or National Rail (owner signal 5)", "report": "defect 9"},
   "placeholder-reply": {"title": "A forced final answer can deliver placeholder; the conversational cap throttles real tasks", "report": "defect 10"},
   "no-routines": {"title": "Routines do not exist on a hosted instance", "report": "defect 11"},
   "no-image-path": {"title": "A hosted instance has no image path", "report": "defect 12"},

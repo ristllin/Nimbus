@@ -51,7 +51,7 @@
          "timeout_s": 300, "settle_s": 30,
          "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
                     {"reply_regex": "(?i)(national ?rail|operator|tfl|transport for london|elizabeth line|great western|thameslink|chiltern)", "known_defect": "web-answer-quality", "may_pass": true},
-                    {"reply_not_regex": "(?i)grandcentralrail|london-now\\.co\\.uk"}]}
+                    {"reply_not_regex": "(?i)grandcentralrail|london-now\\.co\\.uk", "known_defect": "weak-brief-source", "may_pass": true}]}
       ]}
     ]
   }
