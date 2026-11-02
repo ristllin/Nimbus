@@ -548,9 +548,17 @@ class JobEngine {
   std::string nextSubProvider(const std::vector<std::string>& tried, std::string* closedWhy = nullptr) const;
   bool movedOffKeyless(const PendingSpawn& p, const std::string& host, std::string& provider, std::string& model,
                        ManagedAgentAdapter*& a);
-  // A dispatch refused with `err` moves to the next open sub provider (CUM-887).
-  bool spawnMoved(const PendingSpawn& p, FabricErr err, std::string& provider, std::string& model, Directive& d,
-                  char* jobId, nimbus::orch::ConnectorGrant grant);
+  // A dispatch refused with `err` moves to the next open sub provider (CUM-887). On
+  // success the attempt's provider, model and jobId name the run that started.
+  struct SpawnAttempt {
+    std::string& provider;
+    std::string& model;
+    Directive& d;
+    char* jobId;
+    nimbus::orch::ConnectorGrant grant;
+  };
+  bool spawnMayMove(const PendingSpawn& p, FabricErr err) const;
+  bool spawnMoved(const PendingSpawn& p, FabricErr err, SpawnAttempt& at);
   bool subProviderRuns(const std::string& provider, std::string* closedWhy) const;
   uint32_t nowMs() const { return d_.platform.nowMs ? d_.platform.nowMs() : 0; }
   uint32_t freeHeap() const { return d_.platform.freeHeap ? d_.platform.freeHeap() : 0xFFFFFFFFu; }

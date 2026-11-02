@@ -1250,33 +1250,35 @@ bool JobEngine::spillWholeReply(const orch::JobRecord& rec, const std::string& w
 // starts. A connector lives on its provider and a file task runs where its file can come
 // back, so those two stay. At most two moves; on success `provider`, `model` and `jobId`
 // name the run that started.
-bool JobEngine::spawnMoved(const PendingSpawn& p, FabricErr err, std::string& provider, std::string& model,
-                           Directive& d, char* jobId, orch::ConnectorGrant grant) {
+bool JobEngine::spawnMayMove(const PendingSpawn& p, FabricErr err) const {
   if (err == FabricErr::Timeout || err == FabricErr::ParseFail) return false;
   if (!orch::paidCallAllowed(orch::SpendSeam::Sub)) return false;   // the ceiling refuses every provider alike
-  if (!connectorHost(p).empty() || (p.skill[0] && nimbus::orch::isFileSkill(p.skill))) return false;
-  std::vector<std::string> tried{provider};
+  return connectorHost(p).empty() && !(p.skill[0] && nimbus::orch::isFileSkill(p.skill));
+}
+
+bool JobEngine::spawnMoved(const PendingSpawn& p, FabricErr err, SpawnAttempt& at) {
+  if (!spawnMayMove(p, err)) return false;
+  std::vector<std::string> tried{at.provider};
   for (int moves = 0; moves < 2; moves++) {
     const std::string alt = nextSubProvider(tried);
     if (alt.empty()) return false;
     tried.push_back(alt);
     ManagedAgentAdapter* a = d_.fabric->adapterFor(alt.c_str());
-    if (!a) continue;
     std::string altModel;
-    if (!coerceSpawnModel(p, alt, altModel)) continue;
-    keepUnseenRun(d.tag, p, model);   // lane QW4 round 3: a run the refused attempt could not stop
-    hlog::logf("orchestrator: spawn on %s failed %d - moves to %s/%s", provider.c_str(), (int)err, alt.c_str(),
+    if (!a || !coerceSpawnModel(p, alt, altModel)) continue;
+    keepUnseenRun(at.d.tag, p, at.model);   // lane QW4 round 3: a run the refused attempt could not stop
+    hlog::logf("orchestrator: spawn on %s failed %d - moves to %s/%s", at.provider.c_str(), (int)err, alt.c_str(),
                altModel.c_str());
-    d.model = altModel.length() ? altModel.c_str() : nullptr;
+    at.d.model = altModel.length() ? altModel.c_str() : nullptr;
     FabricErr next;
     {
-      const orch::ConnectorGrantScope scope(grant);
-      next = a->dispatch(d, jobId);
+      const orch::ConnectorGrantScope scope(at.grant);
+      next = a->dispatch(at.d, at.jobId);
     }
     if (next != FabricErr::Ok) continue;
-    ledgerSwapped(p, provider + " refused it; runs on " + alt + "/" + altModel);
-    provider = alt;
-    model = altModel;
+    ledgerSwapped(p, at.provider + " refused it; runs on " + alt + "/" + altModel);
+    at.provider = alt;
+    at.model = altModel;
     return true;
   }
   return false;
@@ -1379,7 +1381,8 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   if (err != FabricErr::Ok) {
     // CUM-887: a refusal that surely started nothing moves the work on. If nothing takes
     // it, the first refusal below is the one the owner hears.
-    if (spawnMoved(p, err, provider, model, d, jobId, grant)) {
+    SpawnAttempt attempt{provider, model, d, jobId, grant};
+    if (spawnMoved(p, err, attempt)) {
       err = FabricErr::Ok;
       a = d_.fabric->adapterFor(provider.c_str());
     }

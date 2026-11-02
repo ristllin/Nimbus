@@ -344,20 +344,27 @@ static nimbus::orch::HeadStep runCustomHead(CustomHead& h) {
 static std::string zaiSameName(const std::string& s2) { return s2; }
 static const ChatDialect kZaiDialect{zaiSameName, zaiSameName, zaiSameName};
 
-static bool zaiLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& tr,
-                        const layout::PromptParts& p, const HeadTools& ht, bool allowTools, uint32_t maxTokens,
-                        std::string& body, std::string& err) {
+struct ZaiRound {
+  const nimbus::orch::Transcript& tr;
+  const layout::PromptParts& parts;
+  const HeadTools& ht;
+  bool allowTools;
+  uint32_t maxTokens;
+};
+static bool zaiLoopBody(const ProviderDeps& pd, const ZaiRound& a, std::string& body, std::string& err) {
   JsonDocument req = wire::makeDoc(pd);
   req["model"] = s(pd.customModel);
-  if (maxTokens) req["max_tokens"] = maxTokens;
+  if (a.maxTokens) req["max_tokens"] = a.maxTokens;
   const std::string effort = s(pd.customReasoningEffort);
   if (!effort.empty()) req["reasoning_effort"] = effort;
   JsonArray msgs = req["messages"].to<JsonArray>();
-  renderChatMessages(tr, msgs, p.stat + p.shelf, /*showingImages=*/false, p.split ? &p : nullptr, /*sees=*/false,
-                     kZaiDialect);
+  const layout::PromptParts& p = a.parts;
+  const std::string sysText = p.stat + p.shelf;
+  renderChatMessages(ChatRender{a.tr, sysText, /*showingImages=*/false, p.split ? &p : nullptr, /*sees=*/false, kZaiDialect},
+                     msgs);
   seedChatUserMessage(msgs, p, nullptr);
-  if (!putChatTools(pd, req["tools"].to<JsonArray>(), &ht, kZaiDialect, /*onlyFinal=*/!allowTools, err)) return false;
-  if (allowTools) {
+  if (!putChatTools(pd, req["tools"].to<JsonArray>(), &a.ht, kZaiDialect, /*onlyFinal=*/!a.allowTools, err)) return false;
+  if (a.allowTools) {
     req["tool_choice"] = "required";
   } else {
     JsonObject tc = req["tool_choice"].to<JsonObject>();
@@ -396,6 +403,26 @@ static bool zaiRefusedRound(const JsonDocument& resp, nimbus::orch::HeadStep& ou
   return true;
 }
 
+// A 200's bookkeeping and reading. True when the round is settled (an answer, a tool round,
+// or a refusal); false when it was cut, with `cutWhy`.
+static bool zaiRoundDone(const JsonDocument& resp, nimbus::orch::TokenUsage* usage, nimbus::orch::HeadStep& out,
+                         std::string& cutWhy) {
+  if (usage) *usage += nimbus::orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
+  nimbus::orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
+  if (zaiRefusedRound(resp, out)) return true;
+  if (!readChatRound(resp, out, cutWhy, kZaiDialect)) return false;
+  zaiFinishFromText(out);
+  return true;
+}
+
+static void zaiHttpFailure(int code, const JsonDocument& resp, nimbus::orch::HeadStep& out) {
+  const char* em = resp["error"]["message"] | "";
+  if (!em[0]) em = resp["message"] | "";
+  const std::string e = wire::httpErrLine("chat", code, em);
+  wire::httpFailure(out, code, e, e);
+  hlog::logf("orchTurn(zai-loop): %s", e.c_str());
+}
+
 nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& instructions,
                                      const HeadTools& ht, nimbus::orch::TokenUsage* usage,
                                      nimbus::orch::Transcript& tr) {
@@ -424,7 +451,7 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
       out = orch::HeadStep();
       const uint32_t maxTokens = attempt ? cap.retryTokens : cap.maxTokens;
       std::string body;
-      if (!zaiLoopBody(pd, tr, round, ht, allowTools, maxTokens, body, out.error)) {
+      if (!zaiLoopBody(pd, ZaiRound{tr, round, ht, allowTools, maxTokens}, body, out.error)) {
         out.ok = false;
         out.kind = orch::StepErr::BadRequest;
         return out;
@@ -434,22 +461,9 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
       const int code = custRequest(pd, "POST", "/v1/chat/completions", std::move(body), /*anthropicAuth=*/false, resp,
                                    filter, roundMs);
       if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
-      if (code != 200) {
-        const char* em = resp["error"]["message"] | "";
-        if (!em[0]) em = resp["message"] | "";
-        const std::string e = wire::httpErrLine("chat", code, em);
-        wire::httpFailure(out, code, e, e);
-        hlog::logf("orchTurn(zai-loop): %s", e.c_str());
-        return out;
-      }
-      if (usage) *usage += orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
-      orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
-      if (zaiRefusedRound(resp, out)) return out;
+      if (code != 200) { zaiHttpFailure(code, resp, out); return out; }
       std::string cutWhy;
-      if (readChatRound(resp, out, cutWhy, kZaiDialect)) {
-        zaiFinishFromText(out);
-        return out;
-      }
+      if (zaiRoundDone(resp, usage, out, cutWhy)) return out;
       if (attempt == 0 && cap.hasRetry()) {
         hlog::logf("orchTurn(zai-loop): cut (%s) at %u tokens - one retry with %u", cutWhy.c_str(),
                    (unsigned)maxTokens, (unsigned)cap.retryTokens);
@@ -462,14 +476,19 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
   };
 }
 
-static bool runZaiLoop(const ProviderDeps& pd, std::string& convId, const std::string& instructions,
-                       const std::string& inputs, std::string& outJson, std::string& err, const HeadTools& ht,
+struct ZaiTurn {
+  const std::string& instructions;
+  const std::string& inputs;
+  std::string& outJson;
+  std::string& err;
+};
+static bool runZaiLoop(const ProviderDeps& pd, std::string& convId, const ZaiTurn& t, const HeadTools& ht,
                        nimbus::orch::TokenUsage* usage) {
   namespace orch = nimbus::orch;
   orch::Transcript tr;
-  tr.addUser(inputs);
+  tr.addUser(t.inputs);
   const imageparts::LoopImages photos(tr);   // a photo reads as its transcription: GLM here is blind
-  const orch::HeadStepFn inner = zaiLoopStep(pd, instructions, ht, usage, tr);
+  const orch::HeadStepFn inner = zaiLoopStep(pd, t.instructions, ht, usage, tr);
   const ResendCtx resend{&pd, &ht.cfg, &inner, "orchTurn(zai-loop)"};
   orch::HeadLoopHooks hooks;
   hooks.step     = resendUnsentOnce(&resend);
@@ -485,8 +504,8 @@ static bool runZaiLoop(const ProviderDeps& pd, std::string& convId, const std::s
   hlog::logf("orchTurn(zai-loop): rounds=%d cap=%s ok=%d heap=%u", res.rounds, res.capReason.c_str(), (int)res.ok,
              (unsigned)(pd.freeHeap ? pd.freeHeap() : 0));
   if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));
-  if (!res.ok) return wire::loopFailed(res, outJson, err);
-  outJson = res.finalTurn;
+  if (!res.ok) return wire::loopFailed(res, t.outJson, t.err);
+  t.outJson = res.finalTurn;
   convId  = "chat";
   return true;
 }
@@ -516,7 +535,7 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
     return false;
   }
   if (pd.customToolLoop && tools && tools->dispatch && pd.toolLoopOn && pd.toolLoopOn())
-    return runZaiLoop(pd, convId, instructions, inputs, outJson, err, *tools, usage);
+    return runZaiLoop(pd, convId, ZaiTurn{instructions, inputs, outJson, err}, *tools, usage);
 
   JsonDocument filter;
   JsonObject ch = filter["choices"].add<JsonObject>();

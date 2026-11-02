@@ -21,11 +21,19 @@ struct ChatDialect {
   std::string (*registryName)(const std::string& name);  // wire name -> registry name
 };
 
+// One request's view of the transcript.
+struct ChatRender {
+  const nimbus::orch::Transcript& tr;
+  const std::string& sysText;
+  bool showingImages;              // the seed shows the turn's photos (else their transcriptions)
+  const layout::PromptParts* parts;   // a split prompt, with its history; nullptr = flat
+  bool sees;                       // image.look's photos ride this request
+  const ChatDialect& dialect;
+};
+
 // system (per-round instructions), the history, the user seed, then per tool-carrying
 // round an assistant message answered by role:"tool" messages.
-void renderChatMessages(const nimbus::orch::Transcript& tr, ArduinoJson::JsonArray msgs,
-                        const std::string& sysText, bool showingImages, const layout::PromptParts* parts,
-                        bool sees, const ChatDialect& dialect);
+void renderChatMessages(const ChatRender& r, ArduinoJson::JsonArray msgs);
 
 // The tools array: orch_turn first (shapes only, the field docs ride the prompt), then
 // every registry tool under its wire name. `onlyFinal` leaves just orch_turn: a forced

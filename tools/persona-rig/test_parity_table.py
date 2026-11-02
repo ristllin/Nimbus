@@ -15,7 +15,9 @@ def main() -> int:
         root = Path(tmp)
         (root / "parity-a").mkdir()
         (root / "parity-a" / "summary.json").write_text(
-            json.dumps({"scenarios": [{"id": "chat", "pass": True, "judge": {"min_score": 0.9}}, {"id": "web", "pass": False}]})
+            json.dumps(
+                {"scenarios": [{"id": "chat", "pass": True, "judge": {"min_score": 0.9}}, {"id": "web", "pass": False}]}
+            )
         )
         (root / "parity-b").mkdir()
         (root / "parity-b" / "summary.json").write_text(json.dumps({"scenarios": [{"id": "chat", "pass": False}]}))

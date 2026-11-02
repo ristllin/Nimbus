@@ -295,37 +295,75 @@ void chatRoundFilter(JsonDocument& filter) {
 // images (a user message after tool messages is accepted: probed live 27 Oct on
 // mistral-small-latest and mistral-large-latest); a blind host reads a caption's
 // answer in the tool message instead.
-void renderChatMessages(const nimbus::orch::Transcript& tr, ArduinoJson::JsonArray msgs,
-                        const std::string& sysText, bool showingImages, const layout::PromptParts* parts,
-                        bool sees, const ChatDialect& dialect) {
-  namespace orch = nimbus::orch;
-  using Kind = orch::TranscriptItem::Kind;
+// The system message, the history messages and the turn's seeded user message.
+static void renderChatHead(const ChatRender& r, ArduinoJson::JsonArray msgs) {
+  using Kind = nimbus::orch::TranscriptItem::Kind;
   {
     JsonObject s = msgs.add<JsonObject>();
     s["role"] = "system";
-    wire::putFieldStr(s["content"], parts ? (parts->stat + parts->shelf) : sysText, "the system prompt");
+    wire::putFieldStr(s["content"], r.parts ? (r.parts->stat + r.parts->shelf) : r.sysText, "the system prompt");
   }
   // R3: the history as real messages between the system and this turn's own
   // (Mistral caches a matching prefix on its own; the API refuses an empty
   // text, so an empty history message carries a placeholder).
-  if (parts) {
-    for (const layout::Msg& m : parts->history) {
+  if (r.parts) {
+    for (const layout::Msg& m : r.parts->history) {
       JsonObject o = msgs.add<JsonObject>();
       o["role"] = m.user ? "user" : "assistant";
       wire::putFieldStr(o["content"], m.text.empty() ? "(empty)" : m.text, "a history message");
     }
   }
-  const auto& e = tr.entries();
-  imageparts::LookRender looks(tr, sees, imageparts::Dialect::MistralChat);
-  for (const auto& it : e) {
+  for (const auto& it : r.tr.entries()) {
     if (it.kind != Kind::User) continue;
     JsonObject u = msgs.add<JsonObject>();
     u["role"] = "user";
     // A request that does not show the turn's photos reads their machine
     // transcriptions in place of their labels (R1).
-    wire::putFieldStr(u["content"], imageparts::userText(tr, it.text, showingImages), "the user message");
+    wire::putFieldStr(u["content"], imageparts::userText(r.tr, it.text, r.showingImages), "the user message");
     break;
   }
+}
+
+// One tool-carrying round: the assistant message with its calls, then the tool messages.
+static void renderChatRound(const ChatRender& r, ArduinoJson::JsonArray msgs, imageparts::LookRender& looks,
+                            const std::string& prose, const std::vector<size_t>& calls,
+                            const std::vector<size_t>& results) {
+  const auto& e = r.tr.entries();
+  JsonObject a = msgs.add<JsonObject>();
+  a["role"] = "assistant";
+  wire::putModelStr(a["content"], prose, "replayed prose");   // "" is valid alongside tool_calls
+  JsonArray tc = a["tool_calls"].to<JsonArray>();
+  for (size_t ci : calls) {
+    JsonObject t = tc.add<JsonObject>();
+    t["id"]   = r.dialect.callId(e[ci].id);
+    t["type"] = "function";
+    JsonObject fn = t["function"].to<JsonObject>();
+    fn["name"]      = r.dialect.wireName(e[ci].name);
+    wire::putModelStr(fn["arguments"], e[ci].text, e[ci].name.c_str());
+  }
+  for (size_t ri : results) {
+    JsonObject m = msgs.add<JsonObject>();
+    m["role"]         = "tool";
+    m["tool_call_id"] = r.dialect.callId(e[ri].id);
+    m["name"]         = r.dialect.wireName(e[ri].name);
+    std::string lookWords;
+    size_t j = 0;
+    if (looks.render(e[ri], lookWords, j) != imageparts::LookRender::Show::NotALook) {
+      wire::putModelStr(m["content"], lookWords, e[ri].name.c_str());
+      continue;
+    }
+    wire::putModelStr(m["content"], e[ri].isError ? (std::string("ERROR: ") + e[ri].text) : e[ri].text,
+                      e[ri].name.c_str());
+  }
+  looks.putMessage(msgs);
+}
+
+void renderChatMessages(const ChatRender& r, ArduinoJson::JsonArray msgs) {
+  namespace orch = nimbus::orch;
+  using Kind = orch::TranscriptItem::Kind;
+  renderChatHead(r, msgs);
+  const auto& e = r.tr.entries();
+  imageparts::LookRender looks(r.tr, r.sees, imageparts::Dialect::MistralChat);
   size_t i = 0;
   while (i < e.size()) {
     if (e[i].kind == Kind::User) { i++; continue; }
@@ -343,35 +381,7 @@ void renderChatMessages(const nimbus::orch::Transcript& tr, ArduinoJson::JsonArr
         default: break;
       }
     }
-    if (calls.empty()) continue;
-    JsonObject a = msgs.add<JsonObject>();
-    a["role"] = "assistant";
-    wire::putModelStr(a["content"], prose, "replayed prose");   // "" is valid alongside tool_calls
-    JsonArray tc = a["tool_calls"].to<JsonArray>();
-    for (size_t ci : calls) {
-      JsonObject t = tc.add<JsonObject>();
-      t["id"]   = dialect.callId(e[ci].id);
-      t["type"] = "function";
-      JsonObject fn = t["function"].to<JsonObject>();
-      fn["name"]      = dialect.wireName(e[ci].name);
-      wire::putModelStr(fn["arguments"], e[ci].text, e[ci].name.c_str());
-    }
-    for (size_t ri : results) {
-      JsonObject m = msgs.add<JsonObject>();
-      m["role"]         = "tool";
-      m["tool_call_id"] = dialect.callId(e[ri].id);
-      m["name"]         = dialect.wireName(e[ri].name);
-      std::string lookWords;
-      size_t j = 0;
-      if (looks.render(e[ri], lookWords, j) != imageparts::LookRender::Show::NotALook) {
-        wire::putModelStr(m["content"], lookWords, e[ri].name.c_str());
-        continue;
-      }
-      wire::putModelStr(m["content"],
-                        e[ri].isError ? (std::string("ERROR: ") + e[ri].text) : e[ri].text,
-                        e[ri].name.c_str());
-    }
-    looks.putMessage(msgs);
+    if (!calls.empty()) renderChatRound(r, msgs, looks, prose, calls, results);
   }
 }
 
@@ -500,7 +510,8 @@ static bool misLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& 
     // the user seed. R3: prompt_cache_key keeps one chat's turns on one cache.
     const layout::PromptParts& p = *a.round;
     layout::putCacheKey(req.as<ArduinoJson::JsonObject>(), p);
-    renderChatMessages(tr, msgs, p.stat + p.shelf, a.imgs != nullptr, p.split ? &p : nullptr, a.sees, kMistralDialect);
+    const std::string sysText = p.stat + p.shelf;
+    renderChatMessages(ChatRender{tr, sysText, a.imgs != nullptr, p.split ? &p : nullptr, a.sees, kMistralDialect}, msgs);
     seedChatUserMessage(msgs, p, a.imgs);
   }
   if (!putChatTools(pd, req["tools"].to<JsonArray>(), a.ht, kMistralDialect, false, err)) return false;
@@ -862,38 +873,64 @@ static bool mistralHeadBody(const ProviderDeps& pd, const std::string& convId,
 // shape and left reply empty, 2 of 2 live, and mistral-large-4-0 spent 4,194 tokens
 // thinking about a 1 KB summary. So the fold is a plain chat completion: no schema, no
 // connectors, the table's effort, and its reply IS the summary.
+struct FoldRequest {
+  const std::string& model;
+  const std::string& inputs;
+  uint32_t maxTokens;
+  const char* effort;
+};
+static bool mistralFoldBody(const ProviderDeps& pd, const FoldRequest& f, std::string& body, std::string& err) {
+  JsonDocument req = makeDoc(pd);
+  req["model"] = f.model;
+  if (f.maxTokens) req["max_tokens"] = f.maxTokens;
+  if (*f.effort) req["reasoning_effort"] = f.effort;
+  JsonArray msgs = req["messages"].to<JsonArray>();
+  JsonObject sys = msgs.add<JsonObject>();
+  sys["role"] = "system";
+  sys["content"] = nimbus::orch::ORCH_COMPACT_PROMPT;
+  JsonObject u = msgs.add<JsonObject>();
+  u["role"] = "user";
+  wire::putFieldStr(u["content"], f.inputs, "the conversation to summarize");
+  return wire::serializeChecked(req, body, err) && bodyWithinBudget(body, err);
+}
+
+static bool isLengthCut(const JsonDocument& resp) {
+  const std::string fr = resp["choices"][0]["finish_reason"] | "";
+  return fr == "length" || fr == "model_length";
+}
+
+// One fold request; the status (0 = no answer, `err` says why).
+static int mistralFoldRequest(const ProviderDeps& pd, const FoldRequest& f, JsonDocument& resp, HeaderList& quota,
+                              std::string& err) {
+  JsonDocument filter;
+  chatRoundFilter(filter);
+  keepMistralError(filter);
+  std::string body;
+  if (!mistralFoldBody(pd, f, body, err)) return 0;
+  const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
+  const int code = mistralRequest(pd, "POST", "/v1/chat/completions", std::move(body), resp, filter,
+                                  MISTRAL_TIMEOUT_MS, &quota);
+  if (code <= 0) err = wire::headTransportError(pd, t0, MISTRAL_TIMEOUT_MS);
+  return code;
+}
+
+static bool foldRefusedEffort(int code, const JsonDocument& resp) {
+  return code != 200 && misRefusedEffort(code, mistralErrText(resp) + " " + (const char*)(resp["code"] | ""));
+}
+
 static bool mistralFold(const ProviderDeps& pd, const std::string& inputs, std::string& outJson,
                         std::string& err, nimbus::orch::TokenUsage* usage) {
   const std::string model = pd.orchModel ? pd.orchModel("mistral") : std::string();
   const OutputCap cap = outputCapFor("mistral", model, RoundKind::Fold, kMistralRoundMs);
-  JsonDocument filter;
-  chatRoundFilter(filter);
-  keepMistralError(filter);
   bool effortRetried = false;
   for (int attempt = 0; attempt < 2; ++attempt) {
-    JsonDocument req = makeDoc(pd);
-    req["model"] = model;
     const uint32_t maxTokens = attempt ? cap.retryTokens : cap.maxTokens;
-    if (maxTokens) req["max_tokens"] = maxTokens;
     const char* effort = misEffortRefusedBefore(model) ? "" : cap.effort;
-    if (*effort) req["reasoning_effort"] = effort;
-    JsonArray msgs = req["messages"].to<JsonArray>();
-    JsonObject sys = msgs.add<JsonObject>();
-    sys["role"] = "system";
-    sys["content"] = nimbus::orch::ORCH_COMPACT_PROMPT;
-    JsonObject u = msgs.add<JsonObject>();
-    u["role"] = "user";
-    wire::putFieldStr(u["content"], inputs, "the conversation to summarize");
-    std::string body;
-    if (!wire::serializeChecked(req, body, err) || !bodyWithinBudget(body, err)) return false;
     JsonDocument resp = makeDoc(pd);
     HeaderList quota;
-    const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
-    const int code = mistralRequest(pd, "POST", "/v1/chat/completions", std::move(body), resp, filter,
-                                    MISTRAL_TIMEOUT_MS, &quota);
-    if (code <= 0) { err = wire::headTransportError(pd, t0, MISTRAL_TIMEOUT_MS); return false; }
-    if (code != 200 && *effort && !effortRetried &&
-        misRefusedEffort(code, mistralErrText(resp) + " " + (const char*)(resp["code"] | ""))) {
+    const int code = mistralFoldRequest(pd, FoldRequest{model, inputs, maxTokens, effort}, resp, quota, err);
+    if (code <= 0) return false;
+    if (!effortRetried && *effort && foldRefusedEffort(code, resp)) {
       misRememberNoEffort(model);
       effortRetried = true;
       --attempt;
@@ -906,15 +943,14 @@ static bool mistralFold(const ProviderDeps& pd, const std::string& inputs, std::
     }
     if (usage) *usage += nimbus::orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
     nimbus::orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
-    const std::string fr = resp["choices"][0]["finish_reason"] | "";
-    if ((fr == "length" || fr == "model_length") && attempt == 0 && cap.hasRetry()) continue;
-    if (fr == "length" || fr == "model_length") {
+    if (isLengthCut(resp)) {
+      if (attempt == 0 && cap.hasRetry()) continue;
       err = "cut at the output limit (" + std::to_string(maxTokens) + " tokens)";
       return false;
     }
     outJson = nimbus::orch::chatContentText(resp["choices"][0]["message"]["content"]);
-    if (outJson.empty()) { err = "the fold came back with no text"; return false; }
-    return true;
+    if (outJson.empty()) err = "the fold came back with no text";
+    return !outJson.empty();
   }
   return false;
 }
