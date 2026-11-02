@@ -1100,8 +1100,16 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
                                      const std::string& instructions,
                                      const HeadTools& ht,
                                      nimbus::orch::TokenUsage* usage,
-                                     nimbus::orch::Transcript& tr,
-                                     std::shared_ptr<ThinkingByCall> thinking) {
+                                     nimbus::orch::Transcript& tr) {
+  return antLoopStepWith(pd, instructions, ht, usage, tr, std::make_shared<ThinkingByCall>());
+}
+
+nimbus::orch::HeadStepFn antLoopStepWith(const ProviderDeps& pd,
+                                         const std::string& instructions,
+                                         const HeadTools& ht,
+                                         nimbus::orch::TokenUsage* usage,
+                                         nimbus::orch::Transcript& tr,
+                                         std::shared_ptr<ThinkingByCall> thinkingByCall) {
   namespace orch = nimbus::orch;
   const std::string model = pd.orchModel ? pd.orchModel("anthropic") : std::string();
   // Replay budget - NOT the token window. The request body breaks long before the
@@ -1120,9 +1128,6 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
   std::string sys;
   wire::putFieldStr(sys, instructions, "the system prompt");
   const layout::PromptParts parts = layout::split(sys);
-  // R3: this turn's thinking payloads, keyed by the round's first tool-call id
-  // (RAM only, one turn's lifetime, small at effort low).
-  auto thinkingByCall = thinking ? std::move(thinking) : std::make_shared<ThinkingByCall>();
 
   return [&ht, usage, &tr, pd, model, kReplayToolBytes, parts, thinkingByCall](
              bool allowTools,
@@ -1337,7 +1342,7 @@ static bool runAntLoop(const ProviderDeps& pd, std::string& convId,
   const auto thinking = std::make_shared<ThinkingByCall>();
   const HostLoop loop{pd, ht, "orchTurn(ant-loop)", "anthropic",
                       [&](const std::string& ins, nimbus::orch::Transcript& tr) {
-                        return antLoopStep(pd, ins, ht, usage, tr, thinking);
+                        return antLoopStepWith(pd, ins, ht, usage, tr, thinking);
                       }};
   const bool ok = runHostLoop(loop, instructions, inputs, outJson, err);
   if (ok) convId = "messages";   // stateless marker (state lives in the turn's memory field)

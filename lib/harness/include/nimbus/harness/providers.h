@@ -222,13 +222,16 @@ std::string mistralUnsafeName(const std::string& n);
 // against the same transcript (results are data; nothing re-dispatches).
 // ⚠ Lifetime: `instructions`/`ht`/`usage`/`tr` are captured BY REFERENCE - the
 // caller's frame must outlive every call of the returned step. `pd` is copied.
-// Anthropic's signed thinking, keyed by a round's first tool-call id: the replay carries it
-// verbatim. One turn long (RAM only); null = the step keeps its own.
-using ThinkingByCall = std::map<std::string, std::string>;
 nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd, const std::string& instructions,
                                      const HeadTools& ht, nimbus::orch::TokenUsage* usage,
-                                     nimbus::orch::Transcript& tr,
-                                     std::shared_ptr<ThinkingByCall> thinking = nullptr);
+                                     nimbus::orch::Transcript& tr);
+// Anthropic's signed thinking, keyed by a round's first tool-call id: the replay carries it
+// verbatim. One turn long (RAM only). The same step on a store that outlives it, for a step that
+// is rebuilt mid-turn when a refit changes the prompt.
+using ThinkingByCall = std::map<std::string, std::string>;
+nimbus::orch::HeadStepFn antLoopStepWith(const ProviderDeps& pd, const std::string& instructions,
+                                         const HeadTools& ht, nimbus::orch::TokenUsage* usage,
+                                         nimbus::orch::Transcript& tr, std::shared_ptr<ThinkingByCall> thinking);
 nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd, const std::string& instructions,
                                      const HeadTools& ht, nimbus::orch::TokenUsage* usage,
                                      nimbus::orch::Transcript& tr);
