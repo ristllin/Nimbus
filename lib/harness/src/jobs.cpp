@@ -1438,6 +1438,14 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   if (!durable) hlog::logf("orchestrator: journal record %s not stored", tag);
 
   hlog::logf("orchestrator: spawned %s -> %s (%s/%s)", tag, jobId, rec.backend, rec.model);
+  // A spawn that moved off a keyless provider names where it ran even when its turn's
+  // reply cleared the note: the owner must hear the ack with the provider in it.
+  bool moved = false;
+  {
+    const std::string task = capText(p.task, kLedgerTaskMax);
+    for (const auto& e : ledger_)
+      if (e.chatId == p.chatId && e.name == p.name && e.task == task && !e.swapped.empty()) moved = true;
+  }
   ledgerStarted(p, tag, rec.backend, rec.model, durable);
   if (d_.hooks.onSpawn) {   // lifecycle observer (after the journal write - the job is real)
     SpawnEv ev;
@@ -1458,7 +1466,7 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
                              " \xC2\xB7 " + rec.backend + "/" + rec.model + "]";
   if (!durable)
     deliverNotDurableAck(p, chatId, suffix);
-  else if (!p.quiet && activeCount() <= 2)
+  else if (!p.quiet && (p.note[0] || moved) && activeCount() <= 2)
     deliver(chatId, std::string(p.note) + suffix);
   emitJobState(tag, rec.backend, orch::JobState::Queued);
 }
