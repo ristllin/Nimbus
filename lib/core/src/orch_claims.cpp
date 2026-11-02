@@ -2459,22 +2459,29 @@ ClaimScan scanClaims(const std::string& reply, bool ownerAskedHow, bool ownerAsk
 
 const char kNoLaterConfirmationTail[] = "(Correction: no confirmation will follow about that. Ask any time to check.)";
 
+namespace {
+bool hasAnyOf(const std::string& hay, std::initializer_list<const char*> needles) {
+  for (const char* n : needles)
+    if (hay.find(n) != std::string::npos) return true;
+  return false;
+}
+}  // namespace
+
 bool promisesLaterSaveConfirmation(const std::string& reply) {
   std::string low;
   low.reserve(reply.size());
   for (char c : reply) low += (char)std::tolower((unsigned char)c);
-  const auto has = [](const std::string& hay, const char* needle) { return hay.find(needle) != std::string::npos; };
   size_t from = 0;
   while (from < low.size()) {
     size_t end = low.find_first_of(".!?\n", from);
     if (end == std::string::npos) end = low.size();
     const std::string s = low.substr(from, end - from);
     from = end + 1;
-    const bool future = has(s, "i'll ") || has(s, "i will ") || has(s, "i\xE2\x80\x99ll ");
-    const bool saved = has(s, "stored") || has(s, "saved") || has(s, "the write") || has(s, "in memory");
-    const bool later = has(s, "next message") || has(s, "next turn") || has(s, " once ") || has(s, " when ") || has(s, " after ");
+    const bool future = hasAnyOf(s, {"i'll ", "i will ", "i\xE2\x80\x99ll "});
+    const bool saved = hasAnyOf(s, {"stored", "saved", "the write", "in memory"});
+    const bool later = hasAnyOf(s, {"next message", "next turn", " once ", " when ", " after "});
     if (!future || !saved) continue;
-    if (has(s, "confirm") || (later && (has(s, "let you know") || has(s, "tell you") || has(s, "notify you")))) return true;
+    if (hasAnyOf(s, {"confirm"}) || (later && hasAnyOf(s, {"let you know", "tell you", "notify you"}))) return true;
   }
   return false;
 }

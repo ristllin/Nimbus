@@ -349,17 +349,18 @@ static void testJobsOnTheRoute(ndtest::Ctx& c) {
   clearEnv();
 }
 
+static NimbusdRig::Options embedOpts(const std::string& tag) {
+  auto o = opts(tag);
+  o.embeddings = true;
+  o.embedHost = "mistral";
+  o.embedModel = "mistral-embed";
+  o.embedDims = 1024;
+  return o;
+}
+
 static void testEmbeddings(ndtest::Ctx& c) {
   std::printf("  -- (d) long-term memory follows the key --\n");
   clearEnv();
-  const auto embedOpts = [](const std::string& tag) {
-    auto o = opts(tag);
-    o.embeddings = true;
-    o.embedHost = "mistral";
-    o.embedModel = "mistral-embed";
-    o.embedDims = 1024;
-    return o;
-  };
   {
     setenv("OPENAI_API_KEY", "sk-test-openai-only-000000000000", 1);
     FakeHttpTransport tx;
@@ -401,6 +402,11 @@ static void testEmbeddings(ndtest::Ctx& c) {
     c.ok(has(found, "Zorblax"), std::string(env) + ": keyword search finds it");
     clearEnv();
   }
+}
+
+static void testEmbeddingsHonestAnswers(ndtest::Ctx& c) {
+  std::printf("  -- (d2) what a write says when the held key cannot embed --\n");
+  clearEnv();
   {
     // Stored vectors keep their space: a Mistral-width store never moves to OpenAI.
     auto o = embedOpts("vp-d5");
@@ -1286,6 +1292,7 @@ int main() {
   testToolRows(c);
   testJobsOnTheRoute(c);
   testEmbeddings(c);
+  testEmbeddingsHonestAnswers(c);
   testRoutines(c);
   testSkills(c);
   testPhotos(c);

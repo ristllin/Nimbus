@@ -117,6 +117,31 @@ inline size_t collectTgPhotos(const std::vector<nimbus::tg::Update>& ups, size_t
   return i - 1;
 }
 
+// One admitted update: a photo turn (its album collected), a text turn (with a note
+// when an unreadable attachment came with the words), or the plain "not taken" line.
+// Returns the index of the last update consumed.
+inline size_t serveOne(const std::vector<nimbus::tg::Update>& ups, size_t i, const TgInboundIo& io,
+                       TgRouteStats& st) {
+  const auto& u = ups[i];
+  if (isTgPhoto(u.attachment) && io.photoTurn) {
+    std::string caption;
+    std::vector<PhotoIn> photos;
+    const size_t last = collectTgPhotos(ups, i, io, caption, photos);
+    io.photoTurn(u.chatId, caption, photos);
+    st.turns++;
+    return last;
+  }
+  const bool attached = u.attachment.kind != nimbus::tg::Attachment::Kind::None && !u.edited;
+  if (!u.text.empty() && io.turn) {
+    if (attached && io.send) io.send(u.chatId, kTgNotTaken);   // said at once: the turn may wait behind others
+    io.turn(u.chatId, tgCaptionTurn(u));
+    st.turns++;
+  } else if (attached && io.send) {
+    io.send(u.chatId, kTgNotTaken);
+  }
+  return i;
+}
+
 inline TgRouteStats routeTelegramUpdates(const std::vector<nimbus::tg::Update>& ups,
                                          TelegramAccess& access, const TgInboundIo& io,
                                          time_t now) {
@@ -126,20 +151,7 @@ inline TgRouteStats routeTelegramUpdates(const std::vector<nimbus::tg::Update>& 
     if (!TelegramAccess::isChatId(u.chatId)) continue;   // no chat, nothing to gate on
     const TelegramAccess::Admit why = access.admit(u.chatId);
     if (why == TelegramAccess::Admit::Serve) {
-      if (isTgPhoto(u.attachment) && io.photoTurn) {
-        std::string caption;
-        std::vector<PhotoIn> photos;
-        i = collectTgPhotos(ups, i, io, caption, photos);
-        io.photoTurn(u.chatId, caption, photos);
-        st.turns++;
-      } else if (!u.text.empty() && io.turn) {
-        if (u.attachment.kind != nimbus::tg::Attachment::Kind::None && !u.edited && io.send)
-          io.send(u.chatId, kTgNotTaken);   // said at once: the turn may wait behind others
-        io.turn(u.chatId, tgCaptionTurn(u));
-        st.turns++;
-      } else if (u.attachment.kind != nimbus::tg::Attachment::Kind::None && !u.edited && io.send) {
-        io.send(u.chatId, kTgNotTaken);
-      }
+      i = serveOne(ups, i, io, st);
       continue;
     }
     st.refused++;

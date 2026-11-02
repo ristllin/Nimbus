@@ -62,11 +62,7 @@ class DaemonHttpTransport : public agent::HttpTransport {
 
     curl_easy_reset(handle_);
 
-    const std::string url = std::string(req.tls ? "https://" : "http://") + req.host +
-                            (req.port && req.port != (req.tls ? 443 : 80)
-                                 ? ":" + std::to_string(req.port)
-                                 : "") +
-                            req.path;
+    const std::string url = buildUrl(req);
 
     curl_slist* hdrs = nullptr;
     for (const auto& h : req.headers)
@@ -100,18 +96,10 @@ class DaemonHttpTransport : public agent::HttpTransport {
     if (req.method != "GET") curl_easy_setopt(handle_, CURLOPT_FRESH_CONNECT, 1L);
 
     // R1: a body with photos spliced in (http.h BodySplice) goes out whole here.
+    // Named local on purpose: CURLOPT_POSTFIELDS does not copy, so the body must
+    // outlive curl_easy_perform below.
     const std::string body = agent::materializeBody(req);
-    if (req.method == "POST") {
-      curl_easy_setopt(handle_, CURLOPT_POST, 1L);
-      curl_easy_setopt(handle_, CURLOPT_POSTFIELDS, body.data());
-      curl_easy_setopt(handle_, CURLOPT_POSTFIELDSIZE, (long)body.size());
-    } else if (req.method != "GET") {
-      curl_easy_setopt(handle_, CURLOPT_CUSTOMREQUEST, req.method.c_str());
-      if (!body.empty()) {
-        curl_easy_setopt(handle_, CURLOPT_POSTFIELDS, body.data());
-        curl_easy_setopt(handle_, CURLOPT_POSTFIELDSIZE, (long)body.size());
-      }
-    }
+    setMethodAndBody(req, body);
 
     const CURLcode rc = curl_easy_perform(handle_);
     long code = 0;
@@ -130,6 +118,27 @@ class DaemonHttpTransport : public agent::HttpTransport {
     }
     out.status = (int)code;
     return true;
+  }
+
+  static std::string buildUrl(const agent::HttpRequest& req) {
+    return std::string(req.tls ? "https://" : "http://") + req.host +
+           (req.port && req.port != (req.tls ? 443 : 80) ? ":" + std::to_string(req.port) : "") +
+           req.path;
+  }
+
+  void setMethodAndBody(const agent::HttpRequest& req, const std::string& body) {
+    if (req.method == "POST") {
+      curl_easy_setopt(handle_, CURLOPT_POST, 1L);
+      curl_easy_setopt(handle_, CURLOPT_POSTFIELDS, body.data());
+      curl_easy_setopt(handle_, CURLOPT_POSTFIELDSIZE, (long)body.size());
+      return;
+    }
+    if (req.method == "GET") return;
+    curl_easy_setopt(handle_, CURLOPT_CUSTOMREQUEST, req.method.c_str());
+    if (!body.empty()) {
+      curl_easy_setopt(handle_, CURLOPT_POSTFIELDS, body.data());
+      curl_easy_setopt(handle_, CURLOPT_POSTFIELDSIZE, (long)body.size());
+    }
   }
 
   // How far a failed exchange got before it failed: not out (no connection, or
