@@ -1395,6 +1395,10 @@ function applyHostedChrome(){
       while(p&&(p.tagName==='P'||p.tagName==='LABEL')){off(p); if(p.tagName==='LABEL')break; p=p.previousElementSibling;}};
     ['midFail','loopRounds','loopDeadline','compactKB','tlsSlots','tlsVerify','capProbe','ttsOn','skAuto'].forEach(row);
     off($('capProbeActive'));
+    const tt=$('tgToken');      // a hosted bot is connected when the instance is created
+    if(tt){off(tt.parentElement); const tip=tt.parentElement.previousElementSibling; // the line above is the readiness line
+      const lb=tip&&tip.previousElementSibling&&tip.previousElementSibling.previousElementSibling; if(lb&&lb.tagName==='LABEL')off(lb);
+      if(tip&&tip.previousElementSibling&&tip.previousElementSibling.classList.contains('tip'))off(tip.previousElementSibling);}
     off(document.querySelector('.subtab[data-sp=safety]'));
     ['prefslist','prefsnew','prefsmsg'].forEach(id=>{const e=$(id); if(id==='prefsnew')off(e&&e.parentElement); else if(id==='prefslist')row(id); else off(e);});
     const oh=$('orchHost'); if(oh)[].slice.call(oh.options).forEach(o=>{if(o.value==='custom')o.remove();});
@@ -3622,13 +3626,14 @@ function applyOrch(d){
   // Telegram READINESS (P2.6): every gate that silently eats a reply, made visible.
   {const r=$('tgReady');
    if(r){const parts=[];
-    if(!d.hasTg)parts.push('• No bot token yet - Telegram is off (create one with @BotFather)');
+    if(!d.hasTg)parts.push(HOSTED?'• No bot connected. A bot is connected when the instance is created at app.cumulo-nimbus.ai.':'• No bot token yet - Telegram is off (create one with @BotFather)');
     else if(!d.tgLive)parts.push(d.running
       ?'⚠ Token saved - restart the device to start Telegram'
       :'⚠ Token saved - Telegram runs in Orchestrator mode (switch modes to start it)');
     else parts.push('✓ Bot active');
     // Verify-on-save verdict (owner: "run a tiny verification"): a real getMe check.
-    if(d.hasTg){
+    // A hosted bot is checked by the platform, and reports no verdict here.
+    if(d.hasTg&&!HOSTED){
       if(d.tgVerify===1)parts.push('✓ Token verified'+(d.tgBot?(' - bot @'+d.tgBot):''));
       else if(d.tgVerify===0)parts.push('✗ Token rejected by Telegram - check it');
       else if(d.tgVts>0)parts.push('⚠ Couldn’t verify the token - retry');
@@ -4578,7 +4583,9 @@ function _orchHostSync(v){const oh=$('orchHost');if(!oh)return;
 // checkbox lists, which persist per-interaction via renderPrio's own save() - the
 // stale $('provPrio').value deref threw a TypeError that made this button store
 // NOTHING, silently, for every field.
-function _orchSavePayload(){return {custBase:$('custBase').value,custKey:$('custKey').value,
+function _orchSavePayload(){
+  if(HOSTED)return {orchLoop:$('orchLoop').checked?1:0,orchTrace:$('orchTrace').checked?1:0};   // the rest is fixed here
+  return {custBase:$('custBase').value,custKey:$('custKey').value,
     custConv:$('custConv').value,custModel:$('custModel').value,
     tgToken:$('tgToken').value,
     orchLoop:$('orchLoop').checked?1:0,

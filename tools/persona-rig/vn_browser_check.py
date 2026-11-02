@@ -147,7 +147,9 @@ SET_CONTROL = """(i) => {
     if (!o) return false;
     e.value = o.value;
   } else if (e.type === 'number') e.value = String((+e.value || 10) + 1);
-  else e.value = i === 'custBase' ? 'https://proxy.example/v1' : 'walk1';
+  else if (i === 'custBase') e.value = 'https://proxy.example/v1';
+  else if (i === 'tgToken') e.value = '123456789:AAFakeTokenForTheWalkOnly0123456789abc';
+  else e.value = 'walk1';
   e.dispatchEvent(new Event('input', {bubbles: true}));
   e.dispatchEvent(new Event('change', {bubbles: true}));
   return true;

@@ -483,6 +483,8 @@ test('hosted: Assistant shows no control the instance refuses or ignores', async
   await page.locator('.subtab[data-sp=connectors]').click();
   await open();
   await expect(page.locator('#ttsOn')).toBeHidden();
+  await expect(page.locator('#tgToken')).toBeHidden();
+  await expect(page.locator('#tgAddId')).toBeVisible();
   await page.locator('.subtab[data-sp=skills]').click();
   await expect(page.locator('#skAuto')).toBeHidden();
   await expect(page.locator('#skSave')).toBeVisible();
@@ -558,6 +560,22 @@ test('hosted: a saved web search key never reads as verifying', async ({ page })
   await expect(page.locator('#tavstat')).not.toContainText('not yet verified');
 });
 
+// (12b) The same for a connected bot: live, with no check that never lands.
+test('hosted: a connected bot never reads as verifying', async ({ page }) => {
+  await markHosted(page);
+  await routeHosted(page);
+  await seedToken(page);
+  await openApp(page);
+  const orch = await page.evaluate(() => fetch('/api/orch').then((r) => r.json()));
+  await page.route('**/api/orch', (r) => r.fulfill({ contentType: 'application/json',
+    body: JSON.stringify({ ...orch, hasTg: true, tgLive: true, tgVerify: undefined, tgVts: undefined }) }));
+  await page.locator('.tab[data-p=assistant]').click();
+  await page.locator('.subtab[data-sp=connectors]').click();
+  await page.evaluate(() => document.querySelectorAll('details').forEach((d) => { d.open = true; }));
+  await expect(page.locator('#tgReady')).toContainText('Bot active', { timeout: 8000 });
+  await expect(page.locator('#tgReady')).not.toContainText('erifying');
+});
+
 // (13) The recording line tells the truth in both states, and off is reachable.
 test('hosted: the chat says recording is off only when it is, and the box saves', async ({ page }) => {
   await markHosted(page);
@@ -591,6 +609,7 @@ test('hosted: the chat says recording is off only when it is, and the box saves'
   await page.locator('#toolusesave').click();
   await expect.poll(() => posted.length, { timeout: 8000 }).toBeGreaterThan(0);
   expect(posted[posted.length - 1]).toContain('orchTrace=0');
+  for (const fixed of ['midFail', 'loopRounds', 'tlsSlots', 'custBase', 'tgToken']) expect(posted[posted.length - 1]).not.toContain(fixed);
   await page.locator('.tab[data-p=chat]').click();
   await expect(page.locator('#chatTrace')).toContainText('Activity recording is off', { timeout: 8000 });
   await expect(page.locator('#chatTrace')).toContainText('Assistant');
