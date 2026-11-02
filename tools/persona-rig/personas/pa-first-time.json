@@ -27,14 +27,14 @@
          "expect": [{"turn_resolved": true}, {"reply_regex": "\\b48\\b"}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
       ]},
       {"id": "memory", "steps": [
-        {"say": "Please remember permanently: my dog is called Biscuit-${suffix}. Confirm when it is stored.",
+        {"say": "Please remember permanently: my dog is called Biscuit${suffix}. Confirm when it is stored.",
          "settle_s": 5,
          "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
                     {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}, "known_defect": "${mem_defect}", "may_pass": "${mem_may}"},
                     {"no_fabricated_action": true}]},
         {"http": {"method": "POST", "path": "/api/orch", "form": {"clearConv": "1"}}, "expect": [{"http_status": 200}]},
         {"say": "What is my dog called?",
-         "expect": [{"turn_resolved": true}, {"reply_contains": "Biscuit-${suffix}", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+         "expect": [{"turn_resolved": true}, {"reply_contains": "Biscuit${suffix}", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
       ]},
       {"id": "file", "steps": [
         {"say": "Save a file named shopping.txt in project home with exactly this text: milk, eggs, bread-${suffix}. Then confirm.",
@@ -44,7 +44,7 @@
       {"id": "restart-recovery", "needs": ["memory"], "steps": [
         {"restart": true},
         {"say": "We restarted. What is my dog called?",
-         "expect": [{"turn_resolved": true}, {"reply_contains": "Biscuit-${suffix}", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+         "expect": [{"turn_resolved": true}, {"reply_contains": "Biscuit${suffix}", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
         {"http": {"method": "GET", "path": "/api/files/list?project=home"},
          "expect": [{"http_status": 200}, {"body_contains": "shopping.txt"}]}
       ]}

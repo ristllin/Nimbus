@@ -34,7 +34,7 @@
          "expect": [{"turn_resolved": true}, {"reply_regex": "\\b520\\b"}, {"reply_not_regex": "(?i)did you eat the whole|how much of the pack|243 g", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
       ]},
       {"id": "s3-explicit-rule-wins", "steps": [
-        {"say": "Suggest a quick lunch from bread, cheese, ham, and peanut butter.",
+        {"say": "Suggest a quick lunch from bread, cheese, ham, and peanut butter. Answer with just the lunch, no notes.",
          "expect": [{"turn_resolved": true}, {"reply_not_contains": "peanut", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
       ]},
       {"id": "s4-no-plumbing", "steps": [

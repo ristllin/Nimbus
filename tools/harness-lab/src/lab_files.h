@@ -30,6 +30,7 @@ class LabFiles {
     registerListAndSave(reg);
     registerRead(reg);
     registerAppend(reg);
+    registerDelete(reg);
   }
 
   void registerListAndSave(nimbus::orch::ToolRegistry& reg) {
@@ -79,6 +80,18 @@ class LabFiles {
             R"("name":{"type":"string"},"text":{"type":"string"},)"
             R"("key":{"type":"string"},"sum":{"type":"string"}},)"
             R"("required":["project","name","text"]})");
+  }
+
+  void registerDelete(nimbus::orch::ToolRegistry& reg) {
+    reg.add("files.delete",
+            "Delete a stored file for good: the bytes and the index entry both go. "
+            "Pass 'project' and 'name'.",
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+              return deleteTool(a, who);
+            },
+            R"({"type":"object","properties":{"project":{"type":"string"},)"
+            R"("name":{"type":"string"}},)"
+            R"("required":["project","name"]})");
   }
 
   // One tool handler each - the registrations above stay one-liners, and each
@@ -158,6 +171,19 @@ class LabFiles {
           up, p + "/" + n, sum, nimbus::orch::logDayOf(std::time(nullptr), true).zone));
     }
     return appendPlain(p, n, t);
+  }
+
+  nimbus::orch::ToolResult deleteTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+    const std::string p = str(a, "project"), n = str(a, "name");
+    if (p.empty() || n.empty())
+      return nimbus::orch::ToolResult::fail("need 'project' and 'name'");
+    if (!nimbus::orch::FileStore::validSegment(p, 24) ||
+        !nimbus::orch::FileStore::validSegment(n, 48))
+      return nimbus::orch::ToolResult::fail("invalid project or name");
+    const std::string path = p + "/" + n;
+    if (!files_.erase(path))
+      return nimbus::orch::ToolResult::fail("no such file: " + path);
+    return nimbus::orch::ToolResult::ok("deleted " + path);
   }
 
   nimbus::orch::ToolResult appendPlain(const std::string& p, const std::string& n,

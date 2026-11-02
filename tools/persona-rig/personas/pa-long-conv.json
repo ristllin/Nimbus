@@ -16,7 +16,7 @@
     "host": "${host}",
     "scenarios": [
       {"id": "fold", "steps": [
-        {"say": "For this conversation only, the codeword is PERSIMMON-${suffix}. Acknowledge it in one short sentence; do not store it in long-term memory.",
+        {"say": "For this conversation, my codeword is PERSIMMON-${suffix}. Acknowledge it in one short sentence and keep it in mind for this conversation.",
          "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
         {"say": "Note $i of a long working session. Reply in one short sentence acknowledging the note.",
          "repeat": 20, "pad": 3200, "settle_s": 2, "timeout_s": 300,

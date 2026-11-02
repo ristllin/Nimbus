@@ -122,6 +122,24 @@ class PosixFiles {
             R"("name":{"type":"string"},"text":{"type":"string"},)"
             R"("key":{"type":"string"},"sum":{"type":"string"}},)"
             R"("required":["project","name","text"]})");
+
+    addOwnerOnly(reg, "files.delete",
+            "Delete a stored file for good: the bytes and the index entry both go. "
+            "Pass 'project' and 'name'.",
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+              const std::string p = str(a, "project"), n = str(a, "name");
+              if (p.empty() || n.empty())
+                return nimbus::orch::ToolResult::fail("need 'project' and 'name'");
+              if (!nimbus::orch::FileStore::validSegment(p, 24) ||
+                  !nimbus::orch::FileStore::validSegment(n, 48))
+                return nimbus::orch::ToolResult::fail("invalid project or name");
+              if (!remove(p, n))
+                return nimbus::orch::ToolResult::fail("no such file: " + p + "/" + n);
+              return nimbus::orch::ToolResult::ok("deleted " + p + "/" + n);
+            },
+            R"({"type":"object","properties":{"project":{"type":"string"},)"
+            R"("name":{"type":"string"}},)"
+            R"("required":["project","name"]})");
   }
 
   // files.read: the text of a stored file, or the rule's refusal (file_store.h).

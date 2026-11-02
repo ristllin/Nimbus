@@ -6,6 +6,8 @@
 //       assistant's own files.read tool - it used to answer {"ok":true} and store
 //       nothing (list count 0);
 //   (b) delete and delete-project work, and a missing file is a 404;
+//   (b2) the files.delete TOOL removes a file (bytes + index), refuses a missing
+//       file and a traversal name, and refuses a non-owner;
 //   (c) a traversal name is refused by the same gate the tools use;
 //   (d) routines, skills, wake-ups and downloads refuse a write by name (the page
 //       printed "Created" for a routine that never existed), and still answer an
@@ -142,6 +144,43 @@ static void testOneFoodLogAndItsReceipt(ndtest::Ctx& c) {
   c.ok(has(tail.output, "1200 from 2 rows"), "files.read {tail, sum} gives the day's total, a bare comma included");
 }
 
+// files.delete: the chat can delete a stored file (the privacy persona asks for
+// exactly this), the bytes and the index entry both go, and a non-owner is refused.
+static void testFilesDeleteTool(ndtest::Ctx& c) {
+  std::printf("  -- (b2) files.delete removes the file, the bytes, and the index entry --\n");
+  const std::string dir = ndtest::scratchDir("hf-del");
+  ndtest::rmTree(dir);
+  mkdir(dir.c_str(), 0755);
+  PosixFiles files(dir);
+  nimbus::orch::ToolRegistry reg;
+  files.registerTools(reg);
+  nimbus::orch::Principal owner = nimbus::orch::principalForRole("1", nimbus::orch::Role::Admin);
+  owner.owner = true;
+  nimbus::orch::Principal member = nimbus::orch::principalForRole("2", nimbus::orch::Role::User);
+  const auto call = [&](const char* name, const std::string& json, const nimbus::orch::Principal& who) {
+    JsonDocument d;
+    deserializeJson(d, json);
+    return reg.dispatch(name, d.as<JsonObjectConst>(), who);
+  };
+  c.ok(call("artifact.save", R"({"project":"personal","name":"notes.txt","text":"secret"})", owner).success,
+       "the file is saved first");
+  c.ok(files.has("personal/notes.txt"), "the bytes are on the disk");
+  const auto gone = call("files.delete", R"({"project":"personal","name":"notes.txt"})", owner);
+  c.ok(gone.success && has(gone.output, "deleted personal/notes.txt"), "files.delete answers deleted");
+  c.ok(!files.has("personal/notes.txt"), "the index entry is gone");
+  struct stat st;
+  c.ok(::stat((dir + "/personal/notes.txt").c_str(), &st) != 0, "the bytes are gone from the disk");
+  const auto again = call("files.delete", R"({"project":"personal","name":"notes.txt"})", owner);
+  c.ok(!again.success && has(again.error, "no such file"), "deleting a missing file says so");
+  const auto trav = call("files.delete", R"({"project":"..","name":"passwd"})", owner);
+  c.ok(!trav.success && has(trav.error, "invalid project or name"), "a traversal name is refused");
+  c.ok(call("artifact.save", R"({"project":"personal","name":"notes.txt","text":"secret"})", owner).success,
+       "saved again for the member check");
+  const auto mem = call("files.delete", R"({"project":"personal","name":"notes.txt"})", member);
+  c.ok(!mem.success && has(mem.error, "owner"), "a non-owner is refused");
+  c.ok(files.has("personal/notes.txt"), "the member's refusal deleted nothing");
+}
+
 static void testNotYetHosted(ndtest::Ctx& c) {
   std::printf("  -- (d) a routine needs a schedule, and downloads refuse writes by name --\n");
   Config cfg;
@@ -271,6 +310,7 @@ int main() {
   std::printf("=== hosted files + not-yet-hosted surfaces (CUM-543, offline) ===\n");
   testUploadListDownload(c);
   testRemove(c);
+  testFilesDeleteTool(c);
   testTraversalRefused(c);
   testOneFoodLogAndItsReceipt(c);
   testNotYetHosted(c);

@@ -42,6 +42,7 @@ const ToolTaintRow kRows[] = {
     // files (src/agent/files_subsystem.cpp)
     {"artifact.save", T::Internal, E::FileWrite},
     {"files.append", T::Internal, E::FileWrite},   // G1a: writes rows, echoes only the count
+    {"files.delete", T::Internal, E::FileWrite},   // a landed delete backs the "gone" claim
     {"files.edit", T::Internal, E::FileWrite},    // v4.6.2: a landed edit backs the save/log claims
     {"files.fetch", T::External, E::FileWrite},
     {"files.list", T::Internal, E::Read},

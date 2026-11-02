@@ -17,13 +17,15 @@
       {"id": "chat-memory", "steps": [
         {"say": "What is 9 times 6? Answer with just the number.",
          "expect": [{"turn_resolved": true}, {"reply_regex": "\\b54\\b"}, {"no_error_reply": true}]},
-        {"say": "Please remember permanently: my favourite chai is masala chai-${suffix}. Confirm when stored.",
+        {"say": "Please remember permanently: my favourite chai is called MasalaChai${suffix}. Confirm when stored.",
          "settle_s": 5,
          "expect": [{"turn_resolved": true}, {"no_error_reply": true}, {"no_fabricated_action": true},
                     {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}}]},
         {"http": {"method": "POST", "path": "/api/orch", "form": {"clearConv": "1"}}, "expect": [{"http_status": 200}]},
         {"say": "What chai do I like?",
-         "expect": [{"turn_resolved": true}, {"reply_contains": "masala chai-${suffix}"}, {"no_error_reply": true}]}
+         "expect": [{"turn_resolved": true}, {"reply_contains": "MasalaChai${suffix}"}, {"no_error_reply": true}]},
+        {"http": {"method": "GET", "path": "/api/mem/vector?query=MasalaChai&limit=10"},
+         "expect": [{"http_status": 200}, {"body_contains": "MasalaChai${suffix}"}]}
       ]},
       {"id": "file-and-spawn", "steps": [
         {"say": "Save a file named plan.txt in project work with exactly: ship-${suffix}. Then confirm.",

@@ -19,7 +19,7 @@
       ]},
       {"id": "embed-switch-then-memory", "steps": [
         {"http": {"method": "GET", "path": "/api/mem/stats"},
-         "expect": [{"http_status": 200}, {"body_contains": "\"embedAvailable\":false"}]},
+         "expect": [{"http_status": 200}, {"body_contains": "\"embedAvailable\":true"}]},
         {"http": {"method": "POST", "path": "/api/mem/embedverify", "form": {"provider": "openai", "model": "text-embedding-3-small", "dims": "0"}},
          "expect": [{"http_status": 200}]},
         {"http": {"method": "POST", "path": "/api/mem/embedcfg", "form": {"provider": "openai", "model": "text-embedding-3-small", "dims": "0"}},

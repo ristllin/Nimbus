@@ -2009,6 +2009,27 @@ void registerTools() {
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"find":{"type":"string"},"replace":{"type":"string"},"all":{"type":"boolean"},"count":{"type":"integer"}},"required":["project","name","find"]})");
 
+  reg.add("files.delete",
+          "Delete one of your saved files for good: the bytes and the index entry both go. "
+          "Only a file you may write can be deleted; anyone else's file is simply not found. "
+          "Pass 'project' and 'name'.",
+          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
+            if (!available())
+              return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
+            const std::string project = argStr(a, "project"), name = argStr(a, "name");
+            if (project.empty() || name.empty())
+              return nimbus::orch::ToolResult::fail("need 'project' and 'name'");
+            {
+              memory::Lock g;
+              if (!g_store.writeAllowed(project, name, who.ns, who.owner))
+                return nimbus::orch::ToolResult::fail("not found");
+            }
+            if (!removeFile(project, name))
+              return nimbus::orch::ToolResult::fail("no such file: " + project + "/" + name);
+            return nimbus::orch::ToolResult::ok("deleted " + project + "/" + name);
+          },
+          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"}},"required":["project","name"]})");
+
   reg.add("files.share",
           "Share one of your saved files with everyone who can talk to this "
           "device, or stop sharing it (set share false). Sharing is read-only: "

@@ -74,6 +74,7 @@ const ActionRuleRow kRows[] = {
     // ---- files (src/agent/files_subsystem.cpp, pdf_tool.cpp): own namespace ----
     {"artifact.save", R::Open, "save a file"},
     {"files.append", R::Open, "add rows to a file"},
+    {"files.delete", R::Open, "delete a file"},   // the handler's line: only a file the caller may write
     {"files.edit", R::Open, "edit a file"},   // the handler's line: only a file the caller may write
     {"files.fetch", R::Open, "download a file"},
     {"files.list", R::Open, "list files"},

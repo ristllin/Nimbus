@@ -23,13 +23,13 @@
          "expect": [{"turn_resolved": true}, {"reply_regex": "(?i)konto|bank", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
       ]},
       {"id": "german-memory", "needs": ["german-chat"], "steps": [
-        {"say": "Merke dir dauerhaft: Mein Hund heißt Bello-${suffix}. Bestätige, wenn es gespeichert ist.",
+        {"say": "Merke dir dauerhaft: Mein Hund heißt Bello${suffix}. Bestätige, wenn es gespeichert ist.",
          "settle_s": 5,
          "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
                     {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}, "known_defect": "${mem_defect}", "may_pass": "${mem_may}"}]},
         {"http": {"method": "POST", "path": "/api/orch", "form": {"clearConv": "1"}}, "expect": [{"http_status": 200}]},
         {"say": "Wie heißt mein Hund?",
-         "expect": [{"turn_resolved": true}, {"reply_contains": "Bello-${suffix}", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+         "expect": [{"turn_resolved": true}, {"reply_contains": "Bello${suffix}", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
       ]}
     ]
   }
