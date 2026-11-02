@@ -71,6 +71,9 @@ RETRY_BACKOFF_S = 20
 FAKE_KEY_PREFIX = "RIG_FAKE_"
 # The daemon's logged error for a failure worth another try. Nothing else is retried.
 TRANSIENT_RE = re.compile(r"\bHTTP (429|500|502|503|504|529)\b")
+# A transport-level failure (no HTTP status at all) is the same class: the request never
+# got an answer, so no tool ran and another try repeats no side effect.
+TRANSPORT_RE = re.compile(r"transport fail|no response|partial file|connection (reset|timed out)|did not answer in time", re.I)
 # Judge prices in cents per million tokens (input, output), from model_price_defaults.h.
 JUDGE_PRICES = {"claude-sonnet-4-6": (300, 1500), "gpt-5.5": (500, 3000)}
 JUDGE_FALLBACK_CENTS = 2  # one call, when the provider reported no usage
@@ -572,7 +575,8 @@ def _transient_failure(rec: dict) -> bool:
     """The turn failed on a provider error before any tool ran, so another try repeats no side effect."""
     text = "\n".join([rec.get("reply") or "", *rec.get("replies", [])])
     failed = not text.strip() or ERROR_REPLY_RE.search(text) is not None
-    return failed and not rec.get("tools") and TRANSIENT_RE.search(rec.get("log", "")) is not None
+    log = rec.get("log", "")
+    return failed and not rec.get("tools") and (TRANSIENT_RE.search(log) or TRANSPORT_RE.search(log)) is not None
 
 
 def _implicit_checks(rec: dict) -> list:

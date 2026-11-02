@@ -54,7 +54,13 @@ class FakeNimbusd:
         self.log.append("turn spend: ok owner | fake/fake-model in=100 out=10 cR=0 cW=0 n=1 id=fake-model")
         self.turn_counter += 1
         self.last_turn_failed = False
-        if "flaky" in text and self.transient_failures > 0:
+        if "flaky-transport" in text and self.transient_failures > 0:
+            self.transient_failures -= 1
+            self.last_turn_failed = True
+            self.log.append("provider: transport fail api.mistral.ai/v1/chat/completions: Transferred a partial file: no response")
+            self.log.append("orchestrator: mistral did not answer in time - failing over without a retry")
+            self.push("assistant", "That didn't finish - try again later.")
+        elif "flaky" in text and self.transient_failures > 0:
             self.transient_failures -= 1
             self.last_turn_failed = True
             self.log.append("orchTurn(mistral-loop): HTTP 429 rate limited")
@@ -1234,6 +1240,21 @@ class RunOptions(unittest.TestCase):
         self.assertFalse(pr._transient_failure(rec), "another try would repeat the write")
         self.assertTrue(pr._transient_failure({**rec, "tools": []}))
         self.assertTrue(pr._transient_failure({**rec, "tools": None}))
+
+    def test_a_transport_failure_retries_like_a_429(self):
+        fake = FakeNimbusd()
+        fake.transient_failures = 1
+        p = persona(scenarios=[sc(say("flaky-transport turn", {"no_error_reply": True}))])
+        results, _b, ev = self.run_it([p], fake, backoff_s=0)
+        self.assertTrue(results[0]["pass"], results[0])
+        rec = json.loads((ev / "unit" / "s" / "step-00.json").read_text())
+        self.assertEqual(len(rec["earlier_tries"]), 1)
+        self.assertIn("transport fail", rec["earlier_tries"][0]["log"])
+
+    def test_a_transport_failure_with_no_tool_run_is_transient(self):
+        rec = {"reply": "That didn't finish", "log": "provider: transport fail x: no response", "tools": []}
+        self.assertTrue(pr._transient_failure(rec))
+        self.assertFalse(pr._transient_failure({**rec, "tools": [{"name": "files_write"}]}))
 
     def test_a_failure_with_no_provider_error_is_not_retried(self):
         fake = FakeNimbusd()
