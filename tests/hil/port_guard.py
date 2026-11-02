@@ -45,3 +45,7 @@ def check_mac(mac, tool="bench tool"):
 
 def port_for_mac(mac, tool="port-for-mac"):
     return load().port_for_mac(mac, tool)
+
+
+def guard_norm(text):
+    return load().norm(text)
