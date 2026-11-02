@@ -66,6 +66,10 @@ struct HttpRequest {
   // response body.
   const char* errHeaderPrefix = nullptr;
   HeaderList* errHeaders = nullptr;
+  // OPTIONAL read bound (0 = none): a transport that supports it stops reading a
+  // response once the body passes this many bytes and returns what it holds. A
+  // download of unknown size uses it so an oversized file is not read whole.
+  size_t maxResponseBytes = 0;
   // Payloads spliced into `body` at send time (see BodySplice); empty = `body` is
   // the whole request body. Content-Length is bodyLength(), never body.size().
   BodySplices splices;

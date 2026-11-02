@@ -26,6 +26,10 @@
 // exercise genuine persistence, and the artifacts survive a restart.
 namespace nimbusd {
 
+// The page's name for a photo attached in the chat: on its way to one turn, not a file the
+// owner keeps. The turn removes it once it has the bytes; one never sent is swept.
+constexpr const char* kChatPhotoPrefix = "att-";
+
 class PosixFiles {
  public:
   // `root` is the files directory (e.g. /data/mem/files). Loads the index if it
@@ -187,6 +191,8 @@ class PosixFiles {
     fsutil::writeFileAtomic(indexPath(), store_.dump());
     return true;
   }
+  // Chat photos no turn ever took (the page closed before the message went).
+  void sweepChatPhotos(uint32_t) {}
   // Delete every file in a project; -1 when the project holds none.
   int removeProject(const std::string& p) {
     std::vector<std::string> names;

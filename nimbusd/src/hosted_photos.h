@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -34,10 +35,31 @@
 // blind head's reading. Single-context: engine thread only.
 namespace nimbusd {
 
+// Photo bytes waiting for their turn, shared by every copy of the message that carries
+// them and counted until the last copy is gone. Telegram photos are downloaded on arrival
+// and wait in RAM behind a long turn or another person's work, so the total is bounded:
+// past it a photo reaches its turn as the reason, and the message is not lost.
+constexpr size_t kPhotoHoldMaxBytes = 32u * 1024 * 1024;
+class PhotoBudget {
+ public:
+  size_t used() const { return used_.load(); }
+  bool hasRoom() const { return true; }
+  std::shared_ptr<const std::string> hold(std::string bytes) {
+    return std::make_shared<const std::string>(std::move(bytes));
+  }
+
+ private:
+  std::atomic<size_t> used_{0};
+};
+inline PhotoBudget& photoBudget() {
+  static PhotoBudget b;
+  return b;
+}
+
 // One photo for a turn: its bytes, or the Files entry they are read from at turn time.
 struct PhotoIn {
   std::string project, name;
-  std::string bytes;
+  std::shared_ptr<const std::string> bytes;
   std::string why;   // set when the channel could not fetch it: what the head is told
 };
 
@@ -137,7 +159,7 @@ class HostedPhotos {
   // Keep one photo and write its row; returns its segment in the turn's text.
   std::string takePhoto(nimbus::orch::TurnImages& set, const std::string& caption, const PhotoIn& p,
                         nimbus::orch::MediaLabel label, std::string& ref) {
-    std::string bytes = p.bytes;
+    std::string bytes = p.bytes ? *p.bytes : std::string();
     if (bytes.empty() && (!p.why.empty() || !h_.fetchFile || !h_.fetchFile(p.project, p.name, bytes))) {
       label.cls = nimbus::orch::MediaClass::FetchFailed;
       label.detail = p.why.empty() ? "not found in Files" : p.why;

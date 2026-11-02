@@ -62,11 +62,11 @@ inline bool isTgPhoto(const nimbus::tg::Attachment& a) {
 // fetch that failed still reaches the turn, as its reason.
 inline PhotoIn fetchTgPhoto(const nimbus::tg::Attachment& a, const TgInboundIo& io) {
   PhotoIn p;
-  std::string err;
-  if (!io.fetchFile || !io.fetchFile(a.fileId, p.bytes, err)) {
-    p.bytes.clear();
+  std::string err, bytes;
+  if (!io.fetchFile || !io.fetchFile(a.fileId, bytes, err))
     p.why = err.empty() ? "the download failed" : err;
-  }
+  else
+    p.bytes = photoBudget().hold(std::move(bytes));
   return p;
 }
 

@@ -17,9 +17,17 @@
 //       and a file that is no image are told plainly;
 //   (h) the web search key is set on the page and survives a restart;
 //   (i) nothing in a hosted turn's prompt calls the instance a device;
-//   (j) a Telegram photo or album reaches one turn, and the rest gets an answer.
+//   (j) a Telegram photo or album reaches one turn, and the rest gets an answer;
+//   (k) activity recording is what the page says it is, and can be turned off;
+//   (l) what a write says when the held key cannot embed, and when the text list is full;
+//   (m) a chat photo leaves no Files entry behind, and photos waiting are bounded in RAM;
+//   (n) the Telegram download itself; (o) the guards around held turns and routines.
+#include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -27,6 +35,7 @@
 #include "engine_thread.h"
 #include "reply_buffer.h"
 #include "rig.h"
+#include "telegram.h"
 #include "test_util.h"
 #include "tg_inbound.h"
 #include "web_api.h"
@@ -287,6 +296,62 @@ static void testToolRows(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// The page's Home reads GET /api/orch "jobs": a real list while a job runs, empty after.
+static void testJobsOnTheRoute(ndtest::Ctx& c) {
+  std::printf("  -- (c2) /api/orch lists the job while it runs --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", "cumulo_sk_test_JOBS", 1);
+  // The sub-agent's provider does not answer until released, so the job is really running.
+  struct Gate : agent::HttpTransport {
+    FakeHttpTransport inner;
+    std::mutex mu;
+    std::condition_variable cv;
+    bool open = false;
+    bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
+      if (has(req.path, "/chat/completions")) {
+        std::unique_lock<std::mutex> lk(mu);
+        cv.wait_for(lk, std::chrono::seconds(20), [this] { return open; });
+      }
+      return inner.exec(req, out, err);
+    }
+    void release() {
+      {
+        std::lock_guard<std::mutex> lk(mu);
+        open = true;
+      }
+      cv.notify_all();
+    }
+  } gate;
+  gate.inner.script.push_back(headJson("{\"reply\":\"on it\",\"memory\":\"\",\"session_ops\":[{\"op\":\"spawn\",\"task\":\"long work\"}]}"));
+  Exchange sub;
+  sub.expectPathContains = "/chat/completions";
+  sub.body = "{\"choices\":[{\"message\":{\"content\":\"done\"}}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":2}}";
+  gate.inner.script.push_back(sub);
+  gate.inner.script.push_back(headTurn("Reported."));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("vp-c3"), &gate);
+  {
+    Web web(rig);
+    c.ok(has(web.call("GET", "/api/orch").body, "\"jobs\":[]"), "no job: an empty list");
+    web.call("POST", "/api/chat", "text=start+it");
+    bool listed = false;
+    for (int i = 0; i < 200 && !listed; i++) {
+      const std::string b = web.call("GET", "/api/orch").body;
+      listed = has(b, "\"jobs\":[{") && has(b, "\"tag\":");
+      if (!listed) std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    c.ok(listed, "the job lists on the route the page reads, with its tag");
+    gate.release();
+    bool empty = false;
+    for (int i = 0; i < 400 && !empty; i++) {
+      empty = has(web.call("GET", "/api/orch").body, "\"jobs\":[]") && has(web.replies.sinceJsonArray(0), "Reported");
+      if (!empty) std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    c.ok(empty, "and leaves it once reported");
+  }
+  clearEnv();
+}
+
 static void testEmbeddings(ndtest::Ctx& c) {
   std::printf("  -- (d) long-term memory follows the key --\n");
   clearEnv();
@@ -365,6 +430,30 @@ static void testEmbeddings(ndtest::Ctx& c) {
     c.eq(rig.embedProvider(), "mistral", "stored vectors keep their provider");
     c.eqi(rig.embedWidth(), 1024, "and their width");
     c.eqi(rig.vectors().size(), 1, "and the memory");
+    // That store with an OpenAI key: a key is held, it just cannot reach these memories.
+    const std::string out = rig.callTool("memory.write", R"({"content":"my brother's dog is Quillfeather"})");
+    c.ok(has(out, "kept as text"), "the write is kept as text");
+    c.ok(!has(out, "holds no key"), "and never says it holds no key: it holds an OpenAI one");
+    c.ok(has(out, "made with mistral"), "it names what the stored memories were made with");
+    c.ok(has(out, "Mistral key"), "and the key that fixes it");
+    c.ok(has(out, "No later confirmation"), "nothing is promised");
+    clearEnv();
+  }
+  {
+    // The 65th memory on a key that cannot embed: the same honest answer as the first 64.
+    setenv("Z_AI_TOKEN", "test-key-with-no-embedding-route-0000", 1);
+    FakeHttpTransport tx;
+    Config cfg;
+    NimbusdRig rig(cfg, embedOpts("vp-d6"), &tx);
+    std::string out;
+    for (int i = 0; i < 65; i++)
+      out = rig.callTool("memory.write", "{\"content\":\"fact number " + std::to_string(i) + " about the garden\"}");
+    c.ok(has(out, "not stored"), "the 65th is refused");
+    c.ok(has(out, "64"), "it says how many text memories are kept");
+    c.ok(has(out, "holds no key"), "and why");
+    c.ok(has(out, "OpenAI, Mistral or Cumulo Nimbus"), "and which keys would help");
+    c.ok(!has(out, "device"), "with no device wording");
+    c.ok(!has(out, "no embeddings key for"), "and no provider the owner never chose");
     clearEnv();
   }
 }
@@ -564,11 +653,23 @@ static void testPhotos(ndtest::Ctx& c) {
     c.ok(tx.seen.size() >= 2 && has(tx.seen.back().body, "[image 1/1 ref=") && !has(tx.seen.back().body, "the photo itself is in this message"),
          "the next turn's history names it, and does not claim it is attached");
     const std::string ref = orch::blobHash(pngPixel());
-    c.ok(has(rig.callTool("image.look", "{\"ref\":\"" + ref + "\",\"question\":\"what color?\"}"), ref) ||
-             has(rig.callTool("image.look", "{\"ref\":\"" + ref + "\",\"question\":\"what color?\"}"), "photo"),
-         "image.look finds the stored copy");
     c.ok(has(rig.callTool("image.note", "{\"ref\":\"" + ref + "\",\"note\":\"x\"}"), "only for a photo"), "image.note is for this turn's photos");
 
+    // image.look in a later turn: the stored bytes go to the head as an image part.
+    Exchange look;
+    look.expectPathContains = "/responses";
+    look.body = "{\"id\":\"r1\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"image_look\","
+                "\"arguments\":\"{\\\"ref\\\":\\\"" + ref + "\\\",\\\"question\\\":\\\"what color?\\\"}\"}],"
+                "\"usage\":{\"input_tokens\":5,\"output_tokens\":5}}";
+    tx.script.push_back(look);
+    tx.script.push_back(loopFinal("It was red."));
+    const size_t before = tx.spliced.size();
+    const TurnRecord again = rig.say("owner", "look at that earlier photo again");
+    c.ok(has(again.reply, "red"), "the turn that looked answered");
+    c.ok(tx.spliced.size() == before + 2 && tx.spliced[before].empty(), "no image on the first request of that turn");
+    c.ok(tx.spliced.size() == before + 2 && !tx.spliced[before + 1].empty(), "image.look brought the stored bytes back as an image part");
+    c.ok(has(rig.callTool("image.look", R"({"ref":"0123456789abcdef","question":"what color?"})"), "no stored photo with that ref"),
+         "a ref with no stored copy says so");
   }
   {
     FakeHttpTransport tx;
@@ -734,13 +835,400 @@ static void testTelegramPhotos(ndtest::Ctx& c) {
   c.ok(has(sent, "text and photos"), "a voice note is told what this bot reads, never silence");
 }
 
+
+static Exchange anyHead(const std::string& reply) { return loopFinal(reply); }
+
+static void testChatPhotoLeavesNoEntry(ndtest::Ctx& c) {
+  std::printf("  -- (m) a chat photo leaves no Files entry behind --\n");
+  clearEnv();
+  setenv("OPENAI_API_KEY", "sk-test-openai-photo-00000000000", 1);
+  {
+    FakeHttpTransport tx;
+    tx.script.push_back(anyHead("One."));
+    tx.script.push_back(anyHead("Two."));
+    tx.script.push_back(anyHead("Three."));
+    Config cfg;
+    NimbusdRig rig(cfg, loopOpts("vp-m"), &tx);
+    std::string err;
+    const std::string uploaded = kChatPhotoPrefix + std::string("abc123-photo.png");
+    c.ok(rig.files().put("chat", uploaded, pngPixel(), err), "the page's upload is in Files");
+    c.eqi((long)rig.files().count(), 1, "one entry while it waits for its turn");
+    rig.sayWithPhotos("owner", "what is this?", {inFiles(uploaded)});
+    c.ok(!tx.spliced.empty() && !tx.spliced[0].empty(), "the turn took its bytes");
+    c.eqi((long)rig.files().count(), 0, "and the Files entry is gone");
+    const std::string ref = orch::blobHash(pngPixel());
+    std::string blob;
+    c.ok(fsutil::readFile(orch::blobPath(rig.memDir() + "/photos", ref, "bin"), blob), "the stored copy image.look reads stays");
+    // A file the owner keeps in Files is never removed, even when a message names it.
+    c.ok(rig.files().put("chat", "keep-me.png", pngPixel(), err), "an owner's own file");
+    rig.sayWithPhotos("owner", "and this?", {inFiles("keep-me.png")});
+    c.eqi((long)rig.files().count(), 1, "stays where it is");
+    // One that never reaches a turn: the page closed before the message went.
+    const std::string stale = kChatPhotoPrefix + std::string("old-unsent.png");
+    c.ok(rig.files().put("chat", stale, pngPixel(), err), "an upload never sent");
+    rig.files().sweepChatPhotos((uint32_t)time(nullptr) + 2 * 86400);
+    c.ok(!rig.files().fetch("chat", stale, err), "is swept once it is days old");
+    c.ok(rig.files().fetch("chat", "keep-me.png", err), "and the sweep leaves the owner's file");
+  }
+  {
+    // 300 photos in a row never fill the store the assistant's own files share.
+    FakeHttpTransport tx;
+    Config cfg;
+    auto o = loopOpts("vp-m2");
+    NimbusdRig rig(cfg, o, &tx);
+    std::string err;
+    bool allStored = true;
+    for (int i = 0; i < 300; i++) {
+      const std::string n = kChatPhotoPrefix + std::to_string(i) + ".png";
+      allStored = allStored && rig.files().put("chat", n, pngPixel(), err);
+      tx.script.push_back(anyHead("seen"));
+      rig.sayWithPhotos("owner", "photo " + std::to_string(i), {inFiles(n)});
+    }
+    c.ok(allStored, "photo 300 stores like photo 1");
+    c.eqi((long)rig.files().count(), 0, "and nothing is left in Files");
+    c.ok(rig.files().put("notes", "a.txt", "hello", err), "and the assistant's own files still have room");
+  }
+  clearEnv();
+}
+
+static void testHeldPhotoBytesBounded(ndtest::Ctx& c) {
+  std::printf("  -- (m2) photos waiting for their turn are bounded in RAM --\n");
+  clearEnv();
+  const std::string dir = ndtest::scratchDir("vp-m3");
+  ndtest::rmTree(dir);
+  fsutil::mkdirs(dir);
+  TelegramAccess access(dir);
+  std::string err;
+  access.setAllowCsv("123", err);
+  c.eqi((long)photoBudget().used(), 0, "nothing held at the start");
+  TgInboundIo io;
+  const std::string big(nimbus::orch::kImagePartBytes, 'x');
+  std::vector<std::vector<PhotoIn>> waiting;   // the engine's queue while a long turn runs
+  int fetched = 0;
+  io.send = [](const std::string&, const std::string&) {};
+  io.fetchFile = [&](const std::string&, std::string& bytes, std::string&) {
+    fetched++;
+    bytes = big;
+    return true;
+  };
+  io.photoTurn = [&](const std::string&, const std::string&, const std::vector<PhotoIn>& p) { waiting.push_back(p); };
+  size_t peak = 0;
+  for (int album = 0; album < 40; album++) {
+    std::vector<nimbus::tg::Update> ups;
+    const std::string group = "alb" + std::to_string(album);
+    for (int k = 0; k < 10; k++) ups.push_back(tgPhoto("123", k ? "" : "look", group, "f"));
+    routeTelegramUpdates(ups, access, io, 1000 + album);
+    peak = std::max(peak, photoBudget().used());
+  }
+  c.ok(peak <= kPhotoHoldMaxBytes, "the bytes held never pass the bound");
+  c.ok(peak >= kPhotoHoldMaxBytes - 20 * nimbus::orch::kImagePartBytes, "and the bound is what stopped them");
+  c.eqi((long)waiting.size(), 40, "every message still reaches a turn");
+  c.ok(has(waiting.back()[0].why, "waiting"), "a photo past the bound reaches its turn as the reason");
+  c.ok(fetched < 400, "and it is not downloaded");
+  // A copy of the queue holds no second copy of the bytes.
+  {
+    const auto copy = waiting;
+    c.eqi((long)photoBudget().used(), (long)peak, "copies share the bytes");
+    c.ok(copy.size() == waiting.size(), "the copy is whole");
+  }
+  waiting.clear();
+  c.eqi((long)photoBudget().used(), 0, "and a finished turn gives them back");
+  clearEnv();
+}
+
+static void testTelegramDownload(ndtest::Ctx& c) {
+  std::printf("  -- (n) the Telegram download itself --\n");
+  clearEnv();
+  const std::string dir = ndtest::scratchDir("vp-n");
+  ndtest::rmTree(dir);
+  fsutil::mkdirs(dir);
+  const std::string tok = "123456:TESTTOKEN";
+  const auto getFile = [](const std::string& body) {
+    Exchange e;
+    e.expectHost = "api.telegram.org";
+    e.expectPathContains = "/getFile?file_id=FID";
+    e.body = body;
+    return e;
+  };
+  {
+    FakeHttpTransport tx;
+    tx.script.push_back(getFile(R"({"ok":true,"result":{"file_id":"FID","file_size":5,"file_path":"photos/file_7.jpg"}})"));
+    Exchange file;
+    file.expectHost = "api.telegram.org";
+    file.body = "BYTES";
+    tx.script.push_back(file);
+    TelegramChannel ch(tok, &tx, dir + "/o1");
+    std::string out, err;
+    c.ok(ch.fetchFile("FID", 100, out, err), "a photo downloads");
+    c.eq(out, "BYTES", "with its bytes");
+    c.ok(tx.seen.size() == 2 && tx.seen[1].path == "/file/bot" + tok + "/photos/file_7.jpg", "from the file host's own path");
+  }
+  {
+    // Telegram writes the path with escaped slashes in some answers.
+    FakeHttpTransport tx;
+    tx.script.push_back(getFile(R"({"ok":true,"result":{"file_id":"FID","file_path":"photos\/file_8.jpg"}})"));
+    Exchange file;
+    file.body = "B";
+    tx.script.push_back(file);
+    TelegramChannel ch(tok, &tx, dir + "/o2");
+    std::string out, err;
+    c.ok(ch.fetchFile("FID", 100, out, err), "an escaped path downloads");
+    c.ok(tx.seen.size() == 2 && tx.seen[1].path == "/file/bot" + tok + "/photos/file_8.jpg", "unescaped on the wire");
+  }
+  {
+    FakeHttpTransport tx;
+    tx.script.push_back(getFile(R"({"ok":true,"result":{"file_size":101,"file_id":"FID","file_path":"photos/big.jpg"}})"));
+    TelegramChannel ch(tok, &tx, dir + "/o3");
+    std::string out, err;
+    c.ok(!ch.fetchFile("FID", 100, out, err), "a file over the limit by its reported size is refused");
+    c.eq(err, "too large", "saying so");
+    c.eqi((long)tx.seen.size(), 1, "before any bytes move");
+  }
+  {
+    FakeHttpTransport tx;
+    tx.script.push_back(getFile(R"({"ok":true,"result":{"file_id":"FID","file_path":"photos/unsized.jpg"}})"));
+    Exchange file;
+    file.body = std::string(101, 'x');
+    tx.script.push_back(file);
+    TelegramChannel ch(tok, &tx, dir + "/o4");
+    std::string out, err;
+    c.ok(!ch.fetchFile("FID", 100, out, err), "an unsized file over the limit is refused on arrival");
+    c.eq(err, "too large", "saying so");
+    c.ok(out.empty(), "and none of it is kept");
+    c.ok(tx.seen.size() == 2 && tx.seen[1].maxResponseBytes > 0 && tx.seen[1].maxResponseBytes <= 100 + 1,
+         "the transport is told to stop reading past the limit");
+  }
+  {
+    FakeHttpTransport tx;
+    Exchange gone = getFile(R"({"ok":false,"description":"file is too big"})");
+    gone.status = 400;
+    tx.script.push_back(gone);
+    TelegramChannel ch(tok, &tx, dir + "/o5");
+    std::string out, err;
+    c.ok(!ch.fetchFile("FID", 100, out, err), "Telegram's own refusal is a failed download");
+    c.eq(err, "the download failed", "in plain words");
+  }
+  {
+    FakeHttpTransport tx;
+    tx.script.push_back(getFile(R"({"ok":true,"result":{"file_id":"FID"}})"));
+    TelegramChannel ch(tok, &tx, dir + "/o6");
+    std::string out, err;
+    c.ok(!ch.fetchFile("FID", 100, out, err), "an answer with no path is a failed download");
+    c.eqi((long)tx.seen.size(), 1, "and no second request goes out");
+  }
+}
+
+static void testTelegramRest(ndtest::Ctx& c) {
+  std::printf("  -- (j2) an album past the cap, and a caption on what it cannot read --\n");
+  clearEnv();
+  const std::string dir = ndtest::scratchDir("vp-j2");
+  ndtest::rmTree(dir);
+  fsutil::mkdirs(dir);
+  TelegramAccess access(dir);
+  std::string err;
+  access.setAllowCsv("123", err);
+  TgInboundIo io;
+  std::vector<size_t> sizes;
+  std::vector<std::string> sent, turnTexts;
+  io.send = [&](const std::string&, const std::string& t) { sent.push_back(t); };
+  io.turn = [&](const std::string&, const std::string& t) { turnTexts.push_back(t); };
+  io.photoTurn = [&](const std::string&, const std::string&, const std::vector<PhotoIn>& p) { sizes.push_back(p.size()); };
+  io.fetchFile = [&](const std::string&, std::string& b, std::string&) {
+    b = pngPixel();
+    return true;
+  };
+  std::vector<nimbus::tg::Update> album;
+  for (size_t i = 0; i < nimbus::orch::kTurnImageMax + 2; i++) album.push_back(tgPhoto("123", "", "big", "f"));
+  routeTelegramUpdates(album, access, io, 1000);
+  c.ok(sizes.size() == 2 && sizes[0] == nimbus::orch::kTurnImageMax && sizes[1] == 2,
+       "an album past the cap fills one turn, and the rest are the next: none lost");
+
+  // A file, a voice note, a video with words: the words reach the head, and it knows.
+  using K = nimbus::tg::Attachment::Kind;
+  const struct { K kind; const char* word; } cases[] = {
+      {K::Document, "file"},   {K::Voice, "voice note"},  {K::Video, "video"},      {K::Sticker, "sticker"},
+      {K::Audio, "audio"},     {K::VideoNote, "video"},   {K::Animation, "animation"}, {K::Other, "attachment"}};
+  for (const auto& kase : cases) {
+    sent.clear();
+    turnTexts.clear();
+    nimbus::tg::Update u;
+    u.chatId = "123";
+    u.text = "what is the total on this invoice?";
+    u.attachment.kind = kase.kind;
+    u.attachment.fileId = "F";
+    routeTelegramUpdates({u}, access, io, 2000);
+    c.eqi((long)turnTexts.size(), 1, std::string(kase.word) + ": the words reach a turn");
+    c.ok(!turnTexts.empty() && has(turnTexts[0], "what is the total") && has(turnTexts[0], kase.word),
+         std::string(kase.word) + ": and the head is told what came with them");
+    c.ok(!turnTexts.empty() && has(turnTexts[0], "did not reach you"), std::string(kase.word) + ": that it did not reach it");
+    c.ok(sent.size() == 1 && has(sent[0], "text and photos"), std::string(kase.word) + ": and the sender hears what this bot reads");
+  }
+  // Plain words are plain words: nothing is added.
+  sent.clear();
+  turnTexts.clear();
+  nimbus::tg::Update plain;
+  plain.chatId = "123";
+  plain.text = "hello";
+  routeTelegramUpdates({plain}, access, io, 3000);
+  c.ok(turnTexts.size() == 1 && turnTexts[0] == "hello", "a plain message is untouched");
+  c.ok(sent.empty(), "and gets no extra line");
+}
+
+static void testActivityRecording(ndtest::Ctx& c) {
+  std::printf("  -- (k) activity recording is what the page says --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", "cumulo_sk_test_TRACE", 1);
+  auto o = opts("vp-k");
+  o.toolLoop = true;
+  const auto toolTurn = [](FakeHttpTransport& tx) {
+    Exchange call;
+    call.expectPathContains = "/responses";
+    call.body = "{\"id\":\"r1\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"docs_search\","
+                "\"arguments\":\"{\\\"query\\\":\\\"routines\\\"}\"}],\"usage\":{\"input_tokens\":5,\"output_tokens\":5}}";
+    tx.script.push_back(call);
+    tx.script.push_back(loopFinal("looked it up"));
+  };
+  FakeHttpTransport tx;
+  {
+    Config cfg;
+    NimbusdRig rig(cfg, o, &tx);
+    {
+      Web web(rig);
+      c.ok(has(web.call("GET", "/api/orch").body, "\"orchTrace\":true"), "the page reads recording on, as it is");
+    }
+    toolTurn(tx);
+    rig.say("owner", "first");
+    Web web(rig);
+    const std::string on = web.call("GET", "/api/mem/episodic?limit=50").body;
+    c.ok(has(on, "\"kind\":\"tool_output\""), "on: the tool call left its row");
+    c.eqi(web.call("POST", "/api/orch", "orchTrace=0").status, 200, "the box turns it off");
+    c.ok(has(web.call("GET", "/api/orch").body, "\"orchTrace\":false"), "and the page reads off");
+  }
+  {
+    Config cfg;
+    NimbusdRig rig(cfg, o, &tx);
+    {
+      Web web(rig);
+      c.ok(has(web.call("GET", "/api/orch").body, "\"orchTrace\":false"), "off survives a restart");
+      const size_t before = web.call("GET", "/api/mem/episodic?limit=50").body.find("\"text\":\"second\"");
+      c.ok(before == std::string::npos, "nothing yet from the next turn");
+    }
+    toolTurn(tx);
+    rig.say("owner", "second");
+    Web web(rig);
+    const std::string off = web.call("GET", "/api/mem/episodic?limit=50").body;
+    c.ok(has(off, "second"), "the message itself is kept");
+    const size_t at = off.find("second");
+    c.ok(off.find("tool:docs_search", 0) == off.rfind("tool:docs_search") || !has(off.substr(0, at), "tool:docs_search"),
+         "off: this turn's tool call left no new row");
+    int rows = 0;
+    for (size_t p = off.find("\"kind\":\"tool_output\""); p != std::string::npos; p = off.find("\"kind\":\"tool_output\"", p + 1)) rows++;
+    c.eqi(rows, 1, "only the row from when it was on");
+    c.eqi(web.call("POST", "/api/orch", "orchTrace=1").status, 200, "and it turns back on");
+  }
+  clearEnv();
+}
+
+static void testHeldAndRoutineGuards(ndtest::Ctx& c) {
+  std::printf("  -- (o) the guards around held turns and routines --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", "cumulo_sk_test_GUARDS", 1);
+  {
+    // A routine due into a member's chat while the owner's work is unreported defers.
+    const auto o = opts("vp-o");
+    fsutil::mkdirs(o.dataDir + "/mem");
+    std::vector<orch::LoopRecord> seed(1);
+    seed[0].id = "lpmember";
+    seed[0].name = "for sam";
+    seed[0].prompt = "RUN-FOR-SAM";
+    seed[0].chatId = "666";
+    seed[0].sched.kind = orch::SchedKind::Once;
+    seed[0].sched.intervalSec = 300;
+    seed[0].createdBy = orch::CreatedBy::Owner;
+    seed[0].approved = true;
+    seed[0].nextRun = (uint64_t)time(nullptr) - 30;
+    fsutil::writeFileAtomic(o.dataDir + "/mem/loops.json", orch::dumpLoops(seed));
+    FakeHttpTransport tx;
+    tx.script.push_back(headJson("{\"reply\":\"Starting.\",\"memory\":\"\",\"session_ops\":[{\"op\":\"spawn\",\"task\":\"work\"}]}"));
+    Exchange sub;
+    sub.expectPathContains = "/chat/completions";
+    sub.body = "{\"choices\":[{\"message\":{\"content\":\"the owner's private answer\"}}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":2}}";
+    tx.script.push_back(sub);
+    Config cfg;
+    NimbusdRig rig(cfg, o, &tx);
+    std::string err;
+    rig.telegramAccess().approve("555", "Roy", err);
+    rig.telegramAccess().approve("666", "Sam", err);
+    rig.telegramAccess().setRole("555", orch::Role::Admin, err);
+    rig.say("555", "start the work");
+    for (int i = 0; i < 200 && !rig.jobs().hasFreshResults(); i++) {
+      rig.pumpJobs();
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    c.ok(rig.turnMustWait("666"), "the owner's unreported work makes a member wait");
+    const size_t seen = tx.seen.size();
+    rig.loopsTick([](bool) {});
+    c.eqi((long)tx.seen.size(), (long)seen, "a routine into that member's chat sends nothing while it waits");
+    c.ok(has(rig.routines().json(), "lpmember"), "and is kept for its next try, not spent");
+  }
+  clearEnv();
+  {
+    // Past the bound the oldest waiting message goes, and whoever waits on it stops.
+    EngineThread::HeldQueue q;
+    std::atomic<int> firstEnded{0}, restEnded{0};
+    EngineThread::Held first;
+    first.chat = "666";
+    first.text = "the oldest";
+    first.ended = [&firstEnded] { firstEnded.fetch_add(1); };
+    q.push(first);
+    for (size_t i = 0; i < EngineThread::kHeldMax - 1; i++) {
+      EngineThread::Held m;
+      m.chat = "666";
+      m.ended = [&restEnded] { restEnded.fetch_add(1); };
+      q.push(m);
+    }
+    c.eqi(firstEnded.load(), 0, "nothing is dropped up to the bound");
+    EngineThread::Held last;
+    last.chat = "666";
+    q.push(last);
+    c.eqi(firstEnded.load(), 1, "past it the oldest waiter is released, not left hanging");
+    c.eqi(restEnded.load(), 0, "and only that one");
+    c.eqi((long)q.items.size(), (long)EngineThread::kHeldMax, "the queue stays at its bound");
+  }
+  {
+    // A loop id that comes up twice is drawn again.
+    setenv("CUMULO_API_KEY", "cumulo_sk_test_LOOPID", 1);
+    FakeHttpTransport tx;
+    Config cfg;
+    NimbusdRig rig(cfg, opts("vp-o2"), &tx);
+    const uint32_t draws[] = {7, 7, 7, 9};
+    size_t at = 0;
+    rig.routines().setIdSource([&] { return draws[at++ % 4]; });
+    JsonDocument d;
+    deserializeJson(d, R"({"kind":"daily","at":"09:00"})");
+    const auto a = rig.routines().create("a", "one", "owner", d.as<JsonObjectConst>(), false, false);
+    const auto b = rig.routines().create("b", "two", "owner", d.as<JsonObjectConst>(), false, false);
+    c.ok(a.ok && b.ok, "both routines are made");
+    c.ok(a.id != b.id, "an id already in use is never reused");
+    rig.routines().setIdSource(nullptr);
+    clearEnv();
+  }
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== a hosted instance does what the device does (offline) ===\n");
   testTelegramPhotos(c);
+  testTelegramRest(c);
+  testTelegramDownload(c);
+  testHeldPhotoBytesBounded(c);
+  testChatPhotoLeavesNoEntry(c);
+  testActivityRecording(c);
+  testHeldAndRoutineGuards(c);
   testHistoryAndFold(c);
   testWebChatContract(c);
   testToolRows(c);
+  testJobsOnTheRoute(c);
   testEmbeddings(c);
   testRoutines(c);
   testSkills(c);

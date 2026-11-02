@@ -94,6 +94,9 @@ class HostedLoops {
     persist();
   }
 
+  // Tests: where a new id's digits come from (null = random).
+  void setIdSource(std::function<uint32_t()> src) { idSource_ = std::move(src); }
+
   Created create(const std::string& name, const std::string& prompt, const std::string& chatId,
                  ArduinoJson::JsonObjectConst schedule, bool byAgent, bool inScheduled) {
     Created r;
@@ -264,7 +267,7 @@ class HostedLoops {
     static std::mt19937 rng{std::random_device{}()};
     for (;;) {
       char b[10];
-      snprintf(b, sizeof b, "lp%06x", (unsigned)(rng() & 0xFFFFFF));
+      snprintf(b, sizeof b, "lp%06x", (unsigned)((idSource_ ? idSource_() : rng()) & 0xFFFFFF));
       if (!find(b)) return b;
     }
   }
@@ -413,6 +416,7 @@ class HostedLoops {
   std::vector<nimbus::orch::LoopRecord> loops_;
   nimbus::orch::DeviceCounters dev_;
   nimbus::orch::LoopCaps caps_;
+  std::function<uint32_t()> idSource_;
   HostedLoopHooks h_;
   std::string path_, modePath_;
   bool askFirst_ = false;
