@@ -25,7 +25,9 @@ guard = port_guard.load()
 BENCH_MAC = "AA:BB:CC:00:11:22"
 # Built from the guard's own list, never written out: a MAC in a runner is how it gets pasted into a command.
 FORBIDDEN = ":".join(next(iter(guard.FORBIDDEN_MACS))[i : i + 2] for i in range(0, 12, 2))
-ENV_TEXT = "NIMBUS_TEST_STA_SSID=bench-ssid\nNIMBUS_TEST_STA_PASS=bench-pass\nANTHROPIC_API_KEY=sk-fake-not-a-real-key\n"
+ENV_TEXT = (
+    "NIMBUS_TEST_STA_SSID=bench-ssid\nNIMBUS_TEST_STA_PASS=bench-pass\nANTHROPIC_API_KEY=sk-fake-not-a-real-key\n"
+)
 
 
 @pytest.fixture
@@ -40,12 +42,14 @@ def bus(tmp_path, monkeypatch):
     return str(node)
 
 
-def make_gate(tmp_path, device, console, port, no_console=False, env_text=ENV_TEXT, ask=lambda question: True):
+def make_gate(tmp_path, device, console, port, opts=None):
+    """A Gate over the fake device. ``opts``: no_console, env_text, ask."""
+    opts = opts or {}
     env = tmp_path / "env"
-    env.write_text(env_text)
+    env.write_text(opts.get("env_text", ENV_TEXT))
     out = tmp_path / "ev"
     argv = ["--out", str(out), "--env-file", str(env), "--ip", device.ip]
-    if no_console:
+    if opts.get("no_console"):
         token_file = tmp_path / "tok"
         token_file.write_text(fake.TOKEN)
         argv += ["--no-console", "--token-file", str(token_file)]
@@ -57,7 +61,7 @@ def make_gate(tmp_path, device, console, port, no_console=False, env_text=ENV_TE
         args=args,
         ev=bd.Evidence(str(out), api.scrub),
         api=api,
-        ask=ask,
+        ask=opts.get("ask", lambda question: True),
         open_console=lambda: console,
         settle_s=0.01,
     )
@@ -67,9 +71,9 @@ def grades(verdict):
     return {row["step"]: row["grade"] for row in verdict["steps"]}
 
 
-def console_gate(tmp_path, bus, device, **overrides):
+def console_gate(tmp_path, bus, device, opts=None):
     console = fake.FakeConsole(device, ip_on_join=device.ip)
-    return console, og.run_gate(make_gate(tmp_path, device, console, bus, **overrides))
+    return console, og.run_gate(make_gate(tmp_path, device, console, bus, opts))
 
 
 def test_a_fresh_unit_passes_the_whole_gate(tmp_path, bus):
@@ -103,7 +107,7 @@ def test_a_unit_that_is_not_fresh_fails_and_the_rest_do_not_run(tmp_path, bus):
 def test_a_missing_provider_key_blocks_the_gate_never_passes(tmp_path, bus):
     env_text = ENV_TEXT.replace("ANTHROPIC_API_KEY=sk-fake-not-a-real-key\n", "")
     with fake.FakeDevice() as device:
-        _, verdict = console_gate(tmp_path, bus, device, env_text=env_text)
+        _, verdict = console_gate(tmp_path, bus, device, {"env_text": env_text})
     got = grades(verdict)
     assert verdict["grade"] == "BLOCKED"
     assert got["provider"] == "BLOCKED"
@@ -131,7 +135,8 @@ def test_a_crash_on_the_restart_fails_the_gate(tmp_path, bus):
 
 def test_no_console_without_a_person_is_blocked_not_pass(tmp_path):
     with fake.FakeDevice() as device:
-        verdict = og.run_gate(make_gate(tmp_path, device, None, None, no_console=True, ask=lambda question: None))
+        opts = {"no_console": True, "ask": lambda question: None}
+        verdict = og.run_gate(make_gate(tmp_path, device, None, None, opts))
     got = grades(verdict)
     assert verdict["grade"] == "BLOCKED"
     assert got["is-fresh"] == "BLOCKED"
@@ -147,7 +152,7 @@ def test_no_console_with_a_person_passes(tmp_path):
                 device.restart()
             return True
 
-        verdict = og.run_gate(make_gate(tmp_path, device, None, None, no_console=True, ask=ask))
+        verdict = og.run_gate(make_gate(tmp_path, device, None, None, {"no_console": True, "ask": ask}))
     assert verdict["grade"] == "PASS", verdict["steps"]
 
 

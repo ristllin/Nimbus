@@ -114,7 +114,12 @@ def clean_scan():
 
 
 def grade(polls=None, turn_rows=None, scan=None, plan=None):
-    return soak.grade_run(plan or PLAN, run_polls() if polls is None else polls, turns() if turn_rows is None else turn_rows, scan or clean_scan())
+    return soak.grade_run(
+        plan or PLAN,
+        run_polls() if polls is None else polls,
+        turns() if turn_rows is None else turn_rows,
+        scan or clean_scan(),
+    )
 
 
 def test_a_clean_24_hours_passes():
@@ -135,9 +140,15 @@ def _with(row_index, **overrides):
     [
         ([poll(float(t), bootN=7 if t < 40000 else 8) for t in range(0, int(24 * HOUR) + 1, 300)], "restarted"),
         (_with(200, uptimeMs=5), "uptime went back"),
-        ([poll(float(t), crashFp=None if t < 40000 else "deadbeef") for t in range(0, int(24 * HOUR) + 1, 300)], "crash"),
+        (
+            [poll(float(t), crashFp=None if t < 40000 else "deadbeef") for t in range(0, int(24 * HOUR) + 1, 300)],
+            "crash",
+        ),
         ([poll(float(t), crashNew=t >= 40000) for t in range(0, int(24 * HOUR) + 1, 300)], "crash record"),
-        ([poll(float(t), lowWater=14000 if t < 2 * HOUR else 7000) for t in range(0, int(24 * HOUR) + 1, 300)], "low water"),
+        (
+            [poll(float(t), lowWater=14000 if t < 2 * HOUR else 7000) for t in range(0, int(24 * HOUR) + 1, 300)],
+            "low water",
+        ),
         ([poll(float(t), nvsFree=7000 - t // 300) for t in range(0, int(24 * HOUR) + 1, 300)], "settings store"),
         (_with(10, http=0, err="timed out"), "no answer"),
         (_with(10, s=6.0), "slowest poll"),
@@ -178,7 +189,11 @@ def test_a_low_memory_turn_in_the_log_is_a_fail():
         ([poll(float(t)) for t in range(0, int(24 * HOUR) + 1, 3600)], None, "hole"),
         ([], None, "no poll"),
         ([{**poll(float(t)), "lowWater": None} for t in range(0, int(24 * HOUR) + 1, 300)], None, "low-water"),
-        ([{**poll(float(t)), "allocFails": None} for t in range(0, int(24 * HOUR) + 1, 300)], None, "failed-allocation"),
+        (
+            [{**poll(float(t)), "allocFails": None} for t in range(0, int(24 * HOUR) + 1, 300)],
+            None,
+            "failed-allocation",
+        ),
         ([{**poll(float(t)), "bootN": None} for t in range(0, int(24 * HOUR) + 1, 300)], None, "boot count"),
         ([{**poll(float(t)), "nvsFree": None} for t in range(0, int(24 * HOUR) + 1, 300)], None, "settings-store"),
         ([{**poll(float(t)), "dreamKnown": False} for t in range(0, int(24 * HOUR) + 1, 300)], None, "dream"),
