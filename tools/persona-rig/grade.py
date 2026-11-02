@@ -106,6 +106,13 @@ def tool_result_regex(rec, arg, _ctx):
     """The daemon folds each anatomy line at 200 characters, so only a result's start can match."""
     return _tool_field_regex(rec, arg, "result")
 
+def write_result_regex(rec, arg, _ctx):
+    """What a memory write answered, by either path: a tool call's result, or the log line
+    of the reply's mem_write field (which reaches the head only on the next turn)."""
+    text = "\n".join([rec.get("log") or ""] + [str(t.get("result", "")) for t in rec.get("tools") or []])
+    m = re.search(arg, text, re.I)
+    return m is not None, m.group(0) if m else f"no match in {len(text)} bytes of log and tool results"
+
 
 def log_regex(rec, arg, _ctx):
     text = rec.get("log", "")
@@ -226,6 +233,7 @@ ASSERTIONS = {
     "tool_args_regex": tool_args_regex,
     "tool_result_regex": tool_result_regex,
     "no_fabricated_action": no_fabricated_action,
+    "write_result_regex": write_result_regex,
     "log_regex": log_regex,
     "log_not_regex": log_not_regex,
     "http_status": http_status,

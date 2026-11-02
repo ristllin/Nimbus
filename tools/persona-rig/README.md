@@ -171,6 +171,7 @@ one passing and one failing case for every entry.
 | `turn_resolved` | bool | the turn's own poll answered, which the page's spinner needs |
 | `tool_called`, `tool_not_called` | name | a head tool of this step (`files_read`, not `files.read`) |
 | `tool_args_regex`, `tool_result_regex` | `{"tool", "regex"}` | a call of that tool whose arguments or result match |
+| `write_result_regex` | regex | what a memory write answered: a tool result, or the log line of the reply's `mem_write` field |
 | `log_regex`, `log_not_regex` | regex | the daemon log lines this step added |
 | `http_status`, `body_contains`, `body_not_contains`, `body_regex` | value | the `http` or `upload` response |
 | `tokens_max` | number | input plus output tokens of the step |

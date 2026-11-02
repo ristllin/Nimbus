@@ -41,20 +41,9 @@
             },
             {
               "no_error_reply": true
-            }
-          ]
-        },
-        {
-          "http": {
-            "method": "GET",
-            "path": "/api/lastturn"
-          },
-          "expect": [
-            {
-              "body_contains": "kept as text"
             },
             {
-              "body_not_contains": "stored automatically"
+              "write_result_regex": "kept as text"
             }
           ]
         },

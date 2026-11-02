@@ -405,6 +405,7 @@ CASES = {
     "tool_args_regex": ({"tool": "files_read", "regex": "notes"}, REC, {"tool": "files_read", "regex": "other"}),
     "tool_result_regex": ({"tool": "files_read", "regex": "hello"}, REC, {"tool": "files_write", "regex": "hello"}),
     "no_fabricated_action": (True, {**REC, "reply": "I've emailed it.", "replies": []}, True),
+    "write_result_regex": ("kept as text", {**REC, "tools": [{"name": "memory_write", "result": "kept as text: memory m1"}]}, "stored memory"),
     "log_regex": (r"fold\(owner\): ok", REC, "no such line"),
     "log_not_regex": ("no such line", REC, "fold"),
     "http_status": (200, REC, 400),
