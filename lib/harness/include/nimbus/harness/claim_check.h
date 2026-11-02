@@ -107,7 +107,8 @@ class ClaimCheck {
   // The ledger flags a tool call's arguments carry (kFxPermanent for a memory
   // written or updated with permanent:true, kFxVoice for reply.telegram
   // voice:true, kFxHealth for a read of the device's own state, kFxLogRow for a
-  // files.append into a .csv or .log file, kept only if its result counts a row).
+  // files.append into a .csv or .log file, kept only if its result counts a row, kFxMusic for
+  // media.play, kept only if its result says the player is playing).
   static uint16_t toolCallFlags(const std::string& regName, const std::string& argsJson);
   // Sub-agent results this turn read: how many had a lookup behind them and how
   // many were live-data results with none.
