@@ -658,26 +658,10 @@ static bool paidProbeAllowed(const String& provider) {
   return false;
 }
 
-// Probes each candidate the catalog knows and folds the verdicts into it. True when a
-// verdict changed something; `sent` says whether any request went out.
-static bool probeCandidates(const String& provider, const String* cands, int nc,
-                            std::vector<nimbus::orch::ModelInfo>& cat, bool& sent) {
-  bool changed = false;
-  for (int i = 0; i < nc; ++i) {
-    nimbus::orch::ModelInfo* found = nullptr;
-    for (auto& mi : cat)
-      if (mi.id == cands[i].c_str()) { found = &mi; break; }
-    if (!found) continue;
-    sent = true;
-    const nimbus::orch::ProbeVerdict v = probeModel(provider, cands[i]);
-    if (v == nimbus::orch::ProbeVerdict::Unknown) continue;
-    found->usable = (v == nimbus::orch::ProbeVerdict::Usable);
-    found->probed = true;
-    changed = true;
-    alogf("verify: %s probe %s -> %s", provider.c_str(), cands[i].c_str(),
-          found->usable ? "usable" : "UNUSABLE");
-  }
-  return changed;
+static nimbus::orch::ModelInfo* findCandidate(std::vector<nimbus::orch::ModelInfo>& cat, const String& id) {
+  for (auto& mi : cat)
+    if (mi.id == id.c_str()) return &mi;
+  return nullptr;
 }
 
 // Probe the owner's SELECTED models for a provider (bounded to protect the single
@@ -698,8 +682,19 @@ static void probeSelectedModels(const String& provider) {
     return;
   // Last, so a parked provider's one re-check is never taken by a pass with nothing to send.
   if (!paidProbeAllowed(provider)) return;
-  bool sent = false;
-  const bool changed = probeCandidates(provider, cands, nc, cat, sent);
+  bool sent = false, changed = false;
+  for (int i = 0; i < nc; ++i) {
+    nimbus::orch::ModelInfo* found = findCandidate(cat, cands[i]);
+    if (!found) continue;
+    sent = true;
+    const nimbus::orch::ProbeVerdict v = probeModel(provider, cands[i]);
+    if (v == nimbus::orch::ProbeVerdict::Unknown) continue;
+    found->usable = (v == nimbus::orch::ProbeVerdict::Usable);
+    found->probed = true;
+    changed = true;
+    alogf("verify: %s probe %s -> %s", provider.c_str(), cands[i].c_str(),
+          found->usable ? "usable" : "UNUSABLE");
+  }
   if (changed && !store::setModelStoreText(provider, nimbus::orch::serializeModelStore(meta, cat)))
     alogf("verify: %s probe verdicts not stored (file write failed)", provider.c_str());
   if (!sent) gate::handBack(provider.c_str());

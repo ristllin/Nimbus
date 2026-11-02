@@ -230,8 +230,7 @@ static void testAccountRefusal(ndtest::Ctx& c) {
   clearProviderEnv();
   setenv("CUMULO_API_KEY", kKey, 1);
   FakeHttpTransport tx;
-  // The engine retries a failed head once on a fresh conversation: both refused.
-  tx.script.push_back(ex("/router/openai/v1/responses", 402, refusal("credits_or_subscription_required")));
+  // A refusal of the account comes back the same: no same-host retry.
   tx.script.push_back(ex("/router/openai/v1/responses", 402, refusal("credits_or_subscription_required")));
   tx.script.push_back(ex("/router/openai/v1/responses", 200, respBody("topped up")));
   Config cfg;
@@ -302,13 +301,10 @@ static void testHonestCauses(ndtest::Ctx& c) {
   clearProviderEnv();
   setenv("CUMULO_API_KEY", kKey, 1);
   FakeHttpTransport tx;
-  // The pick is refused, then the default too; the engine retries the head once.
-  for (int i = 0; i < 2; i++) {
-    tx.script.push_back(ex("/router/anthropic/v1/messages", 403, refusal("model_not_priced")));
-    tx.script.push_back(ex("/router/openai/v1/responses", 403, refusal("model_not_priced")));
-  }
-  for (int i = 0; i < 2; i++)
-    tx.script.push_back(ex("/router/openai/v1/responses", 403, refusal("native_tool_not_metered")));
+  // The pick is refused, then the default too. A cause is not retried on the same head.
+  tx.script.push_back(ex("/router/anthropic/v1/messages", 403, refusal("model_not_priced")));
+  tx.script.push_back(ex("/router/openai/v1/responses", 403, refusal("model_not_priced")));
+  tx.script.push_back(ex("/router/openai/v1/responses", 403, refusal("native_tool_not_metered")));
   Config cfg;
   NimbusdRig rig(cfg, baseOpt("rh-j", false), &tx);
   rig.applyOrchModel("cumulo", "anthropic/claude-sonnet-5");
@@ -490,11 +486,9 @@ static void testRefusedFallbackFallsToDefault(ndtest::Ctx& c) {
   {
     FakeHttpTransport tx;
     tx.script.push_back(ex("/router/mistral/v1/conversations", 200, misBody("mistral here")));
-    for (int i = 0; i < 2; i++) {   // the engine retries a failed head once
-      tx.script.push_back(ex("/router/anthropic/v1/messages", 403, refusal("model_not_priced")));
-      tx.script.push_back(ex("/router/mistral/v1/conversations", 402, refusal("funding_cap_reached")));
-      tx.script.push_back(ex("/router/openai/v1/responses", 403, refusal("model_not_priced")));
-    }
+    tx.script.push_back(ex("/router/anthropic/v1/messages", 403, refusal("model_not_priced")));
+    tx.script.push_back(ex("/router/mistral/v1/conversations", 402, refusal("funding_cap_reached")));
+    tx.script.push_back(ex("/router/openai/v1/responses", 403, refusal("model_not_priced")));
     Config cfg;
     NimbusdRig rig(cfg, baseOpt("rh-m2", false), &tx);
     rig.applyOrchModel("cumulo", "mistral/mistral-large-latest");
@@ -502,7 +496,7 @@ static void testRefusedFallbackFallsToDefault(ndtest::Ctx& c) {
     rig.applyOrchModel("cumulo", "anthropic/claude-sonnet-5");
     const TurnRecord t = rig.say("owner", "hi again");
     c.ok(has(t.reply, "does not offer gpt-5.6 right now"), "a refused default gets its honest cause");
-    c.eqi((long)tx.seen.size(), 7, "three attempts per head run, never a loop");
+    c.eqi((long)tx.seen.size(), 4, "three attempts on the one head run, never a loop");
     c.eq(rig.modelFor("cumulo"), "anthropic/claude-sonnet-5", "nothing answered, so the pick is left alone");
   }
   clearProviderEnv();
@@ -518,22 +512,19 @@ static void testDefaultSpelledWithItsUpstream(ndtest::Ctx& c) {
   setenv("CUMULO_API_KEY", kKey, 1);
   {
     FakeHttpTransport tx;
-    for (int i = 0; i < 2; i++)   // one request per head run; the engine retries a failed head once
-      tx.script.push_back(ex("/router/openai/v1/responses", 403, refusal("model_not_priced")));
+    tx.script.push_back(ex("/router/openai/v1/responses", 403, refusal("model_not_priced")));
     Config cfg;
     NimbusdRig rig(cfg, baseOpt("rh-o", false), &tx);
     rig.applyOrchModel("cumulo", "openai/gpt-5.6");
     const TurnRecord t = rig.say("owner", "hi");
-    c.eqi((long)tx.seen.size(), 2, "one request per head run: the refused default is not re-tried as a fallback");
+    c.eqi((long)tx.seen.size(), 1, "one request: the refused default is not re-tried as a fallback");
     c.ok(has(t.reply, "does not offer openai/gpt-5.6"), "the cause names the model the owner picked");
   }
   {
     FakeHttpTransport tx;
     tx.script.push_back(ex("/router/openai/v1/responses", 200, respBody("default here")));
-    for (int i = 0; i < 2; i++) {
-      tx.script.push_back(ex("/router/anthropic/v1/messages", 403, refusal("model_not_priced")));
-      tx.script.push_back(ex("/router/openai/v1/responses", 402, refusal("funding_cap_reached")));
-    }
+    tx.script.push_back(ex("/router/anthropic/v1/messages", 403, refusal("model_not_priced")));
+    tx.script.push_back(ex("/router/openai/v1/responses", 402, refusal("funding_cap_reached")));
     Config cfg;
     NimbusdRig rig(cfg, baseOpt("rh-o2", false), &tx);
     rig.applyOrchModel("cumulo", "openai/gpt-5.6");
@@ -541,11 +532,10 @@ static void testDefaultSpelledWithItsUpstream(ndtest::Ctx& c) {
     rig.applyOrchModel("cumulo", "anthropic/claude-sonnet-5");
     rig.say("owner", "hi again");
     const char* const want[] = {"/router/openai/v1/responses", "/router/anthropic/v1/messages",
-                                "/router/openai/v1/responses", "/router/anthropic/v1/messages",
                                 "/router/openai/v1/responses"};
-    bool order = tx.seen.size() == 5;
-    for (size_t i = 0; order && i < 5; i++) order = tx.seen[i].path == want[i];
-    c.ok(order, "each head run: the pick, then the last working selector, never the same default again");
+    bool order = tx.seen.size() == 3;
+    for (size_t i = 0; order && i < 3; i++) order = tx.seen[i].path == want[i];
+    c.ok(order, "the head run: the pick, then the last working selector, never the same default again");
     c.eq(rig.modelFor("cumulo"), "anthropic/claude-sonnet-5", "nothing answered, so the pick is left alone");
   }
   {
