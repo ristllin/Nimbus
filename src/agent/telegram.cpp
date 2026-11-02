@@ -1437,7 +1437,8 @@ static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& w
   char proj[48];
   snprintf(proj, sizeof(proj), "chat-%s", in.slot.chatId);
   std::string ferr;
-  if (agent::files::saveStream(proj, fname, LittleFS, in.lfsPath, ferr, who.ns, in.hash)) return Kept::Stored;
+  if (agent::files::saveStream(proj, fname, agent::files::StagedFile{LittleFS, in.lfsPath}, ferr, who.ns, in.hash))
+    return Kept::Stored;
   alogf("telegram: attach store failed: %s", ferr.c_str());
   if (!agent::files::noteRefusal(ferr)) return Kept::Failed;
   sendFileStoreNotice();   // the episode's first refusal: queued before this turn's reply
@@ -1465,6 +1466,16 @@ static const char* refusalOf(const MediaSlot& m, const nimbus::orch::Principal& 
   if (m.size && m.size > nimbus::tg::kPhotoBudget) return nimbus::orch::kMediaTooLarge;
   if (files::wouldExceedQuota(who, m.size ? m.size : 1)) return nimbus::orch::kMediaOverQuota;
   return "";
+}
+
+// The same limit once the bytes are here and the real size and content are known: a copy
+// this sender already keeps is not charged twice. `contentHash` is the file's blob hash.
+static const char* refusalAfterFetch(const MediaSlot& m, const nimbus::orch::Principal& who, const char* localPath,
+                                     uint32_t total, std::string& contentHash) {
+  contentHash = hashFile(localPath);
+  if (files::holdsSameContent(m.chatId, contentHash, who.ns) || !files::wouldExceedQuota(who, total)) return "";
+  LittleFS.remove(localPath);
+  return nimbus::orch::kMediaOverQuota;
 }
 
 static const nimbus::tg::Update* pageUpdate(int32_t id);
@@ -1725,13 +1736,8 @@ static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string&
   size_t total = 0;
   alogf("telegram: media %d/%d fetch start (update %ld)", label.k, label.n, (long)m.updateId);
   why = fetchToLfs(m, localPath, nimbus::tg::kPhotoBudget, total);
-  const std::string contentHash = why[0] ? std::string() : hashFile(localPath);
-  // The bytes are here, so a copy this sender already keeps is not charged twice.
-  if (!why[0] && !files::holdsSameContent(m.chatId, contentHash, who.ns) &&
-      files::wouldExceedQuota(who, (uint32_t)total)) {
-    LittleFS.remove(localPath);
-    why = nimbus::orch::kMediaOverQuota;
-  }
+  std::string contentHash;
+  if (!why[0]) why = refusalAfterFetch(m, who, localPath, (uint32_t)total, contentHash);
   if (why[0]) return failedSegment(label, why, slot, seg);
   alogf("telegram: attachment downloaded %u bytes", (unsigned)total);
   downloading.end();

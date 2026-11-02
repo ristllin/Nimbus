@@ -95,10 +95,16 @@ def test_replies_fail_loudly_when_the_card_stays_busy(monkeypatch):
     "reply,kind",
     [
         (l71.SHORT_REPLY, "refused"),
-        ("That didn't finish - the device ran out of working memory for this request. "
-         "Already done this turn: device_log. Nothing is still running; try a shorter question or wait a minute.", "memory"),
-        ("That didn't finish - the device could not finish sending its request (memory is tight). "
-         "Your message was not answered.", "memory"),
+        (
+            "That didn't finish - the device ran out of working memory for this request. "
+            "Already done this turn: device_log. Nothing is still running; try a shorter question or wait a minute.",
+            "memory",
+        ),
+        (
+            "That didn't finish - the device could not finish sending its request (memory is tight). "
+            "Your message was not answered.",
+            "memory",
+        ),
         ("The oldest line in this read is seq 89.", "served"),
         ("", "bad"),
         ("   \n", "bad"),
@@ -116,4 +122,3 @@ def test_only_the_refusal_passes_the_under_the_floor_leg():
     for other in l71.MEMORY_ENDINGS:
         assert other != l71.SHORT_REPLY
         assert l71.classify_end(other + " for this request.") != "refused"
-

@@ -89,17 +89,7 @@ class PosixFiles {
             "Read a stored file's contents. Pass 'tail' (a row count) to read only the "
             "last rows of a log or CSV; with 'sum' (a numeric column) the tail also "
             "reports that column's total for today.",
-            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
-              const std::string p = str(a, "project"), n = str(a, "name");
-              std::string body;
-              if (!read(p, n, body))
-                return nimbus::orch::ToolResult::fail("no such file: " + p + "/" + n);
-              if (!nimbus::orch::fileReadableAsText(n, body))
-                return nimbus::orch::ToolResult::fail(nimbus::orch::kNotTextRefusal);
-              if (a["tail"].is<float>() && a["tail"].as<double>() >= 1)
-                return nimbus::orch::ToolResult::ok(tailWithTotal(n, body, a));
-              return nimbus::orch::ToolResult::ok(body);
-            },
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) { return readTool(a); },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"},"tail":{"type":"number"},"sum":{"type":"string"}},"required":["project","name"]})");
 
@@ -124,6 +114,17 @@ class PosixFiles {
             R"("name":{"type":"string"},"text":{"type":"string"},)"
             R"("key":{"type":"string"},"sum":{"type":"string"}},)"
             R"("required":["project","name","text"]})");
+  }
+
+  // files.read: the text of a stored file, or the rule's refusal (file_store.h).
+  nimbus::orch::ToolResult readTool(ArduinoJson::JsonObjectConst a) {
+    const std::string p = str(a, "project"), n = str(a, "name");
+    std::string body;
+    if (!read(p, n, body)) return nimbus::orch::ToolResult::fail("no such file: " + p + "/" + n);
+    if (!nimbus::orch::fileReadableAsText(n, body)) return nimbus::orch::ToolResult::fail(nimbus::orch::kNotTextRefusal);
+    if (a["tail"].is<float>() && a["tail"].as<double>() >= 1)
+      return nimbus::orch::ToolResult::ok(tailWithTotal(n, body, a));
+    return nimbus::orch::ToolResult::ok(body);
   }
 
   // ---- direct access (scenario seeding + assertions) ----

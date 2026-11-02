@@ -120,8 +120,11 @@ class OpenWrite {
 // instead of landing in a blob directory nothing accounts for. `contentHash` (the blob
 // hash in hex, "" = unknown): a copy this sender already keeps in `project` is not
 // stored or charged a second time, and the call succeeds.
-bool saveStream(const std::string& project, const std::string& name,
-                fs::FS& srcFs, const char* srcPath, std::string& err,
+struct StagedFile {
+  fs::FS& fs;
+  const char* path;
+};
+bool saveStream(const std::string& project, const std::string& name, const StagedFile& staged, std::string& err,
                 const std::string& ownerNs, const std::string& contentHash = std::string());
 // Does this sender already keep these bytes in chat `chatId`'s project?
 bool holdsSameContent(const char* chatId, const std::string& contentHash, const std::string& ns);

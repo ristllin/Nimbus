@@ -896,6 +896,34 @@ ToolResult lexicalSearchFallback(const MemoryContext& ctx, const std::string& qu
 }
 
 // ---- memory.search ----------------------------------------------------------
+// The semantic answer: the stored rows nearest `qv`, then the caller's queued facts. A
+// fact still queued has no vector yet (its write said search finds it meanwhile, and the
+// embedder may be back before the drain has run): up to half the answer, at least one
+// line, so a busy store cannot crowd out what the caller just wrote.
+ToolResult semanticAnswer(const MemoryContext& ctx, const std::string& query, const std::vector<int8_t>& qv,
+                          int k, const Principal& who) {
+  auto hits = ctx.vec->search(qv, k, ctx.nowHours(), readSetFor(who));   // TTL + v3.7.0 read boundary
+  const std::vector<std::string> waiting =
+      queuedHits(ctx.pending, lexParse(query), readSetFor(who), (size_t)std::max(1, k / 2));
+  const int room = k - (int)waiting.size();
+  // Apply the user/model relevance threshold (similarity = 1 - distance).
+  float thr = ctx.cfg ? ctx.cfg->relevanceThreshold : 0.0f;
+  std::string out;
+  int n = 0;
+  for (const auto& h : hits) {
+    if (n >= room) break;
+    if ((1.0f - h.distance) < thr) continue;
+    out += "- [" + std::to_string((int)(h.importance * 100)) + "%] " + h.content + "\n";
+    n++;
+  }
+  for (const auto& w : waiting) {
+    out += "- " + w + "\n";
+    n++;
+  }
+  if (n == 0) return ToolResult::ok("No relevant memories found.");
+  return ToolResult::ok("Found " + std::to_string(n) + " memories:\n" + out);
+}
+
 ToolResult doSearch(const MemoryContext& ctx, JsonObjectConst a, const Principal& who) {
   // A revoked (Unknown) principal keeps its namespace - the data is retained
   // for the admin - but it may no longer READ it. Gating only writes would let
@@ -919,29 +947,7 @@ ToolResult doSearch(const MemoryContext& ctx, JsonObjectConst a, const Principal
   }
   const std::vector<int8_t>& qv = t.vec;
 
-  auto hits = ctx.vec->search(qv, k, ctx.nowHours(), readSetFor(who));   // TTL + v3.7.0 read boundary
-  // A fact still queued has no vector yet (its write said search finds it meanwhile, and
-  // the embedder may be back before the drain has run): up to half the answer, at least
-  // one line, so a busy store cannot crowd out what the caller just wrote.
-  const std::vector<std::string> waiting =
-      queuedHits(ctx.pending, lexParse(query), readSetFor(who), (size_t)std::max(1, k / 2));
-  const int room = k - (int)waiting.size();
-  // Apply the user/model relevance threshold (similarity = 1 - distance).
-  float thr = ctx.cfg ? ctx.cfg->relevanceThreshold : 0.0f;
-  std::string out;
-  int n = 0;
-  for (const auto& h : hits) {
-    if (n >= room) break;
-    if ((1.0f - h.distance) < thr) continue;
-    out += "- [" + std::to_string((int)(h.importance * 100)) + "%] " + h.content + "\n";
-    n++;
-  }
-  for (const auto& w : waiting) {
-    out += "- " + w + "\n";
-    n++;
-  }
-  if (n == 0) return ToolResult::ok("No relevant memories found.");
-  return ToolResult::ok("Found " + std::to_string(n) + " memories:\n" + out);
+  return semanticAnswer(ctx, query, qv, k, who);
 }
 
 // ---- memory.archive (search/restore/list the SD cold store) -----------------

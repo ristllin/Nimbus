@@ -513,8 +513,7 @@ bool holdsSameContent(const char* chatId, const std::string& contentHash, const 
   return g_store.sameContent(std::string("chat-") + chatId, strtoull(contentHash.c_str(), nullptr, 16), ns) != nullptr;
 }
 
-bool saveStream(const std::string& project, const std::string& name,
-                fs::FS& srcFs, const char* srcPath, std::string& err,
+bool saveStream(const std::string& project, const std::string& name, const StagedFile& staged, std::string& err,
                 const std::string& ownerNs, const std::string& contentHash) {
   memory::Lock g;
   if (!available()) { err = "no SD card - artifact store absent"; return false; }
@@ -524,7 +523,7 @@ bool saveStream(const std::string& project, const std::string& name,
     alogf("files: %s/%s is a copy of %s - not stored again", project.c_str(), name.c_str(), same->name.c_str());
     return true;
   }
-  File src = srcFs.open(srcPath, FILE_READ);
+  File src = staged.fs.open(staged.path, FILE_READ);
   if (!src) { err = "couldn't read the staged file"; return false; }
   const size_t total = src.size();
   if (g_store.wouldExceed(project, name, total, err)) { src.close(); return false; }

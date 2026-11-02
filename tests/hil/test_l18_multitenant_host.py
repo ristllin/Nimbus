@@ -20,8 +20,11 @@ pytestmark = pytest.mark.host
     "result,landed",
     [
         ('{"text": "stored memory m0001 (pinned)"}', True),
-        ('{"text": "queued memory m0001, not stored yet: tls busy. It is kept on the device and stored '
-         'automatically when embeddings work again; keyword search finds it meanwhile."}', True),
+        (
+            '{"text": "queued memory m0001, not stored yet: tls busy. It is kept on the device and stored '
+            'automatically when embeddings work again; keyword search finds it meanwhile."}',
+            True,
+        ),
         # A full queue says "not stored" too, and must not pass as a write.
         ('{"text": "embedding failed (memory not stored: 16 memories are already waiting)"}', False),
         ('{"text": "this conversation is not approved to use memory"}', False),
