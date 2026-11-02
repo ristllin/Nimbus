@@ -50,8 +50,16 @@ def test_write_landed(result, landed):
         ),
         ("No relevant memories found.", "LOCKER-1", False),
         # The leg's _text is json.dumps of the MCP result, so its newlines arrive escaped.
-        (json.dumps({"text": "Found 2 memories:\n- [pending, not stored yet] other\n- [100%] is LOCKER-1\n"}), "LOCKER-1", True),
-        (json.dumps({"text": "Found 2 memories:\n- [100%] other\n- [pending, not stored yet] is LOCKER-1\n"}), "LOCKER-1", False),
+        (
+            json.dumps({"text": "Found 2 memories:\n- [pending, not stored yet] other\n- [100%] is LOCKER-1\n"}),
+            "LOCKER-1",
+            True,
+        ),
+        (
+            json.dumps({"text": "Found 2 memories:\n- [100%] other\n- [pending, not stored yet] is LOCKER-1\n"}),
+            "LOCKER-1",
+            False,
+        ),
     ],
 )
 def test_row_stored(search, marker, stored):
