@@ -863,8 +863,13 @@ static void test_a_speech_gap_does_not_hide_a_send_gap_in_the_same_reply() {
     TEST_ASSERT_TRUE_MESSAGE(afterSend.find(unsent) == std::string::npos, reply);
   }
   // A verb after "and" shares the assistant's subject, and only the assistant's.
-  for (const char* other : {"I know you emailed Sam and forwarded it.", "I saw that Sam read it and shared it."})
+  for (const char* other : {"I know you emailed Sam and forwarded it.", "I saw that Sam read it and shared it.",
+                            "I know Sam read it and shared it.", "I looked at the order, it was packed and delivered on Monday.",
+                            "I found the parcel was packed and delivered on Monday."})
     TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(other, none), ClaimClass::Sent), other);
+  for (const char* own : {"I have read it and emailed it to Sam.", "I sent you the summary as a voice note and emailed Sam.",
+                          "I read the note and then forwarded it to Sam."})
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(own, none), ClaimClass::Sent), own);
   const std::string mixed = claimTail(gapsFor("I sent you a voice message and emailed Sam.", none));
   TEST_ASSERT_TRUE(mixed.find(noVoice) != std::string::npos && mixed.find(unsent) != std::string::npos);
   // Two claims that fail the same way are one line.

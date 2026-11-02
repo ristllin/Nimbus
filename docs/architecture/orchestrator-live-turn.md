@@ -455,7 +455,7 @@ before a message that cannot finish and says how many arrived. The
 tool's result carries those receipts, and the claim check accepts a voice-message
 claim only with one. Text-to-speech gets a read window sized to its text (25 s up to
 60 s), and a clip the window or a dropped connection cut short is removed and
-reported as "truncated at N B", never used. A raw body (OpenAI, the router) that ends by
+reported as "truncated at N B", never used; a failed flash write is reported as that instead. A raw body (OpenAI, the router) that ends by
 the server closing the connection with no stated length is judged by its own framing
 (`nimbus/orch/clip_probe.h`, fed as the bytes arrive): an MP3 whose last frame is unfinished,
 a WAV short of a whole sample or of its declared data size, or audio far shorter than its
@@ -466,7 +466,8 @@ falls back to the same Telegram voice path only when the speaker could not play 
 sink answers with how it ended (`nimbus/orch/speak_outcome.h`: the speaker, a Telegram
 message id, or why not) and `apply.cpp` records exactly that: nothing is captured to
 history unless it was voiced, volume 0 is refused before any synthesis, text over 400 bytes
-is cut on a character boundary and the reply says so, and the claim ledger holds a Speak
+is cut on a character boundary and the reply says so, a tts-only turn that could not be spoken
+sends its text in writing with the same claim check as a reply, and the claim ledger holds a Speak
 that landed or a voice send with a receipt behind any "read it aloud".
 The reply tools run outside the memory card lock (`handleMcp`): only their history
 row takes it.

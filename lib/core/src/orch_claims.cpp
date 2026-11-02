@@ -1302,16 +1302,19 @@ bool saveReference(const Scan& sc, size_t i, const Cue& cue) {
 }
 
 // A send verb right after "and" or "then" shares the assistant's subject ("I read it aloud and
-// emailed the summary to Sam"), unless someone else or a subordinate clause comes in between
-// ("I know you emailed Sam and forwarded it", "I saw that Sam read it and shared it").
-constexpr const char* kSubordinators[] = {"that", "who", "which", "what", "how", "when", "if", "as",
-                                          "while", "because", "since", "though", "although"};
+// emailed the summary to Sam"), unless the clause turned to someone or something else first: a
+// reported act ("I know Sam read it and shared it", "I saw that it was shared and posted") or a
+// state ("the parcel was packed and delivered").
+constexpr const char* kNotOwnAct[] = {"that",   "who",     "which", "what",    "how",  "when",  "if",
+                                      "while",  "because", "since", "though",  "although",
+                                      "know",   "think",   "see",   "saw",     "heard", "believe",
+                                      "noticed", "hope",   "guess", "is",      "are",  "was",   "were"};
 
 bool sharesSelfSubject(const Scan& sc, size_t i) {
   if (i == 0 || (!tokIs(sc.s, sc.toks[i - 1], "and") && !tokIs(sc.s, sc.toks[i - 1], "then"))) return false;
-  for (size_t k = i - 1; k-- > 0 && sc.toks[k].sent == sc.toks[i].sent;) {
+  for (size_t k = i - 1; k-- > 0 && sameClause(sc, k, i);) {
     if (tokIn(sc.s, sc.toks[k], kSelfSubjects)) return true;
-    if (tokIn(sc.s, sc.toks[k], kSubordinators)) return false;
+    if (tokIn(sc.s, sc.toks[k], kNotOwnAct)) return false;
     // "sent you the file": before a determiner "you" is the object, not someone else acting.
     if (tokIn(sc.s, sc.toks[k], kOtherSubjects) && !tokIn(sc.s, sc.toks[k + 1], kDeterminers)) return false;
   }
