@@ -736,10 +736,11 @@ static bool runOaiLoop(const ProviderDeps& pd, std::string& convId,
                        const std::string& instructions, const std::string& inputs,
                        std::string& outJson, std::string& err, const HeadTools& ht,
                        nimbus::orch::TokenUsage* usage) {
-  const bool ok = runHostLoop(pd, "orchTurn(oai-loop)", "openai", instructions, inputs, outJson, err, ht,
-                              [&](const std::string& ins, nimbus::orch::Transcript& tr) {
-                                return oaiLoopStep(pd, ins, ht, usage, tr);
-                              });
+  const HostLoop loop{pd, ht, "orchTurn(oai-loop)", "openai",
+                      [&](const std::string& ins, nimbus::orch::Transcript& tr) {
+                        return oaiLoopStep(pd, ins, ht, usage, tr);
+                      }};
+  const bool ok = runHostLoop(loop, instructions, inputs, outJson, err);
   if (ok) convId = "responses";   // stateless marker - the device owns the turn's state
   return ok;
 }

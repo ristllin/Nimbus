@@ -276,9 +276,15 @@ nimbus::orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx);
 // no other host to move to. `make` builds the host's step on the prompt the requests send; it is
 // called again when a refit changes that prompt, so any state a step keeps must outlive it.
 using HostStepMaker = std::function<nimbus::orch::HeadStepFn(const std::string& instructions, nimbus::orch::Transcript& tr)>;
-bool runHostLoop(const ProviderDeps& pd, const char* who, const std::string& host, const std::string& instructions,
-                 const std::string& inputs, std::string& outJson, std::string& err, const HeadTools& ht,
-                 const HostStepMaker& make);
+struct HostLoop {
+  const ProviderDeps& pd;
+  const HeadTools& ht;
+  const char* who;    // the log's name for it
+  const char* host;
+  HostStepMaker make;
+};
+bool runHostLoop(const HostLoop& loop, const std::string& instructions, const std::string& inputs,
+                 std::string& outJson, std::string& err);
 
 // ---- the fabric's typed failover (lane K) --------------------------------------
 // Every failed round is classified (nimbus::orch::StepErr) and the fabric acts on

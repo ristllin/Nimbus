@@ -93,8 +93,9 @@ int headCalls(LabRig& rig) {
 
 }  // namespace
 
-void overflowRefusal(LabRig& rig, const Report& r) {
-  const std::string chat = "ovf-overflow";
+namespace {
+// A past turn holding the marker, and a newer one: the marker swells where it rides.
+void addSwollenHistory(LabRig& rig, const std::string& chat) {
   LabRig::Row oldQ;
   oldQ.chat = chat;
   oldQ.text = std::string("Note this for later: ") + kSwell;
@@ -113,13 +114,48 @@ void overflowRefusal(LabRig& rig, const Report& r) {
   a2.role = "assistant";
   a2.text = "Paris.";
   rig.addRow(a2);
-  // The marker swells to 1.5 M words where it rides: past every current model's window.
-  const std::string pad = [] {
-    std::string p;
-    p.reserve(7500000);
-    for (int i = 0; i < 1500000; i++) p += "word ";
-    return p;
-  }();
+}
+
+// 1.5 M words: past every current model's window.
+std::string swellPad() {
+  std::string p;
+  p.reserve(7500000);
+  for (int i = 0; i < 1500000; i++) p += "word ";
+  return p;
+}
+
+// What the refit leg watches on the wire: from the second head request on the marker swells, and
+// a request that says what it left out should replay the signed thinking of the first answer.
+struct RefitWatch {
+  const std::string& pad;
+  int heads = 0;
+  std::string signature;
+  bool carried = false, leftOutSaid = false;
+
+  void onRequest(agent::HttpRequest& q) {
+    if (!isHead(q)) return;
+    heads++;
+    const bool leftOut = q.body.find("LEFT OUT") != std::string::npos;
+    leftOutSaid = leftOutSaid || leftOut;
+    carried = carried || (leftOut && !signature.empty() && q.body.find(signature) != std::string::npos);
+    if (heads < 2) return;   // round 0 goes out as it is, and runs its tool
+    const size_t at = q.body.find(kSwell);
+    if (at != std::string::npos) q.body.replace(at, sizeof(kSwell) - 1, pad);
+  }
+  void onResponse(const agent::HttpRequest& q, const agent::HttpResponse& resp) {
+    if (!isHead(q) || heads != 1) return;   // the tool round the refused request replays
+    JsonDocument d;
+    if (deserializeJson(d, resp.body)) return;
+    for (JsonObject c : d["content"].as<JsonArray>())
+      if (std::string(c["type"] | "") == "thinking") signature = std::string(c["signature"] | "");
+  }
+};
+}  // namespace
+
+void overflowRefusal(LabRig& rig, const Report& r) {
+  const std::string chat = "ovf-overflow";
+  addSwollenHistory(rig, chat);
+  const std::string pad = swellPad();
   rig.shim().onRequest = [&pad](agent::HttpRequest& q) {
     if (!isHead(q)) return;
     const size_t at = q.body.find(kSwell);
@@ -139,50 +175,11 @@ void overflowRefusal(LabRig& rig, const Report& r) {
 // round. On Anthropic that replay must carry the round's signed thinking verbatim or it is a 400.
 void refitAfterATool(LabRig& rig, const Report& r) {
   const std::string chat = "ovf-refit";
-  LabRig::Row oldQ;
-  oldQ.chat = chat;
-  oldQ.text = std::string("Note this for later: ") + kSwell;
-  rig.addRow(oldQ);
-  LabRig::Row oldA;
-  oldA.chat = chat;
-  oldA.role = "assistant";
-  oldA.text = "Noted.";
-  rig.addRow(oldA);
-  LabRig::Row q2;
-  q2.chat = chat;
-  q2.text = "And what is the capital of France?";
-  rig.addRow(q2);
-  LabRig::Row a2;
-  a2.chat = chat;
-  a2.role = "assistant";
-  a2.text = "Paris.";
-  rig.addRow(a2);
-  const std::string pad = [] {
-    std::string p;
-    p.reserve(7500000);
-    for (int i = 0; i < 1500000; i++) p += "word ";
-    return p;
-  }();
-  int heads = 0;
-  std::string signature;
-  bool retryCarriesIt = false, leftOutSaid = false;
-  rig.shim().onRequest = [&](agent::HttpRequest& q) {
-    if (!isHead(q)) return;
-    heads++;
-    if (!signature.empty() && q.body.find(signature) != std::string::npos && q.body.find("LEFT OUT") != std::string::npos)
-      retryCarriesIt = true;
-    leftOutSaid = leftOutSaid || q.body.find("LEFT OUT") != std::string::npos;
-    if (heads < 2) return;   // round 0 goes out as it is, and runs its tool
-    const size_t at = q.body.find(kSwell);
-    if (at != std::string::npos) q.body.replace(at, sizeof(kSwell) - 1, pad);
-  };
-  rig.shim().onResponse = [&signature, &heads](const agent::HttpRequest& q, agent::HttpResponse& resp) {
-    if (!isHead(q) || heads != 1) return;   // the tool round the refused request replays
-    JsonDocument d;
-    if (deserializeJson(d, resp.body)) return;
-    for (JsonObject c : d["content"].as<JsonArray>())
-      if (std::string(c["type"] | "") == "thinking") signature = std::string(c["signature"] | "");
-  };
+  addSwollenHistory(rig, chat);
+  const std::string pad = swellPad();
+  RefitWatch w{pad};
+  rig.shim().onRequest = [&w](agent::HttpRequest& q) { w.onRequest(q); };
+  rig.shim().onResponse = [&w](const agent::HttpRequest& q, agent::HttpResponse& resp) { w.onResponse(q, resp); };
   auto t = rig.say(chat,
                    "Work out in your head, carefully and step by step, which is larger: 17 * 23 + 19 * 31, or 29 * 37 "
                    "- 11 * 13. Then search your memory with the memory search tool for the larger number, and after that "
@@ -191,11 +188,11 @@ void refitAfterATool(LabRig& rig, const Report& r) {
   rig.shim().onResponse = nullptr;
   printCalls(rig, r);
   r.note("reply: " + t.reply.substr(0, 300));
-  r.note(signature.empty() ? "no thinking block on the tool round" : "the tool round carried a signed thinking block");
-  r.check(heads >= 3, "round 0, the refused round 1, the trimmed retry");
+  r.note(w.signature.empty() ? "no thinking block on the tool round" : "the tool round carried a signed thinking block");
+  r.check(w.heads >= 3, "round 0, the refused round 1, the trimmed retry");
   r.check(refusedCalls(rig) >= 1, "the provider really refused the swollen round");
-  r.check(leftOutSaid, "the retry says what it left out");
-  r.check(signature.empty() || retryCarriesIt, "the retry replays the round's signed thinking");
+  r.check(w.leftOutSaid, "the retry says what it left out");
+  r.check(w.signature.empty() || w.carried, "the retry replays the round's signed thinking");
   r.check(lastCallServed(rig), "the provider accepted the refitted request");
   r.check(!t.reply.empty() && t.reply.find("didn't finish") == std::string::npos, "the turn answered after the trim");
 }

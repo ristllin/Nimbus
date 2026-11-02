@@ -480,9 +480,11 @@ void loopHooks(orch::HeadLoopHooks& hooks, const ProviderDeps& pd, const HeadToo
 }
 }  // namespace
 
-bool runHostLoop(const ProviderDeps& pd, const char* who, const std::string& host, const std::string& instructions,
-                 const std::string& inputs, std::string& outJson, std::string& err, const HeadTools& ht,
-                 const HostStepMaker& make) {
+bool runHostLoop(const HostLoop& loop, const std::string& instructions, const std::string& inputs,
+                 std::string& outJson, std::string& err) {
+  const ProviderDeps& pd = loop.pd;
+  const HeadTools& ht = loop.ht;
+  const char* who = loop.who;
   // The CANONICAL transcript: the controller records prose, calls and results into it, and
   // every round's request is rendered fresh from it. Stateless by construction: no provider
   // conversation to create or track in loop mode.
@@ -491,10 +493,10 @@ bool runHostLoop(const ProviderDeps& pd, const char* who, const std::string& hos
   const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
   RoundRecovery rec(tr, ht, instructions, inputs);
   // CUM-477: one same-host resend of a request that never left.
-  orch::HeadStepFn inner = make(instructions, tr);
+  orch::HeadStepFn inner = loop.make(instructions, tr);
   const ResendCtx resend{&pd, &ht.cfg, &inner, who};
   const orch::HeadStepFn send = resendUnsentOnce(&resend);
-  rec.bind(nullptr, [&] { inner = make(rec.instructions(), tr); });
+  rec.bind(nullptr, [&] { inner = loop.make(rec.instructions(), tr); });
 
   orch::HeadLoopHooks hooks;
   hooks.step = [&](bool allowTools, const std::vector<orch::HeadToolResult>& prior, uint32_t budgetAtEntry,
@@ -510,7 +512,7 @@ bool runHostLoop(const ProviderDeps& pd, const char* who, const std::string& hos
       size_t budget = 0, size = 0;
       if (orch::parseBodyBudgetError(sr.error, budget, size)) return sr;
       typeStep(sr);
-      if (rec.overflowRetry(host, sr.error)) continue;
+      if (rec.overflowRetry(loop.host, sr.error)) continue;
       if (sr.kind != orch::StepErr::Cut) return rec.failure(sr);
       rec.noteCut(sr);
       if (!rec.cutRerunOnce()) return rec.failure(sr);

@@ -1335,10 +1335,11 @@ static bool runAntLoop(const ProviderDeps& pd, std::string& convId,
                        nimbus::orch::TokenUsage* usage) {
   // A step rebuilt on a refitted prompt still replays this turn's signed thinking.
   const auto thinking = std::make_shared<ThinkingByCall>();
-  const bool ok = runHostLoop(pd, "orchTurn(ant-loop)", "anthropic", instructions, inputs, outJson, err, ht,
-                              [&](const std::string& ins, nimbus::orch::Transcript& tr) {
-                                return antLoopStep(pd, ins, ht, usage, tr, thinking);
-                              });
+  const HostLoop loop{pd, ht, "orchTurn(ant-loop)", "anthropic",
+                      [&](const std::string& ins, nimbus::orch::Transcript& tr) {
+                        return antLoopStep(pd, ins, ht, usage, tr, thinking);
+                      }};
+  const bool ok = runHostLoop(loop, instructions, inputs, outJson, err);
   if (ok) convId = "messages";   // stateless marker (state lives in the turn's memory field)
   return ok;
 }
