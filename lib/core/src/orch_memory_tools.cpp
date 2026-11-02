@@ -455,6 +455,9 @@ struct WriteSpec {
 WriteSpec specFromArgs(const MemoryContext& ctx, JsonObjectConst a, double defImportance) {
   WriteSpec w;
   w.content = strArg(a, "content");
+  // The same names a model reaches for in mem_write[] (orch_turn.cpp): read, not dropped.
+  for (const char* name : {"fact", "text", "memory", "note", "value"})
+    if (w.content.empty()) w.content = strArg(a, name);
   double imp = defImportance;
   numArg(a, "importance", imp);
   w.importance = (float)(imp < 0 ? 0 : imp > 1 ? 1 : imp);

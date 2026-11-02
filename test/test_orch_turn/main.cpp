@@ -444,6 +444,35 @@ static void test_mem_write_parsed_and_clamped() {
   TEST_ASSERT_FALSE(t.mem_write[1].permanent);               // default
 }
 
+// The VNC gap pass: GLM's mem_write items carried `fact` or `text`, and 11 of 12 vanished with
+// no trace. The class: every name a model reaches for is read and noted; an item with no text
+// is reported in words the final-answer check sends back; `content` alone stays silent.
+static void test_mem_write_reads_the_common_names_and_reports_the_rest() {
+  for (const char* name : {"fact", "text", "memory", "note", "value"}) {
+    const std::string j = std::string(R"({"reply":"ok","mem_write":[{")") + name + R"(":"the cat is Pixel"}]})";
+    Turn t; ParseError e;
+    TEST_ASSERT_TRUE_MESSAGE(parseTurn(j, t, e), name);
+    TEST_ASSERT_EQUAL_MESSAGE(1u, t.mem_write.size(), name);
+    TEST_ASSERT_EQUAL_STRING("the cat is Pixel", t.mem_write[0].content.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(1u, t.parseNotes.size(), name);
+  }
+  {
+    Turn t; ParseError e;
+    TEST_ASSERT_TRUE(parseTurn(R"({"reply":"saved","mem_write":[{"subject":"cat"}]})", t, e));
+    TEST_ASSERT_EQUAL(0u, t.mem_write.size());
+    TEST_ASSERT_EQUAL(1u, t.parseNotes.size());
+    TEST_ASSERT_TRUE(t.parseNotes[0].find(" arrived as ") != std::string::npos);
+    TEST_ASSERT_TRUE(t.parseNotes[0].find("not used") != std::string::npos);
+    TEST_ASSERT_TRUE(t.parseNotes[0].find("subject") != std::string::npos);
+  }
+  {
+    Turn t; ParseError e;
+    TEST_ASSERT_TRUE(parseTurn(R"({"reply":"saved","mem_write":[{"content":"plain"}]})", t, e));
+    TEST_ASSERT_EQUAL(1u, t.mem_write.size());
+    TEST_ASSERT_EQUAL(0u, t.parseNotes.size());
+  }
+}
+
 // TOLERANT: a malformed / empty-content mem_write item is dropped, not a turn error.
 static void test_mem_write_tolerant_drops_bad() {
   const char* j = R"({"reply":"","memory":"","ask":"","mem_write":[
@@ -695,6 +724,7 @@ int main() {
   RUN_TEST(test_empty_arrays_are_valid);
   RUN_TEST(test_arrays_optional_reply_only);
   RUN_TEST(test_mem_write_parsed_and_clamped);
+  RUN_TEST(test_mem_write_reads_the_common_names_and_reports_the_rest);
   RUN_TEST(test_mem_write_tolerant_drops_bad);
   RUN_TEST(test_mem_query_parsed);
   RUN_TEST(test_session_ops_parsed);

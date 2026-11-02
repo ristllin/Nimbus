@@ -156,6 +156,21 @@ ToolRegistry::Verdict ToolRegistry::accessFor(const std::string& name, JsonObjec
   return access_ ? access_(name, args, who) : Verdict::allow();
 }
 
+namespace {
+// The call's argument names the tool's schema does not list, comma separated. A schema with
+// no properties (a tool that takes anything) lists nothing to compare against.
+std::string unknownArgs(const std::string& schemaJson, JsonObjectConst args) {
+  if (args.isNull() || args.size() == 0 || schemaJson.find("\"properties\"") == std::string::npos) return "";
+  JsonDocument schema;
+  if (deserializeJson(schema, schemaJson)) return "";
+  JsonObjectConst props = schema["properties"].as<JsonObjectConst>();
+  std::string out;
+  for (JsonPairConst kv : args)
+    if (props[kv.key()].isNull()) out += (out.empty() ? "" : ", ") + std::string(kv.key().c_str());
+  return out;
+}
+}  // namespace
+
 ToolResult ToolRegistry::dispatch(const std::string& name, JsonObjectConst args,
                                   const Principal& who) const {
   // Policy gate FIRST - a denied/gated tool must never reach its handler, and
@@ -180,7 +195,14 @@ ToolResult ToolRegistry::dispatch(const std::string& name, JsonObjectConst args,
   if (g && !g->open())
     return ToolResult::fail(g->reason.empty() ? ("tool unavailable: " + name) : g->reason);
   if (!t->handler) return ToolResult::fail("tool has no handler: " + name);
-  return t->handler(args, who);
+  ToolResult res = t->handler(args, who);
+  // A tool argument never disappears in silence, on any provider (VNC gap pass, 1 Nov).
+  const std::string ignored = unknownArgs(t->schemaJson, args);
+  if (!ignored.empty()) {
+    std::string& text = res.success ? res.output : res.error;
+    text += (text.empty() ? "" : "\n") + std::string("(not read: ") + ignored + ": this tool has no such argument)";
+  }
+  return res;
 }
 
 // ---- unknown-tool recovery (CUM-538) ------------------------------------------

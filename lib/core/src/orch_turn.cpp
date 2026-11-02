@@ -335,6 +335,24 @@ bool normalizeSessionOps(JsonObject root, Turn& rep) {
   return changed;
 }
 
+// A mem_write item's text. GLM sent `fact` or `text` on 11 of 12 writes and every one was
+// dropped in silence (VNC gap pass, 1 Nov), so the reply claimed a save that never happened.
+// The common names are read, and an item with no text is reported: the final-answer check
+// sends " arrived as ... not used" back to the model, and the log shows it.
+std::string memWriteText(JsonObjectConst m, Turn& rep) {
+  for (const char* name : {"content", "fact", "text", "memory", "note", "value"}) {
+    JsonVariantConst v = m[name];
+    if (!v.is<const char*>() || !*v.as<const char*>()) continue;
+    if (std::strcmp(name, "content") != 0)
+      rep.parseNotes.push_back(std::string("mem_write text arrived as ") + name + "; repaired");
+    return v.as<const char*>();
+  }
+  std::string fields;
+  for (JsonPairConst kv : m) fields += (fields.empty() ? "" : ",") + capUtf8(kv.key().c_str(), 24);
+  rep.parseNotes.push_back("mem_write item arrived as {" + capUtf8(fields, 96) + "} with no text in content; not used");
+  return std::string();
+}
+
 }  // namespace
 
 const char* turnFieldName(TurnField f) {
@@ -515,9 +533,7 @@ bool parseTurn(const std::string& json, Turn& out, ParseError& err) {
   //    clamped [0,1], default 0.5), permanent (bool, default false)}.
   for (JsonVariantConst m : root["mem_write"].as<JsonArrayConst>()) {
     if (!m.is<JsonObjectConst>()) continue;
-    JsonVariantConst cv = m["content"];
-    if (!cv.is<const char*>()) continue;
-    std::string content = capUtf8(std::string(cv.as<const char*>()), kMemModelMax);
+    std::string content = capUtf8(memWriteText(m.as<JsonObjectConst>(), out), kMemModelMax);
     if (content.empty()) continue;
     MemWrite w;
     w.content = std::move(content);

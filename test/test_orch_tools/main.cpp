@@ -563,6 +563,27 @@ static void test_models_pointer_line() {
   TEST_ASSERT_EQUAL_STRING("[AVAILABLE MODELS] (none configured)\n", modelsPointerLine({}).c_str());
 }
 
+// VNC gap pass, 1 Nov: a tool argument never disappears in silence, on any provider. A name
+// the schema does not list runs the tool and the result says so; a listed name adds nothing.
+static void test_an_unknown_tool_argument_is_reported() {
+  nimbus::orch::ToolRegistry reg;
+  reg.add("t.echo", "echo",
+          [](JsonObjectConst, const nimbus::orch::Principal&) { return nimbus::orch::ToolResult::ok("ran"); },
+          R"({"type":"object","properties":{"query":{"type":"string"}}})");
+  auto call = [&reg](const char* argsJson) {
+    JsonDocument d;
+    deserializeJson(d, argsJson);
+    nimbus::orch::Principal who;
+    who.owner = true;
+    return reg.dispatch("t.echo", d.as<JsonObjectConst>(), who);
+  };
+  TEST_ASSERT_EQUAL_STRING("ran", call(R"({"query":"x"})").output.c_str());
+  const auto r = call(R"({"query":"x","n_results":5})");
+  TEST_ASSERT_TRUE(r.success);
+  TEST_ASSERT_TRUE_MESSAGE(r.output.find("ran") == 0, r.output.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(r.output.find("n_results") != std::string::npos, r.output.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_unknown_tool_turn_field_session_ops);
@@ -592,6 +613,7 @@ int main(int, char**) {
   RUN_TEST(test_models_list_filters_and_refresh);
   RUN_TEST(test_models_list_refusals);
   RUN_TEST(test_models_pointer_line);
+  RUN_TEST(test_an_unknown_tool_argument_is_reported);
   UNITY_END();
   return 0;
 }
