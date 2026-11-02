@@ -50,6 +50,12 @@ The split that matters at the parser is between `reply` and everything else:
   `Turn::parseNotes`, never read as empty in silence. A malformed *item* is
   still never a whole-turn error, and every spawn intent the parser cannot
   carry lands in `Turn::spawnDrops` with its reason.
+- **An empty answer is never reported as done.** On the tool loop, a final turn with no
+  `reply`, `ask` or spawn gets one correction round on every provider, unless nobody is
+  waiting (a scheduled or quiet turn) or a tool or sub-agent already answered. If it is still
+  empty, a waiting owner hears "The model returned an empty answer. Try asking again.", or
+  "Finished. The model sent no message." when an action of that turn really landed. A
+  refused action or an unstored fact did not land.
 
 The wire schema still lists `memory` and `ask` under `required` on the STRICT
 wires (OpenAI, Mistral, the custom head): their validators demand every property
@@ -257,8 +263,12 @@ auto-mirrored).
 | `permanent` | bool | pins the fact so it never decays or prunes | **false** |
 | `ttl` | enum string | one of `session` / `days` / `weeks` / `months` / `permanent`; **accepted only when it names a known class**, otherwise ignored and the store's default class applies | store default (`weeks`) |
 
-A non-object item, an item with a non-string / missing `content`, or an
-empty-after-cap `content` is **dropped** - the turn stays valid.
+A model that names the text `fact`, `text`, `memory`, `note` or `value` is read the same
+way, and any other non-empty string in the item except `ttl` and `source` leads the text:
+`{"key":"sister_cat","value":"Pixel"}` stores `sister_cat: Pixel`, so a fact never loses its
+subject. A non-object item, or an item with none of those names, is **dropped and named in
+`Turn::parseNotes`**, which the final-answer check sends back to the model - the turn stays
+valid.
 
 The device applies `mem_write` while it applies the turn, **before** it delivers
 `reply`/`ask` (`applyTurn`, `lib/harness/src/apply.cpp`). The model never sees the

@@ -26,7 +26,11 @@ never drift:
   namespace with user rights, never as the admin (see [MCP](../mcp.md)).
 
 Both paths execute through the same `dispatch()`, so the capability manifest, the
-prompt's tool list, and what actually runs are the same thing. Architecture:
+prompt's tool list, and what actually runs are the same thing. No argument disappears in
+silence: a call with one the tool neither lists nor reads still runs, and its result ends
+`(not read: <name>: this tool has no such argument)`. A schema that leaves its arguments open
+(`additionalProperties`, `patternProperties`, `anyOf`, `oneOf`, `allOf`, `$ref`), as an
+external MCP server's may, flags nothing. Architecture:
 [Orchestrator World](../orchestrator-world.md)
 (§5 On-device MCP server & tool registry).
 
