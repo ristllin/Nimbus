@@ -89,7 +89,9 @@ class Api:
     def set_token(self, token: str) -> None:
         self._token = token
 
-    def request(self, path: str, data: Optional[bytes] = None, ctype: str = "", timeout: Optional[float] = None) -> Reply:
+    def request(
+        self, path: str, data: Optional[bytes] = None, ctype: str = "", timeout: Optional[float] = None
+    ) -> Reply:
         req = urllib.request.Request(f"http://{self.ip}{path}", data=data)
         req.add_header("X-Nimbus-Token", self._token)
         if ctype:

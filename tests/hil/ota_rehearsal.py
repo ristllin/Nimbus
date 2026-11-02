@@ -72,7 +72,8 @@ class Rehearsal:
         providers = orch.get("providers") or {}
         settings = {k: orch.get(k) for k in SETTINGS if k in orch}
         settings["providers"] = {
-            name: {"hasKey": (v or {}).get("hasKey"), "orchModel": (v or {}).get("orchModel")} for name, v in providers.items()
+            name: {"hasKey": (v or {}).get("hasKey"), "orchModel": (v or {}).get("orchModel")}
+            for name, v in providers.items()
         }
         row = {
             "fw": state.get("fw"),
@@ -161,7 +162,12 @@ class Rehearsal:
 
     def one_turn(self) -> Optional[str]:
         result = bd.chat_turn(self.api, "Reply with exactly one word: ok", 180.0, self.a.wait_s)
-        self.res["turn"] = {"ok": result.ok, "reply": result.reply[:200], "seconds": round(result.seconds, 1), "error": result.error}
+        self.res["turn"] = {
+            "ok": result.ok,
+            "reply": result.reply[:200],
+            "seconds": round(result.seconds, 1),
+            "error": result.error,
+        }
         return None
 
     def soak(self) -> Optional[str]:
@@ -191,25 +197,38 @@ class Rehearsal:
         return None
 
     # -- the grade --------------------------------------------------------------------------------
-    def grade(self) -> None:
+    def _settings_diffs(self) -> Dict[str, Any]:
+        pre, ok_snap = self.res["preInstall"], self.res["okConfirmed"]
+        return {
+            k: {"before": v, "after": ok_snap["settings"].get(k)}
+            for k, v in pre["settings"].items()
+            if ok_snap["settings"].get(k) != v
+        }
+
+    def _checks(self) -> Dict[str, bool]:
         r, a = self.res, self.a
         pre, post, end = r["preInstall"], r["postFlip"], r["soakEnd"]
         ok_snap = r["okConfirmed"]
-        diffs = {k: {"before": v, "after": ok_snap["settings"].get(k)} for k, v in pre["settings"].items() if ok_snap["settings"].get(k) != v}
-        r["settingsDiff"] = diffs
         soak = r["soak"]
         low = (end.get("mem") or {}).get("lowWater")
-        self.checks = {
+        return {
             "bootsOtherSlot": post["otaSlot"] != pre["otaSlot"],
             "runsCandidate": str(post["build"]).startswith(a.want_build),
             "validates": str(r["lastOta"]).startswith("ok "),
-            "settingsPreserved": not diffs,
+            "settingsPreserved": not r["settingsDiff"],
             "nvsUnchanged": (pre["nvs"] or {}).get("free") == (ok_snap["nvs"] or {}).get("free"),
             "turnAnswers": bool(r["turn"]["ok"] and "ok" in r["turn"]["reply"].lower()),
-            "soakClean": soak["failed"] == 0 and len(soak["bootNs"]) == 1 and not ((end["boot"] or {}).get("crash") or {}).get("thisReset"),
+            "soakClean": soak["failed"] == 0
+            and len(soak["bootNs"]) == 1
+            and not ((end["boot"] or {}).get("crash") or {}).get("thisReset"),
             "modelListRestamped": (r["modelsAfter"] or 0) > (r["modelsBefore"] or 0) or r["modelsStoredLine"],
             "lowWaterHolds": isinstance(low, (int, float)) and low > MIN_LOW_WATER,
         }
+
+    def grade(self) -> None:
+        r = self.res
+        r["settingsDiff"] = self._settings_diffs()
+        self.checks = self._checks()
         r["checks"] = self.checks
         r["grade"] = "PASS" if all(self.checks.values()) else "FAIL"
 
@@ -233,7 +252,15 @@ class Rehearsal:
             self.console.close()
 
     def run(self) -> Dict[str, Any]:
-        phases = (self.start_state, self.fill, self.check_available, self.install, self.validated, self.one_turn, self.soak)
+        phases = (
+            self.start_state,
+            self.fill,
+            self.check_available,
+            self.install,
+            self.validated,
+            self.one_turn,
+            self.soak,
+        )
         try:
             for phase in phases:
                 reason = phase()
@@ -269,7 +296,11 @@ def host_ip_toward(device_ip: str) -> str:
 def manifest_argv(version: str, key: str, out: str, url_base: str, images: Dict[str, str]) -> List[str]:
     """make_manifest.py for one image under each OTA variant it must answer to."""
     base = [sys.executable, str(REPO / "tools" / "make_manifest.py"), "--version", version, "--key", key]
-    return base + ["--out", out, "--url-base", url_base, "--notes", "bench rehearsal"] + [f"{k}={v}" for k, v in images.items()]
+    return (
+        base
+        + ["--out", out, "--url-base", url_base, "--notes", "bench rehearsal"]
+        + [f"{k}={v}" for k, v in images.items()]
+    )
 
 
 def serve(image: str, version: str, key: str, device_ip: str, srv_dir: str, port: int = 8443) -> str:
@@ -287,7 +318,9 @@ def serve(image: str, version: str, key: str, device_ip: str, srv_dir: str, port
     )
     host = host_ip_toward(device_ip)
     base = f"https://{host}:{port}"
-    argv = manifest_argv(version, key, str(srv / "manifest.json"), base, {"test-cyd": str(served), "freenove-28": str(served)})
+    argv = manifest_argv(
+        version, key, str(srv / "manifest.json"), base, {"test-cyd": str(served), "freenove-28": str(served)}
+    )
     subprocess.run(argv, check=True, capture_output=True)
     handler = lambda *a, **kw: http.server.SimpleHTTPRequestHandler(*a, directory=str(srv), **kw)  # noqa: E731
     http.server.ThreadingHTTPServer.allow_reuse_address = True
@@ -309,7 +342,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--url", default="", help="the manifest's https URL; or use --serve")
     ap.add_argument("--serve", metavar="FIRMWARE_BIN", help="sign and serve this image from here with the test key")
     ap.add_argument("--want-version", default="v5.0.0", help="the version the manifest offers")
-    ap.add_argument("--want-build", required=True, help="the candidate's git describe; /api/state .build must start with it")
+    ap.add_argument(
+        "--want-build", required=True, help="the candidate's git describe; /api/state .build must start with it"
+    )
     ap.add_argument("--start-version", default="v4.6.4", help="the version the unit must be on before the update")
     ap.add_argument("--target-free", type=int, default=3936)
     ap.add_argument("--soak-s", type=float, default=900.0)

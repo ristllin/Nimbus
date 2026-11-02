@@ -482,22 +482,46 @@ def test_the_new_drivers_console_refuses(bus, monkeypatch, tmp_path, mac):
 @pytest.mark.parametrize(
     "module,argv",
     [
-        ("soak_24h", ["--ip", "192.0.2.1", "--token-file", "{tok}", "--out", "{out}", "--port", "{port}", "--mac", "{mac}"]),
+        (
+            "soak_24h",
+            ["--ip", "192.0.2.1", "--token-file", "{tok}", "--out", "{out}", "--port", "{port}", "--mac", "{mac}"],
+        ),
         ("soak_24h", ["--ip", "192.0.2.1", "--token-file", "{tok}", "--out", "{out}", "--port", "{port}"]),
         (
             "ota_rehearsal",
             ["--ip", "192.0.2.1", "--token-file", "{tok}", "--out", "{out}", "--port", "{port}", "--mac", "{mac}"]
             + ["--url", "https://192.0.2.2/m.json", "--want-build", "v5"],
         ),
-        ("bench_rows", ["A07", "--ip", "192.0.2.1", "--token-file", "{tok}", "--out", "{out}", "--port", "{port}", "--mac", "{mac}"]),
+        (
+            "bench_rows",
+            [
+                "A07",
+                "--ip",
+                "192.0.2.1",
+                "--token-file",
+                "{tok}",
+                "--out",
+                "{out}",
+                "--port",
+                "{port}",
+                "--mac",
+                "{mac}",
+            ],
+        ),
+        (
+            "onboarding_gate",
+            ["--port", "{port}", "--mac", "{mac}", "--out", "{out}", "--env-file", "{env}"],
+        ),
     ],
 )
 def test_the_new_drivers_refuse_on_their_command_lines(bus, tmp_path, module, argv):
     mod = __import__(module)
     token = tmp_path / "tok"
     token.write_text("t" * 24)
+    env = tmp_path / "env"
+    env.write_text("NIMBUS_TEST_STA_SSID=x\n")
     port = bus.put(FORBIDDEN[0])
-    filled = [a.format(tok=token, out=tmp_path / "ev", port=port, mac=FORBIDDEN[0]) for a in argv]
+    filled = [a.format(tok=token, out=tmp_path / "ev", port=port, mac=FORBIDDEN[0], env=env) for a in argv]
     assert mod.main(filled) == guard.REFUSED_EXIT
     assert FakeSerial.opened == []
 
@@ -518,7 +542,9 @@ def _upload_hook():
 
     fake_env = Env(PROJECT_DIR=str(REPO))
     source = (TOOLS / "pio_upload_guard.py").read_text(encoding="utf-8")
-    exec(compile(source, "pio_upload_guard.py", "exec"), {"Import": lambda name: None, "env": fake_env, "__name__": "x"})
+    exec(
+        compile(source, "pio_upload_guard.py", "exec"), {"Import": lambda name: None, "env": fake_env, "__name__": "x"}
+    )
     return actions["upload"]
 
 
@@ -560,7 +586,9 @@ def _sources():
 
 def _is_host_test(path: Path) -> bool:
     """A host test's fake serial is not a port open."""
-    return path.name.startswith("test_") and (path.parent == TOOLS or path.stem.endswith("_host") or "release_gate" in path.parts)
+    return path.name.startswith("test_") and (
+        path.parent == TOOLS or path.stem.endswith("_host") or "release_gate" in path.parts
+    )
 
 
 def port_opening_files_without_the_guard(sources):
@@ -569,7 +597,9 @@ def port_opening_files_without_the_guard(sources):
     return [
         path.name
         for path in sources
-        if not _is_host_test(path) and opens.search(path.read_text(encoding="utf-8")) and not asks.search(path.read_text(encoding="utf-8"))
+        if not _is_host_test(path)
+        and opens.search(path.read_text(encoding="utf-8"))
+        and not asks.search(path.read_text(encoding="utf-8"))
     ]
 
 

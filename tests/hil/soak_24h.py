@@ -28,6 +28,7 @@ else PASS.
 from __future__ import annotations
 
 import argparse
+import collections
 import glob
 import json
 import os
@@ -210,6 +211,7 @@ class Soak:
         return None
 
     def finish(self) -> Dict[str, Any]:
+        self.poll_once()  # the last number on record is the end of the run, whatever the poll interval
         self.read_errlog()
         state = self.api.state(self.args.poll_timeout)
         self.ev.write("dream.json", state.get("dream") or {})
@@ -315,11 +317,17 @@ def _read_lines(paths: List[str]) -> List[str]:
 
 
 def scan_run(out: str) -> Dict[str, Any]:
-    """The scanner over everything the run saved. The durable log is read many times and overlaps itself, so its
-    lines count once each; the console log is one stream. The headline is the larger of the two, because a line can
-    reach one and not the other."""
-    errlog = sorted(set(_read_lines(sorted(glob.glob(os.path.join(out, "errlog", "*.txt"))))))
-    console = _read_lines([os.path.join(out, "console.log")] if os.path.exists(os.path.join(out, "console.log")) else [])
+    """The scanner over everything the run saved. The durable log is read many times and each read overlaps the last,
+    so a line counts as often as the read that holds it most (two equal lines stay two, and a line in ten reads stays
+    one). The console log is one stream. The headline is the larger of the two, because a line can reach one and not
+    the other."""
+    held: collections.Counter = collections.Counter()
+    for path in sorted(glob.glob(os.path.join(out, "errlog", "*.txt"))):
+        held |= collections.Counter(_read_lines([path]))
+    errlog = list(held.elements())
+    console = _read_lines(
+        [os.path.join(out, "console.log")] if os.path.exists(os.path.join(out, "console.log")) else []
+    )
     from_errlog, from_console = bd.scan_lines(errlog), bd.scan_lines(console)
     return {
         "errlog": from_errlog,
@@ -398,13 +406,19 @@ def _grade_polls(polls, reasons) -> Dict[str, Any]:
     return {"polls": len(polls), "failedPolls": failed, "pollMedianS": median, "pollMaxS": max(times, default=None)}
 
 
-def _grade_turns(turns, plan, reasons) -> Dict[str, Any]:
+def _grade_turn_failures(turns, reasons) -> int:
     bad = [t for t in turns if not t.get("ok")]
     if bad:
         reasons["FAIL"].append(f"{len(bad)} of {len(turns)} turns failed; first: {bad[0].get('error', '')[:120]}")
     slow = [t for t in turns if t.get("kind") in ("text", "food") and t.get("ok") and t["s"] > TEXT_TURN_LIMIT_S]
     if slow:
-        reasons["FAIL"].append(f"{len(slow)} text turns over {TEXT_TURN_LIMIT_S:.0f} s; slowest {max(t['s'] for t in slow)} s")
+        reasons["FAIL"].append(
+            f"{len(slow)} text turns over {TEXT_TURN_LIMIT_S:.0f} s; slowest {max(t['s'] for t in slow)} s"
+        )
+    return len(bad)
+
+
+def _grade_turn_coverage(turns, plan, reasons) -> Dict[str, int]:
     kinds = {kind: sum(1 for t in turns if t.get("kind") == kind) for kind in ("text", "food", "album")}
     if not plan.get("pollOnly"):
         for kind in ("text", "food"):
@@ -412,7 +426,13 @@ def _grade_turns(turns, plan, reasons) -> Dict[str, Any]:
                 reasons["BLOCKED"].append(f"no {kind} turn ran")
         if plan.get("albums") and not kinds["album"]:
             reasons["BLOCKED"].append("albums were planned and none ran")
-    return {"turns": kinds, "failedTurns": len(bad)}
+    return kinds
+
+
+def _grade_turns(turns, plan, reasons) -> Dict[str, Any]:
+    failed = _grade_turn_failures(turns, reasons)
+    kinds = _grade_turn_coverage(turns, plan, reasons)
+    return {"turns": kinds, "failedTurns": failed}
 
 
 def _grade_dream(answered, reasons) -> Optional[str]:
@@ -451,9 +471,10 @@ def grade_run(plan: Dict[str, Any], polls, turns, scan) -> Dict[str, Any]:
     answered = [r for r in polls if r.get("http") == 200]
     if not answered:
         reasons["BLOCKED"].append("no poll was answered")
-    numbers: Dict[str, Any] = {"hoursWatched": round((polls[-1]["t"] - start) / 3600.0, 3) if polls else 0.0}
-    if numbers["hoursWatched"] < plan.get("hours", 24.0) * DURATION_SLACK:
-        reasons["BLOCKED"].append(f"watched {numbers['hoursWatched']} h of {plan.get('hours')} h")
+    watched = (polls[-1]["t"] - start) / 3600.0 if polls else 0.0
+    numbers: Dict[str, Any] = {"hoursWatched": round(watched, 3)}
+    if watched < plan.get("hours", 24.0) * DURATION_SLACK:
+        reasons["BLOCKED"].append(f"watched {watched:.3f} h of {plan.get('hours')} h")
     _grade_restart(answered, reasons)
     _grade_crash(answered, reasons)
     _grade_nvs(answered, reasons)

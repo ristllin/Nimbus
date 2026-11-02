@@ -37,7 +37,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bench_driver as bd
 import port_guard
 
-WIFIAP_RE = re.compile(r"WIFIAP\?\s+ssid=(?P<ssid>\S+)\s+ip=\S+\s+up=(?P<up>\d)\s+sta=(?P<sta>\d)\s+onboarded=(?P<ob>\d)")
+WIFIAP_RE = re.compile(
+    r"WIFIAP\?\s+ssid=(?P<ssid>\S+)\s+ip=\S+\s+up=(?P<up>\d)\s+sta=(?P<sta>\d)\s+onboarded=(?P<ob>\d)"
+)
 STATUS_RE = re.compile(r"STATUS .*?mode=(?P<mode>\d+)\s+wifi=(?P<wifi>\d)\s+ip=(?P<ip>\S+)")
 RENDER_RE = re.compile(r"RENDER screen=(?P<screen>\d+)")
 WEBTOK_RE = re.compile(r"WEBTOK ([0-9a-fA-F]{24})")
@@ -51,7 +53,12 @@ BACK_TAP = (20, 22)  # the header Back or Home target on every screen that draws
 DEFAULT_CEILING_CENTS = 2000  # the owner's monthly default for a new unit
 FIRST_MESSAGE = "Reply with exactly one word: ok"
 KEY_FIELD = {"anthropic": "antKey", "mistral": "mistKey", "openai": "oaiKey", "zai": "zaiKey"}
-KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "mistral": "MISTRAL_API_KEY", "openai": "OPENAI_API_KEY", "zai": "Z_AI_TOKEN"}
+KEY_ENV = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "zai": "Z_AI_TOKEN",
+}
 WIFI_ENV = ("NIMBUS_TEST_STA_SSID", "NIMBUS_TEST_STA_PASS")
 
 
@@ -175,15 +182,25 @@ def step_first_screen(g: Gate) -> Dict[str, Any]:
         return {"answer": g.human("Does a tap on the gear open the menu, and does Back close it?")}
     gate = CALGATE_RE.search(g.console.cmd("CALGATE?", "CALGATE", 6.0))
     need(gate, "CALGATE? did not answer")
-    need(not (gate["active"] == "1" and gate["kind"] == "cap"), "a capacitive panel must never sit behind the touch gate")
+    need(
+        not (gate["active"] == "1" and gate["kind"] == "cap"), "a capacitive panel must never sit behind the touch gate"
+    )
     first = _screen(g)
     need(first in SCREENS_AT_REST, f"the first screen is id {first}, not a resting screen")
     g.console.cmd(f"TAP {GEAR_TAP[0]} {GEAR_TAP[1]}", "TAP", 4.0)
-    menu = g.poll(lambda: MENU_RE.search(g.console.cmd("MENU?", "MENU open=", 4.0) or "MENU open=0").group("open") == "1", 6.0, 0.3)
+    menu = g.poll(
+        lambda: MENU_RE.search(g.console.cmd("MENU?", "MENU open=", 4.0) or "MENU open=0").group("open") == "1",
+        6.0,
+        0.3,
+    )
     need(menu, "a tap on the gear did not open the menu")
     need(_screen(g) == SCREEN_MENU, "the menu is open but RENDER? does not show it")
     g.console.cmd(f"TAP {BACK_TAP[0]} {BACK_TAP[1]}", "TAP", 4.0)
-    closed = g.poll(lambda: MENU_RE.search(g.console.cmd("MENU?", "MENU open=", 4.0) or "MENU open=1").group("open") == "0", 6.0, 0.3)
+    closed = g.poll(
+        lambda: MENU_RE.search(g.console.cmd("MENU?", "MENU open=", 4.0) or "MENU open=1").group("open") == "0",
+        6.0,
+        0.3,
+    )
     need(closed, "Back did not close the menu")
     return {"firstScreen": SCREENS_AT_REST[first], "touch": gate["kind"]}
 
@@ -230,7 +247,10 @@ def step_gate_holds(g: Gate) -> Dict[str, Any]:
     need(state.get("needsOnboarding") is True, "a fresh unit must report needsOnboarding")
     need(state.get("provVerified") is False, "a fresh unit must not report a verified provider")
     pushed = g.api.post_form("/api/onboard/complete", {})
-    need(pushed.code == 409 and "no verified provider" in pushed.text, f"finishing with no provider answered {pushed.code}")
+    need(
+        pushed.code == 409 and "no verified provider" in pushed.text,
+        f"finishing with no provider answered {pushed.code}",
+    )
     return {"pushed": pushed.code, "said": pushed.text[:80]}
 
 
@@ -295,7 +315,10 @@ def step_restart(g: Gate) -> Dict[str, Any]:
     else:
         need(g.console.cmd("REBOOT", "REBOOTING", 8.0), "REBOOT was not acknowledged")
         g.poll(lambda: g.console.cmd("PING", "PONG", 3.0), 60.0)
-    after = g.poll(lambda: (lambda s: s if s.get("boot", {}).get("n") != before.get("boot", {}).get("n") else {})(g.api.state()), 90.0)
+    after = g.poll(
+        lambda: (lambda s: s if s.get("boot", {}).get("n") != before.get("boot", {}).get("n") else {})(g.api.state()),
+        90.0,
+    )
     need(after, "the unit did not come back with a new boot count")
     need(after.get("needsOnboarding") is False, "the wizard came back after a restart")
     need(after.get("provVerified") is True, "the provider did not stay verified across a restart")
@@ -375,7 +398,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--token-out", help="where to save the token read from the console")
     ap.add_argument("--factory-reset", action="store_true", help="send FACTRESET first (erases the unit's settings)")
     ap.add_argument("--wipe-build", help="a build folder to erase and full-flash first")
-    ap.add_argument("--boot-app0", default=os.path.expanduser("~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin"))
+    ap.add_argument(
+        "--boot-app0",
+        default=os.path.expanduser(
+            "~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin"
+        ),
+    )
     ap.add_argument("--esptool", default=os.path.expanduser("~/.platformio/penv/bin/esptool"))
     args = ap.parse_args(argv)
     if args.no_console and not (args.ip and args.token_file):
@@ -403,7 +431,11 @@ def main(argv=None) -> int:
         if gate.console:
             gate.console.close()
     print(json.dumps({"grade": verdict["grade"], "steps": [(r["step"], r["grade"]) for r in verdict["steps"]]}))
-    return 0 if verdict["grade"] == "PASS" else (port_guard.REFUSED_EXIT if "refused" in json.dumps(verdict["steps"][0]) else 1)
+    return (
+        0
+        if verdict["grade"] == "PASS"
+        else (port_guard.REFUSED_EXIT if "refused" in json.dumps(verdict["steps"][0]) else 1)
+    )
 
 
 if __name__ == "__main__":

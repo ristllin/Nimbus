@@ -176,7 +176,11 @@ def row_a07(b: Bench) -> Grade:
     if "didn't finish" in result.reply or "That didn't finish" in "\n".join(lines):
         fails.append("the owner got 'That didn't finish'")
     if not any("turn fit: left out" in line for line in lines):
-        return ("BLOCKED", "the turn answered but nothing was trimmed, so this did not reach the overflow") if not fails else _verdict(fails, "")
+        return (
+            ("BLOCKED", "the turn answered but nothing was trimmed, so this did not reach the overflow")
+            if not fails
+            else _verdict(fails, "")
+        )
     return _verdict(fails, "answered on the same turn with the body trimmed")
 
 
@@ -244,7 +248,9 @@ def row_c05(b: Bench) -> Grade:
         cut = any(" cut" in line for line in lines)
         if cut and not any("the round runs once more" in line for line in lines):
             fails.append("the album cut and the round did not run again")
-        return _verdict(fails, "the album was answered, after a recovered cut" if cut else "the album was answered clean")
+        return _verdict(
+            fails, "the album was answered, after a recovered cut" if cut else "the album was answered clean"
+        )
 
     return _with_bot(b, body)
 
@@ -252,7 +258,11 @@ def row_c05(b: Bench) -> Grade:
 def _inject_member_photo(b: Bench, chat: int, update: int, name: str, size: int) -> None:
     import tg_archive_bench as tb
 
-    b.con("TGINJECT " + tb.page([tb.local_photo_update(update, chat, f"/mem/files/bench500/{name}", size)]), "injected", 15.0)
+    b.con(
+        "TGINJECT " + tb.page([tb.local_photo_update(update, chat, f"/mem/files/bench500/{name}", size)]),
+        "injected",
+        15.0,
+    )
 
 
 def _member_chat(b: Bench) -> int:
@@ -283,7 +293,9 @@ def row_c06(b: Bench) -> Grade:
     files = listed.json().get("files") or []
     if len(files) != 1:
         return ("FAIL", f"the same photo twice left {len(files)} stored files")
-    b.need_human("From an approved member chat, send photos until the limit refuses one. Did the refusal reach the chat as a reply?")
+    b.need_human(
+        "From an approved member chat, send photos until the limit refuses one. Did the refusal reach the chat as a reply?"
+    )
     return ("PASS", "one stored file for the duplicate; the person saw the refusal reach the sender")
 
 
@@ -294,7 +306,11 @@ def row_v04(b: Bench) -> Grade:
 
     seen = b.mark()
     update = tb.first_update_id()
-    b.con("TGINJECT " + tb.page([tb.text_update(update, chat, "Please say hello out loud on the device.")]), "injected", 15.0)
+    b.con(
+        "TGINJECT " + tb.page([tb.text_update(update, chat, "Please say hello out loud on the device.")]),
+        "injected",
+        15.0,
+    )
     b.console.wait("turn end:", b.args.album_wait_s, since=time.time() - 1)
     lines = b.new_lines(seen)
     b.ev.write("errlog.txt", "\n".join(lines))
@@ -352,9 +368,13 @@ def _one_cut(b: Bench, n: int, original: bytes, edited: bytes) -> Dict[str, Any]
         raise Blocked("could not upload the file before a cut")
     before = b.state()
     delay = random.uniform(0.5, 3.0)
-    b.need_human(f"Cut {n}: hold the USB-C cable. Answer yes, then pull it the moment PULL NOW prints ({delay:.1f} s later).")
+    b.need_human(
+        f"Cut {n}: hold the USB-C cable. Answer yes, then pull it the moment PULL NOW prints ({delay:.1f} s later)."
+    )
     worker = threading.Thread(
-        target=lambda: b.tool("files.edit", {"project": "bench500", "name": "edit.csv", "find": "row0,", "replace": "edited0,"}),
+        target=lambda: b.tool(
+            "files.edit", {"project": "bench500", "name": "edit.csv", "find": "row0,", "replace": "edited0,"}
+        ),
         daemon=True,
     )
     worker.start()
@@ -565,13 +585,17 @@ def row_b03(b: Bench) -> Grade:
 
 def row_h23(b: Bench) -> Grade:
     """Two looks in a browser at http://<ip>/. The person types the device token into the page's gate."""
-    b.need_human("Open a Telegram photo's chat bubble on the web page. Does it read [photo]? Save a screenshot under the row's folder.")
+    b.need_human(
+        "Open a Telegram photo's chat bubble on the web page. Does it read [photo]? Save a screenshot under the row's folder."
+    )
     b.need_human("With the card held busy, reload the web page. Does a 503 still read 'SD card'? Save a screenshot.")
     return ("PASS", "the person saw both; screenshots are the evidence")
 
 
 def row_v05(b: Bench) -> Grade:
-    raise Blocked("needs a real short write on a stalled socket, and http_multipart.cpp has no seam; only the wording is host-tested")
+    raise Blocked(
+        "needs a real short write on a stalled socket, and http_multipart.cpp has no seam; only the wording is host-tested"
+    )
 
 
 ROWS: Dict[str, Tuple[Callable[[Bench], Grade], bool]] = {
@@ -601,7 +625,13 @@ def run_row(b: Bench, row: str) -> Dict[str, Any]:
         grade, reason = fn(b)
     except Blocked as exc:
         grade, reason = "BLOCKED", str(exc)
-    verdict = {"row": row, "grade": grade, "reason": reason, "at": bd.utc_iso(started), "seconds": round(time.time() - started, 1)}
+    verdict = {
+        "row": row,
+        "grade": grade,
+        "reason": reason,
+        "at": bd.utc_iso(started),
+        "seconds": round(time.time() - started, 1),
+    }
     b.ev.write("verdict.json", verdict)
     b.say(f"{row}: {grade}: {reason}")
     return verdict
@@ -646,6 +676,25 @@ def _open_console(args, ev: bd.Evidence):
     return bd.Console(args.port, ev.path("console.log"), "bench_rows")
 
 
+def _prepare_run(args):
+    """Validate the row's arguments and open what it needs. Returns (api, ev, console), or an exit code."""
+    if args.row != "V05" and not (args.ip and args.token_file):
+        print("--ip and --token-file are required", file=sys.stderr)
+        return 2
+    api = bd.Api(args.ip or "0.0.0.0", bd.read_token(args.token_file) if args.token_file else "unset")
+    ev = bd.Evidence(os.path.join(args.out, args.row), api.scrub)
+    try:
+        if args.port:
+            return api, ev, _open_console(args, ev)
+        if ROWS[args.row][1]:
+            print(f"{args.row} needs the test console: pass --port and --mac", file=sys.stderr)
+            return 2
+    except port_guard.ForbiddenDevice as exc:
+        print(exc, file=sys.stderr)
+        return port_guard.REFUSED_EXIT
+    return api, ev, None
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     if args.row == "list":
@@ -655,21 +704,10 @@ def main(argv=None) -> int:
     if args.row not in ROWS:
         print(f"no row {args.row}; try: bench_rows.py list", file=sys.stderr)
         return 2
-    if args.row != "V05" and not (args.ip and args.token_file):
-        print("--ip and --token-file are required", file=sys.stderr)
-        return 2
-    api = bd.Api(args.ip or "0.0.0.0", bd.read_token(args.token_file) if args.token_file else "unset")
-    ev = bd.Evidence(os.path.join(args.out, args.row), api.scrub)
-    console = None
-    try:
-        if args.port:
-            console = _open_console(args, ev)
-        elif ROWS[args.row][1]:
-            print(f"{args.row} needs the test console: pass --port and --mac", file=sys.stderr)
-            return 2
-    except port_guard.ForbiddenDevice as exc:
-        print(exc, file=sys.stderr)
-        return port_guard.REFUSED_EXIT
+    prepared = _prepare_run(args)
+    if isinstance(prepared, int):
+        return prepared
+    api, ev, console = prepared
     try:
         verdict = run_row(Bench(args=args, api=api, ev=ev, console=console, ask=ask_stdin), args.row)
     finally:

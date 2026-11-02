@@ -308,7 +308,7 @@ def selftest():
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description="N7 internal-SRAM sampler (read-only)")
+    p = argparse.ArgumentParser(description="N7 internal-SRAM sampler (read-only)", allow_abbrev=False)
     p.add_argument("--ip", help="device LAN IP")
     p.add_argument("--token-file", help="a file holding the device token (or set NIMBUS_TEST_TOKEN)")
     p.add_argument("--out", help="JSONL output path (append)")

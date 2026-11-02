@@ -106,7 +106,9 @@ class FakeDevice:
         turn = str(self._next_turn)
         reply = self.chat_reply(text)
         self.turns[turn] = reply
-        self.log(f"turn end: {'ok' if reply else 'FAIL'} host=fake tokens in=1 out=1 tools=0 reply={len(reply)}B src=web")
+        self.log(
+            f"turn end: {'ok' if reply else 'FAIL'} host=fake tokens in=1 out=1 tools=0 reply={len(reply)}B src=web"
+        )
         return turn
 
 
@@ -281,7 +283,7 @@ class FakeConsole:
     def cmd(self, line: str, expect: str, timeout: float = 8.0, secret: bool = False) -> str:
         if self.dead:
             return ""
-        started = time.time() - 0.001
+        started = time.time()
         self.send(line, secret)
         return self.wait(expect, min(timeout, 0.05), since=started)
 
@@ -323,7 +325,9 @@ class FakeConsole:
     def _v_wifiap(self, line: str) -> List[str]:
         s = self.device.state
         onboarded = int(not s.get("needsOnboarding")) if self.onboarded_override is None else self.onboarded_override
-        return [f"WIFIAP? ssid=Nimbus-1234-setup ip=192.168.4.1 up=1 sta={int(bool(s.get('sta')))} onboarded={onboarded} uptime=9 radio=1"]
+        return [
+            f"WIFIAP? ssid=Nimbus-1234-setup ip=192.168.4.1 up=1 sta={int(bool(s.get('sta')))} onboarded={onboarded} uptime=9 radio=1"
+        ]
 
     def _v_render(self, line: str) -> List[str]:
         return [f"RENDER screen={self.screen} posture=0 seg=0 single=0 dark=0 bright=80"]
