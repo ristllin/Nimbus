@@ -1376,6 +1376,7 @@ function applyHostedChrome(){
       while(p&&(p.tagName==='P'||p.tagName==='LABEL')){off(p); if(p.tagName==='LABEL')break; p=p.previousElementSibling;}};
     ['midFail','loopRounds','loopDeadline','compactKB','tlsSlots','tlsVerify','capProbe','ttsOn','skAuto'].forEach(row);
     off($('capProbeActive'));
+    off($('clockSyncBtn'));      // the platform keeps this clock
     const tt=$('tgToken');      // a hosted bot is connected when the instance is created
     if(tt){off(tt.parentElement); const tip=tt.parentElement.previousElementSibling; // the line above is the readiness line
       const lb=tip&&tip.previousElementSibling&&tip.previousElementSibling.previousElementSibling; if(lb&&lb.tagName==='LABEL')off(lb);
@@ -3637,7 +3638,8 @@ function applyOrch(d){
       '• No one approved yet - message the bot once, then approve it below');
     const sp=d.sttProv&&d.providers&&d.providers[d.sttProv];
     const ck=d.providers&&d.providers.cumulo&&d.providers.cumulo.hasKey;
-    parts.push(sp&&sp.hasKey?('✓ voice notes ('+d.sttProv+' STT)') :
+    if(HOSTED)parts.push('Reads text and photos');   // no voice notes on a hosted bot
+    else parts.push(sp&&sp.hasKey?('✓ voice notes ('+d.sttProv+' STT)') :
       ck?'✓ voice notes (Cumulo Nimbus STT)' :
       '⚠ No '+(d.sttProv||'dictation')+' key - voice notes can’t be transcribed');
     r.textContent=parts.join('  ·  ');
@@ -5657,7 +5659,7 @@ function loadTelegram(){
 $('tgAddBtn').onclick=()=>{const id=$('tgAddId').value.trim();if(id){tgPost('/api/telegram/add',{id:id,name:$('tgAddName').value.trim()},'Member added');$('tgAddId').value='';$('tgAddName').value='';}};
 $('tgPublic').onchange=()=>{
   if(!$('tgPublic').checked){tgPost('/api/telegram/public',{on:0},'Open access off');return;}
-  uiConfirm('Allow anyone to message this device?\n\nAnyone who finds your bot on Telegram can give it instructions and spend your API credits.',{ok:'Allow Public Access',danger:true}).then(ok=>{
+  uiConfirm('Allow anyone to message this '+(HOSTED?'instance':'device')+'?\n\nAnyone who finds your bot on Telegram can give it instructions and spend your API credits.',{ok:'Allow Public Access',danger:true}).then(ok=>{
     if(!ok){$('tgPublic').checked=false;return;}
     tgPost('/api/telegram/public',{on:1},'Open access on');
   });
@@ -5850,6 +5852,11 @@ function loadChatHistory(){
       if(_tagVal(m.tags,'ev:')==='clear'){const dv=document.createElement('div');
         dv.style.cssText='align-self:center;font-size:10.5px;color:var(--ink3);padding:6px 0;letter-spacing:.04em';
         dv.textContent=m.text; log.appendChild(dv); any=true; return;}
+      // What started a turn nobody typed (results arrived, a routine ran): the same quiet
+      // line, never an assistant bubble, and the turn's summary chip stays for its reply.
+      if(_tagVal(m.tags,'ev:')==='trigger'){const dv=document.createElement('div');
+        dv.style.cssText='align-self:center;font-size:10.5px;color:var(--ink3);padding:6px 0;letter-spacing:.04em';
+        dv.textContent=String(m.text||'').replace(/^\[|\]$/g,''); log.appendChild(dv); any=true; return;}
       // A user row's OWN id is its turn id; the reply row carries turn:<that id>.
       // Trace renders just above the reply it produced.
       const tid=m.role==='user'?m.id:_turnId(m);

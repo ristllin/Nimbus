@@ -506,6 +506,29 @@ test('hosted: Assistant shows no control the instance refuses or ignores', async
   await expect(page.locator('#searchOverlay')).not.toContainText('factory reset');
 });
 
+// (10b) A turn nobody typed: what started it is a quiet line, not an assistant bubble, and
+//       the reply keeps its summary chip. The shared page, so the device reads the same.
+test('a sub-agent result turn shows its trigger as a line and its chip on the reply', async ({ page }) => {
+  await markHosted(page);
+  await routeHosted(page);
+  await seedToken(page);
+  await page.route('**/api/mem/episodic**', (r) => r.fulfill({ contentType: 'application/json', body: JSON.stringify({ messages: [
+    { id: 'm3', session: 'owner', channel: 'web', role: 'system', kind: 'log', tags: 'ev:turnend,turn:m1',
+      text: JSON.stringify({ host: 'mistral', model: 'mistral-small', ok: true, in: 10, out: 5, tools: 0 }) },
+    { id: 'm2', session: 'owner', channel: 'web', role: 'assistant', kind: 'message', tags: 'out:reply,turn:m1', text: 'It is 144.' },
+    { id: 'm1', session: 'owner', channel: 'web', role: 'system', kind: 'message', tags: 'ev:trigger,src:synth,turn:m1', text: '[sub-agent results arrived]' },
+  ] }) }));
+  await page.route('**/api/chat**', (r) => r.fulfill({ contentType: 'application/json', body: '{"async":0,"busy":0}' }));
+  await openApp(page);
+  await page.locator('.tab[data-p=chat]').click();
+  await expect(page.locator('#chatLog')).toContainText('It is 144.', { timeout: 8000 });
+  await expect(page.locator('#chatLog')).toContainText('sub-agent results arrived');
+  await expect(page.locator('#chatLog')).not.toContainText('[sub-agent results arrived]');
+  const bubbles = await page.locator('#chatLog > *').allInnerTexts();
+  const reply = bubbles.find((t) => t.includes('It is 144.'));
+  expect(reply).toContain('mistral');
+});
+
 // (11a) The lines that would be untrue here read in the instance's own words.
 test('hosted: Memory, Chat and Device make no claim about a card, a mic or Wi-Fi', async ({ page }) => {
   await markHosted(page);
@@ -574,6 +597,8 @@ test('hosted: a connected bot never reads as verifying', async ({ page }) => {
   await page.evaluate(() => document.querySelectorAll('details').forEach((d) => { d.open = true; }));
   await expect(page.locator('#tgReady')).toContainText('Bot active', { timeout: 8000 });
   await expect(page.locator('#tgReady')).not.toContainText('erifying');
+  await expect(page.locator('#tgReady')).not.toContainText('voice notes');
+  await expect(page.locator('#tgReady')).toContainText('Reads text and photos');
 });
 
 // (13) The recording line tells the truth in both states, and off is reachable.
