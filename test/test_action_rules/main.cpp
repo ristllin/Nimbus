@@ -899,8 +899,15 @@ static void test_device_wiring_of_the_owner_chat_rules() {
   TEST_ASSERT_TRUE(role != std::string::npos);
   const std::string body = orch.substr(role, orch.find("\n}\n", role) - role);
   TEST_ASSERT_TRUE_MESSAGE(body.find("tableHasAdmin = g_tenants.adminCount() > 0;") != std::string::npos, body.c_str());
-  TEST_ASSERT_TRUE_MESSAGE(body.find("roleWithoutRow(isChatAllowed(chatId), agent::telegram::isOwner(chatId), tableHasAdmin)") !=
-                               std::string::npos,
+  // The no-row fallback resolves the Telegram owner rule from NVS (thread-safe), never
+  // from telegram's poll-task-owned g_owners/g_allowlist Strings: roleOfChat also runs on
+  // the web task (the /api/test seams), and the poll task reassigns those Strings on every
+  // allowlist reload, so a web-task read of them is a use-after-free race.
+  TEST_ASSERT_TRUE_MESSAGE(body.find("agent::telegram::isOwner") == std::string::npos, body.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(body.find("roleWithoutRow(") != std::string::npos &&
+                               body.find("nimbus::orch::telegramOwnerOf(") != std::string::npos &&
+                               body.find("store::telegramAllowlist()") != std::string::npos &&
+                               body.find("store::telegramOwners()") != std::string::npos,
                            body.c_str());
   const size_t sys = orch.find("static void drainSystemTurn() {");
   TEST_ASSERT_TRUE(sys != std::string::npos);
