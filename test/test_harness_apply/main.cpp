@@ -1426,13 +1426,16 @@ static void test_tts_only_turn_that_was_not_spoken_delivers_the_text() {
     TEST_ASSERT_EQUAL_STRING_MESSAGE("It is ready.\nOnly the device's owner can speak aloud on the device.",
                                      busy.delivered[0].second.c_str(), chat);
   }
-  // Voice replies switched off keep the owner's ruling: a silent no-op, no text injected.
+  // Voice replies switched off keep the owner's ruling: a silent no-op, no text injected -
+  // and an owner chat that got nothing still hears the empty-answer line, not silence
+  // (lane MG: an empty answer is honest on every channel).
   Rec off;
   ApplyDeps dOff = makeDeps(off, /*tts=*/false);
   ApplyState stOff = makeState(off);
   agent::applyTurn(turnWithDevice("{\"type\":\"tts\",\"text\":\"The kettle is ready.\"}"), "1001", dOff,
                    stOff, spawned);
-  TEST_ASSERT_EQUAL(0, (int)off.delivered.size());
+  TEST_ASSERT_EQUAL(1, (int)off.delivered.size());
+  TEST_ASSERT_EQUAL_STRING(agent::kEmptyAnswer, off.delivered[0].second.c_str());
 }
 
 // Independent review: the text of a failed tts-only turn goes out as the turn's message, so it is
@@ -1543,8 +1546,17 @@ static void test_the_shortened_note_never_goes_out_alone() {
     bool spawned = false;
     agent::applyTurn(turnWithDevice(json.c_str()), "1001", d, st, spawned);
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.spoken.size(), scheduled ? "scheduled" : "reply-less");
-    TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.delivered.size(), scheduled ? "scheduled" : "reply-less");
-    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.turnCompletes.size(), "a synchronous channel still completes");
+    if (scheduled) {
+      // A routine tells nobody: the completion signal only.
+      TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
+      TEST_ASSERT_EQUAL(1, (int)r.turnCompletes.size());
+    } else {
+      // A reply-less turn that acted (it spoke) says so on the owner's channel - the
+      // shortened note rides no message of its own.
+      TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+      TEST_ASSERT_EQUAL_STRING(agent::kNoMessageAfterAction, r.delivered[0].second.c_str());
+      TEST_ASSERT_EQUAL(0, (int)r.turnCompletes.size());
+    }
   }
   Rec r;   // a routine's reply carries it: the reply goes out anyway
   ApplyDeps d = makeDeps(r, /*tts=*/true);

@@ -612,9 +612,10 @@ static void test_real_overflow_refusals_trim_and_retry_once() {
   }
 }
 
-// Z.ai's head runs single-shot: the refusal the old matcher did not know (code 1261).
+// Z.ai's head runs single-shot when the fabric is off (the custom head always does; a
+// keyed zai runs the loop since lane MG): the refusal the old matcher did not know (1261).
 static void test_zai_overflow_on_the_single_shot_path() {
-  Rig r({"zai"}, 2000);
+  Rig r({"zai"}, 2000, /*fabric=*/false);
   r.quotedHistory(8, 1200);
   Exchange refuse;
   refuse.status = 400;
@@ -1174,9 +1175,10 @@ static void test_unattended_promise_gets_the_line() {
   TEST_ASSERT_TRUE_MESSAGE(s.saidAny(kLaterLine), s.all().c_str());
 }
 
-// The single-shot head and an answer the device cannot parse as a turn: the same line.
+// The single-shot head (fabric off, as the custom head always runs) and an answer the
+// device cannot parse as a turn: the same line.
 static void test_unreadable_promise_gets_the_line() {
-  Rig r({"zai"}, 2000);
+  Rig r({"zai"}, 2000, /*fabric=*/false);
   Exchange serve;
   serve.body =
       "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"{\\\"reply\\\":\\\"I'll finish that next "

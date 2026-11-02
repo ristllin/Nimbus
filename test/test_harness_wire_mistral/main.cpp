@@ -1497,7 +1497,7 @@ static void test_connectors_refusal_retried_once_without_them() {
     TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
     TEST_ASSERT_FALSE(bodyHas(d, 0, "\"tools\""));   // the wire key builtins and Studio connectors ride
   }
-  // A sub-agent on that model skips them too, and pays no doomed 400 of its own.
+  // A sub-agent on that model moves to the tools model (CUM-887) and pays no doomed 400.
   {
     FakeProviderDeps d;
     d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("c-conn3")});
@@ -1508,8 +1508,10 @@ static void test_connectors_refusal_retried_once_without_them() {
     char jobId[72] = {};
     TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "sub-mistral", dir, jobId));
     TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
-    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"model\":\"mistral-large-4-0\""));
-    TEST_ASSERT_FALSE(bodyHas(d, 0, "\"tools\""));
+    // CUM-887 (lane MG): the model refused builtins above, so the run moves to the tools
+    // model and keeps its tools - no doomed 400 is paid.
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"model\":\"mistral-medium-latest\""));
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"web_search\""));
   }
   // Remembered per model: a sub-agent on another model still gets them.
   {
