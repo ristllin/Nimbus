@@ -775,20 +775,21 @@ static void testTavilyKey(ndtest::Ctx& c) {
     FakeHttpTransport tx;
     NimbusdRig rig(cfg, o, &tx);
     Web web(rig);
-    c.ok(!rig.registry().has("web.search"), "no key, no web.search");
+    c.ok(rig.registry().has("web.search"), "web.search is registered");
+    c.ok(!rig.registry().gateOpen("web.search"), "no key, web.search is not offered");
     c.ok(has(web.call("GET", "/api/orch").body, "\"hasTav\":false"), "the page reads no key");
     c.eqi(web.call("POST", "/api/orch", "tavKey=tvly-test-key-0000000000000000").status, 200, "the key saves");
-    c.ok(rig.registry().has("web.search"), "web.search is offered at once");
+    c.ok(rig.registry().gateOpen("web.search"), "web.search is offered at once");
     c.ok(has(web.call("GET", "/api/orch").body, "\"hasTav\":true"), "the page reads it");
   }
   {
     Config cfg;
     FakeHttpTransport tx;
     NimbusdRig rig(cfg, o, &tx);
-    c.ok(rig.registry().has("web.search"), "it survives a restart");
+    c.ok(rig.registry().gateOpen("web.search"), "it survives a restart");
     Web web(rig);
     c.eqi(web.call("POST", "/api/orch", "clr_tavKey=1").status, 200, "the key clears");
-    c.ok(!rig.registry().has("web.search"), "web.search goes with it");
+    c.ok(!rig.registry().gateOpen("web.search"), "web.search goes with it");
   }
   clearEnv();
 }
