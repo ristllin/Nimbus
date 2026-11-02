@@ -3798,7 +3798,7 @@ function embStateText(d){
     const need=(prov==='openai'||prov==='cumulo')?'an OpenAI or Cumulo Nimbus key':(PROVNOUN[prov]||'a key for it');
     return {warn:true,txt:'Your stored memories were made with '+lbl+', and this device has no key that can add to them. Add '+need+' on Assistant > Models, or change the embedding model below (that erases the stored memories).'};
   }
-  return {warn:true,txt:'Long-term memory search by meaning is off: it needs a Cumulo Nimbus, OpenAI or Mistral key (Anthropic and Z.ai can\'t create embeddings). New memories are kept as text and found by keyword until you add one on Assistant > Models. Chat works without it.'};
+  return {warn:true,txt:'Long-term memory is off: it needs a Cumulo Nimbus, OpenAI or Mistral key to search by meaning (Anthropic and Z.ai can\'t create embeddings). New memories are kept as text and found by keyword until you add one on Assistant > Models. Chat works without it.'};
 }
 // Supported embedding providers/models (owner: dropdown, not free text - only show
 // what the device can actually call). Curated; the live verify on save is the real gate.
