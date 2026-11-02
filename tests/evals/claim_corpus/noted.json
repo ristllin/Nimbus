@@ -190,5 +190,17 @@
   "reply": "Noted, going forward I'll work to 150 g.",
   "claim": true,
   "from": "guard: a promise of keeping, nothing kept"
+ },
+ {
+  "owner": "My flight is next week.",
+  "reply": "Noted, that's future work for you.",
+  "claim": false,
+  "from": "guard: 'future' alone promises nothing"
+ },
+ {
+  "owner": "I'll deal with it later.",
+  "reply": "Noted, set it aside for now.",
+  "claim": false,
+  "from": "guard: 'set it' alone promises nothing"
  }
 ]

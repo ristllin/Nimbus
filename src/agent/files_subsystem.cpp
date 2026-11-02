@@ -717,10 +717,11 @@ static std::string csvHeader(File& f, const std::string& window, size_t start) {
 // final figures into it once at boot and removes the legacy file, so the
 // model stops appending to an unfixable orphan. Only the owner's file folds, and the
 // file goes only when all its figures reached the ledger. Caller holds the Lock (begin).
-// A file's size on the card, 0 when it cannot be opened.
+// A file's size on the card, kUnreadableBytes when it cannot be opened (past any read cap).
+static constexpr size_t kUnreadableBytes = SIZE_MAX;
 static size_t fileBytes(const char* project, const char* name) {
   File f = memory::dataFs().open(pathOf(project, name).c_str(), FILE_READ);
-  if (!f) return 0;
+  if (!f) return kUnreadableBytes;
   const size_t n = f.size();
   f.close();
   return n;
@@ -749,7 +750,7 @@ void migrateLegacyMealLog() {
   // past the cap) leaves both as they are (planLedgerFold).
   constexpr size_t kFoldCap = nimbus::orch::kLedgerFoldCap;
   const size_t legacyBytes = fileBytes(kLegacyProject, kLegacyName);
-  if (legacyBytes == 0) return;   // the index names the file; the card may have lost it - nothing to fold
+  if (legacyBytes == kUnreadableBytes) return;   // the index names the file; the card may have lost it - nothing to fold
   if (legacyBytes > kFoldCap) {
     alogf("files: legacy %s/%s is %u KB - too large to fold safely, left in place",
           kLegacyProject, kLegacyName, (unsigned)(legacyBytes / 1024));

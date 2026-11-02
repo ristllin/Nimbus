@@ -1304,8 +1304,8 @@ bool reportedTotal(const Scan& sc, size_t i) {
 constexpr const char* kKeepWords[] = {"remember", "remembered", "memory", "memories", "stored", "store", "storing", "saved",
                                       "save", "saving", "permanent", "permanently", "forever", "file", "notes", "log", "logged"};
 // A promise that it lasts past this reply: the same claim in other words ("noted for future chats").
-constexpr const char* kKeepPhrases[] = {"from now on", "next time", "going forward", "future chats", "future chat", "future", "i've set",
-                                        "i have set", "set that", "set it", "i will use", "i'll use"};
+constexpr const char* kKeepPhrases[] = {"from now on", "next time", "going forward", "future chats", "future chat", "future sessions", "in future",
+                                        "i've set", "i have set", "set that as", "i will use", "i'll use"};
 bool keepPhraseAt(const Scan& sc, size_t k) {
   for (const char* phrase : kKeepPhrases)
     if (matchPhrase(sc, k, phrase, nullptr)) return true;
