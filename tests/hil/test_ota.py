@@ -19,7 +19,8 @@ Typed OTA (schema 2): the fixture manifest is a v2 typed manifest keyed on the
 device type. This suite runs on the Solide ``env:test`` board, whose OTA type
 resolves (NVS ``otaType`` unset -> compile-time fallback) to ``test``, so the
 manifest is signed for the ``test`` variant. A Freenove test board runs the
-``test-cyd`` build and its own suite; do not repoint FW_BIN at it.
+``test-cyd`` build and its own suite, test_ota_freenove.py, which runs these same
+tests through the ``ota_board`` fixture; do not repoint FW_BIN at it.
 """
 
 from __future__ import annotations
@@ -103,6 +104,7 @@ def _make_cert(tmp: Path) -> tuple[Path, Path]:
 
 
 def _sign_manifest(tmp: Path, key: Path, url_base: str, fw: Path) -> Path:
+    variant = fw.stem[len("firmware-") :]  # the fixture names the served file after the board's OTA variant
     out = tmp / "manifest.json"
     subprocess.run(
         [
@@ -118,7 +120,7 @@ def _sign_manifest(tmp: Path, key: Path, url_base: str, fw: Path) -> Path:
             url_base,
             "--notes",
             "hil fixture",
-            f"test={fw}",  # schema 2 (default) -> typed manifest, variant "test"
+            f"{variant}={fw}",  # schema 2 (default) -> typed manifest, keyed on the variant
         ],
         check=True,
         capture_output=True,
@@ -126,7 +128,7 @@ def _sign_manifest(tmp: Path, key: Path, url_base: str, fw: Path) -> Path:
     import json
 
     man = json.loads(out.read_text())
-    assert man["schema"] == 2 and "test" in man["variants"], man
+    assert man["schema"] == 2 and variant in man["variants"], man
     return out
 
 
@@ -151,18 +153,29 @@ def _reachable_ip_or_skip(device, net, secrets, require_secret) -> str:
 
 
 @pytest.fixture
-def ota_server(tmp_path, device, net, secrets, require_secret):
+def ota_board():
+    """The board family under test: its firmware image, OTA variant and pio env."""
+    return {"fw_bin": FW_BIN, "variant": "test", "env": "test"}
+
+
+def _served_fw(serve_dir: Path) -> Path:
+    """The image the fixture serves, firmware-<variant>.bin."""
+    return next(serve_dir.glob("firmware-*.bin"))
+
+
+@pytest.fixture
+def ota_server(tmp_path, device, net, secrets, require_secret, ota_board):
     """Local HTTPS fixture server + device pointed at it. Yields (ip, tok, base,
     tmp_path); restores tlsVerify + the manifest-URL override afterwards."""
-    if not FW_BIN.is_file():
-        pytest.skip("no env:test firmware.bin - run `pio run -e test` first")
+    if not ota_board["fw_bin"].is_file():
+        pytest.skip(f"no env:{ota_board['env']} firmware.bin - run `pio run -e {ota_board['env']}` first")
     ip = _reachable_ip_or_skip(device, net, secrets, require_secret)
     tok = _webtok(device)
 
     host = _host_ip_toward(ip)
     serve_dir = tmp_path / "serve"
     serve_dir.mkdir()
-    (serve_dir / "firmware-test.bin").write_bytes(FW_BIN.read_bytes())
+    (serve_dir / f"firmware-{ota_board['variant']}.bin").write_bytes(ota_board["fw_bin"].read_bytes())
 
     crt, key = _make_cert(tmp_path)
     # SO_REUSEADDR + an explicit server_close() below. Without both, this
@@ -243,7 +256,7 @@ def test_check_finds_release(ota_server, device):
     """Manifest fetch + parse + eligibility: served v99.0.0 must become
     state=available with the version + notes surfaced."""
     ip, tok, base, serve_dir = ota_server
-    _sign_manifest(serve_dir.parent, TEST_KEY, base, serve_dir / "firmware-test.bin")
+    _sign_manifest(serve_dir.parent, TEST_KEY, base, _served_fw(serve_dir))
     os.replace(serve_dir.parent / "manifest.json", serve_dir / "manifest.json")
     _point_at(device, base)
     _start(device, "OTACHECK")
@@ -256,7 +269,7 @@ def test_dry_run_verifies_end_to_end(ota_server, device):
     verify, then Update.abort() - no flip, no reboot. Also covers the 302
     redirect hop (the binary URL goes through /redir/)."""
     ip, tok, base, serve_dir = ota_server
-    _sign_manifest(serve_dir.parent, TEST_KEY, f"{base}/redir", serve_dir / "firmware-test.bin")
+    _sign_manifest(serve_dir.parent, TEST_KEY, f"{base}/redir", _served_fw(serve_dir))
     os.replace(serve_dir.parent / "manifest.json", serve_dir / "manifest.json")
     _point_at(device, base)
     _start(device, "OTACHECK")
@@ -272,11 +285,11 @@ def test_bitflip_binary_sha_fails(ota_server, device):
     """A corrupted binary (same size, one byte flipped AFTER signing) must be
     rejected by the streaming SHA check - and never arm the guard."""
     ip, tok, base, serve_dir = ota_server
-    _sign_manifest(serve_dir.parent, TEST_KEY, base, serve_dir / "firmware-test.bin")
+    _sign_manifest(serve_dir.parent, TEST_KEY, base, _served_fw(serve_dir))
     os.replace(serve_dir.parent / "manifest.json", serve_dir / "manifest.json")
-    blob = bytearray((serve_dir / "firmware-test.bin").read_bytes())
+    blob = bytearray((_served_fw(serve_dir)).read_bytes())
     blob[len(blob) // 2] ^= 0xFF
-    (serve_dir / "firmware-test.bin").write_bytes(bytes(blob))
+    (_served_fw(serve_dir)).write_bytes(bytes(blob))
 
     _point_at(device, base)
     _start(device, "OTACHECK")
@@ -300,7 +313,7 @@ def test_wrong_key_sig_fails(ota_server, device, tmp_path):
         check=True,
         capture_output=True,
     )
-    _sign_manifest(serve_dir.parent, rogue, base, serve_dir / "firmware-test.bin")
+    _sign_manifest(serve_dir.parent, rogue, base, _served_fw(serve_dir))
     os.replace(serve_dir.parent / "manifest.json", serve_dir / "manifest.json")
 
     _point_at(device, base)
@@ -341,7 +354,7 @@ def test_check_result_new_version(ota_server, device, net):
     """CUM-58: after a check that finds a release, otaResult settles to
     'new-version' (not a hung 'pending' or a false 'up-to-date')."""
     ip, tok, base, serve_dir = ota_server
-    _sign_manifest(serve_dir.parent, TEST_KEY, base, serve_dir / "firmware-test.bin")
+    _sign_manifest(serve_dir.parent, TEST_KEY, base, _served_fw(serve_dir))
     os.replace(serve_dir.parent / "manifest.json", serve_dir / "manifest.json")
     _point_at(device, base)
     _start(device, "OTACHECK")
