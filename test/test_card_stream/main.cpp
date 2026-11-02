@@ -666,6 +666,26 @@ static void test_every_card_download_is_a_card_stream() {
   }
 }
 
+// The staging pool rule (cardStagingInternalOk): on a board with PSRAM, staging
+// never comes out of internal SRAM - an exhausted PSRAM answers null and the
+// stream waits (test_no_staging_memory_waits_inside_the_budget pins that path)
+// instead of draining the pool a live turn's TLS handshake needs a contiguous
+// block of. Only a no-PSRAM board (no other pool exists) may stage internally.
+static void test_staging_never_drains_internal_on_a_psram_board() {
+  TEST_ASSERT_TRUE(nimbus::net::cardStagingInternalOk(false));   // no PSRAM: internal is all there is
+  TEST_ASSERT_FALSE(nimbus::net::cardStagingInternalOk(true));  // PSRAM board: never internal
+  // The device seam obeys the rule: the internal fallback is gated on it, with
+  // the board's real PSRAM state (psramFound), not silently.
+  const std::string code = readSource("src/net/web_admission.cpp");
+  const size_t at = code.find("uint8_t* stagingGet(");
+  TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, "stagingGet not found");
+  const std::string body = blockAfter(code, at);
+  TEST_ASSERT_TRUE_MESSAGE(body.find("cardStagingInternalOk(psramFound())") != std::string::npos,
+                           "stagingGet's internal fallback must be gated on the PSRAM rule");
+  TEST_ASSERT_TRUE_MESSAGE(body.find("MALLOC_CAP_SPIRAM") != std::string::npos,
+                           "stagingGet tries PSRAM first");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_free_card_streams_whole_at_the_pace);
@@ -687,5 +707,6 @@ int main(int, char**) {
   RUN_TEST(test_a_card_file_ends_only_at_its_size);
   RUN_TEST(test_no_library_filler_reads_the_card);
   RUN_TEST(test_every_card_download_is_a_card_stream);
+  RUN_TEST(test_staging_never_drains_internal_on_a_psram_board);
   return UNITY_END();
 }
