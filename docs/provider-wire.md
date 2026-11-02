@@ -248,7 +248,9 @@ retry and failover happen INSIDE a single logical round:
 A **Cut** round gets a note in its seeded message: it ran out of room, what it wrote
 first, and to answer in far fewer words. It then switches host, or, with nowhere to
 go, runs once more on the same host. If that is cut too, the owner gets what it wrote
-with the plain cut marker. Tools that ran before the cut are never run again.
+with the plain cut marker. Tools that ran before the cut are never run again. Once the round is
+served the note is gone: later rounds are not told to be brief, and a later failure is told as
+itself, not as the recovered cut. An overflow that a trim recovered is not told either.
 
 A provider's **context-window refusal** (`isContextOverflowError`, each provider's
 recorded wording; a refused `max_tokens` is not one) is trimmed and retried once on
@@ -276,11 +278,16 @@ order:
 Whatever went is said: the request's input opens with `[LEFT OUT TO FIT THIS REQUEST]`,
 the log has a `turn fit:` line, and the owner hears it when it touches what they asked
 about (results, the latest messages, part of their message, the tools). The chat's fold
-is queued for the next idle moment. A failed synthesis turn sends only the raw results,
-not a second failure message as well.
+is queued for the next idle moment when at least 4 KB of conversation went, except within two
+turns of the last fold: a run of large payloads is no sign that the fold failed, so it neither
+pauses folding nor alerts anyone. A failed synthesis turn sends the raw results, not a second
+failure message as well; a key or credit notice due that turn still goes out, since nothing else
+says what to do.
 
-A head the fabric cannot drive, and a tool loop with mid-turn failover off, get the same
-ladder from the engine while no tool has run, on the prompt and the input.
+A tool loop on one host (the Cumulo router head, the hosted Virtual Nimbus, mid-turn failover
+off) gets all of this inside its loop, with no host to move to: the ladder, the one trim for a
+window refusal, the note and one more run for a cut. A head with no tool loop gets the same
+ladder from the engine, on the prompt and the input.
 
 Nothing re-dispatches on a switch: every tool the loop already ran is in the
 transcript as a result, so the next provider's renderer just reads it. A

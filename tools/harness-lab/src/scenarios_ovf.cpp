@@ -134,6 +134,71 @@ void overflowRefusal(LabRig& rig, const Report& r) {
   r.check(t.reply.find("didn't finish") == std::string::npos, "no failure reply");
 }
 
+// The refit that happens mid-turn, after a tool ran: the provider really refuses round 1, the trim
+// drops the swollen row and rebuilds the step, and the real provider takes the replay of the tool
+// round. On Anthropic that replay must carry the round's signed thinking verbatim or it is a 400.
+void refitAfterATool(LabRig& rig, const Report& r) {
+  const std::string chat = "ovf-refit";
+  LabRig::Row oldQ;
+  oldQ.chat = chat;
+  oldQ.text = std::string("Note this for later: ") + kSwell;
+  rig.addRow(oldQ);
+  LabRig::Row oldA;
+  oldA.chat = chat;
+  oldA.role = "assistant";
+  oldA.text = "Noted.";
+  rig.addRow(oldA);
+  LabRig::Row q2;
+  q2.chat = chat;
+  q2.text = "And what is the capital of France?";
+  rig.addRow(q2);
+  LabRig::Row a2;
+  a2.chat = chat;
+  a2.role = "assistant";
+  a2.text = "Paris.";
+  rig.addRow(a2);
+  const std::string pad = [] {
+    std::string p;
+    p.reserve(7500000);
+    for (int i = 0; i < 1500000; i++) p += "word ";
+    return p;
+  }();
+  int heads = 0;
+  std::string signature;
+  bool retryCarriesIt = false, leftOutSaid = false;
+  rig.shim().onRequest = [&](agent::HttpRequest& q) {
+    if (!isHead(q)) return;
+    heads++;
+    if (!signature.empty() && q.body.find(signature) != std::string::npos && q.body.find("LEFT OUT") != std::string::npos)
+      retryCarriesIt = true;
+    leftOutSaid = leftOutSaid || q.body.find("LEFT OUT") != std::string::npos;
+    if (heads < 2) return;   // round 0 goes out as it is, and runs its tool
+    const size_t at = q.body.find(kSwell);
+    if (at != std::string::npos) q.body.replace(at, sizeof(kSwell) - 1, pad);
+  };
+  rig.shim().onResponse = [&signature](const agent::HttpRequest& q, agent::HttpResponse& resp) {
+    if (!isHead(q) || !signature.empty()) return;
+    JsonDocument d;
+    if (deserializeJson(d, resp.body)) return;
+    for (JsonObject c : d["content"].as<JsonArray>())
+      if (std::string(c["type"] | "") == "thinking") signature = std::string(c["signature"] | "");
+  };
+  auto t = rig.say(chat,
+                   "Think carefully step by step about what to look for, then search your memory for 'pumpkin soup' "
+                   "with the memory search tool, and after that tell me in one short sentence what you found.");
+  rig.shim().onRequest = nullptr;
+  rig.shim().onResponse = nullptr;
+  printCalls(rig, r);
+  r.note("reply: " + t.reply.substr(0, 300));
+  r.note(signature.empty() ? "no thinking block on the tool round" : "the tool round carried a signed thinking block");
+  r.check(heads >= 3, "round 0, the refused round 1, the trimmed retry");
+  r.check(refusedCalls(rig) >= 1, "the provider really refused the swollen round");
+  r.check(leftOutSaid, "the retry says what it left out");
+  r.check(signature.empty() || retryCarriesIt, "the retry replays the round's signed thinking");
+  r.check(lastCallServed(rig), "the provider accepted the refitted request");
+  r.check(!t.reply.empty() && t.reply.find("didn't finish") == std::string::npos, "the turn answered after the trim");
+}
+
 void synthesisOverBudget(LabRig& rig, const Report& r) {
   const std::string chat = "ovf-round0";
   // What the request's own estimate cannot see: text the wire writes at twice its size.

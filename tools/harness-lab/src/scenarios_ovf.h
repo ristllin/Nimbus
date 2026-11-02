@@ -9,6 +9,9 @@
 //
 //   ovf-overflow     an old history row swells the request past the model's real window,
 //                    so the provider really refuses; the trim drops it and the turn answers
+//   ovf-refit        the same at round 1, after a tool ran; on Anthropic the retry replays the
+//                    round's signed thinking (--no-failover: a single host's loop, as on a
+//                    hosted Virtual Nimbus or a router head)
 //   ovf-round0       a synthesis turn whose first request is over the wire budget
 //   ovf-cut          a round cut twice by real output limits, then the fabric's recovery
 //   ovf-cut-natural  an answer too long for the adapter's own output caps, no forcing
@@ -28,6 +31,7 @@ struct Report {
 };
 
 void overflowRefusal(LabRig& rig, const Report& r);
+void refitAfterATool(LabRig& rig, const Report& r);
 void synthesisOverBudget(LabRig& rig, const Report& r);
 void cutContinues(LabRig& rig, const Report& r);
 void cutNatural(LabRig& rig, const Report& r);

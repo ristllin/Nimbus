@@ -403,6 +403,7 @@ void scFoldBudget(LabRig& rig, Ctx& c) { caching::foldBudget(rig, histReport(c))
 // Lane OVF: a turn never dies of its size or ends in silence (scenarios_ovf.cpp).
 ovf::Report ovfReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
 void scOvfOverflow(LabRig& rig, Ctx& c) { ovf::overflowRefusal(rig, ovfReport(c)); }
+void scOvfRefit(LabRig& rig, Ctx& c) { ovf::refitAfterATool(rig, ovfReport(c)); }
 void scOvfRound0(LabRig& rig, Ctx& c) { ovf::synthesisOverBudget(rig, ovfReport(c)); }
 void scOvfCut(LabRig& rig, Ctx& c) { ovf::cutContinues(rig, ovfReport(c)); }
 void scOvfCutNatural(LabRig& rig, Ctx& c) { ovf::cutNatural(rig, ovfReport(c)); }
@@ -448,6 +449,7 @@ const Scenario kScenarios[] = {
     {"history-cache",  "facts, a photo and a routine ride the history once; a replay storm is one row", scHistoryCache, false},
     {"episodic-dates", "memory_episodic rows carry their dates: today's unread photo reads as today's", scEpisodicDates, false},
     {"ovf-overflow",    "a provider's real overflow refusal: trim, retry once, answer", scOvfOverflow, false},
+    {"ovf-refit",       "a provider's real refusal at round 1, after a tool ran: the refitted replay is accepted", scOvfRefit, false},
     {"ovf-round0",      "a synthesis over the wire budget at round 0 still answers", scOvfRound0, false},
     {"ovf-cut",         "a round really cut twice runs on with the note (or on the next host)", scOvfCut, false},
     {"ovf-cut-natural", "an answer too long for the real output caps still ends with an answer", scOvfCutNatural, false},

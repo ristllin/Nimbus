@@ -247,6 +247,59 @@ static void testWebPageIsTheWebChannel(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// The hosted head runs a single host's tool loop, never the fabric: on a direct key and on the
+// router. A provider's window refusal after a tool ran is trimmed and answered on the same turn,
+// the tool does not run again, and the refitted prompt is still the hosted one.
+static void testOverflowAfterAToolIsTrimmedInTheLoop(ndtest::Ctx& c) {
+  struct Head {
+    const char* env;
+    const char* key;
+    const char* tool;
+    const char* answer;
+    const char* refusal;
+  };
+  const Head heads[] = {
+      {"MISTRAL_API_KEY", "test_key_PROMPT",
+       "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"content\":\"\",\"tool_calls\":[{\"id\":\"toolcall1\","
+       "\"function\":{\"name\":\"memory_search\",\"arguments\":\"{\\\"query\\\":\\\"x\\\"}\"}}]}}]}",
+       "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"content\":\"\",\"tool_calls\":[{\"id\":\"abcdefghi\","
+       "\"function\":{\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"answered after the trim\\\"}\"}}]}}]}",
+       "{\"object\":\"error\",\"message\":\"Prompt 1100000 > 1048576 maximum context length\",\"type\":"
+       "\"invalid_request_prompt_too_long\",\"code\":\"3059\"}"},
+      {"CUMULO_API_KEY", "cumulo_sk_test_PROMPT",
+       "{\"id\":\"r\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"toolcall1\","
+       "\"name\":\"memory_search\",\"arguments\":\"{\\\"query\\\":\\\"x\\\"}\"}]}",
+       "{\"id\":\"r\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"c\","
+       "\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"answered after the trim\\\"}\"}]}",
+       "{\"error\":{\"message\":\"Your input exceeds the context window of this model.\",\"type\":"
+       "\"invalid_request_error\",\"code\":\"context_length_exceeded\"}}"},
+  };
+  for (const Head& h : heads) {
+    std::printf("  -- %s: a window refusal after a tool ran --\n", h.env);
+    clearEnv();
+    setenv(h.env, h.key, 1);
+    FakeHttpTransport tx;
+    tx.script.push_back(Exchange{"", "", 200, h.tool});
+    tx.script.push_back(Exchange{"", "", 400, h.refusal});
+    tx.script.push_back(Exchange{"", "", 200, h.answer});
+    Config cfg;
+    NimbusdRig::Options o = opts(std::string("hp-trim-") + h.env);
+    o.toolLoop = true;
+    NimbusdRig rig(cfg, o, &tx);
+    const TurnRecord t = rig.say("owner", "Use a web lookup and compare the three plans in detail");
+    c.eqi((int)tx.seen.size(), 3, "the tool round, the refusal, the trimmed retry");
+    c.ok(has(t.reply, "answered after the trim"), "the owner gets the answer");
+    if (tx.seen.size() == 3) {
+      const std::string& b = tx.seen[2].body;
+      c.ok(has(b, "LEFT OUT"), "the retry says what it left out");
+      c.ok(has(b, "THIS TURN RUNS ON"), "the retry still names the host it runs on");
+      c.ok(has(b, "hosted Virtual Nimbus") || has(b, "a Virtual Nimbus"), "the refitted prompt is the hosted one");
+      c.ok(!has(b, "ESP32"), "never the desk device's words");
+    }
+    clearEnv();
+  }
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== hosted prompt truth (CUM-542, offline) ===\n");
@@ -254,6 +307,7 @@ int main() {
   testClockFollowsTheOwnersZone(c);
   testFoodLedgerRidesTheHostedTurn(c);
   testWebPageIsTheWebChannel(c);
+  testOverflowAfterAToolIsTrimmedInTheLoop(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;
