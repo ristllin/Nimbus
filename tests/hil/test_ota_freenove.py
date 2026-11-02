@@ -2,8 +2,8 @@
 
 The same tests as test_ota.py, run against this board family's image: a schema 2 manifest cannot cross board
 families, so the Solide suite cannot prove the Freenove's path. The tests are imported, not copied, and the
-``ota_board`` fixture below is the only difference; a host test checks no test is missing here. The dry-run flow leaves
-the unit exactly as it started.
+``ota_board`` fixture below is the only difference; tests/hil/test_ota_twin_host.py checks no test is missing here.
+The dry-run flow leaves the unit exactly as it started.
 
 Run it on a Freenove with: pytest tests/hil/test_ota_freenove.py -m net --allow-hardware --port <port>.
 """

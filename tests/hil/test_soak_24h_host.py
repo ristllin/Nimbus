@@ -80,11 +80,14 @@ def poll(t, **overrides):
         "crashNew": None,
         "heap": 40000,
         "heapMin": 20000,
+        "intFree": 40000,
         "intLargest": 16000,
         "lowWater": 14000,
         "lowWaterTags": "boot",
         "allocFails": 3,
+        "pollStackMin": 9000,
         "nvsFree": 7000,
+        "nvsFails": 0,
         "dreamKnown": True,
         "dreamLast": "ran",
         "dreamStateSaved": True,
@@ -205,6 +208,42 @@ def test_a_missing_measurement_is_blocked_never_pass(polls, turn_rows, needle):
     verdict = grade(polls=polls, turn_rows=turn_rows)
     assert verdict["grade"] == "BLOCKED", verdict
     assert any(needle in reason for reason in verdict["reasons"]["BLOCKED"]), verdict["reasons"]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "uptimeMs",
+        "bootN",
+        "heap",
+        "heapMin",
+        "intFree",
+        "intLargest",
+        "lowWater",
+        "allocFails",
+        "pollStackMin",
+        "nvsFree",
+        "nvsFails",
+    ],
+)
+def test_a_measurement_that_disappears_mid_run_is_blocked_never_pass(field):
+    """A number measured in the first hour and None afterwards is a missing measurement, not a fine one."""
+    polls = [
+        poll(float(t)) if t < 2 * HOUR else {**poll(float(t)), field: None} for t in range(0, int(24 * HOUR) + 1, 300)
+    ]
+    verdict = grade(polls=polls)
+    assert verdict["grade"] == "BLOCKED", verdict
+    assert any(field in reason for reason in verdict["reasons"]["BLOCKED"]), verdict["reasons"]
+
+
+def test_a_measurement_missing_only_at_the_start_is_blocked_too():
+    polls = [
+        {**poll(float(t)), "lowWater": None} if t < 2 * HOUR else poll(float(t))
+        for t in range(0, int(24 * HOUR) + 1, 300)
+    ]
+    verdict = grade(polls=polls)
+    assert verdict["grade"] == "BLOCKED", verdict
+    assert any("lowWater" in reason for reason in verdict["reasons"]["BLOCKED"]), verdict["reasons"]
 
 
 def test_a_planned_album_that_never_ran_is_blocked():

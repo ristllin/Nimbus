@@ -8,6 +8,7 @@ a new port-opening file that does not ask the guard, so this list cannot quietly
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib.util
 import os
 import re
@@ -395,6 +396,29 @@ def test_ring_check_refuses(bus, monkeypatch, mac):
 def test_nsn_send_asks_the_guard_before_its_diagnostic_open():
     source = (TOOLS / "nsn_send.py").read_text(encoding="utf-8")  # it imports bleak, so it is read, not run
     assert source.index('bench_guard.check_port(PORT, "nsn_send")') < source.index("serial.Serial()")
+
+
+def test_run_gate_stays_port_free_so_it_needs_no_refusal_leg():
+    """run_gate.py prints the bench battery but opens no port itself, so the command-line parametrize below has no
+    row for it. If it ever gains a port-opening step, this fails and the step must ask bench_guard first."""
+    source = (TOOLS / "release_gate" / "run_gate.py").read_text(encoding="utf-8")
+    offenders = []
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("Serial", "list_ports")
+        ):
+            offenders.append(node.lineno)
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and re.search(r"/dev/(cu|tty)\.|usbmodem|esptool", node.value)
+        ):
+            offenders.append(node.lineno)
+    assert not offenders, (
+        f"run_gate.py gained a port-touching step at lines {offenders}; wire bench_guard.check_port first"
+    )
 
 
 # ---- the HIL harness ---------------------------------------------------------------------------------------

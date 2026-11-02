@@ -21,7 +21,8 @@ lower-case words and reported zero over 24 of these lines.
 
 Grades: FAIL (a restart, a new crash, low water under 8 KB after the first hour, a low-memory turn failure, a failed
 or slow turn, slow or failed polls, the settings store shrinking), BLOCKED (too short, a hole in the polls, a missing
-number, no dream, a load that never ran), OPEN (it ran clean but memory failures were counted, for a person to read),
+number in any answered poll - one that vanishes mid-run counts, not just one absent from all of them - no dream, a
+load that never ran), OPEN (it ran clean but memory failures were counted, for a person to read),
 else PASS.
 """
 
@@ -341,6 +342,34 @@ def _numbers(rows: List[Dict[str, Any]], name: str) -> List[float]:
     return [r[name] for r in rows if isinstance(r.get(name), (int, float))]
 
 
+# Every number an answered poll must carry. One that was measured in an earlier poll and is missing in a later one
+# is a missing measurement: BLOCKED, never read as fine (a telemetry task that died at hour 2 must not grade clean).
+MEASURED_NUMBERS = (
+    "uptimeMs",
+    "bootN",
+    "heap",
+    "heapMin",
+    "intFree",
+    "intLargest",
+    "lowWater",
+    "allocFails",
+    "pollStackMin",
+    "nvsFree",
+    "nvsFails",
+)
+
+
+def _grade_measurements(answered, reasons) -> None:
+    for name in MEASURED_NUMBERS:
+        seen = sum(1 for r in answered if isinstance(r.get(name), (int, float)))
+        if 0 < seen < len(answered):
+            first_gap = next(r["t"] for r in answered if not isinstance(r.get(name), (int, float)))
+            reasons["BLOCKED"].append(
+                f"the {name} measurement is missing from {len(answered) - seen} of {len(answered)} "
+                f"answered polls (first missing at t={first_gap:.0f})"
+            )
+
+
 def _grade_restart(answered, reasons) -> None:
     boots = _numbers(answered, "bootN")
     if not boots:
@@ -368,7 +397,11 @@ def _grade_memory(answered, start, reasons) -> Dict[str, Any]:
         return {}
     settled = [r for r in answered if r["t"] >= start + SETTLE_S]
     lows = _numbers(settled, "lowWater")
-    lowest = min(settled, key=lambda r: r.get("lowWater", 1 << 30)) if lows else None
+    lowest = (
+        min(settled, key=lambda r: r["lowWater"] if isinstance(r.get("lowWater"), (int, float)) else 1 << 30)
+        if lows
+        else None
+    )
     if lows and min(lows) < MIN_LOW_WATER:
         reasons["FAIL"].append(f"low water {min(lows)} B after the first hour (limit {MIN_LOW_WATER} B)")
     return {
@@ -471,6 +504,7 @@ def grade_run(plan: Dict[str, Any], polls, turns, scan) -> Dict[str, Any]:
     answered = [r for r in polls if r.get("http") == 200]
     if not answered:
         reasons["BLOCKED"].append("no poll was answered")
+    _grade_measurements(answered, reasons)
     watched = (polls[-1]["t"] - start) / 3600.0 if polls else 0.0
     numbers: Dict[str, Any] = {"hoursWatched": round(watched, 3)}
     if watched < plan.get("hours", 24.0) * DURATION_SLACK:
