@@ -708,15 +708,6 @@ static std::string csvHeader(File& f, const std::string& window, size_t start) {
   return h;
 }
 
-// v4.6.3 (the 30 Oct Lumi investigation): the one-time fold of the legacy meal
-// log into the designed ledger. The investigated device held an ad-hoc log
-// (nutrition/meal_log.csv: headerless, five generations of the same days in
-// four schemas) whose keyed writes all refused and whose "corrections" all
-// appended duplicates. The designed ledger (ONE file, one row per meal,
-// corrections by key) is where meals belong; this folds the legacy file's
-// final figures into it once at boot and removes the legacy file, so the
-// model stops appending to an unfixable orphan. Only the owner's file folds, and the
-// file goes only when all its figures reached the ledger. Caller holds the Lock (begin).
 // A file's size on the card, kUnreadableBytes when it cannot be opened (past any read cap).
 static constexpr size_t kUnreadableBytes = SIZE_MAX;
 static size_t fileBytes(const char* project, const char* name) {
@@ -727,6 +718,15 @@ static size_t fileBytes(const char* project, const char* name) {
   return n;
 }
 
+// v4.6.3 (the 30 Oct Lumi investigation): the one-time fold of the legacy meal
+// log into the designed ledger. The investigated device held an ad-hoc log
+// (nutrition/meal_log.csv: headerless, five generations of the same days in
+// four schemas) whose keyed writes all refused and whose "corrections" all
+// appended duplicates. The designed ledger (ONE file, one row per meal,
+// corrections by key) is where meals belong; this folds the legacy file's
+// final figures into it once at boot and removes the legacy file, so the
+// model stops appending to an unfixable orphan. Only the owner's file folds, and the
+// file goes only when all its figures reached the ledger. Caller holds the Lock (begin).
 void migrateLegacyMealLog() {
   constexpr const char* kLegacyProject = "nutrition";
   constexpr const char* kLegacyName = "meal_log.csv";
@@ -736,6 +736,7 @@ void migrateLegacyMealLog() {
     alogf("files: legacy %s/%s left alone (it is not the owner's file)", kLegacyProject, kLegacyName);
     return;
   }
+  const std::string legacyOwner = legacyEntry->owner;   // the ledger's save below may move the entry
   // A designed ledger may already exist: on 31 Oct the head rebuilt the legacy file next
   // to it and logged every later meal there. Those rows fold in too; the ledger's own rows
   // keep their keys.
@@ -779,11 +780,14 @@ void migrateLegacyMealLog() {
     alogf("files: legacy meal log migration failed: %s", err.c_str());
     return;
   }
-  // A dropped data row has no other copy: the source stays. The designed ledger now
-  // exists, so the next boot leaves it alone and this runs once either way.
+  // A dropped data row has no other copy: the source stays. Its last row then says it has
+  // been folded, so the next boot leaves it alone and this runs once either way: the ledger
+  // existing no longer stops the fold, and a kept source must not refill a row removed since.
   if (!m.sourceFullyFolded()) {
     alogf("files: migrated the legacy meal log into %s/%s (%d rows folded), %d rows unread: source kept",
           nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, m.folded, m.droppedData);
+    if (!saveText(kLegacyProject, kLegacyName, nimbus::orch::markLegacyFolded(legacy), err, legacyOwner))
+      alogf("files: the kept legacy meal log could not be marked as folded: %s", err.c_str());
     return;
   }
   memory::dataFs().remove(pathOf(kLegacyProject, kLegacyName).c_str());

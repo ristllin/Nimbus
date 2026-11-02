@@ -92,7 +92,9 @@ memory or the conversation; the fold summary copies the ledger's dated totals.
 The food log is one file: a write to another CSV whose name says both food and log
 (or only "log" in a food project) is refused with the call to use instead; a weight
 log or a list of meal ideas is not one, and a log left at `nutrition/meal_log.csv`
-folds into the ledger at the next start. The day's sum counts meal rows and nothing
+folds into the ledger at the next start. It goes once all its figures are in the
+ledger; if a row cannot be read it stays, marked as folded, and does not fold again.
+The day's sum counts meal rows and nothing
 else: a bare comma in a row's items is read back into the items, a row that states
 a total is never summed, a pasted header is no row, and a meal logged twice counts
 once with its last figures. A row the device cannot read for certain leaves the

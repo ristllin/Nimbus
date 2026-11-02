@@ -41,6 +41,7 @@ enum CueFlag : uint32_t {
   kSrcName    = 1u << 18,  // source: credits the NAME after it ("Source: National Rail Enquiries")
   kAck        = 1u << 21,  // saved: an acknowledgement unless it says or was asked to keep it (bareAck)
 };
+static_assert(kAck != kVoicedVerb && kVoicedVerb != kLogFileObject, "each cue flag holds its own bit");
 
 // What a source credited by name looks like (kSrcName cues keep it in Cue::backs).
 enum NameKind : uint32_t {
@@ -1337,6 +1338,14 @@ bool bareAck(const Scan& sc, size_t i) {
 constexpr const char* kLoggedThings[] = {"items", "item", "rows", "row", "meals", "meal", "foods", "food", "entries", "entry", "figures", "figure"};
 constexpr const char* kLoggedLater[] = {"until", "till", "once", "when", "after", "unless", "if", "before"};
 constexpr const char* kFigureUnits[] = {"g", "gm", "gram", "grams", "kcal", "kcals", "cal", "cals", "calories"};
+// "after I logged the eggs", "before we logged it" and "after I've logged it" name a save the
+// assistant did: the word before "logged" says so, and that is the claim, not a reference to the log.
+bool assistantLoggedIt(const Scan& sc, size_t i, size_t later) {
+  const Tok& who = sc.toks[i - 1];
+  if (tokIs(sc.s, who, "i") || tokIs(sc.s, who, "we")) return true;
+  return tokIs(sc.s, sc.toks[later], "after") && (tokIs(sc.s, who, "i've") || tokIs(sc.s, who, "we've"));
+}
+
 bool loggedReference(const Scan& sc, size_t i) {
   const uint16_t sent = sc.toks[i].sent;
   const bool opens = i == 0 || sc.toks[i - 1].sent != sent;
@@ -1344,7 +1353,7 @@ bool loggedReference(const Scan& sc, size_t i) {
       !subjectOrAux(sc, sc.toks[i - 1]))
     return true;
   for (size_t d = 1; d <= 3 && d <= i && sameClause(sc, i - d, i); d++)
-    if (tokIn(sc.s, sc.toks[i - d], kLoggedLater)) return true;
+    if (tokIn(sc.s, sc.toks[i - d], kLoggedLater) && !assistantLoggedIt(sc, i, i - d)) return true;
   return i >= 2 && sameClause(sc, i - 2, i) && tokIs(sc.s, sc.toks[i - 1], "is") && tokIn(sc.s, sc.toks[i - 2], kFigureUnits);
 }
 

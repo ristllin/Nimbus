@@ -233,6 +233,12 @@ bool foldHeaderedRow(const LegacyHeader& h, const std::string& line, size_t pos,
   return true;
 }
 
+// A row that is no meal: a header, or a total the rows already sum to. Dropping one loses
+// no figure, so it never keeps the source.
+bool holdsNoMeal(const LegacyHeader& h, const std::string& line) {
+  return headerRow(line) || (h.usable() && csvStatesTotal(csvStoredRow(line, h.names)));
+}
+
 // The meals in eating order; an unknown word sorts last, alphabetically.
 int mealRank(const std::string& m) {
   for (size_t i = 0; i < sizeof(kMealWords) / sizeof(kMealWords[0]); i++)
@@ -285,7 +291,7 @@ GenMap groupLegacy(const std::string& legacyText, LedgerMigration& m) {
     const bool read = header.usable() ? foldHeaderedRow(header, line, thisPos, r) : foldRow(line, r);
     if (!read) {
       m.dropped++;
-      if (!headerRow(line)) m.droppedData++;
+      if (!holdsNoMeal(header, line)) m.droppedData++;
       continue;
     }
     Gen& g = keyed[{r.day, r.meal}][r.ts];
@@ -391,6 +397,10 @@ std::string renderLedger(const FinalMap& merged, int& folded, const std::string&
 LedgerMigration planLedgerMigration(const std::string& legacyText,
                                     const std::string& existingLedger) {
   LedgerMigration m;
+  if (legacyFoldedAlready(legacyText)) {
+    m.ok = true;   // its rows had their one fold: what the ledger did to them since stands
+    return m;
+  }
   const GenMap keyed = groupLegacy(legacyText, m);
   FinalMap merged = foldWinners(keyed);
   if (!existingLedger.empty()) {
@@ -407,6 +417,17 @@ LedgerMigration planLedgerMigration(const std::string& legacyText,
   m.out = renderLedger(merged, m.folded, existingLedger);
   m.ok = true;
   return m;
+}
+
+bool legacyFoldedAlready(const std::string& legacyText) {
+  const std::string mark = std::string("\n") + kLegacyFoldedMark;
+  return legacyText.find(mark) != std::string::npos;
+}
+
+std::string markLegacyFolded(const std::string& legacyText) {
+  std::string out = legacyText;
+  if (!out.empty() && out.back() != '\n') out += '\n';
+  return out + kLegacyFoldedMark + "\n";
 }
 
 bool legacyLogFoldable(const FileStore& store, const FileEntry& legacy) {

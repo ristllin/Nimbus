@@ -268,9 +268,25 @@ static void test_the_source_goes_only_when_every_data_row_folded() {
       "timestamp,meal,item,grams,kcal,protein\n"
       "2026-10-30,lunch,Soup,300,260,14\n");
   TEST_ASSERT_EQUAL(1, clean.folded);
-  TEST_ASSERT_EQUAL(1, clean.dropped);
+  TEST_ASSERT_EQUAL(0, clean.dropped);   // a first row that names the columns is read, not dropped
   TEST_ASSERT_EQUAL(0, clean.droppedData);
   TEST_ASSERT_TRUE(clean.sourceFullyFolded());
+  // A header further down is dropped, and a total row is no meal: neither keeps the file.
+  const LedgerMigration stray = planLedgerMigration(
+      "2026-10-29,lunch,Rice,200,300,8\n"
+      "timestamp,meal,item,grams,kcal,protein\n"
+      "2026-10-30,lunch,Soup,300,260,14\n");
+  TEST_ASSERT_EQUAL(1, stray.dropped);
+  TEST_ASSERT_EQUAL(0, stray.droppedData);
+  TEST_ASSERT_TRUE(stray.sourceFullyFolded());
+  const LedgerMigration totals = planLedgerMigration(
+      "key,date,items,kcal,protein_g\n"
+      "2026-11-01-lunch,2026-11-01,soup,300,10\n"
+      "2026-11-01-total,2026-11-01,total,300,10\n");
+  TEST_ASSERT_EQUAL(1, totals.folded);
+  TEST_ASSERT_EQUAL(1, totals.dropped);
+  TEST_ASSERT_EQUAL(0, totals.droppedData);
+  TEST_ASSERT_TRUE(totals.sourceFullyFolded());
   TEST_ASSERT_TRUE(planLedgerMigration(kFixture).sourceFullyFolded());   // its two drops are headers
 
   const LedgerMigration lost = planLedgerMigration(
@@ -305,6 +321,31 @@ static void test_only_the_owners_legacy_log_folds() {
   }
 }
 
+// A kept source folds once. The ledger existing cannot be the sign any more (a ledger beside a
+// legacy file is what the fold is for), so without the mark a row the ledger removed since
+// would come back at every boot.
+static void test_a_kept_source_folds_once_even_with_a_ledger() {
+  const std::string legacy =
+      "2026-10-29,lunch,Boba,300,225,1\n"
+      "2026-10-30 19:00,Rice, beans,200,400,20\n";   // a row that cannot be read keeps the file
+  const LedgerMigration first = planLedgerMigration(legacy, "date,meal,items,kcal,protein_g\n");
+  TEST_ASSERT_EQUAL(1, first.folded);
+  TEST_ASSERT_FALSE(first.sourceFullyFolded());
+  const std::string marked = markLegacyFolded(legacy);
+  TEST_ASSERT_EQUAL_INT(0, (int)marked.find(legacy));
+  TEST_ASSERT_FALSE(legacyFoldedAlready(legacy));
+  TEST_ASSERT_TRUE(legacyFoldedAlready(marked));
+  // The owner took the boba out of the ledger: the next boot writes nothing.
+  const LedgerMigration again = planLedgerMigration(marked, "date,meal,items,kcal,protein_g\n");
+  TEST_ASSERT_TRUE(again.ok);
+  TEST_ASSERT_EQUAL(0, again.folded);
+  TEST_ASSERT_TRUE(again.out.empty());
+  TEST_ASSERT_FALSE(again.sourceFullyFolded());
+  // Also with the ledger gone, and with a source that has no last line end.
+  TEST_ASSERT_EQUAL(0, planLedgerMigration(marked).folded);
+  TEST_ASSERT_TRUE(legacyFoldedAlready(markLegacyFolded("2026-10-29,lunch,Boba,300,225,1")));
+}
+
 // The device wiring of the two rules above, in the order they must run: the owner check
 // before a byte is read, and the remove of the source only past the fully-folded check.
 static void test_the_fold_checks_the_owner_and_keeps_an_unfolded_source() {
@@ -321,6 +362,8 @@ static void test_the_fold_checks_the_owner_and_keeps_an_unfolded_source() {
   const size_t read = src.find("readWhole(kLegacyProject, kLegacyName, kFoldCap)", fn);
   const size_t save = src.find("saveText(nimbus::orch::kLedgerProject", fn);
   const size_t whole = src.find("m.sourceFullyFolded()", fn);
+  const size_t marks = src.find("markLegacyFolded(legacy)", fn);
+  TEST_ASSERT_TRUE_MESSAGE(marks != std::string::npos && marks > whole, "a kept source is marked as folded");
   const size_t remove = src.find("remove(pathOf(kLegacyProject, kLegacyName)", fn);
   TEST_ASSERT_TRUE(owner != std::string::npos && read != std::string::npos);
   TEST_ASSERT_TRUE(save != std::string::npos && whole != std::string::npos && remove != std::string::npos);
@@ -468,6 +511,7 @@ int main() {
   RUN_TEST(test_a_quoted_item_keeps_its_comma_and_its_columns);
   RUN_TEST(test_an_unquoted_comma_never_shifts_the_figures);
   RUN_TEST(test_the_source_goes_only_when_every_data_row_folded);
+  RUN_TEST(test_a_kept_source_folds_once_even_with_a_ledger);
   RUN_TEST(test_only_the_owners_legacy_log_folds);
   RUN_TEST(test_the_fold_checks_the_owner_and_keeps_an_unfolded_source);
   RUN_TEST(test_a_migrated_ledger_is_read_by_the_ledger_readers);

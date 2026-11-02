@@ -349,7 +349,7 @@ class PosixFiles {
   std::string tailWithTotal(const std::string& n, const std::string& body, ArduinoJson::JsonObjectConst a) {
     std::string text = tailOf(n, body, (size_t)a["tail"].as<double>());
     const std::string sum = str(a, "sum");
-    if (!sum.empty()) text += nimbus::orch::csvDayTotalLine(body, sum, todayStr(), std::string());
+    if (!sum.empty()) text += nimbus::orch::csvDayTotalLine(body, sum, todayStr(), nimbus::orch::logDayOf(time(nullptr), true).zone);
     return text;
   }
 

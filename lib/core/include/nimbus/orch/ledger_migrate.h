@@ -60,6 +60,13 @@ struct LedgerMigration {
   bool sourceFullyFolded() const { return ok && folded > 0 && droppedData == 0; }
 };
 
+// A source kept past its fold says so in a last row. The ledger existing is no such sign: a ledger
+// and a legacy file side by side is what the fold is for. Folding a kept source at every boot would
+// bring back a row the ledger has since removed or moved ("Boba??? Thats yesterday.").
+inline constexpr const char kLegacyFoldedMark[] = "#folded into food/food-log.csv; the rows above that could not be read are not in it";
+bool legacyFoldedAlready(const std::string& legacyText);
+std::string markLegacyFolded(const std::string& legacyText);
+
 // Only a legacy file the device owner controls folds, into the owner's ledger. A member
 // can hold a file of that name in their own namespace (the name is not reserved); it
 // stays theirs and stays where it is: the fold must not move it into the owner's prompt.
@@ -68,6 +75,7 @@ bool legacyLogFoldable(const FileStore& store, const FileEntry& legacy);
 // Fold `legacyText` into ledger shape. `existingLedger` is the designed ledger's current text when
 // one exists: it stays byte for byte and wins its (day, meal) keys, and only legacy rows of other
 // keys are added after it. A ledger in other columns takes nothing (folded 0). "" when none exists.
+// A source marked as folded takes no further part (folded 0).
 LedgerMigration planLedgerMigration(const std::string& legacyText,
                                     const std::string& existingLedger = std::string());
 

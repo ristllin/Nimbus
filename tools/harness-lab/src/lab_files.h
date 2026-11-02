@@ -135,7 +135,7 @@ class LabFiles {
       if (eol != std::string::npos) header = file.substr(0, eol);
       std::string text = nimbus::orch::renderTail(v, n, file.size(), header);
       const std::string sum = str(a, "sum");
-      if (!sum.empty()) text += nimbus::orch::csvDayTotalLine(it->second, sum, todayStr(), std::string());
+      if (!sum.empty()) text += nimbus::orch::csvDayTotalLine(it->second, sum, todayStr(), nimbus::orch::logDayOf(std::time(nullptr), true).zone);
       return nimbus::orch::ToolResult::ok(text);
     }
     return nimbus::orch::ToolResult::ok(it->second);

@@ -1894,6 +1894,7 @@ static void test_a_real_save_claim_still_gets_its_correction() {
       "You're on 1,652 kcal and 52 kcal logged.",
       // The assistant as the participle's subject beside a total (QW6 rebase review): a save claim.
       "You're at 1,652 kcal after I logged the eggs.",
+      "You're at 1,652 kcal after I've logged the eggs.",
       "You're at 1,652 kcal and I've logged 156 kcal for the eggs.",
       "You're at 1,652 kcal so far and I have logged the eggs.",
       "So far you're at 1,652 kcal, and we logged the eggs.",
