@@ -10,7 +10,7 @@ import check_critical_sections as cs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# The shape the 29 Oct 2026 crash's frames point at, as v4.6.1 shipped it.
+# The shape of the 29 Oct 2026 crash (confirmed by decoding its frames against the v4.6.1 build), as v4.6.1 shipped it.
 V461_SINK = """
 static void orchDeviceSink(const nimbus::orch::ValidatedAction& a) {
   using nimbus::orch::ActionKind;
@@ -72,6 +72,10 @@ def test_every_forbidden_call_fails_in_every_section_shape():
         "memory::captureEvent(a, b);",
         'captureEvent("dream", row);',
         "errlog::append(a, b);",
+        'hlog::log("x");',
+        'agent::hlog::logf("x %d", 1);',
+        'nimbus::agent::hlog::logf("x %d", 1);',
+        'hlog :: logf("x");',
         "xSemaphoreTake(m, 10);",
         "vTaskDelay(1);",
         "delay(2);",
@@ -98,6 +102,20 @@ def test_every_log_entry_point_in_agent_log_is_forbidden():
     assert {"alog", "alogf", "alogcf", "alogLevelf", "logPersist", "logSerial"} <= set(names)
     for name in names:
         assert lines(f"void f() {{ net::ConfigLockGuard lk; agent::{name}(a); }}") == [1], name
+
+
+def test_the_harness_log_seam_is_forbidden():
+    """hlog::log and hlog::logf reach the same durable write as alogf (the device's sink calls alog),
+    so one under a spinlock aborts the same way. Without the hlog alternative neither is flagged."""
+    with open(os.path.join(cs.REPO, "lib/harness/include/nimbus/harness/log.h"), encoding="utf-8") as f:
+        src = f.read()
+    names = re.findall(r"^inline\s+void\s+(log\w*)\s*\(", src, re.M)
+    assert {"log", "logf"} <= set(names)
+    for name in names:
+        assert lines(f'void f() {{ net::ConfigLockGuard lk; agent::hlog::{name}("x"); }}') == [1], name
+        assert lines(f'void f() {{ portENTER_CRITICAL(&m); hlog::{name}("x"); portEXIT_CRITICAL(&m); }}') == [1], name
+    # Outside a section it is the harness's ordinary logging.
+    assert lines('void f() { agent::hlog::logf("x"); net::ConfigLockGuard lk; g = 1; }') == []
 
 
 def test_a_guard_ends_with_its_scope():
@@ -141,7 +159,7 @@ void f() {
 
 
 def test_a_name_that_only_ends_like_one_is_not_a_call():
-    assert lines("void f() { net::ConfigLockGuard lk; my_delay(1); dialog(2); xalogf(3); }") == []
+    assert lines("void f() { net::ConfigLockGuard lk; my_delay(1); dialog(2); xalogf(3); xhlog::log(4); }") == []
 
 
 def test_the_gate_runs_it():

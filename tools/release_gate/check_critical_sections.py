@@ -3,10 +3,10 @@
 
 A portMUX critical section runs with the CPU's interrupt level raised. Newlib's recursive
 FILE lock aborts at a raised level, so one durable log line under a spinlock restarts the
-device. The 29 Oct 2026 crash (fingerprint 2419bf4a) aborted in that lock. Its frames, solved
-against a build that does not match by call-graph alignment, point at orchDeviceSink's "lights"
-line inside net::ConfigLockGuard. That reading awaits the matching ELF and a board check, but the
-shape is fatal whichever line was the trigger.
+device. The 29 Oct 2026 crash (fingerprint 2419bf4a) aborted in that lock. Decoded against the
+matching v4.6.1 build (CI artifact firmware-elf-v4.6.1; program 2026-10-18 evidence
+crash-2419bf4a/DECODE.md), its 16 frames confirm the cause: orchDeviceSink's "devsink: lights"
+line, written under net::ConfigLockGuard (src/main.cpp:826 at v4.6.1), reaches fwrite and abort().
 
 The scan reads src/ and lib/ for the three critical-section shapes:
     portENTER_CRITICAL(&m) ... portEXIT_CRITICAL(&m)    (any _ISR or _SAFE spelling, same mux)
@@ -33,6 +33,8 @@ EXTENSIONS = (".cpp", ".cc", ".c", ".h", ".hpp")
 
 # What must never run with interrupts masked: a log line's durable write, stdio, the card and
 # flash file systems, NVS, the blocking primitives, and the subsystems that do those inside.
+# hlog::log and hlog::logf are the harness's one logging seam; the device's sink sends them to
+# alog, the same durable path, so they are as fatal here as alogf.
 FORBIDDEN = re.compile(
     r"\b("
     r"alog\w*|logPersist|logSerial|emitRedacted|log_[evwid]|ESP_LOG[EWIDV]|printf|fprintf|fwrite|fread|fopen|fclose|fflush|"
@@ -40,6 +42,7 @@ FORBIDDEN = re.compile(
     r")\s*\("
     r"|\b(Serial|SD|LittleFS|Preferences)\s*\."
     r"|\b(errlog|store|memory|telegram|sfx|nvs)\s*::\s*\w+\s*\("
+    r"|\bhlog\s*::\s*\w+\s*\("
     r"|\bnvs_\w+\s*\("
 )
 

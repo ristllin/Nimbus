@@ -674,7 +674,7 @@ static void test_drop_marker_only_when_dropped() {
   TEST_ASSERT_EQUAL_INT(1, (int)std::count(m.begin(), m.end(), '\n'));
 }
 
-// The 2026-10-29 Lumi panic pin (fw v4.6.1, the dream-end row write): a durable line
+// The 2026-10-29 Lumi panic pin (fw v4.6.1, the "devsink: lights" line under the config lock): a durable line
 // refused by the FILE-write context guard - errlog_fs skips the FILE touch when the
 // CPU interrupt level is raised, because newlib's lock_acquire_generic ABORTS on a
 // recursive FILE lock acquired in that state - rides the SAME bounded marker as a

@@ -825,8 +825,10 @@ static void orchDeviceSink(const nimbus::orch::ValidatedAction& a) {
   using nimbus::orch::ActionKind;
   if (a.kind == ActionKind::Reboot) { g_rebootPending = true; return; }
   // Before the lock, never under it: the guard is a spinlock with interrupts masked, and a
-  // log line's durable write under it aborts (the frames of the 29 Oct crash, fingerprint
-  // 2419bf4a, point here). tools/release_gate/check_critical_sections.py fails on one.
+  // log line's durable write under it aborts. This line under the guard (at v4.6.1) is the
+  // confirmed cause of the 29 Oct crash, fingerprint 2419bf4a: decoded against the matching
+  // v4.6.1 build (program 2026-10-18, evidence/crash-2419bf4a/DECODE.md).
+  // tools/release_gate/check_critical_sections.py fails on one.
   if (a.kind == ActionKind::Lights) agent::alogf("devsink: lights -> %s", a.lightsOff ? "off" : "full");
   net::ConfigLockGuard lk;
   if (a.kind == ActionKind::Lights) {
