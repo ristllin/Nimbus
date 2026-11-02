@@ -97,8 +97,10 @@ RouterAnswer readRouterAnswer(const std::string& text);
 // funded, or passed it and failed further on. It ends a billing or key park whatever else
 // it says about this one call, so a parked seam never waits on a call that could be
 // served. (rate_limited, router faults and admin pauses come before the wallet and show
-// nothing either way.)
-bool routerAnswerProvesAccount(const RouterAnswer& a);
+// nothing either way.) The router reads a key's own monthly budget after the wallet, so
+// the clamp and a held wallet say nothing about it: with `keyBudgetPark` only an answer
+// from past the budget counts (an upstream's failure).
+bool routerAnswerProvesAccount(const RouterAnswer& a, bool keyBudgetPark = false);
 
 // The smallest output a capped resend may ask for (the contract's floor for a fold, and
 // the headroom of the shortest head reply). Below it the call fails.

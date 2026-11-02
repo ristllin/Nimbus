@@ -179,8 +179,10 @@ bool available() {
     const std::string key = keyOf(p);
     if (key.empty() || !*captionModel(p == std::string("cumulo") ? "openai" : p)) continue;
     if (!strcmp(p, "cumulo") && routerHost().empty()) continue;
+    // A question that sends nothing: it reads the park and leaves a due re-check for the
+    // caption walk, which asks at the moment it sends.
     if (nimbus::orch::providerPark()
-            .available(p, nimbus::orch::PaidSeam::Vision, nimbus::orch::parkKeyFingerprint(key), now)
+            .peek(p, nimbus::orch::PaidSeam::Vision, nimbus::orch::parkKeyFingerprint(key), now)
             .open)
       return true;
   }

@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 
+#include "nimbus/orch/owner_first.h"
 #include "rig.h"
 
 // engine_thread - the daemon's concurrency layer (the one genuinely new design
@@ -186,13 +187,18 @@ class EngineThread {
         busy_.store(true);
         if (!task.background) snapInFlight(true);
         task.fn();
-        if (!task.background) snapInFlight(false);
+        if (!task.background) {
+          snapInFlight(false);
+          ownerFirst_.noteTurnEnd(NimbusdRig::steadyMs());
+        }
         busy_.store(false);
       }
       if (running_.load()) pumpJobs();   // never start a sub dispatch while stopping
       if (running_.load()) rig_->drainTick();   // memory writes queued during an embedding outage
       if (running_.load()) rig_->spendTick();   // lane DEF: the month rollover and owed notices
-      if (running_.load()) rig_->recheckTick();   // a parked provider nothing else is calling
+      // A parked provider nothing else is calling. It blocks this thread, so it waits for
+      // a quiet moment: a client's next message comes first (device parity, owner_first.h).
+      if (running_.load() && ownerFirst_.parkRecheckMayStart(false, NimbusdRig::steadyMs())) rig_->recheckTick();
       if (running_.load()) releaseHeld();
       // Refresh the snapshot (cheap) so uptime/state stay current.
       refreshSnapshot();
@@ -298,6 +304,7 @@ class EngineThread {
   std::atomic<uint64_t> curWebTurn_{0};   // web turn id of the running task (0 = none)
   std::atomic<bool> busy_{false};          // any task / pump step executing now
   std::deque<Held> held_;                  // turns waiting on another namespace (engine thread)
+  nimbus::orch::OwnerFirstGate ownerFirst_;   // engine thread only: the idle re-check waits for a quiet moment
 
   mutable std::mutex snapMu_;
   StateSnapshot snap_;

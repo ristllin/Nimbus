@@ -2143,7 +2143,7 @@ class NimbusdRig {
       return false;
     }
     lastGoodCumulo_ = r.used;
-    if (eng_ && eng_->turnInFlight()) agent::router_refusal::settleClamp(tap_.refusal(), steadyMs(), o.out);
+    if (eng_ && eng_->turnInFlight()) agent::router_refusal::settleClamp(tap_.servedCapped(), steadyMs(), o.out);
     if (!r.fellBack()) return true;
     // A background compaction call (the fold runs through this same head, with no
     // turn in flight) gets the answer only: no notice prefixed into the summary,

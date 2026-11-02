@@ -544,15 +544,12 @@ static void test_fail_over_cools_the_upstream() {
 
 // The owner hears about the clamp plainly, not on every turn of a low wallet.
 static void test_the_clamp_note_is_not_on_every_turn() {
-  rf::RouterRefusal first;
-  first.reason = "insufficient_credits_for_call";
   uint32_t last = 0;
   bool noted = false;
-  TEST_ASSERT_TRUE(rf::clampNoteDue(first, 1000, last, noted));
-  TEST_ASSERT_FALSE(rf::clampNoteDue(first, 2000, last, noted));
-  TEST_ASSERT_TRUE(rf::clampNoteDue(first, 1000 + rf::kClampNoteEveryMs, last, noted));
-  first.reason = "insufficient_credits";
-  TEST_ASSERT_FALSE(rf::clampNoteDue(first, 1000 + 2 * rf::kClampNoteEveryMs, last, noted));
+  TEST_ASSERT_TRUE(rf::clampNoteDue(true, 1000, last, noted));
+  TEST_ASSERT_FALSE(rf::clampNoteDue(true, 2000, last, noted));
+  TEST_ASSERT_TRUE(rf::clampNoteDue(true, 1000 + rf::kClampNoteEveryMs, last, noted));
+  TEST_ASSERT_FALSE(rf::clampNoteDue(false, 1000 + 2 * rf::kClampNoteEveryMs, last, noted));   // no capped resend served
   TEST_ASSERT_FALSE(has(rf::clampNote(), "dd credits"));
 }
 

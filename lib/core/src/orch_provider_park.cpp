@@ -429,7 +429,7 @@ ParkKind ProviderPark::noteAnswer(const char* provider, PaidSeam seam, uint32_t 
   }
   const ParkKind kind = parkKindForProvider(provider, httpStatus, text);
   if (kind == ParkKind::None) {
-    if (provider && std::strcmp(provider, "cumulo") == 0 && routerAnswerProvesAccount(readRouterAnswer(text)))
+    if (answerEndsPark(provider, text))
       noteSuccess(provider, seam);   // this call was refused; the account is fine
     else
       noteFailure(provider, nowMs);
@@ -557,6 +557,11 @@ ParkCause ProviderPark::causeOf(const char* provider) {
   loadLocked(clockNow());
   const Rec* r = find(provider);
   return r && r->kind != ParkKind::None ? r->cause : ParkCause::Unspecified;
+}
+
+bool ProviderPark::answerEndsPark(const char* provider, const std::string& text) {
+  if (!provider || std::strcmp(provider, "cumulo") != 0) return false;
+  return routerAnswerProvesAccount(readRouterAnswer(text), causeOf(provider) == ParkCause::KeyBudget);
 }
 
 uint32_t ProviderPark::recheckInMs(const char* provider) {

@@ -362,9 +362,9 @@ answers by the same shared rule):
 | The wallet is empty, or credits or a plan are missing (`insufficient_credits`, `credits_or_subscription_required`) | "That didn't finish - the Cumulo router needs credits or a plan for this account. Add credits in the portal." |
 | This device reached its monthly limit (`budget_exceeded`) | "That didn't finish - the Cumulo router stopped at this device's monthly limit. Raise it in the portal." |
 | The account is suspended (`account_suspended`) | "That didn't finish - the Cumulo router says this account is suspended. Contact support." |
-| The clamp: the wallet has credits and this call's worst case does not fit (`insufficient_credits_for_call`) | One resend capped at what fits, served with a note that the reply was kept short; when no useful cap fits, "That didn't finish - the Cumulo router says this request is larger than the remaining credits allow." |
+| The clamp: the wallet has credits and this call's worst case does not fit (`insufficient_credits_for_call`) | One resend capped at what fits, served with a note that the reply was kept short; when no useful cap fits, "That didn't finish - the Cumulo router says this request is larger than the remaining credits allow." Whatever fails after the resend reads as itself, not as the clamp |
 | Rate limited, or the wallet held by other calls (`rate_limited`, `credits_held_in_flight`) | One resend after `retryAfterMs` when that is 6 seconds or less, else the engine's rate-limit reply |
-| A reason this image does not know, or a 402 with none | "That didn't finish - the Cumulo router refused this request. Try again shortly." Nothing parks |
+| A reason this image does not know, or a 402 or 403 with none | "That didn't finish - the Cumulo router refused this request. Try again shortly." Nothing parks |
 
 Only a refusal of an attempt's first request is answered again on another model,
 so a tool that already ran is never repeated (a request that got no answer is not

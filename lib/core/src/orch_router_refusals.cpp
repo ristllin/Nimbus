@@ -158,14 +158,19 @@ RouterAnswer readRouterAnswer(const std::string& text) {
   return a;
 }
 
-bool routerAnswerProvesAccount(const RouterAnswer& a) {
-  static const char* const kPast[] = {
-      "insufficient_credits_for_call", "credits_held_in_flight", "upstream_rate_limited",
-      "upstream_quota_exhausted",      "upstream_auth_failed",   "upstream_error",
-      "fallback_exhausted",            "provider_timeout",       "provider_unreachable",
+bool routerAnswerProvesAccount(const RouterAnswer& a, bool keyBudgetPark) {
+  // The router's order: entitlement and suspension, the wallet and its clamp, the key's
+  // budget, then the upstream (apps/api/src/router-service.ts in the cloud repo).
+  static const char* const kPastTheWallet[] = {"insufficient_credits_for_call", "credits_held_in_flight"};
+  static const char* const kPastTheBudget[] = {
+      "upstream_rate_limited", "upstream_quota_exhausted", "upstream_auth_failed", "upstream_error",
+      "fallback_exhausted",    "provider_timeout",         "provider_unreachable",
   };
   if (!a.row) return false;
-  for (const char* r : kPast)
+  for (const char* r : kPastTheBudget)
+    if (std::strcmp(a.row->reason, r) == 0) return true;
+  if (keyBudgetPark) return false;
+  for (const char* r : kPastTheWallet)
     if (std::strcmp(a.row->reason, r) == 0) return true;
   return false;
 }

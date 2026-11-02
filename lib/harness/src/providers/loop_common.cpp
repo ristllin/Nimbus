@@ -264,8 +264,12 @@ void parkHost(const ProviderDeps& pd, const std::string& host, orch::StepErr kin
 // of the one PROBE request after the re-check time re-arms the park it already had
 // (the refusal it was parked for was never answered otherwise - a 503 or a
 // timeout on the probe must not silently un-park it).
+//
+// Cumulo closes only on the reason its body names, and the wire already heard that body
+// (noteParkRefusal). A step kind here is typed from a status alone, and a status cannot
+// say: a gateway's 403 with no reason is one failed call, not a rejected key.
 void noteHostFailed(const ProviderDeps& pd, const std::string& host, orch::StepErr kind, int httpStatus) {
-  if (orch::fabricRuleFor(kind).parkHost) {
+  if (host != "cumulo" && orch::fabricRuleFor(kind).parkHost) {
     parkHost(pd, host, kind, httpStatus);
     return;
   }

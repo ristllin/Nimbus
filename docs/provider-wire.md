@@ -282,10 +282,16 @@ re-applies it at boot). The health report's **Providers** row and `GET /api/orch
 | `insufficient_credits_for_call` (the clamp: the wallet has credits, this call's worst case does not fit) | One resend with the output capped at `maxAffordableOutputTokens` when that is at least 256; otherwise this call fails with "this request is larger than the remaining credits allow". A short reply opens with a note saying why, at most once every 6 hours |
 | `rate_limited`, `credits_held_in_flight`, `router_internal_error` | One resend of the same request after `retryAfterMs` when that is 6 seconds or less, else the engine's own reply |
 | `fail_over` reasons (`upstream_*`, `provider_*`, `fallback_exhausted`, `funding_cap_reached`, `router_disabled`, `ceiling_reached`) | That upstream cools for `retryAfterMs`; the turn answers on the router default, or fails over to the next provider. The wallet is never blamed |
-| Any other reason, or a 402 with none | This call fails. Never a park |
+| Any other reason, or a 402 or 403 with none | This call fails. Never a park. A 401 with no reason still reads as the key: the router's own 401 always names one, so what is left is a body that did not survive |
+
+A resend that recovers a refusal ends it: a cut reply or a server error on the capped
+resend reads as it would with no clamp, and a refusal of the resend is what the owner hears
+about. Only a resend that was capped opens the reply with the note.
 
 A clamp, a held wallet or an upstream's failure also shows the account stands, so any
-of them ends a billing or key park outright.
+of them ends a billing or key park outright. The exception is a park for this device's
+own limit (`budget_exceeded`): the router reads that budget after the wallet, so only an
+upstream's failure says it was passed.
 
 **A re-check is a real request.** A reader (a failover candidate list, the sub-agent
 catalog, a status surface) asks `peek`, which never takes the park's one re-check; the
@@ -294,6 +300,9 @@ that got it and then sends nothing hands it back. A parked provider nothing else
 such as Cumulo last in the priority list behind a head that answers every turn, is asked
 by the idle re-check (`TurnEngine::recheckParkedHost`, on the fold's pump) with one short
 request: a refusal is free and an answer ends the park, so a provider recovers by itself.
+It waits for two quiet minutes after the last turn, never runs while a turn does, under
+low memory, or past the spend limit or the provider's budget. A provider that hangs holds
+the pump until the head's timeout, the same as a fold.
 Every re-check logs one outcome: `park: <provider> re-check answered - open again`,
 `refused again (...)`, `failed without a verdict`, `got no answer in time`, or `handed
 back`. A hosted instance keeps asking its head on every turn, so a client who tops up is

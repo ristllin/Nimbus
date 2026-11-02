@@ -107,6 +107,10 @@ static bool closedByPark(const SttProvider& prov, nimbus::voice::SttResult& out)
 // The upload's answer, for the park: a billing or key refusal closes the provider for
 // every seam; a success ends an episode.
 static void noteToPark(const SttProvider& prov, bool ok, const String& err, const String& resp) {
+  if (!ok && nimbus::voice::sttSentNothing(std::string(err.c_str()))) {   // a re-check it got stays due
+    gate::handBack(prov.slug.c_str());
+    return;
+  }
   int st = 0;
   if (!ok) nimbus::voice::sttKindForError(std::string(err.c_str()), &st);
   gate::noteAnswer(prov.slug.c_str(), nimbus::orch::PaidSeam::Stt, prov.key, ok ? 200 : st, resp.c_str());

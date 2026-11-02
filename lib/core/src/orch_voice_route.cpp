@@ -94,6 +94,16 @@ std::string voiceRefusalStatus(const std::string& code) {
   return failsOver(code) ? kVoiceServicePaused : "Voice is unavailable right now. Try again soon.";
 }
 
+std::string voiceRefusalWhy(int httpStatus, const std::string& body, const std::string& providerCode) {
+  const RouterAnswer a = readRouterAnswer(body);
+  if (a.reason == "insufficient_credits_for_call") return "This reply is too long for the remaining credits.";
+  if (voiceRefusalKnown(a.reason)) return voiceRefusalStatus(a.reason);
+  const std::string code = !a.reason.empty() ? a.reason : providerCode;
+  std::string s = "the voice provider refused (HTTP " + std::to_string(httpStatus);
+  if (!code.empty()) s += ", " + code;
+  return s + ")";
+}
+
 bool voiceRefusalKnown(const std::string& code) { return findRefusal(code) != nullptr || failsOver(code); }
 
 }  // namespace orch

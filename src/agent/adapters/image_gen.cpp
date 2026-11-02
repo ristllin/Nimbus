@@ -64,7 +64,13 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
   }
 
   arbiter::WorkSlot slot(10000);
-  if (!slot) { free(buf); errOut = "device busy"; alog("imagegen: arbiter busy"); return nullptr; }
+  if (!slot) {
+    gate::handBack("openai");
+    free(buf);
+    errOut = "device busy";
+    alog("imagegen: arbiter busy");
+    return nullptr;
+  }
   WiFiClientSecure c;
   tlsSetup(c);
   c.setHandshakeTimeout(12);

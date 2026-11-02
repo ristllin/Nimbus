@@ -39,4 +39,8 @@ struct SttResult {
 // ("no answer") - never as an empty transcript.
 SttResult::Kind sttKindForError(const std::string& err, int* httpOut);
 
+// The uploader failed before any byte left: the TLS slot was busy or the file would not
+// open. A re-check of a parked provider this call took was not spent.
+inline bool sttSentNothing(const std::string& err) { return err == kErrSlotBusy || err == kErrFileOpen; }
+
 }  // namespace nimbus::voice

@@ -61,6 +61,10 @@ VoiceRouteInfo voiceRouteFor(const std::string& effectiveProvider, VoiceKind kin
 // follows AGENTS section 6: sentence case, US English, no em dash, states what
 // happened then the one next step. Pure + host-tested.
 std::string voiceRefusalStatus(const std::string& code);
+// Why text to speech was refused, from the answer as far as the seam read it: the router's
+// reason in the owner's words (a body cut part way still names it), else the status and
+// `providerCode`, a direct provider's machine code ("" = none).
+std::string voiceRefusalWhy(int httpStatus, const std::string& body, const std::string& providerCode);
 
 // True when `code` is one of the contract's refusal codes above (so it has its own
 // named line). Anything else - a provider's own error body, e.g. a rejected key - is

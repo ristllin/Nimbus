@@ -69,6 +69,9 @@ struct HttpRequest {
   // Payloads spliced into `body` at send time (see BodySplice); empty = `body` is
   // the whole request body. Content-Length is bodyLength(), never body.size().
   BodySplices splices;
+  // This send is the clamp's capped resend (router refusal contract): the wire lowered the
+  // output cap. A tap above the transport reads it to know a served reply was kept short.
+  bool cappedResend = false;
 };
 
 // ---- the spliced body (portable; the device transport and the host fakes) ------

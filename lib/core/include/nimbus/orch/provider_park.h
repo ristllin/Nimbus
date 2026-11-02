@@ -260,6 +260,10 @@ class ProviderPark {
   bool isProbing(const char* provider);
   // What the router said this park is for (Unspecified for any other refusal).
   ParkCause causeOf(const char* provider);
+  // Does this refusal, which closes nothing itself, show the account stands, so the park
+  // of `provider` ends? Only the router says so, and what counts depends on the park: a
+  // clamp says nothing about a key's spent budget (routerAnswerProvesAccount).
+  bool answerEndsPark(const char* provider, const std::string& text);
   // How long until the provider's re-check request (0 when it is due, or when the
   // provider is not parked). Reads only: it never hands out the probe.
   uint32_t recheckInMs(const char* provider);

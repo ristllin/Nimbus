@@ -152,20 +152,17 @@ void noteRefusal(WiFiClientSecure& c, const TtsProvider& prov, int status, uint3
     if (c.available()) errb[n++] = c.read(); else vTaskDelay(1);
   }
   gate::noteAnswer(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key, status, errb);
-  // Log the refusal honestly (a router 4xx is {"error":<code>}); the spoken reply
-  // is supplementary, so the turn's TEXT reply still reaches the owner - no silence.
+  // Log the refusal honestly; the spoken reply is supplementary, so the turn's TEXT reply
+  // still reaches the owner - no silence. errb may hold only the start of a long refusal:
+  // the router names its reason first, and voiceRefusalWhy reads a cut body. A direct
+  // provider's code needs the whole JSON, so a cut one just goes unnamed.
   bool jok = false;
-  const std::string code = core::parseErrorCode(errb, &jok);
-  if (jok && !code.empty()) {
-    alogf("tts: %s HTTP %d refused (%s): %s", store::ttsProvider().c_str(), status,
-          code.c_str(), nimbus::orch::voiceRefusalStatus(code).c_str());
-    setWhy(why, String("the voice provider refused (HTTP ") + status + ", " + code.c_str() + ")");
-    return;
-  }
+  std::string code = core::parseErrorCode(errb, &jok);
+  if (!jok) code.clear();
   const std::string line = nimbus::orch::providerErrLine(prov.slug.c_str(), status,
                                                          nimbus::orch::providerErrorText(errb));
   alogf("tts: %s", line.c_str());
-  setWhy(why, String("the voice provider refused (HTTP ") + status + ")");
+  setWhy(why, nimbus::orch::voiceRefusalWhy(status, errb, code).c_str());
 }
 
 // Mistral: {"audio_data":"<base64 mp3>"} - skip to the value, stream-decode it.

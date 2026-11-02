@@ -1160,7 +1160,7 @@ static bool cumuloTurn(CumuloCall& c) {
     return false;
   }
   copyWholeOrClear(g_cumuloLastGood, r.used);
-  if (g_engine && g_engine->turnInFlight()) rf::settleClamp(tap.refusal(), (uint32_t)millis(), c.out);
+  if (g_engine && g_engine->turnInFlight()) rf::settleClamp(tap.servedCapped(), (uint32_t)millis(), c.out);
   if (!r.fellBack() || !g_engine || !g_engine->turnInFlight()) return true;
   rf::settleFallback(r, picked, std::string(CUMULO_MODEL), c.out, [] { return cumuloPick(); },
                      [](const std::string& p) { store::setOrchModel("cumulo", String(p.c_str())); });
@@ -2676,8 +2676,10 @@ static void compactTick() {
   if (!g_engine || g_engine->turnInFlight()) return;
   if (!nimbus::net::staConnected()) return;   // offline fold = guaranteed breaker burn
   // A parked provider nothing else is calling is asked here, so it recovers by itself
-  // (one request at most per pass; the fold waits for the next pass).
-  if (g_engine->recheckParkedHost()) return;
+  // (one request at most per pass; the fold waits for the next pass). It waits for the
+  // owner: the request blocks this task, and this task reads the owner's messages.
+  if (g_ownerFirst.parkRecheckMayStart(telegram::guardStatus().holding, millis()) && g_engine->recheckParkedHost())
+    return;
 
   // Gate FIRST (prism v3.6.0 HIGH): runFold's own heap/key/budget gates fire
   // AFTER the owner-visible notice and the 64 KB digest would already be paid,

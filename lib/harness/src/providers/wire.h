@@ -123,8 +123,9 @@ inline std::string parkProviderOf(const ProviderDeps& pd, const std::string& hos
 // forget. A 403 is left to the typed seams (it may name one model or endpoint), and
 // a success is noted only where a model call succeeded (a free session poll that
 // answers 200 says nothing about the account's credit).
+// `resending`: the wire sends this request once more, so that answer is the verdict.
 inline void noteParkRefusal(const ProviderDeps& pd, const std::string& host, const std::string& path, int status,
-                            const JsonDocument& doc) {
+                            const JsonDocument& doc, bool resending = false) {
   if (status < 400) return;
   const std::string prov = parkProviderOf(pd, host, path);
   if (prov.empty()) return;
@@ -141,9 +142,9 @@ inline void noteParkRefusal(const ProviderDeps& pd, const std::string& host, con
   if (!closes) {
     // Answered with no verdict on the account. A router answer that shows the account
     // stands ends a park outright; otherwise a due re-check waits another interval.
-    if (prov == "cumulo" && nimbus::orch::routerAnswerProvesAccount(nimbus::orch::readRouterAnswer(text)))
+    if (nimbus::orch::providerPark().answerEndsPark(prov.c_str(), text))
       nimbus::orch::providerPark().noteSuccess(prov.c_str(), nimbus::orch::PaidSeam::Chat);
-    else if (kind == nimbus::orch::ParkKind::None && nimbus::orch::providerPark().isProbing(prov.c_str()))
+    else if (!resending && kind == nimbus::orch::ParkKind::None && nimbus::orch::providerPark().isProbing(prov.c_str()))
       nimbus::orch::providerPark().noteFailure(prov.c_str(), now);   // a poll says nothing: only the probe's own answer
     return;
   }
@@ -175,6 +176,7 @@ inline bool capRouterRequest(HttpRequest& req, const nimbus::orch::RouterAnswer&
   size_t n = 0;
   if (!nimbus::orch::capOutputTokens(req.body, req.path, (uint32_t)a.maxAffordableOutputTokens, edits, n)) return false;
   for (BodySplice& sp : req.splices) sp.at = nimbus::orch::applyCapEdits(sp.at, edits, n);
+  req.cappedResend = true;
   hlog::logf("router: %s %s - resending once with the output capped at %u", req.path.c_str(), a.reason.c_str(),
              (unsigned)a.maxAffordableOutputTokens);
   return true;
@@ -441,8 +443,9 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
     if (paidRequest && nimbus::orch::sentWithoutAnswer(status, terr))
       meterUnanswered(pd, host, req, pd.monoMs ? pd.monoMs() - sentAt : 0);
     lastExchange().allocFailed = terr.find("alloc failed") != std::string::npos;
-    noteParkRefusal(pd, host, req.path, status, doc);
-    if (sends > 0 || !viaRouter || status < 400 || !terr.empty() || !prepareRouterResend(pd, req, doc)) break;
+    const bool resend = sends == 0 && viaRouter && status >= 400 && terr.empty() && prepareRouterResend(pd, req, doc);
+    noteParkRefusal(pd, host, req.path, status, doc, resend);
+    if (!resend) break;
     doc.clear();
   }
   if (status == 0) {

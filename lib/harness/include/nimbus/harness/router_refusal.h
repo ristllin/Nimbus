@@ -26,11 +26,13 @@
 // first refusal of an attempt, so the head can tell a refused model (switch back
 // to a model that works) from an account-wide refusal (say what to do) without
 // touching the shared provider code. The reason decides, never the status: the table is
-// the router refusal contract (nimbus/orch/router_refusals.h).
+// the router refusal contract (nimbus/orch/router_refusals.h). A refusal the wire recovers
+// by itself (the clamp's capped resend, a short wait) is over once it resends: the tap
+// keeps what that send got, so a later failure is never read from a refusal already past.
 namespace agent {
 namespace router_refusal {
 
-// The first refusal the router answered within one head attempt.
+// The first refusal the router answered within one head attempt that still stands.
 struct RouterRefusal {
   int status = 0;              // HTTP status; 0 = no refusal seen
   std::string reason;          // the router's machine reason ("model_not_priced", ...)
@@ -61,8 +63,9 @@ struct RouterRefusal {
 //   Clamp    - the wallet has credits and this call's worst case does not fit, even after
 //              the capped resend (insufficient_credits_for_call): this call fails, the
 //              account is fine;
-//   Refused  - a 402 with no reason, or a reason this image does not know: a per-call
-//              failure, never a park and never "add credits";
+//   Refused  - a 402 or 403 with no reason (a gateway in front of the router, a body that
+//              did not survive), or a reason this image does not know: a per-call failure,
+//              never a park, never "add credits" and never read as a dead key;
 //   Paused   - the whole router is paused (router_disabled, ceiling_reached,
 //              router_not_configured);
 //   RateLimit/Auth/Other keep the engine's own reply.
@@ -122,10 +125,12 @@ inline RefusalKind classifyRefusal(const RouterRefusal& r) {
   if (byReason == RefusalKind::Selector || refusesTheModel(r)) return RefusalKind::Selector;
   if (byReason != RefusalKind::None) return byReason;
   if (nimbus::orch::routerReasonRow(r.reason)) return RefusalKind::Other;   // the table's: fix_request, per call
-  // A 402 that names no reason, or a reason this image does not know: a per-call failure,
-  // never "add credits" and never read as a dead key.
+  // A 402 or 403 that names no reason, or a reason this image does not know: a per-call
+  // failure, never "add credits" and never read as a dead key. A 401 with no reason stays
+  // the key: the router's own 401 always names one, so what is left is a body that did not
+  // survive, and a dead key that never parks would be asked forever on every seam.
   const bool unknownReason = !r.reason.empty();
-  if (r.status == 402 || (unknownReason && (r.status == 401 || r.status == 403 || r.status == 429)))
+  if (r.status == 402 || r.status == 403 || (unknownReason && (r.status == 401 || r.status == 429)))
     return RefusalKind::Refused;
   if (r.status == 429) return RefusalKind::RateLimit;
   if (r.status == 401) return RefusalKind::Auth;
@@ -284,12 +289,18 @@ class RouterTap : public agent::HttpTransport {
   void begin() {
     requests_ = 0;
     refusal_ = RouterRefusal{};
+    resendable_ = false;
+    servedCapped_ = false;
   }
   const RouterRefusal& refusal() const { return refusal_; }
+  // A capped resend of this attempt was served: its reply may be short because of the clamp.
+  bool servedCapped() const { return servedCapped_; }
 
   bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
+    supersede(req);
     const bool ok = inner_->exec(req, out, err);
     if (!counts(req, ok ? out.status : 0)) return ok;
+    noteServed(req, out.status);
     if (ok && out.status >= 400 && refusal_.status == 0) {
       JsonDocument d = newDoc();
       if (deserializeJson(d, out.body)) d.clear();
@@ -306,12 +317,28 @@ class RouterTap : public agent::HttpTransport {
     wide["error"] = true;     // a string reason, or the whole (small) error object
     wide["message"] = true;
     wide["retryAfterMs"] = true;
+    supersede(req);
     const int status = inner_->execJson(req, doc, wide, err);
-    if (counts(req, status) && status >= 400 && refusal_.status == 0) note(req, status, doc);
+    if (!counts(req, status)) return status;
+    noteServed(req, status);
+    if (status >= 400 && refusal_.status == 0) note(req, status, doc);
     return status;
   }
 
  private:
+  // The wire's own resend of a refusal it recovers (the clamp capped, a short wait): the
+  // same request of the attempt, so it is not counted twice, and the refusal it answers is
+  // over. Whatever this send gets is what the attempt heard.
+  void supersede(const agent::HttpRequest& req) {
+    if (!resendable_) return;
+    resendable_ = false;
+    if (req.path != refusedPath_) return;
+    refusal_ = RouterRefusal{};
+    --requests_;
+  }
+  void noteServed(const agent::HttpRequest& req, int status) {
+    if (req.cappedResend && status >= 200 && status < 300) servedCapped_ = true;
+  }
   // Counts the router's answers (status > 0): a request that never left, or got
   // no answer, can have led to no tool run, so a refusal answering its resend
   // (CUM-477) is still the attempt's first request and is answered on another
@@ -337,6 +364,9 @@ class RouterTap : public agent::HttpTransport {
     const nimbus::orch::RouterReasonRow* row = nimbus::orch::routerReasonRow(refusal_.reason);
     if (nowMs_ && row && row->action == nimbus::orch::RouterAction::FailOver)
       cooling_.cool(upstreamOfPath(req.path), nowMs_(), d["retryAfterMs"] | (uint32_t)0);
+    resendable_ = row && (row->action == nimbus::orch::RouterAction::RetryCapped ||
+                          row->action == nimbus::orch::RouterAction::RetryLater);
+    if (resendable_) refusedPath_ = req.path;
   }
 
   agent::HttpTransport* inner_;
@@ -344,6 +374,9 @@ class RouterTap : public agent::HttpTransport {
   ArduinoJson::Allocator* alloc_;
   int requests_ = 0;
   RouterRefusal refusal_;
+  bool resendable_ = false;   // refusal_ is one the wire may resend (the clamp, a short wait)
+  std::string refusedPath_;
+  bool servedCapped_ = false;
   uint32_t (*nowMs_)() = nullptr;
   UpstreamCooling cooling_;
 };
@@ -445,17 +478,17 @@ void settleFallback(const LadderResult& r, const std::string& picked, const std:
 // A conversation turn the clamp's capped resend served: the owner hears why the reply is
 // short, at most every `kClampNoteEveryMs` so a low wallet does not repeat it on every turn.
 inline constexpr uint32_t kClampNoteEveryMs = 6u * 60u * 60u * 1000u;
-inline bool clampNoteDue(const RouterRefusal& first, uint32_t nowMs, uint32_t& lastNoteMs, bool& noted) {
-  if (first.reason != "insufficient_credits_for_call") return false;
+inline bool clampNoteDue(bool servedCapped, uint32_t nowMs, uint32_t& lastNoteMs, bool& noted) {
+  if (!servedCapped) return false;
   if (noted && (uint32_t)(nowMs - lastNoteMs) < kClampNoteEveryMs) return false;
   noted = true;
   lastNoteMs = nowMs;
   return true;
 }
-inline void settleClamp(const RouterRefusal& first, uint32_t nowMs, std::string& outJson) {
+inline void settleClamp(bool servedCapped, uint32_t nowMs, std::string& outJson) {
   static uint32_t lastNoteMs = 0;
   static bool noted = false;
-  if (clampNoteDue(first, nowMs, lastNoteMs, noted)) prefixReply(outJson, clampNote());
+  if (clampNoteDue(servedCapped, nowMs, lastNoteMs, noted)) prefixReply(outJson, clampNote());
 }
 
 }  // namespace router_refusal
