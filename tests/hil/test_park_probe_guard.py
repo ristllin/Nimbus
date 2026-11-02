@@ -42,7 +42,7 @@ def _function_body(text: str, signature: str) -> str:
             brace = text.find("{", at)
             semi = text.find(";", at)
             if brace < 0 or (0 <= semi < brace):
-                continue   # a call or a declaration
+                continue  # a call or a declaration
             depth = 0
             for i in range(brace, len(text)):
                 depth += {"{": 1, "}": -1}.get(text[i], 0)
@@ -63,12 +63,12 @@ def _unhanded_returns(body: str, send: str) -> list[str]:
     for i, line in enumerate(lines):
         if not re.search(r"\breturn\b", line) or line.strip().startswith("//"):
             continue
-        start = i   # the statement or block that returns: back to its `if`
+        start = i  # the statement or block that returns: back to its `if`
         while start > 0 and "if (" not in lines[start]:
             start -= 1
         near = "\n".join(lines[start : i + 1])
         if any(ok in near for ok in ("handBack", "busy()", ".open", "closedByPark", "failFromStatus")):
-            continue   # handed back; the closed verdict; an answer the park was told about (the bench's)
+            continue  # handed back; the closed verdict; an answer the park was told about (the bench's)
         bad.append(line.strip())
     return bad
 
@@ -94,7 +94,9 @@ def test_the_guard_flags_a_seam_that_drops_the_recheck():
   if (!slot) { free(buf); errOut = "device busy"; return nullptr; }
   client.connect(host, 443);
 }"""
-    assert _unhanded_returns(body, r"\.connect\(") == ['if (!slot) { free(buf); errOut = "device busy"; return nullptr; }']
+    assert _unhanded_returns(body, r"\.connect\(") == [
+        'if (!slot) { free(buf); errOut = "device busy"; return nullptr; }'
+    ]
     handed = body.replace("{ free(buf);", '{ gate::handBack("openai"); free(buf);')
     assert _unhanded_returns(handed, r"\.connect\(") == []
 
@@ -117,9 +119,9 @@ def test_a_question_that_sends_nothing_reads_with_peek():
 
 # Who may ask the claiming question: each is about to send, and hands it back if it does not.
 _CLAIMERS = {
-    "lib/core/src/orch_provider_park.cpp",   # pickOpenProvider: the walk of a seam about to send
-    "lib/harness/src/vision_caption.cpp",    # the caption walk, which releases on a skipped send
-    "src/agent/provider_gate.cpp",           # gate::check
+    "lib/core/src/orch_provider_park.cpp",  # pickOpenProvider: the walk of a seam about to send
+    "lib/harness/src/vision_caption.cpp",  # the caption walk, which releases on a skipped send
+    "src/agent/provider_gate.cpp",  # gate::check
 }
 
 
