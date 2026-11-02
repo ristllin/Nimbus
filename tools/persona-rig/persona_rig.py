@@ -563,6 +563,19 @@ def _implicit_checks(rec: dict) -> list:
     return out
 
 
+def keep_earlier_run(path: Path):
+    """Evidence is never overwritten: an earlier run at this path moves aside, with its time."""
+    if not path.exists():
+        return
+    stamp = _utc().replace(":", "")
+    aside = path.with_name(f"{path.name}.replaced-{stamp}")
+    n = 1
+    while aside.exists():
+        n += 1
+        aside = path.with_name(f"{path.name}.replaced-{stamp}-{n}")
+    path.rename(aside)
+
+
 class Runner:
     """One persona on one container, start to teardown."""
 
@@ -1111,6 +1124,7 @@ def run_and_write(personas: list, backend, env_values: dict, evidence: Path, opt
     options = {"limits": RunLimits(), **(options or {})}
     results = run_all(personas, backend, env_values, evidence, options)
     scrub = Scrubber(env_values.values())
+    keep_earlier_run(evidence / "run-summary.json")
     (evidence / "run-summary.json").write_text(scrub(json.dumps(results, indent=1, ensure_ascii=False)))
     totals = {
         **options["limits"].snapshot(),

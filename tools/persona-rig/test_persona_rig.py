@@ -1415,6 +1415,25 @@ class Regrade(unittest.TestCase):
             self.assertEqual(pr.regrade(Path(d), io.StringIO()), 0)
 
 
+class TestEvidenceIsKept(unittest.TestCase):
+    def test_a_second_run_moves_the_first_aside(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp) / "persona"
+            run.mkdir()
+            (run / "summary.json").write_text("first run")
+            pr.keep_earlier_run(run)
+            self.assertFalse(run.exists())
+            aside = list(Path(tmp).glob("persona.replaced-*"))
+            self.assertEqual(len(aside), 1)
+            self.assertEqual((aside[0] / "summary.json").read_text(), "first run")
+            run.mkdir()
+            (run / "summary.json").write_text("second run")
+            pr.keep_earlier_run(run)
+            self.assertEqual(len(list(Path(tmp).glob("persona.replaced-*"))), 2)
+            pr.keep_earlier_run(run)   # nothing there now: a no-op
+            self.assertEqual(len(list(Path(tmp).glob("persona.replaced-*"))), 2)
+
+
 if __name__ == "__main__":
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     unittest.main(verbosity=1)

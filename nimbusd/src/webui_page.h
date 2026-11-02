@@ -1383,6 +1383,26 @@ function applyHostedChrome(){
       [ms,tip,lb].forEach(el=>{if(el)el.style.display='none';});}
     const lede=document.querySelector('#pane-set .plede');
     if(lede)lede.textContent='Identity, software version and connectivity, all in one place.';
+    // What this instance does not have: never a control that answers a refusal or does
+    // nothing. Voice, a custom endpoint, the settings it keeps fixed, the Safety sub-page
+    // (no scanner, downloads or guest moderation here), standing rules and self-approval.
+    document.querySelectorAll('details.setgroup').forEach(g=>{const s=g.querySelector('summary'),t=s?s.textContent:'';
+      if(['Voice','Custom endpoint'].some(x=>t.indexOf(x)===0))g.style.display='none';});
+    const off=el=>{if(el)el.style.display='none';};
+    const row=id=>{const e=$(id); if(!e)return;      // a field, its help line and its label
+      const lb=e.closest('label'); if(lb){off(lb); const n=lb.nextElementSibling; if(n&&n.classList.contains('tip'))off(n); return;}
+      off(e); let p=e.previousElementSibling;
+      while(p&&(p.tagName==='P'||p.tagName==='LABEL')){off(p); if(p.tagName==='LABEL')break; p=p.previousElementSibling;}};
+    ['midFail','loopRounds','loopDeadline','compactKB','tlsSlots','tlsVerify','capProbe','ttsOn','skAuto'].forEach(row);
+    off($('capProbeActive'));
+    off(document.querySelector('.subtab[data-sp=safety]'));
+    ['prefslist','prefsnew','prefsmsg'].forEach(id=>{const e=$(id); if(id==='prefsnew')off(e&&e.parentElement); else if(id==='prefslist')row(id); else off(e);});
+    const oh=$('orchHost'); if(oh)[].slice.call(oh.options).forEach(o=>{if(o.value==='custom')o.remove();});
+    // Recording is real here, and is about this instance rather than a card.
+    const tr=$('orchTrace'), trLb=tr&&tr.closest('label');
+    if(trLb)[].forEach.call(trLb.childNodes,n=>{if(n.nodeType===3&&/thinking/.test(n.textContent))n.textContent=' Record tool calls ';});
+    const trTip=trLb&&trLb.nextElementSibling;
+    if(trTip&&trTip.classList.contains('tip'))trTip.textContent='Keeps a record of what the assistant did on each turn - each tool call and its result - viewable in the chat. Stored on this instance. Turning it off stops new records.';
   }catch(e){}
 }
 applyHostedChrome();
@@ -1529,9 +1549,12 @@ function renderSearch(groups){
 // The search "index": a static settings/actions index plus live source fetchers.
 // Static hits are synchronous; each source fills its group as it resolves, so the
 // palette stays responsive. searchIndexStatic() is pure and unit-testable.
+// A hosted instance drops the actions whose group it does not have.
+const SEARCH_NOT_HOSTED=['Safety','Check for updates','Pair with the cloud','Display and touch','Ring theme and demo','Battery and battery mode','Sign-in code and connectivity','Erase / factory reset'];
 function searchIndexStatic(q){
   const ql=(q||'').trim().toLowerCase();
-  return ql?SEARCH_INDEX.filter(x=>(x.label+' '+x.kw).toLowerCase().indexOf(ql)>=0):SEARCH_INDEX.slice();
+  const all=HOSTED?SEARCH_INDEX.filter(x=>SEARCH_NOT_HOSTED.indexOf(x.label)<0):SEARCH_INDEX;
+  return ql?all.filter(x=>(x.label+' '+x.kw).toLowerCase().indexOf(ql)>=0):all.slice();
 }
 let _sSeq=0;
 function runSearch(q){
@@ -1679,7 +1702,7 @@ function renderPrio(hostId, field, csv){
   // moves what the owner set. Primary-provider (orchHost) still lists only the
   // BYOK heads, since the router is the deterministic fallback source, not the
   // one head that "runs the assistant".
-  const ALL=['openai','anthropic','mistral','cumulo','zai','custom'], host=$(hostId); if(!host)return;
+  const ALL=['openai','anthropic','mistral','cumulo','zai'].concat(HOSTED?[]:['custom']), host=$(hostId); if(!host)return;
   let order=csv.split(',').map(s=>s.trim()).filter(x=>ALL.includes(x));
   let rows=order.map(p=>({p,on:true})).concat(ALL.filter(x=>!order.includes(x)).map(p=>({p,on:false})));
   const save=()=>orchApply({[field]:rows.filter(r=>r.on).map(r=>r.p).join(',')});
@@ -3577,6 +3600,7 @@ function applyOrch(d){
     const tv=!d.hasTav?'Web search is off - add a key to enable it'
       :d.tavVerify===1?'✓ Web search ready - key verified'
       :d.tavVerify===0?'✗ Key rejected by Tavily - check it'
+      :HOSTED?'Key saved. The assistant says so if a search is refused.'
       :d.tavVts>0?'⚠ Key saved but not yet verified - save again to retry'
       :'⏳ Key saved - verifying…';
     $('tavstat').textContent=tv;
@@ -3707,7 +3731,7 @@ function fetchQAct(id,op){
 // Safety ACTIVITY surface (CUM-215): the scanner's blocked/suspected log, per-entry
 // owner actions (approve scoped / dismiss / report), and the scoped allowlist.
 var _safetyReport={available:false,copy:''};
-function loadSafety(){fetch('/api/safety').then(cardJson).then(function(d){cardBusyNote('safetyList',false);renderSafety(d);}).catch(function(e){if(onCardBusy(e,'safety',loadSafety,'safetyList'))return;var b=$('safetyList');if(b&&/loading/i.test(b.textContent))b.innerHTML='<p class=hint>Could not load activity. Try again.</p>';
+function loadSafety(){if(HOSTED)return;fetch('/api/safety').then(cardJson).then(function(d){cardBusyNote('safetyList',false);renderSafety(d);}).catch(function(e){if(onCardBusy(e,'safety',loadSafety,'safetyList'))return;var b=$('safetyList');if(b&&/loading/i.test(b.textContent))b.innerHTML='<p class=hint>Could not load activity. Try again.</p>';
   var a=$('safetyAllow');if(a&&/loading/i.test(a.textContent))a.textContent='Could not load. Try again.';});}
 // Reuse the one full HTML escaper (connEsc, defined below and hoisted): it also
 // escapes ' and ", so ids interpolated into inline handlers cannot break out (CUM-215).
@@ -4590,7 +4614,7 @@ $('revertdir')&&($('revertdir').onclick=()=>orchApply({sysPrompt:''}).then(ok=>{
 // read outside content; approving is the owner's one click here.
 let _prefsSeen='';
 function loadPrefs(){
-  const box=$('prefslist'); if(!box)return;
+  const box=$('prefslist'); if(!box||HOSTED)return;
   fetch('/api/prefs').then(jok).then(d=>{
     cardBusyNote(box,false);
     const now=JSON.stringify(d);
@@ -5343,7 +5367,20 @@ $('filesRmProj')&&($('filesRmProj').onclick=()=>{
 // server-acked offset takes over. An .mp3 is routed to the music store so it plays.
 // onPct(0..100) is called as it climbs. Resolves to the parsed JSON (or {}), rejects with
 // the HTTP status (or 0 on a network error). Reused by the chat drag-and-drop (CUM-57).
+// The name Files takes: printable ASCII with no space, at most 48 characters, the
+// extension kept. Hosted files keep every name a browser can give them this way.
+function _safeFileName(name,max){
+  const m=String(name||'file').match(/^(.*?)(\.[A-Za-z0-9]{1,8})?$/), clean=s=>s.replace(/[^\x21-\x7e]+/g,'-').replace(/[\/\\?%*:|"<>]+/g,'-').replace(/^[-.]+|-+$/g,'');
+  const ext=m[2]||''; return (clean(m[1])||'file').slice(0,(max||48)-ext.length).replace(/-+$/,'')+ext;
+}
+// A photo on its way to one turn: its own unique name, so two "image.jpg" never overwrite,
+// under the prefix the server removes once the turn has the bytes.
+function _chatPhotoFile(f){
+  const tag=Date.now().toString(36).slice(-6)+Math.random().toString(36).slice(2,6);
+  return new File([f],_safeFileName('att-'+tag+'-'+f.name),{type:f.type});
+}
 function uploadFile(file, proj, onPct){
+  if(HOSTED&&_safeFileName(file.name)!==file.name)file=new File([file],_safeFileName(file.name),{type:file.type});
   // The page is served under "/d/<id>/" over the tunnel and "/" on the local network;
   // XHR is not wrapped by the fetch base-rewriter, so prefix the app base by hand.
   const base=location.pathname.replace(/\/[^/]*$/,'');
@@ -5365,7 +5402,8 @@ function uploadFile(file, proj, onPct){
     if(base){poll=setInterval(()=>{fetch('/__upload_status?u='+uploadId).then(r=>r.ok?r.json():null)
       .then(p=>{if(p&&p.known&&p.total>0&&onPct)onPct(Math.min(100,Math.round(p.acked/p.total*100)));}).catch(()=>{});},400);}
     const done=()=>{if(poll){clearInterval(poll);poll=null;}};
-    x.onload=()=>{done();if(x.status>=200&&x.status<300){try{resolve(JSON.parse(x.responseText||'{}'));}catch(e){resolve({});}}else reject(x.status);};
+    x.onload=()=>{done();if(x.status>=200&&x.status<300){try{resolve(JSON.parse(x.responseText||'{}'));}catch(e){resolve({});}}
+      else{try{uploadFile.why=JSON.parse(x.responseText||'{}').error||'';}catch(e){uploadFile.why='';} reject(x.status);}};
     x.onerror=()=>{done();reject(0);};
     const fd=new FormData();fd.append('file',file,file.name);
     x.send(fd);
@@ -5953,13 +5991,13 @@ function chatUpload(files){
     const f=list[i++], photo=HOSTED&&/^image\//.test(f.type||'');
     let name=f.name;
     run({status:'chatUpMsg',pending:'Uploading '+f.name+'…',
-      work:()=>(photo?_chatShrink(f):Promise.resolve(f)).then(up=>{name=up.name;
+      work:()=>(photo?_chatShrink(f).then(_chatPhotoFile):Promise.resolve(f)).then(up=>{name=up.name;uploadFile.why='';
         return uploadFile(up,proj,pct=>fbState('chatUpMsg','pending','Uploading '+f.name+'… '+pct+'%',pct));}),
       // Hosted: a photo goes to the assistant as an image with the next message.
       ok:()=>{if(photo)_chatAtt.push(proj+'/'+name);
         if(typeof _chatBubble==='function')_chatBubble('u',photo?'Attached '+f.name+'. It goes with your next message.':'Attached '+f.name+' (in Files > '+proj+'). Ask me about it.','web');
         return 'Attached '+f.name+'.';},
-      error:s=>'Upload of '+f.name+' failed'+(s?(' ('+s+')'):'')+' - check the file and try again.'})
+      error:s=>'Upload of '+f.name+' failed'+(HOSTED&&uploadFile.why?(': '+uploadFile.why):((s?(' ('+s+')'):'')+' - check the file and try again.'))})
       .then(next).catch(next);   // keep going even if one file fails
   };
   next();
