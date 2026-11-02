@@ -437,6 +437,31 @@ static void testEmbeddings(ndtest::Ctx& c) {
     clearEnv();
   }
   {
+    // A head with no embedding route writes through its reply's mem_write: the fact is
+    // kept as text, and the next turn's automatic recall brings it back by keyword.
+    setenv("Z_AI_TOKEN", "test-key-with-no-embedding-route-0000", 1);
+    FakeHttpTransport tx;
+    const auto zaiTurn = [](const std::string& turn) {
+      Exchange e;
+      e.expectPathContains = "/chat/completions";
+      e.body = "{\"choices\":[{\"message\":{\"content\":\"" + esc(turn) + "\"}}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":2}}";
+      return e;
+    };
+    tx.script.push_back(zaiTurn("{\"reply\":\"Noted.\",\"memory\":\"\",\"mem_write\":[{\"content\":\"Owner's sister's cat is named Zorblax5521.\",\"importance\":0.8,\"ttl\":\"permanent\",\"permanent\":true}]}"));
+    tx.script.push_back(zaiTurn("{\"reply\":\"Zorblax5521.\",\"memory\":\"\"}"));
+    tx.script.push_back(zaiTurn("{\"reply\":\"Saving it. I'll confirm it's stored in my next message.\",\"memory\":\"\"}"));
+    Config cfg;
+    NimbusdRig rig(cfg, embedOpts("vp-d7"), &tx);
+    rig.say("owner", "Please remember permanently: my sister's cat is called Zorblax5521.");
+    c.ok(has(rig.callTool("memory.search", R"({"query":"Zorblax5521 cat"})"), "Zorblax5521"), "mem_write: the fact is kept");
+    rig.clearConversation("owner");
+    rig.say("owner", "What is my sister's cat called? Search your memory.");
+    c.ok(tx.seen.size() == 2 && has(tx.seen[1].body, "Zorblax5521"), "and the next turn's recall brings it by keyword");
+    const TurnRecord promised = rig.say("owner", "Remember my locker is 12. Confirm when stored.");
+    c.ok(has(promised.reply, "no confirmation will follow"), "a reply that promises a later confirmation is corrected in the same message");
+    clearEnv();
+  }
+  {
     // The 65th memory on a key that cannot embed: the same honest answer as the first 64.
     setenv("Z_AI_TOKEN", "test-key-with-no-embedding-route-0000", 1);
     FakeHttpTransport tx;

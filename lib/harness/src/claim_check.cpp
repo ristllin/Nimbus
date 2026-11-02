@@ -590,6 +590,11 @@ std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawne
     tail += orch::staleStatusNote(staleAge);
   const bool later = !unbackedPromise(reply, fx_).empty();
   if (later) tail += std::string("\n\n") + orch::kLaterPromiseLine;
+  if (orch::promisesLaterSaveConfirmation(reply)) {
+    tail += tail.empty() ? "\n\n" : "\n";
+    tail += orch::kNoLaterConfirmationTail;
+    hlog::logf("claims: tail no later confirmation");
+  }
   if (tail.empty()) return tail;
   g_tailed++;
   for (const orch::ClaimGap& g : gaps) hlog::logf("claims: tail %s", orch::claimClassSlug(g.cls));

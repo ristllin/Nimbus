@@ -53,7 +53,7 @@
               "turn_resolved": true
             },
             {
-              "reply_not_regex": "(will|i'?ll|going to) (confirm|let you know|tell you|notify)|once (it'?s|it is|the device|that'?s|embeddings?)|(stored|saved) automatically|will be (stored|saved)|when (it'?s|it is|embeddings?) (stored|saved|work)|still pending|confirm.{0,40}(saved|stored|written)"
+              "reply_regex": "(?is)\\A(?!.*(?:(will|i'?ll|going to) (confirm|let you know|tell you|notify)|once (it'?s|it is|the device|that'?s|embeddings?)|(stored|saved) automatically|will be (stored|saved)|when (it'?s|it is|embeddings?) (stored|saved|work)|still pending|confirm.{0,40}(saved|stored|written))).*\\Z|no confirmation will follow"
             },
             {
               "no_error_reply": true
@@ -98,7 +98,7 @@
               "reply_contains": "Zorblax5521"
             },
             {
-              "reply_not_regex": "(will|i'?ll|going to) (confirm|let you know|tell you|notify)|once (it'?s|it is|the device|that'?s|embeddings?)|(stored|saved) automatically|will be (stored|saved)|when (it'?s|it is|embeddings?) (stored|saved|work)|still pending|confirm.{0,40}(saved|stored|written)"
+              "reply_regex": "(?is)\\A(?!.*(?:(will|i'?ll|going to) (confirm|let you know|tell you|notify)|once (it'?s|it is|the device|that'?s|embeddings?)|(stored|saved) automatically|will be (stored|saved)|when (it'?s|it is|embeddings?) (stored|saved|work)|still pending|confirm.{0,40}(saved|stored|written))).*\\Z|no confirmation will follow"
             }
           ]
         }

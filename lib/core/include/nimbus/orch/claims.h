@@ -235,6 +235,11 @@ std::string figureNumbers(const std::string& text, size_t cap = 4096);
 
 // The gaps between the claims and the evidence, at most one per claim, in reply
 // order. No ledger (fx null) means nothing can be checked: no gaps.
+// Does a reply promise a later confirmation of a save ("I'll confirm it's stored in my
+// next message")? Nothing is ever sent later about a write, so the turn's tail says so.
+bool promisesLaterSaveConfirmation(const std::string& reply);
+extern const char kNoLaterConfirmationTail[];
+
 std::vector<ClaimGap> claimGaps(const std::string& reply, const ClaimScan& scan,
                                 const ClaimEvidence& ev);
 

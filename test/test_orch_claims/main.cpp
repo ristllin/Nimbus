@@ -1910,8 +1910,21 @@ static void test_a_real_save_claim_still_gets_its_correction() {
                            claimTailLine(gapsFor("Logged: cappuccino, 52 kcal / 3.6g protein.", TurnEffects())[0]).c_str());
 }
 
+static void test_a_promised_save_confirmation_is_recognized() {
+  using nimbus::orch::promisesLaterSaveConfirmation;
+  for (const char* yes : {"I'll confirm it's stored in my next message once the write lands.",
+                          "Saving it now. I will let you know once that is saved.",
+                          "I'll tell you when it's stored!", "I\xE2\x80\x99ll confirm when it is saved."})
+    TEST_ASSERT_TRUE_MESSAGE(promisesLaterSaveConfirmation(yes), yes);
+  for (const char* no : {"I'll remember that.", "I'll let you know when the sub-agent finishes.",
+                         "It is kept as text. No later confirmation will come.", "I can't confirm it's stored.",
+                         "Stored. I'll tell you more about the garden tomorrow.", ""})
+    TEST_ASSERT_FALSE_MESSAGE(promisesLaterSaveConfirmation(no), no);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_a_promised_save_confirmation_is_recognized);
   RUN_TEST(test_every_class_has_cues_and_a_template);
   RUN_TEST(test_every_cue_is_a_claim_when_plain);
   RUN_TEST(test_every_cue_negated_within_four_tokens_is_not_a_claim);

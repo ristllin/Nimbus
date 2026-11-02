@@ -201,6 +201,15 @@ static void test_stale_status_only_on_a_routine() {
   TEST_ASSERT_EQUAL_STRING("", routine.finalCheck(turnJson("Did you do your lesson today?")).c_str());
 }
 
+// Nothing is sent later about a write: a reply that promises it gets the plain line.
+static void test_a_promised_confirmation_gets_the_tail() {
+  ClaimCheck cc;
+  const std::string tail = cc.tailAfterApply("Saving that. I'll confirm it's stored in my next message.");
+  TEST_ASSERT_TRUE(tail.find("no confirmation will follow") != std::string::npos);
+  ClaimCheck ok;
+  TEST_ASSERT_EQUAL_STRING("", ok.tailAfterApply("I'll remember that.").c_str());
+}
+
 static void test_tail_after_apply_uses_the_real_outcomes() {
   // The final check saw a mem_write item (pending), so "Logged" passed; apply
   // then recorded the write as refused: the owner gets the correction line.
@@ -1436,6 +1445,7 @@ static void test_a_running_total_reply_is_not_corrected_but_a_save_claim_is() {
 
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_a_promised_confirmation_gets_the_tail);
   RUN_TEST(test_consistent_replies_need_no_correction);
   RUN_TEST(test_voice_claim_needs_a_telegram_receipt);
   RUN_TEST(test_a_spoken_claim_is_checked_even_with_hosted_tools);
