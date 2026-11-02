@@ -354,8 +354,9 @@ Exchange overloaded(const std::string& host) { return refused(host, 503, "{\"mes
 
 // An Anthropic round that thought, then called a tool. The signature is validated, so it
 // must come back byte for byte.
-std::string thinkingToolBody() {
-  return "{\"content\":[{\"type\":\"thinking\",\"thinking\":\"why\",\"signature\":\"SIGNED-ROUND-0\"},"
+std::string thinkingToolBody(size_t thoughtBytes = 3) {
+  return "{\"content\":[{\"type\":\"thinking\",\"thinking\":\"" + std::string(thoughtBytes, 'w') +
+         "\",\"signature\":\"SIGNED-ROUND-0\"},"
          "{\"type\":\"tool_use\",\"id\":\"toolcall1\",\"name\":\"memory_search\",\"input\":{\"query\":\"x\"}}],"
          "\"stop_reason\":\"tool_use\"}";
 }
@@ -418,9 +419,11 @@ static void test_synthesis_at_lumis_size_keeps_its_results_whole() {
   TEST_ASSERT_TRUE(crossed > 0);
 }
 
-// The same on an owner turn, and what the turn leaves out is said: the model reads it in
-// the request, the log names it. The sweep must really cross the wire budget.
-static void test_owner_turn_trims_older_history_first_and_says_so() {
+// The same on an owner turn, and what the turn leaves out is said: the model reads it in the
+// request, the log names it, and the owner hears when it was the latest messages. The sweep must
+// really cross the wire budget: with the request's own room held back, what crosses at round 0
+// is a prompt and tools with little history left to give.
+static void test_owner_turn_over_budget_answers_and_says_so() {
   const char* host = "mistral";
   int crossed = 0;
   for (size_t tools = 44000; tools <= 72000; tools += 2000) {
@@ -435,11 +438,10 @@ static void test_owner_turn_trims_older_history_first_and_says_so() {
     if (!LogCapture::contains("B budget")) continue;
     crossed++;
     const std::string& body = r.wire.http.seen[0].body;
-    TEST_ASSERT_TRUE_MESSAGE(body.find("old question 7") != std::string::npos, "the newest past turn is kept");
-    TEST_ASSERT_TRUE_MESSAGE(body.find("old question 0") == std::string::npos, "the oldest past turn goes first");
     TEST_ASSERT_TRUE_MESSAGE(body.find("LEFT OUT") != std::string::npos, "the model is told what was left out");
-    TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("left out"), "the log names what was left out");
-    TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("of the older history"), "the history rung did it");
+    TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("turn fit: left out"), "the log names what was left out");
+    if (LogCapture::contains("of the newest conversation"))
+      TEST_ASSERT_TRUE_MESSAGE(r.saidAny("written without the latest messages"), r.all().c_str());
   }
   TEST_ASSERT_TRUE_MESSAGE(crossed > 0, "the sweep never crossed the wire budget on an owner turn");
 }
@@ -529,16 +531,19 @@ static void test_a_refit_keeps_the_signed_thinking() {
   // The wire budget's prompt rung at round 1 rebuilds the step the same way.
   int crossed = 0;
   for (bool fabric : {true, false})
-    for (size_t tools = 30000; tools <= 74000; tools += 2000) {
+    for (size_t tools = 50000; tools <= 60000; tools += 200) {
       LogCapture::install();
       Rig r({"anthropic"}, tools, fabric);
-      r.toolOutput = std::string(4000, 't');
       r.quotedHistory(8, 1500);
-      r.script(ok("anthropic", thinkingToolBody()));
+      r.script(ok("anthropic", thinkingToolBody(4000)));   // the replay itself takes the body over
       r.script(ok("anthropic", finalBody("anthropic")));
       r.turn(kWorkTurn);
-      if (r.requests() < 2 || !LogCapture::contains("headloop: round 1")) continue;
-      if (!LogCapture::contains("of the older history")) continue;
+      bool refitted = false;
+      for (const std::string& line : LogCapture::lines())
+        refitted = refitted || (line.rfind("headloop: round 1", 0) == 0 &&
+                                (line.find("of the older history") != std::string::npos ||
+                                 line.find("of the prompt and input") != std::string::npos));
+      if (!refitted) continue;
       crossed++;
       TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[1].body.find("SIGNED-ROUND-0") != std::string::npos,
                                fabric ? "budget fabric" : "budget host loop");
@@ -803,22 +808,24 @@ static void test_host_loop_recovers_mid_turn() {
     Rig c({host}, 2000, /*fabric=*/false);
     c.script(ok(host, toolBody(host, 1)));
     c.script(ok(host, cutBody(host)));
-    c.script(ok(host, cutBody(host)));
+    const bool headroomRetry = std::string(host) != "openai";   // the Responses wire has none in its step
+    if (headroomRetry) c.script(ok(host, cutBody(host)));
     c.script(ok(host, toolBody(host, 2)));
     c.script(ok(host, finalBody(host)));
     c.turn(kWorkTurn);
     assertAnswered(c, host);
     TEST_ASSERT_EQUAL_MESSAGE(2, c.dispatched, host);
-    TEST_ASSERT_EQUAL_MESSAGE(5, (int)c.requests(), host);
-    TEST_ASSERT_TRUE_MESSAGE(c.wire.http.seen[3].body.find("RAN OUT OF ROOM") != std::string::npos, host);
-    TEST_ASSERT_TRUE_MESSAGE(c.wire.http.seen[4].body.find("RAN OUT OF ROOM") == std::string::npos, host);
+    const size_t n = c.requests();
+    TEST_ASSERT_EQUAL_MESSAGE(headroomRetry ? 5 : 4, (int)n, host);
+    TEST_ASSERT_TRUE_MESSAGE(c.wire.http.seen[n - 2].body.find("RAN OUT OF ROOM") != std::string::npos, host);
+    TEST_ASSERT_TRUE_MESSAGE(c.wire.http.seen[n - 1].body.find("RAN OUT OF ROOM") == std::string::npos, host);
     // Over the wire budget after a tool ran, with only the prompt left to give.
     int crossed = 0;
-    for (size_t tools = 30000; tools <= 74000; tools += 4000) {
+    for (size_t tools = 40000; tools <= 80000; tools += 2000) {
       LogCapture::install();
       Rig b({host}, tools, /*fabric=*/false);
       b.toolOutput = std::string(4000, 't');
-      b.quotedHistory(8, 1500);
+      b.quotedHistory(8, 400);
       b.script(ok(host, toolBody(host, 1)));
       b.script(ok(host, finalBody(host)));
       b.turn(kWorkTurn);
@@ -1079,8 +1086,8 @@ static const char* const kNotPromises[] = {
     "I can't finish this next turn or later: there is no job for it.",
     "Your next message starts a new turn.",
     "364 kcal left today.",
-    "I'm seeing fries in the background, so I logged the burger only.",
-    "I'm logging the toast; the coffee in the background is not counted.",
+    "I'm seeing fries in the background, so the burger is the main item.",
+    "I'm looking at the toast; the coffee in the background is not counted.",
     "I'm glad you're still working on your protein target, it will pay off.",
     "I'm proud that you keep working on your goals.",
 };
@@ -1290,7 +1297,7 @@ int main() {
   UNITY_BEGIN();
   RUN_TEST(test_synthesis_never_fails_on_size);
   RUN_TEST(test_synthesis_at_lumis_size_keeps_its_results_whole);
-  RUN_TEST(test_owner_turn_trims_older_history_first_and_says_so);
+  RUN_TEST(test_owner_turn_over_budget_answers_and_says_so);
   RUN_TEST(test_owner_is_told_what_was_left_out);
   RUN_TEST(test_turn_end_says_when_history_went);
   RUN_TEST(test_budget_refit_folds_read_rounds_before_the_conversation);

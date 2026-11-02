@@ -1666,9 +1666,11 @@ static TurnEngine::Deps buildTurnDeps() {
       g_lastTurnChat[sizeof(g_lastTurnChat) - 1] = 0;
       g_folds.noteTurn(ev.chatId);
       publishFoldStatus(ev.chatId);
-      if ((!ev.ok && anyContextOverflow(ev)) || ev.trimmedForSize) {
+      if (!ev.ok && anyContextOverflow(ev)) {
         g_folds.markOverflow(ev.chatId);   // next compactTick() folds this chat
         alogf("fold: context-overflow classified on %s - fold queued", ev.chatId.c_str());
+      } else if (ev.trimmedForSize) {
+        g_folds.noteHistoryTrimmed(ev.chatId);   // the next compactTick() folds, outside the thrash window
       }
     }
   };
@@ -1702,6 +1704,7 @@ static TurnEngine::Deps buildTurnDeps() {
                                     ht, spend, notify);
   };
   d.hosts.fabricSupports = [](const std::string& h) { return providers::fabricSupports(h); };
+  d.standingWork = [](const std::string& chatId) { return loops::hasStanding(chatId); };
   // Lane K's park, one store for the fabric and the single-shot ladder and fold,
   // over the same ProviderDeps (the park's key and model fingerprint).
   d.hosts.parked = [](const std::string& h, providers::HostPark* why) {

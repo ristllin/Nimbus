@@ -3,6 +3,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <memory>
 #include <string>
 
 #include "nimbus/harness/fabric.h"      // Directive / ResultEnvelope / FabricErr
@@ -220,9 +222,13 @@ std::string mistralUnsafeName(const std::string& n);
 // against the same transcript (results are data; nothing re-dispatches).
 // ⚠ Lifetime: `instructions`/`ht`/`usage`/`tr` are captured BY REFERENCE - the
 // caller's frame must outlive every call of the returned step. `pd` is copied.
+// Anthropic's signed thinking, keyed by a round's first tool-call id: the replay carries it
+// verbatim. One turn long (RAM only); null = the step keeps its own.
+using ThinkingByCall = std::map<std::string, std::string>;
 nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd, const std::string& instructions,
                                      const HeadTools& ht, nimbus::orch::TokenUsage* usage,
-                                     nimbus::orch::Transcript& tr);
+                                     nimbus::orch::Transcript& tr,
+                                     std::shared_ptr<ThinkingByCall> thinking = nullptr);
 nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd, const std::string& instructions,
                                      const HeadTools& ht, nimbus::orch::TokenUsage* usage,
                                      nimbus::orch::Transcript& tr);
@@ -263,6 +269,16 @@ struct ResendCtx {
   mutable bool settled = false;
 };
 nimbus::orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx);
+
+// One host's tool loop: what the Cumulo router head, the hosted Virtual Nimbus and a device with
+// mid-turn failover off run. A round too big for the wire or the provider's window gives things
+// up and runs again, and a cut round runs once more with the note, exactly as in the fabric, with
+// no other host to move to. `make` builds the host's step on the prompt the requests send; it is
+// called again when a refit changes that prompt, so any state a step keeps must outlive it.
+using HostStepMaker = std::function<nimbus::orch::HeadStepFn(const std::string& instructions, nimbus::orch::Transcript& tr)>;
+bool runHostLoop(const ProviderDeps& pd, const char* who, const std::string& host, const std::string& instructions,
+                 const std::string& inputs, std::string& outJson, std::string& err, const HeadTools& ht,
+                 const HostStepMaker& make);
 
 // ---- the fabric's typed failover (lane K) --------------------------------------
 // Every failed round is classified (nimbus::orch::StepErr) and the fabric acts on

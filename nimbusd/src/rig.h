@@ -2440,6 +2440,7 @@ class NimbusdRig {
   // then the router-style OpenAI-compatible heads (cumulo, Z.ai) that a keyed VN with
   // no direct key still runs on.
   void registerHeads(agent::TurnEngine::Deps& d) {
+    d.requestPrompt = hostedPrompt;   // a prompt refitted mid-loop keeps its hosted wording
     // The park hears every head's answer: a served one ends an episode, a failed one
     // re-arms a due re-check. `parked` stays unset on purpose: a hosted head is asked on
     // every turn, so a client who tops up is answered on the next message and a refusal

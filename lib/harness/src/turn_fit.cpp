@@ -56,6 +56,7 @@ size_t TurnFit::dropOlderHistory(size_t want) {
   if (!drop) return 0;
   h.erase(h.begin() + (long)first, h.begin() + (long)(first + drop));
   historyDropped_ += (int)drop;
+  historyBytesDropped_ += freed;
   return freed;
 }
 
@@ -113,6 +114,7 @@ size_t TurnFit::dropNewestHistory(size_t want) {
     newestDropped_ += (int)h.size();
     h.clear();
   }
+  historyBytesDropped_ += freed;
   return freed;
 }
 

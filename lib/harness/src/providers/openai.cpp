@@ -736,41 +736,12 @@ static bool runOaiLoop(const ProviderDeps& pd, std::string& convId,
                        const std::string& instructions, const std::string& inputs,
                        std::string& outJson, std::string& err, const HeadTools& ht,
                        nimbus::orch::TokenUsage* usage) {
-  namespace orch = nimbus::orch;
-  // The CANONICAL transcript (Stage 2): the controller records prose/calls/
-  // results into it; every round's input[] is rendered fresh from it. Stateless
-  // by construction - no previous_response_id, no store, no chain to poison.
-  orch::Transcript tr;
-  tr.addUser(inputs);
-  const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
-  // CUM-477: a request the device could not finish sending is resent once on the
-  // same host after the heap recovers (the Cumulo router head runs this loop).
-  const orch::HeadStepFn inner = oaiLoopStep(pd, instructions, ht, usage, tr);
-  const ResendCtx resend{&pd, &ht.cfg, &inner, "orchTurn(oai-loop)"};
-  orch::HeadStepFn step = resendUnsentOnce(&resend);
-
-  orch::HeadLoopHooks hooks;
-  hooks.step     = step;
-  hooks.dispatch = ht.dispatch;
-  hooks.nowMs    = pd.nowMs;
-  hooks.freeHeap = pd.freeHeap;
-  hooks.largestBlock = pd.largestBlock;
-  hooks.log      = [](const std::string& m) { hlog::logf("%s", m.c_str()); };
-  hooks.onText   = ht.onRoundText;   // round prose / reasoning summaries -> engine
-  hooks.spill    = ht.spill;         // clamped-result spill -> results ring
-  hooks.transcript = &tr;            // the controller records; step() renders
-
-  orch::HeadOutcome res = runHeadLoop(ht.cfg, hooks);
-  hlog::logf("orchTurn(oai-loop): rounds=%d cap=%s ok=%d heap=%u",
-             res.rounds, res.capReason.c_str(), (int)res.ok,
-             (unsigned)(pd.freeHeap ? pd.freeHeap() : 0));
-  // Glass Box P3: hand the canonical transcript to the engine BEFORE the
-  // failure return - a failed turn's middle is exactly what needs debugging.
-  if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));
-  if (!res.ok) return wire::loopFailed(res, outJson, err);   // CUM-621: a cut keeps its partial turn
-  outJson = res.finalTurn;
-  convId  = "responses";   // stateless marker - the device owns the turn's state
-  return true;
+  const bool ok = runHostLoop(pd, "orchTurn(oai-loop)", "openai", instructions, inputs, outJson, err, ht,
+                              [&](const std::string& ins, nimbus::orch::Transcript& tr) {
+                                return oaiLoopStep(pd, ins, ht, usage, tr);
+                              });
+  if (ok) convId = "responses";   // stateless marker - the device owns the turn's state
+  return ok;
 }
 
 bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,

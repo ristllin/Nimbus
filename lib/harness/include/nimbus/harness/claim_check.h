@@ -33,6 +33,7 @@
 #include "nimbus/orch/claims.h"
 #include "nimbus/orch/food_figures.h"
 #include "nimbus/orch/hosted_runs.h"
+#include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/turn.h"
 #include "nimbus/orch/turn_effects.h"
 
@@ -140,9 +141,8 @@ class ClaimCheck {
   nimbus::orch::TurnEffects& effects() { return fx_; }
   const nimbus::orch::TurnEffects& effects() const { return fx_; }
 
-  // Work is still running for this chat as the turn starts (a live sub-agent): a reply
-  // that says it will report back has something behind it.
-  void setLaterWork(bool live) { laterWork_ = live; }
+  // What stands behind a promise of later work as the turn starts (reply_guard.h).
+  void setLaterWork(nimbus::orch::LaterWork behind) { laterWork_ = behind; }
 
   // The final-answer check (validateFinal): "" when the reply's claims are
   // backed by the ledger plus the turn's own fields, else the correction text.
@@ -171,7 +171,7 @@ class ClaimCheck {
   static uint32_t tailedCount();
 
  private:
-  bool laterWork_ = false;   // a sub-agent was live as the turn started
+  nimbus::orch::LaterWork laterWork_ = nimbus::orch::LaterWork::None;
   std::vector<nimbus::orch::ClaimGap> gapsFor(const std::string& reply,
                                               const nimbus::orch::TurnEffects& fx,
                                               bool skipSpawned) const;

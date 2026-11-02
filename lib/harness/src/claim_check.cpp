@@ -205,7 +205,7 @@ orch::FxKind fxKindForTool(const std::string& n) {
 }
 
 void ClaimCheck::beginTurn() {
-  laterWork_ = false;
+  laterWork_ = orch::LaterWork::None;
   fx_.reset();
   sources_.clear();
   recalled_.clear();
@@ -567,9 +567,9 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
 }
 
 std::string ClaimCheck::unbackedPromise(const std::string& reply, const orch::TurnEffects& fx) const {
-  if (laterWork_ || fx.anyOk(orch::FxKind::Spawn) || fx.anyOk(orch::FxKind::Schedule)) return std::string();
+  if (fx.anyOk(orch::FxKind::Spawn) || fx.anyOk(orch::FxKind::Schedule)) return std::string();
   size_t b = 0, e = 0;
-  if (!orch::laterPromiseSpan(reply, &b, &e)) return std::string();
+  if (!orch::laterPromiseSpan(reply, &b, &e, laterWork_)) return std::string();
   return reply.substr(b, e - b);
 }
 

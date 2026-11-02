@@ -343,6 +343,193 @@ ClosedPick pickWhenAllClosed(const ProviderDeps& pd, const std::vector<std::stri
 }
 }  // namespace
 
+namespace {
+// What a host's tool loop can still do for a round that was too big or ran out of room: refit
+// the prompt, one trim for a provider's window, one more run with the cut note. The fabric and
+// a single host's loop (the Cumulo router head, the hosted Virtual Nimbus, failover off) share
+// it. One turn long, on the turn's stack: the saved cut lives on the heap (it is big).
+class RoundRecovery {
+ public:
+  RoundRecovery(orch::Transcript& tr, const HeadTools& ht, const std::string& instructions, const std::string& inputs)
+      : tr_(tr), ht_(ht), instructions_(instructions), inputs_(inputs) {}
+
+  // `lead` opens each request's input; `rebuild` makes the host's step anew on instructions().
+  void bind(std::function<std::string()> lead, std::function<void()> rebuild) {
+    lead_ = std::move(lead);
+    rebuild_ = std::move(rebuild);
+  }
+  // The prompt and input the requests send: the engine's until a refit shortens them.
+  const std::string& instructions() const { return fitted_ ? fitInstructions_ : instructions_; }
+  std::string seed() const { return (lead_ ? lead_() : std::string()) + cutNote_ + (fitted_ ? fitInputs_ : inputs_); }
+  // The seed differs from what the engine handed in, whichever host runs it.
+  bool seedChanged() const { return fitted_ || !cutNote_.empty(); }
+
+  // The prompt side of a refit (turn_fit.h): what the next request renders changes, so the
+  // host's step is rebuilt on it. Never runs while the step is on the stack.
+  size_t fitPrompt(size_t want, orch::FitScope scope) {
+    if (!ht_.fitPrompt) return 0;
+    const size_t freed = ht_.fitPrompt(want, scope, fitInstructions_, fitInputs_);
+    if (!freed) return 0;
+    fitted_ = true;
+    tr_.setSeedText(seed());
+    rebuild_();
+    return freed;
+  }
+  std::function<size_t(size_t, orch::FitScope)> fitHook() {
+    return [this](size_t want, orch::FitScope scope) { return fitPrompt(want, scope); };
+  }
+
+  // A provider refused the request for its size: nothing ran and nothing was billed. Trim
+  // along the whole ladder and say to run it once more; the turn's photos are read as their
+  // transcriptions on this host from here on. A second refusal in a row takes the caller's rules.
+  bool overflowRetry(const std::string& host, const std::string& why) {
+    if (overflowTried_ || !orch::isContextOverflowError(why)) return false;
+    overflowTried_ = true;
+    const size_t total = instructions().size() + (fitted_ ? fitInputs_.size() : inputs_.size()) + tr_.toolBytes();
+    const size_t want = orch::overflowTrimBytes(why, total);
+    const size_t freed = orch::trimForOverflow(tr_, want, fitHook(), [&]() -> size_t {
+      return imageparts::readAsText(tr_.images(), host);
+    });
+    hlog::logf("fabric: %s refused the request for its size - gave up %u of %u B, one retry", host.c_str(),
+               (unsigned)freed, (unsigned)want);
+    return freed > 0;
+  }
+
+  // The next attempt at a cut round is told what happened and answers in less room.
+  void noteCut(const orch::HeadStep& sr) {
+    savedCut_.reset(new orch::HeadStep(sr));
+    orch::Salvage kept;
+    orch::salvageTurnText(sr.finalTurn, kept);
+    cutNote_ = orch::cutRetryNote(sr.error, kept.reply.empty() ? sr.text : kept.reply);
+    tr_.setSeedText(seed());
+  }
+  // True the first time per run of failures: the round may run once more with the note.
+  bool cutRerunOnce() {
+    if (cutRerun_) return false;
+    cutRerun_ = true;
+    return true;
+  }
+  // What a cut round wrote outlives a later failure of another kind: the owner gets those
+  // words, not a bare cause.
+  const orch::HeadStep& failure(const orch::HeadStep& last) const { return savedCut_ ? *savedCut_ : last; }
+
+  // A round moved to another host: that host gets its own trim and its own rerun.
+  void newHost() { overflowTried_ = cutRerun_ = false; }
+
+  // The round is served. What was recovered is over: a later round's failure is about
+  // itself, it may have its own trim and rerun, and it is not told about this cut.
+  void served() {
+    overflowTried_ = cutRerun_ = false;
+    savedCut_.reset();
+    heldHost_.clear();
+    heldCause_.clear();
+    if (cutNote_.empty()) return;
+    cutNote_.clear();
+    tr_.setSeedText(seed());
+  }
+
+  // A cut's cause reaches the failure chain only if nothing recovers it (the chain's first
+  // entry is what the owner hears). `note` files a failed attempt, with what it took to flush.
+  void holdCut(const std::string& host, const std::string& why) {
+    if (!heldHost_.empty() && heldHost_ != host) flushCause();
+    if (!heldHost_.empty()) return;   // the first of a run explains it
+    heldHost_ = host;
+    heldCause_ = why;
+  }
+  void flushCause() {
+    if (heldHost_.empty()) return;
+    if (ht_.onStepError) ht_.onStepError(heldHost_, heldCause_);
+    heldHost_.clear();
+    heldCause_.clear();
+  }
+
+ private:
+  orch::Transcript& tr_;
+  const HeadTools& ht_;
+  const std::string& instructions_;
+  const std::string& inputs_;
+  std::function<std::string()> lead_;
+  std::function<void()> rebuild_;
+  std::string fitInstructions_, fitInputs_;
+  bool fitted_ = false;
+  bool overflowTried_ = false, cutRerun_ = false;
+  std::unique_ptr<orch::HeadStep> savedCut_;
+  std::string cutNote_;
+  std::string heldHost_, heldCause_;
+};
+
+// The time the turn has left when a round runs again inside one step: the budget the controller
+// passed was for the first attempt.
+uint32_t remainingBudgetMs(const ProviderDeps& pd, uint32_t budgetMs, uint32_t since) {
+  if (budgetMs == UINT32_MAX || !pd.nowMs) return budgetMs;
+  const uint32_t used = pd.nowMs() - since;
+  return used >= budgetMs ? 0u : budgetMs - used;
+}
+
+void loopHooks(orch::HeadLoopHooks& hooks, const ProviderDeps& pd, const HeadTools& ht, orch::Transcript& tr,
+               RoundRecovery& rec) {
+  hooks.dispatch = ht.dispatch;
+  hooks.nowMs    = pd.nowMs;
+  hooks.freeHeap = pd.freeHeap;
+  hooks.largestBlock = pd.largestBlock;
+  hooks.log      = [](const std::string& m) { hlog::logf("%s", m.c_str()); };
+  hooks.onText   = ht.onRoundText;   // round prose -> engine (Glass Box A4)
+  hooks.spill    = ht.spill;         // clamped-result spill -> results ring
+  hooks.transcript = &tr;            // the controller records; step() renders
+  if (ht.fitPrompt) hooks.fitPrompt = rec.fitHook();
+}
+}  // namespace
+
+bool runHostLoop(const ProviderDeps& pd, const char* who, const std::string& host, const std::string& instructions,
+                 const std::string& inputs, std::string& outJson, std::string& err, const HeadTools& ht,
+                 const HostStepMaker& make) {
+  // The CANONICAL transcript: the controller records prose, calls and results into it, and
+  // every round's request is rendered fresh from it. Stateless by construction: no provider
+  // conversation to create or track in loop mode.
+  orch::Transcript tr;
+  tr.addUser(inputs);
+  const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
+  RoundRecovery rec(tr, ht, instructions, inputs);
+  // CUM-477: one same-host resend of a request that never left.
+  orch::HeadStepFn inner = make(instructions, tr);
+  const ResendCtx resend{&pd, &ht.cfg, &inner, who};
+  const orch::HeadStepFn send = resendUnsentOnce(&resend);
+  rec.bind(nullptr, [&] { inner = make(rec.instructions(), tr); });
+
+  orch::HeadLoopHooks hooks;
+  hooks.step = [&](bool allowTools, const std::vector<orch::HeadToolResult>& prior, uint32_t budgetAtEntry,
+                   const std::string& capReason) -> orch::HeadStep {
+    const uint32_t stepStart = pd.nowMs ? pd.nowMs() : 0;
+    for (;;) {
+      orch::HeadStep sr = send(allowTools, prior, remainingBudgetMs(pd, budgetAtEntry, stepStart), capReason);
+      if (sr.ok) {
+        rec.served();
+        return sr;
+      }
+      // Too big to send: the controller refits and runs it again (head_loop.h).
+      size_t budget = 0, size = 0;
+      if (orch::parseBodyBudgetError(sr.error, budget, size)) return sr;
+      typeStep(sr);
+      if (rec.overflowRetry(host, sr.error)) continue;
+      if (sr.kind != orch::StepErr::Cut) return rec.failure(sr);
+      rec.noteCut(sr);
+      if (!rec.cutRerunOnce()) return rec.failure(sr);
+      hlog::logf("%s: cut - the round runs once more with the note", who);
+    }
+  };
+  loopHooks(hooks, pd, ht, tr, rec);
+
+  const orch::HeadOutcome res = runHeadLoop(ht.cfg, hooks);
+  hlog::logf("%s: rounds=%d cap=%s ok=%d heap=%u", who, res.rounds, res.capReason.c_str(), (int)res.ok,
+             (unsigned)(pd.freeHeap ? pd.freeHeap() : 0));
+  // Glass Box P3: hand the canonical transcript to the engine BEFORE the failure return: a
+  // failed turn's middle is exactly what needs debugging.
+  if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));
+  if (!res.ok) return wire::loopFailed(res, outJson, err);   // CUM-621: a cut keeps its partial turn
+  outJson = res.finalTurn;
+  return true;
+}
+
 bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostList,
                    const std::string& instructions, const std::string& inputs,
                    std::string& outJson, std::string& err, const HeadTools& ht,
@@ -381,14 +568,15 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
     resend[i] = ResendCtx{&pd, &ht.cfg, &inner[i], who};
     return resendUnsentOnce(&resend[i]);
   };
-  // The prompt and input the requests send: the engine's until a refit shortens them.
-  std::string fitInstructions, fitInputs;
-  bool fitted = false;
+  RoundRecovery rec(tr, ht, instructions, inputs);
+  // Anthropic's signed thinking of this turn: only the Anthropic step reads it, and it
+  // outlives a step rebuilt on a refitted prompt (the replay must carry it verbatim).
+  const auto antThinking = std::make_shared<ThinkingByCall>();
   auto makeStep = [&](size_t i) -> orch::HeadStepFn {
     const std::string& h = hostList[i];
-    const std::string& ins = fitted ? fitInstructions : instructions;
+    const std::string& ins = rec.instructions();
     orch::TokenUsage* use = &hostUse[i];
-    if (h == "anthropic") return wrap(i, antLoopStep(pd, ins, ht, use, tr), "orchTurn(ant-loop)");
+    if (h == "anthropic") return wrap(i, antLoopStep(pd, ins, ht, use, tr, antThinking), "orchTurn(ant-loop)");
     if (h == "openai")    return wrap(i, oaiLoopStep(pd, ins, ht, use, tr), "orchTurn(oai-loop)");
     if (h == "mistral")   return wrap(i, misLoopStep(pd, ins, ht, use, tr), "orchTurn(mistral-loop)");
     return nullptr;
@@ -426,15 +614,14 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   }
   // The seeded input opens with the lead of the host each request really runs on (HFM),
   // then the note of a cut round (reply_guard.h cutRetryNote).
-  std::string cutNote;
-  auto seedFor = [&](size_t i) {
-    return (ht.inputLead ? ht.inputLead(hostList[i]) : std::string()) + cutNote + (fitted ? fitInputs : inputs);
-  };
-  tr.addUser(seedFor(hostIdx));
+  orch::HeadStepFn cur;
+  rec.bind([&] { return ht.inputLead ? ht.inputLead(hostList[hostIdx]) : std::string(); },
+           [&] { cur = makeStep(hostIdx); });
+  tr.addUser(rec.seed());
   const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
   int    switches = 0;
   const int kMaxSwitches = 2;
-  orch::HeadStepFn cur = makeStep(hostIdx);
+  cur = makeStep(hostIdx);
   if (!cur) { err = "unknown host " + hostList[hostIdx]; return false; }
   if (hostIdx > 0) {
     HostPark why;
@@ -445,45 +632,16 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
     if (notify) notify(hostList[0], hostList[hostIdx]);
   }
 
-  // The prompt side of a refit (turn_fit.h): what the next request renders changes, so
-  // the host's step is rebuilt on it. Never runs while `cur` is on the stack.
-  auto fitPromptNow = [&](size_t want, orch::FitScope scope) -> size_t {
-    if (!ht.fitPrompt) return 0;
-    const size_t freed = ht.fitPrompt(want, scope, fitInstructions, fitInputs);
-    if (!freed) return 0;
-    fitted = true;
-    tr.setSeedText(seedFor(hostIdx));
-    cur = makeStep(hostIdx);
-    return freed;
-  };
-  // A provider refused the request for its size: trim along the whole ladder. The turn's
-  // photos are read as their transcriptions on this host from here on.
-  auto trimForRefusal = [&](const std::string& why) -> bool {
-    const size_t total = (fitted ? fitInstructions.size() + fitInputs.size() : instructions.size() + inputs.size()) +
-                         tr.toolBytes();
-    const size_t want = orch::overflowTrimBytes(why, total);
-    const size_t freed = orch::trimForOverflow(tr, want, fitPromptNow, [&]() -> size_t {
-      return imageparts::readAsText(tr.images(), hostList[hostIdx]);
-    });
-    hlog::logf("fabric: %s refused the request for its size - gave up %u of %u B, one retry",
-               hostList[hostIdx].c_str(), (unsigned)freed, (unsigned)want);
-    return freed > 0;
-  };
-  // Per host and per run of failures: one trim-and-retry, one more round after a cut.
-  bool overflowTried = false, cutRerun = false;
-  std::unique_ptr<orch::HeadStep> savedCut;   // the round's last cut (off the stack: it is big)
-  // The time the turn has left when a round runs again inside this step: the budget the
-  // controller passed was for the first attempt.
-  auto remainingMs = [&pd](uint32_t budgetMs, uint32_t since) -> uint32_t {
-    if (budgetMs == UINT32_MAX || !pd.nowMs) return budgetMs;
-    const uint32_t used = pd.nowMs() - since;
-    return used >= budgetMs ? 0u : budgetMs - used;
-  };
-
   // The wrapper IS the controller's step: retry/failover happens INSIDE one
   // logical round, so runHeadLoop's caps and recording are provider-agnostic.
   // Every failed attempt reaches the engine's failure chain with its host (lane T).
+  // A cut's and a provider overflow's cause are noted only when nothing recovers them.
   auto noteFailed = [&](const orch::HeadStep& r) {
+    if (r.kind == orch::StepErr::Cut) {
+      rec.holdCut(hostList[hostIdx], r.error);
+      return;
+    }
+    rec.flushCause();
     if (ht.onStepError) ht.onStepError(hostList[hostIdx], r.error);
   };
   orch::HeadStepFn step = [&](bool allowTools,
@@ -492,7 +650,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
                               const std::string& capReason) -> orch::HeadStep {
     const uint32_t stepStart = pd.nowMs ? pd.nowMs() : 0;
     for (;;) {
-      const uint32_t budgetMs = remainingMs(budgetAtEntry, stepStart);
+      const uint32_t budgetMs = remainingBudgetMs(pd, budgetAtEntry, stepStart);
       // Lane DEF2: a host whose own monthly limit was reached during this turn (its billed
       // rounds count at once) is not asked again: the round moves to the next open host,
       // quietly (the owner hears about the limit once, from the limits store), and the
@@ -515,7 +673,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
         ++switches;
         cur = next;
         inner[prevIdx] = nullptr;   // the abandoned host's step and its deps copy
-        if (ht.inputLead) tr.setSeedText(seedFor(hostIdx));
+        if (ht.inputLead) tr.setSeedText(rec.seed());
         continue;
       }
       // Lane DEF: each billed round counts toward the monthly spend ceiling at once (the
@@ -528,8 +686,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
                              before, hostUse[hostIdx]);
       if (sr.ok) {
         unparkHost(hostList[hostIdx]);
-        overflowTried = cutRerun = false;
-        savedCut.reset();   // this round is served: a later failure is not about that cut
+        rec.served();
         return sr;
       }
       // A round too big to SEND never left the device: the controller folds older
@@ -539,14 +696,11 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       size_t budget = 0, size = 0;
       if (orch::parseBodyBudgetError(sr.error, budget, size)) return sr;
       typeStep(sr);
+      // The provider's context window: trim and retry once on this host. Not a failure yet: if
+      // the retry fails it says why itself. A second refusal takes the rules below (another
+      // host may have the room, and it runs the trimmed request).
+      if (rec.overflowRetry(hostList[hostIdx], sr.error)) continue;
       noteFailed(sr);   // every failed attempt, the no-retry exits below included (lane T)
-      // The provider's context window: nothing ran and nothing was billed. Trim and
-      // retry once on this host; a second refusal takes the rules below (another host
-      // may have the room, and it runs the trimmed request).
-      if (!overflowTried && orch::isContextOverflowError(sr.error)) {
-        overflowTried = true;
-        if (trimForRefusal(sr.error)) continue;
-      }
       if (orch::isSpendFrozenError(sr.error)) {
         hlog::logf("fabric: %s step refused - %s (no retry, no switch)",
                    hostList[hostIdx].c_str(), orch::kSpendFrozenError);
@@ -578,7 +732,11 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
         orch::notePendingUsage(hostList[hostIdx].c_str(),
                                pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()).c_str() : "",
                                beforeRetry, hostUse[hostIdx]);
-        if (sr2.ok) { unparkHost(hostList[hostIdx]); return sr2; }
+        if (sr2.ok) {
+          unparkHost(hostList[hostIdx]);
+          rec.served();
+          return sr2;
+        }
         typeStep(sr2);
         noteFailed(sr2);
       } else if (!orch::fabricRuleFor(sr.kind).retrySameHost) {
@@ -593,21 +751,15 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       // next host, is told what happened and answers in less room; with nowhere to go
       // the round runs once more here (Lumi, 31 Oct: the only open host, 3m56s, no answer).
       if (sr2.kind == orch::StepErr::Cut) {
-        savedCut.reset(new orch::HeadStep(sr2));
-        orch::Salvage kept;
-        orch::salvageTurnText(sr2.finalTurn, kept);
-        cutNote = orch::cutRetryNote(sr2.error, kept.reply.empty() ? sr2.text : kept.reply);
-        tr.setSeedText(seedFor(hostIdx));
-        if (nowhereToGo && !cutRerun) {
-          cutRerun = true;
+        rec.noteCut(sr2);
+        if (nowhereToGo && rec.cutRerunOnce()) {
           hlog::logf("fabric: %s cut with nowhere to go - the round runs once more with the note",
                      hostList[hostIdx].c_str());
           continue;
         }
       }
-      // Exhausted: the controller fails soft to the caller. What a cut round wrote outlives
-      // a later failure of another kind: the owner gets those words, not a bare cause.
-      if (nowhereToGo) return savedCut ? *savedCut : sr2;
+      // Exhausted: the controller fails soft to the caller.
+      if (nowhereToGo) return rec.failure(sr2);
       const std::string from = hostList[hostIdx];
       const std::string to   = hostList[nextIdx];
       orch::HeadStepFn next = makeStep(nextIdx);
@@ -622,25 +774,16 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       if (notify) notify(from, to);
       cur = next;
       inner[prevIdx] = nullptr;   // the abandoned host's step and its deps copy
-      overflowTried = false;
-      cutRerun = false;
-      if (ht.inputLead || !cutNote.empty() || fitted) tr.setSeedText(seedFor(hostIdx));
+      rec.newHost();
+      if (ht.inputLead || rec.seedChanged()) tr.setSeedText(rec.seed());
       // loop: the SAME round re-runs on the new host. The transcript already
       // holds every executed tool result - nothing re-dispatches.
     }
   };
 
   orch::HeadLoopHooks hooks;
-  hooks.step     = step;
-  hooks.dispatch = ht.dispatch;
-  hooks.nowMs    = pd.nowMs;
-  hooks.freeHeap = pd.freeHeap;
-  hooks.largestBlock = pd.largestBlock;
-  hooks.log      = [](const std::string& m) { hlog::logf("%s", m.c_str()); };
-  hooks.onText   = ht.onRoundText;
-  hooks.spill    = ht.spill;
-  hooks.transcript = &tr;
-  if (ht.fitPrompt) hooks.fitPrompt = fitPromptNow;
+  hooks.step = step;
+  loopHooks(hooks, pd, ht, tr, rec);
 
   // Every exit files what each host billed, once (nothing bills before the loop).
   auto fileSpend = [&] {
@@ -658,6 +801,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
     if (spend) fileSpend();
     throw;
   }
+  if (!res.ok) rec.flushCause();   // nothing recovered it
   hlog::logf("fabric-loop: rounds=%d cap=%s ok=%d host=%s switches=%d heap=%u",
              res.rounds, res.capReason.c_str(), (int)res.ok,
              hostList[hostIdx].c_str(), switches,

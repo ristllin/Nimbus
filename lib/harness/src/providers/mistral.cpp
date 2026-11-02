@@ -669,39 +669,12 @@ static bool runMistralLoop(const ProviderDeps& pd, std::string& convId,
                            const std::string& instructions, const std::string& inputs,
                            std::string& outJson, std::string& err, const HeadTools& ht,
                            nimbus::orch::TokenUsage* usage) {
-  namespace orch = nimbus::orch;
-  // The CANONICAL transcript: the controller records, step() renders. Stateless
-  // by construction - no conversation to create or track in loop mode.
-  orch::Transcript tr;
-  tr.addUser(inputs);
-  const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
-  // CUM-477: one same-host resend of a request that never left (see openai.cpp).
-  const orch::HeadStepFn inner = misLoopStep(pd, instructions, ht, usage, tr);
-  const ResendCtx resend{&pd, &ht.cfg, &inner, "orchTurn(mistral-loop)"};
-  orch::HeadStepFn step = resendUnsentOnce(&resend);
-
-  orch::HeadLoopHooks hooks;
-  hooks.step     = step;
-  hooks.dispatch = ht.dispatch;
-  hooks.nowMs    = pd.nowMs;
-  hooks.freeHeap = pd.freeHeap;
-  hooks.largestBlock = pd.largestBlock;
-  hooks.log      = [](const std::string& m2) { hlog::logf("%s", m2.c_str()); };
-  hooks.onText   = ht.onRoundText;   // round prose -> engine
-  hooks.spill    = ht.spill;         // clamped-result spill -> results ring
-  hooks.transcript = &tr;            // the controller records; step() renders
-
-  orch::HeadOutcome res = runHeadLoop(ht.cfg, hooks);
-  hlog::logf("orchTurn(mistral-loop): rounds=%d cap=%s ok=%d heap=%u",
-             res.rounds, res.capReason.c_str(), (int)res.ok,
-             (unsigned)(pd.freeHeap ? pd.freeHeap() : 0));
-  // Glass Box P3: hand the canonical transcript to the engine BEFORE the
-  // failure return - a failed turn's middle is exactly what needs debugging.
-  if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));
-  if (!res.ok) return wire::loopFailed(res, outJson, err);   // CUM-621: a cut keeps its partial turn
-  outJson = res.finalTurn;
-  convId  = "chat";   // stateless marker - the device owns the turn's state
-  return true;
+  const bool ok = runHostLoop(pd, "orchTurn(mistral-loop)", "mistral", instructions, inputs, outJson, err, ht,
+                              [&](const std::string& ins, nimbus::orch::Transcript& tr) {
+                                return misLoopStep(pd, ins, ht, usage, tr);
+                              });
+  if (ok) convId = "chat";   // stateless marker - the device owns the turn's state
+  return ok;
 }
 
 // ---- the schema-less head shape (a Studio connector is attached) -------------

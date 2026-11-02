@@ -599,6 +599,13 @@ void TurnEngine::deliverParkedRefusal(const std::string& chatId, const std::stri
   const bool ownerWrote = turnSource_ == TurnSource::Owner || turnSource_ == TurnSource::Serial;
   const orch::RefusalTurnAnswer answer = orch::refusalTurnAnswer(host.c_str(), ownerWrote);
   if (answer == orch::RefusalTurnAnswer::Notice) {
+    if (rawResultsFollow_) {
+      // The latch is taken: this is the one time the owner is told. The raw results say what
+      // came back, and only this says what to do about the summaries that stopped.
+      const std::string held = foldHeldNotices();
+      deliver(chatId, held.empty() ? notice : notice + " " + held);
+      return;
+    }
     deliverFailure(chatId, notice, activeJobs, "", nothingRan);
     return;
   }
@@ -1248,7 +1255,16 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // starts is live for the NEXT turn's full set. Rendering only: `specs` is the
   // one list the prompt's tool list, the wire and the dispatch map all read.
   const bool liveSessions = d_.jobs && !d_.jobs->sessionInfos().empty();
-  claims_.setLaterWork(liveSessions || (d_.jobs && d_.jobs->activeCount() > 0));   // "I'll report back" stands
+  // What stands behind "I'll report back": a live sub-agent stands behind any promise; a routine
+  // or wakeup set for this chat, or the routine this turn is a run of, behind a promise to report.
+  const orch::LaterWork laterAtStart =
+      liveSessions ? orch::LaterWork::Live
+                   : (routineRecurs_ || (d_.standingWork && d_.standingWork(chatId))) ? orch::LaterWork::Standing
+                                                                                      : orch::LaterWork::None;
+  auto laterBehind = [&]() {
+    return d_.jobs && d_.jobs->activeCount() > 0 ? orch::LaterWork::Live : laterAtStart;
+  };
+  claims_.setLaterWork(laterBehind());
   if (!liveSessions)
     specs.erase(std::remove_if(specs.begin(), specs.end(),
                                [](const orch::ToolRegistry::Spec& s) {
@@ -1704,6 +1720,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
 
   // What the request gives up when it does not fit, and what it says about it (turn_fit.h).
   TurnFit fit(ci, inputs, headToolsPtr ? &headTools : nullptr);
+  std::function<std::string()> requestInputs;   // the input as the running attempt sends it
   auto takeFit = [&]() {
     instructions = fit.instructions();
     lastInstructions_ = layout::display(instructions);
@@ -1713,8 +1730,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       const size_t freed = fit.shrink(want, scope);
       if (!freed) return 0;
       takeFit();
-      ins = instructions;
-      inp = fit.inputs();
+      ins = d_.requestPrompt ? d_.requestPrompt(instructions) : instructions;
+      // The fabric leads each request itself (inputLead); a single host's loop gets it here.
+      inp = headTools.inputLead ? fit.inputs() : requestInputs();
       return freed;
     };
   std::string outJson, err;
@@ -1817,6 +1835,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     const std::string model = d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h) : std::string();
     const bool blind = photos && !photos->empty() && !(headToolsPtr && orch::headTakesImages(h, model));
     const std::string& in = inputsFor(h);
+    requestInputs = [&, blind, h, photos]() -> std::string {
+      const std::string& now = inputsFor(h);
+      return blind ? photos->blindText(now) : now;
+    };
     auto fileAttempt = [&] {
       tf.spend.add(h.c_str(), d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", attempt);
     };
@@ -2105,7 +2127,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // for a provider's window. The ladder below takes over from there, on the trimmed prompt.
     size_t budget = 0, size = 0;   // the wire budget's figures, read to tell the two refusals apart
     for (int tries = 0; !ok && *loopDispatched == 0 && tries < kSingleShotRefits; ++tries) {
-      const size_t want = sizeRefusalBytes(err, instructions.size() + inputs.size(), tries);
+      // A window refusal the head's own loop already trimmed for has had its one retry.
+      const size_t want = sizeRefusalBytes(err, instructions.size() + inputs.size(), fit.trimmed() ? tries + 1 : tries);
       if (!want) break;
       // A window refusal has one retry, so it takes the whole ladder; the wire budget's next
       // build checks the work, so it gives up one rung at a time.
@@ -2238,8 +2261,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // a provider fault. Salvage what it wrote (when the adapter kept the partial
     // turn) with the honest marker, capture it, and record the cut.
     if (orch::isCutError(err)) {
-      const orch::LaterWork workBehind = d_.jobs && d_.jobs->activeCount() > 0 ? orch::LaterWork::Live : orch::LaterWork::None;
-      const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true, workBehind);
+      const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true, laterBehind());
       if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
       const std::string fold = foldHeldNotices();   // L19-13 d: one message
       // With no text to keep, what the turn did run is still told (Lumi, 31 Oct: four
@@ -2375,9 +2397,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // fenced, possibly cut short), and only its top-level reply/ask - never the
     // raw text and never a nested field. A cut answer gets the honest marker; the
     // delivered text is captured so the next turn sees what the owner saw.
-    const SalvageOutcome so =
-        salvageForOwner(outJson, perr.detail, /*reportedCut=*/false,
-                        d_.jobs && d_.jobs->activeCount() > 0 ? orch::LaterWork::Live : orch::LaterWork::None);
+    const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false, laterBehind());
     if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
     deliver(chatId, so.text, /*modelText=*/so.salvaged);   // captured as the row; salvaged text spoke
     err = (so.cut ? "cut: " : "parse: ") + perr.detail;
@@ -2816,6 +2836,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   heldReply_.clear();
   scheduledTurn_ = true;
   quietTurn_ = quietOk;
+  routineRecurs_ = !once && !ownerReminder && !loopId.empty() && !dream::isReserved(loopId);
   attribution_ = loopId.empty() ? "loop" : ("loop:" + loopId);   // spend attribution
   turnSource_ = TurnSource::Loop;
   loopName_ = name;   // the [FALLBACK] note names the routine a switch happened in
@@ -2902,6 +2923,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   triggerPending_ = false;
   scheduledTurn_ = false;
   quietTurn_ = false;
+  routineRecurs_ = false;
   dreamTurn_ = false;
   attribution_ = "turn";                       // back to the owner default
   turnSource_ = TurnSource::Owner;
@@ -2929,6 +2951,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   triggerPending_ = false;
   scheduledTurn_ = false;
   quietTurn_ = false;
+  routineRecurs_ = false;
   dreamTurn_ = false;
   turnSource_ = TurnSource::Owner;
   nimbus::orch::FireOutcome o;

@@ -326,6 +326,13 @@ bool isReservedId(const String& id) {
   return isReservedStd(std::string(id.c_str()));
 }
 
+bool hasStanding(const std::string& chatId) {
+  Lock lk;
+  for (const auto& l : g_loops)
+    if (l.enabled && l.approved && !isReservedStd(l.id) && (l.chatId.empty() || l.chatId == chatId)) return true;
+  return false;
+}
+
 void setFireGate(GateHook gate) {
   Lock lk;
   g_gate = std::move(gate);

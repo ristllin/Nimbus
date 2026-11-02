@@ -295,6 +295,9 @@ class TurnEngine {
     // shift's advance (persisted with the turn).
     std::function<HistoryMarks(const std::string& chatId)> historyMarks;
     std::function<void(const std::string& chatId, const std::string& softStart)> noteHistoryShift;
+    // The prompt as this fabric's requests send it, for a request refitted inside a head's own
+    // loop (the hosted Virtual Nimbus rewrites its device wording). Unwired = as composed.
+    std::function<std::string(const std::string& instructions)> requestPrompt;
     // A routine or wakeup is set for this chat (a promise to report back has something
     // behind it). Unwired = none.
     std::function<bool(const std::string& chatId)> standingWork;
@@ -634,6 +637,7 @@ class TurnEngine {
   volatile bool turnTelegram_ = true;   // CUM-523: this turn's one Telegram sample (read cross-task)
   volatile bool turnFileSend_ = true;   // CUM-523: and whether files.send can deliver on it
   bool scheduledTurn_ = false;          // a Local Loops / synthesis (unattended) turn is running
+  bool routineRecurs_ = false;          // that turn is a run of a routine that will run again
   bool quietTurn_ = false;              // dream: suppress the bare-"Done." fallback this turn
   bool dreamTurn_ = false;              // the reserved dream loop: memory-only surface (lane M)
   // F1 (lane I): this turn's skills - what buildDynamicContext attached (the

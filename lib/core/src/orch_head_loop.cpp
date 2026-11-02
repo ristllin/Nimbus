@@ -281,12 +281,14 @@ size_t refitOneRung(Transcript& tr, const HeadLoopHooks& hooks, size_t want, siz
                     const char*& what) {
   what = "the replayed tool rounds";
   size_t freed = tr.stubArguments(kArgStubOver);
-  // foldOlderRounds(newest) folds every older round and never clips the newest:
-  // the fold lands the replay exactly on the cap, but a host whose byte
-  // accounting sits one byte over must not clip the results the model has not
-  // seen yet (a CI run clipped |end7| that way) - a still-over re-run refuses
-  // again and the third rung clips with the honest last-resort cap.
-  if (freed == 0 && cap < newest) freed = tr.foldOlderRounds(newest);
+  // Tool rounds the model has already read go before the owner's earlier messages. Where the
+  // cap would reach into the newest round, foldOlderRounds(newest) folds every older round and
+  // never clips the newest: the fold lands the replay exactly on the cap, but a host whose
+  // byte accounting sits one byte over must not clip the results the model has not seen yet (a
+  // CI run clipped |end7| that way) - a still-over re-run refuses again and the third rung clips
+  // with the honest last-resort cap. Where the cap holds the newest round whole, trimToolOutputs
+  // folds older rounds and clips nothing.
+  if (freed == 0) freed = cap < newest ? tr.foldOlderRounds(newest) : tr.trimToolOutputs(cap);
   if (freed) return freed;
   // Round 0, or nothing left to fold: the prompt's older history before any result
   // the model has not read (Lumi, 1 Nov: 90519 B at round 0 with 0 B to fold).

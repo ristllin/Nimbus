@@ -241,7 +241,9 @@ class FoldStore {
   // existing zero-tools fresh-retry already recovered the TURN; this recovers
   // the trajectory. Persisted.
   void markOverflow(const std::string& chatId);
-  // A served turn left out conversation history to fit its request (turn_fit.h).
+  // A served turn left out conversation history to fit its request (turn_fit.h): the chat
+  // needs its fold. Inside the thrash window of the last fold it does not count: large payloads
+  // are no proof that the fold failed to shrink the chat, so no pause and no alert.
   void noteHistoryTrimmed(const std::string& chatId);
   // An overflow fold is queued for the chat (the next turn needs it, so it does
   // not wait for a quiet moment).

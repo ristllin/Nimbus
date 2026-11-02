@@ -50,6 +50,10 @@ void reloadCaps();
 void ensureLoop(const nimbus::orch::LoopRecord& record, bool reserved = true);
 bool isReservedId(const String& id);
 
+// A routine or wakeup the owner approved is set for this chat, so a promise to report back has
+// something behind it (the turn's promise check). The nightly dream does not count.
+bool hasStanding(const std::string& chatId);
+
 // Pre-fire idle gate: return 0 to fire now, else seconds to defer (nextRun
 // slips by that much via nimbus::orch::deferLoop; a defer does NOT count
 // against any fire ceiling). Called on tg_poll with the loops lock held -

@@ -50,9 +50,11 @@ class TurnFit {
   // The input as the request should send it: the note, then what is left of the input.
   std::string inputs() const;
   bool trimmed() const { return trimmed_; }
-  // Conversation history was left out: the chat needs its fold (other cuts would come back
-  // the same after one, and a fold is a paid call).
-  bool historyTrimmed() const { return historyDropped_ > 0 || newestDropped_ > 0; }
+  // Enough conversation history was left out that the chat needs its fold. A fold is a paid call:
+  // other cuts would come back the same after one, and a sliver of history to make room for a
+  // large payload is no reason for one.
+  bool historyTrimmed() const { return historyBytesDropped_ >= kFoldWorthBytes; }
+  static constexpr size_t kFoldWorthBytes = 4096;
 
   // What was left out, for the model; "" = nothing.
   std::string note() const;
@@ -78,6 +80,7 @@ class TurnFit {
   bool trimmed_ = false;
   int historyDropped_ = 0;
   int newestDropped_ = 0;
+  size_t historyBytesDropped_ = 0;
   int recalledDropped_ = 0;
   int resultBlocksClipped_ = 0;
   size_t resultBytesCut_ = 0;

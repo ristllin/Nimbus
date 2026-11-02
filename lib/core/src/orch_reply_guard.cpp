@@ -169,22 +169,52 @@ bool asksForWork(const std::string& ownerText) {
 
 namespace {
 
-// Where later work is promised. Each stands for "after this reply" on its own.
-const char* const kLaterCues[] = {
-    "next turn",          "next round",        "next pass",        "later turn",       "following turn",
-    "my next message",    "my next reply",     "my next response", "in the background", "report back",
-    "get back to you",    "come back to you",  "circle back",      "keep you posted",  "follow up with you",
-    "let you know when",  "ping you when",     "update you when",  "hang tight",       "stand by",
-    "bear with me",       "give me a moment",  "give me a minute", "one moment",       "keep working on",
-    "continue working on", "still working on",  "working on it",
+// Where later work is promised. The words alone prove little ("in the background" is often a
+// place in a photo, "still working on" is often the owner's goal, a next turn can be on a road),
+// so each kind says what else the sentence must hold.
+enum class Cue : uint8_t {
+  Turn,         // a later turn of this chat: any first person, or "this will"
+  Round,        // the same words as a contest's or a loan's: a first-person future
+  Report,       // telling the owner later: a first-person future (a routine can back it)
+  Background,   // a first person doing work there, in the same clause
+  Effort,       // "working on": only with a first person as its subject
+  Wait,         // asks the owner to wait: stands alone
+  WaitAlone,    // the same, only where it opens the sentence
 };
-// The future of a first person, for the cues that need one: "the next turn" alone can be
-// a plain statement of how turns work.
+struct LaterCue {
+  const char* text;
+  Cue kind;
+};
+const LaterCue kLaterCues[] = {
+    {"next turn", Cue::Turn},          {"later turn", Cue::Turn},          {"following turn", Cue::Turn},
+    {"my next message", Cue::Turn},    {"my next reply", Cue::Turn},       {"my next response", Cue::Turn},
+    {"next round", Cue::Round},        {"next pass", Cue::Round},          {"report back", Cue::Report},
+    {"get back to you", Cue::Report},  {"come back to you", Cue::Report},  {"circle back", Cue::Report},
+    {"keep you posted", Cue::Report},  {"follow up with you", Cue::Report}, {"let you know when", Cue::Report},
+    {"ping you when", Cue::Report},    {"update you when", Cue::Report},   {"in the background", Cue::Background},
+    {"keep working on", Cue::Effort},  {"continue working on", Cue::Effort}, {"still working on", Cue::Effort},
+    {"working on it", Cue::Effort},    {"hang tight", Cue::Wait},          {"bear with me", Cue::Wait},
+    {"give me a moment", Cue::Wait},   {"give me a minute", Cue::Wait},    {"stand by", Cue::WaitAlone},
+    {"one moment", Cue::WaitAlone},
+};
 const char* const kFirstPersonFuture[] = {
-    "i'll", "i\xE2\x80\x99ll", "i will", "i'm going to", "i am going to", "this will", "that will", "it will",
-    "will have", "will be", "i'm", "i\xE2\x80\x99m", "i am", "we'll", "we will", "hang tight", "stand by",
-    "bear with me", "give me",
+    "i'll", "i\xE2\x80\x99ll", "i will", "i'm going to", "i\xE2\x80\x99m going to", "i am going to", "we'll",
+    "we\xE2\x80\x99ll", "we will", "and will",
 };
+// A later turn can also be promised with the work as the subject: "this will complete next turn".
+const char* const kWorkFuture[] = {"this will", "that will", "it will", "will have", "will be"};
+const char* const kFirstPersonNow[] = {"i'm", "i\xE2\x80\x99m", "i am"};
+// The work "in the background" names, when it is work and not a place.
+const char* const kBackgroundWork[] = {
+    "run",      "running",  "check",  "checking", "work",   "working", "continue",   "continuing", "finish",
+    "finishing", "process", "processing", "search", "searching", "do",  "doing",     "handle",     "handling",
+    "monitor",  "monitoring", "research", "researching", "going",
+};
+// Words that may open a request to wait, and adverbs between a subject and its verb.
+const char* const kWaitLeads[] = {"please", "just", "ok", "okay", "so", "alright", "now"};
+const char* const kAdverbs[] = {"now", "also", "just", "currently", "then", "still"};
+// After these, a next turn or round is a road's or a contest's.
+const char* const kNotATurn[] = {"on", "left", "right", "of", "at"};
 // The owner is a condition of it, or it asks: not a promise of unasked work.
 const char* const kConditional[] = {
     "if you",    "if it",      "when you",  "once you", "after you", "tell me",  "send me", "let me know",
@@ -211,12 +241,97 @@ bool negatedBefore(const std::string& s, size_t cueAt) {
   return hasAnyWord(before, kNegation);
 }
 
-bool sentencePromises(const std::string& s) {
+// The word right after a cue, or "".
+std::string wordAfter(const std::string& s, size_t from) {
+  while (from < s.size() && s[from] == ' ') from++;
+  size_t e = from;
+  while (e < s.size() && isWordChar(s[e])) e++;
+  return s.substr(from, e - from);
+}
+
+template <size_t N>
+bool oneOf(const std::string& word, const char* const (&list)[N]) {
+  for (const char* w : list)
+    if (word == w) return true;
+  return false;
+}
+
+// `s` up to `at`, without the adverbs that end it ("i'm still" + "working on it").
+std::string beforeAdverbs(const std::string& s, size_t at) {
+  size_t e = at;
+  for (;;) {
+    while (e > 0 && !isWordChar(s[e - 1])) e--;
+    size_t b = e;
+    while (b > 0 && isWordChar(s[b - 1])) b--;
+    if (b == e || !oneOf(s.substr(b, e - b), kAdverbs)) break;
+    e = b;
+  }
+  return s.substr(0, e);
+}
+
+template <size_t N>
+bool endsWithAny(const std::string& s, const char* const (&list)[N]) {
+  for (const char* words : list) {
+    const size_t n = std::strlen(words);
+    if (s.size() >= n && s.compare(s.size() - n, n, words) == 0 && (s.size() == n || !isWordChar(s[s.size() - n - 1])))
+      return true;
+  }
+  return false;
+}
+
+bool firstPersonIsSubject(const std::string& s, size_t cueAt) {
+  const std::string before = beforeAdverbs(s, cueAt);
+  return endsWithAny(before, kFirstPersonFuture) || endsWithAny(before, kFirstPersonNow);
+}
+
+// The first person at work in the clause that holds the cue, or in the next one when the cue
+// opens its clause ("In the background, I'll keep checking.").
+bool workInTheBackground(const std::string& s, size_t cueAt, size_t cueLen) {
+  size_t from = s.find_last_of(";,:", cueAt);
+  from = from == std::string::npos ? 0 : from + 1;
+  std::string clause = s.substr(from, cueAt - from);
+  if (clause.find_first_not_of(" (\"'") == std::string::npos) clause = s.substr(cueAt + cueLen);
+  return (hasAnyWord(clause, kFirstPersonFuture) || hasAnyWord(clause, kFirstPersonNow) || hasAnyWord(clause, kWorkFuture)) &&
+         hasAnyWord(clause, kBackgroundWork);
+}
+
+// Only words that may open a request stand before the cue.
+bool opensTheSentence(const std::string& s, size_t cueAt) {
+  size_t i = 0;
+  while (i < cueAt) {
+    while (i < cueAt && !isWordChar(s[i])) i++;
+    size_t e = i;
+    while (e < cueAt && isWordChar(s[e])) e++;
+    if (e > i && !oneOf(s.substr(i, e - i), kWaitLeads)) return false;
+    i = e;
+  }
+  return true;
+}
+
+bool cueBacked(const LaterCue& cue, const std::string& s, size_t at) {
+  const size_t len = std::strlen(cue.text);
+  switch (cue.kind) {
+    case Cue::Turn:
+      if (oneOf(wordAfter(s, at + len), kNotATurn)) return false;
+      return hasAnyWord(s, kFirstPersonFuture) || hasAnyWord(s, kWorkFuture) || hasAnyWord(s, kFirstPersonNow);
+    case Cue::Round:
+      return !oneOf(wordAfter(s, at + len), kNotATurn) && (hasAnyWord(s, kFirstPersonFuture) || findWord(s, "this will") != std::string::npos);
+    case Cue::Report:     return hasAnyWord(s, kFirstPersonFuture);
+    case Cue::Background: return workInTheBackground(s, at, len);
+    case Cue::Effort:     return firstPersonIsSubject(s, at);
+    case Cue::Wait:       return true;
+    case Cue::WaitAlone:  return opensTheSentence(s, at);
+  }
+  return false;
+}
+
+bool sentencePromises(const std::string& s, LaterWork behind) {
   if (s.empty() || s.find('?') != std::string::npos || hasAnyWord(s, kConditional)) return false;
-  for (const char* cue : kLaterCues) {
-    const size_t at = findWord(s, cue);
+  for (const LaterCue& cue : kLaterCues) {
+    if (behind == LaterWork::Standing && cue.kind == Cue::Report) continue;
+    const size_t at = findWord(s, cue.text);
     if (at == std::string::npos || negatedBefore(s, at)) continue;
-    if (hasAnyWord(s, kFirstPersonFuture)) return true;
+    if (cueBacked(cue, s, at)) return true;
   }
   return false;
 }
@@ -232,7 +347,7 @@ bool laterPromiseSpan(const std::string& reply, size_t* begin, size_t* end, Late
     size_t stop = t.find_first_of(".!?\n", from);
     // "..." and decimals keep the sentence going only until the next real stop.
     const size_t e = stop == std::string::npos ? t.size() : stop + 1;
-    if (sentencePromises(t.substr(from, e - from))) {
+    if (sentencePromises(t.substr(from, e - from), behind)) {
       if (begin) *begin = from;
       if (end) *end = e;
       return true;
@@ -251,7 +366,8 @@ std::string laterCorrection(const std::string& excerpt) {
   return "[PROMISE CHECK] Your reply promises later work: \"" + q +
          "\". After this answer nothing continues: no later turn is coming, and no sub-agent, routine or wakeup "
          "stands behind it. Do the work now with your tools, start a sub-agent or a routine for it, or say plainly "
-         "what is not done and that the owner can ask to continue. Do not mention this check.";
+         "what is not done and that the owner can ask to continue. Do not repeat anything already done, and do not "
+         "mention this check.";
 }
 
 std::string cutRetryNote(const std::string& why, const std::string& partial) {
