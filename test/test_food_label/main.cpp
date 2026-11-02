@@ -265,6 +265,99 @@ static void test_plain_words_are_not_brands() {
   TEST_ASSERT_TRUE(unsupportedDetails(row, "").empty());
 }
 
+// ---- review fix pass -------------------------------------------------------------------
+// The real lunch1 row's comma-list shape: "54.9 g protein, fat 21.0" - the fat figure
+// sits two tokens after "protein"; the nearest macro word must win, not a fixed
+// priority (before the fix the fat was classified as protein and dropped, so Atwater
+// never ran on the row).
+static const char kRowLunch1[] =
+    "2026-11-02,lunch1,\"Frive Chicken Tikka Masala, full 390 g pack eaten whole per whole-portion rule "
+    "[label per serving = whole pack: 611 kcal, 54.9 g protein, fat 21.0, carb 50.0, fibre 4.7]\",611,54.9";
+
+static void test_comma_list_macros_parse() {
+  const LabelRead r = parseLabelRead(kRowLunch1);
+  TEST_ASSERT_TRUE(r.hasPerServing);
+  TEST_ASSERT_TRUE(r.perServing.hasFat);
+  TEST_ASSERT_EQUAL_FLOAT(21.0, r.perServing.fat);
+  TEST_ASSERT_TRUE(r.perServing.hasCarb);
+  TEST_ASSERT_EQUAL_FLOAT(50.0, r.perServing.carb);
+  TEST_ASSERT_EQUAL_FLOAT(54.9, r.perServing.protein);
+  TEST_ASSERT_EQUAL_FLOAT(611, r.perServing.kcal);
+  TEST_ASSERT_TRUE(r.netKnown);
+  TEST_ASSERT_EQUAL_FLOAT(390, r.netG);
+  // The correct comma-list row passes its own Atwater (4x54.9 + 4x50 + 9x21 = 608.6 vs 611).
+  TEST_ASSERT_TRUE(checkLabelRead(r).empty());
+}
+
+// A 5.9-for-54.9 protein misread in the same comma-list shape is refused by the row's
+// own Atwater even with no turn sources at all (the vision-head path).
+static void test_comma_list_misread_refused() {
+  const std::string row =
+      "2026-11-02,lunch1,\"Frive Chicken Tikka Masala, full 390 g pack [label per serving = whole pack: 611 kcal, "
+      "5.9 g protein, fat 21.0, carb 50.0, fibre 4.7]\",611,5.9";
+  const std::string refusal = labelRowGate(row, "[image 1/1 ref=aaaa] (attached)");
+  TEST_ASSERT_FALSE_MESSAGE(refusal.empty(), "the 5.9-for-54.9 misread landed silently");
+  TEST_ASSERT_TRUE_MESSAGE(refusal.find("4P+4C+9F") != std::string::npos, refusal.c_str());
+}
+
+// The vision-head path: the input block holds only "(attached)"; the head's own read
+// of the label arrives in its image.note args. The gate must check the row against it.
+static void test_gate_uses_the_heads_image_note_read() {
+  const std::string visionInputs = "[image 1/1 ref=aaaa] (attached)";
+  const std::string noteArgs =
+      "{\"ref\":\"aaaa\",\"note\":\"label per serving = whole pack: 235 kcal, 41.0 g protein, fat 7.3, carb 1.2; "
+      "per 100 g: 179 kcal, 31.3 g protein; net 131 g\"}";
+  // Without any read the row is unchecked (nothing to check it against).
+  TEST_ASSERT_TRUE(labelRowGate(kRow904Bad, visionInputs).empty());
+  // With the head's note the 4.3 g row is refused.
+  const std::string refusal = labelRowGate(kRow904Bad, visionInputs + "\n" + noteArgs);
+  TEST_ASSERT_FALSE_MESSAGE(refusal.empty(), "the 4.3 g row landed silently on the vision-head path");
+  TEST_ASSERT_TRUE_MESSAGE(refusal.find("4.3") != std::string::npos, refusal.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(refusal.find("Nothing was written") != std::string::npos, refusal.c_str());
+}
+
+// The owner's real 19:09 message: "M&s chimichurri???" on its own line after another
+// line, and "I ate a KFC, bucket" with a comma - punctuation and newlines are word
+// separators, so the brand the owner did write still backs the row.
+static void test_brand_backed_across_newlines_and_punctuation() {
+  const std::string row =
+      "2026-11-02,dinner,\"M&S Chimichurri Beef Bowl, full 388 g pack [label per serving = whole pack: 557 kcal, "
+      "38.7 g protein]\",557,38.7";
+  const std::string owner1909 =
+      "1. Yesterday we got to 2550... iirc no idea what deficit you counted... skyr was full pot 150g sure \n"
+      "M&s chimichurri???\n";
+  TEST_ASSERT_TRUE_MESSAGE(unsupportedDetails(row, owner1909).empty(),
+                           unsupportedDetails(row, owner1909).c_str());
+  const std::string kfcRow =
+      "2026-11-02,lunch,\"KFC bucket, full pack [label per serving = whole pack: 611 kcal, 54.9 g protein]\",611,54.9";
+  TEST_ASSERT_TRUE_MESSAGE(unsupportedDetails(kfcRow, "I ate a KFC, bucket\n").empty(),
+                           unsupportedDetails(kfcRow, "I ate a KFC, bucket\n").c_str());
+  // Still refused when nothing this turn holds the brand.
+  TEST_ASSERT_FALSE(unsupportedDetails(row, "chimichurri beef bowl frive 388 g").empty());
+}
+
+// The second read of the same label from a stored record (another provider's
+// transcription of the same photo) vs the head's reply: disagreements surfaced with
+// both values, never averaged; a record of a different pack is not compared.
+static void test_second_read_note_for_reply() {
+  const std::string replyBad =
+      "Grilled Chicken Breast Side, whole pack = 235 kcal / 4.3 g protein (per 100 g: 179 kcal / 3.3 g).";
+  const std::string replyOk =
+      "Grilled Chicken Breast Side, whole pack = 235 kcal / 41.0 g protein (per 100 g: 179 kcal / 31.3 g).";
+  const std::string records = std::string("[image 1/1 ref=aaaa] (transcribed by mistral) ") + kT904 + "\n";
+  const std::string note = secondReadNoteForReply(replyBad, records);
+  TEST_ASSERT_TRUE_MESSAGE(note.find("second read (mistral)") != std::string::npos, note.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(note.find("protein per serving") != std::string::npos, note.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(note.find("4.3") != std::string::npos && note.find("41") != std::string::npos,
+                           note.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(note.find("never averaged") != std::string::npos, note.c_str());
+  // Agreement is quiet; a different label's record is not compared.
+  TEST_ASSERT_TRUE(secondReadNoteForReply(replyOk, records).empty());
+  TEST_ASSERT_TRUE(secondReadNoteForReply(replyBad,
+                                          std::string("[image 1/1 ref=bbbb] (transcribed by mistral) ") + kT907)
+                       .empty());
+}
+
 int main(int argc, char** argv) {
   (void)argc;
   (void)argv;
@@ -291,5 +384,10 @@ int main(int argc, char** argv) {
   RUN_TEST(test_supported_brand_passes);
   RUN_TEST(test_assumed_row_passes);
   RUN_TEST(test_plain_words_are_not_brands);
+  RUN_TEST(test_comma_list_macros_parse);
+  RUN_TEST(test_comma_list_misread_refused);
+  RUN_TEST(test_gate_uses_the_heads_image_note_read);
+  RUN_TEST(test_brand_backed_across_newlines_and_punctuation);
+  RUN_TEST(test_second_read_note_for_reply);
   return UNITY_END();
 }

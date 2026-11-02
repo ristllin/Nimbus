@@ -120,9 +120,12 @@ class ClaimCheck {
   // turn source holds is refused unless the row is marked [assumed]. The refusal, or "".
   std::string labelRowRefusal(const std::string& regName, const std::string& argsJson) const;
   // A head tool ran: its effect class (the shared tool table) and its result.
-  // The result text joins the figure sources (bounded).
+  // The result text joins the figure sources (bounded). `regName` (the registered
+  // name) lets the label gate keep the raw text of this turn's image.* calls - the
+  // head's own reads of the turn's photos, which the input block does not hold when
+  // a photo rides the message as an image.
   void noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
-                uint16_t flags = 0);
+                uint16_t flags = 0, const std::string& regName = std::string());
   // The arguments of the same call, right before noteTool: the words a memory or file
   // write saved join the quote rule's seen text when the write lands, so a save
   // confirmation quoting them is never corrected as an invented record (the review).
@@ -185,6 +188,10 @@ class ClaimCheck {
   void recordGaps(const std::string& reply, std::vector<nimbus::orch::ClaimGap>& kept) const;
   std::string seenText(bool fixedToo) const;   // what a quote (fixedToo) or a reason may come from
   void noteToolText(const std::string& output);
+  // Stash a raw image.* arg/result as one of this turn's label reads (bounded).
+  void stashImageRead(const std::string& text);
+  // A write tool landed: its saved words join the seen text and the record.
+  void noteWriteLanded();
   std::vector<nimbus::orch::FoodGap> foodGaps(const std::string& reply, nimbus::orch::FoodFacts& facts) const;
   // The correction text for a final turn: the claim fix plus the food/stale notes and
   // the later-promise line (split out of finalCheck for the complexity gate).
@@ -217,6 +224,12 @@ class ClaimCheck {
   std::string turnInputs_;       // the turn's input block (bounded): the label reads a
                                  // ledger row is checked against (food_label.h)
   bool turnInputsClipped_ = false;  // the input block was past its cap: the label gate stands down
+  std::string imageReads_;       // the raw args/results of this turn's image.* calls (bounded):
+                                 // the head's own reads of the turn's photos, which the input
+                                 // block holds only as "[image k/N ref=...] (attached)"
+  std::string records_;          // the turn's stored vision records (settled media rows in the
+                                 // owner's history rows and the recalled memories), bounded:
+                                 // the second-read comparison reads them (food_label.h)
   std::string toolText_;         // the tool results in normalizedWords form (bounded)
   std::string ownerText_;        // the owner's message (bounded): a why-question's reasons
   std::string ownerWords_;       // the owner's own words this turn (message + their history

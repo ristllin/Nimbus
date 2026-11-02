@@ -30,6 +30,7 @@ constexpr size_t kSourceWordsMax = 8192;   // the words a named source is checke
 constexpr size_t kToolTextMax = 32768;     // the tool results a quoted record is checked against
 constexpr size_t kOwnerTextMax = 1024;     // the owner's message a why-question is read from
 constexpr size_t kEvidenceTextMax = 32768; // a text longer than this is read only in part (orch_claims)
+constexpr size_t kImageReadsMax = 8192;    // the raw image.* args/results the label gate reads
 
 // What an allowed device action does, by the device's own validator (a blocked
 // or unknown element backs nothing).
@@ -220,6 +221,8 @@ void ClaimCheck::beginTurn() {
   ownerWords_.clear();
   turnInputs_.clear();
   turnInputsClipped_ = false;
+  imageReads_.clear();
+  records_.clear();
   toolText_.clear();
   ownerText_.clear();
   ledger_.clear();
@@ -241,6 +244,11 @@ void ClaimCheck::setSources(const std::string& inputs, const std::string& recall
   // against at store time (food_label.h). Past the cap the gate stands down.
   turnInputsClipped_ = inputs.size() > kEvidenceTextMax;
   turnInputs_ = inputs.substr(0, kEvidenceTextMax);
+  // The turn's stored vision records: the settled media rows in the owner's history
+  // rows and the recalled memories ("[image ... ref=...] (transcribed by X) <read>").
+  // The second-read comparison (food_label.h) reads them at the final check. Bounded
+  // on its own: a truncated record list can only miss a comparison, never invent one.
+  records_ = (parts.histOwner + "\n" + recalled).substr(0, kEvidenceTextMax);
   sources_ = orch::figureNumbers(inputs, kSourceNumbersMax);
   {
     // The owner's own history rows ground a follow-up's figures too (the previous
@@ -337,7 +345,28 @@ uint16_t ClaimCheck::toolCallFlags(const std::string& regName, const std::string
   return (d["permanent"] | false) ? orch::kFxPermanent : 0;
 }
 
+void ClaimCheck::stashImageRead(const std::string& text) {
+  if (imageReads_.size() + text.size() + 1 > kImageReadsMax) clipped_ = true;
+  else imageReads_ += "\n" + text;
+}
+
+void ClaimCheck::noteWriteLanded() {
+  if (pendingWrote_.empty()) return;
+  // The write landed: its words are seen (the quote rule) and on record.
+  const std::string words = orch::normalizedWords(pendingWrote_);
+  if (toolText_.size() + words.size() + 1 > kToolTextMax) clipped_ = true;
+  else {
+    toolText_ += words;
+    wroteText_ += words;
+  }
+}
+
 void ClaimCheck::noteToolArgs(const std::string& regName, const std::string& argsJson) {
+  // The head's own read of a photo of this turn (image.note's note, image.look's
+  // question): the input block holds the photo only as "[image k/N ref=...] (attached)"
+  // when the head sees it itself, so the label gate reads the head's read from here.
+  // Write tools are never stashed: a row must not back itself.
+  if (regName.rfind("image.", 0) == 0) stashImageRead(argsJson);
   // The words a write saved this turn: a "Stored in memory: "..." right after a real
   // memory.write is the turn's own record, whatever the reply quotes (the review).
   pendingWrote_.clear();
@@ -354,20 +383,15 @@ void ClaimCheck::noteToolArgs(const std::string& regName, const std::string& arg
 }
 
 void ClaimCheck::noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
-                          uint16_t flags) {
+                          uint16_t flags, const std::string& regName) {
   orch::recordToolEffect(fx_, kind, isError, output, flags);
   causeEvidence_ |= orch::causeEvidenceOf(output);
+  // An image.* result (a blind host's caption answer to image.look) is a label read
+  // of this turn's photo too.
+  if (!isError && regName.rfind("image.", 0) == 0) stashImageRead(output);
   if (!isError) {
     noteToolText(output);
-    if (!pendingWrote_.empty()) {
-      // The write landed: its words are seen (the quote rule) and on record.
-      const std::string words = orch::normalizedWords(pendingWrote_);
-      if (toolText_.size() + words.size() + 1 > kToolTextMax) clipped_ = true;
-      else {
-        toolText_ += words;
-        wroteText_ += words;
-      }
-    }
+    noteWriteLanded();
   }
   pendingWrote_.clear();
   if (!isError && (flags & orch::kFxHealth)) causeEvidence_ |= orch::kEvHealthRead;
@@ -574,11 +598,15 @@ std::string ClaimCheck::labelRowRefusal(const std::string& regName, const std::s
   if (!isFoodLedgerFile(project, name)) return std::string();
   const char* text = rowTextOf(d);
   if (!text) return std::string();
-  const std::string gate = orch::labelRowGate(text, turnInputs_);
+  // The turn's real inputs: the input block plus the head's own reads of this turn's
+  // photos (image.note/image.look), which the input block holds only as "(attached)"
+  // when the head sees the photo itself.
+  const std::string sources = imageReads_.empty() ? turnInputs_ : turnInputs_ + "\n" + imageReads_;
+  const std::string gate = orch::labelRowGate(text, sources);
   if (!gate.empty()) return gate;
   // The raw input block, not sourceWords_: that form drops words under 3 letters, and
   // a brand like "M&S" normalizes to the short words "m s".
-  const std::string unsup = orch::unsupportedDetails(text, turnInputs_);
+  const std::string unsup = orch::unsupportedDetails(text, sources);
   if (!unsup.empty())
     return "the row names " + unsup + " and no owner message, label read or tool result this turn holds it - nothing was written. "
            "Take the brand or detail from the owner's words or this turn's label read, or store the row marked [assumed: <detail>].";
@@ -599,13 +627,17 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
   const std::string stale =
       routineDay_.empty() ? std::string() : orch::staleStatusIn(said, routineDay_, orch::kStaleStatusDays, &staleAge);
   const std::string later = unbackedPromise(said, pending);
-  if (gaps.empty() && food.empty() && stale.empty() && later.empty()) {
+  // A stored vision record of the same label (another provider's read) that disagrees
+  // with this reply's figures is surfaced, never averaged (food_label.h).
+  const std::string second = clipped_ ? std::string() : orch::secondReadNoteForReply(said, records_);
+  if (gaps.empty() && food.empty() && stale.empty() && later.empty() && second.empty()) {
     hlog::logf("claims: ok n=%u", (unsigned)orch::scanClaims(said).claims.size());
     return std::string();
   }
   corrected_ = true;
   g_corrected++;
   std::string more;
+  if (!second.empty()) more += "[SECOND READ] " + second + "\n";
   if (!food.empty()) more += orch::foodGapCorrection(food, facts);
   if (!stale.empty())
     more += "\"" + stale + "\" cites data " + std::to_string(staleAge) + " days old as if it were the state of things. "
@@ -653,6 +685,10 @@ std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawne
     tail += orch::staleStatusNote(staleAge);
   const bool later = !unbackedPromise(reply, fx_).empty();
   if (later) tail += std::string("\n\n") + orch::kLaterPromiseLine;
+  // The second-read disagreement with a stored record, surfaced on the delivered
+  // reply too (food_label.h): both values, never averaged.
+  const std::string second = clipped_ ? std::string() : orch::secondReadNoteForReply(reply, records_);
+  if (!second.empty()) tail += (tail.empty() ? std::string() : "\n\n") + "(Second read: " + second + ")";
   if (orch::promisesLaterSaveConfirmation(reply)) {
     tail += tail.empty() ? "\n\n" : "\n";
     tail += orch::kNoLaterConfirmationTail;

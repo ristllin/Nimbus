@@ -1509,6 +1509,67 @@ static void test_label_row_gate_refuses_an_unsupported_brand() {
   TEST_ASSERT_EQUAL_STRING("", cc.labelRowRefusal("files.append", assumed).c_str());
 }
 
+// The vision-head path: the input block holds the photo only as "(attached)", so the
+// head's own read of the label arrives in its image.note args - the gate must use them
+// (before the fix it read only the input block and the 4.3 g row landed silently).
+static void test_label_row_gate_uses_the_image_note_read() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  TurnSources parts;
+  parts.owner = "[image 1/1 ref=aaaa] (attached)";
+  cc.setSources(parts.owner, "", parts);
+  const std::string bad =
+      "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"2026-11-02,snack2,\\\"Grilled Chicken Breast Side, "
+      "full 131 g pack eaten whole [label per serving = whole pack: 235 kcal, 4.3 g protein]\\\",235,4.3\"}";
+  // No read anywhere yet: nothing to check the row against.
+  TEST_ASSERT_EQUAL_STRING("", cc.labelRowRefusal("files.append", bad).c_str());
+  // The head noted the label it read (image.note): the row is now refused.
+  cc.noteToolArgs("image.note",
+                  "{\"ref\":\"aaaa\",\"note\":\"label per serving = whole pack: 235 kcal, 41.0 g protein, fat 7.3, "
+                  "carb 1.2; per 100 g: 179 kcal, 31.3 g protein; net 131 g\"}");
+  const std::string refused = cc.labelRowRefusal("files.append", bad);
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("do not add up") != std::string::npos, refused.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("4.3") != std::string::npos, refused.c_str());
+  // A write tool's own args never back the row (no self-backing).
+  ClaimCheck self;
+  self.beginTurn();
+  TurnSources sp;
+  sp.owner = "[image 1/1 ref=aaaa] (attached)";
+  self.setSources(sp.owner, "", sp);
+  self.noteToolArgs("files.append", bad);
+  TEST_ASSERT_EQUAL_STRING("", self.labelRowRefusal("files.append", bad).c_str());
+}
+
+// The second read: a stored record of the same photo (another provider's transcription,
+// in the owner's history rows) that disagrees with the reply's figures is surfaced on
+// the final check and the delivered tail - both values, never averaged.
+static void test_second_read_disagreement_is_surfaced() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  TurnSources parts;
+  parts.owner = "what did I eat today?";
+  parts.histOwner =
+      "[image 1/1 ref=aaaa] (transcribed by mistral) " + std::string(kLabel904) + "\n";
+  cc.setSources(parts.owner, "", parts);
+  const std::string reply =
+      "Grilled Chicken Breast Side, whole pack = 235 kcal / 4.3 g protein (per 100 g: 179 kcal / 3.3 g).";
+  const std::string corr = cc.finalCheck(turnJson(reply));
+  TEST_ASSERT_TRUE_MESSAGE(corr.find("second read (mistral)") != std::string::npos, corr.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(corr.find("protein per serving") != std::string::npos, corr.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(corr.find("4.3") != std::string::npos && corr.find("41") != std::string::npos,
+                           corr.c_str());
+  const std::string tail = cc.tailAfterApply(reply);
+  TEST_ASSERT_TRUE_MESSAGE(tail.find("second read (mistral)") != std::string::npos, tail.c_str());
+  // An agreeing reply is quiet.
+  ClaimCheck ok;
+  ok.beginTurn();
+  ok.setSources(parts.owner, "", parts);
+  const std::string good =
+      "Grilled Chicken Breast Side, whole pack = 235 kcal / 41.0 g protein (per 100 g: 179 kcal / 31.3 g).";
+  TEST_ASSERT_EQUAL_STRING("", ok.finalCheck(turnJson(good)).c_str());
+  TEST_ASSERT_EQUAL_STRING("", ok.tailAfterApply(good).c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_promised_confirmation_gets_the_tail);
@@ -1556,5 +1617,7 @@ int main(int, char**) {
   RUN_TEST(test_an_idle_tally_name_is_not_a_source_word);
   RUN_TEST(test_label_row_gate_refuses_the_43_g_row);
   RUN_TEST(test_label_row_gate_refuses_an_unsupported_brand);
+  RUN_TEST(test_label_row_gate_uses_the_image_note_read);
+  RUN_TEST(test_second_read_disagreement_is_surfaced);
   return UNITY_END();
 }

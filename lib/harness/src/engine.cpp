@@ -1630,7 +1630,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         const std::string& regName = (it != nameMap->end()) ? it->second : call.name;
         const uint16_t flags = ClaimCheck::toolCallFlags(regName, call.argsJson);
         claims_.noteToolArgs(regName, call.argsJson);   // the words a write saved: seen when it lands
-        claims_.noteTool(fxKindForTool(regName), r.isError, r.output, flags);
+        claims_.noteTool(fxKindForTool(regName), r.isError, r.output, flags, regName);
         return r;
       };
     }

@@ -3117,8 +3117,15 @@ bool ownerActionPhraseWord(const std::string& w) {
 bool ownerActionGap(const std::string& reply, const std::string& ownerWords, ClaimGap* out) {
   if (ownerWords.empty()) return false;
   const std::string hay = " " + ownerWords + " ";
-  // The owner sent a photo this turn: "you photographed/sent/showed" is then backed.
-  const bool ownerSentPhoto = hay.find(" image ") != std::string::npos || hay.find(" photo ") != std::string::npos;
+  // The owner sent media this turn (a photo, a file, a voice note: the message's
+  // media segment is the owner's words on a media-only turn): "you
+  // photographed/sent/showed" is then backed by the segment itself, and the rest of
+  // the sentence describes what the media shows, not what the owner said.
+  const bool ownerSentMedia = hay.find(" image ") != std::string::npos ||
+                              hay.find(" photo ") != std::string::npos ||
+                              hay.find(" file ") != std::string::npos ||
+                              hay.find(" voice note ") != std::string::npos ||
+                              hay.find(" document ") != std::string::npos;
   // Folded in place, one byte per byte, so the offsets stay the reply's.
   std::string low;
   low.reserve(reply.size() < kScanMax ? reply.size() : kScanMax);
@@ -3147,22 +3154,27 @@ bool ownerActionGap(const std::string& reply, const std::string& ownerWords, Cla
       for (const auto& q : quotes)
         if (q.first >= p && q.first < se) { introducesQuote = true; break; }
       if (introducesQuote) continue;   // the quoted-record rule checks that one
+      // A media phrase ("you photographed/sent/showed") with media in the owner's
+      // message this turn is backed by that media segment: the clause after it says
+      // what the photo or file shows, which the head read from the media itself.
+      const bool mediaPhrase = std::strcmp(phrase, "you photographed") == 0 ||
+                               std::strcmp(phrase, "you sent") == 0 ||
+                               std::strcmp(phrase, "you showed") == 0;
+      if (mediaPhrase && ownerSentMedia) continue;
       std::string ns = normalizedWords(low.substr(sb, p - sb) + " " + low.substr(p + n, se - p - n)) + " ";
       bool any = false, missing = false;
       for (size_t b = 0, w; (w = ns.find(' ', b)) != std::string::npos; b = w + 1) {
         const std::string word = ns.substr(b, w - b);
         if (word.size() < 5 || reasonStop(word) || ownerActionPhraseWord(word)) continue;
-        if (ownerSentPhoto && (word == "photographed" || word == "photo" || word == "sent" ||
+        if (ownerSentMedia && (word == "photographed" || word == "photo" || word == "sent" ||
                                word == "showed" || word == "attached"))
           continue;
         any = true;
         if (!ownerWordOnRecord(word, hay)) missing = true;
       }
-      // "You photographed/sent/showed" with no photo in the owner's message this turn is
+      // "You photographed/sent/showed" with no media in the owner's message this turn is
       // itself the unbacked claim, whatever the rest of the sentence says.
-      const bool photoPhrase = std::strcmp(phrase, "you photographed") == 0 ||
-                               std::strcmp(phrase, "you sent") == 0 || std::strcmp(phrase, "you showed") == 0;
-      if ((any && missing) || (photoPhrase && !ownerSentPhoto)) {
+      if ((any && missing) || (mediaPhrase && !ownerSentMedia)) {
         if (out) {
           *out = spanGap(reply, sb, se, ClaimClass::Source, kGapOwnerAction);
           out->name = phrase;

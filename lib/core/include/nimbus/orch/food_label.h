@@ -86,6 +86,14 @@ std::vector<FigureDisagreement> labelReadDisagreements(const std::string& headTe
 std::string secondReadNote(const std::string& headText, const std::string& secondText,
                            const std::string& byProvider);
 
+// The second-read note for a head reply against the turn's stored vision records
+// (`recordsText`: settled media rows, e.g. "[image 1/1 ref=...] (transcribed by X)
+// <read>"). Only a record that plausibly reads the SAME label as the reply (a shared
+// net weight, or a shared per-serving kcal) is compared, so a reply about another
+// food is never "disagreed" with. The provider is read off the record's
+// "(transcribed by X)" tag. "" when no record disagrees (or none matches).
+std::string secondReadNoteForReply(const std::string& replyText, const std::string& recordsText);
+
 // The brand/detail tokens a row's items assert that appear nowhere in `sourceText`
 // (the turn's sources as raw text: the owner's message, the label reads, the tool
 // results; normalized inside the same way as the candidates, so "M&S" in the sources

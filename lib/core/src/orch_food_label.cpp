@@ -175,14 +175,37 @@ Fig kcalFig(const WordCtx& c, double& val, double num) {
   return Fig::None;
 }
 
+// The macro a word names, Fig::None when it names none. "fat" is refused when it
+// belongs to a saturates line ("of which saturates 2.2 g", "saturated fat 3.0").
+Fig macroWordFig(const std::string& w, bool nearSaturates, const std::string* before) {
+  if (w == "protein") return Fig::Protein;
+  if (w == "carb" || w == "carbohydrate" || w == "carbs") return Fig::Carb;
+  if (w == "fat" && !nearSaturates && !(before && (*before == "saturates" || *before == "saturated")))
+    return Fig::Fat;
+  return Fig::None;
+}
+
 Fig macroFig(const WordCtx& c, double& val, double num) {
   val = num;
-  if (c.has("protein")) return Fig::Protein;
-  if (c.has("carb") || c.has("carbohydrate") || c.has("carbs")) return Fig::Carb;
+  // The NEAREST macro word wins, not a fixed priority: in a comma list
+  // ("54.9 g protein, fat 21.0") the fat figure sits two tokens after "protein",
+  // and a priority order would classify it as protein and drop it (first figure
+  // wins), leaving the fat unset so Atwater never runs.
+  Fig best = Fig::None;
+  long bestDist = 0;
   const std::string* p1 = c.word(-1);
   const std::string* p2 = c.word(-2);
-  if (c.has("fat") && !(p1 && *p1 == "saturates") && !(p2 && *p2 == "saturates")) return Fig::Fat;
-  return Fig::None;
+  const bool nearSaturates = (p1 && (*p1 == "saturates" || *p1 == "saturated")) ||
+                             (p2 && (*p2 == "saturates" || *p2 == "saturated"));
+  for (long k : {-3, -2, -1, 1, 2}) {
+    const std::string* w = c.word(k);
+    if (!w) continue;
+    const Fig f = macroWordFig(*w, nearSaturates, c.word(k - 1));
+    if (f == Fig::None) continue;
+    const long d = k < 0 ? -k : k;
+    if (best == Fig::None || d < bestDist) { bestDist = d; best = f; }
+  }
+  return best;
 }
 
 // Net weight: a gram figure with "net"/"weight"/"wt"/"full" nearby ("net 388 g",
@@ -363,9 +386,14 @@ void parseLine(const std::string& line, LabelRead& r, std::vector<Col>& inherite
     for (const auto& m : marks) inherited.push_back(m.second);
   }
   if (inherited.empty()) inherited.push_back(Col::Serving);   // no marker anywhere: the row's own figures
+  // The "100" of a "per 100 g" marker opens the column; it is not itself a figure
+  // ("(per 100 g: 179 kcal)" must not read 100 as a protein).
+  std::vector<bool> markerNum(ts.size(), false);
+  for (const auto& m : marks)
+    if (m.second == Col::Per100 && m.first + 1 < ts.size()) markerNum[m.first + 1] = true;
   size_t k = 0;   // a line with no markers of its own: the k-th figure maps to inherited[min(k, size-1)]
   for (size_t i = 0; i < ts.size(); ++i) {
-    if (!ts[i].isNum) continue;
+    if (!ts[i].isNum || markerNum[i]) continue;
     double val = 0;
     const Fig f = classify(ts, i, val);
     if (f == Fig::None) continue;
@@ -440,16 +468,13 @@ bool countsAsRead(const LabelRead& r) {
          (r.hasPerServing && r.perServing.hasKcal && r.perServing.hasProtein) || r.netKnown;
 }
 
-// The label reads a turn's sources hold, one per block.
-std::vector<LabelRead> sourceReads(const std::string& turnSources) {
-  std::vector<LabelRead> out;
+// The blocks of a turn's sources, one per blank line or bracketed tag: each holds
+// one photo's read (or one plain message), never merged with another's figures.
+std::vector<std::string> sourceBlocks(const std::string& turnSources) {
+  std::vector<std::string> out;
   std::string block;
   auto flush = [&]() {
-    if (!block.empty()) {
-      const LabelRead r = parseLabelRead(block);
-      if (countsAsRead(r)) out.push_back(r);
-      block.clear();
-    }
+    if (!block.empty()) { out.push_back(block); block.clear(); }
   };
   for (size_t b = 0, e; b <= turnSources.size(); b = e + 1) {
     e = turnSources.find('\n', b);
@@ -461,6 +486,16 @@ std::vector<LabelRead> sourceReads(const std::string& turnSources) {
     if (e == turnSources.size()) break;
   }
   flush();
+  return out;
+}
+
+// The label reads a turn's sources hold, one per block.
+std::vector<LabelRead> sourceReads(const std::string& turnSources) {
+  std::vector<LabelRead> out;
+  for (const std::string& block : sourceBlocks(turnSources)) {
+    const LabelRead r = parseLabelRead(block);
+    if (countsAsRead(r)) out.push_back(r);
+  }
   return out;
 }
 
@@ -565,14 +600,62 @@ std::string secondReadNote(const std::string& headText, const std::string& secon
 
 namespace {
 
-// Lowercase, "&" splits words: the one normalization both the row's brand
-// candidates and the source text go through, so "M&S" in the sources backs
-// "m s" in the row.
+// The provider a stored record names in its "(transcribed by X)" tag, "" if none.
+std::string providerOfRecord(const std::string& block) {
+  std::string low;
+  for (char c : block) low += (char)std::tolower((unsigned char)c);
+  const size_t at = low.find("(transcribed by ");
+  if (at == std::string::npos) return std::string();
+  const size_t b = at + 16;   // "(transcribed by " is 16 chars
+  const size_t e = low.find(')', b);
+  if (e == std::string::npos || e <= b) return std::string();
+  return block.substr(b, e - b);
+}
+
+// Does a stored record plausibly read the SAME label as the head's reply? A shared
+// net weight, or a shared per-serving kcal. A record of a different pack must not
+// be "disagreed" with.
+bool sameLabelRead(const LabelRead& head, const LabelRead& rec) {
+  if (head.netKnown && rec.netKnown && std::fabs(head.netG - rec.netG) <= 1.0) return true;
+  return head.hasPerServing && rec.hasPerServing && head.perServing.hasKcal &&
+         rec.perServing.hasKcal && near(head.perServing.kcal, rec.perServing.kcal, 0.02, 1.0);
+}
+
+}  // namespace
+
+std::string secondReadNoteForReply(const std::string& replyText, const std::string& recordsText) {
+  const LabelRead head = parseLabelRead(replyText);
+  if (!head.hasPerServing && !head.hasPer100) return std::string();
+  std::string out;
+  for (const std::string& block : sourceBlocks(recordsText)) {
+    const LabelRead rec = parseLabelRead(block);
+    if (!countsAsRead(rec) || !sameLabelRead(head, rec)) continue;
+    const std::string note = secondReadNote(replyText, block, providerOfRecord(block));
+    if (note.empty()) continue;
+    if (!out.empty()) out += " ";
+    out += note;
+  }
+  return out;
+}
+
+namespace {
+
+// Lowercase, every non-alphanumeric run becomes one space: the one normalization
+// both the row's brand candidates and the source text go through, so "M&S" in the
+// sources backs "m s" in the row - and "M&s" at the start of its own line, or
+// "KFC," with a comma after it, backs them too (punctuation and newlines are word
+// separators, not part of a word).
 std::string normalizeAmp(const std::string& s) {
   std::string out;
+  bool sep = false;
   for (char c : s) {
-    if (c == '&') { if (!out.empty() && out.back() != ' ') out += ' '; continue; }
-    out += (char)std::tolower((unsigned char)c);
+    if (std::isalnum((unsigned char)c)) {
+      out += (char)std::tolower((unsigned char)c);
+      sep = false;
+    } else if (!out.empty() && !sep) {
+      out += ' ';
+      sep = true;
+    }
   }
   while (!out.empty() && out.back() == ' ') out.pop_back();
   return out;

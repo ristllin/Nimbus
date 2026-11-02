@@ -1468,6 +1468,25 @@ static void test_an_owner_action_claim_needs_a_backing_message() {
   TEST_ASSERT_FALSE(ownerActionGap("You told me about the 4 fries.", "", nullptr));
 }
 
+// A media-only turn: the owner's words are just the media segment, so "you
+// sent/photographed/showed" is backed by the segment itself and the clause after it
+// (what the photo shows) is not checked against the owner's words. Claims about what
+// the owner SAID still need their words.
+static void test_an_owner_action_claim_on_a_media_only_turn() {
+  const std::string photo = normalizedWords("[image 1/1 ref=0123456789abcdef] (attached)");
+  const std::string file = normalizedWords("[file 1/1 ref=0123456789abcdef] (attached: the file itself is in this message)");
+  // The playbook-elicited photo-default reply is clean.
+  TEST_ASSERT_FALSE(ownerActionGap("Since you sent the photo with no question, I'm logging the whole pack as eaten.", photo, nullptr));
+  TEST_ASSERT_FALSE(ownerActionGap("The Frive pack you photographed shows 41 g protein per serving.", photo, nullptr));
+  TEST_ASSERT_FALSE(ownerActionGap("The recipe PDF you sent lists 611 kcal per pack.", file, nullptr));
+  // But "you told me / confirmed" with no owner words is still a gap.
+  TEST_ASSERT_TRUE(ownerActionGap("You told me about the 4 fries earlier.", photo, nullptr));
+  TEST_ASSERT_TRUE(ownerActionGap("You confirmed the whole pack was eaten.", photo, nullptr));
+  // And a photo claim on a text-only turn is still a gap.
+  const std::string text = normalizedWords("4 frives please. Always assume whole unless told otherwise.");
+  TEST_ASSERT_TRUE(ownerActionGap("It is the M&S pack you photographed at 13:08.", text, nullptr));
+}
+
 // Asked why, a reason must be built from words on record (the eval's mistral-large-latest
 // on "Why notion?", 27 Oct: three invented reasons in three runs).
 static void test_a_reason_asked_for_needs_words_on_record() {
@@ -2009,6 +2028,7 @@ int main(int, char**) {
   RUN_TEST(test_a_source_named_by_name_needs_its_words_in_a_source);
   RUN_TEST(test_a_quoted_memory_must_be_words_the_turn_saw);
   RUN_TEST(test_an_owner_action_claim_needs_a_backing_message);
+  RUN_TEST(test_an_owner_action_claim_on_a_media_only_turn);
   RUN_TEST(test_a_reason_asked_for_needs_words_on_record);
   RUN_TEST(test_log_row_needs_a_counted_row);
   RUN_TEST(test_tool_tally_names_counts_and_idle_tools);
