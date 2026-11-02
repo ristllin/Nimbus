@@ -38,6 +38,7 @@ struct HostedSettings {
   std::string directive;   // device sysPrompt ("" = the shipped default)
   std::string devName;     // the instance's display name
   bool toolLoop = true;    // device orchLoop
+  bool trace = true;       // device orchTrace: the tool and turn rows the chat discloses
 };
 
 // Thread-safe, durable store: the HTTP thread reads for GET /api/state and
@@ -59,6 +60,7 @@ class SettingsStore {
     readStr(d, "directive", s_.directive);
     readStr(d, "devName", s_.devName);
     if (d["toolLoop"].is<bool>()) s_.toolLoop = d["toolLoop"].as<bool>();
+    if (d["trace"].is<bool>()) s_.trace = d["trace"].as<bool>();
   }
   HostedSettings get() const {
     std::lock_guard<std::mutex> lk(mu_);
@@ -79,6 +81,7 @@ class SettingsStore {
     d["directive"] = next.directive;
     d["devName"] = next.devName;
     d["toolLoop"] = next.toolLoop;
+    d["trace"] = next.trace;
     std::string out;
     serializeJson(d, out);
     if (!fsutil::writeFileAtomic(path_, out)) return false;
@@ -241,7 +244,7 @@ struct FixedKnob {
 };
 inline const std::vector<FixedKnob>& fixedKnobs() {
   static const std::vector<FixedKnob> k = {
-      {"midFail", "0", true},       {"codeSbx", "0", true},     {"orchTrace", "0", true},
+      {"midFail", "0", true},       {"codeSbx", "0", true},
       {"tlsVerify", "1", true},     {"loopRounds", "12", false}, {"loopDeadline", "600", false},
       {"compactKB", "48", false},    {"tlsSlots", "1", false},   {"capProbe", "1", false},
       {"capProbeH", "24", false},   {"custBase", "", false},    {"custModel", "", false},
@@ -266,7 +269,7 @@ enum class Verdict { Apply, NoOp, Refuse };
 // the tool loop, the Telegram allowlist and the conversation/memory clears.
 inline bool appliedOrchField(const std::string& f) {
   static const char* kApplied[] = {"orchHost", "provPrio", "subPrio", "sysPrompt", "clearConv",
-                                   "clearMem", "convReset", "orchLoop", "tgAllow",
+                                   "clearMem", "convReset", "orchLoop", "orchTrace", "tgAllow",
                                    "spendCeil",    // lane DEF: the monthly spend ceiling
                                    "tavKey", "clr_tavKey"};   // the web search key
   for (const char* a : kApplied)

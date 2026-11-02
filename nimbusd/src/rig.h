@@ -1743,6 +1743,10 @@ class NimbusdRig {
     mc.park = &park_;
     mc.nowMs = [] { return steadyMs(); };
     mc.embedProvider = [this] { return opt_.embedHost; };
+    mc.holdsEmbedKey = [this] {
+      const orch::EmbedKeys k = usableEmbedKeys(false);
+      return k.openai || k.cumulo || k.mistral;
+    };
     memCtx_ = mc;
     orch::registerMemoryTools(reg_, mc);
     orch::registerFoodTools(reg_);   // the food playbook's portion calculator (as the device)
@@ -1795,6 +1799,9 @@ class NimbusdRig {
       epi_->addMessage(m);
     };
     h.fetchFile = [this](const std::string& p, const std::string& n, std::string& out) { return files_->fetch(p, n, out); };
+    h.dropFile = [this](const std::string& p, const std::string& n) {
+      if (isChatPhoto(p, n)) files_->remove(p, n);
+    };
     h.key = [this](const std::string& p) { return cfg_.providerKey(p); };
     h.priority = [this] { return settings_.get().provPrio; };
     h.routerHost = [this] { return hasCumulo() ? std::string(kCumuloHost) : std::string(); };
@@ -3165,6 +3172,7 @@ class NimbusdRig {
   // No sidecars on a hosted instance: a clipped row keeps its clip, and results.get
   // is what a model reads the rest with.
   void captureToolRow(const orch::HeadToolResult& r) {
+    if (!settings_.get().trace) return;   // device: memory::traceActive
     orch::TraceToolRow tr;
     tr.name = r.name;
     const auto it = traceArgs_.find(r.id);
@@ -3179,7 +3187,7 @@ class NimbusdRig {
                 turnTag_ + ",tool:" + r.name + (r.isError ? ",err" : ""));
   }
   void captureTurnEndRow(const agent::TurnEndEv& ev) {
-    if (turnTag_.empty() || ev.chatId.empty()) return;
+    if (!settings_.get().trace || turnTag_.empty() || ev.chatId.empty()) return;
     const orch::TurnChipDisclosure disc =
         orch::turnChipDisclosure(ev.requestedHost, ev.requestedModel, ev.host, ev.servedModel, ev.model);
     orch::TurnEndRowIn row;

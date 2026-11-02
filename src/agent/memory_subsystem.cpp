@@ -1127,6 +1127,10 @@ void begin() {
     ctx.archiveAvailable = [] { return effHaveSd(); };
   }
   ctx.embed = embedText;
+  ctx.holdsEmbedKey = [] {
+    const nimbus::orch::EmbedKeys k = usableEmbedKeys(false);
+    return k.openai || k.cumulo || k.mistral;
+  };
   ctx.nowHours = [] { return nowHours(); };
   ctx.persistScratch = [] { return persistScratchpad(); };   // the tool reports a RAM-only save
   ctx.ops = &g_memOps;   // what writes did, for the nightly dream's honest outcome (lane M)

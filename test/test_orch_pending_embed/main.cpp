@@ -475,6 +475,46 @@ static void test_counters_call_a_queued_write_queued() {
   TEST_ASSERT_EQUAL_UINT32(0, r.ops.failed);
 }
 
+// No key can embed: the words say which of the two cases it is, and the list running
+// full gets the same answer as the writes before it (device and hosted).
+static void test_no_key_words_tell_the_two_cases_apart() {
+  Rig none;
+  none.failWith = "no embeddings key for mistral";
+  ToolResult w = none.write("my locker code is 4417", owner());
+  TEST_ASSERT_TRUE(has(w.output, "kept as text"));
+  TEST_ASSERT_TRUE(has(w.output, "holds no key"));
+  TEST_ASSERT_FALSE(has(w.output, "device"));
+  Rig held;
+  held.failWith = "no embeddings key for mistral";
+  held.ctx.holdsEmbedKey = [] { return true; };
+  ToolResult x = held.write("my locker code is 4417", owner());
+  TEST_ASSERT_TRUE(has(x.output, "kept as text"));
+  TEST_ASSERT_FALSE(has(x.output, "holds no key"));
+  TEST_ASSERT_TRUE(has(x.output, "made with mistral"));
+  TEST_ASSERT_TRUE(has(x.output, "a Mistral key"));
+  TEST_ASSERT_TRUE(has(x.output, "erase the stored memories"));
+  held.failWith = "no embeddings key for openai";
+  ToolResult y = held.write("my gate code is 88", owner());
+  TEST_ASSERT_TRUE(has(y.output, "an OpenAI or Cumulo Nimbus key"));
+  // At the cap: refused, and still the honest answer.
+  Rig full;
+  full.failWith = "no embeddings key for mistral";
+  for (int i = 0; i < 64; i++) full.write("fact " + std::to_string(i), owner());
+  ToolResult z = full.write("the 65th fact", owner());
+  TEST_ASSERT_FALSE(z.success);
+  TEST_ASSERT_EQUAL_STRING(kMemOutcomeRefused, z.code.c_str());
+  TEST_ASSERT_TRUE(has(z.error, "memory not stored: 64 memories are already waiting"));
+  TEST_ASSERT_TRUE(has(z.error, "holds no key"));
+  TEST_ASSERT_TRUE(has(z.error, "only OpenAI, Mistral or Cumulo Nimbus"));
+  TEST_ASSERT_FALSE(has(z.error, "device"));
+  TEST_ASSERT_FALSE(has(z.error, "no embeddings key for"));
+  // Every other failure class keeps its own words at the cap.
+  Rig out;
+  out.failWith = "HTTP 429 credit_balance_exhausted";
+  for (int i = 0; i < 64; i++) out.write("fact " + std::to_string(i), owner());
+  TEST_ASSERT_TRUE(has(out.write("the 65th fact", owner()).error, "embeddings:"));
+}
+
 static void test_queue_full_or_storage_down_refuses_honestly() {
   Rig r;
   r.failWith = "HTTP 429 credit_balance_exhausted";
@@ -492,7 +532,7 @@ static void test_queue_full_or_storage_down_refuses_honestly() {
   ToolResult x = s.write("my locker code is 4417", owner());
   TEST_ASSERT_FALSE(x.success);
   TEST_ASSERT_EQUAL_STRING(kMemOutcomeRefused, x.code.c_str());
-  TEST_ASSERT_TRUE(has(x.error, "device storage unavailable"));
+  TEST_ASSERT_TRUE(has(x.error, "storage unavailable"));
   TEST_ASSERT_EQUAL_INT(0, (int)s.pending.size());
   // Without the queue bound (an MCP-only context), today's refusal stands.
   Rig n(/*bindQueue=*/false);
@@ -1031,6 +1071,7 @@ int main(int, char**) {
   RUN_TEST(test_billing_refusals_classify_as_out_of_credit);
   RUN_TEST(test_write_during_outage_is_queued_for_every_failure_class);
   RUN_TEST(test_counters_call_a_queued_write_queued);
+  RUN_TEST(test_no_key_words_tell_the_two_cases_apart);
   RUN_TEST(test_queue_full_or_storage_down_refuses_honestly);
   RUN_TEST(test_parked_turn_spends_no_embed);
   RUN_TEST(test_billing_park_notices_once_per_episode);

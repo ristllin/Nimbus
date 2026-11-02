@@ -47,9 +47,32 @@ inline std::string tgRefusalText(TelegramAccess::Admit why, const std::string& c
          chatId + ".";
 }
 
-// What the hosted bot says to a voice note, video or file with no words: it takes
-// text and photos. Never silence: the sender would wait for an answer that never comes.
+// What the hosted bot says to a voice note, video or file: it takes text and photos.
+// Never silence: the sender would wait for an answer that never comes.
 constexpr const char* kTgNotTaken = "This assistant reads text and photos here. Send it as text, or add it under Files on its page.";
+
+// The words of a message that came with something this bot cannot read: they run as a
+// turn, and the head is told what did not reach it, so it never answers as if it had read
+// it. Constant words: a file name is the sender's text and stays out of the framing.
+inline const char* tgAttachmentWord(nimbus::tg::Attachment::Kind k) {
+  using K = nimbus::tg::Attachment::Kind;
+  switch (k) {
+    case K::Document: return "file";
+    case K::Voice: return "voice note";
+    case K::Video:
+    case K::VideoNote: return "video";
+    case K::Sticker: return "sticker";
+    case K::Audio: return "audio clip";
+    case K::Animation: return "animation";
+    default: return "attachment";
+  }
+}
+inline std::string tgCaptionTurn(const nimbus::tg::Update& u) {
+  if (u.attachment.kind == nimbus::tg::Attachment::Kind::None) return u.text;
+  return u.text + "\n\n[The sender also attached a " + tgAttachmentWord(u.attachment.kind) +
+         " to this message. It did not reach you: this assistant reads only text and photos here. "
+         "Say so, and do not guess what it holds.]";
+}
 
 // A photo the head can take: a Telegram photo, or an image sent as a file.
 inline bool isTgPhoto(const nimbus::tg::Attachment& a) {
@@ -62,11 +85,18 @@ inline bool isTgPhoto(const nimbus::tg::Attachment& a) {
 // fetch that failed still reaches the turn, as its reason.
 inline PhotoIn fetchTgPhoto(const nimbus::tg::Attachment& a, const TgInboundIo& io) {
   PhotoIn p;
+  static constexpr const char* kTooMany = "too many photos are waiting for their turn; send it again in a while";
+  if (!photoBudget().hasRoom()) {   // not even downloaded
+    p.why = kTooMany;
+    return p;
+  }
   std::string err, bytes;
-  if (!io.fetchFile || !io.fetchFile(a.fileId, bytes, err))
+  if (!io.fetchFile || !io.fetchFile(a.fileId, bytes, err)) {
     p.why = err.empty() ? "the download failed" : err;
-  else
-    p.bytes = photoBudget().hold(std::move(bytes));
+    return p;
+  }
+  p.bytes = photoBudget().hold(std::move(bytes));
+  if (!p.bytes) p.why = kTooMany;
   return p;
 }
 
@@ -103,7 +133,9 @@ inline TgRouteStats routeTelegramUpdates(const std::vector<nimbus::tg::Update>& 
         io.photoTurn(u.chatId, caption, photos);
         st.turns++;
       } else if (!u.text.empty() && io.turn) {
-        io.turn(u.chatId, u.text);   // text, or the caption of something it cannot take
+        if (u.attachment.kind != nimbus::tg::Attachment::Kind::None && !u.edited && io.send)
+          io.send(u.chatId, kTgNotTaken);   // said at once: the turn may wait behind others
+        io.turn(u.chatId, tgCaptionTurn(u));
         st.turns++;
       } else if (u.attachment.kind != nimbus::tg::Attachment::Kind::None && !u.edited && io.send) {
         io.send(u.chatId, kTgNotTaken);

@@ -297,58 +297,55 @@ static void testToolRows(ndtest::Ctx& c) {
 }
 
 // The page's Home reads GET /api/orch "jobs": a real list while a job runs, empty after.
+// An OpenAI sub-agent is a background response, so the job is really running between polls.
 static void testJobsOnTheRoute(ndtest::Ctx& c) {
   std::printf("  -- (c2) /api/orch lists the job while it runs --\n");
   clearEnv();
-  setenv("CUMULO_API_KEY", "cumulo_sk_test_JOBS", 1);
-  // The sub-agent's provider does not answer until released, so the job is really running.
-  struct Gate : agent::HttpTransport {
-    FakeHttpTransport inner;
-    std::mutex mu;
-    std::condition_variable cv;
-    bool open = false;
-    bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
-      if (has(req.path, "/chat/completions")) {
-        std::unique_lock<std::mutex> lk(mu);
-        cv.wait_for(lk, std::chrono::seconds(20), [this] { return open; });
+  setenv("OPENAI_API_KEY", "sk-test-openai-jobs-000000000000", 1);
+  struct Background : agent::HttpTransport {
+    std::atomic<bool> finished{false};
+    std::atomic<int> posts{0};
+    bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string&) override {
+      out.status = 200;
+      const auto usage = std::string("\"usage\":{\"input_tokens\":5,\"output_tokens\":5}");
+      if (req.method == "GET") {
+        out.body = finished.load()
+                       ? "{\"id\":\"resp_job\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":"
+                         "\"output_text\",\"text\":\"the answer\"}]}]," + usage + "}"
+                       : std::string("{\"id\":\"resp_job\",\"status\":\"in_progress\"}");
+        return true;
       }
-      return inner.exec(req, out, err);
-    }
-    void release() {
-      {
-        std::lock_guard<std::mutex> lk(mu);
-        open = true;
+      const int n = posts.fetch_add(1);
+      if (n == 1) {
+        out.body = "{\"id\":\"resp_job\",\"status\":\"queued\"}";
+        return true;
       }
-      cv.notify_all();
+      const std::string turn = n == 0 ? "{\\\"reply\\\":\\\"Started.\\\",\\\"memory\\\":\\\"\\\",\\\"session_ops\\\":[{\\\"op\\\":\\\"spawn\\\",\\\"task\\\":\\\"long work\\\"}]}"
+                                      : "{\\\"reply\\\":\\\"Reported.\\\",\\\"memory\\\":\\\"\\\"}";
+      out.body = "{\"id\":\"r" + std::to_string(n) + "\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":"
+                 "\"output_text\",\"text\":\"" + turn + "\"}]}]," + usage + "}";
+      return true;
     }
-  } gate;
-  gate.inner.script.push_back(headJson("{\"reply\":\"on it\",\"memory\":\"\",\"session_ops\":[{\"op\":\"spawn\",\"task\":\"long work\"}]}"));
-  Exchange sub;
-  sub.expectPathContains = "/chat/completions";
-  sub.body = "{\"choices\":[{\"message\":{\"content\":\"done\"}}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":2}}";
-  gate.inner.script.push_back(sub);
-  gate.inner.script.push_back(headTurn("Reported."));
+  } http;
   Config cfg;
-  NimbusdRig rig(cfg, opts("vp-c3"), &gate);
-  {
-    Web web(rig);
-    c.ok(has(web.call("GET", "/api/orch").body, "\"jobs\":[]"), "no job: an empty list");
-    web.call("POST", "/api/chat", "text=start+it");
-    bool listed = false;
-    for (int i = 0; i < 200 && !listed; i++) {
-      const std::string b = web.call("GET", "/api/orch").body;
-      listed = has(b, "\"jobs\":[{") && has(b, "\"tag\":");
-      if (!listed) std::this_thread::sleep_for(std::chrono::milliseconds(25));
-    }
-    c.ok(listed, "the job lists on the route the page reads, with its tag");
-    gate.release();
-    bool empty = false;
-    for (int i = 0; i < 400 && !empty; i++) {
-      empty = has(web.call("GET", "/api/orch").body, "\"jobs\":[]") && has(web.replies.sinceJsonArray(0), "Reported");
-      if (!empty) std::this_thread::sleep_for(std::chrono::milliseconds(25));
-    }
-    c.ok(empty, "and leaves it once reported");
+  NimbusdRig rig(cfg, opts("vp-c3"), &http);
+  Web web(rig);
+  c.ok(has(web.call("GET", "/api/orch").body, "\"jobs\":[]"), "no job: an empty list");
+  web.call("POST", "/api/chat", "text=start+it");
+  bool listed = false;
+  for (int i = 0; i < 400 && !listed; i++) {
+    const std::string b = web.call("GET", "/api/orch").body;
+    listed = has(b, "\"jobs\":[{\"tag\":");
+    if (!listed) std::this_thread::sleep_for(std::chrono::milliseconds(25));
   }
+  c.ok(listed, "the job lists on the route the page reads, with its tag");
+  http.finished.store(true);
+  bool empty = false;
+  for (int i = 0; i < 800 && !empty; i++) {
+    empty = has(web.call("GET", "/api/orch").body, "\"jobs\":[]") && has(web.replies.sinceJsonArray(0), "Reported");
+    if (!empty) std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  }
+  c.ok(empty, "and leaves it once reported");
   clearEnv();
 }
 

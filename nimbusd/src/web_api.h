@@ -441,6 +441,7 @@ class WebApi {
     if (name.empty()) name = filename;
     auto err = std::make_shared<std::string>();
     ApiResp r = engineWrite([this, proj, name, bytes, err] {
+      if (isChatPhoto(proj, name)) rig_->files().sweepChatPhotos((uint32_t)time(nullptr));
       return rig_->files().put(proj, name, bytes, *err) ? std::string(R"({"ok":true})") : std::string();
     }, 5);
     if (r.status == 200 && !err->empty()) return refuse("Couldn't store the file: " + *err + ".");
@@ -552,7 +553,7 @@ class WebApi {
   }
 
   bool tryStubsExtra(bool get, const std::string& base, ApiResp& out) {
-    if (base == "/api/trace" && get)    { out = {200, "text/plain; charset=utf-8", "Turn tracing is off on this instance."}; return true; }
+    if (base == "/api/trace" && get)    { out = {200, "text/plain; charset=utf-8", "The raw model exchange is not kept on this instance. The tool calls above are."}; return true; }
     if (base == "/api/mem/blob" && get) { out = {404, "text/plain; charset=utf-8", "reason: no blob store on a hosted instance"}; return true; }
     if (base == "/api/preview")
       { out = okJson(R"({"ok":true})"); return true; }
@@ -837,6 +838,7 @@ class WebApi {
     d["provPrio"] = st.provPrio;
     d["subPrio"] = rig_->subPriority();
     d["orchLoop"] = st.toolLoop;   // device parity (store::orchToolLoop)
+    d["orchTrace"] = st.trace;     // device parity: the box on Assistant > Tools
     d["directive"] = st.directive;   // "" = the shipped default (the page pre-fills it)
     d["directiveDefault"] = nimbus::orch::kOwnerDirectiveDefault;
     d["directiveMax"] = nimbus::orch::kMemDirectiveMax;
@@ -1060,6 +1062,10 @@ class WebApi {
     if (present(names, "orchLoop")) {
       const bool on = hosted::normBool(formValue(body, "orchLoop")) == "1";
       w.settings.push_back([on](HostedSettings& s) { s.toolLoop = on; });
+    }
+    if (present(names, "orchTrace")) {
+      const bool on = hosted::normBool(formValue(body, "orchTrace")) == "1";
+      w.settings.push_back([on](HostedSettings& s) { s.trace = on; });
     }
     return std::string();
   }

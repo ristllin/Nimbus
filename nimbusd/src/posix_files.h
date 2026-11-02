@@ -28,7 +28,11 @@ namespace nimbusd {
 
 // The page's name for a photo attached in the chat: on its way to one turn, not a file the
 // owner keeps. The turn removes it once it has the bytes; one never sent is swept.
+constexpr const char* kChatPhotoProject = "chat";
 constexpr const char* kChatPhotoPrefix = "att-";
+inline bool isChatPhoto(const std::string& project, const std::string& name) {
+  return project == kChatPhotoProject && name.rfind(kChatPhotoPrefix, 0) == 0;
+}
 
 class PosixFiles {
  public:
@@ -191,8 +195,14 @@ class PosixFiles {
     fsutil::writeFileAtomic(indexPath(), store_.dump());
     return true;
   }
-  // Chat photos no turn ever took (the page closed before the message went).
-  void sweepChatPhotos(uint32_t) {}
+  // Chat photos no turn ever took (the page closed before the message went): gone after
+  // a day. `now` is epoch seconds. Runs on each chat photo's upload.
+  void sweepChatPhotos(uint32_t now) {
+    std::vector<std::string> stale;
+    for (const auto* e : store_.list(kChatPhotoProject))
+      if (isChatPhoto(kChatPhotoProject, e->name) && now - e->createdAt > 86400u) stale.push_back(e->name);
+    for (const auto& n : stale) remove(kChatPhotoProject, n);
+  }
   // Delete every file in a project; -1 when the project holds none.
   int removeProject(const std::string& p) {
     std::vector<std::string> names;

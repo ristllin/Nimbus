@@ -183,6 +183,10 @@ struct MemoryContext {
   std::function<bool()> clockSynced = [] { return true; };
   // The configured embeddings provider slug, named in the words only when known.
   std::function<std::string()> embedProvider;
+  // Does this assistant hold any key that can create embeddings? True while it still
+  // cannot embed means the key cannot reach the memories already stored (their space is
+  // fixed), which has a different fix from holding no such key. Null = none held.
+  std::function<bool()> holdsEmbedKey;
   // A park started for a new reason (raw = the seam's token). The device tells
   // the owner once per billing episode.
   std::function<void(EmbedFail kind, const std::string& raw)> onParked;

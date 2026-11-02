@@ -21,6 +21,7 @@
 #include "nimbus/orch/row_overlay.h"
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/turn_images.h"
+#include "posix_files.h"
 #include "posix_fs.h"
 
 // hosted_photos - photos on a hosted instance: the same turn the device builds (owner
@@ -43,9 +44,19 @@ constexpr size_t kPhotoHoldMaxBytes = 32u * 1024 * 1024;
 class PhotoBudget {
  public:
   size_t used() const { return used_.load(); }
-  bool hasRoom() const { return true; }
+  bool hasRoom() const { return used() < kPhotoHoldMaxBytes; }
+  // The bytes, counted until the last copy lets go; null when they do not fit.
   std::shared_ptr<const std::string> hold(std::string bytes) {
-    return std::make_shared<const std::string>(std::move(bytes));
+    const size_t n = bytes.size();
+    if (used_.fetch_add(n) + n > kPhotoHoldMaxBytes) {
+      used_.fetch_sub(n);
+      return nullptr;
+    }
+    auto* kept = new std::string(std::move(bytes));
+    return std::shared_ptr<const std::string>(kept, [this, n](const std::string* s) {
+      delete s;
+      used_.fetch_sub(n);
+    });
   }
 
  private:
@@ -70,6 +81,8 @@ class HostedPhotos {
     std::function<void(const std::string& chat, const std::string& text, const std::string& blobPath)> captureRow;
     // The stored copy of a Files entry; false when it is not there.
     std::function<bool(const std::string& project, const std::string& name, std::string& out)> fetchFile;
+    // Drop a Files entry the turn has taken (a chat photo, posix_files.h isChatPhoto).
+    std::function<void(const std::string& project, const std::string& name)> dropFile;
     std::function<std::string(const std::string& provider)> key;
     std::function<std::string()> priority;
     std::function<std::string()> routerHost;
@@ -169,6 +182,7 @@ class HostedPhotos {
     label.ref = ref;
     const std::string path = nimbus::orch::blobPath(dir_, ref, "bin");
     const bool kept = fsutil::writeFileAtomic(path, bytes);
+    if (kept && h_.dropFile) h_.dropFile(p.project, p.name);
     prune();
     const char* why = "";
     const char* real = nimbus::orch::admitImage(set, (const uint8_t*)bytes.data(), bytes.size(), why);

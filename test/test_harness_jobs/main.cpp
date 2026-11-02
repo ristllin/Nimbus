@@ -318,6 +318,18 @@ static void test_short_sso_task_spawn_round_trips() {
   TEST_ASSERT_EQUAL(0, (int)r.adapter.dispatched[0].instruction.rfind("web_search\n\n[Reply size:", 0));
 }
 
+// A turn with a reply clears the spawn's note (apply.cpp): the head's reply already said
+// it. No note means no ack at all, never the bare "[tag - backend/model]" suffix.
+static void test_spawn_with_no_note_sends_no_ack() {
+  Rig r;
+  orch::Spawn s = sp();
+  s.note = "";
+  r.eng->enqueueSpawn(s, "chat1");
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL(1, (int)r.eng->activeCount());   // the job did start
+}
+
 static void test_spawn_ack_message_bytes() {
   Rig r;
   r.eng->enqueueSpawn(sp(), "chat1");
@@ -3091,6 +3103,7 @@ int main(int, char**) {
   RUN_TEST(test_short_sso_task_spawn_round_trips);
   RUN_TEST(test_stuck_job_gives_up_after_15min_of_poll_failures);
   RUN_TEST(test_long_running_job_arc_parks_dim_then_completes);
+  RUN_TEST(test_spawn_with_no_note_sends_no_ack);
   RUN_TEST(test_spawn_ack_message_bytes);
   RUN_TEST(test_job_limit_refusal);
   RUN_TEST(test_spawn_refusals_reach_the_head_with_the_real_reason);

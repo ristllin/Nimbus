@@ -2,6 +2,8 @@
 #include <string>
 #include <vector>
 
+#include <ArduinoJson.h>
+
 #include "daemon_config.h"
 #include "nimbus/harness/http.h"
 #include "nimbus/telegram_offset.h"
@@ -97,10 +99,11 @@ class TelegramChannel {
     agent::HttpResponse resp;
     if (!call("getFile?file_id=" + fileId, "", resp, err)) return false;
     if (resp.status != 200) { err = "the download failed"; return false; }
-    const std::string path = jsonStr(resp.body, "file_path");
+    JsonDocument d;
+    if (deserializeJson(d, resp.body)) { err = "the download failed"; return false; }
+    const std::string path = d["result"]["file_path"] | "";
     if (path.empty()) { err = "the download failed"; return false; }
-    const size_t at = resp.body.find("\"file_size\":");
-    if (at != std::string::npos && (size_t)std::strtoull(resp.body.c_str() + at + 12, nullptr, 10) > maxBytes) {
+    if ((d["result"]["file_size"] | (uint64_t)0) > maxBytes) {
       err = "too large";
       return false;
     }
@@ -109,6 +112,7 @@ class TelegramChannel {
     req.host = "api.telegram.org";
     req.path = "/file/bot" + token_ + "/" + path;
     req.timeoutMs = 30000;
+    req.maxResponseBytes = maxBytes + 1;   // Telegram may omit file_size: stop reading past it
     agent::HttpResponse file;
     std::string e;
     if (!http_ || !http_->exec(req, file, e) || file.status != 200) { err = "the download failed"; return false; }

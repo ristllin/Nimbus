@@ -77,8 +77,9 @@ class DaemonHttpTransport : public agent::HttpTransport {
     curl_easy_setopt(handle_, CURLOPT_HTTPHEADER, hdrs);
     curl_easy_setopt(handle_, CURLOPT_TIMEOUT_MS, (long)req.timeoutMs);
     curl_easy_setopt(handle_, CURLOPT_CONNECTTIMEOUT_MS, 15000L);
+    BodySink bodySink{&out.body, req.maxResponseBytes, false};
     curl_easy_setopt(handle_, CURLOPT_WRITEFUNCTION, &DaemonHttpTransport::onWrite);
-    curl_easy_setopt(handle_, CURLOPT_WRITEDATA, &out.body);
+    curl_easy_setopt(handle_, CURLOPT_WRITEDATA, &bodySink);
     // Error-header capture (HttpRequest::errHeaders), only when the caller asked:
     // a Mistral 429's x-ratelimit-* headers are the only thing that names the
     // quota window, since its body reads the same for all of them (CUM-465). The sink
@@ -117,6 +118,11 @@ class DaemonHttpTransport : public agent::HttpTransport {
     curl_easy_getinfo(handle_, CURLINFO_RESPONSE_CODE, &code);
     curl_slist_free_all(hdrs);
 
+    // The read bound stopped this on purpose: what it holds is the answer.
+    if (rc == CURLE_WRITE_ERROR && bodySink.overLimit) {
+      out.status = (int)code;
+      return true;
+    }
     if (rc != CURLE_OK) {
       err = failureText(rc, howFarSent(req));
       out.status = 0;
@@ -168,9 +174,21 @@ class DaemonHttpTransport : public agent::HttpTransport {
     return uploaded >= (curl_off_t)agent::bodyLength(req) ? Sent::Whole : Sent::Partly;
   }
 
+  struct BodySink {
+    std::string* body;
+    size_t limit;   // 0 = none
+    bool overLimit;
+  };
   static size_t onWrite(char* p, size_t sz, size_t nm, void* ud) {
-    static_cast<std::string*>(ud)->append(p, sz * nm);
-    return sz * nm;
+    auto* s = static_cast<BodySink*>(ud);
+    const size_t n = sz * nm;
+    if (s->limit && s->body->size() + n >= s->limit) {
+      s->body->append(p, s->limit - s->body->size());
+      s->overLimit = true;
+      return 0;   // curl stops the transfer here
+    }
+    s->body->append(p, n);
+    return n;
   }
 
   // One curl header callback per line. A status line opens a header block and

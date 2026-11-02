@@ -522,11 +522,26 @@ PendingEmbed pendingFrom(const MemoryContext& ctx, const VecEntry& e, const Writ
 
 // No key here can embed at all: this is how memory works until one is added, not an
 // outage, and nothing will ever report back. The model says what is true now.
-std::string keptAsTextWords(const std::string& id, bool update) {
-  return std::string(update ? "update kept as text for " : "kept as text: memory ") + id +
-         ". This assistant holds no key that can create embeddings (only OpenAI, Mistral or Cumulo Nimbus keys "
-         "can), so it is found by its words, not by meaning, until the owner adds one. Tell the owner exactly "
-         "that if they ask. No later confirmation will come, so do not promise one.";
+std::string noEmbedKeyWhy(const MemoryContext& ctx, const std::string& detail) {
+  if (ctx.holdsEmbedKey && ctx.holdsEmbedKey()) {
+    const std::string made = detail.empty() ? "another provider" : detail;
+    const char* need = detail == "mistral" ? "a Mistral key"
+                       : detail.empty()    ? "that provider's key"
+                                           : "an OpenAI or Cumulo Nimbus key";
+    return "The memories stored here were made with " + made +
+           " embeddings, and the key this assistant holds cannot add to them, so another key of the same kind "
+           "changes nothing. The owner can add " + need +
+           ", or erase the stored memories on the Memory page so the key it holds takes over";
+  }
+  return "This assistant holds no key that can create embeddings. The owner can add one: only OpenAI, Mistral or "
+         "Cumulo Nimbus keys can";
+}
+
+std::string keptAsTextWords(const MemoryContext& ctx, const std::string& id, bool update, const std::string& detail) {
+  return std::string(update ? "update kept as text for " : "kept as text: memory ") + id + ". " +
+         noEmbedKeyWhy(ctx, detail) +
+         ". Until then it is found by its words, not by meaning. Tell the owner exactly that if they ask. No later "
+         "confirmation will come, so do not promise one.";
 }
 
 // The result of a write that reached the queue.
@@ -535,11 +550,12 @@ ToolResult queuedResult(const MemoryContext& ctx, const PendingEmbed& p, const E
   // Report what is queued now (a coalesced entry keeps the stronger intent).
   const PendingEmbed* queued = ctx.pending->find(p.id);
   const bool update = (queued ? queued->op : p.op) == PendingOp::Update;
-  if (t.kind == EmbedFail::NoKey) return withCode(ToolResult::ok(keptAsTextWords(p.id, update) + note), kMemOutcomeQueued, ctx);
+  if (t.kind == EmbedFail::NoKey)
+    return withCode(ToolResult::ok(keptAsTextWords(ctx, p.id, update, t.detail) + note), kMemOutcomeQueued, ctx);
   return withCode(
       ToolResult::ok(std::string(update ? "queued update for " : "queued memory ") + p.id +
                      (update ? ", not changed yet: " : ", not stored yet: ") + cause +
-                     ". It is kept on the device and " +
+                     ". It is kept and " +
                      (update ? "applied" : "stored") +
                      " automatically when embeddings work again; keyword search finds it "
                      "meanwhile. Until then, do not say it is saved." + note),
@@ -553,6 +569,15 @@ ToolResult enqueueOrRefuse(const MemoryContext& ctx, PendingEmbed p, const Embed
                            const std::string& note, const char* notStored) {
   const std::string cause = embedFailReasonFor(t.kind, t.detail);
   auto refuse = [&](const std::string& why) {
+    // With no key that can embed, this list is all the memory there is: the answer is
+    // the kept-as-text one, not an outage's, and it names the way out.
+    if (t.kind == EmbedFail::NoKey)
+      return withCode(ToolResult::fail(std::string(notStored) + ": " + why + ". Without embeddings, memories are kept "
+                                       "as text, " + std::to_string(PendingEmbeds::kMaxEntries) + " at most and " +
+                                       std::to_string(PendingEmbeds::kMaxPerMember) + " per person. " +
+                                       noEmbedKeyWhy(ctx, t.detail) + ". Removing a memory also makes room. Tell the "
+                                       "owner exactly that; do not say this one was saved."),
+                      kMemOutcomeRefused, ctx);
     return withCode(ToolResult::fail(cause + " (" + notStored + ": " + why + ")"),
                     kMemOutcomeRefused, ctx);
   };
@@ -560,7 +585,7 @@ ToolResult enqueueOrRefuse(const MemoryContext& ctx, PendingEmbed p, const Embed
     case PendingEmbeds::Add::Full:
       return refuse(std::to_string(PendingEmbeds::kMaxEntries) + " memories are already waiting");
     case PendingEmbeds::Add::BytesFull:
-      return refuse("the waiting list on the device is full");
+      return refuse("the waiting list is full");
     case PendingEmbeds::Add::NsFull:
       return refuse("this conversation already has " +
                     std::to_string(PendingEmbeds::kMaxPerMember) + " memories waiting");
@@ -571,7 +596,7 @@ ToolResult enqueueOrRefuse(const MemoryContext& ctx, PendingEmbed p, const Embed
     case PendingEmbeds::Add::Added:
       if (ctx.persistPending && !ctx.persistPending()) {
         ctx.pending->pop(p.id);
-        return refuse("device storage unavailable");
+        return refuse("storage unavailable");
       }
       break;
     case PendingEmbeds::Add::Coalesced:
