@@ -466,11 +466,11 @@ static void test_loop_prose_final_accepted_only_on_the_final_round() {
 }
 
 // A cut round is retried ONCE in the step with a body that differs (more room,
-// effort one step down), then fails as Cut with the real cause: never echoed,
-// never "recovered", never resent identically.
+// effort one step down), then runs once more with the note, whose first attempt is new again,
+// then fails as Cut with the real cause: never echoed, never "recovered", never resent identically.
 static void test_loop_max_tokens_cut_retries_then_fails_loud() {
   FakeProviderDeps d;
-  for (int i = 0; i < 2; i++)
+  for (int i = 0; i < 4; i++)
     d.http.script.push_back({"", "", 200,
         "{\"content\":[{\"type\":\"text\",\"text\":\"trunc\"}],\"stop_reason\":\"max_tokens\"}"});
   auto pd = d.contract();
@@ -480,10 +480,14 @@ static void test_loop_max_tokens_cut_retries_then_fails_loud() {
   std::string conv, out, err;
   TEST_ASSERT_FALSE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, &rig.ht, nullptr));
   TEST_ASSERT_EQUAL_STRING("cut at the output limit (12000 tokens)", err.c_str());
-  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL(4, (int)d.http.seen.size());
   TEST_ASSERT_TRUE(reqBody(d, 0) != reqBody(d, 1));
   TEST_ASSERT_TRUE(bodyHas(d, 0, "\"max_tokens\":8192,\"output_config\":{\"effort\":\"medium\"}"));
   TEST_ASSERT_TRUE(bodyHas(d, 1, "\"max_tokens\":12000,\"output_config\":{\"effort\":\"low\"}"));
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "RAN OUT OF ROOM"));
+  TEST_ASSERT_TRUE(bodyHas(d, 2, "RAN OUT OF ROOM"));
+  TEST_ASSERT_TRUE(bodyHas(d, 3, "RAN OUT OF ROOM"));
+  TEST_ASSERT_TRUE(reqBody(d, 2) != reqBody(d, 3));
 }
 
 // CUM-526 (the CUM-506 class): a tool_use block batched with the final orch_turn
