@@ -126,6 +126,18 @@ Strong at conversation and reasoning.
    will set up from. You see the full key only once.
 5. **To revoke it later.** Return to the same **API keys** page and delete the key.
 
+## Picking a model for daily use
+
+Measured on one script of everyday jobs (memory, files, a food plan, web lookups, helpers,
+a long answer). Details: `coverage/MG-PARITY-2026-11-02.md` in the program notes.
+
+- **Mistral Large 4** and **GLM-5.3** handle daily use. A very long answer on GLM is
+  limited to about 1,800 words, because Z.ai closes a request after 60 seconds.
+- **GLM-5.3 Flash** and **Mistral Medium** handle most of it for less, and slip on food
+  arithmetic more often.
+- **Mistral Small** suits helpers and quick chat. As the main assistant it can say a file
+  was changed without changing it, and the assistant tells you so when you pick it.
+
 ## Z.ai
 
 Conversation, tools and web lookups. Z.ai's search can run months behind, so a

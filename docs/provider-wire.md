@@ -176,14 +176,16 @@ serves:
   `max_tokens` and its reasoning effort. Anthropic rounds get 8,192 tokens with
   `output_config.effort` pinned (medium; low for the fold) on the families that
   accept it, clamped so a generation at the family's slowest measured rate still
-  finishes inside the round's 120 s; Mistral rounds get 6,000 tokens (12,000 on the
-  retry) on Large 4, Medium, Small and Magistral and 4,096 on older models, and a
-  Mistral head that can reason (the models whose `/v1/models` entry says
+  finishes inside the round's 120 s; Mistral's gateway closes a non-streamed request
+  at 60 s, so its rounds have a 65 s deadline and the close reads as a timeout (no
+  same-host retry). Inside that, Large 4 gets about 4,950 tokens (6,050 on the retry),
+  Medium and Small about 5,360 (7,150) and older models 3,000 (4,000), and a Mistral
+  head that can reason (the models whose `/v1/models` entry says
   `capabilities.reasoning`) gets the lowest `reasoning_effort` it takes: `"low"` on
   Large 4 and the hosted GLM, which refuse `"none"`, and `"none"` on the others,
   which refuse `"low"`. A refused value is retried once without the field (HTTP 400
   code 3051, or 422); with no field Large 4 thinks at its default and runs out of
-  output. Z.ai rounds get 3,000 (4,000 on the retry) inside their 50 s. OpenAI sends
+  output. Z.ai rounds get 2,400 (3,000 on the retry) inside their 50 s. OpenAI sends
   no output cap (reasoning would starve the answer). Under the time clamp the first attempt takes three quarters of what
   the round's time allows (never under 3,000 tokens) and the retry after a cut the
   whole fit, at least a third more - a full 120 s round on claude-opus-5 is 4,125
@@ -470,12 +472,14 @@ Z.ai request the device makes (the head, direct or through the Cumulo router's
 `zai` upstream, and every Z.ai sub-agent) carries `reasoning_effort: "low"`; a
 Virtual Nimbus's Z.ai heads (direct and through the router) do the same through
 the same code.
-A head request gets 50 s and 3,000 output tokens (4,000 on the retry after a cut);
-if Z.ai has not answered by then, the turn fails over to the next provider straight
+A head request gets 50 s and 2,400 output tokens (3,000 on the retry after a cut),
+about 1,800 words, because a request that runs past 60 s gets no answer at all; if
+Z.ai has not answered by then, the turn fails over to the next provider straight
 away (no same-host retry) and the notice says Z.ai did not answer in time.
 
 A GLM head runs the same tool loop as the other providers, and Z.ai is a host of
-the mid-turn failover. The compaction fold is a plain completion with no response
+the mid-turn failover. An answer it sends as text instead of an `orch_turn` call is
+delivered as the reply. The compaction fold is a plain completion with no response
 format: its reply is the summary.
 
 ## Cumulo Nimbus router
