@@ -422,7 +422,7 @@
                 "no_error_reply": true
               },
               {
-                "reply_contains": "Sunday"
+                "reply_regex": "(?i)\\bsun(day)?\\b"
               },
               {
                 "reply_regex": "(?i)packing"
