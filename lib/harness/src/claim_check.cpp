@@ -548,6 +548,12 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
     more += "\"" + stale + "\" cites data " + std::to_string(staleAge) + " days old as if it were the state of things. "
             "Do not: ask for an update, or use something newer, or leave it out.\n";
   if (!later.empty()) hlog::log("claims: a promise of later work with nothing behind it -> correction round");
+  return correctionFor(gaps, pending, more, later);
+}
+
+std::string ClaimCheck::correctionFor(const std::vector<orch::ClaimGap>& gaps,
+                                      const orch::TurnEffects& pending,
+                                      const std::string& more, const std::string& later) const {
   if (gaps.empty()) {
     hlog::log("claims: figures unbacked -> correction round");
     std::string out = "[CLAIM CHECK] " + more;

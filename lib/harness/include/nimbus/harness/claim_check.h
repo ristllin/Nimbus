@@ -181,6 +181,11 @@ class ClaimCheck {
   std::string seenText(bool fixedToo) const;   // what a quote (fixedToo) or a reason may come from
   void noteToolText(const std::string& output);
   std::vector<nimbus::orch::FoodGap> foodGaps(const std::string& reply, nimbus::orch::FoodFacts& facts) const;
+  // The correction text for a final turn: the claim fix plus the food/stale notes and
+  // the later-promise line (split out of finalCheck for the complexity gate).
+  std::string correctionFor(const std::vector<nimbus::orch::ClaimGap>& gaps,
+                            const nimbus::orch::TurnEffects& pending,
+                            const std::string& more, const std::string& later) const;
 
   // EFF: the normalized scan cache (claim_check.cpp ensureSeenCache) - the records
   // every check of one turn reads, normalized once instead of per check.
