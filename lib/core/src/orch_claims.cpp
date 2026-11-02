@@ -1343,17 +1343,15 @@ bool spawnRejected(const Scan& sc, size_t i, size_t len, const Cue& cue, int* nu
 }
 
 // What makes "aloud", "out loud" and "on the speaker" a claim of speech or sound: the verb just
-// before it in its clause, not past a clause join ("read your note and laughed out loud").
+// before it in its clause, as near as kSelf's subject must be (selfContext).
 constexpr const char* kSayVerbs[] = {"said", "saying", "spoke", "speaking", "read", "reading", "recited", "voiced"};
 constexpr const char* kPlayVerbs[] = {"played", "playing", "put"};
-constexpr size_t kVoicedVerbBefore = 4;
+constexpr size_t kVoicedVerbBefore = 3;
 
 template <size_t N>
 bool verbJustBefore(const Scan& sc, size_t i, const char* const (&verbs)[N]) {
-  for (size_t d = 1; d <= kVoicedVerbBefore && d <= i && sameClause(sc, i - d, i); d++) {
-    if (tokIn(sc.s, sc.toks[i - d], kClauseJoins)) return false;
+  for (size_t d = 1; d <= kVoicedVerbBefore && d <= i && sameClause(sc, i - d, i); d++)
     if (tokIn(sc.s, sc.toks[i - d], verbs)) return true;
-  }
   return false;
 }
 
@@ -2249,20 +2247,21 @@ struct GapCheck {
     const size_t k = cueToken(sc, cue, cl);
     return k < sc.toks.size() && verbJustBefore(sc, k, kPlayVerbs);
   }
+  // A voice-message claim and a spoken claim ("read it aloud") are the device's own: a hosted
+  // tool cannot send its Telegram voice message or drive its speaker, so they are checked
+  // whatever tools the head had. A spoken claim is backed by speech that played on the speaker
+  // or by a voice message with Telegram's receipt; a voice-message claim only by the receipt.
+  bool voicedGap(bool speaks, ClaimGap& g) {
+    if (voiceDelivered(*ev.fx) || (speaks && backedBy(*ev.fx, kSpeakBacks))) return false;
+    g.variant = voiceUnconfirmed(*ev.fx) ? kGapVoiceUnconfirmed : speaks ? kGapNotSpoken : kGapNoVoiceReceipt;
+    g.deviceOnly = true;
+    return true;
+  }
   bool effectGap(const Cue& cue, const Claim& cl, ClaimGap& g) {
     if (cue.cls == C::Cause) return causeGap(cue, ev.causeEvidence, &g.variant);
     if (musicBacks(cue, cl)) return false;
-    // A voice-message claim and a spoken claim ("read it aloud") are the device's own: a hosted
-    // tool cannot send its Telegram voice message or drive its speaker, so they are checked
-    // whatever tools the head had. A spoken claim is backed by speech that played on the speaker
-    // or by a voice message with Telegram's receipt; a voice-message claim only by the receipt.
     const bool speaks = cue.cls == C::Sent && cue.backs == kSpeakBacks;
-    if (speaks || voiceClaim(cue, cl)) {
-      if (voiceDelivered(*ev.fx) || (speaks && backedBy(*ev.fx, kSpeakBacks))) return false;
-      g.variant = voiceUnconfirmed(*ev.fx) ? kGapVoiceUnconfirmed : speaks ? kGapNotSpoken : kGapNoVoiceReceipt;
-      g.deviceOnly = true;
-      return true;
-    }
+    if (speaks || voiceClaim(cue, cl)) return voicedGap(speaks, g);
     if (!isGap(cue, cl, *ev.fx, &g.variant)) return false;
     if (cue.cls == C::Checked) return !pinStateChecked(cue, cl);
     if (g.variant != kGapPinNoop) return true;
