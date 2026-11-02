@@ -194,6 +194,40 @@ static void checkHardware(ndtest::Ctx& c, DaemonHttpTransport& cl, int port, con
   c.ok(loops.status == 200 && loops.body == "[]", "loops returns a well-formed empty list");
 }
 
+// Routines and wake-ups writes are synchronous on the engine thread, so the
+// answer carries the real result: an action on a missing id (a stale list row -
+// the wake-up fired and was auto-removed, another client deleted the routine) is
+// a no-op and must not report success.
+static void checkRoutines(ndtest::Ctx& c, DaemonHttpTransport& cl, int port, const std::string& tok) {
+  const std::string sched = "schedule=%7B%22kind%22%3A%22daily%22%2C%22at%22%3A%2209%3A00%22%7D";
+  Out made{};
+  for (int i = 0; i < 100; i++) {
+    made = P(cl, port, "/api/loops", tok, "action=create&name=t&prompt=p&" + sched);
+    if (made.status != 503) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  c.ok(made.status == 200 && has(made.body, "\"ok\":true"), "a routine is created");
+  std::string id = "lp000000";
+  const size_t idAt = made.body.find("\"id\":\"");
+  if (idAt != std::string::npos) {
+    const size_t from = idAt + 6;
+    id = made.body.substr(from, made.body.find('"', from) - from);
+  }
+  c.ok(id != "lp000000", "the create answer carries the new id");
+  for (const char* action : {"approve", "pause", "resume", "delete"})
+    c.ok(has(P(cl, port, "/api/loops", tok, std::string("action=") + action + "&id=lpmissing").body,
+             "\"ok\":false"),
+         std::string("loops ") + action + " of a missing id answers ok:false, not a success");
+  c.ok(has(P(cl, port, "/api/loops", tok, "action=delete&id=" + id).body, "\"ok\":true"),
+       "delete of the real id succeeds");
+  c.ok(has(P(cl, port, "/api/loops", tok, "action=delete&id=" + id).body, "\"ok\":false"),
+       "the second delete is a no-op and says so");
+  c.ok(has(P(cl, port, "/api/wakeups", tok, "action=approve&id=lpmissing").body, "\"ok\":false"),
+       "wakeup approve of a missing id answers ok:false");
+  c.ok(has(P(cl, port, "/api/wakeups", tok, "action=cancel&id=lpmissing").body, "\"ok\":false"),
+       "wakeup cancel of a missing id answers ok:false");
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== virtual nimbus web surface (T2, offline, loopback) ===\n");
@@ -246,6 +280,7 @@ int main() {
   checkStatic(c, cl, port, token);
   checkChat(c, cl, port, token);
   checkHardware(c, cl, port, token);
+  checkRoutines(c, cl, port, token);
 
   http.stop();
   eng.stop();

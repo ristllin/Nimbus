@@ -211,11 +211,14 @@ class WebApi {
     if (id.empty()) return refuse("id required");
     NimbusdRig* rig = rig_;
     return engineWrite([rig, action, id]() -> std::string {
-      if (action == "approve") rig->routines().approve(id);
-      else if (action == "pause") rig->routines().setEnabled(id, false);
-      else if (action == "resume") rig->routines().setEnabled(id, true);
-      else if (action == "delete") rig->routines().cancel(id);
-      return R"({"ok":true})";
+      // The write is synchronous here, so the answer carries the real result: a
+      // missing id (a stale list row) is a no-op and must not report success.
+      bool ok = false;
+      if (action == "approve") ok = rig->routines().approve(id);
+      else if (action == "pause") ok = rig->routines().setEnabled(id, false);
+      else if (action == "resume") ok = rig->routines().setEnabled(id, true);
+      else if (action == "delete") ok = rig->routines().cancel(id);
+      return ok ? R"({"ok":true})" : R"({"ok":false})";
     }, 5);
   }
   ApiResp loopCreate(const std::string& body) {
@@ -242,10 +245,14 @@ class WebApi {
       return refuse("action must be mode, approve, or cancel");
     NimbusdRig* rig = rig_;
     return engineWrite([rig, action, value, id]() -> std::string {
-      if (action == "mode") rig->routines().setAskFirst(value == "ask");
-      else if (action == "approve") rig->routines().approve(id);
-      else rig->routines().cancel(id);
-      return R"({"ok":true})";
+      if (action == "mode") {
+        rig->routines().setAskFirst(value == "ask");
+        return R"({"ok":true})";
+      }
+      // approve/cancel of a missing id is a no-op: report it, never a success.
+      const bool ok = action == "approve" ? rig->routines().approve(id)
+                                          : rig->routines().cancel(id);
+      return ok ? R"({"ok":true})" : R"({"ok":false})";
     }, 5);
   }
 
