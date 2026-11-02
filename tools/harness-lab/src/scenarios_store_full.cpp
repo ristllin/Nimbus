@@ -97,7 +97,7 @@ std::string photoTurn(LabRig& rig, const std::string& chat, int k) {
   media.blob = "/mem/blobs/" + l.ref + ".jpg";
   rig.addRow(media);
   const std::string routed = b.render(0).c_str();
-  agent::history::noteInbound(agent::history::inboundForBucket(b, 0, {l.ref}), routed);
+  agent::history::noteInbound(agent::history::inboundForBucket(b, 0, {l.ref}, 0), routed);
   return routed;
 }
 
