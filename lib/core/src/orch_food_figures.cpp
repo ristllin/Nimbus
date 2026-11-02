@@ -1,5 +1,6 @@
 #include "nimbus/orch/food_figures.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +21,8 @@ struct Tok {
   bool approx = false;   // "~450", "about 450"
   Unit unit = Unit::None;
   size_t at = 0, end = 0;   // the number's bytes in the text it was read from
+  bool clauseBreak = false;  // a comma, semicolon or bracket stands before this token
+  bool rangeEnd = false;     // the 2,360 of "2,320-2,360"
 };
 
 bool isDigit(char c) { return c >= '0' && c <= '9'; }
@@ -66,31 +69,48 @@ size_t readNumber(const std::string& s, size_t p, double& v) {
   return p;
 }
 
+// What the punctuation since the last token said about the next one.
+struct Between {
+  bool tilde = false, broke = false, dash = false;
+};
+
+size_t addNumber(const std::string& sentence, size_t p, const Between& gap, std::vector<Tok>& out) {
+  Tok t;
+  t.number = true;
+  t.approx = gap.tilde || (!out.empty() && oneOf(out.back().word, {"about", "around", "approx", "approximately", "roughly"}));
+  t.at = p;
+  t.clauseBreak = gap.broke;
+  t.rangeEnd = gap.dash && !out.empty() && out.back().number;
+  p = readNumber(sentence, p, t.value);
+  t.end = p;
+  out.push_back(t);
+  return p;
+}
+
+size_t addWord(const std::string& sentence, size_t p, const Between& gap, std::vector<Tok>& out) {
+  Tok t;
+  t.clauseBreak = gap.broke;
+  while (p < sentence.size() && (isLetter(sentence[p]) || sentence[p] == '\'')) t.word += sentence[p++];
+  if (!out.empty() && out.back().number && out.back().unit == Unit::None) {
+    if (oneOf(t.word, {"kcal", "kcals", "cal", "cals", "calorie", "calories"})) out.back().unit = Unit::Kcal;
+    else if (oneOf(t.word, {"g", "gm", "gram", "grams"})) out.back().unit = Unit::Gram;
+  }
+  out.push_back(t);
+  return p;
+}
+
 std::vector<Tok> tokensOf(const std::string& sentence) {
   std::vector<Tok> out;
-  bool tilde = false;
+  Between gap;
   for (size_t p = 0; p < sentence.size();) {
     const char c = sentence[p];
-    if (isDigit(c)) {
-      Tok t;
-      t.number = true;
-      t.approx = tilde || (!out.empty() && oneOf(out.back().word, {"about", "around", "approx", "approximately", "roughly"}));
-      t.at = p;
-      p = readNumber(sentence, p, t.value);
-      t.end = p;
-      out.push_back(t);
-      tilde = false;
-    } else if (isLetter(c)) {
-      Tok t;
-      while (p < sentence.size() && (isLetter(sentence[p]) || sentence[p] == '\'')) t.word += sentence[p++];
-      if (!out.empty() && out.back().number && out.back().unit == Unit::None) {
-        if (oneOf(t.word, {"kcal", "kcals", "cal", "cals", "calorie", "calories"})) out.back().unit = Unit::Kcal;
-        else if (oneOf(t.word, {"g", "gm", "gram", "grams"})) out.back().unit = Unit::Gram;
-      }
-      out.push_back(t);
-      tilde = false;
+    if (isDigit(c) || isLetter(c)) {
+      p = isDigit(c) ? addNumber(sentence, p, gap, out) : addWord(sentence, p, gap, out);
+      gap = Between{};
     } else {
-      tilde = c == '~';
+      gap.tilde = c == '~';
+      gap.dash = c == '-';
+      gap.broke = gap.broke || c == ',' || c == ';' || c == '(' || c == ')';
       p++;
     }
   }
@@ -211,8 +231,8 @@ bool leftAt(const std::vector<Tok>& toks, size_t i);
 
 // A bare "2,500" in a sentence that names what it counts: "your calorie target is 2,500".
 Unit bareUnit(const Tok& t, const std::vector<Tok>& toks) {
-  if (hasWord(toks, {"calorie", "calories", "kcal", "kcals"})) return t.value >= 500 ? Unit::Kcal : Unit::None;
-  return hasWord(toks, {"protein"}) && t.value >= 20 ? Unit::Gram : Unit::None;
+  if (t.value >= 500 && hasWord(toks, {"calorie", "calories", "kcal", "kcals"})) return Unit::Kcal;
+  return t.value >= 20 && t.value < 500 && hasWord(toks, {"protein", "floor"}) ? Unit::Gram : Unit::None;
 }
 
 Unit figureUnit(const Tok& t, const std::vector<Tok>& toks, bool macros) {
@@ -372,7 +392,7 @@ std::vector<Stated> prescribedTargets(const std::vector<Tok>& toks, bool macros)
   std::vector<Stated> out;
   const bool firm = hasWord(toks, {"should", "must", "need"});
   if ((!firm && !hasWord(toks, {"eat", "plan", "plan's", "calls", "recommended", "recommend", "requires"})) || namesAMeal(toks) ||
-      hasWord(toks, {"average", "averaged", "averaging", "ate", "eaten", "burn", "burns", "burned", "deficit", "surplus", "maintenance",
+      hasWord(toks, {"average", "averages", "averaged", "averaging", "ate", "eaten", "burn", "burns", "burned", "deficit", "surplus", "maintenance",
                      "tdee", "yesterday"}))
     return out;
   for (size_t i = 0; i < toks.size(); i++)
@@ -436,7 +456,7 @@ bool needsMore(const std::vector<Tok>& toks, size_t i, size_t need) {
 bool leftAfter(const std::vector<Tok>& toks, size_t i) {
   for (size_t f = i + 1; f < toks.size() && f <= i + 4; f++) {
     const Tok& t = toks[f];
-    if (t.number) return false;
+    if (t.number || t.clauseBreak) return false;   // "2,360 kcal, under your target" is the total
     if (t.word == "spare") return toks[i].unit == Unit::Kcal;   // "40 g to spare" over a floor is a surplus
     if (oneOf(t.word, {"left", "remaining", "remain", "remains", "short", "needed"})) return !(t.word == "needed" && namesAMeal(toks));
     if (oneOf(t.word, {"below", "under"})) return targetWordWithin(toks, f + 1, 4);
@@ -459,7 +479,7 @@ bool leftBefore(const std::vector<Tok>& toks, size_t i) {
   bool plain = true;   // "short by at least": nothing else between, or "short: today is at 88 g" reads as left
   for (size_t b = i; b > 0 && i - b < 5; b--) {
     const Tok& t = toks[b - 1];
-    if (t.number) return false;
+    if (t.number || toks[b].clauseBreak) return false;
     if (t.word == "short") return plain;
     if (oneOf(t.word, {"leaves", "leaving", "remaining"})) return true;
     if (t.word == "left") return !leftHasItsFigure(toks, b - 1);
@@ -497,6 +517,7 @@ bool saysAtMost(const std::string& low) {
 // The sentence is about a meal it proposes, on top of the ledger: an earlier figure of this kind,
 // or a word that points at one ("That leaves ...", "After the pasta ...", "Protein stays ...").
 bool projectedLeft(const std::vector<Tok>& toks, size_t i) {
+  if (i + 2 < toks.size() && toks[i + 2].word == "short") return true;   // too small a "short" takes a meal into account
   for (size_t b = 0; b < i; b++) {
     if (toks[b].number ? toks[b].unit == toks[i].unit
                        : oneOf(toks[b].word, {"after", "adding", "add", "plus", "then", "brings", "bringing", "takes", "taking", "puts",
@@ -606,7 +627,7 @@ bool figureLink(const Tok& t) {
 
 void takeFigure(const std::vector<Tok>& toks, size_t i, DayFigures& d) {
   const Tok& t = toks[i];
-  if (!t.number || leftAt(toks, i)) return;
+  if (!t.number || t.rangeEnd || leftAt(toks, i)) return;   // a range is an estimate, not the ledger's
   if (t.unit == Unit::Kcal && !d.kcal) d.kcal = &t;
   if (t.unit == Unit::Gram && !d.protein && i + 2 < toks.size() && toks[i + 2].word == "protein") d.protein = &t;
 }
@@ -883,29 +904,39 @@ std::string ownerStatementsOf(const std::string& text) {
   return out;
 }
 
+namespace {
+
+// A line's first bare figure, 0 when it has none. A date is not bare.
+double firstBareFigure(const std::string& line) {
+  std::string field;
+  bool quoted = false;
+  for (size_t i = 0; i <= line.size(); i++) {
+    const char c = i < line.size() ? line[i] : ',';
+    if (c == '"') quoted = !quoted;
+    else if (c != ',') field += (c == ' ' || c == '\t' || c == '\r') ? std::string() : std::string(1, c);
+    else if (!quoted) {
+      if (!field.empty() && field.find_first_not_of("0123456789.") == std::string::npos && std::strtod(field.c_str(), nullptr) >= 20)
+        return std::strtod(field.c_str(), nullptr);
+      field.clear();
+    }
+  }
+  return 0;
+}
+
+}  // namespace
+
+// A row is date,metric,target,source, or a part of one (files.edit): a line's first bare figure is its
+// target, and what follows it is the source's words. A set-aside row is never counted.
 bool unsourcedTargetWrite(const std::string& text, const std::string& sourceNumbers, double* figure) {
   const std::vector<double> sources = parseNumbers(sourceNumbers);
-  const auto unsourced = [&](const std::string& field) {
-    if (field.empty() || field.find_first_not_of("0123456789.") != std::string::npos) return false;
-    const double v = std::strtod(field.c_str(), nullptr);
-    if (v < 20 || nearSource(v, sources, 0.5)) return false;
-    if (figure) *figure = v;
-    return true;
-  };
-  std::string field;
-  bool quoted = false, comment = false, atStart = true;
-  for (size_t i = 0; i <= text.size(); i++) {
-    const char c = i < text.size() ? text[i] : '\n';
-    if (atStart && c == '#') comment = true;
-    atStart = c == '\n';
-    if (c == '"') quoted = !quoted;
-    else if (c == ',' && quoted) continue;   // "2,500"
-    else if (c == ',' || c == '\n') {
-      if (!comment && unsourced(field)) return true;
-      field.clear();
-      if (c == '\n') comment = false;
-    } else if (c != ' ' && c != '\t' && c != '\r') {
-      field += c;
+  for (size_t p = 0; p <= text.size();) {
+    const size_t e = std::min(text.find('\n', p), text.size());
+    const std::string line = text.substr(p, e - p);
+    p = e + 1;
+    const double v = line.rfind("#", 0) == 0 ? 0 : firstBareFigure(line);
+    if (v > 0 && !nearSource(v, sources, 0.5)) {
+      if (figure) *figure = v;
+      return true;
     }
   }
   return false;

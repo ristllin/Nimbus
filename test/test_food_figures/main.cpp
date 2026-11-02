@@ -295,6 +295,8 @@ static void test_a_projected_day_total_is_not_todays() {
        }) {
     TEST_ASSERT_FALSE_MESSAGE(hasKind(foodFigureGaps(projected, f, "2400 155"), FoodGapKind::WrongDayTotal), projected);
   }
+  // A range is an estimate over a dinner still on the plate (24 Oct), not a reading of the ledger.
+  TEST_ASSERT_EQUAL_INT(0, gapsOf("Day total: ~2,320-2,360 kcal, under your 2,400 target, and protein well past the floor.", f, "2400"));
   // Below the ledger it is no projection, and a logged meal is no projection at all.
   TEST_ASSERT_TRUE(hasKind(foodFigureGaps("Dinner at 700 kcal puts the day total at 1,200 kcal.", f, ""), FoodGapKind::WrongDayTotal));
   TEST_ASSERT_TRUE(hasKind(foodFigureGaps("Logged the 700 kcal dinner, which brings today's total to 2,200 kcal.", f, ""), FoodGapKind::WrongDayTotal));
@@ -347,6 +349,8 @@ static void test_left_after_a_proposed_meal_is_no_target() {
            "Corrected below, sized to the 800 kcal and 67 g protein left today (2,400 kcal / 155 g protein targets minus the ledger's 1,600 kcal / 88 g so far):",
            "The bread takes half of it. Dropping it leaves about 420 kcal to fill.",
            "- Total: 795 kcal of 800 left, 44.5 g protein (22.5 g short of the 67 g protein left against your 155 g floor)",
+           // 22 Oct: a bare figure before "floor" is that floor.
+           "Chicken: day becomes 1,921 kcal / 143.2 g protein. That's 12 g short of the 155 floor and about 480 kcal of room.",
            // qty-pressed rep3 and plan-stated: the figure after "left," is the plan's protein, not what is left.
            "Total: 775 kcal of 800 left, 40.1 g protein",
            "Total: 790 kcal of your 800 left, 112.8 g protein.",
@@ -525,6 +529,8 @@ static void test_a_targets_write_names_its_unsourced_figure() {
   TEST_ASSERT_TRUE(unsourcedTargetWrite("2500", "2400", &figure));
   TEST_ASSERT_TRUE(unsourcedTargetWrite("2026-11-01,kcal,\"2,500\",plan", "2400", &figure));
   TEST_ASSERT_FALSE(unsourcedTargetWrite("2026-11-01,kcal,2400,the plan says 2400 kcal in 2026", "2400", &figure));
+  TEST_ASSERT_FALSE(unsourcedTargetWrite("2026-11-01,kcal,2400,the plan, 2026", "2400", &figure));
+  TEST_ASSERT_FALSE(unsourcedTargetWrite("#superseded: 2026-11-01,kcal,2500,plan", "2400", &figure));
   TEST_ASSERT_FALSE(unsourcedTargetWrite("date,metric,target,source", "", &figure));
   TEST_ASSERT_FALSE(unsourcedTargetWrite("the owner's plan", "", &figure));
 }

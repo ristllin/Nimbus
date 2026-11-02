@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import subprocess
 import sys
 import threading
@@ -53,6 +54,15 @@ def _git(*args: str) -> str:
     return proc.stdout.strip()
 
 
+def tree_head() -> str:
+    """The commit a run measured. A tree exported with git archive has no .git, so it carries .eval-tree-head."""
+    head = _git("rev-parse", "HEAD")
+    marker = REPO / ".eval-tree-head"
+    if not head and marker.exists():
+        head = marker.read_text(encoding="utf-8").strip()
+    return head
+
+
 def provenance(args) -> dict:
     """What a run measured: the commit, local edits, the driver build and the run settings."""
     dirty = [ln for ln in _git("status", "--porcelain").splitlines() if "tests/evals/" not in ln]
@@ -65,7 +75,7 @@ def provenance(args) -> dict:
         "reps": args.reps,
         "scenarios": args.scenarios or "all",
         "backend": args.backend,
-        "git_head": _git("rev-parse", "HEAD"),
+        "git_head": tree_head(),
         "git_dirty_outside_evals": dirty,
         "driver_built": dt.datetime.fromtimestamp(built, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "started": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -207,6 +217,31 @@ def judge_run(t: Task, turns: list[dict], history: list[dict] | None = None) -> 
     return out
 
 
+# What the device adds to a reply. None of the scenarios has a reply that deserves one: a run whose delivered
+# reply carries one failed, whatever the judge read, because the owner saw it. The criteria never look at these.
+DEVICE_LINE = re.compile(r"\((?:Correction|Note):[^)]*\)")
+DEVICE_LINE_ID = "device-line"
+
+
+def device_lines(turns: list[dict]) -> list[str]:
+    out = []
+    for t in turns:
+        for text in t.get("deliveries") or [t.get("reply", "")]:
+            out += DEVICE_LINE.findall(text or "")
+    return out
+
+
+def with_device_lines(rec: dict) -> dict:
+    """The record's verdict with its device lines counted, for a new run or one saved before this rule."""
+    lines = device_lines(rec.get("turns") or [])
+    rec["device_lines"] = lines
+    verdict = rec.get("verdict")
+    if lines and verdict and DEVICE_LINE_ID not in verdict["failed"]:
+        verdict.update(pass_judge=verdict["pass"], **{"pass": False, "pass_strict": False})
+        verdict["failed"] = sorted(verdict["failed"] + [DEVICE_LINE_ID])
+    return rec
+
+
 def _failed_ids(judges: list[dict], required: bool) -> list[str]:
     return sorted({c["id"] for j in judges for c in j["criteria"] if c["required"] == required and not c["pass"]})
 
@@ -266,6 +301,7 @@ def execute(t: Task, budget: Budget) -> dict:
         "verdict": decide(judges, errored),
         "cost_usd": {"head": head, "judges": round(sum(j["cost_usd"] for j in judges), 6)},
     }
+    with_device_lines(rec)
     budget.add(head["total"] + rec["cost_usd"]["judges"])
     files["final"].write_text(json.dumps(rec, indent=1), encoding="utf-8")
     return rec

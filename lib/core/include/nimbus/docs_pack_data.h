@@ -91,8 +91,9 @@ or a plan, `food-coach` (answer first, only the foods the owner has, amounts fro
 the `food.portions` calculator). The model never rebuilds a day's total from
 memory or the conversation; the fold summary copies the ledger's dated totals.
 
-The food log is one file: a write to another CSV named as a meal or food log is
-refused with the call to use instead, and a log left at `nutrition/meal_log.csv`
+The food log is one file: a write to another CSV whose name says both food and log
+(or only "log" in a food project) is refused with the call to use instead; a weight
+log or a list of meal ideas is not one, and a log left at `nutrition/meal_log.csv`
 folds into the ledger at the next start. The day's sum counts meal rows and nothing
 else: a bare comma in a row's items is read back into the items, a row that states
 a total is never summed, a pasted header is no row, and a meal logged twice counts
@@ -103,12 +104,15 @@ unknown, so the day shows protein known and unknown apart.
 Daily targets live in `food/food-targets.csv` (`date,metric,target,source`), a row
 per metric with where it came from. With targets stored the block shows what is left,
 worked out by the device; with none, a food turn is told to read them first and which
-plan files it could read. The reply is then checked before delivery
-(`food_figures.h`): a stated target, or a "left" figure that implies one, needs its
-number in something the turn read or the owner said (the assistant's earlier replies
-and the fold summary are not sources); a stated day total must be the ledger's; "you
-need X g" over a row of unknown protein is not a figure. One correction round, then a
-calm line on the reply. On a food turn the earlier rows of the foods the message names
+plan files it could read. A write to the targets file with a figure nothing this turn
+holds is refused, by any tool that can write it. The reply is then checked before
+delivery (`food_figures.h`): a stated target, or a "left" figure that implies one, needs
+its number in something the turn read or the owner said (the assistant's earlier replies
+and the fold summary are not sources); a stated day total, the figure its words bind to,
+must be the ledger's; "you need X g" over a row of unknown protein is not a figure. A
+figure for one meal, a comparison, a total or a "left" over a meal the reply only
+proposes are none of these, and a line on the reply names only what the reply said. One
+correction round, then a calm line on the reply. On a food turn the earlier rows of the foods the message names
 ride along, and a keyed write says when an earlier day's row of the same food holds a
 figure off by more than a quarter, so the same food keeps the same estimate. An
 approved stored skill about food rides a logged meal.)NIMBUSDOC"},

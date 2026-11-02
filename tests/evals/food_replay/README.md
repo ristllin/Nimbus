@@ -19,3 +19,11 @@ python3 tests/evals/food_replay/replay.py --after . --before <tree of the base c
 
 `--full <file.jsonl>` also runs every delivered reply of a private transcript through the checks and lists what they would
 add, so a new rule is read against all the real replies before it ships. That file holds personal data and stays out of the repo.
+
+`recorded.py` reads the replies a food coach eval already recorded through a tree's checks, again with no model calls: it
+strips the device's lines, rebuilds the ledger from each run's seed and write receipts, and lists what the tree would add. A
+change to the checks is read against every model's real replies before anything is spent on new runs.
+
+```bash
+python3 tests/evals/food_replay/recorded.py --after . --label <eval run dir> [--label ...]
+```

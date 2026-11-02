@@ -449,3 +449,42 @@ def test_a_judge_with_no_verdict_is_asked_again_then_errors(monkeypatch):
     graded = {"judges": [{"criteria": [{"evidence": "e", "pass": False}]}]}
     assert not fcrun.ungraded(graded)
     assert fcrun.ungraded({"judges": [{"criteria": [{"evidence": "no verdict returned", "pass": False}]}]})
+
+
+def test_a_device_line_on_the_delivered_reply_fails_the_run():
+    """The owner saw it, whatever the judge read: a false correction is the complaint itself."""
+    verdict = {"pass": True, "pass_strict": True, "failed": [], "advisory_failed": []}
+    turn = {"reply": "x", "deliveries": ["Fine.\\n\\n(Correction: the food log has today at 1400 kcal.)"]}
+    rec = fcrun.with_device_lines({"turns": [turn], "verdict": dict(verdict)})
+    assert rec["verdict"]["pass"] is False and rec["verdict"]["pass_strict"] is False
+    assert rec["verdict"]["pass_judge"] is True
+    assert rec["verdict"]["failed"] == [fcrun.DEVICE_LINE_ID]
+    assert rec["device_lines"] == ["(Correction: the food log has today at 1400 kcal.)"]
+    # Counted once, on a saved record read twice, and a clean reply is untouched.
+    assert fcrun.with_device_lines(rec)["verdict"]["failed"] == [fcrun.DEVICE_LINE_ID]
+    clean = fcrun.with_device_lines({"turns": [{"reply": "Fine (a note in the model's own words)."}], "verdict": dict(verdict)})
+    assert clean["verdict"]["pass"] is True and clean["device_lines"] == []
+
+
+def test_the_report_counts_device_lines(tmp_path):
+    scn = fcworld.load_scenarios()[0]["id"]
+    rec = {
+        "scenario": scn,
+        "rep": 1,
+        "turns": [{"reply": "Fine.\\n\\n(Note: that cites a date 9 days old. Check it is still current.)"}],
+        "verdict": {"pass": True, "pass_strict": True, "failed": [], "advisory_failed": [], "judges_agree": None, "errored": False},
+        "cost_usd": {"head": {"total": 0.0, "by": {}}, "judges": 0.0},
+    }
+    (tmp_path / scn).mkdir()
+    (tmp_path / scn / "rep1.json").write_text(json.dumps(rec), encoding="utf-8")
+    summary = fcreport.summarize(fcreport.load_records(tmp_path), "x", fcworld.load_config())
+    assert summary["totals"]["device_lines"] == 1 and summary["totals"]["pass"] == 0
+    assert "device line: 1 of 1" in fcreport.render_markdown(summary)
+
+
+def test_provenance_names_the_commit_of_an_exported_tree(tmp_path, monkeypatch):
+    monkeypatch.setattr(fcrun, "_git", lambda *a: "")
+    monkeypatch.setattr(fcrun, "REPO", tmp_path)
+    assert fcrun.tree_head() == ""
+    (tmp_path / ".eval-tree-head").write_text("abc123\n", encoding="utf-8")
+    assert fcrun.tree_head() == "abc123"

@@ -37,8 +37,10 @@ see any of them:
 The last scenario is a guard: a fix for invented food must not turn into guessing or
 into a stall when the owner has named nothing.
 
-A scenario passes a run when every required criterion passes. Advisory criteria are
-reported and never gate. A scenario meets the target when at least 4 of its 5 runs pass
+A scenario passes a run when every required criterion passes and the delivered reply
+carries no device line ("(Correction: ...)", "(Note: ...)"). That check is code, not the
+judge: no scenario has a reply that deserves one, and a false correction is the same
+complaint as a wrong figure. Advisory criteria are reported and never gate. A scenario meets the target when at least 4 of its 5 runs pass
 (`config.json`).
 
 ## How a run works

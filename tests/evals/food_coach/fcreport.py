@@ -7,6 +7,7 @@ import json
 import re
 from pathlib import Path
 
+import fcrun
 import fcworld
 
 REC_NAME = re.compile(r"^rep\d+\.json$")
@@ -17,7 +18,7 @@ def load_records(label_dir: Path) -> list[dict]:
     for path in sorted(label_dir.glob("*/rep*.json")):
         if REC_NAME.match(path.name):
             recs.append(json.loads(path.read_text(encoding="utf-8")))
-    return [r for r in recs if "skipped" not in r]
+    return [fcrun.with_device_lines(r) for r in recs if "skipped" not in r]
 
 
 def _scenario_row(scn: dict, recs: list[dict], target: int) -> dict:
@@ -42,6 +43,7 @@ def _scenario_row(scn: dict, recs: list[dict], target: int) -> dict:
         "failed_criteria": dict(sorted(failed.items())),
         "advisory_failed": dict(sorted(advisory.items())),
         "judges_agree": f"{sum(agree)}/{len(agree)}" if agree else "n/a",
+        "device_lines": sum(1 for r in mine if r.get("device_lines")),
     }
 
 
@@ -64,6 +66,7 @@ def summarize(recs: list[dict], label: str, cfg: dict) -> dict:
             "runs": len(recs),
             "pass": sum(v["pass"] for v in scenarios.values()),
             "pass_strict": sum(v["pass_strict"] for v in scenarios.values()),
+            "device_lines": sum(v["device_lines"] for v in scenarios.values()),
             "errors": sum(v["errors"] for v in scenarios.values()),
             "scenarios_meeting_target": sum(1 for v in scenarios.values() if v["meets_target"]),
             "scenarios": len(scenarios),
@@ -96,6 +99,7 @@ def render_markdown(summary: dict) -> str:
         "",
         f"Totals: {t['pass']} of {t['runs']} runs pass ({t['pass_strict']} strict), {t['errors']} errored; "
         f"{t['scenarios_meeting_target']} of {t['scenarios']} scenarios meet the target.",
+        f"Runs whose delivered reply carries a device line: {t['device_lines']} of {t['runs']}.",
         f"Spend: head ${cost['head']:.4f}, judges ${cost['judges']:.4f}, total ${cost['total']:.4f}.",
         "",
     ]
