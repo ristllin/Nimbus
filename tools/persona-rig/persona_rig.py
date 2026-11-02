@@ -73,7 +73,9 @@ FAKE_KEY_PREFIX = "RIG_FAKE_"
 TRANSIENT_RE = re.compile(r"\bHTTP (429|500|502|503|504|529)\b")
 # A transport-level failure (no HTTP status at all) is the same class: the request never
 # got an answer, so no tool ran and another try repeats no side effect.
-TRANSPORT_RE = re.compile(r"transport fail|no response|partial file|connection (reset|timed out)|did not answer in time", re.I)
+TRANSPORT_RE = re.compile(
+    r"transport fail|no response|partial file|connection (reset|timed out)|did not answer in time", re.I
+)
 # Judge prices in cents per million tokens (input, output), from model_price_defaults.h.
 JUDGE_PRICES = {"claude-sonnet-4-6": (300, 1500), "gpt-5.5": (500, 3000)}
 JUDGE_FALLBACK_CENTS = 2  # one call, when the provider reported no usage

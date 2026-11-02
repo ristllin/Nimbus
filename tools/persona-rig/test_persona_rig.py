@@ -57,7 +57,9 @@ class FakeNimbusd:
         if "flaky-transport" in text and self.transient_failures > 0:
             self.transient_failures -= 1
             self.last_turn_failed = True
-            self.log.append("provider: transport fail api.mistral.ai/v1/chat/completions: Transferred a partial file: no response")
+            self.log.append(
+                "provider: transport fail api.mistral.ai/v1/chat/completions: Transferred a partial file: no response"
+            )
             self.log.append("orchestrator: mistral did not answer in time - failing over without a retry")
             self.push("assistant", "That didn't finish - try again later.")
         elif "flaky" in text and self.transient_failures > 0:
