@@ -42,7 +42,9 @@ def test_the_freenove_twin_imports_every_test_of_test_ota():
 def test_the_freenove_twin_imports_nothing_test_ota_does_not_define():
     defined = _top_level_defs(HIL / "test_ota.py")
     imported = _imported_from_test_ota(HIL / "test_ota_freenove.py")
-    assert imported <= defined, f"test_ota_freenove.py imports names test_ota.py does not define: {sorted(imported - defined)}"
+    assert imported <= defined, (
+        f"test_ota_freenove.py imports names test_ota.py does not define: {sorted(imported - defined)}"
+    )
 
 
 def test_the_freenove_twin_overrides_the_board_fixture():
