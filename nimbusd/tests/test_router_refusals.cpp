@@ -257,12 +257,19 @@ static void testParkedFallbackHostIsReallyAsked(ndtest::Ctx& c) {
   orch::providerPark().clear();
   parkDue("cumulo", orch::ParkCause::WalletEmpty);
   router.clearSeen();
-  for (int i = 0; i < 5; i++) {
-    rig.engine().canFoldNow();
-    rig.engine().headOnFallback();
+  // What a hosted instance really reads: the state surface (hosts.parked is unset here, so
+  // the candidate lists never ask the park; test_router_refusal_repro pins those, bound).
+  {
+    EngineThread eng(&rig);
+    ReplyBuffer replies;
+    WebApi api(&rig, &eng, &replies);
+    for (int i = 0; i < 5; i++) {
+      ApiResp out;
+      api.handle("GET", "/api/orch", "", out);
+    }
   }
-  c.eqi(router.paidRequests(), 0, "reading the candidates sends nothing");
-  c.ok(parked("cumulo"), "and the park stands");
+  c.eqi(router.paidRequests(), 0, "reading the state sends nothing");
+  c.ok(parked("cumulo") && !orch::providerPark().isProbing("cumulo"), "the park stands and the re-check stays due");
   rig.recheckTick();
   c.eqi(router.paidRequests(), 1, "the idle re-check makes the one request");
   bool toRouter = false;
@@ -425,9 +432,249 @@ static void testOrchShowsThePark(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// ---- the fix pass: a refusal the wire recovered, and a body with no reason ----------
+
+// A reply cut at the output limit, in the Responses shape the router default speaks.
+static FakeRouter::Answer cutReply() {
+  FakeRouter::Answer a;
+  a.body = "{\"id\":\"r\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},"
+           "\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}";
+  return a;
+}
+static FakeRouter::Answer badGateway() {
+  FakeRouter::Answer a;
+  a.status = 502;
+  a.body = "{\"error\":{\"message\":\"bad gateway\"}}";
+  return a;
+}
+
+// The first request of a turn on a funded wallet under 500 credits declares no cap, so the
+// router clamps it; what the capped resend gets is what the owner hears about.
+static TurnRecord clampThen(const std::string& tag, FakeRouter::Answer (*then)(), bool clamped, int* requests) {
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  Harness h(tag, [then, clamped](const FakeRouter::Seen& s) {
+    if (clamped && declaredCap(s.body) < 0) return refuse("insufficient_credits_for_call");
+    return then();
+  }, baseOpt(tag));
+  const TurnRecord t = h.rig.say("owner", "hello");
+  if (requests) *requests = h.router.paidRequests();
+  clearEnv();
+  return t;
+}
+
+// A clamp the wire recovered is over. A cut reply and a 502 on the capped resend read and
+// behave exactly as they do with no clamp: the salvage, the same-host retry, their own words.
+static void testARecoveredClampIsNotTheCause(ndtest::Ctx& c) {
+  std::printf("  -- a clamp the wire recovered is not the cause of what fails later --\n");
+  int plain = 0, capped = 0;
+  const TurnRecord cutPlain = clampThen("rr-cut-a", cutReply, false, &plain);
+  const TurnRecord cutCapped = clampThen("rr-cut-b", cutReply, true, &capped);
+  c.ok(!has(cutCapped.reply, "larger than"), "a cut reply is not blamed on the credits: " + cutCapped.reply);
+  c.eq(cutCapped.reply, cutPlain.reply, "a cut capped reply reads as any cut reply");
+  const TurnRecord gwPlain = clampThen("rr-gw-c", badGateway, false, &plain);
+  const TurnRecord gwCapped = clampThen("rr-gw-d", badGateway, true, &capped);
+  c.ok(has(gwPlain.reply, "server error"), "the baseline names the server error: " + gwPlain.reply);
+  c.ok(!has(gwCapped.reply, "larger than"), "a 502 on the resend is not blamed on the credits: " + gwCapped.reply);
+  c.eq(gwCapped.reply, gwPlain.reply, "a 502 after a clamp reads as any 502");
+  c.eqi(plain, 2, "the baseline retries on the same host once");
+  c.eqi(capped, 4, "and so does the turn that was clamped first (each run: refused, then capped)");
+}
+
+// The resend's own refusal decides, not the clamp it answered: an upstream out of quota
+// fails over and cools; a spent key budget parks in its own words.
+static void testTheResendsRefusalIsTheCause(ndtest::Ctx& c) {
+  std::printf("  -- the capped resend's own refusal is the cause --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  int asked = 0;
+  Harness h("rr-res-q", [&asked](const FakeRouter::Seen& s) {
+    if (!has(s.path, "/router/anthropic/")) return served(s, "on the default");
+    return asked++ == 0 ? refuse("insufficient_credits_for_call") : refuse("upstream_quota_exhausted");
+  }, baseOpt("rr-res-q"));
+  h.rig.applyOrchModel("cumulo", "anthropic/claude-sonnet-5");
+  const TurnRecord t = h.rig.say("owner", "hello");
+  c.ok(has(t.reply, "on the default"), "the resend's upstream refusal answers on the default: " + t.reply);
+  c.ok(!has(t.reply, "larger than"), "the wallet is not blamed");
+  c.eq(h.rig.modelFor("cumulo"), "anthropic/claude-sonnet-5", "the pick is kept");
+  c.ok(!parked("cumulo"), "nothing parked");
+  c.eqi(asked, 2, "the clamp and its resend");
+  h.rig.say("owner", "again");
+  c.eqi(asked, 2, "the failing upstream cooled: the next turn does not ask it");
+  clearEnv();
+
+  setenv("CUMULO_API_KEY", kKey, 1);
+  Harness b("rr-res-b", [](const FakeRouter::Seen& s) {
+    return declaredCap(s.body) < 0 ? refuse("insufficient_credits_for_call") : refuse("budget_exceeded");
+  }, baseOpt("rr-res-b"));
+  const TurnRecord tb = b.rig.say("owner", "hello");
+  c.ok(has(tb.reply, "monthly limit") && !has(tb.reply, "larger than"), "the real reason, the device's limit: " + tb.reply);
+  c.ok(orch::providerPark().causeOf("cumulo") == orch::ParkCause::KeyBudget, "parked for the budget");
+  clearEnv();
+}
+
+// The clamp's wait path resends the same request and it is served in full: nothing was
+// kept short, so nothing says so.
+static void testAWaitedClampIsNotKeptShort(ndtest::Ctx& c) {
+  std::printf("  -- a clamp that only waited does not say the reply was kept short --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  int calls = 0;
+  Harness h("rr-wait", [&calls](const FakeRouter::Seen& s) {
+    if (calls++ > 0) return served(s);
+    FakeRouter::Answer a;
+    a.status = 402;
+    a.body = "{\"error\":\"insufficient_credits_for_call\",\"reason\":\"insufficient_credits_for_call\","
+             "\"message\":\"Other requests hold your credits.\",\"charged\":false,\"retryable\":true,\"retryAfterMs\":5000,"
+             "\"balanceCredits\":400,\"availableCredits\":0,\"heldCredits\":400,\"estimatedCredits\":300,"
+             "\"maxAffordableOutputTokens\":0,\"retryHint\":\"wait\"}";
+    return a;
+  }, baseOpt("rr-wait"));
+  const TurnRecord t = h.rig.say("owner", "hello");
+  c.ok(has(t.reply, "served"), "served after the wait");
+  c.ok(!has(t.reply, "kept short") && !has(t.reply, "larger than"), "and not called short: " + t.reply);
+  const auto seen = h.router.seen();
+  c.ok(seen.size() == 2 && seen[0].body == seen[1].body, "the same request, unchanged");
+  clearEnv();
+}
+
+// A gateway in front of the router, or a body that names nothing: per call. The owner is
+// not told about a key, and Cumulo stays usable. A 401 with no reason is still the key.
+static void testABodyWithNoReasonIsPerCall(ndtest::Ctx& c) {
+  std::printf("  -- a 403 with no reason parks nothing --\n");
+  for (const char* body : {"{\"message\":\"Forbidden\"}", "<html><body>403 Forbidden</body></html>", ""}) {
+    clearEnv();
+    setenv("CUMULO_API_KEY", kKey, 1);
+    const std::string b = body;
+    Harness h("rr-403", [b](const FakeRouter::Seen&) {
+      FakeRouter::Answer a;
+      a.status = 403;
+      a.body = b;
+      return a;
+    }, baseOpt("rr-403"));
+    const TurnRecord t = h.rig.say("owner", "hello");
+    c.ok(!parked("cumulo"), "403 " + b + " parks nothing");
+    c.ok(!has(t.reply, "rejected") && !has(t.reply, "its key"), "and blames no key: " + t.reply);
+    c.ok(has(t.reply, "refused this request"), "it says what happened");
+  }
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  Harness k("rr-401", [](const FakeRouter::Seen&) {
+    FakeRouter::Answer a;
+    a.status = 401;
+    a.body = "";
+    return a;
+  }, baseOpt("rr-401"));
+  k.rig.say("owner", "hello");
+  c.ok(parked("cumulo"), "a 401 whose body did not survive still reads as the key");
+  clearEnv();
+}
+
+// A key's spent budget stands behind the clamp: the router clamps before it reads the
+// budget, so a clamp says nothing about it. The owner is not told again.
+static void testAClampDoesNotEndABudgetPark(ndtest::Ctx& c) {
+  std::printf("  -- a clamp does not end a key budget park --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  Harness h("rr-budget", [](const FakeRouter::Seen& s) {
+    return declaredCap(s.body) < 0 ? refuse("insufficient_credits_for_call") : refuse("budget_exceeded");
+  }, baseOpt("rr-budget"));
+  h.rig.say("owner", "hello");
+  c.ok(parked("cumulo"), "the budget parks");
+  c.ok(orch::providerPark().causeOf("cumulo") == orch::ParkCause::KeyBudget, "and names itself");
+  orch::providerPark().noticeDue("cumulo");   // told
+  parkDue("cumulo", orch::ParkCause::KeyBudget);
+  const size_t openBefore = h.logWith("re-check answered - open again").size();
+  const size_t againBefore = h.logWith("cumulo re-check refused again").size();
+  h.rig.recheckTick();
+  c.ok(parked("cumulo"), "the re-check is clamped, then refused by the budget: still parked");
+  c.eqi((long)(h.logWith("re-check answered - open again").size() - openBefore), 0, "and never logged as open");
+  c.eqi((long)(h.logWith("cumulo re-check refused again").size() - againBefore), 1, "one honest outcome line");
+  c.ok(!orch::providerPark().noticeDue("cumulo"), "the owner's one notice is still spent");
+  clearEnv();
+}
+
+// The tick itself, on a real engine thread with nobody calling: the only production call
+// of the idle re-check. And a client's message comes first: right after a turn it waits.
+static void testTheEngineThreadAsksTheParkedProvider(ndtest::Ctx& c) {
+  std::printf("  -- the engine thread's idle tick really asks a parked provider --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  Harness h("rr-tick", [](const FakeRouter::Seen& s) { return served(s, "ok"); }, baseOpt("rr-tick"));
+  parkDue("cumulo", orch::ParkCause::WalletEmpty);
+  EngineThread eng(&h.rig);
+  eng.start();
+  for (int i = 0; i < 300 && parked("cumulo"); i++) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  c.eqi(h.router.paidRequests(), 1, "one request, from the idle tick alone");
+  c.ok(!parked("cumulo"), "recovered with nobody calling");
+
+  // A turn just ended: the re-check holds off, so a client's next message is not behind it.
+  eng.postMessage("owner", "hello");
+  for (int i = 0; i < 300 && h.router.paidRequests() < 2; i++) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  for (int i = 0; i < 300 && eng.busy(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  c.eqi(h.router.paidRequests(), 2, "the turn's one request");
+  h.router.clearSeen();
+  parkDue("cumulo", orch::ParkCause::WalletEmpty);
+  std::this_thread::sleep_for(std::chrono::milliseconds(2500));   // two idle ticks
+  c.eqi(h.router.paidRequests(), 0, "due, but a turn just ended: nothing is sent yet");
+  eng.stop();
+  clearEnv();
+}
+
+// The transport for a turn whose requests get no answer at all.
+struct DeadOrRedirect : agent::HttpTransport {
+  ndtest::RouterRedirect inner;
+  bool dead = false;
+  DeadOrRedirect(const std::string& host, int port) : inner(host, port) {}
+  bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
+    if (!dead) return inner.exec(req, out, err);
+    err = "connect failed";
+    return false;
+  }
+};
+
+// The engine's failed hook, on a Virtual Nimbus: a due re-check that got no answer re-arms
+// at once, with its line, instead of waiting out the lease.
+static void testAFailedHeadReArmsTheRecheck(ndtest::Ctx& c) {
+  std::printf("  -- a head that gets no answer re-arms a due re-check --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeRouter router([](const FakeRouter::Seen& s) { return served(s); });
+  DeadOrRedirect http(kCumuloHost, router.port());
+  Config cfg;
+  NimbusdRig rig(cfg, baseOpt("rr-rearm"), &http);
+  orch::providerPark().clear();
+  parkDue("cumulo", orch::ParkCause::WalletEmpty);
+  http.dead = true;
+  size_t before = 0;
+  for (const std::string& l : NimbusdRig::harnessLog()) before += has(l, "cumulo re-check failed without a verdict") ? 1 : 0;
+  rig.say("owner", "hello");
+  size_t after = 0;
+  for (const std::string& l : NimbusdRig::harnessLog()) after += has(l, "cumulo re-check failed without a verdict") ? 1 : 0;
+  c.eqi((long)(after - before), 1, "one outcome line");
+  c.ok(orch::providerPark().recheckInMs("cumulo") > 0, "a whole new wait, not a probe left out");
+  c.ok(parked("cumulo"), "still parked");
+  clearEnv();
+}
+
+// The verify badge hears a suspension from a turn, not only from the model list.
+static void testATurnRecordsTheSuspendedBadge(ndtest::Ctx& c) {
+  std::printf("  -- a suspended account reaches the verify badge --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  Harness h("rr-susp", [](const FakeRouter::Seen&) { return refuse("account_suspended"); }, baseOpt("rr-susp"));
+  const TurnRecord t = h.rig.say("owner", "hello");
+  c.ok(has(t.reply, "suspended"), "the reply says so: " + t.reply);
+  const ProviderVerify v = h.rig.verifyState("cumulo");
+  c.eqi(v.verify, -1, "could not verify, not rejected");
+  c.eq(v.reason, "suspended", "the badge reason");
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== Cumulo router refusals against a local fake router (offline) ===\n");
+  testAWaitedClampIsNotKeptShort(c);   // first: the clamp note is at most every 6 hours per process
   testTheClampOnAFundedWallet(c);
   testNoCapFits(c);
   testEmptyWalletParksAndRecovers(c);
@@ -439,6 +686,13 @@ int main() {
   testEmbeddings(c);
   testVerifyReadsSuspended(c);
   testOrchShowsThePark(c);
+  testARecoveredClampIsNotTheCause(c);
+  testTheResendsRefusalIsTheCause(c);
+  testABodyWithNoReasonIsPerCall(c);
+  testAClampDoesNotEndABudgetPark(c);
+  testTheEngineThreadAsksTheParkedProvider(c);
+  testAFailedHeadReArmsTheRecheck(c);
+  testATurnRecordsTheSuspendedBadge(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;
