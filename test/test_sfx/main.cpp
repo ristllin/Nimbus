@@ -1,7 +1,9 @@
 #include <unity.h>
 
+#include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <string>
 
 #include "nimbus/sfx_map.h"
 #include "nimbus/speaker_memory.h"
@@ -310,6 +312,37 @@ static void test_skips_log_one_line_per_period() {
   TEST_ASSERT_GREATER_OR_EQUAL_UINT32(6, lines);
 }
 
+// The speaker turn (src/sfx/speaker_turn.cpp, Arduino-only: pinned here, the
+// seam cannot run on the host): take() must NEVER answer true unless the turn's
+// mutex is really held. The bug this closes: a failed mutex allocation made
+// take() return true with nothing held, so the sfx and music tasks both read
+// the DMA-memory figures and both opened the speaker - the failed open left the
+// radio's buffers with nothing (the 1 Nov 2026 Lumi failure class). The seam
+// must also retry creation (a heap-exhausted first use must not refuse every
+// sound forever).
+static void test_the_speaker_turn_refuses_when_it_holds_nothing() {
+  FILE* f = std::fopen("src/sfx/speaker_turn.cpp", "rb");
+  if (!f) { TEST_FAIL_MESSAGE("src/sfx/speaker_turn.cpp not readable"); return; }
+  std::string src;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) src.append(buf, n);
+  std::fclose(f);
+  const size_t take = src.find("bool SpeakerTurn::take(");
+  TEST_ASSERT_TRUE_MESSAGE(take != std::string::npos, "SpeakerTurn::take not found");
+  const size_t end = src.find('}', src.find("held_ = xSemaphoreTake"));
+  TEST_ASSERT_TRUE(end != std::string::npos);
+  const std::string body = src.substr(take, end - take);
+  // No phantom turn: a null lock refuses (returns false), never succeeds.
+  TEST_ASSERT_TRUE_MESSAGE(body.find("return false") != std::string::npos,
+                           "take() must refuse when the lock cannot be had");
+  TEST_ASSERT_TRUE_MESSAGE(body.find("if (!created) return false") != std::string::npos,
+                           "a failed mutex creation must refuse the turn");
+  // And the refusal is recoverable: creation is retried on a later take.
+  TEST_ASSERT_TRUE_MESSAGE(src.find("xSemaphoreCreateMutex()") != std::string::npos,
+                           "the mutex creation must be retried, not cached as null forever");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_slugs_roundtrip);
@@ -333,6 +366,7 @@ int main(int, char**) {
   RUN_TEST(test_the_hold_survives_the_millis_wrap);
   RUN_TEST(test_an_asked_sound_ignores_the_hold);
   RUN_TEST(test_skips_log_one_line_per_period);
+  RUN_TEST(test_the_speaker_turn_refuses_when_it_holds_nothing);
   UNITY_END();
   return 0;
 }
