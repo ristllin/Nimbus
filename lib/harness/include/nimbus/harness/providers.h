@@ -3,8 +3,6 @@
 
 #include <cstdint>
 #include <functional>
-#include <map>
-#include <memory>
 #include <string>
 
 #include "nimbus/harness/fabric.h"      // Directive / ResultEnvelope / FabricErr
@@ -225,13 +223,6 @@ std::string mistralUnsafeName(const std::string& n);
 nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd, const std::string& instructions,
                                      const HeadTools& ht, nimbus::orch::TokenUsage* usage,
                                      nimbus::orch::Transcript& tr);
-// Anthropic's signed thinking, keyed by a round's first tool-call id: the replay carries it
-// verbatim. One turn long (RAM only). The same step on a store that outlives it, for a step that
-// is rebuilt mid-turn when a refit changes the prompt.
-using ThinkingByCall = std::map<std::string, std::string>;
-nimbus::orch::HeadStepFn antLoopStepWith(const ProviderDeps& pd, const std::string& instructions,
-                                         const HeadTools& ht, nimbus::orch::TokenUsage* usage,
-                                         nimbus::orch::Transcript& tr, std::shared_ptr<ThinkingByCall> thinking);
 nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd, const std::string& instructions,
                                      const HeadTools& ht, nimbus::orch::TokenUsage* usage,
                                      nimbus::orch::Transcript& tr);

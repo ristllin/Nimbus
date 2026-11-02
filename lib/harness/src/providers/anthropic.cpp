@@ -1101,15 +1101,6 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
                                      const HeadTools& ht,
                                      nimbus::orch::TokenUsage* usage,
                                      nimbus::orch::Transcript& tr) {
-  return antLoopStepWith(pd, instructions, ht, usage, tr, std::make_shared<ThinkingByCall>());
-}
-
-nimbus::orch::HeadStepFn antLoopStepWith(const ProviderDeps& pd,
-                                         const std::string& instructions,
-                                         const HeadTools& ht,
-                                         nimbus::orch::TokenUsage* usage,
-                                         nimbus::orch::Transcript& tr,
-                                         std::shared_ptr<ThinkingByCall> thinkingByCall) {
   namespace orch = nimbus::orch;
   const std::string model = pd.orchModel ? pd.orchModel("anthropic") : std::string();
   // Replay budget - NOT the token window. The request body breaks long before the
@@ -1128,6 +1119,9 @@ nimbus::orch::HeadStepFn antLoopStepWith(const ProviderDeps& pd,
   std::string sys;
   wire::putFieldStr(sys, instructions, "the system prompt");
   const layout::PromptParts parts = layout::split(sys);
+  // R3: this turn's thinking payloads, keyed by the round's first tool-call id. They ride the
+  // transcript: a refit rebuilds this step on a shortened prompt, and the replay still needs them.
+  auto* thinkingByCall = &tr.signedThinking();
 
   return [&ht, usage, &tr, pd, model, kReplayToolBytes, parts, thinkingByCall](
              bool allowTools,
@@ -1168,7 +1162,7 @@ nimbus::orch::HeadStepFn antLoopStepWith(const ProviderDeps& pd,
     auto render = [&]() {
       msgs = conv.to<JsonArray>();
       if (direct && sees) imageparts::useFileRefs(*tr.images());
-      renderAntMessages(tr, msgs, imgs != nullptr, sees, thinkingByCall.get());
+      renderAntMessages(tr, msgs, imgs != nullptr, sees, thinkingByCall);
       // R3: the per-turn block (the final-round notice included) LEADS the
       // seeded user message, so the system blocks and the history stay
       // byte-stable across rounds and turns. Once per render: the messages
@@ -1288,7 +1282,7 @@ nimbus::orch::HeadStepFn antLoopStepWith(const ProviderDeps& pd,
                     (const char*)(resp["stop_reason"] | "?") + ")";
         return out;
       }
-      const std::string sr = antReadRound(resp, out, thinkingByCall.get());
+      const std::string sr = antReadRound(resp, out, thinkingByCall);
       // 4) the completeness gate: a reply cut at max_tokens - wherever it stopped,
       //    a finished orch_turn included - is never run and never delivered as
       //    complete (a half-written memory_write, a reply cut mid-sentence).
@@ -1338,11 +1332,9 @@ static bool runAntLoop(const ProviderDeps& pd, std::string& convId,
                        const std::string& instructions, const std::string& inputs,
                        std::string& outJson, std::string& err, const HeadTools& ht,
                        nimbus::orch::TokenUsage* usage) {
-  // A step rebuilt on a refitted prompt still replays this turn's signed thinking.
-  const auto thinking = std::make_shared<ThinkingByCall>();
   const HostLoop loop{pd, ht, "orchTurn(ant-loop)", "anthropic",
                       [&](const std::string& ins, nimbus::orch::Transcript& tr) {
-                        return antLoopStepWith(pd, ins, ht, usage, tr, thinking);
+                        return antLoopStep(pd, ins, ht, usage, tr);
                       }};
   const bool ok = runHostLoop(loop, instructions, inputs, outJson, err);
   if (ok) convId = "messages";   // stateless marker (state lives in the turn's memory field)

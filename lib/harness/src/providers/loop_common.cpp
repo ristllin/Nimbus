@@ -563,14 +563,11 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
     return resendUnsentOnce(&resend[i]);
   };
   RoundRecovery rec(tr, ht, instructions, inputs);
-  // Anthropic's signed thinking of this turn: only the Anthropic step reads it, and it
-  // outlives a step rebuilt on a refitted prompt (the replay must carry it verbatim).
-  const auto antThinking = std::make_shared<ThinkingByCall>();
   auto makeStep = [&](size_t i) -> orch::HeadStepFn {
     const std::string& h = hostList[i];
     const std::string& ins = rec.instructions();
     orch::TokenUsage* use = &hostUse[i];
-    if (h == "anthropic") return wrap(i, antLoopStepWith(pd, ins, ht, use, tr, antThinking), "orchTurn(ant-loop)");
+    if (h == "anthropic") return wrap(i, antLoopStep(pd, ins, ht, use, tr), "orchTurn(ant-loop)");
     if (h == "openai")    return wrap(i, oaiLoopStep(pd, ins, ht, use, tr), "orchTurn(oai-loop)");
     if (h == "mistral")   return wrap(i, misLoopStep(pd, ins, ht, use, tr), "orchTurn(mistral-loop)");
     return nullptr;
