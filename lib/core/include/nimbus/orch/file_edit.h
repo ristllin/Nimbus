@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // file_edit - the portable rules behind files.edit (host-tested; the device
 // and nimbusd only move bytes).
@@ -111,5 +112,65 @@ class TextEditStream {
   size_t applyLimit_ = 0;   // 0 = no limit (countOnly scans the whole file)
   bool done_ = false;       // apply limit reached: the rest copies through
 };
+
+// ---- the keyed-CSV row diff: a whole-day rewrite says what changed -----------
+// RCA 2026-11-01/02 cause 15: a day delete and a from-scratch re-entry dropped
+// the fries row and changed a protein figure, and the reply said only
+// "replaced 1 of 1 match(es)". The find text IS what was there, so the
+// row-level change is computed from the spans themselves - no second pass over
+// the file, and nothing is claimed that the caller's own words do not show.
+
+// One row the report names: its date and key column values.
+struct CsvEditRow {
+  std::string date;   // the date column's value (YYYY-MM-DD)
+  std::string key;    // the key column's value
+};
+
+// A row that stayed (same date and key) while a figure column changed.
+struct CsvEditChange {
+  CsvEditRow row;
+  std::string col;         // the figure column's name
+  std::string was, now;    // its cells, as the spans held them
+};
+
+struct CsvEditDiff {
+  bool keyed = false;   // the spans read as rows of a keyed CSV (a date column
+                        // and a key column were both trusted); the caller says
+                        // nothing otherwise - never a guess
+  std::vector<CsvEditRow> removed;    // rows the replacement took out
+  std::vector<CsvEditRow> added;      // rows the replacement put in
+  std::vector<CsvEditChange> changed; // rows that stayed with a figure changed
+};
+
+// The row-level change a keyed-CSV edit makes. `headerRow` is the file's first
+// row (the column names); the find text is exactly what was there. Rows that
+// do not parse as the header's rows with a YYYY-MM-DD date (a fragment of a
+// row, a comment, the header itself) take no part. Only figure columns are
+// compared for `changed`: figures are what a day's total counts, while
+// rewritten free text is a re-entry's normal churn.
+CsvEditDiff diffKeyedEdit(const std::string& headerRow, const std::string& find,
+                          const std::string& replace);
+
+// The most named rows per list in renderKeyedEditDiff; the rest is "+N more".
+inline constexpr size_t kEditDiffMaxRows = 8;
+
+// The report lines ("rows removed: ...", "rows added: ...", "changed: ..."),
+// "" when the diff has nothing to say.
+std::string renderKeyedEditDiff(const CsvEditDiff& d);
+
+// ---- the removed-rows note: a re-add that skips a row is named ---------------
+// The caller holds the rows an edit removed (in RAM, one file, bounded); when
+// rows land for the same file again - a keyed append, an edit that adds rows -
+// the ones not re-added are named, so a from-scratch re-entry cannot quietly
+// drop a row the owner already reported.
+inline constexpr size_t kRemovedNoteMaxRows = 40;
+
+// `remembered` minus every row `readded` holds (date plus key; duplicates pair
+// in order).
+std::vector<CsvEditRow> notReadded(const std::vector<CsvEditRow>& remembered,
+                                   const std::vector<CsvEditRow>& readded);
+
+// The warning for what a re-add left out: "" when nothing is missing.
+std::string renderNotReadded(const std::vector<CsvEditRow>& missing);
 
 }  // namespace nimbus::orch

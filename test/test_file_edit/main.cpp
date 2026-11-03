@@ -368,6 +368,135 @@ static void test_a_replacement_identical_to_the_find_text_is_no_change() {
   TEST_ASSERT_TRUE(src.find("renderEditReply(", edit) != std::string::npos);
 }
 
+// ---- the keyed-CSV row diff (RCA 2026-11-01/02 cause 15) ----------------------
+// The food log's own shape: a day delete and a from-scratch re-entry dropped the
+// fries row and changed a protein figure, and the reply said only "replaced 1 of
+// 1 match(es)". The find text is what was there, so the diff is computed from the
+// spans themselves.
+
+static const char kFoodHeader[] = "date,meal,items,kcal,protein_g,key";
+
+static std::string foodRow(const std::string& meal, const std::string& kcal,
+                           const std::string& protein) {
+  return "2026-11-02," + meal + ",\"Some food\"," + kcal + "," + protein +
+         ",2026-11-02-" + meal + "\n";
+}
+
+// The seven rows the 19:12 delete took out (the RCA's day).
+static std::string sevenRows() {
+  const char* meals[] = {"breakfast", "snack1", "snack2", "lunch1", "lunch2", "dinner", "drink1"};
+  std::string rows;
+  for (const char* m : meals) rows += foodRow(m, "100", "5.0");
+  return rows;
+}
+
+static void test_a_whole_day_delete_names_its_rows() {
+  const CsvEditDiff d = diffKeyedEdit(kFoodHeader, sevenRows(), "");
+  TEST_ASSERT_TRUE_MESSAGE(d.keyed, "a keyed CSV's whole-day delete is a keyed edit");
+  TEST_ASSERT_EQUAL(7, (int)d.removed.size());
+  TEST_ASSERT_EQUAL(0, (int)d.added.size());
+  TEST_ASSERT_EQUAL(0, (int)d.changed.size());
+  bool fries = false;
+  for (const CsvEditRow& r : d.removed)
+    if (r.date == "2026-11-02" && r.key == "snack1") fries = true;
+  TEST_ASSERT_TRUE_MESSAGE(fries, "the removed rows name their date and key");
+  const std::string lines = renderKeyedEditDiff(d);
+  TEST_ASSERT_TRUE(lines.find("rows removed:") != std::string::npos);
+  TEST_ASSERT_TRUE(lines.find("2026-11-02 snack1") != std::string::npos);
+  TEST_ASSERT_TRUE(lines.find("2026-11-02 drink1") != std::string::npos);
+}
+
+// The re-entry shape: one row dropped, one figure changed, one row new - each
+// named, against what was there.
+static void test_a_day_rewrite_names_added_changed_and_removed() {
+  const std::string before = foodRow("breakfast", "66", "3.3") + foodRow("snack1", "327", "31.8") +
+                             foodRow("snack2", "120", "4.3");
+  const std::string after = foodRow("breakfast", "66", "3.3") + foodRow("snack2", "120", "4.0") +
+                            foodRow("fries", "50", "0.6");
+  const CsvEditDiff d = diffKeyedEdit(kFoodHeader, before, after);
+  TEST_ASSERT_TRUE(d.keyed);
+  TEST_ASSERT_EQUAL(1, (int)d.removed.size());
+  TEST_ASSERT_EQUAL(1, (int)d.added.size());
+  TEST_ASSERT_EQUAL(1, (int)d.changed.size());
+  TEST_ASSERT_EQUAL_STRING("snack1", d.removed[0].key.c_str());
+  TEST_ASSERT_EQUAL_STRING("fries", d.added[0].key.c_str());
+  TEST_ASSERT_EQUAL_STRING("snack2", d.changed[0].row.key.c_str());
+  TEST_ASSERT_EQUAL_STRING("protein_g", d.changed[0].col.c_str());
+  TEST_ASSERT_EQUAL_STRING("4.3", d.changed[0].was.c_str());
+  TEST_ASSERT_EQUAL_STRING("4.0", d.changed[0].now.c_str());
+  const std::string lines = renderKeyedEditDiff(d);
+  TEST_ASSERT_TRUE(lines.find("rows removed: 2026-11-02 snack1") != std::string::npos);
+  TEST_ASSERT_TRUE(lines.find("rows added: 2026-11-02 fries") != std::string::npos);
+  TEST_ASSERT_TRUE(lines.find("changed: 2026-11-02 snack2 protein_g 4.3 -> 4.0") != std::string::npos);
+  // The report rides after the receipt, and the claim check still reads the
+  // receipt: the diff lines must not unseat the "replaced A of B" proof.
+  EditDecision dec = decideEdit(before.size(), after.size(), EditPolicy{}, 1);
+  TEST_ASSERT_TRUE(dec.ok);
+  const std::string reply = renderEditReply("food/meal_log.csv", dec, 200) + "\n" + lines;
+  TurnEffects fx;
+  recordToolEffect(fx, FxKind::FileWrite, false, reply, kFxLogRow);
+  TEST_ASSERT_TRUE(fx.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_TRUE(fx.anyOkWith(FxKind::FileWrite, kFxLogRow));
+}
+
+// A surgical mid-row edit (a figure alone) is not a row-level change: the rows
+// do not parse, the diff says nothing, and the reply keeps its today shape.
+static void test_a_mid_row_edit_says_nothing() {
+  const CsvEditDiff d = diffKeyedEdit(kFoodHeader, "4.3", "4.0");
+  TEST_ASSERT_FALSE(d.keyed);
+  TEST_ASSERT_EQUAL_STRING("", renderKeyedEditDiff(d).c_str());
+  // A span whose rows hold no date column, and a header with no key column
+  // (every non-date column a plain number): never a guess.
+  TEST_ASSERT_FALSE(diffKeyedEdit("meal,items,kcal", foodRow("breakfast", "66", "3.3"), "").keyed);
+  TEST_ASSERT_FALSE(diffKeyedEdit("date,kcal,protein_g",
+                                  "2026-11-02,100,5.0\n2026-11-02,200,6.0\n", "").keyed);
+}
+
+// The report is bounded: a bigger rewrite names the first rows and counts the
+// rest, never a runaway tool result.
+static void test_the_row_lists_are_bounded() {
+  std::string rows;
+  for (int i = 0; i < 12; i++) rows += foodRow("meal" + std::to_string(i), "100", "5.0");
+  const CsvEditDiff d = diffKeyedEdit(kFoodHeader, rows, "");
+  TEST_ASSERT_EQUAL(12, (int)d.removed.size());
+  const std::string lines = renderKeyedEditDiff(d);
+  TEST_ASSERT_TRUE(lines.find("+4 more") != std::string::npos);
+  TEST_ASSERT_TRUE(lines.find("meal11") == std::string::npos);   // past the cap, counted not named
+}
+
+// The removed-rows note: a re-add that skips a row is named, and a complete
+// re-add says nothing.
+static void test_not_readded_names_the_missing_row() {
+  std::vector<CsvEditRow> remembered;
+  const char* meals[] = {"breakfast", "snack1", "snack2", "lunch1", "lunch2", "dinner", "fries"};
+  for (const char* m : meals) remembered.push_back({"2026-11-02", m});
+  std::vector<CsvEditRow> readded = remembered;
+  readded.pop_back();   // the from-scratch re-entry dropped the fries row
+  const std::vector<CsvEditRow> missing = notReadded(remembered, readded);
+  TEST_ASSERT_EQUAL(1, (int)missing.size());
+  TEST_ASSERT_EQUAL_STRING("fries", missing[0].key.c_str());
+  const std::string warn = renderNotReadded(missing);
+  TEST_ASSERT_TRUE(warn.find("2026-11-02 fries") != std::string::npos);
+  TEST_ASSERT_TRUE(warn.find("not") != std::string::npos);
+  TEST_ASSERT_EQUAL(0, (int)notReadded(remembered, remembered).size());
+  TEST_ASSERT_EQUAL_STRING("", renderNotReadded({}).c_str());
+}
+
+// The device wires the diff into files.edit's reply and the note into both
+// write paths: the report exists only if the seams carry it.
+static void test_the_device_reports_the_diff_and_the_missing_readd() {
+  const std::string src = readSubsystem();
+  const size_t edit = src.find("ToolResult editDoc(");
+  TEST_ASSERT_TRUE(edit != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("diffKeyedEdit(", edit) != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("renderKeyedEditDiff(", edit) != std::string::npos);
+  const size_t upsert = src.find("ToolResult upsertRows(");
+  TEST_ASSERT_TRUE(upsert != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("notReadded(", upsert) != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("renderNotReadded(", upsert) != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("g_removedRows") != std::string::npos);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_validate_the_caps_and_the_policy);
@@ -387,5 +516,11 @@ int main() {
   RUN_TEST(test_the_edit_commits_through_the_swap);
   RUN_TEST(test_a_file_over_the_ceiling_is_refused_with_the_way_out);
   RUN_TEST(test_a_replacement_identical_to_the_find_text_is_no_change);
+  RUN_TEST(test_a_whole_day_delete_names_its_rows);
+  RUN_TEST(test_a_day_rewrite_names_added_changed_and_removed);
+  RUN_TEST(test_a_mid_row_edit_says_nothing);
+  RUN_TEST(test_the_row_lists_are_bounded);
+  RUN_TEST(test_not_readded_names_the_missing_row);
+  RUN_TEST(test_the_device_reports_the_diff_and_the_missing_readd);
   return UNITY_END();
 }

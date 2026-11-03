@@ -1087,6 +1087,60 @@ static bool commitMerged(const std::string& project, const std::string& name, si
   return commitPart(e, err);
 }
 
+// The last keyed-CSV rows an edit removed (one file, in RAM only, bounded): a
+// later write that lands rows for the same file is told which of them were not
+// logged again, so a from-scratch re-entry cannot quietly drop a row the owner
+// already reported (RCA 2026-11-01/02 cause 15: the fries row). The note lives
+// until its rows are logged again or another removal replaces it; a restart
+// forgets it, which is the honest bound - it guards a re-entry, not history.
+struct RemovedRowsNote {
+  std::string project, name;
+  std::vector<nimbus::orch::CsvEditRow> rows;
+};
+static RemovedRowsNote g_removedRows;
+
+// What a landed write to project/name still owes the note: the remembered rows
+// minus the ones this write logged again (the note keeps what is still
+// missing). "" when nothing is missing. Caller holds the store lock.
+static std::string reconcileRemovedRows(const std::string& project, const std::string& name,
+                                         const std::vector<nimbus::orch::CsvEditRow>& written) {
+  if (g_removedRows.project != project || g_removedRows.name != name) return std::string();
+  const std::vector<nimbus::orch::CsvEditRow> missing =
+      nimbus::orch::notReadded(g_removedRows.rows, written);
+  g_removedRows.rows = missing;
+  if (missing.empty()) g_removedRows = RemovedRowsNote();
+  return nimbus::orch::renderNotReadded(missing);
+}
+
+// Remember this edit's removals on the note (bounded; a removal on another
+// file starts that file's note fresh). Caller holds the store lock.
+static void rememberRemovedRows(const std::string& project, const std::string& name,
+                                const std::vector<nimbus::orch::CsvEditRow>& removed) {
+  if (removed.empty()) return;
+  if (g_removedRows.project != project || g_removedRows.name != name)
+    g_removedRows = RemovedRowsNote{project, name, {}};
+  for (const nimbus::orch::CsvEditRow& r : removed) {
+    if (g_removedRows.rows.size() >= nimbus::orch::kRemovedNoteMaxRows) break;
+    g_removedRows.rows.push_back(r);
+  }
+}
+
+// The first row (the header) of a stored file, bounded: the keyed edit diff's
+// column names. "" when it cannot be read.
+static std::string firstRowOf(const std::string& path) {
+  File f = memory::dataFs().open(path.c_str(), FILE_READ);
+  if (!f) return std::string();
+  char head[512];
+  const int n = (int)f.read((uint8_t*)head, sizeof head);
+  f.close();
+  if (n <= 0) return std::string();
+  std::string row(head, (size_t)n);
+  const size_t nl = row.find('\n');
+  if (nl != std::string::npos) row.resize(nl);
+  dropCr(row);
+  return row;
+}
+
 // files.append with a key: the keyed CSV upsert (file_append.h). The model sends
 // only the new rows; the device merges them by date and key, row by row from the
 // card (any log size), and reports what each row did and the day totals. The
@@ -1137,7 +1191,14 @@ static nimbus::orch::ToolResult upsertRows(const AppendArgs& a, const nimbus::or
       alogf("files: upsert %s/%s replaced %d appended %d (%u B)", project.c_str(), name.c_str(),
             up.replaced, up.appended, unsigned(bytes));
   }
-  return ToolResult::ok(nimbus::orch::renderUpsertReply(up, project + "/" + name, sum, day.zone));
+  std::string reply = nimbus::orch::renderUpsertReply(up, project + "/" + name, sum, day.zone);
+  if (up.changed) {   // rows landed: any the note remembers and this did not re-add are named
+    std::vector<nimbus::orch::CsvEditRow> written;
+    for (const nimbus::orch::RowChange& c : up.changes) written.push_back({c.date, c.key});
+    if (const std::string warn = reconcileRemovedRows(project, name, written); !warn.empty())
+      reply += "\n" + warn;
+  }
+  return ToolResult::ok(reply);
 }
 
 // Copy the first `upto` bytes of `src` into the .part.
@@ -1412,6 +1473,9 @@ static nimbus::orch::ToolResult editDoc(const std::string& project, const std::s
         appendRefusal(project, name, d.sizeDelta > 0 ? size_t(d.sizeDelta) : 0, newSize, who);
     if (!refusal.empty()) return ToolResult::fail(refusalForHead(refusal));
   }
+  // The header of the keyed CSV (read before the swap: the find span's rows
+  // are the file's own), for the row-level report below.
+  const std::string header = nimbus::orch::isCsvName(name) ? firstRowOf(path) : std::string();
   if (const std::string err = substituteDoc(path, find, replace, size_t(d.apply), newSize);
       !err.empty())
     return ToolResult::fail(err);
@@ -1419,7 +1483,20 @@ static nimbus::orch::ToolResult editDoc(const std::string& project, const std::s
   if (!commitEdit(project, name, newSize, err)) return ToolResult::fail(err);
   alogf("files: edit %s/%s replaced %d of %u match(es) (%u B -> %u B)", project.c_str(),
         name.c_str(), d.apply, (unsigned)matches, (unsigned)oldSize, (unsigned)newSize);
-  return ToolResult::ok(nimbus::orch::renderEditReply(where, d, newSize));
+  std::string reply = nimbus::orch::renderEditReply(where, d, newSize);
+  if (!header.empty()) {
+    const nimbus::orch::CsvEditDiff diff = nimbus::orch::diffKeyedEdit(header, find, replace);
+    if (diff.keyed) {
+      // A whole-day rewrite reports what changed against what was there, and
+      // the removals are remembered: a later re-add that skips a row is named.
+      if (const std::string lines = nimbus::orch::renderKeyedEditDiff(diff); !lines.empty())
+        reply += "\n" + lines;
+      if (const std::string warn = reconcileRemovedRows(project, name, diff.added); !warn.empty())
+        reply += "\n" + warn;
+      rememberRemovedRows(project, name, diff.removed);
+    }
+  }
+  return ToolResult::ok(reply);
 }
 
 std::string readDocText(const std::string& project, const std::string& name,
@@ -1998,7 +2075,9 @@ void registerTools() {
           "FIRST match by default; 'all': true replaces every match, 'count' replaces the first "
           "N. The reply says how many matches were found and how many were replaced, so nothing "
           "happens silently. A no-match says so and changes nothing. An empty 'replace' deletes "
-          "the span. The file's other bytes keep their exact order (a CSV's rows stay rows). "
+          "the span. An edit to a keyed CSV (a log with a date and a key column) also names "
+          "the rows it removed, added or changed. The file's other bytes keep their exact "
+          "order (a CSV's rows stay rows). "
           "Max 2 KB find, 4 KB replacement, 200 matches per call, 1 MB file.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
             nimbus::orch::EditPolicy pol;

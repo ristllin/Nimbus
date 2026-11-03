@@ -318,16 +318,6 @@ bool allIsoAt(const std::vector<std::vector<std::string>>& rows, size_t c) {
   return !rows.empty();
 }
 
-// The date column of a header given some of its rows: by name when that column
-// holds dates in those rows, else the first column that does; -1 = none.
-int dateColumnOf(const std::vector<std::string>& header, const std::vector<std::vector<std::string>>& rows) {
-  const int byName = dateColumnByName(header);
-  if (byName >= 0 && allIsoAt(rows, (size_t)byName)) return byName;
-  for (size_t c = 0; c < header.size(); c++)
-    if (allIsoAt(rows, c)) return (int)c;
-  return rows.empty() ? byName : -1;
-}
-
 // A figure as a stored row may hold it: a plain number, or a quoted one with thousands
 // separators ("1,045": a bare comma never reaches a single field). New rows stay plain.
 bool figureOf(const std::string& f, double& v) {
@@ -613,6 +603,17 @@ std::string numText(double v) {
 
 }  // namespace
 
+// The date column of a header given some of its rows: by name when that column
+// holds dates in those rows, else the first column that does; -1 = none.
+int csvDateColumnOf(const std::vector<std::string>& header, const std::vector<std::vector<std::string>>& rows) {
+  const int byName = dateColumnByName(header);
+  if (byName >= 0 && allIsoAt(rows, (size_t)byName)) return byName;
+  for (size_t c = 0; c < header.size(); c++)
+    if (allIsoAt(rows, c)) return (int)c;
+  return rows.empty() ? byName : -1;
+}
+
+
 // ---- CsvUpsertStream ----------------------------------------------------------
 // The replies never quote a stored row's free text: only the identity the model
 // itself sent, a stored date, a stored figure that is a plain number, and a
@@ -709,7 +710,7 @@ bool CsvUpsertStream::checkNewRow(size_t n, NewRow& row) {
 bool CsvUpsertStream::findDateColumn(const std::vector<NewRow>& rows) {
   std::vector<std::vector<std::string>> fields;
   for (const NewRow& r : rows) fields.push_back(r.fields);
-  dateIdx_ = dateColumnOf(header_, fields);
+  dateIdx_ = csvDateColumnOf(header_, fields);
   if (dateIdx_ >= 0) return true;
   const int named = dateColumnByName(header_);
   for (size_t i = 0; named >= 0 && i < rows.size(); i++)
@@ -1034,7 +1035,7 @@ void CsvDayTally::readHeader(const std::string& row) {
 
 // The row's day; the first data row settles which column holds it.
 std::string CsvDayTally::rowDay(const std::vector<std::string>& f) {
-  if (dateIdx_ < 0) dateIdx_ = dateColumnOf(header_, {f});
+  if (dateIdx_ < 0) dateIdx_ = csvDateColumnOf(header_, {f});
   return dateIdx_ >= 0 && f.size() > (size_t)dateIdx_ ? isoDay(f[(size_t)dateIdx_]) : std::string();
 }
 

@@ -249,6 +249,14 @@ bool csvFigure(const std::string& cell, double& out);
 // Does this stored row state a total instead of a thing eaten? (never counted)
 bool csvStatesTotal(const std::vector<std::string>& fields);
 
+// The date column of a header given some of its rows: by name (date, day, or a
+// name holding date, day or time) when that column holds YYYY-MM-DD dates in
+// those rows, else the first column that does; -1 = none. The one rule the
+// keyed upsert and the files.edit row diff share, so the two can never
+// disagree on which column is the date.
+int csvDateColumnOf(const std::vector<std::string>& header,
+                    const std::vector<std::vector<std::string>>& rows);
+
 // One day's total as a stream (the files.read tail view): feed every row of the
 // file in order, header first.
 class CsvDayTally {

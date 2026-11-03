@@ -138,4 +138,214 @@ void TextEditStream::finish(std::string& out) {
   carry_.clear();
 }
 
+// ---- the keyed-CSV row diff ---------------------------------------------------
+
+namespace {
+
+std::string diffTrim(const std::string& s) {
+  size_t a = 0, b = s.size();
+  while (a < b && (s[a] == ' ' || s[a] == '\t')) a++;
+  while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t')) b--;
+  return s.substr(a, b - a);
+}
+
+std::string diffKey(const std::string& s) {
+  std::string out = diffTrim(s);
+  for (char& c : out)
+    if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+  return out;
+}
+
+// The span's lines, CR ends dropped, a final line without its end included: the
+// parse below tells a whole row from a fragment, so the line split never guesses.
+std::vector<std::string> spanLines(const std::string& text) {
+  std::vector<std::string> out;
+  size_t start = 0;
+  for (;;) {
+    const size_t nl = text.find('\n', start);
+    if (nl == std::string::npos) {
+      if (start < text.size()) out.push_back(text.substr(start));
+      return out;
+    }
+    std::string line = text.substr(start, nl - start);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    out.push_back(line);
+    start = nl + 1;
+  }
+}
+
+// One parsed row of a span: its cells by the header's columns.
+struct SpanRow {
+  std::vector<std::string> cells;
+  std::string date, key;   // its identity, once the columns are known
+};
+
+// The span's rows that read as the header's rows (the same reader the day total
+// uses; a fragment, a comment or the header itself reads as none).
+std::vector<SpanRow> spanRows(const std::string& text, const std::vector<std::string>& header) {
+  std::vector<SpanRow> out;
+  for (const std::string& line : spanLines(text)) {
+    SpanRow r;
+    r.cells = csvStoredRow(line, header);
+    if (r.cells.size() == header.size()) out.push_back(r);
+  }
+  return out;
+}
+
+// The key column: the leftmost column other than the date that no parsed row
+// reads as a plain number in (a meal, a category), or a column named "key"
+// when every other column is numeric; -1 = none, and the caller says nothing.
+int diffKeyColumn(const std::vector<std::string>& header, int dateCol,
+                  const std::vector<SpanRow>& rows) {
+  for (size_t c = 0; c < header.size(); c++) {
+    if ((int)c == dateCol) continue;
+    double v;
+    bool anyFigure = false;
+    for (const SpanRow& r : rows)
+      if (c < r.cells.size() && csvFigure(r.cells[c], v)) {
+        anyFigure = true;
+        break;
+      }
+    if (!anyFigure) return (int)c;
+  }
+  for (size_t c = 0; c < header.size(); c++) {
+    if ((int)c != dateCol && diffKey(header[c]) == "key") return (int)c;
+  }
+  return -1;
+}
+
+bool sameRowIdentity(const CsvEditRow& a, const CsvEditRow& b) {
+  return a.date == b.date && diffKey(a.key) == diffKey(b.key);
+}
+
+// How the report names a row: the key column's own value when it already
+// carries the date, else the date and the key.
+std::string rowLabel(const CsvEditRow& r) {
+  if (!r.date.empty() && r.key.rfind(r.date, 0) == 0) return r.key;
+  if (r.date.empty()) return r.key;
+  return r.date + " " + r.key;
+}
+
+}  // namespace
+
+CsvEditDiff diffKeyedEdit(const std::string& headerRow, const std::string& find,
+                          const std::string& replace) {
+  CsvEditDiff d;
+  const std::vector<std::string> header = csvHeaderOf(headerRow);
+  if (header.size() < 2) return d;   // a one-column file keys nothing
+  std::vector<SpanRow> before = spanRows(find, header);
+  std::vector<SpanRow> after = spanRows(replace, header);
+  // The date column: the one rule the keyed upsert uses, over both spans' rows,
+  // so the diff and the upsert can never disagree on which column is the date.
+  std::vector<std::vector<std::string>> all;
+  for (const SpanRow& r : before) all.push_back(r.cells);
+  for (const SpanRow& r : after) all.push_back(r.cells);
+  const int dateCol = csvDateColumnOf(header, all);
+  if (dateCol < 0) return d;
+  const auto dated = [dateCol](std::vector<SpanRow>& rows) {
+    rows.erase(std::remove_if(rows.begin(), rows.end(),
+                              [dateCol](const SpanRow& r) {
+                                return isoDayOf(r.cells[(size_t)dateCol]).empty();
+                              }),
+               rows.end());
+  };
+  dated(before);
+  dated(after);
+  const int keyCol = diffKeyColumn(header, dateCol, before);
+  if (keyCol < 0) return d;
+  const auto identify = [dateCol, keyCol](std::vector<SpanRow>& rows) {
+    for (SpanRow& r : rows) {
+      r.date = isoDayOf(r.cells[(size_t)dateCol]);
+      r.key = diffTrim(r.cells[(size_t)keyCol]);
+    }
+  };
+  identify(before);
+  identify(after);
+  // No dated row parsed on either side (a mid-row edit, a span of fragments):
+  // there is no row-level change to report, and the caller says nothing.
+  d.keyed = !before.empty() || !after.empty();
+  // Pair the rows by identity, in order (duplicates pair one to one): what
+  // stayed may have changed, what did not is removed or added.
+  std::vector<bool> used(after.size(), false);
+  for (const SpanRow& b : before) {
+    size_t hit = after.size();
+    for (size_t i = 0; i < after.size(); i++)
+      if (!used[i] && b.date == after[i].date && diffKey(b.key) == diffKey(after[i].key)) {
+        used[i] = true;
+        hit = i;
+        break;
+      }
+    if (hit == after.size()) {
+      d.removed.push_back({b.date, b.key});
+      continue;
+    }
+    const SpanRow& a = after[hit];
+    for (size_t c = 0; c < header.size(); c++) {   // the figure columns only
+      if ((int)c == dateCol || (int)c == keyCol) continue;
+      double was = 0, now = 0;
+      if (csvFigure(b.cells[c], was) && csvFigure(a.cells[c], now) && was != now)
+        d.changed.push_back({{b.date, b.key}, header[c], diffTrim(b.cells[c]), diffTrim(a.cells[c])});
+    }
+  }
+  for (size_t i = 0; i < after.size(); i++)
+    if (!used[i]) d.added.push_back({after[i].date, after[i].key});
+  return d;
+}
+
+std::string renderKeyedEditDiff(const CsvEditDiff& d) {
+  if (!d.keyed || (d.removed.empty() && d.added.empty() && d.changed.empty()))
+    return std::string();
+  std::string out;
+  const auto rowsLine = [&out](const char* what, const std::vector<CsvEditRow>& rows) {
+    if (rows.empty()) return;
+    if (!out.empty()) out += '\n';
+    out += what;
+    const size_t named = std::min(rows.size(), kEditDiffMaxRows);
+    for (size_t i = 0; i < named; i++) out += (i ? ", " : "") + rowLabel(rows[i]);
+    if (rows.size() > named)
+      out += " (+" + std::to_string(rows.size() - named) + " more)";
+  };
+  rowsLine("rows removed: ", d.removed);
+  rowsLine("rows added: ", d.added);
+  if (!d.changed.empty()) {
+    if (!out.empty()) out += '\n';
+    out += "changed: ";
+    const size_t named = std::min(d.changed.size(), kEditDiffMaxRows);
+    for (size_t i = 0; i < named; i++) {
+      const CsvEditChange& c = d.changed[i];
+      out += (i ? "; " : "") + rowLabel(c.row) + " " + c.col + " " + c.was + " -> " + c.now;
+    }
+    if (d.changed.size() > named)
+      out += " (+" + std::to_string(d.changed.size() - named) + " more)";
+  }
+  return out;
+}
+
+std::vector<CsvEditRow> notReadded(const std::vector<CsvEditRow>& remembered,
+                                   const std::vector<CsvEditRow>& readded) {
+  std::vector<bool> used(readded.size(), false);
+  std::vector<CsvEditRow> out;
+  for (const CsvEditRow& r : remembered) {
+    bool hit = false;
+    for (size_t i = 0; i < readded.size(); i++)
+      if (!used[i] && sameRowIdentity(readded[i], r)) {
+        used[i] = true;
+        hit = true;
+        break;
+      }
+    if (!hit) out.push_back(r);
+  }
+  return out;
+}
+
+std::string renderNotReadded(const std::vector<CsvEditRow>& missing) {
+  if (missing.empty()) return std::string();
+  std::string out = "note: removed by an earlier edit and not logged again: ";
+  const size_t named = std::min(missing.size(), kEditDiffMaxRows);
+  for (size_t i = 0; i < named; i++) out += (i ? ", " : "") + rowLabel(missing[i]);
+  if (missing.size() > named)
+    out += " (+" + std::to_string(missing.size() - named) + " more)";
+  return out;
+}
+
 }  // namespace nimbus::orch
