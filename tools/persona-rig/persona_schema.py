@@ -62,6 +62,7 @@ SCENARIO_FIELDS = {
 ACTION_FIELDS = {"say": str, "http": dict, "upload": dict, "restart": bool, "sleep": NUMBER}
 SAY_FIELDS = {
     "as": str,
+    "att": list,
     "timeout_s": NUMBER,
     "settle_s": NUMBER,
     "await_replies": int,

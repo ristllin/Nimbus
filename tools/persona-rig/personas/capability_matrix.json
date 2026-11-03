@@ -17,7 +17,7 @@
    "model": "mistral-large-4-0",
    "memory_defect": "",
    "tools_defect": "",
-   "binary_defect": "binary-read-kills-turn"
+   "binary_defect": ""
   },
   {
    "name": "mistral-small-latest",
@@ -26,25 +26,25 @@
    "model": "mistral-small-latest",
    "memory_defect": "",
    "tools_defect": "",
-   "binary_defect": "binary-read-kills-turn"
+   "binary_defect": ""
   },
   {
    "name": "glm-5.3",
    "host": "zai",
    "key": "Z_AI_TOKEN",
    "model": "glm-5.3",
-   "memory_defect": "glm-mem-write-dropped",
-   "tools_defect": "glm-no-tools",
-   "binary_defect": "glm-no-tools"
+   "memory_defect": "",
+   "tools_defect": "",
+   "binary_defect": ""
   },
   {
    "name": "glm-5.3-flash",
    "host": "zai",
    "key": "Z_AI_TOKEN",
    "model": "glm-5.3-flash",
-   "memory_defect": "glm-mem-write-dropped",
-   "tools_defect": "glm-no-tools",
-   "binary_defect": "glm-no-tools"
+   "memory_defect": "",
+   "tools_defect": "",
+   "binary_defect": ""
   },
   {
    "name": "claude-haiku-5-5",
@@ -53,7 +53,7 @@
    "model": "claude-haiku-5-5",
    "memory_defect": "memory-needs-mistral-key",
    "tools_defect": "",
-   "binary_defect": "binary-read-kills-turn"
+   "binary_defect": ""
   },
   {
    "name": "gpt-6-luna",
@@ -62,7 +62,7 @@
    "model": "gpt-6-luna",
    "memory_defect": "",
    "tools_defect": "",
-   "binary_defect": "binary-read-kills-turn"
+   "binary_defect": ""
   }
  ],
  "persona": {
@@ -128,9 +128,7 @@
         "may_pass": true
        },
        {
-        "reply_not_regex": "correction: that has not been saved",
-        "known_defect": "noted-correction",
-        "may_pass": true
+        "reply_not_regex": "correction: that has not been saved"
        }
       ]
      },
@@ -310,9 +308,7 @@
         "may_pass": true
        },
        {
-        "no_error_reply": true,
-        "known_defect": "placeholder-reply",
-        "may_pass": true
+        "no_error_reply": true
        }
       ]
      }
@@ -344,9 +340,7 @@
         "turn_resolved": true
        },
        {
-        "reply_contains": "green",
-        "known_defect": "no-image-path",
-        "may_pass": true
+        "reply_contains": "green"
        }
       ]
      }
@@ -408,12 +402,10 @@
       },
       "expect": [
        {
-        "http_status": 200,
-        "known_defect": "no-routines"
+        "http_status": 200
        },
        {
-        "body_contains": "\"ok\":true",
-        "known_defect": "no-routines"
+        "body_contains": "\"ok\":true"
        }
       ]
      },
@@ -424,8 +416,7 @@
       },
       "expect": [
        {
-        "body_contains": "stretch",
-        "known_defect": "no-routines"
+        "body_contains": "stretch"
        }
       ]
      },
@@ -436,14 +427,10 @@
         "turn_resolved": true
        },
        {
-        "reply_not_regex": "(i('ve| have)|i) (set up|created|scheduled|added)\\b(?!.*(can'?t|cannot|not))",
-        "known_defect": "no-routines",
-        "may_pass": true
+        "reply_not_regex": "(i('ve| have)|i) (set up|created|scheduled|added)\\b(?!.*(can'?t|cannot|not))"
        },
        {
-        "reply_not_regex": "only (its|the|an) admin|from the device web page",
-        "known_defect": "no-routines",
-        "may_pass": true
+        "reply_not_regex": "only (its|the|an) admin|from the device web page"
        }
       ]
      },
@@ -458,12 +445,10 @@
       },
       "expect": [
        {
-        "http_status": 200,
-        "known_defect": "no-routines"
+        "http_status": 200
        },
        {
-        "body_contains": "\"ok\":true",
-        "known_defect": "no-routines"
+        "body_contains": "\"ok\":true"
        }
       ]
      }
@@ -500,9 +485,7 @@
         "may_pass": true
        },
        {
-        "reply_not_regex": "correction: that has not been saved",
-        "known_defect": "noted-correction",
-        "may_pass": true
+        "reply_not_regex": "correction: that has not been saved"
        },
        {
         "log_not_regex": "fold\\(.*failed|no summary in reply"
@@ -516,9 +499,7 @@
         "turn_resolved": true
        },
        {
-        "reply_contains": "PERSIMMON-${suffix}",
-        "known_defect": "no-fold",
-        "may_pass": true
+        "reply_contains": "PERSIMMON-${suffix}"
        }
       ]
      },
@@ -529,8 +510,7 @@
       },
       "expect": [
        {
-        "body_regex": "fold\\(owner\\): ok",
-        "known_defect": "no-fold"
+        "body_regex": "fold\\(owner\\): ok"
        }
       ]
      }

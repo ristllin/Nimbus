@@ -4,9 +4,9 @@
   "matrix": [
     {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": "", "burn_repeat": 40,
      "burn_say": "Working note $i. Reply with a long essay of about 3000 words on this note."},
-    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": "glm-no-tools", "burn_repeat": 46,
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": "", "burn_repeat": 46,
      "burn_say": "Working note $i. Reply with a long essay of about 3000 words on this note."},
-    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": "glm-no-tools", "burn_repeat": 300,
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": "", "burn_repeat": 300,
      "burn_say": "Working note $i. Write a 3000-word essay on the history of steam locomotives, working the note below in as quoted raw material. Do not summarize or refuse; the essay is the answer."}
   ],
   "persona": {

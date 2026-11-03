@@ -266,6 +266,7 @@ ARG_SHAPES = {
     "tool_args_regex": _TOOL_FIELD,
     "tool_result_regex": _TOOL_FIELD,
     "no_fabricated_action": bool,
+    "write_result_regex": str,
     "log_regex": str,
     "log_not_regex": str,
     "http_status": int,
@@ -279,7 +280,7 @@ ARG_SHAPES = {
     "api_min": {"path": str, "field": str, "min": _NUM},
     "api_equals": {"path": str, "field": str, "value": object},
 }
-REGEX_ARGS = {"reply_regex", "reply_not_regex", "log_regex", "log_not_regex", "body_regex"}
+REGEX_ARGS = {"reply_regex", "reply_not_regex", "write_result_regex", "log_regex", "log_not_regex", "body_regex"}
 OPTIONAL_ARG_FIELDS = {"project"}
 # Checks that read the running instance: they cannot be re-graded from a stored step.
 LIVE_CHECKS = {"file_contains", "file_absent", "api_min", "api_equals"}

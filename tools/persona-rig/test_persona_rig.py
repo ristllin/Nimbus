@@ -780,7 +780,7 @@ class Schema(unittest.TestCase):
     def test_a_mistyped_step_or_scenario_field_is_refused(self):
         for bad in ("timout_s", "settel_s"):
             self.refused("unknown field", scenarios=[sc(say(**{bad: 5}))])
-        self.refused("unknown field", scenarios=[sc(say(), knwon_defect="no-fold")])
+        self.refused("unknown field", scenarios=[sc(say(), knwon_defect="no-web-lookup")])
 
     def test_repeat_and_pad_are_checked_before_they_expand(self):
         self.refused("at least 1", scenarios=[sc(say(repeat=0))])
@@ -802,9 +802,9 @@ class Schema(unittest.TestCase):
         self.refused("instance_env_keys", instance_env_keys=[5])
         self.refused(
             "true or false",
-            scenarios=[sc(say("x", {"reply_contains": "x", "known_defect": "no-fold", "may_pass": "no"}))],
+            scenarios=[sc(say("x", {"reply_contains": "x", "known_defect": "no-web-lookup", "may_pass": "no"}))],
         )
-        self.refused("is text", scenarios=[sc(say("x", {"reply_contains": "x", "known_defect": ["no-fold"]}))])
+        self.refused("is text", scenarios=[sc(say("x", {"reply_contains": "x", "known_defect": ["no-web-lookup"]}))])
 
     def test_wrong_types_are_refused_not_raised_later(self):
         self.refused("monthly_cap_cents", monthly_cap_cents="500")
@@ -832,10 +832,37 @@ class Schema(unittest.TestCase):
         self.refused("known_defects.json", scenarios=[sc(say("x", {"reply_contains": "x", "known_defect": "nope"}))])
         self.refused("needs a known_defect", scenarios=[sc(say("x", {"reply_contains": "x", "may_pass": True}))])
 
+    def test_every_assertion_has_an_arg_shape(self):
+        # An assertion without a shape crashes check_arg with a KeyError, so a persona
+        # using it cannot even load. The two tables must name the same assertions.
+        self.assertEqual(set(grade.ASSERTIONS), set(grade.ARG_SHAPES))
+
+    def test_every_tracked_persona_loads(self):
+        # A persona that does not load stops its round before anything is spent, but a
+        # file that rots here is only discovered mid-run. Every tracked file must load.
+        files = sorted((HERE / "personas").rglob("*.json"))
+        self.assertGreater(len(files), 20)
+        for path in files:
+            with self.subTest(path=path.name):
+                pr.load_personas(str(path))
+
     def test_the_report_defects_are_registered(self):
+        # The registry holds only the open classes: a class whose fix landed on main
+        # is removed here in the same change, or a persona marker would keep excusing
+        # a failure that is really a regression.
         rows = pr.known_defects()
-        self.assertTrue({"no-fold", "glm-no-tools", "no-routines", "binary-read-kills-turn"} <= set(rows))
+        self.assertEqual(
+            set(rows),
+            {
+                "memory-needs-mistral-key",
+                "member-memory-write-dropped",
+                "no-web-lookup",
+                "web-answer-quality",
+                "weak-brief-source",
+            },
+        )
         self.assertTrue(all(r["title"] and r["report"] for r in rows.values()))
+        self.assertTrue(all(r.get("linear") for r in rows.values()), "every open class names its Linear issue")
 
     def test_a_no_embedding_route_class_is_only_used_where_no_row_asserts_memory_hard(self):
         # Root-cause honesty for memory excuses: a class marked root_cause
@@ -1046,37 +1073,37 @@ class Markers(unittest.TestCase):
             return pr.run_all([p], FakeBackend(FakeNimbusd()), {"FAKE_MISTRAL": FAKE_KEY}, Path(d), options)[0]
 
     def test_a_marked_failure_does_not_fail_the_persona_and_is_listed(self):
-        check = {"reply_contains": "banana", "known_defect": "no-fold"}
+        check = {"reply_contains": "banana", "known_defect": "no-web-lookup"}
         summary = self.run_one(persona(scenarios=[sc(say("hi", check))]))
         self.assertTrue(summary["pass"], summary)
         row = summary["scenarios"][0]
         self.assertEqual(row["verdict"], "known_defect")
-        self.assertEqual(row["known_failures"][0]["known_defect"], "no-fold")
-        self.assertEqual(summary["known_defects"], ["no-fold"])
+        self.assertEqual(row["known_failures"][0]["known_defect"], "no-web-lookup")
+        self.assertEqual(summary["known_defects"], ["no-web-lookup"])
 
     def test_a_marked_check_that_passes_fails_until_the_marker_goes(self):
-        check = {"reply_contains": "hi", "known_defect": "no-fold"}
+        check = {"reply_contains": "hi", "known_defect": "no-web-lookup"}
         summary = self.run_one(persona(scenarios=[sc(say("hi", check))]))
         self.assertFalse(summary["pass"])
         self.assertEqual(summary["scenarios"][0]["xpass"][0]["check"], "reply_contains")
 
     def test_may_pass_is_for_a_defect_that_comes_and_goes(self):
-        check = {"reply_contains": "hi", "known_defect": "no-fold", "may_pass": True}
+        check = {"reply_contains": "hi", "known_defect": "no-web-lookup", "may_pass": True}
         self.assertTrue(self.run_one(persona(scenarios=[sc(say("hi", check))]))["pass"])
 
     def test_an_unmarked_failure_beside_a_marked_one_still_fails(self):
-        checks = [{"reply_contains": "banana", "known_defect": "no-fold"}, {"reply_contains": "kiwi"}]
+        checks = [{"reply_contains": "banana", "known_defect": "no-web-lookup"}, {"reply_contains": "kiwi"}]
         self.assertFalse(self.run_one(persona(scenarios=[sc(say("hi", *checks))]))["pass"])
 
     def test_a_marker_on_a_scenario_is_refused(self):
         with self.assertRaises(pr.PersonaError):
-            persona(scenarios=[sc(say("hi"), known_defect="no-routines")])
+            persona(scenarios=[sc(say("hi"), known_defect="no-web-lookup")])
 
     def test_a_marker_never_excuses_a_refused_turn_or_a_check_that_broke(self):
-        broke = grade.grade_step({"reply": "x"}, [{"tool_called": "y", "known_defect": "no-routines"}], None)
+        broke = grade.grade_step({"reply": "x"}, [{"tool_called": "y", "known_defect": "no-web-lookup"}], None)
         self.assertTrue(broke[0]["broke"])
         self.assertNotIn("known_defect", broke[0])
-        dead = grade.grade_step({}, [{"file_absent": {"name": "n"}, "known_defect": "no-routines"}], DeadInstance())
+        dead = grade.grade_step({}, [{"file_absent": {"name": "n"}, "known_defect": "no-web-lookup"}], DeadInstance())
         self.assertTrue(dead[0]["broke"])
         rec = {"checks": [*broke, *dead, {"check": "turn_finished", "arg": True, "pass": False, "seen": "out of time"}]}
         out = {"failed": [], "known_failures": [], "xpass": []}

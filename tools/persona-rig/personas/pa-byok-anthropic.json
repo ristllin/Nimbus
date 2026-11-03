@@ -39,7 +39,7 @@
       {"id": "web-no-tavily", "steps": [
         {"say": "Use a web lookup to find the latest stable Python 3 release on python.org/downloads. Tell me the version and the URL you used.",
          "timeout_s": 300, "settle_s": 30,
-         "expect": [{"turn_resolved": true}, {"reply_contains": "${py_latest}", "known_defect": "no-web-lookup", "may_pass": true}, {"no_error_reply": true, "known_defect": "placeholder-reply", "may_pass": true}]}
+         "expect": [{"turn_resolved": true}, {"reply_contains": "${py_latest}", "known_defect": "no-web-lookup", "may_pass": true}, {"no_error_reply": true}]}
       ]}
     ]
   },

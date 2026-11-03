@@ -3,8 +3,8 @@
   "vars": {"suffix": "1177"},
   "matrix": [
     {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": ""},
-    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": "glm-no-tools"},
-    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": "glm-no-tools"}
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": ""},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": ""}
   ],
   "persona": {
     "name": "pa-commuter-${name}",

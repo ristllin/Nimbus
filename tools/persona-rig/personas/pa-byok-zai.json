@@ -2,8 +2,8 @@
   "description": "BYOK on Z.ai alone: the instance holds only a Z.ai key, so memory has no embedding route and web runs on Z.ai's own search. Chat, memory honesty, a file, a sub-agent, web.",
   "vars": {"suffix": "8842"},
   "matrix": [
-    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "mem_defect": "glm-mem-write-dropped", "tools_defect": "glm-no-tools"},
-    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "mem_defect": "glm-mem-write-dropped", "tools_defect": "glm-no-tools"}
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "mem_defect": "", "tools_defect": ""},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "mem_defect": "", "tools_defect": ""}
   ],
   "persona": {
     "name": "pa-byok-zai-${name}",

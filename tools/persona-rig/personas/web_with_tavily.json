@@ -80,14 +80,10 @@
         "may_pass": true
        },
        {
-        "no_error_reply": true,
-        "known_defect": "placeholder-reply",
-        "may_pass": true
+        "no_error_reply": true
        },
        {
-        "tool_called": "web_search",
-        "known_defect": "glm-no-tools",
-        "may_pass": true
+        "tool_called": "web_search"
        }
       ]
      }

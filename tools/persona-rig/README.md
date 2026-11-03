@@ -114,7 +114,7 @@ Marking a failure as known keeps a suite green while a reported defect stands, a
 defect-hitting persona in the repo. An id must be a row of `known_defects.json`.
 
 ```json
-{"tool_called": "files_read", "known_defect": "glm-no-tools"}
+{"tool_called": "web_search", "known_defect": "no-web-lookup"}
 ```
 
 - A marked check that fails is recorded under `known_failures`, the persona still passes, and the

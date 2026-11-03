@@ -51,18 +51,14 @@
         "turn_resolved": true
        },
        {
-        "log_regex": "mem_write outcomes stored=[1-9]",
-        "known_defect": "glm-mem-write-dropped",
-        "may_pass": true
+        "log_regex": "mem_write outcomes stored=[1-9]"
        },
        {
         "api_min": {
          "path": "/api/mem/stats",
          "field": "vectors",
          "min": 1
-        },
-        "known_defect": "glm-mem-write-dropped",
-        "may_pass": true
+        }
        }
       ]
      }
