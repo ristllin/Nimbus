@@ -200,8 +200,12 @@ static bool voiceOwnsRing() { return g_voice.ownsRing(); }
 // CUM-482: this slot now serves ONLY legacy clients that poll without a turn id -
 // any delivery overwrites it, so an async result landing between two turns was
 // handed to the next turn's first poll (off by one from then on).
-static volatile bool g_webReplyPending = false;
-static String        g_webReply;
+// Bench F03 (v4.9.0): the slot is consumed only by an IDLE poll. The reply is
+// delivered while the turn is still wrapping up; a client that keeps polling
+// while `busy` is set had its interim poll eat the reply, and its final poll
+// (pending false, busy 0) read an empty slot - the reply was lost with no way
+// back. A busy-window poll reads without retiring (agent::WebLegacySlot).
+static agent::WebLegacySlot g_webSlot;   // under g_webChatMx (below)
 // CUM-482: per-turn pairing. POST books a turn id, orchOnMessage claims it when
 // tg_poll starts that turn, every delivery to chat "web" inside the turn is its
 // reply, and anything delivered between turns (spawn acks, synthesis reports,
@@ -914,11 +918,10 @@ static bool orchSendSink(const String& chatId, const String& text) {
       std::lock_guard<std::mutex> lk(g_webChatMx);
       legacy = agent::deliverToWebChat(g_webChat, std::string(text.c_str(), text.length()),
                                        agent::loops::firing());
+      if (legacy) g_webSlot.deliver(std::string(text.c_str(), text.length()));
     }
     if (legacy) {
-      net::ConfigLockGuard lk;   // the legacy single slot (no-turn-id clients)
-      g_webReply = text;
-      g_webReplyPending = true;
+      net::ConfigLockGuard lk;   // the legacy single slot's pending backstop
       g_webTurnDeadlineMs = 0;   // the turn answered - no longer pending
     }
     return true;
@@ -4093,10 +4096,16 @@ void setup() {
     return dl != 0 && (int32_t)(millis() - dl) < 0;
   };
   wc.chatPoll = []() -> String {
-    net::ConfigLockGuard lk;
-    if (!g_webReplyPending) return String();
-    g_webReplyPending = false;
-    return g_webReply;
+    // Bench F03: a poll while work still runs (a turn in flight, active jobs)
+    // reads the slot WITHOUT retiring the reply - that client is still
+    // mid-conversation (its own loop waits for busy to clear), and its final
+    // poll must still see the reply. Only an idle poll consumes, so a drain
+    // still reads each delivery exactly once. The busy read allocates, so it
+    // stays OUTSIDE the slot's mutex (chatActivity computes the same number).
+    const bool idle = !agent::orchestrator::turnInFlight() &&
+                      agent::orchestrator::sessionInfosSnapshot().empty();
+    std::lock_guard<std::mutex> lk(g_webChatMx);
+    return String(g_webSlot.poll(idle).c_str());
   };
   // Route the memory WORKING SET (VDB int8 vector buffers + the entries array - the
   // dominant per-entry cost) to PSRAM, so hundreds/thousands of vectors don't eat the

@@ -1403,10 +1403,15 @@ class WebApi {
     } else {
       // Param-less poll (legacy clients / HIL): hand back the oldest ready reply,
       // FIFO. Kept so the single-turn contract still works without a turn id.
+      // Bench F03 (v4.9.0 device): a poll while work still runs READS the reply
+      // without retiring it - that client is still mid-conversation (its own
+      // loop waits for busy to clear), and its final poll must still see the
+      // reply; the consuming read lost it with no way back. An idle poll
+      // consumes, so a drain still reads each delivery exactly once.
       if (!resolved_.empty()) {
         auto it = resolved_.begin();   // map ordered by turn id ascending = FIFO
         fillChatReply(d, it->second);
-        resolved_.erase(it);
+        if (snap.activeJobs + (snap.turnInFlight ? 1 : 0) == 0) resolved_.erase(it);
       } else {
         d["reply"] = "";
         d["pending"] = !pending_.empty();

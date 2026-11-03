@@ -117,6 +117,43 @@ class WebChatBook {
 // otherwise show as the answer to the owner's next message.
 bool deliverToWebChat(WebChatBook& book, const std::string& text, bool routine);
 
+// The no-turn-id slot for legacy clients (HIL legs, bench scripts, a page whose
+// POST answer carried no turn id): the LAST reply delivered to the web chat.
+// A poll READS it; only a poll on an idle device RETIRES it.
+//
+// Bench F03 (v4.9.0): the reply is delivered while the turn is still wrapping
+// up, the client's own loop keeps polling while `busy` is set (more may still
+// arrive), its poll lands in that window, the slot was consumed on read, and
+// the client's final poll (pending false, busy 0) read an empty slot - the
+// reply was lost with no way back, three turns in a row. A busy-window poll is
+// an interim peek, never the final read; an idle poll is the final read and
+// consumes, so a drain (tests/hil/run_scenarios.py _drain_reply) still reads
+// each delivery exactly once.
+//
+// Portable and single-threaded by contract: the device calls every method under
+// the same mutex as the book's (deliver on tg_poll, poll on the web task).
+class WebLegacySlot {
+ public:
+  // A non-routine delivery to chat "web" (deliverToWebChat returned true).
+  void deliver(const std::string& text) {
+    if (text.empty()) return;
+    reply_ = text;
+    pending_ = true;
+  }
+  // The poll's read: the reply, retired only when the device is idle (no turn
+  // in flight, no active jobs - the same `busy` the poll's own body reports).
+  std::string poll(bool idle) {
+    if (!pending_) return std::string();
+    if (idle) pending_ = false;
+    return reply_;
+  }
+  bool pending() const { return pending_; }
+
+ private:
+  std::string reply_;
+  bool pending_ = false;
+};
+
 // ---- the /api/chat route bodies (portable: test_harness_webchat drives the
 // real decision; the device handlers only adapt the HTTP request) -------------
 
@@ -130,7 +167,7 @@ struct ChatGetRequest {
 };
 struct ChatGetDeps {
   std::function<WebChatBook::View(const std::string& turn)> view;   // null => legacy only
-  std::function<std::string()> legacyPoll;   // returns + CLEARS the legacy slot
+  std::function<std::string()> legacyPoll;   // reads the legacy slot (WebLegacySlot::poll)
   std::function<bool()> legacyPending;       // null => "pending while empty" (old inference)
   std::function<void(uint32_t& asyncSeq, int& busy)> activity;   // nullable
 };
