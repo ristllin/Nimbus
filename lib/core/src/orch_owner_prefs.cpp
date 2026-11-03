@@ -436,7 +436,14 @@ PrefErr OwnerPrefs::add(const std::string& text, PrefOrigin origin, uint32_t now
   e.origin = origin;
   e.filters = filtersForRule(t);
   e.text = t;
-  std::vector<PrefEntry> next = items_;
+  // Lane POL2 review: a retired rule the owner re-states comes back as this
+  // fresh add, and its retired copy is redundant now: the loader drops a
+  // same-key line at the next parse, so keeping both would silently lose one.
+  const std::string key = prefKey(t);
+  std::vector<PrefEntry> next;
+  next.reserve(items_.size() + 1);
+  for (const PrefEntry& k : items_)
+    if (!(k.moved || k.evicted) || prefKey(k.text) != key) next.push_back(k);
   next.push_back(e);
   const PrefErr room = checkRoom(next);
   if (room != PrefErr::Ok) {
