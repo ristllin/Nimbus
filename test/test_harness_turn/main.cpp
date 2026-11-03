@@ -103,6 +103,10 @@ struct Rig {
   // Lane POL2: every openqObserve call the engine made (chat, owner text, reply).
   std::vector<std::array<std::string, 3>> openqObserveCalls;
   std::vector<std::string> finalChecks;   // what HeadTools.cfg.validateFinal said (checkFinal)
+  // Lane POL2: what HeadTools.cfg.validateProseFinal said about a prose leak, per
+  // loop turn (the fake provider bypasses the real loop, so the loop-level behavior
+  // is covered in test_orch_head_loop; this asserts the engine wires the hook).
+  std::vector<std::string> proseChecks;
   std::vector<std::pair<std::string, std::string>> assistantRows;   // ApplyDeps.captureAssistant: (chat, text)
   std::vector<std::string> assistantRowTags;   // lane I: each captured row's engine tags
   std::function<void()> onProviderCall;   // in-turn hook (stuck-turn reaper test)
@@ -561,6 +565,9 @@ struct Rig {
         }
       }
       recordFinalCheck(tools, s);
+      if (tools && tools->cfg.validateProseFinal)
+        proseChecks.push_back(tools->cfg.validateProseFinal(
+            "Pat, you have a blue Brompton - I saved it to memory (recall m0a811a23)."));
       if (onProviderCall) onProviderCall();
       // Like the adapters: the echo is captured on the HTTP 200, before the turn is
       // known to parse, so a failed attempt can carry one too.
@@ -2434,6 +2441,21 @@ static void test_pol2_openq_observer_skips_scheduled_turns() {
                                                    /*quietOk=*/true, /*once=*/true);
   TEST_ASSERT_TRUE(w.ok);
   TEST_ASSERT_EQUAL(1, (int)r.openqObserveCalls.size());
+}
+
+// Lane POL2: a prose final answer is the owner-facing reply too, so the plumbing
+// check holds on it. glm-5.3 answered in the text channel with a memory id in the
+// prose ("recall m0a811a23") and the orch_turn check never saw it, so the id
+// reached the owner. The loop-level behavior (one correction round, JSON-wrapped
+// send-back) is covered in test_orch_head_loop; this asserts the engine wires the
+// prose check into every loop turn's HeadTools.
+static void test_pol2_prose_plumbing_check_is_wired() {
+  Rig r;
+  r.scripts["anthropic"] = {Rig::Script{}};   // one plain loop turn is enough
+  r.eng->handleMessage("go", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, (int)r.proseChecks.size());
+  TEST_ASSERT_TRUE(r.proseChecks[0].find("REPLY CHECK") != std::string::npos);
+  TEST_ASSERT_TRUE(r.proseChecks[0].find("plumbing") != std::string::npos);
 }
 
 // W20: a Once wakeup gets the honest [WAKEUP] preamble - "recurring task" would
@@ -5483,6 +5505,7 @@ static void runSecondHalf() {
   RUN_TEST(test_runtime_model_facts_change_the_input_and_never_the_cached_prompt);
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
   RUN_TEST(test_pol2_openq_observer_skips_scheduled_turns);
+  RUN_TEST(test_pol2_prose_plumbing_check_is_wired);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);
   RUN_TEST(test_owner_reminder_gets_reminder_framing_not_wakeup);
   RUN_TEST(test_cum523_telegramless_wakeup_has_no_telegram_leg);

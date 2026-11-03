@@ -421,6 +421,28 @@ PrefErr OwnerPrefs::addDuplicate(int dup, bool pending, std::string* idOut) {
   return approve(items_[(size_t)dup].id);
 }
 
+std::vector<PrefEntry> OwnerPrefs::nextForAdd(const std::string& key, const PrefEntry& e) const {
+  std::vector<PrefEntry> next;
+  next.reserve(items_.size() + 1);
+  for (const PrefEntry& k : items_)
+    if (!(k.moved || k.evicted) || prefKey(k.text) != key) next.push_back(k);
+  next.push_back(e);
+  return next;
+}
+
+PrefErr OwnerPrefs::commitMakingRoom(std::vector<PrefEntry>& next, const PrefEntry& e,
+                                      std::string* idOut, std::vector<PrefEntry>* evictedOut) {
+  std::vector<PrefEntry> evicted;
+  const PrefErr made = evictForRoom(next, evicted);
+  if (made != PrefErr::Ok) return made;
+  const PrefErr r = commit(next, seeded_, listed_, nextId_ + 1);
+  if (r == PrefErr::Ok) {
+    if (idOut) *idOut = e.idStr();
+    if (evictedOut) *evictedOut = evicted;
+  }
+  return r;
+}
+
 PrefErr OwnerPrefs::add(const std::string& text, PrefOrigin origin, uint32_t nowHours, bool pending,
                         std::string* idOut, std::vector<PrefEntry>* evictedOut) {
   const std::string t = sanitizePrefText(text);
@@ -437,32 +459,18 @@ PrefErr OwnerPrefs::add(const std::string& text, PrefOrigin origin, uint32_t now
   e.filters = filtersForRule(t);
   e.text = t;
   // Lane POL2 review: a retired rule the owner re-states comes back as this
-  // fresh add, and its retired copy is redundant now: the loader drops a
-  // same-key line at the next parse, so keeping both would silently lose one.
-  const std::string key = prefKey(t);
-  std::vector<PrefEntry> next;
-  next.reserve(items_.size() + 1);
-  for (const PrefEntry& k : items_)
-    if (!(k.moved || k.evicted) || prefKey(k.text) != key) next.push_back(k);
-  next.push_back(e);
+  // fresh add, and its retired copy is redundant now (nextForAdd drops it).
+  std::vector<PrefEntry> next = nextForAdd(prefKey(t), e);
   const PrefErr room = checkRoom(next);
-  if (room != PrefErr::Ok) {
-    // Lane POL2: an active add makes room instead of degrading to a refusal the
-    // model would paper over with a memory write. A pending add never evicts.
-    if (room != PrefErr::Full || pending) return room;
-    std::vector<PrefEntry> evicted;
-    const PrefErr made = evictForRoom(next, evicted);
-    if (made != PrefErr::Ok) return made;
+  if (room == PrefErr::Ok) {
     const PrefErr r = commit(next, seeded_, listed_, nextId_ + 1);
-    if (r == PrefErr::Ok) {
-      if (idOut) *idOut = e.idStr();
-      if (evictedOut) *evictedOut = evicted;
-    }
+    if (r == PrefErr::Ok && idOut) *idOut = e.idStr();
     return r;
   }
-  const PrefErr r = commit(next, seeded_, listed_, nextId_ + 1);
-  if (r == PrefErr::Ok && idOut) *idOut = e.idStr();
-  return r;
+  // Lane POL2: an active add makes room instead of degrading to a refusal the
+  // model would paper over with a memory write. A pending add never evicts.
+  if (room != PrefErr::Full || pending) return room;
+  return commitMakingRoom(next, e, idOut, evictedOut);
 }
 
 PrefErr OwnerPrefs::replace(uint32_t id, const std::string& text, PrefOrigin origin, uint32_t nowHours) {

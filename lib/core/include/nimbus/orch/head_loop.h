@@ -218,6 +218,13 @@ struct HeadLoopConfig {
   // tool-less round, with the text as the result of its orch_turn call. Separate from
   // validateFinal's budget: at most once per turn. Null => no check.
   std::function<std::string(const std::string& finalTurn)> forcedFinalCheck;
+  // Lane POL2: a prose final answer (HeadStep::prose) is not an orch_turn, so
+  // validateFinal never sees it - but it is still the owner-facing reply. This
+  // check runs on the prose text itself, with the same one-round budget and the
+  // same never-on-the-forced-round rule. The rejected prose goes back wrapped as
+  // an orch_turn call whose arguments ARE JSON ({"reply": ...}), so every
+  // provider's replay stays well-formed. Null => prose is delivered as before.
+  std::function<std::string(const std::string& prose)> validateProseFinal;
 };
 
 // One final-answer check: "" when the turn is fine, else the correction text.

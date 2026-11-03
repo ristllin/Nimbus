@@ -1716,6 +1716,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     headTools.cfg.forcedFinalCheck = [&userText](const std::string& finalTurn) {
       return orch::placeholderCheck(finalTurn, userText);
     };
+    // Lane POL2: a prose final answer is the owner-facing reply too (glm-5.3
+    // answered in the text channel with a memory id and the orch_turn check
+    // never saw it): the plumbing check holds on the prose itself, same
+    // one-round budget.
+    headTools.cfg.validateProseFinal = [](const std::string& prose) {
+      return orch::plumbingCheckText(prose);
+    };
     headTools.cfg.maxRounds          = roundsNow;   // user-tunable (P6); the prompt states the same cap
     headTools.cfg.deadlineMs         =
         (uint32_t)(d_.cfg.loop.deadlineS ? d_.cfg.loop.deadlineS() : 600) * 1000U;

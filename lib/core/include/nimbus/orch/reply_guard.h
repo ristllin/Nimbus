@@ -43,6 +43,10 @@ bool hasPlumbing(const std::string& reply);
 // correction note (model-facing).
 std::string plumbingCheck(const std::string& finalTurnJson);
 
+// Lane POL2: the same check over a prose final answer (HeadStep::prose), where
+// the text IS the owner-facing reply. "" when clean, else the correction note.
+std::string plumbingCheckText(const std::string& prose);
+
 // True when the owner's message asks for work: an action, a lookup, a link, a long
 // brief, or words this reader cannot judge. False only for what reads as plain chat.
 bool asksForWork(const std::string& ownerText);

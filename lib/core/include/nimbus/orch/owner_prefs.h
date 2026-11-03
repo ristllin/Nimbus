@@ -195,6 +195,14 @@ class OwnerPrefs {
   // The same words added again: nothing new. A human adding a rule that waits
   // for approval IS the approval.
   PrefErr addDuplicate(int dup, bool pending, std::string* idOut);
+  // The next list an add writes: today's items plus the new one, with a same-key
+  // retired copy dropped (the loader dedups same-key lines, so keeping both
+  // would silently lose one).
+  std::vector<PrefEntry> nextForAdd(const std::string& key, const PrefEntry& e) const;
+  // Commit an add that needs room: retire items until it fits, then commit and
+  // report what was retired.
+  PrefErr commitMakingRoom(std::vector<PrefEntry>& next, const PrefEntry& e, std::string* idOut,
+                            std::vector<PrefEntry>* evictedOut);
   int indexOf(uint32_t id) const;
   int indexOfKey(const std::string& key) const;
 

@@ -97,6 +97,18 @@ static void test_plumbing_check_reads_the_field() {
                        .find("REPLY CHECK") != std::string::npos);
 }
 
+// Lane POL2: the prose check - a prose final answer's text IS the owner-facing
+// reply (glm-5.3 answered in the text channel with "recall m0a811a23" and the
+// orch_turn check never saw it), so it is checked directly.
+static void test_plumbing_check_text_holds_on_prose() {
+  const std::string hit = plumbingCheckText(
+      "Pat, you have a blue Brompton - I saved it to memory (recall m0a811a23).");
+  TEST_ASSERT_TRUE(hit.find("REPLY CHECK") != std::string::npos);
+  TEST_ASSERT_TRUE(hit.find("plumbing") != std::string::npos);
+  TEST_ASSERT_TRUE(plumbingCheckText("Pat, you have a blue Brompton.").empty());
+  TEST_ASSERT_TRUE(plumbingCheckText("").empty());
+}
+
 // ---- the plain-chat cap's classifier -----------------------------------------------
 static void test_work_and_chat() {
   for (const char* t : {"Use a web lookup to find the latest stable Python 3 release listed on python.org/downloads.",
@@ -307,6 +319,7 @@ int main() {
   RUN_TEST(test_plumbing_class);
   RUN_TEST(test_plain_replies_have_no_plumbing);
   RUN_TEST(test_plumbing_check_reads_the_field);
+  RUN_TEST(test_plumbing_check_text_holds_on_prose);
   RUN_TEST(test_work_and_chat);
   RUN_TEST(test_promises);
   RUN_TEST(test_ordinary_replies_are_not_promises);

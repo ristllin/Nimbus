@@ -194,6 +194,20 @@ bool hasPlumbing(const std::string& reply) {
   return memoryIdIn(t) || jobIdIn(t) || storageWordingIn(t) || devicePathIn(t);
 }
 
+namespace {
+// The correction a plumbing leak gets (model-facing), shared by the orch_turn
+// check and the prose check.
+const char* const kPlumbingCorrection =
+    "[REPLY CHECK] Your reply shows internal plumbing: a memory or job id, a file "
+    "path, or storage wording like \"read back confirmed\". The owner reads plain "
+    "words only. Rewrite the answer without them: say what the thing is for the "
+    "owner, or leave it out. Do not mention this check.";
+}  // namespace
+
+std::string plumbingCheckText(const std::string& text) {
+  return hasPlumbing(text) ? std::string(kPlumbingCorrection) : std::string();
+}
+
 std::string plumbingCheck(const std::string& finalTurnJson) {
   JsonDocument d;
   if (deserializeJson(d, finalTurnJson) != DeserializationError::Ok) return std::string();
@@ -202,10 +216,7 @@ std::string plumbingCheck(const std::string& finalTurnJson) {
   // The ask field reaches the owner too (it is the question shown), so both are
   // checked: plumbing in either is a leak.
   if (!hasPlumbing(reply) && !hasPlumbing(ask)) return std::string();
-  return "[REPLY CHECK] Your reply shows internal plumbing: a memory or job id, a file "
-         "path, or storage wording like \"read back confirmed\". The owner reads plain "
-         "words only. Rewrite the answer without them: say what the thing is for the "
-         "owner, or leave it out. Do not mention this check.";
+  return std::string(kPlumbingCorrection);
 }
 
 namespace {

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "nimbus/orch/head_loop.h"
+#include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/transcript.h"
 
 using namespace nimbus::orch;
@@ -817,6 +818,63 @@ static void test_prose_final_is_never_checked() {
   TEST_ASSERT_FALSE(o2.prose);
 }
 
+// Lane POL2: a prose final answer is still the owner-facing reply: its own check
+// (validateProseFinal) gets the same ONE correction round validateFinal gives an
+// orch_turn, and the rejected prose returns wrapped as an orch_turn call whose
+// arguments ARE JSON, so every provider's replay stays well-formed. A clean prose
+// answer costs nothing, and a model that leaks again after its one round is
+// delivered as prose (no thrash).
+static void test_prose_final_check_corrects_plumbing_once() {
+  Fake f;
+  HeadStep leak =
+      stepFinished("Pat, you have a blue Brompton - I saved it to memory (recall m0a811a23).");
+  leak.prose = true;
+  f.script = {leak, stepFinished("{\"reply\":\"Pat, you have a blue Brompton.\"}")};
+  Transcript tr;
+  tr.addUser("go");
+  HeadLoopConfig cfg;
+  cfg.validateProseFinal = [](const std::string& prose) { return plumbingCheckText(prose); };
+  HeadLoopHooks h = f.hooks();
+  h.transcript = &tr;
+  HeadOutcome o = runHeadLoop(cfg, h);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_FALSE(o.prose);   // the corrected answer was an orch_turn
+  TEST_ASSERT_EQUAL(1, o.corrections);
+  TEST_ASSERT_EQUAL(2u, f.stepIdx);
+  TEST_ASSERT_EQUAL(1u, f.priorSeen[1].size());
+  TEST_ASSERT_EQUAL_STRING(kFinalCheckCallId, f.priorSeen[1][0].id.c_str());
+  TEST_ASSERT_TRUE(f.priorSeen[1][0].isError);
+  TEST_ASSERT_TRUE(has(f.priorSeen[1][0].output, "plumbing"));
+  // The rejected prose rode back as JSON orch_turn arguments (replay-safe).
+  int wrapped = 0;
+  for (const auto& it : tr.entries())
+    if (it.kind == TranscriptItem::Kind::ToolUse && it.name == "orch_turn") {
+      wrapped++;
+      TEST_ASSERT_TRUE(has(it.text, "\"reply\""));
+      TEST_ASSERT_TRUE(has(it.text, "m0a811a23"));
+    }
+  TEST_ASSERT_EQUAL(1, wrapped);
+  // Counter-test: clean prose costs no round and is delivered as prose.
+  Fake clean;
+  HeadStep fine = stepFinished("Pat, you have a blue Brompton.");
+  fine.prose = true;
+  clean.script = {fine};
+  HeadOutcome oc = runHeadLoop(cfg, clean.hooks());
+  TEST_ASSERT_TRUE(oc.ok);
+  TEST_ASSERT_TRUE(oc.prose);
+  TEST_ASSERT_EQUAL(0, oc.corrections);
+  TEST_ASSERT_EQUAL(1u, clean.stepIdx);
+  // Thrash guard: a model that leaks again after its one round is delivered.
+  Fake stubborn;
+  HeadStep leak2 = leak;
+  stubborn.script = {leak, leak2};
+  HeadOutcome os = runHeadLoop(cfg, stubborn.hooks());
+  TEST_ASSERT_TRUE(os.ok);
+  TEST_ASSERT_TRUE(os.prose);
+  TEST_ASSERT_EQUAL(1, os.corrections);
+  TEST_ASSERT_EQUAL(2u, stubborn.stepIdx);
+}
+
 static void test_final_checks_chain_into_one_correction() {
   FinalCheck a = [](const std::string&) { return std::string("shape"); };
   FinalCheck none;
@@ -834,6 +892,7 @@ int main(int, char**) {
   RUN_TEST(test_final_check_costs_nothing_when_the_answer_is_fine);
   RUN_TEST(test_cut_final_turn_is_handed_on_not_corrected);
   RUN_TEST(test_prose_final_is_never_checked);
+  RUN_TEST(test_prose_final_check_corrects_plumbing_once);
   RUN_TEST(test_final_checks_chain_into_one_correction);
   RUN_TEST(test_cum506_siblings_of_the_final_turn_run_before_any_reply);
   RUN_TEST(test_g1_all_write_siblings_accept_the_final_turn);

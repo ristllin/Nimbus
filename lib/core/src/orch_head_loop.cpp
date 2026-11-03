@@ -1,5 +1,7 @@
 #include "nimbus/orch/head_loop.h"
 
+#include <ArduinoJson.h>
+
 #include "nimbus/orch/billing_refusal.h"   // isBillingRefusal - the Billing step kind
 #include "nimbus/orch/body_budget.h"   // parseBodyBudgetError - a round too big to send
 #include "nimbus/orch/transcript.h"  // the canonical record the controller fills
@@ -369,6 +371,19 @@ void sendFinalBack(const HeadStep& sr, const std::string& fix, int round, const 
   prior.push_back(std::move(res));
   if (hooks.log) hooks.log("headloop: final answer sent back for one correction - " + fix.substr(0, 120));
 }
+
+// A rejected PROSE final goes back the same way, wrapped so the orch_turn call
+// the correction answers holds JSON arguments (the prose itself is not JSON).
+void sendProseBack(const HeadStep& sr, const std::string& fix, int round, const HeadLoopHooks& hooks,
+                   std::vector<HeadToolResult>& prior) {
+  JsonDocument d;
+  d["reply"] = sr.finalTurn;
+  std::string args;
+  serializeJson(d, args);
+  HeadStep wrapped = sr;
+  wrapped.finalTurn = args;
+  sendFinalBack(wrapped, fix, round, hooks, prior);
+}
 }  // namespace
 
 HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
@@ -549,6 +564,18 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
         if (!fix.empty()) {
           out.corrections++;
           sendFinalBack(sr, fix, round, hooks, prior);
+          continue;
+        }
+      }
+      // Lane POL2: a prose final is not an orch_turn, but it is the owner-facing
+      // reply: its own check gets the same ONE correction round, and the rejected
+      // prose returns wrapped as JSON orch_turn arguments so replay stays well-formed.
+      if (sr.prose && cfg.validateProseFinal && !lastChance && out.corrections == 0 &&
+          sr.cut.empty()) {
+        const std::string fix = cfg.validateProseFinal(sr.finalTurn);
+        if (!fix.empty()) {
+          out.corrections++;
+          sendProseBack(sr, fix, round, hooks, prior);
           continue;
         }
       }
