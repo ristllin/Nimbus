@@ -2710,7 +2710,12 @@ function loadLoops(){
 // the device has, so it could not save and the approval card never showed.
 function wkIn(s){if(s==null)return '';const m=Math.round(s/60);
   return m<1?'in under a minute':(m<120?'in ~'+m+' min':'in ~'+Math.round(m/60)+' h');}
-function wkPost(body){return fetch('/api/wakeups',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(body).toString()}).then(jok);}
+// GATE2: a 200 body of {"ok":false} is the server's honest no-op (a stale row:
+// the wake-up already fired or was removed between the page's GET and the
+// click). jok() only guards the HTTP status, so the seam itself rejects - no
+// caller can render a success state for a no-op.
+const WK_GONE='gone';
+function wkPost(body){return fetch('/api/wakeups',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(body).toString()}).then(jok).then(j=>((j&&j.ok===false)?Promise.reject(WK_GONE):j));}
 function loadWakeups(){
   const sel=$('wkPolicy'); if(!sel)return;
   fetch('/api/wakeups').then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{
@@ -2718,7 +2723,7 @@ function loadWakeups(){
     sel.onchange=()=>run({status:'wkMsg',pending:'Saving…',
       work:()=>wkPost({action:'mode',value:sel.value}),
       ok:()=>sel.value==='ask'?'Ask me first - new wake-ups wait for approval.':'Wake-ups run silently.',
-      error:e=>'Couldn\'t save'+(e?(' ('+e+')'):'')+' - try again.'});
+      error:e=>e===WK_GONE?'That save did not apply - try again.':'Couldn\'t save'+(e?(' ('+e+')'):'')+' - try again.'});
     const items=(d.wakeups||[]).filter(w=>w);
     // A single pending approval card (never a loop): only the FIRST pending item.
     const p=items.find(w=>w.pending), box=$('wkPending');
@@ -2729,7 +2734,8 @@ function loadWakeups(){
         const act=(a,word,msg)=>run({status:'wkPendMsg',pending:msg,
           work:()=>wkPost({action:a,id:p.id||''}),
           ok:()=>{setTimeout(loadWakeups,400);return a==='approve'?'Approved.':'Denied.';},
-          error:e=>'Couldn\'t '+word+(e?(' ('+e+')'):'')+' - try again.'});
+          error:e=>{if(e===WK_GONE){setTimeout(loadWakeups,400);return 'That wake-up is no longer pending.';}
+            return 'Couldn\'t '+word+(e?(' ('+e+')'):'')+' - try again.';}});
         $('wkApprove').onclick=()=>act('approve','approve','Approving…');
         $('wkDeny').onclick=()=>act('cancel','deny','Denying…');
       } else box.style.display='none';
