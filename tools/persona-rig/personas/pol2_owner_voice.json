@@ -1,0 +1,102 @@
+{
+ "description": "Lane POL2: the six conversation-annoyance classes from owner-signals-2026-11-02.md and RCA-2026-11-01-02 section 5, on the three head models the task names. Every scenario asserts the fixed behavior: run against the base image it fails (the before column), against the fixed image it passes (the after column). The GLM rows carry the recorded GLM defects (no tool loop, dropped mem_write) as markers, the same way capability_matrix.json does.",
+ "matrix": [
+  {"name": "mistral-large-4-0", "host": "mistral", "model": "mistral-large-4-0",
+   "keys": {"mistral": "MISTRAL_API_KEY"},
+   "models": {"head": {"mistral": "mistral-large-4-0"}, "sub": {"mistral": "mistral-large-4-0"}},
+   "tools_defect": "", "mem_defect": ""},
+  {"name": "glm-5.3", "host": "zai", "model": "glm-5.3",
+   "keys": {"zai": "Z_AI_TOKEN"},
+   "models": {"head": {"zai": "glm-5.3"}, "sub": {"zai": "glm-5.3"}},
+   "tools_defect": "glm-no-tools", "mem_defect": "glm-mem-write-dropped"},
+  {"name": "claude-haiku-5-5", "host": "anthropic", "model": "claude-haiku-5-5",
+   "keys": {"anthropic": "ANTHROPIC_API_KEY", "mistral": "MISTRAL_API_KEY"},
+   "models": {"head": {"anthropic": "claude-haiku-5-5"}, "sub": {"anthropic": "claude-haiku-5-5"}},
+   "tools_defect": "", "mem_defect": ""}
+ ],
+ "persona": {
+  "name": "pa-pol2-${name}",
+  "display_name": "POL2 ${name}",
+  "timezone": "Europe/London",
+  "directive": "You are the home assistant for Pat. Keep replies short and practical.",
+  "monthly_cap_cents": 300,
+  "keys": "${keys}",
+  "models": "${models}",
+  "host": "${host}",
+  "instance_env_keys": ["TAVILY_API_KEY"],
+  "env": {"NIMBUSD_TOOL_LOOP": "1"},
+  "scenarios": [
+   {"id": "s1-openq",
+    "description": "Class 1: an open item is noted once, dropped on the owner's word, and never re-raised.",
+    "steps": [
+     {"say": "Keep an open question for me, don't answer it now: which skyr pot label should I photograph next? Just note it on your open list and confirm in one line.",
+      "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                 {"tool_called": "openq", "known_defect": "${tools_defect}", "may_pass": true}]},
+     {"say": "Forget the skyr pot question, I always deal with it. Take it off your open list. One line.",
+      "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                 {"tool_called": "openq", "known_defect": "${tools_defect}", "may_pass": true}]},
+     {"say": "Different thing: what is 9 times 6? Answer with just the number.",
+      "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                 {"reply_regex": "\\b54\\b"}, {"reply_not_contains": "skyr"}]}
+    ]},
+   {"id": "s2-standing",
+    "description": "Class 2: a never-rule still binds when the standing-rules list is full, and the owner is told which rule retired.",
+    "steps": [
+     {"say": "Add these six standing rules with your rules tool, one call per rule: answer briefly; greet me by name; use metric units; no emoji; confirm before file changes; keep weather notes short. Confirm when all six are saved.",
+      "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                 {"tool_called": "prefs", "known_defect": "${tools_defect}", "may_pass": true}]},
+     {"say": "Add six more standing rules the same way: never mention politics; never recommend brands; no slang; never discuss sports; spell out money amounts; prefer plain words. Confirm when all six are saved.",
+      "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                 {"tool_called": "prefs", "known_defect": "${tools_defect}", "may_pass": true}]},
+     {"say": "The rules list is full now. Add one more standing rule anyway and tell me what happened: never bring up my duolingo streak unless I ask.",
+      "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                 {"reply_regex": "retir", "known_defect": "${tools_defect}", "may_pass": true}]},
+     {"say": "It's Sunday evening. Anything I should keep in mind this week? Keep it short.",
+      "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                 {"reply_not_contains": "duolingo"}]}
+    ]},
+   {"id": "s3-plumbing",
+    "description": "Class 3: no memory ids, file paths or read-back wording in an owner-facing reply.",
+    "steps": [
+     {"say": "Remember permanently: my bike is a blue Brompton. One line back, in plain words.",
+      "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                 {"reply_not_regex": "read back confirmed|mem_[0-9a-f]{4,}|\\bm[0-9a-f]{8}\\b|memory id|/data/|result-job|job[0-9]{4}|row key"}]},
+     {"say": "What bike do I have, and how do you know? One line, plain words only.",
+      "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                 {"reply_contains": "brompton"},
+                 {"reply_not_regex": "read back confirmed|mem_[0-9a-f]{4,}|\\bm[0-9a-f]{8}\\b|memory id|/data/|result-job|job[0-9]{4}|row key"}]}
+    ]},
+   {"id": "s4-sources",
+    "description": "Class 4: a disruption brief names a primary source, not a weak aggregator.",
+    "steps": [
+     {"say": "Is there any rail disruption into London King's Cross today? Check the web and name where you read it.",
+      "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                 {"tool_called": "web", "known_defect": "${tools_defect}", "may_pass": true},
+                 {"reply_regex": "national rail|lner|govia|gtr\\b|thameslink|great northern|network rail"}]}
+    ]},
+   {"id": "s5-topics",
+    "description": "Class 5: a stored fact is not raised on an unrelated turn.",
+    "steps": [
+     {"say": "Remember permanently: my dentist appointment is on the 12th. One line back.",
+      "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                 {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1},
+                  "known_defect": "${mem_defect}", "may_pass": true}]},
+     {"http": {"method": "POST", "path": "/api/orch", "form": {"clearConv": "1"}},
+      "expect": [{"http_status": 200}]},
+     {"say": "What is the capital of France? One word.",
+      "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                 {"reply_regex": "\\bParis\\b"}, {"reply_not_contains": "dentist"}]}
+    ]},
+   {"id": "s6-frustration",
+    "description": "Class 6: a frustrated, confused owner gets one short re-anchored line, not a re-explanation.",
+    "steps": [
+     {"say": "For the record: my dentist appointment is on the 12th, not Tuesday. One line.",
+      "expect": [{"turn_resolved": true}, {"no_error_reply": true}]},
+     {"say": "This is useless. First you said Tuesday, now the 12th. I'm lost. When is my dentist appointment? One line, nothing else.",
+      "expect": [{"turn_resolved": true}, {"no_error_reply": true},
+                 {"reply_contains": "12"},
+                 {"reply_regex": "^[\\s\\S]{0,400}$"}]}
+    ]}
+  ]
+ }
+}
