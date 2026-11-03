@@ -55,7 +55,6 @@ from persona_schema import (  # noqa: E402, F401  (the rig's public loading surf
 )
 
 DOCKER = os.environ.get("DOCKER_BIN", "docker")
-BUSY_RETRY_S = 120  # how long a snapshot read waits out the instance's honest busy
 HTTP_TIMEOUT_S = 60
 CONFIG_PAUSE_S = 0.2  # the web app's pace between saves
 # How long a read waits out the daemon's 503 "instance busy". A quiet moment

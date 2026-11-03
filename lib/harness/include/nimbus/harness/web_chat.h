@@ -127,8 +127,9 @@ bool deliverToWebChat(WebChatBook& book, const std::string& text, bool routine);
 // the client's final poll (pending false, busy 0) read an empty slot - the
 // reply was lost with no way back, three turns in a row. A busy-window poll is
 // an interim peek, never the final read; an idle poll is the final read and
-// consumes, so a drain (tests/hil/run_scenarios.py _drain_reply) still reads
-// each delivery exactly once.
+// consumes. The slot answers the same reply on every busy poll, so a drain
+// (tests/hil/run_scenarios.py run_turn) records a delivery once by deduping
+// the peek re-reads.
 //
 // Portable and single-threaded by contract: the device calls every method under
 // the same mutex as the book's (deliver on tg_poll, poll on the web task).

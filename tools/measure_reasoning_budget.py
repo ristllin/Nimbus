@@ -210,8 +210,7 @@ def call(provider, model, effort, shape, key, schema=False):
         return json.loads(e.read() or b"{}"), (time.time() - t0) * 1000, "HTTP %d" % e.code
 
 
-def run_cell(spec, shape, schema, key):
-    """One request; returns the measurement row (rep stamped by the caller)."""
+def run_cell(spec, shape, schema, key, rep):
     provider, model, effort = spec
     resp, ms, err = call(provider, model, effort, shape, key, schema)
     usage = resp.get("usage", {})
@@ -224,7 +223,7 @@ def run_cell(spec, shape, schema, key):
         "effort": effort or None,
         "shape": shape + ("-schema" if schema else ""),
         "schema": schema,
-        "rep": 0,
+        "rep": rep,
         "error": err,
         "latency_ms": round(ms),
         "finish_reason": (resp.get("choices") or [{}])[0].get("finish_reason"),
@@ -244,8 +243,7 @@ def probe_model(provider, model, effort, key, reps, rows):
         schemas = [False, True] if shape in ("food-final", "food-big") else [False]
         for rep in range(reps):
             for schema in schemas:
-                row = run_cell((provider, model, effort), shape, schema, key)
-                row["rep"] = rep
+                row = run_cell((provider, model, effort), shape, schema, key, rep)
                 rows.append(row)
                 print(".", end="", flush=True)
 
