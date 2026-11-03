@@ -129,3 +129,29 @@ test('a stale approval (ok:false) is surfaced, never "Approved." or "Denied."', 
   await expect(msg).not.toContainText('Denied.');
   await expect(msg).not.toHaveAttribute('data-fb', 'ok');
 });
+
+// GATE2 fix pass (self-review finding): the same honest {"ok":false} answer
+// lands on /api/loops row actions (nimbusd, a stale row: pause/resume/delete/
+// approve of an id that no longer exists), and the row buttons used to swallow
+// it entirely - no ok check, no catch, just a silent reload. A no-op (or a
+// failed request) must say so next to the list it reloaded.
+test('a stale routine row action (ok:false) is surfaced, not silent', async ({ page }) => {
+  await seedToken(page);
+  const posts = [];
+  await page.route('**/api/loops', (route) => {
+    const req = route.request();
+    if (req.method() === 'POST') { posts.push(req.postData() || ''); return route.fulfill({ status: 200, body: '{"ok":false}' }); }
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
+      { id: 'lp0007', name: 'Daily digest', prompt: 'Summarize the day', kind: 'interval', everySec: 86400, at: '', enabled: true, why: '', nextRun: 0, byAgent: false, approved: true, lastResult: 'ok', firesToday: 1, tokensToday: 120, reserved: false },
+    ]) });
+  });
+  await openSub(page, 'routines');
+  const pause = page.locator('#loopList button[data-act=pause]');
+  await expect(pause).toBeVisible();
+  await pause.click();
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]).toContain('pause');
+  expect(posts[0]).toContain('lp0007');
+  await expect(page.locator('#lpMsg')).toContainText('no longer available');
+  await expect(page.locator('#lpMsg')).not.toHaveAttribute('data-fb', 'ok');
+});

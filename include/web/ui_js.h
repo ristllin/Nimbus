@@ -1560,7 +1560,15 @@ function loadLoops(){
     }).join('')+'</tbody></table>';
     el.querySelectorAll('button[data-act]').forEach(b=>b.onclick=()=>{
       const fd=new FormData(); fd.append('action',b.dataset.act); fd.append('id',b.dataset.id);
-      fetch('/api/loops',{method:'POST',body:fd}).then(()=>setTimeout(loadLoops,500));
+      // nimbusd answers {"ok":false} when the id no longer exists (a stale row,
+      // the same honest no-op the wake-up card surfaces); the device always
+      // stages ok:true. Either way the list reloads to the truth, but a no-op
+      // or a failed request must say so, never pass silently.
+      fetch('/api/loops',{method:'POST',body:fd}).then(r=>r.json()).then(x=>{
+        setTimeout(loadLoops,500);
+        if(x&&x.ok===false)fbState('lpMsg','error','That routine is no longer available - the list is up to date.');
+      }).catch(()=>{setTimeout(loadLoops,500);
+        fbState('lpMsg','error','Couldn\'t apply that change - try again.');});
     });
   }).catch(()=>{el.innerHTML='<span class=hint>Couldn\'t load routines</span>';});
 }
@@ -1598,7 +1606,7 @@ function loadWakeups(){
         const act=(a,word,msg)=>run({status:'wkPendMsg',pending:msg,
           work:()=>wkPost({action:a,id:p.id||''}),
           ok:()=>{setTimeout(loadWakeups,400);return a==='approve'?'Approved.':'Denied.';},
-          error:e=>{if(e===WK_GONE){setTimeout(loadWakeups,400);return 'That wake-up is no longer pending.';}
+          error:e=>{if(e===WK_GONE){setTimeout(loadWakeups,400);return 'That wake-up is no longer pending - the list is up to date.';}
             return 'Couldn\'t '+word+(e?(' ('+e+')'):'')+' - try again.';}});
         $('wkApprove').onclick=()=>act('approve','approve','Approving…');
         $('wkDeny').onclick=()=>act('cancel','deny','Denying…');
@@ -1625,9 +1633,11 @@ function initLoopForm(){
     fd.append('prompt',prompt); fd.append('chatId',$('lpChat').value.trim());
     fd.append('schedule',JSON.stringify(sched));
     fetch('/api/loops',{method:'POST',body:fd}).then(r=>r.json()).then(x=>{
-      $('lpMsg').textContent=x.ok?'Created':(x.error||'Couldn\'t create - try again');
+      // lpMsg is shared with the row buttons above, so both write it through
+      // fbState - one state machine, no stale error class under a later "Created".
+      fbState('lpMsg',x.ok?'ok':'error',x.ok?'Created':(x.error||'Couldn\'t create - try again'));
       if(x.ok){$('lpName').value='';$('lpPrompt').value='';} setTimeout(loadLoops,500);
-    }).catch(()=>$('lpMsg').textContent='Couldn\'t create - try again');
+    }).catch(()=>fbState('lpMsg','error','Couldn\'t create - try again'));
   };
 }
 document.addEventListener('DOMContentLoaded',initLoopForm);
