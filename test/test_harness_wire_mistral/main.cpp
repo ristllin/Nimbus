@@ -1682,6 +1682,29 @@ static void test_effort_table_matches_the_recording() {
   }
 }
 
+// The same-host step-down table (ruling 3 Nov 09:15Z): only a head that cannot turn
+// its reasoning off gets a same-provider non-reasoning round before another provider
+// is asked. Large 4 refuses effort "none" (the recording above); every other Mistral
+// head runs at "none", Z.ai has no non-reasoning GLM, and every current Claude line
+// takes effort.
+static void test_the_same_host_step_down_table() {
+  const struct { const char* host; const char* model; const char* alt; } rows[] = {
+      {"mistral", "mistral-large-4-0", "mistral-medium-latest"},
+      {"mistral", "mistral-large-4", "mistral-medium-latest"},
+      {"mistral", "mistral/mistral-large-4-0", "mistral-medium-latest"},   // a router pick
+      {"mistral", "mistral-medium-latest", ""},   // already runs at effort "none"
+      {"mistral", "mistral-small-latest", ""},
+      {"mistral", "mistral-large-latest", ""},
+      {"zai", "glm-5.3", ""},                    // both GLM models reason
+      {"zai", "glm-5.3-flash", ""},
+      {"anthropic", "claude-opus-5", ""},         // every Claude line takes effort
+      {"openai", "gpt-5.6-sol", ""},
+  };
+  for (const auto& r : rows)
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(r.alt, providers::sameHostNonReasoningModel(r.host, r.model),
+                                     r.model);
+}
+
 // CUM-823: web.search with no Tavily key runs Mistral's built-in search on a model that
 // takes it, whatever the head is. Recorded shape: evidence/probes/web-mistral-*.
 static void test_web_search_runs_on_mistral_builtin() {
@@ -2087,6 +2110,7 @@ int main(int, char**) {
   RUN_TEST(test_mistral_rounds_fit_the_gateway);
   RUN_TEST(test_fold_is_a_plain_completion);
   RUN_TEST(test_effort_table_matches_the_recording);
+  RUN_TEST(test_the_same_host_step_down_table);
   RUN_TEST(test_cum616_effort_table_matches_the_recorded_model_list);
   RUN_TEST(test_r1_image_url_parts_in_the_seeded_user_message);
   RUN_TEST(test_r1_mistral_model_without_image_input_reads_transcriptions);

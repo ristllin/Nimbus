@@ -178,6 +178,16 @@ const char* mistralHeadEffort(const std::string& model) {
   return "none";   // every other reasoning model refuses "low" (the same recording)
 }
 
+const char* sameHostNonReasoningModel(const std::string& host, const std::string& model) {
+  if (host != "mistral") return "";
+  const std::string m = startsWith(model, "mistral/") ? model.substr(8) : model;
+  // Only Large 4 is forced to reason (it refuses effort "none"); every other Mistral
+  // head runs at "none", so a cut there is a long answer, not reasoning, and the next
+  // provider - not a smaller same-provider model - is the right escape.
+  if (!startsWith(m, "mistral-large-4")) return "";
+  return "mistral-medium-latest";   // the default Mistral head, at effort "none"
+}
+
 uint32_t slowestTokensPerSecond(const std::string& host, const std::string& model) {
   // Floors about 25-30% under the rates measured live on 18 Oct over a whole
   // non-streamed request (evidence/rate-probe.json in the lane notes): Haiku 5.5

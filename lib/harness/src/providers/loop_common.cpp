@@ -8,6 +8,7 @@
 #include <new>   // std::bad_alloc: a thrown round still files what the loop billed
 
 #include "nimbus/harness/log.h"
+#include "nimbus/harness/output_caps.h"   // sameHostNonReasoningModel - the cut step-down
 #include "wire.h"   // wire::lastExchange - did the failed request ever leave the device
 #include "image_parts.h"   // R1: LoopImages - the turn's photos seed the transcript
 #include "nimbus/orch/compact.h"   // isContextOverflowError - a provider's window refusal
@@ -651,6 +652,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
   int    switches = 0;
   const int kMaxSwitches = 2;
+  bool   steppedDown = false;   // the one same-host non-reasoning step after a cut
   cur = makeStep(hostIdx);
   if (!cur) { err = "unknown host " + hostList[hostIdx]; return false; }
   if (hostIdx > 0) {
@@ -775,6 +777,35 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       }
       const orch::FabricRule rule = orch::fabricRuleFor(sr2.kind);
       noteHostFailed(pd, hostList[hostIdx], sr2.kind, sr2.httpStatus);
+      // Ruling 3 Nov 09:15Z: a reasoning head that out-grew its round (Lumi:
+      // Large 4 cut at 4,125 then 5,500 tokens for a 135-byte reply, 38,656
+      // billed as reasoning) gets ONE same-host step on a non-reasoning model
+      // before a different provider is asked. Same provider, so no owner
+      // notice: nothing the owner sees changes, and the round that spiralled
+      // is exactly the round a non-reasoning model answers in a few hundred
+      // tokens (measured 3 Nov, evidence/defect5/). The step-down holds for
+      // the rest of the turn: the configured head already spiralled once.
+      if (sr2.kind == orch::StepErr::Cut && !steppedDown) {
+        const std::string headModel =
+            pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()) : std::string();
+        const char* alt = providers::sameHostNonReasoningModel(hostList[hostIdx], headModel);
+        if (alt && *alt && headModel != alt) {
+          steppedDown = true;
+          hlog::logf("fabric: %s (%s) cut at its output cap - one same-host step on %s "
+                     "before another provider",
+                     hostList[hostIdx].c_str(), headModel.c_str(), alt);
+          ProviderDeps altPd = pd;   // the step keeps its own copy, as every step does
+          const std::string altModel = alt;
+          auto origModel = pd.orchModel;
+          altPd.orchModel = [origModel, altModel](const char* h) {
+            return std::string(h) == "mistral" ? altModel
+                                              : (origModel ? origModel(h) : std::string());
+          };
+          cur = wrap(hostIdx, misLoopStep(altPd, rec.instructions(), ht, &hostUse[hostIdx], tr),
+                     "orchTurn(mistral-loop)");
+          continue;   // the SAME round re-runs on the stepped-down model
+        }
+      }
       const size_t nextIdx = nextUnparked(hostIdx + 1);
       const bool nowhereToGo = !rule.switchHost || switches >= kMaxSwitches || nextIdx >= hostCount;
       // A cut round had its headroom retry in the step. The next attempt, here or on the

@@ -72,6 +72,16 @@ bool mistralTakesEffort(const std::string& model);
 // Magistral and the Vibe aliases refuse "low" (recorded 1 Nov).
 const char* mistralHeadEffort(const std::string& model);
 
+// The same-provider model a cut round steps down to before a different provider is
+// asked ("" = none). Only a head that cannot turn its reasoning off needs one: Large 4
+// refuses effort "none", so its output budget can go to reasoning even at "low" (Lumi
+// 3 Nov: cut at 4,125 then 5,500 tokens for a 135-byte reply, 38,656 tokens billed as
+// reasoning). Measured 3 Nov on the real turn shapes (evidence/defect5/): every other
+// Mistral head runs at effort "none" and answers in a few hundred tokens, so its cut is
+// a genuinely long answer, not reasoning; Z.ai has no non-reasoning GLM, and every
+// current Claude line takes effort. The step-down model itself runs at "none".
+const char* sameHostNonReasoningModel(const std::string& host, const std::string& model);
+
 // The family's slowest calibrated output rate, tokens per second (the time clamp).
 uint32_t slowestTokensPerSecond(const std::string& host, const std::string& model);
 
