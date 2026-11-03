@@ -188,6 +188,36 @@ static void test_a_reply_marks_an_item_raised_once() {
   TEST_ASSERT_TRUE(again.entries()[0].raised);
 }
 
+// A passing mention is not a raise: the reply must actually ask. An unrelated
+// answer that merely shares subject words must not retire the item (the owner
+// was never asked, so it stays live).
+static void test_a_mention_without_a_question_never_marks_raised() {
+  World w;
+  w.q.begin(&w.io);
+  w.q.add("Photograph the skyr pot label next time", 1, nullptr);
+  TEST_ASSERT_TRUE(observeOpenQ(w.q, "what is the weather",
+                                "the skyr pot label looked fine in passing today").empty());
+  TEST_ASSERT_FALSE(w.q.entries()[0].raised);
+  // An ask-shaped closer without a question mark counts as asking.
+  TEST_ASSERT_FALSE(observeOpenQ(w.q, "hi",
+                                 "let me know about the skyr pot label when you can").empty());
+  TEST_ASSERT_TRUE(w.q.entries()[0].raised);
+}
+
+// The owner's fresh "note this for me" re-opens a raised item.
+static void test_readding_a_raised_item_reopens_it() {
+  World w;
+  w.q.begin(&w.io);
+  std::string id;
+  w.q.add("Photograph the skyr pot label next time", 1, &id);
+  observeOpenQ(w.q, "hi", "could you photograph the skyr pot label?");
+  TEST_ASSERT_TRUE(w.q.entries()[0].raised);
+  TEST_ASSERT_EQUAL(int(OpenQErr::Ok),
+                    int(w.q.add("Photograph the skyr pot label next time", 2, &id)));
+  TEST_ASSERT_EQUAL_STRING("q1", id.c_str());   // the same item, not a new one
+  TEST_ASSERT_FALSE(w.q.entries()[0].raised);
+}
+
 static void test_the_owner_returning_reopens_an_item() {
   World w;
   w.q.begin(&w.io);
@@ -226,6 +256,21 @@ static void test_a_mention_needs_the_subject() {
   TEST_ASSERT_FALSE(w.q.entries()[0].raised);
   TEST_ASSERT_FALSE(observeOpenQ(w.q, "hi", "Sure - what about the skyr pot?").empty());
   TEST_ASSERT_TRUE(w.q.entries()[0].raised);
+}
+
+// The drop cues match whole words only: "resorted" is not "sorted" and
+// "disclosed" is not "closed", or a passing word would withdraw an item the
+// owner never meant to drop.
+static void test_drop_cues_match_whole_words() {
+  World w;
+  w.q.begin(&w.io);
+  w.q.add("Photograph the skyr pot label next time", 1, nullptr);
+  TEST_ASSERT_TRUE(observeOpenQ(w.q, "the skyr pot label was resorted today", "ok").empty());
+  TEST_ASSERT_EQUAL(1, (int)w.q.count());
+  TEST_ASSERT_TRUE(observeOpenQ(w.q, "the skyr pot label story was disclosed", "ok").empty());
+  TEST_ASSERT_EQUAL(1, (int)w.q.count());
+  TEST_ASSERT_FALSE(observeOpenQ(w.q, "the skyr pot label is sorted now", "ok").empty());
+  TEST_ASSERT_EQUAL(0, (int)w.q.count());
 }
 
 // ---- 6. the openq.edit rails: role x turn kind x taint x action --------------------
@@ -311,9 +356,12 @@ int main() {
   RUN_TEST(test_persist_failure_changes_nothing);
   RUN_TEST(test_damaged_files_parse_within_the_caps);
   RUN_TEST(test_a_reply_marks_an_item_raised_once);
+  RUN_TEST(test_a_mention_without_a_question_never_marks_raised);
+  RUN_TEST(test_readding_a_raised_item_reopens_it);
   RUN_TEST(test_the_owner_returning_reopens_an_item);
   RUN_TEST(test_the_owner_withdrawing_removes_an_item);
   RUN_TEST(test_a_mention_needs_the_subject);
+  RUN_TEST(test_drop_cues_match_whole_words);
   RUN_TEST(test_openq_edit_rails_matrix);
   RUN_TEST(test_openq_edit_is_never_advertised_to_a_member);
   RUN_TEST(test_openq_edit_flows);

@@ -5,7 +5,6 @@
 
 #include "nimbus/mem_cap.h"           // utf8CapLen
 #include "nimbus/orch/word_match.h"   // lowerAscii / isWordChar (shared helpers)
-#include "nimbus/utf8.h"              // utf8Repair
 
 namespace nimbus {
 namespace orch {
@@ -15,7 +14,8 @@ namespace {
 constexpr const char kHeader[] = "#nimbus-openq v1";
 
 uint32_t toU32(const std::string& s) {
-  if (s.empty()) return 0;
+  // More than 10 digits is not an id: strtoul would wrap it to another item's id.
+  if (s.empty() || s.size() > 10) return 0;
   for (char c : s)
     if (c < '0' || c > '9') return 0;
   return (uint32_t)std::strtoul(s.c_str(), nullptr, 10);
@@ -61,7 +61,7 @@ const char* openQErrWords(OpenQErr e) {
   switch (e) {
     case OpenQErr::Ok:            return "ok";
     case OpenQErr::Empty:         return "the item is empty";
-    case OpenQErr::TooLong:       return "keep the item under 160 characters";
+    case OpenQErr::TooLong:       return "keep the item within 160 bytes";
     case OpenQErr::Full:          return "the open list is full (5 items); remove one first";
     case OpenQErr::NotFound:      return "no open item with that id";
     case OpenQErr::PersistFailed: return "could not save the open list (storage error); nothing changed";
@@ -138,12 +138,18 @@ OpenQErr OpenQuestions::commit(const std::vector<OpenQEntry>& next, uint32_t nex
 
 OpenQErr OpenQuestions::add(const std::string& text, uint32_t nowHours, std::string* idOut) {
   std::string t = sanitizePrefText(text);
-  utf8Repair(t);
   if (t.empty()) return OpenQErr::Empty;
   if (t.size() > kOpenQItemMax) return OpenQErr::TooLong;
   const int dup = indexOfKey(prefKey(t));
   if (dup >= 0) {
     if (idOut) *idOut = items_[(size_t)dup].idStr();
+    // The owner's fresh "note this for me" re-opens a raised item: the words
+    // came back, so the raise-once bookkeeping starts over (open_questions.h).
+    if (items_[(size_t)dup].raised) {
+      std::vector<OpenQEntry> next = items_;
+      next[(size_t)dup].raised = false;
+      return commit(next, nextId_);
+    }
     return OpenQErr::Ok;
   }
   if (items_.size() >= kOpenQMaxItems) return OpenQErr::Full;
@@ -190,20 +196,28 @@ std::vector<std::string> openQKeywords(const std::string& text) {
   return words::subjectWords(text);
 }
 
+// Whole-word containment: "sorted" must not match "resorted", "closed" must not
+// match "disclosed" (the drop cues are common words; a substring match would
+// withdraw an item the owner did not mean to drop).
+bool containsWholeWord(const std::string& hay, const std::string& needle) {
+  size_t at = hay.find(needle);
+  while (at != std::string::npos) {
+    const bool startOk = at == 0 || !words::isWordChar(hay[at - 1]);
+    const bool endOk = at + needle.size() >= hay.size() ||
+                       !words::isWordChar(hay[at + needle.size()]);
+    if (startOk && endOk) return true;
+    at = hay.find(needle, at + 1);
+  }
+  return false;
+}
+
 bool openQMentions(const std::string& itemText, const std::string& other) {
   const std::vector<std::string> kw = openQKeywords(itemText);
   if (kw.empty()) return false;
   const std::string hay = words::lowerAscii(sanitizePrefText(other));
   size_t shared = 0;
   for (const std::string& w : kw) {
-    // whole-word containment
-    size_t at = hay.find(w);
-    while (at != std::string::npos) {
-      const bool startOk = at == 0 || !words::isWordChar(hay[at - 1]);
-      const bool endOk = at + w.size() >= hay.size() || !words::isWordChar(hay[at + w.size()]);
-      if (startOk && endOk) { shared++; break; }
-      at = hay.find(w, at + 1);
-    }
+    if (containsWholeWord(hay, w)) shared++;
   }
   const size_t need = (kw.size() + 1) / 2;   // half, rounded up, at least one
   return shared >= need;
@@ -220,7 +234,19 @@ const char* const kOpenQDropCues[] = {
 bool openQOwnerDrops(const std::string& itemText, const std::string& ownerText) {
   const std::string s = words::lowerAscii(sanitizePrefText(ownerText));
   for (const char* cue : kOpenQDropCues)
-    if (s.find(cue) != std::string::npos) return openQMentions(itemText, ownerText);
+    if (containsWholeWord(s, cue)) return openQMentions(itemText, ownerText);
+  return false;
+}
+
+// A reply counts as having raised an item only when it actually asks the owner
+// something: a question mark or an ask-shaped closer. A passing mention of the
+// subject inside an unrelated answer must not retire the item - the owner was
+// never asked, so the item stays live (the class 1 failure in the other direction).
+bool replyAsks(const std::string& reply) {
+  const std::string s = words::lowerAscii(sanitizePrefText(reply));
+  if (s.find('?') != std::string::npos) return true;
+  for (const char* cue : {"let me know", "tell me", "wondering if", "curious whether", "curious if"})
+    if (s.find(cue) != std::string::npos) return true;
   return false;
 }
 
@@ -242,16 +268,20 @@ std::string observeOpenQ(OpenQuestions& q, const std::string& ownerText,
       changed = true;
     }
   }
-  // 2. the reply: a mention of the subject marks the item raised.
+  // 2. the reply: an actual question about the subject marks the item raised.
   for (OpenQEntry& e : next) {
-    if (!e.raised && openQMentions(e.text, reply)) {
+    if (!e.raised && replyAsks(reply) && openQMentions(e.text, reply)) {
       e.raised = true;
-      log += "openq: " + e.idStr() + " marked raised (the reply mentioned it)\n";
+      log += "openq: " + e.idStr() + " marked raised (the reply asked about it)\n";
       changed = true;
     }
   }
   if (!changed) return std::string();
-  return q.replaceAll(next) == OpenQErr::Ok ? log : std::string();
+  // A persist failure is never silent: the engine logs what is returned, so the
+  // lost bookkeeping is at least visible in the log (open_questions.h).
+  if (q.replaceAll(next) != OpenQErr::Ok)
+    return "openq: raise-once bookkeeping not saved (persist failed)\n";
+  return log;
 }
 
 }  // namespace orch

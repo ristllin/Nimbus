@@ -43,10 +43,12 @@ ToolResult doAdd(const OpenQToolContext& ctx, const std::string& text) {
 }
 
 ToolResult doRemove(const OpenQToolContext& ctx, const std::string& idArg) {
-  // "q3" / "3"
+  // "q3" / "3". More than 10 digits is not an id (the wrap would remove the
+  // wrong item: q4294967297 would parse as q1).
   std::string digits = idArg;
   if (!digits.empty() && (digits[0] == 'q' || digits[0] == 'Q')) digits.erase(0, 1);
   uint32_t id = 0;
+  if (digits.empty() || digits.size() > 10) return ToolResult::fail("missing 'id' (for example q3)");
   for (char c : digits) {
     if (c < '0' || c > '9') { id = 0; break; }
     id = id * 10 + (uint32_t)(c - '0');

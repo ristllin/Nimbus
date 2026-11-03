@@ -14,6 +14,7 @@
 
 #include <map>
 #include <set>
+#include <array>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -99,6 +100,8 @@ struct Rig {
   };
   std::vector<Attempt> attempts;
   std::vector<orch::HeadToolResult> toolResults;
+  // Lane POL2: every openqObserve call the engine made (chat, owner text, reply).
+  std::vector<std::array<std::string, 3>> openqObserveCalls;
   std::vector<std::string> finalChecks;   // what HeadTools.cfg.validateFinal said (checkFinal)
   std::vector<std::pair<std::string, std::string>> assistantRows;   // ApplyDeps.captureAssistant: (chat, text)
   std::vector<std::string> assistantRowTags;   // lane I: each captured row's engine tags
@@ -285,6 +288,13 @@ struct Rig {
     d.episodicCaptureUser = [this](const std::string& c, const std::string& t,
                                    const std::string& f) {
       captured.push_back({c, t, f});
+    };
+    // Lane POL2: record every openqObserve call so tests can assert which turns
+    // the observer saw (attended owner turns only, engine.cpp).
+    d.openqObserve = [this](const std::string& chat, const std::string& ownerText,
+                            const std::string& reply) {
+      openqObserveCalls.push_back({chat, ownerText, reply});
+      return std::string();
     };
     d.firstAllowedChat = [] { return std::string("1001"); };
     d.journalGc = [this] { journalGcs++; };
@@ -2397,6 +2407,33 @@ static void test_scheduled_turn_rails_and_fire_outcome() {
   TEST_ASSERT_FALSE(o4.deferred);
   TEST_ASSERT_TRUE(orch::fireWasAttempted(o4));
   TEST_ASSERT_TRUE(r4.attempts.size() >= 1);   // provider WAS dialed (retry may add more)
+}
+
+// Lane POL2: the open-question observer sees attended owner turns only. A
+// routine or wakeup prompt fires into the owner's chat as Role::Admin, so the
+// chat filter alone would let an unattended reply mark a topic raised or drop
+// an item the owner never mentioned - raise-once bookkeeping is owner-driven.
+static void test_pol2_openq_observer_skips_scheduled_turns() {
+  Rig r;
+  r.adminChats = true;
+  r.scripts["anthropic"] = {
+      {true, "{\"reply\":\"done\", \"memory\":\"\", \"ask\":\"\"}", "", 0}};
+  // An attended owner turn is observed.
+  TEST_ASSERT_TRUE(r.eng->runTurn("inputs", "1001", "ask about the skyr pot"));
+  TEST_ASSERT_EQUAL(1, (int)r.openqObserveCalls.size());
+  TEST_ASSERT_EQUAL_STRING("ask about the skyr pot",
+                           r.openqObserveCalls[0][1].c_str());
+  // A scheduled routine whose prompt mentions the same subject is NOT observed.
+  orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "check the skyr pot",
+                                                   "morning");
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL(1, (int)r.openqObserveCalls.size());
+  // A one-shot wakeup is equally unattended.
+  orch::FireOutcome w = r.eng->injectScheduledTurn("1001", "sorted the skyr pot",
+                                                   "wakeup", "lp1",
+                                                   /*quietOk=*/true, /*once=*/true);
+  TEST_ASSERT_TRUE(w.ok);
+  TEST_ASSERT_EQUAL(1, (int)r.openqObserveCalls.size());
 }
 
 // W20: a Once wakeup gets the honest [WAKEUP] preamble - "recurring task" would
@@ -5445,6 +5482,7 @@ static void runSecondHalf() {
   RUN_TEST(test_the_per_turn_line_names_the_open_host_while_the_head_is_capped);
   RUN_TEST(test_runtime_model_facts_change_the_input_and_never_the_cached_prompt);
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
+  RUN_TEST(test_pol2_openq_observer_skips_scheduled_turns);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);
   RUN_TEST(test_owner_reminder_gets_reminder_framing_not_wakeup);
   RUN_TEST(test_cum523_telegramless_wakeup_has_no_telegram_leg);

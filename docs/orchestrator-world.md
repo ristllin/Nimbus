@@ -75,11 +75,12 @@ already in memory and lists them once. A rule that forbids em dashes also
 switches on a device-enforced filter that removes them from every delivered
 reply, so the guarantee holds even when the model slips.
 
-A full list makes room instead of refusing: the oldest active rule retires to a
-side state (the owner is told which one, and `/prefs restore <id>` brings it
-back), so a new always/never rule always lands and never falls silently into
-vector memory. The owner's stop rules also bind their own routines: a due
-routine whose topic a "never ask about X" rule stops is deferred, not fired.
+A full list makes room instead of refusing: a seeded rule retires first (the
+owner never typed it), then the oldest typed rule, to a side state (the owner is
+told which one, and `/prefs restore <id>` brings it back), so a new always/never
+rule always lands and never falls silently into vector memory. The owner's stop
+rules also bind their own routines: a due routine whose topic a "never ask about
+X" rule stops is deferred, not fired.
 
 ### 1.1c The owner's open questions
 

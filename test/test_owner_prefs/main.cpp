@@ -1004,6 +1004,44 @@ static void test_eviction_on_full_makes_room_and_the_owner_hears_it() {
   TEST_ASSERT_TRUE(w.p.find(15)->pending);
 }
 
+// Lane POL2: the retired list has its own cap (kPrefsEvictedMax). An add on a
+// full list with the retired list already at the cap is refused as Full - it
+// never pushes a ninth retired line the loader would silently drop on the
+// next parse (a restorable rule must not vanish without the owner hearing it).
+static void test_eviction_stops_at_the_retired_cap() {
+  World w;
+  w.io.exists = true;
+  // 12 active rules of 95 bytes (1,140 of the 1,200 cap) plus 8 retired lines:
+  // the retired list is exactly at its cap and the active list is byte-full.
+  std::string blob = "#nimbus-prefs v1 seeded=0 listed=0 next=21\n";
+  for (int i = 1; i <= 12; i++)
+    blob += "p" + std::to_string(i) + "\tA\t" + std::to_string(i) + "\tchat\t-\t" +
+            std::string(95, 'a' + (i % 26)) + "\n";
+  for (int i = 13; i <= 20; i++)
+    blob += "p" + std::to_string(i) + "\tE\t" + std::to_string(i) + "\tchat\t-\t" +
+            "retired rule number " + std::to_string(i) + "\n";
+  w.io.blob = blob;
+  w.p.begin(&w.io);
+  TEST_ASSERT_EQUAL(12, (int)w.p.activeCount());
+  TEST_ASSERT_EQUAL(8, (int)w.p.evictedCount());
+  // The add is refused: nothing retires past the cap, nothing is lost.
+  std::vector<PrefEntry> evicted;
+  TEST_ASSERT_EQUAL(int(PrefErr::Full),
+                    int(w.p.add(std::string(100, 'n'), PrefOrigin::Web, 0, false, nullptr, &evicted)));
+  TEST_ASSERT_EQUAL(0, (int)evicted.size());
+  TEST_ASSERT_EQUAL(12, (int)w.p.activeCount());
+  TEST_ASSERT_EQUAL(8, (int)w.p.evictedCount());
+  checkInvariants(w.p);
+  // Freeing a retired slot (a restore is not needed; removing one retired line)
+  // lets the next add make room again.
+  TEST_ASSERT_EQUAL(int(PrefErr::Ok), int(w.p.remove(13)));
+  TEST_ASSERT_EQUAL(int(PrefErr::Ok),
+                    int(w.p.add(std::string(100, 'n'), PrefOrigin::Web, 0, false, nullptr, &evicted)));
+  TEST_ASSERT_EQUAL(1, (int)evicted.size());
+  TEST_ASSERT_EQUAL(8, (int)w.p.evictedCount());   // one retired, one newly retired
+  checkInvariants(w.p);
+}
+
 // ---- lane POL2: a standing rule binds routines and wakeups -------------------------
 // The class: "never ask about X" stops a routine about X from firing, and nothing
 // else does - over every rule shape, not one pair.
@@ -1031,6 +1069,22 @@ static void test_standing_rules_block_loop_fires() {
   TEST_ASSERT_FALSE(standingBlocksFire({"never mention catfood"}, "check the cat food bowl").blocked);
   TEST_ASSERT_FALSE(standingBlocksFire({"never ask about duolingo"}, "").blocked);
   TEST_ASSERT_FALSE(standingBlocksFire({}, "check the Duolingo streak").blocked);
+  // A bare "don't"/"stop" is not a veto: a rule ASKING for the reminder must
+  // not block the routine it asks for, and a device wish is not a topic veto.
+  TEST_ASSERT_FALSE(standingBlocksFire({"don't forget to check the shed roof"},
+                                        "check the shed roof and tell me").blocked);
+  TEST_ASSERT_FALSE(standingBlocksFire({"stop the door slamming"},
+                                        "oil the door hinges weekly").blocked);
+  // The marker must govern the subject: the veto is the words after it.
+  TEST_ASSERT_FALSE(standingBlocksFire({"never discuss politics at dinner"},
+                                       "share a quick dinner recipe").blocked);
+  // The routine's NAME is part of its topic: a name that names the vetoed
+  // subject blocks even when the prompt alone would not.
+  const StandingBlock byName = standingBlocksFire({"never ask about duolingo"},
+                                                  "check the streak and tell me",
+                                                  "Duolingo streak check");
+  TEST_ASSERT_TRUE(byName.blocked);
+  TEST_ASSERT_EQUAL_STRING("never ask about duolingo", byName.rule.c_str());
   // Several rules: the one that blocks is named.
   const StandingBlock b = standingBlocksFire({"always reply in English", "never ask about duolingo"},
                                              "check the Duolingo streak");
@@ -1041,6 +1095,7 @@ static void test_standing_rules_block_loop_fires() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_eviction_on_full_makes_room_and_the_owner_hears_it);
+  RUN_TEST(test_eviction_stops_at_the_retired_cap);
   RUN_TEST(test_standing_rules_block_loop_fires);
   RUN_TEST(test_caps_and_persist_hold_under_any_op_sequence);
   RUN_TEST(test_damaged_files_parse_within_the_caps);

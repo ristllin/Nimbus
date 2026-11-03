@@ -53,10 +53,15 @@ static void test_salvage_keeps_no_filler() {
 static void test_plumbing_class() {
   for (const char* t : {"I saved that as m84cc98c8.", "your memory m12345678 holds it", "M84CC98C8 (uppercase)",
                         "the job result-job0009 finished", "Result-Job0009 is done", "the result-job finished",
+                        "job1234 is still running", "Job0009 finished early",
+                        "saved under mem_1a2b", "the mem_1a2b3c4d row", "its memory id is mem_00ff",
                         "read back confirmed: the rule is saved", "Read Back Confirmed.",
                         "it is stored on the device as a rule", "Stored on the device as text.",
+                        "the memory id was reused", "the row key is stable",
                         "see projects/trip/itinerary.md for the plan", "the file nutrition/meal_log.csv was updated",
-                        "notes/scratch.txt has it", "a/b/c.md"})
+                        "notes/scratch.txt has it", "a/b/c.md", "written to /data/prefs.bin",
+                        "the config lives at /data/config.json", "logs/turn.log rotated",
+                        "check /data/ for the file"})
     TEST_ASSERT_TRUE_MESSAGE(hasPlumbing(t), t);
 }
 
@@ -80,7 +85,10 @@ static void test_plumbing_check_reads_the_field() {
   TEST_ASSERT_TRUE(plumbingCheck("{\"reply\":\"The train is on time.\"}").empty());
   TEST_ASSERT_TRUE(plumbingCheck("not json").empty());
   TEST_ASSERT_TRUE(plumbingCheck("{\"reply\":\"\"}").empty());
-  TEST_ASSERT_TRUE(plumbingCheck("{\"memory\":\"m84cc98c8\"}").empty());   // only the reply is checked
+  TEST_ASSERT_TRUE(plumbingCheck("{\"memory\":\"m84cc98c8\"}").empty());   // only the owner-facing fields are checked
+  // The ask field reaches the owner too: plumbing there is equally a leak.
+  TEST_ASSERT_TRUE(plumbingCheck("{\"reply\":\"Sure.\",\"ask\":\"what is result-job0009?\"}")
+                       .find("REPLY CHECK") != std::string::npos);
 }
 
 // ---- the plain-chat cap's classifier -----------------------------------------------

@@ -89,6 +89,18 @@ namespace {
 // Lane POL2: the plumbing an owner must never read. Each pattern is a class the
 // 2 Nov signals named: a memory id, a job id, storage wording, a device path.
 bool memoryIdIn(const std::string& t) {
+  // mem_[0-9a-f]{4,}: the memory tool's own id shape.
+  for (size_t at = t.find("mem_"); at != std::string::npos; at = t.find("mem_", at + 1)) {
+    if (at != 0 && isWordChar(t[at - 1])) continue;
+    size_t n = 0;
+    while (at + 4 + n < t.size()) {
+      const char c = t[at + 4 + n];
+      if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) n++;
+      else break;
+    }
+    if (n >= 4 && (at + 4 + n >= t.size() || !isWordChar(t[at + 4 + n]))) return true;
+  }
+  // m[0-9a-f]{8}: the store's row id shape.
   for (size_t at = t.find('m'); at != std::string::npos; at = t.find('m', at + 1)) {
     if (at != 0 && isWordChar(t[at - 1])) continue;
     size_t n = 0;
@@ -102,18 +114,31 @@ bool memoryIdIn(const std::string& t) {
   return false;
 }
 
-bool jobIdIn(const std::string& t) { return t.find("result-job") != std::string::npos; }
+bool jobIdIn(const std::string& t) {
+  if (t.find("result-job") != std::string::npos) return true;
+  // job[0-9]{4}: a bare job id the owner should never have to read.
+  for (size_t at = t.find("job"); at != std::string::npos; at = t.find("job", at + 1)) {
+    if (at != 0 && isWordChar(t[at - 1])) continue;
+    size_t n = 0;
+    while (at + 3 + n < t.size() && t[at + 3 + n] >= '0' && t[at + 3 + n] <= '9') n++;
+    if (n >= 4 && (at + 3 + n >= t.size() || !isWordChar(t[at + 3 + n]))) return true;
+  }
+  return false;
+}
 
 bool storageWordingIn(const std::string& t) {
   return t.find("read back confirmed") != std::string::npos ||
-         t.find("stored on the device as") != std::string::npos;
+         t.find("stored on the device as") != std::string::npos ||
+         t.find("memory id") != std::string::npos || t.find("row key") != std::string::npos;
 }
 
 // A device file path: a run of path bytes with a slash, ending in a file suffix.
 // URLs are external, not plumbing: a match preceded by "http", "://" or "www."
 // does not count.
 bool devicePathIn(const std::string& t) {
-  static const char* const kSuffix[] = {".md", ".csv", ".txt"};
+  // The device's storage root is plumbing whatever the suffix (" /data/prefs.bin").
+  if (t.find("/data/") != std::string::npos) return true;
+  static const char* const kSuffix[] = {".md", ".csv", ".txt", ".bin", ".json", ".log"};
   for (const char* suf : kSuffix) {
     for (size_t at = t.find(suf); at != std::string::npos; at = t.find(suf, at + 1)) {
       const size_t end = at + std::strlen(suf);
@@ -145,7 +170,10 @@ std::string plumbingCheck(const std::string& finalTurnJson) {
   JsonDocument d;
   if (deserializeJson(d, finalTurnJson) != DeserializationError::Ok) return std::string();
   const char* reply = d["reply"] | "";
-  if (!hasPlumbing(reply)) return std::string();
+  const char* ask = d["ask"] | "";
+  // The ask field reaches the owner too (it is the question shown), so both are
+  // checked: plumbing in either is a leak.
+  if (!hasPlumbing(reply) && !hasPlumbing(ask)) return std::string();
   return "[REPLY CHECK] Your reply shows internal plumbing: a memory or job id, a file "
          "path, or storage wording like \"read back confirmed\". The owner reads plain "
          "words only. Rewrite the answer without them: say what the thing is for the "

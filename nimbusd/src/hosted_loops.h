@@ -364,7 +364,7 @@ class HostedLoops {
       const std::vector<std::string> rules = h_.standingRules();
       if (!rules.empty()) {
         const nimbus::orch::StandingBlock block =
-            nimbus::orch::standingBlocksFire(rules, due->prompt);
+            nimbus::orch::standingBlocksFire(rules, due->prompt, due->name);
         if (block.blocked) {
           nimbus::orch::deferLoop(*due, now, kStandingBlockDeferSec);
           persist();

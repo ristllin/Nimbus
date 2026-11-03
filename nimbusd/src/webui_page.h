@@ -4666,11 +4666,13 @@ function loadPrefs(){
       +'<span style="flex:1">'+_fesc(r.text)
       +(r.state==='pending'?' <b style="color:#e0a349">waits for your approval</b>':'')
       +(r.state==='moved'?' <span class=hint>(moved to memory: a dated fact, not a rule)</span>':'')
+      +(r.state==='retired'?' <span class=hint>(retired to make room for new rules)</span>':'')
       +(r.nodash?' <span class=hint>(em dashes are removed from replies)</span>':'')
       +(r.age?' <span class=hint>'+_fesc(r.age)+'</span>':'')
       +'</span>'
       +(r.state==='pending'?' <a href="#" data-pid="'+_fesc(r.id)+'" data-pact="approve">Approve</a>':'')
       +(r.state==='moved'?' <a href="#" data-pid="'+_fesc(r.id)+'" data-pact="restore">Restore</a>':'')
+      +(r.state==='retired'?' <a href="#" data-pid="'+_fesc(r.id)+'" data-pact="restore">Restore</a>':'')
       +' <a href="#" data-pid="'+_fesc(r.id)+'" data-pact="remove">Remove</a></div>').join('');
     const msg=$('prefsmsg'); if(msg)msg.textContent='';
     box.querySelectorAll('a[data-pid]').forEach(a=>a.onclick=e=>{e.preventDefault();
@@ -4688,6 +4690,8 @@ $('prefsadd')&&($('prefsadd').onclick=()=>{
   fetch('/api/prefs',{method:'POST',body:fd}).then(async r=>{
     const j=await r.json().catch(()=>({}));
     if(!r.ok){const m=$('prefsmsg');if(m)m.textContent=j.error||('Save failed ('+r.status+').');return;}
+    // A full list made room: the device says which older rule retired.
+    if(j.retired&&j.retired.length){const m=$('prefsmsg');if(m)m.textContent=(j.message||'Saved.')+' '+j.retired.join(' · ');}
     $('prefsnew').value='';loadPrefs();
   }).catch(()=>{const m=$('prefsmsg');if(m)m.textContent='Could not reach the device - try again.';});
 });

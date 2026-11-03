@@ -2517,8 +2517,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   parkMemResults(chatId);
   // Lane POL2: the open-question list observes the completed turn (a reply that
   // mentions an item marks it raised; the owner's message re-opens or withdraws
-  // one). Unwired = a host without the store.
-  if (d_.openqObserve && !userText.empty()) {
+  // one). Unwired = a host without the store. Attended owner turns only: a
+  // routine, wakeup or synthesis prompt is not the owner speaking, and letting
+  // it observe would let an unattended reply mark a topic raised or drop an
+  // item the owner never mentioned (the same rail the openq tool enforces).
+  const bool attendedOwnerTurn = !scheduledTurn_ && turnSource_ != TurnSource::Synthesis &&
+                                 turnSource_ != TurnSource::Loop;
+  if (d_.openqObserve && !userText.empty() && attendedOwnerTurn) {
     const std::string openqLog = d_.openqObserve(chatId, userText, turn.reply);
     if (!openqLog.empty()) hlog::log(openqLog.c_str());
   }

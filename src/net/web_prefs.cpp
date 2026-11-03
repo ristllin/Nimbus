@@ -81,7 +81,7 @@ void registerPrefsRoutes(AsyncWebServer& server) {
     if (action == "add" || action == "import") d["message"] = "Saved.";
     // Lane POL2: a full list made room; the page says which rule retired.
     if (!evicted.empty()) {
-      d["message"] = "Saved. The list was full, so this rule was retired to make room:";
+      d["message"] = "Saved. The list was full, so an older rule retired to make room:";
       JsonArray arr = d["retired"].to<JsonArray>();
       for (const orch::PrefEntry& ev : evicted) arr.add(ev.text);
     }

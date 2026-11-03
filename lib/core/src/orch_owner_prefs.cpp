@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 
 #include "nimbus/mem_cap.h"   // utf8CapLen
 #include "nimbus/orch/history_rows.h"   // kClockValidHours - an hour from before the clock was set
@@ -427,6 +428,10 @@ PrefErr OwnerPrefs::add(const std::string& text, PrefOrigin origin, uint32_t now
     if (room != PrefErr::Full || pending) return room;
     std::vector<PrefEntry> evicted;
     while (checkRoom(next) != PrefErr::Ok) {
+      // The retired list has its own cap (kPrefsEvictedMax): past it the add is
+      // refused as Full instead of pushing evicted lines the loader would
+      // silently drop on the next parse (a restorable rule must never vanish).
+      if (evictedOf(next) >= kPrefsEvictedMax) return PrefErr::Full;
       const int pick = evictionPick(next);
       if (pick < 0) return PrefErr::Full;   // nothing active left to retire
       next[(size_t)pick].evicted = true;
@@ -782,17 +787,55 @@ std::string seedListingText(const OwnerPrefs& p) {
 // ---- lane POL2: a standing rule binds routines and wakeups ---------------------
 
 StandingBlock standingBlocksFire(const std::vector<std::string>& activeRuleTexts,
-                                 const std::string& loopPrompt) {
+                                 const std::string& loopPrompt,
+                                 const std::string& loopName) {
   StandingBlock out;
   const std::string prompt = words::lowerAscii(loopPrompt);
-  const std::vector<std::string> promptWords = words::subjectWords(loopPrompt);
+  std::vector<std::string> promptWords = words::subjectWords(loopPrompt);
+  // The routine's name is part of its topic (a "Duolingo streak check" whose
+  // prompt only says "check the streak" is still the Duolingo routine).
+  for (const std::string& w : words::subjectWords(loopName))
+    if (std::find(promptWords.begin(), promptWords.end(), w) == promptWords.end())
+      promptWords.push_back(w);
   if (promptWords.empty()) return out;
-  static const char* const kStopMarkers[] = {"never", "stop", "no more", "don't", "dont",
-                                             "do not"};
+  // Only an asking/mentioning veto shape blocks a fire. A bare "don't" or
+  // "stop" is not one: "don't forget to check the shed roof" ASKS for the
+  // reminder, and "stop the door slamming" is a device wish, not a topic veto.
+  static const char* const kStopMarkers[] = {
+      "never ask",    "stop asking",   "don't ask",    "dont ask",      "do not ask",
+      "never mention", "stop mentioning", "don't mention", "dont mention", "do not mention",
+      "never bring up", "stop bringing up", "don't bring up", "dont bring up", "do not bring up",
+      "never discuss", "stop discussing", "don't discuss", "dont discuss", "do not discuss",
+      "never talk about", "stop talking about", "don't talk about", "dont talk about",
+      "do not talk about", "no more"};
   for (const std::string& rule : activeRuleTexts) {
     const std::string r = collapseSpaces(lowerAscii(sanitizePrefText(rule)));
-    if (!words::anyPhrase(r, kStopMarkers)) continue;
-    for (const std::string& w : words::subjectWords(rule)) {
+    // The marker must govern the subject: the veto is the words AFTER it, so a
+    // rule whose stop shape sits elsewhere in the sentence never blocks.
+    size_t at = std::string::npos;
+    size_t markerLen = 0;
+    for (const char* marker : kStopMarkers) {
+      const size_t pos = r.find(marker);
+      if (pos != std::string::npos && (at == std::string::npos || pos < at)) {
+        at = pos;
+        markerLen = strlen(marker);
+      }
+    }
+    if (at == std::string::npos) continue;
+    std::string veto = r.substr(at + markerLen);
+    // "ask about X" / "talk to X": the lead-in is part of the asking, not the topic.
+    for (const char* lead : {"about ", "to "})
+      if (veto.compare(0, strlen(lead), lead) == 0) { veto.erase(0, strlen(lead)); break; }
+    // The vetoed topic is the noun phrase after the marker; a prepositional tail
+    // narrows it to its head ("never discuss politics at dinner" vetoes politics,
+    // not every dinner routine).
+    for (const char* tail : {" at ", " in ", " on ", " during ", " unless ", " when ",
+                             " while ", " if ", " by ", " for ", " with ", " over ", " under "}) {
+      const size_t p = veto.find(tail);
+      if (p != std::string::npos) veto.resize(p);
+    }
+    const std::vector<std::string> vetoWords = words::subjectWords(veto);
+    for (const std::string& w : vetoWords) {
       if (std::find(promptWords.begin(), promptWords.end(), w) != promptWords.end()) {
         out.blocked = true;
         out.rule = rule;

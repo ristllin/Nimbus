@@ -165,6 +165,9 @@ class PosixStoreIO : public orch::PrefsStoreIO {
     return true;
   }
   bool saveChecked(const std::string& blob) override {
+    // The device seam's checked save refuses an over-cap blob; a silent write
+    // here would read back truncated and diverge from the device.
+    if (blob.size() > cap_) return false;
     return fsutil::writeFileAtomic(path_, blob);
   }
   void setPath(const std::string& path, size_t cap) {

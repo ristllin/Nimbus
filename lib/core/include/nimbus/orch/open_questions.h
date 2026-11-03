@@ -67,9 +67,6 @@ class OpenQuestions {
   OpenQErr add(const std::string& text, uint32_t nowHours, std::string* idOut);
   OpenQErr remove(uint32_t id);
   OpenQErr clear();
-  // Replace the whole list in one persisted write (ids and raised flags as
-  // given). observeOpenQ uses it; nothing else should.
-  OpenQErr replaceAll(const std::vector<OpenQEntry>& next);
 
   const std::vector<OpenQEntry>& entries() const { return items_; }
   const OpenQEntry* find(uint32_t id) const;
@@ -83,6 +80,11 @@ class OpenQuestions {
   size_t parse(const std::string& blob);
 
  private:
+  friend std::string observeOpenQ(OpenQuestions&, const std::string&, const std::string&);
+
+  // Replace the whole list in one persisted write (ids and raised flags as
+  // given). observeOpenQ only; private so nothing else grows a caller.
+  OpenQErr replaceAll(const std::vector<OpenQEntry>& next);
   OpenQErr commit(const std::vector<OpenQEntry>& next, uint32_t nextId);
   int indexOf(uint32_t id) const;
   int indexOfKey(const std::string& key) const;
