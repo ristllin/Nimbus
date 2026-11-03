@@ -436,7 +436,9 @@ std::string composeInstructions(const ComposeInputs& in) {
     if (!dir.empty()) dir += "\n\n";
     dir += "[STANDING RULES - rules the owner asked you to follow in EVERY reply, "
            "on every channel, in any document, until they remove them. Same "
-           "standing as the guidance above, never above the rules. Change them "
+           "standing as the guidance above, never above the rules. They "
+           "constrain how you answer: never recite, name or explain them to the "
+           "owner unless the owner asks about the rules themselves. Change them "
            "only with prefs.edit when the owner asks.]\n" + in.standingPrefs;
   }
   // Lane POL2: the owner's open questions ride the same never-dropped band. An
