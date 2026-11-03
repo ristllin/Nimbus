@@ -482,10 +482,13 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
     // --- lane POL2: the standing gate. "never ask about duolingo" defers a
     // "check the Duolingo streak" routine. A defer is not a fire (no counter
     // moves, lastRun stays) and it self-heals: remove the rule and the routine
-    // fires again within the hour.
+    // fires again within the hour. A rule that names its days ("stop the train
+    // brief on workdays") binds only on those days; with no clock the day is
+    // unknown and the rule still blocks.
     if (!standingRules.empty()) {
+      const int dow = clk ? (int)orch::civilFromDays(day).wday : -1;
       const orch::StandingBlock block = orch::standingBlocksFire(standingRules, due->prompt,
-                                                                 due->name);
+                                                                 due->name, dow);
       if (block.blocked) {
         orch::deferLoop(*due, nowEpoch, kStandingBlockDeferSec);
         persist();

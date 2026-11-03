@@ -188,6 +188,13 @@ class OwnerPrefs {
     return commit(next, seeded, listed, nextId, datedChecked_);
   }
   PrefErr checkRoom(const std::vector<PrefEntry>& next) const;
+  // Lane POL2: retire active rules (a seed first, then the oldest) until the
+  // list has room. Stops at the retired cap: past it the add is refused as
+  // Full, never a silent drop at the next parse.
+  PrefErr evictForRoom(std::vector<PrefEntry>& next, std::vector<PrefEntry>& evicted);
+  // The same words added again: nothing new. A human adding a rule that waits
+  // for approval IS the approval.
+  PrefErr addDuplicate(int dup, bool pending, std::string* idOut);
   int indexOf(uint32_t id) const;
   int indexOfKey(const std::string& key) const;
 
@@ -242,13 +249,22 @@ std::string seedListingText(const OwnerPrefs& p);
 // part of its topic: a "Duolingo streak check" whose prompt only says "check
 // the streak" is still the Duolingo routine. The device and nimbusd consult it
 // before a loop fires and defer a blocked one.
+// A rule that names the days it applies on ("stop the train brief on
+// workdays", "never ask about duolingo on weekends") binds only on those days;
+// a bare "stop" is a veto only when it carries such a day scope (without one
+// it stays a device wish: "stop the door slamming"). dayOfWeek is the local
+// day, 0 = Sunday .. 6 = Saturday; -1 = unknown (no clock), and a day-scoped
+// rule still blocks then: the owner's quiet is never lost to a missing clock.
 struct StandingBlock {
   bool        blocked = false;
   std::string rule;    // the rule that blocked it ("" when nothing did)
 };
+// The days a stop rule is scoped to by its own words.
+enum class RuleDays : uint8_t { Any, Workdays, Weekends };
 StandingBlock standingBlocksFire(const std::vector<std::string>& activeRuleTexts,
                                  const std::string& loopPrompt,
-                                 const std::string& loopName = std::string());
+                                 const std::string& loopName = std::string(),
+                                 int dayOfWeek = -1);
 
 }  // namespace orch
 }  // namespace nimbus

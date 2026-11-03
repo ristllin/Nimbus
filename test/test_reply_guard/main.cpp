@@ -67,11 +67,17 @@ static void test_plumbing_class() {
 
 // The dimension the matcher must not swallow: plain replies, URLs (external, not
 // plumbing), bare file names without a path, and words that merely look hex-ish.
+// A URL whose path holds "/data/" is still external (a primary source the owner
+// should keep, not device plumbing): the host before it names another machine.
 static void test_plain_replies_have_no_plumbing() {
   for (const char* t : {"The 06:00 train is on time.", "memory", "memorize this", "sum 12345678",
                         "m1234567", "m123456789z", "read back", "the device is fine",
                         "https://example.com/page.md", "see www.site.com/a.md", "http://x.org/y.txt",
-                        "readme.md", "trip.md is ready", "/etc/hosts", "3.14 is pi"})
+                        "readme.md", "trip.md is ready", "/etc/hosts", "3.14 is pi",
+                        "see https://nationalrail.co.uk/data/disruptions for live times",
+                        "www.nationalrail.co.uk/data/ptim has the feed",
+                        "http://192.168.50.76/data/index.json answered",
+                        "traindata.co.uk/data/feed is the source"})
     TEST_ASSERT_FALSE_MESSAGE(hasPlumbing(t), t);
   TEST_ASSERT_FALSE(hasPlumbing(""));
 }

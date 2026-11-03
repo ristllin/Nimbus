@@ -86,7 +86,7 @@ X" rule stops is deferred, not fired.
 
 Follow-ups the owner leaves open in conversation ("photograph the skyr pot
 label next time") live in one small bounded list on the device
-(`/data/openq.txt`, at most 5 items, 160 characters each, zero NVS keys),
+(`/data/openq.txt`, at most 5 items, 160 B each, zero NVS keys),
 rendered into the never-dropped part of every owner-facing prompt as
 `[OPEN QUESTIONS]`, right under the standing rules. The device itself watches
 each completed turn in the owner's chat: an item is marked raised once a reply

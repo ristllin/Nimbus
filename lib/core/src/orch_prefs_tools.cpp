@@ -342,20 +342,26 @@ std::string prefsJson(const OwnerPrefs& p, uint32_t nowHours) {
 }
 
 PrefErr prefsWebAction(OwnerPrefs& p, const std::string& action, const std::string& id,
-                       const std::string& text, uint32_t nowHours, std::string& idOut,
-                       std::vector<PrefEntry>* evicted) {
+                       const std::string& text, uint32_t nowHours, WebActionOut* out) {
+  std::string idOut;
+  std::vector<PrefEntry>* evicted = out ? &out->evicted : nullptr;
+  PrefErr e;
   if (action == "add" || action == "import")
-    return p.add(text, action == "add" ? PrefOrigin::Web : PrefOrigin::Import, nowHours, false,
-                 &idOut, evicted);
-  if (action == "clear") return p.clear();
-  const uint32_t n = parsePrefId(id);
-  if (!n) return PrefErr::NotFound;
-  idOut = "p" + std::to_string(n);
-  if (action == "replace") return p.replace(n, text, PrefOrigin::Web, nowHours);
-  if (action == "remove") return p.remove(n);
-  if (action == "approve") return p.approve(n);
-  if (action == "restore") return p.restore(n);
-  return PrefErr::NotFound;
+    e = p.add(text, action == "add" ? PrefOrigin::Web : PrefOrigin::Import, nowHours, false,
+              &idOut, evicted);
+  else if (action == "clear") e = p.clear();
+  else {
+    const uint32_t n = parsePrefId(id);
+    if (!n) return PrefErr::NotFound;
+    idOut = "p" + std::to_string(n);
+    if (action == "replace")            e = p.replace(n, text, PrefOrigin::Web, nowHours);
+    else if (action == "remove")        e = p.remove(n);
+    else if (action == "approve")       e = p.approve(n);
+    else if (action == "restore")       e = p.restore(n);
+    else                                return PrefErr::NotFound;
+  }
+  if (out) out->id = idOut;
+  return e;
 }
 
 int prefErrHttpStatus(PrefErr e) {

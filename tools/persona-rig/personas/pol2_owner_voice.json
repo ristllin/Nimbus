@@ -1,5 +1,5 @@
 {
- "description": "Lane POL2: the six conversation-annoyance classes from owner-signals-2026-11-02.md and RCA-2026-11-01-02 section 5, on the three head models the task names. Every scenario asserts the fixed behavior: run against the base image it fails (the before column), against the fixed image it passes (the after column). The GLM rows carry the recorded GLM defects (no tool loop, dropped mem_write) as markers, the same way capability_matrix.json does.",
+ "description": "Lane POL2: the six conversation-annoyance classes from owner-signals-2026-11-02.md and RCA-2026-11-01-02 section 5, on the three head models the task names. s1-openq and s2-standing fail on the base image (no open-question store, no eviction) and pass on the fixed one: they are the before/after pair. s3-plumbing through s6-frustration assert the fixed behavior on the after image; their base-image runs passed by model variance, so their failing-first proof is the host suite (test_reply_guard, test_harness_compose, test_open_questions), not the before column. The GLM rows carry the recorded GLM defects (no tool loop, dropped mem_write) as markers, the same way capability_matrix.json does.",
  "matrix": [
   {"name": "mistral-large-4-0", "host": "mistral", "model": "mistral-large-4-0",
    "keys": {"mistral": "MISTRAL_API_KEY"},

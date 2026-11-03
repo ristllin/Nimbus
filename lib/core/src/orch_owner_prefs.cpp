@@ -363,8 +363,14 @@ int OwnerPrefs::indexOf(uint32_t id) const {
 }
 
 int OwnerPrefs::indexOfKey(const std::string& key) const {
-  for (size_t i = 0; i < items_.size(); i++)
+  for (size_t i = 0; i < items_.size(); i++) {
+    // Lane POL2 review: a retired rule is not a duplicate. Matching one made
+    // a re-stated rule a silent no-op with a false "already a standing rule"
+    // while it stayed retired, and a replace could erase the active rule to
+    // "keep" a retired one.
+    if (items_[i].moved || items_[i].evicted) continue;
     if (prefKey(items_[i].text) == key) return (int)i;
+  }
   return -1;
 }
 
@@ -398,6 +404,23 @@ PrefErr OwnerPrefs::commit(const std::vector<PrefEntry>& next, bool seeded, bool
   return PrefErr::Ok;
 }
 
+PrefErr OwnerPrefs::evictForRoom(std::vector<PrefEntry>& next, std::vector<PrefEntry>& evicted) {
+  while (checkRoom(next) != PrefErr::Ok) {
+    if (evictedOf(next) >= kPrefsEvictedMax) return PrefErr::Full;
+    const int pick = evictionPick(next);
+    if (pick < 0) return PrefErr::Full;   // nothing active left to retire
+    next[(size_t)pick].evicted = true;
+    evicted.push_back(next[(size_t)pick]);
+  }
+  return PrefErr::Ok;
+}
+
+PrefErr OwnerPrefs::addDuplicate(int dup, bool pending, std::string* idOut) {
+  if (idOut) *idOut = items_[(size_t)dup].idStr();
+  if (!items_[(size_t)dup].pending || pending) return PrefErr::Ok;
+  return approve(items_[(size_t)dup].id);
+}
+
 PrefErr OwnerPrefs::add(const std::string& text, PrefOrigin origin, uint32_t nowHours, bool pending,
                         std::string* idOut, std::vector<PrefEntry>* evictedOut) {
   const std::string t = sanitizePrefText(text);
@@ -405,13 +428,7 @@ PrefErr OwnerPrefs::add(const std::string& text, PrefOrigin origin, uint32_t now
   if (t.size() > kPrefItemMax) return PrefErr::TooLong;
   if (const PrefErr dated = datedRefusal(t); dated != PrefErr::Ok) return dated;
   const int dup = indexOfKey(prefKey(t));
-  if (dup >= 0) {
-    if (idOut) *idOut = items_[(size_t)dup].idStr();
-    // The same words again: nothing new. A human adding a rule that waits for
-    // approval IS the approval.
-    if (!items_[(size_t)dup].pending || pending) return PrefErr::Ok;
-    return approve(items_[(size_t)dup].id);
-  }
+  if (dup >= 0) return addDuplicate(dup, pending, idOut);
   PrefEntry e;
   e.id = nextId_;
   e.pending = pending;
@@ -427,16 +444,8 @@ PrefErr OwnerPrefs::add(const std::string& text, PrefOrigin origin, uint32_t now
     // model would paper over with a memory write. A pending add never evicts.
     if (room != PrefErr::Full || pending) return room;
     std::vector<PrefEntry> evicted;
-    while (checkRoom(next) != PrefErr::Ok) {
-      // The retired list has its own cap (kPrefsEvictedMax): past it the add is
-      // refused as Full instead of pushing evicted lines the loader would
-      // silently drop on the next parse (a restorable rule must never vanish).
-      if (evictedOf(next) >= kPrefsEvictedMax) return PrefErr::Full;
-      const int pick = evictionPick(next);
-      if (pick < 0) return PrefErr::Full;   // nothing active left to retire
-      next[(size_t)pick].evicted = true;
-      evicted.push_back(next[(size_t)pick]);
-    }
+    const PrefErr made = evictForRoom(next, evicted);
+    if (made != PrefErr::Ok) return made;
     const PrefErr r = commit(next, seeded_, listed_, nextId_ + 1);
     if (r == PrefErr::Ok) {
       if (idOut) *idOut = e.idStr();
@@ -786,11 +795,76 @@ std::string seedListingText(const OwnerPrefs& p) {
 
 // ---- lane POL2: a standing rule binds routines and wakeups ---------------------
 
+// Only an asking/mentioning veto shape blocks a fire. A bare "don't" or
+// "stop" is not one: "don't forget to check the shed roof" ASKS for the
+// reminder, and "stop the door slamming" is a device wish, not a topic veto.
+const char* const kStopMarkers[] = {
+    "never ask",    "stop asking",   "don't ask",    "dont ask",      "do not ask",
+    "never mention", "stop mentioning", "don't mention", "dont mention", "do not mention",
+    "never bring up", "stop bringing up", "don't bring up", "dont bring up", "do not bring up",
+    "never discuss", "stop discussing", "don't discuss", "dont discuss", "do not discuss",
+    "never talk about", "stop talking about", "don't talk about", "dont talk about",
+    "do not talk about", "no more"};
+
+// The days a rule's veto applies on, by the rule's own words: "on workdays" /
+// "on weekdays" narrow it to Monday-Friday, "on weekends" to Saturday and
+// Sunday. The 2 Nov signal was exactly this shape: the 13:00 workday check-in
+// was the annoyance and the owner's remedy was a weekend-only routine.
+RuleDays ruleDaysOf(const std::string& rule) {
+  const std::string r = collapseSpaces(lowerAscii(sanitizePrefText(rule)));
+  if (r.find("workday") != std::string::npos || r.find("weekday") != std::string::npos)
+    return RuleDays::Workdays;
+  if (r.find("weekend") != std::string::npos) return RuleDays::Weekends;
+  return RuleDays::Any;
+}
+
+bool ruleDaysMatch(RuleDays days, int dayOfWeek) {
+  if (days == RuleDays::Weekends) return dayOfWeek == 0 || dayOfWeek == 6;
+  return dayOfWeek >= 1 && dayOfWeek <= 5;   // Workdays
+}
+
+// The veto subject of a rule: the words its asking/mentioning marker governs.
+// The marker must govern the subject (the veto is the words AFTER it), the
+// "about" lead-in is part of the asking, and a prepositional tail narrows the
+// topic to its head ("never discuss politics at dinner" vetoes politics, not
+// every dinner routine). "" when the rule carries no veto shape.
+std::vector<std::string> ruleVetoWords(const std::string& rule) {
+  const std::string r = collapseSpaces(lowerAscii(sanitizePrefText(rule)));
+  size_t at = std::string::npos;
+  size_t markerLen = 0;
+  for (const char* marker : kStopMarkers) {
+    const size_t pos = r.find(marker);
+    if (pos != std::string::npos && (at == std::string::npos || pos < at)) {
+      at = pos;
+      markerLen = strlen(marker);
+    }
+  }
+  // Lane POL2 review: a bare "stop" is a veto only when the rule names the
+  // days it applies on ("stop the train brief on workdays"). A day scope is
+  // about when a routine may fire, which a device wish never carries; without
+  // one a bare stop stays what it was: "stop the door slamming" is a wish.
+  if (at == std::string::npos) {
+    if (ruleDaysOf(rule) == RuleDays::Any) return {};
+    const size_t pos = r.find("stop ");
+    if (pos == std::string::npos) return {};
+    at = pos;
+    markerLen = 5;
+  }
+  std::string veto = r.substr(at + markerLen);
+  for (const char* lead : {"about ", "to "})
+    if (veto.compare(0, strlen(lead), lead) == 0) { veto.erase(0, strlen(lead)); break; }
+  for (const char* tail : {" at ", " in ", " on ", " during ", " unless ", " when ",
+                           " while ", " if ", " by ", " for ", " with ", " over ", " under "}) {
+    const size_t p = veto.find(tail);
+    if (p != std::string::npos) veto.resize(p);
+  }
+  return words::subjectWords(veto);
+}
+
 StandingBlock standingBlocksFire(const std::vector<std::string>& activeRuleTexts,
                                  const std::string& loopPrompt,
-                                 const std::string& loopName) {
+                                 const std::string& loopName, int dayOfWeek) {
   StandingBlock out;
-  const std::string prompt = words::lowerAscii(loopPrompt);
   std::vector<std::string> promptWords = words::subjectWords(loopPrompt);
   // The routine's name is part of its topic (a "Duolingo streak check" whose
   // prompt only says "check the streak" is still the Duolingo routine).
@@ -798,44 +872,13 @@ StandingBlock standingBlocksFire(const std::vector<std::string>& activeRuleTexts
     if (std::find(promptWords.begin(), promptWords.end(), w) == promptWords.end())
       promptWords.push_back(w);
   if (promptWords.empty()) return out;
-  // Only an asking/mentioning veto shape blocks a fire. A bare "don't" or
-  // "stop" is not one: "don't forget to check the shed roof" ASKS for the
-  // reminder, and "stop the door slamming" is a device wish, not a topic veto.
-  static const char* const kStopMarkers[] = {
-      "never ask",    "stop asking",   "don't ask",    "dont ask",      "do not ask",
-      "never mention", "stop mentioning", "don't mention", "dont mention", "do not mention",
-      "never bring up", "stop bringing up", "don't bring up", "dont bring up", "do not bring up",
-      "never discuss", "stop discussing", "don't discuss", "dont discuss", "do not discuss",
-      "never talk about", "stop talking about", "don't talk about", "dont talk about",
-      "do not talk about", "no more"};
   for (const std::string& rule : activeRuleTexts) {
-    const std::string r = collapseSpaces(lowerAscii(sanitizePrefText(rule)));
-    // The marker must govern the subject: the veto is the words AFTER it, so a
-    // rule whose stop shape sits elsewhere in the sentence never blocks.
-    size_t at = std::string::npos;
-    size_t markerLen = 0;
-    for (const char* marker : kStopMarkers) {
-      const size_t pos = r.find(marker);
-      if (pos != std::string::npos && (at == std::string::npos || pos < at)) {
-        at = pos;
-        markerLen = strlen(marker);
-      }
-    }
-    if (at == std::string::npos) continue;
-    std::string veto = r.substr(at + markerLen);
-    // "ask about X" / "talk to X": the lead-in is part of the asking, not the topic.
-    for (const char* lead : {"about ", "to "})
-      if (veto.compare(0, strlen(lead), lead) == 0) { veto.erase(0, strlen(lead)); break; }
-    // The vetoed topic is the noun phrase after the marker; a prepositional tail
-    // narrows it to its head ("never discuss politics at dinner" vetoes politics,
-    // not every dinner routine).
-    for (const char* tail : {" at ", " in ", " on ", " during ", " unless ", " when ",
-                             " while ", " if ", " by ", " for ", " with ", " over ", " under "}) {
-      const size_t p = veto.find(tail);
-      if (p != std::string::npos) veto.resize(p);
-    }
-    const std::vector<std::string> vetoWords = words::subjectWords(veto);
-    for (const std::string& w : vetoWords) {
+    // A day-scoped veto binds only on the days it names. An unknown day (no
+    // clock) keeps the rule blocking: the owner's quiet is never lost to a
+    // missing clock.
+    const RuleDays days = ruleDaysOf(rule);
+    if (days != RuleDays::Any && dayOfWeek >= 0 && !ruleDaysMatch(days, dayOfWeek)) continue;
+    for (const std::string& w : ruleVetoWords(rule)) {
       if (std::find(promptWords.begin(), promptWords.end(), w) != promptWords.end()) {
         out.blocked = true;
         out.rule = rule;

@@ -22,21 +22,27 @@ uint32_t toU32(const std::string& s) {
 }
 
 // One item line of the file, or false when the line is not well-formed.
-bool parseLine(const std::string& line, OpenQEntry& e) {
-  // q<id> <R|-> <createdHours> <text>
+// The id and raised flag of a well-formed line's head ("q<id>\t<R|->\t"), or
+// false when it is not one. `at` returns just past the state field.
+bool parseLineHead(const std::string& line, size_t& at, OpenQEntry& e) {
   if (line.size() < 4 || (line[0] != 'q' && line[0] != 'Q')) return false;
-  size_t at = 1;
-  while (at < line.size() && line[at] >= '0' && line[at] <= '9') at++;
-  if (at == 1 || at + 2 >= line.size() || line[at] != '\t') return false;
-  e.id = toU32(line.substr(1, at - 1));
+  size_t i = 1;
+  while (i < line.size() && line[i] >= '0' && line[i] <= '9') i++;
+  if (i == 1 || i + 2 >= line.size() || line[i] != '\t') return false;
+  e.id = toU32(line.substr(1, i - 1));
   if (e.id == 0) return false;
-  at++;
-  const char state = line[at];
+  const char state = line[i + 1];
   if (state != 'R' && state != '-') return false;
   e.raised = state == 'R';
-  at++;
-  if (line[at] != '\t') return false;
-  at++;
+  if (line[i + 2] != '\t') return false;
+  at = i + 3;
+  return true;
+}
+
+bool parseLine(const std::string& line, OpenQEntry& e) {
+  // q<id> <R|-> <createdHours> <text>
+  size_t at = 0;
+  if (!parseLineHead(line, at, e)) return false;
   const size_t tab = line.find('\t', at);
   const std::string hours = tab == std::string::npos ? line.substr(at) : line.substr(at, tab - at);
   e.createdHours = toU32(hours);

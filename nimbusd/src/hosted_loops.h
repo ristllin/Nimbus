@@ -337,6 +337,23 @@ class HostedLoops {
     }
     return false;
   }
+  // Lane POL2: the standing gate. "never ask about duolingo" defers a "check
+  // the Duolingo streak" routine. A defer is not a fire (no counter moves,
+  // lastRun stays) and it self-heals: remove the rule and the routine fires
+  // again within the hour.
+  bool stoppedByStandingRule(nimbus::orch::LoopRecord& due, uint64_t now) {
+    if (!h_.standingRules) return false;
+    const std::vector<std::string> rules = h_.standingRules();
+    if (rules.empty()) return false;
+    const nimbus::orch::StandingBlock block =
+        nimbus::orch::standingBlocksFire(rules, due.prompt, due.name,
+                                         nimbus::orch::civilFromDays(localDay(now)).wday);
+    if (!block.blocked) return false;
+    nimbus::orch::deferLoop(due, now, kStandingBlockDeferSec);
+    persist();
+    say("loops: '" + due.name + "' deferred - a standing rule stops its topic");
+    return true;
+  }
   // Pick at most one due loop, advance it and store that BEFORE the fire: a fire whose
   // advance did not land never runs, so a restart can never fire one occurrence twice.
   bool selectAndClaim(uint64_t now, nimbus::orch::LoopFireRequest& req, uint64_t& prevLastRun) {
@@ -356,23 +373,7 @@ class HostedLoops {
       return false;
     }
     if (!due) return false;
-    // Lane POL2: the standing gate. "never ask about duolingo" defers a "check
-    // the Duolingo streak" routine. A defer is not a fire (no counter moves,
-    // lastRun stays) and it self-heals: remove the rule and the routine fires
-    // again within the hour.
-    if (h_.standingRules) {
-      const std::vector<std::string> rules = h_.standingRules();
-      if (!rules.empty()) {
-        const nimbus::orch::StandingBlock block =
-            nimbus::orch::standingBlocksFire(rules, due->prompt, due->name);
-        if (block.blocked) {
-          nimbus::orch::deferLoop(*due, now, kStandingBlockDeferSec);
-          persist();
-          say("loops: '" + due->name + "' deferred - a standing rule stops its topic");
-          return false;
-        }
-      }
-    }
+    if (stoppedByStandingRule(*due, now)) return false;
     const nimbus::orch::Delivery dl = deliveryFor(*due, world);
     req = nimbus::orch::buildFireRequest(*due, dl, now);
     // The shared rule names the device's web chat; a hosted page chats as "owner".

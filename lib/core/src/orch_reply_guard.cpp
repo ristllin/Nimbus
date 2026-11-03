@@ -88,8 +88,8 @@ namespace {
 
 // Lane POL2: the plumbing an owner must never read. Each pattern is a class the
 // 2 Nov signals named: a memory id, a job id, storage wording, a device path.
-bool memoryIdIn(const std::string& t) {
-  // mem_[0-9a-f]{4,}: the memory tool's own id shape.
+// mem_[0-9a-f]{4,}: the memory tool's own id shape.
+bool memToolIdIn(const std::string& t) {
   for (size_t at = t.find("mem_"); at != std::string::npos; at = t.find("mem_", at + 1)) {
     if (at != 0 && isWordChar(t[at - 1])) continue;
     size_t n = 0;
@@ -100,7 +100,11 @@ bool memoryIdIn(const std::string& t) {
     }
     if (n >= 4 && (at + 4 + n >= t.size() || !isWordChar(t[at + 4 + n]))) return true;
   }
-  // m[0-9a-f]{8}: the store's row id shape.
+  return false;
+}
+
+// m[0-9a-f]{8}: the store's row id shape.
+bool rowIdIn(const std::string& t) {
   for (size_t at = t.find('m'); at != std::string::npos; at = t.find('m', at + 1)) {
     if (at != 0 && isWordChar(t[at - 1])) continue;
     size_t n = 0;
@@ -113,6 +117,8 @@ bool memoryIdIn(const std::string& t) {
   }
   return false;
 }
+
+bool memoryIdIn(const std::string& t) { return memToolIdIn(t) || rowIdIn(t); }
 
 bool jobIdIn(const std::string& t) {
   if (t.find("result-job") != std::string::npos) return true;
@@ -133,29 +139,51 @@ bool storageWordingIn(const std::string& t) {
 }
 
 // A device file path: a run of path bytes with a slash, ending in a file suffix.
-// URLs are external, not plumbing: a match preceded by "http", "://" or "www."
-// does not count.
+// URLs are external, not plumbing: a match inside a whitespace-delimited word
+// that carries a scheme ("http://host/a/b.md") or starts at a "www." host is
+// on another machine. Judging by the whole word (not the bytes next to the
+// match) keeps deep URL paths external too ("http://host/data/index.json").
+bool inUrlWord(const std::string& t, size_t at) {
+  size_t b = at;
+  while (b > 0 && t[b - 1] != ' ' && t[b - 1] != '\t' && t[b - 1] != '\n' && t[b - 1] != '\r')
+    b--;
+  size_t e = at;
+  while (e < t.size() && t[e] != ' ' && t[e] != '\t' && t[e] != '\n' && t[e] != '\r') e++;
+  const std::string word = t.substr(b, e - b);
+  return word.find("://") != std::string::npos || word.rfind("www.", 0) == 0;
+}
+
+// One suffix's path scan: a slash-delimited name ending in this suffix, and
+// not a URL (a token with its own host or behind a scheme is external).
+bool pathWithSuffixIn(const std::string& t, const char* suf) {
+  for (size_t at = t.find(suf); at != std::string::npos; at = t.find(suf, at + 1)) {
+    const size_t end = at + std::strlen(suf);
+    if (end < t.size() && isWordChar(t[end])) continue;
+    const size_t slash = t.rfind('/', at);
+    if (slash == std::string::npos) continue;   // a bare name, not a path
+    size_t b = slash;
+    while (b > 0 && (isWordChar(t[b - 1]) || t[b - 1] == '.' || t[b - 1] == '-')) b--;
+    if (slash == b) continue;                   // "/foo.md": no name before the slash
+    if (inUrlWord(t, at)) continue;
+    return true;
+  }
+  return false;
+}
+
 bool devicePathIn(const std::string& t) {
   // The device's storage root is plumbing whatever the suffix (" /data/prefs.bin").
-  if (t.find("/data/") != std::string::npos) return true;
-  static const char* const kSuffix[] = {".md", ".csv", ".txt", ".bin", ".json", ".log"};
-  for (const char* suf : kSuffix) {
-    for (size_t at = t.find(suf); at != std::string::npos; at = t.find(suf, at + 1)) {
-      const size_t end = at + std::strlen(suf);
-      if (end < t.size() && isWordChar(t[end])) continue;
-      const size_t slash = t.rfind('/', at);
-      if (slash == std::string::npos) continue;   // a bare name, not a path
-      size_t b = slash;
-      while (b > 0 && (isWordChar(t[b - 1]) || t[b - 1] == '.' || t[b - 1] == '-')) b--;
-      if (slash == b) continue;                   // "/foo.md": no name before the slash
-      // A URL is external, not plumbing: the token may carry its own host
-      // ("www.site.com/a.md") or sit behind a scheme ("https://host/a.md").
-      const std::string tok = t.substr(b, end - b);
-      const std::string pre = t.substr(b > 12 ? b - 12 : 0, b > 12 ? 12 : b);
-      if (tok.rfind("www.", 0) == 0 || pre.find("://") != std::string::npos) continue;
-      return true;
-    }
+  // A URL path is external, not plumbing: a scheme or "www." host anywhere in
+  // the word, or a dotted host right before "/data/" ("nationalrail.co.uk/data/
+  // disruptions", with or without a scheme), names another machine.
+  for (size_t at = t.find("/data/"); at != std::string::npos; at = t.find("/data/", at + 1)) {
+    if (inUrlWord(t, at)) continue;
+    size_t b = at;
+    while (b > 0 && (isWordChar(t[b - 1]) || t[b - 1] == '.' || t[b - 1] == '-')) b--;
+    if (b == at || t.substr(b, at - b).find('.') == std::string::npos) return true;
   }
+  static const char* const kSuffix[] = {".md", ".csv", ".txt", ".bin", ".json", ".log"};
+  for (const char* suf : kSuffix)
+    if (pathWithSuffixIn(t, suf)) return true;
   return false;
 }
 
