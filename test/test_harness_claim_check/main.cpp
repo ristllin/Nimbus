@@ -231,6 +231,26 @@ static void test_a_partial_target_store_is_surfaced() {
     TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson("Done.")).c_str());
     TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("Done.").c_str());
   }
+  // The completing write was REFUSED: the kcal target the first write's citation
+  // stated is still unstored, and the refusal must not silence it - only a
+  // landed write clears a metric from the running set.
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources("", "", TurnSources{});
+    FoodFacts facts;
+    facts.targetsKnown = true;
+    facts.proteinTarget = 155;
+    cc.setFoodFacts([facts]() { return facts; });
+    cc.noteToolArgs("files.append", row);
+    cc.noteTool(FxKind::FileWrite, false, "appended 1 row");
+    cc.noteToolArgs("files.append", kcalRow);
+    cc.noteTool(FxKind::FileWrite, true, "quota exceeded");
+    const std::string fix = cc.finalCheck(turnJson(reply));
+    TEST_ASSERT_TRUE_MESSAGE(fix.find("2400 kcal") != std::string::npos, fix.c_str());
+    const std::string tail = cc.tailAfterApply(reply);
+    TEST_ASSERT_TRUE_MESSAGE(tail.find("2400 kcal") != std::string::npos, tail.c_str());
+  }
   // The write was refused (an error result): nothing landed, nothing to say.
   {
     ClaimCheck cc;

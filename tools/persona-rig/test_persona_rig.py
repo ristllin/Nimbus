@@ -864,21 +864,28 @@ class Schema(unittest.TestCase):
         self.assertTrue(all(r["title"] and r["report"] for r in rows.values()))
         self.assertTrue(all(r.get("linear") for r in rows.values()), "every open class names its Linear issue")
 
-    def test_a_no_embedding_route_class_is_only_used_where_no_row_asserts_memory_hard(self):
-        # Root-cause honesty for memory excuses: a class marked root_cause
-        # "no-embedding-route" may only sit on a host where no persona asserts the same
-        # /api/mem/stats check hard. One hard vectors>=1 pass on a host proves that host
-        # has an embedding route, so excusing under this class there mislabels the
-        # failure and would mis-route a recurrence to the wrong defect bucket.
+    def test_a_no_embedding_route_class_is_only_used_where_no_key_can_embed(self):
+        # Root-cause honesty for memory excuses: the embedding route is a property of
+        # the instance's KEYS, not its head host (glm-cause holds a Mistral key next
+        # to its zai head and stores hard; pa-byok-zai holds only a Z.ai key and
+        # cannot store - same head host, different route, proved by the 3 Nov re-run:
+        # evidence/defect4-rerun/pa-byok-zai-glm-5.3/summary.json). So a class marked
+        # root_cause "no-embedding-route" may only sit on an instance that holds no
+        # embedding-capable key (OpenAI, Mistral or Cumulo Nimbus - noEmbedKeyWhy in
+        # orch_memory_tools.cpp), and only where no persona with the SAME key set
+        # asserts the same /api/mem/stats check hard: a hard vectors>=1 pass on that
+        # key set proves the route exists, so excusing under this class there
+        # mislabels the failure and would mis-route a recurrence to the wrong bucket.
         defects = pr.known_defects()
         no_route = {n for n, d in defects.items() if d.get("root_cause") == "no-embedding-route"}
         self.assertIn("memory-needs-mistral-key", no_route)
-        hard_hosts, excused = set(), []
-        # Only the run set: run-round.sh globs pa-*.json, so the older parity scripts in
-        # personas/ are not part of the lane's rounds and are not checked here.
-        for path in sorted((HERE / "personas").glob("pa-*.json")):
+        embed_keys = {"openai", "mistral", "cumulo"}
+        hard_keysets, excused = set(), []
+        # Every tracked persona file, not just the pa-*.json round set: an excuse on
+        # any loaded persona can mislabel a failure the same way.
+        for path in sorted((HERE / "personas").rglob("*.json")):
             for p in pr.load_personas(str(path)):
-                host = p.get("host", "")
+                keys = frozenset(p.get("keys", {}).keys())
                 for sc in p["scenarios"]:
                     for st in sc["steps"]:
                         for item in st.get("expect", []):
@@ -887,15 +894,20 @@ class Schema(unittest.TestCase):
                                 continue
                             kd = item.get("known_defect", "")
                             if kd in no_route:
-                                excused.append((path.name, host, kd))
+                                excused.append((path.name, sorted(keys), kd))
+                                self.assertFalse(
+                                    keys & embed_keys,
+                                    f"{path.name}: {kd} excuses a memory check on an instance "
+                                    "that holds an embedding-capable key",
+                                )
                             elif not kd:
-                                hard_hosts.add(host)
-        for fname, host, kd in excused:
+                                hard_keysets.add(keys)
+        for fname, keys, kd in excused:
             self.assertNotIn(
-                host,
-                hard_hosts,
-                f"{fname}: {kd} excuses a memory check on host {host!r}, but another persona "
-                "of that host asserts the same check hard, so the host has an embedding route",
+                frozenset(keys),
+                hard_keysets,
+                f"{fname}: {kd} excuses a memory check on a key set another persona "
+                "asserts hard, so that key set has an embedding route",
             )
 
     def _load_matrix(self, doc):

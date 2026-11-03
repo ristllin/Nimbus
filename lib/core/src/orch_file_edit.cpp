@@ -251,7 +251,15 @@ CsvEditDiff diffKeyedEdit(const std::string& headerRow, const std::string& find,
   };
   dated(before);
   dated(after);
-  const int keyCol = diffKeyColumn(header, dateCol, before);
+  // The key column is picked over BOTH spans' dated rows, like the date column:
+  // with only the find span, a find text with no dated rows (a comment line, a
+  // fragment) leaves the figure scan vacuous and the first non-date column is
+  // returned unconditionally, so added rows were named by a figure value.
+  std::vector<SpanRow> both;
+  both.reserve(before.size() + after.size());
+  both.insert(both.end(), before.begin(), before.end());
+  both.insert(both.end(), after.begin(), after.end());
+  const int keyCol = diffKeyColumn(header, dateCol, both);
   if (keyCol < 0) return d;
   const auto identify = [dateCol, keyCol](std::vector<SpanRow>& rows) {
     for (SpanRow& r : rows) {

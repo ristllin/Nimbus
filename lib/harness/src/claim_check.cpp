@@ -216,6 +216,7 @@ void ClaimCheck::beginTurn() {
   targetsClipped_ = false;
   citedUnstored_.clear();
   pendingCited_.clear();
+  pendingStoredKcal_ = pendingStoredProtein_ = false;
   foodFacts_ = nullptr;
   routineDay_.clear();
   sourceNames_ = 0;
@@ -387,16 +388,17 @@ void ClaimCheck::noteToolArgs(const std::string& regName, const std::string& arg
   // stores a metric clears it from the running set: a later write of the same turn can
   // complete the set, and only what still did not land is ever surfaced.
   pendingCited_.clear();
+  pendingStoredKcal_ = pendingStoredProtein_ = false;
   if (targetsClipped_) return;
   std::string name = d["name"] | "";
   for (char& c : name) c = (char)std::tolower((unsigned char)c);
   if (name.rfind("food-targets", 0) != 0) return;
   const orch::TargetsWrite scan = orch::scanTargetsWrite(text);
-  citedUnstored_.erase(std::remove_if(citedUnstored_.begin(), citedUnstored_.end(),
-                                      [&scan](const orch::CitedTarget& t) {
-                                        return t.protein ? scan.storedProtein : scan.storedKcal;
-                                      }),
-                       citedUnstored_.end());
+  // Only the landed write clears a metric from the running set (noteTool): a
+  // refused write stored nothing, so an earlier write's unstored target must
+  // still surface.
+  pendingStoredKcal_ = scan.storedKcal;
+  pendingStoredProtein_ = scan.storedProtein;
   pendingCited_ = scan.unstored;
 }
 
@@ -411,7 +413,14 @@ void ClaimCheck::noteTool(nimbus::orch::FxKind kind, bool isError, const std::st
     noteToolText(output);
     noteWriteLanded();
     // Bench F03: the targets write landed, so its citation's unstored targets are the
-    // turn's own (a refused write stashed nothing that landed).
+    // turn's own, and the metrics it did store leave the running set (a refused write
+    // stashed nothing that landed, so it cleared nothing either).
+    citedUnstored_.erase(std::remove_if(citedUnstored_.begin(), citedUnstored_.end(),
+                                        [this](const orch::CitedTarget& t) {
+                                          return t.protein ? pendingStoredProtein_
+                                                           : pendingStoredKcal_;
+                                        }),
+                         citedUnstored_.end());
     for (const orch::CitedTarget& t : pendingCited_) {
       const bool there = std::any_of(citedUnstored_.begin(), citedUnstored_.end(),
                                     [&t](const orch::CitedTarget& x) { return x.protein == t.protein; });
@@ -419,6 +428,7 @@ void ClaimCheck::noteTool(nimbus::orch::FxKind kind, bool isError, const std::st
     }
   }
   pendingCited_.clear();
+  pendingStoredKcal_ = pendingStoredProtein_ = false;
   pendingWrote_.clear();
   if (!isError && (flags & orch::kFxHealth)) causeEvidence_ |= orch::kEvHealthRead;
   if (!isError) {

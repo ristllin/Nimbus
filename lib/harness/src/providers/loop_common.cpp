@@ -785,7 +785,10 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       // is exactly the round a non-reasoning model answers in a few hundred
       // tokens (measured 3 Nov, evidence/defect5/). The step-down holds for
       // the rest of the turn: the configured head already spiralled once.
-      if (sr2.kind == orch::StepErr::Cut && !steppedDown) {
+      // The mistral host check is structural, not redundant: the step below
+      // speaks the Mistral wire (misLoopStep), so a future table entry for
+      // another host needs its own loop step here, never this one.
+      if (sr2.kind == orch::StepErr::Cut && !steppedDown && hostList[hostIdx] == "mistral") {
         const std::string headModel =
             pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()) : std::string();
         const char* alt = providers::sameHostNonReasoningModel(hostList[hostIdx], headModel);

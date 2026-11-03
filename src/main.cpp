@@ -913,12 +913,12 @@ static bool orchSendSink(const String& chatId, const String& text) {
   // async in the book - the open page re-renders its history - and never fills the
   // legacy slot, where the next poll would claim it as the owner's next answer.
   if (chatId == "web") {
+    const std::string reply(text.c_str(), text.length());
     bool legacy;
     {
       std::lock_guard<std::mutex> lk(g_webChatMx);
-      legacy = agent::deliverToWebChat(g_webChat, std::string(text.c_str(), text.length()),
-                                       agent::loops::firing());
-      if (legacy) g_webSlot.deliver(std::string(text.c_str(), text.length()));
+      legacy = agent::deliverToWebChat(g_webChat, reply, agent::loops::firing());
+      if (legacy) g_webSlot.deliver(reply);
     }
     if (legacy) {
       net::ConfigLockGuard lk;   // the legacy single slot's pending backstop

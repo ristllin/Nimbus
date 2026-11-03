@@ -452,6 +452,22 @@ static void test_a_mid_row_edit_says_nothing() {
                                   "2026-11-02,100,5.0\n2026-11-02,200,6.0\n", "").keyed);
 }
 
+// A find text with no dated rows (a note line, a fragment) replaced by dated
+// rows: the key column is picked over both spans, so an added row is named by
+// its key, never by a figure value read from the replace span alone.
+static void test_an_undated_find_span_does_not_key_rows_by_a_figure() {
+  const CsvEditDiff d = diffKeyedEdit("date,kcal,meal",
+                                      "# a note line\n",
+                                      "2026-11-02,450,breakfast\n2026-11-02,865,lunch\n");
+  TEST_ASSERT_TRUE_MESSAGE(d.keyed, "dated rows on the replace side make it a keyed edit");
+  TEST_ASSERT_EQUAL(2, (int)d.added.size());
+  TEST_ASSERT_EQUAL_STRING("breakfast", d.added[0].key.c_str());
+  TEST_ASSERT_EQUAL_STRING("lunch", d.added[1].key.c_str());
+  const std::string lines = renderKeyedEditDiff(d);
+  TEST_ASSERT_TRUE(lines.find("rows added: 2026-11-02 breakfast") != std::string::npos);
+  TEST_ASSERT_TRUE(lines.find("450") == std::string::npos);   // a figure value is never the key
+}
+
 // The report is bounded: a bigger rewrite names the first rows and counts the
 // rest, never a runaway tool result.
 static void test_the_row_lists_are_bounded() {
@@ -483,17 +499,24 @@ static void test_not_readded_names_the_missing_row() {
 }
 
 // The device wires the diff into files.edit's reply and the note into both
-// write paths: the report exists only if the seams carry it.
+// write paths: the report exists only if the seams carry it. The note rides the
+// reconcileRemovedRows helper (defined before both writers), so the seam here
+// is the helper's call from each writer plus the helper's own two calls.
 static void test_the_device_reports_the_diff_and_the_missing_readd() {
   const std::string src = readSubsystem();
   const size_t edit = src.find("ToolResult editDoc(");
   TEST_ASSERT_TRUE(edit != std::string::npos);
   TEST_ASSERT_TRUE(src.find("diffKeyedEdit(", edit) != std::string::npos);
   TEST_ASSERT_TRUE(src.find("renderKeyedEditDiff(", edit) != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("reconcileRemovedRows(", edit) != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("rememberRemovedRows(", edit) != std::string::npos);
   const size_t upsert = src.find("ToolResult upsertRows(");
   TEST_ASSERT_TRUE(upsert != std::string::npos);
-  TEST_ASSERT_TRUE(src.find("notReadded(", upsert) != std::string::npos);
-  TEST_ASSERT_TRUE(src.find("renderNotReadded(", upsert) != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("reconcileRemovedRows(", upsert) != std::string::npos);
+  const size_t reconcile = src.find("static std::string reconcileRemovedRows(");
+  TEST_ASSERT_TRUE(reconcile != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("notReadded(", reconcile) != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("renderNotReadded(", reconcile) != std::string::npos);
   TEST_ASSERT_TRUE(src.find("g_removedRows") != std::string::npos);
 }
 
@@ -519,6 +542,7 @@ int main() {
   RUN_TEST(test_a_whole_day_delete_names_its_rows);
   RUN_TEST(test_a_day_rewrite_names_added_changed_and_removed);
   RUN_TEST(test_a_mid_row_edit_says_nothing);
+  RUN_TEST(test_an_undated_find_span_does_not_key_rows_by_a_figure);
   RUN_TEST(test_the_row_lists_are_bounded);
   RUN_TEST(test_not_readded_names_the_missing_row);
   RUN_TEST(test_the_device_reports_the_diff_and_the_missing_readd);

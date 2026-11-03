@@ -219,9 +219,13 @@ class ClaimCheck {
   bool targetsClipped_ = false;  // that list hit its cap: the target rule stands down
   // Bench F03: targets a landed targets-write cited but did not store (food_figures.h),
   // and the same scan of the write whose result is still pending. One slot: tool calls
-  // are sequential, noteToolArgs fills it and the matching noteTool consumes it.
+  // are sequential, noteToolArgs fills it and the matching noteTool consumes it. The
+  // pending scan's stored flags ride too: a write only clears a metric from the
+  // running set when it LANDS, so a refused write never silences an earlier one.
   std::vector<nimbus::orch::CitedTarget> citedUnstored_;
   std::vector<nimbus::orch::CitedTarget> pendingCited_;
+  bool pendingStoredKcal_ = false;
+  bool pendingStoredProtein_ = false;
   std::function<nimbus::orch::FoodFacts()> foodFacts_;
   std::string routineDay_;       // set on a scheduled turn: the stale-status rule applies
   uint32_t sourceNames_ = 0;     // SourceEvidence bits this turn names (CUM-824)

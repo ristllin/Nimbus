@@ -33,7 +33,7 @@
    "host": "zai",
    "key": "Z_AI_TOKEN",
    "model": "glm-5.3",
-   "memory_defect": "",
+   "memory_defect": "memory-needs-mistral-key",
    "tools_defect": "",
    "binary_defect": ""
   },
@@ -42,7 +42,7 @@
    "host": "zai",
    "key": "Z_AI_TOKEN",
    "model": "glm-5.3-flash",
-   "memory_defect": "",
+   "memory_defect": "memory-needs-mistral-key",
    "tools_defect": "",
    "binary_defect": ""
   },
