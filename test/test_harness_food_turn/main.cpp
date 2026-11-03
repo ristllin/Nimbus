@@ -399,6 +399,17 @@ static void test_the_wire_guard_on_a_device_shaped_loop_turn() {
   std::vector<agent::HistMsg> small = chat();
   small.resize(6);
   TEST_ASSERT_EQUAL(0, (int)agent::fitHistoryToWire(small, 4000 + histBytes(small), loopTools, 2000, true));
+  // Ruling 3 Nov 09:15Z asked whether recent history is dropped too eagerly (Lumi:
+  // 10 messages left out on a one-line turn). The guard drops the OLDEST whole
+  // exchanges, so the drop above is also the MINIMUM: keeping one more pair would
+  // not fit, and the pair it kept back is the newest exchange, not an old one.
+  TEST_ASSERT_TRUE(droppedLoop >= 2);
+  std::vector<agent::HistMsg> onePairMore = chat();
+  onePairMore.erase(onePairMore.begin() + 2,
+                    onePairMore.begin() + 2 + (long)(droppedLoop - 2));
+  TEST_ASSERT_TRUE_MESSAGE(
+      agent::fitHistoryToWire(onePairMore, base + histBytes(onePairMore), loopTools, inp, true) > 0,
+      "the guard left out more history than the budget required");
 }
 
 int main(int, char**) {
