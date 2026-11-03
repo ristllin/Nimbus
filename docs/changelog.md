@@ -6,6 +6,22 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v4.9.0 - Interim build ahead of v5.0.0
+
+An interim build that carries the launch fixes landed so far, ahead of the full
+v5.0.0 release. It carries the work of the launch lanes QW6R, OVF, FOOD, MG, RTF,
+HEAP, PROT, RCAD, GATE, GATE2 and LABEL.
+
+- **The food log tells the truth.** Figures read off a nutrition label are checked against the photo's own numbers before they are stored, and a mismatch is marked instead of landing silently. A row with no backing in what you said or what was read is refused, and the assistant never claims "you told me" without quoting a real message. A food photo with no question is logged as eaten, in one line, with an easy undo.
+- **The daily coach works from the ledger's own rows.** Sums come from the device's records, a daily target with no source cannot be stored, and the stray second food file folds back into the food log at the next start.
+- **A turn no longer dies of its own size.** A request that is too big gives things up in a set order, says what it gave up, and still answers. "Placeholder" and empty promises of "next turn" no longer reach you.
+- **Compaction finishes on Mistral again.** The "no summary in reply" failures are fixed: the summary reads the reply's text, and a model that refuses the built-in connectors no longer breaks it.
+- **Mistral and GLM can drive a day.** Memory, files, a food plan, web lookups and long answers work on Mistral Large 4 and GLM-5.3, and an empty model reply no longer turns into "Done.".
+- **No more false "add credits".** The device no longer tells you to add credits when the wallet has credits. Only an empty wallet, a missing plan, a device limit, a suspended account or a bad key stops the hosted service, each in its own words, and a request too large for the remaining credits is sent again once with a shorter reply limit.
+- **Fewer stalls and crashes.** The model list refresh no longer takes the device's spare memory close to empty, a binary file or a stray control byte no longer kills a turn on any provider, and a photo received twice is charged once against a member's storage.
+- **A changed Telegram token starts clean.** After a bot token change the device no longer replays old updates or misses new ones, and the web cards say what really happened: acting on something that is already gone says so, never "Approved.".
+- **Voice changes ship without hardware proof.** No audio test has run on any board (owner's order of 2 November: silent mode), so the speaking changes in this build are host-tested only.
+
 ## v4.6.4 - Compaction works on every Mistral model again
 
 A fix release for the broken compaction reported on 31 October.
