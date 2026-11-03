@@ -51,7 +51,7 @@
         "turn_resolved": true
        },
        {
-        "log_regex": "mem_write outcomes stored=[1-9]"
+        "write_result_regex": "stored memory m[0-9a-f]+|mem_write outcomes stored=[1-9]"
        },
        {
         "api_min": {
