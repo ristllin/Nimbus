@@ -6,9 +6,10 @@ persona class that never ran, and its round-history counts must match the raw ev
 under lanes/PERSONA/evidence/. Both are checked here so a wrong claim fails a test
 instead of reaching the orchestrator.
 
-These tests only run where the lane layout exists (this tree at lanes/<LANE>/nimbus,
-with ../evidence and ../../../coverage/PERSONA-2026-11.md). On a clean checkout they
-skip, so CI is unaffected.
+These tests only run in the PERSONA lane layout (this tree at lanes/PERSONA/nimbus,
+with ../evidence and ../../../coverage/PERSONA-2026-11.md). On a clean checkout, on
+main, and in sibling lane trees (lanes/<OTHER>/nimbus, which share the program
+root's coverage/ dir) they skip, so CI and the other lanes are unaffected.
 """
 
 import json
@@ -79,7 +80,13 @@ def _evidence_rounds() -> dict:
     return out
 
 
-@unittest.skipUnless(COVERAGE_DOC.is_file(), "lane coverage doc not present outside the lane layout")
+# The doc and the round evidence belong to lane PERSONA only: sibling lane trees
+# see the same program-root coverage/ dir, so the doc's presence alone must not
+# arm these checks against another lane's (empty) round evidence.
+@unittest.skipUnless(
+    COVERAGE_DOC.is_file() and LANE.name == "PERSONA",
+    "PERSONA coverage doc/evidence layout not present (runs only in lanes/PERSONA/nimbus)",
+)
 class CoverageDocClaims(unittest.TestCase):
     def test_every_task_minimum_class_is_covered_or_marked_not_run(self):
         doc = COVERAGE_DOC.read_text()
