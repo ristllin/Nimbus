@@ -39,6 +39,29 @@ LittleFsPrefsIO g_io;
 nimbus::orch::OwnerPrefs g_prefs;
 bool g_begun = false;
 
+// Lane POL2: the open-question list over /data/openq.txt, the same seam.
+class LittleFsOpenQIO : public nimbus::orch::PrefsStoreIO {
+ public:
+  bool load(std::string& out) override {
+    if (!flashMounted()) return false;
+    memory::Lock g;   // the same recursive lock the engines take
+    File f = LittleFS.open(nimbus::orch::kOpenQPath, FILE_READ);
+    if (!f) return false;
+    out.resize(f.size() > nimbus::orch::kOpenQFileMax ? nimbus::orch::kOpenQFileMax : f.size());
+    const size_t got = out.empty() ? 0 : f.read((uint8_t*)out.data(), out.size());
+    f.close();
+    out.resize(got);
+    return true;
+  }
+  bool saveChecked(const std::string& blob) override {
+    return writeFileAtomic(nimbus::orch::kOpenQPath, blob, "openq");
+  }
+};
+
+LittleFsOpenQIO g_openq_io;
+nimbus::orch::OpenQuestions g_openq;
+bool g_openq_begun = false;
+
 void notifyOwner(const std::string& text) {
   const String chat = orchestrator::firstAllowedChat();
   if (chat.length()) telegram::send(chat, String(text.c_str()), /*block=*/false);
@@ -50,6 +73,10 @@ void begin() {
   if (!g_begun) {
     g_prefs.begin(&g_io);
     g_begun = true;
+  }
+  if (!g_openq_begun) {
+    g_openq.begin(&g_openq_io);
+    g_openq_begun = true;
   }
 }
 
@@ -83,11 +110,60 @@ std::string blockForRole(bool ownerFacing) {
   return g_prefs.renderBlock();
 }
 
+// Lane POL2: the active rule texts, for the loops' standing gate
+// (orch::standingBlocksFire). Snapshotted under the store's own lock; the loops
+// tick calls this BEFORE taking its lock, so the two locks never nest.
+std::vector<std::string> activeRuleTexts() {
+  std::vector<std::string> out;
+  if (!flashMounted()) return out;
+  memory::Lock g;
+  begin();
+  for (const nimbus::orch::PrefEntry& e : g_prefs.entries())
+    if (!e.pending && !e.moved && !e.evicted) out.push_back(e.text);
+  return out;
+}
+
 uint32_t filtersForRole(bool ownerFacing) {
   if (!ownerFacing || !flashMounted()) return 0;
   memory::Lock g;
   begin();
   return g_prefs.activeFilters();
+}
+
+nimbus::orch::OpenQuestions& openQStore() { return g_openq; }
+
+bool withOpenQStore(const std::function<void(nimbus::orch::OpenQuestions&)>& fn) {
+  if (!flashMounted()) return false;
+  memory::Lock g;
+  begin();
+  fn(g_openq);
+  return true;
+}
+
+nimbus::orch::OpenQToolContext openQContext() {
+  nimbus::orch::OpenQToolContext c;
+  c.withOpenQ = [](const std::function<void(nimbus::orch::OpenQuestions&)>& fn) {
+    return withOpenQStore(fn);
+  };
+  c.inScheduledTurn = [] { return orchestrator::inScheduledTurn(); };
+  c.externalContentSeen = [] { return orchestrator::turnReadOutsideContent(); };
+  c.nowHours = [] { return memory::nowHours(); };
+  return c;
+}
+
+std::string openQBlockForRole(bool ownerFacing) {
+  if (!ownerFacing) return std::string();   // the list is the owner's
+  if (!flashMounted()) return std::string();
+  memory::Lock g;
+  begin();
+  return g_openq.renderBlock();
+}
+
+std::string observeOwnerTurn(const std::string& ownerText, const std::string& reply) {
+  if (!flashMounted()) return std::string();
+  memory::Lock g;
+  begin();
+  return nimbus::orch::observeOpenQ(g_openq, ownerText, reply);
 }
 
 namespace {

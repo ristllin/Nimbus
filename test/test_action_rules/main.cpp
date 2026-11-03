@@ -149,6 +149,9 @@ const Expect kExpect[] = {
     // standing rules
     {"prefs.edit", kOwner},
     {"prefs.edit.change", kOwnerNow},
+    // the owner's open questions (lane POL2): the same shape as the rules
+    {"openq.edit", kOwner},
+    {"openq.edit.change", kOwnerNow},
     // results, sub-agents
     {"results.get", kOpen},
     {"results.list", kOpen},
@@ -223,7 +226,7 @@ const Expect* expectFor(const std::string& key) {
 bool argumentKey(const std::string& key) {
   static const char* const kKeys[] = {"memory.config.update", "models.list.refresh", "device.selftest.audible",
                                       "prefs.edit.change",    "reply.telegram.other_chat", "files.send.other_chat",
-                                      "files.share.owner"};
+                                      "files.share.owner",    "openq.edit.change"};
   for (const char* k : kKeys)
     if (key == k) return true;
   return false;

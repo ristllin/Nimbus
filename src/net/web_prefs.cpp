@@ -58,10 +58,11 @@ void registerPrefsRoutes(AsyncWebServer& server) {
     const std::string text(qparam(r, "text").c_str());
     orch::PrefErr e = orch::PrefErr::PersistFailed;
     std::string idOut;
+    std::vector<orch::PrefEntry> evicted;
     bool ran = false;
     if (prefs::withStore([&](orch::OwnerPrefs& p) {
           ran = true;
-          e = orch::prefsWebAction(p, action, id, text, agent::memory::nowHours(), idOut);
+          e = orch::prefsWebAction(p, action, id, text, agent::memory::nowHours(), idOut, &evicted);
         }))
       ;
     if (!ran) { sendJson(r, 507, "{\"error\":\"The rules file area is not available.\"}"); return; }
@@ -78,6 +79,12 @@ void registerPrefsRoutes(AsyncWebServer& server) {
     d["ok"] = true;
     if (!idOut.empty()) d["id"] = idOut;
     if (action == "add" || action == "import") d["message"] = "Saved.";
+    // Lane POL2: a full list made room; the page says which rule retired.
+    if (!evicted.empty()) {
+      d["message"] = "Saved. The list was full, so this rule was retired to make room:";
+      JsonArray arr = d["retired"].to<JsonArray>();
+      for (const orch::PrefEntry& ev : evicted) arr.add(ev.text);
+    }
     String out;
     serializeJson(d, out);
     sendJson(r, 200, out);

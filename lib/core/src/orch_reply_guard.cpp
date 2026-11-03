@@ -86,6 +86,74 @@ std::string placeholderCheck(const std::string& finalTurnJson, const std::string
 
 namespace {
 
+// Lane POL2: the plumbing an owner must never read. Each pattern is a class the
+// 2 Nov signals named: a memory id, a job id, storage wording, a device path.
+bool memoryIdIn(const std::string& t) {
+  for (size_t at = t.find('m'); at != std::string::npos; at = t.find('m', at + 1)) {
+    if (at != 0 && isWordChar(t[at - 1])) continue;
+    size_t n = 0;
+    while (at + 1 + n < t.size()) {
+      const char c = t[at + 1 + n];
+      if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) n++;
+      else break;
+    }
+    if (n >= 8 && (at + 1 + n >= t.size() || !isWordChar(t[at + 1 + n]))) return true;
+  }
+  return false;
+}
+
+bool jobIdIn(const std::string& t) { return t.find("result-job") != std::string::npos; }
+
+bool storageWordingIn(const std::string& t) {
+  return t.find("read back confirmed") != std::string::npos ||
+         t.find("stored on the device as") != std::string::npos;
+}
+
+// A device file path: a run of path bytes with a slash, ending in a file suffix.
+// URLs are external, not plumbing: a match preceded by "http", "://" or "www."
+// does not count.
+bool devicePathIn(const std::string& t) {
+  static const char* const kSuffix[] = {".md", ".csv", ".txt"};
+  for (const char* suf : kSuffix) {
+    for (size_t at = t.find(suf); at != std::string::npos; at = t.find(suf, at + 1)) {
+      const size_t end = at + std::strlen(suf);
+      if (end < t.size() && isWordChar(t[end])) continue;
+      const size_t slash = t.rfind('/', at);
+      if (slash == std::string::npos) continue;   // a bare name, not a path
+      size_t b = slash;
+      while (b > 0 && (isWordChar(t[b - 1]) || t[b - 1] == '.' || t[b - 1] == '-')) b--;
+      if (slash == b) continue;                   // "/foo.md": no name before the slash
+      // A URL is external, not plumbing: the token may carry its own host
+      // ("www.site.com/a.md") or sit behind a scheme ("https://host/a.md").
+      const std::string tok = t.substr(b, end - b);
+      const std::string pre = t.substr(b > 12 ? b - 12 : 0, b > 12 ? 12 : b);
+      if (tok.rfind("www.", 0) == 0 || pre.find("://") != std::string::npos) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+bool hasPlumbing(const std::string& reply) {
+  const std::string t = lowered(reply);
+  return memoryIdIn(t) || jobIdIn(t) || storageWordingIn(t) || devicePathIn(t);
+}
+
+std::string plumbingCheck(const std::string& finalTurnJson) {
+  JsonDocument d;
+  if (deserializeJson(d, finalTurnJson) != DeserializationError::Ok) return std::string();
+  const char* reply = d["reply"] | "";
+  if (!hasPlumbing(reply)) return std::string();
+  return "[REPLY CHECK] Your reply shows internal plumbing: a memory or job id, a file "
+         "path, or storage wording like \"read back confirmed\". The owner reads plain "
+         "words only. Rewrite the answer without them: say what the thing is for the "
+         "owner, or leave it out. Do not mention this check.";
+}
+
+namespace {
+
 // Past this the message is a brief, not a chat line.
 constexpr size_t kChatMaxBytes = 240;
 

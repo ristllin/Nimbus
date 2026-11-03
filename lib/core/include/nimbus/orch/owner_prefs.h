@@ -43,6 +43,7 @@ inline constexpr size_t kPrefItemMax = 240;      // bytes per rule text
 inline constexpr size_t kPrefsMaxBytes = 1200;   // all active rule texts together
 inline constexpr size_t kPrefsPendingMax = 4;
 inline constexpr size_t kPrefsMovedMax = 8;      // moved rules kept for /prefs restore
+inline constexpr size_t kPrefsEvictedMax = 8;    // retired rules kept for /prefs restore (lane POL2)
 // The file at its fullest (12 rules and 8 moved ones at 240 bytes, with their
 // fields): what a loader reads before it stops.
 inline constexpr size_t kPrefsFileMax = 8192;
@@ -68,7 +69,7 @@ enum class PrefErr : uint8_t {
   PersistFailed,  // the file could not be written: nothing changed
   DatedFood,      // lane CTX: a dated meal or day total, not a rule (the food ledger)
   DatedFact,      // lane CTX: a dated measurement or one-off fact, not a rule (memory)
-  NotMoved,       // restore on a rule that was not moved
+  NotMoved,       // restore on a rule that was not retired
 };
 // Plain words for an error, for the tool result, /prefs and the web route.
 const char* prefErrWords(PrefErr e);
@@ -77,6 +78,7 @@ struct PrefEntry {
   uint32_t    id = 0;             // shown as "p<id>"
   bool        pending = false;
   bool        moved = false;      // lane CTX: a dated fact moved to memory (state M)
+  bool        evicted = false;    // lane POL2: retired to make room (state E)
   uint32_t    createdHours = 0;   // device epoch hours (0 = clock not set)
   PrefOrigin  origin = PrefOrigin::Chat;
   uint32_t    filters = 0;        // PrefFilter bits
@@ -127,8 +129,14 @@ class OwnerPrefs {
   // Every mutation persists first and changes the list only when the save landed
   // (PersistFailed leaves everything as it was). Re-adding an existing rule
   // returns its id with Ok; a human add of a pending rule approves it.
+  //
+  // Lane POL2 (standing rules get room): an ACTIVE add that does not fit makes
+  // room itself - the eviction candidate (a seeded rule first, then the oldest)
+  // is retired (state E, restorable) and reported in *evicted so the caller
+  // tells the owner. A pending add never evicts: it waits or is refused. When
+  // even evicting everything cannot fit the rule, Full still comes back.
   PrefErr add(const std::string& text, PrefOrigin origin, uint32_t nowHours, bool pending,
-              std::string* idOut);
+              std::string* idOut, std::vector<PrefEntry>* evicted = nullptr);
   PrefErr replace(uint32_t id, const std::string& text, PrefOrigin origin, uint32_t nowHours);
   PrefErr remove(uint32_t id);
   PrefErr approve(uint32_t id);
@@ -158,6 +166,7 @@ class OwnerPrefs {
   size_t activeCount() const;
   size_t pendingCount() const;
   size_t movedCount() const;
+  size_t evictedCount() const;
   size_t activeBytes() const;
 
   // The prompt block body: one "- (p<id>) <text>" line per ACTIVE rule, "" when
@@ -222,6 +231,21 @@ std::vector<std::string> pickSeedRules(const std::vector<SeedCandidate>& in,
 // The owner's one listing after the seed: every active rule the seed added
 // (plain words, device copy). "" when there is none.
 std::string seedListingText(const OwnerPrefs& p);
+
+// ---- lane POL2: a standing rule binds routines and wakeups -------------------
+
+// Does an active standing rule stop a routine or wakeup from raising its
+// topic? Deterministic, whole-word: a rule with a stop marker (never, stop, no
+// more, don't, do not) whose subject words occur in the loop's own prompt
+// blocks the fire ("never ask about duolingo" blocks a "check the Duolingo
+// streak" routine; "always log meals" blocks nothing). The device and nimbusd
+// consult it before a loop fires and defer a blocked one.
+struct StandingBlock {
+  bool        blocked = false;
+  std::string rule;    // the rule that blocked it ("" when nothing did)
+};
+StandingBlock standingBlocksFire(const std::vector<std::string>& activeRuleTexts,
+                                 const std::string& loopPrompt);
 
 }  // namespace orch
 }  // namespace nimbus

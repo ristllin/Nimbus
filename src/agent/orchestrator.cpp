@@ -1273,6 +1273,9 @@ static TurnEngine::Deps buildTurnDeps() {
     // directive, on every owner-facing turn whatever started it (a member or
     // guest turn never sees them - the rules are the owner's).
     in.standingPrefs = prefs::blockForRole(roleOfChat(String(chatId.c_str())) == nimbus::orch::Role::Admin);
+    // Lane POL2: the owner's open questions ride the same band, owner-facing
+    // turns only, like the standing rules.
+    in.openQuestions = prefs::openQBlockForRole(roleOfChat(String(chatId.c_str())) == nimbus::orch::Role::Admin);
     in.runningMemory = g_mem.model(chatId);   // the TURN CHAT's rolling summary (B3)
     // LIVE hardware manifest (P5): read the actual HAL health + storage mount +
     // fault mask instead of hardcoding flags, so the model's self-model matches
@@ -1709,6 +1712,14 @@ static TurnEngine::Deps buildTurnDeps() {
   };
   d.hosts.fabricSupports = [](const std::string& h) { return providers::fabricSupports(h); };
   d.standingWork = [](const std::string& chatId) { return loops::hasStanding(chatId); };
+  // Lane POL2: the open-question list observes every completed turn in the
+  // owner's own chat (raise-once bookkeeping, open_questions.h). A member's
+  // turn never touches the owner's items.
+  d.openqObserve = [](const std::string& chatId, const std::string& ownerText,
+                      const std::string& reply) {
+    if (roleOfChat(String(chatId.c_str())) != nimbus::orch::Role::Admin) return std::string();
+    return prefs::observeOwnerTurn(ownerText, reply);
+  };
   // Lane K's park, one store for the fabric and the single-shot ladder and fold,
   // over the same ProviderDeps (the park's key and model fingerprint).
   d.hosts.parked = [](const std::string& h, providers::HostPark* why) {

@@ -41,7 +41,7 @@ std::string ruleLine(const PrefEntry& e, uint32_t nowH) {
 std::string ruleLines(const OwnerPrefs& p, uint32_t nowH) {
   std::string out;
   for (const PrefEntry& e : p.entries())
-    if (!e.moved) out += ruleLine(e, nowH) + "\n";
+    if (!e.moved && !e.evicted) out += ruleLine(e, nowH) + "\n";
   return out;
 }
 
@@ -55,11 +55,22 @@ std::string movedLines(const OwnerPrefs& p) {
   return out;
 }
 
+// (Lane POL2) the rules retired to make room, each with the way back.
+std::string evictedLines(const OwnerPrefs& p) {
+  if (!p.evictedCount()) return std::string();
+  std::string out = "Retired to make room for new rules:\n";
+  for (const PrefEntry& e : p.entries())
+    if (e.evicted)
+      out += "(" + e.idStr() + ") " + e.text + " [restore: /prefs restore " + e.idStr() + "]\n";
+  return out;
+}
+
 // The rules, then the moved facts (the model's list).
 std::string listText(const OwnerPrefs& p, uint32_t nowH) {
   std::string out = ruleLines(p, nowH);
   if (out.empty()) out = "no standing rules yet\n";
   out += movedLines(p);
+  out += evictedLines(p);
   out.pop_back();
   return out;
 }
@@ -71,6 +82,7 @@ struct ModelAdd {
   std::string text;
   bool        pending = false;
   bool        existed = false;
+  std::vector<PrefEntry> evicted;   // lane POL2: retired to make room
 };
 
 ModelAdd modelAdd(const PrefsToolContext& ctx, const std::string& text) {
@@ -78,8 +90,8 @@ ModelAdd modelAdd(const PrefsToolContext& ctx, const std::string& text) {
   r.pending = tainted(ctx);
   const bool ran = ctx.withPrefs && ctx.withPrefs([&](OwnerPrefs& p) {
     const size_t before = p.entries().size();
-    r.err = p.add(text, PrefOrigin::Chat, now(ctx), r.pending, &r.id);
-    r.existed = r.err == PrefErr::Ok && p.entries().size() == before;
+    r.err = p.add(text, PrefOrigin::Chat, now(ctx), r.pending, &r.id, &r.evicted);
+    r.existed = r.err == PrefErr::Ok && p.entries().size() == before && r.evicted.empty();
     if (const PrefEntry* e = p.find(parsePrefId(r.id))) {
       r.text = e->text;
       r.pending = e->pending;
@@ -91,6 +103,10 @@ ModelAdd modelAdd(const PrefsToolContext& ctx, const std::string& text) {
 
 void noticeForAdd(const PrefsToolContext& ctx, const ModelAdd& r) {
   if (r.err != PrefErr::Ok || r.existed) return;
+  for (const PrefEntry& e : r.evicted)   // lane POL2: the owner is told, never a silent loss
+    notify(ctx, "The standing rules were full, so this rule was retired to make room (" +
+                    e.idStr() + "): " + e.text + "\nMake it a rule again with /prefs restore " +
+                    e.idStr() + ".");
   if (r.pending)
     notify(ctx, "A standing rule waits for your approval (" + r.id + "): " + r.text +
                     "\nIt came from a conversation that read outside content. Approve it with /prefs approve " +
@@ -100,14 +116,23 @@ void noticeForAdd(const PrefsToolContext& ctx, const ModelAdd& r) {
 }
 
 std::string modelAddWords(const ModelAdd& r) {
-  if (r.err != PrefErr::Ok) return std::string("not saved: ") + prefErrWords(r.err);
+  if (r.err != PrefErr::Ok)
+    return std::string("not saved: ") + prefErrWords(r.err) +
+           " Tell the owner plainly and ask which rule to remove. Do NOT store this as a "
+           "memory instead: a memory is not guaranteed in the next turn's prompt, so the "
+           "rule would silently stop applying.";
   if (r.existed && !r.pending) return "already a standing rule (" + r.id + "); nothing changed";
   if (r.pending)
     return "saved as PENDING rule " + r.id +
            ": this turn read outside content, so it is NOT active until the owner approves it "
            "(/prefs approve " + r.id + " or the web page). Tell the owner it waits for approval.";
-  return "saved as standing rule " + r.id +
-         "; it applies from your next reply on and appears under [STANDING RULES]. The owner was told.";
+  std::string out = "saved as standing rule " + r.id +
+                    "; it applies from your next reply on and appears under [STANDING RULES]. "
+                    "The owner was told.";
+  for (const PrefEntry& e : r.evicted)
+    out += " The list was full, so rule " + e.idStr() + " was retired to make room: " + e.text +
+           " (the owner was told and can restore it with /prefs restore " + e.idStr() + ").";
+  return out;
 }
 
 ToolResult doAdd(const PrefsToolContext& ctx, const std::string& text) {
@@ -183,19 +208,26 @@ constexpr const char kUsage[] =
 std::string commandList(const OwnerPrefs& p, uint32_t nowH) {
   if (p.entries().empty())
     return "No standing rules yet. Add one with /prefs add <rule>, for example /prefs add Never use em dashes.";
-  const size_t rules = p.entries().size() - p.movedCount();
+  const size_t rules = p.entries().size() - p.movedCount() - p.evictedCount();
   const std::string head =
       rules ? "Standing rules (" + std::to_string(rules) + "):\n" + ruleLines(p, nowH) : "No standing rules yet.\n";
-  return head + movedLines(p) + "Add: /prefs add <rule>. Remove: /prefs rm <id>.";
+  return head + movedLines(p) + evictedLines(p) +
+         "Add: /prefs add <rule>. Remove: /prefs rm <id>.";
 }
 
 std::string commandAct(OwnerPrefs& p, const std::string& verb, const std::string& rest, uint32_t nowH) {
   std::string id;
   if (verb == "add") {
-    const PrefErr e = p.add(rest, PrefOrigin::Command, nowH, /*pending=*/false, &id);
+    std::vector<PrefEntry> evicted;
+    const PrefErr e = p.add(rest, PrefOrigin::Command, nowH, /*pending=*/false, &id, &evicted);
     if (e != PrefErr::Ok) return std::string("Not saved: ") + prefErrWords(e) + ".";
     const PrefEntry* r = p.find(parsePrefId(id));
-    return "Saved (" + id + "): " + (r ? r->text : rest) + "\nIt applies from the next reply.";
+    std::string out = "Saved (" + id + "): " + (r ? r->text : rest) + "\nIt applies from the next reply.";
+    for (const PrefEntry& ev : evicted)
+      out += "\nThe list was full, so (" + ev.idStr() + ") " + ev.text +
+             " was retired. Restore it with /prefs restore " + ev.idStr() +
+             ", or remove another rule first.";
+    return out;
   }
   const uint32_t n = parsePrefId(rest);
   if (!n) return kUsage;
@@ -291,7 +323,7 @@ std::string prefsJson(const OwnerPrefs& p, uint32_t nowHours) {
     JsonObject o = items.add<JsonObject>();
     o["id"] = e.idStr();
     o["text"] = e.text;
-    o["state"] = e.moved ? "moved" : e.pending ? "pending" : "active";
+    o["state"] = e.moved ? "moved" : e.evicted ? "retired" : e.pending ? "pending" : "active";
     o["created"] = e.createdHours;
     const std::string age = prefAgeText(e.createdHours, nowHours);
     if (!age.empty()) o["age"] = age;
@@ -310,9 +342,11 @@ std::string prefsJson(const OwnerPrefs& p, uint32_t nowHours) {
 }
 
 PrefErr prefsWebAction(OwnerPrefs& p, const std::string& action, const std::string& id,
-                       const std::string& text, uint32_t nowHours, std::string& idOut) {
+                       const std::string& text, uint32_t nowHours, std::string& idOut,
+                       std::vector<PrefEntry>* evicted) {
   if (action == "add" || action == "import")
-    return p.add(text, action == "add" ? PrefOrigin::Web : PrefOrigin::Import, nowHours, false, &idOut);
+    return p.add(text, action == "add" ? PrefOrigin::Web : PrefOrigin::Import, nowHours, false,
+                 &idOut, evicted);
   if (action == "clear") return p.clear();
   const uint32_t n = parsePrefId(id);
   if (!n) return PrefErr::NotFound;

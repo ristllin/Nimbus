@@ -11,6 +11,7 @@
 #include "nimbus/harness/skill_store.h"   // skillTurnTainted: this turn read outside content
 #include "nimbus/orch/loop_delivery.h"
 #include "nimbus/orch/loops.h"
+#include "nimbus/orch/owner_prefs.h"   // standingBlocksFire - a rule binds a routine (lane POL2)
 #include "nimbus/orch/spend_ceiling.h"   // isSpendFrozenError
 #include "nimbus/orch/tool_registry.h"
 #include "hosted_settings.h"             // tzMutex: every local-time read here takes it
@@ -27,6 +28,10 @@
 // routes dispatch there, and a tool call runs inside a turn).
 namespace nimbusd {
 
+// Lane POL2: how long a standing-rule defer pushes a due routine out (the
+// device's loops_subsystem.cpp uses the same hour).
+inline constexpr uint32_t kStandingBlockDeferSec = 3600;
+
 struct HostedLoopHooks {
   std::function<nimbus::orch::FireOutcome(const nimbus::orch::LoopFireRequest&)> fire;
   std::function<bool(const std::string& chat)> chatAllowed;   // fire-time re-check
@@ -34,6 +39,9 @@ struct HostedLoopHooks {
   std::function<void(const std::string& text)> alert;         // a message to the owner
   std::function<std::string()> originChat;                    // the creating turn's chat
   std::function<bool()> inScheduledTurn;
+  // Lane POL2: the owner's active standing-rule texts, snapshotted per sweep;
+  // a stop rule whose subject is a due routine's topic defers its fire.
+  std::function<std::vector<std::string>()> standingRules;
   std::function<void(const std::string& line)> log;
 };
 
@@ -348,6 +356,23 @@ class HostedLoops {
       return false;
     }
     if (!due) return false;
+    // Lane POL2: the standing gate. "never ask about duolingo" defers a "check
+    // the Duolingo streak" routine. A defer is not a fire (no counter moves,
+    // lastRun stays) and it self-heals: remove the rule and the routine fires
+    // again within the hour.
+    if (h_.standingRules) {
+      const std::vector<std::string> rules = h_.standingRules();
+      if (!rules.empty()) {
+        const nimbus::orch::StandingBlock block =
+            nimbus::orch::standingBlocksFire(rules, due->prompt);
+        if (block.blocked) {
+          nimbus::orch::deferLoop(*due, now, kStandingBlockDeferSec);
+          persist();
+          say("loops: '" + due->name + "' deferred - a standing rule stops its topic");
+          return false;
+        }
+      }
+    }
     const nimbus::orch::Delivery dl = deliveryFor(*due, world);
     req = nimbus::orch::buildFireRequest(*due, dl, now);
     // The shared rule names the device's web chat; a hosted page chats as "owner".

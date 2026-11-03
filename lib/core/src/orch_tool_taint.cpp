@@ -25,6 +25,9 @@ const ToolTaintRow kRows[] = {
     // the owner's standing rules (lib/core/src/orch_prefs_tools.cpp): a durable save
     // the owner asked for, so a "saved" claim is backed like a memory write
     {"prefs.edit", T::Internal, E::MemWrite},
+    // the owner's open questions (lib/core/src/orch_openq_tools.cpp): the same
+    // durable-save backing
+    {"openq.edit", T::Internal, E::MemWrite},
     // the portion calculator (lib/core/src/orch_food_portions.cpp): arithmetic over the
     // model's own arguments, nothing stored or fetched
     {"food.portions", T::Internal, E::Read},

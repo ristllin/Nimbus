@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <string>
+#include <vector>
 
 // word_match - whole-word phrase tests over lowercase text, shared by the lexical
 // classifiers: the standing rules' rule and dated-fact tests (owner_prefs.h) and the
@@ -36,6 +37,36 @@ bool anyPhrase(const std::string& s, const char* const (&list)[N]) {
   for (const char* p : list)
     if (hasPhrase(s, p)) return true;
   return false;
+}
+
+// The subject words of a text: lowercase ASCII tokens of 3+ bytes with the
+// question furniture (about, next, need, ask, ...) left out. Shared by the open
+// list's raise-once matching (open_questions.h) and the standing gate's topic
+// test (owner_prefs.h): "never ask about duolingo" has the one subject word
+// "duolingo", so a routine prompt that mentions it is the same topic.
+inline std::vector<std::string> subjectWords(const std::string& text) {
+  static const char* const kStop[] = {
+      "about", "this", "that", "with", "from", "when", "then", "them", "they", "will", "would",
+      "should", "could", "have", "has", "had", "been", "need", "needs", "needed", "next", "time",
+      "times", "please", "thanks", "thank", "just", "like", "want", "wants", "ask", "asked", "asks",
+      "item", "open", "question", "follow", "check", "again", "later", "every", "each", "some",
+      "more", "most", "over", "into", "your", "yours", "mine", "after", "before", "while", "there",
+  };
+  const std::string s = lowerAscii(text);
+  std::vector<std::string> out;
+  size_t i = 0;
+  while (i < s.size()) {
+    while (i < s.size() && !isWordChar(s[i])) i++;
+    size_t b = i;
+    while (i < s.size() && isWordChar(s[i])) i++;
+    if (i - b < 3) continue;
+    std::string w = s.substr(b, i - b);
+    bool stop = false;
+    for (const char* st : kStop)
+      if (w == st) stop = true;
+    if (!stop) out.push_back(w);
+  }
+  return out;
 }
 
 }  // namespace nimbus::orch::words

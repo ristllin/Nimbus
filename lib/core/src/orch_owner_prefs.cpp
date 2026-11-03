@@ -117,9 +117,10 @@ bool parseRuleLine(const std::string& line, PrefEntry& e) {
   const std::vector<std::string> f = splitTabs(line, 6);
   if (f.size() != 6 || f[0].size() < 2 || (f[0][0] != 'p' && f[0][0] != 'P')) return false;
   e.id = toU32(f[0].substr(1));
-  if (e.id == 0 || (f[1] != "A" && f[1] != "P" && f[1] != "M")) return false;
+  if (e.id == 0 || (f[1] != "A" && f[1] != "P" && f[1] != "M" && f[1] != "E")) return false;
   e.pending = f[1] == "P";
   e.moved = f[1] == "M";
+  e.evicted = f[1] == "E";
   e.createdHours = toU32(f[2]);
   e.origin = originFromSlug(f[3]);
   e.filters = filtersFromSlug(f[4]);
@@ -144,7 +145,9 @@ void parseHeader(const std::string& line, bool& seeded, bool& listed, bool& date
   }
 }
 
-const char* stateLetter(const PrefEntry& e) { return e.moved ? "M" : e.pending ? "P" : "A"; }
+const char* stateLetter(const PrefEntry& e) {
+  return e.moved ? "M" : e.evicted ? "E" : e.pending ? "P" : "A";
+}
 
 std::string serializeState(const std::vector<PrefEntry>& items, bool seeded, bool listed,
                            uint32_t nextId, bool dated) {
@@ -158,7 +161,7 @@ std::string serializeState(const std::vector<PrefEntry>& items, bool seeded, boo
   return out;
 }
 
-bool isActive(const PrefEntry& e) { return !e.pending && !e.moved; }
+bool isActive(const PrefEntry& e) { return !e.pending && !e.moved && !e.evicted; }
 
 size_t activeBytesOf(const std::vector<PrefEntry>& v) {
   size_t n = 0;
@@ -181,13 +184,22 @@ size_t movedOf(const std::vector<PrefEntry>& v) {
   return n;
 }
 
-// The rules the 12-rule cap counts: active and pending (a moved one is not a rule).
-size_t rulesOf(const std::vector<PrefEntry>& v) { return v.size() - movedOf(v); }
+size_t evictedOf(const std::vector<PrefEntry>& v) {
+  size_t n = 0;
+  for (const PrefEntry& e : v)
+    if (e.evicted) n++;
+  return n;
+}
+
+// The rules the 12-rule cap counts: active and pending (a moved or evicted one
+// is not a rule).
+size_t rulesOf(const std::vector<PrefEntry>& v) { return v.size() - movedOf(v) - evictedOf(v); }
 
 // Would this entry fit the parsed list's caps? (The tolerant parse keeps every
 // intact line up to the caps, in file order.)
 bool fitsCaps(const std::vector<PrefEntry>& kept, const PrefEntry& e) {
   if (e.moved) return movedOf(kept) < kPrefsMovedMax;
+  if (e.evicted) return evictedOf(kept) < kPrefsEvictedMax;
   if (rulesOf(kept) >= kPrefsMaxItems) return false;
   if (e.pending) return pendingOf(kept) < kPrefsPendingMax;
   return activeBytesOf(kept) + e.text.size() <= kPrefsMaxBytes;
@@ -201,6 +213,25 @@ PrefErr datedRefusal(const std::string& text) {
     case DatedKind::None:        break;
   }
   return PrefErr::Ok;
+}
+
+// Lane POL2: the rule that steps aside when the list is full. A seeded one
+// first (the owner never typed it as a rule; the first-boot seed lifted it from
+// memory), then the oldest, then the lowest id. Never a pending one (it waits
+// for the owner) and never one already retired.
+int evictionPick(const std::vector<PrefEntry>& v) {
+  int best = -1;
+  for (size_t i = 0; i < v.size(); i++) {
+    const PrefEntry& e = v[i];
+    if (!isActive(e)) continue;
+    if (best < 0) { best = (int)i; continue; }
+    const PrefEntry& b = v[(size_t)best];
+    if (e.origin == PrefOrigin::Seed && b.origin != PrefOrigin::Seed) { best = (int)i; continue; }
+    if (e.origin == b.origin &&
+        (e.createdHours < b.createdHours || (e.createdHours == b.createdHours && e.id < b.id)))
+      best = (int)i;
+  }
+  return best;
 }
 
 bool knownIdOrKey(const std::vector<PrefEntry>& kept, const PrefEntry& e) {
@@ -236,7 +267,7 @@ const char* prefErrWords(PrefErr e) {
     case PrefErr::DatedFact:
       return "that is a dated one-off fact (a measurement or an event), not a standing rule: keep it in "
              "memory instead, where it is recalled when it matters";
-    case PrefErr::NotMoved:      return "that rule was not moved to memory";
+    case PrefErr::NotMoved:      return "that rule was not retired";
   }
   return "error";
 }
@@ -344,6 +375,7 @@ const PrefEntry* OwnerPrefs::find(uint32_t id) const {
 size_t OwnerPrefs::activeCount() const { return rulesOf(items_) - pendingOf(items_); }
 size_t OwnerPrefs::pendingCount() const { return pendingOf(items_); }
 size_t OwnerPrefs::movedCount() const { return movedOf(items_); }
+size_t OwnerPrefs::evictedCount() const { return evictedOf(items_); }
 size_t OwnerPrefs::activeBytes() const { return activeBytesOf(items_); }
 
 PrefErr OwnerPrefs::checkRoom(const std::vector<PrefEntry>& next) const {
@@ -366,7 +398,7 @@ PrefErr OwnerPrefs::commit(const std::vector<PrefEntry>& next, bool seeded, bool
 }
 
 PrefErr OwnerPrefs::add(const std::string& text, PrefOrigin origin, uint32_t nowHours, bool pending,
-                        std::string* idOut) {
+                        std::string* idOut, std::vector<PrefEntry>* evictedOut) {
   const std::string t = sanitizePrefText(text);
   if (t.empty()) return PrefErr::Empty;
   if (t.size() > kPrefItemMax) return PrefErr::TooLong;
@@ -389,7 +421,24 @@ PrefErr OwnerPrefs::add(const std::string& text, PrefOrigin origin, uint32_t now
   std::vector<PrefEntry> next = items_;
   next.push_back(e);
   const PrefErr room = checkRoom(next);
-  if (room != PrefErr::Ok) return room;
+  if (room != PrefErr::Ok) {
+    // Lane POL2: an active add makes room instead of degrading to a refusal the
+    // model would paper over with a memory write. A pending add never evicts.
+    if (room != PrefErr::Full || pending) return room;
+    std::vector<PrefEntry> evicted;
+    while (checkRoom(next) != PrefErr::Ok) {
+      const int pick = evictionPick(next);
+      if (pick < 0) return PrefErr::Full;   // nothing active left to retire
+      next[(size_t)pick].evicted = true;
+      evicted.push_back(next[(size_t)pick]);
+    }
+    const PrefErr r = commit(next, seeded_, listed_, nextId_ + 1);
+    if (r == PrefErr::Ok) {
+      if (idOut) *idOut = e.idStr();
+      if (evictedOut) *evictedOut = evicted;
+    }
+    return r;
+  }
   const PrefErr r = commit(next, seeded_, listed_, nextId_ + 1);
   if (r == PrefErr::Ok && idOut) *idOut = e.idStr();
   return r;
@@ -480,9 +529,10 @@ PrefErr OwnerPrefs::moveDatedFacts(std::vector<PrefEntry>* moved) {
 PrefErr OwnerPrefs::restore(uint32_t id) {
   const int i = indexOf(id);
   if (i < 0) return PrefErr::NotFound;
-  if (!items_[(size_t)i].moved) return PrefErr::NotMoved;
+  if (!items_[(size_t)i].moved && !items_[(size_t)i].evicted) return PrefErr::NotMoved;
   std::vector<PrefEntry> next = items_;
   next[(size_t)i].moved = false;
+  next[(size_t)i].evicted = false;
   const PrefErr room = checkRoom(next);
   if (room != PrefErr::Ok) return room;
   return commit(next, seeded_, listed_, nextId_);
@@ -727,6 +777,30 @@ std::string seedListingText(const OwnerPrefs& p) {
   return "Standing rules found in earlier conversations. They now apply to every reply:\n" + lines +
          "To drop one, send /prefs rm and its id (for example /prefs rm p2), or use the device's "
          "web page. /prefs lists them all.";
+}
+
+// ---- lane POL2: a standing rule binds routines and wakeups ---------------------
+
+StandingBlock standingBlocksFire(const std::vector<std::string>& activeRuleTexts,
+                                 const std::string& loopPrompt) {
+  StandingBlock out;
+  const std::string prompt = words::lowerAscii(loopPrompt);
+  const std::vector<std::string> promptWords = words::subjectWords(loopPrompt);
+  if (promptWords.empty()) return out;
+  static const char* const kStopMarkers[] = {"never", "stop", "no more", "don't", "dont",
+                                             "do not"};
+  for (const std::string& rule : activeRuleTexts) {
+    const std::string r = collapseSpaces(lowerAscii(sanitizePrefText(rule)));
+    if (!words::anyPhrase(r, kStopMarkers)) continue;
+    for (const std::string& w : words::subjectWords(rule)) {
+      if (std::find(promptWords.begin(), promptWords.end(), w) != promptWords.end()) {
+        out.blocked = true;
+        out.rule = rule;
+        return out;
+      }
+    }
+  }
+  return out;
 }
 
 }  // namespace orch

@@ -47,6 +47,42 @@ static void test_salvage_keeps_no_filler() {
   TEST_ASSERT_TRUE(s.text.find("placeholder") == std::string::npos);
 }
 
+// ---- lane POL2: internal plumbing never reaches the owner ---------------------------
+// Each pattern is a class the 2 Nov signals named: a memory id, a job id, storage
+// wording, a device file path.
+static void test_plumbing_class() {
+  for (const char* t : {"I saved that as m84cc98c8.", "your memory m12345678 holds it", "M84CC98C8 (uppercase)",
+                        "the job result-job0009 finished", "Result-Job0009 is done", "the result-job finished",
+                        "read back confirmed: the rule is saved", "Read Back Confirmed.",
+                        "it is stored on the device as a rule", "Stored on the device as text.",
+                        "see projects/trip/itinerary.md for the plan", "the file nutrition/meal_log.csv was updated",
+                        "notes/scratch.txt has it", "a/b/c.md"})
+    TEST_ASSERT_TRUE_MESSAGE(hasPlumbing(t), t);
+}
+
+// The dimension the matcher must not swallow: plain replies, URLs (external, not
+// plumbing), bare file names without a path, and words that merely look hex-ish.
+static void test_plain_replies_have_no_plumbing() {
+  for (const char* t : {"The 06:00 train is on time.", "memory", "memorize this", "sum 12345678",
+                        "m1234567", "m123456789z", "read back", "the device is fine",
+                        "https://example.com/page.md", "see www.site.com/a.md", "http://x.org/y.txt",
+                        "readme.md", "trip.md is ready", "/etc/hosts", "3.14 is pi"})
+    TEST_ASSERT_FALSE_MESSAGE(hasPlumbing(t), t);
+  TEST_ASSERT_FALSE(hasPlumbing(""));
+}
+
+// The final-answer check: one correction round, model-facing words, and only for
+// a reply that actually holds plumbing.
+static void test_plumbing_check_reads_the_field() {
+  const std::string hit = plumbingCheck("{\"reply\":\"Saved as m84cc98c8.\",\"ask\":\"\"}");
+  TEST_ASSERT_TRUE(hit.find("REPLY CHECK") != std::string::npos);
+  TEST_ASSERT_TRUE(hit.find("plumbing") != std::string::npos);
+  TEST_ASSERT_TRUE(plumbingCheck("{\"reply\":\"The train is on time.\"}").empty());
+  TEST_ASSERT_TRUE(plumbingCheck("not json").empty());
+  TEST_ASSERT_TRUE(plumbingCheck("{\"reply\":\"\"}").empty());
+  TEST_ASSERT_TRUE(plumbingCheck("{\"memory\":\"m84cc98c8\"}").empty());   // only the reply is checked
+}
+
 // ---- the plain-chat cap's classifier -----------------------------------------------
 static void test_work_and_chat() {
   for (const char* t : {"Use a web lookup to find the latest stable Python 3 release listed on python.org/downloads.",
@@ -254,6 +290,9 @@ int main() {
   RUN_TEST(test_real_replies_are_not_filler);
   RUN_TEST(test_final_check_reads_the_field);
   RUN_TEST(test_salvage_keeps_no_filler);
+  RUN_TEST(test_plumbing_class);
+  RUN_TEST(test_plain_replies_have_no_plumbing);
+  RUN_TEST(test_plumbing_check_reads_the_field);
   RUN_TEST(test_work_and_chat);
   RUN_TEST(test_promises);
   RUN_TEST(test_ordinary_replies_are_not_promises);

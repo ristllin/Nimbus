@@ -287,6 +287,29 @@ Notes:
   their own heading, the rules moved to memory at boot as dated facts, each with
   `/prefs restore <id>`.
 
+## `openq.*` - the owner's open questions
+
+Registered by `registerOpenQTools()` (`lib/core/src/orch_openq_tools.cpp`) over
+the portable `OpenQuestions` store (`/data/openq.txt`, zero NVS keys). The list
+rides the never-dropped part of every owner-facing prompt as
+`[OPEN QUESTIONS]`, and the device itself watches each completed owner turn
+(raise-once bookkeeping, `open_questions.h`): an item is marked raised when a
+reply mentions its subject, re-opened when the owner's own message mentions it,
+and removed when the owner's message pairs a drop cue with the subject.
+
+| Tool | Description (as registered) | Arguments | State |
+|---|---|---|---|
+| `openq.edit` | The owner's OPEN QUESTIONS: follow-ups the owner left open (a photo to take next time, a thing to check later), shown to you every turn under [OPEN QUESTIONS]. Add one when the owner leaves something open, remove it when it is resolved or they withdraw it. The device marks an item raised once your reply mentions it, and tells you not to raise it again. add {text} \| remove {id} \| list. | `action` (**required**, `add` \| `remove` \| `list`), `text` (string), `id` (string, e.g. `q3`) | live (owner/admin only) |
+
+Notes:
+- Owner-only: a member or guest turn never sees the tool or the list.
+- Refused in unattended turns (a routine, a wakeup, sub-agent synthesis, the
+  dream): a routine must not plant follow-ups on the owner.
+- A turn that already read outside content cannot change the list at all: an
+  open item is the owner's, not something a web page may shape.
+- The list stays small on purpose (at most 5 items, 160 bytes each); a full
+  list refuses an add until something is resolved or withdrawn.
+
 ## `docs.*` - the device's own documentation
 
 Registered by the memory subsystem (`src/agent/memory_subsystem.cpp`; portable

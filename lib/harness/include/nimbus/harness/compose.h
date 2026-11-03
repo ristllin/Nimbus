@@ -41,6 +41,8 @@ struct ComposeInputs {
   std::string directive;             // owner directive (OrchMemory::directive)
   std::string standingPrefs;         // the owner's standing rules block (owner_prefs.h;
                                      // "" hides [STANDING RULES] - the fresh device)
+  std::string openQuestions;         // lane POL2: the owner's open-question block
+                                     // (open_questions.h); "" hides [OPEN QUESTIONS]
   std::string runningMemory;         // model working notes (OrchMemory::model)
   nimbus::orch::Hardware hw;         // live manifest flags (deviceName ignored -
                                      // set from devName for lifetime safety)

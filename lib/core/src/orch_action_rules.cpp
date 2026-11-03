@@ -59,6 +59,9 @@ const ActionRuleRow kRows[] = {
     // ---- standing rules (lib/core/src/orch_prefs_tools.cpp) ----
     {"prefs.edit", R::Owner, "see the standing rules"},
     {"prefs.edit.change", R::OwnerAttended, "change the standing rules"},
+    // ---- the owner's open questions (lib/core/src/orch_openq_tools.cpp) ----
+    {"openq.edit", R::Owner, "see the open questions"},
+    {"openq.edit.change", R::OwnerAttended, "change the open questions"},
     // ---- recent results, sub-agents (lib/core) ----
     {"results.get", R::Open, "read a stored result"},
     {"results.list", R::Open, "list stored results"},
@@ -256,6 +259,10 @@ std::string toolActionKey(const std::string& name, ArduinoJson::JsonObjectConst 
   if (name == "prefs.edit") {
     const std::string act = str(a, "action");
     return act == "add" || act == "replace" || act == "remove" ? "prefs.edit.change" : name;
+  }
+  if (name == "openq.edit") {
+    const std::string act = str(a, "action");
+    return act == "add" || act == "remove" ? "openq.edit.change" : name;
   }
   if (name == "reply.telegram" || name == "files.send") return sendKey(name, a, c);
   if (name == "files.share") return shareKey(a, c);

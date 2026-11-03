@@ -1180,6 +1180,7 @@ void begin() {
   g_ctx = ctx;
   registerMemoryTools(g_reg, ctx);
   nimbus::orch::registerPrefsTools(g_reg, prefs::context());
+  nimbus::orch::registerOpenQTools(g_reg, prefs::openQContext());   // lane POL2: openq.edit
   nimbus::orch::registerFoodTools(g_reg);   // lane CTX: food.portions (a plan's arithmetic)
   applyConfig();   // capacity cap (score-based eviction on add); tier-aware (§degraded)
 

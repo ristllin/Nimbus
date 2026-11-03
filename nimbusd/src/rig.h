@@ -51,6 +51,10 @@
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/model_choices.h"
+#include "nimbus/orch/open_questions.h"   // lane POL2: the owner's open items
+#include "nimbus/orch/openq_tools.h"      // lane POL2: openq.edit
+#include "nimbus/orch/owner_prefs.h"      // lane POL2: the owner's standing rules
+#include "nimbus/orch/prefs_tools.h"      // lane POL2: prefs.edit
 #include "nimbus/orch/owner_first.h"     // a due automatic fold waits for the owner
 #include "nimbus/orch/pending_embed.h"   // memory writes that survive an embedding outage
 #include "nimbus/orch/provider_slots.h"
@@ -149,6 +153,30 @@ struct HeadOut {
   orch::TokenUsage* usage;
 };
 
+// Lane POL2: the owner's standing rules and open questions over the instance's
+// own POSIX files - the same PrefsStoreIO seam the device runs over LittleFS
+// (prefs_subsystem.cpp), so the portable stores behave identically here. A
+// read is capped at the store's file max, exactly as the device's reader.
+class PosixStoreIO : public orch::PrefsStoreIO {
+ public:
+  bool load(std::string& out) override {
+    if (!fsutil::readFile(path_, out)) return false;
+    if (out.size() > cap_) out.resize(cap_);
+    return true;
+  }
+  bool saveChecked(const std::string& blob) override {
+    return fsutil::writeFileAtomic(path_, blob);
+  }
+  void setPath(const std::string& path, size_t cap) {
+    path_ = path;
+    cap_ = cap;
+  }
+
+ private:
+  std::string path_;
+  size_t cap_ = 0;
+};
+
 class NimbusdRig {
  public:
   struct Options {
@@ -240,6 +268,10 @@ class NimbusdRig {
   // so they live in their own plain file (slug=model lines).
   std::string modelsPath() const { return memDir() + "/models.txt"; }
   std::string subModelsPath() const { return memDir() + "/submodels.txt"; }
+  // Lane POL2: the owner's standing rules and open questions, the hosted twins
+  // of the device's /data/prefs.txt and /data/openq.txt.
+  std::string prefsPath() const { return memDir() + "/prefs.txt"; }
+  std::string openQPath() const { return memDir() + "/openq.txt"; }
 
   // Persist every whole-file store with the atomic tmp->rename writer. The
   // episodic append-log is already durable per-message; this flushes the RAM
@@ -1805,9 +1837,21 @@ class NimbusdRig {
       const orch::EmbedKeys k = usableEmbedKeys(false);
       return k.openai || k.cumulo || k.mistral;
     };
+    // Lane POL2: a mem_write item marked standing:true routes to the owner's
+    // rules instead of the vector store, as on the device (memory_subsystem).
+    mc.saveStanding = [this](const std::string& text, const orch::Principal& who,
+                             bool& handled) {
+      return orch::prefsSaveStanding(prefsCtx(), text, who, handled);
+    };
     memCtx_ = mc;
     orch::registerMemoryTools(reg_, mc);
     orch::registerFoodTools(reg_);   // the food playbook's portion calculator (as the device)
+    // Lane POL2 (hosted parity): the owner's standing rules and open questions,
+    // the same tools and rails the device runs - owner only, never from an
+    // unattended turn, outside content means pending (prefs_tools.h).
+    buildPrefs();
+    orch::registerPrefsTools(reg_, prefsCtx());
+    orch::registerOpenQTools(reg_, openqCtx());
 
     registerWebSearchTool();
     registerDocsTools();
@@ -1822,6 +1866,75 @@ class NimbusdRig {
     for (const auto& s : reg_.toolSpecs()) toolNames_.push_back(s.name);
   }
 
+  // ---- lane POL2: the owner's standing rules and open questions (hosted parity)
+  // The same portable stores the device runs (owner_prefs.h, open_questions.h),
+  // over this instance's own POSIX files. Single-context like everything else
+  // here; the mutex exists so a future reader off the engine thread stays safe.
+  void buildPrefs() {
+    prefsIO_.setPath(prefsPath(), orch::kPrefsFileMax);
+    openqIO_.setPath(openQPath(), orch::kOpenQFileMax);
+    prefs_.begin(&prefsIO_);
+    openq_.begin(&openqIO_);
+  }
+  orch::PrefsToolContext prefsCtx() {
+    orch::PrefsToolContext c;
+    c.withPrefs = [this](const std::function<void(orch::OwnerPrefs&)>& fn) {
+      std::lock_guard<std::mutex> g(prefsMu_);
+      fn(prefs_);
+      return true;
+    };
+    c.inScheduledTurn = [this] { return eng_ && eng_->inScheduledTurn(); };
+    c.externalContentSeen = [this] { return eng_ && eng_->externalContentSeen(); };
+    c.nowHours = [] { return nowHours(); };
+    c.notify = [this](const std::string& text) { notifyOwnerWords(text); };
+    return c;
+  }
+  orch::OpenQToolContext openqCtx() {
+    orch::OpenQToolContext c;
+    c.withOpenQ = [this](const std::function<void(orch::OpenQuestions&)>& fn) {
+      std::lock_guard<std::mutex> g(prefsMu_);
+      fn(openq_);
+      return true;
+    };
+    c.inScheduledTurn = [this] { return eng_ && eng_->inScheduledTurn(); };
+    c.externalContentSeen = [this] { return eng_ && eng_->externalContentSeen(); };
+    c.nowHours = [] { return nowHours(); };
+    return c;
+  }
+  // The [STANDING RULES] / [OPEN QUESTIONS] bodies for one chat's role ("" for a
+  // member or guest turn - both lists are the owner's).
+  std::string prefsBlockForRole(bool ownerFacing) {
+    if (!ownerFacing) return std::string();
+    std::lock_guard<std::mutex> g(prefsMu_);
+    return prefs_.renderBlock();
+  }
+  std::string openQBlockForRole(bool ownerFacing) {
+    if (!ownerFacing) return std::string();
+    std::lock_guard<std::mutex> g(prefsMu_);
+    return openq_.renderBlock();
+  }
+  // The active rule texts for the loops' standing gate (owner_prefs.h
+  // standingBlocksFire): a stop rule whose subject is a routine's topic defers
+  // that routine's fire.
+  std::vector<std::string> activeRuleTexts() {
+    std::vector<std::string> out;
+    std::lock_guard<std::mutex> g(prefsMu_);
+    for (const orch::PrefEntry& e : prefs_.entries())
+      if (!e.pending && !e.moved && !e.evicted) out.push_back(e.text);
+    return out;
+  }
+  // An owner notice from the prefs/openq rails (a rule added or evicted, an open
+  // item changed): the hosted page always, the Telegram owner chat too when a
+  // bot runs here - the same pair the spend-ceiling notices use.
+  void notifyOwnerWords(const std::string& text) {
+    record(kWebChatId, text);
+    if (cfg_.has("TELEGRAM_BOT_TOKEN") && access_) {
+      const std::string allow = access_->allowCsv();
+      const std::string owner = allow.substr(0, allow.find(','));
+      if (!owner.empty()) record(owner, text);
+    }
+  }
+
   // Routines, wake-ups and skills, over the shared cores (hosted_loops.h, hosted_skills.h).
   void buildRoutinesAndSkills() {
     const auto scheduledNow = [this] { return eng_ && eng_->inScheduledTurn(); };
@@ -1832,6 +1945,9 @@ class NimbusdRig {
     lh.alert = [this](const std::string& t) { record(kWebChatId, t); };
     lh.originChat = [this] { return cur_.chatId; };
     lh.inScheduledTurn = scheduledNow;
+    // Lane POL2: the standing gate - the owner's active rules, snapshotted for
+    // each sweep; a stop rule whose subject is a due routine's topic defers it.
+    lh.standingRules = [this] { return activeRuleTexts(); };
     lh.log = [](const std::string& l) { memLog(l); };
     loops_.begin(memDir(), std::move(lh));
     loops_.registerTools(reg_);
@@ -2546,6 +2662,12 @@ class NimbusdRig {
       // role, so an approved member is never addressed as the owner.
       in.speakerRole = orch::roleName(access_->roleOf(chat));
       in.speakerLabel = access_->labelOf(chat);
+      // Lane POL2 (hosted parity): the owner's standing rules and open questions
+      // ride the never-dropped band on the owner's own turns; a member or guest
+      // turn never sees them.
+      const bool ownerFacing = access_->roleOf(chat) == orch::Role::Admin;
+      in.standingPrefs = prefsBlockForRole(ownerFacing);
+      in.openQuestions = openQBlockForRole(ownerFacing);
       fillHostedFacts(in);
       return in;
     };
@@ -2572,6 +2694,15 @@ class NimbusdRig {
     };
     d.firstAllowedChat = [] { return std::string("owner"); };
     d.journalGc = [] {};
+    // Lane POL2: the open-question list observes every completed turn in the
+    // owner's chat (raise-once bookkeeping, open_questions.h); a member's turn
+    // never touches the owner's items.
+    d.openqObserve = [this](const std::string& chat, const std::string& ownerText,
+                            const std::string& reply) {
+      if (access_->roleOf(chat) != orch::Role::Admin) return std::string();
+      std::lock_guard<std::mutex> g(prefsMu_);
+      return orch::observeOpenQ(openq_, ownerText, reply);
+    };
     // Lane CTX (CUM-840): today's food ledger over the VN's own POSIX files store,
     // the same scan the device runs - the hosted turn's per-turn block and the fold
     // read the real path, not the desk device's card. The hosted store is
@@ -3411,6 +3542,15 @@ class NimbusdRig {
   std::unique_ptr<PosixFiles> files_;
   orch::ToolRegistry reg_;
   std::vector<std::string> toolNames_;
+  // Lane POL2: the owner's standing rules and open questions, the same portable
+  // stores the device runs (owner_prefs.h, open_questions.h) over the instance's
+  // own POSIX files. One mutex guards both: the engine thread (tools, the
+  // observe hook, the prompt bands) and the loops sweep read them.
+  std::mutex prefsMu_;
+  PosixStoreIO prefsIO_;
+  PosixStoreIO openqIO_;
+  orch::OwnerPrefs prefs_;
+  orch::OpenQuestions openq_;
   std::string tavilyKey_;
 
   // Sub-agent fabric (device parity): adapters + the durable journal. Rig-owned so

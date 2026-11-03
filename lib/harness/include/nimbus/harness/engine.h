@@ -301,6 +301,14 @@ class TurnEngine {
     // A routine or wakeup is set for this chat (a promise to report back has something
     // behind it). Unwired = none.
     std::function<bool(const std::string& chatId)> standingWork;
+    // Lane POL2: observe a completed owner-facing turn for the open-question list
+    // (open_questions.h observeOpenQ: a reply that mentions an item marks it
+    // raised, the owner's message re-opens or withdraws one). The chat rides along
+    // so the wiring observes only the owner's own turns - a member's message
+    // must not re-open or suppress the owner's items. Returns a log
+    // line, "" when nothing changed. Unwired = no open list on this host.
+    std::function<std::string(const std::string& chatId, const std::string& ownerText,
+                              const std::string& reply)> openqObserve;
     // Minutes east of UTC for day markers and send times (unwired = UTC).
     std::function<int32_t()> utcOffsetMin;
     // The same, valid at a unix time: DST and zone changes apply to each row at its own

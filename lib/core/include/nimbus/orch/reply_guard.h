@@ -33,6 +33,16 @@ extern const char kPlaceholderCorrection[];
 // "" when it is an answer, else kPlaceholderCorrection.
 std::string placeholderCheck(const std::string& finalTurnJson, const std::string& ownerText);
 
+// Lane POL2: internal plumbing in an owner-facing reply - memory ids (m84cc98c8),
+// job ids (result-job0009), storage wording ("read back confirmed", "stored on the
+// device as"), or a device file path (project/name.md). True when the reply holds
+// any of it; plumbingCheck turns that into the model's correction.
+bool hasPlumbing(const std::string& reply);
+
+// The final-answer check for plumbing: "" when the reply is clean, else the
+// correction note (model-facing).
+std::string plumbingCheck(const std::string& finalTurnJson);
+
 // True when the owner's message asks for work: an action, a lookup, a link, a long
 // brief, or words this reader cannot judge. False only for what reads as plain chat.
 bool asksForWork(const std::string& ownerText);

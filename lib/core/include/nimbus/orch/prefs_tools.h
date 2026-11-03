@@ -65,7 +65,8 @@ std::string prefsJson(const OwnerPrefs& p, uint32_t nowHours = 0);
 // add is the owner typing on the page (origin web); import is a restore (origin
 // import). Both are active at once.
 PrefErr prefsWebAction(OwnerPrefs& p, const std::string& action, const std::string& id,
-                       const std::string& text, uint32_t nowHours, std::string& idOut);
+                       const std::string& text, uint32_t nowHours, std::string& idOut,
+                       std::vector<PrefEntry>* evicted = nullptr);
 // The HTTP status for a result (400 bad text, 404 unknown id, 409 full, 507 not saved).
 int prefErrHttpStatus(PrefErr e);
 

@@ -1698,6 +1698,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         [pseudo](const std::string& finalTurn) { return turnShapeCorrection(finalTurn, pseudo.get()); },
         [this](const std::string& finalTurn) { return claims_.finalCheck(finalTurn, /*skipSpawned=*/true); },
         [&userText](const std::string& finalTurn) { return orch::placeholderCheck(finalTurn, userText); },
+        // Lane POL2: internal plumbing (memory ids, job ids, storage wording,
+        // device paths) never reaches the owner; one correction round fixes it.
+        [](const std::string& finalTurn) { return orch::plumbingCheck(finalTurn); },
         // An empty reply gets one more try, on every provider. Only a turn with nothing to
         // say goes without one: scheduled, quiet, or one a tool or a sub-agent answers.
         [this, pseudo](const std::string& finalTurn) {
@@ -2512,6 +2515,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     agent::applyTurn(turn, chatId, d_.apply, st, spawned);
   }
   parkMemResults(chatId);
+  // Lane POL2: the open-question list observes the completed turn (a reply that
+  // mentions an item marks it raised; the owner's message re-opens or withdraws
+  // one). Unwired = a host without the store.
+  if (d_.openqObserve && !userText.empty()) {
+    const std::string openqLog = d_.openqObserve(chatId, userText, turn.reply);
+    if (!openqLog.empty()) hlog::log(openqLog.c_str());
+  }
   riskNote_  = st.riskNote;   // consumed (cleared) by the portable apply
   lastReply_ = st.lastReply;  // Local Loops semantic-repeat hash
   // Lane L: whether this turn put anything in front of the owner (the

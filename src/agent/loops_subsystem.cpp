@@ -22,6 +22,8 @@
 #include "store.h"
 #include "../sys/config_nvs.h"    // (device name - unused directly, kept for parity)
 #include "net/wifi_portal.h"      // net::staConnected
+#include "prefs_subsystem.h"     // prefs::activeRuleTexts - the standing gate (lane POL2)
+#include "nimbus/orch/owner_prefs.h"   // standingBlocksFire - a rule binds a routine (lane POL2)
 
 namespace agent {
 namespace loops {
@@ -59,6 +61,9 @@ struct Lock {
 
 static const char* kLoopPath  = "/data/loops.json";
 static const uint32_t LOOP_TICK_MS = 20000;   // 20 s sweep (cf. tickSdHealth / attn sweep)
+// Lane POL2: how long the standing gate defers a blocked routine - bounded log
+// noise, and the routine self-heals within the hour after the rule is removed.
+static const uint32_t kStandingBlockDeferSec = 3600;
 
 // ---- persistence -----------------------------------------------------------
 static std::string loadRaw() {
@@ -412,6 +417,12 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
 
   const uint32_t day = clk ? curLocalDay(nowEpoch) : 0;
 
+  // Lane POL2: the owner's standing rules, snapshotted BEFORE the loops lock
+  // (the prefs store takes its own lock; the two never nest). A stop rule whose
+  // subject is the routine's topic defers the fire - the owner's own words bind
+  // their routines too.
+  const std::vector<std::string> standingRules = prefs::activeRuleTexts();
+
   // --- SELECT + advance + persist, all under the lock (fast); release before firing.
   LoopFireRequest req;
   bool haveFire = false;
@@ -467,6 +478,21 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
       return;
     }
     if (!due) return;
+
+    // --- lane POL2: the standing gate. "never ask about duolingo" defers a
+    // "check the Duolingo streak" routine. A defer is not a fire (no counter
+    // moves, lastRun stays) and it self-heals: remove the rule and the routine
+    // fires again within the hour.
+    if (!standingRules.empty()) {
+      const orch::StandingBlock block = orch::standingBlocksFire(standingRules, due->prompt);
+      if (block.blocked) {
+        orch::deferLoop(*due, nowEpoch, kStandingBlockDeferSec);
+        persist();
+        alogf("loops: '%s' deferred %us - a standing rule stops its topic (%.60s)",
+              due->name.c_str(), (unsigned)kStandingBlockDeferSec, block.rule.c_str());
+        return;
+      }
+    }
 
     // --- pre-fire idle gate (DREAMING): a busy device defers the loop instead
     // of firing - nextRun slips, NO fire/ceiling counter moves (deferLoop).

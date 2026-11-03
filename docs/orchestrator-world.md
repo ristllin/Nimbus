@@ -75,7 +75,27 @@ already in memory and lists them once. A rule that forbids em dashes also
 switches on a device-enforced filter that removes them from every delivered
 reply, so the guarantee holds even when the model slips.
 
-### 1.1c Today's food ledger
+A full list makes room instead of refusing: the oldest active rule retires to a
+side state (the owner is told which one, and `/prefs restore <id>` brings it
+back), so a new always/never rule always lands and never falls silently into
+vector memory. The owner's stop rules also bind their own routines: a due
+routine whose topic a "never ask about X" rule stops is deferred, not fired.
+
+### 1.1c The owner's open questions
+
+Follow-ups the owner leaves open in conversation ("photograph the skyr pot
+label next time") live in one small bounded list on the device
+(`/data/openq.txt`, at most 5 items, 160 characters each, zero NVS keys),
+rendered into the never-dropped part of every owner-facing prompt as
+`[OPEN QUESTIONS]`, right under the standing rules. The device itself watches
+each completed turn in the owner's chat: an item is marked raised once a reply
+mentions its subject (the prompt then says not to raise it again unless the
+owner returns to it), re-opened when the owner's own message mentions it, and
+removed when the owner pairs a drop cue with it ("forget the skyr label"). The
+model adds one with `openq.edit` when the owner leaves something open, and
+never from an unattended turn or a turn that read outside content.
+
+### 1.1d Today's food ledger
 
 Meals live in one ledger file per person, never in memory: `food/food-log.csv`
 for the owner (`food/food-log-<chat id>.csv` for a member, who cannot write the
