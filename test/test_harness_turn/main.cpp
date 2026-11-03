@@ -450,6 +450,13 @@ struct Rig {
                                                    : std::string("<no check>"));
   }
 
+  // Lane POL2: what HeadTools.cfg.validateProseFinal says about a prose leak.
+  void recordProseCheck(const agent::HeadTools* tools) {
+    if (!tools || !tools->cfg.validateProseFinal) return;
+    proseChecks.push_back(tools->cfg.validateProseFinal(
+        "Pat, you have a blue Brompton - I saved it to memory (recall m0a811a23)."));
+  }
+
   // Lane L: a failed attempt that still hands back its (cut) turn.
   static void keepPartial(const Script& s, std::string& out) {
     if (s.partialOnFail) out = s.outJson;
@@ -565,9 +572,7 @@ struct Rig {
         }
       }
       recordFinalCheck(tools, s);
-      if (tools && tools->cfg.validateProseFinal)
-        proseChecks.push_back(tools->cfg.validateProseFinal(
-            "Pat, you have a blue Brompton - I saved it to memory (recall m0a811a23)."));
+      recordProseCheck(tools);
       if (onProviderCall) onProviderCall();
       // Like the adapters: the echo is captured on the HTTP 200, before the turn is
       // known to parse, so a failed attempt can carry one too.
