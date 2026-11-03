@@ -58,7 +58,12 @@ DOCKER = os.environ.get("DOCKER_BIN", "docker")
 BUSY_RETRY_S = 120  # how long a snapshot read waits out the instance's honest busy
 HTTP_TIMEOUT_S = 60
 CONFIG_PAUSE_S = 0.2  # the web app's pace between saves
-BUSY_WAIT_S = 120  # how long a read waits out the daemon's 503 "instance busy"
+# How long a read waits out the daemon's 503 "instance busy". A quiet moment
+# between turns can run an automatic conversation fold - a paid provider call
+# on the engine thread that a big history makes slow - so this must outlast
+# the longest fold, not just a turn's tail (a GLM fold after a web-search turn
+# outlasted 120 s and killed an all-green cell on 3 Nov 2026).
+BUSY_WAIT_S = 420
 BUSY_POLL_S = 1
 # A persona that names no ceiling still gets this one, not the daemon's 20 USD default.
 DEFAULT_CAP_CENTS = 200

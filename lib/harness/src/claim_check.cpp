@@ -415,32 +415,38 @@ void ClaimCheck::noteTool(nimbus::orch::FxKind kind, bool isError, const std::st
     // Bench F03: the targets write landed, so its citation's unstored targets are the
     // turn's own, and the metrics it did store leave the running set (a refused write
     // stashed nothing that landed, so it cleared nothing either).
-    citedUnstored_.erase(std::remove_if(citedUnstored_.begin(), citedUnstored_.end(),
-                                        [this](const orch::CitedTarget& t) {
-                                          return t.protein ? pendingStoredProtein_
-                                                           : pendingStoredKcal_;
-                                        }),
-                         citedUnstored_.end());
-    for (const orch::CitedTarget& t : pendingCited_) {
-      const bool there = std::any_of(citedUnstored_.begin(), citedUnstored_.end(),
-                                    [&t](const orch::CitedTarget& x) { return x.protein == t.protein; });
-      if (!there) citedUnstored_.push_back(t);
-    }
+    mergePendingCited();
   }
   pendingCited_.clear();
   pendingStoredKcal_ = pendingStoredProtein_ = false;
   pendingWrote_.clear();
   if (!isError && (flags & orch::kFxHealth)) causeEvidence_ |= orch::kEvHealthRead;
-  if (!isError) {
-    const std::string read = orch::figureNumbers(output, kSourceNumbersMax);
-    targetsClipped_ = targetsClipped_ || output.size() > kEvidenceTextMax || targetNums_.size() + read.size() + 1 > kSourceNumbersMax;
-    if (!targetsClipped_ && !read.empty()) targetNums_ += " " + read;
-  }
+  if (!isError) noteToolNumbers(output);
   if (isError || sources_.size() >= kSourceNumbersMax) return;
   const std::string more = orch::figureNumbers(output, kSourceNumbersMax - sources_.size());
   if (more.empty()) return;
   if (!sources_.empty()) sources_ += ' ';
   sources_ += more;
+}
+
+void ClaimCheck::mergePendingCited() {
+  citedUnstored_.erase(std::remove_if(citedUnstored_.begin(), citedUnstored_.end(),
+                                      [this](const orch::CitedTarget& t) {
+                                        return t.protein ? pendingStoredProtein_
+                                                         : pendingStoredKcal_;
+                                      }),
+                       citedUnstored_.end());
+  for (const orch::CitedTarget& t : pendingCited_) {
+    const bool there = std::any_of(citedUnstored_.begin(), citedUnstored_.end(),
+                                  [&t](const orch::CitedTarget& x) { return x.protein == t.protein; });
+    if (!there) citedUnstored_.push_back(t);
+  }
+}
+
+void ClaimCheck::noteToolNumbers(const std::string& output) {
+  const std::string read = orch::figureNumbers(output, kSourceNumbersMax);
+  targetsClipped_ = targetsClipped_ || output.size() > kEvidenceTextMax || targetNums_.size() + read.size() + 1 > kSourceNumbersMax;
+  if (!targetsClipped_ && !read.empty()) targetNums_ += " " + read;
 }
 
 void ClaimCheck::noteFresh(int sourced, int unsourced) {
@@ -649,6 +655,13 @@ std::string ClaimCheck::labelRowRefusal(const std::string& regName, const std::s
   return std::string();
 }
 
+// finalCheck's all-clear test, split out for the complexity gate.
+bool nothingToCorrect(const std::vector<orch::ClaimGap>& gaps, const std::vector<orch::FoodGap>& food,
+                      const std::string& cited, const std::string& stale,
+                      const std::string& later, const std::string& second) {
+  return gaps.empty() && food.empty() && cited.empty() && stale.empty() && later.empty() && second.empty();
+}
+
 std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSpawned) {
   orch::Turn t;
   orch::ParseError err;
@@ -662,12 +675,7 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
   // Bench F03: a targets write cited a target it did not store. The model gets one
   // round to store the rest or say it is not stored (the facts are read after the
   // turn's writes, so a second write of the same turn already cleared it).
-  std::string cited;
-  if (!citedUnstored_.empty()) {
-    if (!orch::speaksOfFood(said) && foodFacts_) facts = foodFacts_();
-    cited = orch::unstoredTargetCorrection(citedUnstored_, facts.targetsKnown, facts.kcalTarget,
-                                          facts.proteinTarget);
-  }
+  const std::string cited = citedTargetCorrection(said, facts);
   int staleAge = 0;
   const std::string stale =
       routineDay_.empty() ? std::string() : orch::staleStatusIn(said, routineDay_, orch::kStaleStatusDays, &staleAge);
@@ -675,7 +683,7 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
   // A stored vision record of the same label (another provider's read) that disagrees
   // with this reply's figures is surfaced, never averaged (food_label.h).
   const std::string second = clipped_ ? std::string() : orch::secondReadNoteForReply(said, records_);
-  if (gaps.empty() && food.empty() && cited.empty() && stale.empty() && later.empty() && second.empty()) {
+  if (nothingToCorrect(gaps, food, cited, stale, later, second)) {
     hlog::logf("claims: ok n=%u", (unsigned)orch::scanClaims(said).claims.size());
     return std::string();
   }
@@ -690,6 +698,13 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
             "Do not: ask for an update, or use something newer, or leave it out.\n";
   if (!later.empty()) hlog::log("claims: a promise of later work with nothing behind it -> correction round");
   return correctionFor(gaps, pending, more, later);
+}
+
+std::string ClaimCheck::citedTargetCorrection(const std::string& said, orch::FoodFacts& facts) const {
+  if (citedUnstored_.empty()) return std::string();
+  if (!orch::speaksOfFood(said) && foodFacts_) facts = foodFacts_();
+  return orch::unstoredTargetCorrection(citedUnstored_, facts.targetsKnown, facts.kcalTarget,
+                                        facts.proteinTarget);
 }
 
 std::string ClaimCheck::correctionFor(const std::vector<orch::ClaimGap>& gaps,
@@ -728,10 +743,7 @@ std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawne
   std::string tail = (gaps.empty() ? std::string() : orch::claimTail(gaps)) + orch::foodGapTail(food, facts);
   // Bench F03: the owner sees a note for a target the turn's own write cited but did
   // not store, unless the device already holds it.
-  if (!citedUnstored_.empty()) {
-    if (!orch::speaksOfFood(reply) && foodFacts_) facts = foodFacts_();
-    tail += orch::unstoredTargetNote(citedUnstored_, facts.targetsKnown, facts.kcalTarget, facts.proteinTarget);
-  }
+  tail += citedTargetNote(reply, facts);
   int staleAge = 0;
   if (!routineDay_.empty() && !orch::staleStatusIn(reply, routineDay_, orch::kStaleStatusDays, &staleAge).empty())
     tail += orch::staleStatusNote(staleAge);
@@ -748,12 +760,24 @@ std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawne
   }
   if (tail.empty()) return tail;
   g_tailed++;
+  logTailChecks(gaps, food, later, tail);
+  return tail;
+}
+
+void ClaimCheck::logTailChecks(const std::vector<orch::ClaimGap>& gaps,
+                               const std::vector<orch::FoodGap>& food,
+                               bool later, const std::string& tail) const {
   for (const orch::ClaimGap& g : gaps) hlog::logf("claims: tail %s", orch::claimClassSlug(g.cls));
   if (!food.empty()) hlog::log("claims: tail food figures");
   if (!citedUnstored_.empty() && tail.find("(Note: the source of the stored target") != std::string::npos)
     hlog::log("claims: tail unstored cited target");
   if (later) hlog::log("claims: tail later-promise");
-  return tail;
+}
+
+std::string ClaimCheck::citedTargetNote(const std::string& reply, orch::FoodFacts& facts) const {
+  if (citedUnstored_.empty()) return std::string();
+  if (!orch::speaksOfFood(reply) && foodFacts_) facts = foodFacts_();
+  return orch::unstoredTargetNote(citedUnstored_, facts.targetsKnown, facts.kcalTarget, facts.proteinTarget);
 }
 
 // Everything the turn was given, normalized: the tool results, the input block and the

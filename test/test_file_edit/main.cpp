@@ -499,17 +499,23 @@ static void test_not_readded_names_the_missing_row() {
 }
 
 // The device wires the diff into files.edit's reply and the note into both
-// write paths: the report exists only if the seams carry it. The note rides the
-// reconcileRemovedRows helper (defined before both writers), so the seam here
-// is the helper's call from each writer plus the helper's own two calls.
+// write paths: the report exists only if the seams carry it. editDoc's row
+// report lives in keyedEditReport (split out of the writer for the complexity
+// gate), so the seam is the writer's call plus the helper's own calls; the
+// note rides the reconcileRemovedRows helper (defined before both writers),
+// so the seam there is the helper's call from each writer plus the helper's
+// own two calls.
 static void test_the_device_reports_the_diff_and_the_missing_readd() {
   const std::string src = readSubsystem();
   const size_t edit = src.find("ToolResult editDoc(");
   TEST_ASSERT_TRUE(edit != std::string::npos);
-  TEST_ASSERT_TRUE(src.find("diffKeyedEdit(", edit) != std::string::npos);
-  TEST_ASSERT_TRUE(src.find("renderKeyedEditDiff(", edit) != std::string::npos);
-  TEST_ASSERT_TRUE(src.find("reconcileRemovedRows(", edit) != std::string::npos);
-  TEST_ASSERT_TRUE(src.find("rememberRemovedRows(", edit) != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("keyedEditReport(", edit) != std::string::npos);
+  const size_t report = src.find("static std::string keyedEditReport(");
+  TEST_ASSERT_TRUE(report != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("diffKeyedEdit(", report) != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("renderKeyedEditDiff(", report) != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("reconcileRemovedRows(", report) != std::string::npos);
+  TEST_ASSERT_TRUE(src.find("rememberRemovedRows(", report) != std::string::npos);
   const size_t upsert = src.find("ToolResult upsertRows(");
   TEST_ASSERT_TRUE(upsert != std::string::npos);
   TEST_ASSERT_TRUE(src.find("reconcileRemovedRows(", upsert) != std::string::npos);

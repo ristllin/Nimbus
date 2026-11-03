@@ -1441,6 +1441,24 @@ static std::string editPrecheck(const std::string& project, const std::string& n
 // on the device); the edit substitutes an exact span in place. Bounded
 // streaming, one Lock held throughout: scan-count the matches, decide, then
 // substitute into the part file and swap it in.
+// The row-level report of a keyed CSV edit (editDoc's tail, split out for the
+// complexity gate): what changed against what was there, and the removals
+// remembered for a later re-add that skips a row.
+static std::string keyedEditReport(const std::string& project, const std::string& name,
+                                   const std::string& header, const std::string& find,
+                                   const std::string& replace) {
+  std::string out;
+  if (header.empty()) return out;
+  const nimbus::orch::CsvEditDiff diff = nimbus::orch::diffKeyedEdit(header, find, replace);
+  if (!diff.keyed) return out;
+  if (const std::string lines = nimbus::orch::renderKeyedEditDiff(diff); !lines.empty())
+    out += "\n" + lines;
+  if (const std::string warn = reconcileRemovedRows(project, name, diff.added); !warn.empty())
+    out += "\n" + warn;
+  rememberRemovedRows(project, name, diff.removed);
+  return out;
+}
+
 static nimbus::orch::ToolResult editDoc(const std::string& project, const std::string& name,
                                         const std::string& find, const std::string& replace,
                                         const nimbus::orch::EditPolicy& pol,
@@ -1484,18 +1502,7 @@ static nimbus::orch::ToolResult editDoc(const std::string& project, const std::s
   alogf("files: edit %s/%s replaced %d of %u match(es) (%u B -> %u B)", project.c_str(),
         name.c_str(), d.apply, (unsigned)matches, (unsigned)oldSize, (unsigned)newSize);
   std::string reply = nimbus::orch::renderEditReply(where, d, newSize);
-  if (!header.empty()) {
-    const nimbus::orch::CsvEditDiff diff = nimbus::orch::diffKeyedEdit(header, find, replace);
-    if (diff.keyed) {
-      // A whole-day rewrite reports what changed against what was there, and
-      // the removals are remembered: a later re-add that skips a row is named.
-      if (const std::string lines = nimbus::orch::renderKeyedEditDiff(diff); !lines.empty())
-        reply += "\n" + lines;
-      if (const std::string warn = reconcileRemovedRows(project, name, diff.added); !warn.empty())
-        reply += "\n" + warn;
-      rememberRemovedRows(project, name, diff.removed);
-    }
-  }
+  reply += keyedEditReport(project, name, header, find, replace);
   return ToolResult::ok(reply);
 }
 

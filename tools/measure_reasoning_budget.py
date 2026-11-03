@@ -36,8 +36,7 @@ SCHEMA_NOTE = (
     "\"device\": [{\"type\": string, \"value\": string}]}."
 )
 FINAL_NOTE = (
-    "\n\nThe tool result is in the transcript. Answer now with your orch_turn object. "
-    "Do not call any more tools."
+    "\n\nThe tool result is in the transcript. Answer now with your orch_turn object. Do not call any more tools."
 )
 FOOD_TOOLS = [
     {
@@ -127,16 +126,25 @@ def big_history():
     real turn (in=59282 tokens over 3 calls, so about 20k per call)."""
     out = []
     for i in range(30):
-        out.append({"role": "user", "content": "Note %d: breakfast was oats with berries and "
-                    "a spoon of honey, coffee black, then a walk to the station %s" % (i, "and the day went on. " * 30)})
-        out.append({"role": "assistant", "content": "Logged: oats with berries and honey, coffee "
-                    "black. The walk counts too. %s" % ("Anything else you ate, tell me. " * 20)})
+        out.append(
+            {
+                "role": "user",
+                "content": "Note %d: breakfast was oats with berries and "
+                "a spoon of honey, coffee black, then a walk to the station %s" % (i, "and the day went on. " * 30),
+            }
+        )
+        out.append(
+            {
+                "role": "assistant",
+                "content": "Logged: oats with berries and honey, coffee "
+                "black. The walk counts too. %s" % ("Anything else you ate, tell me. " * 20),
+            }
+        )
     return out
 
 
 SHAPES["food-big"] = {
-    "messages": SHAPES["food-final"]["messages"][:-2] + big_history()
-    + SHAPES["food-final"]["messages"][-2:],
+    "messages": SHAPES["food-final"]["messages"][:-2] + big_history() + SHAPES["food-final"]["messages"][-2:],
     "tools": FOOD_TOOLS,
 }
 MODELS = [
@@ -173,9 +181,7 @@ def strip_descriptions(node):
     return node
 
 
-ORCH_SCHEMA = strip_descriptions(
-    json.loads((HERE.parent / "test/golden/orch_schema.json").read_text())
-)
+ORCH_SCHEMA = strip_descriptions(json.loads((HERE.parent / "test/golden/orch_schema.json").read_text()))
 
 
 def call(provider, model, effort, shape, key, schema=False):
@@ -204,52 +210,47 @@ def call(provider, model, effort, shape, key, schema=False):
         return json.loads(e.read() or b"{}"), (time.time() - t0) * 1000, "HTTP %d" % e.code
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--env-file", default="nimbus/.env")
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--reps", type=int, default=1)
-    args = ap.parse_args()
-    env = read_env_file(args.env_file)
-    rows = []
-    for provider, model, effort in MODELS:
-        _, keyname = ENDPOINTS[provider]
-        key = env.get(keyname, "")
-        if not key:
-            print("no key for", provider, "- skipped")
-            continue
-        reps = args.reps if model == "mistral-large-4-0" else 1
-        for shape in SHAPES:
-            if shape == "food-big" and model != "mistral-large-4-0":
-                continue   # the big shape is the one observed failing: large 4 only
-            for rep in range(reps):
-                for schema in ([False, True] if shape in ("food-final", "food-big") else [False]):
-                    resp, ms, err = call(provider, model, effort, shape, key, schema)
-                    usage = resp.get("usage", {})
-                    msg = (resp.get("choices") or [{}])[0].get("message", {})
-                    text = msg.get("content") or ""
-                    reasoning = msg.get("reasoning_content") or ""
-                    rows.append(
-                        {
-                            "provider": provider,
-                            "model": model,
-                            "effort": effort or None,
-                            "shape": shape + ("-schema" if schema else ""),
-                            "schema": schema,
-                            "rep": rep,
-                            "error": err,
-                            "latency_ms": round(ms),
-                            "finish_reason": (resp.get("choices") or [{}])[0].get("finish_reason"),
-                            "prompt_tokens": usage.get("prompt_tokens"),
-                            "completion_tokens": usage.get("completion_tokens"),
-                            "visible_chars": len(text),
-                            "reasoning_chars": len(reasoning),
-                            "reply_head": text[:120],
-                        }
-                    )
-                    print(".", end="", flush=True)
-    Path(args.out).write_text(json.dumps(rows, indent=1) + "\n")
-    print("\nwrote", args.out, len(rows), "rows")
+def run_cell(spec, shape, schema, key):
+    """One request; returns the measurement row (rep stamped by the caller)."""
+    provider, model, effort = spec
+    resp, ms, err = call(provider, model, effort, shape, key, schema)
+    usage = resp.get("usage", {})
+    msg = (resp.get("choices") or [{}])[0].get("message", {})
+    text = msg.get("content") or ""
+    reasoning = msg.get("reasoning_content") or ""
+    return {
+        "provider": provider,
+        "model": model,
+        "effort": effort or None,
+        "shape": shape + ("-schema" if schema else ""),
+        "schema": schema,
+        "rep": 0,
+        "error": err,
+        "latency_ms": round(ms),
+        "finish_reason": (resp.get("choices") or [{}])[0].get("finish_reason"),
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "visible_chars": len(text),
+        "reasoning_chars": len(reasoning),
+        "reply_head": text[:120],
+    }
+
+
+def probe_model(provider, model, effort, key, reps, rows):
+    """All shapes and schema variants for one model."""
+    for shape in SHAPES:
+        if shape == "food-big" and model != "mistral-large-4-0":
+            continue  # the big shape is the one observed failing: large 4 only
+        schemas = [False, True] if shape in ("food-final", "food-big") else [False]
+        for rep in range(reps):
+            for schema in schemas:
+                row = run_cell((provider, model, effort), shape, schema, key)
+                row["rep"] = rep
+                rows.append(row)
+                print(".", end="", flush=True)
+
+
+def report(rows):
     for r in rows:
         print(
             "%-22s %-10s effort=%-4s %-10s %5d ms  completion=%5s visible=%5d ch  reasoning=%6d ch  %s"
@@ -265,6 +266,27 @@ def main():
                 r["error"] or r["finish_reason"] or "",
             )
         )
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--env-file", default="nimbus/.env")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--reps", type=int, default=1)
+    args = ap.parse_args()
+    env = read_env_file(args.env_file)
+    rows = []
+    for provider, model, effort in MODELS:
+        _, keyname = ENDPOINTS[provider]
+        key = env.get(keyname, "")
+        if not key:
+            print("no key for", provider, "- skipped")
+            continue
+        reps = args.reps if model == "mistral-large-4-0" else 1
+        probe_model(provider, model, effort, key, reps, rows)
+    Path(args.out).write_text(json.dumps(rows, indent=1) + "\n")
+    print("\nwrote", args.out, len(rows), "rows")
+    report(rows)
 
 
 if __name__ == "__main__":

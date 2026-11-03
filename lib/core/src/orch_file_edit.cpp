@@ -226,6 +226,27 @@ std::string rowLabel(const CsvEditRow& r) {
   return r.date + " " + r.key;
 }
 
+// The first unused after-row with the same identity (duplicates pair one to one).
+size_t matchAfter(const SpanRow& b, const std::vector<SpanRow>& after, std::vector<bool>& used) {
+  for (size_t i = 0; i < after.size(); i++)
+    if (!used[i] && b.date == after[i].date && diffKey(b.key) == diffKey(after[i].key)) {
+      used[i] = true;
+      return i;
+    }
+  return after.size();
+}
+
+// The figure columns a paired row changed on.
+void diffChangedColumns(const SpanRow& b, const SpanRow& a, const std::vector<std::string>& header,
+                        int dateCol, int keyCol, CsvEditDiff& d) {
+  for (size_t c = 0; c < header.size(); c++) {   // the figure columns only
+    if ((int)c == dateCol || (int)c == keyCol) continue;
+    double was = 0, now = 0;
+    if (csvFigure(b.cells[c], was) && csvFigure(a.cells[c], now) && was != now)
+      d.changed.push_back({{b.date, b.key}, header[c], diffTrim(b.cells[c]), diffTrim(a.cells[c])});
+  }
+}
+
 }  // namespace
 
 CsvEditDiff diffKeyedEdit(const std::string& headerRow, const std::string& find,
@@ -276,24 +297,12 @@ CsvEditDiff diffKeyedEdit(const std::string& headerRow, const std::string& find,
   // stayed may have changed, what did not is removed or added.
   std::vector<bool> used(after.size(), false);
   for (const SpanRow& b : before) {
-    size_t hit = after.size();
-    for (size_t i = 0; i < after.size(); i++)
-      if (!used[i] && b.date == after[i].date && diffKey(b.key) == diffKey(after[i].key)) {
-        used[i] = true;
-        hit = i;
-        break;
-      }
+    const size_t hit = matchAfter(b, after, used);
     if (hit == after.size()) {
       d.removed.push_back({b.date, b.key});
       continue;
     }
-    const SpanRow& a = after[hit];
-    for (size_t c = 0; c < header.size(); c++) {   // the figure columns only
-      if ((int)c == dateCol || (int)c == keyCol) continue;
-      double was = 0, now = 0;
-      if (csvFigure(b.cells[c], was) && csvFigure(a.cells[c], now) && was != now)
-        d.changed.push_back({{b.date, b.key}, header[c], diffTrim(b.cells[c]), diffTrim(a.cells[c])});
-    }
+    diffChangedColumns(b, after[hit], header, dateCol, keyCol, d);
   }
   for (size_t i = 0; i < after.size(); i++)
     if (!used[i]) d.added.push_back({after[i].date, after[i].key});

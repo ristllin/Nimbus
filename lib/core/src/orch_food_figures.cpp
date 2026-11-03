@@ -1020,6 +1020,33 @@ std::string targetFigure(const CitedTarget& t) {
   return num(t.figure) + (t.protein ? " g protein" : " kcal");
 }
 
+// The first target of each unit a row's citation states.
+void scanCitedTargets(const std::string& citation, double& citedKcal, double& citedProtein) {
+  for (const Stated& f : citedTargetsOf(citation)) {
+    if (f.unit == Unit::Kcal && citedKcal <= 0) citedKcal = f.value;
+    if (f.unit == Unit::Gram && citedProtein <= 0) citedProtein = f.value;
+  }
+}
+
+// One row of a targets write: which metric it stores, and the target its
+// citation states.
+void scanTargetsRow(const std::string& row, TargetsWrite& w, double& citedKcal, double& citedProtein) {
+  if (row.find_first_not_of(" \t\r") == std::string::npos || row[0] == '#') return;
+  // The first three commas split date,metric,target; the citation is the rest, its own
+  // commas and all ("2,400 kcal"). Fewer than three commas is a partial row (a
+  // files.edit fragment): its citation is not the write's whole claim.
+  const size_t c1 = row.find(',');
+  const size_t c2 = c1 == std::string::npos ? std::string::npos : row.find(',', c1 + 1);
+  const size_t c3 = c2 == std::string::npos ? std::string::npos : row.find(',', c2 + 1);
+  if (c3 == std::string::npos) return;
+  const std::string metric = folded(row.substr(c1 + 1, c2 - c1 - 1));
+  const bool kcal = metric.find("kcal") != std::string::npos || metric.find("calorie") != std::string::npos;
+  const bool protein = !kcal && metric.find("protein") != std::string::npos;
+  w.storedKcal = w.storedKcal || kcal;
+  w.storedProtein = w.storedProtein || protein;
+  scanCitedTargets(row.substr(c3 + 1), citedKcal, citedProtein);
+}
+
 }  // namespace
 
 TargetsWrite scanTargetsWrite(const std::string& rowText) {
@@ -1029,23 +1056,7 @@ TargetsWrite scanTargetsWrite(const std::string& rowText) {
     const size_t e = std::min(rowText.find('\n', p), rowText.size());
     const std::string row = rowText.substr(p, e - p);
     p = e + 1;
-    if (row.find_first_not_of(" \t\r") == std::string::npos || row[0] == '#') continue;
-    // The first three commas split date,metric,target; the citation is the rest, its own
-    // commas and all ("2,400 kcal"). Fewer than three commas is a partial row (a
-    // files.edit fragment): its citation is not the write's whole claim.
-    const size_t c1 = row.find(',');
-    const size_t c2 = c1 == std::string::npos ? std::string::npos : row.find(',', c1 + 1);
-    const size_t c3 = c2 == std::string::npos ? std::string::npos : row.find(',', c2 + 1);
-    if (c3 == std::string::npos) continue;
-    const std::string metric = folded(row.substr(c1 + 1, c2 - c1 - 1));
-    const bool kcal = metric.find("kcal") != std::string::npos || metric.find("calorie") != std::string::npos;
-    const bool protein = !kcal && metric.find("protein") != std::string::npos;
-    w.storedKcal = w.storedKcal || kcal;
-    w.storedProtein = w.storedProtein || protein;
-    for (const Stated& f : citedTargetsOf(row.substr(c3 + 1))) {
-      if (f.unit == Unit::Kcal && citedKcal <= 0) citedKcal = f.value;
-      if (f.unit == Unit::Gram && citedProtein <= 0) citedProtein = f.value;
-    }
+    scanTargetsRow(row, w, citedKcal, citedProtein);
   }
   if (citedKcal > 0 && !w.storedKcal) w.unstored.push_back({citedKcal, false});
   if (citedProtein > 0 && !w.storedProtein) w.unstored.push_back({citedProtein, true});

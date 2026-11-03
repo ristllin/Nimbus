@@ -192,6 +192,18 @@ class ClaimCheck {
   void stashImageRead(const std::string& text);
   // A write tool landed: its saved words join the seen text and the record.
   void noteWriteLanded();
+  // noteTool's landed-write merge and figure scan (split out for the complexity gate).
+  void mergePendingCited();
+  void noteToolNumbers(const std::string& output);
+  // The turn's own write cited a target it did not store: the correction round's
+  // text (finalCheck) and the owner-facing note (tailAfterApply) share the facts
+  // read, so both take it by reference.
+  std::string citedTargetCorrection(const std::string& said, nimbus::orch::FoodFacts& facts) const;
+  std::string citedTargetNote(const std::string& reply, nimbus::orch::FoodFacts& facts) const;
+  // tailAfterApply's log lines (split out for the complexity gate).
+  void logTailChecks(const std::vector<nimbus::orch::ClaimGap>& gaps,
+                     const std::vector<nimbus::orch::FoodGap>& food,
+                     bool later, const std::string& tail) const;
   std::vector<nimbus::orch::FoodGap> foodGaps(const std::string& reply, nimbus::orch::FoodFacts& facts) const;
   // The correction text for a final turn: the claim fix plus the food/stale notes and
   // the later-promise line (split out of finalCheck for the complexity gate).
