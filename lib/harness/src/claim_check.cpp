@@ -214,6 +214,8 @@ void ClaimCheck::beginTurn() {
   ownerNums_.clear();
   targetNums_.clear();
   targetsClipped_ = false;
+  citedUnstored_.clear();
+  pendingCited_.clear();
   foodFacts_ = nullptr;
   routineDay_.clear();
   sourceNames_ = 0;
@@ -380,6 +382,22 @@ void ClaimCheck::noteToolArgs(const std::string& regName, const std::string& arg
   if (!text) text = d["replace"] | (const char*)nullptr;   // files.edit: what the span now says
   if (!text || !*text) return;
   pendingWrote_ = " " + orch::normalizedWords(text);
+  // Bench F03: a targets write whose own citation states targets the row did not store.
+  // Stashed here; the matching noteTool confirms it when the write lands. A write that
+  // stores a metric clears it from the running set: a later write of the same turn can
+  // complete the set, and only what still did not land is ever surfaced.
+  pendingCited_.clear();
+  if (targetsClipped_) return;
+  std::string name = d["name"] | "";
+  for (char& c : name) c = (char)std::tolower((unsigned char)c);
+  if (name.rfind("food-targets", 0) != 0) return;
+  const orch::TargetsWrite scan = orch::scanTargetsWrite(text);
+  citedUnstored_.erase(std::remove_if(citedUnstored_.begin(), citedUnstored_.end(),
+                                      [&scan](const orch::CitedTarget& t) {
+                                        return t.protein ? scan.storedProtein : scan.storedKcal;
+                                      }),
+                       citedUnstored_.end());
+  pendingCited_ = scan.unstored;
 }
 
 void ClaimCheck::noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
@@ -392,7 +410,15 @@ void ClaimCheck::noteTool(nimbus::orch::FxKind kind, bool isError, const std::st
   if (!isError) {
     noteToolText(output);
     noteWriteLanded();
+    // Bench F03: the targets write landed, so its citation's unstored targets are the
+    // turn's own (a refused write stashed nothing that landed).
+    for (const orch::CitedTarget& t : pendingCited_) {
+      const bool there = std::any_of(citedUnstored_.begin(), citedUnstored_.end(),
+                                    [&t](const orch::CitedTarget& x) { return x.protein == t.protein; });
+      if (!there) citedUnstored_.push_back(t);
+    }
   }
+  pendingCited_.clear();
   pendingWrote_.clear();
   if (!isError && (flags & orch::kFxHealth)) causeEvidence_ |= orch::kEvHealthRead;
   if (!isError) {
@@ -623,6 +649,15 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
   const std::vector<orch::ClaimGap> gaps = gapsFor(said, pending, skipSpawned);
   orch::FoodFacts facts;
   const std::vector<orch::FoodGap> food = foodGaps(said, facts);
+  // Bench F03: a targets write cited a target it did not store. The model gets one
+  // round to store the rest or say it is not stored (the facts are read after the
+  // turn's writes, so a second write of the same turn already cleared it).
+  std::string cited;
+  if (!citedUnstored_.empty()) {
+    if (!orch::speaksOfFood(said) && foodFacts_) facts = foodFacts_();
+    cited = orch::unstoredTargetCorrection(citedUnstored_, facts.targetsKnown, facts.kcalTarget,
+                                          facts.proteinTarget);
+  }
   int staleAge = 0;
   const std::string stale =
       routineDay_.empty() ? std::string() : orch::staleStatusIn(said, routineDay_, orch::kStaleStatusDays, &staleAge);
@@ -630,7 +665,7 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
   // A stored vision record of the same label (another provider's read) that disagrees
   // with this reply's figures is surfaced, never averaged (food_label.h).
   const std::string second = clipped_ ? std::string() : orch::secondReadNoteForReply(said, records_);
-  if (gaps.empty() && food.empty() && stale.empty() && later.empty() && second.empty()) {
+  if (gaps.empty() && food.empty() && cited.empty() && stale.empty() && later.empty() && second.empty()) {
     hlog::logf("claims: ok n=%u", (unsigned)orch::scanClaims(said).claims.size());
     return std::string();
   }
@@ -639,6 +674,7 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
   std::string more;
   if (!second.empty()) more += "[SECOND READ] " + second + "\n";
   if (!food.empty()) more += orch::foodGapCorrection(food, facts);
+  if (!cited.empty()) more += cited;
   if (!stale.empty())
     more += "\"" + stale + "\" cites data " + std::to_string(staleAge) + " days old as if it were the state of things. "
             "Do not: ask for an update, or use something newer, or leave it out.\n";
@@ -680,6 +716,12 @@ std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawne
   orch::FoodFacts facts;
   const std::vector<orch::FoodGap> food = foodGaps(reply, facts);
   std::string tail = (gaps.empty() ? std::string() : orch::claimTail(gaps)) + orch::foodGapTail(food, facts);
+  // Bench F03: the owner sees a note for a target the turn's own write cited but did
+  // not store, unless the device already holds it.
+  if (!citedUnstored_.empty()) {
+    if (!orch::speaksOfFood(reply) && foodFacts_) facts = foodFacts_();
+    tail += orch::unstoredTargetNote(citedUnstored_, facts.targetsKnown, facts.kcalTarget, facts.proteinTarget);
+  }
   int staleAge = 0;
   if (!routineDay_.empty() && !orch::staleStatusIn(reply, routineDay_, orch::kStaleStatusDays, &staleAge).empty())
     tail += orch::staleStatusNote(staleAge);
@@ -698,6 +740,8 @@ std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawne
   g_tailed++;
   for (const orch::ClaimGap& g : gaps) hlog::logf("claims: tail %s", orch::claimClassSlug(g.cls));
   if (!food.empty()) hlog::log("claims: tail food figures");
+  if (!citedUnstored_.empty() && tail.find("(Note: the source of the stored target") != std::string::npos)
+    hlog::log("claims: tail unstored cited target");
   if (later) hlog::log("claims: tail later-promise");
   return tail;
 }

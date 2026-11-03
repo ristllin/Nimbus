@@ -169,6 +169,95 @@ static void test_a_made_up_target_cannot_become_its_own_source() {
   TEST_ASSERT_EQUAL_STRING("", owner.tailAfterApply("Got it, your daily target is 2,200 kcal.").c_str());
 }
 
+// Bench F03 (v4.9.0): the model stored the plan's protein target, its own row cited a
+// source that also states the kcal target, and the kcal row never landed - no line
+// said so. A partial target store is surfaced: the model gets one round to store the
+// rest or say it is not stored, and the owner sees a note when it still did not land.
+static void test_a_partial_target_store_is_surfaced() {
+  const char* row = "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":"
+                    "\"2026-11-03,protein_g,155,food/plan.md (Daily target: 2,400 kcal and 155 g protein)\"}";
+  const char* kcalRow = "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":"
+                        "\"2026-11-03,kcal,2400,food/plan.md (Daily target: 2,400 kcal and 155 g protein)\"}";
+  const char* reply = "Stored your protein target: 155 g.";
+  // The F03 turn: the plan was read, the protein row appended, the reply cites the
+  // protein figure only. The kcal target the row's own citation states is surfaced.
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    TurnSources parts;
+    parts.owner = "Store my plan's targets.";
+    cc.setSources("", "", parts);
+    FoodFacts facts;   // after the turn's write: the protein row landed, kcal did not
+    facts.targetsKnown = true;
+    facts.proteinTarget = 155;
+    cc.setFoodFacts([facts]() { return facts; });
+    cc.noteTool(FxKind::Read, false, "Daily target: 2,400 kcal and 155 g protein.");
+    cc.noteToolArgs("files.append", row);
+    cc.noteTool(FxKind::FileWrite, false, "appended 1 row(s) to food/food-targets.csv (keyed, 109 B)");
+    const std::string fix = cc.finalCheck(turnJson(reply));
+    TEST_ASSERT_TRUE_MESSAGE(fix.find("2400 kcal") != std::string::npos, fix.c_str());
+    const std::string tail = cc.tailAfterApply(reply);
+    TEST_ASSERT_TRUE_MESSAGE(tail.find("(Note:") != std::string::npos && tail.find("2400 kcal") != std::string::npos,
+                             tail.c_str());
+  }
+  // The device already holds the kcal target: nothing to say.
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources("", "", TurnSources{});
+    FoodFacts facts;
+    facts.targetsKnown = true;
+    facts.kcalTarget = 2400;
+    facts.proteinTarget = 155;
+    cc.setFoodFacts([facts]() { return facts; });
+    cc.noteToolArgs("files.append", row);
+    cc.noteTool(FxKind::FileWrite, false, "appended 1 row");
+    TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson("Done.")).c_str());
+    TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("Done.").c_str());
+  }
+  // A later write in the same turn stores the kcal row: nothing to say.
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources("", "", TurnSources{});
+    FoodFacts facts;
+    facts.targetsKnown = true;
+    facts.proteinTarget = 155;
+    cc.setFoodFacts([facts]() { return facts; });
+    cc.noteToolArgs("files.append", row);
+    cc.noteTool(FxKind::FileWrite, false, "appended 1 row");
+    cc.noteToolArgs("files.append", kcalRow);
+    cc.noteTool(FxKind::FileWrite, false, "appended 1 row");
+    TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson("Done.")).c_str());
+    TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("Done.").c_str());
+  }
+  // The write was refused (an error result): nothing landed, nothing to say.
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources("", "", TurnSources{});
+    FoodFacts facts;
+    facts.targetsKnown = true;
+    cc.setFoodFacts([facts]() { return facts; });
+    cc.noteToolArgs("files.append", row);
+    cc.noteTool(FxKind::FileWrite, true, "quota exceeded");
+    TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson("Done.")).c_str());
+    TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("Done.").c_str());
+  }
+  // The targets file could not be read: nothing is said on partial evidence.
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources("", "", TurnSources{});
+    FoodFacts facts;   // targetsKnown false
+    cc.setFoodFacts([facts]() { return facts; });
+    cc.noteToolArgs("files.append", row);
+    cc.noteTool(FxKind::FileWrite, false, "appended 1 row");
+    TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson("Done.")).c_str());
+    TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("Done.").c_str());
+  }
+}
+
 // A reply whose food words are capitalized is read like any other.
 static void test_capitalized_food_words_reach_the_check() {
   FoodFacts facts;
@@ -1619,5 +1708,6 @@ int main(int, char**) {
   RUN_TEST(test_label_row_gate_refuses_an_unsupported_brand);
   RUN_TEST(test_label_row_gate_uses_the_image_note_read);
   RUN_TEST(test_second_read_disagreement_is_surfaced);
+  RUN_TEST(test_a_partial_target_store_is_surfaced);
   return UNITY_END();
 }

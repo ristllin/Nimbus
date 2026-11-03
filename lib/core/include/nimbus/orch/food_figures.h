@@ -36,6 +36,12 @@ struct FoodFacts {
   int rows = 0;              // rows counted in kcal
   double protein = 0;        // the known part
   int proteinUnknown = 0;    // rows with no protein figure
+  // The person's stored daily targets, read after the turn's own writes (a partial
+  // target store must be told from a complete one, bench F03). targetsKnown false:
+  // the targets file could not be read, and nothing is said about them.
+  bool targetsKnown = false;
+  double kcalTarget = 0;     // 0 = none stored
+  double proteinTarget = 0;  // 0 = none stored
 };
 
 enum class FoodGapKind : uint8_t { UnsourcedTarget = 0, WrongDayTotal, ProteinLeftUnknown };
@@ -76,6 +82,34 @@ bool speaksOfFood(const std::string& text);
 // The first target figure in a write to the food targets file that nothing this turn holds: a whole
 // row, part of one (files.edit) or a bare figure. A date or a source's words are no target figure.
 bool unsourcedTargetWrite(const std::string& text, const std::string& sourceNumbers, double* figure);
+
+// A stored targets row's own citation can state more targets than the row stored (bench F03,
+// v4.9.0: the row stored protein_g, its citation read "Daily target: 2,400 kcal and 155 g
+// protein", and the kcal target never landed - no line said so). A write to the targets file,
+// scanned: the targets its rows' citations state that no row of the same write stored, and
+// which metrics the write did store (a later write of the same turn completes the set and
+// clears what it stores). A partial row (fewer than four fields, a files.edit fragment)
+// states nothing: its citation is not the write's whole claim. English only, like the rest
+// of this scanner.
+struct CitedTarget {
+  double figure = 0;
+  bool protein = false;   // false = kcal
+};
+struct TargetsWrite {
+  std::vector<CitedTarget> unstored;   // cited but not stored by this write
+  bool storedKcal = false;
+  bool storedProtein = false;
+};
+TargetsWrite scanTargetsWrite(const std::string& rowText);
+// The owner's note for targets a turn's write cited but did not store, and the device does
+// not hold (kcalTarget/proteinTarget: the stored targets after the turn's writes; targetsKnown
+// false = the file could not be read, and nothing is said). "" when each cited target is stored.
+std::string unstoredTargetNote(const std::vector<CitedTarget>& cited, bool targetsKnown,
+                               double kcalTarget, double proteinTarget);
+// The same for the model's one correction round: store the rest with its source, or say in
+// the reply that it is not stored.
+std::string unstoredTargetCorrection(const std::vector<CitedTarget>& cited, bool targetsKnown,
+                                     double kcalTarget, double proteinTarget);
 
 // The text of the one correction round.
 std::string foodGapCorrection(const std::vector<FoodGap>& gaps, const FoodFacts& facts);

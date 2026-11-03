@@ -217,6 +217,11 @@ class ClaimCheck {
   std::string ownerNums_;        // the numbers the owner's own message holds (CUM-824)
   std::string targetNums_;       // the numbers a daily target may come from (food_figures.h)
   bool targetsClipped_ = false;  // that list hit its cap: the target rule stands down
+  // Bench F03: targets a landed targets-write cited but did not store (food_figures.h),
+  // and the same scan of the write whose result is still pending. One slot: tool calls
+  // are sequential, noteToolArgs fills it and the matching noteTool consumes it.
+  std::vector<nimbus::orch::CitedTarget> citedUnstored_;
+  std::vector<nimbus::orch::CitedTarget> pendingCited_;
   std::function<nimbus::orch::FoodFacts()> foodFacts_;
   std::string routineDay_;       // set on a scheduled turn: the stale-status rule applies
   uint32_t sourceNames_ = 0;     // SourceEvidence bits this turn names (CUM-824)

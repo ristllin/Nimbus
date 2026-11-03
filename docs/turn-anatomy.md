@@ -454,7 +454,10 @@ Food figures have their own check (`food_figures.h`): a stated daily target, or 
 "left" that implies one, needs its number in what the owner said or the turn read (never
 the assistant's earlier replies or the fold summary); a stated day total must be the food
 ledger's, read after the turn's own writes; a "you need" over a row of unknown protein is
-not a figure. A memory that would store a sourceless target is refused. On a scheduled
+not a figure. A memory that would store a sourceless target is refused. A stored target
+row whose own citation states more targets than the row stored (a plan that sets both
+kcal and protein, only one of which landed) gets the same correction round, and a note
+names what is not stored. On a scheduled
 turn, a status citing a record older than a week as the state of things is held the same way.
 
 A source claim is a credit: the source said, showed or read something ("the gauge

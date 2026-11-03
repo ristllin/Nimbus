@@ -967,6 +967,112 @@ bool unsourcedTargetWrite(const std::string& text, const std::string& sourceNumb
   return false;
 }
 
+namespace {
+
+// The figures joined to a target word's first figure by "and" and its like: "Daily
+// target: 2,400 kcal and 155 g protein" states both. Stops at the first token that is
+// not a joined figure, so a citation's other numbers are never read as targets.
+void joinedFigures(const std::vector<Tok>& toks, std::vector<Stated>& out) {
+  if (out.empty()) return;
+  size_t j = out.back().at + 1;
+  for (;;) {
+    while (j < toks.size() && !toks[j].number &&
+           oneOf(toks[j].word, {"kcal", "kcals", "cal", "cals", "calorie", "calories", "g", "gm", "gram",
+                                "grams", "protein", "of", "daily", "day", "per", "a", "target", "targets", "goal"}))
+      j++;
+    if (j >= toks.size() || toks[j].number || !oneOf(toks[j].word, {"and", "also", "with", "plus", "&"})) return;
+    j++;
+    while (j < toks.size() && !toks[j].number && oneOf(toks[j].word, {"a", "an", "the", "of"})) j++;
+    if (j >= toks.size() || !toks[j].number || !foodUnit(toks[j], true)) return;
+    out.push_back({toks[j].value, toks[j].unit, j});
+    j++;
+  }
+}
+
+// Every target a citation states: the figures of each target word, with the joined cluster.
+std::vector<Stated> citedTargetsOf(const std::string& citation) {
+  std::vector<Stated> out;
+  for (const std::string& sentence : sentencesOf(citation)) {
+    const std::string low = folded(sentence);
+    const std::vector<Tok> toks = tokensOf(low);
+    for (size_t i = 0; i < toks.size(); i++) {
+      if (toks[i].number || !targetWordAt(toks, i)) continue;
+      std::vector<Stated> figs = figuresOfTarget(toks, i, true);
+      joinedFigures(toks, figs);
+      for (const Stated& f : figs)
+        if (f.unit != Unit::None) out.push_back(f);
+    }
+  }
+  return out;
+}
+
+// The targets of `cited` the device does not hold, as (figure, protein) pairs.
+std::vector<CitedTarget> missingOf(const std::vector<CitedTarget>& cited, bool targetsKnown,
+                                    double kcalTarget, double proteinTarget) {
+  std::vector<CitedTarget> out;
+  if (!targetsKnown) return out;
+  for (const CitedTarget& t : cited)
+    if (t.protein ? proteinTarget <= 0 : kcalTarget <= 0) out.push_back(t);
+  return out;
+}
+
+std::string targetFigure(const CitedTarget& t) {
+  return num(t.figure) + (t.protein ? " g protein" : " kcal");
+}
+
+}  // namespace
+
+TargetsWrite scanTargetsWrite(const std::string& rowText) {
+  TargetsWrite w;
+  double citedKcal = 0, citedProtein = 0;
+  for (size_t p = 0; p <= rowText.size();) {
+    const size_t e = std::min(rowText.find('\n', p), rowText.size());
+    const std::string row = rowText.substr(p, e - p);
+    p = e + 1;
+    if (row.find_first_not_of(" \t\r") == std::string::npos || row[0] == '#') continue;
+    // The first three commas split date,metric,target; the citation is the rest, its own
+    // commas and all ("2,400 kcal"). Fewer than three commas is a partial row (a
+    // files.edit fragment): its citation is not the write's whole claim.
+    const size_t c1 = row.find(',');
+    const size_t c2 = c1 == std::string::npos ? std::string::npos : row.find(',', c1 + 1);
+    const size_t c3 = c2 == std::string::npos ? std::string::npos : row.find(',', c2 + 1);
+    if (c3 == std::string::npos) continue;
+    const std::string metric = folded(row.substr(c1 + 1, c2 - c1 - 1));
+    const bool kcal = metric.find("kcal") != std::string::npos || metric.find("calorie") != std::string::npos;
+    const bool protein = !kcal && metric.find("protein") != std::string::npos;
+    w.storedKcal = w.storedKcal || kcal;
+    w.storedProtein = w.storedProtein || protein;
+    for (const Stated& f : citedTargetsOf(row.substr(c3 + 1))) {
+      if (f.unit == Unit::Kcal && citedKcal <= 0) citedKcal = f.value;
+      if (f.unit == Unit::Gram && citedProtein <= 0) citedProtein = f.value;
+    }
+  }
+  if (citedKcal > 0 && !w.storedKcal) w.unstored.push_back({citedKcal, false});
+  if (citedProtein > 0 && !w.storedProtein) w.unstored.push_back({citedProtein, true});
+  return w;
+}
+
+std::string unstoredTargetNote(const std::vector<CitedTarget>& cited, bool targetsKnown,
+                               double kcalTarget, double proteinTarget) {
+  std::string out;
+  for (const CitedTarget& t : missingOf(cited, targetsKnown, kcalTarget, proteinTarget))
+    out += "\n\n(Note: the source of the stored target also states a daily target of " + targetFigure(t) +
+           ", and it is not stored.)";
+  return out;
+}
+
+std::string unstoredTargetCorrection(const std::vector<CitedTarget>& cited, bool targetsKnown,
+                                     double kcalTarget, double proteinTarget) {
+  std::string out;
+  for (const CitedTarget& t : missingOf(cited, targetsKnown, kcalTarget, proteinTarget)) {
+    if (!out.empty()) out += "\n";
+    out += "The row stored in food-targets.csv cites a source that also states a daily target of " +
+           targetFigure(t) + ", and that target was not stored. Store it with its source too, or say in "
+           "your reply that it is not stored.";
+  }
+  return out;
+}
+
 std::string foodGapCorrection(const std::vector<FoodGap>& gaps, const FoodFacts& facts) {
   std::string out = "Your reply states food figures the device's records do not back. Fix them, then give the reply again:\n";
   for (const FoodGap& g : gaps) {

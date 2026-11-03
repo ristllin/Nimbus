@@ -548,6 +548,54 @@ static void test_a_targets_write_names_its_unsourced_figure() {
   TEST_ASSERT_FALSE(unsourcedTargetWrite("the owner's plan", "", &figure));
 }
 
+// ---- bench F03: a stored row's citation can state targets the row did not store --------
+
+// The F03 row verbatim (the plan's comma stays in the citation): the plan states both
+// targets, only the protein row landed, and no line said so. The citation's own words
+// name what is missing.
+static void test_a_citation_stating_two_targets_names_the_unstored_one() {
+  const char* row = "2026-11-03,protein_g,155,food/plan.md (Daily target: 2,400 kcal and 155 g protein)";
+  const TargetsWrite w = scanTargetsWrite(row);
+  TEST_ASSERT_EQUAL_INT(1, (int)w.unstored.size());
+  TEST_ASSERT_EQUAL_FLOAT(2400, (float)w.unstored[0].figure);
+  TEST_ASSERT_FALSE(w.unstored[0].protein);
+  TEST_ASSERT_TRUE(w.storedProtein);
+  TEST_ASSERT_FALSE(w.storedKcal);
+  // The mirror: a kcal row from the same citation leaves the protein target unstored.
+  const TargetsWrite mirror =
+      scanTargetsWrite("2026-11-03,kcal,2400,food/plan.md (Daily target: 2,400 kcal and 155 g protein)");
+  TEST_ASSERT_EQUAL_INT(1, (int)mirror.unstored.size());
+  TEST_ASSERT_EQUAL_FLOAT(155, (float)mirror.unstored[0].figure);
+  TEST_ASSERT_TRUE(mirror.unstored[0].protein);
+  // Both rows of one write: nothing unstored.
+  TEST_ASSERT_EQUAL_INT(0, (int)scanTargetsWrite(std::string(row) +
+      "\n2026-11-03,kcal,2400,food/plan.md (Daily target: 2,400 kcal and 155 g protein)").unstored.size());
+  // A citation that states only what the row stored, one with no target words, and a
+  // partial row (a files.edit fragment) state nothing.
+  TEST_ASSERT_EQUAL_INT(0, (int)scanTargetsWrite("2026-11-03,protein_g,155,food/plan.md (155 g protein)").unstored.size());
+  TEST_ASSERT_EQUAL_INT(0, (int)scanTargetsWrite("2026-11-03,protein_g,155,food/plan.md").unstored.size());
+  TEST_ASSERT_EQUAL_INT(0, (int)scanTargetsWrite("protein_g,155,food/plan.md (Daily target: 2,400 kcal)").unstored.size());
+  // The header row of the write states nothing.
+  TEST_ASSERT_EQUAL_INT(0, (int)scanTargetsWrite("date,metric,target,source\n2026-11-03,protein_g,155,the plan").unstored.size());
+}
+
+// The note the owner sees, and the round the model gets, name the unstored figure and
+// stay silent when the device already holds it or cannot read its file.
+static void test_the_unstored_target_note_and_correction() {
+  const std::vector<CitedTarget> cited = {{2400, false}};
+  TEST_ASSERT_TRUE(unstoredTargetNote(cited, true, 0, 155).find("2400 kcal") != std::string::npos);
+  TEST_ASSERT_TRUE(unstoredTargetNote(cited, true, 0, 155).find("(Note:") != std::string::npos);
+  TEST_ASSERT_TRUE(unstoredTargetCorrection(cited, true, 0, 155).find("2400 kcal") != std::string::npos);
+  // Already stored (an earlier day's row): nothing to say.
+  TEST_ASSERT_EQUAL_STRING("", unstoredTargetNote(cited, true, 2400, 155).c_str());
+  TEST_ASSERT_EQUAL_STRING("", unstoredTargetCorrection(cited, true, 2400, 155).c_str());
+  // The targets file could not be read: nothing is said on partial evidence.
+  TEST_ASSERT_EQUAL_STRING("", unstoredTargetNote(cited, false, 0, 155).c_str());
+  TEST_ASSERT_EQUAL_STRING("", unstoredTargetCorrection(cited, false, 0, 155).c_str());
+  // The protein mirror reads as grams.
+  TEST_ASSERT_TRUE(unstoredTargetNote({{155, true}}, true, 2400, 0).find("155 g protein") != std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_the_31_oct_250_g_target);
@@ -575,5 +623,7 @@ int main(int, char**) {
   RUN_TEST(test_a_stale_status_reads_only_what_is_old);
   RUN_TEST(test_speaks_of_food_ignores_case);
   RUN_TEST(test_a_targets_write_names_its_unsourced_figure);
+  RUN_TEST(test_a_citation_stating_two_targets_names_the_unstored_one);
+  RUN_TEST(test_the_unstored_target_note_and_correction);
   return UNITY_END();
 }

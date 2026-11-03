@@ -56,6 +56,11 @@ nimbus::orch::FoodFacts TurnEngine::currentFoodFacts(const std::string& chatId) 
   facts.rows = l.kcalRows;
   facts.protein = l.protein;
   facts.proteinUnknown = l.proteinUnknown;
+  // The stored targets after the turn's writes (bench F03): a partial target store is
+  // told from a complete one only against what the file really holds now.
+  facts.targetsKnown = l.exists && l.error.empty();
+  facts.kcalTarget = l.targets.kcal;
+  facts.proteinTarget = l.targets.protein;
   return facts;
 }
 
