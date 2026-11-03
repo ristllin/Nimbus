@@ -160,6 +160,21 @@ def _drain_reply(dev: Dev) -> str:
         return ""
 
 
+def _record_delivery(seen: str, rep: str, replies: list) -> str:
+    """Record a delivery once; returns the new 'last seen' text.
+
+    The legacy slot's peek contract (the bench F03 fix): a poll while the device
+    is busy reads the reply WITHOUT retiring it, so the same delivery answers
+    every poll until an idle one retires it. A delivery is therefore recorded
+    when its text differs from the last one recorded; the slot holds only the
+    LAST delivery, so two consecutive identical deliveries are indistinguishable
+    by the contract itself."""
+    if rep != seen:
+        replies.append(rep)
+        return rep
+    return seen
+
+
 def run_turn(dev: Dev, prompt: str, *, timeout=None, collect_late=8.0) -> tuple:
     """Fire one turn on chat 'web'; return (reply, all_replies_after_this_turn).
 
@@ -178,13 +193,8 @@ def run_turn(dev: Dev, prompt: str, *, timeout=None, collect_late=8.0) -> tuple:
         r = dev.post("/api/chat", {"text": f"[{marker}] {prompt}"}, timeout=12)
     assert r.status_code == 200, f"/api/chat -> {r.status_code}: {r.text[:160]}"
 
-    # The legacy slot's peek contract (the bench F03 fix): a poll while the device
-    # is busy reads the reply WITHOUT retiring it, so the same delivery answers
-    # every poll until an idle one retires it. A delivery is therefore recorded
-    # when its text differs from the last one recorded; the slot holds only the
-    # LAST delivery, so two consecutive identical deliveries are indistinguishable
-    # by the contract itself. Any non-empty read still extends the wait - the slot
-    # holding something is activity, and a fan-out's later synthesis must land.
+    # Any non-empty read still extends the wait - the slot holding something is
+    # activity, and a fan-out's later synthesis must land.
     seen = ""
     replies, deadline = [], time.time() + timeout
     hard_deadline = time.time() + max(timeout, 420)  # cap even if jobs never drain
@@ -198,14 +208,10 @@ def run_turn(dev: Dev, prompt: str, *, timeout=None, collect_late=8.0) -> tuple:
             # whose real reply landed seconds later (seen live: buyers-guide,
             # steer rep2). Keep it, but keep waiting for the actual reply.
             if "switching to" in rep and "hit trouble" in rep:
-                if rep != seen:
-                    seen = rep
-                    replies.append(rep)
+                seen = _record_delivery(seen, rep, replies)
                 deadline = min(hard_deadline, time.time() + 120)
                 continue
-            if rep != seen:
-                seen = rep
-                replies.append(rep)
+            seen = _record_delivery(seen, rep, replies)
             break
         # A fan-out that doesn't ACK early replies only when its sub-agents finish
         # - which can exceed `timeout`. As long as the job table shows active work
@@ -225,9 +231,7 @@ def run_turn(dev: Dev, prompt: str, *, timeout=None, collect_late=8.0) -> tuple:
         time.sleep(POLL)
         rep = _drain_reply(dev)
         if rep:
-            if rep != seen:
-                seen = rep
-                replies.append(rep)
+            seen = _record_delivery(seen, rep, replies)
             late_end = min(late_hard, time.time() + collect_late)  # extend on activity, capped
     return replies[0], replies
 
