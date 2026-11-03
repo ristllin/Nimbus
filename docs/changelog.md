@@ -6,6 +6,21 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v5.0.0 - The launch release
+
+The full launch release. It carries everything in the interim v4.9.0 build plus the
+final correctness and conversation work: the web chat reply that vanished, the food
+plan that stored only half its targets, the day rewrite that changed things in
+silence, the reasoning model that spent its budget before answering, and the six
+conversation habits the owner had asked to stop.
+
+- **The web chat shows your reply.** On v4.9.0 the web page could show an empty reply after the answer was delivered: a poll that landed while the turn was still wrapping up consumed it. The reply now stays in its slot until the page reads it at idle, and it is delivered once, not duplicated.
+- **A food plan stores every target it cites.** A plan that states both a calorie and a protein target no longer stores only one row in silence: a cited target the row did not store is named and corrected, and you are told when it still does not land.
+- **A day rewrite says what changed.** Deleting and re-entering a day no longer loses a row or changes a figure without a word: the reply names the rows it removed, added or changed, and a re-entry that skips a removed row is named too.
+- **A cut reasoning model steps down quietly.** A model that spends its answer budget on hidden reasoning no longer fails over to another provider with a warning for a short reply: it first gets one round on a same-provider model that does not reason, and you see a notice only when something you would notice changed.
+- **The conversation stops annoying you.** An open question is raised once and dropped when you say so, never re-raised on its own. "Never ask" and "stop on workdays" rules bind even when the rules list is full: the oldest rule is merged or retired with you told, never silently dropped. Replies carry no memory ids, job ids or file paths. Briefs prefer primary sources: the train operator, the Met Office or the BBC, never a lone aggregator. A stored fact is not raised on a turn it has nothing to do with. A confused or angry owner gets a short answer that re-anchors on the facts that changed.
+- **Voice is not hardware-tested.** No audio test has run on any board (owner's order of 2 November: silent mode), so the speaking parts of this build are host-tested only.
+
 ## v4.9.0 - Interim build ahead of v5.0.0
 
 An interim build that carries the launch fixes landed so far, ahead of the full
