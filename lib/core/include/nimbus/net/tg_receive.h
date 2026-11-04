@@ -140,6 +140,27 @@ inline SettlePage settlePageOf(const std::vector<tg::Update>& page, const orch::
 // messages that could not be fetched or transcribed (the sender was already told).
 inline constexpr char kVoiceNotHeard[] = "[this voice note could not be heard; the sender was told]";
 
+// The mid-turn queue peek's ack filter (lane PROG). While a page's turns run inside
+// the drain, the cursor still points at that page's start: it advances only after the
+// last turn returns, so a getUpdates at the cursor's offset re-serves the page being
+// drained. An update of that page is the running turn's own input, or a later bucket
+// already batched - never a message that arrived while the turn runs - so
+// acknowledging it would tell the sender the message this turn is answering right now
+// is queued behind it. `inPage` is the receiver's updateOf (the page being drained);
+// ids at or below `ackedHighWater` were taken by an earlier peek of this turn.
+// Returns the updates the peek may acknowledge, in id order.
+template <class InPageFn>
+std::vector<const tg::Update*> peekQueuedToAck(const std::vector<tg::Update>& peeked,
+                                               int32_t ackedHighWater, InPageFn inPage) {
+  std::vector<const tg::Update*> out;
+  for (const tg::Update& u : peeked) {
+    if (u.updateId <= ackedHighWater) continue;
+    if (inPage(u.updateId)) continue;
+    out.push_back(&u);
+  }
+  return out;
+}
+
 // The chat of the page's newest plain-text turn candidate from an allowed chat (the held
 // text the typing indicator is for); "" when there is none.
 template <class Allowed>

@@ -2667,8 +2667,10 @@ bool turnProgressLine(const String& chatId, const String& line) {
 // (the poller is the turn), so at a boundary the turn PEEKS at the pending
 // updates - getUpdates at the current offset with timeout=0, offset NOT
 // advanced, so the post-turn poll still processes every message normally - and
-// acknowledges each newly-seen one immediately. Rate-limited: a fast turn's
-// boundaries are seconds apart and each peek is a short TLS session.
+// acknowledges each one that arrived past the page being drained (the peek
+// re-serves that page; its updates are this turn's own input, never queued).
+// Rate-limited: a fast turn's boundaries are seconds apart and each peek is a
+// short TLS session.
 static constexpr uint32_t kPeekGapMs = 10000;
 static uint32_t s_lastPeekMs = 0;
 static int32_t s_peekAckedId = 0;   // high-water: Telegram update ids only grow
@@ -2687,8 +2689,14 @@ int turnAckQueued() {
   closePollSocket();
   if (yielded || rp.fetchError) return 0;
   int acked = 0;
-  for (const auto& u : ups) {
-    if (u.updateId <= s_peekAckedId) continue;   // already acknowledged this turn
+  // The peek re-serves the page being drained (the cursor advances only after the
+  // drain): without the filter it would acknowledge the very message this turn is
+  // answering - and every later bucket already batched - as "queued". The rule is
+  // the portable, host-tested one (test_tg_peek).
+  const auto toAck = nimbus::net::peekQueuedToAck(
+      ups, s_peekAckedId, [](int32_t id) { return pageUpdate(id) != nullptr; });
+  for (const nimbus::tg::Update* pu : toAck) {
+    const nimbus::tg::Update& u = *pu;
     s_peekAckedId = u.updateId;
     if (u.edited || u.chatId.empty() || !isAllowed(String(u.chatId.c_str()))) continue;
     if (sendNow(u.chatId.c_str(), "Got it, queued. It will answer that once this task finishes."))
