@@ -5,3 +5,9 @@ PASS nimbus-tft: static DRAM 89795 B (baseline 91195 B, -1400 B; ceiling 91635 B
 rc=0
 PASS freenove-28: static DRAM 89875 B (baseline 91275 B, -1400 B; ceiling 91723 B)
 rc=0
+
+re-run on the battery DISPO-3 ELF, head e90b8e48, Wed Nov  4 10:40:57 UTC 2026
+PASS nimbus-tft: static DRAM 89795 B (baseline 91195 B, -1400 B; ceiling 91635 B)
+rc=0
+PASS freenove-28: static DRAM 89875 B (baseline 91275 B, -1400 B; ceiling 91723 B)
+rc=0
