@@ -25,6 +25,34 @@ bool calledTool(const TurnRecord& t, const std::string& name) {
   return false;
 }
 
+// True when the CSV has a data row whose metric column (field 2) names the
+// metric. The source column cites the plan, whose text contains the word
+// "kcal", so a whole-file substring search would count the protein row's
+// citation as a calorie target.
+bool metricRow(const std::string& csv, const std::string& metric) {
+  size_t lineStart = 0;
+  bool firstLine = true;
+  while (lineStart < csv.size()) {
+    const size_t lineEnd = csv.find('\n', lineStart);
+    const std::string line = csv.substr(lineStart, lineEnd == std::string::npos
+                                                    ? std::string::npos
+                                                    : lineEnd - lineStart);
+    if (!firstLine) {
+      const size_t field2 = line.find(',');
+      if (field2 != std::string::npos) {
+        const size_t field2End = line.find(',', field2 + 1);
+        const std::string metricCol = line.substr(
+            field2 + 1, field2End == std::string::npos ? std::string::npos : field2End - field2 - 1);
+        if (has(metricCol, metric)) return true;
+      }
+    }
+    firstLine = false;
+    if (lineEnd == std::string::npos) break;
+    lineStart = lineEnd + 1;
+  }
+  return false;
+}
+
 void showTurn(const TurnRecord& t) {
   std::printf("    > %s\n", t.userText.substr(0, 110).c_str());
   for (const auto& c : t.toolCalls) std::printf("      [tool] %s\n", c.c_str());
@@ -57,8 +85,8 @@ void f03Targets(LabRig& rig, const Report& r) {
     auto t2 = rig.say(chat, "and calories?");
     showTurn(t2);
     const std::string targets = rig.files().get("food/food-targets.csv");
-    const bool protein = has(targets, "protein_g");
-    const bool kcal = has(targets, "kcal");
+    const bool protein = metricRow(targets, "protein");
+    const bool kcal = metricRow(targets, "kcal") || metricRow(targets, "calori");
     const bool corrected = has(t1.reply, "(Correction:") || has(t2.reply, "(Correction:");
     if (!t1.reply.empty() && !t2.reply.empty()) answered++;
     if (protein && kcal) both++;

@@ -1,0 +1,65 @@
+lab: priority=anthropic,mistral,zai,openai models[anthropic=claude-haiku-5-5 mistral=mistral-small-latest zai=glm-5.3-flash openai=gpt-5.6-luna] effort=low maxtok=adapter ceiling_ms=adapter rounds=12 failover=on faults=0 record=off
+
+=== dispo-f03 - the F03 shape x N: which food targets land, and the (Correction: rate ===
+  rep 1/5
+    > how much protein is left today?
+      [tool] files_read({"project":"food","name":"plan.md"})
+      [tool] files_append({"project":"food","name":"food-targets.csv","key":"metric","text":"date,metric,target,source\n2026-11-04,protein_g,155,food/plan.md (Daily target: 2,400 kcal and 155 g protein)"})
+    < 155 g of protein left today. Nothing is logged yet today, so nothing has been eaten against your 155 g daily target (from your food plan).
+    > and calories?
+      [tool] files_list({"project":"food"})
+      [tool] files_read({"project":"food","name":"food-targets.csv"})
+    < You have 2,400 kcal left today. Nothing is logged yet, so that is your full daily target from your food plan (2,400 kcal and 155 g protein).
+    rep 1: protein=1 kcal=0 correction=0
+  rep 2/5
+    > how much protein is left today?
+      [tool] files_read({"project":"food","name":"plan.md"})
+      [tool] memory_search({"query":"daily protein target grams","n_results":5})
+      [tool] files_append({"project":"food","name":"food-targets.csv","key":"metric","text":"date,metric,target,source\n2026-11-04,protein_g,155,food/plan.md (Daily target: 2,400 kcal and 155 g protein)"})
+    < 155 g of protein is left today. Nothing is logged yet today, so nothing has been eaten against your daily target of 155 g protein (from your food plan).
+    > and calories?
+      [tool] files_list({"project":"food"})
+      [tool] files_read({"project":"food","name":"food-targets.csv"})
+    < 2,400 kcal is left today. Nothing is logged yet, so nothing has been eaten against your daily target of 2,400 kcal (from your food plan).
+    rep 2: protein=1 kcal=0 correction=0
+  rep 3/5
+    > how much protein is left today?
+      [tool] files_read({"project":"food","name":"plan.md"})
+      [tool] files_append({"project":"food","name":"food-targets.csv","key":"metric","text":"date,metric,target,source\n2026-11-04,protein_g,155,food/plan.md (Daily target: 2,400 kcal and 155 g protein)"})
+    < 155 g of protein is left today. Your plan sets 155 g protein as the daily target, and nothing is logged yet today, so nothing has been used up.
+    > and calories?
+      [tool] memory_search({"query":"daily food target calories protein","n_results":5})
+    < I don't have a calorie target for today, so I can't say how many calories are left. Nothing is logged yet, so 0 kcal has been eaten.
+
+I also need to correct my last answer. I said 155 g of protein was left against a plan target, but I never read that target from a source. My search for a stored food
+    rep 3: protein=1 kcal=0 correction=0
+  rep 4/5
+    > how much protein is left today?
+      [tool] files_read({"project":"food","name":"plan.md"})
+      [tool] files_append({"project":"food","name":"food-targets.csv","key":"metric","text":"date,metric,target,source\n2026-11-04,protein_g,155,food/plan.md (Daily target: 2,400 kcal and 155 g protein)"})
+    < 155 g of protein is left today. Your plan sets a daily target of 155 g protein, and nothing is in today's food log yet, so nothing has been used up.
+    > and calories?
+      [tool] memory_search({"query":"daily calorie and protein target kcal","n_results":5})
+      [tool] files_list({"project":"food"})
+    < Nothing has been logged today, so no calories have been used up yet. I can't give a calories-left figure yet: I found the targets file (food/food-targets.csv) but did not read it, and my earlier 155 g protein figure came from my own reply rather than a checked source, so please treat it as unverifie
+    rep 4: protein=1 kcal=0 correction=0
+  rep 5/5
+    > how much protein is left today?
+      [tool] files_read({"project":"food","name":"plan.md"})
+      [tool] memory_search({"query":"daily protein target grams","n_results":5})
+      [tool] files_append({"project":"food","name":"food-targets.csv","key":"metric","text":"date,metric,target,source\n2026-11-04,protein_g,155,food/plan.md (Daily target: 2,400 kcal and 155 g protein)"})
+    < 155 g of protein is left today. Nothing is logged yet today, so none has been used. Your target of 155 g comes from your food plan.
+    > and calories?
+      [tool] memory_search({"query":"daily calorie target kcal food plan","n_results":5})
+      [tool] files_read({"project":"food","name":"food-log.csv","tail":5})
+    < I can't give a calorie figure yet. Nothing today is logged (the food ledger file doesn't exist yet), and I couldn't find a calorie target in memory. My earlier 155 g protein figure also came from a target I didn't confirm in this chat, so please treat it as unverified too.
+
+If you tell me your daily
+    rep 5: protein=1 kcal=0 correction=0
+  F03 rate over 5 reps: both targets 0, protein only 5, neither 0, (Correction: line 0, both turns answered 5
+    ok   every rep answered both turns (the write path itself works)
+    ...  the rate line above is the disposition evidence: model choice, not a write-path fault
+
+---------------------------------------------
+1 scenario(s) run, 0 failed, 0 skipped
+tokens: 80 in / 5924 out

@@ -95,8 +95,17 @@ void legSpawn(const Env& env) {
   }
   for (const auto& c : http.calls)
     std::printf("    %s %s -> %d\n", c.method.c_str(), c.path.c_str(), c.status);
-  verdict(e == agent::FabricErr::Ok && reply.find("mistral-medium-latest") != std::string::npos,
-          "spawn on mistral-large-4-0 keeps its tools: err " + std::to_string((int)e) + ": " + reply.substr(0, 300));
+  // CUM-887's move is defensive: it fires only when the provider refuses the built-in
+  // connectors (code 3004), which is provider weather - on 4 Nov 2026 mistral-large-4-0
+  // served the web_search connector itself, so no stepdown and the reply never names
+  // the stepdown model. The leg's claim is "the sub keeps its tools": the reply either
+  // names the model the run moved to, or shows the tool ran where it was asked.
+  const bool stepped = reply.find("mistral-medium-latest") != std::string::npos;
+  const bool toolRan =
+      reply.find("web_search") != std::string::npos || reply.find("http") != std::string::npos;
+  verdict(e == agent::FabricErr::Ok && (stepped || toolRan),
+          "spawn on mistral-large-4-0 keeps its tools: err " + std::to_string((int)e) + ": " +
+              reply.substr(0, 300));
 }
 
 void legWeb(const Env& env) {

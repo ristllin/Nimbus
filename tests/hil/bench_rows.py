@@ -184,6 +184,30 @@ def row_a07(b: Bench) -> Grade:
     return _verdict(fails, "answered on the same turn with the body trimmed")
 
 
+def _stack_guard(before: Dict[str, Any], after: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """pollStackMin's drop across the trim, or why it cannot be measured."""
+    stack_before = mem(before, "pollStackMin") or 0
+    if stack_before >= 0xFFFF0000:  # the poll task's unset sentinel: no sample yet
+        return None, f"pollStackMin unmeasurable (before-snap held the unset sentinel {stack_before})"
+    drop = stack_before - (mem(after, "pollStackMin") or 0)
+    if drop > POLL_STACK_ALLOWANCE:
+        return f"pollStackMin fell {drop} B (allowance {POLL_STACK_ALLOWANCE} B)", None
+    return None, None
+
+
+def _low_water_guard(a02: Dict[str, Any], after: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """lowWater's gap under A02's, or why it cannot be measured (the watermark is since-boot)."""
+    if boot_n(a02) != boot_n(after):
+        return None, (
+            f"lowWater unmeasurable (A02's state is boot {boot_n(a02)}, the run is boot {boot_n(after)}: "
+            "the since-boot watermark reset in between)"
+        )
+    gap = (mem(a02, "lowWater") or 0) - (mem(after, "lowWater") or 0)
+    if gap > LOW_WATER_ALLOWANCE:
+        return f"low water {gap} B under A02's (allowance {LOW_WATER_ALLOWANCE} B)", None
+    return None, None
+
+
 def row_a08(b: Bench) -> Grade:
     """The memory cost of the trim: reads A07's snapshots against A02's low water (--a02-state).
 
@@ -211,30 +235,20 @@ def row_a08(b: Bench) -> Grade:
             trimmed = "turn fit: left out" in f.read()
     if not trimmed:
         raise Blocked("A07's turn did not trim, so the trim's cost was never exercised")
-    fails: List[str] = []
-    unmeasured: List[str] = []
-    stack_before, stack_after = mem(before, "pollStackMin") or 0, mem(after, "pollStackMin") or 0
-    if stack_before >= 0xFFFF0000:   # the poll task's unset sentinel: no sample yet
-        unmeasured.append(f"pollStackMin unmeasurable (before-snap held the unset sentinel {stack_before})")
-    else:
-        drop = stack_before - stack_after
-        if drop > POLL_STACK_ALLOWANCE:
-            fails.append(f"pollStackMin fell {drop} B (allowance {POLL_STACK_ALLOWANCE} B)")
-    if boot_n(a02) != boot_n(after):
-        unmeasured.append(
-            f"lowWater unmeasurable (A02's state is boot {boot_n(a02)}, the run is boot {boot_n(after)}: "
-            "the since-boot watermark reset in between)"
-        )
-    else:
-        gap = (mem(a02, "lowWater") or 0) - (mem(after, "lowWater") or 0)
-        if gap > LOW_WATER_ALLOWANCE:
-            fails.append(f"low water {gap} B under A02's (allowance {LOW_WATER_ALLOWANCE} B)")
+    stack_fail, stack_unmeasured = _stack_guard(before, after)
+    water_fail, water_unmeasured = _low_water_guard(a02, after)
+    fails = [c for c in (stack_fail, water_fail) if c]
+    unmeasured = [c for c in (stack_unmeasured, water_unmeasured) if c]
     if fails:
         return _verdict(fails, "")
     if unmeasured:
         return ("BLOCKED", "; ".join(unmeasured))
-    return _verdict([], f"pollStackMin fell {stack_before - stack_after} B; low water within "
-                        f"{max((mem(a02, 'lowWater') or 0) - (mem(after, 'lowWater') or 0), 0)} B of A02")
+    stack_before, stack_after = mem(before, "pollStackMin") or 0, mem(after, "pollStackMin") or 0
+    return _verdict(
+        [],
+        f"pollStackMin fell {stack_before - stack_after} B; low water within "
+        f"{max((mem(a02, 'lowWater') or 0) - (mem(after, 'lowWater') or 0), 0)} B of A02",
+    )
 
 
 def _load(path: str) -> Dict[str, Any]:

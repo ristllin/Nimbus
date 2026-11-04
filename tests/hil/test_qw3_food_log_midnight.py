@@ -5,13 +5,18 @@ then took Sunday's breakfast for Saturday's dinner. This leg replays the shape o
 bench unit set to Europe/London, with real head calls (Anthropic, ``NIMBUS_QW3_MODEL``,
 default claude-haiku-5-5):
 
-1. the food log ``qw3-bench/food-log.csv`` is seeded (upload) with Saturday's breakfast
+1. the food log ``food/food-log.csv`` is seeded (upload) with Saturday's breakfast
    and lunch;
 2. 21:10 BST Saturday: dinner;
 3. 00:20 BST Sunday (23:20 UTC Saturday): a clementine - the local day is already the 25th;
 4. 08:20 GMT Sunday (BST ended at 01:00 UTC): breakfast;
 5. a correction to that breakfast;
 6. both days' totals asked for.
+
+The leg runs on the one ledger, ``food/food-log.csv``: the device refuses a keyed
+append to any other food-log-named CSV (``secondFoodLogRefusal``, the one-food-log
+invariant from lane FOOD), so a leg pointed at ``qw3-bench/food-log.csv`` can never
+see its keyed append land - the v5 bench H09 FAIL was that refusal, not a head fault.
 
 Graded (qw3_food_grade.py) from the file the device wrote (``/api/files/dl``) and the
 final reply: the seeded rows untouched, one row per meal on its local day, the
@@ -45,7 +50,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "sto
 pytestmark = [pytest.mark.hil, pytest.mark.net, pytest.mark.agent]
 
 LONDON = "GMT0BST,M3.5.0/1,M10.5.0"
-PROJECT, NAME = "qw3-bench", "food-log.csv"
+PROJECT, NAME = "food", "food-log.csv"  # the one ledger: a second food-log CSV is refused (food_ledger.h)
 MODEL = os.environ.get("NIMBUS_QW3_MODEL", "claude-haiku-5-5")
 EVIDENCE = os.environ.get("NIMBUS_QW3_EVIDENCE", "")
 WHERE = f"{PROJECT}/{NAME}"

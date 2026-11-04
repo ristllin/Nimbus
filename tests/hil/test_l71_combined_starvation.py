@@ -64,7 +64,9 @@ SHORT_REPLY = "I'm short of memory right now. Please try again in a minute."
 # while the heap is already under the floor is never taken in, and this is its
 # wording. Distinct from SHORT_REPLY on purpose: the during-turn gate
 # (turn_memory.h) refuses a turn already running.
-ADMIT_REPLY = "One moment, I'm finishing some background work and low on working memory. Please resend in a few seconds."
+ADMIT_REPLY = (
+    "One moment, I'm finishing some background work and low on working memory. Please resend in a few seconds."
+)
 PROMPT = "CALL the device.log tool with scan_kb 64 and lines 60 now, then tell me what the oldest lines say."
 BALLAST_RE = re.compile(r"FAULT sram_ballast=(\d+) held=(\d+) intFree=(\d+) intLargest=(\d+)")
 OVERALL_RE = re.compile(

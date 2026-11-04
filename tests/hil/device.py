@@ -770,7 +770,7 @@ class Device:
             while line is not None:
                 if "PONG" in line:
                     if "boot console" not in line:
-                        return True   # the full console answered
+                        return True  # the full console answered
                 else:
                     self._pushback.append(line)
                 line = self._readline(time.time() + 0.5)
