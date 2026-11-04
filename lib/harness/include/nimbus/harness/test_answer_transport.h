@@ -25,6 +25,13 @@
 //
 // The device test build wraps deviceTransport() in it (transport_tls.cpp); a host
 // test wraps its own fake. Production images compile none of it.
+//
+// The seat widens what an armed host scripts in test builds: every caller of
+// deviceTransport() to that host is answered, not only provider exchanges - the
+// safety report POST and web search ride the same decorator. That matches the
+// seam's existing host-level semantics (vision_caption arms the same way), and no
+// bench row arms an override while relying on those paths; it is stated here so
+// it stays a known effect, not a surprise.
 namespace agent {
 
 class TestAnswerTransport : public HttpTransport {
@@ -61,7 +68,8 @@ class TestAnswerTransport : public HttpTransport {
     err.clear();
     if (!body.empty()) {
       const DeserializationError derr =
-          deserializeJson(doc, body, DeserializationOption::Filter(filter));
+          deserializeJson(doc, body, DeserializationOption::Filter(filter),
+                           DeserializationOption::NestingLimit(kResponseNestingLimit));
       if (derr) err = std::string("response parse failed: ") + derr.c_str();
     }
     ++answered_;

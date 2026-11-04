@@ -454,8 +454,9 @@ def _arm_park(b: Bench, body: str) -> str:
 
 
 def row_s10(b: Bench) -> Grade:
-    """The clamp 402: the turn answers on a capped resend and the provider is not parked. PROVFAULT answers before
-    the transport, so the resend itself is only proven end to end with a real low-wallet account."""
+    """The clamp 402: the turn answers on a capped resend and the provider is not parked. PROVFAULT answers at
+    the transport's seat (TestAnswerTransport), so the resend runs against the scripted refusal; a served capped
+    reply still needs a real low-wallet account."""
     _head_on_cumulo(b)
     seen = b.mark()
     parked = _arm_park(b, CLAMP_402)
@@ -469,7 +470,7 @@ def row_s10(b: Bench) -> Grade:
         fails.append("the provider parked on a clamp")
     if fails:
         return ("FAIL", "; ".join(fails))
-    return ("OPEN", "the clamp path behaves; the real resend still needs a low-wallet account")
+    return ("OPEN", "the capped resend ran against the scripted refusal; a served capped reply still needs a low-wallet account")
 
 
 def _wait_recheck(b: Bench, seen: set, wanted: Tuple[str, ...], label: str) -> List[str]:
