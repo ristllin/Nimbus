@@ -2,7 +2,8 @@
 
 The device runs ONE outbound work-TLS exchange at a time through the work slot
 (``src/sys/tls_arbiter``, AGENTS.md "No on-device concurrency"). The cloud relay
-broke that rule for years: it dialed (``relay_client.cpp`` ``g_ws->connect``) and
+broke that rule for years: it dialed (``relay_client.cpp`` ``g_ws->connect``, now the
+``connectHost(*g_ws, ...)`` seam) and
 streamed tunneled pages (``emitResFrame`` -> ``wsWriteAll``) with no slot, and on
 14 Oct a 26 s page upload overlapped two head-turn body writes and both failed.
 
@@ -59,7 +60,9 @@ def _code(line: str) -> str:
     return _LITERALS.sub("", line)
 
 
-_TLS_CONNECT = re.compile(r"(?:\.|->)connect\s*\(")
+# The first network step of a seam: a raw connect, or the connectHost() seam
+# (src/sys/net_util.h) every host-based connect now goes through.
+_TLS_CONNECT = re.compile(r"(?:(?:\.|->)connect|connectHost)\s*\(")
 # Taking the work slot: the scope guard (arbiter::WorkSlot, or a nimbus::HeldSlot built
 # on acquireWork) or the hand-held call. A declaration only: `WorkSlot& s` or a
 # parameter does not take it.
@@ -190,13 +193,16 @@ def test_guard_flags_a_raw_connect_and_accepts_the_slot_forms():
         "  bool ok = c.connect(\"h\", 443);\n  arbiter::WorkSlot slot(1);\n  return ok;",
     )
     assert _tls_offenders("agent/x.cpp", late) == flagged
+    raw_host = _RAW.replace("return c.connect(\"h\", 443);", "return connectHost(c, \"h\", 443);")
+    assert _tls_offenders("agent/x.cpp", raw_host) == flagged
     held = _GUARDED.replace(
         "arbiter::WorkSlot slot(10000);", "nimbus::HeldSlot slot(&arbiter::acquireWork, &arbiter::releaseWork, 1);"
     )
     by_hand = _GUARDED.replace(
         "arbiter::WorkSlot slot(10000);\n  if (!slot) return false;", "if (!arbiter::acquireWork(1)) return false;"
     )
-    for ok in (_GUARDED, held, by_hand):
+    guarded_host = _GUARDED.replace("return c.connect(\"h\", 443);", "return connectHost(c, \"h\", 443);")
+    for ok in (_GUARDED, held, by_hand, guarded_host):
         assert _tls_offenders("agent/x.cpp", ok) == [], ok
 
 
@@ -234,7 +240,7 @@ def test_allowlisted_helpers_are_called_by_a_slot_holder():
 
 def test_relay_dial_and_big_frames_take_the_slot():
     fns = _fn_map("net/relay_client.cpp")
-    dialers = [n for n, (_, b) in fns.items() if re.search(r"g_ws->connect\s*\(", b)]
+    dialers = [n for n, (_, b) in fns.items() if re.search(r"g_ws->connect\s*\(|connectHost\s*\(\s*\*g_ws", b)]
     assert dialers, "the relay dial (g_ws->connect) moved: update this guard"
     for n in dialers:
         assert _slot_before_connect(fns[n][1]), f"relay {n}() dials the cloud without the TLS work slot"

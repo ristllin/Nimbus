@@ -27,9 +27,9 @@ _ADAPTERS = _REPO / "src" / "agent" / "adapters"
 
 # A seam's gate::check and the first thing that really goes to the network after it.
 _SEAMS = {
-    "image_gen.cpp": ("generateToBuffer(", r"\.connect\("),
+    "image_gen.cpp": ("generateToBuffer(", r"(?:\.connect\(|connectHost\()"),
     "audio_tts.cpp": ("synthesizeToFile(", r"connectTts\("),
-    "embeddings.cpp": ("embedWith(", r"\.connect\("),
+    "embeddings.cpp": ("embedWith(", r"(?:\.connect\(|connectHost\()"),
     "audio_stt.cpp": ("transcribeCommon(", r"httpmp::post\("),
 }
 
@@ -99,6 +99,12 @@ def test_the_guard_flags_a_seam_that_drops_the_recheck():
     ]
     handed = body.replace("{ free(buf);", '{ gate::handBack("openai"); free(buf);')
     assert _unhanded_returns(handed, r"\.connect\(") == []
+    # the connectHost() seam is the first network step now: same rule, same counter-test
+    send = r"(?:\.connect\(|connectHost\()"
+    host_seam = body.replace("client.connect(host, 443);", "connectHost(client, host, 443);")
+    assert _unhanded_returns(host_seam, send) == ['if (!slot) { free(buf); errOut = "device busy"; return nullptr; }']
+    handed_host = host_seam.replace("{ free(buf);", '{ gate::handBack("openai"); free(buf);')
+    assert _unhanded_returns(handed_host, send) == []
 
 
 def test_speech_to_text_hands_back_what_it_did_not_send():
