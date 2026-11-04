@@ -142,7 +142,7 @@ void h20Search(LabRig& rig, const Report& r) {
     std::printf("  rep %d/%d\n", i, reps);
     auto t = rig.say(chat, "What is the latest Python 3 release?");
     showTurn(t);
-    const bool used = calledTool(t, "web.search");
+    const bool used = calledTool(t, "web_search") || calledTool(t, "web.search");
     const bool names = has(t.reply, "python.org") || has(t.reply, "Python 3.1");
     if (!t.reply.empty()) answered++;
     if (used) searched++;

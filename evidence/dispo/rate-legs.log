@@ -123,7 +123,7 @@ The log is one file, food/food-log.csv, so I couldn't write to qw3-bench/food-lo
   rep 5/5
     > What is the latest Python 3 release?
       [tool] web_search({"query":"latest Python 3 release version python.org","max_results":5})
-    < I couldn't check the latest Python 3 release just now: the web search failed with an authorisation error (HTTP 401, missing or invalid API key). I don't want to give you a version number from memory, since it may be out of date. The current release is listed at python.org/downloads. I can retry the 
+    < I couldn't check the latest Python 3 release just now: the web search failed with an authorisation error (HTTP 401, missing or invalid API key). I don't want to give you a version number from memory, since it may be out of date. The current release is listed at python.org/downloads. I can retry the
     rep 5: web.search=0 names-a-source=1
   H20 rate over 5 reps: web.search ran 0, reply names a source 5, answered 5
     ok   every rep answered (the turn itself works)

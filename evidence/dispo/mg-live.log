@@ -19,7 +19,7 @@ Pending items & next steps
 Pending
 [spawn]
     POST /v1/conversations -> 200
-  PASS spawn on mistral-large-4-0 keeps its tools: err 0: As of November 4, 2026, the latest stable Python 3 release is **Python 3.15.2**, released **October 25, 2026**; the latest stable feature line is **Python 3.15** (**3.15.0 final**, released October 9, 2026). **Python 3.16.0a1** exists but is an alpha/pre-release, not stable.  
+  PASS spawn on mistral-large-4-0 keeps its tools: err 0: As of November 4, 2026, the latest stable Python 3 release is **Python 3.15.2**, released **October 25, 2026**; the latest stable feature line is **Python 3.15** (**3.15.0 final**, released October 9, 2026). **Python 3.16.0a1** exists but is an alpha/pre-release, not stable.
 Sources: web_search re
 [web]
   PASS mistral search: Answer: The latest stable Python 3 release version number is **3.15.2**, released on October 25, 2026 (source: https://www.python.org/downloads/, https://www.python.org/doc/versions/, https://realpython.com/python-news-november-2026/).

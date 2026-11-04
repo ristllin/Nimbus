@@ -7044,13 +7044,13 @@ CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/esp32-s3-devk
 PLATFORM: Espressif 32 (55.3.39) > Espressif ESP32-S3-DevKitC-1-N8 (8 MB QD, No PSRAM)
 HARDWARE: ESP32S3 240MHz, 320KB RAM, 8MB Flash
 DEBUG: Current (esp-builtin) On-board (esp-builtin) External (cmsis-dap, esp-bridge, esp-prog, esp-prog-2, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
-PACKAGES: 
- - contrib-piohome @ 3.4.4 
- - framework-arduinoespressif32 @ 3.3.9 
- - framework-arduinoespressif32-libs @ 5.5.4+sha.735507283d 
- - tool-esp-rom-elfs @ 2024.10.11 
- - tool-esptoolpy @ 5.3.0 
- - tool-xtensa-esp-elf-gdb @ 17.1.0+20260402 
+PACKAGES:
+ - contrib-piohome @ 3.4.4
+ - framework-arduinoespressif32 @ 3.3.9
+ - framework-arduinoespressif32-libs @ 5.5.4+sha.735507283d
+ - tool-esp-rom-elfs @ 2024.10.11
+ - tool-esptoolpy @ 5.3.0
+ - tool-xtensa-esp-elf-gdb @ 17.1.0+20260402
  - toolchain-xtensa-esp-elf @ 14.2.0+20260121
 LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
 LDF Modes: Finder ~ chain, Compatibility ~ soft
@@ -8846,13 +8846,13 @@ CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/esp32-s3-devk
 PLATFORM: Espressif 32 (55.3.39) > Espressif ESP32-S3-DevKitC-1-N8 (8 MB QD, No PSRAM)
 HARDWARE: ESP32S3 240MHz, 320KB RAM, 8MB Flash
 DEBUG: Current (esp-builtin) On-board (esp-builtin) External (cmsis-dap, esp-bridge, esp-prog, esp-prog-2, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
-PACKAGES: 
- - contrib-piohome @ 3.4.4 
- - framework-arduinoespressif32 @ 3.3.9 
- - framework-arduinoespressif32-libs @ 5.5.4+sha.735507283d 
- - tool-esp-rom-elfs @ 2024.10.11 
- - tool-esptoolpy @ 5.3.0 
- - tool-xtensa-esp-elf-gdb @ 17.1.0+20260402 
+PACKAGES:
+ - contrib-piohome @ 3.4.4
+ - framework-arduinoespressif32 @ 3.3.9
+ - framework-arduinoespressif32-libs @ 5.5.4+sha.735507283d
+ - tool-esp-rom-elfs @ 2024.10.11
+ - tool-esptoolpy @ 5.3.0
+ - tool-xtensa-esp-elf-gdb @ 17.1.0+20260402
  - toolchain-xtensa-esp-elf @ 14.2.0+20260121
 LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
 LDF Modes: Finder ~ chain, Compatibility ~ soft
@@ -10648,13 +10648,13 @@ CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/esp32-s3-devk
 PLATFORM: Espressif 32 (55.3.39) > Espressif ESP32-S3-DevKitC-1-N8 (8 MB QD, No PSRAM)
 HARDWARE: ESP32S3 240MHz, 320KB RAM, 8MB Flash
 DEBUG: Current (esp-builtin) On-board (esp-builtin) External (cmsis-dap, esp-bridge, esp-prog, esp-prog-2, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
-PACKAGES: 
- - contrib-piohome @ 3.4.4 
- - framework-arduinoespressif32 @ 3.3.9 
- - framework-arduinoespressif32-libs @ 5.5.4+sha.735507283d 
- - tool-esp-rom-elfs @ 2024.10.11 
- - tool-esptoolpy @ 5.3.0 
- - tool-xtensa-esp-elf-gdb @ 17.1.0+20260402 
+PACKAGES:
+ - contrib-piohome @ 3.4.4
+ - framework-arduinoespressif32 @ 3.3.9
+ - framework-arduinoespressif32-libs @ 5.5.4+sha.735507283d
+ - tool-esp-rom-elfs @ 2024.10.11
+ - tool-esptoolpy @ 5.3.0
+ - tool-xtensa-esp-elf-gdb @ 17.1.0+20260402
  - toolchain-xtensa-esp-elf @ 14.2.0+20260121
 LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
 LDF Modes: Finder ~ chain, Compatibility ~ soft
@@ -12495,13 +12495,13 @@ CONFIGURATION: https://docs.platformio.org/page/boards/espressif32/esp32-s3-devk
 PLATFORM: Espressif 32 (55.3.39) > Espressif ESP32-S3-DevKitC-1-N8 (8 MB QD, No PSRAM)
 HARDWARE: ESP32S3 240MHz, 320KB RAM, 8MB Flash
 DEBUG: Current (esp-builtin) On-board (esp-builtin) External (cmsis-dap, esp-bridge, esp-prog, esp-prog-2, iot-bus-jtag, jlink, minimodule, olimex-arm-usb-ocd, olimex-arm-usb-ocd-h, olimex-arm-usb-tiny-h, olimex-jtag-tiny, tumpa)
-PACKAGES: 
- - contrib-piohome @ 3.4.4 
- - framework-arduinoespressif32 @ 3.3.9 
- - framework-arduinoespressif32-libs @ 5.5.4+sha.735507283d 
- - tool-esp-rom-elfs @ 2024.10.11 
- - tool-esptoolpy @ 5.3.0 
- - tool-xtensa-esp-elf-gdb @ 17.1.0+20260402 
+PACKAGES:
+ - contrib-piohome @ 3.4.4
+ - framework-arduinoespressif32 @ 3.3.9
+ - framework-arduinoespressif32-libs @ 5.5.4+sha.735507283d
+ - tool-esp-rom-elfs @ 2024.10.11
+ - tool-esptoolpy @ 5.3.0
+ - tool-xtensa-esp-elf-gdb @ 17.1.0+20260402
  - toolchain-xtensa-esp-elf @ 14.2.0+20260121
 LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
 LDF Modes: Finder ~ chain, Compatibility ~ soft
@@ -16273,7 +16273,7 @@ PASSED
     ok   the corrected answer is what the owner hears
   -- (n) a hosted Z.ai sub carries reasoning_effort low, direct and over the router --
     ok   the sub went to /api/paas/v4/chat/completions
-    ok   carries reasoning_effort low: zai 
+    ok   carries reasoning_effort low: zai
     ok   the sub went to /router/zai/chat/completions
     ok   carries reasoning_effort low: cumulo zai/glm-5.3
     ok   the sub went to /router/openai/v1/chat/completions
