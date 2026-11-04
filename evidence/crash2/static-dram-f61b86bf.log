@@ -1,0 +1,6 @@
+# static DRAM on the ELFs battery CRASH2-reviewfix (f61b86bf) built, 2026-11-04T12:01:49Z
+# command: python3 tools/release_gate/check_static_dram.py
+
+PASS nimbus-tft: static DRAM 89795 B (baseline 91195 B, -1400 B; ceiling 91635 B)
+PASS freenove-28: static DRAM 89875 B (baseline 91275 B, -1400 B; ceiling 91723 B)
+rc=0
