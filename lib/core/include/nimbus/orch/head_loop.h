@@ -147,6 +147,20 @@ struct HeadStep {
   bool prose = false;
 };
 
+// What the loop is doing at a round boundary, handed to the progress observer.
+// `round` is the round about to run (0 = before the first provider request),
+// `elapsedMs` the loop's own clock since it started, and `tools` names the calls
+// the PREVIOUS round dispatched (empty on round 0) - the plain words for "what it
+// is doing" come from those. `lastRound` is true when the gate just forced the
+// tool-less final round: the answer is imminent, so a surface that was about to
+// say "still working" or acknowledge a queued message should stay quiet instead.
+struct HeadProgress {
+  int       round = 0;
+  uint32_t  elapsedMs = 0;
+  bool      lastRound = false;
+  std::vector<std::string> tools;
+};
+
 // Perform ONE model turn. `allowTools`=false forces the "answer now" round (the
 // adapter advertises NO tools / forces orch_turn) so the model must terminate.
 // `priorResults` holds the outcomes of the tool calls returned by the PREVIOUS
@@ -278,6 +292,12 @@ struct HeadLoopHooks {
   // HeadStep.text is non-empty, BEFORE tool dispatch - the device persists it
   // as a kind=llm_response episodic row. Observer-only; never affects the loop.
   std::function<void(const std::string& text, int round)> onText;
+  // Optional turn-progress observer (lane PROG): fired at EVERY round boundary -
+  // before each provider step, round 0 included - which is the only moment no
+  // provider request is in flight, so a surface may do its own signalling (a
+  // Telegram typing keep-alive, a busy state) or look for messages that arrived
+  // meanwhile. Observer-only; never affects the loop. Null = byte-identical.
+  std::function<void(const HeadProgress&)> progress;
 };
 
 struct HeadOutcome {

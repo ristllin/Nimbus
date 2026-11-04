@@ -1528,6 +1528,21 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       ev.round = round;
       d_.hooks.onThinking(ev);
     };
+    // Round-boundary observer (lane PROG): every boundary of the running loop
+    // reaches the hook spine, so a surface can keep its "working" signal alive
+    // and pick up messages that arrived meanwhile. cfg.maxRounds is read at
+    // fire time (it is finalized below, before the loop runs).
+    headTools.onRoundProgress = [this, &headTools](const orch::HeadProgress& hp) {
+      if (!d_.hooks.onTurnProgress) return;
+      TurnProgressEv ev;
+      ev.chatId = curChat_;
+      ev.round = hp.round;
+      ev.elapsedMs = hp.elapsedMs;
+      ev.lastRound = hp.lastRound;
+      ev.tools = hp.tools;
+      ev.maxRounds = headTools.cfg.maxRounds;
+      d_.hooks.onTurnProgress(ev);
+    };
     // Canonical-transcript observer (Glass Box P3): each loop hands its brief
     // over on the way out (success OR failure) so the turn dossier can carry the
     // tool loop's actual middle, not just the turn's entry and exit.

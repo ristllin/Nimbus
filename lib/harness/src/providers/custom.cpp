@@ -530,6 +530,7 @@ static bool runZaiLoop(const ProviderDeps& pd, std::string& convId, const ZaiTur
   hooks.largestBlock = pd.largestBlock;
   hooks.log      = [](const std::string& m) { hlog::logf("%s", m.c_str()); };
   hooks.onText   = ht.onRoundText;
+  hooks.progress = ht.onRoundProgress;   // round boundaries -> engine (lane PROG)
   hooks.spill    = ht.spill;
   hooks.transcript = &tr;
   orch::HeadOutcome res = runHeadLoop(ht.cfg, hooks);

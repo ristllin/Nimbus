@@ -34,6 +34,12 @@ struct HeadTools {
   // HeadLoopHooks.onText so mid-turn "thinking" reaches the engine's hook spine.
   std::function<void(const std::string& text, int round)> onRoundText;
 
+  // Optional round-boundary observer (lane PROG): providers forward it into
+  // HeadLoopHooks.progress so every round boundary of a running turn reaches the
+  // engine's hook spine (Hooks.onTurnProgress) - the moment a surface may signal
+  // work or look for queued messages, because no provider request is in flight.
+  std::function<void(const nimbus::orch::HeadProgress&)> onRoundProgress;
+
   // Optional recent-results spill (Context Fabric): forwarded into
   // HeadLoopHooks.spill - a clamped tool result's FULL text lands in the
   // results ring and the truncation marker carries the results.get handle.

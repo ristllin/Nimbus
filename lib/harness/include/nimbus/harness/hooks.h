@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "nimbus/harness/turn_anatomy.h"  // HistoryFacts (TurnDebugEv)
 #include "nimbus/orch/failure_chain.h"   // FailureChain - why a turn failed
@@ -127,11 +128,29 @@ struct TurnDebugEv {
   std::string askedModel;
 };
 
+// A round boundary of a running turn (lane PROG): fired at EVERY boundary of
+// the head loop - before each provider request, round 0 included - which is the
+// only moment no request is in flight, so a surface may signal work (a typing
+// keep-alive, a busy state) or look for messages that arrived meanwhile. The
+// plain-words plan for what to show is turn_progress.h; this event carries the
+// raw facts. `tools` names the calls the PREVIOUS round dispatched (empty on
+// round 0), `lastRound` means the forced final round is starting (the answer is
+// imminent - stay quiet), and `maxRounds` is the loop's round cap.
+struct TurnProgressEv {
+  std::string chatId;
+  int round = 0;
+  uint32_t elapsedMs = 0;
+  bool lastRound = false;
+  std::vector<std::string> tools;
+  int maxRounds = 0;
+};
+
 struct Hooks {
   std::function<void(const TurnStartEv&)> onTurnStart;
   std::function<void(const nimbus::orch::HeadToolCall&)> onToolCall;
   std::function<void(const nimbus::orch::HeadToolResult&)> onToolResult;
   std::function<void(const ThinkingEv&)> onThinking;
+  std::function<void(const TurnProgressEv&)> onTurnProgress;
   std::function<void(const TurnEndEv&)> onTurnEnd;
   std::function<void(const SpawnEv&)> onSpawn;
   std::function<void(const ResultEv&)> onResult;

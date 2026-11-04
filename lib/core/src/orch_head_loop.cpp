@@ -303,6 +303,28 @@ size_t refitOneRung(Transcript& tr, const HeadLoopHooks& hooks, size_t want, siz
   return freed;
 }
 
+// Fold rungs until `want` bytes are reclaimed (or a rung gives nothing more),
+// so ONE re-run fits: the real Waitrose case (Lumi, 4 Nov) folded 5582 B against
+// a 10418 B overshoot, re-ran, refused again at 85882 B, folded 1396 B more -
+// every extra refusal is a full body build and parse cycle spent discovering
+// what the first refusal already said. Each rung still gives up only what it
+// must: the remaining want and the clip cap are re-derived after every rung,
+// the same arithmetic a fresh refusal would apply, so folding several rungs in
+// one cycle clips nothing more than the old one-rung-per-refusal ladder did.
+size_t refitEnough(Transcript& tr, const HeadLoopHooks& hooks, size_t want, size_t have,
+                   size_t newest, const char*& what) {
+  size_t freed = 0;
+  for (int rung = 0; rung < kBudgetRefits; ++rung) {
+    const size_t remaining = want > freed ? want - freed : 1;
+    const size_t cap = have > remaining ? have - remaining : 1;   // trimToolOutputs(0) means no cap
+    const size_t got = refitOneRung(tr, hooks, remaining, cap, newest, what);
+    if (!got) break;
+    freed += got;
+    if (freed >= want) break;
+  }
+  return freed;
+}
+
 bool refitToBudget(const HeadStep& sr, const HeadLoopHooks& hooks, int round) {
   size_t budget = 0, size = 0;
   if (sr.ok || !hooks.transcript || !parseBodyBudgetError(sr.error, budget, size) || size <= budget)
@@ -311,9 +333,8 @@ bool refitToBudget(const HeadStep& sr, const HeadLoopHooks& hooks, int round) {
   const size_t have = tr.toolBytes();
   const size_t newest = newestRoundBytes(tr);
   const size_t want = (size - budget) + (have > newest ? kBudgetRefitSlack : kBudgetClipSlack);
-  const size_t cap = have > want ? have - want : 1;   // trimToolOutputs(0) means no cap
   const char* what = "";
-  const size_t freed = refitOneRung(tr, hooks, want, cap, newest, what);
+  const size_t freed = refitEnough(tr, hooks, want, have, newest, what);
   if (hooks.log)
     hooks.log("headloop: round " + std::to_string(round) + " body " + std::to_string(size) + " B over the " +
               std::to_string(budget) + " B budget - folded " + std::to_string(freed) + " B of " + what +
@@ -390,6 +411,7 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
   HeadOutcome out;
   const uint32_t start = hooks.nowMs ? hooks.nowMs() : 0;
   std::vector<HeadToolResult> prior;  // empty on the first step
+  std::vector<std::string> lastTools;   // the calls the previous round dispatched (progress)
   size_t totalBytes = 0;
   bool forceFinal = false;            // set by a stall / the byte budget
   std::string forceReason;
@@ -401,7 +423,9 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
   // (CUM-506), so both get the same clamp, spill, transcript and byte budget.
   auto dispatchAll = [&](const std::vector<HeadToolCall>& calls, int round) -> bool {
     bool allOk = true;
+    lastTools.clear();
     for (const HeadToolCall& call : calls) {
+      lastTools.push_back(call.name);
       HeadToolResult r = hooks.dispatch(call);
       if (r.id.empty()) r.id = call.id;      // default: echo the call id
       if (r.name.empty()) r.name = call.name;
@@ -449,6 +473,21 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
     }
     const bool lastChance = !reason.empty();
     const bool allowTools = !lastChance;
+
+    // Lane PROG: the round boundary - no provider request is in flight right
+    // now, the only moment a surface may signal work or look for queued
+    // messages. Fires before every step (round 0 included), with the calls the
+    // previous round dispatched, and `lastRound` set when this is the forced
+    // final round so a surface never says "still working" over an imminent
+    // answer. Observer-only.
+    if (hooks.progress) {
+      HeadProgress hp;
+      hp.round = round;
+      hp.elapsedMs = hooks.nowMs ? hooks.nowMs() - start : 0;
+      hp.lastRound = lastChance;
+      hp.tools = lastTools;
+      hooks.progress(hp);
+    }
 
     if (hooks.log) {
       std::string m = "headloop round=" + std::to_string(round) +

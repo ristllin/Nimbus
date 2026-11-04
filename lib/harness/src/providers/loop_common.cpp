@@ -501,6 +501,7 @@ void loopHooks(orch::HeadLoopHooks& hooks, const ProviderDeps& pd, const HeadToo
   hooks.largestBlock = pd.largestBlock;
   hooks.log      = [](const std::string& m) { hlog::logf("%s", m.c_str()); };
   hooks.onText   = ht.onRoundText;   // round prose -> engine (Glass Box A4)
+  hooks.progress = ht.onRoundProgress;   // round boundaries -> engine (lane PROG)
   hooks.spill    = ht.spill;         // clamped-result spill -> results ring
   hooks.transcript = &tr;            // the controller records; step() renders
   if (ht.fitPrompt) hooks.fitPrompt = rec.fitHook();
