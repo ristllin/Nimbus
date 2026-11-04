@@ -206,7 +206,7 @@ bool connectTg(WiFiClientSecure& sc) {
   tlsSetup(sc);
   sc.setHandshakeTimeout(10);
   for (int attempt = 0; attempt < 2; ++attempt) {
-    if (sc.connect(kHost, kPort, 10000)) return true;
+    if (connectHost(sc, kHost, kPort, 10000)) return true;
     tlsClose(sc);
     vTaskDelay(pdMS_TO_TICKS(400));
   }

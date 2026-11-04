@@ -155,7 +155,7 @@ struct TlsIo {
   // intermittently fail; a fresh socket clears it).
   bool connect() {
     for (int a = 0; a < 3 && !expired(); a++) {
-      if (client->connect(req.host.c_str(), req.port)) return true;
+      if (connectHost(*client, req.host.c_str(), req.port)) return true;
       close();
       if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
     }

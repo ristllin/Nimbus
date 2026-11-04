@@ -186,7 +186,7 @@ String refreshAccess(const Info& c) {
   tlsSetup(client);
   client.setHandshakeTimeout(12);
   client.setConnectionTimeout(15000);  // F25: real socket bound (setTimeout is inert here)
-  if (!client.connect(host.c_str(), 443)) {
+  if (!connectHost(client, host.c_str(), 443)) {
     slot.release();
     alogf("connectors: oauth connect %s failed", host.c_str());
     return "";
@@ -777,7 +777,7 @@ struct McpResp {
 // Open the socket (TLS or plain) with a short connect-retry, bounded by deadline.
 bool mcpConnect(Client& c, const UrlParts& u, uint32_t deadline) {
   for (int attempt = 0; attempt < 3 && (int32_t)(millis() - deadline) < 0; attempt++) {
-    if (c.connect(u.host.c_str(), u.port)) return true;
+    if (connectHost(c, u.host.c_str(), u.port)) return true;
     delay(400);
   }
   return false;

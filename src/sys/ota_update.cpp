@@ -393,7 +393,7 @@ static int httpsGetOnce(const UrlParts& u, ByteSink sink, void* ctx,
   client.setConnectionTimeout(15000);  // F25: real socket bound (setTimeout inert)
   bool connected = false;
   for (int a = 0; a < 2 && !connected; a++) {
-    if (client.connect(u.host.c_str(), u.port)) { connected = true; break; }
+    if (connectHost(client, u.host.c_str(), u.port)) { connected = true; break; }
     tlsClose(client);
     if (a < 1) vTaskDelay(pdMS_TO_TICKS(400));
   }

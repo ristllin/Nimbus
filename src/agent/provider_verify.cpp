@@ -411,7 +411,7 @@ static bool fetchAnthropicPage(nimbus::orch::ModelHarvest& h, const String& key,
   c.setHandshakeTimeout(12);
   c.setConnectionTimeout(15000);
   bool more = false;
-  if (!c.connect(ANTHROPIC_HOST, 443)) {
+  if (!connectHost(c, ANTHROPIC_HOST, 443)) {
     h.cut = true;
   } else {
     c.print(String("GET /v1/models?limit=100&after_id=") + after.c_str() +
@@ -632,7 +632,7 @@ static nimbus::orch::ProbeVerdict probeModel(const String& provider, const Strin
   tlsSetup(client);
   client.setHandshakeTimeout(12);
   client.setConnectionTimeout(15000);
-  if (!client.connect(host, 443)) return nimbus::orch::ProbeVerdict::Unknown;
+  if (!connectHost(client, host, 443)) return nimbus::orch::ProbeVerdict::Unknown;
   client.print(req);
   String errBody;
   const int code = readProbeResponse(client, errBody, 4096);   // room for the answer's usage
@@ -707,7 +707,7 @@ static bool zaiHostAnswers(const char* h, const String& key) {
   tlsSetup(client);
   client.setHandshakeTimeout(12);
   client.setConnectionTimeout(15000);
-  if (!client.connect(h, 443)) return false;
+  if (!connectHost(client, h, 443)) return false;
   String req = String("GET ") + ZAI_BASE_PATH + "/models HTTP/1.0\r\nHost: " + h +
                "\r\nAuthorization: Bearer " + key +
                "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
@@ -750,7 +750,7 @@ static void syncCumuloFallbacks(const char* host, const String& key) {
   tlsSetup(client);
   client.setHandshakeTimeout(12);
   client.setConnectionTimeout(15000);
-  if (!client.connect(host, 443)) return;
+  if (!connectHost(client, host, 443)) return;
   String req = String("GET /fallbacks HTTP/1.0\r\nHost: ") + host +
                "\r\nAuthorization: Bearer " + key +
                "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
@@ -775,7 +775,7 @@ static FetchIo mistralConnectorsIo(WiFiClientSecure& client, const String& key) 
   FetchIo io;
   io.turnInFlight = [] { return orchestrator::turnInFlight(); };
   io.connect = [&client, &key]() {
-    if (!client.connect(MISTRAL_HOST, 443)) return false;
+    if (!connectHost(client, MISTRAL_HOST, 443)) return false;
     client.print(String("GET /v1/connectors?page_size=100 HTTP/1.0\r\nHost: ") + MISTRAL_HOST +
                  "\r\nAuthorization: Bearer " + key +
                  "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n");
@@ -1040,7 +1040,7 @@ static void runOne() {
     const uint32_t connectMs = g_inline ? runWaitMs(8000) : 15000;
     client.setHandshakeTimeout(g_inline ? (connectMs + 999) / 1000 : 12);
     client.setConnectionTimeout(connectMs);  // F25: real socket bound (setTimeout inert)
-    if (connectMs && client.connect(host, 443)) {
+    if (connectMs && connectHost(client, host, 443)) {
       // Tavily: a minimal POST /search proves the key does real work; the others
       // stay GET-shaped.
       const char* body = isTav ? "{\"query\":\"ping\",\"max_results\":1}" : nullptr;

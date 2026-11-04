@@ -1,0 +1,24 @@
+crash fp=7f7617df task=relay why=assert failed: udp_new_ip_type /IDF/components/lwip/lwip/src/core/udp.c:1278 (Required to lock TCPIP core functionality!)
+  0x40382d3d: panic_abort at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/panic.c:477
+  0x40382d05: esp_system_abort at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/port/esp_system_chip.c:87
+  0x4038a752: __assert_func at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/newlib/src/assert.c:81
+  0x422d3fca: udp_new_ip_type at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/lwip/src/core/udp.c:1278 (discriminator 1)
+  0x422cca1c: dns_alloc_random_port at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/lwip/src/core/dns.c:978
+   (inlined by) dns_alloc_pcb at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/lwip/src/core/dns.c:1018
+   (inlined by) dns_enqueue at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/lwip/src/core/dns.c:1636
+   (inlined by) dns_gethostbyname_addrtype at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/lwip/src/core/dns.c:1817
+  0x422cca7d: dns_gethostbyname at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/lwip/src/core/dns.c:1691
+  0x422cb696: sntp_request at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/lwip/src/apps/sntp/sntp.c:639
+  0x422cb752: sntp_try_next_server at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/lwip/src/apps/sntp/sntp.c:433
+  0x422cb7ce: sntp_dns_found at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/lwip/src/apps/sntp/sntp.c:616
+   (inlined by) sntp_dns_found at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/lwip/src/apps/sntp/sntp.c:603
+  0x422cbbab: dns_call_found at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/lwip/src/core/dns.c:1071
+  0x422cc649: dns_clear_cache at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/lwip/src/core/dns.c:414
+  0x4200ed96: NetworkManager::hostByName(char const*, IPAddress&) at /Users/roydarnell/.platformio/packages/framework-arduinoespressif32/libraries/Network/src/NetworkManager.cpp:84
+  0x421a5609: NetworkClientSecure::connect(char const*, unsigned short, char const*, char const*, char const*) at /Users/roydarnell/.platformio/packages/framework-arduinoespressif32/libraries/NetworkClientSecure/src/NetworkClientSecure.cpp:140
+  0x421a573e: NetworkClientSecure::connect(char const*, unsigned short) at /Users/roydarnell/.platformio/packages/framework-arduinoespressif32/libraries/NetworkClientSecure/src/NetworkClientSecure.cpp:126
+   (inlined by) NetworkClientSecure::connect(char const*, unsigned short) at /Users/roydarnell/.platformio/packages/framework-arduinoespressif32/libraries/NetworkClientSecure/src/NetworkClientSecure.cpp:122
+  0x42390695: NetworkClientSecure::connect(char const*, unsigned short, long) at /Users/roydarnell/.platformio/packages/framework-arduinoespressif32/libraries/NetworkClientSecure/src/NetworkClientSecure.cpp:131
+  0x4225a7c2: nimbus::relay::(anonymous namespace)::relayTask(void*) at /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/bench/wt/b500-28813029/src/net/relay_client.cpp:1494 (discriminator 1)
+   (inlined by) runSession at /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/bench/wt/b500-28813029/src/net/relay_client.cpp:1536 (discriminator 1)
+   (inlined by) relayTask at /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/bench/wt/b500-28813029/src/net/relay_client.cpp:1661 (discriminator 1)

@@ -27,6 +27,7 @@ import check_config_mapping
 import check_critical_sections
 import check_driver_pin
 import check_elf_symbols
+import check_lwip_core_lock
 import check_ota_preserves_nvs
 import check_release_notes
 import check_sram_staging
@@ -142,6 +143,7 @@ def run_host_checks() -> bool:
         ("model-id lint (p18-N)", model_id_lint.main),
         ("static-dram ceiling (p18-DEF)", check_static_dram.main),
         ("nothing logs under a spinlock", check_critical_sections.main),
+        ("lwip core lock (CRASH2 A03)", check_lwip_core_lock.main),
         ("release notes line (D5)", check_release_notes.main),
     ):
         rc = fn([])

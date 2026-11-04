@@ -171,7 +171,7 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
     bool connected = false;
     const int attempts = web ? 1 : 3;
     for (int attempt = 0; attempt < attempts && !connected; attempt++) {
-      if (client.connect(host.c_str(), 443)) { connected = true; break; }
+      if (connectHost(client, host.c_str(), 443)) { connected = true; break; }
       tlsClose(client);
       if (attempt < attempts - 1) vTaskDelay(pdMS_TO_TICKS(400));
     }

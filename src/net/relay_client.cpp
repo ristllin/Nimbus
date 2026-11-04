@@ -882,7 +882,7 @@ int httpsPostJson(const String& host, const char* path, const String& reqBody, S
   WiFiClientSecure c;
   relayTlsSetup(c);
   int status = -1;
-  const bool connected = c.connect(host.c_str(), kTlsPort, kConnectTimeoutMs);
+  const bool connected = connectHost(c, host.c_str(), kTlsPort, kConnectTimeoutMs);
   const uint32_t connMs = millis() - t0;
   if (connected) {
     String req = String("POST ") + path + " HTTP/1.1\r\nHost: " + host +
@@ -1491,7 +1491,7 @@ Dial dialSession(const String& host, const String& deviceId, const String& cred,
   agent::alogf("relay: dial host=%s:%u path=%s id=%s", host.c_str(), (unsigned)kTlsPort,
                kWsPath, deviceId.c_str());
   const uint32_t tlsT0 = millis();
-  const bool tlsOk = g_ws->connect(host.c_str(), kTlsPort, kConnectTimeoutMs);
+  const bool tlsOk = connectHost(*g_ws, host.c_str(), kTlsPort, kConnectTimeoutMs);
   const uint32_t tlsMs = millis() - tlsT0;
   agent::alogf("relay: tls %s in %ums", tlsOk ? "ok" : "FAIL", tlsMs);
   if (!tlsOk) {

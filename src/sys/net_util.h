@@ -1,6 +1,7 @@
 #pragma once
 #include <WiFiClientSecure.h>
 #include <lwip/sockets.h>
+#include <lwip/tcpip.h>   // LOCK_TCPIP_CORE / sys_thread_tcpip (hostByNameLocked, connectHost)
 
 // agent::store::tlsVerify() - the outbound-TLS security switch. Forward-declared
 // (not #include "agent/store.h") so this sys-level header carries no dependency
@@ -60,4 +61,47 @@ inline void tlsClose(WiFiClientSecure& c) {
     setsockopt(fd, SOL_SOCKET, SO_LINGER, &so, sizeof(so));
   }
   c.stop();
+}
+
+// --- lwIP TCPIP core lock (bench A03, fp=7f7617df, candidate 28813029) ---------
+// NetworkManager::hostByName() calls the RAW lwIP dns_clear_cache() when an interface
+// IP state just flipped (NetworkManager.cpp:84 - exactly the Wi-Fi drop/rejoin case)
+// WITHOUT holding the TCPIP core lock. dns_clear_cache() synchronously fires every
+// pending DNS callback (dns.c:414 -> dns_call_found), so with SNTP's lookup pending
+// the chain sntp_dns_found -> sntp_request -> dns_gethostbyname -> dns_alloc_random_port
+// -> udp_new_ip_type hits LWIP_ASSERT_CORE_LOCKED() and panics the calling task
+// (decoded frame by frame in evidence/crash2/a03-decode-28813029.txt: task=relay via
+// WiFiClientSecure::connect -> hostByName -> dns_clear_cache). Every hostname resolve
+// in the firmware therefore goes through hostByNameLocked(), and every host-based
+// connect through connectHost(), which resolves under the lock first: the IP-state
+// flip is consumed and the DNS cache warmed while the lock is held, so the core's own
+// hostByName inside connect() then performs no raw lwIP call. The core lock is a
+// non-recursive mutex with a per-thread holder mark, hence the own-query guard.
+// tools/release_gate/check_lwip_core_lock.py fails the release on any bare hostByName,
+// any raw lwIP core call outside a LOCK_TCPIP_CORE region, or any host-based connect
+// that does not go through connectHost().
+inline bool hostByNameLocked(const char* host, IPAddress& out) {
+  const bool own = sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER);
+  if (!own) LOCK_TCPIP_CORE();
+  const int ok = Network.hostByName(host, out);
+  if (!own) UNLOCK_TCPIP_CORE();
+  return ok == 1;
+}
+
+// Host-based connect with the resolve under the TCPIP core lock (see above). Use this
+// for EVERY connect(host, ...); connecting by IPAddress stays direct (no DNS inside).
+inline int connectHost(Client& c, const char* host, uint16_t port) {
+  IPAddress warm;
+  hostByNameLocked(host, warm);
+  return c.connect(host, port);
+}
+inline int connectHost(WiFiClientSecure& c, const char* host, uint16_t port) {
+  IPAddress warm;
+  hostByNameLocked(host, warm);
+  return c.connect(host, port);
+}
+inline int connectHost(WiFiClientSecure& c, const char* host, uint16_t port, int32_t timeoutMs) {
+  IPAddress warm;
+  hostByNameLocked(host, warm);
+  return c.connect(host, port, timeoutMs);
 }

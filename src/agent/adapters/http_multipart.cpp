@@ -98,7 +98,7 @@ bool post(const char* host, int port, const char* path, const String& bearer,
   if (connectBudgetMs) {
     const uint32_t t0 = millis();
     IPAddress ip;
-    if (!WiFi.hostByName(host, ip)) {
+    if (!hostByNameLocked(host, ip)) {   // locked: bench A03 fp=7f7617df (dns_clear_cache unlocked on the IP-state flip)
       err = nimbus::voice::kErrConnectFailed;
       alogf("multipart: resolve %s failed", host);
       return false;
@@ -126,7 +126,7 @@ bool post(const char* host, int port, const char* path, const String& bearer,
       c.setConnectionTimeout(left);
       c.setHandshakeTimeout(std::max<uint32_t>(1, std::min<uint32_t>(12, left / 1000)));
     }
-    if (c.connect(host, port)) { connected = true; break; }
+    if (connectHost(c, host, port)) { connected = true; break; }
     tlsClose(c);
     if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
   }

@@ -111,7 +111,7 @@ void setWhy(String* why, const String& s) {
 // Connect within the request's window: up to three attempts, 400 ms apart.
 bool connectTts(WiFiClientSecure& c, const String& host, uint32_t deadline) {
   for (int a = 0; a < 3 && (int32_t)(millis() - deadline) < 0; a++) {
-    if (c.connect(host.c_str(), 443)) return true;
+    if (connectHost(c, host.c_str(), 443)) return true;
     tlsClose(c);
     if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
   }

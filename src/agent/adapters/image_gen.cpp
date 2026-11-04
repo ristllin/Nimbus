@@ -82,7 +82,7 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
   const char* host = "api.openai.com";
   bool connected = false;
   for (int a = 0; a < 3 && !connected && (int32_t)(millis() - deadline) < 0; a++) {
-    if (c.connect(host, 443)) { connected = true; break; }
+    if (connectHost(c, host, 443)) { connected = true; break; }
     tlsClose(c);
     if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
   }

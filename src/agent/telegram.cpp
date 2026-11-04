@@ -524,7 +524,7 @@ bool tlsConnect(WiFiClientSecure& sc) {
   tlsSetup(sc);
   sc.setHandshakeTimeout(CONNECT_TIMEOUT / 1000);   // seconds
   for (int attempt = 1; attempt <= 2; attempt++) {
-    if (sc.connect(TG_HOST, TG_PORT, (int32_t)CONNECT_TIMEOUT)) return true;
+    if (connectHost(sc, TG_HOST, TG_PORT, (int32_t)CONNECT_TIMEOUT)) return true;
     tlsClose(sc);
     if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(400));
   }
