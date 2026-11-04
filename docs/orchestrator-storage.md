@@ -673,10 +673,27 @@ tiny card:     {present:false, unsupported:true, files:[]}
 
 ## 5d. A full file store
 
-The store refuses a new file when it is out of entries (256 by default) or out of
-quota (`FileStore::fullRefusal` tells these apart from a refused request such as a bad
-name or one file over its size limit, and from a card below the supported size). A
-full store is told to the owner **once per episode**, never per item:
+The store has **no entry-count cap**: the index scales with the card (owner ruling
+R6, no SD file cap), and an upgrade keeps every existing row whatever the old limit
+said. The only space limit is the **byte quota** from §5c, so a save refuses only
+when the card-scaled quota is genuinely reached (`FileStore::fullRefusal` tells that
+apart from a refused request such as a bad name or one file over its size limit, and
+from a card below the supported size). Listings and searches stay bounded per call
+however large the index grows: `GET /api/files/list` and the `files.list` tool page
+with `limit`/`offset` (default page 1000, ceiling 2000; the payload's `count` is the
+total, `shown` the page), and `files.search` scans at most the newest 512 readable
+text documents per call and says when older ones were not scanned.
+
+When the byte quota is the blocker, the save path first **reclaims the oldest
+regenerable copies** - chat-attachment copies (the Telegram archive keeps the
+original, and Telegram can re-serve it by file id) and same-content duplicates -
+oldest first, until the new file fits. The owner's own artifacts are never
+eviction candidates. A reclaim that cannot cover the need evicts nothing: the save
+refuses rather than losing copies for nothing. When a save lands only because
+copies were reclaimed, the owner hears it **once per episode**, in plain words, as
+a second device notice alongside the full-store one.
+
+A full store is told to the owner **once per episode**, never per item:
 
 - **The episode starts** with the first save the owner did not watch fail: an inbound
   Telegram photo or file, an assistant save (`artifact.save`, `files.append`,
@@ -698,8 +715,10 @@ full store is told to the owner **once per episode**, never per item:
   that lands in between does not end it. The state is RAM only (no settings key), so
   a restart mid-episode tells the owner once more.
 
-The rule keys on the store's own full refusal, never on the number, so it holds when
-the entry limit or the quota changes.
+The rule keys on the store's own full refusal, never on a count, so it holds when
+the quota changes. (The old 256-entry cap is gone: `FileStore::maxEntries` defaults
+to uncapped, and `load()` keeps every valid row, so a device at the old cap upgrades
+in place and loses nothing.)
 
 ## 6. Implementation phases (value × testability)
 

@@ -207,6 +207,62 @@ static void test_other_refusals_never_tell() {
   TEST_ASSERT_FALSE(ep.takeNotice());
 }
 
+// ---- lane FSCAP: the reclaim notice (space limit reached, regenerable copies went first) ----
+
+// The store's byte quota was reached and the oldest regenerable copies were
+// reclaimed: the owner hears it once per episode, however many saves reclaim.
+static void test_reclaim_notice_once_per_episode() {
+  StoreFullEpisode ep;
+  int notices = 0;
+  for (int k = 0; k < 20; ++k) {
+    TEST_ASSERT_EQUAL(k == 0, ep.reclaimed());   // true only when it starts the episode
+    notices += ep.takeReclaimNotice();
+  }
+  TEST_ASSERT_EQUAL_INT(1, notices);
+  TEST_ASSERT_TRUE(ep.active());
+  // Making room ends the episode and drops a notice not yet taken.
+  ep.room();
+  TEST_ASSERT_FALSE(ep.active());
+  TEST_ASSERT_FALSE(ep.takeReclaimNotice());
+  // A new episode raises exactly one more.
+  TEST_ASSERT_TRUE(ep.reclaimed());
+  TEST_ASSERT_TRUE(ep.takeReclaimNotice());
+  TEST_ASSERT_FALSE(ep.takeReclaimNotice());
+}
+
+// A full refusal already raised this episode: the reclaim notice does not stack a
+// second owner message on it (the owner hears it once).
+static void test_reclaim_does_not_stack_on_a_full_notice() {
+  StoreFullEpisode ep;
+  TEST_ASSERT_TRUE(ep.refused(true));
+  TEST_ASSERT_TRUE(ep.takeNotice());
+  TEST_ASSERT_FALSE(ep.reclaimed());         // same episode: no second notice
+  TEST_ASSERT_FALSE(ep.takeReclaimNotice());
+  // And the other way round: a reclaim first, then a refusal, still one notice.
+  StoreFullEpisode ep2;
+  TEST_ASSERT_TRUE(ep2.reclaimed());
+  TEST_ASSERT_TRUE(ep2.takeReclaimNotice());
+  TEST_ASSERT_TRUE(ep2.refused(true));
+  TEST_ASSERT_FALSE(ep2.takeNotice());
+}
+
+// The reclaim notice's words: plain device copy (no I/me/my, no em dash, ASCII),
+// says what happened, that the owner's own files were not touched, and the one
+// next step; names no fixed count.
+static void test_reclaim_notice_words() {
+  const std::string n = kStoreReclaimNotice;
+  TEST_ASSERT_FALSE(hasEmDash(n));
+  TEST_ASSERT_TRUE(printableAscii(n));
+  TEST_ASSERT_TRUE(n.find("space limit") != std::string::npos);
+  TEST_ASSERT_TRUE(n.find("removed to make room") != std::string::npos);
+  TEST_ASSERT_TRUE(n.find("Your own files were not touched") != std::string::npos);
+  TEST_ASSERT_TRUE(n.find("web page") != std::string::npos);
+  TEST_ASSERT_TRUE(n.find("256") == std::string::npos);
+  for (const char* first : {" I ", " me ", " my ", "I'm", "!"})
+    TEST_ASSERT_TRUE_MESSAGE(n.find(first) == std::string::npos, first);
+  TEST_ASSERT_EQUAL_CHAR('.', n.back());
+}
+
 // ---- the words ----------------------------------------------------------------
 
 // The owner notice: plain device copy (no I/me/my, no em dash, ASCII), says what
@@ -318,6 +374,9 @@ int main() {
   RUN_TEST(test_making_room_ends_the_episode);
   RUN_TEST(test_room_before_the_notice_drops_it);
   RUN_TEST(test_other_refusals_never_tell);
+  RUN_TEST(test_reclaim_notice_once_per_episode);
+  RUN_TEST(test_reclaim_does_not_stack_on_a_full_notice);
+  RUN_TEST(test_reclaim_notice_words);
   RUN_TEST(test_owner_notice_words);
   RUN_TEST(test_head_fact_words);
   RUN_TEST(test_tool_note_words);

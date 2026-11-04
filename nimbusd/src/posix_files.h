@@ -64,17 +64,35 @@ class PosixFiles {
   void registerTools(nimbus::orch::ToolRegistry& reg) {
     addOwnerOnly(reg, "files.list",
             "List stored files. Optional 'project' narrows to one project. "
-            "Returns one 'project/name (N bytes)' per line.",
+            "Returns one 'project/name (N bytes)' per line. Lane FSCAP: the listing is "
+            "bounded per call - 'limit' (default 1000, max 2000) entries after "
+            "'offset'; the reply says how many there are in all.",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
               const std::string proj = str(a, "project");
+              size_t limit = a["limit"].is<double>() ? (size_t)a["limit"].as<double>() : 0;
+              size_t offset = a["offset"].is<double>() ? (size_t)a["offset"].as<double>() : 0;
+              if (limit == 0 || limit > kListPageMax) limit = kListPageDefault;
               std::string out;
-              for (const auto* e : store_.list(proj))
-                out += e->project + "/" + e->name + " (" +
-                       std::to_string(e->bytes) + " bytes)\n";
-              return out.empty() ? nimbus::orch::ToolResult::ok("(no files)")
-                                 : nimbus::orch::ToolResult::ok(out);
+              size_t shown = 0;
+              for (size_t base = offset; shown < limit; base += kListPageChunk) {
+                const auto page = store_.listPage(proj, base, kListPageChunk);
+                if (page.empty()) break;
+                for (const auto* e : page) {
+                  if (shown >= limit) break;
+                  out += e->project + "/" + e->name + " (" +
+                         std::to_string(e->bytes) + " bytes)\n";
+                  ++shown;
+                }
+              }
+              if (out.empty()) return nimbus::orch::ToolResult::ok("(no files)");
+              const size_t total = store_.count();
+              if (shown < total)
+                out = "(showing " + std::to_string(shown) + " of " + std::to_string(total) +
+                      " files; pass offset to page)\n" + out;
+              return nimbus::orch::ToolResult::ok(out);
             },
-            R"({"type":"object","properties":{"project":{"type":"string"}}})");
+            R"({"type":"object","properties":{"project":{"type":"string"},)"
+            R"("limit":{"type":"number"},"offset":{"type":"number"}}})");
 
     addOwnerOnly(reg, "artifact.save",
             "Save a text file under a project. Overwrites an existing file of the same name.",
@@ -174,6 +192,11 @@ class PosixFiles {
   }
   size_t count() const { return store_.count(); }
   uint64_t totalBytes() const { return store_.totalBytes(); }
+  // Lane FSCAP: the byte quota is the store's real space limit (the entry count
+  // is uncapped by default); the daemon config / tests set it here, as the device
+  // sets it from the real card size at mount.
+  void setLimits(const nimbus::orch::FileStore::Limits& l) { store_.setLimits(l); }
+  const nimbus::orch::FileStore& store() const { return store_; }
 
   // Files that look like the owner's food or weight plan (food_ledger.h), newest first.
   std::vector<std::string> foodPlanFiles() const {
@@ -191,15 +214,30 @@ class PosixFiles {
 
   // ---- the web app's Files panel (device /api/files/*, CUM-543) ----
   // The listing in the device's shape (web_files.cpp + files_subsystem listJson).
-  void listInto(JsonArray arr, const std::string& project) const {
-    for (const auto* e : store_.list(project)) {
-      JsonObject o = arr.add<JsonObject>();
-      o["project"] = e->project;
-      o["name"] = e->name;
-      o["bytes"] = e->bytes;
-      o["kind"] = nimbus::orch::fileKindName(e->kind);
-      o["createdAt"] = e->createdAt;
+  // Lane FSCAP: bounded per call - at most `limit` entries after `offset`
+  // (0/0 = the default page); the payload's count says the total.
+  static constexpr size_t kListPageDefault = 1000;
+  static constexpr size_t kListPageMax = 2000;
+  static constexpr size_t kListPageChunk = 512;
+  size_t listInto(JsonArray arr, const std::string& project, size_t limit = 0,
+                  size_t offset = 0) const {
+    if (limit == 0 || limit > kListPageMax) limit = kListPageDefault;
+    size_t shown = 0;
+    for (size_t base = offset; shown < limit; base += kListPageChunk) {
+      const auto page = store_.listPage(project, base, kListPageChunk);
+      if (page.empty()) break;
+      for (const auto* e : page) {
+        if (shown >= limit) break;
+        JsonObject o = arr.add<JsonObject>();
+        o["project"] = e->project;
+        o["name"] = e->name;
+        o["bytes"] = e->bytes;
+        o["kind"] = nimbus::orch::fileKindName(e->kind);
+        o["createdAt"] = e->createdAt;
+        ++shown;
+      }
     }
+    return shown;
   }
   // Store an uploaded file (any bytes) under the same traversal gate as the tools.
   bool put(const std::string& p, const std::string& n, const std::string& bytes, std::string& err) {
@@ -237,10 +275,42 @@ class PosixFiles {
     return root_ + "/" + p + "/" + n;
   }
 
+  // Lane FSCAP: evict the oldest regenerable copies (chat attachments, same-hash
+  // duplicates - never an owner artifact) until `addBytes` fits under the byte
+  // quota, mirroring the device's reclaimRoomLocked. Returns true when anything
+  // was reclaimed; the caller re-checks wouldExceed afterwards.
+  bool reclaimRoom(const std::string& p, const std::string& n, uint64_t addBytes) {
+    const nimbus::orch::FileEntry* cur = store_.find(p, n);
+    const uint64_t replaced = cur ? cur->bytes : 0;
+    const uint64_t total = store_.totalBytes();
+    const uint64_t quota = store_.limits().maxTotalBytes;
+    const uint64_t over = total - replaced + addBytes;
+    if (over <= quota) return false;
+    const auto plan = store_.planEviction(over - quota);
+    if (plan.empty()) return false;
+    uint64_t cover = 0;
+    for (const auto* e : plan) cover += e->bytes;
+    if (cover < over - quota) return false;   // the copies cannot cover the need: evicting them would lose data for a save that still refuses
+    // Copy the identities FIRST: remove() erases from the index vector and shifts
+    // the rest, so a plan pointer read after a remove names the wrong entry.
+    struct Victim { std::string project, name; };
+    std::vector<Victim> victims;
+    victims.reserve(plan.size());
+    for (const auto* e : plan) victims.push_back(Victim{e->project, e->name});
+    for (const auto& v : victims) {
+      ::unlink(bytesPath(v.project, v.name).c_str());
+      store_.remove(v.project, v.name);
+    }
+    fsutil::writeFileAtomic(indexPath(), store_.dump());
+    return true;
+  }
+
   // The store's limits are checked BEFORE the first byte lands: a refused file
   // (past the entry or byte cap) must leave nothing on the volume, since the index
   // is what the Files panel lists and deletes by, and an unindexed file could never
-  // be seen or reclaimed from the app.
+  // be seen or reclaimed from the app. Lane FSCAP: when the BYTE quota is the
+  // blocker, the oldest regenerable copies (chat attachments, same-hash duplicates)
+  // are evicted first so the save lands; owner artifacts are never evicted.
   bool save(const std::string& p, const std::string& n, const std::string& text,
             std::string& err) {
     if (!nimbus::orch::FileStore::validSegment(p, 24) ||
@@ -248,7 +318,10 @@ class PosixFiles {
       err = "invalid project or name";
       return false;
     }
-    if (store_.wouldExceed(p, n, text.size(), err)) return false;
+    if (store_.wouldExceed(p, n, text.size(), err)) {
+      if (err == nimbus::orch::FileStore::kErrStoreFull) reclaimRoom(p, n, text.size());
+      if (store_.wouldExceed(p, n, text.size(), err)) return false;
+    }
     const bool replacing = store_.find(p, n) != nullptr;
     if (!fsutil::writeFileAtomic(bytesPath(p, n), text)) {
       err = "write failed";
@@ -285,7 +358,11 @@ class PosixFiles {
       err = plan.err;
       return false;
     }
-    if (store_.wouldExceed(p, n, cur.size() + plan.bytes.size(), err)) return false;
+    if (store_.wouldExceed(p, n, cur.size() + plan.bytes.size(), err)) {
+      if (err == nimbus::orch::FileStore::kErrStoreFull)
+        reclaimRoom(p, n, cur.size() + plan.bytes.size());
+      if (store_.wouldExceed(p, n, cur.size() + plan.bytes.size(), err)) return false;
+    }
     ::mkdir((root_ + "/" + p).c_str(), 0755);
     FILE* f = std::fopen(bytesPath(p, n).c_str(), "ab");
     if (!f) {
@@ -344,7 +421,10 @@ class PosixFiles {
       return false;
     }
     if (up.changed) {
-      if (store_.wouldExceed(p, n, up.out.size(), out.err)) return false;
+      if (store_.wouldExceed(p, n, up.out.size(), out.err)) {
+        if (out.err == nimbus::orch::FileStore::kErrStoreFull) reclaimRoom(p, n, up.out.size());
+        if (store_.wouldExceed(p, n, up.out.size(), out.err)) return false;
+      }
       if (!fsutil::writeFileAtomic(bytesPath(p, n), up.out)) {
         out.err = "write failed";
         return false;

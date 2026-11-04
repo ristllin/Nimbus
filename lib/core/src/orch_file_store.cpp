@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 
 namespace nimbus::orch {
 
@@ -106,7 +107,11 @@ const char FileStore::kErrTooManyFiles[] = "too many files (remove some first)";
 const char FileStore::kErrStoreFull[] = "store full (artifacts are never auto-deleted - remove some first)";
 
 bool FileStore::fullRefusal(const std::string& err) const {
-  return (err == kErrTooManyFiles && lim_.maxEntries > 0) || (err == kErrStoreFull && lim_.maxTotalBytes > 0);
+  // Lane FSCAP: with no entry cap (the default) a count refusal cannot occur and
+  // is not reported as fullness; a zero entry limit (a store that takes nothing)
+  // is not fullness either.
+  return (err == kErrTooManyFiles && lim_.maxEntries > 0 && lim_.maxEntries != kNoEntryCap) ||
+         (err == kErrStoreFull && lim_.maxTotalBytes > 0);
 }
 
 bool FileStore::wouldExceed(const std::string& project, const std::string& name,
@@ -164,6 +169,79 @@ std::vector<const FileEntry*> FileStore::list(const std::string& project) const 
   return out;
 }
 
+std::vector<const FileEntry*> FileStore::listPage(const std::string& project, size_t offset,
+                                                  size_t limit) const {
+  std::vector<const FileEntry*> out;
+  size_t seen = 0;
+  for (const auto& e : entries_) {
+    if (!project.empty() && e.project != project) continue;
+    if (seen++ < offset) continue;
+    if (limit && out.size() >= limit) break;
+    out.push_back(&e);
+  }
+  return out;
+}
+
+// ---- regenerable copies (lane FSCAP eviction) --------------------------------
+
+bool FileStore::isRegenerableCopy(const FileEntry& e) const {
+  if (isAttachmentProject(e.project)) return true;
+  if (!e.hash) return false;
+  // A newer entry holding the same content makes this one the older copy.
+  for (size_t j = 0; j < entries_.size(); ++j) {
+    const FileEntry& o = entries_[j];
+    if (o.hash != e.hash || !o.hash) continue;
+    if (o.createdAt > e.createdAt) return true;
+    if (o.createdAt == e.createdAt && &o > &e) return true;
+  }
+  return false;
+}
+
+std::vector<const FileEntry*> FileStore::planEviction(uint64_t needBytes) const {
+  // O(n log n), not O(n^2): isRegenerableCopy's same-hash test is a linear scan, so
+  // calling it per entry would be quadratic at 10,000 files. One sort by
+  // (hash, createdAt, index) marks the newest entry of each content group; every
+  // other entry of a non-zero-hash group is an older copy.
+  std::vector<const FileEntry*> byHash;
+  byHash.reserve(entries_.size());
+  for (const auto& e : entries_) byHash.push_back(&e);
+  std::sort(byHash.begin(), byHash.end(),
+            [](const FileEntry* a, const FileEntry* b) {
+              if (a->hash != b->hash) return a->hash < b->hash;
+              if (a->createdAt != b->createdAt) return a->createdAt < b->createdAt;
+              return a < b;
+            });
+  std::vector<char> newestOfHash(entries_.size(), 0);
+  for (size_t i = 0; i < byHash.size();) {
+    size_t j = i;
+    while (j < byHash.size() && byHash[j]->hash == byHash[i]->hash) ++j;
+    if (byHash[i]->hash != 0 && j > i)
+      newestOfHash[size_t(byHash[j - 1] - entries_.data())] = 1;   // the group's last = newest
+    i = j;
+  }
+  std::vector<const FileEntry*> cands;
+  cands.reserve(entries_.size() / 4 + 8);
+  for (size_t i = 0; i < entries_.size(); ++i) {
+    const FileEntry& e = entries_[i];
+    if (isAttachmentProject(e.project)) cands.push_back(&e);
+    else if (e.hash && !newestOfHash[i]) cands.push_back(&e);
+  }
+  // Oldest first: createdAt, then index order (stable).
+  std::stable_sort(cands.begin(), cands.end(),
+                   [](const FileEntry* a, const FileEntry* b) {
+                     if (a->createdAt != b->createdAt) return a->createdAt < b->createdAt;
+                     return a < b;
+                   });
+  std::vector<const FileEntry*> plan;
+  uint64_t freed = 0;
+  for (const FileEntry* e : cands) {
+    if (freed >= needBytes) break;
+    plan.push_back(e);
+    freed += e->bytes;
+  }
+  return plan;
+}
+
 std::vector<std::string> FileStore::projects() const {
   std::vector<std::string> out;
   for (const auto& e : entries_)
@@ -215,6 +293,11 @@ bool FileStore::load(const std::string& blob) {
   };
   std::string line;
   if (!nextLine(line) || line != "FILESv1") return false;
+  // Lane FSCAP: the duplicate lookup is a map, not a per-row linear scan - at
+  // 10,000 rows indexOf() per row is quadratic and the boot-time load is the one
+  // call that must stay bounded as the index scales with the card.
+  std::unordered_map<std::string, size_t> byFolded;
+  byFolded.reserve(1024);
   while (nextLine(line)) {
     if (line.empty()) continue;
     // split on tabs into 8 fields, plus an OPTIONAL 9th (v3.7.0 owner);
@@ -259,12 +342,17 @@ bool FileStore::load(const std::string& blob) {
     // owner passes every ownership check on it. If NO row of the group is
     // owner-controlled (two members fought over one name pre-fix), the FIRST
     // row wins: pre-fix first-writer semantics, fail-closed for the later dup.
-    const int dup = indexOf(e.project, e.name);
-    if (dup < 0) {
-      if (entries_.size() < lim_.maxEntries) entries_.push_back(e);
-    } else if (ownerControlled(e) && !ownerControlled(entries_[size_t(dup)])) {
-      entries_[size_t(dup)] = e;   // the owner's row takes the identity over
-    }                               // else: the earlier row already rules this file
+    const std::string folded = words::lowerAscii(e.project) + '\t' + words::lowerAscii(e.name);
+    const auto dupIt = byFolded.find(folded);
+    if (dupIt == byFolded.end()) {
+      // Lane FSCAP: load() keeps every valid row whatever the entry limit says -
+      // an upgrade (or a downgrade-then-upgrade) never loses a file. The limit
+      // gates new adds in wouldExceed, not what persistence keeps.
+      byFolded.emplace(folded, entries_.size());
+      entries_.push_back(e);
+    } else if (ownerControlled(e) && !ownerControlled(entries_[dupIt->second])) {
+      entries_[dupIt->second] = e;   // the owner's row takes the identity over
+    }                                // else: the earlier row already rules this file
   }
   return true;
 }

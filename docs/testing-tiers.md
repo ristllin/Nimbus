@@ -153,6 +153,30 @@ Every crash leaves a durable, readable cause, read on the next boot from the cor
   checks the built test image: the compiler once deleted the null store and turned the stack
   recursion into a loop, so those two kinds armed nothing.
 
+## File-store scale leg
+
+The artifact store's index scales with the card: no entry-count cap an owner can hit
+(owner ruling R6), the card-scaled byte quota is the only space limit, and per-call
+listings/searches stay bounded however large the index grows.
+
+- Host (T1): `test/test_file_store_scale` - the 257th and 10,000th file store (no
+  count cap), a 300-row and a Lumi-shaped 256-row index load keeps every row
+  (migration loses nothing), `listPage` pages a 10,000-entry index, `planEviction`
+  picks the oldest regenerable copies (chat attachments, same-hash duplicates) and
+  never an owner artifact, and executing a plan copies the identities before
+  `remove()` (which shifts the index vector) so the right entries go. The same suite
+  measures time and memory per call at 10,000 files with a counting `operator new`:
+  bounded, PSRAM-first, no new static internal RAM. `test/test_store_full` pins the
+  once-per-episode full-store and reclaim notices.
+- Host rig (T4): `nimbusd/tests/test_hosted_files.cpp` - 300+ files store on the
+  daemon, a zero-byte quota refuses without leaving bytes on the volume, the byte
+  quota evicts the oldest regenerable copies first (never an owner artifact, and
+  nothing when the copies cannot cover the need), and the web list plus the
+  `files.list` tool page with `limit`/`offset` while `count` reports the total.
+- Hardware (T5): the SD legs stay with the bench - a real card at the old 256-entry
+  cap upgrades in place and keeps every file, and a full-quota save reclaims an
+  attachment copy on glass.
+
 ## Storm tier
 
 A storm is a fault that feeds itself: a device that cannot save its Telegram position

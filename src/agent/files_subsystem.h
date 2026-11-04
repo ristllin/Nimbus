@@ -63,6 +63,10 @@ StorageTruth storageTruth();
 bool noteRefusal(const std::string& err);
 // The episode's owner notice, once (the Telegram poll task sends it).
 bool takeFullNotice();
+// Lane FSCAP: the episode's reclaim notice, once - the store's byte quota was
+// reached and the oldest regenerable copies were reclaimed (never the owner's
+// own files). The Telegram poll task sends it like the full notice.
+bool takeReclaimNotice();
 // The refusal an assistant save hands the head: a full store notes the episode
 // (noteRefusal) and adds that the owner is told and how much to say; any other
 // refusal is returned unchanged.
@@ -186,7 +190,9 @@ bool wouldExceedQuota(const nimbus::orch::Principal& who, uint32_t bytes);
 // JSON array of entries (project filter optional) - for GET /api/files.
 // ns/owner (v3.7.0) bound what the caller may see; the web Files browser is the
 // token-authenticated owner surface, so it passes owner=true.
+// Lane FSCAP: the listing is bounded per call - at most `limit` entries after
+// `offset` (0/0 = the default page); the payload's count says the total.
 String listJson(const String& project, const std::string& ns = "", bool owner = true,
-                bool mayReadShared = true);
+                bool mayReadShared = true, size_t limit = 0, size_t offset = 0);
 
 }  // namespace agent::files

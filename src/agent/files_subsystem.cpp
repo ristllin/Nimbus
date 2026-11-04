@@ -390,8 +390,65 @@ bool noteRefusal(const std::string& err) {
 
 bool takeFullNotice() { return g_full.takeNotice(); }
 
+bool takeReclaimNotice() { return g_full.takeReclaimNotice(); }   // lane FSCAP
+
 std::string refusalForHead(const std::string& err) {
   return noteRefusal(err) ? err + nimbus::orch::kStoreFullToolNote : err;
+}
+
+// Lane FSCAP: the store's real space limit is its byte quota (scaled from the card
+// at mount), never a file count. When a save would exceed the quota, the oldest
+// REGENERABLE copies go first - chat-attachment copies (the Telegram archive keeps
+// the original) and same-content duplicates - never the owner's own artifacts.
+// Removes their bytes and index rows, persists, and raises the episode's one
+// reclaim notice. Returns true when anything was reclaimed; the caller re-checks
+// wouldExceed and refuses with kErrStoreFull only when even that was not enough.
+// Caller holds memory::Lock.
+bool reclaimRoomLocked(const std::string& project, const std::string& name, uint64_t addBytes) {
+  std::string err;
+  if (!g_store.wouldExceed(project, name, addBytes, err)) return false;
+  if (err != nimbus::orch::FileStore::kErrStoreFull) return false;
+  const nimbus::orch::FileEntry* cur = g_store.find(project, name);
+  const uint64_t replaced = cur ? cur->bytes : 0;
+  const uint64_t total = g_store.totalBytes();
+  const uint64_t quota = g_store.limits().maxTotalBytes;
+  const uint64_t over = total - replaced + addBytes;
+  if (over <= quota) return false;
+  const auto plan = g_store.planEviction(over - quota);
+  if (plan.empty()) return false;
+  uint64_t freed = 0;
+  for (const auto* e : plan) freed += e->bytes;
+  if (freed < over - quota) return false;   // the copies cannot cover the need: evicting them would lose data for a save that still refuses
+  // Copy the identities FIRST: remove() erases from the index vector and shifts
+  // the rest, so a plan pointer read after a remove names the wrong entry.
+  struct Victim { std::string project, name; uint32_t bytes; };
+  std::vector<Victim> victims;
+  victims.reserve(plan.size());
+  for (const auto* e : plan) victims.push_back(Victim{e->project, e->name, e->bytes});
+  freed = 0;
+  for (const auto& v : victims) {
+    memory::dataFs().remove(pathOf(v.project, v.name).c_str());
+    g_store.remove(v.project, v.name);
+    freed += v.bytes;
+    alogf("files: reclaimed %s/%s (%u B) - a regenerable copy, the original is kept elsewhere",
+          v.project.c_str(), v.name.c_str(), (unsigned)v.bytes);
+  }
+  persistIndex();
+  g_full.reclaimed();   // the owner hears it once per episode, in plain words
+  alogf("files: reclaimed %llu B from %zu regenerable cop%s to make room",
+        (unsigned long long)freed, plan.size(), plan.size() == 1 ? "y" : "ies");
+  return true;
+}
+
+// Pre-check a save against the store, reclaiming regenerable copies first when the
+// byte quota is the blocker. Returns the final wouldExceed verdict in `err`.
+// Caller holds memory::Lock.
+bool checkRoomLocked(const std::string& project, const std::string& name, uint64_t addBytes,
+                     std::string& err) {
+  if (!g_store.wouldExceed(project, name, addBytes, err)) return false;
+  if (err == nimbus::orch::FileStore::kErrStoreFull && reclaimRoomLocked(project, name, addBytes))
+    return g_store.wouldExceed(project, name, addBytes, err);
+  return true;
 }
 
 // ---- streaming upload session ------------------------------------------------
@@ -405,7 +462,7 @@ static bool beginSession(const std::string& project, const std::string& name,
   if (!available()) { err = "no SD card - artifact store absent"; return false; }
   if (uploadActiveLocked()) { err = "another upload is in progress"; return false; }
   // Refuse BEFORE the first chunk (quota + path safety live in the core).
-  if (g_store.wouldExceed(project, name, expectedBytes, err)) return false;
+  if (checkRoomLocked(project, name, expectedBytes, err)) return false;   // FSCAP: reclaim copies first
   // Ownership boundary (prism v4.1 #10): (project,name) is the identity and the
   // finish rename REPLACES - without this, a capture stamped with one chat's ns
   // could silently DESTROY another principal's artifact. Same check files.save
@@ -459,7 +516,7 @@ bool finishWrite(bool ok, std::string& err) {
   fs::FS& fs = memory::dataFs();
   if (!ok) { fs.remove(kPartPath); g_w = WriteSession{}; err = "upload aborted"; return false; }
   // Final quota check with the REAL size (client size hints can lie low too).
-  if (g_store.wouldExceed(g_w.project, g_w.name, g_w.written, err)) {
+  if (checkRoomLocked(g_w.project, g_w.name, g_w.written, err)) {   // FSCAP: reclaim copies first
     fs.remove(kPartPath); g_w = WriteSession{};
     return false;
   }
@@ -526,7 +583,7 @@ bool saveStream(const std::string& project, const std::string& name, const Stage
   File src = staged.fs.open(staged.path, FILE_READ);
   if (!src) { err = "couldn't read the staged file"; return false; }
   const size_t total = src.size();
-  if (g_store.wouldExceed(project, name, total, err)) { src.close(); return false; }
+  if (checkRoomLocked(project, name, total, err)) { src.close(); return false; }   // FSCAP
   fs::FS& fs = memory::dataFs();
   fs.mkdir(dirOf(project).c_str());
   fs.remove(kPartPath);
@@ -559,7 +616,7 @@ bool saveText(const std::string& project, const std::string& name,
   memory::Lock g;
   if (!available()) { err = "no SD card - artifact store absent"; return false; }
   if (uploadActiveLocked()) { err = "an upload is in progress - try again"; return false; }
-  if (g_store.wouldExceed(project, name, text.size(), err)) return false;
+  if (checkRoomLocked(project, name, text.size(), err)) return false;   // FSCAP
   fs::FS& fs = memory::dataFs();
   fs.mkdir(dirOf(project).c_str());
   fs.remove(kPartPath);
@@ -587,7 +644,7 @@ bool saveBytes(const std::string& project, const std::string& name,
   if (!available()) { err = "no SD card - artifact store absent"; return false; }
   if (uploadActiveLocked()) { err = "an upload is in progress - try again"; return false; }
   if (!data || len == 0) { err = "empty buffer"; return false; }
-  if (g_store.wouldExceed(project, name, len, err)) return false;
+  if (checkRoomLocked(project, name, len, err)) return false;   // FSCAP
   fs::FS& fs = memory::dataFs();
   fs.mkdir(dirOf(project).c_str());
   fs.remove(kPartPath);
@@ -887,7 +944,7 @@ static std::string appendRefusal(const std::string& project, const std::string& 
   if (q.maxBytes && g_store.bytesFor(who.ns) + addBytes > q.maxBytes)
     return kStorageLimit;
   std::string err;
-  if (g_store.wouldExceed(project, name, newSize, err)) return err;
+  if (checkRoomLocked(project, name, newSize, err)) return err;   // FSCAP: reclaim copies first
   return std::string();
 }
 
@@ -1067,7 +1124,7 @@ static bool commitMerged(const std::string& project, const std::string& name, si
     err = kStorageLimit;
     return false;
   }
-  if (g_store.wouldExceed(project, name, bytes, err)) {
+  if (checkRoomLocked(project, name, bytes, err)) {   // FSCAP: reclaim copies first
     memory::dataFs().remove(kPartPath);
     err = refusalForHead(err);
     return false;
@@ -1527,12 +1584,9 @@ std::string persistSubResult(const std::string& project, const std::string& name
                              const std::string& tag, const std::string& text,
                              const std::string& ownerNs) {
   if (!available()) return "[persist FAILED: no SD card]";
-  // Per-project rail: a runaway fan-out must not eat the whole 256-entry index.
-  {
-    memory::Lock g;
-    if (g_store.list(project).size() >= 128)
-      return "[persist FAILED: project is full (128 docs)]";
-  }
+  // Lane FSCAP: no per-project COUNT rail any more - the store has no entry cap an
+  // owner can hit; the card-scaled byte quota (checked in saveText below) is the
+  // only space limit, and a runaway fan-out is bounded by it, not by a count.
   // Agent-assigned name, sanitized; the job tag guarantees uniqueness per boot.
   std::string base = name;
   if (base.empty() || !nimbus::orch::FileStore::validSegment(base, 20)) base = "result";
@@ -1597,31 +1651,49 @@ std::vector<std::string> foodPlanFiles(const nimbus::orch::Principal& who) {
   return out;
 }
 
+// Lane FSCAP: a listing is bounded per call. One call emits at most `limit`
+// readable entries (default page kListPageDefault, ceiling kListPageMax) after
+// `offset`; the payload's `count` says how many there are in all, so a client
+// pages with offset/limit instead of one call materializing the whole index.
+constexpr size_t kListPageDefault = 1000;
+constexpr size_t kListPageMax = 2000;
+constexpr size_t kListPageChunk = 512;   // internal scan chunk (pointers only)
+
 String listJson(const String& project, const std::string& ns, bool owner,
-                bool mayReadShared) {
+                bool mayReadShared, size_t limit, size_t offset) {
   memory::Lock g;
+  if (limit == 0 || limit > kListPageMax) limit = kListPageDefault;
   String out = "[";
-  // Reserve up front (~140 B/entry) so growth is one allocation, not a realloc
-  // ladder. The buffer rides PSRAM (main.cpp's extmem allocator spills every
-  // alloc >=128 B to the 8 MB PSRAM), so even a full 256-entry listing never
-  // pressures the ~26 K internal heap. Store size is hard-capped at maxEntries.
-  out.reserve(2 + g_store.count() * 140);
+  // Reserve the PAGE (~140 B/entry), not the store: the buffer rides PSRAM
+  // (main.cpp's extmem allocator spills every alloc >=128 B to the 8 MB PSRAM),
+  // so a listing never pressures the ~26 K internal heap however large the
+  // index grows (lane FSCAP: no entry cap any more).
+  out.reserve(2 + limit * 140);
   bool first = true;
-  for (const auto* e : g_store.list(std::string(project.c_str()))) {
-    if (!g_store.readableBy(*e, ns, owner, mayReadShared)) continue;   // own it, or shared
-    if (!first) out += ',';
-    first = false;
-    out += "{\"project\":\"";  jsonEscapeInto(out, e->project);
-    out += "\",\"name\":\"";   jsonEscapeInto(out, e->name);
-    out += "\",\"bytes\":" + String((unsigned long)e->bytes);
-    out += ",\"kind\":\"" + String(nimbus::orch::fileKindName(e->kind)) + "\"";
-    out += ",\"createdAt\":" + String((unsigned long)e->createdAt);
-    if (!e->providerFileId.empty()) {
-      out += ",\"providerTag\":\"";  jsonEscapeInto(out, e->providerTag);
-      out += "\",\"providerFileId\":\""; jsonEscapeInto(out, e->providerFileId);
-      out += "\"";
+  size_t shown = 0, skipped = 0;
+  const std::string proj(project.c_str());
+  for (size_t base = 0; shown < limit; base += kListPageChunk) {
+    const auto page = g_store.listPage(proj, base, kListPageChunk);
+    if (page.empty()) break;
+    for (const auto* e : page) {
+      if (!g_store.readableBy(*e, ns, owner, mayReadShared)) continue;   // own it, or shared
+      if (skipped++ < offset) continue;
+      if (shown >= limit) break;
+      if (!first) out += ',';
+      first = false;
+      out += "{\"project\":\"";  jsonEscapeInto(out, e->project);
+      out += "\",\"name\":\"";   jsonEscapeInto(out, e->name);
+      out += "\",\"bytes\":" + String((unsigned long)e->bytes);
+      out += ",\"kind\":\"" + String(nimbus::orch::fileKindName(e->kind)) + "\"";
+      out += ",\"createdAt\":" + String((unsigned long)e->createdAt);
+      if (!e->providerFileId.empty()) {
+        out += ",\"providerTag\":\"";  jsonEscapeInto(out, e->providerTag);
+        out += "\",\"providerFileId\":\""; jsonEscapeInto(out, e->providerFileId);
+        out += "\"";
+      }
+      out += "}";
+      ++shown;
     }
-    out += "}";
   }
   out += "]";
   return out;
@@ -1963,11 +2035,13 @@ void registerTools() {
   // knowing exact names. Scans TEXT doc bodies only (readable by the caller),
   // ranks by textMatchScore (the shared lexical.h word rule, CUM-515: how many
   // of the words a doc holds, then how often), returns the best matches with a
-  // snippet around the earliest matching word. Bounded: the store is hard-capped
-  // at 256 files, each read is size-limited, so a query is a bounded on-demand scan -
-  // no index to maintain (the corpus is too small for BM25's IDF to earn its
-  // cost). For a MEANING search over facts use memory.search; for conversation
-  // history use memory.episodic.
+  // snippet around the earliest matching word. Bounded per call (lane FSCAP:
+  // the index has no count cap any more, so one query scans at most the newest
+  // kSearchScanMax readable text docs, each read size-limited, and says when
+  // older docs were not scanned) - no index to maintain (the corpus is too
+  // small for BM25's IDF to earn its cost). For a MEANING search over facts
+  // use memory.search; for conversation history use memory.episodic.
+  constexpr size_t kSearchScanMax = 512;   // newest text docs scanned per call
   reg.add("files.search",
           "Search the CONTENT of saved TEXT documents (md/txt/json/csv/log) for words. "
           "Returns the best-matching files with a snippet. Optional 'project' scopes it. "
@@ -1979,13 +2053,33 @@ void registerTools() {
             struct Hit { std::string project, name, snippet; int score; };
             std::vector<Hit> hits;
             const nimbus::orch::LexQuery qlex = nimbus::orch::lexParse(qy);
+            size_t candidates = 0, scanned = 0;
             {
               memory::Lock g;
               if (!available())
                 return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
-              for (const auto* e : g_store.list(proj)) {
-                if (!textDocName(e->name)) continue;
-                if (!g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) continue;
+              // Lane FSCAP: collect the readable text docs in chunks (pointers
+              // only), newest first, and scan at most kSearchScanMax of them -
+              // one call never reads the whole card however large the index.
+              std::vector<const nimbus::orch::FileEntry*> docs;
+              for (size_t base = 0;; base += kListPageChunk) {
+                const auto page = g_store.listPage(proj, base, kListPageChunk);
+                if (page.empty()) break;
+                for (const auto* e : page) {
+                  if (!textDocName(e->name)) continue;
+                  if (!g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) continue;
+                  docs.push_back(e);
+                }
+              }
+              candidates = docs.size();
+              std::sort(docs.begin(), docs.end(),
+                        [](const nimbus::orch::FileEntry* x, const nimbus::orch::FileEntry* y) {
+                          if (x->createdAt != y->createdAt) return x->createdAt > y->createdAt;
+                          return x->name < y->name;
+                        });
+              if (docs.size() > kSearchScanMax) docs.resize(kSearchScanMax);
+              for (const auto* e : docs) {
+                ++scanned;
                 std::string body = readWhole(e->project, e->name, 64 * 1024);
                 int sc = nimbus::orch::textMatchScore(body, qy);
                 if (sc <= 0) continue;
@@ -2002,8 +2096,13 @@ void registerTools() {
             }
             std::sort(hits.begin(), hits.end(),
                       [](const Hit& x, const Hit& y) { return x.score > y.score; });
-            if (hits.empty()) return nimbus::orch::ToolResult::ok("no documents matched");
             std::string out;
+            if (scanned < candidates)
+              out += "(scanned the newest " + std::to_string(scanned) + " of " +
+                     std::to_string(candidates) + " text docs; older docs not scanned)\n";
+            if (hits.empty())
+              return nimbus::orch::ToolResult::ok(out.empty() ? "no documents matched"
+                                                             : out + "no documents matched");
             int n = 0;
             for (const auto& h : hits) {
               if (n++ >= 8) break;   // top matches; files.read fetches a whole doc

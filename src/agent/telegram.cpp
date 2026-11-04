@@ -1180,10 +1180,15 @@ static void sendStorageNotice() {
 
 // The once-per-episode "the file store is full" notice (agent::files::noteRefusal
 // raises it). The photo path sends it at once, so it reaches the owner before that
-// photo's reply; the poll loop sends one an assistant save raised.
+// photo's reply; the poll loop sends one an assistant save raised. Lane FSCAP: the
+// reclaim notice rides the same route - the owner should hear that a save only
+// landed because older regenerable copies were evicted (same kind, its own text,
+// so the web chat's once-per-day dedup treats it as its own notice).
 static void sendFileStoreNotice() {
   sendOwnerNotice(nimbus::net::OwnerNotice::FileStore, [] { return agent::files::takeFullNotice(); },
                   nimbus::orch::kStoreFullNotice, " (file store)");
+  sendOwnerNotice(nimbus::net::OwnerNotice::FileStore, [] { return agent::files::takeReclaimNotice(); },
+                  nimbus::orch::kStoreReclaimNotice, " (file store reclaim)");
 }
 
 // ---- sendMessage ------------------------------------------------------------

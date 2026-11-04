@@ -21,10 +21,22 @@
 // every consumer (web upload, tools, provider adapters) inherits, so a hostile
 // name can never traverse out of the tree.
 //
-// Durability rule: artifacts are never auto-evicted. Full is full - add()
-// refuses with an explicit reason the caller surfaces to the human/model.
+// Durability rule: the owner's own artifacts are never auto-evicted. When the
+// store's real space limit (its byte quota, scaled from the card at mount) is
+// reached, the oldest REGENERABLE copies go first - chat-attachment copies (the
+// Telegram archive keeps the original) and same-content duplicates - never an
+// owner artifact; past those, add() refuses with an explicit reason the caller
+// surfaces to the human/model.
 
 namespace nimbus::orch {
+
+// Lane FSCAP (owner ruling R6: no SD file cap): the entry COUNT is no longer a
+// limit an owner can hit. The default limit is "no cap" - the index scales with
+// the card (its durable copy is the on-card .index, its in-RAM mirror rides
+// PSRAM, and per-call listings are paged via listPage), and the byte quota is
+// the real space limit. An explicit maxEntries still works (tests, and a store
+// that must take nothing at all: 0).
+inline constexpr size_t kNoEntryCap = SIZE_MAX;
 
 // Mirrors the provider content-block split (document / image / audio / other) so
 // tools + future Files-API routing agree on one vocabulary.
@@ -70,7 +82,7 @@ struct FileEntry {
 class FileStore {
  public:
   struct Limits {
-    size_t   maxEntries   = 256;
+    size_t   maxEntries   = kNoEntryCap;           // no count cap by default (FSCAP)
     size_t   maxNameLen   = 48;
     size_t   maxProjectLen = 24;
     uint64_t maxFileBytes = 8ull * 1024 * 1024;    // 8 MB per artifact
@@ -166,7 +178,14 @@ class FileStore {
   // ---- queries ----
   const FileEntry* find(const std::string& project, const std::string& name) const;
   // All entries, or one project's ("" = all). Pointers valid until next mutation.
+  // Internal scans use this; per-call surfaces (web listing, tools) use listPage
+  // so one call never materializes the whole index.
   std::vector<const FileEntry*> list(const std::string& project = "") const;
+  // Bounded per-call listing: at most `limit` entries starting at `offset`
+  // (0-based, over the same order list() returns; `limit` 0 = no cap). Lane
+  // FSCAP: listings stay bounded per call however large the index grows.
+  std::vector<const FileEntry*> listPage(const std::string& project, size_t offset,
+                                         size_t limit) const;
   std::vector<std::string> projects() const;    // distinct project names, sorted
   size_t   count() const { return entries_.size(); }
   uint64_t totalBytes() const;
@@ -194,13 +213,35 @@ class FileStore {
     return entries_.size() < lim_.maxEntries && totalBytes() < lim_.maxTotalBytes;
   }
 
+  // ---- regenerable copies (lane FSCAP eviction) ----
+  // True when `project` is a chat-attachment folder ("chat" or "chat-<chatId>"):
+  // the receive path stores inbound Telegram media there, and the Telegram
+  // archive keeps every received item (and Telegram can re-serve it by file id),
+  // so the stored copy is regenerable.
+  static bool isAttachmentProject(const std::string& p) {
+    return p == "chat" || p.rfind("chat-", 0) == 0;
+  }
+  // Is this entry a regenerable COPY rather than an original artifact? A copy is
+  // one whose bytes exist elsewhere: it sits in a chat-attachment project, or a
+  // NEWER entry in this store holds the same content (same non-zero hash). The
+  // owner's own artifacts (other projects, no newer duplicate) are never
+  // regenerable copies and are never auto-evicted.
+  bool isRegenerableCopy(const FileEntry& e) const;
+  // Plan an eviction that frees at least `needBytes`: the oldest regenerable
+  // copies first (createdAt, then index order), until their bytes cover the need
+  // or they run out. Never includes an owner artifact. The caller removes the
+  // returned entries (bytes + index row) and re-checks wouldExceed.
+  std::vector<const FileEntry*> planEviction(uint64_t needBytes) const;
+
   // ---- persistence (device stores dump() as /mem/files/.index) ----
   // Versioned, line-oriented, tab-separated (names are segment-safe so no
   // escaping is needed - tabs/newlines are rejected by validSegment).
   std::string dump() const;
   // Tolerant: bad lines are skipped. Case-variant duplicate rows (a pre-fix,
   // case-sensitive index could hold two per one FAT file) collapse to the
-  // owner-controlled row; see load() in orch_file_store.cpp.
+  // owner-controlled row; see load() in orch_file_store.cpp. Lane FSCAP: load()
+  // keeps EVERY valid row whatever the entry limit says - an upgrade never loses
+  // a file; the limit gates new adds only.
   bool load(const std::string& blob);
 
  private:

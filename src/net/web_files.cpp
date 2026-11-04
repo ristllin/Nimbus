@@ -155,11 +155,20 @@ void registerFileRoutes(AsyncWebServer& server) {
                   ",\"quota\":" + String((unsigned long long)t.quota) +
                   ",\"cardTotal\":" + String((unsigned long long)t.cardTotal) +
                   ",\"cardFree\":" + String((unsigned long long)t.cardFree) +
-                  ",\"freeBytes\":" + String((unsigned long long)headroom) +
-                  ",\"files\":";
-    String list = files::listJson(qparam(r, "project"));
+                  ",\"freeBytes\":" + String((unsigned long long)headroom);
+    // Lane FSCAP: the listing is paged - ?limit=&offset= bound what one call
+    // returns (the store has no entry cap any more); `count` above is the
+    // total, `shown` is what this page carries, so the client can page on.
+    size_t limit = 0, offset = 0;
+    const String limQ = qparam(r, "limit");
+    const String offQ = qparam(r, "offset");
+    if (!limQ.isEmpty()) limit = (size_t)strtoul(limQ.c_str(), nullptr, 10);
+    if (!offQ.isEmpty()) offset = (size_t)strtoul(offQ.c_str(), nullptr, 10);
+    String list = files::listJson(qparam(r, "project"), "", true, true, limit, offset);
     tgArchiveAppendFiles(list, qparam(r, "project"));   // saved Telegram media, read-only
-    sendJson(r, 200, body + list + "}");
+    size_t shown = 0;
+    for (int i = 0; (i = list.indexOf("{\"project\":", i)) >= 0; i += 10) ++shown;
+    sendJson(r, 200, body + ",\"shown\":" + String((unsigned long)shown) + ",\"files\":" + list + "}");
   });
 
   // ---- POST /api/files/upload?project=&name= - multipart streamed to SD ----------

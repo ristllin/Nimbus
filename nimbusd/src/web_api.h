@@ -393,7 +393,8 @@ class WebApi {
                 const std::string& body, ApiResp& out) {
     if (base.rfind("/api/files/", 0) != 0) return false;
     const std::string proj = queryParam(path, "project"), name = queryParam(path, "name");
-    if (base == "/api/files/list" && m == "GET") out = filesList(proj);
+    if (base == "/api/files/list" && m == "GET")
+      out = filesList(proj, queryParam(path, "limit"), queryParam(path, "offset"));
     else if (base == "/api/files/dl" && m == "GET") out = filesGet(proj, name);
     else if (base == "/api/files/upload" && m == "POST") out = filesUpload(proj, name, body);
     else if (base == "/api/files/rm" && m == "POST") out = filesRemove(body);
@@ -401,14 +402,20 @@ class WebApi {
     else out = refuse("Not available on a hosted Nimbus yet: " + base);
     return true;
   }
-  ApiResp filesList(const std::string& proj) {
-    return engineRead([this, proj] {
+  // Lane FSCAP: the listing is paged - ?limit=&offset= bound what one call
+  // returns (the store has no entry cap any more); `count` is the total,
+  // `shown` is what this page carries.
+  ApiResp filesList(const std::string& proj, const std::string& limitQ = "",
+                    const std::string& offsetQ = "") {
+    return engineRead([this, proj, limitQ, offsetQ] {
+      size_t limit = limitQ.empty() ? 0 : (size_t)strtoul(limitQ.c_str(), nullptr, 10);
+      size_t offset = offsetQ.empty() ? 0 : (size_t)strtoul(offsetQ.c_str(), nullptr, 10);
       JsonDocument d;
       d["present"] = true;
       d["unsupported"] = false;
       d["count"] = (int)rig_->files().count();
       d["bytes"] = (double)rig_->files().totalBytes();
-      rig_->files().listInto(d["files"].to<JsonArray>(), proj);
+      d["shown"] = (int)rig_->files().listInto(d["files"].to<JsonArray>(), proj, limit, offset);
       std::string out; serializeJson(d, out); return out;
     });
   }

@@ -12,8 +12,12 @@
 //   (d) routines, skills, wake-ups and downloads refuse a write by name (the page
 //       printed "Created" for a routine that never existed), and still answer an
 //       honest empty GET;
-//   (e) an upload the store refuses (the 257th file) leaves no bytes on the disk,
-//       so the volume never holds a file the panel cannot show or delete;
+//   (e) the store has no count cap (lane FSCAP: 300+ files store fine); an upload
+//       a zero-byte quota refuses leaves no bytes on the disk, so the volume never
+//       holds a file the panel cannot show or delete;
+//   (h) lane FSCAP: the byte quota evicts the oldest regenerable copies first and
+//       never an owner artifact;
+//   (i) lane FSCAP: per-call listings are bounded (web limit/offset, tool paging);
 //   (f) files.read refuses a binary file in words instead of handing its bytes to the
 //       provider request.
 // Offline: no provider traffic at all.
@@ -194,33 +198,100 @@ static void testNotYetHosted(ndtest::Ctx& c) {
   c.ok(fetchq.status == 400 && has(fetchq.body, "Not available on a hosted Nimbus yet"), "/api/fetchq refuses a write");
 }
 
-static void testRefusedUploadLeavesNoFile(ndtest::Ctx& c) {
-  std::printf("  -- (e) a refused upload leaves no bytes on the disk --\n");
-  Config cfg;
-  const NimbusdRig::Options o = opts("hf-e");
-  NimbusdRig rig(cfg, o);
-  std::string err;
-  bool all = true;
-  for (int i = 0; i < 256; i++) all = rig.files().put("bulk", "f" + std::to_string(i) + ".txt", "x", err) && all;
-  c.ok(all, "the store takes 256 files");
-  Web web(rig);
-  const ApiResp r = web.call("POST", "/api/files/upload?project=chat&name=new.bin", multipart("new.bin", "orphan?"));
-  c.eqi(r.status, 400, "the 257th file is refused");
-  c.ok(has(r.body, "too many files"), "with the store's reason");
-  struct stat st;
-  c.ok(::stat((o.dataDir + "/mem/files/chat/new.bin").c_str(), &st) != 0, "no bytes were written for it");
-  c.ok(::stat((o.dataDir + "/mem/files/chat").c_str(), &st) != 0, "not even its project folder");
-  c.ok(has(web.call("GET", "/api/files/list").body, "\"count\":256"), "the list still counts 256");
-  const ApiResp over = web.call("POST", "/api/files/upload?project=bulk&name=f3.txt", multipart("f3.txt", "new bytes"));
-  c.eqi(over.status, 200, "replacing an existing file is not a new entry, so it still saves");
-  c.ok(web.call("GET", "/api/files/dl?project=bulk&name=f3.txt").body == "new bytes", "with the new bytes");
-}
-
 // The text of a tools/call answer (rig.callTool returns the whole JSON-RPC envelope).
 static std::string toolText(const std::string& rpc) {
   JsonDocument d;
   deserializeJson(d, rpc);
   return std::string(d["result"]["content"][0]["text"] | "");
+}
+
+static void testRefusedUploadLeavesNoFile(ndtest::Ctx& c) {
+  std::printf("  -- (e) no count cap: the 257th file stores; a byte-quota refusal leaves no bytes --\n");
+  Config cfg;
+  const NimbusdRig::Options o = opts("hf-e");
+  NimbusdRig rig(cfg, o);
+  std::string err;
+  bool all = true;
+  for (int i = 0; i < 300; i++) all = rig.files().put("bulk", "f" + std::to_string(i) + ".txt", "x", err) && all;
+  c.ok(all, "lane FSCAP: the store takes 300 files - the count cap is gone");
+  Web web(rig);
+  const ApiResp r = web.call("POST", "/api/files/upload?project=chat&name=new.bin", multipart("new.bin", "orphan?"));
+  c.eqi(r.status, 200, "the 301st file is accepted too (the byte quota is the only space limit)");
+  c.ok(has(web.call("GET", "/api/files/list").body, "\"count\":301"), "the list counts 301");
+  const ApiResp over = web.call("POST", "/api/files/upload?project=bulk&name=f3.txt", multipart("f3.txt", "new bytes"));
+  c.eqi(over.status, 200, "replacing an existing file is not a new entry, so it still saves");
+  c.ok(web.call("GET", "/api/files/dl?project=bulk&name=f3.txt").body == "new bytes", "with the new bytes");
+  // A store whose byte quota is zero takes nothing, and the refusal leaves no
+  // bytes on the volume (the index is what the panel lists and deletes by).
+  nimbus::orch::FileStore::Limits zero;
+  zero.maxTotalBytes = 0;
+  rig.files().setLimits(zero);
+  const ApiResp full = web.call("POST", "/api/files/upload?project=chat&name=full.bin", multipart("full.bin", "no room"));
+  c.eqi(full.status, 400, "a zero-quota store refuses the upload");
+  struct stat st;
+  c.ok(::stat((o.dataDir + "/mem/files/chat/full.bin").c_str(), &st) != 0, "no bytes were written for it");
+  c.ok(has(web.call("GET", "/api/files/list").body, "\"count\":301"), "the list still counts 301");
+}
+
+// Lane FSCAP: when the byte quota is hit, the oldest regenerable copies (chat
+// attachments) go first so the save lands; owner artifacts are never evicted.
+static void testByteQuotaEvictsCopiesFirst(ndtest::Ctx& c) {
+  std::printf("  -- (h) the byte quota evicts the oldest regenerable copies, never owner artifacts --\n");
+  Config cfg;
+  const NimbusdRig::Options o = opts("hf-h");
+  NimbusdRig rig(cfg, o);
+  nimbus::orch::FileStore::Limits l;
+  l.maxTotalBytes = 1200;   // tiny quota so the test needs no gigabytes
+  rig.files().setLimits(l);
+  std::string err;
+  c.ok(rig.files().put("docs", "keep.md", std::string(200, 'k'), err), "the owner artifact stores");
+  for (int i = 0; i < 5; i++)
+    c.ok(rig.files().put("chat", "att-" + std::to_string(i) + ".jpg", std::string(200, 'a'), err),
+         "chat attachment " + std::to_string(i) + " stores");
+  c.eqi((long)rig.files().count(), 6, "six files fit exactly under the quota (200 + 5*200 = 1200)");
+  // The next save needs 400 more: the oldest attachments (att-0, att-1 = 400 B)
+  // are reclaimed so it lands; the owner artifact is never a candidate.
+  c.ok(rig.files().put("docs", "new.md", std::string(400, 'n'), err), "the new save lands after reclaiming");
+  c.ok(rig.files().has("docs/keep.md"), "the owner artifact is never evicted");
+  c.ok(rig.files().has("docs/new.md"), "the new file is there");
+  c.ok(!rig.files().has("chat/att-0.jpg") && !rig.files().has("chat/att-1.jpg"),
+       "the oldest regenerable copies went first");
+  c.ok(rig.files().has("chat/att-2.jpg") && rig.files().has("chat/att-4.jpg"),
+       "the newer copies survive");
+  c.eqi((long)rig.files().count(), 5, "keep + new + three attachments");
+  struct stat st;
+  c.ok(::stat((o.dataDir + "/mem/files/chat/att-0.jpg").c_str(), &st) != 0, "the evicted copy's bytes are gone too");
+  // A need the remaining copies cannot cover (400 B left, 4000 needed): nothing is
+  // evicted for a save that would still refuse, and the store says so in words.
+  c.ok(!rig.files().put("docs", "more.md", std::string(4000, 'm'), err), "the copies cannot cover it: refused");
+  c.ok(has(err, "full"), "with the store-full reason");
+  c.ok(!rig.files().has("docs/more.md"), "and no bytes for it");
+  c.ok(rig.files().has("chat/att-2.jpg"), "the remaining copies were NOT evicted for nothing");
+  c.eqi((long)rig.files().count(), 5, "the count is unchanged");
+}
+
+// Lane FSCAP: per-call listings are bounded - the web list pages with
+// limit/offset and says the total, and the files.list tool does the same.
+static void testListingsArePaged(ndtest::Ctx& c) {
+  std::printf("  -- (i) listings are bounded per call (web pages, the tool pages) --\n");
+  Config cfg;
+  NimbusdRig rig(cfg, opts("hf-i"));
+  std::string err;
+  for (int i = 0; i < 7; i++)
+    rig.files().put("bulk", "f" + std::to_string(i) + ".txt", "x", err);
+  Web web(rig);
+  const ApiResp p1 = web.call("GET", "/api/files/list?limit=3&offset=0");
+  c.ok(has(p1.body, "\"count\":7"), "the payload's count is the total");
+  c.ok(has(p1.body, "\"shown\":3"), "shown is what this page carries");
+  c.ok(has(p1.body, "f0.txt") && !has(p1.body, "f3.txt"), "the first page holds the first three");
+  const ApiResp p3 = web.call("GET", "/api/files/list?limit=3&offset=6");
+  c.ok(has(p3.body, "\"shown\":1") && has(p3.body, "f6.txt"), "the last page holds the remainder");
+  const ApiResp all = web.call("GET", "/api/files/list");
+  c.ok(has(all.body, "\"shown\":7"), "no params: the default page covers all seven");
+  const std::string t1 = toolText(rig.callTool("files.list", R"({"limit":2,"offset":0})"));
+  c.ok(has(t1, "showing 2 of 7") && has(t1, "f0.txt") && !has(t1, "f2.txt"), "the tool pages too");
+  const std::string tAll = toolText(rig.callTool("files.list", R"({})"));
+  c.ok(has(tAll, "f6.txt") && !has(tAll, "showing"), "the tool's default page lists all seven");
 }
 
 // A true "removed from the log" must not draw a correction on a hosted client: the
@@ -315,6 +386,8 @@ int main() {
   testOneFoodLogAndItsReceipt(c);
   testNotYetHosted(c);
   testRefusedUploadLeavesNoFile(c);
+  testByteQuotaEvictsCopiesFirst(c);
+  testListingsArePaged(c);
   testKeyedCorrectionBacksItsClaim(c);
   testBinaryReadIsRefused(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
