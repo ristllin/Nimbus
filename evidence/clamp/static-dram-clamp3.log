@@ -1,0 +1,15 @@
+== lane CLAMP static DRAM gate, fix pass for REVIEW-FINDINGS item 1 ==
+date: Wed Nov  4 06:14:40 UTC 2026
+head: 40f4dcf87f8c4d18ffaef17c5a33642b5c451fe8
+tree: 0 dirty entries (0 = clean)
+== builds at this head (incremental; source unchanged since battery CLAMP-2 built these ELFs) ==
+RAM:   [===       ]  27.4% (used 89796 bytes from 327680 bytes)
+========================= [SUCCESS] Took 8.34 seconds =========================
+esp32s3        SUCCESS   00:00:08.343
+RAM:   [===       ]  27.4% (used 89876 bytes from 327680 bytes)
+========================= [SUCCESS] Took 8.65 seconds =========================
+esp32s3-cyd    SUCCESS   00:00:08.655
+== python3 tools/release_gate/check_static_dram.py ==
+PASS nimbus-tft: static DRAM 89795 B (baseline 91195 B, -1400 B; ceiling 91635 B)
+PASS freenove-28: static DRAM 89875 B (baseline 91275 B, -1400 B; ceiling 91723 B)
+dram rc=0
