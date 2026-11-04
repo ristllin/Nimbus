@@ -342,6 +342,9 @@
        {
         "reply_contains": "green"
        }
+      ],
+      "att": [
+       "chat/sample.png"
       ]
      }
     ]
@@ -427,7 +430,7 @@
         "turn_resolved": true
        },
        {
-        "reply_not_regex": "(i('ve| have)|i) (set up|created|scheduled|added)\\b(?!.*(can'?t|cannot|not))"
+        "reply_regex": "(?i)approv"
        },
        {
         "reply_not_regex": "only (its|the|an) admin|from the device web page"
@@ -436,19 +439,15 @@
      },
      {
       "http": {
-       "method": "POST",
-       "path": "/api/loops",
-       "form": {
-        "action": "delete",
-        "id": "stretch"
-       }
+       "method": "GET",
+       "path": "/api/loops"
       },
       "expect": [
        {
         "http_status": 200
        },
        {
-        "body_contains": "\"ok\":true"
+        "body_regex": "\"approved\": ?false"
        }
       ]
      }

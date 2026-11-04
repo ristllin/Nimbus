@@ -19,6 +19,7 @@
 #include "scenarios_skills.h"   // lane I: skills used and editable (live legs)
 #include "scenarios_prefs.h"   // lane J: standing owner preferences (live legs)
 #include "scenarios_g1.h"   // message-level caching legs (cost per turn by gap)
+#include "scenarios_monly.h"   // lane MONLY: the Mistral-only client's live legs
 
 namespace lab {
 namespace {
@@ -411,6 +412,10 @@ void scOvfPlaceholder(LabRig& rig, Ctx& c) { ovf::forcedPlaceholder(rig, ovfRepo
 void scOvfPromise(LabRig& rig, Ctx& c) { ovf::promiseCorrected(rig, ovfReport(c)); }
 void scOvfAlbum(LabRig& rig, Ctx& c) { ovf::albumOfSix(rig, ovfReport(c)); }
 
+// Lane MONLY: a client with only a Mistral key (scenarios_monly.cpp).
+monly::Report monlyReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
+void scMonlyStepdown(LabRig& rig, Ctx& c) { monly::cutStepsDownSameHost(rig, monlyReport(c)); }
+
 struct Scenario {
   const char* name;
   const char* what;
@@ -456,6 +461,7 @@ const Scenario kScenarios[] = {
     {"ovf-placeholder", "a filler answer on the forced round goes back once, the wire takes it", scOvfPlaceholder, false},
     {"ovf-promise",     "a next-turn promise goes back once, the wire takes it", scOvfPromise, false},
     {"ovf-album",       "six real photos in one turn end with an answer (NIMBUS_LAB_PHOTOS)", scOvfAlbum, false},
+    {"monly-stepdown",  "a cut round on the Mistral-only head steps down same-host, no owner notice", scMonlyStepdown, false},
     {"photos-native",  "three label photos go to the head as images; the reply reads their values", scPhotosNative, false},
     {"photo-label-honesty", "a photo unread for billing: the head names the cause, no resend, no blame", scPhotoLabelHonesty, false},
     {"caption-scoring", "the fallback caption step per keyed provider: fields exact, no empty caption", scCaptionScoring, false},
