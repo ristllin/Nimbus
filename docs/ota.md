@@ -122,6 +122,20 @@ published (a Virtual Nimbus image tag needs no line; a release candidate may go 
 one), in `run_gate.py`, and in the `tools/release_gate` tests on every push, so a
 version bump in `include/version.h` without its line fails CI before anyone tags it.
 
+## The owner-regression gate
+
+Every owner-visible failure since 28 Oct 2026 is a row in
+`coverage/OWNER-ISSUES-REGISTER.md` with a deterministic guard
+(`test/test_owner_regressions`) and, where the failure is model-dependent, a live
+quality case (`tests/evals/owner_regressions`). The release gate
+(`tools/release_gate/check_owner_regressions.py`) refuses a release unless the
+register names only guards that exist, and a full live run of the suite on the exact
+candidate sha is on disk under `tests/evals/owner_regressions/runs/<sha>/` with every
+hard row at its threshold on the gate models and no row regressed against the
+previous candidate. It runs in `run_gate.py` (host checks plus the `--candidate`
+step), and its self-test runs in the `tools/release_gate` tests on every push, so a
+register row that names a test which does not exist fails CI the day it is written.
+
 ## Release tags: firmware and Virtual Nimbus image
 
 One release workflow serves two channels, and the tag that is pushed picks the channel.

@@ -28,6 +28,7 @@ looking at the glass are all in scope.
 | A storm the device feeds itself: the same message taken in again and again, a refusing provider asked again and again, a notice per attempt (the 19 and 21 Oct 2026 storms) | the storm-suite step: every storm leg passed on the candidate after its commit, and has a v4.5.13 control run | `check_storm_evidence.py`, `tests/hil/storm/`, `test_release_gate.py` |
 | A release ships with no word to its owners, or a line the device would cut (owner decision D5) | one line per OTA release in `docs/release-notes/<tag>.txt`: present, one line, at most 95 bytes (the device's notes field), printable ASCII, no ticket numbers; release.yml checks it in its first job (tag-shape, before any build or publish; vn- image tags need none, -rcN tags may go without) and writes it into the manifest's `notes` (not covered by the signature); the tests check the current version.h on every push | `check_release_notes.py`, `test_release_notes.py` |
 | A test build's crash switch ships in a release image | the ELF scan for the test console's crash switches runs on all four release images (even with `--identity-only`), behind the source guard that keeps every use inside `#ifdef NIMBUS_TEST` | `check_elf_symbols.py`, `test_panic_guard.py`, `test_release_gate.py` (workflow wiring) |
+| An owner-visible failure from the 28 Oct - 4 Nov window ships again (v5.0.0 launch gate, LAUNCH-5.0.0 ruling 4 Nov 20:20Z) | the owner-issues register (`coverage/OWNER-ISSUES-REGISTER.md`) must name only guards that exist (every `oir_*` id a RUN_TEST in `test/test_owner_regressions`, every suite id a real suite, the EXPECTED-FAIL roster equal to the suite's skipping tests), and a full live run of `tests/evals/owner_regressions` on the exact candidate sha must exist on disk with every hard row at its threshold on the gate models and no row regressed vs the previous candidate; a stale EXPECTED-FAIL (an xfail row that passed, or a skip in the candidate's native log) blocks too | `check_owner_regressions.py`, `test_owner_regressions.py`, `test/test_owner_regressions`, `tests/evals/owner_regressions` |
 
 ## At merge time
 
@@ -62,6 +63,18 @@ It fails the gate when any of the eight legs has no run on the candidate, only r
 than the candidate's commit, a newest run that did not pass, or no run on the v4.5.13
 control image. The legs, how to run one and where the evidence goes are in
 `docs/testing-tiers.md` ("Storm tier").
+
+Owner-regression step (v5.0.0 launch gate; the live suite needs provider keys, so it is
+not part of the host checks - run it on the candidate and pass the sha):
+
+```
+python3 tests/evals/owner_regressions/run_eval.py run --sha <candidate sha>   # full live run, records under runs/<sha>/
+python3 tools/release_gate/run_gate.py --candidate <sha> --native-log <battery log>   # blocks the tag unless the run is green
+python3 tools/release_gate/check_owner_regressions.py --candidate <sha> [--previous <sha>] [--native-log <log>]   # the step alone
+```
+
+The static half (register/suite/gate-wiring consistency) runs with the host checks and in
+`pytest tools/release_gate` on every push.
 
 Full battery (prints the exact hardware and cloud commands to run and paste):
 

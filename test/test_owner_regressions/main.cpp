@@ -14,6 +14,7 @@
 #include "nimbus/orch/food_figures.h"
 #include "nimbus/orch/food_label.h"
 #include "nimbus/orch/food_ledger.h"
+#include "nimbus/orch/food_portions.h"
 #include "nimbus/orch/ledger_migrate.h"
 #include "nimbus/orch/loop_delivery.h"
 #include "nimbus/orch/loops.h"
@@ -181,13 +182,49 @@ void test_oir_10_target_needs_source() {
   TEST_ASSERT_FALSE(unsourcedFoodTargets("we adjusted it to 2,500 kcal", "2400").empty());
 }
 
-// OIR-12: a grams cell parses as its number, so the receipt counts it; the guard for
-// the grams-vs-kcal class is the portion plan, which never treats a gram figure as
-// kcal (live case lc-grams-vs-kcal covers the model side).
-void test_oir_12_grams_cell_parses_as_number() {
-  double out = 0;
-  TEST_ASSERT_TRUE(csvFigure("350 g", out));
-  TEST_ASSERT_EQUAL_INT(350, (int)out);
+// OIR-03: a second vision read that disagrees with the head's is surfaced with both
+// values, never averaged; an agreeing second read is quiet.
+void test_oir_03_second_read_disagreement_surfaced() {
+  const std::string head =
+      "Nutritional values Per 100g Per serving\n"
+      "Energy kJ/kcal 750/179 982/235\n"
+      "Fat 5.6g 7.3g\n"
+      "Carbohydrate 0.9g 1.2g\n"
+      "Protein 31.3g 41.0g\n"
+      "Net 131 g";
+  const std::string misread =
+      "Nutritional values Per 100g Per serving\n"
+      "Energy kJ/kcal 750/179 982/235\n"
+      "Fat 5.6g 7.3g\n"
+      "Carbohydrate 0.9g 1.2g\n"
+      "Protein 31.3g 4.3g\n"
+      "Net 131 g";
+  const auto d = labelReadDisagreements(head, misread);
+  TEST_ASSERT_EQUAL_INT(1, (int)d.size());
+  TEST_ASSERT_NOT_NULL(strstr(d[0].field.c_str(), "protein per serving"));
+  TEST_ASSERT_EQUAL_FLOAT(41.0, d[0].head);
+  TEST_ASSERT_EQUAL_FLOAT(4.3, d[0].second);
+  const std::string note = secondReadNote(head, misread, "openai");
+  TEST_ASSERT_FALSE(note.empty());
+  TEST_ASSERT_NOT_NULL(strstr(note.c_str(), "41"));
+  TEST_ASSERT_NOT_NULL(strstr(note.c_str(), "4.3"));
+  TEST_ASSERT_NOT_NULL(strstr(note.c_str(), "never averaged"));
+  TEST_ASSERT_TRUE(secondReadNote(head, head, "openai").empty());
+}
+
+// OIR-12: a gram amount converts through kcal-per-100 g, never counts as kcal
+// (350 g at 68 kcal/100 g is 238 kcal, not 350).
+void test_oir_12_grams_convert_through_kcal100() {
+  PortionFood boba;
+  boba.name = "boba tea";
+  boba.kcal100 = 68;
+  boba.fixedG = 350;
+  const PortionPlan p = sizePortions({boba}, 1000);
+  TEST_ASSERT_TRUE_MESSAGE(p.ok, p.err.c_str());
+  TEST_ASSERT_EQUAL_INT(1, (int)p.lines.size());
+  TEST_ASSERT_EQUAL_FLOAT(350, p.lines[0].grams);
+  TEST_ASSERT_EQUAL_FLOAT(238, p.lines[0].kcal);
+  TEST_ASSERT_TRUE(p.lines[0].kcal < 300);   // never the gram figure itself
 }
 
 // OIR-13/OIR-21: a "next turn" promise is detected and carries a correction line.
@@ -248,9 +285,22 @@ void test_oir_18_receipt_vs_reply_rows() {
   TEST_ASSERT_TRUE(hasGapKind(gaps, FoodGapKind::WrongDayTotal));
 }
 
+// OIR-16: a two-letter fragment ("bb") yields no food words, so it can never match
+// "black beans" as the same food - a near-match is not a match, and no recall or
+// provenance backs an invented item.
+void test_oir_16_near_match_is_not_a_food_match() {
+  TEST_ASSERT_TRUE(foodWordsOf("bb").empty());
+  TEST_ASSERT_FALSE(sameFoodWords(foodWordsOf("bb"), foodWordsOf("black beans")));
+  TEST_ASSERT_FALSE(foodWordIn("bb", foodWordsOf("black beans")));
+  // Control: the same food named two ways still matches.
+  TEST_ASSERT_TRUE(sameFoodWords(foodWordsOf("boba tea"), foodWordsOf("another boba tea, no milk")));
+}
+
 // OIR-19 (xfail, lane UPSERT): a keyed write whose key names a meal slot must never
 // replace a row describing a different item. While the unfixed replace is detected,
-// the test reports EXPECTED-FAIL; when UPSERT lands, the receipt must name the row.
+// the test reports EXPECTED-FAIL; when UPSERT lands, the new item appends with its own
+// key (UPSERT TASK item 1: only a correction of the same item replaces), so the
+// replace count is 0 and both rows count in the day total (457 + 445 = 902).
 void test_oir_19_silent_replace_xfail() {
   const std::string ex = std::string(kLedgerHeader) +
                          "2026-11-04,dinner,smoked brisket 150 g and bread 58 g,457,40.2\n";
@@ -260,8 +310,9 @@ void test_oir_19_silent_replace_xfail() {
   if (up.replaced == 1) {
     TEST_IGNORE_MESSAGE("EXPECTED-FAIL OIR-19/OIR-42: lane UPSERT in flight, the keyed write still replaces a different item");
   }
-  TEST_ASSERT_FALSE(up.changes.empty());
-  TEST_ASSERT_FALSE(up.changes[0].was.empty());
+  TEST_ASSERT_EQUAL_INT(0, up.replaced);
+  TEST_ASSERT_EQUAL_INT(1, up.appended);
+  TEST_ASSERT_EQUAL_INT(902, (int)up.todayTotal);
 }
 
 // OIR-20: "now correctly keyed" with no such effect this turn is a claim gap.
@@ -383,6 +434,17 @@ void test_oir_37_plumbing() {
   TEST_ASSERT_TRUE(hasPlumbing(t));
   TEST_ASSERT_FALSE(plumbingCheckText(t).empty());
   TEST_ASSERT_FALSE(hasPlumbing("Here is your commute brief."));
+}
+
+// OIR-39: a standing rule with a stop marker ("never ask about duolingo") blocks the
+// routine whose name or prompt raises that topic, and never blocks an unrelated one.
+void test_oir_39_never_ask_blocks_the_routine() {
+  const std::vector<std::string> rules = {"never ask about duolingo"};
+  const StandingBlock hit = standingBlocksFire(rules, "check the Duolingo streak", "Duolingo streak check");
+  TEST_ASSERT_TRUE(hit.blocked);
+  TEST_ASSERT_EQUAL_STRING("never ask about duolingo", hit.rule.c_str());
+  TEST_ASSERT_FALSE(standingBlocksFire(rules, "check the gym streak", "gym check").blocked);
+  TEST_ASSERT_FALSE(standingBlocksFire({"always log meals"}, "log today's meals").blocked);
 }
 
 // OIR-40: a message arriving past the batch caps is Deferred (re-served), never
@@ -514,6 +576,7 @@ int main(int argc, char** argv) {
   UNITY_BEGIN();
   RUN_TEST(test_oir_01_routine_fire_request_carries_prompt);
   RUN_TEST(test_oir_02_contradictory_save_status);
+  RUN_TEST(test_oir_03_second_read_disagreement_surfaced);
   RUN_TEST(test_oir_04_owner_figures_win);
   RUN_TEST(test_oir_05_day_total_receipt);
   RUN_TEST(test_oir_07_unconfirmed_finalised);
@@ -522,10 +585,11 @@ int main(int argc, char** argv) {
 #endif
   RUN_TEST(test_oir_09_total_includes_every_row);
   RUN_TEST(test_oir_10_target_needs_source);
-  RUN_TEST(test_oir_12_grams_cell_parses_as_number);
+  RUN_TEST(test_oir_12_grams_convert_through_kcal100);
   RUN_TEST(test_oir_13_later_promise_tracked);
   RUN_TEST(test_oir_14_day_rollover);
   RUN_TEST(test_oir_15_label_cross_column);
+  RUN_TEST(test_oir_16_near_match_is_not_a_food_match);
   RUN_TEST(test_oir_17_subagent_invented_items);
   RUN_TEST(test_oir_18_receipt_vs_reply_rows);
   RUN_TEST(test_oir_19_silent_replace_xfail);
@@ -542,6 +606,7 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_33_raw_dump_capped);
   RUN_TEST(test_oir_36_rules_full_makes_room);
   RUN_TEST(test_oir_37_plumbing);
+  RUN_TEST(test_oir_39_never_ask_blocks_the_routine);
   RUN_TEST(test_oir_40_queued_message_deferred_not_dropped);
   RUN_TEST(test_oir_41_mistral_connector_scope);
   RUN_TEST(test_oir_42_upsert_total_xfail);

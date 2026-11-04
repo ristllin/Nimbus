@@ -29,6 +29,7 @@ import check_driver_pin
 import check_elf_symbols
 import check_lwip_core_lock
 import check_ota_preserves_nvs
+import check_owner_regressions
 import check_release_notes
 import check_sram_staging
 import check_static_dram
@@ -145,6 +146,7 @@ def run_host_checks() -> bool:
         ("nothing logs under a spinlock", check_critical_sections.main),
         ("lwip core lock (CRASH2 A03)", check_lwip_core_lock.main),
         ("release notes line (D5)", check_release_notes.main),
+        ("owner regressions (p18-REGR)", check_owner_regressions.main),
     ):
         rc = fn([])
         results.append((name, rc == 0))
@@ -162,9 +164,18 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument("--host-only", action="store_true", help="run only the host checks")
     ap.add_argument("--storm-evidence", help="the storm suite's evidence directory for this candidate")
     ap.add_argument("--candidate", help="the release candidate's commit (with --storm-evidence)")
+    ap.add_argument("--native-log", help="the candidate's native test log for the owner-regression gate")
     args = ap.parse_args(argv)
 
     host_ok = run_host_checks()
+    if args.candidate:
+        print()
+        print("OWNER REGRESSIONS - live run on the candidate sha (p18-REGR, LAUNCH-5.0.0 ruling 4 Nov 20:20Z)")
+        oargs = ["--candidate", args.candidate]
+        if args.native_log:
+            oargs += ["--native-log", args.native_log]
+        rc = check_owner_regressions.main(oargs)
+        host_ok = host_ok and rc == 0
     if args.storm_evidence or args.candidate:
         print()
         if not (args.storm_evidence and args.candidate):
