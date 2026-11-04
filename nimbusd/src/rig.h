@@ -33,6 +33,7 @@
 #include "nimbus/harness/conversation.h"
 #include "nimbus/harness/dream.h"
 #include "nimbus/harness/engine.h"
+#include "nimbus/harness/turn_progress.h"  // lane PROG: the round-boundary signal plan
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/turn_anatomy.h"   // the /api/lastturn page head
@@ -544,6 +545,14 @@ class NimbusdRig {
   // Set once at wiring time; the rig still records deliveries for scenarios.
   void setDeliver(std::function<void(const std::string&, const std::string&)> fn) {
     onDeliver_ = std::move(fn);
+  }
+
+  // Lane PROG: the running turn's round-boundary signals. Called on the engine
+  // thread with the turn's chat, whether to send a typing keep-alive now, and
+  // the turn's ONE progress line when it is time (empty otherwise).
+  void setTurnProgress(
+      std::function<void(const std::string&, bool, const std::string&)> fn) {
+    onTurnProgress_ = std::move(fn);
   }
 
   agent::TurnEngine& engine() { return *eng_; }
@@ -2754,6 +2763,7 @@ class NimbusdRig {
       if (curUserRowId_.empty()) snprintf(id, sizeof id, "m%08x", (unsigned)(++epiSeq_));
       turnTag_ = "turn:" + (curUserRowId_.empty() ? std::string(id) : curUserRowId_);
       traceArgs_.clear();
+      progLineSent_ = false;   // lane PROG: the ONE progress line is per turn
     };
     d.hooks.onToolCall = [this](const orch::HeadToolCall& c) {
       cur_.toolCalls.push_back(c.name + "(" + trunc(c.argsJson, 200) + ")");
@@ -2762,6 +2772,23 @@ class NimbusdRig {
     d.hooks.onToolResult = [this](const orch::HeadToolResult& r) {
       cur_.toolResults.push_back(trunc(r.output, 300));
       captureToolRow(r);
+    };
+    // Lane PROG: every round boundary of the running turn reaches the progress
+    // sink (typing keep-alive + the turn's ONE plain progress line). The plan is
+    // the portable, host-tested turn_progress.h; the sink owns the transport.
+    // Runs on the engine thread, like the delivery hook.
+    d.hooks.onTurnProgress = [this](const agent::TurnProgressEv& ev) {
+      if (!onTurnProgress_) return;
+      orch::HeadProgress hp;
+      hp.round = ev.round;
+      hp.elapsedMs = ev.elapsedMs;
+      hp.lastRound = ev.lastRound;
+      hp.tools = ev.tools;
+      const nimbus::harness::TurnProgressPlan plan =
+          nimbus::harness::planTurnProgress(hp, ev.maxRounds, progLineSent_);
+      if (plan.sayLine) progLineSent_ = true;
+      if (plan.keepAlive || plan.sayLine)
+        onTurnProgress_(ev.chatId, plan.keepAlive, plan.sayLine ? plan.line : std::string());
     };
     d.hooks.onTurnDebug = [this](const agent::TurnDebugEv& ev) { captureTurn(ev); };
     d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) {
@@ -3585,6 +3612,8 @@ class NimbusdRig {
   std::string convId_, antEnv_, antAgents_, lastHost_, lastServedBy_;
   bool lastFallback_ = false;   // CUM-236 served-by of the most recent turn
   std::function<void(const std::string&, const std::string&)> onDeliver_;
+  std::function<void(const std::string&, bool, const std::string&)> onTurnProgress_;
+  bool progLineSent_ = false;   // lane PROG: engine thread only (the hook's task)
 
   TurnRecord cur_;
   std::vector<TurnRecord> turns_;

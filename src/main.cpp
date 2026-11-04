@@ -1286,6 +1286,7 @@ static render::ScreenCtx buildCtx(int cursorJob) {
   render::ScreenCtx c;
   fillHeaderCtx(c);   // mode/profile/posture + WiFi/BT/battery/net-degraded header
   c.needsSetup = deviceNeedsSetup();   // StatusIdle -> first-run CTA (CUM-259)
+  c.turnActive = g_orchMode && agent::orchestrator::turnInFlight();   // lane PROG
   // Setup/QR context - filled on EVERY build (P2/P3): SetupInfo shows the AP
   // SSID + a scan-to-configure QR on unprovisioned boot, and a scheduler-driven
   // ConfigQr (the repeated-401 reaction) needs the URL without going through

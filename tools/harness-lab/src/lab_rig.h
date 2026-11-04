@@ -71,11 +71,23 @@ inline constexpr const char* kLabZaiPath = "/api/paas/v4";
 
 namespace orch = nimbus::orch;
 
+// One round boundary of a turn (lane PROG): the raw facts the head loop's
+// progress hook fired, kept so a scenario can assert what a surface would
+// have shown and replay the plan over the real timeline.
+struct ProgressMark {
+  int round = 0;
+  uint32_t elapsedMs = 0;
+  bool lastRound = false;
+  int maxRounds = 0;
+  std::vector<std::string> tools;
+};
+
 struct TurnRecord {
   std::string chatId, userText, reply;
   std::string turnInputs;   // the per-turn INPUT (where [ACTIVE SKILLS] and [STANDING RULES] ride)
   std::vector<std::string> toolCalls;    // "name(args)"
   std::vector<std::string> toolResults;  // truncated result text
+  std::vector<ProgressMark> progress;   // one per round boundary, round 0 included
   std::vector<std::string> deliveries;
   std::string host;
   uint32_t    tokensIn = 0, tokensOut = 0;
@@ -848,6 +860,18 @@ class LabRig {
                      trunc(r.output, 200).c_str());
     };
     d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) { lastHost_ = ev.host; };
+    d.hooks.onTurnProgress = [this](const agent::TurnProgressEv& ev) {
+      ProgressMark m;
+      m.round = ev.round;
+      m.elapsedMs = ev.elapsedMs;
+      m.lastRound = ev.lastRound;
+      m.maxRounds = ev.maxRounds;
+      m.tools = ev.tools;
+      cur_.progress.push_back(m);
+      if (opt_.verboseHttp)
+        std::fprintf(stderr, "[progress] round=%d elapsed=%ums last=%d tools=%zu\n",
+                     ev.round, ev.elapsedMs, (int)ev.lastRound, ev.tools.size());
+    };
     d.hooks.onTurnDebug = [this](const agent::TurnDebugEv& ev) {
       if (ev.inputs) cur_.turnInputs = *ev.inputs;   // where [ACTIVE SKILLS] and [STANDING RULES] ride
     };

@@ -18,7 +18,8 @@
 
 namespace lab {
 namespace ovf {
-namespace {
+// No anonymous namespace here: the swell machinery (the marker, the swollen
+// history, the wire watchers) is shared with the lane PROG replay scenario.
 
 namespace orch = nimbus::orch;
 
@@ -91,9 +92,6 @@ int headCalls(LabRig& rig) {
   return n;
 }
 
-}  // namespace
-
-namespace {
 // A past turn holding the marker, and a newer one: the marker swells where it rides.
 void addSwollenHistory(LabRig& rig, const std::string& chat) {
   LabRig::Row oldQ;
@@ -150,7 +148,6 @@ struct RefitWatch {
       if (std::string(c["type"] | "") == "thinking") signature = std::string(c["signature"] | "");
   }
 };
-}  // namespace
 
 void overflowRefusal(LabRig& rig, const Report& r) {
   const std::string chat = "ovf-overflow";

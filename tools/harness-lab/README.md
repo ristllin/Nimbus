@@ -158,6 +158,7 @@ permanently-broken `web.search` ship, so each scenario asserts an outcome.
 | `ovf-album` | six photos in one turn end with an answer (`NIMBUS_LAB_PHOTOS`) |
 | `photo-eval` | not a scenario: the `nimbus-lab photo-eval --dir=<manifest dir> --out=<results dir>` command runs one meal-analysis turn per photo in `photos.json` and records the replies verbatim; scoring happens outside the driver. `--shared-chat` keeps every photo in one chat (kept photos ride their history messages), `--no-drain` leaves uploads in the delete queue so a long run reaches inline photos next to them |
 | `meal-eval` | the food log is written where it is read: an owner-stated figure and a correction land as files.append rows, never a claimed update without the effect |
+| `prog-long-turn` | the real Waitrose case replayed: a multi-round lookup whose body crosses the 85 KB budget mid-turn; every round boundary signals (keep-alive, ONE plain line, queue check) and each crossing folds in one cycle |
 
 Scenarios needing a Tavily key **skip loudly**. A silent skip reads as a pass,
 which is how a broken capability stays broken.

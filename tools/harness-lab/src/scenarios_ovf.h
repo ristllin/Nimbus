@@ -30,6 +30,19 @@ struct Report {
   std::function<void(const std::string& what)> note;
 };
 
+// Shared swell machinery (also used by the lane PROG replay scenario): a marker
+// row in the history that a request shim replaces with a pad past every model's
+// window, plus the wire watchers over the recorded provider calls.
+extern const char kSwell[];
+
+bool isHead(const agent::HttpRequest& q);
+void addSwollenHistory(LabRig& rig, const std::string& chat);
+std::string swellPad();
+void printCalls(LabRig& rig, const Report& r);
+int refusedCalls(LabRig& rig);
+bool lastCallServed(LabRig& rig);
+int headCalls(LabRig& rig);
+
 void overflowRefusal(LabRig& rig, const Report& r);
 void refitAfterATool(LabRig& rig, const Report& r);
 void synthesisOverBudget(LabRig& rig, const Report& r);

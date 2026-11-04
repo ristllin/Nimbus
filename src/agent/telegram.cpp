@@ -1542,6 +1542,7 @@ static void maybeTyping(const char* chatId) {
   tlsClose(sc);
 }
 
+
 // Photo or document k of n of turn `turn` (slot `slot`): fetched, hashed, handed to the
 // archive (one download), described (a photo), kept in the file store and the episodic
 // record, and returned as its segment text - the one label (media_label.h) and the
@@ -2627,6 +2628,74 @@ void pollTask(void*) {
 }
 
 }  // namespace
+
+// ---- lane PROG: the running turn's round-boundary signals --------------------
+// All of this runs on the poll task (the turn's own task) at a round boundary,
+// where no provider request is in flight: each signal opens its own SHORT TLS
+// session, sequentially, and closes it - never a second resident session. The
+// real case (Lumi, 4 Nov) ran 5 min 12 s with no visible sign of work while the
+// owner watched a frozen chat.
+
+// A real Telegram chat id is digits (with an optional leading '-' for groups);
+// the web/serial/voice pseudo-channels ("web", "serial", ...) must not reach
+// the Telegram API.
+static bool realChatId(const char* chatId) {
+  if (!chatId || !chatId[0]) return false;
+  for (const char* p = chatId; *p; ++p)
+    if (!((*p >= '0' && *p <= '9') || (p == chatId && *p == '-'))) return false;
+  return true;
+}
+
+// The typing keep-alive between every tool round and provider request: the same
+// rate-limited indicator the media path uses (Telegram shows it ~5 s), so a
+// long turn never stops looking alive on the chat it is answering.
+void turnTyping(const String& chatId) {
+  if (!enabled() || !realChatId(chatId.c_str())) return;
+  maybeTyping(chatId.c_str());
+}
+
+// The turn's ONE progress line, sent at once (the reply queue drains only after
+// the turn, so a queued line would land after the answer it explains).
+bool turnProgressLine(const String& chatId, const String& line) {
+  if (!enabled() || !realChatId(chatId.c_str()) || !line.length()) return false;
+  // sendNow, not doSendMessageRaw: the line is an outbound text the archive
+  // keeps, like every other direct send (the archive-hook test walks the sites).
+  return sendNow(chatId.c_str(), line.c_str());
+}
+
+// A message that arrived while the turn runs is invisible until the next poll
+// (the poller is the turn), so at a boundary the turn PEEKS at the pending
+// updates - getUpdates at the current offset with timeout=0, offset NOT
+// advanced, so the post-turn poll still processes every message normally - and
+// acknowledges each newly-seen one immediately. Rate-limited: a fast turn's
+// boundaries are seconds apart and each peek is a short TLS session.
+static constexpr uint32_t kPeekGapMs = 10000;
+static uint32_t s_lastPeekMs = 0;
+static int32_t s_peekAckedId = 0;   // high-water: Telegram update ids only grow
+
+int turnAckQueued() {
+  if (!enabled() || !g_token.length()) return 0;
+  const uint32_t now = millis();
+  if (s_lastPeekMs && now - s_lastPeekMs < kPeekGapMs) return 0;
+  s_lastPeekMs = now;
+  std::vector<nimbus::tg::Update> ups;
+  nimbus::orch::RawPage rp;
+  bool yielded = false;
+  fetchOnePage(g_cursor.offset(), /*longPollS=*/0, ups, rp, yielded);
+  // Never hold the poll socket into the next provider request: one TLS session
+  // at a time (the post-turn poll reconnects as it always did).
+  closePollSocket();
+  if (yielded || rp.fetchError) return 0;
+  int acked = 0;
+  for (const auto& u : ups) {
+    if (u.updateId <= s_peekAckedId) continue;   // already acknowledged this turn
+    s_peekAckedId = u.updateId;
+    if (u.edited || u.chatId.empty() || !isAllowed(String(u.chatId.c_str()))) continue;
+    if (sendNow(u.chatId.c_str(), "Got it, queued. It will answer that once this task finishes."))
+      acked++;
+  }
+  return acked;
+}
 
 // ---- public API -------------------------------------------------------------
 

@@ -125,6 +125,22 @@ GuardStatus guardStatus();
 bool injectMessage(const String& chatId, const String& text);
 bool enabled();
 
+// ---- lane PROG: the running turn's round-boundary signals -------------------
+// Called from the turn's own round boundaries (the poll task, no provider
+// request in flight): each opens its own short TLS session, sequentially, so a
+// long turn never looks frozen on the chat it is answering. No new concurrency.
+// The typing keep-alive between every tool round and provider request
+// (rate-limited; Telegram shows typing ~5 s). A non-Telegram chat id no-ops.
+void turnTyping(const String& chatId);
+// The turn's ONE progress line, sent at once (the reply queue drains only after
+// the turn, so a queued line would land after the answer it explains).
+bool turnProgressLine(const String& chatId, const String& line);
+// Peek at messages that arrived while the turn runs (getUpdates timeout=0 at
+// the current offset; the offset is NOT advanced, so the post-turn poll still
+// processes them normally) and acknowledge each newly-seen allowed one
+// immediately. Rate-limited. Returns the count acknowledged.
+int turnAckQueued();
+
 // Live token swap: adopt a NEW bot token without a reboot. Staged here (any task)
 // and applied on the poll task's next loop - it closes the old bot's long-poll
 // socket and RESETS the getUpdates offset (the stored offset belongs to the old

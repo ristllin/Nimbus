@@ -482,7 +482,13 @@ std::string composeInstructions(const ComposeInputs& in) {
         "You may call these tools MID-TURN - several rounds if needed - and you see "
         "each result before deciding your next step. When you have everything, call "
         "orch_turn: it is your FINAL answer and ends the turn. Prefer calling "
-        "memory_search live over the deferred mem_query field.\n";
+        "memory_search live over the deferred mem_query field.\n"
+        "A lookup that will need many rounds (a broad search, a long chain of "
+        "checks) belongs to a sub-agent: spawn it with session_ops, answer the "
+        "owner now with what you already have, and its results arrive on a later "
+        "turn. If you are already several rounds deep in one, stop early - say "
+        "what you found and what is still missing - rather than running to the "
+        "round cap while the owner waits.\n";
     if (in.loopRoundsNow > 0 && in.loopRoundsNow < in.loopRounds)
       loopNote += "This turn you may call tools over several rounds (at most " + std::to_string(in.loopRoundsNow) +
                   "), not more.\n";

@@ -6,6 +6,7 @@
 #include "nimbus/harness/jobs.h"        // portable sub-agent job machinery (Stage F)
 #include "nimbus/harness/engine.h"      // portable turn orchestration (Stage G)
 #include "nimbus/harness/turn_memory.h" // L24: a turn keeps its small blocks in PSRAM
+#include "nimbus/harness/turn_progress.h"  // lane PROG: the round-boundary signal plan
 #include "../sys/heap_watch.h"          // heapwatch::psramFirst - the turn's malloc placement
 #include "nimbus/harness/turn_inbox.h"  // histV2 switch (the turn-structured history)
 #include "nimbus/harness/turn_anatomy.h" // the /api/lastturn page head (provider chain, device history)
@@ -1447,9 +1448,12 @@ static TurnEngine::Deps buildTurnDeps() {
   // internal-heap transient per row stays ~2 KB; memory::traceActive() gates on
   // the SD append-log + the owner `otrace` knob.
   static std::map<std::string, std::string> s_traceArgs;   // call id -> args (full cap)
+  static bool s_progLineSent = false;   // lane PROG: the ONE progress line went out
   static int s_traceBlobs = 0;   // sidecars written this turn (P4 budget)
   static int s_turnBlobFails = 0;   // sidecar writes that failed this turn (L19-24)
   d.hooks.onTurnStart = [](const TurnStartEv& ev) {
+    // Lane PROG: the ONE progress line is per turn.
+    s_progLineSent = false;
     // Turn identity = the turn's USER row id (boot-stable, resumed past history
     // via nextIdHint) - so the chat UI joins a bubble to its trace rows by ID
     // instead of chronological adjacency (which mis-bucketed an interleaved
@@ -1524,6 +1528,28 @@ static TurnEngine::Deps buildTurnDeps() {
     snprintf(tags, sizeof(tags), "%s,round:%d", g_turnTag, ev.round);
     memory::captureMessage(ev.chatId.c_str(), "assistant", orch::MsgKind::LlmResponse,
                            String(t.c_str()), "", tags);
+  };
+  // Lane PROG: every round boundary of the running turn reaches the Telegram
+  // seam - typing stays alive between every provider request, ONE plain
+  // progress line past 30 s or at the third round, and a message that arrived
+  // mid-turn is acknowledged immediately instead of waiting out the turn in
+  // silence. The plan is the portable, host-tested turn_progress.h; this just
+  // executes it on the poll task (the turn's own task, no new concurrency).
+  // s_progLineSent is reset per turn in onTurnStart above.
+  d.hooks.onTurnProgress = [](const TurnProgressEv& ev) {
+    orch::HeadProgress hp;
+    hp.round = ev.round;
+    hp.elapsedMs = ev.elapsedMs;
+    hp.lastRound = ev.lastRound;
+    hp.tools = ev.tools;
+    const nimbus::harness::TurnProgressPlan plan =
+        nimbus::harness::planTurnProgress(hp, ev.maxRounds, s_progLineSent);
+    if (plan.keepAlive) telegram::turnTyping(String(ev.chatId.c_str()));
+    if (plan.sayLine) {
+      if (telegram::turnProgressLine(String(ev.chatId.c_str()), String(plan.line.c_str())))
+        s_progLineSent = true;
+    }
+    if (plan.checkQueue) telegram::turnAckQueued();
   };
   // B5: sub-agent COMMS into the glass box - the spawn brief and the terminal
   // result land as kind=log rows in the SPAWNING chat's session, so the debug

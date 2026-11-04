@@ -1,0 +1,39 @@
+{
+  "description": "Lane PROG: a long turn never looks frozen. A slow multi-round web lookup keeps the chat alive (a typing keep-alive at every round boundary and ONE plain progress line), and a message that arrives while that turn runs is kept and answered after it, not lost.",
+  "vars": {"suffix": "4417"},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "mem_defect": "member-memory-write-dropped"},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "mem_defect": ""}
+  ],
+  "persona": {
+    "name": "pa-prog-${name}",
+    "display_name": "Priya's Nimbus",
+    "timezone": "Europe/London",
+    "directive": "You help Priya with her shop's stock and delivery questions.",
+    "monthly_cap_cents": 600,
+    "keys": {"mistral": "MISTRAL_API_KEY", "${host}": "${key}"},
+    "instance_env_keys": ["TELEGRAM_BOT_TOKEN", "TAVILY_API_KEY"],
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "members": [{"chat": "4001", "name": "Priya", "role": "user"}],
+    "scenarios": [
+      {"id": "slow-lookup", "steps": [
+        {"say": "Please use the web, one search at a time, to find today's UK prices for three things: a First Class stamp, a litre of milk, and a cinema ticket in London. Report each price in pounds on its own line.", "as": "4001",
+         "timeout_s": 300, "settle_s": 10,
+         "expect": [{"reply_regex": "£|GBP"}, {"no_error_reply": true},
+                    {"log_regex": "turnprog: keep-alive \\(typing\\) to 4001"},
+                    {"log_regex": "turnprog: line to 4001: "}]}
+      ]},
+      {"id": "mid-turn-message", "needs": ["slow-lookup"], "steps": [
+        {"http": {"method": "POST", "path": "/api/message", "json": {"chat_id": "4001", "text": "Please use the web, one search at a time, to find today's UK prices for three things: a First Class stamp, a litre of milk, and a cinema ticket in London. Report each price in pounds on its own line."}},
+         "expect": [{"http_status": 202}]},
+        {"sleep": 6},
+        {"say": "While you finish that, please remember permanently: my delivery van goes out at 7:40 on Fridays. Confirm when stored.", "as": "4001",
+         "timeout_s": 300, "settle_s": 5,
+         "expect": [{"reply_regex": "£|GBP"}, {"reply_regex": "(?i)7:40|friday"}, {"no_error_reply": true},
+                    {"log_regex": "turnprog: keep-alive \\(typing\\) to 4001"},
+                    {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}, "known_defect": "${mem_defect}", "may_pass": true}]}
+      ]}
+    ]
+  }
+}

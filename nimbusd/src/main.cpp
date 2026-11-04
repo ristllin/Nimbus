@@ -103,6 +103,25 @@ void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replie
                           std::atomic<nimbusd::TelegramChannel*>* sender) {
   // Runs on the engine thread. `sender` is atomic because the main thread fills
   // it in (below) after the bot is validated, concurrently with the first turns.
+  // Lane PROG: the running turn's round-boundary signals (engine thread, the
+  // same transport the delivery hook uses): a typing keep-alive between every
+  // provider request and the turn's ONE plain progress line, so a long turn
+  // never looks frozen on the chat it is answering.
+  rig.setTurnProgress([sender](const std::string& chat, bool keepAlive, const std::string& line) {
+    nimbusd::TelegramChannel* s = sender->load(std::memory_order_acquire);
+    if (!s || chat == nimbusd::kWebChatId) return;
+    std::string e;
+    // The signals ride the daemon log too, so a hosted run (the persona rig)
+    // can assert what the chat surface actually showed its owner.
+    if (keepAlive) {
+      s->sendChatAction(chat, "typing", e);
+      agent::hlog::logf("turnprog: keep-alive (typing) to %s", chat.c_str());
+    }
+    if (!line.empty()) {
+      s->sendMessage(chat, line, e);
+      agent::hlog::logf("turnprog: line to %s: %s", chat.c_str(), line.c_str());
+    }
+  });
   rig.setDeliver([&replies, &eng, sender](const std::string& chat, const std::string& text) {
     // Tag the channel (so web matches only its own) AND the web turn this reply
     // answers (currentWebTurn, 0 for Telegram/non-web) so the web chat surface
@@ -222,7 +241,16 @@ int runDaemon(nimbusd::Config& cfg) {
       // becomes a turn; anyone else is queued for the owner's approval and told so.
       // The refusal rides the POLL transport, which this thread owns.
       nimbusd::TgInboundIo io;
-      io.turn = [&eng](const std::string& chat, const std::string& text) { eng.postMessage(chat, text); };
+      io.turn = [&eng, &tgPoll](const std::string& chat, const std::string& text) {
+        // Lane PROG: a message that arrives while a turn runs is queued behind
+        // it; the sender is told so at once instead of waiting in silence.
+        if (eng.busy()) {
+          std::string e;
+          tgPoll->sendMessage(chat, "Got it, queued. It will answer that once this task finishes.", e);
+          agent::hlog::logf("turnprog: queued ack to %s", chat.c_str());
+        }
+        eng.postMessage(chat, text);
+      };
       io.photoTurn = [&eng](const std::string& chat, const std::string& text, const std::vector<nimbusd::PhotoIn>& photos) {
         eng.postMessage(chat, text, 0, nullptr, photos);
       };

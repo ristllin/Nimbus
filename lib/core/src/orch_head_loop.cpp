@@ -307,20 +307,42 @@ size_t refitOneRung(Transcript& tr, const HeadLoopHooks& hooks, size_t want, siz
 // so ONE re-run fits: the real Waitrose case (Lumi, 4 Nov) folded 5582 B against
 // a 10418 B overshoot, re-ran, refused again at 85882 B, folded 1396 B more -
 // every extra refusal is a full body build and parse cycle spent discovering
-// what the first refusal already said. Each rung still gives up only what it
-// must: the remaining want and the clip cap are re-derived after every rung,
-// the same arithmetic a fresh refusal would apply, so folding several rungs in
-// one cycle clips nothing more than the old one-rung-per-refusal ladder did.
+// what the first refusal already said. Two limits keep the fold honest:
+// - only the TRANSCRIPT rungs fold several to a cycle. They are wire-measurable
+//   (a tool result rides the request about as many bytes as it holds), so
+//   `want` in wire bytes is a real target for them. The prompt-ladder rungs are
+//   not: the wire writes history text JSON-escaped, up to twice its size, so
+//   folding those against wire bytes overfolds - the results a synthesis exists
+//   for got clipped that way while history still had turns to give. A prompt
+//   rung still gives up only one rung per refusal, and the next body build says
+//   whether it was enough (dropNewestHistory's own rule).
+// - `have` and `newest` stay the REFUSAL's own figures for the whole cycle, not
+//   re-derived per rung: the cap they derive is the one the re-run checks
+//   against, and re-deriving it mid-cycle (before any body build) lets the
+//   last-resort clip of the newest round fire on a fold the re-run would have
+//   accepted - the growing-loop matrix clipped result 3 that way, a result the
+//   model had not seen yet. A cycle that underfolds just refuses again, and
+//   the fresh refusal re-derives everything (the bounded-refits test watches
+//   that cost).
+// `what` names every rung that gave, in order: the log line is the record of
+// what the fold took, not just its last rung.
 size_t refitEnough(Transcript& tr, const HeadLoopHooks& hooks, size_t want, size_t have,
-                   size_t newest, const char*& what) {
+                   size_t newest, std::string& what) {
   size_t freed = 0;
   for (int rung = 0; rung < kBudgetRefits; ++rung) {
     const size_t remaining = want > freed ? want - freed : 1;
     const size_t cap = have > remaining ? have - remaining : 1;   // trimToolOutputs(0) means no cap
-    const size_t got = refitOneRung(tr, hooks, remaining, cap, newest, what);
+    const char* rungWhat = "";
+    const size_t got = refitOneRung(tr, hooks, remaining, cap, newest, rungWhat);
+    if (got && what.find(rungWhat) == std::string::npos) {
+      if (!what.empty()) what += " then ";
+      what += rungWhat;
+    }
     if (!got) break;
     freed += got;
     if (freed >= want) break;
+    if (std::string(rungWhat) == "the older history" || std::string(rungWhat) == "the prompt and input")
+      break;   // the wire escapes history at up to twice its size: only the re-run can measure it
   }
   return freed;
 }
@@ -333,7 +355,7 @@ bool refitToBudget(const HeadStep& sr, const HeadLoopHooks& hooks, int round) {
   const size_t have = tr.toolBytes();
   const size_t newest = newestRoundBytes(tr);
   const size_t want = (size - budget) + (have > newest ? kBudgetRefitSlack : kBudgetClipSlack);
-  const char* what = "";
+  std::string what;
   const size_t freed = refitEnough(tr, hooks, want, have, newest, what);
   if (hooks.log)
     hooks.log("headloop: round " + std::to_string(round) + " body " + std::to_string(size) + " B over the " +

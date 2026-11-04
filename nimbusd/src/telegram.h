@@ -111,6 +111,17 @@ class TelegramChannel {
     return true;
   }
 
+  // The typing indicator (lane PROG): Telegram shows it ~5 s, so a long turn's
+  // round boundaries re-send it and the chat never stops looking alive.
+  bool sendChatAction(const std::string& chatId, const std::string& action, std::string& err) {
+    const std::string body = std::string("{\"chat_id\":") + jsonNum(chatId) +
+                             ",\"action\":" + jsonQuote(action) + "}";
+    agent::HttpResponse resp;
+    if (!call("sendChatAction", body, resp, err)) return false;
+    if (resp.status != 200) { err = "sendChatAction HTTP " + std::to_string(resp.status); return false; }
+    return true;
+  }
+
   // Download one file by its Telegram id (getFile, then the file host). A file over
   // `maxBytes` is refused by its reported size, before any bytes move.
   bool fetchFile(const std::string& fileId, size_t maxBytes, std::string& out, std::string& err) {

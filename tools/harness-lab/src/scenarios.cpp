@@ -22,6 +22,7 @@
 #include "scenarios_monly.h"   // lane MONLY: the Mistral-only client's live legs
 #include "scenarios_dispo.h"    // lane DISPO: model-choice rate legs (F03/H09/H20)
 #include "scenarios_conn.h"    // lane CONN: connector honesty legs (live + scripted)
+#include "scenarios_prog.h"    // lane PROG: the long-turn progress replay
 
 namespace lab {
 namespace {
@@ -425,6 +426,10 @@ void scOvfAlbum(LabRig& rig, Ctx& c) { ovf::albumOfSix(rig, ovfReport(c)); }
 monly::Report monlyReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
 void scMonlyStepdown(LabRig& rig, Ctx& c) { monly::cutStepsDownSameHost(rig, monlyReport(c)); }
 
+// Lane PROG: a long turn never looks frozen (scenarios_prog.cpp).
+prog::Report progReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
+void scProgLongTurn(LabRig& rig, Ctx& c) { prog::longTurnReplay(rig, progReport(c)); }
+
 struct Scenario {
   const char* name;
   const char* what;
@@ -492,6 +497,7 @@ const Scenario kScenarios[] = {
     {"conn-gmail-none", "Gmail with nothing configured: the honest not-set-up answer", scConnNoop, false},
     {"conn-gmail-unauth", "a Mistral connector the provider refuses for real: the owner hears it", scConnNoop, false},
     {"conn-notion-success", "Notion via Mistral: the refusal is paid once, the run lands on the tools model", scConnNoop, false},
+    {"prog-long-turn", "the real Waitrose case: boundaries signal all turn, one line, one-cycle folds", scProgLongTurn, false},
 };
 
 }  // namespace
