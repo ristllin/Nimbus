@@ -197,34 +197,38 @@ bool FileStore::isRegenerableCopy(const FileEntry& e) const {
   return false;
 }
 
-std::vector<const FileEntry*> FileStore::planEviction(uint64_t needBytes) const {
-  // O(n log n), not O(n^2): isRegenerableCopy's same-hash test is a linear scan, so
-  // calling it per entry would be quadratic at 10,000 files. One sort by
-  // (hash, createdAt, index) marks the newest entry of each content group; every
-  // other entry of a non-zero-hash group is an older copy.
+// Marks the newest entry of each non-zero-hash content group (by createdAt, then
+// index order). One sort, so planEviction stays O(n log n) at 10,000 files -
+// isRegenerableCopy's same-hash test is a linear scan and would be quadratic if
+// called per entry.
+static std::vector<char> newestOfHashMarks(const std::vector<FileEntry>& entries) {
   std::vector<const FileEntry*> byHash;
-  byHash.reserve(entries_.size());
-  for (const auto& e : entries_) byHash.push_back(&e);
+  byHash.reserve(entries.size());
+  for (const auto& e : entries) byHash.push_back(&e);
   std::sort(byHash.begin(), byHash.end(),
             [](const FileEntry* a, const FileEntry* b) {
               if (a->hash != b->hash) return a->hash < b->hash;
               if (a->createdAt != b->createdAt) return a->createdAt < b->createdAt;
               return a < b;
             });
-  std::vector<char> newestOfHash(entries_.size(), 0);
+  std::vector<char> marks(entries.size(), 0);
   for (size_t i = 0; i < byHash.size();) {
     size_t j = i;
     while (j < byHash.size() && byHash[j]->hash == byHash[i]->hash) ++j;
     if (byHash[i]->hash != 0 && j > i)
-      newestOfHash[size_t(byHash[j - 1] - entries_.data())] = 1;   // the group's last = newest
+      marks[size_t(byHash[j - 1] - entries.data())] = 1;   // the group's last = newest
     i = j;
   }
+  return marks;
+}
+
+std::vector<const FileEntry*> FileStore::planEviction(uint64_t needBytes) const {
+  const std::vector<char> newest = newestOfHashMarks(entries_);
   std::vector<const FileEntry*> cands;
   cands.reserve(entries_.size() / 4 + 8);
   for (size_t i = 0; i < entries_.size(); ++i) {
     const FileEntry& e = entries_[i];
-    if (isAttachmentProject(e.project)) cands.push_back(&e);
-    else if (e.hash && !newestOfHash[i]) cands.push_back(&e);
+    if (isAttachmentProject(e.project) || (e.hash && !newest[i])) cands.push_back(&e);
   }
   // Oldest first: createdAt, then index order (stable).
   std::stable_sort(cands.begin(), cands.end(),

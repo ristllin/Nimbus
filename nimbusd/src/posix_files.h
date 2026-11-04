@@ -68,28 +68,7 @@ class PosixFiles {
             "bounded per call - 'limit' (default 1000, max 2000) entries after "
             "'offset'; the reply says how many there are in all.",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
-              const std::string proj = str(a, "project");
-              size_t limit = a["limit"].is<double>() ? (size_t)a["limit"].as<double>() : 0;
-              size_t offset = a["offset"].is<double>() ? (size_t)a["offset"].as<double>() : 0;
-              if (limit == 0 || limit > kListPageMax) limit = kListPageDefault;
-              std::string out;
-              size_t shown = 0;
-              for (size_t base = offset; shown < limit; base += kListPageChunk) {
-                const auto page = store_.listPage(proj, base, kListPageChunk);
-                if (page.empty()) break;
-                for (const auto* e : page) {
-                  if (shown >= limit) break;
-                  out += e->project + "/" + e->name + " (" +
-                         std::to_string(e->bytes) + " bytes)\n";
-                  ++shown;
-                }
-              }
-              if (out.empty()) return nimbus::orch::ToolResult::ok("(no files)");
-              const size_t total = store_.count();
-              if (shown < total)
-                out = "(showing " + std::to_string(shown) + " of " + std::to_string(total) +
-                      " files; pass offset to page)\n" + out;
-              return nimbus::orch::ToolResult::ok(out);
+              return filesListTool(a);
             },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("limit":{"type":"number"},"offset":{"type":"number"}}})");
@@ -158,6 +137,32 @@ class PosixFiles {
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"}},)"
             R"("required":["project","name"]})");
+  }
+
+  // files.list, paged (lane FSCAP): at most `limit` entries after `offset`; the
+  // reply says the total when the page does not cover it.
+  nimbus::orch::ToolResult filesListTool(ArduinoJson::JsonObjectConst a) {
+    const std::string proj = str(a, "project");
+    size_t limit = a["limit"].is<double>() ? (size_t)a["limit"].as<double>() : 0;
+    size_t offset = a["offset"].is<double>() ? (size_t)a["offset"].as<double>() : 0;
+    if (limit == 0 || limit > kListPageMax) limit = kListPageDefault;
+    std::string out;
+    size_t shown = 0;
+    for (size_t base = offset; shown < limit; base += kListPageChunk) {
+      const auto page = store_.listPage(proj, base, kListPageChunk);
+      if (page.empty()) break;
+      for (const auto* e : page) {
+        if (shown >= limit) break;
+        out += e->project + "/" + e->name + " (" + std::to_string(e->bytes) + " bytes)\n";
+        ++shown;
+      }
+    }
+    if (out.empty()) return nimbus::orch::ToolResult::ok("(no files)");
+    const size_t total = store_.count();
+    if (shown < total)
+      out = "(showing " + std::to_string(shown) + " of " + std::to_string(total) +
+            " files; pass offset to page)\n" + out;
+    return nimbus::orch::ToolResult::ok(out);
   }
 
   // files.read: the text of a stored file, or the rule's refusal (file_store.h).
@@ -305,6 +310,14 @@ class PosixFiles {
     return true;
   }
 
+  // Room for `addBytes` more under the byte quota, reclaiming regenerable copies
+  // first when the quota is the blocker (lane FSCAP). save/append/upsert share it.
+  bool roomFor(const std::string& p, const std::string& n, uint64_t addBytes, std::string& err) {
+    if (!store_.wouldExceed(p, n, addBytes, err)) return true;
+    if (err == nimbus::orch::FileStore::kErrStoreFull) reclaimRoom(p, n, addBytes);
+    return !store_.wouldExceed(p, n, addBytes, err);
+  }
+
   // The store's limits are checked BEFORE the first byte lands: a refused file
   // (past the entry or byte cap) must leave nothing on the volume, since the index
   // is what the Files panel lists and deletes by, and an unindexed file could never
@@ -318,10 +331,7 @@ class PosixFiles {
       err = "invalid project or name";
       return false;
     }
-    if (store_.wouldExceed(p, n, text.size(), err)) {
-      if (err == nimbus::orch::FileStore::kErrStoreFull) reclaimRoom(p, n, text.size());
-      if (store_.wouldExceed(p, n, text.size(), err)) return false;
-    }
+    if (!roomFor(p, n, text.size(), err)) return false;
     const bool replacing = store_.find(p, n) != nullptr;
     if (!fsutil::writeFileAtomic(bytesPath(p, n), text)) {
       err = "write failed";
@@ -358,11 +368,7 @@ class PosixFiles {
       err = plan.err;
       return false;
     }
-    if (store_.wouldExceed(p, n, cur.size() + plan.bytes.size(), err)) {
-      if (err == nimbus::orch::FileStore::kErrStoreFull)
-        reclaimRoom(p, n, cur.size() + plan.bytes.size());
-      if (store_.wouldExceed(p, n, cur.size() + plan.bytes.size(), err)) return false;
-    }
+    if (!roomFor(p, n, cur.size() + plan.bytes.size(), err)) return false;
     ::mkdir((root_ + "/" + p).c_str(), 0755);
     FILE* f = std::fopen(bytesPath(p, n).c_str(), "ab");
     if (!f) {
@@ -421,10 +427,7 @@ class PosixFiles {
       return false;
     }
     if (up.changed) {
-      if (store_.wouldExceed(p, n, up.out.size(), out.err)) {
-        if (out.err == nimbus::orch::FileStore::kErrStoreFull) reclaimRoom(p, n, up.out.size());
-        if (store_.wouldExceed(p, n, up.out.size(), out.err)) return false;
-      }
+      if (!roomFor(p, n, up.out.size(), out.err)) return false;
       if (!fsutil::writeFileAtomic(bytesPath(p, n), up.out)) {
         out.err = "write failed";
         return false;
