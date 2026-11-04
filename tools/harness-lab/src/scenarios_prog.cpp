@@ -31,6 +31,87 @@ int foldRound(const std::string& line) {
   return round;
 }
 
+// What the portable plan would show at every boundary the turn actually hit:
+// the counts a scenario asserts on, and the ONE line the owner would see.
+// lineAlreadySent carries across boundaries the way a surface folds it.
+struct SignalCounts {
+  int keepAlives = 0, queueChecks = 0, sayLines = 0;
+  std::string line;
+};
+
+SignalCounts walkBoundaries(const TurnRecord& t, const Report& r) {
+  SignalCounts s;
+  bool lineSent = false;
+  std::string timeline;
+  for (const auto& m : t.progress) {
+    orch::HeadProgress hp;
+    hp.round = m.round;
+    hp.elapsedMs = m.elapsedMs;
+    hp.lastRound = m.lastRound;
+    hp.tools = m.tools;
+    const auto plan = nimbus::harness::planTurnProgress(hp, m.maxRounds, lineSent);
+    if (plan.keepAlive) s.keepAlives++;
+    if (plan.checkQueue) s.queueChecks++;
+    if (plan.sayLine) {
+      s.sayLines++;
+      s.line = plan.line;
+      lineSent = true;
+    }
+    timeline += "round " + std::to_string(m.round) + " at " + std::to_string(m.elapsedMs / 1000) + "s" +
+                (m.lastRound ? " (final)" : "") + "; ";
+  }
+  r.note("after: boundaries at " + timeline);
+  if (!s.line.empty())
+    r.note("after: the one progress line the owner would see: \"" + s.line + "\"");
+  return s;
+}
+
+// The signal shape the lane promises: one boundary per round, a keep-alive and a
+// queue check at each except the imminent answer, exactly one plain line.
+void checkSignalShape(const Report& r, const TurnRecord& t, const SignalCounts& s) {
+  const auto& marks = t.progress;
+  r.check(marks.size() >= 2, "the turn ran multiple rounds, so the boundary seam had something to signal");
+  bool consecutive = true;
+  for (size_t i = 0; i < marks.size(); ++i)
+    if (marks[i].round != (int)i) consecutive = false;
+  r.check(consecutive, "one boundary per round, round 0 included");
+  const int finalMarks = marks.empty() ? 0 : (marks.back().lastRound ? 1 : 0);
+  r.check(s.keepAlives == (int)marks.size() - finalMarks,
+          "a keep-alive at every boundary except the imminent answer");
+  r.check(s.queueChecks == (int)marks.size() - finalMarks,
+          "every boundary looks for messages that arrived mid-turn");
+  r.check(s.sayLines <= 1, "never more than one progress line per turn");
+  r.check(marks.size() <= 2 || s.sayLines == 1,
+          "a turn past its third round says the one plain line");
+  if (s.sayLines == 1) {
+    r.check(!s.line.empty() && s.line.find("prog_bulk_lookup") == std::string::npos &&
+                s.line.find("memory_search") == std::string::npos && s.line.find('_') == std::string::npos,
+            "the line is plain words, no machine names");
+  }
+}
+
+// The refit, on the real wire: each crossing folded enough in ONE cycle (the
+// real case needed two refusals per crossing), every request that left the lab
+// was inside the budget, and the provider accepted the refitted replay.
+void checkFoldShape(const Report& r, LabRig& rig, const TurnRecord& t, size_t largest) {
+  int folds = 0;
+  std::set<int> foldedRounds;
+  for (const auto& l : LabRig::harnessLog()) {
+    const int round = foldRound(l);
+    if (round < 0) continue;
+    folds++;
+    foldedRounds.insert(round);
+    r.note("fold: " + l);
+  }
+  r.check(folds >= 1, "the replay crossed the wire budget mid-turn, after tools ran");
+  r.check(folds == (int)foldedRounds.size(),
+          "each crossing folded enough in one cycle, no round refused twice");
+  r.check(largest <= agent::providers::kWireBodyMax, "every request sent was inside the wire budget");
+  r.check(ovf::lastCallServed(rig), "the provider accepted the refitted replay");
+  r.check(!t.reply.empty() && t.reply.find("didn't finish") == std::string::npos,
+          "the turn answered after the folds");
+}
+
 }  // namespace
 
 void longTurnReplay(LabRig& rig, const Report& r) {
@@ -86,73 +167,11 @@ void longTurnReplay(LabRig& rig, const Report& r) {
   ovf::printCalls(rig, {r.check, r.note});
   r.note("reply: " + t.reply.substr(0, 300));
 
-  // AFTER - the timeline the owner now sees: every boundary, when it fired, and
-  // what the portable plan would show there (keep-alive, the ONE line, the
-  // queue check). Folded the way a surface folds it: lineAlreadySent carries
-  // across boundaries.
-  const auto& marks = t.progress;
-  std::string timeline;
-  int keepAlives = 0, queueChecks = 0, sayLines = 0;
-  std::string line;
-  bool lineSent = false;
-  for (const auto& m : marks) {
-    orch::HeadProgress hp;
-    hp.round = m.round;
-    hp.elapsedMs = m.elapsedMs;
-    hp.lastRound = m.lastRound;
-    hp.tools = m.tools;
-    const auto plan = nimbus::harness::planTurnProgress(hp, m.maxRounds, lineSent);
-    if (plan.keepAlive) keepAlives++;
-    if (plan.checkQueue) queueChecks++;
-    if (plan.sayLine) {
-      sayLines++;
-      line = plan.line;
-      lineSent = true;
-    }
-    timeline += "round " + std::to_string(m.round) + " at " + std::to_string(m.elapsedMs / 1000) + "s" +
-                (m.lastRound ? " (final)" : "") + "; ";
-  }
-  r.note("after: boundaries at " + timeline);
-  if (!line.empty()) r.note("after: the one progress line the owner would see: \"" + line + "\"");
-
-  r.check(marks.size() >= 2, "the turn ran multiple rounds, so the boundary seam had something to signal");
-  bool consecutive = true;
-  for (size_t i = 0; i < marks.size(); ++i)
-    if (marks[i].round != (int)i) consecutive = false;
-  r.check(consecutive, "one boundary per round, round 0 included");
-  const int finalMarks = marks.empty() ? 0 : (marks.back().lastRound ? 1 : 0);
-  r.check(keepAlives == (int)marks.size() - finalMarks,
-          "a keep-alive at every boundary except the imminent answer");
-  r.check(queueChecks == (int)marks.size() - finalMarks,
-          "every boundary looks for messages that arrived mid-turn");
-  r.check(sayLines <= 1, "never more than one progress line per turn");
-  r.check(marks.size() <= 2 || sayLines == 1,
-          "a turn past its third round says the one plain line");
-  if (sayLines == 1) {
-    r.check(!line.empty() && line.find("prog_bulk_lookup") == std::string::npos &&
-                line.find("memory_search") == std::string::npos && line.find('_') == std::string::npos,
-            "the line is plain words, no machine names");
-  }
-
-  // The refit, on the real wire: each crossing folded enough in ONE cycle (the
-  // real case needed two refusals per crossing), every request that left the
-  // lab was inside the budget, and the provider accepted the refitted replay.
-  int folds = 0;
-  std::set<int> foldedRounds;
-  for (const auto& l : LabRig::harnessLog()) {
-    const int round = foldRound(l);
-    if (round < 0) continue;
-    folds++;
-    foldedRounds.insert(round);
-    r.note("fold: " + l);
-  }
-  r.check(folds >= 1, "the replay crossed the wire budget mid-turn, after tools ran");
-  r.check(folds == (int)foldedRounds.size(),
-          "each crossing folded enough in one cycle, no round refused twice");
-  r.check(largest <= agent::providers::kWireBodyMax, "every request sent was inside the wire budget");
-  r.check(ovf::lastCallServed(rig), "the provider accepted the refitted replay");
-  r.check(!t.reply.empty() && t.reply.find("didn't finish") == std::string::npos,
-          "the turn answered after the folds");
+  // AFTER - the timeline the owner now sees, then the two shapes the lane
+  // promises: the signal shape at the boundaries, the fold shape on the wire.
+  const SignalCounts s = walkBoundaries(t, r);
+  checkSignalShape(r, t, s);
+  checkFoldShape(r, rig, t, largest);
 }
 
 }  // namespace prog
