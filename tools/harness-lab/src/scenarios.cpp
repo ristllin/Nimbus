@@ -21,6 +21,7 @@
 #include "scenarios_g1.h"   // message-level caching legs (cost per turn by gap)
 #include "scenarios_monly.h"   // lane MONLY: the Mistral-only client's live legs
 #include "scenarios_dispo.h"    // lane DISPO: model-choice rate legs (F03/H09/H20)
+#include "scenarios_conn.h"    // lane CONN: connector honesty legs (live + scripted)
 
 namespace lab {
 namespace {
@@ -435,6 +436,10 @@ struct Scenario {
   bool degradeHeap = false;
 };
 
+// The conn-* legs run through their own driver (scenarios_conn.cpp), which owns
+// per-leg rig options; the table entry only lists them.
+void scConnNoop(LabRig&, Ctx&) {}
+
 const Scenario kScenarios[] = {
     {"smoke",         "a plain reply and one tool round trip (the live-leg wiring check)", scSmoke, false},
     {"web-search",    "live web.search end to end, and the model uses the result", scWebSearch, true},
@@ -484,6 +489,9 @@ const Scenario kScenarios[] = {
     {"dispo-f03",      "the F03 shape x N: which food targets land, and the (Correction: rate", scDispoF03, false},
     {"dispo-h09",      "the H09 dinner shape x N: the named file vs the one food log", scDispoH09, false},
     {"dispo-h20",      "the H20 question x N: does the head run web.search", scDispoH20, false},
+    {"conn-gmail-none", "Gmail with nothing configured: the honest not-set-up answer", scConnNoop, false},
+    {"conn-gmail-unauth", "a Mistral connector the provider refuses for real: the owner hears it", scConnNoop, false},
+    {"conn-notion-success", "Notion via Mistral: the refusal is paid once, the run lands on the tools model", scConnNoop, false},
 };
 
 }  // namespace
@@ -596,20 +604,42 @@ static int runParity(const Env& env, const LabRig::Options& opt) {
   return failures;
 }
 
+// The parity and conn legs run through their own drivers (each builds per-leg
+// rigs); true when the entry is handled and the counts were added.
+struct DriverCounts {
+  int failed = 0;
+  int ran = 0;
+  bool connRan = false;
+};
+bool runOwnDriver(const Scenario& s, const Env& env, const LabRig::Options& opt,
+                  const std::vector<std::string>& names, DriverCounts& n) {
+  if (std::strncmp(s.name, "conn-", 5) == 0) {
+    if (n.connRan) return true;   // one driver call for the whole conn-* family
+    n.connRan = true;
+    int legs = 0;
+    n.failed += conn::run(env, opt, names, legs);
+    n.ran += legs;
+    return true;
+  }
+  if (std::strcmp(s.name, "parity") == 0) {
+    if (names.empty() || std::find(names.begin(), names.end(), "parity") != names.end())
+      n.failed += runParity(env, opt);
+    return true;
+  }
+  return false;
+}
+
 int runScenarios(const Env& env, const LabRig::Options& opt,
                  const std::vector<std::string>& names) {
   const bool haveSearch = !env.get("TAVILY_API_KEY").empty();
   int failed = 0, ran = 0, skipped = 0;
   uint32_t tokIn = 0, tokOut = 0;
+  DriverCounts drivers;
 
   for (const auto& s : kScenarios) {
     if (!names.empty() &&
         std::find(names.begin(), names.end(), s.name) == names.end()) continue;
-    if (std::strcmp(s.name, "parity") == 0) {
-      if (names.empty() || std::find(names.begin(), names.end(), "parity") != names.end())
-        failed += runParity(env, opt);
-      continue;
-    }
+    if (runOwnDriver(s, env, opt, names, drivers)) continue;
     if (s.needsSearch && !haveSearch) {
       // Skip LOUDLY: a silently-skipped scenario reads as a pass, which is how
       // a broken capability stays broken.
@@ -635,6 +665,8 @@ int runScenarios(const Env& env, const LabRig::Options& opt,
     }
   }
 
+  failed += drivers.failed;
+  ran += drivers.ran;
   std::printf("\n---------------------------------------------\n");
   std::printf("%d scenario(s) run, %d failed, %d skipped\n", ran, failed, skipped);
   std::printf("tokens: %u in / %u out\n", tokIn, tokOut);

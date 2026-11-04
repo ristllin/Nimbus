@@ -20,6 +20,7 @@
 #include "nimbus/harness/websearch.h"
 #include "nimbus/docs_pack.h"
 #include "nimbus/orch/embedding.h"
+#include "nimbus/orch/connectors_wire.h"   // lane CONN: the rig's connector attach + catalog
 #include "nimbus/orch/food_portions.h"   // lane CTX: food.portions
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/mem_config.h"
@@ -131,6 +132,17 @@ class LabRig {
     // nimbus/orch/model_defaults.h): the head row, the sub row for sub-agents, and the
     // background row while a scheduled turn runs - the defaults wired end to end.
     bool        roleDefaults = false;
+    // Lane CONN: connectors the rig attaches + catalogues exactly as the device
+    // does (attachMistralWire on the mistral wire, catalogText in the stable
+    // prompt). Empty = none, the historical lab.
+    std::vector<nimbus::orch::ConnectorInfo> connectors;
+    // The workspace answer for the Studio connectors: newline-delimited ids the
+    // probe "lists" as active ("" = unprobed, so every Studio connector reads
+    // auth 2 and the attach skips it, exactly as a fresh device would).
+    std::string mistralListed;
+    // Wire the [PROVIDERS & CONNECTORS] catalog into the turn (off by default:
+    // every existing scenario's prompt stays byte-identical).
+    bool        connectorsCatalog = false;
   };
 
   LabRig(Env env, Options opt)
@@ -274,6 +286,9 @@ class LabRig {
   LabSkills& skills() { return skills_; }   // seed + inspect the store (lane I)
   LabPrefs& prefs() { return prefs_; }   // lane J: the standing-rules store
   const std::vector<TurnRecord>& turns() const { return turns_; }
+  // The turn record still receiving deliveries after say() returns (a pumped
+  // sub-agent's refusal notice lands here, outside any owner turn).
+  const TurnRecord& lastTurn() const { return cur_; }
   const std::vector<std::string>& toolNames() const { return toolNames_; }
 
   uint32_t totalIn() const {
@@ -286,6 +301,15 @@ class LabRig {
   bool hostAvailable(const std::string& h) const { return !env_.providerKey(h).empty(); }
   const Options& options() const { return opt_; }
   const Env& env() const { return env_; }
+  // Lane CONN: the deps the rig's own head turns and subs run over, so a
+  // scenario's fabric adapter rides the same transport, keys and models.
+  agent::providers::ProviderDeps deps() { return providerDeps(); }
+  // The connectors the rig attaches, with the credential state the fake
+  // workspace answer (Options.mistralListed) stamps - the same rule the device
+  // applies before any attach, so a scenario sees exactly what would ride.
+  std::vector<nimbus::orch::ConnectorInfo> stampedConnectors() const {
+    return authStampedConnectors();
+  }
 
   // The model a host's head and subs request: an override, else the lab default.
   std::string modelFor(const std::string& h) const {
@@ -604,12 +628,34 @@ class LabRig {
     return c;
   }
 
+  // The connectors with their credential state stamped by the fake workspace
+  // answer (lane CONN): the same applyConnectorAuth rule the device runs before
+  // any attach, so auth 2 entries are skipped rather than sent.
+  std::vector<nimbus::orch::ConnectorInfo> authStampedConnectors() const {
+    std::vector<nimbus::orch::ConnectorInfo> cs = opt_.connectors;
+    nimbus::orch::MistralWorkspace ws;
+    if (!opt_.mistralListed.empty()) {
+      ws.probed = true;
+      ws.listed = opt_.mistralListed.front() == '\n' ? opt_.mistralListed
+                                                     : "\n" + opt_.mistralListed;
+      if (ws.listed.back() != '\n') ws.listed += '\n';
+    }
+    nimbus::orch::applyConnectorAuth(cs, ws);
+    return cs;
+  }
+
   agent::providers::ProviderDeps providerDeps() {
     agent::providers::ProviderDeps pd;
     pd.http = &shim_;
     pd.key = [this](const char* h) { return env_.providerKey(h); };
     pd.orchModel = [this](const char* h) { return modelFor(h); };
     pd.toolLoopOn = [this] { return opt_.toolLoop; };
+    if (!opt_.connectors.empty()) {
+      const std::vector<nimbus::orch::ConnectorInfo> cs = authStampedConnectors();
+      pd.attachMistral = [cs](JsonDocument& doc) {
+        nimbus::orch::attachMistralWire(doc, cs, /*builtinsOnly=*/false);
+      };
+    }
     pd.zaiHead = [this](agent::providers::ProviderDeps& z) {
       z.customBase = [] { return std::string(kLabZaiHost); };
       z.customPathPrefix = [] { return std::string(kLabZaiPath); };
@@ -752,7 +798,17 @@ class LabRig {
     d.mcpDispatch = [this](const std::string& req, const orch::Principal& who) {
       return reg_.handleRpc(req, who);
     };
-    d.connectorsCatalog = [](bool) { return std::string(); };
+    d.connectorsCatalog = [this](bool headCallsTools) {
+      if (!opt_.connectorsCatalog) return std::string();
+      nimbus::orch::ProviderState ps;
+      ps.openaiKeyed    = !env_.providerKey("openai").empty();
+      ps.anthropicKeyed = !env_.providerKey("anthropic").empty();
+      ps.mistralKeyed   = !env_.providerKey("mistral").empty();
+      ps.currentHost    = opt_.priority.substr(0, opt_.priority.find(','));
+      ps.headModel      = modelFor(ps.currentHost);
+      ps.webSearchTool  = headCallsTools && !env_.get("TAVILY_API_KEY").empty();
+      return nimbus::orch::catalogText(authStampedConnectors(), ps);
+    };
     wireSkillsDeps(d);
     d.modelChoices = [this](const std::string& p) { return config().provider.modelChoices(p); };
     d.episodicCaptureUser = [this](const std::string& c, const std::string& t,

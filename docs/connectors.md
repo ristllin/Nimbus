@@ -53,7 +53,7 @@ in firmware ([Security](#security)).
 |---|---|---|
 | **OpenAI** | ✅ remote MCP (`server_url` + token) and first-party connectors (Gmail, Calendar, Drive…) | ✅ same |
 | **Anthropic** | - (the head turn is a single forced tool; MCP cannot run mid-turn) | ✅ remote MCP by URL (`mcp_servers`); a pasted token or a completed Sign in is forwarded as the server's authorization token |
-| **Mistral** | ✅ Studio built-ins + Studio-named connectors - **single-shot turns** | ✅ sub-agents run over the Conversations API; built-ins *and* Studio connectors attach to the spawn dispatch (server-side) |
+| **Mistral** | ✅ Studio built-ins + Studio-named connectors - **single-shot turns**; ✗ when the Orchestrator's model is in the mistral-large-4 family (it refuses Mistral's built-in connectors, so those runs move to a sub-agent) | ✅ sub-agents run over the Conversations API; built-ins *and* Studio connectors attach to the spawn dispatch (server-side) |
 
 Two consequences:
 
@@ -64,6 +64,12 @@ Two consequences:
 - **Mistral requires the least setup.** Its connectors are authenticated in
   **Mistral Studio** and referenced by name - Nimbus stores *no secret* for
   them.
+- **The head model can refuse them.** The mistral-large-4 family (currently
+  mistral-large-4-0) answers any request that carries Mistral's built-in
+  connectors with an error, so with such a model as the Orchestrator's head no
+  Mistral connector runs on its own turns: the card shows **via sessions**, and
+  a task that needs one runs on a sub-agent, which Nimbus moves to a model that
+  accepts the connectors and says so in its reply.
 
 ## How Nimbus knows a connector is available
 
