@@ -1,0 +1,11 @@
+# Failing-first run of the new review-fix tests, pre-fix tree (head 774bafea), 2026-11-04T10:57:58Z
+# command: cd tools/release_gate && python3 -m pytest test_lwip_core_lock.py -q
+
+  Full diff:
+  + []
+  - [
+  -     1,
+  - ]
+FAILED test_lwip_core_lock.py::test_unclosed_lock_fails - AssertionError: assert 'LOCK_TCPIP_CORE without matching UNLOCK_TCPIP_CORE' in []
+ +  where [] = rules('\nvoid f() {\n  LOCK_TCPIP_CORE();\n  dns_clear_cache();\n')
+5 failed, 9 passed in 1.33s

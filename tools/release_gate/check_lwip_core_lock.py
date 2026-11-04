@@ -17,12 +17,25 @@ The scan reads src/ and lib/ and fails on:
      the TCPIP thread, so every raw call must hold the lock; the socket API and the
      netconn API (lwip_getaddrinfo, netconn_gethostbyname, setsockopt, ...) take the lock
      internally and are not raw.
-  2. a bare hostByName() call anywhere but the locked seam src/sys/net_util.h - the
-     Arduino core's hostByName is the one that calls dns_clear_cache() unlocked.
-  3. a host-based connect() that does not go through connectHost() in the seam: the
+  2. a bare hostByName() call anywhere, the seam src/sys/net_util.h included - the
+     Arduino core's hostByName is the one that calls dns_clear_cache() unlocked
+     (NetworkManager.cpp:84), the A03 crash path.
+  3. a hostByName() call INSIDE a LOCK_TCPIP_CORE region: Network.hostByName resolves
+     through the netconn API, which takes the core lock itself (netdb.c ->
+     netconn_gethostbyname_addrtype -> tcpip_send_msg_wait_sem -> LOCK_TCPIP_CORE,
+     tcpip.c:446), and the core lock is a non-recursive mutex taken with portMAX_DELAY
+     (port/freertos/sys_arch.c:44,63) - holding it across hostByName self-deadlocks the
+     calling task on a mutex it already holds. Resolve with the RAW dns_gethostbyname
+     under the lock instead (it asserts the lock held but never takes it), then
+     connect by IPAddress.
+  4. a host-based connect() that does not go through connectHost() in the seam: the
      first argument must be an IPAddress-typed expression (an IPAddress(...) literal or
-     a name declared as IPAddress in the same file). Anything else is a hostname, and a
-     hostname connect runs the core's unlocked hostByName inside.
+     a name declared as IPAddress in the same file). Anything else - a string, a
+     member, a cast, any parenthesized expression - is a hostname, and a hostname
+     connect runs the core's unlocked hostByName inside (NetworkClient.cpp:312,
+     NetworkClientSecure.cpp:140,192).
+  5. a LOCK_TCPIP_CORE() with no matching UNLOCK_TCPIP_CORE() - an unclosed lock must
+     fail the gate, not silently exempt the rest of the file from rule 1.
 
 Usage:
     python3 tools/release_gate/check_lwip_core_lock.py [paths...]
@@ -42,8 +55,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 DEFAULT_ROOTS = ("src", "lib")
 EXTENSIONS = (".cpp", ".cc", ".c", ".h", ".hpp")
 
-# The one file allowed to resolve by host / connect by host directly: it holds the
-# TCPIP core lock around them (hostByNameLocked / connectHost).
+# The seam file: the one place allowed to resolve hostnames and to connect, and only
+# through resolveHostLocked() (raw dns_gethostbyname under the lock) + connectHost()
+# (connect by IPAddress). The rules below apply to it like to every other file.
 SEAM = os.path.join("src", "sys", "net_util.h")
 
 # Raw lwIP core APIs: each asserts LWIP_ASSERT_CORE_LOCKED() when the caller is not the
@@ -62,8 +76,20 @@ RAW_LWIP = re.compile(
 LOCK = re.compile(r"\bLOCK_TCPIP_CORE\s*\(\s*\)")
 UNLOCK = re.compile(r"\bUNLOCK_TCPIP_CORE\s*\(\s*\)")
 HOSTBYNAME = re.compile(r"\bhostByName\s*\(")
-CONNECT = re.compile(r"\bconnect\s*\(\s*([^,()]+)")
+# The first argument, allowing one level of nested parens: a cast or any
+# parenthesized expression (e.g. c.connect((const char*)host, 443)) must be captured
+# and flagged, not skipped; a zero-argument connect() (a member named connect, not a
+# dial) does not match at all.
+CONNECT = re.compile(r"\bconnect\s*\(\s*((?:[^,()]|\([^()]*\))+)")
 IP_DECL = re.compile(r"\bIPAddress\s+([A-Za-z_]\w*)")
+
+RULE_RAW = "raw lwIP call outside LOCK_TCPIP_CORE"
+RULE_HOSTBYNAME = "bare hostByName anywhere (unlocked dns_clear_cache path)"
+RULE_HOSTBYNAME_LOCKED = (
+    "hostByName under LOCK_TCPIP_CORE self-deadlocks (netconn re-takes the non-recursive core lock)"
+)
+RULE_CONNECT = "host-based connect not through connectHost"
+RULE_UNCLOSED = "LOCK_TCPIP_CORE without matching UNLOCK_TCPIP_CORE"
 
 
 class Finding(NamedTuple):
@@ -73,10 +99,16 @@ class Finding(NamedTuple):
     text: str
 
 
-def lock_regions(text: str) -> Iterator["tuple[int, int]"]:
-    """(start, end) of every LOCK_TCPIP_CORE() ... UNLOCK_TCPIP_CORE() region."""
+def lock_regions(text: str) -> Iterator["tuple[int, int, int, bool]"]:
+    """(lock_start, start, end, unclosed) of every LOCK_TCPIP_CORE() region.
+
+    An unclosed LOCK (no UNLOCK_TCPIP_CORE at its brace depth) extends to end of text
+    and is reported unclosed, so it fails the gate instead of exempting the rest of
+    the file from the raw-lwIP rule.
+    """
     for m in LOCK.finditer(text):
-        yield m.end(), _pair_end(text, m.end(), lambda i: UNLOCK.match(text, i))
+        end = _pair_end(text, m.end(), lambda i: UNLOCK.match(text, i))
+        yield m.start(), m.end(), end, end == len(text)
 
 
 def _ip_shaped(arg: str, ip_names: "set[str]") -> bool:
@@ -88,12 +120,11 @@ def scan_source(path: str, src: str) -> List[Finding]:
     text = blank_comments_and_strings(src)
     lines = src.split("\n")
     rel = os.path.relpath(path, REPO) if os.path.isabs(path) else path
-    seam = rel == SEAM
     regions = list(lock_regions(text))
     ip_names = set(IP_DECL.findall(text))
 
     def in_lock(pos: int) -> bool:
-        return any(s <= pos < e for s, e in regions)
+        return any(s <= pos < e for _ls, s, e, _u in regions)
 
     def line_of(pos: int) -> int:
         return text.count("\n", 0, pos) + 1
@@ -102,15 +133,19 @@ def scan_source(path: str, src: str) -> List[Finding]:
     for m in RAW_LWIP.finditer(text):
         if not in_lock(m.start()):
             ln = line_of(m.start())
-            found.append(Finding(rel, ln, "raw lwIP call outside LOCK_TCPIP_CORE", lines[ln - 1].strip()))
-    if not seam:
-        for m in HOSTBYNAME.finditer(text):
+            found.append(Finding(rel, ln, RULE_RAW, lines[ln - 1].strip()))
+    for m in HOSTBYNAME.finditer(text):
+        ln = line_of(m.start())
+        rule = RULE_HOSTBYNAME_LOCKED if in_lock(m.start()) else RULE_HOSTBYNAME
+        found.append(Finding(rel, ln, rule, lines[ln - 1].strip()))
+    for m in CONNECT.finditer(text):
+        if not _ip_shaped(m.group(1), ip_names):
             ln = line_of(m.start())
-            found.append(Finding(rel, ln, "bare hostByName outside the locked seam", lines[ln - 1].strip()))
-        for m in CONNECT.finditer(text):
-            if not _ip_shaped(m.group(1), ip_names):
-                ln = line_of(m.start())
-                found.append(Finding(rel, ln, "host-based connect not through connectHost", lines[ln - 1].strip()))
+            found.append(Finding(rel, ln, RULE_CONNECT, lines[ln - 1].strip()))
+    for lock_start, _s, _e, unclosed in regions:
+        if unclosed:
+            ln = line_of(lock_start)
+            found.append(Finding(rel, ln, RULE_UNCLOSED, lines[ln - 1].strip()))
     # de-dup by line, keep order
     seen = set()
     out: List[Finding] = []
@@ -154,7 +189,8 @@ def main(argv: "list[str] | None" = None) -> int:
         print(f"FAIL lwip core lock: {len(found)} call(s) outside LOCK_TCPIP_CORE / the locked seam")
         return 1
     print(
-        f"PASS lwip core lock: {files} files, {locks} lock regions, every raw lwIP call locked, every host connect through the seam"
+        f"PASS lwip core lock: {files} files, {locks} lock regions, every raw lwIP call locked, "
+        "no hostByName anywhere (bare or under a lock), every host connect through connectHost by IPAddress"
     )
     return 0
 
