@@ -162,12 +162,14 @@ listings/searches stay bounded however large the index grows.
 - Host (T1): `test/test_file_store_scale` - the 257th and 10,000th file store (no
   count cap), a 300-row and a Lumi-shaped 256-row index load keeps every row
   (migration loses nothing), `listPage` pages a 10,000-entry index, `planEviction`
-  picks the oldest regenerable copies (chat attachments, same-hash duplicates) and
-  never an owner artifact, and executing a plan copies the identities before
-  `remove()` (which shifts the index vector) so the right entries go. The same suite
-  measures time and memory per call at 10,000 files with a counting `operator new`:
-  bounded, PSRAM-first, no new static internal RAM. `test/test_store_full` pins the
-  once-per-episode full-store and reclaim notices.
+  picks the oldest regenerable copies (chat-attachment copies only - never an owner
+  artifact or any other project's file, even a same-content duplicate) and
+  executing a plan copies the identities before `remove()` (which shifts the index
+  vector) so the right entries go. The same suite measures time and memory per call
+  at 10,000 files with a counting `operator new`: bounded, and the index's strings,
+  vector and load-time map ride the working allocator (PSRAM on device) at any size,
+  so plain-heap live bytes stay at +0 across 2,000 adds. `test/test_store_full` pins
+  the once-per-episode full-store and reclaim notices.
 - Host rig (T4): `nimbusd/tests/test_hosted_files.cpp` - 300+ files store on the
   daemon, a zero-byte quota refuses without leaving bytes on the volume, the byte
   quota evicts the oldest regenerable copies first (never an owner artifact, and

@@ -158,17 +158,32 @@ void registerFileRoutes(AsyncWebServer& server) {
                   ",\"freeBytes\":" + String((unsigned long long)headroom);
     // Lane FSCAP: the listing is paged - ?limit=&offset= bound what one call
     // returns (the store has no entry cap any more); `count` above is the
-    // total, `shown` is what this page carries, so the client can page on.
+    // whole-store total, `shown` is what this page carries, so the client can
+    // page on. Review fix: shown/listCount/nextOffset/more are computed from
+    // the STORE page (listJson's out-params) BEFORE tgArchiveAppendFiles appends
+    // the Telegram archive's read-only rows - archive rows must never inflate
+    // the paging counters or the client would skip store rows and re-append
+    // the archive rows on every page.
     size_t limit = 0, offset = 0;
     const String limQ = qparam(r, "limit");
     const String offQ = qparam(r, "offset");
     if (!limQ.isEmpty()) limit = (size_t)strtoul(limQ.c_str(), nullptr, 10);
     if (!offQ.isEmpty()) offset = (size_t)strtoul(offQ.c_str(), nullptr, 10);
-    String list = files::listJson(qparam(r, "project"), "", true, true, limit, offset);
+    size_t shown = 0, listCount = 0;
+    files::ListPage pg;
+    pg.limit = limit;
+    pg.offset = offset;
+    pg.shownOut = &shown;
+    pg.totalOut = &listCount;
+    String list = files::listJson(qparam(r, "project"), "", true, true, pg);
+    const size_t nextOffset = offset + shown;
+    const bool more = nextOffset < listCount;
     tgArchiveAppendFiles(list, qparam(r, "project"));   // saved Telegram media, read-only
-    size_t shown = 0;
-    for (int i = 0; (i = list.indexOf("{\"project\":", i)) >= 0; i += 10) ++shown;
-    sendJson(r, 200, body + ",\"shown\":" + String((unsigned long)shown) + ",\"files\":" + list + "}");
+    sendJson(r, 200, body + ",\"shown\":" + String((unsigned long)shown) +
+                  ",\"listCount\":" + String((unsigned long)listCount) +
+                  ",\"nextOffset\":" + String((unsigned long)nextOffset) +
+                  ",\"more\":" + (more ? "true" : "false") +
+                  ",\"files\":" + list + "}");
   });
 
   // ---- POST /api/files/upload?project=&name= - multipart streamed to SD ----------

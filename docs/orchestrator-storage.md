@@ -681,14 +681,18 @@ apart from a refused request such as a bad name or one file over its size limit,
 from a card below the supported size). Listings and searches stay bounded per call
 however large the index grows: `GET /api/files/list` and the `files.list` tool page
 with `limit`/`offset` (default page 1000, ceiling 2000; the payload's `count` is the
-total, `shown` the page), and `files.search` scans at most the newest 512 readable
-text documents per call and says when older ones were not scanned.
+whole-store total, `shown` the page, and `listCount`/`nextOffset`/`more` page the
+store rows themselves - the Files panel's "Show more" fetches `nextOffset` while
+`more` is true, and the read-only Telegram archive rows appended to the payload
+never inflate those counters), and `files.search` scans at most the newest 512
+readable text documents per call and says when older ones were not scanned.
 
 When the byte quota is the blocker, the save path first **reclaims the oldest
-regenerable copies** - chat-attachment copies (the Telegram archive keeps the
-original, and Telegram can re-serve it by file id) and same-content duplicates -
-oldest first, until the new file fits. The owner's own artifacts are never
-eviction candidates. A reclaim that cannot cover the need evicts nothing: the save
+regenerable copies** - chat-attachment copies only (the Telegram archive keeps the
+original, and Telegram can re-serve it by file id) - oldest first, until the new
+file fits. Anything outside the chat-attachment folders is someone's own file -
+the owner's uploads and reports, another principal's artifact - and is never an
+eviction candidate, even when a newer entry in the store holds the same content. A reclaim that cannot cover the need evicts nothing: the save
 refuses rather than losing copies for nothing. When a save lands only because
 copies were reclaimed, the owner hears it **once per episode**, in plain words, as
 a second device notice alongside the full-store one.

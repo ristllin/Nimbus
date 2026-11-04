@@ -92,7 +92,7 @@ std::string lumiShapedIndex() {
 // (The replacement operators must live at global scope, so the anonymous namespace
 // closes here and reopens below.)
 }  // namespace
-static size_t g_live = 0, g_peak = 0;
+static size_t g_live = 0, g_peak = 0, g_plainNew = 0;
 static const size_t kHdr = 16;
 
 void* operator new(size_t n) {
@@ -100,6 +100,7 @@ void* operator new(size_t n) {
   if (!p) throw std::bad_alloc();
   std::memcpy(p, &n, sizeof n);
   g_live += n;
+  ++g_plainNew;   // every plain (non-working-set) allocation, counted for the placement test
   if (g_live > g_peak) g_peak = g_live;
   return (char*)p + kHdr;
 }
@@ -277,6 +278,13 @@ static void test_list_page_is_bounded_per_call() {
   TEST_ASSERT_EQUAL(5, int(small.listPage("", 0, 100).size()));
   TEST_ASSERT_EQUAL(2, int(small.listPage("", 3, 100).size()));
   TEST_ASSERT_EQUAL(0, int(small.listPage("", 5, 100).size()));
+  // countMatching: the filter-aware total the paging gate keys on (O(1) memory).
+  TEST_ASSERT_EQUAL(10000, int(s.countMatching("")));
+  TEST_ASSERT_EQUAL(int(inProj), int(s.countMatching("proj-7")));
+  TEST_ASSERT_EQUAL(0, int(s.countMatching("no-such-project")));
+  TEST_ASSERT_EQUAL(5, int(small.countMatching("")));
+  TEST_ASSERT_EQUAL(5, int(small.countMatching("p")));
+  TEST_ASSERT_EQUAL(0, int(small.countMatching("q")));
 }
 
 // ---- eviction plan: oldest regenerable copies first, never owner artifacts -----
@@ -294,16 +302,18 @@ static void test_eviction_plan_picks_regenerable_copies_oldest_first() {
   TEST_ASSERT_TRUE(s.add(a1, err));
   TEST_ASSERT_TRUE(s.add(a2, err));
   TEST_ASSERT_TRUE(s.add(a3, err));
-  // A same-content pair: the OLDER copy is regenerable, the newer is the original.
+  // A same-content pair in an OWNER project: both are the owner's own files, so
+  // NEITHER is a regenerable copy (review finding: the old rule evicted the older
+  // one, contradicting the reclaim notice and docs).
   FileEntry d1 = mk("uploads", "copy-a.bin", 2000, 0x99); d1.createdAt = 150;
   FileEntry d2 = mk("uploads", "copy-b.bin", 2000, 0x99); d2.createdAt = 250;
   TEST_ASSERT_TRUE(s.add(d1, err));
   TEST_ASSERT_TRUE(s.add(d2, err));
 
   TEST_ASSERT_TRUE(s.isRegenerableCopy(*s.find("chat-1", "photo-1.jpg")));
-  TEST_ASSERT_TRUE(s.isRegenerableCopy(*s.find("uploads", "copy-a.bin")));
-  TEST_ASSERT_FALSE(s.isRegenerableCopy(*s.find("uploads", "copy-b.bin")));   // newest of the hash
-  TEST_ASSERT_FALSE(s.isRegenerableCopy(*s.find("uploads", "report.md")));    // owner artifact
+  TEST_ASSERT_FALSE(s.isRegenerableCopy(*s.find("uploads", "copy-a.bin")));  // owner project: never
+  TEST_ASSERT_FALSE(s.isRegenerableCopy(*s.find("uploads", "copy-b.bin")));
+  TEST_ASSERT_FALSE(s.isRegenerableCopy(*s.find("uploads", "report.md")));   // owner artifact
   TEST_ASSERT_FALSE(s.isRegenerableCopy(*s.find("notes", "todo.md")));
   TEST_ASSERT_TRUE(FileStore::isAttachmentProject("chat-6098532481"));
   TEST_ASSERT_TRUE(FileStore::isAttachmentProject("chat"));
@@ -314,29 +324,26 @@ static void test_eviction_plan_picks_regenerable_copies_oldest_first() {
   auto plan = s.planEviction(4000);
   TEST_ASSERT_EQUAL(1, int(plan.size()));
   TEST_ASSERT_EQUAL_STRING("photo-1.jpg", plan[0]->name.c_str());
-  // Need 8000 B: photo-1(4000) + copy-a(2000) + photo-2(4000) = 10000 >= 8000, oldest
-  // first (createdAt 100, 150, 200), still no owner artifact.
+  // Need 8000 B: photo-1(4000) + photo-2(4000) = 8000, oldest first (createdAt
+  // 100, 200); the owner-project duplicate copy-a is NOT a candidate any more.
   plan = s.planEviction(8000);
+  TEST_ASSERT_EQUAL(2, int(plan.size()));
+  TEST_ASSERT_EQUAL_STRING("photo-1.jpg", plan[0]->name.c_str());
+  TEST_ASSERT_EQUAL_STRING("photo-2.jpg", plan[1]->name.c_str());
+  // Need 12000 B: photo-1 + photo-2 + doc-3(300) = 14000 >= 12000.
+  plan = s.planEviction(12000);
   TEST_ASSERT_EQUAL(3, int(plan.size()));
   TEST_ASSERT_EQUAL_STRING("photo-1.jpg", plan[0]->name.c_str());
-  TEST_ASSERT_EQUAL_STRING("copy-a.bin", plan[1]->name.c_str());
-  TEST_ASSERT_EQUAL_STRING("photo-2.jpg", plan[2]->name.c_str());
-  // Need 12000 B: photo-1, photo-2, then copy-a (createdAt 150 < doc-3's 300? no:
-  // order is createdAt: 100, 150(copy-a), 200, 250 is not regenerable, 300) ->
-  // photo-1(100), copy-a(150), photo-2(200) = 4000+2000+4000 = 10000 < 12000, next doc-3(300) 6000 -> 16000 >= 12000.
-  plan = s.planEviction(12000);
-  TEST_ASSERT_EQUAL(4, int(plan.size()));
-  TEST_ASSERT_EQUAL_STRING("photo-1.jpg", plan[0]->name.c_str());
-  TEST_ASSERT_EQUAL_STRING("copy-a.bin", plan[1]->name.c_str());
-  TEST_ASSERT_EQUAL_STRING("photo-2.jpg", plan[2]->name.c_str());
-  TEST_ASSERT_EQUAL_STRING("doc-3.pdf", plan[3]->name.c_str());
+  TEST_ASSERT_EQUAL_STRING("photo-2.jpg", plan[1]->name.c_str());
+  TEST_ASSERT_EQUAL_STRING("doc-3.pdf", plan[2]->name.c_str());
   for (const auto* e : plan) TEST_ASSERT_FALSE(e->project == "notes" || e->name == "report.md");
+  for (const auto* e : plan) TEST_ASSERT_FALSE(e->name == "copy-a.bin" || e->name == "copy-b.bin");
   // A need no regenerable copy can cover: all of them, never an owner artifact.
   plan = s.planEviction(1ull << 40);
-  TEST_ASSERT_EQUAL(4, int(plan.size()));
+  TEST_ASSERT_EQUAL(3, int(plan.size()));
   uint64_t freed = 0;
   for (const auto* e : plan) freed += e->bytes;
-  TEST_ASSERT_EQUAL_UINT64(16000, freed);
+  TEST_ASSERT_EQUAL_UINT64(14000, freed);
   // No regenerable copies at all: an empty plan, the owner's files stay.
   FileStore own;
   TEST_ASSERT_TRUE(own.add(mk("uploads", "mine.md", 100, 0x5), err));
@@ -351,15 +358,90 @@ static void test_eviction_plan_picks_regenerable_copies_oldest_first() {
     TEST_ASSERT_EQUAL(1, int(plan.size()));
     struct Victim { std::string project, name; };
     std::vector<Victim> victims;
-    for (const auto* e : plan) victims.push_back(Victim{e->project, e->name});
+    for (const auto* e : plan) victims.push_back(Victim{std::string(e->project.c_str()), std::string(e->name.c_str())});
     for (const auto& v : victims) TEST_ASSERT_TRUE(s.remove(v.project, v.name));
     TEST_ASSERT_NULL(s.find("chat-1", "photo-1.jpg"));
     TEST_ASSERT_NOT_NULL(s.find("chat-1", "photo-2.jpg"));    // not in the plan: survives
     TEST_ASSERT_NOT_NULL(s.find("chat-2", "doc-3.pdf"));
-    TEST_ASSERT_NOT_NULL(s.find("uploads", "copy-a.bin"));
+    TEST_ASSERT_NOT_NULL(s.find("uploads", "copy-a.bin"));     // owner file: survives
     TEST_ASSERT_NOT_NULL(s.find("uploads", "report.md"));     // owner artifact: survives
     TEST_ASSERT_EQUAL(6, int(s.count()));
   }
+}
+
+// Review finding (eviction deletes owner-created files): the owner uploads the
+// same content under two names in their own projects - same hash, older + newer.
+// The byte quota is reached; the plan must not contain either of them, so the
+// owner's named files survive and the reclaim notice stays true.
+static void test_owner_project_duplicates_are_never_eviction_candidates() {
+  FileStore s;
+  std::string err;
+  FileEntry a = mk("uploads", "a.pdf", 3000, 0xABCD); a.createdAt = 100;
+  FileEntry b = mk("reports", "b.pdf", 3000, 0xABCD); b.createdAt = 200;   // same content, newer
+  TEST_ASSERT_TRUE(s.add(a, err));
+  TEST_ASSERT_TRUE(s.add(b, err));
+  TEST_ASSERT_FALSE(s.isRegenerableCopy(*s.find("uploads", "a.pdf")));
+  TEST_ASSERT_FALSE(s.isRegenerableCopy(*s.find("reports", "b.pdf")));
+  // Even a huge need: the plan is empty, nothing of the owner's is evicted.
+  TEST_ASSERT_TRUE(s.planEviction(1ull << 40).empty());
+  // A chat copy of the SAME content is the regenerable one (the archive keeps it).
+  FileEntry c = mk("chat-9", "photo.jpg", 3000, 0xABCD); c.createdAt = 50;
+  TEST_ASSERT_TRUE(s.add(c, err));
+  TEST_ASSERT_TRUE(s.isRegenerableCopy(*s.find("chat-9", "photo.jpg")));
+  auto plan = s.planEviction(3000);
+  TEST_ASSERT_EQUAL(1, int(plan.size()));
+  TEST_ASSERT_EQUAL_STRING("photo.jpg", plan[0]->name.c_str());
+  TEST_ASSERT_NOT_NULL(s.find("uploads", "a.pdf"));
+  TEST_ASSERT_NOT_NULL(s.find("reports", "b.pdf"));
+}
+
+// ---- review finding (high): the uncapped index's per-entry allocations must ride
+// the working-set allocator (PSRAM on the device), not the sub-128 B internal heap.
+// main.cpp spills only allocations >=128 B to PSRAM (heap_caps_malloc_extmem_enable
+// (128)), so a std::string per entry (names exceed the 15-char SSO) would stay
+// internal and a few thousand entries would exhaust the ~26 K internal headroom.
+// With the WorkingAllocator seam installed, add() must do ZERO plain allocations.
+static void test_index_allocations_ride_the_working_allocator() {
+  static size_t hookAllocs = 0;
+  nimbus::orch::setWorkingAllocators(
+      [](size_t n) -> void* { ++hookAllocs; return std::malloc(n); },
+      [](void* p) { std::free(p); });
+  // Project/name longer than ANY SSO (15 on the device's libstdc++, 22 on the
+  // host's libc++), so every entry really allocates.
+  const std::string proj = "chat-123456789012345678";   // 23 chars, a valid segment
+  FileStore s;
+  std::string err;
+  size_t plainDuring = 0;
+  const size_t hook0 = hookAllocs;
+  for (int i = 0; i < 500; i++) {
+    FileEntry e = mk(proj, "photo-" + std::to_string(500000000 + i) + "-received-copy.jpg",
+                     1024, 0x9000ull + (uint64_t)i);
+    const size_t before = g_plainNew;
+    TEST_ASSERT_TRUE_MESSAGE(s.add(e, err), err.c_str());
+    plainDuring += g_plainNew - before;   // allocations inside add() only
+  }
+  nimbus::orch::setWorkingAllocators(nullptr, nullptr);   // restore the default hooks
+  TEST_ASSERT_EQUAL(0, int(plainDuring));                  // every store allocation rode the hook
+  TEST_ASSERT_TRUE(hookAllocs - hook0 >= 2 * 500);         // entry strings + the index buffer
+  TEST_ASSERT_EQUAL(500, int(s.count()));
+  // load() must leave NOTHING live on the plain heap: the rows, their strings and
+  // the folded-key map nodes all ride the hook (a 10k-row boot load otherwise
+  // parks one sub-128 B node per row on the internal heap).
+  std::string blob = "FILESv1\n";
+  for (int i = 0; i < 2000; i++)
+    blob += row(proj, "photo-" + std::to_string(600000000 + i) + "-received-copy.jpg", 10,
+                1700000000u + (uint32_t)i, 0x7000ull + (uint64_t)i);
+  nimbus::orch::setWorkingAllocators(
+      [](size_t n) -> void* { ++hookAllocs; return std::malloc(n); },
+      [](void* p) { std::free(p); });
+  FileStore t;
+  const size_t live0 = g_live, hook1 = hookAllocs;
+  TEST_ASSERT_TRUE(t.load(blob));
+  const long liveDelta = (long)g_live - (long)live0;
+  nimbus::orch::setWorkingAllocators(nullptr, nullptr);
+  TEST_ASSERT_EQUAL(2000, int(t.count()));
+  TEST_ASSERT_EQUAL(0, int(liveDelta));                    // nothing live on the plain heap
+  TEST_ASSERT_TRUE(hookAllocs - hook1 >= 3 * 2000);        // strings + map nodes + index buffer
 }
 
 // ---- the 10,000-file measurement: memory and time per call stay bounded ---------
@@ -408,15 +490,48 @@ static std::string readSrc(const char* path) {
 
 // The class rules the device seam must keep: no fixed count rail left in the file
 // subsystem, the eviction plan is consulted on a full store, listings page, and
-// the search scan is capped per call.
+// the search scan is capped per call. Plus the review-fix-pass rules: the paging
+// payload is computed from STORE rows before the Telegram archive rows are
+// appended, the client pages on nextOffset/more and never re-appends archive
+// rows, the device files.list tool takes limit/offset, and the store count is
+// not a uint16 that wraps at 65,536.
 static void test_device_wiring_fscap() {
   const std::string fs = readSrc("src/agent/files_subsystem.cpp");
   TEST_ASSERT_TRUE(fs.find("project is full (128") == std::string::npos);   // the count rail is gone
   TEST_ASSERT_TRUE(fs.find("planEviction(") != std::string::npos);          // eviction on the byte quota
   TEST_ASSERT_TRUE(fs.find("listPage(") != std::string::npos);               // paged listing
   TEST_ASSERT_TRUE(fs.find("kSearchScanMax") != std::string::npos);          // bounded search scan
+  // review fix pass: the device files.list tool pages (limit/offset in the schema
+  // and read by the handler, passed to listJson)
+  TEST_ASSERT_TRUE(fs.find("\"limit\":{\"type\":\"number\"}") != std::string::npos);
+  TEST_ASSERT_TRUE(fs.find("\"offset\":{\"type\":\"number\"}") != std::string::npos);
+  TEST_ASSERT_TRUE(fs.find("argNum(a, \"limit\")") != std::string::npos);
   const std::string web = readSrc("src/net/web_files.cpp");
   TEST_ASSERT_TRUE(web.find("limit") != std::string::npos && web.find("offset") != std::string::npos);
+  // review fix pass: shown/listCount/nextOffset/more come from the STORE page
+  // (listJson's out-params) BEFORE tgArchiveAppendFiles appends the archive rows -
+  // archive rows must never inflate the paging counters.
+  const size_t shownAt = web.find("&shown");
+  const size_t arcAt = web.find("tgArchiveAppendFiles(list");   // the call, not the comment
+  const size_t nextAt = web.find("const size_t nextOffset");
+  TEST_ASSERT_TRUE(shownAt != std::string::npos);
+  TEST_ASSERT_TRUE(arcAt != std::string::npos && shownAt < arcAt);
+  TEST_ASSERT_TRUE(nextAt != std::string::npos && nextAt < arcAt);   // paging fields computed pre-append
+  TEST_ASSERT_TRUE(web.find("nextOffset") != std::string::npos);
+  TEST_ASSERT_TRUE(web.find("(more ? \"true\" : \"false\")") != std::string::npos);   // the more field is emitted
+  TEST_ASSERT_TRUE(web.find("listCount") != std::string::npos);
+  // the client pages on the server's nextOffset/more and skips readOnly (archive)
+  // rows when appending a page
+  const std::string js = readSrc("include/web/ui_js.h");
+  TEST_ASSERT_TRUE(js.find("d.nextOffset") != std::string::npos);
+  TEST_ASSERT_TRUE(js.find("d.more") != std::string::npos);
+  TEST_ASSERT_TRUE(js.find("readOnly") != std::string::npos);
+  // review fix pass: the store's file count is a uint32, not a uint16 that wraps
+  const std::string hdr = readSrc("src/agent/files_subsystem.h");
+  TEST_ASSERT_TRUE(hdr.find("uint16_t files") == std::string::npos);
+  TEST_ASSERT_TRUE(hdr.find("uint32_t files") != std::string::npos);
+  TEST_ASSERT_TRUE(hdr.find("uint16_t& count") == std::string::npos);
+  TEST_ASSERT_TRUE(hdr.find("uint32_t& count") != std::string::npos);
 }
 
 int main() {
@@ -426,6 +541,8 @@ int main() {
   RUN_TEST(test_lumi_shaped_store_migrates_in_place);
   RUN_TEST(test_list_page_is_bounded_per_call);
   RUN_TEST(test_eviction_plan_picks_regenerable_copies_oldest_first);
+  RUN_TEST(test_owner_project_duplicates_are_never_eviction_candidates);
+  RUN_TEST(test_index_allocations_ride_the_working_allocator);
   RUN_TEST(test_10000_files_per_call_stays_bounded);
   RUN_TEST(test_device_wiring_fscap);
   return UNITY_END();

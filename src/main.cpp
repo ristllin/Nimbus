@@ -3152,7 +3152,7 @@ static void registerDeviceTools() {
             s += ",\"fsTotal\":"; s += (uint32_t)LittleFS.totalBytes();
             s += ",\"fsUsed\":";  s += (uint32_t)LittleFS.usedBytes();
             {
-              bool fp; uint16_t fc; uint64_t fb; uint32_t ffree;
+              bool fp; uint32_t fc; uint64_t fb; uint32_t ffree;
               agent::files::stats(fp, fc, fb, ffree);
               s += ",\"files\":{\"present\":"; s += fp ? "true" : "false";
               s += ",\"count\":"; s += fc;

@@ -403,8 +403,11 @@ class WebApi {
     return true;
   }
   // Lane FSCAP: the listing is paged - ?limit=&offset= bound what one call
-  // returns (the store has no entry cap any more); `count` is the total,
-  // `shown` is what this page carries.
+  // returns (the store has no entry cap any more); `count` is the whole-store
+  // total, `shown` is what this page carries. Review fix: the paging fields
+  // (listCount/nextOffset/more) mirror the device's web_files.cpp and are
+  // computed from the STORE rows only (countMatching of the project filter),
+  // so the client pages on store rows exactly like on the device.
   ApiResp filesList(const std::string& proj, const std::string& limitQ = "",
                     const std::string& offsetQ = "") {
     return engineRead([this, proj, limitQ, offsetQ] {
@@ -415,7 +418,14 @@ class WebApi {
       d["unsupported"] = false;
       d["count"] = (int)rig_->files().count();
       d["bytes"] = (double)rig_->files().totalBytes();
-      d["shown"] = (int)rig_->files().listInto(d["files"].to<JsonArray>(), proj, limit, offset);
+      const size_t shown =
+          rig_->files().listInto(d["files"].to<JsonArray>(), proj, limit, offset);
+      const size_t listCount = rig_->files().store().countMatching(proj);
+      const size_t nextOffset = offset + shown;
+      d["shown"] = (int)shown;
+      d["listCount"] = (int)listCount;
+      d["nextOffset"] = (int)nextOffset;
+      d["more"] = nextOffset < listCount;
       std::string out; serializeJson(d, out); return out;
     });
   }

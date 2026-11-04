@@ -37,7 +37,7 @@ void primeFetchLock();
 bool available();
 
 // Stats for /api/state + the capability manifest.
-void stats(bool& present, uint16_t& count, uint64_t& bytes, uint32_t& freeBytes);
+void stats(bool& present, uint32_t& count, uint64_t& bytes, uint32_t& freeBytes);
 
 // CUM-7: the full storage truth for the files payload. `quota` = card - 512 MB
 // reserve (0 when the card is unsupported); `cardTotal`/`cardFree` are the raw
@@ -46,7 +46,7 @@ void stats(bool& present, uint16_t& count, uint64_t& bytes, uint32_t& freeBytes)
 struct StorageTruth {
   bool     present     = false;
   bool     unsupported = false;
-  uint16_t files       = 0;
+  uint32_t files       = 0;   // uint32: no wrap at 65,536 (lane FSCAP review fix)
   uint64_t used        = 0;
   uint64_t quota       = 0;
   uint64_t cardTotal   = 0;
@@ -190,9 +190,17 @@ bool wouldExceedQuota(const nimbus::orch::Principal& who, uint32_t bytes);
 // JSON array of entries (project filter optional) - for GET /api/files.
 // ns/owner (v3.7.0) bound what the caller may see; the web Files browser is the
 // token-authenticated owner surface, so it passes owner=true.
-// Lane FSCAP: the listing is bounded per call - at most `limit` entries after
-// `offset` (0/0 = the default page); the payload's count says the total.
+// Lane FSCAP: the listing is bounded per call - one paging bundle keeps the
+// function under the argument ceiling. `limit`/`offset` bound the page
+// (0/0 = the default page); `shownOut`/`totalOut` (optional) receive the page
+// size and the filter-aware total, so the caller can build paging fields
+// (nextOffset/more) from STORE rows only - before any archive rows are appended.
+struct ListPage {
+  size_t limit = 0, offset = 0;
+  size_t* shownOut = nullptr;
+  size_t* totalOut = nullptr;
+};
 String listJson(const String& project, const std::string& ns = "", bool owner = true,
-                bool mayReadShared = true, size_t limit = 0, size_t offset = 0);
+                bool mayReadShared = true, const ListPage& page = {});
 
 }  // namespace agent::files

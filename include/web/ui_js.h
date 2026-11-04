@@ -4244,7 +4244,8 @@ function loadFiles(){
   }).catch(e=>{if(!onCardBusy(e,'files',loadFiles,box))box.innerHTML='<span class=hint>Files unavailable</span>';});
 }
 // Lane FSCAP: the listing is paged server-side (the store has no entry cap), so the
-// panel fetches one page at a time and offers "Show more" while shown < count.
+// panel fetches one page at a time and offers "Show more" while the server's
+// nextOffset < listCount (store rows only; archive rows never inflate them).
 let filesOffset=0;
 function _fileRow(f){
   // "view" only for what the device is willing to render inline (the server
@@ -4269,17 +4270,24 @@ function _bindFileRows(box){
 function _filesPage(box,proj,offset,append){
   const q='?limit=1000&offset='+offset+(proj?('&project='+encodeURIComponent(proj)):'');
   return fetch('/api/files/list'+q).then(jok).then(d=>{
-    const files=d.files||[];
+    const all=d.files||[];
+    // The server appends the Telegram archive's read-only rows to every page as
+    // a fixed suffix: render them on the first page only, never re-append them.
+    const files=append?all.filter(f=>!f.readOnly):all;
     let tb=box.querySelector('tbody');
     if(!append||!tb) box.innerHTML='<table><tbody>'+files.map(_fileRow).join('')+'</tbody></table>';
     else files.forEach(f=>tb.insertAdjacentHTML('beforeend',_fileRow(f)));
     tb=box.querySelector('tbody');
     _bindFileRows(box);
-    filesOffset=offset+(d.shown||files.length);
-    const more=box.querySelector('#filesMoreRow'); if(more)more.remove();
-    if((d.shown||0)<(d.count||0)&&tb){
+    // The server pages on STORE rows only: nextOffset/more/listCount come from
+    // the store page, never inflated by the archive rows (review fix).
+    filesOffset=(d.nextOffset!==undefined)?d.nextOffset:offset+(d.shown||0);
+    const listCount=(d.listCount!==undefined)?d.listCount:(d.count||0);
+    const more=d.more!==undefined?d.more:(filesOffset<listCount);
+    const moreRow=box.querySelector('#filesMoreRow'); if(moreRow)moreRow.remove();
+    if(more&&tb){
       const tr=document.createElement('tr'); tr.id='filesMoreRow';
-      tr.innerHTML='<td colspan=4><a href="#" id=filesMore>Show more ('+filesOffset+' of '+d.count+' shown)</a></td>';
+      tr.innerHTML='<td colspan=4><a href="#" id=filesMore>Show more ('+filesOffset+' of '+listCount+' shown)</a></td>';
       tb.appendChild(tr);
       $('filesMore').onclick=e=>{e.preventDefault(); _filesPage(box,proj,filesOffset,true);};
     }

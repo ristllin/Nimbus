@@ -288,10 +288,19 @@ static void testListingsArePaged(ndtest::Ctx& c) {
   c.ok(has(p3.body, "\"shown\":1") && has(p3.body, "f6.txt"), "the last page holds the remainder");
   const ApiResp all = web.call("GET", "/api/files/list");
   c.ok(has(all.body, "\"shown\":7"), "no params: the default page covers all seven");
+  // review fix pass (F2): the payload carries listCount/nextOffset/more computed
+  // from the STORE rows of the page's filter, so a client pages on store rows only
+  c.ok(has(p1.body, "\"listCount\":7"), "listCount is the store total the page keys on");
+  c.ok(has(p1.body, "\"nextOffset\":3") && has(p1.body, "\"more\":true"), "page 1: nextOffset=3, more");
+  c.ok(has(p3.body, "\"nextOffset\":7") && has(p3.body, "\"more\":false"), "last page: nextOffset=7, no more");
   const std::string t1 = toolText(rig.callTool("files.list", R"({"limit":2,"offset":0})"));
   c.ok(has(t1, "showing 2 of 7") && has(t1, "f0.txt") && !has(t1, "f2.txt"), "the tool pages too");
   const std::string tAll = toolText(rig.callTool("files.list", R"({})"));
   c.ok(has(tAll, "f6.txt") && !has(tAll, "showing"), "the tool's default page lists all seven");
+  rig.files().put("other", "o0.txt", "x", err);
+  const ApiResp pf = web.call("GET", "/api/files/list?project=bulk&limit=3&offset=0");
+  c.ok(has(pf.body, "\"count\":8") && has(pf.body, "\"listCount\":7") && has(pf.body, "\"nextOffset\":3"),
+       "a project filter: count is the whole store, listCount the filtered rows");
 }
 
 // A true "removed from the log" must not draw a correction on a hosted client: the

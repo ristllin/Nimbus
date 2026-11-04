@@ -83,9 +83,16 @@ bool uploadActiveLocked() {
   return g_w.active;
 }
 
-std::string dirOf(const std::string& project) { return std::string(kRoot) + "/" + project; }
-std::string pathOf(const std::string& project, const std::string& name) {
-  return dirOf(project) + "/" + name;
+std::string dirOf(std::string_view project) {
+  std::string out = std::string(kRoot) + "/";
+  out.append(project.data(), project.size());
+  return out;
+}
+std::string pathOf(std::string_view project, std::string_view name) {
+  std::string out = dirOf(project);
+  out += '/';
+  out.append(name.data(), name.size());
+  return out;
 }
 
 // Persist the index atomically (same .tmp+rename pattern as the memory blobs).
@@ -268,7 +275,7 @@ uint32_t nowEpoch() {
   return t > 1000000000 ? uint32_t(t) : 0;   // 0 = clock not synced (same test as nowHours)
 }
 
-void jsonEscapeInto(String& out, const std::string& s) {
+void jsonEscapeInto(String& out, std::string_view s) {
   // Segments are printable-ASCII with no quotes/backslashes possible per
   // validSegment, but escape defensively anyway.
   for (char c : s) {
@@ -357,10 +364,10 @@ void begin() {
 
 bool available() { return g_begun && memory::haveSd(); }
 
-void stats(bool& present, uint16_t& count, uint64_t& bytes, uint32_t& freeBytes) {
+void stats(bool& present, uint32_t& count, uint64_t& bytes, uint32_t& freeBytes) {
   memory::Lock g;
   present = available();
-  count = uint16_t(g_store.count());
+  count = uint32_t(g_store.count());
   bytes = g_store.totalBytes();
   freeBytes = uint32_t(g_store.limits().maxTotalBytes > bytes
                            ? g_store.limits().maxTotalBytes - bytes : 0);
@@ -375,7 +382,7 @@ StorageTruth storageTruth() {
   StorageTruth t;
   t.present     = available();
   t.unsupported = g_cardUnsupported;
-  t.files       = uint16_t(g_store.count());
+  t.files       = uint32_t(g_store.count());
   t.used        = g_store.totalBytes();
   t.quota       = g_store.limits().maxTotalBytes;
   t.cardTotal   = (uint64_t)solide::storage::cardSizeMB() << 20;
@@ -398,8 +405,9 @@ std::string refusalForHead(const std::string& err) {
 
 // Lane FSCAP: the store's real space limit is its byte quota (scaled from the card
 // at mount), never a file count. When a save would exceed the quota, the oldest
-// REGENERABLE copies go first - chat-attachment copies (the Telegram archive keeps
-// the original) and same-content duplicates - never the owner's own artifacts.
+// REGENERABLE copies go first - chat-attachment copies only (the Telegram archive
+// keeps the original) - never the owner's own artifacts or any other project's
+// file, even one holding the same content as a newer entry.
 // Removes their bytes and index rows, persists, and raises the episode's one
 // reclaim notice. Returns true when anything was reclaimed; the caller re-checks
 // wouldExceed and refuses with kErrStoreFull only when even that was not enough.
@@ -424,7 +432,7 @@ bool reclaimRoomLocked(const std::string& project, const std::string& name, uint
   struct Victim { std::string project, name; uint32_t bytes; };
   std::vector<Victim> victims;
   victims.reserve(plan.size());
-  for (const auto* e : plan) victims.push_back(Victim{e->project, e->name, e->bytes});
+  for (const auto* e : plan) victims.push_back(Victim{nimbus::orch::plainCopy(e->project), nimbus::orch::plainCopy(e->name), e->bytes});
   freed = 0;
   for (const auto& v : victims) {
     memory::dataFs().remove(pathOf(v.project, v.name).c_str());
@@ -683,7 +691,7 @@ std::string absPath(const std::string& project, const std::string& name) {
 // Text-document gate for reads that reach model context (files.read + attach
 // splicing): content types only - a binary blob spliced into a brief is noise
 // at best. Mirrors inlineViewable's spirit at the tool layer.
-static bool textDocName(const std::string& name) {
+static bool textDocName(std::string_view name) {
   auto ends = [&](const char* ext) {
     const size_t n = strlen(ext);
     if (name.size() < n) return false;
@@ -694,14 +702,14 @@ static bool textDocName(const std::string& name) {
   return ends(".md") || ends(".txt") || ends(".json") || ends(".csv") || ends(".log");
 }
 
-static bool fileKindIsCsv(const std::string& name) {
-  return nimbus::orch::isCsvName(name);
+static bool fileKindIsCsv(std::string_view name) {
+  return nimbus::orch::isCsvName(std::string(name));
 }
 
 // Bounded SD read of one doc through a PSRAM buffer (never internal SRAM). `ok`
 // (optional) is false when the file could not be opened or read in full up to
 // the cap, so a caller can tell a card fault from an empty file.
-static std::string readWhole(const std::string& project, const std::string& name,
+static std::string readWhole(std::string_view project, std::string_view name,
                              size_t cap, bool* ok = nullptr) {
   memory::Lock g;
   if (ok) *ok = false;
@@ -804,7 +812,7 @@ void migrateLegacyMealLog() {
     alogf("files: legacy %s/%s left alone (it is not the owner's file)", kLegacyProject, kLegacyName);
     return;
   }
-  const std::string legacyOwner = legacyEntry->owner;   // the ledger's save below may move the entry
+  const std::string legacyOwner = nimbus::orch::plainCopy(legacyEntry->owner);   // the ledger's save below may move the entry
   // A designed ledger may already exist: on 31 Oct the head rebuilt the legacy file next
   // to it and logged every later meal there. Those rows fold in too; the ledger's own rows
   // keep their keys.
@@ -1116,7 +1124,9 @@ static bool commitMerged(const std::string& project, const std::string& name, si
   // The caller's usage without the copy being replaced - when that copy counts
   // toward the caller at all (bytesFor's own owner rule).
   const uint64_t used = g_store.bytesFor(who.ns);
-  const bool mine = old && (old->owner.empty() ? std::string(nimbus::orch::kOwnerNs) : old->owner) == who.ns;
+  const bool mine = old && (old->owner.empty()
+                                ? std::string_view(nimbus::orch::kOwnerNs) == who.ns
+                                : std::string_view(old->owner) == who.ns);
   const uint64_t replaced = mine && used >= old->bytes ? old->bytes : 0;
   const auto q = nimbus::orch::effectiveQuota(who.role, who.quota);
   if (q.maxBytes && used - replaced + bytes > q.maxBytes) {
@@ -1621,7 +1631,7 @@ int removeProject(const std::string& project) {
   if (!available() || project.empty()) return -1;
   // Snapshot the names first: list() pointers are invalidated by remove().
   std::vector<std::string> names;
-  for (const auto* e : g_store.list(project)) names.push_back(e->name);
+  for (const auto* e : g_store.list(project)) names.push_back(nimbus::orch::plainCopy(e->name));
   if (names.empty()) return -1;   // unknown/empty project
   for (const auto& n : names) {
     memory::dataFs().remove(pathOf(project, n).c_str());
@@ -1638,7 +1648,7 @@ std::vector<std::string> foodPlanFiles(const nimbus::orch::Principal& who) {
   memory::Lock g;
   std::vector<const nimbus::orch::FileEntry*> found;
   for (const auto* e : g_store.list(std::string())) {
-    if (nimbus::orch::looksLikeFoodPlan(e->project, e->name) && g_store.readableBy(*e, who.ns, who.owner, false))
+    if (nimbus::orch::looksLikeFoodPlan(nimbus::orch::plainCopy(e->project), nimbus::orch::plainCopy(e->name)) && g_store.readableBy(*e, who.ns, who.owner, false))
       found.push_back(e);
   }
   std::sort(found.begin(), found.end(),
@@ -1646,7 +1656,7 @@ std::vector<std::string> foodPlanFiles(const nimbus::orch::Principal& who) {
   std::vector<std::string> out;
   for (const auto* e : found) {
     if (out.size() == nimbus::orch::kMaxPlanFiles) break;
-    out.push_back(e->project + "/" + e->name);
+    out.push_back(nimbus::orch::plainCopy(e->project + "/" + e->name));
   }
   return out;
 }
@@ -1660,8 +1670,9 @@ constexpr size_t kListPageMax = 2000;
 constexpr size_t kListPageChunk = 512;   // internal scan chunk (pointers only)
 
 String listJson(const String& project, const std::string& ns, bool owner,
-                bool mayReadShared, size_t limit, size_t offset) {
+                bool mayReadShared, const ListPage& page) {
   memory::Lock g;
+  size_t limit = page.limit, offset = page.offset;
   if (limit == 0 || limit > kListPageMax) limit = kListPageDefault;
   String out = "[";
   // Reserve the PAGE (~140 B/entry), not the store: the buffer rides PSRAM
@@ -1670,13 +1681,14 @@ String listJson(const String& project, const std::string& ns, bool owner,
   // index grows (lane FSCAP: no entry cap any more).
   out.reserve(2 + limit * 140);
   bool first = true;
-  size_t shown = 0, skipped = 0;
+  size_t shown = 0, skipped = 0, total = 0;
   const std::string proj(project.c_str());
   for (size_t base = 0; shown < limit; base += kListPageChunk) {
     const auto page = g_store.listPage(proj, base, kListPageChunk);
     if (page.empty()) break;
     for (const auto* e : page) {
       if (!g_store.readableBy(*e, ns, owner, mayReadShared)) continue;   // own it, or shared
+      ++total;                                                            // filter-aware total
       if (skipped++ < offset) continue;
       if (shown >= limit) break;
       if (!first) out += ',';
@@ -1696,6 +1708,8 @@ String listJson(const String& project, const std::string& ns, bool owner,
     }
   }
   out += "]";
+  if (page.shownOut) *page.shownOut = shown;
+  if (page.totalOut) *page.totalOut = total;
   return out;
 }
 
@@ -1705,6 +1719,11 @@ namespace {
 
 std::string argStr(ArduinoJson::JsonObjectConst a, const char* k) {
   return a[k].is<const char*>() ? std::string(a[k].as<const char*>()) : std::string();
+}
+
+// Optional numeric tool argument (0 when absent/not a number).
+size_t argNum(ArduinoJson::JsonObjectConst a, const char* k) {
+  return a[k].is<double>() ? (size_t)a[k].as<double>() : 0;
 }
 
 
@@ -1925,7 +1944,9 @@ void registerTools() {
 
   reg.add("files.list",
           "List the device's durable artifact store (SD /mem/files): projects and files "
-          "the owner or you saved. Optional 'project' filters to one folder.",
+          "the owner or you saved. Optional 'project' filters to one folder; optional "
+          "'limit' (default 1000, max 2000) and 'offset' page the listing - the reply's "
+          "count/shown say how many there are in all.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
             if (!available())
               return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
@@ -1934,17 +1955,27 @@ void registerTools() {
             // (files / used / quota / free-on-card) so the model reasons correctly.
             StorageTruth t = storageTruth();
             const uint64_t headroom = t.quota > t.used ? t.quota - t.used : 0;
+            size_t shown = 0, total = 0;
+            files::ListPage pg;
+            pg.limit = argNum(a, "limit");
+            pg.offset = argNum(a, "offset");
+            pg.shownOut = &shown;
+            pg.totalOut = &total;
             String j = "{\"count\":" + String(t.files) + ",\"bytes\":" + String((unsigned long long)t.used) +
                        ",\"quota\":" + String((unsigned long long)t.quota) +
                        ",\"cardFree\":" + String((unsigned long long)t.cardFree) +
                        ",\"freeBytes\":" + String((unsigned long long)headroom) + ",\"files\":";
             j += listJson(String(argStr(a, "project").c_str()), who.ns, who.owner,
-                          who.perms().readShared);
+                          who.perms().readShared, pg);
+            j += ",\"shown\":" + String((unsigned long)shown) +
+                 ",\"listCount\":" + String((unsigned long)total);
+            if (shown < total)
+              j += ",\"more\":true";
             j += "}";
             if (j.length() > 4000) j = j.substring(0, 4000) + "...(truncated)";
             return nimbus::orch::ToolResult::ok(std::string(j.c_str()));
           },
-          R"({"type":"object","properties":{"project":{"type":"string"}}})");
+          R"({"type":"object","properties":{"project":{"type":"string"},"limit":{"type":"number"},"offset":{"type":"number"}}})");
 
   reg.add("files.stat",
           "Metadata for one stored file: size, kind, created time, provider file id.",
@@ -1955,7 +1986,7 @@ void registerTools() {
             const std::string project = argStr(a, "project"), name = argStr(a, "name");
             // (find validates nothing itself; unknown names just miss.)
             for (const auto* e : g_store.list(project))
-              if (e->name == name) {
+              if (std::string_view(e->name) == name) {
                 // Another principal's artifact is INVISIBLE, not "forbidden":
                 // a distinguishable refusal would confirm the file exists.
                 if (!g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) break;
@@ -2091,7 +2122,7 @@ void registerTools() {
                 // Both ends on a character boundary: a byte-offset cut tore a character.
                 std::string snip = nimbus::utf8Window(body, at, 40, 160);
                 for (char& c : snip) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
-                hits.push_back(Hit{e->project, e->name, snip, sc});
+                hits.push_back(Hit{nimbus::orch::plainCopy(e->project), nimbus::orch::plainCopy(e->name), snip, sc});
               }
             }
             std::sort(hits.begin(), hits.end(),

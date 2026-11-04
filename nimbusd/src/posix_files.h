@@ -30,7 +30,7 @@ namespace nimbusd {
 // owner keeps. The turn removes it once it has the bytes; one never sent is swept.
 constexpr const char* kChatPhotoProject = "chat";
 constexpr const char* kChatPhotoPrefix = "att-";
-inline bool isChatPhoto(const std::string& project, const std::string& name) {
+inline bool isChatPhoto(std::string_view project, std::string_view name) {
   return project == kChatPhotoProject && name.rfind(kChatPhotoPrefix, 0) == 0;
 }
 
@@ -153,12 +153,13 @@ class PosixFiles {
       if (page.empty()) break;
       for (const auto* e : page) {
         if (shown >= limit) break;
-        out += e->project + "/" + e->name + " (" + std::to_string(e->bytes) + " bytes)\n";
+        out += nimbus::orch::plainCopy(e->project) + "/" + nimbus::orch::plainCopy(e->name) +
+               " (" + std::to_string(e->bytes) + " bytes)\n";
         ++shown;
       }
     }
     if (out.empty()) return nimbus::orch::ToolResult::ok("(no files)");
-    const size_t total = store_.count();
+    const size_t total = store_.countMatching(proj);   // the filter-aware total the page keys on
     if (shown < total)
       out = "(showing " + std::to_string(shown) + " of " + std::to_string(total) +
             " files; pass offset to page)\n" + out;
@@ -207,13 +208,16 @@ class PosixFiles {
   std::vector<std::string> foodPlanFiles() const {
     std::vector<const nimbus::orch::FileEntry*> found;
     for (const auto* e : store_.list(std::string()))
-      if (nimbus::orch::looksLikeFoodPlan(e->project, e->name)) found.push_back(e);
+      if (nimbus::orch::looksLikeFoodPlan(nimbus::orch::plainCopy(e->project),
+                                         nimbus::orch::plainCopy(e->name)))
+        found.push_back(e);
     std::sort(found.begin(), found.end(), [](const nimbus::orch::FileEntry* a, const nimbus::orch::FileEntry* b) {
       return a->createdAt > b->createdAt;
     });
     std::vector<std::string> out;
     for (const auto* e : found)
-      if (out.size() < nimbus::orch::kMaxPlanFiles) out.push_back(e->project + "/" + e->name);
+      if (out.size() < nimbus::orch::kMaxPlanFiles)
+        out.push_back(nimbus::orch::plainCopy(e->project) + "/" + nimbus::orch::plainCopy(e->name));
     return out;
   }
 
@@ -234,8 +238,8 @@ class PosixFiles {
       for (const auto* e : page) {
         if (shown >= limit) break;
         JsonObject o = arr.add<JsonObject>();
-        o["project"] = e->project;
-        o["name"] = e->name;
+        o["project"] = nimbus::orch::plainCopy(e->project);
+        o["name"] = nimbus::orch::plainCopy(e->name);
         o["bytes"] = e->bytes;
         o["kind"] = nimbus::orch::fileKindName(e->kind);
         o["createdAt"] = e->createdAt;
@@ -261,13 +265,14 @@ class PosixFiles {
   void sweepChatPhotos(uint32_t now) {
     std::vector<std::string> stale;
     for (const auto* e : store_.list(kChatPhotoProject))
-      if (isChatPhoto(kChatPhotoProject, e->name) && now - e->createdAt > 86400u) stale.push_back(e->name);
+      if (isChatPhoto(kChatPhotoProject, e->name) && now - e->createdAt > 86400u)
+        stale.push_back(nimbus::orch::plainCopy(e->name));
     for (const auto& n : stale) remove(kChatPhotoProject, n);
   }
   // Delete every file in a project; -1 when the project holds none.
   int removeProject(const std::string& p) {
     std::vector<std::string> names;
-    for (const auto* e : store_.list(p)) names.push_back(e->name);
+    for (const auto* e : store_.list(p)) names.push_back(nimbus::orch::plainCopy(e->name));
     if (p.empty() || names.empty()) return -1;
     for (const auto& n : names) remove(p, n);
     ::rmdir((root_ + "/" + p).c_str());
@@ -280,10 +285,10 @@ class PosixFiles {
     return root_ + "/" + p + "/" + n;
   }
 
-  // Lane FSCAP: evict the oldest regenerable copies (chat attachments, same-hash
-  // duplicates - never an owner artifact) until `addBytes` fits under the byte
-  // quota, mirroring the device's reclaimRoomLocked. Returns true when anything
-  // was reclaimed; the caller re-checks wouldExceed afterwards.
+  // Lane FSCAP: evict the oldest regenerable copies (chat-attachment copies only -
+  // never an owner artifact or any other project's file) until `addBytes` fits
+  // under the byte quota, mirroring the device's reclaimRoomLocked. Returns true
+  // when anything was reclaimed; the caller re-checks wouldExceed afterwards.
   bool reclaimRoom(const std::string& p, const std::string& n, uint64_t addBytes) {
     const nimbus::orch::FileEntry* cur = store_.find(p, n);
     const uint64_t replaced = cur ? cur->bytes : 0;
@@ -301,7 +306,8 @@ class PosixFiles {
     struct Victim { std::string project, name; };
     std::vector<Victim> victims;
     victims.reserve(plan.size());
-    for (const auto* e : plan) victims.push_back(Victim{e->project, e->name});
+    for (const auto* e : plan)
+      victims.push_back(Victim{nimbus::orch::plainCopy(e->project), nimbus::orch::plainCopy(e->name)});
     for (const auto& v : victims) {
       ::unlink(bytesPath(v.project, v.name).c_str());
       store_.remove(v.project, v.name);
@@ -322,8 +328,8 @@ class PosixFiles {
   // (past the entry or byte cap) must leave nothing on the volume, since the index
   // is what the Files panel lists and deletes by, and an unindexed file could never
   // be seen or reclaimed from the app. Lane FSCAP: when the BYTE quota is the
-  // blocker, the oldest regenerable copies (chat attachments, same-hash duplicates)
-  // are evicted first so the save lands; owner artifacts are never evicted.
+  // blocker, the oldest regenerable copies (chat-attachment copies only) are
+  // evicted first so the save lands; owner artifacts are never evicted.
   bool save(const std::string& p, const std::string& n, const std::string& text,
             std::string& err) {
     if (!nimbus::orch::FileStore::validSegment(p, 24) ||
