@@ -174,6 +174,36 @@ static void test_out_of_range_cap_is_safe() {
   TEST_ASSERT_FALSE(active(COUNT));
 }
 
+// The PROVIDER fault's host list, as the class: EVERY direct LLM API host the
+// device can dial is cut (the fixed three plus whichever Z.ai base the device
+// probed), and no other host is (Telegram, the relay, Tavily and the router
+// must stay up so a failure path's owner-visible alerts still deliver). Bench
+// D01 (v5-28813029): the dream leg armed FAULT provider and expected the
+// night to fail, but Z.ai was missing from the seam, the dream failed over
+// and ran - a stale list breaks every "all providers out" leg the same way.
+static void test_provider_outage_cuts_every_llm_host_and_no_other() {
+  // The fixed LLM API hosts, whatever Z.ai base is probed.
+  for (const char* h : {"api.openai.com", "api.anthropic.com", "api.mistral.ai"}) {
+    TEST_ASSERT_TRUE_MESSAGE(providerOutageHost(h, ""), h);
+    TEST_ASSERT_TRUE_MESSAGE(providerOutageHost(h, "api.z.ai"), h);
+  }
+  // Z.ai is a first-class provider (lane MG): both probed bases are cut.
+  TEST_ASSERT_TRUE(providerOutageHost("api.z.ai", "api.z.ai"));
+  TEST_ASSERT_TRUE(providerOutageHost("open.bigmodel.cn", "open.bigmodel.cn"));
+  // A Z.ai base that was never probed ("" ) cuts nothing extra: the host
+  // string of a real request never matches an empty base.
+  TEST_ASSERT_FALSE(providerOutageHost("api.z.ai", ""));
+  TEST_ASSERT_FALSE(providerOutageHost("", ""));
+  // Every host the failure path's alerts ride stays reachable.
+  for (const char* h : {"api.telegram.org", "api.tavily.com", "app.cumulo-nimbus.ai",
+                        "relay.cumulo-nimbus.ai", ""}) {
+    TEST_ASSERT_FALSE_MESSAGE(providerOutageHost(h, "api.z.ai"), h);
+  }
+  // Null safety on both arguments.
+  TEST_ASSERT_FALSE(providerOutageHost(nullptr, "api.z.ai"));
+  TEST_ASSERT_FALSE(providerOutageHost("api.z.ai", nullptr));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_default_all_clear);
@@ -188,5 +218,6 @@ int main(int, char**) {
   RUN_TEST(test_sd_io_distinct_from_sd);
   RUN_TEST(test_parse_rejects_unknown);
   RUN_TEST(test_out_of_range_cap_is_safe);
+  RUN_TEST(test_provider_outage_cuts_every_llm_host_and_no_other);
   return UNITY_END();
 }

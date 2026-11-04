@@ -317,11 +317,14 @@ class TlsTransport : public HttpTransport {
 
     // FAULT provider (TEST-only; active() is constant-false in production):
     // simulate a total LLM-provider outage - the exact "no response" a dead
-    // network produces - for the LLM API hosts ONLY, so Telegram keeps working
-    // and the failure path's owner-visible messages remain observable by HIL.
+    // network produces - for every direct LLM API host (openai / anthropic /
+    // mistral / the probed Z.ai base), so Telegram keeps working and the
+    // failure path's owner-visible messages remain observable by HIL. The host
+    // list lives in nimbus::fault::providerOutageHost so a provider added
+    // later joins the seam in one place (bench D01, v5-28813029: Z.ai was
+    // missing here and the dream failed over instead of failing).
     if (nimbus::fault::active(nimbus::fault::PROVIDER) &&
-        (req.host == "api.openai.com" || req.host == "api.anthropic.com" ||
-         req.host == "api.mistral.ai")) {
+        nimbus::fault::providerOutageHost(req.host.c_str(), agent::store::zaiBase().c_str())) {
       err = "no response";
       return 0;
     }

@@ -17,9 +17,13 @@ Bench legs (``hil`` + ``net``, unit A, test build, the live head on Anthropic
    number and the stored crash fingerprint stay the same.
 2. Under the turn floor from the start, three runs in a row: the ballast takes internal
    free down to 6.5 KB (the floor is 12 KB) before the turn is asked for. Every run ends
-   with exactly the honest reply ("I'm short of memory right now. Please try again in a
-   minute.") as the chat's history row, no provider request (the console says the turn
-   ended for memory before it), no restart.
+   with exactly the honest admission refusal ("One moment, I'm finishing some background
+   work and low on working memory. Please resend in a few seconds.") as the chat's history
+   row, no provider request, no restart. A squeeze from the start lands on the CUM-404
+   admission gate (engine.cpp: the turn is never taken in), whose wording is deliberately
+   its own; the "I'm short of memory right now." reply belongs to the DURING-turn gate
+   (turn_memory.h), which leg 3 covers. Bench H08 (v5-28813029) failed this leg on the
+   wording alone: the device refused honestly, at the right gate.
 3. The squeeze arriving at some point during the turn, three runs in a row. Where it lands
    is a race with the setup, and the setup has grown faster, so the leg asserts the class:
    whatever the moment, the turn ends in one reply that is an answer or an honest memory
@@ -56,6 +60,11 @@ SQUEEZE_FREE = 6500  # under the 12000 B turn floor, after the rechecks too
 SQUEEZE_DELAY_S = 0.2  # after the turn task took the turn: inside the setup (recall runs ~1-2 s)
 TURN_BUDGET_S = 180.0
 SHORT_REPLY = "I'm short of memory right now. Please try again in a minute."
+# The CUM-404 admission gate's refusal (engine.cpp handleMessage): a turn asked for
+# while the heap is already under the floor is never taken in, and this is its
+# wording. Distinct from SHORT_REPLY on purpose: the during-turn gate
+# (turn_memory.h) refuses a turn already running.
+ADMIT_REPLY = "One moment, I'm finishing some background work and low on working memory. Please resend in a few seconds."
 PROMPT = "CALL the device.log tool with scan_kb 64 and lines 60 now, then tell me what the oldest lines say."
 BALLAST_RE = re.compile(r"FAULT sram_ballast=(\d+) held=(\d+) intFree=(\d+) intLargest=(\d+)")
 OVERALL_RE = re.compile(
@@ -74,12 +83,13 @@ NOT_A_REPLY = ('{"reply"', '"session_ops"', '"mem_write"', "placeholder")
 
 
 def classify_end(reply: str) -> str:
-    """How a squeezed turn ended: "refused" (before any provider request), "memory" (an
-    honest ending part way), "served" (an answer), or "bad" (nothing a person can read)."""
+    """How a squeezed turn ended: "refused" (before any provider request, at either
+    memory gate), "memory" (an honest ending part way), "served" (an answer), or
+    "bad" (nothing a person can read)."""
     text = (reply or "").strip()
     if not text or any(mark in text for mark in NOT_A_REPLY):
         return "bad"
-    if text == SHORT_REPLY:
+    if text == SHORT_REPLY or text == ADMIT_REPLY:
         return "refused"
     if text.startswith(MEMORY_ENDINGS):
         return "memory"
@@ -265,7 +275,10 @@ def test_l71_under_the_floor_from_the_start_is_refused_three_times(device, net, 
     for i in range(RUNS):
         reply = _episode(device, net, squeeze=False, first=True)
         print(f"\n[l71] under the floor run {i + 1}/{RUNS}: {reply[:120]!r}")
-        assert reply == SHORT_REPLY, f"run {i + 1}: not the honest short-of-memory reply: {reply[:160]!r}"
+        # The squeeze lands before the turn, so the CUM-404 admission gate refuses
+        # it (engine.cpp) with its own exact wording; SHORT_REPLY is the during-turn
+        # gate's, covered by the squeeze leg below. Still exact, still a refusal.
+        assert reply == ADMIT_REPLY, f"run {i + 1}: not the honest admission refusal: {reply[:160]!r}"
 
 
 def test_l71_a_squeeze_during_the_turn_ends_honestly_three_times(device, net, starvation):

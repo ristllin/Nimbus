@@ -20,6 +20,7 @@
 #include "scenarios_prefs.h"   // lane J: standing owner preferences (live legs)
 #include "scenarios_g1.h"   // message-level caching legs (cost per turn by gap)
 #include "scenarios_monly.h"   // lane MONLY: the Mistral-only client's live legs
+#include "scenarios_dispo.h"    // lane DISPO: model-choice rate legs (F03/H09/H20)
 
 namespace lab {
 namespace {
@@ -301,6 +302,13 @@ skillslegs::Report skillslegsReport(Ctx& c) {
 }
 void scSkillsE2E(LabRig& rig, Ctx& c) { skillslegs::e2e(rig, skillslegsReport(c)); }
 void scMealEval(LabRig& rig, Ctx& c) { skillslegs::mealEval(rig, skillslegsReport(c)); }
+dispolegs::Report dispoReport(Ctx& c) {
+  return {[&c](bool ok, const std::string& what) { c.check(ok, what); },
+          [&c](const std::string& what) { c.note(what); }};
+}
+void scDispoF03(LabRig& rig, Ctx& c) { dispolegs::f03Targets(rig, dispoReport(c)); }
+void scDispoH09(LabRig& rig, Ctx& c) { dispolegs::h09Dinner(rig, dispoReport(c)); }
+void scDispoH20(LabRig& rig, Ctx& c) { dispolegs::h20Search(rig, dispoReport(c)); }
 void scPrefsE2E(LabRig& rig, Ctx& c) {
   prefslegs::Report rep;
   rep.check = [&c](bool ok, const std::string& what) { c.check(ok, what); };
@@ -473,6 +481,9 @@ const Scenario kScenarios[] = {
     {"prefs-nextday",  "a standing default stated on day N is applied on day N+1 without a reminder", scPrefsNextDay, false},
     {"cache-gaps",      "cost per turn at a fixed gap over a long history (NIMBUS_G1_GAP_S, _TURNS)", scCacheGaps, false},
     {"fold-budget",     "one fold over a recorded long history: inside the budget, sections 2/4/5 kept", scFoldBudget, false},
+    {"dispo-f03",      "the F03 shape x N: which food targets land, and the (Correction: rate", scDispoF03, false},
+    {"dispo-h09",      "the H09 dinner shape x N: the named file vs the one food log", scDispoH09, false},
+    {"dispo-h20",      "the H20 question x N: does the head run web.search", scDispoH20, false},
 };
 
 }  // namespace

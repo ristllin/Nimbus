@@ -283,9 +283,13 @@ def device(request, allow_hardware, port):
                 return
             pytest.skip(f"no device on serial: {exc}")
 
-    # Reset to a clean boot and resync the stream before handing over.
+    # Reset to a clean boot and resync the stream before handing over. The
+    # console-ready wait closes the recorded READY-race (bench H14b,
+    # v5-28813029): the boot pump answers PING during setup() and DISCARDS the
+    # first real command, so the session's first test command could be eaten.
     try:
         dev.reset()
+        dev.wait_console_ready()
     except DeviceError as exc:
         if lan_only:
             print(f"\n[conftest] console did not come up ({exc}) - LAN-only mode, continuing")

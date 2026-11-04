@@ -743,6 +743,39 @@ class Device:
         except ExpectTimeout:
             return False
 
+    def wait_console_ready(self, timeout: float = 20.0) -> bool:
+        """True once the FULL test console answers PING - not the boot pump.
+
+        pumpBoot() (src/test_console.cpp) answers ``PING`` with
+        ``PONG (boot console)`` while setup() is still running, and every OTHER
+        line it reads is DISCARDED. So a PING answered by the boot pump proves
+        only that Serial is alive: the first real command sent next is eaten
+        while the full console (which needs main.cpp's late hooks) is not up
+        yet. That is the recorded READY-race (bench H14b, v5-28813029,
+        probe-album.log: the first command after the fixture's resync PONG
+        never landed - album, text and a long HISTADD alike - and every
+        command from the second on worked). PING until the plain full-console
+        ``PONG`` arrives; every non-reply line consumed here is PUSHED BACK so
+        a following wait_ready()/expect() still sees it. False on timeout: the
+        caller's first command then fails loudly, exactly as before."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                self.send("PING")
+            except (OSError, IOError):
+                return False
+            # Our own probe's replies (either console) are consumed; anything
+            # else (boot stream) is replayed for whoever reads the stream next.
+            line = self._readline(time.time() + 2.0)
+            while line is not None:
+                if "PONG" in line:
+                    if "boot console" not in line:
+                        return True   # the full console answered
+                else:
+                    self._pushback.append(line)
+                line = self._readline(time.time() + 0.5)
+        return False
+
     def status(self, timeout: float = 3.0) -> "re.Match[str]":
         """``STATUS`` -> parsed ``STATUS mode=.. wifi=.. ip=.. rssi=.. heap=..
         [minheap.. psram.. sd.. vec.. flashfull..] uptime=..`` (STATUS_PATTERN)."""

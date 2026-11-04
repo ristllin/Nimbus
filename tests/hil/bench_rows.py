@@ -185,7 +185,18 @@ def row_a07(b: Bench) -> Grade:
 
 
 def row_a08(b: Bench) -> Grade:
-    """The memory cost of the trim: reads A07's snapshots against A02's low water (--a02-state)."""
+    """The memory cost of the trim: reads A07's snapshots against A02's low water (--a02-state).
+
+    Measurement validity (bench v5-28813029, lane DISPO): the row measures the
+    TRIM's cost, so it is BLOCKED when A07's turn never trimmed (A07's own
+    BLOCKED case: the HISTADD approximation cannot reach the overflow);
+    pollStackMin's before-snap can catch the poll task's unset sentinel
+    (0xFFFFFFFF), which makes the drop arithmetic meaningless instead of a
+    real drop; and mem.lowWater is a since-boot minimum (heap_watch), so A02's
+    state file is only a valid baseline when it was captured on the SAME boot
+    as A07's run (a crash between A02 and A07 - e.g. the A03 row - resets the
+    watermark, and every row in between dips it). Each guard reports the
+    clause as unmeasurable; none of them loosens an allowance."""
     folder = os.path.join(b.args.out, "A07")
     if not os.path.exists(os.path.join(folder, "state-after.json")):
         raise Blocked("run A07 first: this row reads its snapshots")
@@ -193,14 +204,37 @@ def row_a08(b: Bench) -> Grade:
         raise Blocked("pass --a02-state with A02's state file")
     before, after = _load(os.path.join(folder, "state-before.json")), _load(os.path.join(folder, "state-after.json"))
     a02 = _load(b.args.a02_state)
-    fails = []
-    drop = (mem(before, "pollStackMin") or 0) - (mem(after, "pollStackMin") or 0)
-    if drop > POLL_STACK_ALLOWANCE:
-        fails.append(f"pollStackMin fell {drop} B (allowance {POLL_STACK_ALLOWANCE} B)")
-    gap = (mem(a02, "lowWater") or 0) - (mem(after, "lowWater") or 0)
-    if gap > LOW_WATER_ALLOWANCE:
-        fails.append(f"low water {gap} B under A02's (allowance {LOW_WATER_ALLOWANCE} B)")
-    return _verdict(fails, f"pollStackMin fell {drop} B; low water within {max(gap, 0)} B of A02")
+    errlog_path = os.path.join(folder, "errlog.txt")
+    trimmed = False
+    if os.path.exists(errlog_path):
+        with open(errlog_path, encoding="utf-8") as f:
+            trimmed = "turn fit: left out" in f.read()
+    if not trimmed:
+        raise Blocked("A07's turn did not trim, so the trim's cost was never exercised")
+    fails: List[str] = []
+    unmeasured: List[str] = []
+    stack_before, stack_after = mem(before, "pollStackMin") or 0, mem(after, "pollStackMin") or 0
+    if stack_before >= 0xFFFF0000:   # the poll task's unset sentinel: no sample yet
+        unmeasured.append(f"pollStackMin unmeasurable (before-snap held the unset sentinel {stack_before})")
+    else:
+        drop = stack_before - stack_after
+        if drop > POLL_STACK_ALLOWANCE:
+            fails.append(f"pollStackMin fell {drop} B (allowance {POLL_STACK_ALLOWANCE} B)")
+    if boot_n(a02) != boot_n(after):
+        unmeasured.append(
+            f"lowWater unmeasurable (A02's state is boot {boot_n(a02)}, the run is boot {boot_n(after)}: "
+            "the since-boot watermark reset in between)"
+        )
+    else:
+        gap = (mem(a02, "lowWater") or 0) - (mem(after, "lowWater") or 0)
+        if gap > LOW_WATER_ALLOWANCE:
+            fails.append(f"low water {gap} B under A02's (allowance {LOW_WATER_ALLOWANCE} B)")
+    if fails:
+        return _verdict(fails, "")
+    if unmeasured:
+        return ("BLOCKED", "; ".join(unmeasured))
+    return _verdict([], f"pollStackMin fell {stack_before - stack_after} B; low water within "
+                        f"{max((mem(a02, 'lowWater') or 0) - (mem(after, 'lowWater') or 0), 0)} B of A02")
 
 
 def _load(path: str) -> Dict[str, Any]:
