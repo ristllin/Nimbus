@@ -15,6 +15,7 @@
 #include "agent_config.h"
 #include "nimbus/exchange_trace.h"   // the traced exchange: one line on every path
 #include "nimbus/fault.h"
+#include "nimbus/harness/test_answer_transport.h"   // the bench's scripted answer (test builds)
 #include "nimbus/orch/spend_guard.h"   // noteHttpDateHeader - a time base without NTP (lane QW4)
 #include "connectors.h"
 #include "store.h"
@@ -416,8 +417,19 @@ class TlsTransport : public HttpTransport {
 }  // namespace
 
 HttpTransport& deviceTransport() {
+#if defined(NIMBUS_TEST)
+  // The bench's scripted provider answer (PROVFAULT) answers at the transport's
+  // seat: under the RouterTap the cumulo head holds over this transport, inside the
+  // wire's resend loop, so a scripted refusal walks the production path - the clamp
+  // 402 resends once capped, and no scripted answer can bypass that machinery the
+  // way the old wire-level override did (lane CLAMP, bench row S10).
+  static TlsTransport real;
+  static agent::TestAnswerTransport scripted(&real);
+  return scripted;
+#else
   static TlsTransport t;
   return t;
+#endif
 }
 
 providers::ProviderDeps deviceProviderDeps() {

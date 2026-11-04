@@ -14,6 +14,7 @@
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/router_refusal.h"
+#include "nimbus/harness/test_answer_transport.h"
 #include "nimbus/orch/billing_refusal.h"
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/head_loop.h"
@@ -80,6 +81,7 @@ int linesWith(const char* needle) {
 void setUp() {
   LogCapture::install();
   providers::clearHostParks();
+  providers::clearTestStatusOverride();
   // The park's outcome lines reach the log once a host was asked about (hostParked wires it).
   providers::ProviderDeps none;
   providers::hostParked(none, "none");
@@ -87,6 +89,7 @@ void setUp() {
 void tearDown() {
   agent::hlog::setSink(nullptr);
   providers::clearHostParks();
+  providers::clearTestStatusOverride();
 }
 
 // ---- the table -----------------------------------------------------------------------
@@ -496,6 +499,87 @@ static void test_every_reason_on_the_wire() {
   }
 }
 
+// ---- the bench's scripted answer: the production path, not a shortcut -----------------
+
+namespace {
+// The bench seam as the device holds it: the scripted answer (PROVFAULT) at the
+// transport's seat, under the RouterTap the cumulo head installs over it.
+struct ScriptedHead {
+  FakeProviderDeps wire;
+  agent::TestAnswerTransport scripted;
+  rf::RouterTap tap;
+  providers::ProviderDeps pd;
+  std::vector<uint32_t> delays;
+  explicit ScriptedHead(const char* host)
+      : scripted(&wire.http), tap(&scripted, host) {
+    pd = wire.contract();
+    pd.http = &tap;   // as cumuloAttempt installs it: the tap over the transport
+    pd.routerBase = [host] { return std::string(host); };
+    pd.routerKey = [] { return std::string("cumulo_fake"); };
+    pd.delayMs = [this](uint32_t ms) { delays.push_back(ms); };
+  }
+  void arm(int status, const std::string& body) {
+    providers::setTestStatusOverride(pd.routerBase(), status, body);
+  }
+  bool turn(std::string& out, std::string& err) {
+    std::string conv;
+    return providers::orchTurnOpenAI(pd, conv, "system", "hello", out, err, nullptr, nullptr);
+  }
+};
+}  // namespace
+
+// The S10 row's class rule: a scripted answer enters at the transport's seat, so the
+// refusal machinery above it runs exactly as on a live answer. The cumulo head holds a
+// RouterTap over the transport and answers through the ladder; the wire resends a clamp
+// once capped. A scripted answer that bypassed either (the old override answered before
+// both) read the clamp 402 as an out-of-credit failover and could never show the resend,
+// so no build could pass S10.
+static void test_the_scripted_answer_walks_the_clamp_path() {
+  ScriptedHead h("router.test");
+  h.arm(402, contractBody("insufficient_credits_for_call"));
+  std::string out, err;
+  const bool ok = h.turn(out, err);
+  providers::clearTestStatusOverride();
+  TEST_ASSERT_FALSE(ok);   // the resend is refused too: the call fails, honestly
+  TEST_ASSERT_EQUAL_UINT_MESSAGE(2, h.scripted.answered(), "the request, then one capped resend");
+  TEST_ASSERT_EQUAL_STRING("insufficient_credits_for_call", h.tap.refusal().reason.c_str());
+  TEST_ASSERT_TRUE(LogCapture::contains("resending once with the output capped at 74904"));
+  TEST_ASSERT_FALSE(anySeamClosed("cumulo", h.wire.now));
+  const rf::RefusalKind k = rf::classifyRefusal(h.tap.refusal());
+  TEST_ASSERT_EQUAL_INT((int)rf::RefusalKind::Clamp, (int)k);
+  const std::string cause = rf::refusalCause(k, "openai/gpt-6");
+  TEST_ASSERT_TRUE(has(cause, "larger than the remaining credits allow"));
+  TEST_ASSERT_FALSE(has(cause, "Add credits"));
+}
+
+// The class over the whole table: through the scripted seam every reason behaves as it
+// does on a live answer - a resend only when the wire's own rule resends (a cap that
+// fits, or a wait short enough to sit out), a park only for the park reasons, and the
+// tap's reason is the router's own.
+static void test_the_scripted_answer_behaves_like_a_live_one_over_the_table() {
+  for (const ContractRow& c : kContractRows) {
+    providers::clearHostParks();
+    ScriptedHead h("router.test");
+    const std::string body = contractBody(c.reason);
+    h.arm(c.http, body);
+    std::string out, err;
+    const bool ok = h.turn(out, err);
+    providers::clearTestStatusOverride();
+    TEST_ASSERT_FALSE_MESSAGE(ok, c.reason);
+    const orch::RouterAnswer a = orch::readRouterAnswer(body);
+    const bool capped = a.action() == RouterAction::RetryCapped &&
+                        a.maxAffordableOutputTokens >= (int64_t)orch::kRouterCapFloorTokens;
+    const bool waits = (a.action() == RouterAction::RetryLater ||
+                        (a.action() == RouterAction::RetryCapped && a.retryable)) &&
+                       a.retryAfterMs > 0 && a.retryAfterMs <= orch::kRouterInlineRetryMaxMs;
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(capped || waits ? 2 : 1, h.scripted.answered(), c.reason);
+    TEST_ASSERT_EQUAL_MESSAGE(rowOf(c.reason)->action == RouterAction::ParkBilling ||
+                                  rowOf(c.reason)->action == RouterAction::ParkAuth,
+                              anySeamClosed("cumulo", h.wire.now), c.reason);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(c.reason, h.tap.refusal().reason.c_str(), c.reason);
+  }
+}
+
 // ---- the head ladder -----------------------------------------------------------------
 
 // A tap over the fake transport, as a head holds it.
@@ -796,6 +880,8 @@ int main(int, char**) {
   RUN_TEST(test_a_second_clamp_fails_the_call_without_a_loop);
   RUN_TEST(test_the_clamp_below_the_floor_fails_at_once);
   RUN_TEST(test_retry_later_waits_then_resends_unchanged);
+  RUN_TEST(test_the_scripted_answer_walks_the_clamp_path);
+  RUN_TEST(test_the_scripted_answer_behaves_like_a_live_one_over_the_table);
   RUN_TEST(test_every_reason_on_the_wire);
   RUN_TEST(test_fail_over_cools_the_upstream);
   RUN_TEST(test_the_clamp_note_is_not_on_every_turn);

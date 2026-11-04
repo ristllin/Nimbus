@@ -396,20 +396,19 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   // job's usage so far is read and counted; the caller still reads the cancel's outcome.
   CancelMeterOnExit meterAfter(pd, host, port, tls, headers, cancel);
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
-  {   // test and host builds only: the bench's scripted provider answer
+  {   // test and host builds only: the bench's UNSENT verb (kTestUnsentStatus). The
+    // scripted ANSWER (any other status) is the transport's seat now: the device
+    // wraps its transport in TestAnswerTransport, so a scripted refusal walks the
+    // production path - the RouterTap a Cumulo head holds above the transport, the
+    // resend loop below - instead of bypassing both. Answering here read the router's
+    // clamp 402 as an out-of-credit failover and could never show the capped resend
+    // (lane CLAMP, bench row S10).
     int ovStatus = 0;
     std::string ovBody;
     if (testStatusOverride(host, ovStatus, ovBody) && ovStatus == kTestUnsentStatus) {
       lastExchange().unsent = lastExchange().unsentAtStart = true;
       hlog::logf("provider: TEST override: request to %s%s not sent (first write)", host, path.c_str());
       return 0;
-    }
-    if (testStatusOverride(host, ovStatus, ovBody)) {
-      const JsonDocument wide = routerRefusalFilter(pd, filter);
-      deserializeJson(doc, ovBody, DeserializationOption::Filter(wide));
-      hlog::logf("provider: TEST override answered %s%s with HTTP %d", host, path.c_str(), ovStatus);
-      noteParkRefusal(pd, host, path, ovStatus, doc);
-      return meterAfter.status = ovStatus;
     }
   }
 #endif

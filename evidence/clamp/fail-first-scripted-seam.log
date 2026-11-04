@@ -1,0 +1,48 @@
+********************************************************************************
+Obsolete PIO Core v6.1.19 is used (previous was 6.2.0)
+Please remove multiple PIO Cores from a system:
+https://docs.platformio.org/en/latest/core/installation/troubleshooting.html
+********************************************************************************
+Verbosity level can be increased via `-v, -vv, or -vvv` option
+Collected 291 tests
+
+Processing test_router_refusal_contract in native environment
+--------------------------------------------------------------------------------
+Building...
+Testing...
+test/test_router_refusal_contract/main.cpp:868: test_the_table_is_the_contract	[PASSED]
+test/test_router_refusal_contract/main.cpp:869: test_only_the_park_reasons_close_cumulo_on_every_seam	[PASSED]
+test/test_router_refusal_contract/main.cpp:870: test_unknown_reason_and_bare_402	[PASSED]
+test/test_router_refusal_contract/main.cpp:871: test_a_reason_quoted_in_a_message_is_not_a_reason	[PASSED]
+test/test_router_refusal_contract/main.cpp:872: test_the_answer_is_read_whole	[PASSED]
+test/test_router_refusal_contract/main.cpp:873: test_add_credits_only_when_it_is_true	[PASSED]
+test/test_router_refusal_contract/main.cpp:874: test_a_named_park_reads_as_what_it_is	[PASSED]
+test/test_router_refusal_contract/main.cpp:875: test_the_cause_survives_a_restart	[PASSED]
+test/test_router_refusal_contract/main.cpp:876: test_embedding_refusals_by_reason	[PASSED]
+test/test_router_refusal_contract/main.cpp:877: test_cap_edit_every_spelling_and_path	[PASSED]
+test/test_router_refusal_contract/main.cpp:878: test_cap_edit_moves_splice_offsets	[PASSED]
+test/test_router_refusal_contract/main.cpp:879: test_the_clamp_resends_once_capped_and_serves	[PASSED]
+test/test_router_refusal_contract/main.cpp:880: test_a_second_clamp_fails_the_call_without_a_loop	[PASSED]
+test/test_router_refusal_contract/main.cpp:881: test_the_clamp_below_the_floor_fails_at_once	[PASSED]
+test/test_router_refusal_contract/main.cpp:882: test_retry_later_waits_then_resends_unchanged	[PASSED]
+test/test_router_refusal_contract/main.cpp:544: test_the_scripted_answer_walks_the_clamp_path: Expected 2 Was 0. the request, then one capped resend	[FAILED]
+test/test_router_refusal_contract/main.cpp:575: test_the_scripted_answer_behaves_like_a_live_one_over_the_table: Expected 1 Was 0. missing_router_key	[FAILED]
+test/test_router_refusal_contract/main.cpp:885: test_every_reason_on_the_wire	[PASSED]
+test/test_router_refusal_contract/main.cpp:886: test_fail_over_cools_the_upstream	[PASSED]
+test/test_router_refusal_contract/main.cpp:887: test_the_clamp_note_is_not_on_every_turn	[PASSED]
+test/test_router_refusal_contract/main.cpp:888: test_reads_never_spend_the_recheck	[PASSED]
+test/test_router_refusal_contract/main.cpp:889: test_the_idle_recheck_makes_one_request_with_one_outcome	[PASSED]
+test/test_router_refusal_contract/main.cpp:890: test_the_idle_recheck_stays_quiet_when_it_should	[PASSED]
+test/test_router_refusal_contract/main.cpp:891: test_the_probe_token	[PASSED]
+test/test_router_refusal_contract/main.cpp:892: test_the_wire_claims_the_probe_when_the_request_leaves	[PASSED]
+test/test_router_refusal_contract/main.cpp:893: test_a_poll_does_not_push_the_recheck_back	[PASSED]
+test/test_router_refusal_contract/main.cpp:894: test_an_answer_past_the_wallet_ends_the_park	[PASSED]
+Program received signal SIGINT (Interrupt: 2)
+------- native:test_router_refusal_contract [ERRORED] Took 0.82 seconds -------
+
+=================================== SUMMARY ===================================
+Environment    Test                          Status    Duration
+-------------  ----------------------------  --------  ------------
+native         test_router_refusal_contract  ERRORED   00:00:00.824
+
+============ 28 test cases: 2 failed, 25 succeeded in 00:00:00.824 ============

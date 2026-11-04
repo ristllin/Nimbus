@@ -25,6 +25,7 @@
 #include "nimbus/exchange_trace.h"   // the device transport's own error texts
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/harness/test_answer_transport.h"
 #include "nimbus/orch/billing_refusal.h"
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/result_envelope.h"
@@ -761,15 +762,26 @@ static void test_sub_provenance_counts_per_provider() {
 }
 
 // The bench seam: a scripted provider answer replaces the network for one API
-// host (nothing is sent), so the device's billing path runs on demand.
+// host (nothing is sent), so the device's billing path runs on demand. It answers
+// at the transport's seat (TestAnswerTransport), so the refusal machinery above
+// the transport runs on it exactly as on a live answer (lane CLAMP).
 static void test_test_status_override_answers_locally() {
   FakeProviderDeps d;   // no script: any real request would fail loudly
+  agent::TestAnswerTransport scripted(&d.http);
   providers::setTestStatusOverride("api.anthropic.com", 400,
       "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API.\"}}");
-  const orch::HeadStep st = stepFor("anthropic", 200, "unused");
+  providers::ProviderDeps pd = d.contract();
+  pd.http = &scripted;
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  orch::Transcript tr;
+  tr.addUser("hi");
+  const orch::HeadStep st =
+      providers::antLoopStep(pd, "SYS", rig.ht, nullptr, tr)(true, {}, 60000, "");
   providers::clearTestStatusOverride();
   TEST_ASSERT_EQUAL((int)StepErr::Billing, (int)st.kind);
   TEST_ASSERT_EQUAL(400, st.httpStatus);
+  TEST_ASSERT_EQUAL(1, (int)scripted.answered());
   TEST_ASSERT_TRUE(LogCapture::contains("TEST override answered api.anthropic.com/v1/messages with HTTP 400"));
 }
 

@@ -1541,6 +1541,31 @@ static void test_cum530_router_refusal_notice_is_never_unavailable() {
   TEST_ASSERT_TRUE(n.anyDelivered("cumulo is unavailable - switching to openai"));
 }
 
+// ---- lane CLAMP: a Cumulo-only client and the clamp ----------------------------
+// The welcome wallet's clamp (insufficient_credits_for_call): the capped resend is
+// the wire's (test_router_refusal_contract). When the resend is refused too, a client
+// with no other key hears the clamp's own cause - never "add credits" while the wallet
+// holds credits, never an out-of-credit failover, and nothing parks.
+static void test_a_cumulo_only_client_hears_the_clamp_not_add_credits() {
+  Rig r;
+  r.cfg.keyed.clear();                    // no BYOK head: the router key is everything
+  r.cfg.routerKeyed = true;
+  r.cfg.routerHost = "cumulo";
+  r.scripts["cumulo"] = {{false, "",
+                          "the Cumulo router says this request is larger than the remaining "
+                          "credits allow",
+                          0, "", 0, 0}};
+  TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());   // no other host to fail over to
+  TEST_ASSERT_TRUE(r.anyDelivered("That didn't finish - the Cumulo router says this request "
+                                   "is larger than the remaining credits allow"));
+  TEST_ASSERT_FALSE(r.anyDelivered("Add credit"));
+  TEST_ASSERT_FALSE(r.anyDelivered("out of credit"));
+  TEST_ASSERT_FALSE(r.anyDelivered("switching to"));
+  orch::ParkEntry parks[orch::ProviderPark::kMaxProviders];
+  TEST_ASSERT_EQUAL(0, (int)orch::providerPark().snapshot(parks, orch::ProviderPark::kMaxProviders, 0));
+}
+
 // ---- (5) NO retry after a tool dispatched -----------------------------------
 
 static void test_no_retry_after_tool_dispatched() {
@@ -5479,6 +5504,7 @@ static void runFirstHalf() {
   RUN_TEST(test_cum542_web_page_chat_is_the_web_ui);
   RUN_TEST(test_cum544_all_timeouts_say_no_answer_in_time);
   RUN_TEST(test_cum530_router_refusal_notice_is_never_unavailable);
+  RUN_TEST(test_a_cumulo_only_client_hears_the_clamp_not_add_credits);
 }
 
 static void runSecondHalf() {
