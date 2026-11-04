@@ -81,8 +81,16 @@ void checkSignalShape(const Report& r, const TurnRecord& t, const SignalCounts& 
   r.check(s.queueChecks == (int)marks.size() - finalMarks,
           "every boundary looks for messages that arrived mid-turn");
   r.check(s.sayLines <= 1, "never more than one progress line per turn");
-  r.check(marks.size() <= 2 || s.sayLines == 1,
-          "a turn past its third round says the one plain line");
+  // The line is due once a boundary that is NOT the imminent answer passes the
+  // threshold (the third round, or 30 s - turn_progress kLineAtRound/kLineAfterMs).
+  // A turn that ENDS at its third round stays quiet: the answer is imminent.
+  // (Live shape, 4 Nov: the model can end the bulk lookup at round 2, which is
+  // final - reproduced twice; the old form demanded a line there.)
+  bool lineDue = false;
+  for (const auto& m : marks)
+    if (!m.lastRound && (m.round >= 2 || m.elapsedMs >= 30000)) lineDue = true;
+  r.check(!lineDue || s.sayLines == 1,
+          "a boundary past the third round or 30 s says the one plain line");
   if (s.sayLines == 1) {
     r.check(!s.line.empty() && s.line.find("prog_bulk_lookup") == std::string::npos &&
                 s.line.find("memory_search") == std::string::npos && s.line.find('_') == std::string::npos,

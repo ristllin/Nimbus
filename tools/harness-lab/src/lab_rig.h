@@ -772,6 +772,38 @@ class LabRig {
     };
   }
 
+  // The glass box, for free: on the host these hooks are just callbacks.
+  // Split out of buildEngine to stay under the complexity gate (lane PROG).
+  void wireHooks(agent::TurnEngine::Deps& d) {
+    d.hooks.onToolCall = [this](const orch::HeadToolCall& c) {
+      cur_.toolCalls.push_back(c.name + "(" + trunc(c.argsJson, 200) + ")");
+      if (opt_.verboseHttp)
+        std::fprintf(stderr, "[tool] %s %s\n", c.name.c_str(), trunc(c.argsJson, 160).c_str());
+    };
+    d.hooks.onToolResult = [this](const orch::HeadToolResult& r) {
+      cur_.toolResults.push_back(trunc(r.output, 300));
+      if (opt_.verboseHttp)
+        std::fprintf(stderr, "[tool] -> %s%s\n", r.isError ? "ERROR " : "",
+                     trunc(r.output, 200).c_str());
+    };
+    d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) { lastHost_ = ev.host; };
+    d.hooks.onTurnProgress = [this](const agent::TurnProgressEv& ev) {
+      ProgressMark m;
+      m.round = ev.round;
+      m.elapsedMs = ev.elapsedMs;
+      m.lastRound = ev.lastRound;
+      m.maxRounds = ev.maxRounds;
+      m.tools = ev.tools;
+      cur_.progress.push_back(m);
+      if (opt_.verboseHttp)
+        std::fprintf(stderr, "[progress] round=%d elapsed=%ums last=%d tools=%zu\n",
+                     ev.round, ev.elapsedMs, (int)ev.lastRound, ev.tools.size());
+    };
+    d.hooks.onTurnDebug = [this](const agent::TurnDebugEv& ev) {
+      if (ev.inputs) cur_.turnInputs = *ev.inputs;   // where [ACTIVE SKILLS] and [STANDING RULES] ride
+    };
+  }
+
   void buildEngine() {
     agent::JobEngine::Deps jd;
     jd.platform = platform();
@@ -847,34 +879,7 @@ class LabRig {
                                     orch::logDayOf(std::time(nullptr), true).date, message);
     };
 
-    // The glass box, for free: on the host these hooks are just callbacks.
-    d.hooks.onToolCall = [this](const orch::HeadToolCall& c) {
-      cur_.toolCalls.push_back(c.name + "(" + trunc(c.argsJson, 200) + ")");
-      if (opt_.verboseHttp)
-        std::fprintf(stderr, "[tool] %s %s\n", c.name.c_str(), trunc(c.argsJson, 160).c_str());
-    };
-    d.hooks.onToolResult = [this](const orch::HeadToolResult& r) {
-      cur_.toolResults.push_back(trunc(r.output, 300));
-      if (opt_.verboseHttp)
-        std::fprintf(stderr, "[tool] -> %s%s\n", r.isError ? "ERROR " : "",
-                     trunc(r.output, 200).c_str());
-    };
-    d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) { lastHost_ = ev.host; };
-    d.hooks.onTurnProgress = [this](const agent::TurnProgressEv& ev) {
-      ProgressMark m;
-      m.round = ev.round;
-      m.elapsedMs = ev.elapsedMs;
-      m.lastRound = ev.lastRound;
-      m.maxRounds = ev.maxRounds;
-      m.tools = ev.tools;
-      cur_.progress.push_back(m);
-      if (opt_.verboseHttp)
-        std::fprintf(stderr, "[progress] round=%d elapsed=%ums last=%d tools=%zu\n",
-                     ev.round, ev.elapsedMs, (int)ev.lastRound, ev.tools.size());
-    };
-    d.hooks.onTurnDebug = [this](const agent::TurnDebugEv& ev) {
-      if (ev.inputs) cur_.turnInputs = *ev.inputs;   // where [ACTIVE SKILLS] and [STANDING RULES] ride
-    };
+    wireHooks(d);
 
     d.apply.deliver = d.deliver;
     d.apply.stageDevice = [this](const orch::ValidatedAction& va) {
