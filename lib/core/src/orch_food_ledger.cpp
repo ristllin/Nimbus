@@ -330,11 +330,17 @@ void FoodLedgerScan::keepRow(const std::string& row) {
   }
 }
 
-// Lane UPSERT: a history row (#replaced: / #superseded:) dated today is kept for the
-// dispute block - it names a row of the day that changed or disappeared. Never
-// counted, never matched; shown only when the owner disputes a total.
+// Lane UPSERT: a history row (#replaced: / #superseded: / #removed:) dated today is
+// kept for the dispute block - it names a row of the day that changed or
+// disappeared. Never counted, never matched; shown only when the owner disputes a
+// total. #removed: rows are what files.edit and a whole-file save keep of the rows
+// they dropped (review finding 2).
 void FoodLedgerScan::keepHistory(const std::string& row) {
-  const size_t prefix = row.rfind("#replaced: ", 0) == 0 ? 11 : 13;   // "#replaced: " / "#superseded: "
+  size_t prefix = 0;
+  if (row.rfind("#replaced: ", 0) == 0) prefix = 11;
+  else if (row.rfind("#superseded: ", 0) == 0) prefix = 13;
+  else if (row.rfind("#removed: ", 0) == 0) prefix = 9;
+  else return;
   if (dateColumn_.empty()) return;
   const std::vector<std::string> names = headerNames(header_);
   size_t di = names.size();
@@ -358,7 +364,8 @@ void FoodLedgerScan::feed(const std::string& row, bool complete) {
     startHeader(row);
     return;
   }
-  if (row.rfind("#replaced: ", 0) == 0 || row.rfind("#superseded: ", 0) == 0) {
+  if (row.rfind("#replaced: ", 0) == 0 || row.rfind("#superseded: ", 0) == 0 ||
+      row.rfind("#removed: ", 0) == 0) {
     keepHistory(row);
     return;
   }
@@ -618,17 +625,34 @@ bool mentionsLedger(const std::string& text) {
   return words::anyPhrase(lowerAscii(text), kLedgerWords);
 }
 
+// The separate figures in a text ("1878/2400" is two; "mp3" is none).
+size_t countFigures(const std::string& s) {
+  size_t n = 0;
+  for (size_t i = 0; i < s.size(); i++) {
+    if (!isDigit(s[i])) continue;
+    if (i > 0 && words::isWordChar(s[i - 1]) && !isDigit(s[i - 1])) continue;
+    n++;
+    while (i < s.size() && (isDigit(s[i]) || s[i] == '.')) i++;
+  }
+  return n;
+}
+
 // Lane UPSERT, 4 Nov: the owner disputes a total ("Thats wrong. Previous message said
 // i have 510 left ... 1878/2400???", "where did the brisket go", "your calc is off").
-// A dispute word beside a ledger mention, a food word or a figure: the turn gets the
-// day's history rows (renderLedgerDispute) so the answer names what changed.
+// A dispute word beside a ledger mention or a food word: the turn gets the day's
+// history rows (renderLedgerDispute) so the answer names what changed. A bare figure
+// only counts when the message compares figures - a disputed total is one figure
+// against another ("1878/2400", "2335 not 1878") - so a lone digit beside a dispute
+// word ("it's 24 degrees", "serial 1234") is a dispute about something else and
+// must not attach the food block (review finding 4).
 bool disputesLedger(const std::string& text) {
   static const char* const kDisputeWords[] = {
       "wrong",     "not right", "incorrect", "missing",  "lost",     "gone",     "disappear",
       "where did", "add up",    "adds up",   "doesn't add", "dispute", "miscount", "double count",
       "double-count", "error",  "off by",    "calc is off", "not the total", "that's not"};
-  if (!words::anyPhrase(lowerAscii(text), kDisputeWords)) return false;
-  return mentionsLedger(text) || looksFoodRelated(text) || text.find_first_of("0123456789") != std::string::npos;
+  const std::string s = lowerAscii(text);
+  if (!words::anyPhrase(s, kDisputeWords)) return false;
+  return mentionsLedger(text) || looksFoodRelated(text) || countFigures(s) >= 2;
 }
 
 std::string renderLedgerDispute(const FoodLedger& l) {

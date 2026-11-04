@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -526,6 +527,63 @@ static void test_the_device_reports_the_diff_and_the_missing_readd() {
   TEST_ASSERT_TRUE(src.find("g_removedRows") != std::string::npos);
 }
 
+// Lane UPSERT fix pass (review finding 2): a keyed-CSV edit that removes or
+// changes rows keeps them in the file as history rows, so a disputed day can be
+// re-read from the file itself - the same rows the receipt names.
+static void test_a_keyed_edit_keeps_removed_and_changed_rows_as_history() {
+  const std::string before = foodRow("breakfast", "66", "3.3") + foodRow("snack1", "327", "31.8") +
+                             foodRow("snack2", "120", "4.3");
+  const std::string after = foodRow("breakfast", "66", "3.3") + foodRow("snack2", "120", "4.0") +
+                            foodRow("fries", "50", "0.6");
+  const std::string hist = historyRowsForKeyedEdit(kFoodHeader, before, after);
+  TEST_ASSERT_TRUE_MESSAGE(hist.find("#removed: " + foodRow("snack1", "327", "31.8")) != std::string::npos,
+                           hist.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(hist.find("#replaced: " + foodRow("snack2", "120", "4.3")) != std::string::npos,
+                           hist.c_str());
+  // The added row is not history; an unchanged row is not history either.
+  TEST_ASSERT_TRUE(hist.find("fries") == std::string::npos);
+  TEST_ASSERT_TRUE(hist.find("breakfast") == std::string::npos);
+  // Not a keyed CSV (no date column): nothing to keep.
+  TEST_ASSERT_EQUAL_STRING("", historyRowsForKeyedEdit("a,b\n", "1,2\n", "1,3\n").c_str());
+  // A mid-row edit (no dated rows in the spans): nothing to keep.
+  TEST_ASSERT_EQUAL_STRING("", historyRowsForKeyedEdit(kFoodHeader, "ome food", "other food").c_str());
+  // A whole-day delete keeps every removed row.
+  const std::string all = historyRowsForKeyedEdit(kFoodHeader, sevenRows(), "");
+  TEST_ASSERT_EQUAL_INT(7, (int)std::count(all.begin(), all.end(), '\n'));
+  TEST_ASSERT_TRUE(all.find("#removed: " + foodRow("snack1", "100", "5.0")) != std::string::npos);
+}
+
+// Lane UPSERT fix pass (review finding 2): a whole-file rewrite (artifact.save
+// over a keyed CSV) keeps the old file's rows of TODAY that the new text drops
+// or changes as history rows; other days' rows are not kept.
+static void test_a_whole_file_rewrite_keeps_the_days_dropped_and_changed_rows_as_history() {
+  const std::string oldText = std::string(kFoodHeader) + "\n" + sevenRows() +
+                              "2026-11-03,dinner,\"Pasta\",800,30,2026-11-03-dinner\n";
+  std::string newText = std::string(kFoodHeader) + "\n";
+  for (const char* m : {"breakfast", "snack2", "lunch1", "lunch2", "dinner", "drink1"})
+    newText += foodRow(m, "100", "5.0");
+  newText += foodRow("lunch1", "100", "9.9");   // a changed row (same identity, new text)
+  const std::string hist = historyRowsForRewrite(oldText, newText, "2026-11-02");
+  TEST_ASSERT_TRUE_MESSAGE(hist.find("#removed: " + foodRow("snack1", "100", "5.0")) != std::string::npos,
+                           hist.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(hist.find("#replaced: " + foodRow("lunch1", "100", "5.0")) != std::string::npos,
+                           hist.c_str());
+  TEST_ASSERT_TRUE(hist.find("2026-11-03") == std::string::npos);   // another day is not kept
+  // The streaming form agrees with the whole-text form.
+  RewriteHistoryScan scan(newText, "2026-11-02");
+  RowSplitter rows([&scan](const std::string& row, bool complete) {
+    scan.feed(row, complete);
+    return true;
+  });
+  rows.push(oldText.data(), oldText.size());
+  rows.end();
+  TEST_ASSERT_EQUAL_STRING(hist.c_str(), scan.finish().c_str());
+  // Nothing dropped or changed: no history.
+  TEST_ASSERT_EQUAL_STRING("", historyRowsForRewrite(oldText, oldText, "2026-11-02").c_str());
+  // Not a keyed CSV: no history.
+  TEST_ASSERT_EQUAL_STRING("", historyRowsForRewrite("a,b\n1,2\n", "a,b\n1,3\n", "2026-11-02").c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_validate_the_caps_and_the_policy);
@@ -552,5 +610,7 @@ int main() {
   RUN_TEST(test_the_row_lists_are_bounded);
   RUN_TEST(test_not_readded_names_the_missing_row);
   RUN_TEST(test_the_device_reports_the_diff_and_the_missing_readd);
+  RUN_TEST(test_a_keyed_edit_keeps_removed_and_changed_rows_as_history);
+  RUN_TEST(test_a_whole_file_rewrite_keeps_the_days_dropped_and_changed_rows_as_history);
   return UNITY_END();
 }

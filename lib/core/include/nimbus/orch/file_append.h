@@ -111,7 +111,10 @@ std::string renderTail(const TailView& v, const std::string& name, size_t fileBy
 //     non-date, non-key, non-figure fields) - same item replaces, different item
 //     appends under a unique key ("dinner-2", "dinner-3", ... avoiding the keys the
 //     day already holds) and the stored row is kept. key=date (a one-row-per-day
-//     ledger) has no reused label and replaces as before;
+//     ledger) has no reused label and replaces as before. A re-send of a row already
+//     stored under another key of the same day (a retry of a rekeyed write under its
+//     original label) adds nothing: the receipt names the key it is already logged
+//     under and the day's total is unchanged;
 // Fields follow CSV quoting: "chicken, rice" is one field, "" inside quotes is a
 // quote; a comma inside a balanced pair of parentheses is also part of its field
 // (a migrated ledger's "Boba tea (no sugar, honey tapioca)"). A stored row with more
@@ -146,6 +149,8 @@ struct RowChange {
   std::string wasItems;   // the replaced row's item words, capped ("" = none): what the replace took away
   std::string keptKey;    // non-empty when the sent key named a stored row of a DIFFERENT item: that row was
                           // kept and this row was appended under a new unique key
+  std::string dupKey;     // non-empty when the row is already stored under another key of the same day (a re-send
+                          // of a rekeyed row under its original label): nothing was added
   int superseded = 0; // more stored rows of this identity set aside (replace: "all")
   std::string sameFoodDate;   // the newest earlier day with the same food at a far-off figure ("" = none)
   double sameFoodFigure = 0;  // that row's figure
@@ -160,6 +165,7 @@ struct CsvUpsert {
   int replaced = 0;        // rows whose date and key already existed and described the same item
   int appended = 0;        // rows with a new date or key
   int rekeyed = 0;         // appended rows that reused a stored key naming a different item (a new unique key)
+  int duplicates = 0;      // rows already stored under another key of the same day: not added again
   int superseded = 0;      // duplicate stored rows set aside as #superseded: (replace: "all")
   bool hasTotal = false;   // today's total is known
   double todayTotal = 0;   // the sum column over today's rows
@@ -203,9 +209,11 @@ class CsvUpsertStream {
     std::vector<std::string> fields;
     bool used = false;   // it replaced a stored row
     bool rekey = false;  // its key named a stored row of a different item: append under a new unique key
+    bool dup = false;    // already stored under another key of the same day: add nothing
     std::string was;     // that row's sum figure
     std::string wasItems;   // that row's item words, capped
     std::string keptKey;    // the sent key that was kept by the stored row (rekey)
+    std::string dupKey;     // the stored key this row is already logged under (dup)
     int superseded = 0;  // more stored rows of its identity set aside
     std::vector<std::string> foodWords;   // a food log: the words of its items
     std::string sameFoodDate;
@@ -228,12 +236,23 @@ class CsvUpsertStream {
   void countUndated(const std::vector<std::string>& f);
   std::string identity(const std::vector<std::string>& f) const;
   std::string itemTextOf(const std::vector<std::string>& f) const;   // what a row says it holds
+  std::vector<std::string> itemWords(const std::vector<std::string>& f) const;   // its item words
+  bool sameWords(const std::vector<std::string>& a, const std::vector<std::string>& b) const;   // the same-item rule
   bool sameItem(const NewRow& n, const std::vector<std::string>& stored) const;
   std::string itemWordsOf(const std::vector<std::string>& f) const;   // capped, for the receipt
   bool rekeyRow(NewRow& n);   // assign a unique key; false = none free
+  bool finishRow(NewRow& n, std::string& out);   // one pending row at finish(): dup/rekey/append
   void noteTakenKey(const std::vector<std::string>& f);   // record a stored row's key for the day
   bool feedRekey(NewRow& hit, const std::vector<std::string>& f, const std::string& row, bool complete,
                  std::string& out);   // a reused label naming a different item: keep the stored row
+  // Lane UPSERT fix pass: a stored row's day, key and item words, remembered (capped) so a
+  // re-send of a row already stored under another key of the same day is recognised.
+  struct SeenRow {
+    std::string date, key;
+    std::vector<std::string> words;
+  };
+  void recordSeen(const std::vector<std::string>& f);
+  void markDupAgainstStored(const std::vector<std::string>& f);   // a pending rekey row that is this stored row
   void tally(const std::vector<std::string>& f);
   void watchSameFood(const std::vector<std::string>& f);
   void noteSameFood(NewRow& n, const std::string& day, double was) const;
@@ -248,6 +267,7 @@ class CsvUpsertStream {
   std::map<std::string, std::set<std::string>> taken_;   // keys each date already holds (capped)
   size_t takenCount_ = 0;
   std::set<std::string> assigned_;   // keys this call assigned (rekeyed rows)
+  std::vector<SeenRow> seen_;   // stored rows seen so far (capped): the same-day duplicate guard
   CsvUpsert r_;
 };
 

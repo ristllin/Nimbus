@@ -1374,6 +1374,51 @@ static void test_upsert_no_stored_row_vanishes_without_a_history_trace() {
   }
 }
 
+// Lane UPSERT fix pass (review finding 3): a re-send of an already-rekeyed row
+// under its ORIGINAL label must not append a second copy and double-count the
+// day. After the 20:04 write landed as dinner-2, the same message sent again
+// (a retry after an ambiguous failure) hits the stored "dinner" row, which
+// describes a different item - but the row is already stored under dinner-2,
+// so nothing is added and the day's total is unchanged.
+static void test_upsert_a_resend_of_a_rekeyed_row_under_its_original_label_adds_nothing() {
+  const std::string head = "date,meal,items,kcal,protein_g\n";
+  const std::string file = head +
+                           "2026-11-04,breakfast,skyr + granola,533,32.5\n"
+                           "2026-11-04,dinner,smoked brisket + seeded bread,457,40.2\n";
+  CsvUpsert up = planCsvUpsert(file, head + "2026-11-04,dinner,Frive Smoky Baharat Mango Chicken,445,26.0\n",
+                               "meal", "kcal", "2026-11-04");
+  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+  TEST_ASSERT_EQUAL_INT(1, up.rekeyed);
+  const std::string after = up.out;
+  TEST_ASSERT_TRUE(after.find("dinner-2,Frive Smoky Baharat Mango Chicken,445,26.0") != std::string::npos);
+  // The 20:04 message is sent again under the original label "dinner" (a retry).
+  up = planCsvUpsert(after, head + "2026-11-04,dinner,Frive Smoky Baharat Mango Chicken,445,26.0\n",
+                     "meal", "kcal", "2026-11-04");
+  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+  TEST_ASSERT_EQUAL_INT(0, up.rekeyed);   // no third row
+  TEST_ASSERT_EQUAL_INT(0, up.appended);
+  TEST_ASSERT_EQUAL_INT(1, up.duplicates);
+  TEST_ASSERT_FALSE(up.changed);          // nothing was written
+  TEST_ASSERT_TRUE_MESSAGE(up.out.find("dinner-3") == std::string::npos, up.out.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(up.todayTotal > 1434.9 && up.todayTotal < 1435.1,
+                           "533 + 457 + 445 counted once = 1435");
+  const std::string reply = renderUpsertReply(up, "food/food-log.csv", "kcal", "GMT");
+  TEST_ASSERT_TRUE_MESSAGE(reply.find("already logged as") != std::string::npos &&
+                               reply.find("dinner-2") != std::string::npos,
+                           reply.c_str());
+  // The same when the already-rekeyed row sits BEFORE the reused-key row in the file.
+  const std::string reordered = head +
+                                "2026-11-04,dinner-2,Frive Smoky Baharat Mango Chicken,445,26.0\n"
+                                "2026-11-04,dinner,smoked brisket + seeded bread,457,40.2\n";
+  up = planCsvUpsert(reordered, head + "2026-11-04,dinner,Frive Smoky Baharat Mango Chicken,445,26.0\n",
+                     "meal", "kcal", "2026-11-04");
+  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+  TEST_ASSERT_EQUAL_INT(0, up.appended);
+  TEST_ASSERT_EQUAL_INT(1, up.duplicates);
+  TEST_ASSERT_TRUE(up.out.find("dinner-3") == std::string::npos);
+  TEST_ASSERT_TRUE(up.todayTotal > 901.9 && up.todayTotal < 902.1);   // 445 + 457 once
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_append_never_rewrites_a_stored_byte);
@@ -1416,5 +1461,6 @@ int main(int, char**) {
   RUN_TEST(test_upsert_one_side_without_item_words_is_a_different_item);
   RUN_TEST(test_upsert_key_date_still_replaces_one_row_per_day);
   RUN_TEST(test_upsert_no_stored_row_vanishes_without_a_history_trace);
+  RUN_TEST(test_upsert_a_resend_of_a_rekeyed_row_under_its_original_label_adds_nothing);
   return UNITY_END();
 }

@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -172,5 +173,49 @@ std::vector<CsvEditRow> notReadded(const std::vector<CsvEditRow>& remembered,
 
 // The warning for what a re-add left out: "" when nothing is missing.
 std::string renderNotReadded(const std::vector<CsvEditRow>& missing);
+
+// ---- the history rows a keyed-CSV write keeps in the file --------------------
+// Lane UPSERT fix pass (review finding 2): a row that disappears or changes today
+// must stay nameable from the file itself, so a disputed total can be re-read
+// from the ledger's own history. A keyed-CSV edit keeps every row it removed as
+// a "#removed: " row and every row it changed (same date and key, different
+// text) as a "#replaced: " row holding the old text; a whole-file rewrite
+// (artifact.save over a keyed CSV) keeps the old file's rows of `today` that the
+// new text drops or changes the same way. "" when the spans do not read as rows
+// of a keyed CSV. Capped like the ledger's history rows (food_ledger.h).
+inline constexpr size_t kEditHistoryMaxRows = 12;
+inline constexpr size_t kEditHistoryMaxBytes = 900;
+
+// The history lines a keyed-CSV edit must append to the file: "#removed: <row>"
+// for each row the replacement took out, "#replaced: <row>" for each row it
+// changed. `headerRow` is the file's first row; the find text is exactly what
+// was there. "" when the spans do not read as rows of a keyed CSV.
+std::string historyRowsForKeyedEdit(const std::string& headerRow, const std::string& find,
+                                    const std::string& replace);
+
+// The streaming form of the whole-file rewrite: construct with the NEW text and
+// the day to keep, feed every row of the OLD file in order (header first), then
+// finish() returns the history lines to append to the new file ("" = none).
+class RewriteHistoryScan {
+ public:
+  RewriteHistoryScan(const std::string& newText, const std::string& today);
+  void feed(const std::string& row, bool complete);
+  std::string finish() const { return out_; }
+
+ private:
+  void feedDataRow(const std::string& row, const std::vector<std::string>& fields);
+  std::string today_;
+  std::vector<std::string> header_;   // the NEW text's header: the file's columns after the save
+  bool sawHeader_ = false;
+  int dateCol_ = -1, keyCol_ = -1;
+  std::map<std::string, std::string> newRows_;   // identity (date + key) -> the new row's raw line
+  std::string out_;
+  size_t rows_ = 0, bytes_ = 0;
+};
+
+// The whole-text form of the same (the host lab, the tests): the old file's rows
+// of `today` that `newText` drops or changes, as history lines.
+std::string historyRowsForRewrite(const std::string& oldText, const std::string& newText,
+                                  const std::string& today);
 
 }  // namespace nimbus::orch

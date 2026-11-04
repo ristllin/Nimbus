@@ -11,6 +11,11 @@
 
 namespace nimbus::orch {
 
+// Lane UPSERT fix pass: the same-day duplicate guard's bounds - how many stored
+// rows it remembers, and how many item words per row.
+static constexpr size_t kSeenMaxRows = 128;
+static constexpr size_t kSeenMaxWords = 24;
+
 // v4.6.3 (the 30 Oct investigation): the first row of a NEW CSV must be its
 // header (the column names, no data). A data row first would grow the file up
 // headerless: keyed writes refuse forever after (no key column to name), so
@@ -845,16 +850,24 @@ std::string CsvUpsertStream::itemTextOf(const std::vector<std::string>& f) const
   return out;
 }
 
-// Lane UPSERT: is the stored row the same item as the new one? Decided by the item
-// words, in code: both sides with no words are the same (a log with no free text, a
-// correction of figures only), exactly one side with no words is a different item,
+// The item words of a row's fields (the items column, else its free fields).
+std::vector<std::string> CsvUpsertStream::itemWords(const std::vector<std::string>& f) const {
+  return foodWordsOf(itemTextOf(f));
+}
+
+// The same-item rule over two word lists: both empty are the same (a log with no
+// free text, a correction of figures only), exactly one empty is a different item,
 // otherwise the same-food words decide.
-bool CsvUpsertStream::sameItem(const NewRow& n, const std::vector<std::string>& stored) const {
-  const std::vector<std::string> a = foodWordsOf(itemTextOf(n.fields));
-  const std::vector<std::string> b = foodWordsOf(itemTextOf(stored));
+bool CsvUpsertStream::sameWords(const std::vector<std::string>& a, const std::vector<std::string>& b) const {
   if (a.empty() && b.empty()) return true;
   if (a.empty() != b.empty()) return false;
   return sameFoodWords(a, b);
+}
+
+// Lane UPSERT: is the stored row the same item as the new one? Decided by the item
+// words, in code.
+bool CsvUpsertStream::sameItem(const NewRow& n, const std::vector<std::string>& stored) const {
+  return sameWords(itemWords(n.fields), itemWords(stored));
 }
 
 // The replaced row's item words for the receipt, capped: at most 12 words and 120
@@ -967,6 +980,7 @@ bool CsvUpsertStream::feedData(const std::string& row, bool complete, std::strin
     return true;
   }
   noteTakenKey(f);   // the keys this date already holds, for the rekeyed rows' unique keys (capped)
+  recordSeen(f);     // the same-day duplicate guard (review finding 3)
   NewRow* hit = match(identity(f));
   if (!complete && provablyCut(f, quotes, header_.size(), prev_, sumIdx_)) {
     feedCut(f, row, hit, out);
@@ -979,6 +993,7 @@ bool CsvUpsertStream::feedData(const std::string& row, bool complete, std::strin
     countUndated(f);
     tally(f);
     watchSameFood(f);
+    markDupAgainstStored(f);   // a pending rekey row that is this stored row adds nothing
     return true;
   }
   if (hit->used || hit->rekey) return secondMatch(*hit, row, out);
@@ -1000,10 +1015,57 @@ void CsvUpsertStream::noteTakenKey(const std::vector<std::string>& f) {
   if (!day.empty() && !k.empty() && taken_[day].insert(k).second) takenCount_++;
 }
 
+// Remember a stored row's day, key and item words (capped), so a re-send of a row
+// already stored under another key of the same day is recognised (review finding 3).
+void CsvUpsertStream::recordSeen(const std::vector<std::string>& f) {
+  if (keyIdx_ == dateIdx_ || dateIdx_ < 0 || f.size() <= (size_t)dateIdx_ || f.size() <= (size_t)keyIdx_ ||
+      f.size() > header_.size() || seen_.size() >= kSeenMaxRows)
+    return;
+  const std::string day = isoDay(f[(size_t)dateIdx_]);
+  const std::string k = keyText(f[(size_t)keyIdx_]);
+  if (day.empty() || k.empty()) return;
+  SeenRow s;
+  s.date = day;
+  s.key = k;
+  const std::vector<std::string> w = itemWords(f);
+  for (size_t i = 0; i < w.size() && i < kSeenMaxWords; i++) s.words.push_back(w[i]);
+  seen_.push_back(std::move(s));
+}
+
+// A stored row of the same day that is the same item as a pending rekeyed row: that
+// rekeyed row is a re-send of this stored row - it adds nothing (review finding 3).
+void CsvUpsertStream::markDupAgainstStored(const std::vector<std::string>& f) {
+  if (keyIdx_ == dateIdx_ || dateIdx_ < 0 || f.size() <= (size_t)dateIdx_ || f.size() <= (size_t)keyIdx_)
+    return;
+  const std::string day = isoDay(f[(size_t)dateIdx_]);
+  if (day.empty()) return;
+  const std::vector<std::string> w = itemWords(f);
+  for (NewRow& n : rows_)
+    if (n.rekey && !n.used && !n.dup && n.date == day && sameWords(itemWords(n.fields), w)) {
+      n.dup = true;
+      n.dupKey = keyText(f[(size_t)keyIdx_]);
+      n.rekey = false;
+      n.keptKey.clear();
+    }
+}
+
 // A reused label naming a DIFFERENT item: the stored row is kept as it is, the new
-// row is appended under a unique key in finish().
+// row is appended under a unique key in finish() - unless the row is already stored
+// under another key of the same day (a re-send of a rekeyed row under its original
+// label): then it adds nothing and the day's total is unchanged (review finding 3).
 bool CsvUpsertStream::feedRekey(NewRow& hit, const std::vector<std::string>& f, const std::string& row,
                                 bool complete, std::string& out) {
+  for (const SeenRow& s : seen_)
+    if (s.date == hit.date && sameWords(itemWords(hit.fields), s.words)) {
+      hit.dup = true;
+      hit.dupKey = s.key;
+      out = row + "\n";
+      if (!complete) r_.changed = true;
+      countUndated(f);
+      tally(f);
+      watchSameFood(f);
+      return true;
+    }
   hit.rekey = true;
   hit.keptKey = hit.key;
   out = row + "\n";
@@ -1050,6 +1112,29 @@ void CsvUpsertStream::tally(const std::vector<std::string>& f) {
   if (proteinIdx_ >= 0) tallyInto(r_.protein, f, header_, dateIdx_, proteinIdx_);
 }
 
+// One pending new row at finish(): a duplicate adds nothing, a rekey gets its
+// unique key, and anything not used is appended. False on a failure (no free key).
+bool CsvUpsertStream::finishRow(NewRow& n, std::string& out) {
+  if (n.dup) {
+    // Already stored under another key of the same day: not appended, not counted.
+    r_.duplicates++;
+  } else if (n.rekey) {
+    if (!rekeyRow(n))
+      return fail("cannot find a free '" + keyCol_ + "' value for " + n.date + " '" + n.keptKey +
+                  "' - log it under its own " + keyCol_ + " name");
+    r_.rekeyed++;
+  }
+  r_.changes.push_back({n.date, n.key, n.used, n.was, n.wasItems, n.rekey ? n.keptKey : std::string(),
+                        n.dupKey, n.superseded, n.sameFoodDate, n.sameFoodFigure, n.figure});
+  if (n.used || n.dup) return true;
+  out += n.raw + "\n";
+  outRows_++;
+  r_.appended++;
+  r_.changed = true;
+  tally(n.fields);
+  return true;
+}
+
 bool CsvUpsertStream::finish(std::string& out) {
   out.clear();
   if (failed_ || !begun_) return false;
@@ -1058,20 +1143,8 @@ bool CsvUpsertStream::finish(std::string& out) {
     outRows_++;
     r_.changed = true;
   }
-  for (NewRow& n : rows_) {
-    if (n.rekey && !rekeyRow(n))
-      return fail("cannot find a free '" + keyCol_ + "' value for " + n.date + " '" + n.keptKey +
-                  "' - log it under its own " + keyCol_ + " name");
-    if (n.rekey) r_.rekeyed++;
-    r_.changes.push_back({n.date, n.key, n.used, n.was, n.wasItems, n.rekey ? n.keptKey : std::string(),
-                          n.superseded, n.sameFoodDate, n.sameFoodFigure, n.figure});
-    if (n.used) continue;
-    out += n.raw + "\n";
-    outRows_++;
-    r_.appended++;
-    r_.changed = true;
-    tally(n.fields);
-  }
+  for (NewRow& n : rows_)
+    if (!finishRow(n, out)) return false;
   // Every stored row is written back (replaced in place, set aside, or as it
   // was), plus the appended rows: no update can drop a row.
   const size_t expect = storedRows_ + (size_t)r_.appended + (sawHeader_ ? 0 : 1);
@@ -1382,7 +1455,11 @@ namespace {
 std::string renderChange(const RowChange& c, const std::string& sumCol) {
   const std::string what = (c.date.empty() ? std::string() : c.date + " ") + "'" + c.key + "'";
   std::string out;
-  if (!c.replaced) {
+  if (!c.dupKey.empty()) {
+    // A re-send of a row already stored under another key of the same day.
+    out = "- already logged as " + (c.date.empty() ? std::string() : c.date + " ") + "'" + c.dupKey +
+          "' - not added again, the day's total is unchanged\n";
+  } else if (!c.replaced) {
     out = "- added " + what + "\n";
     if (!c.keptKey.empty())
       out += "- the stored " + (c.date.empty() ? std::string() : c.date + " ") + "'" + c.keptKey +
@@ -1426,12 +1503,21 @@ static std::string renderRekeyed(const CsvUpsert& up) {
          " a stored key that names a different item and got a new key (the stored rows were kept)\n";
 }
 
+// Lane UPSERT fix pass: rows that were already stored under another key of the same
+// day (a re-send of a rekeyed row under its original label) - not added again.
+static std::string renderDuplicates(const CsvUpsert& up) {
+  if (up.duplicates <= 0) return std::string();
+  return std::to_string(up.duplicates) + (up.duplicates == 1 ? " row was" : " rows were") +
+         " already logged under another key of the same day - not added again\n";
+}
+
 std::string renderUpsertReply(const CsvUpsert& up, const std::string& where,
                               const std::string& sumCol, const std::string& zoneAt) {
   std::string out = "replaced " + std::to_string(up.replaced) + (up.replaced == 1 ? " row" : " rows") +
                     ", added " + std::to_string(up.appended) + (up.appended == 1 ? " row" : " rows") +
                     " in " + where + (up.changed ? "" : " (no change: the rows were already as sent)") + "\n";
   out += renderRekeyed(up);
+  out += renderDuplicates(up);
   for (const RowChange& c : up.changes) out += renderChange(c, sumCol);
   if (up.cut) {
     const std::string which = up.cutDate.empty() ? std::string() : " (dated " + up.cutDate + ")";

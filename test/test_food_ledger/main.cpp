@@ -481,6 +481,39 @@ void test_a_disputed_total_gets_the_days_history_rows() {
   TEST_ASSERT_FALSE(disputesLedger("thanks!"));
 }
 
+// Review finding 4: the bare-digit gate must not fire the food-dispute block on a
+// non-food dispute. A disputed total compares figures, so the digit path needs two
+// or more figures; one figure beside a dispute word is about something else (a
+// temperature, a serial number).
+void test_a_dispute_about_something_else_is_not_a_ledger_dispute() {
+  TEST_ASSERT_FALSE(disputesLedger("That's not the right temperature, it's 24 degrees"));
+  TEST_ASSERT_FALSE(disputesLedger("wrong serial number, it's 1234"));
+  TEST_ASSERT_FALSE(disputesLedger("that's not the right color either"));
+  // A disputed total compares figures: two or more figures still fire.
+  TEST_ASSERT_TRUE(disputesLedger("it should be 2335 not 1878, that's wrong"));
+  TEST_ASSERT_TRUE(disputesLedger("Thats wrong. Previous message said i have 510 left the you add 445 and you are left with 1878/2400???"));
+}
+
+// Review finding 2: a row removed by files.edit (kept in the file as a #removed:
+// history row) is named by the dispute block like a #replaced: row, and is never
+// counted as a row or a figure.
+void test_a_removed_row_kept_as_history_is_named_in_a_dispute() {
+  std::string file;
+  logRows(file, "2026-10-26,breakfast,skyr + granola,533,32\n");
+  logRows(file, "2026-10-26,dinner,smoked brisket + bread,457,40\n");
+  // files.edit deleted the dinner row; the device kept it in the file as a #removed: row.
+  file = std::string(kHead) + "\n2026-10-26,breakfast,skyr + granola,533,32\n" +
+         "#removed: 2026-10-26,dinner,smoked brisket + bread,457,40\n";
+  const FoodLedger l = scan(file);
+  TEST_ASSERT_EQUAL_INT(1, l.rowsToday);
+  TEST_ASSERT_EQUAL_INT(1, (int)l.historyToday.size());
+  TEST_ASSERT_TRUE(has(l.historyToday[0], "#removed: 2026-10-26,dinner,smoked brisket + bread,457,40"));
+  const std::string block = renderLedgerDispute(l);
+  TEST_ASSERT_TRUE(has(block, "[TODAY'S LEDGER HISTORY"));
+  TEST_ASSERT_TRUE(has(block, "#removed: 2026-10-26,dinner,smoked brisket + bread,457,40"));
+  EQ_NUM(533, l.kcal);   // the history row is never counted
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_canonical_names_per_person);
@@ -509,5 +542,7 @@ int main(int, char**) {
   RUN_TEST(test_food_intent_is_read_only_when_plain);
   RUN_TEST(test_a_replace_keeps_the_replaced_row_as_history);
   RUN_TEST(test_a_disputed_total_gets_the_days_history_rows);
+  RUN_TEST(test_a_dispute_about_something_else_is_not_a_ledger_dispute);
+  RUN_TEST(test_a_removed_row_kept_as_history_is_named_in_a_dispute);
   return UNITY_END();
 }

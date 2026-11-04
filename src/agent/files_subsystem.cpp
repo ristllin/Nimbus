@@ -1208,6 +1208,36 @@ static std::string firstRowOf(const std::string& path) {
   return row;
 }
 
+// Lane UPSERT fix pass: the history rows a whole-file rewrite (artifact.save
+// over an existing keyed CSV) must keep - the stored file's rows of `today`
+// that `newText` drops or changes (file_edit.h RewriteHistoryScan), streamed
+// row by row from the card so no log size is held whole. "" when there is
+// nothing to keep or the file cannot be read (the save then proceeds without
+// history, exactly as before). `today` is read from NVS by the caller, before
+// the lock.
+static std::string rewriteHistoryOf(const std::string& path, const std::string& newText,
+                                    const std::string& today) {
+  if (today.empty()) return std::string();
+  memory::Lock g;
+  if (!available()) return std::string();
+  File f = memory::dataFs().open(path.c_str(), FILE_READ);
+  if (!f) return std::string();
+  nimbus::orch::RewriteHistoryScan scan(newText, today);
+  nimbus::orch::RowSplitter rows([&scan](const std::string& row, bool complete) {
+    scan.feed(row, complete);
+    return true;
+  });
+  char buf[512];
+  for (;;) {
+    const size_t got = f.read((uint8_t*)buf, sizeof buf);
+    if (got == 0) break;
+    if (!rows.push(buf, got)) break;
+  }
+  f.close();
+  rows.end();
+  return scan.finish();
+}
+
 // files.append with a key: the keyed CSV upsert (file_append.h). The model sends
 // only the new rows; the device merges them by date and key, row by row from the
 // card (any log size), and reports what each row did and the day totals. The
@@ -1472,6 +1502,30 @@ static std::string substituteDoc(const std::string& path, const std::string& fin
   return std::string();
 }
 
+// Lane UPSERT fix pass: append the history rows a keyed-CSV edit keeps (the
+// rows it removed or changed) to the finished .part, then verify the .part
+// holds exactly the size the edit promised. "" hist leaves the .part alone.
+static bool appendHistoryToPart(const std::string& hist, size_t expectTotal) {
+  if (hist.empty()) return true;
+  fs::FS& fs = memory::dataFs();
+  File f = fs.open(kPartPath, FILE_APPEND);
+  if (!f) return false;
+  const size_t n = f.write(reinterpret_cast<const uint8_t*>(hist.data()), hist.size());
+  f.close();
+  if (n != hist.size()) {
+    fs.remove(kPartPath);
+    return false;
+  }
+  File chk = fs.open(kPartPath, FILE_READ);
+  const size_t on = chk ? chk.size() : 0;
+  if (chk) chk.close();
+  if (on != expectTotal) {
+    fs.remove(kPartPath);
+    return false;
+  }
+  return true;
+}
+
 // Swap the finished .part in over project/name. The entry keeps its owner and creation
 // time (still the same file); the content hash is unknown until the next whole write,
 // and an uploaded provider copy is stale now.
@@ -1510,16 +1564,20 @@ static std::string editPrecheck(const std::string& project, const std::string& n
 // substitute into the part file and swap it in.
 // The row-level report of a keyed CSV edit (editDoc's tail, split out for the
 // complexity gate): what changed against what was there, and the removals
-// remembered for a later re-add that skips a row.
+// remembered for a later re-add that skips a row. Lane UPSERT fix pass: the
+// history rows the edit kept in the file are named too, so a disputed total can
+// be re-read from the file itself.
 static std::string keyedEditReport(const std::string& project, const std::string& name,
                                    const std::string& header, const std::string& find,
-                                   const std::string& replace) {
+                                   const std::string& replace, const std::string& hist) {
   std::string out;
   if (header.empty()) return out;
   const nimbus::orch::CsvEditDiff diff = nimbus::orch::diffKeyedEdit(header, find, replace);
   if (!diff.keyed) return out;
   if (const std::string lines = nimbus::orch::renderKeyedEditDiff(diff); !lines.empty())
     out += "\n" + lines;
+  if (!hist.empty())
+    out += "\nthe removed and changed rows are kept in the file as history rows (#removed: / #replaced:)";
   if (const std::string warn = reconcileRemovedRows(project, name, diff.added); !warn.empty())
     out += "\n" + warn;
   rememberRemovedRows(project, name, diff.removed);
@@ -1552,24 +1610,33 @@ static nimbus::orch::ToolResult editDoc(const std::string& project, const std::s
   const std::string where = project + "/" + name;
   if (nimbus::orch::editChangesNothing(find, replace))
     return ToolResult::ok(nimbus::orch::renderEditNoChange(where, d));
-  const size_t newSize = size_t((int64_t)oldSize + d.sizeDelta);
+  // The header of the keyed CSV (read before the swap: the find span's rows
+  // are the file's own), for the row-level report and the history rows below.
+  const std::string header = nimbus::orch::isCsvName(name) ? firstRowOf(path) : std::string();
+  // Lane UPSERT fix pass: a keyed-CSV edit keeps the rows it removed or changed
+  // as history rows appended to the file, so the file still accounts for every
+  // row a dispute may name.
+  const std::string hist = header.empty()
+                               ? std::string()
+                               : nimbus::orch::historyRowsForKeyedEdit(header, find, replace);
+  const size_t subSize = size_t((int64_t)oldSize + d.sizeDelta);
+  const size_t newSize = subSize + hist.size();
   {   // the same quota rules as artifact.save: an edit's growth is a write
-    const std::string refusal =
-        appendRefusal(project, name, d.sizeDelta > 0 ? size_t(d.sizeDelta) : 0, newSize, who);
+    const size_t growth = (d.sizeDelta > 0 ? size_t(d.sizeDelta) : 0) + hist.size();
+    const std::string refusal = appendRefusal(project, name, growth, newSize, who);
     if (!refusal.empty()) return ToolResult::fail(refusalForHead(refusal));
   }
-  // The header of the keyed CSV (read before the swap: the find span's rows
-  // are the file's own), for the row-level report below.
-  const std::string header = nimbus::orch::isCsvName(name) ? firstRowOf(path) : std::string();
-  if (const std::string err = substituteDoc(path, find, replace, size_t(d.apply), newSize);
+  if (const std::string err = substituteDoc(path, find, replace, size_t(d.apply), subSize);
       !err.empty())
     return ToolResult::fail(err);
+  if (!appendHistoryToPart(hist, newSize))
+    return ToolResult::fail("SD short write: the file is unchanged");
   std::string err;
   if (!commitEdit(project, name, newSize, err)) return ToolResult::fail(err);
   alogf("files: edit %s/%s replaced %d of %u match(es) (%u B -> %u B)", project.c_str(),
         name.c_str(), d.apply, (unsigned)matches, (unsigned)oldSize, (unsigned)newSize);
   std::string reply = nimbus::orch::renderEditReply(where, d, newSize);
-  reply += keyedEditReport(project, name, header, find, replace);
+  reply += keyedEditReport(project, name, header, find, replace, hist);
   return ToolResult::ok(reply);
 }
 
@@ -2161,9 +2228,25 @@ void registerTools() {
             // (project,name) is the identity and add() REPLACES - so a write
             // that lands on another principal's artifact would DESTROY it.
             // Refuse before touching the filesystem (prism R2/B2).
+            const bool replacing = g_store.find(project, name) != nullptr;
+            // Lane UPSERT fix pass: a whole-file rewrite over an existing keyed
+            // CSV keeps the old file's rows of today that the new text drops or
+            // changes, as history rows appended to the saved text - the file
+            // still accounts for every row a dispute may name.
+            std::string payload = text;
+            bool keptHistory = false;
+            if (replacing && fileKindIsCsv(name)) {
+              const nimbus::orch::LogDay day = logDay();   // an NVS read: before the lock
+              const std::string hist = rewriteHistoryOf(pathOf(project, name), text, day.date);
+              if (!hist.empty()) {
+                if (!payload.empty() && payload.back() != '\n') payload += '\n';
+                payload += hist;
+                keptHistory = true;
+              }
+            }
             {   // artifact-store quota, measured from the index at the WRITE
               const auto q = nimbus::orch::effectiveQuota(who.role, who.quota);
-              if (q.maxBytes && g_store.bytesFor(who.ns) + text.size() > q.maxBytes)
+              if (q.maxBytes && g_store.bytesFor(who.ns) + payload.size() > q.maxBytes)
                 return nimbus::orch::ToolResult::fail(
                     "this conversation has reached its file-storage limit - ask the "
                     "device's admin to raise it, or delete something first");
@@ -2171,13 +2254,15 @@ void registerTools() {
             if (!g_store.writeAllowed(project, name, who.ns, who.owner))
               return nimbus::orch::ToolResult::fail(
                   "that project/name belongs to someone else - choose another name");
-            const bool replacing = g_store.find(project, name) != nullptr;
-            if (!saveText(project, name, text, err, who.ns))
+            if (!saveText(project, name, payload, err, who.ns))
               return nimbus::orch::ToolResult::fail(refusalForHead(err));
             return nimbus::orch::ToolResult::ok("saved " + project + "/" + name + " (" +
-                                                std::to_string(text.size()) + " bytes)" +
+                                                std::to_string(payload.size()) + " bytes)" +
                                                 (replacing ? std::string(", ") + nimbus::orch::kSaveReplacedNote
-                                                           : std::string()));
+                                                           : std::string()) +
+                                                (keptHistory
+                                                     ? "; the rows of today this save dropped or changed are kept in the file as history rows (#removed: / #replaced:)"
+                                                     : std::string()));
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"}},"required":["project","name","text"]})");
 

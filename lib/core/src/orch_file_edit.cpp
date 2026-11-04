@@ -1,6 +1,7 @@
 #include "nimbus/orch/file_edit.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include "nimbus/orch/file_append.h"   // kKeyedMaxBytes
 
@@ -178,6 +179,7 @@ std::vector<std::string> spanLines(const std::string& text) {
 struct SpanRow {
   std::vector<std::string> cells;
   std::string date, key;   // its identity, once the columns are known
+  std::string raw;         // the line as it stood (the history rows keep it)
 };
 
 // The span's rows that read as the header's rows (the same reader the day total
@@ -186,6 +188,7 @@ std::vector<SpanRow> spanRows(const std::string& text, const std::vector<std::st
   std::vector<SpanRow> out;
   for (const std::string& line : spanLines(text)) {
     SpanRow r;
+    r.raw = line;
     r.cells = csvStoredRow(line, header);
     if (r.cells.size() == header.size()) out.push_back(r);
   }
@@ -249,63 +252,82 @@ void diffChangedColumns(const SpanRow& b, const SpanRow& a, const std::vector<st
 
 }  // namespace
 
-CsvEditDiff diffKeyedEdit(const std::string& headerRow, const std::string& find,
-                          const std::string& replace) {
-  CsvEditDiff d;
-  const std::vector<std::string> header = csvHeaderOf(headerRow);
-  if (header.size() < 2) return d;   // a one-column file keys nothing
-  std::vector<SpanRow> before = spanRows(find, header);
-  std::vector<SpanRow> after = spanRows(replace, header);
+// Both spans parsed as rows of one keyed CSV, with the date and key columns the
+// one shared rule picks (the keyed upsert's), and each row identified. `keyed` is
+// false when the spans do not read as rows of a keyed CSV at all.
+struct KeyedSpans {
+  bool keyed = false;
+  int dateCol = -1, keyCol = -1;
+  std::vector<std::string> header;
+  std::vector<SpanRow> before, after;
+};
+
+KeyedSpans parseKeyedSpans(const std::string& headerRow, const std::string& find,
+                           const std::string& replace) {
+  KeyedSpans sp;
+  sp.header = csvHeaderOf(headerRow);
+  if (sp.header.size() < 2) return sp;   // a one-column file keys nothing
+  sp.before = spanRows(find, sp.header);
+  sp.after = spanRows(replace, sp.header);
   // The date column: the one rule the keyed upsert uses, over both spans' rows,
   // so the diff and the upsert can never disagree on which column is the date.
   std::vector<std::vector<std::string>> all;
-  for (const SpanRow& r : before) all.push_back(r.cells);
-  for (const SpanRow& r : after) all.push_back(r.cells);
-  const int dateCol = csvDateColumnOf(header, all);
-  if (dateCol < 0) return d;
-  const auto dated = [dateCol](std::vector<SpanRow>& rows) {
+  for (const SpanRow& r : sp.before) all.push_back(r.cells);
+  for (const SpanRow& r : sp.after) all.push_back(r.cells);
+  sp.dateCol = csvDateColumnOf(sp.header, all);
+  if (sp.dateCol < 0) return sp;
+  const auto dated = [dateCol = sp.dateCol](std::vector<SpanRow>& rows) {
     rows.erase(std::remove_if(rows.begin(), rows.end(),
                               [dateCol](const SpanRow& r) {
                                 return isoDayOf(r.cells[(size_t)dateCol]).empty();
                               }),
                rows.end());
   };
-  dated(before);
-  dated(after);
+  dated(sp.before);
+  dated(sp.after);
   // The key column is picked over BOTH spans' dated rows, like the date column:
   // with only the find span, a find text with no dated rows (a comment line, a
   // fragment) leaves the figure scan vacuous and the first non-date column is
   // returned unconditionally, so added rows were named by a figure value.
   std::vector<SpanRow> both;
-  both.reserve(before.size() + after.size());
-  both.insert(both.end(), before.begin(), before.end());
-  both.insert(both.end(), after.begin(), after.end());
-  const int keyCol = diffKeyColumn(header, dateCol, both);
-  if (keyCol < 0) return d;
-  const auto identify = [dateCol, keyCol](std::vector<SpanRow>& rows) {
+  both.reserve(sp.before.size() + sp.after.size());
+  both.insert(both.end(), sp.before.begin(), sp.before.end());
+  both.insert(both.end(), sp.after.begin(), sp.after.end());
+  sp.keyCol = diffKeyColumn(sp.header, sp.dateCol, both);
+  if (sp.keyCol < 0) return sp;
+  const auto identify = [dateCol = sp.dateCol, keyCol = sp.keyCol](std::vector<SpanRow>& rows) {
     for (SpanRow& r : rows) {
       r.date = isoDayOf(r.cells[(size_t)dateCol]);
       r.key = diffTrim(r.cells[(size_t)keyCol]);
     }
   };
-  identify(before);
-  identify(after);
+  identify(sp.before);
+  identify(sp.after);
   // No dated row parsed on either side (a mid-row edit, a span of fragments):
   // there is no row-level change to report, and the caller says nothing.
-  d.keyed = !before.empty() || !after.empty();
+  sp.keyed = !sp.before.empty() || !sp.after.empty();
+  return sp;
+}
+
+CsvEditDiff diffKeyedEdit(const std::string& headerRow, const std::string& find,
+                          const std::string& replace) {
+  CsvEditDiff d;
+  const KeyedSpans sp = parseKeyedSpans(headerRow, find, replace);
+  if (!sp.keyed) return d;
+  d.keyed = true;
   // Pair the rows by identity, in order (duplicates pair one to one): what
   // stayed may have changed, what did not is removed or added.
-  std::vector<bool> used(after.size(), false);
-  for (const SpanRow& b : before) {
-    const size_t hit = matchAfter(b, after, used);
-    if (hit == after.size()) {
+  std::vector<bool> used(sp.after.size(), false);
+  for (const SpanRow& b : sp.before) {
+    const size_t hit = matchAfter(b, sp.after, used);
+    if (hit == sp.after.size()) {
       d.removed.push_back({b.date, b.key});
       continue;
     }
-    diffChangedColumns(b, after[hit], header, dateCol, keyCol, d);
+    diffChangedColumns(b, sp.after[hit], sp.header, sp.dateCol, sp.keyCol, d);
   }
-  for (size_t i = 0; i < after.size(); i++)
-    if (!used[i]) d.added.push_back({after[i].date, after[i].key});
+  for (size_t i = 0; i < sp.after.size(); i++)
+    if (!used[i]) d.added.push_back({sp.after[i].date, sp.after[i].key});
   return d;
 }
 
@@ -363,6 +385,132 @@ std::string renderNotReadded(const std::vector<CsvEditRow>& missing) {
   if (missing.size() > named)
     out += " (+" + std::to_string(missing.size() - named) + " more)";
   return out;
+}
+
+// ---- the history rows a keyed-CSV write keeps in the file --------------------
+// Lane UPSERT fix pass (review finding 2): a row that disappears or changes today
+// stays nameable from the file itself. A keyed-CSV edit keeps every row it removed
+// as a "#removed: " row and every row it changed (same date and key, different
+// text) as a "#replaced: " row holding the old text - the same rows the receipt
+// names. Capped like the ledger's history rows.
+
+std::string historyRowsForKeyedEdit(const std::string& headerRow, const std::string& find,
+                                    const std::string& replace) {
+  const KeyedSpans sp = parseKeyedSpans(headerRow, find, replace);
+  if (!sp.keyed) return std::string();
+  std::string out;
+  size_t rows = 0, bytes = 0;
+  const auto add = [&out, &rows, &bytes](const char* prefix, const std::string& raw) {
+    const size_t line = std::strlen(prefix) + raw.size() + 1;
+    if (rows >= kEditHistoryMaxRows || (rows > 0 && bytes + line > kEditHistoryMaxBytes)) return;
+    out += prefix + raw + "\n";
+    rows++;
+    bytes += line;
+  };
+  std::vector<bool> used(sp.after.size(), false);
+  for (const SpanRow& b : sp.before) {
+    const size_t hit = matchAfter(b, sp.after, used);
+    if (hit == sp.after.size()) add("#removed: ", b.raw);
+    else if (sp.after[hit].raw != b.raw) add("#replaced: ", b.raw);
+  }
+  return out;
+}
+
+namespace {
+
+bool editCommentRow(const std::string& row) {
+  size_t p = 0;
+  while (p < row.size() && (row[p] == ' ' || row[p] == '\t' || row[p] == '\r')) p++;
+  return p < row.size() && row[p] == '#';
+}
+
+bool editBlankRow(const std::string& row) {
+  for (char c : row)
+    if (c != ' ' && c != '\t' && c != '\r') return false;
+  return true;
+}
+
+}  // namespace
+
+// The new text's rows: their identities (date plus key) and raw lines, under the
+// new header - the file's columns after the save, so the history rows written
+// into it are read back under the same header.
+RewriteHistoryScan::RewriteHistoryScan(const std::string& newText, const std::string& today)
+    : today_(today) {
+  if (today_.empty()) return;
+  std::vector<std::string> lines;
+  RowSplitter split([&lines](const std::string& row, bool) {
+    lines.push_back(row);
+    return true;
+  });
+  split.push(newText.data(), newText.size());
+  split.end();
+  if (lines.empty()) return;
+  header_ = csvHeaderOf(lines[0]);
+  if (header_.size() < 2) return;
+  std::vector<std::vector<std::string>> cells;
+  std::vector<SpanRow> rows;
+  for (size_t i = 1; i < lines.size(); i++) {
+    if (editCommentRow(lines[i]) || editBlankRow(lines[i])) continue;
+    SpanRow r;
+    r.raw = lines[i];
+    r.cells = csvStoredRow(lines[i], header_);
+    if (r.cells.size() != header_.size()) continue;
+    cells.push_back(r.cells);
+    rows.push_back(std::move(r));
+  }
+  dateCol_ = csvDateColumnOf(header_, cells);
+  if (dateCol_ < 0) return;
+  keyCol_ = diffKeyColumn(header_, dateCol_, rows);
+  if (keyCol_ < 0) return;
+  for (const SpanRow& r : rows) {
+    const std::string day = isoDayOf(r.cells[(size_t)dateCol_]);
+    if (day.empty()) continue;
+    newRows_[day + "\x1f" + diffKey(r.cells[(size_t)keyCol_])] = r.raw;
+  }
+}
+
+// One data row of the OLD file: a row of today the new text drops is kept as
+// "#removed: ", one it changes as "#replaced: " (the old text).
+void RewriteHistoryScan::feedDataRow(const std::string& row, const std::vector<std::string>& f) {
+  const std::string day = isoDayOf(f[(size_t)dateCol_]);
+  if (day != today_) return;
+  const auto it = newRows_.find(day + "\x1f" + diffKey(f[(size_t)keyCol_]));
+  const char* prefix = nullptr;
+  if (it == newRows_.end()) prefix = "#removed: ";
+  else if (it->second != row) prefix = "#replaced: ";
+  if (!prefix) return;
+  const size_t line = std::strlen(prefix) + row.size() + 1;
+  if (rows_ >= kEditHistoryMaxRows || (rows_ > 0 && bytes_ + line > kEditHistoryMaxBytes)) return;
+  out_ += prefix + row + "\n";
+  rows_++;
+  bytes_ += line;
+}
+
+// One row of the OLD file, in order (header first).
+void RewriteHistoryScan::feed(const std::string& row, bool) {
+  if (today_.empty() || dateCol_ < 0 || keyCol_ < 0) return;
+  if (!sawHeader_) {
+    if (editBlankRow(row)) return;
+    sawHeader_ = true;   // the old file's header row: the columns come from the new text
+    return;
+  }
+  if (editCommentRow(row) || editBlankRow(row)) return;
+  const std::vector<std::string> f = csvStoredRow(row, header_);
+  if (f.size() != header_.size()) return;
+  feedDataRow(row, f);
+}
+
+std::string historyRowsForRewrite(const std::string& oldText, const std::string& newText,
+                                  const std::string& today) {
+  RewriteHistoryScan scan(newText, today);
+  RowSplitter rows([&scan](const std::string& row, bool complete) {
+    scan.feed(row, complete);
+    return true;
+  });
+  rows.push(oldText.data(), oldText.size());
+  rows.end();
+  return scan.finish();
 }
 
 }  // namespace nimbus::orch
