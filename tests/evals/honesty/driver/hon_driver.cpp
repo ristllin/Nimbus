@@ -18,6 +18,10 @@
 //        turn; "keep" leaves it for the next owner turn.
 //   say  an owner message, answered live.
 //   row  a message of the earlier chat that comes between steps (seeded, no live turn).
+//   file a file on the card before the steps run; {{TODAY}}/{{YESTERDAY}}/{{TOMORROW}}
+//        in its text expand to the device's local day strings.
+//   pref standing rules already on the device ("texts": [rule, ...]).
+// The transcript also carries the final state: files, prefs and memory rows.
 // The graded turn is the last live one. Web search is left out of the lab when the
 // scenario says so (the device head it replays had none), and the scenario's clock
 // replaces the host clock.
@@ -35,7 +39,9 @@
 #include "lab_options.h"
 #include "lab_rig.h"
 #include "nimbus/harness/compose.h"
+#include "nimbus/orch/file_append.h"   // logDayOf, for the {{TODAY}} tokens
 #include "nimbus/orch/journal.h"
+#include "nimbus/orch/owner_prefs.h"
 
 namespace {
 
@@ -187,6 +193,23 @@ uint32_t nowHours() {
              std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
+// Scenario files stay static across run days: {{TODAY}} / {{YESTERDAY}} / {{TOMORROW}}
+// in a seeded file's text become the device's local day strings (the ledger keys on them).
+std::string substituteDays(const std::string& text) {
+  std::string out = text;
+  const std::pair<const char*, int> tokens[] = {
+      {"{{TODAY}}", 0}, {"{{YESTERDAY}}", -1}, {"{{TOMORROW}}", 1}};
+  for (const auto& tk : tokens) {
+    const std::string day = orch::logDayOf(std::time(nullptr) + tk.second * 86400, true).date;
+    size_t pos = 0;
+    while ((pos = out.find(tk.first, pos)) != std::string::npos) {
+      out.replace(pos, std::strlen(tk.first), day);
+      pos += day.size();
+    }
+  }
+  return out;
+}
+
 void seedRow(lab::LabRig& rig, const std::string& chat, const std::string& role, const std::string& text) {
   lab::LabRig::Row row;
   row.chat = chat;
@@ -238,7 +261,8 @@ bool runSub(lab::LabRig& rig, Subs& subs, const std::string& chat, JsonObjectCon
   s.task = str(st["task"]);
   s.name = str(st["name"]);
   s.category = "research";
-  subs.adapterFor(s.provider).queued.push_back(run);
+  if (!(st["fail"] | false))   // fail=true: the provider refuses the dispatch (spawn failure)
+    subs.adapterFor(s.provider).queued.push_back(run);
   if (!rig.jobs().enqueueSpawn(s, chat, /*quiet=*/true)) return false;
   for (int i = 0; i < 300 && !rig.jobs().hasFreshResults(); i++) {   // dispatch, then poll (~2 s)
     rig.jobs().pump();
@@ -258,6 +282,17 @@ bool runSteps(lab::LabRig& rig, Subs& subs, JsonObjectConst sc, JsonDocument& ou
       seedRow(rig, chat, str(st["role"]), str(st["text"]));
       continue;
     }
+    if (kind == "file") {  // a file on the card before the steps run ({{TODAY}} & co. expand)
+      rig.files().seed(str(st["path"]), substituteDays(str(st["text"])));
+      continue;
+    }
+    if (kind == "pref") {  // standing rules already on the device
+      for (JsonVariantConst v : st["texts"].as<JsonArrayConst>()) {
+        std::string id;
+        rig.prefs().store().add(str(v), orch::PrefOrigin::Seed, nowHours(), /*pending=*/false, &id);
+      }
+      continue;
+    }
     if (kind == "say") {
       const lab::TurnRecord t = rig.say(chat, str(st["text"]));
       addTurn(turns, "owner", t, logFrom);
@@ -275,11 +310,37 @@ bool runSteps(lab::LabRig& rig, Subs& subs, JsonObjectConst sc, JsonDocument& ou
       addTurn(turns, "synthesis", t, logFrom);
       ok = ok && t.ok;
     } else if (then == "consume") {
-      (void)rig.jobs().takeFreshResults();   // the synthesis already happened on the device
+      // the synthesis already happened on the device (scoped take, as the turn does)
+      (void)rig.jobs().takeFreshResultsFor(rig.jobs().freshScopeFor(chat), nullptr, nullptr, nullptr);
       seedRow(rig, chat, "assistant", str(st["sentThen"]));
     }
   }
   return ok;
+}
+
+// The final on-device state, so a runner can assert on what actually landed (the
+// ledger's rows, the standing rules, the memory rows) instead of only on the reply.
+void dumpState(lab::LabRig& rig, JsonObject out) {
+  JsonObject files = out["files"].to<JsonObject>();
+  for (const auto& kv : rig.files().all()) files[kv.first.c_str()] = kv.second;
+  JsonArray prefs = out["prefs"].to<JsonArray>();
+  for (const auto& e : rig.prefs().store().entries()) {
+    JsonObject p = prefs.add<JsonObject>();
+    p["id"] = e.idStr();
+    p["text"] = e.text;
+    p["pending"] = e.pending;
+    p["moved"] = e.moved;
+    p["evicted"] = e.evicted;
+  }
+  JsonArray mem = out["memory"].to<JsonArray>();
+  for (const auto& m : rig.episodic().query(orch::MsgQuery())) {
+    JsonObject r = mem.add<JsonObject>();
+    r["id"] = m.id;
+    r["role"] = m.role;
+    r["kind"] = (int)m.kind;
+    r["ts"] = m.tsHours;
+    r["text"] = m.text;
+  }
 }
 
 bool writeSystemDump(const lab::LabRig& rig, const std::string& path) {
@@ -295,9 +356,11 @@ bool buildOptions(const Args& a, JsonObjectConst sc, lab::LabRig::Options& opt, 
   opt.priority = a.host;
   opt.models[a.host] = a.model;
   opt.devName = str(sc["devName"]).empty() ? "Nimbus" : str(sc["devName"]);
-  opt.midTurnFailover = false;   // a failure is attributable to this one host
+  opt.midTurnFailover = sc["failover"] | false;   // default: a failure is attributable to this one host
   opt.embeddings = false;        // the history and the ledger answer, not recall
   opt.recordDir = a.record;
+  for (JsonVariantConst f : sc["faults"].as<JsonArrayConst>())   // injected provider faults
+    if (!lab::applyFault(str(f), opt, err)) return false;
   if (!lab::applyEffort(a.effort, opt, err)) return false;
   if (a.maxTokens > 0 && !lab::applyMaxTokens(std::to_string(a.maxTokens), opt, err)) return false;
   if (a.rounds > 0 && !lab::applyRounds(std::to_string(a.rounds), opt, err)) return false;
@@ -339,6 +402,7 @@ int main(int argc, char** argv) {
   for (JsonObjectConst r : sc["history"].as<JsonArrayConst>()) seedRow(rig, chat, str(r["role"]), str(r["text"]));
   JsonDocument out;
   const bool ok = runSteps(rig, subs, sc.as<JsonObjectConst>(), out);
+  dumpState(rig, out.as<JsonObject>());
   out["scenario"] = str(sc["id"]);
   out["host"] = a.host;
   out["model"] = a.model;

@@ -213,6 +213,8 @@ class LabFiles {
   }
 
   void seed(const std::string& path, const std::string& text) { files_[path] = text; }
+  // Every stored file (path -> text), for eval drivers that dump the final state.
+  const std::map<std::string, std::string>& all() const { return files_; }
   // The store is full: every save is refused with the device's words (the store's
   // error and the tool note: the owner is told once).
   enum class Full { No, Told };
