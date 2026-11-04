@@ -5344,7 +5344,8 @@ function tgArcExport(){const chat=$('tgArcChat').value,day=$('tgArcDay').value;i
 function loadFiles(){
   const box=$('filesList'); if(!box)return;
   const proj=($('filesProj')&&$('filesProj').value.trim())||'';
-  fetch('/api/files/list'+(proj?('?project='+encodeURIComponent(proj)):'')).then(jok).then(d=>{
+  filesOffset=0;
+  _filesPage(box,proj,0,false).then(d=>{
     cardBusyNote(box,false);
     if($('filesStat'))$('filesStat').textContent=d.present
       ?((d.count||0)+' files · '+_fbytes(d.bytes)+' used'+(d.freeBytes!==undefined?(' · '+_fbytes(d.freeBytes)+' free'):''))
@@ -5355,27 +5356,52 @@ function loadFiles(){
       if(c.sizeMB!==undefined)parts.push('Card: '+_mb(c.freeMB||0)+' free of '+_mb(c.sizeMB));
       if(q.limitMB)parts.push('file quota '+_mb(q.usedMB||0)+' of '+_mb(q.limitMB));
       $('filesQuota').textContent=d.present?parts.join(' · '):'';}
-    const files=d.files||[];
-    if(!files.length){box.innerHTML='<span class=hint>No files'+(proj?(' in '+_fesc(proj)):'')+'</span>';return;}
-    box.innerHTML='<table><tbody>'+files.map(f=>{
-      // "view" only for what the device is willing to render inline (the server
-      // decides; this just avoids offering a link that would download anyway).
-      const v=_fviewable(f.name);
-      const view=v?('<a href="#" data-vp="'+_fesc(f.project)+'" data-vn="'+_fesc(f.name)+'" data-vk="'+v+'">view</a> &middot; '):'';
-      // "get" is a header-only download (dlFile), never a token-bearing link.
-      return '<tr><td style="word-break:break-all">'+_fesc(f.project)+'/'+_fesc(f.name)+'</td><td>'+_fesc(f.kind||'')+
-        '</td><td style="white-space:nowrap">'+_fbytes(f.bytes)+'</td><td style="white-space:nowrap">'+view+
-        '<a href="#" data-dlp="'+_fesc(f.project)+'" data-dln="'+_fesc(f.name)+'">get</a> &middot; <a href="#" data-rmp="'+_fesc(f.project)+'" data-rmn="'+_fesc(f.name)+'">delete</a></td></tr>';
-    }).join('')+'</tbody></table>';
-    box.querySelectorAll('a[data-vp]').forEach(a=>a.onclick=e=>{
-      e.preventDefault(); _fpreview(a.dataset.vp,a.dataset.vn,a.dataset.vk);});
-    box.querySelectorAll('a[data-dlp]').forEach(a=>a.onclick=e=>{e.preventDefault();
-      dlFile(a.dataset.dlp,a.dataset.dln).catch(()=>toast('Couldn\'t download - try again'));});
-    box.querySelectorAll('a[data-rmp]').forEach(a=>a.onclick=e=>{e.preventDefault();
-      uiConfirm('Delete '+a.dataset.rmp+'/'+a.dataset.rmn+'?',{ok:'Delete',danger:true}).then(ok=>{ if(!ok)return;
-      const fd=new FormData();fd.append('project',a.dataset.rmp);fd.append('name',a.dataset.rmn);
-      fetch('/api/files/rm',{method:'POST',body:fd}).then(r=>r.ok?loadFiles():Promise.reject(r.status)).catch(()=>toast('Couldn\'t delete - try again'));});});
+    if(!(d.files||[]).length&&!proj)box.innerHTML='<span class=hint>No files</span>';
+    else if(!(d.files||[]).length)box.innerHTML='<span class=hint>No files in '+_fesc(proj)+'</span>';
   }).catch(e=>{if(!onCardBusy(e,'files',loadFiles,box))box.innerHTML='<span class=hint>Files unavailable</span>';});
+}
+// Lane FSCAP: the listing is paged server-side (the store has no entry cap), so the
+// panel fetches one page at a time and offers "Show more" while shown < count.
+let filesOffset=0;
+function _fileRow(f){
+  // "view" only for what the device is willing to render inline (the server
+  // decides; this just avoids offering a link that would download anyway).
+  const v=_fviewable(f.name);
+  const view=v?('<a href="#" data-vp="'+_fesc(f.project)+'" data-vn="'+_fesc(f.name)+'" data-vk="'+v+'">view</a> &middot; '):'';
+  // "get" is a header-only download (dlFile), never a token-bearing link.
+  return '<tr><td style="word-break:break-all">'+_fesc(f.project)+'/'+_fesc(f.name)+'</td><td>'+_fesc(f.kind||'')+
+    '</td><td style="white-space:nowrap">'+_fbytes(f.bytes)+'</td><td style="white-space:nowrap">'+view+
+    '<a href="#" data-dlp="'+_fesc(f.project)+'" data-dln="'+_fesc(f.name)+'">get</a> &middot; <a href="#" data-rmp="'+_fesc(f.project)+'" data-rmn="'+_fesc(f.name)+'">delete</a></td></tr>';
+}
+function _bindFileRows(box){
+  box.querySelectorAll('a[data-vp]').forEach(a=>a.onclick=e=>{
+    e.preventDefault(); _fpreview(a.dataset.vp,a.dataset.vn,a.dataset.vk);});
+  box.querySelectorAll('a[data-dlp]').forEach(a=>a.onclick=e=>{e.preventDefault();
+    dlFile(a.dataset.dlp,a.dataset.dln).catch(()=>toast('Couldn\'t download - try again'));});
+  box.querySelectorAll('a[data-rmp]').forEach(a=>a.onclick=e=>{e.preventDefault();
+    uiConfirm('Delete '+a.dataset.rmp+'/'+a.dataset.rmn+'?',{ok:'Delete',danger:true}).then(ok=>{ if(!ok)return;
+    const fd=new FormData();fd.append('project',a.dataset.rmp);fd.append('name',a.dataset.rmn);
+    fetch('/api/files/rm',{method:'POST',body:fd}).then(r=>r.ok?loadFiles():Promise.reject(r.status)).catch(()=>toast('Couldn\'t delete - try again'));});});
+}
+function _filesPage(box,proj,offset,append){
+  const q='?limit=1000&offset='+offset+(proj?('&project='+encodeURIComponent(proj)):'');
+  return fetch('/api/files/list'+q).then(jok).then(d=>{
+    const files=d.files||[];
+    let tb=box.querySelector('tbody');
+    if(!append||!tb) box.innerHTML='<table><tbody>'+files.map(_fileRow).join('')+'</tbody></table>';
+    else files.forEach(f=>tb.insertAdjacentHTML('beforeend',_fileRow(f)));
+    tb=box.querySelector('tbody');
+    _bindFileRows(box);
+    filesOffset=offset+(d.shown||files.length);
+    const more=box.querySelector('#filesMoreRow'); if(more)more.remove();
+    if((d.shown||0)<(d.count||0)&&tb){
+      const tr=document.createElement('tr'); tr.id='filesMoreRow';
+      tr.innerHTML='<td colspan=4><a href="#" id=filesMore>Show more ('+filesOffset+' of '+d.count+' shown)</a></td>';
+      tb.appendChild(tr);
+      $('filesMore').onclick=e=>{e.preventDefault(); _filesPage(box,proj,filesOffset,true);};
+    }
+    return d;
+  });
 }
 $('filesRefresh')&&($('filesRefresh').onclick=loadFiles);
 $('filesProj')&&$('filesProj').addEventListener('keydown',e=>{if(e.key==='Enter')loadFiles();});
