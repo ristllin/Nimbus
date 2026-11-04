@@ -11,6 +11,7 @@
 #include "lab_files.h"
 #include "lab_options.h"
 #include "lab_wire.h"
+#include "lane_mg_live.h"
 #include "nimbus/harness/fault_transport.h"
 #include "nimbus/orch/turn_effects.h"
 
@@ -191,6 +192,26 @@ void testKeyedReply() {
   check(!same.anyOk(orch::FxKind::FileReplace), "a re-send that changed nothing replaced nothing");
 }
 
+// The mg-live spawn leg's verdict, as the class (independent-review finding on
+// the H18 leg): "the sub keeps its tools" is proven only by the provider's own
+// run record (webRuns), never by reply text - a from-memory answer can cite a
+// URL or name web_search with no tool run at all, and a stepdown that ran no
+// tool proves nothing about the tools being kept.
+void testMgSpawnVerdict() {
+  std::puts("mg spawn verdict");
+  check(lab::spawnKeepsTools(true, "Python 3.15.2 per python.org", 1),
+        "a provider-recorded web run passes");
+  check(lab::spawnKeepsTools(true, "Python 3.15.2 per python.org", 3),
+        "several provider-recorded web runs pass");
+  check(!lab::spawnKeepsTools(true, "I used the web_search tool, see https://www.python.org", 0),
+        "reply text alone never proves the tool ran");
+  check(!lab::spawnKeepsTools(
+            true, "answer\n[note: this ran on mistral-medium-latest because mistral-large-4-0 cannot use Mistral's built-in tools]", 0),
+        "a stepdown that ran no tool does not prove tools kept");
+  check(!lab::spawnKeepsTools(false, "Python 3.15.2 per python.org", 2),
+        "a dispatch error fails even with web runs recorded");
+}
+
 }  // namespace
 
 int cmdSelftest() {
@@ -199,6 +220,7 @@ int cmdSelftest() {
   testScrub();
   testFaultChain();
   testKeyedReply();
+  testMgSpawnVerdict();
   std::printf("%s\n", g_fail ? "LAB SELFTEST FAILED" : "lab selftest passed");
   return g_fail ? 1 : 0;
 }

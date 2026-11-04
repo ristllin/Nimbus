@@ -175,8 +175,8 @@ static void test_out_of_range_cap_is_safe() {
 }
 
 // The PROVIDER fault's host list, as the class: EVERY direct LLM API host the
-// device can dial is cut (the fixed three plus whichever Z.ai base the device
-// probed), and no other host is (Telegram, the relay, Tavily and the router
+// device can dial is cut (the fixed three plus both Z.ai bases, probed or
+// not), and no other host is (Telegram, the relay, Tavily and the router
 // must stay up so a failure path's owner-visible alerts still deliver). Bench
 // D01 (v5-28813029): the dream leg armed FAULT provider and expected the
 // night to fail, but Z.ai was missing from the seam, the dream failed over
@@ -187,21 +187,26 @@ static void test_provider_outage_cuts_every_llm_host_and_no_other() {
     TEST_ASSERT_TRUE_MESSAGE(providerOutageHost(h, ""), h);
     TEST_ASSERT_TRUE_MESSAGE(providerOutageHost(h, "api.z.ai"), h);
   }
-  // Z.ai is a first-class provider (lane MG): both probed bases are cut.
+  // Z.ai is a first-class provider (lane MG): both bases are cut, PINNED OR
+  // NOT. The device dials api.z.ai with the base unpinned (the adapter and
+  // the head's customBase fall back to ZAI_HOST_PRIMARY when zaiBase() is
+  // "", and the inline verify returns the primary without pinning), so an
+  // unpinned base must not open a hole in the outage (independent-review
+  // finding on the D01 fix: the dream would fail over and run again).
+  TEST_ASSERT_TRUE(providerOutageHost("api.z.ai", ""));
+  TEST_ASSERT_TRUE(providerOutageHost("open.bigmodel.cn", ""));
   TEST_ASSERT_TRUE(providerOutageHost("api.z.ai", "api.z.ai"));
   TEST_ASSERT_TRUE(providerOutageHost("open.bigmodel.cn", "open.bigmodel.cn"));
-  // A Z.ai base that was never probed ("" ) cuts nothing extra: the host
-  // string of a real request never matches an empty base.
-  TEST_ASSERT_FALSE(providerOutageHost("api.z.ai", ""));
   TEST_ASSERT_FALSE(providerOutageHost("", ""));
   // Every host the failure path's alerts ride stays reachable.
   for (const char* h : {"api.telegram.org", "api.tavily.com", "app.cumulo-nimbus.ai",
                         "relay.cumulo-nimbus.ai", ""}) {
     TEST_ASSERT_FALSE_MESSAGE(providerOutageHost(h, "api.z.ai"), h);
   }
-  // Null safety on both arguments.
+  // Null safety on the base: a null base is an unpinned base, so the fixed
+  // hosts (api.z.ai included) are still cut; only a null HOST is never a cut.
   TEST_ASSERT_FALSE(providerOutageHost(nullptr, "api.z.ai"));
-  TEST_ASSERT_FALSE(providerOutageHost("api.z.ai", nullptr));
+  TEST_ASSERT_TRUE(providerOutageHost("api.z.ai", nullptr));
 }
 
 int main(int, char**) {

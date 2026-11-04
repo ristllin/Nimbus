@@ -51,7 +51,12 @@ bool parse(const char* s, Cap& out) {
 
 bool providerOutageHost(const char* host, const char* zaiBase) {
   if (!host) return false;
-  for (const char* h : {"api.openai.com", "api.anthropic.com", "api.mistral.ai"})
+  // Both Z.ai bases are fixed, not conditional on the pin: the device dials
+  // api.z.ai with zaiBase() unpinned (the adapter and the head's customBase
+  // fall back to ZAI_HOST_PRIMARY, and the inline verify returns the primary
+  // without pinning), so an empty base must not open a hole in the outage.
+  for (const char* h : {"api.openai.com", "api.anthropic.com", "api.mistral.ai",
+                        "api.z.ai", "open.bigmodel.cn"})
     if (std::strcmp(host, h) == 0) return true;
   return zaiBase && zaiBase[0] && std::strcmp(host, zaiBase) == 0;
 }

@@ -1,0 +1,11 @@
+H18 re-proof under the strengthened verdict (independent-review finding 2): the spawn leg now passes only on the provider's own run record (ResultEnvelope.webRuns). First attempt: transient transport failure (POST -> 0, err 1 Network); retried immediately and the run completed.
+date -u:
+Wed Nov  4 10:58:32 UTC 2026
+cmd: tools/harness-lab/build/nimbus-lab --env=.env mg-live spawn (key read by name, never printed)
+[spawn]
+    POST /v1/conversations -> 200
+  PASS spawn on mistral-large-4-0 keeps its tools (provider-recorded web runs: 3): err 0: As of November 4, 2026, the latest stable Python 3 release is **Python 3.15.2**, released **October 25, 2026**. The newest feature/major line is **Python 3.15**, first released as **3.15.0 on October 9, 2026**.
+
+Sources: Python.org “Download Python” (https://www.python.org/downloads/), Python.or
+mg-live: PASSED
+rc=0

@@ -88,23 +88,24 @@ void legSpawn(const Env& env) {
   char job[72] = {};
   const agent::FabricErr e = agent::providers::mistralDispatch(pd, "mistral-large-4-0", d, job);
   std::string reply;
+  unsigned webRuns = 0;
   if (e == agent::FabricErr::Ok) {
     static agent::ResultEnvelope env2;
     agent::providers::mistralPoll(pd, job, env2);
     reply = env2.reply;
+    webRuns = env2.webRuns;
   }
   for (const auto& c : http.calls)
     std::printf("    %s %s -> %d\n", c.method.c_str(), c.path.c_str(), c.status);
-  // CUM-887's move is defensive: it fires only when the provider refuses the built-in
-  // connectors (code 3004), which is provider weather - on 4 Nov 2026 mistral-large-4-0
-  // served the web_search connector itself, so no stepdown and the reply never names
-  // the stepdown model. The leg's claim is "the sub keeps its tools": the reply either
-  // names the model the run moved to, or shows the tool ran where it was asked.
-  const bool stepped = reply.find("mistral-medium-latest") != std::string::npos;
-  const bool toolRan =
-      reply.find("web_search") != std::string::npos || reply.find("http") != std::string::npos;
-  verdict(e == agent::FabricErr::Ok && (stepped || toolRan),
-          "spawn on mistral-large-4-0 keeps its tools: err " + std::to_string((int)e) + ": " +
+  // CUM-887's move is defensive: it fires only when the provider refuses the
+  // built-in connectors (code 3004), which is provider weather - on 4 Nov 2026
+  // mistral-large-4-0 served the web_search connector itself, so no stepdown
+  // and the reply never names the stepdown model. The leg's claim is "the sub
+  // keeps its tools", and the proof is the provider's own run record
+  // (webRuns), never the reply text.
+  verdict(spawnKeepsTools(e == agent::FabricErr::Ok, reply, webRuns),
+          "spawn on mistral-large-4-0 keeps its tools (provider-recorded web runs: " +
+              std::to_string(webRuns) + "): err " + std::to_string((int)e) + ": " +
               reply.substr(0, 300));
 }
 
@@ -128,6 +129,15 @@ void legTurn(const Env& env) {
 }
 
 }  // namespace
+
+bool spawnKeepsTools(bool dispatchOk, const std::string& reply, unsigned webRuns) {
+  // The proof is the provider's own run record alone: the tool.execution
+  // entries the poll copies into webRuns. No reply text counts - a
+  // from-memory answer can cite a URL or name web_search with no tool run,
+  // and a stepdown that ran no tool proves nothing about tools kept.
+  (void)reply;
+  return dispatchOk && webRuns > 0;
+}
 
 int cmdMgLive(const Env& env, const std::string& leg) {
   if (leg == "fold" || leg == "all") { std::printf("[fold]\n"); legFold(env); }
