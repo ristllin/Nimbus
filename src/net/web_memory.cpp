@@ -609,6 +609,9 @@ void handleToolsGet(AsyncWebServerRequest* r) {
   ps.anthropicKeyed = agent::store::hasAnthropicKey();
   ps.mistralKeyed   = agent::store::hasMistralKey();
   ps.currentHost    = std::string(agent::store::resolvedOrchHost().c_str());
+  // Lane CONN: the head model gates the direct/subsessions badge (mistral-large-4-0
+  // refuses Mistral's connectors), so the Capabilities table must know it.
+  ps.headModel      = std::string(agent::store::orchModel(ps.currentHost.c_str()).c_str());
   const char* kDirect  = capScopeSlug(CapScope::OrchestratorDirect);
   const char* kUnavail = capScopeSlug(CapScope::Unavailable);
   auto grp = [&](const char* group, const char* name, const char* desc,

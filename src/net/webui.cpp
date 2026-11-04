@@ -2929,6 +2929,13 @@ void beginWeb(const WebConfig& wc) {
       host = pri.substring(0, e);
     }
     out["host"] = host;
+    // Lane CONN: a head model that refuses Mistral's built-in connectors
+    // (mistral-large-4-0) can never run them on its own turns, so the page must
+    // badge every Mistral connector "via sessions", never "live on your turns".
+    out["hostRefuses"] =
+        host == "mistral" &&
+        nimbus::orch::modelRefusesBuiltinConnectors(
+            std::string(agent::store::orchModel("mistral").c_str()));
     // 22 Oct honesty: why the last automatic workspace check missed, when the next
     // slow re-check runs, and how many tools ride a Mistral request.
     agent::connectors::webStatusInto(out.as<JsonObject>());

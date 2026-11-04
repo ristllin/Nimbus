@@ -146,6 +146,12 @@ struct ProviderState {
   // "(YOU are here)" lines read it, the rows above read the Spawn seam. A Chat-only 403
   // on the head moves every turn elsewhere while its sub-agents still run.
   HeadPause hostPause;
+  // The MODEL the current head runs on ("" when unknown). A head model that
+  // refuses a provider's built-in connectors (mistral-large-4-0 refuses Mistral's
+  // with HTTP 400, code 3004) can never run that provider's connectors on its own
+  // turns: the wire drops them after one refused request, so the catalog and
+  // connectorScope must route them to a spawned sub-agent instead (lane CONN).
+  std::string headModel;
   // CUM-822: the head's own web.search tool (Tavily) is listed: its key is present and its
   // budget is open.
   bool webSearchTool = false;
@@ -186,6 +192,15 @@ PdfRoute pdfRoute(const std::vector<ConnectorInfo>& cs, const ProviderState& ps)
 // The provider a file task's sub-agent runs on for this route ("" = none: the
 // device writer needs no sub, and None has no route).
 const char* pdfRouteProvider(const PdfRoute& r);
+
+// Whether `model` is a Mistral model recorded to refuse the built-in connectors
+// (the mistral-large-4 family: HTTP 400 "does not support builtin connectors",
+// code 3004, recorded 31 Oct on mistral-large-4-0 and replayed by the wire tests
+// on mistral-large-4-1). The provider may serve them on a given day (4 Nov it
+// served web_search on mistral-large-4-0), so this is the CONSERVATIVE routing
+// fact, not a weather report: a sub-agent spawn always works, a head-turn promise
+// breaks whenever the refusal fires. Pure, host-tested.
+bool modelRefusesBuiltinConnectors(const std::string& model);
 
 // A known connector the UI can describe / link even before it is configured.
 struct KnownConnector {

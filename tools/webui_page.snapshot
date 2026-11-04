@@ -4207,10 +4207,12 @@ function connAvail(prov,host,keyed,auth,ws){
     // SubsessionsOnly rule the Capabilities table shows.
     // CUM-537: the device checks the Mistral workspace after a save; until that check
     // lands the connector is unchecked, not missing, so say so instead.
+    // Lane CONN: a head model that refuses the built-in connectors (mistral-large-4-0)
+    // never runs them on its own turns, so even a connected one is via sessions.
     if(ws==='checking')return{cls:'unk',txt:'checking your Mistral workspace'};
     if(ws==='unchecked')return{cls:'unk',txt:'Mistral workspace not checked'};
     if(auth===2)return{cls:'unk',txt:'connect it in Mistral'};
-    return host==='mistral'?{cls:'ok',txt:'live on your turns'}:{cls:'ext',txt:'via sessions'};
+    return host==='mistral'&&!window._connRefuses?{cls:'ok',txt:'live on your turns'}:{cls:'ext',txt:'via sessions'};
   }
   return{cls:'unk',txt:'configured'};
 }
@@ -4242,13 +4244,16 @@ function loadConnectors(poll){
   // would wipe a token being typed or a provider being picked (focused or not); a
   // card that is new since the last full load waits for the next one.
   window._connWs={miss:d.wsMiss,recheck:d.wsRecheckS};
+  window._connRefuses=!!d.hostRefuses;
   connWarn(d.mistralTools|0,d.mistralToolsAdvised||2);
   if(poll===true){
     cards.forEach(([k,c])=>{const st=$('cc_'+k.id+'_st');
       if(st)st.innerHTML=window._connDrafts[k.id]?'<span class="badge vfy unk">not saved</span>':connStatus(k,c,keyed,host);
       const w=$('cc_'+k.id+'_ws');if(w)w.innerHTML=connWsLine(k,c);});
   }else{
-    $('connhost').textContent=host?('The assistant is running on '+host+'. Connectors on '+host+' are live on its own turns; the others are reachable through sessions it spawns.'):'';
+    $('connhost').textContent=host?((host==='mistral'&&window._connRefuses)
+      ?('The assistant is running on '+host+' on a model that refuses its built-in connectors, so every connector is reachable through sessions it spawns.')
+      :('The assistant is running on '+host+'. Connectors on '+host+' are live on its own turns; the others are reachable through sessions it spawns.')) :'';
     window._connKnown=known;
     window._connCtx={keyed:keyed,host:host,cards:{}};
     cards.forEach(([k,c])=>{window._connCtx.cards[k.id]={k:k,c:c};});
@@ -4314,7 +4319,7 @@ function connCard(k,c,keyed,host,provPick){
   if(curProv==='mistral'&&kind!=='mcp'){
     h+='<p class=hint style="margin:6px 0;color:var(--amber)">'+(kind==='builtin'
       ?'This runs inside Mistral with your Mistral key. There is nothing to paste here.'
-      :'This runs on Mistral. Add your Mistral key, then turn '+connEsc(k.name)+' on in Mistral Studio &rsaquo; Connectors. It is referenced by name here, so there is nothing to paste.')+'</p>';
+      :'This runs on Mistral. Authorize '+connEsc(k.name)+' in Mistral\'s console (Studio &rsaquo; Connectors), then enable it here with Mistral as the provider: it is referenced by name, so there is nothing to paste.')+'</p>';
   }
   // token field only for remote MCP (a pasted PAT/bearer). Mistral connectors carry
   // no device secret (Studio-auth); OpenAI first-party needs the OAuth block (helper
