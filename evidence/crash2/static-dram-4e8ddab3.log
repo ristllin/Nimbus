@@ -1,0 +1,11 @@
+== lane CRASH2 static DRAM gate, measured at head 4e8ddab3 ==
+date: Wed Nov  4 09:58:01 UTC 2026
+head: 4e8ddab3b670abc2d04f1a6f2aa581b8f1282f5b
+tree: 0 dirty entries (0 = clean)
+== builds: .pio/build/{esp32s3,esp32s3-cyd}/firmware.elf as built by battery CRASH2-final ==
+== (firmware sources identical at 4e8ddab3: git diff b789b16a..4e8ddab3 touches only ==
+==  tests/hil/test_l41_tls_slot_guard.py and tests/hil/test_park_probe_guard.py)    ==
+== python3 tools/release_gate/check_static_dram.py ==
+PASS nimbus-tft: static DRAM 89795 B (baseline 91195 B, -1400 B; ceiling 91635 B)
+PASS freenove-28: static DRAM 89875 B (baseline 91275 B, -1400 B; ceiling 91723 B)
+dram rc=0
