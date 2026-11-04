@@ -81,12 +81,7 @@ def lock_regions(text: str) -> Iterator["tuple[int, int]"]:
 
 def _ip_shaped(arg: str, ip_names: "set[str]") -> bool:
     arg = arg.strip()
-    return (
-        arg.startswith("IPAddress")
-        or arg in ip_names
-        or arg.startswith("127.")
-        or arg == "0.0.0.0"
-    )
+    return arg.startswith("IPAddress") or arg in ip_names or arg.startswith("127.") or arg == "0.0.0.0"
 
 
 def scan_source(path: str, src: str) -> List[Finding]:
@@ -158,7 +153,9 @@ def main(argv: "list[str] | None" = None) -> int:
     if found:
         print(f"FAIL lwip core lock: {len(found)} call(s) outside LOCK_TCPIP_CORE / the locked seam")
         return 1
-    print(f"PASS lwip core lock: {files} files, {locks} lock regions, every raw lwIP call locked, every host connect through the seam")
+    print(
+        f"PASS lwip core lock: {files} files, {locks} lock regions, every raw lwIP call locked, every host connect through the seam"
+    )
     return 0
 
 

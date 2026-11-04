@@ -50,11 +50,28 @@ def test_raw_lwip_calls_fail_outside_a_lock_region():
 
 def test_every_raw_api_name_fails_outside_a_lock():
     names = [
-        "dns_clear_cache", "dns_gethostbyname", "dns_gethostbyname_addrtype",
-        "dns_setserver", "udp_new", "udp_new_ip_type", "udp_bind", "udp_sendto",
-        "tcp_new", "tcp_bind", "tcp_connect", "tcp_write", "tcp_output",
-        "pbuf_alloc", "pbuf_free", "netbuf_new", "netbuf_delete",
-        "netif_set_ipaddr", "ip_addr_set", "ip4_addr_set", "etharp_output", "igmp_start",
+        "dns_clear_cache",
+        "dns_gethostbyname",
+        "dns_gethostbyname_addrtype",
+        "dns_setserver",
+        "udp_new",
+        "udp_new_ip_type",
+        "udp_bind",
+        "udp_sendto",
+        "tcp_new",
+        "tcp_bind",
+        "tcp_connect",
+        "tcp_write",
+        "tcp_output",
+        "pbuf_alloc",
+        "pbuf_free",
+        "netbuf_new",
+        "netbuf_delete",
+        "netif_set_ipaddr",
+        "ip_addr_set",
+        "ip4_addr_set",
+        "etharp_output",
+        "igmp_start",
     ]
     for n in names:
         assert lines(f"void f() {{ {n}(); }}") == [1], n
