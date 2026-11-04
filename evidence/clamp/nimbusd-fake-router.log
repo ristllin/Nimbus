@@ -1760,7 +1760,7 @@ PASSED
     ok   the corrected answer is what the owner hears
   -- (n) a hosted Z.ai sub carries reasoning_effort low, direct and over the router --
     ok   the sub went to /api/paas/v4/chat/completions
-    ok   carries reasoning_effort low: zai 
+    ok   carries reasoning_effort low: zai
     ok   the sub went to /router/zai/chat/completions
     ok   carries reasoning_effort low: cumulo zai/glm-5.3
     ok   the sub went to /router/openai/v1/chat/completions

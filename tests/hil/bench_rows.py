@@ -470,7 +470,10 @@ def row_s10(b: Bench) -> Grade:
         fails.append("the provider parked on a clamp")
     if fails:
         return ("FAIL", "; ".join(fails))
-    return ("OPEN", "the capped resend ran against the scripted refusal; a served capped reply still needs a low-wallet account")
+    return (
+        "OPEN",
+        "the capped resend ran against the scripted refusal; a served capped reply still needs a low-wallet account",
+    )
 
 
 def _wait_recheck(b: Bench, seen: set, wanted: Tuple[str, ...], label: str) -> List[str]:
