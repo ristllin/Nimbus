@@ -523,7 +523,9 @@ static void test_replace_claims_hold_against_the_real_keyed_reply_and_log_row_fl
     return renderUpsertReply(up, "food/food-log.csv", "kcal", "GMT");
   };
   TurnEffects replaced, added, same;
-  recordToolEffect(replaced, FxKind::FileWrite, false, reply("2026-10-30,lunch,removed,0,0\n"), kFxLogRow);
+  // Lane UPSERT: a keyed write of a DIFFERENT item under the same key appends under a
+  // new key (no replace), so the replace case here corrects the SAME item.
+  recordToolEffect(replaced, FxKind::FileWrite, false, reply("2026-10-30,lunch,black beans,0,0\n"), kFxLogRow);
   TEST_ASSERT_TRUE(replaced.anyOk(FxKind::FileReplace));
   TEST_ASSERT_FALSE(gapOf(gapsFor(claim, replaced), ClaimClass::Saved));
   recordToolEffect(added, FxKind::FileWrite, false, reply("2026-10-30,dinner,soup,200,5\n"), kFxLogRow);
@@ -556,6 +558,36 @@ static void test_replace_claims_hold_against_the_real_keyed_reply_and_log_row_fl
   TurnEffects named;
   recordToolEffect(named, FxKind::FileWrite, false, "appended 1 row to replaced 3/edited 2.csv (now 9 bytes)", kFxLogRow);
   TEST_ASSERT_FALSE(named.anyOk(FxKind::FileReplace));
+}
+
+// Lane UPSERT, 4 Nov 20:04-20:07: the keyed write REPLACED the stored dinner row, and
+// the reply said only "Logged. The dinner row is now the ..." - the replace was hidden.
+// A turn that replaced a stored row must say "replaced" in the reply; a log claim
+// beside a hidden replace is a gap.
+static void test_a_hidden_replace_is_a_gap() {
+  TurnEffects replaced;
+  recordToolEffect(replaced, FxKind::FileWrite, false,
+                   "replaced 1 row, added 0 rows in food/food-log.csv", kFxLogRow);
+  TEST_ASSERT_TRUE(replaced.anyOk(FxKind::FileReplace));
+  // The 4 Nov reply shape: a log claim, no word of replacing.
+  const char* hidden = "Logged. The dinner row is now the Frive Smoky Baharat Mango Chicken, 445 kcal. "
+                       "Today now stands at 1,878 kcal from 5 rows.";
+  const auto gaps = gapsFor(hidden, replaced);
+  TEST_ASSERT_TRUE_MESSAGE(gapOf(gaps, ClaimClass::Saved), hidden);
+  const std::string tail = claimTail(gaps);
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, tail.find("this turn replaced a stored row"));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, tail.find("say which row and what it held"));
+  // A reply that says "replaced" is honest: no gap.
+  for (const char* honest : {"Replaced dinner: brisket 457 kcal with the mango chicken 445 kcal. Today is 2,335 kcal.",
+                             "Corrected the dinner row - it replaced the old 457 kcal row. Today is 1,890 kcal."})
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(honest, replaced), ClaimClass::Saved), honest);
+  // No replace happened: no hidden-replace gap (the plain log claim is backed).
+  TurnEffects added;
+  recordToolEffect(added, FxKind::FileWrite, false, "replaced 0 rows, added 1 row in food/food-log.csv", kFxLogRow);
+  TEST_ASSERT_FALSE(added.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_FALSE(gapOf(gapsFor(hidden, added), ClaimClass::Saved));
+  // No log claim at all: nothing to hide the replace behind.
+  TEST_ASSERT_FALSE(gapOf(gapsFor("Here is the weather.", replaced), ClaimClass::Saved));
 }
 
 static void test_pin_noop_does_not_back_pinned_and_says_so() {
@@ -1995,6 +2027,7 @@ int main(int, char**) {
   RUN_TEST(test_gap_matrix_every_class_against_every_effect_kind);
   RUN_TEST(test_remove_replace_dedup_claims_need_a_replaced_row);
   RUN_TEST(test_replace_claims_hold_against_the_real_keyed_reply_and_log_row_flag);
+  RUN_TEST(test_a_hidden_replace_is_a_gap);
   RUN_TEST(test_pin_noop_does_not_back_pinned_and_says_so);
   RUN_TEST(test_pin_noop_disclosed_in_the_reply_needs_no_correction);
   RUN_TEST(test_pin_call_backs_a_confirmed_pin_state);

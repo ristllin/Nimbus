@@ -41,6 +41,10 @@ inline constexpr const char kFoodLedgerHeader[] = "date,meal,items,kcal,protein_
 inline constexpr size_t kLedgerShowRows = 24;
 inline constexpr size_t kLedgerShowBytes = 1400;
 inline constexpr size_t kLedgerRowMax = 160;
+// Today's history rows (the #replaced: / #superseded: rows dated today), shown when
+// the owner disputes a total: at most this many and this many bytes.
+inline constexpr size_t kLedgerHistoryRows = 12;
+inline constexpr size_t kLedgerHistoryBytes = 900;
 
 // The ledger's file name for one person: the owner's food-log.csv; a member's
 // food-log-<letters and digits of the chat id>.csv ("" when nothing usable is left).
@@ -89,6 +93,9 @@ struct FoodLedger {
   std::string header;    // the stored header row ("" = none)
   std::vector<std::string> rows;   // today's rows shown, oldest first (the newest kept)
   int rowsToday = 0;     // every stored row dated today (shown or not)
+  std::vector<std::string> historyToday;   // today's history rows: the #replaced: /
+                                           // #superseded: rows dated today - rows that
+                                           // changed or disappeared today (lane UPSERT)
   bool hasKcal = false;  // the header has a kcal column
   double kcal = 0;
   int kcalRows = 0;      // rows counted in kcal
@@ -126,14 +133,17 @@ class FoodLedgerScan {
  private:
   void startHeader(const std::string& row);
   void keepRow(const std::string& row);
+  void keepHistory(const std::string& row);
   std::string today_;
   std::string header_;
   bool sawHeader_ = false;
-  std::string kcalColumn_, mealColumn_;
+  std::string kcalColumn_, mealColumn_, dateColumn_;
   std::unique_ptr<CsvDayTally> kcal_, protein_;
   std::vector<std::string> shown_;
   size_t shownBytes_ = 0;
   int rowsToday_ = 0;
+  std::vector<std::string> history_;
+  size_t historyBytes_ = 0;
 };
 
 // The whole-text form (the host lab, the tests). `fileText` "" with exists false =
@@ -209,5 +219,17 @@ std::string secondFoodLogRefusal(const std::string& project, const std::string& 
 // earlier estimate ("give me the list", "your calc is off", "you estimated
 // earlier")? Read only when today's ledger has rows.
 bool mentionsLedger(const std::string& text);
+
+// Does this text dispute the ledger's figures: the owner says a total, a row or a
+// figure is wrong, missing or lost ("Thats wrong ... 1878/2400", "where did the
+// brisket go", "your calc is off")? Lane UPSERT, 4 Nov: a disputed total is
+// answered from the day's history rows, not from memory.
+bool disputesLedger(const std::string& text);
+
+// The dispute block: today's history rows - every row of the day that changed or
+// disappeared today, kept in the file as #replaced: / #superseded: rows - so the
+// owner's dispute can be answered from what the day held before. "" when there are
+// none (or no ledger).
+std::string renderLedgerDispute(const FoodLedger& l);
 
 }  // namespace nimbus::orch

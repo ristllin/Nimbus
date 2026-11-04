@@ -94,6 +94,10 @@ void TurnEngine::applyFoodContext(ComposeInputs& ci, const std::string& userText
                     (!userText.empty() && (lastExchangeAboutFood(ci) ||
                                            (ledger_.hasRows() && nimbus::orch::mentionsLedger(userText))));
   ci.foodLedger = nimbus::orch::renderLedgerBlock(ledger_, food);
+  // Lane UPSERT, 4 Nov: the owner disputes a total - the day's history rows (rows that
+  // changed or disappeared today, kept as #replaced: rows) ride the turn, so the
+  // answer names what the day held before instead of re-adding from memory.
+  if (nimbus::orch::disputesLedger(userText)) ci.foodLedger += nimbus::orch::renderLedgerDispute(ledger_);
   ci.foodPlaybook.clear();
   if (!food) return;
   ci.foodLedger += foodRecallBlock(userText);

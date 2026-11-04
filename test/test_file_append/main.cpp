@@ -142,14 +142,16 @@ static void test_g1_keyed_upsert_updates_by_key_and_appends_new() {
   TEST_ASSERT_EQUAL_INT(1, up.appended);
   TEST_ASSERT_TRUE(up.changed);
   TEST_ASSERT_TRUE(up.out.find("2026-10-23,lunch,520") != std::string::npos);
-  TEST_ASSERT_TRUE(up.out.find("2026-10-23,lunch,450") == std::string::npos);
+  // The replaced row is kept as a #replaced: history row, never as a data row.
+  TEST_ASSERT_TRUE(up.out.find("#replaced: 2026-10-23,lunch,450\n") != std::string::npos);
+  TEST_ASSERT_TRUE(up.out.find("\n2026-10-23,lunch,450\n") == std::string::npos);
   TEST_ASSERT_TRUE(up.out.find("2026-10-22,dinner,900") != std::string::npos);
-  // One row per key: the header plus three data rows (lunch, the 22nd's
-  // dinner, the new snack), and "lunch" appears exactly once.
-  TEST_ASSERT_EQUAL_INT(4, (int)std::count(up.out.begin(), up.out.end(), '\n'));
+  // One data row per key: the header, the #replaced: history row, lunch, the
+  // 22nd's dinner and the new snack, and "lunch" appears exactly once as a row.
+  TEST_ASSERT_EQUAL_INT(5, (int)std::count(up.out.begin(), up.out.end(), '\n'));
   size_t at = 0, lunches = 0;
-  while ((at = up.out.find("lunch", at)) != std::string::npos) { lunches++; at++; }
-  TEST_ASSERT_EQUAL_INT(1, (int)lunches);
+  while ((at = up.out.find("\n2026-10-23,lunch,", at)) != std::string::npos) { lunches++; at++; }
+  TEST_ASSERT_EQUAL_INT(1, (int)lunches);   // once as a data row; the #replaced: line does not match
   // A new file adopts the text's header as its first row.
   const nimbus::orch::CsvUpsert fresh =
       nimbus::orch::planCsvUpsert("", nt, "meal", "kcal", "2026-10-23");
@@ -322,6 +324,21 @@ const char kHead[] = "date,meal,items,kcal,protein_g";
 
 int rowCount(const std::string& file) { return (int)std::count(file.begin(), file.end(), '\n'); }
 
+// Data rows only: history rows (#replaced:, #cut:, #superseded:) are comments,
+// never matched or counted.
+int dataRowCount(const std::string& file) {
+  int n = 0;
+  size_t p = 0;
+  while (p < file.size()) {
+    const size_t nl = file.find('\n', p);
+    const std::string row = file.substr(p, nl == std::string::npos ? std::string::npos : nl - p);
+    if (!row.empty() && row[0] != '#') n++;
+    if (nl == std::string::npos) break;
+    p = nl + 1;
+  }
+  return n;
+}
+
 size_t occurrences(const std::string& hay, const std::string& needle) {
   size_t n = 0;
   for (size_t p = hay.find(needle); p != std::string::npos; p = hay.find(needle, p + 1)) n++;
@@ -362,7 +379,10 @@ static void test_qw3_keyed_update_never_touches_another_day() {
   TEST_ASSERT_EQUAL_INT(1, up.replaced);
   TEST_ASSERT_TRUE(up.out.find("2026-10-23,dinner,pasta + mozzarella,2300,140\n") != std::string::npos);
   TEST_ASSERT_TRUE(up.out.find("2026-10-24,dinner,beef + skyr,990,87\n") != std::string::npos);
-  TEST_ASSERT_EQUAL_INT(4, rowCount(up.out));
+  // The replaced row is kept as a #replaced: history row (5 lines: header, the
+  // history row, and the three data rows).
+  TEST_ASSERT_TRUE(up.out.find("#replaced: 2026-10-23,dinner,pasta + mozzarella,2422,142\n") != std::string::npos);
+  TEST_ASSERT_EQUAL_INT(5, rowCount(up.out));
   TEST_ASSERT_EQUAL_STRING("2026-10-23", up.changes[0].date.c_str());
   TEST_ASSERT_TRUE(up.changes[0].was.find("2422") != std::string::npos);   // the reply can say what it was
   // The reply totals today AND the corrected day.
@@ -376,11 +396,13 @@ static void test_qw3_keyed_update_never_touches_another_day() {
   TEST_ASSERT_FALSE(up.ok);
   TEST_ASSERT_TRUE(up.err.find("cannot tell them apart") != std::string::npos);
   TEST_ASSERT_TRUE(up.out.empty());
-  // ...while key=date on a one-row-per-day ledger replaces that day's row.
+  // ...while key=date on a one-row-per-day ledger replaces that day's row (the
+  // replaced row is kept as a #replaced: history row).
   const std::string ledger = "date,kcal\n2026-10-23,2422\n2026-10-24,1495\n";
   up = planCsvUpsert(ledger, "date,kcal\n2026-10-24,1600\n", "date", "kcal", "2026-10-24");
   TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
-  TEST_ASSERT_EQUAL_STRING("date,kcal\n2026-10-23,2422\n2026-10-24,1600\n", up.out.c_str());
+  TEST_ASSERT_EQUAL_STRING("date,kcal\n2026-10-23,2422\n#replaced: 2026-10-24,1495\n2026-10-24,1600\n",
+                           up.out.c_str());
 }
 
 // Property: for a seeded mix of days, meals and keyed writes, no update ever
@@ -401,9 +423,10 @@ static void test_qw3_no_update_drops_or_moves_a_row() {
     const CsvUpsert up = planCsvUpsert(file, text, "meal", "kcal", "2026-10-25");
     TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
     const std::string next = applied(file, up);
-    TEST_ASSERT_EQUAL_INT(rowCount(file) + up.appended, rowCount(next));
+    TEST_ASSERT_EQUAL_INT(dataRowCount(file) + up.appended, dataRowCount(next));
     // Every row of another date, or another meal, is still there byte for byte
     // AND in the same order: the write touched only its own date and meal.
+    // History rows (#...) are compared separately, below.
     const auto others = [&](const std::string& text) {
       std::string kept;
       size_t p = 0;
@@ -411,11 +434,25 @@ static void test_qw3_no_update_drops_or_moves_a_row() {
         const size_t nl = text.find('\n', p);
         const std::string row = text.substr(p, nl - p);
         p = nl + 1;
+        if (row.empty() || row[0] == '#') continue;
         if (row.rfind(day + "," + meal + ",", 0) != 0) kept += row + "\n";
       }
       return kept;
     };
     TEST_ASSERT_EQUAL_STRING(others(file).c_str(), others(next).c_str());
+    // Every history row the write left names a row that was in the file before,
+    // as a data row or already as a history row (comments are kept as written).
+    for (size_t hp = next.find("\n#replaced: "); hp != std::string::npos;
+         hp = next.find("\n#replaced: ", hp + 1)) {
+      const size_t he = next.find('\n', hp + 1);
+      const std::string hrow = next.substr(hp + 12, he - hp - 12);
+      const bool inFile = file.find("\n" + hrow + "\n") != std::string::npos ||
+                          file.find("\n#replaced: " + hrow + "\n") != std::string::npos ||
+                          file.find("\n#cut: " + hrow + "\n") != std::string::npos ||
+                          file.find("\n#superseded: " + hrow + "\n") != std::string::npos ||
+                          file.rfind(hrow + "\n", 0) == 0;
+      TEST_ASSERT_TRUE_MESSAGE(inFile, hrow.c_str());
+    }
     TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)occurrences(next, "\n" + day + "," + meal + ","));
     file = next;
   }
@@ -802,11 +839,13 @@ static void test_qw3_provably_cut_last_row_is_set_aside() {
   TEST_ASSERT_EQUAL_INT(0, again.replaced);
   TEST_ASSERT_EQUAL_INT(1145, (int)again.todayTotal);   // 450 + 95 + 600
   TEST_ASSERT_TRUE(again.out.find("#cut: 2026-10-26,dinner\n") != std::string::npos);   // kept, never lost
-  // The same meal logged again in full: it replaces the cut row.
+  // The same meal logged again in full: it replaces the cut row, and the cut
+  // row is kept as a #replaced: history row (never matched or counted).
   up = planCsvUpsert(cut, "date,meal,kcal\n2026-10-26,dinner,600\n", "meal", "kcal", "2026-10-26");
   TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
   TEST_ASSERT_TRUE(up.cutReplaced);
-  TEST_ASSERT_EQUAL_STRING("date,meal,kcal\n2026-10-26,lunch,450\n2026-10-26,dinner,600\n", up.out.c_str());
+  TEST_ASSERT_EQUAL_STRING("date,meal,kcal\n2026-10-26,lunch,450\n#replaced: 2026-10-26,dinner\n2026-10-26,dinner,600\n",
+                           up.out.c_str());
   TEST_ASSERT_EQUAL_INT(1050, (int)up.todayTotal);
   // The tail view's total never counts a cut row either.
   TEST_ASSERT_EQUAL_INT(450, (int)dayTotal(cut, "2026-10-26"));
@@ -1030,11 +1069,13 @@ static void test_qw3_read_failure_or_short_write_never_rewrites_the_log() {
 // an empty stored file, a CRLF log with a real change, a quoted key with spaces,
 // key=date with a cut duplicate, rows with no date, an over-long stored row.
 static void test_qw3_review_edges() {
-  // Blank lines above the header are kept; the header is still found.
+  // Blank lines above the header are kept; the header is still found. The
+  // correction keeps the replaced row as a #replaced: history row.
   CsvUpsert up = planCsvUpsert("\n\ndate,meal,kcal\n2026-10-25,lunch,450\n", "date,meal,kcal\n2026-10-25,lunch,520\n",
                                "meal", "kcal", "2026-10-25");
   TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
-  TEST_ASSERT_EQUAL_STRING("\n\ndate,meal,kcal\n2026-10-25,lunch,520\n", up.out.c_str());
+  TEST_ASSERT_EQUAL_STRING("\n\ndate,meal,kcal\n#replaced: 2026-10-25,lunch,450\n2026-10-25,lunch,520\n",
+                           up.out.c_str());
   double t = 0;
   TEST_ASSERT_TRUE(csvDayTotal("\ndate,kcal\n2026-10-25,450\n", "kcal", "2026-10-25", t));
   TEST_ASSERT_EQUAL_INT(450, (int)t);
@@ -1051,11 +1092,13 @@ static void test_qw3_review_edges() {
                                 [&](const std::string& b) { out += b; return true; }, err));
     TEST_ASSERT_EQUAL_STRING("date,meal,kcal\n2026-10-25,lunch,450\n", out.c_str());
   }
-  // A CRLF log with a real change: rewritten with LF line ends, nothing lost.
+  // A CRLF log with a real change: rewritten with LF line ends, nothing lost,
+  // the replaced row kept as history.
   up = planCsvUpsert("date,meal,kcal\r\n2026-10-24,dinner,990\r\n2026-10-25,lunch,450\r\n",
                      "date,meal,kcal\n2026-10-25,lunch,520\n", "meal", "kcal", "2026-10-25");
   TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
-  TEST_ASSERT_EQUAL_STRING("date,meal,kcal\n2026-10-24,dinner,990\n2026-10-25,lunch,520\n", up.out.c_str());
+  TEST_ASSERT_EQUAL_STRING("date,meal,kcal\n2026-10-24,dinner,990\n#replaced: 2026-10-25,lunch,450\n2026-10-25,lunch,520\n",
+                           up.out.c_str());
   // A quoted key with spaces is the same key.
   up = planCsvUpsert("date,meal,kcal\n2026-10-25,\" Lunch \",450\n", "date,meal,kcal\n2026-10-25,lunch,520\n", "meal",
                      "kcal", "2026-10-25");
@@ -1067,7 +1110,8 @@ static void test_qw3_review_edges() {
   up = planCsvUpsert("date,kcal\n2026-10-25,450\n2026-10-25,", "date,kcal\n2026-10-25,500\n", "date", "kcal",
                      "2026-10-25");
   TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
-  TEST_ASSERT_EQUAL_STRING("date,kcal\n2026-10-25,500\n#cut: 2026-10-25,\n", up.out.c_str());
+  TEST_ASSERT_EQUAL_STRING("date,kcal\n#replaced: 2026-10-25,450\n2026-10-25,500\n#cut: 2026-10-25,\n",
+                           up.out.c_str());
   TEST_ASSERT_EQUAL_INT(500, (int)up.todayTotal);
   // Rows with no YYYY-MM-DD date count toward no day, and the reply says so.
   up = planCsvUpsert("date,meal,kcal\n25/10/2026,lunch,450\nOct 25,tea,52\n", "date,meal,kcal\n2026-10-25,dinner,600\n",
@@ -1136,8 +1180,8 @@ static void test_qw3_replace_all_resolves_old_duplicates_in_place() {
                           "2026-10-23,dinner,700\n";
   CsvUpsert up = planCsvUpsert(old, "date,meal,kcal\n2026-10-24,dinner,990\n", "meal", "kcal", "2026-10-25", true);
   TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
-  TEST_ASSERT_EQUAL_STRING("date,meal,kcal\n2026-10-24,dinner,990\n2026-10-24,lunch,500\n#superseded: 2026-10-24,dinner,1100\n"
-                           "2026-10-23,dinner,700\n",
+  TEST_ASSERT_EQUAL_STRING("date,meal,kcal\n#replaced: 2026-10-24,dinner,1200\n2026-10-24,dinner,990\n2026-10-24,lunch,500\n"
+                           "#superseded: 2026-10-24,dinner,1100\n2026-10-23,dinner,700\n",
                            up.out.c_str());
   TEST_ASSERT_EQUAL_INT(1, up.replaced);
   TEST_ASSERT_EQUAL_INT(1, up.superseded);
@@ -1218,6 +1262,118 @@ static void test_qw3_any_header_naming_keeps_days_apart() {
   TEST_ASSERT_EQUAL_INT(450, (int)t);
 }
 
+// ---- lane UPSERT: a reused key never silently replaces a different item ---------
+// 4 Nov 20:04: the owner logged a second dinner under the key "dinner"; the keyed
+// update replaced the brisket row and the day total dropped by 457 kcal. The class
+// rule: a keyed write whose key names a reused label replaces the stored row ONLY
+// when it describes the same item (decided in code, by the item's words); a different
+// item appends under a unique key and the stored row is kept. Every replace keeps the
+// replaced row as a #replaced: history row and the receipt names what it held.
+static void test_upsert_reused_key_with_a_different_item_appends_under_a_new_key() {
+  const std::string head = "date,meal,items,kcal,protein_g\n";
+  const std::string file = head +
+                           "2026-11-04,breakfast,skyr + granola,533,32.5\n"
+                           "2026-11-04,dinner,smoked brisket + seeded bread,457,40.2\n";
+  // The 20:04 write: same date and key "dinner", a different item.
+  CsvUpsert up = planCsvUpsert(file, head + "2026-11-04,dinner,Frive Smoky Baharat Mango Chicken,445,26.0\n",
+                               "meal", "kcal", "2026-11-04");
+  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+  TEST_ASSERT_EQUAL_INT(0, up.replaced);   // nothing was replaced
+  TEST_ASSERT_EQUAL_INT(1, up.appended);   // the new meal is its own row
+  TEST_ASSERT_TRUE_MESSAGE(up.out.find("2026-11-04,dinner,smoked brisket + seeded bread,457,40.2\n") !=
+                               std::string::npos,
+                           "the stored dinner row was kept byte for byte");
+  TEST_ASSERT_TRUE_MESSAGE(up.out.find("2026-11-04,dinner-2,Frive Smoky Baharat Mango Chicken,445,26.0\n") !=
+                               std::string::npos,
+                           up.out.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(up.todayTotal > 1434.9 && up.todayTotal < 1435.1,
+                           "both dinners count: 533 + 457 + 445 = 1435");
+  const std::string reply = renderUpsertReply(up, "food/food-log.csv", "kcal", "GMT");
+  TEST_ASSERT_TRUE_MESSAGE(reply.find("different item") != std::string::npos, reply.c_str());
+  // The unique key avoids keys the day already holds.
+  up = planCsvUpsert(up.out, head + "2026-11-04,dinner,waffles with compote,277,5.7\n", "meal", "kcal", "2026-11-04");
+  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(up.out.find("2026-11-04,dinner-3,waffles with compote,277,5.7\n") != std::string::npos,
+                           up.out.c_str());
+  // A correction of the SAME item still replaces, keeps the old row as history, and
+  // the receipt names what it replaced.
+  up = planCsvUpsert(up.out, head + "2026-11-04,dinner,smoked brisket + seeded bread,760,61\n", "meal", "kcal",
+                     "2026-11-04");
+  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+  TEST_ASSERT_EQUAL_INT(1, up.replaced);
+  TEST_ASSERT_TRUE_MESSAGE(up.out.find("#replaced: 2026-11-04,dinner,smoked brisket + seeded bread,457,40.2\n") !=
+                               std::string::npos,
+                           up.out.c_str());
+  const std::string reply2 = renderUpsertReply(up, "food/food-log.csv", "kcal", "GMT");
+  TEST_ASSERT_TRUE_MESSAGE(reply2.find("replaced 2026-11-04 'dinner' (was 457 kcal; the replaced row's items: smoked "
+                                       "brisket seeded bread)") != std::string::npos,
+                           reply2.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(up.todayTotal > 2014.9 && up.todayTotal < 2015.1,
+                           "533 + 760 + 445 + 277 = 2015, the corrected figure counted once");
+}
+
+// Exactly one side with no item words is a different item (a bare "x" names nothing).
+static void test_upsert_one_side_without_item_words_is_a_different_item() {
+  const std::string head = "date,meal,items,kcal,protein_g\n";
+  CsvUpsert up = planCsvUpsert(head + "2026-11-04,dinner,x,457,40\n",
+                               head + "2026-11-04,dinner,brisket + bread,760,61\n", "meal", "kcal", "2026-11-04");
+  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+  TEST_ASSERT_EQUAL_INT(0, up.replaced);
+  TEST_ASSERT_EQUAL_INT(1, up.appended);
+  TEST_ASSERT_TRUE(up.out.find("2026-11-04,dinner,x,457,40\n") != std::string::npos);
+  TEST_ASSERT_TRUE(up.out.find("2026-11-04,dinner-2,brisket + bread,760,61\n") != std::string::npos);
+  // ...and the other way round.
+  up = planCsvUpsert(head + "2026-11-04,dinner,brisket + bread,457,40\n",
+                     head + "2026-11-04,dinner,x,760,61\n", "meal", "kcal", "2026-11-04");
+  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+  TEST_ASSERT_EQUAL_INT(0, up.replaced);
+  TEST_ASSERT_TRUE(up.out.find("2026-11-04,dinner-2,x,760,61\n") != std::string::npos);
+}
+
+// key=date is the one-row-per-day ledger: the key IS the date, so there is no reused
+// label to protect and the row replaces as before.
+static void test_upsert_key_date_still_replaces_one_row_per_day() {
+  const std::string file = "date,note,kcal\n2026-11-04,morning,100\n";
+  CsvUpsert up = planCsvUpsert(file, "date,note,kcal\n2026-11-04,evening,200\n", "date", "kcal", "2026-11-04");
+  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+  TEST_ASSERT_EQUAL_INT(1, up.replaced);
+  TEST_ASSERT_EQUAL_INT(0, up.appended);
+  TEST_ASSERT_EQUAL_INT(200, (int)up.todayTotal);
+}
+
+// The class property over random writes: no stored row ever vanishes without a
+// #replaced: trace of it - every row of the file before is either still there byte for
+// byte or kept as a history row.
+static void test_upsert_no_stored_row_vanishes_without_a_history_trace() {
+  const char* items[] = {"brisket + bread", "mango chicken", "waffles", "skyr + granola", "x", "salad"};
+  const char* meals[] = {"breakfast", "lunch", "dinner", "snack-1600"};
+  std::string file = std::string(kHead) + "\n";
+  unsigned seed = 42;
+  for (int step = 0; step < 300; step++) {
+    seed = seed * 1103515245u + 12345u;
+    const std::string day = (seed & 8) ? "2026-11-04" : "2026-11-03";
+    const std::string meal = meals[(seed >> 4) % 4];
+    const std::string it = items[(seed >> 8) % 6];
+    const int kcal = 50 + (int)((seed >> 12) % 900);
+    const CsvUpsert up = planCsvUpsert(file, std::string(kHead) + "\n" + day + "," + meal + "," + it + "," +
+                                                     std::to_string(kcal) + ",10\n",
+                                       "meal", "kcal", "2026-11-04");
+    TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+    const std::string next = applied(file, up);
+    size_t p = 0;
+    while (p < file.size()) {
+      const size_t nl = file.find('\n', p);
+      const std::string row = file.substr(p, nl - p);
+      p = nl + 1;
+      if (row.empty() || row[0] == '#' || row == kHead) continue;
+      TEST_ASSERT_TRUE_MESSAGE(next.find(row + "\n") != std::string::npos ||
+                                   next.find("#replaced: " + row + "\n") != std::string::npos,
+                               row.c_str());
+    }
+    file = next;
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_append_never_rewrites_a_stored_byte);
@@ -1256,5 +1412,9 @@ int main(int, char**) {
   RUN_TEST(test_qw3_review_edges);
   RUN_TEST(test_qw3_replace_all_resolves_old_duplicates_in_place);
   RUN_TEST(test_qw3_any_header_naming_keeps_days_apart);
+  RUN_TEST(test_upsert_reused_key_with_a_different_item_appends_under_a_new_key);
+  RUN_TEST(test_upsert_one_side_without_item_words_is_a_different_item);
+  RUN_TEST(test_upsert_key_date_still_replaces_one_row_per_day);
+  RUN_TEST(test_upsert_no_stored_row_vanishes_without_a_history_trace);
   return UNITY_END();
 }

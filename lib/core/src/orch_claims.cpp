@@ -2003,8 +2003,9 @@ enum GapVariant : uint8_t {
   kGapNotSpoken = 18,        // "read it aloud" with nothing spoken and no voice message delivered
   kGapVoiceUnconfirmed = 19, // a voice message whose upload went out but Telegram did not confirm
   kGapOwnerAction = 20,      // "you told me/confirmed/photographed ..." with no owner message saying it (lane LABEL)
+  kGapHiddenReplace = 21,    // a log claim beside a replace the reply never says "replaced" (lane UPSERT)
 };
-static_assert(kGapOwnerAction + 1 == kGapVariantCount, "a new gap variant raises kGapVariantCount (claims.h)");
+static_assert(kGapHiddenReplace + 1 == kGapVariantCount, "a new gap variant raises kGapVariantCount (claims.h)");
 
 // Phrases that make a send claim a voice-message claim: the delivery itself named as
 // spoken audio. A lone "voice" or "audio" is not enough ("sent you the recording of
@@ -2325,12 +2326,34 @@ struct GapCheck {
     g.deviceOnly = true;
     return true;
   }
+  // Lane UPSERT (4 Nov 20:04): the turn replaced a stored row, and the reply says so
+  // nowhere - a log claim beside a hidden replace is a gap. The replace verbs
+  // ("removed", "replaced", "deleted") disclose the change themselves and are
+  // checked by their own rule (kGapNoReplace), so they are not re-checked here.
+  bool replaceDisclosed() {
+    ensureTokens();
+    for (size_t k = 0; k < sc.toks.size(); k++)
+      if (matchPhrase(sc, k, "replac*", nullptr)) return true;
+    return false;
+  }
   bool effectGap(const Cue& cue, const Claim& cl, ClaimGap& g) {
     if (cue.cls == C::Cause) return causeGap(cue, ev.causeEvidence, &g.variant);
     if (musicBacks(cue, cl)) return false;
     const bool speaks = cue.cls == C::Sent && cue.backs == kSpeakBacks;
     if (speaks || voiceClaim(cue, cl)) return voicedGap(speaks, g);
-    if (!isGap(cue, cl, *ev.fx, &g.variant)) return false;
+    if (!isGap(cue, cl, *ev.fx, &g.variant)) {
+      // Lane UPSERT (4 Nov 20:04): the turn replaced a stored row, and the reply says so
+      // nowhere - a plain save claim ("Logged.") beside a hidden replace is a gap. The
+      // replace verbs ("removed", "replaced", "deleted") disclose the change themselves
+      // (kGapNoReplace checks them), and the log verbs ("updated the log") honestly cover
+      // a replace as an update, so neither is re-checked here.
+      if (cue.cls == C::Saved && cue.backs == kSavedBacks && ev.fx->anyOk(FxKind::FileReplace) &&
+          !replaceDisclosed()) {
+        g.variant = kGapHiddenReplace;
+        return true;
+      }
+      return false;
+    }
     if (cue.cls == C::Checked) return !pinStateChecked(cue, cl);
     if (g.variant != kGapPinNoop) return true;
     if (pinCovered < 0) {
@@ -2375,6 +2398,9 @@ const char* savedWhat(uint8_t variant) {
   if (variant == kGapNoReplace)
     return "no stored row was replaced this turn; only a keyed files.append that reports a replaced row, a "
            "files.edit or a whole-file save over the stored file removes or replaces one";
+  if (variant == kGapHiddenReplace)
+    return "this turn replaced a stored row, but the reply never says so; say which row was replaced and what "
+           "it held (the receipt names it)";
   if (variant == kGapQueued) return "the memory write was only queued; it is not stored yet";
   return variant == kGapRamOnly ? "it was kept in RAM only; saving failed" : "nothing was saved";
 }
@@ -3281,6 +3307,9 @@ std::string savedTail(uint8_t variant) {
   if (variant == kGapNoReplace)
     return "(Correction: no stored row was replaced this turn - an append adds a new row; a "
            "removal or dedup needs a keyed update (files.append with a key) or files.edit.)";
+  if (variant == kGapHiddenReplace)
+    return "(Correction: this turn replaced a stored row and the reply does not say so - "
+           "say which row and what it held.)";
   return variant == kGapRamOnly
              ? "(Note: this is kept only until the next restart; saving it permanently failed.)"
              : "(Correction: that has not been saved.)";

@@ -307,6 +307,7 @@ void FoodLedgerScan::startHeader(const std::string& row) {
   const std::vector<std::string> names = headerNames(header_);
   kcalColumn_ = pickColumn(names, "kcal", {"kcal", "calorie"});
   mealColumn_ = pickColumn(names, "meal", {"meal"});
+  dateColumn_ = pickColumn(names, "date", {"date", "day", "when"});
   const std::string protein = pickColumn(names, "protein_g", {"protein"});
   // The kcal tally also reports the rows (its sink): with no kcal column the
   // rows are still found, through a tally over a column the header surely has.
@@ -329,11 +330,36 @@ void FoodLedgerScan::keepRow(const std::string& row) {
   }
 }
 
+// Lane UPSERT: a history row (#replaced: / #superseded:) dated today is kept for the
+// dispute block - it names a row of the day that changed or disappeared. Never
+// counted, never matched; shown only when the owner disputes a total.
+void FoodLedgerScan::keepHistory(const std::string& row) {
+  const size_t prefix = row.rfind("#replaced: ", 0) == 0 ? 11 : 13;   // "#replaced: " / "#superseded: "
+  if (dateColumn_.empty()) return;
+  const std::vector<std::string> names = headerNames(header_);
+  size_t di = names.size();
+  for (size_t c = 0; c < names.size(); c++)
+    if (names[c] == dateColumn_) di = c;
+  const std::vector<std::string> f = csvStoredRow(row.substr(prefix), names);
+  if (di >= f.size() || isoDayOf(f[di]) != today_) return;
+  history_.push_back(shownRow(row));
+  historyBytes_ += history_.back().size() + 1;
+  while (history_.size() > kLedgerHistoryRows ||
+         (historyBytes_ > kLedgerHistoryBytes && history_.size() > 1)) {
+    historyBytes_ -= history_.front().size() + 1;
+    history_.erase(history_.begin());
+  }
+}
+
 void FoodLedgerScan::feed(const std::string& row, bool complete) {
   if (today_.empty()) return;
   if (!sawHeader_) {
     if (row.find_first_not_of(" \t\r") == std::string::npos) return;   // blank lines above the header
     startHeader(row);
+    return;
+  }
+  if (row.rfind("#replaced: ", 0) == 0 || row.rfind("#superseded: ", 0) == 0) {
+    keepHistory(row);
     return;
   }
   kcal_->feed(row, complete);
@@ -344,6 +370,7 @@ void FoodLedgerScan::finish(FoodLedger& out) const {
   out.header = sawHeader_ ? shownRow(header_) : std::string();
   out.rows = shown_;
   out.rowsToday = rowsToday_;
+  out.historyToday = history_;
   out.hasKcal = !kcalColumn_.empty();
   out.kcalColumn = kcalColumn_;
   out.mealColumn = mealColumn_;
@@ -589,6 +616,31 @@ bool mentionsLedger(const std::string& text) {
   static const char* const kLedgerWords[] = {"total", "totals", "calc", "calculation", "ledger",
                                              "estimate", "estimated", "estimates", "by meal"};
   return words::anyPhrase(lowerAscii(text), kLedgerWords);
+}
+
+// Lane UPSERT, 4 Nov: the owner disputes a total ("Thats wrong. Previous message said
+// i have 510 left ... 1878/2400???", "where did the brisket go", "your calc is off").
+// A dispute word beside a ledger mention, a food word or a figure: the turn gets the
+// day's history rows (renderLedgerDispute) so the answer names what changed.
+bool disputesLedger(const std::string& text) {
+  static const char* const kDisputeWords[] = {
+      "wrong",     "not right", "incorrect", "missing",  "lost",     "gone",     "disappear",
+      "where did", "add up",    "adds up",   "doesn't add", "dispute", "miscount", "double count",
+      "double-count", "error",  "off by",    "calc is off", "not the total", "that's not"};
+  if (!words::anyPhrase(lowerAscii(text), kDisputeWords)) return false;
+  return mentionsLedger(text) || looksFoodRelated(text) || text.find_first_of("0123456789") != std::string::npos;
+}
+
+std::string renderLedgerDispute(const FoodLedger& l) {
+  if (l.today.empty() || l.historyToday.empty()) return std::string();
+  std::string out = "[TODAY'S LEDGER HISTORY - rows of " + l.where() +
+                    " that changed or disappeared today, kept in the file as history rows; today's totals count "
+                    "only the live rows above]\n";
+  if (!l.header.empty()) out += l.header + "\n";
+  for (const std::string& r : l.historyToday) out += r + "\n";
+  out += "The owner disputes a total: re-read the whole day before answering, name any row that disappeared or "
+         "changed today from these, and say what it held.]\n";
+  return out;
 }
 
 }  // namespace nimbus::orch

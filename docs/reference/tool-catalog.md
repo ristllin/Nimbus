@@ -346,7 +346,7 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 | `files.stat` | Metadata for one stored file: size, kind, created time, provider file id. | `project` (**required**), `name` (**required**) | live |
 | `files.read` | Read a stored TEXT document's content, paged; with `tail`, only the last rows of a log or CSV, and with `sum` a day's total of that column. | `project` (**required**), `name` (**required**), `offset` (number), `tail` (number of rows, max 200), `sum` (optional, a numeric column), `date` (optional, `YYYY-MM-DD`; default today) | live |
 | `files.search` | Search the CONTENT of saved text documents for words; returns the best matches with a snippet, ranked by how many of the words each document holds, then by how often they occur. | `query` (**required**), `project` (optional filter) | live |
-| `files.append` | Add rows to a text document (a log, a CSV); creates it when missing. Without `key`, the rows go on the end and nothing stored is rewritten. With `key`, a keyed CSV update: a row is its date plus its key, so the same date and key again replaces that row (a correction) and other days are never touched. | `project` (**required**), `name` (**required**, a text extension), `text` (**required**, max 4 KB per call; with `key`, the stored header row first), `key` (optional, the column that tells one day's rows apart, such as `meal`; the log needs a date column), `sum` (optional, a numeric column - the reply carries the day totals), `replace` (optional, `"all"`: when the key names several stored rows that are one item logged twice, this row replaces them) | live |
+| `files.append` | Add rows to a text document (a log, a CSV); creates it when missing. Without `key`, the rows go on the end and nothing stored is rewritten. With `key`, a keyed CSV update: a row is its date plus its key, so the same date and key again replaces that row only when it describes the same item (a correction; the device decides by the items column, and a different item under the same key is appended under a new unique key, e.g. `dinner-2`, with the stored row kept) and other days are never touched. Every replace keeps the replaced row in the file as a `#replaced:` history row and the reply names what it held. | `project` (**required**), `name` (**required**, a text extension), `text` (**required**, max 4 KB per call; with `key`, the stored header row first), `key` (optional, the column that tells one day's rows apart, such as `meal`; the log needs a date column), `sum` (optional, a numeric column - the reply carries the day totals), `replace` (optional, `"all"`: when the key names several stored rows that are one item logged twice, this row replaces them) | live |
 | `files.edit` | Edit a saved text document surgically: find an exact text span (a phrase, or a whole line's text) and replace it - instead of reading and re-saving the whole file. Replaces the first match by default; `all: true` for every match, `count` for the first N. The reply says how many matches were found and replaced; a no-match changes nothing, and a replacement identical to the find text says no change. An edit to a keyed CSV (a log with a date and a key column) also names the rows it removed, added or changed, and a later re-add that skips a removed row is named too. A file over 1 MB is refused. | `project` (**required**), `name` (**required**, a text extension), `find` (**required**, max 2 KB), `replace` (optional, max 4 KB; empty deletes the span), `all` (boolean, default false), `count` (integer, default 1, max 200) | live |
 | `files.delete` | Delete one saved file for good: the bytes and the index entry both go. Only a file the caller may write can be deleted; anyone else's file is simply not found. A missing file is refused by name. | `project` (**required**), `name` (**required**) | live |
 | `artifact.save` | Persist a TEXT artifact (report, summary, document) into the durable store. | `project` (**required**), `name` (**required**, with extension `.md`/`.txt`/`.csv`/`.json`), `text` (**required**, max ~24 KB per call) | live |
@@ -381,7 +381,18 @@ Notes:
   name (`date`, `day`, or a name holding date, day or time) or by its content
   (the column the new rows fill with `YYYY-MM-DD` dates); a log with no date
   column is refused for keyed writes. The same date and key again replaces
-  that row, so a correction never counts twice in a day's total. The call is
+  that row only when the new row describes the SAME item - decided on the
+  device by the items column (or, without one, by the row's non-date,
+  non-key, non-figure fields), never by the model's wording: a different
+  item under the same key (a second dinner under `dinner`) is appended
+  under a new unique key (`dinner-2`, avoiding the keys the day already
+  holds) and the stored row is kept, so a reused label never silently
+  replaces a row describing a different item. `key` = the date column
+  itself (a one-row-per-day ledger) has no reused label and replaces as
+  before. Every replace keeps the replaced row in the file as a
+  `#replaced:` history row (never matched or counted), so a disputed day
+  can be re-read against what it held before; the reply names what each
+  replaced row held. The call is
   refused, and nothing is written, when the key names more than one stored row
   (unless `replace: "all"`, which keeps the others as `#superseded:` rows) or
   two rows of the call, when the header differs from the stored one (the reply
@@ -392,7 +403,8 @@ Notes:
   gets its line end); a provably cut one is replaced by a new row with its date
   and key, or kept as a `#cut:` row that is never counted; rows starting with
   `#` are comments. The
-  reply says what each row did (a replaced row with what it was) and, with
+  reply says what each row did (a replaced row with what it was: its figure
+  and its items, and a rekeyed row with the stored key it kept) and, with
   `sum`, each day's total with its row count: today first, with its time zone
   (`today's kcal (2026-10-25, GMT): 976 from 2 rows`), then every other date
   written. With no time zone set the device's day is the UTC day and the reply

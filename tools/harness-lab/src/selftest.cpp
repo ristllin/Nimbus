@@ -156,7 +156,9 @@ void testFaultChain() {
 }
 
 // The lab's keyed files.append reads as a replacement to the device's claim check, so a
-// lab run judges a keyed correction the way the firmware does.
+// lab run judges a keyed write the way the firmware does. Lane UPSERT: only a correction
+// of the SAME item replaces; a different item under a reused key is appended under a new
+// key and records no replacement.
 void testKeyedReply() {
   std::puts("keyed reply");
   namespace orch = nimbus::orch;
@@ -181,14 +183,22 @@ void testKeyedReply() {
     deserializeJson(out, reg.handleRpc(in, orch::principalForRole("owner", orch::Role::Admin)));
     return std::string(out["result"]["content"][0]["text"] | "");
   };
-  orch::TurnEffects added, replaced, same;
+  orch::TurnEffects added, replaced, rekeyed, same;
   orch::recordToolEffect(added, orch::FxKind::FileWrite, false, keyed("2026-10-30,lunch,black beans,300,10"), orch::kFxLogRow);
   check(!added.anyOk(orch::FxKind::FileReplace), "a new row replaced nothing");
   check(added.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "a new row is a landed log row");
-  orch::recordToolEffect(replaced, orch::FxKind::FileWrite, false, keyed("2026-10-30,lunch,rice,250,6"), orch::kFxLogRow);
-  check(replaced.anyOk(orch::FxKind::FileReplace), "a keyed correction records a replacement");
+  const std::string fix = keyed("2026-10-30,lunch,black beans,320,11");
+  orch::recordToolEffect(replaced, orch::FxKind::FileWrite, false, fix, orch::kFxLogRow);
+  check(replaced.anyOk(orch::FxKind::FileReplace), "a keyed correction of the same item records a replacement");
   check(replaced.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "a keyed correction is a landed log row");
-  orch::recordToolEffect(same, orch::FxKind::FileWrite, false, keyed("2026-10-30,lunch,rice,250,6"), orch::kFxLogRow);
+  check(fix.find("was 300 kcal") != std::string::npos && fix.find("the replaced row's items:") != std::string::npos,
+        ("the replace receipt names what it replaced: " + fix).c_str());
+  const std::string other = keyed("2026-10-30,lunch,rice,250,6");
+  orch::recordToolEffect(rekeyed, orch::FxKind::FileWrite, false, other, orch::kFxLogRow);
+  check(!rekeyed.anyOk(orch::FxKind::FileReplace), "a different item under a reused key replaced nothing");
+  check(rekeyed.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "a different item under a reused key still lands a row");
+  check(other.find("reused a stored key") != std::string::npos, "the receipt says the stored key was reused");
+  orch::recordToolEffect(same, orch::FxKind::FileWrite, false, keyed("2026-10-30,lunch,black beans,320,11"), orch::kFxLogRow);
   check(!same.anyOk(orch::FxKind::FileReplace), "a re-send that changed nothing replaced nothing");
 }
 

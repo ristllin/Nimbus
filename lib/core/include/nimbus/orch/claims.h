@@ -211,7 +211,7 @@ std::string sourceNoun(uint32_t bit);
 
 
 // How many gap variants exist (kGap* in orch_claims.cpp): a test walks every one.
-constexpr uint8_t kGapVariantCount = 21;
+constexpr uint8_t kGapVariantCount = 22;
 
 struct ClaimGap {
   ClaimClass  cls = ClaimClass::Saved;

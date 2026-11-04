@@ -562,6 +562,29 @@ std::string quoteRow(const std::string& row) {
 
 std::string rowNo(size_t n) { return "row " + std::to_string((unsigned)n); }
 
+// One field serialized back into a row: quoted when it holds a comma, a quote, a line
+// end or a space at either end (the rekeyed row is rebuilt from its fields).
+std::string csvFieldOf(const std::string& f) {
+  const bool quote = f.find_first_of(",\"\n\r") != std::string::npos ||
+                     (!f.empty() && (f.front() == ' ' || f.back() == ' '));
+  if (!quote) return f;
+  std::string out = "\"";
+  for (char c : f) {
+    if (c == '"') out += "\"\"";
+    else out += c;
+  }
+  return out + "\"";
+}
+
+std::string csvRowOf(const std::vector<std::string>& fields) {
+  std::string out;
+  for (size_t i = 0; i < fields.size(); i++) {
+    if (i) out += ',';
+    out += csvFieldOf(fields[i]);
+  }
+  return out;
+}
+
 // Count one row into `d` when it is dated d.date. Counted: a meal row whose sum field reads
 // as a number. Not counted, and said: a row whose columns cannot be trusted (`unread`), a
 // row that states a total (`totalRows`). A food log's row repeating an earlier row's words
@@ -702,6 +725,8 @@ bool CsvUpsertStream::checkNewRow(size_t n, NewRow& row) {
     if (rows_[i].id == row.id)
       return fail(rowNo(i + 1) + " and " + rowNo(n) + " both name " + row.date + " '" + row.key +
                   "' - send one row per date and key");
+  if (keyIdx_ != dateIdx_ && takenCount_ < 1024)
+    if (taken_[row.date].insert(keyText(row.key)).second) takenCount_++;
   return true;
 }
 
@@ -806,15 +831,83 @@ CsvUpsertStream::NewRow* CsvUpsertStream::match(const std::string& id) {
   return nullptr;
 }
 
-void CsvUpsertStream::replaceWith(NewRow& n, const std::vector<std::string>& stored, bool same,
+// What a row says it holds: the items column when the header names one, else every
+// field that is not the date, not the key and not a figure (a log's free text).
+std::string CsvUpsertStream::itemTextOf(const std::vector<std::string>& f) const {
+  if (itemsIdx_ >= 0 && f.size() > (size_t)itemsIdx_) return f[(size_t)itemsIdx_];
+  std::string out;
+  double v = 0;
+  for (size_t c = 0; c < f.size() && c < header_.size(); c++) {
+    if ((int)c == dateIdx_ || (int)c == keyIdx_ || f[c].empty() || figureOf(f[c], v)) continue;
+    if (!out.empty()) out += ' ';
+    out += f[c];
+  }
+  return out;
+}
+
+// Lane UPSERT: is the stored row the same item as the new one? Decided by the item
+// words, in code: both sides with no words are the same (a log with no free text, a
+// correction of figures only), exactly one side with no words is a different item,
+// otherwise the same-food words decide.
+bool CsvUpsertStream::sameItem(const NewRow& n, const std::vector<std::string>& stored) const {
+  const std::vector<std::string> a = foodWordsOf(itemTextOf(n.fields));
+  const std::vector<std::string> b = foodWordsOf(itemTextOf(stored));
+  if (a.empty() && b.empty()) return true;
+  if (a.empty() != b.empty()) return false;
+  return sameFoodWords(a, b);
+}
+
+// The replaced row's item words for the receipt, capped: at most 12 words and 120
+// bytes, cut on a UTF-8 boundary (normalized words, never the row's raw free text).
+std::string CsvUpsertStream::itemWordsOf(const std::vector<std::string>& f) const {
+  const std::vector<std::string> words = foodWordsOf(itemTextOf(f));
+  std::string out;
+  size_t n = 0;
+  for (const std::string& w : words) {
+    if (n >= 12 || out.size() + w.size() + 1 > 120) break;
+    if (n) out += ' ';
+    out += w;
+    n++;
+  }
+  return out;
+}
+
+// A rekeyed row gets a unique key: base-2, base-3, ... avoiding every key the date
+// already holds (stored rows and this call's rows) and the keys this call assigned.
+bool CsvUpsertStream::rekeyRow(NewRow& n) {
+  const std::string base = keyText(n.key);
+  const auto& dayKeys = taken_[n.date];
+  for (unsigned i = 2; i <= 1025; i++) {
+    const std::string cand = base + "-" + std::to_string(i);
+    if (dayKeys.count(cand) || assigned_.count(cand)) continue;
+    n.fields[(size_t)keyIdx_] = cand;
+    n.key = cand;
+    n.id = n.date + "\x1f" + keyText(cand);
+    n.raw = csvRowOf(n.fields);
+    assigned_.insert(cand);
+    return true;
+  }
+  return false;
+}
+
+void CsvUpsertStream::replaceWith(NewRow& n, const std::vector<std::string>& stored,
+                                  const std::string& storedRaw, bool identical, bool complete,
                                   std::string& out) {
   double v = 0;
   n.used = true;
   if (sumIdx_ >= 0 && stored.size() > (size_t)sumIdx_ && plainNumber(stored[(size_t)sumIdx_], v))
     n.was = numText(v);   // the replaced figure, a plain number: never stored free text
+  n.wasItems = itemWordsOf(stored);
   r_.replaced++;
-  if (!same) r_.changed = true;
-  out = n.raw + "\n";
+  if (!identical || !complete) r_.changed = true;
+  if (!identical) {
+    // The replaced row is kept as a #replaced: history row (never matched or
+    // counted), so a disputed day can be re-read against what it held before.
+    // A byte-identical re-send changes nothing and leaves no history row.
+    out = "#replaced: " + storedRaw + "\n" + n.raw + "\n";
+  } else {
+    out = n.raw + "\n";
+  }
   tally(n.fields);
 }
 
@@ -826,7 +919,7 @@ void CsvUpsertStream::feedCut(const std::vector<std::string>& f, const std::stri
   r_.cutDate = f.size() > (size_t)dateIdx_ ? isoDay(f[(size_t)dateIdx_]) : std::string();
   r_.changed = true;
   if (hit && !hit->used) {
-    replaceWith(*hit, f, false, out);
+    replaceWith(*hit, f, row, hit->raw == row, false, out);
     r_.cutReplaced = true;
     return;
   }
@@ -873,6 +966,7 @@ bool CsvUpsertStream::feedData(const std::string& row, bool complete, std::strin
     if (!complete) r_.changed = true;
     return true;
   }
+  noteTakenKey(f);   // the keys this date already holds, for the rekeyed rows' unique keys (capped)
   NewRow* hit = match(identity(f));
   if (!complete && provablyCut(f, quotes, header_.size(), prev_, sumIdx_)) {
     feedCut(f, row, hit, out);
@@ -887,8 +981,36 @@ bool CsvUpsertStream::feedData(const std::string& row, bool complete, std::strin
     watchSameFood(f);
     return true;
   }
-  if (hit->used) return secondMatch(*hit, row, out);
-  replaceWith(*hit, f, hit->raw == row && complete, out);
+  if (hit->used || hit->rekey) return secondMatch(*hit, row, out);
+  // Lane UPSERT: the key names a reused label. When the stored row describes a
+  // DIFFERENT item, it is kept as it is and the new row is appended under a unique
+  // key (finish) - a second meal under "dinner" never replaces the first (4 Nov).
+  if (keyIdx_ != dateIdx_ && !sameItem(*hit, f)) return feedRekey(*hit, f, row, complete, out);
+  replaceWith(*hit, f, row, hit->raw == row, complete, out);
+  return true;
+}
+
+// The keys this date already holds, for the rekeyed rows' unique keys (capped).
+void CsvUpsertStream::noteTakenKey(const std::vector<std::string>& f) {
+  if (keyIdx_ == dateIdx_ || dateIdx_ < 0 || f.size() <= (size_t)dateIdx_ || f.size() <= (size_t)keyIdx_ ||
+      f.size() > header_.size() || takenCount_ >= 1024)
+    return;
+  const std::string day = isoDay(f[(size_t)dateIdx_]);
+  const std::string k = keyText(f[(size_t)keyIdx_]);
+  if (!day.empty() && !k.empty() && taken_[day].insert(k).second) takenCount_++;
+}
+
+// A reused label naming a DIFFERENT item: the stored row is kept as it is, the new
+// row is appended under a unique key in finish().
+bool CsvUpsertStream::feedRekey(NewRow& hit, const std::vector<std::string>& f, const std::string& row,
+                                bool complete, std::string& out) {
+  hit.rekey = true;
+  hit.keptKey = hit.key;
+  out = row + "\n";
+  if (!complete) r_.changed = true;
+  countUndated(f);
+  tally(f);
+  watchSameFood(f);
   return true;
 }
 
@@ -937,7 +1059,12 @@ bool CsvUpsertStream::finish(std::string& out) {
     r_.changed = true;
   }
   for (NewRow& n : rows_) {
-    r_.changes.push_back({n.date, n.key, n.used, n.was, n.superseded, n.sameFoodDate, n.sameFoodFigure, n.figure});
+    if (n.rekey && !rekeyRow(n))
+      return fail("cannot find a free '" + keyCol_ + "' value for " + n.date + " '" + n.keptKey +
+                  "' - log it under its own " + keyCol_ + " name");
+    if (n.rekey) r_.rekeyed++;
+    r_.changes.push_back({n.date, n.key, n.used, n.was, n.wasItems, n.rekey ? n.keptKey : std::string(),
+                          n.superseded, n.sameFoodDate, n.sameFoodFigure, n.figure});
     if (n.used) continue;
     out += n.raw + "\n";
     outRows_++;
@@ -1257,8 +1384,17 @@ std::string renderChange(const RowChange& c, const std::string& sumCol) {
   std::string out;
   if (!c.replaced) {
     out = "- added " + what + "\n";
+    if (!c.keptKey.empty())
+      out += "- the stored " + (c.date.empty() ? std::string() : c.date + " ") + "'" + c.keptKey +
+             "' row describes a different item, so it was kept and this row got a new key\n";
   } else {
-    out = "- replaced " + what + (c.was.empty() ? std::string() : " (was " + c.was + " " + sumCol + ")") + "\n";
+    std::string detail;
+    if (!c.was.empty()) detail = "was " + c.was + " " + sumCol;
+    if (!c.wasItems.empty()) {
+      if (!detail.empty()) detail += "; ";
+      detail += "the replaced row's items: " + c.wasItems;
+    }
+    out = "- replaced " + what + (detail.empty() ? std::string() : " (" + detail + ")") + "\n";
     if (c.superseded > 0)
       out += "- set aside " + std::to_string(c.superseded) + " more " + (c.superseded == 1 ? "row" : "rows") + " of " +
              what + " as #superseded: (not counted)\n";
@@ -1282,11 +1418,20 @@ std::string renderProteinTotal(const CsvUpsert& up) {
   return out;
 }
 
+// Lane UPSERT: rows that reused a stored key naming a different item and got a new
+// unique key (the stored rows were kept).
+static std::string renderRekeyed(const CsvUpsert& up) {
+  if (up.rekeyed <= 0) return std::string();
+  return std::to_string(up.rekeyed) + (up.rekeyed == 1 ? " row reused" : " rows reused") +
+         " a stored key that names a different item and got a new key (the stored rows were kept)\n";
+}
+
 std::string renderUpsertReply(const CsvUpsert& up, const std::string& where,
                               const std::string& sumCol, const std::string& zoneAt) {
   std::string out = "replaced " + std::to_string(up.replaced) + (up.replaced == 1 ? " row" : " rows") +
                     ", added " + std::to_string(up.appended) + (up.appended == 1 ? " row" : " rows") +
                     " in " + where + (up.changed ? "" : " (no change: the rows were already as sent)") + "\n";
+  out += renderRekeyed(up);
   for (const RowChange& c : up.changes) out += renderChange(c, sumCol);
   if (up.cut) {
     const std::string which = up.cutDate.empty() ? std::string() : " (dated " + up.cutDate + ")";

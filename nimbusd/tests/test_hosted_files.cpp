@@ -344,14 +344,22 @@ static void testKeyedCorrectionBacksItsClaim(ndtest::Ctx& c) {
   c.eqi((long)gaps(logClaim, added), 0, "but it backs the log claim");
   c.ok(gaps(replaceClaim, added) > 0, "and it does not back a replace claim");
 
-  const std::string fixed = keyed("2026-10-30,lunch,rice,250,6\n");
+  // Lane UPSERT: only a correction of the SAME item replaces; a different item under
+  // the reused key "lunch" is appended under a new key and records no replacement.
+  const std::string fixed = keyed("2026-10-30,lunch,black beans,320,11\n");
   const orch::TurnEffects replaced = effects(fixed);
-  c.ok(replaced.anyOk(orch::FxKind::FileReplace), "a keyed correction records a replacement: " + fixed);
+  c.ok(replaced.anyOk(orch::FxKind::FileReplace), "a keyed correction of the same item records a replacement: " + fixed);
   c.ok(replaced.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "and a landed log row");
   c.eqi((long)gaps(replaceClaim, replaced), 0, "the true replace claim draws no correction");
   c.eqi((long)gaps(logClaim, replaced), 0, "the true log claim draws no correction");
 
-  const orch::TurnEffects same = effects(keyed("2026-10-30,lunch,rice,250,6\n"));
+  const std::string other = keyed("2026-10-30,lunch,rice,250,6\n");
+  const orch::TurnEffects rekeyed = effects(other);
+  c.ok(!rekeyed.anyOk(orch::FxKind::FileReplace), "a different item under a reused key replaced nothing: " + other);
+  c.ok(rekeyed.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "but it still landed a row");
+  c.ok(gaps(replaceClaim, rekeyed) > 0, "so a replace claim over it is corrected");
+
+  const orch::TurnEffects same = effects(keyed("2026-10-30,lunch,black beans,320,11\n"));
   c.ok(!same.anyOk(orch::FxKind::FileReplace), "a re-send that changed nothing replaced nothing");
   c.ok(gaps(replaceClaim, same) > 0, "so a replace claim over it is corrected");
 }

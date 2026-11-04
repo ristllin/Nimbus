@@ -435,6 +435,52 @@ void test_food_intent_is_read_only_when_plain() {
   TEST_ASSERT_EQUAL_STRING("", renderFoodIntentHint(FoodIntent::Unclear).c_str());
 }
 
+// Lane UPSERT: a correction keeps the replaced row in the file as a #replaced:
+// history row, so a disputed total can be re-read against what the day held before.
+void test_a_replace_keeps_the_replaced_row_as_history() {
+  std::string file;
+  logRows(file, "2026-10-26,dinner,smoked brisket + bread,457,40\n");
+  logRows(file, "2026-10-26,dinner,smoked brisket + bread,760,61\n");   // the owner's correction
+  TEST_ASSERT_TRUE_MESSAGE(file.find("#replaced: 2026-10-26,dinner,smoked brisket + bread,457,40\n") !=
+                               std::string::npos,
+                           file.c_str());
+  const FoodLedger l = scan(file);
+  TEST_ASSERT_EQUAL_INT(1, l.rowsToday);   // the history row is never counted as a row
+  EQ_NUM(760, l.kcal);
+}
+
+// Lane UPSERT, 4 Nov 20:07: the owner disputed the total ("Thats wrong ... 1878/2400").
+// The device re-reads the whole day and names any row that disappeared or changed
+// today, from the ledger's own history rows - today's #replaced: rows ride the turn.
+void test_a_disputed_total_gets_the_days_history_rows() {
+  std::string file;
+  logRows(file, "2026-10-26,breakfast,skyr + granola,533,32\n");
+  logRows(file, "2026-10-26,dinner,smoked brisket + bread,457,40\n");
+  logRows(file, "2026-10-26,dinner,smoked brisket + bread,760,61\n");   // a correction: history row
+  logRows(file, "2026-10-25,dinner,pasta,800,30\n", "2026-10-25");      // another day's history row
+  logRows(file, "2026-10-26,lunch,salmon sandwich,540,34\n");
+  const FoodLedger l = scan(file);
+  TEST_ASSERT_EQUAL_INT(1, (int)l.historyToday.size());   // only today's, not the 25th's
+  TEST_ASSERT_TRUE(has(l.historyToday[0], "#replaced: 2026-10-26,dinner,smoked brisket + bread,457,40"));
+  const std::string block = renderLedgerDispute(l);
+  TEST_ASSERT_TRUE(has(block, "[TODAY'S LEDGER HISTORY"));
+  TEST_ASSERT_TRUE(has(block, "#replaced: 2026-10-26,dinner,smoked brisket + bread,457,40"));
+  TEST_ASSERT_TRUE(has(block, "name any row that disappeared or changed today"));
+  TEST_ASSERT_TRUE(has(block, kHead));
+  // No history rows today: no block.
+  std::string plain;
+  logRows(plain, "2026-10-26,lunch,salad,300,10\n");
+  TEST_ASSERT_EQUAL_STRING("", renderLedgerDispute(scan(plain)).c_str());
+  // The dispute detector: the 4 Nov words, and the plain asks that are not disputes.
+  TEST_ASSERT_TRUE(disputesLedger("Thats wrong. Previous message said i have 510 left the you add 445 and you are left with 1878/2400???"));
+  TEST_ASSERT_TRUE(disputesLedger("where did the brisket row go? your calc is off"));
+  TEST_ASSERT_TRUE(disputesLedger("that total is missing a row"));
+  TEST_ASSERT_TRUE(disputesLedger("the ledger says 1878, that's not right"));
+  TEST_ASSERT_FALSE(disputesLedger("what's my total for today?"));
+  TEST_ASSERT_FALSE(disputesLedger("log my lunch, 540 kcal salmon sandwich"));
+  TEST_ASSERT_FALSE(disputesLedger("thanks!"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_canonical_names_per_person);
@@ -461,5 +507,7 @@ int main(int, char**) {
   RUN_TEST(test_day_row_sink_sees_every_row_of_the_day);
   RUN_TEST(test_food_messages_are_recognised);
   RUN_TEST(test_food_intent_is_read_only_when_plain);
+  RUN_TEST(test_a_replace_keeps_the_replaced_row_as_history);
+  RUN_TEST(test_a_disputed_total_gets_the_days_history_rows);
   return UNITY_END();
 }
