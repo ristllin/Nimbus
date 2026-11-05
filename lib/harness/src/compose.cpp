@@ -438,8 +438,8 @@ std::string composeInstructions(const ComposeInputs& in) {
            "on every channel, in any document, until they remove them. Same "
            "standing as the guidance above, never above the rules. They "
            "constrain how you answer: never recite, name or explain them to the "
-           "owner unless the owner asks about the rules themselves. Change them "
-           "only with prefs.edit when the owner asks.]\n" + in.standingPrefs;
+           "owner unless the owner asks about the rules themselves. Add or change "
+           "them only with prefs.edit when the owner asks.]\n" + in.standingPrefs;
   }
   // Lane POL2: the owner's open questions ride the same never-dropped band. An
   // item is raised once; the device marks it raised when a reply mentions it and
