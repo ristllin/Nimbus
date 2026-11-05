@@ -12,7 +12,7 @@
   ],
   "assertions": [
     "reply_ok",
-    {"id": "tool_called", "params": {"name": "files.read"}},
+    {"id": "tool_called", "params": {"name": "files_read"}},
     {"id": "reply_forbids", "params": {"forbidden": ["correctly keyed", "all correct", "no issues at all", "everything is correct", "perfectly keyed"]}}
   ]
 }

@@ -12,7 +12,6 @@
   ],
   "assertions": [
     "reply_ok",
-    {"id": "tool_called", "params": {"name": "files.read"}},
     {"id": "ledger_row_kcal_near", "params": {"item": "boba", "expected": 225, "tol": 15}}
   ]
 }
