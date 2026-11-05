@@ -504,8 +504,9 @@ static void test_food_playbooks_state_their_rules() {
   // "per-serving" as the figure to log, and holding even when the photo itself did
   // not come through (lc-photo-default 0/5 on claude-haiku-5-5).
   for (const char* must : {"photo means eaten WHOLE", "220 kcal per bar x\n   4 bars in the pack = 880 kcal",
-                           "not even when the photo did not come through",
-                           "A pack photo with no question is not a\n   missing amount (rule 1)"})
+                           "not even when the photo did not come through", "and ask nothing else",
+                           "A pack photo with no question is not a\n   missing amount (rule 1)",
+                           "A rule the\n   owner asks you to remember is not a meal"})
     TEST_ASSERT_TRUE_MESSAGE(f.find(must) != std::string::npos, must);
   // Lane QFIX: a named restaurant/chain/deli/product is looked up before any
   // estimate, and an inconclusive lookup still logs the meal (lc-restaurant-lookup,
