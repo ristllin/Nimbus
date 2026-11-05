@@ -174,3 +174,17 @@ tests/evals/owner_regressions/runs/bf40a3edf9f401df83be010eac2d9847d82e2681/ (ta
   refusal ("the file store is full ... delete files by hand", no save) still fails on three
   axes (no file, refusal phrasing, no "saved"/"stored"), and every rep recorded on every leg
   this lane ran (claude-haiku-5-5 and glm-5.3, seven legs) passes the new set.
+- OIR-36 / lc-rules-full (before 4/5 on claude-haiku-5-5; the 40e04a6e run recorded 3/5, the
+  failing reps making zero tool calls and replying "Got it. I'll remember ..."): fix in the
+  prompt, not the fixture. The V1 memory-tier list says LONG-TERM vector memory holds
+  "anything the owner asks you to remember" with no exception, so a remember-request that is
+  an always/never rule resolves to mem_write or to no write at all; the V0 prompt carried the
+  carve-out ("an always/never rule for every reply belongs in the STANDING RULES via
+  prefs.edit, not here") and the V1 rewrite dropped it. The LONG-TERM clause now reads
+  "... anything the owner asks you to remember except an always/never rule for every reply
+  (a STANDING RULE: prefs.edit, not here)". The wording is 21 bytes shorter than the first
+  attempt because the static-block budget canary (test_prompt_layout
+  test_static_block_does_not_move_under_budget_pressure) showed room=1016 against the 1024
+  clip floor: a longer carve-out pushed a 128 K head's fixture from clipping its capability
+  list to dropping the section outright. Guard: the prompt goldens (orch_prompt_default,
+  orch_prompt_recall_loopoff) plus that budget test.

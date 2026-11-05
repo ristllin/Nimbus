@@ -359,7 +359,9 @@ std::string composeInstructions(const ComposeInputs& in) {
                 "in scratchpad.short and tick items off as they finish), LONG-TERM vector memory "
                 "(mem_write/mem_query or memory.write - where every DURABLE FACT belongs: "
                 "names, dates, topic-specific likes and dislikes, anything the owner asks you "
-                "to remember; if a write fails, retry it NEXT turn rather than parking the "
+                "to remember except an always/never rule for every reply (a STANDING RULE: "
+                "prefs.edit, not here); if a write fails, retry it "
+                "NEXT turn rather than parking the "
                 "fact in running memory), STANDING RULES (prefs.edit - an always/never rule "
                 "the owner wants in EVERY reply whatever the topic; memory is recalled by "
                 "topic, so a rule stored there is invisible in most turns; test: " +
