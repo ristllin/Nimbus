@@ -103,3 +103,61 @@ and PROG (a305cbfc) all landed before this lane did.
   tools/release_gate/test_owner_regressions.py (runs in CI gate-logic and in the battery's
   citools row, both of which run pytest over tools/release_gate). The gate is wired into
   run_gate.py's host checks and its --candidate step.
+
+## Lane QFIX rulings (2026-11-05, REGR-RUN-2 on candidate bf40a3ed)
+
+Written reasons for every product/prompt fix and every fixture decision this lane made, per
+lanes/QFIX/TASK.md. "Before" numbers are the claude-haiku-5-5 legs of
+tests/evals/owner_regressions/runs/bf40a3edf9f401df83be010eac2d9847d82e2681/ (target 4/5).
+
+- OIR-35 / lc-photo-default (before 0/5): the whole-pack rule was in the food-log playbook
+  but phrased "log the per-serving (whole pack) figures", which a head reads as the
+  per-serving figure; rule 6 ("amount missing: ask one short question") then won. Fix in the
+  prompt, not the fixture: rule 1 now states the whole-pack figure with a worked example
+  (220 kcal per bar x 4 bars = 880), says it holds even when the photo itself did not come
+  through, and rule 6 names a pack photo as not a missing amount. The rule rides the per-turn
+  food playbook, so it reaches every head (both prompt variants, every provider), not one
+  model. Guard: test_harness_skills playbook assertions.
+- OIR-50 / lc-defended-hallucination (before 0/5): the head did the right search but quoted its
+  own earlier line verbatim, and the quote contains "you told me"; the device claim check
+  skips phrases inside quotes, so nothing corrected it. Fix in the prompt: when no owner
+  message backs a claim, paraphrase the earlier claim instead of quoting it and never repeat
+  "you told me"/"you photographed"/"you confirmed", not even inside quotes; say plainly that no
+  owner message says it. In kFoodLog rule 12 and kFoodCoach rule 7 (the scenario's turn is an
+  ask, so the coach playbook is the one attached). Guard: test_harness_skills.
+- OIR-10, OIR-22 / lc-target-source (before 1/5): the scenario stores food-targets.csv but no
+  food-log.csv, so the ledger block's no-rows branch showed no target at all (leftText needs a
+  kcal column; noTargetsText stands down when targets exist) and the head answered from
+  nowhere. Product fix in lib/core: renderLedgerBlock now shows a [FOOD TARGETS] line with the
+  stored figures and sources on a no-rows food turn when leftText has nothing to say.
+  Guard: test_food_ledger test_stored_targets_show_on_an_empty_day.
+- OIR-30 / lc-protein-unknown (before 3/5): failing reps said "at most 120 g of protein left",
+  a grams-left figure from an unknown row. Fix in the prompt: kFoodCoach rule 6 now forbids
+  any grams-left figure when a row's protein is unknown (not "N g of protein left", not "at
+  most N g", not "you need N g"); say it is unknown. Guard: test_harness_skills.
+- OIR-29 / lc-restaurant-lookup (before 2/5) and OIR-26 / lc-photo-estimate (before 3/5): the
+  lookup rule existed but heads either skipped web_search or, finding no exact published
+  figure, refused to log. Fix in the prompt: kFoodLog rule 8 now says always web_search first
+  for a named restaurant/chain/deli/packaged product, and an inconclusive lookup still logs
+  the meal this turn marked [assumed: ...] - "log it" means log it. Guard: test_harness_skills.
+- OIR-07, OIR-20 / lc-false-claim (before 2/5): failing reps answered from the in-context
+  ledger snapshot without an active files_read. Fix in the prompt: kFoodLog rule 5 and
+  kFoodCoach rule 7 - when the owner asks whether the log is correct right now or challenges an
+  earlier claim, call files_read first and answer from the file as it stands now; never confirm
+  an earlier claim without that read. Guard: test_harness_skills.
+- OIR-05, OIR-09, OIR-18, OIR-27 / lc-day-total and OIR-14 / lc-day-rollover (before: lc-day-total
+  0/5 on claude-haiku-5-5 and 2/5 on glm-5.3; lc-day-rollover 4/5 on both, one rep each failing on
+  the same wording): fixture ruling, not a threshold move. The replies stated the correct day
+  figure ("So far today you've eaten 1611 kcal") without the word "total", which the old
+  ledger_day_total required. The assertion now checks the figure however it is stated: a
+  "total ... N kcal" is always checked against the receipt, and the day's figure stated in
+  plain day wording ("so far today ... N kcal", "today ... N kcal", "N kcal ... today")
+  counts as stated; with require_stated the reply must state a figure matching the receipt,
+  and a stated "total" that disagrees still fails. Reason: the assertion's job is that a
+  stated day figure equals the ledger's own receipt, not that the reply uses one word.
+- OIR-19, OIR-42 / lc-silent-replace (before 1/5): fixture ruling, not a threshold move. The
+  scenario text "I ate 70 percent of it, 445 kcal" is genuinely ambiguous - 445 can be read
+  as the whole pack (heads then logged 312). The real 4 Nov case was a 635 kcal pack, 70%
+  eaten, 445 kcal eaten. The scenario now says exactly that ("The pack is 635 kcal for the
+  whole pack and I ate 70 percent of it, that is 445 kcal") and the target is unchanged: the
+  brisket row kept, the mango chicken row at 445 kcal, the day total consistent.

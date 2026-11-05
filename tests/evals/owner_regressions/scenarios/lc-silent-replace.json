@@ -8,7 +8,7 @@
   "webSearch": false,
   "steps": [
     {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{TODAY}},dinner,brisket with bread,457,38\n"},
-    {"do": "say", "text": "Log my dinner for today: Frive Smoky Baharat Mango Chicken, I ate 70 percent of it, 445 kcal."}
+    {"do": "say", "text": "Log my dinner for today: Frive Smoky Baharat Mango Chicken. The pack is 635 kcal for the whole pack and I ate 70 percent of it, that is 445 kcal."}
   ],
   "assertions": [
     "reply_ok",

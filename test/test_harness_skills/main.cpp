@@ -500,6 +500,25 @@ static void test_food_playbooks_state_their_rules() {
   for (const char* must : {"its published\n   nutrition (look it up before estimating", "The same food gets the same figures",
                            "stays an empty cell, never 0"})
     TEST_ASSERT_TRUE_MESSAGE(f.find(must) != std::string::npos, must);
+  // Lane QFIX (REGR-RUN-2): the whole-pack default, stated so a head cannot read
+  // "per-serving" as the figure to log, and holding even when the photo itself did
+  // not come through (lc-photo-default 0/5 on claude-haiku-5-5).
+  for (const char* must : {"means eaten WHOLE", "220 kcal per bar, 4 bars in the pack",
+                           "= 880 kcal", "not even when\n   the photo itself did not come through",
+                           "A pack photo with no question is not a\n   missing amount"})
+    TEST_ASSERT_TRUE_MESSAGE(f.find(must) != std::string::npos, must);
+  // Lane QFIX: a named restaurant/chain/deli/product is looked up before any
+  // estimate, and an inconclusive lookup still logs the meal (lc-restaurant-lookup,
+  // lc-photo-estimate); a challenge to the log re-reads the file first
+  // (lc-false-claim); the owner's word wins and an unbacked "you told me" is never
+  // repeated, not even inside quotes (lc-defended-hallucination).
+  for (const char* must : {"Always call\n   web_search first for a named restaurant, chain, deli or packaged product",
+                           "never hold the row\n   back for a question",
+                           "call files_read on the ledger first and answer from the file\n   as it stands now",
+                           "not a check. Never confirm an earlier claim of yours without\n   that read",
+                           "never repeat \"you told me\"", "not even inside quotes",
+                           "Quote a source only\n   when it is a real owner message"})
+    TEST_ASSERT_TRUE_MESSAGE(f.find(must) != std::string::npos, must);
   const std::string c = agent::builtinSkillBody(agent::kFoodCoachSkillId, true);
   for (const char* must : {"a target you cannot point to is not stated", "your own\n   earlier replies are not a source",
                            "Totals come from [TODAY'S FOOD LEDGER]", "list the ledger's rows",
@@ -510,6 +529,18 @@ static void test_food_playbooks_state_their_rules() {
                            "Amounts and plans come from food.portions", "fixed_g for every amount the owner fixed", "add nothing on top", "the fixed foods still go in the call as fixed_g",
                            "its Total line",
                            "ask one short question\n   about what they have: no plan, no amounts and no food.portions call yet"})
+    TEST_ASSERT_TRUE_MESSAGE(c.find(must) != std::string::npos, must);
+  // Lane QFIX (REGR-RUN-2): a stored target is named by the [FOOD TARGETS] line
+  // (lc-target-source); an unknown protein gives no grams-left figure at all
+  // (lc-protein-unknown); a challenge to the log re-reads the file first and the
+  // owner's word wins without repeating an unbacked "you told me" (lc-false-claim,
+  // lc-defended-hallucination).
+  for (const char* must : {"A stored target is named by the [FOOD TARGETS] line with\n   its source",
+                           "give NO grams-left figure at all", "not \"N g of protein\n   left\"",
+                           "unknown until that row's figure is known",
+                           "call files_read on the ledger first and answer\n   from the file as it stands now",
+                           "I can't find any message from you saying that - I was wrong",
+                           "not even inside\n   quotes"})
     TEST_ASSERT_TRUE_MESSAGE(c.find(must) != std::string::npos, must);
   // The coach carries no logging procedure (a weak head logged the plan it was asked for).
   TEST_ASSERT_TRUE(c.find("files.append {") == std::string::npos);

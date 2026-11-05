@@ -148,6 +148,27 @@ std::string noTargetsText(const FoodLedger& l) {
   return out;
 }
 
+// The stored targets themselves, for a day with no rows to sum against (the ledger
+// file absent or empty: leftText has no kcal column to work from). Without this the
+// head is asked a target question on an empty day and shown nothing - it then answers
+// from nowhere while food-targets.csv holds the figure (REGR-RUN-2 lc-target-source).
+std::string targetsText(const FoodLedger& l) {
+  const FoodTargets& t = l.targets;
+  if (t.kcal <= 0 && t.protein <= 0) return std::string();
+  const std::string tname = l.name.rfind("food-log", 0) == 0 ? "food-targets" + l.name.substr(8) : l.name;
+  std::string out = "[FOOD TARGETS] stored in " + l.project + "/" + tname + ": ";
+  bool first = true;
+  if (t.kcal > 0) {
+    out += "kcal " + num(t.kcal) + " (from " + t.kcalSource + ")";
+    first = false;
+  }
+  if (t.protein > 0) {
+    out += (first ? "" : "; ") + std::string("protein_g ") + num(t.protein) + " (from " + t.proteinSource + ")";
+  }
+  out += ". State these when asked for a target, with their source; never invent another figure.\n";
+  return out;
+}
+
 // The one call that writes today's first row. The stored header is the one to
 // send (a keyed write refuses any other), keyed by its own meal and kcal columns; a
 // new ledger starts with ours.
@@ -478,8 +499,9 @@ std::string renderLedgerBlock(const FoodLedger& l, bool foodTurn) {
   }
   if (!l.hasRows()) {
     if (!foodTurn) return std::string();
+    const std::string left = leftText(l);
     return head + ": no rows yet today. The first meal the owner says they ate is logged with " + firstCall(l) +
-           ".]\n" + leftText(l) + noTargetsText(l);
+           ".]\n" + left + (left.empty() ? targetsText(l) : std::string()) + noTargetsText(l);
   }
   std::string out = head +
                     ". The device's record of today's meals: today's totals come from here, never "

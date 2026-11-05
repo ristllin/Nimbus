@@ -319,20 +319,35 @@ def ledger_row_count(sc: dict, t: dict, params: dict):
 
 @assertion
 def ledger_day_total(sc: dict, t: dict, params: dict):
-    """Every 'total ... N kcal' the graded reply states equals the receipt: the sum of
-    the day's kcal rows in the final ledger. With require_stated (default true) the
-    reply must state a total at all."""
+    """The graded reply states the day's figure and it equals the receipt: the sum of
+    the day's kcal rows in the final ledger. A 'total ... N kcal' is always checked
+    against the receipt. The day's figure stated in plain day wording counts as
+    stated too ('so far today ... N kcal', 'today ... N kcal', 'N kcal ... today'):
+    REGR-RUN-2 found replies that stated the correct figure without the word
+    'total', which the old wording-only check failed. With require_stated (default
+    true) the reply must state a figure matching the receipt at all; a stated
+    'total' that disagrees with the receipt always fails."""
     expected = day_kcal_sum(t, params)
     r = last_reply(t)
-    matches = re.findall(r"total[^.\n]{0,60}?(\d[\d,\.]*)\s*kcal", r, re.IGNORECASE)
-    stated = [v for v in (num(m) for m in matches) if v is not None]
+    strong = [
+        v
+        for v in (num(m) for m in re.findall(r"total[^.\n]{0,60}?(\d[\d,\.]*)\s*kcal", r, re.IGNORECASE))
+        if v is not None
+    ]
+    weak = []
+    for pat in (
+        r"\b(?:so far|today|day)\b[^.\n]{0,60}?(\d[\d,\.]*)\s*kcal",
+        r"(\d[\d,\.]*)\s*kcal[^.\n]{0,40}?\b(?:so far today|today so far|for today|today)\b",
+    ):
+        weak += [v for v in (num(m) for m in re.findall(pat, r, re.IGNORECASE)) if v is not None]
+    stated = strong + weak
     require = params.get("require_stated", True)
-    if require and not stated:
-        return False, f"no total stated in reply (receipt says {expected:g} kcal)"
-    bad = [v for v in stated if abs(v - expected) > 0.5]
+    if require and not any(abs(v - expected) <= 0.5 for v in stated):
+        return False, f"no day figure stated matching the receipt {expected:g} kcal (stated {stated})"
+    bad = [v for v in strong if abs(v - expected) > 0.5]
     if bad:
-        return False, f"reply totals {stated} != receipt {expected:g} kcal"
-    return True, f"reply totals {stated} == receipt {expected:g} kcal"
+        return False, f"reply totals {strong} != receipt {expected:g} kcal"
+    return True, f"day figure stated {stated} == receipt {expected:g} kcal"
 
 
 @assertion

@@ -191,6 +191,35 @@ void test_no_target_stored_sends_the_head_to_a_source() {
   TEST_ASSERT_FALSE(has(renderLedgerBlock(l, true), "[FOOD TARGETS]"));
 }
 
+// Lane QFIX (REGR-RUN-2 lc-target-source): on a day with no rows the stored targets
+// must still be shown - the ledger file may not exist at all, so leftText has no
+// kcal column to work from and the head would otherwise be asked a target question
+// with nothing in the prompt but the file's name.
+void test_stored_targets_show_on_an_empty_day() {
+  FoodLedger none = scan("", false);
+  none.targets.kcal = 2400;
+  none.targets.kcalSource = "the owner's eating plan";
+  none.targets.protein = 110;
+  none.targets.proteinSource = "the owner's eating plan";
+  const std::string b = renderLedgerBlock(none, true);
+  TEST_ASSERT_TRUE_MESSAGE(has(b, "[FOOD TARGETS] stored in food/food-targets.csv"), b.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(b, "kcal 2400 (from the owner's eating plan)"), b.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(b, "protein_g 110 (from the owner's eating plan)"), b.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(b, "never invent another figure"), b.c_str());
+  // Not on a turn that is not about food, and not when nothing is stored.
+  TEST_ASSERT_EQUAL_STRING("", renderLedgerBlock(none, false).c_str());
+  FoodLedger bare = scan("", false);
+  TEST_ASSERT_FALSE(has(renderLedgerBlock(bare, true), "[FOOD TARGETS] stored in"));
+  TEST_ASSERT_TRUE(has(renderLedgerBlock(bare, true), "[FOOD TARGETS] None is stored."));
+  // A ledger file with a header but no rows today: leftText already carries the
+  // target, so the targets line does not repeat it.
+  FoodLedger headerOnly = scan(std::string(kHead) + "\n2026-10-25,lunch,x,1,1\n");
+  headerOnly.targets = none.targets;
+  const std::string h = renderLedgerBlock(headerOnly, true);
+  TEST_ASSERT_TRUE_MESSAGE(has(h, "2400 kcal left of 2400"), h.c_str());
+  TEST_ASSERT_FALSE(has(h, "[FOOD TARGETS] stored in"));
+}
+
 void test_plan_files_are_about_food_or_weight() {
   TEST_ASSERT_TRUE(looksLikeFoodPlan("roy-weight-loss", "roy-12-month-plan-2026-10-14.md"));
   TEST_ASSERT_TRUE(looksLikeFoodPlan("health", "meal_planning.md"));
@@ -524,6 +553,7 @@ int main(int, char**) {
   RUN_TEST(test_a_kcal_total_that_cannot_be_read_is_no_figure);
   RUN_TEST(test_targets_come_from_a_file_with_a_source);
   RUN_TEST(test_no_target_stored_sends_the_head_to_a_source);
+  RUN_TEST(test_stored_targets_show_on_an_empty_day);
   RUN_TEST(test_plan_files_are_about_food_or_weight);
   RUN_TEST(test_one_food_log);
   RUN_TEST(test_figures_that_correct_a_meal_are_not_a_plain_request);
