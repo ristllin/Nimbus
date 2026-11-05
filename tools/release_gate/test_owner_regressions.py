@@ -54,22 +54,23 @@ THRESHOLDS = {
 
 
 def summary(sha, scenarios):
-    """A summary.json body: one model, the given {scenario: (runs, passes, xfail, meets)}."""
-    return {
+    """A summary.json body: both gate models, the given {scenario: (runs, passes, xfail, meets)}."""
+    body = {
         "suite": "owner_regressions",
         "sha": sha,
         "runs": 5,
         "generated_utc": "2026-11-05T00:00:00+00:00",
-        "models": {
-            "mistral-large-4-0": {
-                "host": "mistral",
-                "scenarios": {
-                    sid: {"runs": r, "passes": p, "min_passes": 4, "xfail": x, "meets": m}
-                    for sid, (r, p, x, m) in scenarios.items()
-                },
-            }
-        },
+        "models": {},
     }
+    for model, host in (("mistral-large-4-0", "mistral"), ("claude-haiku-5-5", "anthropic")):
+        body["models"][model] = {
+            "host": host,
+            "scenarios": {
+                sid: {"runs": r, "passes": p, "min_passes": 4, "xfail": x, "meets": m}
+                for sid, (r, p, x, m) in scenarios.items()
+            },
+        }
+    return body
 
 
 @pytest.fixture
@@ -194,6 +195,14 @@ def test_live_half_fails_on_a_stale_xfail_that_met_its_threshold(tree):
         None,
     )
     assert any("stale EXPECTED-FAIL" in e for e in errs)
+
+
+def test_live_half_fails_when_a_gate_model_has_no_run(tree):
+    sha = "f" * 40
+    s = summary(sha, {"lc-one": (5, 5, False, True), "lc-two": (5, 0, True, False), "lc-four": (5, 0, True, False)})
+    del s["models"]["claude-haiku-5-5"]
+    errs = cor.live_problems(s, THRESHOLDS, None)
+    assert any("claude-haiku-5-5" in e and "no live run" in e for e in errs)
 
 
 def test_live_half_fails_on_regression_against_the_previous_candidate(tree):

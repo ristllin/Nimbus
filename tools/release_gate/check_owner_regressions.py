@@ -17,8 +17,9 @@ v5.0.0 is not tagged unless this gate passes on the exact candidate sha. Two hal
 
 2. Live run (--candidate SHA). Refuses the release unless a full live run on the
    exact candidate sha exists on disk under
-   tests/evals/owner_regressions/runs/<sha>/summary.json, every non-xfail scenario
-   meets its threshold on each gate model (thresholds.json gate_models), no scenario
+   tests/evals/owner_regressions/runs/<sha>/summary.json, every gate model has a
+   leg in it, every non-xfail scenario meets its threshold on each gate model
+   (thresholds.json gate_models), no scenario
    regressed against the previous candidate's run, and no xfail scenario met its
    threshold (a stale xfail must be flipped, not left skipping). With --native-log,
    an EXPECTED-FAIL skip in the candidate's native run also blocks: a landed fix
@@ -207,6 +208,9 @@ def live_problems(summary: dict, thresholds: dict, previous: "dict | None") -> "
     gate_models = thresholds.get("gate_models", [])
     scen_xfail = thresholds.get("scenarios", {})
     expected = expected_scenarios(summary, thresholds)
+    for gm in sorted(gate_models):
+        if gm not in summary.get("models", {}):
+            errs.append(f"{gm}: gate model has no live run on the candidate sha")
     for model in sorted(summary.get("models", {})):
         m = summary["models"][model]
         is_gate = model in gate_models

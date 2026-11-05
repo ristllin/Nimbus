@@ -1,5 +1,5 @@
 {
-  "comment": "Pass thresholds for the owner-regression live suite, written 2026-11-04 BEFORE the first run and not tuned after seeing results (lane REGR TASK.md item 2b). A scenario meets its target on a model when passes >= min_passes out of `runs` reps. The release gate (tools/release_gate/check_owner_regressions.py) requires every non-xfail scenario to meet its target on each gate model. xfail marks a row whose fix is still open on main (routine prompt adherence, unasked-topic guard, loop freshness, loop cancellation); the rows whose fixes were in flight in UPSERT, FSCAP and PROG were flipped to required when those lanes landed (0cefb9d3, fd75210d, a305cbfc).",
+  "comment": "Pass thresholds for the owner-regression live suite, written 2026-11-04 BEFORE the first run and not tuned after seeing results (lane REGR TASK.md item 2b). A scenario meets its target on a model when passes >= min_passes out of `runs` reps. The release gate (tools/release_gate/check_owner_regressions.py) requires every non-xfail scenario to meet its target on each gate model. xfail marks a row whose fix is still open on main (loop freshness, loop cancellation); the rows whose fixes were in flight in UPSERT, FSCAP and PROG were flipped to required when those lanes landed (0cefb9d3, fd75210d, a305cbfc), and lc-routine-content / lc-unasked-topic were flipped after REGR-RUN-2 met them 5/5 on claude-haiku-5-5 and glm-5.3 on bf40a3ed (a stale xfail must be flipped, not left skipping).",
   "runs": 5,
   "default_min_passes": 4,
   "gate_models": ["mistral-large-4-0", "claude-haiku-5-5"],
@@ -11,8 +11,6 @@
     "gpt-6-luna": {"host": "openai", "min_passes": 4}
   },
   "scenarios": {
-    "lc-routine-content": {"xfail": true, "reason": "OIR-01 routine prompt adherence still open on main"},
-    "lc-unasked-topic": {"xfail": true, "reason": "OIR-06 guard on extra content still open on main"},
     "lc-stale-checkin": {"xfail": true, "reason": "OIR-28 connector freshness in loops still open on main"},
     "lc-never-ask": {"xfail": true, "reason": "OIR-39 loop cancellation after a refusal still open on main"}
   }
