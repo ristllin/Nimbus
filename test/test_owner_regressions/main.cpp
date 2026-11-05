@@ -34,9 +34,10 @@
 // (lane REGR). One test per register row that has a lib/core seam; every fixture is synthetic,
 // shaped like the real case with the same numbers class. No personal text from the evidence.
 //
-// Rows whose fix is still in flight in another lane (OIR-19/OIR-42 lane UPSERT, OIR-43 lane
-// FSCAP) self-flip: while the unfixed behavior is detected the test reports EXPECTED-FAIL via
-// TEST_IGNORE_MESSAGE; when the lane lands the behavior changes and the real assertion runs.
+// Rows whose fix landed while this lane was in flight (OIR-19/OIR-42 lane UPSERT 0cefb9d3,
+// OIR-43 lane FSCAP fd75210d) carried a runtime self-flip: while the unfixed behavior was
+// detected the test reported EXPECTED-FAIL via TEST_IGNORE_MESSAGE; the train removed the
+// ignore when the owning lane landed, so the real assertions run unconditionally.
 
 using namespace nimbus::orch;
 
@@ -296,20 +297,16 @@ void test_oir_16_near_match_is_not_a_food_match() {
   TEST_ASSERT_TRUE(sameFoodWords(foodWordsOf("boba tea"), foodWordsOf("another boba tea, no milk")));
 }
 
-// OIR-19 (xfail, lane UPSERT): a keyed write whose key names a meal slot must never
-// replace a row describing a different item. While the unfixed replace is detected,
-// the test reports EXPECTED-FAIL; when UPSERT lands, the new item appends with its own
-// key (UPSERT TASK item 1: only a correction of the same item replaces), so the
-// replace count is 0 and both rows count in the day total (457 + 445 = 902).
-void test_oir_19_silent_replace_xfail() {
+// OIR-19 (fixed, lane UPSERT 0cefb9d3): a keyed write whose key names a meal slot must never
+// replace a row describing a different item. The new item appends with its own key (UPSERT
+// TASK item 1: only a correction of the same item replaces), so the replace count is 0 and
+// both rows count in the day total (457 + 445 = 902).
+void test_oir_19_silent_replace_fixed() {
   const std::string ex = std::string(kLedgerHeader) +
                          "2026-11-04,dinner,smoked brisket 150 g and bread 58 g,457,40.2\n";
   const std::string nw = "2026-11-04,dinner,Frive Smoky Baharat Mango Chicken 70% of 406 g pack,445,26.0\n";
   const CsvUpsert up = planCsvUpsert(ex, std::string(kLedgerHeader) + nw, "meal", "kcal", "2026-11-04");
   TEST_ASSERT_TRUE(up.ok);
-  if (up.replaced == 1) {
-    TEST_IGNORE_MESSAGE("EXPECTED-FAIL OIR-19/OIR-42: lane UPSERT in flight, the keyed write still replaces a different item");
-  }
   TEST_ASSERT_EQUAL_INT(0, up.replaced);
   TEST_ASSERT_EQUAL_INT(1, up.appended);
   TEST_ASSERT_EQUAL_INT(902, (int)up.todayTotal);
@@ -478,9 +475,9 @@ void test_oir_41_mistral_connector_scope() {
   TEST_ASSERT_EQUAL(int(CapScope::SubsessionsOnly), int(connectorScope(c, ps)));
 }
 
-// OIR-42 (xfail, lane UPSERT): after a second dinner is logged, the day total must
+// OIR-42 (fixed, lane UPSERT 0cefb9d3): after a second dinner is logged, the day total must
 // be 2,335 (both rows), not 1,878 (the replaced row lost).
-void test_oir_42_upsert_total_xfail() {
+void test_oir_42_upsert_total_fixed() {
   const std::string ex = std::string(kLedgerHeader) +
                          "2026-11-04,breakfast,skyr and granola,533,32.5\n"
                          "2026-11-04,drink,cappuccino,66,3.3\n"
@@ -490,16 +487,12 @@ void test_oir_42_upsert_total_xfail() {
   const std::string nw = "2026-11-04,dinner,Frive Smoky Baharat Mango Chicken 70% of 406 g pack,445,26.0\n";
   const CsvUpsert up = planCsvUpsert(ex, std::string(kLedgerHeader) + nw, "meal", "kcal", "2026-11-04");
   TEST_ASSERT_TRUE(up.ok);
-  if ((int)up.todayTotal == 1878) {
-    TEST_IGNORE_MESSAGE("EXPECTED-FAIL OIR-42: lane UPSERT in flight, the replaced dinner row is still lost from the total");
-  }
   TEST_ASSERT_EQUAL_INT(2335, (int)up.todayTotal);
 }
 
-// OIR-43 (xfail, lane FSCAP): the store's 256-entry count cap must not be a limit
-// an owner can hit while the card has room. While the cap still refuses, the test
-// reports EXPECTED-FAIL; when FSCAP lands, the 257th entry is accepted.
-void test_oir_43_store_count_cap_xfail() {
+// OIR-43 (fixed, lane FSCAP fd75210d): the store's 256-entry count cap must not be a limit
+// an owner can hit while the card has room. The 257th entry is accepted.
+void test_oir_43_store_count_cap_fixed() {
   FileStore st;
   for (int i = 0; i < 256; i++) {
     FileEntry e;
@@ -515,9 +508,6 @@ void test_oir_43_store_count_cap_xfail() {
   e.bytes = 10;
   std::string err;
   const bool ok = st.add(e, err);
-  if (!ok && st.fullRefusal(err)) {
-    TEST_IGNORE_MESSAGE("EXPECTED-FAIL OIR-43: lane FSCAP in flight, the 256-entry count cap still refuses with card space free");
-  }
   TEST_ASSERT_TRUE(ok);
 }
 
@@ -592,7 +582,7 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_16_near_match_is_not_a_food_match);
   RUN_TEST(test_oir_17_subagent_invented_items);
   RUN_TEST(test_oir_18_receipt_vs_reply_rows);
-  RUN_TEST(test_oir_19_silent_replace_xfail);
+  RUN_TEST(test_oir_19_silent_replace_fixed);
   RUN_TEST(test_oir_20_false_claim_keyed);
   RUN_TEST(test_oir_22_unsourced_protein_target);
   RUN_TEST(test_oir_23_cut_retry_note);
@@ -609,8 +599,8 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_39_never_ask_blocks_the_routine);
   RUN_TEST(test_oir_40_queued_message_deferred_not_dropped);
   RUN_TEST(test_oir_41_mistral_connector_scope);
-  RUN_TEST(test_oir_42_upsert_total_xfail);
-  RUN_TEST(test_oir_43_store_count_cap_xfail);
+  RUN_TEST(test_oir_42_upsert_total_fixed);
+  RUN_TEST(test_oir_43_store_count_cap_fixed);
   RUN_TEST(test_oir_44_write_drop_claim);
   RUN_TEST(test_oir_46_embed_parked_not_used);
   RUN_TEST(test_oir_47_park_402_billing);
