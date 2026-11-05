@@ -1,4 +1,5 @@
 #include "nimbus/harness/vision_caption.h"
+#include "nimbus/json_strict.h"
 
 #include <ArduinoJson.h>
 
@@ -15,6 +16,7 @@
 #include "nimbus/orch/spend_ceiling.h"    // paidCallAllowed - the monthly spend ceiling (lane DEF)
 #include "nimbus/orch/provider_error.h"   // oneLineText
 #include "nimbus/orch/provider_park.h"    // the one per-provider park
+#include "nimbus/orch/router_refusals.h"   // the clamp on a photo: reason and capped resend
 #include "nimbus/orch/reply_text.h"       // messagesContentText, chatContentText
 #include "nimbus/orch/token_usage_json.h"
 #include "nimbus/orch/turn_images.h"   // kImagePartBytes - the record queue's size budget
@@ -61,8 +63,10 @@ const char* kMemoryPrompt =
     "Write a short record of this photo for a memory search: one or two plain sentences on "
     "what it shows, then any key text or numbers in it copied exactly. No preamble.";
 const char* kQuestionPrompt =
-    "Answer the question below about this photo. Copy any text you rely on exactly. If the "
-    "photo does not show the answer, say so plainly.";
+    "Say in one line what the photo shows, in your own words, then answer the question below. "
+    "The question may name what someone guessed is in the photo, and that guess may be wrong: "
+    "if the photo disagrees, say so and answer from the photo. Copy any text you rely on "
+    "exactly. If the photo does not show the answer, say so plainly.";
 
 std::string promptOf(const CaptionRequest& in) {
   std::string p = in.kind == CaptionKind::Memory     ? kMemoryPrompt
@@ -86,6 +90,7 @@ std::string errorText(const JsonDocument& doc) {
   if (doc["error"].is<const char*>()) t += std::string(doc["error"].as<const char*>()) + " ";
   JsonVariantConst m = doc["message"];
   if (m.is<const char*>()) t += std::string(m.as<const char*>()) + " ";
+  if (doc["reason"].is<const char*>()) t += std::string(doc["reason"].as<const char*>()) + " ";
   if (doc["code"].is<const char*>()) t += std::string(doc["code"].as<const char*>()) + " ";
   return t;
 }
@@ -178,6 +183,7 @@ Route routeOf(const CaptionDeps& d, const std::string& provider) {
 
 std::string closedWords(const std::string& provider, const orch::ParkVerdict& v) {
   if (v.paused) return "paid requests to " + provider + " are paused";
+  if (v.cause != orch::ParkCause::Unspecified) return provider + orch::parkCauseWhy(v.cause);
   if (v.kind == orch::ParkKind::Billing)
     return provider + " out of credit" + (v.httpStatus ? " (HTTP " + std::to_string(v.httpStatus) + ")" : "");
   if (v.kind == orch::ParkKind::Auth) return provider + " refused the key";
@@ -247,7 +253,7 @@ bool buildCaptionRequest(const std::string& provider, const std::string& model, 
     txt["type"] = "text";
   } else {   // mistral
     req["max_tokens"] = cap;
-    if (providers::mistralTakesEffort(model)) req["reasoning_effort"] = "none";   // Mistral's low setting
+    if (providers::mistralTakesEffort(model)) req["reasoning_effort"] = providers::mistralHeadEffort(model);
     img["type"] = "image_url";
     img["image_url"] = std::string("data:") + mime + ";base64," + kMarker;
     txt = content.add<JsonObject>();
@@ -255,7 +261,7 @@ bool buildCaptionRequest(const std::string& provider, const std::string& model, 
   }
   txt["text"] = promptOf(in);
   std::string body;
-  serializeJson(req, body);
+  nimbus::serializeStrictJson(req, body);
   const size_t at = body.find(kMarker);
   if (at == std::string::npos) return false;
   body.erase(at, std::strlen(kMarker));
@@ -316,6 +322,8 @@ JsonDocument answerFilter() {
   filter["message"] = true;
   filter["code"] = true;
   filter["type"] = true;
+  filter["reason"] = true;   // a router refusal: the reason decides, and says what fits
+  filter["maxAffordableOutputTokens"] = true;
   return filter;
 }
 
@@ -366,6 +374,29 @@ void readRefusal(const HttpRequest& req, const Route& route, const JsonDocument&
            : k == orch::ParkKind::Auth  ? ReadFail::Auth
                                         : ReadFail::ProviderError;
   r.words = failWords(r.fail, r.provider, r.status);
+  const orch::ParkCause cause = orch::providerPark().causeOf(r.provider.c_str());
+  if (k != orch::ParkKind::None && cause != orch::ParkCause::Unspecified) r.words = r.provider + orch::parkCauseWhy(cause);
+  if (orch::readRouterAnswer(errorText(doc)).action() == orch::RouterAction::RetryCapped)
+    r.words = "this request is larger than the remaining credits allow";
+}
+
+// The router's clamp on a photo: the wallet holds credits, this call's worst case does
+// not fit, and the answer says what would. Resends once with the output capped there, the
+// photo's splice moved with the edit. False when no useful cap fits.
+bool capCaptionRequest(HttpRequest& req, const JsonDocument& doc) {
+  std::string said;
+  serializeJson(doc, said);
+  const orch::RouterAnswer a = orch::readRouterAnswer(said);
+  if (a.action() != orch::RouterAction::RetryCapped ||
+      a.maxAffordableOutputTokens < (int64_t)orch::kRouterCapFloorTokens)
+    return false;
+  orch::CapEdit edits[orch::kCapEditMax];
+  size_t n = 0;
+  if (!orch::capOutputTokens(req.body, req.path, (uint32_t)a.maxAffordableOutputTokens, edits, n)) return false;
+  for (BodySplice& sp : req.splices) sp.at = orch::applyCapEdits(sp.at, edits, n);
+  hlog::logf("vision: %s clamped - resending once with the output capped at %u", req.host.c_str(),
+             (unsigned)a.maxAffordableOutputTokens);
+  return true;
 }
 
 // Ask one open provider for the photo.
@@ -376,6 +407,7 @@ CaptionResult askOne(const CaptionDeps& d, const std::string& p, const Route& ro
   r.model = route.model;
   HttpRequest req;
   if (!buildCaptionRequest(route.wire, route.model, key, in, route.host, req)) {
+    orch::providerPark().releaseProbe(p.c_str());   // nothing goes out: a re-check stays due
     r.fail = ReadFail::Unsupported;
     r.words = failWords(r.fail, p, 0);
     return r;
@@ -384,6 +416,11 @@ CaptionResult askOne(const CaptionDeps& d, const std::string& p, const Route& ro
   std::string terr;
   r.requests = 1;
   r.status = send(d, req, doc, terr);
+  if (p == "cumulo" && r.status == 402 && capCaptionRequest(req, doc)) {
+    doc.clear();
+    r.requests = 2;
+    r.status = send(d, req, doc, terr);
+  }
   if (r.status <= 0) {
     orch::providerPark().noteFailure(p.c_str(), now);
     r.status = 0;
@@ -554,6 +591,19 @@ const PendingRecord* RecordQueue::due(uint32_t nowMs, bool providerOpen) const {
   for (size_t i = items_.size(); i-- > 0;)   // newest first
     if ((int32_t)(nowMs - items_[i].notBeforeMs) >= 0) return &items_[i];
   return nullptr;
+}
+
+bool RecordQueue::holds(const std::string& ref) const {
+  for (const PendingRecord& r : items_)
+    if (ref == r.ref.c_str()) return true;
+  return false;
+}
+
+std::string lookFailedWords(bool queued, const std::string& reason) {
+  if (queued)
+    return "this photo has not been read yet: its reading is waiting for a provider (" + reason +
+           ") and lands in its row by itself. Say it has not been read yet; it need not be sent again";
+  return "the photo could not be read: " + reason;
 }
 
 void RecordQueue::settle(const PendingRecord::Str& ref, bool ok, uint32_t nowMs) {

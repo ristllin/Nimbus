@@ -6,6 +6,58 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v5.0.0 - The launch release
+
+The full launch release. It carries everything in the interim v4.9.0 build plus the
+final correctness and conversation work: the web chat reply that vanished, the food
+plan that stored only half its targets, the day rewrite that changed things in
+silence, the reasoning model that spent its budget before answering, and the six
+conversation habits the owner had asked to stop.
+
+- **The web chat shows your reply.** On v4.9.0 the web page could show an empty reply after the answer was delivered: a poll that landed while the turn was still wrapping up consumed it. The reply now stays in its slot until the page reads it at idle, and it is delivered once, not duplicated.
+- **A food plan stores every target it cites.** A plan that states both a calorie and a protein target no longer stores only one row in silence: a cited target the row did not store is named and corrected, and you are told when it still does not land.
+- **A day rewrite says what changed.** Deleting and re-entering a day no longer loses a row or changes a figure without a word: the reply names the rows it removed, added or changed, and a re-entry that skips a removed row is named too.
+- **A cut reasoning model steps down quietly.** A model that spends its answer budget on hidden reasoning no longer fails over to another provider with a warning for a short reply: it first gets one round on a same-provider model that does not reason, and you see a notice only when something you would notice changed.
+- **The conversation stops annoying you.** An open question is raised once and dropped when you say so, never re-raised on its own. "Never ask" and "stop on workdays" rules bind even when the rules list is full: the oldest rule is merged or retired with you told, never silently dropped. Replies carry no memory ids, job ids or file paths. Briefs prefer primary sources: the train operator, the Met Office or the BBC, never a lone aggregator. A stored fact is not raised on a turn it has nothing to do with. A confused or angry owner gets a short answer that re-anchors on the facts that changed.
+- **Voice is not hardware-tested.** No audio test has run on any board (owner's order of 2 November: silent mode), so the speaking parts of this build are host-tested only.
+
+## v4.9.0 - Interim build ahead of v5.0.0
+
+An interim build that carries the launch fixes landed so far, ahead of the full
+v5.0.0 release. It carries the work of the launch lanes QW6R, OVF, FOOD, MG, RTF,
+HEAP, PROT, RCAD, GATE, GATE2 and LABEL.
+
+- **The food log tells the truth.** Figures read off a nutrition label are checked against the photo's own numbers before they are stored, and a mismatch is marked instead of landing silently. A row with no backing in what you said or what was read is refused, and the assistant never claims "you told me" without quoting a real message. A food photo with no question is logged as eaten, in one line, with an easy undo.
+- **The daily coach works from the ledger's own rows.** Sums come from the device's records, a daily target with no source cannot be stored, and the stray second food file folds back into the food log at the next start.
+- **A turn no longer dies of its own size.** A request that is too big gives things up in a set order, says what it gave up, and still answers. "Placeholder" and empty promises of "next turn" no longer reach you.
+- **Compaction finishes on Mistral again.** The "no summary in reply" failures are fixed: the summary reads the reply's text, and a model that refuses the built-in connectors no longer breaks it.
+- **Mistral and GLM can drive a day.** Memory, files, a food plan, web lookups and long answers work on Mistral Large 4 and GLM-5.3, and an empty model reply no longer turns into "Done.".
+- **No more false "add credits".** The device no longer tells you to add credits when the wallet has credits. Only an empty wallet, a missing plan, a device limit, a suspended account or a bad key stops the hosted service, each in its own words, and a request too large for the remaining credits is sent again once with a shorter reply limit.
+- **Fewer stalls and crashes.** The model list refresh no longer takes the device's spare memory close to empty, a binary file or a stray control byte no longer kills a turn on any provider, and a photo received twice is charged once against a member's storage.
+- **A changed Telegram token starts clean.** After a bot token change the device no longer replays old updates or misses new ones, and the web cards say what really happened: acting on something that is already gone says so, never "Approved.".
+- **Voice changes ship without hardware proof.** No audio test has run on any board (owner's order of 2 November: silent mode), so the speaking changes in this build are host-tested only.
+
+## v4.6.4 - Compaction works on every Mistral model again
+
+A fix release for the broken compaction reported on 31 October.
+
+- **A model that refuses the built-in connectors no longer breaks the conversation summary.** Switching the assistant to mistral-large-4-0 made every compaction attempt die with "does not support builtin connectors" - retried forever, so the conversation summary went stale and answers degraded. The turn is now retried once without the server-side connectors (your own tools are unaffected - they run on the device), the refusal is remembered, and compaction completes.
+
+## v4.6.3 - Log corrections that land, and a ledger that heals itself
+
+A fix release for the correction loop reported on 30 October.
+
+- **Corrections are checked against what actually happened.** Saying "removed", "replaced" or "deduplicated" now requires the tool result that says a stored row was really replaced - a plain append no longer backs the claim, and the reply says so honestly.
+- **The meal ledger heals itself.** An old headerless meal log folds into the proper ledger on the next start - your final figures win - and creating a headerless log that corrections cannot target is refused with the header it needs, so the silent-append loop cannot recur.
+- **A lost reply tells you.** If a crash ever eats a reply again, the boot notice says the message arrived and its work may be done - check before re-sending, so nothing gets logged twice.
+
+## v4.6.2 - The 29 October crash stopped, files.edit added
+
+A fix release for the crash and the file-editing gap reported on 29 October.
+
+- **The 29 October crash stopped.** A log write refused at a raised interrupt level no longer stops the device. The fix's first account blamed the nightly dream, and that was wrong. The crash frames, decoded against the matching v4.6.1 build, show a log line written during a "lights" action while the config lock was held, and 5.0.0 moves that line out of the lock.
+- **files.edit.** The assistant can now change one line of a text document without reading and rewriting the whole file - it finds the text, replaces it, and leaves everything else untouched. Cheaper on memory and tokens, and it says honestly what it found and replaced.
+
 ## v4.6.1 - Faster replies, no web-page restarts, the real model named
 
 A fix release for problems seen in the first hours of v4.6.0.

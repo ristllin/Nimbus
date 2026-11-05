@@ -68,6 +68,9 @@ struct DeliveryWorld {
 // follow telegram::isOwner exactly: an owner must be allow-listed; with no owners list the
 // owner is the text before the allowlist's first comma (trimmed), else every allow-listed
 // entry of the owners list, the first of which is the owner default.
+// Whether `chatId` is the Telegram owner by these lists (the same rule, from the lists
+// the caller just wrote: the poll task's own copies lag a web-task write by one cycle).
+bool telegramOwnerOf(const std::string& allowlist, const std::string& owners, const std::string& chatId);
 DeliveryWorld deliveryWorld(const std::string& botToken, const std::string& allowlist,
                             const std::string& owners);
 

@@ -1,0 +1,17 @@
+{
+  "id": "lc-plumbing",
+  "title": "A reply carries no internal plumbing",
+  "rows": ["OIR-37"],
+  "replays": "The 2 Nov class: replies carried artifact file paths, memory ids, read back confirmed and row keys.",
+  "clock": "{{TODAY}} {{DOW}} 06:02 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "say", "text": "Log my lunch: a turkey sandwich, 480 kcal. Then confirm it is saved."}
+  ],
+  "assertions": [
+    "reply_ok",
+    "no_plumbing",
+    {"id": "ledger_row", "params": {"item": "turkey", "kcal": 480}}
+  ]
+}

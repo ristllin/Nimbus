@@ -86,6 +86,42 @@ CLAIM_TURNS = {
         "session_ops": "spawn three researchers on this and summarize",
     },
 }
+# QW6 (voice honesty, test_l75_voice_honesty.py): the end-of-turn tts action behind a reply that says
+# it was read aloud; a turn whose only output is the tts action; and a text of about 900 characters
+# with 2-byte letters, over the 400-byte bound the action voices.
+CLAIM_TURNS["mock-claim-spoken"] = {
+    "reply": "I read it aloud for you.",
+    "device": [{"type": "tts", "text": "Bench voice check."}],
+}
+CLAIM_TURNS["mock-tts-only"] = {
+    "reply": "",
+    "device": [{"type": "tts", "text": "The bench kettle is ready."}],
+}
+# A failed tts beside a reply is reported whatever the reply says: a wording no claim cue knows,
+# and a reply in another language (the claim check only reads a few English phrasings).
+CLAIM_TURNS["mock-tts-reworded"] = {
+    "reply": "Playing it now.",
+    "device": [{"type": "tts", "text": "Bench voice check."}],
+}
+CLAIM_TURNS["mock-tts-french"] = {
+    "reply": "Je l'ai lu \u00e0 voix haute pour toi.",
+    "device": [{"type": "tts", "text": "Bench voice check."}],
+}
+# T4's long text forces the tts action's HARD cut inside a run of 2-byte letters: a short ASCII lead,
+# then one long hyphenated word with no space or sentence end from byte 133 to past byte 400, where
+# a 2-byte letter straddles the 400-byte bound. A byte cut would end inside that letter; the device
+# backs off to byte 399. The rest (spaces, sentences) only makes the text long.
+_LONG_TTS_WORD = "Z\u00fcrich-r\u00e9sum\u00e9-na\u00efve-jalape\u00f1o-cr\u00e8me-br\u00fbl\u00e9e-"
+_LONG_TTS = (
+    "Bench voice check: "
+    + (_LONG_TTS_WORD * 12).rstrip("-")
+    + ". "
+    + ("Cafe owners in Z\u00fcrich read the r\u00e9sum\u00e9 of a na\u00efve jalape\u00f1o chef. " * 7).strip()
+)
+CLAIM_TURNS["mock-tts-long"] = {
+    "reply": "I read it aloud for you.",
+    "device": [{"type": "tts", "text": _LONG_TTS}],
+}
 # Storm leg h: a reply that claims an effect the turn never had (no memory write, no
 # notes): the device must not pass it on as true.
 CLAIM_TURNS["mock-claim-nothing"] = {"reply": "Saved it to memory."}

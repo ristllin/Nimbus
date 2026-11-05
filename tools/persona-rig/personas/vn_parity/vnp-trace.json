@@ -1,0 +1,108 @@
+{
+  "name": "vnp-trace",
+  "description": "The activity recording box is what the page says, and it can be turned off.",
+  "keys": {
+    "mistral": "MISTRAL_API_KEY"
+  },
+  "models": {
+    "head": {
+      "mistral": "mistral-small-latest"
+    },
+    "sub": {
+      "mistral": "mistral-small-latest"
+    }
+  },
+  "host": "mistral",
+  "timezone": "Europe/London",
+  "monthly_cap_cents": 200,
+  "scenarios": [
+    {
+      "id": "trace-switch",
+      "steps": [
+        {
+          "http": {
+            "method": "GET",
+            "path": "/api/orch"
+          },
+          "expect": [
+            {
+              "body_contains": "\"orchTrace\":true"
+            }
+          ]
+        },
+        {
+          "http": {
+            "method": "POST",
+            "path": "/api/orch",
+            "form": {
+              "orchTrace": "0"
+            }
+          },
+          "expect": [
+            {
+              "http_status": 200
+            }
+          ]
+        },
+        {
+          "say": "Search your documentation for how routines work, using your docs search tool, then answer in one line.",
+          "expect": [
+            {
+              "turn_resolved": true
+            },
+            {
+              "tool_called": "docs_search"
+            }
+          ]
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/api/mem/episodic?limit=50"
+          },
+          "expect": [
+            {
+              "body_not_contains": "\"kind\":\"tool_output\""
+            }
+          ]
+        },
+        {
+          "http": {
+            "method": "POST",
+            "path": "/api/orch",
+            "form": {
+              "orchTrace": "1"
+            }
+          },
+          "expect": [
+            {
+              "http_status": 200
+            }
+          ]
+        },
+        {
+          "say": "Search your documentation for how skills work, using your docs search tool, then answer in one line.",
+          "expect": [
+            {
+              "turn_resolved": true
+            },
+            {
+              "tool_called": "docs_search"
+            }
+          ]
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/api/mem/episodic?limit=50"
+          },
+          "expect": [
+            {
+              "body_contains": "\"kind\":\"tool_output\""
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

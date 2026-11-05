@@ -75,7 +75,8 @@ class ProviderHosts {
   // Lane K's billing and auth park on the paths outside the fabric loop: the
   // single-shot ladder and the context fold skip a parked host and feed the park
   // with every answer and failure, so a refused host is asked once per episode on
-  // every path, not once per turn. The device binds these to providers::hostParked,
+  // every path, not once per turn. `parked` is a read, never a claim of the re-check: the
+  // wire claims it when the request leaves. The device binds these to providers::hostParked,
   // noteHostFailed and unparkHost over its ProviderDeps (the park's key and model
   // fingerprint is the fabric's). Unset = no host is ever parked.
   std::function<bool(const std::string& host, providers::HostPark* why)> parked;
@@ -294,6 +295,20 @@ class TurnEngine {
     // shift's advance (persisted with the turn).
     std::function<HistoryMarks(const std::string& chatId)> historyMarks;
     std::function<void(const std::string& chatId, const std::string& softStart)> noteHistoryShift;
+    // The prompt as this fabric's requests send it, for a request refitted inside a head's own
+    // loop (the hosted Virtual Nimbus rewrites its device wording). Unwired = as composed.
+    std::function<std::string(const std::string& instructions)> requestPrompt;
+    // A routine or wakeup is set for this chat (a promise to report back has something
+    // behind it). Unwired = none.
+    std::function<bool(const std::string& chatId)> standingWork;
+    // Lane POL2: observe a completed owner-facing turn for the open-question list
+    // (open_questions.h observeOpenQ: a reply that mentions an item marks it
+    // raised, the owner's message re-opens or withdraws one). The chat rides along
+    // so the wiring observes only the owner's own turns - a member's message
+    // must not re-open or suppress the owner's items. Returns a log
+    // line, "" when nothing changed. Unwired = no open list on this host.
+    std::function<std::string(const std::string& chatId, const std::string& ownerText,
+                              const std::string& reply)> openqObserve;
     // Minutes east of UTC for day markers and send times (unwired = UTC).
     std::function<int32_t()> utcOffsetMin;
     // The same, valid at a unix time: DST and zone changes apply to each row at its own
@@ -304,6 +319,12 @@ class TurnEngine {
     // device: the canonical file streamed through FoodLedgerScan under the turn's
     // read boundary). It rides the per-turn block and the fold. Nullable => none.
     std::function<nimbus::orch::FoodLedger(const std::string& chatId)> foodLedger;
+    // The person's earlier ledger rows of the foods a message names (renderFoodRecall /
+    // FoodRecallScan), asked on a food turn: the same food gets the same figures across days.
+    std::function<std::string(const std::string& chatId, const std::string& message)> foodRecall;
+    // The approved stored skills about food (foodSkillId, by id): the one that guides a logged
+    // meal rides that turn, so the owner's own method is consulted, not just listed.
+    std::function<std::vector<std::string>()> foodSkills;
   };
 
   // Heap floors, defaulted to src/agent/agent_config.h's values so the
@@ -403,6 +424,10 @@ class TurnEngine {
   // have been paid, and a persistent defer (low heap, month-long budget cap)
   // otherwise repeats them every pump pass - an owner-visible notice loop.
   bool canFoldNow() const;
+  // The idle re-check: when a parked provider's re-check is due, one small real request
+  // on the caller's task (the fold pump: the same single task, the same one TLS slot).
+  // True when a request went out. Cheap when nothing is due, so a pump may call it often.
+  bool recheckParkedHost();
   // Keyed, in-budget fold hosts (orchHost first, then priority; <=3). Public so
   // tests can pin the ladder order without scripting a provider.
   std::vector<std::string> foldHostCandidates() const;
@@ -457,9 +482,13 @@ class TurnEngine {
   // A mid-loop reply.telegram/reply.speak already answered THIS turn's chat -
   // applyTurn then suppresses its bare "Done." fallback (device sendToChat
   // reports it here). The reply reached the owner, so the fire spoke too.
-  void noteToolReplied() {
+  // `text` is what it sent to this chat (kept, bounded, so a tts that fails later in the turn
+  // never sends the same words a second time).
+  void noteToolReplied(const std::string& text = std::string()) {
     toolReplied_ = true;
     spoke_ = true;
+    if (!text.empty() && toolReplyTexts_.size() < kToolReplyKeep)
+      toolReplyTexts_.emplace_back(text.data(), text.size() < kToolReplyBytes ? text.size() : kToolReplyBytes);
   }
   // CUM-826: the model's text reached the owner on a path the engine does not see (a
   // tool sent it to another allowlisted chat of the owner). Called once the send was
@@ -517,6 +546,8 @@ class TurnEngine {
   std::string syncCapacityText() const;
   // A billing refusal's owner notice: once per episode (billingNoticeDue, shared
   // with the embedding seam), held without taking the latch on a quiet turn.
+  bool recheckableHost(const std::string& host) const;   // recheckParkedHost's gates
+  void askParkedHost(const std::string& host);           // its one small request
   void deliverBillingNotice(const std::string& chatId, const std::string& host,
                             const std::string& text);
   // L19-13 d: a provider-switch notice raised while a turn runs is HELD, not sent:
@@ -554,6 +585,9 @@ class TurnEngine {
   // then, once the history is known, fill the per-turn ledger and (a food turn) the
   // playbooks.
   std::string loadFoodLedger(const std::string& chatId);
+  nimbus::orch::FoodFacts currentFoodFacts(const std::string& chatId) const;
+  std::string ownerFoodSkillBlock(bool asks) const;
+  std::string foodRecallBlock(const std::string& userText) const;
   void applyFoodContext(ComposeInputs& ci, const std::string& userText) const;
   // The fold's day: [TODAY] and the ledger's view for this chat ("" = no clock).
   std::string foldDayContext(const std::string& chatId) const;
@@ -605,9 +639,13 @@ class TurnEngine {
   // each turn's start; FireOutcome.answered reads it.
   volatile bool spoke_ = false;
   bool fireServed_ = false;   // the fire's runTurn returned true (recorded before its bookkeeping)
+  static constexpr size_t kToolReplyKeep = 8;
+  static constexpr size_t kToolReplyBytes = 2048;
+  decltype(ApplyState::toolReplyTexts) toolReplyTexts_;   // ...and what it said (this turn)
   volatile bool turnTelegram_ = true;   // CUM-523: this turn's one Telegram sample (read cross-task)
   volatile bool turnFileSend_ = true;   // CUM-523: and whether files.send can deliver on it
   bool scheduledTurn_ = false;          // a Local Loops / synthesis (unattended) turn is running
+  bool routineRecurs_ = false;          // that turn is a run of a routine that will run again
   bool quietTurn_ = false;              // dream: suppress the bare-"Done." fallback this turn
   bool dreamTurn_ = false;              // the reserved dream loop: memory-only surface (lane M)
   // F1 (lane I): this turn's skills - what buildDynamicContext attached (the
@@ -690,6 +728,7 @@ class TurnEngine {
   uint32_t    pendingFallbackMs_ = 0;  // nowMs() when it was recorded
   std::string loopName_;               // the scheduled turn in flight (its routine name)
 
+  bool rawResultsFollow_ = false;   // a failed synthesis: the raw results are the message
   // histV2 (conversation.h): the in-flight user row, a seedless turn's trigger
   // row (written before its first assistant row), and the out: kind of the
   // assistant row being captured.

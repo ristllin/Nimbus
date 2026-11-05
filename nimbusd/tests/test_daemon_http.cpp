@@ -17,7 +17,8 @@
 //       never fully left, "connect failed" before it was sent;
 //   (g) so a hosted Z.ai sub cut after its POST is Timeout (may have started);
 //   (h) a POST never rides a kept-alive connection, so libcurl never re-sends one
-//       the peer read and then cut (it is sent, and billed, once).
+//       the peer read and then cut (it is sent, and billed, once);
+//   (i) a read bound stops an oversized download.
 // Every case runs on ONE transport (the persistent handle), so a plain request
 // after a capturing one also proves the per-exchange sink never outlives it.
 // Offline: a loopback server with canned responses; no keys, no external network.
@@ -313,6 +314,24 @@ static void testPostNeverResentOnAReusedConnection(ndtest::Ctx& c, DaemonHttpTra
   }
 }
 
+// (i) A read bound stops an oversized body where it was asked to, and the answer is
+// still an answer: the caller sees a body past its limit and refuses it by size.
+static void testReadBound(ndtest::Ctx& c, DaemonHttpTransport& t) {
+  CannedServer srv({response("HTTP/1.1 200 OK", {"Content-Type: application/octet-stream"}, std::string(200000, 'x')),
+                    response("HTTP/1.1 200 OK", {"Content-Type: application/octet-stream"}, std::string(50, 'y'))});
+  agent::HttpRequest req = loopbackGet(srv.port(), "/big");
+  req.maxResponseBytes = 101;
+  agent::HttpResponse out;
+  std::string err;
+  c.ok(t.exec(req, out, err) && out.status == 200, "(i) a body past the bound is still an answer");
+  c.eqi((long)out.body.size(), 101, "(i) and reading stopped at the bound");
+  agent::HttpRequest small = loopbackGet(srv.port(), "/small");
+  small.maxResponseBytes = 101;
+  agent::HttpResponse out2;
+  c.ok(t.exec(small, out2, err) && out2.body.size() == 50, "(i) a body under the bound is whole");
+  srv.join();
+}
+
 int main() {
   std::signal(SIGPIPE, SIG_IGN);
   ndtest::Ctx c;
@@ -326,6 +345,7 @@ int main() {
   testFailuresSpeakTheWireWords(c, t);
   testCutSubMayHaveStarted(c, t);
   testPostNeverResentOnAReusedConnection(c, t);
+  testReadBound(c, t);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

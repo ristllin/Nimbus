@@ -33,6 +33,7 @@
 #include "nimbus/telegram_offset.h"   // nimbus::core::TgOffsetCursor (host-tested)
 #include "nimbus/tg_updates.h"        // nimbus::tg::parseUpdates (host-tested filtered parse)
 #include "nimbus/orch/msg_batch.h"    // CUM-398 rapid-message batcher + drainPages (host-tested)
+#include "nimbus/orch/loop_delivery.h"  // telegramOwnerOf: the owner rule from given lists (host-tested)
 #include "nimbus/orch/media_label.h"  // the one inbound media label (host-tested)
 #include "nimbus/orch/store_full.h"   // a full file store is said once (host-tested)
 #include "nimbus/orch/blob_store.h"   // BlobHasher: the content hash of an inbound file
@@ -523,7 +524,7 @@ bool tlsConnect(WiFiClientSecure& sc) {
   tlsSetup(sc);
   sc.setHandshakeTimeout(CONNECT_TIMEOUT / 1000);   // seconds
   for (int attempt = 1; attempt <= 2; attempt++) {
-    if (sc.connect(TG_HOST, TG_PORT, (int32_t)CONNECT_TIMEOUT)) return true;
+    if (connectHost(sc, TG_HOST, TG_PORT, (int32_t)CONNECT_TIMEOUT)) return true;
     tlsClose(sc);
     if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(400));
   }
@@ -1179,10 +1180,15 @@ static void sendStorageNotice() {
 
 // The once-per-episode "the file store is full" notice (agent::files::noteRefusal
 // raises it). The photo path sends it at once, so it reaches the owner before that
-// photo's reply; the poll loop sends one an assistant save raised.
+// photo's reply; the poll loop sends one an assistant save raised. Lane FSCAP: the
+// reclaim notice rides the same route - the owner should hear that a save only
+// landed because older regenerable copies were evicted (same kind, its own text,
+// so the web chat's once-per-day dedup treats it as its own notice).
 static void sendFileStoreNotice() {
   sendOwnerNotice(nimbus::net::OwnerNotice::FileStore, [] { return agent::files::takeFullNotice(); },
                   nimbus::orch::kStoreFullNotice, " (file store)");
+  sendOwnerNotice(nimbus::net::OwnerNotice::FileStore, [] { return agent::files::takeReclaimNotice(); },
+                  nimbus::orch::kStoreReclaimNotice, " (file store reclaim)");
 }
 
 // ---- sendMessage ------------------------------------------------------------
@@ -1437,7 +1443,8 @@ static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& w
   char proj[48];
   snprintf(proj, sizeof(proj), "chat-%s", in.slot.chatId);
   std::string ferr;
-  if (agent::files::saveStream(proj, fname, LittleFS, in.lfsPath, ferr, who.ns)) return Kept::Stored;
+  if (agent::files::saveStream(proj, fname, agent::files::StagedFile{LittleFS, in.lfsPath}, ferr, who.ns, in.hash))
+    return Kept::Stored;
   alogf("telegram: attach store failed: %s", ferr.c_str());
   if (!agent::files::noteRefusal(ferr)) return Kept::Failed;
   sendFileStoreNotice();   // the episode's first refusal: queued before this turn's reply
@@ -1461,10 +1468,20 @@ static nimbus::orch::Principal senderOf(const char* chatId) {
 // Telegram's size hint can read low, so the real size is checked again after.
 static const char* refusalOf(const MediaSlot& m, const nimbus::orch::Principal& who) {
   if (!tgPathSafe(m.fileId)) return "unreadable file id";
-  if (!agent::memory::haveSd()) return "no memory card in the device";
-  if (m.size && m.size > nimbus::tg::kPhotoBudget) return "too large";
-  if (files::wouldExceedQuota(who, m.size ? m.size : 1)) return "over the sender's storage limit";
+  if (!agent::memory::haveSd()) return nimbus::orch::kMediaNoCard;
+  if (m.size && m.size > nimbus::tg::kPhotoBudget) return nimbus::orch::kMediaTooLarge;
+  if (files::wouldExceedQuota(who, m.size ? m.size : 1)) return nimbus::orch::kMediaOverQuota;
   return "";
+}
+
+// The same limit once the bytes are here and the real size and content are known: a copy
+// this sender already keeps is not charged twice. `contentHash` is the file's blob hash.
+static const char* refusalAfterFetch(const MediaSlot& m, const nimbus::orch::Principal& who, const char* localPath,
+                                     uint32_t total, std::string& contentHash) {
+  contentHash = hashFile(localPath);
+  if (files::holdsSameContent(m.chatId, contentHash, who.ns) || !files::wouldExceedQuota(who, total)) return "";
+  LittleFS.remove(localPath);
+  return nimbus::orch::kMediaOverQuota;
 }
 
 static const nimbus::tg::Update* pageUpdate(int32_t id);
@@ -1529,6 +1546,7 @@ static void maybeTyping(const char* chatId) {
   readLine(sc, line, sizeof(line), millis() + 5000);
   tlsClose(sc);
 }
+
 
 // Photo or document k of n of turn `turn` (slot `slot`): fetched, hashed, handed to the
 // archive (one download), described (a photo), kept in the file store and the episodic
@@ -1725,15 +1743,13 @@ static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string&
   size_t total = 0;
   alogf("telegram: media %d/%d fetch start (update %ld)", label.k, label.n, (long)m.updateId);
   why = fetchToLfs(m, localPath, nimbus::tg::kPhotoBudget, total);
-  if (!why[0] && files::wouldExceedQuota(who, (uint32_t)total)) {
-    LittleFS.remove(localPath);
-    why = "over the sender's storage limit";
-  }
+  std::string contentHash;
+  if (!why[0]) why = refusalAfterFetch(m, who, localPath, (uint32_t)total, contentHash);
   if (why[0]) return failedSegment(label, why, slot, seg);
   alogf("telegram: attachment downloaded %u bytes", (unsigned)total);
   downloading.end();
   const bool image = photo || nimbus::orch::imagePartMime(m.mime)[0];
-  const InboundFile in{m, localPath, hashFile(localPath), photo, image};
+  const InboundFile in{m, localPath, contentHash, photo, image};
   agent::vision::ReadFail fail;
   describeStaged(in, turn, k, n, label, fail);
   seg = nimbus::orch::mediaSegment(label);
@@ -1762,17 +1778,7 @@ static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string&
 static void mediaFailed(const char* chatId, size_t count) {
   const char* why = "";
   for (size_t i = 0; i < s_turnMedia && !why[0]; ++i) why = g_slots[s_turnSlots[i]].why ? g_slots[s_turnSlots[i]].why : "";
-  const bool many = count > 1;
-  String text;
-  if (!strcmp(why, "no memory card in the device"))
-    text = "This device can't keep photos or files without a memory card. Describe it in words instead.";
-  else if (!strcmp(why, "too large"))
-    text = many ? "Those files are too large to take. Send smaller ones." : "That file is too large to take. Send a smaller one.";
-  else if (!strcmp(why, "over the sender's storage limit"))
-    text = "Your file storage on this device is full. Ask the owner to raise it, or delete something first.";
-  else
-    text = many ? "Couldn't fetch those files. Try sending them again." : "Couldn't fetch that file. Try sending it again.";
-  sendNow(chatId, text.c_str());
+  sendNow(chatId, nimbus::orch::mediaRefusedReply(why, count > 1).c_str());
 }
 
 // An item the poison guard skips (fetching or describing it crashed the device twice):
@@ -2120,7 +2126,8 @@ static void noteHistory(const nimbus::orch::PsString& text) {
     const TurnMedia& t = g_slots[s_turnSlots[j]].media;
     if (t.kept && t.k >= 1 && (size_t)t.k <= refs.size()) refs[(size_t)t.k - 1] = t.ref;
   }
-  agent::history::Inbound in = agent::history::inboundForBucket(g_batch, i, refs);
+  agent::history::Inbound in = agent::history::inboundForBucket(
+      g_batch, i, refs, nimbus::core::tgBotIdOf(g_token.c_str()));
   if (g_batch.voiceAt(i) && !voiceRef.empty()) in.refs.push_back(voiceRef);
   const std::string routed(text.c_str(), text.size());
   // A crossed turn's note is for the model, not the record: the row keeps what was sent.
@@ -2627,6 +2634,82 @@ void pollTask(void*) {
 
 }  // namespace
 
+// ---- lane PROG: the running turn's round-boundary signals --------------------
+// All of this runs on the poll task (the turn's own task) at a round boundary,
+// where no provider request is in flight: each signal opens its own SHORT TLS
+// session, sequentially, and closes it - never a second resident session. The
+// real case (Lumi, 4 Nov) ran 5 min 12 s with no visible sign of work while the
+// owner watched a frozen chat.
+
+// A real Telegram chat id is digits (with an optional leading '-' for groups);
+// the web/serial/voice pseudo-channels ("web", "serial", ...) must not reach
+// the Telegram API.
+static bool realChatId(const char* chatId) {
+  if (!chatId || !chatId[0]) return false;
+  for (const char* p = chatId; *p; ++p)
+    if (!((*p >= '0' && *p <= '9') || (p == chatId && *p == '-'))) return false;
+  return true;
+}
+
+// The typing keep-alive between every tool round and provider request: the same
+// rate-limited indicator the media path uses (Telegram shows it ~5 s), so a
+// long turn never stops looking alive on the chat it is answering.
+void turnTyping(const String& chatId) {
+  if (!enabled() || !realChatId(chatId.c_str())) return;
+  maybeTyping(chatId.c_str());
+}
+
+// The turn's ONE progress line, sent at once (the reply queue drains only after
+// the turn, so a queued line would land after the answer it explains).
+bool turnProgressLine(const String& chatId, const String& line) {
+  if (!enabled() || !realChatId(chatId.c_str()) || !line.length()) return false;
+  // sendNow, not doSendMessageRaw: the line is an outbound text the archive
+  // keeps, like every other direct send (the archive-hook test walks the sites).
+  return sendNow(chatId.c_str(), line.c_str());
+}
+
+// A message that arrived while the turn runs is invisible until the next poll
+// (the poller is the turn), so at a boundary the turn PEEKS at the pending
+// updates - getUpdates at the current offset with timeout=0, offset NOT
+// advanced, so the post-turn poll still processes every message normally - and
+// acknowledges each one that arrived past the page being drained (the peek
+// re-serves that page; its updates are this turn's own input, never queued).
+// Rate-limited: a fast turn's boundaries are seconds apart and each peek is a
+// short TLS session.
+static constexpr uint32_t kPeekGapMs = 10000;
+static uint32_t s_lastPeekMs = 0;
+static int32_t s_peekAckedId = 0;   // high-water: Telegram update ids only grow
+
+int turnAckQueued() {
+  if (!enabled() || !g_token.length()) return 0;
+  const uint32_t now = millis();
+  if (s_lastPeekMs && now - s_lastPeekMs < kPeekGapMs) return 0;
+  s_lastPeekMs = now;
+  std::vector<nimbus::tg::Update> ups;
+  nimbus::orch::RawPage rp;
+  bool yielded = false;
+  fetchOnePage(g_cursor.offset(), /*longPollS=*/0, ups, rp, yielded);
+  // Never hold the poll socket into the next provider request: one TLS session
+  // at a time (the post-turn poll reconnects as it always did).
+  closePollSocket();
+  if (yielded || rp.fetchError) return 0;
+  int acked = 0;
+  // The peek re-serves the page being drained (the cursor advances only after the
+  // drain): without the filter it would acknowledge the very message this turn is
+  // answering - and every later bucket already batched - as "queued". The rule is
+  // the portable, host-tested one (test_tg_peek).
+  const auto toAck = nimbus::net::peekQueuedToAck(
+      ups, s_peekAckedId, [](int32_t id) { return pageUpdate(id) != nullptr; });
+  for (const nimbus::tg::Update* pu : toAck) {
+    const nimbus::tg::Update& u = *pu;
+    s_peekAckedId = u.updateId;
+    if (u.edited || u.chatId.empty() || !isAllowed(String(u.chatId.c_str()))) continue;
+    if (sendNow(u.chatId.c_str(), "Got it, queued. It will answer that once this task finishes."))
+      acked++;
+  }
+  return acked;
+}
+
 // ---- public API -------------------------------------------------------------
 
 void begin(const String& token, const String& allowlist, MessageCallback cb) {
@@ -2922,6 +3005,11 @@ bool approvePending(const String& chatId, const String& name) {
   }
   pendingRemove(chatId.c_str());
   reloadAllowlist();
+  // The owner rule from the lists just stored: this runs on the web task, and the poll
+  // task's copies (isOwner) neither hold this chat yet nor may be read from here.
+  const std::string id(chatId.c_str());
+  agent::orchestrator::tenantApproved(
+      id, nimbus::orch::telegramOwnerOf(std::string(al.c_str()), std::string(store::telegramOwners().c_str()), id));
   return true;
 }
 

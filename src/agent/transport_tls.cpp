@@ -1,5 +1,6 @@
 #include "transport_tls.h"
 
+#include <esp_memory_utils.h>   // esp_ptr_dma_capable: which bodies encrypt in place
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 
@@ -14,6 +15,7 @@
 #include "agent_config.h"
 #include "nimbus/exchange_trace.h"   // the traced exchange: one line on every path
 #include "nimbus/fault.h"
+#include "nimbus/harness/test_answer_transport.h"   // the bench's scripted answer (test builds)
 #include "nimbus/orch/spend_guard.h"   // noteHttpDateHeader - a time base without NTP (lane QW4)
 #include "connectors.h"
 #include "store.h"
@@ -118,7 +120,7 @@ struct TlsIo {
   uint32_t deadline;   // F25: the WHOLE operation (connect retries + I/O) rides one clock
   std::string parseWhy;   // the parser's reason when readBody() fails
   std::string tooLarge;   // set when the body parsed whole but was over the retained cap
-  uint8_t* slice = nullptr;   // R1: one PSRAM slice a spliced body is encoded into
+  uint8_t* slice = nullptr;   // R1: one PSRAM slice buffer a spliced/external body is encoded into
   uint32_t pacedMs = 0;       // time spent waiting for internal headroom between slices
 
   ~TlsIo() {
@@ -128,13 +130,21 @@ struct TlsIo {
   }
 
   // R1 (http.h paceSlice): let the TCP window drain before the next slice when the
-  // internal heap is short, instead of failing an allocation mid-body; only while the
-  // largest block is still growing, and never past the exchange's cap: 2 s, at most a
-  // tenth of its deadline (v4.6.1).
+  // pool is short, instead of failing an allocation mid-body. THE POOL IS THE
+  // DMA-CAPABLE ONE (photo-DMA regression): the record's own 1,600 B esp-aes
+  // chunks and the TCP pbufs allocate from MALLOC_CAP_DMA, while a fragmented
+  // heap's INTERNAL readings are carried by the ~7.6 KB of free internal memory
+  // above SOC_DMA_HIGH that DMA cannot reach - waiting on that reading starved
+  // the chunks the slices themselves needed (bench unit L, the 21.5 KB photo
+  // leg: internal largest 7,156 B steady while the DMA pool fragmented below
+  // 1,600 B and every esp-aes chunk alloc failed). A drain shows in FREE even
+  // where the largest never moves, and the cap scales with the body.
   void paceForHeadroom() {
-    auto largest = [] { return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); };
+    auto largest = [] { return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_8BIT); };
+    auto free8 = [] { return (uint32_t)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_8BIT); };
     auto sleep = [](uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms)); };
-    paceSlice(pacedMs, paceCapMs(req.timeoutMs), largest, sleep, [this] { return expired(); });
+    paceSlice(pacedMs, paceCapForBody(req.timeoutMs, bodyLength(req)), kDmaChunkFloor,
+              SliceIo{largest, free8, sleep, [this] { return expired(); }});
   }
 
   bool expired() const { return (int32_t)(millis() - deadline) >= 0; }
@@ -145,7 +155,7 @@ struct TlsIo {
   // intermittently fail; a fresh socket clears it).
   bool connect() {
     for (int a = 0; a < 3 && !expired(); a++) {
-      if (client->connect(req.host.c_str(), req.port)) return true;
+      if (connectHost(*client, req.host.c_str(), req.port)) return true;
       close();
       if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
     }
@@ -173,13 +183,19 @@ struct TlsIo {
     if (off == 0) nimbus::crash::testPanicPoint();   // L39: an armed panic lands here, before any body byte
 #endif
     if (off > 0) paceForHeadroom();
-    if (req.splices.empty()) return client->write((const uint8_t*)req.body.data() + off, want);
-    // R1: a body with photos spliced in (http.h BodySplice) is never assembled: each
-    // slice is encoded from the photo's one PSRAM copy into one PSRAM slice buffer,
-    // so a 2 MB album costs 4 KB of working memory, never internal heap.
+    // In place only when the AES engine can read the bytes directly (a plain body
+    // in internal DMA-capable memory, the ordinary small request): zero copies.
+    // Everything else - a spliced body (the photo's PSRAM copy) or a body string
+    // the >=128 B PSRAM spill parked outside - is encoded through ONE PSRAM
+    // slice buffer, so a 2 MB album costs 4 KB of working memory, never
+    // internal heap (R1: the per-record AES chunks that bounce such bytes through
+    // DMA buffers are transient and small, and the pacing below holds room for
+    // them).
+    if (req.splices.empty() && esp_ptr_dma_capable(req.body.data()))
+      return client->write((const uint8_t*)req.body.data() + off, want);
+    if (want > nimbus::heapwatch::kBodySliceBytes) want = nimbus::heapwatch::kBodySliceBytes;
     if (!slice) slice = (uint8_t*)heap_caps_malloc(nimbus::heapwatch::kBodySliceBytes, MALLOC_CAP_SPIRAM);
     if (!slice) return 0;   // no PSRAM for the slice: the body fails "after N of M", typed by the caller
-    if (want > nimbus::heapwatch::kBodySliceBytes) want = nimbus::heapwatch::kBodySliceBytes;
     const size_t n = bodyRead(req, off, slice, want);
     return n ? client->write(slice, n) : 0;
   }
@@ -301,11 +317,14 @@ class TlsTransport : public HttpTransport {
 
     // FAULT provider (TEST-only; active() is constant-false in production):
     // simulate a total LLM-provider outage - the exact "no response" a dead
-    // network produces - for the LLM API hosts ONLY, so Telegram keeps working
-    // and the failure path's owner-visible messages remain observable by HIL.
+    // network produces - for every direct LLM API host (openai / anthropic /
+    // mistral / the probed Z.ai base), so Telegram keeps working and the
+    // failure path's owner-visible messages remain observable by HIL. The host
+    // list lives in nimbus::fault::providerOutageHost so a provider added
+    // later joins the seam in one place (bench D01, v5-28813029: Z.ai was
+    // missing here and the dream failed over instead of failing).
     if (nimbus::fault::active(nimbus::fault::PROVIDER) &&
-        (req.host == "api.openai.com" || req.host == "api.anthropic.com" ||
-         req.host == "api.mistral.ai")) {
+        nimbus::fault::providerOutageHost(req.host.c_str(), agent::store::zaiBase().c_str())) {
       err = "no response";
       return 0;
     }
@@ -401,8 +420,19 @@ class TlsTransport : public HttpTransport {
 }  // namespace
 
 HttpTransport& deviceTransport() {
+#if defined(NIMBUS_TEST)
+  // The bench's scripted provider answer (PROVFAULT) answers at the transport's
+  // seat: under the RouterTap the cumulo head holds over this transport, inside the
+  // wire's resend loop, so a scripted refusal walks the production path - the clamp
+  // 402 resends once capped, and no scripted answer can bypass that machinery the
+  // way the old wire-level override did (lane CLAMP, bench row S10).
+  static TlsTransport real;
+  static agent::TestAnswerTransport scripted(&real);
+  return scripted;
+#else
   static TlsTransport t;
   return t;
+#endif
 }
 
 providers::ProviderDeps deviceProviderDeps() {
@@ -419,8 +449,27 @@ providers::ProviderDeps deviceProviderDeps() {
     if (!strcmp(host, "cumulo"))    return std::string(store::cumuloKey().c_str());
     return std::string();
   };
-  pd.orchModel = [](const char* host) { return std::string(store::orchModel(host).c_str()); };
+  pd.orchModel = [](const char* host) {
+    String m = store::orchModel(host);
+    // The Z.ai head's default when nothing is picked: the fabric files spend under this.
+    if (!m.length() && !strcmp(host, "zai")) m = ZAI_MODEL;
+    return std::string(m.c_str());
+  };
   pd.toolLoopOn = [] { return store::orchToolLoop(); };
+  // The Z.ai head's endpoint, key and policy: its own head and its fabric rounds.
+  pd.zaiHead = [](providers::ProviderDeps& z) {
+    z.customBase       = [] { String b = store::zaiBase();
+                              return std::string((b.length() ? b : String(ZAI_HOST_PRIMARY)).c_str()); };
+    z.customPathPrefix = [] { return std::string(ZAI_BASE_PATH); };
+    z.customKey        = [] { return std::string(store::zaiKey().c_str()); };
+    z.customConv       = [] { return std::string("openai"); };
+    z.customModel      = [] { String m = store::orchModel("zai");
+                              return std::string((m.length() ? m : String(ZAI_MODEL)).c_str()); };
+    // CUM-495: a single shot uses json_object, since Z.ai answers 200 but IGNORES
+    // json_schema. CUM-544: GLM always reasons; reasoning_effort "low" + the 50 s budget
+    // keep a substantive turn inside Z.ai's ~60 s gateway cut.
+    providers::applyZaiHeadPolicy(z);
+  };
   pd.antEnvId = [] { return std::string(store::antEnvId().c_str()); };
   pd.setAntEnvId = [](const std::string& v) { store::setAntEnvId(v.c_str()); };
   pd.antAgentMap = [] { return std::string(store::antAgentMap().c_str()); };

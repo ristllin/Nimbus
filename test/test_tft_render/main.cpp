@@ -283,6 +283,20 @@ static ScreenCtx ringCtx() {
 
 static void test_status_empty()   { golden("status_empty", ScreenId::StatusIdle, baseCtx()); }
 
+// Lane PROG: a running turn is work, not idle. The home screen's empty state
+// says "Working on it" while a turn runs, so the panel never claims "Nothing
+// running" over a turn the owner is waiting on. turnActive drives it; the
+// golden pins the working layout (the idle goldens above stay byte-identical).
+static ScreenCtx workingCtx() {
+  ScreenCtx c = baseCtx();
+  c.modeName = "orchestrator";
+  c.turnActive = true;
+  return c;
+}
+static void test_status_working() {
+  golden("status_working", ScreenId::StatusIdle, workingCtx());
+}
+
 // CUM-259: a credless, un-onboarded device that lands on StatusIdle must show the
 // "Set up Wi-Fi" call-to-action (a tap back to Setup), never the idle session list
 // that looks onboarded. needsSetup drives it; the golden pins the CTA layout.
@@ -1142,6 +1156,7 @@ static void test_palette_matches_web_ui() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_status_empty);
+  RUN_TEST(test_status_working);
   RUN_TEST(test_status_setup_cta);
   RUN_TEST(test_status_jobs);
   RUN_TEST(test_status_ring);

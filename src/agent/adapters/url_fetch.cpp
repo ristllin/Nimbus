@@ -10,6 +10,7 @@
 #include "../provider_gate.h"  // the one per-provider park (L19-8)
 #include "version.h"   // NIMBUS_FW_VERSION - the fetch User-Agent
 #include "../../sys/agent_log.h"
+#include "nimbus/json_strict.h"
 #include "nimbus/orch/reply_text.h"
 #include "nimbus/orch/seam_meter.h"   // meterSeamAnswer - the scan's spend (lane DEF)
 #include "nimbus/orch/spend_ceiling.h"   // paidCallAllowed - the scan's gate (lane QW4)
@@ -63,7 +64,7 @@ uint64_t httpsGetStream(const std::string& url,
     tlsSetup(c);
     c.setHandshakeTimeout(15);
     c.setConnectionTimeout(15000);
-    if (!c.connect(u.host.c_str(), u.port)) {
+    if (!connectHost(c, u.host.c_str(), u.port)) {
       slot.release();
       err = "connect failed: " + u.host;
       return 0;
@@ -286,15 +287,23 @@ int scanVerdict(const std::string& headText, const std::string& url,
   else d["max_tokens"] = 60;
   JsonObject m = d["messages"].add<JsonObject>();
   m["role"] = "user"; m["content"] = prompt;
-  String body; serializeJson(d, body);
+  // The prompt holds a fetched page: any byte at all, and a raw control byte would make
+  // the whole request invalid JSON.
+  std::string strict;
+  nimbus::serializeStrictJson(d, strict);
+  String body(strict.c_str());
 
   arbiter::WorkSlot slot(15000);
-  if (!slot) { reason = "device busy"; return -1; }
+  if (!slot) {
+    gate::handBack(p.slug.c_str());
+    reason = "device busy";
+    return -1;
+  }
   WiFiClientSecure c;
   tlsSetup(c);
   c.setHandshakeTimeout(15);
   c.setConnectionTimeout(15000);
-  if (!c.connect(p.host, 443)) {
+  if (!connectHost(c, p.host, 443)) {
     slot.release();
     gate::noteAnswer(p.slug.c_str(), nimbus::orch::PaidSeam::UrlFetch, p.key, 0, "");
     reason = "scan connect failed";

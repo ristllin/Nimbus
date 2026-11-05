@@ -1,0 +1,25 @@
+{
+  "description": "A GLM owner holding only a Z.ai key: web.search runs on Z.ai's own search and memory has no embedding route. The honest edges of the parity eval.",
+  "vars": {"suffix": "7741"},
+  "truth": {"py_latest": {"url": "https://www.python.org/downloads/", "regex": "Download Python (3\\.\\d+\\.\\d+)"}},
+  "matrix": [{"name": "glm-5.3-flash", "model": "glm-5.3-flash"}, {"name": "glm-5.3", "model": "glm-5.3"}],
+  "persona": {
+    "name": "zai-only-${name}",
+    "keys": {"zai": "Z_AI_TOKEN"},
+    "models": {"head": {"zai": "${model}"}, "sub": {"zai": "${model}"}},
+    "host": "zai",
+    "timezone": "Europe/London",
+    "monthly_cap_cents": 300,
+    "scenarios": [
+      {"id": "web", "steps": [
+        {"say": "Use a web lookup to find the latest stable Python 3 release. Tell me the version number and the URL you used.", "timeout_s": 240, "settle_s": 10, "expect": [
+          {"turn_resolved": true}, {"no_error_reply": true}, {"tool_called": "web_search"},
+          {"reply_regex": "3\\.\\d+"}, {"reply_contains": "${py_latest}"}]}
+      ]},
+      {"id": "memory_truth", "steps": [
+        {"say": "Please remember permanently: my sister's cat is named Zorblax${suffix}. Confirm when stored.", "settle_s": 5, "expect": [
+          {"turn_resolved": true}, {"no_error_reply": true}, {"no_fabricated_action": true}]}
+      ]}
+    ]
+  }
+}

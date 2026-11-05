@@ -94,14 +94,14 @@ of the table first, then recall bullets one at a time:
 |---|---|---|---|---|
 | 1 | static | role + field docs | `ORCH_ROLE` + `ORCH_FIELD_DOCS` | the orch_turn contract, generated from the same `ORCH_D_*` macros as the wire schema - prompt and wire cannot drift |
 | 2 | static | identity + `[HOW YOU RUN]` | `compose.cpp` | device name (never the model: the static block is cached and outlives a failover, so the model is named per request in `[THIS TURN RUNS ON]`), firmware version, **the current date (temporal grounding - says UNKNOWN and forbids dating anything until SNTP syncs)**, then how turns/rounds/memory tiers/sub-agents work |
-| 3 | shelf | `[OWNER PREFERENCES ...]` | `sysPrompt` (NVS) | your standing instructions from the web Directive box (and the setup wizard). It ships with an owner-authored default and is editable (or revertible) any time; empty stored value uses that default. Framed as subordinate to blocks 1-2, so it shapes tone and behavior but never overrides safety, moderation, or access rules. It rides the shelf (its own cached block), so an owner edit re-caches only the shelf. Below it, `[STANDING RULES]`: your short always/never rules from `/data/prefs.txt` (up to 12), every owner-facing turn, added with `/prefs` or `prefs.edit` |
+| 3 | shelf | `[OWNER PREFERENCES ...]` | `sysPrompt` (NVS) | your standing instructions from the web Directive box (and the setup wizard). It ships with an owner-authored default and is editable (or revertible) any time; empty stored value uses that default. Framed as subordinate to blocks 1-2, so it shapes tone and behavior but never overrides safety, moderation, or access rules. It rides the shelf (its own cached block), so an owner edit re-caches only the shelf. Below it, `[STANDING RULES]`: your short always/never rules from `/data/prefs.txt` (up to 12), every owner-facing turn, added with `/prefs` or `prefs.edit`, and below those `[OPEN QUESTIONS]`: the owner's open follow-ups from `/data/openq.txt` (up to 5), each raised to the owner at most once unless they return to it |
 | 4 | static | `## CAPABILITIES` | `orch_world.cpp` | hardware manifest, ring/screen honesty prose, artifact store, voice on/off, sub-agent fire-and-forget note, Limits (keys/routing blocked), connector honesty. The `Tools you can call:` list appears only when the mid-turn tool loop is disabled in the settings - with the loop on, every tool rides the request itself with its full description and the manifest points there (about 8 KB less per turn) |
 | 5 | static | `## HOW YOUR MEMORY WORKS` | `compose.cpp` | the memory-tier usage instructions (v1 prompt only) |
 | 6 | static | catalogs | `engine.cpp::buildStableCatalogs` | `[AVAILABLE PROVIDERS]` (sub-session priority as configured, then "(paused now: ...)" naming the providers in it that are paused right now), `[AVAILABLE MODELS]` (one line naming the keyed providers and pointing to the `models.list` tool when the config's tool loop is on, the tool is registered and the head runs a tool loop - a config-keyed shape, never this turn's heap gate, so the cached block cannot flip per turn; on heads that keep the inline per-provider short lists from the model store, each with its age, "list from <date>, may miss newer models", router ids under cumulo only; every listed model passes the spawn and model-switch checks; when the loop is off for a single turn, the dynamic loop-off note says the pointer tool cannot run either), `[PROVIDERS & CONNECTORS]` (where the head runs reads the head's own seam, so a head that refuses its model shows as paused for your own turns; the rows read each provider's sub-agent seam: a paused provider's row says why and when it returns and names its connectors as waiting, it gets no spawn, PDF or sandbox route, and a `PUBLIC WEB FACTS` line names the open web search routes). Counted against the static part's budget since the shelf split (a flat render can no longer pass the 60 KB wire guard) |
 | 7 | shelf | the skills index | `engine.cpp` | the playbook list (`[SKILLS]`), the same index the skill.get tool serves from; an edit re-caches only the shelf |
 | 8 | history | the conversation messages | `conversation.cpp::renderHistory` | the fold summary's message pair first, then **per-chat history: one user and one assistant message per turn, oldest first, append-only between boundaries, byte budget derived from the head model's window (8 KB at 200K, 3000 B floor, 16 KB cap), with the owner's current local day kept whole on top of it (up to 16 KB), stopping at the newest `/clear` boundary or the fold anchor** (shared photos, files and voice notes appear once, inside the turn that carried them; the in-flight turn is excluded - it arrives as `[USER]`). Providers send these as real history messages; a flat head reads them as the `## RECENT CONVERSATION` block. Rules: see "The turn-structured history" below |
 | 9 | per-turn | clock, speaker, `[RUNNING MEMORY]`, tool-loop note | `compose.cpp` | the time of day, who sent this message (human turns only), the model's own `memory` field from last turn, and whether the tool loop is ON this turn |
-| 10 | per-turn | `[TODAY'S FOOD LEDGER]`, `[FOOD PLAYBOOK]` | the food ledger file (`nimbus/orch/food_ledger.h`), the `food-log` built-in | today's rows of the person's food ledger (`food/food-log.csv` for the owner) and their kcal and protein totals, on every turn that has rows today (the newest 24 rows or 1,400 B are shown; the totals count every row); on a food turn with no rows yet, the one `files.append` call that starts them. A food turn (the message, the exchange before it, or a question about the ledger's list, total or an earlier estimate) also gets a food playbook with no `skill.get` round: `food-log` (logging a meal eaten) when the message reports food, `food-coach` (answer first, plans from the foods the owner has, amounts from the `food.portions` calculator) when it asks, both when its words say neither, then one line naming which it is. Never dropped, and never takes the rest of the per-turn part's room |
+| 10 | per-turn | `[TODAY'S FOOD LEDGER]`, `[FOOD TARGETS]`, `[THE SAME FOOD ON EARLIER DAYS]`, `[FOOD PLAYBOOK]` | the food ledger file (`nimbus/orch/food_ledger.h`), the `food-log` built-in | today's rows of the person's food ledger (`food/food-log.csv` for the owner) and their kcal and protein totals, on every turn that has rows today (the newest 24 rows or 1,400 B are shown; the totals count every row), with what is left against stored targets; on a food turn with no rows yet, the one `files.append` call that starts them; on a food turn with no stored target, where to read one; on a food turn, the earlier rows of the foods the message names. A food turn (the message, the exchange before it, or a question about the ledger's list, total or an earlier estimate) also gets a food playbook with no `skill.get` round: `food-log` (logging a meal eaten) when the message reports food, `food-coach` (answer first, plans from the foods the owner has, amounts from the `food.portions` calculator) when it asks, both when its words say neither, then one line naming which it is. Never dropped, and never takes the rest of the per-turn part's room |
 | 11 | per-turn | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
 | 12 | per-turn | `## SCRATCHPAD` | flash file `/data/scratchpad.bin` | the model's own goal tiers (now/short/long) |
 | 13 | per-turn | `## RELEVANT MEMORIES` | vector-DB recall on the user text | top-k long-term memories semantically similar to your message, prefixed `[NN%]` |
@@ -130,7 +130,9 @@ turn:
   - OpenAI: the static part and the shelf as developer messages with explicit
     cache breakpoints, the history as message items with the third breakpoint on
     the last user item, then the user message led by the per-turn part, and the
-    per-chat `prompt_cache_key`;
+    per-chat `prompt_cache_key`. Only gpt-5.6 and later take the breakpoints; every
+    other model gets the same messages without them, and a model that still refuses
+    one is sent the round again without it;
   - Mistral: one system message (static plus shelf), the history messages, then
     the user message led by the per-turn part, and the per-chat
     `prompt_cache_key`;
@@ -359,15 +361,22 @@ the reply names that real cause instead. The device never goes silent on a chat.
 
 The per-turn input opens with one line naming what the request runs on, so the model
 can answer "which model are you?" exactly: `[THIS TURN RUNS ON] mistral /
-mistral-large-2512 (asked for mistral-large-latest).` It ends one of two ways. When the
-chosen head is the one answering, it closes with "When asked which model you run, name
-this one only." When it is not, it says why ("Anthropic, the chosen head, is paused by
-the owner's monthly limit and returns automatically when it lifts.") and closes with
-"When asked which model you run, name this one and say why the chosen head is not running
-this turn." The line is built for each request from the provider that request goes to: each
-host a single-shot turn tries, the host a tool-loop turn starts on (after a paused head is
-skipped) and the host it moves to mid-turn. It rides the input, never the cached system
-prompt, which names no model at all.
+mistral-large-2512 (asked for mistral-large-latest).` The model is the one that provider
+last answered with for that alias since the device started (else the alias resolved through
+its stored list), and "(asked for ...)" appears only when the two differ. When the device knows
+only a `-latest` alias (no list names the model behind it yet), the line adds "That is an
+alias: add no version, size or family from memory." When the chosen
+head is not the one answering and something holds it off, one sentence says what and when
+it comes back: paused by the owner, by the owner's monthly limit or by the overall spending
+limit, out of credit, its key refused, a request refused with HTTP 403 (back when it is
+checked again), or over its monthly budget ("Anthropic, the chosen head, is out of credit
+and returns automatically once credit is added."). The line then ends "When asked
+which model you run, name this one and say why the chosen head is not running this turn."
+Without that sentence it ends "When asked which model you run, name this one only." The
+line is built for each request from the provider that request goes to: each host a
+single-shot turn tries, the host a tool-loop turn starts on (past a parked or paused head)
+and the host it moves to mid-turn. It rides the input, never the cached system prompt,
+which names no model at all. The turn page (`/api/lastturn`) shows it as the first line of the input section.
 
 ## Diagnosing a confusing reply
 
@@ -385,6 +394,33 @@ also shows whether a `[MEMORY RESULTS]` or `[FRESH RESULTS]` block led the input
 exactly which memories were recalled, and - in section 4 - every tool call the
 model made mid-turn with its arguments and result.
 
+## An answer that is not one
+
+Template filler where an answer belongs ("placeholder", "<reply>", "your reply here", only
+dots) gets one more round, on the forced final round too, and is never delivered: a model
+that repeats it ends the turn with "That didn't finish". A word the owner's message holds
+is an answer.
+
+A reply that promises later work ("I'll finish this next turn", "I'll report back") has
+to have something behind it: a sub-agent running or started this turn, or a routine or
+wakeup set this turn. A promise to report back ("I'll let you know when it arrives") also
+stands on a routine or wakeup set earlier for this chat, or on the routine this turn is a run
+of; it cannot tell which routine, so any of them counts. Nothing else continues after a final
+answer. Without one the model gets one correction round, and a reply that still promises
+reaches the owner with a plain line saying nothing is running for it. The check sits on every
+path that delivers the model's words: the served reply, the forced final round, a prose answer,
+a cut or unreadable answer.
+
+The words are read in their sentence, since they alone prove little: "in the background" is
+often a place in a photo and counts only with a first person doing work there; "still working
+on" is often the owner's goal and counts only with a first person as its subject; a next turn
+or round can be on a road or in a contest.
+
+A plain chat line runs at most 2 tool rounds, stated in the per-turn block so the cached
+static block does not change between turns. A message that asks for work keeps the
+configured rounds: an action or lookup verb where a request starts, a link, a word such as
+web, search, file or calendar, more than 240 bytes, or text this check cannot read.
+
 ## The claim check
 
 Before a reply goes out, the device compares what it says the turn did with what
@@ -399,16 +435,30 @@ claims in ten classes:
 
 | Class | Example | Backed by |
 |---|---|---|
-| saved | "Logged.", "Noted." | a memory write, file write, skill save or scratchpad write; a log claim ("updated the day log", "logged it in your food log") needs a row or a rewrite that landed: a `files.append` of any extension whose result counts at least one row appended, added or replaced, or a whole-file `artifact.save` of a `.txt`/`.md` document whose save receipt landed (correcting a line of a free-text log is a save). A memory "entry" is a save, never a log file row |
+| saved | "Logged.", "Noted, I'll remember that" | a memory write, file write, skill save or scratchpad write; a log claim ("updated the day log", "logged it in your food log") needs a row or a rewrite that landed: a `files.append` of any extension whose result counts at least one row appended, added or replaced, or a whole-file `artifact.save` of a `.txt`/`.md` document whose save receipt landed (correcting a line of a free-text log is a save). A memory "entry" is a save, never a log file row |
 | deliverable | "written and waiting", "saved as plan.md" | a file or skill written this turn |
 | spawned | "I started three research sub-agents" | that many accepted spawns |
-| sent | "sent", "reminder set", "read it aloud" | a send, a schedule, speech; for a voice message ("I sent you a voice message", "Voice note sent"), only a voice send whose result names Telegram's `message_id`; any other Telegram send (text, document, photo) is the same: a queued send with no `message_id` backs no "sent", and the line says the message is queued, not delivered |
+| sent | "sent", "reminder set", "read it aloud" | a send, a schedule, speech; "read it aloud", "spoken" and, after a verb of saying or playing with the assistant as subject, "out loud", "aloud" and "on the speaker" need speech that really played on the speaker (an end-of-turn `tts` that was refused at volume 0, or that the speaker or Telegram could not carry, backs nothing and the line says it was not spoken) or a voice message with Telegram's `message_id`; "laughed out loud" is no claim, and a `media.play` the player confirmed also backs "played it on the speaker"; for a voice message ("I sent you a voice message", "Voice note sent"), only a voice send whose result names Telegram's `message_id` (when the upload went out but Telegram never answered usably, the line says the message was not confirmed and may not have arrived, not that nothing was delivered); any other Telegram send (text, document, photo) is the same: a queued send with no `message_id` backs no "sent", and the line says the message is queued, not delivered |
 | changed | "pinned", "switched", "turned off", "I've set" | a real change: a config action that actually changed a stored value, or a routine ("cfg(no change)" backs nothing); a pin on an already pinned memory is not one |
 | durable | "survives a restart", "never decays" | a save that landed (not RAM only); a pin for "never decays" |
 | checked | "I checked", "live data" | a lookup, or a sub-agent result with a lookup behind it; a pin call for "confirmed it's pinned" |
 | figure | "200 kcal (label)", "your watch said 408" | the number appears in a source the turn was given |
-| source | "Rain gauge at the office roof: 3.0 mm", "the live gauge says", "per the label", "according to the app", "Source: National Rail Enquiries", "checked live on National Rail" | that source (a gauge, sensor, label, receipt, menu, watch, scale, app, website, ...) named this turn by the owner's message (or the owner's own earlier rows in the conversation window: a follow-up about the previous message's photo or label credits a source the owner really gave), a tool result, a sub-agent result or a memory search result; a photo this turn may show any of them, and a sub-agent result with web runs names a website; recalled memories name only the owner's own devices (watch, scale, tracker); the assistant's earlier replies name nothing. A source credited by name (a citation, a check on it, or "according to" it in a sentence about now: "today", "live", "this morning", or a live status like "trains are running") needs every word of the name in those texts; a sentence-case phrase after a colon ("Source: Your food log") names nothing. A quote presented as something on record from before ("I recalled a memory: \"...\"", "you said \"...\"", "your message: \"...\"") needs those words, in order, in something the turn was given (the prompt with its history, the input block, a tool result, or the words this turn's own writes saved); the phrase must introduce the quote directly - a draft, a translation or a save confirmation in quotes is not checked. An explanation of how an instrument works ("the gauge reads 1 mm when 1 litre falls", a reply to a how-question) credits nothing |
+| source | "Rain gauge at the office roof: 3.0 mm", "the live gauge says", "per the label", "according to the app", "Source: National Rail Enquiries", "checked live on National Rail" | that source (a gauge, sensor, label, receipt, menu, watch, scale, app, website, ...) named this turn by the owner's message (or the owner's own earlier rows in the conversation window: a follow-up about the previous message's photo or label credits a source the owner really gave), a tool result, a sub-agent result or a memory search result; a photo this turn may show any of them, and a sub-agent result with web runs names a website; recalled memories name only the owner's own devices (watch, scale, tracker); the assistant's earlier replies name nothing. A source credited by name (a citation, a check on it, or "according to" it in a sentence about now: "today", "live", "this morning", or a live status like "trains are running") needs every word of the name in those texts; a sentence-case phrase after a colon ("Source: Your food log") names nothing. A quote presented as something on record from before ("I recalled a memory: \"...\"", "you said \"...\"", "your message: \"...\"") needs those words, in order, in something the turn was given (the prompt with its history, the input block, a tool result, or the words this turn's own writes saved); the phrase must introduce the quote directly - a draft, a translation or a save confirmation in quotes is not checked. An explanation of how an instrument works ("the gauge reads 1 mm when 1 litre falls", a reply to a how-question) credits nothing. A claim about what the owner said or did this turn ("you told me about the 4 fries", "the pack you photographed", "you confirmed it") needs a content word of its clause in the owner's own words this turn - a stored row is not evidence against the owner |
 | cause | "your connection", "corrupt", "it timed out", "my vision path is working", "you keep sending" | a record this turn that shows it: a network failure, a client error, a damaged file, a timeout, a billing refusal; "it is working" needs a health read this turn and no failure on record; "you keep sending" is refused when the records show the DEVICE repeated the deliveries; guesses and hedges do not exempt a cause |
+
+A plain "Noted." is an acknowledgement, not a save claim: it claims a save only when the
+owner asked for something to be kept or its own sentence speaks of keeping it
+(`tests/evals/claim_corpus/noted.json` holds the real replies).
+
+Food figures have their own check (`food_figures.h`): a stated daily target, or a figure
+"left" that implies one, needs its number in what the owner said or the turn read (never
+the assistant's earlier replies or the fold summary); a stated day total must be the food
+ledger's, read after the turn's own writes; a "you need" over a row of unknown protein is
+not a figure. A memory that would store a sourceless target is refused. A stored target
+row whose own citation states more targets than the row stored (a plan that sets both
+kcal and protein, only one of which landed) gets the same correction round, and a note
+names what is not stored. On a scheduled
+turn, a status citing a record older than a week as the state of things is held the same way.
 
 A source claim is a credit: the source said, showed or read something ("the gauge
 says", "watch data"), the reply cites it ("per the label", "according to the app", or
@@ -439,7 +489,9 @@ evidence store fills, the source, quote and reason rules stand down for the turn
 than state that something is missing.
 
 Questions, offers, conditions, possibilities and plain futures ("want me to", "I'll",
-"it may have been lost, or saved elsewhere"), a negation within four words, a clause
+"it may have been lost, or saved elsewhere"), a running total ("1,600 kcal logged so far",
+"you're at 1,600 kcal logged": a figure beside "logged" with a progress phrase reports what is
+already on record), a negation within four words, a clause
 whose subject is "nothing", "none" or "no record" ("nothing in the logs shows it was
 saved"), quoted text, another person's action and references to earlier turns are not
 claims. Replies that are mostly not English are not scanned. Provider-hosted tools
@@ -453,7 +505,7 @@ are visible on this device in its result text, so what that text does not name i
 backed whatever the sub ran (a weather-only result backs no "Source: National Rail
 Enquiries"). An enabled connector that did not run backs nothing. Everything the
 device does itself (memory, files, skills, notes, sub-agents, a Telegram voice message
-from its own bot) is always checked, and so is a source no hosted tool can read (a
+from its own bot, speech on its own speaker) is always checked, and so is a source no hosted tool can read (a
 gauge, a sensor, a label, a watch).
 Cause claims are always checked: the records are the device's own.
 
@@ -468,7 +520,8 @@ tools are still available to do the work or rewrite the reply. The round shares 
 one-per-turn limit with the turn-shape check, which owns sub-agent claims. If the
 round cannot run (the forced final round) or the claim is still unbacked after it,
 or the claimed effect failed when the turn was applied, the reply gets one calm line
-per class that says what did not happen, for example "(Correction: that has not
+per class (the sent class gets one per different thing it says, so "not spoken aloud" never
+hides an unbacked email in the same reply) that says what did not happen, for example "(Correction: that has not
 been saved.)", "(Correction: nothing was pinned this turn.)", "(Note: this is kept
 only until the next restart; saving it permanently failed.)", "(Note: that is
 queued for Telegram; the device has no delivery receipt for it yet.)", for a

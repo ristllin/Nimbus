@@ -94,6 +94,9 @@ override the default for their role; leave it at zero to inherit.
 | How long a memory lives | 30 days | 1 year | unlimited |
 | Permanent pins | none | 10 | unlimited |
 
+A photo or file received twice counts once. A message that is nothing but photos or files
+over the limit gets one reply saying the storage is full.
+
 **A request over the limit is clamped, not refused.** Someone asking the
 device to remember something "forever" gets their maximum instead, and is told
 so - the fact still lands. The exception is permanent pins, which are counted

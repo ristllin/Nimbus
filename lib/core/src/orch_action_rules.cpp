@@ -1,5 +1,7 @@
 #include "nimbus/orch/action_rules.h"
 
+#include <initializer_list>
+
 #include "nimbus/orch/vector_memory.h"   // kMcpNs
 
 namespace nimbus {
@@ -59,6 +61,9 @@ const ActionRuleRow kRows[] = {
     // ---- standing rules (lib/core/src/orch_prefs_tools.cpp) ----
     {"prefs.edit", R::Owner, "see the standing rules"},
     {"prefs.edit.change", R::OwnerAttended, "change the standing rules"},
+    // ---- the owner's open questions (lib/core/src/orch_openq_tools.cpp) ----
+    {"openq.edit", R::Owner, "see the open questions"},
+    {"openq.edit.change", R::OwnerAttended, "change the open questions"},
     // ---- recent results, sub-agents (lib/core) ----
     {"results.get", R::Open, "read a stored result"},
     {"results.list", R::Open, "list stored results"},
@@ -74,6 +79,8 @@ const ActionRuleRow kRows[] = {
     // ---- files (src/agent/files_subsystem.cpp, pdf_tool.cpp): own namespace ----
     {"artifact.save", R::Open, "save a file"},
     {"files.append", R::Open, "add rows to a file"},
+    {"files.delete", R::Open, "delete a file"},   // the handler's line: only a file the caller may write
+    {"files.edit", R::Open, "edit a file"},   // the handler's line: only a file the caller may write
     {"files.fetch", R::Open, "download a file"},
     {"files.list", R::Open, "list files"},
     {"files.pdf", R::Open, "make a PDF"},
@@ -247,14 +254,25 @@ static std::string shareKey(ArduinoJson::JsonObjectConst a, const ActionCaller& 
   return c.owner() && !unshare ? "files.share.owner" : "files.share";
 }
 
+// An action-narrowed key: when the tool's `action` field is one of the
+// state-changing verbs, the stricter row applies; anything else (a read)
+// keeps the tool's own row.
+std::string changeKey(const std::string& name, ArduinoJson::JsonObjectConst a, const char* key,
+                      std::initializer_list<const char*> acts) {
+  const std::string act = str(a, "action");
+  for (const char* verb : acts)
+    if (act == verb) return key;
+  return name;
+}
+
 std::string toolActionKey(const std::string& name, ArduinoJson::JsonObjectConst a, const ActionCaller& c) {
   if (name == "memory.config") return str(a, "action") == "update" ? "memory.config.update" : name;
   if (name == "models.list") return truthy(a, "refresh") ? "models.list.refresh" : name;
   if (name == "device.selftest") return truthy(a, "audible") ? "device.selftest.audible" : name;
-  if (name == "prefs.edit") {
-    const std::string act = str(a, "action");
-    return act == "add" || act == "replace" || act == "remove" ? "prefs.edit.change" : name;
-  }
+  if (name == "prefs.edit")
+    return changeKey(name, a, "prefs.edit.change", {"add", "replace", "remove"});
+  if (name == "openq.edit")
+    return changeKey(name, a, "openq.edit.change", {"add", "remove"});
   if (name == "reply.telegram" || name == "files.send") return sendKey(name, a, c);
   if (name == "files.share") return shareKey(a, c);
   return name;

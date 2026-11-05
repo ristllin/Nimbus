@@ -3,6 +3,7 @@
 #include <cstring>
 #include <string>
 
+#include "nimbus/orch/provider_park.h"
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
@@ -72,6 +73,58 @@ static void test_anthropic_wire_hits_messages_not_chat() {
   agent::ResultEnvelope envp;
   TEST_ASSERT_TRUE(openaiCompatPoll(pd, "cumulo", jobId, envp) == agent::FabricErr::Ok);
   TEST_ASSERT_EQUAL_STRING("hi-ant", envp.reply);   // parsed from content[0].text
+}
+
+// A sub-agent over the router reads the reason like every other seam: the clamp resends
+// once capped, a refused model is not a rejected key, only a park reason parks. Its deps
+// carry no router override: the path is what says it is the router.
+static void test_a_router_sub_reads_the_reason() {
+  auto routerEp = [] {
+    CompatEndpoint ep;
+    ep.host = "app.test"; ep.basePath = "/router/openai/v1"; ep.key = "x"; ep.model = "m1";
+    ep.backendTag = "cumulo";
+    return ep;
+  };
+  namespace orch = nimbus::orch;
+  auto closed = [] {
+    orch::ParkEntry e[orch::ProviderPark::kMaxProviders];
+    const size_t n = orch::providerPark().snapshot(e, orch::ProviderPark::kMaxProviders, 1000);
+    for (size_t i = 0; i < n; i++)
+      if (std::string(e[i].provider) == "cumulo" && e[i].kind != orch::ParkKind::None) return true;
+    return false;
+  };
+  orch::providerPark().clear();
+  {
+    FakeProviderDeps rig;
+    rig.http.script.push_back({"", "", 402,
+        "{\"error\":\"insufficient_credits_for_call\",\"reason\":\"insufficient_credits_for_call\","
+        "\"maxAffordableOutputTokens\":700,\"charged\":false}"});
+    rig.http.script.push_back({"", "", 200, "{\"choices\":[{\"message\":{\"content\":\"hi\"}}]}"});
+    agent::providers::ProviderDeps pd = rig.contract();
+    char jobId[72] = {};
+    TEST_ASSERT_TRUE(openaiCompatDispatch(pd, routerEp(), makeDirective(), jobId) == agent::FabricErr::Ok);
+    TEST_ASSERT_EQUAL_UINT(2, rig.http.seen.size());
+    TEST_ASSERT_TRUE(rig.http.seen[1].body.find("\"max_completion_tokens\":700") != std::string::npos ||
+                     rig.http.seen[1].body.find("\"max_tokens\":700") != std::string::npos);
+    TEST_ASSERT_FALSE(closed());
+  }
+  {
+    FakeProviderDeps rig;
+    rig.http.script.push_back({"", "", 403, "{\"error\":\"model_not_priced\",\"reason\":\"model_not_priced\"}"});
+    agent::providers::ProviderDeps pd = rig.contract();
+    char jobId[72] = {};
+    TEST_ASSERT_TRUE(openaiCompatDispatch(pd, routerEp(), makeDirective(), jobId) == agent::FabricErr::RemoteFail);
+    TEST_ASSERT_FALSE(closed());
+  }
+  {
+    FakeProviderDeps rig;
+    rig.http.script.push_back({"", "", 401, "{\"error\":\"invalid_router_key\",\"reason\":\"invalid_router_key\"}"});
+    agent::providers::ProviderDeps pd = rig.contract();
+    char jobId[72] = {};
+    TEST_ASSERT_TRUE(openaiCompatDispatch(pd, routerEp(), makeDirective(), jobId) == agent::FabricErr::Auth);
+    TEST_ASSERT_TRUE(closed());
+  }
+  orch::providerPark().clear();
 }
 
 // Auth + error mapping: a 401 maps to FabricErr::Auth; a bad model to BadRequest.
@@ -253,16 +306,46 @@ static void test_chunk_list_content_reads_as_the_answer() {
   TEST_ASSERT_EQUAL_STRING("hi-ant", env2.reply);
 }
 
+// A compat sub (the hosted Z.ai and router subs) agrees with Mistral's and custom's: a billed
+// 200 with nothing in it, or a gateway that lost the upstream, may have run.
+static void test_compat_sub_errors_say_whether_it_may_have_run() {
+  const struct { int status; const char* body; agent::FabricErr want; } cases[] = {
+      {200, "{\"choices\":[{\"message\":{\"content\":\"\"}}],\"usage\":{\"prompt_tokens\":9}}", agent::FabricErr::ParseFail},
+      {502, "{\"error\":{\"message\":\"bad gateway\"}}", agent::FabricErr::Timeout},
+      {504, "{\"error\":{\"message\":\"gateway timeout\"}}", agent::FabricErr::Timeout},
+      {500, "{\"error\":{\"message\":\"boom\"}}", agent::FabricErr::RemoteFail},
+      {503, "{\"error\":{\"message\":\"overloaded\"}}", agent::FabricErr::RemoteFail},
+      {400, "{\"error\":{\"message\":\"bad\"}}", agent::FabricErr::RemoteFail},
+  };
+  for (const auto& k : cases) {
+    FakeProviderDeps rig;
+    rig.http.script.push_back({"", "", k.status, k.body});
+    agent::providers::ProviderDeps pd = rig.contract();
+    CompatEndpoint ep;
+    ep.host = "api.z.ai";
+    ep.basePath = "/api/paas/v4";
+    ep.key = "tok";
+    ep.model = "glm-5.3";
+    ep.backendTag = "zai";
+    ep.wire = CompatWire::OpenAIChat;
+    char jobId[72] = {};
+    TEST_ASSERT_EQUAL_MESSAGE((int)k.want, (int)openaiCompatDispatch(pd, ep, makeDirective(), jobId),
+                              std::to_string(k.status).c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_openai_wire_hits_chat_completions);
   RUN_TEST(test_anthropic_wire_hits_messages_not_chat);
   RUN_TEST(test_chunk_list_content_reads_as_the_answer);
+  RUN_TEST(test_a_router_sub_reads_the_reason);
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_429_names_the_window);
   RUN_TEST(test_cum544_zai_sub_carries_low_effort);
   RUN_TEST(test_cum538_a_sub_that_outruns_its_post_is_a_timeout);
   RUN_TEST(test_compat_sub_deadline_by_endpoint);
+  RUN_TEST(test_compat_sub_errors_say_whether_it_may_have_run);
   UNITY_END();
   return 0;
 }

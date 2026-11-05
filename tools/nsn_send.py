@@ -20,6 +20,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bench_guard  # noqa: E402 - the forbidden-device guard, a sibling of this tool
+
 NOTIFY_HOST = Path(
     os.environ.get("NIMBUS_NOTIFY_HOST", str(Path(__file__).resolve().parent.parent.parent / "nsnotify"))
 )
@@ -68,6 +71,7 @@ def _open_status_serial():
     which can wedge the S3's USB-serial-JTAG peripheral; see AGENTS.md)."""
     if serial is None:
         return None
+    bench_guard.check_port(PORT, "nsn_send")
     try:
         s = serial.Serial()
         s.port, s.baudrate, s.timeout = PORT, 115200, 0.3

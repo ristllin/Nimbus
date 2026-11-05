@@ -97,9 +97,9 @@ agent host:
 
 - **LLM turns** against OpenAI, Anthropic, Mistral, or Z.ai, directly or
   through the Cumulo Nimbus router, or against an OpenAI-compatible custom
-  endpoint on your own network (a local model). On OpenAI, Anthropic and Mistral
-  the head runs a bounded multi-round tool loop; Z.ai and a custom endpoint
-  answer in a single structured call ([provider wire](./provider-wire.md),
+  endpoint on your own network (a local model). On OpenAI, Anthropic, Mistral and
+  Z.ai the head runs a bounded multi-round tool loop; a custom endpoint answers
+  in a single structured call ([provider wire](./provider-wire.md),
   [turn anatomy](./turn-anatomy.md)).
 - **The World memory system** - vector recall, episodic history, scratchpad
   goals - tiered across PSRAM, SD card, and flash

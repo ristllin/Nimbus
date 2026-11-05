@@ -1,0 +1,17 @@
+{
+  "id": "lc-rules-full",
+  "title": "An owner rule lands as an active standing rule even when the list is full",
+  "rows": ["OIR-36"],
+  "replays": "The 2 Nov class: the standing-rules list was full (12 rules, 1,200 chars), so an owner rule was refused into long-term memory where it is not guaranteed next turn.",
+  "clock": "{{TODAY}} {{DOW}} 08:16 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "pref", "texts": ["Bins go out on Tuesday night.", "Water the ferns on Saturday morning.", "The vet appointment is the first Monday of each month.", "Call mom on Sunday evenings.", "The boiler service is due every October.", "Order cat food when the bag is half empty.", "The spare key is with the neighbor at number 4.", "Replace the smoke alarm batteries each spring.", "The car service is due every 12 months.", "Back up the laptop on the first of the month.", "The recycling goes out on alternate Wednesdays.", "Dentist check-ups are every six months."]},
+    {"do": "say", "text": "Also remember: always double-check my coffee orders before placing them."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "prefs_active", "params": {"text": "coffee orders"}}
+  ]
+}

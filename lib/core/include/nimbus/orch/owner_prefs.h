@@ -43,6 +43,7 @@ inline constexpr size_t kPrefItemMax = 240;      // bytes per rule text
 inline constexpr size_t kPrefsMaxBytes = 1200;   // all active rule texts together
 inline constexpr size_t kPrefsPendingMax = 4;
 inline constexpr size_t kPrefsMovedMax = 8;      // moved rules kept for /prefs restore
+inline constexpr size_t kPrefsEvictedMax = 8;    // retired rules kept for /prefs restore (lane POL2)
 // The file at its fullest (12 rules and 8 moved ones at 240 bytes, with their
 // fields): what a loader reads before it stops.
 inline constexpr size_t kPrefsFileMax = 8192;
@@ -68,7 +69,7 @@ enum class PrefErr : uint8_t {
   PersistFailed,  // the file could not be written: nothing changed
   DatedFood,      // lane CTX: a dated meal or day total, not a rule (the food ledger)
   DatedFact,      // lane CTX: a dated measurement or one-off fact, not a rule (memory)
-  NotMoved,       // restore on a rule that was not moved
+  NotMoved,       // restore on a rule that was not retired
 };
 // Plain words for an error, for the tool result, /prefs and the web route.
 const char* prefErrWords(PrefErr e);
@@ -77,6 +78,7 @@ struct PrefEntry {
   uint32_t    id = 0;             // shown as "p<id>"
   bool        pending = false;
   bool        moved = false;      // lane CTX: a dated fact moved to memory (state M)
+  bool        evicted = false;    // lane POL2: retired to make room (state E)
   uint32_t    createdHours = 0;   // device epoch hours (0 = clock not set)
   PrefOrigin  origin = PrefOrigin::Chat;
   uint32_t    filters = 0;        // PrefFilter bits
@@ -127,8 +129,14 @@ class OwnerPrefs {
   // Every mutation persists first and changes the list only when the save landed
   // (PersistFailed leaves everything as it was). Re-adding an existing rule
   // returns its id with Ok; a human add of a pending rule approves it.
+  //
+  // Lane POL2 (standing rules get room): an ACTIVE add that does not fit makes
+  // room itself - the eviction candidate (a seeded rule first, then the oldest)
+  // is retired (state E, restorable) and reported in *evicted so the caller
+  // tells the owner. A pending add never evicts: it waits or is refused. When
+  // even evicting everything cannot fit the rule, Full still comes back.
   PrefErr add(const std::string& text, PrefOrigin origin, uint32_t nowHours, bool pending,
-              std::string* idOut);
+              std::string* idOut, std::vector<PrefEntry>* evicted = nullptr);
   PrefErr replace(uint32_t id, const std::string& text, PrefOrigin origin, uint32_t nowHours);
   PrefErr remove(uint32_t id);
   PrefErr approve(uint32_t id);
@@ -158,6 +166,7 @@ class OwnerPrefs {
   size_t activeCount() const;
   size_t pendingCount() const;
   size_t movedCount() const;
+  size_t evictedCount() const;
   size_t activeBytes() const;
 
   // The prompt block body: one "- (p<id>) <text>" line per ACTIVE rule, "" when
@@ -179,6 +188,21 @@ class OwnerPrefs {
     return commit(next, seeded, listed, nextId, datedChecked_);
   }
   PrefErr checkRoom(const std::vector<PrefEntry>& next) const;
+  // Lane POL2: retire active rules (a seed first, then the oldest) until the
+  // list has room. Stops at the retired cap: past it the add is refused as
+  // Full, never a silent drop at the next parse.
+  PrefErr evictForRoom(std::vector<PrefEntry>& next, std::vector<PrefEntry>& evicted);
+  // The same words added again: nothing new. A human adding a rule that waits
+  // for approval IS the approval.
+  PrefErr addDuplicate(int dup, bool pending, std::string* idOut);
+  // The next list an add writes: today's items plus the new one, with a same-key
+  // retired copy dropped (the loader dedups same-key lines, so keeping both
+  // would silently lose one).
+  std::vector<PrefEntry> nextForAdd(const std::string& key, const PrefEntry& e) const;
+  // Commit an add that needs room: retire items until it fits, then commit and
+  // report what was retired.
+  PrefErr commitMakingRoom(std::vector<PrefEntry>& next, const PrefEntry& e, std::string* idOut,
+                            std::vector<PrefEntry>* evictedOut);
   int indexOf(uint32_t id) const;
   int indexOfKey(const std::string& key) const;
 
@@ -222,6 +246,33 @@ std::vector<std::string> pickSeedRules(const std::vector<SeedCandidate>& in,
 // The owner's one listing after the seed: every active rule the seed added
 // (plain words, device copy). "" when there is none.
 std::string seedListingText(const OwnerPrefs& p);
+
+// ---- lane POL2: a standing rule binds routines and wakeups -------------------
+
+// Does an active standing rule stop a routine or wakeup from raising its
+// topic? Deterministic, whole-word: a rule with a stop marker (never, stop, no
+// more, don't, do not) whose subject words occur in the loop's own prompt
+// blocks the fire ("never ask about duolingo" blocks a "check the Duolingo
+// streak" routine; "always log meals" blocks nothing). The routine's NAME is
+// part of its topic: a "Duolingo streak check" whose prompt only says "check
+// the streak" is still the Duolingo routine. The device and nimbusd consult it
+// before a loop fires and defer a blocked one.
+// A rule that names the days it applies on ("stop the train brief on
+// workdays", "never ask about duolingo on weekends") binds only on those days;
+// a bare "stop" is a veto only when it carries such a day scope (without one
+// it stays a device wish: "stop the door slamming"). dayOfWeek is the local
+// day, 0 = Sunday .. 6 = Saturday; -1 = unknown (no clock), and a day-scoped
+// rule still blocks then: the owner's quiet is never lost to a missing clock.
+struct StandingBlock {
+  bool        blocked = false;
+  std::string rule;    // the rule that blocked it ("" when nothing did)
+};
+// The days a stop rule is scoped to by its own words.
+enum class RuleDays : uint8_t { Any, Workdays, Weekends };
+StandingBlock standingBlocksFire(const std::vector<std::string>& activeRuleTexts,
+                                 const std::string& loopPrompt,
+                                 const std::string& loopName = std::string(),
+                                 int dayOfWeek = -1);
 
 }  // namespace orch
 }  // namespace nimbus

@@ -149,6 +149,9 @@ const Expect kExpect[] = {
     // standing rules
     {"prefs.edit", kOwner},
     {"prefs.edit.change", kOwnerNow},
+    // the owner's open questions (lane POL2): the same shape as the rules
+    {"openq.edit", kOwner},
+    {"openq.edit.change", kOwnerNow},
     // results, sub-agents
     {"results.get", kOpen},
     {"results.list", kOpen},
@@ -164,6 +167,8 @@ const Expect kExpect[] = {
     // files
     {"artifact.save", kOpen},
     {"files.append", kOpen},
+    {"files.delete", kOpen},
+    {"files.edit", kOpen},
     {"files.fetch", kOpen},
     {"files.list", kOpen},
     {"files.pdf", kOpen},
@@ -221,7 +226,7 @@ const Expect* expectFor(const std::string& key) {
 bool argumentKey(const std::string& key) {
   static const char* const kKeys[] = {"memory.config.update", "models.list.refresh", "device.selftest.audible",
                                       "prefs.edit.change",    "reply.telegram.other_chat", "files.send.other_chat",
-                                      "files.share.owner"};
+                                      "files.share.owner",    "openq.edit.change"};
   for (const char* k : kKeys)
     if (key == k) return true;
   return false;
@@ -846,8 +851,8 @@ static void test_results_ring_scoped_by_caller_class() {
 }
 
 // Every product that runs the job engine tells it who a chat is: with no principalFor a
-// sub-agent counts as the owner's (host rigs only), so a product that forgets it would
-// hand the owner's connectors to a member's sub-agent.
+// With no principalFor a job engine treats no chat as the owner's (it fails closed), so a
+// product that forgets it would quietly take the owner's connectors and results away.
 static void test_every_product_wires_the_spawn_principal() {
   const std::string device = readFile("src/agent/orchestrator.cpp");
   const size_t jd = device.find("static JobEngine::Deps buildJobDeps()");
@@ -898,8 +903,15 @@ static void test_device_wiring_of_the_owner_chat_rules() {
   TEST_ASSERT_TRUE(role != std::string::npos);
   const std::string body = orch.substr(role, orch.find("\n}\n", role) - role);
   TEST_ASSERT_TRUE_MESSAGE(body.find("tableHasAdmin = g_tenants.adminCount() > 0;") != std::string::npos, body.c_str());
-  TEST_ASSERT_TRUE_MESSAGE(body.find("roleWithoutRow(isChatAllowed(chatId), agent::telegram::isOwner(chatId), tableHasAdmin)") !=
-                               std::string::npos,
+  // The no-row fallback resolves the Telegram owner rule from NVS (thread-safe), never
+  // from telegram's poll-task-owned g_owners/g_allowlist Strings: roleOfChat also runs on
+  // the web task (the /api/test seams), and the poll task reassigns those Strings on every
+  // allowlist reload, so a web-task read of them is a use-after-free race.
+  TEST_ASSERT_TRUE_MESSAGE(body.find("agent::telegram::isOwner") == std::string::npos, body.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(body.find("roleWithoutRow(") != std::string::npos &&
+                               body.find("nimbus::orch::telegramOwnerOf(") != std::string::npos &&
+                               body.find("store::telegramAllowlist()") != std::string::npos &&
+                               body.find("store::telegramOwners()") != std::string::npos,
                            body.c_str());
   const size_t sys = orch.find("static void drainSystemTurn() {");
   TEST_ASSERT_TRUE(sys != std::string::npos);

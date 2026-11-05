@@ -1,0 +1,18 @@
+{
+  "id": "lc-never-ask",
+  "title": "A routine the owner refused never fires again",
+  "rows": ["OIR-39"],
+  "replays": "The 2 Nov class: the daily check-in fired after the owner said forget it, no reason to ask. Loop cancellation after a refusal is still open.",
+  "clock": "{{TODAY}} {{DOW}} 13:00 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "pref", "texts": ["Never ask me about the language app streak again."]},
+    {"do": "say", "text": "To be clear: forget the daily language app check-in. No reason to ask, stop bringing it up."},
+    {"do": "scheduled", "name": "daily-check-in", "loopId": "checkin", "text": "Daily check-in: report the owner's language app streak and today's plan."}
+  ],
+  "assertions": [
+    {"id": "prefs_active", "params": {"text": "language app"}},
+    {"id": "reply_last_forbids", "params": {"forbidden": ["streak", "language app"]}}
+  ]
+}

@@ -23,6 +23,7 @@
 #include "adapters/image_gen.h"   // CUM-508: imagegen::available() opens image.generate's gate
 #include "nimbus/speaker_reply.h"   // speakerFailText - reply.speak's honest failure
 #include "adapters/tavily.h"
+#include "transport_tls.h"   // deviceProviderDeps: web.search on the provider's own search
 #include "nimbus/harness/websearch.h"  // registerWebSearchTool (portable, host-tested)
 #include "nimbus/orch/tool_gates.h"     // CUM-508: the provider-gated tool table
 #include "memory_restore.h"               // CUM-406: portable restore parse/apply core
@@ -1126,6 +1127,10 @@ void begin() {
     ctx.archiveAvailable = [] { return effHaveSd(); };
   }
   ctx.embed = embedText;
+  ctx.holdsEmbedKey = [] {
+    const nimbus::orch::EmbedKeys k = usableEmbedKeys(false);
+    return k.openai || k.cumulo || k.mistral;
+  };
   ctx.nowHours = [] { return nowHours(); };
   ctx.persistScratch = [] { return persistScratchpad(); };   // the tool reports a RAM-only save
   ctx.ops = &g_memOps;   // what writes did, for the nightly dream's honest outcome (lane M)
@@ -1175,6 +1180,7 @@ void begin() {
   g_ctx = ctx;
   registerMemoryTools(g_reg, ctx);
   nimbus::orch::registerPrefsTools(g_reg, prefs::context());
+  nimbus::orch::registerOpenQTools(g_reg, prefs::openQContext());   // lane POL2: openq.edit
   nimbus::orch::registerFoodTools(g_reg);   // lane CTX: food.portions (a plan's arithmetic)
   applyConfig();   // capacity cap (score-based eviction on add); tier-aware (§degraded)
 
@@ -1216,15 +1222,23 @@ void begin() {
     registerResultTools(g_reg, rh);
   }
 
-  // web.search (Tavily) - gives the orchestrator + external MCP clients a live-web
+  // web.search (Tavily, else the provider's own) - gives the orchestrator + external MCP clients a live-web
   // capability (the key is human-set, never model-writable). The handler does one
   // blocking HTTPS round-trip via the TLS arbiter. CUM-508: registered ALWAYS;
   // whether it is listed is the live key gate installed below, so a key saved
   // after boot works on the next turn (it used to need a restart).
   {
     agent::websearch::WebSearchToolDeps wd;
-    wd.search = [](const std::string& q, int k) { return agent::tavily::search(q, k); };
-    wd.overBudget = [] { return agent::store::providerOverBudget("tavily"); };
+    // No Tavily key, or its month is used up: the provider's own search (CUM-823).
+    wd.search = [](const std::string& q, int k) {
+      if (agent::tavily::available() && !agent::store::providerOverBudget("tavily"))
+        return agent::tavily::search(q, k);
+      return agent::providers::hostedWebSearch(agent::deviceProviderDeps(), q, k);
+    };
+    wd.overBudget = [] {
+      return agent::store::providerOverBudget("tavily") &&
+             !agent::providers::hostedWebSearchAvailable(agent::deviceProviderDeps());
+    };
     wd.recordCall = [] { agent::store::recordProviderCall("tavily"); };
     agent::websearch::registerWebSearchTool(g_reg, wd);
   }
@@ -1234,7 +1248,9 @@ void begin() {
   // later (files subsystem); gates are keyed by name, so order does not matter.
   nimbus::orch::applyToolGates(g_reg, [](nimbus::orch::ToolGate g) {
     switch (g) {
-      case nimbus::orch::ToolGate::WebSearchKey: return agent::tavily::available();
+      case nimbus::orch::ToolGate::WebSearchKey:
+        return agent::tavily::available() ||
+               agent::providers::hostedWebSearchAvailable(agent::deviceProviderDeps());
       case nimbus::orch::ToolGate::ImageKey:     return agent::imagegen::available();
     }
     return false;
@@ -1588,6 +1604,7 @@ void begin() {
                   r.outcome == agent::SkillOutcome::Replaced ||
                   r.outcome == agent::SkillOutcome::EditProposed)
                 out = agent::skillProposalNotice(id, r);   // plain words for the reply too
+              out += agent::skillSaveNotes(r);
               // The 17 Oct sibling case: a save that created a near-duplicate names the
               // existing skill so the next save can edit it instead.
               if (!r.similar.empty())

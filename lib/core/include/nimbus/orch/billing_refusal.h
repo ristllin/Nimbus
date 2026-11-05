@@ -4,6 +4,8 @@
 #include <cstring>
 #include <string>
 
+#include "nimbus/orch/router_refusals.h"   // a router refusal is decided by its reason
+
 // billing_refusal - ONE table for "the provider refused because the account is out
 // of credit or quota", shared by every paid seam (the chat head's Billing step
 // error, embeddings, the caption step, spawns, speech, the download scan) through
@@ -21,28 +23,25 @@
 //     please check your plan and billing details.") and the newer message
 //     "You have no credits remaining. Add credits to continue ...";
 //   - OpenAI embeddings: 429 code "credit_balance_exhausted";
-//   - Mistral: 402 Payment Required; the Cumulo router: 402 with
-//     insufficient_credits, insufficient_credits_for_call, budget_exceeded,
-//     credits_or_subscription_required, 4xx funding_cap_reached, and its monthly
-//     cap as 429 ceiling_reached.
-// Every 402 is billing whatever its body says.
+//   - Mistral: 402 Payment Required.
+// A provider's every 402 is billing whatever its body says. The Cumulo router is the
+// exception: it names a reason, and the reason decides (router_refusals.h). Only
+// insufficient_credits, credits_or_subscription_required and budget_exceeded are about
+// this account's money. The clamp (insufficient_credits_for_call) refuses one call on a
+// funded wallet; funding_cap_reached and ceiling_reached are the platform's own limits.
 namespace nimbus {
 namespace orch {
 
-// The text and code markers, matched case-insensitively anywhere in the provider's
-// error message or code. Exposed so a test can walk every token.
+// A provider's own text and code markers, matched case-insensitively anywhere in the
+// provider's error message or code. Exposed so a test can walk every token. The router's
+// reasons are not here: its table decides them first (router_refusals.h).
 inline constexpr const char* kBillingTokens[] = {
     "credit balance is too low",
     "insufficient_quota",
     "exceeded your current quota",
     "no credits remaining",
     "credit_balance_exhausted",
-    "funding_cap_reached",
-    "insufficient_credits",
-    "budget_exceeded",
-    "credits_or_subscription_required",
     "billing_hard_limit_reached",
-    "ceiling_reached",   // the Cumulo router's monthly cap (HTTP 429)
 };
 
 namespace detail {
@@ -63,6 +62,9 @@ inline bool containsNoCase(const std::string& hay, const char* needle) {
 // said: its error message, error code or type, or the device's whole error line
 // ("resp HTTP 429: You have no credits remaining..."). status 0 = unknown.
 inline bool isBillingRefusal(int status, const std::string& text) {
+  const RouterAnswer router = readRouterAnswer(text);
+  if (router.row) return router.action() == RouterAction::ParkBilling;
+  if (!router.reason.empty()) return false;   // a reason this image does not know: per call
   if (status == 402) return true;
   if (status != 0 && status != 400 && status != 403 && status != 429) return false;
   for (const char* t : kBillingTokens)

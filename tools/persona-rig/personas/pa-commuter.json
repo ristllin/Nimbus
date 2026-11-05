@@ -1,0 +1,44 @@
+{
+  "description": "A commuter with routines and briefings: creates a routine through chat, lists and deletes it, then asks for an evening brief whose train-disruption sources must be the operator or National Rail, not random blogs (owner signal 5). Tavily key rides as an instance env key, the way the platform passes it.",
+  "vars": {"suffix": "1177"},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": ""},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": ""},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": ""}
+  ],
+  "persona": {
+    "name": "pa-commuter-${name}",
+    "display_name": "Dan's Nimbus",
+    "timezone": "Europe/London",
+    "directive": "You help Dan commute into London. Keep briefs short and factual.",
+    "monthly_cap_cents": 800,
+    "keys": {"mistral": "MISTRAL_API_KEY", "${host}": "${key}"},
+    "instance_env_keys": ["TAVILY_API_KEY"],
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "scenarios": [
+      {"id": "routine-via-chat", "steps": [
+        {"say": "Set up a routine called morning-brief-${suffix}: every weekday at 07:30, send me a commute brief for my line into London Paddington. Then tell me plainly what you did.",
+         "timeout_s": 300, "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
+                    {"reply_not_regex": "(?i)only (its|the|an) admin|from the device web page|can'?t (set|create)"}]},
+        {"http": {"method": "GET", "path": "/api/loops"},
+         "expect": [{"http_status": 200}, {"body_contains": "morning-brief-${suffix}"}]}
+      ]},
+      {"id": "routine-delete", "needs": ["routine-via-chat"], "steps": [
+        {"say": "Delete the routine morning-brief-${suffix}.",
+         "timeout_s": 300, "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"http": {"method": "GET", "path": "/api/loops"},
+         "expect": [{"http_status": 200}, {"body_not_contains": "morning-brief-${suffix}"}]}
+      ]},
+      {"id": "brief-sources", "steps": [
+        {"say": "Any train disruptions on the Elizabeth line into London Paddington this evening? Use a web lookup and tell me which sources you used.",
+         "timeout_s": 300, "settle_s": 30,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
+                    {"reply_regex": "(?i)(national ?rail|elizabeth line|operator|tfl|transport for london)", "known_defect": "web-answer-quality", "may_pass": true},
+                    {"reply_not_regex": "(?i)grandcentralrail|london-now\\.co\\.uk"}]}
+      ]}
+    ]
+  }
+}

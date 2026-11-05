@@ -16,6 +16,7 @@
 
 #include "../support/fake_http.h"
 #include "nimbus/harness/websearch.h"
+#include "nimbus/orch/tool_registry.h"
 
 using harness_test::Exchange;
 using harness_test::FakeHttpTransport;
@@ -155,6 +156,18 @@ void test_request_shape(void) {
   TEST_ASSERT_TRUE(req.body.find("secret-key") == std::string::npos);
 }
 
+// A query is model-authored text: a raw control byte must not make the body invalid.
+void test_a_control_byte_in_the_query_leaves_escaped(void) {
+  FakeHttpTransport http;
+  http.script.push_back(Exchange{"api.tavily.com", "/search", 200, kSmallBody, ""});
+  const std::string query = std::string("capital \x1B of\x01 France") + '\x1F';
+  agent::websearch::search(http, "k", query, 3);
+  TEST_ASSERT_EQUAL_size_t(1, http.seen.size());
+  const std::string& b = http.seen[0].body;
+  for (char c : b) TEST_ASSERT_TRUE_MESSAGE((unsigned char)c >= 0x20, b.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(b.find("\\u001b of\\u0001 France\\u001f") != std::string::npos, b.c_str());
+}
+
 void test_max_results_is_clamped(void) {
   for (int req : {0, -5, 99}) {
     FakeHttpTransport http;
@@ -267,6 +280,37 @@ void test_missing_fields_do_not_produce_garbage(void) {
   TEST_ASSERT_TRUE(r.digest.find("(untitled)") != std::string::npos);
 }
 
+// The monthly Tavily call budget counts Tavily's calls: a search answered by a provider's
+// own search (Mistral, Z.ai) books nothing against it, answered or not. A Tavily call that
+// answered, or that failed but may have billed, still counts.
+static void test_a_hosted_search_is_not_a_tavily_call() {
+  const struct { bool hosted, ok, billed; int counted; } cases[] = {
+      {true, true, false, 0},  {true, false, true, 0},
+      {false, true, false, 1}, {false, false, true, 1}, {false, false, false, 0},
+  };
+  for (const auto& k : cases) {
+    nimbus::orch::ToolRegistry reg;
+    agent::websearch::WebSearchToolDeps wd;
+    int counted = 0;
+    wd.search = [&k](const std::string&, int) {
+      agent::websearch::Result r;
+      r.ok = k.ok;
+      r.billed = k.billed;
+      r.hosted = k.hosted;
+      r.digest = "d";
+      return r;
+    };
+    wd.recordCall = [&counted] { counted++; };
+    agent::websearch::registerWebSearchTool(reg, wd);
+    JsonDocument a;
+    a["query"] = "latest python";
+    nimbus::orch::Principal who;
+    who.owner = true;
+    reg.dispatch("web.search", a.as<JsonObjectConst>(), who);
+    TEST_ASSERT_EQUAL(k.counted, counted);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_large_response_parses);
@@ -286,5 +330,7 @@ int main(int, char**) {
   RUN_TEST(test_results_without_an_answer_are_usable);
   RUN_TEST(test_digest_honours_max_results);
   RUN_TEST(test_missing_fields_do_not_produce_garbage);
+  RUN_TEST(test_a_control_byte_in_the_query_leaves_escaped);
+  RUN_TEST(test_a_hosted_search_is_not_a_tavily_call);
   return UNITY_END();
 }

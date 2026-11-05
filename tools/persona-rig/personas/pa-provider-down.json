@@ -1,0 +1,41 @@
+{
+  "description": "A provider going down mid-conversation: the head model is pointed at a model the provider does not have, a turn must answer gracefully with plain wording (a failover answer with a notice, or a plain error - never a raw dump or a hang), then the model is restored and the next turn answers with the conversation context intact.",
+  "vars": {"suffix": "5590"},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0"},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3"},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash"}
+  ],
+  "persona": {
+    "name": "pa-down-${name}",
+    "display_name": "Lucia's Nimbus",
+    "timezone": "Europe/Rome",
+    "monthly_cap_cents": 600,
+    "keys": {"mistral": "MISTRAL_API_KEY", "${host}": "${key}"},
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "scenarios": [
+      {"id": "context", "steps": [
+        {"say": "For this conversation, my favourite colour is called Viridian${suffix}. Acknowledge in one short sentence.",
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true}]},
+        {"say": "What is 3 times 9? Answer with just the number.",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b27\\b"}, {"no_error_reply": true}]}
+      ]},
+      {"id": "provider-down", "needs": ["context"], "steps": [
+        {"http": {"method": "POST", "path": "/api/orch", "form": {"orchM_${host}": "no-such-model-${suffix}"}},
+         "expect": [{"http_status": 200}]},
+        {"say": "What is 6 times 7? Answer with just the number.",
+         "timeout_s": 300,
+         "expect": [{"turn_resolved": true}, {"reply_regex": "(?i)(\\b42\\b|couldn'?t|can'?t|failed|error|didn'?t finish|not available|unknown|try again|went wrong|refused)"}, {"reply_not_regex": "\\A\\s*\\{.*\\}\\s*\\Z"}]}
+      ]},
+      {"id": "recovery", "needs": ["provider-down"], "steps": [
+        {"http": {"method": "POST", "path": "/api/orch", "form": {"orchM_${host}": "${model}"}},
+         "expect": [{"http_status": 200}]},
+        {"say": "What is 6 times 7? Answer with just the number.",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b42\\b"}, {"no_error_reply": true}]},
+        {"say": "And what is my favourite colour?",
+         "expect": [{"turn_resolved": true}, {"reply_contains": "Viridian${suffix}"}, {"no_error_reply": true}]}
+      ]}
+    ]
+  }
+}

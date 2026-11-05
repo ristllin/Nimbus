@@ -14,8 +14,11 @@
 #include <vector>
 
 #include "nimbus/orch/claims.h"
+#include "nimbus/orch/file_append.h"
 #include "nimbus/orch/hosted_runs.h"
+#include "nimbus/orch/speak_outcome.h"
 #include "nimbus/orch/sub_provenance.h"
+#include "nimbus/orch/voice_notes.h"
 #include "nimbus/orch/turn_effects.h"
 
 using namespace nimbus::orch;
@@ -86,7 +89,7 @@ static std::string coreFor(const ClaimCueInfo& c) {
                                                                      : w + " BBC Weather, rain today";
       return c.needsCredit ? "the " + w + " says it is 3.0 mm" : "rain 3.0 mm " + w;
     default:
-      return w;
+      return c.needsVoicedVerb ? "said it " + w : w;
   }
 }
 
@@ -407,8 +410,9 @@ static void test_gap_matrix_every_class_against_every_effect_kind() {
       {ClaimClass::Saved, "Logged it.",
        {FxKind::MemWrite, FxKind::MemUpdate, FxKind::MemPin, FxKind::FileWrite, FxKind::SkillSave,
         FxKind::Scratch}},
-      // R4: a note is also backed by a scratchpad write (even a RAM-only one).
-      {ClaimClass::Saved, "Noted.",
+      // R4: a note is also backed by a scratchpad write (even a RAM-only one). The bare
+      // "Noted." was this case until the claim corpus: it is an acknowledgement now.
+      {ClaimClass::Saved, "Noted in your memory.",
        {FxKind::MemWrite, FxKind::MemUpdate, FxKind::MemPin, FxKind::FileWrite, FxKind::SkillSave,
         FxKind::Scratch, FxKind::ScratchRamOnly}},
       {ClaimClass::Deliverable, "The packing list is written and waiting whenever you want it.",
@@ -439,6 +443,151 @@ static void test_gap_matrix_every_class_against_every_effect_kind() {
       TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(cc.reply, failed), cc.cls), msg);
     }
   }
+}
+
+// v4.6.3 (the 30 Oct ledger investigation): a remove/replace/dedup claim on a
+// log is backed ONLY by a stored row that was actually replaced - the keyed
+// upsert's "replaced N row(s)" with N>0, or a files.edit's "replaced A of B".
+// The day's replies ("The black beans entry is now removed from the log",
+// "Replaced today's log with your figures", "fixed and deduplicated") all
+// passed against plain appends: a row landed, nothing was replaced.
+static void test_remove_replace_dedup_claims_need_a_replaced_row() {
+  const char* replies[] = {
+      "The black beans entry is now removed from the log.",
+      "I replaced today's log with your figures.",
+      "The meal log is now fixed and deduplicated.",
+      "The duplicate rows are deleted from the ledger.",
+  };
+  // Without a record noun within reach it is not a save claim at all.
+  const ClaimScan noLog = scanClaims("I removed the packaging tape from the box.");
+  TEST_ASSERT_FALSE(hasClass(noLog, ClaimClass::Saved));
+  // A plain append backs none of them: the gap names exactly what did not
+  // happen - the replacement, not the save.
+  TurnEffects append;
+  recordToolEffect(append, FxKind::FileWrite, false,
+                   "appended 1 row to food/food-log.csv (now 150 bytes)");
+  TEST_ASSERT_FALSE(append.anyOk(FxKind::FileReplace));
+  for (const char* r : replies) {
+    const auto gaps = gapsFor(r, append);
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gaps, ClaimClass::Saved), r);
+  }
+  const std::string tail = claimTail(gapsFor(replies[0], append));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, tail.find("no stored row was replaced"));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, tail.find("an append adds a new row"));
+  // An upsert that only ADDED (replaced 0) backs nothing either.
+  TurnEffects addOnly;
+  recordToolEffect(addOnly, FxKind::FileWrite, false,
+                   "replaced 0 rows, added 1 row in food/food-log.csv");
+  TEST_ASSERT_FALSE(addOnly.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_TRUE(gapOf(gapsFor(replies[0], addOnly), ClaimClass::Saved));
+  // A keyed upsert that replaced rows backs them all.
+  TurnEffects upsert;
+  recordToolEffect(upsert, FxKind::FileWrite, false,
+                   "replaced 1 row, added 0 rows in food/food-log.csv");
+  TEST_ASSERT_TRUE(upsert.anyOk(FxKind::FileReplace));
+  for (const char* r : replies)
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(r, upsert), ClaimClass::Saved), r);
+  // A files.edit that substituted backs them too (an edit CAN remove a row).
+  TurnEffects edit;
+  recordToolEffect(edit, FxKind::FileWrite, false,
+                   "edited food/food-log.csv: replaced 1 of 3 matches (now 412 bytes)");
+  TEST_ASSERT_TRUE(edit.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_FALSE(gapOf(gapsFor(replies[0], edit), ClaimClass::Saved));
+  // An edit that found nothing records no replace (its no-match is an error).
+  TurnEffects noMatch;
+  recordToolEffect(noMatch, FxKind::FileWrite, true,
+                   "no match for the find text - nothing changed");
+  TEST_ASSERT_FALSE(noMatch.anyOk(FxKind::FileReplace));
+}
+
+// The merge of the two claim designs: the replace verbs have a log noun, and on main a
+// log noun is backed by any landed row. A landed append with the log-row flag (what the
+// device really records) must still not back "removed", and the keyed reply the device
+// really writes must back it only when it replaced a row and changed the file.
+static void test_replace_claims_hold_against_the_real_keyed_reply_and_log_row_flag() {
+  const char* claim = "The black beans entry is now removed from the log.";
+  TurnEffects append;
+  recordToolEffect(append, FxKind::FileWrite, false, "appended 1 row to food/food-log.csv (now 150 bytes)", kFxLogRow);
+  TEST_ASSERT_TRUE(append.anyOkWith(FxKind::FileWrite, kFxLogRow));
+  TEST_ASSERT_FALSE(append.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_TRUE(gapOf(gapsFor(claim, append), ClaimClass::Saved));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, claimTail(gapsFor(claim, append)).find("no stored row was replaced"));
+  // "updated the log" stays the softer claim: that same appended row backs it.
+  TEST_ASSERT_FALSE(gapOf(gapsFor("I updated the log.", append), ClaimClass::Saved));
+
+  const std::string header = "date,meal,items,kcal,protein_g\n";
+  const std::string stored = header + "2026-10-30,lunch,black beans,300,10\n";
+  auto reply = [&](const std::string& rows) {
+    const CsvUpsert up = planCsvUpsert(stored, header + rows, "meal", "kcal", "2026-10-30");
+    TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
+    return renderUpsertReply(up, "food/food-log.csv", "kcal", "GMT");
+  };
+  TurnEffects replaced, added, same;
+  // Lane UPSERT: a keyed write of a DIFFERENT item under the same key appends under a
+  // new key (no replace), so the replace case here corrects the SAME item.
+  recordToolEffect(replaced, FxKind::FileWrite, false, reply("2026-10-30,lunch,black beans,0,0\n"), kFxLogRow);
+  TEST_ASSERT_TRUE(replaced.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_FALSE(gapOf(gapsFor(claim, replaced), ClaimClass::Saved));
+  recordToolEffect(added, FxKind::FileWrite, false, reply("2026-10-30,dinner,soup,200,5\n"), kFxLogRow);
+  TEST_ASSERT_FALSE(added.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_TRUE(gapOf(gapsFor(claim, added), ClaimClass::Saved));
+  recordToolEffect(same, FxKind::FileWrite, false, reply("2026-10-30,lunch,black beans,300,10\n"), kFxLogRow);
+  TEST_ASSERT_FALSE(same.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_TRUE(gapOf(gapsFor(claim, same), ClaimClass::Saved));
+
+  // files.edit: a landed edit backs both the replace verb and the log claim; the flag
+  // survives only its own receipt.
+  TurnEffects edit;
+  recordToolEffect(edit, FxKind::FileWrite, false, "edited food/food-log.csv: replaced 2 of 2 matches (now 90 bytes)",
+                   kFxLogRow);
+  TEST_ASSERT_TRUE(edit.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_TRUE(edit.anyOkWith(FxKind::FileWrite, kFxLogRow));
+  TEST_ASSERT_FALSE(gapOf(gapsFor(claim, edit), ClaimClass::Saved));
+  TEST_ASSERT_FALSE(gapOf(gapsFor("I updated the log.", edit), ClaimClass::Saved));
+  // The playbook's other rewrite: a whole-file save over the stored file backs the removal.
+  // A save that created the file, or one with no such note, replaced nothing.
+  TurnEffects rewrite, created;
+  recordToolEffect(rewrite, FxKind::FileWrite, false,
+                   std::string("saved food/food-log.csv (90 bytes), ") + kSaveReplacedNote);
+  TEST_ASSERT_TRUE(rewrite.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_FALSE(gapOf(gapsFor(claim, rewrite), ClaimClass::Saved));
+  recordToolEffect(created, FxKind::FileWrite, false, "saved food/food-log.csv (90 bytes)");
+  TEST_ASSERT_FALSE(created.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_TRUE(gapOf(gapsFor(claim, created), ClaimClass::Saved));
+  // A plain append into a file whose name holds the marker words replaces nothing.
+  TurnEffects named;
+  recordToolEffect(named, FxKind::FileWrite, false, "appended 1 row to replaced 3/edited 2.csv (now 9 bytes)", kFxLogRow);
+  TEST_ASSERT_FALSE(named.anyOk(FxKind::FileReplace));
+}
+
+// Lane UPSERT, 4 Nov 20:04-20:07: the keyed write REPLACED the stored dinner row, and
+// the reply said only "Logged. The dinner row is now the ..." - the replace was hidden.
+// A turn that replaced a stored row must say "replaced" in the reply; a log claim
+// beside a hidden replace is a gap.
+static void test_a_hidden_replace_is_a_gap() {
+  TurnEffects replaced;
+  recordToolEffect(replaced, FxKind::FileWrite, false,
+                   "replaced 1 row, added 0 rows in food/food-log.csv", kFxLogRow);
+  TEST_ASSERT_TRUE(replaced.anyOk(FxKind::FileReplace));
+  // The 4 Nov reply shape: a log claim, no word of replacing.
+  const char* hidden = "Logged. The dinner row is now the Frive Smoky Baharat Mango Chicken, 445 kcal. "
+                       "Today now stands at 1,878 kcal from 5 rows.";
+  const auto gaps = gapsFor(hidden, replaced);
+  TEST_ASSERT_TRUE_MESSAGE(gapOf(gaps, ClaimClass::Saved), hidden);
+  const std::string tail = claimTail(gaps);
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, tail.find("this turn replaced a stored row"));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, tail.find("say which row and what it held"));
+  // A reply that says "replaced" is honest: no gap.
+  for (const char* honest : {"Replaced dinner: brisket 457 kcal with the mango chicken 445 kcal. Today is 2,335 kcal.",
+                             "Corrected the dinner row - it replaced the old 457 kcal row. Today is 1,890 kcal."})
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(honest, replaced), ClaimClass::Saved), honest);
+  // No replace happened: no hidden-replace gap (the plain log claim is backed).
+  TurnEffects added;
+  recordToolEffect(added, FxKind::FileWrite, false, "replaced 0 rows, added 1 row in food/food-log.csv", kFxLogRow);
+  TEST_ASSERT_FALSE(added.anyOk(FxKind::FileReplace));
+  TEST_ASSERT_FALSE(gapOf(gapsFor(hidden, added), ClaimClass::Saved));
+  // No log claim at all: nothing to hide the replace behind.
+  TEST_ASSERT_FALSE(gapOf(gapsFor("Here is the weather.", replaced), ClaimClass::Saved));
 }
 
 static void test_pin_noop_does_not_back_pinned_and_says_so() {
@@ -570,7 +719,7 @@ static void test_durability_against_the_scratchpad_outcome() {
   TEST_ASSERT_TRUE(gapOf(gaps, ClaimClass::Durable));
   TEST_ASSERT_NOT_EQUAL(std::string::npos, claimTail(gaps).find("until the next restart"));
   // "noted" alone is backed by the RAM-only write (R4): it IS noted, until restart.
-  TEST_ASSERT_EQUAL(0, (int)gapsFor("Noted.", ram).size());
+  TEST_ASSERT_EQUAL(0, (int)gapsFor("Noted in your memory.", ram).size());
   // A durable store that landed the same turn may be what "survives" refers to
   // (a permanent memory written alongside a RAM-only note): precision first.
   for (FxKind store : {FxKind::MemWrite, FxKind::MemUpdate, FxKind::MemPin, FxKind::FileWrite,
@@ -604,6 +753,32 @@ static void test_spawn_count_must_be_met() {
     fx.add(FxKind::SpawnRefused, false);
     TEST_ASSERT_EQUAL_MESSAGE(n < 6, gapOf(gapsFor(reply, fx), ClaimClass::Spawned), reply);
   }
+}
+
+// ---- the real replies: tests/evals/claim_corpus/noted.json --------------------------------
+static void test_claim_corpus_noted() {
+  std::FILE* f = std::fopen("tests/evals/claim_corpus/noted.json", "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, "the corpus is read from the project root");
+  std::string text;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+  std::fclose(f);
+  JsonDocument doc;
+  TEST_ASSERT_TRUE(deserializeJson(doc, text) == DeserializationError::Ok);
+  int rows = 0;
+  for (JsonObjectConst row : doc.as<JsonArrayConst>()) {
+    const std::string owner = row["owner"] | "", reply = row["reply"] | "";
+    const bool expect = row["claim"] | false;
+    const ClaimScan scan = scanClaims(reply, ownerAskedHow(owner), ownerAskedKeep(owner));
+    TurnEffects none;
+    ClaimEvidence ev;
+    ev.fx = &none;
+    const bool gap = !claimGaps(reply, scan, ev).empty();
+    TEST_ASSERT_EQUAL_MESSAGE(expect, gap, reply.c_str());
+    rows++;
+  }
+  TEST_ASSERT_TRUE(rows >= 15);
 }
 
 static void test_lane_n_zai_shape_noted_with_nothing_stored() {
@@ -694,7 +869,7 @@ static void test_unsourced_result_needs_a_hedge_or_a_lookup() {
 static void test_tail_one_calm_line_per_class_ascii_no_em_dash() {
   std::vector<ClaimGap> all;
   for (int c = 0; c < (int)ClaimClass::kCount; c++)
-    for (uint8_t v = 0; v < 4; v++) {
+    for (uint8_t v = 0; v < kGapVariantCount; v++) {   // every GapVariant, incl. not spoken / voice not confirmed
       ClaimGap g;
       g.cls = (ClaimClass)c;
       g.variant = v;
@@ -709,11 +884,61 @@ static void test_tail_one_calm_line_per_class_ascii_no_em_dash() {
       TEST_ASSERT_EQUAL(std::string::npos, line.find('!'));
     }
   const std::string tail = claimTail(all);
-  // One line per class, however many gaps of it.
+  // One line per class, however many gaps of it. The send class alone says each different thing:
+  // plain, no voice message, queued, not spoken, voice not confirmed (the test below says why).
   int lines = 0;
   for (size_t p = tail.find("\n\n("); p != std::string::npos; p = tail.find("\n\n(", p + 1)) lines++;
-  TEST_ASSERT_EQUAL((int)ClaimClass::kCount, lines);
+  TEST_ASSERT_EQUAL((int)ClaimClass::kCount - 1 + 5, lines);
   TEST_ASSERT_EQUAL_STRING("", claimTail({}).c_str());
+}
+
+// Independent review: "I read it aloud and emailed the summary to Sam" got only the speech line, so
+// the owner believed the email went out; the other order lost the speech line. Each claim of the
+// send class that says a different thing keeps its own line, in either order, and the same line
+// never repeats.
+static void test_a_speech_gap_does_not_hide_a_send_gap_in_the_same_reply() {
+  const std::string spoken = "(Correction: that was not spoken aloud.)";
+  const std::string unsent = "(Correction: that has not been sent.)";
+  const std::string noVoice = "(Correction: no voice message was delivered.)";
+  const char* both[] = {"I read it aloud and emailed the summary to Sam.",
+                        "I emailed the summary to Sam and read it aloud.",
+                        "I read it aloud, and I sent you the file on Telegram.",
+                        "I sent you the file on Telegram, and I read it aloud."};
+  TurnEffects none;
+  for (const char* reply : both) {
+    const std::string tail = claimTail(gapsFor(reply, none));
+    TEST_ASSERT_TRUE_MESSAGE(tail.find(spoken) != std::string::npos, reply);
+    TEST_ASSERT_TRUE_MESSAGE(tail.find(unsent) != std::string::npos, reply);
+    // Whichever half is backed loses its line, and only that one.
+    TurnEffects spoke;
+    spoke.add(FxKind::Speak, true);
+    const std::string afterSpeech = claimTail(gapsFor(reply, spoke));
+    TEST_ASSERT_TRUE_MESSAGE(afterSpeech.find(spoken) == std::string::npos, reply);
+    TEST_ASSERT_TRUE_MESSAGE(afterSpeech.find(unsent) != std::string::npos, reply);
+    TurnEffects sent;
+    sent.add(FxKind::Send, true);
+    const std::string afterSend = claimTail(gapsFor(reply, sent));
+    TEST_ASSERT_TRUE_MESSAGE(afterSend.find(spoken) != std::string::npos, reply);
+    TEST_ASSERT_TRUE_MESSAGE(afterSend.find(unsent) == std::string::npos, reply);
+  }
+  // A verb after "and" shares the assistant's subject, and only the assistant's.
+  for (const char* other : {"I know you emailed Sam and forwarded it.", "I saw that Sam read it and shared it.",
+                            "I know Sam read it and shared it.", "I looked at the order, it was packed and delivered on Monday.",
+                            "I found the parcel was packed and delivered on Monday."})
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(other, none), ClaimClass::Sent), other);
+  for (const char* own : {"I have read it and emailed it to Sam.", "I sent you the summary as a voice note and emailed Sam.",
+                          "I read the note and then forwarded it to Sam."})
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(own, none), ClaimClass::Sent), own);
+  const std::string mixed = claimTail(gapsFor("I sent you a voice message and emailed Sam.", none));
+  TEST_ASSERT_TRUE(mixed.find(noVoice) != std::string::npos && mixed.find(unsent) != std::string::npos);
+  // Two claims that fail the same way are one line.
+  TEST_ASSERT_EQUAL_STRING(("\n\n" + unsent).c_str(),
+                           claimTail(gapsFor("I emailed Sam and I forwarded it to Ana.", none)).c_str());
+  // Every other class keeps its one line, whichever gaps it holds.
+  ClaimGap plain, ram;
+  plain.cls = ram.cls = ClaimClass::Saved;
+  ram.variant = 1;
+  TEST_ASSERT_EQUAL_STRING(("\n\n" + claimTailLine(plain)).c_str(), claimTail({plain, ram}).c_str());
 }
 
 static void test_correction_names_claims_and_the_ledger_and_stays_bounded() {
@@ -1249,6 +1474,51 @@ static void test_a_quoted_memory_must_be_words_the_turn_saw() {
   TEST_ASSERT_TRUE(recordQuoteGap(invented, seen, nullptr, true));
 }
 
+// Lane LABEL, 2 Nov: an unquoted "you told me / confirmed / photographed ..." with no
+// owner message saying it is a gap; one whose words the owner did say is not.
+static void test_an_owner_action_claim_needs_a_backing_message() {
+  const std::string owner = normalizedWords("4 frives please. Always assume whole unless told otherwise.");
+  ClaimGap g;
+  // The 2 Nov defence: "You told me about the 4 fries" - no owner message says fries.
+  TEST_ASSERT_TRUE(ownerActionGap("Not made up: you told me about the 4 fries earlier.", owner, &g));
+  TEST_ASSERT_EQUAL(ClaimClass::Source, g.cls);
+  TEST_ASSERT_TRUE(g.excerpt.find("you told me about the 4 fries") != std::string::npos);
+  TEST_ASSERT_TRUE(claimTail(std::vector<ClaimGap>{g}).find("no message from you this turn says that") != std::string::npos);
+  // "the M&S pack you photographed" - the owner never photographed an M&S pack.
+  TEST_ASSERT_TRUE(ownerActionGap("It is the M&S pack you photographed at 13:08.", owner, nullptr));
+  TEST_ASSERT_TRUE(ownerActionGap("You confirmed the whole pack was eaten.", owner, nullptr));
+  // Backed: the owner did say frives, and did say whole.
+  TEST_ASSERT_FALSE(ownerActionGap("You told me about the 4 frives.", owner, nullptr));
+  TEST_ASSERT_FALSE(ownerActionGap("You said to assume whole unless told otherwise.", owner, nullptr));
+  // No content words after the phrase: not checked (precision first).
+  TEST_ASSERT_FALSE(ownerActionGap("You told me so.", owner, nullptr));
+  // A quote after the phrase is the record-quote rule's, not this one's.
+  TEST_ASSERT_FALSE(ownerActionGap("You told me \"4 fries\" earlier.", owner, nullptr));
+  // Inside quotes: the owner being quoted back.
+  TEST_ASSERT_FALSE(ownerActionGap("He said \"you told me about the fries\" to me.", owner, nullptr));
+  // No owner words at all: nothing to check against.
+  TEST_ASSERT_FALSE(ownerActionGap("You told me about the 4 fries.", "", nullptr));
+}
+
+// A media-only turn: the owner's words are just the media segment, so "you
+// sent/photographed/showed" is backed by the segment itself and the clause after it
+// (what the photo shows) is not checked against the owner's words. Claims about what
+// the owner SAID still need their words.
+static void test_an_owner_action_claim_on_a_media_only_turn() {
+  const std::string photo = normalizedWords("[image 1/1 ref=0123456789abcdef] (attached)");
+  const std::string file = normalizedWords("[file 1/1 ref=0123456789abcdef] (attached: the file itself is in this message)");
+  // The playbook-elicited photo-default reply is clean.
+  TEST_ASSERT_FALSE(ownerActionGap("Since you sent the photo with no question, I'm logging the whole pack as eaten.", photo, nullptr));
+  TEST_ASSERT_FALSE(ownerActionGap("The Frive pack you photographed shows 41 g protein per serving.", photo, nullptr));
+  TEST_ASSERT_FALSE(ownerActionGap("The recipe PDF you sent lists 611 kcal per pack.", file, nullptr));
+  // But "you told me / confirmed" with no owner words is still a gap.
+  TEST_ASSERT_TRUE(ownerActionGap("You told me about the 4 fries earlier.", photo, nullptr));
+  TEST_ASSERT_TRUE(ownerActionGap("You confirmed the whole pack was eaten.", photo, nullptr));
+  // And a photo claim on a text-only turn is still a gap.
+  const std::string text = normalizedWords("4 frives please. Always assume whole unless told otherwise.");
+  TEST_ASSERT_TRUE(ownerActionGap("It is the M&S pack you photographed at 13:08.", text, nullptr));
+}
+
 // Asked why, a reason must be built from words on record (the eval's mistral-large-latest
 // on "Why notion?", 27 Oct: three invented reasons in three runs).
 static void test_a_reason_asked_for_needs_words_on_record() {
@@ -1447,8 +1717,291 @@ static void test_hosted_runs_read_back_from_what_the_device_records() {
   TEST_ASSERT_FALSE(hostedRuns().any());
 }
 
+// ---- QW6: spoken claims and the voice receipt -------------------------------------------
+
+static const uint8_t kVoiceSend = (uint8_t)(kFxTelegram | kFxVoice);
+
+// "read it aloud" / "spoken": backed by a reply that played on the speaker OR a Telegram
+// voice message carrying Telegram's receipt, and by nothing else: not a voice send without
+// a receipt, not a text send, not a failed speak. The gap says it was not spoken.
+static void test_spoken_claims_need_the_speaker_or_a_voice_receipt() {
+  const char* replies[] = {"I read it aloud for you.", "I have read aloud the summary.",
+                           "The summary was spoken.", "I am reading it aloud now.",
+                           // other wordings of the same claim (merge review)
+                           "Done, I said it out loud for you.", "I spoke it aloud just now.",
+                           "I played it on the speaker.", "I read it out loud for you."};
+  struct Row { const char* what; TurnEffects fx; bool backed; };
+  std::vector<Row> rows;
+  { TurnEffects fx; fx.add(FxKind::Speak, true); rows.push_back({"spoke", fx, true}); }
+  { TurnEffects fx; fx.add(FxKind::Send, true, "41", 1, (uint8_t)(kVoiceSend | kFxReceipt)); rows.push_back({"voice receipt", fx, true}); }
+  { TurnEffects fx; fx.add(FxKind::Send, false, "", 1, kVoiceSend); rows.push_back({"voice send without a receipt", fx, false}); }
+  { TurnEffects fx; fx.add(FxKind::Send, true, "42", 1, (uint8_t)(kFxTelegram | kFxReceipt)); rows.push_back({"text receipt", fx, false}); }
+  { TurnEffects fx; fx.add(FxKind::Speak, false); rows.push_back({"failed speak", fx, false}); }
+  { TurnEffects fx; rows.push_back({"nothing", fx, false}); }
+  for (const char* reply : replies)
+    for (const Row& row : rows) {
+      const std::vector<ClaimGap> gaps = gapsFor(reply, row.fx);
+      const std::string what = std::string(row.what) + ": " + reply;
+      TEST_ASSERT_EQUAL_MESSAGE(!row.backed, gapOf(gaps, ClaimClass::Sent), what.c_str());
+      if (!row.backed) {
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("(Correction: that was not spoken aloud.)",
+                                         claimTailLine(gaps[0]).c_str(), row.what);
+        TEST_ASSERT_TRUE_MESSAGE(claimCorrection(gaps, row.fx).find("nothing was spoken aloud") != std::string::npos,
+                                 row.what);
+      }
+    }
+}
+
+// Independent review: "on the speaker", "out loud" and "aloud" put a false "not spoken aloud" on a
+// truthful music reply and on figures of speech. They claim speech only after a verb of saying or
+// playing in their clause; music that really started backs the playing verbs and nothing else.
+static void test_a_speech_cue_needs_a_verb_of_speech_and_music_backs_only_playing() {
+  const char* notClaims[] = {"I laughed out loud at that one.", "I wondered aloud whether that was right.",
+                             "I was thinking out loud.", "I read your note and laughed out loud.",
+                             "I checked it on the speaker."};
+  TurnEffects none;
+  for (const char* reply : notClaims) TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(reply, none), ClaimClass::Sent), reply);
+  // The class: every such cue, with a verb that says nothing about the speaker.
+  int voiced = 0;
+  for (size_t i = 0; i < claimCueCount(); i++) {
+    const ClaimCueInfo c = claimCue(i);
+    if (!c.needsVoicedVerb) continue;
+    voiced++;
+    const std::string s = "Done, I laughed " + cueWords(c.phrase) + " for you.";
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(s, none), ClaimClass::Sent), s.c_str());
+  }
+  TEST_ASSERT_EQUAL(3, voiced);
+  const char* playing[] = {"Done, I played it on the speaker.", "I played it on the speaker.",
+                           "I put it on the speaker.", "I've played it on the speaker.",
+                           "I'm playing it on the speaker now."};
+  const char* speaking[] = {"I read it on the speaker.", "I said it out loud.", "I spoke it aloud just now.",
+                            "I read it out loud for you."};
+  const std::string status = R"({"state":"playing","current":"song.wav","index":0,"count":1,"repeat":false,"tracks":["song.wav"]})";
+  TurnEffects music;
+  recordToolEffect(music, FxKind::Config, false, status, kFxMusic);
+  for (const char* reply : playing) {
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)gapsFor(reply, music).size(), reply);
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(reply, none), ClaimClass::Sent), reply);
+  }
+  for (const char* reply : speaking) TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(reply, music), ClaimClass::Sent), reply);
+  // Only the player's own "playing" counts: no tracks, a pause, a stop or a failed call back nothing.
+  struct Row { bool isError; std::string out; };
+  const Row dead[] = {{false, R"({"error":"no tracks in /music"})"},
+                      {false, R"({"state":"paused","current":"song.wav"})"},
+                      {false, R"({"state":"stopped","current":""})"},
+                      {true, "invalid track name (SD /music, .wav or .mp3)"}};
+  for (const Row& row : dead) {
+    TurnEffects fx;
+    recordToolEffect(fx, FxKind::Config, row.isError, row.out, kFxMusic);
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor("I played it on the speaker.", fx), ClaimClass::Sent), row.out.c_str());
+  }
+}
+
+// What a tts device action's summary records: the speaker is a Speak, a Telegram delivery
+// is a receipted voice Send, and every other summary spoke nothing. A tool error always
+// records the failed Speak. The same through the device.control tool's "applied: " line.
+static void test_a_tts_summary_records_what_really_happened() {
+  { TurnEffects fx; recordSpeakSummary(fx, "tts ");
+    TEST_ASSERT_EQUAL(1, (int)fx.size()); TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Speak && fx.at(0).ok); }
+  { TurnEffects fx; recordSpeakSummary(fx, "tts(telegram message_id 41) ");
+    TEST_ASSERT_EQUAL(1, (int)fx.size());
+    TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Send && fx.at(0).ok);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)(kVoiceSend | kFxReceipt), fx.at(0).flags);
+    TEST_ASSERT_EQUAL_STRING("41", fx.at(0).ref);
+    TEST_ASSERT_TRUE(voiceDelivered(fx)); }
+  { TurnEffects fx; recordSpeakSummary(fx, "tts(telegram message_id ) ");   // no id: no receipt
+    TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Send && !fx.at(0).ok);
+    TEST_ASSERT_FALSE(voiceDelivered(fx)); }
+  for (const char* sum : {"tts(not-spoken: the speaker volume is 0, so speech would play as silence) ",
+                          "tts(voice-off) ", "tts(no-sink) ", "tts", ""}) {
+    TurnEffects fx; recordSpeakSummary(fx, sum);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)fx.size(), sum);
+    TEST_ASSERT_TRUE_MESSAGE(fx.at(0).kind == FxKind::Speak && !fx.at(0).ok, sum);
+  }
+  {   // an upload Telegram never confirmed may have arrived: a failed Speak, and a failed unconfirmed voice Send
+    TurnEffects fx;
+    recordSpeakSummary(fx, std::string("tts(not-spoken: ") + kTtsUnconfirmedLead +
+                           "; the speaker is marked faulty; Telegram sent no confirmation (HTTP 0)) ");
+    TEST_ASSERT_EQUAL(2, (int)fx.size());
+    TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Speak && !fx.at(0).ok);
+    TEST_ASSERT_TRUE(fx.at(1).kind == FxKind::Send && !fx.at(1).ok && (fx.at(1).flags & kFxUnconfirmed));
+    TEST_ASSERT_FALSE(voiceDelivered(fx));
+  }
+  {   // a refused one is only a failed Speak
+    TurnEffects fx;
+    recordSpeakSummary(fx, "tts(not-spoken: the speaker is marked faulty; the Telegram voice message did not "
+                           "arrive: Telegram did not accept it (Bad Request: chat not found)) ");
+    TEST_ASSERT_EQUAL(1, (int)fx.size());
+  }
+  { TurnEffects fx; recordSpeakSummary(fx, "tts ", /*isError=*/true);
+    TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Speak && !fx.at(0).ok); }
+  { TurnEffects fx; recordSpeakSummary(fx, "tts(telegram message_id 41) ", /*isError=*/true);
+    TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Speak && !fx.at(0).ok); }
+  // A config summary that merely STARTS with the letters is a setting, not speech: "ttsOn cfg " is
+  // a changed stored value (a Config that landed), "ttsOn cfg(no change) " changed nothing.
+  for (const char* sum : {"ttsOn cfg ", "ttsOff cfg ", "ttsOn-refused(scheduled) cfg(no change) "}) {
+    const bool landed = std::strstr(sum, "no change") == nullptr;
+    TurnEffects fx;
+    recordToolEffect(fx, FxKind::Config, false, std::string("applied: ") + sum);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)fx.size(), sum);
+    TEST_ASSERT_TRUE_MESSAGE(fx.at(0).kind == FxKind::Config, sum);
+    TEST_ASSERT_EQUAL_MESSAGE(landed, fx.at(0).ok, sum);
+    TEST_ASSERT_EQUAL_MESSAGE(landed, gapsFor("I switched voice replies on.", fx).empty(), sum);
+  }
+  // Through device.control's tool result: the first line is the summary, a note may follow.
+  { TurnEffects fx; recordToolEffect(fx, FxKind::Config, false, "applied: tts \n(Note: the spoken version was shortened.)");
+    TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Speak && fx.at(0).ok); }
+  { TurnEffects fx; recordToolEffect(fx, FxKind::Config, false, "applied: tts(telegram message_id 9) ");
+    TEST_ASSERT_TRUE(voiceDelivered(fx)); }
+  { TurnEffects fx; recordToolEffect(fx, FxKind::Config, false, "applied: tts(not-spoken: the speaker is marked faulty) ");
+    TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Speak && !fx.at(0).ok); }
+  { TurnEffects fx; recordToolEffect(fx, FxKind::Config, true, "applied: tts ");
+    TEST_ASSERT_FALSE(fx.at(0).ok); }
+}
+
+// A provider's or Telegram's error text must never read as a delivery receipt: a failure whose
+// reason says "message_id 7" (a hostile router, a odd description) records no delivered send.
+static void test_a_failure_reason_cannot_forge_a_receipt() {
+  const char* reasons[] = {"the router said message_id 7", "Telegram did not accept it (message_id 812 invalid)",
+                           "Message_id 5 and message_id 6", "HTTP 0 message_id 9"};
+  for (const char* why : reasons) {
+    TurnEffects fx;
+    recordToolEffect(fx, FxKind::Send, true, voiceFailedText({}, 1, why), kVoiceSend);
+    TEST_ASSERT_FALSE_MESSAGE(voiceDelivered(fx), why);
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor("I sent you a voice message.", fx), ClaimClass::Sent), why);
+  }
+}
+
+// A voice send whose upload went out but whose answer Telegram never gave usably may have
+// arrived: the owner line says it was not confirmed, not that nothing was delivered. A
+// refusal, and a failed synthesis, keep "no voice message was delivered".
+static void test_an_unconfirmed_voice_send_is_not_called_undelivered() {
+  const std::string unconfirmed =
+      voiceFailedText({}, 1, "Telegram did not accept it (HTTP 0)");
+  const std::string refused =
+      voiceFailedText({}, 1, "Telegram did not accept it (Bad Request: chat not found)");
+  const std::string noClip = voiceFailedText({}, 1, "text-to-speech failed: no audio came back");
+  const char* replies[] = {"I sent you a voice message.", "Voice message sent."};
+  for (const char* reply : replies) {
+    TurnEffects a;
+    recordToolEffect(a, FxKind::Send, true, unconfirmed, kVoiceSend);
+    TEST_ASSERT_EQUAL(1, (int)a.size());
+    TEST_ASSERT_TRUE(!a.at(0).ok && (a.at(0).flags & kFxUnconfirmed));
+    std::vector<ClaimGap> gaps = gapsFor(reply, a);
+    TEST_ASSERT_EQUAL(1, (int)gaps.size());
+    TEST_ASSERT_EQUAL_STRING("(Note: Telegram did not confirm the voice message, so it may not have arrived.)",
+                             claimTailLine(gaps[0]).c_str());
+    TEST_ASSERT_TRUE(gaps[0].deviceOnly);
+    for (const std::string& why : {refused, noClip}) {
+      TurnEffects b;
+      recordToolEffect(b, FxKind::Send, true, why, kVoiceSend);
+      TEST_ASSERT_FALSE(b.at(0).flags & kFxUnconfirmed);
+      gaps = gapsFor(reply, b);
+      TEST_ASSERT_EQUAL_STRING("(Correction: no voice message was delivered.)", claimTailLine(gaps[0]).c_str());
+    }
+    // A partial send whose later note is unconfirmed still backs the delivered one.
+    TurnEffects p;
+    recordToolEffect(p, FxKind::Send, true, voiceFailedText({{811, 1000}}, 3, "Telegram did not accept it (HTTP 0)"),
+                     kVoiceSend);
+    TEST_ASSERT_TRUE(voiceDelivered(p));
+    TEST_ASSERT_TRUE(gapsFor(reply, p).empty());
+  }
+  // The flag is only ever set on a voice send.
+  TurnEffects t;
+  recordToolEffect(t, FxKind::Send, true, unconfirmed, kFxTelegram);
+  TEST_ASSERT_FALSE(t.at(0).flags & kFxUnconfirmed);
+}
+
+// ---- CUM-771: a reply that states a total, an estimate or a plan claims no save --------------------
+
+// Replies the base image corrected with "(Correction: that has not been saved.)" although they
+// claimed nothing: they report what is ALREADY logged ("1,600 kcal logged so far") and offer or
+// plan the rest (lane QW7's qty-vague eval, 26 Oct; the last row is a reply the owner got on
+// 24 Oct and was never corrected). None of them asserts that a save, log or update happened.
+static void test_a_reported_total_or_an_estimate_is_not_a_save_claim() {
+  const char* replies[] = {
+      "For 2,400 kcal you have 800 left (1,600 logged so far).\n\n- **Mozzarella:** 4 slices (100 g), about "
+      "280 kcal and 22 g protein.\n\nThese are estimates. Nothing is logged yet. Tell me what you actually eat "
+      "and I'll add it.",
+      "You're at 1,600 kcal logged, so 800 kcal are left.\n\n- **Pasta salad:** about 325 g, roughly 420 "
+      "kcal.\n\nBoth figures are estimates, since I haven't weighed anything.\n\nWant me to log this once "
+      "you've eaten?",
+      "Today so far is 1,600 kcal and 88 g protein logged, so you have about 800 kcal left under your 2,400 kcal "
+      "target.\n\nYou said earlier that dinner would have no cheese, so I want to check: has that changed? I "
+      "haven't logged anything yet. Tell me what you actually eat and I'll add it to the food log.",
+      "Morning tally (blind estimate, bread protein assumed since brand unknown):\n- 2 bread slices @ 120 kcal "
+      "each = 240 kcal, ~8g protein\n- Mozzarella slice: 64 kcal / 4.7g (your number)\n\nMorning total: "
+      "~475-505 kcal, ~25-28g protein.\n\nGood that the weekend session is locked in, no more \"maybe "
+      "Sunday.\" I'll check back to log it once it's done.",
+      "I'd suggest 250 g of pasta and 6 slices. Logging it once you confirm is fine.",
+      // Pure running totals: the progress words are in the participle's own clause, adjacent to it.
+      "That is 1,652 kcal logged to date.",
+      "(1,652 logged so far)",
+      "Your total is 1,652 kcal logged so far today.",
+      "You are at 1,652 kcal logged, with 700 left.",
+      "You're at 1,652 kcal logged so far today.",
+      "So far you're at 1,652 kcal logged.",
+  };
+  for (const char* reply : replies) {
+    TurnEffects none;   // nothing was saved this turn
+    TEST_ASSERT_TRUE_MESSAGE(gapsFor(reply, none).empty(), reply);
+    TEST_ASSERT_FALSE_MESSAGE(hasClass(scanClaims(reply), ClaimClass::Saved), reply);
+  }
+}
+
+// The counter-cases: a reply that asserts a save still is one, with or without a figure, and a
+// standing total beside a real claim does not hide it. With nothing saved each gets the line.
+static void test_a_real_save_claim_still_gets_its_correction() {
+  const char* replies[] = {
+      "Logged: cappuccino, 52 kcal / 3.6g protein. First item on today's log.",           // 23 Oct, Lumi
+      "Cappuccino logged: 52 kcal / 3.6g protein (standing rule).\n\nRunning morning total: ~527-557 kcal.",
+      "52 kcal logged.",
+      "Done: 2 eggs, 156 kcal logged. You have about 800 kcal left.",
+      "I logged 52 kcal for the cappuccino.",
+      "Logged the cappuccino (52 kcal). You're at 1,652 kcal logged so far.",             // claim + a total
+      "Updated the day log: 1,652 kcal so far.",
+      // One sentence that mixes a FRESH figure with a total (merge review): the progress words sit in
+      // another clause, or are no progress words, so the save claim stands.
+      "2 eggs, 156 kcal logged, so you're at 1,652 kcal so far.",
+      "3 eggs logged - you're on a roll!",
+      "2 eggs, 156 kcal logged; you are at 1,652 kcal so far.",
+      "156 kcal logged and you're at 1,652 so far.",
+      "52 kcal logged, so you're at 1,652 kcal logged so far.",                          // the first one is fresh
+      "Logged 156 kcal for the eggs, you're at 1,652 kcal logged so far.",
+      "You're on 1,652 kcal and 52 kcal logged.",
+      // The assistant as the participle's subject beside a total (QW6 rebase review): a save claim.
+      "You're at 1,652 kcal after I logged the eggs.",
+      "You're at 1,652 kcal after I've logged the eggs.",
+      "You're at 1,652 kcal and I've logged 156 kcal for the eggs.",
+      "You're at 1,652 kcal so far and I have logged the eggs.",
+      "So far you're at 1,652 kcal, and we logged the eggs.",
+  };
+  for (const char* reply : replies) {
+    TurnEffects none;
+    TEST_ASSERT_TRUE_MESSAGE(gapOf(gapsFor(reply, none), ClaimClass::Saved), reply);
+    TurnEffects saved;
+    saved.add(FxKind::FileWrite, true, std::string(), 1, kFxLogRow);   // a landed row backs it (a log claim needs one)
+    TEST_ASSERT_FALSE_MESSAGE(gapOf(gapsFor(reply, saved), ClaimClass::Saved), reply);
+  }
+  TEST_ASSERT_EQUAL_STRING("(Correction: that has not been saved.)",
+                           claimTailLine(gapsFor("Logged: cappuccino, 52 kcal / 3.6g protein.", TurnEffects())[0]).c_str());
+}
+
+static void test_a_promised_save_confirmation_is_recognized() {
+  using nimbus::orch::promisesLaterSaveConfirmation;
+  for (const char* yes : {"I'll confirm it's stored in my next message once the write lands.",
+                          "Saving it now. I will let you know once that is saved.",
+                          "I'll tell you when it's stored!", "I\xE2\x80\x99ll confirm when it is saved."})
+    TEST_ASSERT_TRUE_MESSAGE(promisesLaterSaveConfirmation(yes), yes);
+  for (const char* no : {"I'll remember that.", "I'll let you know when the sub-agent finishes.",
+                         "It is kept as text. No later confirmation will come.", "I can't confirm it's stored.",
+                         "Stored. I'll tell you more about the garden tomorrow.", ""})
+    TEST_ASSERT_FALSE_MESSAGE(promisesLaterSaveConfirmation(no), no);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_a_promised_save_confirmation_is_recognized);
   RUN_TEST(test_every_class_has_cues_and_a_template);
   RUN_TEST(test_every_cue_is_a_claim_when_plain);
   RUN_TEST(test_every_cue_negated_within_four_tokens_is_not_a_claim);
@@ -1461,10 +2014,20 @@ int main(int, char**) {
   RUN_TEST(test_every_cue_inside_quotes_or_code_is_not_a_claim);
   RUN_TEST(test_a_correction_of_the_record_needs_a_files_effect);
   RUN_TEST(test_switch_claims_need_a_setting_that_changed);
+  RUN_TEST(test_spoken_claims_need_the_speaker_or_a_voice_receipt);
+  RUN_TEST(test_a_speech_cue_needs_a_verb_of_speech_and_music_backs_only_playing);
+  RUN_TEST(test_a_tts_summary_records_what_really_happened);
+  RUN_TEST(test_an_unconfirmed_voice_send_is_not_called_undelivered);
+  RUN_TEST(test_a_failure_reason_cannot_forge_a_receipt);
+  RUN_TEST(test_a_reported_total_or_an_estimate_is_not_a_save_claim);
+  RUN_TEST(test_a_real_save_claim_still_gets_its_correction);
   RUN_TEST(test_non_english_reply_is_not_scanned);
   RUN_TEST(test_other_person_past_and_adjective_are_not_claims);
   RUN_TEST(test_spawn_claims_need_a_sub_agent_noun_and_respect_clause_negation);
   RUN_TEST(test_gap_matrix_every_class_against_every_effect_kind);
+  RUN_TEST(test_remove_replace_dedup_claims_need_a_replaced_row);
+  RUN_TEST(test_replace_claims_hold_against_the_real_keyed_reply_and_log_row_flag);
+  RUN_TEST(test_a_hidden_replace_is_a_gap);
   RUN_TEST(test_pin_noop_does_not_back_pinned_and_says_so);
   RUN_TEST(test_pin_noop_disclosed_in_the_reply_needs_no_correction);
   RUN_TEST(test_pin_call_backs_a_confirmed_pin_state);
@@ -1474,10 +2037,12 @@ int main(int, char**) {
   RUN_TEST(test_never_decay_needs_a_pin_or_a_permanent_write);
   RUN_TEST(test_spawn_count_must_be_met);
   RUN_TEST(test_lane_n_zai_shape_noted_with_nothing_stored);
+  RUN_TEST(test_claim_corpus_noted);
   RUN_TEST(test_figure_property_over_random_tables);
   RUN_TEST(test_owner_reported_figures_may_come_from_recalled_memories_label_figures_may_not);
   RUN_TEST(test_unsourced_result_needs_a_hedge_or_a_lookup);
   RUN_TEST(test_tail_one_calm_line_per_class_ascii_no_em_dash);
+  RUN_TEST(test_a_speech_gap_does_not_hide_a_send_gap_in_the_same_reply);
   RUN_TEST(test_correction_names_claims_and_the_ledger_and_stays_bounded);
   RUN_TEST(test_excerpt_is_bounded_and_valid_utf8);
   RUN_TEST(test_no_ledger_means_no_gaps_and_huge_replies_are_bounded);
@@ -1495,6 +2060,8 @@ int main(int, char**) {
   RUN_TEST(test_source_evidence_names_whole_words_and_links);
   RUN_TEST(test_a_source_named_by_name_needs_its_words_in_a_source);
   RUN_TEST(test_a_quoted_memory_must_be_words_the_turn_saw);
+  RUN_TEST(test_an_owner_action_claim_needs_a_backing_message);
+  RUN_TEST(test_an_owner_action_claim_on_a_media_only_turn);
   RUN_TEST(test_a_reason_asked_for_needs_words_on_record);
   RUN_TEST(test_log_row_needs_a_counted_row);
   RUN_TEST(test_tool_tally_names_counts_and_idle_tools);

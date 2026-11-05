@@ -1,6 +1,9 @@
 #pragma once
 #include <WiFiClientSecure.h>
 #include <lwip/sockets.h>
+#include <lwip/tcpip.h>   // LOCK_TCPIP_CORE / sys_thread_tcpip (resolveHostLocked, connectHost)
+#include <lwip/dns.h>      // dns_gethostbyname (raw API: asserts the lock held, never takes it)
+#include <lwip/sys.h>      // sys_sem_t / sys_arch_sem_wait (the bounded wait for the answer)
 
 // agent::store::tlsVerify() - the outbound-TLS security switch. Forward-declared
 // (not #include "agent/store.h") so this sys-level header carries no dependency
@@ -60,4 +63,106 @@ inline void tlsClose(WiFiClientSecure& c) {
     setsockopt(fd, SOL_SOCKET, SO_LINGER, &so, sizeof(so));
   }
   c.stop();
+}
+
+// --- lwIP TCPIP core lock (bench A03, fp=7f7617df, candidate 28813029) ---------
+// NetworkManager::hostByName() calls the RAW lwIP dns_clear_cache() when an interface
+// IP state just flipped (NetworkManager.cpp:84 - exactly the Wi-Fi drop/rejoin case)
+// WITHOUT holding the TCPIP core lock. dns_clear_cache() synchronously fires every
+// pending DNS callback (dns.c:414 -> dns_call_found), so with SNTP's lookup pending
+// the chain sntp_dns_found -> sntp_try_next_server -> sntp_request -> dns_gethostbyname
+// -> dns_alloc_random_port -> udp_new_ip_type hits LWIP_ASSERT_CORE_LOCKED() (udp.c:1278)
+// and panics the calling task (decoded frame by frame in
+// evidence/crash2/a03-decode-28813029.txt: task=relay via WiFiClientSecure::connect ->
+// hostByName -> dns_clear_cache).
+//
+// The class fix removes hostByName from every task path instead of locking around it:
+// Network.hostByName resolves through the netconn API, which TAKES the core lock
+// itself (lwip_getaddrinfo -> netconn_gethostbyname_addrtype -> tcpip_send_msg_wait_sem
+// -> LOCK_TCPIP_CORE, tcpip.c:446), and the core lock is a NON-RECURSIVE mutex taken
+// with portMAX_DELAY (port/freertos/sys_arch.c:44,63) - holding it across
+// Network.hostByName self-deadlocks the calling task on a mutex it already holds.
+// So the seam resolves with the RAW dns_gethostbyname() under LOCK_TCPIP_CORE() (a raw
+// API: it asserts the lock held but never takes it - the webDnsReady pattern in
+// embeddings.cpp), then connects by IPAddress, whose connect() runs no DNS at all
+// (NetworkClient.cpp:312 / NetworkClientSecure.cpp:140,192 are the host overloads).
+// dns_clear_cache()'s only caller in the whole stack is NetworkManager.cpp:84, so with
+// no hostByName left in any task it is never called from outside the TCPIP thread.
+// tools/release_gate/check_lwip_core_lock.py fails the release on any raw lwIP core
+// call outside a LOCK_TCPIP_CORE region, any hostByName (bare, or under a lock - that
+// one self-deadlocks), any host-based connect that does not go through connectHost(),
+// and an unclosed LOCK_TCPIP_CORE.
+namespace nimbus_net_detail {
+struct DnsWait {
+  sys_sem_t sem;
+  ip_addr_t addr;
+  bool ok;
+};
+inline void dnsWaitFound(const char*, const ip_addr_t* addr, void* arg) {
+  auto* w = static_cast<DnsWait*>(arg);
+  if (addr != nullptr) {
+    w->addr = *addr;
+    w->ok = true;
+  } else {
+    w->ok = false;
+  }
+  sys_sem_signal(&w->sem);
+}
+}  // namespace nimbus_net_detail
+
+// Resolve a hostname with the RAW lwIP DNS API under the TCPIP core lock (see above).
+// Cache hit: ERR_OK with the address immediately. Miss: the query is sent while the
+// lock is held and ERR_INPROGRESS comes back; the answer arrives in the TCPIP thread,
+// which needs the lock, so the wait happens WITHOUT holding it (the same shape the
+// netconn layer uses, api_msg.c lwip_netconn_do_gethostbyname) and is bounded by
+// waitMs on top of lwIP's own DNS retry timeout.
+inline bool resolveHostLocked(const char* host, IPAddress& out, uint32_t waitMs = 10000) {
+  if (out.fromString(host)) return true;  // literal address: no DNS involved
+  nimbus_net_detail::DnsWait w;
+  w.ok = false;
+  if (sys_sem_new(&w.sem, 0) != ERR_OK) return false;
+  const bool own = sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER);
+  if (!own) LOCK_TCPIP_CORE();
+  ip_addr_t addr;
+  err_t e = dns_gethostbyname(host, &addr, nimbus_net_detail::dnsWaitFound, &w);
+  if (e == ERR_OK) {
+    out.from_ip_addr_t(&addr);
+  } else if (e == ERR_INPROGRESS) {
+    if (own) {
+      e = ERR_VAL;  // already the lock holder (TCPIP thread): cannot block for the answer
+    } else {
+      UNLOCK_TCPIP_CORE();
+      sys_arch_sem_wait(&w.sem, waitMs);
+      LOCK_TCPIP_CORE();
+      if (w.ok) {
+        out.from_ip_addr_t(&w.addr);
+        e = ERR_OK;
+      } else {
+        e = ERR_VAL;
+      }
+    }
+  }
+  sys_sem_free(&w.sem);
+  if (!own) UNLOCK_TCPIP_CORE();
+  return e == ERR_OK;
+}
+
+// Host-based connect through the seam: resolve under the TCPIP core lock (see above),
+// then connect by IPAddress so the core's own hostByName inside connect(host, ...)
+// never runs. Use this for EVERY connect(host, ...); connecting by IPAddress stays
+// direct (no DNS inside).
+inline int connectHost(Client& c, const char* host, uint16_t port) {
+  IPAddress ip;
+  if (!resolveHostLocked(host, ip)) return 0;
+  return c.connect(ip, port);
+}
+inline int connectHost(WiFiClientSecure& c, const char* host, uint16_t port) {
+  IPAddress ip;
+  if (!resolveHostLocked(host, ip)) return 0;
+  return c.connect(ip, port);
+}
+inline int connectHost(WiFiClientSecure& c, const char* host, uint16_t port, int32_t timeoutMs) {
+  IPAddress ip;
+  if (!resolveHostLocked(host, ip)) return 0;
+  return c.connect(ip, port, timeoutMs);
 }

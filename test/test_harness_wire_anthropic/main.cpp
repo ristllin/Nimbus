@@ -466,11 +466,11 @@ static void test_loop_prose_final_accepted_only_on_the_final_round() {
 }
 
 // A cut round is retried ONCE in the step with a body that differs (more room,
-// effort one step down), then fails as Cut with the real cause: never echoed,
-// never "recovered", never resent identically.
+// effort one step down), then runs once more with the note, whose first attempt is new again,
+// then fails as Cut with the real cause: never echoed, never "recovered", never resent identically.
 static void test_loop_max_tokens_cut_retries_then_fails_loud() {
   FakeProviderDeps d;
-  for (int i = 0; i < 2; i++)
+  for (int i = 0; i < 4; i++)
     d.http.script.push_back({"", "", 200,
         "{\"content\":[{\"type\":\"text\",\"text\":\"trunc\"}],\"stop_reason\":\"max_tokens\"}"});
   auto pd = d.contract();
@@ -480,10 +480,14 @@ static void test_loop_max_tokens_cut_retries_then_fails_loud() {
   std::string conv, out, err;
   TEST_ASSERT_FALSE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, &rig.ht, nullptr));
   TEST_ASSERT_EQUAL_STRING("cut at the output limit (12000 tokens)", err.c_str());
-  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL(4, (int)d.http.seen.size());
   TEST_ASSERT_TRUE(reqBody(d, 0) != reqBody(d, 1));
   TEST_ASSERT_TRUE(bodyHas(d, 0, "\"max_tokens\":8192,\"output_config\":{\"effort\":\"medium\"}"));
   TEST_ASSERT_TRUE(bodyHas(d, 1, "\"max_tokens\":12000,\"output_config\":{\"effort\":\"low\"}"));
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "RAN OUT OF ROOM"));
+  TEST_ASSERT_TRUE(bodyHas(d, 2, "RAN OUT OF ROOM"));
+  TEST_ASSERT_TRUE(bodyHas(d, 3, "RAN OUT OF ROOM"));
+  TEST_ASSERT_TRUE(reqBody(d, 2) != reqBody(d, 3));
 }
 
 // CUM-526 (the CUM-506 class): a tool_use block batched with the final orch_turn
@@ -1255,6 +1259,18 @@ static void test_r1_refused_images_are_resent_as_transcriptions() {
   // A 400 about something else is not an image refusal: no blind re-send.
   TEST_ASSERT_FALSE(providers::imageparts::refusedImages(400, "max_tokens: must be at most 64000"));
   TEST_ASSERT_FALSE(providers::imageparts::refusedImages(500, "image service down"));
+  // Matched by cause (the class: every refusal wording a provider really uses reads as a
+  // photo refusal; nothing else blinds a seeing head for the rest of the turn).
+  for (const char* cause : {"image exceeds 5 MB maximum", "messages.0.content.1.image.source.base64: invalid",
+                            "Invalid image_url", "invalid_image_format", "image_parse_error",
+                            "This model does not support images", "Image input is not supported",
+                            "too many image parts", "vision input is not available", "bad data URL"})
+    TEST_ASSERT_TRUE_MESSAGE(providers::imageparts::refusedImages(400, cause), cause);
+  for (const char* other : {"Model mistral-large-4-0 does not support builtin connectors",
+                            "connectors: web_search, image, images are not available for this model",
+                            "tools.2.type: expected one of web_search, code_interpreter, image_generation",
+                            "unknown field imagery", "document_library is not enabled", "reimaged"})
+    TEST_ASSERT_FALSE_MESSAGE(providers::imageparts::refusedImages(422, other), other);
   TEST_ASSERT_TRUE(providers::imageparts::refusedImages(413, "request_too_large"));
   TEST_ASSERT_TRUE(providers::imageparts::refusedImages(422, "Invalid Image URL"));
 }
@@ -1682,6 +1698,35 @@ static void keepOne(const char* ref, const char* id, uint32_t nowMs) {
   const providers::imageparts::LoopImages loop(tr);
 }
 
+// The bench of 31 Oct: 14 of 62 photo turns died with HTTP 400 "not valid JSON". Once
+// the upload queue was full, the turn's photo went inline while older photos rode their
+// history message as kept files, and the bytes landed outside their JSON string. Both
+// at once is the case; each alone was tested.
+static void test_img_inline_photo_with_kept_files_is_valid_json() {
+  keepOne("0123456789abcdef", "file_kept_a", 1000);
+  keepOne("fedcba9876543210", "file_kept_b", 1000);
+  harness_test::PhotoTurn fx;   // inline: uploadOnce is off, as with a full delete queue
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, finalToolBody()});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("claude-haiku-5-5"); };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  const nimbus::orch::ActiveTurnImages active(fx.set.get());
+  std::string conv, out, err;
+  const std::string prompt = promptWithHistory({kPhotoRow});
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnAnthropic(pd, conv, prompt, fx.text, out, err, &rig.ht, nullptr), err.c_str());
+  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+  const std::string& body = d.http.seen[0].body;
+  JsonDocument doc;
+  const DeserializationError e = deserializeJson(doc, body, DeserializationOption::NestingLimit(32));
+  TEST_ASSERT_TRUE_MESSAGE(e == DeserializationError::Ok, body.substr(0, 400).c_str());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, ("\"data\":\"" + harness_test::b64Of(fx.a) + "\"").c_str()));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, ("\"data\":\"" + harness_test::b64Of(fx.b) + "\"").c_str()));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "file_kept_a"));
+  providers::imageparts::dropFileRefs();
+}
+
 // Nothing kept is left at the provider for long: every upload asks the provider to
 // delete it by itself after kUploadExpiryS (so one a restart orphaned goes too); a kept
 // file unused for an hour is deleted (exactly an hour is still kept); a refusal of a
@@ -1888,6 +1933,7 @@ int main(int, char**) {
   RUN_TEST(test_img_failover_from_a_blind_host_still_sends_the_pixels);
   RUN_TEST(test_img_reattach_rides_the_history_message_with_a_stable_prefix);
   RUN_TEST(test_img_history_prefix_is_append_only_except_across_a_fold);
+  RUN_TEST(test_img_inline_photo_with_kept_files_is_valid_json);
   RUN_TEST(test_img_kept_files_are_never_left_behind);
   RUN_TEST(test_img_look_twice_attaches_the_photo_once);
   RUN_TEST(test_img_splice_all_cuts_every_occurrence_of_a_look_marker);

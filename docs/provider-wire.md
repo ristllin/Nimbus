@@ -34,8 +34,8 @@ channel:
 |---|---|---|---|
 | **OpenAI** (Responses API) | `text.format` `json_schema`, `strict:true` | `orch_turn` function tool, `strict:true` parameters | **Yes**, both channels - the model cannot emit an out-of-schema `orch_turn` |
 | **Anthropic** (Messages API) | the `orch_turn` tool with `tool_choice:auto` - never forced (Sonnet 5.5, Opus 5.5 and Fable 5.1 answer a forced `tool_choice` with a 400); a prose answer is delivered as the reply. The compaction fold offers no tool: its reply is the summary | `orch_turn` offered alongside the registry tools (`tool_choice:auto`) | **No** - the strict-grammar budget rejects a schema this size, so descriptions are stripped and the schema is advisory; its top-level `required` list is just `reply` and the tool description says to OMIT fields the turn is not using (the device parser treats every other field as optional), so the head stops re-emitting unchanged fields as empty values. The device parser + validator are the enforcement |
-| **Mistral** | Conversations API, `response_format.json_schema`, `strict:true` | chat/completions, `orch_turn` function tool (no `strict` flag; the schema's shapes only - the field descriptions ride the prompt, so 10 KB of them no longer ride every round) | single-shot **yes**; loop **advisory** - the device parser + validator enforce it |
-| **Z.ai** (direct, or Cumulo with the zai upstream) | chat/completions, `response_format:{type:"json_object"}` + a JSON-only instruction | none (single-shot head) | **No** - Z.ai answers `json_schema` requests with plain Markdown, so the head asks for `json_object`; a reply that is still prose is delivered as the reply (nothing else rides it) |
+| **Mistral** | Conversations API, `response_format.json_schema`, `strict:true`. The compaction fold is a plain chat completion with no format: its reply is the summary | chat/completions, `orch_turn` function tool (no `strict` flag; the schema's shapes only - the field descriptions ride the prompt, so 10 KB of them no longer ride every round) | single-shot **yes**; loop **advisory** - the device parser + validator enforce it |
+| **Z.ai** (direct, or Cumulo with the zai upstream) | chat/completions, `response_format:{type:"json_object"}` + a JSON-only instruction | chat/completions, `orch_turn` function tool with `tool_choice:"required"`; the forced final round offers only `orch_turn` | **No** - Z.ai answers `json_schema` requests with plain Markdown, so a single shot asks for `json_object`; the loop's schema is advisory. A reply that is still prose is delivered as the reply (nothing else rides it) |
 | **Custom** (LAN / proxy) | chat/completions, `response_format.json_schema`, `strict:true` (schema-less retry on 400) | none (single-shot head) | when the backend supports it |
 
 **"Strict at the wire, lenient at the parser."** Regardless of provider,
@@ -176,12 +176,17 @@ serves:
   `max_tokens` and its reasoning effort. Anthropic rounds get 8,192 tokens with
   `output_config.effort` pinned (medium; low for the fold) on the families that
   accept it, clamped so a generation at the family's slowest measured rate still
-  finishes inside the round's 120 s; Mistral rounds get 4,096, and a Mistral head
-  that can reason (the models whose `/v1/models` entry says
-  `capabilities.reasoning`: Small 2603+, Medium, Magistral, Large 4) gets
-  `reasoning_effort:"none"`, retried once without the field if the model refuses it
-  (HTTP 400 code 3051, or 422); OpenAI sends no output cap (reasoning would starve
-  the answer). Under the time clamp the first attempt takes three quarters of what
+  finishes inside the round's 120 s; Mistral's gateway closes a non-streamed request
+  at 60 s, so its rounds have a 65 s deadline and the close reads as a timeout (no
+  same-host retry). Inside that, Large 4 gets 4,125 tokens (5,500 on the retry),
+  Medium and Small get 5,361 (7,150) and older models 3,000 (4,000), and a Mistral
+  head that can reason (the models whose `/v1/models` entry says
+  `capabilities.reasoning`) gets the lowest `reasoning_effort` it takes: `"low"` on
+  Large 4 and the hosted GLM, which refuse `"none"`, and `"none"` on the others,
+  which refuse `"low"`. A refused value is retried once without the field (HTTP 400
+  code 3051, or 422); with no field Large 4 thinks at its default and runs out of
+  output. Z.ai rounds get 2,400 (3,000 on the retry) inside their 50 s. OpenAI sends
+  no output cap (reasoning would starve the answer). Under the time clamp the first attempt takes three quarters of what
   the round's time allows (never under 3,000 tokens) and the retry after a cut the
   whole fit, at least a third more - a full 120 s round on claude-opus-5 is 4,125
   then 5,500, so every capped round, a Claude id that takes no effort included, has a
@@ -191,8 +196,13 @@ serves:
   `status:"incomplete"`, the custom head `finish_reason:"length"` - and a cut
   answer is never run or delivered as complete. A cut round is retried once in
   the same step with a body that differs (more room, effort one step lower),
-  never an identical one; still cut, it fails as a Cut. Thinking is never
-  disabled (a 400 on Opus 5.5 and Fable 5.1); effort is the lever.
+  never an identical one; still cut, it fails as a Cut, and the fabric takes over
+  (below). Thinking is never disabled (a 400 on Opus 5.5 and Fable 5.1); effort is
+  the lever.
+- **A long answer in the round's text**: Mistral and Z.ai can write the answer as the
+  round's text with only a pointer or a digest of it in `orch_turn`, and only `reply` is
+  delivered. Text of at least 1,200 bytes and at least twice the reply replaces it; the
+  turn's other fields stay.
 - **Mistral built-ins**: chat/completions forbids tool_choice forcing alongside
   the Studio built-in connectors, so loop rounds drop the built-ins and the
   registry's `web.search` covers the gap. (The single-shot Conversations path
@@ -206,15 +216,16 @@ serves:
   the conversation. Only OpenAI's encrypted reasoning items are replayed, and
   only because a reasoning model requires them under `store:false`.
 
-## Context overflow (reactive)
+## Context overflow
 
-A provider rejecting a request for size is recognized by wording
-(`isContextOverflowError`: OpenAI `context_length_exceeded` / "maximum context
-length", Anthropic "prompt is too long", Mistral "exceeds the maximum", plus a
-generic "context window" guard). The turn itself recovers through the normal
-zero-tools fresh-thread retry below; additionally the chat is marked fold-due,
-so the next pump pass compacts it ([memory.md](memory.md)) instead of
-letting the failure recur.
+A provider rejecting a request for size is recognized by its wording
+(`isContextOverflowError`, recorded from each API: Anthropic "prompt is too long: N tokens
+> M maximum", OpenAI `context_length_exceeded` and "exceeds the context window", Mistral "Prompt
+N > M maximum context length" with type `invalid_request_prompt_too_long`, Z.ai code 1261
+"Prompt exceeds max length"). A refused `max_tokens` names a limit too and is not one. The
+turn trims and retries once (below), and the chat is marked fold-due, so the next pump pass
+compacts it ([memory.md](memory.md)) instead of letting it recur. Mistral answers a request far
+over a small tier's limit with a 429, which is handled as a rate limit.
 
 ## Mid-turn provider failover
 
@@ -243,6 +254,50 @@ retry and failover happen INSIDE a single logical round:
    current provider plus up to two keyed, in-budget alternates from
    `providerPriority`.
 
+A **Cut** round gets a note in its seeded message: it ran out of room, what it wrote
+first, and to answer in far fewer words. It then switches host, or, with nowhere to
+go, runs once more on the same host. If that is cut too, the owner gets what it wrote
+with the plain cut marker. Tools that ran before the cut are never run again. Once the round is
+served the note is gone: later rounds are not told to be brief, and a later failure is told as
+itself, not as the recovered cut. An overflow that a trim recovered is not told either.
+
+A provider's **context-window refusal** (`isContextOverflowError`, each provider's
+recorded wording; a refused `max_tokens` is not one) is trimmed and retried once on
+the same host, then follows the Rejected row above with the trimmed request. It is
+never a raw provider line to the owner.
+
+**What a request gives up when it does not fit.** The same ladder answers a body over
+the wire budget (`kWireBodyMax`, refused before the send and refitted until it fits)
+and a window refusal (one pass, so it walks as far as the refusal's figures ask). In
+order:
+
+1. the arguments of calls that already ran, then older tool rounds folded to one line;
+2. older history, oldest first (the summary and the newest turn stay);
+3. the turn's photos as images, for a window refusal only (photos sit outside the byte
+   budget): that host reads their transcriptions;
+4. the newest tool results, clipped;
+5. recalled memories, then the attached food playbook (a tool can read both again);
+6. the `[FRESH RESULTS]` and `[MEMORY RESULTS]` blocks, clipped, both ends kept;
+7. the newest past turns as whole pairs, then the summary. On a turn with nobody's message
+   in it (a synthesis, a routine) 7 comes before 6, since the results are what it is for;
+8. the middle of the turn input;
+9. every registry tool (orch_turn alone rides, and the model is told to answer now);
+10. the skills list and standing preferences.
+
+Whatever went is said: the request's input opens with `[LEFT OUT TO FIT THIS REQUEST]`,
+the log has a `turn fit:` line, and the owner hears it when it touches what they asked
+about (results, the latest messages, part of their message, the tools). The chat's fold
+is queued for the next idle moment when at least 4 KB of conversation went, except within two
+turns of the last fold: a run of large payloads is no sign that the fold failed, so it neither
+pauses folding nor alerts anyone. A failed synthesis turn sends the raw results, not a second
+failure message as well; a key or credit notice due that turn still goes out, since nothing else
+says what to do.
+
+A tool loop on one host (the Cumulo router head, the hosted Virtual Nimbus, mid-turn failover
+off) gets all of this inside its loop, with no host to move to: the ladder, the one trim for a
+window refusal, the note and one more run for a cut. A head with no tool loop gets the same
+ladder from the engine, on the prompt and the input.
+
 Nothing re-dispatches on a switch: every tool the loop already ran is in the
 transcript as a result, so the next provider's renderer just reads it. A
 **parked** host is skipped at the start of later turns - no request, retry or
@@ -269,8 +324,44 @@ the wall clock when it is set, so a restart neither sends one more doomed reques
 nor repeats the owner notice. The **pause switch** on the same record holds a
 provider (or every provider) off every seam until the cause that set it lifts it -
 the spend ceiling uses it; the pause itself is not saved by the park (its owner
-re-applies it at boot). The health report's **Providers** row lists every closed
-provider and when it is checked again.
+re-applies it at boot). The health report's **Providers** row and `GET /api/orch`
+(`parks`) list every closed provider, why, and when it is checked again.
+
+**The Cumulo router is read by its reason, never its status.** Its refusal contract
+(`lib/core/include/nimbus/orch/router_refusals.h`, a copy of the contract in
+`tools/router_contract/`) names what each reason means for a device:
+
+| Router answer | What the device does |
+|---|---|
+| `insufficient_credits`, `credits_or_subscription_required` (no money), `budget_exceeded` (this device's own limit), `account_suspended`, `missing_router_key`, `invalid_router_key` | The only answers that park: every seam, the owner told once, in words true of that reason ("Add credits" only for the first two) |
+| `insufficient_credits_for_call` (the clamp: the wallet has credits, this call's worst case does not fit) | One resend with the output capped at `maxAffordableOutputTokens` when that is at least 256; otherwise this call fails with "this request is larger than the remaining credits allow". A short reply opens with a note saying why, at most once every 6 hours |
+| `rate_limited`, `credits_held_in_flight`, `router_internal_error` | One resend of the same request after `retryAfterMs` when that is 6 seconds or less, else the engine's own reply |
+| `fail_over` reasons (`upstream_*`, `provider_*`, `fallback_exhausted`, `funding_cap_reached`, `router_disabled`, `ceiling_reached`) | That upstream cools for `retryAfterMs`; the turn answers on the router default, or fails over to the next provider. The wallet is never blamed |
+| Any other reason, or a 402 or 403 with none | This call fails. Never a park. A 401 with no reason still reads as the key: the router's own 401 always names one, so what is left is a body that did not survive |
+
+A resend that recovers a refusal ends it: a cut reply or a server error on the capped
+resend reads as it would with no clamp, and a refusal of the resend is what the owner hears
+about. Only a resend that was capped opens the reply with the note.
+
+A clamp, a held wallet or an upstream's failure also shows the account stands, so any
+of them ends a billing or key park outright. The exception is a park for this device's
+own limit (`budget_exceeded`): the router reads that budget after the wallet, so only an
+upstream's failure says it was passed.
+
+**A re-check is a real request.** A reader (a failover candidate list, the sub-agent
+catalog, a status surface) asks `peek`, which never takes the park's one re-check; the
+request that leaves claims it (`wire::exchange`, or `available` at a device seam). A seam
+that got it and then sends nothing hands it back. A parked provider nothing else calls,
+such as Cumulo last in the priority list behind a head that answers every turn, is asked
+by the idle re-check (`TurnEngine::recheckParkedHost`, on the fold's pump) with one short
+request: a refusal is free and an answer ends the park, so a provider recovers by itself.
+It waits for two quiet minutes after the last turn, never runs while a turn does, under
+low memory, or past the spend limit or the provider's budget. A provider that hangs holds
+the pump until the head's timeout, the same as a fold.
+Every re-check logs one outcome: `park: <provider> re-check answered - open again`,
+`refused again (...)`, `failed without a verdict`, `got no answer in time`, or `handed
+back`. A hosted instance keeps asking its head on every turn, so a client who tops up is
+answered on the next message.
 
 **Out of credit or a refused key: told once, answered once, then quiet.** A turn
 that fails for billing or on a refused key - the provider refused, or the park ended
@@ -385,9 +476,16 @@ Z.ai request the device makes (the head, direct or through the Cumulo router's
 `zai` upstream, and every Z.ai sub-agent) carries `reasoning_effort: "low"`; a
 Virtual Nimbus's Z.ai heads (direct and through the router) do the same through
 the same code.
-A head request gets 50 s; if Z.ai has not answered by then, the turn fails over
-to the next provider straight away (no same-host retry) and the notice says Z.ai
-did not answer in time.
+A head request gets 50 s and 2,400 output tokens (3,000 on the retry after a cut),
+about 1,800 words, because a request that runs past 60 s gets no answer at all; if
+Z.ai has not answered by then, the turn fails over to the next provider straight
+away (no same-host retry) and the notice says Z.ai did not answer in time.
+
+A GLM head runs the same tool loop as the other providers, and Z.ai is a host of
+the mid-turn failover. A model that refuses `reasoning_effort` gets one retry without
+it, remembered for this boot, on the loop and the single shot alike. An answer it sends
+as text instead of an `orch_turn` call is delivered as the reply. The compaction fold is a plain completion with no response
+format: its reply is the summary.
 
 ## Cumulo Nimbus router
 

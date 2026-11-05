@@ -147,6 +147,20 @@ struct HeadStep {
   bool prose = false;
 };
 
+// What the loop is doing at a round boundary, handed to the progress observer.
+// `round` is the round about to run (0 = before the first provider request),
+// `elapsedMs` the loop's own clock since it started, and `tools` names the calls
+// the PREVIOUS round dispatched (empty on round 0) - the plain words for "what it
+// is doing" come from those. `lastRound` is true when the gate just forced the
+// tool-less final round: the answer is imminent, so a surface that was about to
+// say "still working" or acknowledge a queued message should stay quiet instead.
+struct HeadProgress {
+  int       round = 0;
+  uint32_t  elapsedMs = 0;
+  bool      lastRound = false;
+  std::vector<std::string> tools;
+};
+
 // Perform ONE model turn. `allowTools`=false forces the "answer now" round (the
 // adapter advertises NO tools / forces orch_turn) so the model must terminate.
 // `priorResults` holds the outcomes of the tool calls returned by the PREVIOUS
@@ -213,6 +227,18 @@ struct HeadLoopConfig {
   // its HeadTools cfg to runHeadLoop verbatim, so no provider can forget to
   // forward it. Null => no check, byte-identical to before.
   std::function<std::string(const std::string& finalTurn)> validateFinal;
+  // The check that holds on the forced final round too, where validateFinal does not
+  // run: an answer that is not one (template filler, reply_guard.h) gets ONE more
+  // tool-less round, with the text as the result of its orch_turn call. Separate from
+  // validateFinal's budget: at most once per turn. Null => no check.
+  std::function<std::string(const std::string& finalTurn)> forcedFinalCheck;
+  // Lane POL2: a prose final answer (HeadStep::prose) is not an orch_turn, so
+  // validateFinal never sees it - but it is still the owner-facing reply. This
+  // check runs on the prose text itself, with the same one-round budget and the
+  // same never-on-the-forced-round rule. The rejected prose goes back wrapped as
+  // an orch_turn call whose arguments ARE JSON ({"reply": ...}), so every
+  // provider's replay stays well-formed. Null => prose is delivered as before.
+  std::function<std::string(const std::string& prose)> validateProseFinal;
 };
 
 // One final-answer check: "" when the turn is fine, else the correction text.
@@ -223,6 +249,11 @@ FinalCheck chainFinalChecks(std::vector<FinalCheck> checks);
 // The call id the correction round answers. Nine alphanumerics: Mistral's
 // tool-call id rule, and valid on every other wire.
 extern const char kFinalCheckCallId[];
+
+// How far a refit may go on the prompt side. A refusal of the byte budget can check its
+// work (the next build measures it), so it takes one rung at a time and gives up no more
+// than it must. A provider's window refusal gets one retry, so it takes the whole ladder.
+enum class FitScope : uint8_t { OlderHistory, NextRung, Ladder };
 
 // Forward decl: transcript.h includes THIS header (it uses HeadToolCall/Result),
 // so the dependency runs one way only - hooks hold a pointer, never a value.
@@ -252,10 +283,21 @@ struct HeadLoopHooks {
   // the wire is byte-identical whether or not this is set.
   Transcript* transcript = nullptr;
   std::function<void(const std::string&)> log;       // optional trace
+  // Optional: give up prompt and input bytes when a request does not fit and the
+  // transcript has nothing left to fold (nimbus/harness/turn_fit.h). The hook rebuilds what
+  // the next step renders. Returns the bytes given up, 0 = nothing left on that scope.
+  // Null => the transcript is all a refit can shrink.
+  std::function<size_t(size_t want, FitScope scope)> fitPrompt;
   // Optional round-prose observer (Glass Box A4): fired once per step whose
   // HeadStep.text is non-empty, BEFORE tool dispatch - the device persists it
   // as a kind=llm_response episodic row. Observer-only; never affects the loop.
   std::function<void(const std::string& text, int round)> onText;
+  // Optional turn-progress observer (lane PROG): fired at EVERY round boundary -
+  // before each provider step, round 0 included - which is the only moment no
+  // provider request is in flight, so a surface may do its own signalling (a
+  // Telegram typing keep-alive, a busy state) or look for messages that arrived
+  // meanwhile. Observer-only; never affects the loop. Null = byte-identical.
+  std::function<void(const HeadProgress&)> progress;
 };
 
 struct HeadOutcome {
@@ -273,9 +315,18 @@ struct HeadOutcome {
   int         corrections = 0; // final-answer correction rounds run (validateFinal; 0 or 1)
 };
 
+// A provider refused the request for its size (compact.h isContextOverflowError): nothing
+// ran, so the turn gives up `want` bytes along the whole ladder at once, in order, since
+// it gets one retry: arguments of calls that ran, older tool rounds, older history
+// (`fitPrompt`), the turn's photos as images (`dropImages`: they are outside the byte
+// budget but not outside the window), the newest results, the rest of the prompt ladder.
+// Returns the bytes given up. `fitPrompt` and `dropImages` may be null.
+size_t trimForOverflow(Transcript& tr, size_t want, const std::function<size_t(size_t, FitScope)>& fitPrompt,
+                       const std::function<size_t()>& dropImages);
+
 // Drive the bounded ReAct loop to a terminal orch_turn. Always returns (never
-// throws): terminates within maxRounds+1 model calls. See the header comment for
-// the safety contract.
+// throws): terminates within maxRounds+1 model calls, plus at most one correction round
+// and one on the forced round. See the header comment for the safety contract.
 HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks);
 
 }  // namespace orch

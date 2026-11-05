@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 
 namespace nimbus::orch {
 
@@ -20,10 +21,10 @@ const char* fileKindName(FileKind k) {
   }
 }
 
-FileKind fileKindForName(const std::string& name) {
+FileKind fileKindForName(std::string_view name) {
   const size_t dot = name.rfind('.');
-  if (dot == std::string::npos || dot + 1 >= name.size()) return FileKind::Data;
-  std::string ext = name.substr(dot + 1);
+  if (dot == std::string_view::npos || dot + 1 >= name.size()) return FileKind::Data;
+  std::string ext(name.substr(dot + 1));
   for (auto& c : ext) c = char(::tolower((unsigned char)c));
   static const char* kDoc[]   = {"md", "txt", "pdf", "html", "csv", "json", "log"};
   static const char* kImage[] = {"png", "jpg", "jpeg", "gif", "webp", "bmp"};
@@ -34,14 +35,28 @@ FileKind fileKindForName(const std::string& name) {
   return FileKind::Data;
 }
 
+bool fileReadableAsText(std::string_view name, const std::string& bytes) {
+  const FileKind kind = fileKindForName(name);
+  if (kind == FileKind::Image || kind == FileKind::Audio) return false;
+  const size_t n = bytes.size() < kTextSniffBytes ? bytes.size() : kTextSniffBytes;
+  size_t controls = 0;
+  for (size_t i = 0; i < n; i++) {
+    const unsigned char c = (unsigned char)bytes[i];
+    if (c == 0) return false;
+    if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') controls++;
+  }
+  return controls * 10 <= n;
+}
+
 // ---- path safety ------------------------------------------------------------
 
-bool FileStore::validSegment(const std::string& s, size_t maxLen) {
+bool FileStore::validSegment(std::string_view s, size_t maxLen) {
   if (s.empty() || s.size() > maxLen) return false;
   if (s == "." || s == "..") return false;
   if (s[0] == '.') return false;                       // no hidden files
   bool nonSpace = false;
-  for (unsigned char c : s) {
+  for (char ch : s) {
+    const unsigned char c = (unsigned char)ch;
     if (c < 0x21 || c > 0x7E) return false;            // printable ASCII, no spaces/ctrl
     if (c == '/' || c == '\\' || c == ':') return false;  // separators / FAT quirks
     nonSpace = true;
@@ -49,10 +64,15 @@ bool FileStore::validSegment(const std::string& s, size_t maxLen) {
   return nonSpace;
 }
 
-std::string FileStore::relPath(const std::string& project, const std::string& name) const {
+std::string FileStore::relPath(std::string_view project, std::string_view name) const {
   if (!validSegment(project, lim_.maxProjectLen) || !validSegment(name, lim_.maxNameLen))
     return std::string();
-  return project + "/" + name;
+  std::string out;
+  out.reserve(project.size() + 1 + name.size());
+  out.append(project.data(), project.size());
+  out += '/';
+  out.append(name.data(), name.size());
+  return out;
 }
 
 // ---- index ------------------------------------------------------------------
@@ -65,8 +85,17 @@ std::string FileStore::relPath(const std::string& project, const std::string& na
 // The SAME fold as the food-ledger gate (words::lowerAscii) is used here on
 // purpose: the index-identity rule and the reserved-ledger-name rule are two
 // gates over one case-blind FAT, and they must not drift (review finding 4).
-static bool fatSameSegment(const std::string& a, const std::string& b) {
-  return words::lowerAscii(a) == words::lowerAscii(b);
+// Allocation-free on purpose: indexOf runs inside add()/wouldExceed, and with no
+// entry cap a per-comparison std::string would put transient churn on the
+// internal heap at every save (lane FSCAP review fix).
+static char foldAscii(char c) {
+  return (c >= 'A' && c <= 'Z') ? char(c - 'A' + 'a') : c;
+}
+static bool fatSameSegment(std::string_view a, std::string_view b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i)
+    if (foldAscii(a[i]) != foldAscii(b[i])) return false;
+  return true;
 }
 
 // A row the device owner controls: the owner field is empty (the v4.1 data
@@ -76,7 +105,7 @@ static bool ownerControlled(const FileEntry& e) {
   return e.owner.empty() || e.owner == kOwnerNs;
 }
 
-int FileStore::indexOf(const std::string& project, const std::string& name) const {
+int FileStore::indexOf(std::string_view project, std::string_view name) const {
   for (size_t i = 0; i < entries_.size(); ++i)
     if (fatSameSegment(entries_[i].project, project) &&
         fatSameSegment(entries_[i].name, name)) return int(i);
@@ -93,10 +122,14 @@ const char FileStore::kErrTooManyFiles[] = "too many files (remove some first)";
 const char FileStore::kErrStoreFull[] = "store full (artifacts are never auto-deleted - remove some first)";
 
 bool FileStore::fullRefusal(const std::string& err) const {
-  return (err == kErrTooManyFiles && lim_.maxEntries > 0) || (err == kErrStoreFull && lim_.maxTotalBytes > 0);
+  // Lane FSCAP: with no entry cap (the default) a count refusal cannot occur and
+  // is not reported as fullness; a zero entry limit (a store that takes nothing)
+  // is not fullness either.
+  return (err == kErrTooManyFiles && lim_.maxEntries > 0 && lim_.maxEntries != kNoEntryCap) ||
+         (err == kErrStoreFull && lim_.maxTotalBytes > 0);
 }
 
-bool FileStore::wouldExceed(const std::string& project, const std::string& name,
+bool FileStore::wouldExceed(std::string_view project, std::string_view name,
                             uint64_t addBytes, std::string& err) const {
   if (!validSegment(project, lim_.maxProjectLen)) { err = "bad project name"; return true; }
   if (!validSegment(name, lim_.maxNameLen))       { err = "bad file name"; return true; }
@@ -123,38 +156,83 @@ bool FileStore::add(const FileEntry& e, std::string& err) {
   return true;
 }
 
-bool FileStore::remove(const std::string& project, const std::string& name) {
+bool FileStore::remove(std::string_view project, std::string_view name) {
   const int i = indexOf(project, name);
   if (i < 0) return false;
   entries_.erase(entries_.begin() + i);
   return true;
 }
 
-bool FileStore::setProviderId(const std::string& project, const std::string& name,
+bool FileStore::setProviderId(std::string_view project, std::string_view name,
                               const std::string& tag, const std::string& id) {
   const int i = indexOf(project, name);
   if (i < 0) return false;
-  entries_[size_t(i)].providerTag = tag;
-  entries_[size_t(i)].providerFileId = id;
+  entries_[size_t(i)].providerTag.assign(tag.data(), tag.size());
+  entries_[size_t(i)].providerFileId.assign(id.data(), id.size());
   return true;
 }
 
-const FileEntry* FileStore::find(const std::string& project, const std::string& name) const {
+const FileEntry* FileStore::find(std::string_view project, std::string_view name) const {
   const int i = indexOf(project, name);
   return i < 0 ? nullptr : &entries_[size_t(i)];
 }
 
-std::vector<const FileEntry*> FileStore::list(const std::string& project) const {
+std::vector<const FileEntry*> FileStore::list(std::string_view project) const {
   std::vector<const FileEntry*> out;
   for (const auto& e : entries_)
-    if (project.empty() || e.project == project) out.push_back(&e);
+    if (project.empty() || std::string_view(e.project) == project) out.push_back(&e);
   return out;
+}
+
+std::vector<const FileEntry*> FileStore::listPage(std::string_view project, size_t offset,
+                                                  size_t limit) const {
+  std::vector<const FileEntry*> out;
+  size_t seen = 0;
+  for (const auto& e : entries_) {
+    if (!project.empty() && std::string_view(e.project) != project) continue;
+    if (seen++ < offset) continue;
+    if (limit && out.size() >= limit) break;
+    out.push_back(&e);
+  }
+  return out;
+}
+
+// ---- regenerable copies (lane FSCAP eviction) --------------------------------
+
+bool FileStore::isRegenerableCopy(const FileEntry& e) const {
+  // Only a chat-attachment copy is regenerable: the Telegram archive keeps the
+  // original. Anything outside those folders is someone's own file and is never
+  // a candidate, even when a newer entry holds the same content (review fix).
+  return isAttachmentProject(e.project);
+}
+
+std::vector<const FileEntry*> FileStore::planEviction(uint64_t needBytes) const {
+  std::vector<const FileEntry*> cands;
+  cands.reserve(entries_.size() / 4 + 8);
+  for (const auto& e : entries_)
+    if (isAttachmentProject(e.project)) cands.push_back(&e);
+  // Oldest first: createdAt, then index order (stable).
+  std::stable_sort(cands.begin(), cands.end(),
+                   [](const FileEntry* a, const FileEntry* b) {
+                     if (a->createdAt != b->createdAt) return a->createdAt < b->createdAt;
+                     return a < b;
+                   });
+  std::vector<const FileEntry*> plan;
+  uint64_t freed = 0;
+  for (const FileEntry* e : cands) {
+    if (freed >= needBytes) break;
+    plan.push_back(e);
+    freed += e->bytes;
+  }
+  return plan;
 }
 
 std::vector<std::string> FileStore::projects() const {
   std::vector<std::string> out;
   for (const auto& e : entries_)
-    if (std::find(out.begin(), out.end(), e.project) == out.end()) out.push_back(e.project);
+    if (std::find_if(out.begin(), out.end(),
+                     [&](const std::string& p) { return std::string_view(e.project) == p; }) == out.end())
+      out.push_back(plainCopy(e.project));
   std::sort(out.begin(), out.end());
   return out;
 }
@@ -202,6 +280,16 @@ bool FileStore::load(const std::string& blob) {
   };
   std::string line;
   if (!nextLine(line) || line != "FILESv1") return false;
+  // Lane FSCAP: the duplicate lookup is a map, not a per-row linear scan - at
+  // 10,000 rows indexOf() per row is quadratic and the boot-time load is the one
+  // call that must stay bounded as the index scales with the card. The map's keys
+  // AND nodes ride the working-set allocator too (review fix: sub-128 B map nodes
+  // would otherwise land on the internal heap, one per row, at boot).
+  using FoldMap = std::unordered_map<WorkingString, size_t, std::hash<WorkingString>,
+                                     std::equal_to<WorkingString>,
+                                     WorkingAllocator<std::pair<const WorkingString, size_t>>>;
+  FoldMap byFolded;
+  byFolded.reserve(1024);
   while (nextLine(line)) {
     if (line.empty()) continue;
     // split on tabs into 8 fields, plus an OPTIONAL 9th (v3.7.0 owner);
@@ -216,15 +304,17 @@ bool FileStore::load(const std::string& blob) {
     }
     if (n != 8 && n != 9) continue;   // 9 = v3.7.0 owner field (optional)
     FileEntry e;
-    e.project = f[0]; e.name = f[1];
+    e.project.assign(f[0].data(), f[0].size());
+    e.name.assign(f[1].data(), f[1].size());
     e.bytes = uint32_t(strtoul(f[2].c_str(), nullptr, 10));
     e.createdAt = uint32_t(strtoul(f[3].c_str(), nullptr, 10));
     unsigned k = unsigned(strtoul(f[4].c_str(), nullptr, 10));
     e.kind = k <= 3 ? FileKind(k) : FileKind::Data;
     e.hash = strtoull(f[5].c_str(), nullptr, 16);
-    e.providerTag = f[6]; e.providerFileId = f[7];
+    e.providerTag.assign(f[6].data(), f[6].size());
+    e.providerFileId.assign(f[7].data(), f[7].size());
     if (n == 9) {
-      e.owner = f[8];
+      e.owner.assign(f[8].data(), f[8].size());
       const size_t bar = e.owner.find('|');
       if (bar != std::string::npos) {
         e.shared = (e.owner.compare(bar + 1, std::string::npos, "shared") == 0);
@@ -246,12 +336,23 @@ bool FileStore::load(const std::string& blob) {
     // owner passes every ownership check on it. If NO row of the group is
     // owner-controlled (two members fought over one name pre-fix), the FIRST
     // row wins: pre-fix first-writer semantics, fail-closed for the later dup.
-    const int dup = indexOf(e.project, e.name);
-    if (dup < 0) {
-      if (entries_.size() < lim_.maxEntries) entries_.push_back(e);
-    } else if (ownerControlled(e) && !ownerControlled(entries_[size_t(dup)])) {
-      entries_[size_t(dup)] = e;   // the owner's row takes the identity over
-    }                               // else: the earlier row already rules this file
+    // The folded identity key, built straight into a working-set string: no
+    // per-row std::string temporaries on the internal heap at boot.
+    WorkingString folded;
+    folded.reserve(e.project.size() + 1 + e.name.size());
+    for (char c : e.project) folded += foldAscii(c);
+    folded += '\t';
+    for (char c : e.name) folded += foldAscii(c);
+    const auto dupIt = byFolded.find(folded);
+    if (dupIt == byFolded.end()) {
+      // Lane FSCAP: load() keeps every valid row whatever the entry limit says -
+      // an upgrade (or a downgrade-then-upgrade) never loses a file. The limit
+      // gates new adds in wouldExceed, not what persistence keeps.
+      byFolded.emplace(folded, entries_.size());
+      entries_.push_back(e);
+    } else if (ownerControlled(e) && !ownerControlled(entries_[dupIt->second])) {
+      entries_[dupIt->second] = e;   // the owner's row takes the identity over
+    }                                // else: the earlier row already rules this file
   }
   return true;
 }

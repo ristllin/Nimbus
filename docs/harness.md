@@ -165,9 +165,11 @@ owner ONE message (switch notices are held and folded into it).
 **One gate per provider for every paid seam.** Before any request, the chat head,
 sub-agent spawns, embeddings, the photo caption step, speech, the download scan and
 image generation ask the one per-provider park
-(`nimbus::orch::providerPark().available(provider, seam, ...)`): a provider closed
-by a billing refusal or a refused key - learned on any seam - or held by the pause
-switch gets no request. The park lives in `lib/core` and is saved to a flash file by
+(`nimbus::orch::providerPark().available(provider, seam, ...)`, or `peek` for a read
+that may send nothing): a provider closed by a billing refusal or a refused key -
+learned on any seam - or held by the pause switch gets no request. The Cumulo router
+closes it only for the reasons its refusal contract says park
+([provider wire](provider-wire.md)). The park lives in `lib/core` and is saved to a flash file by
 the device (`src/agent/provider_gate.cpp`), so it survives a restart; the spend
 ceiling freezes paid calls through the same pause switch.
 

@@ -1,0 +1,31 @@
+# New guard (post-review-fix) run against the pre-fix candidate tree 28813029, 2026-11-04T11:00:41Z
+# command: python3 tools/release_gate/check_lwip_core_lock.py <bench/wt/b500-28813029>/src
+
+FAIL ../../../bench/wt/b500-28813029/src/net/cloud_mint.cpp:140: host-based connect not through connectHost: if (client.connect(host.c_str(), 443)) {
+FAIL ../../../bench/wt/b500-28813029/src/net/relay_client.cpp:885: host-based connect not through connectHost: const bool connected = c.connect(host.c_str(), kTlsPort, kConnectTimeoutMs);
+FAIL ../../../bench/wt/b500-28813029/src/net/relay_client.cpp:1494: host-based connect not through connectHost: const bool tlsOk = g_ws->connect(host.c_str(), kTlsPort, kConnectTimeoutMs);
+FAIL ../../../bench/wt/b500-28813029/src/sfx/sfx_sync.cpp:75: host-based connect not through connectHost: if (client.connect(SFX_SYNC_HOST, 443)) { connected = true; break; }
+FAIL ../../../bench/wt/b500-28813029/src/agent/connectors.cpp:189: host-based connect not through connectHost: if (!client.connect(host.c_str(), 443)) {
+FAIL ../../../bench/wt/b500-28813029/src/agent/connectors.cpp:780: host-based connect not through connectHost: if (c.connect(u.host.c_str(), u.port)) return true;
+FAIL ../../../bench/wt/b500-28813029/src/agent/provider_verify.cpp:414: host-based connect not through connectHost: if (!c.connect(ANTHROPIC_HOST, 443)) {
+FAIL ../../../bench/wt/b500-28813029/src/agent/provider_verify.cpp:635: host-based connect not through connectHost: if (!client.connect(host, 443)) return nimbus::orch::ProbeVerdict::Unknown;
+FAIL ../../../bench/wt/b500-28813029/src/agent/provider_verify.cpp:710: host-based connect not through connectHost: if (!client.connect(h, 443)) return false;
+FAIL ../../../bench/wt/b500-28813029/src/agent/provider_verify.cpp:753: host-based connect not through connectHost: if (!client.connect(host, 443)) return;
+FAIL ../../../bench/wt/b500-28813029/src/agent/provider_verify.cpp:778: host-based connect not through connectHost: if (!client.connect(MISTRAL_HOST, 443)) return false;
+FAIL ../../../bench/wt/b500-28813029/src/agent/provider_verify.cpp:1043: host-based connect not through connectHost: if (connectMs && client.connect(host, 443)) {
+FAIL ../../../bench/wt/b500-28813029/src/agent/telegram.cpp:527: host-based connect not through connectHost: if (sc.connect(TG_HOST, TG_PORT, (int32_t)CONNECT_TIMEOUT)) return true;
+FAIL ../../../bench/wt/b500-28813029/src/agent/tg_archive.cpp:209: host-based connect not through connectHost: if (sc.connect(kHost, kPort, 10000)) return true;
+FAIL ../../../bench/wt/b500-28813029/src/agent/transport_tls.cpp:157: host-based connect not through connectHost: if (client->connect(req.host.c_str(), req.port)) return true;
+FAIL ../../../bench/wt/b500-28813029/src/agent/adapters/audio_tts.cpp:114: host-based connect not through connectHost: if (c.connect(host.c_str(), 443)) return true;
+FAIL ../../../bench/wt/b500-28813029/src/agent/adapters/embeddings.cpp:174: host-based connect not through connectHost: if (client.connect(host.c_str(), 443)) { connected = true; break; }
+FAIL ../../../bench/wt/b500-28813029/src/agent/adapters/http_multipart.cpp:101: bare hostByName anywhere (unlocked dns_clear_cache path): if (!WiFi.hostByName(host, ip)) {
+FAIL ../../../bench/wt/b500-28813029/src/agent/adapters/http_multipart.cpp:129: host-based connect not through connectHost: if (c.connect(host, port)) { connected = true; break; }
+FAIL ../../../bench/wt/b500-28813029/src/agent/adapters/image_gen.cpp:85: host-based connect not through connectHost: if (c.connect(host, 443)) { connected = true; break; }
+FAIL ../../../bench/wt/b500-28813029/src/agent/adapters/moderation.cpp:65: host-based connect not through connectHost: if (!c.connect("api.mistral.ai", 443)) { slot.release(); alog("moderation: connect failed"); return ClassifierVerdict::Error; }
+FAIL ../../../bench/wt/b500-28813029/src/agent/adapters/provider_file_fetch.cpp:123: host-based connect not through connectHost: if (client.connect(host, kTlsPort)) { connected = true; break; }
+FAIL ../../../bench/wt/b500-28813029/src/agent/adapters/tts_voices.cpp:96: host-based connect not through connectHost: connected = c.connect("api.mistral.ai", 443);
+FAIL ../../../bench/wt/b500-28813029/src/agent/adapters/url_fetch.cpp:67: host-based connect not through connectHost: if (!c.connect(u.host.c_str(), u.port)) {
+FAIL ../../../bench/wt/b500-28813029/src/agent/adapters/url_fetch.cpp:306: host-based connect not through connectHost: if (!c.connect(p.host, 443)) {
+FAIL ../../../bench/wt/b500-28813029/src/sys/ota_update.cpp:396: host-based connect not through connectHost: if (client.connect(u.host.c_str(), u.port)) { connected = true; break; }
+FAIL lwip core lock: 26 call(s) outside LOCK_TCPIP_CORE / the locked seam
+rc=1

@@ -22,6 +22,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -37,8 +38,8 @@ class Transcript {
  public:
   void addUser(std::string text);
   // Replace the seeded user message's text (the fabric's per-host lead line when a round
-  // moves to another host: the request names the host it really runs on). No-op before
-  // addUser.
+  // moves to another host: the request names the host it really runs on), keeping the
+  // lines of any rounds already folded into it. No-op before addUser.
   void setSeedText(std::string text);
   // The photos the seeded user message carries (R1, turn_images.h): each renderer
   // puts them into that message, the newest user message of the request, as its
@@ -58,6 +59,9 @@ class Transcript {
   // so it counts like a 40 KB result; only the seeded [USER] message (budgeted
   // with the prompt) is left out.
   size_t toolBytes() const { return replayBytes_; }
+  // Anthropic's signed thinking of this turn, keyed by a round's first tool-call id: the replay
+  // carries it verbatim. It lives here because a refit rebuilds the host's step mid-turn.
+  std::map<std::string, std::string>& signedThinking() { return signedThinking_; }
   size_t size() const { return e_.size(); }
   bool empty() const { return e_.empty(); }
   const std::vector<TranscriptItem, WorkingAllocator<TranscriptItem>>& entries() const {
@@ -100,6 +104,7 @@ class Transcript {
   std::string renderBrief(size_t maxBytes) const;
 
  private:
+  std::map<std::string, std::string> signedThinking_;
   std::vector<TranscriptItem, WorkingAllocator<TranscriptItem>> e_;
   size_t replayBytes_ = 0;
   TurnImages* images_ = nullptr;

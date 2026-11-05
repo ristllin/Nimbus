@@ -1,0 +1,36 @@
+{
+  "description": "A non-English speaker (German): questions in German must be answered in German with the right number, and a German memory must be stored and recalled in German.",
+  "vars": {"suffix": "3967"},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "mem_defect": "", "mem_may": false, "tools_defect": ""},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "mem_defect": "", "mem_may": true, "tools_defect": ""},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "mem_defect": "", "mem_may": true, "tools_defect": ""}
+  ],
+  "persona": {
+    "name": "pa-deutsch-${name}",
+    "display_name": "Klaras Nimbus",
+    "timezone": "Europe/Berlin",
+    "directive": "You help Klara. She writes in German; answer in German.",
+    "monthly_cap_cents": 600,
+    "keys": {"mistral": "MISTRAL_API_KEY", "${host}": "${key}"},
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "scenarios": [
+      {"id": "german-chat", "steps": [
+        {"say": "Wie viel ist 9 mal 8? Antworte nur mit der Zahl.",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b72\\b"}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "Erklare mir in einem Satz, was ein Girokonto ist.",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "(?i)konto|bank", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]},
+      {"id": "german-memory", "needs": ["german-chat"], "steps": [
+        {"say": "Merke dir dauerhaft: Mein Hund heißt Bello${suffix}. Bestätige, wenn es gespeichert ist.",
+         "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
+                    {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}, "known_defect": "${mem_defect}", "may_pass": "${mem_may}"}]},
+        {"http": {"method": "POST", "path": "/api/orch", "form": {"clearConv": "1"}}, "expect": [{"http_status": 200}]},
+        {"say": "Wie heißt mein Hund?",
+         "expect": [{"turn_resolved": true}, {"reply_contains": "Bello${suffix}", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]}
+    ]
+  }
+}

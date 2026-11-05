@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 
+#include "nimbus/orch/owner_first.h"
 #include "rig.h"
 
 // engine_thread - the daemon's concurrency layer (the one genuinely new design
@@ -42,6 +43,8 @@ struct StateSnapshot {
   uint32_t lastTokensOut = 0;
   bool     providerConfigured = false;  // any provider key present (CUM-211 honest state)
   std::string lastHost;
+  std::string sessionsJson = "[]";      // running and queued sub-agents (device sessionsJson)
+  int         activeJobs = 0;           // ...how many, for the page's watcher
   bool        lastFallback = false;     // served-by of the most recent turn (CUM-236)
   std::string lastServedBy;
   std::string devName;
@@ -75,8 +78,10 @@ class EngineThread {
   // for non-web producers (Telegram, the /message control path).
   // A member's message that arrives while another person's sub-agent work is in
   // flight waits in held_ and runs once that work is reported (runOrHold).
-  void postMessage(const std::string& chatId, const std::string& text, uint64_t webTurn = 0) {
-    post([this, msg = Held{chatId, text, webTurn}] { runOrHold(msg); });
+  // `ended` runs on the engine thread once the turn has finished, whatever it delivered.
+  void postMessage(const std::string& chatId, const std::string& text, uint64_t webTurn = 0,
+                   std::function<void()> ended = nullptr, std::vector<PhotoIn> photos = {}) {
+    post([this, msg = Held{chatId, text, webTurn, std::move(ended), std::move(photos)}] { runOrHold(msg); });
   }
 
   // The web turn id currently being run, or 0 when the running task is not a web
@@ -186,19 +191,33 @@ class EngineThread {
         busy_.store(true);
         if (!task.background) snapInFlight(true);
         task.fn();
-        if (!task.background) snapInFlight(false);
+        if (!task.background) {
+          snapInFlight(false);
+          ownerFirst_.noteTurnEnd(NimbusdRig::steadyMs());
+        }
         busy_.store(false);
       }
-      if (running_.load()) pumpJobs();   // never start a sub dispatch while stopping
-      if (running_.load()) rig_->drainTick();   // memory writes queued during an embedding outage
-      if (running_.load()) rig_->spendTick();   // lane DEF: the month rollover and owed notices
-      if (running_.load()) releaseHeld();
+      if (running_.load()) pumpPeriodic();
       // Refresh the snapshot (cheap) so uptime/state stay current.
       refreshSnapshot();
     }
     // Drain any remaining fire-and-forget tasks so a queued turn is not lost on
     // a clean shutdown (MCP promises left unset simply resolve as the future
     // dies - the HTTP handler treats that as a 503).
+  }
+
+  // Periodic work between tasks: jobs, fold, routines, memory, spend, parked
+  // recheck, held release. Each step is skipped while stopping.
+  void pumpPeriodic() {
+    if (running_.load()) pumpJobs();   // never start a sub dispatch while stopping
+    if (running_.load()) foldTick();   // the conversation fold, between turns
+    if (running_.load()) routinesTick();   // at most one due routine or wake-up
+    if (running_.load()) rig_->drainTick();   // memory writes queued during an embedding outage
+    if (running_.load()) rig_->spendTick();   // lane DEF: the month rollover and owed notices
+    // A parked provider nothing else is calling. It blocks this thread, so it waits for
+    // a quiet moment: a client's next message comes first (device parity, owner_first.h).
+    if (running_.load() && ownerFirst_.parkRecheckMayStart(false, NimbusdRig::steadyMs())) rig_->recheckTick();
+    if (running_.load()) releaseHeld();
   }
 
   // Sub-agent jobs (device parity: the orchestrator's pollJobs on every loop pass):
@@ -214,40 +233,73 @@ class EngineThread {
     busy_.store(false);
   }
 
+  // The conversation fold (device compactTick, after the job pump). A fold that runs
+  // is a paid call on this thread, so it is marked in flight like a turn.
+  void foldTick() {
+    const auto mark = [this](bool on) {
+      busy_.store(on);
+      snapInFlight(on);
+    };
+    try { rig_->foldTick(mark); } catch (...) { mark(false); }
+    rig_->noteFoldPumpEnd();
+  }
+
+  // Routines (device: loops::checkDue on the job pump). A fire is a turn on this thread.
+  void routinesTick() {
+    const auto mark = [this](bool on) {
+      busy_.store(on);
+      snapInFlight(on);
+    };
+    try { rig_->loopsTick(mark); } catch (...) { mark(false); }
+  }
+
   // A turn runs now, or waits in held_ while another person's sub-agent work is in
   // flight (the rig's turnMustWait). Bounded: past kHeldMax the oldest waiting
   // message is dropped with a log line rather than growing without limit.
+ public:
   struct Held {
     std::string chat, text;
     uint64_t webTurn = 0;
+    std::function<void()> ended;   // the turn finished (the web chat stops waiting)
+    std::vector<PhotoIn> photos;   // shown to the head as images
   };
   static constexpr size_t kHeldMax = 64;
+  struct HeldQueue {
+    std::deque<Held> items;
+    void push(const Held& m) {
+      if (items.size() >= kHeldMax) {
+        std::fprintf(stderr, "[nimbusd] held-turn queue full - dropped a message for %s\n",
+                     items.front().chat.c_str());
+        if (items.front().ended) items.front().ended();   // whoever waits on it stops waiting
+        items.pop_front();
+      }
+      items.push_back(m);
+    }
+  };
+
+ private:
   void runOrHold(const Held& m) {
     // A chat with an earlier message still waiting queues behind it (order kept).
-    const bool behind = std::any_of(held_.begin(), held_.end(),
+    const bool behind = std::any_of(held_.items.begin(), held_.items.end(),
                                     [&m](const Held& h) { return h.chat == m.chat; });
     if (behind || rig_->turnMustWait(m.chat)) {
-      if (held_.size() >= kHeldMax) {
-        std::fprintf(stderr, "[nimbusd] held-turn queue full - dropped a message for %s\n",
-                     held_.front().chat.c_str());
-        held_.pop_front();
-      }
-      held_.push_back(m);
+      held_.push(m);
       return;
     }
     curWebTurn_.store(m.webTurn, std::memory_order_release);
-    rig_->say(m.chat, m.text);
+    rig_->sayWithPhotos(m.chat, m.text, m.photos);
     curWebTurn_.store(0, std::memory_order_release);
+    if (m.ended) m.ended();
   }
   // Re-queue, in arrival order, every held message that may run now (each becomes
   // an ordinary task, so it is marked in flight like any turn).
   void releaseHeld() {
     std::deque<Held> still;
-    for (auto& m : held_) {
+    for (auto& m : held_.items) {
       if (rig_->turnMustWait(m.chat)) still.push_back(std::move(m));
       else post([this, msg = std::move(m)] { runOrHold(msg); });
     }
-    held_.swap(still);
+    held_.items.swap(still);
   }
 
   void snapInFlight(bool v) {
@@ -275,6 +327,8 @@ class EngineThread {
     s.lastFallback = rig_->lastFallback();
     s.lastServedBy = rig_->lastServedBy();
     s.devName = rig_->settings().devName;
+    s.sessionsJson = rig_->sessionsJson();
+    s.activeJobs = rig_->activeJobCount();
     {
       std::lock_guard<std::mutex> lk(snapMu_);
       s.turnInFlight = snap_.turnInFlight;  // preserve the in-flight flag
@@ -296,7 +350,8 @@ class EngineThread {
   std::deque<Task> queue_;
   std::atomic<uint64_t> curWebTurn_{0};   // web turn id of the running task (0 = none)
   std::atomic<bool> busy_{false};          // any task / pump step executing now
-  std::deque<Held> held_;                  // turns waiting on another namespace (engine thread)
+  HeldQueue held_;                  // turns waiting on another namespace (engine thread)
+  nimbus::orch::OwnerFirstGate ownerFirst_;   // engine thread only: the idle re-check waits for a quiet moment)
 
   mutable std::mutex snapMu_;
   StateSnapshot snap_;

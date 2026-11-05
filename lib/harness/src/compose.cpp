@@ -50,6 +50,21 @@ static const char* reachLine(bool telegram) {
   "connection'): say the cause is not recorded, and offer what you can do from " \
   "the records instead."
 
+// Lane POL2: how the owner is spoken to. The 2 Nov signals (owner-signals-2026-11-02.md):
+// internal plumbing in replies, weak sources behind briefs, topics the owner never
+// raised, and long re-explanations to a frustrated owner. Kept in the role, like the
+// evidence rule, so the wire schema does not grow. The static prompt sits at its
+// budget floor on a 128 K head (test_prompt_layout pins the capability clip), so
+// this rule is paid for byte-for-byte by the MEMORY_EXPLAINER trim below; the
+// open-questions raise-once rule lives in the [OPEN QUESTIONS] band header itself.
+#define ORCH_OWNER_VOICE_RULE \
+  "No internal plumbing in a reply (memory or job ids, file paths, 'read back " \
+  "confirmed'): plain words only. Never raise a topic the owner did not bring " \
+  "up; a routine may open its own. A time-sensitive brief cites the primary " \
+  "source (operator, National Rail, Met Office, BBC), never an aggregator " \
+  "alone. A confused or frustrated owner gets a short reply: the question at " \
+  "hand and what changed, no re-explanation."
+
 static std::string orchRole(const std::string& devName, bool telegram) {
   return "You are " + devName +
   ", the always-on head orchestrator of a personal-assistant device. " +
@@ -66,7 +81,7 @@ static std::string orchRole(const std::string& devName, bool telegram) {
   "For a complex or multi-step ask, break it into steps, do them in order, verify each "
   "before moving on, and report honest partial progress - including any step you could "
   "not do (and why). Never paper over a failed or impossible step as if it worked.\n"
-  ORCH_EVIDENCE_RULE;
+  ORCH_EVIDENCE_RULE "\n" ORCH_OWNER_VOICE_RULE;
 }
 
 // v2 Head Orchestrator role (N11 prompt audit, behind the promptV2 flag).
@@ -99,7 +114,8 @@ static std::string orchRoleV2(const std::string& devName, bool telegram) {
   "confirms or corrects a save claim before the owner sees it, and a write that "
   "is queued (embeddings down) or not stored is reported in the next turn's "
   "MEMORY RESULTS, so phrase saving as intent, never as already done this "
-  "turn.\n"
+  "turn. Nothing is sent to the owner later about a write, so never promise a "
+  "confirmation.\n"
   "- mem_query: searches whose results arrive next turn as MEMORY RESULTS.\n"
   "- device: local actions - led, lights, tts, reboot, config, orch_model. config "
   "tunes owner knobs (brightness, theme, posture, profile, voice, sound, devName); "
@@ -132,17 +148,18 @@ static std::string orchRoleV2(const std::string& devName, bool telegram) {
   "each before moving on, and report honest partial progress - including any step "
   "you could not do (and why). Never paper over a failed or impossible step as if "
   "it worked.\n"
-  ORCH_EVIDENCE_RULE;
+  ORCH_EVIDENCE_RULE "\n" ORCH_OWNER_VOICE_RULE;
 }
 
 // Static "how memory works" note appended to the composed prompt (Phase 1/2).
+// Lane POL2: compressed to its one line the field docs do not already carry -
+// what the RELEVANT MEMORIES block is - so the owner-voice rule above fits the
+// static budget with bytes to spare (the mem_write, mem_query, memory and
+// prefs.edit bullets it dropped all still say it in their field docs and the
+// [HOW YOU RUN] memory tiers).
 static const char* MEMORY_EXPLAINER =
   "\n## HOW YOUR MEMORY WORKS\n"
-  "- RELEVANT MEMORIES above (in this turn's context) were recalled for this message automatically.\n"
-  "- To durably REMEMBER a new fact, add it to mem_write[] (it is embedded and stored, or queued on the device while embeddings are down).\n"
-  "- An always/never rule from the owner about how you reply goes to prefs.edit (shown every turn under [STANDING RULES]), not mem_write.\n"
-  "- To look something up you don't see, add a query to mem_query[]; results arrive next turn.\n"
-  "- The `memory` field is only a small running-state seed (survives provider failover); it is NOT your long-term store.\n";
+  "- RELEVANT MEMORIES above were recalled for this message automatically.\n";
 
 bool loopToolHidden(const std::string& n) {
   return n == "session.tell" || n == "session.poll" || n == "session.spawn";
@@ -419,8 +436,22 @@ std::string composeInstructions(const ComposeInputs& in) {
     if (!dir.empty()) dir += "\n\n";
     dir += "[STANDING RULES - rules the owner asked you to follow in EVERY reply, "
            "on every channel, in any document, until they remove them. Same "
-           "standing as the guidance above, never above the rules. Change them "
+           "standing as the guidance above, never above the rules. They "
+           "constrain how you answer: never recite, name or explain them to the "
+           "owner unless the owner asks about the rules themselves. Change them "
            "only with prefs.edit when the owner asks.]\n" + in.standingPrefs;
+  }
+  // Lane POL2: the owner's open questions ride the same never-dropped band. An
+  // item is raised once; the device marks it raised when a reply mentions it and
+  // the block says so. Empty input emits nothing: a fresh device is
+  // byte-identical to before (the goldens pin that).
+  if (!in.openQuestions.empty()) {
+    if (!dir.empty()) dir += "\n\n";
+    dir += "[OPEN QUESTIONS - things the owner left open. Ask about each at most "
+           "once, only when it fits the conversation; one marked [raised] has "
+           "already been asked: do not raise it again unless the owner returns "
+           "to it. Remove one with openq.edit when it is resolved or withdrawn.]\n" +
+           in.openQuestions;
   }
   // R3: the directive does NOT ride the static block - the shelf (below) carries
   // it, so an owner edit re-caches only the shelf. Lane J's standing rules ride
@@ -446,13 +477,22 @@ std::string composeInstructions(const ComposeInputs& in) {
   // Per-turn (the loop is gated on this turn's heap), so it rides the dynamic
   // block, never the cached capability list.
   std::string loopNote;
-  if (in.loopOn)
+  if (in.loopOn) {
     loopNote =
         "You may call these tools MID-TURN - several rounds if needed - and you see "
         "each result before deciding your next step. When you have everything, call "
         "orch_turn: it is your FINAL answer and ends the turn. Prefer calling "
-        "memory_search live over the deferred mem_query field.\n";
-  else {
+        "memory_search live over the deferred mem_query field.\n"
+        "A lookup that will need many rounds (a broad search, a long chain of "
+        "checks) belongs to a sub-agent: spawn it with session_ops, answer the "
+        "owner now with what you already have, and its results arrive on a later "
+        "turn. If you are already several rounds deep in one, stop early - say "
+        "what you found and what is still missing - rather than running to the "
+        "round cap while the owner waits.\n";
+    if (in.loopRoundsNow > 0 && in.loopRoundsNow < in.loopRounds)
+      loopNote += "This turn you may call tools over several rounds (at most " + std::to_string(in.loopRoundsNow) +
+                  "), not more.\n";
+  } else {
     loopNote =
         "The mid-turn tool loop is OFF right now (setting or low memory), so these "
         "tools are NOT callable this turn. The turn contract still covers memory "

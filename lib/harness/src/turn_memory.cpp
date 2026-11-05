@@ -1,6 +1,7 @@
 #include "nimbus/harness/turn_memory.h"
 
 #include <cstdio>
+#include <mutex>
 #include <utility>
 
 // A turn never spends the device's last internal SRAM (see turn_memory.h).
@@ -80,19 +81,27 @@ std::function<void(bool)>& psramSwitch() {
   static std::function<void(bool)> sw;
   return sw;
 }
+// Scopes open on more than one task (a turn on tg_poll, a list refresh on its worker), so the
+// depth and the switch change together under this lock: the last scope out always turns it off.
+std::mutex s_psramMx;
 int s_psramDepth = 0;
 }  // namespace
 
 void setPsramFirstSwitch(std::function<void(bool on)> sw) { psramSwitch() = std::move(sw); }
 
 PsramFirstScope::PsramFirstScope() {
+  const std::lock_guard<std::mutex> lk(s_psramMx);
   if (s_psramDepth++ == 0 && psramSwitch()) psramSwitch()(true);
 }
 
 PsramFirstScope::~PsramFirstScope() {
+  const std::lock_guard<std::mutex> lk(s_psramMx);
   if (--s_psramDepth == 0 && psramSwitch()) psramSwitch()(false);
 }
 
-int PsramFirstScope::depth() { return s_psramDepth; }
+int PsramFirstScope::depth() {
+  const std::lock_guard<std::mutex> lk(s_psramMx);
+  return s_psramDepth;
+}
 
 }  // namespace agent

@@ -33,6 +33,10 @@ New code lives only in this directory:
 | `src/router_head.h` | the Cumulo head's view of a router refusal (`RouterTap`), the honest copy for each kind and the ladder that answers a refused pick, named from the rule the device's cumulo head shares (`lib/harness/.../router_refusal.h`) |
 | `src/hosted_settings.h` | the owner's settings (durable, thread-safe) and the apply-or-refuse rule for every field the web app posts |
 | `src/embed_check.h` | the embedding settings' live check: run on the engine thread, never awaited past 5 s, its result kept for the next Verify or Save |
+| `src/hosted_fold.h` | where a conversation's fold state lives: the shared `FoldStore` over one file on the volume |
+| `src/hosted_loops.h` | routines and wake-ups over the shared core (`nimbus/orch/loops.h`, `loop_delivery.h`): the file, the clock, one due fire per sweep, the device's tools |
+| `src/hosted_skills.h` | skills over the shared `SkillStore` on the volume, with the device's `skill.*` tools |
+| `src/hosted_photos.h` | photos to the head as images, the settled row, `image.look` and `image.note`, over the shared `TurnImages` and caption walk |
 | `src/engine_thread.h` | the concurrency layer: one engine thread + request mailbox + a snapshot for lock-free reads |
 | `src/http_control.h` | the 127.0.0.1-only control surface (serves the web app + logo, health, replies, message, MCP, backup; delegates `/api/*` to `WebApi`), web-token gated |
 | `src/web_api.h` | the `/api/*` surface the web app calls, answered with honest Virtual Nimbus semantics (real chat/memory/providers; hardware panels honestly virtual) |
@@ -52,6 +56,12 @@ New code lives only in this directory:
 /data/mem/embed.txt          the embedding provider/model/width saved from the web app
 /data/mem/settings.json      the owner's settings from the web app (routing, directive, time zone, name, tool loop)
 /data/mem/submodels.txt      per-provider sub-agent model picks
+/data/mem/chatsum.txt        each chat's conversation summary, its anchor and fold counters
+/data/mem/loops.json         routines and wake-ups (the device's file format)
+/data/mem/wakeup_mode        the "Wake-ups: ask me first" switch
+/data/mem/skills/<id>/       skills (SKILL.md, and SKILL.next.md for an edit waiting for approval)
+/data/mem/photos/<ref>.bin   photos by content hash, for image.look (the newest 512)
+/data/mem/rowtext.txt        a photo row's settled text
 /data/mem/files/             file artifacts + .index
 /data/mem/telegram.txt       Telegram allowlist, display names, consumed legacy seed and the
                              RBAC roles + limits, in ONE atomically written file
@@ -106,6 +116,13 @@ not retried. It recognizes those replies by the engine's own 429 copy
 (`lib/harness/src/rate_limit.cpp`), which `tools/test_vn_connectors_e2e.py`
 pins as part of `make test`.
 
+### Persona rig (live, paid)
+
+`tools/persona-rig/` starts isolated containers of this image, configures each like a
+person with their own keys, models, caps and members, runs scripted turns, and grades them
+with hard assertions. Its README holds the persona format. Its self test runs under
+`make test` with no docker, network or keys.
+
 ## Configuration
 
 Secrets come from the environment (a mounted Secret in k8s); non-secret settings
@@ -140,6 +157,16 @@ router route (`/router/openai/v1/embeddings`). `/api/mem/stats` reports
 web app's embedding settings work as on the device: `POST /api/mem/embedverify`
 makes one real call and saves nothing, `POST /api/mem/embedcfg` refuses a model
 switch while memories exist unless the owner erases them (`reset=1`).
+
+**Memory follows the key (device parity, `nimbus/orch/embed_pick.h`).** With no
+stored vectors and no key for the configured provider, the instance moves to one it
+holds: an OpenAI-only instance embeds with OpenAI at 256 wide. The pick runs at start,
+on every key save and every 10 s for a changed verdict; stored vectors keep their
+space, and a provider that works is never overridden. Anthropic has no embeddings
+API and no Z.ai route is wired, so an Anthropic-only or Z.ai-only instance keeps a
+memory as text, found by keyword (at most 64, 16 per person), and the assistant is
+told exactly that and that no confirmation follows. A key added later embeds the waiting
+ones.
 
 That call can take the whole 30 s embed timeout, and one HTTP thread serves every
 request (`/healthz` included), so it runs on the engine thread and Verify and Save
@@ -181,15 +208,19 @@ applies. Only `/api/files/upload` takes a file part; anywhere else one is refuse
 | `orchHost`, `provPrio`, `subPrio` | primary provider and the fallback orders (unknown names are dropped; an empty order is refused) |
 | `sysPrompt` | the directive (up to 1500 characters; blank = the shipped default) |
 | `orchLoop` | the head tool loop |
+| `orchTrace` | activity recording, on by default: off stops new tool and turn rows (the chat's tool disclosure) |
 | `devName`, `devTz` (`/api/config`) | the name and the time zone (a POSIX string with zone names of 3 to 16 characters, or a zone name such as `Europe/London`; `/api/state` clock and the prompt's clock follow it at once) |
 | `clearConv`, `clearMem`, `convReset` | Clear conversation (a `/clear` boundary: the next turn carries no earlier conversation, the history is kept), erase the running notes, reset provider threads |
 | keys, `orchM_<slug>`, `subM_<slug>`, `tgAllow` | provider keys (the device's own key rule and sentences: spaces around a key are dropped and it is stored without them, and a key with a space, a line break or another hidden character inside, or of a length that provider never issues, is refused; the instance's secrets file holds provider keys only, and a key an earlier build stored with spaces around it loads trimmed and is rewritten trimmed), head and sub-agent model picks, the Telegram allowlist |
 
+`GET /api/orch` also lists `parks`: each provider a refusal holds closed, with `kind`,
+`status`, `why` in plain words and `recheckInS` until its next check.
+
 The device knobs a hosted instance does not offer (tool-loop limits, TLS slots,
-mid-turn failover, trace, the custom endpoint) are reported by `GET /api/orch` at
-their hosted values, so the page's whole-form **Save Changes** round-trips them as a
-no-op (a blank number field is "unchanged"); posting any other value, or any field not listed above (sound, voice, ring,
-display, battery, mode, budgets, a typed bot or Tavily key), answers
+mid-turn failover, the custom endpoint) are hidden on its page and reported by
+`GET /api/orch` at their hosted values, so the page's whole-form **Save Changes**
+round-trips them as a no-op (a blank number field is "unchanged"); posting any other value, or any field not listed above (sound, voice, ring,
+display, battery, mode, budgets, a typed bot key), answers
 `400 {"ok":false,"error":"Not available on a hosted Nimbus: <field>"}` and nothing
 in that post applies, and a value the instance volume cannot store changes nothing
 (500). Env values (`NIMBUSD_ORCH_HOST`, `NIMBUSD_PRIORITY`, `TZ`, ...) are the
@@ -210,10 +241,61 @@ Telegram message still says Telegram.
 `dl`, `rm`, `rmproject`) works on the instance disk: it is the same store the
 assistant's `files.*` tools read, so an upload is readable by the assistant (one
 upload up to 1 MB; downloads are served as `application/octet-stream`). An upload
-the store refuses (256 files, or the store is full) writes nothing to the disk. Routines,
-skills, wake-ups and URL downloads have no hosted engine yet: their lists answer an
-honest empty GET and a write answers `400 "Not available on a hosted Nimbus yet:
-<feature>"`.
+the store refuses (256 files, or the store is full) writes nothing to the disk. URL
+downloads have no hosted engine yet: their list answers an honest empty GET and a write
+answers `400 "Not available on a hosted Nimbus yet: downloads"`.
+
+**Routines, wake-ups and skills.** `/api/loops`, `/api/wakeups` and `/api/skills/*`
+answer as on the device, over the same core: one due fire per 20 s sweep, the advance
+stored before the fire, no burst after a restart (a recurring routine takes its next
+slot; an armed wake-up whose time passed fires once), the same breakers and caps. The
+assistant has `loop.*`, `wakeup.set` and `skill.*`: its recurring routine and its new
+skill wait for the owner's approval on the page. A routine runs as a turn with no owner
+message and reaches the page without a reload. There is no nightly dream on a hosted
+instance.
+
+**The conversation (device parity).** The history rides as real messages
+(`histV2`, `NIMBUSD_HISTV2=0` restores the old 12-row text window). A chat past 48 KB of
+new rows, or one whose history has been shifted, gets a summary through the same
+engine calls as the device (`FoldStore`, `runFold`, `historyFoldSlice`), when the owner
+pauses or at most 6 turns later; the summary rides every later turn. `/compact` asks
+for one now and `/clear yes` drops it. A tool call leaves a `tool_output` row and each
+turn a summary row, so the chat's tool disclosure works; `GET /api/orch` lists running
+sub-agents under `jobs`.
+
+**The web chat contract.** `GET /api/chat?turn=N` answers as on the device: `pending`
+while the turn is queued or running, `done` once it is over (empty for a turn that
+only started sub-agents), `gone` for an id it does not know. `?watch=1` and every other
+body carry `{async, busy}`: the page's watcher reloads the history when `async` moves,
+so a sub-agent's result appears with no reload. A turn with a reply gets no separate
+"On it." for the sub-agents it started.
+
+**Photos.** The page's Attach and drag-and-drop upload to Files > chat under a unique
+name starting `att-`, so any browser file name works and two photos never overwrite; a
+photo then goes with the next message (`POST /api/chat` field `att`, one `project/name`
+per line), and the page shrinks one over 450 KB to a JPEG first. The turn removes that
+Files entry once it has the bytes, and one never sent is swept after a day, so photos do
+not use up the 256 entries Files holds. A Telegram photo or album is one turn, and the
+bytes waiting for their turn share a 32 MB bound in RAM: past it a photo reaches its turn
+as the reason, not the bytes, and the message itself is kept. The head sees a photo as an
+image part; a head that cannot read an image gets a transcription from a provider that
+can, or a label saying nobody could read it. The row keeps the head's note
+(`image.note`), and `image.look` shows a stored photo again. A voice note, video or file
+on Telegram gets one plain answer saying what the bot reads. When it came with words,
+those words also run as a turn, and the head is told what did not reach it.
+
+**What the page leaves out.** Voice, a custom endpoint, the Safety sub-page (no scanner,
+downloads or guest moderation), standing rules, the fixed tool settings and skill
+self-approval are hidden rather than left to answer a refusal, and the search box drops
+their entries. `tools/persona-rig/vn_browser_check.py --walk-only` changes every control
+a real instance shows and fails on a refusal: run it after adding a control.
+
+**Web search.** The instance's page takes a Tavily key on the same field as the device
+(Assistant > Tools > Web search), durable with the provider keys; `web.search` is
+offered from the next turn. The key is not checked when it is saved, and the page says
+only that it is saved: a refused search is what tells the owner. With no such key, an OpenAI or Anthropic key reaches the web
+through the provider's own search on a sub-agent, and a Mistral key does when its
+`web_search` built-in is on.
 
 **Commands.** `/clear` (then `/clear yes`) clears the conversation exactly like the
 button, `/help` lists the commands, and any other slash command gets a fixed reply:
@@ -332,11 +414,11 @@ the shared `resolveRouterRoute` rule (`"<upstream>/<model>"`, a bare id is
 `openai`), and the SELECTED upstream's native head runs through
 `/router/<upstream>` with the Cumulo key as the bearer: the Anthropic Messages
 wire for `anthropic/...`, the OpenAI Responses wire for `openai/...` and bare ids,
-Mistral for `mistral/...`, each with its real tool loop (the registry tools ride
-every round) when the tool loop is on. `zai/...` and any upstream the native wire
-does not cover keep the single-shot chat-completions path with `json_object`;
-`zai/...`, like the direct Z.ai head (`Z_AI_TOKEN`), also carries the device's
-Z.ai policy: `reasoning_effort: "low"` and a 50 s head budget.
+Mistral for `mistral/...`, and chat completions for `zai/...`, each with its real
+tool loop (the registry tools ride every round) when the tool loop is on. Any
+upstream the native wire does not cover keeps the single-shot chat-completions
+path with `json_object`. `zai/...`, like the direct Z.ai head (`Z_AI_TOKEN`), also
+carries the device's Z.ai policy: `reasoning_effort: "low"` and a 50 s head budget.
 The head advertises provider built-in tools only; the owner's private connectors
 never ride the shared router key.
 
@@ -347,10 +429,14 @@ answers by the same shared rule):
 | Router answer | What happens |
 |---|---|
 | The picked model is not offered (`model_not_priced`, a 404 for the model or its upstream, or the upstream's own 400 "Invalid model" for an id it does not run) | The same turn is answered on the last router model that worked, else (none, or it is refused too) on the router default, each tried once and never the same model twice (`openai/gpt-5.6` is the default `gpt-5.6`); the reply opens with a line naming the refused model and the fix, and once that answer lands the pick moves to the model in use (unless the owner chose another model meanwhile), so GET /api/orch shows it and the next turn answers |
-| That upstream is paused or its route is not allowed (`funding_cap_reached`, `provider_disabled`, `endpoint_not_allowed`) | The turn is answered on the router default with a line saying so; the pick is kept |
+| That upstream is paused, out of quota or failing, or its route is not allowed (the refusal contract's `fail_over` reasons, `endpoint_not_allowed`) | The turn is answered on the router default with a line saying so; the pick is kept, and the upstream is not asked again until its `retryAfterMs` passes |
 | A provider built-in tool is not offered on a paying key (`native_tool_not_metered`) | "That didn't finish - the Cumulo router does not run provider built-in tools on this account. Remove them under Connectors." |
-| Credits or a plan are missing (402) | "That didn't finish - the Cumulo router needs credits or a plan for this account. Add credits in the portal." |
-| Rate limited (429) | the engine's rate-limit reply |
+| The wallet is empty, or credits or a plan are missing (`insufficient_credits`, `credits_or_subscription_required`) | "That didn't finish - the Cumulo router needs credits or a plan for this account. Add credits in the portal." |
+| This device reached its monthly limit (`budget_exceeded`) | "That didn't finish - the Cumulo router stopped at this device's monthly limit. Raise it in the portal." |
+| The account is suspended (`account_suspended`) | "That didn't finish - the Cumulo router says this account is suspended. Contact support." |
+| The clamp: the wallet has credits and this call's worst case does not fit (`insufficient_credits_for_call`) | One resend capped at what fits, served with a note that the reply was kept short; when no useful cap fits, "That didn't finish - the Cumulo router says this request is larger than the remaining credits allow." Whatever fails after the resend reads as itself, not as the clamp |
+| Rate limited, or the wallet held by other calls (`rate_limited`, `credits_held_in_flight`) | One resend after `retryAfterMs` when that is 6 seconds or less, else the engine's rate-limit reply |
+| A reason this image does not know, or a 402 or 403 with none | "That didn't finish - the Cumulo router refused this request. Try again shortly." Nothing parks |
 
 Only a refusal of an attempt's first request is answered again on another model,
 so a tool that already ran is never repeated (a request that got no answer is not
@@ -407,7 +493,7 @@ provider with no key runs the configured sub-agent order, since only the owner
 picks a spawn's model on the owner's key. One the provider refuses with HTTP 429
 also names the quota window, read the same way as a head turn's 429.
 Not wired yet on a hosted
-instance: skill capsules, document attachments, auto-saving a sub's result into a
+instance: document attachments, auto-saving a sub's result into a
 project, and provider file capture (the engine passes the task through and notes
 attachments instead of splicing them).
 

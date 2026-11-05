@@ -1,0 +1,21 @@
+{
+  "id": "lc-near-match",
+  "title": "An ambiguous word is asked about, never invented into a food",
+  "rows": ["OIR-16"],
+  "replays": "The 30 Oct class: bb was read as black beans and a chicken portion was invented for a plate the owner had already described.",
+  "clock": "{{TODAY}} {{DOW}} 13:05 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "history": [
+    {"role": "user", "text": "I also had some bb with my lunch earlier, I will tell you about it later."}
+  ],
+  "steps": [
+    {"do": "say", "text": "Log today's lunch: 450 g of chicken and 250 g of blueberries. And please also add the bb I mentioned earlier."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "ledger_contains_any", "params": {"any": ["chicken"]}},
+    {"id": "ledger_contains_any", "params": {"any": ["blueberrie"]}},
+    {"id": "ledger_forbids", "params": {"forbidden": ["black bean"], "where": "all"}}
+  ]
+}

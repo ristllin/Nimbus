@@ -3,8 +3,9 @@
 Root-cause and bench confirmation for the Nimbus-4 (`solide_s3`) white screen on
 merged `main` (`3e8db03`): the firmware logs `[tft] colour touch panel up` while
 the glass stays white. Whoever runs this holds the device lock per the bench
-lock protocol (create `/tmp/nimbus-devices/usbmodem2101.lock`, 45 min max,
-release after). Nimbus-4 (`usbmodem2101`) is the personal board - its NVS backup lives in
+lock protocol (create a lock named for the unit, 45 min max, release after). The
+port this runbook names is from August 2026: identify today's board by MAC first
+(`python3 tools/bench_guard.py list`). Nimbus-4 is the personal board - its NVS backup lives in
 `~/nimbus-bench/nimbus4-backup/`. All steps below are app-partition uploads (no
 flash erase), so `scrModel=tft` and the touch calibration survive.
 

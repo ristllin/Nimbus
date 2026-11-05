@@ -173,6 +173,59 @@ static void test_park_pause_is_seam_scoped_and_403_lifts_on_recheck() {
   park.clear();
 }
 
+// QW6 on HFM's line: the one pause reader (headPauseIn; the device asks it through parkPause) names
+// a head parked for credit, a refused key, a 403 or a pause with its reason. The read is a snapshot:
+// it never takes the re-check request a seam is due, and a park that closes another seam only is
+// not a closed head on the chat seam.
+static void test_head_pause_is_read_from_the_park_without_its_recheck() {
+  ProviderPark park;
+  const uint32_t t0 = 1000;
+  auto chat = [&park](const char* p, uint32_t now) { return headPauseIn(park, p, PaidSeam::Chat, now, false); };
+  TEST_ASSERT_TRUE(chat("anthropic", t0).park == ParkKind::None);
+  park.park("anthropic", PaidSeam::Chat, 7, ParkKind::Billing, 400, t0);
+  park.park("openai", PaidSeam::Chat, 7, ParkKind::Auth, 401, t0);
+  park.park("mistral", PaidSeam::Vision, 7, ParkKind::Auth, 403, t0);   // one model refused, chat still open
+  park.park("cumulo", PaidSeam::Chat, 7, ParkKind::Auth, 403, t0);      // the head's own seam refused it
+  park.pause("zai", kPauseProviderLimit);
+  TEST_ASSERT_TRUE(chat("anthropic", t0).park == ParkKind::Billing);
+  TEST_ASSERT_EQUAL(400, chat("anthropic", t0).parkStatus);
+  TEST_ASSERT_TRUE(chat("openai", t0).park == ParkKind::Auth);
+  TEST_ASSERT_EQUAL(401, chat("openai", t0).parkStatus);
+  TEST_ASSERT_TRUE(chat("mistral", t0).park == ParkKind::None);
+  TEST_ASSERT_EQUAL(0, chat("mistral", t0).parkStatus);
+  TEST_ASSERT_TRUE(headPauseIn(park, "mistral", PaidSeam::Vision, t0, false).park == ParkKind::Auth);
+  const HeadPause z = chat("zai", t0);
+  TEST_ASSERT_EQUAL(kPauseProviderLimit, z.causes);
+  TEST_ASSERT_TRUE(z.park == ParkKind::None);
+  TEST_ASSERT_FALSE(z.overBudget);   // the caller's check
+  TEST_ASSERT_EQUAL_STRING("Anthropic, the chosen head, is out of credit and returns automatically once credit is added.",
+                           headPauseFact("Anthropic", chat("anthropic", t0)).c_str());
+  TEST_ASSERT_EQUAL_STRING("OpenAI, the chosen head, rejected its key and returns automatically once its key is replaced.",
+                           headPauseFact("OpenAI", chat("openai", t0)).c_str());
+  // A Chat 403 says it lifts on the re-check, never "once its key is replaced" (HFC's wording).
+  const HeadPause refused = chat("cumulo", t0);
+  TEST_ASSERT_EQUAL(403, refused.parkStatus);
+  TEST_ASSERT_EQUAL_STRING(
+      "Cumulo Nimbus, the chosen head, refused a request (HTTP 403) and returns automatically when it is checked "
+      "again.",
+      headPauseFact("Cumulo Nimbus", refused).c_str());
+  // Past the re-check time a Chat read without dueIsOpen still says parked, a read with it says open,
+  // and neither takes the probe: the seam that asks next still gets the one re-check request.
+  const uint32_t due = t0 + ProviderPark::kRecheckMs + 1;
+  TEST_ASSERT_TRUE(chat("anthropic", due).park == ParkKind::Billing);
+  TEST_ASSERT_TRUE(headPauseIn(park, "anthropic", PaidSeam::Chat, due, true).park == ParkKind::None);
+  const ParkVerdict v = park.available("anthropic", PaidSeam::Chat, 7, due);
+  TEST_ASSERT_TRUE(v.open && v.probe);
+  // parkPause is this reader on the process-wide park.
+  ProviderPark& global = providerPark();
+  global.clear();
+  global.park("openai", PaidSeam::Chat, 0, ParkKind::Auth, 403, t0);
+  const HeadPause a = parkPause("openai", PaidSeam::Chat, t0 + 1, false);
+  const HeadPause b = headPauseIn(global, "openai", PaidSeam::Chat, t0 + 1, false);
+  TEST_ASSERT_TRUE(a.park == b.park && a.parkStatus == b.parkStatus && a.causes == b.causes);
+  global.clear();
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_pause_notes);
@@ -183,5 +236,6 @@ int main(int, char**) {
   RUN_TEST(test_owner_asks_to_switch);
   RUN_TEST(test_pause_facts_for_the_model);
   RUN_TEST(test_park_pause_is_seam_scoped_and_403_lifts_on_recheck);
+  RUN_TEST(test_head_pause_is_read_from_the_park_without_its_recheck);
   return UNITY_END();
 }

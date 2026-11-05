@@ -105,6 +105,14 @@ struct ScreenCtx {
   // every golden fixture byte-identical.
   bool needsSetup = false;
 
+  // Lane PROG: a turn is running right now. The home screen's empty state then
+  // says "Working on it" instead of "Nothing running", so the panel never
+  // claims idle while a long turn runs. The ring's working breathe stays the
+  // live signal (per-turn repaints were rejected for flicker, 2026-07-16); this
+  // only makes whatever render does happen honest. Default false keeps every
+  // existing render and golden byte-identical.
+  bool turnActive = false;
+
   // setup info
   std::string apName, apPass, portalUrl;
   std::string fwVersion;  // firmware version string, shown small on the Setup screen

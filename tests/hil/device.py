@@ -35,6 +35,7 @@ import sys
 import time
 from typing import List, Optional, Pattern
 
+import port_guard
 from redact import Secret
 
 try:
@@ -429,6 +430,7 @@ class Device:
         script = os.path.join(os.path.dirname(__file__), "..", "..", "tools", "usb_reset.py")
         skip_serial = skip_serial or os.environ.get("NIMBUS_HIL_OTHER_SERIAL")
         target_serial = target_serial or os.environ.get("NIMBUS_HIL_TARGET_SERIAL")
+        port_guard.check_mac(target_serial, "HIL bus reset")  # usb_reset.py refuses it too; say so before starting it
         for argv in bus_reset_argvs(script, target_serial, skip_serial):
             try:
                 if subprocess.run(argv, capture_output=True, text=True, timeout=25).returncode == 0:
@@ -446,7 +448,15 @@ class Device:
         spurious reboot, sometimes a WEDGED USB peripheral that only a physical
         replug recovers (this was the root cause behind the 'orchestrator hard
         hang' brick and every zombie-port episode; observed live 2026-07-02).
-        Clearing dtr/rts BEFORE open makes attach a pure listen."""
+        Clearing dtr/rts BEFORE open makes attach a pure listen.
+
+        A forbidden board is refused here, before any open (tools/bench_guard.py), and that
+        refusal is never retried. A port with no serial string reads as lost: the callers' reopen
+        loops wait for the serial to come back, which it does when a re-enumeration settles."""
+        try:
+            port_guard.check_port(port, "HIL harness")
+        except port_guard.AnonymousPort as exc:
+            raise DeviceLostError(str(exc)) from exc
         ser = serial.Serial()
         ser.port = port
         ser.baudrate = baud
@@ -732,6 +742,39 @@ class Device:
             return True
         except ExpectTimeout:
             return False
+
+    def wait_console_ready(self, timeout: float = 20.0) -> bool:
+        """True once the FULL test console answers PING - not the boot pump.
+
+        pumpBoot() (src/test_console.cpp) answers ``PING`` with
+        ``PONG (boot console)`` while setup() is still running, and every OTHER
+        line it reads is DISCARDED. So a PING answered by the boot pump proves
+        only that Serial is alive: the first real command sent next is eaten
+        while the full console (which needs main.cpp's late hooks) is not up
+        yet. That is the recorded READY-race (bench H14b, v5-28813029,
+        probe-album.log: the first command after the fixture's resync PONG
+        never landed - album, text and a long HISTADD alike - and every
+        command from the second on worked). PING until the plain full-console
+        ``PONG`` arrives; every non-reply line consumed here is PUSHED BACK so
+        a following wait_ready()/expect() still sees it. False on timeout: the
+        caller's first command then fails loudly, exactly as before."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                self.send("PING")
+            except (OSError, IOError):
+                return False
+            # Our own probe's replies (either console) are consumed; anything
+            # else (boot stream) is replayed for whoever reads the stream next.
+            line = self._readline(time.time() + 2.0)
+            while line is not None:
+                if "PONG" in line:
+                    if "boot console" not in line:
+                        return True  # the full console answered
+                else:
+                    self._pushback.append(line)
+                line = self._readline(time.time() + 0.5)
+        return False
 
     def status(self, timeout: float = 3.0) -> "re.Match[str]":
         """``STATUS`` -> parsed ``STATUS mode=.. wifi=.. ip=.. rssi=.. heap=..
@@ -1093,6 +1136,7 @@ class Device:
         port = self.port or self._pinned_port
         if not port:
             return False
+        port_guard.check_port(port, "HIL esptool reset")
         self.close()
         base = ["--chip", "esp32s3", "--port", port, "--before", "default-reset", "--after", "hard-reset", "chip_id"]
         ok = False
@@ -1193,8 +1237,12 @@ class Device:
                 "flash refused: set NIMBUS_HIL_FLASH_OK=1 to arm flashing "
                 "(double interlock - board is single-owner/bricked)"
             )
+        port = self.port or self._pinned_port
+        if not port:
+            raise DeviceError("flash refused: name the board with --port, a flash never picks a port by itself")
+        port_guard.check_port(port, "HIL flash")
         repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        subprocess.run(["pio", "run", "-e", env, "-t", "upload"], cwd=repo_root, check=True)
+        subprocess.run(["pio", "run", "-e", env, "-t", "upload", "--upload-port", port], cwd=repo_root, check=True)
         self.reopen_after_reenumerate()
         self.wait_ready()
 

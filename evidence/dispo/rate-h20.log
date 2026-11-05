@@ -1,0 +1,35 @@
+lab: priority=anthropic,mistral,zai,openai models[anthropic=claude-haiku-5-5 mistral=mistral-small-latest zai=glm-5.3-flash openai=gpt-5.6-luna] effort=low maxtok=adapter ceiling_ms=adapter rounds=12 failover=on faults=0 record=off
+
+=== dispo-h20 - the H20 question x N: does the head run web.search ===
+  rep 1/5
+    > What is the latest Python 3 release?
+      [tool] web_search({"query":"latest Python 3 release python.org","max_results":5})
+    < The latest Python 3 release I can find is 3.15.2, according to the python.org downloads page. However, another python.org page in the same search lists 3.13.11 (December 2025) as the newest, so the sources conflict and I can't confirm which is current. Check python.org/downloads for the definitive a
+    rep 1: web.search=1 names-a-source=1
+  rep 2/5
+    > What is the latest Python 3 release?
+      [tool] web_search({"query":"latest Python 3 release python.org","max_results":3})
+    < The newest Python 3 release I can find is 3.15.2. The web search summary attributes that to the python.org downloads page, but that page loaded only as a fallback, so I could not read it directly. The python.org docs-by-version page lists 3.13.11 as the latest, dated 5 December 2025. Those two sourc
+    rep 2: web.search=1 names-a-source=1
+  rep 3/5
+    > What is the latest Python 3 release?
+      [tool] web_search({"query":"latest Python 3 release python.org","max_results":3})
+    < The search results disagree, so I can't give you one confirmed answer. A summary of the python.org downloads page lists Python 3.15.2 as the latest release. A python.org documentation-versions snippet lists 3.13.11 (dated 5 December 2025) as the newest, which looks older. My device clock isn't synce
+    rep 3: web.search=1 names-a-source=1
+  rep 4/5
+    > What is the latest Python 3 release?
+      [tool] web_search({"query":"latest Python 3 release python.org","max_results":3})
+    < The latest Python 3 release I can see is 3.15.2, according to the python.org downloads page in my search. Caveat: a second python.org page in the same search still listed 3.13.11 (December 2025), so the sources disagree. I couldn't confirm the date, because my device clock isn't synced. To be certai
+    rep 4: web.search=1 names-a-source=1
+  rep 5/5
+    > What is the latest Python 3 release?
+      [tool] web_search({"query":"latest Python 3 release version python.org","max_results":3})
+    < The latest Python 3 series I can see is 3.14, with 3.14.8 as the newest patch release according to the search results. The first 3.14 release, 3.14.0, came out on October 7, 2025, per python.org. I couldn't confirm today's date from the device, so for the very latest check python.org/downloads, sinc
+    rep 5: web.search=1 names-a-source=1
+  H20 rate over 5 reps: web.search ran 5, reply names a source 5, answered 5
+    ok   every rep answered (the turn itself works)
+    ...  the rate line above is the disposition evidence: the head's choice to search
+
+---------------------------------------------
+1 scenario(s) run, 0 failed, 0 skipped
+tokens: 32 in / 2422 out

@@ -1,0 +1,17 @@
+{
+  "id": "lc-write-drop",
+  "title": "A claimed write actually lands in the ledger",
+  "rows": ["OIR-44"],
+  "replays": "The 4 Nov class: the head said it was reading today's log first, and the write never landed.",
+  "clock": "{{TODAY}} {{DOW}} 10:00 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "say", "text": "Log my evening snack: a slice of banana bread, 260 kcal."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "ledger_row", "params": {"item": "banana bread", "kcal": 260}},
+    {"id": "reply_forbids", "params": {"forbidden": ["hold on"]}}
+  ]
+}

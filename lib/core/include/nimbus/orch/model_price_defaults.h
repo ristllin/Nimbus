@@ -81,6 +81,7 @@ inline constexpr BuiltinPrice kBuiltinPrices[] = {
     {"anthropic", "claude-haiku-5-5:long", 500000, 2500000, 0},
     {"anthropic", "claude-haiku-4-5", 1000000, 5000000, 0},
     {"anthropic", "*", 3000000, 15000000, 0},
+    {"mistral", "mistral-large-4-0", 2000000, 6000000, 0},   // the family's rate
     {"mistral", "mistral-large", 2000000, 6000000, 0},
     {"mistral", "mistral-medium", 1500000, 7500000, 0},
     {"mistral", "mistral-small", 200000, 600000, 0},

@@ -229,6 +229,12 @@ const char kLookHead[] = "[image ref=";
 const char kLookTail[] = "] shown to you again";
 }  // namespace
 
+const char kLookAlreadyShown[] =
+    "This photo came with the current message and is already in front of you as an image. "
+    "Look at it again as if for the first time: your first read can be wrong, and the words in "
+    "your question are not evidence. Answer from what you see, and if it differs from your "
+    "first read, correct it and say so.";
+
 std::string lookResultText(const std::string& ref) { return kLookHead + ref + kLookTail; }
 
 std::string lookResultRef(const std::string& text) {

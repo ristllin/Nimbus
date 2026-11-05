@@ -347,24 +347,19 @@ static void test_turn_ids_unique_and_seeded() {
 struct WebSink {
   WebChatBook& book;
   bool routine = false;          // loops::firing(): a loop's scheduled turn is running
-  std::string legacy;            // the no-turn-id slot (g_webReply)
-  bool legacyPending = false;
+  int busy = 0;                  // the turn tail: turnInFlight + active jobs
+  agent::WebLegacySlot slot;     // the device's g_webSlot: the real product class
   explicit WebSink(WebChatBook& b) : book(b) {}
   void send(const std::string& text) {
-    if (agent::deliverToWebChat(book, text, routine)) {
-      legacy = text;
-      legacyPending = true;
-    }
+    if (agent::deliverToWebChat(book, text, routine)) slot.deliver(text);
   }
-  // GET /api/chat with no turn id (legacy clients): returns + clears the slot.
+  // GET /api/chat with no turn id (legacy clients): the device's chatPoll hook
+  // verbatim - the slot's own read rule decides whether this poll retires the
+  // reply (only when the device is idle, bench F03).
   JsonDocument legacyPoll() {
     agent::ChatGetRequest rq;
     agent::ChatGetDeps deps;
-    deps.legacyPoll = [this] {
-      const std::string r = legacyPending ? legacy : std::string();
-      legacyPending = false;
-      return r;
-    };
+    deps.legacyPoll = [this] { return slot.poll(busy == 0); };
     deps.legacyPending = [] { return false; };
     return parse(agent::chatGetJson(rq, deps));
   }
@@ -414,7 +409,8 @@ static void test_routine_reply_is_async_captured_and_never_a_turns_reply() {
   sink.send("Reminder set for 19:42.");
   b.end();
   TEST_ASSERT_EQUAL_STRING("Reminder set for 19:42.", getTurn(b, t1)["reply"].as<std::string>().c_str());
-  sink.legacyPending = false;   // that turn's legacy client read its answer
+  sink.busy = 0;
+  sink.legacyPoll();            // that turn's legacy client read its answer (idle: consumed)
 
   // T+2 min: the loop fires on tg_poll (inTurn_ is false - checkDue never runs
   // inside a turn) and the scheduled turn replies to chat "web".
@@ -467,7 +463,7 @@ static void test_web_delivery_routing_over_every_case() {
       sink.send("the delivery");
       const bool asAsync = routine || !inTurn;
       TEST_ASSERT_EQUAL_UINT32(a0 + (asAsync ? 1 : 0), b.asyncSeq());
-      TEST_ASSERT_EQUAL(!routine, sink.legacyPending);
+      TEST_ASSERT_EQUAL(!routine, sink.slot.pending());
       if (inTurn) {
         b.end();
         TEST_ASSERT_EQUAL_STRING(routine ? "" : "the delivery",
@@ -477,6 +473,56 @@ static void test_web_delivery_routing_over_every_case() {
       TEST_ASSERT_EQUAL_UINT32(a0 + (asAsync ? 1 : 0), b.asyncSeq());
     }
   }
+}
+
+// ---- bench F03 (v4.9.0): the legacy poll must not eat the reply -------------
+
+// The bench/HIL client loop (evidence/bench-5.0.0/rc-f7553b56/F03): poll every
+// 2 s, keep only the LAST poll body, stop when pending=false AND busy=0 (busy=1
+// means more may still arrive). All three F03 turns delivered the reply while
+// the turn was still wrapping up (busy=1), the consuming slot ate it on that
+// interim poll, and the client's final poll read {"reply":"","pending":false,
+// "busy":0} - the reply was lost with no way back. The reply must survive every
+// poll that is not the client's final one.
+static void test_legacy_reply_survives_a_poll_in_the_busy_window() {
+  WebChatBook b(41);
+  WebSink sink(b);
+  const std::string t1 = post(b, "how much protein is left today?");
+  TEST_ASSERT_EQUAL(1, b.begin("how much protein is left today?"));
+  sink.busy = 1;   // the turn tail: the reply is delivered, the turn has not ended
+  sink.send("At most 155 g of protein is left today.");
+  // The client's interim poll (busy=1): it reads the reply, and for the client
+  // this poll is NOT final - the slot must not retire the reply on it.
+  JsonDocument mid = sink.legacyPoll();
+  TEST_ASSERT_EQUAL_STRING("At most 155 g of protein is left today.",
+                           mid["reply"].as<std::string>().c_str());
+  b.end();
+  sink.busy = 0;   // the turn is over: the client's final poll (pending false, busy 0)
+  JsonDocument fin = sink.legacyPoll();
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(
+      "At most 155 g of protein is left today.", fin["reply"].as<std::string>().c_str(),
+      "the client's final poll lost the reply to its own busy-window poll (bench F03)");
+  TEST_ASSERT_FALSE(fin["pending"].as<bool>());
+}
+
+// The drain contract must survive the fix: an IDLE poll still consumes, so a
+// drain that polls after the turn (tests/hil/run_scenarios.py _drain_reply)
+// reads each delivery exactly once - never a replay of the same reply.
+static void test_idle_poll_still_consumes_for_a_drain() {
+  WebChatBook b(42);
+  WebSink sink(b);
+  const std::string t1 = post(b, "log a cup of tea, 2 kcal");
+  TEST_ASSERT_EQUAL(1, b.begin("log a cup of tea, 2 kcal"));
+  sink.send("Logged: cup of tea, 2 kcal.");
+  b.end();
+  sink.busy = 0;   // the turn is over: every poll now is a drain's final read
+  JsonDocument first = sink.legacyPoll();
+  TEST_ASSERT_EQUAL_STRING("Logged: cup of tea, 2 kcal.",
+                           first["reply"].as<std::string>().c_str());
+  JsonDocument second = sink.legacyPoll();
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(
+      "", second["reply"].as<std::string>().c_str(),
+      "an idle poll must still consume: a drain would read the same reply forever");
 }
 
 // ---- the route bodies -------------------------------------------------------
@@ -576,6 +622,8 @@ int main(int, char**) {
   RUN_TEST(test_legacy_watch_and_turn_paths);
   RUN_TEST(test_routine_reply_is_async_captured_and_never_a_turns_reply);
   RUN_TEST(test_web_delivery_routing_over_every_case);
+  RUN_TEST(test_legacy_reply_survives_a_poll_in_the_busy_window);
+  RUN_TEST(test_idle_poll_still_consumes_for_a_drain);
   UNITY_END();
   return 0;
 }

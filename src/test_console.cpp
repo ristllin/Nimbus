@@ -23,6 +23,7 @@
 
 #include "agent/orchestrator.h"  // PROMPT? - dump the last composed World system prompt
 #include "agent/telegram.h"      // TGSEND - media-send smoke test
+#include "agent/voice_reply.h"   // VOICETEXT - force the text of the next Telegram voice reply
 #include "agent/store.h"
 #include "agent/safety_activity_store.h"  // SAFETY? - activity log + allowlist summary (CUM-215)
 #include "nimbus_board_flip.h"    // per-board display-flip base (CUM-189)
@@ -555,7 +556,7 @@ void spendSet(String arg) {
     String c = arg.substring(6);
     c.trim();
     const uint64_t micro = nimbus::orch::parseCeilingCents(std::string(c.c_str()));
-    if (micro == 0) { reply("SPENDSET usage: SPENDSET limit <cents>"); return; }
+    if (micro == 0) { reply("SPENDSET usage: SPENDSET limit <cents, 100 or more>"); return; }
     const bool ok = agent::spend::setLimitMicro(micro);
     Serial.printf("SPENDSET limit %s %s\n", c.c_str(), ok ? "stored" : "NOT stored");
   } else if (arg.length() && arg != "?" && !spendSeed(arg)) {
@@ -667,9 +668,10 @@ void dispatch(String line) {
     // Play a sound clip by event slug (bypasses the level gate - a test
     // affordance; still respects the speaker fault + voice mute).
     String slug = line.substring(4); slug.trim();
-    const bool ok = ::sfx::play(slug.c_str());
+    String lowMemory;
+    const bool ok = ::sfx::play(slug.c_str(), &lowMemory);
     Serial.printf("SFX %s -> %s (level=%u theme=%s tier=%s vol=%u)\n", slug.c_str(),
-                  ok ? "queued" : "unknown slug", ::sfx::level(), ::sfx::theme(),
+                  !ok ? "unknown slug" : lowMemory.length() ? lowMemory.c_str() : "queued", ::sfx::level(), ::sfx::theme(),
                   ::sfx::tierStr(), agent::store::sfxVolume());
     return;
   }
@@ -1138,6 +1140,26 @@ void dispatch(String line) {
     esp_task_wdt_add(nullptr);
     bool ok = n ? agent::telegram::sendMedia(chat, "audio", "/tts.mp3", "Nimbus voice") : false;
     Serial.printf("TTSTG bytes=%u queued=%d\n", (unsigned)n, (int)ok);
+    return;
+  }
+  if (line.startsWith("VOICETEXT")) {
+    // VOICETEXT <chars> | VOICETEXT off: the next Telegram voice reply (reply.telegram
+    // voice:true, or the tts action's Telegram fallback) voices a fixed text of about
+    // <chars> characters instead of the model's - so a leg can prove the long-text split
+    // without trusting the model not to shorten what it was given. One shot.
+    String arg = line.substring(9);
+    arg.trim();
+    if (arg == "off") { agent::voicereply::setTestTextOverride(String()); reply("VOICETEXT off"); return; }
+    const long want = arg.toInt();
+    if (want < 50 || want > 2300) { reply("VOICETEXT usage: VOICETEXT <50..2300 characters> | off"); return; }
+    String text;
+    for (int n = 1; (long)text.length() < want; n++) {
+      text += "This is sentence number " + String(n) + " of the bench voice check, read in full. ";
+    }
+    text.trim();
+    agent::voicereply::setTestTextOverride(text);
+    Serial.printf("VOICETEXT armed %u chars\n", (unsigned)text.length());
+    Serial.flush();
     return;
   }
   if (line == "TGSEND") {

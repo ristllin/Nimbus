@@ -72,7 +72,7 @@ int httpsGet(const char* path, ByteSink sink, void* ctx, int32_t* lenOut) {
   client.setConnectionTimeout(kHttpTimeoutMs);  // F25: real socket bound (setTimeout inert)
   bool connected = false;
   for (int a = 0; a < 2 && !connected; a++) {
-    if (client.connect(SFX_SYNC_HOST, 443)) { connected = true; break; }
+    if (connectHost(client, SFX_SYNC_HOST, 443)) { connected = true; break; }
     tlsClose(client);
     if (a < 1) vTaskDelay(pdMS_TO_TICKS(400));
   }

@@ -24,9 +24,14 @@
 //       it ("it may have been lost, or saved elsewhere");
 //   R3  spawn backing comes from the enqueue result, never the dispatch log
 //       (dispatch runs after the turn ends);
-//   R4  a scratchpad write backs "noted", and also brings the durability check;
+//   R4  a scratchpad write backs "noted", and also brings the durability check; a bare
+//       "Noted." claims nothing unless the owner asked for something to be kept, or its
+//       own sentence speaks of keeping it (a plain acknowledgement, bareAck);
 //   R5  text inside quotes or code is skipped (the head often quotes the owner);
-//   R6  English only: a reply that is mostly non-ASCII letters is not scanned.
+//   R6  English only: a reply that is mostly non-ASCII letters is not scanned;
+//   R7  a running total is a report, not a save: "logged" beside a figure with a progress
+//       phrase in its sentence ("1,600 kcal logged so far", "you're at 1,600 kcal logged")
+//       states what is already on record. "52 kcal logged." and "Logged: cappuccino" still claim.
 // A send claim about a Telegram delivery is backed only by a send that carries
 // Telegram's receipt (turn_effects.h kFxReceipt: the message_id Telegram answered
 // with), never by a send tool's own words (22 Oct: "sent to Telegram" backed "a
@@ -34,6 +39,11 @@
 // voice message's receipt; a text, document or photo send without a receipt (it was
 // only queued) backs no "sent" either. A send that is not a Telegram send (a share
 // link) backs it as before.
+// A spoken claim ("read it aloud", "spoken") is backed by a reply that really played on
+// the speaker (a Speak that landed) or by a voice message with Telegram's receipt; the
+// end-of-turn `tts` action records which of the two happened, or neither (volume 0, a
+// failed speaker, a refused Telegram upload). A voice message whose upload went out but
+// that Telegram never confirmed gets a "not confirmed" line, not "nothing was delivered".
 //
 // Cause claims (19 Oct: "your Telegram client is re-sending a corrupt,
 // partially-uploaded item", "my vision path is working", none of it on record) are
@@ -103,6 +113,7 @@ struct Claim {
   uint32_t   begin = 0;    // byte span of the clause (or table row) holding the claim
   uint32_t   end = 0;
   uint8_t    count = 0;    // a number the claim states ("six sub-agents"); 0 = none
+  uint8_t    shape = 0;    // send class: what backs it (speech, a voice receipt, a send, a schedule)
 };
 
 struct ClaimScan {
@@ -114,7 +125,9 @@ struct ClaimScan {
 // the owner asked how something works or is done, so an instrument an answer explains
 // is not claimed as read (precision over recall).
 static constexpr size_t kScanMax = 16384;
-ClaimScan scanClaims(const std::string& reply, bool ownerAskedHow = false);
+// `ownerAskedKeep`: the owner asked for something to be kept, so a bare "Noted." answers that;
+// otherwise it is an acknowledgement, not a save claim (ownerAskedKeep below).
+ClaimScan scanClaims(const std::string& reply, bool ownerAskedHow = false, bool ownerAskedKeep = false);
 
 // The quotes a reply presents as a record, and whether one is missing from everything
 // the turn was given (`seen`) or, loosely, from the owner's own words this turn.
@@ -197,12 +210,16 @@ std::string sourceWordsOf(const std::string& text, size_t cap = 8192, bool* clip
 std::string sourceNoun(uint32_t bit);
 
 
+// How many gap variants exist (kGap* in orch_claims.cpp): a test walks every one.
+constexpr uint8_t kGapVariantCount = 22;
+
 struct ClaimGap {
   ClaimClass  cls = ClaimClass::Saved;
   std::string excerpt;     // the claim's clause, at most ~100 bytes, valid UTF-8
   std::string missing;     // Figure: the numbers no source holds ("200, 21, 60")
   uint8_t     variant = 0; // which tail line: plain, RAM-only, not pinned, pin no-op, no voice
-                           // receipt, queued, no receipt, and the cause lines
+                           // receipt, queued, no receipt, the cause lines, not spoken, and a
+                           // voice message Telegram did not confirm
   bool        deviceOnly = false;   // only this device could have done it (a Telegram voice
                                     // message from its bot): a hosted tool never backs it
   uint32_t    source = 0;           // Source: the SourceEvidence bit of the noun it credits;
@@ -218,6 +235,11 @@ std::string figureNumbers(const std::string& text, size_t cap = 4096);
 
 // The gaps between the claims and the evidence, at most one per claim, in reply
 // order. No ledger (fx null) means nothing can be checked: no gaps.
+// Does a reply promise a later confirmation of a save ("I'll confirm it's stored in my
+// next message")? Nothing is ever sent later about a write, so the turn's tail says so.
+bool promisesLaterSaveConfirmation(const std::string& reply);
+extern const char kNoLaterConfirmationTail[];
+
 std::vector<ClaimGap> claimGaps(const std::string& reply, const ClaimScan& scan,
                                 const ClaimEvidence& ev);
 
@@ -246,6 +268,13 @@ bool recordQuoteGap(const std::string& reply, const std::string& seen, ClaimGap*
 // tuesday night") is the turn's own record, not an invented one (the review, HIGH-1).
 bool recordQuoteGap(const std::string& reply, const std::string& seen, const std::string& ownerText,
                     ClaimGap* out, bool memoryOnly = false);
+// An unquoted claim about what the owner did or said this turn ("you told me about the
+// 4 fries", "the M&S pack you photographed", "you confirmed it") with no backing message:
+// no content word of the clause after the phrase appears in `ownerWords` (the owner's
+// own words this turn, normalizedWords form). Quoted claims are recordQuoteGap's.
+// Lane LABEL, 2 Nov: the head defended a made-up row with "you told me about the 4
+// fries" and "the M&S pack you photographed" - neither was in any owner message.
+bool ownerActionGap(const std::string& reply, const std::string& ownerWords, ClaimGap* out);
 // A reason given when the owner asks why (CUM-824, the eval's mistral-large-latest on
 // "Why notion?": "because the standing rule I recalled said to check your Notion commute
 // dashboard", "because I recalled you had set up a Notion database", none of it on
@@ -261,6 +290,8 @@ bool recordQuoteGap(const std::string& reply, const std::string& seen, const std
 // asksWhy says whether the owner's text asks why.
 bool asksWhy(const std::string& ownerText);
 bool ownerAskedHow(const std::string& ownerText);
+// Did the owner ask for something to be kept ("remember ...", "make a note ...", "save this")?
+bool ownerAskedKeep(const std::string& ownerText);
 // The gap unrecordedReasonGap returns (the correction then carries the spawn ledger).
 bool isUnrecordedReason(const ClaimGap& g);
 bool unrecordedReasonGap(const std::string& reply, const std::string& records, const std::string& question,
@@ -279,12 +310,17 @@ bool replyHedgesUnchecked(const std::string& reply);
 // the turn's recorded effects, and says to do the work now or rewrite the reply.
 std::string claimCorrection(const std::vector<ClaimGap>& gaps, const TurnEffects& fx);
 
-// Owner-facing tail: one calm line per gap class, each on its own paragraph, in
-// a fixed class order. "" when there are no gaps.
+// Owner-facing tail: one calm line per gap class, each on its own paragraph, in a fixed class
+// order. The send class gets one line per different thing it says, so a speech correction never
+// hides an unbacked send in the same reply. "" when there are no gaps.
 std::string claimTail(const std::vector<ClaimGap>& gaps);
 // The tail line for one class (exposed for tests and for lines shared with other
 // rails); `g` supplies the figure numbers.
 std::string claimTailLine(const ClaimGap& g);
+// Does a claim tail already tell the owner about speech: "not spoken aloud", "no voice message was
+// delivered" or "Telegram did not confirm the voice message"? Then a second note for the same
+// failed tts would only repeat it.
+bool tailCarriesSpeechGap(const std::string& tail);
 
 // One cue row, exposed so the table property tests iterate the single source.
 struct ClaimCueInfo {
@@ -296,6 +332,7 @@ struct ClaimCueInfo {
   bool        needsCredit;      // a source noun that counts only when the reply credits it
                                 // ("the gauge says", "per the label", "Rain gauge: 3.0 mm")
   bool        namesASource;     // credits the name after it ("Source: BBC Weather")
+  bool        needsVoicedVerb;  // counts only after a verb of saying or playing ("said it out loud")
 };
 size_t claimCueCount();
 ClaimCueInfo claimCue(size_t i);

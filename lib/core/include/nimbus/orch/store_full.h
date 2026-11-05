@@ -30,22 +30,33 @@ class StoreFullEpisode {
   // A save was refused and `full` says the store is full (FileStore::fullRefusal).
   // Returns `full`; the episode's first full refusal raises its one owner notice.
   bool refused(bool full);
+  // Lane FSCAP: the store's real space limit (its byte quota) was reached and the
+  // oldest regenerable copies were reclaimed to make room - never the owner's own
+  // files. Raises the episode's one reclaim notice (unless a full notice is already
+  // raised this episode). Returns true when this call started the episode.
+  bool reclaimed();
   // Files were removed and the store has room again: the episode ends, and a notice
   // not yet taken is dropped (the owner already made room).
   void room();
   // The episode's one owner notice: true once, then false until the next episode.
   bool takeNotice();
+  // The episode's one reclaim notice: true once, then false until the next episode.
+  bool takeReclaimNotice();
   // True from the episode's first full refusal until the store has room again.
   bool active() const { return active_.load(); }
 
  private:
   std::atomic<bool> active_{false};
   std::atomic<bool> notice_{false};
+  std::atomic<bool> reclaimNotice_{false};
 };
 
 // The owner notice (device copy, after "<device name>: "): what happened, then the
 // one next step.
 extern const char kStoreFullNotice[];
+// The reclaim notice (device copy): the space limit was reached, the oldest
+// regenerable copies went first, the owner's own files were not touched.
+extern const char kStoreReclaimNotice[];
 
 // What the head reads after an inbound item the full store did not keep: the store
 // state as a fact the owner already has. `photo` names the item ("photo" or "file");

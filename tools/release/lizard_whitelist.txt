@@ -145,7 +145,6 @@ test/test_orch_rbac/main.cpp:test_role_permissions_matrix
 src/net/web_files.cpp:nimbus::net::contentTypeFor
 lib/harness/src/compose.cpp:agent::composeInstructions
 src/net/web_skills.cpp:nimbus::net::registerSkillRoutes
-lib/harness/src/providers/mistral.cpp:agent::providers::renderMistralMessages
 src/agent/skills.cpp:agent::skills::list
 lib/core/src/tft_screens.cpp:nimbus::tft::drawSetup
 lib/core/src/orch_fetch_policy.cpp:nimbus::orch::parseHttpsUrl

@@ -1,0 +1,13 @@
+fail-first, independent-review finding 1 (D01 hole): providerOutageHost must cut api.z.ai and open.bigmodel.cn even when zaiBase is unpinned, because the device dials the primary in exactly that state (zai_adapter.cpp:18-19, transport_tls.cpp:461-462, provider_verify.cpp:730-733). Run: pio test -e native -f test_fault on head 337bf186 with only the test changed.
+test/test_fault/main.cpp:223: test_parse_rejects_unknown	[PASSED]
+test/test_fault/main.cpp:224: test_out_of_range_cap_is_safe	[PASSED]
+test/test_fault/main.cpp:196: test_provider_outage_cuts_every_llm_host_and_no_other: Expected TRUE Was FALSE	[FAILED]
+Program received signal SIGHUP (Hangup: 1)
+---------------- native:test_fault [ERRORED] Took 1.65 seconds ----------------
+
+=================================== SUMMARY ===================================
+Environment    Test        Status    Duration
+-------------  ----------  --------  ------------
+native         test_fault  ERRORED   00:00:01.648
+
+============ 14 test cases: 1 failed, 12 succeeded in 00:00:01.648 ============

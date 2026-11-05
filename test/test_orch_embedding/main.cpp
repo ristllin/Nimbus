@@ -295,6 +295,20 @@ static void test_empty_store_adopts_configured_width_after_reload() {
   TEST_ASSERT_EQUAL_INT(1024, fresh.dims());
 }
 
+// A fact holding a raw control byte (a pasted log, a sender's message): a raw byte would
+// make the body invalid JSON, the provider answers 400 or 422, and the fact stays queued.
+static void test_a_control_byte_leaves_escaped() {
+  const std::string text = std::string("log \x1B[0m line\x01") + '\x1F';
+  for (const char* provider : {"openai", "mistral"}) {
+    const std::string b = buildEmbeddingRequest(provider, "m", text, 256);
+    TEST_ASSERT_FALSE_MESSAGE(b.empty(), provider);
+    for (char c : b) TEST_ASSERT_TRUE_MESSAGE((unsigned char)c >= 0x20, b.c_str());
+    ArduinoJson::JsonDocument d;
+    TEST_ASSERT_FALSE(deserializeJson(d, b));
+    TEST_ASSERT_EQUAL_STRING(text.c_str(), d["input"].as<const char*>());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_embed_route_per_provider);
@@ -314,5 +328,6 @@ int main(int, char**) {
   RUN_TEST(test_parse_provider_error_object);
   RUN_TEST(test_parse_bad_json_and_missing_fields);
   RUN_TEST(test_parse_feeds_quantize_shape);
+  RUN_TEST(test_a_control_byte_leaves_escaped);
   return UNITY_END();
 }

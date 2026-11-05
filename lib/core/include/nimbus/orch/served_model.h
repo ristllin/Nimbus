@@ -51,9 +51,12 @@ void clearServedModels();   // forget every note (tests)
 //   "[THIS TURN RUNS ON] mistral / mistral-large-2512 (asked for mistral-large-latest). <headFact>
 //    When asked which model you run, name this one and say why the chosen head is not running this turn.\n"
 // (with no headFact the closing sentence is "When asked which model you run, name this one only.")
-// `concrete` "" or equal to `asked`: the asked model alone. `headFact` "" when the chosen head
-// runs the turn, else head_switch.h headPauseFact ("Anthropic, the chosen head, is paused by
-// the owner's monthly limit and returns automatically when it lifts.").
+// `concrete` "" or equal to `asked`: the asked model alone. When the model named is a "-latest"
+// alias the device has not resolved, kRunsOnAliasNote follows it (the endings stay as above).
+// `headFact` "" when the chosen head runs the turn, else head_switch.h headPauseFact
+// ("Anthropic, the chosen head, is paused by the owner's monthly limit and returns automatically
+// when it lifts.").
+inline constexpr const char* kRunsOnAliasNote = "That is an alias: add no version, size or family from memory.";
 std::string runsOnLine(const std::string& host, const std::string& asked, const std::string& concrete,
                        const std::string& headFact);
 

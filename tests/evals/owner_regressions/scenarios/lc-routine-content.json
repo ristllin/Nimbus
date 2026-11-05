@@ -1,0 +1,17 @@
+{
+  "id": "lc-routine-content",
+  "title": "A routine brief carries only what its prompt asked for",
+  "rows": ["OIR-01"],
+  "replays": "The 28 Oct class: the commute brief arrived late and carried food and quiz text the routine prompt never asked for. The guard on extra content in routine replies is still open.",
+  "clock": "{{TODAY}} {{DOW}} 07:30 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "sub", "name": "morning-brief", "provider": "mistral", "model": "mistral-small-latest", "task": "The daily commute brief: disruptions on the district line this morning.", "reply": "Commute: the district line has severe delays this morning between 07:00 and 09:00 due to signal work at the central depot. Also, a fun fact for you: did you know the blue whale is the largest animal ever known? And a quick food fact: a blueberry muffin has about 360 kcal.", "toolRuns": 3, "webRuns": 2, "then": "synthesize"}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "reply_contains_any", "params": {"any": ["district line", "commute", "delays"]}},
+    {"id": "reply_forbids", "params": {"forbidden": ["blue whale", "fun fact", "muffin", "quiz", "trivia", "did you know"]}}
+  ]
+}

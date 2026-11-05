@@ -11,6 +11,7 @@
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
+#include "nimbus/orch/compact.h"           // ORCH_COMPACT_PROMPT: the fold
 #include "nimbus/orch/connectors_wire.h"   // CUM-536: the real Mistral attach + identity probe
 #include "nimbus/orch/hosted_runs.h"   // CUM-835: what a head response ran server-side
 #include "nimbus/orch/orch_schema.h"
@@ -216,6 +217,46 @@ static void test_cum835_head_tool_executions_are_noted() {
   conv.clear();
   TEST_ASSERT_TRUE(providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr));
   TEST_ASSERT_EQUAL_UINT16(0, orch::hostedRuns().total);
+}
+
+// RCAD fix pass: the live fold repro (evidence/rcad-fold-repro-2026-11-02, private)
+// shows the Conversations API returns message.output content as a chunk ARRAY even
+// under the strict schema: a thinking chunk plus the text chunk. mistralOutputContent
+// must read ONLY the text chunk - the thinking text is dropped by the parser, not
+// absent at the wire - so the turn JSON is exactly the text chunk.
+static void test_head_conversations_chunk_array_drops_thinking() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"conv_1\",\"outputs\":[{\"type\":\"message.output\","
+      "\"content\":["
+      "{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"private plan at the wire\"}]},"
+      "{\"type\":\"text\",\"text\":\"{\\\"reply\\\":\\\"hello there\\\",\\\"memory\\\":\\\"\\\"}\"}]}],"
+      "\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20}}"});
+  auto pd = d.contract();
+  std::string conv, out, err;
+  bool ok = providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL_STRING("conv_1", conv.c_str());
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"hello there\",\"memory\":\"\"}", out.c_str());  // thinking left out
+}
+
+// Same wire shape with the v4.6.4 fold failure condition: the text chunk is a
+// schema-valid orch_turn with an EMPTY reply. The read must surface that empty
+// reply verbatim (the engine's "no summary in reply ()"), never substitute the
+// thinking text for it.
+static void test_head_conversations_empty_reply_text_chunk_surfaces() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"conv_1\",\"outputs\":[{\"type\":\"message.output\","
+      "\"content\":["
+      "{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"the summary goes here in thinking\"}]},"
+      "{\"type\":\"text\",\"text\":\"{\\\"reply\\\":\\\"\\\",\\\"memory\\\":\\\"the summary\\\"}\"}]}],"
+      "\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20}}"});
+  auto pd = d.contract();
+  std::string conv, out, err;
+  bool ok = providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"\",\"memory\":\"the summary\"}", out.c_str());
 }
 
 static void test_continuation_sends_no_model_or_instructions() {
@@ -1453,6 +1494,294 @@ static void test_cum616_refused_effort_retried_once_without_it() {
   TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
 }
 
+// ---- the builtin-connectors refusal: one retry without them, then remembered ----
+// Recorded 31 Oct (Lumi errlog, the fold): mistral-large-4-0 refused EVERY
+// conversations turn with this body, so the fold (compaction) retried the same
+// 400 forever and the conversation summary went stale. The turn's tools are
+// client-side; only the server-side builtins are dropped.
+static const char* kConnectorsRefused =
+    "{\"object\":\"error\",\"message\":\"Model mistral-large-4-0 currently does not support builtin connectors.\","
+    "\"type\":\"invalid_request\",\"param\":null,\"code\":\"2003\",\"raw_status_code\":400}";
+
+static void test_connectors_refusal_retried_once_without_them() {
+  const std::vector<orch::ConnectorInfo> cs = {
+      {"web_search", "mistral", "builtin", "", "", "", true}};
+  auto pdWith = [&cs](FakeProviderDeps& d) {
+    auto pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+    pd.attachMistral = [cs](JsonDocument& doc) { orch::attachMistralWire(doc, cs, false); };
+    return pd;
+  };
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 400, kConnectorsRefused});
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("c-conn1")});
+    auto pd = pdWith(d);
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr),
+                             err.c_str());
+    TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"tools\""));                 // the first try carries them
+    TEST_ASSERT_FALSE(bodyHas(d, 1, "\"tools\""));                // the one retry does not
+    TEST_ASSERT_TRUE(LogCapture::contains("refused builtin connectors"));
+    TEST_ASSERT_TRUE(out.find("hello there") != std::string::npos);
+  }
+  // Remembered for the boot: the next turn sends no connectors and no 400 is paid.
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("c-conn2")});
+    auto pd = pdWith(d);
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr),
+                             err.c_str());
+    TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+    TEST_ASSERT_FALSE(bodyHas(d, 0, "\"tools\""));   // the wire key builtins and Studio connectors ride
+  }
+  // A sub-agent on that model moves to the tools model (CUM-887) and pays no doomed 400.
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("c-conn3")});
+    auto pd = pdWith(d);
+    agent::Directive dir;
+    dir.instruction = "do it";
+    dir.model = "mistral-large-4-0";
+    char jobId[72] = {};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "sub-mistral", dir, jobId));
+    TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+    // CUM-887 (lane MG): the model refused builtins above, so the run moves to the tools
+    // model and keeps its tools - no doomed 400 is paid.
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"model\":\"mistral-medium-latest\""));
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"web_search\""));
+  }
+  // Remembered per model: a sub-agent on another model still gets them.
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("c-conn4")});
+    auto pd = pdWith(d);
+    agent::Directive dir;
+    dir.instruction = "do it";
+    char jobId[72] = {};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "sub-mistral", dir, jobId));
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"model\":\"sub-mistral\""));
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"tools\""));
+  }
+  // A different 400 is not a connectors refusal: the turn fails as before.
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 400, "{\"message\":\"Invalid model\"}"});
+    auto pd = pdWith(d);
+    std::string conv, out, err;
+    TEST_ASSERT_FALSE(providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr));
+    TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+  }
+}
+
+// CUM-887 (Lumi, 1 Nov): "spawn failed 8 (prov=mistral model=mistral-large-4-0 cat=research)".
+// The built-in web tools ride a sub-agent's Conversations request, and that model refuses
+// them with this body (recorded live, evidence/probes). The work moves to a Mistral model
+// that keeps the tools, the reply says which model ran, and the refusal is paid once.
+static const char* kSubConnectorsRefused =
+    "{\"object\":\"Error\",\"message\":\"Model mistral-large-4-1 currently does not support builtin connectors.\","
+    "\"type\":\"invalid_request_error\",\"code\":3004}";
+static void test_a_sub_on_a_model_refusing_builtins_keeps_its_tools() {
+  const std::vector<orch::ConnectorInfo> cs = {{"web_search", "mistral", "builtin", "", "", "", true}};
+  const std::string model = "mistral-large-4-1";   // fresh for this test: the refusal memory is per boot
+  auto run = [&](FakeProviderDeps& d, std::string& reply) {
+    auto pd = d.contract();
+    pd.attachMistral = [cs](JsonDocument& doc) { orch::attachMistralWire(doc, cs, false); };
+    agent::Directive dir;
+    dir.category = "research";
+    dir.instruction = "find it";
+    char job[72] = {};
+    const agent::FabricErr e = providers::mistralDispatch(pd, model, dir, job);
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)e);
+    agent::ResultEnvelope env{};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, job, env));
+    reply = env.reply;
+  };
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 400, kSubConnectorsRefused});
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("c-sub1")});
+    std::string reply;
+    run(d, reply);
+    TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(bodyHas(d, 0, ("\"model\":\"" + model + "\"").c_str()));
+    TEST_ASSERT_TRUE(bodyHas(d, 1, "\"web_search\""));          // the tools stayed
+    TEST_ASSERT_FALSE(bodyHas(d, 1, model.c_str()));            // on another model
+    TEST_ASSERT_TRUE_MESSAGE(reply.find("mistral-medium-latest") != std::string::npos, reply.c_str());
+  }
+  {  // Remembered: the next spawn goes straight there, and no 400 is paid.
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("c-sub2")});
+    std::string reply;
+    run(d, reply);
+    TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"web_search\""));
+    TEST_ASSERT_FALSE(bodyHas(d, 0, model.c_str()));
+  }
+  {  // With no tools to keep, the owner's model runs as asked (nothing asked it to move).
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200, messageOutputBody("c-sub3")});
+    auto pd = d.contract();
+    pd.attachMistral = nullptr;
+    agent::Directive dir;
+    dir.category = "research";
+    dir.instruction = "find it";
+    char job[72] = {};
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, model, dir, job));
+    TEST_ASSERT_TRUE(bodyHas(d, 0, model.c_str()));
+    agent::ResultEnvelope env{};
+    providers::mistralPoll(pd, job, env);
+  }
+}
+
+// CUM-890: "fold: no summary in reply ()". Under the strict orch_turn schema
+// mistral-small-latest answered {"reply":"",...} 2 of 2 live (evidence/probes/fold-conv-*).
+// The fold is a plain completion: no schema, no connectors, thinking chunks ignored.
+static void test_fold_is_a_plain_completion() {
+  const std::vector<orch::ConnectorInfo> cs = {{"web_search", "mistral", "builtin", "", "", "", true}};
+  FakeProviderDeps d;
+  d.http.script.push_back(
+      {"api.mistral.ai", "/v1/chat/completions", 200,
+       "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":[{\"type\":\"thinking\",\"thinking\":["
+       "{\"type\":\"text\",\"text\":\"hmm\"}]},{\"type\":\"text\",\"text\":\"1. Decisions\\nNone.\"}]}}],"
+       "\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}"});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+  pd.attachMistral = [cs](JsonDocument& doc) { orch::attachMistralWire(doc, cs, false); };
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(
+      providers::orchTurnMistral(pd, conv, orch::ORCH_COMPACT_PROMPT, "digest", out, err, nullptr, nullptr), err.c_str());
+  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "response_format"));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "\"tools\""));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"reasoning_effort\":\"low\""));
+  TEST_ASSERT_EQUAL_STRING("1. Decisions\nNone.", out.c_str());
+}
+
+// The class behind the routine 6,050-token cut: every reasoning model gets an effort it
+// accepts. Large 4 refused "none", the refusal dropped the field, and with no field it
+// thinks at its default and runs out of room. Recorded live 1 Nov
+// (evidence/probes/mistral-effort-matrix.txt): the value each accepts of none and low.
+static void test_effort_table_matches_the_recording() {
+  struct Row { const char* model; const char* accepts; };
+  const Row rows[] = {{"mistral-large-4-0", "low"},      {"mistral-large-4", "low"},
+                      {"mistral-medium-latest", "none"}, {"mistral-small-latest", "none"},
+                      {"magistral-medium-latest", "none"}, {"mistral-vibe-cli-latest", "none"},
+                      {"zai-glm-5-3", "low"},            {"zai-glm-5-3-flash", "low"},
+                      {"mistral-large-latest", ""}};
+  for (const Row& r : rows) {
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(r.accepts, providers::mistralHeadEffort(r.model), r.model);
+    for (const providers::RoundKind k : {providers::RoundKind::ToolRound, providers::RoundKind::FinalRound,
+                                         providers::RoundKind::SingleShot, providers::RoundKind::Fold}) {
+      const providers::OutputCap c = providers::outputCapFor("mistral", r.model, k, providers::kHeadRoundCeilingMs);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(r.accepts, c.effort, r.model);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(r.accepts, c.retryEffort, r.model);
+    }
+  }
+}
+
+// The same-host step-down table (ruling 3 Nov 09:15Z): only a head that cannot turn
+// its reasoning off gets a same-provider non-reasoning round before another provider
+// is asked. Large 4 refuses effort "none" (the recording above); every other Mistral
+// head runs at "none", Z.ai has no non-reasoning GLM, and every current Claude line
+// takes effort.
+static void test_the_same_host_step_down_table() {
+  const struct { const char* host; const char* model; const char* alt; } rows[] = {
+      {"mistral", "mistral-large-4-0", "mistral-medium-latest"},
+      {"mistral", "mistral-large-4", "mistral-medium-latest"},
+      {"mistral", "mistral/mistral-large-4-0", "mistral-medium-latest"},   // a router pick
+      {"mistral", "mistral-medium-latest", ""},   // already runs at effort "none"
+      {"mistral", "mistral-small-latest", ""},
+      {"mistral", "mistral-large-latest", ""},
+      {"zai", "glm-5.3", ""},                    // both GLM models reason
+      {"zai", "glm-5.3-flash", ""},
+      {"anthropic", "claude-opus-5", ""},         // every Claude line takes effort
+      {"openai", "gpt-5.6-sol", ""},
+  };
+  for (const auto& r : rows)
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(r.alt, providers::sameHostNonReasoningModel(r.host, r.model),
+                                     r.model);
+}
+
+// CUM-823: web.search with no Tavily key runs Mistral's built-in search on a model that
+// takes it, whatever the head is. Recorded shape: evidence/probes/web-mistral-*.
+static void test_web_search_runs_on_mistral_builtin() {
+  providers::clearHostParks();
+  FakeProviderDeps d;
+  d.http.script.push_back(
+      {"api.mistral.ai", "/v1/conversations", 200,
+       "{\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"web_search\",\"info\":{\"result\":"
+       "\"{\\\"a1\\\":{\\\"url\\\":\\\"https://www.python.org/downloads/\\\",\\\"title\\\":\\\"Download\\\","
+       "\\\"snippets\\\":[\\\"Latest Python 3 Release 3.15.2\\\"]}}\"}},"
+       "{\"type\":\"message.output\",\"content\":["
+       "{\"type\":\"text\",\"text\":\"Python 3.15.2\"},{\"type\":\"tool_reference\",\"tool\":\"web_search\","
+       "\"title\":\"Download\",\"url\":\"https://www.python.org/downloads/\"}]}],"
+       "\"usage\":{\"prompt_tokens\":806,\"completion_tokens\":63,\"connectors\":{\"web_search\":1}}}"});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+  TEST_ASSERT_TRUE(providers::hostedWebSearchAvailable(pd));
+  const auto r = providers::hostedWebSearch(pd, "latest python", 5);
+  TEST_ASSERT_TRUE_MESSAGE(r.ok, r.err.c_str());
+  TEST_ASSERT_TRUE(r.hosted);
+  TEST_ASSERT_TRUE(r.digest.find("3.15.2") != std::string::npos);
+  TEST_ASSERT_TRUE(r.digest.find("https://www.python.org/downloads/") != std::string::npos);
+  TEST_ASSERT_TRUE(r.digest.find("Latest Python 3 Release 3.15.2") != std::string::npos);   // the source's own words
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"mistral-medium-latest\""));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "mistral-large-4-0"));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"type\":\"web_search\""));
+}
+
+// A failed Mistral search falls to Z.ai; with neither key nothing is sent and it says so.
+static void test_web_search_walks_to_zai_then_says_why() {
+  providers::clearHostParks();
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 500, "{\"message\":\"boom\"}"});
+    d.http.script.push_back(
+        {"api.z.ai", "/api/paas/v4/chat/completions", 200,
+         "{\"choices\":[{\"message\":{\"content\":\"Python 3.14.3\"}}],\"web_search\":[{\"title\":\"T\","
+         "\"link\":\"https://x.example\",\"publish_date\":\"2026-03-19\"}],\"usage\":{\"prompt_tokens\":9}}"});
+    d.keys["zai"] = "tok";
+    auto pd = d.contract();
+    pd.zaiHead = [](providers::ProviderDeps& z) {
+      z.customBase = [] { return std::string("https://api.z.ai"); };
+      z.customPathPrefix = [] { return std::string("/api/paas/v4"); };
+      z.customKey = [] { return std::string("tok"); };
+      z.customConv = [] { return std::string("openai"); };
+    };
+    const auto r = providers::hostedWebSearch(pd, "latest python", 5);
+    TEST_ASSERT_TRUE_MESSAGE(r.ok, r.err.c_str());
+    TEST_ASSERT_TRUE(r.digest.find("https://x.example") != std::string::npos);
+    TEST_ASSERT_TRUE(r.digest.find("2026-03-19") != std::string::npos);   // its date rides along
+  }
+  {
+    FakeProviderDeps d;
+    d.keys.clear();
+    auto pd = d.contract();
+    TEST_ASSERT_FALSE(providers::hostedWebSearchAvailable(pd));
+    const auto r = providers::hostedWebSearch(pd, "latest python", 5);
+    TEST_ASSERT_FALSE(r.ok);
+    TEST_ASSERT_EQUAL(0, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(r.err.find("no provider") != std::string::npos);
+  }
+}
+
+// The class behind a slow failure: every Mistral head request's deadline sits just past the
+// gateway's 60 s close, so a close reads as a timeout (no same-host retry), and a capped
+// round's first attempt fits inside it at the model's measured rate.
+static void test_mistral_rounds_fit_the_gateway() {
+  TEST_ASSERT_TRUE(providers::kMistralRoundMs > 60000 && providers::kMistralRoundMs < 70000);
+  for (const char* model : {"mistral-large-4-0", "mistral-small-latest", "mistral-medium-latest", "mistral-large-latest"}) {
+    const providers::OutputCap c =
+        providers::outputCapFor("mistral", model, providers::RoundKind::ToolRound, providers::kMistralRoundMs);
+    const uint32_t seconds = c.maxTokens / providers::slowestTokensPerSecond("mistral", model);
+    TEST_ASSERT_TRUE_MESSAGE(seconds <= 60, model);
+    TEST_ASSERT_TRUE_MESSAGE(c.retryTokens > c.maxTokens, model);
+  }
+}
+
 // The class: the table agrees with the recorded /v1/models capabilities.reasoning
 // bit for EVERY chat model Mistral lists (a new model with no table row fails here).
 static void test_cum616_effort_table_matches_the_recorded_model_list() {
@@ -1648,11 +1977,95 @@ static void test_r1_a_list_without_the_models_row_sends_images_and_a_refusal_fal
   TEST_ASSERT_TRUE(fx.set->rejected);
 }
 
+// A sub that ran and billed with nothing to show, or that a gateway lost mid-run, may have
+// run, so it must not read as a refusal: the spawn move starts a second billed copy on one.
+static void test_a_mistral_sub_error_says_whether_it_may_have_run() {
+  const struct { int status; const char* body; agent::FabricErr want; } cases[] = {
+      {200, "{\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"web_search\"}],\"usage\":{\"prompt_tokens\":9}}",
+       agent::FabricErr::ParseFail},
+      {200, "{\"outputs\":[],\"usage\":{\"prompt_tokens\":9}}", agent::FabricErr::ParseFail},
+      {502, "{\"message\":\"bad gateway\"}", agent::FabricErr::Timeout},
+      {504, "{\"message\":\"gateway timeout\"}", agent::FabricErr::Timeout},
+      {500, "{\"message\":\"boom\"}", agent::FabricErr::RemoteFail},
+      {503, "{\"message\":\"overloaded\"}", agent::FabricErr::RemoteFail},
+      {400, "{\"message\":\"bad\"}", agent::FabricErr::RemoteFail},
+  };
+  for (const auto& k : cases) {
+    providers::clearHostParks();
+    FakeProviderDeps d;
+    d.http.script.push_back({"api.mistral.ai", "/v1/conversations", k.status, k.body});
+    auto pd = d.contract();
+    agent::Directive dir;
+    dir.category = "research";
+    dir.instruction = "find it";
+    char job[72] = {};
+    TEST_ASSERT_EQUAL_MESSAGE((int)k.want, (int)providers::mistralDispatch(pd, "mistral-medium-latest", dir, job),
+                              std::to_string(k.status).c_str());
+  }
+}
+
+// The exact numbers a round gets at the real 65 s deadline, and the page that states them.
+// Large 4's retry is 5,500: the time clamp holds it, so effort "low" is what stops the cut.
+static void test_mistral_caps_are_the_documented_numbers() {
+  std::ifstream f("docs/provider-wire.md");
+  TEST_ASSERT_TRUE(f.good());
+  const std::string doc((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  auto withComma = [](uint32_t n) { return std::to_string(n / 1000) + "," + (n % 1000 < 100 ? "0" : "") + (n % 1000 < 10 ? "0" : "") + std::to_string(n % 1000); };
+  const struct { const char* model; uint32_t first, retry; const char* words; } rows[] = {
+      {"mistral-large-4-0", 4125, 5500, "Large 4 gets %1 tokens (%2 on the retry)"},
+      {"mistral-medium-latest", 5361, 7150, "Medium and Small get %1 (%2)"},
+      {"mistral-small-latest", 5361, 7150, "Medium and Small get %1 (%2)"},
+      {"mistral-large-latest", 3000, 4000, "older models %1 (%2)"},
+  };
+  for (const auto& r : rows) {
+    const providers::OutputCap c =
+        providers::outputCapFor("mistral", r.model, providers::RoundKind::ToolRound, providers::kMistralRoundMs);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(r.first, c.maxTokens, r.model);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(r.retry, c.retryTokens, r.model);
+    std::string want = r.words;
+    want.replace(want.find("%1"), 2, withComma(r.first));
+    want.replace(want.find("%2"), 2, withComma(r.retry));
+    TEST_ASSERT_TRUE_MESSAGE(doc.find(want) != std::string::npos, want.c_str());
+  }
+}
+
+// A long answer in the round's text on the Mistral wire (the case that was measured).
+static void test_a_long_mistral_answer_in_the_round_text_reaches_the_owner() {
+  std::string guide;
+  for (int i = 0; i < 60; i++) guide += "Monday route idea and the weather plan for the day. ";
+  FakeProviderDeps d;
+  d.http.script.push_back(
+      {"api.mistral.ai", "/v1/chat/completions", 200,
+       "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"content\":\"" + guide +
+           "\",\"tool_calls\":[{\"id\":\"c1\",\"function\":{\"name\":\"orch_turn\","
+           "\"arguments\":\"{\\\"reply\\\":\\\"The guide is written out in full above.\\\"}\"}}]}}],"
+           "\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":9}}"});
+  auto pd = d.contract();
+  pd.toolLoopOn = [] { return true; };
+  agent::HeadTools ht;
+  ht.dispatch = [](const orch::HeadToolCall& c) {
+    orch::HeadToolResult r;
+    r.id = c.id;
+    r.name = c.name;
+    return r;
+  };
+  ht.cfg.maxRounds = 4;
+  ht.cfg.deadlineMs = 600000;
+  ht.cfg.maxToolResultBytes = 4096;
+  ht.cfg.maxTotalToolBytes = 24576;
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &ht, nullptr), err.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(out.find("Monday route idea") != std::string::npos, out.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(out.find("written out in full above") == std::string::npos, out.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_reserved_toolname_renamed_and_inverted);
   RUN_TEST(test_new_conversation_request_shape);
   RUN_TEST(test_cum835_head_tool_executions_are_noted);
+  RUN_TEST(test_head_conversations_chunk_array_drops_thinking);
+  RUN_TEST(test_head_conversations_empty_reply_text_chunk_surfaces);
   RUN_TEST(test_continuation_sends_no_model_or_instructions);
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_loop_chat_completions_stateless);
@@ -1690,6 +2103,14 @@ int main(int, char**) {
   RUN_TEST(test_loop_429_zero_per_minute_plan);
   RUN_TEST(test_cum616_effort_none_only_on_models_that_reason);
   RUN_TEST(test_cum616_refused_effort_retried_once_without_it);
+  RUN_TEST(test_connectors_refusal_retried_once_without_them);
+  RUN_TEST(test_a_sub_on_a_model_refusing_builtins_keeps_its_tools);
+  RUN_TEST(test_web_search_runs_on_mistral_builtin);
+  RUN_TEST(test_web_search_walks_to_zai_then_says_why);
+  RUN_TEST(test_mistral_rounds_fit_the_gateway);
+  RUN_TEST(test_fold_is_a_plain_completion);
+  RUN_TEST(test_effort_table_matches_the_recording);
+  RUN_TEST(test_the_same_host_step_down_table);
   RUN_TEST(test_cum616_effort_table_matches_the_recorded_model_list);
   RUN_TEST(test_r1_image_url_parts_in_the_seeded_user_message);
   RUN_TEST(test_r1_mistral_model_without_image_input_reads_transcriptions);
@@ -1697,6 +2118,9 @@ int main(int, char**) {
   RUN_TEST(test_r1_a_list_without_the_models_row_sends_images_and_a_refusal_falls_back);
   RUN_TEST(test_img_look_photo_follows_the_tool_message);
   RUN_TEST(test_img_look_blind_mistral_reads_the_answer);
+  RUN_TEST(test_a_mistral_sub_error_says_whether_it_may_have_run);
+  RUN_TEST(test_mistral_caps_are_the_documented_numbers);
+  RUN_TEST(test_a_long_mistral_answer_in_the_round_text_reaches_the_owner);
   UNITY_END();
   return 0;
 }

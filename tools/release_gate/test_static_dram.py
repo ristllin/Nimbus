@@ -3,11 +3,13 @@
 Run: python3 -m pytest tools/release_gate
 """
 
+import json
 import os
 import re
 import struct
 
 import check_static_dram as dram
+import merge_static_dram as merge
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -109,3 +111,87 @@ def test_release_and_gate_run_it():
         assert "check_static_dram.py" in f.read()
     with open(os.path.join(HERE, "run_gate.py"), encoding="utf-8") as f:
         assert "check_static_dram.main" in f.read()
+
+
+# ---- the merge-time check (merge_static_dram.py) ---------------------------------------
+
+MERGE_ID = "v5.0.0-3-g1a2b3c4d"
+MERGE_CEIL = {
+    "nimbus-tft": {"env": "esp32s3", "baseline": 1000, "ceiling": 1100},
+    "freenove-28": {"env": "esp32s3-cyd", "baseline": 1000, "ceiling": 1100},
+    "freenove-35": {"env": "esp32s3-cyd-35", "baseline": 1000, "ceiling": 1100},
+}
+MERGE_REQ = ("nimbus-tft", "freenove-28")
+
+
+def built(tree, env, bss=600, build_id=MERGE_ID):
+    d = tree / ".pio" / "build" / env
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "firmware.elf").write_bytes(make_elf({".dram0.bss": bss, ".dram0.data": 400}) + build_id.encode())
+
+
+def test_merge_passes_when_both_images_are_this_commits_and_under(tmp_path):
+    built(tmp_path, "esp32s3")
+    built(tmp_path, "esp32s3-cyd")
+    assert merge.check_tree(str(tmp_path), MERGE_REQ, MERGE_CEIL, MERGE_ID)
+
+
+def test_merge_fails_over_a_ceiling_on_either_image(tmp_path):
+    built(tmp_path, "esp32s3")
+    built(tmp_path, "esp32s3-cyd", bss=701)  # 1101 B: one over
+    assert not merge.check_tree(str(tmp_path), MERGE_REQ, MERGE_CEIL, MERGE_ID)
+
+
+def test_merge_fails_on_a_missing_required_image(tmp_path):
+    built(tmp_path, "esp32s3")
+    assert not merge.check_tree(str(tmp_path), MERGE_REQ, MERGE_CEIL, MERGE_ID)
+
+
+def test_merge_fails_on_a_stale_required_image(tmp_path):
+    built(tmp_path, "esp32s3", build_id="v5.0.0-2-g99999999")  # under its ceiling, last commit's
+    built(tmp_path, "esp32s3-cyd")
+    assert not merge.check_tree(str(tmp_path), MERGE_REQ, MERGE_CEIL, MERGE_ID)
+
+
+def test_merge_checks_an_optional_image_only_when_this_commit_built_it(tmp_path):
+    built(tmp_path, "esp32s3")
+    built(tmp_path, "esp32s3-cyd")
+    built(tmp_path, "esp32s3-cyd-35", bss=9000, build_id="v5.0.0-2-g99999999")  # stale: not judged
+    assert merge.check_tree(str(tmp_path), MERGE_REQ, MERGE_CEIL, MERGE_ID)
+    built(tmp_path, "esp32s3-cyd-35", bss=9000)  # this commit's: judged
+    assert not merge.check_tree(str(tmp_path), MERGE_REQ, MERGE_CEIL, MERGE_ID)
+
+
+def test_merge_fails_without_a_build_id_or_on_an_unknown_required_variant(tmp_path):
+    built(tmp_path, "esp32s3")
+    built(tmp_path, "esp32s3-cyd")
+    assert not merge.check_tree(str(tmp_path), MERGE_REQ, MERGE_CEIL, None)
+    assert not merge.check_tree(str(tmp_path), MERGE_REQ + ("new-board",), MERGE_CEIL, MERGE_ID)
+
+
+def test_merge_cli_says_its_marker_and_exit_code(tmp_path, capsys):
+    ceil = tmp_path / "ceil.json"
+    ceil.write_text('{"variants": {"nimbus-tft": {"env": "esp32s3", "baseline": 1000, "ceiling": 1100}}}')
+    # The temporary directory is no git checkout: no build id, so red.
+    assert merge.main(["--tree", str(tmp_path), "--require", "nimbus-tft", "--ceilings", str(ceil)]) == 1
+    assert capsys.readouterr().out.strip().endswith("STATIC DRAM RED")
+
+
+def test_merge_required_default_is_what_the_battery_builds():
+    ceilings = dram.load_ceilings()
+    assert {ceilings[v]["env"] for v in merge.DEFAULT_REQUIRED} == {"esp32s3", "esp32s3-cyd"}
+
+
+# The baseline is the last measured tree, so a report's "+N B" is growth since then and not
+# since v4.5.15 (the release line and main merged, lane MB: 91,195 B and 91,275 B). The
+# ceilings did not move: moving one needs the bench heap A/B.
+MEASURED = {"nimbus-tft": 91195, "freenove-28": 91275, "freenove-35": 91275, "freenove-40": 91275}
+UNCHANGED_CEILINGS = {"nimbus-tft": 91635, "freenove-28": 91723, "freenove-35": 91723, "freenove-40": 91723}
+
+
+def test_the_baseline_is_the_measured_merge_and_the_ceilings_did_not_move():
+    variants = json.load(open(dram.CEILINGS))["variants"]
+    for name, row in variants.items():
+        assert row["baseline"] == MEASURED[name], name
+        assert row["ceiling"] == UNCHANGED_CEILINGS[name], f"{name}: a raised ceiling needs the bench heap A/B"
+        assert row["baseline"] <= row["ceiling"], name

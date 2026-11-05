@@ -75,6 +75,7 @@ void LabSkills::registerTools(nimbus::orch::ToolRegistry& reg) {
                                r.outcome == agent::SkillOutcome::EditProposed)
                                   ? agent::skillProposalNotice(id, r)
                                   : agent::skillResultText(id, r);
+            out += agent::skillSaveNotes(r);
             if (!r.similar.empty())
               out += " A skill named '" + r.similar + "' already exists - if you meant to " +
                      "edit it, save there instead.";

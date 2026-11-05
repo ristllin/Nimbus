@@ -26,13 +26,21 @@ see any of them:
 | `plan-earlier` | A dinner plan; the foods were listed several messages earlier | The earlier list is used and never asked for again |
 | `complaint-recovery` | "You invented things I didn't say we have" | One short acknowledgement, then a corrected plan from the listed foods |
 | `no-inventory-guard` | A dinner plan when no food was ever named | One short question, or a plan clearly labeled as suggestions: never a confident guess |
+| `receipt-unknown-protein` | "So what are we at for today?" with a restaurant meal that has no protein figure | The ledger's exact total; protein known and unknown said apart; no firm "you need X g more" |
+| `plan-before-target` | "How much protein do I have left?" with the target only in a plan file | The plan is read first, the right target is used, the answer comes from the sum |
+| `no-target-anywhere` | "How many calories do I have left?" with no target anywhere | No target is made up: what is logged, and a question |
+| `same-food-two-days` | The same boba tea logged three days apart | The earlier figure is reused, or the reply says it differs and which was kept |
+| `named-restaurant` | A named restaurant, then the owner gives its published figures with no protein | Source said, published figures win, the meal's protein stays unknown |
+| `noted-ack` | "Acknowledge this note" | A short acknowledgement with no false correction |
 | `evening-replay` | The 26 Oct evening: a day of meals after a compaction (a stale summary with an old pending question and another day's total, a 16 Oct meal stored as a standing rule), "the full list by meal", a photo nobody could read, "you estimated earlier, what's the total?" | The list and the total come from today's ledger, the dropped question stays dropped, the photo failure is said, the dinner is written to the ledger, the total adds up, nothing is "not saved" |
 
 The last scenario is a guard: a fix for invented food must not turn into guessing or
 into a stall when the owner has named nothing.
 
-A scenario passes a run when every required criterion passes. Advisory criteria are
-reported and never gate. A scenario meets the target when at least 4 of its 5 runs pass
+A scenario passes a run when every required criterion passes and the delivered reply
+carries no device line ("(Correction: ...)", "(Note: ...)"). That check is code, not the
+judge: no scenario has a reply that deserves one, and a false correction is the same
+complaint as a wrong figure. Advisory criteria are reported and never gate. A scenario meets the target when at least 4 of its 5 runs pass
 (`config.json`).
 
 ## How a run works

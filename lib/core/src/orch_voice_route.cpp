@@ -1,4 +1,5 @@
 #include "nimbus/orch/voice_route.h"
+#include "nimbus/orch/router_refusals.h"   // routerReasonRow - the router's fail_over reasons
 
 namespace nimbus {
 namespace orch {
@@ -62,9 +63,17 @@ namespace {
 // codes the owner is told about by name cannot drift from the lines themselves.
 // ASCII, sentence case, no em dash, no exclamation: what happened, then the step.
 struct Refusal { const char* code; const char* line; };
+// An upstream's or the platform's trouble: never read as the owner's key or wallet.
+constexpr const char* kVoiceServicePaused = "Voice is paused by the service for now. Try again later.";
 constexpr Refusal kRefusals[] = {
-    {"funding_cap_reached",    "Voice is out of credit for now. Try again later."},
+    {"funding_cap_reached",    kVoiceServicePaused},
     {"rate_limited",           "Voice is busy right now. Wait a moment and try again."},
+    {"credits_held_in_flight", "Voice is busy right now. Wait a moment and try again."},
+    {"insufficient_credits",   "The credit balance is empty. Add credits in the portal."},
+    {"credits_or_subscription_required", "Voice needs credits or a plan. Add credits in the portal."},
+    {"budget_exceeded",        "This device reached its monthly limit. Raise it in the portal."},
+    {"account_suspended",      "This account is suspended. Contact support."},
+    {"insufficient_credits_for_call", "This recording is larger than the remaining credits allow."},
     {"audio_duration_unknown", "Could not read that recording. Try again."},
     {"unsupported_media_type", "That audio format is not supported."},
 };
@@ -73,14 +82,29 @@ const Refusal* findRefusal(const std::string& code) {
     if (code == r.code) return &r;
   return nullptr;
 }
+bool failsOver(const std::string& code) {
+  const RouterReasonRow* row = routerReasonRow(code);
+  return row && row->action == RouterAction::FailOver;
+}
 }  // namespace
 
 std::string voiceRefusalStatus(const std::string& code) {
   const Refusal* r = findRefusal(code);
-  return r ? r->line : "Voice is unavailable right now. Try again soon.";
+  if (r) return r->line;
+  return failsOver(code) ? kVoiceServicePaused : "Voice is unavailable right now. Try again soon.";
 }
 
-bool voiceRefusalKnown(const std::string& code) { return findRefusal(code) != nullptr; }
+std::string voiceRefusalWhy(int httpStatus, const std::string& body, const std::string& providerCode) {
+  const RouterAnswer a = readRouterAnswer(body);
+  if (a.reason == "insufficient_credits_for_call") return "This reply is too long for the remaining credits.";
+  if (voiceRefusalKnown(a.reason)) return voiceRefusalStatus(a.reason);
+  const std::string code = !a.reason.empty() ? a.reason : providerCode;
+  std::string s = "the voice provider refused (HTTP " + std::to_string(httpStatus);
+  if (!code.empty()) s += ", " + code;
+  return s + ")";
+}
+
+bool voiceRefusalKnown(const std::string& code) { return findRefusal(code) != nullptr || failsOver(code); }
 
 }  // namespace orch
 }  // namespace nimbus

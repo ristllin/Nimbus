@@ -9,17 +9,32 @@ bool StoreFullEpisode::refused(bool full) {
   return full;
 }
 
+bool StoreFullEpisode::reclaimed() {
+  const bool first = !active_.exchange(true);
+  if (first && !notice_.load()) reclaimNotice_.store(true);
+  return first;
+}
+
 void StoreFullEpisode::room() {
   active_.store(false);
   notice_.store(false);
+  reclaimNotice_.store(false);
 }
 
 bool StoreFullEpisode::takeNotice() { return notice_.exchange(false); }
+
+bool StoreFullEpisode::takeReclaimNotice() { return reclaimNotice_.exchange(false); }
 
 const char kStoreFullNotice[] =
     "the file store is full, so new photos and files are not saved to it. To make room, "
     "open the device web page, delete files you don't need in the Memory tab's Files "
     "section, then send them again.";
+
+const char kStoreReclaimNotice[] =
+    "the file store reached its space limit, so the oldest saved copies of received "
+    "photos and files were removed to make room. Your own files were not touched. To "
+    "keep more of them, open the device web page and delete files you don't need in the "
+    "Memory tab's Files section.";
 
 std::string storeFullFact(bool photo, bool inHistory) {
   std::string out =

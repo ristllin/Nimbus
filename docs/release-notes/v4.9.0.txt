@@ -1,0 +1,1 @@
+Interim build ahead of v5.0.0: honest food logs, replies that finish, fewer stalls.

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 
 #include "nimbus/mem_cap.h"   // utf8CapLen
 #include "nimbus/orch/history_rows.h"   // kClockValidHours - an hour from before the clock was set
@@ -117,9 +118,10 @@ bool parseRuleLine(const std::string& line, PrefEntry& e) {
   const std::vector<std::string> f = splitTabs(line, 6);
   if (f.size() != 6 || f[0].size() < 2 || (f[0][0] != 'p' && f[0][0] != 'P')) return false;
   e.id = toU32(f[0].substr(1));
-  if (e.id == 0 || (f[1] != "A" && f[1] != "P" && f[1] != "M")) return false;
+  if (e.id == 0 || (f[1] != "A" && f[1] != "P" && f[1] != "M" && f[1] != "E")) return false;
   e.pending = f[1] == "P";
   e.moved = f[1] == "M";
+  e.evicted = f[1] == "E";
   e.createdHours = toU32(f[2]);
   e.origin = originFromSlug(f[3]);
   e.filters = filtersFromSlug(f[4]);
@@ -144,7 +146,9 @@ void parseHeader(const std::string& line, bool& seeded, bool& listed, bool& date
   }
 }
 
-const char* stateLetter(const PrefEntry& e) { return e.moved ? "M" : e.pending ? "P" : "A"; }
+const char* stateLetter(const PrefEntry& e) {
+  return e.moved ? "M" : e.evicted ? "E" : e.pending ? "P" : "A";
+}
 
 std::string serializeState(const std::vector<PrefEntry>& items, bool seeded, bool listed,
                            uint32_t nextId, bool dated) {
@@ -158,7 +162,7 @@ std::string serializeState(const std::vector<PrefEntry>& items, bool seeded, boo
   return out;
 }
 
-bool isActive(const PrefEntry& e) { return !e.pending && !e.moved; }
+bool isActive(const PrefEntry& e) { return !e.pending && !e.moved && !e.evicted; }
 
 size_t activeBytesOf(const std::vector<PrefEntry>& v) {
   size_t n = 0;
@@ -181,13 +185,22 @@ size_t movedOf(const std::vector<PrefEntry>& v) {
   return n;
 }
 
-// The rules the 12-rule cap counts: active and pending (a moved one is not a rule).
-size_t rulesOf(const std::vector<PrefEntry>& v) { return v.size() - movedOf(v); }
+size_t evictedOf(const std::vector<PrefEntry>& v) {
+  size_t n = 0;
+  for (const PrefEntry& e : v)
+    if (e.evicted) n++;
+  return n;
+}
+
+// The rules the 12-rule cap counts: active and pending (a moved or evicted one
+// is not a rule).
+size_t rulesOf(const std::vector<PrefEntry>& v) { return v.size() - movedOf(v) - evictedOf(v); }
 
 // Would this entry fit the parsed list's caps? (The tolerant parse keeps every
 // intact line up to the caps, in file order.)
 bool fitsCaps(const std::vector<PrefEntry>& kept, const PrefEntry& e) {
   if (e.moved) return movedOf(kept) < kPrefsMovedMax;
+  if (e.evicted) return evictedOf(kept) < kPrefsEvictedMax;
   if (rulesOf(kept) >= kPrefsMaxItems) return false;
   if (e.pending) return pendingOf(kept) < kPrefsPendingMax;
   return activeBytesOf(kept) + e.text.size() <= kPrefsMaxBytes;
@@ -201,6 +214,25 @@ PrefErr datedRefusal(const std::string& text) {
     case DatedKind::None:        break;
   }
   return PrefErr::Ok;
+}
+
+// Lane POL2: the rule that steps aside when the list is full. A seeded one
+// first (the owner never typed it as a rule; the first-boot seed lifted it from
+// memory), then the oldest, then the lowest id. Never a pending one (it waits
+// for the owner) and never one already retired.
+int evictionPick(const std::vector<PrefEntry>& v) {
+  int best = -1;
+  for (size_t i = 0; i < v.size(); i++) {
+    const PrefEntry& e = v[i];
+    if (!isActive(e)) continue;
+    if (best < 0) { best = (int)i; continue; }
+    const PrefEntry& b = v[(size_t)best];
+    if (e.origin == PrefOrigin::Seed && b.origin != PrefOrigin::Seed) { best = (int)i; continue; }
+    if (e.origin == b.origin &&
+        (e.createdHours < b.createdHours || (e.createdHours == b.createdHours && e.id < b.id)))
+      best = (int)i;
+  }
+  return best;
 }
 
 bool knownIdOrKey(const std::vector<PrefEntry>& kept, const PrefEntry& e) {
@@ -236,7 +268,7 @@ const char* prefErrWords(PrefErr e) {
     case PrefErr::DatedFact:
       return "that is a dated one-off fact (a measurement or an event), not a standing rule: keep it in "
              "memory instead, where it is recalled when it matters";
-    case PrefErr::NotMoved:      return "that rule was not moved to memory";
+    case PrefErr::NotMoved:      return "that rule was not retired";
   }
   return "error";
 }
@@ -331,8 +363,14 @@ int OwnerPrefs::indexOf(uint32_t id) const {
 }
 
 int OwnerPrefs::indexOfKey(const std::string& key) const {
-  for (size_t i = 0; i < items_.size(); i++)
+  for (size_t i = 0; i < items_.size(); i++) {
+    // Lane POL2 review: a retired rule is not a duplicate. Matching one made
+    // a re-stated rule a silent no-op with a false "already a standing rule"
+    // while it stayed retired, and a replace could erase the active rule to
+    // "keep" a retired one.
+    if (items_[i].moved || items_[i].evicted) continue;
     if (prefKey(items_[i].text) == key) return (int)i;
+  }
   return -1;
 }
 
@@ -344,6 +382,7 @@ const PrefEntry* OwnerPrefs::find(uint32_t id) const {
 size_t OwnerPrefs::activeCount() const { return rulesOf(items_) - pendingOf(items_); }
 size_t OwnerPrefs::pendingCount() const { return pendingOf(items_); }
 size_t OwnerPrefs::movedCount() const { return movedOf(items_); }
+size_t OwnerPrefs::evictedCount() const { return evictedOf(items_); }
 size_t OwnerPrefs::activeBytes() const { return activeBytesOf(items_); }
 
 PrefErr OwnerPrefs::checkRoom(const std::vector<PrefEntry>& next) const {
@@ -365,20 +404,53 @@ PrefErr OwnerPrefs::commit(const std::vector<PrefEntry>& next, bool seeded, bool
   return PrefErr::Ok;
 }
 
+PrefErr OwnerPrefs::evictForRoom(std::vector<PrefEntry>& next, std::vector<PrefEntry>& evicted) {
+  while (checkRoom(next) != PrefErr::Ok) {
+    if (evictedOf(next) >= kPrefsEvictedMax) return PrefErr::Full;
+    const int pick = evictionPick(next);
+    if (pick < 0) return PrefErr::Full;   // nothing active left to retire
+    next[(size_t)pick].evicted = true;
+    evicted.push_back(next[(size_t)pick]);
+  }
+  return PrefErr::Ok;
+}
+
+PrefErr OwnerPrefs::addDuplicate(int dup, bool pending, std::string* idOut) {
+  if (idOut) *idOut = items_[(size_t)dup].idStr();
+  if (!items_[(size_t)dup].pending || pending) return PrefErr::Ok;
+  return approve(items_[(size_t)dup].id);
+}
+
+std::vector<PrefEntry> OwnerPrefs::nextForAdd(const std::string& key, const PrefEntry& e) const {
+  std::vector<PrefEntry> next;
+  next.reserve(items_.size() + 1);
+  for (const PrefEntry& k : items_)
+    if (!(k.moved || k.evicted) || prefKey(k.text) != key) next.push_back(k);
+  next.push_back(e);
+  return next;
+}
+
+PrefErr OwnerPrefs::commitMakingRoom(std::vector<PrefEntry>& next, const PrefEntry& e,
+                                      std::string* idOut, std::vector<PrefEntry>* evictedOut) {
+  std::vector<PrefEntry> evicted;
+  const PrefErr made = evictForRoom(next, evicted);
+  if (made != PrefErr::Ok) return made;
+  const PrefErr r = commit(next, seeded_, listed_, nextId_ + 1);
+  if (r == PrefErr::Ok) {
+    if (idOut) *idOut = e.idStr();
+    if (evictedOut) *evictedOut = evicted;
+  }
+  return r;
+}
+
 PrefErr OwnerPrefs::add(const std::string& text, PrefOrigin origin, uint32_t nowHours, bool pending,
-                        std::string* idOut) {
+                        std::string* idOut, std::vector<PrefEntry>* evictedOut) {
   const std::string t = sanitizePrefText(text);
   if (t.empty()) return PrefErr::Empty;
   if (t.size() > kPrefItemMax) return PrefErr::TooLong;
   if (const PrefErr dated = datedRefusal(t); dated != PrefErr::Ok) return dated;
   const int dup = indexOfKey(prefKey(t));
-  if (dup >= 0) {
-    if (idOut) *idOut = items_[(size_t)dup].idStr();
-    // The same words again: nothing new. A human adding a rule that waits for
-    // approval IS the approval.
-    if (!items_[(size_t)dup].pending || pending) return PrefErr::Ok;
-    return approve(items_[(size_t)dup].id);
-  }
+  if (dup >= 0) return addDuplicate(dup, pending, idOut);
   PrefEntry e;
   e.id = nextId_;
   e.pending = pending;
@@ -386,13 +458,19 @@ PrefErr OwnerPrefs::add(const std::string& text, PrefOrigin origin, uint32_t now
   e.origin = origin;
   e.filters = filtersForRule(t);
   e.text = t;
-  std::vector<PrefEntry> next = items_;
-  next.push_back(e);
+  // Lane POL2 review: a retired rule the owner re-states comes back as this
+  // fresh add, and its retired copy is redundant now (nextForAdd drops it).
+  std::vector<PrefEntry> next = nextForAdd(prefKey(t), e);
   const PrefErr room = checkRoom(next);
-  if (room != PrefErr::Ok) return room;
-  const PrefErr r = commit(next, seeded_, listed_, nextId_ + 1);
-  if (r == PrefErr::Ok && idOut) *idOut = e.idStr();
-  return r;
+  if (room == PrefErr::Ok) {
+    const PrefErr r = commit(next, seeded_, listed_, nextId_ + 1);
+    if (r == PrefErr::Ok && idOut) *idOut = e.idStr();
+    return r;
+  }
+  // Lane POL2: an active add makes room instead of degrading to a refusal the
+  // model would paper over with a memory write. A pending add never evicts.
+  if (room != PrefErr::Full || pending) return room;
+  return commitMakingRoom(next, e, idOut, evictedOut);
 }
 
 PrefErr OwnerPrefs::replace(uint32_t id, const std::string& text, PrefOrigin origin, uint32_t nowHours) {
@@ -480,9 +558,10 @@ PrefErr OwnerPrefs::moveDatedFacts(std::vector<PrefEntry>* moved) {
 PrefErr OwnerPrefs::restore(uint32_t id) {
   const int i = indexOf(id);
   if (i < 0) return PrefErr::NotFound;
-  if (!items_[(size_t)i].moved) return PrefErr::NotMoved;
+  if (!items_[(size_t)i].moved && !items_[(size_t)i].evicted) return PrefErr::NotMoved;
   std::vector<PrefEntry> next = items_;
   next[(size_t)i].moved = false;
+  next[(size_t)i].evicted = false;
   const PrefErr room = checkRoom(next);
   if (room != PrefErr::Ok) return room;
   return commit(next, seeded_, listed_, nextId_);
@@ -727,6 +806,102 @@ std::string seedListingText(const OwnerPrefs& p) {
   return "Standing rules found in earlier conversations. They now apply to every reply:\n" + lines +
          "To drop one, send /prefs rm and its id (for example /prefs rm p2), or use the device's "
          "web page. /prefs lists them all.";
+}
+
+// ---- lane POL2: a standing rule binds routines and wakeups ---------------------
+
+// Only an asking/mentioning veto shape blocks a fire. A bare "don't" or
+// "stop" is not one: "don't forget to check the shed roof" ASKS for the
+// reminder, and "stop the door slamming" is a device wish, not a topic veto.
+const char* const kStopMarkers[] = {
+    "never ask",    "stop asking",   "don't ask",    "dont ask",      "do not ask",
+    "never mention", "stop mentioning", "don't mention", "dont mention", "do not mention",
+    "never bring up", "stop bringing up", "don't bring up", "dont bring up", "do not bring up",
+    "never discuss", "stop discussing", "don't discuss", "dont discuss", "do not discuss",
+    "never talk about", "stop talking about", "don't talk about", "dont talk about",
+    "do not talk about", "no more"};
+
+// The days a rule's veto applies on, by the rule's own words: "on workdays" /
+// "on weekdays" narrow it to Monday-Friday, "on weekends" to Saturday and
+// Sunday. The 2 Nov signal was exactly this shape: the 13:00 workday check-in
+// was the annoyance and the owner's remedy was a weekend-only routine.
+RuleDays ruleDaysOf(const std::string& rule) {
+  const std::string r = collapseSpaces(lowerAscii(sanitizePrefText(rule)));
+  if (r.find("workday") != std::string::npos || r.find("weekday") != std::string::npos)
+    return RuleDays::Workdays;
+  if (r.find("weekend") != std::string::npos) return RuleDays::Weekends;
+  return RuleDays::Any;
+}
+
+bool ruleDaysMatch(RuleDays days, int dayOfWeek) {
+  if (days == RuleDays::Weekends) return dayOfWeek == 0 || dayOfWeek == 6;
+  return dayOfWeek >= 1 && dayOfWeek <= 5;   // Workdays
+}
+
+// The veto subject of a rule: the words its asking/mentioning marker governs.
+// The marker must govern the subject (the veto is the words AFTER it), the
+// "about" lead-in is part of the asking, and a prepositional tail narrows the
+// topic to its head ("never discuss politics at dinner" vetoes politics, not
+// every dinner routine). "" when the rule carries no veto shape.
+std::vector<std::string> ruleVetoWords(const std::string& rule) {
+  const std::string r = collapseSpaces(lowerAscii(sanitizePrefText(rule)));
+  size_t at = std::string::npos;
+  size_t markerLen = 0;
+  for (const char* marker : kStopMarkers) {
+    const size_t pos = r.find(marker);
+    if (pos != std::string::npos && (at == std::string::npos || pos < at)) {
+      at = pos;
+      markerLen = strlen(marker);
+    }
+  }
+  // Lane POL2 review: a bare "stop" is a veto only when the rule names the
+  // days it applies on ("stop the train brief on workdays"). A day scope is
+  // about when a routine may fire, which a device wish never carries; without
+  // one a bare stop stays what it was: "stop the door slamming" is a wish.
+  if (at == std::string::npos) {
+    if (ruleDaysOf(rule) == RuleDays::Any) return {};
+    const size_t pos = r.find("stop ");
+    if (pos == std::string::npos) return {};
+    at = pos;
+    markerLen = 5;
+  }
+  std::string veto = r.substr(at + markerLen);
+  for (const char* lead : {"about ", "to "})
+    if (veto.compare(0, strlen(lead), lead) == 0) { veto.erase(0, strlen(lead)); break; }
+  for (const char* tail : {" at ", " in ", " on ", " during ", " unless ", " when ",
+                           " while ", " if ", " by ", " for ", " with ", " over ", " under "}) {
+    const size_t p = veto.find(tail);
+    if (p != std::string::npos) veto.resize(p);
+  }
+  return words::subjectWords(veto);
+}
+
+StandingBlock standingBlocksFire(const std::vector<std::string>& activeRuleTexts,
+                                 const std::string& loopPrompt,
+                                 const std::string& loopName, int dayOfWeek) {
+  StandingBlock out;
+  std::vector<std::string> promptWords = words::subjectWords(loopPrompt);
+  // The routine's name is part of its topic (a "Duolingo streak check" whose
+  // prompt only says "check the streak" is still the Duolingo routine).
+  for (const std::string& w : words::subjectWords(loopName))
+    if (std::find(promptWords.begin(), promptWords.end(), w) == promptWords.end())
+      promptWords.push_back(w);
+  if (promptWords.empty()) return out;
+  for (const std::string& rule : activeRuleTexts) {
+    // A day-scoped veto binds only on the days it names. An unknown day (no
+    // clock) keeps the rule blocking: the owner's quiet is never lost to a
+    // missing clock.
+    const RuleDays days = ruleDaysOf(rule);
+    if (days != RuleDays::Any && dayOfWeek >= 0 && !ruleDaysMatch(days, dayOfWeek)) continue;
+    for (const std::string& w : ruleVetoWords(rule)) {
+      if (std::find(promptWords.begin(), promptWords.end(), w) != promptWords.end()) {
+        out.blocked = true;
+        out.rule = rule;
+        return out;
+      }
+    }
+  }
+  return out;
 }
 
 }  // namespace orch

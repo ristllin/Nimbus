@@ -1,5 +1,7 @@
 #include "nimbus/orch/mcp_client.h"
 
+#include "nimbus/json_strict.h"
+
 #include <cctype>
 
 namespace nimbus {
@@ -20,7 +22,7 @@ const char* kProtocolVersion = "2025-06-18";
 namespace {
 std::string serializeDoc(const JsonDocument& d) {
   std::string out;
-  serializeJson(d, out);
+  nimbus::serializeStrictJson(d, out);   // a tool's arguments can hold any byte
   return out;
 }
 }  // namespace

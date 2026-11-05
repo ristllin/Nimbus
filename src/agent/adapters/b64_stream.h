@@ -27,9 +27,10 @@ inline int b64val(char c) {
 // 2M single-byte SD writes. Returns bytes written. If `clean` is non-null it is
 // set true ONLY when the closing quote was reached - false means the deadline or
 // a dropped socket cut the value short, so the file on disk is TRUNCATED and the
-// caller must not treat it as a complete payload.
+// caller must not treat it as a complete payload. `wroteAll`, when non-null, says only
+// whether flash took every decoded byte, so a cut stream is not mistaken for a failed write.
 inline size_t b64decodeToFile(WiFiClientSecure& c, File& f, const String& pre,
-                              uint32_t deadline, bool* clean = nullptr) {
+                              uint32_t deadline, bool* clean = nullptr, bool* wroteAll = nullptr) {
   uint32_t acc = 0; int bits = 0; size_t out = 0; bool stop = false; bool wok = true;
   uint8_t obuf[512]; size_t on = 0;
   // Flush the output buffer and REPORT whether the filesystem accepted every byte.
@@ -58,6 +59,7 @@ inline size_t b64decodeToFile(WiFiClientSecure& c, File& f, const String& pre,
   // "clean" now means: reached the closing quote AND every decoded byte was
   // written. Either miss => the file on disk is incomplete; the caller must fail.
   if (clean) *clean = stop && wok;
+  if (wroteAll) *wroteAll = wok;
   return out;
 }
 

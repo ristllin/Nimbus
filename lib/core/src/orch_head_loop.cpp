@@ -1,5 +1,7 @@
 #include "nimbus/orch/head_loop.h"
 
+#include <ArduinoJson.h>
+
 #include "nimbus/orch/billing_refusal.h"   // isBillingRefusal - the Billing step kind
 #include "nimbus/orch/body_budget.h"   // parseBodyBudgetError - a round too big to send
 #include "nimbus/orch/transcript.h"  // the canonical record the controller fills
@@ -156,6 +158,10 @@ StepErr classifyStepError(const std::string& err, int* httpStatus) {
   static const struct { const char* prefix; StepErr kind; } kDevice[] = {
       {"unsent:", StepErr::Unsent},     {"paused:", StepErr::Paused}, {"low memory", StepErr::LowMemory},
       {"timeout:", StepErr::Timeout},   {"network", StepErr::Transport},
+      // A Cumulo head's own cause (router_refusal.h): the router refused this call and the
+      // sentence says why. Nothing to retry and nothing to park here (the wire parked on
+      // the reason if it was one that parks); another host may still serve it.
+      {kRouterCausePrefix, StepErr::Rejected},
   };
   for (const auto& d : kDevice)
     if (err.rfind(d.prefix, 0) == 0) return d.kind;
@@ -245,9 +251,11 @@ namespace {
 // what remains.
 constexpr size_t kBudgetRefitSlack = 4096;
 constexpr size_t kBudgetClipSlack = 512;
-// Refits per round: big arguments, older rounds, the newest round's clip, and one
-// more for a fold whose stub lines ate the room it made.
-constexpr int kBudgetRefits = 4;
+// Refits per round: big arguments, older rounds, older history, the newest round's clip,
+// each rung of the prompt ladder (turn_fit.h), and a few for a rung whose estimate fell short
+// (stub lines that ate the room a fold made). Each is one body build, and none of them
+// sends anything.
+constexpr int kBudgetRefits = 14;
 // Arguments over this many bytes shrink to a stub (a write of a document, not a query).
 constexpr size_t kArgStubOver = 512;
 
@@ -270,6 +278,75 @@ size_t newestRoundBytes(const Transcript& tr) {
 // tool rounds folded to one-line stubs, then - only when nothing else frees room -
 // the newest round's results clipped (why it matters: body_budget.h). True when
 // something was reclaimed and a re-run can fit.
+// The next rung of the ladder that gives anything up; `what` names it for the log.
+size_t refitOneRung(Transcript& tr, const HeadLoopHooks& hooks, size_t want, size_t cap, size_t newest,
+                    const char*& what) {
+  what = "the replayed tool rounds";
+  size_t freed = tr.stubArguments(kArgStubOver);
+  // Tool rounds the model has already read go before the owner's earlier messages. Where the
+  // cap would reach into the newest round, foldOlderRounds(newest) folds every older round and
+  // never clips the newest: the fold lands the replay exactly on the cap, but a host whose
+  // byte accounting sits one byte over must not clip the results the model has not seen yet (a
+  // CI run clipped |end7| that way) - a still-over re-run refuses again and the third rung clips
+  // with the honest last-resort cap. Where the cap holds the newest round whole, trimToolOutputs
+  // folds older rounds and clips nothing.
+  if (freed == 0) freed = cap < newest ? tr.foldOlderRounds(newest) : tr.trimToolOutputs(cap);
+  if (freed) return freed;
+  // Round 0, or nothing left to fold: the prompt's older history before any result
+  // the model has not read (Lumi, 1 Nov: 90519 B at round 0 with 0 B to fold).
+  if (hooks.fitPrompt && (freed = hooks.fitPrompt(want, FitScope::OlderHistory)) != 0) {
+    what = "the older history";
+    return freed;
+  }
+  if ((freed = tr.trimToolOutputs(cap)) != 0) return freed;
+  if (hooks.fitPrompt && (freed = hooks.fitPrompt(want, FitScope::NextRung)) != 0) what = "the prompt and input";
+  return freed;
+}
+
+// Fold rungs until `want` bytes are reclaimed (or a rung gives nothing more),
+// so ONE re-run fits: the real Waitrose case (Lumi, 4 Nov) folded 5582 B against
+// a 10418 B overshoot, re-ran, refused again at 85882 B, folded 1396 B more -
+// every extra refusal is a full body build and parse cycle spent discovering
+// what the first refusal already said. Two limits keep the fold honest:
+// - only the TRANSCRIPT rungs fold several to a cycle. They are wire-measurable
+//   (a tool result rides the request about as many bytes as it holds), so
+//   `want` in wire bytes is a real target for them. The prompt-ladder rungs are
+//   not: the wire writes history text JSON-escaped, up to twice its size, so
+//   folding those against wire bytes overfolds - the results a synthesis exists
+//   for got clipped that way while history still had turns to give. A prompt
+//   rung still gives up only one rung per refusal, and the next body build says
+//   whether it was enough (dropNewestHistory's own rule).
+// - `have` and `newest` stay the REFUSAL's own figures for the whole cycle, not
+//   re-derived per rung: the cap they derive is the one the re-run checks
+//   against, and re-deriving it mid-cycle (before any body build) lets the
+//   last-resort clip of the newest round fire on a fold the re-run would have
+//   accepted - the growing-loop matrix clipped result 3 that way, a result the
+//   model had not seen yet. A cycle that underfolds just refuses again, and
+//   the fresh refusal re-derives everything (the bounded-refits test watches
+//   that cost).
+// `what` names every rung that gave, in order: the log line is the record of
+// what the fold took, not just its last rung.
+size_t refitEnough(Transcript& tr, const HeadLoopHooks& hooks, size_t want, size_t have,
+                   size_t newest, std::string& what) {
+  size_t freed = 0;
+  for (int rung = 0; rung < kBudgetRefits; ++rung) {
+    const size_t remaining = want > freed ? want - freed : 1;
+    const size_t cap = have > remaining ? have - remaining : 1;   // trimToolOutputs(0) means no cap
+    const char* rungWhat = "";
+    const size_t got = refitOneRung(tr, hooks, remaining, cap, newest, rungWhat);
+    if (got && what.find(rungWhat) == std::string::npos) {
+      if (!what.empty()) what += " then ";
+      what += rungWhat;
+    }
+    if (!got) break;
+    freed += got;
+    if (freed >= want) break;
+    if (std::string(rungWhat) == "the older history" || std::string(rungWhat) == "the prompt and input")
+      break;   // the wire escapes history at up to twice its size: only the re-run can measure it
+  }
+  return freed;
+}
+
 bool refitToBudget(const HeadStep& sr, const HeadLoopHooks& hooks, int round) {
   size_t budget = 0, size = 0;
   if (sr.ok || !hooks.transcript || !parseBodyBudgetError(sr.error, budget, size) || size <= budget)
@@ -278,19 +355,12 @@ bool refitToBudget(const HeadStep& sr, const HeadLoopHooks& hooks, int round) {
   const size_t have = tr.toolBytes();
   const size_t newest = newestRoundBytes(tr);
   const size_t want = (size - budget) + (have > newest ? kBudgetRefitSlack : kBudgetClipSlack);
-  const size_t cap = have > want ? have - want : 1;   // trimToolOutputs(0) means no cap
-  size_t freed = tr.stubArguments(kArgStubOver);
-  // foldOlderRounds(newest) folds every older round and never clips the newest:
-  // the fold lands the replay exactly on the cap, but a host whose byte
-  // accounting sits one byte over must not clip the results the model has not
-  // seen yet (a CI run clipped |end7| that way) - a still-over re-run refuses
-  // again and the third rung clips with the honest last-resort cap.
-  if (freed == 0 && cap < newest) freed = tr.foldOlderRounds(newest);
-  if (freed == 0) freed = tr.trimToolOutputs(cap);
+  std::string what;
+  const size_t freed = refitEnough(tr, hooks, want, have, newest, what);
   if (hooks.log)
     hooks.log("headloop: round " + std::to_string(round) + " body " + std::to_string(size) + " B over the " +
-              std::to_string(budget) + " B budget - folded " + std::to_string(freed) +
-              " B of the replayed tool rounds" + (freed ? ", running the round again" : ", nothing left to fold"));
+              std::to_string(budget) + " B budget - folded " + std::to_string(freed) + " B of " + what +
+              (freed ? ", running the round again" : ", nothing left to fold"));
   return freed > 0;
 }
 
@@ -304,13 +374,70 @@ HeadStep stepWithRefit(const HeadLoopHooks& hooks, bool allowTools, const std::v
 }
 }  // namespace
 
+size_t trimForOverflow(Transcript& tr, size_t want, const std::function<size_t(size_t, FitScope)>& fitPrompt,
+                       const std::function<size_t()>& dropImages) {
+  size_t freed = tr.stubArguments(kArgStubOver);
+  const size_t newest = newestRoundBytes(tr);
+  if (freed < want) freed += tr.foldOlderRounds(newest);
+  if (freed < want && fitPrompt) freed += fitPrompt(want - freed, FitScope::OlderHistory);
+  if (freed < want && dropImages) freed += dropImages();
+  if (freed < want) {
+    const size_t have = tr.toolBytes();
+    const size_t rest = want - freed;
+    freed += tr.trimToolOutputs(have > rest ? have - rest : 1);
+  }
+  if (freed < want && fitPrompt) freed += fitPrompt(want - freed, FitScope::Ladder);
+  return freed;
+}
+
+namespace {
+// Send a rejected final answer back for one correction: the answer is recorded as the
+// orch_turn call the correction answers, so every provider's replay stays well-formed (an
+// unanswered tool_use 400s on Anthropic).
+void sendFinalBack(const HeadStep& sr, const std::string& fix, int round, const HeadLoopHooks& hooks,
+                   std::vector<HeadToolResult>& prior) {
+  HeadToolCall call;
+  call.id = kFinalCheckCallId;
+  call.name = "orch_turn";
+  call.argsJson = sr.finalTurn.empty() ? "{}" : sr.finalTurn;
+  HeadToolResult res;
+  res.id = kFinalCheckCallId;
+  res.name = "orch_turn";
+  res.output = fix;
+  res.isError = true;
+  prior.clear();
+  if (hooks.transcript) {
+    hooks.transcript->addToolCall(call, round, "");
+    hooks.transcript->addToolResult(res, round);
+    if (!sr.meta.empty()) hooks.transcript->attachMeta(round, sr.meta);
+  }
+  prior.push_back(std::move(res));
+  if (hooks.log) hooks.log("headloop: final answer sent back for one correction - " + fix.substr(0, 120));
+}
+
+// A rejected PROSE final goes back the same way, wrapped so the orch_turn call
+// the correction answers holds JSON arguments (the prose itself is not JSON).
+void sendProseBack(const HeadStep& sr, const std::string& fix, int round, const HeadLoopHooks& hooks,
+                   std::vector<HeadToolResult>& prior) {
+  JsonDocument d;
+  d["reply"] = sr.finalTurn;
+  std::string args;
+  serializeJson(d, args);
+  HeadStep wrapped = sr;
+  wrapped.finalTurn = args;
+  sendFinalBack(wrapped, fix, round, hooks, prior);
+}
+}  // namespace
+
 HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
   HeadOutcome out;
   const uint32_t start = hooks.nowMs ? hooks.nowMs() : 0;
   std::vector<HeadToolResult> prior;  // empty on the first step
+  std::vector<std::string> lastTools;   // the calls the previous round dispatched (progress)
   size_t totalBytes = 0;
   bool forceFinal = false;            // set by a stall / the byte budget
   std::string forceReason;
+  bool forcedCheckUsed = false;       // the forced round's one correction (forcedFinalCheck)
 
   // Dispatch one round's calls: clamp + spill each result, record it, and
   // accumulate it for the next step. Returns true when every call succeeded.
@@ -318,7 +445,9 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
   // (CUM-506), so both get the same clamp, spill, transcript and byte budget.
   auto dispatchAll = [&](const std::vector<HeadToolCall>& calls, int round) -> bool {
     bool allOk = true;
+    lastTools.clear();
     for (const HeadToolCall& call : calls) {
+      lastTools.push_back(call.name);
       HeadToolResult r = hooks.dispatch(call);
       if (r.id.empty()) r.id = call.id;      // default: echo the call id
       if (r.name.empty()) r.name = call.name;
@@ -366,6 +495,21 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
     }
     const bool lastChance = !reason.empty();
     const bool allowTools = !lastChance;
+
+    // Lane PROG: the round boundary - no provider request is in flight right
+    // now, the only moment a surface may signal work or look for queued
+    // messages. Fires before every step (round 0 included), with the calls the
+    // previous round dispatched, and `lastRound` set when this is the forced
+    // final round so a surface never says "still working" over an imminent
+    // answer. Observer-only.
+    if (hooks.progress) {
+      HeadProgress hp;
+      hp.round = round;
+      hp.elapsedMs = hooks.nowMs ? hooks.nowMs() - start : 0;
+      hp.lastRound = lastChance;
+      hp.tools = lastTools;
+      hooks.progress(hp);
+    }
 
     if (hooks.log) {
       std::string m = "headloop round=" + std::to_string(round) +
@@ -480,23 +624,29 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
         const std::string fix = cfg.validateFinal(sr.finalTurn);
         if (!fix.empty()) {
           out.corrections++;
-          HeadToolCall call;
-          call.id = kFinalCheckCallId;
-          call.name = "orch_turn";
-          call.argsJson = sr.finalTurn.empty() ? "{}" : sr.finalTurn;
-          HeadToolResult res;
-          res.id = kFinalCheckCallId;
-          res.name = "orch_turn";
-          res.output = fix;
-          res.isError = true;
-          prior.clear();
-          if (hooks.transcript) {
-            hooks.transcript->addToolCall(call, round, "");
-            hooks.transcript->addToolResult(res, round);
-            if (!sr.meta.empty()) hooks.transcript->attachMeta(round, sr.meta);
-          }
-          prior.push_back(std::move(res));
-          if (hooks.log) hooks.log("headloop: final answer sent back for one correction - " + fix.substr(0, 120));
+          sendFinalBack(sr, fix, round, hooks, prior);
+          continue;
+        }
+      }
+      // Lane POL2: a prose final is not an orch_turn, but it is the owner-facing
+      // reply: its own check gets the same ONE correction round, and the rejected
+      // prose returns wrapped as JSON orch_turn arguments so replay stays well-formed.
+      if (sr.prose && cfg.validateProseFinal && !lastChance && out.corrections == 0 &&
+          sr.cut.empty()) {
+        const std::string fix = cfg.validateProseFinal(sr.finalTurn);
+        if (!fix.empty()) {
+          out.corrections++;
+          sendProseBack(sr, fix, round, hooks, prior);
+          continue;
+        }
+      }
+      // The forced round has no correction budget above; an answer that is not one
+      // gets one more tool-less round all the same (at most once per turn).
+      if (cfg.forcedFinalCheck && lastChance && !forcedCheckUsed && sr.cut.empty() && !sr.prose) {
+        const std::string fix = cfg.forcedFinalCheck(sr.finalTurn);
+        if (!fix.empty()) {
+          forcedCheckUsed = true;
+          sendFinalBack(sr, fix, round, hooks, prior);
           continue;
         }
       }

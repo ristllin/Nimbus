@@ -140,7 +140,11 @@ static void test_every_speaker_open_is_checked_and_reported() {
 
 static void test_a_clip_is_used_only_when_whole() {
   const std::string tts = code("src/agent/adapters/audio_tts.cpp");
-  TEST_ASSERT_TRUE(tts.find("&clean)") != std::string::npos);   // b64decodeToFile's clean flag
+  TEST_ASSERT_TRUE(tts.find("&clean, &wroteAll)") != std::string::npos);   // b64decodeToFile's two facts
+  // A cut stream is not a failed write: the flash fact comes from the writes alone, never from "clean".
+  TEST_ASSERT_EQUAL_size_t(1, count(tts, "nimbus::orch::noteMistralValue(rd, "));
+  TEST_ASSERT_EQUAL_size_t(0, count(tts, "rd.writesOk = clean"));
+  TEST_ASSERT_TRUE(code("src/agent/adapters/b64_stream.h").find("*wroteAll = wok;") != std::string::npos);
   const std::string stream = bodyOf(tts, "TtsResult requestAndStream(");
   TEST_ASSERT_TRUE(before(stream, "if (!nimbus::orch::clipWhole(rd)) {", "wrote %u bytes"));
   const std::string cut = between(stream, "if (!nimbus::orch::clipWhole(rd)) {", "return res;");

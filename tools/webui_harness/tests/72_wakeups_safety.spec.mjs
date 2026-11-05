@@ -92,3 +92,66 @@ test('safety subtab shows the real controls (downloads + guest moderation), no d
   await page.locator('#modSave').click();
   await expect.poll(() => posts.some((p) => p.get('modInbound') === '1')).toBe(true);
 });
+
+// GATE2 fix pass (review finding over F6): the API answers 200 {"ok":false}
+// when the id no longer exists - the wake-up fired and was auto-removed
+// between the page's GET and the owner's click (the stale-row case). The card
+// used to render "Approved."/"Denied." in the green ok state for that no-op.
+// Both verbs must surface the no-op instead; the class, not one button.
+test('a stale approval (ok:false) is surfaced, never "Approved." or "Denied."', async ({ page }) => {
+  await seedToken(page);
+  const posts = [];
+  await page.route('**/api/wakeups', (route) => {
+    const req = route.request();
+    if (req.method() === 'POST') { posts.push(new URLSearchParams(req.postData() || '')); return route.fulfill({ status: 200, body: '{"ok":false}' }); }
+    return route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify(wk({ approvalMode: 'ask', wakeups: [
+        { id: 'lp0042', name: 'Follow up on the build', note: 'Check whether CI passed.', createdBy: 'agent', enabled: true, approved: false, pending: true, nextRun: 1, inSec: 600, lastResult: 'none' },
+      ] })) });
+  });
+  await openSub(page, 'routines');
+  const card = page.locator('#wkPending');
+  await expect(card).toBeVisible();
+  const msg = page.locator('#wkPendMsg');
+  await card.getByRole('button', { name: 'Approve' }).click();
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0].get('action')).toBe('approve');
+  expect(posts[0].get('id')).toBe('lp0042');
+  await expect(msg).toContainText('no longer pending');
+  await expect(msg).not.toContainText('Approved.');
+  await expect(msg).not.toHaveAttribute('data-fb', 'ok');
+  // The deny verb lies the same way: the whole card, not one button.
+  await card.getByRole('button', { name: 'Deny' }).click();
+  await expect.poll(() => posts.length).toBe(2);
+  expect(posts[1].get('action')).toBe('cancel');
+  expect(posts[1].get('id')).toBe('lp0042');
+  await expect(msg).toContainText('no longer pending');
+  await expect(msg).not.toContainText('Denied.');
+  await expect(msg).not.toHaveAttribute('data-fb', 'ok');
+});
+
+// GATE2 fix pass (self-review finding): the same honest {"ok":false} answer
+// lands on /api/loops row actions (nimbusd, a stale row: pause/resume/delete/
+// approve of an id that no longer exists), and the row buttons used to swallow
+// it entirely - no ok check, no catch, just a silent reload. A no-op (or a
+// failed request) must say so next to the list it reloaded.
+test('a stale routine row action (ok:false) is surfaced, not silent', async ({ page }) => {
+  await seedToken(page);
+  const posts = [];
+  await page.route('**/api/loops', (route) => {
+    const req = route.request();
+    if (req.method() === 'POST') { posts.push(req.postData() || ''); return route.fulfill({ status: 200, body: '{"ok":false}' }); }
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
+      { id: 'lp0007', name: 'Daily digest', prompt: 'Summarize the day', kind: 'interval', everySec: 86400, at: '', enabled: true, why: '', nextRun: 0, byAgent: false, approved: true, lastResult: 'ok', firesToday: 1, tokensToday: 120, reserved: false },
+    ]) });
+  });
+  await openSub(page, 'routines');
+  const pause = page.locator('#loopList button[data-act=pause]');
+  await expect(pause).toBeVisible();
+  await pause.click();
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]).toContain('pause');
+  expect(posts[0]).toContain('lp0007');
+  await expect(page.locator('#lpMsg')).toContainText('no longer available');
+  await expect(page.locator('#lpMsg')).not.toHaveAttribute('data-fb', 'ok');
+});

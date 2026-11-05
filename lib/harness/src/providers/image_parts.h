@@ -104,6 +104,10 @@ bool refusedImages(int httpStatus, const std::string& errText);
 // the rest of the turn ("" = every host) and logs it. Returns true when the caller
 // should re-send. Another host a failover reaches still gets the pixels.
 bool rejectAndRetry(nimbus::orch::TurnImages* imgs, const char* who, int httpStatus, const std::string& host = "");
+// A request that overflowed the provider's window: `host` reads the turn's photos as their
+// transcriptions from here on. Returns about what that frees (a rough figure per image,
+// since a window counts tokens and not bytes), 0 when no photo was being shown.
+size_t readAsText(nimbus::orch::TurnImages* imgs, const std::string& host);
 
 // The turn input for a request path that cannot show photos (a single-shot head):
 // the photos of the turn in flight read as their machine transcriptions.

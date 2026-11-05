@@ -11,6 +11,7 @@
 #include "nimbus/harness/websearch.h"
 #include "scenarios_turn_record.h"
 #include "scenarios_albums.h"
+#include "scenarios_ovf.h"
 #include "scenarios_photos.h"
 #include "scenarios_g0.h"   // the turn-structured history legs (histV2)
 #include "scenarios_c2.h"   // lane C2: finished jobs after a restart (L19-35)
@@ -18,6 +19,10 @@
 #include "scenarios_skills.h"   // lane I: skills used and editable (live legs)
 #include "scenarios_prefs.h"   // lane J: standing owner preferences (live legs)
 #include "scenarios_g1.h"   // message-level caching legs (cost per turn by gap)
+#include "scenarios_monly.h"   // lane MONLY: the Mistral-only client's live legs
+#include "scenarios_dispo.h"    // lane DISPO: model-choice rate legs (F03/H09/H20)
+#include "scenarios_conn.h"    // lane CONN: connector honesty legs (live + scripted)
+#include "scenarios_prog.h"    // lane PROG: the long-turn progress replay
 
 namespace lab {
 namespace {
@@ -299,6 +304,13 @@ skillslegs::Report skillslegsReport(Ctx& c) {
 }
 void scSkillsE2E(LabRig& rig, Ctx& c) { skillslegs::e2e(rig, skillslegsReport(c)); }
 void scMealEval(LabRig& rig, Ctx& c) { skillslegs::mealEval(rig, skillslegsReport(c)); }
+dispolegs::Report dispoReport(Ctx& c) {
+  return {[&c](bool ok, const std::string& what) { c.check(ok, what); },
+          [&c](const std::string& what) { c.note(what); }};
+}
+void scDispoF03(LabRig& rig, Ctx& c) { dispolegs::f03Targets(rig, dispoReport(c)); }
+void scDispoH09(LabRig& rig, Ctx& c) { dispolegs::h09Dinner(rig, dispoReport(c)); }
+void scDispoH20(LabRig& rig, Ctx& c) { dispolegs::h20Search(rig, dispoReport(c)); }
 void scPrefsE2E(LabRig& rig, Ctx& c) {
   prefslegs::Report rep;
   rep.check = [&c](bool ok, const std::string& what) { c.check(ok, what); };
@@ -399,6 +411,25 @@ void scStoreFullPhotos(LabRig& rig, Ctx& c) { storefull::storeFullPhotos(rig, st
 void scCacheGaps(LabRig& rig, Ctx& c) { caching::cacheGaps(rig, histReport(c)); }
 void scFoldBudget(LabRig& rig, Ctx& c) { caching::foldBudget(rig, histReport(c)); }
 
+// Lane OVF: a turn never dies of its size or ends in silence (scenarios_ovf.cpp).
+ovf::Report ovfReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
+void scOvfOverflow(LabRig& rig, Ctx& c) { ovf::overflowRefusal(rig, ovfReport(c)); }
+void scOvfRefit(LabRig& rig, Ctx& c) { ovf::refitAfterATool(rig, ovfReport(c)); }
+void scOvfRound0(LabRig& rig, Ctx& c) { ovf::synthesisOverBudget(rig, ovfReport(c)); }
+void scOvfCut(LabRig& rig, Ctx& c) { ovf::cutContinues(rig, ovfReport(c)); }
+void scOvfCutNatural(LabRig& rig, Ctx& c) { ovf::cutNatural(rig, ovfReport(c)); }
+void scOvfPlaceholder(LabRig& rig, Ctx& c) { ovf::forcedPlaceholder(rig, ovfReport(c)); }
+void scOvfPromise(LabRig& rig, Ctx& c) { ovf::promiseCorrected(rig, ovfReport(c)); }
+void scOvfAlbum(LabRig& rig, Ctx& c) { ovf::albumOfSix(rig, ovfReport(c)); }
+
+// Lane MONLY: a client with only a Mistral key (scenarios_monly.cpp).
+monly::Report monlyReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
+void scMonlyStepdown(LabRig& rig, Ctx& c) { monly::cutStepsDownSameHost(rig, monlyReport(c)); }
+
+// Lane PROG: a long turn never looks frozen (scenarios_prog.cpp).
+prog::Report progReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
+void scProgLongTurn(LabRig& rig, Ctx& c) { prog::longTurnReplay(rig, progReport(c)); }
+
 struct Scenario {
   const char* name;
   const char* what;
@@ -409,6 +440,10 @@ struct Scenario {
   // ORCH_TURN_HARD_FLOOR and only crosses the loop floor part-way through.
   bool degradeHeap = false;
 };
+
+// The conn-* legs run through their own driver (scenarios_conn.cpp), which owns
+// per-leg rig options; the table entry only lists them.
+void scConnNoop(LabRig&, Ctx&) {}
 
 const Scenario kScenarios[] = {
     {"smoke",         "a plain reply and one tool round trip (the live-leg wiring check)", scSmoke, false},
@@ -436,6 +471,15 @@ const Scenario kScenarios[] = {
     {"albums-one-turn", "an album and its follow-up are one turn whose reply covers every photo", scAlbumsOneTurn, false},
     {"history-cache",  "facts, a photo and a routine ride the history once; a replay storm is one row", scHistoryCache, false},
     {"episodic-dates", "memory_episodic rows carry their dates: today's unread photo reads as today's", scEpisodicDates, false},
+    {"ovf-overflow",    "a provider's real overflow refusal: trim, retry once, answer", scOvfOverflow, false},
+    {"ovf-refit",       "a provider's real refusal at round 1, after a tool ran: the refitted replay is accepted", scOvfRefit, false},
+    {"ovf-round0",      "a synthesis over the wire budget at round 0 still answers", scOvfRound0, false},
+    {"ovf-cut",         "a round really cut twice runs on with the note (or on the next host)", scOvfCut, false},
+    {"ovf-cut-natural", "an answer too long for the real output caps still ends with an answer", scOvfCutNatural, false},
+    {"ovf-placeholder", "a filler answer on the forced round goes back once, the wire takes it", scOvfPlaceholder, false},
+    {"ovf-promise",     "a next-turn promise goes back once, the wire takes it", scOvfPromise, false},
+    {"ovf-album",       "six real photos in one turn end with an answer (NIMBUS_LAB_PHOTOS)", scOvfAlbum, false},
+    {"monly-stepdown",  "a cut round on the Mistral-only head steps down same-host, no owner notice", scMonlyStepdown, false},
     {"photos-native",  "three label photos go to the head as images; the reply reads their values", scPhotosNative, false},
     {"photo-label-honesty", "a photo unread for billing: the head names the cause, no resend, no blame", scPhotoLabelHonesty, false},
     {"caption-scoring", "the fallback caption step per keyed provider: fields exact, no empty caption", scCaptionScoring, false},
@@ -447,6 +491,13 @@ const Scenario kScenarios[] = {
     {"prefs-nextday",  "a standing default stated on day N is applied on day N+1 without a reminder", scPrefsNextDay, false},
     {"cache-gaps",      "cost per turn at a fixed gap over a long history (NIMBUS_G1_GAP_S, _TURNS)", scCacheGaps, false},
     {"fold-budget",     "one fold over a recorded long history: inside the budget, sections 2/4/5 kept", scFoldBudget, false},
+    {"dispo-f03",      "the F03 shape x N: which food targets land, and the (Correction: rate", scDispoF03, false},
+    {"dispo-h09",      "the H09 dinner shape x N: the named file vs the one food log", scDispoH09, false},
+    {"dispo-h20",      "the H20 question x N: does the head run web.search", scDispoH20, false},
+    {"conn-gmail-none", "Gmail with nothing configured: the honest not-set-up answer", scConnNoop, false},
+    {"conn-gmail-unauth", "a Mistral connector the provider refuses for real: the owner hears it", scConnNoop, false},
+    {"conn-notion-success", "Notion via Mistral: the refusal is paid once, the run lands on the tools model", scConnNoop, false},
+    {"prog-long-turn", "the real Waitrose case: boundaries signal all turn, one line, one-cycle folds", scProgLongTurn, false},
 };
 
 }  // namespace
@@ -559,20 +610,42 @@ static int runParity(const Env& env, const LabRig::Options& opt) {
   return failures;
 }
 
+// The parity and conn legs run through their own drivers (each builds per-leg
+// rigs); true when the entry is handled and the counts were added.
+struct DriverCounts {
+  int failed = 0;
+  int ran = 0;
+  bool connRan = false;
+};
+bool runOwnDriver(const Scenario& s, const Env& env, const LabRig::Options& opt,
+                  const std::vector<std::string>& names, DriverCounts& n) {
+  if (std::strncmp(s.name, "conn-", 5) == 0) {
+    if (n.connRan) return true;   // one driver call for the whole conn-* family
+    n.connRan = true;
+    int legs = 0;
+    n.failed += conn::run(env, opt, names, legs);
+    n.ran += legs;
+    return true;
+  }
+  if (std::strcmp(s.name, "parity") == 0) {
+    if (names.empty() || std::find(names.begin(), names.end(), "parity") != names.end())
+      n.failed += runParity(env, opt);
+    return true;
+  }
+  return false;
+}
+
 int runScenarios(const Env& env, const LabRig::Options& opt,
                  const std::vector<std::string>& names) {
   const bool haveSearch = !env.get("TAVILY_API_KEY").empty();
   int failed = 0, ran = 0, skipped = 0;
   uint32_t tokIn = 0, tokOut = 0;
+  DriverCounts drivers;
 
   for (const auto& s : kScenarios) {
     if (!names.empty() &&
         std::find(names.begin(), names.end(), s.name) == names.end()) continue;
-    if (std::strcmp(s.name, "parity") == 0) {
-      if (names.empty() || std::find(names.begin(), names.end(), "parity") != names.end())
-        failed += runParity(env, opt);
-      continue;
-    }
+    if (runOwnDriver(s, env, opt, names, drivers)) continue;
     if (s.needsSearch && !haveSearch) {
       // Skip LOUDLY: a silently-skipped scenario reads as a pass, which is how
       // a broken capability stays broken.
@@ -598,6 +671,8 @@ int runScenarios(const Env& env, const LabRig::Options& opt,
     }
   }
 
+  failed += drivers.failed;
+  ran += drivers.ran;
   std::printf("\n---------------------------------------------\n");
   std::printf("%d scenario(s) run, %d failed, %d skipped\n", ran, failed, skipped);
   std::printf("tokens: %u in / %u out\n", tokIn, tokOut);

@@ -48,8 +48,10 @@ bool onJobState(uint32_t key, uint8_t status);
 // Direct play by slug (console `SFX <slug>` / web test button): bypasses the
 // level + rate gates but still respects the speaker fault + voice mute.
 // Returns false for an unknown slug (a failed/missing file is still "true" -
-// resolution is fall-through by design).
-bool play(const char* slug);
+// resolution is fall-through by design). A refusal on the sfx task (too little memory, a
+// track on the speaker) leaves a log line. A caller that can answer the owner passes
+// `lowMemory`: too little free now sets it to the reason and queues nothing.
+bool play(const char* slug, String* lowMemory = nullptr);
 
 // Queue a freshly-synthesized spoken reply for playback on the sfx task. `mp3`
 // selects the format: true plays /reply.mp3 through the vendored minimp3 decoder

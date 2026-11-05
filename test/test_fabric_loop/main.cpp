@@ -123,6 +123,42 @@ static void test_midturn_failover_carries_results_no_redispatch() {
 // caller at all). The brief must carry the user seed, the call WITH its args,
 // and the result - and must arrive even when the turn FAILED, since a failed
 // turn's middle is exactly what needs debugging.
+// The VN reality check's class: Z.ai is a fabric host like the others. A round that dies
+// on Mistral re-runs on Z.ai against the shared transcript, with nothing dispatched twice,
+// and a surface with no Z.ai step (no zaiHead) fails the switch honestly.
+static void test_zai_is_a_fabric_host() {
+  TEST_ASSERT_TRUE(providers::fabricSupports("zai"));
+  TEST_ASSERT_FALSE(providers::fabricSupports("custom"));
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200,
+                           "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"content\":\"\",\"tool_calls\":["
+                           "{\"id\":\"abc123def\",\"function\":{\"name\":\"memory_search\",\"arguments\":\"{}\"}}]}}]}"});
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 0, ""});   // round 1 dies
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 0, ""});   // same-host retry dies
+  d.http.script.push_back({"api.z.ai", "/api/paas/v4/chat/completions", 200,
+                           "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"content\":\"\",\"tool_calls\":["
+                           "{\"id\":\"call_-1\",\"function\":{\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"ok\\\"}\"}}]}}]}"});
+  auto pd = d.contract();
+  pd.zaiHead = [](providers::ProviderDeps& z) {
+    z.customBase = [] { return std::string("https://api.z.ai"); };
+    z.customPathPrefix = [] { return std::string("/api/paas/v4"); };
+    z.customKey = [] { return std::string("tok"); };
+    z.customConv = [] { return std::string("openai"); };
+    z.customModel = [] { return std::string("glm-5.3"); };
+    providers::applyZaiHeadPolicy(z);
+  };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string out, err;
+  orch::TurnSpend sp;
+  const bool ok = providers::runFabricLoop(pd, {"mistral", "zai"}, "SYS", "USER", out, err, rig.ht, &sp, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(1, (int)rig.dispatched.size());
+  TEST_ASSERT_TRUE(out.find("ok") != std::string::npos);
+  TEST_ASSERT_TRUE(bodyHas(d, 3, "\"tool_call_id\""));
+  TEST_ASSERT_TRUE(bodyHas(d, 3, "tool-ok"));
+}
+
 static void test_brief_reaches_onbrief_with_calls_and_results() {
   FakeProviderDeps d;
   // One host, two rounds: a tool call, then the terminal orch_turn.
@@ -509,10 +545,10 @@ static void test_cum477_fabric_allocates_nothing_per_listed_host() {
 }
 
 
-// CUM-621: a round still cut after its in-step retry hands back the cut orch_turn
-// it carried, so the engine salvages the finished part with its honest marker
-// instead of sending the bare cut line (the other hosts are not asked: Cut switches,
-// but a single-host list has nowhere to go).
+// CUM-621: a round still cut after its recovery hands back the cut orch_turn it
+// carried, so the engine salvages the finished part with its honest marker instead of
+// sending the bare cut line. Lane OVF: a single-host list has nowhere to go, so the round
+// runs once more with the note first (two more requests, cut again here).
 static void test_cum621_a_cut_hands_back_its_partial_turn() {
   FakeProviderDeps d;
   const std::string cut =
@@ -520,6 +556,8 @@ static void test_cum621_a_cut_hands_back_its_partial_turn() {
       "\"input\":{\"reply\":\"Here is the first half of the plan\"}}],\"stop_reason\":\"max_tokens\"}";
   d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, cut});
   d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, cut});   // the retry with more room
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, cut});   // the round once more, with the note
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, cut});   // its retry with more room
   auto pd = d.contract();
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
@@ -528,6 +566,26 @@ static void test_cum621_a_cut_hands_back_its_partial_turn() {
   TEST_ASSERT_EQUAL((int)nimbus::orch::StepErr::Cut, (int)nimbus::orch::classifyStepError(err));
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"Here is the first half of the plan\"}", out.c_str());
   TEST_ASSERT_EQUAL(0, (int)rig.dispatched.size());   // nothing from a cut response runs
+  TEST_ASSERT_EQUAL(4, (int)d.http.seen.size());
+}
+
+// The rerun fails another way: what the cut round wrote is still what comes back.
+static void test_a_cut_outlives_a_later_failure() {
+  FakeProviderDeps d;
+  const std::string cut =
+      "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_fin\",\"name\":\"orch_turn\","
+      "\"input\":{\"reply\":\"Here is the first half\"}}],\"stop_reason\":\"max_tokens\"}";
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, cut});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, cut});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 400, "{\"error\":{\"message\":\"refused\"}}"});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string out, err;
+  TEST_ASSERT_FALSE(providers::runFabricLoop(pd, {"anthropic"}, "SYS", "USER", out, err, rig.ht, nullptr, nullptr));
+  TEST_ASSERT_EQUAL((int)nimbus::orch::StepErr::Cut, (int)nimbus::orch::classifyStepError(err));
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"Here is the first half\"}", out.c_str());
+  TEST_ASSERT_EQUAL(3, (int)d.http.seen.size());
 }
 
 // ---- lane DEF: the monthly spend ceiling mid-turn ---------------------------------
@@ -711,6 +769,88 @@ static void test_hfm_no_input_lead_keeps_the_input() {
   TEST_ASSERT_TRUE(bodyHas(d, 0, "\"text\":\"USER\""));
 }
 
+// ---- ruling 3 Nov 09:15Z: the same-host non-reasoning step after a cut -----------
+// A reasoning head that out-grew its round (Lumi: Large 4 cut at 4,125 then 5,500
+// tokens for a 135-byte reply) gets ONE round on a same-provider non-reasoning
+// model before a different provider is asked: same provider, so no owner notice.
+
+static std::string misCutBody() {
+  return "{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"thinking\"}}],"
+         "\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":4125}}";
+}
+
+static void test_a_cut_large4_steps_down_same_host_before_another_provider() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, misCutBody()});
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, misCutBody()});
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, misFinalBody()});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  int notifies = 0;
+  std::string out, err;
+  orch::TurnSpend sp;
+  bool ok = providers::runFabricLoop(
+      pd, {"mistral", "openai"}, "SYS", "USER", out, err, rig.ht, &sp,
+      [&](const std::string&, const std::string&) { notifies++; });
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  // The cut round (2 attempts) then the stepped-down round: all on mistral.
+  TEST_ASSERT_EQUAL(3, (int)d.http.seen.size());
+  for (const auto& r : d.http.seen) TEST_ASSERT_EQUAL_STRING("api.mistral.ai", r.host.c_str());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"model\":\"mistral-large-4-0\""));
+  // The re-run round asked for the non-reasoning model, not the configured head.
+  TEST_ASSERT_TRUE(bodyHas(d, 2, "\"model\":\"mistral-medium-latest\""));
+  TEST_ASSERT_FALSE(bodyHas(d, 2, "mistral-large-4-0"));
+  // Same provider: no switch, so no owner notice.
+  TEST_ASSERT_EQUAL(0, notifies);
+  TEST_ASSERT_TRUE(harness_test::LogCapture::contains("same-host step on mistral-medium-latest"));
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
+}
+
+static void test_a_second_cut_on_the_stepped_down_model_switches_providers() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, misCutBody()});
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, misCutBody()});
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, misCutBody()});
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, misCutBody()});
+  d.http.script.push_back({"api.openai.com", "/v1/responses", 200, oaiFinalBody()});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  int notifies = 0;
+  std::string out, err;
+  TEST_ASSERT_TRUE(providers::runFabricLoop(
+      pd, {"mistral", "openai"}, "SYS", "USER", out, err, rig.ht, nullptr,
+      [&](const std::string&, const std::string&) { notifies++; }));
+  // The step-down is ONE: its own cut goes to the next provider, with the notice.
+  TEST_ASSERT_EQUAL(5, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL_STRING("api.openai.com", d.http.seen[4].host.c_str());
+  TEST_ASSERT_EQUAL(1, notifies);
+}
+
+static void test_a_cut_on_a_head_that_already_runs_without_reasoning_switches_at_once() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, misCutBody()});
+  d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, misCutBody()});
+  d.http.script.push_back({"api.openai.com", "/v1/responses", 200, oaiFinalBody()});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("mistral-small-latest"); };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  int notifies = 0;
+  std::string out, err;
+  TEST_ASSERT_TRUE(providers::runFabricLoop(
+      pd, {"mistral", "openai"}, "SYS", "USER", out, err, rig.ht, nullptr,
+      [&](const std::string&, const std::string&) { notifies++; }));
+  // Small runs at effort "none": its cut is a long answer, not reasoning, so
+  // there is no same-host step - the next provider is asked straight away.
+  TEST_ASSERT_EQUAL(3, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL(1, notifies);
+  TEST_ASSERT_FALSE(harness_test::LogCapture::contains("same-host step"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_provider_limit_mid_turn_moves_the_round);
@@ -718,9 +858,11 @@ int main(int, char**) {
   RUN_TEST(test_hfm_input_lead_follows_a_mid_turn_move);
   RUN_TEST(test_hfm_no_input_lead_keeps_the_input);
   RUN_TEST(test_midturn_failover_carries_results_no_redispatch);
+  RUN_TEST(test_zai_is_a_fabric_host);
   RUN_TEST(test_brief_reaches_onbrief_with_calls_and_results);
   RUN_TEST(test_brief_delivered_even_when_the_turn_fails);
   RUN_TEST(test_cum621_a_cut_hands_back_its_partial_turn);
+  RUN_TEST(test_a_cut_outlives_a_later_failure);
   RUN_TEST(test_all_hosts_down_fails_soft_with_error);
   RUN_TEST(test_fabric_reports_every_failed_host_in_order);
   RUN_TEST(test_failure_after_billed_rounds_files_them);
@@ -734,5 +876,8 @@ int main(int, char**) {
   RUN_TEST(test_cum477_fabric_allocates_nothing_per_listed_host);
   RUN_TEST(test_spend_ceiling_refuses_the_next_round_before_any_request);
   RUN_TEST(test_spend_ceiling_with_room_lets_the_loop_run);
+  RUN_TEST(test_a_cut_large4_steps_down_same_host_before_another_provider);
+  RUN_TEST(test_a_second_cut_on_the_stepped_down_model_switches_providers);
+  RUN_TEST(test_a_cut_on_a_head_that_already_runs_without_reasoning_switches_at_once);
   return UNITY_END();
 }

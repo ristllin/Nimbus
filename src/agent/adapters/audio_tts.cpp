@@ -1,4 +1,5 @@
 #include "audio_tts.h"
+#include "nimbus/json_strict.h"
 
 #include <ArduinoJson.h>
 #include <LittleFS.h>
@@ -16,6 +17,7 @@
 #include "nimbus/orch/seam_meter.h"  // meterSpeech - its spend (lane DEF)
 #include "nimbus/audio_req.h"       // core::parseErrorCode (host-tested refusal parse)
 #include "nimbus/orch/provider_error.h"  // providerErrLine - the one error-line shape (CUM-620)
+#include "nimbus/orch/clip_probe.h"      // the raw body's own framing: a cut stream ends mid-frame
 #include "nimbus/orch/voice_notes.h"     // ttsDeadlineMs - the read window sized to the text
 
 #include <strings.h>                     // strncasecmp (Content-Length)
@@ -109,7 +111,7 @@ void setWhy(String* why, const String& s) {
 // Connect within the request's window: up to three attempts, 400 ms apart.
 bool connectTts(WiFiClientSecure& c, const String& host, uint32_t deadline) {
   for (int a = 0; a < 3 && (int32_t)(millis() - deadline) < 0; a++) {
-    if (c.connect(host.c_str(), 443)) return true;
+    if (connectHost(c, host.c_str(), 443)) return true;
     tlsClose(c);
     if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
   }
@@ -151,24 +153,22 @@ void noteRefusal(WiFiClientSecure& c, const TtsProvider& prov, int status, uint3
     if (c.available()) errb[n++] = c.read(); else vTaskDelay(1);
   }
   gate::noteAnswer(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key, status, errb);
-  // Log the refusal honestly (a router 4xx is {"error":<code>}); the spoken reply
-  // is supplementary, so the turn's TEXT reply still reaches the owner - no silence.
+  // Log the refusal honestly; the spoken reply is supplementary, so the turn's TEXT reply
+  // still reaches the owner - no silence. errb may hold only the start of a long refusal:
+  // the router names its reason first, and voiceRefusalWhy reads a cut body. A direct
+  // provider's code needs the whole JSON, so a cut one just goes unnamed.
   bool jok = false;
-  const std::string code = core::parseErrorCode(errb, &jok);
-  if (jok && !code.empty()) {
-    alogf("tts: %s HTTP %d refused (%s): %s", store::ttsProvider().c_str(), status,
-          code.c_str(), nimbus::orch::voiceRefusalStatus(code).c_str());
-    setWhy(why, String("the voice provider refused (HTTP ") + status + ", " + code.c_str() + ")");
-    return;
-  }
+  std::string code = core::parseErrorCode(errb, &jok);
+  if (!jok) code.clear();
   const std::string line = nimbus::orch::providerErrLine(prov.slug.c_str(), status,
                                                          nimbus::orch::providerErrorText(errb));
   alogf("tts: %s", line.c_str());
-  setWhy(why, String("the voice provider refused (HTTP ") + status + ")");
+  setWhy(why, nimbus::orch::voiceRefusalWhy(status, errb, code).c_str());
 }
 
 // Mistral: {"audio_data":"<base64 mp3>"} - skip to the value, stream-decode it.
-// b64decodeToFile's clean flag: the closing quote arrived AND every byte was written.
+// b64decodeToFile's clean flag: the closing quote arrived AND every byte was written. A cut
+// stream and a failed write are told apart (noteMistralValue), so each gets its own reason.
 void streamMistral(WiFiClientSecure& c, File& f, uint32_t deadline, nimbus::orch::ClipRead& rd) {
   String head;
   const char* MARK = "\"audio_data\":\"";
@@ -177,9 +177,9 @@ void streamMistral(WiFiClientSecure& c, File& f, uint32_t deadline, nimbus::orch
       head += (char)c.read();
       const int idx = head.indexOf(MARK);
       if (idx < 0) continue;
-      bool clean = false;
-      rd.bytes = b64decodeToFile(c, f, head.substring(idx + strlen(MARK)), deadline, &clean);
-      rd.endSeen = rd.writesOk = clean;
+      bool clean = false, wroteAll = false;
+      const size_t bytes = b64decodeToFile(c, f, head.substring(idx + strlen(MARK)), deadline, &clean, &wroteAll);
+      nimbus::orch::noteMistralValue(rd, bytes, clean, wroteAll);
       return;
     }
     if (!c.connected()) return;
@@ -188,14 +188,21 @@ void streamMistral(WiFiClientSecure& c, File& f, uint32_t deadline, nimbus::orch
 }
 
 // OpenAI and the router: the raw audio body, until the server closes or the stated
-// length arrives (the end), or the window passes or a write fails (cut).
-void streamRaw(WiFiClientSecure& c, File& f, uint32_t deadline, nimbus::orch::ClipRead& rd) {
+// length arrives (the end), or the window passes or a write fails (cut). The bytes also
+// walk through `probe`: with no stated length a reset or a proxy cut ends the stream just
+// like a clean close, and only the audio's own framing tells them apart (clipWhole).
+void streamRaw(WiFiClientSecure& c, File& f, uint32_t deadline, nimbus::orch::ClipRead& rd,
+               nimbus::orch::ClipProbe& probe) {
   uint8_t buf[512];
   rd.writesOk = true;
   while (rd.writesOk && (int32_t)(millis() - deadline) < 0) {
     if (c.available()) {
       const int r = c.read(buf, sizeof(buf));
-      if (r > 0) { rd.writesOk = (size_t)f.write(buf, r) == (size_t)r; rd.bytes += r; }
+      if (r > 0) {
+        rd.writesOk = (size_t)f.write(buf, r) == (size_t)r;
+        rd.bytes += r;
+        probe.feed(buf, (size_t)r);
+      }
     } else if (!c.connected()) {
       rd.endSeen = true;
       return;
@@ -212,6 +219,8 @@ struct TtsRequest {
   const String& body;
   const char*   outPath;
   uint32_t      deadline;
+  bool          wav;         // the raw body is a WAV (else an MP3): which framing the probe reads
+  size_t        textChars;   // spoken characters (speechChars): the least audio a clip can hold
 };
 
 // What one request produced: the bytes of a whole clip (0 = none), and whether the
@@ -255,16 +264,25 @@ TtsResult requestAndStream(WiFiClientSecure& c, const TtsProvider& prov, const T
   nimbus::orch::ClipRead rd;
   rd.mistral = prov.mistral;
   rd.contentLength = contentLength;
-  if (prov.mistral) streamMistral(c, f, deadline, rd);
-  else streamRaw(c, f, deadline, rd);
+  rd.textChars = rq.textChars;
+  if (prov.mistral) {
+    streamMistral(c, f, deadline, rd);
+  } else {
+    nimbus::orch::ClipProbe probe(rq.wav ? nimbus::orch::ClipFormat::Wav : nimbus::orch::ClipFormat::Mp3);
+    streamRaw(c, f, deadline, rd, probe);
+    rd.shapeReadable = probe.readable();
+    rd.shapeEnds = probe.endsOnBoundary();
+    rd.clipMs = probe.durationMs();
+  }
   f.close();
   const char* name = prov.mistral ? "mistral" : "openai";
   if (!nimbus::orch::clipWhole(rd)) {
     // A cut clip is never used (22 Oct: a clip cut at the 25 s window was logged as
     // written and queued as whole). Remove it so nothing can pick it up.
     LittleFS.remove(outPath);
-    alogf("tts: %s %s -> %s, removed", name, nimbus::orch::clipTruncatedText(rd.bytes).c_str(), outPath);
-    setWhy(why, nimbus::orch::clipTruncatedText(rd.bytes).c_str());
+    const std::string cut = nimbus::orch::clipCutText(rd);
+    alogf("tts: %s %s -> %s, removed", name, cut.c_str(), outPath);
+    setWhy(why, cut.c_str());
     return res;
   }
   alogf("tts: %s wrote %u bytes -> %s", name, (unsigned)rd.bytes, outPath);
@@ -297,8 +315,9 @@ size_t synthesizeToFile(const String& text, const char* outPath,
   }
   // L19-8: a provider the one park closed (out of credit or a refused key learned on
   // any seam, or paused) gets no request; the turn's text reply still reaches the owner.
-  if (!gate::check(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key).open) {
-    setWhy(why, "the voice provider is paused");
+  const nimbus::orch::ParkVerdict gv = gate::check(prov.slug.c_str(), nimbus::orch::PaidSeam::Tts, prov.key);
+  if (!gv.open) {
+    setWhy(why, gate::words(prov.slug.c_str(), gv));
     return 0;
   }
 
@@ -309,11 +328,13 @@ size_t synthesizeToFile(const String& text, const char* outPath,
   // OpenAI honors response_format (wav for the speaker, mp3 for Telegram). Mistral
   // ignores it and always returns MP3 (base64 in JSON), so don't send the field.
   if (!prov.mistral) doc["response_format"] = (format && format[0]) ? format : "mp3";
-  String body;
-  serializeJson(doc, body);
+  std::string strict;
+  nimbus::serializeStrictJson(doc, strict);
+  String body(strict.c_str());
 
   arbiter::WorkSlot slot(10000);
   if (!slot) {
+    gate::handBack(prov.slug.c_str());
     alog("tts: arbiter busy");
     setWhy(why, "the network was busy");
     return 0;
@@ -334,7 +355,8 @@ size_t synthesizeToFile(const String& text, const char* outPath,
     alogf("tts: connect %s failed heap=%u", prov.host.c_str(), ESP.getFreeHeap());
     setWhy(why, String("could not reach ") + prov.host);
   } else {
-    res = requestAndStream(c, prov, TtsRequest{body, outPath, deadline}, why);
+    res = requestAndStream(c, prov,
+                           TtsRequest{body, outPath, deadline, needWav, nimbus::orch::speechChars(text.c_str())}, why);
   }
   tlsClose(c);
   slot.release();

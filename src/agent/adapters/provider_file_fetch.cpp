@@ -120,7 +120,7 @@ int httpsGetToSink(const char* host, const std::string& path, const std::string&
   client.setConnectionTimeout(15000);
   bool connected = false;
   for (int a = 0; a < 2 && !connected && before(deadline); a++) {
-    if (client.connect(host, kTlsPort)) { connected = true; break; }
+    if (connectHost(client, host, kTlsPort)) { connected = true; break; }
     tlsClose(client);
     if (a < 1) vTaskDelay(pdMS_TO_TICKS(400));
   }

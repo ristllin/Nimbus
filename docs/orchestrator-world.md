@@ -75,7 +75,28 @@ already in memory and lists them once. A rule that forbids em dashes also
 switches on a device-enforced filter that removes them from every delivered
 reply, so the guarantee holds even when the model slips.
 
-### 1.1c Today's food ledger
+A full list makes room instead of refusing: a seeded rule retires first (the
+owner never typed it), then the oldest typed rule, to a side state (the owner is
+told which one, and `/prefs restore <id>` brings it back), so a new always/never
+rule always lands and never falls silently into vector memory. The owner's stop
+rules also bind their own routines: a due routine whose topic a "never ask about
+X" rule stops is deferred, not fired.
+
+### 1.1c The owner's open questions
+
+Follow-ups the owner leaves open in conversation ("photograph the skyr pot
+label next time") live in one small bounded list on the device
+(`/data/openq.txt`, at most 5 items, 160 B each, zero NVS keys),
+rendered into the never-dropped part of every owner-facing prompt as
+`[OPEN QUESTIONS]`, right under the standing rules. The device itself watches
+each completed turn in the owner's chat: an item is marked raised once a reply
+mentions its subject (the prompt then says not to raise it again unless the
+owner returns to it), re-opened when the owner's own message mentions it, and
+removed when the owner pairs a drop cue with it ("forget the skyr label"). The
+model adds one with `openq.edit` when the owner leaves something open, and
+never from an unattended turn or a turn that read outside content.
+
+### 1.1d Today's food ledger
 
 Meals live in one ledger file per person, never in memory: `food/food-log.csv`
 for the owner (`food/food-log-<chat id>.csv` for a member, who cannot write the
@@ -88,6 +109,57 @@ an estimate, totals read from the ledger) or, when the owner asks for an amount
 or a plan, `food-coach` (answer first, only the foods the owner has, amounts from
 the `food.portions` calculator). The model never rebuilds a day's total from
 memory or the conversation; the fold summary copies the ledger's dated totals.
+
+The food log is one file: a write to another CSV whose name says both food and log
+(or only "log" in a food project) is refused with the call to use instead; a weight
+log or a list of meal ideas is not one, and a log left at `nutrition/meal_log.csv`
+folds into the ledger at the next start. It goes once all its figures are in the
+ledger; if a row cannot be read it stays, marked as folded, and does not fold again.
+The day's sum counts meal rows and nothing
+else: a bare comma in a row's items is read back into the items, a row that states
+a total is never summed, a pasted header is no row, and a meal logged twice counts
+once with its last figures. A row the device cannot read for certain leaves the
+day's total "not known" until it is fixed. A meal with no protein figure stays
+unknown, so the day shows protein known and unknown apart.
+
+A labelled row is checked before it lands. A write to the ledger whose row carries
+label figures is checked against the label's own arithmetic - energy against
+4P + 4C + 9F, and per-100 g times net weight against per-serving - and against the
+turn's real inputs: the input block plus the head's own `image.note`/`image.look`
+reads of the turn's photos (a photo the head sees itself rides the message only as
+`[image k/N ref=...] (attached)`, so its read is taken from the head's note). A row
+whose figures fail the check is refused and names the figure in doubt (re-read the
+label once; if it still disagrees, the row may land marked `[unverified: <figure>]`),
+and a brand or detail no owner message, label read or tool result this turn holds is
+refused unless the row is marked `[assumed: ...]`.
+A food or pack photo sent with no question means eaten whole: the per-serving
+(whole pack) figures are logged, said in one line with the undo (re-send the row
+with 0 kcal), and the device never asks whether the whole pack was eaten. When a
+second vision provider read the same label (the photo's stored record,
+`(transcribed by X) ...`), the device compares the reply's read with that record and
+each disagreement is surfaced with both values, never averaged. And the owner's
+word beats the log: a stored row is not evidence against the owner - when they
+dispute something, the reply shows the row's source and corrects it, and a claim
+that the owner said, confirmed or photographed something needs a real message of
+theirs behind it (the claim check refuses an unbacked one before delivery; a photo,
+file or voice note the owner sent this turn backs "you sent/photographed/showed" by
+itself).
+
+Daily targets live in `food/food-targets.csv` (`date,metric,target,source`), a row
+per metric with where it came from. With targets stored the block shows what is left,
+worked out by the device; with none, a food turn is told to read them first and which
+plan files it could read. A write to the targets file with a figure nothing this turn
+holds is refused, by any tool that can write it. The reply is then checked before
+delivery (`food_figures.h`): a stated target, or a "left" figure that implies one, needs
+its number in something the turn read or the owner said (the assistant's earlier replies
+and the fold summary are not sources); a stated day total, the figure its words bind to,
+must be the ledger's; "you need X g" over a row of unknown protein is not a figure. A
+figure for one meal, a comparison, a total or a "left" over a meal the reply only
+proposes are none of these, and a line on the reply names only what the reply said. One
+correction round, then a calm line on the reply. On a food turn the earlier rows of the foods the message names
+ride along, and a keyed write says when an earlier day's row of the same food holds a
+figure off by more than a quarter, so the same food keeps the same estimate. An
+approved stored skill about food rides a logged meal.
 
 ### 1.2 Scratchpad - model-owned working goals
 A set of goal tiers (short-term / mid-term / long-term goals plus an
@@ -260,14 +332,19 @@ added once for both.
 hosted Virtual Nimbus) a `memory.write` (or `memory.update`) the embedder cannot serve is kept as text in
 a small pending queue and stored automatically once embeddings work again, with
 the same rules as a direct write (namespace, memory limit, time to live, pins),
-under the writer's role at that time. Every write ends in exactly one outcome,
+under the writer's role at that time. With no key at all that can embed (only
+Anthropic or Z.ai keys), or with one that cannot reach the memories already stored
+(they keep the provider they were made with), the same queue is how memory works until
+that is fixed: the fact is kept as text and found by keyword, the tool result says which
+case it is and what fixes it, and no later confirmation is sent. When the queue is full
+the refusal gives the same answer. Every write ends in exactly one outcome,
 and the tool result says which:
 
 | Outcome | Meaning |
 |---|---|
 | `stored` | Embedded and in long-term memory. |
 | `duplicate` | The same fact is already stored. |
-| `queued` | Kept on the device, not stored yet; stored automatically when embeddings work again. Keyword search already finds it (marked `pending, not stored yet`). |
+| `queued` | Kept on the device, not stored yet; stored automatically when embeddings work again. `memory.search` already finds it by its words, whether or not embeddings are back (marked `pending, not stored yet`). |
 | `refused` | Not stored, with the reason: nothing to embed, the conversation's memory limit, the queue is full, or the device could not write the queue to storage. |
 
 The queue holds at most 64 facts or 48 KB, and 16 per member conversation; when

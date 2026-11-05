@@ -1,0 +1,17 @@
+{
+  "id": "lc-restaurant-lookup",
+  "title": "A restaurant meal is checked against the published nutrition before estimating",
+  "rows": ["OIR-29"],
+  "replays": "The 1 Nov class: a Flat Iron dinner was estimated at about 1,200 kcal while the restaurant publishes 923, and no lookup was done first.",
+  "clock": "{{TODAY}} {{DOW}} 15:07 GMT",
+  "devName": "Nimbus",
+  "webSearch": true,
+  "steps": [
+    {"do": "say", "text": "Here is a photo of my dinner at Flat Iron: their standard flank steak plate with a side salad. Log it."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "tool_called", "params": {"name": "web"}},
+    {"id": "ledger_contains_any", "params": {"any": ["steak"]}}
+  ]
+}

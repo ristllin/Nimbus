@@ -444,6 +444,35 @@ static void test_mem_write_parsed_and_clamped() {
   TEST_ASSERT_FALSE(t.mem_write[1].permanent);               // default
 }
 
+// The VNC gap pass: GLM's mem_write items carried `fact` or `text`, and 11 of 12 vanished with
+// no trace. The class: every name a model reaches for is read and noted; an item with no text
+// is reported in words the final-answer check sends back; `content` alone stays silent.
+static void test_mem_write_reads_the_common_names_and_reports_the_rest() {
+  for (const char* name : {"fact", "text", "memory", "note", "value"}) {
+    const std::string j = std::string(R"({"reply":"ok","mem_write":[{")") + name + R"(":"the cat is Pixel"}]})";
+    Turn t; ParseError e;
+    TEST_ASSERT_TRUE_MESSAGE(parseTurn(j, t, e), name);
+    TEST_ASSERT_EQUAL_MESSAGE(1u, t.mem_write.size(), name);
+    TEST_ASSERT_EQUAL_STRING("the cat is Pixel", t.mem_write[0].content.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(1u, t.parseNotes.size(), name);
+  }
+  {
+    Turn t; ParseError e;
+    TEST_ASSERT_TRUE(parseTurn(R"({"reply":"saved","mem_write":[{"subject":"cat"}]})", t, e));
+    TEST_ASSERT_EQUAL(0u, t.mem_write.size());
+    TEST_ASSERT_EQUAL(1u, t.parseNotes.size());
+    TEST_ASSERT_TRUE(t.parseNotes[0].find(" arrived as ") != std::string::npos);
+    TEST_ASSERT_TRUE(t.parseNotes[0].find("not used") != std::string::npos);
+    TEST_ASSERT_TRUE(t.parseNotes[0].find("subject") != std::string::npos);
+  }
+  {
+    Turn t; ParseError e;
+    TEST_ASSERT_TRUE(parseTurn(R"({"reply":"saved","mem_write":[{"content":"plain"}]})", t, e));
+    TEST_ASSERT_EQUAL(1u, t.mem_write.size());
+    TEST_ASSERT_EQUAL(0u, t.parseNotes.size());
+  }
+}
+
 // TOLERANT: a malformed / empty-content mem_write item is dropped, not a turn error.
 static void test_mem_write_tolerant_drops_bad() {
   const char* j = R"({"reply":"","memory":"","ask":"","mem_write":[
@@ -689,12 +718,38 @@ static void test_head_reply_turn_followed_by_more_text_never_acts() {
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"a } b \\\" { c\"}", obj.c_str());
 }
 
+// The text of a mem_write item never loses a sibling string: GLM's {"key":"sister_cat",
+// "value":"Pixel"} must not store a bare "Pixel" that nothing retrieves and that the
+// reply reports as saved. The known fields stay fields.
+static void test_mem_write_keeps_the_strings_beside_its_text() {
+  const char* const cases[][2] = {
+      {R"({"key":"sister_cat","value":"Pixel"})", "sister_cat: Pixel"},
+      {R"({"subject":"sister's cat","note":"Pixel"})", "sister's cat: Pixel"},
+      {R"({"topic":"pets","fact":"the cat is Pixel"})", "pets: the cat is Pixel"},
+      {R"({"content":"the cat is Pixel","category":"pets"})", "pets: the cat is Pixel"},
+      {R"({"content":"plain","ttl":"days"})", "plain"},
+      {R"({"fact":"plain","importance":0.9,"permanent":true,"standing":false,"source":"self"})", "plain"},
+  };
+  for (const auto& c : cases) {
+    const std::string j = std::string(R"({"reply":"ok","mem_write":[)") + c[0] + "]}";
+    Turn t; ParseError e;
+    TEST_ASSERT_TRUE_MESSAGE(parseTurn(j, t, e), c[0]);
+    TEST_ASSERT_EQUAL_MESSAGE(1u, t.mem_write.size(), c[0]);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(c[1], t.mem_write[0].content.c_str(), c[0]);
+  }
+  // An alias beside content is a sibling too, not a second copy of the text lost.
+  Turn t; ParseError e;
+  TEST_ASSERT_TRUE(parseTurn(R"({"reply":"ok","mem_write":[{"content":"a","note":"b"}]})", t, e));
+  TEST_ASSERT_EQUAL_STRING("b: a", t.mem_write[0].content.c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_full_valid_turn_roundtrips);
   RUN_TEST(test_empty_arrays_are_valid);
   RUN_TEST(test_arrays_optional_reply_only);
   RUN_TEST(test_mem_write_parsed_and_clamped);
+  RUN_TEST(test_mem_write_reads_the_common_names_and_reports_the_rest);
   RUN_TEST(test_mem_write_tolerant_drops_bad);
   RUN_TEST(test_mem_query_parsed);
   RUN_TEST(test_session_ops_parsed);
@@ -728,5 +783,6 @@ int main() {
   RUN_TEST(test_head_reply_json_lookalikes_are_unusable);
   RUN_TEST(test_head_reply_prose_quoting_json_never_acts);
   RUN_TEST(test_head_reply_turn_followed_by_more_text_never_acts);
+  RUN_TEST(test_mem_write_keeps_the_strings_beside_its_text);
   return UNITY_END();
 }

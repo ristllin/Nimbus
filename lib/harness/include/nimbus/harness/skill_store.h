@@ -159,6 +159,8 @@ struct SkillStoreConfig {
 // carry them as warnings). `written` is the text as sent (its raw inject value
 // and unknown keys); `merged` is the text after inheriting from the live version.
 std::vector<std::string> lintSkillSave(const SkillMd& written, const SkillMd& merged);
+// What a saver should know about a skill past what one turn carries (none under the cap).
+std::vector<std::string> skillGrowthNotes(const std::string& id, const SkillMd& doc);
 
 // The front-matter keys an author writes, in the words the skill.save tool text
 // uses ("title (a short title); desc (...); ..."). One source: kSkillMdKeys.
@@ -173,6 +175,8 @@ class SkillStore {
 
   // Built-ins and stored skills, a stored one replacing a built-in of the same id.
   std::vector<SkillMeta> list();
+  // The approved stored skills whose id says they are about food (a built-in is attached anyway).
+  std::vector<std::string> approvedFoodSkills();
   bool find(const std::string& id, SkillMeta& out);
   std::string indexText();
 
@@ -247,6 +251,8 @@ std::string skillResultText(const std::string& id, const SkillResult& r);
 // The notice the owner gets when the switch let the assistant's change go live.
 std::string skillSelfApproveNotice(const std::string& id, int rev, bool created);
 // The notice the owner gets when the assistant proposes a new skill or an edit.
+// What the saver should know about a save that landed (" Note: ...", "" when nothing).
+std::string skillSaveNotes(const SkillResult& r);
 std::string skillProposalNotice(const std::string& id, const SkillResult& r);
 // /skill show: description, revision, status and the start of the text, or a
 // short summary of a proposed edit.

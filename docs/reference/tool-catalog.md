@@ -26,7 +26,11 @@ never drift:
   namespace with user rights, never as the admin (see [MCP](../mcp.md)).
 
 Both paths execute through the same `dispatch()`, so the capability manifest, the
-prompt's tool list, and what actually runs are the same thing. Architecture:
+prompt's tool list, and what actually runs are the same thing. No argument disappears in
+silence: a call with one the tool neither lists nor reads still runs, and its result ends
+`(not read: <name>: this tool has no such argument)`. A schema that leaves its arguments open
+(`additionalProperties`, `patternProperties`, `anyOf`, `oneOf`, `allOf`, `$ref`), as an
+external MCP server's may, flags nothing. Architecture:
 [Orchestrator World](../orchestrator-world.md)
 (§5 On-device MCP server & tool registry).
 
@@ -201,6 +205,9 @@ device web page.
 | `skill.delete` | Delete a skill capsule you authored (`created_by: agent`). | `id` (string, **required**) | live (admin-only) |
 
 Notes:
+- A skill holds up to 8 KB. An attached copy or a sub-agent sees its first 4096 bytes and
+  `skill.get` reads it all; the save reply says so when it applies, and a refusal says how many
+  bytes to cut and that the detail can move to a second skill.
 - `skill.save` and `skill.delete` require an admin conversation and are refused
   in scheduled/unattended turns.
 - A skill the model saves is server-stamped `created_by: agent`, `approved:
@@ -228,7 +235,8 @@ Notes:
 The two food playbooks are also attached without a read: on a turn about food the
 device adds `food-log` when the owner reports food eaten, `food-coach` when they ask
 for an amount or a plan, and both when the words say neither (see
-[turn-anatomy.md](../turn-anatomy.md)).
+[turn-anatomy.md](../turn-anatomy.md)). An approved stored skill whose id says it is about
+food (meal, food, nutrition, diet, calorie) rides a logged meal the same way.
 
 ## `food.*` - the portion calculator
 
@@ -279,6 +287,29 @@ Notes:
   their own heading, the rules moved to memory at boot as dated facts, each with
   `/prefs restore <id>`.
 
+## `openq.*` - the owner's open questions
+
+Registered by `registerOpenQTools()` (`lib/core/src/orch_openq_tools.cpp`) over
+the portable `OpenQuestions` store (`/data/openq.txt`, zero NVS keys). The list
+rides the never-dropped part of every owner-facing prompt as
+`[OPEN QUESTIONS]`, and the device itself watches each completed owner turn
+(raise-once bookkeeping, `open_questions.h`): an item is marked raised when a
+reply mentions its subject, re-opened when the owner's own message mentions it,
+and removed when the owner's message pairs a drop cue with the subject.
+
+| Tool | Description (as registered) | Arguments | State |
+|---|---|---|---|
+| `openq.edit` | The owner's OPEN QUESTIONS: follow-ups the owner left open (a photo to take next time, a thing to check later), shown to you every turn under [OPEN QUESTIONS]. Add one when the owner leaves something open, remove it when it is resolved or they withdraw it. The device marks an item raised once your reply mentions it, and tells you not to raise it again. add {text} \| remove {id} \| list. | `action` (**required**, `add` \| `remove` \| `list`), `text` (string), `id` (string, e.g. `q3`) | live (owner/admin only) |
+
+Notes:
+- Owner-only: a member or guest turn never sees the tool or the list.
+- Refused in unattended turns (a routine, a wakeup, sub-agent synthesis, the
+  dream): a routine must not plant follow-ups on the owner.
+- A turn that already read outside content cannot change the list at all: an
+  open item is the owner's, not something a web page may shape.
+- The list stays small on purpose (at most 5 items, 160 bytes each); a full
+  list refuses an add until something is resolved or withdrawn.
+
 ## `docs.*` - the device's own documentation
 
 Registered by the memory subsystem (`src/agent/memory_subsystem.cpp`; portable
@@ -315,19 +346,24 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 | `files.stat` | Metadata for one stored file: size, kind, created time, provider file id. | `project` (**required**), `name` (**required**) | live |
 | `files.read` | Read a stored TEXT document's content, paged; with `tail`, only the last rows of a log or CSV, and with `sum` a day's total of that column. | `project` (**required**), `name` (**required**), `offset` (number), `tail` (number of rows, max 200), `sum` (optional, a numeric column), `date` (optional, `YYYY-MM-DD`; default today) | live |
 | `files.search` | Search the CONTENT of saved text documents for words; returns the best matches with a snippet, ranked by how many of the words each document holds, then by how often they occur. | `query` (**required**), `project` (optional filter) | live |
-| `files.append` | Add rows to a text document (a log, a CSV); creates it when missing. Without `key`, the rows go on the end and nothing stored is rewritten. With `key`, a keyed CSV update: a row is its date plus its key, so the same date and key again replaces that row (a correction) and other days are never touched. | `project` (**required**), `name` (**required**, a text extension), `text` (**required**, max 4 KB per call; with `key`, the stored header row first), `key` (optional, the column that tells one day's rows apart, such as `meal`; the log needs a date column), `sum` (optional, a numeric column - the reply carries the day totals), `replace` (optional, `"all"`: when the key names several stored rows that are one item logged twice, this row replaces them) | live |
+| `files.append` | Add rows to a text document (a log, a CSV); creates it when missing. Without `key`, the rows go on the end and nothing stored is rewritten. With `key`, a keyed CSV update: a row is its date plus its key, so the same date and key again replaces that row only when it describes the same item (a correction; the device decides by the items column, and a different item under the same key is appended under a new unique key, e.g. `dinner-2`, with the stored row kept) and other days are never touched. Every replace keeps the replaced row in the file as a `#replaced:` history row and the reply names what it held. | `project` (**required**), `name` (**required**, a text extension), `text` (**required**, max 4 KB per call; with `key`, the stored header row first), `key` (optional, the column that tells one day's rows apart, such as `meal`; the log needs a date column), `sum` (optional, a numeric column - the reply carries the day totals), `replace` (optional, `"all"`: when the key names several stored rows that are one item logged twice, this row replaces them) | live |
+| `files.edit` | Edit a saved text document surgically: find an exact text span (a phrase, or a whole line's text) and replace it - instead of reading and re-saving the whole file. Replaces the first match by default; `all: true` for every match, `count` for the first N. The reply says how many matches were found and replaced; a no-match changes nothing, and a replacement identical to the find text says no change. An edit to a keyed CSV (a log with a date and a key column) also names the rows it removed, added or changed, and a later re-add that skips a removed row is named too. A file over 1 MB is refused. | `project` (**required**), `name` (**required**, a text extension), `find` (**required**, max 2 KB), `replace` (optional, max 4 KB; empty deletes the span), `all` (boolean, default false), `count` (integer, default 1, max 200) | live |
+| `files.delete` | Delete one saved file for good: the bytes and the index entry both go. Only a file the caller may write can be deleted; anyone else's file is simply not found. A missing file is refused by name. | `project` (**required**), `name` (**required**) | live |
 | `artifact.save` | Persist a TEXT artifact (report, summary, document) into the durable store. | `project` (**required**), `name` (**required**, with extension `.md`/`.txt`/`.csv`/`.json`), `text` (**required**, max ~24 KB per call) | live |
 | `files.share` | Share one of your saved files read-only with everyone, or stop sharing it. | `project` (**required**), `name` (**required**), `share` (boolean, default true) | live (the owner shares only in a message they write) |
 | `files.send` | Send a stored file to the owner on Telegram - images go as an inline photo, other files as a document. With no `chat_id` it goes to the turn's own Telegram chat; from the web chat, voice or serial to the owner's chat (the owner only, writing now). | `project` (**required**), `name` (**required**), `chat_id` (optional) | live |
 | `files.pdf` | Write a PDF with the device's own writer from a title and light Markdown text (`#` headings, `-` bullets, `| table |` rows); text and simple tables only. Saves `<project>/<name>.pdf`, then deliver it with `files.send`. Owner only; needs an SD card. | `project` (**required**), `name` (**required**), `title`, `text` (**required**, up to 48 KB) | live |
 | `files.fetch` | Download a document from an https URL into the file store, governed by the owner's URL-download trust policy (Off / Ask me per link / Scan, then keep / Full trust; web: Assistant → Safety → Downloads). Runs in the background; per-file size cap applies; under Ask me per link the owner approves each link (Telegram `/fetch approve <id>` or the web card); under Scan, then keep the file is quarantined and promoted only on a SAFE AI verdict. | `url`, `project`, `name` | live |
 | `image.generate` | Generate an image from a text prompt and save it as a PNG in the durable store; returns the saved `project`/`name`. | `prompt` (**required**), `project` (default `images`), `name` (optional stem), `size` (optional), `quality` (`low`/`medium`/`high`, default `low`), `model` (optional, default `gpt-image-1`), `describe` (boolean, default false) | live (listed while an OpenAI key is set; a key added later works on the next turn) |
-| `image.look` | View a photo sent earlier: the photo comes back to the head as an image for the rest of the turn (Anthropic in the tool result, OpenAI and Mistral in a message after it), read from its stored copy with no provider call. A head that cannot see images gets one caption request's answer to `question` instead, and so does a routine. At most 4 photos per turn; only during a turn; a caller that is not the owner looks only at photos of its own chat. | `ref` (**required**: the 16 hex characters in the photo's `[image ... ref=...]` label), `question` (**required**, up to 500 bytes) | live (needs an SD card) |
+| `image.look` | View a photo sent earlier: the photo comes back to the head as an image for the rest of the turn (Anthropic in the tool result, OpenAI and Mistral in a message after it), read from its stored copy with no provider call. A head that cannot see images gets one caption request's answer to `question` instead, and so does a routine; the reader is told the question may hold a wrong guess. A photo whose reading is still waiting for a provider answers that it has not been read yet. At most 4 photos per turn; only during a turn; a caller that is not the owner looks only at photos of its own chat. | `ref` (**required**: the 16 hex characters in the photo's `[image ... ref=...]` label), `question` (**required**, up to 500 bytes) | live (needs an SD card) |
 | `image.note` | Write the record of a photo of the current message that the head saw: one line (capped by the device) of what matters in it. It becomes the photo's row in the conversation from the next turn on (`(seen; note: ...)`), so no second model captions it. Only for this turn's photos; sent with the final answer it costs no extra round. | `ref` (**required**), `note` (**required**) | live |
 
 Notes:
 - `files.read` serves text extensions only (`.md` / `.txt` / `.json` / `.csv` /
-  `.log`); binary documents are refused (use `files.share` or the web viewer).
+  `.log`); binary documents are refused (use `files.share` or the web viewer), and
+  so is a file with a text name whose first 4 KB hold a NUL or are more than a tenth
+  control bytes. On a Virtual Nimbus any text file reads, whatever its extension; an
+  image, audio or binary file is refused the same way.
   It is **allowed in scheduled turns**.
 - `artifact.save` overwrites the same `project`+`name`, refuses a write onto
   another person's file, and counts against the caller's file-storage quota.
@@ -345,7 +381,18 @@ Notes:
   name (`date`, `day`, or a name holding date, day or time) or by its content
   (the column the new rows fill with `YYYY-MM-DD` dates); a log with no date
   column is refused for keyed writes. The same date and key again replaces
-  that row, so a correction never counts twice in a day's total. The call is
+  that row only when the new row describes the SAME item - decided on the
+  device by the items column (or, without one, by the row's non-date,
+  non-key, non-figure fields), never by the model's wording: a different
+  item under the same key (a second dinner under `dinner`) is appended
+  under a new unique key (`dinner-2`, avoiding the keys the day already
+  holds) and the stored row is kept, so a reused label never silently
+  replaces a row describing a different item. `key` = the date column
+  itself (a one-row-per-day ledger) has no reused label and replaces as
+  before. Every replace keeps the replaced row in the file as a
+  `#replaced:` history row (never matched or counted), so a disputed day
+  can be re-read against what it held before; the reply names what each
+  replaced row held. The call is
   refused, and nothing is written, when the key names more than one stored row
   (unless `replace: "all"`, which keeps the others as `#superseded:` rows) or
   two rows of the call, when the header differs from the stored one (the reply
@@ -356,7 +403,8 @@ Notes:
   gets its line end); a provably cut one is replaced by a new row with its date
   and key, or kept as a `#cut:` row that is never counted; rows starting with
   `#` are comments. The
-  reply says what each row did (a replaced row with what it was) and, with
+  reply says what each row did (a replaced row with what it was: its figure
+  and its items, and a rekeyed row with the stored key it kept) and, with
   `sum`, each day's total with its row count: today first, with its time zone
   (`today's kcal (2026-10-25, GMT): 976 from 2 rows`), then every other date
   written. With no time zone set the device's day is the UTC day and the reply
@@ -368,6 +416,15 @@ Notes:
   write to that file is refused ("an earlier file replace is not finished -
   restart the device") until the backup is restored, and a backup larger than
   the file it would leave is kept as `<name>.recovered`, never deleted.
+- `files.edit` changes only the matched spans; every other byte keeps its exact
+  position, so a CSV's rows stay rows. It never creates a file (`not found` is
+  the answer), never reads the file into the model's context, and streams the
+  substitution on the device into a temp sibling that replaces the original
+  only after it is fully written and size-verified, the same way as any
+  whole-file write - any refusal (a cap, no match, quota, a short write) leaves
+  the stored file untouched. It
+  follows the same ownership, lock and quota rules as `artifact.save` (an
+  edit's growth counts against the caller's file-storage quota).
 - `files.read` with `tail` reads only the end of the file (about 7.5 KB) and
   returns the last complete rows, oldest first, plus a CSV's header row when it
   is not among them; an incomplete last row is reported, not hidden.
@@ -450,7 +507,7 @@ A Telegram voice reply always goes to Telegram, never to the speaker: text of up
 synthesized, uploaded at once and checked against Telegram's answer. The result names
 Telegram's `message_id` for every voice message that arrived ("delivered to Telegram
 as a voice message (message_id 812, 210 KB)"); when one did not, it says why and that
-nothing (or only some) was delivered, so the reply can fall back to text. `reply.telegram` is
+nothing (or only some) was delivered, so the reply can fall back to text; when the upload went out and only Telegram's answer was missing, it says the message "may not have arrived" instead. `reply.telegram` is
 offered only on a turn that can deliver over Telegram: the bot is running and
 either a chat is allowlisted, or public mode is on and the message itself came in
 over Telegram. `files.send` delivers only to an allowlisted chat, so it is offered
@@ -466,13 +523,16 @@ result point at the Files list on the device web page instead of naming it.
 
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
-| `web.search` | Search the live web; returns an answer plus top results (title, url, snippet). | `query` (string, **required**), `max_results` (integer, default 5) | live (when a web-search key is set) |
+| `web.search` | Search the live web; returns an answer plus top results (title, url, snippet). | `query` (string, **required**), `max_results` (integer, default 5) | live (with a Tavily, Mistral or Z.ai key) |
 
 Note: always registered, and listed (to the model, in `/api/tools` and in MCP
-`tools/list`) exactly while a web-search (Tavily) key is configured. A key added
+`tools/list`) exactly while one of its routes can run: a Tavily key, else a
+Mistral key (its built-in search, which answered freshest), else a Z.ai key (its
+search can run months behind, so each result carries its date). A key added
 in the web app takes effect on the next turn, no restart; without one a call
 refuses and says the key is missing. The key is human-set, never
-model-writable. A monthly call budget can gate it. The provider-gated tools are
+model-writable. A monthly call budget can gate Tavily; past it the tool moves to
+the provider's search. The provider-gated tools are
 one table, `kGatedTools` in `lib/core/include/nimbus/orch/tool_gates.h`.
 
 ## `models.list` - the provider model lists
@@ -581,7 +641,7 @@ Device actions are **not** registry tools - they arrive as the turn's
 | `config` | benign, owner-friendly knobs (allow-listed keys only) | e.g. `ledBrightness`, `priority` (routing *preference*), `posture`, `profile`, `theme`, `attnHoldMs`, `sfxLvlN`/`sfxLvlO`, `sfxVol`, `sfxTheme`, `sttProv`, `ttsProv`, `ttsVoice`, `ttsOn`, `sleepOvr`, `brightOvr`, `devName` | live (rails enforced) |
 | `orch_model` | switch the head's own provider + model at runtime | `provider` (`openai` \| `anthropic` \| `mistral` \| `zai` \| `cumulo`), `model` (an id that provider lists in `models.list`) | live |
 | `reboot` | restart the device | (none) | live |
-| `tts` | speak text aloud on the device speaker (Telegram audio fallback) | `text` | live |
+| `tts` | speak text aloud on the device speaker (Telegram audio fallback) | `text` (at most 400 bytes are voiced, cut at a sentence end or a space and never inside a character; the reply says when the spoken version was shortened) | live |
 
 Rails: a `config` action carrying any protected key (secrets, the auth
 allow-list, provider routing/priority, the routines blob (`loops`) or the budget governors - see
@@ -619,7 +679,27 @@ terminate) are **not** device actions - they go through the turn's
 On-device speech plays through the built-in speaker. Both the `reply.speak` tool
 (mid-turn) and the end-of-turn `device[]` `tts` action synthesize the reply and
 play it on the speaker; `tts` falls back to a Telegram voice message when the
-speaker could not play it. A spoken Telegram message is also available via
+speaker could not play it - to the chat the turn is in when that is a Telegram chat,
+else to the owner's chat. The `tts` action reports what really happened: played on
+the speaker, delivered to Telegram with its `message_id`, or not spoken with the reason
+(a speaker volume of 0 plays silence, so it is refused). Only what was voiced is written
+to history, and a reply that says it was read aloud when it was not gets a correction
+line. When the end-of-turn `device[]` `tts` could not be spoken, the owner hears of it
+in the same turn, whatever the reply says or which language it is in: a reply or
+question gets a short note with the reason unless the claim check's own line already says
+so, and a turn whose only output was that `tts` delivers the text with the reason, unless
+the turn already sent that text with `reply.telegram`. A routine says nothing (the head
+hears of it next turn). Only the owner's chats reach the speaker: a member's or a guest's
+`tts` is refused first, the reply says only the owner can, and a turn whose only output was
+that `tts` still delivers its text. The note "the
+spoken version was shortened" rides a reply or question only: a routine or a turn that
+only spoke sends no message for it. The same action sent mid-turn through
+`device.control` reports `tts(not-spoken: ...)` or the shortened note in the tool's
+result, to the model only: the claim check still corrects a reply that says it was read
+aloud, but the owner is not told otherwise unless the reply says so. A Telegram fallback
+that went out but that Telegram never confirmed says the voice message "may not have
+arrived" instead of that it failed; an upload cut short before its end says nothing was
+delivered. A spoken Telegram message is also available via
 `reply.telegram` `voice:true`, which never uses the speaker. The speaker plays WAV directly and decodes MP3 with
 the bundled decoder, so the reply speaks whether the configured voice provider
 emits WAV (OpenAI) or MP3 (Mistral).

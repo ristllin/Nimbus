@@ -199,6 +199,98 @@ static void test_every_growing_loop_ends_with_an_answer() {
   TEST_ASSERT_TRUE(refits > 10);   // the matrix really crosses the budget
 }
 
+// Lane PROG: the real case's refit shape (Lumi, 4 Nov,
+// evidence/lumi-v490-watch/stuck-errlog-20261104T162414Z.txt, log lines 932-933):
+// round 2's body was 91322 B against the 85000 B budget, the first rung folded
+// 5582 B of the replayed tool rounds, the round re-ran and refused again at
+// 85882 B, and only the second cycle's fold made it fit - seven such double
+// refusals over the turn, each extra one a full body build and parse cycle spent
+// discovering what the first refusal already said. The refit now folds rungs
+// until the overshoot is covered, so this shape re-runs the round exactly once.
+// The one-rung-per-refusal policy this replaces needed the second refusal (the
+// log lines above are its failing-first record; the matrix test above caught the
+// same class as refused=12 against sent=9 before the fix landed).
+static void test_real_case_refit_shape() {
+  Transcript tr;
+  int dispatched = 0, calls = 0, refused = 0;
+  std::vector<size_t> sent;
+  size_t fitFreed = 0;
+  const size_t budget = 85000;
+  tr.addUser("[USER]\\nwhat changed in the update?");
+  auto bodySize = [&] {
+    size_t bytes = 0;
+    for (const auto& it : tr.entries()) bytes += it.text.size() + it.name.size() + it.id.size();
+    return 78648 + bytes - fitFreed;   // tuned: round 2 refuses at exactly 91322 B
+  };
+  HeadLoopConfig cfg;
+  cfg.maxRounds = 8;
+  cfg.deadlineMs = 0;
+  cfg.roundMinHeap = 0;
+  cfg.maxToolResultBytes = 8192;
+  cfg.maxTotalToolBytes = 65536;
+  HeadLoopHooks h;
+  h.nowMs = [] { return 1000u; };
+  h.log = [](const std::string&) {};
+  h.transcript = &tr;
+  h.dispatch = [&](const HeadToolCall& c) {
+    HeadToolResult r;
+    r.id = c.id;
+    r.name = c.name;
+    // Round 0's big result is the fold's rung; round 1's five results are the
+    // newest round the fold must never touch.
+    r.output = dispatched++ == 0 ? std::string(5890, 'a') : std::string(1290, 'b');
+    return r;
+  };
+  h.fitPrompt = [&](size_t want, nimbus::orch::FitScope) {
+    const size_t got = want > 4000 ? 4000 : want;   // a prompt ladder with bounded rungs
+    fitFreed += got;
+    return got;
+  };
+  h.step = [&](bool allowTools, const std::vector<HeadToolResult>&, uint32_t, const std::string&) {
+    HeadStep s;
+    const size_t size = bodySize();
+    if (size > budget) {
+      refused++;
+      s.ok = false;
+      s.kind = nimbus::orch::StepErr::BadRequest;
+      s.error = nimbus::orch::bodyBudgetError(budget, size);
+      return s;
+    }
+    sent.push_back(size);
+    if (!allowTools || calls >= 6) {
+      s.finished = true;
+      s.finalTurn = "{\"reply\":\"done\"}";
+      return s;
+    }
+    const int n = calls == 0 ? 1 : 5;
+    for (int i = 0; i < n; ++i) {
+      HeadToolCall c;
+      c.id = "c" + std::to_string(++calls);
+      c.name = "memory_search";
+      c.argsJson = "{\"q\":\"update notes\"}";
+      s.toolCalls.push_back(c);
+    }
+    return s;
+  };
+  const HeadOutcome o = nimbus::orch::runHeadLoop(cfg, h);
+  char msg[160];
+  std::snprintf(msg, sizeof msg, "ok=%d refused=%d sent=%zu err=%s", (int)o.ok, refused,
+                sent.size(), o.error.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(o.ok, msg);
+  TEST_ASSERT_TRUE_MESSAGE(o.error.empty(), msg);
+  // One refusal: the fold covers the whole 6322 B overshoot (plus room) before
+  // the re-run, where the real case needed two.
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, refused, msg);
+  // Rounds 0, 1 and 2 - no extra provider request spent on the refit.
+  TEST_ASSERT_EQUAL_INT_MESSAGE(3, (int)sent.size(), msg);
+  // The newest round's results the model has not seen yet are never clipped:
+  // all five round 1 results come back whole.
+  int newestResults = 0;
+  for (const auto& it : tr.entries())
+    if (it.kind == nimbus::orch::TranscriptItem::Kind::ToolResult && it.text.size() == 1290) newestResults++;
+  TEST_ASSERT_EQUAL_INT_MESSAGE(5, newestResults, "the newest round was clipped");
+}
+
 // One big write (merge review): an executed call whose ARGUMENTS are the oversize
 // part - an artifact.save of 6-24 KB on a 60-70 KB base. Folding older rounds and
 // clipping results cannot shrink it; its arguments become a short stub (the call ran,
@@ -468,6 +560,7 @@ int main(int, char**) {
   RUN_TEST(test_refusal_wording_round_trips);
   RUN_TEST(test_lumi_loop_finishes_with_an_answer);
   RUN_TEST(test_every_growing_loop_ends_with_an_answer);
+  RUN_TEST(test_real_case_refit_shape);
   RUN_TEST(test_unfittable_round_fails_honestly);
   RUN_TEST(test_lumi_shape_on_every_loop_wire);
   RUN_TEST(test_fabric_refit_is_not_a_failed_step);

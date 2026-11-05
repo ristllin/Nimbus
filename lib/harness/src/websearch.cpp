@@ -1,4 +1,5 @@
 #include "nimbus/harness/websearch.h"
+#include "nimbus/json_strict.h"
 
 #include "nimbus/orch/spend_ceiling.h"   // lane DEF: the paid-call gate
 #include "nimbus/orch/spend_guard.h"     // lane QW4: sentWithoutAnswer - a sent search counts
@@ -84,7 +85,7 @@ Result search(HttpTransport& http, const std::string& apiKey,
     d["max_results"]    = maxResults;
     d["include_answer"] = true;
     d["search_depth"]   = "basic";
-    serializeJson(d, req.body);
+    nimbus::serializeStrictJson(d, req.body);
   }
 
   JsonDocument filter;
@@ -157,7 +158,7 @@ void registerWebSearchTool(nimbus::orch::ToolRegistry& reg, const WebSearchToolD
             Result r = deps.search(q, k);
             // Lane QW4 (CUM-776): a call the provider may have billed counts, answered
             // or not.
-            if ((r.ok || r.billed) && deps.recordCall) deps.recordCall();
+            if ((r.ok || r.billed) && deps.recordCall && !r.hosted) deps.recordCall();
             // Report the ACTUAL cause - one catch-all string used to send the model
             // retrying a search that could never work.
             if (!r.ok) return ToolResult::fail("web search failed: " + r.err);

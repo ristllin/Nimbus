@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <string>
 
 // stt_result - what a speech-to-text call came back with, and the transport's
@@ -15,6 +16,14 @@ constexpr const char* kErrConnectFailed = "connect failed";   // DNS / TCP / TLS
 constexpr const char* kErrSlotBusy = "tls arbiter busy";      // the single TLS slot is taken
 constexpr const char* kErrFileOpen = "file open failed";      // the capture file is missing
 constexpr const char* kErrHttpPrefix = "HTTP ";               // "HTTP <status>" (0 = no answer)
+// The body stopped before its Content-Length (a short write on a stalled socket, the operation
+// deadline, a read error): the server never took the request, so nothing arrived. Distinct from
+// "HTTP 0", which follows a complete body whose answer never came (it may have arrived).
+constexpr const char* kErrUploadCut = "upload cut at ";       // "upload cut at <sent> of <size> B"
+inline std::string uploadCutText(size_t sent, size_t size) {
+  return std::string(kErrUploadCut) + std::to_string((unsigned long long)sent) + " of " +
+         std::to_string((unsigned long long)size) + " B";
+}
 
 struct SttResult {
   enum class Kind : unsigned char { Ok = 0, NoNetwork, Http, Refused, BadReply, Busy, NoAudio };
@@ -29,5 +38,9 @@ struct SttResult {
 // for "HTTP <n>" (0 otherwise). Anything unrecognised reads as Http with status 0
 // ("no answer") - never as an empty transcript.
 SttResult::Kind sttKindForError(const std::string& err, int* httpOut);
+
+// The uploader failed before any byte left: the TLS slot was busy or the file would not
+// open. A re-check of a parked provider this call took was not spent.
+inline bool sttSentNothing(const std::string& err) { return err == kErrSlotBusy || err == kErrFileOpen; }
 
 }  // namespace nimbus::voice

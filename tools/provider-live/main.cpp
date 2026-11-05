@@ -457,6 +457,9 @@ void scLongReport(Ctx& c) {
   std::map<std::string, std::string> files;   // "<project>/<doc>" -> text (the card)
   std::string envelope;
   agent::JobEngine::Deps d;
+  d.principalFor = [](const std::string& chat) {
+    return nimbus::orch::principalForRole(chat, nimbus::orch::Role::Admin);
+  };
   d.platform.nowMs = [] { return nowMs(); };
   d.platform.freeHeap = [] { return (uint32_t)4u * 1024u * 1024u; };
   d.fabric = &fab;

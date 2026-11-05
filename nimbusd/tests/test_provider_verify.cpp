@@ -19,6 +19,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -405,9 +407,57 @@ static void testHostedCatalogIsBounded(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// The hosted picker on the providers' recorded lists: the device's short list, not an
+// eight-row cut of the catalog that lost mistral-small-latest and glm-5.3-flash and put old
+// GLM ids first (VN reality check, defect 15).
+static std::string readRecorded(const char* provider) {
+  std::ifstream f(std::string("../test/support/fixtures/models_2026-10/") + provider + ".json");
+  return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+static void testHostedPickerUsesTheDeviceShortList(ndtest::Ctx& c) {
+  std::printf("  -- (p) the hosted picker lists Mistral Small and GLM Flash, and no foreign model --\n");
+  const struct { const char* slug; const char* env; std::vector<const char*> want; std::vector<const char*> not_; } rows[] = {
+      {"mistral", "MISTRAL_API_KEY", {"mistral-small-latest", "mistral-large-4-0", "mistral-medium-latest"},
+       {"glm-", "deepseek", "labs-", "voxtral"}},
+      {"zai", "Z_AI_TOKEN", {"glm-5.3", "glm-5.3-flash"}, {}},
+  };
+  for (const auto& k : rows) {
+    clearEnv();
+    setenv(k.env, "test_VERIFY_PICKER", 1);
+    FakeHttpTransport tx;
+    Exchange e;
+    e.status = 200;
+    e.body = readRecorded(k.slug);
+    c.ok(!e.body.empty(), std::string("the recorded list for ") + k.slug + " is readable");
+    tx.script.push_back(e);
+    Config cfg;
+    NimbusdRig::Options o = opts(std::string("pv-p-") + k.slug);
+    o.priority = k.slug;
+    NimbusdRig rig(cfg, o, &tx);
+    c.ok(rig.verifyProvider(k.slug), std::string("the verify reads ") + k.slug + "'s list");
+    EngineThread eng(&rig);
+    ReplyBuffer replies;
+    WebApi api(&rig, &eng, &replies);
+    ApiResp orch;
+    api.handle("GET", "/api/orch", "", orch);
+    const std::string key = std::string("\"") + k.slug + "\":{";
+    const size_t a = orch.body.find(key);
+    const std::string row = a == std::string::npos ? std::string() : orch.body.substr(a, orch.body.find('}', a) - a);
+    for (const char* id : k.want) c.ok(has(row, id), std::string(k.slug) + " offers " + id + ": " + row);
+    for (const char* id : k.not_) c.ok(!has(row, id), std::string(k.slug) + " does not offer " + id + ": " + row);
+    if (std::string(k.slug) == "zai") {
+      const size_t oldGlm = row.find("glm-4");
+      c.ok(oldGlm == std::string::npos || oldGlm > row.find("glm-5.3"), "the current GLM line leads: " + row);
+    }
+  }
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== provider verify + router model catalog (CUM-545, offline) ===\n");
+  testHostedPickerUsesTheDeviceShortList(c);
   testVerifyHarvests(c);
   testVerdicts(c);
   testTurnMarksVerified(c);

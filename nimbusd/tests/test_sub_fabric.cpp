@@ -37,6 +37,7 @@
 #include "engine_thread.h"
 #include "loopback_server.h"
 #include "nimbus/harness/rate_limit.h"
+#include "nimbus/harness/turn_contract.h"   // kEmptyAnswer
 #include "reply_buffer.h"
 #include "rig.h"
 #include "sub_fabric.h"
@@ -172,14 +173,21 @@ static void testMistralSpawnEndToEnd(ndtest::Ctx& c) {
   clearEnv();
 }
 
-// (b) no silent drop: a spawn that cannot run says so.
-static void testUnkeyedSpawnSaysSo(ndtest::Ctx& c) {
-  std::printf("  -- (b) a spawn on an unkeyed provider gets an honest message --\n");
+// (b) a spawn on an unkeyed provider moves to one with a key: nothing goes to the unkeyed
+// provider, and the owner is not told to add a key another provider makes unnecessary.
+static void testUnkeyedSpawnMoves(ndtest::Ctx& c) {
+  std::printf("  -- (b) a spawn on an unkeyed provider moves to one with a key --\n");
   clearEnv();
   FakeHttpTransport tx;
   tx.script.push_back(headTurn(
       "{\"reply\":\"Starting a researcher.\",\"memory\":\"\",\"ask\":\"\",\"session_ops\":[{\"op\":\"spawn\","
       "\"id\":null,\"task\":\"research X\",\"provider\":\"openai\",\"model\":null}]}"));
+  Exchange sub;
+  sub.expectHost = "api.mistral.ai";
+  sub.status = 200;
+  sub.body = "{\"conversation_id\":\"c1\",\"outputs\":[{\"type\":\"message.output\",\"content\":\"found X\"}]}";
+  tx.script.push_back(sub);
+  tx.script.push_back(headTurn("{\"reply\":\"It found X.\",\"memory\":\"\",\"ask\":\"\"}"));
   Config cfg;
   NimbusdRig rig(cfg, opts("fab-b"), &tx);
   rig.applyProviderKey("mistral", "mk_TEST_FAB_2");
@@ -188,10 +196,10 @@ static void testUnkeyedSpawnSaysSo(ndtest::Ctx& c) {
   EngineThread eng(&rig);
   eng.start();
   eng.postMessage("web", "research X on openai");
-  c.ok(inbox.waitFor("Couldn't start that agent on openai.", 8000),
-       "the unkeyed openai spawn is reported, not dropped");
+  c.ok(inbox.waitFor("mistral/", 8000), "the ack names the provider that took it");
+  c.ok(!inbox.waitFor("Couldn't start", 50), "the owner is not told to add a key");
   eng.stop();
-  c.eqi((long)tx.seen.size(), 1, "no request was sent to the unkeyed provider");
+  for (const auto& r : tx.seen) c.ok(r.host != "api.openai.com", "no request went to the unkeyed provider");
   clearEnv();
 }
 
@@ -596,14 +604,14 @@ static void testRemovedChatReportDropped(ndtest::Ctx& c) {
   clearEnv();
 }
 
-// (g) device parity: a turn with no reply and no spawn still completes on the
-// synchronous web chat ("Done."), never on an async channel.
-static void testReplyLessTurnCompletesOnWeb(ndtest::Ctx& c) {
-  std::printf("  -- (g) a reply-less turn says Done. on the web chat only --\n");
+// (g) an empty model reply that did nothing is never "Done.": the owner hears the answer
+// was empty, on the web chat and on an approved async chat alike (VN reality check, 1 Nov).
+static void testReplyLessTurnIsNeverDone(ndtest::Ctx& c) {
+  std::printf("  -- (g) a reply-less turn that did nothing says so, and never says Done. --\n");
   clearEnv();
   FakeHttpTransport tx;
-  tx.script.push_back(headTurn("{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}"));
-  tx.script.push_back(headTurn("{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}"));
+  for (int i = 0; i < 4; i++)
+    tx.script.push_back(headTurn("{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}"));
   Config cfg;
   NimbusdRig rig(cfg, opts("fab-g"), &tx);
   rig.applyProviderKey("mistral", "mk_TEST_FAB_6");
@@ -613,11 +621,40 @@ static void testReplyLessTurnCompletesOnWeb(ndtest::Ctx& c) {
   rig.telegramAccess().approve("12345", "", err);   // an approved async (Telegram) chat
   rig.say(kWebChatId, "hello");
   rig.say("12345", "hello");
-  c.eqi((long)got.size(), 1, "exactly one completion delivered");
-  if (!got.empty()) {
-    c.eq(got[0].first, kWebChatId, "it went to the web chat");
-    c.eq(got[0].second, "Done.", "it says Done.");
-  }
+  c.eqi((long)got.size(), 2, "both chats hear it");
+  for (const auto& g : got) c.eq(g.second, agent::kEmptyAnswer, "it says the answer was empty");
+  clearEnv();
+}
+
+// The correction as the daemon runs it, on the tool loop: the head answers empty, the next
+// request carries the check, and the owner hears the answer that came back. The single-shot
+// leg above never reaches this path.
+static void testEmptyLoopAnswerGetsOneCorrection(ndtest::Ctx& c) {
+  std::printf("  -- (g2) on the tool loop an empty answer gets one correction --\n");
+  auto round = [](const std::string& reply) {
+    Exchange e;
+    e.body = "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"tool_calls\":[{\"id\":\"c1\",\"function\":"
+             "{\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"" + reply + "\\\"}\"}}]}}],"
+             "\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":2}}";
+    return e;
+  };
+  clearEnv();
+  FakeHttpTransport tx;
+  tx.script.push_back(round(""));
+  tx.script.push_back(round("Pixel"));
+  Config cfg;
+  NimbusdRig::Options o = opts("fab-g2");
+  o.toolLoop = true;
+  NimbusdRig rig(cfg, o, &tx);
+  rig.applyProviderKey("mistral", "mk_TEST_FAB_7");
+  std::vector<std::pair<std::string, std::string>> got;
+  rig.setDeliver([&got](const std::string& ch, const std::string& t) { got.push_back({ch, t}); });
+  rig.say(kWebChatId, "what is my sister's cat called?");
+  c.eqi((long)tx.seen.size(), 2, "the empty answer costs exactly one more round");
+  c.ok(tx.seen.size() == 2 && tx.seen[1].body.find("[TURN CHECK]") != std::string::npos,
+       "the second round carries the check");
+  c.eqi((long)got.size(), 1, "one answer reaches the owner");
+  if (!got.empty()) c.eq(got[0].second, "Pixel", "the corrected answer is what the owner hears");
   clearEnv();
 }
 
@@ -742,7 +779,7 @@ int main() {
   c.suite = "sub-agent fabric (device parity)";
   std::printf("=== %s ===\n", c.suite);
   testMistralSpawnEndToEnd(c);
-  testUnkeyedSpawnSaysSo(c);
+  testUnkeyedSpawnMoves(c);
   testSpawn429NamesTheWindow(c);
   testJournalReattaches(c);
   testBackgroundWorkIsNotATurn(c);
@@ -754,7 +791,8 @@ int main() {
   testHeldTurnRunsAfterReport(c);
   testSpawnFromOtherNamespaceRefused(c);
   testRemovedChatReportDropped(c);
-  testReplyLessTurnCompletesOnWeb(c);
+  testReplyLessTurnIsNeverDone(c);
+  testEmptyLoopAnswerGetsOneCorrection(c);
   testZaiSubCarriesLowEffort(c);
   testCutSubMayHaveStarted(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);

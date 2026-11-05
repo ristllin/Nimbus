@@ -9,12 +9,15 @@
 #include "../support/mock_claim_turns.h"
 #include "nimbus/harness/apply.h"
 #include "nimbus/harness/claim_check.h"
+#include "nimbus/orch/file_edit.h"
 #include "nimbus/orch/head_loop.h"
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/spawn_claim.h"
 #include "nimbus/orch/tool_taint.h"
 
 using agent::ClaimCheck;
+using agent::TurnSources;
+using nimbus::orch::FoodFacts;
 using nimbus::orch::FxKind;
 using nimbus::orch::HeadLoopConfig;
 using nimbus::orch::HeadLoopHooks;
@@ -69,6 +72,251 @@ static void test_unbacked_claim_gets_one_correction_with_the_record() {
   TEST_ASSERT_EQUAL(before + 1, ClaimCheck::correctedCount());
   // A turn that cannot be read is the shape check's case, not this one's.
   TEST_ASSERT_EQUAL_STRING("", cc.finalCheck("{not json").c_str());
+}
+
+// ---- food figures: the turn's records, the correction round, the owner's line -------------
+static void test_food_target_has_a_source_or_a_correction() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  TurnSources parts;
+  parts.owner = "How much protein is left?";
+  parts.rules = "Standing rule: 2,400 kcal a day.";
+  cc.setSources("", "", parts);
+  FoodFacts facts;
+  facts.have = true;
+  facts.kcal = 2036;
+  facts.protein = 211.7;
+  cc.setFoodFacts([facts]() { return facts; });
+  const char* reply = "You have 38.3 g protein left from your 250 g daily protein target.";
+  const std::string fix = cc.finalCheck(turnJson(reply));
+  TEST_ASSERT_EQUAL(0, (int)fix.find("[CLAIM CHECK]"));
+  TEST_ASSERT_TRUE_MESSAGE(fix.find("250 g protein") != std::string::npos, fix.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(cc.tailAfterApply(reply).find("no source for a daily target of 250 g protein") != std::string::npos,
+                           "the owner's line");
+  // The plan read this turn is a source; the rewrite passes.
+  cc.noteTool(FxKind::Read, false, "Protein: 150-160 g/day, with 150 g as the minimum. Calories: 2,400 kcal.");
+  TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson("The plan says 150 g is the protein target.")).c_str());
+  TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("The 2,400 kcal target comes from your standing rule.").c_str());
+  // An earlier reply of the assistant, a summary and the prompt are no source of a target.
+  ClaimCheck hist;
+  hist.beginTurn();
+  TurnSources noSource;
+  hist.setSources("The assistant said: your 250 g protein target stands.", "", noSource);
+  TEST_ASSERT_TRUE(hist.tailAfterApply("Your 250 g protein target stands.").find("no source") != std::string::npos);
+}
+
+static void test_food_day_total_is_read_after_the_turns_writes() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  cc.setSources("", "", TurnSources{});
+  int reads = 0;
+  cc.setFoodFacts([&reads]() {
+    reads++;
+    FoodFacts f;
+    f.have = true;
+    f.kcal = reads > 1 ? 2369 : 1912;   // the row this turn wrote lands between the checks
+    return f;
+  });
+  TEST_ASSERT_TRUE(cc.finalCheck(turnJson("Today's total is 2,369 kcal.")).find("the ledger has today at 1912 kcal") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("Today's total is 2,369 kcal.").c_str());
+  // No food words, no card read.
+  const int before = reads;
+  TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("The train leaves at 7.").c_str());
+  TEST_ASSERT_EQUAL(before, reads);
+}
+
+static void test_a_made_up_target_cannot_become_its_own_source() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  TurnSources parts;
+  parts.owner = "log this";
+  cc.setSources("", "", parts);
+  std::string why;
+  TEST_ASSERT_TRUE(cc.unsourcedFoodTarget("Your 250 g daily protein target (stable preference)", &why));
+  TEST_ASSERT_TRUE(why.find("250 g") != std::string::npos);
+  TEST_ASSERT_FALSE(cc.unsourcedFoodTarget("Boba tea is 225 kcal per cup.", nullptr));
+  // A row for the targets file is refused before it lands, by every tool that can write it.
+  for (const auto& call : {std::make_pair("files.append", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":\"2026-11-01,protein_g,250,the plan\"}"),
+                           std::make_pair("files.append", "{\"project\":\"food\",\"name\":\"Food-Targets.csv\",\"text\":\"2026-11-01,protein_g,250,the plan\"}"),
+                           std::make_pair("files.edit", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"find\":\"2200\",\"replace\":\"250\"}"),
+                           std::make_pair("files.edit", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"find\":\"x\",\"replace\":\"2026-11-01,protein_g,250,made up\"}"),
+                           std::make_pair("artifact.save", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"content\":\"date,metric,target,source\\n2026-11-01,protein_g,250,the plan\\n\"}")}) {
+    const std::string refused = cc.targetWriteRefusal(call.first, call.second);
+    TEST_ASSERT_TRUE_MESSAGE(refused.find("nothing was written") != std::string::npos, call.second);
+    TEST_ASSERT_TRUE_MESSAGE(refused.find("250") != std::string::npos, call.second);
+  }
+  // Other files and other tools are none of its business.
+  TEST_ASSERT_EQUAL_STRING("", cc.targetWriteRefusal("files.append", "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"2026-11-01,lunch,soup,250,20\"}").c_str());
+  TEST_ASSERT_EQUAL_STRING("", cc.targetWriteRefusal("memory.write", "{\"text\":\"250\"}").c_str());
+  // Read first, stored second: clean, by any of them.
+  ClaimCheck ok;
+  ok.beginTurn();
+  ok.setSources("", "", parts);
+  ok.noteTool(FxKind::Read, false, "Protein: 150 g a day.");
+  TEST_ASSERT_EQUAL_STRING("", ok.targetWriteRefusal("files.append", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":\"2026-11-01,protein_g,150,the plan\"}").c_str());
+  TEST_ASSERT_EQUAL_STRING("", ok.targetWriteRefusal("files.edit", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"find\":\"250\",\"replace\":\"150\"}").c_str());
+  ok.noteToolArgs("files.append", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":\"2026-11-01,protein_g,150,the plan\"}");
+  ok.noteTool(FxKind::FileWrite, false, "replaced 0 rows, added 1 row in food/food-targets.csv");
+  TEST_ASSERT_EQUAL_STRING("", ok.tailAfterApply("Stored it.").c_str());
+  // The owner's own figure: said with a no in front of it, it is theirs to store.
+  ClaimCheck owner;
+  owner.beginTurn();
+  TurnSources said;
+  said.owner = "No, my target is 2,200 kcal a day.";
+  owner.setSources("", "", said);
+  TEST_ASSERT_EQUAL_STRING("", owner.targetWriteRefusal("files.append", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":\"2026-11-01,kcal,2200,the owner\"}").c_str());
+  TEST_ASSERT_FALSE(owner.unsourcedFoodTarget("Roy's daily target is 2,200 kcal.", nullptr));
+  TEST_ASSERT_EQUAL_STRING("", owner.tailAfterApply("Got it, your daily target is 2,200 kcal.").c_str());
+}
+
+// Bench F03 (v4.9.0): the model stored the plan's protein target, its own row cited a
+// source that also states the kcal target, and the kcal row never landed - no line
+// said so. A partial target store is surfaced: the model gets one round to store the
+// rest or say it is not stored, and the owner sees a note when it still did not land.
+static void test_a_partial_target_store_is_surfaced() {
+  const char* row = "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":"
+                    "\"2026-11-03,protein_g,155,food/plan.md (Daily target: 2,400 kcal and 155 g protein)\"}";
+  const char* kcalRow = "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":"
+                        "\"2026-11-03,kcal,2400,food/plan.md (Daily target: 2,400 kcal and 155 g protein)\"}";
+  const char* reply = "Stored your protein target: 155 g.";
+  // The F03 turn: the plan was read, the protein row appended, the reply cites the
+  // protein figure only. The kcal target the row's own citation states is surfaced.
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    TurnSources parts;
+    parts.owner = "Store my plan's targets.";
+    cc.setSources("", "", parts);
+    FoodFacts facts;   // after the turn's write: the protein row landed, kcal did not
+    facts.targetsKnown = true;
+    facts.proteinTarget = 155;
+    cc.setFoodFacts([facts]() { return facts; });
+    cc.noteTool(FxKind::Read, false, "Daily target: 2,400 kcal and 155 g protein.");
+    cc.noteToolArgs("files.append", row);
+    cc.noteTool(FxKind::FileWrite, false, "appended 1 row(s) to food/food-targets.csv (keyed, 109 B)");
+    const std::string fix = cc.finalCheck(turnJson(reply));
+    TEST_ASSERT_TRUE_MESSAGE(fix.find("2400 kcal") != std::string::npos, fix.c_str());
+    const std::string tail = cc.tailAfterApply(reply);
+    TEST_ASSERT_TRUE_MESSAGE(tail.find("(Note:") != std::string::npos && tail.find("2400 kcal") != std::string::npos,
+                             tail.c_str());
+  }
+  // The device already holds the kcal target: nothing to say.
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources("", "", TurnSources{});
+    FoodFacts facts;
+    facts.targetsKnown = true;
+    facts.kcalTarget = 2400;
+    facts.proteinTarget = 155;
+    cc.setFoodFacts([facts]() { return facts; });
+    cc.noteToolArgs("files.append", row);
+    cc.noteTool(FxKind::FileWrite, false, "appended 1 row");
+    TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson("Done.")).c_str());
+    TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("Done.").c_str());
+  }
+  // A later write in the same turn stores the kcal row: nothing to say.
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources("", "", TurnSources{});
+    FoodFacts facts;
+    facts.targetsKnown = true;
+    facts.proteinTarget = 155;
+    cc.setFoodFacts([facts]() { return facts; });
+    cc.noteToolArgs("files.append", row);
+    cc.noteTool(FxKind::FileWrite, false, "appended 1 row");
+    cc.noteToolArgs("files.append", kcalRow);
+    cc.noteTool(FxKind::FileWrite, false, "appended 1 row");
+    TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson("Done.")).c_str());
+    TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("Done.").c_str());
+  }
+  // The completing write was REFUSED: the kcal target the first write's citation
+  // stated is still unstored, and the refusal must not silence it - only a
+  // landed write clears a metric from the running set.
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources("", "", TurnSources{});
+    FoodFacts facts;
+    facts.targetsKnown = true;
+    facts.proteinTarget = 155;
+    cc.setFoodFacts([facts]() { return facts; });
+    cc.noteToolArgs("files.append", row);
+    cc.noteTool(FxKind::FileWrite, false, "appended 1 row");
+    cc.noteToolArgs("files.append", kcalRow);
+    cc.noteTool(FxKind::FileWrite, true, "quota exceeded");
+    const std::string fix = cc.finalCheck(turnJson(reply));
+    TEST_ASSERT_TRUE_MESSAGE(fix.find("2400 kcal") != std::string::npos, fix.c_str());
+    const std::string tail = cc.tailAfterApply(reply);
+    TEST_ASSERT_TRUE_MESSAGE(tail.find("2400 kcal") != std::string::npos, tail.c_str());
+  }
+  // The write was refused (an error result): nothing landed, nothing to say.
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources("", "", TurnSources{});
+    FoodFacts facts;
+    facts.targetsKnown = true;
+    cc.setFoodFacts([facts]() { return facts; });
+    cc.noteToolArgs("files.append", row);
+    cc.noteTool(FxKind::FileWrite, true, "quota exceeded");
+    TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson("Done.")).c_str());
+    TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("Done.").c_str());
+  }
+  // The targets file could not be read: nothing is said on partial evidence.
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources("", "", TurnSources{});
+    FoodFacts facts;   // targetsKnown false
+    cc.setFoodFacts([facts]() { return facts; });
+    cc.noteToolArgs("files.append", row);
+    cc.noteTool(FxKind::FileWrite, false, "appended 1 row");
+    TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson("Done.")).c_str());
+    TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("Done.").c_str());
+  }
+}
+
+// A reply whose food words are capitalized is read like any other.
+static void test_capitalized_food_words_reach_the_check() {
+  FoodFacts facts;
+  facts.have = true;
+  facts.kcal = 1000;
+  facts.rows = 2;
+  facts.protein = 90;
+  for (const char* reply : {"Protein left: 38.3 g (target 250 g)", "**Protein:** 90 g so far, 38 g left of your 128 g target",
+                            "Calories: 1,000 so far, target 2,500 kcal"}) {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources("", "", TurnSources{});
+    cc.setFoodFacts([facts]() { return facts; });
+    TEST_ASSERT_TRUE_MESSAGE(cc.tailAfterApply(reply).find("no source") != std::string::npos, reply);
+  }
+}
+
+static void test_stale_status_only_on_a_routine() {
+  const char* reply = "That's 7 consecutive days as of 2026-10-14; I don't yet have an update.";
+  ClaimCheck owner;
+  owner.beginTurn();
+  owner.setSources("", "", TurnSources{});
+  TEST_ASSERT_EQUAL_STRING("", owner.tailAfterApply(reply).c_str());   // an owner may ask about the past
+  ClaimCheck routine;
+  routine.beginTurn();
+  routine.setSources("", "", TurnSources{});
+  routine.setRoutineDay("2026-11-01");
+  TEST_ASSERT_TRUE(routine.finalCheck(turnJson(reply)).find("18 days old") != std::string::npos);
+  TEST_ASSERT_TRUE(routine.tailAfterApply(reply).find("(Note: that cites a date 18 days old.") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("", routine.finalCheck(turnJson("Did you do your lesson today?")).c_str());
+}
+
+// Nothing is sent later about a write: a reply that promises it gets the plain line.
+static void test_a_promised_confirmation_gets_the_tail() {
+  ClaimCheck cc;
+  const std::string tail = cc.tailAfterApply("Saving that. I'll confirm it's stored in my next message.");
+  TEST_ASSERT_TRUE(tail.find("no confirmation will follow") != std::string::npos);
+  ClaimCheck ok;
+  TEST_ASSERT_EQUAL_STRING("", ok.tailAfterApply("I'll remember that.").c_str());
 }
 
 static void test_tail_after_apply_uses_the_real_outcomes() {
@@ -207,6 +455,8 @@ static void test_scratch_outcomes_and_permanent_tool_writes() {
   TEST_ASSERT_EQUAL((int)nimbus::orch::kFxPermanent,
                     (int)ClaimCheck::toolCallFlags("memory.write", R"({"content":"x","permanent":true})"));
   TEST_ASSERT_EQUAL(0, (int)ClaimCheck::toolCallFlags("memory.write", R"({"content":"x"})"));
+  TEST_ASSERT_EQUAL((int)nimbus::orch::kFxLogRow, (int)ClaimCheck::toolCallFlags("files.append", R"({"name":"x.csv"})"));
+  TEST_ASSERT_EQUAL((int)nimbus::orch::kFxLogRow, (int)ClaimCheck::toolCallFlags("files.edit", R"({"name":"x.csv"})"));
   TEST_ASSERT_EQUAL(0, (int)ClaimCheck::toolCallFlags("files.read", R"({"permanent":true})"));
   ClaimCheck pin;
   pin.beginTurn();
@@ -489,6 +739,22 @@ static void test_a_write_that_does_not_land_under_a_saved_reply_gets_one_correct
 // "claims: ok n=1" let it through; nothing reached Telegram. A voice claim is backed
 // only by a voice send whose result names Telegram's message_id, with or without
 // hosted tools (a connector never sends this device's voice message).
+// The whole seam the head loop uses, from the tool's name: media.play is the only media call that
+// backs "played it on the speaker".
+static void test_a_played_claim_is_backed_by_media_play_through_the_tool_seam() {
+  const std::string playing = R"({"state":"playing","current":"song.wav","index":0,"count":1,"repeat":false,"tracks":["song.wav"]})";
+  const std::string stopped = R"({"state":"stopped","current":"","index":-1,"count":0,"repeat":false,"tracks":[]})";
+  struct Row { const char* tool; const std::string& out; bool backed; };
+  const Row rows[] = {{"media.play", playing, true}, {"media.pause", playing, false}, {"media.stop", stopped, false}};
+  for (const Row& row : rows) {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.noteTool(agent::fxKindForTool(row.tool), false, row.out, ClaimCheck::toolCallFlags(row.tool, "{}"));
+    const std::string tail = cc.tailAfterApply("Done, I played it on the speaker.", false);
+    TEST_ASSERT_EQUAL_MESSAGE(row.backed, tail.empty(), row.tool);
+  }
+}
+
 static void test_voice_claim_needs_a_telegram_receipt() {
   using nimbus::orch::kFxVoice;
   const std::string voiceArgs = R"({"text":"Here is your evening summary.","voice":true})";
@@ -887,7 +1153,10 @@ static void test_a_log_claim_needs_an_append_that_landed_a_row() {
   const nimbus::orch::ToolTaintRow* rows = nimbus::orch::toolTaintTable(n);
   int writers = 0;
   for (size_t i = 0; i < n; i++) {
-    if (rows[i].effect != nimbus::orch::ToolEffect::FileWrite || std::string(rows[i].name) == "files.append") continue;
+    // files.append and files.edit prove a log change by their own receipts (the table below).
+    const std::string writer = rows[i].name;
+    if (rows[i].effect != nimbus::orch::ToolEffect::FileWrite || writer == "files.append" || writer == "files.edit")
+      continue;
     writers++;
     ClaimCheck cc;
     cc.beginTurn();
@@ -912,6 +1181,26 @@ static void test_a_log_claim_needs_an_append_that_landed_a_row() {
     TEST_ASSERT_EQUAL_MESSAGE(a.backs, cc.finalCheck(turnJson(reply)).empty(), a.out);
     if (!a.backs)
       TEST_ASSERT_EQUAL_STRING("\n\n(Correction: no row was added to a log file this turn.)", cc.tailAfterApply(reply).c_str());
+  }
+  // files.edit changes a log in place: its landed receipt backs the claim, a no-match
+  // (an error, nothing changed) does not.
+  nimbus::orch::EditDecision oneMatch;
+  oneMatch.ok = true;
+  oneMatch.matches = 1;
+  oneMatch.apply = 1;
+  const std::string noChangeEdit = nimbus::orch::renderEditNoChange("food/2026-10-27.csv", oneMatch);
+  struct Edit { const char* out; bool error; bool backs; };
+  const Edit edits[] = {
+      {"edited food/2026-10-27.csv: replaced 1 of 1 match (now 310 bytes)", false, true},
+      {"no match for the find text - nothing changed", true, false},
+      // A replacement identical to the find text: the file was not touched.
+      {noChangeEdit.c_str(), false, false},
+  };
+  for (const Edit& e : edits) {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.noteTool(agent::fxKindForTool("files.edit"), e.error, e.out, ClaimCheck::toolCallFlags("files.edit", csv));
+    TEST_ASSERT_EQUAL_MESSAGE(e.backs, cc.finalCheck(turnJson(reply)).empty(), e.out);
   }
   // The review r2 K1 shape, end to end: correcting a line of a free-text log is a
   // whole-file save (artifact.save; the device's receipt is "saved p/n (N bytes)"), the
@@ -1205,11 +1494,204 @@ static void test_an_idle_tally_name_is_not_a_source_word() {
   }
 }
 
+// QW6: a hosted tool (a connector, a hosted search) cannot drive this device's speaker, so an
+// unbacked "read it aloud" is corrected whether or not one ran this turn; a plain "sent" claim
+// beside a connector run still is not (it may have been an email the device cannot see).
+static void test_a_spoken_claim_is_checked_even_with_hosted_tools() {
+  for (int hosted = 0; hosted < 2; hosted++) {
+    ClaimCheck failed;
+    failed.beginTurn();
+    if (hosted) nimbus::orch::noteHostedRun("gmail");
+    failed.noteTool(FxKind::Speak, true, "volume 0", 0);   // a failed speak
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("\n\n(Correction: that was not spoken aloud.)",
+                                     failed.tailAfterApply("I read it aloud for you.").c_str(), hosted ? "hosted" : "plain");
+    ClaimCheck spoke;
+    spoke.beginTurn();
+    if (hosted) nimbus::orch::noteHostedRun("gmail");
+    spoke.noteTool(FxKind::Speak, false, "spoken on device speaker", 0);
+    TEST_ASSERT_EQUAL_STRING("", spoke.tailAfterApply("I read it aloud for you.").c_str());
+  }
+  // The counter-test: a plain send claim with hosted tools is still not checked.
+  ClaimCheck sent;
+  sent.beginTurn();
+  nimbus::orch::noteHostedRun("gmail");
+  TEST_ASSERT_EQUAL_STRING("", sent.tailAfterApply("I sent it to you.").c_str());
+  sent.beginTurn();   // leaves no run behind for the next test
+}
+
+// CUM-771 through the whole check (the in-turn round and the owner tail): a reply that reports a
+// running total and estimates the rest claims no save, so it is delivered as written; the
+// 23 Oct Lumi reply that DID claim a save is still corrected.
+static void test_a_running_total_reply_is_not_corrected_but_a_save_claim_is() {
+  const char* quiet[] = {
+      "For 2,400 kcal you have 800 left (1,600 logged so far).\n\nThese are estimates. Nothing is logged yet. "
+      "Tell me what you actually eat and I'll add it.",
+      "You're at 1,600 kcal logged, so 800 kcal are left.\n\nWant me to log this once you've eaten?",
+      "Morning total: ~475-505 kcal, ~25-28g protein. I'll check back to log it once it's done.",
+      "You're at 1,652 kcal logged so far today.",
+  };
+  for (const char* reply : quiet) {
+    ClaimCheck cc;
+    cc.beginTurn();
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", cc.finalCheck(turnJson(reply)).c_str(), reply);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", cc.tailAfterApply(reply).c_str(), reply);
+  }
+  const char* claims[] = {
+      "Logged: cappuccino, 52 kcal / 3.6g protein. First item on today's log.",   // 23 Oct, Lumi
+      "2 eggs, 156 kcal logged, so you're at 1,652 kcal so far.",                 // a fresh figure AND a total
+      "3 eggs logged - you're on a roll!",
+      "You're at 1,652 kcal after I logged the eggs.",                            // the assistant logged it
+      "You're at 1,652 kcal and I've logged 156 kcal for the eggs.",
+  };
+  for (const char* reply : claims) {
+    ClaimCheck cc;
+    cc.beginTurn();
+    TEST_ASSERT_FALSE_MESSAGE(cc.finalCheck(turnJson(reply)).empty(), reply);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("\n\n(Correction: that has not been saved.)", cc.tailAfterApply(reply).c_str(),
+                                     reply);
+  }
+}
+
+// ---- the store-time label gate on a food-ledger row (lane LABEL, 2 Nov) -------------------
+// The 13:08 photo's label: 41.0 g protein per serving, 31.3 per 100 g, net 131 g.
+static const char kLabel904[] =
+    "[image 1/1 ref=aaaa] Nutritional values Per 100g Per serving\n"
+    "Energy kJ/kcal 750/179 982/235\n"
+    "Fat 5.6g 7.3g\n"
+    "Carbohydrate 0.9g 1.2g\n"
+    "Protein 31.3g 41.0g\n"
+    "131g e";
+
+static void test_label_row_gate_refuses_the_43_g_row() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  TurnSources parts;
+  parts.owner = std::string("[image 1/1 ref=aaaa] ") + kLabel904;
+  cc.setSources(parts.owner, "", parts);
+  const std::string bad =
+      "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"date,meal,items,kcal,protein_g\\n"
+      "2026-11-02,snack2,\\\"Grilled Chicken Breast Side, full 131 g pack eaten whole [label per serving = whole pack: "
+      "235 kcal, 4.3 g protein]\\\",235,4.3\"}";
+  const std::string refused = cc.labelRowRefusal("files.append", bad);
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("do not add up") != std::string::npos, refused.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("4.3") != std::string::npos, refused.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("Nothing was written") != std::string::npos, refused.c_str());
+  // The correct row passes; the [unverified: ...] path passes.
+  const std::string good =
+      "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"date,meal,items,kcal,protein_g\\n"
+      "2026-11-02,snack2,\\\"Grilled Chicken Breast Side, full 131 g pack eaten whole [label per serving = whole pack: "
+      "235 kcal, 41.0 g protein]\\\",235,41.0\"}";
+  TEST_ASSERT_EQUAL_STRING("", cc.labelRowRefusal("files.append", good).c_str());
+  const std::string unver =
+      "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"2026-11-02,snack2,\\\"Grilled Chicken Breast Side "
+      "[label per serving = whole pack: 235 kcal, 4.3 g protein] [unverified: protein per serving]\\\",235,4.3\"}";
+  TEST_ASSERT_EQUAL_STRING("", cc.labelRowRefusal("files.append", unver).c_str());
+  // Other files and other tools are none of its business.
+  TEST_ASSERT_EQUAL_STRING("", cc.labelRowRefusal("files.append", "{\"project\":\"food\",\"name\":\"food-targets.csv\",\"text\":\"x,4.3\"}").c_str());
+  TEST_ASSERT_EQUAL_STRING("", cc.labelRowRefusal("files.append", "{\"project\":\"notes\",\"name\":\"food-log-notes.md\",\"text\":\"4.3 g protein\"}").c_str());
+  TEST_ASSERT_EQUAL_STRING("", cc.labelRowRefusal("memory.write", "{\"text\":\"4.3 g protein\"}").c_str());
+}
+
+static void test_label_row_gate_refuses_an_unsupported_brand() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  TurnSources parts;
+  parts.owner = "chimichurri beef bowl frive 388 g 557 kcal 38.7 g protein per serving";
+  cc.setSources(parts.owner, "", parts);
+  const std::string row =
+      "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"2026-11-02,dinner,\\\"M&S Chimichurri Beef Bowl, "
+      "full 388 g pack [label per serving = whole pack: 557 kcal, 38.7 g protein]\\\",557,38.7\"}";
+  const std::string refused = cc.labelRowRefusal("files.append", row);
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("m s") != std::string::npos, refused.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("[assumed") != std::string::npos, refused.c_str());
+  // The owner's own words back the brand: it may land.
+  ClaimCheck ok;
+  ok.beginTurn();
+  TurnSources said;
+  said.owner = "the M&S pack you photographed, 388 g";
+  ok.setSources(said.owner, "", said);
+  TEST_ASSERT_EQUAL_STRING("", ok.labelRowRefusal("files.append", row).c_str());
+  // Marked [assumed], it may land too.
+  const std::string assumed =
+      "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"2026-11-02,dinner,\\\"M&S Chimichurri Beef Bowl "
+      "[assumed: brand M&S]\\\",557,38.7\"}";
+  TEST_ASSERT_EQUAL_STRING("", cc.labelRowRefusal("files.append", assumed).c_str());
+}
+
+// The vision-head path: the input block holds the photo only as "(attached)", so the
+// head's own read of the label arrives in its image.note args - the gate must use them
+// (before the fix it read only the input block and the 4.3 g row landed silently).
+static void test_label_row_gate_uses_the_image_note_read() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  TurnSources parts;
+  parts.owner = "[image 1/1 ref=aaaa] (attached)";
+  cc.setSources(parts.owner, "", parts);
+  const std::string bad =
+      "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"2026-11-02,snack2,\\\"Grilled Chicken Breast Side, "
+      "full 131 g pack eaten whole [label per serving = whole pack: 235 kcal, 4.3 g protein]\\\",235,4.3\"}";
+  // No read anywhere yet: nothing to check the row against.
+  TEST_ASSERT_EQUAL_STRING("", cc.labelRowRefusal("files.append", bad).c_str());
+  // The head noted the label it read (image.note): the row is now refused.
+  cc.noteToolArgs("image.note",
+                  "{\"ref\":\"aaaa\",\"note\":\"label per serving = whole pack: 235 kcal, 41.0 g protein, fat 7.3, "
+                  "carb 1.2; per 100 g: 179 kcal, 31.3 g protein; net 131 g\"}");
+  const std::string refused = cc.labelRowRefusal("files.append", bad);
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("do not add up") != std::string::npos, refused.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("4.3") != std::string::npos, refused.c_str());
+  // A write tool's own args never back the row (no self-backing).
+  ClaimCheck self;
+  self.beginTurn();
+  TurnSources sp;
+  sp.owner = "[image 1/1 ref=aaaa] (attached)";
+  self.setSources(sp.owner, "", sp);
+  self.noteToolArgs("files.append", bad);
+  TEST_ASSERT_EQUAL_STRING("", self.labelRowRefusal("files.append", bad).c_str());
+}
+
+// The second read: a stored record of the same photo (another provider's transcription,
+// in the owner's history rows) that disagrees with the reply's figures is surfaced on
+// the final check and the delivered tail - both values, never averaged.
+static void test_second_read_disagreement_is_surfaced() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  TurnSources parts;
+  parts.owner = "what did I eat today?";
+  parts.histOwner =
+      "[image 1/1 ref=aaaa] (transcribed by mistral) " + std::string(kLabel904) + "\n";
+  cc.setSources(parts.owner, "", parts);
+  const std::string reply =
+      "Grilled Chicken Breast Side, whole pack = 235 kcal / 4.3 g protein (per 100 g: 179 kcal / 3.3 g).";
+  const std::string corr = cc.finalCheck(turnJson(reply));
+  TEST_ASSERT_TRUE_MESSAGE(corr.find("second read (mistral)") != std::string::npos, corr.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(corr.find("protein per serving") != std::string::npos, corr.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(corr.find("4.3") != std::string::npos && corr.find("41") != std::string::npos,
+                           corr.c_str());
+  const std::string tail = cc.tailAfterApply(reply);
+  TEST_ASSERT_TRUE_MESSAGE(tail.find("second read (mistral)") != std::string::npos, tail.c_str());
+  // An agreeing reply is quiet.
+  ClaimCheck ok;
+  ok.beginTurn();
+  ok.setSources(parts.owner, "", parts);
+  const std::string good =
+      "Grilled Chicken Breast Side, whole pack = 235 kcal / 41.0 g protein (per 100 g: 179 kcal / 31.3 g).";
+  TEST_ASSERT_EQUAL_STRING("", ok.finalCheck(turnJson(good)).c_str());
+  TEST_ASSERT_EQUAL_STRING("", ok.tailAfterApply(good).c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_a_promised_confirmation_gets_the_tail);
   RUN_TEST(test_consistent_replies_need_no_correction);
   RUN_TEST(test_voice_claim_needs_a_telegram_receipt);
+  RUN_TEST(test_a_spoken_claim_is_checked_even_with_hosted_tools);
+  RUN_TEST(test_a_running_total_reply_is_not_corrected_but_a_save_claim_is);
   RUN_TEST(test_unbacked_claim_gets_one_correction_with_the_record);
+  RUN_TEST(test_food_target_has_a_source_or_a_correction);
+  RUN_TEST(test_food_day_total_is_read_after_the_turns_writes);
+  RUN_TEST(test_a_made_up_target_cannot_become_its_own_source);
+  RUN_TEST(test_capitalized_food_words_reach_the_check);
+  RUN_TEST(test_stale_status_only_on_a_routine);
   RUN_TEST(test_tail_after_apply_uses_the_real_outcomes);
   RUN_TEST(test_scratchpad_durability_fresh_device_and_full_nvs);
   RUN_TEST(test_a_hosted_run_this_turn_leaves_what_it_could_back_unchecked);
@@ -1238,8 +1720,14 @@ int main(int, char**) {
   RUN_TEST(test_repeated_checks_read_the_same_records);
   RUN_TEST(test_an_invented_reason_gets_the_ledger_back);
   RUN_TEST(test_a_save_confirmation_quoting_the_saved_words);
+  RUN_TEST(test_a_played_claim_is_backed_by_media_play_through_the_tool_seam);
   RUN_TEST(test_logged_as_a_memory_entry_is_a_save_not_a_log_row);
   RUN_TEST(test_a_followup_about_the_previous_photo_credits_the_label);
   RUN_TEST(test_an_idle_tally_name_is_not_a_source_word);
+  RUN_TEST(test_label_row_gate_refuses_the_43_g_row);
+  RUN_TEST(test_label_row_gate_refuses_an_unsupported_brand);
+  RUN_TEST(test_label_row_gate_uses_the_image_note_read);
+  RUN_TEST(test_second_read_disagreement_is_surfaced);
+  RUN_TEST(test_a_partial_target_store_is_surfaced);
   return UNITY_END();
 }

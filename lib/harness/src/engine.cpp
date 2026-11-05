@@ -3,7 +3,11 @@
 #include "nimbus/harness/prompt_layout.h"
 #include "nimbus/harness/turn_anatomy.h"   // measureHistory / providerChainHeld (/api/lastturn)
 
+#include "nimbus/harness/turn_fit.h"   // what a request gives up when it does not fit
+#include "nimbus/orch/body_budget.h"   // parseBodyBudgetError - the wire budget's refusal
 #include "nimbus/orch/budget.h"    // deriveBudget - per-turn caps from the head model's window
+#include "nimbus/orch/compact.h"   // isContextOverflowError - a provider's window refusal
+#include "nimbus/orch/reply_guard.h"   // filler, work-shaped messages
 #include "nimbus/orch/compact.h"   // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary (runFold)
 #include "nimbus/orch/connector_grant.h"   // whose connectors a turn's requests carry (CUM-828)
 
@@ -108,6 +112,18 @@ nimbus::orch::ErrorClass errorClassOf(nimbus::orch::StepErr k) {
 // offered only when it can help: a cause in transit (transport, server error or
 // overload, rate limit, timeout). A refused request (bad request, auth, billing, a
 // rejected model, a cut answer) comes back the same, so it gets the plain cause.
+// The refits a request gets on a path with no in-loop refit: the rungs of turn_fit.h.
+constexpr int kSingleShotRefits = 10;
+
+// The bytes a refusal of the request's size asks for; 0 when `err` is no such refusal, or
+// when it is a provider's window and this is not the first try (trim and retry once).
+size_t sizeRefusalBytes(const std::string& err, size_t totalBytes, int tries) {
+  size_t budget = 0, size = 0;
+  if (nimbus::orch::parseBodyBudgetError(err, budget, size)) return size > budget ? size - budget + 512 : 0;
+  if (tries == 0 && nimbus::orch::isContextOverflowError(err)) return nimbus::orch::overflowTrimBytes(err, totalBytes);
+  return 0;
+}
+
 struct OwnerCause {
   std::string text;
   bool        transient = false;
@@ -122,6 +138,9 @@ bool transientKind(nimbus::orch::StepErr k) {
 OwnerCause ownerCause(const std::string& host, const std::string& why) {
   if (why.empty()) return {"the provider gave no response", true};
   if (router_refusal::isRefusalCause(why)) return {why, false};   // an owner sentence with its fix
+  // A context overflow that outlived its trim-and-retry: a plain cause, never the raw
+  // refusal. The chat's fold runs next, so asking again can work.
+  if (nimbus::orch::isContextOverflowError(why)) return {"this conversation is too long for " + host + " right now", true};
   int status = 0;
   const nimbus::orch::StepErr k = nimbus::orch::classifyStepError(why, &status);
   const bool untyped = status == 0 && k == nimbus::orch::StepErr::Transport &&
@@ -513,7 +532,10 @@ std::string TurnEngine::foldHeldNotices() {
   std::string out;
   for (const HeldNotice& n : heldNotices_) {
     if (n.latchHost.empty()) continue;   // a switch notice: its cause is in the final notice
-    const std::string line = n.kind == orch::StepErr::Auth
+    const orch::ParkCause cause = orch::providerPark().causeOf(n.latchHost.c_str());
+    const std::string line = cause != orch::ParkCause::Unspecified
+                                 ? std::string(orch::parkCauseFix(cause)) + "."
+                             : n.kind == orch::StepErr::Auth
                                  ? "Update " + providerLabel(n.latchHost) + "'s key under Assistant > Models."
                                  : "Add credit on " + n.latchHost + "'s billing page.";
     if (out.find(line) == std::string::npos) out += (out.empty() ? "" : " ") + line;
@@ -526,6 +548,12 @@ std::string TurnEngine::foldHeldNotices() {
 
 void TurnEngine::deliverFailure(const std::string& chatId, const std::string& head, int activeJobs,
                                 const std::string& advice, bool nothingRan) {
+  if (rawResultsFollow_) {
+    hlog::logf("orchestrator: %s (the raw results follow)", head.c_str());
+    const std::string held = foldHeldNotices();
+    if (!held.empty()) deliver(chatId, held);
+    return;
+  }
   std::string text = head;
   if (nothingRan) {
     text += " Your message was not answered.";
@@ -553,12 +581,17 @@ void TurnEngine::deliverFailure(const std::string& chatId, const std::string& he
 // them).
 void TurnEngine::deliverParkedRefusal(const std::string& chatId, const std::string& host, orch::StepErr kind,
                                       int activeJobs, bool nothingRan) {
-  const bool key = kind == orch::StepErr::Auth;
+  // A park the router named keeps the router's reason: a suspended account is not a bad
+  // key, a key's own budget is not an empty wallet.
+  const orch::ParkCause cause = orch::providerPark().causeOf(host.c_str());
+  const bool key = kind == orch::StepErr::Auth && cause == orch::ParkCause::Unspecified;
   const std::string label = providerLabel(host);
   const std::string notice =
-      key ? "That didn't finish - " + label + " rejected its key. Update it under Assistant > Models."
-          : "That didn't finish - " + label +
-                " says the account is out of credit. Add credit on its billing page, or switch providers.";
+      cause != orch::ParkCause::Unspecified
+          ? "That didn't finish - " + orch::parkCauseNotice(label, cause, std::string())
+      : key ? "That didn't finish - " + label + " rejected its key. Update it under Assistant > Models."
+            : "That didn't finish - " + label +
+                  " says the account is out of credit. Add credit on its billing page, or switch providers.";
   if (holdingNotices()) {
     deliverFailure(chatId, notice, activeJobs, "", nothingRan);
     return;
@@ -566,6 +599,13 @@ void TurnEngine::deliverParkedRefusal(const std::string& chatId, const std::stri
   const bool ownerWrote = turnSource_ == TurnSource::Owner || turnSource_ == TurnSource::Serial;
   const orch::RefusalTurnAnswer answer = orch::refusalTurnAnswer(host.c_str(), ownerWrote);
   if (answer == orch::RefusalTurnAnswer::Notice) {
+    if (rawResultsFollow_) {
+      // The latch is taken: this is the one time the owner is told. The raw results say what
+      // came back, and only this says what to do about the summaries that stopped.
+      const std::string held = foldHeldNotices();
+      deliver(chatId, held.empty() ? notice : notice + " " + held);
+      return;
+    }
     deliverFailure(chatId, notice, activeJobs, "", nothingRan);
     return;
   }
@@ -993,7 +1033,7 @@ std::string TurnEngine::buildStableCatalogs(bool modelsTool, bool headCallsTools
 struct TurnEngine::ApplyCapture {
   TurnEngine* e = nullptr;
   std::function<void(const std::string&, const std::string&)> capture;
-  std::function<void(const std::string&)> speak;
+  std::function<orch::SpeakOutcome(const std::string&, const std::string&)> speak;
 
   ApplyCapture(TurnEngine* eng, bool hasReply) {
     if (!eng->histV2On() || !eng->d_.apply.captureAssistant) return;
@@ -1012,9 +1052,10 @@ struct TurnEngine::ApplyCapture {
       e->outKind_.clear();
     };
     if (speak)
-      e->d_.apply.speak = [this](const std::string& text) {
-        e->nextSpoken_ = true;
-        speak(text);
+      e->d_.apply.speak = [this](const std::string& chat, const std::string& text) {
+        const orch::SpeakOutcome o = speak(chat, text);
+        e->nextSpoken_ = o.ok();   // apply captures the tts line next, only when something was voiced
+        return o;
       };
   }
   ~ApplyCapture() {
@@ -1042,6 +1083,7 @@ TurnSources TurnEngine::claimSources(const std::string& chatId, const std::strin
     parts.subRuns.add(nimbus::orch::runsInRecord(f.provenance));   // CUM-835
   }
   parts.memory = turnMem().memBody;
+  parts.rules = ci.standingPrefs;
   if (d_.jobs) parts.ledger = d_.jobs->spawnLedgerText(chatId);
   for (const HistMsg& m : ci.history)
     if (m.user) parts.histOwner += m.text + "\n";
@@ -1090,6 +1132,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // meant an allowlisted chat. No second closure: the static config stays as it was.
   turnFileSend_ = telegram && (!isTelegramChat(chatId) || telegramOn(std::string()));
   toolReplied_ = false;
+  toolReplyTexts_.clear();
   lastBrief_.clear();  // per-turn: a single-shot turn must not inherit the last loop's brief
   heldNotices_.clear();   // L19-13 d: this turn's switch notices start empty
   // Lane L: sub-agent results folded into this turn are external content (the
@@ -1212,6 +1255,16 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // starts is live for the NEXT turn's full set. Rendering only: `specs` is the
   // one list the prompt's tool list, the wire and the dispatch map all read.
   const bool liveSessions = d_.jobs && !d_.jobs->sessionInfos().empty();
+  // What stands behind "I'll report back": a live sub-agent stands behind any promise; a routine
+  // or wakeup set for this chat, or the routine this turn is a run of, behind a promise to report.
+  const orch::LaterWork laterAtStart =
+      liveSessions ? orch::LaterWork::Live
+                   : (routineRecurs_ || (d_.standingWork && d_.standingWork(chatId))) ? orch::LaterWork::Standing
+                                                                                      : orch::LaterWork::None;
+  auto laterBehind = [&]() {
+    return d_.jobs && d_.jobs->activeCount() > 0 ? orch::LaterWork::Live : laterAtStart;
+  };
+  claims_.setLaterWork(laterBehind());
   if (!liveSessions)
     specs.erase(std::remove_if(specs.begin(), specs.end(),
                                [](const orch::ToolRegistry::Spec& s) {
@@ -1254,7 +1307,14 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // history's USER rows name the previous message's photo or label (the review).
     // Lane CTX: the ledger shown is a source. Its words ride the composed prompt
     // (lastInstructions_, set at compose below), so the quote rule sees them too.
-    claims_.setSources(inputs + loadFoodLedger(chatId), rec, claimSources(chatId, userText, ci));
+    const std::string ledgerBlock = loadFoodLedger(chatId);
+    TurnSources sources = claimSources(chatId, userText, ci);
+    if (ledger_.targets.kcal > 0) sources.targets += std::to_string((long)ledger_.targets.kcal) + " ";
+    if (ledger_.targets.protein > 0) sources.targets += std::to_string((long)ledger_.targets.protein);
+    claims_.setSources(inputs + ledgerBlock, rec, sources);
+    claims_.setFoodFacts([this, chatId]() { return currentFoodFacts(chatId); });
+    if (turnSource_ == TurnSource::Loop && d_.platform.nowEpoch)
+      claims_.setRoutineDay(nimbus::orch::logDayOf((time_t)d_.platform.nowEpoch(), true).date);
     claims_.setQuoteContext(&lastInstructions_, &inputs);   // filled at compose, below
   }
   // W10 (prism): the speaker line is for a REAL human message only. The device
@@ -1290,6 +1350,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   } else if (!ci.chatSummary.empty()) {
     ci.history = renderHistory({}, ci.chatSummary, 0);   // the summary pair alone
   }
+  {
+    // The owner's own earlier messages may state a target (the summary pair is not theirs).
+    std::string ownerRows;
+    for (const HistMsg& m : ci.history)
+      if (m.user && m.text.rfind(kSummaryUserHead, 0) != 0) ownerRows += m.text + "\n";
+    claims_.noteOwnerHistory(ownerRows);
+  }
   turnMem().gate.phase("history", freeHeap(), largestFreeBlock());
   // R3: this chat's TTL table choice and its per-chat cache key.
   turnGaps_.note(chatId, nowMs());
@@ -1310,7 +1377,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // (a cached-manifest property), never this turn's heap gate.
   ci.toolsOnWire = d_.cfg.loop.toolLoopOn && d_.cfg.loop.toolLoopOn();
   ci.loopRounds = d_.cfg.loop.rounds ? d_.cfg.loop.rounds() : kLoopRoundsDefault;
-  if (bounds_) ci.loopRounds = std::min(ci.loopRounds, bounds_->maxRounds);   // a bounded turn's cap
+  int roundsNow = ci.loopRounds;
+  if (bounds_) roundsNow = std::min(roundsNow, bounds_->maxRounds);   // a bounded turn's cap
   // EFF (token burn, 26 Oct analysis): a PLAIN conversational turn - the owner's
   // message and nothing else: no photo in flight, no fresh or parked results, no
   // running session, none of the unattended shapes - gets a small tool-round
@@ -1323,6 +1391,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       !bounds_ && !scheduledTurn_ && !quietTurn_ && !dreamTurn_ && !freshInTurn_ && !liveSessions &&
       (!orch::activeTurnImages() || orch::activeTurnImages()->items.empty()) &&
       turnMem().memBody.empty() &&   // the taken [MEMORY RESULTS] block (never user text)
+      !orch::asksForWork(userText) &&   // VN, 1 Nov: "Use a web lookup..." is a real task, not chat
       !ledger_.hasRows();   // PRISM row 1: the [TODAY'S FOOD LEDGER] block is live data
   // (a person's rows today ride the prompt, day_context.cpp). The pre-5.0.0 eval
   // showed the capped coach answering the day total from MEMORY instead of
@@ -1331,9 +1400,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // below target; sonnet held). A turn with rows keeps the full budget; the
   // cap still holds for every chat with no rows today.
   if (conversational) {
-    ci.loopRounds = std::min(ci.loopRounds, 2);
-    hlog::logf("orchestrator: plain conversational turn - tool rounds capped at %d", (int)ci.loopRounds);
+    roundsNow = std::min(roundsNow, 2);
+    hlog::logf("orchestrator: plain conversational turn - tool rounds capped at %d", roundsNow);
   }
+  ci.loopRoundsNow = roundsNow;
   // CUM-523: the turn's one sample (unwired = true, wording unchanged). It also
   // narrows the manifest's Telegram flag, so the capability line never offers a
   // channel the tool list just withheld.
@@ -1353,9 +1423,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // R5: the model lists move behind models.list when the head can call it: the
   // CONFIG's tool loop is on (toolsOnWire - the same cached-manifest property
   // as the capability list, never this turn's heap gate), the tool is
-  // registered, and the head is one with a tool loop (the custom-dialect heads,
-  // Z.ai and a custom endpoint, run single-shot: custom.cpp advertises no tool,
-  // so they keep the inline lists). PRISM row 1: modelsTool used to key on
+  // registered, and the head is one with a tool loop (a custom endpoint runs
+  // single-shot: custom.cpp advertises it no tool, so it keeps the inline lists).
+  // PRISM row 1: modelsTool used to key on
   // ci.loopOn (the per-turn heap gate), so a device near the loop-heap band
   // flipped the CACHED static block between the pointer line and the inline
   // lists on alternating turns, busting the static-prefix cache each flip -
@@ -1458,6 +1528,21 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       ev.round = round;
       d_.hooks.onThinking(ev);
     };
+    // Round-boundary observer (lane PROG): every boundary of the running loop
+    // reaches the hook spine, so a surface can keep its "working" signal alive
+    // and pick up messages that arrived meanwhile. cfg.maxRounds is read at
+    // fire time (it is finalized below, before the loop runs).
+    headTools.onRoundProgress = [this, &headTools](const orch::HeadProgress& hp) {
+      if (!d_.hooks.onTurnProgress) return;
+      TurnProgressEv ev;
+      ev.chatId = curChat_;
+      ev.round = hp.round;
+      ev.elapsedMs = hp.elapsedMs;
+      ev.lastRound = hp.lastRound;
+      ev.tools = hp.tools;
+      ev.maxRounds = headTools.cfg.maxRounds;
+      d_.hooks.onTurnProgress(ev);
+    };
     // Canonical-transcript observer (Glass Box P3): each loop hands its brief
     // over on the way out (success OR failure) so the turn dossier can carry the
     // tool loop's actual middle, not just the turn's entry and exit.
@@ -1500,6 +1585,27 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
           return done(r);
         }
       }
+      // A daily target nothing this turn holds is never stored (food_figures.h).
+      {
+        std::string refusal = claims_.targetWriteRefusal(regName, call.argsJson);
+        if (!refusal.empty()) {
+          r.isError = true;
+          r.output = std::move(refusal);
+          hlog::logf("claims: refused a targets write (%s)", regName.c_str());
+          return done(r);
+        }
+      }
+      // A labelled food-ledger row that fails the label's own arithmetic, or that
+      // asserts a brand/detail no turn source holds, is never stored (food_label.h).
+      {
+        std::string refusal = claims_.labelRowRefusal(regName, call.argsJson);
+        if (!refusal.empty()) {
+          r.isError = true;
+          r.output = std::move(refusal);
+          hlog::logf("claims: refused a ledger row (%s)", regName.c_str());
+          return done(r);
+        }
+      }
       JsonDocument rq;
       rq["jsonrpc"] = "2.0";
       rq["id"] = 1;
@@ -1537,9 +1643,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         orch::HeadToolResult r = inner(call);
         auto it = nameMap->find(call.name);
         const std::string& regName = (it != nameMap->end()) ? it->second : call.name;
-        const uint8_t flags = ClaimCheck::toolCallFlags(regName, call.argsJson);
+        const uint16_t flags = ClaimCheck::toolCallFlags(regName, call.argsJson);
         claims_.noteToolArgs(regName, call.argsJson);   // the words a write saved: seen when it lands
-        claims_.noteTool(fxKindForTool(regName), r.isError, r.output, flags);
+        claims_.noteTool(fxKindForTool(regName), r.isError, r.output, flags, regName);
         return r;
       };
     }
@@ -1606,8 +1712,33 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     headTools.cfg.validateFinal = orch::chainFinalChecks({
         [pseudo](const std::string& finalTurn) { return turnShapeCorrection(finalTurn, pseudo.get()); },
         [this](const std::string& finalTurn) { return claims_.finalCheck(finalTurn, /*skipSpawned=*/true); },
+        [&userText](const std::string& finalTurn) { return orch::placeholderCheck(finalTurn, userText); },
+        // Lane POL2: internal plumbing (memory ids, job ids, storage wording,
+        // device paths) never reaches the owner; one correction round fixes it.
+        [](const std::string& finalTurn) { return orch::plumbingCheck(finalTurn); },
+        // An empty reply gets one more try, on every provider. Only a turn with nothing to
+        // say goes without one: scheduled, quiet, or one a tool or a sub-agent answers.
+        [this, pseudo](const std::string& finalTurn) {
+          const orch::TurnEffects& fx = claims_.effects();
+          if (scheduledTurn_ || quietTurn_ || toolReplied_ || fx.anyOk(orch::FxKind::Spawn) ||
+              fx.anyOk(orch::FxKind::Send) || fx.anyOk(orch::FxKind::Speak))
+            return std::string();
+          return emptyAnswerCorrection(finalTurn, pseudo.get());
+        },
     });
-    headTools.cfg.maxRounds          = ci.loopRounds;   // user-tunable (P6); the prompt states the same cap
+    // The forced round too: no real answer means one more tool-less round (VN, 1 Nov: the
+    // literal "placeholder" went to the owner). The turn's end holds the line after it.
+    headTools.cfg.forcedFinalCheck = [&userText](const std::string& finalTurn) {
+      return orch::placeholderCheck(finalTurn, userText);
+    };
+    // Lane POL2: a prose final answer is the owner-facing reply too (glm-5.3
+    // answered in the text channel with a memory id and the orch_turn check
+    // never saw it): the plumbing check holds on the prose itself, same
+    // one-round budget.
+    headTools.cfg.validateProseFinal = [](const std::string& prose) {
+      return orch::plumbingCheckText(prose);
+    };
+    headTools.cfg.maxRounds          = roundsNow;   // user-tunable (P6); the prompt states the same cap
     headTools.cfg.deadlineMs         =
         (uint32_t)(d_.cfg.loop.deadlineS ? d_.cfg.loop.deadlineS() : 600) * 1000U;
     headTools.cfg.roundMinHeap       = t_.loopMinHeap;                 // total-free backstop - not tunable
@@ -1632,6 +1763,23 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   }
   turnMem().gate.phase("tools", freeHeap(), largestFreeBlock());
 
+  // What the request gives up when it does not fit, and what it says about it (turn_fit.h).
+  TurnFit fit(ci, inputs, headToolsPtr ? &headTools : nullptr);
+  std::function<std::string()> requestInputs;   // the input as the running attempt sends it
+  auto takeFit = [&]() {
+    instructions = fit.instructions();
+    lastInstructions_ = layout::display(instructions);
+  };
+  if (headToolsPtr)
+    headTools.fitPrompt = [&](size_t want, orch::FitScope scope, std::string& ins, std::string& inp) -> size_t {
+      const size_t freed = fit.shrink(want, scope);
+      if (!freed) return 0;
+      takeFit();
+      ins = d_.requestPrompt ? d_.requestPrompt(instructions) : instructions;
+      // The fabric leads each request itself (inputLead); a single host's loop gets it here.
+      inp = headTools.inputLead || !requestInputs ? fit.inputs() : requestInputs();
+      return freed;
+    };
   std::string outJson, err;
   // Lifecycle hook: turn end - fired exactly once on EVERY exit path below
   // (budget refusal, provider failure, parse fail, success), observer-only.
@@ -1687,6 +1835,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.attribution = attribution_;
     ev.spend = &tf.spend;
     ev.chain = okFlag ? nullptr : &tf.chain;
+    ev.trimmedForSize = fit.historyTrimmed();
     d_.hooks.onTurnEnd(ev);
   };
   // L24: under the floor at its provider request the turn ends before asking, with
@@ -1715,7 +1864,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // the input (lane HFM; the cached system prompt carries none of it). Rebuilt per host tried.
   std::string turnInputs = inputs;
   auto inputsFor = [&](const std::string& h) -> const std::string& {
-    turnInputs = runsOnText(d_, h, requestedHost) + inputs;
+    turnInputs = runsOnText(d_, h, requestedHost) + (fit.trimmed() ? fit.inputs() : inputs);
     return turnInputs;
   };
   auto runTurnHost = [&](const std::string& h, std::string& cv) -> bool {
@@ -1731,6 +1880,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     const std::string model = d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h) : std::string();
     const bool blind = photos && !photos->empty() && !(headToolsPtr && orch::headTakesImages(h, model));
     const std::string& in = inputsFor(h);
+    requestInputs = [&, blind, h, photos]() -> std::string {
+      const std::string& now = inputsFor(h);
+      return blind ? photos->blindText(now) : now;
+    };
     auto fileAttempt = [&] {
       tf.spend.add(h.c_str(), d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", attempt);
     };
@@ -1947,7 +2100,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       if (d_.hosts.isParked(alt)) continue;
       hlog::logf("orchestrator: %s is parked (%s) - starting on %s", host.c_str(),
                  orch::stepErrSlug(why.kind), alt.c_str());
-      if (why.kind == orch::StepErr::Billing)   // told already, unless a quiet turn held it
+      if (why.cause != orch::ParkCause::Unspecified)
+        holdNotice("\xE2\x9A\xA0\xEF\xB8\x8F " + orch::parkCauseNotice(providerLabel(host), why.cause, alt), host, why.kind);
+      else if (why.kind == orch::StepErr::Billing)   // told already, unless a quiet turn held it
         holdNotice("\xE2\x9A\xA0\xEF\xB8\x8F " + orch::billingNotice(host, why.httpStatus, alt), host, why.kind);
       else if (why.kind == orch::StepErr::Auth)
         holdNotice("\xE2\x9A\xA0\xEF\xB8\x8F " + orch::keyNotice(host, why.httpStatus, alt), host, why.kind);
@@ -2012,6 +2167,33 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     inputsFor(host);   // the debug capture shows the input as the final host's requests carried it
   } else {
     ok = !startPastParkedHead() && runTurnHost(host, convId);
+    // No in-loop refit on this path (a single-shot head, a loop without the fabric). Nothing
+    // ran, so the request is fitted and sent again: until it fits for the wire budget, once
+    // for a provider's window. The ladder below takes over from there, on the trimmed prompt.
+    size_t budget = 0, size = 0;   // the wire budget's figures, read to tell the two refusals apart
+    for (int tries = 0; !ok && *loopDispatched == 0 && tries < kSingleShotRefits; ++tries) {
+      // A window refusal the head's own loop already trimmed for has had its one retry.
+      const size_t want = sizeRefusalBytes(err, instructions.size() + inputs.size(), fit.trimmed() ? tries + 1 : tries);
+      if (!want) break;
+      // A window refusal has one retry, so it takes the whole ladder; the wire budget's next
+      // build checks the work, so it gives up one rung at a time.
+      size_t freed = fit.shrink(want, orch::FitScope::OlderHistory);
+      if (freed < want && !orch::parseBodyBudgetError(err, budget, size))
+        freed += fit.shrink(want - freed, orch::FitScope::Ladder);
+      else if (!freed)
+        freed = fit.shrink(want, orch::FitScope::NextRung);
+      if (!freed) break;
+      takeFit();
+      hlog::logf("orchestrator: %s refused the request for its size - gave up %u B, sending it again", host.c_str(),
+                 (unsigned)freed);
+      turnStartMs_ = nowMs();   // a live attempt, not a stuck turn (see the retry below)
+      convId = "";
+      ok = runTurnHost(host, convId);
+    }
+  }
+  if (fit.trimmed()) {
+    const std::string line = fit.ownerLine();
+    if (!line.empty()) holdNotice(line);
   }
   // Retry/failover ONLY when no loop tool executed: a replay re-runs the whole tool
   // loop, duplicating side effects (memory writes, spawns). Once tools ran, a failed
@@ -2124,13 +2306,20 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // a provider fault. Salvage what it wrote (when the adapter kept the partial
     // turn) with the honest marker, capture it, and record the cut.
     if (orch::isCutError(err)) {
-      const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true);
+      const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true, laterBehind());
       if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
       const std::string fold = foldHeldNotices();   // L19-13 d: one message
+      // With no text to keep, what the turn did run is still told (Lumi, 31 Oct: four
+      // tools ran, then "how did you fail without getting back to me?").
+      std::string said = so.text;
+      if (!so.salvaged) {
+        const std::string work = workDoneLine(lastBrief_);
+        if (!work.empty()) said += " " + work;
+      }
       // deliver() captures the row: one message the owner received (salvage text
       // plus any folded credit line), one history row. Salvaged text is the model's
       // own: handed over, the fire spoke (CUM-826).
-      deliver(chatId, fold.empty() ? so.text : so.text + "\n\n" + fold, /*modelText=*/so.salvaged);
+      deliver(chatId, fold.empty() ? said : said + "\n\n" + fold, /*modelText=*/so.salvaged);
       err = "cut: " + err;
       fireTurnEnd(false, so.salvaged ? so.text.size() : 0);
       return false;
@@ -2253,7 +2442,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // fenced, possibly cut short), and only its top-level reply/ask - never the
     // raw text and never a nested field. A cut answer gets the honest marker; the
     // delivered text is captured so the next turn sees what the owner saw.
-    const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false);
+    const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false, laterBehind());
     if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
     deliver(chatId, so.text, /*modelText=*/so.salvaged);   // captured as the row; salvaged text spoke
     err = (so.cut ? "cut: " : "parse: ") + perr.detail;
@@ -2269,6 +2458,18 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // the screen) ever gets reasoning, tool-call markup or a wrapper tag.
   turn.reply = orch::cleanReplyMarkup(turn.reply);
   turn.ask = orch::cleanReplyMarkup(turn.ask);
+  // Template filler is not an answer, on any provider and any path (a single shot, a prose
+  // head, a forced round that repeated it): the turn failed, and nothing in it is applied.
+  if (orch::isPlaceholderReply(turn.reply, userText)) {
+    hlog::logf("orchestrator: %s answered with template filler (%u B) - not delivered", host.c_str(),
+               (unsigned)turn.reply.size());
+    err = "placeholder: the model wrote template filler instead of an answer";
+    tf.chain.note(host, err);
+    deliverFailure(chatId, "That didn't finish - " + providerLabel(host) + " did not write an answer.",
+                   d_.jobs ? d_.jobs->activeCount() : 0, "ask again to retry", *loopDispatched == 0);
+    fireTurnEnd(false, 0);
+    return false;
+  }
   // Lane L (formatting F1): fields recovered from leaked tool markup carry
   // actions, and quoted external content (a mail body, a web page) can carry
   // the same markers - so they apply only on an attended owner turn that read
@@ -2294,6 +2495,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   st.scheduledTurn       = scheduledTurn_;
   st.quietFallback       = quietTurn_;
   st.toolRepliedThisTurn = toolReplied_;
+  st.toolReplyTexts      = toolReplyTexts_;
   st.riskNote            = riskNote_;
   PendingMem& parked     = pendingMemResults_[chatId];   // this chat's next turn only
   st.pendingMemResults   = &parked.body;
@@ -2335,6 +2537,18 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     agent::applyTurn(turn, chatId, d_.apply, st, spawned);
   }
   parkMemResults(chatId);
+  // Lane POL2: the open-question list observes the completed turn (a reply that
+  // mentions an item marks it raised; the owner's message re-opens or withdraws
+  // one). Unwired = a host without the store. Attended owner turns only: a
+  // routine, wakeup or synthesis prompt is not the owner speaking, and letting
+  // it observe would let an unattended reply mark a topic raised or drop an
+  // item the owner never mentioned (the same rail the openq tool enforces).
+  const bool attendedOwnerTurn = !scheduledTurn_ && turnSource_ != TurnSource::Synthesis &&
+                                 turnSource_ != TurnSource::Loop;
+  if (d_.openqObserve && !userText.empty() && attendedOwnerTurn) {
+    const std::string openqLog = d_.openqObserve(chatId, userText, turn.reply);
+    if (!openqLog.empty()) hlog::log(openqLog.c_str());
+  }
   riskNote_  = st.riskNote;   // consumed (cleared) by the portable apply
   lastReply_ = st.lastReply;  // Local Loops semantic-repeat hash
   // Lane L: whether this turn put anything in front of the owner (the
@@ -2443,7 +2657,7 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
   turnMem().beginEntry();
   // Snapshot the fresh block BEFORE consumption: if the synthesis turn fails
   // (provider outage / failover exhausted), the results must still reach the
-  // owner RAW - takeFreshResults() frees the entries, so without this snapshot a
+  // owner RAW - takeFreshResultsFor() frees the entries, so without this snapshot a
   // failed turn silently destroyed completed sub-agent work (review finding,
   // 2026-07-13: the "60 s fallback" only covers the PRE-consumption defer case).
   // The owner gets the HUMAN rendering (CUM-480), never the model-facing seed.
@@ -2471,6 +2685,9 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
     lastTurnSpoke_ = false;
     setTrigger("[sub-agent results arrived]", "synth");
     turnMem().admitted = true;   // runTurn continues this record
+    // CUM-886: a failed synthesis is followed by the raw results, which say what happened:
+    // no second message saying "Your message was not answered" to nobody.
+    rawResultsFollow_ = !ownerRaw.empty();
     ok = runTurn(inputs, chatId, "");
   } catch (const std::bad_alloc&) {   // before its turn began: nothing was asked or billed
     try {
@@ -2479,6 +2696,7 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
     } catch (...) {
     }
   }
+  rawResultsFollow_ = false;
   triggerPending_ = false;
   unverifiedTurn_ = false;
   freshInTurn_ = false;
@@ -2675,6 +2893,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   heldReply_.clear();
   scheduledTurn_ = true;
   quietTurn_ = quietOk;
+  routineRecurs_ = !once && !ownerReminder && !loopId.empty() && !dream::isReserved(loopId);
   attribution_ = loopId.empty() ? "loop" : ("loop:" + loopId);   // spend attribution
   turnSource_ = TurnSource::Loop;
   loopName_ = name;   // the [FALLBACK] note names the routine a switch happened in
@@ -2709,7 +2928,8 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
         "with one short line that says what it is and, if you changed anything, what "
         "you did.\n\n"
       : "\n[SCHEDULED LOOP]\nYour recurring task \"" + name + "\" is firing on its schedule. "
-        "There is no new owner message - do the task now and reply to the owner concisely.\n\n";
+        "There is no new owner message - do the task now and reply to the owner concisely. A record "
+        "older than a week is history, not the state of things: ask for an update instead of citing it.\n\n";
   // CUM-523: a one-shot (wakeup / reminder) is answered where it was set. Saying
   // so stops the model sending a "separate alert" down another channel - the web
   // reminder's turn did exactly that on a Telegram-less device.
@@ -2760,6 +2980,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   triggerPending_ = false;
   scheduledTurn_ = false;
   quietTurn_ = false;
+  routineRecurs_ = false;
   dreamTurn_ = false;
   attribution_ = "turn";                       // back to the owner default
   turnSource_ = TurnSource::Owner;
@@ -2787,6 +3008,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   triggerPending_ = false;
   scheduledTurn_ = false;
   quietTurn_ = false;
+  routineRecurs_ = false;
   dreamTurn_ = false;
   turnSource_ = TurnSource::Owner;
   nimbus::orch::FireOutcome o;
@@ -2921,6 +3143,62 @@ bool TurnEngine::canFoldNow() const {
   return !foldHostCandidates().empty();
 }
 
+namespace {
+// Its re-check is due and a chat answer would settle it. A park on one seam (a 403 for one
+// model or endpoint) is that seam's to re-check: a chat answer says nothing about it.
+bool parkEntryDueForChat(const nimbus::orch::ParkEntry& e) {
+  namespace orch = nimbus::orch;
+  const bool chatSeam = e.seamMask & (1u << (uint8_t)orch::PaidSeam::Chat);
+  return e.kind != orch::ParkKind::None && !e.paused && !e.probing && e.recheckInMs == 0 && chatSeam;
+}
+}  // namespace
+
+// The idle re-check (CUM-889): a parked provider that nothing else calls (Cumulo last in
+// the priority list on a device whose head answers every turn) still recovers by itself.
+// A host whose re-check is due gets one small real request, the fold's way (no turn state
+// touched, single shot, no tools, metered), and its answer goes to the park like any
+// other: answered ends the park, a refusal re-parks quietly, anything else waits another
+// interval. A refusal bills nothing and an answer ends the episode, so a parked provider
+// costs at most one short reply per recovery.
+bool TurnEngine::recheckParkedHost() {
+  namespace orch = nimbus::orch;
+  if (turnInFlight_ || !turnHeapOk(freeHeap(), largestFreeBlock(), t_.autoTurnMinHeap, t_.turnMinLargestBlock))
+    return false;
+  if (!orch::paidCallAllowed(orch::SpendSeam::Fold)) return false;
+  orch::ParkEntry e[orch::ProviderPark::kMaxProviders];
+  const size_t n = orch::providerPark().snapshot(e, orch::ProviderPark::kMaxProviders, nowMs());
+  for (size_t i = 0; i < n; ++i) {
+    if (!parkEntryDueForChat(e[i])) continue;
+    const std::string h = e[i].provider;
+    if (!recheckableHost(h)) continue;
+    askParkedHost(h);
+    return true;
+  }
+  return false;
+}
+
+// The host can be asked now: registered, keyed, in budget and not closed since the snapshot.
+bool TurnEngine::recheckableHost(const std::string& h) const {
+  if (!d_.hosts.has(h)) return false;
+  if (d_.cfg.provider.hasKey && !d_.cfg.provider.hasKey(h)) return false;
+  if (d_.cfg.budget.overBudget && d_.cfg.budget.overBudget(h)) return false;
+  return !d_.hosts.isParked(h);
+}
+
+void TurnEngine::askParkedHost(const std::string& h) {
+  namespace orch = nimbus::orch;
+  hlog::logf("park: asking %s with one small request: nothing else is calling it", h.c_str());
+  std::string convId, outJson, err;
+  orch::TokenUsage u;
+  const bool ok = d_.hosts.run(h, convId, orch::ORCH_PARK_RECHECK_PROMPT, "ok", outJson, err, /*tools=*/nullptr, &u);
+  orch::TurnSpend& spend = facts().spend;
+  spend.clear();
+  spend.add(h.c_str(), d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", u);
+  meterSpend(spend, "recheck");
+  if (ok) d_.hosts.noteAnswered(h);
+  else d_.hosts.noteFailed(h, err);
+}
+
 TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
                                            const std::string& prevSummary,
                                            const std::string& digest,
@@ -2966,6 +3244,7 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
   // turn). The turn's spend table is free here: a fold never runs while a turn does.
   orch::TurnSpend& foldSpend = facts().spend;
   foldSpend.clear();
+  orch::Turn t;
   for (const auto& h : hostsToTry) {
     std::string convId;
     outJson.clear(); err.clear();
@@ -2973,19 +3252,28 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
     ok = d_.hosts.run(h, convId, orch::ORCH_COMPACT_PROMPT, inputs,
                       outJson, err, /*tools=*/nullptr, &u);
     foldSpend.add(h.c_str(), d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", u);
-    if (ok) { d_.hosts.noteAnswered(h); host = h; usage = u; break; }
-    d_.hosts.noteFailed(h, err);
-    hlog::logf("fold(%s): %s failed: %s", chatId.c_str(), h.c_str(), err.c_str());
+    if (!ok) {
+      d_.hosts.noteFailed(h, err);
+      hlog::logf("fold(%s): %s failed: %s", chatId.c_str(), h.c_str(), err.c_str());
+      continue;
+    }
+    d_.hosts.noteAnswered(h);
+    // Same lenient read as a head turn (CUM-495): a prose summary IS the summary. An
+    // answer with no summary in it is no fold: the next host gets the job (CUM-890),
+    // and the log says what came back.
+    t = orch::Turn();
+    orch::ParseError perr;
+    if (orch::parseHeadReply(outJson, t, perr) != orch::ReplyShape::Unusable && !t.reply.empty()) {
+      host = h;
+      usage = u;
+      break;
+    }
+    ok = false;
+    hlog::logf("fold(%s): no summary in reply on %s (%s, %u B answered)", chatId.c_str(), h.c_str(),
+               perr.detail.empty() ? "the reply field was empty" : perr.detail.c_str(), (unsigned)outJson.size());
   }
   meterSpend(foldSpend, "compact");
   if (!ok) return FoldResult::Failed;
-  orch::Turn t;
-  orch::ParseError perr;
-  // Same lenient read as a head turn (CUM-495): a prose summary IS the summary.
-  if (orch::parseHeadReply(outJson, t, perr) == orch::ReplyShape::Unusable || t.reply.empty()) {
-    hlog::logf("fold(%s): no summary in reply (%s)", chatId.c_str(), perr.detail.c_str());
-    return FoldResult::Failed;
-  }
   // The reply IS the summary; every other field of the turn is deliberately
   // ignored (no applyTurn - device actions, mem writes, spawns are all inert).
   // The summary feeds every later prompt: a leaked tag here would come back in

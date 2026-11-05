@@ -21,6 +21,7 @@
 #include "agent_config.h"
 #include "fs_atomic.h"                     // writeFileAtomic - the usage files (tmp + rename)
 #include "provider_gate.h"                // the daily spend notice (L19-2)
+#include "../sys/psram_static.h"           // the model store slots in PSRAM
 #include "nimbus/orch/connectors_wire.h"   // resolveHeadHost - the one head-host rule
 #include "nimbus/orch/model_catalog.h"     // the model store line format (lane F)
 #include "nimbus/orch/model_choices.h"     // effectiveModelChoices - the priceable models
@@ -704,7 +705,12 @@ struct ModelStoreSlot {
   std::string text;
   nimbus::orch::ModelStoreMeta meta;   // its header, parsed once per load or write
 };
-ModelStoreSlot g_modelStore[nimbus::orch::kProviderSlotCount + 1];   // + custom
+// The slots live in PSRAM (psram_static.h, 696 B of the merged tree's static DRAM, measured
+// by the release gate): task context only, read under g_modelMx, which stays internal.
+struct ModelStoreSlots {
+  ModelStoreSlot slot[nimbus::orch::kProviderSlotCount + 1];   // + custom
+};
+ModelStoreSlots& g_modelStore = ::nimbus::psramObject<ModelStoreSlots>();
 
 int modelSlot(const String& provider) {
   int i = 0, found = -1;
@@ -717,7 +723,7 @@ int modelSlot(const String& provider) {
 
 // The slot, its file read once per boot (callers hold g_modelMx).
 const ModelStoreSlot& modelStoreLocked(int slot, const String& provider) {
-  ModelStoreSlot& s = g_modelStore[slot];
+  ModelStoreSlot& s = g_modelStore.slot[slot];
   if (s.loaded || !agent::flashMounted()) return s;
   s.loaded = true;
   const std::string path = nimbus::orch::modelStorePath(provider.c_str());
@@ -783,7 +789,7 @@ bool setModelStoreText(const String& provider, const std::string& text) {
   const bool have = nimbus::orch::parseModelStoreHeader(text, meta);
   std::string copy = text;
   std::lock_guard<std::mutex> lk(g_modelMx);
-  ModelStoreSlot& s = g_modelStore[slot];
+  ModelStoreSlot& s = g_modelStore.slot[slot];
   s.text.swap(copy);
   s.meta = std::move(meta);
   s.have = have;

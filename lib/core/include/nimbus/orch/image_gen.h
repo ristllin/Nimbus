@@ -3,6 +3,8 @@
 
 #include <string>
 
+#include "nimbus/json_strict.h"
+
 // image_gen - the OpenAI image-generation wire, as pure portable helpers so the
 // device adapter (src/agent/adapters/image_gen.cpp) and the host test agree on
 // exactly one request shape. Response is always requested as base64 (never a URL
@@ -55,7 +57,7 @@ inline std::string imageGenRequestBody(const std::string& prompt,
   // low/medium/high tier for gpt-image-1.
   if (m == "gpt-image-1") doc["quality"] = quality.empty() ? std::string("low") : quality;
   std::string out;
-  ArduinoJson::serializeJson(doc, out);
+  nimbus::serializeStrictJson(doc, out);
   return out;
 }
 

@@ -110,6 +110,12 @@ std::string skillSelfApproveNotice(const std::string& id, int rev, bool created)
          "Send /skill show " + id + " to read it, or /skill auto off to review changes first.";
 }
 
+std::string skillSaveNotes(const SkillResult& r) {
+  std::string out;
+  for (const std::string& w : r.warnings) out += " Note: " + w + ".";
+  return out;
+}
+
 std::string skillProposalNotice(const std::string& id, const SkillResult& r) {
   const std::string tail = " Send /skill show " + id + " to read it, /skill approve " + id +
                            " to use it, or /skill deny " + id + " to drop it.";

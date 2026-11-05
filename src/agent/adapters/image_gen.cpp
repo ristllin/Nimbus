@@ -56,10 +56,21 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
   // the SD during the read (see the header). Allocate before the TLS so a failure
   // here costs no provider call.
   uint8_t* buf = (uint8_t*)ps_malloc(kGenMaxBytes);
-  if (!buf) { errOut = "out of memory"; alog("imagegen: ps_malloc failed"); return nullptr; }
+  if (!buf) {
+    gate::handBack("openai");
+    errOut = "out of memory";
+    alog("imagegen: ps_malloc failed");
+    return nullptr;
+  }
 
   arbiter::WorkSlot slot(10000);
-  if (!slot) { free(buf); errOut = "device busy"; alog("imagegen: arbiter busy"); return nullptr; }
+  if (!slot) {
+    gate::handBack("openai");
+    free(buf);
+    errOut = "device busy";
+    alog("imagegen: arbiter busy");
+    return nullptr;
+  }
   WiFiClientSecure c;
   tlsSetup(c);
   c.setHandshakeTimeout(12);
@@ -71,7 +82,7 @@ uint8_t* generateToBuffer(const String& prompt, const char* model, const char* s
   const char* host = "api.openai.com";
   bool connected = false;
   for (int a = 0; a < 3 && !connected && (int32_t)(millis() - deadline) < 0; a++) {
-    if (c.connect(host, 443)) { connected = true; break; }
+    if (connectHost(c, host, 443)) { connected = true; break; }
     tlsClose(c);
     if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
   }

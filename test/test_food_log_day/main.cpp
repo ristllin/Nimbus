@@ -105,17 +105,30 @@ static void test_replay_24_25_oct_across_a_london_midnight() {
   TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
   TEST_ASSERT_EQUAL_STRING("2026-10-25", up.days[0].date.c_str());
   // Sunday 08:19 GMT: the breakfast photo, first mistaken for last night's dinner.
+  // Lane UPSERT: a DIFFERENT item under the reused key "dinner" never replaces the
+  // beef row - it appends under a new unique key (dinner-2) and the stored row is kept.
   up = logAt(file, 1792916340, "2026-10-24,dinner,chicken + eggs + skyr + berries,945,107\n");
   TEST_ASSERT_TRUE(up.ok);
-  TEST_ASSERT_EQUAL_INT(1, up.replaced);
-  TEST_ASSERT_EQUAL_STRING("990", up.changes[0].was.c_str());   // the reply shows the figure that was there
-  // The owner: "that is today's breakfast". One call puts both days right.
+  TEST_ASSERT_EQUAL_INT(0, up.replaced);
+  TEST_ASSERT_EQUAL_INT(1, up.appended);
+  TEST_ASSERT_EQUAL_INT(1, up.rekeyed);
+  TEST_ASSERT_EQUAL_STRING("dinner-2", up.changes[0].key.c_str());
+  TEST_ASSERT_EQUAL_STRING("dinner", up.changes[0].keptKey.c_str());
+  TEST_ASSERT_TRUE(file.find("2026-10-24,dinner,beef + skyr + chicken + eggplant,990,88\n") != std::string::npos);
+  TEST_ASSERT_TRUE(file.find("2026-10-24,dinner-2,chicken + eggs + skyr + berries,945,107\n") != std::string::npos);
+  // The owner: "that is today's breakfast". One call puts both days right: the
+  // mistaken dinner-2 row is taken off (the same items with 0 kcal - a correction of
+  // the same item, so it replaces and is kept as a #replaced: history row) and the
+  // breakfast lands on the 25th.
   up = logAt(file, 1792916340,
-             "2026-10-24,dinner,beef + skyr + chicken + eggplant,990,88\n"
+             "2026-10-24,dinner-2,chicken + eggs + skyr + berries,0,0\n"
              "2026-10-25,breakfast,chicken + eggs + skyr + berries,945,107\n");
   TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
   TEST_ASSERT_EQUAL_INT(1, up.replaced);
   TEST_ASSERT_EQUAL_INT(1, up.appended);
+  TEST_ASSERT_EQUAL_STRING("945", up.changes[0].was.c_str());   // the reply shows the figure that was there
+  TEST_ASSERT_TRUE(file.find("#replaced: 2026-10-24,dinner-2,chicken + eggs + skyr + berries,945,107\n") !=
+                   std::string::npos);
   // Coffee, then a correction to the breakfast (smaller chicken breasts).
   TEST_ASSERT_TRUE(logAt(file, 1792917040, "2026-10-25,coffee-0831,coffee + 100 ml whole milk,66,3\n").ok);
   up = logAt(file, 1792917107, "2026-10-25,breakfast,chicken 225 g + eggs + skyr + berries,945,107\n");
@@ -123,7 +136,8 @@ static void test_replay_24_25_oct_across_a_london_midnight() {
   up = logAt(file, 1792917200, "2026-10-25,breakfast,chicken 225 g + eggs + skyr + berries,910,103\n");
   TEST_ASSERT_TRUE(up.ok);
   TEST_ASSERT_EQUAL_INT(1, up.replaced);
-  // Both days' totals, exact: the correction counted once, nothing moved.
+  // Both days' totals, exact: the correction counted once, nothing moved, the
+  // mistaken row zeroed, every replaced row kept as a #replaced: history row.
   TEST_ASSERT_EQUAL_INT(557 + 807 + 990, (int)total(file, "2026-10-24"));
   TEST_ASSERT_EQUAL_INT(35 + 910 + 66, (int)total(file, "2026-10-25"));
   TEST_ASSERT_EQUAL_INT((int)total(file, "2026-10-25"), (int)up.todayTotal);
@@ -133,6 +147,10 @@ static void test_replay_24_25_oct_across_a_london_midnight() {
       "2026-10-24,lunch,bread + salmon + beans,807,66\n"
       "2026-10-24,dinner,beef + skyr + chicken + eggplant,990,88\n"
       "2026-10-25,snack-0030,clementine,35,1\n"
+      "#replaced: 2026-10-24,dinner-2,chicken + eggs + skyr + berries,945,107\n"
+      "2026-10-24,dinner-2,chicken + eggs + skyr + berries,0,0\n"
+      "#replaced: 2026-10-25,breakfast,chicken + eggs + skyr + berries,945,107\n"
+      "#replaced: 2026-10-25,breakfast,chicken 225 g + eggs + skyr + berries,945,107\n"
       "2026-10-25,breakfast,chicken 225 g + eggs + skyr + berries,910,103\n"
       "2026-10-25,coffee-0831,coffee + 100 ml whole milk,66,3\n",
       file.c_str());

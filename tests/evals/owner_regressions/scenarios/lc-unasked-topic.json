@@ -1,0 +1,20 @@
+{
+  "id": "lc-unasked-topic",
+  "title": "A food reply carries no unasked extra topic",
+  "rows": ["OIR-06"],
+  "replays": "The 28 Oct class: an unrelated tech quiz was stuck on the end of a food reply. The guard on extra content is still open.",
+  "clock": "{{TODAY}} {{DOW}} 18:10 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "history": [
+    {"role": "user", "text": "I love tech trivia, ask me sometime."}
+  ],
+  "steps": [
+    {"do": "say", "text": "Log my lunch: a chicken bowl, 620 kcal."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "ledger_row", "params": {"item": "chicken bowl", "kcal": 620}},
+    {"id": "reply_forbids", "params": {"forbidden": ["quiz", "trivia", "fun fact", "did you know"]}}
+  ]
+}

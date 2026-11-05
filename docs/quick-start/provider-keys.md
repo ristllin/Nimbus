@@ -126,10 +126,23 @@ Strong at conversation and reasoning.
    will set up from. You see the full key only once.
 5. **To revoke it later.** Return to the same **API keys** page and delete the key.
 
+## Picking a model for daily use
+
+Measured on one script of everyday jobs: memory, files, a food plan, web lookups, helpers
+and a long answer.
+
+- **Mistral Large 4** and **GLM-5.3** handle daily use. A very long answer on GLM is
+  limited to about 1,800 words, because Z.ai closes a request after 60 seconds.
+- **GLM-5.3 Flash** and **Mistral Medium** handle most of it for less, and slip on food
+  arithmetic more often.
+- **Mistral Small** suits helpers and quick chat. As the main assistant it can say a file
+  was changed without changing it, and the assistant tells you so when you pick it.
+
 ## Z.ai
 
-Conversation and tools only. For voice, images, or memory embeddings, add a second
-key (see [What works with which provider](setup-wizard.md#what-works-with-which-provider)).
+Conversation, tools and web lookups. Z.ai's search can run months behind, so a
+Mistral or Tavily key gives fresher answers. For voice, images, or memory embeddings,
+add a second key (see [What works with which provider](setup-wizard.md#what-works-with-which-provider)).
 
 1. **Create an account.** Sign up at [z.ai](https://z.ai).
 2. **Billing (required).** Add credit to your account.

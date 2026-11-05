@@ -1,7 +1,10 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include <ctime>
 #include <functional>
+#include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,8 +21,8 @@ namespace nimbus::orch {
 
 // One append call carries at most this much text (a few rows, never a file).
 inline constexpr size_t kAppendMaxBytes = 4096;
-// The largest stored log a keyed update or a day total streams (about 20,000
-// rows): each pass holds the store lock, so a bigger file is refused with the
+// The largest stored log a keyed update, a day total or a files.edit streams (about
+// 20,000 rows): each pass holds the store lock, so a bigger file is refused with the
 // way out (start a new log) instead of stalling every other card user.
 inline constexpr size_t kKeyedMaxBytes = 1024 * 1024;
 // The tail view: default and maximum row counts, and the window read from the
@@ -40,7 +43,21 @@ struct AppendPlan {
   bool repairedCut = false;
   int rows = 0;          // rows in `bytes`
 };
-AppendPlan planAppend(const std::string& text, size_t fileBytes, char lastByte);
+// A .csv file name, in any case: the one rule the device, nimbusd and the lab share.
+inline bool isCsvName(const std::string& name) {
+  if (name.size() <= 4) return false;
+  std::string ext = name.substr(name.size() - 4);
+  for (char& c : ext)
+    if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+  return ext == ".csv";
+}
+
+// csvCreate: this append would CREATE a keyed-eligible CSV (.csv, no stored
+// file). Its first row must then be the header (the column names) - a
+// headerless CSV can never be updated by key, so every later "correction"
+// would append a duplicate (v4.6.3, the 30 Oct investigation's loop).
+AppendPlan planAppend(const std::string& text, size_t fileBytes, char lastByte,
+                      bool csvCreate = false);
 
 // The tail view over the last bytes of a file. `window` is the end of the file;
 // `windowStart` is its offset in the file (0 = the window is the whole file).
@@ -86,10 +103,29 @@ std::string renderTail(const TailView& v, const std::string& name, size_t fileBy
 //     its identity replaces it, otherwise it is kept as a "#cut: " comment row that
 //     never matches or counts again;
 //   - a stored row starting with '#' is a comment: kept, never matched or counted.
+//     A replace keeps the row it replaced as a "#replaced: " comment row, so a
+//     disputed day can be re-read against what it held before (lane UPSERT, 4 Nov);
+//   - a keyed write whose key names a reused label (a meal slot like "dinner") never
+//     replaces a stored row that describes a DIFFERENT item: item identity is decided
+//     in code, by the item words of the items column (or, without one, of the row's
+//     non-date, non-key, non-figure fields) - same item replaces, different item
+//     appends under a unique key ("dinner-2", "dinner-3", ... avoiding the keys the
+//     day already holds) and the stored row is kept. key=date (a one-row-per-day
+//     ledger) has no reused label and replaces as before. A re-send of a row already
+//     stored under another key of the same day (a retry of a rekeyed write under its
+//     original label) adds nothing: the receipt names the key it is already logged
+//     under and the day's total is unchanged;
 // Fields follow CSV quoting: "chicken, rice" is one field, "" inside quotes is a
-// quote. A stored row with more fields than the header (an unquoted comma) is kept
-// but never matched or counted, and the total says so; so is a row with no
-// YYYY-MM-DD date. A key compares without case or surrounding spaces. The replies
+// quote; a comma inside a balanced pair of parentheses is also part of its field
+// (a migrated ledger's "Boba tea (no sugar, honey tapioca)"). A stored row with more
+// fields than the header (a bare comma in its free text) is read when exactly one set of
+// figures fits: its free-text column holds the extra fields, its date and figures land
+// where the header names them, and none of the extra fields is a bare number. Otherwise,
+// like a row with no YYYY-MM-DD date, it is kept but never matched or counted, and the
+// total says so. A key compares without case or surrounding spaces. A day's total counts
+// meal rows and nothing else: the header pasted again is no row, a row that states a total
+// is never summed (and refused as a new row), and in a food log (a kcal or protein sum) a
+// row repeating an earlier row's words that day counts once, with the last figures. The replies
 // never quote a stored row's free text (only dates, the model's own keys, plain
 // numbers and a header of plain labels), so the tool's output stays the device's own.
 
@@ -99,15 +135,26 @@ struct DayTotal {
   double total = 0;
   int rows = 0;       // rows dated `date` that were counted
   int unread = 0;     // rows dated `date` whose sum field is not a plain number
+  int totalRows = 0;  // rows dated `date` that state a total ("total", "daily total"): never summed
+  int repeats = 0;    // rows dated `date` that repeat an earlier row's food: counted once
+  std::vector<std::pair<uint32_t, double>> seen;   // a food log's counted rows: their words and figure
 };
 
 // What one new row did to the file.
 struct RowChange {
   std::string date;   // its date ("" = the log has no date column)
-  std::string key;    // its key value
+  std::string key;    // its key value (the new unique key when the stored row of the sent key was kept)
   bool replaced = false;
   std::string was;    // the replaced row's sum figure ("" = none or not a plain number)
+  std::string wasItems;   // the replaced row's item words, capped ("" = none): what the replace took away
+  std::string keptKey;    // non-empty when the sent key named a stored row of a DIFFERENT item: that row was
+                          // kept and this row was appended under a new unique key
+  std::string dupKey;     // non-empty when the row is already stored under another key of the same day (a re-send
+                          // of a rekeyed row under its original label): nothing was added
   int superseded = 0; // more stored rows of this identity set aside (replace: "all")
+  std::string sameFoodDate;   // the newest earlier day with the same food at a far-off figure ("" = none)
+  double sameFoodFigure = 0;  // that row's figure
+  double figure = 0;          // this row's
 };
 
 struct CsvUpsert {
@@ -115,13 +162,17 @@ struct CsvUpsert {
   std::string err;         // why not, when !ok
   std::string out;         // the whole new file ("" = nothing to write); planCsvUpsert only
   bool changed = false;    // the file differs from what was stored
-  int replaced = 0;        // rows whose date and key already existed
+  int replaced = 0;        // rows whose date and key already existed and described the same item
   int appended = 0;        // rows with a new date or key
+  int rekeyed = 0;         // appended rows that reused a stored key naming a different item (a new unique key)
+  int duplicates = 0;      // rows already stored under another key of the same day: not added again
   int superseded = 0;      // duplicate stored rows set aside as #superseded: (replace: "all")
   bool hasTotal = false;   // today's total is known
   double todayTotal = 0;   // the sum column over today's rows
   std::vector<RowChange> changes;   // one per new row, in the text's order
   std::vector<DayTotal> days;       // today first (when known), then each other date written
+  DayTotal protein;                 // a food log with a protein column: today's protein, read the same way
+  std::string proteinCol;           // that column ("" = none: no line in the reply)
   bool cut = false;                 // the stored last row was cut mid-write
   std::string cutDate;              // its date, when it has one
   bool cutReplaced = false;         // a new row replaced it (else it is now a #cut: row)
@@ -157,11 +208,20 @@ class CsvUpsertStream {
     std::string raw, id, date, key;
     std::vector<std::string> fields;
     bool used = false;   // it replaced a stored row
+    bool rekey = false;  // its key named a stored row of a different item: append under a new unique key
+    bool dup = false;    // already stored under another key of the same day: add nothing
     std::string was;     // that row's sum figure
+    std::string wasItems;   // that row's item words, capped
+    std::string keptKey;    // the sent key that was kept by the stored row (rekey)
+    std::string dupKey;     // the stored key this row is already logged under (dup)
     int superseded = 0;  // more stored rows of its identity set aside
+    std::vector<std::string> foodWords;   // a food log: the words of its items
+    std::string sameFoodDate;
+    double figure = 0, sameFoodFigure = 0;
   };
   bool fail(const std::string& why);
   bool parseHeader(const std::string& line);
+  void findFoodColumns();
   bool parseNewRow(size_t n, const std::string& raw, NewRow& row);
   bool findDateColumn(const std::vector<NewRow>& rows);
   bool checkNewRow(size_t n, NewRow& row);
@@ -170,19 +230,44 @@ class CsvUpsertStream {
   bool feedData(const std::string& row, bool complete, std::string& out);
   void feedCut(const std::vector<std::string>& f, const std::string& row, NewRow* hit, std::string& out);
   NewRow* match(const std::string& id);
-  void replaceWith(NewRow& n, const std::vector<std::string>& stored, bool same, std::string& out);
+  void replaceWith(NewRow& n, const std::vector<std::string>& stored, const std::string& storedRaw, bool identical,
+                   bool complete, std::string& out);
   bool secondMatch(NewRow& n, const std::string& row, std::string& out);
   void countUndated(const std::vector<std::string>& f);
   std::string identity(const std::vector<std::string>& f) const;
+  std::string itemTextOf(const std::vector<std::string>& f) const;   // what a row says it holds
+  std::vector<std::string> itemWords(const std::vector<std::string>& f) const;   // its item words
+  bool sameWords(const std::vector<std::string>& a, const std::vector<std::string>& b) const;   // the same-item rule
+  bool sameItem(const NewRow& n, const std::vector<std::string>& stored) const;
+  std::string itemWordsOf(const std::vector<std::string>& f) const;   // capped, for the receipt
+  bool rekeyRow(NewRow& n);   // assign a unique key; false = none free
+  bool finishRow(NewRow& n, std::string& out);   // one pending row at finish(): dup/rekey/append
+  void noteTakenKey(const std::vector<std::string>& f);   // record a stored row's key for the day
+  bool feedRekey(NewRow& hit, const std::vector<std::string>& f, const std::string& row, bool complete,
+                 std::string& out);   // a reused label naming a different item: keep the stored row
+  // Lane UPSERT fix pass: a stored row's day, key and item words, remembered (capped) so a
+  // re-send of a row already stored under another key of the same day is recognised.
+  struct SeenRow {
+    std::string date, key;
+    std::vector<std::string> words;
+  };
+  void recordSeen(const std::vector<std::string>& f);
+  void markDupAgainstStored(const std::vector<std::string>& f);   // a pending rekey row that is this stored row
   void tally(const std::vector<std::string>& f);
+  void watchSameFood(const std::vector<std::string>& f);
+  void noteSameFood(NewRow& n, const std::string& day, double was) const;
   std::string keyCol_, sumCol_, today_, zone_;
   std::vector<std::string> header_;
   std::string headerRaw_;
-  int keyIdx_ = -1, sumIdx_ = -1, dateIdx_ = -1;
+  int keyIdx_ = -1, sumIdx_ = -1, dateIdx_ = -1, itemsIdx_ = -1, proteinIdx_ = -1;
   std::vector<NewRow> rows_;
   std::vector<std::string> prev_;   // the last well-formed stored row (judges a cut last row)
   bool begun_ = false, sawHeader_ = false, failed_ = false, supersede_ = false;
   size_t storedRows_ = 0, outRows_ = 0;
+  std::map<std::string, std::set<std::string>> taken_;   // keys each date already holds (capped)
+  size_t takenCount_ = 0;
+  std::set<std::string> assigned_;   // keys this call assigned (rekeyed rows)
+  std::vector<SeenRow> seen_;   // stored rows seen so far (capped): the same-day duplicate guard
   CsvUpsert r_;
 };
 
@@ -192,6 +277,34 @@ class CsvUpsertStream {
 CsvUpsert planCsvUpsert(const std::string& existing, const std::string& newText,
                         const std::string& keyCol, const std::string& sumCol,
                         const std::string& today, bool supersede = false);
+
+// The same food twice (CUM-864: one drink, 225 kcal on 29 Oct and 90 on 1 Nov, each with its own
+// confident sum). A keyed food log's reply names an earlier day's row of the same food when its
+// figure is off by more than a quarter. The words: lowercase, singular, no sizes or filler.
+std::vector<std::string> foodWordsOf(const std::string& text);
+// Enough of the words in common to be one food: at least two (or the only ones) and most of the shorter list.
+bool sameFoodWords(const std::vector<std::string>& a, const std::vector<std::string>& b);
+// One of the words, spelling slips allowed ("cappucino").
+bool foodWordIn(const std::string& word, const std::vector<std::string>& words);
+
+// The columns of a CSV's header row (no byte order mark, spaces trimmed).
+std::vector<std::string> csvHeaderOf(const std::string& row);
+// The columns of a stored row as `header` names them, read the way the day total reads
+// it: a bare comma in its free text is folded back. Empty when its columns cannot be
+// trusted (a broken quote, wider than the header with no single reading).
+std::vector<std::string> csvStoredRow(const std::string& row, const std::vector<std::string>& header);
+// A cell read as the day total reads a figure: a plain number or a quoted "1,045".
+bool csvFigure(const std::string& cell, double& out);
+// Does this stored row state a total instead of a thing eaten? (never counted)
+bool csvStatesTotal(const std::vector<std::string>& fields);
+
+// The date column of a header given some of its rows: by name (date, day, or a
+// name holding date, day or time) when that column holds YYYY-MM-DD dates in
+// those rows, else the first column that does; -1 = none. The one rule the
+// keyed upsert and the files.edit row diff share, so the two can never
+// disagree on which column is the date.
+int csvDateColumnOf(const std::vector<std::string>& header,
+                    const std::vector<std::vector<std::string>>& rows);
 
 // One day's total as a stream (the files.read tail view): feed every row of the
 // file in order, header first.
@@ -210,6 +323,7 @@ class CsvDayTally {
 
  private:
   void readHeader(const std::string& row);
+  std::string rowDay(const std::vector<std::string>& f);
   std::function<void(const std::string& row)> dayRow_;
   std::string sumCol_, day_;
   std::vector<std::string> header_, prev_;
@@ -224,6 +338,11 @@ class CsvDayTally {
 // `today`. False when the file has no date column or no such sum column.
 bool csvDayTotal(const std::string& fileText, const std::string& sumCol,
                  const std::string& today, double& out);
+
+// One day's total as the reply states it, over a whole text (nimbusd, the lab): the same
+// words as the device's files.read {tail, sum} and the upsert reply.
+std::string csvDayTotalLine(const std::string& fileText, const std::string& sumCol, const std::string& today,
+                            const std::string& zone);
 
 // Rows out of bytes read in chunks: push() each chunk, then end(). Each complete
 // row (its line end, and a CR before it, stripped) goes to onRow(row, true); a

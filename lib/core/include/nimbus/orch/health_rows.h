@@ -1,6 +1,8 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <ArduinoJson.h>
+
 #include <string>
 #include <vector>
 
@@ -43,6 +45,11 @@ bool settingsStorageRow(const SettingsStorageInputs& in, HealthRow& out);
 HealthRow providersRow(ProviderPark& park, uint32_t nowMs);
 
 // The rows as text lines ("<label> | <state> | <detail>"), for the golden.
+// The same park as GET /api/orch "parks": one object per closed provider, in the park's
+// own words, with the reason and the next check: {provider, kind, status, why,
+// recheckInS}. Reads only (never starts a re-check).
+void parksJson(ProviderPark& park, uint32_t nowMs, JsonArray out);
+
 std::string healthRowsText(const std::vector<HealthRow>& rows);
 
 }  // namespace orch

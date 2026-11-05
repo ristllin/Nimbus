@@ -500,6 +500,87 @@ void test_load_collapses_case_variant_rows_to_owner_control() {
   TEST_ASSERT_TRUE(st3.readableBy(*e3, "chat:alice", false));
 }
 
+// Is a stored file readable as text for the model? By kind, then by content.
+static void test_text_readable_rule() {
+  using nimbus::orch::fileReadableAsText;
+  const std::string png("\x89PNG\r\n\x1a\n\0\0\0\rIHDR", 16);
+  TEST_ASSERT_FALSE(fileReadableAsText("photo.png", "looks like text"));   // the name decides first
+  TEST_ASSERT_FALSE(fileReadableAsText("photo.JPG", "looks like text"));
+  TEST_ASSERT_FALSE(fileReadableAsText("clip.mp3", "looks like text"));
+  TEST_ASSERT_FALSE(fileReadableAsText("disguised.txt", png));             // the content decides next
+  TEST_ASSERT_FALSE(fileReadableAsText("noext", png));
+  TEST_ASSERT_TRUE(fileReadableAsText("notes.md", "# plain\nrow one\n"));
+  TEST_ASSERT_TRUE(fileReadableAsText("notes.yaml", "a: 1\n"));
+  TEST_ASSERT_TRUE(fileReadableAsText("empty.txt", ""));
+  TEST_ASSERT_TRUE(fileReadableAsText("accents.txt", "caf\xC3\xA9 \xE2\x82\xAC 12\n"));
+  TEST_ASSERT_TRUE(fileReadableAsText("tabs.csv", "a\tb\r\nc\td\r\n"));
+  // One stray byte in long text is a text file with a blemish, not a binary one: the
+  // wire layer repairs and escapes it. A NUL is never text; a run of noise is not either.
+  std::string blemish(4000, 'a');
+  blemish[100] = '\x01';
+  blemish[200] = '\xFF';
+  TEST_ASSERT_TRUE(fileReadableAsText("log.txt", blemish));
+  std::string nul(4000, 'a');
+  nul[3000] = '\0';
+  TEST_ASSERT_FALSE(fileReadableAsText("log.txt", nul));
+  std::string noise;
+  for (int i = 0; i < 1000; i++) noise += (char)((i % 16) + 1);
+  TEST_ASSERT_FALSE(fileReadableAsText("noise.txt", noise));
+  std::string latin(1000, 'a');   // Latin-1 text: mostly ASCII, some bytes not UTF-8
+  for (int i = 0; i < 1000; i += 25) latin[(size_t)i] = '\xE9';
+  TEST_ASSERT_TRUE(fileReadableAsText("latin.txt", latin));
+  // Only the head of a file is looked at, so a big file costs the same: noise after
+  // the sample does not change the answer.
+  std::string late(nimbus::orch::kTextSniffBytes + 16, 'a');
+  late[nimbus::orch::kTextSniffBytes + 8] = '\0';
+  TEST_ASSERT_TRUE(fileReadableAsText("late.txt", late));
+}
+
+// A photo received twice is one file: the second copy costs nothing against the sender's
+// limit, and the rule cannot be used to read or claim anyone else's file.
+static void test_same_content_finds_only_the_senders_own_copy() {
+  nimbus::orch::FileStore st;
+  nimbus::orch::FileEntry e;
+  e.project = "chat-7"; e.name = "photo-1.jpg"; e.bytes = 2000; e.hash = 0xABCD; e.owner = "7";
+  std::string err;
+  TEST_ASSERT_TRUE(st.add(e, err));
+  TEST_ASSERT_NOT_NULL(st.sameContent("chat-7", 0xABCD, "7"));
+  TEST_ASSERT_EQUAL_STRING("photo-1.jpg", st.sameContent("chat-7", 0xABCD, "7")->name.c_str());
+  TEST_ASSERT_NULL(st.sameContent("chat-7", 0xABCE, "7"));   // other bytes
+  TEST_ASSERT_NULL(st.sameContent("chat-8", 0xABCD, "7"));   // another chat's project
+  TEST_ASSERT_NULL(st.sameContent("chat-7", 0xABCD, "8"));   // another sender
+  TEST_ASSERT_NULL(st.sameContent("chat-7", 0, "7"));        // no hash known decides nothing
+  nimbus::orch::FileEntry unknown = e;
+  unknown.name = "edited.txt"; unknown.hash = 0;             // an edited file: hash unknown
+  TEST_ASSERT_TRUE(st.add(unknown, err));
+  TEST_ASSERT_NULL(st.sameContent("chat-7", 0, "7"));
+}
+
+// The charge the rule protects, through the store the way the receive path drives it
+// (src/agent/files_subsystem.cpp saveStream; the wiring is pinned by
+// tests/hil/test_device_wiring_host.py): an album re-sent whole adds no bytes, and only
+// new bytes spend the limit.
+static void test_a_resent_album_costs_nothing_against_the_limit() {
+  nimbus::orch::FileStore st;
+  std::string err;
+  const auto receive = [&](const char* name, uint64_t hash) {
+    if (st.sameContent("chat-7", hash, "7")) return false;   // a copy: not stored again
+    nimbus::orch::FileEntry e;
+    e.project = "chat-7"; e.name = name; e.bytes = 2000; e.hash = hash; e.owner = "7";
+    TEST_ASSERT_TRUE(st.add(e, err));
+    return true;
+  };
+  TEST_ASSERT_TRUE(receive("photo-1.jpg", 0xA1));
+  TEST_ASSERT_TRUE(receive("photo-2.jpg", 0xA2));
+  TEST_ASSERT_EQUAL_UINT32(4000, st.bytesFor("7"));
+  TEST_ASSERT_FALSE(receive("photo-3.jpg", 0xA1));   // the same two photos, new update ids
+  TEST_ASSERT_FALSE(receive("photo-4.jpg", 0xA2));
+  TEST_ASSERT_EQUAL_UINT32(4000, st.bytesFor("7"));
+  TEST_ASSERT_NULL(st.find("chat-7", "photo-3.jpg"));
+  TEST_ASSERT_TRUE(receive("photo-5.jpg", 0xA3));    // new bytes are charged as ever
+  TEST_ASSERT_EQUAL_UINT32(6000, st.bytesFor("7"));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_sd_quota_and_supported_card);
@@ -521,5 +602,8 @@ int main() {
   RUN_TEST(test_food_ledger_names_are_reserved);
   RUN_TEST(test_identity_is_case_blind_like_fat);
   RUN_TEST(test_load_collapses_case_variant_rows_to_owner_control);
+  RUN_TEST(test_text_readable_rule);
+  RUN_TEST(test_same_content_finds_only_the_senders_own_copy);
+  RUN_TEST(test_a_resent_album_costs_nothing_against_the_limit);
   return UNITY_END();
 }

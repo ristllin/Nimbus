@@ -24,9 +24,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import check_config_mapping
+import check_critical_sections
 import check_driver_pin
 import check_elf_symbols
+import check_lwip_core_lock
 import check_ota_preserves_nvs
+import check_owner_regressions
 import check_release_notes
 import check_sram_staging
 import check_static_dram
@@ -36,9 +39,11 @@ import model_id_lint
 
 HARDWARE_BATTERY = """\
 HARDWARE (bench, --allow-hardware; paste the real output):
-  # solide_s3 (Nimbus-4) and freenove_s3 (Freenove CYD), per board family:
-  pio run -e esp32s3     -t upload                 # flash the release candidate (solide)
-  pio run -e esp32s3-cyd -t upload                 # flash the release candidate (freenove)
+  # solide_s3 and freenove_s3 (Freenove CYD), per board family. The legs below drive the test console, which only
+  # the test images carry; the production images are flashed by the onboarding gate and the final OTA. Check the
+  # board by MAC first (tools/bench_guard.py list) and always name the port:
+  pio run -e test     -t upload --upload-port <port>   # flash the release candidate (solide)
+  pio run -e test-cyd -t upload --upload-port <port>   # flash the release candidate (freenove)
   # Render reaches the glass (CUM-167) - INCLUDES a mandatory human glance:
   pytest tests/hil/test_l29_release_gate.py -m hil --allow-hardware   # RenderToGlass, TouchCorrectness, CrashLoop, OTA
   # Device tunnel serves its own page, not a 502 (CUM-173):
@@ -48,7 +53,7 @@ HARDWARE (bench, --allow-hardware; paste the real output):
   pytest tests/hil -m "hil and not manual and not destructive"  --allow-hardware
   pytest tests/hil -m "net and not manual"  --allow-hardware
   # The human-glance + physical-tap steps (recorded):
-  pytest tests/hil -m manual --allow-hardware --manual-yes=false
+  pytest tests/hil -m manual --allow-hardware
   # Destructive fresh-device legs (L33): factory-reset the board, run DELIBERATELY and alone.
   # The fixture re-provisions Wi-Fi and clears the adversarial cal/flip, but the board is left
   # factory-fresh (re-onboard after):
@@ -75,7 +80,7 @@ PROGRAM 2026-10-18 (v4.5.14) HIL legs (bench, --allow-hardware; paste the real o
   pytest tests/hil/test_l55_spawn_e2e.py -m "hil and agent" --allow-hardware
   # The turn-structured history (lane G0; the message-level caching lane extends it): a
   #   200-copy storm is one (x200) row and at most one fold, twelve turns render all twelve,
-  #   a restart keeps the history bytes, HISTV2 0 restores the old window. Unit A (SD).
+  #   a restart keeps the history bytes, HISTV2 0 restores the old window. A unit with an SD card.
   pytest tests/hil/test_l52_history_cache.py -m "hil and agent" --allow-hardware
   # Monthly spend ceiling (lane DEF): a fake provider (PROVFAULT 200 with a canned usage) or
   #   SPENDSET drives the device to the ceiling; head turn, spawn, photo, voice note, routine
@@ -86,32 +91,29 @@ PROGRAM 2026-10-18 (v4.5.14) HIL legs (bench, --allow-hardware; paste the real o
   # The model store (lane F; lane H extends it): OTA from v4.5.14 merges the NVS short
   #   lists into /data/models_<slug>.txt on the trial boot and erases them on the boot after
   #   mark-valid; a verify writes the store with no NVS write; a rollback still reads the old
-  #   catalog; the Cumulo list is whole or says "more" (unit A); a keyless pinned head runs on
+  #   catalog; the Cumulo list is whole or says "more" (a unit with an SD card); a keyless pinned head runs on
   #   a keyed host (LAN mock). Phases run in order around the flashes (see the module doc).
   pytest tests/hil/test_l50_model_refresh.py -m net --allow-hardware
   # Models on demand (lane H): two dropdown refreshes inside the hour start one refresh per
   #   provider and fetchedAt moves; a refresh asked mid-turn starts after the turn; one
   #   web-chat turn "Switch to Sonnet 5.5." on claude-haiku-5-5 applies; after a flash the
-  #   passive refresh runs once per provider (MODELS passive, run first). Unit L.
+  #   passive refresh runs once per provider (MODELS passive, run first).
   pytest tests/hil/test_l50_model_refresh_h.py -m "hil or net" --allow-hardware
   #   ...and the page shows "Updated <time>" after opening a model dropdown:
   #   (cd tools/webui_harness && TARGET=device BASE_URL=http://<ip> NIMBUS_TOKEN=<tok> \
   #    npx playwright test tests/74_model_picker.spec.mjs -g "cached list first")
 """
 
-# The storm suite (STORM-E2E): eight storm legs on both bench units, each first on the
+# The storm suite (STORM-E2E): eight storm legs on the bench units, each first on the
 # v4.5.13 control image, then on the release candidate. The gate step below reads the
 # legs' evidence and blocks the tag unless every leg passed on this candidate after its
 # commit; run_gate.py --storm-evidence DIR --candidate SHA runs it with the host checks.
 STORM_BATTERY = """\
-STORM SUITE (bench, both units, SD tier; docs/testing-tiers.md "Storm tier"; paste the real output):
-  # unit L: a settings store full, b page re-served, g file store full; unit A: c provider
-  #   refusing, d deterministic error, e low memory, f restart mid-turn, h false claim.
-  # Each leg runs on the v4.5.13 control image, then on the candidate, and writes evidence:
-  NIMBUS_STORM_EVIDENCE=<dir> NIMBUS_STORM_UNIT=L pytest tests/hil/storm -m "hil or net" --allow-hardware \\
-      -k "storm_a or storm_b or storm_g"
-  NIMBUS_STORM_EVIDENCE=<dir> NIMBUS_STORM_UNIT=A pytest tests/hil/storm -m "hil or net" --allow-hardware \\
-      -k "storm_c or storm_d or storm_e or storm_f or storm_h"
+STORM SUITE (bench, every unit, SD tier; docs/testing-tiers.md "Storm tier"; paste the real output):
+  # Each leg runs on the v4.5.13 control image, then on the candidate, and writes evidence. NIMBUS_STORM_UNIT is
+  # the unit's label in the evidence (F1 and so on), never a forbidden board (tools/bench_guard.py):
+  NIMBUS_STORM_EVIDENCE=<dir> NIMBUS_STORM_UNIT=<label> pytest tests/hil/storm -m "hil or net" --allow-hardware \\
+      --port <port>
   # The gate step (fails unless every leg passed on this candidate after its commit):
   python3 tools/release_gate/run_gate.py --storm-evidence <dir> --candidate <sha>
 """
@@ -141,7 +143,10 @@ def run_host_checks() -> bool:
         ("test-console guard (p18-N)", check_test_console_guard.main),
         ("model-id lint (p18-N)", model_id_lint.main),
         ("static-dram ceiling (p18-DEF)", check_static_dram.main),
+        ("nothing logs under a spinlock", check_critical_sections.main),
+        ("lwip core lock (CRASH2 A03)", check_lwip_core_lock.main),
         ("release notes line (D5)", check_release_notes.main),
+        ("owner regressions (p18-REGR)", check_owner_regressions.main),
     ):
         rc = fn([])
         results.append((name, rc == 0))
@@ -159,9 +164,18 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument("--host-only", action="store_true", help="run only the host checks")
     ap.add_argument("--storm-evidence", help="the storm suite's evidence directory for this candidate")
     ap.add_argument("--candidate", help="the release candidate's commit (with --storm-evidence)")
+    ap.add_argument("--native-log", help="the candidate's native test log for the owner-regression gate")
     args = ap.parse_args(argv)
 
     host_ok = run_host_checks()
+    if args.candidate:
+        print()
+        print("OWNER REGRESSIONS - live run on the candidate sha (p18-REGR, LAUNCH-5.0.0 ruling 4 Nov 20:20Z)")
+        oargs = ["--candidate", args.candidate]
+        if args.native_log:
+            oargs += ["--native-log", args.native_log]
+        rc = check_owner_regressions.main(oargs)
+        host_ok = host_ok and rc == 0
     if args.storm_evidence or args.candidate:
         print()
         if not (args.storm_evidence and args.candidate):

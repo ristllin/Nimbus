@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "nimbus/orch/head_loop.h"
+#include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/turn.h"
 
 // turn_contract - the engine's half of the turn-contract fixes (lane L):
@@ -48,6 +49,15 @@ int mergePseudoSpawns(nimbus::orch::Turn& t, const PseudoSpawns& p);
 // form). `pseudo` (nullable) counts spawn items already salvaged this turn.
 std::string turnShapeCorrection(const std::string& finalTurn, const PseudoSpawns* pseudo);
 
+// The empty-answer final check: "" unless the final orch_turn has no reply, no ask and no
+// spawn, then the model-facing correction text.
+std::string emptyAnswerCorrection(const std::string& finalTurn, const PseudoSpawns* pseudo);
+
+// What the owner reads when a turn still ends with no answer: never a made-up "Done."
+// kEmptyAnswer: nothing happened. kNoMessageAfterAction: the turn acted and said nothing.
+extern const char kEmptyAnswer[];
+extern const char kNoMessageAfterAction[];
+
 // The leak-repair gate: clear every field the parser recovered from leaked tool
 // markup (device actions, memory writes and queries, spawns, the scratchpad, and
 // a recovered memory note or ask). Only the cut reply stays. Every dropped spawn
@@ -71,8 +81,9 @@ struct SalvageOutcome {
   bool cut = false;
   bool claimsSpawn = false;   // the salvaged text claims sub-agents (none started)
 };
-SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseDetail,
-                               bool reportedCut);
+// `behind`: what stands behind a promise in the kept text (reply_guard.h).
+SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseDetail, bool reportedCut,
+                               nimbus::orch::LaterWork behind = nimbus::orch::LaterWork::None);
 // The plain lines for an answer with nothing salvageable.
 extern const char kCutNothingSalvaged[];
 extern const char kUnreadableNothingSalvaged[];

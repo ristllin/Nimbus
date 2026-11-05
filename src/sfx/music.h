@@ -68,7 +68,8 @@ bool streamWavFile(fs::FS& fs, const char* path, OpenHook onOpen = nullptr);
 
 // Stop music playback if a track is currently playing, so a spoken reply can take
 // the shared I2S TX channel immediately instead of queueing behind the whole track
-// (solide::audio serializes the TX with a whole-clip mutex). A no-op when idle.
+// (solide::audio serializes the TX with a whole-clip mutex). A no-op when idle. It does
+// not wait: the track closes at its next chunk, and the caller's SpeakerTurn waits for that.
 void stopForSpeech();
 
 // Register the media.play / media.pause / media.stop / media.list tools on the

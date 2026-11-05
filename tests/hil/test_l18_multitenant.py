@@ -22,6 +22,8 @@ Run:
 from __future__ import annotations
 
 import json
+import re
+import time
 import uuid
 
 import pytest
@@ -115,6 +117,42 @@ def _secret(owner="Alice"):
     return form.format(o=owner, t=topic, p=place, m=marker), marker
 
 
+def write_landed(result: str) -> bool:
+    """Did memory.write keep the row? "stored memory <id>", or "queued memory <id>" while
+    embeddings are busy (_store_secret then waits for the store). The word "stored" alone
+    also appears in a refusal and in the queued wording ("not stored yet"), so it decides
+    nothing."""
+    return "stored memory " in result or "queued memory " in result
+
+
+QUEUED_TAG = "pending, not stored yet"
+STORE_WAIT_S = 120
+STORE_POLL_S = 5
+
+
+def row_stored(search_text: str, marker: str) -> bool:
+    """Did memory.search show this row out of the store, not out of the pending queue?
+    (The text may be json.dumps of the MCP result, with its newlines escaped.)"""
+    lines = re.split(r"\\n|\n", search_text)
+    return any(marker in line and QUEUED_TAG not in line for line in lines)
+
+
+def _await_stored(rig, chat, secret, marker, timeout_s=STORE_WAIT_S):
+    """A queued row answers through the queue boundary. Alice finding it and Bob not would
+    then pass with the vector store's namespace filter never touched, so the leg waits for
+    the drain, and skips in words when it never comes: a skip is visible, a pass is not."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        if row_stored(_text(_call(rig, chat, "memory.search", {"query": secret, "n_results": 10})), marker):
+            return
+        if time.monotonic() >= deadline:
+            pytest.skip(
+                f"NOT A PASS: the row stayed queued for {timeout_s}s (embeddings busy), so the vector "
+                "store's namespace filter would not be exercised. Re-run when embeddings work."
+            )
+        time.sleep(STORE_POLL_S)
+
+
 def _store_secret(rig, chat, owner="Alice"):
     """Write a fresh secret as `chat`, retrying past a semantic-dedup collision.
 
@@ -132,7 +170,9 @@ def _store_secret(rig, chat, owner="Alice"):
         # privacy assertions never get to run. This is the product's own
         # affordance for "this matters", not a test-only backdoor.
         res = _text(_call(rig, chat, "memory.write", {"content": secret, "importance": 1.0}))
-        if "stored" in res:
+        if write_landed(res):
+            if "queued memory " in res:
+                _await_stored(rig, chat, secret, marker)
             return secret, marker
         if "duplicate" not in res:
             raise AssertionError(f"memory.write failed as {chat}: {res}")

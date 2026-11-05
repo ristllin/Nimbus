@@ -4,6 +4,7 @@
 #include <set>
 
 #include "nimbus/orch/caps.h"
+#include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/reply_markup.h"
 #include "nimbus/orch/spawn_claim.h"
 
@@ -166,6 +167,22 @@ std::string turnShapeCorrection(const std::string& finalTurn, const PseudoSpawns
   return out;
 }
 
+std::string emptyAnswerCorrection(const std::string& finalTurn, const PseudoSpawns* pseudo) {
+  orch::Turn t;
+  orch::ParseError e;
+  if (orch::parseHeadReply(finalTurn, t, e) == orch::ReplyShape::Unusable) return std::string();
+  if (!t.reply.empty() || !t.ask.empty() || !t.session_ops.empty() || !t.spawn.empty() ||
+      (pseudo && !pseudo->items.empty()))
+    return std::string();
+  return "[TURN CHECK] This orch_turn has an empty reply, so the owner would get no answer. If you need to look "
+         "something up, call the tool for it now (a mem_query field runs too late to help this turn). Then send "
+         "the whole orch_turn again with your answer in reply, or say plainly what you could not find. Do not "
+         "mention this check to the owner.";
+}
+
+const char kEmptyAnswer[] = "The model returned an empty answer. Try asking again.";
+const char kNoMessageAfterAction[] = "Finished. The model sent no message.";
+
 const char kCutNothingSalvaged[] =
     "That answer was cut off before it finished, so nothing in it was carried out. Ask again, "
     "or ask for a shorter answer.";
@@ -174,7 +191,7 @@ const char kUnreadableNothingSalvaged[] =
     "out. Ask again.";
 
 SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseDetail,
-                               bool reportedCut) {
+                               bool reportedCut, orch::LaterWork behind) {
   SalvageOutcome o;
   orch::Salvage sv;
   orch::salvageTurnText(raw, sv);
@@ -182,6 +199,7 @@ SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseD
   std::string text = orch::cleanReplyMarkup(sv.reply);
   const std::string ask = sv.askComplete ? orch::cleanReplyMarkup(sv.ask) : std::string();
   if (!ask.empty()) text += (text.empty() ? "" : "\n") + ask;
+  if (orch::isPlaceholderReply(text)) text.clear();   // filler is nothing salvaged
   o.cut = reportedCut || truncated || (!sv.reply.empty() && !sv.replyComplete);
   if (text.empty()) {
     o.text = o.cut ? kCutNothingSalvaged : kUnreadableNothingSalvaged;
@@ -191,6 +209,8 @@ SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseD
   o.claimsSpawn = orch::replyClaimsSpawn(text);
   o.text = o.cut ? text + "\n\n" + orch::kSalvageCutMarker : text;
   if (o.claimsSpawn) o.text += std::string("\n\n") + orch::kSpawnNotStartedLine;
+  // This path skips apply and its claim tail: a promise in the kept text gets its line here.
+  if (orch::laterPromiseSpan(text, nullptr, nullptr, behind)) o.text += std::string("\n\n") + orch::kLaterPromiseLine;
   return o;
 }
 

@@ -2,6 +2,8 @@
 #include <string>
 #include <vector>
 
+#include <ArduinoJson.h>
+
 #include "daemon_config.h"
 #include "nimbus/harness/http.h"
 #include "nimbus/telegram_offset.h"
@@ -23,7 +25,11 @@
 //
 // Offset durability: the confirmed offset is persisted (atomic write) after each
 // batch, so a restart never re-delivers an already-handled update (which would
-// re-run the turn and double-answer). This is the channel's restart-safety.
+// re-run the turn and double-answer). This is the channel's restart-safety. The
+// file carries the bot id the offset belongs to ("<offset> <bot id>", the id half
+// of the token - public, never the secret): update ids are per-bot, so an offset
+// from another bot is reset to 0 instead of silently skipping the new bot's
+// messages forever.
 namespace nimbusd {
 
 class TelegramChannel {
@@ -31,7 +37,21 @@ class TelegramChannel {
   TelegramChannel(std::string token, agent::HttpTransport* http, std::string offsetPath)
       : token_(std::move(token)), http_(http), offsetPath_(std::move(offsetPath)) {
     std::string s;
-    if (fsutil::readFile(offsetPath_, s)) offset_ = (int32_t)std::atoi(s.c_str());
+    if (fsutil::readFile(offsetPath_, s)) {
+      // "<offset> <bot id>": the offset is that bot's. A file from before the bot
+      // fingerprint carried no bot id, and neither belongs to this token's bot
+      // until proven same.
+      const size_t sp = s.find(' ');
+      offset_ = (int32_t)std::atoi(s.c_str());
+      const int64_t storedBot = sp == std::string::npos ? 0 : std::atoll(s.c_str() + sp + 1);
+      if (storedBot != nimbus::core::tgBotIdOf(token_.c_str())) {
+        // A stale high offset on a different bot makes getUpdates answer ok with
+        // an empty result forever, silently skipping every message (the device
+        // resets its cursor on a live token swap for the same reason). Start at
+        // 0: Telegram re-serves at most the one unconfirmed page.
+        offset_ = 0;
+      }
+    }
   }
 
   // Validate the bot token via getMe. On success fills `botUsername` and returns
@@ -91,6 +111,45 @@ class TelegramChannel {
     return true;
   }
 
+  // The typing indicator (lane PROG): Telegram shows it ~5 s, so a long turn's
+  // round boundaries re-send it and the chat never stops looking alive.
+  bool sendChatAction(const std::string& chatId, const std::string& action, std::string& err) {
+    const std::string body = std::string("{\"chat_id\":") + jsonNum(chatId) +
+                             ",\"action\":" + jsonQuote(action) + "}";
+    agent::HttpResponse resp;
+    if (!call("sendChatAction", body, resp, err)) return false;
+    if (resp.status != 200) { err = "sendChatAction HTTP " + std::to_string(resp.status); return false; }
+    return true;
+  }
+
+  // Download one file by its Telegram id (getFile, then the file host). A file over
+  // `maxBytes` is refused by its reported size, before any bytes move.
+  bool fetchFile(const std::string& fileId, size_t maxBytes, std::string& out, std::string& err) {
+    agent::HttpResponse resp;
+    if (!call("getFile?file_id=" + fileId, "", resp, err)) return false;
+    if (resp.status != 200) { err = "the download failed"; return false; }
+    JsonDocument d;
+    if (deserializeJson(d, resp.body)) { err = "the download failed"; return false; }
+    const std::string path = d["result"]["file_path"] | "";
+    if (path.empty()) { err = "the download failed"; return false; }
+    if ((d["result"]["file_size"] | (uint64_t)0) > maxBytes) {
+      err = "too large";
+      return false;
+    }
+    agent::HttpRequest req;
+    req.method = "GET";
+    req.host = "api.telegram.org";
+    req.path = "/file/bot" + token_ + "/" + path;
+    req.timeoutMs = 30000;
+    req.maxResponseBytes = maxBytes + 1;   // Telegram may omit file_size: stop reading past it
+    agent::HttpResponse file;
+    std::string e;
+    if (!http_ || !http_->exec(req, file, e) || file.status != 200) { err = "the download failed"; return false; }
+    if (file.body.size() > maxBytes) { err = "too large"; return false; }   // Telegram may omit file_size
+    out = file.body;
+    return true;
+  }
+
   int32_t offset() const { return offset_; }
 
  private:
@@ -109,7 +168,12 @@ class TelegramChannel {
     return http_->exec(req, resp, err);
   }
 
-  void persistOffset() { fsutil::writeFileAtomic(offsetPath_, std::to_string(offset_)); }
+  // The offset and the bot it belongs to, one atomic write: a reader (a restart)
+  // never sees the new offset pinned to the old bot.
+  void persistOffset() {
+    fsutil::writeFileAtomic(offsetPath_, std::to_string(offset_) + " " +
+                                          std::to_string(nimbus::core::tgBotIdOf(token_.c_str())));
+  }
 
   // Telegram chat ids are numeric; pass through if it looks numeric, else quote.
   static std::string jsonNum(const std::string& s) {

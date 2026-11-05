@@ -1,5 +1,6 @@
 #include "image_parts.h"
 
+#include <cctype>
 #include <algorithm>
 #include <cstring>
 
@@ -224,11 +225,32 @@ void noteSent(orch::TurnImages* imgs, int httpStatus) {
   if (imgs && httpStatus == 200) imgs->sent = true;
 }
 
+// The word "image" or "images" on its own: never part of a longer name, and '_' joins a
+// name (image_generation in a tool listing is not a refused photo, document_library
+// never holds the word at all).
+static bool loneImageWord(const std::string& e) {
+  auto joins = [](char c) { return std::isalnum((unsigned char)c) || c == '_'; };
+  for (size_t p = e.find("image"); p != std::string::npos; p = e.find("image", p + 1)) {
+    size_t end = p + 5;
+    if (end < e.size() && e[end] == 's') end++;
+    const bool left = p > 0 && joins(e[p - 1]);
+    const bool right = end < e.size() && joins(e[end]);
+    if (!left && !right) return true;
+  }
+  return false;
+}
+
 bool refusedImages(int httpStatus, const std::string& errText) {
   if (httpStatus == 413) return true;
   if (httpStatus != 400 && httpStatus != 422) return false;
   const std::string e = lower(errText);
-  return e.find("image") != std::string::npos;
+  // Only an IMAGE-CAUSE refusal counts: the bare word "image" also appears in unrelated
+  // error bodies, and matching it marked a seeing head blind for the whole boot when a
+  // connectors 400 rode the same turn (its tool listing names image_generation).
+  if (e.find("connector") != std::string::npos) return false;
+  for (const char* w : {"image_url", "image_parse", "invalid_image", "image input", "image part", "vision input", "data url"})
+    if (e.find(w) != std::string::npos) return true;
+  return loneImageWord(e);
 }
 
 bool rejectAndRetry(orch::TurnImages* imgs, const char* who, int httpStatus, const std::string& host) {
@@ -239,6 +261,14 @@ bool rejectAndRetry(orch::TurnImages* imgs, const char* who, int httpStatus, con
   hlog::logf("%s: the provider refused the photos (HTTP %d) - re-sent with their transcriptions", who,
              httpStatus);
   return true;
+}
+
+size_t readAsText(orch::TurnImages* imgs, const std::string& host) {
+  if (!imgs || imgs->empty() || imgs->refusedBy(host)) return 0;
+  constexpr size_t kBytesPerImage = 4096;   // about a window's cost of one photo, in prompt bytes
+  const size_t n = imgs->items.size();
+  rejectAndRetry(imgs, "fabric: the request overflowed", 400, host);
+  return n * kBytesPerImage;
 }
 
 std::string blindInputs(const std::string& inputs) {

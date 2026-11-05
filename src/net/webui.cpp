@@ -18,6 +18,7 @@
 #include "webui.h"
 
 #include <algorithm>   // std::min (heapMin vs the low-water mark)
+#include "nimbus/orch/health_rows.h"   // parksJson: the park in /api/orch
 #include "nimbus/orch/connectors_wire.h"   // /api/test/connwire grid seam
 
 #include "version.h"  // NIMBUS_FW_VERSION/BUILD -> /api/state fw/build
@@ -1328,6 +1329,7 @@ static void buildOrchState(String& out) {
   const int mode = s_wc.currentMode ? s_wc.currentMode()
                                     : (int)solide::memory::getInt("mode", 0);
   d["running"]  = (mode == 1);
+  nimbus::orch::parksJson(nimbus::orch::providerPark(), (uint32_t)millis(), d["parks"].to<JsonArray>());
   d["hasTg"]    = agent::store::telegramToken().length() > 0;
   // CUM-308: a token verified once (getMe) can be revoked later while the poll
   // loop keeps 401ing. authRejected() is the live debounced verdict; when it trips
@@ -1813,13 +1815,14 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty, Str
   if (n == "orchTrace")    { agent::store::setOrchTrace(v == "1" || v == "true"); return true; }
   if (n == "ttsOn")        { agent::store::setTtsEnabled(v == "1" || v == "true"); return true; }
   if (n == "loopRounds")   { agent::store::setOrchLoopRounds(v.toInt()); return true; }
-  // Lane DEF: the monthly spend ceiling in cents (clamped to 1 to 100,000 USD), or "off"
-  // (lane DEF2: the owner's provider limits alone apply). A write that did not land
-  // reports to the persist ledger, so the route answers 507.
+  // Lane DEF: the monthly spend ceiling in cents (1 to 100,000 USD; under 1 USD is
+  // refused, over the top is held there), or "off" (lane DEF2: the owner's provider limits
+  // alone apply). A write that did not land reports to the persist ledger, so the route
+  // answers 507.
   if (n == "spendCeil") {
     if (v == "off") { agent::spend::setLimitMicro(0); return true; }
     const uint64_t micro = nimbus::orch::parseCeilingCents(std::string(v.c_str()));
-    if (micro == 0) { err = "spend ceiling must be a positive whole number of cents, or off"; return true; }
+    if (micro == 0) { err = nimbus::orch::kCeilingFieldRefusal; return true; }
     agent::spend::setLimitMicro(micro);
     return true;
   }
@@ -2926,6 +2929,13 @@ void beginWeb(const WebConfig& wc) {
       host = pri.substring(0, e);
     }
     out["host"] = host;
+    // Lane CONN: a head model that refuses Mistral's built-in connectors
+    // (mistral-large-4-0) can never run them on its own turns, so the page must
+    // badge every Mistral connector "via sessions", never "live on your turns".
+    out["hostRefuses"] =
+        host == "mistral" &&
+        nimbus::orch::modelRefusesBuiltinConnectors(
+            std::string(agent::store::orchModel("mistral").c_str()));
     // 22 Oct honesty: why the last automatic workspace check missed, when the next
     // slow re-check runs, and how many tools ride a Mistral request.
     agent::connectors::webStatusInto(out.as<JsonObject>());
@@ -3814,7 +3824,17 @@ void beginWeb(const WebConfig& wc) {
     if (authBlocked(r)) return;
     String slug;
     if (const AsyncWebParameter* p = r->getParam("slug", true)) slug = p->value();
-    const bool ok = ::sfx::play(slug.c_str());
+    String lowMemory;
+    const bool ok = ::sfx::play(slug.c_str(), &lowMemory);
+    if (ok && lowMemory.length()) {   // told now, not queued to fail silently
+      JsonDocument d;
+      d["ok"] = false;
+      d["error"] = lowMemory;
+      String s;
+      serializeJson(d, s);
+      r->send(503, "application/json", s);
+      return;
+    }
     r->send(ok ? 200 : 400, "application/json",
             ok ? "{\"ok\":true}" : "{\"error\":\"unknown slug\"}");
   });

@@ -1,0 +1,13 @@
+static DRAM gate - lane DISPO, head d7da7483 + uncommitted lane fixes, Wed Nov  4 09:35:51 UTC 2026
+tree: /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/DISPO/nimbus
+build: pio run -e esp32s3 and -e esp32s3-cyd (battery DISPO-1, both rc=0)
+PASS nimbus-tft: static DRAM 89795 B (baseline 91195 B, -1400 B; ceiling 91635 B)
+rc=0
+PASS freenove-28: static DRAM 89875 B (baseline 91275 B, -1400 B; ceiling 91723 B)
+rc=0
+
+re-run on the battery DISPO-3 ELF, head e90b8e48, Wed Nov  4 10:40:57 UTC 2026
+PASS nimbus-tft: static DRAM 89795 B (baseline 91195 B, -1400 B; ceiling 91635 B)
+rc=0
+PASS freenove-28: static DRAM 89875 B (baseline 91275 B, -1400 B; ceiling 91723 B)
+rc=0

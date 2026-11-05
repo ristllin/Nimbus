@@ -1,0 +1,97 @@
+{
+ "name": "vnp-fold-haiku",
+ "description": "A long conversation on Anthropic: the start survives the fold.",
+ "keys": {
+  "anthropic": "ANTHROPIC_API_KEY"
+ },
+ "models": {
+  "head": {
+   "anthropic": "claude-haiku-5-5"
+  }
+ },
+ "host": "anthropic",
+ "timezone": "Europe/London",
+ "monthly_cap_cents": 500,
+ "scenarios": [
+  {
+   "id": "fold",
+   "steps": [
+    {
+     "say": "The codeword for this conversation is PERSIMMON-77. Acknowledge it in one short sentence.",
+     "expect": [
+      {
+       "turn_resolved": true
+      },
+      {
+       "no_error_reply": true
+      }
+     ]
+    },
+    {
+     "say": "Note $i of a long working session. Reply in one short sentence acknowledging the note.",
+     "repeat": 20,
+     "pad": 3200,
+     "settle_s": 2,
+     "expect": [
+      {
+       "turn_resolved": true
+      },
+      {
+       "log_not_regex": "fold\\(.*failed|no summary in reply"
+      }
+     ]
+    },
+    {
+     "sleep": 5
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/log"
+     },
+     "expect": [
+      {
+       "body_regex": "fold\\(owner\\): ok"
+      }
+     ]
+    },
+    {
+     "say": "Earlier in this conversation I told you a codeword. What was it? Answer with the codeword only.",
+     "expect": [
+      {
+       "turn_resolved": true
+      },
+      {
+       "reply_contains": "PERSIMMON-77"
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/mem/episodic?limit=200"
+     },
+     "expect": [
+      {
+       "body_contains": "Conversation compacted"
+      },
+      {
+       "body_contains": "ev:compact"
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/lastturn"
+     },
+     "expect": [
+      {
+       "body_regex": "CONVERSATION SUMMARY[^\\n]*PERSIMMON-77"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

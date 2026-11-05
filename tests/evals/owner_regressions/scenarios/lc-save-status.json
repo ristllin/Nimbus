@@ -1,0 +1,18 @@
+{
+  "id": "lc-save-status",
+  "title": "A save is reported as saved only when it landed",
+  "rows": ["OIR-02"],
+  "replays": "The 28 Oct class: the reply said Stored on the device beside a correction line saying it had not been saved.",
+  "clock": "{{TODAY}} {{DOW}} 09:40 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "say", "text": "Remember this for the long term: my bike lock code is 8273."}
+  ],
+  "assertions": [
+    "reply_ok",
+    "no_correction_line",
+    {"id": "memory_contains", "params": {"text": "8273"}},
+    {"id": "reply_forbids", "params": {"forbidden": ["has not been saved", "not been saved yet"]}}
+  ]
+}

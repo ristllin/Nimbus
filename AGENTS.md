@@ -197,6 +197,17 @@ Providers parallelize **remotely** - the device still polls them one at a time -
 deep fan-out scales **sequentially over waves**, never concurrently. "Run providers
 closer together" means reduce idle poll latency, nothing more.
 
+### ⛔ Nothing logs, touches a file or blocks inside a spinlock
+
+A `portMUX` critical section, `net::ConfigLockGuard` included, masks interrupts, and newlib's
+recursive FILE lock aborts at a raised level. A durable log write aborted that way on a live
+device on 29 Oct 2026 (fingerprint 2419bf4a): `orchDeviceSink` logged `devsink: lights` while it
+held the config lock (`src/main.cpp:826` at v4.6.1). That is confirmed, decoded frame by frame
+against the matching v4.6.1 build (program 2026-10-18, `evidence/crash-2419bf4a/DECODE.md`).
+Copy under the lock, log after it. `tools/release_gate/check_critical_sections.py` fails on one
+written inside a section, `hlog::log` and `hlog::logf` included. It does not follow calls, so
+check what a helper does.
+
 ### Byte-locked wire codecs
 
 The `nimbus-notify` frame codec and the on-device QR encoder are **byte-locked** to
@@ -238,6 +249,7 @@ in the same change.
 | `website/scripts/migrate-docs.mjs` | `website/docs/{quick-start,guides,reference,contributing}/**` (regenerated on deploy; **not committed**) |
 | `tools/webui_concat_check.py` | `tools/webui_page.snapshot` (byte capture of the assembled web UI) |
 | `tools/make_manifest.py` | the signed OTA release manifest (golden-tested against the on-device signer) |
+| `tools/router_contract/gen_contract_header.py` | `test/test_router_refusal_contract/contract_rows.h` (from `tools/router_contract/router-refusal-contract.md`, a verbatim copy of the cloud repo's contract) |
 
 ### Frozen strings and wire numbers
 

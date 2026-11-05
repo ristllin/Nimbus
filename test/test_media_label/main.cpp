@@ -217,6 +217,25 @@ static void test_description_memo() {
   TEST_ASSERT_TRUE(m.find("77", blobHash("fill 7"), "", out));
 }
 
+// A message that was nothing but media the device could not take runs no turn, so this
+// reply is all the sender ever hears: every reason gets words, and the next step.
+static void test_refused_media_reply_says_what_to_do() {
+  using nimbus::orch::mediaRefusedReply;
+  const std::string quota = mediaRefusedReply(nimbus::orch::kMediaOverQuota, true);
+  TEST_ASSERT_TRUE(quota.find("storage on this device is full") != std::string::npos);
+  TEST_ASSERT_TRUE(quota.find("Ask the owner") != std::string::npos);
+  TEST_ASSERT_TRUE(mediaRefusedReply(nimbus::orch::kMediaNoCard, false).find("memory card") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("That file is too large to take. Send a smaller one.",
+                           mediaRefusedReply(nimbus::orch::kMediaTooLarge, false).c_str());
+  TEST_ASSERT_EQUAL_STRING("Those files are too large to take. Send smaller ones.",
+                           mediaRefusedReply(nimbus::orch::kMediaTooLarge, true).c_str());
+  // Any other reason (a download failure, a future refusal) still answers.
+  for (const char* why : {"", "download failed", "some future reason"}) {
+    TEST_ASSERT_TRUE(mediaRefusedReply(why, false).find("Try sending it again") != std::string::npos);
+    TEST_ASSERT_TRUE(mediaRefusedReply(why, true).find("Try sending them again") != std::string::npos);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_format_table);
@@ -227,5 +246,6 @@ int main(int, char**) {
   RUN_TEST(test_late_item_rule);
   RUN_TEST(test_every_label_path_uses_the_formatter);
   RUN_TEST(test_description_memo);
+  RUN_TEST(test_refused_media_reply_says_what_to_do);
   return UNITY_END();
 }

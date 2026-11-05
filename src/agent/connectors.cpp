@@ -13,6 +13,7 @@
 #include "files_subsystem.h"         // files::available - the file routes need an SD card
 #include "pdf_tool.h"                // the device PDF writer (one of the PDF routes)
 #include "adapters/tavily.h"         // tavily::available - the head's own web.search
+#include "transport_tls.h"           // deviceProviderDeps: the provider's own web search
 
 #include <LittleFS.h>
 
@@ -185,7 +186,7 @@ String refreshAccess(const Info& c) {
   tlsSetup(client);
   client.setHandshakeTimeout(12);
   client.setConnectionTimeout(15000);  // F25: real socket bound (setTimeout is inert here)
-  if (!client.connect(host.c_str(), 443)) {
+  if (!connectHost(client, host.c_str(), 443)) {
     slot.release();
     alogf("connectors: oauth connect %s failed", host.c_str());
     return "";
@@ -495,10 +496,14 @@ String catalog(bool headCallsTools) {
   ps.mistralVerified   = store::verifyResult("mistral");
   ps.capProbe       = (int8_t)store::capProbe();   // W3b: off => no verified claims
   ps.currentHost    = currentHost();
+  // Lane CONN: the head MODEL decides whether a mistral head can run connectors at
+  // all (mistral-large-4-0 refuses them), so the catalog must know it.
+  ps.headModel      = std::string(store::orchModel(ps.currentHost.c_str()).c_str());
   ps.hostPause      = orchestrator::providerPause(ps.currentHost, nimbus::orch::PaidSeam::Chat);
   ps.mistralProbePending = provider_verify::workspaceProbePending();   // CUM-537
   // CUM-822: the head's own web.search is a route only for a head that can call tools.
-  ps.webSearchTool  = headCallsTools && tavily::available() && !store::providerOverBudget("tavily");
+  ps.webSearchTool  = headCallsTools && ((tavily::available() && !store::providerOverBudget("tavily")) ||
+                                         providers::hostedWebSearchAvailable(deviceProviderDeps()));
   std::string out = nimbus::orch::catalogText(portableList(), ps).c_str();
   // N4: reconcile + discover device-dialed MCP servers on the turn path (WiFi is
   // up here), then append their live status so the model plans around them.
@@ -775,7 +780,7 @@ struct McpResp {
 // Open the socket (TLS or plain) with a short connect-retry, bounded by deadline.
 bool mcpConnect(Client& c, const UrlParts& u, uint32_t deadline) {
   for (int attempt = 0; attempt < 3 && (int32_t)(millis() - deadline) < 0; attempt++) {
-    if (c.connect(u.host.c_str(), u.port)) return true;
+    if (connectHost(c, u.host.c_str(), u.port)) return true;
     delay(400);
   }
   return false;

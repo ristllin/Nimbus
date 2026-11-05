@@ -1,0 +1,16 @@
+{
+  "id": "lc-gmail-mistral",
+  "title": "Gmail access guidance names the provider console for a Mistral client",
+  "rows": ["OIR-41"],
+  "replays": "The 4 Nov class: do you have access to my personal Gmail was answered with device-page guidance although a Mistral console connector exists. The guidance now names Mistral's console first.",
+  "clock": "{{TODAY}} {{DOW}} 16:18 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "say", "text": "Do you have access to my personal Gmail?"}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "reply_contains_any", "params": {"any": ["console", "connector", "Studio"]}}
+  ]
+}

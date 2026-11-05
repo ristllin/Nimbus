@@ -8,6 +8,8 @@
 #include "nimbus/harness/builtin_skills.h"   // kFoodLogSkillId, kFoodCoachSkillId, builtinSkillBody
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/log.h"              // hlog
+#include "nimbus/harness/skill_attach.h"     // kSkillAttachCap
+#include "nimbus/harness/skill_md.h"         // skillUtf8Prefix
 #include "nimbus/harness/providers.h"        // providers::kWireBodyMax - the request body budget
 #include "nimbus/orch/food_ledger.h"
 #include "nimbus/orch/orch_schema.h"         // ORCH_SCHEMA_BODY - the final-answer tool
@@ -20,8 +22,6 @@ bool startsWith(const std::string& s, const char* p) { return s.rfind(p, 0) == 0
 
 // The newest part of a text (a long reply's end is what the next message answers).
 std::string tail(const std::string& s, size_t n) { return s.size() <= n ? s : s.substr(s.size() - n); }
-
-bool isSummaryMessage(const HistMsg& m) { return startsWith(m.text, kSummaryUserHead) || m.text == kSummaryAck; }
 
 // Was the exchange just before this message about food? A short follow-up ("brine",
 // "I think your calc is off") answers the question the last reply asked.
@@ -38,10 +38,52 @@ bool personChat(const std::string& chatId) { return !chatId.empty() && chatId !=
 
 }  // namespace
 
+bool isSummaryMessage(const HistMsg& m) { return startsWith(m.text, kSummaryUserHead) || m.text == kSummaryAck; }
+
 std::string TurnEngine::loadFoodLedger(const std::string& chatId) {
   ledger_ = nimbus::orch::FoodLedger();
   if (d_.foodLedger && personChat(chatId)) ledger_ = d_.foodLedger(chatId);
   return nimbus::orch::renderLedgerBlock(ledger_, /*foodTurn=*/false);
+}
+
+nimbus::orch::FoodFacts TurnEngine::currentFoodFacts(const std::string& chatId) const {
+  nimbus::orch::FoodFacts facts;
+  if (!d_.foodLedger || !personChat(chatId)) return facts;
+  const nimbus::orch::FoodLedger l = d_.foodLedger(chatId);   // after this turn's writes
+  facts.have = l.exists && l.error.empty() && l.hasKcal;
+  facts.kcalKnown = l.kcalUnread == 0;
+  facts.kcal = l.kcal;
+  facts.rows = l.kcalRows;
+  facts.protein = l.protein;
+  facts.proteinUnknown = l.proteinUnknown;
+  // The stored targets after the turn's writes (bench F03): a partial target store is
+  // told from a complete one only against what the file really holds now.
+  facts.targetsKnown = l.exists && l.error.empty();
+  facts.kcalTarget = l.targets.kcal;
+  facts.proteinTarget = l.targets.protein;
+  return facts;
+}
+
+// The owner's own method for a meal rides a logging turn (1 Nov: "Dont you have a skill guiding
+// you?" - it was on the shelf and never opened). The first approved skill about food, unless the
+// chat already holds it; its tail stays one skill.get away.
+std::string TurnEngine::ownerFoodSkillBlock(bool asks) const {
+  if (asks || !d_.foodSkills || !d_.skillBody) return std::string();
+  for (const std::string& id : d_.foodSkills()) {
+    if (std::any_of(attachPicks_.begin(), attachPicks_.end(), [&id](const AttachPick& a) { return a.id == id; }))
+      return std::string();
+    const std::string body = d_.skillBody(id);
+    if (body.empty()) continue;
+    std::string out = "[SKILL " + id + " - the owner's approved method, follow it for this meal]\n" +
+                      skillUtf8Prefix(body, kSkillAttachCap);
+    if (body.size() > kSkillAttachCap) out += "\n[the rest: skill.get " + id + "]";
+    return out + "\n";
+  }
+  return std::string();
+}
+
+std::string TurnEngine::foodRecallBlock(const std::string& userText) const {
+  return d_.foodRecall && personChat(curChat_) ? d_.foodRecall(curChat_, userText) : std::string();
 }
 
 void TurnEngine::applyFoodContext(ComposeInputs& ci, const std::string& userText) const {
@@ -52,8 +94,13 @@ void TurnEngine::applyFoodContext(ComposeInputs& ci, const std::string& userText
                     (!userText.empty() && (lastExchangeAboutFood(ci) ||
                                            (ledger_.hasRows() && nimbus::orch::mentionsLedger(userText))));
   ci.foodLedger = nimbus::orch::renderLedgerBlock(ledger_, food);
+  // Lane UPSERT, 4 Nov: the owner disputes a total - the day's history rows (rows that
+  // changed or disappeared today, kept as #replaced: rows) ride the turn, so the
+  // answer names what the day held before instead of re-adding from memory.
+  if (nimbus::orch::disputesLedger(userText)) ci.foodLedger += nimbus::orch::renderLedgerDispute(ledger_);
   ci.foodPlaybook.clear();
   if (!food) return;
+  ci.foodLedger += foodRecallBlock(userText);
   // Which playbook: logging when the owner reports food, the coach when they ask (or
   // complain), both when the words do not say. One already in [ACTIVE SKILLS] is left
   // out. Not noted in the row's skills: tag: the playbooks are device context like the
@@ -72,6 +119,7 @@ void TurnEngine::applyFoodContext(ComposeInputs& ci, const std::string& userText
     if (body.empty()) body = builtinSkillBody(p.id, turnTelegram_, turnFileSend_);
     ci.foodPlaybook += body;
   }
+  ci.foodPlaybook += ownerFoodSkillBlock(asks);
   // The message's plain intent, last, nearest the message (eaten: log it; a request: no row).
   if (!ci.foodPlaybook.empty()) ci.foodPlaybook += nimbus::orch::renderFoodIntentHint(intent);
 }

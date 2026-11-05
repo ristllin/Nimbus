@@ -41,6 +41,7 @@ struct Rig {
   uint32_t nowH = 500000;
   bool synced = true;
   std::string failWith;     // non-empty: the embedder fails with this raw token
+  bool holdsKey = false;    // a key that can embed is held (it may not reach the stored space)
   int embedCalls = 0;
   bool persistPendingOk = true;
   int persistPendingCalls = 0;
@@ -51,6 +52,7 @@ struct Rig {
   explicit Rig(bool bindQueue = true) {
     vec.configure(kDims);
     ctx.vec = &vec;
+    ctx.holdsEmbedKey = [this] { return holdsKey; };
     ctx.embed = [this](const std::string& text, std::string& err) -> std::vector<int8_t> {
       embedCalls++;
       if (!failWith.empty()) { err = failWith; return {}; }
@@ -363,8 +365,18 @@ static void test_billing_refusals_classify_as_out_of_credit() {
       {"HTTP 429 insufficient_quota", EmbedFail::OutOfCredit},
       {"HTTP 402", EmbedFail::OutOfCredit},                           // every 402 is billing
       {"HTTP 402 something_new", EmbedFail::OutOfCredit},
-      {"HTTP 429 ceiling_reached", EmbedFail::OutOfCredit},           // router monthly cap
-      {"HTTP 402 funding_cap_reached", EmbedFail::OutOfCredit},
+      {"HTTP 402 insufficient_credits", EmbedFail::OutOfCredit},
+      {"HTTP 402 credits_or_subscription_required", EmbedFail::OutOfCredit},
+      // The router refusal contract: the platform's own limits and the clamp are not this
+      // account's wallet, and a key's budget or a suspension is not an empty one.
+      {"HTTP 429 ceiling_reached", EmbedFail::RouterHeld},
+      {"HTTP 402 funding_cap_reached", EmbedFail::RouterHeld},
+      {"HTTP 429 upstream_quota_exhausted", EmbedFail::RouterHeld},
+      {"HTTP 402 insufficient_credits_for_call", EmbedFail::CallTooLarge},
+      {"HTTP 402 budget_exceeded", EmbedFail::AccountHeld},
+      {"HTTP 403 account_suspended", EmbedFail::AccountHeld},
+      {"HTTP 429 credits_held_in_flight", EmbedFail::RateLimited},
+      {"HTTP 402 router_refused", EmbedFail::ProviderError},
       // Counter-tests: a plain rate limit stays a rate limit; a 500 stays a 500.
       {"HTTP 429 rate_limited", EmbedFail::RateLimited},
       {"HTTP 429", EmbedFail::RateLimited},
@@ -411,8 +423,15 @@ static void test_write_during_outage_is_queued_for_every_failure_class() {
     seen[(int)classifyEmbedFail(raw, d)] = true;
     TEST_ASSERT_TRUE_MESSAGE(w.success, raw);
     TEST_ASSERT_EQUAL_STRING_MESSAGE(kMemOutcomeQueued, w.code.c_str(), raw);
-    TEST_ASSERT_TRUE_MESSAGE(has(w.output, "not stored yet"), raw);
-    TEST_ASSERT_TRUE_MESSAGE(has(w.output, "embeddings:"), raw);
+    if (classifyEmbedFail(raw, d) == EmbedFail::NoKey) {
+      // No key can embed: not an outage. It says what is true now and promises nothing.
+      TEST_ASSERT_TRUE_MESSAGE(has(w.output, "kept as text"), raw);
+      TEST_ASSERT_TRUE_MESSAGE(has(w.output, "No later confirmation"), raw);
+      TEST_ASSERT_FALSE_MESSAGE(has(w.output, "automatically"), raw);
+    } else {
+      TEST_ASSERT_TRUE_MESSAGE(has(w.output, "not stored yet"), raw);
+      TEST_ASSERT_TRUE_MESSAGE(has(w.output, "embeddings:"), raw);
+    }
     TEST_ASSERT_EQUAL_INT(0, r.vec.size());
     TEST_ASSERT_EQUAL_INT(1, (int)r.pending.size());
     TEST_ASSERT_TRUE(r.persistPendingCalls >= 1);   // durable before it answered
@@ -458,6 +477,48 @@ static void test_counters_call_a_queued_write_queued() {
   TEST_ASSERT_EQUAL_UINT32(0, r.ops.failed);
 }
 
+// No key can embed: the words say which of the two cases it is, and the list running
+// full gets the same answer as the writes before it (device and hosted).
+static void test_no_key_words_tell_the_two_cases_apart() {
+  Rig none;
+  none.failWith = "no embeddings key for mistral";
+  ToolResult w = none.write("my locker code is 4417", owner());
+  TEST_ASSERT_TRUE(has(w.output, "kept as text"));
+  TEST_ASSERT_TRUE(has(w.output, "holds no key"));
+  TEST_ASSERT_FALSE(has(w.output, "device"));
+  Rig held;
+  held.failWith = "no embeddings key for mistral";
+  held.holdsKey = true;
+  ToolResult x = held.write("my locker code is 4417", owner());
+  TEST_ASSERT_TRUE(has(x.output, "kept as text"));
+  TEST_ASSERT_FALSE(has(x.output, "holds no key"));
+  TEST_ASSERT_TRUE(has(x.output, "made with mistral"));
+  TEST_ASSERT_TRUE(has(x.output, "a Mistral key"));
+  TEST_ASSERT_TRUE(has(x.output, "erase the stored memories"));
+  Rig heldOpenAi;
+  heldOpenAi.failWith = "no embeddings key for openai";
+  heldOpenAi.holdsKey = true;
+  ToolResult y = heldOpenAi.write("my gate code is 88", owner());
+  TEST_ASSERT_TRUE(has(y.output, "an OpenAI or Cumulo Nimbus key"));
+  // At the cap: refused, and still the honest answer.
+  Rig full;
+  full.failWith = "no embeddings key for mistral";
+  for (int i = 0; i < 64; i++) full.write("fact " + std::to_string(i), owner());
+  ToolResult z = full.write("the 65th fact", owner());
+  TEST_ASSERT_FALSE(z.success);
+  TEST_ASSERT_EQUAL_STRING(kMemOutcomeRefused, z.code.c_str());
+  TEST_ASSERT_TRUE(has(z.error, "memory not stored: 64 memories are already waiting"));
+  TEST_ASSERT_TRUE(has(z.error, "holds no key"));
+  TEST_ASSERT_TRUE(has(z.error, "only OpenAI, Mistral or Cumulo Nimbus"));
+  TEST_ASSERT_FALSE(has(z.error, "device"));
+  TEST_ASSERT_FALSE(has(z.error, "no embeddings key for"));
+  // Every other failure class keeps its own words at the cap.
+  Rig out;
+  out.failWith = "HTTP 429 credit_balance_exhausted";
+  for (int i = 0; i < 64; i++) out.write("fact " + std::to_string(i), owner());
+  TEST_ASSERT_TRUE(has(out.write("the 65th fact", owner()).error, "embeddings:"));
+}
+
 static void test_queue_full_or_storage_down_refuses_honestly() {
   Rig r;
   r.failWith = "HTTP 429 credit_balance_exhausted";
@@ -475,7 +536,7 @@ static void test_queue_full_or_storage_down_refuses_honestly() {
   ToolResult x = s.write("my locker code is 4417", owner());
   TEST_ASSERT_FALSE(x.success);
   TEST_ASSERT_EQUAL_STRING(kMemOutcomeRefused, x.code.c_str());
-  TEST_ASSERT_TRUE(has(x.error, "device storage unavailable"));
+  TEST_ASSERT_TRUE(has(x.error, "storage unavailable"));
   TEST_ASSERT_EQUAL_INT(0, (int)s.pending.size());
   // Without the queue bound (an MCP-only context), today's refusal stands.
   Rig n(/*bindQueue=*/false);
@@ -749,6 +810,83 @@ static void test_queued_fact_found_by_keyword_inside_boundary() {
   }
 }
 
+// The queued write's own words promise that search finds it meanwhile. That has to hold
+// after the embedder recovers and before the drain ran, when memory.search takes the
+// semantic path: on 28 Oct a member's exact sentence came back "No relevant memories
+// found" in that window, and it was read as an RBAC refusal (the l18 bench leg).
+static void test_queued_fact_found_after_the_embedder_recovers() {
+  Rig r;
+  const Principal alice = principalForRole("alice", Role::User);
+  const Principal bob = principalForRole("bob", Role::User);
+  const Principal revoked = principalForRole("alice", Role::Unknown);
+  const char* kSecret = "Alice keeps the locker code for Pier 9 written as LOCKER-77";
+  r.failWith = "tls busy";
+  const std::string args = std::string(R"({"content":")") + kSecret + R"("})";
+  const ToolResult w = r.call("memory.write", args.c_str(), alice);
+  TEST_ASSERT_TRUE_MESSAGE(has(w.output, "not stored yet"), w.output.c_str());
+  r.failWith.clear();   // the embedder is back; nothing has drained the queue yet
+  TEST_ASSERT_EQUAL(1, (int)r.pending.size());
+
+  const std::string query = std::string(R"({"query":")") + kSecret + R"("})";
+  const ToolResult mine = r.call("memory.search", query.c_str(), alice);
+  TEST_ASSERT_TRUE_MESSAGE(has(mine.output, "LOCKER-77"), mine.output.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(mine.output, "[pending, not stored yet]"), mine.output.c_str());
+
+  // The read boundary holds in the new path, whatever the words: another member, and
+  // the writer herself once revoked.
+  const ToolResult other = r.call("memory.search", query.c_str(), bob);
+  TEST_ASSERT_FALSE_MESSAGE(has(other.output, "LOCKER-77"), other.output.c_str());
+  const ToolResult gone = r.call("memory.search", query.c_str(), revoked);
+  TEST_ASSERT_FALSE_MESSAGE(has(gone.output, "LOCKER-77"), gone.output.c_str());
+
+  // A query that shares no word with it does not surface it.
+  const ToolResult far = r.call("memory.search", R"({"query":"weather tomorrow"})", alice);
+  TEST_ASSERT_FALSE_MESSAGE(has(far.output, "LOCKER-77"), far.output.c_str());
+
+  // Stored rows still lead, and n_results still bounds the whole answer.
+  r.call("memory.write", R"({"content":"Alice stores her locker spare key at the office"})", alice);
+  const ToolResult one = r.call("memory.search", R"({"query":"locker","n_results":1})", alice);
+  TEST_ASSERT_TRUE_MESSAGE(has(one.output, "Found 1 memories"), one.output.c_str());
+}
+
+// n_results 1 with one weak queued word match: the best stored row keeps the line. The
+// queue gets at most half the answer, and "half of one" must not mean all of it.
+static void test_a_queued_match_never_takes_the_only_line_from_a_stored_row() {
+  Rig r;
+  const Principal who = principalForRole("alice", Role::User);
+  TEST_ASSERT_TRUE(has(r.call("memory.write", R"({"content":"my coffee order is a flat white"})", who).output, "stored memory"));
+  r.failWith = "tls busy";
+  TEST_ASSERT_TRUE(has(r.call("memory.write", R"({"content":"buy coffee filters tomorrow"})", who).output, "not stored yet"));
+  r.failWith.clear();
+  const ToolResult best = r.call("memory.search", R"({"query":"what is my coffee order","n_results":1})", who);
+  TEST_ASSERT_TRUE_MESSAGE(has(best.output, "flat white"), best.output.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(has(best.output, "filters"), best.output.c_str());
+  // Two lines: one of each, so the queued fact is not lost to a busy store.
+  const ToolResult two = r.call("memory.search", R"({"query":"what is my coffee order","n_results":2})", who);
+  TEST_ASSERT_TRUE_MESSAGE(has(two.output, "flat white") && has(two.output, "filters"), two.output.c_str());
+  // Nothing stored for this reader: the queued fact has the line to itself.
+  const Principal bob = principalForRole("bob", Role::User);
+  r.failWith = "tls busy";
+  r.call("memory.write", R"({"content":"bob parks the blue canoe at the lake"})", bob);
+  r.failWith.clear();
+  const ToolResult alone = r.call("memory.search", R"({"query":"blue canoe","n_results":1})", bob);
+  TEST_ASSERT_TRUE_MESSAGE(has(alone.output, "canoe"), alone.output.c_str());
+}
+
+// What a member may do: the rule the l18 leg's setup depends on, stated once. A User
+// writes and reads its own memory; an Unknown does neither.
+static void test_member_memory_write_is_allowed_by_role() {
+  Rig r;
+  const Principal member = principalForRole("918001", Role::User);
+  const ToolResult w = r.call("memory.write", R"({"content":"member note about the locker"})", member);
+  TEST_ASSERT_TRUE_MESSAGE(w.success && has(w.output, "stored memory"), w.output.c_str());
+  const ToolResult s = r.call("memory.search", R"({"query":"member note about the locker"})", member);
+  TEST_ASSERT_TRUE_MESSAGE(has(s.output, "member note"), s.output.c_str());
+  const Principal unknown = principalForRole("918009", Role::Unknown);
+  const ToolResult denied = r.call("memory.write", R"({"content":"should not land"})", unknown);
+  TEST_ASSERT_FALSE_MESSAGE(has(denied.output, "stored memory"), denied.output.c_str());
+}
+
 static void test_update_during_outage_keeps_old_until_drain() {
   Rig r;
   TEST_ASSERT_EQUAL_STRING(kMemOutcomeStored, r.write("I take my coffee black", owner()).code.c_str());
@@ -937,6 +1075,7 @@ int main(int, char**) {
   RUN_TEST(test_billing_refusals_classify_as_out_of_credit);
   RUN_TEST(test_write_during_outage_is_queued_for_every_failure_class);
   RUN_TEST(test_counters_call_a_queued_write_queued);
+  RUN_TEST(test_no_key_words_tell_the_two_cases_apart);
   RUN_TEST(test_queue_full_or_storage_down_refuses_honestly);
   RUN_TEST(test_parked_turn_spends_no_embed);
   RUN_TEST(test_billing_park_notices_once_per_episode);
@@ -951,5 +1090,8 @@ int main(int, char**) {
   RUN_TEST(test_lexical_recall_bounds_and_tags);
   RUN_TEST(test_coalesced_update_keeps_intent_and_delete_covers_queue);
   RUN_TEST(test_an_unwritable_engine_drains_nothing);
+  RUN_TEST(test_queued_fact_found_after_the_embedder_recovers);
+  RUN_TEST(test_a_queued_match_never_takes_the_only_line_from_a_stored_row);
+  RUN_TEST(test_member_memory_write_is_allowed_by_role);
   return UNITY_END();
 }

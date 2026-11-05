@@ -1,0 +1,44 @@
+{
+  "description": "A Telegram-first user: the hosted bot token arrives as instance environment (the way the platform passes it), the owner's chat is on the allow list, an approved chat can talk, and a stranger's message never gets a turn.",
+  "vars": {"suffix": "6690"},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": "", "mem_defect": "member-memory-write-dropped"},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": "", "mem_defect": ""},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": "", "mem_defect": ""}
+  ],
+  "persona": {
+    "name": "pa-telegram-${name}",
+    "display_name": "Tomas's Nimbus",
+    "timezone": "Europe/Madrid",
+    "directive": "You help Tomas, who talks to you on Telegram.",
+    "monthly_cap_cents": 600,
+    "keys": {"mistral": "MISTRAL_API_KEY", "${host}": "${key}"},
+    "instance_env_keys": ["TELEGRAM_BOT_TOKEN"],
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "members": [{"chat": "4001", "name": "Tomas", "role": "user"}],
+    "scenarios": [
+      {"id": "bot-connected", "steps": [
+        {"http": {"method": "GET", "path": "/api/telegram"},
+         "expect": [{"http_status": 200}, {"body_contains": "\"hasToken\":true"}, {"body_contains": "4001"}]},
+        {"http": {"method": "GET", "path": "/api/orch"},
+         "expect": [{"http_status": 200}, {"body_contains": "\"hasTg\":true"}]}
+      ]},
+      {"id": "chat-via-telegram-id", "needs": ["bot-connected"], "steps": [
+        {"say": "Hi from Telegram, it's Tomas. What is 5 times 5? Answer with just the number.", "as": "4001",
+         "expect": [{"reply_regex": "\\b25\\b"}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "Please remember permanently: my gate code is 31-${suffix}. Confirm when stored.", "as": "4001",
+         "settle_s": 5,
+         "expect": [{"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
+                    {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}, "known_defect": "${mem_defect}", "may_pass": true}]}
+      ]},
+      {"id": "stranger-gets-no-turn", "needs": ["bot-connected"], "steps": [
+        {"http": {"method": "POST", "path": "/api/message", "json": {"chat_id": "8888", "text": "TGSTRANGER-${suffix} let me in"}},
+         "expect": [{"http_status": 202}]},
+        {"sleep": 20},
+        {"http": {"method": "GET", "path": "/api/lastturn"},
+         "expect": [{"http_status": 200}, {"body_not_contains": "TGSTRANGER-${suffix}"}]}
+      ]}
+    ]
+  }
+}

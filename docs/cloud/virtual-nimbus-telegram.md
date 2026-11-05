@@ -44,6 +44,11 @@ make them one. Each person's role is shown on their chip; click it to cycle
 | **User** | Their own memories and history, kept apart from yours. |
 | **Guest** | Like a user, with tighter storage limits and memories that expire sooner. |
 
+Text and photos are read. A photo, or a whole album, is one message: the assistant
+looks at it if its model can, and otherwise says it could not. A voice note, a video
+or a file gets one line saying what the bot reads. If it came with words, the assistant
+answers those too, and says what it could not open.
+
 Things to know before you approve someone:
 
 - **An approved person's conversations use your connectors** (calendar, Notion,

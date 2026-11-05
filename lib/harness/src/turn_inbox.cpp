@@ -40,13 +40,20 @@ bool takeInbound(const std::string& chatId, const std::string& routedText, Inbou
 }
 
 Inbound inboundForBucket(const nimbus::orch::MessageBatcher& b, size_t i,
-                         const std::vector<std::string>& storedRefs) {
+                         const std::vector<std::string>& storedRefs, int64_t botId) {
   Inbound in;
   in.chatId = b.chatIdAt(i);
   int32_t newest = 0;
   for (size_t m = 0; m < b.messageCountAt(i); ++m)
     if (b.updateIdAt(i, m) > newest) newest = b.updateIdAt(i, m);
-  if (newest > 0) in.src = "tg:" + std::to_string(newest) + "x" + std::to_string(b.messageCountAt(i));
+  // The source key names the BOT too ("tg:<bot id>:<newest>x<count>"): update ids
+  // are per-bot, so a bare "tg:<id>x<count>" from one bot collides with another
+  // bot's after a token rotation (the new bot's ids restart low), and the dedup
+  // drop would eat the new bot's first messages as "already seen". The bot id is
+  // the id half of the token (nimbus::core::tgBotIdOf), never the secret.
+  if (newest > 0)
+    in.src = "tg:" + std::to_string(botId) + ":" + std::to_string(newest) + "x" +
+             std::to_string(b.messageCountAt(i));
   const nimbus::orch::PsString rendered = b.render(i);
   std::string said(rendered.c_str(), rendered.size());
   size_t from = 0;

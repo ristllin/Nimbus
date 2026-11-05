@@ -100,6 +100,10 @@ DeliveryWorld deliveryWorld(const std::string& botToken, const std::string& allo
   return w;
 }
 
+bool telegramOwnerOf(const std::string& allowlist, const std::string& owners, const std::string& chatId) {
+  return deliveryWorld(std::string(), allowlist, owners).isOwnerChat(chatId);
+}
+
 Delivery resolveDelivery(const std::string& storedChatId, const DeliveryWorld& w,
                          bool chatAllowed) {
   Delivery d;

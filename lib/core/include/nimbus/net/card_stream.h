@@ -113,6 +113,15 @@ struct CardBufferAlloc {
 };
 CardBufferAlloc cardHeapAlloc();
 
+// The staging pool rule, the seam's admission gate: a board with PSRAM installed
+// never stages a download from internal SRAM. When PSRAM is exhausted the alloc
+// answers null and the stream WAITS (fillOne's null path, class-tested: it
+// stalls inside the same budget and never fails the response) instead of silently
+// taking 2872 B a fill from the scarce pool a live turn's TLS handshake needs a
+// contiguous block of. A board WITHOUT PSRAM has only internal to give, so there
+// the fallback is the intended behavior, not a leak.
+inline bool cardStagingInternalOk(bool psramInstalled) { return !psramInstalled; }
+
 class CardStream {
  public:
   enum class Phase : uint8_t { Open, Head, Body, Done, Failed };

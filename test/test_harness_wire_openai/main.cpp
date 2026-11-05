@@ -8,6 +8,7 @@
 #include "../support/image_turn_fixture.h"
 #include "nimbus/orch/hosted_runs.h"   // CUM-835: what a head response ran server-side
 #include "nimbus/orch/turn_images.h"
+#include "nimbus/harness/prompt_layout.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
 
@@ -1168,6 +1169,123 @@ static void test_r1_openai_single_shot_reads_transcriptions() {
   TEST_ASSERT_FALSE(bodyHas(d, 0, "input_image"));
 }
 
+// ---- the cache breakpoint hint (a model gate, and a retry when the gate is wrong) ----
+//
+// prompt_cache_breakpoint is accepted by gpt-5.6 and later and answered with a 400 by
+// everything else, so one owner-selectable model used to fail every turn. The table is
+// the live probe of 1 Nov across the account's model list: 0 = HTTP 400, 1 = HTTP 200.
+static void test_breakpoint_gate_matches_the_live_probe() {
+  const struct { const char* model; bool takes; } kProbe[] = {
+      {"gpt-4.1", false},      {"gpt-4.1-mini", false},   {"gpt-4.1-nano", false},  {"gpt-4o", false},
+      {"gpt-4o-mini", false},  {"gpt-4o-2024-11-20", false}, {"gpt-5", false},      {"gpt-5-2025-08-07", false},
+      {"gpt-5-mini", false},   {"gpt-5-nano", false},     {"gpt-5-pro", false},     {"gpt-5.1", false},
+      {"gpt-5.2", false},      {"gpt-5.2-pro", false},    {"gpt-5.4", false},       {"gpt-5.4-mini", false},
+      {"gpt-5.4-nano", false}, {"gpt-5.5", false},        {"gpt-5.5-pro", false},   {"gpt-5.5-2026-04-23", false},
+      {"gpt-live-1", false},   {"o3", false},             {"o3-2025-04-16", false},
+      {"gpt-5.6-luna", true},  {"gpt-5.6-sol", true},     {"gpt-5.6-terra", true},  {"gpt-6-astra", true},
+      {"gpt-6-luna", true},    {"gpt-6-sol", true},       {"gpt-6.1-sol", true},    {"gpt-6.1-terra", true},
+  };
+  for (const auto& p : kProbe) {
+    TEST_ASSERT_EQUAL_MESSAGE(p.takes, agent::layout::openAITakesBreakpoints(p.model), p.model);
+    // A router names the same model with its upstream first.
+    const std::string routed = std::string("openai/") + p.model;
+    TEST_ASSERT_EQUAL_MESSAGE(p.takes, agent::layout::openAITakesBreakpoints(routed), routed.c_str());
+  }
+  // What the probe could not show: later versions take it, junk never does.
+  for (const char* later : {"gpt-5.7", "gpt-5.10-luna", "gpt-7", "gpt-10-sol"})
+    TEST_ASSERT_TRUE_MESSAGE(agent::layout::openAITakesBreakpoints(later), later);
+  for (const char* junk : {"", "gpt-", "gpt", "gpt-x", "model-openai", "mistral-large-4-0", "chatgpt-5.6"})
+    TEST_ASSERT_FALSE_MESSAGE(agent::layout::openAITakesBreakpoints(junk), junk);
+}
+
+// The prompt with its parts marked, as compose builds it for a real turn.
+static std::string splitPrompt() {
+  agent::layout::PromptParts p;
+  p.stat = "static";
+  p.shelf = "shelf";
+  p.dyn = "per-turn";
+  p.split = true;
+  agent::layout::Msg m;
+  m.user = true;
+  m.text = "earlier words";
+  p.history.push_back(m);
+  return agent::layout::join(p);
+}
+
+static std::string oaiLoopFinal() {
+  return "{\"id\":\"r\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\","
+         "\"call_id\":\"c\",\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"done\\\"}\"}]}";
+}
+
+// Every wire path: a model that refuses the hint never gets it, one that takes it does.
+static void test_breakpoint_hint_follows_the_model_on_both_paths() {
+  for (bool loop : {true, false}) {
+    for (const char* model : {"gpt-4o-mini", "gpt-5.6-luna"}) {
+      FakeProviderDeps d;
+      d.http.script.push_back({"", "", 200, loop ? oaiLoopFinal() : singleShotBody()});
+      auto pd = d.contract();
+      const std::string m = model;
+      pd.orchModel = [m](const char*) { return m; };
+      FakeProviderDeps::ToolRig rig;
+      d.fillTools(rig);
+      std::string conv, out, err;
+      const bool ok = providers::orchTurnOpenAI(pd, conv, splitPrompt(), "hello", out, err, loop ? &rig.ht : nullptr, nullptr);
+      TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(m == "gpt-5.6-luna", bodyHas(d, 0, "prompt_cache_breakpoint"), model);
+    }
+  }
+}
+
+// A model the gate names wrongly (a new one, a router's rewrite): the 400 says which
+// field it refuses, the round is sent again without it, and no turn fails for a cache hint.
+static void test_breakpoint_refused_by_a_model_the_gate_trusted_retries_once() {
+  const char* k400 = "{\"error\":{\"message\":\"prompt_cache_breakpoint is not supported on this model\","
+                     "\"type\":\"invalid_request_error\",\"param\":\"prompt_cache_breakpoint\","
+                     "\"code\":\"invalid_parameter\"}}";
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 400, k400});
+  d.http.script.push_back({"", "", 200, oaiLoopFinal()});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("gpt-5.7-new"); };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnOpenAI(pd, conv, splitPrompt(), "hello", out, err, &rig.ht, nullptr), err.c_str());
+  TEST_ASSERT_EQUAL_INT(2, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "prompt_cache_breakpoint"));
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "prompt_cache_breakpoint"));
+  TEST_ASSERT_TRUE(LogCapture::contains("prompt_cache_breakpoint"));
+}
+
+// Counter-tests: another 400 is not retried, and a second refusal does not loop.
+static void test_breakpoint_retry_is_only_for_that_refusal() {
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 400, "{\"error\":{\"message\":\"Unsupported parameter: temperature\"}}"});
+    auto pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("gpt-5.6-luna"); };
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    std::string conv, out, err;
+    TEST_ASSERT_FALSE(providers::orchTurnOpenAI(pd, conv, splitPrompt(), "hello", out, err, &rig.ht, nullptr));
+    TEST_ASSERT_EQUAL_INT(1, (int)d.http.seen.size());
+  }
+  {
+    const char* k400 = "{\"error\":{\"message\":\"prompt_cache_breakpoint is not supported on this model\"}}";
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 400, k400});
+    d.http.script.push_back({"", "", 400, k400});
+    d.http.script.push_back({"", "", 400, k400});
+    auto pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("gpt-5.6-luna"); };
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    std::string conv, out, err;
+    TEST_ASSERT_FALSE(providers::orchTurnOpenAI(pd, conv, splitPrompt(), "hello", out, err, &rig.ht, nullptr));
+    TEST_ASSERT_EQUAL_INT(2, (int)d.http.seen.size());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_single_shot_request_shape);
@@ -1213,6 +1331,10 @@ int main(int, char**) {
   RUN_TEST(test_img_look_photo_follows_the_function_output);
   RUN_TEST(test_img_look_blind_openai_reads_the_answer);
   RUN_TEST(test_r1_openai_single_shot_reads_transcriptions);
+  RUN_TEST(test_breakpoint_gate_matches_the_live_probe);
+  RUN_TEST(test_breakpoint_hint_follows_the_model_on_both_paths);
+  RUN_TEST(test_breakpoint_refused_by_a_model_the_gate_trusted_retries_once);
+  RUN_TEST(test_breakpoint_retry_is_only_for_that_refusal);
   UNITY_END();
   return 0;
 }

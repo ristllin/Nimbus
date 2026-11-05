@@ -326,7 +326,9 @@ class JobEngine {
   // before asking any provider puts back what it took (a copy taken just before the
   // take), in front of any that arrived since, so the next turn sees them; never a drop.
   // The stuck-synthesis clock comes back as the take found it.
+#ifdef NIMBUS_JOBS_TEST_SEAM
   std::vector<FreshResult> peekFresh() const { return fresh_; }
+#endif
   std::vector<FreshResult> peekFreshFor(const FreshScope& s) const;
   void restoreFresh(std::vector<FreshResult> taken);
   // The same for a chat's spawn-refusal notes (what takeSpawnNotes returned).
@@ -334,18 +336,24 @@ class JobEngine {
   // `unverified` (optional, CUM-536) reports whether any taken result opened with
   // the connector-not-called marker, so the turn that reads them can refuse to
   // store their contents as memory.
+  // `sourced` had a lookup behind them, `unsourced` are marked unverified. One scope
+  // only: the rest stay parked for their own chat.
+  //
+  // The unscoped forms (every chat's results at once) exist for the job tests alone, so
+  // no product caller can bring back the cross-chat leak by reaching for the short name
+  // (test_harness_jobs defines NIMBUS_JOBS_TEST_SEAM; test_rbac_source_guards_host keeps
+  // it to that file and jobs.cpp).
+#ifdef NIMBUS_JOBS_TEST_SEAM
   std::string takeFreshResults(bool* unverified = nullptr);
-  // The same, also counting the results by provenance for the claim check:
-  // `sourced` had a lookup behind them, `unsourced` are marked unverified.
   std::string takeFreshResults(bool* unverified, int* sourced, int* unsourced);
-  // The same for one scope only: the rest stay parked for their own chat.
+  std::string ownerResultsText() const;
+#endif
   std::string takeFreshResultsFor(const FreshScope& s, bool* unverified, int* sourced, int* unsourced);
   // The same parked results rendered for the OWNER, without consuming them: the
   // raw fallback's text when the summary step cannot run (CUM-480). A one-line
   // preamble, then each sub-agent's title and its findings - none of the
   // model-facing scaffolding ([FRESH RESULTS] header, job tags, results.get
   // handles). Bounded like the seed: past the budget a result folds to one line.
-  std::string ownerResultsText() const;
   std::string ownerResultsText(const FreshScope& s) const;
   // Deliver an owner-facing results text through the job engine's own delivery
   // sink. The synthesis turn's failure path uses it so its raw fallback lands
@@ -537,6 +545,20 @@ class JobEngine {
   std::string firstSubProvider() const;
   // ...and the park's words for the first keyed provider it skipped as closed.
   std::string firstSubProvider(std::string* closedWhy) const;
+  std::string nextSubProvider(const std::vector<std::string>& tried, std::string* closedWhy = nullptr) const;
+  bool movedOffKeyless(const PendingSpawn& p, const std::string& host, std::string& provider, std::string& model,
+                       ManagedAgentAdapter*& a);
+  // A dispatch refused with `err` moves to the next open sub provider (CUM-887). On
+  // success the attempt's provider, model and jobId name the run that started.
+  struct SpawnAttempt {
+    std::string& provider;
+    std::string& model;
+    Directive& d;
+    char* jobId;
+    nimbus::orch::ConnectorGrant grant;
+  };
+  bool spawnMayMove(const PendingSpawn& p, FabricErr err) const;
+  bool spawnMoved(const PendingSpawn& p, FabricErr& err, SpawnAttempt& at);
   bool subProviderRuns(const std::string& provider, std::string* closedWhy) const;
   uint32_t nowMs() const { return d_.platform.nowMs ? d_.platform.nowMs() : 0; }
   uint32_t freeHeap() const { return d_.platform.freeHeap ? d_.platform.freeHeap() : 0xFFFFFFFFu; }
@@ -613,7 +635,7 @@ class JobEngine {
   // take re-arms the clock; without this the fallback never came).
   bool     drainedBeforeTake_ = false;
   void deliverOwnerFallback();           // the stuck-synthesis raw delivery
-  // Who a chat is, for the sub-agents it starts (principalFor; the owner when unwired).
+  // Who a chat is, for the sub-agents it starts (principalFor; no one's owner when unwired).
   bool chatIsOwner(const std::string& chatId) const;
   nimbus::orch::ConnectorGrant grantFor(const std::string& chatId) const;
   void refuseOwnersConnector(const PendingSpawn& p);

@@ -58,11 +58,16 @@ inline bool shouldCompact(uint32_t chainTokens, uint32_t threshold) {
 }
 
 // ---- reactive provider-error classification ---------------------------------
-// True when a provider error string indicates the CONTEXT WINDOW was exceeded -
-// the reactive force-compact path. Matched case-insensitively on the known
-// wordings (OpenAI "context_length_exceeded"/"maximum context length",
-// Anthropic "prompt is too long", Mistral "too large for model"/"context").
+// True when a provider error string indicates the CONTEXT WINDOW was exceeded: the
+// trim-and-retry path of a head turn (lib/harness loop_common) and the reactive
+// force-compact path. Matched case-insensitively on each provider's recorded wording
+// (test_orch_compact). An output cap refused ("max_tokens is too large") is not one.
 bool isContextOverflowError(const std::string& err);
+// How many bytes of a request totalling `totalBytes` a trim gives up for that refusal:
+// from the two figures a line names ("N tokens > M") plus a margin, else a fixed share.
+inline constexpr size_t kOverflowTrimPercent = 40;
+inline constexpr size_t kOverflowTrimMargin = 10;
+size_t overflowTrimBytes(const std::string& err, size_t totalBytes);
 
 // ---- circuit breaker ---------------------------------------------------------
 // 3 consecutive compaction failures pause AUTO compaction (manual stays allowed)
@@ -86,6 +91,9 @@ struct CompactBreaker {
 // when a previous summary exists it is UPDATED, not replaced (opencode pattern),
 // so cost stays bounded no matter how long a chat lives.
 extern const char* const ORCH_COMPACT_PROMPT;
+// The idle re-check of a parked provider: the shortest request that proves the account
+// can be served.
+extern const char* const ORCH_PARK_RECHECK_PROMPT;
 
 // Assemble the compaction call's input: the previous anchored summary (may be
 // empty) + the new episodic digest since the last compaction. digest should
@@ -233,6 +241,10 @@ class FoldStore {
   // existing zero-tools fresh-retry already recovered the TURN; this recovers
   // the trajectory. Persisted.
   void markOverflow(const std::string& chatId);
+  // A served turn left out conversation history to fit its request (turn_fit.h): the chat
+  // needs its fold. Inside the thrash window of the last fold it does not count: large payloads
+  // are no proof that the fold failed to shrink the chat, so no pause and no alert.
+  void noteHistoryTrimmed(const std::string& chatId);
   // An overflow fold is queued for the chat (the next turn needs it, so it does
   // not wait for a quiet moment).
   bool overflowQueued(const std::string& chatId) const {

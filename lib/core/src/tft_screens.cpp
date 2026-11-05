@@ -431,12 +431,16 @@ void drawStatusHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ct
   const int gridBot = L.h - L.gut() - (showMic ? micH + 8 : 0);
 
   if (ctx.jobs.empty()) {
-    // Empty state: say what the device is doing, not "no data".
+    // Empty state: say what the device is doing, not "no data". A running turn
+    // (lane PROG) is work, not idle - the panel must never claim "Nothing
+    // running" over a turn the owner is waiting on.
     fb.card(L.gut(), gridTop, bodyRight - 2 * L.gut(), 84);
-    const std::string l1 = "Nothing running";
-    const std::string l2 = ctx.modeName && std::string(ctx.modeName) == "notifier"
-                               ? "Waiting for a session"
-                               : "Ready when you are";
+    const std::string l1 = ctx.turnActive ? "Working on it" : "Nothing running";
+    const std::string l2 = ctx.turnActive
+                               ? "This may take a moment"
+                               : (ctx.modeName && std::string(ctx.modeName) == "notifier"
+                                      ? "Waiting for a session"
+                                      : "Ready when you are");
     fb.text((bodyRight - fb.textWidth(l1, 2)) / 2, gridTop + 26, l1, kInk, 2);
     fb.text((bodyRight - fb.textWidth(l2, 1)) / 2, gridTop + 50, l2, kInk3, 1);
   } else {

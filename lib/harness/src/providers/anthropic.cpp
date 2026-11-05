@@ -1119,9 +1119,9 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
   std::string sys;
   wire::putFieldStr(sys, instructions, "the system prompt");
   const layout::PromptParts parts = layout::split(sys);
-  // R3: this turn's thinking payloads, keyed by the round's first tool-call id
-  // (RAM only, one turn's lifetime, small at effort low).
-  auto thinkingByCall = std::make_shared<std::map<std::string, std::string>>();
+  // R3: this turn's thinking payloads, keyed by the round's first tool-call id. They ride the
+  // transcript: a refit rebuilds this step on a shortened prompt, and the replay still needs them.
+  auto* thinkingByCall = &tr.signedThinking();
 
   return [&ht, usage, &tr, pd, model, kReplayToolBytes, parts, thinkingByCall](
              bool allowTools,
@@ -1162,7 +1162,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     auto render = [&]() {
       msgs = conv.to<JsonArray>();
       if (direct && sees) imageparts::useFileRefs(*tr.images());
-      renderAntMessages(tr, msgs, imgs != nullptr, sees, thinkingByCall.get());
+      renderAntMessages(tr, msgs, imgs != nullptr, sees, thinkingByCall);
       // R3: the per-turn block (the final-round notice included) LEADS the
       // seeded user message, so the system blocks and the history stay
       // byte-stable across rounds and turns. Once per render: the messages
@@ -1282,7 +1282,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
                     (const char*)(resp["stop_reason"] | "?") + ")";
         return out;
       }
-      const std::string sr = antReadRound(resp, out, thinkingByCall.get());
+      const std::string sr = antReadRound(resp, out, thinkingByCall);
       // 4) the completeness gate: a reply cut at max_tokens - wherever it stopped,
       //    a finished orch_turn included - is never run and never delivered as
       //    complete (a half-written memory_write, a reply cut mid-sentence).
@@ -1332,41 +1332,13 @@ static bool runAntLoop(const ProviderDeps& pd, std::string& convId,
                        const std::string& instructions, const std::string& inputs,
                        std::string& outJson, std::string& err, const HeadTools& ht,
                        nimbus::orch::TokenUsage* usage) {
-  namespace orch = nimbus::orch;
-  // The CANONICAL transcript (Context Fabric Stage 2): the device owns the
-  // turn's record. The controller (runHeadLoop) records prose/calls/results into
-  // it via hooks.transcript, so when step() runs for round N, rounds 0..N-1 are
-  // complete - the request body is rendered fresh from it every round.
-  orch::Transcript tr;
-  tr.addUser(inputs);
-  const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
-  // CUM-477: one same-host resend of a request that never left (see openai.cpp).
-  const orch::HeadStepFn inner = antLoopStep(pd, instructions, ht, usage, tr);
-  const ResendCtx resend{&pd, &ht.cfg, &inner, "orchTurn(ant-loop)"};
-  orch::HeadStepFn step = resendUnsentOnce(&resend);
-
-  orch::HeadLoopHooks hooks;
-  hooks.step     = step;
-  hooks.dispatch = ht.dispatch;
-  hooks.nowMs    = pd.nowMs;
-  hooks.freeHeap = pd.freeHeap;
-  hooks.largestBlock = pd.largestBlock;
-  hooks.log      = [](const std::string& m) { hlog::logf("%s", m.c_str()); };
-  hooks.onText   = ht.onRoundText;   // round prose -> engine (Glass Box A4)
-  hooks.spill    = ht.spill;         // clamped-result spill -> results ring
-  hooks.transcript = &tr;            // the controller records; step() renders
-
-  orch::HeadOutcome res = runHeadLoop(ht.cfg, hooks);
-  hlog::logf("orchTurn(ant-loop): rounds=%d cap=%s ok=%d heap=%u",
-             res.rounds, res.capReason.c_str(), (int)res.ok,
-             (unsigned)(pd.freeHeap ? pd.freeHeap() : 0));
-  // Glass Box P3: hand the canonical transcript to the engine BEFORE the
-  // failure return - a failed turn's middle is exactly what needs debugging.
-  if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));
-  if (!res.ok) return wire::loopFailed(res, outJson, err);   // CUM-621: a cut keeps its partial turn
-  outJson = res.finalTurn;
-  convId  = "messages";   // stateless marker (state lives in the turn's memory field)
-  return true;
+  const HostLoop loop{pd, ht, "orchTurn(ant-loop)", "anthropic",
+                      [&](const std::string& ins, nimbus::orch::Transcript& tr) {
+                        return antLoopStep(pd, ins, ht, usage, tr);
+                      }};
+  const bool ok = runHostLoop(loop, instructions, inputs, outJson, err);
+  if (ok) convId = "messages";   // stateless marker (state lives in the turn's memory field)
+  return ok;
 }
 
 // ---- single-shot head turn and the compaction fold ---------------------------

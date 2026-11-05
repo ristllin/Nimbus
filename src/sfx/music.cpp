@@ -19,8 +19,10 @@
 #include "nimbus/fault.h"
 #include "nimbus/orch/media.h"
 #include "nimbus/orch/tool_registry.h"
+#include "nimbus/speaker_memory.h"             // speakerMemoryOk - room for the speaker and the radio
 #include "nimbus/speaker_reply.h"              // speakerOpenFailReason - a failed open, said plainly
 #include "nimbus/tts_catalog.h"             // core::downmixStereoToMono (host-tested)
+#include "speaker_turn.h"                   // the memory check reads only on this task's turn
 
 namespace music {
 
@@ -117,9 +119,25 @@ static bool parseWavHeader(File& f, uint32_t& rate, uint32_t& dataLen) {
   return false;
 }
 
+// Room for what the owner asked for: the open can leave the radio room (nimbus/speaker_memory.h).
+// Read on the caller's speaker turn, when no other sound holds the driver's buffers.
+static bool roomToOpen(uint32_t& dmaFree) {
+  dmaFree = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+  const uint32_t dmaLargest = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+  return nimbus::sfx::speakerMemoryOk(sfx::speakerProfileHere(), nimbus::sfx::SoundKind::Asked, dmaFree, dmaLargest);
+}
+
 // Open the speaker, or log why it would not start and tell the hook. Every player in
 // this file opens through here, so a failed open is never swallowed.
 static bool openSpeaker(uint32_t rate, OpenHook onOpen) {
+  // What the owner asked for fails honestly rather than take the last DMA memory and maybe fail anyway.
+  uint32_t dmaFree = 0;
+  if (!roomToOpen(dmaFree)) {
+    const std::string lowWhy = nimbus::sfx::speakerLowMemoryReason(dmaFree);
+    agent::alogf("speaker: %s", nimbus::sfx::speakerFailText(lowWhy).c_str());
+    if (onOpen) onOpen(false, lowWhy.c_str());
+    return false;
+  }
   if (solide::audio::spkOpen(rate)) {
     if (onOpen) onOpen(true, "");
     return true;
@@ -347,8 +365,27 @@ void stopForSpeech() {
   if (g_q.state() != MediaState::Stopped) { g_q.stop(); g_gen++; }
 }
 
+// Take the speaker for this track once the clip in front of it has closed, so the memory reads
+// true. False when the queue moved on while it waited, or memory says no: then the queue stops,
+// because every further track and every repeat would meet the same refusal in a tight loop.
+static bool takeSpeakerForTrack(sfx::SpeakerTurn& turn, uint32_t gen) {
+  while (!turn.take(200)) {
+    if (!keepPlaying(gen)) return false;
+  }
+  if (!keepPlaying(gen)) return false;   // a reply may have stopped it just before the turn came
+  uint32_t dmaFree = 0;
+  if (roomToOpen(dmaFree)) return true;
+  agent::alogf("music: stopped: %s", nimbus::sfx::speakerLowMemoryReason(dmaFree).c_str());
+  Lock lk;
+  g_q.stop();
+  g_gen++;
+  return false;
+}
+
 static void playTrack(const std::string& name, uint32_t gen) {
   if (nimbus::fault::active(nimbus::fault::SPEAKER)) { vTaskDelay(pdMS_TO_TICKS(200)); return; }
+  sfx::SpeakerTurn turn;
+  if (!takeSpeakerForTrack(turn, gen)) return;
   const std::string path = fullPath(name);
   // Sniff from the file head so a mislabeled extension is still handled right.
   MediaFormat fmt = MediaFormat::Unknown;

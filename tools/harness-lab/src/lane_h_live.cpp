@@ -303,6 +303,7 @@ class HRig {
 
   void buildEngine() {
     agent::JobEngine::Deps jd;
+    jd.principalFor = ad_.principalFor;   // a sub-agent inherits its chat's principal
     jd.platform.nowMs = nowMs;
     jd.platform.freeHeap = [] { return (uint32_t)4u * 1024u * 1024u; };
     jd.deliver = [this](const std::string&, const std::string& t) { deliveries_.push_back(t); };

@@ -109,6 +109,8 @@ orch::ParkKind noteAnswer(const char* provider, orch::PaidSeam seam, const Strin
   return k;
 }
 
+void handBack(const char* provider) { orch::providerPark().releaseProbe(provider); }
+
 String words(const char* provider, const orch::ParkVerdict& v) {
   return String(orch::parkWords(provider, v).c_str());
 }

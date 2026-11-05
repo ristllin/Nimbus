@@ -102,6 +102,34 @@ static void test_large_photo_in_transport_slices() {
   TEST_ASSERT_TRUE(want.size() > 65535);   // far past what one JSON string may hold
 }
 
+// The photo-DMA fix (the v4.6.1 hold): a plain body whose string the heap
+// parked outside DMA-capable memory rides the same slice buffer as a spliced
+// one - the transport never hands the AES engine a pointer it would have to
+// bounce through per-record 1,600 B chunks. bodyRead must serve that plain
+// body exactly, at every slice size, the same as it serves a spliced body.
+static void test_plain_body_slices_read_back_exactly() {
+  const size_t lens[] = {1, 2, 4095, 4096, 4097, 17 * 1024 + 3};
+  const size_t slices[] = {1, 512, 4096};
+  for (size_t len : lens) {
+    agent::HttpRequest r;
+    r.body = std::string(len, 'x');
+    r.body[0] = 'a';
+    r.body[len - 1] = 'z';
+    for (size_t slice : slices) {
+      std::string got;
+      std::vector<uint8_t> buf(slice);
+      for (size_t off = 0;;) {
+        const size_t n = agent::bodyRead(r, off, buf.data(), slice);
+        if (!n) break;
+        got.append((const char*)buf.data(), n);
+        off += n;
+      }
+      TEST_ASSERT_TRUE_MESSAGE(got == r.body,
+                               ("len " + std::to_string(len) + " slice " + std::to_string(slice)).c_str());
+    }
+  }
+}
+
 // ---- the image rule and formats ----------------------------------------------------
 
 static void test_head_takes_images_table() {
@@ -621,10 +649,20 @@ static void test_the_set_holds_its_refs() {
   TEST_ASSERT_FALSE(set.shown);
 }
 
+// The look at a photo the head already has: a no-op for the bytes, so the words are the
+// whole effect. They send it back to the pixels, not to its own first read.
+static void test_look_at_a_shown_photo_asks_for_a_fresh_read() {
+  const std::string w = nimbus::orch::kLookAlreadyShown;
+  TEST_ASSERT_TRUE(w.find("already in front of you") != std::string::npos);
+  TEST_ASSERT_TRUE(w.find("your first read") != std::string::npos);
+  TEST_ASSERT_TRUE(w.find("correct it") != std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_spliced_body_reads_back_at_every_offset);
   RUN_TEST(test_large_photo_in_transport_slices);
+  RUN_TEST(test_plain_body_slices_read_back_exactly);
   RUN_TEST(test_head_takes_images_table);
   RUN_TEST(test_the_providers_list_decides_image_input);
   RUN_TEST(test_the_set_holds_its_refs);
@@ -645,6 +683,7 @@ int main(int, char**) {
   RUN_TEST(test_looked_photos_limits_markers_and_bytes);
   RUN_TEST(test_look_result_text_round_trips_only_exactly);
   RUN_TEST(test_look_answer_made_once);
+  RUN_TEST(test_look_at_a_shown_photo_asks_for_a_fresh_read);
   RUN_TEST(test_settled_row_property);
   RUN_TEST(test_a_full_note_fits_the_history_row);
   RUN_TEST(test_turn_without_photos_gets_an_empty_set);

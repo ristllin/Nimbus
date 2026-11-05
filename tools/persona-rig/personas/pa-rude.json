@@ -1,0 +1,29 @@
+{
+  "description": "Someone confused and rude: the assistant must stay calm and direct, answer the actual question, not grovel or shout, and keep the thread coherent when the owner loses track.",
+  "vars": {"suffix": "1042"},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": ""},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": ""},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": ""}
+  ],
+  "persona": {
+    "name": "pa-rude-${name}",
+    "display_name": "Rob's Nimbus",
+    "timezone": "Europe/Dublin",
+    "monthly_cap_cents": 600,
+    "keys": {"mistral": "MISTRAL_API_KEY", "${host}": "${key}"},
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "scenarios": [
+      {"id": "rude-but-answered", "steps": [
+        {"say": "You are useless. Just tell me what 5 plus 5 is.",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b10\\b"}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
+                    {"reply_not_regex": "(?i)sorry|apolog"}]},
+        {"say": "wait what was I asking? 5 plus 5 right?",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b10\\b"}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "ok fine. what is 100 divided by 4?",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b25\\b"}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]}
+    ]
+  }
+}

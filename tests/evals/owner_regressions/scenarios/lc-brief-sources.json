@@ -1,0 +1,16 @@
+{
+  "id": "lc-brief-sources",
+  "title": "A time-sensitive brief never rests on an aggregator alone",
+  "rows": ["OIR-38"],
+  "replays": "The 2 Nov class: the commute brief credited disruptions to grandcentralrail.com and london-now.co.uk. The owner-voice rule says a time-sensitive brief cites the primary source, never an aggregator alone.",
+  "clock": "{{TODAY}} {{DOW}} 07:00 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "sub", "name": "commute-brief", "provider": "mistral", "model": "mistral-small-latest", "task": "The daily commute brief: disruptions this morning.", "reply": "Commute today: the 07:42 district line service is delayed by signal work, per grandcentralrail.com. Weather on the route: light rain, per london-now.co.uk. Trains run normally otherwise.", "toolRuns": 4, "webRuns": 2, "then": "synthesize"}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "reply_contains_any", "params": {"any": ["operator", "National Rail", "TfL", "Met Office", "unverified", "not the primary", "aggregator", "could not verify", "not confirmed", "not verified"]}}
+  ]
+}

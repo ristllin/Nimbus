@@ -5,7 +5,7 @@
 //     appears without the owner sending another message - the page watches the
 //     device's activity counter while background work is live;
 //   * a /clear boundary in the history renders as a divider, not a bubble;
-//   * a host that reports no activity (Virtual Nimbus) is never watched, so the
+//   * a host that reports no activity (an older build) is never watched, so the
 //     watcher can never consume its legacy reply queue.
 import { test, expect } from '@playwright/test';
 import { seedToken, openApp } from './_helpers.mjs';

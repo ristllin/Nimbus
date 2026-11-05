@@ -113,10 +113,15 @@ namespace {
 // the error text does (CUM-465).
 FabricErr compatHttpErr(int code, const Directive& d, const JsonDocument& out,
                         const char* backendTag) {
-  if (code == 401 || code == 403) return FabricErr::Auth;
+  // A router refusal names its reason: only its park_auth reasons are about the key.
+  std::string said;
+  serializeJson(out, said);
+  const nimbus::orch::RouterAnswer router = nimbus::orch::readRouterAnswer(said);
+  const bool routerSaysNotTheKey = router.row && router.action() != nimbus::orch::RouterAction::ParkAuth;
+  if ((code == 401 || code == 403) && !routerSaysNotTheKey) return FabricErr::Auth;
   if (code == 429) return wire::rateLimitedByText(d, backendTag, out["error"]["message"] | "");
   hlog::logf("%s: HTTP %d", backendTag, code);
-  return FabricErr::RemoteFail;
+  return wire::subHttpErr(code);
 }
 }  // namespace
 

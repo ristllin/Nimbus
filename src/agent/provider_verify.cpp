@@ -26,12 +26,14 @@
 #include "../sys/tls_arbiter.h"   // one work TLS at a time (coexists with Telegram's)
 #include "orchestrator.h"         // turnInFlight - never re-verify beside a live turn
 #include "provider_gate.h"        // lane QW4: the probe asks the park and tells it the answer
+#include "nimbus/orch/router_refusals.h"   // readRouterAnswer: a refusal's reason
 #include "nimbus/orch/seam_meter.h"   // lane QW4: meterSeamAnswerBody - the probe is counted
 #include "nimbus/orch/spend_guard.h"  // lane QW4: verifyProbeAllowed, httpBodyOf
 #include "provider_verify_retry.h" // pure backoff policy (host-tested)
 #include "workspace_probe.h"       // CUM-537 probe queue + yielding fetch (host-tested)
 #include "model_refresh.h"         // a deferred LLM verify still gets its model list
 #include "nimbus/orch/model_refresh.h"  // kRefreshMinLargest - a list refresh's floor
+#include "nimbus/harness/turn_memory.h"  // PsramFirstScope - a worker's small blocks off internal SRAM
 
 // The Arduino core's loop task (cores/esp32/main.cpp): the device's own re-checks start
 // there (lane QW4, askedByOwner).
@@ -409,7 +411,7 @@ static bool fetchAnthropicPage(nimbus::orch::ModelHarvest& h, const String& key,
   c.setHandshakeTimeout(12);
   c.setConnectionTimeout(15000);
   bool more = false;
-  if (!c.connect(ANTHROPIC_HOST, 443)) {
+  if (!connectHost(c, ANTHROPIC_HOST, 443)) {
     h.cut = true;
   } else {
     c.print(String("GET /v1/models?limit=100&after_id=") + after.c_str() +
@@ -572,6 +574,19 @@ static int readProbeResponse(WiFiClientSecure& client, String& errBody, size_t m
   return code;
 }
 
+// The rest of a refused answer (headers then the refusal body), bounded, read for its
+// reason. The status line was already consumed.
+static bool routerSaysSuspended(WiFiClientSecure& client) {
+  String raw;
+  const uint32_t deadline = millis() + 3000;
+  while ((int32_t)(millis() - deadline) < 0 && raw.length() < 1500) {
+    if (client.available()) raw += (char)client.read();
+    else if (!client.connected()) break;
+    else delay(2);
+  }
+  return nimbus::orch::readRouterAnswer(std::string(raw.c_str(), raw.length())).reason == "account_suspended";
+}
+
 // The key a probe of `provider` carries (the park is keyed by it).
 static String probeKey(const String& provider) {
   if (provider == "openai") return store::openaiKey();
@@ -601,7 +616,10 @@ static void meterProbe(const String& provider, const String& model, int code,
 static void noteProbeAnswer(const String& provider, int code, const std::string& raw) {
   const bool parkable = code == 401 || (code >= 200 && code < 300) ||
                         nimbus::orch::parkKindFor(code, raw) == nimbus::orch::ParkKind::Billing;
-  if (code <= 0 || !parkable) return;
+  if (code <= 0 || !parkable) {   // no verdict on the account: a re-check waits another interval
+    nimbus::orch::providerPark().noteFailure(provider.c_str(), (uint32_t)millis());
+    return;
+  }
   gate::noteAnswer(provider.c_str(), nimbus::orch::PaidSeam::Chat, probeKey(provider), code,
                    raw.c_str());
 }
@@ -614,7 +632,7 @@ static nimbus::orch::ProbeVerdict probeModel(const String& provider, const Strin
   tlsSetup(client);
   client.setHandshakeTimeout(12);
   client.setConnectionTimeout(15000);
-  if (!client.connect(host, 443)) return nimbus::orch::ProbeVerdict::Unknown;
+  if (!connectHost(client, host, 443)) return nimbus::orch::ProbeVerdict::Unknown;
   client.print(req);
   String errBody;
   const int code = readProbeResponse(client, errBody, 4096);   // room for the answer's usage
@@ -640,12 +658,17 @@ static bool paidProbeAllowed(const String& provider) {
   return false;
 }
 
+static nimbus::orch::ModelInfo* findCandidate(std::vector<nimbus::orch::ModelInfo>& cat, const String& id) {
+  for (auto& mi : cat)
+    if (mi.id == id.c_str()) return &mi;
+  return nullptr;
+}
+
 // Probe the owner's SELECTED models for a provider (bounded to protect the single
 // TLS slot) and fold the verdicts into the model store. An Unknown (transient)
 // verdict leaves the model as-is for a later retry; a definitive verdict marks the
 // model probed and sets usable, so an unusable selection stops appearing.
 static void probeSelectedModels(const String& provider) {
-  if (!paidProbeAllowed(provider)) return;
   String cands[2];
   int nc = 0;
   const String om = store::orchModel(provider);
@@ -657,12 +680,13 @@ static void probeSelectedModels(const String& provider) {
   std::vector<nimbus::orch::ModelInfo> cat;
   if (!nimbus::orch::parseModelStore(provider.c_str(), store::modelStoreText(provider), meta, &cat))
     return;
-  bool changed = false;
+  // Last, so a parked provider's one re-check is never taken by a pass with nothing to send.
+  if (!paidProbeAllowed(provider)) return;
+  bool sent = false, changed = false;
   for (int i = 0; i < nc; ++i) {
-    nimbus::orch::ModelInfo* found = nullptr;
-    for (auto& mi : cat)
-      if (mi.id == cands[i].c_str()) { found = &mi; break; }
+    nimbus::orch::ModelInfo* found = findCandidate(cat, cands[i]);
     if (!found) continue;
+    sent = true;
     const nimbus::orch::ProbeVerdict v = probeModel(provider, cands[i]);
     if (v == nimbus::orch::ProbeVerdict::Unknown) continue;
     found->usable = (v == nimbus::orch::ProbeVerdict::Usable);
@@ -673,6 +697,7 @@ static void probeSelectedModels(const String& provider) {
   }
   if (changed && !store::setModelStoreText(provider, nimbus::orch::serializeModelStore(meta, cat)))
     alogf("verify: %s probe verdicts not stored (file write failed)", provider.c_str());
+  if (!sent) gate::handBack(provider.c_str());
 }
 
 // Does a Z.ai candidate host answer the models list for this token? One quick GET
@@ -682,7 +707,7 @@ static bool zaiHostAnswers(const char* h, const String& key) {
   tlsSetup(client);
   client.setHandshakeTimeout(12);
   client.setConnectionTimeout(15000);
-  if (!client.connect(h, 443)) return false;
+  if (!connectHost(client, h, 443)) return false;
   String req = String("GET ") + ZAI_BASE_PATH + "/models HTTP/1.0\r\nHost: " + h +
                "\r\nAuthorization: Bearer " + key +
                "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
@@ -725,7 +750,7 @@ static void syncCumuloFallbacks(const char* host, const String& key) {
   tlsSetup(client);
   client.setHandshakeTimeout(12);
   client.setConnectionTimeout(15000);
-  if (!client.connect(host, 443)) return;
+  if (!connectHost(client, host, 443)) return;
   String req = String("GET /fallbacks HTTP/1.0\r\nHost: ") + host +
                "\r\nAuthorization: Bearer " + key +
                "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
@@ -750,7 +775,7 @@ static FetchIo mistralConnectorsIo(WiFiClientSecure& client, const String& key) 
   FetchIo io;
   io.turnInFlight = [] { return orchestrator::turnInFlight(); };
   io.connect = [&client, &key]() {
-    if (!client.connect(MISTRAL_HOST, 443)) return false;
+    if (!connectHost(client, MISTRAL_HOST, 443)) return false;
     client.print(String("GET /v1/connectors?page_size=100 HTTP/1.0\r\nHost: ") + MISTRAL_HOST +
                  "\r\nAuthorization: Bearer " + key +
                  "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n");
@@ -917,6 +942,9 @@ static void deferLowMemory(const String& provider, uint32_t max8) {
 }
 
 static void runOne() {
+  // Small blocks to PSRAM for the whole run, as a turn does (turn_memory.h): this worker's own
+  // stack took 8.5 KB of the 31 KB at rest, and the rest of the run lives on what is left.
+  const PsramFirstScope psramFirst;
   if (g_wsOnly) { runWorkspaceProbeOnly(); g_pending = false; return; }   // CUM-537
   String provider = g_provider;
   const bool refreshOnly = g_refreshOnly;   // R5: the model list only
@@ -1012,7 +1040,7 @@ static void runOne() {
     const uint32_t connectMs = g_inline ? runWaitMs(8000) : 15000;
     client.setHandshakeTimeout(g_inline ? (connectMs + 999) / 1000 : 12);
     client.setConnectionTimeout(connectMs);  // F25: real socket bound (setTimeout inert)
-    if (connectMs && client.connect(host, 443)) {
+    if (connectMs && connectHost(client, host, 443)) {
       // Tavily: a minimal POST /search proves the key does real work; the others
       // stay GET-shaped.
       const char* body = isTav ? "{\"query\":\"ping\",\"max_results\":1}" : nullptr;
@@ -1066,6 +1094,12 @@ static void runOne() {
       if (result == -1) {
         if (code == 402)                             rsn = "nocredits";
         else if (code == 404 && provider == "cumulo") rsn = "router_outdated";
+      }
+      // An admin suspended the account: the key is fine, and "rejected" would send the
+      // owner after the wrong thing. The body says so (the contract's account_suspended).
+      if (code == 403 && provider == "cumulo" && routerSaysSuspended(client)) {
+        result = -1;
+        rsn = "suspended";
       }
       // NVS-priority (CUM-77 item 6 follow-on): a definitive verdict is tiny and
       // load-bearing. Before CUM-479 the catalog blob written below lived in NVS and

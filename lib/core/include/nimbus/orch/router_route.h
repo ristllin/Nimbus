@@ -46,9 +46,9 @@ bool routableSelector(const std::string& sel);
 bool routableSelector(const char* sel, size_t len);   // the same, on a slice
 
 // Does a head on `host` run the tool loop, so a tool on its request (web.search) is
-// callable? openai, anthropic and mistral do; the Cumulo router head does when its
+// callable? openai, anthropic, mistral and zai do; the Cumulo router head does when its
 // picked selector's upstream is one of them (`cumuloSelector`, resolveRouterRoute);
-// Z.ai, a custom endpoint and the router's compat upstreams run single-shot. One rule
+// a custom endpoint and the router's other compat upstreams run single-shot. One rule
 // for the device and the Virtual Nimbus (check of c962b5d0).
 bool headRunsToolLoop(const std::string& host, const std::string& cumuloSelector);
 

@@ -1,0 +1,17 @@
+{
+  "id": "lc-spawn-failure",
+  "title": "A failed spawn is said plainly, with the next step",
+  "rows": ["OIR-32"],
+  "replays": "The 1 Nov class: Couldn't start that agent on mistral (spawn failed 8) with no honest next step.",
+  "clock": "{{TODAY}} {{DOW}} 18:51 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "sub", "name": "research-helper", "provider": "mistral", "model": "mistral-small-latest", "task": "Research the warranty terms for the owner's coffee machine.", "fail": true},
+    {"do": "say", "text": "Did my research agent finish?"}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "reply_contains_any", "params": {"any": ["couldn't", "could not", "didn't start", "did not start", "failed", "unable", "not able", "never started", "didn't finish", "did not finish"]}}
+  ]
+}

@@ -86,3 +86,39 @@ def test_replies_fail_loudly_when_the_card_stays_busy(monkeypatch):
     monkeypatch.setattr(l71.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
     with pytest.raises(AssertionError, match="stayed busy"):
         l71._replies(_Net([(503, '{"error":"busy"}')]), budget_s=5.0)
+
+
+# The 28 Oct RED, ruled on 1 Nov: an admitted turn squeezed during its request ends in an
+# honest memory reply, and the leg accepts that. Loosening an exact match needs the
+# counter-test: what it still catches.
+@pytest.mark.parametrize(
+    "reply,kind",
+    [
+        (l71.SHORT_REPLY, "refused"),
+        (
+            "That didn't finish - the device ran out of working memory for this request. "
+            "Already done this turn: device_log. Nothing is still running; try a shorter question or wait a minute.",
+            "memory",
+        ),
+        (
+            "That didn't finish - the device could not finish sending its request (memory is tight). "
+            "Your message was not answered.",
+            "memory",
+        ),
+        ("The oldest line in this read is seq 89.", "served"),
+        ("", "bad"),
+        ("   \n", "bad"),
+        ('{"reply": "placeholder", "session_ops": []}', "bad"),
+        ("placeholder", "bad"),
+        ('The turn said {"reply":"hello"} and more', "bad"),
+    ],
+)
+def test_a_squeezed_turn_is_classified(reply, kind):
+    assert l71.classify_end(reply) == kind
+
+
+def test_only_the_refusal_passes_the_under_the_floor_leg():
+    # That leg compares exactly: the other honest endings mean the floor let the turn through.
+    for other in l71.MEMORY_ENDINGS:
+        assert other != l71.SHORT_REPLY
+        assert l71.classify_end(other + " for this request.") != "refused"

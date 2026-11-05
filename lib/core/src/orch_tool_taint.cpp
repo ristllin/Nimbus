@@ -25,6 +25,9 @@ const ToolTaintRow kRows[] = {
     // the owner's standing rules (lib/core/src/orch_prefs_tools.cpp): a durable save
     // the owner asked for, so a "saved" claim is backed like a memory write
     {"prefs.edit", T::Internal, E::MemWrite},
+    // the owner's open questions (lib/core/src/orch_openq_tools.cpp): the same
+    // durable-save backing
+    {"openq.edit", T::Internal, E::MemWrite},
     // the portion calculator (lib/core/src/orch_food_portions.cpp): arithmetic over the
     // model's own arguments, nothing stored or fetched
     {"food.portions", T::Internal, E::Read},
@@ -42,6 +45,8 @@ const ToolTaintRow kRows[] = {
     // files (src/agent/files_subsystem.cpp)
     {"artifact.save", T::Internal, E::FileWrite},
     {"files.append", T::Internal, E::FileWrite},   // G1a: writes rows, echoes only the count
+    {"files.delete", T::Internal, E::FileWrite},   // a landed delete backs the "gone" claim
+    {"files.edit", T::Internal, E::FileWrite},    // v4.6.2: a landed edit backs the save/log claims
     {"files.fetch", T::External, E::FileWrite},
     {"files.list", T::Internal, E::Read},
     {"files.pdf", T::Internal, E::FileWrite},      // the device PDF writer (src/agent/pdf_tool.cpp)

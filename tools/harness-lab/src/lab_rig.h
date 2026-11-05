@@ -20,6 +20,7 @@
 #include "nimbus/harness/websearch.h"
 #include "nimbus/docs_pack.h"
 #include "nimbus/orch/embedding.h"
+#include "nimbus/orch/connectors_wire.h"   // lane CONN: the rig's connector attach + catalog
 #include "nimbus/orch/food_portions.h"   // lane CTX: food.portions
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/mem_config.h"
@@ -70,11 +71,23 @@ inline constexpr const char* kLabZaiPath = "/api/paas/v4";
 
 namespace orch = nimbus::orch;
 
+// One round boundary of a turn (lane PROG): the raw facts the head loop's
+// progress hook fired, kept so a scenario can assert what a surface would
+// have shown and replay the plan over the real timeline.
+struct ProgressMark {
+  int round = 0;
+  uint32_t elapsedMs = 0;
+  bool lastRound = false;
+  int maxRounds = 0;
+  std::vector<std::string> tools;
+};
+
 struct TurnRecord {
   std::string chatId, userText, reply;
   std::string turnInputs;   // the per-turn INPUT (where [ACTIVE SKILLS] and [STANDING RULES] ride)
   std::vector<std::string> toolCalls;    // "name(args)"
   std::vector<std::string> toolResults;  // truncated result text
+  std::vector<ProgressMark> progress;   // one per round boundary, round 0 included
   std::vector<std::string> deliveries;
   std::string host;
   uint32_t    tokensIn = 0, tokensOut = 0;
@@ -131,6 +144,17 @@ class LabRig {
     // nimbus/orch/model_defaults.h): the head row, the sub row for sub-agents, and the
     // background row while a scheduled turn runs - the defaults wired end to end.
     bool        roleDefaults = false;
+    // Lane CONN: connectors the rig attaches + catalogues exactly as the device
+    // does (attachMistralWire on the mistral wire, catalogText in the stable
+    // prompt). Empty = none, the historical lab.
+    std::vector<nimbus::orch::ConnectorInfo> connectors;
+    // The workspace answer for the Studio connectors: newline-delimited ids the
+    // probe "lists" as active ("" = unprobed, so every Studio connector reads
+    // auth 2 and the attach skips it, exactly as a fresh device would).
+    std::string mistralListed;
+    // Wire the [PROVIDERS & CONNECTORS] catalog into the turn (off by default:
+    // every existing scenario's prompt stays byte-identical).
+    bool        connectorsCatalog = false;
   };
 
   LabRig(Env env, Options opt)
@@ -259,14 +283,24 @@ class LabRig {
   // scenario sets the shape it needs (for example the NVSFILL-0 shape).
   nimbus::orch::StorageState& storageState() { return deviceStorage_; }
   CurlHttpTransport& http() { return http_; }
+  // The device's idle step, all at once: delete the uploads a finished turn queued.
+  void drainUploadDeletes() {
+    const agent::providers::ProviderDeps pd = providerDeps();
+    while (agent::providers::pendingUploadDeletes() && agent::providers::deletePendingUploads(pd) > 0) {
+    }
+  }
   // The top of the transport chain: what every lab request goes through.
   agent::HttpTransport& net() { return wire_; }
+  ShimTransport& shim() { return shim_; }
   const agent::FaultPlan& faults() const { return faultPlan_; }
   const RecordingTransport& recorder() const { return rec_; }
   LabFiles& files() { return files_; }
   LabSkills& skills() { return skills_; }   // seed + inspect the store (lane I)
   LabPrefs& prefs() { return prefs_; }   // lane J: the standing-rules store
   const std::vector<TurnRecord>& turns() const { return turns_; }
+  // The turn record still receiving deliveries after say() returns (a pumped
+  // sub-agent's refusal notice lands here, outside any owner turn).
+  const TurnRecord& lastTurn() const { return cur_; }
   const std::vector<std::string>& toolNames() const { return toolNames_; }
 
   uint32_t totalIn() const {
@@ -279,6 +313,15 @@ class LabRig {
   bool hostAvailable(const std::string& h) const { return !env_.providerKey(h).empty(); }
   const Options& options() const { return opt_; }
   const Env& env() const { return env_; }
+  // Lane CONN: the deps the rig's own head turns and subs run over, so a
+  // scenario's fabric adapter rides the same transport, keys and models.
+  agent::providers::ProviderDeps deps() { return providerDeps(); }
+  // The connectors the rig attaches, with the credential state the fake
+  // workspace answer (Options.mistralListed) stamps - the same rule the device
+  // applies before any attach, so a scenario sees exactly what would ride.
+  std::vector<nimbus::orch::ConnectorInfo> stampedConnectors() const {
+    return authStampedConnectors();
+  }
 
   // The model a host's head and subs request: an override, else the lab default.
   std::string modelFor(const std::string& h) const {
@@ -597,12 +640,42 @@ class LabRig {
     return c;
   }
 
+  // The connectors with their credential state stamped by the fake workspace
+  // answer (lane CONN): the same applyConnectorAuth rule the device runs before
+  // any attach, so auth 2 entries are skipped rather than sent.
+  std::vector<nimbus::orch::ConnectorInfo> authStampedConnectors() const {
+    std::vector<nimbus::orch::ConnectorInfo> cs = opt_.connectors;
+    nimbus::orch::MistralWorkspace ws;
+    if (!opt_.mistralListed.empty()) {
+      ws.probed = true;
+      ws.listed = opt_.mistralListed.front() == '\n' ? opt_.mistralListed
+                                                     : "\n" + opt_.mistralListed;
+      if (ws.listed.back() != '\n') ws.listed += '\n';
+    }
+    nimbus::orch::applyConnectorAuth(cs, ws);
+    return cs;
+  }
+
   agent::providers::ProviderDeps providerDeps() {
     agent::providers::ProviderDeps pd;
-    pd.http = &wire_;
+    pd.http = &shim_;
     pd.key = [this](const char* h) { return env_.providerKey(h); };
     pd.orchModel = [this](const char* h) { return modelFor(h); };
     pd.toolLoopOn = [this] { return opt_.toolLoop; };
+    if (!opt_.connectors.empty()) {
+      const std::vector<nimbus::orch::ConnectorInfo> cs = authStampedConnectors();
+      pd.attachMistral = [cs](JsonDocument& doc) {
+        nimbus::orch::attachMistralWire(doc, cs, /*builtinsOnly=*/false);
+      };
+    }
+    pd.zaiHead = [this](agent::providers::ProviderDeps& z) {
+      z.customBase = [] { return std::string(kLabZaiHost); };
+      z.customPathPrefix = [] { return std::string(kLabZaiPath); };
+      z.customKey = [this] { return env_.providerKey("zai"); };
+      z.customConv = [] { return std::string("openai"); };
+      z.customModel = [this] { return modelFor("zai"); };
+      agent::providers::applyZaiHeadPolicy(z);
+    };
     pd.antEnvId = [this] { return antEnv_; };
     pd.setAntEnvId = [this](const std::string& v) { antEnv_ = v; };
     pd.antAgentMap = [this] { return antAgents_; };
@@ -619,16 +692,11 @@ class LabRig {
     return pd;
   }
 
-  // The Z.ai head: the custom/OpenAI-compatible single-shot turn pointed at
-  // Z.ai, with the same head policy the device and nimbusd apply.
+  // The Z.ai head: the custom/OpenAI-compatible deps pointed at Z.ai, with the same
+  // head policy the device and nimbusd apply.
   agent::providers::ProviderDeps zaiProviderDeps() {
     auto pd = providerDeps();
-    pd.customBase = [] { return std::string(kLabZaiHost); };
-    pd.customPathPrefix = [] { return std::string(kLabZaiPath); };
-    pd.customKey = [this] { return env_.providerKey("zai"); };
-    pd.customConv = [] { return std::string("openai"); };
-    pd.customModel = [this] { return modelFor("zai"); };
-    agent::providers::applyZaiHeadPolicy(pd);
+    pd.zaiHead(pd);
     return pd;
   }
 
@@ -638,18 +706,19 @@ class LabRig {
   void wireSkillsDeps(agent::TurnEngine::Deps& d) {
     d.skillsIndex = [this] { return skills_.indexText(); };
     d.skillsPicks = [this](const std::string& chat) { return skills_.picksFor(chat); };
+    d.foodSkills = [this] { return skills_.foodSkillIds(); };
     d.skillBody = [this](const std::string& id) { return skills_.attachBody(id); };
     d.skillUsed = [this](const std::string& chat, const std::string& id) {
       skills_.noteUsed(chat, id);
     };
   }
 
-  // The device's host adapters (fabric failover, Z.ai single-shot, the three
+  // The device's host adapters (fabric failover, the Z.ai head, the three other
   // loop hosts), split out of buildEngine to stay under the complexity gate.
   void wireHosts(agent::TurnEngine::Deps& d) {
     // The device's mid-turn failover: LOOP turns run the engine-owned fabric over
     // the same deps (a failed round re-runs on the next host against the shared
-    // transcript). Z.ai is single-shot only, as on the device.
+    // transcript), as on the device.
     d.hosts.fabric = [this](const std::vector<std::string>& hostList, const std::string& ins,
                             const std::string& inp, std::string& out, std::string& err,
                             const agent::HeadTools& ht, orch::TurnSpend* spend,
@@ -687,6 +756,8 @@ class LabRig {
   // spawn needs, as the device wires them.
   void wireJobs(agent::JobEngine::Deps& jd) {
     jd.journal = journal_;
+    // A sub-agent inherits its chat's principal, as d.apply.principalFor below says.
+    jd.principalFor = [this](const std::string& chat) { return orch::principalForRole(chat, role()); };
     if (!fabric_) return;
     jd.fabric = fabric_;
     jd.subPriority = [this] { return opt_.priority; };
@@ -698,6 +769,38 @@ class LabRig {
     jd.modelIsValid = [](const std::string& p, const std::string& m) {
       const std::string list = std::string(",") + nimbus::orch::staticModelChoices(p.c_str()) + ",";
       return !m.empty() && list.find("," + m + ",") != std::string::npos;
+    };
+  }
+
+  // The glass box, for free: on the host these hooks are just callbacks.
+  // Split out of buildEngine to stay under the complexity gate (lane PROG).
+  void wireHooks(agent::TurnEngine::Deps& d) {
+    d.hooks.onToolCall = [this](const orch::HeadToolCall& c) {
+      cur_.toolCalls.push_back(c.name + "(" + trunc(c.argsJson, 200) + ")");
+      if (opt_.verboseHttp)
+        std::fprintf(stderr, "[tool] %s %s\n", c.name.c_str(), trunc(c.argsJson, 160).c_str());
+    };
+    d.hooks.onToolResult = [this](const orch::HeadToolResult& r) {
+      cur_.toolResults.push_back(trunc(r.output, 300));
+      if (opt_.verboseHttp)
+        std::fprintf(stderr, "[tool] -> %s%s\n", r.isError ? "ERROR " : "",
+                     trunc(r.output, 200).c_str());
+    };
+    d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) { lastHost_ = ev.host; };
+    d.hooks.onTurnProgress = [this](const agent::TurnProgressEv& ev) {
+      ProgressMark m;
+      m.round = ev.round;
+      m.elapsedMs = ev.elapsedMs;
+      m.lastRound = ev.lastRound;
+      m.maxRounds = ev.maxRounds;
+      m.tools = ev.tools;
+      cur_.progress.push_back(m);
+      if (opt_.verboseHttp)
+        std::fprintf(stderr, "[progress] round=%d elapsed=%ums last=%d tools=%zu\n",
+                     ev.round, ev.elapsedMs, (int)ev.lastRound, ev.tools.size());
+    };
+    d.hooks.onTurnDebug = [this](const agent::TurnDebugEv& ev) {
+      if (ev.inputs) cur_.turnInputs = *ev.inputs;   // where [ACTIVE SKILLS] and [STANDING RULES] ride
     };
   }
 
@@ -739,7 +842,17 @@ class LabRig {
     d.mcpDispatch = [this](const std::string& req, const orch::Principal& who) {
       return reg_.handleRpc(req, who);
     };
-    d.connectorsCatalog = [](bool) { return std::string(); };
+    d.connectorsCatalog = [this](bool headCallsTools) {
+      if (!opt_.connectorsCatalog) return std::string();
+      nimbus::orch::ProviderState ps;
+      ps.openaiKeyed    = !env_.providerKey("openai").empty();
+      ps.anthropicKeyed = !env_.providerKey("anthropic").empty();
+      ps.mistralKeyed   = !env_.providerKey("mistral").empty();
+      ps.currentHost    = opt_.priority.substr(0, opt_.priority.find(','));
+      ps.headModel      = modelFor(ps.currentHost);
+      ps.webSearchTool  = headCallsTools && !env_.get("TAVILY_API_KEY").empty();
+      return nimbus::orch::catalogText(authStampedConnectors(), ps);
+    };
     wireSkillsDeps(d);
     d.modelChoices = [this](const std::string& p) { return config().provider.modelChoices(p); };
     d.episodicCaptureUser = [this](const std::string& c, const std::string& t,
@@ -753,26 +866,20 @@ class LabRig {
     // (the lab is single-owner, so every chat reads the owner's file).
     d.foodLedger = [this](const std::string&) {
       const std::string where = std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodLedgerOwnerName;
-      return orch::scanFoodLedger(files_.get(where), files_.has(where), orch::logDayOf(std::time(nullptr), true),
-                                  orch::kFoodLedgerProject, orch::kFoodLedgerOwnerName);
+      orch::FoodLedger l = orch::scanFoodLedger(files_.get(where), files_.has(where),
+                                                orch::logDayOf(std::time(nullptr), true), orch::kFoodLedgerProject,
+                                                orch::kFoodLedgerOwnerName);
+      l.targets = orch::scanFoodTargets(
+          files_.get(std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodTargetsOwnerName));
+      if (l.targets.kcal <= 0 && l.targets.protein <= 0) l.planFiles = files_.foodPlanFiles();
+      return l;
+    };
+    d.foodRecall = [this](const std::string&, const std::string& message) {
+      return orch::renderFoodRecall(files_.get(std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodLedgerOwnerName),
+                                    orch::logDayOf(std::time(nullptr), true).date, message);
     };
 
-    // The glass box, for free: on the host these hooks are just callbacks.
-    d.hooks.onToolCall = [this](const orch::HeadToolCall& c) {
-      cur_.toolCalls.push_back(c.name + "(" + trunc(c.argsJson, 200) + ")");
-      if (opt_.verboseHttp)
-        std::fprintf(stderr, "[tool] %s %s\n", c.name.c_str(), trunc(c.argsJson, 160).c_str());
-    };
-    d.hooks.onToolResult = [this](const orch::HeadToolResult& r) {
-      cur_.toolResults.push_back(trunc(r.output, 300));
-      if (opt_.verboseHttp)
-        std::fprintf(stderr, "[tool] -> %s%s\n", r.isError ? "ERROR " : "",
-                     trunc(r.output, 200).c_str());
-    };
-    d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) { lastHost_ = ev.host; };
-    d.hooks.onTurnDebug = [this](const agent::TurnDebugEv& ev) {
-      if (ev.inputs) cur_.turnInputs = *ev.inputs;   // where [ACTIVE SKILLS] and [STANDING RULES] ride
-    };
+    wireHooks(d);
 
     d.apply.deliver = d.deliver;
     d.apply.stageDevice = [this](const orch::ValidatedAction& va) {
@@ -921,6 +1028,7 @@ class LabRig {
   RecordingTransport rec_;
   agent::FaultInjectingTransport fault_;
   WireOverrideTransport wire_;
+  ShimTransport shim_{&wire_};
 
   orch::VectorMemory vec_;
   orch::Scratchpad   scratch_;

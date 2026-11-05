@@ -9,9 +9,11 @@
 #include <vector>
 
 #include "nimbus/orch/file_append.h"  // planAppend + the tail view (files.append)
+#include "nimbus/orch/food_ledger.h"  // the one food log, plan files
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
 #include "nimbus/orch/file_append.h"  // planAppend/tailRows (CUM-644)
+#include "nimbus/orch/turn_effects.h"  // kSaveReplacedNote: the save's receipt
 #include "nimbus/orch/tool_registry.h"
 
 // Host stand-in for the device's SD-backed artifact tools
@@ -28,6 +30,7 @@ class LabFiles {
     registerListAndSave(reg);
     registerRead(reg);
     registerAppend(reg);
+    registerDelete(reg);
   }
 
   void registerListAndSave(nimbus::orch::ToolRegistry& reg) {
@@ -79,6 +82,18 @@ class LabFiles {
             R"("required":["project","name","text"]})");
   }
 
+  void registerDelete(nimbus::orch::ToolRegistry& reg) {
+    reg.add("files.delete",
+            "Delete a stored file for good: the bytes and the index entry both go. "
+            "Pass 'project' and 'name'.",
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+              return deleteTool(a, who);
+            },
+            R"({"type":"object","properties":{"project":{"type":"string"},)"
+            R"("name":{"type":"string"}},)"
+            R"("required":["project","name"]})");
+  }
+
   // One tool handler each - the registrations above stay one-liners, and each
   // handler's logic stays under the complexity ceiling on its own.
   nimbus::orch::ToolResult listTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
@@ -102,13 +117,16 @@ class LabFiles {
     if (!nimbus::orch::FileStore::validSegment(p, 24) ||
         !nimbus::orch::FileStore::validSegment(n, 48))
       return nimbus::orch::ToolResult::fail("invalid project or name");
+    const std::string second = nimbus::orch::secondFoodLogRefusal(p, n, true, std::string());
+    if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
     // A full store refuses as the device does (files_subsystem refusalForHead).
     if (full_ != Full::No)
       return nimbus::orch::ToolResult::fail(
           std::string(nimbus::orch::FileStore::kErrTooManyFiles) + nimbus::orch::kStoreFullToolNote);
+    const bool replacing = files_.count(p + "/" + n) > 0;
     files_[p + "/" + n] = t;
-    return nimbus::orch::ToolResult::ok("saved " + p + "/" + n + " (" +
-                                        std::to_string(t.size()) + " bytes)");
+    return nimbus::orch::ToolResult::ok("saved " + p + "/" + n + " (" + std::to_string(t.size()) + " bytes)" +
+                                        (replacing ? std::string(", ") + nimbus::orch::kSaveReplacedNote : std::string()));
   }
 
   nimbus::orch::ToolResult readTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
@@ -130,16 +148,7 @@ class LabFiles {
       if (eol != std::string::npos) header = file.substr(0, eol);
       std::string text = nimbus::orch::renderTail(v, n, file.size(), header);
       const std::string sum = str(a, "sum");
-      if (!sum.empty()) {
-        double total = 0;
-        if (nimbus::orch::csvDayTotal(it->second, sum, todayStr(), total)) {
-          char buf[48];
-          std::snprintf(buf, sizeof buf, "%g", total);
-          text += "today's " + sum + ": " + buf + "\n";
-        } else {
-          text += "[no day total: the file has no date column or no column '" + sum + "']\n";
-        }
-      }
+      if (!sum.empty()) text += nimbus::orch::csvDayTotalLine(it->second, sum, todayStr(), nimbus::orch::logDayOf(std::time(nullptr), true).zone);
       return nimbus::orch::ToolResult::ok(text);
     }
     return nimbus::orch::ToolResult::ok(it->second);
@@ -150,30 +159,39 @@ class LabFiles {
                       t = str(a, "text"), key = str(a, "key"), sum = str(a, "sum");
     if (p.empty() || n.empty() || t.empty())
       return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
+    const std::string second = nimbus::orch::secondFoodLogRefusal(p, n, true, std::string());
+    if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
     if (!key.empty()) {
       const nimbus::orch::CsvUpsert up =
           nimbus::orch::planCsvUpsert(files_[p + "/" + n], t, key, sum, todayStr());
       if (!up.ok) return nimbus::orch::ToolResult::fail(up.err);
       if (up.changed) files_[p + "/" + n] = up.out;
-      std::string note = "updated " + std::to_string(up.replaced) +
-                         (up.replaced == 1 ? " row" : " rows") + ", appended " +
-                         std::to_string(up.appended) +
-                         (up.appended == 1 ? " row" : " rows") + " in " + p + "/" + n;
-      if (up.hasTotal) {
-        char buf[48];
-        std::snprintf(buf, sizeof buf, "%g", up.todayTotal);
-        note += "; today's " + sum + ": " + buf;
-      }
-      return nimbus::orch::ToolResult::ok(note);
+      // The device's own reply, word for word: the claim check reads it (turn_effects).
+      return nimbus::orch::ToolResult::ok(nimbus::orch::renderUpsertReply(
+          up, p + "/" + n, sum, nimbus::orch::logDayOf(std::time(nullptr), true).zone));
     }
     return appendPlain(p, n, t);
+  }
+
+  nimbus::orch::ToolResult deleteTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+    const std::string p = str(a, "project"), n = str(a, "name");
+    if (p.empty() || n.empty())
+      return nimbus::orch::ToolResult::fail("need 'project' and 'name'");
+    if (!nimbus::orch::FileStore::validSegment(p, 24) ||
+        !nimbus::orch::FileStore::validSegment(n, 48))
+      return nimbus::orch::ToolResult::fail("invalid project or name");
+    const std::string path = p + "/" + n;
+    if (!files_.erase(path))
+      return nimbus::orch::ToolResult::fail("no such file: " + path);
+    return nimbus::orch::ToolResult::ok("deleted " + path);
   }
 
   nimbus::orch::ToolResult appendPlain(const std::string& p, const std::string& n,
                                        const std::string& t) {
     const std::string path = p + "/" + n;
     const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(
-        t, files_[path].size(), files_[path].empty() ? '\0' : files_[path].back());
+        t, files_[path].size(), files_[path].empty() ? '\0' : files_[path].back(),
+        files_[path].empty() && nimbus::orch::isCsvName(n));
     if (!plan.ok) return nimbus::orch::ToolResult::fail(plan.err);
     files_[path] += plan.bytes;
     return nimbus::orch::ToolResult::ok(
@@ -195,12 +213,25 @@ class LabFiles {
   }
 
   void seed(const std::string& path, const std::string& text) { files_[path] = text; }
+  // Every stored file (path -> text), for eval drivers that dump the final state.
+  const std::map<std::string, std::string>& all() const { return files_; }
   // The store is full: every save is refused with the device's words (the store's
   // error and the tool note: the owner is told once).
   enum class Full { No, Told };
   void setFull(Full f) { full_ = f; }
   size_t count() const { return files_.size(); }
   bool has(const std::string& path) const { return files_.count(path) > 0; }
+  // Files that look like the owner's food or weight plan (food_ledger.h).
+  std::vector<std::string> foodPlanFiles() const {
+    std::vector<std::string> out;
+    for (const auto& f : files_) {
+      const size_t slash = f.first.find('/');
+      if (slash != std::string::npos && out.size() < nimbus::orch::kMaxPlanFiles &&
+          nimbus::orch::looksLikeFoodPlan(f.first.substr(0, slash), f.first.substr(slash + 1)))
+        out.push_back(f.first);
+    }
+    return out;
+  }
   std::string get(const std::string& path) const {
     auto it = files_.find(path);
     return it == files_.end() ? std::string() : it->second;

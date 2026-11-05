@@ -549,10 +549,15 @@ static void test_freeze_listener_hears_changes_only() {
   TEST_ASSERT_EQUAL(4, (int)g_heard.size());
 }
 
-// The owner's field: whole cents only, clamped, never wrapped by a huge number.
+// The owner's field: whole cents only, refused under the floor, never wrapped by a huge
+// number. Over the top is held at the top: that only ever spends less than asked for.
 static void test_ceiling_field_parse_is_strict_and_clamped() {
   TEST_ASSERT_EQUAL_UINT64(20000000ULL, parseCeilingCents("2000"));
-  TEST_ASSERT_EQUAL_UINT64(SpendCeiling::kMinLimitMicro, parseCeilingCents("5"));   // 5 cents -> $1
+  TEST_ASSERT_EQUAL_UINT64(SpendCeiling::kMinLimitMicro, parseCeilingCents("100"));
+  // Every amount under the floor is refused, never raised to it: a 50 cent cap that
+  // answers ok and then allows 1 USD is a cap wrong in the expensive direction.
+  for (int cents = 1; cents < 100; cents++)
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(0ULL, parseCeilingCents(std::to_string(cents)), std::to_string(cents).c_str());
   TEST_ASSERT_EQUAL_UINT64(SpendCeiling::kMaxLimitMicro, parseCeilingCents("10000000"));
   TEST_ASSERT_EQUAL_UINT64(SpendCeiling::kMaxLimitMicro, parseCeilingCents("99999999999999"));
   TEST_ASSERT_EQUAL_UINT64(SpendCeiling::kMaxLimitMicro, parseCeilingCents("18446744073709551616000"));

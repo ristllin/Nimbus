@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/loop_delivery.h"
 #include "nimbus/orch/rbac.h"
 
 using namespace nimbus::orch;
@@ -155,6 +156,79 @@ static void test_only_admin_may_arm_wakeup() {
     TEST_ASSERT_EQUAL(permsFor(r).manageTenants, mayArmWakeup(r));
 }
 
+// An approval writes the chat's row (it used to write none, and the chat resolved by the
+// allowlist fallback from then on). What the row buys: a later change to who is "first on
+// the allowlist" can never promote this chat.
+static void test_approval_writes_the_row() {
+  TenantStore t;
+  std::string err;
+  // A plain approval, an admin on the table: a User row.
+  TEST_ASSERT_TRUE(t.setRole("owner", Role::Admin, err));
+  TEST_ASSERT_TRUE(noteApproved(t, "alice", false, err));
+  TEST_ASSERT_TRUE(t.known("alice"));
+  TEST_ASSERT_EQUAL((int)Role::User, (int)t.roleOf("alice"));
+  // Idempotent: nothing to change means no write to make.
+  TEST_ASSERT_FALSE(noteApproved(t, "alice", false, err));
+  // An explicit role stands: an approval never demotes or promotes one.
+  TEST_ASSERT_TRUE(t.setRole("carla", Role::Guest, err));
+  TEST_ASSERT_FALSE(noteApproved(t, "carla", false, err));
+  TEST_ASSERT_EQUAL((int)Role::Guest, (int)t.roleOf("carla"));
+  TEST_ASSERT_FALSE(noteApproved(t, "owner", false, err));
+  TEST_ASSERT_EQUAL((int)Role::Admin, (int)t.roleOf("owner"));
+  // A revoked row: approving again is an explicit grant (the hosted rule, now shared).
+  TEST_ASSERT_TRUE(t.setRole("bob", Role::Unknown, err));
+  TEST_ASSERT_TRUE(noteApproved(t, "bob", false, err));
+  TEST_ASSERT_EQUAL((int)Role::User, (int)t.roleOf("bob"));
+
+  // A fresh device, no admin yet: the chat the Telegram owner rule names keeps that rule
+  // (a User row would lock the owner out of their own device), and gets no row.
+  TenantStore fresh;
+  TEST_ASSERT_FALSE(noteApproved(fresh, "first", true, err));
+  TEST_ASSERT_FALSE(fresh.known("first"));
+  // Anyone else on that fresh device is a User, in writing: the escalation this closes.
+  TEST_ASSERT_TRUE(noteApproved(fresh, "second", false, err));
+  TEST_ASSERT_EQUAL((int)Role::User, (int)fresh.roleOf("second"));
+  // Counter-test, the row is what holds: with the first chat gone, the second becomes
+  // the one the owner rule names, and its row still says User.
+  const Role resolved = fresh.known("second") ? fresh.roleOf("second")
+                                              : roleWithoutRow(true, true, fresh.adminCount() > 0);
+  TEST_ASSERT_EQUAL((int)Role::User, (int)resolved);
+  TEST_ASSERT_EQUAL((int)Role::Admin, (int)roleWithoutRow(true, true, fresh.adminCount() > 0));
+
+  // A full table refuses in words; the allowlist fallback still answers User, no worse.
+  TenantStore full;
+  for (size_t i = 0; i < TenantStore::kMaxTenants; i++)
+    TEST_ASSERT_TRUE(full.setRole("c" + std::to_string(i), Role::User, err));
+  err.clear();
+  TEST_ASSERT_FALSE(noteApproved(full, "late", false, err));
+  TEST_ASSERT_FALSE(full.known("late"));
+  TEST_ASSERT_FALSE(err.empty());
+}
+
+// The device's approval judges the owner rule from the lists it just wrote, not from the
+// poll task's copy (which does not hold this chat yet): on a fresh device the first chat
+// approved IS the owner and keeps that rule. It used to be written down as a User: the
+// table then had no admin, and the owner could not change a setting from Telegram.
+static void test_first_approval_on_a_fresh_device_keeps_the_owner_rule() {
+  TenantStore t;
+  std::string err;
+  std::string allow = "111";   // what the approval just stored
+  TEST_ASSERT_TRUE(telegramOwnerOf(allow, "", "111"));
+  TEST_ASSERT_FALSE(noteApproved(t, "111", telegramOwnerOf(allow, "", "111"), err));
+  TEST_ASSERT_FALSE(t.known("111"));
+  TEST_ASSERT_EQUAL((int)Role::Admin, (int)roleWithoutRow(true, true, t.adminCount() > 0));
+  allow += ",222";             // the second chat is a member, in writing
+  TEST_ASSERT_FALSE(telegramOwnerOf(allow, "", "222"));
+  TEST_ASSERT_TRUE(noteApproved(t, "222", telegramOwnerOf(allow, "", "222"), err));
+  TEST_ASSERT_EQUAL((int)Role::User, (int)t.roleOf("222"));
+  // An explicit owners list decides, and only for a chat that is on the allowlist.
+  TEST_ASSERT_TRUE(telegramOwnerOf("111,222", "222", "222"));
+  TEST_ASSERT_FALSE(telegramOwnerOf("111,222", "222", "111"));
+  TEST_ASSERT_FALSE(telegramOwnerOf("111", "222", "222"));
+  TEST_ASSERT_FALSE(telegramOwnerOf("", "", "111"));
+  TEST_ASSERT_FALSE(telegramOwnerOf("111", "", ""));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_role_permissions_matrix);
@@ -165,5 +239,7 @@ int main(int, char**) {
   RUN_TEST(test_last_admin_cannot_be_demoted_or_removed);
   RUN_TEST(test_store_roundtrip_and_tolerant_load);
   RUN_TEST(test_legacy_adoption_changes_nobody_by_surprise);
+  RUN_TEST(test_approval_writes_the_row);
+  RUN_TEST(test_first_approval_on_a_fresh_device_keeps_the_owner_rule);
   return UNITY_END();
 }

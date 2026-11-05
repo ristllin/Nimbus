@@ -19,6 +19,9 @@ twice produces a byte-identical header. The output is COMMITTED (like
 include/web/ui_logo.h and src/sfx/sfx_basic_data.h) so CI builds without python.
 
 Run from the repo root:  python3 tools/gen_docs_pack.py
+With --check: exit 1 when the committed header differs from the curated docs/
+(pre-commit hook docs-pack-fresh runs this, so a docs/ edit cannot ship a
+stale pack).
 """
 
 from __future__ import annotations
@@ -233,7 +236,7 @@ def cstr(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def main() -> int:
+def render() -> str:
     files: list[tuple[str, str, list[Section]]] = []  # (slug, title, sections)
     total_raw = 0
     for rel in CURATED:
@@ -293,12 +296,22 @@ def main() -> int:
     w.append("}  // namespace nimbus")
     w.append("")
 
+    return "\n".join(w)
+
+
+def main() -> int:
+    want = render()
+    if "--check" in sys.argv:
+        if not OUT.is_file() or OUT.read_text(encoding="utf-8") != want:
+            sys.exit(
+                "lib/core/include/nimbus/docs_pack_data.h is stale: run "
+                "'python3 tools/gen_docs_pack.py' from the repo root and commit the result"
+            )
+        print("docs pack fresh: docs_pack_data.h matches the curated docs/")
+        return 0
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text("\n".join(w), encoding="utf-8")
-    print(
-        f"wrote {OUT.relative_to(ROOT)}: {len(files)} files, {nsec} sections, "
-        f"~{pack_bytes / 1024:.0f} KB pack ({total_raw / 1024:.0f} KB raw markdown)"
-    )
+    OUT.write_text(want, encoding="utf-8")
+    print(f"wrote {OUT.relative_to(ROOT)} ({OUT.stat().st_size} bytes)")
     return 0
 
 

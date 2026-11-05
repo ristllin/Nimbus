@@ -9,7 +9,9 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/net/tg_receipt.h"
 #include "nimbus/orch/voice_notes.h"
+#include "nimbus/stt_result.h"
 
 using namespace nimbus::orch;
 
@@ -223,6 +225,331 @@ static void test_the_tool_words() {
       speakTooLongText(1500).c_str());
 }
 
+// What voice_reply.cpp makes of a failed send: "Telegram did not accept it (<reason>)".
+static std::string reasonFor(bool transportOk, const std::string& transportErr, const std::string& body) {
+  const nimbus::net::TgReceipt r = nimbus::net::parseTgSendAnswer(transportOk, transportErr, body);
+  TEST_ASSERT_FALSE(r.ok);
+  return "Telegram did not accept it (" + r.error + ")";
+}
+
+// QW6 (CODEREVIEW voice-model-seams): a failure that is only a missing or unreadable
+// ANSWER (the whole file went out) must not say "nothing was delivered": Telegram may have
+// accepted the note. The class: every transport state the receipt parser can report, and
+// every other failure the voice path can name, goes through the one classifier.
+static void test_an_unconfirmed_upload_is_not_called_undelivered() {
+  const std::string noStatus = std::string("HTTP ") + "0";   // httpmp::post: the status line never came
+  struct Row { const char* what; std::string reason; bool unconfirmed; };
+  const Row rows[] = {
+      {"no status line in the window", reasonFor(false, noStatus, ""), true},
+      // The body stopped short of its length (a stalled socket, the deadline): Telegram never took it.
+      {"the upload was cut mid-body", reasonFor(false, nimbus::voice::uploadCutText(4096, 18432), ""), false},
+      {"the upload was cut before any byte", reasonFor(false, nimbus::voice::uploadCutText(0, 18432), ""), false},
+      {"no transport text at all", reasonFor(false, "", ""), true},
+      {"a 2xx answer that is not JSON", reasonFor(true, "", "<html>proxy</html>"), true},
+      {"a 2xx answer without a message id", reasonFor(true, "", R"({"ok":true,"result":{}})"), true},
+      {"Telegram refused with a description",
+       reasonFor(false, "HTTP 400", R"({"ok":false,"error_code":400,"description":"Bad Request: chat not found"})"),
+       false},
+      {"a refusal without a body", reasonFor(false, "HTTP 403", ""), false},
+      {"a server error", reasonFor(false, "HTTP 502", ""), false},
+      {"a status that only starts with 0", std::string("Telegram did not accept it (HTTP 04)"), false},
+      {"connect failed", std::string("Telegram did not accept it (") + nimbus::voice::kErrConnectFailed + ")", false},
+      {"the slot was busy", std::string("Telegram did not accept it (") + nimbus::voice::kErrSlotBusy + ")", false},
+      {"synthesis failed", "text-to-speech failed: the voice provider did not answer in time", false},
+      {"the call budget", voiceBudgetText(), false},
+      {"a refusal of the text", "the text is 2,500 characters, over the limit", false},
+  };
+  for (const Row& row : rows) {
+    TEST_ASSERT_EQUAL_MESSAGE(row.unconfirmed, voiceReasonUnconfirmed(row.reason), row.what);
+    for (size_t total : {(size_t)1, (size_t)3}) {
+      for (size_t got = 0; got < total && got < 2; got++) {
+        std::vector<VoiceNoteSent> sent;
+        for (size_t i = 0; i < got; i++) sent.push_back({(int64_t)(811 + i), 1000});
+        const std::string text = voiceFailedText(sent, total, row.reason);
+        const bool saysMayNot = text.find(kVoiceMayNotHaveArrived) != std::string::npos;
+        const bool saysNothing = text.find("nothing was delivered") != std::string::npos;
+        TEST_ASSERT_EQUAL_MESSAGE(row.unconfirmed, saysMayNot, row.what);
+        // "nothing was delivered" only when nothing was uploaded OR Telegram said no, and nothing arrived before.
+        TEST_ASSERT_EQUAL_MESSAGE(!row.unconfirmed && got == 0, saysNothing, row.what);
+        // The reason is kept (an unconfirmed one without voice_reply.cpp's wrapper).
+        TEST_ASSERT_TRUE_MESSAGE(text.find(row.unconfirmed ? voiceReasonDetail(row.reason) : row.reason) !=
+                                     std::string::npos,
+                                 row.what);
+      }
+    }
+  }
+  TEST_ASSERT_EQUAL_STRING("upload cut at 4096 of 18432 B", nimbus::voice::uploadCutText(4096, 18432).c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "the voice message did not reach Telegram: Telegram did not accept it (upload cut at 4096 of 18432 B); "
+      "nothing was delivered. Reply in text and say the voice message could not be sent",
+      voiceFailedText({}, 1, "Telegram did not accept it (upload cut at 4096 of 18432 B)").c_str());
+  // The speech-to-text upload reads a cut body as it read it before (no answer), never as a transcript.
+  int http = -1;
+  TEST_ASSERT_TRUE(nimbus::voice::sttKindForError(nimbus::voice::uploadCutText(10, 20), &http) ==
+                   nimbus::voice::SttResult::Kind::Http);
+  TEST_ASSERT_EQUAL(0, http);
+  TEST_ASSERT_EQUAL_STRING(
+      "the voice message may not have arrived: Telegram did not confirm it (HTTP 0). Do not say it was "
+      "delivered or that it failed; say it may not have arrived, and give the text in your reply",
+      voiceFailedText({}, 1, "Telegram did not accept it (HTTP 0)").c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "only 1 of the 3 voice messages is confirmed by Telegram (message_id 811); message 2 may not have "
+      "arrived: Telegram did not confirm it (HTTP 0). Say it may not have arrived and give the text of "
+      "the rest in your reply",
+      voiceFailedText({{811, 1000}}, 3, "Telegram did not accept it (HTTP 0)").c_str());
+}
+
+// QW6: the end-of-turn tts action's bound. Whole text when it fits; otherwise a prefix cut
+// at a sentence end, else a space, else a character boundary - never mid-character, never
+// longer than the bound, never empty for non-empty text.
+static void test_speech_cut_keeps_whole_characters() {
+  SpeechCut whole = cutForSpeech("  Hello there.  ");
+  TEST_ASSERT_FALSE(whole.shortened);
+  TEST_ASSERT_EQUAL_STRING("Hello there.", whole.text.c_str());
+  TEST_ASSERT_EQUAL(12, (int)whole.spokenChars);
+  TEST_ASSERT_EQUAL(12, (int)whole.totalChars);
+  TEST_ASSERT_EQUAL_STRING("", cutForSpeech("  \n ").text.c_str());
+  TEST_ASSERT_FALSE(cutForSpeech("").shortened);
+  // Exactly at the bound: whole. One byte over: cut.
+  TEST_ASSERT_FALSE(cutForSpeech(std::string(400, 'a')).shortened);
+  TEST_ASSERT_TRUE(cutForSpeech(std::string(401, 'a')).shortened);
+  // Sentence end preferred.
+  std::string prose;
+  while (prose.size() < 500) prose += "One sentence here. ";
+  SpeechCut s = cutForSpeech(prose);
+  TEST_ASSERT_TRUE(s.shortened);
+  TEST_ASSERT_EQUAL_CHAR('.', s.text.back());
+  TEST_ASSERT_TRUE(s.text.size() <= kTtsActionMaxBytes);
+  // The repeated text above ends a sentence at its last space, so a plain "last space" cut passes
+  // too. Here the last sentence end is well before the last space: only the preference finds it.
+  std::string late;
+  while (late.size() < 150) late += "An opening sentence. ";
+  const std::string lateHead = late + "This one ends the part worth hearing.";
+  late = lateHead;
+  while (late.size() < 700) late += " and then more words without any end";
+  s = cutForSpeech(late);
+  TEST_ASSERT_TRUE(s.shortened);
+  TEST_ASSERT_EQUAL_STRING(lateHead.c_str(), s.text.c_str());
+  // A sentence end in the front third is too short a clip: the last space wins there.
+  std::string early = "Short start.";
+  while (early.size() < 700) early += " more words without any end";
+  s = cutForSpeech(early);
+  TEST_ASSERT_TRUE(s.shortened);
+  TEST_ASSERT_TRUE(s.text.size() > kTtsActionMaxBytes * 2 / 3);
+  TEST_ASSERT_TRUE(s.text.back() != ' ' && early.compare(0, s.text.size() + 1, s.text + " ") == 0);
+  // No sentence end: a word boundary, not a word cut in half.
+  std::string words;
+  while (words.size() < 500) words += "alpha beta gamma ";
+  s = cutForSpeech(words);
+  TEST_ASSERT_TRUE(s.shortened);
+  TEST_ASSERT_TRUE(s.text.back() == 'a' && words.compare(0, s.text.size() + 1, s.text + " ") == 0);
+  // A multi-byte run with no break at all: the hard cut stays on a character.
+  std::string cjk;
+  for (int i = 0; i < 300; i++) cjk += "\xE4\xBD\xA0";   // 900 bytes
+  s = cutForSpeech(cjk);
+  TEST_ASSERT_TRUE(s.shortened);
+  TEST_ASSERT_EQUAL(399, (int)s.text.size());   // 133 characters, the last whole one that fits
+  TEST_ASSERT_EQUAL(133, (int)s.spokenChars);
+  TEST_ASSERT_EQUAL(300, (int)s.totalChars);
+  TEST_ASSERT_EQUAL_STRING("(Note: the spoken version was shortened to the first 133 of its 300 characters.)",
+                           speechShortenedNote(s).c_str());
+  // The same property at every offset: 4-byte characters with a varying prefix.
+  for (int pad = 0; pad < 8; pad++) {
+    std::string e(pad, 'q');
+    for (int i = 0; i < 200; i++) e += "\xF0\x9F\x98\x80";
+    s = cutForSpeech(e);
+    TEST_ASSERT_TRUE(s.text.size() <= 400 && !s.text.empty());
+    TEST_ASSERT_EQUAL(0, (int)((s.text.size() - pad) % 4));   // whole emoji only
+    TEST_ASSERT_TRUE(e.compare(0, s.text.size(), s.text) == 0);
+  }
+  // The job announcement's bound (180 bytes, no sentence end in reach): the same rule at every
+  // offset, so a spoken snippet never ends inside a character whichever bound a caller passes.
+  for (int pad = 0; pad < 8; pad++) {
+    std::string e(pad, 'q');
+    for (int i = 0; i < 100; i++) e += "\xF0\x9F\x98\x80";
+    s = cutForSpeech(e, 180);
+    TEST_ASSERT_TRUE(s.text.size() <= 180 && !s.text.empty());
+    TEST_ASSERT_EQUAL(0, (int)((s.text.size() - pad) % 4));
+  }
+}
+
+// QW6 (CODEREVIEW voice-model-seams): a raw body that ended by the server's close, with no
+// stated length, is judged by its own framing. The class: with no length, a readable stream
+// that stops mid-frame (or holds far less audio than its text takes to say) is cut; a
+// stream the probe could not follow, a stated length, and Mistral's marker decide as before.
+static void test_a_close_delimited_clip_is_judged_by_its_framing() {
+  ClipRead base;
+  base.endSeen = true;
+  base.writesOk = true;
+  base.bytes = 150000;
+  base.shapeReadable = true;
+  base.shapeEnds = true;
+  base.clipMs = 20000;
+  base.textChars = 400;
+  TEST_ASSERT_TRUE(clipWhole(base));
+  // Ends mid-frame: cut.
+  ClipRead mid = base;
+  mid.shapeEnds = false;
+  TEST_ASSERT_FALSE(clipWhole(mid));
+  TEST_ASSERT_EQUAL_STRING("truncated at 150000 B (the speech audio ended in the middle of a frame)",
+                           clipCutText(mid).c_str());
+  // Far less audio than 400 characters take (5 s at four times the normal rate): cut,
+  // even on a frame boundary.
+  ClipRead brief = base;
+  brief.clipMs = 4900;
+  TEST_ASSERT_FALSE(clipWhole(brief));
+  TEST_ASSERT_EQUAL_STRING("truncated at 150000 B (only 4.9 s of audio for 400 spoken characters)",
+                           clipCutText(brief).c_str());
+  brief.clipMs = 5000;
+  TEST_ASSERT_TRUE(clipWhole(brief));
+  // Short texts have no duration floor; unknown duration (0) is not "short".
+  ClipRead tiny = base;
+  tiny.textChars = kClipDurationMinChars - 1;
+  tiny.clipMs = 10;
+  TEST_ASSERT_TRUE(clipWhole(tiny));
+  ClipRead unknownMs = base;
+  unknownMs.clipMs = 0;
+  TEST_ASSERT_TRUE(clipWhole(unknownMs));
+  // A stream the probe could not follow gets no verdict: as before.
+  ClipRead lost = mid;
+  lost.shapeReadable = false;
+  TEST_ASSERT_TRUE(clipWhole(lost));
+  TEST_ASSERT_EQUAL_STRING(clipTruncatedText(lost.bytes).c_str(), clipCutText(lost).c_str());
+  // A stated length decides, whatever the probe saw (a trailer the probe does not know
+  // must not refuse a clip the server says arrived whole); a short one is cut as before.
+  ClipRead stated = mid;
+  stated.contentLength = 150000;
+  TEST_ASSERT_TRUE(clipWhole(stated));
+  stated.contentLength = 150001;
+  TEST_ASSERT_FALSE(clipWhole(stated));
+  TEST_ASSERT_EQUAL_STRING(clipTruncatedText(stated.bytes).c_str(), clipCutText(stated).c_str());
+  // Mistral's closing quote decides.
+  ClipRead mistral = mid;
+  mistral.mistral = true;
+  TEST_ASSERT_TRUE(clipWhole(mistral));
+  // The old conditions still hold with a clean probe: no end seen, no bytes, a failed write.
+  for (int i = 0; i < 3; i++) {
+    ClipRead r = base;
+    if (i == 0) r.endSeen = false;
+    if (i == 1) r.bytes = 0;
+    if (i == 2) r.writesOk = false;
+    TEST_ASSERT_FALSE(clipWhole(r));
+  }
+  // A flash write that failed is named as such, not as a cut stream.
+  ClipRead flash = base;
+  flash.writesOk = false;
+  TEST_ASSERT_EQUAL_STRING("the speech audio could not be saved (a flash write failed after 150000 B)",
+                           clipCutText(flash).c_str());
+  TEST_ASSERT_EQUAL(0, (int)clipMinMs(0));
+  TEST_ASSERT_EQUAL(5000, (int)clipMinMs(400));
+  TEST_ASSERT_EQUAL(60000, (int)clipMinMs(4800));
+}
+
+// The reason without voice_reply.cpp's wrapper, so no sentence says "did not confirm it (Telegram
+// did not accept it (HTTP 0))".
+static void test_the_reason_detail_unwraps_the_telegram_wrapper() {
+  TEST_ASSERT_EQUAL_STRING("HTTP 0", voiceReasonDetail("Telegram did not accept it (HTTP 0)").c_str());
+  TEST_ASSERT_EQUAL_STRING("Bad Request: chat not found",
+                           voiceReasonDetail("Telegram did not accept it (Bad Request: chat not found)").c_str());
+  TEST_ASSERT_EQUAL_STRING("no answer", voiceReasonDetail("no answer").c_str());
+  TEST_ASSERT_EQUAL_STRING("Telegram did not accept it (", voiceReasonDetail("Telegram did not accept it (").c_str());
+  TEST_ASSERT_EQUAL_STRING("", voiceReasonDetail("").c_str());
+}
+
+// Only what a speech engine reads counts toward how much audio a text must produce: dividers,
+// markdown marks, punctuation and emoji do not, so a text that is mostly such marks never gets
+// a clip refused as "too short" (and a long symbol line has no floor at all).
+static void test_only_spoken_characters_set_the_audio_floor() {
+  TEST_ASSERT_EQUAL(0, (int)speechChars(""));
+  TEST_ASSERT_EQUAL(5, (int)speechChars("Hello!"));            // the "!" is not read
+  TEST_ASSERT_EQUAL(0, (int)speechChars(std::string(120, '-')));
+  TEST_ASSERT_EQUAL(0, (int)speechChars("**  __  ..."));
+  TEST_ASSERT_EQUAL(6, (int)speechChars("caf\xC3\xA9 ok"));    // the accented letter is read
+}
+
+static void test_emoji_and_symbols_are_not_spoken_but_scripts_are() {
+  TEST_ASSERT_EQUAL(0, (int)speechChars("\xF0\x9F\x98\x80\xF0\x9F\x98\x80"));   // two emoji
+  TEST_ASSERT_EQUAL(2, (int)speechChars("\xE4\xBD\xA0\xE5\xA5\xBD"));            // two CJK characters
+  TEST_ASSERT_EQUAL(3, (int)speechChars("\xD0\x9F\xD1\x80\xD0\xB8"));             // three Cyrillic letters
+  TEST_ASSERT_EQUAL(0, (int)speechChars("\x80\x80\xBF"));                          // stray continuation bytes
+  // The floor follows: 100 divider characters are 0 spoken characters, no floor; 100 words' worth is.
+  TEST_ASSERT_EQUAL(0, (int)clipMinMs(speechChars(std::string(100, '='))));
+  TEST_ASSERT_EQUAL(5000, (int)clipMinMs(speechChars(std::string(400, 'a'))));
+}
+
+// What the owner/log is told when a clip is refused: a read window that ran out, and no audio at
+// all, are the plain "did not arrive whole", not a claim about frames; tenths of a second for a
+// short clip.
+static void test_clip_cut_words_match_the_facts() {
+  ClipRead base;
+  base.endSeen = true;
+  base.writesOk = true;
+  base.bytes = 100000;
+  base.shapeReadable = true;
+  base.shapeEnds = false;
+  base.textChars = 400;
+  base.clipMs = 9000;
+  TEST_ASSERT_EQUAL_STRING("truncated at 100000 B (the speech audio ended in the middle of a frame)",
+                           clipCutText(base).c_str());
+  ClipRead timedOut = base;   // the read window ran out: the stream did not reach its end
+  timedOut.endSeen = false;
+  TEST_ASSERT_EQUAL_STRING(clipTruncatedText(100000).c_str(), clipCutText(timedOut).c_str());
+  ClipRead empty = base;
+  empty.bytes = 0;
+  TEST_ASSERT_EQUAL_STRING(clipTruncatedText(0).c_str(), clipCutText(empty).c_str());
+  ClipRead brief = base;
+  brief.shapeEnds = true;
+  brief.clipMs = 800;
+  TEST_ASSERT_EQUAL_STRING("truncated at 100000 B (only 0.8 s of audio for 400 spoken characters)",
+                           clipCutText(brief).c_str());
+}
+
+// Independent review: a Mistral stream cut by a dropped connection or the read window was reported
+// as a failed flash write, so the owner heard the storage was failing when the network dropped.
+// Every outcome of the decode, through the same function streamMistral calls.
+static void test_a_cut_mistral_stream_is_not_called_a_flash_failure() {
+  struct Row { bool clean, wroteAll; size_t bytes; bool whole; std::string why; };
+  const std::string flash = "the speech audio could not be saved (a flash write failed after 20000 B)";
+  const Row rows[] = {
+      {true, true, 20000, true, ""},                          // the closing quote, all written
+      {false, true, 20000, false, clipTruncatedText(20000)},  // dropped socket or the window ran out
+      {false, false, 20000, false, flash},                    // a write failed mid-stream
+      {false, false, 0, false, clipTruncatedText(0)},         // nothing decoded: no write to blame
+      {false, true, 0, false, clipTruncatedText(0)},
+  };
+  for (const Row& row : rows) {
+    ClipRead r;
+    r.mistral = true;
+    noteMistralValue(r, row.bytes, row.clean, row.wroteAll);
+    TEST_ASSERT_EQUAL(row.bytes, r.bytes);
+    TEST_ASSERT_EQUAL(row.whole, clipWhole(r));
+    if (!row.whole) TEST_ASSERT_EQUAL_STRING(row.why.c_str(), clipCutText(r).c_str());
+  }
+}
+
+// QW6 rebase review: the bench leg T4's text (tests/hil/mock_llm.py _LONG_TTS) is built so the
+// device must cut HARD inside a run of 2-byte letters: no sentence end or space from byte 133 to the
+// bound, and a 2-byte letter straddling byte 400. The cut backs off to that letter's start (399 B);
+// a byte cut would end inside it.
+static void test_the_bench_long_text_forces_a_hard_cut_before_a_straddling_letter() {
+  const std::string word = "Z\xc3\xbcrich-r\xc3\xa9sum\xc3\xa9-na\xc3\xafve-jalape\xc3\xb1o-cr\xc3\xa8me-br\xc3\xbbl\xc3\xa9" "e-";
+  std::string run;
+  for (int i = 0; i < 12; i++) run += word;
+  run.pop_back();   // rstrip("-")
+  std::string tail;
+  for (int i = 0; i < 7; i++)
+    tail += "Cafe owners in Z\xc3\xbcrich read the r\xc3\xa9sum\xc3\xa9 of a na\xc3\xafve jalape\xc3\xb1o chef. ";
+  tail.pop_back();  // strip()
+  const std::string text = "Bench voice check: " + run + ". " + tail;
+  TEST_ASSERT_TRUE(text.size() > 800);
+  TEST_ASSERT_EQUAL_HEX8(0xb1, (unsigned char)text[400]);   // byte 400 is inside the letter n-tilde
+  const SpeechCut cut = cutForSpeech(text);
+  TEST_ASSERT_TRUE(cut.shortened);
+  TEST_ASSERT_EQUAL(399, (int)cut.text.size());
+  TEST_ASSERT_EQUAL_STRING("\xc3\xb1", text.substr(399, 2).c_str());
+  TEST_ASSERT_EQUAL_STRING(text.substr(0, 399).c_str(), cut.text.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_chars_and_numbers);
@@ -235,5 +562,14 @@ int main(int, char**) {
   RUN_TEST(test_the_whole_call_has_one_time_budget);
   RUN_TEST(test_a_cut_clip_is_refused);
   RUN_TEST(test_the_tool_words);
+  RUN_TEST(test_an_unconfirmed_upload_is_not_called_undelivered);
+  RUN_TEST(test_speech_cut_keeps_whole_characters);
+  RUN_TEST(test_the_bench_long_text_forces_a_hard_cut_before_a_straddling_letter);
+  RUN_TEST(test_a_close_delimited_clip_is_judged_by_its_framing);
+  RUN_TEST(test_the_reason_detail_unwraps_the_telegram_wrapper);
+  RUN_TEST(test_only_spoken_characters_set_the_audio_floor);
+  RUN_TEST(test_emoji_and_symbols_are_not_spoken_but_scripts_are);
+  RUN_TEST(test_clip_cut_words_match_the_facts);
+  RUN_TEST(test_a_cut_mistral_stream_is_not_called_a_flash_failure);
   return UNITY_END();
 }

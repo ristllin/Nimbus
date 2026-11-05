@@ -94,10 +94,15 @@ AwsResponseFiller trickle(AwsResponseFiller inner) {
 namespace {
 
 // The staging buffer of a card stream lives in PSRAM when it can: internal SRAM is the
-// scarce pool (panic F2), and lwIP copies the bytes into its own buffers on add().
+// scarce pool (panic F2), and lwIP copies the bytes into its own buffers on add(). On a
+// board WITH PSRAM, an exhausted PSRAM answers null and the stream WAITS (fillOne's
+// null path) - it never silently falls back to internal SRAM, where each in-flight
+// stream's 2872 B would fragment the contiguous block a live turn's TLS handshake
+// needs. Only a board without PSRAM (there is no other pool) stages internally.
 uint8_t* stagingGet(size_t bytes) {
   void* p = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (!p) p = heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
+  if (!p && nimbus::net::cardStagingInternalOk(psramFound()))
+    p = heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
   return static_cast<uint8_t*>(p);
 }
 void stagingPut(uint8_t* buf) { heap_caps_free(buf); }

@@ -22,12 +22,15 @@ must not disturb). This tool answers that:
     NOT use it on a device you must not restart.
 
 Usage:
-  tools/board_info.py                 # summarize every /dev/cu.usbmodem* board
+  tools/board_info.py                 # list the USB serial nodes and their serials; opens nothing
   tools/board_info.py --port /dev/cu.usbmodem101 --seconds 8
-  tools/board_info.py --status        # also query STATUS (test builds)
-  tools/board_info.py --reboot        # reset + capture a full boot log
-  tools/board_info.py --json          # machine-readable summary (HIL/scripts)
-  tools/board_info.py --raw           # also print the deduped capture
+  tools/board_info.py --port P --status   # also query STATUS (test builds)
+  tools/board_info.py --port P --reboot   # reset + capture a full boot log
+  tools/board_info.py --port P --json     # machine-readable summary (HIL/scripts)
+  tools/board_info.py --port P --raw      # also print the deduped capture
+
+A port is only opened when named with --port, and a forbidden board is refused without opening it
+(tools/bench_guard.py).
 
 Needs pyserial (`pip install pyserial`); it is already in the HIL test deps.
 """
@@ -35,22 +38,25 @@ Needs pyserial (`pip install pyserial`); it is already in the HIL test deps.
 from __future__ import annotations
 
 import argparse
-import glob
 import json
+import os
 import re
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bench_guard  # noqa: E402 - the forbidden-device guard, a sibling of this tool
+
 try:
     import serial  # pyserial
 except ImportError:
-    sys.stderr.write("board_info: pyserial not installed (pip install pyserial)\n")
-    sys.exit(2)
+    serial = None  # main() says so; the parsers below stay importable
 
 
 def capture(port: str, seconds: float, reboot: bool, send_status: bool) -> str:
     """Read raw serial text. DTR/RTS stay deasserted unless `reboot` is set, so by
     default the board is never reset. Returns the decoded text (best-effort)."""
+    bench_guard.check_port(port, "board_info")
     s = serial.Serial()
     s.port = port
     s.baudrate = 115200
@@ -181,9 +187,24 @@ def report(port: str, args) -> dict:
     return result
 
 
-def main() -> int:
+def list_nodes(as_json: bool) -> int:
+    """No --port: what is on the bus, from the USB listing alone. Nothing is opened."""
+    usable, refused = bench_guard.split_ports()
+    rows = [{"port": r.device, "serial": r.serial, "refused": ""} for r in usable]
+    rows += [{"port": r.device, "serial": r.serial, "refused": label} for r, label in refused]
+    if as_json:
+        print(json.dumps(sorted(rows, key=lambda r: r["port"]), indent=2))
+        return 0
+    for row in sorted(rows, key=lambda r: r["port"]):
+        note = f"  REFUSED: {row['refused']}" if row["refused"] else ""
+        print(f"{row['port']}  serial={row['serial'] or '(none)'}{note}")
+    print("Nothing was opened. Name one board with --port to read it.")
+    return 0
+
+
+def main(argv: "list[str] | None" = None) -> int:
     ap = argparse.ArgumentParser(description="Non-destructively read a Nimbus board over USB.")
-    ap.add_argument("--port", help="serial port (default: every /dev/cu.usbmodem*)")
+    ap.add_argument("--port", help="serial port to read (default: only list the nodes, opening nothing)")
     ap.add_argument("--seconds", type=float, default=6.0, help="listen window (default 6)")
     ap.add_argument(
         "--status", action="store_true", help="also send STATUS (test builds; harmless no-op on production)"
@@ -195,23 +216,24 @@ def main() -> int:
     )
     ap.add_argument("--raw", action="store_true", help="print the deduped capture tail")
     ap.add_argument("--json", action="store_true", help="emit the parsed summary as JSON")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
-    ports = [args.port] if args.port else sorted(glob.glob("/dev/cu.usbmodem*"))
-    if not ports:
-        sys.stderr.write("board_info: no /dev/cu.usbmodem* ports found\n")
-        return 1
-    results = []
-    for p in ports:
-        try:
-            results.append(report(p, args))
-        except Exception as e:  # a busy or vanished port should not abort the rest
-            msg = f"{type(e).__name__}: {e}"
-            results.append({"port": p, "error": msg})
-            if not args.json:
-                print(f"\n=== {p} ===\n  ERROR {msg}")
+    if serial is None:
+        sys.stderr.write("board_info: pyserial not installed (pip install pyserial)\n")
+        return 2
+    if not args.port:
+        return list_nodes(args.json)
+    try:
+        result = report(args.port, args)
+    except bench_guard.ForbiddenDevice as e:
+        sys.stderr.write(f"{e}\n")
+        return bench_guard.REFUSED_EXIT
+    except Exception as e:  # a busy or vanished port: say so, in the shape the caller asked for
+        result = {"port": args.port, "error": f"{type(e).__name__}: {e}"}
+        if not args.json:
+            print(f"\n=== {args.port} ===\n  ERROR {result['error']}")
     if args.json:
-        print(json.dumps(results, indent=2))
+        print(json.dumps([result], indent=2))
     return 0
 
 

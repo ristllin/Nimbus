@@ -4,11 +4,14 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "nimbus/harness/claim_check.h"
 #include "nimbus/orch/device_actions.h"
 #include "nimbus/orch/head_switch.h"     // OwnerMessage - who may confirm a head switch
 #include "nimbus/orch/memory_tools.h"   // kMemOutcome* codes
+#include "nimbus/orch/psram_alloc.h"    // WorkingString - what a turn already sent, off the internal heap
+#include "nimbus/orch/speak_outcome.h"   // how a spoken reply ended
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/turn.h"
 
@@ -38,7 +41,15 @@ struct ApplyDeps {
   //   attnHold config knobs).
   std::function<bool(const nimbus::orch::ValidatedAction&)> execConfig;
   std::function<void(const nimbus::orch::ValidatedAction&)> stageDevice;  // null => (noop) paths
-  std::function<void(const std::string& text)> speak;                    // null => tts(no-sink)
+  // Voice `text` (whole characters, at most kTtsActionMaxBytes bytes) for the turn in
+  // `chatId` and say how it ended: played on the device speaker, delivered as a Telegram
+  // voice message (with its message id) to that chat when it is a Telegram chat, else to the
+  // owner chat (telegram::ownerChat: the first allowlisted owner), or not voiced (with why). The
+  // turn records and reports exactly that, never the request. null => tts(no-sink).
+  std::function<nimbus::orch::SpeakOutcome(const std::string& chatId, const std::string& text)> speak;
+  // The speaker volume now (0..100), read when a tts action runs: at 0 the speaker plays
+  // silence, so the action is refused as not spoken. null => unknown, never refuses.
+  std::function<int()> speakerVolume;
   bool ttsEnabled = false;
 
   // orch_model validation + write (validation data lives device-side).
@@ -134,6 +145,17 @@ struct ApplyState {
   // ("say nothing unless the owner is needed"). Risk notes still deliver.
   bool quietFallback = false;
   std::string riskNote;              // pending owner-visible note; consumed here
+  // Speech notes that only ride a message the owner already gets and never go out alone, so a
+  // routine or a reply-less turn cannot send a note by itself:
+  std::string replyNote;             //   the spoken version was shortened
+  std::string unspokenNote;          //   a tts could not be spoken (it rides the reply, the ask or the text below)
+  // A tts-only turn whose text could not be spoken: the text, sent as the turn's message and
+  // claim-checked like a reply (history keeps what went out). Empty when nothing is to be sent.
+  std::string unspokenText;
+  // What reply.telegram already sent to THIS turn's chat (text, or the voiced text of a voice
+  // message): a failed tts never sends that text a second time. In working memory (PSRAM on the
+  // device): up to 8 texts of 2 KB must not sit on the internal heap for the rest of a turn.
+  std::vector<nimbus::orch::WorkingString, nimbus::orch::WorkingAllocator<nimbus::orch::WorkingString>> toolReplyTexts;
   std::string lastReply;             // out: captured for loops' semantic-repeat hash
   ScratchOutcome scratchOutcome = ScratchOutcome::Skipped;   // out: the inline scratchpad write
   // Lane S, the claim check: apply records each real outcome in its ledger (a
@@ -163,6 +185,7 @@ struct ApplyState {
   int memStored = 0;
   int memQueued = 0;
   int memRefused = 0;
+  int memDuplicate = 0;   // a write that matched a stored fact: landed, nothing new
   // v3.7.0: may THIS turn's chat read/write the shared namespace? The device
   // sets it for the owner's chats and the token-authenticated local surfaces;
   // a Telegram member never gets it. Combined with the turn's chatId it forms
@@ -197,6 +220,7 @@ struct DeviceOutcome {
   std::string summary;      // the token(s): "cfg ", "reboot-refused(scheduled) ", ...
   bool refusedWhole = false;   // the caller rule refused the element as a whole
   std::string refusals;     // every part the caller rule refused, in plain words ("" = none)
+  std::string replyNote;    // a note that only rides a message the owner already gets (speech cut short)
 };
 
 // Validate + check who asked + policy-strip + execute ONE device[] element (raw
@@ -213,8 +237,9 @@ DeviceOutcome applyDeviceAction(const std::string& json, const nimbus::orch::Pri
 // The same for the turn's own chat (the caller is d.whoFor(chatId)), returning the
 // summary token(s): a convenience for host rigs and tests (the firmware calls
 // applyDeviceAction).
+// DeviceOutcome::replyNote goes to *replyNote when given, else to *riskNote.
 std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
                                const std::string& chatId, const ApplyDeps& d,
-                               std::string* riskNote);
+                               std::string* riskNote, std::string* replyNote = nullptr);
 
 }  // namespace agent

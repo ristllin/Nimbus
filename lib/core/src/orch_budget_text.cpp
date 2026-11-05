@@ -47,8 +47,11 @@ std::string pauseReason(const LimitsView& v, const std::string& provider, bool w
   if (v.usageLimited(provider)) why.push_back("token or call limit reached");
   if (bits & kPauseOwner) why.push_back("paused by you");
   const uint8_t kind = v.parkKindOf(provider);
-  if (kind == (uint8_t)ParkKind::Billing) why.push_back("out of credit");
-  if (kind == (uint8_t)ParkKind::Auth) why.push_back("its key was refused");
+  const ParkCause cause = providerPark().causeOf(provider.c_str());
+  if (cause == ParkCause::KeyBudget) why.push_back("its device limit was reached");
+  else if (cause == ParkCause::Suspended) why.push_back("the account is suspended");
+  else if (kind == (uint8_t)ParkKind::Billing) why.push_back("out of credit");
+  else if (kind == (uint8_t)ParkKind::Auth) why.push_back("its key was refused");
   return joinList(why);
 }
 

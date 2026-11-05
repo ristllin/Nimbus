@@ -1,3 +1,5 @@
+// The unscoped results API below is declared for this file and the job tests only.
+#define NIMBUS_JOBS_TEST_SEAM
 #include "nimbus/harness/jobs.h"
 
 #include <algorithm>   // remove_if - expire timed-out dispatch times
@@ -241,10 +243,12 @@ static const char kRouterSlug[] = "cumulo";
 
 // L19-8: the one per-provider park closes a provider for spawns too (out of credit
 // or a refused key, learned on any seam, or the pause switch). The spawn seam has no
-// key text at hand, so a key change reaches it through the seams that do.
+// key text at hand, so a key change reaches it through the seams that do. A READ: the
+// catalog and the picker ask about providers they then do not call, so a due re-check
+// reads open and stays due; the wire claims it when a dispatch really leaves.
 static bool spawnSeamOpen(const std::string& provider, uint32_t nowMs, std::string* why = nullptr) {
   const orch::ParkVerdict v =
-      orch::providerPark().available(provider.c_str(), orch::PaidSeam::Spawn, 0, nowMs);
+      orch::providerPark().peek(provider.c_str(), orch::PaidSeam::Spawn, 0, nowMs);
   if (!v.open && why) *why = orch::parkWords(provider.c_str(), v);
   return v.open;
 }
@@ -281,17 +285,26 @@ bool JobEngine::subProviderRuns(const std::string& p, std::string* closedWhy) co
 }
 
 std::string JobEngine::firstSubProvider(std::string* closedWhy) const {
+  return nextSubProvider({}, closedWhy);
+}
+
+// The first sub provider in the configured order, past the ones in `tried`, that is
+// keyed and open.
+std::string JobEngine::nextSubProvider(const std::vector<std::string>& tried, std::string* closedWhy) const {
+  auto runs = [&](const std::string& p) {
+    return std::find(tried.begin(), tried.end(), p) == tried.end() && subProviderRuns(p, closedWhy);
+  };
   std::string prio = d_.subPriority ? d_.subPriority() : std::string();
   size_t start = 0;
   while (start < prio.length()) {
     size_t comma = prio.find(',', start);
     if (comma == std::string::npos) comma = prio.length();
     const std::string p = trimmedSlug(prio.substr(start, comma - start));
-    if (subProviderRuns(p, closedWhy)) return p;
+    if (runs(p)) return p;
     start = comma + 1;
   }
   for (const char* r : {kRouterSlug, "zai"})
-    if (subProviderRuns(r, closedWhy)) return r;
+    if (runs(r)) return r;
   return "";
 }
 
@@ -443,7 +456,10 @@ void JobEngine::addFreshResult(const char* tag, const char* model, const std::st
 }
 
 bool JobEngine::chatIsOwner(const std::string& chatId) const {
-  if (chatId.empty() || !d_.principalFor) return true;   // the device's own, or an unwired host
+  // Unwired: nothing can say who this is, so it is nobody's owner (no connectors, only
+  // its own chat's results). A host that runs sub-agents wires principalFor.
+  if (!d_.principalFor) return false;
+  if (chatId.empty()) return true;   // the device's own work, on a chat of no one
   return orch::connectorGrantFor(d_.principalFor(chatId)) == orch::ConnectorGrant::Owner;
 }
 
@@ -1168,11 +1184,30 @@ bool JobEngine::routeSpawn(const PendingSpawn& p, std::string& provider, std::st
     refuseConnector(p, provider, host);
     return false;
   }
-  if (keyless && !routed) {
+  if (keyless && !routed && !movedOffKeyless(p, host, provider, model, a)) {
     refuseKeyless(p, provider, model);
     return false;
   }
   return coerceSpawnModel(p, provider, model);
+}
+
+// CUM-887's class, before any request: GLM named openai on an instance with no openai key
+// (parity eval, 1 Nov), and the owner was told to add a key while two other providers could
+// do the work. The spawn moves to a provider holding its own key, its model left to the
+// coercion there. A connector or file task stays, and the router's own rule stands (a model
+// it does not offer is refused by name): only a direct key takes the work.
+bool JobEngine::movedOffKeyless(const PendingSpawn& p, const std::string& host, std::string& provider,
+                                std::string& model, ManagedAgentAdapter*& a) {
+  if (!host.empty() || (p.skill[0] && nimbus::orch::isFileSkill(p.skill))) return false;
+  const std::string alt = nextSubProvider({provider, kRouterSlug});
+  ManagedAgentAdapter* altAdapter = alt.empty() ? nullptr : d_.fabric->adapterFor(alt.c_str());
+  if (!altAdapter) return false;
+  hlog::logf("orchestrator: spawn moved %s -> %s (%s has no key)", provider.c_str(), alt.c_str(), provider.c_str());
+  ledgerSwapped(p, provider + " has no key here; runs on " + alt);
+  provider = alt;
+  model.clear();
+  a = altAdapter;
+  return true;
 }
 
 // L19-36: save the whole reply (`whole`, longer than the envelope) to the job's
@@ -1207,6 +1242,51 @@ bool JobEngine::spillWholeReply(const orch::JobRecord& rec, const std::string& w
   hlog::logf("orchestrator: %s reply was %u B - %s", rec.tag, (unsigned)(whole.size() + dropped),
              path.empty() ? ("not saved: " + why).c_str() : ("saved whole as " + path).c_str());
   return !path.empty();
+}
+
+// A Timeout or an unreadable answer may have run and billed.
+static bool mayHaveRun(FabricErr err) { return err == FabricErr::Timeout || err == FabricErr::ParseFail; }
+
+// CUM-887: the refused provider's words were "try again, or use another provider", and
+// using another provider is the device's job. Only errors that surely started nothing
+// move, on the first attempt and on every later one, so a second copy never starts after
+// a run that may have billed. A connector lives on its provider and a file task runs where
+// its file can come back, so those two stay. At most two moves; on success `provider`,
+// `model` and `jobId` name the run that started. A later attempt that may have run ends
+// the walk with `err`, `provider` and `model` naming it: that is what the owner must hear.
+bool JobEngine::spawnMayMove(const PendingSpawn& p, FabricErr err) const {
+  if (mayHaveRun(err)) return false;
+  if (!orch::paidCallAllowed(orch::SpendSeam::Sub)) return false;   // the ceiling refuses every provider alike
+  return connectorHost(p).empty() && !(p.skill[0] && nimbus::orch::isFileSkill(p.skill));
+}
+
+bool JobEngine::spawnMoved(const PendingSpawn& p, FabricErr& err, SpawnAttempt& at) {
+  if (!spawnMayMove(p, err)) return false;
+  std::vector<std::string> tried{at.provider};
+  for (int moves = 0; moves < 2; moves++) {
+    const std::string alt = nextSubProvider(tried);
+    if (alt.empty()) return false;
+    tried.push_back(alt);
+    ManagedAgentAdapter* a = d_.fabric->adapterFor(alt.c_str());
+    std::string altModel;
+    if (!a || !coerceSpawnModel(p, alt, altModel)) continue;
+    keepUnseenRun(at.d.tag, p, at.model);   // lane QW4 round 3: a run the refused attempt could not stop
+    hlog::logf("orchestrator: spawn on %s failed %d - moves to %s/%s", at.provider.c_str(), (int)err, alt.c_str(),
+               altModel.c_str());
+    at.d.model = altModel.length() ? altModel.c_str() : nullptr;
+    FabricErr next;
+    {
+      const orch::ConnectorGrantScope scope(at.grant);
+      next = a->dispatch(at.d, at.jobId);
+    }
+    if (next != FabricErr::Ok && !mayHaveRun(next)) continue;
+    if (next == FabricErr::Ok) ledgerSwapped(p, at.provider + " refused it; runs on " + alt + "/" + altModel);
+    else err = next;
+    at.provider = alt;
+    at.model = altModel;
+    return next == FabricErr::Ok;
+  }
+  return false;
 }
 
 void JobEngine::dispatchSpawn(const PendingSpawn& p) {
@@ -1304,6 +1384,17 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
     err = a->dispatch(d, jobId);
   }
   if (err != FabricErr::Ok) {
+    // CUM-887: a refusal that surely started nothing moves the work on. If nothing takes
+    // it, the first refusal below is the one the owner hears, with the wait it asked for.
+    const RateLimit firstWindow = window;
+    SpawnAttempt attempt{provider, model, d, jobId, grant};
+    if (spawnMoved(p, err, attempt)) {
+      err = FabricErr::Ok;
+      a = d_.fabric->adapterFor(provider.c_str());
+    }
+    window = firstWindow;
+  }
+  if (err != FabricErr::Ok) {
     hlog::logf("orchestrator: spawn failed %d (prov=%s model=%s cat=%s)",
                (int)err, provider.c_str(), model.c_str(), p.category);
     keepUnseenRun(tag, p, model);   // lane QW4 round 3: a run it started and could not stop
@@ -1347,6 +1438,14 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   if (!durable) hlog::logf("orchestrator: journal record %s not stored", tag);
 
   hlog::logf("orchestrator: spawned %s -> %s (%s/%s)", tag, jobId, rec.backend, rec.model);
+  // A spawn that moved off a keyless provider names where it ran even when its turn's
+  // reply cleared the note: the owner must hear the ack with the provider in it.
+  bool moved = false;
+  {
+    const std::string task = capText(p.task, kLedgerTaskMax);
+    for (const auto& e : ledger_)
+      if (e.chatId == p.chatId && e.name == p.name && e.task == task && !e.swapped.empty()) moved = true;
+  }
   ledgerStarted(p, tag, rec.backend, rec.model, durable);
   if (d_.hooks.onSpawn) {   // lifecycle observer (after the journal write - the job is real)
     SpawnEv ev;
@@ -1367,7 +1466,7 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
                              " \xC2\xB7 " + rec.backend + "/" + rec.model + "]";
   if (!durable)
     deliverNotDurableAck(p, chatId, suffix);
-  else if (!p.quiet && activeCount() <= 2)
+  else if (!p.quiet && (p.note[0] || moved) && activeCount() <= 2)
     deliver(chatId, std::string(p.note) + suffix);
   emitJobState(tag, rec.backend, orch::JobState::Queued);
 }

@@ -98,7 +98,7 @@ bool post(const char* host, int port, const char* path, const String& bearer,
   if (connectBudgetMs) {
     const uint32_t t0 = millis();
     IPAddress ip;
-    if (!WiFi.hostByName(host, ip)) {
+    if (!resolveHostLocked(host, ip)) {   // raw dns_gethostbyname under the core lock: bench A03 fp=7f7617df (dns_clear_cache unlocked on the IP-state flip)
       err = nimbus::voice::kErrConnectFailed;
       alogf("multipart: resolve %s failed", host);
       return false;
@@ -126,7 +126,7 @@ bool post(const char* host, int port, const char* path, const String& bearer,
       c.setConnectionTimeout(left);
       c.setHandshakeTimeout(std::max<uint32_t>(1, std::min<uint32_t>(12, left / 1000)));
     }
-    if (c.connect(host, port)) { connected = true; break; }
+    if (connectHost(c, host, port)) { connected = true; break; }
     tlsClose(c);
     if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
   }
@@ -147,6 +147,7 @@ bool post(const char* host, int port, const char* path, const String& bearer,
 
   // Body: fields, then the streamed file, then the closing boundary.
   for (const auto& f : fields) writeField(c, f);
+  size_t fileSent = 0;   // file bytes the socket took
   if (haveFile) {
     c.print(fileHdr);
     if (filePrefix && filePrefixLen) c.write(filePrefix, filePrefixLen);
@@ -163,12 +164,24 @@ bool post(const char* host, int port, const char* path, const String& bearer,
         // F25: bound the upload - a dead socket's send would otherwise grind the
         // WHOLE file through at ~30 s/chunk. write() returns short on a stalled
         // socket; stop on a short write or once the operation deadline passes.
-        if ((int)c.write(buf, n) != n || (int32_t)(millis() - opDeadline) >= 0) break;
+        const int w = (int)c.write(buf, n);
+        if (w > 0) fileSent += (size_t)w;
+        if (w != n || (int32_t)(millis() - opDeadline) >= 0) break;
       }
       SdGuard g(lockSrc);
       f.close();
     }
     c.print("\r\n");
+  }
+  // QW6: a body short of its Content-Length is a request the server never took - nothing
+  // arrived. Say so (not "HTTP 0", which means the whole body went out and no answer came),
+  // and do not wait out the response window on a socket that is already dead.
+  if (haveFile && fileSent < fileSize) {
+    tlsClose(c);
+    slot.release();
+    err = nimbus::voice::uploadCutText(fileSent, fileSize).c_str();
+    alogf("multipart: %s", err.c_str());
+    return false;
   }
   c.printf("--%s--\r\n", kBoundary);
 

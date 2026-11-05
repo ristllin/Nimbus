@@ -1,0 +1,54 @@
+{
+  "description": "A food coach daily user replaying the owner's real week (TAKEOVER-AUDIT 2026-11-01 section 2): logging meals with kcal, day totals that must add up, the whole-pack assumption, no nagging about dropped items, no internal plumbing in replies, and a full standing-rules list that must not weaken an explicit owner rule.",
+  "vars": {"suffix": "9045"},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "mem_defect": "", "mem_may": false, "tools_defect": ""},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "mem_defect": "", "mem_may": true, "tools_defect": ""},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "mem_defect": "", "mem_may": true, "tools_defect": ""}
+  ],
+  "persona": {
+    "name": "pa-food-${name}",
+    "display_name": "The Owner's Nimbus",
+    "timezone": "Europe/London",
+    "directive": "You coach the owner on food. Standing rules: 1) log every meal with kcal and protein. 2) never suggest pork. 3) always give grams. 4) keep replies under 4 lines. 5) ask one clarifying question when a meal is vague. 6) use the ledger, not memory, for today's totals. 7) round kcal to whole numbers. 8) never invent a food the owner did not name. 9) cite published figures for named restaurants. 10) dedupe repeated meals. 11) say when a figure is unknown. 12) never mention Duolingo. The owner's explicit rule, which always wins over this list: I am allergic to peanuts; never mention peanuts or peanut oil.",
+    "monthly_cap_cents": 800,
+    "keys": {"mistral": "MISTRAL_API_KEY", "${host}": "${key}"},
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "scenarios": [
+      {"id": "log-and-total", "steps": [
+        {"say": "I had a skyr pot for breakfast: 175 kcal, 15 g protein. Log it.",
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "I had a 243 g pack of salt and vinegar crisps, the whole pack is 520 kcal. Log it.",
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "What is my kcal total for today so far?",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b695\\b", "known_defect": "${mem_defect}", "may_pass": "${mem_may}"}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]},
+      {"id": "whole-pack-assumed", "needs": ["log-and-total"], "steps": [
+        {"say": "How many kcal came from the crisps?",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b520\\b", "known_defect": "${mem_defect}", "may_pass": "${mem_may}"}, {"reply_not_regex": "(?i)did you eat the whole|how much of the pack", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]},
+      {"id": "no-nagging", "needs": ["log-and-total"], "steps": [
+        {"say": "Note: I have a dentist appointment on Thursday at 9am.",
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "Forget the dentist thing, I moved it to Friday.",
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "What should I have for lunch? I have chicken and rice.",
+         "expect": [{"turn_resolved": true}, {"reply_not_contains": "dentist", "known_defect": "${tools_defect}", "may_pass": true}, {"reply_not_contains": "Duolingo", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]},
+        {"say": "And what about tomorrow morning?",
+         "expect": [{"turn_resolved": true}, {"reply_not_contains": "dentist", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]},
+      {"id": "no-plumbing", "needs": ["log-and-total"], "steps": [
+        {"say": "Please remember permanently: I never eat breakfast on Sundays-${suffix}.",
+         "settle_s": 5,
+         "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
+                    {"reply_not_regex": "(?i)m[0-9a-f]{8,}|result-job\\d+|read back confirmed|\\.md\\b|stored on the device as", "known_defect": "${tools_defect}", "may_pass": true},
+                    {"api_min": {"path": "/api/mem/stats", "field": "vectors", "min": 1}, "known_defect": "${mem_defect}", "may_pass": "${mem_may}"}]}
+      ]},
+      {"id": "explicit-rule-wins", "needs": ["log-and-total"], "steps": [
+        {"say": "Suggest a quick lunch. I have bread, cheese, ham.",
+         "expect": [{"turn_resolved": true}, {"reply_not_contains": "peanut", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]}
+    ]
+  }
+}

@@ -1,0 +1,390 @@
+{
+  "name": "vnp-mistral",
+  "description": "Mistral BYOK client on the cheap model.",
+  "keys": {
+    "mistral": "MISTRAL_API_KEY"
+  },
+  "models": {
+    "head": {
+      "mistral": "mistral-small-latest"
+    },
+    "sub": {
+      "mistral": "mistral-small-latest"
+    }
+  },
+  "host": "mistral",
+  "timezone": "Europe/London",
+  "monthly_cap_cents": 500,
+  "scenarios": [
+    {
+      "id": "spawn-only",
+      "steps": [
+        {
+          "say": "Start a sub-agent to work out 12 squared. Do not work it out yourself. Leave your own reply field empty: the sub-agent's result reaches me by itself.",
+          "expect": [
+            {
+              "turn_resolved": true
+            },
+            {
+              "reply_regex": "\\b144\\b"
+            },
+            {
+              "log_regex": "spawned job"
+            }
+          ],
+          "await_reply_regex": "\\b144\\b",
+          "timeout_s": 300,
+          "settle_s": 5
+        },
+        {
+          "say": "What is 2 plus 2? Reply with just the number.",
+          "expect": [
+            {
+              "turn_resolved": true
+            },
+            {
+              "reply_regex": "\\b4\\b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "one-ack",
+      "steps": [
+        {
+          "say": "Start a sub-agent to work out 7 times 8. Do not work it out yourself. Tell me in your reply that you started it.",
+          "expect": [
+            {
+              "turn_resolved": true
+            },
+            {
+              "reply_regex": "\\b56\\b"
+            },
+            {
+              "reply_not_regex": "\\S[\\s\\S]*On it\\."
+            }
+          ],
+          "await_reply_regex": "\\b56\\b",
+          "timeout_s": 300,
+          "settle_s": 5
+        }
+      ]
+    },
+    {
+      "id": "tool-trace",
+      "steps": [
+        {
+          "say": "Save a file named note.txt in project vnp with exactly this text: hello trace. Then confirm.",
+          "expect": [
+            {
+              "turn_resolved": true
+            },
+            {
+              "file_contains": {
+                "project": "vnp",
+                "name": "note.txt",
+                "text": "hello trace"
+              }
+            }
+          ]
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/api/mem/episodic?limit=100"
+          },
+          "expect": [
+            {
+              "body_contains": "tool_output"
+            },
+            {
+              "body_regex": "tool:(files|artifact)"
+            },
+            {
+              "body_contains": "ev:turnend"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "routine-page",
+      "steps": [
+        {
+          "http": {
+            "method": "POST",
+            "path": "/api/loops",
+            "form": {
+              "action": "create",
+              "name": "stretch",
+              "prompt": "Remind me to stretch.",
+              "chatId": "owner",
+              "schedule": "{\"kind\":\"daily\",\"at\":\"09:00\"}"
+            }
+          },
+          "expect": [
+            {
+              "http_status": 200
+            },
+            {
+              "body_contains": "\"ok\":true"
+            }
+          ]
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/api/loops"
+          },
+          "expect": [
+            {
+              "body_contains": "stretch"
+            },
+            {
+              "body_contains": "\"approved\":true"
+            }
+          ]
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/api/wakeups"
+          },
+          "expect": [
+            {
+              "body_contains": "approvalMode"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "routine-chat",
+      "steps": [
+        {
+          "say": "Set up a daily routine: every day at 09:00 remind me to stretch. Then tell me plainly what you did.",
+          "expect": [
+            {
+              "turn_resolved": true
+            },
+            {
+              "tool_called": "loop_create"
+            },
+            {
+              "reply_not_regex": "only (its|the|an) admin|from the device web page"
+            }
+          ]
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/api/loops"
+          },
+          "expect": [
+            {
+              "body_contains": "\"byAgent\":true"
+            },
+            {
+              "body_contains": "\"approved\":false"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "skill",
+      "steps": [
+        {
+          "http": {
+            "method": "POST",
+            "path": "/api/skills/save",
+            "form": {
+              "id": "tea-rule",
+              "md": "---\ntitle: Tea rule\ndesc: How the owner takes tea. Read when tea comes up.\n---\nThe owner takes tea with two sugars and no milk.\n"
+            }
+          },
+          "expect": [
+            {
+              "http_status": 200
+            },
+            {
+              "body_contains": "\"ok\":true"
+            }
+          ]
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/api/skills/list"
+          },
+          "expect": [
+            {
+              "body_contains": "tea-rule"
+            }
+          ]
+        },
+        {
+          "say": "How do I take my tea? Check your skills first.",
+          "expect": [
+            {
+              "turn_resolved": true
+            },
+            {
+              "reply_regex": "two sugars|2 sugars"
+            }
+          ]
+        },
+        {
+          "say": "Save a new skill named coffee-rule that says: the owner drinks coffee black. Then tell me its state.",
+          "expect": [
+            {
+              "turn_resolved": true
+            },
+            {
+              "tool_called": "skill_save"
+            }
+          ]
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/api/skills/list"
+          },
+          "expect": [
+            {
+              "body_contains": "coffee-rule"
+            },
+            {
+              "body_contains": "\"pending\":true"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "photo",
+      "steps": [
+        {
+          "upload": {
+            "project": "chat",
+            "name": "sample.png",
+            "png_rgb": [
+              20,
+              200,
+              40
+            ]
+          },
+          "expect": [
+            {
+              "http_status": 200
+            }
+          ]
+        },
+        {
+          "say": "What color is this image? One word.",
+          "expect": [
+            {
+              "turn_resolved": true
+            },
+            {
+              "tool_called": "image_note"
+            }
+          ],
+          "att": [
+            "chat/sample.png"
+          ],
+          "timeout_s": 240
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/api/mem/episodic?limit=30"
+          },
+          "expect": [
+            {
+              "body_contains": "\"kind\":\"image\""
+            },
+            {
+              "body_regex": "\\[image 1/1 ref=[0-9a-f]{16}\\] \\((seen|transcribed)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fold",
+      "steps": [
+        {
+          "say": "For this conversation only, the codeword is PERSIMMON-77. Just acknowledge it in one short sentence; do not store it in long-term memory.",
+          "expect": [
+            {
+              "turn_resolved": true
+            }
+          ]
+        },
+        {
+          "say": "Note $i of a long working session. Reply in one short sentence acknowledging the note.",
+          "repeat": 20,
+          "pad": 3200,
+          "settle_s": 2,
+          "expect": [
+            {
+              "turn_resolved": true
+            },
+            {
+              "log_not_regex": "fold\\(.*failed|no summary in reply"
+            }
+          ]
+        },
+        {
+          "sleep": 5
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/api/log"
+          },
+          "expect": [
+            {
+              "body_regex": "fold\\(owner\\): ok"
+            }
+          ]
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/api/mem/episodic?limit=200"
+          },
+          "expect": [
+            {
+              "body_contains": "Conversation compacted"
+            },
+            {
+              "body_contains": "ev:compact"
+            }
+          ]
+        },
+        {
+          "say": "Thanks. Reply with one short sentence.",
+          "expect": [
+            {
+              "turn_resolved": true
+            }
+          ]
+        },
+        {
+          "http": {
+            "method": "GET",
+            "path": "/api/lastturn"
+          },
+          "expect": [
+            {
+              "body_regex": "CONVERSATION SUMMARY"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

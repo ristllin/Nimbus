@@ -152,7 +152,7 @@ static void testSpawnRunsOnRouter(ndtest::Ctx& c) {
   // The synthesis turn has no user row of its own: the owner's request must still
   // be in its conversation window (the in-flight row id may not outlive its turn).
   if (tx.seen.size() >= 3)
-    c.ok(has(tx.seen[2].body, "- user: research the FCA Consumer Duty"),
+    c.ok(has(tx.seen[2].body, "research the FCA Consumer Duty"),
          "the synthesis turn's window still carries the owner's request");
   clearEnv();
 }

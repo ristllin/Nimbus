@@ -21,6 +21,7 @@ void ToolRegistry::add(const std::string& name, const std::string& description,
       t.description = description;
       t.handler = std::move(handler);
       t.schemaJson = schemaJson;
+      t.alsoReads.clear();
       return;
     }
   }
@@ -156,6 +157,47 @@ ToolRegistry::Verdict ToolRegistry::accessFor(const std::string& name, JsonObjec
   return access_ ? access_(name, args, who) : Verdict::allow();
 }
 
+namespace {
+// Does this schema's top level name every argument its tool takes? External MCP tools
+// register their server's inputSchema verbatim, so it may leave the list open by any JSON
+// Schema means, and then an argument it does not name is not a wrong one.
+bool schemaClosesArgs(JsonObjectConst schema) {
+  if (!schema["properties"].is<JsonObjectConst>()) return false;
+  JsonVariantConst more = schema["additionalProperties"];
+  if (!more.isNull() && !(more.is<bool>() && !more.as<bool>())) return false;
+  for (const char* widens : {"patternProperties", "anyOf", "oneOf", "allOf", "$ref", "$dynamicRef", "if",
+                             "dependentSchemas", "unevaluatedProperties"})
+    if (!schema[widens].isNull()) return false;
+  return true;
+}
+
+bool namedIn(const std::string& csv, const char* name) {
+  const std::string padded = "," + csv + ",";
+  return padded.find("," + std::string(name) + ",") != std::string::npos;
+}
+
+// The call's argument names the tool neither lists nor reads, comma separated.
+std::string unknownArgs(const Tool& t, JsonObjectConst args) {
+  if (args.isNull() || args.size() == 0 || t.schemaJson.find("\"properties\"") == std::string::npos) return "";
+  JsonDocument schema;
+  if (deserializeJson(schema, t.schemaJson) || !schemaClosesArgs(schema.as<JsonObjectConst>())) return "";
+  JsonObjectConst props = schema["properties"].as<JsonObjectConst>();
+  std::string out;
+  for (JsonPairConst kv : args)
+    if (props[kv.key()].isNull() && !namedIn(t.alsoReads, kv.key().c_str()))
+      out += (out.empty() ? "" : ", ") + std::string(kv.key().c_str());
+  return out;
+}
+}  // namespace
+
+void ToolRegistry::alsoReads(const std::string& name, std::initializer_list<const char*> args) {
+  for (auto& t : tools_) {
+    if (t.name != name) continue;
+    for (const char* a : args) t.alsoReads += (t.alsoReads.empty() ? "" : ",") + std::string(a);
+    return;
+  }
+}
+
 ToolResult ToolRegistry::dispatch(const std::string& name, JsonObjectConst args,
                                   const Principal& who) const {
   // Policy gate FIRST - a denied/gated tool must never reach its handler, and
@@ -180,7 +222,14 @@ ToolResult ToolRegistry::dispatch(const std::string& name, JsonObjectConst args,
   if (g && !g->open())
     return ToolResult::fail(g->reason.empty() ? ("tool unavailable: " + name) : g->reason);
   if (!t->handler) return ToolResult::fail("tool has no handler: " + name);
-  return t->handler(args, who);
+  ToolResult res = t->handler(args, who);
+  // A tool argument never disappears in silence, on any provider (VNC gap pass, 1 Nov).
+  const std::string ignored = unknownArgs(*t, args);
+  if (!ignored.empty()) {
+    std::string& text = res.success ? res.output : res.error;
+    text += (text.empty() ? "" : "\n") + std::string("(not read: ") + ignored + ": this tool has no such argument)";
+  }
+  return res;
 }
 
 // ---- unknown-tool recovery (CUM-538) ------------------------------------------

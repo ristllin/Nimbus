@@ -1,0 +1,18 @@
+{
+  "id": "lc-migration",
+  "title": "Unreadable ledger rows are kept and never silently dropped",
+  "rows": ["OIR-49"],
+  "replays": "The 30 Oct class: the ledger migration dropped 2 rows without telling the owner.",
+  "clock": "{{TODAY}} {{DOW}} 09:00 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{TODAY}},breakfast,oats with a banana,290,12\n{{TODAY}},lunch,chicken wrap,615,40\n{{TODAY}},snack-1500,apple with peanut butter,180,4\ngarbage-row-1 not a real ledger row\ngarbage-row-2 also not a real ledger row\n"},
+    {"do": "say", "text": "Read my food log and tell me my total for today."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "ledger_day_total", "params": {"require_stated": false}},
+    {"id": "file_written", "params": {"path": "food/food-log.csv", "contains": "garbage-row-1"}}
+  ]
+}

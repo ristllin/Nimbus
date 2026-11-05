@@ -93,7 +93,7 @@ static bool fetchMistral(String& out) {
       tlsSetup(c);
       c.setHandshakeTimeout(12);
       c.setConnectionTimeout(15000);  // F25: real socket bound (setTimeout inert)
-      connected = c.connect("api.mistral.ai", 443);
+      connected = connectHost(c, "api.mistral.ai", 443);
       if (connected) {
         c.printf("GET /v1/audio/voices?type=all&limit=100&offset=%d HTTP/1.0\r\n", offset);
         c.print("Host: api.mistral.ai\r\n");

@@ -44,6 +44,8 @@ bool setSelfApprove(bool on);
 // ---- the engine's attach surface ---------------------------------------------
 // The [SKILLS] index block (the portable skillsIndexText over the store).
 std::string indexText();
+// The approved stored skills about food, by id (agent::foodSkillId).
+std::vector<std::string> foodSkillIds();
 // The skills attached to one chat's turns: pinned context skills plus what the
 // chat read (the RAM AttachTable + selectAttach, both portable).
 std::vector<agent::AttachPick> picksFor(const std::string& chatId);

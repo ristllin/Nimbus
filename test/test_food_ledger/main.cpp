@@ -101,6 +101,186 @@ void test_property_matches_the_day_total() {
   }
 }
 
+// ---- known and unknown protein, targets, the second log (the week of 28 Oct) --------
+
+static const char k1Nov[] =
+    "date,meal,items,kcal,protein_g\n"
+    "2026-10-26,drink,cappuccino,66,3.3\n"
+    "2026-10-26,breakfast,berries + yogurt,196,17.5\n"
+    "2026-10-26,lunch,eggs + bread,517,27.1\n"
+    "2026-10-26,drink2,boba tea,90,0.5\n"
+    "2026-10-26,lunch2,steak + mash + sauce,923,\n";
+
+void test_a_blank_protein_is_unknown_not_zero() {
+  FoodLedger l = scan(k1Nov);
+  EQ_NUM(1792, l.kcal);
+  TEST_ASSERT_FLOAT_WITHIN(0.001, 48.4, (float)l.protein);
+  TEST_ASSERT_EQUAL_INT(4, l.proteinRows);
+  TEST_ASSERT_EQUAL_INT(1, l.proteinUnknown);
+  const std::string block = renderLedgerBlock(l, true);
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "protein: 48.4 g known from 4 rows, 1 row with no protein figure"), block.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "unknown (at least 48.4 g)"), block.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(has(block, "1792 kcal from 5 rows, 48.4 g protein"), "a bare total hides the unknown row");
+  // With a target the device does the sum, and "left" is at most, never a number to chase.
+  l.targets.protein = 150;
+  l.targets.proteinSource = "plan.md";
+  l.targets.kcal = 2400;
+  l.targets.kcalSource = "plan.md";
+  const std::string left = renderLedgerBlock(l, true);
+  TEST_ASSERT_TRUE_MESSAGE(has(left, "608 kcal left of 2400"), left.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(left, "protein: at most 101.6 g left of 150"), left.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(left, "less whatever the 1 row with no figure held"), left.c_str());
+  // All known: a plain figure.
+  FoodLedger known = scan("date,meal,items,kcal,protein_g\n2026-10-26,lunch,x,500,40\n");
+  known.targets = l.targets;
+  const std::string plain = renderLedgerBlock(known, false);
+  TEST_ASSERT_TRUE_MESSAGE(has(plain, "1900 kcal left of 2400"), plain.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(plain, "protein: 110 g left of 150"), plain.c_str());
+  TEST_ASSERT_FALSE(has(plain, "at most"));
+  // Over the target, the sum says over.
+  known.targets.kcal = 400;
+  TEST_ASSERT_TRUE(has(renderLedgerBlock(known, false), "100 kcal over 400"));
+}
+
+void test_a_kcal_total_that_cannot_be_read_is_no_figure() {
+  const FoodLedger l = scan("date,meal,items,kcal,protein_g\n2026-10-26,lunch,x,500,40\n2026-10-26,dinner,y,about 900,40\n");
+  const std::string block = renderLedgerBlock(l, true);
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "kcal not known (500 counted from 1 row, 1 row unreadable)"), block.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "state no day total until then"), block.c_str());
+}
+
+void test_targets_come_from_a_file_with_a_source() {
+  const FoodTargets t = scanFoodTargets(
+      "date,metric,target,source\n"
+      "2026-10-20,kcal,2500,an old plan\n"
+      "2026-10-26,kcal,2400,roy-weight-loss/plan.md\n"
+      "2026-10-26,protein_g,150,roy-weight-loss/plan.md\n"
+      "2026-10-26,fibre_g,30,roy-weight-loss/plan.md\n");
+  EQ_NUM(2400, t.kcal);
+  TEST_ASSERT_EQUAL_STRING("roy-weight-loss/plan.md", t.kcalSource.c_str());
+  EQ_NUM(150, t.protein);
+  // No source, no target; junk never becomes one.
+  const FoodTargets none = scanFoodTargets("date,metric,target,source\n2026-10-26,protein_g,250,\n2026-10-26,kcal,lots,plan\n");
+  EQ_NUM(0, none.protein);
+  EQ_NUM(0, none.kcal);
+  EQ_NUM(0, scanFoodTargets("").kcal);
+  EQ_NUM(0, scanFoodTargets("metric\nkcal\n").kcal);
+  // The member's file sits beside the member's ledger, and only that member may write it.
+  TEST_ASSERT_EQUAL_STRING("food-targets.csv", foodTargetsName(true, "42").c_str());
+  TEST_ASSERT_EQUAL_STRING("food-targets-42.csv", foodTargetsName(false, "42").c_str());
+  TEST_ASSERT_TRUE(ledgerNameWritable("food", "food-targets-42.csv", "chat:42", false));
+  TEST_ASSERT_FALSE(ledgerNameWritable("food", "food-targets.csv", "chat:42", false));
+  TEST_ASSERT_FALSE(ledgerNameWritable("FOOD", "FOOD-TARGETS-7.CSV", "chat:42", false));
+}
+
+void test_no_target_stored_sends_the_head_to_a_source() {
+  FoodLedger l = scan(k1Nov);
+  l.planFiles = {"weight/my-plan.md"};
+  std::string block = renderLedgerBlock(l, true);
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "[FOOD TARGETS] None is stored."), block.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "files.read weight/my-plan.md"), block.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "food-targets.csv"), block.c_str());
+  // The same on the day's first food turn, and not on a turn that is not about food.
+  FoodLedger empty = scan(std::string(kHead) + "\n2026-10-25,lunch,x,1,1\n");
+  TEST_ASSERT_TRUE(has(renderLedgerBlock(empty, true), "[FOOD TARGETS] None is stored."));
+  TEST_ASSERT_FALSE(has(renderLedgerBlock(l, false), "[FOOD TARGETS]"));
+  TEST_ASSERT_TRUE(renderLedgerBlock(empty, false).empty());
+  // Stored targets end the prompt for a source.
+  l.targets.kcal = 2400;
+  l.targets.kcalSource = "plan";
+  TEST_ASSERT_FALSE(has(renderLedgerBlock(l, true), "[FOOD TARGETS]"));
+}
+
+void test_plan_files_are_about_food_or_weight() {
+  TEST_ASSERT_TRUE(looksLikeFoodPlan("roy-weight-loss", "roy-12-month-plan-2026-10-14.md"));
+  TEST_ASSERT_TRUE(looksLikeFoodPlan("health", "meal_planning.md"));
+  TEST_ASSERT_FALSE(looksLikeFoodPlan("work", "q4-plan.md"));
+  TEST_ASSERT_FALSE(looksLikeFoodPlan("roy-weight-loss", "research-synthesis.md"));
+}
+
+// The second log: the class is every name that says "food log" outside the ledger's place.
+void test_one_food_log() {
+  const struct {
+    const char* project;
+    const char* name;
+  } second[] = {{"nutrition", "meal_log.csv"}, {"meals", "log.csv"},          {"tracking", "food-log.csv"},
+                {"x", "Calorie_Log.CSV"},      {"nutrition", "daily-log.csv"}, {"x", "kcal.csv"}};
+  for (const auto& c : second) {
+    const std::string why = secondFoodLogRefusal(c.project, c.name, true, "");
+    TEST_ASSERT_TRUE_MESSAGE(has(why, "food/food-log.csv"), c.name);
+    TEST_ASSERT_TRUE_MESSAGE(has(why, "nothing was written"), c.name);
+  }
+  // A member is sent to that member's ledger.
+  TEST_ASSERT_TRUE(has(secondFoodLogRefusal("nutrition", "meal_log.csv", false, "chat:42"), "food/food-log-42.csv"));
+  // The ledger's place, other logs, other kinds of file: untouched.
+  TEST_ASSERT_TRUE(secondFoodLogRefusal("food", "food-log.csv", true, "").empty());
+  TEST_ASSERT_TRUE(secondFoodLogRefusal("food", "food-targets.csv", true, "").empty());
+  TEST_ASSERT_TRUE(secondFoodLogRefusal("tracking", "weight-log.csv", true, "").empty());
+  TEST_ASSERT_TRUE(secondFoodLogRefusal("runs", "log.csv", true, "").empty());
+  TEST_ASSERT_TRUE(secondFoodLogRefusal("nutrition", "meal_notes.md", true, "").empty());
+  TEST_ASSERT_TRUE(secondFoodLogRefusal("home", "meal-plan.csv", true, "").empty());
+  TEST_ASSERT_TRUE(secondFoodLogRefusal("charity", "foodbank-donors.csv", true, "").empty());
+}
+
+// A log of something else is not a second food log, wherever it sits.
+void test_a_log_of_something_else_is_not_a_second_food_log() {
+  for (const char* other : {"weight-log.csv", "water-intake.csv", "steps-tracker.csv", "supplements-log.csv", "sleep-diary.csv",
+                            "usual-meals.csv", "calorie-reference.csv", "meal-ideas.csv", "calorie-burn.csv", "workout-log.csv"}) {
+    TEST_ASSERT_TRUE_MESSAGE(secondFoodLogRefusal("nutrition", other, true, "").empty(), other);
+    TEST_ASSERT_TRUE_MESSAGE(secondFoodLogRefusal("home", other, true, "").empty(), other);
+  }
+  for (const char* log : {"food-log-2.csv", "food-diary.csv", "meal-tracker.csv", "calorie-intake.csv", "food-ledger.csv", "meals.csv", "protein-log.csv"}) {
+    TEST_ASSERT_FALSE_MESSAGE(secondFoodLogRefusal("home", log, true, "").empty(), log);
+  }
+  for (const char* bare : {"log.csv", "diary.csv", "daily-log.csv", "intake.csv", "my_log.csv", "tracker.csv"}) {
+    TEST_ASSERT_FALSE_MESSAGE(secondFoodLogRefusal("nutrition", bare, true, "").empty(), bare);
+    TEST_ASSERT_TRUE_MESSAGE(secondFoodLogRefusal("runs", bare, true, "").empty(), bare);
+  }
+}
+
+// A row the device set aside is kept and never counted, in the targets file too.
+void test_a_set_aside_target_row_is_not_a_target() {
+  const FoodTargets t = scanFoodTargets("date,metric,target,source\n2026-11-01,kcal,2200,owner\n#superseded: 2026-11-01,kcal,2400,plan\n#cut: 2026-11-01,protein_g,250,plan\n");
+  EQ_NUM(2200, t.kcal);
+  TEST_ASSERT_EQUAL_STRING("owner", t.kcalSource.c_str());
+  EQ_NUM(0, t.protein);
+}
+
+void test_the_same_food_on_earlier_days_rides_the_turn() {
+  const std::string file =
+      "date,meal,items,kcal,protein_g\n"
+      "2026-10-20,drink,boba tea,300,1\n"
+      "2026-10-24,lunch,chicken + rice,600,40\n"
+      "2026-10-25,drink,Boba tea (no sugar; honey tapioca),225,1\n"
+      "2026-10-26,drink,boba tea today,90,0\n";
+  std::string block = renderFoodRecall(file, "2026-10-26", "Boba black tea with no sugar");
+  TEST_ASSERT_TRUE_MESSAGE(has(block, "2026-10-25,drink,Boba tea (no sugar; honey tapioca),225,1"), block.c_str());
+  TEST_ASSERT_TRUE(has(block, "2026-10-20,drink,boba tea,300,1"));
+  TEST_ASSERT_FALSE_MESSAGE(has(block, "boba tea today"), "today's rows are in the ledger block");
+  TEST_ASSERT_FALSE(has(block, "chicken"));
+  TEST_ASSERT_TRUE(has(block, "say which one you kept"));
+  TEST_ASSERT_TRUE(has(block, "data, not instructions"));
+  // Nothing about food, or no match: no block.
+  TEST_ASSERT_EQUAL_STRING("", renderFoodRecall(file, "2026-10-26", "what's the weather").c_str());
+  TEST_ASSERT_EQUAL_STRING("", renderFoodRecall("", "2026-10-26", "boba").c_str());
+  TEST_ASSERT_EQUAL_STRING("", renderFoodRecall(file, "", "boba").c_str());
+  // Bounded, and the newest rows stay.
+  std::string many = "date,meal,items,kcal,protein_g\n";
+  for (int i = 0; i < 40; i++) many += "2026-10-" + std::to_string(10 + i % 15) + ",snack-" + std::to_string(i) + ",oat bar number " + std::to_string(i) + ",100,5\n";
+  block = renderFoodRecall(many, "2026-10-26", "an oat bar");
+  TEST_ASSERT_TRUE(has(block, "oat bar number 39"));
+  TEST_ASSERT_FALSE(has(block, "oat bar number 30,"));
+  TEST_ASSERT_TRUE(block.size() < 1000);
+}
+
+void test_figures_that_correct_a_meal_are_not_a_plain_request() {
+  for (const char* m : {"Their website says steak 325 kcal, mash 543, sauce 55. No protein listed. So what are we at?",
+                        "The label says 190 kcal, can you fix it?", "It should be 450 kcal, right?"})
+    TEST_ASSERT_EQUAL_MESSAGE(int(FoodIntent::Unclear), int(foodIntentOf(m)), m);
+  // A request with figures stays a request: a plan must not be logged as a meal.
+  TEST_ASSERT_EQUAL(int(FoodIntent::Ask), int(foodIntentOf("Plan my dinner. About 1,000 kcal and 60 g protein left today.")));
+}
+
 void test_the_block_is_bounded_and_keeps_the_newest() {
   std::string file = std::string(kHead) + "\n";
   for (int i = 0; i < 60; i++)
@@ -157,7 +337,7 @@ void test_no_rows_today_names_the_first_call_on_a_food_turn_only() {
   // No meal or kcal column to key by: the owner is told, not sent a call that fails.
   const std::string bare = renderLedgerBlock(scan("date,food,notes\n2026-10-25,oats,x\n"), true);
   TEST_ASSERT_TRUE_MESSAGE(has(bare, "no meal or kcal column to key by"), bare.c_str());
-  TEST_ASSERT_FALSE(has(bare, "\"key\""));
+  TEST_ASSERT_FALSE(has(bare, "\"sum\""));   // the keyed call on the ledger; only the targets' own call may follow
 }
 
 void test_an_unreadable_ledger_never_shows_a_total() {
@@ -255,12 +435,101 @@ void test_food_intent_is_read_only_when_plain() {
   TEST_ASSERT_EQUAL_STRING("", renderFoodIntentHint(FoodIntent::Unclear).c_str());
 }
 
+// Lane UPSERT: a correction keeps the replaced row in the file as a #replaced:
+// history row, so a disputed total can be re-read against what the day held before.
+void test_a_replace_keeps_the_replaced_row_as_history() {
+  std::string file;
+  logRows(file, "2026-10-26,dinner,smoked brisket + bread,457,40\n");
+  logRows(file, "2026-10-26,dinner,smoked brisket + bread,760,61\n");   // the owner's correction
+  TEST_ASSERT_TRUE_MESSAGE(file.find("#replaced: 2026-10-26,dinner,smoked brisket + bread,457,40\n") !=
+                               std::string::npos,
+                           file.c_str());
+  const FoodLedger l = scan(file);
+  TEST_ASSERT_EQUAL_INT(1, l.rowsToday);   // the history row is never counted as a row
+  EQ_NUM(760, l.kcal);
+}
+
+// Lane UPSERT, 4 Nov 20:07: the owner disputed the total ("Thats wrong ... 1878/2400").
+// The device re-reads the whole day and names any row that disappeared or changed
+// today, from the ledger's own history rows - today's #replaced: rows ride the turn.
+void test_a_disputed_total_gets_the_days_history_rows() {
+  std::string file;
+  logRows(file, "2026-10-26,breakfast,skyr + granola,533,32\n");
+  logRows(file, "2026-10-26,dinner,smoked brisket + bread,457,40\n");
+  logRows(file, "2026-10-26,dinner,smoked brisket + bread,760,61\n");   // a correction: history row
+  logRows(file, "2026-10-25,dinner,pasta,800,30\n", "2026-10-25");      // another day's history row
+  logRows(file, "2026-10-26,lunch,salmon sandwich,540,34\n");
+  const FoodLedger l = scan(file);
+  TEST_ASSERT_EQUAL_INT(1, (int)l.historyToday.size());   // only today's, not the 25th's
+  TEST_ASSERT_TRUE(has(l.historyToday[0], "#replaced: 2026-10-26,dinner,smoked brisket + bread,457,40"));
+  const std::string block = renderLedgerDispute(l);
+  TEST_ASSERT_TRUE(has(block, "[TODAY'S LEDGER HISTORY"));
+  TEST_ASSERT_TRUE(has(block, "#replaced: 2026-10-26,dinner,smoked brisket + bread,457,40"));
+  TEST_ASSERT_TRUE(has(block, "name any row that disappeared or changed today"));
+  TEST_ASSERT_TRUE(has(block, kHead));
+  // No history rows today: no block.
+  std::string plain;
+  logRows(plain, "2026-10-26,lunch,salad,300,10\n");
+  TEST_ASSERT_EQUAL_STRING("", renderLedgerDispute(scan(plain)).c_str());
+  // The dispute detector: the 4 Nov words, and the plain asks that are not disputes.
+  TEST_ASSERT_TRUE(disputesLedger("Thats wrong. Previous message said i have 510 left the you add 445 and you are left with 1878/2400???"));
+  TEST_ASSERT_TRUE(disputesLedger("where did the brisket row go? your calc is off"));
+  TEST_ASSERT_TRUE(disputesLedger("that total is missing a row"));
+  TEST_ASSERT_TRUE(disputesLedger("the ledger says 1878, that's not right"));
+  TEST_ASSERT_FALSE(disputesLedger("what's my total for today?"));
+  TEST_ASSERT_FALSE(disputesLedger("log my lunch, 540 kcal salmon sandwich"));
+  TEST_ASSERT_FALSE(disputesLedger("thanks!"));
+}
+
+// Review finding 4: the bare-digit gate must not fire the food-dispute block on a
+// non-food dispute. A disputed total compares figures, so the digit path needs two
+// or more figures; one figure beside a dispute word is about something else (a
+// temperature, a serial number).
+void test_a_dispute_about_something_else_is_not_a_ledger_dispute() {
+  TEST_ASSERT_FALSE(disputesLedger("That's not the right temperature, it's 24 degrees"));
+  TEST_ASSERT_FALSE(disputesLedger("wrong serial number, it's 1234"));
+  TEST_ASSERT_FALSE(disputesLedger("that's not the right color either"));
+  // A disputed total compares figures: two or more figures still fire.
+  TEST_ASSERT_TRUE(disputesLedger("it should be 2335 not 1878, that's wrong"));
+  TEST_ASSERT_TRUE(disputesLedger("Thats wrong. Previous message said i have 510 left the you add 445 and you are left with 1878/2400???"));
+}
+
+// Review finding 2: a row removed by files.edit (kept in the file as a #removed:
+// history row) is named by the dispute block like a #replaced: row, and is never
+// counted as a row or a figure.
+void test_a_removed_row_kept_as_history_is_named_in_a_dispute() {
+  std::string file;
+  logRows(file, "2026-10-26,breakfast,skyr + granola,533,32\n");
+  logRows(file, "2026-10-26,dinner,smoked brisket + bread,457,40\n");
+  // files.edit deleted the dinner row; the device kept it in the file as a #removed: row.
+  file = std::string(kHead) + "\n2026-10-26,breakfast,skyr + granola,533,32\n" +
+         "#removed: 2026-10-26,dinner,smoked brisket + bread,457,40\n";
+  const FoodLedger l = scan(file);
+  TEST_ASSERT_EQUAL_INT(1, l.rowsToday);
+  TEST_ASSERT_EQUAL_INT(1, (int)l.historyToday.size());
+  TEST_ASSERT_TRUE(has(l.historyToday[0], "#removed: 2026-10-26,dinner,smoked brisket + bread,457,40"));
+  const std::string block = renderLedgerDispute(l);
+  TEST_ASSERT_TRUE(has(block, "[TODAY'S LEDGER HISTORY"));
+  TEST_ASSERT_TRUE(has(block, "#removed: 2026-10-26,dinner,smoked brisket + bread,457,40"));
+  EQ_NUM(533, l.kcal);   // the history row is never counted
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_canonical_names_per_person);
   RUN_TEST(test_today_rows_and_totals_only);
   RUN_TEST(test_a_correction_never_counts_twice);
   RUN_TEST(test_property_matches_the_day_total);
+  RUN_TEST(test_a_blank_protein_is_unknown_not_zero);
+  RUN_TEST(test_a_kcal_total_that_cannot_be_read_is_no_figure);
+  RUN_TEST(test_targets_come_from_a_file_with_a_source);
+  RUN_TEST(test_no_target_stored_sends_the_head_to_a_source);
+  RUN_TEST(test_plan_files_are_about_food_or_weight);
+  RUN_TEST(test_one_food_log);
+  RUN_TEST(test_figures_that_correct_a_meal_are_not_a_plain_request);
+  RUN_TEST(test_a_log_of_something_else_is_not_a_second_food_log);
+  RUN_TEST(test_a_set_aside_target_row_is_not_a_target);
+  RUN_TEST(test_the_same_food_on_earlier_days_rides_the_turn);
   RUN_TEST(test_the_block_is_bounded_and_keeps_the_newest);
   RUN_TEST(test_rows_are_cleaned_and_cut_on_a_boundary);
   RUN_TEST(test_no_rows_today_names_the_first_call_on_a_food_turn_only);
@@ -271,5 +540,9 @@ int main(int, char**) {
   RUN_TEST(test_day_row_sink_sees_every_row_of_the_day);
   RUN_TEST(test_food_messages_are_recognised);
   RUN_TEST(test_food_intent_is_read_only_when_plain);
+  RUN_TEST(test_a_replace_keeps_the_replaced_row_as_history);
+  RUN_TEST(test_a_disputed_total_gets_the_days_history_rows);
+  RUN_TEST(test_a_dispute_about_something_else_is_not_a_ledger_dispute);
+  RUN_TEST(test_a_removed_row_kept_as_history_is_named_in_a_dispute);
   return UNITY_END();
 }

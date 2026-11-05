@@ -1,6 +1,9 @@
 #pragma once
 #include <string>
+#include <vector>
 
+#include "nimbus/orch/open_questions.h"   // OpenQuestions (lane POL2)
+#include "nimbus/orch/openq_tools.h"    // OpenQToolContext (lane POL2)
 #include "nimbus/orch/owner_prefs.h"   // OwnerPrefs
 #include "nimbus/orch/prefs_tools.h"   // PrefsToolContext
 
@@ -38,6 +41,24 @@ std::string blockForRole(bool ownerFacing);
 // The device-enforced filters for one chat's role (the delivery seam reads
 // this; 0 = none).
 uint32_t filtersForRole(bool ownerFacing);
+
+// ---- lane POL2: the owner's open-question list -------------------------------
+
+// The one open-question store (same lock discipline as the rules).
+nimbus::orch::OpenQuestions& openQStore();
+bool withOpenQStore(const std::function<void(nimbus::orch::OpenQuestions&)>& fn);
+nimbus::orch::OpenQToolContext openQContext();
+
+// The active standing rule texts (lane POL2: the loops' standing gate reads this
+// snapshot before its own lock; see loops_subsystem.cpp).
+std::vector<std::string> activeRuleTexts();
+
+// The [OPEN QUESTIONS] body for one chat's role ("" for a member or guest turn).
+std::string openQBlockForRole(bool ownerFacing);
+
+// The raise-once observation of one completed owner-facing turn (the engine's
+// openqObserve hook): returns the daemon-style log line, "" when nothing changed.
+std::string observeOwnerTurn(const std::string& ownerText, const std::string& reply);
 
 // The first-boot seed: when /data/prefs.txt does not exist yet, lift the
 // owner's always/never rules out of long-term memory (pinned entries and any

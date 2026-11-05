@@ -10,7 +10,7 @@ so a board provisioned here joins the network the legs expect.
 
 Usage (never prints a secret)::
 
-    prov_board.py --label unitL --port /dev/cu.usbmodem2101 --mac 28:84:85:42:18:FC \\
+    prov_board.py --label unitF1 --port /dev/cu.usbmodemNNNN --mac AA:BB:CC:DD:EE:FF \\
         --out-dir ../secrets/devices [--env-file .env] [--keys anthropic]
 
 Writes ``<out-dir>/<label>_webtok.txt`` and ``<out-dir>/<label>_ip.txt``.
@@ -28,6 +28,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Dict, List, Mapping, Optional, Tuple
+
+import port_guard
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_ENV = os.path.join(os.path.dirname(os.path.dirname(HERE)), ".env")
@@ -76,6 +78,7 @@ class Console:
     def __init__(self, port: str):
         import serial
 
+        port_guard.check_port(port, "prov_board")
         self.s = serial.Serial()
         self.s.port, self.s.baudrate, self.s.timeout = port, 115200, 0.3
         self.s.dtr = self.s.rts = False
@@ -156,6 +159,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--env-file", default=DEFAULT_ENV)
     ap.add_argument("--keys", default="anthropic", help="comma-separated providers to push (default anthropic)")
     args = ap.parse_args(argv)
+    port_guard.check_mac(args.mac, "prov_board")
+    port_guard.check_port(args.port, "prov_board")
     if args.mac and not port_matches(args.port, args.mac):
         print(f"refusing: {args.port} is not the board {args.mac}")
         return 2

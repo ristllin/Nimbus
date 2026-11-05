@@ -18,7 +18,7 @@ Every event is appended to ``--out`` as one JSON line. Afterwards:
   sram_sampler.py --soak-verdict <sampler.jsonl>
 
 Usage:
-  o2_soak_load.py --ip <unit A> --token "$NIMBUS_TEST_TOKEN" --hours 24 \\
+  o2_soak_load.py --ip <unit> --token-file <token file> --hours 24 \\
       --port /dev/cu.usbmodemXXXX --out o2_soak_load.jsonl
 """
 
@@ -87,7 +87,7 @@ def photo_page(file_id, chat_id, update_id):
 def _parse(argv):
     p = argparse.ArgumentParser(description="O2 24 h soak load driver")
     p.add_argument("--ip", required=True)
-    p.add_argument("--token", default=os.environ.get("NIMBUS_TEST_TOKEN", ""))
+    p.add_argument("--token-file", help="a file holding the device token (or set NIMBUS_TEST_TOKEN)")
     p.add_argument("--hours", type=float, default=24.0)
     p.add_argument("--turn-every", type=float, default=600.0)
     p.add_argument("--page-every", type=float, default=1800.0)
@@ -95,8 +95,12 @@ def _parse(argv):
     p.add_argument("--port", help="test console serial port (photo injects)")
     p.add_argument("--out", default="o2_soak_load.jsonl")
     args = p.parse_args(argv)
+    args.token = os.environ.get("NIMBUS_TEST_TOKEN", "")
+    if args.token_file:
+        with open(args.token_file, encoding="utf-8") as f:
+            args.token = f.read().strip()
     if not args.token:
-        p.error("--token (or NIMBUS_TEST_TOKEN) is required")
+        p.error("--token-file (or NIMBUS_TEST_TOKEN) is required")
     return args
 
 

@@ -70,6 +70,7 @@ nimbusd::NimbusdRig::Options buildOptions(const nimbusd::Config& cfg) {
   // in the app later turns memory on without a restart. NIMBUSD_EMBEDDINGS=0 turns
   // embeddings off entirely. The web app's embedding settings, once saved, win
   // over these defaults (<data>/mem/embed.txt).
+  opt.histV2 = cfg.getInt("NIMBUSD_HISTV2", 1) != 0;
   opt.embedHost = cfg.get("NIMBUSD_EMBED_HOST", "mistral");
   opt.embeddings = cfg.getInt("NIMBUSD_EMBEDDINGS", 1) != 0;
   opt.embedModel = cfg.get("NIMBUSD_EMBED_MODEL", "mistral-embed");
@@ -102,13 +103,33 @@ void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replie
                           std::atomic<nimbusd::TelegramChannel*>* sender) {
   // Runs on the engine thread. `sender` is atomic because the main thread fills
   // it in (below) after the bot is validated, concurrently with the first turns.
+  // Lane PROG: the running turn's round-boundary signals (engine thread, the
+  // same transport the delivery hook uses): a typing keep-alive between every
+  // provider request and the turn's ONE plain progress line, so a long turn
+  // never looks frozen on the chat it is answering.
+  rig.setTurnProgress([sender](const std::string& chat, bool keepAlive, const std::string& line) {
+    nimbusd::TelegramChannel* s = sender->load(std::memory_order_acquire);
+    if (!s || chat == nimbusd::kWebChatId) return;
+    std::string e;
+    // The signals ride the daemon log too, so a hosted run (the persona rig)
+    // can assert what the chat surface actually showed its owner.
+    if (keepAlive) {
+      s->sendChatAction(chat, "typing", e);
+      agent::hlog::logf("turnprog: keep-alive (typing) to %s", chat.c_str());
+    }
+    if (!line.empty()) {
+      s->sendMessage(chat, line, e);
+      agent::hlog::logf("turnprog: line to %s: %s", chat.c_str(), line.c_str());
+    }
+  });
   rig.setDeliver([&replies, &eng, sender](const std::string& chat, const std::string& text) {
     // Tag the channel (so web matches only its own) AND the web turn this reply
     // answers (currentWebTurn, 0 for Telegram/non-web) so the web chat surface
     // pairs each turn to its own reply by id, not ring position (CUM-293).
     replies.push("assistant", text, chat, eng.currentWebTurn());
+    // The web chat has no Telegram side: only a real chat id goes to the bot.
     nimbusd::TelegramChannel* s = sender->load(std::memory_order_acquire);
-    if (s) { std::string e; s->sendMessage(chat, text, e); }
+    if (s && chat != nimbusd::kWebChatId) { std::string e; s->sendMessage(chat, text, e); }
   });
 }
 
@@ -220,7 +241,22 @@ int runDaemon(nimbusd::Config& cfg) {
       // becomes a turn; anyone else is queued for the owner's approval and told so.
       // The refusal rides the POLL transport, which this thread owns.
       nimbusd::TgInboundIo io;
-      io.turn = [&eng](const std::string& chat, const std::string& text) { eng.postMessage(chat, text); };
+      io.turn = [&eng, &tgPoll](const std::string& chat, const std::string& text) {
+        // Lane PROG: a message that arrives while a turn runs is queued behind
+        // it; the sender is told so at once instead of waiting in silence.
+        if (eng.busy()) {
+          std::string e;
+          tgPoll->sendMessage(chat, "Got it, queued. It will answer that once this task finishes.", e);
+          agent::hlog::logf("turnprog: queued ack to %s", chat.c_str());
+        }
+        eng.postMessage(chat, text);
+      };
+      io.photoTurn = [&eng](const std::string& chat, const std::string& text, const std::vector<nimbusd::PhotoIn>& photos) {
+        eng.postMessage(chat, text, 0, nullptr, photos);
+      };
+      io.fetchFile = [&tgPoll](const std::string& id, std::string& bytes, std::string& e) {
+        return tgPoll->fetchFile(id, nimbus::orch::kImagePartBytes, bytes, e);
+      };
       io.send = [&tgPoll](const std::string& chat, const std::string& text) {
         std::string e;
         if (!tgPoll->sendMessage(chat, text, e)) logLine("telegram: refusal to " + chat + " not sent: " + e);

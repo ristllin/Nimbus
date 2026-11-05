@@ -1,5 +1,8 @@
 #include <unity.h>
 
+#include "nimbus/harness/turn_contract.h"   // kEmptyAnswer
+#include "nimbus/orch/model_defaults.h"     // BackgroundTurnScope
+
 #include <algorithm>
 #include <cstdio>
 #include <map>
@@ -36,6 +39,9 @@ struct Rec {
   std::vector<ValidatedAction> execed;    // execConfig calls (policy-stripped)
   std::vector<ValidatedAction> staged;    // stageDevice calls
   std::vector<std::string> spoken;
+  std::vector<std::string> spokenChats;   // the chat each tts was asked for
+  nimbus::orch::SpeakOutcome speakAnswer = nimbus::orch::SpeakOutcome::spoke();   // what the sink answers
+  int volume = 50;                        // what speakerVolume reads
   std::vector<std::pair<std::string, std::string>> delivered;  // chat, text
   std::vector<std::string> memCalls;      // "name:argsJson"
   std::vector<std::pair<std::string, std::string>> hostModelSet;
@@ -77,7 +83,12 @@ static ApplyDeps makeDeps(Rec& r, bool tts = false, bool withSinks = true) {
   };
   if (withSinks) {
     d.stageDevice = [&r](const ValidatedAction& va) { r.staged.push_back(va); };
-    d.speak = [&r](const std::string& s) { r.spoken.push_back(s); };
+    d.speak = [&r](const std::string& chat, const std::string& s) {
+      r.spokenChats.push_back(chat);
+      r.spoken.push_back(s);
+      return r.speakAnswer;
+    };
+    d.speakerVolume = [&r] { return r.volume; };
   }
   d.modelIsValid = [](const std::string&, const std::string& m) {
     return m.rfind("good-", 0) == 0;   // models named good-* validate
@@ -260,17 +271,106 @@ static void test_tts_action_gated_by_owner_toggle() {
   TEST_ASSERT_EQUAL_STRING("hello", r2.spoken[0].c_str());
 }
 
-static void test_tts_text_bounded_400() {
+// A tts text over the bound is cut on a character boundary, never silently: the reply
+// says the spoken version was shortened. 900 ASCII characters: a sentence-less run is cut
+// at the bound itself.
+static void test_tts_text_over_the_bound_is_cut_and_said() {
   Rec r;
   ApplyDeps d = makeDeps(r, /*tts=*/true);
   ApplyState st = makeState(r);
   bool spawned = false;
   std::string longText(900, 'x');
-  agent::applyTurn(turnWithDevice(
-                       ("{\"tts\":\"" + longText + "\"}").c_str()),
-                   "1001", d, st, spawned);
+  Turn t = turnWithDevice(("{\"tts\":\"" + longText + "\"}").c_str());
+  t.reply = "Here it is.";
+  agent::applyTurn(t, "1001", d, st, spawned);
   TEST_ASSERT_EQUAL(1, (int)r.spoken.size());
   TEST_ASSERT_EQUAL(400, (int)r.spoken[0].size());
+  TEST_ASSERT_EQUAL_STRING("Here it is.\n\n(Note: the spoken version was shortened to the first 400 of its "
+                           "900 characters.)",
+                           r.delivered[0].second.c_str());
+  TEST_ASSERT_EQUAL_STRING(r.spoken[0].c_str(), r.captured[0].c_str());   // history: what was voiced
+  // A text that fits is voiced whole, with no note.
+  Rec r2;
+  ApplyDeps d2 = makeDeps(r2, /*tts=*/true);
+  ApplyState st2 = makeState(r2);
+  Turn t2 = turnWithDevice("{\"tts\":\"All done.\"}");
+  t2.reply = "Done.";
+  agent::applyTurn(t2, "1001", d2, st2, spawned);
+  TEST_ASSERT_EQUAL_STRING("All done.", r2.spoken[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("Done.", r2.delivered[0].second.c_str());
+}
+
+// The class: whatever the text, what reaches the speaker is whole characters, within the
+// bound, a prefix of what was asked (so nothing is invented) and never empty; the note
+// appears exactly when the text was cut. Multi-byte scripts at every offset, and a
+// sentence end that puts the cut before the bound.
+static bool validUtf8(const std::string& s) {
+  size_t i = 0;
+  while (i < s.size()) {
+    const unsigned char c = (unsigned char)s[i];
+    const size_t n = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 0;
+    if (n == 0 || i + n > s.size()) return false;
+    for (size_t k = 1; k < n; k++)
+      if (((unsigned char)s[i + k] & 0xC0) != 0x80) return false;
+    i += n;
+  }
+  return true;
+}
+
+static void test_tts_cut_never_splits_a_character() {
+  const char* units[] = {"x", "\xC3\xA9", "\xD0\x96", "\xE4\xBD\xA0", "\xF0\x9F\x98\x80", "Zażółć gęślą jaźń. "};
+  for (const char* unit : units)
+    for (int pad = 0; pad < 5; pad++)
+      for (int reps : {100, 133, 134, 199, 200, 201, 300, 450}) {
+        std::string text(pad, 'a');
+        for (int i = 0; i < reps; i++) text += unit;
+        Rec r;
+        ApplyDeps d = makeDeps(r, /*tts=*/true);
+        ApplyState st = makeState(r);
+        bool spawned = false;
+        Turn t = turnWithDevice(("{\"tts\":\"" + text + "\"}").c_str());
+        t.reply = "ok";
+        agent::applyTurn(t, "1001", d, st, spawned);
+        TEST_ASSERT_EQUAL(1, (int)r.spoken.size());
+        const std::string& said = r.spoken[0];
+        TEST_ASSERT_TRUE_MESSAGE(validUtf8(said), unit);
+        TEST_ASSERT_TRUE_MESSAGE(!said.empty() && said.size() <= 400, unit);
+        TEST_ASSERT_TRUE_MESSAGE(text.compare(0, said.size(), said) == 0, unit);
+        const bool cut = text.size() > 400;
+        TEST_ASSERT_EQUAL_MESSAGE(cut, r.delivered[0].second.find("was shortened") != std::string::npos, unit);
+        TEST_ASSERT_EQUAL_MESSAGE(cut, said.size() < text.size(), unit);
+      }
+}
+
+// A cut prefers a sentence end, so the owner does not hear a word cut in half.
+static void test_tts_cut_prefers_a_sentence_end() {
+  Rec r;
+  ApplyDeps d = makeDeps(r, /*tts=*/true);
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  std::string text;
+  while (text.size() < 700) text += "This is one sentence of the update. ";
+  Turn t = turnWithDevice(("{\"tts\":\"" + text + "\"}").c_str());
+  t.reply = "ok";
+  agent::applyTurn(t, "1001", d, st, spawned);
+  const std::string& said = r.spoken[0];
+  TEST_ASSERT_TRUE(said.size() <= 400);
+  TEST_ASSERT_EQUAL_CHAR('.', said.back());
+  // The text above ends a sentence at its last space, so a plain "last space" cut passes too. Here
+  // a sentence ends near byte 300 and only words follow: the owner hears that sentence end, not
+  // speech that stops mid-sentence near byte 399.
+  std::string head;
+  while (head.size() < 250) head += "This is one sentence of the update. ";
+  head += "This is where it ends.";
+  std::string longer = head;
+  while (longer.size() < 700) longer += " and more words after it";
+  Rec r2;
+  ApplyDeps d2 = makeDeps(r2, /*tts=*/true);
+  ApplyState st2 = makeState(r2);
+  Turn t2 = turnWithDevice(("{\"tts\":\"" + longer + "\"}").c_str());
+  t2.reply = "ok";
+  agent::applyTurn(t2, "1001", d2, st2, spawned);
+  TEST_ASSERT_EQUAL_STRING(head.c_str(), r2.spoken[0].c_str());
 }
 
 // ---- a pause never moves the owner's head (26 Oct 2026, Lumi) -------------------
@@ -317,6 +417,26 @@ static std::string switchTo(Rec& r, PausedHead& h, const char* provider, const c
 // The owner's words on Lumi ("Hmm I thought anthropic is out of budget") and the DoD's
 // "switch to mistral since anthropic is out of budget": the head stays, nothing is
 // written, the explanation rides the reply, and the next turn's feedback says so.
+// The parity eval's class: the owner picks a head it found unfit for daily use and hears so,
+// in the reply, once. Another pick says nothing.
+static void test_picking_mistral_small_says_what_it_is_for() {
+  auto replyFor = [](const char* model) {
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    d.modelIsValid = [](const std::string&, const std::string&) { return true; };
+    ApplyState st = makeState(r);
+    Turn t = turnWithDevice((std::string("{\"type\":\"orch_model\",\"provider\":\"mistral\",\"model\":\"") + model + "\"}").c_str());
+    t.reply = "Switched.";
+    bool spawned = false;
+    agent::applyTurn(t, "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL(1, (int)r.hostModelSet.size());
+    return r.delivered.empty() ? std::string() : r.delivered[0].second;
+  };
+  const std::string small = replyFor("mistral-small-latest");
+  TEST_ASSERT_TRUE_MESSAGE(small.find("For daily use, pick Mistral Large 4.") != std::string::npos, small.c_str());
+  TEST_ASSERT_EQUAL_STRING("Switched.", replyFor("mistral-large-4-0").c_str());
+}
+
 static void test_orch_model_does_not_move_a_paused_head() {
   nimbus::orch::headSwitchGuard().reset();
   for (const char* owner : {"Hmm I thought anthropic is out of budget",
@@ -628,19 +748,86 @@ static void test_lane_l_an_ask_the_reply_already_ends_with_is_not_repeated() {
   }
 }
 
-static void test_empty_turn_signals_completion_not_done() {
-  // The hardcoded "Done." ack was removed: an empty reply delivers NO message at the
-  // harness level (async channels stay silent). Instead it signals turnComplete, and
-  // the DEVICE wiring resolves only the synchronous channels (web/voice/serial) - so
-  // a reply-less turn never false-fails a web/voice poll, and Telegram stays silent.
+static void test_empty_turn_never_reads_as_done() {
+  // VN reality check, 1 Nov: "What is my sister's cat called?" got "Done." because an
+  // empty model reply signalled completion. A turn that did nothing tells the owner the
+  // answer was empty, on every channel; the completion signal is for a turn that acted.
   Rec r;
   ApplyDeps d = makeDeps(r);
   ApplyState st = makeState(r);
   bool spawned = false;
   agent::applyTurn(Turn{}, "1001", d, st, spawned);
-  TEST_ASSERT_EQUAL(0, (int)r.delivered.size());          // no fabricated message
-  TEST_ASSERT_EQUAL(1, (int)r.turnCompletes.size());      // completion signalled once
-  TEST_ASSERT_EQUAL_STRING("1001", r.turnCompletes[0].c_str());
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING(agent::kEmptyAnswer, r.delivered[0].second.c_str());
+  TEST_ASSERT_EQUAL(0, (int)r.turnCompletes.size());
+  // The words themselves: neither of the two lines can be a bare "Done."
+  for (const char* line : {agent::kEmptyAnswer, agent::kNoMessageAfterAction})
+    TEST_ASSERT_TRUE_MESSAGE(std::string(line).find("Done") == std::string::npos, line);
+}
+
+// The counter-tests: scheduled and background turns stay silent (the owner's complaint
+// about routines pinging), and a turn that acted still gets the completion signal.
+static void test_empty_turn_stays_silent_when_nobody_waits() {
+  {
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r);
+    st.scheduledTurn = true;
+    bool spawned = false;
+    agent::applyTurn(Turn{}, "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
+  }
+  {
+    const nimbus::orch::BackgroundTurnScope background;
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r);
+    bool spawned = false;
+    agent::applyTurn(Turn{}, "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
+  }
+}
+
+// A lookup or a scratchpad note is not an action: that turn still answered nothing.
+static void test_a_lookup_alone_is_not_an_action() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  ApplyState st = makeState(r);
+  agent::ClaimCheck claims;
+  claims.effects().add(nimbus::orch::FxKind::Read, true);
+  claims.effects().add(nimbus::orch::FxKind::Scratch, true);
+  st.claims = &claims;
+  bool spawned = false;
+  agent::applyTurn(Turn{}, "1001", d, st, spawned);
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING(agent::kEmptyAnswer, r.delivered[0].second.c_str());
+}
+
+static void test_turn_that_acted_says_so_without_inventing_done() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  ApplyState st = makeState(r);
+  Turn t;
+  nimbus::orch::MemWrite w;
+  w.content = "the cat is called Pixel";
+  t.mem_write.push_back(w);
+  bool spawned = false;
+  agent::applyTurn(t, "1001", d, st, spawned);
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING(agent::kNoMessageAfterAction, r.delivered[0].second.c_str());
+  TEST_ASSERT_EQUAL(0, (int)r.turnCompletes.size());
+}
+
+// A background turn that acted still resolves through the completion signal, unheard.
+static void test_background_turn_signals_completion_only() {
+  const nimbus::orch::BackgroundTurnScope background;
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  agent::applyTurn(Turn{}, "1001", d, st, spawned);
+  TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL(1, (int)r.turnCompletes.size());
 }
 
 // A spawn or a tool-reply already stands on its own -> no completion signal needed.
@@ -955,8 +1142,457 @@ static void test_claims_noop_device_action_backs_nothing() {
     agent::ClaimCheck cc;
     cc.beginTurn();
     const std::string out = applyChecked(r, d, t, cc);
-    TEST_ASSERT_EQUAL_MESSAGE(!voice, out.find("has not been sent") != std::string::npos,
+    TEST_ASSERT_EQUAL_MESSAGE(!voice, out.find("(Correction: that was not spoken aloud.)") != std::string::npos,
                               voice ? "voice on" : "voice off");
+  }
+}
+
+// DoD (1): the tts action reports what really happened. Spoken on the speaker: the
+// summary token is the pre-lift literal, the text is captured, the ledger backs a "read
+// it aloud" claim.
+static void test_tts_spoken_on_the_speaker_is_recorded() {
+  Rec r;
+  ApplyDeps d = makeDeps(r, /*tts=*/true);
+  Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
+  t.reply = "I read it aloud for you.";
+  agent::ClaimCheck cc;
+  cc.beginTurn();
+  TEST_ASSERT_EQUAL_STRING("I read it aloud for you.", applyChecked(r, d, t, cc).c_str());
+  TEST_ASSERT_TRUE(LogCapture::contains("device[tts ]"));
+  TEST_ASSERT_EQUAL(1, cc.effects().countOk(nimbus::orch::FxKind::Speak));
+  TEST_ASSERT_EQUAL(2, (int)r.captured.size());   // the voiced line, then the reply
+  TEST_ASSERT_EQUAL_STRING("hello", r.captured[0].c_str());
+}
+
+// Volume 0: the speaker would play silence, so the action is NOT spoken: the sink is
+// never asked, nothing is captured as said, a "read it aloud" reply gets its correction
+// and the head learns why on its next turn.
+static void test_tts_at_volume_zero_is_not_spoken() {
+  Rec r;
+  r.volume = 0;
+  ApplyDeps d = makeDeps(r, /*tts=*/true);
+  Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
+  t.reply = "I read it aloud for you.";
+  agent::ClaimCheck cc;
+  cc.beginTurn();
+  const std::string out = applyChecked(r, d, t, cc);
+  TEST_ASSERT_EQUAL(0, (int)r.spoken.size());
+  TEST_ASSERT_TRUE(LogCapture::contains("tts(not-spoken: the speaker volume is 0, so speech would play as silence)"));
+  TEST_ASSERT_EQUAL_STRING("I read it aloud for you.\n\n(Correction: that was not spoken aloud.)", out.c_str());
+  TEST_ASSERT_EQUAL(0, cc.effects().countOk(nimbus::orch::FxKind::Speak));
+  TEST_ASSERT_EQUAL(1, cc.effects().countFailed(nimbus::orch::FxKind::Speak));
+  TEST_ASSERT_EQUAL(1, (int)r.captured.size());   // the reply row only: nothing was said aloud
+  TEST_ASSERT_EQUAL_STRING(out.c_str(), r.captured[0].c_str());
+  TEST_ASSERT_TRUE(r.pendingMem.find("[DEVICE] tts was not spoken: the speaker volume is 0") !=
+                   std::string::npos);
+  // Counter-test: the volume the same turn raised first is read live, and then it speaks.
+  Rec r2;
+  r2.volume = 0;
+  ApplyDeps d2 = makeDeps(r2, /*tts=*/true);
+  d2.execConfig = [&r2](const ValidatedAction& va) {
+    if (va.hasSfxVol) r2.volume = va.sfxVol;
+    return true;
+  };
+  Turn t2;
+  nimbus::orch::DeviceAction raise, say;
+  raise.json = "{\"type\":\"config\",\"sfxVol\":40}";
+  say.json = "{\"type\":\"tts\",\"text\":\"hello\"}";
+  t2.device = {raise, say};
+  ApplyState st2 = makeState(r2);
+  bool spawned = false;
+  agent::applyTurn(t2, "1001", d2, st2, spawned);
+  TEST_ASSERT_EQUAL(1, (int)r2.spoken.size());
+}
+
+// The sink says it could not voice the text (speaker fault, synthesis failed, Telegram
+// refused): the same treatment, with the sink's reason.
+static void test_tts_sink_failure_is_not_spoken() {
+  Rec r;
+  r.speakAnswer = nimbus::orch::SpeakOutcome::failed("text-to-speech failed: the voice provider is paused");
+  ApplyDeps d = makeDeps(r, /*tts=*/true);
+  Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
+  t.reply = "Spoken.";
+  agent::ClaimCheck cc;
+  cc.beginTurn();
+  const std::string out = applyChecked(r, d, t, cc);
+  TEST_ASSERT_EQUAL(1, (int)r.spoken.size());
+  TEST_ASSERT_EQUAL_STRING("Spoken.\n\n(Correction: that was not spoken aloud.)", out.c_str());
+  TEST_ASSERT_TRUE(LogCapture::contains("tts(not-spoken: text-to-speech failed: the voice provider is paused)"));
+  TEST_ASSERT_EQUAL(1, (int)r.captured.size());
+  // A sink that gives no reason, and one that gives a long multi-line one, stay bounded
+  // and readable.
+  Rec r2;
+  r2.speakAnswer = nimbus::orch::SpeakOutcome::failed("");
+  ApplyDeps d2 = makeDeps(r2, /*tts=*/true);
+  ApplyState st2 = makeState(r2);
+  bool spawned = false;
+  agent::applyTurn(turnWithDevice("{\"tts\":\"hello\"}"), "1001", d2, st2, spawned);
+  TEST_ASSERT_TRUE(LogCapture::contains("tts(not-spoken: no reason was given)"));
+  Rec r3;
+  r3.speakAnswer = nimbus::orch::SpeakOutcome::failed(std::string("line one\nline two ") + std::string(300, 'z'));
+  ApplyDeps d3 = makeDeps(r3, /*tts=*/true);
+  ApplyState st3 = makeState(r3);
+  agent::applyTurn(turnWithDevice("{\"tts\":\"hello\"}"), "1001", d3, st3, spawned);
+  TEST_ASSERT_TRUE(LogCapture::contains("tts(not-spoken: line one line two zzzz"));
+  TEST_ASSERT_TRUE(r3.pendingMem.size() < 300);
+}
+
+// The fallback: the speaker could not play it and Telegram delivered a voice message
+// with a message id. The ledger holds a receipted voice send (not a Speak), so "voice
+// message sent" and "read it aloud" are both backed, and the history keeps what arrived.
+static void test_tts_delivered_to_telegram_carries_the_receipt() {
+  const char* replies[] = {"I sent you a voice message.", "I read it aloud for you."};
+  for (const char* reply : replies) {
+    Rec r;
+    r.speakAnswer = nimbus::orch::SpeakOutcome::delivered("41", "hello there");
+    ApplyDeps d = makeDeps(r, /*tts=*/true);
+    Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
+    t.reply = reply;
+    agent::ClaimCheck cc;
+    cc.beginTurn();
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(reply, applyChecked(r, d, t, cc).c_str(), reply);
+    TEST_ASSERT_TRUE(LogCapture::contains("tts(telegram message_id 41)"));
+    TEST_ASSERT_TRUE(nimbus::orch::voiceDelivered(cc.effects()));
+    TEST_ASSERT_EQUAL(0, cc.effects().countOk(nimbus::orch::FxKind::Speak));
+    TEST_ASSERT_EQUAL_STRING("hello there", r.captured[0].c_str());
+  }
+  // A sink that says Telegram but gives no id is not a delivery.
+  Rec r;
+  r.speakAnswer = nimbus::orch::SpeakOutcome::delivered("", "hello");
+  ApplyDeps d = makeDeps(r, /*tts=*/true);
+  Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
+  t.reply = "I sent you a voice message.";
+  agent::ClaimCheck cc;
+  cc.beginTurn();
+  const std::string out = applyChecked(r, d, t, cc);
+  TEST_ASSERT_TRUE(out.find("(Correction: no voice message was delivered.)") != std::string::npos);
+  TEST_ASSERT_EQUAL(1, (int)r.captured.size());
+}
+
+// Each claim is held against what happened. Speech on the speaker backs "read it aloud" but
+// not "I sent you a voice message" (no receipt); a Telegram voice message with its receipt
+// backs both; nothing delivered backs neither.
+static void test_tts_voice_claims_are_checked_against_what_happened() {
+  struct Row { const char* reply; bool spoken; bool telegram; const char* line; };
+  const Row rows[] = {
+      {"I sent you a voice message.", true, false, "(Correction: no voice message was delivered.)"},
+      {"I read it aloud.", true, false, ""},
+      {"I read it aloud.", false, true, ""},
+      {"I sent you a voice message.", false, true, ""},
+      {"I read it aloud.", false, false, "(Correction: that was not spoken aloud.)"},
+      {"I sent you a voice message.", false, false, "(Correction: no voice message was delivered.)"},
+  };
+  for (const Row& row : rows) {
+    Rec r;
+    r.speakAnswer = row.spoken ? nimbus::orch::SpeakOutcome::spoke()
+                    : row.telegram ? nimbus::orch::SpeakOutcome::delivered("7")
+                                   : nimbus::orch::SpeakOutcome::failed("the speaker is marked faulty");
+    ApplyDeps d = makeDeps(r, /*tts=*/true);
+    Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
+    t.reply = row.reply;
+    agent::ClaimCheck cc;
+    cc.beginTurn();
+    const std::string out = applyChecked(r, d, t, cc);
+    const std::string want = std::string(row.reply) + (row.line[0] ? std::string("\n\n") + row.line : "");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), out.c_str(), row.reply);
+  }
+}
+
+// The fallback went out but Telegram never confirmed it (HTTP 0, an unreadable answer): the
+// voice message may have arrived, so the spoken claim gets the "not confirmed" line, not "was
+// not spoken", and a claim that a voice message was sent gets the same line.
+static void test_tts_fallback_that_telegram_did_not_confirm_may_have_arrived() {
+  const char* replies[] = {"I read it aloud for you.", "I sent you a voice message."};
+  for (const char* reply : replies) {
+    Rec r;
+    r.speakAnswer = nimbus::orch::SpeakOutcome::failed(
+        "the speaker is marked faulty; Telegram sent no confirmation (HTTP 0)", /*unconfirmed=*/true);
+    ApplyDeps d = makeDeps(r, /*tts=*/true);
+    Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
+    t.reply = reply;
+    agent::ClaimCheck cc;
+    cc.beginTurn();
+    const std::string out = applyChecked(r, d, t, cc);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(
+        (std::string(reply) + "\n\n(Note: Telegram did not confirm the voice message, so it may not have arrived.)")
+            .c_str(),
+        out.c_str(), reply);
+  }
+  // A refused upload says it did not arrive: "was not spoken".
+  Rec r;
+  r.speakAnswer = nimbus::orch::SpeakOutcome::failed(
+      "the speaker is marked faulty; the Telegram voice message did not arrive: Telegram did not accept it "
+      "(Bad Request: chat not found)");
+  ApplyDeps d = makeDeps(r, /*tts=*/true);
+  Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
+  t.reply = "I read it aloud for you.";
+  agent::ClaimCheck cc;
+  cc.beginTurn();
+  TEST_ASSERT_EQUAL_STRING("I read it aloud for you.\n\n(Correction: that was not spoken aloud.)",
+                           applyChecked(r, d, t, cc).c_str());
+}
+
+// The unconfirmed state rides a flag and the summary leads with a fixed phrase: a long speaker
+// reason can never push the marker past the summary's length cap, and the ledger still holds
+// the failed unconfirmed voice send.
+static void test_tts_unconfirmed_survives_a_long_reason() {
+  Rec r;
+  r.speakAnswer = nimbus::orch::SpeakOutcome::failed(
+      std::string("text-to-speech failed: truncated at 543843 B (the speech audio did not arrive whole) and ") +
+          std::string(200, 'x'),
+      /*unconfirmed=*/true);
+  ApplyDeps d = makeDeps(r, /*tts=*/true);
+  Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
+  t.reply = "I read it aloud for you.";
+  agent::ClaimCheck cc;
+  cc.beginTurn();
+  const std::string out = applyChecked(r, d, t, cc);
+  TEST_ASSERT_TRUE(out.find("(Note: Telegram did not confirm the voice message, so it may not have arrived.)") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(LogCapture::contains("tts(not-spoken: the Telegram voice message may not have arrived; "));
+}
+
+// The sink is told which chat the turn is in, so the Telegram fallback can go there (a guest's
+// request is never voiced into the owner's chat). The mid-turn device.control path passes it too.
+static void test_tts_is_asked_for_the_turns_chat() {
+  Rec r;
+  ApplyDeps d = makeDeps(r, /*tts=*/true);
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  agent::applyTurn(turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}"), "1001", d, st, spawned);
+  agent::applyDeviceElement("{\"type\":\"tts\",\"text\":\"again\"}", false, "web", d, nullptr);
+  TEST_ASSERT_EQUAL(2, (int)r.spokenChats.size());
+  TEST_ASSERT_EQUAL_STRING("1001", r.spokenChats[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("web", r.spokenChats[1].c_str());
+}
+
+// A routine that speaks at volume 0 was silent before and stays silent: the text of an
+// unattended turn is not pushed to Telegram in place of the speech (the head still hears of it).
+static void test_a_scheduled_tts_that_was_not_spoken_stays_quiet() {
+  Rec r;
+  r.volume = 0;
+  ApplyDeps d = makeDeps(r, /*tts=*/true);
+  ApplyState st = makeState(r, /*scheduled=*/true);
+  bool spawned = false;
+  agent::applyTurn(turnWithDevice("{\"type\":\"tts\",\"text\":\"The kettle is ready.\"}"), "1001", d, st,
+                   spawned);
+  TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
+  TEST_ASSERT_TRUE(r.pendingMem.find("[DEVICE] tts was not spoken") != std::string::npos);
+}
+
+// A turn whose only output was a tts that was not spoken would end in silence: the text
+// is delivered with the reason. With a reply of its own, the reply stands (and gets the
+// claim line only when it claims).
+static void test_tts_only_turn_that_was_not_spoken_delivers_the_text() {
+  Rec r;
+  r.volume = 0;
+  ApplyDeps d = makeDeps(r, /*tts=*/true);
+  d.principalFor = [](const std::string& chat) {   // the owner's chat
+    return nimbus::orch::principalForRole(chat, nimbus::orch::Role::Admin);
+  };
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  agent::applyTurn(turnWithDevice("{\"type\":\"tts\",\"text\":\"The kettle is ready.\"}"), "1001", d, st,
+                   spawned);
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_TRUE(r.delivered[0].second.find("The kettle is ready.") != std::string::npos);
+  TEST_ASSERT_TRUE(r.delivered[0].second.find("could not be spoken aloud: the speaker volume is 0") !=
+                   std::string::npos);
+  // History holds what the owner got in its place (the next turn can answer "what did you say?").
+  TEST_ASSERT_EQUAL(1, (int)r.captured.size());
+  TEST_ASSERT_EQUAL_STRING(r.delivered[0].second.c_str(), r.captured[0].c_str());
+  TEST_ASSERT_TRUE(r.delivered[0].second.rfind("The kettle is ready.", 0) == 0);   // no stray leading newline
+  // Anyone else's chat never reaches the speaker (the device.tts rule), but a tts-only turn still
+  // answers: the text, the rule's own line, and none of the device's reasons.
+  for (const char* chat : {"2002", "3003", "7788"}) {
+    Rec guest;
+    guest.volume = 0;
+    ApplyDeps dGuest = makeDeps(guest, /*tts=*/true);
+    ApplyState stGuest = makeState(guest);
+    agent::applyTurn(turnWithDevice("{\"type\":\"tts\",\"text\":\"The kettle is ready.\"}"), chat, dGuest,
+                     stGuest, spawned);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)guest.spokenChats.size(), chat);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)guest.delivered.size(), chat);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("The kettle is ready.\nOnly the device's owner can speak aloud on the device.",
+                                     guest.delivered[0].second.c_str(), chat);
+    TEST_ASSERT_TRUE_MESSAGE(guest.delivered[0].second.find("volume") == std::string::npos, chat);
+    // A routine's refusal still tells nobody the text, and a reply is not doubled.
+    Rec busy;
+    ApplyDeps dBusy = makeDeps(busy, /*tts=*/true);
+    ApplyState stBusy = makeState(busy);
+    Turn withReply = turnWithDevice("{\"type\":\"tts\",\"text\":\"The kettle is ready.\"}");
+    withReply.reply = "It is ready.";
+    agent::applyTurn(withReply, chat, dBusy, stBusy, spawned);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("It is ready.\nOnly the device's owner can speak aloud on the device.",
+                                     busy.delivered[0].second.c_str(), chat);
+  }
+  // Voice replies switched off keep the owner's ruling: a silent no-op, no text injected -
+  // and an owner chat that got nothing still hears the empty-answer line, not silence
+  // (lane MG: an empty answer is honest on every channel).
+  Rec off;
+  ApplyDeps dOff = makeDeps(off, /*tts=*/false);
+  ApplyState stOff = makeState(off);
+  agent::applyTurn(turnWithDevice("{\"type\":\"tts\",\"text\":\"The kettle is ready.\"}"), "1001", dOff,
+                   stOff, spawned);
+  TEST_ASSERT_EQUAL(1, (int)off.delivered.size());
+  TEST_ASSERT_EQUAL_STRING(agent::kEmptyAnswer, off.delivered[0].second.c_str());
+}
+
+// Independent review: the text of a failed tts-only turn goes out as the turn's message, so it is
+// checked like a reply. The same words in t.reply get the same correction.
+static void test_the_text_of_a_failed_tts_only_turn_gets_the_claim_check() {
+  const std::string note = "\n\n(Note: that could not be spoken aloud: the speaker volume is 0, so speech would play as silence.)";
+  const std::string rule = "\nOnly the device's owner can speak aloud on the device.";
+  const std::string unsaved = "\n\n(Correction: that has not been saved.)";
+  const std::string unspoken = "\n\n(Correction: that was not spoken aloud.)";
+  struct Row { const char* chat; const char* text; std::string want; };
+  const Row rows[] = {
+      {"1001", "Done, I saved that to your memory.", "Done, I saved that to your memory." + note + unsaved},
+      {"2002", "Done, I saved that to your memory.", "Done, I saved that to your memory." + rule + unsaved},
+      {"1001", "The kettle is ready.", "The kettle is ready." + note},
+      // The claim line already says it was not spoken: no second note, as beside a reply.
+      {"1001", "I read it aloud for you.", "I read it aloud for you." + unspoken},
+  };
+  for (const Row& row : rows) {
+    Rec r;
+    r.volume = 0;
+    ApplyDeps d = makeDeps(r, /*tts=*/true);
+    const std::string json = std::string("{\"type\":\"tts\",\"text\":\"") + row.text + "\"}";
+    agent::ClaimCheck cc;
+    cc.beginTurn();
+    ApplyState st = makeState(r);
+    st.claims = &cc;
+    bool spawned = false;
+    agent::applyTurn(turnWithDevice(json.c_str()), row.chat, d, st, spawned);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), row.text);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(row.want.c_str(), r.delivered[0].second.c_str(), row.text);
+    // History holds what arrived, the riders of the turn's message included.
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.captured.size(), row.text);
+    TEST_ASSERT_TRUE_MESSAGE(r.captured[0].find(row.text) == 0, row.text);
+    TEST_ASSERT_EQUAL_MESSAGE(row.want.find("Correction") != std::string::npos,
+                              r.captured[0].find("Correction") != std::string::npos, row.text);
+  }
+}
+
+// Merge review: a failed tts beside a reply reaches the owner in the same turn whatever the reply
+// says or which language it is in (the claim check only knows a few English phrasings). The note
+// is plain; the reason is for the owner's chats. A claim line that already says it is not repeated.
+static void test_a_failed_tts_beside_any_reply_tells_the_owner() {
+  const char* replies[] = {
+      "Playing it now.",                            // no cue at all
+      "Sure, here you go.",
+      "Je l'ai lu \xC3\xA0 voix haute pour toi.",      // not English
+      "\xE5\xB7\xB2\xE7\xBB\x8F\xE8\xAF\xBB\xE7\xBB\x99\xE4\xBD\xA0\xE5\x90\xAC\xE4\xBA\x86\xE3\x80\x82",   // Chinese
+      "The kettle is ready.",                       // claims nothing
+  };
+  for (const char* reply : replies) {
+    Rec r;
+    r.volume = 0;
+    ApplyDeps d = makeDeps(r, /*tts=*/true);
+    Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"The kettle is ready.\"}");
+    t.reply = reply;
+    agent::ClaimCheck cc;
+    cc.beginTurn();
+    const std::string out = applyChecked(r, d, t, cc);
+    const std::string want = std::string(reply) + "\n\n(Note: that could not be spoken aloud: the speaker "
+                                                  "volume is 0, so speech would play as silence.)";
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), out.c_str(), reply);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(out.c_str(), r.captured[0].c_str(), reply);   // history = what was delivered
+  }
+  // A reply that does claim it (in any of the claim check's wordings) gets the claim check's own
+  // line, and not a second note.
+  for (const char* claim : {"I read it aloud for you.", "Done, I said it out loud for you.",
+                            "I played it on the speaker."}) {
+    Rec r;
+    r.volume = 0;
+    ApplyDeps d = makeDeps(r, /*tts=*/true);
+    Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
+    t.reply = claim;
+    agent::ClaimCheck cc;
+    cc.beginTurn();
+    TEST_ASSERT_EQUAL_STRING_MESSAGE((std::string(claim) + "\n\n(Correction: that was not spoken aloud.)").c_str(),
+                                     applyChecked(r, d, t, cc).c_str(), claim);
+  }
+  // A question alone carries it too; a routine says nothing (it was silent before).
+  Rec ask;
+  ask.volume = 0;
+  ApplyDeps dAsk = makeDeps(ask, /*tts=*/true);
+  Turn tAsk = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
+  tAsk.ask = "Shall I read it again?";
+  ApplyState stAsk = makeState(ask);
+  bool spawned = false;
+  agent::applyTurn(tAsk, "1001", dAsk, stAsk, spawned);
+  TEST_ASSERT_EQUAL_STRING("Shall I read it again?\n\n(Note: that could not be spoken aloud: the speaker volume is 0, so speech would play as silence.)",
+                           ask.delivered[0].second.c_str());
+  Rec sched;
+  sched.volume = 0;
+  ApplyDeps dSched = makeDeps(sched, /*tts=*/true);
+  Turn tSched = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
+  tSched.reply = "Good morning.";
+  ApplyState stSched = makeState(sched, /*scheduled=*/true);
+  agent::applyTurn(tSched, "1001", dSched, stSched, spawned);
+  TEST_ASSERT_EQUAL_STRING("Good morning.", sched.delivered[0].second.c_str());
+}
+
+// What was said alone (a routine, a turn with nothing else) is never sent as a note of its own:
+// the shortened note rides a reply or ask and nothing else.
+static void test_the_shortened_note_never_goes_out_alone() {
+  const std::string longText(900, 'x');
+  const std::string json = "{\"tts\":\"" + longText + "\"}";
+  for (int scheduled = 0; scheduled < 2; scheduled++) {
+    Rec r;
+    ApplyDeps d = makeDeps(r, /*tts=*/true);
+    ApplyState st = makeState(r, scheduled != 0);
+    agent::ClaimCheck cc;   // the landed speak is recorded in the effects, so the turn counts as acted
+    st.claims = &cc;
+    bool spawned = false;
+    agent::applyTurn(turnWithDevice(json.c_str()), "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.spoken.size(), scheduled ? "scheduled" : "reply-less");
+    if (scheduled) {
+      // A routine tells nobody: the completion signal only.
+      TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
+      TEST_ASSERT_EQUAL(1, (int)r.turnCompletes.size());
+    } else {
+      // A reply-less turn that acted (it spoke) says so on the owner's channel - the
+      // shortened note rides no message of its own.
+      TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+      TEST_ASSERT_EQUAL_STRING(agent::kNoMessageAfterAction, r.delivered[0].second.c_str());
+      TEST_ASSERT_EQUAL(0, (int)r.turnCompletes.size());
+    }
+  }
+  Rec r;   // a routine's reply carries it: the reply goes out anyway
+  ApplyDeps d = makeDeps(r, /*tts=*/true);
+  ApplyState st = makeState(r, /*scheduled=*/true);
+  Turn t = turnWithDevice(json.c_str());
+  t.reply = "Briefing.";
+  bool spawned = false;
+  agent::applyTurn(t, "1001", d, st, spawned);
+  TEST_ASSERT_EQUAL_STRING("Briefing.\n\n(Note: the spoken version was shortened to the first 400 of its 900 "
+                           "characters.)",
+                           r.delivered[0].second.c_str());
+}
+
+// A failed tts never sends text the turn already sent with reply.telegram; a different text is not
+// taken for a duplicate (nothing is dropped). The head's next-turn line says what the owner got.
+static void test_a_failed_tts_does_not_resend_what_reply_telegram_sent() {
+  for (int same = 0; same < 2; same++) {
+    Rec r;
+    r.volume = 0;
+    ApplyDeps d = makeDeps(r, /*tts=*/true);
+    ApplyState st = makeState(r);
+    st.toolRepliedThisTurn = true;
+    st.toolReplyTexts.emplace_back(same ? "  The kettle\nis ready.  " : "Something else entirely.");
+    bool spawned = false;
+    agent::applyTurn(turnWithDevice("{\"type\":\"tts\",\"text\":\"The kettle is ready.\"}"), "1001", d, st,
+                     spawned);
+    if (same) {
+      TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
+      TEST_ASSERT_TRUE(r.pendingMem.find("the sender already has that text") != std::string::npos);
+    } else {
+      TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+      TEST_ASSERT_TRUE(r.delivered[0].second.rfind("The kettle is ready.", 0) == 0);
+      TEST_ASSERT_TRUE(r.pendingMem.find("its text was sent to the sender in writing") != std::string::npos);
+    }
   }
 }
 
@@ -1751,6 +2387,63 @@ static void test_rbac_an_unapproved_chat_starts_no_sub_agent() {
   }
 }
 
+// "Finished." is true only of an action that landed. Every attempted action below was
+// refused or changed nothing, so the owner hears that the answer was empty.
+static void test_a_refused_action_never_reads_as_finished() {
+  for (const char* chat : {"1001", "2002"}) {
+    for (const char* json : {"{\"reboot\":true}", "{\"type\":\"orch_model\",\"provider\":\"keyless\",\"model\":\"good-1\"}",
+                             "{\"type\":\"orch_model\",\"provider\":\"mistral\",\"model\":\"bad-1\"}"}) {
+      if (std::string(chat) == "1001" && std::string(json) == "{\"reboot\":true}") continue;   // the owner's lands
+      Rec r;
+      ApplyDeps d = makeDeps(r);
+      ApplyState st = makeState(r);
+      bool spawned = false;
+      agent::applyTurn(turnWithDevice(json), chat, d, st, spawned);
+      for (const auto& m : r.delivered)
+        TEST_ASSERT_TRUE_MESSAGE(m.second.find("Finished") == std::string::npos, json);
+    }
+  }
+  {  // Every write refused (the memory tool says no): no save happened.
+    Rec r;
+    r.memSuccess = false;
+    r.memCode = "refused";
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r);
+    Turn t;
+    nimbus::orch::MemWrite w;
+    w.content = "the cat is called Pixel";
+    t.mem_write.push_back(w);
+    bool spawned = false;
+    agent::applyTurn(t, "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+    TEST_ASSERT_EQUAL_STRING(agent::kEmptyAnswer, r.delivered[0].second.c_str());
+  }
+  {  // A host with no memory store: the same.
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    d.memDispatch = nullptr;
+    ApplyState st = makeState(r);
+    Turn t;
+    nimbus::orch::MemWrite w;
+    w.content = "the cat is called Pixel";
+    t.mem_write.push_back(w);
+    bool spawned = false;
+    agent::applyTurn(t, "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+    TEST_ASSERT_EQUAL_STRING(agent::kEmptyAnswer, r.delivered[0].second.c_str());
+  }
+  {  // The counter-test: an owner's reboot lands, and that is finished.
+    Rec r;
+    ApplyDeps d = makeDeps(r);
+    ApplyState st = makeState(r);
+    bool spawned = false;
+    agent::applyTurn(turnWithDevice("{\"reboot\":true}"), "1001", d, st, spawned);
+    TEST_ASSERT_EQUAL(1, (int)r.staged.size());
+    TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+    TEST_ASSERT_EQUAL_STRING(agent::kNoMessageAfterAction, r.delivered[0].second.c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_scheduled_turn_refuses_reboot);
@@ -1760,10 +2453,27 @@ int main(int, char**) {
   RUN_TEST(test_risk_note_delivered_even_without_reply);
   RUN_TEST(test_protected_config_never_reaches_exec);
   RUN_TEST(test_tts_action_gated_by_owner_toggle);
-  RUN_TEST(test_tts_text_bounded_400);
+  RUN_TEST(test_tts_text_over_the_bound_is_cut_and_said);
+  RUN_TEST(test_tts_cut_never_splits_a_character);
+  RUN_TEST(test_tts_cut_prefers_a_sentence_end);
+  RUN_TEST(test_tts_spoken_on_the_speaker_is_recorded);
+  RUN_TEST(test_tts_at_volume_zero_is_not_spoken);
+  RUN_TEST(test_tts_sink_failure_is_not_spoken);
+  RUN_TEST(test_tts_delivered_to_telegram_carries_the_receipt);
+  RUN_TEST(test_tts_voice_claims_are_checked_against_what_happened);
+  RUN_TEST(test_tts_fallback_that_telegram_did_not_confirm_may_have_arrived);
+  RUN_TEST(test_tts_unconfirmed_survives_a_long_reason);
+  RUN_TEST(test_tts_is_asked_for_the_turns_chat);
+  RUN_TEST(test_a_scheduled_tts_that_was_not_spoken_stays_quiet);
+  RUN_TEST(test_tts_only_turn_that_was_not_spoken_delivers_the_text);
+  RUN_TEST(test_the_text_of_a_failed_tts_only_turn_gets_the_claim_check);
+  RUN_TEST(test_a_failed_tts_beside_any_reply_tells_the_owner);
+  RUN_TEST(test_the_shortened_note_never_goes_out_alone);
+  RUN_TEST(test_a_failed_tts_does_not_resend_what_reply_telegram_sent);
   RUN_TEST(test_orch_model_valid_and_keyed_applies);
   RUN_TEST(test_orch_model_invalid_model_refused);
   RUN_TEST(test_orch_model_keyless_provider_refused);
+  RUN_TEST(test_picking_mistral_small_says_what_it_is_for);
   RUN_TEST(test_orch_model_does_not_move_a_paused_head);
   RUN_TEST(test_a_paused_head_moves_only_on_the_owners_explicit_second_ask);
   RUN_TEST(test_lumis_sequence_never_moves_the_head);
@@ -1774,7 +2484,11 @@ int main(int, char**) {
   RUN_TEST(test_lane_l_an_ask_the_reply_already_ends_with_is_not_repeated);
   RUN_TEST(test_mem_write_is_stored_before_the_reply_is_delivered);
   RUN_TEST(test_tell_poll_nudge_does_not_mention_await);
-  RUN_TEST(test_empty_turn_signals_completion_not_done);
+  RUN_TEST(test_empty_turn_never_reads_as_done);
+  RUN_TEST(test_empty_turn_stays_silent_when_nobody_waits);
+  RUN_TEST(test_a_lookup_alone_is_not_an_action);
+  RUN_TEST(test_turn_that_acted_says_so_without_inventing_done);
+  RUN_TEST(test_background_turn_signals_completion_only);
   RUN_TEST(test_completion_suppressed_after_spawn);
   RUN_TEST(test_spawn_quiet_flag_tracks_scheduled_turn);
   RUN_TEST(test_done_suppressed_after_spawn_or_tool_reply);
@@ -1810,6 +2524,7 @@ int main(int, char**) {
   RUN_TEST(test_rbac_only_the_owners_turn_raises_the_needs_you_light);
   RUN_TEST(test_rbac_a_refused_action_backs_no_claim);
   RUN_TEST(test_rbac_an_unapproved_chat_starts_no_sub_agent);
+  RUN_TEST(test_a_refused_action_never_reads_as_finished);
   UNITY_END();
   return 0;
 }

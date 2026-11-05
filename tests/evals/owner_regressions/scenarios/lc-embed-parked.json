@@ -1,0 +1,16 @@
+{
+  "id": "lc-embed-parked",
+  "title": "A memory write lands, never stuck waiting",
+  "rows": ["OIR-46"],
+  "replays": "The 28 Oct to 1 Nov class: the memory queue was stuck at 64 with waiting text while one provider's embedding cap parked every write.",
+  "clock": "{{TODAY}} {{DOW}} 14:30 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "say", "text": "Remember: my printer is a Lexmark B3442."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "memory_contains", "params": {"text": "Lexmark"}}
+  ]
+}

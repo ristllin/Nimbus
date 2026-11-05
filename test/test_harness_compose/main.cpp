@@ -217,6 +217,47 @@ static void test_standing_rules_block_presence() {
   TEST_ASSERT_EQUAL_STRING(a.c_str(), agent::composeInstructions(b).c_str());
 }
 
+// Lane POL2: the open-questions band and the owner-voice rule. The band rides
+// the same never-dropped directive band as the standing rules; a fresh device
+// (no items) is byte-identical to before the lane - the goldens pin that.
+static void test_open_questions_band_and_owner_voice_rule() {
+  // With items: the band is present, framed after the standing rules, whole
+  // (both items, the raised tag included).
+  ComposeInputs in = cannedInputs();
+  in.standingPrefs = "- (p1) Never use em dashes anywhere.";
+  in.openQuestions =
+      "- (q1) Photograph the skyr pot label next time\n"
+      "- (q2) Check the shed roof [raised: do not raise it again unless the owner returns to it]";
+  const std::string p = agent::composeInstructions(in);
+  TEST_ASSERT_TRUE(p.find("[OPEN QUESTIONS") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("- (q1) Photograph the skyr pot label next time") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("[raised") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("[STANDING RULES") < p.find("[OPEN QUESTIONS - things the owner left open"));
+  TEST_ASSERT_TRUE(p.find("at most once") != std::string::npos);
+  // Never dropped under budget pressure (the same band as the standing rules).
+  ComposeInputs starved = in;
+  starved.budgetBytes = 2048;
+  TEST_ASSERT_TRUE(agent::composeInstructions(starved).find("[OPEN QUESTIONS") != std::string::npos);
+  // Fresh device (no items): the band hides and the output is byte-identical.
+  ComposeInputs a = cannedInputs();
+  ComposeInputs b = cannedInputs();
+  b.openQuestions.clear();
+  TEST_ASSERT_EQUAL_STRING(agent::composeInstructions(a).c_str(), agent::composeInstructions(b).c_str());
+  TEST_ASSERT_TRUE(agent::composeInstructions(cannedInputs()).find("[OPEN QUESTIONS - things") == std::string::npos);
+  // The owner-voice rule rides BOTH roles (v1 and v2): plain words only, no
+  // unprompted topics, primary sources behind time-sensitive briefs, and a
+  // short answer to a confused or frustrated owner.
+  for (int v2 = 0; v2 < 2; v2++) {
+    ComposeInputs r = cannedInputs();
+    r.promptV2 = v2 == 1;
+    const std::string role = agent::composeInstructions(r);
+    TEST_ASSERT_TRUE(role.find("No internal plumbing in a reply") != std::string::npos);
+    TEST_ASSERT_TRUE(role.find("cites the primary source") != std::string::npos);
+    TEST_ASSERT_TRUE(role.find("Never raise a topic the owner did not bring up") != std::string::npos);
+    TEST_ASSERT_TRUE(role.find("gets a short reply") != std::string::npos);
+  }
+}
+
 // N11: v1 must stay byte-identical when the flag is off (a default fleet is
 // untouched). The default golden IS composed with promptV2=false.
 static void test_prompt_v2_flag_off_is_v1() {
@@ -722,6 +763,7 @@ int main(int, char**) {
   RUN_TEST(test_prompt_golden_with_recall_loop_off);
   RUN_TEST(test_prompt_golden_v2_default);
   RUN_TEST(test_standing_rules_block_presence);
+  RUN_TEST(test_open_questions_band_and_owner_voice_rule);
   RUN_TEST(test_prompt_v2_flag_off_is_v1);
   RUN_TEST(test_prompt_v2_is_smaller);
   RUN_TEST(test_prompt_v2_names_every_field);

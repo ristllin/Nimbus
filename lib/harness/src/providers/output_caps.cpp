@@ -13,6 +13,8 @@ namespace {
 
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
 uint32_t g_testFirstAttemptCap = 0;   // test and host builds only (setTestFirstAttemptCap)
+int g_testCutRounds = 0;              // ... (setTestCutRounds)
+uint32_t g_testCutTokens = 0;
 #endif
 
 // A Claude id's line and version: "claude-opus-4-5" -> ("opus", 45),
@@ -65,15 +67,32 @@ OutputCap anthropicCap(const std::string& model, RoundKind kind) {
 
 OutputCap mistralCap(const std::string& model) {
   OutputCap c;
-  // About 60 s of output at the slowest measured Mistral rate (65 tok/s, Lumi
-  // 13-14 Oct), inside the 120 s round ceiling; the retry gets half again.
-  c.maxTokens = 4096;
-  c.retryTokens = 6144;
-  // A head round answers; it does not reason (Mistral documents "high" and
-  // "none"). Only models that take the field get it, and the cut retry keeps it.
-  const bool effort = mistralTakesEffort(model);
-  c.effort = effort ? "none" : "";
+  // A model that thinks spends its output budget on it, and a cut ends the turn badly.
+  // Measured live 1 Nov: Large 4 at "low" wrote a 1,800-token guide in 18 s, and with no
+  // effort field it was cut at 4,000. The time clamp below holds these inside the 60 s
+  // at which Mistral's gateway closes a request (kMistralRoundMs), so a real round gets
+  // less than these figures: test_mistral_caps_are_the_documented_numbers pins what it gets.
+  const std::string m = startsWith(model, "mistral/") ? model.substr(8) : model;
+  const bool fast = startsWith(m, "mistral-large-4") || startsWith(m, "mistral-small") ||
+                    startsWith(m, "mistral-medium") || startsWith(m, "magistral-");
+  c.maxTokens = fast ? 6000 : 4096;
+  c.retryTokens = fast ? 12000 : 6144;
+  // Only models that take the field get it, at the lowest value each takes, and the cut
+  // retry keeps it.
+  c.effort = mistralHeadEffort(model);
   c.retryEffort = c.effort;
+  return c;
+}
+
+// GLM always reasons and Z.ai's gateway closes a request at 60 s (60.6 s, no response,
+// both GLM models, 1 Nov). Measured 61 to 73 tok/s, so about 2,400 tokens fit a round of
+// 50 s, and the retry after a cut keeps a little more.
+OutputCap zaiCap() {
+  OutputCap c;
+  c.maxTokens = 2400;
+  c.retryTokens = 3000;
+  c.effort = "low";
+  c.retryEffort = "low";
   return c;
 }
 
@@ -105,6 +124,14 @@ void clampToTime(OutputCap& c, uint32_t roundMs, uint32_t rate) {
 }
 
 }  // namespace
+
+const char* modelFitNote(const std::string& provider, const std::string& model) {
+  if (provider != "mistral" && provider != "cumulo") return "";
+  const std::string m = startsWith(model, "mistral/") ? model.substr(8) : model;
+  if (!startsWith(m, "mistral-small")) return "";
+  return "Mistral Small is quick and cheap for chat, but it can say a file was changed without changing it and "
+         "it stalls on food math. For daily use, pick Mistral Large 4.";
+}
 
 const char* roundKindSlug(RoundKind k) {
   switch (k) {
@@ -141,6 +168,26 @@ bool mistralTakesEffort(const std::string& model) {
   return false;
 }
 
+const char* mistralHeadEffort(const std::string& model) {
+  if (!mistralTakesEffort(model)) return "";
+  const std::string m = startsWith(model, "mistral/") ? model.substr(8) : model;
+  // These refuse "none" with 400 code 3051 and list low, medium and high (recorded
+  // 1 Nov). With the field dropped they think at their default and get cut.
+  for (const char* p : {"mistral-large-4", "zai-glm", "glm-"})
+    if (startsWith(m, p)) return "low";
+  return "none";   // every other reasoning model refuses "low" (the same recording)
+}
+
+const char* sameHostNonReasoningModel(const std::string& host, const std::string& model) {
+  if (host != "mistral") return "";
+  const std::string m = startsWith(model, "mistral/") ? model.substr(8) : model;
+  // Only Large 4 is forced to reason (it refuses effort "none"); every other Mistral
+  // head runs at "none", so a cut there is a long answer, not reasoning, and the next
+  // provider - not a smaller same-provider model - is the right escape.
+  if (!startsWith(m, "mistral-large-4")) return "";
+  return "mistral-medium-latest";   // the default Mistral head, at effort "none"
+}
+
 uint32_t slowestTokensPerSecond(const std::string& host, const std::string& model) {
   // Floors about 25-30% under the rates measured live on 18 Oct over a whole
   // non-streamed request (evidence/rate-probe.json in the lane notes): Haiku 5.5
@@ -155,10 +202,12 @@ uint32_t slowestTokensPerSecond(const std::string& host, const std::string& mode
     return 40;   // fable, mythos, unknown: the slowest tier
   }
   if (host == "mistral") {
-    if (startsWith(model, "mistral-small") || startsWith(model, "ministral")) return 90;
-    if (startsWith(model, "mistral-medium")) return 70;
+    if (startsWith(model, "mistral-small") || startsWith(model, "ministral")) return 130;   // 156 to 198, 1 Nov
+    if (startsWith(model, "mistral-medium")) return 130;   // 196, 1 Nov
+    if (startsWith(model, "mistral-large-4")) return 100;   // 101 to 210, 1 Nov
     return 55;
   }
+  if (host == "zai") return 60;   // 61 to 73, 1 Nov
   return 50;
 }
 
@@ -167,13 +216,19 @@ OutputCap outputCapFor(const std::string& host, const std::string& model, RoundK
   OutputCap c;
   if (host == "anthropic") c = anthropicCap(model, kind);
   else if (host == "mistral") c = mistralCap(model);
+  else if (host == "zai") c = zaiCap();
   // OpenAI: no max_output_tokens - reasoning tokens count toward it and would
   // starve the answer; completeness is read from status:"incomplete" instead.
-  // Custom / Z.ai: the head sends no cap either; finish_reason "length" is read.
+  // Custom: the head sends no cap either; finish_reason "length" is read.
   else return c;
   clampToTime(c, roundMs, slowestTokensPerSecond(host, model));
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
   if (g_testFirstAttemptCap && c.maxTokens) c.maxTokens = g_testFirstAttemptCap;
+  if (g_testCutRounds > 0 && c.maxTokens) {
+    g_testCutRounds--;
+    c.maxTokens = g_testCutTokens;
+    c.retryTokens = g_testCutTokens + 16;   // a retry that differs, and is cut again
+  }
 #endif
   return c;
 }
@@ -184,6 +239,11 @@ bool setTestFirstAttemptCap(uint32_t tokens) {
   return true;
 }
 uint32_t testFirstAttemptCap() { return g_testFirstAttemptCap; }
+bool setTestCutRounds(int rounds, uint32_t tokens) {
+  g_testCutRounds = rounds;
+  g_testCutTokens = tokens;
+  return true;
+}
 #endif
 
 }  // namespace providers

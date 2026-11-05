@@ -8,7 +8,7 @@
 #include <mutex>
 #include <new>
 
-#include "nimbus/orch/model_catalog.h"  // cleanModelId - provider text is untrusted
+#include "nimbus/orch/model_catalog.h"  // cleanModelId (provider text is untrusted), isLatestAlias
 #include "nimbus/orch/model_key.h"      // kModelKeyCap - one model id's buffer
 #include "nimbus/orch/model_ledger.h"   // kProvKeyCap - one provider id's buffer
 
@@ -98,10 +98,14 @@ ServedModelNote lastServedModel() {
 
 std::string runsOnLine(const std::string& host, const std::string& asked, const std::string& concrete,
                        const std::string& headFact) {
+  const std::string shown = concrete.empty() ? asked : concrete;
   std::string line = "[THIS TURN RUNS ON] " + host;
-  if (!asked.empty()) line += " / " + (concrete.empty() ? asked : concrete);
+  if (!asked.empty()) line += " / " + shown;
   if (!asked.empty() && !concrete.empty() && concrete != asked) line += " (asked for " + asked + ")";
   line += ".";
+  // QW6: the device knows only a "-latest" alias (its provider's list does not name the model behind
+  // it yet), so nothing may fill the gap from memory (Lumi, 26 Oct: "Mistral Large 2").
+  if (isLatestAlias(shown)) line += std::string(" ") + kRunsOnAliasNote;
   if (headFact.empty()) return line + " When asked which model you run, name this one only.\n";
   return line + " " + headFact +
          " When asked which model you run, name this one and say why the chosen head is not running this turn.\n";

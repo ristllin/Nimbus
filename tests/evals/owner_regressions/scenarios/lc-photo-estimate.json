@@ -1,0 +1,17 @@
+{
+  "id": "lc-photo-estimate",
+  "title": "A photo estimate looks up the published value first",
+  "rows": ["OIR-26"],
+  "replays": "The 31 Oct class: a single bagel photo was estimated at 335 kcal against a published 457, with no lookup done first.",
+  "clock": "{{TODAY}} {{DOW}} 20:51 GMT",
+  "devName": "Nimbus",
+  "webSearch": true,
+  "steps": [
+    {"do": "say", "text": "Here is a photo of my lunch from Big City Deli: a single sesame bagel with cream cheese. Log it with a proper estimate."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "tool_called", "params": {"name": "web"}},
+    {"id": "ledger_contains_any", "params": {"any": ["bagel"]}}
+  ]
+}

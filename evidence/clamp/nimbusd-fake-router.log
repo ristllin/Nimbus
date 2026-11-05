@@ -1,0 +1,2667 @@
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_connectors
+=== connectors registry (T1, offline, CUM-424/425) ===
+    ok   patch upsert of a valid mcp entry saves
+    ok   GET view carries hasTok=true
+    ok   GET view NEVER contains the token
+    ok   GET view carries the entry fields
+    ok   patch with blank tok saves
+    ok   blank-tok patch preserved the stored secret
+    ok   the non-secret field DID update
+    ok   a private MCP URL is refused at save time
+    ok   the refused entry was not stored
+    ok   deleting a missing name is a no-op success
+    ok   delete by name succeeds
+    ok   the set is empty after delete
+    ok   a non-array blob is refused with the device error string
+    ok   an oversize blob is refused
+    ok   a valid blob replace saves
+    ok   a reload sees the persisted set
+    ok   the blob file is 0600 (it can carry pasted tokens)
+    ok   empty patch refused
+    ok   nameless patch refused
+    ok   patch: a token with a space inside is refused with the device sentence
+    ok   patch: a trailing line break from a copy is refused
+    ok   patch: a control byte inside is refused
+    ok   patch: spaces around a token are tolerated, as for a key
+    ok   (cleanup)
+    ok   blob: a token with a space inside is refused with the device sentence
+    ok   nothing refused was stored
+    ok   a clean token saves
+    ok   a blank token in a card edit is not checked (it keeps the stored one)
+    ok   the stored token is kept
+    ok   a three-entry blob (one disabled) saves
+    ok   parse yields every entry (enabled or not)
+    ok   bearer resolves the stored static token
+    ok   a builtin resolves no bearer
+    ok   openai attach carries the mcp entry with its server_label
+    ok   openai attach carries the bearer authorization
+    ok   a disabled entry never rides the wire
+    ok   mistral attach carries the builtin
+    ok   catalogText renders a block for a configured set
+    ok   zai selector routes to the zai upstream (no /v1)
+    ok   the router prices the bare model id
+    ok   a bare id keeps the openai upstream
+    ok   a bare id is sent unchanged
+
+42 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_control
+=== daemon control surface (T2, offline, loopback) ===
+    ok   control surface bound a loopback port
+    ok   GET /healthz -> 200 without a token
+    ok   /healthz body
+    ok   GET /api/state without a token -> 401
+    ok   GET /readyz with token -> 200 (engine running)
+    ok   GET /api/state with token -> 200
+    ok   state JSON carries the instance name
+    ok   state reports running
+    ok   POST /mcp tools/list -> 200
+    ok   the MCP tool list includes memory.write (engine dispatch worked)
+    ok   POST /api/message -> 202 (enqueued, not blocked on)
+    ok   GET /api/state still answers immediately (snapshot read)
+    ok   state reports provVerified:false (keyless instance, honest)
+    ok   state carries the honest Virtual Nimbus marker
+    ok   GET / -> 200 without a token (the app shell is ungated)
+    ok   / serves an HTML document
+    ok   / serves the REAL Nimbus web app (nav + Home pane), not the bare chat page
+    ok   the served page seeds this instance's web token (tunnel auto sign-in)
+    ok   the token seed is injected ahead of the app script
+    ok   GET /logo.svg -> 200 SVG (ungated brand mark)
+    ok   GET /index.html -> 200 HTML (alias of /)
+    ok   GET /api/replies without a token -> 401 (gated)
+    ok   GET /api/replies with token -> 200
+    ok   the recorded owner prompt is returned (role user, text hi)
+    ok   keyless instance reports providerConfigured:false (CUM-211 honest state)
+    ok   lastSeq advanced past the owner prompt
+    ok   after=<lastSeq> returns an empty replies set (seq filter works)
+    ok   a FormData device-only toggle -> 400
+    ok   refused by its real name, never the boundary line
+    ok   a FormData hosted field -> 200
+    ok   and it applies
+    ok   GET /backup with token -> 200
+    ok   the backup tar contains mem/vectors.bin
+    ok   GET /backup without a token -> 401 (gated)
+
+34 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_cumulo_key
+=== nimbusd Cumulo one-key path (CUM-286, offline) ===
+  -- (a) CUMULO_API_KEY set: health ok + router dispatch --
+    ok   the rig sees the Cumulo router key from env
+    ok   health input: a Cumulo-only instance IS provider-configured
+    ok   health Provider reads ok with only a Cumulo key
+    ok   the turn dispatched an HTTP request
+    ok   dispatch host is the fixed router base
+    ok   dispatch path carries the router prefix on OpenAI's native wire (/router/openai/v1/responses)
+    ok   the router bearer is the Cumulo key
+    ok   the router exchange is TLS
+    ok   with the loop off the router head is one call
+    ok   the turn produced a reply
+    ok   the router's reply was delivered to the owner
+  -- (b) no provider key: honest degraded --
+    ok   no Cumulo key present
+    ok   health input: a keyless instance is NOT provider-configured
+    ok   health Provider stays honestly degraded with no key
+  -- (c) BYOK + Cumulo: the direct provider wins --
+    ok   both a BYOK (Mistral) key and the Cumulo key are present
+    ok   the turn dispatched an HTTP request
+    ok   the keyed BYOK head wins - dispatch went to Mistral
+    ok   the router did NOT win while a BYOK key is present
+  -- (d) CUMULO_API_KEY set: the fold rides the router wire --
+    ok   the rig sees the Cumulo router key from env
+    ok   modelFor(cumulo) resolves the router default model, not empty
+    ok   canFoldNow() is true for a Cumulo-only instance
+    ok   the fold ladder has exactly the router head
+    ok   the fold candidate is the Cumulo router
+    ok   runFold succeeded on the router head
+    ok   the router's compaction reply became the summary
+    ok   the fold dispatched an HTTP request
+    ok   fold dispatch host is the fixed router base
+    ok   fold dispatch path carries the router prefix (/router/openai/v1)
+    ok   the fold's router bearer is the Cumulo key
+    ok   the fold exchange is TLS
+
+30 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_cumulo_keyed
+[nimbusd] verify cumulo: HTTP 200
+[nimbusd] verify cumulo: HTTP 200
+=== Cumulo key is a keyed provider (CUM-541, offline) ===
+  -- (a) a Cumulo-only head is told it has router models --
+    ok   the turn dispatched
+    ok   [AVAILABLE MODELS] lists the router with its model
+    ok   the head is never told it has no models
+  -- (b) a spawn with no provider runs on the router key --
+    ok   the head turn replied and spawned
+    ok   the spawn is not refused for want of a key
+    ok   the synthesis turn delivered the router sub's result
+    ok   three router calls: head, sub, synthesis
+    ok   the sub goes to the router host
+    ok   the sub runs the router model
+    ok   the sub carries the spawned task
+    ok   the sub's bearer is the Cumulo key
+    ok   the synthesis turn's window still carries the owner's request
+  -- (c) a keyed BYOK provider in the ladder still wins --
+    ok   both keys are seen
+    ok   the router is the LAST rung, after the configured order
+    ok   a keyed BYOK provider wins the default spawn
+  -- (d) a spawn naming openai on a Cumulo-only instance runs on the router --
+    ok   the head turn replied and spawned
+    ok   the synthesis turn delivered the router sub's result
+    ok   the spawn is not refused
+    ok   three router calls: head, sub, synthesis (none to api.openai.com)
+    ok   the sub goes to the router host
+    ok   on the router's openai upstream
+    ok   with the model the spawn named
+    ok   and the Cumulo key as the bearer
+  -- (d2) an anthropic model the router catalog lists runs on its Anthropic wire --
+    ok   the router catalog is harvested
+    ok   the router sub's result came back
+    ok   verify, head, sub, synthesis
+    ok   the sub runs on the router's Anthropic wire
+    ok   with the model the spawn named
+  -- (d3) a model neither a key nor the router offers is refused with the reason --
+    ok   the owner hears the real reason
+    ok   only the head turn: no keyless or unoffered sub request
+  -- (d4) a member naming anthropic runs the configured router sub model --
+    ok   the router catalog lists anthropic/claude-sonnet-4-6
+    ok   a member chat is approved
+    ok   the member's helper ran and reported
+    ok   on the configured router sub model's upstream
+    ok   the router sub model, never the anthropic model the member's provider named
+
+35 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_daemon_http
+=== daemon_http error-header capture (T2, loopback) ===
+    ok   (a) the refused Mistral head turn fails
+    ok   (a) the adapter's request reached the loopback server
+    ok   (a) the 429 carries its quota window from the x-ratelimit-* headers
+    ok   (a) the owner's reply names the window and its reset
+    ok   (b) execJson returns the 429
+    ok   (b) the body still parses
+    ok   (b) exactly the two prefixed headers, each once (no double capture)
+    ok   (b) name lowercased
+    ok   (b) value trimmed
+    ok   (b) a mixed-case name matches the prefix
+    ok   (b) a value with no space after the colon
+    ok   (c) a healthy response keeps no header
+    ok   (c) no prefix, nothing kept on a 429
+    ok   (c) a plain request on the reused handle gets its 429 and no headers
+    ok   (d) the flood arrives as a 429
+    ok   (d) the header count is capped
+    ok   (d) every kept name and value is capped in length
+    ok   (e) the final status is the 429
+    ok   (e) only the final block's header is kept
+    ok   (e) the window is the 429's, not the 1xx block's
+    ok   (f) a cut exchange fails
+    ok   (f) sent, then cut: "no response" (the run may have started)
+    ok   (f) a request past its deadline fails
+    ok   (f) sent, then the deadline: "no response" (got "Timeout was reached: no response")
+    ok   (f) a refused connection fails
+    ok   (f) nothing sent: "connect failed" (got "connect failed: Couldn't connect to server")
+    ok   (f) a send error mid-body: never fully left
+    ok   (f) a short upload: never fully left
+    ok   (f) a send error after the whole request went out (HTTP/2 frames mid-wait): it may have started
+    ok   (g) a Z.ai sub cut after its POST went out is Timeout (may have started)
+    ok   (g) the POST reached the server once
+    ok   (g) a sub whose connection was refused is Network (did not start)
+    ok   (h) the GETs share one kept-alive connection (the warm cache still works)
+    ok   (h) the cut POST reached the server exactly once (never re-sent)
+    ok   (h) the POST went out on a new connection, not the kept-alive one
+    ok   (h) the cut POST reads "no response" (got "Server returned nothing (no headers, no data): no response")
+    ok   (h) the gateway connection was warm before the sub
+    ok   (h) the Z.ai sub cut after its POST was sent once (billed once)
+    ok   (h) and it is Timeout (may have started), never respawned
+    ok   (i) a body past the bound is still an answer
+    ok   (i) and reading stopped at the bound
+    ok   (i) a body under the bound is whole
+
+42 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_hosted_files
+=== hosted files + not-yet-hosted surfaces (CUM-543, offline) ===
+  -- (a) upload, list, download, and the assistant can read it --
+    ok   the upload answers 200
+    ok   a binary upload answers 200
+    ok   the list counts both files
+    ok   the list names the upload
+    ok   the download answers 200
+    ok   the download is byte for byte (binary-safe)
+    ok   served as octet-stream (never rendered on the page origin)
+    ok   the assistant's files.read sees the uploaded file
+  -- (b) delete and delete-project --
+    ok   delete answers 200
+    ok   a missing file is a 404
+    ok   delete-project needs the confirm phrase
+    ok   delete-project removes the project's files
+    ok   the store is empty
+  -- (b2) files.delete removes the file, the bytes, and the index entry --
+    ok   the file is saved first
+    ok   the bytes are on the disk
+    ok   files.delete answers deleted
+    ok   the index entry is gone
+    ok   the bytes are gone from the disk
+    ok   deleting a missing file says so
+    ok   a traversal name is refused
+    ok   saved again for the member check
+    ok   a non-owner is refused
+    ok   the member's refusal deleted nothing
+  -- (c) a traversal name is refused --
+    ok   a '..' project is refused
+    ok   nothing was stored
+  -- one food log, the same receipt --
+    ok   a second food log is refused with the one to use
+    ok   a whole-file save of one too
+    ok   the keyed write answers with the device's receipt
+    ok   files.read {tail, sum} gives the day's total, a bare comma included
+  -- (d) a routine needs a schedule, and downloads refuse writes by name --
+    ok   a routine with no schedule is refused
+    ok   and the page reads why (x.error)
+    ok   a routine with no schedule was not stored
+    ok   /api/fetchq refuses a write
+  -- (e) a refused upload leaves no bytes on the disk --
+    ok   the store takes 256 files
+    ok   the 257th file is refused
+    ok   with the store's reason
+    ok   no bytes were written for it
+    ok   not even its project folder
+    ok   the list still counts 256
+    ok   replacing an existing file is not a new entry, so it still saves
+    ok   with the new bytes
+  -- (f) a keyed correction backs its claim --
+    ok   a new row reads as added: replaced 0 rows, added 1 row in food/food-log.csv
+- added 2026-10-30 'lunch'
+today's kcal (2026-11-04, UTC): 0 - no rows are dated 2026-11-04
+kcal on 2026-10-30: 300 from 1 row
+today's protein_g: 0 from 0 rows
+
+    ok   a row that only landed replaced nothing
+    ok   but it backs the log claim
+    ok   and it does not back a replace claim
+    ok   a keyed correction records a replacement: replaced 1 row, added 0 rows in food/food-log.csv
+- replaced 2026-10-30 'lunch' (was 300 kcal)
+today's kcal (2026-11-04, UTC): 0 - no rows are dated 2026-11-04
+kcal on 2026-10-30: 250 from 1 row
+today's protein_g: 0 from 0 rows
+
+    ok   and a landed log row
+    ok   the true replace claim draws no correction
+    ok   the true log claim draws no correction
+    ok   a re-send that changed nothing replaced nothing
+    ok   so a replace claim over it is corrected
+  -- (g) files.read refuses a binary file, by name and by content --
+    ok   refused in words: photo.png
+    ok   none of its bytes in the result: photo.png
+    ok   the tail view refuses it too: photo.png
+    ok   refused in words: disguised.txt
+    ok   none of its bytes in the result: disguised.txt
+    ok   the tail view refuses it too: disguised.txt
+    ok   refused in words: sound.mp3
+    ok   none of its bytes in the result: sound.mp3
+    ok   the tail view refuses it too: sound.mp3
+    ok   a text file with any other extension still reads
+    ok   UTF-8 text still reads
+    ok   the download still has its bytes
+
+63 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_hosted_prompt
+=== hosted prompt truth (CUM-542, offline) ===
+  -- every head: real clock, version, hosted identity --
+    ok   openai head: dispatched
+    ok   openai head: the prompt carries the real date
+    ok   openai head: the prompt carries the time of day
+    ok   openai head: never the unsynced-clock line
+    ok   openai head: the engine version
+    ok   openai head: the hosted identity
+    ok   openai head: no desk-device (ESP32) text
+    ok   openai head: never told it is offline
+    ok   openai head: no ring or screen claimed
+    ok   anthropic head: dispatched
+    ok   anthropic head: the prompt carries the real date
+    ok   anthropic head: the prompt carries the time of day
+    ok   anthropic head: never the unsynced-clock line
+    ok   anthropic head: the engine version
+    ok   anthropic head: the hosted identity
+    ok   anthropic head: no desk-device (ESP32) text
+    ok   anthropic head: never told it is offline
+    ok   anthropic head: no ring or screen claimed
+    ok   mistral head: dispatched
+    ok   mistral head: the prompt carries the real date
+    ok   mistral head: the prompt carries the time of day
+    ok   mistral head: never the unsynced-clock line
+    ok   mistral head: the engine version
+    ok   mistral head: the hosted identity
+    ok   mistral head: no desk-device (ESP32) text
+    ok   mistral head: never told it is offline
+    ok   mistral head: no ring or screen claimed
+    ok   cumulo head: dispatched
+    ok   cumulo head: the prompt carries the real date
+    ok   cumulo head: the prompt carries the time of day
+    ok   cumulo head: never the unsynced-clock line
+    ok   cumulo head: the engine version
+    ok   cumulo head: the hosted identity
+    ok   cumulo head: no desk-device (ESP32) text
+    ok   cumulo head: never told it is offline
+    ok   cumulo head: no ring or screen claimed
+    ok   zai head: dispatched
+    ok   zai head: the prompt carries the real date
+    ok   zai head: the prompt carries the time of day
+    ok   zai head: never the unsynced-clock line
+    ok   zai head: the engine version
+    ok   zai head: the hosted identity
+    ok   zai head: no desk-device (ESP32) text
+    ok   zai head: never told it is offline
+    ok   zai head: no ring or screen claimed
+  -- the prompt's clock follows the saved time zone --
+    ok   the zone saves
+    ok   the next turn's time of day is in the owner's zone
+  -- the VN turn reads today's food ledger --
+    ok   the ledger turn dispatched
+    ok   the ledger data block rides the VN turn
+    ok   the block names the owner's ledger file
+    ok   the header row rides
+    ok   the plain turn dispatched
+    ok   no ledger block without a ledger
+    ok   the member chat is approved
+    ok   the member turn dispatched
+    ok   an approved member's turn carries NO ledger data block
+    ok   none of the owner's ledger rows ride the member's turn
+    ok   the member's turn never names the owner's ledger file
+    ok   constructing the hosted rig turns the page alias on
+  -- a page message is the web UI, a Telegram message is Telegram --
+    ok   the page's message is accepted
+    ok   the page's turn dispatched
+    ok   [CHANNEL] names the web UI
+    ok   never Telegram for a page message
+    ok   a Telegram chat is approved
+    ok   the Telegram message ran a turn
+    ok   a real Telegram message still says Telegram
+  -- MISTRAL_API_KEY: a window refusal after a tool ran --
+    ok   the tool round, the refusal, the trimmed retry
+    ok   the owner gets the answer
+    ok   the retry says what it left out
+    ok   the retry still names the host it runs on
+    ok   the refitted prompt is the hosted one
+    ok   never the desk device's words
+  -- CUMULO_API_KEY: a window refusal after a tool ran --
+    ok   the tool round, the refusal, the trimmed retry
+    ok   the owner gets the answer
+    ok   the retry says what it left out
+    ok   the retry still names the host it runs on
+    ok   the refitted prompt is the hosted one
+    ok   never the desk device's words
+
+78 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_hosted_settings
+=== hosted settings apply or refuse (CUM-543, offline) ===
+  -- (a) orchHost applies, reads back, survives a restart, steers the next turn --
+    ok   POST orchHost=cumulo answers 200
+    ok   GET /api/orch reads it back
+    ok   the next turn runs on the pinned head (not Mistral)
+    ok   and answers
+    ok   the pin survives a restart (instance volume)
+  -- (b) provPrio / subPrio apply, sanitize, steer; empty is refused --
+    ok   provPrio applies
+    ok   subPrio applies
+    ok   provPrio reads back sanitized (unknown and repeats dropped)
+    ok   subPrio reads back
+    ok   an order with no known provider is refused
+    ok   and the stored order is untouched
+    ok   the next turn runs on the first keyed provider of the new order
+    ok   the sub-agent ladder follows subPrio
+  -- (c) devTz applies to the instance clock; a bad zone is refused --
+    ok   POST /api/config devTz answers 200
+    ok   /api/state clock.tz reads it back
+    ok   clock.local runs on UTC+3
+    ok   an unknown zone is refused
+    ok   with a sentence that says what to enter
+    ok   the stored zone is untouched
+    ok   a zoneinfo name applies
+    ok   blank (UTC) applies
+  -- (d) Clear conversation empties the next turn's window, keeps history --
+    ok   clearConv=1 answers 200
+    ok   two turns ran
+    ok   the cleared conversation is gone from the next turn
+    ok   the history itself is kept (searchable)
+  -- (e) /clear, /help and unknown commands never call the model --
+    ok   /clear explains and asks
+    ok   /clear yes clears
+    ok   /help lists the commands
+    ok   a routine command says where routines live
+    ok   a device command says it is not here
+    ok   an unknown command gets a fixed reply
+    ok   no command reached the model (nothing billed)
+    ok   the next turn starts after the /clear boundary
+  -- (f) the directive reaches the next turn; too long is refused --
+    ok   sysPrompt applies
+    ok   GET reads it back
+    ok   a directive over the cap is refused
+    ok   the next turn carries the directive
+  -- (g) unsupported fields are refused by name; nothing in that post applies --
+    ok   a post with an unsupported field answers 400
+    ok   naming the field
+    ok   the supported field in the same post did NOT apply
+    ok   /api/config refuses mode
+    ok   /api/config refuses sleepMv
+    ok   /api/config refuses autoUpd
+    ok   /api/config refuses profile
+    ok   Sync now is an honest no-op
+    ok   a typed bot token is refused
+    ok   the custom endpoint is refused
+    ok   /api/orch refuses mrate
+    ok   /api/orch refuses rates
+    ok   /api/orch refuses budget
+  -- (h) the whole-form Save Changes round-trips the hosted knob values --
+    ok   the page's Save Changes payload saves
+    ok   the changed field applied
+    ok   a changed device knob is refused
+    ok   naming the knob
+    ok   and nothing in that post applied
+    ok   a blank number knob (the form before its first load) is unchanged, not refused
+  -- (i) GET /api/orch carries the fields the page dereferences --
+    ok   cust is present (the page reads d.cust.base)
+    ok   the directive default and cap ride along
+    ok   the hosted knob values are reported
+    ok   each provider reports its sub-agent model
+  -- (j) clearMem erases the running notes --
+    ok   the running notes ride the next turn
+    ok   clearMem=1 answers 200
+    ok   the erased notes are gone from the next turn
+  -- (k) orchLoop=0 makes the next turn single-shot --
+    ok   orchLoop=0 applies
+    ok   and reads back
+    ok   the next turn advertises no loop tools
+  -- (l) a message cannot forge a conversation line in the window --
+    ok   a forged line stays inside the sender's own message
+    ok   the text itself is still in the window
+    ok   the in-flight message appears once (as the turn's input, not in the window)
+  -- (m) a cleared zone returns to the operator's TZ; tz and local agree --
+    ok   clearing the zone saves
+    ok   clock.tz names the operator's zone
+    ok   and clock.local runs on it (UTC+2), not UTC
+  -- (n) a settings write that cannot be stored changes nothing --
+    ok   an unstorable write answers 500
+    ok   and the live name did not change
+  -- (o) no echoed sentence; a quoted name stays valid JSON --
+    ok   the sender's words are not echoed
+    ok   a name with a quote saves
+    ok   device.status escapes the name (valid JSON, no forged keys)
+  -- (p) a zone name the clock cannot hold is refused; the clock line stays whole --
+    ok   a 47-letter zone abbreviation is refused
+    ok   nothing was stored
+    ok   a 17-letter name is refused
+    ok   a 17-character quoted name is refused
+    ok   a 16-letter name applies
+    ok   a quoted offset name applies
+    ok   a full POSIX rule applies
+    ok   blank (UTC) applies
+    ok   a 47-letter operator zone renders a whole clock line
+    ok   an operator zone too long for the line renders the UTC time instead
+
+87 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_inapp_keys
+[nimbusd] secrets: MISTRAL_API_KEY was saved in the portal after the in-app key; using the portal's
+[nimbusd] secrets: MISTRAL_API_KEY was saved in the portal after the in-app key; using the portal's
+[nimbusd] secrets: MISTRAL_API_KEY was saved in the portal after the in-app key; using the portal's
+[nimbusd] secrets: OPENAI_API_KEY was saved in the portal after the in-app key; using the portal's
+[nimbusd] verify openai: HTTP 401
+[nimbusd] verify cumulo: HTTP 401
+[nimbusd] verify openai: HTTP 401
+[nimbusd] verify anthropic: HTTP 401
+[nimbusd] verify mistral: HTTP 401
+[nimbusd] verify zai: HTTP 401
+[nimbusd] verify cumulo: HTTP 401
+=== in-app provider keys (CUM-279) ===
+  -- (a) applyProviderKey: takes effect, next turn dispatches --
+    ok   starts with no Mistral key
+    ok   applyProviderKey(mistral, <key>) succeeds
+    ok   Mistral key is now available (took effect)
+    ok   the key-change counter bumped
+    ok   the secrets file was written
+    ok   the secrets file is 0600 (owner-only)
+    ok   the next turn dispatched a request
+    ok   the turn dispatched to the newly-keyed provider
+    ok   an unknown provider slug is rejected
+  -- (b) durable across a restart (same data dir) --
+    ok   set an OpenAI key in-app
+    ok   key present in the first process
+    ok   the in-app key survived the restart (loaded from secrets)
+  -- (b2) portal key vs in-app key: last save wins --
+    ok   a portal key with no in-app key is used
+    ok   save a key in the app
+    ok   the in-app save takes effect at once
+    ok   a restart with the same portal key keeps the in-app key
+    ok   a later portal save wins over the in-app key
+    ok   and stays won on the next restart
+    ok   a later in-app save
+    ok   a later in-app save wins again
+    ok   removing the key in the portal removes it, in-app copy too
+  -- (b2b) the portal saves the same value again --
+    ok   a key saved in the app over K1
+    ok   the in-app key is used
+    ok   re-saving the same value does not take over
+    ok   Remove in the portal drops the in-app key too
+    ok   and saving it again uses it
+    ok   and it stays on the next restart
+    ok   another key saved in the app
+    ok   it is used
+    ok   and removed in the app
+    ok   so the portal's is used again
+  -- (b4) the head order the portal states --
+    ok   Z.ai alone answers with Z.ai
+    ok   a Cumulo key runs ahead of Z.ai
+    ok   Mistral runs ahead of a Cumulo key
+    ok   OpenAI runs ahead of a Cumulo key
+    ok   Anthropic runs ahead of a Cumulo key
+    ok   Mistral is first
+    ok   then OpenAI
+    ok   Anthropic runs ahead of Z.ai
+  -- (b3) upgrade: an older secrets file keeps its key --
+    ok   the older in-app key still wins
+    ok   the next portal save wins
+  -- (c) clearing a key removes it --
+    ok   key set
+    ok   empty key cleared the override
+  -- (d) POST /api/orch applies a key (device-parity form) --
+    ok   POST /api/orch is handled
+    ok   the response reports one key applied
+    ok   the OpenAI key applied through the web seam
+    ok   the Cumulo router key applied through the web seam
+    ok   a non-key orch setting is acked honestly
+  -- (e) POST /api/orch accepts every canonical key field (CUM-445) --
+    ok   POST oaiKey handled
+    ok   oaiKey is accepted (200, not refused)
+    ok   oaiKey reports one key applied
+    ok   oaiKey reached provider openai
+    ok   clr_oaiKey cleared openai
+    ok   POST antKey handled
+    ok   antKey is accepted (200, not refused)
+    ok   antKey reports one key applied
+    ok   antKey reached provider anthropic
+    ok   clr_antKey cleared anthropic
+    ok   POST mistKey handled
+    ok   mistKey is accepted (200, not refused)
+    ok   mistKey reports one key applied
+    ok   mistKey reached provider mistral
+    ok   clr_mistKey cleared mistral
+    ok   POST zaiKey handled
+    ok   zaiKey is accepted (200, not refused)
+    ok   zaiKey reports one key applied
+    ok   zaiKey reached provider zai
+    ok   clr_zaiKey cleared zai
+    ok   POST cumuloKey handled
+    ok   cumuloKey is accepted (200, not refused)
+    ok   cumuloKey reports one key applied
+    ok   cumuloKey reached provider cumulo
+    ok   clr_cumuloKey cleared cumulo
+  -- (f) unknown *Key field refused with 400 (CUM-445) --
+    ok   openaiKey is refused with 400
+    ok   openaiKey names the unknown field in the error
+    ok   openaiKey applied nothing
+    ok   mistralKey is refused with 400
+    ok   mistralKey names the unknown field in the error
+    ok   mistralKey applied nothing
+    ok   anthropicKey is refused with 400
+    ok   anthropicKey names the unknown field in the error
+    ok   anthropicKey applied nothing
+    ok   bogusKey is refused with 400
+    ok   bogusKey names the unknown field i[nimbusd] verify zai: HTTP 401
+[nimbusd] secrets: not writing CUMULO_API_KEY (not a clean provider key)
+[nimbusd] secrets: not writing a line with an unknown name (not a clean provider key)
+[nimbusd] secrets: ignored a line with an unknown name (not a clean provider key)
+[nimbusd] secrets: ignored OPENAI_API_KEY (not a clean provider key)
+[nimbusd] secrets: ignored a line with an unknown name (not a clean provider key)
+[nimbusd] secrets: OPENAI_API_KEY had spaces around it; stored trimmed
+[nimbusd] secrets: CUMULO_API_KEY had spaces around it; stored trimmed
+[nimbusd] secrets: MISTRAL_API_KEY had spaces around it; stored trimmed
+[nimbusd] secrets: ignored ANTHROPIC_API_KEY (not a clean provider key)
+[nimbusd] secrets: ignored Z_AI_TOKEN (not a clean provider key)
+[nimbusd] verify openai: HTTP 0
+[nimbusd] verify cumulo: HTTP 0
+n the error
+    ok   bogusKey applied nothing
+    ok   clr_ of an unknown field is refused too
+    ok   a Save Changes payload with a blank custKey is handled
+    ok   a blank custKey rides Save Changes (not refused as unknown)
+    ok   a typed custKey is refused
+    ok   custKey is refused by name as hosted-only, not as drift
+  -- (g) GET /api/orch reports canonical keyField + hasKey (CUM-445) --
+    ok   GET /api/orch handled
+    ok   reports canonical keyField oaiKey
+    ok   reports canonical keyField antKey
+    ok   reports canonical keyField mistKey
+    ok   reports canonical keyField zaiKey
+    ok   reports canonical keyField cumuloKey
+    ok   Z.ai provider is listed
+    ok   the Z.ai key applied through the web seam (Z_AI_TOKEN)
+  -- (h) a Z.ai-only VN dispatches its turn to api.z.ai (CUM-445) --
+    ok   applyProviderKey(zai) succeeds
+    ok   Z.ai key took effect
+    ok   the turn dispatched a request
+    ok   the Z.ai turn reached api.z.ai (NOT misrouted to Mistral)
+  -- (i) /api/state reports fw and image separately (CUM-444) --
+    ok   GET /api/state handled
+    ok   fw is the engine version (NIMBUS_FW_VERSION)
+    ok   image is the container tag, reported separately
+  -- a key with a line break, a space or a control character is refused --
+    ok   refused with the device's own sentence: cumuloKey=cumulo_sk_x%0ANIMBUSD_ZAI_BASE
+    ok   refused with the device's own sentence: cumuloKey=cumulo_sk_x%0D%0AZ_AI_TOKEN=fo
+    ok   refused with the device's own sentence: oaiKey=sk-proj-two%20words
+    ok   refused with the device's own sentence: antKey=sk-ant-tab%09here
+    ok   refused with the device's own sentence: mistKey=mk_del%7Fhere
+    ok   refused with the device's own sentence: zaiKey=%C3%A9t%C3%A9
+    ok   refused with the device's own sentence: cumuloKey=kkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
+    ok   no key was applied
+    ok   secrets.env never gained an injected line
+    ok   a clean key saves
+    ok   the secrets file holds exactly the clean key
+    ok   the engine-thread seam refuses a key with a line break too
+  -- the secrets file writes and loads provider keys only --
+    ok   a clean key applies
+    ok   only the clean provider key is written
+    ok   a non-provider name in the file never becomes config
+    ok   a clean provider key loads
+    ok   a value with a space does not load
+    ok   nor does any other secret name
+  -- a key stored with spaces around it loads trimmed, and the file is rewritten --
+    ok   a key with a trailing space loads trimmed (first start)
+    ok   the Cumulo router key with a leading space loads trimmed (first start)
+    ok   spaces on both sides and a CR are dropped (first start)
+    ok   a control character still never loads (first start)
+    ok   nor does a tab (first start)
+    ok   the instance still uses both keys (first start)
+    ok   the secrets file holds the trimmed keys (first start)
+    ok   a key with a trailing space loads trimmed (next start)
+    ok   the Cumulo router key with a leading space loads trimmed (next start)
+    ok   spaces on both sides and a CR are dropped (next start)
+    ok   a control character still never loads (next start)
+    ok   nor does a tab (next start)
+    ok   the instance still uses both keys (next start)
+    ok   the secrets file holds the trimmed keys (next start)
+  -- POST /api/orch: a key with spaces around it is stored trimmed; the device's rule refuses the rest --
+    ok   a key with a trailing space saves
+    ok   a key with leading spaces saves
+    ok   stored without the trailing space
+    ok   stored without the leading spaces
+    ok   refused with: That Mistral key is blank. Paste the whole key and save again.
+    ok   refused with: That OpenAI key looks too short. Paste the whole key and save again.
+    ok   refused with: That Z.ai key looks too long. Paste just the key and save again.
+    ok   refused with: That Anthropic key has a space or a hidden character in it. Paste just the key and save again.
+    ok   refused with: That Mistral key has a space or a hidden character in it. Paste just the key and save again.
+    ok   a refused key stores nothing
+    ok   the secrets file holds the trimmed keys only
+    ok   key_shape.h covers cumuloKey
+    ok   a key of spaces alone is refused for cumulo
+    ok   key_shape.h covers oaiKey
+    ok   a key of spaces alone is refused for openai
+    ok   key_shape.h covers antKey
+    ok   a key of spaces alone is refused for anthropic
+    ok   key_shape.h covers mistKey
+    ok   a key of spaces alone is refused for mistral
+    ok   key_shape.h covers zaiKey
+    ok   a key of spaces alone is refused for zai
+
+158 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_mistral_workspace
+[nimbusd] connectors: mistral workspace probe HTTP 200 (364 bytes)
+[nimbusd] connectors: mistral workspace probe HTTP 401 (25 bytes) - no answer, kept the last one
+[nimbusd] connectors: mistral workspace probe HTTP 0 (0 bytes) - no answer, kept the last one
+[nimbusd] connectors: mistral workspace probe HTTP 200 (24 bytes) - no answer, kept the last one
+[nimbusd] connectors: mistral workspace probe HTTP 200 (364 bytes)
+[nimbusd] connectors: mistral workspace probe HTTP 200 (12 bytes)
+[nimbusd] connectors: mistral workspace probe HTTP 200 (364 bytes)
+[nimbusd] verify mistral: HTTP 200
+=== mistral workspace gating (device parity) ===
+  -- (a)(b) probe: listed => usable; no signal keeps the last answer --
+    ok   the Lumi-shaped registry saves
+    ok   unprobed: gcal is NOT usable (fail-closed)
+    ok   unprobed: the catalog says the workspace was not checked (not 'enable it in Mistral')
+    ok   no workspace answer yet
+    ok   a 200 listing lands an answer
+    ok   exactly one probe request
+    ok   the probe is a GET
+    ok   the probe asks for /v1/connectors with the device's page size
+    ok   the probe carries the configured Mistral key as the bearer
+    ok   listed + is_authenticated:false => gcal USABLE
+    ok   listed notion => usable
+    ok   listed slack => usable
+    ok   a Studio connector the workspace does not list => refused
+    ok   a built-in stays provider-side (-1)
+    ok   the catalog carries the not-signed-in hint for gcal, scoped to its own data (CUM-822)
+    ok   the hint claims no priority over web search (CUM-822)
+    ok   the hint never gates: gcal is not called unusable
+    ok   the unlisted connector points the owner at Mistral and is not sent
+    ok   a 401 is no signal
+    ok   the probe outcome records the 401
+    ok   a transport failure is no signal
+    ok   the probe outcome records the transport failure
+    ok   an unparseable 200 is no signal
+    ok   after three no-signal probes gcal is STILL usable (last answer kept)
+  -- (c)(d) probe gating + Mistral key change resets --
+    ok   registry saved
+    ok   no Mistral key: no probe
+    ok   only a disabled Studio connector + a built-in
+    ok   no ENABLED Studio connector: no probe
+    ok   no request was made in either case
+    ok   registry with enabled Studio connectors
+    ok   now the probe runs
+    ok   gcal usable
+    ok   a new Mistral key drops the answer (fail-closed until re-probe)
+    ok   the workspace reads unchecked again
+  -- (e) the catalog's 'YOU are here' is the resolved head --
+    ok   priority led by unkeyed openai/anthropic resolves to the first KEYED provider
+    ok   registry saved
+    ok   the catalog says the turn runs on mistral (not the unkeyed first token)
+    ok   once openai is keyed it heads the priority
+    ok   an explicit orchHost pin wins
+    ok   the sub ladder is its own setting
+    ok   an unset sub ladder follows the head priority
+  -- (h) web.search is a web route; a held-off provider is PAUSED --
+    ok   a Notion card, no Mistral web_search card
+    ok   the head's web.search is named as a web route
+    ok   the line never says no web search exists
+    ok   a head that cannot call tools is not offered it
+    ok   a paused provider is PAUSED
+    ok   and is no spawn target
+    ok   it returns when the pause lifts
+  -- (i) web.search is offered only to a head that runs the tool loop --
+    ok   a Notion card
+    ok   the head resolves
+    ok   the head is offered its web.search
+    ok   the catalog endpoint offers the head web.search
+    ok   a Notion card
+    ok   the head resolves
+    ok   the head is offered its web.search
+    ok   the catalog endpoint offers the head web.search
+  -- (f)(g) web surface: badges, catalog, capabilities, background probes --
+    ok   /api/orch reports the head ladder, the sub ladder and the (unpinned) orchHost
+    ok   POST /api/connectors refuses a token with a space inside
+    ok   the refusal carries the device's sentence for the page to show
+    ok   POST /api/connectors saves the registry
+    ok   the write queued a workspace probe (it was unchecked)
+    ok   an empty workspace: the gcal badge reads refused (auth 2)
+    ok   POST /api/verify accepted
+    ok   verify ran the workspace probe
+    ok   a verify for an unkeyed provider is acknowledged
+    ok   after verify the gcal badge reads usable (auth 1)
+    ok   the badge host is the resolved head (mistral)
+    ok   no key material in the connectors view
+    ok   GET /api/connectors/catalog returns the model block
+    ok   gcal: badge auth, Capabilities availability and catalog agree (1/subsessions-only)
+    ok   notion: badge auth, Capabilities availability and catalog agree (1/subsessi[nimbusd] connectors: mistral workspace probe HTTP 200 (364 bytes)
+[nimbusd] verify mistral: HTTP 200
+ons-only)
+    ok   slack: badge auth, Capabilities availability and catalog agree (1/subsessions-only)
+    ok   ghost: badge auth, Capabilities availability and catalog agree (2/unavailable)
+    ok   POST /api/orch mistKey saves
+    ok   the key write queued a fresh workspace probe
+    ok   the re-probe under the new key restores gcal
+    ok   the re-probe used the NEW key
+    ok   three workspace probes + two model-list reads (verify, key change); no stray requests
+  -- (h) coalesced probes, safe capability tags, queued saves --
+    ok   the first probe request claims the slot
+    ok   a second request while one is queued is coalesced
+    ok   once the probe runs, a new request can queue one again
+    ok   no request without a key
+    ok   a blob with a markup-shaped prov saves (the device accepts it too)
+    ok   the capability tag never carries markup (it reads custom)
+    ok   a read during background work answers busy at once
+    ok   a save queued behind a long probe is not a 503
+    ok   it says it is queued (and it does apply)
+    ok   the queued model save applied
+
+88 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_multipart_form
+=== multipart forms on a hosted Nimbus (CUM-543, offline) ===
+  -- (a) the parser --
+    ok   the boundary is read from the Content-Type
+    ok   any case, a quoted boundary, other parameters first
+    ok   a urlencoded post has none
+    ok   only multipart/form-data is a multipart form
+    ok   one toggle reads
+    ok   as the urlencoded field the page would have posted
+    ok   two fields read
+    ok   no value added a field of its own
+    ok   a value decodes byte-identical
+    ok   the next field is intact
+    ok   an empty form reads as no fields
+    ok   a file part is refused
+    ok   past the part bound
+    ok   past the value bound
+    ok   past the name bound
+    ok   a cut body (no closing boundary) is refused
+    ok   the wrong boundary
+    ok   a part with no field name
+    ok   an empty body
+    ok   a part with no header block is refused
+    ok   filename*= is a file
+    ok   an unquoted filename is a file
+    ok   a binary content type is a file
+    ok   a second Content-Disposition line is refused
+    ok   a text/plain field still reads
+    ok   an unquoted name reads
+    ok   the boundary parameter is matched whole
+    ok   only the exact media type is a form
+  -- (b) POST /api/config with the page's FormData --
+    ok   autoUpd: refused
+    ok   autoUpd: by its real name
+    ok   autoUpd: never the boundary line
+    ok   usbCfm: refused
+    ok   usbCfm: by its real name
+    ok   usbCfm: never the boundary line
+    ok   lbRing: refused
+    ok   lbRing: by its real name
+    ok   lbRing: never the boundary line
+    ok   lbSaver: refused
+    ok   lbSaver: by its real name
+    ok   lbSaver: never the boundary line
+    ok   battMon: refused
+    ok   battMon: by its real name
+    ok   battMon: never the boundary line
+    ok   scrFlip: refused
+    ok   scrFlip: by its real name
+    ok   scrFlip: never the boundary line
+    ok   saverMin: refused
+    ok   saverMin: by its real name
+    ok   saverMin: never the boundary line
+    ok   a hosted field posted as FormData applies
+    ok   the name is saved exactly as posted
+    ok   a post that mixes in a device-only field is refused
+    ok   and nothing in it applies
+    ok   a file part outside the Files panel is refused
+    ok   with a plain sentence
+    ok   a form that cannot be read is refused
+    ok   with a plain sentence
+    ok   neither changed anything
+    ok   the upload route still takes its file part
+    ok   and stores the file's bytes
+
+60 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_orch_model
+=== in-app model picks (T1, offline, CUM-425) ===
+  -- (a) applyOrchModel: applies, validates, bumps counter --
+    ok   cumulo head starts on the router default
+    ok   a router selector applies
+    ok   modelFor resolves the pick
+    ok   the change counter bumped (web poll observes it)
+    ok   an unknown provider slug is rejected
+    ok   a selector with spaces is rejected
+    ok   an oversize selector is rejected
+    ok   a rejected write never clobbers the stored pick
+  -- (b) durable across a restart; empty clears to default --
+    ok   set the pick
+    ok   the pick survived the restart (models.txt)
+    ok   an empty model clears the pick
+    ok   cleared -> back on the router default
+    ok   the clear is durable too
+  -- (c) POST /api/orch orchM_<slug> + GET reports orchModel --
+    ok   POST /api/orch with a model field is handled
+    ok   the response reports one write applied
+    ok   the pick applied through the web
+    ok   GET /api/orch reports the resolved cumulo model
+    ok   clr_orchM_<slug> restores the default
+  -- (d) cumulo pick zai/<m> routes the turn to /router/zai --
+    ok   set the router selector
+    ok   the turn dispatched a request
+    ok   the dispatch path rides the zai upstream (no /v1 - Z.ai base carries its prefix)
+    ok   the request body carries the BARE model id (router prices it)
+    ok   the upstream prefix never leaks into the model field
+
+23 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_pending_embed
+[nimbusd] pending drain parked m1c5d1d0c (left=2)
+[nimbusd] pending drain stored m1c5d1d0c (left=1)
+[nimbusd] pending drain stored m69bc6c61 (left=0)
+[nimbusd] pending drain stored m47d658f5 (left=0)
+=== nimbusd pending-embed queue (T1, offline) ===
+  -- (a) a billing refusal queues the write --
+    ok   fresh data dir: an empty queue
+    ok   memory.write answers queued
+    ok   and says it is not stored yet
+    ok   never claims stored
+    ok   the billing cause, with the provider
+    ok   the vector store is unchanged
+    ok   one entry is pending
+    ok   the queue is on disk before the answer
+    ok   embeddings are parked
+  -- (b) parked: no embeddings request per write or search --
+    ok   no request while parked
+    ok   keyword search finds the queued fact
+    ok   two entries pending
+    ok   the drain is parked too
+    ok   and makes no request
+  -- (c) restart while queued --
+    ok   the queue survived the restart
+    ok   the park memo is RAM only: a restart tries again
+  -- (d) recovery: the drain stores it --
+    ok   one drain step stores
+    ok   the store grew by one
+    ok   one left
+    ok   the next step stores the other
+    ok   the queue is empty
+    ok   semantic search finds it
+  -- restart after the drain: stored once, nothing pending --
+    ok   both facts are durable
+    ok   nothing pending after the restart
+    ok   no drain work
+    ok   and no request
+  -- (e) the embed shim (the live scenario's outage) --
+    ok   the shim queues the write
+    ok   the shim sends nothing
+    ok   shim off: the drain stores
+
+29 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_platform
+=== cgroup heap mapping (T1, offline) ===
+    ok   abundant headroom clamps to the cap (gates never fire)
+    ok   12 MiB free under a 32 MiB reserve reports 0 (engine sheds load)
+    ok   40 MiB free reports 8 MiB after the reserve
+    ok   an unlimited cgroup never gates (reports the cap)
+    ok   missing cgroup files fall back to the cap safely
+
+5 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_posix_stores
+=== posix_stores (T1, offline) ===
+  -- fsutil atomic write --
+    ok   writeFileAtomic creates nested dirs
+    ok   readFile reads it back
+    ok   atomic write stored the exact bytes (up to the NUL)
+    ok   no .tmp file left after rename
+    ok   overwrite succeeds
+    ok   overwrite replaced the contents
+  -- episodic append-log restart --
+    ok   three messages written
+    ok   hydrate rebuilt all three messages from disk
+    ok   messageCount after restart
+    ok   the 'owner' session's two rows survived
+    ok   full-text query finds the recalled fact after restart
+  -- episodic out-of-ring offset read --
+    ok   six messages written (recentCap 2, so 4 are out-of-ring)
+    ok   query returns all six (the 4 out-of-ring read via offset)
+    ok   the oldest out-of-ring record read back intact by its offset
+  -- vector memory restart --
+    ok   vector added
+    ok   one vector in the store
+    ok   vectors.bin written atomically
+    ok   vectors.bin read back after restart
+    ok   deserialize accepted the blob
+    ok   the vector survived the restart
+    ok   associative recall returns the persisted fact after restart
+  -- tolerant deserialize --
+    ok   a garbage blob is rejected (returns false)
+    ok   the store is left empty and usable, not corrupt
+
+23 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_provider_verify
+[nimbusd] verify mistral: HTTP 200
+[nimbusd] verify zai: HTTP 200
+[nimbusd] verify cumulo: HTTP 200
+=== provider verify + router model catalog (CUM-545, offline) ===
+  -- (p) the hosted picker lists Mistral Small and GLM Flash, and no foreign model --
+    ok   the recorded list for mistral is readable
+    ok   the verify reads mistral's list
+    ok   mistral offers mistral-small-latest: "mistral":{"label":"Mistral","keyField":"mistKey","hasKey":true,"verify":1,"vts":1.793768995e9,"choices":"mistral-large-4,mistral-large-4-0,mistral-large-latest,mistral-medium-latest,magistral-medium-latest,mistral-small-latest,magistral-small-latest,ministral-14b-latest","orchModel":"mistral-large-latest","subModel":"mistral-large-latest"
+    ok   mistral offers mistral-large-4-0: "mistral":{"label":"Mistral","keyField":"mistKey","hasKey":true,"verify":1,"vts":1.793768995e9,"choices":"mistral-large-4,mistral-large-4-0,mistral-large-latest,mistral-medium-latest,magistral-medium-latest,mistral-small-latest,magistral-small-latest,ministral-14b-latest","orchModel":"mistral-large-latest","subModel":"mistral-large-latest"
+    ok   mistral offers mistral-medium-latest: "mistral":{"label":"Mistral","keyField":"mistKey","hasKey":true,"verify":1,"vts":1.793768995e9,"choices":"mistral-large-4,mistral-large-4-0,mistral-large-latest,mistral-medium-latest,magistral-medium-latest,mistral-small-latest,magistral-small-latest,ministral-14b-latest","orchModel":"mistral-large-latest","subModel":"mistral-large-latest"
+    ok   mistral does not offer glm-: "mistral":{"label":"Mistral","keyField":"mistKey","hasKey":true,"verify":1,"vts":1.793768995e9,"choices":"mistral-large-4,mistral-large-4-0,mistral-large-latest,mistral-medium-latest,magistral-medium-latest,mistral-small-latest,magistral-small-latest,ministral-14b-latest","orchModel":"mistral-large-latest","subModel":"mistral-large-latest"
+    ok   mistral does not offer deepseek: "mistral":{"label":"Mistral","keyField":"mistKey","hasKey":true,"verify":1,"vts":1.793768995e9,"choices":"mistral-large-4,mistral-large-4-0,mistral-large-latest,mistral-medium-latest,magistral-medium-latest,mistral-small-latest,magistral-small-latest,ministral-14b-latest","orchModel":"mistral-large-latest","subModel":"mistral-large-latest"
+    ok   mistral does not offer labs-: "mistral":{"label":"Mistral","keyField":"mistKey","hasKey":true,"verify":1,"vts":1.793768995e9,"choices":"mistral-large-4,mistral-large-4-0,mistral-large-latest,mistral-medium-latest,magistral-medium-latest,mistral-small-latest,magistral-small-latest,ministral-14b-latest","orchModel":"mistral-large-latest","subModel":"mistral-large-latest"
+    ok   mistral does not offer voxtral: "mistral":{"label":"Mistral","keyField":"mistKey","hasKey":true,"verify":1,"vts":1.793768995e9,"choices":"mistral-large-4,mistral-large-4-0,mistral-large-latest,mistral-medium-latest,magistral-medium-latest,mistral-small-latest,magistral-small-latest,ministral-14b-latest","orchModel":"mistral-large-latest","subModel":"mistral-large-latest"
+    ok   the recorded list for zai is readable
+    ok   the verify reads zai's list
+    ok   zai offers glm-5.3: "zai":{"label":"Z.ai","keyField":"zaiKey","hasKey":true,"verify":1,"vts":1.793768995e9,"choices":"glm-5.3,glm-5.3-flash,glm-5.3-flashx,glm-5.2,glm-5.1,glm-5-turbo,glm-5,glm-4.7","orchModel":"glm-5.3","subModel":"glm-5.3"
+    ok   zai offers glm-5.3-flash: "zai":{"label":"Z.ai","keyField":"zaiKey","hasKey":true,"verify":1,"vts":1.793768995e9,"choices":"glm-5.3,glm-5.3-flash,glm-5.3-flashx,glm-5.2,glm-5.1,glm-5-turbo,glm-5,glm-4.7","orchModel":"glm-5.3","subModel":"glm-5.3"
+    ok   the current GLM line leads: "zai":{"label":"Z.ai","keyField":"zaiKey","hasKey":true,"verify":1,"vts":1.793768995e9,"choices":"glm-5.3,glm-5.3-flash,glm-5.3-flashx,glm-5.2,glm-5.1,glm-5-turbo,glm-5,glm-4.7","orchModel":"glm-5.3","subModel":"glm-5.3"
+  -- (a) a 200 from /router/models verifies the key and fills the picker --
+    ok   the verify succeeds
+    ok   a GET with the Cumulo key as the bearer
+    ok   GET /api/orch: cumulo verify 1 (the badge reads verified)
+    ok   with a verify timestamp
+    ok   the router models become the picker's choices
+    o[nimbusd] verify cumulo: HTTP 402 nocredits
+[nimbusd] verify cumulo: HTTP 401
+[nimbusd] verify cumulo: HTTP 200
+[nimbusd] verify cumulo: HTTP 503
+[nimbusd] verify cumulo: HTTP 200
+[nimbusd] verify cumulo: HTTP 200
+[nimbusd] verify cumulo: HTTP 200
+[nimbusd] verify zai: HTTP 200
+[nimbusd] verify cumulo: HTTP 200
+[nimbusd] verify cumulo: HTTP 200
+[nimbusd] verify cumulo: HTTP 200
+[nimbusd] verify cumulo: HTTP 200
+[nimbusd] connectors: mistral workspace probe HTTP 200 (66 bytes)
+[nimbusd] connectors: mistral workspace probe HTTP 200 (66 bytes)
+[nimbusd] verify mistral: HTTP 200
+k   GET /api/models is served (it was a 404)
+    ok   the catalog carries the router ids with their upstream for grouping
+  -- (b) 402 nocredits, 401 rejected, a transient failure keeps verified --
+    ok   402 -> could not verify, reason nocredits
+    ok   401 -> rejected
+    ok   a transient 503 never demotes a verified key
+  -- (c) a turn that answered marks the head verified --
+    ok   unverified before anything ran
+    ok   verified after a turn answered on the router
+  -- (d) POST /api/verify and a key save queue the read --
+    ok   POST /api/verify answers 200
+    ok   the queued verify ran and verified the key
+    ok   a key save answers 200
+    ok   the new key was verified right after it applied
+    ok   with the NEW key
+  -- (e) the prompt lists router models; a spawn on one runs on it --
+    ok   the synthesis delivered the Claude sub's answer
+    ok   [AVAILABLE MODELS] lists the router's Claude model
+    ok   the sub runs on the Anthropic wire under /router/anthropic
+    ok   with the named model (not coerced)
+    ok   the job drained
+  -- (f) the Z.ai verify host is the bare host of NIMBUSD_ZAI_BASE --
+    ok   the verify reaches the bare host (no scheme in the hostname)
+  -- (h) the hosted router catalog is bounded like the device's --
+    ok   the verify succeeds
+    ok   at most kCatalogMaxRows rows are kept (got 160)
+    ok   the router default comes first
+    ok   the flagships listed last are kept
+    ok   an id no upstream runs is not offered
+  -- (g) a member's spawn cannot pick a model on the owner's key --
+    ok   an approved Telegram member
+    ok   the member's spawn runs the configured sub model's route
+    ok   with the configured sub model, not the member's pick
+  -- (f) a key saved while its check is queued is checked with the new key --
+    ok   the boot path claims the verify
+    ok   the key save answers 200
+    ok   the engine thread ran everything queued
+    ok   the new key got its own verify after it applied
+    ok   with the NEW key
+    ok   the badge reads verified
+    ok   and the picker has the router catalog
+    ok   the boot path claims the workspace probe
+    ok   the Mistral key save answers 200
+    ok   the engine thread ran everything queued
+    ok   the workspace is probed again with the NEW key
+    ok   so the Studio connector's answer is the new key's
+
+57 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_rig
+=== nimbusd rig composition (T1, offline) ===
+  -- tool surface --
+    ok   memory.write is registered
+    ok   memory.search is registered
+    ok   files.list is registered
+    ok   artifact.save is registered
+    ok   docs.search is registered
+    ok   device.status is registered
+    ok   web.search is absent with no Tavily key (advertised == callable)
+  -- write durable memory through the rig --
+    ok   a vector was added
+    ok   a file artifact was saved
+    ok   one episodic message written
+  -- restart: rehydrate from disk --
+    ok   vector memory survived the restart
+    ok   associative recall of the persisted fact after restart
+    ok   file artifact survived the restart
+    ok   file contents intact after restart
+    ok   episodic history survived the restart
+
+15 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_router_embed
+[nimbusd] memory: 1 stored memories are 8 wide but the saved embedding model is 16 wide; they cannot be compared, so memory starts empty (the old store is kept as vectors.bin.mismatch-1793769014)
+=== embeddings through the Cumulo router (CUM-540, offline) ===
+  -- (a) Cumulo-only: memory.write and memory.search embed through the router --
+    ok   embeddings are available with only a Cumulo key
+    ok   memory.write stored a vector
+    ok   the embedding goes to the router host
+    ok   on the configured upstream (same vector space)
+    ok   the Cumulo key is the bearer
+    ok   the configured model rides the body
+    ok   Mistral's dialect: no OpenAI dimensions field (CUM-469)
+    ok   memory.search finds the stored fact
+    ok   /api/mem/stats reports embedAvailable true
+    ok   /api/mem/stats names the router route
+  -- (b) a direct key wins over the router --
+    ok   the direct Mistral key carries the call
+    ok   on the direct path
+  -- (c) no key: nothing is sent and stats says so --
+    ok   no embeddings without any key
+    ok   no request is sent
+    ok   nothing stored
+    ok   stats reports false
+  -- (d) the cumulo embed provider rides /router/openai/v1 --
+    ok   the device's router route
+    ok   OpenAI's dialect carries dimensions
+    ok   stored
+  -- (e) embedverify saves nothing; embedcfg is locked by memories, reset applies --
+    ok   embedverify answers 200 for a working candidate
+    ok   the live call's width is reported
+    ok   a switch is refused while memories exist
+    ok   the refusal says how to switch
+    ok   the memory is untouched
+    ok   reset=1 applies the switch
+    ok   the new config reads back
+    ok   the old-model memories were erased
+    ok   a model name with a line break is refused (it cannot inject a line into embed.txt)
+    ok   the embed provider survives a restart
+    ok   the width survives a restart
+  -- (f) a slow check answers within the bound; its result is kept for the next try --
+    ok   embedverify answers within the bound while the call is still running (waited 5 s)
+    ok   it answers 202: accepted, still checking
+    ok   the page shows "still checking" and saves nothing (never "Verified" without a width)
+    ok   a save during the check answers at once
+    ok   a save during the check is not a 2xx (the page reads any 2xx as saved)
+    ok   nothing changed
+    ok   GET /api/mem/embedcfg shows the settled check
+    ok   the next verify answers from the settled check
+    ok   the save applies the checked width
+    ok   the width is the one the model returned
+    ok   one live call served the check, the verify and the save
+  -- (h) a check queued behind other work is never presumed lost, and never pays twice --
+    ok   the first press queues one check
+    ok   95 s later, still queued behind a long turn: still checking, no second call
+    ok   the queued check starts when its turn comes
+    ok   80 s into its run: still checking
+    ok   the next press answers from its result
+    ok   a check starts
+    ok   89 s into its run: still checking
+    ok   90 s into its run: presumed lost, one new check is queued
+    ok   the lost check's late result is dropped
+    ok   the new check runs
+    ok   a check queued past the queued bound is replaced
+    ok   the replaced check makes no call when its turn comes
+    ok   the newer one does
+    ok   and only once
+  -- (f2) a save still queued past the bound is not answered as saved --
+    ok   the candidate is checked
+    ok   a save still queued past the bound answers 503, never a 2xx (it may yet be refused)
+    ok   with a sentence that says to look again
+    ok   the queued save ran
+    ok   and applied, since nothing refused it meanwhile
+  -- (g) a width the model does not produce is never saved --
+    ok   a width the model does not return is refused
+    ok   the refusal names the real width
+    ok   the saved width is unchanged
+    ok   verify fails it too, naming the fix (the page used to save the typed width after a green verify)
+    ok   memory still works on the saved width
+  -- (h) vectors of another width than the saved config are not compared --
+    ok   one 8-wide memory
+    ok   the incompatible memories are not loaded
+    ok   the store is the saved width
+    ok   and so is the config
+    ok   the [nimbusd] memory: 1 stored memories are 8 wide but the saved embedding model is 16 wide, and a copy could not be written, so they are kept as they are; save the embedding settings again with erase to start fresh
+log says why memory starts empty
+    ok   the old store is kept aside byte for byte, not destroyed
+    ok   an empty store takes the saved width
+    ok   nothing is set aside for an empty store
+    ok   with a read-only volume the memories are kept, not erased
+    ok   and embeddings use their width
+    ok   the log says so
+    ok   vectors.bin is untouched
+
+77 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_router_head
+=== Cumulo router head parity (CUM-539, offline) ===
+  -- (a) anthropic/<model> rides /router/anthropic/v1/messages --
+    ok   pick a Claude router model
+    ok   one request
+    ok   the request goes to the router host
+    ok   the Anthropic Messages wire under /router/anthropic
+    ok   the Cumulo key is the bearer
+    ok   no client x-api-key rides the router request
+    ok   the body carries the bare model id
+    ok   the Claude answer reaches the owner
+  -- (b) the loop advertises the registry tools and runs one mid-turn --
+    ok   two rounds: the tool call, then the final turn
+    ok   memory_write is advertised on the wire
+    ok   memory_search is advertised on the wire
+    ok   every round travels through /router/anthropic
+    ok   the mid-turn tool ran
+    ok   the loop's final reply reaches the owner
+  -- (c) a refused pick answers on the default and the next turn works --
+    ok   the reply names the refused model
+    ok   the reply names the fix
+    ok   the same turn is answered on the router default
+    ok   the refusal is never blamed on the key
+    ok   the pick goes back to the model in use
+    ok   GET /api/orch shows the model in use
+    ok   the next turn answers
+    ok   the next turn goes straight to the working model (no retry of the refusal)
+    ok   next turn on the default
+  -- (d) a refused pick goes back to the last selector that worked --
+    ok   the Mistral pick works
+    ok   the notice names the model that answered
+    ok   answered on the last working selector
+    ok   the pick is the last working selector
+  -- (e) a 402 credits refusal says what to do; the next turn answers --
+    ok   the reply names the account refusal
+    ok   the reply names the fix
+    ok   never blamed on the key
+    ok   the pick is unchanged
+    ok   the next turn answers
+  -- (f) a paused upstream answers on the default and keeps the pick --
+    ok   the notice names the paused model
+    ok   the notice says the pick stays
+    ok   answered on the default
+    ok   the pick is kept
+  -- (f2) endpoint_not_allowed answers on the default and keeps the pick --
+    ok   answered, pick kept
+    ok   a route refusal never rewrites the owner's pick
+  -- (g) zai runs the tool loop over its compat path --
+    ok   the one round that finishes
+    ok   the zai path has no /v1
+    ok   the bare model id
+    ok   the tool loop, on the router's zai upstream too
+    ok   bounded reasoning (CUM-544)
+    ok   the 50 s Z.ai head budget (CUM-544)
+    ok   the answer reaches the owner
+  -- (o) the direct Z.ai head carries the Z.ai policy --
+    ok   one request
+    ok   the Z.ai host
+    ok   json_object, not json_schema (CUM-495)
+    ok   bounded reasoning (CUM-544)
+    ok   the 50 s Z.ai head budget (CUM-544)
+    ok   the answer reaches the owner
+  -- (h) a refusal after a tool ran is not re-run --
+    ok   no fallback request after a tool already ran
+    ok   the tool did run
+    ok   the pick is not touched mid-loop
+    ok   the failure is not blamed on the key
+    ok   the fix sentence is whole (never cut by the engine's 100-character cap)
+    ok   no cut marker in the reply
+  -- (i) the fold answers on the fallback without a notice or a pick change --
+    ok   the fold succeeds on the fallback
+    ok   the summary carries no refusal notice
+    ok   housekeeping never moves the owner's pick
+  -- (j) a refused fallback and a built-in tool refusal get honest causes --
+    ok   a refused fallback names the refused default
+    ok   never blamed on the key
+    ok   a failed fallback leaves the pick alone
+    ok   a built-in tool refusal says so
+  -- (k) Mistral over the router never appends to a stored conversation --
+    ok   two requests
+    ok   the second turn starts a new conversation
+    ok   and answers
+  -- (l) a conversation marker never crosses to another upstream --
+    ok   the turn on anthropic/claude-sonnet-5 answers
+    ok   the turn on openai/gpt-5.6 answers
+    ok   the turn on mistral/mistral-large-latest answers
+    ok   the turn on openai/gpt-5.6 answers
+    ok   one request per turn (nothing refused, nothing retried)
+    ok   the Anthropic marker never rides to OpenAI
+    ok   Mistral starts its own conversation
+    ok   the Mistral conversation id never rides to OpenAI
+  -- (l2) the tool loop's stateless marker never rides as a response id --
+    ok   the loop turn answers
+    ok   the single-shot turn answers
+    ok   two requests
+    ok   no previous_response_id after the loop
+  -- (m) a refused last working selector falls to the router default, once --
+    ok   the router default answers the turn
+    ok   the notice names the refused pick and the model that answered
+    ok   pick, last working, default: each tried once
+    ok   the refused pick moves to the model that answered
+    ok   the next turn answers on it
+    ok   a refused default gets its honest cause
+    ok   three attempts on the one head run, never a loop
+    ok   nothing answered, so the pick is left alone
+  -- (p) the default spelled openai/gpt-5.6 is never re-tried as a different model --
+    ok   one request: the refused default is not re-tried as a fallback
+    ok   the cause names the model the owner picked
+    ok   the default, spelled with its upstream, answers
+    ok   the head run: the pick, then the last working selector, never the same default again
+    ok   nothing answered, so the pick is left alone
+    ok   the alias of the default answers
+    ok   the pick moves to the default, not to its alias
+  -- (n) every refusal cause fits the engine's 100-character cut --
+    ok   no kind and no selector length yields a cause over 100 characters
+    ok   a selector that fits is named, not replaced
+    ok   a 23-character pick keeps the fix
+  -- (q) an upstream's 400 Invalid model is a refused pick --
+    ok   the reply names the refused pick
+    ok   the reply names the fix
+    ok   the same turn is answered on the router default
+    ok   never an outage or a failure
+    ok   the pick goes back to the router default
+    ok   the next turn answers
+    ok   the refused model is not asked again
+
+104 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_router_refusal_repro
+=== the 31 Oct clamp on a funded wallet, against a local fake router ===
+    ok   the clamp on a funded wallet is served: This request is larger than the remaining Cumulo credits allow, so the reply was kept short.
+
+served
+    ok   one capped resend
+    ok   nothing closes
+    ok   and no one is told to add credits
+    ok   a wallet held by other calls is waited out: served
+    ok   nothing closes
+    ok   an empty wallet closes it
+    ok   and says so: That didn't finish - the Cumulo router needs credits or a plan for this account. Add credits in the portal. Your message was not answered. Nothing is still running.
+
+8 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_router_refusals
+=== Cumulo router refusals against a local fake router (offline) ===
+  -- a clamp that only waited does not say the reply was kept short --
+    ok   served after the wait
+    ok   and not called short: served
+    ok   the same request, unchanged
+  -- the clamp resends once capped and serves --
+    ok   two requests: the refused one and its capped resend
+    ok   the first declares no cap, as the head sends it
+    ok   the resend is capped at what the body says fits
+    ok   the owner gets the reply
+    ok   and is told plainly why it is short
+    ok   never told to add credits
+    ok   nothing parked on any seam
+    ok   the note is not on every turn
+  -- no cap fits: the call fails, nothing parks --
+    ok   the reply names the real reason
+    ok   not an empty wallet, not a key
+    ok   nothing parked
+    ok   no resend, no same-host retry
+  -- the empty wallet parks, is told once, and recovers by itself --
+    ok   the empty wallet parks every seam
+    ok   and says so
+    ok   the park knows it is the wallet
+    ok   the next message hears it too
+    ok   still parked for the other seams
+    ok   the idle re-check sends exactly one real request
+    ok   refused again: still parked
+    ok   its outcome is logged
+    ok   and the next tick waits a whole interval
+    ok   one request
+    ok   recovered by itself
+    ok   the recovery is logged
+    ok   turns are served again
+    ok   parked, not due
+    ok   the next message is served and ends the park
+  -- a parked provider nothing calls is still asked, once --
+    ok   reading the state sends nothing
+    ok   the park stands and the re-check stays due
+    ok   the idle re-check makes the one request
+    ok   and it goes to the router, not the head
+    ok   recovered
+  -- retryable refusals do not park --
+    ok   served after the wait
+    ok   waited at least retryAfterMs (5007 ms)
+    ok   the same request, unchanged
+    ok   not parked
+  -- an upstream out of quota fails over, the account is fine --
+    ok   answered on the router default
+    ok   the wallet is not blamed
+    ok   the pick is kept
+    ok   nothing parked
+    ok   the cooled upstream is not asked inside its wait
+    ok   still answered
+  -- every reason in the contract, end to end --
+    ok   missing_router_key parks
+    ok   missing_router_key: "add credits" only for the wallet
+    ok   missing_router_key: the owner gets an answer
+    ok   invalid_router_key parks
+    ok   invalid_router_key: "add credits" only for the wallet
+    ok   invalid_router_key: the owner gets an answer
+    ok   unknown_provider does not park
+    ok   unknown_provider: "add credits" only for the wallet
+    ok   unknown_provider: the owner gets an answer
+    ok   router_not_configured does not park
+    ok   router_not_configured: "add credits" only for the wallet
+    ok   router_not_configured: the owner gets an answer
+    ok   request_too_large does not park
+    ok   request_too_large: "add credits" only for the wallet
+    ok   request_too_large: the owner gets an answer
+    ok   invalid_request does not park
+    ok   invalid_request: "add credits" only for the wallet
+    ok   invalid_request: the owner gets an answer
+    ok   router_disabled does not park
+    ok   router_disabled: "add credits" only for the wallet
+    ok   router_disabled: the owner gets an answer
+    ok   provider_disabled does not park
+    ok   provider_disabled: "add credits" only for the wallet
+    ok   provider_disabled: the owner gets an answer
+    ok   ceiling_reached does not park
+    ok   ceiling_reached: "add credits" only for the wallet
+    ok   ceiling_reached: the owner gets an answer
+    ok   funding_cap_reached does not park
+    ok   funding_cap_reached: "add credits" only for the wallet
+    ok   funding_cap_reached: the owner gets an answer
+    ok   endpoint_not_allowed does not park
+    ok   endpoint_not_allowed: "add credits" only for the wallet
+    ok   endpoint_not_allowed: the owner gets an answer
+    ok   invalid_json does not park
+    ok   invalid_json: "add credits" only for the wallet
+    ok   invalid_json: the owner gets an answer
+    ok   invalid_body does not park
+    ok   invalid_body: "add credits" only for the wallet
+    ok   invalid_body: the owner gets an answer
+    ok   agents_blocked does not park
+    ok   agents_blocked: "add credits" only for the wallet
+    ok   agents_blocked: the owner gets an answer
+    ok   inline_tools_only does not park
+    ok   inline_tools_only: "add credits" only for the wallet
+    ok   inline_tools_only: the owner gets an answer
+    ok   model_not_priced does not park
+    ok   model_not_priced: "add credits" only for the wallet
+    ok   model_not_priced: the owner gets an answer
+    ok   native_tool_not_metered does not park
+    ok   native_tool_not_metered: "add credits" only for the wallet
+    ok   native_tool_not_metered: the owner gets an answer
+    ok   audio_duration_unknown does not park
+    ok   audio_duration_unknown: "add credits" only for the wallet
+    ok   audio_duration_unknown: the owner gets an answer
+    ok   unsupported_media_type does not park
+    ok   unsupported_media_type: "add credits" only for the wallet
+    ok   unsupported_media_type: the owner gets an answer
+    ok   streaming_not_supported does not park
+    ok   streaming_not_supported: "add credits" only for the wallet
+    ok   streaming_not_supported: the owner gets an answer
+    ok   account_suspended parks
+    ok   account_suspended: "add credits" only for the wallet
+    ok   account_suspended: the owner gets an answer
+    ok   credits_or_subscription_required parks
+    ok   credits_or_subscription_required: "add credits" only for the wallet
+    ok   credits_or_subscription_required: the owner gets an answer
+    ok   insufficient_credits parks
+    ok   insufficient_credits: "add credits" only for the wallet
+    ok   insufficient_credits: the owner gets an answer
+    ok   budget_exceeded parks
+    ok   budget_exceeded: "add credits" only for the wallet
+    ok   budget_exceeded: the owner gets an answer
+    ok   upstream_rate_limited does not park
+    ok   upstream_rate_limited: "add credits" only for the wallet
+    ok   upstream_rate_limited: the owner gets an answer
+    ok   upstream_quota_exhausted does not park
+    ok   upstream_quota_exhausted: "add credits" only for the wallet
+    ok   upstream_quota_exhausted: the owner gets an answer
+    ok   upstream_auth_failed does not park
+    ok   upstream_auth_failed: "add credits" only for the wallet
+    ok   upstream_auth_failed: the owner gets an answer
+    ok   upstream_error does not park
+    ok   upstream_error: "add credits" only for the wallet
+    ok   upstream_error: the owner gets an answer
+    ok   fallback_exhausted does not park
+    ok   fallback_exhausted: "add credits" only for the wallet
+    ok   fallback_exhausted: the owner gets an answer
+    ok   provider_timeout does not park
+    ok   provider_timeout: "add credits" only for the wallet
+    ok   provider_timeout: the owner gets an answer
+    ok   provider_unreachable does not park
+    ok   provider_unreachable: "add credits" only for the wallet
+    ok   provider_unreachable: the owner gets an answer
+  -- an unknown reason is a per-call failure --
+    ok   402 {"error":"reason_from_the_future","reason":"reason_from_the_future"} does not park
+    ok   and does not say add credits
+    ok   402 {} does not park
+    ok   and does not say add credits
+    ok   402  does not park
+    ok   and does not say add credits
+  -- embeddings over the router read the reason --
+    ok   insufficient_credits_for_call: no vector
+    ok   insufficient_credits_for_call: HTTP 402 insufficient_credits_for_call
+    ok   insufficient_credits: no vector
+    ok   insufficient_credits: HTTP 402 insufficient_credits
+    ok   upstream_quota_exhausted: no vector
+    ok   upstream_quota_exhausted: HTTP 429 upstream_quota_exhausted
+    ok   model_not_priced: no vector
+    ok   model_not_priced: HTTP 403 model_not_priced
+    ok   account_suspended: no vector
+    ok   account_suspended: HTTP 403 account_suspended
+  -- the verify badge names a suspension --
+    ok   could not verify, not rejected
+    ok   the badge reason
+    ok   402
+    ok   needs credits
+    ok   a bare 403 is still a rejected key
+    ok   and only the router says so
+  -- /api/orch names the park and its next check --
+    ok   a key's budget is not an empty wallet: That didn't finish - the Cumulo router stopped at this device's monthly limit. Raise it in the portal. Your message was not answered. Nothing is still running.
+    ok   the state parses
+    ok   the parked provider
+    ok   its reason in plain words
+    ok   its next check
+  -- a clamp the wire recovered is not the cause of what fails later --
+    ok   a cut reply is not blamed on the credits: That answer was cut off before it finished, so nothing in it was carried out. Ask again, or ask for a shorter answer.
+    ok   a cut capped reply reads as any cut reply
+    ok   the baseline names the server error: That didn't finish - cumulo had a server error (HTTP 502). Your message was not answered. Nothing is still running; ask again to retry.
+    ok   a 502 on the resend is not blamed on the credits: That didn't finish - cumulo had a server error (HTTP 502). Your message was not answered. Nothing is still running; ask again to retry.
+    ok   a 502 after a clamp reads as any 502
+    ok   the baseline retries on the same host once
+    ok   and so does the turn that was clamped first (each run: refused, then capped)
+  -- the capped resend's own refusal is the cause --
+    ok   the resend's upstream refusal answers on the default: The Cumulo router cannot run anthropic/claude-sonnet-5 right now, so gpt-5.6 answered this one. Your model choice is kept.
+
+on the default
+    ok   the wallet is not blamed
+    ok   the pick is kept
+    ok   nothing parked
+    ok   the clamp and its resend
+    ok   the failing upstream cooled: the next turn does not ask it
+    ok   the real reason, the device's limit: That didn't finish - the Cumulo router stopped at this device's monthly limit. Raise it in the portal. Your message was not answered. Nothing is still running.
+    ok   parked for the budget
+  -- a 403 with no reason parks nothing --
+    ok   403 {"message":"Forbidden"} parks nothing
+    ok   and blames no key: That didn't finish - the Cumulo router refused this request. Try again shortly. Your message was not answered. Nothing is still running.
+    ok   it says what happened
+    ok   403 <html><body>403 Forbidden</body></html> parks nothing
+    ok   and blames no key: That didn't finish - the Cumulo router refused this request. Try again shortly. Your message was not answered. Nothing is still running.
+    ok   it says what happened
+    ok   403  parks nothing
+    ok   and blames no key: That didn't finish - the Cumulo router refused this request. Try again shortly. Your message was not answered. Nothing is still running.
+    ok   it says what happened
+    ok   a 401 whose body did not survive still reads as the key
+  -- a clamp does not end a key budget park --
+    ok   the budget parks
+    ok   and names itself
+    ok   the re-check is clamped, then refused by the budget: still parked
+    ok   and never logged as open
+    ok   one honest outcome line
+    ok   the owner's one notice is still spent
+  -- the engine thread's idle tick really asks a parked provider --
+    ok   one request, from the idle tick alone
+    ok   recovered with nobody calling
+    ok   the turn's one request
+    ok   due, but a turn just ended: nothing is sent yet
+  -- a head that gets no answer re-arms a due re-check --
+    ok   one outcome line
+    ok   a whole new wait, not a probe left out
+    ok   still parked
+  -- a suspended account reaches the verify badge --
+    ok   the reply says so: That didn't finish - the Cumulo router says this account is suspended. Contact support. Your message was not answered. Nothing is still running.
+    ok   could not verify, not rejected
+    ok   the badge reason
+
+206 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_spend_ceiling_vn
+[nimbusd] spend: /var/folders/2r/v57sn07n1w7cmqz9b6qc5wmr0000gn/T//nimbusd-test-spendceil-39800/torn.txt did not read back - paid calls paused until the ceiling is raised
+[nimbusd] spend: /var/folders/2r/v57sn07n1w7cmqz9b6qc5wmr0000gn/T//nimbusd-test-spendceil-39800/foreign.txt did not read back - paid calls paused until the ceiling is raised
+[nimbusd] telegram: NIMBUSD_TG_CHAT_ID (legacy seed): added to the allowlist as the admin
+=== virtual nimbus monthly spend ceiling (T2, offline) ===
+    ok   a new instance starts at the 20 USD default
+    ok   under the ceiling: paid calls allowed
+    ok   $18 of $20: still allowed
+    ok   80 percent: one early warning is owed
+    ok   the crossing freezes, and the gate says so
+    ok   the head seam is refused
+    ok   the web chat owes one freeze notice naming the ceiling
+    ok   told once: nothing more is owed
+    ok   a destroyed instance uninstalls the gate
+    ok   the freeze survives a restart
+    ok   a restart sends no second notice
+    ok   raising the ceiling lifts the freeze at once
+    ok   the owner's ceiling is kept
+    ok   an instance that ran an earlier release owes one first-start notice
+    ok   the first-start notice is sent once
+    ok   an embedding's usage counts: {"limitCents":2000,"spentCents":10,"frozen":false,"ownerSet":false,"active":true,"month":202611,"resetsOn":"1 December","saved":true,"loaded":true}
+    ok   an estimate counts too: {"limitCents":2000,"spentCents":15,"frozen":false,"ownerSet":false,"active":true,"month":202611,"resetsOn":"1 December","saved":true,"loaded":true}
+    ok   a sub-agent's usage counts: {"limitCents":2000,"spentCents":25,"frozen":false,"ownerSet":false,"active":true,"month":202611,"resetsOn":"1 December","saved":true,"loaded":true}
+    ok   a torn file starts paused, never at zero: {"limitCents":2000,"spentCents":2000,"frozen":true,"ownerSet":false,"active":true,"month":202611,"resetsOn":"1 December","saved":true,"loaded":true}
+    ok   the paid-call gate refuses
+    ok   one freeze notice says how to resume
+    ok   raising the ceiling resumes paid calls
+    ok   the save leaves no temporary file
+    ok   the repaired state survives a restart
+    ok   a foreign file starts paused too
+    ok   /api/state carries the ceiling and the setup line
+    ok   /api/orch usage carries the ceiling meter
+    ok   a ceiling of 0 is refused
+    ok   spendCeil=1 is refused: {"ok":false,"error":"The spend ceiling must be 1 USD (100 cents) or more, in whole cents, or off."}
+    ok   and the ceiling did not move
+    ok   spendCeil=50 is refused: {"ok":false,"error":"The spend ceiling must be 1 USD (100 cents) or more, in whole cents, or off."}
+    ok   and the ceiling did not move
+    ok   spendCeil=99 is refused: {"ok":false,"error":"The spend ceiling must be 1 USD (100 cents) or more, in whole cents, or off."}
+    ok   and the ceiling did not move
+    ok   the floor itself applies: {"ok":true,"applied":1}
+    ok   POST spendCeil=5000 applies: {"ok":true,"applied":1}
+    ok   the ceiling is now 50 USD
+    ok   a chat send while paused is answered 409
+    ok   the web chat got the freeze notice
+    ok   one notice on the web chat and one on Telegram, nothing repeated (2)
+    ok   the Telegram notice went to the owner chat
+    ok   POST spendCeil=off turns the ceiling off: {"ok":true,"applied":1}
+
+42 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_sub_fabric
+[nimbusd] verify openai: HTTP 0
+[nimbusd] telegram: chat 424242 is not approved - no turn
+[nimbusd] chat 666 must wait for another person's sub-agents
+=== sub-agent fabric (device parity) ===
+  -- (a) head spawns a Mistral sub; the sub carries gcal; synthesis delivers --
+    ok   a gcal Studio connector is configured
+    ok   the head turn replied and spawned
+    ok   the synthesis turn delivered the sub-agent's calendar result (no silent drop)
+    ok   exactly three provider calls: head, sub, synthesis
+    ok   the head turns carry NO Studio connector
+    ok   the head turn is the structured single-shot turn
+    ok   the sub turn is free text (no schema)
+    ok   the sub-agent's Conversations call carries the gcal Studio connector
+    ok   the sub runs the configured sub model
+    ok   the sub carries the spawned task
+    ok   the sub brief is anchored to the instance clock
+    ok   the synthesis turn sees the sub-agent's result
+    ok   the job drained (nothing left queued or running)
+  -- (b) a spawn on an unkeyed provider moves to one with a key --
+    ok   the ack names the provider that took it
+    ok   the owner is not told to add a key
+    ok   no request went to the unkeyed provider
+    ok   no request went to the unkeyed provider
+  -- (b2) a spawn refused by a spent daily connector quota names the window --
+    ok   a gcal Studio connector is configured
+    ok   the refused spawn is reported, not dropped
+    ok   the refusal names the daily window, worded as a head-turn 429
+    ok   two provider calls: the head turn and the refused sub
+    ok   the sub asked for the quota headers
+    ok   nothing journaled for the refused spawn
+  -- (c) the job journal re-attaches after a restart --
+    ok   a running job is journaled
+    ok   a fresh process sees the unfinished job
+    ok   its re-attach key survived byte-identical
+    ok   a delivered + compacted job is gone after the next restart
+    ok   markSeen alone records no finished job
+    ok   a second job is journaled
+    ok   its finished record and seen mark land
+    ok   one journal file, like the device's
+    ok   the finished job is listed after the restart, never active again
+    ok   a per-slot record migrates to the file and the old file goes
+  -- (d) a web write behind background work is applied, not refused --
+    ok   background work does not read as a turn in flight
+    ok   the key write queued behind it is applied (200), not refused busy
+    ok   the write reports it applied
+    ok   /api/orch reports the configured tool loop (off here)
+  -- (e) a key/model save does not drop queued sub-agent work --
+    ok   one spawn is queued (not yet dispatched)
+    ok   a model save rebuilds the engine
+    ok   the job engine survived the rebuild
+    ok   the queued spawn is still queued
+  -- (f) an approved Telegram chat runs sub-agents; an unapproved one gets nothing --
+    ok   a gcal Studio connector is configured
+    ok   an unapproved chat never reaches a turn (so never a spawn)
+    ok   nothing was queued for it
+    ok   the owner approves the chat
+    ok   the owner's chat is an admin
+    ok   the approved chat's turn spawned a sub-agent
+    ok   its sub-agent ran and the result came back
+    ok   head, sub, synthesis: the full device path
+    ok   the approved chat's sub-agent carried the owner's connector
+  -- (f3) a member's sub-agent cannot use the owner's connector --
+    ok   a gcal Studio connector is configured
+    ok   the spawn is refused with the reason
+    ok   no request carried the owner's connector
+    ok   no sub-agent request was made
+  -- (f2) a chat removed mid-turn cannot start a sub-agent --
+    ok   the spawn is refused with the reason
+    ok   nothing was queued
+    ok   only the in-flight head turn reached a provider
+  -- (h1) a member's turn cannot start while the owner's results are unreported --
+    ok   the owner's sub-agent result is waiting for its report
+    ok   the member's turn must wait
+    ok   the owner's own chats never wait
+    ok   the member's turn did not run (so it never saw the owner's calendar)
+    ok   the owner's results are still there for the owner's report
+  -- (h2) the engine holds the member's message and runs it after the report --
+    ok   the member's held message ran in the end (nothing was dropped)
+    ok   owner head, sub, owner report, member head - in that order
+    ok   the owner's report carried the owner's results
+    ok   the member's turn never saw them
+    ok   the report went to the owner's chat
+  -- (h3) a spawn while another person's work is in flight is refused --
+    ok   the second spawn is refused with the reason
+    ok   only the member's spawn is queued
+  -- (h4) a chat removed while its sub-agent ran gets no report --
+    ok   the sub-agent finished
+    ok   the report step ran
+    ok   no report turn ran for the removed chat
+    ok   and the results were never delivered to it
+  -- (g) a reply-less turn that did nothing says so, and never says Done. --
+    ok   both chats hear it
+    ok   it says the answer was empty
+    ok   it says the answer was empty
+  -- (g2) on the tool loop an empty answer gets one correction --
+    ok   the empty answer costs exactly one more round
+    ok   the second round carries the check
+    ok   one answer reaches the owner
+    ok   the corrected answer is what the owner hears
+  -- (n) a hosted Z.ai sub carries reasoning_effort low, direct and over the router --
+    ok   the sub went to /api/paas/v4/chat/completions
+    ok   carries reasoning_effort low: zai
+    ok   the sub went to /router/zai/chat/completions
+    ok   carries reasoning_effort low: cumulo zai/glm-5.3
+    ok   the sub went to /router/openai/v1/chat/completions
+    ok   carries no effort: cumulo openai/gpt-5.6
+    ok   the sub went to /router/anthropic/v1/messages
+    ok   carries no effort: cumulo anthropic/claude-sonnet-5
+  -- (o) a sub cut after its POST went out may have started, and is not sent again --
+    ok   zai: the cut POST reached the server once (1 requests in all)
+    ok   zai: the note says the sub may have started (got "- 'glm-notes' may have started: the agent on zai did not answer in time, so it may have run, and its result will not arrive. Do not spawn it again unless the owner asks
+")
+    ok   zai: the head is told the run may have started
+    ok   zai: nothing is dispatched again
+    ok   cumulo: the cut POST reached the server once (1 requests in all)
+    ok   cumulo: the note says the sub may have started (got "- 'glm-notes' may have started: the agent on cumulo did not answer in time, so it may have run, and its result will not arrive. Do not spawn it again unless the owner asks
+")
+    ok   cumulo: the head is told the run may have started
+    ok   cumulo: nothing is dispatched again
+    ok   mistral: the cut POST reached the server once (1 requests in all)
+    ok   mistral: the note says the sub may have started (got "- 'glm-notes' may have started: the agent on mistral did not answer in time, so it may have run, and its result will not arrive. Do not spawn it again unless the owner asks
+")
+    ok   mistral: the head is told the run may have started
+    ok   mistral: nothing is dispatched again
+    ok   openai: the cut POST reached the server once (1 requests in all)
+    ok   openai: the note says the sub may have started (got "- 'glm-notes' may have started: the agent on openai did not answer in time, so it may have run, and its result will not arrive. Do not spawn it again unless the owner asks
+")
+    ok   openai: the head is told the run may have started
+    ok   openai: nothing is dispatched again
+    ok   anthropic: the cut POST reached the server once (4 requests in all)
+    ok   anthropic: the note says the sub may have started (got "- 'glm-notes' may have started: the agent on anthropic did not answer in time, so it may have run, and its result will not arrive. Do not spawn it again unless the owner asks
+")
+    ok   anthropic: the head is told the run may have started
+    ok   anthropic: nothing is dispatched again
+    ok   anthropic: the one request after the cut interrupts the session
+
+109 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_telegram
+=== telegram channel (T2, offline, fake server) ===
+    ok   getMe succeeds on a valid token
+    ok   getMe extracts the bot username
+    ok   getMe hit the right path with the token
+    ok   getMe fails on a bad token
+    ok   the failure names the HTTP cause
+    ok   poll succeeds
+    ok   both updates are returned for the trust gate to route
+    ok   the message text parsed correctly
+    ok   the chat id is message.chat.id (what the gate keys on)
+    ok   the stranger's update is returned too, in wire order
+    ok   offset advanced past the last whole update (1002 + 1)
+    ok   offset restored from disk after restart
+    ok   the resumed poll asks only for updates newer than the last handled one
+    ok   sendMessage succeeds
+    ok   sendMessage path
+    ok   the body JSON-escapes newlines and quotes
+    ok   a numeric chat id is sent unquoted
+    ok   poll succeeds
+    ok   offset advanced and persisted for bot 111
+    ok   a different bot starts at offset 0, not the old bot's offset
+    ok   poll succeeds
+    ok   the new bot's first poll asks from 0, so its messages are served
+    ok   the new bot's own update advances its own offset
+    ok   the same bot id keeps the offset across a secret rotation
+    ok   a pre-fingerprint offset file is not trusted for any bot
+    ok   the first poll after the upgrade asks from 0
+
+26 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_tg_access
+[nimbusd] telegram: NIMBUSD_TG_CHAT_ID (legacy seed): added to the allowlist as the admin
+[nimbusd] telegram: NIMBUSD_TG_CHAT_ID (legacy seed): already applied once
+=== telegram trust (device model) ===
+  -- (a) a fresh instance trusts no Telegram chat (fail closed) --
+    ok   the allowlist starts empty
+    ok   chat 555 is refused on an empty allowlist
+    ok   chat 555 is Unknown
+    ok   chat 1 is refused on an empty allowlist
+    ok   chat 1 is Unknown
+    ok   chat -1001234567890 is refused on an empty allowlist
+    ok   chat -1001234567890 is Unknown
+    ok   chat 999999999999 is refused on an empty allowlist
+    ok   chat 999999999999 is Unknown
+    ok   the instance's own surface 'owner' is the owner (device: web = Admin)
+    ok   the instance's own surface 'web' is the owner (device: web = Admin)
+    ok   the instance's own surface 'system' is the owner (device: web = Admin)
+    ok   '' is not a Telegram chat id
+    ok   '-' is not a Telegram chat id
+    ok   '12a' is not a Telegram chat id
+    ok   '@roy' is not a Telegram chat id
+    ok   '1 2' is not a Telegram chat id
+    ok   '123456789012345678901234' is not a Telegram chat id
+    ok   an unapproved chat's principal is never the owner
+  -- (b) an unlisted chat: refused, queued for approval, nothing else --
+    ok   no update became a turn
+    ok   all three updates were refused
+    ok   no provider was called (no turn ran)
+    ok   no turn was recorded
+    ok   nothing was written to the conversation history
+    ok   no memory was written
+    ok   no sub-agent was spawned
+    ok   the engine delivered nothing
+    ok   the allowlist is unchanged (still empty)
+    ok   the RBAC table is unchanged (still empty)
+    ok   no access state was persisted
+    ok   exactly one refusal was sent (rate-limited per chat)
+    ok   the refusal goes to the sender's own chat
+    ok   the refusal says why
+    ok   the refusal says the owner must approve them, and gives the chat id to pass on
+    ok   copy style: no dash separators
+    ok   the sender waits in the approval queue (dedup: one entry)
+    ok   no second refusal inside the cooldown
+    ok   one more refusal once the cooldown has passed
+    ok   no provider was called (no turn ran)
+    ok   no turn was recorded
+    ok   nothing was written to the conversation history
+    ok   no memory was written
+    ok   no sub-agent was spawned
+    ok   the engine delivered nothing
+    ok   the allowlist is unchanged (still empty)
+    ok   the RBAC table is unchanged (still empty)
+    ok   no access state was persisted
+    ok   the approval queue stays bounded at 5
+    ok   the newest knock is kept (oldest dropped)
+  -- (c) the owner approves in the web app; the chat is served normally --
+    ok   Roy is waiting for approval
+    ok   GET /api/telegram shows the pending sender (device shape)
+    ok   POST /api/telegram/approve -> 200
+    ok   approval drops them from the queue
+    ok   Roy is listed as approved, NOT as an admin (approval never grants owner rights)
+    ok   an approved chat is a user
+    ok   the owner makes their own chat an admin explicitly (the role chip)
+    ok   GET /api/tenant has Roy's RBAC row as admin
+    ok   and the chip now shows the admin
+    ok   GET /api/orch reports tgAllow
+    ok   the approved chat's message became a turn
+    ok   the reply was delivered to the approved chat
+    ok   no refusal was sent after approval (only the first knock's)
+    ok   POST /api/telegram/add by chat id -> 200
+    ok   a second approval is a member, and the name's delimiters are sanitized
+    ok   the second approved chat is a user
+    ok   a non-numeric chat id is refused
+    ok   a missing id is refused
+  -- (d) the allowlist and roles survive a restart --
+    ok   Roy is made the admin
+    ok   Sam is made a guest
+    ok   the allowlist came back from the instance volume
+    ok   both chats are still served after the restart
+    ok   Roy is still the admin
+    ok   Sam is still a guest
+    ok   display names survived
+    ok   an unlisted chat is still refused
+    ok   the approval queue is RAM only (device parity)
+  -- (e) NIMBUSD_TG_CHAT_ID is a one-time seed of an EMPTY allowlist --
+    ok   an empty allowlist is seeded from the env
+    ok   the seeded chat is the admin
+[nimbusd] telegram: NIMBUSD_TG_CHAT_ID (legacy seed): already applied once
+[nimbusd] telegram: NIMBUSD_TG_CHAT_ID (legacy seed): not added: the allowlist is managed in the web app
+[nimbusd] telegram: NIMBUSD_TG_CHAT_ID (legacy seed): added to the allowlist as the admin
+[nimbusd] telegram: NIMBUSD_TG_CHAT_ID (legacy seed): already applied once
+[nimbusd] telegram: NIMBUSD_TG_CHAT_ID (legacy seed): ignored: not a numeric chat id
+[nimbusd] telegram: chat 666 is not approved - no turn
+[nimbusd] telegram: chat 12345 is not approved - no turn
+    ok   a restart with the same env does not seed again
+    ok   a seed the owner removed does NOT come back on restart
+    ok   a new seed never touches a list the owner manages
+    ok   a fresh volume takes the seed
+    ok   the owner removes the seeded chat
+    ok   the removed seed is NOT re-added on restart, even onto an empty list
+    ok   a malformed seed is ignored (still fail closed)
+  -- (f) a revoked chat gets no turn and is told so; re-approval restores it --
+    ok   the owner revokes Eve
+    ok   Eve is on the list but revoked
+    ok   no turn for the revoked chat
+    ok   no provider call
+    ok   the revoked chat is told its access was removed
+    ok   a revoked chat is not re-queued for approval
+    ok   the owner approves Eve again
+    ok   an explicit re-approval lets her back in
+    ok   as a user, not her old revoked row
+  -- (g) POST /api/orch tgAllow is honored, validated, and fails closed --
+    ok   POST /api/orch tgAllow=<csv> -> 200
+    ok   GET /api/orch reads it back trimmed and de-duplicated
+    ok   a listed chat is served at once (no restart)
+    ok   a malformed id refuses the whole write
+    ok   and nothing changed
+    ok   an empty tgAllow clears the list
+    ok   an emptied allowlist refuses everyone (fail closed)
+  -- (h) open access is refused on a hosted instance --
+    ok   public on -> 400, says why
+    ok   public off is always fine
+    ok   GET reports no open access
+    ok   a stranger is still refused
+  -- (i) an approved member runs as a member, not as the owner --
+    ok   the member's principal is User with its own namespace
+    ok   each turn embedded its message and ran one head turn
+    ok   the member's turn never recalls the owner's memory
+    ok   the owner's own turn does recall it
+    ok   an expired memory is not recalled (query-time TTL)
+    ok   the member's prompt names them a user
+    ok   the owner's prompt names them the admin
+    ok   the owner's files are refused to a member
+    ok   and not advertised to them
+  -- (j) the engine seam refuses a chat removed after its message queued --
+    ok   the owner removes Sam
+    ok   neither reached a provider
+    ok   and nothing was delivered
+    ok   even the only admin chat can be removed (the web app is always the owner)
+    ok   and it is refused at once
+  -- (k) /api/tenant keeps the device's guards --
+    ok   no role for a chat that was never approved (no pre-seeding)
+    ok   the last admin cannot be demoted
+    ok   an approved chat's row is not removed
+    ok   a limit needs a tenant row (a chat that was never approved has none)
+    ok   the role chip still answers
+    ok   a negative limit is refused
+    ok   a limit is set
+    ok   and read back
+    ok   an unknown role is refused
+    ok   a missing id is refused
+    ok   a non-numeric id is refused
+    ok   a request with one bad limit is refused whole
+    ok   and its role part was NOT applied
+    ok   only GET and POST are routes
+    ok   the legacy owner flag route maps onto the real role
+    ok   and it made them an admin
+  -- (l) a role never outlives its chat's approval; one file, fail closed --
+    ok   the raw tgAllow write drops 666
+    ok   and its admin row went with it
+    ok   666 is approved again later
+    ok   as a user: the old admin grant is NOT revived
+    ok   the allowlist and the roles live in ONE atomically written file
+    ok   a torn roles line never promotes anyone
+    ok   an unreadable file is an empty allowlist
+  -- an approval writes the tenant row --
+    ok   the approval lands
+    ok   the chat has a row now
+    ok   as a User
+    ok   an explicit role can be set
+    ok   approving again lands
+    ok   and leaves the explicit role alone
+
+148 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_tool_hints
+=== unknown-tool recovery on a hosted instance (CUM-538, offline) ===
+    ok   two Studio connectors are configured (notion disabled)
+  -- (a) an enabled connector names its provider's sub-agent jobs --
+    ok   gcal: named as a connector of Mistral sub-agents
+    ok   gcal: with the spawn to use instead
+    ok   gcal: and the spawn room
+    ok   connector_googlecalendar: named as a connector of Mistral sub-agents
+    ok   connector_googlecalendar: with the spawn to use instead
+    ok   connector_googlecalendar: and the spawn room
+  -- (b) a disabled connector is not offered --
+    ok   a disabled connector falls to the tool list
+  -- (c) a spawn field carries the real spawn room --
+    ok   session_ops says how many sub-agents may start
+  -- (d) anything else lists the callable tools --
+    ok   the bounded tool list
+
+10 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_usage_diag
+[nimbusd] verify cumulo: HTTP 200
+=== usage across saves + diagnostics (item 4, CUM-546, offline) ===
+  -- (a) usage and turnCount survive a model save and a key save --
+    ok   two turns counted (200 in / 14 out / 2 turns)
+    ok   a model save
+    ok   a model save keeps the counters
+    ok   a key save
+    ok   a key save keeps the counters
+    ok   /api/state turnCount keeps counting
+    ok   the next turn adds to the carried totals
+    ok   the last turn's usage is reported
+  -- (b) /api/lastturn, /api/log and /api/errlog/recent --
+    ok   no anatomy before the first turn
+    ok   GET /api/lastturn answers 200 (it was a 404)
+    ok   the anatomy names the head
+    ok   it is the most recent turn, with its result
+    ok   the instructions shown are the ones the head got (hosted text)
+    ok   GET /api/log serves the engine log
+    ok   GET /api/errlog/recent carries the failure
+    ok   and only failure lines
+  -- (c) the engine log is a bounded ring --
+    ok   at most 1000 lines are kept
+    ok   the newest line is kept
+    ok   key-shaped text is masked in the log
+  -- (d) /api/lastturn masks keys like the logs do --
+    ok   the anatomy is served
+    ok   key-shaped text is masked
+    ok   a key quoted in the directive (the instructions) is masked
+    ok   a router key typed in chat (the input) is masked
+    ok   a key this instance holds is masked whatever its shape
+    ok   the rest of the turn is kept
+  -- (e) a held key with a key-shaped piece inside is masked whole --
+    ok   the whole held value reads [key]
+    ok   no piece of it is left in clear
+  -- (e2) a second key with a held key's prefix is masked whole --
+    ok   no piece of the second key is left in clear
+    ok   the second key reads [key] and the text around it is kept
+    ok   a shapeless value sharing a held key's head is masked whole
+  -- (f) /api/lastturn masks a key saved after the turn, and the formats the page takes --
+    ok   precondition: a shapeless value is not recognizable before it is held
+    ok   a Tavily key the instance does not hold is masked
+    ok   the owner saves that key after the turn
+    ok   the anatomy is served
+    ok   a key saved after the turn is masked as it is served
+    ok   the rest of the turn is kept
+    ok   a held key cut short is masked as far as it goes
+    ok   a long token named a key is masked though nothing holds it
+    ok   the value of a NAME=value named a token is masked
+    ok   only the values are masked
+  -- (g) the named-token rule masks key-like tokens only --
+    ok   the key: q7KxPLAINMISTRALKEY000000000001.
+    ok   MISTRAL_API_KEY=q7KxPLAINMISTRALKEY000000000001
+    ok   {"api_key":"q7KxPLAINMISTRALKEY000000000001"}
+    ok   bot token is 123456789:AAHfakeTokenValue0123456789
+    ok   search key tvly-dev-ABCDEF0123456789
+    ok   the key insight is internationalization
+    ok   keys are 1, 2 and 3; build abc123def456ghi789jkl0 passed
+    ok   a monkey ate q7KxPLAINMISTRALKEY000000000001
+    ok   MONKEY q7KxPLAINMISTRALKEY000000000001
+    ok   apiKey: q7KxPLAINMISTRALKEY000000000001
+    ok   {"accessToken":"q7KxPLAINMISTRALKEY000000000001"}
+    ok   {\"api_key\":\"q7KxPLAINMISTRALKEY000000000001\"}
+    ok   the key is “q7KxPLAINMISTRALKEY000000000001”
+    ok   Your key is **q7KxPLAINMISTRALKEY000000000001**
+    ok   Authorization: Bearer q7KxPLAINMISTRALKEY000000000001
+    ok   {"model":"mistral-large","api_key":"q7KxPLAINMISTRALKEY000000000001","n":1}
+    ok   GET https://x.example/v1?key=q7KxPLAINMISTRALKEY000000000001&alt=json
+    ok   max output tokens for claude-sonnet-5-20260301 is 64000
+    ok   token budget exceeded calling https://api.openai.com/v1/responses
+    ok   the token endpoint https://api.openai.com/v1/oauth/token2 refused
+    ok   the key for gpt-4o-2024-08-06 is set
+    ok   the key for anthropic/claude-opus-5-20260416 is set
+    ok   slack token xoxb-1234-5678-redacted-synthetic-fixture
+    ok   the key 3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b
+    ok   the key e3f2a9c1-7d41-4b0a-9e55-0c1d2e3f4a5b
+    ok   the key deadbeef-7d41-4b0a-9e55-0c1d2e3f4a5b
+    ok   sdk key sdk-3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b
+    ok   webhook token https://hooks.slack.com/services/T0ABCDEFG/B0ABCDEFG/redacted-synthetic-fixture
+    ok   bot token https://api.telegram.org/bot123456789:AAHfakeTokenValue0123456789/getMe
+    ok   webhook token https://hooks.example.com/t/3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b
+    ok   webhook token https://n8n.example.com/webhook/3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b?x=1
+    ok   bot token https://api.telegram.org/bot123456789:AAHd-Q8f3kLm2n_pQ7rS9tU-vW1xY3zA4b/getMe
+    ok   bot token https://api.telegram.org/bot7123456789:AAH-abc_defghijklmn-opqrstuvwxyz012/getMe
+    ok   token https://bot:Q8f3kLm2n-pQ7rS9tU_vW1xY3zA4b@hooks.example.com/notify
+    ok   api key https://hooks.example.com/notify?sig=Q8f3kLm2n-pQ7rS9tU_vW1xY3zA4b
+    ok   token endpoint https://generativelanguage.googleapis.com/v1beta/models
+    ok   key docs at https://platform.openai.com/docs/models/gpt-4o-2024-08-06 say so
+    ok   token https://generativelanguage.googleapis.com:443/v1beta/models/gemini-2.5-pro:generateContent
+    ok   my bot token {"api":"https://api.telegram.org/bot123456789:AAHd-Q8f3kLm2n_pQ7rS9tU-vW1xY3zA4b","x":1}
+    ok   my bot token {"ok":true,"url":"https://n8n.example.com/webhook/3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b","n":2}
+    ok   api key https://hooks.example.com/notify?sig=Q8f3kLm2n%2BpQ7rS9tU%2FvW1xY3zA4b%3D
+    ok   webhook token https://a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6.lambda-url.us-east-1.on.aws/
+    ok   webhook token https://eo1a2b3c4d5e6f7g8h.m.pipedream.net
+    ok   webhook token https://n8n.example.com/webhook/3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b?token=q7KxPLAINMISTRALKEY000000000001
+    ok   token https://user:Q8f3kLm2n@pQ7rS9tU_vW1xY3zA4b@hooks.example.com/x
+    ok   db key postgres://app:Hunter2Prod77@db.internal:5432/app
+    ok   webhook token hooks.example.com/notify?sig=Q8f3kLm2n-pQ7rS9tU_vW1xY3zA4b
+    ok   the token https:\/\/hooks.slack.com\/services\/T0ABCDEFG\/B0ABCDEFG\/redacted-synthetic-fixture
+    ok   token [Q8f3kLm2n-pQ7rS9tU_vW1xY3zA4b](https://example.com)
+    ok   the token count=1500 was spent
+    ok   key docs at https://user@example.com/x say so
+    ok   webhook token https%3A%2F%2Fhooks.slack.com%2Fservices%2FT0ABCDEFG%2FB0ABCDEFG%2Fredacted-synthetic-fixture
+    ok   api key Q8f3kLm2n%2BpQ7rS9tU%2FvW1xY3zA4b%3D
+    ok   my bot token {"api":"https://api.telegram.org","bot":"123456789:AAHd-Q8f3kLm2n_pQ7rS9tU-vW1xY3zA4b"}
+    ok   webhook token hooks.example.com/notify?next=https://x.com&sig=Q8f3kLm2n-pQ7rS9tU_vW1xY3zA4b
+    ok   a bare host URL stays
+    ok   webhook token https://hooks.example.com%2Fservices%2FT0ABCDEFG%2FB0ABCDEFG%2Fredacted-synthetic-fixture
+    ok   api key https://x.example%3Fsig%3DQ8f3kLm2n-pQ7rS9tU_vW1xY3zA4b
+    ok   a long word with an apostrophe stays
+    ok   a long word with a curly apostrophe stays
+  -- (h) masking a long colon-dense word stays linear --
+    ok   nothing in those words is a key, and nothing is masked
+    ok   four ~200 KB separator-dense words are masked in under a second (took 24 ms)
+    ok   a NAME=value after a long colon run is still masked
+  -- (i) the 256 KB cut never keeps the head of a key it splits --
+    ok   the word the cut splits is dropped
+    ok   a run longer than any key is no key's head and is kept
+    ok   the message's place in the anatomy is known
+    ok   the anatomy is cut at 256 KB
+    ok   the owner saves the key after the turn
+    ok   no head of the saved key is served
+
+109 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_vn_parity
+=== a hosted instance does what the device does (offline) ===
+  -- (j) a Telegram photo or album reaches one turn --
+    ok   an album is one turn
+    ok   with all its photos
+    ok   and its caption
+    ok   a photo that could not be fetched says why
+    ok   an unapproved chat gets no turn
+    ok   and its file is never downloaded
+    ok   a voice note is told what this bot reads, never silence
+  -- (j2) an album past the cap, and a caption on what it cannot read --
+    ok   an album past the cap fills one turn, and the rest are the next: none lost
+    ok   file: the words reach a turn
+    ok   file: and the head is told what came with them
+    ok   file: that it did not reach it
+    ok   file: and the sender hears what this bot reads
+    ok   voice note: the words reach a turn
+    ok   voice note: and the head is told what came with them
+    ok   voice note: that it did not reach it
+    ok   voice note: and the sender hears what this bot reads
+    ok   video: the words reach a turn
+    ok   video: and the head is told what came with them
+    ok   video: that it did not reach it
+    ok   video: and the sender hears what this bot reads
+    ok   sticker: the words reach a turn
+    ok   sticker: and the head is told what came with them
+    ok   sticker: that it did not reach it
+    ok   sticker: and the sender hears what this bot reads
+    ok   audio: the words reach a turn
+    ok   audio: and the head is told what came with them
+    ok   audio: that it did not reach it
+    ok   audio: and the sender hears what this bot reads
+    ok   video: the words reach a turn
+    ok   video: and the head is told what came with them
+    ok   video: that it did not reach it
+    ok   video: and the sender hears what this bot reads
+    ok   animation: the words reach a turn
+    ok   animation: and the head is told what came with them
+    ok   animation: that it did not reach it
+    ok   animation: and the sender hears what this bot reads
+    ok   attachment: the words reach a turn
+    ok   attachment: and the head is told what came with them
+    ok   attachment: that it did not reach it
+    ok   attachment: and the sender hears what this bot reads
+    ok   a plain message is untouched
+    ok   and gets no extra line
+  -- (n) the Telegram download itself --
+    ok   a photo downloads
+    ok   with its bytes
+    ok   from the file host's own path
+    ok   an escaped path downloads
+    ok   unescaped on the wire
+    ok   a file over the limit by its reported size is refused
+    ok   saying so
+    ok   before any bytes move
+    ok   an unsized file over the limit is refused on arrival
+    ok   saying so
+    ok   and none of it is kept
+    ok   the transport is told to stop reading past the limit
+    ok   Telegram's own refusal is a failed download
+    ok   in plain words
+    ok   an answer with no path is a failed download
+    ok   and no second request goes out
+  -- (m2) photos waiting for their turn are bounded in RAM --
+    ok   bytes under the bound are held
+    ok   one byte past the bound is refused
+    ok   and a refusal counts nothing
+    ok   exactly at the bound there is no room left
+    ok   the last copy letting go gives its bytes back
+    ok   nothing held at the start
+    ok   the bytes held never pass the bound
+    ok   and the bound is what stopped them
+    ok   every message still reaches a turn
+    ok   a photo past the bound reaches its turn as the reason
+    ok   and it is not downloaded
+    ok   copies share the bytes
+    ok   the copy is whole
+    ok   and a finished turn gives them back
+  -- (m) a chat photo leaves no Files entry behind --
+    ok   the page's upload is in Files
+    ok   one entry while it waits for its turn
+    ok   the turn took its bytes
+    ok   and the Files entry is gone
+    ok   the stored copy image.look reads stays
+    ok   an owner's own file
+    ok   stays where it is
+    ok   an upload never sent
+    ok   is swept once it is days old
+    ok   and the sweep leaves the owner's file
+    ok   photo 300 stores like photo 1
+    ok   and nothing is left in Files
+    ok   and the assistant's own fi[nimbusd] held-turn queue full - dropped a message for 666
+[nimbusd] memory: embeddings now via openai (text-embedding-3-small, 256 wide); mistral has no usable key
+les still have room
+  -- (k) activity recording is what the page says --
+    ok   the page reads recording on, as it is
+    ok   on: the tool call left its row
+    ok   the box turns it off
+    ok   and the page reads off
+    ok   off survives a restart
+    ok   nothing yet from the next turn
+    ok   the message itself is kept
+    ok   off: this turn's tool call left no new row
+    ok   only the row from when it was on
+    ok   and it turns back on
+  -- (o) the guards around held turns and routines --
+    ok   the owner's unreported work makes a member wait
+    ok   a routine into that member's chat sends nothing while it waits
+    ok   and is kept for its next try, not spent
+    ok   nothing is dropped up to the bound
+    ok   past it the oldest waiter is released, not left hanging
+    ok   and only that one
+    ok   the queue stays at its bound
+    ok   both routines are made
+    ok   an id already in use is never reused
+  -- (a) history as messages, and the fold --
+    ok   the next turn carries the last turn as real messages
+    ok   not the old text window
+    ok   a due fold ran, after the owner-first wait
+    ok   the summary is stored
+    ok   and anchored to the newest row it covers
+    ok   the counters restarted
+    ok   the next turn carries the summary
+    ok   and not the folded row itself
+    ok   the log says so
+    ok   the summary survives a restart
+    ok   and rides the first turn after it
+    ok   /clear drops the summary
+    ok   and the next turn starts clean
+    ok   /compact is a command here
+  -- (b) a spawn-only turn resolves, results reach the watcher, one acknowledgement --
+    ok   an id this instance does not know is gone, not pending
+    ok   the spawn-only turn resolves its poll
+    ok   every body carries the watcher's numbers
+    ok   ?watch=1 answers
+    ok   the result reaches the ring between turns
+    ok   the async counter moved: the page re-reads
+    ok   a spawn-only turn keeps its acknowledgement
+    ok   the message after it is answered, not held behind it
+    ok   the turn with a reply finishes
+    ok   a reply that said it started work gets no second acknowledgement
+  -- (c) a tool call leaves a row, a job shows in /api/orch --
+    ok   the tool call left a tool_output row
+    ok   named by its tool
+    ok   the turn left its summary row
+    ok   the page's channel chip reads the web chat
+    ok   no jobs: an empty list
+    ok   a started sub-agent is background work
+  -- (c2) /api/orch lists the job while it runs --
+    ok   no job: an empty list
+    ok   the job lists on the route the page reads, with its tag
+    ok   and leaves it once reported
+  -- (d) long-term memory follows the key --
+    ok   an OpenAI-only instance embeds with OpenAI
+    ok   at the OpenAI width
+    ok   so memory is on
+    ok   a Mistral key keeps Mistral
+    ok   a Cumulo-only instance keeps the default through the router
+    ok   on the router route
+    ok   ANTHROPIC_API_KEY: no route can embed
+    ok   ANTHROPIC_API_KEY: the write says what happened
+    ok   ANTHROPIC_API_KEY: and that nothing follows
+    ok   ANTHROPIC_API_KEY: never a promise of storing later
+    ok   ANTHROPIC_API_KEY: keyword search finds it
+    ok   Z_AI_TOKEN: no route can embed
+    ok   Z_AI_TOKEN: the write says what happened
+    ok   Z_AI_TOKEN: and that nothing follows
+    ok   Z_AI_TOKEN: never a promise of storing later
+    ok   Z_AI_TOKEN: keyword search finds it
+  -- (d2) what a write says when the held key cannot embed --
+    ok   a Mistral-width memory is stored
+    ok   stored vectors keep their provider
+    ok   and their width
+    ok   and the memory
+    ok   the write is kept as text
+    ok   and never says it holds no key: it holds an OpenAI one
+    ok   it names what the stored memories were made with
+    ok   and the key that fixes it
+    ok   nothing is promised
+    ok   mem_write: the fact is kept
+    ok   and the next turn's recall brings it by keyword
+    ok   a reply that promises a later confirmation is corrected in the same message
+    ok   the 65th is refused
+    ok   it says how many text memorie[nimbusd] loops: fired 'wakeup' ok=1 tokens=15 next=1793769491
+[nimbusd] photo: 0ef8e8ab73ca5fe6 not attached (not an image by its bytes)
+s are kept
+    ok   and why
+    ok   and which keys would help
+    ok   with no device wording
+    ok   and no provider the owner never chose
+  -- (e) routines and wake-ups --
+    ok   the page's form creates a routine
+    ok   and says so
+    ok   it lists
+    ok   an owner's routine needs no approval
+    ok   pause
+    ok   reads paused
+    ok   resume
+    ok   delete
+    ok   gone
+    ok   a schedule under the floor is refused
+    ok   the wake-ups route has the device's shape
+    ok   a routine the assistant creates waits for the owner
+    ok   unapproved
+    ok   a wake-up arms with no approval
+    ok   the floor holds
+    ok   a wake-up from a turn that read outside content waits for the owner
+    ok   a member cannot list routines
+    ok   and no routine list leaks into the answer
+    ok   a member cannot create a routine
+    ok   a member cannot cancel a routine
+    ok   a member cannot arm a wake-up
+    ok   the due wake-up fired one turn, the recurring routine none
+    ok   framed as a wake-up, with its note
+    ok   its message reached the owner
+    ok   the thread was marked busy around the fire
+    ok   a one-shot is gone after it fired
+    ok   the recurring routine stays
+    ok   a routine with no chat lands in the page's own conversation
+  -- (f) skills --
+    ok   the owner saves a skill
+    ok   and it is the page's shape
+    ok   it lists as approved
+    ok   and reads back
+    ok   an unknown id is a 404
+    ok   the assistant's skill waits for the owner
+    ok   the prompt's index names the owner's skill
+    ok   skill.get reads it
+  -- (g) photos --
+    ok   a photo with no words is a message
+    ok   nothing at all is still refused
+    ok   a path outside Files is no attachment
+    ok   the upload is in Files
+    ok   the turn answered
+    ok   the bytes went as an image part
+    ok   with the sender's words
+    ok   the photo left one row
+    ok   settled: it says the head saw it
+    ok   the next turn's history names it, and does not claim it is attached
+    ok   image.note is for this turn's photos
+    ok   the turn that looked answered
+    ok   no image on the first request of that turn
+    ok   image.look brought the stored bytes back as an image part
+    ok   a ref with no stored copy says so
+    ok   bytes that are no image are never sent as one
+    ok   the head reads why
+    ok   a path outside Files reads nothing
+    ok   and sends nothing
+    ok   a missing file says so
+    ok   a blind head gets no image part
+    ok   and is told nobody read it
+  -- (h) the web search key on the page --
+    ok   web.search is registered
+    ok   no key, web.search is not offered
+    ok   the page reads no key
+    ok   the key saves
+    ok   web.search is offered at once
+    ok   the page reads it
+    ok   it survives a restart
+    ok   the key clears
+    ok   web.search goes with it
+  -- (i) a hosted head is never told it is a device --
+    ok   a request went out
+    ok   the prompt is in the request
+    ok   no "INSIDE the device"
+    ok   no "the device's wait"
+    ok   no "while the device collects"
+    ok   no "ESP32"
+    ok   no "personal-assistant device"
+    ok   no "act on the device"
+    ok   no "The device checks"
+    ok   no "the device web page"
+    ok   no "the device's web page"
+    ok   no "the device inserts"
+    ok   no "saved on the device"
+    ok   no "the device refuses"
+    ok   no "routines exist on this device"
+    ok   no "saved to the device"
+    ok   no "documentation is on the device"
+    ok   no "the device's own job table"
+    ok   no "the device does one network call"
+    ok   no "queued on the device"
+    ok   no "the device confirms"
+
+259 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_webapi
+=== virtual nimbus web surface (T2, offline, loopback) ===
+    ok   control surface bound a loopback port
+    ok   GET / serves the real web app (ungated shell)
+    ok   the served page seeds this instance's web token
+    ok   GET /logo.svg -> 200 (ungated)
+    ok   GET /api/state without a token -> 401
+    ok   GET /api/state with X-Nimbus-Token -> 200 (header auth)
+    ok   state marks the instance virtual
+    ok   a provisioned VN is not sent to onboarding
+    ok   mode is Orchestrator (assistant)
+    ok   no LED ring is claimed
+    ok   battery is honestly absent (on external power), never a faked voltage
+    ok   the host clock is reported synced (routines work)
+    ok   durable volume plays the SD role (no false 'no SD' alarm)
+    ok   no ESP-OTA fields (the platform rolls the image, not device OTA)
+    ok   params is an empty array, not null (app iterates it)
+    ok   GET /api/health -> components list
+    ok   the engine reports ok
+    ok   hardware components are honestly absent, not faked ok
+    ok   GET /api/orch -> running
+    ok   providers are listed with an honest hasKey (keyless here)
+    ok   orch carries the real session usage block
+    ok   GET /api/usage/models -> 200
+    ok   usage/models is one JSON document
+    ok   usage/models has no spend rows on a hosted instance
+    ok   usage/models offers no model to price on a hosted instance
+    ok   usage/models prices cumulo with its fold price and no spend
+    ok   usage/models prices openai with its fold price and no spend
+    ok   usage/models prices anthropic with its fold price and no spend
+    ok   usage/models prices mistral with its fold price and no spend
+    ok   usage/models prices zai with its fold price and no spend
+    ok   usage/models prices custom with its fold price and no spend
+    ok   usage/models prices tavily with its fold price and no spend
+    ok   openai's fold price is its highest built-in price, the residual its default
+    ok   usage/models names the built-in price date
+    ok   mem/stats reports the 2 seeded memories (real store)
+    ok   mem/stats reports durable storage present (honest)
+    ok   mem/scratchpad returns the real active task
+    ok   mem/config GET returns the retrieval knobs
+    ok   mem/config PUT -> 200
+    ok   the PUT persisted (retrieval_count is now 7)
+    ok   mem/vector GET browses the real entries
+    ok   mem/episodic GET -> messages list
+    ok   tools lists the real registry
+    ok   themes returns the palette + status legend
+    ok   qr renders an SVG for the data
+    ok   qr with no data -> 400 (honest)
+    ok   docs/search returns a results list
+    ok   chat POST accepts the turn
+    ok   chat GET settles (turn completed)
+    ok   the keyless instance replies honestly (no provider), not silence
+    ok   OTA check honestly defers to the platform image roll
+    ok   speaker tone honestly reports no audio hardware
+    ok   wifi honestly reports platform-managed networking
+    ok   loops returns a well-formed empty list
+    ok   a routine is created
+    ok   the create answer carries the new id
+    ok   loops approve of a missing id answers ok:false, not a success
+    ok   loops pause of a missing id answers ok:false, not a success
+    ok   loops resume of a missing id answers ok:false, not a success
+    ok   loops delete of a missing id answers ok:false, not a success
+    ok   delete of the real id succeeds
+    ok   the second delete is a no-op and says so
+    ok   wakeup approve of a missing id answers ok:false
+    ok   wakeup cancel of a missing id answers ok:false
+
+64 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_webchat
+=== web surface (T1, offline) ===
+    ok   empty buffer: lastSeq 0
+    ok   lastSeq is the count of pushes
+    ok   buffer is bounded to its cap (3), oldest evicted
+    ok   evicted entries (m1,m2) are gone
+    ok   the last cap entries are retained
+    ok   entries carry their sequence numbers
+    ok   entries carry role and timestamp
+    ok   sinceJsonArray(after) returns only entries with a higher seq
+    ok   reads never clear the buffer (multi-tab safe)
+    ok   text is JSON-escaped (quote, backslash, newline, tab)
+    ok   the page is an HTML document
+    ok   the app nav bar is present
+    ok   destination present: data-p=home
+    ok   destination present: data-p=chat
+    ok   destination present: data-p=memory
+    ok   destination present: data-p=assistant
+    ok   destination present: data-p=device
+    ok   the Home / Chat / Device panes are present
+    ok   the ring simulator markup is present (full app, not a stub)
+    ok   the served page seeds the given web token
+    ok   the seed runs before the app's nimbusTok() is defined/used
+    ok   the served page sets the hosted honest-UI flag
+    ok   the hosted flag is set before the app script reads it
+    ok   an ungated instance seeds a sentinel token (gate still skipped)
+    ok   the app script still defines saveFailText (the shim's seam)
+    ok   the refusal shim runs after the app script defines saveFailText
+    ok   the shim surfaces a 400's server sentence
+    ok   the served page contains no em dash
+  hosted page with a 1024-char escaping token: 93270 B raw, 124360 B base64 (+2048 envelope) of 524288; room left for about 74602 more token characters
+    ok   every token character escapes to 4 bytes in the page
+    ok   the hosted page fits the sidecar's raw body cap (480 KiB)
+    ok   the hosted page, base64-encoded, fits one relay frame with its 2 KiB envelope
+    ok   the hosted page loads its script from app.js
+    ok   the hosted page script fits the sidecar's raw cap and one relay frame
+
+33 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_webchat_correlate
+=== virtual nimbus mid-turn chat, live burst shape (T2, CUM-293) ===
+    ok   A: three stacked turns each got a distinct id
+    ok   A: turn 1 shows its own final reply (not the interim, not empty)
+    ok   A: turn 2 shows its own reply (not turn 1's spillover interim)
+    ok   A: turn 3 (second stacked entry) shows its own reply, not dropped
+    ok   B: turn B1 shows its own reply
+    ok   B: silent turn B2 resolves empty, does NOT steal B3's reply
+    ok   B: turn B3 (behind the silent one) still shows its own reply
+
+7 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/build/test_webchat_order
+=== virtual nimbus mid-turn chat contract (T2, offline, CUM-218) ===
+    ok   control surface bound a loopback port
+    ok   every rapid POST was accepted and queued (none rejected mid-turn)
+    ok   each turn got its own id (no coalescing of concurrent turns)
+    ok   every turn produced a reply (no silent drop)
+    ok   each turn got its OWN reply in order (no stale replay of a prior turn)
+    ok   the N replies are all distinct (no reply handed to two turns)
+    ok   re-polling a delivered turn returns empty, never a replay
+    ok   the engine delivered exactly N replies for N turns
+    ok   a mid-turn Telegram reply is not claimed by the web turn (channel-matched)
+
+9 checks, 0 failures
+PASSED
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/nimbusd/tools/test_vn_connectors_e2e.py
+test_every_window_reply_maps_to_its_slug (__main__.ReplyTableTest.test_every_window_reply_maps_to_its_slug) ... ok
+test_other_failures_are_not_rate_limits (__main__.ReplyTableTest.test_other_failures_are_not_rate_limits) ... ok
+test_spawn_refusal_maps_to_its_window (__main__.ReplyTableTest.test_spawn_refusal_maps_to_its_window) ... ok
+test_tables_parsed (__main__.ReplyTableTest.test_tables_parsed) ... ok
+test_a_clean_answer_does_not_retry (__main__.RetryTest.test_a_clean_answer_does_not_retry) ... ok
+test_per_minute_limit_retries_once (__main__.RetryTest.test_per_minute_limit_retries_once) ... ok
+test_rate_limited_synthesis_with_fresh_results_does_not_retry (__main__.RetryTest.test_rate_limited_synthesis_with_fresh_results_does_not_retry) ... ok
+test_unnamed_limit_retries_once (__main__.RetryTest.test_unnamed_limit_retries_once) ... ok
+test_windows_that_cannot_reopen_do_not_retry (__main__.RetryTest.test_windows_that_cannot_reopen_do_not_retry) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 0.003s
+
+OK
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/tools/persona-rig/test_lane_coverage.py
+ss
+----------------------------------------------------------------------
+Ran 2 tests in 0.000s
+
+OK (skipped=2)
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/tools/persona-rig/test_parity_table.py
+parity_table self test OK
+
+>>> /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/CLAMP/nimbus/tools/persona-rig/test_persona_rig.py
+......../opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 409: 'Conflict'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+PASS unit
+.FAIL unit
+.FAIL unit
+.PASS unit
+.FAIL unit
+PASS other
+./opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 400: 'Bad Request'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+FAIL unit
+..FAIL unit
+.PASS unit
+.FAIL unit
+.FAIL unit
+./opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/tempfile.py:484: ResourceWarning: Implicitly cleaning up <HTTPError 503: 'Service Unavailable'>
+  _warnings.warn(self.warn_message, ResourceWarning)
+PASS unit
+.PASS unit
+..............PASS unit
+.PASS unit
+.........FAIL unit
+.PASS unit known defects: 1
+...FAIL unit
+.FAIL unit known defects: 1
+.PASS unit
+....FAIL unit
+.FAIL cumulo-funded
+.FAIL unit
+.PASS unit
+.FAIL unit
+.PASS unit
+.PASS unit
+PASS unit
+.FAIL unit
+PASS other
+.PASS unit
+.FAIL unit
+.FAIL unit
+.PASS unit
+...PASS unit
+.PASS unit
+.PASS unit
+PASS unit
+PASS unit
+.PASS unit
+PASS unit (resumed)
+PASS unit
+.PASS unit
+.PASS unit
+..................FAIL unit
+..PASS unit
+.PASS unit
+..FAIL unit
+........
+----------------------------------------------------------------------
+Ran 104 tests in 27.672s
+
+OK
+
+ALL NIMBUSD TESTS PASSED

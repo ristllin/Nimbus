@@ -63,9 +63,14 @@ std::string prefsCommand(const PrefsToolContext& ctx, const std::string& args);
 std::string prefsJson(const OwnerPrefs& p, uint32_t nowHours = 0);
 // POST /api/prefs: action add | import | replace | remove | approve | restore | clear.
 // add is the owner typing on the page (origin web); import is a restore (origin
-// import). Both are active at once.
+// import). Both are active at once. `out` (optional) carries the acted-on rule's
+// id and, for an add that made room, the rules retired to make it.
+struct WebActionOut {
+  std::string id;                       // "p<n>" of the rule the action touched
+  std::vector<PrefEntry> evicted;       // lane POL2: retired to make room
+};
 PrefErr prefsWebAction(OwnerPrefs& p, const std::string& action, const std::string& id,
-                       const std::string& text, uint32_t nowHours, std::string& idOut);
+                       const std::string& text, uint32_t nowHours, WebActionOut* out = nullptr);
 // The HTTP status for a result (400 bad text, 404 unknown id, 409 full, 507 not saved).
 int prefErrHttpStatus(PrefErr e);
 

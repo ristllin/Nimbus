@@ -1,0 +1,520 @@
+{
+ "description": "The Virtual Nimbus capability script: one instance per model, holding one provider key. Failures of the reported defects are marked, so this file exits 0 until something new breaks or a marked defect is fixed.",
+ "vars": {
+  "suffix": "4417"
+ },
+ "truth": {
+  "py_latest": {
+   "url": "https://www.python.org/downloads/",
+   "regex": "Download Python (3\\.\\d+\\.\\d+)"
+  }
+ },
+ "matrix": [
+  {
+   "name": "mistral-large-4-0",
+   "host": "mistral",
+   "key": "MISTRAL_API_KEY",
+   "model": "mistral-large-4-0",
+   "memory_defect": "",
+   "tools_defect": "",
+   "binary_defect": ""
+  },
+  {
+   "name": "mistral-small-latest",
+   "host": "mistral",
+   "key": "MISTRAL_API_KEY",
+   "model": "mistral-small-latest",
+   "memory_defect": "",
+   "tools_defect": "",
+   "binary_defect": ""
+  },
+  {
+   "name": "glm-5.3",
+   "host": "zai",
+   "key": "Z_AI_TOKEN",
+   "model": "glm-5.3",
+   "memory_defect": "memory-needs-mistral-key",
+   "tools_defect": "",
+   "binary_defect": ""
+  },
+  {
+   "name": "glm-5.3-flash",
+   "host": "zai",
+   "key": "Z_AI_TOKEN",
+   "model": "glm-5.3-flash",
+   "memory_defect": "memory-needs-mistral-key",
+   "tools_defect": "",
+   "binary_defect": ""
+  },
+  {
+   "name": "claude-haiku-5-5",
+   "host": "anthropic",
+   "key": "ANTHROPIC_API_KEY",
+   "model": "claude-haiku-5-5",
+   "memory_defect": "memory-needs-mistral-key",
+   "tools_defect": "",
+   "binary_defect": ""
+  },
+  {
+   "name": "gpt-6-luna",
+   "host": "openai",
+   "key": "OPENAI_API_KEY",
+   "model": "gpt-6-luna",
+   "memory_defect": "",
+   "tools_defect": "",
+   "binary_defect": ""
+  }
+ ],
+ "persona": {
+  "name": "cap-${name}",
+  "keys": {
+   "${host}": "${key}"
+  },
+  "models": {
+   "head": {
+    "${host}": "${model}"
+   },
+   "sub": {
+    "${host}": "${model}"
+   }
+  },
+  "host": "${host}",
+  "timezone": "Europe/London",
+  "monthly_cap_cents": 300,
+  "scenarios": [
+   {
+    "id": "chat",
+    "steps": [
+     {
+      "say": "What is 17 times 3? Answer with just the number.",
+      "expect": [
+       {
+        "turn_resolved": true
+       },
+       {
+        "reply_regex": "\\b51\\b"
+       },
+       {
+        "no_error_reply": true,
+        "known_defect": "${tools_defect}",
+        "may_pass": true
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "memory",
+    "steps": [
+     {
+      "say": "Please remember permanently: my sister's cat is named Zorblax${suffix}. Confirm when stored.",
+      "settle_s": 5,
+      "expect": [
+       {
+        "turn_resolved": true
+       },
+       {
+        "no_error_reply": true,
+        "known_defect": "${tools_defect}",
+        "may_pass": true
+       },
+       {
+        "api_min": {
+         "path": "/api/mem/stats",
+         "field": "vectors",
+         "min": 1
+        },
+        "known_defect": "${memory_defect}",
+        "may_pass": true
+       },
+       {
+        "reply_not_regex": "correction: that has not been saved"
+       }
+      ]
+     },
+     {
+      "http": {
+       "method": "POST",
+       "path": "/api/orch",
+       "form": {
+        "clearConv": "1"
+       }
+      },
+      "expect": [
+       {
+        "http_status": 200
+       }
+      ]
+     },
+     {
+      "say": "What is my sister's cat called?",
+      "expect": [
+       {
+        "turn_resolved": true
+       },
+       {
+        "reply_contains": "Zorblax${suffix}",
+        "known_defect": "${tools_defect}",
+        "may_pass": true
+       },
+       {
+        "no_error_reply": true,
+        "known_defect": "${tools_defect}",
+        "may_pass": true
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "restart",
+    "needs": [
+     "memory"
+    ],
+    "steps": [
+     {
+      "restart": true
+     },
+     {
+      "say": "After that restart: what is my sister's cat called? Check your memory if you need to.",
+      "expect": [
+       {
+        "turn_resolved": true
+       },
+       {
+        "reply_contains": "Zorblax${suffix}",
+        "known_defect": "${tools_defect}",
+        "may_pass": true
+       },
+       {
+        "no_error_reply": true,
+        "known_defect": "${tools_defect}",
+        "may_pass": true
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "files",
+    "steps": [
+     {
+      "say": "Save a file named notes.txt in project vnc with exactly this text: hello-file-${suffix}. Then confirm.",
+      "expect": [
+       {
+        "turn_resolved": true
+       },
+       {
+        "no_error_reply": true,
+        "known_defect": "${tools_defect}",
+        "may_pass": true
+       },
+       {
+        "file_contains": {
+         "project": "vnc",
+         "name": "notes.txt",
+         "text": "hello-file-${suffix}"
+        },
+        "known_defect": "${tools_defect}",
+        "may_pass": true
+       }
+      ]
+     },
+     {
+      "http": {
+       "method": "POST",
+       "path": "/api/orch",
+       "form": {
+        "clearConv": "1"
+       }
+      },
+      "expect": [
+       {
+        "http_status": 200
+       }
+      ]
+     },
+     {
+      "say": "Read the file vnc/notes.txt and tell me exactly what it says.",
+      "expect": [
+       {
+        "turn_resolved": true
+       },
+       {
+        "tool_called": "files_read",
+        "known_defect": "${tools_defect}",
+        "may_pass": true
+       },
+       {
+        "tool_args_regex": {
+         "tool": "files_read",
+         "regex": "notes\\.txt"
+        },
+        "known_defect": "${tools_defect}",
+        "may_pass": true
+       },
+       {
+        "reply_contains": "hello-file-${suffix}",
+        "known_defect": "${tools_defect}",
+        "may_pass": true
+       },
+       {
+        "no_error_reply": true,
+        "known_defect": "${tools_defect}",
+        "may_pass": true
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "spawn",
+    "steps": [
+     {
+      "say": "Start a sub-agent to work out the 10th Fibonacci number. Do not work it out yourself. Report what it found.",
+      "await_reply_regex": "\\b55\\b",
+      "timeout_s": 300,
+      "settle_s": 5,
+      "expect": [
+       {
+        "log_regex": "spawned job"
+       },
+       {
+        "reply_regex": "\\b55\\b"
+       },
+       {
+        "no_error_reply": true,
+        "known_defect": "${tools_defect}",
+        "may_pass": true
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "web",
+    "steps": [
+     {
+      "say": "Use a web lookup to find the latest stable Python 3 release listed on python.org/downloads. Tell me the version number and the URL you used.",
+      "timeout_s": 300,
+      "settle_s": 30,
+      "expect": [
+       {
+        "turn_resolved": true
+       },
+       {
+        "reply_contains": "${py_latest}",
+        "known_defect": "no-web-lookup",
+        "may_pass": true
+       },
+       {
+        "no_error_reply": true
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "image",
+    "steps": [
+     {
+      "upload": {
+       "project": "chat",
+       "name": "sample.png",
+       "png_rgb": [
+        20,
+        200,
+        40
+       ]
+      },
+      "expect": [
+       {
+        "http_status": 200
+       }
+      ]
+     },
+     {
+      "say": "Attached sample.png (in Files > chat). What color is this image? If you cannot actually see it, say so.",
+      "expect": [
+       {
+        "turn_resolved": true
+       },
+       {
+        "reply_contains": "green"
+       }
+      ],
+      "att": [
+       "chat/sample.png"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "binary_file",
+    "steps": [
+     {
+      "upload": {
+       "project": "chat",
+       "name": "photo.png",
+       "png_rgb": [
+        200,
+        20,
+        20
+       ]
+      },
+      "expect": [
+       {
+        "http_status": 200
+       }
+      ]
+     },
+     {
+      "say": "Use files_read on chat/photo.png, then tell me in one sentence whether you could read it.",
+      "expect": [
+       {
+        "turn_resolved": true
+       },
+       {
+        "no_error_reply": true,
+        "known_defect": "${binary_defect}",
+        "may_pass": true
+       },
+       {
+        "log_not_regex": "HTTP 4\\d\\d",
+        "known_defect": "${binary_defect}",
+        "may_pass": true
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "routine",
+    "steps": [
+     {
+      "http": {
+       "method": "POST",
+       "path": "/api/loops",
+       "form": {
+        "action": "create",
+        "name": "stretch",
+        "prompt": "Remind me to stretch.",
+        "chatId": "owner",
+        "schedule": "{\"kind\":\"daily\",\"at\":\"09:00\"}"
+       }
+      },
+      "expect": [
+       {
+        "http_status": 200
+       },
+       {
+        "body_contains": "\"ok\":true"
+       }
+      ]
+     },
+     {
+      "http": {
+       "method": "GET",
+       "path": "/api/loops"
+      },
+      "expect": [
+       {
+        "body_contains": "stretch"
+       }
+      ]
+     },
+     {
+      "say": "Set up a daily routine: every day at 09:00 remind me to stretch. Then tell me plainly what you did.",
+      "expect": [
+       {
+        "turn_resolved": true
+       },
+       {
+        "reply_regex": "(?i)approv"
+       },
+       {
+        "reply_not_regex": "only (its|the|an) admin|from the device web page"
+       }
+      ]
+     },
+     {
+      "http": {
+       "method": "GET",
+       "path": "/api/loops"
+      },
+      "expect": [
+       {
+        "http_status": 200
+       },
+       {
+        "body_regex": "\"approved\": ?false"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "id": "fold",
+    "steps": [
+     {
+      "say": "For this conversation only, the codeword is PERSIMMON-${suffix}. Just acknowledge it in one short sentence; do not store it in long-term memory.",
+      "expect": [
+       {
+        "turn_resolved": true
+       },
+       {
+        "no_error_reply": true,
+        "known_defect": "${tools_defect}",
+        "may_pass": true
+       }
+      ]
+     },
+     {
+      "say": "Note $i of a long working session. Reply in one short sentence acknowledging the note.",
+      "repeat": 18,
+      "pad": 3000,
+      "settle_s": 2,
+      "expect": [
+       {
+        "turn_resolved": true
+       },
+       {
+        "no_error_reply": true,
+        "known_defect": "${tools_defect}",
+        "may_pass": true
+       },
+       {
+        "reply_not_regex": "correction: that has not been saved"
+       },
+       {
+        "log_not_regex": "fold\\(.*failed|no summary in reply"
+       }
+      ]
+     },
+     {
+      "say": "Earlier in this conversation I told you a codeword. What was it? Answer with the codeword only.",
+      "expect": [
+       {
+        "turn_resolved": true
+       },
+       {
+        "reply_contains": "PERSIMMON-${suffix}"
+       }
+      ]
+     },
+     {
+      "http": {
+       "method": "GET",
+       "path": "/api/log"
+      },
+      "expect": [
+       {
+        "body_regex": "fold\\(owner\\): ok"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

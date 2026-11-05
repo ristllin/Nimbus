@@ -44,12 +44,33 @@ HealthRow providersRow(ProviderPark& park, uint32_t nowMs) {
     v.paused = e[i].paused;
     v.httpStatus = e[i].httpStatus;
     v.recheckInMs = e[i].recheckInMs;
+    v.cause = e[i].cause;
     if (!d.empty()) d += "; ";
     d += parkWords(e[i].provider, v);
   }
   r.state = d.empty() ? "ok" : "degraded";
   r.detail = d.empty() ? "every provider open" : d;
   return r;
+}
+
+void parksJson(ProviderPark& park, uint32_t nowMs, JsonArray out) {
+  ParkEntry e[ProviderPark::kMaxProviders];
+  const size_t n = park.snapshot(e, ProviderPark::kMaxProviders, nowMs);
+  for (size_t i = 0; i < n; i++) {
+    if (e[i].kind == ParkKind::None) continue;
+    ParkVerdict v;
+    v.open = false;
+    v.kind = e[i].kind;
+    v.httpStatus = e[i].httpStatus;
+    v.recheckInMs = e[i].recheckInMs;
+    v.cause = e[i].cause;
+    JsonObject o = out.add<JsonObject>();
+    o["provider"] = e[i].provider;
+    o["kind"] = parkKindSlug(e[i].kind);
+    o["status"] = e[i].httpStatus;
+    o["why"] = parkWords(e[i].provider, v);
+    o["recheckInS"] = e[i].recheckInMs / 1000u;
+  }
 }
 
 std::string healthRowsText(const std::vector<HealthRow>& rows) {

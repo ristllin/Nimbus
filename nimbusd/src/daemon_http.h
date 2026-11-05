@@ -62,11 +62,7 @@ class DaemonHttpTransport : public agent::HttpTransport {
 
     curl_easy_reset(handle_);
 
-    const std::string url = std::string(req.tls ? "https://" : "http://") + req.host +
-                            (req.port && req.port != (req.tls ? 443 : 80)
-                                 ? ":" + std::to_string(req.port)
-                                 : "") +
-                            req.path;
+    const std::string url = buildUrl(req);
 
     curl_slist* hdrs = nullptr;
     for (const auto& h : req.headers)
@@ -77,8 +73,9 @@ class DaemonHttpTransport : public agent::HttpTransport {
     curl_easy_setopt(handle_, CURLOPT_HTTPHEADER, hdrs);
     curl_easy_setopt(handle_, CURLOPT_TIMEOUT_MS, (long)req.timeoutMs);
     curl_easy_setopt(handle_, CURLOPT_CONNECTTIMEOUT_MS, 15000L);
+    BodySink bodySink{&out.body, req.maxResponseBytes, false};
     curl_easy_setopt(handle_, CURLOPT_WRITEFUNCTION, &DaemonHttpTransport::onWrite);
-    curl_easy_setopt(handle_, CURLOPT_WRITEDATA, &out.body);
+    curl_easy_setopt(handle_, CURLOPT_WRITEDATA, &bodySink);
     // Error-header capture (HttpRequest::errHeaders), only when the caller asked:
     // a Mistral 429's x-ratelimit-* headers are the only thing that names the
     // quota window, since its body reads the same for all of them (CUM-465). The sink
@@ -99,24 +96,21 @@ class DaemonHttpTransport : public agent::HttpTransport {
     if (req.method != "GET") curl_easy_setopt(handle_, CURLOPT_FRESH_CONNECT, 1L);
 
     // R1: a body with photos spliced in (http.h BodySplice) goes out whole here.
+    // Named local on purpose: CURLOPT_POSTFIELDS does not copy, so the body must
+    // outlive curl_easy_perform below.
     const std::string body = agent::materializeBody(req);
-    if (req.method == "POST") {
-      curl_easy_setopt(handle_, CURLOPT_POST, 1L);
-      curl_easy_setopt(handle_, CURLOPT_POSTFIELDS, body.data());
-      curl_easy_setopt(handle_, CURLOPT_POSTFIELDSIZE, (long)body.size());
-    } else if (req.method != "GET") {
-      curl_easy_setopt(handle_, CURLOPT_CUSTOMREQUEST, req.method.c_str());
-      if (!body.empty()) {
-        curl_easy_setopt(handle_, CURLOPT_POSTFIELDS, body.data());
-        curl_easy_setopt(handle_, CURLOPT_POSTFIELDSIZE, (long)body.size());
-      }
-    }
+    setMethodAndBody(req, body);
 
     const CURLcode rc = curl_easy_perform(handle_);
     long code = 0;
     curl_easy_getinfo(handle_, CURLINFO_RESPONSE_CODE, &code);
     curl_slist_free_all(hdrs);
 
+    // The read bound stopped this on purpose: what it holds is the answer.
+    if (rc == CURLE_WRITE_ERROR && bodySink.overLimit) {
+      out.status = (int)code;
+      return true;
+    }
     if (rc != CURLE_OK) {
       err = failureText(rc, howFarSent(req));
       out.status = 0;
@@ -124,6 +118,27 @@ class DaemonHttpTransport : public agent::HttpTransport {
     }
     out.status = (int)code;
     return true;
+  }
+
+  static std::string buildUrl(const agent::HttpRequest& req) {
+    return std::string(req.tls ? "https://" : "http://") + req.host +
+           (req.port && req.port != (req.tls ? 443 : 80) ? ":" + std::to_string(req.port) : "") +
+           req.path;
+  }
+
+  void setMethodAndBody(const agent::HttpRequest& req, const std::string& body) {
+    if (req.method == "POST") {
+      curl_easy_setopt(handle_, CURLOPT_POST, 1L);
+      curl_easy_setopt(handle_, CURLOPT_POSTFIELDS, body.data());
+      curl_easy_setopt(handle_, CURLOPT_POSTFIELDSIZE, (long)body.size());
+      return;
+    }
+    if (req.method == "GET") return;
+    curl_easy_setopt(handle_, CURLOPT_CUSTOMREQUEST, req.method.c_str());
+    if (!body.empty()) {
+      curl_easy_setopt(handle_, CURLOPT_POSTFIELDS, body.data());
+      curl_easy_setopt(handle_, CURLOPT_POSTFIELDSIZE, (long)body.size());
+    }
   }
 
   // How far a failed exchange got before it failed: not out (no connection, or
@@ -168,9 +183,21 @@ class DaemonHttpTransport : public agent::HttpTransport {
     return uploaded >= (curl_off_t)agent::bodyLength(req) ? Sent::Whole : Sent::Partly;
   }
 
+  struct BodySink {
+    std::string* body;
+    size_t limit;   // 0 = none
+    bool overLimit;
+  };
   static size_t onWrite(char* p, size_t sz, size_t nm, void* ud) {
-    static_cast<std::string*>(ud)->append(p, sz * nm);
-    return sz * nm;
+    auto* s = static_cast<BodySink*>(ud);
+    const size_t n = sz * nm;
+    if (s->limit && s->body->size() + n >= s->limit) {
+      s->body->append(p, s->limit - s->body->size());
+      s->overLimit = true;
+      return 0;   // curl stops the transfer here
+    }
+    s->body->append(p, n);
+    return n;
   }
 
   // One curl header callback per line. A status line opens a header block and

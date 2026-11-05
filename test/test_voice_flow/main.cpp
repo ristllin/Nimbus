@@ -306,7 +306,7 @@ static void test_every_line_is_pinned() {
   SttResult refused;
   refused.kind = SttResult::Kind::Refused;
   refused.refusal = nimbus::orch::voiceRefusalStatus("funding_cap_reached");
-  TEST_ASSERT_EQUAL_STRING("Voice unavailable. Voice is out of credit for now. Try again later.",
+  TEST_ASSERT_EQUAL_STRING("Voice unavailable. Voice is paused by the service for now. Try again later.",
                            sentence(lineFor(Outcome::SttRefused, refused)).c_str());
   TEST_ASSERT_TRUE(lineFor(Outcome::None).title.empty());
   // Phase lines.
@@ -669,7 +669,8 @@ static void test_named_refusals_and_names() {
   // Known <=> it has its own line: one table backs both, so they cannot drift.
   const std::string generic = nimbus::orch::voiceRefusalStatus("");
   for (const char* c : {"funding_cap_reached", "rate_limited", "audio_duration_unknown",
-                        "unsupported_media_type", "x", ""})
+                        "unsupported_media_type", "upstream_quota_exhausted", "ceiling_reached",
+                        "insufficient_credits_for_call", "budget_exceeded", "account_suspended", "x", ""})
     TEST_ASSERT_EQUAL(nimbus::orch::voiceRefusalKnown(c),
                       nimbus::orch::voiceRefusalStatus(c) != generic);
   TEST_ASSERT_EQUAL_STRING("transcribing", phaseName(Phase::Transcribing));

@@ -362,6 +362,61 @@ static void test_fallback_sentence_copy() {
     }
 }
 
+// Standing work (the engine's promise check feeds on it): a loop counts as
+// standing for a chat exactly when it DELIVERS to that chat - the same
+// resolveDelivery a fire uses. The class: an owner-default loop (empty chatId)
+// is standing for the owner's Telegram chat (or the web chat with no owner
+// Telegram) and for NO other chat, however the world is set up; the pre-fix rule
+// ("empty chatId matches any chat") answers true for a member's chat and would
+// silence the promise check for a report that never reaches them.
+static void test_standing_follows_the_delivery_target() {
+  const char* owner = "100";
+  const char* member = "200";
+  const DeliveryWorld worlds[] = {
+      deliveryWorld("111:tok", "100,200", "100"),   // owner Telegram, member allowed
+      deliveryWorld("111:tok", "100,200", ""),      // owner = first allowlist entry
+      deliveryWorld("", "100,200", "100"),          // bot off: owner-default falls to web
+      deliveryWorld("", "", ""),                    // no Telegram at all
+  };
+  for (const DeliveryWorld& w : worlds) {
+    LoopRecord l;   // enabled, approved, non-reserved, owner-default (empty chatId)
+    l.enabled = true;
+    l.approved = true;
+    const Delivery d = resolveDelivery(l.chatId, w, true);
+    TEST_ASSERT_TRUE_MESSAGE(d.target == std::string("web") || d.target == std::string(owner),
+                             d.target.c_str());
+    TEST_ASSERT_FALSE(d.target == std::string(member));
+    // The pre-fix rule, run as the counter-model: it claims the owner-default
+    // loop is standing for the member's chat. The delivery rule must disagree
+    // exactly there.
+    const bool oldRule = l.chatId.empty() || l.chatId == std::string(member);
+    TEST_ASSERT_TRUE(oldRule);                       // the counter-model fires ...
+    TEST_ASSERT_FALSE(d.target == std::string(member));   // ... and the rule says no
+  }
+}
+
+// The device seam (src/agent/loops_subsystem.cpp hasStanding) must use the
+// delivery rule, not the bare chatId match: a pin, because the seam itself is
+// Arduino-only and cannot run here.
+static void test_hasstanding_uses_the_delivery_rule() {
+  FILE* f = std::fopen("src/agent/loops_subsystem.cpp", "rb");
+  if (!f) { TEST_FAIL_MESSAGE("src/agent/loops_subsystem.cpp not readable"); return; }
+  std::string src;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) src.append(buf, n);
+  std::fclose(f);
+  const size_t fn = src.find("bool hasStanding(");
+  TEST_ASSERT_TRUE_MESSAGE(fn != std::string::npos, "hasStanding not found");
+  const size_t end = src.find('}', fn);
+  TEST_ASSERT_TRUE(end != std::string::npos);
+  const std::string body = src.substr(fn, end - fn);
+  TEST_ASSERT_TRUE_MESSAGE(body.find("deliveryFor(l, world).target == chatId") != std::string::npos,
+                           "hasStanding must count a loop as standing only for the chat it delivers to");
+  TEST_ASSERT_TRUE_MESSAGE(body.find("l.chatId.empty()") == std::string::npos,
+                           "hasStanding must not treat an owner-default loop as standing for any chat");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_channel_of_every_slug);
@@ -382,5 +437,7 @@ int main(int, char**) {
   RUN_TEST(test_telegram_routine_on_a_telegram_device_is_unchanged);
   RUN_TEST(test_origin_chat);
   RUN_TEST(test_fallback_sentence_copy);
+  RUN_TEST(test_standing_follows_the_delivery_target);
+  RUN_TEST(test_hasstanding_uses_the_delivery_rule);
   return UNITY_END();
 }

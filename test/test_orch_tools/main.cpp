@@ -563,6 +563,93 @@ static void test_models_pointer_line() {
   TEST_ASSERT_EQUAL_STRING("[AVAILABLE MODELS] (none configured)\n", modelsPointerLine({}).c_str());
 }
 
+// VNC gap pass, 1 Nov: a tool argument never disappears in silence, on any provider. A name
+// the schema does not list runs the tool and the result says so; a listed name adds nothing.
+static void test_an_unknown_tool_argument_is_reported() {
+  nimbus::orch::ToolRegistry reg;
+  reg.add("t.echo", "echo",
+          [](JsonObjectConst, const nimbus::orch::Principal&) { return nimbus::orch::ToolResult::ok("ran"); },
+          R"({"type":"object","properties":{"query":{"type":"string"}}})");
+  auto call = [&reg](const char* argsJson) {
+    JsonDocument d;
+    deserializeJson(d, argsJson);
+    nimbus::orch::Principal who;
+    who.owner = true;
+    return reg.dispatch("t.echo", d.as<JsonObjectConst>(), who);
+  };
+  TEST_ASSERT_EQUAL_STRING("ran", call(R"({"query":"x"})").output.c_str());
+  const auto r = call(R"({"query":"x","n_results":5})");
+  TEST_ASSERT_TRUE(r.success);
+  TEST_ASSERT_TRUE_MESSAGE(r.output.find("ran") == 0, r.output.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(r.output.find("n_results") != std::string::npos, r.output.c_str());
+}
+
+// The note is judged only against a schema that really closes the argument list. A schema
+// that leaves it open, by any JSON Schema means, flags nothing: external MCP tools register
+// their server's inputSchema verbatim, and a false note rides every call's result.
+static void test_an_open_schema_flags_no_argument() {
+  const char* const open[] = {
+      R"({"type":"object","anyOf":[{"properties":{"id":{}}},{"properties":{"name":{}}}]})",
+      R"({"type":"object","oneOf":[{"properties":{"id":{}}}]})",
+      R"({"type":"object","allOf":[{"properties":{"id":{}}}]})",
+      R"({"type":"object","properties":{"a":{}},"anyOf":[{"properties":{"id":{}}}]})",
+      R"({"type":"object","properties":{"a":{}},"oneOf":[{"properties":{"id":{}}}]})",
+      R"({"type":"object","properties":{"a":{}},"allOf":[{"properties":{"id":{}}}]})",
+      R"({"$ref":"#/$defs/x","$defs":{"x":{"properties":{"id":{}}}}})",
+      R"({"type":"object","properties":{"a":{}},"$ref":"#/$defs/x"})",
+      R"({"type":"object","properties":{"a":{}},"additionalProperties":true})",
+      R"({"type":"object","properties":{"a":{}},"additionalProperties":{"type":"string"}})",
+      R"({"type":"object","properties":{"a":{}},"patternProperties":{"^x":{}}})",
+      R"({"type":"object","description":"the word \"properties\" in prose"})",
+      R"({"type":"object","properties":"not an object"})",
+  };
+  for (const char* schema : open) {
+    nimbus::orch::ToolRegistry reg;
+    reg.add("t.open", "open",
+            [](JsonObjectConst, const nimbus::orch::Principal&) { return nimbus::orch::ToolResult::ok("ran"); }, schema);
+    JsonDocument d;
+    deserializeJson(d, R"({"id":"1"})");
+    nimbus::orch::Principal who;
+    who.owner = true;
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("ran", reg.dispatch("t.open", d.as<JsonObjectConst>(), who).output.c_str(), schema);
+  }
+  // The counter-test: a closed list still names what it does not take.
+  for (const char* schema : {R"({"type":"object","properties":{"a":{}}})",
+                             R"({"type":"object","properties":{"a":{}},"additionalProperties":false})",
+                             R"({"type":"object","properties":{}})"}) {
+    nimbus::orch::ToolRegistry reg;
+    reg.add("t.closed", "closed",
+            [](JsonObjectConst, const nimbus::orch::Principal&) { return nimbus::orch::ToolResult::ok("ran"); }, schema);
+    JsonDocument d;
+    deserializeJson(d, R"({"id":"1"})");
+    nimbus::orch::Principal who;
+    who.owner = true;
+    const auto r = reg.dispatch("t.closed", d.as<JsonObjectConst>(), who);
+    TEST_ASSERT_TRUE_MESSAGE(r.output.find("not read: id") != std::string::npos, schema);
+  }
+}
+
+// An argument the handler reads but the schema keeps out of the model's sight (an alias, a
+// first-party flag) is read, so the note must not say otherwise, and a replaced tool keeps
+// the rule of its new registration.
+static void test_arguments_a_tool_reads_are_never_reported_as_not_read() {
+  nimbus::orch::ToolRegistry reg;
+  reg.add("t.alias", "alias",
+          [](JsonObjectConst, const nimbus::orch::Principal&) { return nimbus::orch::ToolResult::ok("ran"); },
+          R"({"type":"object","properties":{"content":{}}})");
+  reg.alsoReads("t.alias", {"fact", "standing"});
+  JsonDocument d;
+  deserializeJson(d, R"({"fact":"x","standing":true,"other":1})");
+  nimbus::orch::Principal who;
+  who.owner = true;
+  const auto r = reg.dispatch("t.alias", d.as<JsonObjectConst>(), who);
+  TEST_ASSERT_TRUE_MESSAGE(r.output.find("not read: other:") != std::string::npos, r.output.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(r.output.find("fact") == std::string::npos, r.output.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(r.output.find("standing") == std::string::npos, r.output.c_str());
+  // The model is never offered the hidden names.
+  TEST_ASSERT_TRUE(reg.toolSpecs()[0].schemaJson.find("standing") == std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_unknown_tool_turn_field_session_ops);
@@ -592,6 +679,9 @@ int main(int, char**) {
   RUN_TEST(test_models_list_filters_and_refresh);
   RUN_TEST(test_models_list_refusals);
   RUN_TEST(test_models_pointer_line);
+  RUN_TEST(test_an_unknown_tool_argument_is_reported);
+  RUN_TEST(test_an_open_schema_flags_no_argument);
+  RUN_TEST(test_arguments_a_tool_reads_are_never_reported_as_not_read);
   UNITY_END();
   return 0;
 }

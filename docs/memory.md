@@ -152,8 +152,8 @@ the Telegram pending slots (voice, attachment, media, unknown-chat approvals): a
 An object that needs its constructor moves the same way with
 `nimbus::psramObject<T>(args...)`: it is built in place in PSRAM where the
 function-local static was, once, and never destroyed (a device never runs exit
-handlers), under the same rules plus no lock or atomic member. The job engine and the
-turn engine live there (about 3.1 KB), and the provider park keeps its record table
+handlers), under the same rules plus no lock or atomic member. The job engine, the
+turn engine (about 3.1 KB together) and the model store's slots live there, and the provider park keeps its record table
 in PSRAM through `setRecordMemory`, so only its locks and hooks stay internal.
 `tests/hil/test_psram_statics_host.py` fails if one moves back inline, and the
 release gate's static DRAM check (`tools/release_gate/check_static_dram.py`) fails an
@@ -345,6 +345,10 @@ task's serve), so the device also keeps evidence of its own:
   in RTC memory, so after a panic, watchdog or software reset the next boot logs
   `heap: <n> alloc failure(s) before the last reset` with the newest records.
 - `mem.restingLargest`: the largest internal block at rest (the verify gate's input).
+- Reading `intFree`, `intLargest` and `largest=` in the log: "internal" includes the RTC
+  fast block (about 7.4 KB, `intFree - dmaFree`), and a `largest=7156` is that block, not
+  main SRAM. It can hold a task stack but no DMA buffer, so a Wi-Fi or speaker buffer can
+  fail with several KB of "internal" free. For what those buffers can use, read `dmaFree`.
 - `mem.tlsOverlaps`: concurrent work-TLS seen (it stays 0 under the single slot).
 - `mem.loopStackMin`, `mem.panelStackMin`, `mem.vrelStackMin`: worst free stack of
   the main loop, the display render task and the voice-release watcher;
@@ -382,7 +386,19 @@ the heavy-connector-write restart, 2026-07).
   restart.
 - **Small (< 128 B) allocations outside a turn** - stay internal by the extmem
   threshold; cheap and not worth lowering it for the whole device. During a turn
-  they go to PSRAM (above), because a turn's setup made thousands of them.
+  they go to PSRAM (above), because a turn's setup made thousands of them. The same
+  goes for a provider verify or a model-list refresh on its worker: one string per
+  row of the Cumulo router's list, three times over, is most of what took internal free to
+  968 B on a live device. 5.0.0 moves those blocks to PSRAM; the new low on a board is still
+  to be measured. Anything that keeps a string per row of a list gives it a block over 128 B
+  (`assignOffInternal`, `keptId`); `test/test_refresh_small_blocks` counts them.
+- **The speaker's DMA buffers** - opening the speaker takes DMA-capable SRAM until the
+  clip ends: 8 x 1024 B on a raw I2S board (Solide S3), 16 x 1024 B on the ES8311 codec
+  boards (Freenove), whose one channel carries both directions. A cue opens only with
+  those and a reserve for the radio free (8 KB raw, 3.2 KB codec), and a failed open holds
+  the cues back (one minute, doubling to 16). A spoken reply or a track keeps a smaller
+  reserve (3.2 KB raw, 1.6 KB codec) and says when it cannot play. One sound holds the
+  speaker at a time, and the memory is read on its turn (`nimbus/speaker_memory.h`).
 - **FreeRTOS task stacks** - e.g. `tg_poll` (24 KB, `POLL_STACK_BYTES`), which
   runs the whole turn. Internal by nature. The response parse is bounded to
   `NestingLimit(64)` (`kResponseNestingLimit`), well within this stack.

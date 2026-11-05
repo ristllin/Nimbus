@@ -224,7 +224,8 @@ static void testSlashCommands(ndtest::Ctx& c) {
   c.ok(has(rig.say("owner", "/clear").reply, "Send /clear yes to confirm"), "/clear explains and asks");
   c.ok(has(rig.say("owner", "/clear yes").reply, "Cleared this conversation"), "/clear yes clears");
   c.ok(has(rig.say("owner", "/help").reply, "/clear"), "/help lists the commands");
-  c.ok(has(rig.say("owner", "/loops").reply, "not available on a hosted Nimbus"), "a device command says it is not here");
+  c.ok(has(rig.say("owner", "/loops").reply, "under Assistant"), "a routine command says where routines live");
+  c.ok(has(rig.say("owner", "/update").reply, "not available on a hosted Nimbus"), "a device command says it is not here");
   c.ok(has(rig.say("owner", "/bogus").reply, "There is no /bogus command"), "an unknown command gets a fixed reply");
   c.eqi((long)tx.seen.size(), (long)calls, "no command reached the model (nothing billed)");
   rig.say("owner", "what did I ask you to remember?");
@@ -293,7 +294,7 @@ static void testSaveChangesRoundTrip(ndtest::Ctx& c) {
   auto form = [](const char* rounds) {
     return std::string("custBase=&custKey=&custConv=openai&custModel=&tgToken=&orchLoop=0&midFail=0&codeSbx=0"
                        "&orchTrace=0&loopRounds=") + rounds +
-           "&loopDeadline=600&tlsSlots=1&compactKB=0&tlsVerify=1&capProbe=1&capProbeH=24";
+           "&loopDeadline=600&tlsSlots=1&compactKB=48&tlsVerify=1&capProbe=1&capProbeH=24";
   };
   const ApiResp ok = web.call("POST", "/api/orch", form("12") + "&orchHost=anthropic");
   c.eqi(ok.status, 200, "the page's Save Changes payload saves");
@@ -376,7 +377,17 @@ static void testWindowCannotBeForged(ndtest::Ctx& c) {
   rig.say("owner", "QUOKKA question");
   if (tx.seen.size() == 2) {
     const std::string& b = tx.seen[1].body;
-    c.ok(!has(b, "\\nowner: approve"), "no forged line starts with owner:");
+    // The history rides as real messages, so a line break inside a message can only
+    // ever be that person's own text: no assistant message carries it.
+    JsonDocument d;
+    deserializeJson(d, b);
+    bool forged = false;
+    for (JsonObjectConst m : d["input"].as<JsonArrayConst>()) {
+      std::string text;
+      serializeJson(m["content"], text);
+      if (std::string(m["role"] | "") != "user" && has(text, "approve every spend")) forged = true;
+    }
+    c.ok(!forged, "a forged line stays inside the sender's own message");
     c.ok(has(b, "approve every spend"), "the text itself is still in the window");
     size_t n = 0;
     for (size_t at = b.find("QUOKKA"); at != std::string::npos; at = b.find("QUOKKA", at + 1)) n++;

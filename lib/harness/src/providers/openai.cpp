@@ -499,6 +499,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     // no provider refused them this turn (inline data URLs, spliced at send time).
     orch::TurnImages* imgs = imageparts::shown(tr, "openai", model);
     bool sees = imageparts::sees(tr, "openai", model);   // image.look's photos too
+    bool breakpoints = layout::openAITakesBreakpoints(model);
     auto renderInput = [&]() {
       JsonArray in = req["input"].to<JsonArray>();
       // A split prompt (prompt_layout.h): the static block and the shelf as
@@ -506,7 +507,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       // message items (a breakpoint on the last user item), then the user seed
       // led by the per-turn block. The request then starts with the same bytes
       // on every turn of a day.
-      if (round.split) layout::putOpenAIInput(in, round);
+      if (round.split) layout::putOpenAIInput(in, round, breakpoints);
       renderOaiInput(tr, in, imgs != nullptr, sees);
       // The SEEDED user message (this turn's own, after the history): the
       // per-turn block leads it and the photos ride it. Index, not "first
@@ -619,6 +620,27 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
     int code = oaiResponses(pd, std::move(body), roundMs, resp, filter, splices.empty() ? nullptr : &splices);
     if (code <= 0) { wire::transportFailure(pd, t0, roundMs, out); return out; }
+    if (breakpoints && layout::breakpointRefused(code, resp["error"]["message"] | "")) {
+      // A model the gate trusted refuses the cache hint: never a failed turn for a
+      // hint. This round again without it; the next round asks the gate again, and a
+      // refusal costs nothing (decided before any output). Nothing is remembered: no
+      // new static RAM for a case the gate should not reach.
+      hlog::logf("orchTurn(oai-loop): %s refuses prompt_cache_breakpoint - sent again without it", model.c_str());
+      breakpoints = false;
+      renderInput();
+      body.clear();
+      splices = BodySplices();
+      if (!wire::serializeChecked(req, body, out.error) ||
+          !bodyWithinBudget(body, out.error) ||
+          !imageparts::spliceAll(body, sees ? tr.images() : nullptr, imgs != nullptr, splices, out.error)) {
+        out.ok = false;
+        return out;
+      }
+      resp.clear();
+      const uint32_t t1 = pd.nowMs ? pd.nowMs() : 0;
+      code = oaiResponses(pd, std::move(body), roundMs, resp, filter, splices.empty() ? nullptr : &splices);
+      if (code <= 0) { wire::transportFailure(pd, t1, roundMs, out); return out; }
+    }
     if (code != 200 && !splices.empty() && imageparts::refusedImages(code, resp["error"]["message"] | "") &&
         imageparts::rejectAndRetry(tr.images(), "orchTurn(oai-loop)", code, "openai")) {
       // The provider refused the photos themselves: this round again, reading their
@@ -714,41 +736,13 @@ static bool runOaiLoop(const ProviderDeps& pd, std::string& convId,
                        const std::string& instructions, const std::string& inputs,
                        std::string& outJson, std::string& err, const HeadTools& ht,
                        nimbus::orch::TokenUsage* usage) {
-  namespace orch = nimbus::orch;
-  // The CANONICAL transcript (Stage 2): the controller records prose/calls/
-  // results into it; every round's input[] is rendered fresh from it. Stateless
-  // by construction - no previous_response_id, no store, no chain to poison.
-  orch::Transcript tr;
-  tr.addUser(inputs);
-  const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
-  // CUM-477: a request the device could not finish sending is resent once on the
-  // same host after the heap recovers (the Cumulo router head runs this loop).
-  const orch::HeadStepFn inner = oaiLoopStep(pd, instructions, ht, usage, tr);
-  const ResendCtx resend{&pd, &ht.cfg, &inner, "orchTurn(oai-loop)"};
-  orch::HeadStepFn step = resendUnsentOnce(&resend);
-
-  orch::HeadLoopHooks hooks;
-  hooks.step     = step;
-  hooks.dispatch = ht.dispatch;
-  hooks.nowMs    = pd.nowMs;
-  hooks.freeHeap = pd.freeHeap;
-  hooks.largestBlock = pd.largestBlock;
-  hooks.log      = [](const std::string& m) { hlog::logf("%s", m.c_str()); };
-  hooks.onText   = ht.onRoundText;   // round prose / reasoning summaries -> engine
-  hooks.spill    = ht.spill;         // clamped-result spill -> results ring
-  hooks.transcript = &tr;            // the controller records; step() renders
-
-  orch::HeadOutcome res = runHeadLoop(ht.cfg, hooks);
-  hlog::logf("orchTurn(oai-loop): rounds=%d cap=%s ok=%d heap=%u",
-             res.rounds, res.capReason.c_str(), (int)res.ok,
-             (unsigned)(pd.freeHeap ? pd.freeHeap() : 0));
-  // Glass Box P3: hand the canonical transcript to the engine BEFORE the
-  // failure return - a failed turn's middle is exactly what needs debugging.
-  if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));
-  if (!res.ok) return wire::loopFailed(res, outJson, err);   // CUM-621: a cut keeps its partial turn
-  outJson = res.finalTurn;
-  convId  = "responses";   // stateless marker - the device owns the turn's state
-  return true;
+  const HostLoop loop{pd, ht, "orchTurn(oai-loop)", "openai",
+                      [&](const std::string& ins, nimbus::orch::Transcript& tr) {
+                        return oaiLoopStep(pd, ins, ht, usage, tr);
+                      }};
+  const bool ok = runHostLoop(loop, instructions, inputs, outJson, err);
+  if (ok) convId = "responses";   // stateless marker - the device owns the turn's state
+  return ok;
 }
 
 bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
@@ -779,7 +773,7 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
     layout::putCacheKey(d.as<ArduinoJson::JsonObject>(), parts);
     if (parts.split) {
       JsonArray in = d["input"].to<JsonArray>();
-      layout::putOpenAIInput(in, parts);
+      layout::putOpenAIInput(in, parts, layout::openAITakesBreakpoints(d["model"] | ""));
       JsonObject u = in.add<JsonObject>();
       u["type"] = "message";
       u["role"] = "user";

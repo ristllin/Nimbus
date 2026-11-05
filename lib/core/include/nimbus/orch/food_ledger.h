@@ -41,6 +41,10 @@ inline constexpr const char kFoodLedgerHeader[] = "date,meal,items,kcal,protein_
 inline constexpr size_t kLedgerShowRows = 24;
 inline constexpr size_t kLedgerShowBytes = 1400;
 inline constexpr size_t kLedgerRowMax = 160;
+// Today's history rows (the #replaced: / #superseded: rows dated today), shown when
+// the owner disputes a total: at most this many and this many bytes.
+inline constexpr size_t kLedgerHistoryRows = 12;
+inline constexpr size_t kLedgerHistoryBytes = 900;
 
 // The ledger's file name for one person: the owner's food-log.csv; a member's
 // food-log-<letters and digits of the chat id>.csv ("" when nothing usable is left).
@@ -48,12 +52,35 @@ std::string foodLedgerName(bool owner, const std::string& chatId);
 
 // May the person with namespace `ns` write project/name (the file store asks on every
 // write)? The ledger names are reserved: in project food, a name that starts with
-// "food-log" belongs to one person - food-log.csv to the owner, food-log-<id>.csv to
-// the member whose chat id it names - so nobody can create another person's ledger
-// before their first meal (compared without case, as the card's file system opens
+// "food-log" or "food-targets" belongs to one person - food-log.csv to the owner,
+// food-log-<id>.csv to the member whose chat id it names - so nobody can create another
+// person's ledger before their first meal (compared without case, as the card's file system opens
 // names). Every other name: true. The device owner: always true.
 bool ledgerNameWritable(const std::string& project, const std::string& name, const std::string& ns,
                         bool owner);
+
+// The owner's daily targets, as a stored file with a source for each figure. On 29 and 31
+// Oct the head invented targets (250 g protein, 2,500 kcal) that no file held and did the
+// "left today" sum itself. A target the device holds is shown with its source and the
+// device does the sum; with none, the block says where to read one before stating it
+// (food_figures.h then holds the reply to that). The file is a keyed CSV, one row per
+// metric and date; the last row of a metric wins, and a row without a source counts for
+// nothing. A member's targets sit next to that member's ledger.
+inline constexpr const char kFoodTargetsOwnerName[] = "food-targets.csv";
+inline constexpr const char kFoodTargetsHeader[] = "date,metric,target,source";
+std::string foodTargetsName(bool owner, const std::string& chatId);
+struct FoodTargets {
+  double kcal = 0;              // 0 = none stored
+  double protein = 0;
+  std::string kcalSource, proteinSource;
+};
+FoodTargets scanFoodTargets(const std::string& fileText);
+
+// The files that look like the owner's plan, in the order given, at most `kMaxPlanFiles`:
+// a name holding "plan" somewhere about food, weight or health. Where a block can send
+// the head before it states a target.
+inline constexpr size_t kMaxPlanFiles = 3;
+bool looksLikeFoodPlan(const std::string& project, const std::string& name);
 
 // Today's ledger as the prompt and the fold read it.
 struct FoodLedger {
@@ -66,12 +93,21 @@ struct FoodLedger {
   std::string header;    // the stored header row ("" = none)
   std::vector<std::string> rows;   // today's rows shown, oldest first (the newest kept)
   int rowsToday = 0;     // every stored row dated today (shown or not)
+  std::vector<std::string> historyToday;   // today's history rows: the #replaced: /
+                                           // #superseded: rows dated today - rows that
+                                           // changed or disappeared today (lane UPSERT)
   bool hasKcal = false;  // the header has a kcal column
   double kcal = 0;
   int kcalRows = 0;      // rows counted in kcal
   int kcalUnread = 0;    // rows dated today whose kcal is not a plain number
+  int kcalTotalRows = 0; // rows dated today that state a total: not counted
+  int kcalRepeats = 0;   // rows dated today that repeat a meal: counted once
   bool hasProtein = false;
   double protein = 0;
+  int proteinRows = 0;     // rows with a protein figure
+  int proteinUnknown = 0;  // rows dated today with no protein figure: not "0 g", unknown
+  FoodTargets targets;     // the person's stored targets (surfaces fill it)
+  std::vector<std::string> planFiles;   // "project/name" of plan files (surfaces fill it; only without targets)
   std::string mealColumn;  // the stored header's meal column (the keyed write's key; "" = none)
   std::string kcalColumn;  // its kcal column ("" = none)
   bool hasRows() const { return rowsToday > 0; }
@@ -97,14 +133,17 @@ class FoodLedgerScan {
  private:
   void startHeader(const std::string& row);
   void keepRow(const std::string& row);
+  void keepHistory(const std::string& row);
   std::string today_;
   std::string header_;
   bool sawHeader_ = false;
-  std::string kcalColumn_, mealColumn_;
+  std::string kcalColumn_, mealColumn_, dateColumn_;
   std::unique_ptr<CsvDayTally> kcal_, protein_;
   std::vector<std::string> shown_;
   size_t shownBytes_ = 0;
   int rowsToday_ = 0;
+  std::vector<std::string> history_;
+  size_t historyBytes_ = 0;
 };
 
 // The whole-text form (the host lab, the tests). `fileText` "" with exists false =
@@ -129,6 +168,29 @@ inline constexpr const char kFoldTodayLine[] = "[TODAY] ";
 inline constexpr const char kFoldTotalsLine[] = "Totals for ";
 std::string renderFoldDay(const FoodLedger& l);
 
+// The ledger's own earlier rows of the foods this message names, so the same food gets the same
+// figures across days: rows from other days whose items share a food word with the message, newest
+// first, at most kRecallRows and kRecallBytes. Feed every stored row in order, then render. A file
+// of any size: only the kept rows are held.
+inline constexpr size_t kRecallRows = 5;
+inline constexpr size_t kRecallBytes = 600;
+class FoodRecallScan {
+ public:
+  FoodRecallScan(const std::string& today, const std::string& message);
+  void feed(const std::string& row);
+  // "" when nothing matched.
+  std::string render() const;
+
+ private:
+  void readHeader(const std::string& row);
+  std::string today_;
+  std::vector<std::string> words_, header_, kept_;
+  std::string headerRow_;
+  int items_ = -1;
+};
+// The whole-text form (nimbusd, the lab, the tests).
+std::string renderFoodRecall(const std::string& fileText, const std::string& today, const std::string& message);
+
 // Is this text about food: a meal, eating or drinking, calories or protein, a food
 // named, or a weight in grams? Lexical and cheap, for deciding which turns get the
 // food playbook and the empty-ledger line; a miss costs a skill read, never data.
@@ -145,9 +207,29 @@ FoodIntent foodIntentOf(const std::string& text);
 // The one-line hint for a clear intent ("" for Unclear).
 std::string renderFoodIntentHint(FoodIntent intent);
 
+// The food log is ONE file. A .csv whose name says it is a meal or food log, anywhere but
+// the ledger's place, would be a second one the per-turn block never reads: from 31 Oct to
+// 1 Nov the head logged every meal to nutrition/meal_log.csv next to an empty ledger, so
+// no receipt ever saw them and it did the day's sums itself. Why this write is refused
+// (with the one call to use instead), or "" when it may go ahead.
+std::string secondFoodLogRefusal(const std::string& project, const std::string& name, bool owner,
+                                 const std::string& ns);
+
 // Does this text ask about the ledger itself: its list, a total, a sum or an
 // earlier estimate ("give me the list", "your calc is off", "you estimated
 // earlier")? Read only when today's ledger has rows.
 bool mentionsLedger(const std::string& text);
+
+// Does this text dispute the ledger's figures: the owner says a total, a row or a
+// figure is wrong, missing or lost ("Thats wrong ... 1878/2400", "where did the
+// brisket go", "your calc is off")? Lane UPSERT, 4 Nov: a disputed total is
+// answered from the day's history rows, not from memory.
+bool disputesLedger(const std::string& text);
+
+// The dispute block: today's history rows - every row of the day that changed or
+// disappeared today, kept in the file as #replaced: / #superseded: rows - so the
+// owner's dispute can be answered from what the day held before. "" when there are
+// none (or no ledger).
+std::string renderLedgerDispute(const FoodLedger& l);
 
 }  // namespace nimbus::orch

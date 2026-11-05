@@ -2,6 +2,7 @@
 #include "nimbus/orch/spawn_claim.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 
@@ -34,11 +35,14 @@ enum CueFlag : uint32_t {
   kLogObject  = 1u << 14,  // saved: a log, entry, ledger or total within reach ("updated the log")
   kLogFileObject = 1u << 19,  // saved: a log or file noun within reach ("logged it in your day log"), narrower
                               // than kLogObject: a memory "entry" is a save, not a log file (CUM-837)
+  kVoicedVerb = 1u << 20,  // sent: only after a verb of saying or playing ("said it out loud", never "laughed out loud")
   kSourceNoun = 1u << 15,  // source: a noun that counts only when the reply credits it (sourceCredited)
   kSrcOn      = 1u << 16,  // source: "on the <noun>" credits it ("on the label"; never "on the menu")
   kSrcHeading = 1u << 17,  // source: an instrument naming a reading by itself ("Rain gauge: 3.0 mm")
   kSrcName    = 1u << 18,  // source: credits the NAME after it ("Source: National Rail Enquiries")
+  kAck        = 1u << 21,  // saved: an acknowledgement unless it says or was asked to keep it (bareAck)
 };
+static_assert(kAck != kVoicedVerb && kVoicedVerb != kLogFileObject, "each cue flag holds its own bit");
 
 // What a source credited by name looks like (kSrcName cues keep it in Cue::backs).
 enum NameKind : uint32_t {
@@ -77,6 +81,13 @@ constexpr uint32_t kCheckBacks = fxBit(FxKind::Read) | fxBit(FxKind::SubSourced)
 constexpr uint32_t kSwitchBacks = fxBit(FxKind::Config) | fxBit(FxKind::Schedule);
 // A named source (CUM-824): any subject, no plain-future exemption for the credit itself.
 constexpr uint32_t kSrc = kAnySubject | kSourceNoun;
+// v4.6.3 (the 30 Oct ledger investigation): a remove/replace/dedup claim on a
+// log is backed ONLY by a stored row that was actually replaced - the keyed
+// upsert (replaced>0) or a files.edit. The day's replies said "removed",
+// "Replaced today's log", "fixed and deduplicated" over plain appends: the row
+// landed, nothing was replaced, and the claim check passed because any file
+// write backed the class. A plain append (FileWrite) backs nothing here.
+constexpr uint32_t kReplaceBacks = fxBit(FxKind::FileReplace);
 constexpr uint32_t kDurableStoreBacks = fxBit(FxKind::MemWrite) | fxBit(FxKind::MemUpdate) |
                                         fxBit(FxKind::MemPin) | fxBit(FxKind::FileWrite) |
                                         fxBit(FxKind::SkillSave);
@@ -95,7 +106,7 @@ constexpr Cue kCues[] = {
     {C::Saved, "logged", kLogFileObject | kLogSense, 0},
     {C::Saved, "logged", kLogSense, kSavedBacks},
     {C::Saved, "saved", 0, kSavedBacks},
-    {C::Saved, "noted", 0, kNotedBacks},
+    {C::Saved, "noted", kAck, kNotedBacks},
     {C::Saved, "stored", 0, kSavedBacks},
     {C::Saved, "recorded", kSelf | kNoPassive | kLogSense, kSavedBacks},
     {C::Saved, "added to memory", 0, kSavedBacks},
@@ -114,6 +125,17 @@ constexpr Cue kCues[] = {
     {C::Saved, "adjusted", kLogObject, 0},
     {C::Saved, "amended", kLogObject, 0},
     {C::Saved, "corrected", kSelf | kNoPassive, kSavedBacks},
+    // a removal/replacement/dedup claim on a log (v4.6.3): only a stored row
+    // that was actually replaced backs it - the same log-object reach, a much
+    // narrower back ("The black beans entry is now removed from the log",
+    // "Replaced today's log with your figures", "fixed and deduplicated").
+    // "deduplicated" carries no log-noun gate: deduplication is inherently a
+    // records operation, and the real reply put its noun out of the reach
+    // ("The meal log is now fixed and deduplicated").
+    {C::Saved, "removed", kLogObject, kReplaceBacks},
+    {C::Saved, "replaced", kLogObject, kReplaceBacks},
+    {C::Saved, "deduplicated", 0, kReplaceBacks},
+    {C::Saved, "deleted", kLogObject, kReplaceBacks},
     // ---- a deliverable that exists outside the reply
     {C::Deliverable, "written and waiting", kAnySubject, kFileBacks},
     {C::Deliverable, "drafted and waiting", kAnySubject, kFileBacks},
@@ -166,6 +188,13 @@ constexpr Cue kCues[] = {
     {C::Sent, "read it aloud", 0, kSpeakBacks},
     {C::Sent, "read aloud", kSelf, kSpeakBacks},
     {C::Sent, "reading it aloud", 0, kSpeakBacks},
+    // Other ways to say the same (merge review): "said it out loud", "I spoke it aloud", "played it on
+    // the speaker". Each needs the assistant as subject and a verb of saying or playing just before
+    // it: "laughed out loud" and "wondered aloud" are figures of speech. "played it" alone is no
+    // cue, and music that really started backs the playing verbs (kPlayVerbs).
+    {C::Sent, "out loud", kSelf | kVoicedVerb, kSpeakBacks},
+    {C::Sent, "aloud", kSelf | kVoicedVerb, kSpeakBacks},
+    {C::Sent, "on the speaker", kSelf | kVoicedVerb, kSpeakBacks},
     {C::Sent, "reminder set", kAnySubject, kSchedBacks},
     {C::Sent, "reminder is set", kAnySubject, kSchedBacks},
     {C::Sent, "set a reminder", kSelf, kSchedBacks},
@@ -686,6 +715,8 @@ struct Scan {
   // The owner asked how something works or is done ("how do I ...?"): an instrument a
   // reply EXPLAINS is not claimed as read (precision over recall, the review).
   bool ownerAskedHow = false;
+  // The owner asked for something to be kept ("remember ..."): "Noted." then answers that.
+  bool ownerAskedKeep = false;
   explicit Scan(const std::string& str) : s(str), n(str.size() < kScanMax ? str.size() : kScanMax) {}
 };
 
@@ -1212,19 +1243,157 @@ bool sendReference(const Scan& sc, size_t i, size_t len, const Cue& cue) {
   return false;
 }
 
-// A save cue in a reference: a system log noun, a qualified participle, or
-// earlier work named in the sentence.
+// Words that make a figure beside "logged" a standing total, not a save. They only count in the
+// participle's OWN clause: right after it ("1,600 logged so far", "logged to date") or before the
+// figure ("You're at 1,600 kcal logged", "Today so far is 1,600 kcal logged"). A comma, a dash or a
+// bracket ends the clause, so "156 kcal logged, so you're at 1,652 so far" keeps its save claim, and
+// "you're on a roll" is no progress phrase at all.
+constexpr const char* kProgressAfter[] = {"so far", "to date"};
+constexpr const char* kProgressBefore[] = {"so far", "you're at", "you are at"};
+
+bool hasDigit(const Scan& sc, const Tok& t) {
+  for (uint32_t p = t.b; p < t.b + t.len; p++)
+    if (isDigit((unsigned char)sc.s[p])) return true;
+  return false;
+}
+
+bool figureBefore(const Scan& sc, size_t i) {
+  for (size_t d = 1; d <= 4 && d <= i && sameClause(sc, i - d, i); d++)
+    if (hasDigit(sc, sc.toks[i - d])) return true;
+  return false;
+}
+
+bool progressAfter(const Scan& sc, size_t i) {
+  if (i + 2 >= sc.toks.size() || !sameClause(sc, i + 2, i)) return false;
+  for (const char* phrase : kProgressAfter)
+    if (matchPhrase(sc, i + 1, phrase, nullptr)) return true;
+  return false;
+}
+
+bool progressBefore(const Scan& sc, size_t i) {
+  for (size_t k = i; k-- > 0 && sameClause(sc, k, i);)
+    for (const char* phrase : kProgressBefore)
+      if (matchPhrase(sc, k, phrase, nullptr)) return true;
+  return false;
+}
+
+// "(1,600 logged so far)", "You're at 1,600 kcal logged, so 800 are left", "Today so far is 1,600 kcal
+// and 88 g protein logged" (CUM-771): a figure within four words before the participle and a progress
+// phrase in the participle's own clause, adjacent to it as above, state what is ALREADY on record - the
+// owner's running total - and claim no save of this turn. "Logged: cappuccino, 52 kcal", "Cappuccino
+// logged: 52 kcal", "52 kcal logged." and a fresh figure with the total in another clause ("2 eggs,
+// 156 kcal logged, so you're at 1,652 kcal so far") carry no such phrase and stay claims. Nor is it
+// a total when the assistant is the participle's subject ("You're at 1,652 kcal after I logged the
+// eggs", "...and I've logged 156 kcal"): that is a save it claims, by the test qualifiedParticiple
+// applies (a subject or auxiliary just before it that opens no relative clause).
+bool assistantIsSubject(const Scan& sc, size_t i) {
+  for (size_t d = 1; d <= 2 && d <= i; d++) {
+    if (!sameClause(sc, i - d, i)) break;
+    if (subjectOrAux(sc, sc.toks[i - d])) return !relativeClauseAt(sc, i - d);
+  }
+  return false;
+}
+
+bool reportedTotal(const Scan& sc, size_t i) {
+  return !assistantIsSubject(sc, i) && figureBefore(sc, i) && (progressAfter(sc, i) || progressBefore(sc, i));
+}
+
+// "Noted." is how a model says "I read that". On a hosted instance it drew "(Correction: that
+// has not been saved.)" on 18 of 20 turns of a long chat, and nobody had asked for anything to be
+// saved. It claims a save only when the owner asked for one, or its own sentence speaks of
+// keeping it ("Noted, I'll remember"), and not when that sentence takes it back ("noted for this
+// conversation only, not stored"). tests/evals/claim_corpus/noted.json holds the real replies.
+constexpr const char* kKeepWords[] = {"remember", "remembered", "memory", "memories", "stored", "store", "storing", "saved",
+                                      "save", "saving", "permanent", "permanently", "forever", "file", "notes", "log", "logged"};
+// A promise that it lasts past this reply: the same claim in other words ("noted for future chats").
+constexpr const char* kKeepPhrases[] = {"from now on", "next time", "going forward", "future chats", "future chat", "future sessions", "in future",
+                                        "i've set", "i have set", "set that as", "i will use", "i'll use"};
+bool keepPhraseAt(const Scan& sc, size_t k) {
+  for (const char* phrase : kKeepPhrases)
+    if (matchPhrase(sc, k, phrase, nullptr)) return true;
+  return false;
+}
+constexpr const char* kNotKept[] = {"not", "nothing", "no", "never", "won't", "don't", "isn't"};
+constexpr const char* kAckLead[] = {"ok", "okay", "got", "it", "understood", "acknowledged", "sure", "right", "thanks", "yes", "alright", "all"};
+bool bareAck(const Scan& sc, size_t i) {
+  if (sc.ownerAskedKeep) return false;
+  bool keep = false, not_ = false;
+  const uint16_t sent = sc.toks[i].sent;
+  bool opens = true;   // it opens its sentence, after at most an acknowledging word or two
+  for (size_t k = 0; k < sc.toks.size(); k++) {
+    const Tok& t = sc.toks[k];
+    if (t.sent != sent) continue;
+    keep = keep || tokIn(sc.s, t, kKeepWords) || keepPhraseAt(sc, k);
+    not_ = not_ || tokIn(sc.s, t, kNotKept);
+    if (k < i && !tokIn(sc.s, t, kAckLead)) opens = false;
+  }
+  // "Pixel has noted that": the assistant naming itself, the same acknowledgement.
+  const bool named = i >= 2 && sc.toks[i - 1].sent == sent && tokIs(sc.s, sc.toks[i - 1], "has") &&
+                     !tokIn(sc.s, sc.toks[i - 2], kSelfSubjects);
+  return keep ? not_ : opens || named;
+}
+
+// "logged" that names what is in the log, not a row this reply wrote: "from 5 logged items", "the
+// total is unknown until that's logged", "48.4 g is logged". "Lunch is logged." with nothing written
+// is the claim itself.
+constexpr const char* kLoggedThings[] = {"items", "item", "rows", "row", "meals", "meal", "foods", "food", "entries", "entry", "figures", "figure"};
+constexpr const char* kLoggedLater[] = {"until", "till", "once", "when", "after", "unless", "if", "before"};
+constexpr const char* kFigureUnits[] = {"g", "gm", "gram", "grams", "kcal", "kcals", "cal", "cals", "calories"};
+// "after I logged the eggs", "before we logged it" and "after I've logged it" name a save the
+// assistant did: the word before "logged" says so, and that is the claim, not a reference to the log.
+bool assistantLoggedIt(const Scan& sc, size_t i, size_t later) {
+  const Tok& who = sc.toks[i - 1];
+  if (tokIs(sc.s, who, "i") || tokIs(sc.s, who, "we")) return true;
+  return tokIs(sc.s, sc.toks[later], "after") && (tokIs(sc.s, who, "i've") || tokIs(sc.s, who, "we've"));
+}
+
+bool loggedReference(const Scan& sc, size_t i) {
+  const uint16_t sent = sc.toks[i].sent;
+  const bool opens = i == 0 || sc.toks[i - 1].sent != sent;
+  if (!opens && i + 1 < sc.toks.size() && sameClause(sc, i, i + 1) && tokIn(sc.s, sc.toks[i + 1], kLoggedThings) &&
+      !subjectOrAux(sc, sc.toks[i - 1]))
+    return true;
+  for (size_t d = 1; d <= 3 && d <= i && sameClause(sc, i - d, i); d++)
+    if (tokIn(sc.s, sc.toks[i - d], kLoggedLater) && !assistantLoggedIt(sc, i, i - d)) return true;
+  return i >= 2 && sameClause(sc, i - 2, i) && tokIs(sc.s, sc.toks[i - 1], "is") && tokIn(sc.s, sc.toks[i - 2], kFigureUnits);
+}
+
+// A save cue in a reference: an acknowledgement that asks to be kept, a system log noun, a
+// standing total, a logged thing named, a qualified participle, or earlier work named in the
+// sentence.
 bool saveReference(const Scan& sc, size_t i, const Cue& cue) {
-  if ((cue.flags & kLogSense) && logNounBefore(sc, i)) return true;
+  if ((cue.flags & kAck) && bareAck(sc, i)) return true;
+  if ((cue.flags & kLogSense) && (logNounBefore(sc, i) || reportedTotal(sc, i) || loggedReference(sc, i))) return true;
   if (participleLed(cue) && qualifiedParticiple(sc, i)) return true;
   return (cue.cls == C::Saved || cue.cls == C::Deliverable) && earlierInSentence(sc, i);
+}
+
+// A send verb right after "and" or "then" shares the assistant's subject ("I read it aloud and
+// emailed the summary to Sam"), unless the clause turned to someone or something else first: a
+// reported act ("I know Sam read it and shared it", "I saw that it was shared and posted") or a
+// state ("the parcel was packed and delivered").
+constexpr const char* kNotOwnAct[] = {"that",   "who",     "which", "what",    "how",  "when",  "if",
+                                      "while",  "because", "since", "though",  "although",
+                                      "know",   "think",   "see",   "saw",     "heard", "believe",
+                                      "noticed", "hope",   "guess", "is",      "are",  "was",   "were"};
+
+bool sharesSelfSubject(const Scan& sc, size_t i) {
+  if (i == 0 || (!tokIs(sc.s, sc.toks[i - 1], "and") && !tokIs(sc.s, sc.toks[i - 1], "then"))) return false;
+  for (size_t k = i - 1; k-- > 0 && sameClause(sc, k, i);) {
+    if (tokIn(sc.s, sc.toks[k], kSelfSubjects)) return true;
+    if (tokIn(sc.s, sc.toks[k], kNotOwnAct)) return false;
+    // "sent you the file": before a determiner "you" is the object, not someone else acting.
+    if (tokIn(sc.s, sc.toks[k], kOtherSubjects) && !tokIn(sc.s, sc.toks[k + 1], kDeterminers)) return false;
+  }
+  return false;
 }
 
 bool passesScope(const Scan& sc, size_t i, size_t len, const Cue& cue) {
   if (outOfScope(sc, i, len, cue) || notOurAct(sc, i, len, cue) || saveReference(sc, i, cue) ||
       sendReference(sc, i, len, cue))
     return false;
-  return !(cue.flags & kSelf) || selfContext(sc, i, (cue.flags & kNoPassive) != 0);
+  return !(cue.flags & kSelf) || selfContext(sc, i, (cue.flags & kNoPassive) != 0) ||
+         (cue.cls == C::Sent && sharesSelfSubject(sc, i));
 }
 
 // "saved as a permanent note" names a kind of record (a save claim), not a
@@ -1238,6 +1407,23 @@ bool namesAKind(const Scan& sc, size_t i, size_t len, const Cue& cue) {
 // its clause; *num gets the count it states.
 bool spawnRejected(const Scan& sc, size_t i, size_t len, const Cue& cue, int* num) {
   return (cue.flags & kSpawnVerb) && (clauseNegated(sc, i) || !spawnNounNear(sc, i, i + len, num));
+}
+
+// What makes "aloud", "out loud" and "on the speaker" a claim of speech or sound: the verb just
+// before it in its clause, as near as kSelf's subject must be (selfContext).
+constexpr const char* kSayVerbs[] = {"said", "saying", "spoke", "speaking", "read", "reading", "recited", "voiced"};
+constexpr const char* kPlayVerbs[] = {"played", "playing", "put"};
+constexpr size_t kVoicedVerbBefore = 3;
+
+template <size_t N>
+bool verbJustBefore(const Scan& sc, size_t i, const char* const (&verbs)[N]) {
+  for (size_t d = 1; d <= kVoicedVerbBefore && d <= i && sameClause(sc, i - d, i); d++)
+    if (tokIn(sc.s, sc.toks[i - d], verbs)) return true;
+  return false;
+}
+
+bool voicedVerbMissing(const Scan& sc, size_t i, const Cue& cue) {
+  return (cue.flags & kVoicedVerb) && !verbJustBefore(sc, i, kSayVerbs) && !verbJustBefore(sc, i, kPlayVerbs);
 }
 
 // Fault words: in a cause's sentence they make "your phone" a cause ("your Telegram
@@ -1675,14 +1861,26 @@ bool contextMissing(const Scan& sc, size_t i, size_t len, const Cue& cue) {
   return (cue.flags & kLogObject) && !recordNounNear(sc, i, len);
 }
 
+bool voiceNounNear(const Scan& sc, size_t i);
+
+// One clause holds one claim per class, except the send class: "read it aloud and emailed the
+// summary" and "sent a voice message and emailed Sam" need different things behind them, and the
+// first must not stand in for the second.
+uint8_t sendShape(const Scan& sc, size_t i, const Cue& cue) {
+  if (cue.cls != C::Sent) return 0;
+  if (cue.backs != kSendBacks) return cue.backs == kSpeakBacks ? 1 : 2;
+  return voiceNounNear(sc, i) ? 3 : 4;
+}
+
 void addClaim(const Scan& sc, size_t i, size_t c, int num, ClaimScan& out) {
   Claim cl;
   cl.cls = kCues[c].cls;
   cl.cue = (uint16_t)c;
+  cl.shape = sendShape(sc, i, kCues[c]);
   cl.count = (uint8_t)(num > 0 && num < 256 ? num : 0);
   claimSpan(sc, i, (kCues[c].flags & kFigure) != 0 || kCues[c].cls == C::Source, cl.begin, cl.end);
   for (const Claim& o : out.claims)
-    if (o.cls == cl.cls && o.begin == cl.begin) return;
+    if (o.cls == cl.cls && o.begin == cl.begin && o.shape == cl.shape) return;
   out.claims.push_back(cl);
 }
 
@@ -1698,7 +1896,7 @@ void matchAt(const Scan& sc, size_t i, ClaimScan& out) {
     int num = 0;
     const size_t len = matchPhrase(sc, i, cue.phrase, &num);
     if (!len || contextMissing(sc, i, len, cue) || !passesScope(sc, i, len, cue)) continue;
-    if (spawnRejected(sc, i, len, cue, &num) || namesAKind(sc, i, len, cue)) continue;
+    if (spawnRejected(sc, i, len, cue, &num) || namesAKind(sc, i, len, cue) || voicedVerbMissing(sc, i, cue)) continue;
     addClaim(sc, i, c, num, out);
     if (cue.flags & (kLogObject | kLogFileObject)) return;
   }
@@ -1801,7 +1999,13 @@ enum GapVariant : uint8_t {
   kGapNoLogRow = 14,         // a log claim with no row landed in a .csv or .log file (CUM-782)
   kGapQuote = 15,            // a quote presented as a memory or record that nothing holds (CUM-824)
   kGapCauseUnrecorded = 16,  // a reason, asked why, that nothing on record holds (CUM-824)
+  kGapNoReplace = 17,        // a remove/replace/dedup claim with no replaced row behind it
+  kGapNotSpoken = 18,        // "read it aloud" with nothing spoken and no voice message delivered
+  kGapVoiceUnconfirmed = 19, // a voice message whose upload went out but Telegram did not confirm
+  kGapOwnerAction = 20,      // "you told me/confirmed/photographed ..." with no owner message saying it (lane LABEL)
+  kGapHiddenReplace = 21,    // a log claim beside a replace the reply never says "replaced" (lane UPSERT)
 };
+static_assert(kGapHiddenReplace + 1 == kGapVariantCount, "a new gap variant raises kGapVariantCount (claims.h)");
 
 // Phrases that make a send claim a voice-message claim: the delivery itself named as
 // spoken audio. A lone "voice" or "audio" is not enough ("sent you the recording of
@@ -1812,6 +2016,12 @@ constexpr const char* kVoiceNouns[] = {
     "audio version",  "spoken version", "as audio",       "as spoken audio",
 };
 constexpr int kVoiceBefore = 4, kVoiceAfter = 8;
+
+bool musicPlaying(const TurnEffects& fx) {
+  for (const Effect& e : fx.all())
+    if (e.ok && (e.flags & kFxMusic)) return true;
+  return false;
+}
 
 bool backedBy(const TurnEffects& fx, uint32_t mask) {
   for (unsigned k = 0; k < (unsigned)FxKind::kCount; k++)
@@ -1852,6 +2062,15 @@ bool failedWritesQueued(const TurnEffects& fx) {
 }
 
 bool savedGap(const Cue& cue, const TurnEffects& fx, uint8_t* variant) {
+  if (cue.backs == kReplaceBacks) {
+    // The removal/replacement verbs, ahead of the log-row rule below (their log noun
+    // must not let a landed append back them): the turn may well have written rows;
+    // what did not happen is the REPLACEMENT, and the line must say exactly that
+    // (v4.6.3, the 30 Oct ledger investigation).
+    if (backedBy(fx, kReplaceBacks)) return false;
+    *variant = kGapNoReplace;
+    return true;
+  }
   // CUM-782: only a landed row backs a log claim ("logged", "updated the log").
   if (cue.flags & (kLogObject | kLogFileObject)) {
     if (fx.anyOkWith(FxKind::FileWrite, kFxLogRow)) return false;
@@ -1862,6 +2081,16 @@ bool savedGap(const Cue& cue, const TurnEffects& fx, uint8_t* variant) {
   if (fx.anyOk(FxKind::ScratchRamOnly) && fx.countFailed(FxKind::MemWrite) == 0) *variant = kGapRamOnly;
   else if (failedWritesQueued(fx)) *variant = kGapQueued;
   return true;
+}
+
+// True when a voice send failed after its upload went out (kFxUnconfirmed): Telegram may
+// have accepted it, so the line must not say nothing was delivered.
+bool voiceUnconfirmed(const TurnEffects& fx) {
+  for (size_t i = 0; i < fx.size(); i++) {
+    const Effect& e = fx.at(i);
+    if (e.kind == FxKind::Send && !e.ok && (e.flags & kFxUnconfirmed)) return true;
+  }
+  return false;
 }
 
 // A delivery claim: a Telegram send backs it only with Telegram's receipt; a send
@@ -2079,15 +2308,52 @@ struct GapCheck {
     const size_t k = cueToken(sc, cue, cl);
     return k < sc.toks.size() && voiceNounNear(sc, k);
   }
+  // "I played it on the speaker" after a media.play the player confirmed: true of music, whatever
+  // was or was not said. A speech verb ("I said it out loud") still needs speech.
+  bool musicBacks(const Cue& cue, const Claim& cl) {
+    if (!(cue.flags & kVoicedVerb) || !musicPlaying(*ev.fx)) return false;
+    ensureTokens();
+    const size_t k = cueToken(sc, cue, cl);
+    return k < sc.toks.size() && verbJustBefore(sc, k, kPlayVerbs);
+  }
+  // A voice-message claim and a spoken claim ("read it aloud") are the device's own: a hosted
+  // tool cannot send its Telegram voice message or drive its speaker, so they are checked
+  // whatever tools the head had. A spoken claim is backed by speech that played on the speaker
+  // or by a voice message with Telegram's receipt; a voice-message claim only by the receipt.
+  bool voicedGap(bool speaks, ClaimGap& g) {
+    if (voiceDelivered(*ev.fx) || (speaks && backedBy(*ev.fx, kSpeakBacks))) return false;
+    g.variant = voiceUnconfirmed(*ev.fx) ? kGapVoiceUnconfirmed : speaks ? kGapNotSpoken : kGapNoVoiceReceipt;
+    g.deviceOnly = true;
+    return true;
+  }
+  // Lane UPSERT (4 Nov 20:04): the turn replaced a stored row, and the reply says so
+  // nowhere - a log claim beside a hidden replace is a gap. The replace verbs
+  // ("removed", "replaced", "deleted") disclose the change themselves and are
+  // checked by their own rule (kGapNoReplace), so they are not re-checked here.
+  bool replaceDisclosed() {
+    ensureTokens();
+    for (size_t k = 0; k < sc.toks.size(); k++)
+      if (matchPhrase(sc, k, "replac*", nullptr)) return true;
+    return false;
+  }
   bool effectGap(const Cue& cue, const Claim& cl, ClaimGap& g) {
     if (cue.cls == C::Cause) return causeGap(cue, ev.causeEvidence, &g.variant);
-    if (voiceClaim(cue, cl)) {
-      if (voiceDelivered(*ev.fx)) return false;
-      g.variant = kGapNoVoiceReceipt;
-      g.deviceOnly = true;
-      return true;
+    if (musicBacks(cue, cl)) return false;
+    const bool speaks = cue.cls == C::Sent && cue.backs == kSpeakBacks;
+    if (speaks || voiceClaim(cue, cl)) return voicedGap(speaks, g);
+    if (!isGap(cue, cl, *ev.fx, &g.variant)) {
+      // Lane UPSERT (4 Nov 20:04): the turn replaced a stored row, and the reply says so
+      // nowhere - a plain save claim ("Logged.") beside a hidden replace is a gap. The
+      // replace verbs ("removed", "replaced", "deleted") disclose the change themselves
+      // (kGapNoReplace checks them), and the log verbs ("updated the log") honestly cover
+      // a replace as an update, so neither is re-checked here.
+      if (cue.cls == C::Saved && cue.backs == kSavedBacks && ev.fx->anyOk(FxKind::FileReplace) &&
+          !replaceDisclosed()) {
+        g.variant = kGapHiddenReplace;
+        return true;
+      }
+      return false;
     }
-    if (!isGap(cue, cl, *ev.fx, &g.variant)) return false;
     if (cue.cls == C::Checked) return !pinStateChecked(cue, cl);
     if (g.variant != kGapPinNoop) return true;
     if (pinCovered < 0) {
@@ -2129,6 +2395,12 @@ const char* savedWhat(uint8_t variant) {
   if (variant == kGapNoLogRow)
     return "no row landed in a log file this turn; only a files.append (or a file saved again) that adds or "
            "replaces a row updates a log";
+  if (variant == kGapNoReplace)
+    return "no stored row was replaced this turn; only a keyed files.append that reports a replaced row, a "
+           "files.edit or a whole-file save over the stored file removes or replaces one";
+  if (variant == kGapHiddenReplace)
+    return "this turn replaced a stored row, but the reply never says so; say which row was replaced and what "
+           "it held (the receipt names it)";
   if (variant == kGapQueued) return "the memory write was only queued; it is not stored yet";
   return variant == kGapRamOnly ? "it was kept in RAM only; saving failed" : "nothing was saved";
 }
@@ -2137,6 +2409,9 @@ const char* savedWhat(uint8_t variant) {
 const char* sentWhat(uint8_t variant) {
   if (variant == kGapNoVoiceReceipt)
     return "no voice message reached Telegram (no delivery receipt with a message_id)";
+  if (variant == kGapVoiceUnconfirmed)
+    return "Telegram did not confirm the voice message (no delivery receipt); it may not have arrived";
+  if (variant == kGapNotSpoken) return "nothing was spoken aloud";
   return variant == kGapNoReceipt
              ? "the Telegram send was only queued: no delivery receipt (message_id) came back, so it "
                "is not known to have arrived"
@@ -2191,13 +2466,15 @@ size_t claimCueCount() { return kCueCount; }
 ClaimCueInfo claimCue(size_t i) {
   const Cue& c = kCues[i < kCueCount ? i : 0];
   return ClaimCueInfo{c.cls, c.phrase, (c.flags & kSelf) != 0, (c.flags & kFaultCtx) != 0,
-                      (c.flags & kLogObject) != 0, (c.flags & kSourceNoun) != 0, (c.flags & kSrcName) != 0};
+                      (c.flags & kLogObject) != 0, (c.flags & kSourceNoun) != 0, (c.flags & kSrcName) != 0,
+                      (c.flags & kVoicedVerb) != 0};
 }
 
-ClaimScan scanClaims(const std::string& reply, bool ownerAskedHow) {
+ClaimScan scanClaims(const std::string& reply, bool ownerAskedHow, bool ownerAskedKeep) {
   ClaimScan out;
   Scan sc(reply);
   sc.ownerAskedHow = ownerAskedHow;
+  sc.ownerAskedKeep = ownerAskedKeep;
   if (mostlyNonEnglish(reply, sc.n)) {
     out.skippedNonEnglish = true;
     return out;
@@ -2205,6 +2482,35 @@ ClaimScan scanClaims(const std::string& reply, bool ownerAskedHow) {
   tokenize(sc);
   for (size_t i = 0; i < sc.toks.size(); i++) matchAt(sc, i, out);
   return out;
+}
+
+const char kNoLaterConfirmationTail[] = "(Correction: no confirmation will follow about that. Ask any time to check.)";
+
+namespace {
+bool hasAnyOf(const std::string& hay, std::initializer_list<const char*> needles) {
+  for (const char* n : needles)
+    if (hay.find(n) != std::string::npos) return true;
+  return false;
+}
+}  // namespace
+
+bool promisesLaterSaveConfirmation(const std::string& reply) {
+  std::string low;
+  low.reserve(reply.size());
+  for (char c : reply) low += (char)std::tolower((unsigned char)c);
+  size_t from = 0;
+  while (from < low.size()) {
+    size_t end = low.find_first_of(".!?\n", from);
+    if (end == std::string::npos) end = low.size();
+    const std::string s = low.substr(from, end - from);
+    from = end + 1;
+    const bool future = hasAnyOf(s, {"i'll ", "i will ", "i\xE2\x80\x99ll "});
+    const bool saved = hasAnyOf(s, {"stored", "saved", "the write", "in memory"});
+    const bool later = hasAnyOf(s, {"next message", "next turn", " once ", " when ", " after "});
+    if (!future || !saved) continue;
+    if (hasAnyOf(s, {"confirm"}) || (later && hasAnyOf(s, {"let you know", "tell you", "notify you"}))) return true;
+  }
+  return false;
 }
 
 std::vector<ClaimGap> claimGaps(const std::string& reply, const ClaimScan& scan,
@@ -2720,6 +3026,23 @@ bool ownerAskedHow(const std::string& ownerText) {
          pad.rfind(" how are", 0) == 0;
 }
 
+bool ownerAskedKeep(const std::string& ownerText) {
+  const std::string pad = " " + normalizedWords(ownerText) + " ";
+  for (const char* q : {" remember ", " forget ", " make a note ", " note that ", " note this ", " note it ", " note down ",
+                        " write this down ", " write that down ", " write it down ", " jot ", " save this ", " save that ",
+                        " save it ", " store this ", " store that ", " store it ", " keep this ", " keep that ", " log this ",
+                        " log that ", " log it "}) {
+    const bool forget = std::strcmp(q, " forget ") == 0;   // "forget" asks to keep only when negated
+    for (size_t at = pad.find(q); at != std::string::npos; at = pad.find(q, at + 1)) {
+      const std::string before = pad.substr(at > 8 ? at - 8 : 0, at > 8 ? 8 : at);
+      const bool negated = before.find(" not") != std::string::npos || before.find("dont") != std::string::npos ||
+                           before.find(" don t") != std::string::npos || before.find("never") != std::string::npos;
+      if (negated == forget) return true;
+    }
+  }
+  return false;
+}
+
 // The sentence names one of `subjects` (" "-separated): a single word as a word, a
 // multi-word entry as a phrase ("sub agent" names a sub-agent; a bare "agent" is
 // everyday English and never names one). It is about a past sub-agent.
@@ -2774,6 +3097,117 @@ bool unrecordedReasonGap(const std::string& reply, const std::string& records, c
       for (const std::string& w : missing) out->missing += (out->missing.empty() ? "" : ", ") + w;
     }
     return true;
+  }
+  return false;
+}
+
+// ---- owner-action claims (lane LABEL, 2 Nov) ----------------------------------
+// An unquoted claim about what the owner did or said this turn ("you told me about the
+// 4 fries", "the M&S pack you photographed", "you confirmed it"): the clause after the
+// phrase must be the owner's own - at least one content word (five letters or more, not
+// a stop word) of it must appear in the owner's words this turn. A phrase that introduces
+// a quote is the record-quote rule's, and a phrase inside quotes is the owner being
+// quoted back, so both are skipped here. `ownerWords` is the owner's own words this turn
+// (their message and their earlier rows in the window), normalizedWords form.
+constexpr const char* kOwnerActionPhrases[] = {
+    "you told me", "you confirmed", "you photographed", "you said", "you wrote",
+    "you sent", "you showed", "you mentioned", "your message said",
+};
+
+// A word of the claim against the owner's words: the whole word, or its stem with the
+// word boundary kept ("frives" backs "frives", never "fries" - the 2 Nov near-match).
+bool ownerWordOnRecord(const std::string& w, const std::string& hay) {
+  if (hay.find(" " + w + " ") != std::string::npos) return true;
+  for (const char* suf : {"ing", "ed", "es", "s"}) {
+    const size_t n = std::strlen(suf);
+    if (w.size() > n + 3 && w.compare(w.size() - n, n, suf) == 0 &&
+        hay.find(" " + w.substr(0, w.size() - n) + " ") != std::string::npos)
+      return true;
+  }
+  return false;
+}
+
+// Words of the owner-action phrases themselves: they carry the claim, not its content.
+bool ownerActionPhraseWord(const std::string& w) {
+  for (const char* p : kOwnerActionPhrases)
+    for (const char* tok = p; *tok;) {
+      const char* sp = std::strchr(tok, ' ');
+      const std::string word(tok, sp ? (size_t)(sp - tok) : std::strlen(tok));
+      if (w == word) return true;
+      if (!sp) break;
+      tok = sp + 1;
+    }
+  return false;
+}
+
+bool ownerActionGap(const std::string& reply, const std::string& ownerWords, ClaimGap* out) {
+  if (ownerWords.empty()) return false;
+  const std::string hay = " " + ownerWords + " ";
+  // The owner sent media this turn (a photo, a file, a voice note: the message's
+  // media segment is the owner's words on a media-only turn): "you
+  // photographed/sent/showed" is then backed by the segment itself, and the rest of
+  // the sentence describes what the media shows, not what the owner said.
+  const bool ownerSentMedia = hay.find(" image ") != std::string::npos ||
+                              hay.find(" photo ") != std::string::npos ||
+                              hay.find(" file ") != std::string::npos ||
+                              hay.find(" voice note ") != std::string::npos ||
+                              hay.find(" document ") != std::string::npos;
+  // Folded in place, one byte per byte, so the offsets stay the reply's.
+  std::string low;
+  low.reserve(reply.size() < kScanMax ? reply.size() : kScanMax);
+  for (size_t p = 0; p < reply.size() && p < kScanMax; ++p) {
+    const unsigned char c = (unsigned char)reply[p];
+    low += (c >= 'A' && c <= 'Z') ? (char)(c | 0x20) : (char)c;
+  }
+  const std::vector<std::pair<size_t, size_t>> quotes = quoteSpans(reply);
+  auto inQuotes = [&](size_t p) {
+    for (const auto& q : quotes)
+      if (p >= q.first && p < q.second) return true;
+    return false;
+  };
+  const std::vector<std::pair<size_t, size_t>> sentences = sentenceSpans(reply);
+  for (const char* phrase : kOwnerActionPhrases) {
+    const size_t n = std::strlen(phrase);
+    for (size_t p = low.find(phrase); p != std::string::npos; p = low.find(phrase, p + 1)) {
+      const bool startOk = p == 0 || !wordish((unsigned char)low[p - 1]);
+      const bool endOk = p + n >= low.size() || !wordish((unsigned char)low[p + n]);
+      if (!startOk || !endOk || inQuotes(p)) continue;
+      // The whole sentence the phrase sits in, minus the phrase itself.
+      size_t sb = 0, se = low.size();
+      for (const auto& sp : sentences)
+        if (p >= sp.first && p < sp.second) { sb = sp.first; se = sp.second; break; }
+      bool introducesQuote = false;
+      for (const auto& q : quotes)
+        if (q.first >= p && q.first < se) { introducesQuote = true; break; }
+      if (introducesQuote) continue;   // the quoted-record rule checks that one
+      // A media phrase ("you photographed/sent/showed") with media in the owner's
+      // message this turn is backed by that media segment: the clause after it says
+      // what the photo or file shows, which the head read from the media itself.
+      const bool mediaPhrase = std::strcmp(phrase, "you photographed") == 0 ||
+                               std::strcmp(phrase, "you sent") == 0 ||
+                               std::strcmp(phrase, "you showed") == 0;
+      if (mediaPhrase && ownerSentMedia) continue;
+      std::string ns = normalizedWords(low.substr(sb, p - sb) + " " + low.substr(p + n, se - p - n)) + " ";
+      bool any = false, missing = false;
+      for (size_t b = 0, w; (w = ns.find(' ', b)) != std::string::npos; b = w + 1) {
+        const std::string word = ns.substr(b, w - b);
+        if (word.size() < 5 || reasonStop(word) || ownerActionPhraseWord(word)) continue;
+        if (ownerSentMedia && (word == "photographed" || word == "photo" || word == "sent" ||
+                               word == "showed" || word == "attached"))
+          continue;
+        any = true;
+        if (!ownerWordOnRecord(word, hay)) missing = true;
+      }
+      // "You photographed/sent/showed" with no media in the owner's message this turn is
+      // itself the unbacked claim, whatever the rest of the sentence says.
+      if ((any && missing) || (mediaPhrase && !ownerSentMedia)) {
+        if (out) {
+          *out = spanGap(reply, sb, se, ClaimClass::Source, kGapOwnerAction);
+          out->name = phrase;
+        }
+        return true;
+      }
+    }
   }
   return false;
 }
@@ -2870,6 +3304,12 @@ std::string savedTail(uint8_t variant) {
   if (variant == kGapNoLogRow) return "(Correction: no row was added to a log file this turn.)";
   if (variant == kGapQueued)
     return "(Correction: that has not been saved yet; it is waiting on the device to be stored.)";
+  if (variant == kGapNoReplace)
+    return "(Correction: no stored row was replaced this turn - an append adds a new row; a "
+           "removal or dedup needs a keyed update (files.append with a key) or files.edit.)";
+  if (variant == kGapHiddenReplace)
+    return "(Correction: this turn replaced a stored row and the reply does not say so - "
+           "say which row and what it held.)";
   return variant == kGapRamOnly
              ? "(Note: this is kept only until the next restart; saving it permanently failed.)"
              : "(Correction: that has not been saved.)";
@@ -2878,6 +3318,9 @@ std::string savedTail(uint8_t variant) {
 // The send-class tail: no voice receipt, a queued Telegram send, or nothing sent.
 std::string sentTail(uint8_t variant) {
   if (variant == kGapNoVoiceReceipt) return "(Correction: no voice message was delivered.)";
+  if (variant == kGapVoiceUnconfirmed)
+    return "(Note: Telegram did not confirm the voice message, so it may not have arrived.)";
+  if (variant == kGapNotSpoken) return "(Correction: that was not spoken aloud.)";
   return variant == kGapNoReceipt
              ? "(Note: that is queued for Telegram; the device has no delivery receipt for it yet.)"
              : "(Correction: that has not been sent.)";
@@ -2886,6 +3329,8 @@ std::string sentTail(uint8_t variant) {
 // The source-class tail: a quote no record holds, a name, or a noun (with the owner's figures).
 static std::string sourceTail(const ClaimGap& g) {
   if (g.variant == kGapQuote) return "(Correction: the device has no record of those words.)";
+  if (g.variant == kGapOwnerAction)
+    return "(Correction: no message from you this turn says that, so I am not treating it as something you said.)";
   if (!g.name.empty())
     return "(Correction: nothing the device read this turn came from " + g.name + ", so that source is not confirmed.)";
   const std::string from = "(Correction: the device read nothing from " + sourceNoun(g.source) + " this turn";
@@ -2919,6 +3364,12 @@ std::string claimTailLine(const ClaimGap& g) {
   }
 }
 
+bool tailCarriesSpeechGap(const std::string& tail) {
+  for (uint8_t v : {(uint8_t)kGapNoVoiceReceipt, (uint8_t)kGapVoiceUnconfirmed, (uint8_t)kGapNotSpoken})
+    if (tail.find(sentTail(v)) != std::string::npos) return true;
+  return false;
+}
+
 // The statement inside a line, without its "(Correction: " or "(Note: " lead,
 // so two classes that say the same thing ("nothing was pinned this turn") say
 // it once.
@@ -2934,7 +3385,10 @@ std::string claimTail(const std::vector<ClaimGap>& gaps) {
       if ((size_t)g.cls != c) continue;
       const std::string line = claimTailLine(g);
       if (!line.empty() && out.find(statementOf(line)) == std::string::npos) out += "\n\n" + line;
-      break;   // one line per class
+      // One line per class. The send class alone covers claims a correction cannot merge: "not
+      // spoken aloud" says nothing about the email in the same reply, so each of its lines stays
+      // (the repeat check above keeps it to one line per different thing).
+      if (g.cls != C::Sent) break;
     }
   }
   return out;

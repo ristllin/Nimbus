@@ -1,0 +1,17 @@
+{
+  "id": "lc-photo-misread",
+  "title": "A described lunch photo is logged as the owner described it",
+  "rows": ["OIR-03"],
+  "replays": "The 28 Oct lunch photo class: the plate was chicken, lentils and hummus; the log said beef, rice and coleslaw.",
+  "clock": "{{TODAY}} {{DOW}} 12:11 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "say", "text": "Here is my lunch photo: a plate of chicken, lentils and hummus, with a small piece of flatbread on the side."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "ledger_contains_any", "params": {"any": ["chicken", "lentils", "hummus"]}},
+    {"id": "ledger_forbids", "params": {"forbidden": ["beef", "rice", "coleslaw"], "where": "ledger"}}
+  ]
+}

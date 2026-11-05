@@ -25,7 +25,12 @@
 //     the pump);
 //   * the staged system turn (the post-update awareness turn) starts only after
 //     kQuietMs with no turn ending and kQuietMs after it was staged, so an owner who
-//     writes right after the update notice is answered first.
+//     writes right after the update notice is answered first;
+//   * the idle re-check of a parked provider starts only after kQuietMs with no turn
+//     ending. It is one more request on this task, and a provider that hangs holds the
+//     task until the head's timeout. No bound forces it: the provider being re-checked
+//     is by definition not the one answering this conversation, and a brisk chat that
+//     does need it reaches it through its own turns.
 // This decides only what STARTS: a message that arrives while a fold or the system
 // turn is running waits for it (the turn task is single by design). Routines,
 // sub-agent synthesis and the nightly upkeep are not gated, and a fold queued by a
@@ -66,6 +71,9 @@ class OwnerFirstGate {
   }
   // No fold is due: a later one starts its own wait.
   void noteFoldNotDue() { deferring_ = false; }
+
+  // The idle re-check of a parked provider may start now.
+  bool parkRecheckMayStart(bool pageHeld, uint32_t nowMs) const { return !pageHeld && quiet(nowMs); }
 
   // The staged system turn (staged at `stagedAtMs`) may start now.
   bool systemTurnMayStart(bool pageHeld, uint32_t nowMs, uint32_t stagedAtMs) const {

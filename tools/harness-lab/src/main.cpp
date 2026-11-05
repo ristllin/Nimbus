@@ -9,6 +9,7 @@
 //   nimbus-lab reply-markup           turn-contract live suite L-L1 (lane_l_live.cpp)
 //   nimbus-lab spawn-e2e              turn-contract live suite L-L2 (lane_l_live.cpp)
 //   nimbus-lab models-live [leg]      models on demand live suite (lane_h_live.cpp)
+//   nimbus-lab mg-live [leg]          Mistral and GLM live legs (lane_mg_live.cpp)
 //
 // Flags: --host=<h> --model=<m> --verbose --no-tools --no-embed, plus the run pins
 // (--effort --max-tokens --ceiling-ms --rounds --fault --record; see lab_options.h
@@ -23,8 +24,10 @@
 #include "lab_options.h"
 #include "lab_rig.h"
 #include "honesty_eval.h"
+#include "photo_eval.h"
 #include "lane_h_live.h"
 #include "lane_l_live.h"
+#include "lane_mg_live.h"
 #include "scenarios.h"
 #include "selftest.h"
 #include "sub_cmd.h"
@@ -59,6 +62,11 @@ void usage() {
       "                            --head-model=<id> --reps=<n> --out=<json>\n"
       "                            all three: --effort=<low|...|none> pins Anthropic effort\n"
       "                            (none or adapter = the adapter's own effort)\n"
+      "  photo-eval                the food-photo accuracy driver: one meal-analysis turn\n"
+      "                            per photo in --dir's manifest (photos.json), replies\n"
+      "                            recorded verbatim to --out; scoring happens outside\n"
+      "                            --shared-chat keeps every photo in one chat; --no-drain\n"
+      "                            leaves uploads queued, so a long run reaches inline photos\n"
       "\n"
       "Options:\n"
       "  --host=<openai|anthropic|mistral>   force the provider (default: priority order)\n"
@@ -150,6 +158,7 @@ int main(int argc, char** argv) {
   std::string forceHost, forceModel;
   lab::SubOptions sub;
   lab::LaneLOptions laneL;   // --reps is shared: the lane L suites and the honesty eval
+  lab::PhotoEvalOptions pe;
   std::string only;
 
   // The environment first (NIMBUS_LAB_*), so every flag below overrides it.
@@ -183,6 +192,10 @@ int main(int argc, char** argv) {
     else if (a.rfind("--only=", 0) == 0)     only = a.substr(7);
     else if (a.rfind("--timeout=", 0) == 0)  sub.timeoutS = std::stoi(a.substr(10));
     else if (a.rfind("--record=", 0) == 0)   sub.recordDir = opt.recordDir = a.substr(9);
+    else if (a.rfind("--dir=", 0) == 0)      pe.dir = a.substr(6);
+    else if (a.rfind("--prompt=", 0) == 0)   pe.prompt = a.substr(9);
+    else if (a == "--shared-chat")           pe.sharedChat = true;
+    else if (a == "--no-drain")              pe.noDrain = true;
     else if (laneLFlag(a, laneL)) {
       // --effort is also a run pin (chat, scenarios): both read it, and the
       // suites' "none" is the pin's "adapter".
@@ -286,6 +299,7 @@ int main(int argc, char** argv) {
 
   if (cmd == "reply-markup" || cmd == "spawn-e2e")
     return runLaneL(cmd, env, laneL, opt.verboseHttp, sub.timeoutS);
+  if (cmd == "mg-live") return lab::cmdMgLive(env, args.size() > 1 ? args[1] : "all");
   if (cmd == "models-live") {
     laneL.verbose = opt.verboseHttp;
     return lab::cmdModelsLive(env, laneL, args.size() > 1 ? args[1] : "all");
@@ -293,6 +307,11 @@ int main(int argc, char** argv) {
   if (cmd == "honesty") {
     if (laneL.reps < 1 || laneL.reps > 20) { std::fprintf(stderr, "--reps must be 1..20\n"); return 2; }
     return lab::runHonestyEval(env, opt, laneL.reps, only);
+  }
+
+  if (cmd == "photo-eval") {
+    pe.out = laneL.out;   // --out= is the suites' flag (laneLFlag); this driver reads the same one
+    return lab::cmdPhotoEval(env, opt, pe);
   }
 
   if (cmd == "scenarios") {

@@ -14,6 +14,7 @@
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
 #include "nimbus/harness/reply_overflow.h"   // the whole text of a reply the envelope cut (L19-36)
+#include "nimbus/orch/router_refusals.h"   // the router's refusal contract
 #include "nimbus/orch/provider_error.h"   // providerErrLine, oneLineText - the one error-line shape (CUM-620)
 #include "nimbus/orch/model_key.h"      // lane QW4: kModelKeyCap - the model an estimate names
 #include "nimbus/orch/seam_meter.h"     // lane QW4: a cancelled job's usage counted
@@ -21,6 +22,7 @@
 #include "nimbus/orch/spend_ceiling.h"  // lane DEF: the paid-call gate before any request
 #include "nimbus/orch/token_usage_json.h"   // lane QW4: tokenUsageFromJson - that usage read
 #include "nimbus/orch/wire_limits.h"   // kJsonStrGuard - the provider-bound string ceiling
+#include "nimbus/json_strict.h"        // serializeStrictJson: no raw control byte leaves
 #include "nimbus/utf8.h"               // utf8Valid / utf8Repair / boundary-safe cuts
 
 // wire.h - INTERNAL helpers shared by the four portable provider files. Not part
@@ -98,14 +100,24 @@ inline FabricErr subTransportErr(const ProviderDeps& pd, uint32_t sentAtMs, uint
   return elapsedMs >= (deadlineMs / 10) * 9 ? FabricErr::Timeout : FabricErr::Network;
 }
 
+// A synchronous sub's non-200 that is not a key or quota refusal. A gateway that lost its
+// upstream (502, 504) leaves the run going: Mistral's and Z.ai's close at 60 s while the
+// model writes on, so it may have run and billed. Any other status is the API's own word
+// that the request failed.
+inline FabricErr subHttpErr(int code) {
+  return code == 502 || code == 504 ? FabricErr::Timeout : FabricErr::RemoteFail;
+}
+
 // ---- the one per-provider park, fed by every harness request (L19-8) -------------
-// The provider a request host belongs to: the four API hosts, the Cumulo router (a
-// routed request's host is the router's), else "" (a LAN endpoint, a test host).
-inline std::string parkProviderOf(const ProviderDeps& pd, const std::string& host) {
+// The provider a request belongs to: the four API hosts, the Cumulo router (a routed
+// request's host is the router's, and its path says so whatever deps carried it: a
+// sub-agent's has no router override), else "" (a LAN endpoint, a test host).
+inline std::string parkProviderOf(const ProviderDeps& pd, const std::string& host, const std::string& path) {
   if (host == "api.anthropic.com") return "anthropic";
   if (host == "api.openai.com") return "openai";
   if (host == "api.mistral.ai") return "mistral";
   if (host == "api.z.ai" || host == "open.bigmodel.cn") return "zai";
+  if (path.rfind("/router/", 0) == 0) return "cumulo";
   std::string base = pd.routerBase ? pd.routerBase() : std::string();
   const size_t sch = base.find("://");
   if (sch != std::string::npos) base = base.substr(sch + 3);
@@ -113,29 +125,89 @@ inline std::string parkProviderOf(const ProviderDeps& pd, const std::string& hos
   return !base.empty() && base == host ? "cumulo" : std::string();
 }
 
-// An answered request that refused for billing (every 402, the shared token table)
+// An answered request that refused for billing (a provider's every 402, the shared token
+// table; the router by its reason)
 // or with a refused key (401) closes the provider for EVERY seam, whatever called
 // it: the head, a fold, a sub-agent dispatch or poll. One place, so no adapter can
 // forget. A 403 is left to the typed seams (it may name one model or endpoint), and
 // a success is noted only where a model call succeeded (a free session poll that
 // answers 200 says nothing about the account's credit).
-inline void noteParkRefusal(const ProviderDeps& pd, const std::string& host, int status,
-                            const JsonDocument& doc) {
+// `resending`: the wire sends this request once more, so that answer is the verdict.
+inline void noteParkRefusal(const ProviderDeps& pd, const std::string& host, const std::string& path, int status,
+                            const JsonDocument& doc, bool resending = false) {
   if (status < 400) return;
-  const std::string prov = parkProviderOf(pd, host);
+  const std::string prov = parkProviderOf(pd, host, path);
   if (prov.empty()) return;
   std::string text;
   serializeJson(doc, text);
-  const nimbus::orch::ParkKind kind = nimbus::orch::parkKindFor(status, text);
-  if (kind == nimbus::orch::ParkKind::None || (kind == nimbus::orch::ParkKind::Auth && status != 401))
+  const uint32_t now = pd.nowMs ? pd.nowMs() : 0;
+  const nimbus::orch::ParkKind kind = nimbus::orch::parkKindForProvider(prov.c_str(), status, text);
+  // account_suspended is a 403 that closes every seam (the contract's park_auth); another
+  // 403 may name one model or endpoint and stays with the typed seams.
+  const nimbus::orch::ParkCause cause = nimbus::orch::parkCauseFor(text);
+  const bool closes = kind == nimbus::orch::ParkKind::Billing ||
+                      (kind == nimbus::orch::ParkKind::Auth &&
+                       (status == 401 || cause == nimbus::orch::ParkCause::Suspended));
+  if (!closes) {
+    // Answered with no verdict on the account. A router answer that shows the account
+    // stands ends a park outright; otherwise a due re-check waits another interval.
+    if (nimbus::orch::providerPark().answerEndsPark(prov.c_str(), text))
+      nimbus::orch::providerPark().noteSuccess(prov.c_str(), nimbus::orch::PaidSeam::Chat);
+    else if (!resending && kind == nimbus::orch::ParkKind::None && nimbus::orch::providerPark().isProbing(prov.c_str()))
+      nimbus::orch::providerPark().noteFailure(prov.c_str(), now);   // a poll says nothing: only the probe's own answer
     return;
+  }
   const std::string key = prov == "cumulo" ? (pd.routerKey ? pd.routerKey() : std::string())
                                            : (pd.key ? pd.key(prov.c_str()) : std::string());
-  nimbus::orch::providerPark().park(prov.c_str(), nimbus::orch::PaidSeam::Chat,
-                                    nimbus::orch::parkKeyFingerprint(key), kind, status,
-                                    pd.nowMs ? pd.nowMs() : 0);
+  nimbus::orch::providerPark().park(prov.c_str(), nimbus::orch::PaidSeam::Chat, nimbus::orch::parkKeyFingerprint(key),
+                                    nimbus::orch::ProviderPark::Refusal{kind, status, cause}, now);
   hlog::logf("provider: %s parked for every seam (%s, HTTP %d)", prov.c_str(),
              nimbus::orch::parkKindSlug(kind), status);
+}
+
+// ---- the router's refusals that resend the same request (the refusal contract) --------
+// A filter that keeps what a router refusal says on top of what the caller wants: the
+// reason decides what the device does, so no route may filter it away.
+inline JsonDocument routerRefusalFilter(const ProviderDeps& pd, const JsonDocument& filter) {
+  JsonDocument wide = pd.alloc ? JsonDocument(pd.alloc) : JsonDocument();
+  wide.set(filter);
+  for (const char* k : {"reason", "error", "message", "retryable", "retryAfterMs", "maxAffordableOutputTokens"})
+    wide[k] = true;
+  return wide;
+}
+
+// The clamp: the wallet has credits, this call's worst case does not fit, and the body
+// says what would. Lower the output cap to that number. False when no useful cap fits or
+// this path takes none. Photo splices hold offsets into the body, so they move with it.
+inline bool capRouterRequest(HttpRequest& req, const nimbus::orch::RouterAnswer& a) {
+  if (a.maxAffordableOutputTokens < (int64_t)nimbus::orch::kRouterCapFloorTokens) return false;
+  nimbus::orch::CapEdit edits[nimbus::orch::kCapEditMax];
+  size_t n = 0;
+  if (!nimbus::orch::capOutputTokens(req.body, req.path, (uint32_t)a.maxAffordableOutputTokens, edits, n)) return false;
+  for (BodySplice& sp : req.splices) sp.at = nimbus::orch::applyCapEdits(sp.at, edits, n);
+  req.cappedResend = true;
+  hlog::logf("router: %s %s - resending once with the output capped at %u", req.path.c_str(), a.reason.c_str(),
+             (unsigned)a.maxAffordableOutputTokens);
+  return true;
+}
+
+// Whether the refusal in `doc` resends once, and the request made ready for it: the clamp
+// capped, or (the same request, unchanged) a wait short enough to sit out here. Anything
+// else is the caller's: fail the call or fail over. Never parks, never loops: the caller
+// resends at most once.
+inline bool prepareRouterResend(const ProviderDeps& pd, HttpRequest& req, const JsonDocument& doc) {
+  std::string text;
+  serializeJson(doc, text);
+  const nimbus::orch::RouterAnswer a = nimbus::orch::readRouterAnswer(text);
+  if (a.action() == nimbus::orch::RouterAction::RetryCapped && capRouterRequest(req, a)) return true;
+  const bool waits = a.action() == nimbus::orch::RouterAction::RetryLater ||
+                     (a.action() == nimbus::orch::RouterAction::RetryCapped && a.retryable);
+  if (!waits || a.retryAfterMs == 0 || a.retryAfterMs > nimbus::orch::kRouterInlineRetryMaxMs || !pd.delayMs)
+    return false;
+  hlog::logf("router: %s %s - resending once after %u ms", req.path.c_str(), a.reason.c_str(),
+             (unsigned)a.retryAfterMs);
+  pd.delayMs(a.retryAfterMs);
+  return true;
 }
 
 // ---- a cancel always goes out, and what the job spent is counted (lane QW4) -------
@@ -324,19 +396,19 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   // job's usage so far is read and counted; the caller still reads the cancel's outcome.
   CancelMeterOnExit meterAfter(pd, host, port, tls, headers, cancel);
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
-  {   // test and host builds only: the bench's scripted provider answer
+  {   // test and host builds only: the bench's UNSENT verb (kTestUnsentStatus). The
+    // scripted ANSWER (any other status) is the transport's seat now: the device
+    // wraps its transport in TestAnswerTransport, so a scripted refusal walks the
+    // production path - the RouterTap a Cumulo head holds above the transport, the
+    // resend loop below - instead of bypassing both. Answering here read the router's
+    // clamp 402 as an out-of-credit failover and could never show the capped resend
+    // (lane CLAMP, bench row S10).
     int ovStatus = 0;
     std::string ovBody;
     if (testStatusOverride(host, ovStatus, ovBody) && ovStatus == kTestUnsentStatus) {
       lastExchange().unsent = lastExchange().unsentAtStart = true;
       hlog::logf("provider: TEST override: request to %s%s not sent (first write)", host, path.c_str());
       return 0;
-    }
-    if (testStatusOverride(host, ovStatus, ovBody)) {
-      deserializeJson(doc, ovBody, DeserializationOption::Filter(filter));
-      hlog::logf("provider: TEST override answered %s%s with HTTP %d", host, path.c_str(), ovStatus);
-      noteParkRefusal(pd, host, ovStatus, doc);
-      return meterAfter.status = ovStatus;
     }
   }
 #endif
@@ -359,13 +431,31 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   // host/fake it filter-parses the scripted body string. Either way only the
   // filter-retained fields land in `doc`. Empty/garbage bodies leave doc cleared.
   std::string terr;
-  const uint32_t sentAt = pd.monoMs ? pd.monoMs() : 0;
-  int status = pd.http->execJson(req, doc, filter, terr);
-  // Lane QW4 (CUM-776): sent, no usable answer: counted at an estimate.
-  if (paidRequest && nimbus::orch::sentWithoutAnswer(status, terr))
-    meterUnanswered(pd, host, req, pd.monoMs ? pd.monoMs() - sentAt : 0);
-  lastExchange().allocFailed = terr.find("alloc failed") != std::string::npos;
-  noteParkRefusal(pd, host, status, doc);
+  const std::string parkProv = parkProviderOf(pd, host, req.path);
+  wireParkLog();
+  // The one re-check request of a parked provider is THIS request, claimed as it leaves:
+  // nothing that merely reads the park can spend it (CUM-889).
+  if (paidRequest && !parkProv.empty() && nimbus::orch::providerPark().isParked(parkProv.c_str()) &&
+      nimbus::orch::providerPark().claimProbe(parkProv.c_str(), nimbus::orch::PaidSeam::Chat,
+                                              pd.nowMs ? pd.nowMs() : 0))
+    hlog::logf("fabric: %s re-check due - one probe request (%s)", parkProv.c_str(), path.c_str());
+  const bool viaRouter = parkProv == "cumulo";
+  JsonDocument routerFilter;
+  if (viaRouter) routerFilter = routerRefusalFilter(pd, filter);
+  const JsonDocument& answerFilter = viaRouter ? routerFilter : filter;
+  int status = 0;
+  for (int sends = 0;; ++sends) {
+    const uint32_t sentAt = pd.monoMs ? pd.monoMs() : 0;
+    status = pd.http->execJson(req, doc, answerFilter, terr);
+    // Lane QW4 (CUM-776): sent, no usable answer: counted at an estimate.
+    if (paidRequest && nimbus::orch::sentWithoutAnswer(status, terr))
+      meterUnanswered(pd, host, req, pd.monoMs ? pd.monoMs() - sentAt : 0);
+    lastExchange().allocFailed = terr.find("alloc failed") != std::string::npos;
+    const bool resend = sends == 0 && viaRouter && status >= 400 && terr.empty() && prepareRouterResend(pd, req, doc);
+    noteParkRefusal(pd, host, req.path, status, doc, resend);
+    if (!resend) break;
+    doc.clear();
+  }
   if (status == 0) {
     LastExchange& last = lastExchange();
     last.unsent = terr.find("body truncated") != std::string::npos ||
@@ -685,8 +775,7 @@ inline FabricErr rateLimitedByText(const Directive& d, const char* who, const ch
 // the device the string's storage lands in PSRAM via the >=128 B malloc spill).
 inline std::string serializeBody(const JsonDocument& d) {
   std::string out;
-  out.reserve(measureJson(d));
-  serializeJson(d, out);
+  nimbus::serializeStrictJson(d, out);
   return out;
 }
 
@@ -850,8 +939,7 @@ inline bool serializeChecked(const JsonDocument& d, std::string& out, std::strin
     hlog::logf("wire: %s", err.c_str());
     return false;
   }
-  out.reserve(measureJson(d));
-  serializeJson(d, out);
+  nimbus::serializeStrictJson(d, out);
   return true;
 }
 

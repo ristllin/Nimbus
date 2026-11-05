@@ -25,8 +25,9 @@ the witness:
       does not know (chat id 1). ``telegram: sendAudio FAIL (...)``, the tool says
       nothing was delivered, and the delivered reply does not claim a voice message
       (or carries the device's correction line).
-  V3  long text: about 1,500 characters become several voice messages, each with its
-      own receipt, each confirmed by Telegram.
+  V3  long text: about 1,500 characters (forced on the device by ``VOICETEXT``, so the model
+      cannot shorten them) become several voice messages, each with its own receipt, each
+      confirmed by Telegram.
 
 Conditions: unit L or unit A, Orchestrator mode, an Anthropic key (the head is pinned
 to ``NIMBUS_VOICE_MODEL``, default claude-haiku-5-5) and a Mistral key (the incident's
@@ -66,21 +67,6 @@ RECEIPT_MANY_RE = re.compile(r"voice: delivered to Telegram as \d+ voice message
 TTS_RE = re.compile(r"tts: (?:mistral|openai) wrote (\d+) bytes -> (\S+)")
 SPEND_RE = re.compile(r"fabric-spend: (\S+) in=(\d+) out=(\d+) cR=(\d+) cW=(\d+)")
 CORRECTION = "(Correction: no voice message was delivered.)"
-
-LONG_TEXT = (
-    "Good evening. Here is the bench summary for tonight, read aloud so you can listen while "
-    "you get ready. The weather tomorrow looks dry and mild, with a light breeze from the west "
-    "and highs around fourteen degrees, so a light jacket should be enough for the walk in. "
-    "Your calendar has two meetings in the morning: the planning review at nine thirty and a "
-    "short call with the design team at eleven. The afternoon is clear until the dentist at "
-    "three, which is about twenty minutes away by bus. Your step count today was a little "
-    "under eight thousand, slightly below your weekly average, and you logged two meals. "
-    "There are three reminders for the evening: water the plants on the balcony, call your "
-    "sister about the plans for the weekend, and put the recycling out before ten. The "
-    "parcel you were expecting is out for delivery and should arrive tomorrow before noon. "
-    "Finally, the library books are due on Friday, and the renewal can be done online if you "
-    "need more time. That is everything for today. Sleep well, and have a good morning."
-)
 
 
 # ---- pure helpers (host-tested below) ----------------------------------------
@@ -390,25 +376,39 @@ def test_v2_a_refused_upload_is_reported_honestly(device, voice_bench, net):
     print(f"[V2] PASS refusal {fails[0]!r}; reply: {reply[:200]}")
 
 
+FORCED_CHARS = 1500  # VOICETEXT: the device voices this much, whatever the model passes (QW6)
+
+
 def test_v3_long_text_becomes_several_receipted_voice_messages(device, voice_bench):
+    """The text is forced on the device side (``VOICETEXT``, test builds): the model is asked for a
+    SHORT voice message and cannot shorten what it never wrote, so the split into several notes
+    is always exercised (the earlier leg skipped when the model shortened its own copy)."""
     bot = BenchBot(str(voice_bench.token), int(str(voice_bench.chat)))
     chat = str(voice_bench.chat)
-    lines = _turn(
-        device,
-        chat,
-        f"{RUN} bench: send the following text to me as a Telegram voice message with reply.telegram "
-        "(voice true, no chat_id), passing the text exactly as written, without shortening or "
-        f"summarizing it: {LONG_TEXT}",
-        int(time.time()) % 1000000 + 7000000,
-    )
+    armed = device.cmd("VOICETEXT %d" % FORCED_CHARS, expect="VOICETEXT", timeout=6.0)
+    if "armed" not in armed:
+        pytest.skip(f"this image has no VOICETEXT seam ({armed.strip()!r})")
+    try:
+        lines = _turn(
+            device,
+            chat,
+            f"{RUN} bench: send me a short Telegram voice message with reply.telegram (voice true, no "
+            "chat_id): 'This is the bench long text check.' Then reply with one short sentence saying "
+            "what the tool returned.",
+            int(time.time()) % 1000000 + 7000000,
+        )
+    finally:
+        device.cmd("VOICETEXT off", expect="VOICETEXT", timeout=6.0)
     win = turn_window(lines)
     _report("V3", win)
     ids = receipt_ids(win)
-    if len(ids) == 1:
-        pytest.skip("the model shortened the text into one voice message, so the split was not exercised")
-    assert len(ids) >= 2, f"no voice messages arrived for the long text; tail: {win[-30:]}"
+    assert 2 <= len(ids) <= 4, (
+        f"the forced {FORCED_CHARS} characters must become 2 to 4 voice messages: {ids}; tail: {win[-30:]}"
+    )
     assert tool_receipt_ids(win) == ids, f"the tool's receipts {tool_receipt_ids(win)} != the uploads' {ids}"
     for mid in ids:
         assert _probe(bot, mid) == "exists", f"Telegram does not know message {mid} in the test chat"
     assert not speaker_touches(lines), f"the speaker path ran for a Telegram request: {speaker_touches(lines)}"
-    print(f"[V3] PASS {len(ids)} voice messages, message_id(s) {ids} confirmed by Telegram")
+    print(
+        f"[V3] PASS {len(ids)} voice messages for {FORCED_CHARS} forced characters, message_id(s) {ids} confirmed by Telegram"
+    )

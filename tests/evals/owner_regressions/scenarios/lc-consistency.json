@@ -1,0 +1,17 @@
+{
+  "id": "lc-consistency",
+  "title": "The same food gets the same figures across days",
+  "rows": ["OIR-31"],
+  "replays": "The 29 Oct to 1 Nov class: the same no-milk boba drink was 225 kcal one day and 90 the next.",
+  "clock": "{{TODAY}} {{DOW}} 17:10 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{YESTERDAY}},snack-1500,boba tea no milk,225,0\n"},
+    {"do": "say", "text": "Log the same boba tea I had yesterday afternoon, same size as then."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "ledger_row_kcal_near", "params": {"item": "boba", "expected": 225, "tol": 15}}
+  ]
+}

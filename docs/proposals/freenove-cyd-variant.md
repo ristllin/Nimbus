@@ -34,8 +34,7 @@ capacitive touchscreen, **ILI9341** panel at **240x320** (landscape 320x240),
 **ESP32-S3 N16R8** (16 MB flash / 8 MB PSRAM, native USB), on-board microSD (SDMMC),
 mic + speaker via an **ES8311** codec, a **single** WS2812 RGB LED (no 45-ring), battery
 port. Same MCU family as the Solide S3 board, so platform pin, partitions, and the
-Wi-Fi/BLE/cloud/orchestrator stacks are unchanged. On the bench now as MAC
-`28:84:85:42:18:FC`.
+Wi-Fi/BLE/cloud/orchestrator stacks are unchanged.
 
 ### Confirmed pin map (FNK0104B, from Freenove example sources)
 

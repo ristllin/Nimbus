@@ -17,12 +17,14 @@ the turn heap floors and NO regression in pollStackMin/asyncStackMin.
 
 Usage:
   # single snapshot (before/after a change), appended to a JSONL with a label
-  sram_sampler.py --ip 192.168.1.42 --token "$NIMBUS_ADMIN_TOKEN" \
+  sram_sampler.py --ip 192.168.1.42 --token-file unit_webtok.txt \
       --label before --out n7_baseline.jsonl --once
 
   # 24 h soak sample every 60 s (run the load driver separately: turns+web+BLE)
-  sram_sampler.py --ip 192.168.1.42 --token "$NIMBUS_ADMIN_TOKEN" \
+  sram_sampler.py --ip 192.168.1.42 --token-file unit_webtok.txt \
       --hours 24 --interval 60 --out n7_soak.jsonl
+
+  # the device token comes from --token-file or NIMBUS_TEST_TOKEN, never the command line
 
   # summarize / diff two runs
   sram_sampler.py --summarize n7_soak.jsonl
@@ -38,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import sys
 import time
@@ -175,7 +178,7 @@ def sample_once(ip, token, timeout=5.0):
     url = f"http://{ip}/api/state"
     req = urllib.request.Request(url)
     if token:
-        req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("X-Nimbus-Token", token)  # the only form the device accepts since CUM-45
     with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 (LAN only)
         doc = json.loads(r.read().decode("utf-8"))
     row = {"t": round(time.time(), 3)}
@@ -305,9 +308,9 @@ def selftest():
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description="N7 internal-SRAM sampler (read-only)")
+    p = argparse.ArgumentParser(description="N7 internal-SRAM sampler (read-only)", allow_abbrev=False)
     p.add_argument("--ip", help="device LAN IP")
-    p.add_argument("--token", default="", help="admin bearer token (LAN only)")
+    p.add_argument("--token-file", help="a file holding the device token (or set NIMBUS_TEST_TOKEN)")
     p.add_argument("--out", help="JSONL output path (append)")
     p.add_argument("--label", help="tag written on each sampled row")
     p.add_argument("--once", action="store_true", help="single snapshot then exit")
@@ -334,6 +337,10 @@ def main(argv=None):
         return 0
     if not args.ip:
         p.error("--ip is required for live sampling")
+    token = os.environ.get("NIMBUS_TEST_TOKEN", "")
+    if args.token_file:
+        with open(args.token_file, encoding="utf-8") as f:
+            token = f.read().strip()
 
     def _emit(row):
         if args.label:
@@ -345,7 +352,7 @@ def main(argv=None):
         print(line)
 
     try:
-        first = sample_once(args.ip, args.token)
+        first = sample_once(args.ip, token)
     except (urllib.error.URLError, OSError, TimeoutError) as e:
         print(f"device unreachable at {args.ip}: {e} (skip-clean)", file=sys.stderr)
         return 2
@@ -362,7 +369,7 @@ def main(argv=None):
     while time.time() < deadline:
         time.sleep(max(1.0, args.interval))
         try:
-            row = sample_once(args.ip, args.token)
+            row = sample_once(args.ip, token)
             _emit(row)
             collected.append(row)
         except (urllib.error.URLError, OSError, TimeoutError) as e:

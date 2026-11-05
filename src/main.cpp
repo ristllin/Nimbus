@@ -58,6 +58,7 @@
 #include "agent/orchestrator.h"
 #include "agent/prefs_subsystem.h"   // lane J: standing rules (seed + store)
 #include "agent/spend_ceiling_store.h"        // lane DEF: the monthly spend ceiling (gate, notices)
+#include "nimbus/harness/config.h"   // agent::voiceFallbackChatOf - where a spoken reply may fall back to
 #include "nimbus/harness/jobs.h"   // agent::keyFromTag - ring keys derive from session tags (CUM-243 reaper)
 #include "nimbus/harness/web_chat.h"   // CUM-482: per-turn web chat reply pairing
 #include <esp_random.h>   // esp_random() - the web chat turn-id seed (unique across restarts)
@@ -81,6 +82,7 @@
 #include "agent/store.h"
 #include "agent/telegram.h"
 #include "agent/voice_reply.h"          // orchSpeakSink - the speaker's Telegram fallback, receipted
+#include "nimbus/orch/voice_notes.h"    // voiceReasonUnconfirmed: an upload Telegram never confirmed
 #include "sys/tls_arbiter.h"
 #include "sys/heap_watch.h"   // failed-allocation ring, low-water ladder, spawn gate
 #include "sys/sd_dma_bounce.h"   // the card's reserved DMA buffer (before the mount)
@@ -198,8 +200,12 @@ static bool voiceOwnsRing() { return g_voice.ownsRing(); }
 // CUM-482: this slot now serves ONLY legacy clients that poll without a turn id -
 // any delivery overwrites it, so an async result landing between two turns was
 // handed to the next turn's first poll (off by one from then on).
-static volatile bool g_webReplyPending = false;
-static String        g_webReply;
+// Bench F03 (v4.9.0): the slot is consumed only by an IDLE poll. The reply is
+// delivered while the turn is still wrapping up; a client that keeps polling
+// while `busy` is set had its interim poll eat the reply, and its final poll
+// (pending false, busy 0) read an empty slot - the reply was lost with no way
+// back. A busy-window poll reads without retiring (agent::WebLegacySlot).
+static agent::WebLegacySlot g_webSlot;   // under g_webChatMx (below)
 // CUM-482: per-turn pairing. POST books a turn id, orchOnMessage claims it when
 // tg_poll starts that turn, every delivery to chat "web" inside the turn is its
 // reply, and anything delivered between turns (spawn acks, synthesis reports,
@@ -822,9 +828,14 @@ static void orchEventSink(const attn::Event& e) {
 static void orchDeviceSink(const nimbus::orch::ValidatedAction& a) {
   using nimbus::orch::ActionKind;
   if (a.kind == ActionKind::Reboot) { g_rebootPending = true; return; }
+  // Before the lock, never under it: the guard is a spinlock with interrupts masked, and a
+  // log line's durable write under it aborts. This line under the guard (at v4.6.1) is the
+  // confirmed cause of the 29 Oct crash, fingerprint 2419bf4a: decoded against the matching
+  // v4.6.1 build (program 2026-10-18, evidence/crash-2419bf4a/DECODE.md).
+  // tools/release_gate/check_critical_sections.py fails on one.
+  if (a.kind == ActionKind::Lights) agent::alogf("devsink: lights -> %s", a.lightsOff ? "off" : "full");
   net::ConfigLockGuard lk;
   if (a.kind == ActionKind::Lights) {
-    agent::alogf("devsink: lights -> %s", a.lightsOff ? "off" : "full");
     g_lightsOff = a.lightsOff;
     g_ledOverrideActive = false;         // a lights action clears any led pattern
     g_devActDirty = true;
@@ -902,16 +913,15 @@ static bool orchSendSink(const String& chatId, const String& text) {
   // async in the book - the open page re-renders its history - and never fills the
   // legacy slot, where the next poll would claim it as the owner's next answer.
   if (chatId == "web") {
+    const std::string reply(text.c_str(), text.length());
     bool legacy;
     {
       std::lock_guard<std::mutex> lk(g_webChatMx);
-      legacy = agent::deliverToWebChat(g_webChat, std::string(text.c_str(), text.length()),
-                                       agent::loops::firing());
+      legacy = agent::deliverToWebChat(g_webChat, reply, agent::loops::firing());
+      if (legacy) g_webSlot.deliver(reply);
     }
     if (legacy) {
-      net::ConfigLockGuard lk;   // the legacy single slot (no-turn-id clients)
-      g_webReply = text;
-      g_webReplyPending = true;
+      net::ConfigLockGuard lk;   // the legacy single slot's pending backstop
       g_webTurnDeadlineMs = 0;   // the turn answered - no longer pending
     }
     return true;
@@ -965,29 +975,53 @@ static void spendNoticePump() {
   }
 }
 
+// The chat a spoken reply falls back to when the speaker cannot play it: the chat the turn is
+// in when that is a Telegram chat (a guest's request is never voiced into the owner's chat),
+// else the owner's chat (web, serial and voice turns are the owner's: the same rule device
+// notices use, not merely the first allowlist entry). "" when there is none.
+static String voiceFallbackChat(const String& turnChat) {
+  return String(agent::voiceFallbackChatOf(std::string(turnChat.c_str()),
+                                           std::string(agent::telegram::ownerChat().c_str()))
+                    .c_str());
+}
+
 // SpeakSink: voice the `tts` device action's text. Prefer the on-device speaker
 // (that is what the action promises and what the world prompt now tells the model),
 // and fall back to a Telegram voice message only when the speaker could not play it
 // (no speaker, synth failed, or the speaker did not open) - so the action is no
-// longer a silent no-op on a device with no Telegram allowlist. Runs on the poll task
-// between long-polls (single-TLS: the Telegram socket is closed), so the TTS synth +
-// upload are safe. reply.telegram voice:true never comes here: it goes straight to
-// Telegram (voice_reply.h).
-static void orchSpeakSink(const String& text) {
-  if (text.length() == 0) return;
+// longer a silent no-op on a device with no Telegram allowlist (voiceFallbackChat picks the
+// chat). Runs on the poll task between long-polls (single-TLS: the Telegram socket is closed),
+// so the TTS synth + upload are safe. reply.telegram voice:true never comes here: it goes
+// straight to Telegram (voice_reply.h). The answer is how it really ended (speaker, Telegram
+// message id, or why not): the turn records that and nothing else (QW6).
+static nimbus::orch::SpeakOutcome orchSpeakSink(const String& turnChat, const String& text) {
+  using nimbus::orch::SpeakOutcome;
+  if (text.length() == 0) return SpeakOutcome::failed("there was nothing to say");
   // Test build only: AUDIOINJECT keeps text-to-speech off for its voice turn. The
   // production stub is a constant false, so this line compiles to nothing there.
-  if (tc::ttsMuted()) return;
+  if (tc::ttsMuted()) return SpeakOutcome::failed("text-to-speech is muted for this test");
   // capture=false: the tts device action records the spoken text to history itself
   // (apply.cpp captureAssistant), so speakOnDevice must not also capture it. It notes
   // the turn spoke once the speaker started (CUM-826).
-  if (agent::orchestrator::speakOnDevice(text, /*capture=*/false)) return;   // played on the speaker
-  String allow = agent::store::telegramAllowlist();
-  int c = allow.indexOf(','); String chat = (c > 0) ? allow.substring(0, c) : allow; chat.trim();
-  if (chat.length() == 0) return;
-  // Logs the receipt, or why nothing arrived. A note that reached the owner's chat is
-  // the turn speaking (CUM-826); nothing heard and nothing sent is not.
-  if (agent::voicereply::deliver(chat, text).notesSent > 0) agent::orchestrator::noteTurnSpoke();
+  String speakerWhy;
+  if (agent::orchestrator::speakOnDevice(text, /*capture=*/false, &speakerWhy))
+    return SpeakOutcome::spoke();   // played on the speaker
+  const std::string noSpeaker =
+      speakerWhy.length() ? std::string(speakerWhy.c_str()) : std::string("the speaker could not play it");
+  const String chat = voiceFallbackChat(turnChat);
+  if (chat.length() == 0) return SpeakOutcome::failed(noSpeaker + "; no Telegram chat to send it to");
+  const agent::voicereply::Outcome o = agent::voicereply::deliver(chat, text);   // logs the receipt, or why not
+  // A note that reached the owner's chat is the turn speaking (CUM-826); nothing heard and
+  // nothing sent is not.
+  if (o.notesSent > 0) agent::orchestrator::noteTurnSpoke();
+  if (o.delivered && !o.receipt.empty())
+    return SpeakOutcome::delivered(o.receipt, std::string(o.spokenText.c_str()));
+  const std::string why = o.why.empty() ? std::string("no receipt") : o.why;
+  if (nimbus::orch::voiceReasonUnconfirmed(why))   // the upload went out; Telegram never confirmed it
+    return SpeakOutcome::failed(noSpeaker + "; Telegram sent no confirmation (" +
+                                    nimbus::orch::voiceReasonDetail(why) + ")",
+                                /*unconfirmed=*/true);
+  return SpeakOutcome::failed(noSpeaker + "; the Telegram voice message did not arrive: " + why);
 }
 
 // Lane QW4: a Telegram message the device left unanswered because the overall spend
@@ -1252,6 +1286,7 @@ static render::ScreenCtx buildCtx(int cursorJob) {
   render::ScreenCtx c;
   fillHeaderCtx(c);   // mode/profile/posture + WiFi/BT/battery/net-degraded header
   c.needsSetup = deviceNeedsSetup();   // StatusIdle -> first-run CTA (CUM-259)
+  c.turnActive = g_orchMode && agent::orchestrator::turnInFlight();   // lane PROG
   // Setup/QR context - filled on EVERY build (P2/P3): SetupInfo shows the AP
   // SSID + a scan-to-configure QR on unprovisioned boot, and a scheduler-driven
   // ConfigQr (the repeated-401 reaction) needs the URL without going through
@@ -3117,7 +3152,7 @@ static void registerDeviceTools() {
             s += ",\"fsTotal\":"; s += (uint32_t)LittleFS.totalBytes();
             s += ",\"fsUsed\":";  s += (uint32_t)LittleFS.usedBytes();
             {
-              bool fp; uint16_t fc; uint64_t fb; uint32_t ffree;
+              bool fp; uint32_t fc; uint64_t fb; uint32_t ffree;
               agent::files::stats(fp, fc, fb, ffree);
               s += ",\"files\":{\"present\":"; s += fp ? "true" : "false";
               s += ",\"count\":"; s += fc;
@@ -4062,10 +4097,16 @@ void setup() {
     return dl != 0 && (int32_t)(millis() - dl) < 0;
   };
   wc.chatPoll = []() -> String {
-    net::ConfigLockGuard lk;
-    if (!g_webReplyPending) return String();
-    g_webReplyPending = false;
-    return g_webReply;
+    // Bench F03: a poll while work still runs (a turn in flight, active jobs)
+    // reads the slot WITHOUT retiring the reply - that client is still
+    // mid-conversation (its own loop waits for busy to clear), and its final
+    // poll must still see the reply. Only an idle poll consumes, so a drain
+    // still reads each delivery exactly once. The busy read allocates, so it
+    // stays OUTSIDE the slot's mutex (chatActivity computes the same number).
+    const bool idle = !agent::orchestrator::turnInFlight() &&
+                      agent::orchestrator::sessionInfosSnapshot().empty();
+    std::lock_guard<std::mutex> lk(g_webChatMx);
+    return String(g_webSlot.poll(idle).c_str());
   };
   // Route the memory WORKING SET (VDB int8 vector buffers + the entries array - the
   // dominant per-entry cost) to PSRAM, so hundreds/thousands of vectors don't eat the

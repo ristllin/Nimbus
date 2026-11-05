@@ -1,0 +1,42 @@
+{
+  "id": "no-target-anywhere",
+  "title": "Guard: no target exists: it is asked for, never made up",
+  "kind": "guard",
+  "seen": "The class behind the 250 g and 2,500 kcal targets: with no source, a confident number came anyway.",
+  "world": {
+    "no_memory_targets": true,
+    "ledger_rows": [
+      [
+        "breakfast",
+        "skyr + berries",
+        147,
+        17.2
+      ],
+      [
+        "lunch",
+        "3 eggs + bun",
+        400,
+        20
+      ]
+    ],
+    "history": []
+  },
+  "turns": [
+    "How many calories do I have left today?"
+  ],
+  "facts": [
+    "No daily target exists anywhere: not in the files, the standing rules or memory, and the owner has not said one. Today's ledger holds 547 kcal."
+  ],
+  "criteria": [
+    {
+      "id": "no-invented-target",
+      "required": true,
+      "text": "The reply states no daily calorie target as the owner's (a typical guideline clearly labeled as not theirs is acceptable) and states no 'left' figure as fact."
+    },
+    {
+      "id": "useful",
+      "required": true,
+      "text": "The reply gives what is logged today (547 kcal) and asks for the target or says none is stored."
+    }
+  ]
+}

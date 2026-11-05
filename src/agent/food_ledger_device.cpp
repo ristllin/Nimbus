@@ -36,8 +36,11 @@ nimbus::orch::FoodLedger today(const std::string& chatId, const nimbus::orch::Pr
   l.zone = day.zone;
   l.project = kFoodLedgerProject;
   l.name = foodLedgerName(who.owner, chatId);
-  if (l.today.empty() || l.name.empty() || !who.valid() || !files::available() || !ownLedger(l.name, who))
-    return l;
+  if (l.today.empty() || l.name.empty() || !who.valid() || !files::available()) return l;
+  // The person's targets, or where they could read them (a small file; the index is RAM).
+  l.targets = scanFoodTargets(files::readDocText(l.project, foodTargetsName(who.owner, chatId), who));
+  if (l.targets.kcal <= 0 && l.targets.protein <= 0) l.planFiles = files::foodPlanFiles(who);
+  if (!ownLedger(l.name, who)) return l;
   const std::string path = files::absPath(l.project, l.name);
   if (path.empty()) return l;
   l.exists = true;
@@ -65,6 +68,32 @@ nimbus::orch::FoodLedger today(const std::string& chatId, const nimbus::orch::Pr
   else if (end == StreamEnd::Stopped) l.error = "a row is longer than 16 KB";
   else scan.finish(l);
   return l;
+}
+
+std::string recall(const std::string& chatId, const nimbus::orch::Principal& who, const std::string& message) {
+  using namespace nimbus::orch;
+  const LogDay day = logDayOf(time(nullptr), store::deviceTz().length() > 0);   // settings: before the lock
+  const std::string name = foodLedgerName(who.owner, chatId);
+  if (day.date.empty() || name.empty() || !who.valid() || !files::available() || !ownLedger(name, who)) return std::string();
+  const std::string path = files::absPath(kFoodLedgerProject, name);
+  if (path.empty()) return std::string();
+  FoodRecallScan scan(day.date, message);
+  RowSplitter rows([&scan](const std::string& row, bool) {
+    scan.feed(row);
+    return true;
+  });
+  memory::Lock g;
+  File f = memory::dataFs().open(path.c_str(), FILE_READ);
+  if (!f) return std::string();
+  const size_t size = f.size();
+  if (size > kKeyedMaxBytes) {
+    f.close();
+    return std::string();
+  }
+  const StreamEnd end =
+      streamRows(size, [&f](char* d, size_t n) { return (int)f.read(reinterpret_cast<uint8_t*>(d), n); }, rows);
+  f.close();
+  return end == StreamEnd::Done ? scan.render() : std::string();
 }
 
 }  // namespace agent::foodledger

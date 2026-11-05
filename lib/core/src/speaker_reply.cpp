@@ -47,5 +47,9 @@ std::string speakerOpenFailReason(size_t largestDmaBlock) {
          std::to_string((unsigned long long)largestDmaBlock) + " B)";
 }
 
+std::string speakerLowMemoryReason(size_t freeDma) {
+  return "not enough free memory right now (" + std::to_string((unsigned long long)freeDma) + " B of DMA memory)";
+}
+
 }  // namespace sfx
 }  // namespace nimbus

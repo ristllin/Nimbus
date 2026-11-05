@@ -1,0 +1,284 @@
+[
+ {
+  "id": "sum-31oct",
+  "kind": "sum",
+  "seen": "31 Oct: the built-in sum said 256, the rows sum to 2,369",
+  "file": "date,meal,items,kcal,protein_g\n2026-10-31,breakfast,100 g berries, 150 g yogurt,147,17.2\n2026-10-31,snack,1 protein bar,190,21\n2026-10-31,lunch,3 eggs, 1 bun, half avocado,471,24.4\n2026-10-31,drink,cappuccino (100 ml full milk),66,3.3\n2026-10-31,dinner,200 g steak, 120 g chicken, 200 g ravioli, salad,1038,100.2\n2026-10-31,snack2,bagel 85 g, fig jam 45 g, cream 18 g,457,9.1\n",
+  "day": "2026-10-31",
+  "want": {
+   "kcal": 2369,
+   "protein": 175.2,
+   "unread": 0
+  }
+ },
+ {
+  "id": "sum-31oct-dirty",
+  "kind": "sum",
+  "seen": "31 Oct: the same file with a stale copy of three meals and an 874 total row",
+  "file": "date,meal,items,kcal,protein_g\n2026-10-31,breakfast,100 g berries, 150 g yogurt,147,17.2\n2026-10-31,snack,1 protein bar,190,21\n2026-10-31,lunch,3 eggs, 1 bun, half avocado,471,24.4\n2026-10-31,drink,cappuccino (100 ml full milk),66,3.3\n2026-10-31,dinner,200 g steak, 120 g chicken, 200 g ravioli, salad,1038,100.2\n2026-10-31,snack2,bagel 85 g, fig jam 45 g, cream 18 g,457,9.1\n2026-10-31,breakfast,100 g berries, 150 g yogurt,147,17.2\n2026-10-31,snack,1 protein bar,190,21\n2026-10-31,lunch,3 eggs, 1 bun, half avocado,471,24.4\n2026-10-31,total,all so far,874,66\n",
+  "day": "2026-10-31",
+  "want": {
+   "kcal": 2369,
+   "unread": 0
+  }
+ },
+ {
+  "id": "sum-midnight-29",
+  "kind": "sum",
+  "seen": "29 Oct: three versions of one boba and a snack before midnight",
+  "file": "timestamp,meal,items,kcal,protein_g\n2026-10-29 21:56,drink,Boba tea (no sugar, honey tapioca),350,0\n2026-10-29 21:57,drink,Boba tea (no sugar, honey tapioca),225,1\n2026-10-29 23:58,snack,toast, jam,120,3\n2026-10-30 00:05,snack2,apple,52,0\n2026-10-30 08:30,breakfast,yogurt, raspberries,250,15\n",
+  "day": "2026-10-29",
+  "want": {
+   "kcal": 345
+  }
+ },
+ {
+  "id": "sum-midnight-30",
+  "kind": "sum",
+  "seen": "30 Oct: yesterday's boba must not be in today (\"Boba??? Thats yesterday.\")",
+  "file": "timestamp,meal,items,kcal,protein_g\n2026-10-29 21:56,drink,Boba tea (no sugar, honey tapioca),350,0\n2026-10-29 21:57,drink,Boba tea (no sugar, honey tapioca),225,1\n2026-10-29 23:58,snack,toast, jam,120,3\n2026-10-30 00:05,snack2,apple,52,0\n2026-10-30 08:30,breakfast,yogurt, raspberries,250,15\n",
+  "day": "2026-10-30",
+  "want": {
+   "kcal": 302
+  }
+ },
+ {
+  "id": "sum-quoted-1045",
+  "kind": "sum",
+  "seen": "28 Oct: the owner's 1,045 kcal row in a quoted cell",
+  "file": "date,meal,items,kcal,protein_g\n2026-10-28,lunch,\"chicken, rice\",\"1,045\",89\n2026-10-28,drink,cappuccino,66,3\n",
+  "day": "2026-10-28",
+  "want": {
+   "kcal": 1111,
+   "unread": 0
+  }
+ },
+ {
+  "id": "sum-another-schema",
+  "kind": "sum",
+  "seen": "30 Oct: rows of another schema in one file are no figure, not a wrong one",
+  "file": "date,meal,items,kcal,protein_g\n2026-10-30 08:30,Yogurt,150 g,342,13.5,0.3,4.1,0.12\n2026-10-30,tea,black,5,0\n",
+  "day": "2026-10-30",
+  "want": {
+   "kcal": 5,
+   "unread": 1,
+   "block_has": [
+    "kcal not known"
+   ]
+  }
+ },
+ {
+  "id": "sum-unknown-protein",
+  "kind": "sum",
+  "seen": "1 Nov: a meal with no protein figure, shown as 48.4 g protein",
+  "file": "date,meal,items,kcal,protein_g\n2026-11-01,drink,cappuccino,66,3.3\n2026-11-01,breakfast,berries + banana + yogurt,196,17.5\n2026-11-01,lunch,eggs + bread + salad + sprouts,517,27.1\n2026-11-01,drink2,boba tea,90,0.5\n2026-11-01,lunch2,restaurant steak + mash + sauce,923,\n",
+  "day": "2026-11-01",
+  "want": {
+   "kcal": 1792,
+   "protein": 48.4,
+   "block_has": [
+    "1 row with no protein figure"
+   ]
+  }
+ },
+ {
+  "id": "reply-3989",
+  "kind": "reply",
+  "seen": "30 Oct: \"Wtf. How 3989???\"",
+  "reply": "Today's total is now **3,989 kcal** (1,589 kcal over your 2,400 kcal target).",
+  "sources": "Standing rule: 2,400 kcal a day.",
+  "facts": {
+   "kcal": 1482,
+   "protein": 120,
+   "rows": 6
+  },
+  "want": {
+   "has": "the food log has today at 1482 kcal"
+  }
+ },
+ {
+  "id": "reply-2524-carried",
+  "kind": "reply",
+  "seen": "30 Oct 06:00: yesterday's 2,524 carried into a day with no rows",
+  "reply": "Today's total is 2,524 kcal and 194.1 g protein.",
+  "sources": "Standing rule: 2,400 kcal a day.",
+  "facts": {
+   "kcal": 0,
+   "protein": 0,
+   "rows": 0
+  },
+  "want": {
+   "has": "no rows for today"
+  }
+ },
+ {
+  "id": "reply-1461",
+  "kind": "reply",
+  "seen": "28 Oct: the day stated as 1,461 over rows summing to 1,611",
+  "reply": "Totals so far: 1,461 kcal | 136.8 g protein.",
+  "sources": "Standing rule: 2,400 kcal a day.",
+  "facts": {
+   "kcal": 1611,
+   "protein": 150,
+   "rows": 5
+  },
+  "want": {
+   "has": "the food log has today at 1611 kcal"
+  }
+ },
+ {
+  "id": "reply-250-target",
+  "kind": "reply",
+  "seen": "31 Oct: \"38.3g protein left from what???\"",
+  "owner": "38.3g protein left from what???",
+  "reply": "You have 38.3 g protein left from your 250 g daily protein target.",
+  "sources": "Standing rule: 2,400 kcal a day.",
+  "facts": {
+   "kcal": 2036,
+   "protein": 211.7
+  },
+  "want": {
+   "has": "no source for a daily target of 250 g protein"
+  }
+ },
+ {
+  "id": "reply-250-implied",
+  "kind": "reply",
+  "seen": "31 Oct: the first sign of it, no target named",
+  "owner": "What do i have left for today?",
+  "reply": "Remaining for 2,400 kcal target: 364 kcal, 38.3 g protein left.",
+  "sources": "Standing rule: 2,400 kcal a day.",
+  "facts": {
+   "kcal": 2036,
+   "protein": 211.7
+  },
+  "want": {
+   "has": "daily target behind that 38.3 g protein left"
+  }
+ },
+ {
+  "id": "reply-2500-target",
+  "kind": "reply",
+  "seen": "29 Oct: \"Why 2500? Cant you verify the plan we built?\"",
+  "owner": "Why 2500? Cant you verify the plan we built?",
+  "reply": "The 2,500 kcal target is from the plan we built together.",
+  "sources": "Standing rule: 2,400 kcal a day.",
+  "facts": {
+   "kcal": 1779,
+   "protein": 153
+  },
+  "want": {
+   "has": "no source for a daily target of 2500 kcal"
+  }
+ },
+ {
+  "id": "reply-2500-nosrc",
+  "kind": "reply",
+  "seen": "29 Oct: the same figure before the owner asked",
+  "reply": "Your original target was 2,400 kcal, but we adjusted it to **2,500 kcal**.",
+  "sources": "Standing rule: 2,400 kcal a day.",
+  "facts": {
+   "kcal": 1779,
+   "protein": 153
+  },
+  "want": {
+   "has": "no source for a daily target of 2500 kcal"
+  }
+ },
+ {
+  "id": "reply-plan-read",
+  "kind": "reply",
+  "seen": "31 Oct: the right answer once the plan was read draws nothing",
+  "reply": "The plan sets protein at 150-160 g/day, with 150 g as the minimum.",
+  "sources": "Plan: 2,400 kcal/day. Protein 150-160 g/day, 150 g the minimum working target.",
+  "facts": {
+   "kcal": 2036,
+   "protein": 211.7
+  },
+  "want": {
+   "nothing": true
+  }
+ },
+ {
+  "id": "reply-need-102",
+  "kind": "reply",
+  "seen": "1 Nov: \"you need at least ~102 g more\" over a meal with no protein figure",
+  "reply": "Protein-wise you need at least ~102 g more to clear the 150 g minimum, since the restaurant row has no protein figure.",
+  "sources": "Plan: 2,400 kcal/day. Protein 150-160 g/day, 150 g the minimum working target.",
+  "facts": {
+   "kcal": 1792,
+   "protein": 48.4,
+   "protein_unknown": 1
+  },
+  "want": {
+   "has": "not known exactly"
+  }
+ },
+ {
+  "id": "reply-right-total",
+  "kind": "reply",
+  "seen": "31 Oct: a right day total and a sourced left figure draw nothing",
+  "reply": "Today now totals 2,369 kcal / 175.2 g protein, so 31 kcal left against the 2,400 target.",
+  "sources": "Standing rule: 2,400 kcal a day.",
+  "facts": {
+   "kcal": 2369,
+   "protein": 175.2
+  },
+  "want": {
+   "nothing": true
+  }
+ },
+ {
+  "id": "reply-stale-streak",
+  "kind": "reply",
+  "seen": "1 Nov 13:00: a 14 Oct streak cited in a check-in",
+  "reply": "That's 7 consecutive days as of 2026-10-14; I don't yet have an update on whether the streak is still running.",
+  "routine_day": "2026-11-01",
+  "want": {
+   "has": "18 days old"
+  }
+ },
+ {
+  "id": "reply-noted",
+  "kind": "reply",
+  "seen": "1 Nov, hosted: \"Noted.\" drew a false correction on 18 of 20 turns",
+  "owner": "Note 3 of a long session. Acknowledge in one short sentence.",
+  "reply": "Noted.",
+  "want": {
+   "nothing": true
+  }
+ },
+ {
+  "id": "reply-noted-kept",
+  "kind": "reply",
+  "seen": "Guard: asked to keep it, nothing kept, the correction stays",
+  "owner": "Please remember my locker code is 1234.",
+  "reply": "Noted.",
+  "want": {
+   "has": "has not been saved"
+  }
+ },
+ {
+  "id": "append-boba-90",
+  "kind": "append",
+  "seen": "1 Nov: boba 90 kcal, 225 on 29 Oct, nothing said",
+  "file": "date,meal,items,kcal,protein_g\n2026-10-29,drink,Boba tea (no sugar; honey tapioca),225,1\n",
+  "row": "date,meal,items,kcal,protein_g\n2026-11-01,drink2,boba black tea no sugar + tapioca pearls,90,0.5\n",
+  "day": "2026-11-01",
+  "want": {
+   "has": "a row dated 2026-10-29 holds the same food at 225 kcal"
+  }
+ },
+ {
+  "id": "fold-headered-legacy",
+  "kind": "fold",
+  "seen": "31 Oct to 1 Nov: every meal in a second, hand-keyed file next to the ledger, invisible to every receipt",
+  "file": "key,date,items,kcal,protein_g\n2026-11-01-drink,2026-11-01,cappuccino,66,3.3\n2026-11-01-lunch,2026-11-01,3 eggs, 1 bun,517,27.1\n2026-11-01-lunch2,2026-11-01,steak, mash, sauce,923,\n2026-11-01-total,2026-11-01,total,1506,30\n",
+  "ledger": "date,meal,items,kcal,protein_g\n2026-10-30,lunch,soup,300,10\n",
+  "day": "2026-11-01",
+  "want": {
+   "kcal": 1506,
+   "protein": 30.4
+  }
+ }
+]

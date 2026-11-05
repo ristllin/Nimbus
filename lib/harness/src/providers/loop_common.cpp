@@ -4,14 +4,20 @@
 #include <array>
 #include <cstdio>
 #include <functional>
+#include <memory>
 #include <new>   // std::bad_alloc: a thrown round still files what the loop billed
 
 #include "nimbus/harness/log.h"
+#include "nimbus/harness/output_caps.h"   // sameHostNonReasoningModel - the cut step-down
 #include "wire.h"   // wire::lastExchange - did the failed request ever leave the device
 #include "image_parts.h"   // R1: LoopImages - the turn's photos seed the transcript
+#include "nimbus/orch/compact.h"   // isContextOverflowError - a provider's window refusal
 #include "nimbus/orch/head_loop.h"
+#include "nimbus/orch/head_switch.h"     // parkPause: reading the park without asking it
 #include "nimbus/orch/provider_park.h"   // the one per-provider park every seam shares
+#include "nimbus/orch/reply_guard.h"   // cutRetryNote - what a cut round is told
 #include "nimbus/orch/transcript.h"
+#include "nimbus/orch/turn.h"   // salvageTurnText - what a cut round wrote
 
 namespace agent {
 namespace providers {
@@ -24,7 +30,7 @@ namespace orch = nimbus::orch;
 // host custom" with zero HTTP, and custom inside providerPriority no longer
 // truncates a real failover ladder mid-switch.
 bool fabricSupports(const std::string& host) {
-  return host == "anthropic" || host == "openai" || host == "mistral";
+  return host == "anthropic" || host == "openai" || host == "mistral" || host == "zai";
 }
 
 // ---- CUM-477: one same-host resend for a request that never left -------------
@@ -210,6 +216,39 @@ orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx) {
   };
 }
 
+// ---- web search hosted by the provider (providers.h) -----------------------------
+namespace {
+// A read of the park (parkPause), not an ask (hostParked): this runs on every tool
+// listing, and asking would spend a parked provider's one re-check on nothing.
+bool searchHostOpen(const ProviderDeps& pd, const char* host) {
+  return pd.key && !pd.key(host).empty() &&
+         !orch::pauseHolds(orch::parkPause(host, orch::PaidSeam::Chat, pd.nowMs ? pd.nowMs() : 0, /*dueIsOpen=*/true));
+}
+}  // namespace
+
+bool hostedWebSearchAvailable(const ProviderDeps& pd) {
+  return searchHostOpen(pd, "mistral") || (pd.zaiHead && searchHostOpen(pd, "zai"));
+}
+
+websearch::Result hostedWebSearch(const ProviderDeps& pd, const std::string& query, int maxResults) {
+  websearch::Result res;
+  res.hosted = true;
+  res.err = "no provider with a built-in web search has a key";
+  if (searchHostOpen(pd, "mistral")) {
+    res = mistralWebSearch(pd, query);
+    if (res.ok) return res;
+    hlog::logf("web.search: mistral failed (%s)", res.err.c_str());
+  }
+  if (pd.zaiHead && searchHostOpen(pd, "zai")) {
+    ProviderDeps zai = pd;
+    pd.zaiHead(zai);
+    const bool billedBefore = res.billed;
+    res = zaiWebSearch(zai, query, maxResults);
+    res.billed = res.billed || billedBefore;
+  }
+  return res;
+}
+
 // ---- the host park: the chat seam of the one per-provider park ------------------
 // The fabric's park API (providers.h) is the Chat seam of nimbus::orch::providerPark()
 // (provider_park.h): a billing or key refusal learned on ANY seam (embeddings, the
@@ -235,13 +274,21 @@ orch::ParkKind parkKindOf(orch::StepErr k) {
 }
 }  // namespace
 
+void wireParkLog() {
+  static const bool kWired = [] {
+    orch::providerPark().setLog([](const char* line) { hlog::logf("%s", line); });
+    return true;
+  }();
+  (void)kWired;
+}
+
 bool hostParked(const ProviderDeps& pd, const std::string& host, HostPark* why) {
+  wireParkLog();
   const orch::ParkVerdict v =
-      orch::providerPark().available(host.c_str(), orch::PaidSeam::Chat, keyFpOf(pd, host), nowOf(pd));
-  if (v.probe) hlog::logf("fabric: %s re-check due - one probe request", host.c_str());
+      orch::providerPark().peek(host.c_str(), orch::PaidSeam::Chat, keyFpOf(pd, host), nowOf(pd));
   if (v.keyChanged) hlog::logf("fabric: %s un-parked (its key changed)", host.c_str());
   if (v.open) return false;
-  if (why) *why = HostPark{stepKindOf(v), v.httpStatus, v.paused};
+  if (why) *why = HostPark{stepKindOf(v), v.httpStatus, v.paused, v.cause};
   return true;
 }
 
@@ -256,8 +303,12 @@ void parkHost(const ProviderDeps& pd, const std::string& host, orch::StepErr kin
 // of the one PROBE request after the re-check time re-arms the park it already had
 // (the refusal it was parked for was never answered otherwise - a 503 or a
 // timeout on the probe must not silently un-park it).
+//
+// Cumulo closes only on the reason its body names, and the wire already heard that body
+// (noteParkRefusal). A step kind here is typed from a status alone, and a status cannot
+// say: a gateway's 403 with no reason is one failed call, not a rejected key.
 void noteHostFailed(const ProviderDeps& pd, const std::string& host, orch::StepErr kind, int httpStatus) {
-  if (orch::fabricRuleFor(kind).parkHost) {
+  if (host != "cumulo" && orch::fabricRuleFor(kind).parkHost) {
     parkHost(pd, host, kind, httpStatus);
     return;
   }
@@ -305,8 +356,7 @@ bool testStatusOverride(const std::string& host, int& status, std::string& body)
 
 namespace {
 // With every host of a turn closed: the one to ask (only a host whose re-check fell
-// due since the first walk: asking the park again here is what hands it its one
-// probe), else `count`; and the first closed by a refusal (out of credit or a refused
+// due since the first walk: its request is the probe), else `count`; and the first closed by a refusal (out of credit or a refused
 // key), whose kind and status name the turn's refusal when nothing is asked.
 struct ClosedPick {
   size_t ask;
@@ -327,6 +377,188 @@ ClosedPick pickWhenAllClosed(const ProviderDeps& pd, const std::vector<std::stri
   return pick;
 }
 }  // namespace
+
+namespace {
+// What a host's tool loop can still do for a round that was too big or ran out of room: refit
+// the prompt, one trim for a provider's window, one more run with the cut note. The fabric and
+// a single host's loop (the Cumulo router head, the hosted Virtual Nimbus, failover off) share
+// it. One turn long, on the turn's stack: the saved cut lives on the heap (it is big).
+class RoundRecovery {
+ public:
+  RoundRecovery(orch::Transcript& tr, const HeadTools& ht, const std::string& instructions, const std::string& inputs)
+      : tr_(tr), ht_(ht), instructions_(instructions), inputs_(inputs) {}
+
+  // `lead` opens each request's input; `rebuild` makes the host's step anew on instructions().
+  void bind(std::function<std::string()> lead, std::function<void()> rebuild) {
+    lead_ = std::move(lead);
+    rebuild_ = std::move(rebuild);
+  }
+  // The prompt and input the requests send: the engine's until a refit shortens them.
+  const std::string& instructions() const { return fitted_ ? fitInstructions_ : instructions_; }
+  std::string seed() const { return (lead_ ? lead_() : std::string()) + cutNote_ + (fitted_ ? fitInputs_ : inputs_); }
+  // The seed differs from what the engine handed in, whichever host runs it.
+  bool seedChanged() const { return fitted_ || !cutNote_.empty(); }
+
+  // The prompt side of a refit (turn_fit.h): what the next request renders changes, so the
+  // host's step is rebuilt on it. Never runs while the step is on the stack.
+  size_t fitPrompt(size_t want, orch::FitScope scope) {
+    if (!ht_.fitPrompt) return 0;
+    const size_t freed = ht_.fitPrompt(want, scope, fitInstructions_, fitInputs_);
+    if (!freed) return 0;
+    fitted_ = true;
+    tr_.setSeedText(seed());
+    rebuild_();
+    return freed;
+  }
+  std::function<size_t(size_t, orch::FitScope)> fitHook() {
+    return [this](size_t want, orch::FitScope scope) { return fitPrompt(want, scope); };
+  }
+
+  // A provider refused the request for its size: nothing ran and nothing was billed. Trim
+  // along the whole ladder and say to run it once more; the turn's photos are read as their
+  // transcriptions on this host from here on. A second refusal in a row takes the caller's rules.
+  bool overflowRetry(const std::string& host, const std::string& why) {
+    if (overflowTried_ || !orch::isContextOverflowError(why)) return false;
+    overflowTried_ = true;
+    const size_t total = instructions().size() + (fitted_ ? fitInputs_.size() : inputs_.size()) + tr_.toolBytes();
+    const size_t want = orch::overflowTrimBytes(why, total);
+    const size_t freed = orch::trimForOverflow(tr_, want, fitHook(), [&]() -> size_t {
+      return imageparts::readAsText(tr_.images(), host);
+    });
+    hlog::logf("fabric: %s refused the request for its size - gave up %u of %u B, one retry", host.c_str(),
+               (unsigned)freed, (unsigned)want);
+    return freed > 0;
+  }
+
+  // The next attempt at a cut round is told what happened and answers in less room.
+  void noteCut(const orch::HeadStep& sr) {
+    savedCut_.reset(new orch::HeadStep(sr));
+    orch::Salvage kept;
+    orch::salvageTurnText(sr.finalTurn, kept);
+    cutNote_ = orch::cutRetryNote(sr.error, kept.reply.empty() ? sr.text : kept.reply);
+    tr_.setSeedText(seed());
+  }
+  // True the first time per run of failures: the round may run once more with the note.
+  bool cutRerunOnce() {
+    if (cutRerun_) return false;
+    cutRerun_ = true;
+    return true;
+  }
+  // What a cut round wrote outlives a later failure of another kind: the owner gets those
+  // words, not a bare cause.
+  const orch::HeadStep& failure(const orch::HeadStep& last) const { return savedCut_ ? *savedCut_ : last; }
+
+  // A round moved to another host: that host gets its own trim and its own rerun.
+  void newHost() { overflowTried_ = cutRerun_ = false; }
+
+  // The round is served. What was recovered is over: a later round's failure is about
+  // itself, it may have its own trim and rerun, and it is not told about this cut.
+  void served() {
+    overflowTried_ = cutRerun_ = false;
+    savedCut_.reset();
+    heldHost_.clear();
+    heldCause_.clear();
+    if (cutNote_.empty()) return;
+    cutNote_.clear();
+    tr_.setSeedText(seed());
+  }
+
+  // A cut's cause reaches the failure chain only if nothing recovers it (the chain's first
+  // entry is what the owner hears). `note` files a failed attempt, with what it took to flush.
+  void holdCut(const std::string& host, const std::string& why) {
+    if (!heldHost_.empty() && heldHost_ != host) flushCause();
+    if (!heldHost_.empty()) return;   // the first of a run explains it
+    heldHost_ = host;
+    heldCause_ = why;
+  }
+  void flushCause() {
+    if (heldHost_.empty()) return;
+    if (ht_.onStepError) ht_.onStepError(heldHost_, heldCause_);
+    heldHost_.clear();
+    heldCause_.clear();
+  }
+
+ private:
+  orch::Transcript& tr_;
+  const HeadTools& ht_;
+  const std::string& instructions_;
+  const std::string& inputs_;
+  std::function<std::string()> lead_;
+  std::function<void()> rebuild_;
+  std::string fitInstructions_, fitInputs_;
+  bool fitted_ = false;
+  bool overflowTried_ = false, cutRerun_ = false;
+  std::unique_ptr<orch::HeadStep> savedCut_;
+  std::string cutNote_;
+  std::string heldHost_, heldCause_;
+};
+
+void loopHooks(orch::HeadLoopHooks& hooks, const ProviderDeps& pd, const HeadTools& ht, orch::Transcript& tr,
+               RoundRecovery& rec) {
+  hooks.dispatch = ht.dispatch;
+  hooks.nowMs    = pd.nowMs;
+  hooks.freeHeap = pd.freeHeap;
+  hooks.largestBlock = pd.largestBlock;
+  hooks.log      = [](const std::string& m) { hlog::logf("%s", m.c_str()); };
+  hooks.onText   = ht.onRoundText;   // round prose -> engine (Glass Box A4)
+  hooks.progress = ht.onRoundProgress;   // round boundaries -> engine (lane PROG)
+  hooks.spill    = ht.spill;         // clamped-result spill -> results ring
+  hooks.transcript = &tr;            // the controller records; step() renders
+  if (ht.fitPrompt) hooks.fitPrompt = rec.fitHook();
+}
+}  // namespace
+
+bool runHostLoop(const HostLoop& loop, const std::string& instructions, const std::string& inputs,
+                 std::string& outJson, std::string& err) {
+  const ProviderDeps& pd = loop.pd;
+  const HeadTools& ht = loop.ht;
+  const char* who = loop.who;
+  // The CANONICAL transcript: the controller records prose, calls and results into it, and
+  // every round's request is rendered fresh from it. Stateless by construction: no provider
+  // conversation to create or track in loop mode.
+  orch::Transcript tr;
+  tr.addUser(inputs);
+  const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
+  RoundRecovery rec(tr, ht, instructions, inputs);
+  // CUM-477: one same-host resend of a request that never left.
+  orch::HeadStepFn inner = loop.make(instructions, tr);
+  const ResendCtx resend{&pd, &ht.cfg, &inner, who};
+  const orch::HeadStepFn send = resendUnsentOnce(&resend);
+  rec.bind(nullptr, [&] { inner = loop.make(rec.instructions(), tr); });
+
+  orch::HeadLoopHooks hooks;
+  hooks.step = [&](bool allowTools, const std::vector<orch::HeadToolResult>& prior, uint32_t budgetAtEntry,
+                   const std::string& capReason) -> orch::HeadStep {
+    const uint32_t stepStart = pd.nowMs ? pd.nowMs() : 0;
+    for (;;) {
+      orch::HeadStep sr = send(allowTools, prior, budgetLeft(pd, budgetAtEntry, stepStart), capReason);
+      if (sr.ok) {
+        rec.served();
+        return sr;
+      }
+      // Too big to send: the controller refits and runs it again (head_loop.h).
+      size_t budget = 0, size = 0;
+      if (orch::parseBodyBudgetError(sr.error, budget, size)) return sr;
+      typeStep(sr);
+      if (rec.overflowRetry(loop.host, sr.error)) continue;
+      if (sr.kind != orch::StepErr::Cut) return rec.failure(sr);
+      rec.noteCut(sr);
+      if (!rec.cutRerunOnce()) return rec.failure(sr);
+      hlog::logf("%s: cut - the round runs once more with the note", who);
+    }
+  };
+  loopHooks(hooks, pd, ht, tr, rec);
+
+  const orch::HeadOutcome res = runHeadLoop(ht.cfg, hooks);
+  hlog::logf("%s: rounds=%d cap=%s ok=%d heap=%u", who, res.rounds, res.capReason.c_str(), (int)res.ok,
+             (unsigned)(pd.freeHeap ? pd.freeHeap() : 0));
+  // Glass Box P3: hand the canonical transcript to the engine BEFORE the failure return: a
+  // failed turn's middle is exactly what needs debugging.
+  if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));
+  if (!res.ok) return wire::loopFailed(res, outJson, err);   // CUM-621: a cut keeps its partial turn
+  outJson = res.finalTurn;
+  return true;
+}
 
 bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostList,
                    const std::string& instructions, const std::string& inputs,
@@ -350,8 +582,8 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   // the device could not finish sending is resent once on the same host after a
   // bounded wait for the heap, and reads as low memory when the heap never comes
   // back - so the fabric's own retry and any switch come after that wait. One
-  // context per host in fixed storage sized to the three hosts the fabric speaks
-  // (fabricSupports; the engine passes at most three), alive for the whole loop:
+  // context per host in fixed storage sized to the hosts one turn walks (the engine
+  // passes at most three of the fabric's four), alive for the whole loop:
   // each wrapped step holds only its pointer, and nothing is allocated for them.
   // A host switched away from drops its step at once (it holds a copy of the deps).
   constexpr size_t kMaxHosts = 3;
@@ -366,12 +598,19 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
     resend[i] = ResendCtx{&pd, &ht.cfg, &inner[i], who};
     return resendUnsentOnce(&resend[i]);
   };
+  RoundRecovery rec(tr, ht, instructions, inputs);
   auto makeStep = [&](size_t i) -> orch::HeadStepFn {
     const std::string& h = hostList[i];
+    const std::string& ins = rec.instructions();
     orch::TokenUsage* use = &hostUse[i];
-    if (h == "anthropic") return wrap(i, antLoopStep(pd, instructions, ht, use, tr), "orchTurn(ant-loop)");
-    if (h == "openai")    return wrap(i, oaiLoopStep(pd, instructions, ht, use, tr), "orchTurn(oai-loop)");
-    if (h == "mistral")   return wrap(i, misLoopStep(pd, instructions, ht, use, tr), "orchTurn(mistral-loop)");
+    if (h == "anthropic") return wrap(i, antLoopStep(pd, ins, ht, use, tr), "orchTurn(ant-loop)");
+    if (h == "openai")    return wrap(i, oaiLoopStep(pd, ins, ht, use, tr), "orchTurn(oai-loop)");
+    if (h == "mistral")   return wrap(i, misLoopStep(pd, ins, ht, use, tr), "orchTurn(mistral-loop)");
+    if (h == "zai" && pd.zaiHead) {
+      ProviderDeps zai = pd;   // the step keeps its own copy, as every step does
+      pd.zaiHead(zai);
+      return wrap(i, zaiLoopStep(zai, ins, ht, use, tr), "orchTurn(zai-loop)");
+    }
     return nullptr;
   };
 
@@ -405,13 +644,17 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       return false;
     }
   }
-  // The seeded input opens with the lead of the host each request really runs on (HFM).
-  auto seedFor = [&](size_t i) { return (ht.inputLead ? ht.inputLead(hostList[i]) : std::string()) + inputs; };
-  tr.addUser(seedFor(hostIdx));
+  // The seeded input opens with the lead of the host each request really runs on (HFM),
+  // then the note of a cut round (reply_guard.h cutRetryNote).
+  orch::HeadStepFn cur;
+  rec.bind([&] { return ht.inputLead ? ht.inputLead(hostList[hostIdx]) : std::string(); },
+           [&] { cur = makeStep(hostIdx); });
+  tr.addUser(rec.seed());
   const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
   int    switches = 0;
   const int kMaxSwitches = 2;
-  orch::HeadStepFn cur = makeStep(hostIdx);
+  bool   steppedDown = false;   // the one same-host non-reasoning step after a cut
+  cur = makeStep(hostIdx);
   if (!cur) { err = "unknown host " + hostList[hostIdx]; return false; }
   if (hostIdx > 0) {
     HostPark why;
@@ -425,14 +668,22 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   // The wrapper IS the controller's step: retry/failover happens INSIDE one
   // logical round, so runHeadLoop's caps and recording are provider-agnostic.
   // Every failed attempt reaches the engine's failure chain with its host (lane T).
+  // A cut's and a provider overflow's cause are noted only when nothing recovers them.
   auto noteFailed = [&](const orch::HeadStep& r) {
+    if (r.kind == orch::StepErr::Cut) {
+      rec.holdCut(hostList[hostIdx], r.error);
+      return;
+    }
+    rec.flushCause();
     if (ht.onStepError) ht.onStepError(hostList[hostIdx], r.error);
   };
   orch::HeadStepFn step = [&](bool allowTools,
                               const std::vector<orch::HeadToolResult>& prior,
-                              uint32_t budgetMs,
+                              uint32_t budgetAtEntry,
                               const std::string& capReason) -> orch::HeadStep {
+    const uint32_t stepStart = pd.nowMs ? pd.nowMs() : 0;
     for (;;) {
+      const uint32_t budgetMs = budgetLeft(pd, budgetAtEntry, stepStart);   // a rerun has only what is left
       // Lane DEF2: a host whose own monthly limit was reached during this turn (its billed
       // rounds count at once) is not asked again: the round moves to the next open host,
       // quietly (the owner hears about the limit once, from the limits store), and the
@@ -455,7 +706,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
         ++switches;
         cur = next;
         inner[prevIdx] = nullptr;   // the abandoned host's step and its deps copy
-        if (ht.inputLead) tr.setSeedText(seedFor(hostIdx));
+        if (ht.inputLead) tr.setSeedText(rec.seed());
         continue;
       }
       // Lane DEF: each billed round counts toward the monthly spend ceiling at once (the
@@ -466,7 +717,11 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       orch::notePendingUsage(hostList[hostIdx].c_str(),
                              pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()).c_str() : "",
                              before, hostUse[hostIdx]);
-      if (sr.ok) { unparkHost(hostList[hostIdx]); return sr; }
+      if (sr.ok) {
+        unparkHost(hostList[hostIdx]);
+        rec.served();
+        return sr;
+      }
       // A round too big to SEND never left the device: the controller folds older
       // tool rounds and runs it again (head_loop.h refitToBudget). It is not a host
       // failure and not a cause in the engine's chain (the owner hears the chain's
@@ -474,6 +729,10 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       size_t budget = 0, size = 0;
       if (orch::parseBodyBudgetError(sr.error, budget, size)) return sr;
       typeStep(sr);
+      // The provider's context window: trim and retry once on this host. Not a failure yet: if
+      // the retry fails it says why itself. A second refusal takes the rules below (another
+      // host may have the room, and it runs the trimmed request).
+      if (rec.overflowRetry(hostList[hostIdx], sr.error)) continue;
       noteFailed(sr);   // every failed attempt, the no-retry exits below included (lane T)
       if (orch::isSpendFrozenError(sr.error)) {
         hlog::logf("fabric: %s step refused - %s (no retry, no switch)",
@@ -506,7 +765,11 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
         orch::notePendingUsage(hostList[hostIdx].c_str(),
                                pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()).c_str() : "",
                                beforeRetry, hostUse[hostIdx]);
-        if (sr2.ok) { unparkHost(hostList[hostIdx]); return sr2; }
+        if (sr2.ok) {
+          unparkHost(hostList[hostIdx]);
+          rec.served();
+          return sr2;
+        }
         typeStep(sr2);
         noteFailed(sr2);
       } else if (!orch::fabricRuleFor(sr.kind).retrySameHost) {
@@ -515,9 +778,53 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       }
       const orch::FabricRule rule = orch::fabricRuleFor(sr2.kind);
       noteHostFailed(pd, hostList[hostIdx], sr2.kind, sr2.httpStatus);
+      // Ruling 3 Nov 09:15Z: a reasoning head that out-grew its round (Lumi:
+      // Large 4 cut at 4,125 then 5,500 tokens for a 135-byte reply, 38,656
+      // billed as reasoning) gets ONE same-host step on a non-reasoning model
+      // before a different provider is asked. Same provider, so no owner
+      // notice: nothing the owner sees changes, and the round that spiralled
+      // is exactly the round a non-reasoning model answers in a few hundred
+      // tokens (measured 3 Nov, evidence/defect5/). The step-down holds for
+      // the rest of the turn: the configured head already spiralled once.
+      // The mistral host check is structural, not redundant: the step below
+      // speaks the Mistral wire (misLoopStep), so a future table entry for
+      // another host needs its own loop step here, never this one.
+      if (sr2.kind == orch::StepErr::Cut && !steppedDown && hostList[hostIdx] == "mistral") {
+        const std::string headModel =
+            pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()) : std::string();
+        const char* alt = providers::sameHostNonReasoningModel(hostList[hostIdx], headModel);
+        if (alt && *alt && headModel != alt) {
+          steppedDown = true;
+          hlog::logf("fabric: %s (%s) cut at its output cap - one same-host step on %s "
+                     "before another provider",
+                     hostList[hostIdx].c_str(), headModel.c_str(), alt);
+          ProviderDeps altPd = pd;   // the step keeps its own copy, as every step does
+          const std::string altModel = alt;
+          auto origModel = pd.orchModel;
+          altPd.orchModel = [origModel, altModel](const char* h) {
+            return std::string(h) == "mistral" ? altModel
+                                              : (origModel ? origModel(h) : std::string());
+          };
+          cur = wrap(hostIdx, misLoopStep(altPd, rec.instructions(), ht, &hostUse[hostIdx], tr),
+                     "orchTurn(mistral-loop)");
+          continue;   // the SAME round re-runs on the stepped-down model
+        }
+      }
       const size_t nextIdx = nextUnparked(hostIdx + 1);
-      if (!rule.switchHost || switches >= kMaxSwitches || nextIdx >= hostCount)
-        return sr2;   // exhausted - the controller fails soft to the caller
+      const bool nowhereToGo = !rule.switchHost || switches >= kMaxSwitches || nextIdx >= hostCount;
+      // A cut round had its headroom retry in the step. The next attempt, here or on the
+      // next host, is told what happened and answers in less room; with nowhere to go
+      // the round runs once more here (Lumi, 31 Oct: the only open host, 3m56s, no answer).
+      if (sr2.kind == orch::StepErr::Cut) {
+        rec.noteCut(sr2);
+        if (nowhereToGo && rec.cutRerunOnce()) {
+          hlog::logf("fabric: %s cut with nowhere to go - the round runs once more with the note",
+                     hostList[hostIdx].c_str());
+          continue;
+        }
+      }
+      // Exhausted: the controller fails soft to the caller.
+      if (nowhereToGo) return rec.failure(sr2);
       const std::string from = hostList[hostIdx];
       const std::string to   = hostList[nextIdx];
       orch::HeadStepFn next = makeStep(nextIdx);
@@ -532,22 +839,16 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       if (notify) notify(from, to);
       cur = next;
       inner[prevIdx] = nullptr;   // the abandoned host's step and its deps copy
-      if (ht.inputLead) tr.setSeedText(seedFor(hostIdx));
+      rec.newHost();
+      if (ht.inputLead || rec.seedChanged()) tr.setSeedText(rec.seed());
       // loop: the SAME round re-runs on the new host. The transcript already
       // holds every executed tool result - nothing re-dispatches.
     }
   };
 
   orch::HeadLoopHooks hooks;
-  hooks.step     = step;
-  hooks.dispatch = ht.dispatch;
-  hooks.nowMs    = pd.nowMs;
-  hooks.freeHeap = pd.freeHeap;
-  hooks.largestBlock = pd.largestBlock;
-  hooks.log      = [](const std::string& m) { hlog::logf("%s", m.c_str()); };
-  hooks.onText   = ht.onRoundText;
-  hooks.spill    = ht.spill;
-  hooks.transcript = &tr;
+  hooks.step = step;
+  loopHooks(hooks, pd, ht, tr, rec);
 
   // Every exit files what each host billed, once (nothing bills before the loop).
   auto fileSpend = [&] {
@@ -565,6 +866,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
     if (spend) fileSpend();
     throw;
   }
+  if (!res.ok) rec.flushCause();   // nothing recovered it
   hlog::logf("fabric-loop: rounds=%d cap=%s ok=%d host=%s switches=%d heap=%u",
              res.rounds, res.capReason.c_str(), (int)res.ok,
              hostList[hostIdx].c_str(), switches,

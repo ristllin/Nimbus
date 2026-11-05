@@ -1,0 +1,18 @@
+{
+  "id": "lc-compact",
+  "title": "A transient provider 400 does not lose the turn",
+  "rows": ["OIR-24"],
+  "replays": "The 31 Oct class: /compact failed in an HTTP 400 loop and auto summaries paused. The fold ladder now retries, so a 400 on the way is survived and the turn answers.",
+  "clock": "{{TODAY}} {{DOW}} 20:06 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "faults": ["mistral:1-2:400", "anthropic:1-2:400", "openai:1-2:400", "zai:1-2:400"],
+  "steps": [
+    {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{TODAY}},breakfast,oats with a banana,290,12\n{{TODAY}},lunch,chicken wrap,615,40\n"},
+    {"do": "say", "text": "What is my total so far today?"}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "ledger_day_total", "params": {"require_stated": false}}
+  ]
+}

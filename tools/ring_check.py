@@ -27,8 +27,12 @@ How to read the result (your eyes are the instrument):
 """
 
 import argparse
+import os
 import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bench_guard  # noqa: E402 - the forbidden-device guard, a sibling of this tool
 
 try:
     import serial
@@ -40,9 +44,13 @@ DEFAULT_PORT = "/dev/cu.usbmodem101"  # default bench port - verify the board by
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Flash the LED ring red/green/blue at low brightness.")
-    ap.add_argument("--port", default=DEFAULT_PORT, help=f"serial port (default {DEFAULT_PORT})")
+    ap.add_argument("--port", default=DEFAULT_PORT, help=f"serial port (default {DEFAULT_PORT}; refused if forbidden)")
     args = ap.parse_args()
 
+    try:
+        bench_guard.check_port(args.port, "ring_check")
+    except bench_guard.ForbiddenDevice as e:
+        sys.exit(str(e))
     # Quiet-open per AGENTS.md: NEVER assert DTR/RTS on this board.
     s = serial.Serial()
     s.port = args.port

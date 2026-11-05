@@ -373,6 +373,9 @@ struct MiniRig {
 
   MiniRig() {
     JobEngine::Deps jd;
+    jd.principalFor = [](const std::string& chat) {   // this rig's chats are the owner's
+      return nimbus::orch::principalForRole(chat, nimbus::orch::Role::Admin);
+    };
     jd.platform = plat.contract();
     jd.deliver = [this](const std::string&, const std::string& t) { delivered.push_back(t); };
     jobs.reset(new JobEngine(std::move(jd)));
@@ -491,6 +494,27 @@ static void test_bounded_turn_on_a_fallback_is_single_shot() {
   TEST_ASSERT_FALSE(healthy.eng->headOnFallback());
 }
 
+// The idle re-check of a parked provider is one more blocking request on the task that reads
+// the owner's messages: it waits for a quiet moment and for a held album, and no bound forces it.
+static void test_the_idle_recheck_waits_for_the_owner() {
+  using nimbus::orch::OwnerFirstGate;
+  OwnerFirstGate g;
+  TEST_ASSERT_TRUE(g.parkRecheckMayStart(false, 1000));    // a fresh device: nothing to wait for
+  TEST_ASSERT_FALSE(g.parkRecheckMayStart(true, 1000));    // an album is arriving
+  uint32_t now = 500000;
+  g.noteTurnEnd(now);
+  TEST_ASSERT_FALSE(g.parkRecheckMayStart(false, now));
+  TEST_ASSERT_FALSE(g.parkRecheckMayStart(false, now + OwnerFirstGate::kQuietMs - 1));
+  TEST_ASSERT_TRUE(g.parkRecheckMayStart(false, now + OwnerFirstGate::kQuietMs));
+  // A brisk chat past the fold's bounds: the fold is forced, the re-check is not.
+  for (int i = 0; i < 40; i++) {
+    now += 60000;
+    g.noteTurnEnd(now);
+    g.notePumpEnd();
+    TEST_ASSERT_FALSE(g.parkRecheckMayStart(false, now + 1000));
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_model_reproduces_lumi_without_the_gate);
@@ -503,6 +527,7 @@ int main(int, char**) {
   RUN_TEST(test_gate_rules);
   RUN_TEST(test_bounded_turn_never_runs_the_owner_loop);
   RUN_TEST(test_bounded_turn_on_a_fallback_is_single_shot);
+  RUN_TEST(test_the_idle_recheck_waits_for_the_owner);
   RUN_TEST(test_bounded_turn_token_bound_through_the_loop);
   return UNITY_END();
 }

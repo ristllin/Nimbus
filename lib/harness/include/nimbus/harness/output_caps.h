@@ -50,6 +50,11 @@ struct OutputCap {
 OutputCap outputCapFor(const std::string& host, const std::string& model, RoundKind kind,
                        uint32_t roundMs = 0);
 
+// The one note a person hears when they pick a model the parity eval found unfit for
+// daily use ("" for the others). Plain words, for the reply. Evidence:
+// docs/quick-start/provider-keys.md and the lane's parity table.
+const char* modelFitNote(const std::string& provider, const std::string& model);
+
 // Whether a Claude model accepts output_config.effort (Opus 4.5+, Sonnet 4.6+,
 // Haiku 5+, every Fable and Mythos). Unknown ids: no (omitting it is today's wire).
 bool anthropicTakesEffort(const std::string& model);
@@ -62,6 +67,21 @@ bool anthropicTakesEffort(const std::string& model);
 // carries a "mistral/" prefix.
 bool mistralTakesEffort(const std::string& model);
 
+// The reasoning_effort a head round sends on this Mistral model ("" = none): the lowest
+// value the model takes. Large 4 and the hosted GLM refuse "none"; Small, Medium,
+// Magistral and the Vibe aliases refuse "low" (recorded 1 Nov).
+const char* mistralHeadEffort(const std::string& model);
+
+// The same-provider model a cut round steps down to before a different provider is
+// asked ("" = none). Only a head that cannot turn its reasoning off needs one: Large 4
+// refuses effort "none", so its output budget can go to reasoning even at "low" (Lumi
+// 3 Nov: cut at 4,125 then 5,500 tokens for a 135-byte reply, 38,656 tokens billed as
+// reasoning). Measured 3 Nov on the real turn shapes (evidence/defect5/): every other
+// Mistral head runs at effort "none" and answers in a few hundred tokens, so its cut is
+// a genuinely long answer, not reasoning; Z.ai has no non-reasoning GLM, and every
+// current Claude line takes effort. The step-down model itself runs at "none".
+const char* sameHostNonReasoningModel(const std::string& host, const std::string& model);
+
 // The family's slowest calibrated output rate, tokens per second (the time clamp).
 uint32_t slowestTokensPerSecond(const std::string& host, const std::string& model);
 
@@ -73,6 +93,9 @@ uint32_t slowestTokensPerSecond(const std::string& host, const std::string& mode
 // void here and a bool elsewhere would be two functions with one mangled name).
 bool setTestFirstAttemptCap(uint32_t tokens);
 uint32_t testFirstAttemptCap();
+// Test builds: the next `rounds` capped rounds get `tokens` on BOTH attempts, so a real
+// model is cut twice and the fabric's own recovery runs (lane OVF's live leg).
+bool setTestCutRounds(int rounds, uint32_t tokens);
 
 }  // namespace providers
 }  // namespace agent

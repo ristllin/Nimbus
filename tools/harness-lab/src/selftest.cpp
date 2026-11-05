@@ -8,9 +8,12 @@
 #include <string>
 #include <vector>
 
+#include "lab_files.h"
 #include "lab_options.h"
 #include "lab_wire.h"
+#include "lane_mg_live.h"
 #include "nimbus/harness/fault_transport.h"
+#include "nimbus/orch/turn_effects.h"
 
 namespace lab {
 namespace {
@@ -67,6 +70,32 @@ void testWirePins() {
   const agent::HttpRequest orig = antReq();
   raw.exec(orig, out, err);
   check(echo.seen.back().body == orig.body, "with no pins the body is byte-identical");
+
+  // A pin that changes the body's length must move the splices with it: on 31 Oct the
+  // effort pin left an inline photo's base64 3 bytes late, outside its JSON string, and
+  // 14 of 62 bench turns died with HTTP 400 (reported then as a progressive-JPEG defect).
+  {
+    const uint8_t a[4] = {1, 2, 3, 4}, b[5] = {5, 6, 7, 8, 9};
+    agent::HttpRequest r;
+    r.method = "POST";
+    r.host = "api.anthropic.com";
+    r.path = "/v1/messages";
+    r.body = R"({"model":"m","output_config":{"effort":"medium"},"messages":[{"data":""},{"data":""}]})";
+    const size_t at1 = r.body.find(R"("data":")") + 8;
+    const size_t at2 = r.body.find(R"("data":")", at1) + 8;
+    r.splices.push_back(agent::BodySplice{at1, a, sizeof(a), true});
+    r.splices.push_back(agent::BodySplice{at2, b, sizeof(b), true});
+    WirePins lowOnly{"low", 0, 0};
+    WireOverrideTransport pinned(&echo, &lowOnly);
+    pinned.exec(r, out, err);
+    const std::string wire = agent::materializeBody(echo.seen.back());
+    JsonDocument dd;
+    check(!deserializeJson(dd, wire), "a pinned body with photos spliced in is still valid JSON");
+    check(std::string(dd["output_config"]["effort"] | "") == "low", "the pin landed");
+    check(std::string(dd["messages"][0]["data"] | "") == "AQIDBA==", "the first photo is in its own string");
+    check(std::string(dd["messages"][1]["data"] | "") == "BQYHCAk=", "the second photo is in its own string");
+    check(echo.seen.back().splices.size() == 2, "the splices survive the rewrite");
+  }
 
   agent::HttpRequest tg;
   tg.method = "POST";
@@ -126,6 +155,73 @@ void testFaultChain() {
   check(echo.seen.size() == 2, "the injected request never reached the network");
 }
 
+// The lab's keyed files.append reads as a replacement to the device's claim check, so a
+// lab run judges a keyed write the way the firmware does. Lane UPSERT: only a correction
+// of the SAME item replaces; a different item under a reused key is appended under a new
+// key and records no replacement.
+void testKeyedReply() {
+  std::puts("keyed reply");
+  namespace orch = nimbus::orch;
+  LabFiles files;
+  orch::ToolRegistry reg;
+  files.registerTools(reg);
+  auto keyed = [&](const std::string& row) {
+    JsonDocument rpc;
+    rpc["jsonrpc"] = "2.0";
+    rpc["id"] = 1;
+    rpc["method"] = "tools/call";
+    rpc["params"]["name"] = "files.append";
+    JsonObject a = rpc["params"]["arguments"].to<JsonObject>();
+    a["project"] = "food";
+    a["name"] = "food-log.csv";
+    a["text"] = "date,meal,items,kcal,protein_g\n" + row + "\n";
+    a["key"] = "meal";
+    a["sum"] = "kcal";
+    std::string in;
+    serializeJson(rpc, in);
+    JsonDocument out;
+    deserializeJson(out, reg.handleRpc(in, orch::principalForRole("owner", orch::Role::Admin)));
+    return std::string(out["result"]["content"][0]["text"] | "");
+  };
+  orch::TurnEffects added, replaced, rekeyed, same;
+  orch::recordToolEffect(added, orch::FxKind::FileWrite, false, keyed("2026-10-30,lunch,black beans,300,10"), orch::kFxLogRow);
+  check(!added.anyOk(orch::FxKind::FileReplace), "a new row replaced nothing");
+  check(added.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "a new row is a landed log row");
+  const std::string fix = keyed("2026-10-30,lunch,black beans,320,11");
+  orch::recordToolEffect(replaced, orch::FxKind::FileWrite, false, fix, orch::kFxLogRow);
+  check(replaced.anyOk(orch::FxKind::FileReplace), "a keyed correction of the same item records a replacement");
+  check(replaced.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "a keyed correction is a landed log row");
+  check(fix.find("was 300 kcal") != std::string::npos && fix.find("the replaced row's items:") != std::string::npos,
+        ("the replace receipt names what it replaced: " + fix).c_str());
+  const std::string other = keyed("2026-10-30,lunch,rice,250,6");
+  orch::recordToolEffect(rekeyed, orch::FxKind::FileWrite, false, other, orch::kFxLogRow);
+  check(!rekeyed.anyOk(orch::FxKind::FileReplace), "a different item under a reused key replaced nothing");
+  check(rekeyed.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "a different item under a reused key still lands a row");
+  check(other.find("reused a stored key") != std::string::npos, "the receipt says the stored key was reused");
+  orch::recordToolEffect(same, orch::FxKind::FileWrite, false, keyed("2026-10-30,lunch,black beans,320,11"), orch::kFxLogRow);
+  check(!same.anyOk(orch::FxKind::FileReplace), "a re-send that changed nothing replaced nothing");
+}
+
+// The mg-live spawn leg's verdict, as the class (independent-review finding on
+// the H18 leg): "the sub keeps its tools" is proven only by the provider's own
+// run record (webRuns), never by reply text - a from-memory answer can cite a
+// URL or name web_search with no tool run at all, and a stepdown that ran no
+// tool proves nothing about the tools being kept.
+void testMgSpawnVerdict() {
+  std::puts("mg spawn verdict");
+  check(lab::spawnKeepsTools(true, "Python 3.15.2 per python.org", 1),
+        "a provider-recorded web run passes");
+  check(lab::spawnKeepsTools(true, "Python 3.15.2 per python.org", 3),
+        "several provider-recorded web runs pass");
+  check(!lab::spawnKeepsTools(true, "I used the web_search tool, see https://www.python.org", 0),
+        "reply text alone never proves the tool ran");
+  check(!lab::spawnKeepsTools(
+            true, "answer\n[note: this ran on mistral-medium-latest because mistral-large-4-0 cannot use Mistral's built-in tools]", 0),
+        "a stepdown that ran no tool does not prove tools kept");
+  check(!lab::spawnKeepsTools(false, "Python 3.15.2 per python.org", 2),
+        "a dispatch error fails even with web runs recorded");
+}
+
 }  // namespace
 
 int cmdSelftest() {
@@ -133,6 +229,8 @@ int cmdSelftest() {
   testOptions();
   testScrub();
   testFaultChain();
+  testKeyedReply();
+  testMgSpawnVerdict();
   std::printf("%s\n", g_fail ? "LAB SELFTEST FAILED" : "lab selftest passed");
   return g_fail ? 1 : 0;
 }

@@ -81,8 +81,8 @@ bool sameEntries(const OwnerPrefs& a, const OwnerPrefs& b) {
   if (a.entries().size() != b.entries().size()) return false;
   for (size_t i = 0; i < a.entries().size(); i++) {
     const PrefEntry &x = a.entries()[i], &y = b.entries()[i];
-    if (x.id != y.id || x.pending != y.pending || x.moved != y.moved || x.text != y.text || x.filters != y.filters ||
-        x.origin != y.origin || x.createdHours != y.createdHours)
+    if (x.id != y.id || x.pending != y.pending || x.moved != y.moved || x.evicted != y.evicted ||
+        x.text != y.text || x.filters != y.filters || x.origin != y.origin || x.createdHours != y.createdHours)
       return false;
   }
   return a.seeded() == b.seeded() && a.listingOwed() == b.listingOwed() && a.datedChecked() == b.datedChecked();
@@ -102,8 +102,12 @@ bool noControlChars(const std::string& t) {
 }
 
 void checkInvariants(const OwnerPrefs& p) {
-  TEST_ASSERT_TRUE(p.entries().size() <= kPrefsMaxItems);
+  // The caps count active + pending rules (the prompt's rules); moved and evicted
+  // entries are retained for restore under their own caps (lane POL2).
+  TEST_ASSERT_TRUE(p.activeCount() + p.pendingCount() <= kPrefsMaxItems);
   TEST_ASSERT_TRUE(p.pendingCount() <= kPrefsPendingMax);
+  TEST_ASSERT_TRUE(p.movedCount() <= kPrefsMovedMax);
+  TEST_ASSERT_TRUE(p.evictedCount() <= kPrefsEvictedMax);
   TEST_ASSERT_TRUE(p.activeBytes() <= kPrefsMaxBytes);
   for (const PrefEntry& e : p.entries()) {
     TEST_ASSERT_TRUE(!e.text.empty() && e.text.size() <= kPrefItemMax);
@@ -248,13 +252,38 @@ static void test_caps_refuse_with_plain_words() {
   TEST_ASSERT_EQUAL(int(PrefErr::Ok), int(p.add(std::string(240, 'a'), PrefOrigin::Web, 0, false, nullptr)));
   for (int i = 0; i < 4; i++) p.add(std::string(239 - i, 'b'), PrefOrigin::Web, 0, false, nullptr);
   TEST_ASSERT_EQUAL(5, (int)p.activeCount());   // 1,190 bytes of rules
-  TEST_ASSERT_EQUAL(int(PrefErr::Full), int(p.add("one more rule", PrefOrigin::Web, 0, false, nullptr)));
+  // Lane POL2: a full list makes room itself for an active add - the oldest rule
+  // retires (state E, restorable) and the add succeeds. The caller is told which
+  // rule stepped aside, so the owner hears it; never a silent loss.
+  std::vector<PrefEntry> evicted;
+  TEST_ASSERT_EQUAL(int(PrefErr::Ok), int(p.add("one more rule", PrefOrigin::Web, 0, false, nullptr, &evicted)));
+  TEST_ASSERT_EQUAL(1, (int)evicted.size());
+  TEST_ASSERT_EQUAL_UINT32(1, evicted[0].id);   // the oldest: the 240-byte 'a' rule
+  TEST_ASSERT_TRUE(p.find(1)->evicted);
+  TEST_ASSERT_EQUAL(5, (int)p.activeCount());
+  TEST_ASSERT_EQUAL(1, (int)p.evictedCount());
+  // A pending add never evicts: it waits or is refused.
   for (int i = 0; i < 4; i++)
     TEST_ASSERT_EQUAL(int(PrefErr::Ok), int(p.add("pending rule number " + std::to_string(i), PrefOrigin::Chat, 0, true, nullptr)));
   TEST_ASSERT_EQUAL(int(PrefErr::PendingFull), int(p.add("pending rule number 9", PrefOrigin::Chat, 0, true, nullptr)));
-  TEST_ASSERT_EQUAL(int(PrefErr::Full), int(p.approve(6)));   // approving would pass the byte cap
   TEST_ASSERT_EQUAL(int(PrefErr::NotFound), int(p.remove(99)));
-  TEST_ASSERT_EQUAL(int(PrefErr::NotPending), int(p.approve(1)));
+  TEST_ASSERT_EQUAL(int(PrefErr::NotPending), int(p.approve(1)));   // retired, not pending
+  // Approve never evicts (lane POL2: only an active add makes room): on a list
+  // at the byte cap it still refuses.
+  {
+    FakeIO cap;
+    cap.exists = true;
+    cap.blob = std::string("#nimbus-prefs v1 seeded=0 listed=0 next=7\n") +
+               "p1\tA\t0\tweb\t-\t" + std::string(240, 'a') + "\n" +
+               "p2\tA\t0\tweb\t-\t" + std::string(239, 'b') + "\n" +
+               "p3\tA\t0\tweb\t-\t" + std::string(238, 'c') + "\n" +
+               "p4\tA\t0\tweb\t-\t" + std::string(237, 'd') + "\n" +
+               "p5\tA\t0\tweb\t-\t" + std::string(236, 'e') + "\n" +
+               "p6\tP\t0\tchat\t-\tpending rule\n";
+    OwnerPrefs q;
+    q.begin(&cap);
+    TEST_ASSERT_EQUAL(int(PrefErr::Full), int(q.approve(6)));   // approving would pass the byte cap
+  }
   for (int e = 0; e <= int(PrefErr::PersistFailed); e++) {
     const std::string w = prefErrWords(PrefErr(e));
     TEST_ASSERT_TRUE(!w.empty());
@@ -727,14 +756,14 @@ static void test_web_actions_and_json() {
   FakeIO io;
   OwnerPrefs p;
   p.begin(&io);
-  std::string id;
-  TEST_ASSERT_EQUAL(int(PrefErr::Ok), int(prefsWebAction(p, "add", "", "Never use em dashes", 3, id)));
-  TEST_ASSERT_EQUAL(int(PrefErr::Ok), int(prefsWebAction(p, "import", "", "Always reply in English", 3, id)));
+  WebActionOut out;
+  TEST_ASSERT_EQUAL(int(PrefErr::Ok), int(prefsWebAction(p, "add", "", "Never use em dashes", 3, &out)));
+  TEST_ASSERT_EQUAL(int(PrefErr::Ok), int(prefsWebAction(p, "import", "", "Always reply in English", 3, &out)));
   TEST_ASSERT_EQUAL(int(PrefOrigin::Import), int(p.find(2)->origin));
-  TEST_ASSERT_EQUAL(int(PrefErr::Ok), int(prefsWebAction(p, "replace", "p2", "Always reply in British English", 4, id)));
+  TEST_ASSERT_EQUAL(int(PrefErr::Ok), int(prefsWebAction(p, "replace", "p2", "Always reply in British English", 4, &out)));
   // An owner's replace on the page is the newest provenance: the imported rule
   // became a web-edited one (the import itself was pinned above, before it).
-  TEST_ASSERT_EQUAL(int(PrefErr::NotFound), int(prefsWebAction(p, "remove", "nope", "", 4, id)));
+  TEST_ASSERT_EQUAL(int(PrefErr::NotFound), int(prefsWebAction(p, "remove", "nope", "", 4, &out)));
   JsonDocument d;
   TEST_ASSERT_TRUE(deserializeJson(d, prefsJson(p)) == DeserializationError::Ok);
   TEST_ASSERT_EQUAL(2, (int)d["items"].size());
@@ -743,7 +772,7 @@ static void test_web_actions_and_json() {
   TEST_ASSERT_EQUAL_STRING("web", d["items"][1]["origin"].as<const char*>());   // the replace re-provenanced it
   TEST_ASSERT_EQUAL(12, d["max"]["items"].as<int>());
   TEST_ASSERT_EQUAL(240, d["max"]["itemBytes"].as<int>());
-  TEST_ASSERT_EQUAL(int(PrefErr::Ok), int(prefsWebAction(p, "clear", "", "", 5, id)));
+  TEST_ASSERT_EQUAL(int(PrefErr::Ok), int(prefsWebAction(p, "clear", "", "", 5, &out)));
   TEST_ASSERT_EQUAL(0, (int)p.entries().size());
 }
 
@@ -860,7 +889,7 @@ static void test_ctx_dated_rules_move_once_and_restore() {
                            list.c_str());
   TEST_ASSERT_TRUE(list.find("/prefs restore p1") != std::string::npos);
   TEST_ASSERT_TRUE_MESSAGE(list.find("Standing rules (2):\n(p2)") == 0, list.c_str());   // moved ones not counted
-  TEST_ASSERT_TRUE(prefsCommand(w.ctx(), "restore p2").find("Not changed: that rule was not moved") == 0);
+  TEST_ASSERT_TRUE(prefsCommand(w.ctx(), "restore p2").find("Not changed: that rule was not retired") == 0);
   TEST_ASSERT_TRUE(prefsCommand(w.ctx(), "restore p1").find("Restored p1") == 0);
   TEST_ASSERT_FALSE(w.p.find(1)->moved);
   TEST_ASSERT_TRUE(w.p.renderBlock().find("wooden-tray") != std::string::npos);
@@ -912,8 +941,238 @@ static void test_ctx_lists_show_each_rule_age() {
   TEST_ASSERT_TRUE(w.p.renderBlock().find("added") == std::string::npos);
 }
 
+// ---- lane POL2: a full list makes room, and the owner hears it ----------------------
+// The class from the 2 Nov signals: a rule the owner states is never silently
+// dropped (or papered over with a memory write) because the list was full.
+static void test_eviction_on_full_makes_room_and_the_owner_hears_it() {
+  // A parsed file, so the full list is exact: 12 rules of 95 bytes (1,140 of the
+  // 1,200 cap), the first one seeded (the owner never typed it).
+  World w;
+  w.io.exists = true;
+  std::string blob = "#nimbus-prefs v1 seeded=1 listed=1 next=13\n";
+  blob += "p1\tA\t1\tseed\t-\t" + std::string(95, 's') + "\n";
+  for (int i = 2; i <= 12; i++)
+    blob += "p" + std::to_string(i) + "\tA\t" + std::to_string(i) + "\tchat\t-\t" +
+            std::string(95, 'a' + i) + "\n";
+  w.io.blob = blob;
+  w.p.begin(&w.io);
+  TEST_ASSERT_EQUAL(12, (int)w.p.activeCount());
+  TEST_ASSERT_EQUAL(1140, (int)w.p.activeBytes());
+  // The model's add on the full list: the SEED rule retires first (the owner never
+  // typed it), the add succeeds, and both the model words and the owner notice
+  // say which rule stepped aside.
+  ToolRegistry reg;
+  registerPrefsTools(reg, w.ctx());
+  const Principal owner = principalForRole("owner-chat", Role::Admin);
+  const ToolResult res = callTool(reg, "add", nullptr, std::string(100, 'n').c_str(), owner);
+  TEST_ASSERT_TRUE(res.success);
+  TEST_ASSERT_TRUE(res.output.find("retired to make room") != std::string::npos);
+  TEST_ASSERT_TRUE(res.output.find("restore") != std::string::npos);
+  TEST_ASSERT_EQUAL(2, w.notices);   // the owner was told: the retirement and the save
+  TEST_ASSERT_TRUE(w.p.find(1)->evicted);
+  TEST_ASSERT_EQUAL(12, (int)w.p.activeCount());   // room was made, not overfilled
+  TEST_ASSERT_EQUAL(1, (int)w.p.evictedCount());
+  checkInvariants(w.p);
+  // The next eviction takes the oldest typed rule (id order among equals).
+  const ToolResult res2 = callTool(reg, "add", nullptr, std::string(100, 'm').c_str(), owner);
+  TEST_ASSERT_TRUE(res2.success);
+  TEST_ASSERT_EQUAL(2, (int)w.p.evictedCount());
+  TEST_ASSERT_TRUE(w.p.find(2)->evicted);   // the first typed rule
+  checkInvariants(w.p);
+  // The /prefs list shows the retired rules with the way back.
+  const PrefsToolContext c = w.ctx();
+  const std::string list = prefsCommand(c, "list");
+  TEST_ASSERT_TRUE(list.find("Retired to make room for new rules:") != std::string::npos);
+  TEST_ASSERT_TRUE(list.find("/prefs restore p1") != std::string::npos);
+  // Restore never evicts: on a list at the byte cap it refuses like approve.
+  TEST_ASSERT_TRUE(prefsCommand(c, "restore p1").find("Not changed") == 0);
+  TEST_ASSERT_TRUE(w.p.find(1)->evicted);
+  // With room (one active rule removed) the restore brings it back.
+  TEST_ASSERT_TRUE(prefsCommand(c, "rm p3").find("Removed p3") == 0);
+  TEST_ASSERT_TRUE(prefsCommand(c, "restore p1").find("Restored p1") == 0);
+  TEST_ASSERT_FALSE(w.p.find(1)->evicted);
+  TEST_ASSERT_TRUE(w.p.find(2)->evicted);   // the other one stays retired
+  checkInvariants(w.p);
+  // A pending add never evicts: it waits as pending, nothing retires. (One more
+  // active rule removed first, so the 12-rule cap has a slot for it.)
+  TEST_ASSERT_TRUE(prefsCommand(c, "rm p4").find("Removed p4") == 0);
+  const size_t evictedBefore = w.p.evictedCount();
+  w.tainted = true;   // a tainted turn adds pending
+  const ToolResult pend = callTool(reg, "add", nullptr, "a pending rule from a tainted turn", owner);
+  TEST_ASSERT_TRUE(pend.success);   // pending adds wait; they do not evict
+  TEST_ASSERT_EQUAL(evictedBefore, w.p.evictedCount());
+  TEST_ASSERT_TRUE(w.p.find(15)->pending);
+}
+
+// Lane POL2: the retired list has its own cap (kPrefsEvictedMax). An add on a
+// full list with the retired list already at the cap is refused as Full - it
+// never pushes a ninth retired line the loader would silently drop on the
+// next parse (a restorable rule must not vanish without the owner hearing it).
+static void test_eviction_stops_at_the_retired_cap() {
+  World w;
+  w.io.exists = true;
+  // 12 active rules of 95 bytes (1,140 of the 1,200 cap) plus 8 retired lines:
+  // the retired list is exactly at its cap and the active list is byte-full.
+  std::string blob = "#nimbus-prefs v1 seeded=0 listed=0 next=21\n";
+  for (int i = 1; i <= 12; i++)
+    blob += "p" + std::to_string(i) + "\tA\t" + std::to_string(i) + "\tchat\t-\t" +
+            std::string(95, 'a' + (i % 26)) + "\n";
+  for (int i = 13; i <= 20; i++)
+    blob += "p" + std::to_string(i) + "\tE\t" + std::to_string(i) + "\tchat\t-\t" +
+            "retired rule number " + std::to_string(i) + "\n";
+  w.io.blob = blob;
+  w.p.begin(&w.io);
+  TEST_ASSERT_EQUAL(12, (int)w.p.activeCount());
+  TEST_ASSERT_EQUAL(8, (int)w.p.evictedCount());
+  // The add is refused: nothing retires past the cap, nothing is lost.
+  std::vector<PrefEntry> evicted;
+  TEST_ASSERT_EQUAL(int(PrefErr::Full),
+                    int(w.p.add(std::string(100, 'n'), PrefOrigin::Web, 0, false, nullptr, &evicted)));
+  TEST_ASSERT_EQUAL(0, (int)evicted.size());
+  TEST_ASSERT_EQUAL(12, (int)w.p.activeCount());
+  TEST_ASSERT_EQUAL(8, (int)w.p.evictedCount());
+  checkInvariants(w.p);
+  // Freeing a retired slot (a restore is not needed; removing one retired line)
+  // lets the next add make room again.
+  TEST_ASSERT_EQUAL(int(PrefErr::Ok), int(w.p.remove(13)));
+  TEST_ASSERT_EQUAL(int(PrefErr::Ok),
+                    int(w.p.add(std::string(100, 'n'), PrefOrigin::Web, 0, false, nullptr, &evicted)));
+  TEST_ASSERT_EQUAL(1, (int)evicted.size());
+  TEST_ASSERT_EQUAL(8, (int)w.p.evictedCount());   // one retired, one newly retired
+  checkInvariants(w.p);
+}
+
+// ---- lane POL2: a standing rule binds routines and wakeups -------------------------
+// The class: "never ask about X" stops a routine about X from firing, and nothing
+// else does - over every rule shape, not one pair.
+static void test_standing_rules_block_loop_fires() {
+  // A stop rule whose subject is the routine's topic blocks it.
+  const char* const kStopRules[] = {
+      "never ask about duolingo", "stop asking about the shed roof", "no more train updates",
+      "don't mention the skyr pot label", "do not ask about gym progress"};
+  const char* const kPrompts[] = {
+      "check the Duolingo streak and tell me", "look at the shed roof again",
+      "the 06:00 train disruption brief", "photograph the skyr pot label",
+      "report on gym progress this week"};
+  for (size_t i = 0; i < 5; i++) {
+    const StandingBlock b = standingBlocksFire({kStopRules[i]}, kPrompts[i]);
+    TEST_ASSERT_TRUE_MESSAGE(b.blocked, kStopRules[i]);
+    TEST_ASSERT_EQUAL_STRING(kStopRules[i], b.rule.c_str());
+  }
+  // The dimensions the gate must not swallow:
+  // - a rule with no stop marker never blocks (an "always" rule is not a veto);
+  // - a stop rule about another topic blocks nothing;
+  // - the subject must overlap as whole words, not as substrings;
+  // - an empty prompt or no rules blocks nothing.
+  TEST_ASSERT_FALSE(standingBlocksFire({"always log meals in the food ledger"}, "log today's meals").blocked);
+  TEST_ASSERT_FALSE(standingBlocksFire({"never ask about duolingo"}, "check the gym streak").blocked);
+  TEST_ASSERT_FALSE(standingBlocksFire({"never mention catfood"}, "check the cat food bowl").blocked);
+  TEST_ASSERT_FALSE(standingBlocksFire({"never ask about duolingo"}, "").blocked);
+  TEST_ASSERT_FALSE(standingBlocksFire({}, "check the Duolingo streak").blocked);
+  // A bare "don't"/"stop" is not a veto: a rule ASKING for the reminder must
+  // not block the routine it asks for, and a device wish is not a topic veto.
+  TEST_ASSERT_FALSE(standingBlocksFire({"don't forget to check the shed roof"},
+                                        "check the shed roof and tell me").blocked);
+  TEST_ASSERT_FALSE(standingBlocksFire({"stop the door slamming"},
+                                        "oil the door hinges weekly").blocked);
+  // The marker must govern the subject: the veto is the words after it.
+  TEST_ASSERT_FALSE(standingBlocksFire({"never discuss politics at dinner"},
+                                       "share a quick dinner recipe").blocked);
+  // The routine's NAME is part of its topic: a name that names the vetoed
+  // subject blocks even when the prompt alone would not.
+  const StandingBlock byName = standingBlocksFire({"never ask about duolingo"},
+                                                  "check the streak and tell me",
+                                                  "Duolingo streak check");
+  TEST_ASSERT_TRUE(byName.blocked);
+  TEST_ASSERT_EQUAL_STRING("never ask about duolingo", byName.rule.c_str());
+  // Several rules: the one that blocks is named.
+  const StandingBlock b = standingBlocksFire({"always reply in English", "never ask about duolingo"},
+                                             "check the Duolingo streak");
+  TEST_ASSERT_TRUE(b.blocked);
+  TEST_ASSERT_EQUAL_STRING("never ask about duolingo", b.rule.c_str());
+}
+
+// Lane POL2 review: a day-scoped stop binds the loops gate, and only on the
+// days it names. The 2 Nov signal was exactly this shape: the 13:00 workday
+// check-in was the annoyance and the owner's remedy was a weekend-only
+// routine, so "stop Y on workdays" must defer Y on workdays and leave the
+// weekend fire alone.
+static void test_day_scoped_stop_rules_bind_only_on_their_days() {
+  // A bare "stop" with a day scope is a veto on the days it names...
+  TEST_ASSERT_TRUE(standingBlocksFire({"stop the train brief on workdays"},
+                                       "the 06:00 train disruption brief", "", 1).blocked);   // Monday
+  TEST_ASSERT_FALSE(standingBlocksFire({"stop the train brief on workdays"},
+                                        "the 06:00 train disruption brief", "", 6).blocked);   // Saturday
+  // ...and a scoped never-rule binds only on its days too.
+  TEST_ASSERT_TRUE(standingBlocksFire({"never ask about duolingo on workdays"},
+                                       "check the Duolingo streak", "", 3).blocked);          // Wednesday
+  TEST_ASSERT_FALSE(standingBlocksFire({"never ask about duolingo on workdays"},
+                                        "check the Duolingo streak", "", 0).blocked);         // Sunday
+  // A weekend-scoped rule is the mirror image.
+  TEST_ASSERT_TRUE(standingBlocksFire({"no more duolingo check-ins on weekends"},
+                                       "check the Duolingo streak", "", 6).blocked);          // Saturday
+  TEST_ASSERT_FALSE(standingBlocksFire({"no more duolingo check-ins on weekends"},
+                                        "check the Duolingo streak", "", 2).blocked);         // Tuesday
+  // An unscoped rule keeps binding every day...
+  TEST_ASSERT_TRUE(standingBlocksFire({"never ask about duolingo"},
+                                       "check the Duolingo streak", "", 6).blocked);
+  // ...a bare stop with no day scope stays a device wish, not a veto...
+  TEST_ASSERT_FALSE(standingBlocksFire({"stop the door slamming"},
+                                        "oil the door hinges weekly", "", 1).blocked);
+  // ...and an unknown day (no clock) keeps the rule blocking: the owner's
+  // quiet is never lost to a missing clock.
+  TEST_ASSERT_TRUE(standingBlocksFire({"stop the train brief on workdays"},
+                                       "the 06:00 train disruption brief").blocked);
+}
+
+// Lane POL2 review: re-stating a retired rule brings it back. A retired
+// duplicate used to return Ok as "already a standing rule; nothing changed"
+// while the rule stayed retired - the class-2 annoyance again, now with a
+// false success claim to the model.
+static void test_restating_a_retired_rule_makes_it_active_again() {
+  // A parsed file, so the full list is exact: 12 rules, the first one the
+  // rule the owner cares about (seeded, so it retires first).
+  World w;
+  w.io.exists = true;
+  std::string blob = "#nimbus-prefs v1 seeded=1 listed=1 next=13\n";
+  blob += "p1\tA\t1\tseed\t-\tnever ask about duolingo\n";
+  for (int i = 2; i <= 12; i++)
+    blob += "p" + std::to_string(i) + "\tA\t" + std::to_string(i) + "\tchat\t-\t" +
+            std::string(95, 'a' + i) + "\n";
+  w.io.blob = blob;
+  w.p.begin(&w.io);
+  TEST_ASSERT_EQUAL(12, (int)w.p.activeCount());
+  // The list fills; the seed rule retires to make room.
+  std::vector<PrefEntry> evicted;
+  TEST_ASSERT_EQUAL(int(PrefErr::Ok),
+                    int(w.p.add(std::string(100, 'n'), PrefOrigin::Web, 0, false, nullptr, &evicted)));
+  TEST_ASSERT_EQUAL(1, (int)evicted.size());
+  TEST_ASSERT_TRUE(w.p.find(1)->evicted);
+  TEST_ASSERT_TRUE(w.p.renderBlock().find("never ask about duolingo") == std::string::npos);
+  // The owner re-states the retired rule: it must come back, not no-op.
+  ToolRegistry reg;
+  registerPrefsTools(reg, w.ctx());
+  const Principal owner = principalForRole("owner-chat", Role::Admin);
+  const ToolResult res = callTool(reg, "add", nullptr, "never ask about duolingo", owner);
+  TEST_ASSERT_TRUE(res.success);
+  TEST_ASSERT_TRUE(res.output.find("saved as standing rule") != std::string::npos);
+  TEST_ASSERT_TRUE(res.output.find("already a standing rule") == std::string::npos);
+  // It is active again: it rides the prompt block and binds the loops gate.
+  TEST_ASSERT_TRUE(w.p.renderBlock().find("never ask about duolingo") != std::string::npos);
+  std::vector<std::string> active;
+  for (const PrefEntry& e : w.p.entries())
+    if (!e.pending && !e.moved && !e.evicted) active.push_back(e.text);
+  TEST_ASSERT_TRUE(standingBlocksFire(active, "check the Duolingo streak").blocked);
+  checkInvariants(w.p);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_eviction_on_full_makes_room_and_the_owner_hears_it);
+  RUN_TEST(test_eviction_stops_at_the_retired_cap);
+  RUN_TEST(test_standing_rules_block_loop_fires);
+  RUN_TEST(test_day_scoped_stop_rules_bind_only_on_their_days);
+  RUN_TEST(test_restating_a_retired_rule_makes_it_active_again);
   RUN_TEST(test_caps_and_persist_hold_under_any_op_sequence);
   RUN_TEST(test_damaged_files_parse_within_the_caps);
   RUN_TEST(test_rules_never_forge_prompt_structure);

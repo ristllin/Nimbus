@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "nimbus/orch/health_rows.h"   // parksJson: the park in /api/orch
 #include "embed_check.h"
 #include "engine_thread.h"
 #include "multipart_form.h"
@@ -79,6 +80,7 @@ class WebApi {
     const std::string& body = multipart ? fields : rawBody;
     return tryStatus(method, base, body, out) ||
            tryChat(method, base, path, body, out) ||
+           tryAssistantWork(method, base, path, body, out) ||
            tryMemory(method, base, path, body, out) ||
            tryConnectors(method, base, body, out) ||
            tryTelegram(method, base, body, out) ||
@@ -171,10 +173,7 @@ class WebApi {
     const bool get = m == "GET";
     struct Stub { const char* base; bool prefix; const char* getBody; const char* feature; };
     static const Stub kStubs[] = {
-        {"/api/loops", false, "[]", "routines"},
         {"/api/fetchq", false, "[]", "downloads"},
-        {"/api/wakeups", false, R"({"policy":"silent-allow","pending":null,"items":[]})", "wake-ups"},
-        {"/api/skills", true, R"({"sd":true,"skills":[]})", "skills"},
     };
     for (const Stub& s : kStubs) {
       const bool hit = s.prefix ? base.rfind(s.base, 0) == 0 : base == s.base;
@@ -183,6 +182,177 @@ class WebApi {
       return true;
     }
     return tryStubsExtra(get, base, out);
+  }
+
+  bool tryAssistantWork(const std::string& m, const std::string& base, const std::string& path,
+                        const std::string& body, ApiResp& out) {
+    return tryRoutines(m, base, body, out) || trySkills(m, base, path, body, out);
+  }
+
+  // ---- routines and wake-ups (device /api/loops, /api/wakeups, same bodies) -----------
+  // The table is the engine thread's, so a write runs there: refused with a retry
+  // while a turn is running, never dropped behind an "ok".
+  bool tryRoutines(const std::string& m, const std::string& base, const std::string& body, ApiResp& out) {
+    if (base != "/api/loops" && base != "/api/wakeups") return false;
+    const bool wakeups = base == "/api/wakeups";
+    if (m == "GET") {
+      NimbusdRig* rig = rig_;
+      out = engineRead([rig, wakeups] { return wakeups ? rig->routines().wakeupsJson() : rig->routines().json(); });
+      return true;
+    }
+    out = wakeups ? wakeupPost(body) : loopPost(body);
+    return true;
+  }
+  ApiResp loopPost(const std::string& body) {
+    const std::string action = formValue(body, "action");
+    if (action.empty()) return refuse("action required");
+    if (action == "create") return loopCreate(body);
+    const std::string id = formValue(body, "id");
+    if (id.empty()) return refuse("id required");
+    NimbusdRig* rig = rig_;
+    return engineWrite([rig, action, id]() -> std::string {
+      // The write is synchronous here, so the answer carries the real result: a
+      // missing id (a stale list row) is a no-op and must not report success.
+      bool ok = false;
+      if (action == "approve") ok = rig->routines().approve(id);
+      else if (action == "pause") ok = rig->routines().setEnabled(id, false);
+      else if (action == "resume") ok = rig->routines().setEnabled(id, true);
+      else if (action == "delete") ok = rig->routines().cancel(id);
+      return ok ? R"({"ok":true})" : R"({"ok":false})";
+    }, 5);
+  }
+  ApiResp loopCreate(const std::string& body) {
+    JsonDocument sched;
+    if (deserializeJson(sched, formValue(body, "schedule")))
+      return refuse("The schedule could not be read. Set it again and retry.");
+    const std::string name = formValue(body, "name"), prompt = formValue(body, "prompt"), chat = formValue(body, "chatId");
+    auto err = std::make_shared<std::string>();
+    NimbusdRig* rig = rig_;
+    ApiResp r = engineWrite([rig, name, prompt, chat, sched, err]() -> std::string {
+      const HostedLoops::Created c =
+          rig->routines().create(name, prompt, chat, sched.as<ArduinoJson::JsonObjectConst>(), false, false);
+      *err = c.err;
+      return c.ok ? R"({"ok":true,"id":")" + c.id + R"("})" : std::string(R"({"ok":false})");
+    }, 5);
+    if (r.status == 200 && !err->empty()) return refuse(*err);
+    return r;
+  }
+  ApiResp wakeupPost(const std::string& body) {
+    const std::string action = formValue(body, "action"), value = formValue(body, "value"), id = formValue(body, "id");
+    if (action == "mode" && value != "ask" && value != "auto") return refuse("value must be ask or auto");
+    if ((action == "approve" || action == "cancel") && id.empty()) return refuse("id required");
+    if (action != "mode" && action != "approve" && action != "cancel")
+      return refuse("action must be mode, approve, or cancel");
+    NimbusdRig* rig = rig_;
+    return engineWrite([rig, action, value, id]() -> std::string {
+      if (action == "mode") {
+        rig->routines().setAskFirst(value == "ask");
+        return R"({"ok":true})";
+      }
+      // approve/cancel of a missing id is a no-op: report it, never a success.
+      const bool ok = action == "approve" ? rig->routines().approve(id)
+                                          : rig->routines().cancel(id);
+      return ok ? R"({"ok":true})" : R"({"ok":false})";
+    }, 5);
+  }
+
+  // ---- skills (device /api/skills/*, same bodies): the owner's side of the store ------
+  bool trySkills(const std::string& m, const std::string& base, const std::string& path,
+                 const std::string& body, ApiResp& out) {
+    if (base.rfind("/api/skills/", 0) != 0) return false;
+    const std::string op = base.substr(12);
+    if (op == "list" && m == "GET") out = skillsList();
+    else if (op == "get" && m == "GET") out = skillGet(queryParam(path, "id"));
+    else if (m == "POST" && (op == "save" || op == "approve" || op == "deny" || op == "discard" || op == "delete"))
+      out = skillWrite(op, formValue(body, "id"), formValue(body, "md"));
+    else out = refuse("Not available on a hosted Nimbus yet: " + base);
+    return true;
+  }
+  ApiResp skillsList() {
+    NimbusdRig* rig = rig_;
+    return engineRead([rig] {
+      JsonDocument d;
+      d["sd"] = true;   // the page's word for "skills can be stored here"
+      d["auto"] = false;
+      JsonArray arr = d["skills"].to<JsonArray>();
+      for (const auto& s : rig->skills().store().list()) {
+        JsonObject o = arr.add<JsonObject>();
+        o["id"] = s.id;
+        o["title"] = s.title;
+        if (!s.desc.empty()) o["desc"] = s.desc;
+        if (!s.version.empty()) o["version"] = s.version;
+        o["source"] = s.source;
+        if (s.builtin()) continue;
+        o["origin"] = s.origin;
+        o["inject"] = s.inject;
+        o["rev"] = s.rev;
+        if (!s.approved) o["pending"] = true;
+        if (!s.pendingEdit) continue;
+        o["pendingEdit"] = true;
+        o["nextRev"] = s.nextRev;
+        if (s.nextStale) o["nextStale"] = true;
+      }
+      std::string out;
+      serializeJson(d, out);
+      return out;
+    });
+  }
+  ApiResp skillGet(const std::string& id) {
+    NimbusdRig* rig = rig_;
+    auto known = std::make_shared<bool>(true);
+    ApiResp r = engineRead([rig, id, known] {
+      agent::SkillStore& st = rig->skills().store();
+      std::string md = st.raw(id);
+      const bool stored = !md.empty();
+      if (!stored) md = st.get(id, agent::SkillSide{});
+      *known = !md.empty();
+      JsonDocument d;
+      d["id"] = id;
+      d["source"] = stored ? "sd" : "builtin";
+      d["md"] = md;
+      const std::string next = st.rawNext(id);
+      if (!next.empty()) d["next_md"] = next;
+      std::string out;
+      serializeJson(d, out);
+      return out;
+    });
+    if (r.status == 200 && !*known) return ApiResp{404, "application/json", R"({"error":"unknown skill id"})"};
+    return r;
+  }
+  ApiResp skillWrite(const std::string& op, const std::string& id, const std::string& md) {
+    NimbusdRig* rig = rig_;
+    auto failed = std::make_shared<bool>(false);
+    ApiResp r = engineWrite([rig, op, id, md, failed] {
+      agent::SkillStore& st = rig->skills().store();
+      const agent::SkillCaller who = agent::SkillCaller::ownerCall();
+      const agent::SkillResult res = op == "save"      ? st.save(id, md, who, false)
+                                     : op == "approve" ? st.approve(id, who)
+                                     : op == "deny"    ? st.deny(id, who)
+                                     : op == "discard" ? st.discard(id, who)
+                                                       : st.remove(id, who);
+      *failed = !res.ok;
+      return skillResultJson(id, res);
+    }, 5);
+    if (r.status == 200 && *failed) r.status = 400;
+    return r;
+  }
+  static std::string skillResultJson(const std::string& id, const agent::SkillResult& res) {
+    JsonDocument d;
+    if (!res.ok) {
+      d["error"] = res.err;
+    } else {
+      d["ok"] = true;
+      d["outcome"] = agent::skillOutcomeSlug(res.outcome);
+      d["rev"] = res.rev;
+      d["message"] = agent::skillResultText(id, res);
+      if (!res.warnings.empty()) {
+        JsonArray w = d["warnings"].to<JsonArray>();
+        for (const auto& s : res.warnings) w.add(s);
+      }
+    }
+    std::string out;
+    serializeJson(d, out);
+    return out;
   }
 
   // Read-only insight surfaces: the model catalog (CUM-545) and the diagnostics.
@@ -223,7 +393,8 @@ class WebApi {
                 const std::string& body, ApiResp& out) {
     if (base.rfind("/api/files/", 0) != 0) return false;
     const std::string proj = queryParam(path, "project"), name = queryParam(path, "name");
-    if (base == "/api/files/list" && m == "GET") out = filesList(proj);
+    if (base == "/api/files/list" && m == "GET")
+      out = filesList(proj, queryParam(path, "limit"), queryParam(path, "offset"));
     else if (base == "/api/files/dl" && m == "GET") out = filesGet(proj, name);
     else if (base == "/api/files/upload" && m == "POST") out = filesUpload(proj, name, body);
     else if (base == "/api/files/rm" && m == "POST") out = filesRemove(body);
@@ -231,14 +402,30 @@ class WebApi {
     else out = refuse("Not available on a hosted Nimbus yet: " + base);
     return true;
   }
-  ApiResp filesList(const std::string& proj) {
-    return engineRead([this, proj] {
+  // Lane FSCAP: the listing is paged - ?limit=&offset= bound what one call
+  // returns (the store has no entry cap any more); `count` is the whole-store
+  // total, `shown` is what this page carries. Review fix: the paging fields
+  // (listCount/nextOffset/more) mirror the device's web_files.cpp and are
+  // computed from the STORE rows only (countMatching of the project filter),
+  // so the client pages on store rows exactly like on the device.
+  ApiResp filesList(const std::string& proj, const std::string& limitQ = "",
+                    const std::string& offsetQ = "") {
+    return engineRead([this, proj, limitQ, offsetQ] {
+      size_t limit = limitQ.empty() ? 0 : (size_t)strtoul(limitQ.c_str(), nullptr, 10);
+      size_t offset = offsetQ.empty() ? 0 : (size_t)strtoul(offsetQ.c_str(), nullptr, 10);
       JsonDocument d;
       d["present"] = true;
       d["unsupported"] = false;
       d["count"] = (int)rig_->files().count();
       d["bytes"] = (double)rig_->files().totalBytes();
-      rig_->files().listInto(d["files"].to<JsonArray>(), proj);
+      const size_t shown =
+          rig_->files().listInto(d["files"].to<JsonArray>(), proj, limit, offset);
+      const size_t listCount = rig_->files().store().countMatching(proj);
+      const size_t nextOffset = offset + shown;
+      d["shown"] = (int)shown;
+      d["listCount"] = (int)listCount;
+      d["nextOffset"] = (int)nextOffset;
+      d["more"] = nextOffset < listCount;
       std::string out; serializeJson(d, out); return out;
     });
   }
@@ -278,6 +465,7 @@ class WebApi {
     if (name.empty()) name = filename;
     auto err = std::make_shared<std::string>();
     ApiResp r = engineWrite([this, proj, name, bytes, err] {
+      if (isChatPhoto(proj, name)) rig_->files().sweepChatPhotos((uint32_t)time(nullptr));
       return rig_->files().put(proj, name, bytes, *err) ? std::string(R"({"ok":true})") : std::string();
     }, 5);
     if (r.status == 200 && !err->empty()) return refuse("Couldn't store the file: " + *err + ".");
@@ -389,7 +577,7 @@ class WebApi {
   }
 
   bool tryStubsExtra(bool get, const std::string& base, ApiResp& out) {
-    if (base == "/api/trace" && get)    { out = {200, "text/plain; charset=utf-8", "Turn tracing is off on this instance."}; return true; }
+    if (base == "/api/trace" && get)    { out = {200, "text/plain; charset=utf-8", "The raw model exchange is not kept on this instance. The tool calls above are."}; return true; }
     if (base == "/api/mem/blob" && get) { out = {404, "text/plain; charset=utf-8", "reason: no blob store on a hosted instance"}; return true; }
     if (base == "/api/preview")
       { out = okJson(R"({"ok":true})"); return true; }
@@ -636,6 +824,7 @@ class WebApi {
     const StateSnapshot s = eng_->snapshot();
     JsonDocument d;
     d["running"] = true;
+    nimbus::orch::parksJson(nimbus::orch::providerPark(), NimbusdRig::steadyMs(), d["parks"].to<JsonArray>());
     JsonObject provs = d["providers"].to<JsonObject>();
     // Walk the CANONICAL provider registry (lib/core provider_slots.h) so this GET,
     // the device UI, and orchPost all read the SAME slug/label/keyField table. The
@@ -673,6 +862,7 @@ class WebApi {
     d["provPrio"] = st.provPrio;
     d["subPrio"] = rig_->subPriority();
     d["orchLoop"] = st.toolLoop;   // device parity (store::orchToolLoop)
+    d["orchTrace"] = st.trace;     // device parity: the box on Assistant > Tools
     d["directive"] = st.directive;   // "" = the shipped default (the page pre-fills it)
     d["directiveDefault"] = nimbus::orch::kOwnerDirectiveDefault;
     d["directiveMax"] = nimbus::orch::kMemDirectiveMax;
@@ -696,7 +886,11 @@ class WebApi {
       if (deserializeJson(cd, rig_->spendCeiling().stateJson()) == DeserializationError::Ok)
         u["ceiling"] = cd.as<JsonObject>();
     }
-    d["jobs"].to<JsonArray>();
+    {
+      JsonDocument jd;   // the running and queued sub-agents (device sessionsJson)
+      if (deserializeJson(jd, s.sessionsJson) == DeserializationError::Ok) d["jobs"] = jd.as<JsonArray>();
+      else d["jobs"].to<JsonArray>();
+    }
     std::string out;
     serializeJson(d, out);
     return okJson(out);
@@ -853,11 +1047,11 @@ class WebApi {
 
   // The settings and actions one POST carries, validated before anything applies.
   struct OrchWrites {
-    Writes keys, models, subs;
+    Writes keys, models, subs, tavily;   // tavily: at most one, the web search key
     std::vector<std::function<void(HostedSettings&)>> settings;
     bool clearConv = false, clearMem = false, convReset = false;
     bool empty() const {
-      return keys.empty() && models.empty() && subs.empty() && settings.empty() && !clearConv &&
+      return keys.empty() && models.empty() && subs.empty() && tavily.empty() && settings.empty() && !clearConv &&
              !clearMem && !convReset;
     }
   };
@@ -893,6 +1087,10 @@ class WebApi {
       const bool on = hosted::normBool(formValue(body, "orchLoop")) == "1";
       w.settings.push_back([on](HostedSettings& s) { s.toolLoop = on; });
     }
+    if (present(names, "orchTrace")) {
+      const bool on = hosted::normBool(formValue(body, "orchTrace")) == "1";
+      w.settings.push_back([on](HostedSettings& s) { s.trace = on; });
+    }
     return std::string();
   }
 
@@ -904,6 +1102,10 @@ class WebApi {
       if (hosted::orchFieldVerdict(f, formValue(body, f)) == hosted::Verdict::Refuse)
         return hosted::notAvailable(f);
     collectWrites(body, w.keys, w.models);
+    formWrite(body, "tavKey", "tavily", w.tavily);
+    for (const auto& t : w.tavily)
+      if (!t.second.empty() && NimbusdRig::storableKey(t.second).empty())
+        return "That key is not valid. Paste just the key and save again.";
     for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++) {
       const std::string slug = nimbus::orch::kProviderSlots[i].slug;
       formWrite(body, "subM_" + slug, slug, w.subs);
@@ -932,10 +1134,15 @@ class WebApi {
   // the engine; the clears touch the conversation and memory stores).
   // Returns "" when the settings could not be stored (the caller answers 500;
   // nothing in the settings changed - SettingsStore applies only what persists).
-  std::string applyOrchWrites(const OrchWrites& w) {
+  int applyKeysAndModels(const OrchWrites& w) {
     int applied = applyKeyWrites(w.keys);
+    for (const auto& t : w.tavily) applied += rig_->applyTavilyKey(t.second) ? 1 : 0;
     for (const auto& m : w.models) applied += rig_->applyOrchModel(m.first, m.second) ? 1 : 0;
     for (const auto& m : w.subs) applied += rig_->applySubModel(m.first, m.second) ? 1 : 0;
+    return applied;
+  }
+  std::string applyOrchWrites(const OrchWrites& w) {
+    int applied = applyKeysAndModels(w);
     if (!w.settings.empty()) {
       if (!rig_->updateSettings([&w](HostedSettings& s) { for (const auto& fn : w.settings) fn(s); }))
         return std::string();
@@ -945,7 +1152,7 @@ class WebApi {
     if (w.clearMem) { rig_->clearRunningMemory(); applied++; }
     if (w.convReset) { rig_->resetConversations(); applied++; }
     const char* note = "Saved and applied.";
-    if (!w.keys.empty()) note = "Key saved and applied.";
+    if (!w.keys.empty() || !w.tavily.empty()) note = "Key saved and applied.";
     else if (!w.models.empty()) note = "Model saved and applied.";
     JsonDocument d;
     d["ok"] = true;
@@ -978,7 +1185,7 @@ class WebApi {
     // per-provider limits of its own, so off means no monthly ceiling at all).
     const std::string v = formValue(body, "spendCeil");
     const uint64_t micro = v == "off" ? 0 : nimbus::orch::parseCeilingCents(v);
-    if (micro == 0 && v != "off") return refuse("spend ceiling must be a positive whole number of cents, or off");
+    if (micro == 0 && v != "off") return refuse(nimbus::orch::kCeilingFieldRefusal);
     if (!rig_->spendCeiling().setLimitMicro(micro))
       return ApiResp{507, "application/json", R"({"error":"storage_full","note":"Couldn't save the ceiling."})"};
     return okJson(R"({"ok":true,"applied":1})");
@@ -1128,7 +1335,8 @@ class WebApi {
   // ------------------------------------------------------------------ chat
   ApiResp chatPost(const std::string& body) {
     std::string text = formValue(body, "text");
-    if (text.empty()) return ApiResp{400, "application/json", R"({"error":"missing text"})"};
+    const std::vector<PhotoIn> photos = attachedPhotos(formValue(body, "att"));
+    if (text.empty() && photos.empty()) return ApiResp{400, "application/json", R"({"error":"missing text"})"};
     // Lane DEF: paid calls are paused at the monthly spend ceiling: answer at once.
     if (nimbus::orch::spendFrozen())
       return ApiResp{409, "application/json",
@@ -1146,7 +1354,8 @@ class WebApi {
     // Flood backstop (symmetry with resolved_'s cap): an authenticated owner hammering
     // POSTs faster than the single engine thread replies cannot grow this without bound.
     while (pending_.size() > 256) pending_.pop_front();
-    eng_->postMessage(kWebChat, text, turn);
+    ReplyBuffer* ring = replies_;
+    eng_->postMessage(kWebChat, text, turn, [ring, turn] { ring->noteTurnEnded(turn); }, photos);
     JsonDocument d;
     d["pending"] = true;
     d["turn"] = turn;   // the client polls GET /api/chat?turn=<turn> for THIS reply
@@ -1155,28 +1364,71 @@ class WebApi {
     return okJson(out);
   }
 
+  // The photos a message brings: "project/name" entries of Files, one per line (the
+  // page uploads each first). Read on the engine thread when the turn starts.
+  static std::vector<PhotoIn> attachedPhotos(const std::string& att) {
+    std::vector<PhotoIn> out;
+    size_t from = 0;
+    while (from < att.size() && out.size() < nimbus::orch::kTurnImageMax) {
+      size_t nl = att.find('\n', from);
+      if (nl == std::string::npos) nl = att.size();
+      const std::string item = att.substr(from, nl - from);
+      from = nl + 1;
+      const size_t slash = item.find('/');
+      if (slash == std::string::npos) continue;
+      PhotoIn in;
+      in.project = item.substr(0, slash);
+      in.name = item.substr(slash + 1);
+      // The one traversal gate Files uses: anything else is not a Files entry.
+      if (nimbus::orch::FileStore::validSegment(in.project, 24) && nimbus::orch::FileStore::validSegment(in.name, 48))
+        out.push_back(in);
+    }
+    return out;
+  }
+
+  // The contract the page reads (device agent::chatGetJson): `pending` while the turn
+  // is queued or running, `done` once it is over (with an empty reply when it only
+  // started sub-agents), `gone` for an id this instance does not know. Every body adds
+  // {async, busy}, so the page's watcher picks up results that arrive between turns.
   ApiResp chatGet(const std::string& path) {
     resolveWebTurns();
     JsonDocument d;
     const std::string tp = queryParam(path, "turn");
+    d["async"] = replies_->asyncSeq();
+    const StateSnapshot snap = eng_->snapshot();
+    d["busy"] = snap.activeJobs + (snap.turnInFlight ? 1 : 0);
+    if (!queryParam(path, "watch").empty()) {
+      std::string watch;
+      serializeJson(d, watch);
+      return okJson(watch);
+    }
     if (!tp.empty()) {
       // Turn-matched poll: hand back only THIS turn's own reply.
       const uint64_t turn = std::strtoull(tp.c_str(), nullptr, 10);
       auto it = resolved_.find(turn);
       if (it != resolved_.end()) {
         fillChatReply(d, it->second);
+        d["done"] = true;
         resolved_.erase(it);   // delivered; a repeat poll must not replay it
       } else {
+        const bool pending = turnPending(turn);
         d["reply"] = "";
-        d["pending"] = turnPending(turn);   // unknown/old id -> not pending, empty
+        d["pending"] = pending;   // unknown/old id -> not pending, empty
+        d["done"] = false;
+        d["gone"] = !pending;
       }
     } else {
       // Param-less poll (legacy clients / HIL): hand back the oldest ready reply,
       // FIFO. Kept so the single-turn contract still works without a turn id.
+      // Bench F03 (v4.9.0 device): a poll while work still runs READS the reply
+      // without retiring it - that client is still mid-conversation (its own
+      // loop waits for busy to clear), and its final poll must still see the
+      // reply; the consuming read lost it with no way back. An idle poll
+      // consumes, so a drain still reads each delivery exactly once.
       if (!resolved_.empty()) {
         auto it = resolved_.begin();   // map ordered by turn id ascending = FIFO
         fillChatReply(d, it->second);
-        resolved_.erase(it);
+        if (snap.activeJobs + (snap.turnInFlight ? 1 : 0) == 0) resolved_.erase(it);
       } else {
         d["reply"] = "";
         d["pending"] = !pending_.empty();
@@ -1473,22 +1725,31 @@ class WebApi {
 
   ApiResp memEpisodic(const std::string& path) {
     int limit = atoiOr(queryParam(path, "limit"), 200);
-    return engineRead([this, limit] {
+    const std::string before = queryParam(path, "before");
+    return engineRead([this, limit, before] {
       orch::MsgQuery q;
       q.limit = limit;
-      q.alsoKinds = {orch::MsgKind::ToolOutput, orch::MsgKind::LlmResponse, orch::MsgKind::Log};
+      q.before = before;
+      // Every kind (device parity): the chat history pairs a turn with its tool rows.
       JsonDocument d;
       JsonArray arr = d["messages"].to<JsonArray>();
-      for (const auto& m : rig_->episodic().query(q)) {
+      orch::EpiQueryInfo info;
+      for (const auto& m : rig_->episodic().query(q, &info)) {
         JsonObject o = arr.add<JsonObject>();
         o["id"] = m.id;
         o["session"] = m.sessionId;
-        o["channel"] = "";
+        o["ts"] = m.tsHours;
+        // The channel is derived from the chat, as on the device: this instance's page
+        // chats as "owner"; anything else is a Telegram chat id.
+        o["channel"] = m.sessionId == kWebChat ? "web" : (m.sessionId == "system" ? "system" : "telegram");
         o["role"] = m.role;
         o["kind"] = orch::kindName(m.kind);
         o["text"] = m.text;
         o["tags"] = m.tags;
       }
+      d["total"] = rig_->episodic().messageCount();
+      d["olderExists"] = info.olderExists;
+      d["nextBefore"] = info.nextBefore;
       std::string out; serializeJson(d, out); return out;
     });
   }

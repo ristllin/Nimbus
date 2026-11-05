@@ -64,6 +64,7 @@ const char kScratchRamOnlyNote[] = "; kept until restart only (saving failed)";
 // in step with what embeddings.cpp emits and the test that iterates the classes.
 namespace {
 bool rawStartsWith(const std::string& s, const char* p) { return s.rfind(p, 0) == 0; }
+constexpr const char* kRouterRefusedWord = "router_refused";
 
 // The status portion of an "HTTP ..." token. A billing refusal (the ONE table
 // shared with the chat head, billing_refusal.h) is OutOfCredit; a 429 without a
@@ -77,10 +78,15 @@ EmbedFail classifyHttpToken(const std::string& raw, std::string& detail) {
     code += c;
   }
   const int status = code.empty() ? 0 : std::atoi(code.c_str());
-  // The router's monthly cap (HTTP 429 ceiling_reached) is a billing refusal too;
-  // it is checked beside the shared table, which does not carry it yet.
-  if (isBillingRefusal(status, raw) || raw.find("ceiling_reached") != std::string::npos)
-    return EmbedFail::OutOfCredit;
+  if (raw.find(kRouterRefusedWord) != std::string::npos) {   // a reason this image does not know
+    detail = code;
+    return EmbedFail::ProviderError;
+  }
+  const RouterAnswer router = readRouterAnswer(raw);
+  if (router.reason == "budget_exceeded" || router.reason == "account_suspended") return EmbedFail::AccountHeld;
+  if (router.action() == RouterAction::RetryCapped) return EmbedFail::CallTooLarge;
+  if (router.action() == RouterAction::FailOver) return EmbedFail::RouterHeld;
+  if (isBillingRefusal(status, raw)) return EmbedFail::OutOfCredit;
   if (raw.find("endpoint_not_allowed") != std::string::npos) return EmbedFail::RouteNotAllowed;
   if (status == 429 || raw.find("rate_limited") != std::string::npos) return EmbedFail::RateLimited;
   detail = code;
@@ -133,6 +139,18 @@ EmbedFail classifyEmbedFail(const std::string& raw, std::string& detail) {
   return EmbedFail::Unknown;
 }
 
+std::string embedRefusalToken(int status, const std::string& body, const std::string& code, bool viaRouter) {
+  const std::string http = "HTTP " + std::to_string(status);
+  if (!viaRouter) {
+    if (status == 401 || status == 403) return "key rejected";
+    return code.empty() ? http : http + " " + code;
+  }
+  const RouterAnswer a = readRouterAnswer(body);
+  if (a.row) return a.action() == RouterAction::ParkAuth && status == 401 ? "key rejected" : http + " " + a.reason;
+  if (a.reason.empty() && status == 401) return "key rejected";   // the body did not survive: a dead key reads as one
+  return http + " " + kRouterRefusedWord;   // the contract: an unknown reason is a per-call failure
+}
+
 std::string embedFailWords(EmbedFail kind, const std::string& detail) {
   // The two detail-bearing classes are explicit; the rest are a flat table.
   if (kind == EmbedFail::NoKey)
@@ -161,6 +179,9 @@ std::string embedFailWords(EmbedFail kind, const std::string& detail) {
     {EmbedFail::NoModel,         "no embeddings model configured"},
     {EmbedFail::BadRequest,      "no text to embed"},
     {EmbedFail::Unknown,         "unavailable"},
+    {EmbedFail::CallTooLarge,    "this request is larger than the remaining credits allow"},
+    {EmbedFail::RouterHeld,      "the Cumulo router cannot serve embeddings right now"},
+    {EmbedFail::AccountHeld,     "the Cumulo account is suspended or reached its monthly limit"},
   };
   for (const auto& e : kW) if (e.k == kind) return e.w;
   return "unavailable";
@@ -431,9 +452,14 @@ struct WriteSpec {
   bool standing = false;   // lane J: an every-reply rule, routed to the standing rules
 };
 
+constexpr const char* kContentAliases[] = {"fact", "text", "memory", "note", "value"};
+
 WriteSpec specFromArgs(const MemoryContext& ctx, JsonObjectConst a, double defImportance) {
   WriteSpec w;
   w.content = strArg(a, "content");
+  // The same names a model reaches for in mem_write[] (orch_turn.cpp): read, not dropped.
+  for (const char* name : kContentAliases)
+    if (w.content.empty()) w.content = strArg(a, name);
   double imp = defImportance;
   numArg(a, "importance", imp);
   w.importance = (float)(imp < 0 ? 0 : imp > 1 ? 1 : imp);
@@ -494,6 +520,48 @@ PendingEmbed pendingFrom(const MemoryContext& ctx, const VecEntry& e, const Writ
   return p;
 }
 
+// No key here can embed at all: this is how memory works until one is added, not an
+// outage, and nothing will ever report back. The model says what is true now.
+std::string noEmbedKeyWhy(const MemoryContext& ctx, const std::string& detail) {
+  if (ctx.holdsEmbedKey && ctx.holdsEmbedKey()) {
+    const std::string made = detail.empty() ? "another provider" : detail;
+    const char* need = detail == "mistral" ? "a Mistral key"
+                       : detail.empty()    ? "that provider's key"
+                                           : "an OpenAI or Cumulo Nimbus key";
+    return "The memories stored here were made with " + made +
+           " embeddings, and the key this assistant holds cannot add to them, so another key of the same kind "
+           "changes nothing. The owner can add " + need +
+           ", or erase the stored memories on the Memory page so the key it holds takes over";
+  }
+  return "This assistant holds no key that can create embeddings. The owner can add one: only OpenAI, Mistral or "
+         "Cumulo Nimbus keys can";
+}
+
+std::string keptAsTextWords(const MemoryContext& ctx, const std::string& id, bool update, const std::string& detail) {
+  return std::string(update ? "update kept as text for " : "kept as text: memory ") + id + ". " +
+         noEmbedKeyWhy(ctx, detail) +
+         ". Until then it is found by its words, not by meaning. Tell the owner exactly that if they ask. No later "
+         "confirmation will come, so do not promise one.";
+}
+
+// The result of a write that reached the queue.
+ToolResult queuedResult(const MemoryContext& ctx, const PendingEmbed& p, const EmbedTry& t, const std::string& note,
+                        const std::string& cause) {
+  // Report what is queued now (a coalesced entry keeps the stronger intent).
+  const PendingEmbed* queued = ctx.pending->find(p.id);
+  const bool update = (queued ? queued->op : p.op) == PendingOp::Update;
+  if (t.kind == EmbedFail::NoKey)
+    return withCode(ToolResult::ok(keptAsTextWords(ctx, p.id, update, t.detail) + note), kMemOutcomeQueued, ctx);
+  return withCode(
+      ToolResult::ok(std::string(update ? "queued update for " : "queued memory ") + p.id +
+                     (update ? ", not changed yet: " : ", not stored yet: ") + cause +
+                     ". It is kept and " +
+                     (update ? "applied" : "stored") +
+                     " automatically when embeddings work again; keyword search finds it "
+                     "meanwhile. Until then, do not say it is saved." + note),
+      kMemOutcomeQueued, ctx);
+}
+
 // Put a write the embedder cannot serve now into the durable queue. "queued" is
 // claimed only after the queue reached storage; a full queue or a failed persist
 // refuses honestly and nothing queued is evicted.
@@ -501,6 +569,15 @@ ToolResult enqueueOrRefuse(const MemoryContext& ctx, PendingEmbed p, const Embed
                            const std::string& note, const char* notStored) {
   const std::string cause = embedFailReasonFor(t.kind, t.detail);
   auto refuse = [&](const std::string& why) {
+    // With no key that can embed, this list is all the memory there is: the answer is
+    // the kept-as-text one, not an outage's, and it names the way out.
+    if (t.kind == EmbedFail::NoKey)
+      return withCode(ToolResult::fail(std::string(notStored) + ": " + why + ". Without embeddings, memories are kept "
+                                       "as text, " + std::to_string(PendingEmbeds::kMaxEntries) + " at most and " +
+                                       std::to_string(PendingEmbeds::kMaxPerMember) + " per person. " +
+                                       noEmbedKeyWhy(ctx, t.detail) + ". Removing a memory also makes room. Tell the "
+                                       "owner exactly that; do not say this one was saved."),
+                      kMemOutcomeRefused, ctx);
     return withCode(ToolResult::fail(cause + " (" + notStored + ": " + why + ")"),
                     kMemOutcomeRefused, ctx);
   };
@@ -508,7 +585,7 @@ ToolResult enqueueOrRefuse(const MemoryContext& ctx, PendingEmbed p, const Embed
     case PendingEmbeds::Add::Full:
       return refuse(std::to_string(PendingEmbeds::kMaxEntries) + " memories are already waiting");
     case PendingEmbeds::Add::BytesFull:
-      return refuse("the waiting list on the device is full");
+      return refuse("the waiting list is full");
     case PendingEmbeds::Add::NsFull:
       return refuse("this conversation already has " +
                     std::to_string(PendingEmbeds::kMaxPerMember) + " memories waiting");
@@ -519,7 +596,7 @@ ToolResult enqueueOrRefuse(const MemoryContext& ctx, PendingEmbed p, const Embed
     case PendingEmbeds::Add::Added:
       if (ctx.persistPending && !ctx.persistPending()) {
         ctx.pending->pop(p.id);
-        return refuse("device storage unavailable");
+        return refuse("storage unavailable");
       }
       break;
     case PendingEmbeds::Add::Coalesced:
@@ -527,17 +604,7 @@ ToolResult enqueueOrRefuse(const MemoryContext& ctx, PendingEmbed p, const Embed
       if (ctx.persistPending) ctx.persistPending();
       break;
   }
-  // Report what is queued now (a coalesced entry keeps the stronger intent).
-  const PendingEmbed* queued = ctx.pending->find(p.id);
-  const bool update = (queued ? queued->op : p.op) == PendingOp::Update;
-  return withCode(
-      ToolResult::ok(std::string(update ? "queued update for " : "queued memory ") + p.id +
-                     (update ? ", not changed yet: " : ", not stored yet: ") + cause +
-                     ". It is kept on the device and " +
-                     (update ? "applied" : "stored") +
-                     " automatically when embeddings work again; keyword search finds it "
-                     "meanwhile. Until then, do not say it is saved." + note),
-      kMemOutcomeQueued, ctx);
+  return queuedResult(ctx, p, t, note, cause);
 }
 
 // Store an embedded entry: the end of every successful write. A duplicate keeps
@@ -841,6 +908,27 @@ std::vector<std::string> lexicalHits(const VectorMemory& vec, const PendingEmbed
   return out;
 }
 
+// The caller's queued facts that share a word with `lq`, best first: what a semantic
+// search cannot see until the drain gives them a vector. The same read boundary and
+// the same "not stored yet" words as the keyword search.
+std::vector<std::string> queuedHits(const PendingEmbeds* pending, const LexQuery& lq,
+                                    const std::vector<std::string>& allow, size_t k) {
+  std::vector<std::string> out;
+  if (!pending || k == 0) return out;
+  LexHits best;
+  best.reserve(std::min(k, pending->size()) + 1);
+  uint32_t seq = 0;
+  pending->forEachEntry([&](const PendingEmbed& p) {
+    ++seq;
+    if (!nsAllowsEntry(p.ns, allow)) return;
+    const int sc = lexCoverage(p.content, lq);
+    if (sc > 0) keepBest(best, k, LexHit{sc, seq, &p.content, -1});
+  });
+  out.reserve(best.size());
+  for (const LexHit& h : best) out.push_back(lexHitText(h));
+  return out;
+}
+
 ToolResult lexicalSearchFallback(const MemoryContext& ctx, const std::string& query,
                                  int k, const Principal& who, const std::string& reasonWords) {
   const std::string label = "keyword match, embeddings unavailable: " + reasonWords;
@@ -854,6 +942,38 @@ ToolResult lexicalSearchFallback(const MemoryContext& ctx, const std::string& qu
 }
 
 // ---- memory.search ----------------------------------------------------------
+// The semantic answer: the stored rows nearest `qv`, then the caller's queued facts. A
+// fact still queued has no vector yet (its write said search finds it meanwhile, and the
+// embedder may be back before the drain has run): up to half the answer, at least one
+// line, so a busy store cannot crowd out what the caller just wrote. One word in common
+// is all a queued fact needs, so it never takes the last line from a stored row that
+// passes the threshold: with n_results 1 the best stored row answers.
+ToolResult semanticAnswer(const MemoryContext& ctx, const std::string& query, const std::vector<int8_t>& qv,
+                          int k, const Principal& who) {
+  auto hits = ctx.vec->search(qv, k, ctx.nowHours(), readSetFor(who));   // TTL + v3.7.0 read boundary
+  // Apply the user/model relevance threshold (similarity = 1 - distance).
+  float thr = ctx.cfg ? ctx.cfg->relevanceThreshold : 0.0f;
+  const bool storedHit = std::any_of(hits.begin(), hits.end(), [thr](const auto& h) { return (1.0f - h.distance) >= thr; });
+  const int queuedLines = storedHit ? std::min(std::max(1, k / 2), k - 1) : std::max(1, k / 2);
+  const std::vector<std::string> waiting =
+      queuedHits(ctx.pending, lexParse(query), readSetFor(who), (size_t)std::max(0, queuedLines));
+  const int room = k - (int)waiting.size();
+  std::string out;
+  int n = 0;
+  for (const auto& h : hits) {
+    if (n >= room) break;
+    if ((1.0f - h.distance) < thr) continue;
+    out += "- [" + std::to_string((int)(h.importance * 100)) + "%] " + h.content + "\n";
+    n++;
+  }
+  for (const auto& w : waiting) {
+    out += "- " + w + "\n";
+    n++;
+  }
+  if (n == 0) return ToolResult::ok("No relevant memories found.");
+  return ToolResult::ok("Found " + std::to_string(n) + " memories:\n" + out);
+}
+
 ToolResult doSearch(const MemoryContext& ctx, JsonObjectConst a, const Principal& who) {
   // A revoked (Unknown) principal keeps its namespace - the data is retained
   // for the admin - but it may no longer READ it. Gating only writes would let
@@ -877,18 +997,7 @@ ToolResult doSearch(const MemoryContext& ctx, JsonObjectConst a, const Principal
   }
   const std::vector<int8_t>& qv = t.vec;
 
-  auto hits = ctx.vec->search(qv, k, ctx.nowHours(), readSetFor(who));   // TTL + v3.7.0 read boundary
-  // Apply the user/model relevance threshold (similarity = 1 - distance).
-  float thr = ctx.cfg ? ctx.cfg->relevanceThreshold : 0.0f;
-  std::string out;
-  int n = 0;
-  for (const auto& h : hits) {
-    if ((1.0f - h.distance) < thr) continue;
-    out += "- [" + std::to_string((int)(h.importance * 100)) + "%] " + h.content + "\n";
-    n++;
-  }
-  if (n == 0) return ToolResult::ok("No relevant memories found.");
-  return ToolResult::ok("Found " + std::to_string(n) + " memories:\n" + out);
+  return semanticAnswer(ctx, query, qv, k, who);
 }
 
 // ---- memory.archive (search/restore/list the SD cold store) -----------------
@@ -1280,6 +1389,10 @@ void registerMemoryTools(ToolRegistry& reg, const MemoryContext& ctx) {
           R"("importance":{"type":"number"},"permanent":{"type":"boolean"},)"
           R"("ttl":{"type":"string","enum":["session","days","weeks","months","permanent"]},)"
           R"("source":{"type":"string"}},"required":["content"]})");
+  // Read, though not offered: the aliases, and applyTurn's routing flag on every mem_write[].
+  reg.alsoReads("memory.write", {"standing"});
+  reg.alsoReads("memory.write", {kContentAliases[0], kContentAliases[1], kContentAliases[2], kContentAliases[3],
+                                 kContentAliases[4]});
 
   reg.add("memory.search",
           "Search your long-term memory for facts relevant to a query.",
@@ -1295,6 +1408,9 @@ void registerMemoryTools(ToolRegistry& reg, const MemoryContext& ctx) {
           R"({"type":"object","properties":{"content":{"type":"string"},"old":{"type":"string"},)"
           R"("id":{"type":"string"},"importance":{"type":"number"},"permanent":{"type":"boolean"},)"
           R"("ttl":{"type":"string","enum":["session","days","weeks","months","permanent"]}},"required":["content"]})");
+  reg.alsoReads("memory.update", {"query", "source"});
+  reg.alsoReads("memory.update", {kContentAliases[0], kContentAliases[1], kContentAliases[2], kContentAliases[3],
+                                  kContentAliases[4]});
 
   reg.add("memory.pin",
           "Pin a memory (never forgotten), unpin it (let it decay/expire again), or delete it. Identify it by exact content or id. Pinning only stops decay; it does not put a memory into every prompt.",

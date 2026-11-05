@@ -279,6 +279,20 @@ static void test_counter_timestamp_in_static_block_is_caught() {
   TEST_ASSERT_TRUE(diff.find("static block differs") == 0);
 }
 
+// The model a turn runs on is no part of the system prompt (QW6 on v4.6.1): a pause, a park or a
+// failover changes it from one request to the next, so it rides each request's input
+// ([THIS TURN RUNS ON], the engine's runsOnText) and the prompt is byte-identical whichever host
+// answers. ComposeInputs::hostLabel is still filled by the device; nothing renders it.
+static void test_the_answering_host_never_reaches_the_system_prompt() {
+  std::unique_ptr<Turn> a = turnAt(3), b = turnAt(3);
+  a->ci.hostLabel = "anthropic / model-anthropic";
+  b->ci.hostLabel = "mistral / mistral-medium-2508";
+  const std::string pa = agent::composeInstructions(a->ci), pb = agent::composeInstructions(b->ci);
+  TEST_ASSERT_EQUAL_STRING(pa.c_str(), pb.c_str());
+  for (const char* claim : {"mistral-medium-2508", "Your brain right now", "[YOUR MODEL]", "RUNS ON] mistral"})
+    TEST_ASSERT_TRUE_MESSAGE(pb.find(claim) == std::string::npos, claim);
+}
+
 // The static block is budgeted alone (with the shelf, history and catalogs
 // counted against the same budget - prism row 9): a huge recall or history on
 // one turn cannot move its clip point.
@@ -404,6 +418,9 @@ static std::vector<std::string> runTurn(Wire w, const std::string& instructions,
   const bool loop = w == Wire::AntLoop || w == Wire::OaiLoop || w == Wire::MisLoop;
   scriptWire(d, w);
   auto pd = d.contract();
+  // A model that takes OpenAI's cache breakpoints: the layout under test is that wire.
+  if (w == Wire::OaiLoop || w == Wire::OaiSingle)
+    pd.orchModel = [](const char*) { return std::string("gpt-5.6-luna"); };
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
   for (const auto& s : (extraSpecs ? *extraSpecs : kNoSpecs)) rig.ht.specs.push_back(s);
@@ -993,6 +1010,7 @@ int main(int, char**) {
   RUN_TEST(test_join_split_round_trip_and_legacy);
   RUN_TEST(test_prefix_stable_across_per_turn_content);
   RUN_TEST(test_counter_timestamp_in_static_block_is_caught);
+  RUN_TEST(test_the_answering_host_never_reaches_the_system_prompt);
   RUN_TEST(test_static_block_does_not_move_under_budget_pressure);
   RUN_TEST(test_flat_render_of_the_largest_budget_stays_under_the_guard);
   RUN_TEST(test_wire_prefix_stable_and_tools_byte_identical);

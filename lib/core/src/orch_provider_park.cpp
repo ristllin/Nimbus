@@ -60,10 +60,58 @@ const char* parkKindSlug(ParkKind k) {
   return "?";
 }
 
+namespace {
+ParkKind kindOfAction(RouterAction a) {
+  if (a == RouterAction::ParkBilling) return ParkKind::Billing;
+  if (a == RouterAction::ParkAuth) return ParkKind::Auth;
+  return ParkKind::None;
+}
+}  // namespace
+
 ParkKind parkKindFor(int httpStatus, const std::string& text) {
+  const RouterAnswer router = readRouterAnswer(text);
+  if (router.row) return kindOfAction(router.action());
   if (isBillingRefusal(httpStatus, text)) return ParkKind::Billing;
   if (httpStatus == 401 || httpStatus == 403) return ParkKind::Auth;
   return ParkKind::None;
+}
+
+ParkKind parkKindForProvider(const char* provider, int httpStatus, const std::string& text) {
+  if (!provider || std::strcmp(provider, "cumulo") != 0) return parkKindFor(httpStatus, text);
+  const RouterAnswer router = readRouterAnswer(text);
+  if (router.row) return kindOfAction(router.action());
+  return router.reason.empty() && httpStatus == 401 ? ParkKind::Auth : ParkKind::None;
+}
+
+ParkCause parkCauseFor(const std::string& text) {
+  const RouterAnswer a = readRouterAnswer(text);
+  if (a.reason == "insufficient_credits") return ParkCause::WalletEmpty;
+  if (a.reason == "credits_or_subscription_required") return ParkCause::NeedsPlan;
+  if (a.reason == "budget_exceeded") return ParkCause::KeyBudget;
+  if (a.reason == "account_suspended") return ParkCause::Suspended;
+  return ParkCause::Unspecified;
+}
+
+const char* parkCauseWhy(ParkCause c) {
+  switch (c) {
+    case ParkCause::WalletEmpty: return " says the credit balance is empty";
+    case ParkCause::NeedsPlan:   return " needs credits or a plan for this account";
+    case ParkCause::KeyBudget:   return " says this device reached its monthly limit";
+    case ParkCause::Suspended:   return " says this account is suspended";
+    case ParkCause::Unspecified: break;
+  }
+  return "";
+}
+
+const char* parkCauseFix(ParkCause c) {
+  switch (c) {
+    case ParkCause::WalletEmpty:
+    case ParkCause::NeedsPlan:   return "Add credits in the portal";
+    case ParkCause::KeyBudget:   return "Raise the limit in the portal";
+    case ParkCause::Suspended:   return "Contact support";
+    case ParkCause::Unspecified: break;
+  }
+  return "";
 }
 
 std::string parkWords(const char* provider, const ParkVerdict& v) {
@@ -73,7 +121,8 @@ std::string parkWords(const char* provider, const ParkVerdict& v) {
   if (v.paused & kPauseProviderLimit) return "paid requests to " + p + " are paused: its monthly limit is reached";
   if (v.paused) return "paid requests to " + p + " are paused";
   std::string s;
-  if (v.kind == ParkKind::Billing) s = p + " says the account is out of credit";
+  if (v.cause != ParkCause::Unspecified) s = p + parkCauseWhy(v.cause);
+  else if (v.kind == ParkKind::Billing) s = p + " says the account is out of credit";
   else s = p + " refused the key";
   if (v.httpStatus > 0) s += " (HTTP " + std::to_string(v.httpStatus) + ")";
   s += "; it is checked again " + minutesText(v.recheckInMs);
@@ -84,8 +133,19 @@ std::string parkShortWords(const char* provider, const ParkVerdict& v) {
   if (v.open) return std::string();
   if (v.paused) return "Paid requests are paused.";
   const std::string p = provider ? provider : "The provider";
+  if (v.cause == ParkCause::WalletEmpty) return p + " credit is empty. Add credits.";
+  if (v.cause == ParkCause::NeedsPlan) return p + " needs credits or a plan.";
+  if (v.cause == ParkCause::KeyBudget) return p + " reached its monthly limit.";
+  if (v.cause == ParkCause::Suspended) return p + " account is suspended.";
   if (v.kind == ParkKind::Billing) return p + " is out of credit. Add credit.";
   return p + " refused the key.";
+}
+
+std::string parkCauseNotice(const std::string& provider, ParkCause cause, const std::string& next) {
+  if (cause == ParkCause::Unspecified) return std::string();
+  std::string s = provider + parkCauseWhy(cause) + ". " + parkCauseFix(cause);
+  if (!next.empty()) s += "; until then, " + next + " answers";
+  return s + ".";
 }
 
 std::string keyNotice(const std::string& provider, int httpStatus, const std::string& next) {
@@ -123,6 +183,16 @@ uint32_t ProviderPark::epochNow() const { return storage_.epochS ? storage_.epoc
 uint32_t ProviderPark::clockNow() {
   if (storage_.nowMs) lastNowMs_ = storage_.nowMs();
   return lastNowMs_;
+}
+
+void ProviderPark::setLog(LogSink sink) {
+  std::lock_guard<std::recursive_mutex> lk(mx_);
+  log_ = sink;
+}
+
+void ProviderPark::noteOutcome(const Rec& r, const std::string& what) {
+  if (!log_) return;
+  pendingLog_ += std::string("park: ") + r.provider + " re-check " + what + "\n";
 }
 
 void ProviderPark::setRecordMemory(RecordAlloc alloc) {
@@ -188,6 +258,7 @@ void ProviderPark::endEpisode(Rec& r) {
   r.probing = false;
   r.noticed = false;
   r.answered = false;
+  r.cause = ParkCause::Unspecified;
 }
 
 void ProviderPark::loadLocked(uint32_t nowMs) {
@@ -206,20 +277,35 @@ void ProviderPark::flush() {
   std::lock_guard<std::mutex> io(saveMx_);
   std::function<bool(const std::string&)> save;
   std::string blob;
+  std::string lines;
+  LogSink sink = nullptr;
   {
     std::lock_guard<std::recursive_mutex> lk(mx_);
-    if (!dirty_ || !storage_.save) return;
-    dirty_ = false;
-    save = storage_.save;
-    blob = serialize(lastNowMs_);
+    lines.swap(pendingLog_);
+    sink = log_;
+    if (dirty_ && storage_.save) {
+      dirty_ = false;
+      save = storage_.save;
+      blob = serialize(lastNowMs_);
+    }
   }
-  save(blob);
+  if (sink) {
+    for (size_t at = 0; at < lines.size();) {
+      const size_t eol = lines.find('\n', at);
+      sink(lines.substr(at, eol - at).c_str());
+      at = eol + 1;
+    }
+  }
+  if (save) save(blob);
 }
 
-void ProviderPark::parkLocked(Rec& r, PaidSeam seam, ParkKind kind, int httpStatus, uint32_t nowMs) {
+void ProviderPark::parkLocked(Rec& r, PaidSeam seam, ParkKind kind, int httpStatus, uint32_t nowMs,
+                              ParkCause cause) {
+  const bool wasRecheck = r.kind != ParkKind::None && (r.probing || laterOrEqual(nowMs, r.recheckAtMs));
   // A billing refusal and a refused key (401) hold for every seam; a 403 names one
-  // model or endpoint the key may not use, so it closes only the seam that met it.
-  const bool everySeam = kind == ParkKind::Billing || httpStatus != 403;
+  // model or endpoint the key may not use, so it closes only the seam that met it. The
+  // router's account_suspended is a 403 about the whole account.
+  const bool everySeam = kind == ParkKind::Billing || httpStatus != 403 || cause == ParkCause::Suspended;
   if (r.kind == ParkKind::None) r.sinceEpoch = epochNow();
   // The first refusal of a kind names it; a billing park is never downgraded.
   const bool upgrade = r.kind == ParkKind::None || (kind == ParkKind::Billing && r.kind != ParkKind::Billing);
@@ -227,16 +313,32 @@ void ProviderPark::parkLocked(Rec& r, PaidSeam seam, ParkKind kind, int httpStat
     r.kind = kind;
     r.httpStatus = httpStatus;
   }
+  // The latest thing the router said names it: a wallet that went from empty to a spent
+  // key budget reads as the budget. A typed park with no words of its own keeps them.
+  if (cause != ParkCause::Unspecified) r.cause = cause;
   r.seamMask |= everySeam ? kAllSeams : seamBit(seam);
   r.recheckAtMs = nowMs + kRecheckMs;
   r.probing = false;
+  if (wasRecheck)
+    noteOutcome(r, std::string("refused again (") + parkKindSlug(kind) + ", HTTP " + std::to_string(httpStatus) +
+                       ") - next in 30 minutes");
 }
 
 ParkVerdict ProviderPark::available(const char* provider, PaidSeam seam, uint32_t keyFp, uint32_t nowMs) {
-  ParkVerdict v;
-  if (!validName(provider)) return v;
   FlushOnExit flushAfter{*this};   // after the lock below is released
   std::lock_guard<std::recursive_mutex> lk(mx_);
+  return askLocked(provider, seam, keyFp, nowMs, /*claim=*/true);
+}
+
+ParkVerdict ProviderPark::peek(const char* provider, PaidSeam seam, uint32_t keyFp, uint32_t nowMs) {
+  FlushOnExit flushAfter{*this};   // after the lock below is released
+  std::lock_guard<std::recursive_mutex> lk(mx_);
+  return askLocked(provider, seam, keyFp, nowMs, /*claim=*/false);
+}
+
+ParkVerdict ProviderPark::askLocked(const char* provider, PaidSeam seam, uint32_t keyFp, uint32_t nowMs, bool claim) {
+  ParkVerdict v;
+  if (!validName(provider)) return v;
   loadLocked(nowMs);
   Rec* r = find(provider);
   v.paused = (uint8_t)(pausedAll_ | (r ? r->paused : 0));
@@ -258,31 +360,64 @@ ParkVerdict ProviderPark::available(const char* provider, PaidSeam seam, uint32_
     if (!laterOrEqual(nowMs, r->probeUntilMs)) return v;   // inside the probe's lease
     r->probing = false;                                    // no answer in the lease: a failed probe
     r->recheckAtMs = nowMs + kRecheckMs;
+    noteOutcome(*r, "got no answer in time - next in 30 minutes");
     saveLocked();
   }
   if (laterOrEqual(nowMs, r->recheckAtMs)) {
-    r->probing = true;   // one request goes; its answer re-parks, re-arms or ends it
-    r->probeUntilMs = nowMs + kProbeLeaseMs;
-    v.probe = true;
+    if (claim) {
+      r->probing = true;   // one request goes; its answer re-parks, re-arms or ends it
+      r->probeUntilMs = nowMs + kProbeLeaseMs;
+      v.probe = true;
+    } else {
+      v.due = true;
+    }
     return v;
   }
   v.open = false;
   v.kind = r->kind;
   v.httpStatus = r->httpStatus;
+  v.cause = r->cause;
   v.recheckInMs = r->recheckAtMs - nowMs;
   return v;
 }
 
+bool ProviderPark::claimProbe(const char* provider, PaidSeam seam, uint32_t nowMs) {
+  if (!validName(provider)) return false;
+  FlushOnExit flushAfter{*this};   // after the lock below is released
+  std::lock_guard<std::recursive_mutex> lk(mx_);
+  loadLocked(nowMs);
+  Rec* r = find(provider);
+  if (!r || r->kind == ParkKind::None || r->probing || !(r->seamMask & seamBit(seam))) return false;
+  if (!laterOrEqual(nowMs, r->recheckAtMs)) return false;
+  r->probing = true;
+  r->probeUntilMs = nowMs + kProbeLeaseMs;
+  return true;
+}
+
+void ProviderPark::releaseProbe(const char* provider) {
+  if (!validName(provider)) return;
+  FlushOnExit flushAfter{*this};   // after the lock below is released
+  std::lock_guard<std::recursive_mutex> lk(mx_);
+  Rec* r = find(provider);
+  if (!r || !r->probing) return;
+  r->probing = false;
+  noteOutcome(*r, "handed back - no request went out");
+}
+
 void ProviderPark::park(const char* provider, PaidSeam seam, uint32_t keyFp, ParkKind kind, int httpStatus,
                         uint32_t nowMs) {
-  if (kind == ParkKind::None || !validName(provider)) return;
+  park(provider, seam, keyFp, Refusal{kind, httpStatus, ParkCause::Unspecified}, nowMs);
+}
+
+void ProviderPark::park(const char* provider, PaidSeam seam, uint32_t keyFp, const Refusal& refusal, uint32_t nowMs) {
+  if (refusal.kind == ParkKind::None || !validName(provider)) return;
   FlushOnExit flushAfter{*this};   // after the lock below is released
   std::lock_guard<std::recursive_mutex> lk(mx_);
   loadLocked(nowMs);
   Rec* r = ensure(provider);
   if (keyFp && r->keyFp && keyFp != r->keyFp) endEpisode(*r);   // the old key's park is over
   if (keyFp) r->keyFp = keyFp;
-  parkLocked(*r, seam, kind, httpStatus, nowMs);
+  parkLocked(*r, seam, refusal.kind, refusal.httpStatus, nowMs, refusal.cause);
   saveLocked();
 }
 
@@ -292,12 +427,15 @@ ParkKind ProviderPark::noteAnswer(const char* provider, PaidSeam seam, uint32_t 
     noteSuccess(provider, seam);
     return ParkKind::None;
   }
-  const ParkKind kind = parkKindFor(httpStatus, text);
+  const ParkKind kind = parkKindForProvider(provider, httpStatus, text);
   if (kind == ParkKind::None) {
-    noteFailure(provider, nowMs);
+    if (answerEndsPark(provider, text))
+      noteSuccess(provider, seam);   // this call was refused; the account is fine
+    else
+      noteFailure(provider, nowMs);
     return kind;
   }
-  park(provider, seam, keyFp, kind, httpStatus, nowMs);
+  park(provider, seam, keyFp, Refusal{kind, httpStatus, parkCauseFor(text)}, nowMs);
   return kind;
 }
 
@@ -309,6 +447,7 @@ bool ProviderPark::noteSuccess(const char* provider, PaidSeam seam) {
   Rec* r = find(provider);
   if (!r || (r->kind == ParkKind::None && !r->noticed)) return false;
   if (r->kind != ParkKind::None && !(r->seamMask & seamBit(seam))) return false;
+  if (r->kind != ParkKind::None) noteOutcome(*r, "answered - open again");
   endEpisode(*r);
   dropIfEmpty(*r);
   saveLocked();
@@ -321,9 +460,11 @@ void ProviderPark::noteFailure(const char* provider, uint32_t nowMs) {
   std::lock_guard<std::recursive_mutex> lk(mx_);
   loadLocked(nowMs);
   Rec* r = find(provider);
-  if (!r || !r->probing) return;
+  if (!r || r->kind == ParkKind::None) return;
+  if (!r->probing && !laterOrEqual(nowMs, r->recheckAtMs)) return;
   r->probing = false;
   r->recheckAtMs = nowMs + kRecheckMs;
+  noteOutcome(*r, "failed without a verdict - next in 30 minutes");
   saveLocked();
 }
 
@@ -395,6 +536,34 @@ bool ProviderPark::shortAnswerDue(const char* provider) {
   return true;
 }
 
+bool ProviderPark::isParked(const char* provider) {
+  if (!validName(provider)) return false;
+  std::lock_guard<std::recursive_mutex> lk(mx_);
+  loadLocked(clockNow());
+  const Rec* r = find(provider);
+  return r && r->kind != ParkKind::None;
+}
+
+bool ProviderPark::isProbing(const char* provider) {
+  if (!validName(provider)) return false;
+  std::lock_guard<std::recursive_mutex> lk(mx_);
+  const Rec* r = find(provider);
+  return r && r->kind != ParkKind::None && r->probing;
+}
+
+ParkCause ProviderPark::causeOf(const char* provider) {
+  if (!validName(provider)) return ParkCause::Unspecified;
+  std::lock_guard<std::recursive_mutex> lk(mx_);
+  loadLocked(clockNow());
+  const Rec* r = find(provider);
+  return r && r->kind != ParkKind::None ? r->cause : ParkCause::Unspecified;
+}
+
+bool ProviderPark::answerEndsPark(const char* provider, const std::string& text) {
+  if (!provider || std::strcmp(provider, "cumulo") != 0) return false;
+  return routerAnswerProvesAccount(readRouterAnswer(text), causeOf(provider) == ParkCause::KeyBudget);
+}
+
 uint32_t ProviderPark::recheckInMs(const char* provider) {
   if (!validName(provider)) return 0;
   std::lock_guard<std::recursive_mutex> lk(mx_);
@@ -444,16 +613,27 @@ size_t ProviderPark::snapshot(ParkEntry* out, size_t cap, uint32_t nowMs) {
     e.answered = r.answered;
     e.warnedDay = r.warnedDay;
     e.paused = (uint8_t)(r.paused | pausedAll_);
+    e.cause = r.cause;
   }
   return n;
 }
 
 // "PK1\n" then one line per record with durable state:
-//   <provider> <kind> <status> <seamMask> <recheckInS> <recheckEpoch> <sinceEpoch> <noticed> <warnedDay> <keyFp hex>
+//   <provider> <kind> <status> <seamMask> <recheckInS> <recheckEpoch> <sinceEpoch> <noticed> <warnedDay> <keyFp hex> <cause>
 // recheckEpoch is the wall-clock re-check time when the clock is known (0 = not);
 // recheckInS is the relative wait, used when either clock is unknown at load.
 // <noticed> is 0 (not told), 1 (told) or 2 (told, and the one short answer to a
-// refused turn went out): an older image reads any non-zero value as "told".
+// refused turn went out): an older image reads any non-zero value as "told". <cause> (a
+// ParkCause, only when the router named one) came later: an older image stops reading
+// before it, and a line without it reads as Unspecified.
+namespace {
+unsigned noticedCode(bool answered, bool noticed) { return answered ? 2u : (noticed ? 1u : 0u); }
+void appendCause(char* line, size_t cap, int len, ParkCause cause) {
+  if (cause == ParkCause::Unspecified || len <= 0 || (size_t)len >= cap) return;
+  std::snprintf(line + len, cap - (size_t)len, " %u", (unsigned)cause);
+}
+}  // namespace
+
 std::string ProviderPark::serialize(uint32_t nowMs) const {
   std::lock_guard<std::recursive_mutex> lk(mx_);
   std::string out = "PK1\n";
@@ -464,28 +644,33 @@ std::string ProviderPark::serialize(uint32_t nowMs) const {
     if (r.kind != ParkKind::None && !r.probing && !laterOrEqual(nowMs, r.recheckAtMs))
       inS = (r.recheckAtMs - nowMs + 999u) / 1000u;
     char line[128];
-    std::snprintf(line, sizeof(line), "%s %u %d %u %lu %lu %lu %u %lu %08lx\n", r.provider, (unsigned)r.kind,
-                  r.httpStatus, (unsigned)r.seamMask, (unsigned long)inS,
-                  (unsigned long)(epoch && inS ? epoch + inS : 0u), (unsigned long)r.sinceEpoch,
-                  r.answered ? 2u : (r.noticed ? 1u : 0u), (unsigned long)r.warnedDay, (unsigned long)r.keyFp);
+    const int len = std::snprintf(line, sizeof(line), "%s %u %d %u %lu %lu %lu %u %lu %08lx", r.provider,
+                                  (unsigned)r.kind, r.httpStatus, (unsigned)r.seamMask, (unsigned long)inS,
+                                  (unsigned long)(epoch && inS ? epoch + inS : 0u), (unsigned long)r.sinceEpoch,
+                                  noticedCode(r.answered, r.noticed), (unsigned long)r.warnedDay,
+                                  (unsigned long)r.keyFp);
+    appendCause(line, sizeof(line), len, r.cause);
     out += line;
+    out += '\n';
   }
   return out;
 }
 
 namespace {
 // One saved line: <provider> <kind> <status> <seamMask> <recheckInS> <recheckEpoch>
-// <sinceEpoch> <noticed> <warnedDay> <keyFp hex>. False for anything else.
+// <sinceEpoch> <noticed> <warnedDay> <keyFp hex> [<cause>]. False for anything else.
 struct SavedRec {
   char prov[16] = {};
-  unsigned kind = 0, mask = 0, noticed = 0;
+  unsigned kind = 0, mask = 0, noticed = 0, cause = 0;
   int status = 0;
   unsigned long inS = 0, recheckEpoch = 0, since = 0, warned = 0, fp = 0;
 };
 bool parseSaved(const std::string& line, SavedRec& out) {
-  const int got = std::sscanf(line.c_str(), "%15s %u %d %u %lu %lu %lu %u %lu %lx", out.prov, &out.kind, &out.status,
-                              &out.mask, &out.inS, &out.recheckEpoch, &out.since, &out.noticed, &out.warned, &out.fp);
-  return got == 10 && validName(out.prov) && out.kind <= (unsigned)ParkKind::Auth;
+  const int got = std::sscanf(line.c_str(), "%15s %u %d %u %lu %lu %lu %u %lu %lx %u", out.prov, &out.kind, &out.status,
+                              &out.mask, &out.inS, &out.recheckEpoch, &out.since, &out.noticed, &out.warned, &out.fp,
+                              &out.cause);
+  if (out.cause > (unsigned)ParkCause::Suspended) out.cause = 0;   // a newer image's: its words are not known here
+  return got >= 10 && validName(out.prov) && out.kind <= (unsigned)ParkKind::Auth;
 }
 // What is left of a saved wait after a restart: the wall clock decides when both the
 // save and now know it; otherwise the saved wait is used whole (never shorter than the
@@ -529,6 +714,7 @@ bool ProviderPark::deserialize(const std::string& blob, uint32_t nowMs) {
     r.answered = sr.noticed >= 2;
     r.warnedDay = (uint32_t)sr.warned;
     r.keyFp = (uint32_t)sr.fp;
+    r.cause = (ParkCause)sr.cause;
   }
   for (const Rec& k : keep)
     if (k.paused && k.provider[0]) ensure(k.provider)->paused |= k.paused;

@@ -214,6 +214,51 @@ static void test_all_refused_gives_the_typed_billing_result() {
   TEST_ASSERT_EQUAL(429, e.status);
 }
 
+// The router's clamp on a photo (a Cumulo-only device): one resend with the output capped at
+// what fits, the photo's splice moved with the edit, nothing parked. A second refusal fails
+// this photo with the real reason. The empty wallet parks, with its own words.
+static void test_router_clamp_on_a_photo_resends_capped() {
+  Rig r;
+  r.prio = "cumulo";
+  r.keyed = {"cumulo"};
+  const std::string clamp =
+      "{\"error\":\"insufficient_credits_for_call\",\"reason\":\"insufficient_credits_for_call\","
+      "\"charged\":false,\"retryable\":false,\"maxAffordableOutputTokens\":300,\"retryHint\":\"lower_max_output\"}";
+  r.http.script.push_back({"", "/router/", 402, clamp});
+  r.http.script.push_back({"", "/router/", 200, chatOk("a clear photo of a cat, read in full")});
+  vision::CaptionDeps d = r.deps();
+  d.routerHost = [] { return std::string("router.test"); };
+  d.routerSelection = [] { return std::string("openai/gpt-6"); };
+  vision::CaptionRequest in;
+  in.bytes = r.photo;
+  in.len = sizeof r.photo;
+  in.mime = "image/jpeg";
+  vision::CaptionResult res = vision::caption(d, in);
+  TEST_ASSERT_EQUAL_MESSAGE(vision::ReadFail::None, res.fail, res.words.c_str());
+  TEST_ASSERT_EQUAL(2, r.http.seen.size());
+  JsonDocument second;
+  TEST_ASSERT_FALSE((bool)deserializeJson(second, r.http.seen[1].body));
+  const int cap = second["max_completion_tokens"] | (second["max_tokens"] | -1);
+  TEST_ASSERT_EQUAL(300, cap);
+  TEST_ASSERT_NOT_NULL(strstr(r.http.seen[1].body.c_str(), "base64,"));   // the photo landed inside its string
+  TEST_ASSERT_FALSE(parked("cumulo", orch::PaidSeam::Chat, r.now));
+
+  vision::clearLastError();
+  r.http.script.push_back({"", "/router/", 402, clamp});
+  r.http.script.push_back({"", "/router/", 402, clamp});
+  res = vision::caption(d, in);
+  TEST_ASSERT_EQUAL(4, r.http.seen.size());   // never a loop
+  TEST_ASSERT_NOT_NULL(strstr(res.words.c_str(), "larger than the remaining credits"));
+  TEST_ASSERT_FALSE(parked("cumulo", orch::PaidSeam::Chat, r.now));
+
+  r.http.script.push_back(
+      {"", "/router/", 402, "{\"error\":\"insufficient_credits\",\"reason\":\"insufficient_credits\",\"charged\":false}"});
+  res = vision::caption(d, in);
+  TEST_ASSERT_EQUAL(vision::ReadFail::Billing, res.fail);
+  TEST_ASSERT_NOT_NULL_MESSAGE(strstr(res.words.c_str(), "credit balance is empty"), res.words.c_str());
+  TEST_ASSERT_TRUE(parked("cumulo", orch::PaidSeam::Chat, r.now));
+}
+
 // The monthly spend ceiling (lane DEF): a frozen device sends no caption request at all.
 static void test_spend_freeze_sends_nothing() {
   Rig rig;
@@ -436,9 +481,86 @@ static void test_fail_words_per_class() {
                            vision::failWords(vision::ReadFail::Billing, "openai", 429).c_str());
 }
 
+// The head's question can carry its own first guess (28 Oct: "the beef and black-bean
+// stir-fry, the portion of rice" for a plate of chicken and lentils). A second model that
+// is simply asked about the stir-fry confirms the stir-fry, and the wrong read locks in.
+// The reader is told what the question is, before it reads the question.
+static void test_question_prompt_does_not_inherit_the_heads_guess() {
+  vision::CaptionRequest in;
+  const uint8_t bytes[] = {0xFF, 0xD8, 0xFF};
+  in.bytes = bytes;
+  in.len = sizeof(bytes);
+  in.mime = "image/jpeg";
+  in.kind = vision::CaptionKind::Question;
+  in.question = "how many grams is the beef and black-bean stir-fry?";
+  agent::HttpRequest req;
+  TEST_ASSERT_TRUE(vision::buildCaptionRequest("openai", "gpt-6-luna", "k", in, "", req));
+  const size_t guard = req.body.find("may be wrong");
+  const size_t asked = req.body.find("Question: how many grams");
+  TEST_ASSERT_TRUE_MESSAGE(guard != std::string::npos, req.body.c_str());
+  TEST_ASSERT_TRUE(asked != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(guard < asked, "the warning comes before the question");
+  TEST_ASSERT_TRUE(req.body.find("what the photo shows") != std::string::npos);
+  // A plain reading has no question and gets none of these words.
+  in.kind = vision::CaptionKind::Fallback;
+  in.question.clear();
+  agent::HttpRequest plain;
+  TEST_ASSERT_TRUE(vision::buildCaptionRequest("openai", "gpt-6-luna", "k", in, "", plain));
+  TEST_ASSERT_TRUE(plain.body.find("may be wrong") == std::string::npos);
+}
+
+// The question reaches a caption request verbatim from a model's tool argument: a raw
+// control byte must leave escaped on every caption wire, and the photo's splice must
+// still land inside its own string (the escape moves the offsets).
+static void test_a_control_byte_in_the_question_leaves_escaped() {
+  vision::CaptionRequest in;
+  const uint8_t bytes[] = {0xFF, 0xD8, 0xFF};
+  in.bytes = bytes;
+  in.len = sizeof(bytes);
+  in.mime = "image/jpeg";
+  in.kind = vision::CaptionKind::Question;
+  in.question = std::string("how many\x1B grams\x01") + '\x1F';
+  for (const char* provider : {"anthropic", "openai", "mistral"}) {
+    agent::HttpRequest req;
+    TEST_ASSERT_TRUE(vision::buildCaptionRequest(provider, vision::captionModel(provider), "k", in, "", req));
+    for (char c : req.body) TEST_ASSERT_TRUE_MESSAGE((unsigned char)c >= 0x20, provider);
+    TEST_ASSERT_TRUE_MESSAGE(req.body.find("how many\\u001b grams\\u0001\\u001f") != std::string::npos, provider);
+    TEST_ASSERT_EQUAL_size_t(1, req.splices.size());
+    const std::string before = req.body.substr(0, req.splices[0].at);
+    const bool inItsString = before.rfind("base64,") == before.size() - 7 || before.rfind("\"data\":\"") == before.size() - 8;
+    TEST_ASSERT_TRUE_MESSAGE(inItsString, provider);
+  }
+}
+
+// image.look of a photo whose reading is still queued (the 31 Oct window: the record was
+// written 15 s after the turn that needed it): the head hears that, never a plain failure
+// it would pass on as "the lookup failed", and is not sent to ask for the photo again.
+static void test_look_while_the_record_is_queued_says_so() {
+  vision::RecordQueue& q = vision::recordQueue();
+  q.clear();
+  vision::PendingRecord r;
+  r.ref = nimbus::orch::workingCopy("00112233445566ff");
+  r.chatId = nimbus::orch::workingCopy("7");
+  r.len = 100;
+  TEST_ASSERT_FALSE(q.holds("00112233445566ff"));
+  TEST_ASSERT_TRUE(q.push(r));
+  TEST_ASSERT_TRUE(q.holds("00112233445566ff"));
+  TEST_ASSERT_FALSE(q.holds("ffeeddccbbaa9988"));
+  const std::string waiting = vision::lookFailedWords(true, "openai paused");
+  TEST_ASSERT_TRUE(waiting.find("not been read yet") != std::string::npos);
+  TEST_ASSERT_TRUE(waiting.find("need not be sent again") != std::string::npos);
+  TEST_ASSERT_TRUE(waiting.find("could not be read") == std::string::npos);
+  // Nothing queued: the failure stays a failure, with its reason.
+  TEST_ASSERT_EQUAL_STRING("the photo could not be read: openai paused",
+                           vision::lookFailedWords(false, "openai paused").c_str());
+  q.settle(r.ref, true, 0);
+  TEST_ASSERT_FALSE(q.holds("00112233445566ff"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_billing_429_parks_walks_on_and_notices_once);
+  RUN_TEST(test_router_clamp_on_a_photo_resends_capped);
   RUN_TEST(test_5xx_and_connect_failure_walk_on_without_parking);
   RUN_TEST(test_walk_is_sticky_per_page);
   RUN_TEST(test_closed_provider_is_skipped_with_no_request);
@@ -447,11 +569,14 @@ int main(int, char**) {
   RUN_TEST(test_spend_freeze_sends_nothing);
   RUN_TEST(test_quiet_turn_leaves_the_notice_latch);
   RUN_TEST(test_request_builder_per_provider);
+  RUN_TEST(test_a_control_byte_in_the_question_leaves_escaped);
   RUN_TEST(test_caption_models_are_current);
   RUN_TEST(test_sender_text_cannot_move_the_photo);
   RUN_TEST(test_look_args);
   RUN_TEST(test_error_line_keeps_host_model_code_inside_the_cap);
   RUN_TEST(test_overlong_reply_is_a_logged_failure);
   RUN_TEST(test_fail_words_per_class);
+  RUN_TEST(test_question_prompt_does_not_inherit_the_heads_guess);
+  RUN_TEST(test_look_while_the_record_is_queued_says_so);
   return UNITY_END();
 }

@@ -1,0 +1,18 @@
+{
+  "id": "lc-day-rollover",
+  "title": "Yesterday's total never carries into today",
+  "rows": ["OIR-14"],
+  "replays": "The 30 Oct class: yesterday's 2,524 kcal carried into today's total, giving 2,989 instead of today's own 465.",
+  "clock": "{{TODAY}} {{DOW}} 08:29 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{YESTERDAY}},dinner,steak night with sides,2524,150\n{{TODAY}},breakfast,oats with a banana,465,14\n"},
+    {"do": "say", "text": "What is my total for today?"}
+  ],
+  "assertions": [
+    "reply_ok",
+    "ledger_day_total",
+    {"id": "reply_forbids", "params": {"forbidden": ["2989", "2,989"]}}
+  ]
+}

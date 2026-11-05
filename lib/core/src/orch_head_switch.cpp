@@ -16,7 +16,28 @@ struct PauseWords {
   const char* modelWhy;
   const char* modelUntil;
 };
-const PauseWords* pauseWords(uint8_t causes, ParkKind park, bool overBudget, int parkStatus = 0) {
+// A park the router named: the wallet, the plan, the key's own budget or a suspension.
+const PauseWords* causeWords(ParkCause cause) {
+  static const PauseWords kWallet{" says the credit balance is empty", "once credits are added",
+                                  " says the credit balance is empty", "once credits are added"};
+  static const PauseWords kPlan{" needs credits or a plan", "once credits are added", " needs credits or a plan",
+                                "once credits are added"};
+  static const PauseWords kKeyBudget{" reached this device's monthly limit", "when the limit is raised",
+                                     " reached this device's monthly limit", "when the limit is raised"};
+  static const PauseWords kSuspended{" says this account is suspended", "when the suspension is lifted",
+                                     " says this account is suspended", "when the suspension is lifted"};
+  switch (cause) {
+    case ParkCause::WalletEmpty: return &kWallet;
+    case ParkCause::NeedsPlan:   return &kPlan;
+    case ParkCause::KeyBudget:   return &kKeyBudget;
+    case ParkCause::Suspended:   return &kSuspended;
+    case ParkCause::Unspecified: break;
+  }
+  return nullptr;
+}
+
+const PauseWords* pauseWords(uint8_t causes, ParkKind park, bool overBudget, int parkStatus = 0,
+                             ParkCause cause = ParkCause::Unspecified) {
   static const PauseWords kLimit{" is paused by your monthly limit", "when it lifts",
                                  " is paused by the owner's monthly limit", "when it lifts"};
   static const PauseWords kCeiling{" is paused by your overall spending limit", "when it lifts",
@@ -35,6 +56,7 @@ const PauseWords* pauseWords(uint8_t causes, ParkKind park, bool overBudget, int
   if (causes & kPauseProviderLimit) return &kLimit;
   if (causes & kPauseSpendCeiling) return &kCeiling;
   if (causes & kPauseOwner) return &kOwner;
+  if (park != ParkKind::None && causeWords(cause)) return causeWords(cause);
   if (park == ParkKind::Billing) return &kCredit;
   if (park == ParkKind::Auth) return parkStatus == 403 ? &kRefused : &kKey;
   return overBudget ? &kBudget : nullptr;
@@ -49,16 +71,16 @@ std::string headPauseNote(const std::string& label, uint8_t pauseCauses, ParkKin
 }
 
 std::string headPauseNote(const std::string& label, const HeadPause& p) {
-  const PauseWords* w = pauseWords(p.causes, p.park, p.overBudget, p.parkStatus);
+  const PauseWords* w = pauseWords(p.causes, p.park, p.overBudget, p.parkStatus, p.cause);
   if (!w) return std::string();
   return label + w->ownerWhy + "; replies already fail over automatically and return to " + label + " " +
          w->ownerUntil + ".";
 }
 
-bool pauseHolds(const HeadPause& p) { return pauseWords(p.causes, p.park, p.overBudget, p.parkStatus) != nullptr; }
+bool pauseHolds(const HeadPause& p) { return pauseWords(p.causes, p.park, p.overBudget, p.parkStatus, p.cause) != nullptr; }
 
-HeadPause parkPause(const std::string& provider, PaidSeam seam, uint32_t nowMs, bool dueIsOpen) {
-  ProviderPark& park = providerPark();
+HeadPause headPauseIn(ProviderPark& park, const std::string& provider, PaidSeam seam, uint32_t nowMs,
+                      bool dueIsOpen) {
   HeadPause hp;
   ParkEntry e[ProviderPark::kMaxProviders];
   const size_t n = park.snapshot(e, ProviderPark::kMaxProviders, nowMs);
@@ -67,19 +89,24 @@ HeadPause parkPause(const std::string& provider, PaidSeam seam, uint32_t nowMs, 
     if (dueIsOpen && e[i].recheckInMs == 0 && !e[i].probing) continue;
     hp.park = e[i].kind;
     hp.parkStatus = e[i].httpStatus;
+    hp.cause = e[i].cause;
   }
   hp.causes = park.pausedBy(provider.c_str());
   return hp;
 }
 
+HeadPause parkPause(const std::string& provider, PaidSeam seam, uint32_t nowMs, bool dueIsOpen) {
+  return headPauseIn(providerPark(), provider, seam, nowMs, dueIsOpen);
+}
+
 std::string headPauseFact(const std::string& label, const HeadPause& p) {
-  const PauseWords* w = pauseWords(p.causes, p.park, p.overBudget, p.parkStatus);
+  const PauseWords* w = pauseWords(p.causes, p.park, p.overBudget, p.parkStatus, p.cause);
   if (!w) return std::string();
   return label + ", the chosen head," + w->modelWhy + " and returns automatically " + w->modelUntil + ".";
 }
 
 std::string providerPauseFact(const std::string& label, const HeadPause& p) {
-  const PauseWords* w = pauseWords(p.causes, p.park, p.overBudget, p.parkStatus);
+  const PauseWords* w = pauseWords(p.causes, p.park, p.overBudget, p.parkStatus, p.cause);
   if (!w) return std::string();
   return label + w->modelWhy + " and returns automatically " + w->modelUntil + ".";
 }

@@ -1,0 +1,15 @@
+fail-first, independent-review finding 2 (H18 leg verdict): the spawn leg's verdict must prove 'the sub keeps its tools' from the provider's own run record (ResultEnvelope.webRuns), never from reply text. Run: make -C tools/harness-lab check on head 337bf186 with the verdict extracted unchanged plus the new selftest leg.
+keyed reply
+  ok   a new row replaced nothing
+  ok   a new row is a landed log row
+  ok   a keyed correction records a replacement
+  ok   a keyed correction is a landed log row
+  ok   a re-send that changed nothing replaced nothing
+mg spawn verdict
+  FAIL a provider-recorded web run passes
+  FAIL several provider-recorded web runs pass
+  FAIL reply text alone never proves the tool ran
+  FAIL a stepdown that ran no tool does not prove tools kept
+  ok   a dispatch error fails even with web runs recorded
+LAB SELFTEST FAILED
+make: *** [check] Error 1

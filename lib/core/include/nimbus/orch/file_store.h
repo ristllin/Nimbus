@@ -1,8 +1,10 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 #include "nimbus/orch/food_ledger.h"     // ledgerNameWritable - the reserved ledger names
+#include "nimbus/orch/psram_alloc.h"     // WorkingString/WorkingVector - the PSRAM seam
 #include "nimbus/orch/vector_memory.h"   // kOwnerNs
 #include <vector>
 
@@ -21,35 +23,64 @@
 // every consumer (web upload, tools, provider adapters) inherits, so a hostile
 // name can never traverse out of the tree.
 //
-// Durability rule: artifacts are never auto-evicted. Full is full - add()
-// refuses with an explicit reason the caller surfaces to the human/model.
+// Durability rule: the owner's own artifacts are never auto-evicted. When the
+// store's real space limit (its byte quota, scaled from the card at mount) is
+// reached, the oldest REGENERABLE copies go first - chat-attachment copies (the
+// Telegram archive keeps the original) - never an entry outside the
+// chat-attachment folders, whatever its hash; past those, add() refuses with an
+// explicit reason the caller surfaces to the human/model.
 
 namespace nimbus::orch {
+
+// Lane FSCAP (owner ruling R6: no SD file cap): the entry COUNT is no longer a
+// limit an owner can hit. The default limit is "no cap" - the index scales with
+// the card (its durable copy is the on-card .index, its in-RAM mirror rides
+// PSRAM, and per-call listings are paged via listPage), and the byte quota is
+// the real space limit. An explicit maxEntries still works (tests, and a store
+// that must take nothing at all: 0).
+inline constexpr size_t kNoEntryCap = SIZE_MAX;
 
 // Mirrors the provider content-block split (document / image / audio / other) so
 // tools + future Files-API routing agree on one vocabulary.
 enum class FileKind : uint8_t { Doc = 0, Image = 1, Audio = 2, Data = 3 };
 
 const char* fileKindName(FileKind k);          // "doc" / "image" / "audio" / "data"
-FileKind    fileKindForName(const std::string& name);  // by extension; Data if unknown
+FileKind    fileKindForName(std::string_view name);  // by extension; Data if unknown
 
+// Can a stored file go to the model as text? No when its name says image or audio, or
+// when its head (the first kTextSniffBytes) holds a NUL or more than one control byte
+// in ten. Text with a stray bad byte stays readable: the wire layer repairs and escapes
+// it (nimbus/utf8.h, nimbus/json_strict.h). Every files.read path asks this one rule.
+inline constexpr size_t kTextSniffBytes = 4096;
+bool fileReadableAsText(std::string_view name, const std::string& bytes);
+// What files.read says when the rule answers no. Model-facing.
+inline constexpr const char* kNotTextRefusal =
+    "this is not a text file (an image, audio or other binary data), so its contents cannot be read here";
+
+// Lane FSCAP review fix: the entry's strings ride the WorkingAllocator seam, so on
+// the device every per-entry allocation goes to PSRAM (the device hooks route
+// workingAlloc to heap_caps_malloc(MALLOC_CAP_SPIRAM) at ANY size). Plain
+// std::string would keep every sub-128 B block on the scarce internal heap
+// (main.cpp spills only >=128 B), and with no entry cap a few thousand entries
+// would exhaust it. On the host the default hooks are malloc/free, so tests are
+// unchanged.
 struct FileEntry {
-  std::string project;         // sanitized segment (folder under /mem/files)
-  std::string name;            // sanitized segment (human name, extension kept)
+  WorkingString project;       // sanitized segment (folder under /mem/files)
+  WorkingString name;          // sanitized segment (human name, extension kept)
   uint32_t    bytes = 0;
   uint32_t    createdAt = 0;   // epoch seconds (0 = clock unknown at write time)
   FileKind    kind = FileKind::Data;
   uint64_t    hash = 0;        // FNV-1a 64 content hash (identity/dedup; blob_store's)
   // Provider Files-API cache (A4 seam): upload-once, reference-by-id. Empty until
   // an adapter uploads this artifact; invalidated when content (hash) changes.
-  std::string providerTag;     // "anthropic" | "openai" | "" (none)
-  std::string providerFileId;  // the provider's file id ("" = not uploaded)
+  WorkingString providerTag;   // "anthropic" | "openai" | "" (none)
+  WorkingString providerFileId;// the provider's file id ("" = not uploaded)
   // v3.7.0 data boundary: WHOSE artifact this is (a Principal namespace).
   // Empty = legacy, adopted as the owner's on load. Written as a NINTH index
   // field, deliberately LAST: a pre-v3.7 image parses only eight and absorbs
   // the tail into providerFileId - a disposable upload cache - so a rollback
   // keeps every file and every real column intact.
-  std::string owner;
+  WorkingString owner;
   // v3.7.0: an explicit, per-artifact, READ-ONLY grant by this file's owner -
   // "here is a document" rather than a fact that silently enters someone's
   // prompt (which is why vector memory has no equivalent). Encoded INSIDE the
@@ -60,7 +91,7 @@ struct FileEntry {
 class FileStore {
  public:
   struct Limits {
-    size_t   maxEntries   = 256;
+    size_t   maxEntries   = kNoEntryCap;           // no count cap by default (FSCAP)
     size_t   maxNameLen   = 48;
     size_t   maxProjectLen = 24;
     uint64_t maxFileBytes = 8ull * 1024 * 1024;    // 8 MB per artifact
@@ -90,10 +121,11 @@ class FileStore {
   // A valid segment: 1..maxLen printable-ASCII chars, no '/', '\\', control
   // chars or spaces-only, not "." / "..", no leading dot (hidden files), no ':'
   // (FAT drive-letter/ADS quirks). This is THE traversal gate.
-  static bool validSegment(const std::string& s, size_t maxLen);
+  // (string_view params: entry fields are WorkingStrings, callers pass std::string.)
+  static bool validSegment(std::string_view s, size_t maxLen);
 
   // "<project>/<name>" after validating both against these limits ("" on reject).
-  std::string relPath(const std::string& project, const std::string& name) const;
+  std::string relPath(std::string_view project, std::string_view name) const;
 
   // ---- mutations ----
   // Adds or REPLACES (same project+name). Enforces segment safety + all quotas.
@@ -104,8 +136,9 @@ class FileStore {
   // by writing the same path.
   bool ownedBy(const FileEntry& e, const std::string& ns, bool owner) const {
     if (owner) return true;                       // the device owner sees all
-    const std::string eff = e.owner.empty() ? std::string(kOwnerNs) : e.owner;
-    return eff == ns;
+    const std::string_view eff = e.owner.empty() ? std::string_view(kOwnerNs)
+                                                 : std::string_view(e.owner);
+    return eff == std::string_view(ns);
   }
   // READ visibility = own it, or it was explicitly shared. Sharing never grants
   // write: only the owner (or an admin) may replace or delete a shared file.
@@ -120,11 +153,26 @@ class FileStore {
   // the write like the vector one.
   uint32_t bytesFor(const std::string& ns) const {
     uint32_t n = 0;
+    const std::string_view nsv(ns);
     for (const auto& e : entries_) {
-      const std::string eff = e.owner.empty() ? std::string(kOwnerNs) : e.owner;
-      if (eff == ns) n += e.bytes;
+      const std::string_view eff = e.owner.empty() ? std::string_view(kOwnerNs)
+                                                   : std::string_view(e.owner);
+      if (eff == nsv) n += e.bytes;
     }
     return n;
+  }
+  // This sender's stored file in `project` with exactly these bytes (nullptr = none; a
+  // hash of 0 is "unknown" and matches nothing). A photo received twice stays one file,
+  // so a re-sent album does not eat the sender's limit.
+  const FileEntry* sameContent(std::string_view project, uint64_t hash, const std::string& ns) const {
+    if (!hash) return nullptr;
+    const std::string_view nsv(ns);
+    for (const auto& e : entries_) {
+      const bool mine = e.owner.empty() ? nsv == std::string_view(kOwnerNs)
+                                        : std::string_view(e.owner) == nsv;
+      if (e.hash == hash && std::string_view(e.project) == project && mine) return &e;
+    }
+    return nullptr;
   }
   // Refuse a write that would overwrite an entry the caller does not own, or create
   // another person's food ledger (lane CTX: a member could otherwise create the
@@ -137,15 +185,31 @@ class FileStore {
   }
 
   bool add(const FileEntry& e, std::string& err);
-  bool remove(const std::string& project, const std::string& name);
+  bool remove(std::string_view project, std::string_view name);
   // Cache a provider file id on an existing entry (A4).
-  bool setProviderId(const std::string& project, const std::string& name,
+  bool setProviderId(std::string_view project, std::string_view name,
                      const std::string& tag, const std::string& id);
 
   // ---- queries ----
-  const FileEntry* find(const std::string& project, const std::string& name) const;
+  const FileEntry* find(std::string_view project, std::string_view name) const;
   // All entries, or one project's ("" = all). Pointers valid until next mutation.
-  std::vector<const FileEntry*> list(const std::string& project = "") const;
+  // Internal scans use this; per-call surfaces (web listing, tools) use listPage
+  // so one call never materializes the whole index.
+  std::vector<const FileEntry*> list(std::string_view project = "") const;
+  // Bounded per-call listing: at most `limit` entries starting at `offset`
+  // (0-based, over the same order list() returns; `limit` 0 = no cap). Lane
+  // FSCAP: listings stay bounded per call however large the index grows.
+  std::vector<const FileEntry*> listPage(std::string_view project, size_t offset,
+                                         size_t limit) const;
+  // The filter-aware total listPage pages over (O(n) time, O(1) memory) - the
+  // paging gate keys on this, not on the whole-store count, when a project
+  // filter is set.
+  size_t countMatching(std::string_view project) const {
+    size_t n = 0;
+    for (const auto& e : entries_)
+      if (project.empty() || std::string_view(e.project) == project) ++n;
+    return n;
+  }
   std::vector<std::string> projects() const;    // distinct project names, sorted
   size_t   count() const { return entries_.size(); }
   uint64_t totalBytes() const;
@@ -157,7 +221,7 @@ class FileStore {
 
   // Pre-check for STREAMING uploads: can `addBytes` more fit (per-file + total +
   // entry-count for a NEW name)? Refuse before the first chunk lands, not after.
-  bool wouldExceed(const std::string& project, const std::string& name,
+  bool wouldExceed(std::string_view project, std::string_view name,
                    uint64_t addBytes, std::string& err) const;
 
   // The two refusals that mean the store itself is full (out of entries, out of
@@ -173,19 +237,44 @@ class FileStore {
     return entries_.size() < lim_.maxEntries && totalBytes() < lim_.maxTotalBytes;
   }
 
+  // ---- regenerable copies (lane FSCAP eviction) ----
+  // True when `project` is a chat-attachment folder ("chat" or "chat-<chatId>"):
+  // the receive path stores inbound Telegram media there, and the Telegram
+  // archive keeps every received item (and Telegram can re-serve it by file id),
+  // so the stored copy is regenerable.
+  static bool isAttachmentProject(std::string_view p) {
+    return p == "chat" || p.rfind("chat-", 0) == 0;
+  }
+  // Is this entry a regenerable COPY rather than an original artifact? Only a
+  // chat-attachment copy is: its bytes exist in the Telegram archive. Anything
+  // outside the chat-attachment folders is someone's own file - the owner's
+  // uploads/reports, another principal's artifact - and is NEVER auto-evicted,
+  // even when a newer entry in the store holds the same content (review fix:
+  // the old same-hash rule evicted the owner's older duplicate, contradicting
+  // the reclaim notice and docs).
+  bool isRegenerableCopy(const FileEntry& e) const;
+  // Plan an eviction that frees at least `needBytes`: the oldest regenerable
+  // copies first (createdAt, then index order), until their bytes cover the need
+  // or they run out. Never includes an entry outside the chat-attachment
+  // folders. The caller removes the returned entries (bytes + index row) and
+  // re-checks wouldExceed.
+  std::vector<const FileEntry*> planEviction(uint64_t needBytes) const;
+
   // ---- persistence (device stores dump() as /mem/files/.index) ----
   // Versioned, line-oriented, tab-separated (names are segment-safe so no
   // escaping is needed - tabs/newlines are rejected by validSegment).
   std::string dump() const;
   // Tolerant: bad lines are skipped. Case-variant duplicate rows (a pre-fix,
   // case-sensitive index could hold two per one FAT file) collapse to the
-  // owner-controlled row; see load() in orch_file_store.cpp.
+  // owner-controlled row; see load() in orch_file_store.cpp. Lane FSCAP: load()
+  // keeps EVERY valid row whatever the entry limit says - an upgrade never loses
+  // a file; the limit gates new adds only.
   bool load(const std::string& blob);
 
  private:
-  int indexOf(const std::string& project, const std::string& name) const;
+  int indexOf(std::string_view project, std::string_view name) const;
   Limits lim_;
-  std::vector<FileEntry> entries_;
+  WorkingVector<FileEntry> entries_;   // rides the working-set allocator (PSRAM on device)
 };
 
 }  // namespace nimbus::orch

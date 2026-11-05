@@ -123,8 +123,8 @@ namespace orch {
   "confirms or corrects a save claim in the reply before the owner sees it; " \
   "one that is queued (embeddings down) or not stored is reported in the " \
   "next turn's MEMORY RESULTS. So 'I saved it' in the reply is a prediction " \
-  "- phrase it as intent ('I'll remember that') and confirm it a later turn, " \
-  "never as a completed fact this turn."
+  "- phrase it as intent ('I'll remember that'), never as a completed fact this " \
+  "turn, and never promise a confirmation: nothing is sent to the owner later about a write."
 #define ORCH_D_MEMQ \
   "Search strings for facts NOT already shown in RELEVANT MEMORIES; results " \
   "arrive next turn as MEMORY RESULTS."

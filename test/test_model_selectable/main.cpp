@@ -204,12 +204,68 @@ static void test_cold_start_without_a_store() {
   TEST_ASSERT_TRUE(modelSelectable("openai", "gpt-6-astra", PickRole::Any, se));   // cold-start list
 }
 
+// QW6 (CODEREVIEW voice-model-seams): a key whose list holds none of the provider's short
+// list families (an older or narrower account) still gets a short list, made of the rows the
+// store offers, so the prompt line and the picker never fall back to cold-start models the
+// one check then refuses. The parity class again, over lists the Oct 2026 fixtures do not
+// cover: for every direct provider, a list of ids the provider's own filter drops.
+static std::string listBody(const std::vector<std::pair<std::string, int>>& idsAndAge) {
+  std::string body = "{\"object\":\"list\",\"data\":[";
+  for (size_t i = 0; i < idsAndAge.size(); i++) {
+    if (i) body += ",";
+    body += "{\"id\":\"" + idsAndAge[i].first + "\",\"object\":\"model\",\"created\":" +
+            std::to_string(1700000000 - idsAndAge[i].second * 86400) + ",\"owned_by\":\"x\"}";
+  }
+  return body + "]}";
+}
+
+static void test_a_narrow_account_still_lists_what_the_store_offers() {
+  struct Row { const char* provider; std::vector<std::pair<std::string, int>> ids; };
+  const Row rows[] = {
+      {"openai", {{"gpt-4.1", 10}, {"gpt-4o", 20}, {"gpt-4o-mini", 30}, {"gpt-4-turbo", 40}}},
+      {"openai", {{"gpt-4o-2024-08-06", 5}}},                    // only a dated snapshot
+      {"anthropic", {{"claude-3-5-sonnet", 10}, {"claude-3-haiku", 20}}},
+      {"zai", {{"glm-4.5", 10}, {"glm-4-flash", 20}}},          // zai's filter is glm*, not a generation
+  };
+  for (const Row& row : rows) {
+    const std::string p = row.provider;
+    const std::string text = storeFrom(p, listBody(row.ids), kOct22);
+    ModelStoreMeta meta;
+    TEST_ASSERT_TRUE(parseModelStoreHeader(text, meta));
+    const SelectableSources src = sourcesFor(p, &text, kOct22);
+    const std::string shortList = effectiveModelChoices(p.c_str(), meta.choices);
+    TEST_ASSERT_FALSE_MESSAGE(meta.choices.empty(), (p + ": " + row.ids[0].first).c_str());   // not the cold start
+    TEST_ASSERT_TRUE_MESSAGE(choiceItems(shortList).size() >= 1, p.c_str());
+    for (const std::string& id : choiceItems(shortList)) {
+      const std::string tag = p + ": " + id;
+      TEST_ASSERT_TRUE_MESSAGE(modelSelectable(p, id, PickRole::Any, src), tag.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(agent::model_pick::allowed(p, id, PickRole::Head, src), tag.c_str());
+      // Every listed id is one the store holds (never a compiled cold-start name).
+      bool held = false;
+      forEachStoreRow(p, text, [&](const ModelInfo& m) { held = held || m.id == id; return true; });
+      TEST_ASSERT_TRUE_MESSAGE(held, tag.c_str());
+    }
+  }
+  // The strict filter still wins when it keeps something: a flagship-family row is listed
+  // alone, and an older chat model stays off the short list (it remains pickable by name).
+  const std::string mixed = storeFrom("openai", listBody({{"gpt-4o", 10}, {"gpt-5.6-sol", 20}}), kOct22);
+  ModelStoreMeta meta;
+  TEST_ASSERT_TRUE(parseModelStoreHeader(mixed, meta));
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6-sol", meta.choices.c_str());
+  // And a store that offers nothing keeps the cold start (no rows, nothing to list).
+  const std::string embeddingsOnly = storeFrom("openai", listBody({{"text-embedding-3-small", 10}}), kOct22);
+  ModelStoreMeta none;
+  TEST_ASSERT_TRUE(parseModelStoreHeader(embeddingsOnly, none));
+  TEST_ASSERT_TRUE(none.choices.empty());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_listed_id_passes_every_check);
   RUN_TEST(test_accepted_if_and_only_if_offered);
   RUN_TEST(test_refusals);
   RUN_TEST(test_cold_start_without_a_store);
+  RUN_TEST(test_a_narrow_account_still_lists_what_the_store_offers);
   UNITY_END();
   return 0;
 }

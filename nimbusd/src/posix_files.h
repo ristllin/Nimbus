@@ -11,6 +11,7 @@
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/provider_caps.h"  // LocalDate - the upsert's today
 #include "nimbus/orch/tool_registry.h"
+#include "nimbus/orch/turn_effects.h"  // kSaveReplacedNote: the save receipt
 #include "posix_fs.h"
 
 // posix_files - the daemon's files.* / artifact.save tool surface, disk-backed.
@@ -24,6 +25,14 @@
 // the firmware rejects it. This makes the multi-tool / tool-loop scenarios
 // exercise genuine persistence, and the artifacts survive a restart.
 namespace nimbusd {
+
+// The page's name for a photo attached in the chat: on its way to one turn, not a file the
+// owner keeps. The turn removes it once it has the bytes; one never sent is swept.
+constexpr const char* kChatPhotoProject = "chat";
+constexpr const char* kChatPhotoPrefix = "att-";
+inline bool isChatPhoto(std::string_view project, std::string_view name) {
+  return project == kChatPhotoProject && name.rfind(kChatPhotoPrefix, 0) == 0;
+}
 
 class PosixFiles {
  public:
@@ -55,17 +64,14 @@ class PosixFiles {
   void registerTools(nimbus::orch::ToolRegistry& reg) {
     addOwnerOnly(reg, "files.list",
             "List stored files. Optional 'project' narrows to one project. "
-            "Returns one 'project/name (N bytes)' per line.",
+            "Returns one 'project/name (N bytes)' per line. Lane FSCAP: the listing is "
+            "bounded per call - 'limit' (default 1000, max 2000) entries after "
+            "'offset'; the reply says how many there are in all.",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
-              const std::string proj = str(a, "project");
-              std::string out;
-              for (const auto* e : store_.list(proj))
-                out += e->project + "/" + e->name + " (" +
-                       std::to_string(e->bytes) + " bytes)\n";
-              return out.empty() ? nimbus::orch::ToolResult::ok("(no files)")
-                                 : nimbus::orch::ToolResult::ok(out);
+              return filesListTool(a);
             },
-            R"({"type":"object","properties":{"project":{"type":"string"}}})");
+            R"({"type":"object","properties":{"project":{"type":"string"},)"
+            R"("limit":{"type":"number"},"offset":{"type":"number"}}})");
 
     addOwnerOnly(reg, "artifact.save",
             "Save a text file under a project. Overwrites an existing file of the same name.",
@@ -73,10 +79,12 @@ class PosixFiles {
               const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text");
               if (p.empty() || n.empty())
                 return nimbus::orch::ToolResult::fail("need 'project' and 'name'");
-              std::string err;
-              if (!save(p, n, t, err)) return nimbus::orch::ToolResult::fail(err);
-              return nimbus::orch::ToolResult::ok("saved " + p + "/" + n + " (" +
-                                                  std::to_string(t.size()) + " bytes)");
+              std::string err = nimbus::orch::secondFoodLogRefusal(p, n, true, std::string());
+              const bool replacing = store_.find(p, n) != nullptr;
+              if (!err.empty() || !save(p, n, t, err)) return nimbus::orch::ToolResult::fail(err);
+              return nimbus::orch::ToolResult::ok("saved " + p + "/" + n + " (" + std::to_string(t.size()) + " bytes)" +
+                                                  (replacing ? std::string(", ") + nimbus::orch::kSaveReplacedNote
+                                                             : std::string()));
             },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"},"text":{"type":"string"}},)"
@@ -84,18 +92,11 @@ class PosixFiles {
 
     addOwnerOnly(reg, "files.read",
             "Read a stored file's contents. Pass 'tail' (a row count) to read only the "
-            "last rows of a log or CSV.",
-            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
-              const std::string p = str(a, "project"), n = str(a, "name");
-              std::string body;
-              if (!read(p, n, body))
-                return nimbus::orch::ToolResult::fail("no such file: " + p + "/" + n);
-              if (a["tail"].is<float>() && a["tail"].as<double>() >= 1)
-                return nimbus::orch::ToolResult::ok(tailOf(n, body, (size_t)a["tail"].as<double>()));
-              return nimbus::orch::ToolResult::ok(body);
-            },
+            "last rows of a log or CSV; with 'sum' (a numeric column) the tail also "
+            "reports that column's total for today.",
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) { return readTool(a); },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
-            R"("name":{"type":"string"},"tail":{"type":"number"}},"required":["project","name"]})");
+            R"("name":{"type":"string"},"tail":{"type":"number"},"sum":{"type":"string"}},"required":["project","name"]})");
 
     // The device's files.append (file_append.h): the new rows go on the end of the
     // file; nothing stored is rewritten. With 'key' it is the keyed CSV upsert
@@ -112,20 +113,68 @@ class PosixFiles {
                                 key = str(a, "key"), sum = str(a, "sum");
               if (p.empty() || n.empty())
                 return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
-              if (!key.empty()) {
-                UpsertOut out;
-                if (!upsert(p, n, t, key, sum, out))
-                  return nimbus::orch::ToolResult::fail(out.err);
-                return nimbus::orch::ToolResult::ok(out.note);
-              }
-              std::string err, note;
-              if (!append(p, n, t, err, note)) return nimbus::orch::ToolResult::fail(err);
-              return nimbus::orch::ToolResult::ok(note);
+              return appendTool(p, n, t, key, sum);
             },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"},"text":{"type":"string"},)"
             R"("key":{"type":"string"},"sum":{"type":"string"}},)"
             R"("required":["project","name","text"]})");
+
+    addOwnerOnly(reg, "files.delete",
+            "Delete a stored file for good: the bytes and the index entry both go. "
+            "Pass 'project' and 'name'.",
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+              const std::string p = str(a, "project"), n = str(a, "name");
+              if (p.empty() || n.empty())
+                return nimbus::orch::ToolResult::fail("need 'project' and 'name'");
+              if (!nimbus::orch::FileStore::validSegment(p, 24) ||
+                  !nimbus::orch::FileStore::validSegment(n, 48))
+                return nimbus::orch::ToolResult::fail("invalid project or name");
+              if (!remove(p, n))
+                return nimbus::orch::ToolResult::fail("no such file: " + p + "/" + n);
+              return nimbus::orch::ToolResult::ok("deleted " + p + "/" + n);
+            },
+            R"({"type":"object","properties":{"project":{"type":"string"},)"
+            R"("name":{"type":"string"}},)"
+            R"("required":["project","name"]})");
+  }
+
+  // files.list, paged (lane FSCAP): at most `limit` entries after `offset`; the
+  // reply says the total when the page does not cover it.
+  nimbus::orch::ToolResult filesListTool(ArduinoJson::JsonObjectConst a) {
+    const std::string proj = str(a, "project");
+    size_t limit = a["limit"].is<double>() ? (size_t)a["limit"].as<double>() : 0;
+    size_t offset = a["offset"].is<double>() ? (size_t)a["offset"].as<double>() : 0;
+    if (limit == 0 || limit > kListPageMax) limit = kListPageDefault;
+    std::string out;
+    size_t shown = 0;
+    for (size_t base = offset; shown < limit; base += kListPageChunk) {
+      const auto page = store_.listPage(proj, base, kListPageChunk);
+      if (page.empty()) break;
+      for (const auto* e : page) {
+        if (shown >= limit) break;
+        out += nimbus::orch::plainCopy(e->project) + "/" + nimbus::orch::plainCopy(e->name) +
+               " (" + std::to_string(e->bytes) + " bytes)\n";
+        ++shown;
+      }
+    }
+    if (out.empty()) return nimbus::orch::ToolResult::ok("(no files)");
+    const size_t total = store_.countMatching(proj);   // the filter-aware total the page keys on
+    if (shown < total)
+      out = "(showing " + std::to_string(shown) + " of " + std::to_string(total) +
+            " files; pass offset to page)\n" + out;
+    return nimbus::orch::ToolResult::ok(out);
+  }
+
+  // files.read: the text of a stored file, or the rule's refusal (file_store.h).
+  nimbus::orch::ToolResult readTool(ArduinoJson::JsonObjectConst a) {
+    const std::string p = str(a, "project"), n = str(a, "name");
+    std::string body;
+    if (!read(p, n, body)) return nimbus::orch::ToolResult::fail("no such file: " + p + "/" + n);
+    if (!nimbus::orch::fileReadableAsText(n, body)) return nimbus::orch::ToolResult::fail(nimbus::orch::kNotTextRefusal);
+    if (a["tail"].is<float>() && a["tail"].as<double>() >= 1)
+      return nimbus::orch::ToolResult::ok(tailWithTotal(n, body, a));
+    return nimbus::orch::ToolResult::ok(body);
   }
 
   // ---- direct access (scenario seeding + assertions) ----
@@ -149,18 +198,55 @@ class PosixFiles {
   }
   size_t count() const { return store_.count(); }
   uint64_t totalBytes() const { return store_.totalBytes(); }
+  // Lane FSCAP: the byte quota is the store's real space limit (the entry count
+  // is uncapped by default); the daemon config / tests set it here, as the device
+  // sets it from the real card size at mount.
+  void setLimits(const nimbus::orch::FileStore::Limits& l) { store_.setLimits(l); }
+  const nimbus::orch::FileStore& store() const { return store_; }
+
+  // Files that look like the owner's food or weight plan (food_ledger.h), newest first.
+  std::vector<std::string> foodPlanFiles() const {
+    std::vector<const nimbus::orch::FileEntry*> found;
+    for (const auto* e : store_.list(std::string()))
+      if (nimbus::orch::looksLikeFoodPlan(nimbus::orch::plainCopy(e->project),
+                                         nimbus::orch::plainCopy(e->name)))
+        found.push_back(e);
+    std::sort(found.begin(), found.end(), [](const nimbus::orch::FileEntry* a, const nimbus::orch::FileEntry* b) {
+      return a->createdAt > b->createdAt;
+    });
+    std::vector<std::string> out;
+    for (const auto* e : found)
+      if (out.size() < nimbus::orch::kMaxPlanFiles)
+        out.push_back(nimbus::orch::plainCopy(e->project) + "/" + nimbus::orch::plainCopy(e->name));
+    return out;
+  }
 
   // ---- the web app's Files panel (device /api/files/*, CUM-543) ----
   // The listing in the device's shape (web_files.cpp + files_subsystem listJson).
-  void listInto(JsonArray arr, const std::string& project) const {
-    for (const auto* e : store_.list(project)) {
-      JsonObject o = arr.add<JsonObject>();
-      o["project"] = e->project;
-      o["name"] = e->name;
-      o["bytes"] = e->bytes;
-      o["kind"] = nimbus::orch::fileKindName(e->kind);
-      o["createdAt"] = e->createdAt;
+  // Lane FSCAP: bounded per call - at most `limit` entries after `offset`
+  // (0/0 = the default page); the payload's count says the total.
+  static constexpr size_t kListPageDefault = 1000;
+  static constexpr size_t kListPageMax = 2000;
+  static constexpr size_t kListPageChunk = 512;
+  size_t listInto(JsonArray arr, const std::string& project, size_t limit = 0,
+                  size_t offset = 0) const {
+    if (limit == 0 || limit > kListPageMax) limit = kListPageDefault;
+    size_t shown = 0;
+    for (size_t base = offset; shown < limit; base += kListPageChunk) {
+      const auto page = store_.listPage(project, base, kListPageChunk);
+      if (page.empty()) break;
+      for (const auto* e : page) {
+        if (shown >= limit) break;
+        JsonObject o = arr.add<JsonObject>();
+        o["project"] = nimbus::orch::plainCopy(e->project);
+        o["name"] = nimbus::orch::plainCopy(e->name);
+        o["bytes"] = e->bytes;
+        o["kind"] = nimbus::orch::fileKindName(e->kind);
+        o["createdAt"] = e->createdAt;
+        ++shown;
+      }
     }
+    return shown;
   }
   // Store an uploaded file (any bytes) under the same traversal gate as the tools.
   bool put(const std::string& p, const std::string& n, const std::string& bytes, std::string& err) {
@@ -174,10 +260,19 @@ class PosixFiles {
     fsutil::writeFileAtomic(indexPath(), store_.dump());
     return true;
   }
+  // Chat photos no turn ever took (the page closed before the message went): gone after
+  // a day. `now` is epoch seconds. Runs on each chat photo's upload.
+  void sweepChatPhotos(uint32_t now) {
+    std::vector<std::string> stale;
+    for (const auto* e : store_.list(kChatPhotoProject))
+      if (isChatPhoto(kChatPhotoProject, e->name) && now - e->createdAt > 86400u)
+        stale.push_back(nimbus::orch::plainCopy(e->name));
+    for (const auto& n : stale) remove(kChatPhotoProject, n);
+  }
   // Delete every file in a project; -1 when the project holds none.
   int removeProject(const std::string& p) {
     std::vector<std::string> names;
-    for (const auto* e : store_.list(p)) names.push_back(e->name);
+    for (const auto* e : store_.list(p)) names.push_back(nimbus::orch::plainCopy(e->name));
     if (p.empty() || names.empty()) return -1;
     for (const auto& n : names) remove(p, n);
     ::rmdir((root_ + "/" + p).c_str());
@@ -190,10 +285,51 @@ class PosixFiles {
     return root_ + "/" + p + "/" + n;
   }
 
+  // Lane FSCAP: evict the oldest regenerable copies (chat-attachment copies only -
+  // never an owner artifact or any other project's file) until `addBytes` fits
+  // under the byte quota, mirroring the device's reclaimRoomLocked. Returns true
+  // when anything was reclaimed; the caller re-checks wouldExceed afterwards.
+  bool reclaimRoom(const std::string& p, const std::string& n, uint64_t addBytes) {
+    const nimbus::orch::FileEntry* cur = store_.find(p, n);
+    const uint64_t replaced = cur ? cur->bytes : 0;
+    const uint64_t total = store_.totalBytes();
+    const uint64_t quota = store_.limits().maxTotalBytes;
+    const uint64_t over = total - replaced + addBytes;
+    if (over <= quota) return false;
+    const auto plan = store_.planEviction(over - quota);
+    if (plan.empty()) return false;
+    uint64_t cover = 0;
+    for (const auto* e : plan) cover += e->bytes;
+    if (cover < over - quota) return false;   // the copies cannot cover the need: evicting them would lose data for a save that still refuses
+    // Copy the identities FIRST: remove() erases from the index vector and shifts
+    // the rest, so a plan pointer read after a remove names the wrong entry.
+    struct Victim { std::string project, name; };
+    std::vector<Victim> victims;
+    victims.reserve(plan.size());
+    for (const auto* e : plan)
+      victims.push_back(Victim{nimbus::orch::plainCopy(e->project), nimbus::orch::plainCopy(e->name)});
+    for (const auto& v : victims) {
+      ::unlink(bytesPath(v.project, v.name).c_str());
+      store_.remove(v.project, v.name);
+    }
+    fsutil::writeFileAtomic(indexPath(), store_.dump());
+    return true;
+  }
+
+  // Room for `addBytes` more under the byte quota, reclaiming regenerable copies
+  // first when the quota is the blocker (lane FSCAP). save/append/upsert share it.
+  bool roomFor(const std::string& p, const std::string& n, uint64_t addBytes, std::string& err) {
+    if (!store_.wouldExceed(p, n, addBytes, err)) return true;
+    if (err == nimbus::orch::FileStore::kErrStoreFull) reclaimRoom(p, n, addBytes);
+    return !store_.wouldExceed(p, n, addBytes, err);
+  }
+
   // The store's limits are checked BEFORE the first byte lands: a refused file
   // (past the entry or byte cap) must leave nothing on the volume, since the index
   // is what the Files panel lists and deletes by, and an unindexed file could never
-  // be seen or reclaimed from the app.
+  // be seen or reclaimed from the app. Lane FSCAP: when the BYTE quota is the
+  // blocker, the oldest regenerable copies (chat-attachment copies only) are
+  // evicted first so the save lands; owner artifacts are never evicted.
   bool save(const std::string& p, const std::string& n, const std::string& text,
             std::string& err) {
     if (!nimbus::orch::FileStore::validSegment(p, 24) ||
@@ -201,7 +337,7 @@ class PosixFiles {
       err = "invalid project or name";
       return false;
     }
-    if (store_.wouldExceed(p, n, text.size(), err)) return false;
+    if (!roomFor(p, n, text.size(), err)) return false;
     const bool replacing = store_.find(p, n) != nullptr;
     if (!fsutil::writeFileAtomic(bytesPath(p, n), text)) {
       err = "write failed";
@@ -232,12 +368,13 @@ class PosixFiles {
     const nimbus::orch::FileEntry* old = store_.find(p, n);
     if (old) read(p, n, cur);
     const nimbus::orch::AppendPlan plan =
-        nimbus::orch::planAppend(text, cur.size(), cur.empty() ? '\0' : cur.back());
+        nimbus::orch::planAppend(text, cur.size(), cur.empty() ? '\0' : cur.back(),
+                                 cur.empty() && nimbus::orch::isCsvName(n));   // the device's create rule
     if (!plan.ok) {
       err = plan.err;
       return false;
     }
-    if (store_.wouldExceed(p, n, cur.size() + plan.bytes.size(), err)) return false;
+    if (!roomFor(p, n, cur.size() + plan.bytes.size(), err)) return false;
     ::mkdir((root_ + "/" + p).c_str(), 0755);
     FILE* f = std::fopen(bytesPath(p, n).c_str(), "ab");
     if (!f) {
@@ -296,7 +433,7 @@ class PosixFiles {
       return false;
     }
     if (up.changed) {
-      if (store_.wouldExceed(p, n, up.out.size(), out.err)) return false;
+      if (!roomFor(p, n, up.out.size(), out.err)) return false;
       if (!fsutil::writeFileAtomic(bytesPath(p, n), up.out)) {
         out.err = "write failed";
         return false;
@@ -313,15 +450,33 @@ class PosixFiles {
       if (!store_.add(e, out.err)) return false;
       fsutil::writeFileAtomic(indexPath(), store_.dump());
     }
-    out.note = "updated " + std::to_string(up.replaced) +
-               (up.replaced == 1 ? " row" : " rows") + ", appended " +
-               std::to_string(up.appended) + (up.appended == 1 ? " row" : " rows") + " in " + p + "/" + n;
-    if (up.hasTotal) {
-      char tot[32];
-      std::snprintf(tot, sizeof tot, "%g", up.todayTotal);
-      out.note += "; today's " + sum + ": " + tot;
-    }
+    // The device's own reply, word for word: the claim check reads it (turn_effects).
+    out.note = nimbus::orch::renderUpsertReply(up, p + "/" + n, sum,
+                                               nimbus::orch::logDayOf(time(nullptr), true).zone);
     return true;
+  }
+
+  // files.append: the one food log first, then the keyed upsert or a plain append.
+  nimbus::orch::ToolResult appendTool(const std::string& p, const std::string& n, const std::string& t,
+                                      const std::string& key, const std::string& sum) {
+    const std::string second = nimbus::orch::secondFoodLogRefusal(p, n, true, std::string());
+    if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
+    if (!key.empty()) {
+      UpsertOut out;
+      if (!upsert(p, n, t, key, sum, out)) return nimbus::orch::ToolResult::fail(out.err);
+      return nimbus::orch::ToolResult::ok(out.note);
+    }
+    std::string err, note;
+    if (!append(p, n, t, err, note)) return nimbus::orch::ToolResult::fail(err);
+    return nimbus::orch::ToolResult::ok(note);
+  }
+
+  // files.read {tail, sum}: the tail view, and the day's total when a sum column is named.
+  std::string tailWithTotal(const std::string& n, const std::string& body, ArduinoJson::JsonObjectConst a) {
+    std::string text = tailOf(n, body, (size_t)a["tail"].as<double>());
+    const std::string sum = str(a, "sum");
+    if (!sum.empty()) text += nimbus::orch::csvDayTotalLine(body, sum, todayStr(), nimbus::orch::logDayOf(time(nullptr), true).zone);
+    return text;
   }
 
   // The tail view over a whole body (the device reads only the window; on disk the

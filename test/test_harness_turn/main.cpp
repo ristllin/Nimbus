@@ -1,6 +1,6 @@
 #include <unity.h>
 
-#include "nimbus/orch/head_switch.h"   // parkPause
+#include "nimbus/orch/head_switch.h"   // parkPause, headPauseIn: the closed head as the device reads it
 
 #include "nimbus/orch/router_route.h"   // headRunsToolLoop
 
@@ -13,6 +13,8 @@
 #include "nimbus/harness/prompt_layout.h"   // the static/summary/per-turn split
 
 #include <map>
+#include <set>
+#include <array>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -34,6 +36,7 @@
 #include "nimbus/orch/model_defaults.h"
 #include "nimbus/orch/spend_ceiling.h"
 #include "nimbus/orch/billing_refusal.h"   // the one-notice-per-episode latch
+#include "nimbus/orch/provider_park.h"     // the pause the owner's provider limits set
 #include "nimbus/orch/spawn_claim.h"
 #include "nimbus/harness/turn_anatomy.h"    // the /api/lastturn head
 #include "nimbus/orch/budget.h"
@@ -97,7 +100,13 @@ struct Rig {
   };
   std::vector<Attempt> attempts;
   std::vector<orch::HeadToolResult> toolResults;
+  // Lane POL2: every openqObserve call the engine made (chat, owner text, reply).
+  std::vector<std::array<std::string, 3>> openqObserveCalls;
   std::vector<std::string> finalChecks;   // what HeadTools.cfg.validateFinal said (checkFinal)
+  // Lane POL2: what HeadTools.cfg.validateProseFinal said about a prose leak, per
+  // loop turn (the fake provider bypasses the real loop, so the loop-level behavior
+  // is covered in test_orch_head_loop; this asserts the engine wires the hook).
+  std::vector<std::string> proseChecks;
   std::vector<std::pair<std::string, std::string>> assistantRows;   // ApplyDeps.captureAssistant: (chat, text)
   std::vector<std::string> assistantRowTags;   // lane I: each captured row's engine tags
   std::function<void()> onProviderCall;   // in-turn hook (stuck-turn reaper test)
@@ -127,6 +136,10 @@ struct Rig {
   std::string fabricStart;
   std::string fabricLead;
   std::string fabricInstructions;
+  // QW6: with fabricStart empty, start where the real fabric does (runFabricLoop's
+  // nextUnparked: the first listed host the park leaves open); fabricStarted records it.
+  bool fabricSkipsParked = false;
+  std::string fabricStarted;
   std::function<orch::HeadPause(const std::string&)> headPause;   // ApplyDeps.headPause
   std::function<orch::HeadPause(const std::string&)> spawnPause;  // TurnEngine::Deps.spawnPause
   std::function<bool(const std::string&)> headRunsTools;          // TurnEngine::Deps.headRunsTools
@@ -280,6 +293,13 @@ struct Rig {
                                    const std::string& f) {
       captured.push_back({c, t, f});
     };
+    // Lane POL2: record every openqObserve call so tests can assert which turns
+    // the observer saw (attended owner turns only, engine.cpp).
+    d.openqObserve = [this](const std::string& chat, const std::string& ownerText,
+                            const std::string& reply) {
+      openqObserveCalls.push_back({chat, ownerText, reply});
+      return std::string();
+    };
     d.firstAllowedChat = [] { return std::string("1001"); };
     d.journalGc = [this] { journalGcs++; };
     d.hooks.onTurnDebug = [this](const agent::TurnDebugEv& ev) {
@@ -430,6 +450,13 @@ struct Rig {
                                                    : std::string("<no check>"));
   }
 
+  // Lane POL2: what HeadTools.cfg.validateProseFinal says about a prose leak.
+  void recordProseCheck(const agent::HeadTools* tools) {
+    if (!tools || !tools->cfg.validateProseFinal) return;
+    proseChecks.push_back(tools->cfg.validateProseFinal(
+        "Pat, you have a blue Brompton - I saved it to memory (recall m0a811a23)."));
+  }
+
   // Lane L: a failed attempt that still hands back its (cut) turn.
   static void keepPartial(const Script& s, std::string& out) {
     if (s.partialOnFail) out = s.outJson;
@@ -463,6 +490,16 @@ struct Rig {
     return fabricOk;
   }
 
+  // The host a scripted fabric run starts on: fabricStart when set, else (fabricSkipsParked)
+  // the first listed host the park leaves open, as runFabricLoop does, else the first listed.
+  std::string fabricStartIn(const std::vector<std::string>& hl) {
+    if (!fabricStart.empty()) return fabricStart;
+    if (fabricSkipsParked)
+      for (const std::string& h : hl)
+        if (!agent::providers::hostParked(parkDeps, h, nullptr)) return h;
+    return hl[0];
+  }
+
   // Like providers::runFabricLoop: each host bills into its own counter, filed into
   // the spend table under the model configured for it.
   bool fabricRun(const std::vector<std::string>& hl, std::string& out, std::string& err,
@@ -480,7 +517,8 @@ struct Rig {
       toolResults.push_back(ht.dispatch(c));
     }
     if (!fabricVisits.empty()) return fabricVisitsRun(hl, out, err, ht, spend, notify);
-    const std::string& start = fabricStart.empty() ? hl[0] : fabricStart;
+    const std::string start = fabricStartIn(hl);
+    fabricStarted = start;
     fabricLead = ht.inputLead ? ht.inputLead(start) : std::string();
     if (start != hl[0]) {   // started past a paused head: the real fabric notifies the move
       if (notify) notify(hl[0], start);
@@ -534,6 +572,7 @@ struct Rig {
         }
       }
       recordFinalCheck(tools, s);
+      recordProseCheck(tools);
       if (onProviderCall) onProviderCall();
       // Like the adapters: the echo is captured on the HTTP 200, before the turn is
       // known to parse, so a failed attempt can carry one too.
@@ -1068,6 +1107,19 @@ static void test_the_per_turn_input_names_the_model_this_turn_runs_on() {
         "[THIS TURN RUNS ON] anthropic / claude-haiku-5-5. When asked which model you run, name this one only.\ninputs",
         r.attempts[0].inputs.c_str());
   }
+  {
+    Rig r;   // QW6: a Mistral alias no list resolves yet - the line says so and forbids a guessed version
+    nimbus::orch::installServedModelResolver(nullptr);
+    nimbus::orch::clearServedModels();
+    r.cfg.orchHost = "mistral";
+    r.cfg.orchModels["mistral"] = "mistral-large-latest";
+    r.eng->runTurn("inputs", "1001", "");
+    TEST_ASSERT_EQUAL_STRING(("[THIS TURN RUNS ON] mistral / mistral-large-latest. " +
+                              std::string(nimbus::orch::kRunsOnAliasNote) +
+                              " When asked which model you run, name this one only.\ninputs")
+                                 .c_str(),
+                             r.attempts[0].inputs.c_str());
+  }
   nimbus::orch::installServedModelResolver(nullptr);
   nimbus::orch::clearServedModels();
 }
@@ -1487,6 +1539,31 @@ static void test_cum530_router_refusal_notice_is_never_unavailable() {
   n.scripts["cumulo"] = {{false, "", "network", 0, "", 0, 0}};
   n.eng->runTurn("inputs", "1001", "");
   TEST_ASSERT_TRUE(n.anyDelivered("cumulo is unavailable - switching to openai"));
+}
+
+// ---- lane CLAMP: a Cumulo-only client and the clamp ----------------------------
+// The welcome wallet's clamp (insufficient_credits_for_call): the capped resend is
+// the wire's (test_router_refusal_contract). When the resend is refused too, a client
+// with no other key hears the clamp's own cause - never "add credits" while the wallet
+// holds credits, never an out-of-credit failover, and nothing parks.
+static void test_a_cumulo_only_client_hears_the_clamp_not_add_credits() {
+  Rig r;
+  r.cfg.keyed.clear();                    // no BYOK head: the router key is everything
+  r.cfg.routerKeyed = true;
+  r.cfg.routerHost = "cumulo";
+  r.scripts["cumulo"] = {{false, "",
+                          "the Cumulo router says this request is larger than the remaining "
+                          "credits allow",
+                          0, "", 0, 0}};
+  TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());   // no other host to fail over to
+  TEST_ASSERT_TRUE(r.anyDelivered("That didn't finish - the Cumulo router says this request "
+                                   "is larger than the remaining credits allow"));
+  TEST_ASSERT_FALSE(r.anyDelivered("Add credit"));
+  TEST_ASSERT_FALSE(r.anyDelivered("out of credit"));
+  TEST_ASSERT_FALSE(r.anyDelivered("switching to"));
+  orch::ParkEntry parks[orch::ProviderPark::kMaxProviders];
+  TEST_ASSERT_EQUAL(0, (int)orch::providerPark().snapshot(parks, orch::ProviderPark::kMaxProviders, 0));
 }
 
 // ---- (5) NO retry after a tool dispatched -----------------------------------
@@ -1990,6 +2067,251 @@ static void test_head_host_is_the_host_the_turn_runs_on() {
   }
 }
 
+// ---- QW6 on HFM's per-turn line: the identity follows the dispatch ---------------------------
+
+static size_t countOf(const std::string& hay, const std::string& needle);
+
+// The first request's input on the path the turn took: the fabric's seeded lead, or the
+// single-shot attempt's input.
+static std::string firstInput(Rig& r, bool fabric) {
+  if (fabric) return r.fabricLead;
+  TEST_ASSERT_FALSE_MESSAGE(r.attempts.empty(), "the turn made no request");
+  return r.attempts.back().inputs;
+}
+static std::string startedOn(Rig& r, bool fabric) {
+  if (fabric) return r.fabricStarted;
+  TEST_ASSERT_FALSE_MESSAGE(r.attempts.empty(), "the turn made no request");
+  return r.attempts.back().host;
+}
+static bool startsWith(const std::string& s, const std::string& lead) { return s.rfind(lead, 0) == 0; }
+static const char kOnlyThis[] = " When asked which model you run, name this one only.\n";
+static const char kSayWhy[] =
+    " When asked which model you run, name this one and say why the chosen head is not running this turn.\n";
+
+// The cached prompt carries no model claim of any shape (v4.6.1): not the line, not the old
+// static identity sentence, not the old catalog line, not the chosen-head fact.
+static void assertNoModelClaim(const std::string& instructions, const char* tag) {
+  for (const char* claim : {"THIS TURN RUNS ON", "Your brain right now", "[YOUR MODEL]", "the chosen head", "That is an alias"})
+    TEST_ASSERT_TRUE_MESSAGE(instructions.find(claim) == std::string::npos, tag);
+}
+
+// QW6 (25 Oct: the owner asked "what model are you running?" and the prompt named the raw pin):
+// on every device shape where the raw pin or first priority token is not the head the turn runs
+// on, the request's line names the host it really goes to, and nothing else names a model.
+static void test_the_per_turn_line_names_the_resolved_head_on_every_device_shape() {
+  struct Row { const char* what; std::set<std::string> keyed; std::string router, pin, priority; };
+  const Row rows[] = {
+      {"pinned host lost its key", {"anthropic"}, "", "openai", "openai,anthropic,mistral"},
+      {"default priority, anthropic only", {"anthropic"}, "", "", "openai,anthropic,mistral"},
+      {"Cumulo only", {}, "cumulo", "", "openai,anthropic,mistral"},
+      {"Z.ai only", {}, "zai", "", "openai,anthropic,mistral"},
+      {"keyed pin", {"openai", "anthropic"}, "cumulo", "anthropic", "openai,anthropic,mistral"},
+  };
+  for (const Row& row : rows) {
+    nimbus::orch::clearServedModels();
+    Rig r;
+    r.cfg.keyed = row.keyed;
+    r.cfg.routerKeyed = !row.router.empty();
+    r.cfg.routerHost = row.router;
+    r.cfg.orchHost = row.pin;
+    r.cfg.priority = row.priority;
+    const std::string ran = r.eng->headHost();
+    r.eng->handleMessage("what model are you running?", "Roy", "web");
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.attempts.size(), row.what);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(ran.c_str(), r.attempts[0].host.c_str(), row.what);
+    TEST_ASSERT_TRUE_MESSAGE(
+        startsWith(r.attempts[0].inputs, "[THIS TURN RUNS ON] " + ran + " / model-" + ran + "." + kOnlyThis),
+        row.what);
+    assertNoModelClaim(r.attempts[0].instructions, row.what);
+  }
+}
+
+// QW6: a head parked for credit (the real park lane K writes, read the way the device reads it:
+// headPauseIn, Chat) - every request names the open host the DISPATCH starts on and says once why the
+// chosen head is not running, on the single-shot path and on the fabric, until the head answers
+// again. The fabric drives only anthropic, openai and mistral, so with Z.ai second in priority the
+// same park starts a single-shot turn on zai but a fabric turn on openai: the line follows each.
+static void test_the_per_turn_line_names_the_open_host_while_the_head_is_parked() {
+  struct Row { const char* what; std::string priority, head, headLabel; std::set<std::string> extraKeyed; };
+  const Row rows[] = {
+      {"default order", "anthropic,openai,mistral", "anthropic", "Anthropic", {}},
+      {"a host the fabric cannot drive comes second", "mistral,zai,openai,anthropic", "mistral", "Mistral", {"zai"}},
+  };
+  for (const Row& row : rows)
+    for (int fabric = 0; fabric < 2; fabric++) {
+      nimbus::orch::clearServedModels();
+      Rig r;
+      r.cfg.toolLoop = fabric != 0;
+      r.cfg.midFail = fabric != 0;
+      r.fabricSkipsParked = true;
+      r.headPause = [&r](const std::string& h) {
+        return orch::headPauseIn(orch::providerPark(), h, orch::PaidSeam::Chat, r.plat.ms, /*dueIsOpen=*/false);
+      };
+      r.cfg.priority = row.priority;
+      for (const std::string& k : row.extraKeyed) r.cfg.keyed.insert(k);
+      const std::string tag = std::string(row.what) + (fabric ? ", fabric" : ", single shot");
+      const std::string head = r.eng->headHost();
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(row.head.c_str(), head.c_str(), tag.c_str());
+      r.eng->handleMessage("hi", "Roy", "1001");   // the head is open: it alone is named
+      TEST_ASSERT_TRUE_MESSAGE(
+          startsWith(firstInput(r, fabric != 0), "[THIS TURN RUNS ON] " + head + " / model-" + head + "." + kOnlyThis),
+          tag.c_str());
+      agent::providers::noteHostFailed(r.parkDeps, head, orch::StepErr::Billing, 402);
+      TEST_ASSERT_TRUE(agent::providers::hostParked(r.parkDeps, head, nullptr));
+      r.attempts.clear();
+      r.fabricCalls.clear();
+      r.eng->handleMessage("what model are you running?", "Roy", "1001");
+      const std::string ran = startedOn(r, fabric != 0);
+      TEST_ASSERT_TRUE_MESSAGE(ran != head, tag.c_str());   // the parked head is not asked
+      if (std::string(row.what) != "default order")   // the row that tells the two paths apart
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(fabric ? "openai" : "zai", ran.c_str(), tag.c_str());
+      const std::string want = "[THIS TURN RUNS ON] " + ran + " / model-" + ran + ". " + row.headLabel +
+                               ", the chosen head, is out of credit and returns automatically once credit is added." +
+                               kSayWhy;
+      const std::string in = firstInput(r, fabric != 0);
+      TEST_ASSERT_TRUE_MESSAGE(startsWith(in, want), (tag + ": " + in.substr(0, 300)).c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)countOf(in, "the chosen head,"), tag.c_str());
+      assertNoModelClaim(r.debug.back().instructions, tag.c_str());   // no model claim reaches the cache
+      // The head answers again: its park ends and the next request names it alone once more.
+      agent::providers::unparkHost(head);
+      r.attempts.clear();
+      r.eng->handleMessage("and now?", "Roy", "1001");
+      TEST_ASSERT_TRUE_MESSAGE(
+          startsWith(firstInput(r, fabric != 0), "[THIS TURN RUNS ON] " + head + " / model-" + head + "." + kOnlyThis),
+          tag.c_str());
+    }
+}
+
+// QW6 on HFC's wording: a head whose chat seam refused a request with HTTP 403 (one model or endpoint
+// the project may not use) is named with the 403 and comes back on the re-check, never "once its key
+// is replaced" - the line reads parkStatus through the same reader as the device.
+static void test_the_per_turn_line_names_a_403_head_with_its_recheck() {
+  for (int fabric = 0; fabric < 2; fabric++) {
+    const char* tag = fabric ? "fabric" : "single shot";
+    nimbus::orch::clearServedModels();
+    Rig r;
+    r.cfg.toolLoop = fabric != 0;
+    r.cfg.midFail = fabric != 0;
+    r.fabricSkipsParked = true;
+    r.headPause = [&r](const std::string& h) {
+      return orch::headPauseIn(orch::providerPark(), h, orch::PaidSeam::Chat, r.plat.ms, /*dueIsOpen=*/false);
+    };
+    agent::providers::noteHostFailed(r.parkDeps, "anthropic", orch::StepErr::Auth, 403);
+    TEST_ASSERT_TRUE(agent::providers::hostParked(r.parkDeps, "anthropic", nullptr));
+    r.eng->handleMessage("what model are you running?", "Roy", "1001");
+    const std::string ran = startedOn(r, fabric != 0);
+    TEST_ASSERT_TRUE_MESSAGE(ran != "anthropic", tag);
+    const std::string want = "[THIS TURN RUNS ON] " + ran + " / model-" + ran +
+                             ". Anthropic, the chosen head, refused a request (HTTP 403) and returns automatically "
+                             "when it is checked again." +
+                             kSayWhy;
+    const std::string in = firstInput(r, fabric != 0);
+    TEST_ASSERT_TRUE_MESSAGE(startsWith(in, want), (std::string(tag) + ": " + in.substr(0, 300)).c_str());
+    TEST_ASSERT_TRUE_MESSAGE(in.find("key is replaced") == std::string::npos, tag);
+    agent::providers::unparkHost("anthropic");
+  }
+}
+
+// QW6, production 26 Oct (Lumi v4.6.0): Anthropic and OpenAI frozen by the owner's caps, the turn
+// on mistral/mistral-medium, the reply "Running on anthropic / claude-opus-5". A head closed by a
+// cap (the token budget hook, or the pause the provider limits set on the park) is named only as
+// the chosen head with its reason, on both paths; the model it answered with earlier this boot
+// (HFM's served-model record) never rides along as the answering host's; when the cap lifts, the
+// head's line carries that recorded model again.
+struct LimitPause {
+  std::vector<std::string> hosts;
+  void on(const char* host) {
+    orch::providerPark().pause(host, orch::kPauseProviderLimit);
+    hosts.push_back(host);
+  }
+  void lift() {
+    for (const std::string& h : hosts) orch::providerPark().resume(h.c_str(), orch::kPauseProviderLimit);
+    hosts.clear();
+  }
+  ~LimitPause() { lift(); }
+};
+
+static void test_the_per_turn_line_names_the_open_host_while_the_head_is_capped() {
+  for (int how = 0; how < 2; how++)          // 0: the token-budget hook, 1: the provider-limit pause
+    for (int fabric = 0; fabric < 2; fabric++) {
+      const std::string tag = std::string(how ? "paused" : "over budget") + (fabric ? ", fabric" : ", single shot");
+      nimbus::orch::clearServedModels();
+      nimbus::orch::noteServedModel("anthropic", "claude-opus-5", "claude-opus-5-20260101");
+      Rig r;
+      r.cfg.toolLoop = fabric != 0;
+      r.cfg.midFail = fabric != 0;
+      r.fabricSkipsParked = true;
+      r.headPause = [&r](const std::string& h) {
+        return orch::headPauseIn(orch::providerPark(), h, orch::PaidSeam::Chat, r.plat.ms, /*dueIsOpen=*/false);
+      };
+      r.cfg.orchModels["anthropic"] = "claude-opus-5";
+      r.cfg.orchModels["mistral"] = "mistral-medium";
+      LimitPause pause;   // lifted when this round ends, even on a failed assert
+      if (how == 0) {
+        r.cfg.overBudgetHosts = {"anthropic", "openai"};
+      } else {
+        pause.on("anthropic");
+        pause.on("openai");
+      }
+      r.eng->handleMessage("What model are you running?", "Roy", "1001");
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("mistral", startedOn(r, fabric != 0).c_str(), tag.c_str());
+      const std::string why = how ? "is paused by the owner's monthly limit and returns automatically when it lifts."
+                                  : "is over its monthly budget and returns automatically when its budget resets.";
+      const std::string in = firstInput(r, fabric != 0);
+      TEST_ASSERT_TRUE_MESSAGE(
+          startsWith(in, "[THIS TURN RUNS ON] mistral / mistral-medium. Anthropic, the chosen head, " + why + kSayWhy),
+          (tag + ": " + in.substr(0, 300)).c_str());
+      TEST_ASSERT_TRUE_MESSAGE(in.find("claude-opus-5") == std::string::npos, tag.c_str());
+      const std::string& ins = r.debug.back().instructions;
+      assertNoModelClaim(ins, tag.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(ins.find("claude-opus-5") == std::string::npos, tag.c_str());
+      // The cap lifts: the head is named again, with the model it really answered with.
+      r.cfg.overBudgetHosts.clear();
+      pause.lift();
+      r.attempts.clear();
+      r.eng->handleMessage("And now?", "Roy", "1001");
+      TEST_ASSERT_TRUE_MESSAGE(startsWith(firstInput(r, fabric != 0),
+                                          std::string("[THIS TURN RUNS ON] anthropic / claude-opus-5-20260101 (asked for "
+                                                      "claude-opus-5).") +
+                                              kOnlyThis),
+                               tag.c_str());
+    }
+  nimbus::orch::clearServedModels();
+}
+
+// QW6R, on EFF's plain conversational turn (the shape most owner messages take): what the provider
+// answered with changes between two turns, and only the input may change. The cached prompt stays
+// byte for byte, the line carries the new id, and an unresolved "-latest" alias adds the no-guessing
+// note in the input alone.
+static void test_runtime_model_facts_change_the_input_and_never_the_cached_prompt() {
+  for (int fabric = 0; fabric < 2; fabric++) {
+    const char* tag = fabric ? "fabric" : "single shot";
+    nimbus::orch::clearServedModels();
+    Rig r;
+    r.cfg.toolLoop = fabric != 0;
+    r.cfg.midFail = fabric != 0;
+    r.cfg.orchModels["anthropic"] = "acme-large-latest";
+    r.eng->handleMessage("hi", "Roy", "1001");
+    TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("plain conversational turn"), tag);
+    const std::string aliasOnly = firstInput(r, fabric != 0);
+    TEST_ASSERT_TRUE_MESSAGE(startsWith(aliasOnly, std::string("[THIS TURN RUNS ON] anthropic / acme-large-latest. ") +
+                                                       nimbus::orch::kRunsOnAliasNote + kOnlyThis),
+                             (std::string(tag) + ": " + aliasOnly.substr(0, 200)).c_str());
+    const std::string first = r.debug.back().instructions;
+    assertNoModelClaim(first, tag);
+    nimbus::orch::noteServedModel("anthropic", "acme-large-latest", "acme-large-2512");
+    r.attempts.clear();
+    r.eng->handleMessage("hi", "Roy", "1001");
+    const std::string resolved = firstInput(r, fabric != 0);
+    TEST_ASSERT_TRUE_MESSAGE(startsWith(resolved, std::string("[THIS TURN RUNS ON] anthropic / acme-large-2512 (asked "
+                                                              "for acme-large-latest).") +
+                                                      kOnlyThis),
+                             (std::string(tag) + ": " + resolved.substr(0, 200)).c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(first.c_str(), r.debug.back().instructions.c_str(), tag);
+  }
+  nimbus::orch::clearServedModels();
+}
+
 // ---- CUM-495: a Z.ai prose reply is the answer, not a formatting error -------
 
 // Bench unit B, step 7: the Z.ai head answered 200 with Markdown prose (the
@@ -2122,6 +2444,48 @@ static void test_scheduled_turn_rails_and_fire_outcome() {
   TEST_ASSERT_FALSE(o4.deferred);
   TEST_ASSERT_TRUE(orch::fireWasAttempted(o4));
   TEST_ASSERT_TRUE(r4.attempts.size() >= 1);   // provider WAS dialed (retry may add more)
+}
+
+// Lane POL2: the open-question observer sees attended owner turns only. A
+// routine or wakeup prompt fires into the owner's chat as Role::Admin, so the
+// chat filter alone would let an unattended reply mark a topic raised or drop
+// an item the owner never mentioned - raise-once bookkeeping is owner-driven.
+static void test_pol2_openq_observer_skips_scheduled_turns() {
+  Rig r;
+  r.adminChats = true;
+  r.scripts["anthropic"] = {
+      {true, "{\"reply\":\"done\", \"memory\":\"\", \"ask\":\"\"}", "", 0}};
+  // An attended owner turn is observed.
+  TEST_ASSERT_TRUE(r.eng->runTurn("inputs", "1001", "ask about the skyr pot"));
+  TEST_ASSERT_EQUAL(1, (int)r.openqObserveCalls.size());
+  TEST_ASSERT_EQUAL_STRING("ask about the skyr pot",
+                           r.openqObserveCalls[0][1].c_str());
+  // A scheduled routine whose prompt mentions the same subject is NOT observed.
+  orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "check the skyr pot",
+                                                   "morning");
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL(1, (int)r.openqObserveCalls.size());
+  // A one-shot wakeup is equally unattended.
+  orch::FireOutcome w = r.eng->injectScheduledTurn("1001", "sorted the skyr pot",
+                                                   "wakeup", "lp1",
+                                                   /*quietOk=*/true, /*once=*/true);
+  TEST_ASSERT_TRUE(w.ok);
+  TEST_ASSERT_EQUAL(1, (int)r.openqObserveCalls.size());
+}
+
+// Lane POL2: a prose final answer is the owner-facing reply too, so the plumbing
+// check holds on it. glm-5.3 answered in the text channel with a memory id in the
+// prose ("recall m0a811a23") and the orch_turn check never saw it, so the id
+// reached the owner. The loop-level behavior (one correction round, JSON-wrapped
+// send-back) is covered in test_orch_head_loop; this asserts the engine wires the
+// prose check into every loop turn's HeadTools.
+static void test_pol2_prose_plumbing_check_is_wired() {
+  Rig r;
+  r.scripts["anthropic"] = {Rig::Script{}};   // one plain loop turn is enough
+  r.eng->handleMessage("go", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, (int)r.proseChecks.size());
+  TEST_ASSERT_TRUE(r.proseChecks[0].find("REPLY CHECK") != std::string::npos);
+  TEST_ASSERT_TRUE(r.proseChecks[0].find("plumbing") != std::string::npos);
 }
 
 // W20: a Once wakeup gets the honest [WAKEUP] preamble - "recurring task" would
@@ -2824,9 +3188,22 @@ static void test_runfold_gates_and_failure() {
   empty.outJson = "{\"reply\":\"\",\"ask\":\"\",\"memory\":\"\",\"device\":[],"
                   "\"mem_write\":[],\"mem_query\":[],\"session_ops\":[]}";
   r.scripts["anthropic"] = {empty};
-  r.scriptIdx["anthropic"] = 0;
+  r.scripts["openai"] = {empty};
+  r.scripts["mistral"] = {empty};
   TEST_ASSERT_TRUE(r.eng->runFold("1001", "", "d", sum) == FR::Failed);
   TEST_ASSERT_EQUAL_STRING("", sum.c_str());
+  TEST_ASSERT_TRUE(LogCapture::contains("no summary in reply on anthropic (the reply field was empty"));
+  // CUM-890: an answer with no summary in it is no fold, and the next host gets the job.
+  TEST_ASSERT_EQUAL(3, (int)r.attempts.size());
+  r.attempts.clear();
+  r.scripts.clear(); r.scriptIdx.clear();
+  Rig::Script good;
+  good.outJson = "1. Decisions\nKeep it short.";
+  r.scripts["anthropic"] = {empty};
+  r.scripts["openai"] = {good};
+  TEST_ASSERT_TRUE(r.eng->runFold("1001", "", "d", sum) == FR::Ok);
+  TEST_ASSERT_EQUAL_STRING("1. Decisions\nKeep it short.", sum.c_str());
+  TEST_ASSERT_EQUAL(2, (int)r.attempts.size());
 }
 
 // canFoldNow is the PRE-notice gate (prism v3.6.0 HIGH): the device must be able
@@ -4173,7 +4550,26 @@ static void test_cum821_spawn_reads_ignore_a_chat_only_403() {
 
 // Check of c962b5d0: the head's own web.search is offered by whether THIS head runs the tool
 // loop (orch::headRunsToolLoop), not by fabric support: the Cumulo head on a native upstream
-// does (the one-key onboarding path), Z.ai, custom and a compat upstream do not.
+// does (the one-key onboarding path), Z.ai does, and custom does not.
+// VN reality check, 1 Nov: an empty reply gets one correction round on every provider. A turn
+// a spawn or a tool answers is left alone (the engine's closure holds the rest of the rule).
+static void test_empty_answer_gets_one_correction() {
+  const std::string empty = "{\"reply\":\"\",\"ask\":\"\",\"memory\":\"\",\"device\":[],\"mem_write\":[],"
+                            "\"mem_query\":[\"sister cat\"],\"session_ops\":[]}";
+  const std::string fix = agent::emptyAnswerCorrection(empty, nullptr);
+  TEST_ASSERT_TRUE(fix.rfind("[TURN CHECK]", 0) == 0);
+  TEST_ASSERT_TRUE(fix.find("call the tool") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("", agent::emptyAnswerCorrection("{\"reply\":\"Pixel\"}", nullptr).c_str());
+  TEST_ASSERT_EQUAL_STRING("", agent::emptyAnswerCorrection("{\"reply\":\"\",\"ask\":\"Which one?\"}", nullptr).c_str());
+  // A write with no words is still no answer: the owner who said something hears back.
+  TEST_ASSERT_TRUE(agent::emptyAnswerCorrection("{\"reply\":\"\",\"mem_write\":[{\"content\":\"x\"}]}", nullptr)
+                       .rfind("[TURN CHECK]", 0) == 0);
+  TEST_ASSERT_EQUAL_STRING(
+      "", agent::emptyAnswerCorrection(
+              "{\"reply\":\"\",\"session_ops\":[{\"op\":\"spawn\",\"task\":\"t\",\"name\":\"n\"}]}", nullptr)
+              .c_str());
+}
+
 static void test_head_runs_tools_decides_the_web_search_route() {
   TEST_ASSERT_TRUE(orch::headRunsToolLoop("openai", ""));
   TEST_ASSERT_TRUE(orch::headRunsToolLoop("anthropic", ""));
@@ -4181,8 +4577,8 @@ static void test_head_runs_tools_decides_the_web_search_route() {
   TEST_ASSERT_TRUE(orch::headRunsToolLoop("cumulo", "gpt-5.6"));                 // bare id: openai
   TEST_ASSERT_TRUE(orch::headRunsToolLoop("cumulo", "anthropic/claude-haiku-5-5"));
   TEST_ASSERT_TRUE(orch::headRunsToolLoop("cumulo", "mistral/mistral-small-latest"));
-  TEST_ASSERT_FALSE(orch::headRunsToolLoop("cumulo", "zai/glm-5.3"));
-  TEST_ASSERT_FALSE(orch::headRunsToolLoop("zai", ""));
+  TEST_ASSERT_TRUE(orch::headRunsToolLoop("cumulo", "zai/glm-5.3"));   // GLM runs the loop (VN reality check)
+  TEST_ASSERT_TRUE(orch::headRunsToolLoop("zai", ""));
   TEST_ASSERT_FALSE(orch::headRunsToolLoop("custom", ""));
   for (bool runs : {true, false}) {
     Rig r;
@@ -4302,6 +4698,10 @@ static std::vector<ExitCase> exitCases() {
   // L24: the turn's setup left internal SRAM under the turn floor: no provider
   // request, the device's own cause (turn_memory.h).
   v.push_back({"setup memory", "device", "turn floor", [](Rig& r) { r.plat.heap = 7000; }});
+  // Lane OVF: template filler where an answer belongs is a failed turn, on every path.
+  v.push_back({"filler", "anthropic", "placeholder", [](Rig& r) {
+                 r.scripts["anthropic"] = {{true, "{\"reply\":\"placeholder\",\"memory\":\"\",\"ask\":\"\"}", "", 0, "", 0, 0}};
+               }});
   return v;
 }
 
@@ -4340,7 +4740,7 @@ static void test_every_failed_turn_exit_carries_a_cause() {
   const std::string src = readSource("lib/harness/src/engine.cpp");
   const size_t exits = countOf(src, "fireTurnEnd(false");
   const char* names[] = {"budget", "cut", "unsent", "low memory", "billing", "429", "generic", "parse",
-                         "spend ceiling", "no key", "setup memory"};
+                         "spend ceiling", "no key", "setup memory", "filler"};
   for (const char* n : names) {
     bool covered = false;
     for (const ExitCase& c : cases) covered = covered || std::strncmp(c.exitName, n, std::strlen(n)) == 0;
@@ -5055,6 +5455,7 @@ static void runFirstHalf() {
   RUN_TEST(test_cum821_capacity_leaves_out_paused_providers);
   RUN_TEST(test_cum821_sub_priority_marks_paused_providers);
   RUN_TEST(test_cum821_spawn_reads_ignore_a_chat_only_403);
+  RUN_TEST(test_empty_answer_gets_one_correction);
   RUN_TEST(test_head_runs_tools_decides_the_web_search_route);
   RUN_TEST(test_every_failed_turn_exit_carries_a_cause);
   RUN_TEST(test_owner_notice_names_the_first_cause);
@@ -5103,6 +5504,7 @@ static void runFirstHalf() {
   RUN_TEST(test_cum542_web_page_chat_is_the_web_ui);
   RUN_TEST(test_cum544_all_timeouts_say_no_answer_in_time);
   RUN_TEST(test_cum530_router_refusal_notice_is_never_unavailable);
+  RUN_TEST(test_a_cumulo_only_client_hears_the_clamp_not_add_credits);
 }
 
 static void runSecondHalf() {
@@ -5127,7 +5529,14 @@ static void runSecondHalf() {
   RUN_TEST(test_cum495_json_array_reply_is_never_shown_raw);
   RUN_TEST(test_truncated_json_array_reply_is_never_shown_raw);
   RUN_TEST(test_head_host_is_the_host_the_turn_runs_on);
+  RUN_TEST(test_the_per_turn_line_names_the_resolved_head_on_every_device_shape);
+  RUN_TEST(test_the_per_turn_line_names_the_open_host_while_the_head_is_parked);
+  RUN_TEST(test_the_per_turn_line_names_a_403_head_with_its_recheck);
+  RUN_TEST(test_the_per_turn_line_names_the_open_host_while_the_head_is_capped);
+  RUN_TEST(test_runtime_model_facts_change_the_input_and_never_the_cached_prompt);
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
+  RUN_TEST(test_pol2_openq_observer_skips_scheduled_turns);
+  RUN_TEST(test_pol2_prose_plumbing_check_is_wired);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);
   RUN_TEST(test_owner_reminder_gets_reminder_framing_not_wakeup);
   RUN_TEST(test_cum523_telegramless_wakeup_has_no_telegram_leg);
@@ -5230,12 +5639,81 @@ static void test_cum830_a_turn_reads_only_its_own_chats_results() {
   TEST_ASSERT_TRUE(r.jobs->hasFreshResultsFor(r.jobs->freshScopeFor("1001")));
 }
 
+// The empty-answer correction as the engine wires it, not the pure function: an owner's
+// empty reply gets the round, and a turn with nothing to say does not, because that round
+// is paid for.
+static void test_the_empty_answer_correction_is_wired_with_its_exclusions() {
+  const std::string empty = "{\"reply\":\"\",\"ask\":\"\",\"memory\":\"\"}";
+  {  // An owner who asked.
+    Rig r;
+    Rig::Script s;
+    s.checkFinal = true;
+    s.outJson = empty;
+    r.scripts["anthropic"] = {s};
+    r.eng->handleMessage("what is my sister's cat called?", "Roy", "1001");
+    TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
+    TEST_ASSERT_TRUE_MESSAGE(r.finalChecks[0].rfind("[TURN CHECK]", 0) == 0, r.finalChecks[0].c_str());
+    TEST_ASSERT_TRUE_MESSAGE(r.finalChecks[0].find("empty reply") != std::string::npos, r.finalChecks[0].c_str());
+  }
+  {  // A scheduled turn has nobody waiting: no paid round.
+    Rig r;
+    Rig::Script s;
+    s.checkFinal = true;
+    s.outJson = empty;
+    r.scripts["anthropic"] = {s};
+    r.eng->injectScheduledTurn("", "the routine's prompt", "morning");
+    TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
+    TEST_ASSERT_EQUAL_STRING("", r.finalChecks[0].c_str());
+  }
+  {  // An answer with words costs no round.
+    Rig r;
+    Rig::Script s;
+    s.checkFinal = true;
+    s.outJson = "{\"reply\":\"Pixel.\"}";
+    r.scripts["anthropic"] = {s};
+    r.eng->handleMessage("what is my sister's cat called?", "Roy", "1001");
+    TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
+    TEST_ASSERT_EQUAL_STRING("", r.finalChecks[0].c_str());
+  }
+}
+
+// roleOfChat runs on the turn task AND on the web task (the token-gated /api/test seams
+// call it from async_tcp), so its no-row fallback must resolve the Telegram owner rule
+// from NVS, never from telegram's poll-task-owned g_owners/g_allowlist Strings: the poll
+// task reassigns those on every allowlist reload, and a web-task read of a String being
+// freed is a use-after-free. telegramOwnerOf is the host-tested owner rule over given
+// lists (the same one approvePending uses on the web task).
+static void test_roleofchat_reads_the_owner_rule_from_nvs_not_the_poll_tasks_strings() {
+  std::string src;
+  FILE* f = std::fopen("src/agent/orchestrator.cpp", "rb");
+  TEST_ASSERT_NOT_NULL(f);
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) src.append(buf, n);
+  std::fclose(f);
+  const size_t fn = src.find("nimbus::orch::Role roleOfChat(const String& chatId) {");
+  TEST_ASSERT_TRUE(fn != std::string::npos);
+  const size_t fallback = src.find("roleWithoutRow(", fn);
+  TEST_ASSERT_TRUE(fallback != std::string::npos);
+  const size_t segEnd = src.find("\n}", fallback);
+  TEST_ASSERT_TRUE(segEnd != std::string::npos);
+  const std::string seg = src.substr(fallback, segEnd - fallback);
+  TEST_ASSERT_TRUE_MESSAGE(seg.find("agent::telegram::isOwner") == std::string::npos,
+                           "roleOfChat must not read the poll task's g_owners/g_allowlist");
+  TEST_ASSERT_TRUE_MESSAGE(seg.find("telegramOwnerOf") != std::string::npos &&
+                               seg.find("store::telegramAllowlist()") != std::string::npos &&
+                               seg.find("store::telegramOwners()") != std::string::npos,
+                           "the owner rule comes from NVS via telegramOwnerOf");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_cum828_a_turns_requests_carry_its_chats_grant);
   RUN_TEST(test_cum830_a_turn_reads_only_its_own_chats_results);
   runFirstHalf();
   runSecondHalf();
+  RUN_TEST(test_the_empty_answer_correction_is_wired_with_its_exclusions);
+  RUN_TEST(test_roleofchat_reads_the_owner_rule_from_nvs_not_the_poll_tasks_strings);
   UNITY_END();
   return 0;
 }

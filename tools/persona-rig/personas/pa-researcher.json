@@ -1,0 +1,39 @@
+{
+  "description": "A researcher with web and sub-agents: a web lookup graded against a known answer read live from python.org, a sub-agent whose result must arrive and be reported, and a follow-up answered from the file the sub-agent wrote.",
+  "vars": {"suffix": "3345"},
+  "truth": {"py_latest": {"url": "https://www.python.org/downloads/", "regex": "Download Python (3\\.\\d+\\.\\d+)"}},
+  "matrix": [
+    {"name": "mistral-large-4-0", "host": "mistral", "key": "MISTRAL_API_KEY", "model": "mistral-large-4-0", "tools_defect": ""},
+    {"name": "glm-5.3", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3", "tools_defect": ""},
+    {"name": "glm-5.3-flash", "host": "zai", "key": "Z_AI_TOKEN", "model": "glm-5.3-flash", "tools_defect": ""}
+  ],
+  "persona": {
+    "name": "pa-research-${name}",
+    "display_name": "Priya's Nimbus",
+    "timezone": "Europe/London",
+    "directive": "You help Priya research. Cite sources, and use sub-agents for anything that takes more than one step.",
+    "monthly_cap_cents": 800,
+    "keys": {"mistral": "MISTRAL_API_KEY", "${host}": "${key}"},
+    "instance_env_keys": ["TAVILY_API_KEY"],
+    "models": {"head": {"${host}": "${model}"}, "sub": {"${host}": "${model}"}},
+    "host": "${host}",
+    "scenarios": [
+      {"id": "web-truth", "steps": [
+        {"say": "Use a web lookup to find the latest stable Python 3 release listed on python.org/downloads. Tell me the version number and the URL you used.",
+         "timeout_s": 300, "settle_s": 30,
+         "expect": [{"turn_resolved": true}, {"reply_contains": "${py_latest}", "known_defect": "web-answer-quality", "may_pass": true}, {"reply_contains": "python.org", "known_defect": "web-answer-quality", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]},
+      {"id": "spawn-and-report", "steps": [
+        {"say": "Start a sub-agent to research the 10th Fibonacci number and write its answer into a file named fib.txt in project research. Do not work it out yourself. Report what it found.",
+         "await_reply_regex": "\\b55\\b", "timeout_s": 300, "settle_s": 8,
+         "expect": [{"turn_resolved": true}, {"log_regex": "spawned job"}, {"reply_regex": "\\b55\\b"}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
+                    {"file_contains": {"project": "research", "name": "fib.txt", "text": "55"}, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]},
+      {"id": "follow-up-from-file", "needs": ["spawn-and-report"], "steps": [
+        {"http": {"method": "POST", "path": "/api/orch", "form": {"clearConv": "1"}}, "expect": [{"http_status": 200}]},
+        {"say": "What did the sub-agent write into research/fib.txt? Read the file and tell me.",
+         "expect": [{"turn_resolved": true}, {"reply_regex": "\\b55\\b", "known_defect": "${tools_defect}", "may_pass": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true}]}
+      ]}
+    ]
+  }
+}

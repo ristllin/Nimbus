@@ -1372,6 +1372,55 @@ function applyHostedChrome(){
       body.appendChild(n);}
     document.querySelectorAll('[data-go=device]').forEach(b=>{
       if((b.textContent||'').indexOf('Check for updates')===0)b.style.display='none';});
+    // A hosted instance has no restart, power, screen, ring, sound or card to erase, and
+    // only one mode: those controls go, never a button that answers an error.
+    ['homeRestart','homePowerOff','modehdr'].forEach(id=>{const el=$(id); if(el)el.style.display='none';});
+    document.querySelectorAll('.mobmode').forEach(el=>{el.style.display='none';});
+    document.querySelectorAll('details.setgroup').forEach(g=>{const s=g.querySelector('summary'),t=s?s.textContent:'';
+      if(['Display','Ring','Sound','Power','Danger zone'].some(x=>t.indexOf(x)===0))g.style.display='none';});
+    const ms=$('mode');   // the Mode row in Mode & identity: its select, its hint and its label
+    if(ms){const tip=ms.previousElementSibling,lb=tip&&tip.previousElementSibling;
+      [ms,tip,lb].forEach(el=>{if(el)el.style.display='none';});}
+    const lede=document.querySelector('#pane-set .plede');
+    if(lede)lede.textContent='Identity, software version and connectivity, all in one place.';
+    // What this instance does not have: never a control that answers a refusal or does
+    // nothing. Voice, a custom endpoint, the settings it keeps fixed, the Safety sub-page
+    // (no scanner, downloads or guest moderation here), standing rules and self-approval.
+    document.querySelectorAll('details.setgroup').forEach(g=>{const s=g.querySelector('summary'),t=s?s.textContent:'';
+      if(['Voice','Custom endpoint'].some(x=>t.indexOf(x)===0))g.style.display='none';});
+    const off=el=>{if(el)el.style.display='none';};
+    const row=id=>{const e=$(id); if(!e)return;      // a field, its help line and its label
+      const lb=e.closest('label'); if(lb){off(lb); const n=lb.nextElementSibling; if(n&&n.classList.contains('tip'))off(n); return;}
+      off(e); let p=e.previousElementSibling;
+      while(p&&(p.tagName==='P'||p.tagName==='LABEL')){off(p); if(p.tagName==='LABEL')break; p=p.previousElementSibling;}};
+    ['midFail','loopRounds','loopDeadline','compactKB','tlsSlots','tlsVerify','capProbe','ttsOn','skAuto'].forEach(row);
+    off($('capProbeActive'));
+    off($('clockSyncBtn'));      // the platform keeps this clock
+    const tt=$('tgToken');      // a hosted bot is connected when the instance is created
+    if(tt){off(tt.parentElement); const tip=tt.parentElement.previousElementSibling; // the line above is the readiness line
+      const lb=tip&&tip.previousElementSibling&&tip.previousElementSibling.previousElementSibling; if(lb&&lb.tagName==='LABEL')off(lb);
+      if(tip&&tip.previousElementSibling&&tip.previousElementSibling.classList.contains('tip'))off(tip.previousElementSibling);}
+    off(document.querySelector('.subtab[data-sp=safety]'));
+    ['prefslist','prefsnew','prefsmsg'].forEach(id=>{const e=$(id); if(id==='prefsnew')off(e&&e.parentElement); else if(id==='prefslist')row(id); else off(e);});
+    const oh=$('orchHost'); if(oh)[].slice.call(oh.options).forEach(o=>{if(o.value==='custom')o.remove();});
+    // Recording is real here, and is about this instance rather than a card.
+    const tr=$('orchTrace'), trLb=tr&&tr.closest('label');
+    if(trLb)[].forEach.call(trLb.childNodes,n=>{if(n.nodeType===3&&/thinking/.test(n.textContent))n.textContent=' Record tool calls ';});
+    const trTip=trLb&&trLb.nextElementSibling;
+    if(trTip&&trTip.classList.contains('tip'))trTip.textContent='Keeps a record of what the assistant did on each turn - each tool call and its result - viewable in the chat. Stored on this instance. Turning it off stops new records.';
+    // The lines that would be untrue on a hosted instance, in its own words.
+    const HOSTED_WORDS=[
+      ['On-device storage','Instance storage'],
+      ['What the device knows and the files it has made, stored on its SD card, not in a cloud.','What this instance knows and the files it has made, stored on its own volume.'],
+      ['Token usage reported by your providers, tracked since the device last restarted.','Token usage reported by your providers, tracked since this instance last restarted.'],
+      ['Message the device from Telegram.','Message this instance from Telegram.'],
+      ['Who can message this device ','Who can message this instance '],
+      ['the live on-device tool surface','the live tool surface'],
+      ['Device clock','Clock'],
+      ['Set automatically from the internet once Wi-Fi connects: there is no manual clock. Until it syncs, daily and weekly routines wait.','Set by the platform: there is no manual clock.'],
+    ];
+    const tw=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+    for(let n=tw.nextNode();n;n=tw.nextNode())HOSTED_WORDS.forEach(w=>{if(n.nodeValue.indexOf(w[0])>=0)n.nodeValue=n.nodeValue.replace(w[0],w[1]);});
   }catch(e){}
 }
 applyHostedChrome();
@@ -1518,9 +1567,12 @@ function renderSearch(groups){
 // The search "index": a static settings/actions index plus live source fetchers.
 // Static hits are synchronous; each source fills its group as it resolves, so the
 // palette stays responsive. searchIndexStatic() is pure and unit-testable.
+// A hosted instance drops the actions whose group it does not have.
+const SEARCH_NOT_HOSTED=['Safety','Check for updates','Pair with the cloud','Display and touch','Ring theme and demo','Battery and battery mode','Sign-in code and connectivity','Erase / factory reset'];
 function searchIndexStatic(q){
   const ql=(q||'').trim().toLowerCase();
-  return ql?SEARCH_INDEX.filter(x=>(x.label+' '+x.kw).toLowerCase().indexOf(ql)>=0):SEARCH_INDEX.slice();
+  const all=HOSTED?SEARCH_INDEX.filter(x=>SEARCH_NOT_HOSTED.indexOf(x.label)<0):SEARCH_INDEX;
+  return ql?all.filter(x=>(x.label+' '+x.kw).toLowerCase().indexOf(ql)>=0):all.slice();
 }
 let _sSeq=0;
 function runSearch(q){
@@ -1668,7 +1720,7 @@ function renderPrio(hostId, field, csv){
   // moves what the owner set. Primary-provider (orchHost) still lists only the
   // BYOK heads, since the router is the deterministic fallback source, not the
   // one head that "runs the assistant".
-  const ALL=['openai','anthropic','mistral','cumulo','zai','custom'], host=$(hostId); if(!host)return;
+  const ALL=['openai','anthropic','mistral','cumulo','zai'].concat(HOSTED?[]:['custom']), host=$(hostId); if(!host)return;
   let order=csv.split(',').map(s=>s.trim()).filter(x=>ALL.includes(x));
   let rows=order.map(p=>({p,on:true})).concat(ALL.filter(x=>!order.includes(x)).map(p=>({p,on:false})));
   const save=()=>orchApply({[field]:rows.filter(r=>r.on).map(r=>r.p).join(',')});
@@ -2644,7 +2696,15 @@ function loadLoops(){
     }).join('')+'</tbody></table>';
     el.querySelectorAll('button[data-act]').forEach(b=>b.onclick=()=>{
       const fd=new FormData(); fd.append('action',b.dataset.act); fd.append('id',b.dataset.id);
-      fetch('/api/loops',{method:'POST',body:fd}).then(()=>setTimeout(loadLoops,500));
+      // nimbusd answers {"ok":false} when the id no longer exists (a stale row,
+      // the same honest no-op the wake-up card surfaces); the device always
+      // stages ok:true. Either way the list reloads to the truth, but a no-op
+      // or a failed request must say so, never pass silently.
+      fetch('/api/loops',{method:'POST',body:fd}).then(r=>r.json()).then(x=>{
+        setTimeout(loadLoops,500);
+        if(x&&x.ok===false)fbState('lpMsg','error','That routine is no longer available - the list is up to date.');
+      }).catch(()=>{setTimeout(loadLoops,500);
+        fbState('lpMsg','error','Couldn\'t apply that change - try again.');});
     });
   }).catch(()=>{el.innerHTML='<span class=hint>Couldn\'t load routines</span>';});
 }
@@ -2658,7 +2718,12 @@ function loadLoops(){
 // the device has, so it could not save and the approval card never showed.
 function wkIn(s){if(s==null)return '';const m=Math.round(s/60);
   return m<1?'in under a minute':(m<120?'in ~'+m+' min':'in ~'+Math.round(m/60)+' h');}
-function wkPost(body){return fetch('/api/wakeups',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(body).toString()}).then(jok);}
+// GATE2: a 200 body of {"ok":false} is the server's honest no-op (a stale row:
+// the wake-up already fired or was removed between the page's GET and the
+// click). jok() only guards the HTTP status, so the seam itself rejects - no
+// caller can render a success state for a no-op.
+const WK_GONE='gone';
+function wkPost(body){return fetch('/api/wakeups',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(body).toString()}).then(jok).then(j=>((j&&j.ok===false)?Promise.reject(WK_GONE):j));}
 function loadWakeups(){
   const sel=$('wkPolicy'); if(!sel)return;
   fetch('/api/wakeups').then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{
@@ -2666,7 +2731,7 @@ function loadWakeups(){
     sel.onchange=()=>run({status:'wkMsg',pending:'Saving…',
       work:()=>wkPost({action:'mode',value:sel.value}),
       ok:()=>sel.value==='ask'?'Ask me first - new wake-ups wait for approval.':'Wake-ups run silently.',
-      error:e=>'Couldn\'t save'+(e?(' ('+e+')'):'')+' - try again.'});
+      error:e=>e===WK_GONE?'That save did not apply - try again.':'Couldn\'t save'+(e?(' ('+e+')'):'')+' - try again.'});
     const items=(d.wakeups||[]).filter(w=>w);
     // A single pending approval card (never a loop): only the FIRST pending item.
     const p=items.find(w=>w.pending), box=$('wkPending');
@@ -2677,7 +2742,8 @@ function loadWakeups(){
         const act=(a,word,msg)=>run({status:'wkPendMsg',pending:msg,
           work:()=>wkPost({action:a,id:p.id||''}),
           ok:()=>{setTimeout(loadWakeups,400);return a==='approve'?'Approved.':'Denied.';},
-          error:e=>'Couldn\'t '+word+(e?(' ('+e+')'):'')+' - try again.'});
+          error:e=>{if(e===WK_GONE){setTimeout(loadWakeups,400);return 'That wake-up is no longer pending - the list is up to date.';}
+            return 'Couldn\'t '+word+(e?(' ('+e+')'):'')+' - try again.';}});
         $('wkApprove').onclick=()=>act('approve','approve','Approving…');
         $('wkDeny').onclick=()=>act('cancel','deny','Denying…');
       } else box.style.display='none';
@@ -2703,9 +2769,11 @@ function initLoopForm(){
     fd.append('prompt',prompt); fd.append('chatId',$('lpChat').value.trim());
     fd.append('schedule',JSON.stringify(sched));
     fetch('/api/loops',{method:'POST',body:fd}).then(r=>r.json()).then(x=>{
-      $('lpMsg').textContent=x.ok?'Created':(x.error||'Couldn\'t create - try again');
+      // lpMsg is shared with the row buttons above, so both write it through
+      // fbState - one state machine, no stale error class under a later "Created".
+      fbState('lpMsg',x.ok?'ok':'error',x.ok?'Created':(x.error||'Couldn\'t create - try again'));
       if(x.ok){$('lpName').value='';$('lpPrompt').value='';} setTimeout(loadLoops,500);
-    }).catch(()=>$('lpMsg').textContent='Couldn\'t create - try again');
+    }).catch(()=>fbState('lpMsg','error','Couldn\'t create - try again'));
   };
 }
 document.addEventListener('DOMContentLoaded',initLoopForm);
@@ -2752,13 +2820,14 @@ function lastFailText(dflt){return saveFailText(_lastFail,dflt);}
 // no Retry-After, such as "the archive needs the SD card", is an answer, not busy.)
 const CARD_BUSY='card-busy';
 let _busyMs=5000,_busyCard=true;
-function isBusy(r){return r.status===503&&!!r.headers.get('Retry-After');}
+// A hosted instance answers any read during a turn with a plain 503: the same wait.
+function isBusy(r){return r.status===503&&(HOSTED||!!r.headers.get('Retry-After'));}
 function noteBusy(r){const s=parseInt(r.headers.get('Retry-After'),10);
   _busyMs=Math.min(Math.max(isNaN(s)?5:s,2),30)*1000;
   _busyCard=/json/.test(r.headers.get('Content-Type')||'');}
 function busyGuard(r){if(isBusy(r)){noteBusy(r);throw CARD_BUSY;}return r;}
 function cardJson(r){return busyGuard(r).json();}
-function busyWhat(){return _busyCard?'The SD card is busy right now.':'The device is busy right now.';}
+function busyWhat(){return HOSTED?'The assistant is busy right now.':_busyCard?'The SD card is busy right now.':'The device is busy right now.';}
 // The busy note for `anchor` (an id or a node): one line above it, or inside it when it
 // is an empty card (a panel that never loaded); on while busy, gone once data arrives.
 function _busyNoteOf(a){
@@ -2798,7 +2867,7 @@ function cardFetch(url,onBusy,tries=2){
     return new Promise(res=>setTimeout(res,_busyMs)).then(()=>cardFetch(url,null,tries-1));
   });
 }
-function busyToast(){toast(_busyCard?'Waiting for the SD card':'Waiting for the device');}
+function busyToast(){toast(HOSTED?'Waiting for the assistant':_busyCard?'Waiting for the SD card':'Waiting for the device');}
 // Fetch plain text, surfacing the SERVER's reason on failure. The glass-box
 // endpoints answer 404 with a human sentence ("off: …", "nosd: …", "evicted: …")
 // precisely so the chat can say why instead of showing an empty panel. A busy card
@@ -3072,6 +3141,7 @@ function ringSimStart(){
 // warn (amber) = a router/environment problem, unk (neutral) = transient/unknown.
 const VFYREASON={
   nocredits:      {cls:'bad', txt:'Needs credits or subscription'},
+  suspended:      {cls:'bad', txt:'Account suspended'},
   router_outdated:{cls:'warn',txt:'Router needs an update'},
   'low-memory':   {cls:'unk', txt:'Verification deferred'},
   connectfail:    {cls:'unk', txt:'Couldn\'t reach the provider'},
@@ -3164,6 +3234,7 @@ function vfyOutcome(p,pv){
   if(pv.verify===0)return {ok:false,txt:lbl+' rejected this key. Check that you copied all of it, or create a new key'+at+'.'};
   const r=pv.vfyReason;
   if(r==='nocredits')return {ok:false,txt:'The key works, but the '+lbl+' account has no credit. Add credit'+at+', then tap Save & Verify.'};
+  if(r==='suspended')return {ok:false,txt:'The key works, but the '+lbl+' account is suspended. Credits do not lift this: contact support.'};
   if(r==='router_outdated')return {ok:false,txt:'The Cumulo Nimbus service needs an update before it can check keys. Your key is saved; try again later.'};
   if(r==='low-memory')return {ok:false,wait:true,txt:DEFER_MSG};
   if(r==='connectfail')return {ok:false,txt:'Couldn\'t reach '+lbl+'. Check that the device\'s Wi-Fi has internet, then tap Save & Verify.'};
@@ -3563,6 +3634,7 @@ function applyOrch(d){
     const tv=!d.hasTav?'Web search is off - add a key to enable it'
       :d.tavVerify===1?'✓ Web search ready - key verified'
       :d.tavVerify===0?'✗ Key rejected by Tavily - check it'
+      :HOSTED?'Key saved. The assistant says so if a search is refused.'
       :d.tavVts>0?'⚠ Key saved but not yet verified - save again to retry'
       :'⏳ Key saved - verifying…';
     $('tavstat').textContent=tv;
@@ -3571,13 +3643,14 @@ function applyOrch(d){
   // Telegram READINESS (P2.6): every gate that silently eats a reply, made visible.
   {const r=$('tgReady');
    if(r){const parts=[];
-    if(!d.hasTg)parts.push('• No bot token yet - Telegram is off (create one with @BotFather)');
+    if(!d.hasTg)parts.push(HOSTED?'• No bot connected. A bot is connected when the instance is created at app.cumulo-nimbus.ai.':'• No bot token yet - Telegram is off (create one with @BotFather)');
     else if(!d.tgLive)parts.push(d.running
       ?'⚠ Token saved - restart the device to start Telegram'
       :'⚠ Token saved - Telegram runs in Orchestrator mode (switch modes to start it)');
     else parts.push('✓ Bot active');
     // Verify-on-save verdict (owner: "run a tiny verification"): a real getMe check.
-    if(d.hasTg){
+    // A hosted bot is checked by the platform, and reports no verdict here.
+    if(d.hasTg&&!HOSTED){
       if(d.tgVerify===1)parts.push('✓ Token verified'+(d.tgBot?(' - bot @'+d.tgBot):''));
       else if(d.tgVerify===0)parts.push('✗ Token rejected by Telegram - check it');
       else if(d.tgVts>0)parts.push('⚠ Couldn’t verify the token - retry');
@@ -3600,7 +3673,8 @@ function applyOrch(d){
       '• No one approved yet - message the bot once, then approve it below');
     const sp=d.sttProv&&d.providers&&d.providers[d.sttProv];
     const ck=d.providers&&d.providers.cumulo&&d.providers.cumulo.hasKey;
-    parts.push(sp&&sp.hasKey?('✓ voice notes ('+d.sttProv+' STT)') :
+    if(HOSTED)parts.push('Reads text and photos');   // no voice notes on a hosted bot
+    else parts.push(sp&&sp.hasKey?('✓ voice notes ('+d.sttProv+' STT)') :
       ck?'✓ voice notes (Cumulo Nimbus STT)' :
       '⚠ No '+(d.sttProv||'dictation')+' key - voice notes can’t be transcribed');
     r.textContent=parts.join('  ·  ');
@@ -3693,7 +3767,7 @@ function fetchQAct(id,op){
 // Safety ACTIVITY surface (CUM-215): the scanner's blocked/suspected log, per-entry
 // owner actions (approve scoped / dismiss / report), and the scoped allowlist.
 var _safetyReport={available:false,copy:''};
-function loadSafety(){fetch('/api/safety').then(cardJson).then(function(d){cardBusyNote('safetyList',false);renderSafety(d);}).catch(function(e){if(onCardBusy(e,'safety',loadSafety,'safetyList'))return;var b=$('safetyList');if(b&&/loading/i.test(b.textContent))b.innerHTML='<p class=hint>Could not load activity. Try again.</p>';
+function loadSafety(){if(HOSTED)return;fetch('/api/safety').then(cardJson).then(function(d){cardBusyNote('safetyList',false);renderSafety(d);}).catch(function(e){if(onCardBusy(e,'safety',loadSafety,'safetyList'))return;var b=$('safetyList');if(b&&/loading/i.test(b.textContent))b.innerHTML='<p class=hint>Could not load activity. Try again.</p>';
   var a=$('safetyAllow');if(a&&/loading/i.test(a.textContent))a.textContent='Could not load. Try again.';});}
 // Reuse the one full HTML escaper (connEsc, defined below and hoisted): it also
 // escapes ' and ", so ids interpolated into inline handlers cannot break out (CUM-215).
@@ -4152,10 +4226,12 @@ function connAvail(prov,host,keyed,auth,ws){
     // SubsessionsOnly rule the Capabilities table shows.
     // CUM-537: the device checks the Mistral workspace after a save; until that check
     // lands the connector is unchecked, not missing, so say so instead.
+    // Lane CONN: a head model that refuses the built-in connectors (mistral-large-4-0)
+    // never runs them on its own turns, so even a connected one is via sessions.
     if(ws==='checking')return{cls:'unk',txt:'checking your Mistral workspace'};
     if(ws==='unchecked')return{cls:'unk',txt:'Mistral workspace not checked'};
     if(auth===2)return{cls:'unk',txt:'connect it in Mistral'};
-    return host==='mistral'?{cls:'ok',txt:'live on your turns'}:{cls:'ext',txt:'via sessions'};
+    return host==='mistral'&&!window._connRefuses?{cls:'ok',txt:'live on your turns'}:{cls:'ext',txt:'via sessions'};
   }
   return{cls:'unk',txt:'configured'};
 }
@@ -4187,13 +4263,16 @@ function loadConnectors(poll){
   // would wipe a token being typed or a provider being picked (focused or not); a
   // card that is new since the last full load waits for the next one.
   window._connWs={miss:d.wsMiss,recheck:d.wsRecheckS};
+  window._connRefuses=!!d.hostRefuses;
   connWarn(d.mistralTools|0,d.mistralToolsAdvised||2);
   if(poll===true){
     cards.forEach(([k,c])=>{const st=$('cc_'+k.id+'_st');
       if(st)st.innerHTML=window._connDrafts[k.id]?'<span class="badge vfy unk">not saved</span>':connStatus(k,c,keyed,host);
       const w=$('cc_'+k.id+'_ws');if(w)w.innerHTML=connWsLine(k,c);});
   }else{
-    $('connhost').textContent=host?('The assistant is running on '+host+'. Connectors on '+host+' are live on its own turns; the others are reachable through sessions it spawns.'):'';
+    $('connhost').textContent=host?((host==='mistral'&&window._connRefuses)
+      ?('The assistant is running on '+host+' on a model that refuses its built-in connectors, so every connector is reachable through sessions it spawns.')
+      :('The assistant is running on '+host+'. Connectors on '+host+' are live on its own turns; the others are reachable through sessions it spawns.')) :'';
     window._connKnown=known;
     window._connCtx={keyed:keyed,host:host,cards:{}};
     cards.forEach(([k,c])=>{window._connCtx.cards[k.id]={k:k,c:c};});
@@ -4259,7 +4338,7 @@ function connCard(k,c,keyed,host,provPick){
   if(curProv==='mistral'&&kind!=='mcp'){
     h+='<p class=hint style="margin:6px 0;color:var(--amber)">'+(kind==='builtin'
       ?'This runs inside Mistral with your Mistral key. There is nothing to paste here.'
-      :'This runs on Mistral. Add your Mistral key, then turn '+connEsc(k.name)+' on in Mistral Studio &rsaquo; Connectors. It is referenced by name here, so there is nothing to paste.')+'</p>';
+      :'This runs on Mistral. Authorize '+connEsc(k.name)+' in Mistral\'s console (Studio &rsaquo; Connectors), then enable it here with Mistral as the provider: it is referenced by name, so there is nothing to paste.')+'</p>';
   }
   // token field only for remote MCP (a pasted PAT/bearer). Mistral connectors carry
   // no device secret (Studio-auth); OpenAI first-party needs the OAuth block (helper
@@ -4527,7 +4606,9 @@ function _orchHostSync(v){const oh=$('orchHost');if(!oh)return;
 // checkbox lists, which persist per-interaction via renderPrio's own save() - the
 // stale $('provPrio').value deref threw a TypeError that made this button store
 // NOTHING, silently, for every field.
-function _orchSavePayload(){return {custBase:$('custBase').value,custKey:$('custKey').value,
+function _orchSavePayload(){
+  if(HOSTED)return {orchLoop:$('orchLoop').checked?1:0,orchTrace:$('orchTrace').checked?1:0};   // the rest is fixed here
+  return {custBase:$('custBase').value,custKey:$('custKey').value,
     custConv:$('custConv').value,custModel:$('custModel').value,
     tgToken:$('tgToken').value,
     orchLoop:$('orchLoop').checked?1:0,
@@ -4576,7 +4657,7 @@ $('revertdir')&&($('revertdir').onclick=()=>orchApply({sysPrompt:''}).then(ok=>{
 // read outside content; approving is the owner's one click here.
 let _prefsSeen='';
 function loadPrefs(){
-  const box=$('prefslist'); if(!box)return;
+  const box=$('prefslist'); if(!box||HOSTED)return;
   fetch('/api/prefs').then(jok).then(d=>{
     cardBusyNote(box,false);
     const now=JSON.stringify(d);
@@ -4590,11 +4671,13 @@ function loadPrefs(){
       +'<span style="flex:1">'+_fesc(r.text)
       +(r.state==='pending'?' <b style="color:#e0a349">waits for your approval</b>':'')
       +(r.state==='moved'?' <span class=hint>(moved to memory: a dated fact, not a rule)</span>':'')
+      +(r.state==='retired'?' <span class=hint>(retired to make room for new rules)</span>':'')
       +(r.nodash?' <span class=hint>(em dashes are removed from replies)</span>':'')
       +(r.age?' <span class=hint>'+_fesc(r.age)+'</span>':'')
       +'</span>'
       +(r.state==='pending'?' <a href="#" data-pid="'+_fesc(r.id)+'" data-pact="approve">Approve</a>':'')
       +(r.state==='moved'?' <a href="#" data-pid="'+_fesc(r.id)+'" data-pact="restore">Restore</a>':'')
+      +(r.state==='retired'?' <a href="#" data-pid="'+_fesc(r.id)+'" data-pact="restore">Restore</a>':'')
       +' <a href="#" data-pid="'+_fesc(r.id)+'" data-pact="remove">Remove</a></div>').join('');
     const msg=$('prefsmsg'); if(msg)msg.textContent='';
     box.querySelectorAll('a[data-pid]').forEach(a=>a.onclick=e=>{e.preventDefault();
@@ -4612,6 +4695,8 @@ $('prefsadd')&&($('prefsadd').onclick=()=>{
   fetch('/api/prefs',{method:'POST',body:fd}).then(async r=>{
     const j=await r.json().catch(()=>({}));
     if(!r.ok){const m=$('prefsmsg');if(m)m.textContent=j.error||('Save failed ('+r.status+').');return;}
+    // A full list made room: the device says which older rule retired.
+    if(j.retired&&j.retired.length){const m=$('prefsmsg');if(m)m.textContent=(j.message||'Saved.')+' '+j.retired.join(' · ');}
     $('prefsnew').value='';loadPrefs();
   }).catch(()=>{const m=$('prefsmsg');if(m)m.textContent='Could not reach the device - try again.';});
 });
@@ -4920,7 +5005,7 @@ function embStateText(d){
     const need=(prov==='openai'||prov==='cumulo')?'an OpenAI or Cumulo Nimbus key':(PROVNOUN[prov]||'a key for it');
     return {warn:true,txt:'Your stored memories were made with '+lbl+', and this device has no key that can add to them. Add '+need+' on Assistant > Models, or change the embedding model below (that erases the stored memories).'};
   }
-  return {warn:true,txt:'Long-term memory is off: it needs a Cumulo Nimbus, OpenAI or Mistral key to store and search memories (Anthropic and Z.ai can\'t create embeddings). Add one on Assistant > Models. Chat works without it.'};
+  return {warn:true,txt:'Long-term memory is off: it needs a Cumulo Nimbus, OpenAI or Mistral key to search by meaning (Anthropic and Z.ai can\'t create embeddings). New memories are kept as text and found by keyword until you add one on Assistant > Models. Chat works without it.'};
 }
 // Supported embedding providers/models (owner: dropdown, not free text - only show
 // what the device can actually call). Curated; the live verify on save is the real gate.
@@ -5278,7 +5363,8 @@ function tgArcExport(){const chat=$('tgArcChat').value,day=$('tgArcDay').value;i
 function loadFiles(){
   const box=$('filesList'); if(!box)return;
   const proj=($('filesProj')&&$('filesProj').value.trim())||'';
-  fetch('/api/files/list'+(proj?('?project='+encodeURIComponent(proj)):'')).then(jok).then(d=>{
+  filesOffset=0;
+  _filesPage(box,proj,0,false).then(d=>{
     cardBusyNote(box,false);
     if($('filesStat'))$('filesStat').textContent=d.present
       ?((d.count||0)+' files · '+_fbytes(d.bytes)+' used'+(d.freeBytes!==undefined?(' · '+_fbytes(d.freeBytes)+' free'):''))
@@ -5289,27 +5375,60 @@ function loadFiles(){
       if(c.sizeMB!==undefined)parts.push('Card: '+_mb(c.freeMB||0)+' free of '+_mb(c.sizeMB));
       if(q.limitMB)parts.push('file quota '+_mb(q.usedMB||0)+' of '+_mb(q.limitMB));
       $('filesQuota').textContent=d.present?parts.join(' · '):'';}
-    const files=d.files||[];
-    if(!files.length){box.innerHTML='<span class=hint>No files'+(proj?(' in '+_fesc(proj)):'')+'</span>';return;}
-    box.innerHTML='<table><tbody>'+files.map(f=>{
-      // "view" only for what the device is willing to render inline (the server
-      // decides; this just avoids offering a link that would download anyway).
-      const v=_fviewable(f.name);
-      const view=v?('<a href="#" data-vp="'+_fesc(f.project)+'" data-vn="'+_fesc(f.name)+'" data-vk="'+v+'">view</a> &middot; '):'';
-      // "get" is a header-only download (dlFile), never a token-bearing link.
-      return '<tr><td style="word-break:break-all">'+_fesc(f.project)+'/'+_fesc(f.name)+'</td><td>'+_fesc(f.kind||'')+
-        '</td><td style="white-space:nowrap">'+_fbytes(f.bytes)+'</td><td style="white-space:nowrap">'+view+
-        '<a href="#" data-dlp="'+_fesc(f.project)+'" data-dln="'+_fesc(f.name)+'">get</a> &middot; <a href="#" data-rmp="'+_fesc(f.project)+'" data-rmn="'+_fesc(f.name)+'">delete</a></td></tr>';
-    }).join('')+'</tbody></table>';
-    box.querySelectorAll('a[data-vp]').forEach(a=>a.onclick=e=>{
-      e.preventDefault(); _fpreview(a.dataset.vp,a.dataset.vn,a.dataset.vk);});
-    box.querySelectorAll('a[data-dlp]').forEach(a=>a.onclick=e=>{e.preventDefault();
-      dlFile(a.dataset.dlp,a.dataset.dln).catch(()=>toast('Couldn\'t download - try again'));});
-    box.querySelectorAll('a[data-rmp]').forEach(a=>a.onclick=e=>{e.preventDefault();
-      uiConfirm('Delete '+a.dataset.rmp+'/'+a.dataset.rmn+'?',{ok:'Delete',danger:true}).then(ok=>{ if(!ok)return;
-      const fd=new FormData();fd.append('project',a.dataset.rmp);fd.append('name',a.dataset.rmn);
-      fetch('/api/files/rm',{method:'POST',body:fd}).then(r=>r.ok?loadFiles():Promise.reject(r.status)).catch(()=>toast('Couldn\'t delete - try again'));});});
+    if(!(d.files||[]).length&&!proj)box.innerHTML='<span class=hint>No files</span>';
+    else if(!(d.files||[]).length)box.innerHTML='<span class=hint>No files in '+_fesc(proj)+'</span>';
   }).catch(e=>{if(!onCardBusy(e,'files',loadFiles,box))box.innerHTML='<span class=hint>Files unavailable</span>';});
+}
+// Lane FSCAP: the listing is paged server-side (the store has no entry cap), so the
+// panel fetches one page at a time and offers "Show more" while the server's
+// nextOffset < listCount (store rows only; archive rows never inflate them).
+let filesOffset=0;
+function _fileRow(f){
+  // "view" only for what the device is willing to render inline (the server
+  // decides; this just avoids offering a link that would download anyway).
+  const v=_fviewable(f.name);
+  const view=v?('<a href="#" data-vp="'+_fesc(f.project)+'" data-vn="'+_fesc(f.name)+'" data-vk="'+v+'">view</a> &middot; '):'';
+  // "get" is a header-only download (dlFile), never a token-bearing link.
+  return '<tr><td style="word-break:break-all">'+_fesc(f.project)+'/'+_fesc(f.name)+'</td><td>'+_fesc(f.kind||'')+
+    '</td><td style="white-space:nowrap">'+_fbytes(f.bytes)+'</td><td style="white-space:nowrap">'+view+
+    '<a href="#" data-dlp="'+_fesc(f.project)+'" data-dln="'+_fesc(f.name)+'">get</a> &middot; <a href="#" data-rmp="'+_fesc(f.project)+'" data-rmn="'+_fesc(f.name)+'">delete</a></td></tr>';
+}
+function _bindFileRows(box){
+  box.querySelectorAll('a[data-vp]').forEach(a=>a.onclick=e=>{
+    e.preventDefault(); _fpreview(a.dataset.vp,a.dataset.vn,a.dataset.vk);});
+  box.querySelectorAll('a[data-dlp]').forEach(a=>a.onclick=e=>{e.preventDefault();
+    dlFile(a.dataset.dlp,a.dataset.dln).catch(()=>toast('Couldn\'t download - try again'));});
+  box.querySelectorAll('a[data-rmp]').forEach(a=>a.onclick=e=>{e.preventDefault();
+    uiConfirm('Delete '+a.dataset.rmp+'/'+a.dataset.rmn+'?',{ok:'Delete',danger:true}).then(ok=>{ if(!ok)return;
+    const fd=new FormData();fd.append('project',a.dataset.rmp);fd.append('name',a.dataset.rmn);
+    fetch('/api/files/rm',{method:'POST',body:fd}).then(r=>r.ok?loadFiles():Promise.reject(r.status)).catch(()=>toast('Couldn\'t delete - try again'));});});
+}
+function _filesPage(box,proj,offset,append){
+  const q='?limit=1000&offset='+offset+(proj?('&project='+encodeURIComponent(proj)):'');
+  return fetch('/api/files/list'+q).then(jok).then(d=>{
+    const all=d.files||[];
+    // The server appends the Telegram archive's read-only rows to every page as
+    // a fixed suffix: render them on the first page only, never re-append them.
+    const files=append?all.filter(f=>!f.readOnly):all;
+    let tb=box.querySelector('tbody');
+    if(!append||!tb) box.innerHTML='<table><tbody>'+files.map(_fileRow).join('')+'</tbody></table>';
+    else files.forEach(f=>tb.insertAdjacentHTML('beforeend',_fileRow(f)));
+    tb=box.querySelector('tbody');
+    _bindFileRows(box);
+    // The server pages on STORE rows only: nextOffset/more/listCount come from
+    // the store page, never inflated by the archive rows (review fix).
+    filesOffset=(d.nextOffset!==undefined)?d.nextOffset:offset+(d.shown||0);
+    const listCount=(d.listCount!==undefined)?d.listCount:(d.count||0);
+    const more=d.more!==undefined?d.more:(filesOffset<listCount);
+    const moreRow=box.querySelector('#filesMoreRow'); if(moreRow)moreRow.remove();
+    if(more&&tb){
+      const tr=document.createElement('tr'); tr.id='filesMoreRow';
+      tr.innerHTML='<td colspan=4><a href="#" id=filesMore>Show more ('+filesOffset+' of '+listCount+' shown)</a></td>';
+      tb.appendChild(tr);
+      $('filesMore').onclick=e=>{e.preventDefault(); _filesPage(box,proj,filesOffset,true);};
+    }
+    return d;
+  });
 }
 $('filesRefresh')&&($('filesRefresh').onclick=loadFiles);
 $('filesProj')&&$('filesProj').addEventListener('keydown',e=>{if(e.key==='Enter')loadFiles();});
@@ -5329,7 +5448,20 @@ $('filesRmProj')&&($('filesRmProj').onclick=()=>{
 // server-acked offset takes over. An .mp3 is routed to the music store so it plays.
 // onPct(0..100) is called as it climbs. Resolves to the parsed JSON (or {}), rejects with
 // the HTTP status (or 0 on a network error). Reused by the chat drag-and-drop (CUM-57).
+// The name Files takes: printable ASCII with no space, at most 48 characters, the
+// extension kept. Hosted files keep every name a browser can give them this way.
+function _safeFileName(name,max){
+  const m=String(name||'file').match(/^(.*?)(\.[A-Za-z0-9]{1,8})?$/), clean=s=>s.replace(/[^\x21-\x7e]+/g,'-').replace(/[\/\\?%*:|"<>]+/g,'-').replace(/^[-.]+|-+$/g,'');
+  const ext=m[2]||''; return (clean(m[1])||'file').slice(0,(max||48)-ext.length).replace(/-+$/,'')+ext;
+}
+// A photo on its way to one turn: its own unique name, so two "image.jpg" never overwrite,
+// under the prefix the server removes once the turn has the bytes.
+function _chatPhotoFile(f){
+  const tag=Date.now().toString(36).slice(-6)+Math.random().toString(36).slice(2,6);
+  return new File([f],_safeFileName('att-'+tag+'-'+f.name),{type:f.type});
+}
 function uploadFile(file, proj, onPct){
+  if(HOSTED&&_safeFileName(file.name)!==file.name)file=new File([file],_safeFileName(file.name),{type:file.type});
   // The page is served under "/d/<id>/" over the tunnel and "/" on the local network;
   // XHR is not wrapped by the fetch base-rewriter, so prefix the app base by hand.
   const base=location.pathname.replace(/\/[^/]*$/,'');
@@ -5351,7 +5483,8 @@ function uploadFile(file, proj, onPct){
     if(base){poll=setInterval(()=>{fetch('/__upload_status?u='+uploadId).then(r=>r.ok?r.json():null)
       .then(p=>{if(p&&p.known&&p.total>0&&onPct)onPct(Math.min(100,Math.round(p.acked/p.total*100)));}).catch(()=>{});},400);}
     const done=()=>{if(poll){clearInterval(poll);poll=null;}};
-    x.onload=()=>{done();if(x.status>=200&&x.status<300){try{resolve(JSON.parse(x.responseText||'{}'));}catch(e){resolve({});}}else reject(x.status);};
+    x.onload=()=>{done();if(x.status>=200&&x.status<300){try{resolve(JSON.parse(x.responseText||'{}'));}catch(e){resolve({});}}
+      else{try{uploadFile.why=JSON.parse(x.responseText||'{}').error||'';}catch(e){uploadFile.why='';} reject(x.status);}};
     x.onerror=()=>{done();reject(0);};
     const fd=new FormData();fd.append('file',file,file.name);
     x.send(fd);
@@ -5604,7 +5737,7 @@ function loadTelegram(){
 $('tgAddBtn').onclick=()=>{const id=$('tgAddId').value.trim();if(id){tgPost('/api/telegram/add',{id:id,name:$('tgAddName').value.trim()},'Member added');$('tgAddId').value='';$('tgAddName').value='';}};
 $('tgPublic').onchange=()=>{
   if(!$('tgPublic').checked){tgPost('/api/telegram/public',{on:0},'Open access off');return;}
-  uiConfirm('Allow anyone to message this device?\n\nAnyone who finds your bot on Telegram can give it instructions and spend your API credits.',{ok:'Allow Public Access',danger:true}).then(ok=>{
+  uiConfirm('Allow anyone to message this '+(HOSTED?'instance':'device')+'?\n\nAnyone who finds your bot on Telegram can give it instructions and spend your API credits.',{ok:'Allow Public Access',danger:true}).then(ok=>{
     if(!ok){$('tgPublic').checked=false;return;}
     tgPost('/api/telegram/public',{on:1},'Open access on');
   });
@@ -5749,6 +5882,11 @@ function _chatHistoryEdges(log,d){
   if(d.indexComplete===false){const dv=line('Older history is still being indexed: '+(d.total||0)+' rows so far.');
     dv.id='chatIndexing';log.insertBefore(dv,log.firstChild);}
 }
+// What the owner sent, for their own bubble: a stored photo's label reads as a photo, not
+// its content hash, and the turn's framing around their words goes.
+function _chatSaid(t){
+  return String(t==null?'':t).replace(/\[(image|file) [^\]]*ref=[0-9a-f]{16}[^\]]*\]/g,(m,k)=>k==='image'?'[photo]':'[file]').replace(/\]\s*They wrote: /g,'] ');
+}
 function loadChatHistory(){
   const log=$('chatLog'); if(!log||_chatBusy)return;
   // No kind filter: message rows render as bubbles, tool_output/llm_response rows
@@ -5792,12 +5930,17 @@ function loadChatHistory(){
       if(_tagVal(m.tags,'ev:')==='clear'){const dv=document.createElement('div');
         dv.style.cssText='align-self:center;font-size:10.5px;color:var(--ink3);padding:6px 0;letter-spacing:.04em';
         dv.textContent=m.text; log.appendChild(dv); any=true; return;}
+      // What started a turn nobody typed (results arrived, a routine ran): the same quiet
+      // line, never an assistant bubble, and the turn's summary chip stays for its reply.
+      if(_tagVal(m.tags,'ev:')==='trigger'){const dv=document.createElement('div');
+        dv.style.cssText='align-self:center;font-size:10.5px;color:var(--ink3);padding:6px 0;letter-spacing:.04em';
+        dv.textContent=String(m.text||'').replace(/^\[|\]$/g,''); log.appendChild(dv); any=true; return;}
       // A user row's OWN id is its turn id; the reply row carries turn:<that id>.
       // Trace renders just above the reply it produced.
       const tid=m.role==='user'?m.id:_turnId(m);
       if(m.role==='user')liveTid=m.id;   // newest user row wins: the turn that may still be in flight
       if(m.role!=='user'&&tid&&byTurn[tid]){_traceGroup(log,byTurn[tid]);delete byTurn[tid];}
-      const bub=_chatBubble(m.role==='user'?'u':'a',m.text,m.role==='user'?_chatMeta(m):undefined);
+      const bub=_chatBubble(m.role==='user'?'u':'a',m.role==='user'?_chatSaid(m.text):m.text,m.role==='user'?_chatMeta(m):undefined);
       if(m.role!=='user'&&tid&&endByTurn[tid]){_turnChip(bub,endByTurn[tid]);delete endByTurn[tid];}
       any=true;
     });
@@ -5808,7 +5951,7 @@ function loadChatHistory(){
     // or a seedless routine/synthesis turn with no chat bubble - and is dropped, not
     // stacked as a wall of collapsed "N tool calls" rows the owner cannot place.
     if(liveTid&&byTurn[liveTid])_traceGroup(log,byTurn[liveTid]);
-    if(!any)log.innerHTML='<p class=hint>No conversation yet - say something below, message the bot on Telegram, or hold the mic button to talk.</p>';
+    if(!any)log.innerHTML=HOSTED?'<p class=hint>No conversation yet - say something below, or message the bot on Telegram.</p>':'<p class=hint>No conversation yet - say something below, message the bot on Telegram, or hold the mic button to talk.</p>';
     _chatHistoryEdges(log,d);
     if(!_chatOlder.length)log.scrollTop=log.scrollHeight;
   }).catch(e=>{onCardBusy(e,'chathist',loadChatHistory,log);});
@@ -5820,7 +5963,6 @@ function loadChatHistory(){
 // appears without the owner sending another message. Every 4 s while background
 // work may still deliver; otherwise every 30 s, so a reminder or routine that fires
 // into an idle open page (CUM-505) still shows up on its own.
-// Watches only a device that reports `busy`; a hosted instance keeps its own flow.
 let _chatWatchT=0,_chatAsync=-1,_chatWatchUntil=0;
 function _chatWatch(d,arm){
   if(!d||typeof d.busy!=='number')return;
@@ -5848,6 +5990,7 @@ function _chatWatchPoll(){
 // fills ITS OWN bubble; a prior turn's reply can never render under a newer message.
 let _chatQ=[];        // FIFO of {text,pend} awaiting their POST + poll cycle
 let _chatBusy=false;  // a turn is mid POST+poll (one outstanding at a time)
+let _chatAtt=[];      // hosted: "project/name" of photos the next message brings
 function _chatIdle(){$('chatMsg').textContent='';}
 function _chatPump(){
   if(_chatBusy)return;
@@ -5858,7 +6001,8 @@ function _chatPump(){
   // Done with this turn: free the slot, re-sync from the canonical store only when
   // nothing is queued behind us (so a still-pending bubble is never wiped), pump next.
   const done=resync=>{_chatBusy=false; if(resync&&!_chatQ.length)setTimeout(loadChatHistory,900); _chatPump();};
-  fetch('/api/chat',{method:'POST',body:new URLSearchParams({text:job.text})})
+  const form={text:job.text}; if(job.att)form.att=job.att;
+  fetch('/api/chat',{method:'POST',body:new URLSearchParams(form)})
     .then(r=>r.ok?r.json():r.json().then(e=>Promise.reject(e.error||r.status)))
     .then(p=>{
       const turn=p&&p.turn;   // match this turn's own reply by id (never "latest")
@@ -5889,21 +6033,39 @@ function _chatPump(){
     .catch(err=>{pend.textContent='✗ '+err;pend.style.opacity=1;done(false);});
 }
 function sendChatTurn(){
-  const t=$('chatInput'),v=(t.value||'').trim(); if(!v)return;
-  _chatBubble('u',v,'web'); t.value='';
+  const t=$('chatInput'),v=(t.value||'').trim(); if(!v&&!_chatAtt.length)return;
+  if(v)_chatBubble('u',v,'web'); t.value='';
   const pend=_chatBubble('a','…'); pend.style.opacity=.6;   // honest pending, even mid-turn
-  _chatQ.push({text:v,pend:pend});
+  _chatQ.push({text:v,pend:pend,att:_chatAtt.join('\n')});
+  _chatAtt=[];
   _chatPump();
 }
 $('chatSend')&&($('chatSend').onclick=sendChatTurn);
 loadChatHistory();
-if(!HOSTED)_chatWatchPoll();   // research already running when the page opened
+_chatWatchPoll();   // research already running when the page opened
 $('chatInput')&&$('chatInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChatTurn();}});
 
 // ---- Chat file upload: file picker + drag-and-drop (CUM-57) -----------------
 // Files upload to the shared artifact store (/api/files/upload) with a real
 // progress bar via the feedback helper, and land as a chat bubble so the
 // assistant can reference them. Reuses uploadFile() (token in the header).
+// A hosted photo larger than one image part is sent as a smaller JPEG: a phone photo is
+// many megabytes, and the head reads text at this size. A format the browser cannot
+// draw (HEIC) goes as it is, and the assistant says why it could not read it.
+function _chatShrink(f){
+  const max=450*1024; if(f.size<=max)return Promise.resolve(f);
+  return new Promise(res=>{const u=URL.createObjectURL(f),im=new Image();
+    im.onerror=()=>{URL.revokeObjectURL(u);res(f);};
+    im.onload=()=>{URL.revokeObjectURL(u);
+      const tryAt=(side,q)=>{const k=Math.min(1,side/Math.max(im.width,im.height)),c=document.createElement('canvas');
+        c.width=Math.round(im.width*k);c.height=Math.round(im.height*k);
+        c.getContext('2d').drawImage(im,0,0,c.width,c.height);
+        c.toBlob(b=>{if(!b){res(f);return;}
+          if(b.size>max&&side>640){tryAt(Math.round(side*.75),q);return;}
+          res(new File([b],f.name.replace(/\.[^.]*$/,'')+'.jpg',{type:'image/jpeg'}));},'image/jpeg',q);};
+      tryAt(1600,.82);};
+    im.src=u;});
+}
 function chatUpload(files){
   const list=Array.from(files||[]).filter(Boolean); if(!list.length)return;
   const proj='chat';
@@ -5912,12 +6074,16 @@ function chatUpload(files){
   let i=0;
   const next=()=>{
     if(i>=list.length)return;   // leave the last file's result state on screen
-    const f=list[i++];
+    const f=list[i++], photo=HOSTED&&/^image\//.test(f.type||'');
+    let name=f.name;
     run({status:'chatUpMsg',pending:'Uploading '+f.name+'…',
-      work:()=>uploadFile(f,proj,pct=>fbState('chatUpMsg','pending','Uploading '+f.name+'… '+pct+'%',pct)),
-      ok:()=>{if(typeof _chatBubble==='function')_chatBubble('u','Attached '+f.name+' (in Files > '+proj+'). Ask me about it.','web');
+      work:()=>(photo?_chatShrink(f).then(_chatPhotoFile):Promise.resolve(f)).then(up=>{name=up.name;uploadFile.why='';
+        return uploadFile(up,proj,pct=>fbState('chatUpMsg','pending','Uploading '+f.name+'… '+pct+'%',pct));}),
+      // Hosted: a photo goes to the assistant as an image with the next message.
+      ok:()=>{if(photo)_chatAtt.push(proj+'/'+name);
+        if(typeof _chatBubble==='function')_chatBubble('u',photo?'Attached '+f.name+'. It goes with your next message.':'Attached '+f.name+' (in Files > '+proj+'). Ask me about it.','web');
         return 'Attached '+f.name+'.';},
-      error:s=>'Upload of '+f.name+' failed'+(s?(' ('+s+')'):'')+' - check the file and try again.'})
+      error:s=>'Upload of '+f.name+' failed'+(HOSTED&&uploadFile.why?(': '+uploadFile.why):((s?(' ('+s+')'):'')+' - check the file and try again.'))})
       .then(next).catch(next);   // keep going even if one file fails
   };
   next();

@@ -34,6 +34,12 @@ struct HeadTools {
   // HeadLoopHooks.onText so mid-turn "thinking" reaches the engine's hook spine.
   std::function<void(const std::string& text, int round)> onRoundText;
 
+  // Optional round-boundary observer (lane PROG): providers forward it into
+  // HeadLoopHooks.progress so every round boundary of a running turn reaches the
+  // engine's hook spine (Hooks.onTurnProgress) - the moment a surface may signal
+  // work or look for queued messages, because no provider request is in flight.
+  std::function<void(const nimbus::orch::HeadProgress&)> onRoundProgress;
+
   // Optional recent-results spill (Context Fabric): forwarded into
   // HeadLoopHooks.spill - a clamped tool result's FULL text lands in the
   // results ring and the truncation marker carries the results.get handle.
@@ -58,6 +64,13 @@ struct HeadTools {
   // lead of the host it starts on (past a parked or paused head) and rewrites it when a round
   // moves to another host. Null = the input as given.
   std::function<std::string(const std::string& host)> inputLead;
+
+  // Optional prompt side of a refit (turn_fit.h, lane OVF): give up at least `want` bytes
+  // within `scope` and hand back the prompt and the input the next request sends. Returns
+  // the bytes given up, 0 = nothing left there. The engine may also empty `specs` on a late
+  // rung. Null = only the transcript can shrink.
+  std::function<size_t(size_t want, nimbus::orch::FitScope scope, std::string& instructions, std::string& inputs)>
+      fitPrompt;
 };
 
 }  // namespace agent

@@ -18,6 +18,24 @@ inline int32_t nextTelegramOffset(int32_t currentOffset, int32_t updateId) {
   return next > currentOffset ? next : currentOffset;  // never move the offset backwards
 }
 
+// The bot identity inside a bot token: the numeric id before the first ':' (public by
+// design - getMe returns it, and it is the id half of every token Telegram issues).
+// It names the bot in durable stores (the daemon's offset file, the history dedup
+// tag) WITHOUT keeping secret material on disk or in rows: update ids are per-bot, so
+// a store keyed by update id only means something relative to one bot, and a token
+// rotation to a different bot must not reuse the old bot's state. 0 when the token is
+// empty or not the "<digits>:<secret>" shape (0 is never a real bot id).
+inline int64_t tgBotIdOf(const char* token) {
+  if (!token) return 0;
+  int64_t id = 0;
+  const char* p = token;
+  for (; *p >= '0' && *p <= '9'; ++p) {
+    id = id * 10 + (*p - '0');
+    if (id > 99999999999LL) return 0;   // not a bot id shape
+  }
+  return *p == ':' ? id : 0;
+}
+
 // TgOffsetCursor - the getUpdates offset the poll loop works from.
 //
 // The replay loop it ends (14 Oct 2026): the settings storage (NVS) reached 0 free

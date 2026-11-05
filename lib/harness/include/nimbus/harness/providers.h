@@ -10,6 +10,7 @@
 #include "nimbus/harness/http.h"        // HttpTransport - the device/host seam
 #include "nimbus/orch/body_budget.h"    // bodyBudgetError - the refusal the tool loop reads back
 #include "nimbus/harness/reply_overflow.h"  // noteUnseenRun / takeUnseenRun (lane QW4)
+#include "nimbus/harness/websearch.h"   // websearch::Result - the provider-hosted search
 #include "nimbus/orch/head_loop.h"      // StepErr - the typed step error
 #include "nimbus/orch/provider_park.h"  // the one per-provider park (the host park's store)
 #include "nimbus/orch/token_usage.h"
@@ -54,8 +55,9 @@ namespace providers {
 // a body over it is REFUSED before the send (fail closed, named, the way
 // serializeChecked refuses an over-long string): a component that escapes
 // its cap costs one honest turn, not a TLS stall (lane O3's memory pressure).
-// Inside a tool loop the refusal is recoverable: nothing was sent, so the loop
-// folds older tool rounds and runs the round again (orch_head_loop.cpp).
+// The refusal is recoverable: nothing was sent, so the turn gives up what it can in a
+// defined order (older tool rounds, then history and the rest, turn_fit.h) and runs the
+// round again (orch_head_loop.cpp).
 // Photos splice in AFTER the check: they are their own bounded channel.
 inline constexpr size_t kWireBodyMax = 85000;
 static_assert(kWireBodyMax % 1000 == 0, "bodyBudgetError states the budget in whole KB");
@@ -118,6 +120,13 @@ struct ProviderDeps {
   // Optional per-request budget for the custom HEAD in ms; 0 = the 120 s head
   // default (CUST_HEAD_TIMEOUT_MS). The Z.ai heads set kZaiHeadTimeoutMs.
   uint32_t customHeadTimeoutMs = 0;
+  // The custom HEAD runs the tool loop (zaiLoopStep) when the engine passes tools. Set
+  // by applyZaiHeadPolicy. A LAN model keeps the single shot: a small model can wedge
+  // itself in a forced tool loop.
+  bool customToolLoop = false;
+  // Points a copy of these deps at the Z.ai head, so the fabric can run a round there.
+  // Unset = no Z.ai step on this surface.
+  std::function<void(ProviderDeps&)> zaiHead;
 
   // Cumulo router HEAD override (CUM-242 tool loop). When routerBase() is
   // non-empty, the three native head-turn wire helpers (antRequest / the OpenAI
@@ -229,7 +238,24 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd, const std::string& 
                                      const HeadTools& ht, nimbus::orch::TokenUsage* usage,
                                      nimbus::orch::Transcript& tr);
 
-// True iff the fabric loop can drive this host (anthropic/openai/mistral - the
+// One round on the custom-endpoint deps (Z.ai): pd already carries the endpoint,
+// applyZaiHeadPolicy's effort and budget, and the model.
+nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& instructions,
+                                     const HeadTools& ht, nimbus::orch::TokenUsage* usage,
+                                     nimbus::orch::Transcript& tr);
+
+// ---- web search hosted by the provider ------------------------------------------
+// web.search with no Tavily key (VN reality check, 1 Nov: "Every model answered that it
+// cannot look anything up"; CUM-823). Mistral's built-in search first: it answered with
+// the current release and its sources, live 1 Nov. Z.ai's second: it answered with a
+// release eight months old from Chinese-language blogs, so its results carry their dates.
+// Available when a provider with such a search has a key and is not parked.
+bool hostedWebSearchAvailable(const ProviderDeps& pd);
+websearch::Result hostedWebSearch(const ProviderDeps& pd, const std::string& query, int maxResults);
+websearch::Result mistralWebSearch(const ProviderDeps& pd, const std::string& query);
+websearch::Result zaiWebSearch(const ProviderDeps& pd, const std::string& query, int maxResults);
+
+// True iff the fabric loop can drive this host (anthropic/openai/mistral/zai - the
 // custom LAN backend is single-shot only). The engine consults this before
 // routing a turn to the fabric; keep in sync with loop_common's makeStep.
 bool fabricSupports(const std::string& host);
@@ -263,6 +289,22 @@ struct ResendCtx {
 };
 nimbus::orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx);
 
+// One host's tool loop: what the Cumulo router head, the hosted Virtual Nimbus and a device with
+// mid-turn failover off run. A round too big for the wire or the provider's window gives things
+// up and runs again, and a cut round runs once more with the note, exactly as in the fabric, with
+// no other host to move to. `make` builds the host's step on the prompt the requests send; it is
+// called again when a refit changes that prompt, so any state a step keeps must outlive it.
+using HostStepMaker = std::function<nimbus::orch::HeadStepFn(const std::string& instructions, nimbus::orch::Transcript& tr)>;
+struct HostLoop {
+  const ProviderDeps& pd;
+  const HeadTools& ht;
+  const char* who;    // the log's name for it
+  const char* host;
+  HostStepMaker make;
+};
+bool runHostLoop(const HostLoop& loop, const std::string& instructions, const std::string& inputs,
+                 std::string& outJson, std::string& err);
+
 // ---- the fabric's typed failover (lane K) --------------------------------------
 // Every failed round is classified (nimbus::orch::StepErr) and the fabric acts on
 // the kind (fabricRuleFor): one same-host resend only for a cause in transit
@@ -288,10 +330,17 @@ struct HostPark {
   nimbus::orch::StepErr kind = nimbus::orch::StepErr::None;
   int httpStatus = 0;
   uint8_t paused = 0;
+  nimbus::orch::ParkCause cause = nimbus::orch::ParkCause::Unspecified;   // what the router said
 };
 // Closed now? `why` (optional) receives the refusal or pause that closed it. A host
-// whose key changed since it was parked is open again (a new start).
+// whose key changed since it was parked is open again (a new start). A READ: a host whose
+// re-check is due reads open, and asking takes nothing (a candidate list asks about hosts
+// it will not call). The one probe is claimed by the wire when the request really leaves
+// (wire::exchange), so it cannot be spent on a host nobody called.
 bool hostParked(const ProviderDeps& pd, const std::string& host, HostPark* why = nullptr);
+// The park's re-check outcome lines reach the one log (idempotent; the wire and the
+// fabric call it, so a seam that only ever sends still logs them).
+void wireParkLog();
 void parkHost(const ProviderDeps& pd, const std::string& host, nimbus::orch::StepErr kind,
               int httpStatus);
 // A failed round there: parks on a billing or auth refusal; re-arms an existing
@@ -356,9 +405,10 @@ std::string mistralCallId(const std::string& id);
 // on a 400 it retries once schema-less with a JSON-only nudge, leaning on the
 // engine's lenient parseHeadReply + salvage). Each request may take up to the
 // head budget: pd.customHeadTimeoutMs, else 120 s (the OpenAI/Anthropic ceiling).
-// The Z.ai heads share this path with their own 50 s budget (kZaiHeadTimeoutMs).
-// v1 has NO tool loop (`tools` advertises nothing; when the engine passes it,
-// its round floor drives the one resend of a request that never left, CUM-477);
+// The Z.ai heads share this path with their own 50 s budget (kZaiHeadTimeoutMs), and
+// run the tool loop when tools are passed (pd.customToolLoop). A LAN head has NO tool
+// loop (`tools` advertises nothing; when the engine passes it, its round floor drives
+// the one resend of a request that never left, CUM-477);
 // customConv "anthropic" is refused (the head speaks chat-completions only).
 // Registered in orchestrator.cpp ONLY when store::hasCustom().
 // A request that reached the provider but got no answer inside the budget fails
@@ -379,6 +429,11 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
 inline constexpr uint32_t kHeadRoundCeilingMs = 120000;   // anthropic, openai, mistral, custom heads
 inline constexpr uint32_t kSyncSubCeilingMs   = 120000;   // a sub that runs inside its POST
 inline constexpr uint32_t kMinRoundMs         = 8000;     // a near-exhausted final round still gets a shot
+// Mistral's gateway closes a non-streamed request at 60 s: measured 1 Nov on
+// mistral-large-4-0 and mistral-medium-latest (60.1 s, no response). A deadline just past
+// it reads the close as a timeout, so the turn fails over at once. At 120 s the close read
+// as a dead network and paid a same-host retry for another 60 s (the 3m56s album, 31 Oct).
+inline constexpr uint32_t kMistralRoundMs     = 65000;
 
 // ---- Z.ai (GLM) wire policy (CUM-544) ---------------------------------------
 // ONE place for every Z.ai request path: the direct BYOK head, the Cumulo
@@ -393,7 +448,8 @@ inline constexpr uint32_t    kZaiHeadTimeoutMs   = 50000;
 // "zai" -> kZaiReasoningEffort; every other name -> "".
 const char* reasoningEffortFor(const std::string& upstream);
 // Apply the Z.ai head policy to a pd already pointed at a Z.ai endpoint:
-// json_object mode (CUM-495), kZaiReasoningEffort, kZaiHeadTimeoutMs.
+// json_object mode for a single shot (CUM-495), the tool loop, kZaiReasoningEffort,
+// kZaiHeadTimeoutMs.
 void applyZaiHeadPolicy(ProviderDeps& pd);
 // Point pd at the Cumulo router's single-shot chat-completions head for an
 // upstream the native fabric does not drive (zai, or any unknown name):

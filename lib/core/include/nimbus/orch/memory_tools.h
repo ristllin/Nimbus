@@ -60,8 +60,18 @@ enum class EmbedFail {
                     // disagree with the model's native width, e.g. mistral-embed 1024)
   NoModel,          // no embeddings model configured
   BadRequest,       // nothing to embed (empty text)
-  Unknown           // an unmapped token (generic line)
+  Unknown,          // an unmapped token (generic line)
+  CallTooLarge,     // the router's clamp: the wallet holds credits, this call does not fit
+  RouterHeld,       // the router cannot serve it now (an upstream or platform limit, not the account)
+  AccountHeld       // the account is suspended, or this device reached its monthly limit
 };
+inline constexpr EmbedFail kEmbedFailLast = EmbedFail::AccountHeld;
+
+// The err token of an embedding the provider refused with `status`, in the vocabulary
+// classifyEmbedFail reads. `code` is the answer's machine code (core::parseErrorCode),
+// bounded and secret-safe. Over the Cumulo router the reason in `body` decides; directly,
+// a 401 or 403 is the key.
+std::string embedRefusalToken(int status, const std::string& body, const std::string& code, bool viaRouter);
 
 // Classify a raw failure token from `agent::embeddings::embedWith` err. Pure +
 // host-tested. `detail` receives ONLY a bounded, secret-safe extra (a KNOWN
@@ -173,6 +183,10 @@ struct MemoryContext {
   std::function<bool()> clockSynced = [] { return true; };
   // The configured embeddings provider slug, named in the words only when known.
   std::function<std::string()> embedProvider;
+  // Does this assistant hold any key that can create embeddings? True while it still
+  // cannot embed means the key cannot reach the memories already stored (their space is
+  // fixed), which has a different fix from holding no such key. Null = none held.
+  std::function<bool()> holdsEmbedKey;
   // A park started for a new reason (raw = the seam's token). The device tells
   // the owner once per billing episode.
   std::function<void(EmbedFail kind, const std::string& raw)> onParked;

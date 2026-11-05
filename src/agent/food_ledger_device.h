@@ -15,5 +15,7 @@ namespace agent::foodledger {
 // under the file store's read boundary. No card or no file = no ledger; a failed read
 // is an error the block states (never a total).
 nimbus::orch::FoodLedger today(const std::string& chatId, const nimbus::orch::Principal& who);
+// The person's earlier rows of the foods a message names (food_ledger.h FoodRecallScan), for its prompt.
+std::string recall(const std::string& chatId, const nimbus::orch::Principal& who, const std::string& message);
 
 }  // namespace agent::foodledger

@@ -2720,6 +2720,98 @@ static void test_sandbox_and_github_lines_follow_paused_providers() {
                    std::string::npos);
 }
 
+// ---- lane CONN: a head model that refuses connectors is never promised them ----
+
+// mistral-large-4-0 refuses Mistral's built-in connectors (HTTP 400, code 3004,
+// recorded 31 Oct; the wire drops them after one rebuilt retry). The catalog and
+// the Capabilities scope must therefore say SubsessionsOnly for EVERY Mistral
+// connector on such a head, never "callable on YOUR OWN turns": the head cannot
+// run them, so promising them invites a guessed answer (CUM-536's class).
+static void test_model_refuses_builtin_connectors_family() {
+  TEST_ASSERT_TRUE(nimbus::orch::modelRefusesBuiltinConnectors("mistral-large-4-0"));
+  TEST_ASSERT_TRUE(nimbus::orch::modelRefusesBuiltinConnectors("mistral-large-4-1"));
+  TEST_ASSERT_FALSE(nimbus::orch::modelRefusesBuiltinConnectors("mistral-medium-latest"));
+  TEST_ASSERT_FALSE(nimbus::orch::modelRefusesBuiltinConnectors("mistral-small-latest"));
+  TEST_ASSERT_FALSE(nimbus::orch::modelRefusesBuiltinConnectors("magistral-medium-latest"));
+  TEST_ASSERT_FALSE(nimbus::orch::modelRefusesBuiltinConnectors("glm-5.3"));
+  TEST_ASSERT_FALSE(nimbus::orch::modelRefusesBuiltinConnectors("claude-sonnet-5"));
+  TEST_ASSERT_FALSE(nimbus::orch::modelRefusesBuiltinConnectors(""));
+}
+
+// A workspace answer that lists exactly `id` (via the shared CUM-537 helper shape).
+static MistralWorkspace wsListingOne(const char* id) {
+  MistralWorkspace ws;
+  ws.probed = true;
+  ws.listed = std::string("\n") + id + "\n";
+  return ws;
+}
+
+static void test_refusing_head_makes_mistral_connectors_sub_only() {
+  std::vector<ConnectorInfo> cs = {studio("gcal"), mk("web_search", "mistral", "builtin")};
+  nimbus::orch::applyConnectorAuth(cs, wsListingOne("google_calendar"));
+  ProviderState ps;
+  ps.mistralKeyed = true;
+  ps.currentHost = "mistral";
+  ps.headModel = "mistral-large-4-0";
+  TEST_ASSERT_EQUAL(1, cs[0].auth);   // listed: usable, so the scope below is about the HEAD MODEL
+  TEST_ASSERT_EQUAL((int)CapScope::SubsessionsOnly, (int)connectorScope(cs[0], ps));
+  TEST_ASSERT_EQUAL((int)CapScope::SubsessionsOnly, (int)connectorScope(cs[1], ps));
+  const std::string t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("Connectors on mistral are callable on YOUR OWN turns") ==
+                   std::string::npos);
+  TEST_ASSERT_TRUE(t.find("refuses Mistral's built-in connectors") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("run ONLY on a sub-agent you spawn on mistral") != std::string::npos);
+  // Control: a head model that accepts them keeps the direct promise.
+  ps.headModel = "mistral-medium-latest";
+  TEST_ASSERT_EQUAL((int)CapScope::OrchestratorDirect, (int)connectorScope(cs[0], ps));
+  TEST_ASSERT_EQUAL((int)CapScope::OrchestratorDirect, (int)connectorScope(cs[1], ps));
+  TEST_ASSERT_TRUE(catalogText(cs, ps).find(
+                       "Connectors on mistral are callable on YOUR OWN turns") != std::string::npos);
+  // An unknown head model ("" - an older build) keeps the historical claim: the
+  // wire layer still guards the real request (one retry without the connectors).
+  ps.headModel.clear();
+  TEST_ASSERT_EQUAL((int)CapScope::OrchestratorDirect, (int)connectorScope(cs[0], ps));
+}
+
+// The class rule, not the instance: EVERY known catalog connector that can run on
+// mistral is sub-only on a refusing mistral head, whatever its kind.
+static void test_refusing_head_sub_only_for_every_mistral_connector() {
+  int n = 0;
+  const nimbus::orch::KnownConnector* k = knownConnectors(n);
+  ProviderState ps;
+  ps.mistralKeyed = true;
+  ps.currentHost = "mistral";
+  ps.headModel = "mistral-large-4-0";
+  int checked = 0;
+  for (int i = 0; i < n; i++) {
+    if (std::string(k[i].providers).find("mistral") == std::string::npos) continue;
+    ConnectorInfo c = mk(k[i].id, "mistral", k[i].kind);
+    c.auth = 1;   // usable: the scope below is about the head model alone
+    TEST_ASSERT_EQUAL_MESSAGE((int)CapScope::SubsessionsOnly, (int)connectorScope(c, ps), k[i].id);
+    checked++;
+  }
+  TEST_ASSERT_TRUE(checked >= 6);   // gmail, gcal, gdrive, notion, github, slack, linear, builtins
+}
+
+// A Mistral client's Gmail is authorized in Mistral's console, then enabled on
+// the device with Mistral as the provider (the owner's ask). The catalog's
+// not-configured guidance must name the console FIRST for Mistral-reachable
+// connectors, and must not promise it with no Mistral key.
+static void test_catalog_mistral_client_setup_names_console_first() {
+  ProviderState ps;
+  ps.mistralKeyed = true;
+  ps.currentHost = "mistral";
+  ps.headModel = "mistral-large-4-0";
+  const std::string t = catalogText({}, ps);
+  TEST_ASSERT_TRUE(t.find("Not configured") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("gmail") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("Mistral's console") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("then enables it on the device web page") != std::string::npos);
+  ProviderState off = ps;
+  off.mistralKeyed = false;   // no Mistral key: the console line would be a false promise
+  TEST_ASSERT_TRUE(catalogText({}, off).find("Mistral's console") == std::string::npos);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_mistral_connector_id_shared_map);
@@ -2819,5 +2911,9 @@ int main() {
   RUN_TEST(test_pdf_route_skips_a_paused_provider);
   RUN_TEST(test_head_location_reads_the_chat_seam);
   RUN_TEST(test_sandbox_and_github_lines_follow_paused_providers);
+  RUN_TEST(test_model_refuses_builtin_connectors_family);
+  RUN_TEST(test_refusing_head_makes_mistral_connectors_sub_only);
+  RUN_TEST(test_refusing_head_sub_only_for_every_mistral_connector);
+  RUN_TEST(test_catalog_mistral_client_setup_names_console_first);
   return UNITY_END();
 }

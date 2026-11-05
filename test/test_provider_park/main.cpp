@@ -109,7 +109,7 @@ const Refusal kRefusals[] = {
     {429, "{\"error\":{\"code\":\"insufficient_quota\"}}", true, true},                        // OpenAI quota
     {400, "{\"error\":{\"message\":\"Your credit balance is too low to access the Anthropic API.\"}}", true, true},
     {402, "{}", true, true},                                                                  // every 402
-    {429, "{\"error\":\"ceiling_reached\"}", true, true},                                     // the router's cap
+    {429, "{\"error\":\"ceiling_reached\"}", false, false},                                   // the platform's cap, not this account's
     {401, "{\"error\":{\"message\":\"invalid x-api-key\"}}", true, true},                     // a refused key
     {403, "{\"error\":{\"message\":\"model not allowed for this project\"}}", true, false},   // one model / endpoint
     {429, "{\"error\":{\"message\":\"Rate limit reached for requests per minute\"}}", false, false},   // counter-test
@@ -399,6 +399,22 @@ struct SpawnRig {
     eng->pump();
   }
 };
+
+// CUM-889: the spawn picker and the catalog read the park. A due re-check reads open and
+// stays due: the probe is taken by the request that leaves, not by a question about a
+// provider nobody then calls.
+static void test_the_spawn_picker_does_not_spend_the_recheck() {
+  providerPark().clear();
+  SpawnRig r;
+  r.plat.ms = 5000;
+  providerPark().noteAnswer("openai", PaidSeam::Chat, 0, 402, "{}", r.plat.ms);
+  r.plat.ms += orch::ProviderPark::kRecheckMs + 1;
+  r.spawn("");   // the picker and the spawn's own gate both read it, due
+  orch::ParkEntry e[orch::ProviderPark::kMaxProviders];
+  TEST_ASSERT_EQUAL_UINT(1, providerPark().snapshot(e, orch::ProviderPark::kMaxProviders, r.plat.ms));
+  TEST_ASSERT_FALSE(e[0].probing);
+  TEST_ASSERT_TRUE(providerPark().claimProbe("openai", PaidSeam::Spawn, r.plat.ms));   // still there for the wire
+}
 
 static void test_embedding_refusal_closes_vision_spawn_and_chat() {
   // The embedding seam meets the refusal (device: embeddings.cpp -> gate::noteAnswer).
@@ -815,6 +831,7 @@ int main(int, char**) {
   RUN_TEST(test_pause_is_ram_only_and_survives_a_load);
   RUN_TEST(test_forget_parks_is_saved_and_keeps_pauses);
   RUN_TEST(test_records_live_in_the_memory_the_device_gives);
+  RUN_TEST(test_the_spawn_picker_does_not_spend_the_recheck);
   RUN_TEST(test_embedding_refusal_closes_vision_spawn_and_chat);
   RUN_TEST(test_rate_limit_on_one_seam_parks_nothing);
   RUN_TEST(test_spawn_refused_when_every_provider_is_closed);

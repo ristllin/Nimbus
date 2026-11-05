@@ -257,7 +257,7 @@ uint64_t parseCeilingCents(const std::string& field, uint64_t floorMicro) {
   }
   if (cents == 0) return 0;
   const uint64_t micro = (cents > kMaxCents ? kMaxCents : cents) * 10000ULL;
-  return micro < floorMicro ? floorMicro : micro;
+  return micro < floorMicro ? 0 : micro;
 }
 
 // ---- copy ------------------------------------------------------------------------

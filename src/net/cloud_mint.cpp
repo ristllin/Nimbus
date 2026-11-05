@@ -137,7 +137,7 @@ static void runOne() {
                            (size_t)(_nimbusCrtBundleEnd - _nimbusCrtBundleStart));
     client.setHandshakeTimeout(12);
     client.setConnectionTimeout(15000);
-    if (client.connect(host.c_str(), 443)) {
+    if (connectHost(client, host.c_str(), 443)) {
       String req = String("POST /router/device-key HTTP/1.0\r\nHost: ") + host +
                    "\r\nContent-Type: application/json\r\nAccept-Encoding: identity"
                    "\r\nUser-Agent: Nimbus\r\nContent-Length: ";

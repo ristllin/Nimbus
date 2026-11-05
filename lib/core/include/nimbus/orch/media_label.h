@@ -88,6 +88,15 @@ extern const char kAttachedSuffix[];
 // The suffix of a photo seen in its turn with no note (Seen), word for word.
 extern const char kSeenSuffix[];
 
+// Why a photo or file could not be taken (the channel's reasons; refusalOf, the fetch).
+extern const char kMediaNoCard[];
+extern const char kMediaTooLarge[];
+extern const char kMediaOverQuota[];
+// The one reply to a sender whose whole message was media that could not be taken: what
+// happened and the next step, whatever the reason (`many`: more than one item). Without
+// it the sender hears nothing, because no turn runs for such a message.
+std::string mediaRefusedReply(const std::string& why, bool many);
+
 // A late or redelivered item: its Telegram date is more than kLateItemS before the
 // device clock (false while the clock is unset, before 2020). Such an item carries
 // its send time in the turn (the label's "sent", a text's "(sent 09:58)") and its

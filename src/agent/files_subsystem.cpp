@@ -28,8 +28,11 @@
 #include "nimbus/orch/episodic.h"     // textMatchScore (files.search)
 #include "nimbus/orch/file_append.h"  // files.append + the files.read tail view
 #include "nimbus/orch/file_swap.h"    // whole-file replace without a moment the file is gone
+#include "nimbus/orch/file_edit.h"    // files.edit: the streaming text substitution
+#include "nimbus/orch/ledger_migrate.h"  // v4.6.3: the legacy meal-log fold
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
+#include "nimbus/orch/turn_effects.h"  // kSaveReplacedNote: the save receipt
 #include "nimbus/orch/provider_caps.h"  // LocalDate - the upsert's today
 #include "nimbus/orch/spend_ceiling.h"  // paidCallAllowed - the scan's gate before the download (lane QW4)
 #include "nimbus/orch/tool_registry.h"
@@ -80,9 +83,16 @@ bool uploadActiveLocked() {
   return g_w.active;
 }
 
-std::string dirOf(const std::string& project) { return std::string(kRoot) + "/" + project; }
-std::string pathOf(const std::string& project, const std::string& name) {
-  return dirOf(project) + "/" + name;
+std::string dirOf(std::string_view project) {
+  std::string out = std::string(kRoot) + "/";
+  out.append(project.data(), project.size());
+  return out;
+}
+std::string pathOf(std::string_view project, std::string_view name) {
+  std::string out = dirOf(project);
+  out += '/';
+  out.append(name.data(), name.size());
+  return out;
 }
 
 // Persist the index atomically (same .tmp+rename pattern as the memory blobs).
@@ -265,7 +275,7 @@ uint32_t nowEpoch() {
   return t > 1000000000 ? uint32_t(t) : 0;   // 0 = clock not synced (same test as nowHours)
 }
 
-void jsonEscapeInto(String& out, const std::string& s) {
+void jsonEscapeInto(String& out, std::string_view s) {
   // Segments are printable-ASCII with no quotes/backslashes possible per
   // validSegment, but escape defensively anyway.
   for (char c : s) {
@@ -277,6 +287,8 @@ void jsonEscapeInto(String& out, const std::string& s) {
 void registerTools();   // fwd (bottom)
 
 }  // namespace
+
+void migrateLegacyMealLog();   // fwd: the one-time legacy meal-log fold (below)
 
 void begin() {
   memory::Lock g;
@@ -344,6 +356,7 @@ void begin() {
   reindexRecovered(swapped);
   reindexRecovered(g_keptAside);   // the owner sees it in the Files list
   fs.remove(kPartPath);   // stale partial from a crash mid-upload
+  migrateLegacyMealLog();   // v4.6.3: the one-time fold into the designed ledger
   alogf("files: ready (%u files, %llu KB)", unsigned(g_store.count()),
         (unsigned long long)(g_store.totalBytes() / 1024));
   registerTools();
@@ -351,10 +364,10 @@ void begin() {
 
 bool available() { return g_begun && memory::haveSd(); }
 
-void stats(bool& present, uint16_t& count, uint64_t& bytes, uint32_t& freeBytes) {
+void stats(bool& present, uint32_t& count, uint64_t& bytes, uint32_t& freeBytes) {
   memory::Lock g;
   present = available();
-  count = uint16_t(g_store.count());
+  count = uint32_t(g_store.count());
   bytes = g_store.totalBytes();
   freeBytes = uint32_t(g_store.limits().maxTotalBytes > bytes
                            ? g_store.limits().maxTotalBytes - bytes : 0);
@@ -369,7 +382,7 @@ StorageTruth storageTruth() {
   StorageTruth t;
   t.present     = available();
   t.unsupported = g_cardUnsupported;
-  t.files       = uint16_t(g_store.count());
+  t.files       = uint32_t(g_store.count());
   t.used        = g_store.totalBytes();
   t.quota       = g_store.limits().maxTotalBytes;
   t.cardTotal   = (uint64_t)solide::storage::cardSizeMB() << 20;
@@ -384,8 +397,66 @@ bool noteRefusal(const std::string& err) {
 
 bool takeFullNotice() { return g_full.takeNotice(); }
 
+bool takeReclaimNotice() { return g_full.takeReclaimNotice(); }   // lane FSCAP
+
 std::string refusalForHead(const std::string& err) {
   return noteRefusal(err) ? err + nimbus::orch::kStoreFullToolNote : err;
+}
+
+// Lane FSCAP: the store's real space limit is its byte quota (scaled from the card
+// at mount), never a file count. When a save would exceed the quota, the oldest
+// REGENERABLE copies go first - chat-attachment copies only (the Telegram archive
+// keeps the original) - never the owner's own artifacts or any other project's
+// file, even one holding the same content as a newer entry.
+// Removes their bytes and index rows, persists, and raises the episode's one
+// reclaim notice. Returns true when anything was reclaimed; the caller re-checks
+// wouldExceed and refuses with kErrStoreFull only when even that was not enough.
+// Caller holds memory::Lock.
+bool reclaimRoomLocked(const std::string& project, const std::string& name, uint64_t addBytes) {
+  std::string err;
+  if (!g_store.wouldExceed(project, name, addBytes, err)) return false;
+  if (err != nimbus::orch::FileStore::kErrStoreFull) return false;
+  const nimbus::orch::FileEntry* cur = g_store.find(project, name);
+  const uint64_t replaced = cur ? cur->bytes : 0;
+  const uint64_t total = g_store.totalBytes();
+  const uint64_t quota = g_store.limits().maxTotalBytes;
+  const uint64_t over = total - replaced + addBytes;
+  if (over <= quota) return false;
+  const auto plan = g_store.planEviction(over - quota);
+  if (plan.empty()) return false;
+  uint64_t freed = 0;
+  for (const auto* e : plan) freed += e->bytes;
+  if (freed < over - quota) return false;   // the copies cannot cover the need: evicting them would lose data for a save that still refuses
+  // Copy the identities FIRST: remove() erases from the index vector and shifts
+  // the rest, so a plan pointer read after a remove names the wrong entry.
+  struct Victim { std::string project, name; uint32_t bytes; };
+  std::vector<Victim> victims;
+  victims.reserve(plan.size());
+  for (const auto* e : plan) victims.push_back(Victim{nimbus::orch::plainCopy(e->project), nimbus::orch::plainCopy(e->name), e->bytes});
+  freed = 0;
+  for (const auto& v : victims) {
+    memory::dataFs().remove(pathOf(v.project, v.name).c_str());
+    g_store.remove(v.project, v.name);
+    freed += v.bytes;
+    alogf("files: reclaimed %s/%s (%u B) - a regenerable copy, the original is kept elsewhere",
+          v.project.c_str(), v.name.c_str(), (unsigned)v.bytes);
+  }
+  persistIndex();
+  g_full.reclaimed();   // the owner hears it once per episode, in plain words
+  alogf("files: reclaimed %llu B from %zu regenerable cop%s to make room",
+        (unsigned long long)freed, plan.size(), plan.size() == 1 ? "y" : "ies");
+  return true;
+}
+
+// Pre-check a save against the store, reclaiming regenerable copies first when the
+// byte quota is the blocker. Returns the final wouldExceed verdict in `err`.
+// Caller holds memory::Lock.
+bool checkRoomLocked(const std::string& project, const std::string& name, uint64_t addBytes,
+                     std::string& err) {
+  if (!g_store.wouldExceed(project, name, addBytes, err)) return false;
+  if (err == nimbus::orch::FileStore::kErrStoreFull && reclaimRoomLocked(project, name, addBytes))
+    return g_store.wouldExceed(project, name, addBytes, err);
+  return true;
 }
 
 // ---- streaming upload session ------------------------------------------------
@@ -399,7 +470,7 @@ static bool beginSession(const std::string& project, const std::string& name,
   if (!available()) { err = "no SD card - artifact store absent"; return false; }
   if (uploadActiveLocked()) { err = "another upload is in progress"; return false; }
   // Refuse BEFORE the first chunk (quota + path safety live in the core).
-  if (g_store.wouldExceed(project, name, expectedBytes, err)) return false;
+  if (checkRoomLocked(project, name, expectedBytes, err)) return false;   // FSCAP: reclaim copies first
   // Ownership boundary (prism v4.1 #10): (project,name) is the identity and the
   // finish rename REPLACES - without this, a capture stamped with one chat's ns
   // could silently DESTROY another principal's artifact. Same check files.save
@@ -453,7 +524,7 @@ bool finishWrite(bool ok, std::string& err) {
   fs::FS& fs = memory::dataFs();
   if (!ok) { fs.remove(kPartPath); g_w = WriteSession{}; err = "upload aborted"; return false; }
   // Final quota check with the REAL size (client size hints can lie low too).
-  if (g_store.wouldExceed(g_w.project, g_w.name, g_w.written, err)) {
+  if (checkRoomLocked(g_w.project, g_w.name, g_w.written, err)) {   // FSCAP: reclaim copies first
     fs.remove(kPartPath); g_w = WriteSession{};
     return false;
   }
@@ -501,16 +572,26 @@ bool writeBusy() { memory::Lock g; return uploadActiveLocked(); }
 
 // ---- direct ops ----------------------------------------------------------------
 
-bool saveStream(const std::string& project, const std::string& name,
-                fs::FS& srcFs, const char* srcPath, std::string& err,
-                const std::string& ownerNs) {
+bool holdsSameContent(const char* chatId, const std::string& contentHash, const std::string& ns) {
+  memory::Lock g;
+  if (!available()) return false;
+  return g_store.sameContent(std::string("chat-") + chatId, strtoull(contentHash.c_str(), nullptr, 16), ns) != nullptr;
+}
+
+bool saveStream(const std::string& project, const std::string& name, const StagedFile& staged, std::string& err,
+                const std::string& ownerNs, const std::string& contentHash) {
   memory::Lock g;
   if (!available()) { err = "no SD card - artifact store absent"; return false; }
   if (uploadActiveLocked()) { err = "an upload is in progress - try again"; return false; }
-  File src = srcFs.open(srcPath, FILE_READ);
+  const uint64_t hash = strtoull(contentHash.c_str(), nullptr, 16);
+  if (const auto* same = g_store.sameContent(project, hash, ownerNs)) {
+    alogf("files: %s/%s is a copy of %s - not stored again", project.c_str(), name.c_str(), same->name.c_str());
+    return true;
+  }
+  File src = staged.fs.open(staged.path, FILE_READ);
   if (!src) { err = "couldn't read the staged file"; return false; }
   const size_t total = src.size();
-  if (g_store.wouldExceed(project, name, total, err)) { src.close(); return false; }
+  if (checkRoomLocked(project, name, total, err)) { src.close(); return false; }   // FSCAP
   fs::FS& fs = memory::dataFs();
   fs.mkdir(dirOf(project).c_str());
   fs.remove(kPartPath);
@@ -533,6 +614,7 @@ bool saveStream(const std::string& project, const std::string& name,
   e.bytes = (uint32_t)written;
   e.createdAt = nowEpoch();
   e.kind = nimbus::orch::fileKindForName(name);
+  e.hash = hash;
   return commitPart(e, err);
 }
 
@@ -542,7 +624,7 @@ bool saveText(const std::string& project, const std::string& name,
   memory::Lock g;
   if (!available()) { err = "no SD card - artifact store absent"; return false; }
   if (uploadActiveLocked()) { err = "an upload is in progress - try again"; return false; }
-  if (g_store.wouldExceed(project, name, text.size(), err)) return false;
+  if (checkRoomLocked(project, name, text.size(), err)) return false;   // FSCAP
   fs::FS& fs = memory::dataFs();
   fs.mkdir(dirOf(project).c_str());
   fs.remove(kPartPath);
@@ -570,7 +652,7 @@ bool saveBytes(const std::string& project, const std::string& name,
   if (!available()) { err = "no SD card - artifact store absent"; return false; }
   if (uploadActiveLocked()) { err = "an upload is in progress - try again"; return false; }
   if (!data || len == 0) { err = "empty buffer"; return false; }
-  if (g_store.wouldExceed(project, name, len, err)) return false;
+  if (checkRoomLocked(project, name, len, err)) return false;   // FSCAP
   fs::FS& fs = memory::dataFs();
   fs.mkdir(dirOf(project).c_str());
   fs.remove(kPartPath);
@@ -609,7 +691,7 @@ std::string absPath(const std::string& project, const std::string& name) {
 // Text-document gate for reads that reach model context (files.read + attach
 // splicing): content types only - a binary blob spliced into a brief is noise
 // at best. Mirrors inlineViewable's spirit at the tool layer.
-static bool textDocName(const std::string& name) {
+static bool textDocName(std::string_view name) {
   auto ends = [&](const char* ext) {
     const size_t n = strlen(ext);
     if (name.size() < n) return false;
@@ -620,14 +702,14 @@ static bool textDocName(const std::string& name) {
   return ends(".md") || ends(".txt") || ends(".json") || ends(".csv") || ends(".log");
 }
 
-static bool fileKindIsCsv(const std::string& name) {
-  return name.size() > 4 && strcasecmp(name.c_str() + name.size() - 4, ".csv") == 0;
+static bool fileKindIsCsv(std::string_view name) {
+  return nimbus::orch::isCsvName(std::string(name));
 }
 
 // Bounded SD read of one doc through a PSRAM buffer (never internal SRAM). `ok`
 // (optional) is false when the file could not be opened or read in full up to
 // the cap, so a caller can tell a card fault from an empty file.
-static std::string readWhole(const std::string& project, const std::string& name,
+static std::string readWhole(std::string_view project, std::string_view name,
                              size_t cap, bool* ok = nullptr) {
   memory::Lock g;
   if (ok) *ok = false;
@@ -702,6 +784,103 @@ static std::string csvHeader(File& f, const std::string& window, size_t start) {
   return h;
 }
 
+// A file's size on the card, kUnreadableBytes when it cannot be opened (past any read cap).
+static constexpr size_t kUnreadableBytes = SIZE_MAX;
+static size_t fileBytes(const char* project, const char* name) {
+  File f = memory::dataFs().open(pathOf(project, name).c_str(), FILE_READ);
+  if (!f) return kUnreadableBytes;
+  const size_t n = f.size();
+  f.close();
+  return n;
+}
+
+// v4.6.3 (the 30 Oct Lumi investigation): the one-time fold of the legacy meal
+// log into the designed ledger. The investigated device held an ad-hoc log
+// (nutrition/meal_log.csv: headerless, five generations of the same days in
+// four schemas) whose keyed writes all refused and whose "corrections" all
+// appended duplicates. The designed ledger (ONE file, one row per meal,
+// corrections by key) is where meals belong; this folds the legacy file's
+// final figures into it once at boot and removes the legacy file, so the
+// model stops appending to an unfixable orphan. Only the owner's file folds, and the
+// file goes only when all its figures reached the ledger. Caller holds the Lock (begin).
+void migrateLegacyMealLog() {
+  constexpr const char* kLegacyProject = "nutrition";
+  constexpr const char* kLegacyName = "meal_log.csv";
+  const nimbus::orch::FileEntry* legacyEntry = g_store.find(kLegacyProject, kLegacyName);
+  if (!legacyEntry) return;
+  if (!nimbus::orch::legacyLogFoldable(g_store, *legacyEntry)) {
+    alogf("files: legacy %s/%s left alone (it is not the owner's file)", kLegacyProject, kLegacyName);
+    return;
+  }
+  const std::string legacyOwner = nimbus::orch::plainCopy(legacyEntry->owner);   // the ledger's save below may move the entry
+  // A designed ledger may already exist: on 31 Oct the head rebuilt the legacy file next
+  // to it and logged every later meal there. Those rows fold in too; the ledger's own rows
+  // keep their keys.
+  const bool ledgerStored = g_store.find(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName) != nullptr;
+  // PRISM v4.6.3 row 1: the fold reads the file through a bounded read
+  // (kFoldCap, below). A file OVER that cap must be left ENTIRELY alone: the
+  // read would silently take only its head, and under append order the tail
+  // holds the owner's LATEST generations - exactly the final figures the fold
+  // exists to keep - and the orphan would then be removed. Never fold what
+  // was not fully read. The ledger is held to the same rule: the fold replaces it
+  // and deletes the legacy file, so a short read of either (a badly seated card, a ledger
+  // past the cap) leaves both as they are (planLedgerFold).
+  constexpr size_t kFoldCap = nimbus::orch::kLedgerFoldCap;
+  const size_t legacyBytes = fileBytes(kLegacyProject, kLegacyName);
+  if (legacyBytes == kUnreadableBytes) return;   // the index names the file; the card may have lost it - nothing to fold
+  if (legacyBytes > kFoldCap) {
+    alogf("files: legacy %s/%s is %u KB - too large to fold safely, left in place",
+          kLegacyProject, kLegacyName, (unsigned)(legacyBytes / 1024));
+    return;
+  }
+  const size_t ledgerBytes = ledgerStored ? fileBytes(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName) : 0;
+  const std::string legacy = readWhole(kLegacyProject, kLegacyName, kFoldCap);
+  const std::string stored = ledgerStored && ledgerBytes <= kFoldCap
+                                 ? readWhole(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, kFoldCap)
+                                 : std::string();
+  const nimbus::orch::LedgerMigration m =
+      nimbus::orch::planLedgerFold(legacy, legacyBytes, ledgerStored, stored, ledgerBytes);
+  if (!m.err.empty()) {
+    alogf("files: legacy meal log not folded (%s), both files left in place", m.err.c_str());
+    return;
+  }
+  // A fold that folded NOTHING also leaves the orphan alone: its rows were
+  // unmappable, and removing the file would still lose the raw record.
+  if (!m.ok || m.folded == 0) {
+    alogf("files: legacy meal log not migrated (nothing foldable), left in place");
+    return;
+  }
+  std::string err;
+  // A dropped data row has no other copy: the source stays. Its last row then says it has
+  // been folded, so the next boot leaves it alone and this runs once either way: the ledger
+  // existing no longer stops the fold, and a kept source must not refill a row removed since.
+  // The mark is therefore written BEFORE the ledger: a kept source that is not durably
+  // marked would fold again at every boot and re-add rows the owner removed since. If the
+  // mark write fails, nothing is written at all and the fold retries at the next boot.
+  const bool keepSource = !m.sourceFullyFolded();
+  if (keepSource &&
+      !saveText(kLegacyProject, kLegacyName, nimbus::orch::markLegacyFolded(legacy), err, legacyOwner)) {
+    alogf("files: the kept legacy meal log could not be marked as folded: %s - nothing written, the fold retries at the next boot",
+          err.c_str());
+    return;
+  }
+  if (!saveText(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, m.out, err,
+                std::string())) {
+    alogf("files: legacy meal log migration failed: %s", err.c_str());
+    return;
+  }
+  if (keepSource) {
+    alogf("files: migrated the legacy meal log into %s/%s (%d rows folded), %d rows unread: source kept (marked as folded)",
+          nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, m.folded, m.droppedData);
+    return;
+  }
+  memory::dataFs().remove(pathOf(kLegacyProject, kLegacyName).c_str());
+  g_store.remove(kLegacyProject, kLegacyName);
+  persistIndex();
+  alogf("files: migrated the legacy meal log into %s/%s (%d rows folded, %d dropped)",
+        nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, m.folded, m.dropped);
+}
+
 // files.read {tail}: the last rows of a text document, read from the END of the
 // file - never the whole file (file_append.h). The window starts one byte early so
 // tailRows can tell a row that starts exactly at the window from a partial one.
@@ -717,6 +896,16 @@ static nimbus::orch::ToolResult readTail(const std::string& project, const std::
   File f = memory::dataFs().open(path.c_str(), FILE_READ);
   if (!f) return nimbus::orch::ToolResult::fail("SD open failed");
   const size_t size = f.size();
+  // A text name is a claim, not proof: the head of the file answers, as on a whole read.
+  std::string head(std::min(size, nimbus::orch::kTextSniffBytes), '\0');
+  if (f.read((uint8_t*)&head[0], head.size()) != head.size()) {
+    f.close();
+    return nimbus::orch::ToolResult::fail("the file could not be read - try again");
+  }
+  if (!nimbus::orch::fileReadableAsText(name, head)) {
+    f.close();
+    return nimbus::orch::ToolResult::fail(nimbus::orch::kNotTextRefusal);
+  }
   const size_t start = size > nimbus::orch::kTailWindowBytes ? size - nimbus::orch::kTailWindowBytes - 1 : 0;
   std::string window(size - start, '\0');
   const bool seeked = f.seek(start);
@@ -763,7 +952,7 @@ static std::string appendRefusal(const std::string& project, const std::string& 
   if (q.maxBytes && g_store.bytesFor(who.ns) + addBytes > q.maxBytes)
     return kStorageLimit;
   std::string err;
-  if (g_store.wouldExceed(project, name, newSize, err)) return err;
+  if (checkRoomLocked(project, name, newSize, err)) return err;   // FSCAP: reclaim copies first
   return std::string();
 }
 
@@ -935,7 +1124,9 @@ static bool commitMerged(const std::string& project, const std::string& name, si
   // The caller's usage without the copy being replaced - when that copy counts
   // toward the caller at all (bytesFor's own owner rule).
   const uint64_t used = g_store.bytesFor(who.ns);
-  const bool mine = old && (old->owner.empty() ? std::string(nimbus::orch::kOwnerNs) : old->owner) == who.ns;
+  const bool mine = old && (old->owner.empty()
+                                ? std::string_view(nimbus::orch::kOwnerNs) == who.ns
+                                : std::string_view(old->owner) == who.ns);
   const uint64_t replaced = mine && used >= old->bytes ? old->bytes : 0;
   const auto q = nimbus::orch::effectiveQuota(who.role, who.quota);
   if (q.maxBytes && used - replaced + bytes > q.maxBytes) {
@@ -943,7 +1134,7 @@ static bool commitMerged(const std::string& project, const std::string& name, si
     err = kStorageLimit;
     return false;
   }
-  if (g_store.wouldExceed(project, name, bytes, err)) {
+  if (checkRoomLocked(project, name, bytes, err)) {   // FSCAP: reclaim copies first
     memory::dataFs().remove(kPartPath);
     err = refusalForHead(err);
     return false;
@@ -961,6 +1152,90 @@ static bool commitMerged(const std::string& project, const std::string& name, si
   e.providerTag.clear();      // an uploaded provider copy is stale now
   e.providerFileId.clear();
   return commitPart(e, err);
+}
+
+// The last keyed-CSV rows an edit removed (one file, in RAM only, bounded): a
+// later write that lands rows for the same file is told which of them were not
+// logged again, so a from-scratch re-entry cannot quietly drop a row the owner
+// already reported (RCA 2026-11-01/02 cause 15: the fries row). The note lives
+// until its rows are logged again or another removal replaces it; a restart
+// forgets it, which is the honest bound - it guards a re-entry, not history.
+struct RemovedRowsNote {
+  std::string project, name;
+  std::vector<nimbus::orch::CsvEditRow> rows;
+};
+static RemovedRowsNote g_removedRows;
+
+// What a landed write to project/name still owes the note: the remembered rows
+// minus the ones this write logged again (the note keeps what is still
+// missing). "" when nothing is missing. Caller holds the store lock.
+static std::string reconcileRemovedRows(const std::string& project, const std::string& name,
+                                         const std::vector<nimbus::orch::CsvEditRow>& written) {
+  if (g_removedRows.project != project || g_removedRows.name != name) return std::string();
+  const std::vector<nimbus::orch::CsvEditRow> missing =
+      nimbus::orch::notReadded(g_removedRows.rows, written);
+  g_removedRows.rows = missing;
+  if (missing.empty()) g_removedRows = RemovedRowsNote();
+  return nimbus::orch::renderNotReadded(missing);
+}
+
+// Remember this edit's removals on the note (bounded; a removal on another
+// file starts that file's note fresh). Caller holds the store lock.
+static void rememberRemovedRows(const std::string& project, const std::string& name,
+                                const std::vector<nimbus::orch::CsvEditRow>& removed) {
+  if (removed.empty()) return;
+  if (g_removedRows.project != project || g_removedRows.name != name)
+    g_removedRows = RemovedRowsNote{project, name, {}};
+  for (const nimbus::orch::CsvEditRow& r : removed) {
+    if (g_removedRows.rows.size() >= nimbus::orch::kRemovedNoteMaxRows) break;
+    g_removedRows.rows.push_back(r);
+  }
+}
+
+// The first row (the header) of a stored file, bounded: the keyed edit diff's
+// column names. "" when it cannot be read.
+static std::string firstRowOf(const std::string& path) {
+  File f = memory::dataFs().open(path.c_str(), FILE_READ);
+  if (!f) return std::string();
+  char head[512];
+  const int n = (int)f.read((uint8_t*)head, sizeof head);
+  f.close();
+  if (n <= 0) return std::string();
+  std::string row(head, (size_t)n);
+  const size_t nl = row.find('\n');
+  if (nl != std::string::npos) row.resize(nl);
+  dropCr(row);
+  return row;
+}
+
+// Lane UPSERT fix pass: the history rows a whole-file rewrite (artifact.save
+// over an existing keyed CSV) must keep - the stored file's rows of `today`
+// that `newText` drops or changes (file_edit.h RewriteHistoryScan), streamed
+// row by row from the card so no log size is held whole. "" when there is
+// nothing to keep or the file cannot be read (the save then proceeds without
+// history, exactly as before). `today` is read from NVS by the caller, before
+// the lock.
+static std::string rewriteHistoryOf(const std::string& path, const std::string& newText,
+                                    const std::string& today) {
+  if (today.empty()) return std::string();
+  memory::Lock g;
+  if (!available()) return std::string();
+  File f = memory::dataFs().open(path.c_str(), FILE_READ);
+  if (!f) return std::string();
+  nimbus::orch::RewriteHistoryScan scan(newText, today);
+  nimbus::orch::RowSplitter rows([&scan](const std::string& row, bool complete) {
+    scan.feed(row, complete);
+    return true;
+  });
+  char buf[512];
+  for (;;) {
+    const size_t got = f.read((uint8_t*)buf, sizeof buf);
+    if (got == 0) break;
+    if (!rows.push(buf, got)) break;
+  }
+  f.close();
+  rows.end();
+  return scan.finish();
 }
 
 // files.append with a key: the keyed CSV upsert (file_append.h). The model sends
@@ -1013,7 +1288,14 @@ static nimbus::orch::ToolResult upsertRows(const AppendArgs& a, const nimbus::or
       alogf("files: upsert %s/%s replaced %d appended %d (%u B)", project.c_str(), name.c_str(),
             up.replaced, up.appended, unsigned(bytes));
   }
-  return ToolResult::ok(nimbus::orch::renderUpsertReply(up, project + "/" + name, sum, day.zone));
+  std::string reply = nimbus::orch::renderUpsertReply(up, project + "/" + name, sum, day.zone);
+  if (up.changed) {   // rows landed: any the note remembers and this did not re-add are named
+    std::vector<nimbus::orch::CsvEditRow> written;
+    for (const nimbus::orch::RowChange& c : up.changes) written.push_back({c.date, c.key});
+    if (const std::string warn = reconcileRemovedRows(project, name, written); !warn.empty())
+      reply += "\n" + warn;
+  }
+  return ToolResult::ok(reply);
 }
 
 // Copy the first `upto` bytes of `src` into the .part.
@@ -1122,7 +1404,11 @@ static nimbus::orch::ToolResult appendRows(const AppendArgs& a, const nimbus::or
   char last = '\0';
   if (!fileEnd(path, g_store.find(a.project, a.name) != nullptr, size, last))
     return ToolResult::fail("the card read failed - nothing was added; try again");
-  const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(a.text, size, last);
+  // v4.6.3: an append that would CREATE a CSV must carry its header row first (a
+  // headerless CSV can never be updated by key: the 30 Oct investigation's duplicate
+  // loop). A non-CSV or an existing file is unchanged.
+  const bool csvCreate = size == 0 && fileKindIsCsv(a.name);
+  const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(a.text, size, last, csvCreate);
   if (!plan.ok) return ToolResult::fail(plan.err);
   if (plan.repairedCut && fileKindIsCsv(a.name)) {
     CsvTail t;
@@ -1131,6 +1417,227 @@ static nimbus::orch::ToolResult appendRows(const AppendArgs& a, const nimbus::or
     if (t.lastStart > 0 && nimbus::orch::csvLastRowCut(t.header, t.prev, t.last)) return appendCutAside(a, size, t, who);
   }
   return appendBytes(a, size, plan, who);
+}
+
+// files.edit (v4.6.2): the surgical edit of a stored TEXT document. The only
+// way to change a byte used to be the whole-file rewrite (files.read plus
+// artifact.save - every stored byte over the prompt twice, a whole-file buffer
+// on the device); the edit substitutes an exact span in place. Bounded
+// streaming, one Lock held throughout: scan-count the matches, decide, then
+// substitute into the part file and swap it in like every whole-file replace
+// (commitPart, file_swap.h) - the original is untouched until the substituted
+// file is fully written and size-verified, and it is kept on any failure.
+// Pass 1 of files.edit: count the matches without emitting anything (a
+// bounded stream; the file is never held whole). "" from countDocMatches means
+// the file could not be read.
+static std::string countDocMatches(const std::string& path, const std::string& find,
+                                   const std::string& replace, size_t& oldSize,
+                                   size_t& matches) {
+  fs::FS& fs = memory::dataFs();
+  File f = fs.open(path.c_str(), FILE_READ);
+  if (!f) return "SD open failed";
+  oldSize = f.size();
+  if (const std::string big = nimbus::orch::editSizeRefusal(oldSize); !big.empty()) {
+    f.close();
+    return big;
+  }
+  nimbus::orch::TextEditStream scan(find, replace, true);
+  std::string discard;
+  char buf[512];
+  for (;;) {
+    const size_t got = f.read((uint8_t*)buf, sizeof buf);
+    if (got == 0) break;
+    scan.feed(buf, got, discard);
+  }
+  f.close();
+  scan.finish(discard);
+  matches = scan.found();
+  return std::string();
+}
+
+// Pass 2 of files.edit: stream the substitution into the part file and verify
+// its size. The stored file is not touched here: "" leaves a finished .part for
+// commitEdit to swap in, anything else leaves no .part.
+static std::string substituteDoc(const std::string& path, const std::string& find,
+                                 const std::string& replace, size_t apply, size_t newSize) {
+  fs::FS& fs = memory::dataFs();
+  fs.remove(kPartPath);
+  File src = fs.open(path.c_str(), FILE_READ);
+  if (!src) return "SD open failed";
+  File dst = fs.open(kPartPath, FILE_WRITE);
+  if (!dst) { src.close(); return "SD open failed"; }
+  nimbus::orch::TextEditStream sub(find, replace, false);
+  sub.setApplyLimit(apply);
+  std::string out;
+  out.reserve(512 + replace.size());
+  char buf[512];
+  bool writeOk = true;
+  for (;;) {
+    const size_t got = src.read((uint8_t*)buf, sizeof buf);
+    if (got == 0) break;
+    out.clear();
+    sub.feed(buf, got, out);
+    if (!out.empty() && dst.write((const uint8_t*)out.data(), out.size()) != out.size()) {
+      writeOk = false;
+      break;
+    }
+  }
+  src.close();
+  if (writeOk) {
+    out.clear();
+    sub.finish(out);
+    if (!out.empty() && dst.write((const uint8_t*)out.data(), out.size()) != out.size())
+      writeOk = false;
+  }
+  dst.close();
+  {   // Verify the substituted file is exactly the size the decision promised.
+    File chk = fs.open(kPartPath, FILE_READ);
+    const size_t on = chk ? chk.size() : 0;
+    if (chk) chk.close();
+    if (!writeOk || on != newSize) {
+      fs.remove(kPartPath);
+      return "SD short write: the file is unchanged";
+    }
+  }
+  return std::string();
+}
+
+// Lane UPSERT fix pass: append the history rows a keyed-CSV edit keeps (the
+// rows it removed or changed) to the finished .part, then verify the .part
+// holds exactly the size the edit promised. "" hist leaves the .part alone.
+static bool appendHistoryToPart(const std::string& hist, size_t expectTotal) {
+  if (hist.empty()) return true;
+  fs::FS& fs = memory::dataFs();
+  File f = fs.open(kPartPath, FILE_APPEND);
+  if (!f) return false;
+  const size_t n = f.write(reinterpret_cast<const uint8_t*>(hist.data()), hist.size());
+  f.close();
+  if (n != hist.size()) {
+    fs.remove(kPartPath);
+    return false;
+  }
+  File chk = fs.open(kPartPath, FILE_READ);
+  const size_t on = chk ? chk.size() : 0;
+  if (chk) chk.close();
+  if (on != expectTotal) {
+    fs.remove(kPartPath);
+    return false;
+  }
+  return true;
+}
+
+// Swap the finished .part in over project/name. The entry keeps its owner and creation
+// time (still the same file); the content hash is unknown until the next whole write,
+// and an uploaded provider copy is stale now.
+static bool commitEdit(const std::string& project, const std::string& name, size_t newSize,
+                       std::string& err) {
+  const nimbus::orch::FileEntry* old = g_store.find(project, name);
+  if (!old) {
+    memory::dataFs().remove(kPartPath);
+    err = "not found";
+    return false;
+  }
+  nimbus::orch::FileEntry e = *old;
+  e.bytes = uint32_t(newSize);
+  e.hash = 0;
+  e.providerTag.clear();
+  e.providerFileId.clear();
+  return commitPart(e, err);
+}
+
+// files.edit's argument precheck, before anything is opened: "" when the
+// edit may proceed to the gates.
+static std::string editPrecheck(const std::string& project, const std::string& name,
+                                const std::string& find, const std::string& replace,
+                                const nimbus::orch::EditPolicy& pol) {
+  if (project.empty() || name.empty() || find.empty()) return "need 'project', 'name' and 'find'";
+  if (!textDocName(name))
+    return "files.edit edits a text document (.csv, .log, .md, .txt, .json)";
+  return nimbus::orch::validateEdit(find.size(), replace.size(), pol);
+}
+
+// files.edit (v4.6.2): the surgical edit of a stored TEXT document. The only
+// way to change a byte used to be the whole-file rewrite (files.read plus
+// artifact.save - every stored byte over the prompt twice, a whole-file buffer
+// on the device); the edit substitutes an exact span in place. Bounded
+// streaming, one Lock held throughout: scan-count the matches, decide, then
+// substitute into the part file and swap it in.
+// The row-level report of a keyed CSV edit (editDoc's tail, split out for the
+// complexity gate): what changed against what was there, and the removals
+// remembered for a later re-add that skips a row. Lane UPSERT fix pass: the
+// history rows the edit kept in the file are named too, so a disputed total can
+// be re-read from the file itself.
+static std::string keyedEditReport(const std::string& project, const std::string& name,
+                                   const std::string& header, const std::string& find,
+                                   const std::string& replace, const std::string& hist) {
+  std::string out;
+  if (header.empty()) return out;
+  const nimbus::orch::CsvEditDiff diff = nimbus::orch::diffKeyedEdit(header, find, replace);
+  if (!diff.keyed) return out;
+  if (const std::string lines = nimbus::orch::renderKeyedEditDiff(diff); !lines.empty())
+    out += "\n" + lines;
+  if (!hist.empty())
+    out += "\nthe removed and changed rows are kept in the file as history rows (#removed: / #replaced:)";
+  if (const std::string warn = reconcileRemovedRows(project, name, diff.added); !warn.empty())
+    out += "\n" + warn;
+  rememberRemovedRows(project, name, diff.removed);
+  return out;
+}
+
+static nimbus::orch::ToolResult editDoc(const std::string& project, const std::string& name,
+                                        const std::string& find, const std::string& replace,
+                                        const nimbus::orch::EditPolicy& pol,
+                                        const nimbus::orch::Principal& who) {
+  using nimbus::orch::ToolResult;
+  if (const std::string bad = editPrecheck(project, name, find, replace, pol); !bad.empty())
+    return ToolResult::fail(bad);
+  memory::Lock g;
+  // appendGate ARBITRATES THE UPLOAD SESSION'S .part SLOT before substituteDoc
+  // consumes it: its uploadActiveLocked() check refuses an active session ("an
+  // upload is in progress - try again") - the same check every writer of the
+  // slot makes - and the one Lock held below keeps a session from starting
+  // mid-edit (prism v4.6.2 row 1; pinned by test_file_edit's slot-gate scan).
+  const std::string gate = appendGate(project, name, who);
+  if (!gate.empty()) return ToolResult::fail(gate);
+  if (!g_store.find(project, name)) return ToolResult::fail("not found");   // an edit never creates
+  const std::string path = pathOf(project, name);
+  size_t oldSize = 0, matches = 0;
+  if (const std::string err = countDocMatches(path, find, replace, oldSize, matches); !err.empty())
+    return ToolResult::fail(err);
+  const nimbus::orch::EditDecision d =
+      nimbus::orch::decideEdit(find.size(), replace.size(), pol, matches);
+  if (!d.ok) return ToolResult::fail(d.err);
+  const std::string where = project + "/" + name;
+  if (nimbus::orch::editChangesNothing(find, replace))
+    return ToolResult::ok(nimbus::orch::renderEditNoChange(where, d));
+  // The header of the keyed CSV (read before the swap: the find span's rows
+  // are the file's own), for the row-level report and the history rows below.
+  const std::string header = nimbus::orch::isCsvName(name) ? firstRowOf(path) : std::string();
+  // Lane UPSERT fix pass: a keyed-CSV edit keeps the rows it removed or changed
+  // as history rows appended to the file, so the file still accounts for every
+  // row a dispute may name.
+  const std::string hist = header.empty()
+                               ? std::string()
+                               : nimbus::orch::historyRowsForKeyedEdit(header, find, replace);
+  const size_t subSize = size_t((int64_t)oldSize + d.sizeDelta);
+  const size_t newSize = subSize + hist.size();
+  {   // the same quota rules as artifact.save: an edit's growth is a write
+    const size_t growth = (d.sizeDelta > 0 ? size_t(d.sizeDelta) : 0) + hist.size();
+    const std::string refusal = appendRefusal(project, name, growth, newSize, who);
+    if (!refusal.empty()) return ToolResult::fail(refusalForHead(refusal));
+  }
+  if (const std::string err = substituteDoc(path, find, replace, size_t(d.apply), subSize);
+      !err.empty())
+    return ToolResult::fail(err);
+  if (!appendHistoryToPart(hist, newSize))
+    return ToolResult::fail("SD short write: the file is unchanged");
+  std::string err;
+  if (!commitEdit(project, name, newSize, err)) return ToolResult::fail(err);
+  alogf("files: edit %s/%s replaced %d of %u match(es) (%u B -> %u B)", project.c_str(),
+        name.c_str(), d.apply, (unsigned)matches, (unsigned)oldSize, (unsigned)newSize);
+  std::string reply = nimbus::orch::renderEditReply(where, d, newSize);
+  reply += keyedEditReport(project, name, header, find, replace, hist);
+  return ToolResult::ok(reply);
 }
 
 std::string readDocText(const std::string& project, const std::string& name,
@@ -1154,12 +1661,9 @@ std::string persistSubResult(const std::string& project, const std::string& name
                              const std::string& tag, const std::string& text,
                              const std::string& ownerNs) {
   if (!available()) return "[persist FAILED: no SD card]";
-  // Per-project rail: a runaway fan-out must not eat the whole 256-entry index.
-  {
-    memory::Lock g;
-    if (g_store.list(project).size() >= 128)
-      return "[persist FAILED: project is full (128 docs)]";
-  }
+  // Lane FSCAP: no per-project COUNT rail any more - the store has no entry cap an
+  // owner can hit; the card-scaled byte quota (checked in saveText below) is the
+  // only space limit, and a runaway fan-out is bounded by it, not by a count.
   // Agent-assigned name, sanitized; the job tag guarantees uniqueness per boot.
   std::string base = name;
   if (base.empty() || !nimbus::orch::FileStore::validSegment(base, 20)) base = "result";
@@ -1194,7 +1698,7 @@ int removeProject(const std::string& project) {
   if (!available() || project.empty()) return -1;
   // Snapshot the names first: list() pointers are invalidated by remove().
   std::vector<std::string> names;
-  for (const auto* e : g_store.list(project)) names.push_back(e->name);
+  for (const auto* e : g_store.list(project)) names.push_back(nimbus::orch::plainCopy(e->name));
   if (names.empty()) return -1;   // unknown/empty project
   for (const auto& n : names) {
     memory::dataFs().remove(pathOf(project, n).c_str());
@@ -1207,33 +1711,72 @@ int removeProject(const std::string& project) {
   return (int)names.size();
 }
 
-String listJson(const String& project, const std::string& ns, bool owner,
-                bool mayReadShared) {
+std::vector<std::string> foodPlanFiles(const nimbus::orch::Principal& who) {
   memory::Lock g;
+  std::vector<const nimbus::orch::FileEntry*> found;
+  for (const auto* e : g_store.list(std::string())) {
+    if (nimbus::orch::looksLikeFoodPlan(nimbus::orch::plainCopy(e->project), nimbus::orch::plainCopy(e->name)) && g_store.readableBy(*e, who.ns, who.owner, false))
+      found.push_back(e);
+  }
+  std::sort(found.begin(), found.end(),
+            [](const nimbus::orch::FileEntry* a, const nimbus::orch::FileEntry* b) { return a->createdAt > b->createdAt; });
+  std::vector<std::string> out;
+  for (const auto* e : found) {
+    if (out.size() == nimbus::orch::kMaxPlanFiles) break;
+    out.push_back(nimbus::orch::plainCopy(e->project + "/" + e->name));
+  }
+  return out;
+}
+
+// Lane FSCAP: a listing is bounded per call. One call emits at most `limit`
+// readable entries (default page kListPageDefault, ceiling kListPageMax) after
+// `offset`; the payload's `count` says how many there are in all, so a client
+// pages with offset/limit instead of one call materializing the whole index.
+constexpr size_t kListPageDefault = 1000;
+constexpr size_t kListPageMax = 2000;
+constexpr size_t kListPageChunk = 512;   // internal scan chunk (pointers only)
+
+String listJson(const String& project, const std::string& ns, bool owner,
+                bool mayReadShared, const ListPage& page) {
+  memory::Lock g;
+  size_t limit = page.limit, offset = page.offset;
+  if (limit == 0 || limit > kListPageMax) limit = kListPageDefault;
   String out = "[";
-  // Reserve up front (~140 B/entry) so growth is one allocation, not a realloc
-  // ladder. The buffer rides PSRAM (main.cpp's extmem allocator spills every
-  // alloc >=128 B to the 8 MB PSRAM), so even a full 256-entry listing never
-  // pressures the ~26 K internal heap. Store size is hard-capped at maxEntries.
-  out.reserve(2 + g_store.count() * 140);
+  // Reserve the PAGE (~140 B/entry), not the store: the buffer rides PSRAM
+  // (main.cpp's extmem allocator spills every alloc >=128 B to the 8 MB PSRAM),
+  // so a listing never pressures the ~26 K internal heap however large the
+  // index grows (lane FSCAP: no entry cap any more).
+  out.reserve(2 + limit * 140);
   bool first = true;
-  for (const auto* e : g_store.list(std::string(project.c_str()))) {
-    if (!g_store.readableBy(*e, ns, owner, mayReadShared)) continue;   // own it, or shared
-    if (!first) out += ',';
-    first = false;
-    out += "{\"project\":\"";  jsonEscapeInto(out, e->project);
-    out += "\",\"name\":\"";   jsonEscapeInto(out, e->name);
-    out += "\",\"bytes\":" + String((unsigned long)e->bytes);
-    out += ",\"kind\":\"" + String(nimbus::orch::fileKindName(e->kind)) + "\"";
-    out += ",\"createdAt\":" + String((unsigned long)e->createdAt);
-    if (!e->providerFileId.empty()) {
-      out += ",\"providerTag\":\"";  jsonEscapeInto(out, e->providerTag);
-      out += "\",\"providerFileId\":\""; jsonEscapeInto(out, e->providerFileId);
-      out += "\"";
+  size_t shown = 0, skipped = 0, total = 0;
+  const std::string proj(project.c_str());
+  for (size_t base = 0; shown < limit; base += kListPageChunk) {
+    const auto page = g_store.listPage(proj, base, kListPageChunk);
+    if (page.empty()) break;
+    for (const auto* e : page) {
+      if (!g_store.readableBy(*e, ns, owner, mayReadShared)) continue;   // own it, or shared
+      ++total;                                                            // filter-aware total
+      if (skipped++ < offset) continue;
+      if (shown >= limit) break;
+      if (!first) out += ',';
+      first = false;
+      out += "{\"project\":\"";  jsonEscapeInto(out, e->project);
+      out += "\",\"name\":\"";   jsonEscapeInto(out, e->name);
+      out += "\",\"bytes\":" + String((unsigned long)e->bytes);
+      out += ",\"kind\":\"" + String(nimbus::orch::fileKindName(e->kind)) + "\"";
+      out += ",\"createdAt\":" + String((unsigned long)e->createdAt);
+      if (!e->providerFileId.empty()) {
+        out += ",\"providerTag\":\"";  jsonEscapeInto(out, e->providerTag);
+        out += "\",\"providerFileId\":\""; jsonEscapeInto(out, e->providerFileId);
+        out += "\"";
+      }
+      out += "}";
+      ++shown;
     }
-    out += "}";
   }
   out += "]";
+  if (page.shownOut) *page.shownOut = shown;
+  if (page.totalOut) *page.totalOut = total;
   return out;
 }
 
@@ -1243,6 +1786,11 @@ namespace {
 
 std::string argStr(ArduinoJson::JsonObjectConst a, const char* k) {
   return a[k].is<const char*>() ? std::string(a[k].as<const char*>()) : std::string();
+}
+
+// Optional numeric tool argument (0 when absent/not a number).
+size_t argNum(ArduinoJson::JsonObjectConst a, const char* k) {
+  return a[k].is<double>() ? (size_t)a[k].as<double>() : 0;
 }
 
 
@@ -1463,7 +2011,9 @@ void registerTools() {
 
   reg.add("files.list",
           "List the device's durable artifact store (SD /mem/files): projects and files "
-          "the owner or you saved. Optional 'project' filters to one folder.",
+          "the owner or you saved. Optional 'project' filters to one folder; optional "
+          "'limit' (default 1000, max 2000) and 'offset' page the listing - the reply's "
+          "count/shown say how many there are in all.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
             if (!available())
               return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
@@ -1472,17 +2022,27 @@ void registerTools() {
             // (files / used / quota / free-on-card) so the model reasons correctly.
             StorageTruth t = storageTruth();
             const uint64_t headroom = t.quota > t.used ? t.quota - t.used : 0;
+            size_t shown = 0, total = 0;
+            files::ListPage pg;
+            pg.limit = argNum(a, "limit");
+            pg.offset = argNum(a, "offset");
+            pg.shownOut = &shown;
+            pg.totalOut = &total;
             String j = "{\"count\":" + String(t.files) + ",\"bytes\":" + String((unsigned long long)t.used) +
                        ",\"quota\":" + String((unsigned long long)t.quota) +
                        ",\"cardFree\":" + String((unsigned long long)t.cardFree) +
                        ",\"freeBytes\":" + String((unsigned long long)headroom) + ",\"files\":";
             j += listJson(String(argStr(a, "project").c_str()), who.ns, who.owner,
-                          who.perms().readShared);
+                          who.perms().readShared, pg);
+            j += ",\"shown\":" + String((unsigned long)shown) +
+                 ",\"listCount\":" + String((unsigned long)total);
+            if (shown < total)
+              j += ",\"more\":true";
             j += "}";
             if (j.length() > 4000) j = j.substring(0, 4000) + "...(truncated)";
             return nimbus::orch::ToolResult::ok(std::string(j.c_str()));
           },
-          R"({"type":"object","properties":{"project":{"type":"string"}}})");
+          R"({"type":"object","properties":{"project":{"type":"string"},"limit":{"type":"number"},"offset":{"type":"number"}}})");
 
   reg.add("files.stat",
           "Metadata for one stored file: size, kind, created time, provider file id.",
@@ -1493,7 +2053,7 @@ void registerTools() {
             const std::string project = argStr(a, "project"), name = argStr(a, "name");
             // (find validates nothing itself; unknown names just miss.)
             for (const auto* e : g_store.list(project))
-              if (e->name == name) {
+              if (std::string_view(e->name) == name) {
                 // Another principal's artifact is INVISIBLE, not "forbidden":
                 // a distinguishable refusal would confirm the file exists.
                 if (!g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) break;
@@ -1547,6 +2107,9 @@ void registerTools() {
             std::string text = readWhole(project, name, 256 * 1024, &readOk);
             if (!readOk)   // a card or memory fault is said, never shown as an empty file
               return nimbus::orch::ToolResult::fail("the file could not be read - try again");
+            // A text name is a claim, not proof: the same rule as the hosted files.read.
+            if (!nimbus::orch::fileReadableAsText(name, text))
+              return nimbus::orch::ToolResult::fail(nimbus::orch::kNotTextRefusal);
             const size_t total = text.size();
             if (offset >= total && total > 0)
               return nimbus::orch::ToolResult::ok(
@@ -1570,11 +2133,13 @@ void registerTools() {
   // knowing exact names. Scans TEXT doc bodies only (readable by the caller),
   // ranks by textMatchScore (the shared lexical.h word rule, CUM-515: how many
   // of the words a doc holds, then how often), returns the best matches with a
-  // snippet around the earliest matching word. Bounded: the store is hard-capped
-  // at 256 files, each read is size-limited, so a query is a bounded on-demand scan -
-  // no index to maintain (the corpus is too small for BM25's IDF to earn its
-  // cost). For a MEANING search over facts use memory.search; for conversation
-  // history use memory.episodic.
+  // snippet around the earliest matching word. Bounded per call (lane FSCAP:
+  // the index has no count cap any more, so one query scans at most the newest
+  // kSearchScanMax readable text docs, each read size-limited, and says when
+  // older docs were not scanned) - no index to maintain (the corpus is too
+  // small for BM25's IDF to earn its cost). For a MEANING search over facts
+  // use memory.search; for conversation history use memory.episodic.
+  constexpr size_t kSearchScanMax = 512;   // newest text docs scanned per call
   reg.add("files.search",
           "Search the CONTENT of saved TEXT documents (md/txt/json/csv/log) for words. "
           "Returns the best-matching files with a snippet. Optional 'project' scopes it. "
@@ -1586,13 +2151,33 @@ void registerTools() {
             struct Hit { std::string project, name, snippet; int score; };
             std::vector<Hit> hits;
             const nimbus::orch::LexQuery qlex = nimbus::orch::lexParse(qy);
+            size_t candidates = 0, scanned = 0;
             {
               memory::Lock g;
               if (!available())
                 return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
-              for (const auto* e : g_store.list(proj)) {
-                if (!textDocName(e->name)) continue;
-                if (!g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) continue;
+              // Lane FSCAP: collect the readable text docs in chunks (pointers
+              // only), newest first, and scan at most kSearchScanMax of them -
+              // one call never reads the whole card however large the index.
+              std::vector<const nimbus::orch::FileEntry*> docs;
+              for (size_t base = 0;; base += kListPageChunk) {
+                const auto page = g_store.listPage(proj, base, kListPageChunk);
+                if (page.empty()) break;
+                for (const auto* e : page) {
+                  if (!textDocName(e->name)) continue;
+                  if (!g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) continue;
+                  docs.push_back(e);
+                }
+              }
+              candidates = docs.size();
+              std::sort(docs.begin(), docs.end(),
+                        [](const nimbus::orch::FileEntry* x, const nimbus::orch::FileEntry* y) {
+                          if (x->createdAt != y->createdAt) return x->createdAt > y->createdAt;
+                          return x->name < y->name;
+                        });
+              if (docs.size() > kSearchScanMax) docs.resize(kSearchScanMax);
+              for (const auto* e : docs) {
+                ++scanned;
                 std::string body = readWhole(e->project, e->name, 64 * 1024);
                 int sc = nimbus::orch::textMatchScore(body, qy);
                 if (sc <= 0) continue;
@@ -1604,13 +2189,18 @@ void registerTools() {
                 // Both ends on a character boundary: a byte-offset cut tore a character.
                 std::string snip = nimbus::utf8Window(body, at, 40, 160);
                 for (char& c : snip) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
-                hits.push_back(Hit{e->project, e->name, snip, sc});
+                hits.push_back(Hit{nimbus::orch::plainCopy(e->project), nimbus::orch::plainCopy(e->name), snip, sc});
               }
             }
             std::sort(hits.begin(), hits.end(),
                       [](const Hit& x, const Hit& y) { return x.score > y.score; });
-            if (hits.empty()) return nimbus::orch::ToolResult::ok("no documents matched");
             std::string out;
+            if (scanned < candidates)
+              out += "(scanned the newest " + std::to_string(scanned) + " of " +
+                     std::to_string(candidates) + " text docs; older docs not scanned)\n";
+            if (hits.empty())
+              return nimbus::orch::ToolResult::ok(out.empty() ? "no documents matched"
+                                                             : out + "no documents matched");
             int n = 0;
             for (const auto& h : hits) {
               if (n++ >= 8) break;   // top matches; files.read fetches a whole doc
@@ -1632,13 +2222,31 @@ void registerTools() {
               return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
             if (text.size() > 24 * 1024)
               return nimbus::orch::ToolResult::fail("text too large (max 24 KB per call)");
+            const std::string second = nimbus::orch::secondFoodLogRefusal(project, name, who.owner, who.ns);
+            if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
             std::string err;
             // (project,name) is the identity and add() REPLACES - so a write
             // that lands on another principal's artifact would DESTROY it.
             // Refuse before touching the filesystem (prism R2/B2).
+            const bool replacing = g_store.find(project, name) != nullptr;
+            // Lane UPSERT fix pass: a whole-file rewrite over an existing keyed
+            // CSV keeps the old file's rows of today that the new text drops or
+            // changes, as history rows appended to the saved text - the file
+            // still accounts for every row a dispute may name.
+            std::string payload = text;
+            bool keptHistory = false;
+            if (replacing && fileKindIsCsv(name)) {
+              const nimbus::orch::LogDay day = logDay();   // an NVS read: before the lock
+              const std::string hist = rewriteHistoryOf(pathOf(project, name), text, day.date);
+              if (!hist.empty()) {
+                if (!payload.empty() && payload.back() != '\n') payload += '\n';
+                payload += hist;
+                keptHistory = true;
+              }
+            }
             {   // artifact-store quota, measured from the index at the WRITE
               const auto q = nimbus::orch::effectiveQuota(who.role, who.quota);
-              if (q.maxBytes && g_store.bytesFor(who.ns) + text.size() > q.maxBytes)
+              if (q.maxBytes && g_store.bytesFor(who.ns) + payload.size() > q.maxBytes)
                 return nimbus::orch::ToolResult::fail(
                     "this conversation has reached its file-storage limit - ask the "
                     "device's admin to raise it, or delete something first");
@@ -1646,10 +2254,15 @@ void registerTools() {
             if (!g_store.writeAllowed(project, name, who.ns, who.owner))
               return nimbus::orch::ToolResult::fail(
                   "that project/name belongs to someone else - choose another name");
-            if (!saveText(project, name, text, err, who.ns))
+            if (!saveText(project, name, payload, err, who.ns))
               return nimbus::orch::ToolResult::fail(refusalForHead(err));
             return nimbus::orch::ToolResult::ok("saved " + project + "/" + name + " (" +
-                                                std::to_string(text.size()) + " bytes)");
+                                                std::to_string(payload.size()) + " bytes)" +
+                                                (replacing ? std::string(", ") + nimbus::orch::kSaveReplacedNote
+                                                           : std::string()) +
+                                                (keptHistory
+                                                     ? "; the rows of today this save dropped or changed are kept in the file as history rows (#removed: / #replaced:)"
+                                                     : std::string()));
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"}},"required":["project","name","text"]})");
 
@@ -1672,9 +2285,51 @@ void registerTools() {
             args.key = argStr(a, "key");
             args.sum = argStr(a, "sum");
             args.replaceAll = argStr(a, "replace") == "all";
+            const std::string second = nimbus::orch::secondFoodLogRefusal(args.project, args.name, who.owner, who.ns);
+            if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
             return appendRows(args, who);
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"},"key":{"type":"string"},"sum":{"type":"string"},"replace":{"type":"string","enum":["all"]}},"required":["project","name","text"]})");
+
+  reg.add("files.edit",
+          "Edit a saved TEXT document surgically: find an exact text span (a phrase, or a whole "
+          "line's text) and replace it - never read and re-save the whole file. Replaces the "
+          "FIRST match by default; 'all': true replaces every match, 'count' replaces the first "
+          "N. The reply says how many matches were found and how many were replaced, so nothing "
+          "happens silently. A no-match says so and changes nothing. An empty 'replace' deletes "
+          "the span. An edit to a keyed CSV (a log with a date and a key column) also names "
+          "the rows it removed, added or changed. The file's other bytes keep their exact "
+          "order (a CSV's rows stay rows). "
+          "Max 2 KB find, 4 KB replacement, 200 matches per call, 1 MB file.",
+          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
+            nimbus::orch::EditPolicy pol;
+            pol.all = a["all"].as<bool>();
+            if (a["count"].is<int>()) pol.count = a["count"].as<int>();
+            return editDoc(argStr(a, "project"), argStr(a, "name"), argStr(a, "find"),
+                          argStr(a, "replace"), pol, who);
+          },
+          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"find":{"type":"string"},"replace":{"type":"string"},"all":{"type":"boolean"},"count":{"type":"integer"}},"required":["project","name","find"]})");
+
+  reg.add("files.delete",
+          "Delete one of your saved files for good: the bytes and the index entry both go. "
+          "Only a file you may write can be deleted; anyone else's file is simply not found. "
+          "Pass 'project' and 'name'.",
+          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
+            if (!available())
+              return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
+            const std::string project = argStr(a, "project"), name = argStr(a, "name");
+            if (project.empty() || name.empty())
+              return nimbus::orch::ToolResult::fail("need 'project' and 'name'");
+            {
+              memory::Lock g;
+              if (!g_store.writeAllowed(project, name, who.ns, who.owner))
+                return nimbus::orch::ToolResult::fail("not found");
+            }
+            if (!removeFile(project, name))
+              return nimbus::orch::ToolResult::fail("no such file: " + project + "/" + name);
+            return nimbus::orch::ToolResult::ok("deleted " + project + "/" + name);
+          },
+          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"}},"required":["project","name"]})");
 
   reg.add("files.share",
           "Share one of your saved files with everyone who can talk to this "
@@ -1838,8 +2493,9 @@ void registerTools() {
   reg.add("image.look",
           "View a photo sent earlier yourself: it comes back to you as an image. ref = the 16 hex "
           "characters in its [image ... ref=...] label in the conversation; question = what you "
-          "want to check in it (used only when you cannot see images). Use it whenever the "
-          "photo's note or your earlier reply does not answer what you are asked.",
+          "want to check in it, asked openly (\"what is on the plate?\"), never naming what you "
+          "think it shows (used only when you cannot see images). Use it whenever the photo's "
+          "note or your earlier reply does not answer what you are asked.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
             if (!agent::orchestrator::turnInFlight())
               return nimbus::orch::ToolResult::fail("image.look is only available during a turn");

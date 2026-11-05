@@ -6,6 +6,7 @@
 #include "nimbus/harness/jobs.h"        // portable sub-agent job machinery (Stage F)
 #include "nimbus/harness/engine.h"      // portable turn orchestration (Stage G)
 #include "nimbus/harness/turn_memory.h" // L24: a turn keeps its small blocks in PSRAM
+#include "nimbus/harness/turn_progress.h"  // lane PROG: the round-boundary signal plan
 #include "../sys/heap_watch.h"          // heapwatch::psramFirst - the turn's malloc placement
 #include "nimbus/harness/turn_inbox.h"  // histV2 switch (the turn-structured history)
 #include "nimbus/harness/turn_anatomy.h" // the /api/lastturn page head (provider chain, device history)
@@ -21,10 +22,12 @@
 #include "adapters/mistral_adapter.h"   // orchTurnMistral - Mistral host (Conversations)
 #include "transport_tls.h"              // deviceProviderDeps - head-custom host (Stage H)
 #include "nimbus/harness/providers.h"   // providers::orchTurnCustom
+#include "nimbus/harness/turn_contract.h"   // kNoMessageAfterAction
 #include "loops_subsystem.h"            // loops::checkDue - Local Loops tick (on tg_poll)
 #include "dream_subsystem.h"            // DREAMING: noteTurnEnd (idle-gate quiet clock)
 #include "connectors.h"                 // per-provider connector catalog + attach
 #include "nimbus/orch/action_rules.h"   // who may run each tool and device action (CUM-813)
+#include "nimbus/orch/loop_delivery.h"  // telegramOwnerOf: the owner rule from NVS lists (host-tested)
 #include "model_refresh.h"   // R5: the orch_model miss answer
 #include "provider_verify.h"            // queueWorkspaceProbeIfStale() at boot (CUM-537)
 #include "nimbus/orch/connectors_wire.h" // portable attach*Wire (builtinsOnly cumulo route)
@@ -137,7 +140,9 @@ static std::mutex   g_turnOwnerMx;                // device.control may also run
 static HarnessConfig g_cfg;
 
 static orch::OrchMemory      g_mem;
-static orch::Journal         g_journal;
+// PSRAM (psram_static.h): about 1.7 KB that internal RAM no longer holds. Task
+// context only (single-writer on tg_poll), no lock member, so psramObject applies.
+static orch::Journal&        g_journal = ::nimbus::psramObject<orch::Journal>();
 static LittleFsMemoryStore   g_memStore;
 // v3.6.0 fold state (plans/compaction-plan.md). All accessed on tg_poll ONLY
 // (capture hooks, onTurnEnd, pollJobs, handleMessage) - no lock needed.
@@ -473,9 +478,10 @@ static void ttsAnnounce(const String& text) {
     char c = text[i];
     if (c == '.' || c == '!' || c == '?' || c == '\n') { end = i + 1; break; }
   }
+  // No sentence end in reach: the speech cut's rule, never in the middle of a character.
   String snippet = (end > 0) ? text.substring(0, end)
-                             : text.substring(0, min((int)text.length(), 180));
-  g_sinks.speak(snippet);
+                             : String(nimbus::orch::cutForSpeech(std::string(text.c_str()), 180).text.c_str());
+  g_sinks.speak(String(), snippet);   // no chat: the owner chat if the speaker cannot play it
 }
 
 // hostForPrompt moved to the harness (agent::hostForPrompt over ProviderConfig,
@@ -832,8 +838,9 @@ static JobEngine::Deps buildJobDeps() {
 
 // What holds paid requests to `p` off now on `seam` (nimbus::orch::HeadPause): the pause switch
 // (the owner, the overall ceiling, the provider's monthly limit), a refusal park covering that
-// seam, the monthly budget check. The park's re-check request is never taken; the budget check is
-// the one every turn makes at its start. Chat for the head; Spawn for the catalog (providerPause).
+// seam (parkPause -> headPauseIn, host-tested), the monthly budget check. The park's re-check
+// request is never taken; the budget check is the one every turn makes at its start. Chat for
+// the head; Spawn for the catalog (providerPause).
 static nimbus::orch::HeadPause headPauseFor(const std::string& p,
                                             nimbus::orch::PaidSeam seam = nimbus::orch::PaidSeam::Chat,
                                             bool dueIsOpen = false) {
@@ -883,7 +890,10 @@ static agent::ApplyDeps buildApplyDeps() {
   if (g_sinks.device)
     d.stageDevice = [](const orch::ValidatedAction& va) { g_sinks.device(va); };
   if (g_sinks.speak)
-    d.speak = [](const std::string& s) { g_sinks.speak(String(s.c_str())); };
+    d.speak = [](const std::string& chat, const std::string& s) {
+      return g_sinks.speak(String(chat.c_str()), String(s.c_str()));
+    };
+  d.speakerVolume = [] { return (int)store::sfxVolume(); };   // live: a tts at volume 0 plays silence
   d.modelIsValid = [](const std::string& p, const std::string& m) {
     return modelIsValid(String(p.c_str()), m.c_str());
   };
@@ -968,7 +978,7 @@ static agent::ApplyDeps buildApplyDeps() {
     // nobody is polling for it, so it stays silent there as well (no 03:30 "Done.").
     if (loops::firing()) return;
     if (chatId == "web" || chatId == "voice" || chatId == "serial")
-      deliver(String(chatId.c_str()), String("Done."));
+      deliver(String(chatId.c_str()), String(kNoMessageAfterAction));   // a background turn only
   };
   d.emitAsk = [] { emitAsk(); };
   d.captureAssistant = [](const std::string& chatId, const std::string& text) {
@@ -1018,6 +1028,11 @@ static void copyWholeOrClear(char (&dst)[N], const std::string& s) {
 }
 static agent::router_refusal::RouterTap& cumuloTap() {
   static agent::router_refusal::RouterTap tap(nullptr, g_cumuloRouterHost, &PsramJsonAllocator::instance());
+  static const bool kClockSet = [] {   // the fail_over cooling table's clock
+    tap.setClock([] { return (uint32_t)millis(); });
+    return true;
+  }();
+  (void)kClockSet;
   return tap;
 }
 
@@ -1067,9 +1082,9 @@ static void setCumuloRouterHost() {
 // pd (base = cumuloBase, key = cumuloKey, orchModel = the bare model) dispatches
 // to that upstream's orchTurn*, which picks the tool loop vs a single shot from
 // `tools` + the loop toggle; wire::applyRouter reroutes every request through
-// /router/<upstream>, and every request passes the refusal tap. zai (and any name
-// the native fabric does not drive) stays the single-shot chat-completions path
-// (orchTurnCustom over /router/<upstream>).
+// /router/<upstream>, and every request passes the refusal tap. zai runs its own tool
+// loop, and any name the native fabric does not drive stays the single-shot
+// chat-completions path (both orchTurnCustom over /router/<upstream>).
 static bool cumuloAttempt(const std::string& sel, CumuloCall& c) {
   const nimbus::orch::RouterRoute rr = nimbus::orch::resolveRouterRoute(sel);
   const std::string upstream = rr.upstream;
@@ -1150,6 +1165,7 @@ static bool cumuloTurn(CumuloCall& c) {
     return false;
   }
   copyWholeOrClear(g_cumuloLastGood, r.used);
+  if (g_engine && g_engine->turnInFlight()) rf::settleClamp(tap.servedCapped(), (uint32_t)millis(), c.out);
   if (!r.fellBack() || !g_engine || !g_engine->turnInFlight()) return true;
   rf::settleFallback(r, picked, std::string(CUMULO_MODEL), c.out, [] { return cumuloPick(); },
                      [](const std::string& p) { store::setOrchModel("cumulo", String(p.c_str())); });
@@ -1258,6 +1274,9 @@ static TurnEngine::Deps buildTurnDeps() {
     // directive, on every owner-facing turn whatever started it (a member or
     // guest turn never sees them - the rules are the owner's).
     in.standingPrefs = prefs::blockForRole(roleOfChat(String(chatId.c_str())) == nimbus::orch::Role::Admin);
+    // Lane POL2: the owner's open questions ride the same band, owner-facing
+    // turns only, like the standing rules.
+    in.openQuestions = prefs::openQBlockForRole(roleOfChat(String(chatId.c_str())) == nimbus::orch::Role::Admin);
     in.runningMemory = g_mem.model(chatId);   // the TURN CHAT's rolling summary (B3)
     // LIVE hardware manifest (P5): read the actual HAL health + storage mount +
     // fault mask instead of hardcoding flags, so the model's self-model matches
@@ -1408,6 +1427,11 @@ static TurnEngine::Deps buildTurnDeps() {
     const String cid(chatId.c_str());
     return agent::foodledger::today(chatId, nimbus::orch::principalForRole(chatId, roleOfChat(cid)));
   };
+  d.foodRecall = [](const std::string& chatId, const std::string& message) {
+    const String cid(chatId.c_str());
+    return agent::foodledger::recall(chatId, nimbus::orch::principalForRole(chatId, roleOfChat(cid)), message);
+  };
+  d.foodSkills = [] { return skills::foodSkillIds(); };
   d.firstAllowedChat = [] { return std::string(firstAllowedChat().c_str()); };
   d.journalGc = [] { g_journal.gc(); };
   // Clamped-tool-result spill (Context Fabric): the loop's truncation marker
@@ -1424,9 +1448,12 @@ static TurnEngine::Deps buildTurnDeps() {
   // internal-heap transient per row stays ~2 KB; memory::traceActive() gates on
   // the SD append-log + the owner `otrace` knob.
   static std::map<std::string, std::string> s_traceArgs;   // call id -> args (full cap)
+  static bool s_progLineSent = false;   // lane PROG: the ONE progress line went out
   static int s_traceBlobs = 0;   // sidecars written this turn (P4 budget)
   static int s_turnBlobFails = 0;   // sidecar writes that failed this turn (L19-24)
   d.hooks.onTurnStart = [](const TurnStartEv& ev) {
+    // Lane PROG: the ONE progress line is per turn.
+    s_progLineSent = false;
     // Turn identity = the turn's USER row id (boot-stable, resumed past history
     // via nextIdHint) - so the chat UI joins a bubble to its trace rows by ID
     // instead of chronological adjacency (which mis-bucketed an interleaved
@@ -1501,6 +1528,28 @@ static TurnEngine::Deps buildTurnDeps() {
     snprintf(tags, sizeof(tags), "%s,round:%d", g_turnTag, ev.round);
     memory::captureMessage(ev.chatId.c_str(), "assistant", orch::MsgKind::LlmResponse,
                            String(t.c_str()), "", tags);
+  };
+  // Lane PROG: every round boundary of the running turn reaches the Telegram
+  // seam - typing stays alive between every provider request, ONE plain
+  // progress line past 30 s or at the third round, and a message that arrived
+  // mid-turn is acknowledged immediately instead of waiting out the turn in
+  // silence. The plan is the portable, host-tested turn_progress.h; this just
+  // executes it on the poll task (the turn's own task, no new concurrency).
+  // s_progLineSent is reset per turn in onTurnStart above.
+  d.hooks.onTurnProgress = [](const TurnProgressEv& ev) {
+    orch::HeadProgress hp;
+    hp.round = ev.round;
+    hp.elapsedMs = ev.elapsedMs;
+    hp.lastRound = ev.lastRound;
+    hp.tools = ev.tools;
+    const nimbus::harness::TurnProgressPlan plan =
+        nimbus::harness::planTurnProgress(hp, ev.maxRounds, s_progLineSent);
+    if (plan.keepAlive) telegram::turnTyping(String(ev.chatId.c_str()));
+    if (plan.sayLine) {
+      if (telegram::turnProgressLine(String(ev.chatId.c_str()), String(plan.line.c_str())))
+        s_progLineSent = true;
+    }
+    if (plan.checkQueue) telegram::turnAckQueued();
   };
   // B5: sub-agent COMMS into the glass box - the spawn brief and the terminal
   // result land as kind=log rows in the SPAWNING chat's session, so the debug
@@ -1653,6 +1702,8 @@ static TurnEngine::Deps buildTurnDeps() {
       if (!ev.ok && anyContextOverflow(ev)) {
         g_folds.markOverflow(ev.chatId);   // next compactTick() folds this chat
         alogf("fold: context-overflow classified on %s - fold queued", ev.chatId.c_str());
+      } else if (ev.trimmedForSize) {
+        g_folds.noteHistoryTrimmed(ev.chatId);   // the next compactTick() folds, outside the thrash window
       }
     }
   };
@@ -1686,6 +1737,15 @@ static TurnEngine::Deps buildTurnDeps() {
                                     ht, spend, notify);
   };
   d.hosts.fabricSupports = [](const std::string& h) { return providers::fabricSupports(h); };
+  d.standingWork = [](const std::string& chatId) { return loops::hasStanding(chatId); };
+  // Lane POL2: the open-question list observes every completed turn in the
+  // owner's own chat (raise-once bookkeeping, open_questions.h). A member's
+  // turn never touches the owner's items.
+  d.openqObserve = [](const std::string& chatId, const std::string& ownerText,
+                      const std::string& reply) {
+    if (roleOfChat(String(chatId.c_str())) != nimbus::orch::Role::Admin) return std::string();
+    return prefs::observeOwnerTurn(ownerText, reply);
+  };
   // Lane K's park, one store for the fabric and the single-shot ladder and fold,
   // over the same ProviderDeps (the park's key and model fingerprint).
   d.hosts.parked = [](const std::string& h, providers::HostPark* why) {
@@ -1709,11 +1769,10 @@ static TurnEngine::Deps buildTurnDeps() {
       return providers::orchTurnCustom(deviceProviderDeps(), cv, ins, inp, out, err,
                                        tools, usage);
     });
-  // CUM-242: the router providers as first-class orchestrator HEADS. Same
-  // single-shot chat-completions turn as the custom head (orchTurnCustom), but
-  // over a FIXED base + path prefix and the router key, so a device holding only
-  // a verified Cumulo (or Z.ai) key runs the whole assistant - the flagship "one
-  // key, one balance" path. Registered UNCONDITIONALLY (unlike custom's boot-time
+  // CUM-242: the router providers as first-class orchestrator HEADS, over a FIXED base
+  // + path prefix and the router key, so a device holding only a verified Cumulo (or
+  // Z.ai) key runs the whole assistant - the flagship "one key, one balance" path. The
+  // Z.ai head runs the tool loop through orchTurnCustom (pd.customToolLoop). Registered UNCONDITIONALLY (unlike custom's boot-time
   // hasCustom() gate) so a key added AFTER boot works with no reboot: selection is
   // gated live by routerFallbackHost()/hasKey() (both check the key at turn time),
   // and orchTurnCustom refuses honestly if the base/key is somehow empty.
@@ -1727,18 +1786,7 @@ static TurnEngine::Deps buildTurnDeps() {
                         std::string& out, std::string& err, const agent::HeadTools* tools,
                         nimbus::orch::TokenUsage* usage) {
     providers::ProviderDeps pd = deviceProviderDeps();
-    pd.customBase       = [] { String b = store::zaiBase();
-                               return std::string((b.length() ? b : String(ZAI_HOST_PRIMARY)).c_str()); };
-    pd.customPathPrefix = [] { return std::string(ZAI_BASE_PATH); };
-    pd.customKey        = [] { return std::string(store::zaiKey().c_str()); };
-    pd.customConv       = [] { return std::string("openai"); };
-    pd.customModel      = [] { String m = store::orchModel("zai");
-                               return std::string((m.length() ? m : String(ZAI_MODEL)).c_str()); };
-    // CUM-495: Z.ai answers 200 but IGNORES response_format json_schema, so
-    // json_object + the JSON-only nudge (a prose reply still reaches the owner via
-    // parseHeadReply). CUM-544: GLM always reasons; reasoning_effort "low" + the
-    // 50 s budget keep a substantive turn inside Z.ai's ~60 s gateway cut.
-    providers::applyZaiHeadPolicy(pd);
+    pd.zaiHead(pd);
     return providers::orchTurnCustom(pd, cv, ins, inp, out, err, tools, usage);
   });
   return d;
@@ -1795,6 +1843,7 @@ static void registerDeviceControl() {
         std::string out = "applied: " + dev.summary;
         if (!dev.refusals.empty()) out += "\nnot applied: " + dev.refusals;
         if (!risk.empty()) out += risk;
+        out += dev.replyNote;   // the head relays it: this path has no reply of its own to ride
         return nimbus::orch::ToolResult::ok(out);
       },
       R"JS({"type":"object","properties":{"action":{"type":"object","description":"one device[] element, verbatim (config/led/lights/tts)"}},"required":["action"]})JS");
@@ -2332,7 +2381,7 @@ bool sendToChat(const String& chatId, const String& text, bool asVoice, std::str
       // Noted before the history row (which can fail): a voice note reached the owner
       // (the current chat or an allowlisted one), so the fire spoke (CUM-826).
       noteTurnSpoke();
-      if (cid == cur && g_engine) g_engine->noteToolReplied();
+      if (cid == cur && g_engine) g_engine->noteToolReplied(std::string(o.spokenText.c_str()));
       // Capture what reached the TARGET chat to its history.
       memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, o.spokenText, "",
                              withTurnTag("via:telegram"));
@@ -2346,7 +2395,7 @@ bool sendToChat(const String& chatId, const String& text, bool asVoice, std::str
     // Queued for the owner (the current chat or an allowlisted one): the fire spoke
     // (CUM-826), noted before the history row, which can fail.
     noteTurnSpoke();
-    if (cid == cur && g_engine) g_engine->noteToolReplied();
+    if (cid == cur && g_engine) g_engine->noteToolReplied(std::string(text.c_str()));
     // reply.telegram output was invisible to history - capture it (to the TARGET
     // chat, so a cross-chat send lands in the right conversation).
     memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, text, "",
@@ -2538,8 +2587,15 @@ nimbus::orch::Role roleOfChat(const String& chatId) {
   // No row at all: while no Admin row exists, the chat the Telegram owner rule names
   // is the owner (a freshly onboarded owner may change the device before the table
   // holds a row); otherwise an allow-listed chat is a User; anyone else is Unknown
-  // until approved (nimbus::orch::roleWithoutRow).
-  return nimbus::orch::roleWithoutRow(isChatAllowed(chatId), agent::telegram::isOwner(chatId), tableHasAdmin);
+  // until approved (nimbus::orch::roleWithoutRow). The owner rule reads NVS
+  // (thread-safe), never telegram's poll-task-owned g_owners/g_allowlist: roleOfChat
+  // also runs on the web task (the /api/test seams), and the poll task reassigns those
+  // Strings on every allowlist reload.
+  return nimbus::orch::roleWithoutRow(
+      isChatAllowed(chatId),
+      nimbus::orch::telegramOwnerOf(std::string(store::telegramAllowlist().c_str()),
+                                     std::string(store::telegramOwners().c_str()), id),
+      tableHasAdmin);
 }
 
 // ---- tenant mutations (locked; every surface goes through these) -------------
@@ -2573,6 +2629,18 @@ bool tenantSetRole(const std::string& chatId, nimbus::orch::Role r, std::string&
     return false;
   }
   return true;
+}
+
+void tenantApproved(const std::string& chatId, bool telegramOwner) {
+  TenantLock lk;
+  std::string err;
+  if (!nimbus::orch::noteApproved(g_tenants, chatId, telegramOwner, err)) {
+    if (!err.empty()) alogf("rbac: approved %s without a row: %s", chatId.c_str(), err.c_str());
+    return;
+  }
+  if (LittleFsTenantStoreIO::saveChecked(g_tenants.dump())) return;
+  g_tenants.load(LittleFsTenantStoreIO::load());   // RAM never disagrees with storage
+  alogf("rbac: approved %s, its row did not persist", chatId.c_str());
 }
 
 bool tenantSetQuota(const std::string& chatId, const nimbus::orch::Quota& q,
@@ -2663,6 +2731,11 @@ static void compactTick() {
   using nimbus::orch::FoldDue;
   if (!g_engine || g_engine->turnInFlight()) return;
   if (!nimbus::net::staConnected()) return;   // offline fold = guaranteed breaker burn
+  // A parked provider nothing else is calling is asked here, so it recovers by itself
+  // (one request at most per pass; the fold waits for the next pass). It waits for the
+  // owner: the request blocks this task, and this task reads the owner's messages.
+  if (g_ownerFirst.parkRecheckMayStart(telegram::guardStatus().holding, millis()) && g_engine->recheckParkedHost())
+    return;
 
   // Gate FIRST (prism v3.6.0 HIGH): runFold's own heap/key/budget gates fire
   // AFTER the owner-visible notice and the 64 KB digest would already be paid,

@@ -1,6 +1,8 @@
 #include "nimbus/harness/prompt_layout.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
 
 namespace agent {
@@ -355,9 +357,9 @@ ArduinoJson::JsonObject oaiMessage(ArduinoJson::JsonArray input, const char* rol
 }
 }  // namespace
 
-void putOpenAIInput(ArduinoJson::JsonArray input, const PromptParts& p) {
-  if (!p.stat.empty()) oaiMessage(input, "developer", "input_text", p.stat, true);
-  if (!p.shelf.empty()) oaiMessage(input, "developer", "input_text", p.shelf, true);
+void putOpenAIInput(ArduinoJson::JsonArray input, const PromptParts& p, bool breakpoints) {
+  if (!p.stat.empty()) oaiMessage(input, "developer", "input_text", p.stat, breakpoints);
+  if (!p.shelf.empty()) oaiMessage(input, "developer", "input_text", p.shelf, breakpoints);
   // The breakpoint goes on the last USER history message: an assistant item's
   // output_text part takes none.
   size_t lastUser = p.history.size();
@@ -366,8 +368,25 @@ void putOpenAIInput(ArduinoJson::JsonArray input, const PromptParts& p) {
   for (size_t i = 0; i < p.history.size(); i++) {
     const Msg& m = p.history[i];
     oaiMessage(input, m.user ? "user" : "assistant", m.user ? "input_text" : "output_text", nonEmpty(m.text),
-               i == lastUser);
+               breakpoints && i == lastUser);
   }
+}
+
+bool openAITakesBreakpoints(const std::string& model) {
+  const size_t slash = model.rfind('/');
+  const char* s = model.c_str() + (slash == std::string::npos ? 0 : slash + 1);
+  if (strncmp(s, "gpt-", 4) != 0 || !isdigit((unsigned char)s[4])) return false;
+  char* end = nullptr;
+  const long major = strtol(s + 4, &end, 10);
+  long minor = 0;
+  if (*end == '.' && isdigit((unsigned char)end[1])) minor = strtol(end + 1, &end, 10);
+  // A letter glued to the number ("gpt-4o") is another family, whatever its digits.
+  if (*end != '\0' && *end != '-') return false;
+  return major > 5 || (major == 5 && minor >= 6);
+}
+
+bool breakpointRefused(int httpStatus, const std::string& errText) {
+  return httpStatus == 400 && errText.find("prompt_cache_breakpoint") != std::string::npos;
 }
 
 int countOpenAIBreakpoints(ArduinoJson::JsonVariantConst request) {

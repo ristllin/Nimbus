@@ -1,0 +1,167 @@
+{
+ "name": "vnp-openai",
+ "description": "OpenAI-only client: memory must follow the key.",
+ "keys": {
+  "openai": "OPENAI_API_KEY"
+ },
+ "models": {
+  "head": {
+   "openai": "gpt-6-luna"
+  },
+  "sub": {
+   "openai": "gpt-6-luna"
+  }
+ },
+ "host": "openai",
+ "timezone": "Europe/London",
+ "monthly_cap_cents": 500,
+ "scenarios": [
+  {
+   "id": "memory-follows",
+   "steps": [
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/mem/stats"
+     },
+     "expect": [
+      {
+       "body_contains": "\"embedAvailable\":true"
+      },
+      {
+       "body_contains": "\"provider\":\"openai\""
+      }
+     ]
+    },
+    {
+     "say": "Please remember permanently: my sister's cat is called Zorblax4417.",
+     "expect": [
+      {
+       "turn_resolved": true
+      },
+      {
+       "api_min": {
+        "path": "/api/mem/stats",
+        "field": "vectors",
+        "min": 1
+       }
+      }
+     ],
+     "settle_s": 5
+    },
+    {
+     "http": {
+      "method": "POST",
+      "path": "/api/orch",
+      "form": {
+       "clearConv": "1"
+      }
+     },
+     "expect": [
+      {
+       "http_status": 200
+      }
+     ]
+    },
+    {
+     "say": "What is my sister's cat called? Search your memory.",
+     "expect": [
+      {
+       "turn_resolved": true
+      },
+      {
+       "reply_contains": "Zorblax4417"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "jobs-visible",
+   "steps": [
+    {
+     "say": "Start a sub-agent to write a 150-word note about the history of tea. Do not write it yourself. Tell me in one line that you started it.",
+     "expect": [
+      {
+       "turn_resolved": true
+      }
+     ],
+     "settle_s": 0,
+     "timeout_s": 120
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/orch"
+     },
+     "expect": [
+      {
+       "body_regex": "\"jobs\":\\[\\{\"tag\""
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "photo",
+   "steps": [
+    {
+     "upload": {
+      "project": "chat",
+      "name": "sample.png",
+      "png_rgb": [
+       20,
+       200,
+       40
+      ]
+     },
+     "expect": [
+      {
+       "http_status": 200
+      }
+     ]
+    },
+    {
+     "say": "What color is this image? One word.",
+     "expect": [
+      {
+       "turn_resolved": true
+      },
+      {
+       "reply_contains": "green"
+      }
+     ],
+     "att": [
+      "chat/sample.png"
+     ],
+     "timeout_s": 240
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/mem/episodic?limit=30"
+     },
+     "expect": [
+      {
+       "body_contains": "\"kind\":\"image\""
+      },
+      {
+       "body_regex": "\\[image 1/1 ref=[0-9a-f]{16}\\] \\((seen|transcribed)"
+      }
+     ]
+    },
+    {
+     "say": "What color was the photo I just sent you?",
+     "expect": [
+      {
+       "turn_resolved": true
+      },
+      {
+       "reply_contains": "green"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

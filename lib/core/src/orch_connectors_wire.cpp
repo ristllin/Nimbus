@@ -1479,6 +1479,14 @@ std::string webFactsLine(const std::vector<ConnectorInfo>& cs, const ProviderSta
 }
 }  // namespace
 
+// Whether the CURRENT head refuses the connectors of its own provider (today only
+// a mistral head on a mistral-large-4 model). Such a head can never run them on
+// its own turns: the wire layer drops the attach after one refused request, so
+// every surface must route the work to a spawned sub-agent instead.
+static bool headRefusesOwnConnectors(const ProviderState& ps) {
+  return ps.currentHost == "mistral" && modelRefusesBuiltinConnectors(ps.headModel);
+}
+
 std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderState& ps) {
   std::string out = "\n[PROVIDERS & CONNECTORS]\n";
   const std::string& host = ps.currentHost;
@@ -1505,13 +1513,29 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
   } else if (hostKnown) {
     out += "You are currently running on ";
     out += host;
-    out += ". Connectors on ";
-    out += host;
-    out += " are callable on YOUR OWN turns; connectors on the other providers are "
-           "reachable only by spawning a sub-agent on that provider.\n";
+    // Lane CONN: a head model that refuses its provider's built-in connectors
+    // (mistral-large-4-0 on mistral) can never run them on its own turns, so the
+    // "callable on YOUR OWN turns" promise would invite a guessed answer.
+    if (headRefusesOwnConnectors(ps)) {
+      out += " on the model " + ps.headModel + ", which refuses Mistral's built-in "
+             "connectors, so connectors on mistral run ONLY on a sub-agent you spawn "
+             "on mistral, never on your own turns here. Connectors on the other "
+             "providers are reachable only by spawning a sub-agent on that provider.\n";
+    } else {
+      out += ". Connectors on ";
+      out += host;
+      out += " are callable on YOUR OWN turns; connectors on the other providers are "
+             "reachable only by spawning a sub-agent on that provider.\n";
+    }
   }
   if (hostKnown) {
-    if (host == "mistral" && !hostPaused && !ps.mistralHeadCarriesStudio)
+    if (host == "mistral" && !hostPaused && headRefusesOwnConnectors(ps))
+      out += "EXCEPTION: your head model (" + ps.headModel + ") refuses Mistral's "
+             "built-in connectors, so NO Mistral connector or hosted built-in runs "
+             "on your own turns here: they run ONLY on a sub-agent you spawn on "
+             "mistral (session_ops spawn: provider = mistral, skill = the connector "
+             "name), which runs on a model that accepts them.\n";
+    else if (host == "mistral" && !hostPaused && !ps.mistralHeadCarriesStudio)
       out += "EXCEPTION: Mistral Studio connectors (calendar, Notion, Slack, Gmail, "
              "Drive, GitHub...) are NOT attached to your own turns here; they run ONLY "
              "on a sub-agent you spawn on mistral (session_ops spawn: provider = "
@@ -1531,6 +1555,23 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
     const std::string* paused;   // providerPauseFact, "" = open
     const char* native;
   };
+  // Lane CONN: on a head model that refuses the built-in connectors, the mistral
+  // row must not promise the single-shot attach - the wire drops it after one
+  // refused request, so the sub-agent is the only honest route.
+  const std::string misNative = headRefusesOwnConnectors(ps)
+      ? "connectors + built-ins attach ONLY to sub-agents you spawn on mistral "
+        "(your head model refuses them): spawn a mistral sub for ALL connector work"
+      : ps.mistralHeadCarriesStudio
+            ? std::string("connectors + built-ins attach to a single-shot turn AND to "
+                          "sub-agents you spawn on mistral, but NOT to your tool-loop "
+                          "turns (the loop forces tool_choice, which the provider "
+                          "rejects with built-ins) - so on your own loop turns you "
+                          "have only the registry tools; spawn a mistral sub for "
+                          "connector work")
+            : std::string("built-ins attach to a single-shot turn AND to sub-agents "
+                          "you spawn on mistral; Studio connectors run ONLY on "
+                          "sub-agents you spawn on mistral, never on your own turns: "
+                          "spawn a mistral sub for connector work");
   const Row rows[] = {
       {"openai", ps.openaiKeyed, ps.openaiVerified, &oaiPaused,
        "connectors/MCP run server-side on your own turns AND on sub-agents; "
@@ -1539,16 +1580,7 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
        "sub-agents run in a cloud sandbox with bash, file read/write, web "
        "search/fetch; connectors (BYO MCP by URL) attach to SUB-AGENTS only, "
        "not your own turns"},
-      {"mistral", ps.mistralKeyed, ps.mistralVerified, &misPaused,
-       ps.mistralHeadCarriesStudio
-           ? "connectors + built-ins attach to a single-shot turn AND to sub-agents "
-             "you spawn on mistral, but NOT to your tool-loop turns (the loop forces "
-             "tool_choice, which the provider rejects with built-ins) - so on your own "
-             "loop turns you have only the registry tools; spawn a mistral sub for "
-             "connector work"
-           : "built-ins attach to a single-shot turn AND to sub-agents you spawn on "
-             "mistral; Studio connectors run ONLY on sub-agents you spawn on mistral, "
-             "never on your own turns: spawn a mistral sub for connector work"},
+      {"mistral", ps.mistralKeyed, ps.mistralVerified, &misPaused, misNative.c_str()},
   };
   for (const Row& r : rows) {
     out += "- ";
@@ -1641,7 +1673,7 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
              (ps.anthropicKeyed && p.find("anthropic") != std::string::npos) ||
              (ps.mistralKeyed && p.find("mistral") != std::string::npos);
     };
-    std::string notCfg, disabled;
+    std::string notCfg, disabled, misNotCfg;
     for (int i = 0; i < kn; i++) {
       const std::string id = kk[i].id;
       if (id == "document_library") continue;   // needs library-id plumbing
@@ -1657,6 +1689,14 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
       if (!have) {
         if (!notCfg.empty()) notCfg += ", ";
         notCfg += id;
+        // Lane CONN: a Mistral-reachable connector is authorized in Mistral's
+        // console first, then enabled on the device - the model must tell a
+        // Mistral client both steps, in that order, never just "add a card".
+        if (ps.mistralKeyed &&
+            std::string(kk[i].providers).find("mistral") != std::string::npos) {
+          if (!misNotCfg.empty()) misNotCfg += ", ";
+          misNotCfg += id;
+        }
       } else if (!en) {
         if (!disabled.empty()) disabled += ", ";
         disabled += id;
@@ -1665,6 +1705,10 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
     if (!notCfg.empty())
       out += "Not configured (owner can add on the device web page, Assistant > "
              "Connectors): " + notCfg + "\n";
+    if (!misNotCfg.empty())
+      out += "For the Mistral ones (" + misNotCfg + "): the owner authorizes the "
+             "connector in Mistral's console (Studio > Connectors), then enables it "
+             "on the device web page with Mistral as the provider.\n";
     if (!disabled.empty())
       out += "Configured but turned OFF (owner can re-enable on the device web page, "
              "Assistant > Connectors): " +
@@ -1869,6 +1913,12 @@ static bool providerKeyed(const std::string& prov, const ProviderState& ps) {
   return false;   // a custom/unknown provider name has no key state here
 }
 
+
+// ---- lane CONN: the head model's connector refusal ----------------------------
+bool modelRefusesBuiltinConnectors(const std::string& model) {
+  return model.rfind("mistral-large-4", 0) == 0;
+}
+
 CapScope connectorScope(const ConnectorInfo& c, const ProviderState& ps) {
   if (!providerKeyed(c.prov, ps)) return CapScope::Unavailable;   // NO KEY
   if (!c.enabled)                 return CapScope::Unavailable;   // owner turned it off
@@ -1883,6 +1933,10 @@ CapScope connectorScope(const ConnectorInfo& c, const ProviderState& ps) {
   // even when mistral is the head (see ProviderState.mistralHeadCarriesStudio).
   if (onHost && !ps.mistralHeadCarriesStudio && isMistralStudioConnector(c))
     return CapScope::SubsessionsOnly;
+  // Lane CONN: a head model that refuses its provider's built-in connectors
+  // (mistral-large-4-0) can never run them on its own turns, whatever the attach
+  // wiring says - the wire drops them after one refused request. Sub-agent only.
+  if (onHost && headRefusesOwnConnectors(ps)) return CapScope::SubsessionsOnly;
   return onHost ? CapScope::OrchestratorDirect : CapScope::SubsessionsOnly;
 }
 
