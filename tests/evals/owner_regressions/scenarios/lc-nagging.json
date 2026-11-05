@@ -1,0 +1,21 @@
+{
+  "id": "lc-nagging",
+  "title": "A settled item is never re-listed in a later reply",
+  "rows": ["OIR-34"],
+  "replays": "The 2 Nov class: every reply re-listed the same stale open items (Still open: ...).",
+  "clock": "{{TODAY}} {{DOW}} 07:53 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "history": [
+    {"role": "assistant", "text": "Still open: the garage door sensor question and the pharmacy run. Let me know when you want to handle these."}
+  ],
+  "steps": [
+    {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{TODAY}},breakfast,oats with a banana,290,12\n"},
+    {"do": "say", "text": "All sorted, thanks. What is my total today?"}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "ledger_day_total", "params": {"require_stated": false}},
+    {"id": "reply_forbids", "params": {"forbidden": ["still open"]}}
+  ]
+}

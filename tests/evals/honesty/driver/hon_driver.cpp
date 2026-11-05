@@ -21,6 +21,10 @@
 //   file a file on the card before the steps run; {{TODAY}}/{{YESTERDAY}}/{{TOMORROW}}
 //        in its text expand to the device's local day strings.
 //   pref standing rules already on the device ("texts": [rule, ...]).
+//   scheduled an unattended turn (a routine firing): the text is the routine's
+//        prompt, the name the routine's display name, loopId its loop id. The
+//        turn runs exactly as the device would fire it (the prefs rails read the
+//        scheduled flag), and its reply is graded like any other.
 // The transcript also carries the final state: files, prefs and memory rows.
 // The graded turn is the last live one. Web search is left out of the lab when the
 // scenario says so (the device head it replays had none), and the scenario's clock
@@ -194,7 +198,9 @@ uint32_t nowHours() {
 }
 
 // Scenario files stay static across run days: {{TODAY}} / {{YESTERDAY}} / {{TOMORROW}}
-// in a seeded file's text become the device's local day strings (the ledger keys on them).
+// in a seeded file's text become the device's local day strings (the ledger keys on
+// them), and {{DOW}} becomes the weekday name, so a scenario's clock can name the
+// real today without a per-run edit.
 std::string substituteDays(const std::string& text) {
   std::string out = text;
   const std::pair<const char*, int> tokens[] = {
@@ -206,6 +212,14 @@ std::string substituteDays(const std::string& text) {
       out.replace(pos, std::strlen(tk.first), day);
       pos += day.size();
     }
+  }
+  char dow[8] = {0};
+  const std::time_t now = std::time(nullptr);
+  std::strftime(dow, sizeof(dow), "%a", std::localtime(&now));
+  size_t pos = 0;
+  while ((pos = out.find("{{DOW}}", pos)) != std::string::npos) {
+    out.replace(pos, 7, dow);
+    pos += std::strlen(dow);
   }
   return out;
 }
@@ -261,14 +275,18 @@ bool runSub(lab::LabRig& rig, Subs& subs, const std::string& chat, JsonObjectCon
   s.task = str(st["task"]);
   s.name = str(st["name"]);
   s.category = "research";
-  if (!(st["fail"] | false))   // fail=true: the provider refuses the dispatch (spawn failure)
+  const bool scriptedFail = st["fail"] | false;
+  if (!scriptedFail)   // fail=true: the provider refuses the dispatch (spawn failure)
     subs.adapterFor(s.provider).queued.push_back(run);
   if (!rig.jobs().enqueueSpawn(s, chat, /*quiet=*/true)) return false;
-  for (int i = 0; i < 300 && !rig.jobs().hasFreshResults(); i++) {   // dispatch, then poll (~2 s)
+  // A scripted failure is the recorded reality, not a driver error: the refusal
+  // lands in the spawn ledger on the first pumps, and the scenario carries on.
+  const int polls = scriptedFail ? 5 : 300;
+  for (int i = 0; i < polls && !rig.jobs().hasFreshResults(); i++) {   // dispatch, then poll (~2 s)
     rig.jobs().pump();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
-  return rig.jobs().hasFreshResults();
+  return scriptedFail || rig.jobs().hasFreshResults();
 }
 
 bool runSteps(lab::LabRig& rig, Subs& subs, JsonObjectConst sc, JsonDocument& out) {
@@ -291,6 +309,16 @@ bool runSteps(lab::LabRig& rig, Subs& subs, JsonObjectConst sc, JsonDocument& ou
         std::string id;
         rig.prefs().store().add(str(v), orch::PrefOrigin::Seed, nowHours(), /*pending=*/false, &id);
       }
+      continue;
+    }
+    if (kind == "scheduled") {  // an unattended turn: a routine firing as the device does
+      rig.scheduled(chat, str(st["text"]), str(st["name"]), /*quietOk=*/false, str(st["loopId"]));
+      const lab::TurnRecord& t = rig.lastTurn();
+      addTurn(turns, "scheduled", t, logFrom);
+      // A scheduled turn that said nothing (suppressed by a rail, or cancelled by
+      // the owner's standing rule) is a legitimate outcome, not a driver error;
+      // only a reply that failed mid-turn fails the run.
+      ok = ok && (t.ok || t.reply.empty());
       continue;
     }
     if (kind == "say") {
@@ -380,7 +408,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "hon_driver: cannot parse %s\n", a.scenario.c_str());
     return 2;
   }
-  g_profile.clock = str(sc["clock"]);
+  g_profile.clock = substituteDays(str(sc["clock"]));   // {{TODAY}}/{{DOW}} name the real today
   lab::Env env;
   env.loadDotenv(a.env);
   if (!(sc["webSearch"] | false)) env.drop("TAVILY_API_KEY");

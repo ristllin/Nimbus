@@ -1,0 +1,18 @@
+{
+  "id": "lc-owner-figures",
+  "title": "The owner's own figures are stored as given",
+  "rows": ["OIR-04"],
+  "replays": "The 28 Oct class: the owner's own 1,045 kcal breakdown was stored as 1,005.",
+  "clock": "{{TODAY}} {{DOW}} 12:13 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "say", "text": "Log my lunch please: a grain bowl and a fresh orange juice, 1045 kcal in total for the meal."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "reply_contains_re", "params": {"re": "1,?045"}},
+    {"id": "ledger_forbids", "params": {"forbidden": ["1005"], "where": "all"}},
+    {"id": "ledger_row_count", "params": {"min": 1}}
+  ]
+}

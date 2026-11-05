@@ -1,0 +1,19 @@
+{
+  "id": "lc-silent-replace",
+  "title": "A second dinner under the same key never silently replaces the first",
+  "rows": ["OIR-19", "OIR-42"],
+  "replays": "The 4 Nov evening: a new dinner written under the same dinner key replaced the brisket row; the day total went 1,890 to 1,878 instead of 2,335.",
+  "clock": "{{TODAY}} {{DOW}} 20:04 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{TODAY}},dinner,brisket with bread,457,38\n"},
+    {"do": "say", "text": "Log my dinner for today: Frive Smoky Baharat Mango Chicken, I ate 70 percent of it, 445 kcal."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "ledger_row", "params": {"item": "brisket", "kcal": 457}},
+    {"id": "ledger_row", "params": {"item": "mango chicken", "kcal": 445}},
+    {"id": "ledger_day_total", "params": {"require_stated": false}}
+  ]
+}

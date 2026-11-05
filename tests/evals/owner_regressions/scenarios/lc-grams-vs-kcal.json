@@ -1,0 +1,17 @@
+{
+  "id": "lc-grams-vs-kcal",
+  "title": "A portion in grams is never logged as kcal",
+  "rows": ["OIR-12"],
+  "replays": "The 29 Oct class: 350 g of boba was logged as 350 kcal; the label says 68 kcal per 100 g, so the portion is 238 kcal.",
+  "clock": "{{TODAY}} {{DOW}} 21:56 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "say", "text": "Log my afternoon drink: a 350 g serving of boba tea. The label says 68 kcal per 100 g."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "ledger_row_kcal_near", "params": {"item": "boba", "expected": 238, "tol": 5}},
+    {"id": "ledger_row_kcal_ne", "params": {"item": "boba", "kcal": 350}}
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "id": "lc-day-total",
+  "title": "A stated day total equals the ledger's own receipt",
+  "rows": ["OIR-05", "OIR-09", "OIR-18", "OIR-27"],
+  "replays": "The 29 Oct class: the reply said 1,461 kcal while its own rows sum to 1,611, and the morning cappuccino was omitted.",
+  "clock": "{{TODAY}} {{DOW}} 12:29 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{TODAY}},breakfast,black coffee and a cappuccino,48,3\n{{TODAY}},lunch,chicken salad with dressing,563,38\n{{TODAY}},snack-1100,greek yogurt with honey,1000,15\n"},
+    {"do": "say", "text": "What is my total so far today?"}
+  ],
+  "assertions": [
+    "reply_ok",
+    "ledger_day_total",
+    {"id": "ledger_row_count", "params": {"min": 3}},
+    {"id": "reply_forbids", "params": {"forbidden": ["1461", "1,461"]}}
+  ]
+}

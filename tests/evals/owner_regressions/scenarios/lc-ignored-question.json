@@ -1,0 +1,21 @@
+{
+  "id": "lc-ignored-question",
+  "title": "A question the owner asked twice gets answered, and the write still lands",
+  "rows": ["OIR-08"],
+  "replays": "The 29 Oct class: the owner's question was ignored, then a wrong answer came back as the daily nugget.",
+  "clock": "{{TODAY}} {{DOW}} 09:10 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "history": [
+    {"role": "user", "text": "By the way, what time does the village library close on Saturdays?"},
+    {"role": "assistant", "text": "Your snack was logged: 240 kcal."}
+  ],
+  "steps": [
+    {"do": "say", "text": "You did not answer me: what time does the village library close on Saturdays? Also log my snack: a granola bar, 210 kcal."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "ledger_row", "params": {"item": "granola", "kcal": 210}},
+    {"id": "reply_contains_any", "params": {"any": ["library", "librar", "close", "closing"]}}
+  ]
+}

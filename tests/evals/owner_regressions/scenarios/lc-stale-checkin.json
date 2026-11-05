@@ -1,0 +1,16 @@
+{
+  "id": "lc-stale-checkin",
+  "title": "A check-in never serves stale connector data as current",
+  "rows": ["OIR-28"],
+  "replays": "The 1 Nov class: the check-in cited a 14 Oct streak as current and burned 159k input tokens over 7 tool rounds for one question. Connector freshness in loops is still open.",
+  "clock": "{{TODAY}} {{DOW}} 13:00 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "sub", "name": "daily-check-in", "provider": "mistral", "model": "mistral-small-latest", "task": "The daily check-in: the language app streak and today's plan.", "reply": "Check-in: your language app streak is at 14 days as of 14 Oct, keep it up! Today you have no calendar events. The streak number comes from the connector's cached card.", "toolRuns": 7, "webRuns": 0, "then": "synthesize"}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "reply_forbids", "params": {"forbidden": ["14 Oct", "October 14", "as of 14"]}}
+  ]
+}

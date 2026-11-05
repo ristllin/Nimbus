@@ -1,0 +1,18 @@
+{
+  "id": "lc-album",
+  "title": "A six-photo album turn completes and logs, never a cut-off dump",
+  "rows": ["OIR-25"],
+  "replays": "The 31 Oct class: a six-photo album failed after 3m56s with a cut off notice. The turn now stays inside the output budget and completes.",
+  "clock": "{{TODAY}} {{DOW}} 20:06 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "say", "text": "Here are six photos from my lunch today. Photo 1: a bowl of tomato soup. Photo 2: half a grilled cheese sandwich. Photo 3: the second sandwich half. Photo 4: a small side salad. Photo 5: a pickle spear. Photo 6: a glass of lemonade. Log the whole meal as lunch."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "reply_max_len", "params": {"max": 4000}},
+    {"id": "ledger_row_count", "params": {"min": 1}},
+    {"id": "ledger_contains_any", "params": {"any": ["soup", "sandwich", "cheese"]}}
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "id": "lc-photo-default",
+  "title": "A pack-label photo logs the whole pack by default and never asks",
+  "rows": ["OIR-35"],
+  "replays": "The 2 Nov class: a pack label photo was logged, then the owner was asked did you eat the whole pack? The rule is a whole-pack default, said in one line, never a question.",
+  "clock": "{{TODAY}} {{DOW}} 08:15 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "say", "text": "Here is a photo of the label on my protein bar pack: 220 kcal per bar, 4 bars in the pack. Logging my snack."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "ledger_row_kcal_near", "params": {"item": "protein bar", "expected": 880, "tol": 5}},
+    {"id": "reply_contains_any", "params": {"any": ["whole pack", "all 4", "four bars", "880"]}},
+    {"id": "reply_forbids", "params": {"forbidden": ["did you eat the whole", "did you eat all", "how many bars", "whole pack?"]}}
+  ]
+}

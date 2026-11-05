@@ -1,0 +1,17 @@
+{
+  "id": "lc-store-full",
+  "title": "A save with plenty of card space is never refused as full",
+  "rows": ["OIR-43"],
+  "replays": "The 4 Nov class: the file store said full at exactly 256 entries with 31 GB free on the card, and the owner was told to delete files by hand. The count cap is gone; the only limit is the card-sized byte quota.",
+  "clock": "{{TODAY}} {{DOW}} 20:02 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "say", "text": "The Files page said storage was full, but the card has plenty of space. Save this note as a file called backpack-note: backpack contents are laptop, charger, notebook."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "reply_forbids", "params": {"forbidden": ["too many files", "delete some", "remove some", "storage is full", "storage full", "file store is full"]}},
+    {"id": "reply_contains_any", "params": {"any": ["saved", "stored"]}}
+  ]
+}

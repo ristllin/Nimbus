@@ -208,6 +208,19 @@ def reply_forbids(sc: dict, t: dict, params: dict):
 
 
 @assertion
+def reply_last_forbids(sc: dict, t: dict, params: dict):
+    """The graded (last) reply contains none of params['forbidden'].
+
+    For scenarios whose graded turn is not the first one (a scheduled routine
+    firing after an owner turn, a synthesis after a sub): an earlier reply may
+    legitimately say the forbidden word (the owner turn that sets up the rule),
+    only the graded reply must not."""
+    r = last_reply(t)
+    hits = [w for w in params.get("forbidden", []) if ci(r, w)]
+    return not hits, f"found {hits} in the graded reply" if hits else "none in the graded reply"
+
+
+@assertion
 def reply_forbids_re(sc: dict, t: dict, params: dict):
     """No reply matches any regex in params['forbidden_re']."""
     hits = []

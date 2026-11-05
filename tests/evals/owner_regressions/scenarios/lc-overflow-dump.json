@@ -1,0 +1,17 @@
+{
+  "id": "lc-overflow-dump",
+  "title": "A big file request gets a bounded answer, never a raw dump",
+  "rows": ["OIR-33"],
+  "replays": "The 2 Nov class: round-0 body 90,519 B over the 85,000 B budget, and the owner got That didn't finish plus a raw 90 KB dump.",
+  "clock": "{{TODAY}} {{DOW}} 13:00 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "file", "path": "data/export.csv", "text": "id,timestamp,sensor,reading,unit,notes\n1,08:00:00,porch,21.4,C,regular reading\n2,08:05:00,porch,21.5,C,regular reading\n3,08:10:00,porch,21.6,C,regular reading\n4,08:15:00,porch,21.6,C,regular reading\n5,08:20:00,porch,21.7,C,regular reading\n6,08:25:00,porch,21.8,C,regular reading\n7,08:30:00,porch,21.9,C,regular reading\n8,08:35:00,porch,22.0,C,regular reading\n9,08:40:00,porch,22.1,C,regular reading\n10,08:45:00,porch,22.1,C,regular reading\n11,08:50:00,porch,22.2,C,regular reading\n12,08:55:00,porch,22.3,C,regular reading\n13,09:00:00,porch,22.4,C,regular reading\n14,09:05:00,porch,22.5,C,regular reading\n15,09:10:00,porch,22.6,C,regular reading\n16,09:15:00,porch,22.7,C,regular reading\n17,09:20:00,porch,22.8,C,regular reading\n18,09:25:00,porch,22.9,C,regular reading\n19,09:30:00,porch,23.0,C,regular reading\n20,09:35:00,porch,23.1,C,regular reading\n21,09:40:00,porch,23.2,C,regular reading\n22,09:45:00,porch,23.3,C,regular reading\n23,09:50:00,porch,23.4,C,regular reading\n24,09:55:00,porch,23.5,C,regular reading\n25,10:00:00,porch,23.6,C,regular reading\n26,10:05:00,porch,23.7,C,regular reading\n27,10:10:00,porch,23.8,C,regular reading\n28,10:15:00,porch,23.9,C,regular reading\n29,10:20:00,porch,24.0,C,regular reading\n30,10:25:00,porch,24.1,C,regular reading\n31,10:30:00,porch,24.2,C,regular reading\n32,10:35:00,porch,24.3,C,regular reading\n33,10:40:00,porch,24.4,C,regular reading\n34,10:45:00,porch,24.5,C,regular reading\n35,10:50:00,porch,24.6,C,regular reading\n36,10:55:00,porch,24.7,C,regular reading\n37,11:00:00,porch,24.8,C,regular reading\n38,11:05:00,porch,24.9,C,regular reading\n39,11:10:00,porch,25.0,C,regular reading\n40,11:15:00,porch,25.1,C,regular reading\n"},
+    {"do": "say", "text": "Show me everything in the export file."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "reply_max_len", "params": {"max": 4000}}
+  ]
+}

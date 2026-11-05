@@ -76,10 +76,12 @@ def check_scenario(sc: dict) -> list:
     if not sc.get("id", "").startswith("lc-"):
         errs.append("id must start with lc-")
     for st in sc.get("steps", []):
-        if st.get("do") not in ("say", "sub", "row", "file", "pref"):
+        if st.get("do") not in ("say", "sub", "row", "file", "pref", "scheduled"):
             errs.append(f"unknown step {st.get('do')!r}")
         if st.get("do") == "sub" and not st.get("name"):
             errs.append("sub step missing name")
+        if st.get("do") == "scheduled" and not st.get("text"):
+            errs.append("scheduled step missing text")
     for a in sc.get("assertions", []):
         aid = a["id"] if isinstance(a, dict) else a
         if aid not in A.known_ids():

@@ -1,0 +1,17 @@
+{
+  "id": "lc-label-misread",
+  "title": "The owner's nutrition table beats a misread label",
+  "rows": ["OIR-15"],
+  "replays": "The 30 Oct class: skyr was logged at 342 kcal from a misread 228 per 100 g; the owner's table says the 150 g portion is 175 kcal.",
+  "clock": "{{TODAY}} {{DOW}} 08:29 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "say", "text": "Log 150 g of skyr for my breakfast. My nutrition table says that portion is 175 kcal."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "ledger_row_kcal_near", "params": {"item": "skyr", "expected": 175, "tol": 3}},
+    {"id": "ledger_row_kcal_ne", "params": {"item": "skyr", "kcal": 342}}
+  ]
+}

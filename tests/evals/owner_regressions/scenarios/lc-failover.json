@@ -1,0 +1,18 @@
+{
+  "id": "lc-failover",
+  "title": "A transient provider failure does not lose the answer",
+  "rows": ["OIR-47"],
+  "replays": "The 1 Nov class: mistral ran out of room, the answer landed 2m52s late with a failover notice. The failure chain now retries and the answer lands.",
+  "clock": "{{TODAY}} {{DOW}} 15:46 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "faults": ["mistral:1:429", "anthropic:1:429", "openai:1:429", "zai:1:429"],
+  "steps": [
+    {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{TODAY}},breakfast,oats with a banana,290,12\n{{TODAY}},lunch,chicken wrap,615,40\n"},
+    {"do": "say", "text": "What is my total so far today?"}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "ledger_day_total", "params": {"require_stated": false}}
+  ]
+}

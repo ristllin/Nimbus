@@ -1,0 +1,19 @@
+{
+  "id": "lc-frozen-turn",
+  "title": "A long lookup turn answers, and the message queued behind it is answered too",
+  "rows": ["OIR-40"],
+  "replays": "The 4 Nov class: a lookup turn ran 5m12s with no visible sign of work and a second message waited behind it. The progress signal and the queued ack landed with lane PROG.",
+  "clock": "{{TODAY}} {{DOW}} 16:17 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{TODAY}},breakfast,oats with a banana,290,12\n{{TODAY}},lunch,chicken wrap,615,40\n{{TODAY}},snack-1500,apple with peanut butter,180,4\n"},
+    {"do": "say", "text": "Go through my whole food log carefully, check every row of today, and tell me whether my day looks balanced."},
+    {"do": "say", "text": "Also, what is my total today?"}
+  ],
+  "assertions": [
+    "reply_ok",
+    "ledger_day_total",
+    {"id": "reply_forbids", "params": {"forbidden": ["still working", "one moment", "hold on"]}}
+  ]
+}

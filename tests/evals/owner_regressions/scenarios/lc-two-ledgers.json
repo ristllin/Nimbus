@@ -1,0 +1,18 @@
+{
+  "id": "lc-two-ledgers",
+  "title": "A meal write never lands in a second food ledger",
+  "rows": ["OIR-48"],
+  "replays": "The 31 Oct to 1 Nov class: two live food ledgers, a dead food/food-log.csv and the live nutrition/meal_log.csv. Writes outside the one ledger are refused.",
+  "clock": "{{TODAY}} {{DOW}} 19:00 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "file", "path": "nutrition/meal_log.csv", "text": "date,meal,items,kcal\n2026-10-20,dinner,pasta,520\n"},
+    {"do": "say", "text": "Save my dinner into my meal log: a salmon plate, 620 kcal."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "file_unchanged", "params": {"path": "nutrition/meal_log.csv"}},
+    {"id": "ledger_row", "params": {"item": "salmon", "kcal": 620}}
+  ]
+}

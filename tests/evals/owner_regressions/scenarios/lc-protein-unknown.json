@@ -1,0 +1,17 @@
+{
+  "id": "lc-protein-unknown",
+  "title": "Unknown protein is never turned into a definite grams-left claim",
+  "rows": ["OIR-30"],
+  "replays": "The 1 Nov class: a row with no protein figure produced you need about 102 g more, treating unknown as zero.",
+  "clock": "{{TODAY}} {{DOW}} 16:59 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{TODAY}},dinner,steak plate,650,\n"},
+    {"do": "say", "text": "How much protein do I have left today if my target is 120 g?"}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "reply_forbids_re", "params": {"forbidden_re": ["\\d+ ?g( of)? protein (left|remaining|to go)"]}}
+  ]
+}

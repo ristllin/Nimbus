@@ -1,0 +1,18 @@
+{
+  "id": "lc-promise",
+  "title": "A turn that promises an answer delivers it in the same turn",
+  "rows": ["OIR-13", "OIR-21"],
+  "replays": "The 31 Oct class: I'll finish the calculation next turn, then nothing came and the owner chased twice.",
+  "clock": "{{TODAY}} {{DOW}} 15:44 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{TODAY}},breakfast,oats with a banana,290,12\n{{TODAY}},lunch,chicken wrap,615,40\n"},
+    {"do": "say", "text": "Check my food log and tell me my total so far today. Take your time and be thorough."}
+  ],
+  "assertions": [
+    "reply_ok",
+    {"id": "ledger_day_total", "params": {"require_stated": false}},
+    {"id": "reply_forbids", "params": {"forbidden": ["next turn", "hold on", "one moment", "in a moment", "I'll finish", "I will finish", "shortly"]}}
+  ]
+}
