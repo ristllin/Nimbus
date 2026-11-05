@@ -289,6 +289,50 @@ bool runSub(lab::LabRig& rig, Subs& subs, const std::string& chat, JsonObjectCon
   return scriptedFail || rig.jobs().hasFreshResults();
 }
 
+// The seed steps (row, file, pref): state on the device before a live turn runs.
+// Returns true when the step was handled, so runSteps can skip to the next one.
+bool seedStep(lab::LabRig& rig, const std::string& chat, const std::string& kind, JsonObjectConst st) {
+  if (kind == "row") {   // a message the owner saw between steps (no live turn)
+    seedRow(rig, chat, str(st["role"]), str(st["text"]));
+    return true;
+  }
+  if (kind == "file") {  // a file on the card before the steps run ({{TODAY}} & co. expand)
+    rig.files().seed(str(st["path"]), substituteDays(str(st["text"])));
+    return true;
+  }
+  if (kind == "pref") {  // standing rules already on the device
+    for (JsonVariantConst v : st["texts"].as<JsonArrayConst>()) {
+      std::string id;
+      rig.prefs().store().add(str(v), orch::PrefOrigin::Seed, nowHours(), /*pending=*/false, &id);
+    }
+    return true;
+  }
+  return false;
+}
+
+// The sub step: dispatch the scripted sub-agent, then synthesize or consume per
+// the scenario's "then". Returns false only on a hard driver error.
+struct TurnCtx { JsonArray turns; size_t logFrom; };
+
+bool runSubStep(lab::LabRig& rig, Subs& subs, const std::string& chat, JsonObjectConst st, const TurnCtx& ctx,
+                bool& ok) {
+  if (!runSub(rig, subs, chat, st)) {
+    std::fprintf(stderr, "hon_driver: sub %s never finished\n", str(st["name"]).c_str());
+    return false;
+  }
+  const std::string then = str(st["then"]);
+  if (then == "synthesize") {
+    const lab::TurnRecord t = rig.synthesize(chat);
+    addTurn(ctx.turns, "synthesis", t, ctx.logFrom);
+    ok = ok && t.ok;
+  } else if (then == "consume") {
+    // the synthesis already happened on the device (scoped take, as the turn does)
+    (void)rig.jobs().takeFreshResultsFor(rig.jobs().freshScopeFor(chat), nullptr, nullptr, nullptr);
+    seedRow(rig, chat, "assistant", str(st["sentThen"]));
+  }
+  return true;
+}
+
 bool runSteps(lab::LabRig& rig, Subs& subs, JsonObjectConst sc, JsonDocument& out) {
   const std::string chat = str(sc["chat"]).empty() ? "owner" : str(sc["chat"]);
   JsonArray turns = out["turns"].to<JsonArray>();
@@ -296,21 +340,7 @@ bool runSteps(lab::LabRig& rig, Subs& subs, JsonObjectConst sc, JsonDocument& ou
   for (JsonObjectConst st : sc["steps"].as<JsonArrayConst>()) {
     const std::string kind = str(st["do"]);
     const size_t logFrom = lab::LabRig::harnessLog().size();
-    if (kind == "row") {   // a message the owner saw between steps (no live turn)
-      seedRow(rig, chat, str(st["role"]), str(st["text"]));
-      continue;
-    }
-    if (kind == "file") {  // a file on the card before the steps run ({{TODAY}} & co. expand)
-      rig.files().seed(str(st["path"]), substituteDays(str(st["text"])));
-      continue;
-    }
-    if (kind == "pref") {  // standing rules already on the device
-      for (JsonVariantConst v : st["texts"].as<JsonArrayConst>()) {
-        std::string id;
-        rig.prefs().store().add(str(v), orch::PrefOrigin::Seed, nowHours(), /*pending=*/false, &id);
-      }
-      continue;
-    }
+    if (seedStep(rig, chat, kind, st)) continue;
     if (kind == "scheduled") {  // an unattended turn: a routine firing as the device does
       rig.scheduled(chat, str(st["text"]), str(st["name"]), /*quietOk=*/false, str(st["loopId"]));
       const lab::TurnRecord& t = rig.lastTurn();
@@ -328,20 +358,7 @@ bool runSteps(lab::LabRig& rig, Subs& subs, JsonObjectConst sc, JsonDocument& ou
       continue;
     }
     if (kind != "sub") return false;
-    if (!runSub(rig, subs, chat, st)) {
-      std::fprintf(stderr, "hon_driver: sub %s never finished\n", str(st["name"]).c_str());
-      return false;
-    }
-    const std::string then = str(st["then"]);
-    if (then == "synthesize") {
-      const lab::TurnRecord t = rig.synthesize(chat);
-      addTurn(turns, "synthesis", t, logFrom);
-      ok = ok && t.ok;
-    } else if (then == "consume") {
-      // the synthesis already happened on the device (scoped take, as the turn does)
-      (void)rig.jobs().takeFreshResultsFor(rig.jobs().freshScopeFor(chat), nullptr, nullptr, nullptr);
-      seedRow(rig, chat, "assistant", str(st["sentThen"]));
-    }
+    if (!runSubStep(rig, subs, chat, st, TurnCtx{turns, logFrom}, ok)) return false;
   }
   return ok;
 }
