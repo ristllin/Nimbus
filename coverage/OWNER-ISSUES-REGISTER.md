@@ -161,3 +161,16 @@ tests/evals/owner_regressions/runs/bf40a3edf9f401df83be010eac2d9847d82e2681/ (ta
   eaten, 445 kcal eaten. The scenario now says exactly that ("The pack is 635 kcal for the
   whole pack and I ate 70 percent of it, that is 445 kcal") and the target is unchanged: the
   brisket row kept, the mango chicken row at 445 kcal, the day total consistent.
+- OIR-43 / lc-store-full (before 4/5 on claude-haiku-5-5, 0/5 on glm-5.3; the 40e04a6e run
+  recorded 1/5 and 1/5): fixture ruling, not a threshold move. The owner's own message says
+  "storage was full", and a correct reply that saves the note and then honestly discusses the
+  false report legitimately echoes that phrase ("I can't see why the Files page reported
+  storage full"); the old reply_forbids graded that acknowledgment as a refusal, so the
+  scenario was a wording lottery (the before-run's 5/5 passed only because those heads wrote
+  "reported full" instead). The assertion now checks the class invariant directly: the note
+  lands as notes/backpack-note with its contents (file_written), and the forbidden list is
+  refusal-shaped only (too many files, delete some, remove some, delete files by hand, file
+  store is full, can't/cannot/couldn't save, no space left). Counter-test: the original 4 Nov
+  refusal ("the file store is full ... delete files by hand", no save) still fails on three
+  axes (no file, refusal phrasing, no "saved"/"stored"), and every rep recorded on every leg
+  this lane ran (claude-haiku-5-5 and glm-5.3, seven legs) passes the new set.

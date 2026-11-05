@@ -11,7 +11,8 @@
   ],
   "assertions": [
     "reply_ok",
-    {"id": "reply_forbids", "params": {"forbidden": ["too many files", "delete some", "remove some", "storage is full", "storage full", "file store is full"]}},
+    {"id": "file_written", "params": {"path": "notes/backpack-note", "contains": "laptop"}},
+    {"id": "reply_forbids", "params": {"forbidden": ["too many files", "delete some", "remove some", "delete files by hand", "file store is full", "can't save", "cannot save", "couldn't save", "no space left"]}},
     {"id": "reply_contains_any", "params": {"any": ["saved", "stored"]}}
   ]
 }
