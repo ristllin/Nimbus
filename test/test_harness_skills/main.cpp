@@ -516,7 +516,8 @@ static void test_food_playbooks_state_their_rules() {
                            "never hold the row back for a question",
                            "files_read the ledger first\n   and answer from the file as it stands now",
                            "never confirm an earlier\n   claim of yours without that read",
-                           "never\n   repeat \"you told me\"", "not even\n   inside quotes or in the apology"})
+                           "describe your earlier claim, never quote the line",
+                           "never repeat \"you told me\"", "not inside quotes, not in the apology"})
     TEST_ASSERT_TRUE_MESSAGE(f.find(must) != std::string::npos, must);
   const std::string c = agent::builtinSkillBody(agent::kFoodCoachSkillId, true);
   for (const char* must : {"a target you cannot point to is not stated", "your own earlier replies are not a source",
@@ -539,7 +540,8 @@ static void test_food_playbooks_state_their_rules() {
                            "unknown until that row's figure is known",
                            "files_read the\n   ledger first and answer from the file as it stands now",
                            "I can't find\n   any message from you saying that - I was wrong",
-                           "not\n   even inside quotes or in the apology"})
+                           "describe your earlier\n   line without quoting it",
+                           "never repeat \"you told me\"", "not inside quotes, not in the apology"})
     TEST_ASSERT_TRUE_MESSAGE(c.find(must) != std::string::npos, must);
   // The coach carries no logging procedure (a weak head logged the plan it was asked for).
   TEST_ASSERT_TRUE(c.find("files.append {") == std::string::npos);

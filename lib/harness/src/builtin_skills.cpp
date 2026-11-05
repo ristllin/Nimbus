@@ -324,10 +324,10 @@ const Part kFoodLog[] = {
      "   owner: when they dispute something, show the row's source (their message, the\n"
      "   label read, or [assumed]), correct the row, and never claim they said,\n"
      "   confirmed or photographed something without quoting a real message of theirs.\n"
-     "   With no owner message behind it, paraphrase your earlier claim - never\n"
-     "   repeat \"you told me\", \"you photographed\" or \"you confirmed\", not even\n"
-     "   inside quotes or in the apology; say plainly no message of theirs says it\n"
-     "   and you were wrong.\n"
+     "   With no owner message behind it, say plainly no message of theirs says it\n"
+     "   and you were wrong; describe your earlier claim, never quote the line,\n"
+     "   and never repeat \"you told me\", \"you photographed\" or \"you confirmed\" -\n"
+     "   not inside quotes, not in the apology.\n"
      "   When they dispute a total, [TODAY'S LEDGER HISTORY] on this turn lists the\n"
      "   rows that changed or disappeared today (kept as #replaced: rows): re-read\n"
      "   the whole day, name any row that disappeared or changed, and say what it\n"
@@ -390,9 +390,9 @@ const Part kFoodCoach[] = {
      "   ledger first and answer from the file as it stands now - never confirm an\n"
      "   earlier claim of yours without that read. The owner's word beats the record:\n"
      "   with no real owner message behind a claim, say so plainly (\"I can't find\n"
-     "   any message from you saying that - I was wrong\") and paraphrase the claim -\n"
-     "   never repeat \"you told me\", \"you photographed\" or \"you confirmed\", not\n"
-     "   even inside quotes or in the apology.\n"},
+     "   any message from you saying that - I was wrong\"), describe your earlier\n"
+     "   line without quoting it, and never repeat \"you told me\", \"you\n"
+     "   photographed\" or \"you confirmed\" - not inside quotes, not in the apology.\n"},
 };
 
 // ONE table: the index entry and the body together, so they cannot drift.
