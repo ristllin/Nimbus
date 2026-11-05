@@ -231,6 +231,19 @@ bool standingRulesApply(Role role);
 // replies" is a rule.
 bool looksLikeStandingRule(const std::string& text, const std::string& devName = "");
 
+// Does the owner's message ask that something be kept ("remember ...", "don't
+// forget ...")? Deliberately broad: the per-turn routing hint it gates carries
+// the routing itself (a rule goes to prefs.edit, a fact to mem_write, a question
+// is a search), so a broad match only ever restates correct routing. OIR-36:
+// heads acknowledged a remember-request with "I'll remember" and no write, so
+// the device says where the request lands on the turn that carries it.
+bool rememberRequest(const std::string& text);
+
+// The per-turn routing hint for a remember-request turn ("" when the message
+// is not one). Names the three landings so the head acts on the request in this
+// turn instead of acknowledging it.
+std::string renderMemoryRoutingHint(const std::string& text);
+
 // A memory the first-boot seed may lift into the rules.
 struct SeedCandidate {
   std::string text;

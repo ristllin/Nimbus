@@ -533,6 +533,48 @@ static void test_standing_rule_classifier_corpus() {
                 std::to_string(fp) + " false fires").c_str());
 }
 
+// Lane QFIX (OIR-36): a remember-request names its landing on the turn that carries it.
+// The detector is broad on purpose (the hint restates routing), but it must fire on
+// every way an owner asks to keep something and stay quiet otherwise.
+static void test_remember_request_corpus() {
+  const char* const kRequests[] = {
+      "Also remember: always double-check my coffee orders before placing them.",
+      "Remember: my printer is a Lexmark B3442.",
+      "Remember this for the long term: my bike lock code is 8273.",
+      "remember to reply in German",
+      "Please remember that my sister's name is Ada.",
+      "Don't forget: no voice notes after 22:00.",
+      "Do not forget the boiler service is due in October.",
+      "REMEMBER: metric units only.",
+      // Broad by design: a question or the owner's own recalling still mentions
+      // remembering, and the hint's routing covers both (search, save nothing).
+      "Do you remember what I said about the printer?",
+      "I remember you said the gym was quiet.",
+  };
+  const char* const kNotRequests[] = {
+      "What did I eat today?",
+      "That was memorable.",
+      "",
+      "log lunch: chicken wrap, 615 kcal",
+  };
+  for (const char* t : kRequests)
+    TEST_ASSERT_TRUE_MESSAGE(rememberRequest(t), t);
+  for (const char* t : kNotRequests)
+    TEST_ASSERT_FALSE_MESSAGE(rememberRequest(t), t);
+}
+
+// The hint rides only a remember-request turn, and it names all three landings:
+// a rule (prefs.edit, full list no refusal), a fact (mem_write), a question (search).
+static void test_memory_routing_hint() {
+  TEST_ASSERT_EQUAL_STRING("", renderMemoryRoutingHint("what's for dinner?").c_str());
+  const std::string h = renderMemoryRoutingHint("Also remember: always double-check my coffee orders.");
+  TEST_ASSERT_TRUE(h.find("[MEMORY ROUTING]") == 0);
+  TEST_ASSERT_TRUE(h.find("prefs.edit") != std::string::npos);
+  TEST_ASSERT_TRUE(h.find("retires to make room") != std::string::npos);
+  TEST_ASSERT_TRUE(h.find("mem_write") != std::string::npos);
+  TEST_ASSERT_TRUE(h.find("search") != std::string::npos);
+}
+
 // ---- 11. the first-boot seed, listed to the owner once --------------------------------
 static std::vector<SeedCandidate> lumiShapedMemories() {
   // Synthetic memories shaped like a long-running owner device (no personal data).
@@ -1186,6 +1228,8 @@ int main(int, char**) {
   RUN_TEST(test_no_dash_keeps_fenced_code);
   RUN_TEST(test_filters_follow_the_rule_words);
   RUN_TEST(test_standing_rule_classifier_corpus);
+  RUN_TEST(test_remember_request_corpus);
+  RUN_TEST(test_memory_routing_hint);
   RUN_TEST(test_first_boot_seed_lifts_rules_and_lists_them_once);
   RUN_TEST(test_seed_on_a_fresh_device_owes_nothing_and_never_runs_twice);
   RUN_TEST(test_rules_apply_to_the_owner_on_every_turn_kind_and_no_other_role);

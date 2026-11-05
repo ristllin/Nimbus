@@ -17,6 +17,7 @@
 #include "nimbus/harness/conversation.h"   // FoldSlice - the history fold slice (histV2)
 #include "nimbus/harness/skill_attach.h"   // AttachPick - the [ACTIVE SKILLS] picks (F1)
 #include "nimbus/orch/food_ledger.h"   // lane CTX: Deps::foodLedger
+#include "nimbus/orch/owner_prefs.h"     // lane QFIX: renderMemoryRoutingHint
 #include "nimbus/orch/episodic.h"       // EpisodicMessage (historyRows)
 #include "nimbus/orch/failure_chain.h"  // FailureChain - the turn's causes
 #include "nimbus/orch/fallback_rules.h" // ErrorClass - the pending [FALLBACK] note's class

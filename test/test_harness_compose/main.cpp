@@ -722,6 +722,20 @@ static void test_ctx_food_block_rides_the_per_turn_block() {
   TEST_ASSERT_TRUE(a.dyn.find("FOOD") == std::string::npos);
 }
 
+// Lane QFIX (OIR-36): the memory-routing hint rides the per-turn block on a
+// remember-request turn and leaves the cached blocks byte-identical.
+static void test_memory_routing_hint_rides_the_per_turn_block() {
+  ComposeInputs plain = cannedInputs();
+  ComposeInputs withHint = cannedInputs();
+  withHint.memoryRouting = "[MEMORY ROUTING] This message mentions remembering.";
+  const agent::layout::PromptParts a = agent::layout::split(agent::composeInstructions(plain));
+  const agent::layout::PromptParts b = agent::layout::split(agent::composeInstructions(withHint));
+  TEST_ASSERT_EQUAL_STRING(a.stat.c_str(), b.stat.c_str());
+  TEST_ASSERT_EQUAL_STRING(a.shelf.c_str(), b.shelf.c_str());
+  TEST_ASSERT_TRUE(b.dyn.find("[MEMORY ROUTING] This message mentions remembering.") != std::string::npos);
+  TEST_ASSERT_TRUE(a.dyn.find("[MEMORY ROUTING]") == std::string::npos);
+}
+
 static void test_ctx_food_block_never_takes_the_turns_room() {
   for (int budget : {20971, 32768}) {
     ComposeInputs plain = cannedInputs();
@@ -790,6 +804,7 @@ int main(int, char**) {
   RUN_TEST(test_one_honesty_rule_and_the_evidence_rule_in_both_roles);
   RUN_TEST(test_ctx_food_block_rides_the_per_turn_block);
   RUN_TEST(test_ctx_food_block_never_takes_the_turns_room);
+  RUN_TEST(test_memory_routing_hint_rides_the_per_turn_block);
   UNITY_END();
   return 0;
 }

@@ -135,6 +135,11 @@ struct ComposeInputs {
   // them without a skill read. "" = not a food turn, or both are already in
   // [ACTIVE SKILLS].
   std::string foodPlaybook;
+  // Lane QFIX (OIR-36): the per-turn memory-routing hint (owner_prefs.h
+  // renderMemoryRoutingHint) on a turn whose message asks that something be kept,
+  // so the head saves it (prefs.edit for a rule, mem_write for a fact) instead of
+  // acknowledging. "" = not a remember-request.
+  std::string memoryRouting;
 };
 
 // Compose the World system prompt as the cacheable parts of prompt_layout.h,

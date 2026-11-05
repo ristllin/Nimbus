@@ -563,7 +563,9 @@ std::string composeInstructions(const ComposeInputs& in) {
   if (!in.runningMemory.empty())
     head += (head.empty() ? "" : "\n") + std::string("[RUNNING MEMORY]\n") + in.runningMemory + "\n";
   const std::string food = foodBlock(in);
-  dyn.identity = "\n" + head + (head.empty() ? "" : "\n") + loopNote + food;
+  std::string headExtra = loopNote + food;
+  if (!in.memoryRouting.empty()) headExtra += (headExtra.empty() ? "" : "\n") + in.memoryRouting;
+  dyn.identity = "\n" + head + (head.empty() ? "" : "\n") + headExtra;
   dyn.sessions = renderSessions(in.sessions);
   dyn.recentConversation = in.recentConversation;
   dyn.scratchpad = in.scratchpad;

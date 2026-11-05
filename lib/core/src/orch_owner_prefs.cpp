@@ -774,6 +774,20 @@ bool looksLikeStandingRule(const std::string& text, const std::string& devName) 
   return !s.empty() && isRule(s, lowerAscii(devName));
 }
 
+bool rememberRequest(const std::string& text) {
+  static const char* const kKeep[] = {"remember", "don't forget", "do not forget"};
+  return words::anyPhrase(words::lowerAscii(text), kKeep);
+}
+
+std::string renderMemoryRoutingHint(const std::string& text) {
+  if (!rememberRequest(text)) return std::string();
+  return "[MEMORY ROUTING] This message mentions remembering. An always/never rule the owner "
+         "wants followed in every reply: save it as a standing rule now with prefs.edit (a full "
+         "list is no refusal: the oldest rule retires to make room). A durable fact: mem_write "
+         "now. Asked whether you remember something: search memory and the episodic log, save "
+         "nothing.";
+}
+
 std::vector<std::string> pickSeedRules(const std::vector<SeedCandidate>& in, const std::string& devName) {
   std::vector<const SeedCandidate*> picked;
   for (const SeedCandidate& c : in) {

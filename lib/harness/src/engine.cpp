@@ -1447,6 +1447,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   if (d_.skillsIndex) ci.skillsShelf = d_.skillsIndex();
   ci.recallDegraded = recall.degraded;
   applyFoodContext(ci, userText);   // lane CTX: today's ledger, and the food playbook on a food turn
+  ci.memoryRouting = nimbus::orch::renderMemoryRoutingHint(userText);   // lane QFIX: a remember-request names its landing
   std::string instructions = agent::composeInstructions(ci);
   if (fitHistoryToWire(ci.history, instructions.size(), wireToolBytes(specs, ci.loopOn), inputs.size(), ci.loopOn))
     instructions = agent::composeInstructions(ci);   // lane CTX: the history fits the request body
