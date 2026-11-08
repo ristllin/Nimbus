@@ -187,7 +187,10 @@ static void test_console_ping_answers_only_on_the_console_seam() {
 static void test_the_dream_fires_only_from_the_scheduler_and_the_drill_pump() {
   size_t fires = 0, pumps = 0, reconciles = 0;
   for (const Source& s : firmware()) {
-    const size_t f = countOf(s.code, "dream::fire(") + countOf(s.code, "=fire(req,");
+    // pumpDrill's call: `o = fire(req, ...)`, or boxed on the heap off the poll task's
+    // stack (lane STACK): `new orch::FireOutcome(fire(req, ...))`.
+    const size_t f = countOf(s.code, "dream::fire(") + countOf(s.code, "=fire(req,") +
+                     countOf(s.code, "FireOutcome(fire(req,");
     const size_t p = countOf(s.code, "dream::pumpDrill(");
     const size_t rb = countOf(s.code, "dream::pumpBootReconcile(");
     if (f) TEST_ASSERT_TRUE_MESSAGE(s.path == "src/main.cpp" || s.path == "src/agent/dream_subsystem.cpp",
