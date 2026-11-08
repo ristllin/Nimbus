@@ -819,8 +819,9 @@ class StormBench:
 
     def fresh_message(self, answer_re, text: str, update_id: int, timeout: float = 180.0) -> dict:
         """Send one fresh owner message after the storm and wait for the reply: returns
-        {"usable", "usable_s", "reply"}. An honest refusal (any reply) counts as usable;
-        silence does not."""
+        {"usable", "usable_s", "reply"}. An honest refusal counts as usable; silence does
+        not, and neither does a reply that a provider could not be reached
+        (grading.probe_reply_usable)."""
         before = self.chat_rows()
         sent, gone_before = self.outbound_read()
         sent_before = len(sent or [])
@@ -843,7 +844,8 @@ class StormBench:
             if out is not None and not gone_before and not gone:
                 rows += out[sent_before:]
             if rows:
-                return {"usable": True, "usable_s": time.time() - t0, "reply": rows[-1].get("text", "")}
+                text = rows[-1].get("text", "")
+                return {"usable": g.probe_reply_usable(text), "usable_s": time.time() - t0, "reply": text}
             time.sleep(3.0)
         return {"usable": False, "usable_s": None, "reply": ""}
 

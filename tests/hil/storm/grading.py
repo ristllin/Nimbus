@@ -63,6 +63,19 @@ SPEND_N_RE = re.compile(r"\bn=(\d+)")
 # The provider answered on the device's behalf (PROVFAULT): a request that never left.
 OVERRIDE_RE = re.compile(r"provider: TEST override answered (?P<host>[^/\s]+)\S* with HTTP (?P<status>\d+)")
 PARKED_RE = re.compile(r"provider: (?P<host>\S+) parked for every seam")
+# A fresh message's reply that says a provider could not be reached is not an honest refusal: no leg cuts the
+# transport (each fault answers at the transport's seat with an HTTP status), so that reply means the build cannot
+# reach its providers at all. On bf40a3ed every TLS dial went by address with no name (lane SNI) and the kit counted
+# such replies as usable.
+UNREACHABLE_RE = re.compile(r"\bcould(?:n['\u2019]t| not) be reached\b", re.I)
+
+
+def probe_reply_usable(text: str) -> bool:
+    """Whether a fresh message's reply counts as usable: an answer or an honest refusal, never "could not be
+    reached"."""
+    return not UNREACHABLE_RE.search(text or "")
+
+
 # A Telegram message line ("telegram: msg from <name> (chat <id>): <text>").
 TG_MSG_RE = re.compile(r"telegram: msg from .*? \(chat (?P<chat>-?\d+)\): (?P<text>.*)$")
 # Notices the device logs when it delivers one to the owner outside a turn's reply.

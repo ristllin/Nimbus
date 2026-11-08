@@ -837,3 +837,18 @@ def test_the_busy_reads_behind_a_window_are_counted_in_its_record(monkeypatch):
     assert rec["closeReads"]["retried"] == 0 and rec["closeReads"]["cardGone"] == 0
     assert rec["olderSameText"] == 6  # three earlier episodes: three notices and three short answers
     assert bench.read_summary() == {"retried": 1, "cardGone": 0, "pollMisses": 0}
+# ---- lane SNI: a provider that could not be reached is not an honest refusal ----------------------------------
+
+
+@pytest.mark.parametrize(
+    "reply,usable",
+    [
+        ("pong", True),
+        ("That didn't finish - Anthropic says the account is out of credit. Add credit on its billing page.", True),
+        ("Your message was not answered. Anthropic rejected its key: update it under Assistant > Models.", True),
+        ("That didn't finish - anthropic could not be reached; openai and mistral also failed.", False),
+        ("That didn\u2019t finish - mistral couldn\u2019t be reached.", False),
+    ],
+)
+def test_a_probe_reply_that_no_provider_could_be_reached_is_not_usable(reply, usable):
+    assert g.probe_reply_usable(reply) is usable
