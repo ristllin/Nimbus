@@ -4884,6 +4884,39 @@ static void test_no_billed_response_means_no_fallback() {
   }
 }
 
+// Lane DEGRADE: the turn-end event says whether any host billed and, for a turn that
+// switched, the providers it ran on in order. The device's degraded line is built from
+// exactly these two fields: "the main provider is down, a later choice answers".
+static void test_turn_end_carries_billed_and_the_switch_path() {
+  {   // a switched turn that was served: billed, and the path starts at the head and ends at the host
+    Rig r;
+    r.cfg.midFail = true;
+    r.fabricSwitch = true;
+    TEST_ASSERT_TRUE(r.eng->runTurn("inputs", "1001", ""));
+    const agent::TurnEndEv& ev = r.hookEnds.back();
+    TEST_ASSERT_TRUE(ev.billed);
+    TEST_ASSERT_TRUE_MESSAGE(ev.path.find(" -> ") != std::string::npos, ev.path.c_str());
+    TEST_ASSERT_EQUAL_INT(0, (int)ev.path.rfind(ev.requestedHost, 0));
+    TEST_ASSERT_TRUE_MESSAGE(ev.path.size() >= ev.host.size() &&
+                                 ev.path.compare(ev.path.size() - ev.host.size(), ev.host.size(), ev.host) == 0,
+                             ev.path.c_str());
+  }
+  {   // a plain served turn: billed, no path (it never switched)
+    Rig r;
+    TEST_ASSERT_TRUE(r.eng->runTurn("inputs", "1001", "hi"));
+    TEST_ASSERT_TRUE(r.hookEnds.back().billed);
+    TEST_ASSERT_TRUE(r.hookEnds.back().path.empty());
+  }
+  {   // every host failed before anything billed: not billed, and no path to name
+    Rig r;
+    for (const char* h : {"anthropic", "openai", "mistral"})
+      r.scripts[h] = {{false, "", "network", 0, "", 0, 0}, {false, "", "network", 0, "", 0, 0}};
+    TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
+    TEST_ASSERT_FALSE(r.hookEnds.back().billed);
+    TEST_ASSERT_TRUE(r.hookEnds.back().path.empty());
+  }
+}
+
 // The 37,771-for-15,438 class: a failing scheduled fire reports ITS OWN spend, never
 // the previous turn's, and its cause.
 static void test_scheduled_failure_reports_cause_and_own_spend() {
@@ -5462,6 +5495,7 @@ static void runFirstHalf() {
   RUN_TEST(test_failure_notice_retry_advice_only_when_transient);
   RUN_TEST(test_failure_notice_names_helpers_still_running);
   RUN_TEST(test_no_billed_response_means_no_fallback);
+  RUN_TEST(test_turn_end_carries_billed_and_the_switch_path);
   RUN_TEST(test_scheduled_failure_reports_cause_and_own_spend);
   RUN_TEST(test_fallback_note_names_previous_turn_and_reason);
   RUN_TEST(test_metering_matrix_once_per_turn_per_host);

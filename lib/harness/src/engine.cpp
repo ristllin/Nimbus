@@ -1831,6 +1831,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.fallback = last && orch::servedByDisclosure(requestedHost, requestedModel, host,
                                                    ev.servedModel).fallback;
     ev.model = last ? last->model : "";
+    ev.billed = last != nullptr;
+    if (tf.switched) ev.path = pendingFallbackPath_;
     ev.source = turnSource_;
     ev.attribution = attribution_;
     ev.spend = &tf.spend;
