@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include "nimbus/orch/degraded.h"   // lane DEGRADE: the ServingTracker the turn-end event feeds
 #include "nimbus/orch/head_switch.h"   // parkPause, headPauseIn: the closed head as the device reads it
 
 #include "nimbus/orch/router_route.h"   // headRunsToolLoop
@@ -4914,6 +4915,38 @@ static void test_turn_end_carries_billed_and_the_switch_path() {
     TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
     TEST_ASSERT_FALSE(r.hookEnds.back().billed);
     TEST_ASSERT_TRUE(r.hookEnds.back().path.empty());
+  }
+  {   // review: the head billed a round, then it and every later host failed. A host billed, but
+      // NOT the one the turn ended on, so nothing answered: billed is about the final host. The
+      // device would otherwise say "<head> down, <last host> answers" for a turn nobody answered.
+    Rig r;
+    r.cfg.midFail = true;
+    r.fabricVisits = {{100, 20, "network"}, {0, 0, "network"}, {0, 0, "network"}};
+    r.fabricOk = false;
+    r.fabricErr = "network";
+    TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
+    const agent::TurnEndEv& ev = r.hookEnds.back();
+    TEST_ASSERT_NOT_EQUAL(ev.requestedHost, ev.host);   // it did switch, to the host that failed
+    TEST_ASSERT_FALSE_MESSAGE(ev.billed, "a head that billed a round, then failed, did not serve this turn");
+    orch::ServingTracker t;   // what the device does with the event
+    t.noteTurn(ev.requestedHost, ev.host, ev.path, ev.billed, 1000);
+    TEST_ASSERT_FALSE(t.fact(2000).active);
+  }
+  {   // the counter-case: the head billed a round, failed, and the next host answered and billed
+    Rig r;
+    r.cfg.midFail = true;
+    r.fabricVisits = {{100, 20, "network"}, {50, 10, ""}};
+    r.fabricOk = true;
+    TEST_ASSERT_TRUE(r.eng->runTurn("inputs", "1001", ""));
+    const agent::TurnEndEv& ev = r.hookEnds.back();
+    TEST_ASSERT_NOT_EQUAL(ev.requestedHost, ev.host);
+    TEST_ASSERT_TRUE(ev.billed);
+    orch::ServingTracker t;
+    t.noteTurn(ev.requestedHost, ev.host, ev.path, ev.billed, 1000);
+    const orch::FallbackFact f = t.fact(2000);
+    TEST_ASSERT_TRUE(f.active);
+    TEST_ASSERT_EQUAL_STRING(ev.host.c_str(), f.served.c_str());
+    TEST_ASSERT_EQUAL_STRING(ev.requestedHost.c_str(), f.head.c_str());
   }
 }
 

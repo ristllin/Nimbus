@@ -60,7 +60,7 @@ struct TurnEndEv {
   std::string servedModel;     // the model key `host` billed under ("" when it billed nothing)
   bool fallback = false;        // served host != requested, or served model differs from requested;
                                 // false when no host billed (nothing was served)
-  // Lane DEGRADE: whether any host billed (the turn was answered by someone), and the
+  // Lane DEGRADE: whether the host the turn ended on (`host`) billed, i.e. someone answered it, and the
   // providers the turn ran on in order ("a -> b -> c") when it switched; "" when it did not.
   bool billed = false;
   std::string path;

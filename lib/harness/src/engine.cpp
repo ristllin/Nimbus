@@ -1831,7 +1831,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.fallback = last && orch::servedByDisclosure(requestedHost, requestedModel, host,
                                                    ev.servedModel).fallback;
     ev.model = last ? last->model : "";
-    ev.billed = last != nullptr;
+    // Served: the host the turn ENDED on billed. A head that billed a round and then failed, with
+    // a later host failing too, billed (last is the head's slot) but nothing answered.
+    ev.billed = last != nullptr && host == last->host;
     if (tf.switched) ev.path = pendingFallbackPath_;
     ev.source = turnSource_;
     ev.attribution = attribution_;
