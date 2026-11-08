@@ -1,0 +1,1080 @@
+#!/usr/bin/env python3
+"""Release gate: the Telegram poll task (tg_poll) keeps its stack floor on every path.
+
+tg_poll runs the whole turn: the long poll, head rounds (the cut retry and the claim
+correction round included), every tool, STT, media downloads, the staged OTA check and
+install, and the Telegram archive. On 8 Nov 2026 Lumi (v4.9.0) logged "tg_poll stack:
+min free 936 B of 24576" after a voice note that created a routine, and the 29 Oct crash
+2419bf4a aborted on the same task. This gate measures the worst case from the built
+image instead of waiting for the field to find it.
+
+How it measures (coverage/STACK-2026-11.md has the full method):
+- Frames: the `entry a1, N` of every windowed function in the ELF, the number
+  -fstack-usage writes to a .su file (checked equal: pollTask 4944 B in both), which also
+  covers the precompiled ESP-IDF libraries no .su file describes. ROM functions come from
+  the chip's ROM ELF.
+- Calls: `call8`, the -mlongcalls form (`l32r aN, <lit>` then `callx8 aN`), and indirect
+  calls resolved three ways, in order: a rule in tg_poll_stack.json (function pointers:
+  the hooks main.cpp registers, provider seams, library tables); a std::function call
+  (found from the inline chain addr2line -i reports) reaches every `_M_invoke` of that
+  exact signature; a virtual call reaches every vtable entry at the same slot whose
+  method name is called on the source line. Code that only ever runs on another task
+  (the web server, Bluetooth, the relay task...) is listed in the config and never taken
+  as an indirect target. An indirect site nothing resolves is charged
+  `unresolved_indirect_bytes`.
+- Recursion: the graph is walked depth-first from the task entry and every back edge is
+  cut. A cut cycle must be declared in the config: real recursion with its depth bound
+  (the recursive function's frame is counted that many times), or a cycle the
+  over-approximation made that cannot happen at run time, with why. An undeclared cycle
+  fails the gate.
+- A function that moves its stack pointer at run time (a VLA or alloca) needs a bound in
+  the config, or the gate fails.
+- Fixed costs the frames do not show: the coprocessor save area and TLS block at the top
+  of every task stack, and one interrupt exception frame at the deepest point.
+
+The verdict is the worst case from the task entry (vPortTaskWrapper -> pollTask) and, per
+named path (turn start, head round, each tool, STT, OTA, archive...), the worst case of
+any chain through that path. Each must leave at least `min_free_bytes` of `stack_bytes`.
+
+Usage:
+    python3 tools/release_gate/check_tg_poll_stack.py                 # .pio/build/esp32s3-cyd
+    python3 tools/release_gate/check_tg_poll_stack.py --elf <firmware.elf> [--report out.md]
+Exit 0 = every path leaves the floor; 1 = a path is under it, or the analysis is not
+sound (an undeclared cycle or dynamic frame, a stale config row, a missing tool or ELF).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+from collections import defaultdict
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tg_poll_stack.json")
+DEFAULT_ENVS = ("esp32s3-cyd",)
+INCLUDE_ROOTS = ("lib/core/include", "lib/harness/include", "include", "src")
+
+CALL_RE = re.compile(r"^call(0|4|8|12)$")
+CALLX_RE = re.compile(r"^callx(0|4|8|12)$")
+INSN_RE = re.compile(r"^\s*([0-9a-f]{8}):\s+(\S+)(?:\s+(.*))?$")
+LIT_RE = re.compile(r"\(([0-9a-f]{1,8}) <")
+STDFN_RE = re.compile(r"^std::function<(.*)>::operator\(\)\(")
+INVOKE_RE = re.compile(r"^std::_Function_handler<(.*?), .*>::_M_invoke\(")
+IDENT_CALL_RE = re.compile(r"(~?[A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+
+# ---- toolchain -----------------------------------------------------------------------
+
+
+def find_tool(name: str) -> str:
+    """xtensa-esp32s3-elf-<name> from $NIMBUS_XTENSA_BIN, PlatformIO's toolchain, or PATH."""
+    exe = "xtensa-esp32s3-elf-" + name
+    dirs = []
+    if os.environ.get("NIMBUS_XTENSA_BIN"):
+        dirs.append(os.environ["NIMBUS_XTENSA_BIN"])
+    core = os.environ.get("PLATFORMIO_CORE_DIR", os.path.expanduser("~/.platformio"))
+    dirs.append(os.path.join(core, "packages", "toolchain-xtensa-esp-elf", "bin"))
+    for d in dirs:
+        p = os.path.join(d, exe)
+        if os.access(p, os.X_OK):
+            return p
+    p = shutil.which(exe)
+    if p:
+        return p
+    raise FileNotFoundError(f"{exe} not found (set NIMBUS_XTENSA_BIN or install the PlatformIO toolchain)")
+
+
+def find_rom_elf(cfg: dict) -> str:
+    if os.environ.get("NIMBUS_ROM_ELF"):
+        return os.environ["NIMBUS_ROM_ELF"]
+    core = os.environ.get("PLATFORMIO_CORE_DIR", os.path.expanduser("~/.platformio"))
+    return os.path.join(core, "packages", "tool-esp-rom-elfs", cfg["rom_elf"])
+
+
+def run(cmd: list, stdin: "str | None" = None) -> str:
+    r = subprocess.run(cmd, input=stdin, capture_output=True, text=True, errors="replace")
+    if r.returncode != 0:
+        raise RuntimeError(f"{os.path.basename(cmd[0])} failed ({r.returncode}): {r.stderr.strip()[:300]}")
+    return r.stdout
+
+
+# ---- the image ---------------------------------------------------------------------
+
+
+class Fn:
+    __slots__ = ("addr", "size", "name", "dname", "frame", "dynamic", "calls", "indirect", "rom")
+
+    def __init__(self, addr: int, size: int, name: str, rom: bool = False):
+        self.addr, self.size, self.name, self.rom = addr, size, name, rom
+        self.dname = name
+        self.frame = 0
+        self.dynamic = False
+        self.calls = []      # (site, target addr)
+        self.indirect = []   # (site, load offset or None): calls the disassembly cannot resolve
+
+
+def parse_nm(text: str, rom: bool = False) -> dict:
+    """addr -> Fn for every code symbol (t/T/w/W) with a size.
+
+    The ROM ELF leaves its jump-table entries (`__call_memset`: l32r + jx to the real
+    memset) unsized; there a symbol runs to the next one.
+    """
+    funcs = {}
+    unsized = []
+    for line in text.splitlines():
+        p = line.split()
+        if len(p) == 4 and p[2] in ("t", "T", "w", "W"):
+            addr, size = int(p[0], 16), int(p[1], 16)
+            if size and addr not in funcs:
+                funcs[addr] = Fn(addr, size, p[3], rom)
+        elif rom and len(p) == 3 and p[1] in ("t", "T"):
+            unsized.append((int(p[0], 16), p[2]))
+    starts = sorted(set(funcs) | {a for a, _ in unsized})
+    nxt = {a: b for a, b in zip(starts, starts[1:])}
+    for addr, name in unsized:
+        if addr not in funcs and addr in nxt:
+            funcs[addr] = Fn(addr, min(nxt[addr] - addr, 4096), name, rom)
+    return funcs
+
+
+def _regs(args: str) -> list:
+    return [a.strip() for a in args.split(",")]
+
+
+def frame_of(op: str, args: str) -> "int | None":
+    if op == "entry":
+        parts = _regs(args)
+        if len(parts) == 2 and parts[0] == "a1":
+            return int(parts[1], 0)
+    return None
+
+
+def call0_adjust(op: str, args: str) -> int:
+    """Bytes a call0-ABI function takes with `addi a1, a1, -N` (0 when not such a move)."""
+    if op in ("addi", "addmi", "addi.n"):
+        parts = _regs(args)
+        if len(parts) == 3 and parts[0] == "a1" and parts[1] == "a1":
+            v = int(parts[2], 0)
+            return -v if v < 0 else 0
+    return 0
+
+
+NO_DEST_RE = re.compile(r"^(s8i|s16i|s32i|s32i\.n|s32c1i|s32e|s32ri|s32nb|ss\w*|b\w*|j|jx|call\w*|ret\w*|"
+                        r"entry|w\w*|memw|isync|dsync|esync|rsync|extw|nop\w*|loop\w*|mula\.\w*|mul\.\w*|"
+                        r"umul\.\w*|ee\.\w*|simcall|break\w*|ill\w*|rfe|rfi|rfwo|rfwu)$")
+CLOBBER = {"0": range(0, 16), "4": range(4, 8), "8": range(8, 16), "12": range(12, 16)}
+
+
+class Regs:
+    """The last instruction that wrote each address register, along one linear sweep.
+
+    Control-flow merges are not followed: a write on another branch is not seen, which is
+    why only the two forms GCC emits right before an indirect call are read from it.
+    """
+
+    def __init__(self):
+        self.last = {}
+        self.junk = False   # the previous line was data objdump decoded (.byte) or a DSP op
+
+    def note(self, op: str, args: str) -> None:
+        self.junk = op.startswith(".") or op.startswith("ee.")
+        m = CALL_RE.match(op) or CALLX_RE.match(op)
+        if m:
+            for r in CLOBBER[m.group(1)]:
+                self.last.pop(f"a{r}", None)
+            return
+        if NO_DEST_RE.match(op) or not args:
+            return
+        dst = _regs(args)[0]
+        if re.fullmatch(r"a\d+", dst):
+            self.last[dst] = (op, args)
+
+
+def _callx(cur: Fn, addr: int, reg: str, regs: Regs, starts: set) -> None:
+    """One `callx`: a long call when the register was loaded from a literal, else indirect.
+
+    `l32r aN, <lit>` is the -mlongcalls form: a direct call to the literal's value.
+    `l32i aN, aM, K` loads from offset K: a vtable slot when the call is virtual.
+    """
+    op, args = regs.last.get(reg, ("", ""))
+    if op == "l32r":
+        lm = LIT_RE.search(args)
+        if lm:
+            target = int(lm.group(1), 16)
+            if target in starts or target >= 0x40000000:
+                cur.calls.append((addr, target))   # an address not in the image resolves later
+                return
+    slot = None
+    if op in ("l32i", "l32i.n"):
+        parts = _regs(args)
+        if len(parts) == 3 and parts[1] != "a1":   # a load from the stack is a spill reload, not a slot
+            slot = int(parts[2], 0)
+    cur.indirect.append((addr, slot))
+
+
+def _insn(cur: Fn, addr: int, op: str, args: str, regs: Regs, starts: set) -> None:
+    if op == "movsp" and _regs(args)[0] == "a1":
+        prev = regs.last.get(_regs(args)[1], ("", ""))
+        if prev[0] == "sub":
+            cur.dynamic = True
+    elif CALL_RE.match(op):
+        t = int(args.split()[0], 16)
+        if t in starts:
+            cur.calls.append((addr, t))
+    elif CALLX_RE.match(op) and not regs.junk:
+        _callx(cur, addr, args.split()[0] if args else "", regs, starts)
+    elif op in ("j", "jx"):
+        _tail(cur, addr, op, args, regs, starts)
+    regs.note(op, args)
+
+
+def _tail(cur: Fn, addr: int, op: str, args: str, regs: Regs, starts: set) -> None:
+    """A jump into another function's entry (a ROM jump-table trampoline, a tail call) is a call."""
+    target = None
+    if op == "j":
+        target = int(args.split()[0], 16)
+    else:
+        prev = regs.last.get(args.split()[0] if args else "", ("", ""))
+        lm = LIT_RE.search(prev[1]) if prev[0] == "l32r" else None
+        target = int(lm.group(1), 16) if lm else None
+    if target is not None and target in starts and not (cur.addr <= target < cur.addr + cur.size):
+        cur.calls.append((addr, target))
+
+
+UNCOND_RE = re.compile(r"^(j|jx|ret|ret\.n|retw|retw\.n|ill|ill\.n)$")
+TARGET_RE = re.compile(r"\b([0-9a-f]{8})\b")
+
+
+def _function_body(cur: Fn, insns: list, starts: set) -> None:
+    """Calls of one function. Code after an unconditional jump or return is dead until a
+    branch lands there: objdump decodes the padding and data in it as instructions, and
+    a `callx` there that no long-call `l32r` of the same dead stretch loads is not a call."""
+    targets = set()
+    for _addr, op, args in insns:
+        if op.startswith("b") or op in ("j", "loop", "loopnez", "loopgtz"):
+            targets.update(int(t, 16) for t in TARGET_RE.findall(args))
+    regs = Regs()
+    dead = False
+    for addr, op, args in insns:
+        if addr in targets:
+            dead = False
+        if dead and (CALLX_RE.match(op) and regs.last.get(args.split()[0] if args else "", ("",))[0] != "l32r"):
+            regs.note(op, args)
+            continue
+        _insn(cur, addr, op, args, regs, starts)
+        if UNCOND_RE.match(op):
+            dead = True
+            regs = Regs()
+
+
+def parse_disassembly(text: str, funcs: dict, known: "set | None" = None) -> None:
+    """Fill frame, calls and indirect sites of every Fn from `objdump -d` text.
+
+    Only instructions inside a symbol's [addr, addr+size) count, so literal pools and
+    padding objdump decodes as code between functions never add a call.
+    """
+    starts = known if known is not None else set(funcs)
+    cur, end, insns, adjust = None, 0, [], 0
+
+    def finish() -> None:
+        if cur is None:
+            return
+        if insns:
+            f = frame_of(insns[0][1], insns[0][2])
+            cur.frame = f if f is not None else sum(call0_adjust(op, a) for _x, op, a in insns)
+        _function_body(cur, insns, starts)
+
+    for line in text.splitlines():
+        m = INSN_RE.match(line)
+        if not m:
+            continue
+        addr = int(m.group(1), 16)
+        if addr in funcs:
+            finish()
+            cur, end, insns = funcs[addr], addr + funcs[addr].size, []
+        if cur is None or addr >= end:
+            continue
+        insns.append((addr, m.group(2), (m.group(3) or "").strip()))
+    finish()
+
+
+def elf_reader(path: str):
+    """A function: addr -> the 4-byte little-endian word the ELF loads there (or None)."""
+    with open(path, "rb") as f:
+        blob = f.read()
+    if blob[:4] != b"\x7fELF" or blob[4] != 1 or blob[5] != 1:
+        raise ValueError(f"{path}: not a 32-bit little-endian ELF")
+    shoff = struct.unpack_from("<I", blob, 0x20)[0]
+    shentsize, shnum = struct.unpack_from("<HH", blob, 0x2E)
+    secs = []
+    for i in range(shnum):
+        _n, typ, flags, addr, off, size = struct.unpack_from("<IIIIII", blob, shoff + i * shentsize)
+        if flags & 0x2 and typ != 8 and size:   # SHF_ALLOC, not NOBITS
+            secs.append((addr, size, off))
+
+    def word(a: int) -> "int | None":
+        for addr, size, off in secs:
+            if addr <= a and a + 4 <= addr + size:
+                return struct.unpack_from("<I", blob, off + a - addr)[0]
+        return None
+    return word
+
+
+def _strip_params(dname: str) -> str:
+    i = dname.rfind(")")
+    depth = 0
+    while i >= 0:
+        c = dname[i]
+        if c == ")":
+            depth += 1
+        elif c == "(":
+            depth -= 1
+            if depth == 0:
+                break
+        i -= 1
+    return dname[:i] if i > 0 else dname
+
+
+def split_name(dname: str) -> "tuple[str, str]":
+    """(qualifier, unqualified name) of a demangled function: `ns::Cls::read(int)` -> (`ns::Cls`, `read`)."""
+    for prefix in ("non-virtual thunk to ", "virtual thunk to "):
+        if dname.startswith(prefix):
+            dname = dname[len(prefix):]
+    head = _strip_params(dname)
+    depth = 0
+    cut = 0
+    for j, c in enumerate(head):
+        if c == "<":
+            depth += 1
+        elif c == ">":
+            depth -= 1
+        elif c == ":" and depth == 0 and head[j + 1:j + 2] == ":":
+            cut = j + 2
+    return head[:max(cut - 2, 0)], head[cut:]
+
+
+def last_name(qualified: str) -> str:
+    """`ns::Cls` -> `Cls` (template arguments kept)."""
+    depth = 0
+    cut = 0
+    for j, c in enumerate(qualified):
+        if c == "<":
+            depth += 1
+        elif c == ">":
+            depth -= 1
+        elif c == ":" and depth == 0 and qualified[j + 1:j + 2] == ":":
+            cut = j + 2
+    return qualified[cut:]
+
+
+def method_name(dname: str) -> str:
+    """The unqualified name of a demangled function: `ns::Cls::read(int)` -> `read`; any destructor -> `~`."""
+    name = split_name(dname)[1]
+    return "~" if name.startswith("~") else name
+
+
+def vtable_slots(nm_text: str, word, funcs: dict) -> dict:
+    """(method name, byte offset from an address point) -> sorted addrs, from every vtable.
+
+    An address point is where an object's vptr points: two words past an offset-to-top
+    (0, or a small negative number for a secondary base) and a typeinfo pointer (0 here:
+    the firmware builds with -fno-rtti). A class with several bases has several.
+    """
+    typeinfo = set()
+    tables = []
+    for line in nm_text.splitlines():
+        p = line.split()
+        if len(p) != 4:
+            continue
+        if p[3].startswith("_ZTI"):
+            typeinfo.add(int(p[0], 16))
+        elif p[3].startswith("_ZTV"):
+            tables.append((int(p[0], 16), int(p[1], 16)))
+    out = defaultdict(set)
+    for base, size in tables:
+        words = [word(a) for a in range(base, base + size, 4)]
+        point = None
+        for i, w in enumerate(words):
+            if i >= 2 and (words[i - 1] == 0 or words[i - 1] in typeinfo) and \
+                    (words[i - 2] == 0 or (words[i - 2] or 0) >= 0xFFFF0000) and w in funcs:
+                point = i
+            if point is not None and w in funcs:
+                out[(method_name(funcs[w].dname), (i - point) * 4)].add(w)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
+
+
+def code_only(line: str) -> str:
+    """A source line without its string literals and comments."""
+    line = STRING_RE.sub('""', line)
+    line = re.sub(r"/\*.*?\*/", " ", line)
+    return line.split("//", 1)[0]
+
+
+class Sources:
+    """Source lines by path, read once (a missing file reads as empty)."""
+
+    def __init__(self):
+        self.cache = {}
+        self.joined = {}
+
+    def headers(self, path: str) -> list:
+        """The sibling header, then the project headers the file #includes (one level)."""
+        stem = os.path.splitext(path)[0]
+        out = [stem + ext for ext in (".h", ".hpp") if stem + ext != path]
+        self.line(path + ":1")
+        roots = [os.path.dirname(path)] + [os.path.join(REPO, d) for d in INCLUDE_ROOTS]
+        for line in self.cache.get(path, []):
+            m = re.match(r'\s*#\s*include\s+"([^"]+)"', line)
+            if not m:
+                continue
+            for root in roots:
+                cand = os.path.normpath(os.path.join(root, m.group(1)))
+                if os.path.exists(cand):
+                    out.append(cand)
+                    break
+        for h in out:
+            self.line(h + ":1")
+        return out
+
+    def text(self, loc: str) -> str:
+        path = loc.split(" (discriminator")[0].rpartition(":")[0]
+        if path not in self.joined:
+            self.line(loc)
+            self.joined[path] = "\n".join(self.cache.get(path, []))
+        return self.joined[path]
+
+    def line(self, loc: str) -> str:
+        loc = loc.split(" (discriminator")[0]
+        path, _, num = loc.rpartition(":")
+        if not path or not num.isdigit():
+            return ""
+        if path not in self.cache:
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    self.cache[path] = f.read().splitlines()
+            except OSError:
+                self.cache[path] = []
+        lines = self.cache[path]
+        n = int(num)
+        return lines[n - 1] if 0 < n <= len(lines) else ""
+
+
+def demangle(funcs: dict, cxxfilt: str) -> None:
+    order = list(funcs.values())
+    out = run([cxxfilt], "\n".join(f.name for f in order) + "\n").splitlines()
+    for f, d in zip(order, out):
+        f.dname = d
+
+
+def addr2line(elf: str, tool: str, addrs: list) -> dict:
+    """addr -> [(function, file:line), ...] innermost inline frame first."""
+    if not addrs:
+        return {}
+    text = run([tool, "-a", "-f", "-i", "-C", "-e", elf], "\n".join(f"{a:08x}" for a in addrs) + "\n")
+    out = {}
+    cur = None
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if ln.startswith("0x"):
+            cur = int(ln, 16)
+            out[cur] = []
+            i += 1
+        elif cur is not None and i + 1 < len(lines):
+            out[cur].append((ln, lines[i + 1]))
+            i += 2
+        else:
+            i += 1
+    return out
+
+
+def short_loc(loc: str) -> str:
+    loc = loc.split(" (discriminator")[0]
+    for marker in ("/nimbus/", "/esp-idf/components/", "/packages/framework-arduinoespressif32/",
+                   "/libdeps/esp32s3-cyd/", "/libdeps/"):
+        if marker in loc:
+            return loc.split(marker, 1)[1]
+    return "/".join(loc.split("/")[-2:])
+
+
+# ---- the model ---------------------------------------------------------------------
+
+
+class Model:
+    def __init__(self, funcs: dict, cfg: dict, inlines: dict, vslots: "dict | None" = None,
+                 sources: "Sources | None" = None):
+        self.funcs = funcs
+        self.cfg = cfg
+        self.inlines = inlines
+        self.vslots = vslots or {}
+        self.vnames = defaultdict(set)
+        for (name, _slot), addrs in self.vslots.items():
+            self.vnames[name].update(addrs)
+        self.sources = sources or Sources()
+        self.errors = []
+        self.edges = defaultdict(list)       # caller -> [(site, callee)]
+        self.unresolved = defaultdict(list)  # caller -> [site]
+        self.hits = defaultdict(int)         # config row -> times it applied
+        self.how = defaultdict(int)          # how indirect sites were resolved
+        self.cache = {}
+        self.elsewhere = [re.compile(r["function"]) for r in cfg.get("not_on_tg_poll", [])]
+        self.dropped = 0
+        self.mult = {}
+
+    def match(self, pattern: str) -> list:
+        if pattern not in self.cache:
+            rx = re.compile(pattern)
+            self.cache[pattern] = sorted(a for a, f in self.funcs.items() if rx.search(f.dname))
+        return self.cache[pattern]
+
+    def invokers(self, sig: str) -> list:
+        key = ("invoke", sig)
+        if key not in self.cache:
+            hits = []
+            for a, f in self.funcs.items():
+                m = INVOKE_RE.match(f.dname)
+                if m and m.group(1) == sig:
+                    hits.append(a)
+            self.cache[key] = sorted(hits)
+        return self.cache[key]
+
+    def on_tg_poll(self, targets) -> list:
+        """Drop indirect targets that only ever run on another task (config not_on_tg_poll)."""
+        out = []
+        for t in sorted(targets):
+            name = self.funcs[t].dname
+            hit = next((i for i, rx in enumerate(self.elsewhere) if rx.search(name)), None)
+            if hit is None:
+                out.append(t)
+            else:
+                self.hits["elsewhere|" + self.cfg["not_on_tg_poll"][hit]["function"]] += 1
+                self.dropped += 1
+        return out
+
+    def _by_rule(self, names: list, locs: list) -> "list | None":
+        for rule in self.cfg["indirect"]:
+            if not any(re.search(rule["in"], n) for n in names):
+                continue
+            if "at" in rule and not any(re.search(rule["at"], loc) for loc in locs):
+                continue
+            self.hits["indirect|" + rule["in"] + "|" + rule.get("at", "")] += 1
+            self.how["config rule"] += 1
+            out = set()
+            for pat in rule["targets"]:
+                out.update(self.match(pat))
+            return self.on_tg_poll(out)
+        return None
+
+    def _by_signature(self, names: list) -> "list | None":
+        for n in names:
+            m = STDFN_RE.match(n)
+            if m:
+                self.how["std::function, by signature"] += 1
+                return self.on_tg_poll(self.invokers(m.group(1)))
+        return None
+
+    def _by_vtable(self, locs: list, slot: "int | None", names: list) -> "list | None":
+        """A virtual call loads its target from a vtable slot: the methods at that slot named on the line."""
+        if not locs:
+            return None
+        text = code_only(self.sources.line(locs[0]))
+        called = set(IDENT_CALL_RE.findall(text))
+        if re.search(r"\bdelete\b", text):
+            called.add("~")
+        out = set()
+        for name in called:
+            cls = self.deleted_class(names) if name == "~" else self.receiver_class(locs[0], text, name, names)
+            known = cls is not None and self.known_class(cls)
+            if slot is None and not known:
+                continue   # no slot and no receiver type: nothing ties this call to a vtable
+            found = set(self.vslots.get((name, slot), ()) if slot is not None else self.vnames.get(name, ()))
+            if found and known:
+                found = {t for t in found if self.derives(last_name(split_name(self.funcs[t].dname)[0]), cls)}
+            out.update(found)
+        if not out:
+            return None
+        out = self.same_hierarchy(out, locs[0], names)
+        self.how["virtual, by slot and source line"] += 1
+        return self.on_tg_poll(out)
+
+    def known_class(self, cls: str) -> bool:
+        bases = self.cfg.get("bases", {})
+        return cls in bases or any(cls in v for v in bases.values())
+
+    def derives(self, cls: str, base: str) -> bool:
+        """cls is base or derives from it, by the config's bases map (unqualified names)."""
+        bases = self.cfg.get("bases", {})
+        todo, seen = [cls], set()
+        while todo:
+            c = todo.pop()
+            if c == base:
+                return True
+            if c not in seen:
+                seen.add(c)
+                todo.extend(bases.get(c, []))
+        return False
+
+    def receiver_class(self, loc: str, code: str, name: str, names: list) -> "str | None":
+        """The static class a virtual call goes through, when the source says it.
+
+        `name(...)` alone is a call on this: the enclosing method's class. `x.name(...)` or
+        `x->name(...)` goes through x's declared type, the nearest declaration of x above
+        the call in the same file (a smart pointer's pointee; a config alias for a typedef).
+        """
+        m = re.search(r"([A-Za-z_]\w*)\s*(?:\.|->)\s*" + re.escape(name) + r"\s*\(", code)
+        if m is None:
+            if re.search(r"(?<![\w.>:~])" + re.escape(name) + r"\s*\(", code) and names:
+                return last_name(split_name(names[0])[0]) or None
+            return None
+        return self.declared_type(loc, m.group(1))
+
+    @staticmethod
+    def deleted_class(names: list) -> "str | None":
+        """The static type a `delete` goes through: the unique_ptr or default_delete it is inlined from."""
+        for n in names:
+            m = re.match(r"^std::(?:default_delete|unique_ptr)<([^,<>]+)", n)
+            if m:
+                return last_name(m.group(1).strip())
+        return None
+
+    def declared_type(self, loc: str, ident: str) -> "str | None":
+        """ident's declared class: the nearest declaration above the call, else in the sibling header."""
+        path, _, num = loc.split(" (discriminator")[0].rpartition(":")
+        if not num.isdigit():
+            return None
+        decl = re.compile(r"((?:[A-Za-z_]\w*::)*[A-Za-z_]\w*)\s*(<[^;(){}]*>)?\s*(?:const\s*)?[&*]*\s*(?:const\s*)?"
+                          r"\b" + re.escape(ident) + r"\b\s*(?:[;,)=({\[]|$)")
+        self.sources.line(loc)
+        lines = self.sources.cache.get(path, [])
+        found = self._scan_decl(decl, lines[:int(num)][::-1])
+        for header in self.sources.headers(path) if found is None else ():
+            found = self._scan_decl(decl, self.sources.cache.get(header, []))
+            if found is not None:
+                break
+        return found
+
+    def _scan_decl(self, decl, lines) -> "str | None":
+        for line in lines:
+            for m in decl.finditer(code_only(line)):
+                typ, args = m.group(1), m.group(2) or ""
+                if typ in ("return", "else", "case", "delete", "new", "sizeof", "const", "auto", "static", "if"):
+                    continue
+                if re.search(r"(unique_ptr|shared_ptr)$", typ) and args:
+                    typ = re.findall(r"[A-Za-z_]\w*", args)[-1]
+                return self.cfg.get("aliases", {}).get(last_name(typ), last_name(typ))
+        return None
+
+    def same_hierarchy(self, targets: set, loc: str, names: list) -> set:
+        """Keep the candidates whose class hierarchy the call site names (config hierarchies).
+
+        Slot and method name do not tell `fs::File::write` from `CardWriter::write`: both
+        sit at the same slot of unrelated vtables. A call site names the type it calls
+        through, in its source file or in the inline chain's template arguments, so a
+        hierarchy no word of which appears there is not the one called. Candidates of no
+        listed hierarchy are always kept; when the site names none, all are kept.
+        """
+        text = self.sources.text(loc) + "\n" + "\n".join(names)
+        rows = self.cfg.get("hierarchies", [])
+        tagged = {}
+        for t in targets:
+            cls = split_name(self.funcs[t].dname)[0]
+            tagged[t] = next((i for i, r in enumerate(rows) if any(re.search(c, cls) for c in r["classes"])), None)
+        named = set()
+        for i in {v for v in tagged.values() if v is not None}:
+            if any(re.search(r"\b" + re.escape(w) + r"\b", text) for w in rows[i]["names"]):
+                named.add(i)
+                self.hits["hierarchy|" + rows[i]["names"][0]] += 1
+        if not named:
+            return targets
+        return {t for t, i in tagged.items() if i is None or i in named}
+
+    def resolve_site(self, caller: Fn, site: int, slot: "int | None") -> "list | None":
+        """Targets of one indirect call site, or None when nothing names them."""
+        chain = self.inlines.get(site, [])
+        names = [n for n, _ in chain] + [caller.dname]
+        locs = [loc for _, loc in chain]
+        found = self._by_rule(names, locs)
+        if found is None:
+            found = self._by_signature(names)
+        if found is None:
+            found = self._by_vtable(locs, slot, names)
+        if found is None:
+            self.how["unresolved"] += 1
+        return found
+
+    def build(self, root: int) -> None:
+        """Edges reachable from root, with indirect sites resolved."""
+        seen = set()
+        todo = [root]
+        while todo:
+            a = todo.pop()
+            if a in seen or a not in self.funcs:
+                continue
+            seen.add(a)
+            f = self.funcs[a]
+            for site, t in f.calls:
+                if t in self.funcs:
+                    self.edges[a].append((site, t))
+                    todo.append(t)
+                else:
+                    self.unresolved[a].append(site)
+            for site, slot in f.indirect:
+                targets = self.resolve_site(f, site, slot)
+                if targets is None:
+                    self.unresolved[a].append(site)
+                    continue
+                self.edges[a].extend((site, t) for t in targets)
+                todo.extend(targets)
+        self.reach = seen
+        for a in self.edges:
+            self.edges[a] = sorted(set(self.edges[a]))
+
+    def cut_cycles(self, root: int) -> None:
+        """Depth-first from root; every back edge is cut. Leaves self.order (callers first)."""
+        state = {root: 1}   # 1 on the walk, 2 done
+        post = []
+        self.back = []      # (caller, site, callee)
+        self.dag = defaultdict(list)
+        stack = [(root, 0)]
+        while stack:
+            v, i = stack[-1]
+            succ = self.edges.get(v, [])
+            if i == len(succ):
+                state[v] = 2
+                post.append(v)
+                stack.pop()
+                continue
+            stack[-1] = (v, i + 1)
+            site, w = succ[i]
+            if state.get(w) == 1:
+                self.back.append((v, site, w))
+                continue
+            self.dag[v].append((site, w))
+            if w not in state:
+                state[w] = 1
+                stack.append((w, 0))
+        self.order = post[::-1]
+
+    def declare_cycles(self) -> None:
+        """Every cut cycle is declared real (with a depth) or impossible (with why)."""
+        rec = self.cfg.get("recursion", [])
+        fake = self.cfg.get("impossible_cycles", [])
+        for caller, _site, callee in self.back:
+            names = (self.funcs[caller].dname, self.funcs[callee].dname)
+            row = next((r for r in rec if any(re.search(r["function"], n) for n in names)), None)
+            if row is not None:
+                self.hits["recursion|" + row["function"]] += 1
+                self.mult[callee] = max(self.mult.get(callee, 1), row["depth"])
+                continue
+            row = next((r for r in fake if re.search(r["caller"], names[0]) and re.search(r["callee"], names[1])),
+                       None)
+            if row is not None:
+                self.hits["impossible|" + row["caller"] + "|" + row["callee"]] += 1
+                continue
+            self.errors.append(f"undeclared cycle: {names[0][:140]} -> {names[1][:140]}")
+
+    def _frames(self) -> None:
+        dyn = self.cfg.get("dynamic_frames", [])
+        self.frame = {}
+        for a in self.reach:
+            f = self.funcs[a]
+            fr = f.frame
+            if f.dynamic:
+                row = next((r for r in dyn if re.search(r["function"], f.dname)), None)
+                if row is None:
+                    self.errors.append(f"dynamic stack frame with no bound in the config: {f.dname}")
+                else:
+                    self.hits["dynamic|" + row["function"]] += 1
+                    fr += row["extra_bytes"]
+            self.frame[a] = fr * self.mult.get(a, 1)
+
+    def _below(self) -> None:
+        """below[a]: the worst bytes from entering a to the deepest point under it."""
+        unknown = self.cfg["unresolved_indirect_bytes"]
+        self.below = {}
+        self.below_next = {}
+        for a in reversed(self.order):
+            best, nxt = 0, None
+            for site, t in self.dag.get(a, ()):
+                if self.below[t] > best:
+                    best, nxt = self.below[t], (site, t)
+            if self.unresolved.get(a) and unknown > best:
+                best, nxt = unknown, (self.unresolved[a][0], None)
+            self.below[a] = self.frame[a] + best
+            self.below_next[a] = nxt
+
+    def _entry(self) -> None:
+        """entry[a]: the worst bytes already on the stack when a is entered."""
+        self.entry = {self.root: 0}
+        self.entry_prev = {self.root: None}
+        for a in self.order:
+            here = self.entry[a] + self.frame[a]
+            for site, t in self.dag.get(a, ()):
+                if here > self.entry.get(t, -1):
+                    self.entry[t] = here
+                    self.entry_prev[t] = (a, site)
+
+    def analyse(self, root: int) -> None:
+        self.root = root
+        self.build(root)
+        self.cut_cycles(root)
+        self.declare_cycles()
+        self._frames()
+        self._below()
+        self._entry()
+
+    def chain_down(self, start: int) -> list:
+        """[(addr or None, site)] from start down the worst way (site = the call into it)."""
+        out = [(start, None)]
+        a = start
+        while a is not None:
+            nxt = self.below_next.get(a)
+            if nxt is None:
+                break
+            site, a = nxt
+            out.append((a, site))
+        return out
+
+    def chain_up(self, target: int) -> list:
+        out = []
+        node = target
+        while True:
+            prev = self.entry_prev.get(node)
+            out.append((node, prev[1] if prev else None))
+            if prev is None:
+                break
+            node = prev[0]
+        out.reverse()
+        return out
+
+    def through(self, addrs: list) -> "tuple | None":
+        """(worst total, function) over the given functions reachable from the root."""
+        best = None
+        for a in addrs:
+            if a in self.entry:
+                total = self.entry[a] + self.below[a]
+                if best is None or total > best[0]:
+                    best = (total, a)
+        return best
+
+
+# ---- the verdict -------------------------------------------------------------------
+
+
+def load_config(path: str = CONFIG) -> dict:
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_image(elf: str, cfg: dict, tools: dict) -> "tuple[dict, str]":
+    nm_text = run([tools["nm"], "-S", "--defined-only", elf])
+    funcs = parse_nm(nm_text)
+    rom = find_rom_elf(cfg)
+    if not os.path.exists(rom):
+        raise FileNotFoundError(f"ROM ELF {rom} not found (set NIMBUS_ROM_ELF; PlatformIO installs tool-esp-rom-elfs)")
+    for a, f in parse_nm(run([tools["nm"], "-S", "--defined-only", rom]), rom=True).items():
+        funcs.setdefault(a, f)
+    known = set(funcs)
+    # The precompiled ESP-IDF libraries' Xtensa property tables (.xt.prop) mark their own
+    # code as data, so objdump prints mbedTLS, lwIP and newlib as empty words. Without
+    # them objdump decodes every function; the dead-code rule (_function_body) keeps the
+    # data it then decodes inside functions from adding calls.
+    with tempfile.TemporaryDirectory() as tmp:
+        bare = os.path.join(tmp, "noprop.elf")
+        run([tools["objcopy"], "--remove-section", ".xt.prop", "--remove-section", ".xt.lit", elf, bare])
+        parse_disassembly(run([tools["objdump"], "-d", "--no-show-raw-insn", bare]),
+                          {a: f for a, f in funcs.items() if not f.rom}, known)
+    parse_disassembly(run([tools["objdump"], "-d", "--no-show-raw-insn", rom]),
+                      {a: f for a, f in funcs.items() if f.rom}, known)
+    demangle(funcs, tools["c++filt"])
+    return funcs, nm_text
+
+
+def analyse_elf(elf: str, cfg: dict) -> "tuple[Model, dict]":
+    tools = {n: find_tool(n) for n in ("nm", "objdump", "objcopy", "addr2line", "c++filt")}
+    funcs, nm_text = load_image(elf, cfg, tools)
+    entry = [a for a, f in funcs.items() if f.name == cfg["entry"]]
+    if not entry:
+        raise ValueError(f"entry {cfg['entry']} not in the image")
+    # The task starts in vPortTaskWrapper, which calls pollTask through a register.
+    wrapper = [a for a, f in funcs.items() if f.name == cfg["task_wrapper"]]
+    root = entry[0]
+    if wrapper:
+        root = wrapper[0]
+        funcs[root].calls = [(root, entry[0])]
+        funcs[root].indirect = []
+    sites = sorted({s for f in funcs.values() if not f.rom for s, _ in f.indirect})
+    inlines = addr2line(elf, tools["addr2line"], sites)
+    vslots = vtable_slots(nm_text, elf_reader(elf), funcs)
+    model = Model(funcs, cfg, inlines, vslots, Sources())
+    model.analyse(root)
+    model.tools = tools
+    model.elf = elf
+    return model, funcs
+
+
+def describe(model: Model, chain: list, site_locs: dict) -> list:
+    rows = []
+    total = 0
+    for addr, site in chain:
+        loc = short_loc(site_locs.get(site, [("", "")])[0][1]) if site is not None else ""
+        if addr is None:
+            b = model.cfg["unresolved_indirect_bytes"]
+            total += b
+            rows.append((b, total, "(unresolved indirect call: config unresolved_indirect_bytes)", loc))
+            continue
+        b = model.frame[addr]
+        total += b
+        name = model.funcs[addr].dname
+        if model.mult.get(addr, 1) > 1:
+            name += f"  [recursion x{model.mult[addr]}]"
+        rows.append((b, total, name, loc))
+    return rows
+
+
+def stale_rows(model: Model) -> list:
+    cfg = model.cfg
+    out = []
+    for r in cfg["indirect"]:
+        if not model.hits.get("indirect|" + r["in"] + "|" + r.get("at", "")):
+            out.append(f"stale indirect rule (no call site on tg_poll): in={r['in']!r}")
+    for r in cfg.get("recursion", []):
+        if not model.hits.get("recursion|" + r["function"]):
+            out.append(f"stale recursion row (no cycle on tg_poll): {r['function']!r}")
+    for r in cfg.get("impossible_cycles", []):
+        if not model.hits.get("impossible|" + r["caller"] + "|" + r["callee"]):
+            out.append(f"stale impossible-cycle row: {r['caller']!r} -> {r['callee']!r}")
+    for r in cfg.get("hierarchies", []):
+        if not model.hits.get("hierarchy|" + r["names"][0]):
+            out.append(f"stale hierarchy row (no virtual call site names it): {r['names'][0]!r}")
+    for r in cfg.get("not_on_tg_poll", []):
+        if not model.hits.get("elsewhere|" + r["function"]):
+            out.append(f"stale not-on-tg_poll row (never an indirect target here): {r['function']!r}")
+    for r in cfg.get("dynamic_frames", []):
+        if not model.hits.get("dynamic|" + r["function"]):
+            out.append(f"stale dynamic-frame row (no such function on tg_poll): {r['function']!r}")
+    return out
+
+
+def verdict(model: Model) -> dict:
+    cfg = model.cfg
+    stack = cfg["stack_bytes"]
+    fixed = sum(v for k, v in cfg["fixed_overhead"].items() if not k.startswith("_"))
+    floor = cfg["min_free_bytes"]
+    paths = [("worst case (any path)", model.through([model.root]))]
+    for row in cfg["paths"]:
+        addrs = []
+        for pat in row["through"]:
+            addrs.extend(model.match(pat))
+        hit = model.through(addrs) if addrs else None
+        if hit is None:
+            model.errors.append(f"path '{row['name']}': nothing matching {row['through']} is reachable")
+            continue
+        paths.append((row["name"], hit))
+    chains = {name: model.chain_up(fn)[:-1] + model.chain_down(fn) for name, (_t, fn) in paths}
+    sites = sorted({s for ch in chains.values() for _, s in ch if s is not None})
+    locs = addr2line(model.elf, model.tools["addr2line"], sites)
+    rows = []
+    for name, (total, _fn) in paths:
+        used = total + fixed
+        rows.append({"name": name, "used": used, "free": stack - used, "ok": stack - used >= floor,
+                     "chain": describe(model, chains[name], locs)})
+    errors = list(model.errors) + stale_rows(model)
+    return {
+        "stack": stack, "fixed": fixed, "floor": floor, "rows": rows,
+        "reach": len(model.reach), "edges": sum(len(v) for v in model.edges.values()),
+        "unresolved": sum(len(v) for v in model.unresolved.values()),
+        "how": dict(model.how), "cut": len(model.back), "dropped": model.dropped,
+        "errors": errors, "ok": all(r["ok"] for r in rows) and not errors,
+    }
+
+
+def render(v: dict, elf: str, chain_rows: int = 60) -> str:
+    how = ", ".join(f"{k} {n}" for k, n in sorted(v["how"].items()))
+    lines = [
+        f"tg_poll stack budget for {elf}",
+        "",
+        f"Stack {v['stack']} B, floor {v['floor']} B free, fixed overhead {v['fixed']} B (coprocessor save "
+        f"area, TLS block, one interrupt frame). {v['reach']} functions and {v['edges']} call edges reachable. "
+        f"Indirect sites: {how}. {v['dropped']} indirect targets dropped as not on tg_poll; "
+        f"{v['cut']} back edges cut.",
+        "",
+        "| path | worst used B | free B | verdict |",
+        "|---|---:|---:|---|",
+    ]
+    for r in v["rows"]:
+        lines.append(f"| {r['name']} | {r['used']} | {r['free']} | {'ok' if r['ok'] else 'UNDER FLOOR'} |")
+    for r in v["rows"]:
+        lines += ["", f"### {r['name']}: {r['used']} B used, {r['free']} B free", "",
+                  "| frame B | running B | function | called at |", "|---:|---:|---|---|"]
+        for b, tot, name, loc in r["chain"][:chain_rows]:
+            lines.append(f"| {b} | {tot} | `{name[:150]}` | {loc} |")
+        if len(r["chain"]) > chain_rows:
+            lines.append(f"| | | ... {len(r['chain']) - chain_rows} more frames | |")
+    if v["errors"]:
+        lines += ["", "Analysis errors (the gate fails on each):"]
+        lines += ["- " + e for e in v["errors"]]
+    return "\n".join(lines)
+
+
+def check(elf: str, cfg: dict, report: "str | None" = None, quiet: bool = False) -> bool:
+    model, _ = analyse_elf(elf, cfg)
+    v = verdict(model)
+    text = render(v, elf)
+    if report:
+        with open(report, "w", encoding="utf-8") as f:
+            f.write(text + "\n")
+    if not quiet:
+        print(text)
+        print()
+    for r in v["rows"]:
+        print(("PASS " if r["ok"] else "FAIL ") + f"tg_poll {r['name']}: {r['used']} B used, {r['free']} B free "
+              f"(floor {v['floor']} B)")
+    if v["errors"]:
+        print(f"FAIL tg_poll stack analysis: {len(v['errors'])} error(s) listed above")
+    return v["ok"]
+
+
+def main(argv: "list[str] | None" = None) -> int:
+    ap = argparse.ArgumentParser(description="tg_poll worst-case stack from the built image")
+    ap.add_argument("--elf", help="firmware.elf to check (default: every built env in the config)")
+    ap.add_argument("--config", default=CONFIG, help=argparse.SUPPRESS)
+    ap.add_argument("--report", help="also write the full report (markdown) here")
+    ap.add_argument("--quiet", action="store_true", help="print only the verdict lines")
+    args = ap.parse_args(argv)
+    try:
+        cfg = load_config(args.config)
+    except (OSError, ValueError) as e:
+        print(f"FAIL tg_poll stack: cannot read {args.config}: {e}")
+        return 1
+    if args.elf:
+        elfs = [args.elf]
+    else:
+        elfs = [os.path.join(REPO, ".pio", "build", env, "firmware.elf") for env in cfg.get("envs", DEFAULT_ENVS)]
+        elfs = [e for e in elfs if os.path.exists(e)]
+    if not elfs:
+        print("FAIL tg_poll stack: no image is built (pio run -e esp32s3-cyd first)")
+        return 1
+    ok = True
+    for elf in elfs:
+        try:
+            ok = check(elf, cfg, args.report, args.quiet) and ok
+        except (OSError, ValueError, RuntimeError) as e:
+            print(f"FAIL tg_poll stack: {elf}: {e}")
+            ok = False
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

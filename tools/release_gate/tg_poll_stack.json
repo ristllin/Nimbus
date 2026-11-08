@@ -1,0 +1,539 @@
+{
+  "about": "Worst-case stack of the Telegram poll task (tg_poll), checked on the built image by check_tg_poll_stack.py. Method and the measured tables: coverage/STACK-2026-11.md. Every row below says why it is true; a row that no longer matches anything fails the gate as stale.",
+  "entry": "_ZN5agent8telegram12_GLOBAL__N_18pollTaskEPv",
+  "task_wrapper": "vPortTaskWrapper",
+  "rom_elf": "esp32s3_rev0_rom.elf",
+  "envs": [
+    "esp32s3-cyd",
+    "esp32s3"
+  ],
+  "stack_bytes": 24576,
+  "min_free_bytes": 4096,
+  "fixed_overhead": {
+    "_why": "Bytes on the task stack no frame shows. The FreeRTOS Xtensa port (port.c pxPortInitialiseStack) puts the coprocessor save area (XT_CP_SIZE 316 B on the S3, rounded to 16) and the GCC TLS block (9 B of .tdata/.tbss, rounded to 16) at the top of every task stack. An interrupt at the deepest point pushes one exception frame (XT_STK_FRMSZ 192 B) plus the interrupted frame's 16 B base save area before switching to the ISR stack.",
+    "coprocessor_save_area": 320,
+    "tls_block": 16,
+    "interrupt_frame": 208
+  },
+  "unresolved_indirect_bytes": 0,
+  "indirect": [
+    {
+      "in": "^agent::telegram::\\(anonymous namespace\\)::pollTask\\(",
+      "targets": [
+        "^orchOnMessage\\(",
+        "^orchTick\\(\\)",
+        "^agent::stt::transcribe\\(",
+        "^stagedWorkRun\\(\\)",
+        "^stagedWorkPending\\(\\)"
+      ],
+      "why": "pollTask's function pointers: g_cb, g_tick, g_stt, g_stagedRun and g_stagedPending, set once by main.cpp (telegram::begin, setTick, setSttSink, setStagedWork); g_attachSink is never set"
+    }
+  ],
+  "not_on_tg_poll": [
+    {
+      "function": "^(Async|std::_Function_handler<void \\(AsyncWebServerRequest|std::_Sp_counted_ptr<AsyncWebServerRequest|AsyncUDP)",
+      "why": "ESPAsyncWebServer and AsyncUDP run their handlers on the async_tcp task"
+    },
+    {
+      "function": "^(nimbus::net::(register\\w*Routes|beginWeb|admission::)|non-virtual thunk to nimbus::net::admission::|std::_Function_handler<[^,]*, nimbus::net::|std::_Sp_counted_deleter<fs::File\\*, nimbus::net::admission::|_ZZN6nimbus3net9admission)",
+      "why": "web routes and their card stream responses: async_tcp task"
+    },
+    {
+      "function": "^(NimBLE|nimbus::net::ble::|non-virtual thunk to NimBLE)",
+      "why": "Bluetooth callbacks run on the NimBLE host task"
+    }
+  ],
+  "recursion": [],
+  "impossible_cycles": [],
+  "dynamic_frames": [],
+  "paths": [],
+  "hierarchies": [
+    {
+      "names": [
+        "Print",
+        "Stream",
+        "Client",
+        "NetworkClient",
+        "NetworkClientSecure",
+        "WiFiClientSecure",
+        "WiFiClient",
+        "File",
+        "HWCDC",
+        "HardwareSerial",
+        "Serial",
+        "StreamString",
+        "TwoWire",
+        "Wire",
+        "BlockingClientReader"
+      ],
+      "classes": [
+        "^(Print|Stream|HWCDC|HardwareSerial|StreamString|NetworkClient|NetworkClientSecure|fs::File|TwoWire|AsyncUDP\\w*|agent::\\(anonymous namespace\\)::BlockingClientReader)$"
+      ],
+      "why": "Arduino's Print -> Stream -> Client chain"
+    },
+    {
+      "names": [
+        "FileImpl",
+        "FileImplPtr",
+        "VFSFileImpl"
+      ],
+      "classes": [
+        "^(VFSFileImpl|fs::FileImpl)$"
+      ],
+      "why": "fs::File's implementation"
+    },
+    {
+      "names": [
+        "FSImpl",
+        "FSImplPtr",
+        "VFSImpl",
+        "LittleFSImpl"
+      ],
+      "classes": [
+        "^(VFSImpl|LittleFSImpl|fs::FSImpl)$"
+      ],
+      "why": "fs::FS's implementation"
+    },
+    {
+      "names": [
+        "Fs",
+        "CardFs"
+      ],
+      "classes": [
+        "::CardFs$"
+      ],
+      "why": "tgarc::Fs"
+    },
+    {
+      "names": [
+        "Reader",
+        "CardReader"
+      ],
+      "classes": [
+        "::CardReader$"
+      ],
+      "why": "tgarc::Reader"
+    },
+    {
+      "names": [
+        "Writer",
+        "CardWriter"
+      ],
+      "classes": [
+        "::CardWriter$"
+      ],
+      "why": "tgarc::Writer"
+    },
+    {
+      "names": [
+        "Source",
+        "TgFileSource"
+      ],
+      "classes": [
+        "::TgFileSource$"
+      ],
+      "why": "tgarc::Source"
+    },
+    {
+      "names": [
+        "SwapFs",
+        "SdSwapFs"
+      ],
+      "classes": [
+        "::SdSwapFs$"
+      ],
+      "why": "orch::SwapFs"
+    },
+    {
+      "names": [
+        "EpiFs",
+        "ArduinoEpiFs"
+      ],
+      "classes": [
+        "::ArduinoEpiFs$"
+      ],
+      "why": "orch::EpiFs"
+    },
+    {
+      "names": [
+        "SkillFs",
+        "DeviceSkillFs"
+      ],
+      "classes": [
+        "::DeviceSkillFs$"
+      ],
+      "why": "agent::SkillFs"
+    },
+    {
+      "names": [
+        "JournalStore",
+        "FileJournalStore",
+        "FlashJournalStore"
+      ],
+      "classes": [
+        "::(FileJournalStore|FlashJournalStore)$"
+      ],
+      "why": "orch::JournalStore"
+    },
+    {
+      "names": [
+        "JournalFileIo",
+        "FlashJournalIo"
+      ],
+      "classes": [
+        "::FlashJournalIo$"
+      ],
+      "why": "orch::JournalFileIo"
+    },
+    {
+      "names": [
+        "MemoryStore",
+        "LittleFsMemoryStore"
+      ],
+      "classes": [
+        "::LittleFsMemoryStore$"
+      ],
+      "why": "orch::MemoryStore"
+    },
+    {
+      "names": [
+        "PrefsStoreIO",
+        "LittleFsOpenQIO",
+        "LittleFsPrefsIO"
+      ],
+      "classes": [
+        "::LittleFs(OpenQ|Prefs)IO$"
+      ],
+      "why": "orch::PrefsStoreIO"
+    },
+    {
+      "names": [
+        "FoldStoreIO",
+        "LittleFsFoldStoreIO"
+      ],
+      "classes": [
+        "::LittleFsFoldStoreIO$"
+      ],
+      "why": "orch::FoldStoreIO"
+    },
+    {
+      "names": [
+        "EpisodicStore",
+        "AppendLogEpisodicStore",
+        "InMemoryEpisodicStore",
+        "RowTextOverlay"
+      ],
+      "classes": [
+        "^nimbus::orch::(AppendLogEpisodicStore|InMemoryEpisodicStore|RowTextOverlay|EpisodicStore)$"
+      ],
+      "why": "orch::EpisodicStore"
+    },
+    {
+      "names": [
+        "ManagedAgentAdapter",
+        "HeavyFabric",
+        "adapterFor"
+      ],
+      "classes": [
+        "^agent::\\w+Adapter$"
+      ],
+      "why": "the provider adapters"
+    },
+    {
+      "names": [
+        "HttpTransport",
+        "TlsTransport",
+        "RouterTap"
+      ],
+      "classes": [
+        "::(TlsTransport|RouterTap)$"
+      ],
+      "why": "agent::HttpTransport"
+    },
+    {
+      "names": [
+        "ByteReader",
+        "ClientReader"
+      ],
+      "classes": [
+        "::ClientReader$"
+      ],
+      "why": "core::ByteReader"
+    },
+    {
+      "names": [
+        "Allocator",
+        "PsramJsonAllocator",
+        "WorkingJsonAllocator",
+        "DefaultAllocator"
+      ],
+      "classes": [
+        "(DefaultAllocator|PsramJsonAllocator|WorkingJsonAllocator)$"
+      ],
+      "why": "ArduinoJson::Allocator"
+    },
+    {
+      "names": [
+        "_M_dispose",
+        "_M_destroy",
+        "shared_ptr",
+        "_Sp_counted_base"
+      ],
+      "classes": [
+        "^std::_Sp_counted"
+      ],
+      "why": "shared_ptr control blocks"
+    },
+    {
+      "names": [
+        "NVSHandle",
+        "NVSPartition",
+        "NVSPartitionManager",
+        "NVSHandleSimple"
+      ],
+      "classes": [
+        "^nvs::"
+      ],
+      "why": "ESP-IDF NVS C++ classes"
+    },
+    {
+      "names": [
+        "Monitor",
+        "AdcBatteryMonitor"
+      ],
+      "classes": [
+        "::AdcBatteryMonitor$"
+      ],
+      "why": "power::Monitor"
+    },
+    {
+      "names": [
+        "Port",
+        "VoicePort"
+      ],
+      "classes": [
+        "^VoicePort$"
+      ],
+      "why": "voice::Port"
+    },
+    {
+      "names": [
+        "NetworkInterface",
+        "STAClass",
+        "APClass",
+        "NetworkManager",
+        "WiFi"
+      ],
+      "classes": [
+        "^(NetworkInterface|STAClass|APClass|NetworkManager)$"
+      ],
+      "why": "Arduino network interfaces"
+    },
+    {
+      "names": [
+        "IPAddress",
+        "Printable"
+      ],
+      "classes": [
+        "^IPAddress$"
+      ],
+      "why": "Printable"
+    },
+    {
+      "names": [
+        "MD5Builder",
+        "HashBuilder"
+      ],
+      "classes": [
+        "^MD5Builder$"
+      ],
+      "why": "HashBuilder"
+    },
+    {
+      "names": [
+        "error_category",
+        "system_error"
+      ],
+      "classes": [
+        "error_category$"
+      ],
+      "why": "std::error_category"
+    },
+    {
+      "names": [
+        "exception",
+        "bad_alloc",
+        "logic_error",
+        "runtime_error",
+        "length_error",
+        "out_of_range",
+        "invalid_argument",
+        "bad_function_call",
+        "system_error",
+        "what"
+      ],
+      "classes": [
+        "^std::(bad_\\w+|logic_error|runtime_error|length_error|out_of_range|invalid_argument|system_error|exception)$",
+        "^__gnu_cxx::__concurrence",
+        "^__cxxabiv1::"
+      ],
+      "why": "exceptions and RTTI support"
+    }
+  ],
+  "bases": {
+    "Stream": [
+      "Print"
+    ],
+    "HWCDC": [
+      "Stream"
+    ],
+    "HardwareSerial": [
+      "Stream"
+    ],
+    "StreamString": [
+      "Stream"
+    ],
+    "File": [
+      "Stream"
+    ],
+    "TwoWire": [
+      "Stream"
+    ],
+    "Client": [
+      "Stream"
+    ],
+    "NetworkClient": [
+      "Client"
+    ],
+    "NetworkClientSecure": [
+      "NetworkClient"
+    ],
+    "BlockingClientReader": [
+      "Stream"
+    ],
+    "AsyncUDPMessage": [
+      "Print"
+    ],
+    "AsyncUDPPacket": [
+      "Stream"
+    ],
+    "AsyncUDP": [
+      "Print"
+    ],
+    "VFSFileImpl": [
+      "FileImpl"
+    ],
+    "VFSImpl": [
+      "FSImpl"
+    ],
+    "LittleFSImpl": [
+      "VFSImpl"
+    ],
+    "CardFs": [
+      "Fs"
+    ],
+    "CardReader": [
+      "Reader"
+    ],
+    "CardWriter": [
+      "Writer"
+    ],
+    "TgFileSource": [
+      "Source"
+    ],
+    "SdSwapFs": [
+      "SwapFs"
+    ],
+    "ArduinoEpiFs": [
+      "EpiFs"
+    ],
+    "DeviceSkillFs": [
+      "SkillFs"
+    ],
+    "FileJournalStore": [
+      "JournalStore"
+    ],
+    "FlashJournalStore": [
+      "FlashJournalIo",
+      "FileJournalStore"
+    ],
+    "FlashJournalIo": [
+      "JournalFileIo"
+    ],
+    "LittleFsMemoryStore": [
+      "MemoryStore"
+    ],
+    "LittleFsOpenQIO": [
+      "PrefsStoreIO"
+    ],
+    "LittleFsPrefsIO": [
+      "PrefsStoreIO"
+    ],
+    "LittleFsFoldStoreIO": [
+      "FoldStoreIO"
+    ],
+    "AppendLogEpisodicStore": [
+      "EpisodicStore"
+    ],
+    "InMemoryEpisodicStore": [
+      "EpisodicStore"
+    ],
+    "RowTextOverlay": [
+      "EpisodicStore"
+    ],
+    "AnthropicAdapter": [
+      "ManagedAgentAdapter"
+    ],
+    "CumuloAdapter": [
+      "ManagedAgentAdapter"
+    ],
+    "CustomAdapter": [
+      "ManagedAgentAdapter"
+    ],
+    "MistralAdapter": [
+      "ManagedAgentAdapter"
+    ],
+    "OpenAIAdapter": [
+      "ManagedAgentAdapter"
+    ],
+    "ZaiAdapter": [
+      "ManagedAgentAdapter"
+    ],
+    "TlsTransport": [
+      "HttpTransport"
+    ],
+    "RouterTap": [
+      "HttpTransport"
+    ],
+    "ClientReader": [
+      "ByteReader"
+    ],
+    "PsramJsonAllocator": [
+      "Allocator"
+    ],
+    "WorkingJsonAllocator": [
+      "Allocator"
+    ],
+    "DefaultAllocator": [
+      "Allocator"
+    ],
+    "AdcBatteryMonitor": [
+      "Monitor"
+    ],
+    "VoicePort": [
+      "Port"
+    ],
+    "STAClass": [
+      "NetworkInterface"
+    ],
+    "APClass": [
+      "NetworkInterface"
+    ]
+  },
+  "aliases": {
+    "FileImplPtr": "FileImpl",
+    "FSImplPtr": "FSImpl",
+    "WiFiClientSecure": "NetworkClientSecure",
+    "WiFiClient": "NetworkClient"
+  }
+}
