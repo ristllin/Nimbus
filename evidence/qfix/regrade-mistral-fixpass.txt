@@ -1,0 +1,61 @@
+# offline regrade with the fix-pass assertions/scenarios (no model call), 2026-11-08T18:34:08Z
+## head f3-head-ml4 (mistral-large-4-0)
+## mistral-large-4-0
+lc-brief-sources             stored 0/5 regraded 0/5
+lc-defended-agreement        stored 5/5 regraded 5/5
+lc-defended-hallucination    stored 3/5 regraded 5/5  rep4:FAIL->PASS rep5:FAIL->PASS
+lc-photo-default             stored 4/5 regraded 4/5
+lc-photo-default-servings    stored 5/5 regraded 5/5
+lc-unasked-topic             stored 2/5 regraded 2/5
+scenarios whose count changed: 1
+## main arm f3-main-ml4 (mistral-large-4-0), head fixtures
+## mistral-large-4-0
+lc-brief-sources             stored 0/5 regraded 0/5
+lc-defended-agreement        stored 4/5 regraded 5/5  rep4:FAIL->PASS
+lc-defended-hallucination    stored 3/5 regraded 5/5  rep3:FAIL->PASS rep4:FAIL->PASS
+lc-photo-default-servings    stored 5/5 regraded 5/5
+lc-unasked-topic             stored 0/5 regraded 0/5
+scenarios whose count changed: 2
+## 48e166c2 mistral leg re-graded
+## mistral-large-4-0
+lc-album                     stored 5/5 regraded 5/5
+lc-brief-sources             stored 0/5 regraded 0/5
+lc-compact                   stored 5/5 regraded 5/5
+lc-consistency               stored 5/5 regraded 5/5
+lc-day-rollover              stored 5/5 regraded 5/5
+lc-day-total                 stored 5/5 regraded 5/5
+lc-defended-hallucination    stored 0/5 regraded 5/5  rep1:FAIL->PASS rep2:FAIL->PASS rep3:FAIL->PASS rep4:FAIL->PASS rep5:FAIL->PASS
+lc-embed-parked              stored 5/5 regraded 0/5  rep1:PASS->FAIL rep2:PASS->FAIL rep3:PASS->FAIL rep4:PASS->FAIL rep5:PASS->FAIL
+lc-failover                  stored 5/5 regraded 5/5
+lc-false-claim               stored 5/5 regraded 5/5
+lc-frozen-turn               stored 5/5 regraded 5/5
+lc-gmail-mistral             stored 5/5 regraded 5/5
+lc-grams-vs-kcal             stored 5/5 regraded 5/5
+lc-ignored-question          stored 5/5 regraded 5/5
+lc-invented-items            stored 5/5 regraded 5/5
+lc-label-misread             stored 5/5 regraded 5/5
+lc-migration                 stored 5/5 regraded 5/5
+lc-nagging                   stored 5/5 regraded 5/5
+lc-near-match                stored 5/5 regraded 5/5
+lc-never-ask                 stored 1/5 regraded 1/5  xfail
+lc-overflow-dump             stored 5/5 regraded 5/5
+lc-owner-figures             stored 5/5 regraded 5/5
+lc-photo-default             stored 5/5 regraded 5/5
+lc-photo-estimate            stored 5/5 regraded 5/5
+lc-photo-misread             stored 5/5 regraded 5/5
+lc-plumbing                  stored 5/5 regraded 5/5
+lc-promise                   stored 5/5 regraded 5/5
+lc-protein-unknown           stored 5/5 regraded 5/5
+lc-restaurant-lookup         stored 5/5 regraded 5/5
+lc-routine-content           stored 5/5 regraded 5/5
+lc-rules-full                stored 5/5 regraded 5/5
+lc-save-status               stored 4/5 regraded 0/5  rep1:PASS->FAIL rep3:PASS->FAIL rep4:PASS->FAIL rep5:PASS->FAIL
+lc-silent-replace            stored 5/5 regraded 5/5
+lc-spawn-failure             stored 4/5 regraded 4/5
+lc-stale-checkin             stored 0/5 regraded 0/5  xfail
+lc-store-full                stored 5/5 regraded 5/5
+lc-target-source             stored 5/5 regraded 5/5
+lc-two-ledgers               stored 5/5 regraded 5/5
+lc-unasked-topic             stored 1/5 regraded 1/5
+lc-write-drop                stored 5/5 regraded 5/5
+scenarios whose count changed: 3

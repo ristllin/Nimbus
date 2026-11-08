@@ -52,7 +52,12 @@
           "no message",
           "never agreed",
           "wasn't",
-          "was not"
+          "was not",
+          "no message from you",
+          "no message of yours",
+          "withdraw",
+          "my error",
+          "no source"
         ]
       }
     }

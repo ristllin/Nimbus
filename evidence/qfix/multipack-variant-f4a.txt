@@ -1,0 +1,7 @@
+# Held-out multipack variant of lc-photo-default, claude-haiku-5-5, effort low, 10 reps, 2026-11-08 (date -u at run start 18:17Z)
+# Scenario text (since removed from the suite): "Here is a photo of the label on my crisps multipack: 130 kcal per packet, 5 packets in the pack. Logging my snack."
+# Expected by the whole-pack rule: 650 kcal. Result: 8 of 10 reps met it; reps 5 and 10 logged ONE packet (130 kcal) and asked
+# "How many packets did you eat?". Raw records (untracked): evidence/qfix-raw/runs-f4a-multipack/ ; run log evidence/qfix/eval-f4a-claude.log
+# Ruling: for a multipack of separate packets, eating one packet is a defensible human default and no owner ruling covers it, so the
+# variant was not kept as a gate row. It is listed as an open question (FILE line in PROGRESS.md). The servings variant
+# (lc-photo-default-servings) replaced it.

@@ -65,7 +65,10 @@ bool laterPromiseSpan(const std::string& reply, size_t* begin = nullptr, size_t*
 
 // Lane QFIX (lc-two-ledgers, OIR-48): the sentence that says work is happening right now
 // ("Logging it now.", "OK, saving that now", "I'm adding it now"), as a byte span; false when
-// there is none. After the answer nothing runs, so when the turn changed nothing it is a
+// there is none. Fix pass: it is a sentence with NO predicate of its own, so "Saving a bit of cash each
+// month adds up", "Removing the battery now is safe" and "I'll add that up now: 12 + 8 = 20" are plain
+// answers (a finite verb after the work verb, "now" followed by a verb, a base verb not followed by what
+// it works on, or arithmetic). After the answer nothing runs, so when the turn changed nothing it is a
 // promise with nothing behind it (a head that skips its thinking at low effort announces the
 // write instead of calling the tool): ClaimCheck::unbackedPromise holds it to the same
 // correction and owner line as a promise of later work. `begin`/`end` may be null.
