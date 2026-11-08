@@ -488,7 +488,13 @@ const char* const kStoreVerbs[] = {"logging", "saving", "recording", "storing"};
 const char* const kStoreObjects[] = {"it", "that", "this", "them", "these", "those", "your", "the", "my", "a", "an",
                                      "everything", "all", "dinner", "lunch", "breakfast", "snack", "supper", "brunch"};
 // What may stand before the participle: "OK, logging it now", "Got it, saving that now", "I'm adding it now".
-const char* const kNowLeads[] = {"ok", "okay", "sure", "alright", "right", "yes", "great", "got", "it", "i", "i'm", "m", "am"};
+const char* const kNowLeads[] = {"ok",   "okay", "sure", "alright", "right",  "yes",   "great", "got", "it",    "i",
+                                 "i'm",  "m",    "am",   "i'll",    "ll",     "will",  "let",   "me",  "going", "to",
+                                 "gonna"};
+// Among the leads, the ones that make the base form an announcement: "I'll log that now", "Let me save it now".
+const char* const kFutureLeads[] = {"i'll", "ll", "will", "let", "going", "gonna"};
+const char* const kBaseVerbs[] = {"log",   "save",   "record", "store",  "add",    "write",    "update", "enter", "set",
+                                  "send",  "create", "delete", "remove", "change", "pin",      "schedule", "note", "put"};
 
 // The next word of `s` from `at` (advanced past it), "" at the end. `clauseEnd` is set when a
 // colon or semicolon lay between the previous word and this one.
@@ -511,9 +517,14 @@ bool announcesNowIn(const std::string& s) {
   size_t at = 0;
   bool stop = false;
   std::string w = nextWord(s, at, stop);
-  while (!w.empty() && oneOf(w, kNowLeads)) w = nextWord(s, at, stop);
-  if (!oneOf(w, kNowVerbs)) return false;
-  if (oneOf(w, kStoreVerbs)) {
+  bool future = false;
+  while (!w.empty() && oneOf(w, kNowLeads)) {
+    future = future || oneOf(w, kFutureLeads);
+    w = nextWord(s, at, stop);
+  }
+  const bool participle = oneOf(w, kNowVerbs);
+  if (!participle && !(future && oneOf(w, kBaseVerbs))) return false;
+  if (participle && oneOf(w, kStoreVerbs)) {
     size_t peek = at;
     const std::string next = nextWord(s, peek, stop);
     if (!stop && (oneOf(next, kStoreObjects) || (!next.empty() && std::isdigit((unsigned char)next[0])))) return true;

@@ -251,7 +251,10 @@ tests/evals/owner_regressions/runs/bf40a3edf9f401df83be010eac2d9847d82e2681/ (ta
   test_round_an_announcement_with_nothing_run_gets_one_round and
   test_an_announcement_is_backed_only_by_work_that_changed_something (both fail with the
   guard disabled, verified). The matcher was measured against every stored live reply of this
-  lane (3,656 replies, 1,357 without any tool call): it flags 58, every one a "Logging ..."
-  announcement with no tool call behind it (lc-two-ledgers, lc-consistency, lc-label-misread,
-  lc-near-match, lc-grams-vs-kcal, lc-album, lc-photo-misread, lc-silent-replace), and none of
-  the other 1,299 no-tool-call replies.
+  lane (3,900 replies, 1,433 without any tool call): it flags 60, every one a "Logging ..." or
+  "I'll log that now" announcement with no tool call behind it (lc-two-ledgers, lc-consistency,
+  lc-label-misread, lc-near-match, lc-grams-vs-kcal, lc-album, lc-photo-misread,
+  lc-silent-replace), and none of the other 1,373 no-tool-call replies. A first-person future
+  with a base storage verb counts when it says "now" ("I'll log that now.", "Let me save it
+  now."). The head's own scratchpad note in the same answer does not back the announcement (a
+  live rep announced the log and carried only a scratchpad update).

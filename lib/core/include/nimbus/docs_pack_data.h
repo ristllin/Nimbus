@@ -2134,8 +2134,9 @@ chain: an answer whose reply claims an effect that neither this turn's tools nor
 its own items back (a file written, a memory saved, a pin, a check, a figure from
 a source) is sent back with the claims and the turn's record; sub-agent claims are
 left to the shape check. A reply that promises later work with nothing behind it, a reply
-that only says the work is happening right now ("Logging it now.", "Logging your lunch as
-roughly 670 kcal") while the turn wrote, sent or scheduled nothing (a lookup, a failed write or a refused spawn is not work done), and
+that only says the work is happening right now ("Logging it now.", "I'll log that now.",
+"Logging your lunch as roughly 670 kcal") while the turn wrote, sent or scheduled nothing (a
+lookup, a failed write, a refused spawn or the head's own scratchpad note is not work done), and
 a reply that is template filler, join the chain too. At most one correction round runs
 per turn, shared by all of them, never on the forced final round, never for a cut answer
 and never for a prose answer (which carries no spawn). The one exception is filler: it

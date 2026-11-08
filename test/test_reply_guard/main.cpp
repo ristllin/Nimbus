@@ -236,6 +236,13 @@ static void test_announcing_work_now() {
            "Logging it under yesterday (2026-11-07), using the same figure.",
            "Saving that for today.",
            "Recording the snack at 220 kcal.",
+           // A first-person future is the same announcement when it says now (live, 8 Nov).
+           "I'll log that now.",
+           "I will save it now.",
+           "Let me log that now.",
+           "OK, I'll add it to your food log now.",
+           "I\xE2\x80\x99ll log it now.",
+           "I'm going to log it now.",
        })
     TEST_ASSERT_TRUE_MESSAGE(announcesWorkNow(p), p);
   for (const char* p : {
@@ -255,10 +262,15 @@ static void test_announcing_work_now() {
            "Noting that you are vegetarian, I left the chicken out.",
            "Skipping the language app check-in, as you asked.",
            "Setting expectations: I cannot see the photo.",
+           "I'll log it when you confirm the weight.",
+           "I'll log that later.",
+           "I'll look at it now.",
+           "Let me know when you eat it now.",
+           "Will you log it now?",
+           "That will save it now.",
            "You are logging it now.",
            "Logging is on and the row goes in at the end of the day, so nothing is lost if you add the rest of the evening here later on now.",
            "The total now is 1,611 kcal.",
-           "I will log it now.",
            "Saved. Today's total is 620 kcal.",
            "",
        })

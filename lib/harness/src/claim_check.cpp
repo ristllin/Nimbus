@@ -729,14 +729,16 @@ std::string ClaimCheck::correctionFor(const std::vector<orch::ClaimGap>& gaps,
 }
 
 namespace {
-// Lane QFIX: did this turn change anything? A lookup, a failed write and a refused spawn are
-// not work done, so a reply that says the work is happening now has nothing behind it.
+// Lane QFIX: did this turn change anything? A lookup, a failed write, a refused spawn and the head's
+// own scratchpad notes (the working goal tiers, not what the owner asked for) are not work done,
+// so a reply that says the work is happening now has nothing behind it.
 bool changedSomething(const orch::TurnEffects& fx) {
   using orch::FxKind;
   for (const orch::Effect& e : fx.all()) {
     if (!e.ok) continue;
     switch (e.kind) {
       case FxKind::Read:
+      case FxKind::Scratch:
       case FxKind::SubSourced:
       case FxKind::SubUnsourced:
       case FxKind::MemPinNoop:

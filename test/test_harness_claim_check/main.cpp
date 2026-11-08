@@ -1729,6 +1729,14 @@ static void test_an_announcement_is_backed_only_by_work_that_changed_something()
     TEST_ASSERT_TRUE(cc.finalCheck(said).find("[PROMISE CHECK]") != std::string::npos);
   }
   {
+    // The head's own scratchpad note in the same answer is not the work it announced.
+    ClaimCheck cc;
+    cc.beginTurn();
+    const std::string withNote =
+        turnJson("Logging it now.", "\"scratchpad\":{\"active\":\"log the boba tea\",\"short\":null,\"mid\":null,\"long\":null}");
+    TEST_ASSERT_TRUE(cc.finalCheck(withNote).find("[PROMISE CHECK]") != std::string::npos);
+  }
+  {
     ClaimCheck cc;   // nothing ran at all
     cc.beginTurn();
     TEST_ASSERT_TRUE(cc.finalCheck(said).find("[PROMISE CHECK]") != std::string::npos);
