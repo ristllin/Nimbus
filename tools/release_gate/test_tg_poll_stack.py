@@ -229,7 +229,9 @@ def test_the_stack_size_in_the_config_is_the_tasks():
 
 # ---- the built image ------------------------------------------------------------------
 
-ELF = os.path.join(REPO, ".pio", "build", "esp32s3-cyd", "firmware.elf")
+
+def _elf(env):
+    return os.path.join(REPO, ".pio", "build", env, "firmware.elf")
 
 
 def _toolchain():
@@ -240,12 +242,11 @@ def _toolchain():
         return False
 
 
-@pytest.mark.skipif(
-    not (os.path.exists(ELF) and _toolchain()),
-    reason="no esp32s3-cyd image or Xtensa toolchain here (the battery and release.yml run it)",
-)
-def test_the_built_image_keeps_the_floor_on_every_tg_poll_path():
-    assert st.check(ELF, st.load_config(), quiet=True), "tg_poll leaves under 4096 B on some path (report above)"
+@pytest.mark.parametrize("env", ["esp32s3-cyd", "esp32s3"])
+def test_the_built_image_keeps_the_floor_on_every_tg_poll_path(env):
+    if not (os.path.exists(_elf(env)) and _toolchain()):
+        pytest.skip(f"no {env} image or Xtensa toolchain here (the battery and release.yml run it)")
+    assert st.check(_elf(env), st.load_config(), quiet=True), f"tg_poll leaves under 4096 B on some {env} path"
 
 
 def test_report_shape_is_json_safe():
