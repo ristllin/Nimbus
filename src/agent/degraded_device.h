@@ -15,9 +15,14 @@
 // card lock is tried with LoopLock(0); a busy lock keeps the last answer). noteTurn() runs
 // on the turn task at the end of every turn. shown(), generation() and into() are read
 // from any task (the AsyncTCP task serves /api/state); the shown set is a copy under a
-// small mutex. The state is allocated on first use, so it costs no static RAM.
+// small mutex. The state is allocated by begin(), so it costs a pointer of static RAM, not the state.
 namespace agent {
 namespace degraded {
+
+// Allocates the state. Called once from setup(), while memory is plentiful (its mutex is a
+// FreeRTOS object, and a failed allocation of one aborts); until then everything answers
+// "nothing degraded".
+void begin();
 
 // A turn ended: `requested` is the head it started on, `served` the provider that answered,
 // `path` the providers it ran on in order ("a -> b"), `billed` whether any provider billed.

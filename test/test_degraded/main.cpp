@@ -763,6 +763,7 @@ static void test_device_wiring() {
   const std::string orch = readFile("src/agent/orchestrator.cpp");
   TEST_ASSERT_EQUAL_size_t(1, count(orch, "degraded::noteTurn("));   // the turn-end hook feeds the tracker
   const std::string main = readFile("src/main.cpp");
+  TEST_ASSERT_TRUE(contains(main, "agent::degraded::begin();"));    // setup allocates the state (the mutex is a FreeRTOS object)
   TEST_ASSERT_TRUE(contains(main, "agent::degraded::tick("));       // the main loop runs the tick
   // ... and a device still in first-run setup is not degraded, it is not set up yet.
   TEST_ASSERT_TRUE(contains(main, "g_orchMode && !deviceNeedsSetup(), net::staConnected()"));
@@ -781,6 +782,11 @@ static void test_device_wiring() {
   TEST_ASSERT_TRUE(count(tg, "s_loopMs = millis();") >= 3);   // pollTask start, loop top, after staged work
   TEST_ASSERT_TRUE(contains(tg, "h.idleMs = millis() - s_loopMs;"));
   TEST_ASSERT_TRUE(contains(readFile("src/agent/files_subsystem.cpp"), "bool storeFullActive() { return g_full.active(); }"));
+  // The device keeps its degraded state on the heap: no static object here (static RAM is
+  // about 400 B from its ceiling; check_static_dram.py is the gate, this keeps the shape).
+  TEST_ASSERT_FALSE(contains(dev, "static State s"));
+  TEST_ASSERT_TRUE(contains(dev, "State* s_state = nullptr;"));
+  TEST_ASSERT_TRUE(contains(main, "static DegradedPaint* p = nullptr;"));
   // The ring-only repaint keeps the strip of the last full paint.
   TEST_ASSERT_TRUE(contains(main, "buildCtx(-1, /*fullPaint=*/false)"));
 }

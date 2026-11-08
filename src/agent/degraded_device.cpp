@@ -29,10 +29,10 @@ struct State {
   memory::EmbedHealth embed;
 };
 
-State* state() {
-  static State* s = new (std::nothrow) State();
-  return s;
-}
+// Allocated once by begin() in setup(), before any task that reads it runs; null until then
+// (every entry point answers "nothing degraded"). A plain pointer, so no guard variable.
+State* s_state = nullptr;
+State* state() { return s_state; }
 
 ParkedFact factOf(const ParkEntry& e) {
   ParkedFact p;
@@ -105,6 +105,10 @@ void collectTelegram(DegradedFacts& f) {
 }
 
 }  // namespace
+
+void begin() {
+  if (!s_state) s_state = new (std::nothrow) State();
+}
 
 void noteTurn(const std::string& requested, const std::string& served, const std::string& path, bool billed) {
   if (State* s = state()) s->tracker.noteTurn(requested, served, path, billed, (uint32_t)millis());

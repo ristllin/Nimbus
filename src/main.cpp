@@ -1284,20 +1284,30 @@ static void fillVoiceCtx(render::ScreenCtx& c) {
   c.micBusy = g_voice.busy();
 }
 
-// Lane DEGRADE: the details card behind the home screen's strip (the reason one tap away).
-// It is the Ask text card, held until Close, so it needs no screen of its own. The card
-// counts as up while the Ask text is still exactly the text this put there, so a later
-// reply that replaces it is never mistaken for it.
-static String g_degradedDetailShown;   // the text this put on the card ("" = none)
-static bool askIsDegradedDetails() {
-  return g_degradedDetailShown.length() && g_askOverride == g_degradedDetailShown;
+// Lane DEGRADE: the display bookkeeping of the degraded strip and its details card. Main
+// task only, and on the heap (allocated at first use) so it costs 4 bytes of static RAM, not
+// the 28 the two objects would.
+struct DegradedPaint {
+  // The strip rows the last FULL paint drew. The on-screen ring is repainted alone at
+  // animation cadence (repaintRingRegion composes the whole frame and pushes only the ring
+  // square), so it must compose the strip the panel shows or its square would not match the
+  // layout around it. A changed set takes effect at the next full paint.
+  std::vector<std::string> rows;
+  // The details card behind the strip (the reason one tap away) is the Ask text card, held
+  // until Close, so it needs no screen of its own. It counts as up while the Ask text is
+  // still exactly the text this put there, so a later reply that replaces it is never
+  // mistaken for it.
+  String detailShown;   // "" = the card is not up
+};
+static DegradedPaint* degradedPaint() {
+  static DegradedPaint* p = nullptr;
+  if (!p) p = new (std::nothrow) DegradedPaint();
+  return p;
 }
-
-// Lane DEGRADE: the strip rows the last FULL paint drew. The on-screen ring is repainted
-// alone at animation cadence (repaintRingRegion composes the whole frame and pushes only the
-// ring square), so it must compose the strip the panel shows or its square would not match
-// the layout around it. A changed set takes effect at the next full paint.
-static std::vector<std::string> g_paintedDegradedRows;
+static bool askIsDegradedDetails() {
+  const DegradedPaint* p = degradedPaint();
+  return p && p->detailShown.length() && g_askOverride == p->detailShown;
+}
 
 // `fullPaint` false: the ring-only repaint, which keeps the strip of the last full paint.
 static render::ScreenCtx buildCtx(int cursorJob, bool fullPaint = true) {
@@ -1406,9 +1416,9 @@ static render::ScreenCtx buildCtx(int cursorJob, bool fullPaint = true) {
     c.micHeld = g_voiceActive;   // instant pressed feedback on the hold-to-talk button
   }
   fillVoiceCtx(c);
-  if (g_orchMode) {
-    if (fullPaint) g_paintedDegradedRows = nimbus::orch::degradedStripRows(agent::degraded::shown(), 3);
-    c.degradedRows = g_paintedDegradedRows;
+  if (DegradedPaint* dp = g_orchMode ? degradedPaint() : nullptr) {
+    if (fullPaint) dp->rows = nimbus::orch::degradedStripRows(agent::degraded::shown(), 3);
+    c.degradedRows = dp->rows;
   }
   return c;
 }
@@ -3542,6 +3552,7 @@ void setup() {
   // Lazily created mutexes allocate a FreeRTOS object from internal RAM on first use,
   // and a failed allocation there aborts. Create them now, while memory is plentiful.
   { std::lock_guard<std::mutex> prime(g_webChatMx); }
+  agent::degraded::begin();   // lane DEGRADE: its mutex and state, allocated while memory is plentiful
   otaupd::setEventHook(otaEventHook);
   otaupd::setIdleProvider(otaIdleSnapshot);
   // A check or install whose own task does not fit (a loaded device sits just
@@ -5598,17 +5609,18 @@ static bool voiceTapDismiss(const nimbus::tft::TapRegion* t, uint32_t now) {
   return !elsewhere;
 }
 
-// While the card is up a change of the set rewrites it, and when nothing is degraded any
-// more it closes.
+// The tap on the strip: put the reasons on the Ask card. While it is up a change of the set
+// rewrites it, and when nothing is degraded any more it closes (onDegradedChanged).
 static void showDegradedDetails() {
+  DegradedPaint* dp = degradedPaint();
   const std::string text = nimbus::orch::degradedDetailText(agent::degraded::shown());
-  if (text.empty()) {   // it cleared between the paint and the tap
-    g_degradedDetailShown = "";
+  if (!dp || text.empty()) {   // it cleared between the paint and the tap
+    if (dp) dp->detailShown = "";
     renderScreen(attn::ScreenId::StatusIdle, -1);
     return;
   }
-  g_degradedDetailShown = text.c_str();
-  g_askOverride = g_degradedDetailShown;
+  dp->detailShown = text.c_str();
+  g_askOverride = dp->detailShown;
   g_askSticky = true; g_askPage = 0;
   renderScreen(attn::ScreenId::Ask, -1);
 }
@@ -5616,22 +5628,24 @@ static void showDegradedDetails() {
 // The shown set changed (agent::degraded::tick). The home screen repaints with the new
 // strip; an open details card is rewritten, or closed when nothing is degraded any more.
 static void onDegradedChanged(uint32_t now) {
+  DegradedPaint* dp = degradedPaint();
+  if (!dp) return;
   if (!askIsDegradedDetails()) {
-    g_degradedDetailShown = "";
+    dp->detailShown = "";
     if (!g_menu.isOpen() && g_lastScreen == uint8_t(attn::ScreenId::StatusIdle))
       g_sched.onIntent(uint8_t(attn::ScreenId::StatusIdle), false, now);
     return;
   }
   const std::string text = nimbus::orch::degradedDetailText(agent::degraded::shown());
   if (text.empty()) {
-    g_degradedDetailShown = "";
+    dp->detailShown = "";
     g_askOverride = "";
     g_askSticky = false; g_askPage = 0;
     renderScreen(attn::ScreenId::StatusIdle, -1);
     return;
   }
-  g_degradedDetailShown = text.c_str();
-  g_askOverride = g_degradedDetailShown;
+  dp->detailShown = text.c_str();
+  g_askOverride = dp->detailShown;
   g_askPage = 0;
   renderScreen(attn::ScreenId::Ask, -1);
 }
