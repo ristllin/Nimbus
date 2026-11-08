@@ -79,11 +79,11 @@ using DegradedSet = std::vector<DegradedCondition>;
 
 // ---- the facts -------------------------------------------------------------------
 
-// What the last turn that billed went past (ServingTracker::fact).
 // memory_tools.h defines it; the facts carry it opaquely so this header (which the screen's
 // render context includes) does not pull the memory tools in.
 enum class EmbedFail;
 
+// What the last turn that billed went past (ServingTracker::fact).
 struct FallbackFact {
   bool active = false;                // a later choice answered the last turn
   std::string head;                   // the provider the turn started on (slug)
