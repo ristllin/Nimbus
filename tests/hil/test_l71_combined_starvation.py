@@ -50,6 +50,8 @@ import time
 
 import pytest
 
+from bench_driver import failure_notice
+
 pytestmark = [pytest.mark.hil, pytest.mark.net]
 
 MODEL = os.environ.get("NIMBUS_LAB_MODEL", "claude-haiku-5-5")
@@ -86,8 +88,11 @@ NOT_A_REPLY = ('{"reply"', '"session_ops"', '"mem_write"', "placeholder")
 
 def classify_end(reply: str) -> str:
     """How a squeezed turn ended: "refused" (before any provider request, at either
-    memory gate), "memory" (an honest ending part way), "served" (an answer), or
-    "bad" (nothing a person can read)."""
+    memory gate), "memory" (an honest ending part way), "failed" (the device's failure
+    notice for any other cause, such as a provider it could not reach), "served" (an
+    answer), or "bad" (nothing a person can read). "failed" is lane SNI's: on bf40a3ed
+    every reply here was "That didn't finish - anthropic could not be reached ..." and
+    this leg read it as served."""
     text = (reply or "").strip()
     if not text or any(mark in text for mark in NOT_A_REPLY):
         return "bad"
@@ -95,6 +100,8 @@ def classify_end(reply: str) -> str:
         return "refused"
     if text.startswith(MEMORY_ENDINGS):
         return "memory"
+    if failure_notice(text):
+        return "failed"
     return "served"
 
 
@@ -271,6 +278,7 @@ def test_l71_l24_recipe_runs_three_times_without_a_panic(device, net, starvation
         reply = _episode(device, net, squeeze=False)
         print(f"\n[l71] L24 recipe run {i + 1}/{RUNS}: {reply[:120]!r}")
         assert reply.strip(), "an empty reply row"
+        assert classify_end(reply) != "failed", f"run {i + 1}: the turn failed: {reply[:160]!r}"
 
 
 def test_l71_under_the_floor_from_the_start_is_refused_three_times(device, net, starvation):
@@ -289,3 +297,4 @@ def test_l71_a_squeeze_during_the_turn_ends_honestly_three_times(device, net, st
         kind = classify_end(reply)
         print(f"\n[l71] squeeze run {i + 1}/{RUNS} ({kind}): {reply[:120]!r}")
         assert kind != "bad", f"run {i + 1}: nothing a person can read: {reply[:160]!r}"
+        assert kind != "failed", f"run {i + 1}: the turn failed for a cause other than memory: {reply[:160]!r}"

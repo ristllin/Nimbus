@@ -106,6 +106,14 @@ def test_replies_fail_loudly_when_the_card_stays_busy(monkeypatch):
             "memory",
         ),
         ("The oldest line in this read is seq 89.", "served"),
+        # Lane SNI: the bf40a3ed run's replies, read as served then. A failure notice for
+        # any cause but memory is a failed turn.
+        (
+            "That didn't finish - anthropic could not be reached; openai and mistral also failed. "
+            "Your message was not answered. Nothing is still running; ask again to retry.",
+            "failed",
+        ),
+        ("That didn't finish - mistral did not write an answer.", "failed"),
         ("", "bad"),
         ("   \n", "bad"),
         ('{"reply": "placeholder", "session_ops": []}', "bad"),
