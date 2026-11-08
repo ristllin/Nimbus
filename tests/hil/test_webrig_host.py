@@ -97,3 +97,47 @@ def test_stitch_quiet_ring_adds_nothing():
 def test_stitch_marks_a_turned_over_ring_as_a_gap():
     acc, gap = stitch("old " * 100, "entirely new text " * 20)
     assert gap and "[log gap]" in acc
+
+
+# ---- lane SNI: a failure notice is not an answer ---------------------------------------------------------------
+
+
+class _Reply:
+    def __init__(self, body, code=200):
+        self.status_code, self._body, self.text = code, body, str(body)
+
+    def json(self):
+        return self._body
+
+
+class _Session:
+    """The two web-chat routes: POST answers with a turn id, GET with that turn done and `reply`."""
+
+    def __init__(self, reply):
+        self.reply = reply
+
+    def post(self, url, data=None, timeout=None):
+        return _Reply({"ok": True, "turn": "t1"})
+
+    def get(self, url, params=None, timeout=None):
+        return _Reply({"turn": "t1", "reply": self.reply, "pending": False, "done": True, "gone": False})
+
+
+def test_chat_turn_returns_an_answer():
+    from webrig import chat_turn
+
+    assert chat_turn(_Session("391"), "10.0.0.9", "What is 17 times 23?", timeout_s=1, poll_s=0) == "391"
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "That didn't finish - anthropic could not be reached; openai and mistral also failed.",
+        "That didn't finish - the device ran out of working memory for this request.",
+    ],
+)
+def test_chat_turn_fails_on_the_devices_failure_notice(reply):
+    from webrig import chat_turn
+
+    with pytest.raises(pytest.fail.Exception, match="failure notice"):
+        chat_turn(_Session(reply), "10.0.0.9", "What is 17 times 23?", timeout_s=1, poll_s=0)

@@ -418,3 +418,85 @@ def test_sram_sampler_takes_its_token_from_a_file_not_the_command_line(tmp_path,
     with fake.FakeDevice() as device:
         assert sram_sampler.main(["--ip", device.ip, "--token-file", str(token_file), "--once"]) == 0
     assert fake.TOKEN not in capsys.readouterr().out
+
+
+# ---- lane SNI: the soak that passed a build whose every exchange failed ------------------------------------------
+
+K01 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "k01-c168797b")
+NOTICES = [
+    "That didn't finish - anthropic could not be reached; openai and mistral also failed. Your message was not "
+    "answered. Nothing is still running; ask again to retry.",
+    "That didn't finish - the device ran out of working memory for this request.",
+    "That didn’t finish - mistral did not write an answer.",
+    "Couldn't start that: mistral could not be reached. Check the connection and try again.",
+]
+ANSWERS = ["391", "Logged lunch: grilled chicken breast and rice, 640 kcal.", "Finished: 3 rows saved.", ""]
+
+
+def test_the_stored_k01_soak_fails_on_its_turns_and_its_exchanges():
+    """K01 on c168797b: the build dialed TLS by address, so every exchange failed at connect and every reply was the
+    failure notice. The driver recorded each turn ok, and the run's own verdict counted 0 failed turns. The fixture is
+    the run's start.json and turns.jsonl as recorded, the first and last three polls, and every distinct heaptrace
+    line of its 16 durable-log reads."""
+    verdict = soak.grade_dir(K01)
+    assert verdict["grade"] == "FAIL"
+    fails = verdict["reasons"]["FAIL"]
+    assert any(reason.startswith("32 of 32 turns failed") for reason in fails), fails
+    assert any(reason.startswith("212 provider exchanges failed at connect") for reason in fails), fails
+    assert verdict["numbers"]["failedTurns"] == 32
+    assert verdict["numbers"]["connectFailedExchanges"] == 212
+
+
+@pytest.mark.parametrize("reply", NOTICES)
+def test_a_failure_notice_is_a_failed_turn_even_when_it_was_recorded_ok(reply):
+    rows = turns()
+    rows[5] = {**rows[5], "ok": True, "reply": reply}
+    verdict = grade(turn_rows=rows)
+    assert verdict["grade"] == "FAIL"
+    assert verdict["numbers"]["failedTurns"] == 1
+    assert bd.failure_notice(reply)
+
+
+@pytest.mark.parametrize("reply", ANSWERS)
+def test_an_answer_is_not_a_failure_notice(reply):
+    rows = [{**row, "reply": reply} for row in turns()]
+    assert not bd.failure_notice(reply)
+    assert grade(turn_rows=rows)["grade"] == "PASS"
+
+
+def _trace(host, stage):
+    return (
+        f"47 96105 - transport: heaptrace {host}/v1/messages body=67131 pre=38676/14324 conn=38584/14324 "
+        f"wrote=0/0 done=38628/14324 fail={stage} af=0 min=37952 at=95006 ms=1097"
+    )
+
+
+def test_the_scanner_counts_exchanges_by_the_stage_they_stopped_at():
+    found = bd.scan_lines([_trace("api.mistral.ai", "none")] * 3 + [_trace("api.openai.com", "connect")] * 2
+                          + [_trace("api.mistral.ai", "connect"), _trace("api.anthropic.com", "read")])
+    assert found["exchanges"] == {"none": 3, "connect": 3, "read": 1}
+    assert found["connectFailed"] == 3
+    assert found["connectFailedByHost"] == {"api.openai.com": 2, "api.mistral.ai": 1}
+    assert found["total"] == 0  # an exchange record is not a memory failure
+
+
+def test_an_exchange_that_failed_at_connect_fails_the_soak():
+    found = bd.scan_lines([_trace("api.mistral.ai", "none"), _trace("api.openai.com", "connect")])
+    verdict = grade(scan={"errlog": found, "console": bd.scan_lines([]), "total": 0, "turnFailedLowMemory": 0,
+                          "connectFailed": found["connectFailed"]})
+    assert verdict["grade"] == "FAIL"
+    assert any("1 provider exchanges failed at connect" in reason for reason in verdict["reasons"]["FAIL"])
+    healthy = bd.scan_lines([_trace("api.mistral.ai", "none")] * 5)
+    assert grade(scan={"errlog": healthy, "console": healthy, "total": 0, "turnFailedLowMemory": 0,
+                       "connectFailed": 0})["grade"] == "PASS"
+
+
+def test_a_failure_notice_from_the_device_fails_the_run_end_to_end(run):
+    device, out, go = run
+    device.chat_reply = lambda text: NOTICES[0]
+    device.errlog.extend([_trace("api.anthropic.com", "connect")] * 3)
+    verdict = go()
+    assert verdict["grade"] == "FAIL"
+    recorded = soak.load_jsonl(out / "turns.jsonl")
+    assert recorded and all(row["ok"] is False and "failure notice" in row["error"] for row in recorded)
+    assert verdict["numbers"]["connectFailedExchanges"] == 3

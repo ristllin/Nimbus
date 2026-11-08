@@ -1,0 +1,31 @@
+{
+ "albums": false,
+ "at": "2026-11-04T19:23:57Z",
+ "console": false,
+ "first": {
+  "allocFailLast": null,
+  "allocFails": 0,
+  "bootN": 562,
+  "bootReason": "crash(watchdog)",
+  "build": "v4.9.0-41-gc168797b",
+  "crashFp": null,
+  "crashNew": null,
+  "crashThisReset": null,
+  "dreamKnown": false,
+  "dreamLast": null,
+  "dreamStateSaved": null,
+  "heap": 43428,
+  "heapMin": 34596,
+  "intFree": 43428,
+  "intLargest": 14324,
+  "lowWater": 34596,
+  "lowWaterTags": "-",
+  "nvsFails": 0,
+  "nvsFree": 11936,
+  "pollStackMin": 15788,
+  "uptimeMs": 75935
+ },
+ "hours": 24.0,
+ "pollOnly": false,
+ "t": 1793820237.449429
+}
