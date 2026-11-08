@@ -113,4 +113,8 @@ std::string crashNotice(const std::string& deviceName, const TurnJournal* j,
   return msg + " during a background task" + from + ". That task did not finish.";
 }
 
+std::string stallNotice(const std::string&, const TurnJournal*, const std::string&) {
+  return std::string();   // FAILING-FIRST STUB (lane TGSTALL step 1)
+}
+
 }  // namespace nimbus::orch

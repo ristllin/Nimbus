@@ -56,4 +56,11 @@ std::string kindFromTurnMark(const std::string& mark);
 std::string crashNotice(const std::string& deviceName, const TurnJournal* j,
                         const std::string& hhmm, const std::string& cause = std::string());
 
+// The owner notice after the poll task's liveness guard restarted the device
+// (nimbus/sys/poll_guard.h): it had stopped answering, so it restarted itself. A Telegram
+// request in flight is served again after the restart (the offset was not stored), so
+// the notice says it is being tried again, and, for a message, to check a logged row
+// was not saved twice. Same arguments as crashNotice.
+std::string stallNotice(const std::string& deviceName, const TurnJournal* j, const std::string& hhmm);
+
 }  // namespace nimbus::orch

@@ -38,6 +38,12 @@ bool isOwnerRequestKind(const std::string& kind);
 RestartNoticePlan planRestartNotice(const std::string& deviceName, int resetReason, const TurnJournal* lost,
                                     const std::string& hhmm, const std::string& crashCause);
 
+// The plan after a poll-guard restart (nimbus/sys/poll_guard.h): stallNotice's text with
+// the same timing rule. `streak` is the guard restarts in a row this one ends: the owner
+// is told once per streak (the first), never again for the restarts that follow it.
+RestartNoticePlan planStallNotice(const std::string& deviceName, const TurnJournal* lost,
+                                  const std::string& hhmm, uint8_t streak);
+
 // Holds at most one notice and lets it out once. Each call returns the text to
 // send now, or "" (and never the same text twice). Releasing moves the text
 // out, so the device can guard a call with a spinlock (no allocation inside

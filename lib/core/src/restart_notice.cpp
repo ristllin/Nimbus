@@ -22,6 +22,10 @@ RestartNoticePlan planRestartNotice(const std::string& deviceName, int resetReas
   return p;
 }
 
+RestartNoticePlan planStallNotice(const std::string&, const TurnJournal*, const std::string&, uint8_t) {
+  return RestartNoticePlan();   // FAILING-FIRST STUB (lane TGSTALL step 1): nobody is told
+}
+
 std::string RestartNoticeQueue::release() {
   std::string out;
   out.swap(held_);
