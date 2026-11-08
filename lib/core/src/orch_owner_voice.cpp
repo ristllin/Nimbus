@@ -41,9 +41,9 @@ bool disputesAttribution(const std::string& text) {
 
 std::string renderOwnerVoiceHint(const std::string& text) {
   std::string out =
-      "[REPLY SCOPE] Answer this message. Earlier messages (answered or not) and memories are "
-      "context, not topics to raise: the reply adds no question, offer or fact on a topic this "
-      "message does not ask about. [OPEN QUESTIONS] keep their own rule.\n";
+      "[REPLY SCOPE] Answer this message only. An earlier message (answered, or shown with [no reply]) "
+      "and a memory are context, not requests still waiting for an answer: the reply adds no question, "
+      "offer or fact on a topic this message does not ask about. [OPEN QUESTIONS] keep their own rule.\n";
   if (disputesAttribution(text))
     out += "[DISPUTED CLAIM] This message says they never said or did something you said they did. "
            "Search the episodic log first. If no message of theirs says it, say that plainly and that "
