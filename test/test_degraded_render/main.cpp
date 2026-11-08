@@ -293,37 +293,99 @@ static void test_details_last_page() {
 
 // ---- structural -----------------------------------------------------------------------------------
 
-// A healthy device renders exactly as before: an empty strip draws nothing and moves nothing.
-static void test_healthy_renders_exactly_as_before() {
-  for (const auto& p : kPanels) {
-    for (int layout = 0; layout < 3; layout++) {
-      ScreenCtx a = layout == 0 ? ringlessCtx(DegradedSet()) : layout == 1 ? barCtx(DegradedSet()) : barJobsCtx(DegradedSet());
-      ScreenCtx b = a;
-      b.degradedRows.clear();   // never set
-      Fb565 fa(p.w, p.h), fbuf(p.w, p.h);
-      const Rendered ra = renderScreen(fa, ScreenId::StatusIdle, a);
-      const Rendered rb = renderScreen(fbuf, ScreenId::StatusIdle, b);
-      TEST_ASSERT_EQUAL_MEMORY(fa.data(), fbuf.data(), fa.byteSize());
-      TEST_ASSERT_TRUE(tapOf(ra, TapRegion::Action::Degraded) == nullptr);
-      TEST_ASSERT_EQUAL_size_t(rb.taps.size(), ra.taps.size());
-    }
-  }
+// ---- "exactly as before" is anchored to goldens blessed BEFORE this lane ---------------------------------
+//
+// An A/B of one ScreenCtx against a copy of itself proves nothing (both sides run the same
+// code, so ANY change to the default render leaves them equal). The "before" is bytes that were
+// blessed by another suite before this lane existed: status_empty, status_jobs and ask in
+// test_tft_render (the ring layout's healthy bytes are test_voice_render's voice_ring_* and
+// spend_paused_ring, which run in the same native battery and did not change). These helpers
+// read them and never write them: a re-bless belongs to the suite that owns the golden.
+static void assertMatchesOwnedGolden(const char* name, ScreenId id, const ScreenCtx& ctx, const PanelSize& p) {
+  Fb565 fb(p.w, p.h);
+  renderScreen(fb, id, ctx);
+  const std::string dir = p.subdir[0] ? std::string(kDir) + "/" + p.subdir : std::string(kDir);
+  const std::string path = dir + "/" + name + ".bin";
+  FILE* f = std::fopen(path.c_str(), "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, path.c_str());
+  std::vector<uint8_t> expect(fb.byteSize());
+  const size_t got = std::fread(expect.data(), 1, expect.size(), f);
+  std::fclose(f);
+  TEST_ASSERT_TRUE_MESSAGE(got == expect.size(), path.c_str());
+  TEST_ASSERT_EQUAL_MEMORY_MESSAGE(expect.data(), fb.data(), fb.byteSize(), path.c_str());
 }
 
-// An unrelated reply is untouched by the new card fields (compact off, no title).
+static bool pixelsDiffer(const Fb565& a, const Fb565& b) {
+  return std::memcmp(a.data(), b.data(), a.byteSize()) != 0;
+}
+
+// The fixtures of the owning suite (test_tft_render baseCtx / jobsCtx), copied exactly: if they
+// drift apart the comparison below fails, loudly.
+static ScreenCtx ownedBaseCtx() {
+  ScreenCtx c;
+  c.deviceName = "Nimbus-4";
+  return c;
+}
+static ScreenCtx ownedJobsCtx() {
+  ScreenCtx c = ownedBaseCtx();
+  c.jobs.push_back({101, 1 /*Running*/, 40, 170, "build firmware", 2 /*codex*/});
+  c.jobs.push_back({102, 2 /*WaitingInput*/, 0, 213, "review deploy plan", 1 /*claude*/});
+  c.jobs.push_back({103, 4 /*Done*/, 100, 85, "run tests", 3 /*vibe*/});
+  c.jobs.push_back({104, 5 /*Error*/, 0, 0, "publish release", 1});
+  c.cursorJob = 1;
+  c.battery.valid = true;
+  c.battery.percent = 82;
+  return c;
+}
+
+// A healthy device renders exactly as before: the device sets degradedStripRows(empty set, 3) on
+// every paint, and that must be the bytes the pre-lane renderer drew, at every panel. The strip is
+// live (one row changes the pixels and adds the one Degraded target), and recovery returns to the
+// owned bytes exactly.
+static void test_healthy_renders_exactly_as_before() {
+  struct Case { const char* golden; ScreenCtx (*make)(); };
+  const Case cases[] = {{"status_empty", ownedBaseCtx}, {"status_jobs", ownedJobsCtx}};
+  for (const auto& p : kPanels)
+    for (const Case& k : cases) {
+      ScreenCtx healthy = k.make();
+      healthy.degradedRows = degradedStripRows(DegradedSet(), 3);
+      assertMatchesOwnedGolden(k.golden, ScreenId::StatusIdle, healthy, p);
+      Fb565 fh(p.w, p.h);
+      TEST_ASSERT_TRUE_MESSAGE(tapOf(renderScreen(fh, ScreenId::StatusIdle, healthy), TapRegion::Action::Degraded) == nullptr,
+                               k.golden);
+      // The detector is live: the same screen with one degraded row differs and has the one target ...
+      ScreenCtx sick = k.make();
+      sick.degradedRows = degradedStripRows(setOf({DegradedId::ClockUnsynced}), 3);
+      Fb565 fs(p.w, p.h);
+      const Rendered rs = renderScreen(fs, ScreenId::StatusIdle, sick);
+      TEST_ASSERT_TRUE_MESSAGE(pixelsDiffer(fh, fs), k.golden);
+      TEST_ASSERT_TRUE_MESSAGE(tapOf(rs, TapRegion::Action::Degraded) != nullptr, k.golden);
+      // ... and the recovery (rows emptied again) is the owned bytes once more.
+      sick.degradedRows = degradedStripRows(DegradedSet(), 3);
+      assertMatchesOwnedGolden(k.golden, ScreenId::StatusIdle, sick, p);
+    }
+}
+
+// An unrelated reply is untouched by the new card fields: it is the `ask` golden blessed before this
+// lane, at every panel. The fields are live (compact text and a title each change the pixels), so
+// "unchanged" means the defaults, not a field that does nothing.
 static void test_a_plain_reply_renders_exactly_as_before() {
+  const char* text = "The deploy finished. Two tests failed on the release branch; "
+                     "do you want me to open a pull request with the fixes?";   // test_tft_render test_ask
   for (const auto& p : kPanels) {
-    ScreenCtx c;
-    c.deviceName = "Lumi";
-    c.modeName = "orchestrator";
-    c.askText = "Your 3 pm is moved to 4.";
-    ScreenCtx d = c;
-    d.askCompact = false;
-    d.askTitle.clear();
-    Fb565 a(p.w, p.h), b(p.w, p.h);
-    renderScreen(a, ScreenId::Ask, c);
-    renderScreen(b, ScreenId::Ask, d);
-    TEST_ASSERT_EQUAL_MEMORY(a.data(), b.data(), a.byteSize());
+    ScreenCtx plain = ownedBaseCtx();
+    plain.askText = text;
+    assertMatchesOwnedGolden("ask", ScreenId::Ask, plain, p);
+    Fb565 base(p.w, p.h), compact(p.w, p.h), titled(p.w, p.h);
+    renderScreen(base, ScreenId::Ask, plain);
+    ScreenCtx c = plain;
+    c.askCompact = true;
+    renderScreen(compact, ScreenId::Ask, c);
+    TEST_ASSERT_TRUE_MESSAGE(pixelsDiffer(base, compact), "askCompact must change the card");
+    ScreenCtx t = plain;
+    t.askTitle = "Degraded";
+    renderScreen(titled, ScreenId::Ask, t);
+    TEST_ASSERT_TRUE_MESSAGE(pixelsDiffer(base, titled), "askTitle must change the header");
   }
 }
 
