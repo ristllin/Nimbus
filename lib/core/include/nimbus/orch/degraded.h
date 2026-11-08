@@ -60,10 +60,12 @@ inline constexpr uint32_t kClockGraceMs = 120u * 1000u;
 // A head that is not held off (no park, no pause) and has not failed a turn for this long
 // is taken as recovered: the next turn will say otherwise if not.
 inline constexpr uint32_t kFallbackQuietMs = 30u * 60u * 1000u;
-// The Telegram loop is silent when it has not checked in for this long; a turn in flight
-// gets the longer allowance (a long turn runs on the same task).
-inline constexpr uint32_t kTgIdleMs = 5u * 60u * 1000u;
-inline constexpr uint32_t kTgIdleBusyMs = 20u * 60u * 1000u;
+// The Telegram loop is silent when it has not checked in for this long (a normal cycle is
+// under a minute; the 4-6 Nov outage lasted 28 hours, so ten minutes is early enough and
+// clear of a slow file download). A turn or staged work in flight gets the longer
+// allowance: it runs on the same task.
+inline constexpr uint32_t kTgIdleMs = 10u * 60u * 1000u;
+inline constexpr uint32_t kTgIdleBusyMs = 30u * 60u * 1000u;
 // Telegram is unreachable after this many getUpdates failures in a row.
 inline constexpr uint32_t kTgFailsUnreachable = 5;
 
@@ -110,7 +112,7 @@ struct TelegramFact {
 };
 
 struct DegradedFacts {
-  bool orchestrator = true;    // Notifier mode has none of these subsystems
+  bool orchestrator = true;    // false in Notifier mode (none of these subsystems) and on a device still in first-run setup (not degraded, not set up yet)
   uint32_t uptimeMs = 0;
   FallbackFact fallback;
   std::vector<ParkedFact> parks;

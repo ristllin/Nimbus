@@ -24,8 +24,9 @@ namespace degraded {
 void noteTurn(const std::string& requested, const std::string& served, const std::string& path, bool billed);
 
 // Main loop. Collects the facts and folds them in (at most every kTickMs); true when the
-// SHOWN set changed, so the caller repaints the home screen. `orchestrator`: Notifier mode
-// has none of these subsystems and shows nothing. `wifiUp`: the station link is up.
+// SHOWN set changed, so the caller repaints the home screen. `orchestrator`: false in Notifier
+// mode (none of these subsystems) and on a device still in first-run setup; nothing shows then.
+// `wifiUp`: the station link is up.
 bool tick(uint32_t nowMs, bool orchestrator, bool wifiUp);
 
 nimbus::orch::DegradedSet shown();   // a copy, in display order

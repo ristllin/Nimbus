@@ -96,7 +96,7 @@ static DegradedFacts factsRaising(DegradedId id) {
       return f;
     case DegradedId::TelegramSilent:
       f.telegram.configured = true;
-      f.telegram.idleMs = 6u * 60u * 1000u;
+      f.telegram.idleMs = 12u * 60u * 1000u;
       return f;
     case DegradedId::ClockUnsynced:
       f.clockSynced = false;
@@ -477,7 +477,7 @@ static void test_a_long_turn_on_the_poll_task_gets_the_longer_allowance() {
   TelegramFact t;
   t.configured = true;
   t.turnBusy = true;
-  t.idleMs = 15u * 60u * 1000u;
+  t.idleMs = 25u * 60u * 1000u;
   TEST_ASSERT_EQUAL_STRING("<none>", tgLine(t).c_str());
   t.idleMs = kTgIdleBusyMs + 1;
   TEST_ASSERT_EQUAL_STRING("Telegram is not responding", tgLine(t).c_str());
@@ -764,6 +764,8 @@ static void test_device_wiring() {
   TEST_ASSERT_EQUAL_size_t(1, count(orch, "degraded::noteTurn("));   // the turn-end hook feeds the tracker
   const std::string main = readFile("src/main.cpp");
   TEST_ASSERT_TRUE(contains(main, "agent::degraded::tick("));       // the main loop runs the tick
+  // ... and a device still in first-run setup is not degraded, it is not set up yet.
+  TEST_ASSERT_TRUE(contains(main, "g_orchMode && !deviceNeedsSetup(), net::staConnected()"));
   TEST_ASSERT_TRUE(contains(main, "Action::Degraded"));             // a tap opens the reason
   const std::string web = readFile("src/net/webui.cpp");
   TEST_ASSERT_TRUE(contains(web, "agent::degraded::into("));        // /api/state

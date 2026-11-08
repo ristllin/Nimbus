@@ -6689,7 +6689,8 @@ void loop() {
   // 2 s, never waiting for the card lock) and a change of the SHOWN set repaints the home
   // screen or rewrites the open details card. A status line, not an alert: no sound, no
   // popup, no message.
-  if (agent::degraded::tick(now, g_orchMode, net::staConnected())) onDegradedChanged(now);
+  // A device still in first-run setup is not degraded, it is not set up yet: no lines then.
+  if (agent::degraded::tick(now, g_orchMode && !deviceNeedsSetup(), net::staConnected())) onDegradedChanged(now);
 
   // While the Software update submenu is showing, reseed its live status line
   // (~1 Hz) from the OTA engine so Checking../Up to date/Update found appear

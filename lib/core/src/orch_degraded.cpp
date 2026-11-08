@@ -80,10 +80,6 @@ DegradedCondition headFallback(const FallbackFact& f) {
 
 // ---- 2. a parked or paused provider ---------------------------------------------------------
 
-struct ParkLine {
-  std::string tail;   // what follows the provider's name in the line
-};
-
 // The line's words after the name, for one provider.
 std::string parkTail(const ParkedFact& p) {
   if (p.kind == ParkKind::Billing) {
