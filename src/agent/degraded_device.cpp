@@ -3,6 +3,7 @@
 #include <mutex>
 #include <new>
 
+#include "../sys/agent_log.h"
 #include "files_subsystem.h"
 #include "memory_subsystem.h"
 #include "store.h"
@@ -104,6 +105,17 @@ void collectTelegram(DegradedFacts& f) {
   f.telegram.wifiUp = f.wifiUp;
 }
 
+// One durable line each time the shown set changes: "degraded: head_fallback,store_full gen=3"
+// ("none" when it cleared), so what the owner saw and when is on disk, not only on the glass.
+void logShown(const DegradedSet& set, uint32_t gen) {
+  std::string ids;
+  for (const DegradedCondition& c : set) {
+    if (!ids.empty()) ids += ",";
+    ids += degradedSlug(c.id);
+  }
+  alogf("degraded: shown=%s gen=%u", ids.empty() ? "none" : ids.c_str(), (unsigned)gen);
+}
+
 }  // namespace
 
 void begin() {
@@ -132,8 +144,16 @@ bool tick(uint32_t nowMs, bool orchestrator, bool wifiUp) {
     collectTelegram(f);
   }
   const DegradedSet now = computeDegraded(f);
-  std::lock_guard<std::mutex> lk(s->mx);
-  return s->debounce.update(now, nowMs);
+  DegradedSet after;
+  uint32_t gen = 0;
+  {
+    std::lock_guard<std::mutex> lk(s->mx);
+    if (!s->debounce.update(now, nowMs)) return false;
+    after = s->debounce.shown();
+    gen = s->debounce.generation();
+  }
+  logShown(after, gen);   // outside the lock: the durable log is the evidence a status line was up
+  return true;
 }
 
 DegradedSet shown() {

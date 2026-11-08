@@ -760,6 +760,7 @@ static void test_device_wiring() {
   TEST_ASSERT_TRUE(dev.size() > 0);
   TEST_ASSERT_TRUE(contains(dev, "computeDegraded("));
   TEST_ASSERT_TRUE(contains(dev, "DegradedDebounce"));
+  TEST_ASSERT_TRUE(contains(dev, "alogf(\"degraded: shown=%s gen=%u\""));   // every change leaves a durable line
   const std::string orch = readFile("src/agent/orchestrator.cpp");
   TEST_ASSERT_EQUAL_size_t(1, count(orch, "degraded::noteTurn("));   // the turn-end hook feeds the tracker
   const std::string main = readFile("src/main.cpp");
