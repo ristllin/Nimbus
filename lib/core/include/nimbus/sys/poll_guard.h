@@ -72,7 +72,7 @@ class PollLiveness {
  public:
   void arm(uint32_t nowMs);
   void disarm();
-  bool armed() const { return armed_.load(std::memory_order_relaxed); }
+  bool armed() const { return armed_.load(std::memory_order_acquire); }
   void beat(uint32_t nowMs, const char* step);
   uint32_t silentMs(uint32_t nowMs) const { return nowMs - lastMs_.load(std::memory_order_relaxed); }
   const char* lastStep() const { return step_.load(std::memory_order_relaxed); }

@@ -17,7 +17,7 @@ void PollLiveness::arm(uint32_t nowMs) {
   samples_ = 0;
   onCpu_ = 0;
   fired_ = false;
-  armed_.store(true, std::memory_order_relaxed);
+  armed_.store(true, std::memory_order_release);   // the episode fields above first
 }
 
 void PollLiveness::disarm() { armed_.store(false, std::memory_order_relaxed); }

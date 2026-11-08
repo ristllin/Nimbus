@@ -95,7 +95,6 @@ size_t readFrames(TaskHandle_t t, uint32_t& pc, uint32_t* bt) {
   agent::alogcf(errlog::cat::kBoot, "%s", sys::pollStallLogLine(s, g_rec.streak(), limitMs, true).c_str());
   const std::string why = sys::pollStallReason(s, pc, bt, n);
   agent::alogcf(errlog::cat::kBoot, "%s", why.c_str());
-  Serial.flush();
   // A panic, not esp_restart(): the poison guard counts a try against the Telegram work
   // in flight (a message that stalls the device twice is skipped) and the core dump
   // keeps every task's stack, the stuck one included.
