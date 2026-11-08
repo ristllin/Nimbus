@@ -348,31 +348,9 @@ void drawDegradedStrip(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx&
   push(r, x, y, w, h, TapRegion::Action::Degraded);
 }
 
-// Ring-dominant Notifier screen for boards with NO physical LED ring: the ring is
-// the whole display. Sessions are the arcs the ring already draws; a small legend
-// sits inside it (clipped to the inner circle), and orchestrator's hold-to-talk is
-// a tall button on the RIGHT so the ring keeps the full screen height. The ring
-// square is exposed on Rendered so the device pushes ONLY it at animation cadence.
-static void drawRingHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
-  const bool showMic = ctx.modeName && std::string(ctx.modeName) == "orchestrator";
-  const int micW = showMic ? 84 : 0;                  // right-side strip for the mic
-  const int bodyTop = L.bodyTop();
-  const int stripH = stripHeight(L, stripRows(ctx));      // lane DEGRADE: 0 when nothing is degraded
-  const int bodyH = (L.h - L.gut()) - bodyTop -           // ring uses the FULL body height,
-                    (stripH ? stripH + kStripGap : 0);    // less the degraded strip under it
-  const int ringAreaW = L.w - micW - 2 * L.gut();         // width left of the mic strip
-
-  const int rs = std::min(ringAreaW, bodyH);
-  const int rx = L.gut() + (ringAreaW - rs) / 2;
-  const int ry = bodyTop + (bodyH - rs) / 2;
-  drawRingWidget(fb, rx, ry, rs, ctx.ringLeds);
-  r.ringX = int16_t(rx); r.ringY = int16_t(ry);
-  r.ringW = int16_t(rs); r.ringH = int16_t(rs);
-
-  const int cx = rx + rs / 2, cy = ry + rs / 2;
-  // Text stays well inside the dots. Under a degraded strip the ring is small, so the
-  // text gets the measured chord of the smaller ring instead of the roomy margin.
-  const int inner = (stripH && rs < 160) ? std::min(rs - 24, 96) : rs - 72;
+// The legend inside the on-screen ring (pure code motion out of drawRingHome): the voice
+// line while hold-to-talk is live, else "Nothing running", else the focused session.
+static void drawRingLegend(Fb565& fb, const ScreenCtx& ctx, int cx, int cy, int inner) {
   if (!ctx.voiceTitle.empty()) {
     ringVoiceStatus(fb, cx, cy, inner, ctx);
   } else if (ctx.jobs.empty()) {
@@ -393,23 +371,54 @@ static void drawRingHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCt
       ringCenterLine(fb, cx, cy + 18, inner, cnt, kInk3);
     }
   }
+}
 
-  // Hold-to-talk: a tall button on the RIGHT (orchestrator only). Pressed state
-  // fills brighter so a touch is felt instantly (ctx.micHeld set by the device);
-  // while a turn is processing it draws inactive ("wait") - a hold then does
-  // nothing, and the button says so instead of looking ready (CUM-456).
-  if (showMic) {
-    const int bw = micW - L.gut(), bh = std::min(bodyH, 132);
-    const int bx = L.w - L.gut() - bw, by = bodyTop + (bodyH - bh) / 2;
-    const bool busy = ctx.micBusy;   // never held at the same time (held = recording)
-    const uint16_t fill = ctx.micHeld ? kInk : busy ? kRaise2 : kTeal;
-    const uint16_t ink = busy ? kInk3 : kBg;
-    const char* word = busy ? "wait" : "hold";
-    fb.fillRoundRect(bx, by, bw, bh, L.cardRadius, fill);
-    iconMic(fb, bx + bw / 2, by + bh / 2 - 9, ink);
-    fb.text(bx + (bw - fb.textWidth(word, 1)) / 2, by + bh / 2 + 7, word, ink, 1);
-    push(r, bx, by, bw, bh, TapRegion::Action::Mic);
-  }
+// Hold-to-talk: a tall button on the RIGHT (orchestrator only). Pressed state
+// fills brighter so a touch is felt instantly (ctx.micHeld set by the device);
+// while a turn is processing it draws inactive ("wait") - a hold then does
+// nothing, and the button says so instead of looking ready (CUM-456).
+constexpr int kRingMicW = 84;   // right-side strip for the mic
+
+static void drawRingMic(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, int bodyTop,
+                        int bodyH) {
+  const int bw = kRingMicW - L.gut(), bh = std::min(bodyH, 132);
+  const int bx = L.w - L.gut() - bw, by = bodyTop + (bodyH - bh) / 2;
+  const bool busy = ctx.micBusy;   // never held at the same time (held = recording)
+  const uint16_t fill = ctx.micHeld ? kInk : busy ? kRaise2 : kTeal;
+  const uint16_t ink = busy ? kInk3 : kBg;
+  const char* word = busy ? "wait" : "hold";
+  fb.fillRoundRect(bx, by, bw, bh, L.cardRadius, fill);
+  iconMic(fb, bx + bw / 2, by + bh / 2 - 9, ink);
+  fb.text(bx + (bw - fb.textWidth(word, 1)) / 2, by + bh / 2 + 7, word, ink, 1);
+  push(r, bx, by, bw, bh, TapRegion::Action::Mic);
+}
+
+// Ring-dominant Notifier screen for boards with NO physical LED ring: the ring is
+// the whole display. Sessions are the arcs the ring already draws; a small legend
+// sits inside it (clipped to the inner circle), and orchestrator's hold-to-talk is
+// a tall button on the RIGHT so the ring keeps the full screen height. The ring
+// square is exposed on Rendered so the device pushes ONLY it at animation cadence.
+static void drawRingHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
+  const bool showMic = ctx.modeName && std::string(ctx.modeName) == "orchestrator";
+  const int micW = showMic ? kRingMicW : 0;           // right-side strip for the mic
+  const int bodyTop = L.bodyTop();
+  const int stripH = stripHeight(L, stripRows(ctx));      // lane DEGRADE: 0 when nothing is degraded
+  const int bodyH = (L.h - L.gut()) - bodyTop -           // ring uses the FULL body height,
+                    (stripH ? stripH + kStripGap : 0);    // less the degraded strip under it
+  const int ringAreaW = L.w - micW - 2 * L.gut();         // width left of the mic strip
+
+  const int rs = std::min(ringAreaW, bodyH);
+  const int rx = L.gut() + (ringAreaW - rs) / 2;
+  const int ry = bodyTop + (bodyH - rs) / 2;
+  drawRingWidget(fb, rx, ry, rs, ctx.ringLeds);
+  r.ringX = int16_t(rx); r.ringY = int16_t(ry);
+  r.ringW = int16_t(rs); r.ringH = int16_t(rs);
+
+  // Text stays well inside the dots. Under a degraded strip the ring is small, so the
+  // text gets the measured chord of the smaller ring instead of the roomy margin.
+  const int inner = (stripH && rs < 160) ? std::min(rs - 24, 96) : rs - 72;
+  drawRingLegend(fb, ctx, rx + rs / 2, ry + rs / 2, inner);
+  if (showMic) drawRingMic(fb, L, r, ctx, bodyTop, bodyH);
   if (stripH) drawDegradedStrip(fb, L, r, ctx, L.h - L.gut() - stripH, stripH);
 }
 

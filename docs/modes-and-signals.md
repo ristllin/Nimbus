@@ -365,6 +365,29 @@ live status, and the screen offers Publish setup network, Choose network (scan a
 join), and Forget network, but not the full list editor. Networks save from either surface into the one shared
 list.
 
+## 8. When the device runs degraded (Orchestrator only)
+
+When something runs below par, the device says so on its own screen and on the web
+page, in plain words, one short line for each thing. Nothing beeps, pops up or sends a
+message: it is a status line that stays until the cause is gone. On the home screen the
+lines sit in a card at the bottom (the on-screen ring shrinks to make room); on the web
+page they sit at the top of Home. Tap the card on the device, or click a line on the
+page, to see what happened and the one next step. The same list is in
+`/api/state` under `degraded` (`count`, `gen`, and one `id`, `line` and `why` for each).
+
+| Line | What it means | What to do |
+|---|---|---|
+| Anthropic down, Mistral answers | The provider you chose as your main one did not answer the last turn, so a later choice answered. The line names both (and the one between, on the details card). It clears when a turn is answered by your main provider again, or after half an hour with no failed turn once the provider is no longer held off. | The details card says why (out of credit, key refused, a monthly limit) and the one fix. Nothing if it was a passing outage. |
+| OpenAI is out of credit, Mistral key refused, Cumulo Nimbus needs a plan | A provider is out of credit, refused its key, hit its monthly limit or is paused. Providers already named in the first line are not repeated. | Add credit or fix the key under Assistant > Models. It is checked again by itself. |
+| Memory is keyword-only, saves queued | Embeddings are unavailable, so memory search matches words only and new memories wait in a queue. Nothing is lost. | Check the embedding provider's credit and key. Queued memories are stored once embeddings answer. |
+| File storage is full, Device storage is full | The file store or the internal storage has no room, so new photos, files or memories are not saved. | Delete files you do not need in the Memory tab's Files section. |
+| Telegram is not responding, Telegram has stopped, Telegram rejects the bot token, Telegram is unreachable | The Telegram loop stopped checking in, is not running, was refused by Telegram, or cannot reach it. Not shown while Wi-Fi is down (the Wi-Fi glyph says that). | Set a new bot token under Assistant > Connectors > Telegram, or restart the device. |
+| Clock not synced | The clock has not synced two minutes after start, so routines, the nightly dream and dated memories wait. | Check Wi-Fi. It keeps trying by itself. |
+
+It is calm on purpose: a line appears only after its cause has held for ten seconds
+and goes only after it has been gone for thirty, so a flapping connection does not make
+the screen flicker. The monthly spend ceiling keeps its own line ("Paid AI paused").
+
 ---
 
 ## For developers - where the logic lives
@@ -383,6 +406,7 @@ If this page ever disagrees with the code, the code's single sources win:
 | Screensaver idle clock + stages (rest, deep-dim) | `lib/core/include/nimbus/saver.h` |
 | Sound event ranks | `lib/core/include/nimbus/sfx_map.h`, `lib/core/src/sfx_map.cpp` + `docs/sfx-map.md` |
 | Header (title, Wi-Fi glyph, battery icon) | `lib/core/src/tft_screens.cpp` `drawHeader` |
+| Degraded conditions, words, calm (dwell) | `lib/core/src/orch_degraded.cpp` + `src/agent/degraded_device.cpp` (facts), strip in `tft_screens.cpp` `drawDegradedStrip` |
 | Saved-network list + selection/failover | `lib/core/src/wifi_known_networks.cpp`, `wifi_policy.cpp` |
 | Failover wiring to the radio (the seam) | `src/net/wifi_link.cpp` |
 | Setup-AP recovery interplay | `lib/core/src/setup_ap.cpp` (`decideSetupAp`) |

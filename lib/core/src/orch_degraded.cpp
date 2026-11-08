@@ -278,32 +278,37 @@ ParkReason degradedParkReason(const ParkedFact& p) {
   return r;
 }
 
+namespace {
+
+// Every provider the park holds off, except the ones the fallback line already names as
+// down: a park on one of those is that line's cause, not a second line.
+std::vector<ParkedFact> heldProviders(const DegradedFacts& f, bool fallback) {
+  std::vector<ParkedFact> held;
+  const std::vector<std::string>& named = f.fallback.down;
+  for (const ParkedFact& p : f.parks) {
+    if (!holds(p)) continue;
+    if (fallback && std::find(named.begin(), named.end(), p.provider) != named.end()) continue;
+    held.push_back(p);
+  }
+  return held;
+}
+
+}  // namespace
+
 DegradedSet computeDegraded(const DegradedFacts& f) {
   DegradedSet out;
   if (!f.orchestrator) return out;
 
-  // 1. The head's fallback: the providers it went past are named here, so a park on one
-  // of them is this line's cause and not a second line.
+  // 1. The head's fallback, 2. every other provider the park holds off.
   const FallbackFact& fb = f.fallback;
   const bool fallback = fb.active && (fb.headClosed || fb.ageMs < kFallbackQuietMs);
   if (fallback) out.push_back(headFallback(fb));
-
-  // 2. Every other provider the park holds off.
-  std::vector<ParkedFact> held;
-  for (const ParkedFact& p : f.parks) {
-    if (!holds(p)) continue;
-    if (fallback && std::find(fb.down.begin(), fb.down.end(), p.provider) != fb.down.end()) continue;
-    held.push_back(p);
-  }
+  const std::vector<ParkedFact> held = heldProviders(f, fallback);
   if (!held.empty()) out.push_back(providerParked(held));
 
-  // 3. Memory.
+  // 3. Memory, 4. storage, 5. Telegram.
   if (f.embedParked || f.pendingEmbeds > 0) out.push_back(memory(f.embedParked, f.pendingEmbeds));
-
-  // 4. Storage.
   if (f.storeFull || f.flashFull) out.push_back(storeFull(f.storeFull));
-
-  // 5. Telegram.
   DegradedCondition tg;
   if (telegramSilent(f.telegram, tg)) out.push_back(tg);
 
