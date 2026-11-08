@@ -160,12 +160,12 @@ Concatenated in `handleMessage()` / synthesis / scheduled-loop paths
 | block | when present | gotcha |
 |---|---|---|
 | `[MEMORY RESULTS]` | the model ran `mem_query` on **this chat's** last turn | results are deferred one turn and go back only to the chat that asked; explicitly framed *background - answer the [USER] message on its topic* |
-| `[FRESH RESULTS]` | sub-agents just finished | drives the automatic synthesis turn; past the 6-slot cap a result parks as a one-line stub carrying `results.get("sub:<tag>")` - nothing is ever silently dropped. The line under its header keeps each result's sources; when a result ran a web search or fetch, the next line adds that a time-sensitive fact (travel, weather, a disruption) credited only to a secondary site is said to be unverified, naming the primary source to check (the operator, National Rail, TfL, the Met Office, BBC) |
+| `[FRESH RESULTS]` | sub-agents just finished | drives the automatic synthesis turn; past the 6-slot cap a result parks as a one-line stub carrying `results.get("sub:<tag>")` - nothing is ever silently dropped. The line under its header keeps each result's sources; when a result that ran a web search or fetch credits a site by name (a domain or a link), the next line adds that a time-sensitive fact (travel, weather, a disruption) credited only to a site that is not its primary source is said to be unverified, naming the primary source to check, and that a fact with no site named gets no such label (the role's rule names the primary sources) |
 | `[ACTIVE SESSIONS]` | always | live sub-agent digest - authoritative ("if it lists none, nothing is running") |
 | `[SPAWN CAPACITY]` | always | how many sub-agents this turn can start, and that a big fan-out runs over waves |
 | `[CHANNEL]` | owner turns | which channel the message arrived on (the web UI for the device's own page and a Virtual Nimbus page, Telegram for a Telegram chat) + reply-routing rules |
-| `[REPLY SCOPE]` | owner turns | right before `[USER]`: answer this message only; an earlier message (answered, or shown with `[no reply]`) and a memory are context, not requests still waiting for an answer; `[OPEN QUESTIONS]` keep their own rule |
-| `[DISPUTED CLAIM]` | owner turns whose message disputes an attribution ("I never said that", "show me where I said it") | search the episodic log first; with no message of theirs behind the claim, say so and that the head was wrong, in its own words, with no "you told me", "you said", "you mentioned", "you photographed" or "you confirmed", not even quoted |
+| `[REPLY SCOPE]` | owner turns | right before `[USER]`: answer this message; an earlier question shown with `[no reply]` still gets its answer; any other earlier message (a remark, an invitation, one already answered) and a memory are context, not requests still waiting for an answer; `[OPEN QUESTIONS]` keep their own rule |
+| `[DISPUTED CLAIM]` | owner turns whose message disputes an attribution: a first-person denial ("I never said that", "That's not what I said", "When did I ever say that") or a question whose pointer ends the clause ("Where did I say that?"); a recall question ("Where did I say the meeting was?") or someone else's words ("My boss never said that") is not one | search the episodic log first; with no message of theirs behind the claim, say so and that the head was wrong, in its own words, with no "you told me", "you said", "you mentioned", "you photographed" or "you confirmed", not even quoted |
 | `[USER]` | owner turns | your message - **the only thing you typed that the model sees this turn** |
 | `[SYSTEM]` | synthesis turns | "sub-agents finished, no new user message - synthesize" |
 | `[SCHEDULED LOOP]` | routine firings | the routine's stored prompt; no user message |
@@ -245,8 +245,8 @@ called by the engine for every turn:
 - **A turn is the unit.** Each exchange renders as one `- user:` line and one
   `- assistant:` line, whatever rows carried it: the reply and the question it
   asked join, a spoken copy of a written reply is left out, and a turn that got
-  no answer shows `[no reply]` (a later reply does not take it up unless the later
-  message brings it up: the reply-scope check below). A routine, wakeup or sub-agent synthesis turn
+  no answer shows `[no reply]` (a later reply does not take up a remark of it unless the
+  later message brings it up: the reply-scope check below). A routine, wakeup or sub-agent synthesis turn
   shows its trigger as a `- system:` line (`[routine "commute" ran]`), so its
   reply never sits under the previous turn's reply.
 - **Each item once.** A photo's record lives in its media row; the user
@@ -414,14 +414,21 @@ reaches the owner with a plain line saying nothing is running for it. The check 
 path that delivers the model's words: the served reply, the forced final round, a prose answer,
 a cut or unreadable answer.
 
-An earlier owner message that got no reply (its history line is `[no reply]`) is not taken
-up by a reply to a later message, unless that later message brings it up (a shared topic
-word, or a pointer back such as "I mentioned", "earlier", "you didn't answer"). A reply
-sentence that holds a topic word of such a message (four letters or more, not a common
-word) that the current message does not hold gets one correction round naming the earlier
-message and the sentence (`[REPLY SCOPE CHECK]`, `owner_voice.h`); the round is shared with
-the other final-answer checks. The check reads the newest three such messages of the
-request's history, on a turn with a real human message only.
+An earlier owner remark that got no reply (its history line is `[no reply]`, bare or after
+`[did: nothing]`) is not taken up by a reply to a later message, unless that later message
+brings it up: a shared topic word, a pointer back ("I mentioned", "earlier", "you didn't
+answer"), a ping ("Hello?", "are you there", "did you get"), a recap ("so far", "have I
+had") or a bare question with no topic of its own. An earlier question or direct request is
+owed its answer and never counts (one deferred to "sometime" is a remark), and neither does
+a turn the head acted on (`[did: memory] [no reply]`). A reply sentence that holds a topic
+word of such a remark (four letters or more, not a common or sentiment word) that the current
+message does not hold, and that makes a move on it (a question, promise, offer,
+acknowledgement, deferral or aside: "I'll", "noted", "want me to", "sometime", "by the way"),
+gets one correction round naming the earlier message and the sentence (`[REPLY SCOPE
+CHECK]`, `owner_voice.h`); a sentence that reports a fact ("You have had chicken salad and
+a latte, 870 kcal.") never does. The round is shared with the other final-answer checks.
+The check reads the newest three such messages of the request's history, on a turn with a
+real human message only.
 
 The words are read in their sentence, since they alone prove little: "in the background" is
 often a place in a photo and counts only with a first person doing work there; "still working
@@ -455,7 +462,7 @@ claims in ten classes:
 | durable | "survives a restart", "never decays" | a save that landed (not RAM only); a pin for "never decays" |
 | checked | "I checked", "live data" | a lookup, or a sub-agent result with a lookup behind it; a pin call for "confirmed it's pinned" |
 | figure | "200 kcal (label)", "your watch said 408" | the number appears in a source the turn was given |
-| source | "Rain gauge at the office roof: 3.0 mm", "the live gauge says", "per the label", "according to the app", "Source: National Rail Enquiries", "checked live on National Rail" | that source (a gauge, sensor, label, receipt, menu, watch, scale, app, website, ...) named this turn by the owner's message (or the owner's own earlier rows in the conversation window: a follow-up about the previous message's photo or label credits a source the owner really gave), a tool result, a sub-agent result or a memory search result; a photo this turn may show any of them, and a sub-agent result with web runs names a website; recalled memories name only the owner's own devices (watch, scale, tracker); the assistant's earlier replies name nothing. A source credited by name (a citation, a check on it, or "according to" it in a sentence about now: "today", "live", "this morning", or a live status like "trains are running") needs every word of the name in those texts; a sentence-case phrase after a colon ("Source: Your food log") names nothing. A quote presented as something on record from before ("I recalled a memory: \"...\"", "you said \"...\"", "your message: \"...\"") needs those words, in order, in something the turn was given (the prompt with its history, the input block, a tool result, or the words this turn's own writes saved); the phrase must introduce the quote directly - a draft, a translation or a save confirmation in quotes is not checked. An explanation of how an instrument works ("the gauge reads 1 mm when 1 litre falls", a reply to a how-question) credits nothing. A claim about what the owner said or did this turn ("you told me about the 4 fries", "the pack you photographed", "you confirmed it") needs a content word of its clause in the owner's own words this turn - a stored row is not evidence against the owner. When the owner's message disputes such a claim ("I never said that"), the phrase counts inside quotes too ('I was wrong to say "as you told me"'), unless the quote is the owner's own words, and the correction asks for the claim to be taken back in the head's own words, without the phrase |
+| source | "Rain gauge at the office roof: 3.0 mm", "the live gauge says", "per the label", "according to the app", "Source: National Rail Enquiries", "checked live on National Rail" | that source (a gauge, sensor, label, receipt, menu, watch, scale, app, website, ...) named this turn by the owner's message (or the owner's own earlier rows in the conversation window: a follow-up about the previous message's photo or label credits a source the owner really gave), a tool result, a sub-agent result or a memory search result; a photo this turn may show any of them, and a sub-agent result with web runs names a website; recalled memories name only the owner's own devices (watch, scale, tracker); the assistant's earlier replies name nothing. A source credited by name (a citation, a check on it, or "according to" it in a sentence about now: "today", "live", "this morning", or a live status like "trains are running") needs every word of the name in those texts; a sentence-case phrase after a colon ("Source: Your food log") names nothing. A quote presented as something on record from before ("I recalled a memory: \"...\"", "you said \"...\"", "your message: \"...\"") needs those words, in order, in something the turn was given (the prompt with its history, the input block, a tool result, or the words this turn's own writes saved); the phrase must introduce the quote directly - a draft, a translation or a save confirmation in quotes is not checked. An explanation of how an instrument works ("the gauge reads 1 mm when 1 litre falls", a reply to a how-question) credits nothing. A claim about what the owner said or did this turn ("you told me about the 4 fries", "the pack you photographed", "you confirmed it") needs a content word of its clause in the owner's own words this turn - a stored row is not evidence against the owner. When the owner's message disputes such a claim ("I never said that"), the phrase counts inside quotes too ('I was wrong to say "as you told me"'), unless the quote is the owner's own words, and the correction asks for the claim to be taken back in the head's own words, without the phrase or any phrase like it ("you said", "you mentioned", ...); the tail line holds none of them |
 | cause | "your connection", "corrupt", "it timed out", "my vision path is working", "you keep sending" | a record this turn that shows it: a network failure, a client error, a damaged file, a timeout, a billing refusal; "it is working" needs a health read this turn and no failure on record; "you keep sending" is refused when the records show the DEVICE repeated the deliveries; guesses and hedges do not exempt a cause |
 
 A plain "Noted." is an acknowledgement, not a save claim: it claims a save only when the
@@ -571,7 +578,8 @@ today:
 - the scratchpad header, which says when saving is failing and the notes last only
   until restart;
 - a `memory.pin` or `memory.write` result, which says when nothing changed
-  ("already pinned") and when a write was refused;
+  ("already pinned") and when a write was refused; a refused write or update also says
+  that nothing keeps or retries it, so the reply never promises a later save;
 - `[FRESH RESULTS]`, where each sub-agent result says how many tools it ran, and a
   live-data result with none opens with `[NOT CHECKED]`;
 - the `device.log` tool: the device's own durable log (settings saves, boot
