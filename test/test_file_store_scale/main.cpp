@@ -6,6 +6,7 @@
 #include <cstring>
 #include <new>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "nimbus/orch/file_store.h"
@@ -138,11 +139,35 @@ static M measure(F&& f) {
   return m;
 }
 
+// A wall-clock cap on a read-only call is checked on the quickest of up to kTries calls. On a
+// loaded host (several batteries share the cores) one descheduled call adds tens of
+// milliseconds to a call that takes microseconds, and that flaked this test on main at a
+// load average near 100 (1 run in 6, projects() and wouldExceed). A call that really is not
+// bounded is slow on every try, so the cap still fails it (test_cap_fails_a_call_slow_on_every_try).
+// Only repeatable calls use it: a mutating call (add, remove) is measured once, since a
+// second call would measure a different state. Memory is read from the first call.
+static constexpr int kTries = 5;
+
+template <typename F>
+static M measureBest(F&& f, double msCap) {
+  M best = measure(f);
+  for (int i = 1; i < kTries && best.ms >= msCap; i++) {
+    const M again = measure(f);
+    if (again.ms < best.ms) best.ms = again.ms;
+  }
+  return best;
+}
+
 static void report(const char* what, const M& m, double msCap, size_t memCap) {
   std::printf("  %-34s %9.3f ms  live %+8ld B  peak %9zu B\n", what, m.ms, m.liveDelta,
               m.peakDelta);
   TEST_ASSERT_TRUE_MESSAGE(m.ms < msCap, what);
   TEST_ASSERT_TRUE_MESSAGE(m.peakDelta <= memCap, what);
+}
+
+template <typename F>
+static void reportBest(const char* what, F&& f, double msCap, size_t memCap) {
+  report(what, measureBest(f, msCap), msCap, memCap);
 }
 
 // A 10,000-entry store: 50 projects (some chat-attachment projects), unique
@@ -401,6 +426,29 @@ static void test_owner_project_duplicates_are_never_eviction_candidates() {
 // (128)), so a std::string per entry (names exceed the 15-char SSO) would stay
 // internal and a few thousand entries would exhaust the ~26 K internal headroom.
 // With the WorkingAllocator seam installed, add() must do ZERO plain allocations.
+// The helper behind the wall-clock caps absorbs one stall and still fails a call that is slow
+// on every try (the property the comment above kTries relies on).
+static void test_cap_fails_a_call_slow_on_every_try() {
+  int calls = 0;
+  const M stalled = measureBest(
+      [&] {
+        if (calls++ == 0) std::this_thread::sleep_for(std::chrono::milliseconds(250));
+      },
+      200);
+  TEST_ASSERT_TRUE_MESSAGE(stalled.ms < 200, "one stalled call must not fail the cap");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(2, calls, "the stall is measured once, one quick call settles it");
+
+  int slowCalls = 0;
+  const M slow = measureBest(
+      [&] {
+        slowCalls++;
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+      },
+      200);
+  TEST_ASSERT_TRUE_MESSAGE(slow.ms >= 200, "a call slow on every try must still fail the cap");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(kTries, slowCalls, "every try is spent before the cap fails");
+}
+
 static void test_index_allocations_ride_the_working_allocator() {
   static size_t hookAllocs = 0;
   nimbus::orch::setWorkingAllocators(
@@ -453,23 +501,23 @@ static void test_10000_files_per_call_stays_bounded() {
   std::printf("  -- per-call cost at 10,000 files (host measurement, lane FSCAP DoD) --\n");
 
   std::string err;
-  report("find (hit)", measure([&] { (void)s.find("proj-7", "f7.txt"); }), 50, 64 * 1024);
-  report("find (miss)", measure([&] { (void)s.find("proj-7", "nope.txt"); }), 50, 64 * 1024);
+  reportBest("find (hit)", [&] { (void)s.find("proj-7", "f7.txt"); }, 50, 64 * 1024);
+  reportBest("find (miss)", [&] { (void)s.find("proj-7", "nope.txt"); }, 50, 64 * 1024);
   report("add (new entry)", measure([&] { (void)s.add(mk("proj-7", "new.txt", 100, 0xF1), err); }), 100, 8 * 1024 * 1024);
   report("add (replace)", measure([&] { (void)s.add(mk("proj-7", "f7.txt", 200, 0xF2), err); }), 50, 64 * 1024);
   report("remove", measure([&] { (void)s.remove("proj-7", "new.txt"); }), 100, 8 * 1024 * 1024);
-  report("listPage(0,100)", measure([&] { (void)s.listPage("", 0, 100); }), 50, 64 * 1024);
-  report("listPage(9900,100)", measure([&] { (void)s.listPage("", 9900, 100); }), 50, 64 * 1024);
-  report("list() full scan", measure([&] { (void)s.list(""); }), 100, 256 * 1024);
-  report("projects()", measure([&] { (void)s.projects(); }), 100, 128 * 1024);
-  report("totalBytes()", measure([&] { (void)s.totalBytes(); }), 50, 1024);
-  report("bytesFor(owner)", measure([&] { (void)s.bytesFor("owner"); }), 50, 1024);
-  report("wouldExceed", measure([&] { std::string e; (void)s.wouldExceed("p", "n.txt", 10, e); }), 50, 64 * 1024);
-  report("isRegenerableCopy", measure([&] { (void)s.isRegenerableCopy(*s.find("proj-7", "f7.txt")); }), 50, 64 * 1024);
-  report("planEviction(1 MB)", measure([&] { (void)s.planEviction(1024 * 1024); }), 100, 256 * 1024);
+  reportBest("listPage(0,100)", [&] { (void)s.listPage("", 0, 100); }, 50, 64 * 1024);
+  reportBest("listPage(9900,100)", [&] { (void)s.listPage("", 9900, 100); }, 50, 64 * 1024);
+  reportBest("list() full scan", [&] { (void)s.list(""); }, 100, 256 * 1024);
+  reportBest("projects()", [&] { (void)s.projects(); }, 100, 128 * 1024);
+  reportBest("totalBytes()", [&] { (void)s.totalBytes(); }, 50, 1024);
+  reportBest("bytesFor(owner)", [&] { (void)s.bytesFor("owner"); }, 50, 1024);
+  reportBest("wouldExceed", [&] { std::string e; (void)s.wouldExceed("p", "n.txt", 10, e); }, 50, 64 * 1024);
+  reportBest("isRegenerableCopy", [&] { (void)s.isRegenerableCopy(*s.find("proj-7", "f7.txt")); }, 50, 64 * 1024);
+  reportBest("planEviction(1 MB)", [&] { (void)s.planEviction(1024 * 1024); }, 100, 256 * 1024);
   const std::string blob = s.dump();
-  report("dump()", measure([&] { (void)s.dump(); }), 500, 8 * 1024 * 1024);
-  report("load(dump)", measure([&] { FileStore t; (void)t.load(blob); }), 2000, 16 * 1024 * 1024);
+  reportBest("dump()", [&] { (void)s.dump(); }, 500, 8 * 1024 * 1024);
+  reportBest("load(dump)", [&] { FileStore t; (void)t.load(blob); }, 2000, 16 * 1024 * 1024);
   std::printf("  -- index at 10,000 files: %zu bytes on card, %zu entries --\n", blob.size(),
               s.count());
   TEST_ASSERT_EQUAL(10000, int(s.count()));
@@ -543,6 +591,7 @@ int main() {
   RUN_TEST(test_eviction_plan_picks_regenerable_copies_oldest_first);
   RUN_TEST(test_owner_project_duplicates_are_never_eviction_candidates);
   RUN_TEST(test_index_allocations_ride_the_working_allocator);
+  RUN_TEST(test_cap_fails_a_call_slow_on_every_try);
   RUN_TEST(test_10000_files_per_call_stays_bounded);
   RUN_TEST(test_device_wiring_fscap);
   return UNITY_END();
