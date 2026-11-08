@@ -24,6 +24,8 @@
 #include "nimbus/harness/hooks.h"   // TurnSource - mirrored by value in turn_journal.h
 #include "nimbus/logring.h"
 #include "nimbus/orch/restart_notice.h"
+#include "nimbus/sys/poll_guard.h"   // isPollStallReason: the guard's own restart
+#include "poll_watch.h"             // the guard's streak at this boot
 #include "nimbus/orch/turn_journal.h"
 #include "nimbus/sys/boot_record.h"
 #include "nimbus/sys/panic_arm.h"
@@ -406,10 +408,17 @@ void queueCrashNotice() {
   // A crash's own dump names its cause; an older dump (this crash wrote none) does not.
   const Report* dump = (g_report && describesThisCrash(*g_report)) ? g_report : nullptr;
   const char* cause = plainCause(crashKind(dump, g_reason));
+  const std::string name(sys::deviceName().c_str());
+  const std::string hhmm = j ? localHhmm(j->at) : std::string();
   // Held only when the crash cut a background turn (the owner is not waiting on it);
-  // sent once at the owner's next turn (restart_notice.h).
-  nimbus::orch::RestartNoticePlan plan = nimbus::orch::planRestartNotice(
-      std::string(sys::deviceName().c_str()), g_reason, j, j ? localHhmm(j->at) : std::string(), cause);
+  // sent once at the owner's next turn (restart_notice.h). A restart the poll task's
+  // liveness guard asked for says so in its own words, once per streak (poll_guard.h);
+  // without its RTC record (it did not survive) the owner is told, never left guessing.
+  const bool stall = dump && nimbus::sys::isPollStallReason(dump->why);
+  nimbus::orch::RestartNoticePlan plan =
+      stall ? nimbus::orch::planStallNotice(name, j, hhmm,
+                                            nimbus::pollwatch::bootAfterStall() ? nimbus::pollwatch::streakAtBoot() : 1)
+            : nimbus::orch::planRestartNotice(name, g_reason, j, hhmm, cause);
   const nimbus::orch::NoticeTiming timing = plan.timing;
   std::string now;
   portENTER_CRITICAL(&g_noticeMux);

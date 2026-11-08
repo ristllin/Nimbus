@@ -59,6 +59,7 @@
 #include <esp_heap_caps.h>   // MALLOC_CAP_SPIRAM - queue storage on PSRAM (docs/memory-model.md)
 #include <esp_attr.h>        // RTC_NOINIT_ATTR - the storm breakers' record
 #include <esp_app_desc.h>    // the running image's ELF hash: the guard record's build id
+#include "../sys/poll_watch.h"   // lane TGSTALL: the poll task's liveness beats
 #include <time.h>
 #include "nimbus/tg_html.h"   // v4.1.1: markdown -> Telegram HTML (plain fallback below)
 #include "nimbus/orch/reply_markup.h"   // lane L: cleanReplyMarkup at the Telegram seam
@@ -384,6 +385,7 @@ static void idlePause(uint32_t pauseMs) {
     // task by luck (release-gate verifier, 2026-10-04).
     const uint32_t ms = nimbus::net::tgIdleSleepMs(idleWaitEnds(), millis() - start, pauseMs);
     if (ms == 0) return;
+    nimbus::pollwatch::beat("idle");
     vTaskDelay(pdMS_TO_TICKS(ms));
   }
 }
@@ -524,6 +526,7 @@ bool tlsConnect(WiFiClientSecure& sc) {
   tlsSetup(sc);
   sc.setHandshakeTimeout(CONNECT_TIMEOUT / 1000);   // seconds
   for (int attempt = 1; attempt <= 2; attempt++) {
+    nimbus::pollwatch::beat("telegram connect");
     if (connectHost(sc, TG_HOST, TG_PORT, (int32_t)CONNECT_TIMEOUT)) return true;
     tlsClose(sc);
     if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(400));
@@ -539,6 +542,7 @@ int readLine(WiFiClientSecure& sc, char* buf, int bufLen, uint32_t deadline) {
   while ((int32_t)(millis() - deadline) < 0 && i < bufLen - 1) {
     if (!sc.available()) {
       if (!sc.connected()) break;
+      nimbus::pollwatch::beat("telegram read");
       vTaskDelay(1);
       continue;
     }
@@ -554,7 +558,7 @@ int readBody(WiFiClientSecure& sc, char* buf, int bufLen, uint32_t deadline) {
   int n = 0;
   while ((int32_t)(millis() - deadline) < 0 && n < bufLen - 1) {
     if (sc.available()) buf[n++] = sc.read();
-    else { if (!sc.connected()) break; vTaskDelay(1); }
+    else { if (!sc.connected()) break; nimbus::pollwatch::beat("telegram read"); vTaskDelay(1); }
   }
   buf[n] = 0;
   return n;
@@ -815,7 +819,7 @@ static int readBodyN(WiFiClientSecure& sc, char* buf, int bufLen, long want, uin
       got++;
       if (stored < bufLen - 1) buf[stored++] = c;
     } else if (!sc.connected()) { buf[stored] = 0; return -1; }
-    else vTaskDelay(1);
+    else { nimbus::pollwatch::beat("telegram read"); vTaskDelay(1); }
   }
   buf[stored] = 0;
   return (got >= want) ? stored : -1;
@@ -946,6 +950,7 @@ static nimbus::net::TgWait awaitPollResponse(uint32_t deadline, int timeoutS) {
         bytes, bytes || g_pollSc.connected(), (int32_t)(millis() - deadline) >= 0,
         idleWaitEnds(), timeoutS);
     if (w != nimbus::net::TgWait::Keep) return w;
+    nimbus::pollwatch::beat("long-poll");
     vTaskDelay(1);
   }
 }
@@ -1346,7 +1351,7 @@ static TgDl downloadToLfs(const char* filePath, const char* localPath, size_t ca
         total += r;
       }
     } else if (!sc.connected()) break;
-    else delay(2);
+    else { nimbus::pollwatch::beat("media download"); delay(2); }
   }
   f.close();
   tlsClose(sc);
@@ -2377,6 +2382,23 @@ static void drainMedia() {
   if (!ok && m.sd) sendNow(m.chatId, (String("Couldn't send ") + base + ". It's saved under Files.").c_str());
 }
 
+#if defined(NIMBUS_TEST)
+// TGSTALL: the bench's poll-task stall (armTestStall). Volatile so the spin is not
+// folded away; the block waits on nothing.
+static volatile int s_testStall = 0;
+static void runTestStall() {
+  const int kind = s_testStall;
+  if (kind == 0) return;
+  s_testStall = 0;
+  nimbus::pollwatch::beat("test stall");
+  alogf("telegram: TGSTALL %s - the poll task stops here", kind == 1 ? "spin" : "block");
+  if (kind == 1) {
+    for (volatile uint32_t n = 0;; n = n + 1) {}
+  }
+  for (;;) vTaskDelay(portMAX_DELAY);
+}
+#endif
+
 // ---- pollTask ---------------------------------------------------------------
 
 // Check connectivity by IP - WiFi.status() can stay at 0 (WL_IDLE_STATUS) if the
@@ -2389,7 +2411,10 @@ static bool wifiReady() {
 
 void pollTask(void*) {
   bool haveToken = g_token.length() > 0;   // non-const: a live token swap updates it
-  while (g_running && !wifiReady()) vTaskDelay(pdMS_TO_TICKS(500));
+  while (g_running && !wifiReady()) {
+    nimbus::pollwatch::beat("wifi wait");
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
   vTaskDelay(pdMS_TO_TICKS(3000));   // let the association RX burst drain before first TLS
 
   // The ONE read of the stored offset: the RAM cursor is the truth from here on, and
@@ -2409,6 +2434,10 @@ void pollTask(void*) {
 
   int activeJobs = 0;
   while (g_running) {
+    nimbus::pollwatch::beat("poll loop");
+#if defined(NIMBUS_TEST)
+    runTestStall();   // TGSTALL: the bench's stall, at the loop top like any staged work
+#endif
     // Work staged for this task by another module (setStagedWork: an OTA check or
     // install whose own task did not fit). Here at the loop top every turn, job
     // dispatch and reply send of the previous cycle has returned, so it never runs
@@ -2423,11 +2452,17 @@ void pollTask(void*) {
     const bool ranStaged = stagedWorkWaiting();
     if (ranStaged) {
       closePollSocket();   // one TLS session at a time: the staged work opens its own
+      nimbus::pollwatch::beat("staged work");
       g_stagedRun();
       if (!g_running) break;   // a quiesce arrived during the run: start nothing new
     }
 
-    if (!wifiReady()) { closePollSocket(); vTaskDelay(pdMS_TO_TICKS(2000)); continue; }
+    if (!wifiReady()) {
+      closePollSocket();
+      nimbus::pollwatch::beat("wifi wait");
+      vTaskDelay(pdMS_TO_TICKS(2000));
+      continue;
+    }
 
     // P8: pick up a live allowlist / public-mode change (owner approved a pending
     // sender, edited a chip, or flipped public mode) WITHOUT a reboot. Poll-task
@@ -2535,6 +2570,7 @@ void pollTask(void*) {
     // messages queued for the next cycle. The accumulated batch also rides PSRAM
     // (g_batch / WorkingAllocator), so this adds no internal-SRAM pressure.
     if (g_inboundQ && g_cb) {
+      nimbus::pollwatch::beat("local turn");
       InboundMsg* im = ensureInboundStage();
       if (im) {
         g_batch.clear();
@@ -2569,6 +2605,7 @@ void pollTask(void*) {
       }
     }
 
+    nimbus::pollwatch::beat("media out");
     if (haveToken) drainMedia();    // outbound media (device -> owner); own TLS
 
     // Advance background jobs (orchestrator::pollJobs) - synchronous, this task.
@@ -2578,6 +2615,7 @@ void pollTask(void*) {
     // surface the WORST seen, so the stack size is set from real peaks, not a guess -
     // and so a stack creeping toward the canary is visible long before it overflows
     // (that overflow is the recurring crash(panic); see POLL_STACK_BYTES).
+    nimbus::pollwatch::beat("jobs");
     activeJobs = g_tick ? g_tick() : 0;
     g_activeJobs = activeJobs;
     {
@@ -2603,6 +2641,7 @@ void pollTask(void*) {
     // Drain reply queue. With a token, deliver to Telegram (retry a few times on a
     // transient TLS failure). Without a token the reply was already mirrored to
     // serial by the send sink, so drain-and-discard to keep the queue from backing up.
+    nimbus::pollwatch::beat("replies");
     PendingReply reply;
     while (xQueueReceive(g_replyQ, &reply, 0) == pdTRUE) {
       if (!haveToken) continue;
@@ -2615,6 +2654,7 @@ void pollTask(void*) {
 
     // Telegram archive: queued outbound items, unfinished media downloads (on this
     // task's single TLS session, after the replies above went out), storage pressure.
+    nimbus::pollwatch::beat("archive");
     agent::tgarchive::tick(g_token, &idleWaitEnds, &closePollSocket);
 
     // Quiesce tighten (verifier round 2): a stop that ended the long-poll above
@@ -2628,6 +2668,7 @@ void pollTask(void*) {
   // Publish "gone" BEFORE self-deleting so quiesce() can poll the handle without
   // touching a dead task's state. Queues are deliberately left alive (reboot or
   // a fresh begin() follows; deleting them here is the stop()-crash in reverse).
+  nimbus::pollwatch::disarm();   // it stops on purpose: the liveness guard stands down
   g_task = nullptr;
   vTaskDelete(nullptr);
 }
@@ -2743,9 +2784,14 @@ void begin(const String& token, const String& allowlist, MessageCallback cb) {
     alogf("telegram: FAILED to create poll task (heap=%u)", ESP.getFreeHeap());
     return;
   }
+  nimbus::pollwatch::arm(g_task);   // lane TGSTALL: the loop task watches it from now on
   alogf("telegram: turn task up (%s)",
         token.length() ? "Telegram long-poll ON" : "local turns only, no token");
 }
+
+#if defined(NIMBUS_TEST)
+void armTestStall(int kind) { s_testStall = kind; }
+#endif
 
 void setTick(TickCallback cb)   { g_tick = cb; }
 void setSttSink(SttSink cb)     { g_stt = cb; }
@@ -3064,6 +3110,7 @@ void stop() {
 }
 
 bool quiesce(uint32_t timeoutMs) {
+  nimbus::pollwatch::disarm();   // stopped on purpose: a turn the quiesce waits out is not a stall
   g_running = false;   // idlePause AND the long-poll wait end on this (the GiveUp
                        // path), so an idle task - token or not - joins within a
                        // slice or two; only a turn mid-provider-call holds it.

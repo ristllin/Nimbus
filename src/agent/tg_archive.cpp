@@ -306,6 +306,7 @@ class TgFileSource : public arc::Source {
         return n;
       }
       if (!sc_.available() && !sc_.connected()) return remaining_ > 0 ? -1 : 0;
+      nimbus::pollwatch::beat("archive download");
       vTaskDelay(1);
     }
     return -1;

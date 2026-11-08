@@ -459,6 +459,7 @@ static int httpsGetOnce(const UrlParts& u, ByteSink sink, void* ctx,
     uint8_t buf[1024];
     while (before(deadline)) {
       int n = client.read(buf, sizeof(buf));
+      nimbus::pollwatch::beat("update download");   // the staged check/install runs on tg_poll
       if (n > 0) {
         if (!sink(buf, (size_t)n, ctx)) { sinkOk = false; break; }
       } else if (!client.connected() && !client.available()) {

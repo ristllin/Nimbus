@@ -30,7 +30,6 @@ class LateWait {
  public:
   bool callbackArrives();
   bool waiterLeaves();
-  bool answered() const { return st_ == State::Answered; }
 
  private:
   enum class State : uint8_t { Waiting, Answered, Abandoned };

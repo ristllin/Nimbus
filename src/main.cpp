@@ -33,6 +33,7 @@
 #endif
 #include "sys/errlog_fs.h"   // setSuspended - the factory sweep's durable-log barrier; attachStorage
 #include "sys/crash_report.h"   // boot record, core dump reader, crash notice (crash forensics)
+#include "sys/poll_watch.h"     // the poll task's liveness guard (lane TGSTALL)
 #include "nimbus/sys/reset_reason.h"   // the one reset-reason table
 #include "sys/loop_watch.h"               // every loop pass timed against the task watchdog
 #include <nvs_flash.h>   // nvs_flash_erase() - web factory reset
@@ -4175,6 +4176,9 @@ void setup() {
   // The lost-turn journal lives on LittleFS, mounted only in Orchestrator mode (the
   // only mode that runs turns). Read before the turn task can start a new one.
   if (g_orchMode) nimbus::crash::collectTurnJournal();
+  // The poll task's liveness guard reads its RTC streak record before the crash notice
+  // is planned and before the poll task can exist (lane TGSTALL).
+  if (g_orchMode) nimbus::pollwatch::boot();
   // Device-event timeline (Glass Box A3): the BOOT row - the answer to the
   // owner's live "did you manage to reboot?" that the model couldn't give
   // ("there's no reboot record available"). Reset reason distinguishes a
@@ -5886,6 +5890,7 @@ void loop() {
   nimbus::loopwatch::notePass();       // a slow pass names itself before the watchdog must
   nimbus::heapwatch::pump(millis());   // alloc-failure lines + the 1 Hz low-water ladder
   nimbus::crash::breadcrumbTick();   // RTC breadcrumb: uptime + heap low-water every 5 s
+  nimbus::pollwatch::tick();   // lane TGSTALL: a poll task silent 5 min restarts the device
 #ifdef NIMBUS_NOTIFIER_DEBUG
   // CUM-185: steady-state contiguous-SRAM sampler (test/debug builds only, so the
   // production nsn serial stream stays clean). Emits the same line as the boot

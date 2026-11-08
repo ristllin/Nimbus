@@ -10,6 +10,7 @@
 #include "../sys/crash_report.h"   // testPanicPoint (L39 crash-forensics legs)
 #endif
 #include "../sys/net_util.h"
+#include "../sys/poll_watch.h"   // lane TGSTALL: a turn's socket waits are the poll task's beats
 #include "../sys/ps_json.h"
 #include "../sys/tls_arbiter.h"
 #include "agent_config.h"
@@ -74,6 +75,7 @@ class BlockingClientReader : public Stream {
       if (v >= 0) return v;
       if (!c_->connected() && c_->available() == 0) return -1;  // real EOF
       if ((int32_t)(millis() - deadline_) >= 0) return -1;      // timed out (wrap-safe)
+      nimbus::pollwatch::beat("provider read");
       delay(1);
     }
   }
@@ -142,7 +144,10 @@ struct TlsIo {
   void paceForHeadroom() {
     auto largest = [] { return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_8BIT); };
     auto free8 = [] { return (uint32_t)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_8BIT); };
-    auto sleep = [](uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms)); };
+    auto sleep = [](uint32_t ms) {
+      nimbus::pollwatch::beat("provider write");
+      vTaskDelay(pdMS_TO_TICKS(ms));
+    };
     paceSlice(pacedMs, paceCapForBody(req.timeoutMs, bodyLength(req)), kDmaChunkFloor,
               SliceIo{largest, free8, sleep, [this] { return expired(); }});
   }
@@ -155,6 +160,7 @@ struct TlsIo {
   // intermittently fail; a fresh socket clears it).
   bool connect() {
     for (int a = 0; a < 3 && !expired(); a++) {
+      nimbus::pollwatch::beat("provider connect");
       if (connectHost(*client, req.host.c_str(), req.port)) return true;
       close();
       if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
@@ -182,6 +188,7 @@ struct TlsIo {
 #ifdef NIMBUS_TEST
     if (off == 0) nimbus::crash::testPanicPoint();   // L39: an armed panic lands here, before any body byte
 #endif
+    nimbus::pollwatch::beat("provider write");
     if (off > 0) paceForHeadroom();
     // In place only when the AES engine can read the bytes directly (a plain body
     // in internal DMA-capable memory, the ordinary small request): zero copies.
@@ -206,7 +213,7 @@ struct TlsIo {
     while (!expired()) {
       if (client->available()) { char c = client->read(); if (c == '\n') break; if (c != '\r') status += c; }
       else if (!client->connected() && !client->available()) break;
-      else delay(2);
+      else { nimbus::pollwatch::beat("provider read"); delay(2); }
     }
     int code = 0;
     int sp = status.indexOf(' ');
@@ -234,7 +241,7 @@ struct TlsIo {
         }
         else if (c != '\r') line += c;
       } else if (!client->connected() && !client->available()) return false;
-      else delay(2);
+      else { nimbus::pollwatch::beat("provider read"); delay(2); }
     }
     return false;
   }
@@ -246,7 +253,7 @@ struct TlsIo {
         int n = client->read(buf, sizeof(buf));
         if (n > 0) out->body.append((const char*)buf, (size_t)n);
         else if (!client->connected() && !client->available()) break;
-        else delay(2);
+        else { nimbus::pollwatch::beat("provider read"); delay(2); }
       }
       return true;
     }
@@ -256,6 +263,11 @@ struct TlsIo {
     // safe on the ~47 K internal-heap budget.
     uint32_t heapBefore = ESP.getFreeHeap();
     BlockingClientReader rdr(client, deadline);
+    // ArduinoJson reads a Stream through readBytes(), which retries read() in a busy loop
+    // for Stream's own timeout (1 s by default) once read() reports the end: read() above
+    // already waits (yielding) until a byte, the end or the deadline, so that second wait
+    // only spun the poll task without yielding at every end of input (lane TGSTALL).
+    rdr.setTimeout(0);
     DeserializationError derr =
         deserializeJson(*doc, rdr, DeserializationOption::Filter(*filter),
                         DeserializationOption::NestingLimit(kResponseNestingLimit));

@@ -76,6 +76,7 @@
 #include "nimbus/net/page_split.h"            // CUM-565: the page and its script as two responses
 #include "nimbus/harness/claim_check.h"       // claimsCorrected / claimsTailed onto /api/state
 #include "../sys/ota_update.h"          // /api/ota/* + /api/state ota fields
+#include "../sys/poll_watch.h"          // /api/state tgPoll liveness fields (lane TGSTALL)
 #include "../sys/heap_watch.h"          // /api/state mem: low-water, alloc failures
 #include "web_admission.h"              // big responses trickle or answer busy (internal SRAM)
 #include "../sys/crash_report.h"        // /api/state boot object (reset reason, crash summary)
@@ -549,6 +550,12 @@ static void addTgPollState(JsonDocument& d) {
   tp["staleDrops"]       = ps.staleDrops;
   tp["backoffMs"]        = ps.backoffMs;
   tp["fails"]            = agent::telegram::consecutiveFails();
+  // Lane TGSTALL: the poll task's liveness. silentS counts since its last beat (a
+  // healthy task stays under a few seconds, a turn's slowest step under 120 s); the
+  // device restarts itself at 300 s. stallStreak: guard restarts in a row before this boot.
+  tp["silentS"]          = nimbus::pollwatch::silentS();
+  tp["step"]             = nimbus::pollwatch::lastStep();
+  tp["stallStreak"]      = nimbus::pollwatch::streakAtBoot();
 }
 
 // The NVS reserve and the moved stores: writes the reserve refused and keys the

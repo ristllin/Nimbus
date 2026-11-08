@@ -95,6 +95,7 @@
 #include "nimbus/harness/conversation.h"   // the /clear boundary + live conversation window (CUM-511)
 #include "../sfx/sound_fx.h"      // SFX hooks: spawn ack / turn start / reply / mem save
 #include "../sys/crash_report.h"  // crash UX: the in-flight turn journal
+#include "../sys/poll_watch.h"    // lane TGSTALL: turn, round and tool beats of the poll task
 #include "nimbus/sys/log_window.h"   // forensic window: routine headloop lines stay in RAM
 
 #include <ArduinoJson.h>
@@ -1452,6 +1453,7 @@ static TurnEngine::Deps buildTurnDeps() {
   static int s_traceBlobs = 0;   // sidecars written this turn (P4 budget)
   static int s_turnBlobFails = 0;   // sidecar writes that failed this turn (L19-24)
   d.hooks.onTurnStart = [](const TurnStartEv& ev) {
+    nimbus::pollwatch::beat("turn");   // lane TGSTALL: a turn's steps are the poll task's beats
     // Lane PROG: the ONE progress line is per turn.
     s_progLineSent = false;
     // Turn identity = the turn's USER row id (boot-stable, resumed past history
@@ -1476,6 +1478,7 @@ static TurnEngine::Deps buildTurnDeps() {
     nimbus::crash::turnStarted((int)ev.source, ev.chatId, std::string());
   };
   d.hooks.onToolCall = [](const orch::HeadToolCall& call) {
+    nimbus::pollwatch::beat("tool");
     if (!memory::traceActive()) return;
     // Keep the args at the FULL cap here (P4): the row text still shows the
     // short clip, but the sidecar needs what the model actually sent. >=128 B
@@ -1488,6 +1491,7 @@ static TurnEngine::Deps buildTurnDeps() {
     if (s_traceArgs.size() < 24) s_traceArgs[call.id] = std::move(a);
   };
   d.hooks.onToolResult = [](const orch::HeadToolResult& r) {
+    nimbus::pollwatch::beat("tool done");
     if (!memory::traceActive()) return;
     std::string args;
     auto it = s_traceArgs.find(r.id);
@@ -1537,6 +1541,7 @@ static TurnEngine::Deps buildTurnDeps() {
   // executes it on the poll task (the turn's own task, no new concurrency).
   // s_progLineSent is reset per turn in onTurnStart above.
   d.hooks.onTurnProgress = [](const TurnProgressEv& ev) {
+    nimbus::pollwatch::beat("round");
     orch::HeadProgress hp;
     hp.round = ev.round;
     hp.elapsedMs = ev.elapsedMs;
@@ -1600,6 +1605,7 @@ static TurnEngine::Deps buildTurnDeps() {
   // real billed tokens + tool-call count. onSpawn/onResult stay UNWIRED here on
   // purpose - sfx + the ring already cover those via the event/fire sinks.
   d.hooks.onTurnEnd = [](const TurnEndEv& ev) {
+    nimbus::pollwatch::beat("turn end");
     nimbus::crash::turnEnded();   // the turn finished: no crash notice will name it
     g_ownerFirst.noteTurnEnd(millis());   // background work waits for the owner
     // Hold-to-talk (CUM-456): the voice message's own turn answered? A salvaged

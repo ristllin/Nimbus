@@ -23,6 +23,7 @@
 
 #include "agent/orchestrator.h"  // PROMPT? - dump the last composed World system prompt
 #include "agent/telegram.h"      // TGSEND - media-send smoke test
+#include "sys/poll_watch.h"       // TGSTALL? - the poll task's liveness guard (lane TGSTALL)
 #include "agent/voice_reply.h"   // VOICETEXT - force the text of the next Telegram voice reply
 #include "agent/store.h"
 #include "agent/safety_activity_store.h"  // SAFETY? - activity log + allowlist summary (CUM-215)
@@ -2152,6 +2153,21 @@ void dispatch(String line) {
   if (line.startsWith("BATTFLAP")) { battFlap(line.substring(8)); return; }
   if (line.startsWith("TGINJECT ")) {
     tgInject(line.substring(9));
+    return;
+  }
+  if (line == "TGSTALL?") {
+    reply(String("TGSTALL silent=") + nimbus::pollwatch::silentS() + " step=" + nimbus::pollwatch::lastStep() +
+          " streak=" + nimbus::pollwatch::streakAtBoot() + " afterStall=" + (nimbus::pollwatch::bootAfterStall() ? 1 : 0));
+    return;
+  }
+  if (line.startsWith("TGSTALL ")) {
+    // Lane TGSTALL: stop the poll task the way Lumi's stopped (spin) or blocked (block);
+    // the liveness guard restarts the device about 5 minutes later. off disarms.
+    String a = line.substring(8); a.trim();
+    const int kind = a == "spin" ? 1 : a == "block" ? 2 : a == "off" ? 0 : -1;
+    if (kind < 0) { reply("ERR TGSTALL spin|block|off"); return; }
+    agent::telegram::armTestStall(kind);
+    reply(String("TGSTALL armed=") + a);
     return;
   }
   if (line.startsWith("UNSENT ")) {

@@ -77,6 +77,11 @@ bool injectRawUpdates(const char* body, size_t len);
 // Media whose file_id is "LOCAL_<path>" is read from that file on the card instead of
 // fetched.
 String injectRawPage(const String& body);
+// TGSTALL (the console verb, lane TGSTALL): make the poll task stop at its next loop top
+// the way Lumi's did, so the bench can watch the liveness guard end to end. 1: spin on
+// the CPU, never yielding; 2: block forever. 0 disarms a stall not reached yet. The guard
+// restarts the device about 5 minutes later (sys/poll_watch.h).
+void armTestStall(int kind);
 #endif
 
 // The chat the device's own notices go to: the first explicit owner that is still on
