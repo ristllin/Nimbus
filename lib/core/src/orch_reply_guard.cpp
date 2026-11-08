@@ -509,32 +509,49 @@ std::string nextWord(const std::string& s, size_t& at, bool& clauseEnd) {
   return s.substr(b, at - b);
 }
 
-// "logging it now", "saving that to your food log now": a participle that opens the sentence
-// (leads aside) with "now" within six words, in the same clause; or a storage verb that opens it
-// and is followed by what it stores. Not a question, not a condition.
-bool announcesNowIn(const std::string& s) {
-  if (s.find('?') != std::string::npos || hasAnyWord(s, kConditional)) return false;
-  size_t at = 0;
+// The first word of `s` that is not a lead (the leads are skipped); `future` is set when a future
+// lead stood among them ("I'll", "let me").
+std::string skipLeads(const std::string& s, size_t& at, bool& future) {
   bool stop = false;
   std::string w = nextWord(s, at, stop);
-  bool future = false;
   while (!w.empty() && oneOf(w, kNowLeads)) {
     future = future || oneOf(w, kFutureLeads);
     w = nextWord(s, at, stop);
   }
-  const bool participle = oneOf(w, kNowVerbs);
-  if (!participle && !(future && oneOf(w, kBaseVerbs))) return false;
-  if (participle && oneOf(w, kStoreVerbs)) {
-    size_t peek = at;
-    const std::string next = nextWord(s, peek, stop);
-    if (!stop && (oneOf(next, kStoreObjects) || (!next.empty() && std::isdigit((unsigned char)next[0])))) return true;
-  }
+  return w;
+}
+
+// A storage verb is announced when what it stores follows at once: a pronoun, an article, a meal word
+// or a figure ("Logging your lunch as roughly 670 kcal").
+bool storesSomething(const std::string& s, size_t at) {
+  bool stop = false;
+  const std::string next = nextWord(s, at, stop);
+  return !stop && (oneOf(next, kStoreObjects) || (!next.empty() && std::isdigit((unsigned char)next[0])));
+}
+
+// "now" within six words of `at`, in the same clause.
+bool saysNowSoon(const std::string& s, size_t at) {
   for (int n = 0; n < 6; n++) {
-    w = nextWord(s, at, stop);
+    bool stop = false;
+    const std::string w = nextWord(s, at, stop);
     if (w.empty() || stop) return false;
     if (w == "now") return true;
   }
   return false;
+}
+
+// "logging it now", "saving that to your food log now", "I'll log that now": a work verb that opens the
+// sentence (leads aside) with "now" soon after it; or a storage verb that opens it and is followed by what
+// it stores. Not a question, not a condition.
+bool announcesNowIn(const std::string& s) {
+  if (s.find('?') != std::string::npos || hasAnyWord(s, kConditional)) return false;
+  size_t at = 0;
+  bool future = false;
+  const std::string w = skipLeads(s, at, future);
+  const bool participle = oneOf(w, kNowVerbs);
+  if (!participle && !(future && oneOf(w, kBaseVerbs))) return false;
+  if (participle && oneOf(w, kStoreVerbs) && storesSomething(s, at)) return true;
+  return saysNowSoon(s, at);
 }
 
 }  // namespace
