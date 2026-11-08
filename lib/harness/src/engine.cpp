@@ -1358,7 +1358,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       if (m.user && m.text.rfind(kSummaryUserHead, 0) != 0) ownerRows += m.text + "\n";
     claims_.noteOwnerHistory(ownerRows);
   }
-  if (ci.speakerPresent) claims_.noteUnanswered(unansweredOwnerMessages(ci.history));   // lane MLQ (OIR-06)
+  if (ci.speakerPresent) {   // lane MLQ (OIR-06): the reply-scope line and check, only with something to hold
+    std::vector<std::string> unanswered = unansweredOwnerMessages(ci.history);
+    if (!unanswered.empty()) ci.replyScope = nimbus::orch::renderReplyScopeHint();
+    claims_.noteUnanswered(std::move(unanswered));
+  }
   turnMem().gate.phase("history", freeHeap(), largestFreeBlock());
   // R3: this chat's TTL table choice and its per-chat cache key.
   turnGaps_.note(chatId, nowMs());
@@ -2813,9 +2817,8 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
     ". Your orch_turn `reply` field is ALREADY delivered to this same channel - that is"
     " the one and only answer; never send the same answer twice." +
     loopHint +
-    // Lane MLQ: the owner-voice rules next to the message they govern (owner_voice.h).
-    "\n\n" + nimbus::orch::renderOwnerVoiceHint(text) +
-    "\n[USER]\n" + text;
+    // Lane MLQ: a message that disputes an attribution gets its line right before it.
+    "\n\n" + nimbus::orch::renderDisputedClaimHint(text) + "[USER]\n" + text;
   turnMem().gate.phase("inputs", freeHeap(), largestFreeBlock());
   turnMem().admitted = true;   // runTurn continues this record
   runTurn(inputs, chatId, text, telegram);   // text drives associative recall

@@ -140,6 +140,9 @@ struct ComposeInputs {
   // so the head saves it (prefs.edit for a rule, mem_write for a fact) instead of
   // acknowledging. "" = not a remember-request.
   std::string memoryRouting;
+  // Lane MLQ (OIR-06): the [REPLY SCOPE] line (owner_voice.h) on a human turn whose history
+  // holds an earlier owner message with no reply; "" otherwise.
+  std::string replyScope;
 };
 
 // Compose the World system prompt as the cacheable parts of prompt_layout.h,

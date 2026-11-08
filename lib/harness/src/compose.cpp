@@ -565,6 +565,7 @@ std::string composeInstructions(const ComposeInputs& in) {
   const std::string food = foodBlock(in);
   std::string headExtra = loopNote + food;
   if (!in.memoryRouting.empty()) headExtra += (headExtra.empty() ? "" : "\n") + in.memoryRouting;
+  if (!in.replyScope.empty()) headExtra += (headExtra.empty() ? "" : "\n") + in.replyScope;
   dyn.identity = "\n" + head + (head.empty() ? "" : "\n") + headExtra;
   dyn.sessions = renderSessions(in.sessions);
   dyn.recentConversation = in.recentConversation;

@@ -13,8 +13,10 @@
 // it (an earlier owner message that got no reply read as still waiting for one) or
 // where the per-turn framing pulled the other way ([FRESH RESULTS]: "with only the
 // sources they name"). These lines put each rule next to the message it governs, in
-// the per-turn turn input of a real human message only: the cached blocks stay
-// byte-identical, and a routine's prompt or a sub-agent's text never gets them.
+// the per-turn block of a real human message only, and only when they govern something
+// there (fix pass: a line on every turn moved mistral-large-4-0's wording on unrelated
+// rows): the cached blocks stay byte-identical, and a routine's prompt or a sub-agent's
+// text never gets them.
 namespace nimbus {
 namespace orch {
 
@@ -27,13 +29,17 @@ namespace orch {
 // apostrophe a phone keyboard types counts too.
 bool disputesAttribution(const std::string& text);
 
-// The per-turn lines for a human message (each ends with a newline): [REPLY SCOPE] on
-// every one (answer this message; an earlier question or request shown with [no reply] is
-// still owed unless left for later; any other earlier message and a memory are context),
-// and [DISPUTED CLAIM] when disputesAttribution(text) (search first; with no message of
-// theirs behind the claim, say so and that you were wrong, in your own words, without the
-// attribution wording, not even quoted).
-std::string renderOwnerVoiceHint(const std::string& text);
+// The [REPLY SCOPE] line (ends with a newline), for a human turn whose history holds an
+// earlier owner message with no reply (the engine's per-turn head lines): answer this
+// message; an earlier question or request shown with [no reply] is still owed unless left
+// for later; any other earlier message and a memory are context.
+std::string renderReplyScopeHint();
+
+// The [DISPUTED CLAIM] line (ends with a newline) when disputesAttribution(text), else "":
+// search first; with no message of theirs behind the claim, say so and that you were
+// wrong, in your own words, without the attribution wording, not even quoted. It rides
+// the turn input right before [USER]; with no dispute the input is the base's, byte for byte.
+std::string renderDisputedClaimHint(const std::string& text);
 
 // The reply-scope check (OIR-06). An earlier owner remark that got no reply reads to a
 // head as still waiting for one: on the 48e166c2 leg mistral-large-4-0 answered "I love

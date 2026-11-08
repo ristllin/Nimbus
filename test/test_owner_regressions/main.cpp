@@ -575,8 +575,8 @@ void test_oir_50_disputed_quote_is_checked() {
   // Not disputes: news the owner had not shared, a request to be shown something.
   TEST_ASSERT_FALSE(disputesAttribution("I didn't tell you, but I got the job!"));
   TEST_ASSERT_FALSE(disputesAttribution("Show me where the file is."));
-  TEST_ASSERT_TRUE(renderOwnerVoiceHint(owner).find("[DISPUTED CLAIM]") != std::string::npos);
-  TEST_ASSERT_TRUE(renderOwnerVoiceHint("Log my lunch").find("[DISPUTED CLAIM]") == std::string::npos);
+  TEST_ASSERT_TRUE(renderDisputedClaimHint(owner).rfind("[DISPUTED CLAIM]", 0) == 0);
+  TEST_ASSERT_EQUAL_STRING("", renderDisputedClaimHint("Log my lunch").c_str());   // the base's input, byte for byte
   const std::string words = normalizedWords(owner);
   const char* quoted = "I was wrong to say \"as you told me.\"";
   ClaimGap gap;
@@ -593,7 +593,7 @@ void test_oir_50_disputed_quote_is_checked() {
 // reply-scope check finds the sentence that takes the earlier message up, unless this
 // message brings it up itself.
 void test_oir_06_unanswered_message_not_taken_up() {
-  TEST_ASSERT_TRUE(renderOwnerVoiceHint("Log my lunch").rfind("[REPLY SCOPE]", 0) == 0);
+  TEST_ASSERT_TRUE(renderReplyScopeHint().rfind("[REPLY SCOPE]", 0) == 0);
   const std::vector<std::string> earlier = {"(Sun 8 Nov) I love tech trivia, ask me sometime."};
   const std::string now = "Log my lunch: a chicken bowl, 620 kcal.";
   const std::string reply = "Logged: lunch, chicken bowl, 620 kcal. I'll quiz you on tech trivia sometime!";
@@ -666,7 +666,7 @@ void test_oir_50_owner_action_tail_keeps_its_own_rule() {
 // remark up on a live leg.
 void test_oir_06_owed_answers_and_reported_facts_are_in_scope() {
   // The per-turn line says so too: an earlier question or request shown with [no reply] is owed.
-  TEST_ASSERT_TRUE(renderOwnerVoiceHint("Log my lunch").find("question or request of theirs shown with [no reply] is still owed") !=
+  TEST_ASSERT_TRUE(renderReplyScopeHint().find("question or request of theirs shown with [no reply] is still owed") !=
                    std::string::npos);
   // An earlier question that got no reply is owed its answer, pinged or not.
   TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Yes, I am here. Your protein target is 150 g.", "Hello? Are you there?",

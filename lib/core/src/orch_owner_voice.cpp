@@ -298,20 +298,21 @@ bool disputesAttribution(const std::string& text) {
   return false;
 }
 
-std::string renderOwnerVoiceHint(const std::string& text) {
-  std::string out =
-      "[REPLY SCOPE] Answer this message. An earlier question or request of theirs shown with [no reply] "
-      "is still owed its answer, unless they left it for later. Any other earlier message (a remark, an "
-      "invitation, one already answered) and a memory are context, not requests still waiting for an "
-      "answer: the reply adds no question, offer or promise on a topic this message does not ask about. "
-      "[OPEN QUESTIONS] keep their own rule.\n";
-  if (disputesAttribution(text))
-    out += "[DISPUTED CLAIM] This message says they never said or did something you said they did. "
-           "Search the episodic log first. If no message of theirs says it, say that plainly and that "
-           "you were wrong, and describe your earlier claim in your own words: no \"you told me\", "
-           "\"you said\", \"you mentioned\", \"you photographed\" or \"you confirmed\" anywhere in the "
-           "reply, not in quotes and not in the apology.\n";
-  return out;
+std::string renderReplyScopeHint() {
+  return "[REPLY SCOPE] Answer this message. An earlier question or request of theirs shown with [no reply] "
+         "is still owed its answer, unless they left it for later. Any other earlier message (a remark, an "
+         "invitation, one already answered) and a memory are context, not requests still waiting for an "
+         "answer: the reply adds no question, offer or promise on a topic this message does not ask about. "
+         "[OPEN QUESTIONS] keep their own rule.\n";
+}
+
+std::string renderDisputedClaimHint(const std::string& text) {
+  if (!disputesAttribution(text)) return std::string();
+  return "[DISPUTED CLAIM] This message says they never said or did something you said they did. "
+         "Search the episodic log first. If no message of theirs says it, say that plainly and that "
+         "you were wrong, and describe your earlier claim in your own words: no \"you told me\", "
+         "\"you said\", \"you mentioned\", \"you photographed\" or \"you confirmed\" anywhere in the "
+         "reply, not in quotes and not in the apology.\n";
 }
 
 }  // namespace orch

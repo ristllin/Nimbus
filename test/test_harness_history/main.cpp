@@ -901,11 +901,13 @@ static void test_mlq_unanswered_owner_message_reaches_the_scope_check() {
     r.eng->handleMessage("Log my lunch: a chicken bowl, 620 kcal.", "Roy", "123");
     TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
     TEST_ASSERT_TRUE_MESSAGE(r.finalChecks[0].find("[REPLY SCOPE CHECK]") != std::string::npos, r.finalChecks[0].c_str());
-    // The per-turn lines ride the turn input, right before [USER].
+    // Fix pass: the [REPLY SCOPE] line rides the per-turn head lines, and only on a turn whose
+    // history holds an unanswered owner message; the turn input is the base's ("\n\n[USER]\n").
+    TEST_ASSERT_TRUE(r.instructions.back().find("[REPLY SCOPE] Answer this message.") != std::string::npos);
     const std::string& in = r.inputs.back();
-    TEST_ASSERT_TRUE(in.find("[REPLY SCOPE]") != std::string::npos);
-    TEST_ASSERT_TRUE(in.find("[REPLY SCOPE]") < in.find("[USER]\nLog my lunch"));
+    TEST_ASSERT_TRUE(in.find("[REPLY SCOPE]") == std::string::npos);
     TEST_ASSERT_TRUE(in.find("[DISPUTED CLAIM]") == std::string::npos);
+    TEST_ASSERT_TRUE(in.find("\n\n[USER]\nLog my lunch") != std::string::npos);
   }
   {
     Rig r;   // the earlier message was answered: no round
@@ -916,6 +918,7 @@ static void test_mlq_unanswered_owner_message_reaches_the_scope_check() {
     r.eng->handleMessage("Log my lunch: a chicken bowl, 620 kcal.", "Roy", "123");
     TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
     TEST_ASSERT_TRUE(r.finalChecks[0].find("[REPLY SCOPE CHECK]") == std::string::npos);
+    TEST_ASSERT_TRUE(r.instructions.back().find("[REPLY SCOPE] Answer this message.") == std::string::npos);   // nothing to hold
   }
   {
     Rig r;   // this message brings the earlier one up: no round
