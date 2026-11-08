@@ -1879,8 +1879,9 @@ function _nvsBanner(n,r){let b=$('nvsBanner');
 // The degraded banner on Home (lane DEGRADE): one line per condition the device runs
 // degraded on, the same set its screen shows (/api/state degraded). The reason opens under
 // its line (a native details row: keyboard reachable, no script state). Calm on purpose: no
-// motion, no toast, no sound. A row is updated in place, so a reason the page is reading
-// stays open across the 3 s poll.
+// motion, no toast, no sound. A row is updated in place and only where something changed, so a
+// reason the page is reading stays open, a focused line keeps focus and a selection survives
+// the 3 s poll.
 function _degradedBanner(g){
   let b=$('degradedBar');
   const items=(g&&g.items)||[];
@@ -1890,6 +1891,7 @@ function _degradedBanner(g){
   const rows={};
   [].slice.call(b.children).forEach(ch=>{rows[ch.getAttribute('data-dg')]=ch;});
   const keep={};
+  let at=0;
   items.forEach(it=>{
     keep[it.id]=1;
     let row=rows[it.id];
@@ -1897,11 +1899,18 @@ function _degradedBanner(g){
       const sm=document.createElement('summary');sm.style.cursor='pointer';
       const p=document.createElement('p');p.style.margin='4px 0 4px 16px';p.style.opacity='.85';
       row.appendChild(sm);row.appendChild(p);}
-    row.firstChild.textContent=it.line;row.lastChild.textContent=it.why;
-    b.appendChild(row);   // in the device's order (a moved row keeps its open state)
+    // Write only what changed: assigning textContent replaces the text node even with the same
+    // text, which clears a selection in it and makes a live region announce again.
+    if(row.firstChild.textContent!==it.line)row.firstChild.textContent=it.line;
+    if(row.lastChild.textContent!==it.why)row.lastChild.textContent=it.why;
+    // In the device's order, and a row already in place is left alone: appendChild MOVES a node
+    // (remove, then insert), which drops the focus of a keyboard user on its line every 3 s.
+    if(b.children[at]!==row)b.insertBefore(row,b.children[at]||null);
+    at++;
   });
   Object.keys(rows).forEach(id=>{if(!keep[id])b.removeChild(rows[id]);});
-  b.style.display=items.length?'block':'none';
+  const show=items.length?'block':'none';
+  if(b.style.display!==show)b.style.display=show;
 }
 function applyState(d){
   if(d.storeSD!==undefined){GB.sd=!!d.storeSD&&!d.sdLost;_chatTraceHint();}
