@@ -267,11 +267,11 @@ struct TlsIo {
     // read() in a busy loop for Stream's own timeout (1 s by default) once read() reports
     // the end. read() above already waits (yielding) until a byte, the end or the deadline,
     // so that second wait could only spin the poll task without yielding. It is reached
-    // only when the parser asks for a byte past the end of the input, which means a
-    // truncated or early-closed response: a complete document is never read past its
+    // only when the parser asks for a byte past the end of the input: a truncated or
+    // early-closed response, or an empty body. A complete document is never read past its
     // closing brace (checked with a host probe against ArduinoJson 7.4.3, this filter and
-    // nesting limit). So this removes a 1 s spin per cut-off response, not per response
-    // (lane TGSTALL).
+    // nesting limit). So this removes a 1 s spin per cut-off or empty response, not per
+    // response (lane TGSTALL).
     rdr.setTimeout(0);
     DeserializationError derr =
         deserializeJson(*doc, rdr, DeserializationOption::Filter(*filter),
