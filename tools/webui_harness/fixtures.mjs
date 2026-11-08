@@ -31,6 +31,9 @@ export const STATE = {
     battMon: true, settingsLive: true,
   },
   storeSD: true, sdLost: false,
+  // Lane DEGRADE: /api/state always carries the degraded set (count 0 when healthy), the
+  // same set the device screen shows (nimbus/orch/degraded.h degradedInto).
+  degraded: { count: 0, gen: 0, items: [] },
   // Reach info the Home info line + connectivity render. rssi is the current station
   // signal the Wi-Fi panel badges on the in-use saved network (proposal §3).
   sta: true, rssi: -58,
