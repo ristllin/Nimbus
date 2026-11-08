@@ -25,13 +25,16 @@ std::string straightApostrophes(const std::string& s) {
 }
 
 // What an owner writes when the head credited them with words or an act that was never
-// theirs (OIR-50, 2 Nov: "I never said that", "where did I say that").
+// theirs (OIR-50, 2 Nov: "I never said that", "where did I say that"). Only the forms that
+// dispute a claim: "I didn't tell you, but I got the job" and "show me where the file is"
+// are not disputes, so "didn't tell you" and "show me where" alone never count.
 const char* const kDisputePhrases[] = {
-    "i never said",       "never said that",   "i didn't say",      "i did not say",
-    "i never told you",   "never told you that", "i didn't tell you", "i did not tell you",
-    "where did i say",    "where i said",      "where i supposedly", "when did i say",
-    "show me where",      "not what i said",   "i never mentioned", "i didn't mention",
-    "i never sent",       "i never photographed", "i never confirmed", "i didn't confirm",
+    "i never said that",     "i never said it",       "i never said i",      "never said that",
+    "i didn't say that",     "i did not say that",    "i didn't say i",      "i did not say i",
+    "i never told you that", "i never told you i",    "where did i say",     "where did i tell you",
+    "when did i say",        "when did i tell you",   "where i supposedly",  "not what i said",
+    "i never mentioned that", "i never photographed", "i never confirmed",   "i didn't confirm that",
+    "i never sent that",     "i never sent you",
 };
 
 // Words too common to name a topic (4+ letters; shorter words never count).

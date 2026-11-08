@@ -530,6 +530,9 @@ static std::string freshSeedBody(const std::vector<JobEngine::FreshResult>& take
   // sources a result names and state only facts it contains, never facts from
   // earlier answers.
   b += kFreshFactsLine;
+  bool web = false;   // lane MLQ: a result that ran the web gets the primary-source line
+  for (const auto& f : taken) web = web || f.web || f.provenance.find(", web: ") != std::string::npos;
+  if (web) b += kFreshSourcesLine;
   // Bound the SEED (Context Fabric, 2026-08-05): a fan-out synthesis inlined all
   // sub-results here - 6 x 3500 chars = ~21 KB in the pinned user turn that the
   // in-turn fold can never trim, which (measured) floored the request body near

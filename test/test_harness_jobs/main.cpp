@@ -1358,22 +1358,29 @@ static void test_cum822_web_results_carry_the_sources_and_no_stale_facts_line() 
 
 // Lane MLQ (OIR-38): a commute result that credits a delay to an aggregator site was relayed
 // as fact by mistral-large-4-0 5 of 5 times: "with only the sources they name" read as "pass
-// the source on". The facts line under the header says what such a fact becomes (labeled
-// unverified, naming the primary source to check), on every fresh block.
+// the source on". A fresh block whose results ran the web carries the line that says what
+// such a fact becomes (labeled unverified, naming the primary source to check), right under
+// the facts line; a block of results that never touched the web pays no bytes for it.
 static void test_mlq_fresh_block_labels_a_secondary_source() {
-  Rig r;
-  r.adapter.toolRuns = 4;
-  r.adapter.webRuns = 2;
-  r.adapter.doneReply = "Commute: the 07:42 district line service is delayed, per grandcentralrail.com.";
-  runOneDoneJob(r, sp("The daily commute brief: disruptions this morning."));
-  const std::string block = r.eng->takeFreshResults();
-  const size_t facts = block.find(agent::kFreshFactsLine);
-  TEST_ASSERT_TRUE_MESSAGE(facts != std::string::npos, block.c_str());
-  const std::string line = block.substr(facts, block.find('\n', facts) - facts);
-  TEST_ASSERT_TRUE_MESSAGE(line.find("time-sensitive fact") != std::string::npos, line.c_str());
-  TEST_ASSERT_TRUE(line.find("is said to be unverified, naming the primary source to check") != std::string::npos);
-  TEST_ASSERT_TRUE(line.find("National Rail") != std::string::npos);
-  TEST_ASSERT_TRUE(facts < block.find("grandcentralrail.com"));   // the rule comes before the result
+  for (uint16_t web : {0, 2}) {
+    Rig r;
+    r.adapter.toolRuns = 4;
+    r.adapter.webRuns = web;
+    r.adapter.doneReply = "Commute: the 07:42 district line service is delayed, per grandcentralrail.com.";
+    runOneDoneJob(r, sp("The daily commute brief: disruptions this morning."));
+    const std::string block = r.eng->takeFreshResults();
+    const size_t facts = block.find(agent::kFreshFactsLine);
+    TEST_ASSERT_TRUE_MESSAGE(facts != std::string::npos, block.c_str());
+    const size_t line = block.find(agent::kFreshSourcesLine);
+    if (!web) {
+      TEST_ASSERT_EQUAL_MESSAGE(std::string::npos, line, block.c_str());
+      continue;
+    }
+    TEST_ASSERT_EQUAL_MESSAGE(facts + std::strlen(agent::kFreshFactsLine), line, block.c_str());
+    TEST_ASSERT_TRUE(std::string(agent::kFreshSourcesLine).find("is said to be unverified, naming the primary source") !=
+                     std::string::npos);
+    TEST_ASSERT_TRUE(line < block.find("grandcentralrail.com"));   // the rule comes before the result
+  }
 }
 
 // Check of c962b5d0: a sub that ran only a web search (weather) for "the weather for my

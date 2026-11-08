@@ -566,8 +566,12 @@ void test_oir_50_defended_hallucination() {
 void test_oir_50_disputed_quote_is_checked() {
   const std::string owner = "I never said that. Show me where I supposedly said it.";
   TEST_ASSERT_TRUE(disputesAttribution(owner));
-  TEST_ASSERT_TRUE(disputesAttribution("I didn\xE2\x80\x99t tell you that"));   // the phone's apostrophe
+  TEST_ASSERT_TRUE(disputesAttribution("I didn\xE2\x80\x99t say that"));   // the phone's apostrophe
+  TEST_ASSERT_TRUE(disputesAttribution("Where did I tell you I ate a burger?"));
   TEST_ASSERT_FALSE(disputesAttribution("What did I have for dinner yesterday?"));
+  // Not disputes: news the owner had not shared, a request to be shown something.
+  TEST_ASSERT_FALSE(disputesAttribution("I didn't tell you, but I got the job!"));
+  TEST_ASSERT_FALSE(disputesAttribution("Show me where the file is."));
   TEST_ASSERT_TRUE(renderOwnerVoiceHint(owner).find("[DISPUTED CLAIM]") != std::string::npos);
   TEST_ASSERT_TRUE(renderOwnerVoiceHint("Log my lunch").find("[DISPUTED CLAIM]") == std::string::npos);
   const std::string words = normalizedWords(owner);
