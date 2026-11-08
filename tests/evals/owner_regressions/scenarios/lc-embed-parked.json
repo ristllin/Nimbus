@@ -6,6 +6,7 @@
   "clock": "{{TODAY}} {{DOW}} 14:30 GMT",
   "devName": "Nimbus",
   "webSearch": false,
+  "localMemory": true,
   "steps": [
     {"do": "say", "text": "Remember: my printer is a Lexmark B3442."}
   ],

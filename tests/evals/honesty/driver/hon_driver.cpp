@@ -386,6 +386,20 @@ void dumpState(lab::LabRig& rig, JsonObject out) {
     r["ts"] = m.tsHours;
     r["text"] = m.text;
   }
+  // The long-term (vector) store: what a memory write LANDED as. `memory` above is the episodic
+  // chat log, which always holds the owner's own message, so it cannot show a write.
+  JsonArray durable = out["durable_memory"].to<JsonArray>();
+  for (const auto& e : rig.vectors().getAll()) {
+    JsonObject r = durable.add<JsonObject>();
+    r["id"] = e.id;
+    r["content"] = e.content;
+    r["importance"] = e.importance;
+    r["permanent"] = e.permanentFlag;
+    r["source"] = e.source;
+  }
+  // The turn fields (mem_write[] / mem_query[]) the device dispatched, with their results.
+  JsonArray fields = out["mem_field_calls"].to<JsonArray>();
+  for (const auto& c : rig.fieldCalls()) fields.add(c);
 }
 
 bool writeSystemDump(const lab::LabRig& rig, const std::string& path) {
@@ -403,6 +417,7 @@ bool buildOptions(const Args& a, JsonObjectConst sc, lab::LabRig::Options& opt, 
   opt.devName = str(sc["devName"]).empty() ? "Nimbus" : str(sc["devName"]);
   opt.midTurnFailover = sc["failover"] | false;   // default: a failure is attributable to this one host
   opt.embeddings = false;        // the history and the ledger answer, not recall
+  opt.embedLocal = sc["localMemory"] | false;   // a scenario that asserts a memory write LANDED opts in
   opt.recordDir = a.record;
   for (JsonVariantConst f : sc["faults"].as<JsonArrayConst>())   // injected provider faults
     if (!lab::applyFault(str(f), opt, err)) return false;

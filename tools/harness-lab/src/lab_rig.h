@@ -109,6 +109,11 @@ class LabRig {
     bool        toolLoop = true;
     bool        verboseHttp = false;
     bool        embeddings = true;   // real embeddings => real associative recall
+    // A deterministic local embedder (trigram hash at embedDims, no network, no key) so a memory
+    // write can LAND in a run that has `embeddings` off: for scenarios that assert a write landed,
+    // not recall quality (owner-regression lc-save-status, lc-embed-parked). Per-turn recall stays
+    // governed by `embeddings`.
+    bool        embedLocal = false;
     // Simulated INTERNAL-heap reading, in bytes. The device's turn/loop gates all
     // read ESP.getFreeHeap(); reporting a large value here means they never fire,
     // which is right for logic testing but makes the lab blind to the failure the
@@ -259,6 +264,9 @@ class LabRig {
   std::string addRow(const Row& r) { return captureRow(r); }
   orch::ToolRegistry& registry() { return reg_; }
   orch::VectorMemory& vectors() { return vec_; }
+  // The orch_turn mem_write[] / mem_query[] items the device dispatched, "name(args) -> result"
+  // (head-loop tool calls are in TurnRecord::toolCalls; these never are).
+  const std::vector<std::string>& fieldCalls() const { return fieldCalls_; }
   orch::Scratchpad& scratchpad() { return scratch_; }
   agent::JobEngine& jobs() { return *jobs_; }
   // Lane C2 (L19-35): give the job engine a journal (no fabric: spawns queue, never
@@ -536,6 +544,7 @@ class LabRig {
   // Real embeddings through the same portable request/response codec the device
   // uses - so recall in the lab is genuine associative recall, not a fake.
   std::vector<int8_t> embed(const std::string& text) {
+    if (opt_.embedLocal) return localEmbed(text);
     if (!opt_.embeddings) return {};
     const std::string key = env_.providerKey(opt_.embedHost);
     if (key.empty()) return {};
@@ -564,6 +573,22 @@ class LabRig {
       return {};
     }
     return orch::VectorMemory::quantize(f);
+  }
+
+  // The local embedder behind Options::embedLocal: a lowercase trigram hash at the store's width.
+  std::vector<int8_t> localEmbed(const std::string& text) const {
+    const int dims = opt_.embedDims > 0 ? opt_.embedDims : 64;
+    std::vector<float> v((size_t)dims, 0.0f);
+    for (size_t i = 0; i + 2 < text.size(); i++) {
+      uint32_t h = 2166136261u;
+      for (size_t k = i; k < i + 3; k++) {
+        h ^= (uint8_t)std::tolower((unsigned char)text[k]);
+        h *= 16777619u;
+      }
+      v[h % (uint32_t)dims] += 1.0f;
+    }
+    if (text.size() < 3) v[0] = 1.0f;
+    return orch::VectorMemory::quantize(v);
   }
 
   // The simulated internal-heap reading shared by Platform and ProviderDeps.
@@ -909,7 +934,14 @@ class LabRig {
   void wireTurnFields(agent::ApplyDeps& a) {
     a.withMemoryLock = [](const std::function<void()>& fn) { fn(); };
     a.memDispatch = [this](const char* name, ArduinoJson::JsonObjectConst args,
-                           const orch::Principal& who) { return reg_.dispatch(name, args, who); };
+                           const orch::Principal& who) {
+      const orch::ToolResult r = reg_.dispatch(name, args, who);
+      std::string a;
+      ArduinoJson::serializeJson(args, a);
+      fieldCalls_.push_back(std::string(name) + "(" + trunc(a, 200) + ") -> " +
+                            trunc(r.success ? r.output : "ERROR " + r.error, 160));
+      return r;
+    };
     a.persistMemory = [] {};
     a.applyScratch = [this](const orch::ScratchUpdate& u) {
       const std::string before = scratch_.serialize();
@@ -1031,6 +1063,7 @@ class LabRig {
   ShimTransport shim_{&wire_};
 
   orch::VectorMemory vec_;
+  std::vector<std::string> fieldCalls_;
   orch::Scratchpad   scratch_;
   orch::MemOpCounters memOps_;
   orch::MemConfig    memCfg_;

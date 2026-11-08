@@ -12,6 +12,7 @@ Usage: python3 evidence/qfix/announce_scan.py [--list] [--out FILE]
   --out    write the same listing to FILE
 No model call is made. Run from the tree root.
 """
+
 import argparse
 import glob
 import json
@@ -74,9 +75,7 @@ def main():
         else:
             flag_notool += 1
         lines.append(f"{'TOOLS' if tools else 'NOTOOL'}\t{sc}\t{p}#turn{i}\t{o.split(chr(9), 1)[1]}")
-    summary = (
-        f"replies={n} no_tool_call={notool} flagged_no_tool={flag_notool} flagged_with_tool_calls={flag_tool}"
-    )
+    summary = f"replies={n} no_tool_call={notool} flagged_no_tool={flag_notool} flagged_with_tool_calls={flag_tool}"
     print(summary)
     if a.list:
         print("\n".join(lines))

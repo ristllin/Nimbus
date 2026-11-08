@@ -1,0 +1,54 @@
+{
+  "id": "lc-photo-default-servings",
+  "title": "A servings label photo logs the whole pack by default and never asks (held-out variant of lc-photo-default)",
+  "rows": [
+    "OIR-35"
+  ],
+  "replays": "Held-out variant of lc-photo-default (fix pass F4): other numbers and other words than the playbook's worked example (servings per pouch, not bars per pack), so a pass shows the rule generalizes and is not the model copying its prompt.",
+  "clock": "{{TODAY}} {{DOW}} 15:40 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "steps": [
+    {
+      "do": "say",
+      "text": "Here is a photo of the nutrition label on my trail mix pouch: 150 kcal per serving, 4 servings per pouch. Logging my snack."
+    }
+  ],
+  "assertions": [
+    "reply_ok",
+    {
+      "id": "ledger_row_kcal_near",
+      "params": {
+        "item": "trail mix",
+        "expected": 600,
+        "tol": 5
+      }
+    },
+    {
+      "id": "reply_contains_any",
+      "params": {
+        "any": [
+          "whole pouch",
+          "whole pack",
+          "all 4",
+          "four servings",
+          "600",
+          "entire pouch"
+        ]
+      }
+    },
+    {
+      "id": "reply_forbids",
+      "params": {
+        "forbidden": [
+          "did you eat the whole",
+          "did you eat all",
+          "how many servings",
+          "whole pouch?",
+          "how many did you",
+          "how many of the"
+        ]
+      }
+    }
+  ]
+}

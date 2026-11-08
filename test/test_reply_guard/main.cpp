@@ -336,6 +336,11 @@ static void test_informational_sentences_are_no_announcement() {
            "Logging breakfast: 150 g skyr, 175 kcal (from your nutrition table).",
            "I'm saving that as a lasting preference.",
            "Saving it now.",
+           // A subordinate clause about what the owner gave is not a predicate of the announcement itself
+           // (live, 8 Nov, fix pass: "Logging the whole pack as you sent it: 4 bars x 220 kcal = 880 kcal.").
+           "Logging the whole pack as you sent it: 4 bars x 220 kcal = 880 kcal.",
+           "Logging it as you told me: boba tea, 238 kcal.",
+           "Logging your lunch with the figures you gave, 670 kcal.",
            "Logging a granola bar at 210 kcal.",
            "Recording the snack at 220 kcal.",
        })

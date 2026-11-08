@@ -511,19 +511,19 @@ const char* const kFinite[] = {
     "do",      "does",    "did",     "will",   "would",  "can",     "could",   "should",  "may",    "might",
     "must",    "shall",   "cannot",  "isn't",  "aren't", "wasn't",  "weren't", "doesn't", "don't",  "didn't",
     "won't",   "can't",   "couldn't", "wouldn't", "shouldn't",
-    "keeps",   "kept",    "works",   "worked", "takes",  "took",    "makes",   "made",    "adds",   "added",
-    "means",   "meant",   "helps",   "helped", "gives",  "gave",    "lets",    "costs",   "cost",   "requires",
-    "required", "needs",  "needed",  "depends", "saves", "saved",   "goes",    "went",    "gets",   "got",
-    "becomes", "became",  "comes",   "came",   "uses",   "used",    "shows",   "showed",  "tells",  "told",
-    "lasts",   "lasted",  "protects", "prevents", "avoids", "ensures", "reduces", "increases", "improves",
-    "matters", "counts",  "runs",    "ran",    "starts", "started", "stops",   "stopped", "turns",  "turned",
-    "brings",  "brought", "stays",   "stayed", "remains", "allows", "allowed", "causes",  "caused", "creates",
-    "created", "leads",   "led",     "tends",  "seems",  "seemed",  "looks",   "looked",  "feels",  "felt",
-    "appears", "covers",  "includes", "included", "holds", "held",   "risks",   "frees",   "freed",  "cools",
-    "wastes",  "slows",   "speeds",  "pays",   "paid",   "builds",  "built",   "moves",   "moved",  "lists",
-    "listed",  "stores",  "records", "logs",   "writes", "wrote",   "sends",   "sent",    "removes", "deletes",
-    "changes", "changed", "updates", "updated", "sets",   "pins",    "notes",   "noted",
+    "keeps",   "kept",    "works",   "worked", "takes",  "took",    "makes",   "made",    "adds",   "means",
+    "meant",   "helps",   "helped",  "gives",  "lets",   "costs",   "cost",    "requires", "needs", "depends",
+    "saves",   "goes",    "went",    "gets",   "becomes", "became", "comes",   "came",    "uses",   "shows",
+    "tells",   "lasts",   "lasted",  "protects", "prevents", "avoids", "ensures", "reduces", "increases",
+    "improves", "matters", "counts", "runs",   "ran",    "starts",  "started", "stops",   "stopped", "turns",
+    "turned",  "brings",  "brought", "stays",  "stayed", "remains", "remained", "allows", "caused", "causes",
+    "creates", "leads",   "tends",   "seems",  "seemed", "looks",   "feels",   "appears", "covers", "includes",
+    "holds",   "risks",   "frees",   "cools",  "wastes", "slows",   "speeds",  "pays",    "builds", "moves",
+    "lists",   "stores",  "records", "logs",   "writes", "sends",   "removes", "deletes", "changes", "updates",
+    "sets",    "pins",    "notes",
 };
+// Past forms of what the owner did or gave ("sent", "told", "gave", "showed", "wrote", "got", "used") are left out
+// on purpose: "Logging the whole pack as you sent it" is an announcement with a subordinate clause, not a statement.
 
 bool isClauseBreak(const std::string& s, size_t at) {
   const char c = s[at];

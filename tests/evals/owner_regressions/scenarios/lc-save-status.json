@@ -6,6 +6,7 @@
   "clock": "{{TODAY}} {{DOW}} 09:40 GMT",
   "devName": "Nimbus",
   "webSearch": false,
+  "localMemory": true,
   "steps": [
     {"do": "say", "text": "Remember this for the long term: my bike lock code is 8273."}
   ],

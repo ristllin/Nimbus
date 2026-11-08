@@ -489,7 +489,7 @@ static void test_food_playbooks_state_their_rules() {
   TEST_ASSERT_TRUE(agent::isBuiltinSkill(agent::kFoodCoachSkillId));
   const std::string f = agent::builtinSkillBody(agent::kFoodLogSkillId, true);
   for (const char* must : {"A meal is logged only when the owner says it was eaten",
-                           "A question, a\n   request for a plan or\n   for amounts", "Meals go ONLY to the ledger file it names",
+                           "A question, a request for a plan or\n   for amounts", "Meals go ONLY to the ledger file it names",
                            "never to mem_write", "Write the row as soon as the meal has an estimate",
                            "Totals come from [TODAY'S FOOD LEDGER] or the files.append reply",
                            "Never add up\n   a day from the conversation",
@@ -503,8 +503,14 @@ static void test_food_playbooks_state_their_rules() {
   // Lane QFIX (REGR-RUN-2): the whole-pack default, stated so a head cannot read
   // "per-serving" as the figure to log, and holding even when the photo itself did
   // not come through (lc-photo-default 0/5 on claude-haiku-5-5).
-  for (const char* must : {"photo means eaten WHOLE", "220 kcal per bar x\n   4 bars in the pack = 880 kcal",
-                           "not even when the photo did not come through", "and ask nothing else",
+  // Fix pass F4: the worked example uses numbers no fixture uses (190 x 3 = 570, not the
+  // lc-photo-default pack), so a green row cannot be the model copying its own prompt.
+  // A servings label is the case the first wording missed: a "pouch" with "4 servings" read as one serving eaten
+  // (held-out lc-photo-default-servings, 3/10 on claude-haiku-5-5), so the rule says a serving is the label's
+  // unit, never the amount eaten.
+  for (const char* must : {"photo means eaten WHOLE", "whole pack, pouch, box or bottle",
+                           "x servings in it, e.g. 190 x 3 = 570 kcal", "serving is the label's unit, never the amount eaten",
+                           "not even when the photo\n   did not come through", "and ask nothing\n   else",
                            "A pack photo with no question is not a\n   missing amount (rule 1)",
                            "A rule the\n   owner asks you to remember is not a meal and not a memory note: save it as\n   a standing rule with prefs.edit"})
     TEST_ASSERT_TRUE_MESSAGE(f.find(must) != std::string::npos, must);
@@ -517,9 +523,13 @@ static void test_food_playbooks_state_their_rules() {
                            "never hold the row back for a question",
                            "files_read the ledger first\n   and answer from the file as it stands now",
                            "never confirm an earlier\n   claim of yours without that read",
-                           "describe your earlier claim, never quote the line",
-                           "never repeat \"you told me\"", "not inside quotes, not in the apology"})
+                           "withdraw the claim", "naming the withdrawn line while you retract it is fine"})
     TEST_ASSERT_TRUE_MESSAGE(f.find(must) != std::string::npos, must);
+  // Fix pass F4: the prompt states the class (no claim that the owner said, sent or showed something
+  // without a message of theirs), not the fixture's own forbid list, and it no longer forbids an
+  // honest retraction from naming the line it withdraws.
+  for (const char* mustNot : {"never repeat \"you told me\"", "not inside quotes", "never quote the line", "220 kcal per bar"})
+    TEST_ASSERT_TRUE_MESSAGE(f.find(mustNot) == std::string::npos, mustNot);
   const std::string c = agent::builtinSkillBody(agent::kFoodCoachSkillId, true);
   for (const char* must : {"a target you cannot point to is not stated", "your own earlier replies are not a source",
                            "Totals come from [TODAY'S FOOD LEDGER]", "list the ledger's rows",
@@ -540,10 +550,11 @@ static void test_food_playbooks_state_their_rules() {
                            "give NO grams-left figure at all", "not \"N g of protein\n   left\"",
                            "unknown until that row's figure is known",
                            "files_read the\n   ledger first and answer from the file as it stands now",
-                           "I can't find\n   any message from you saying that - I was wrong",
-                           "describe your earlier\n   line without quoting it",
-                           "never repeat \"you told me\"", "not inside quotes, not in the apology"})
+                           "withdraw it", "naming the withdrawn line while you retract it\n   is fine"})
     TEST_ASSERT_TRUE_MESSAGE(c.find(must) != std::string::npos, must);
+  for (const char* mustNot : {"never repeat \"you told me\"", "not inside quotes", "without quoting it",
+                              "I can't find\n   any message from you saying that - I was wrong"})
+    TEST_ASSERT_TRUE_MESSAGE(c.find(mustNot) == std::string::npos, mustNot);
   // The coach carries no logging procedure (a weak head logged the plan it was asked for).
   TEST_ASSERT_TRUE(c.find("files.append {") == std::string::npos);
   TEST_ASSERT_TRUE(c.find("key: \"meal\"") == std::string::npos);

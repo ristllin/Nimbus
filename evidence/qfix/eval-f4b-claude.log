@@ -1,0 +1,11 @@
+claude-haiku-5-5 lc-photo-default-servings rep1: FAIL (0.0015 USD, 5.3s)
+claude-haiku-5-5 lc-photo-default-servings rep2: FAIL (0.0010 USD, 6.8s)
+claude-haiku-5-5 lc-photo-default-servings rep3: FAIL (0.0009 USD, 5.1s)
+claude-haiku-5-5 lc-photo-default-servings rep4: PASS (0.0011 USD, 6.0s)
+claude-haiku-5-5 lc-photo-default-servings rep5: FAIL (0.0021 USD, 8.0s)
+claude-haiku-5-5 lc-photo-default-servings rep6: PASS (0.0010 USD, 5.7s)
+claude-haiku-5-5 lc-photo-default-servings rep7: FAIL (0.0020 USD, 7.7s)
+claude-haiku-5-5 lc-photo-default-servings rep8: FAIL (0.0010 USD, 5.6s)
+claude-haiku-5-5 lc-photo-default-servings rep9: PASS (0.0010 USD, 5.6s)
+claude-haiku-5-5 lc-photo-default-servings rep10: FAIL (0.0009 USD, 5.0s)
+summary: /Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/QFIX/nimbus/tests/evals/owner_regressions/runs/fixpass-f4b/summary.json
