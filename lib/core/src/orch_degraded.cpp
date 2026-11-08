@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "nimbus/orch/memory_tools.h"   // EmbedFail, embedFailWords: the real cause of a parked embedding
 #include "nimbus/orch/provider_slots.h"
 
 namespace nimbus {
@@ -119,6 +120,29 @@ std::string parkTail(const ParkedFact& p) {
 
 bool holds(const ParkedFact& p) { return !parkTail(p).empty(); }
 
+// Does the provider come back without the owner? A refusal park is probed again by itself and a
+// provider's own monthly limit lifts when it is raised or the month turns. Only the owner's pause
+// waits for the owner.
+bool returnsByItself(const ParkedFact& p) {
+  return p.kind != ParkKind::None || (p.paused & kPauseProviderLimit);
+}
+bool waitsForOwner(const ParkedFact& p) { return (p.paused & kPauseOwner) != 0; }
+
+// The closing sentence: what happens next, true of every provider the line names.
+std::string parkReturn(const std::vector<ParkedFact>& held) {
+  bool byItself = false, byOwner = false;
+  for (const ParkedFact& p : held) {
+    byItself = byItself || returnsByItself(p);
+    byOwner = byOwner || waitsForOwner(p);
+  }
+  const bool one = held.size() == 1;
+  if (byItself && byOwner)
+    return one ? "It is checked again by itself, and stays paused until you resume it."
+               : "Those you paused stay paused until you resume them. The others are checked again by themselves.";
+  if (byOwner) return one ? "It stays paused until you resume it." : "They stay paused until you resume them.";
+  return one ? "It is checked again by itself." : "They are checked again by themselves.";
+}
+
 DegradedCondition providerParked(const std::vector<ParkedFact>& held) {
   DegradedCondition c;
   c.id = DegradedId::ProviderParked;
@@ -136,25 +160,63 @@ DegradedCondition providerParked(const std::vector<ParkedFact>& held) {
     c.why += degradedProviderLabel(p.provider) + " " + r.phrase + ".";
     if (!r.fix.empty()) c.why += " " + r.fix + ".";
   }
-  c.why += " Other providers answer meanwhile, and it is checked again by itself.";
+  c.why += " Other providers answer meanwhile. " + parkReturn(held);
   return c;
 }
 
 // ---- 3. memory without embeddings ---------------------------------------------------------
 
-DegradedCondition memory(bool parked, int pending) {
+// The one next step for an embedding outage, by what parked it. Credit advice for a width
+// mismatch sends the owner to the wrong page, and a passing timeout needs no step at all.
+std::string embedFix(EmbedFail kind) {
+  switch (kind) {
+    case EmbedFail::WidthMismatch:
+      return "Set Dimensions to the model's size under Memory > Embedding model.";
+    case EmbedFail::NoModel:
+      return "Choose an embedding model under Memory > Embedding model.";
+    case EmbedFail::RouteNotAllowed:
+      return "Choose another embedding provider under Memory > Embedding model.";
+    case EmbedFail::NoKey:
+      return "Add the embedding provider's key under Assistant > Models.";
+    case EmbedFail::KeyRejected:
+      return "Update the embedding provider's key under Assistant > Models.";
+    case EmbedFail::OutOfCredit:
+    case EmbedFail::CallTooLarge:
+    case EmbedFail::AccountHeld:
+      return "Check the provider's credit and plan under Assistant > Models.";
+    case EmbedFail::Busy:
+    case EmbedFail::Unreachable:
+    case EmbedFail::Timeout:
+    case EmbedFail::RateLimited:
+    case EmbedFail::RouterHeld:
+    case EmbedFail::ProviderError:
+    case EmbedFail::BadResponse:
+    case EmbedFail::BadRequest:
+    case EmbedFail::Unknown:
+      return "It is tried again by itself.";
+    case EmbedFail::None:
+      break;
+  }
+  return "Check the embedding model under Memory > Embedding model and the key under Assistant > Models.";
+}
+
+DegradedCondition memory(bool parked, int pending, EmbedFail kind, const std::string& detail) {
   DegradedCondition c;
   c.id = DegradedId::Memory;
   if (parked && pending > 0) c.line = "Memory is keyword-only, saves queued";
   else if (parked) c.line = "Memory is keyword-only";
   else c.line = "Memory saves are queued";
   if (parked) {
-    c.why = "Embeddings are unavailable, so memory search matches words only";
+    // The cause in the park's own words ("the model returns 1024-wide embeddings but memory is set
+    // to 768"), when it has any; an unmapped cause says nothing rather than "unavailable" twice.
+    std::string cause = kind == EmbedFail::None ? std::string() : embedFailWords(kind, detail);
+    if (cause == "unavailable") cause.clear();
+    c.why = "Embeddings are unavailable" + (cause.empty() ? std::string() : " (" + cause + ")") +
+            ", so memory search matches words only";
     c.why += pending > 0 ? " and " + std::to_string(pending) + (pending == 1 ? " new memory waits" : " new memories wait") +
                                " in a queue."
                          : ".";
-    c.why += " Nothing is lost: queued memories are stored once embeddings answer again."
-             " Check the provider's credit and key under Assistant > Models.";
+    c.why += " Nothing is lost: queued memories are stored once embeddings answer again. " + embedFix(kind);
   } else {
     c.why = std::to_string(pending) + (pending == 1 ? " new memory is" : " new memories are") +
             " waiting for an embedding. They are stored as soon as embeddings answer.";
@@ -321,7 +383,7 @@ DegradedSet computeDegraded(const DegradedFacts& f) {
   if (!held.empty()) out.push_back(providerParked(held));
 
   // 3. Memory, 4. storage, 5. Telegram.
-  if (f.embedParked || f.pendingEmbeds > 0) out.push_back(memory(f.embedParked, f.pendingEmbeds));
+  if (f.embedParked || f.pendingEmbeds > 0) out.push_back(memory(f.embedParked, f.pendingEmbeds, f.embedKind, f.embedDetail));
   if (f.storeFull || f.flashFull) out.push_back(storeFull(f.storeFull));
   DegradedCondition tg;
   if (telegramSilent(f.telegram, tg)) out.push_back(tg);

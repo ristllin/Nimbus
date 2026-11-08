@@ -484,6 +484,8 @@ String embedParkedWhy();      // "" when embeddings are not parked
 struct EmbedHealth {
   bool parked = false;   // embeddings are parked
   int  pending = 0;      // memory writes waiting for an embedding
+  nimbus::orch::EmbedFail kind = nimbus::orch::EmbedFail::None;   // what parked them (None = not parked)
+  std::string detail;    // classifyEmbedFail's secret-safe detail ("1024/768", a provider slug)
 };
 bool embedHealth(EmbedHealth& out);
 void noteEmbedConfigChanged();// an embed config or key save: the park ends

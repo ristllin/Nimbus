@@ -2369,6 +2369,8 @@ bool embedHealth(EmbedHealth& out) {
   if (!g) return false;
   out.parked = g_park.parked();
   out.pending = (int)g_pending.size();
+  out.kind = g_park.reason();
+  out.detail = g_park.detail();
   return true;
 }
 

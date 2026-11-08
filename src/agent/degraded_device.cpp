@@ -89,6 +89,8 @@ void collectMemory(State& s, DegradedFacts& f) {
   if (memory::embedHealth(h)) s.embed = h;   // busy: the last answer stands
   f.embedParked = s.embed.parked;
   f.pendingEmbeds = s.embed.pending;
+  f.embedKind = s.embed.kind;       // why: the reason one tap away names the real cause
+  f.embedDetail = s.embed.detail;
   f.storeFull = files::storeFullActive();
   f.flashFull = memory::flashFull();
   f.clockSynced = memory::clockSynced();

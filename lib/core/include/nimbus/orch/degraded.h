@@ -80,6 +80,10 @@ using DegradedSet = std::vector<DegradedCondition>;
 // ---- the facts -------------------------------------------------------------------
 
 // What the last turn that billed went past (ServingTracker::fact).
+// memory_tools.h defines it; the facts carry it opaquely so this header (which the screen's
+// render context includes) does not pull the memory tools in.
+enum class EmbedFail;
+
 struct FallbackFact {
   bool active = false;                // a later choice answered the last turn
   std::string head;                   // the provider the turn started on (slug)
@@ -117,6 +121,8 @@ struct DegradedFacts {
   FallbackFact fallback;
   std::vector<ParkedFact> parks;
   bool embedParked = false;    // embeddings are parked (EmbedPark)
+  EmbedFail embedKind = EmbedFail(0);   // why (EmbedFail::None = not known), with embedDetail
+  std::string embedDetail;     // classifyEmbedFail's secret-safe detail ("1024/768", a provider slug)
   int  pendingEmbeds = 0;      // memory writes waiting for an embedding
   bool storeFull = false;      // the file store refused a save for room, not yet made
   bool flashFull = false;      // the internal flash is full (memory persists pause)

@@ -22,6 +22,7 @@
 
 #include "nimbus/orch/degraded.h"
 #include "nimbus/orch/file_store.h"
+#include "nimbus/orch/memory_tools.h"   // EmbedFail: the cause the memory reason follows
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/store_full.h"
 
@@ -68,6 +69,19 @@ static size_t count(const std::string& hay, const char* needle) {
   const size_t len = std::strlen(needle);
   while ((pos = hay.find(needle, pos)) != std::string::npos) { ++n; pos += len; }
   return n;
+}
+
+// The braces of the function whose signature starts at `signature` (source text, not a parse).
+static std::string functionBody(const std::string& src, const char* signature) {
+  const size_t at = src.find(signature);
+  if (at == std::string::npos) return std::string();
+  const size_t open = src.find('{', at);
+  int depth = 0;
+  for (size_t i = open; i < src.size(); ++i) {
+    if (src[i] == '{') ++depth;
+    if (src[i] == '}' && --depth == 0) return src.substr(open, i - open + 1);
+  }
+  return std::string();
 }
 
 // Facts that raise exactly one condition (the class walk uses this for every id).
@@ -464,6 +478,41 @@ static void test_the_park_reason_carries_the_one_next_step() {
   TEST_ASSERT_TRUE(none.phrase.empty() && none.fix.empty());
 }
 
+// "it is checked again by itself" is true of a refusal park (it is probed again) and of a provider's
+// own monthly limit (it lifts when the limit is raised or the month turns). It is FALSE of a provider
+// the owner paused: that waits for the owner, and the reason must say so.
+static std::string parkWhy(const std::vector<ParkedFact>& held) {
+  DegradedFacts f;
+  f.uptimeMs = 600000;
+  f.parks = held;
+  DegradedCondition c;
+  TEST_ASSERT_TRUE(pick(f, DegradedId::ProviderParked, c));
+  return c.why;
+}
+
+static void test_a_provider_the_owner_paused_is_not_said_to_return_by_itself() {
+  const std::string paused = parkWhy({parked("mistral", ParkKind::None, 0, kPauseOwner)});
+  TEST_ASSERT_TRUE_MESSAGE(contains(paused, "Resume it under Assistant > Usage"), paused.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(contains(paused, "until you resume it"), paused.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(contains(paused, "by itself"), paused.c_str());   // the contradiction the review found
+
+  const std::string park = parkWhy({parked("openai", ParkKind::Billing, 429)});
+  TEST_ASSERT_TRUE_MESSAGE(contains(park, "checked again by itself"), park.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(contains(park, "until you resume"), park.c_str());
+
+  const std::string limit = parkWhy({parked("anthropic", ParkKind::None, 0, kPauseProviderLimit)});
+  TEST_ASSERT_TRUE_MESSAGE(contains(limit, "by itself"), limit.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(contains(limit, "until you resume"), limit.c_str());
+
+  // Several: both clauses, each about its own providers.
+  const std::string both = parkWhy({parked("mistral", ParkKind::None, 0, kPauseOwner), parked("openai", ParkKind::Billing, 429)});
+  TEST_ASSERT_TRUE_MESSAGE(contains(both, "you paused"), both.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(contains(both, "checked again by themselves") || contains(both, "checked again by itself"), both.c_str());
+  const std::string twoPaused = parkWhy({parked("mistral", ParkKind::None, 0, kPauseOwner), parked("zai", ParkKind::None, 0, kPauseOwner)});
+  TEST_ASSERT_TRUE_MESSAGE(contains(twoPaused, "until you resume them"), twoPaused.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(contains(twoPaused, "by itself") || contains(twoPaused, "by themselves"), twoPaused.c_str());
+}
+
 // ---- 3. memory without its embeddings ------------------------------------------------------
 
 static std::string memoryLine(bool parkedNow, int pending) {
@@ -481,6 +530,79 @@ static void test_memory_says_keyword_only_queued_or_both() {
   TEST_ASSERT_EQUAL_STRING("Memory saves are queued", memoryLine(false, 3).c_str());
   TEST_ASSERT_EQUAL_STRING("Memory is keyword-only, saves queued", memoryLine(true, 3).c_str());
   TEST_ASSERT_EQUAL_STRING("<none>", memoryLine(false, 0).c_str());
+}
+
+// The reason one tap away must be the real one: EmbedPark parks on many kinds, and credit
+// is only some of them. Credit advice for a width mismatch sends the owner to the wrong page.
+static std::string memoryWhy(EmbedFail kind, const char* detail = "", int pending = 0) {
+  DegradedFacts f;
+  f.uptimeMs = 600000;
+  f.embedParked = true;
+  f.pendingEmbeds = pending;
+  f.embedKind = kind;
+  f.embedDetail = detail;
+  DegradedCondition c;
+  TEST_ASSERT_TRUE(pick(f, DegradedId::Memory, c));
+  return c.why;
+}
+
+static void test_the_memory_reason_follows_the_real_cause() {
+  // The review's case: the model returns 1024-wide vectors, memory is set to 768.
+  const std::string width = memoryWhy(EmbedFail::WidthMismatch, "1024/768");
+  TEST_ASSERT_TRUE_MESSAGE(contains(width, "1024") && contains(width, "768"), width.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(contains(width, "Dimensions"), width.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(contains(width, "Memory > Embedding model"), width.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(contains(width, "credit"), width.c_str());
+  const std::string width2 = memoryWhy(EmbedFail::WidthMismatch);   // no detail: still the right page
+  TEST_ASSERT_TRUE_MESSAGE(contains(width2, "Dimensions") && !contains(width2, "credit"), width2.c_str());
+
+  const std::string noModel = memoryWhy(EmbedFail::NoModel);
+  TEST_ASSERT_TRUE_MESSAGE(contains(noModel, "Choose an embedding model"), noModel.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(contains(noModel, "credit"), noModel.c_str());
+
+  for (EmbedFail k : {EmbedFail::Busy, EmbedFail::Timeout, EmbedFail::Unreachable, EmbedFail::RateLimited,
+                      EmbedFail::RouterHeld, EmbedFail::ProviderError, EmbedFail::BadResponse}) {
+    const std::string w = memoryWhy(k);   // a passing trouble: nothing to fix, it is tried again
+    TEST_ASSERT_TRUE_MESSAGE(contains(w, "tried again by itself"), w.c_str());
+    TEST_ASSERT_FALSE_MESSAGE(contains(w, "credit"), w.c_str());
+    TEST_ASSERT_FALSE_MESSAGE(contains(w, "Assistant > Models"), w.c_str());
+  }
+
+  const std::string credit = memoryWhy(EmbedFail::OutOfCredit, "openai");
+  TEST_ASSERT_TRUE_MESSAGE(contains(credit, "credit"), credit.c_str());
+  const std::string noKey = memoryWhy(EmbedFail::NoKey, "openai");
+  TEST_ASSERT_TRUE_MESSAGE(contains(noKey, "key under Assistant > Models"), noKey.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(contains(noKey, "credit"), noKey.c_str());
+  const std::string rejected = memoryWhy(EmbedFail::KeyRejected);
+  TEST_ASSERT_TRUE_MESSAGE(contains(rejected, "key under Assistant > Models"), rejected.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(contains(rejected, "credit"), rejected.c_str());
+
+  // The cause is not known (a park from before this field): no claim about credit or a key.
+  const std::string unknown = memoryWhy(EmbedFail::None);
+  TEST_ASSERT_FALSE_MESSAGE(contains(unknown, "credit"), unknown.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(contains(unknown, "Memory > Embedding model"), unknown.c_str());
+
+  // A queue count is still said, with whatever the cause is.
+  const std::string queued = memoryWhy(EmbedFail::WidthMismatch, "1024/768", 3);
+  TEST_ASSERT_TRUE_MESSAGE(contains(queued, "3 new memories wait"), queued.c_str());
+}
+
+// The class: every EmbedFail has a reason that is non-empty, ASCII, a sentence, and sends the
+// owner to credit only when the cause is about credit or the account.
+static void test_every_embed_cause_has_its_own_honest_reason() {
+  for (int i = 0; i <= (int)kEmbedFailLast; i++) {
+    const EmbedFail k = (EmbedFail)i;
+    for (int pending : {0, 2}) {
+      const std::string w = memoryWhy(k, "", pending);
+      const std::string at = "EmbedFail " + std::to_string(i) + ": " + w;
+      TEST_ASSERT_TRUE_MESSAGE(w.size() > 40, at.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(printableAscii(w), at.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(w.back() == '.', at.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(contains(w, "Nothing is lost"), at.c_str());
+      const bool creditCause = k == EmbedFail::OutOfCredit || k == EmbedFail::CallTooLarge || k == EmbedFail::AccountHeld;
+      TEST_ASSERT_TRUE_MESSAGE(contains(w, "credit") == creditCause, at.c_str());
+    }
+  }
 }
 
 static void test_the_memory_line_never_carries_a_count() {
@@ -911,6 +1033,12 @@ static void test_device_wiring() {
   const size_t eh = mem.find("bool embedHealth(");
   TEST_ASSERT_TRUE(eh != std::string::npos);
   TEST_ASSERT_TRUE_MESSAGE(mem.find("LoopLock g(0);", eh) - eh < 200, "embedHealth must open with LoopLock g(0)");
+  // ... and carries the park's real cause, so the reason one tap away is not always "check the credit".
+  TEST_ASSERT_TRUE(contains(dev, "f.embedKind = s.embed.kind;"));
+  TEST_ASSERT_TRUE(contains(dev, "f.embedDetail = s.embed.detail;"));
+  const std::string ehBody = functionBody(mem, "bool embedHealth(");
+  TEST_ASSERT_TRUE(contains(ehBody, "out.kind = g_park.reason();"));
+  TEST_ASSERT_TRUE(contains(ehBody, "out.detail = g_park.detail();"));
   const std::string tg = readFile("src/agent/telegram.cpp");
   TEST_ASSERT_TRUE(count(tg, "s_loopMs = millis();") >= 3);   // pollTask start, loop top, after staged work
   TEST_ASSERT_TRUE(contains(tg, "h.idleMs = millis() - s_loopMs;"));
@@ -931,18 +1059,6 @@ static void test_device_wiring() {
 // memory is plentiful. The first lock of these two would otherwise be the main-loop tick at
 // about 15 s uptime, or the turn task's noteTurn, or an /api/state on the AsyncTCP task.
 // The class: EVERY mutex the module owns is locked once in begin().
-static std::string functionBody(const std::string& src, const char* signature) {
-  const size_t at = src.find(signature);
-  if (at == std::string::npos) return std::string();
-  const size_t open = src.find('{', at);
-  int depth = 0;
-  for (size_t i = open; i < src.size(); ++i) {
-    if (src[i] == '{') ++depth;
-    if (src[i] == '}' && --depth == 0) return src.substr(open, i - open + 1);
-  }
-  return std::string();
-}
-
 static void test_begin_locks_every_mutex_the_module_owns_once() {
   const std::string dev = readFile("src/agent/degraded_device.cpp");
   const std::string hdr = readFile("lib/core/include/nimbus/orch/degraded.h");
@@ -1007,8 +1123,11 @@ int main() {
   RUN_TEST(test_several_parked_providers_are_one_line_that_names_them);
   RUN_TEST(test_a_parked_provider_the_fallback_already_names_is_one_line_not_two);
   RUN_TEST(test_the_park_reason_carries_the_one_next_step);
+  RUN_TEST(test_a_provider_the_owner_paused_is_not_said_to_return_by_itself);
   RUN_TEST(test_memory_says_keyword_only_queued_or_both);
   RUN_TEST(test_the_memory_line_never_carries_a_count);
+  RUN_TEST(test_the_memory_reason_follows_the_real_cause);
+  RUN_TEST(test_every_embed_cause_has_its_own_honest_reason);
   RUN_TEST(test_a_full_file_store_and_a_full_flash_each_show);
   RUN_TEST(test_a_routine_reclaim_never_raises_the_full_store_line);
   RUN_TEST(test_telegram_is_silent_only_when_it_is_set_up_and_the_loop_stopped_checking_in);
