@@ -247,4 +247,9 @@ Nothing here ran on a board. No bench unit is reachable and Lumi is read-only fo
 5. DNS late answer: a resolver that answers after 10 s (a firewall delaying UDP 53) with the
    poll task connecting: no crash, the connect fails cleanly, the next one works.
 6. On Lumi after the next update: the guard's first real catch names the spin. Until then the
-   exact loop behind the 4 to 7 Nov stalls stays unproven.
+   exact loop behind the 4 to 7 Nov stalls stays unproven, and so does any fix for it.
+7. The notice on the device, by chat: a guard restart during a Telegram turn says the message is
+   tried again and the reply then arrives; one during a web chat turn says the reply was lost
+   and nothing re-runs it; one with no turn in flight answers the Telegram messages that waited.
+8. A whole-file archive download (a server that ignores the resume) on a slow link longer than
+   5 minutes: `tgPoll.silentS` stays low, no restart.
