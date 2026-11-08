@@ -5,6 +5,7 @@
 #include "nimbus/orch/billing_refusal.h"   // isBillingRefusal - the Billing step kind
 #include "nimbus/orch/body_budget.h"   // parseBodyBudgetError - a round too big to send
 #include "nimbus/orch/transcript.h"  // the canonical record the controller fills
+#include <memory>   // unique_ptr: a round's step result off the poll task stack (lane STACK)
 
 namespace nimbus {
 namespace orch {
@@ -423,7 +424,8 @@ void sendProseBack(const HeadStep& sr, const std::string& fix, int round, const 
   d["reply"] = sr.finalTurn;
   std::string args;
   serializeJson(d, args);
-  HeadStep wrapped = sr;
+  const std::unique_ptr<HeadStep> copy(new HeadStep(sr));   // 152 B off the turn's stack (lane STACK)
+  HeadStep& wrapped = *copy;
   wrapped.finalTurn = args;
   sendFinalBack(wrapped, fix, round, hooks, prior);
 }
@@ -538,7 +540,10 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
     // the adapter can tell the model that this is its last turn (see
     // kFinalRoundNotice - a silent capability removal produced confabulated
     // "I'll report back" replies on every provider).
-    HeadStep sr = stepWithRefit(hooks, allowTools, prior, budgetMs, reason, round);
+    // Each round's step result lives on the heap (lane STACK): 152 B the provider's own
+    // request, parse and tools would otherwise sit on top of, on the Telegram poll task.
+    const std::unique_ptr<HeadStep> step(new HeadStep(stepWithRefit(hooks, allowTools, prior, budgetMs, reason, round)));
+    HeadStep& sr = *step;
     if (!sr.ok) {  // transport/parse failure - fail soft to the caller
       out.ok = false;
       out.error = sr.error.empty() ? "provider step failed" : sr.error;

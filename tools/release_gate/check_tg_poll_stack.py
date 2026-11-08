@@ -585,6 +585,71 @@ def lambda_names(sources: "Sources", loc: str) -> set:
     return set()
 
 
+GDB_IN_RE = re.compile(r"^0x([0-9a-f]+) is in (.*) \((.+):(\d+)\)\.$")
+
+
+def find_gdb() -> "str | None":
+    core = os.environ.get("PLATFORMIO_CORE_DIR", os.path.expanduser("~/.platformio"))
+    p = os.path.join(core, "packages", "tool-xtensa-esp-elf-gdb", "bin", "xtensa-esp-elf-gdb-no-python")
+    return p if os.access(p, os.X_OK) else shutil.which("xtensa-esp-elf-gdb-no-python")
+
+
+def gdb_lines(elf: str, gdb: str, addrs: list) -> dict:
+    """addr -> [(innermost function, file:line)] from GDB, which reads DWARF without trusting
+    .debug_aranges (see repair_inlines)."""
+    if not addrs:
+        return {}
+    with tempfile.NamedTemporaryFile("w", suffix=".gdb", delete=False) as f:
+        f.write("set listsize 1\n" + "".join(f"list *0x{a:x}\n" for a in addrs))
+        cmd = f.name
+    try:
+        text = run([gdb, "-batch", "-nx", "-x", cmd, elf])
+    finally:
+        os.unlink(cmd)
+    out = {}
+    for line in text.splitlines():
+        m = GDB_IN_RE.match(line.strip())
+        if m:
+            out[int(m.group(1), 16)] = [(m.group(2), f"{m.group(3)}:{m.group(4)}")]
+    return out
+
+
+def repair_inlines(elf: str, funcs: dict, inlines: dict) -> int:
+    """Replace inline chains addr2line got wrong with GDB's innermost frame; returns how many.
+
+    Some links carry a .debug_aranges entry that points past .debug_info (GDB warns about
+    it); BFD trusts the table and then maps whole functions to an unrelated template, with
+    no line. A chain whose outermost function is not the function the site is in is that
+    case. GDB's answer names only the innermost frame, so the chain gets the containing
+    function as its outer frame and no call-site line for it.
+    """
+    owner = {}
+    for f in funcs.values():
+        if not f.rom:
+            for s, _slot in f.indirect:
+                owner[s] = f
+    bad = [s for s, ch in inlines.items() if s in owner and _chain_wrong(ch, owner[s])]
+    gdb = find_gdb()
+    if not bad or gdb is None:
+        return 0
+    fixed = gdb_lines(elf, gdb, bad)
+    for s, ch in fixed.items():
+        inner = ch[0]
+        caller = owner[s].dname
+        inlines[s] = [inner] if plain_name(inner[0]) == plain_name(caller) else [inner, (caller, "??:0")]
+    return len(fixed)
+
+
+def plain_name(dname: str) -> str:
+    return _strip_params(plain(dname).split(" [")[0])
+
+
+def _chain_wrong(chain: list, caller: Fn) -> bool:
+    if not chain or chain[0][1].startswith("??"):
+        return True
+    return plain_name(chain[-1][0]) != plain_name(caller.dname)
+
+
 def short_loc(loc: str) -> str:
     loc = loc.split(" (discriminator")[0]
     for marker in (
@@ -1237,12 +1302,14 @@ def analyse_elf(elf: str, cfg: dict) -> "tuple[Model, dict]":
     funcs, nm_text = load_image(elf, cfg, tools)
     root = task_root(funcs, cfg)
     inlines = addr2line(elf, tools["addr2line"], inline_sites(funcs))
+    repaired = repair_inlines(elf, funcs, inlines)
     vslots = vtable_slots(nm_text, elf_reader(elf), funcs)
     model = Model(funcs, cfg, inlines, vslots, Sources())
     model.lambda_names = handler_lambda_names(elf, tools, funcs, model.sources)
     model.analyse(root)
     model.tools = tools
     model.elf = elf
+    model.repaired = repaired
     return model, funcs
 
 
@@ -1303,6 +1370,21 @@ def stale_rows(model: Model) -> list:
     return out
 
 
+def chain_locations(model: Model, chains: dict) -> dict:
+    """site -> inline chain for every call on the reported chains, repaired like the analysis's."""
+    owner = {}
+    for ch in chains.values():
+        for (prev, _s), (_a, site) in zip(ch, ch[1:]):
+            if site is not None and prev is not None and prev in model.funcs:
+                owner[site] = model.funcs[prev]
+    locs = addr2line(model.elf, model.tools["addr2line"], sorted(owner))
+    bad = [s for s, ch in locs.items() if s in owner and _chain_wrong(ch, owner[s])]
+    gdb = find_gdb()
+    if bad and gdb:
+        locs.update(gdb_lines(model.elf, gdb, bad))
+    return locs
+
+
 def named_paths(model: Model) -> list:
     """[(name, (worst total, function))]: the whole task, then each configured path."""
     paths = [("worst case (any path)", model.through([model.root]))]
@@ -1323,8 +1405,7 @@ def verdict(model: Model) -> dict:
     floor = cfg["min_free_bytes"]
     paths = named_paths(model)
     chains = {name: model.chain_up(fn)[:-1] + model.chain_down(fn) for name, (_t, fn) in paths}
-    sites = sorted({s for ch in chains.values() for _, s in ch if s is not None})
-    locs = addr2line(model.elf, model.tools["addr2line"], sites)
+    locs = chain_locations(model, chains)
     rows = []
     for name, (total, _fn) in paths:
         used = total + fixed

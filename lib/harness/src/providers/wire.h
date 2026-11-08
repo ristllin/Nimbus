@@ -578,13 +578,20 @@ inline CancelledBill cancelledBillOf(const CancelOf& c, int code, const JsonDocu
 inline bool meterCancelledJob(const ProviderDeps& pd, const char* host, uint16_t port, bool tls,
                               const std::vector<std::pair<std::string, std::string>>& headers,
                               const CancelOf& c) {
-  JsonDocument filter;
+  // On the heap (lane STACK): this runs inside exchange()'s own exit, deep in a turn on
+  // the Telegram poll task (two documents, the bill and the route: about 260 B).
+  struct MeterLocals {
+    JsonDocument filter;
+    JsonDocument doc;
+  };
+  const std::unique_ptr<MeterLocals> locals(new MeterLocals());
+  JsonDocument& filter = locals->filter;
   filter["usage"] = true;
   filter["model"] = true;
   filter["status"] = true;
   filter["agent"]["model"] = true;
   filter["output"].add<JsonObject>()["type"] = true;
-  JsonDocument doc;
+  JsonDocument& doc = locals->doc;
   const int code = exchange(pd, host, port, tls, "GET", c.jobPath, headers, std::string(),
                             kCancelUsageReadMs, doc, filter);
   if (c.kind == CancelKind::Session && !sessionSettled(code, doc)) {
@@ -593,8 +600,11 @@ inline bool meterCancelledJob(const ProviderDeps& pd, const char* host, uint16_t
     return false;
   }
   bool estimate = false;
-  const CancelledBill b = cancelledBillOf(c, code, doc, estimate);
-  const nimbus::orch::SeamRoute r = nimbus::orch::seamRouteFor(host, c.jobPath.c_str(), b.model.c_str());
+  const std::unique_ptr<const CancelledBill> bill(new CancelledBill(cancelledBillOf(c, code, doc, estimate)));
+  const CancelledBill& b = *bill;
+  const std::unique_ptr<const nimbus::orch::SeamRoute> route(
+      new nimbus::orch::SeamRoute(nimbus::orch::seamRouteFor(host, c.jobPath.c_str(), b.model.c_str())));
+  const nimbus::orch::SeamRoute& r = *route;
   nimbus::orch::meterSeamUsage(nimbus::orch::SpendSeam::Sub, r.provider.c_str(), r.model.c_str(), b.u);
   nimbus::orch::meterSubSearchRuns(r.provider.c_str(), b.webRuns);
   if (b.container)
