@@ -48,7 +48,7 @@ def test_state_carries_the_degraded_set():
         assert 0 < len(item["line"]) <= LINE_MAX
         assert item["line"].isascii() and item["line"].isprintable()
         assert item["why"].strip() and item["why"].isascii()
-        assert "—" not in item["line"] + item["why"]
+        assert chr(0x2014) not in item["line"] + item["why"]
         idx = IDS.index(item["id"])
         assert idx > last, "items are in display order, one per id"
         last = idx
