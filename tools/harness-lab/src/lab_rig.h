@@ -12,6 +12,7 @@
 #include "lab_env.h"
 #include "lab_files.h"
 #include "lab_prefs.h"   // lane J: the standing rules
+#include "lab_text.h"    // cutRecord: a record cut never splits a UTF-8 character
 #include "lab_wire.h"
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/fault_transport.h"
@@ -1048,9 +1049,8 @@ class LabRig {
     if (!opt_.histV2) capture(chat, "assistant", text, "");   // histV2: apply captures the reply
   }
 
-  static std::string trunc(const std::string& s, size_t n) {
-    return s.size() <= n ? s : s.substr(0, n) + "...";
-  }
+  // A record cut (lab_text.h): never inside a UTF-8 character, the eval reads these as UTF-8.
+  static std::string trunc(const std::string& s, size_t n) { return cutRecord(s, n); }
 
   Env  env_;
   Options opt_;

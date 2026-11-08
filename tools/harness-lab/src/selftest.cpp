@@ -3,13 +3,19 @@
 // chain. `make check` runs it, so the battery covers the lab's seams too.
 #include "selftest.h"
 
+#include <unistd.h>
+
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "lab_files.h"
 #include "lab_options.h"
+#include "lab_text.h"
 #include "lab_wire.h"
 #include "lane_mg_live.h"
 #include "nimbus/harness/fault_transport.h"
@@ -222,6 +228,92 @@ void testMgSpawnVerdict() {
         "a dispatch error fails even with web runs recorded");
 }
 
+
+// Structurally valid UTF-8, the way Python's strict decoder reads a record: every lead
+// byte is followed by exactly its continuation bytes, and nothing else is a stray byte.
+bool wellFormedUtf8(const std::string& s) {
+  size_t i = 0;
+  while (i < s.size()) {
+    const unsigned char c = (unsigned char)s[i];
+    const size_t len = c < 0x80 ? 1 : (c >= 0xC2 && c <= 0xDF) ? 2 : (c >= 0xE0 && c <= 0xEF) ? 3
+                       : (c >= 0xF0 && c <= 0xF4) ? 4 : 0;
+    if (len == 0 || i + len > s.size()) return false;
+    for (size_t k = 1; k < len; k++)
+      if (((unsigned char)s[i + k] & 0xC0) != 0x80) return false;
+    i += len;
+  }
+  return true;
+}
+
+// REGR3E, 8 Nov 2026: a docs tool result cut at 300 bytes fell inside the 3-byte arrow
+// (U+2192), run_eval.py read the transcript as UTF-8 and the whole leg stopped. The rule
+// is a class, so the test sweeps every cap over every character width, not that one cut.
+void testRecordCut() {
+  std::puts("record cuts never split a UTF-8 character");
+  const std::string arrow = "\xE2\x86\x92";      // U+2192, 3 bytes
+  const std::string eacute = "\xC3\xA9";         // U+00E9, 2 bytes
+  const std::string rocket = "\xF0\x9F\x9A\x80";  // U+1F680, 4 bytes
+  check(wellFormedUtf8(arrow + eacute + rocket) && !wellFormedUtf8(arrow.substr(0, 2) + "..."),
+        "the validator accepts whole characters and refuses a cut one");
+
+  const std::string docs = std::string(298, 'a') + arrow + std::string(40, 'b');
+  check(cutRecord(docs, 300) == std::string(298, 'a') + "...",
+        "a 300 B cap inside the arrow drops the arrow whole, then adds the marker");
+  check(cutRecord(std::string(297, 'a') + arrow + "bb", 300) == std::string(297, 'a') + arrow + "...",
+        "a character that ends exactly on the cap is kept");
+  check(cutRecord("short", 300) == "short" && capUtf8("short", 300) == "short",
+        "a text under the cap is returned untouched, with no marker");
+  check(capUtf8(docs, 300) == std::string(298, 'a'), "capUtf8 cuts the same way without the marker");
+
+  bool allValid = true, allPrefix = true, allBounded = true;
+  size_t points = 0;
+  for (const std::string& ch : {eacute, arrow, rocket}) {
+    const std::string text = "ab" + ch + "cd" + ch + ch + "e" + ch + std::string(7, 'z') + ch;
+    for (size_t n = 0; n < text.size(); n++) {
+      const std::string capped = capUtf8(text, n);
+      const std::string cut = cutRecord(text, n);
+      points++;
+      allValid = allValid && wellFormedUtf8(capped) && wellFormedUtf8(cut);
+      allPrefix = allPrefix && text.compare(0, capped.size(), capped) == 0 && cut == capped + "...";
+      allBounded = allBounded && capped.size() <= n;
+    }
+  }
+  std::printf("  (%zu cut points swept)\n", points);
+  check(allValid, "no cap over any 2, 3 or 4 byte character leaves invalid UTF-8");
+  check(allPrefix, "the kept text is always a prefix of the original");
+  check(allBounded, "the kept text never exceeds the cap");
+}
+
+// The recorder writes a provider error body to errors.jsonl, cut at 4096 bytes, and
+// record_to_fixtures.py reads that file as UTF-8: the same class as the transcript.
+void testRecorderBodyCut() {
+  std::puts("recorder error body cut (errors.jsonl)");
+  namespace fs = std::filesystem;
+  std::string dir = (fs::temp_directory_path() / "nimbus-lab-selftest-XXXXXX").string();
+  if (!mkdtemp(dir.data())) {
+    check(false, "a temp dir for the recorder");
+    return;
+  }
+  EchoTransport echo;
+  echo.status = 400;
+  echo.body = std::string(4094, 'a') + "\xE2\x86\x92" + "tail";   // the arrow straddles byte 4096
+  RecordingTransport rec(&echo, dir);
+  agent::HttpResponse out;
+  std::string err;
+  rec.exec(antReq(), out, err);
+  check(rec.errorRows() == 1, "a 400 from a provider host is recorded as an error row");
+  std::ifstream in(dir + "/errors.jsonl", std::ios::binary);
+  std::stringstream all;
+  all << in.rdbuf();
+  const std::string file = all.str();
+  check(!file.empty() && wellFormedUtf8(file), "errors.jsonl is valid UTF-8 when the body is cut inside a character");
+  JsonDocument row;
+  deserializeJson(row, file);
+  const std::string body = row["body"] | "";
+  check(body == std::string(4094, 'a'), "the row keeps the body up to the character it could not keep whole");
+  fs::remove_all(dir);
+}
+
 }  // namespace
 
 int cmdSelftest() {
@@ -231,6 +323,8 @@ int cmdSelftest() {
   testFaultChain();
   testKeyedReply();
   testMgSpawnVerdict();
+  testRecordCut();
+  testRecorderBodyCut();
   std::printf("%s\n", g_fail ? "LAB SELFTEST FAILED" : "lab selftest passed");
   return g_fail ? 1 : 0;
 }
