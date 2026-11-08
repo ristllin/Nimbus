@@ -294,24 +294,144 @@ void test_reason_is_bounded_and_names_the_stall() {
   TEST_ASSERT_TRUE(line.find("provider read") != std::string::npos);
 }
 
-// The guard restarts by a panic, so the poison guard counts a try against the Telegram
-// work in flight: a message that stalls the device twice is skipped (tg_dup_guard.h).
+// The guard restarts by a panic (poll_watch.cpp restartFor calls esp_system_abort, pinned by
+// test_poll_watch_wiring), and a panic leaves ESP_RST_PANIC. Driven through the real
+// storm-breaker record (tg_dup_guard.h): each guard restart counts a try against the
+// Telegram bucket in flight, the first leaves it free to run again, the second makes the
+// poison guard skip it. A plain esp_restart() (ESP_RST_SW) would count nothing, so a message
+// that stalls the device every time would run again after every restart, forever.
 void test_guard_restart_counts_a_poison_try() {
-  TEST_ASSERT_EQUAL(nimbus::net::BootKind::Crash, nimbus::net::bootKindOf((int)ResetReason::Panic));
-  TEST_ASSERT_TRUE(isCrashReset((int)ResetReason::Panic));
+  using nimbus::net::BootKind;
+  using nimbus::net::TgGuard;
+  using nimbus::net::TgGuardStore;
+  using nimbus::net::bootKindOf;
+  using nimbus::net::kPhaseBucket;
+  using nimbus::net::kPoisonMaxTries;
+  static TgGuardStore st;   // RTC memory on the device: what a power-on leaves first
+  std::memset(&st, 0xA5, sizeof st);
+  {
+    TgGuard g(st);
+    TEST_ASSERT_FALSE(g.boot(BootKind::PowerOn, kBuild));
+    g.mark(4242, kPhaseBucket);   // the bucket whose turn stalls
+  }
+  nimbus::orch::TurnJournal j;
+  j.chat = "123456789";
+  j.kind = "message";
+  for (uint8_t restart = 1; restart <= kPoisonMaxTries; ++restart) {
+    TgGuard g(st);
+    TEST_ASSERT_TRUE(g.boot(bootKindOf((int)ResetReason::Panic), kBuild));   // the guard's restart
+    TEST_ASSERT_EQUAL_UINT8(restart, g.tries());
+    // What the boot's stall notice is told, and what the poll task then does with the page.
+    const nimbus::orch::StallReplay r{true, g.tries()};
+    const bool skipped = g.poisoned(4242, kPhaseBucket);
+    TEST_ASSERT_EQUAL(restart >= kPoisonMaxTries, skipped);
+    TEST_ASSERT_EQUAL(!skipped, nimbus::orch::lostTurnRunsAgain(j, r));
+    if (skipped) TEST_ASSERT_EQUAL_UINT32(1, g.poisonAcks());   // acked unrun, the owner told
+    else g.mark(4242, kPhaseBucket);   // served again: the same work, its tries kept
+  }
+
+  static TgGuardStore plain;
+  std::memset(&plain, 0xA5, sizeof plain);
+  {
+    TgGuard g(plain);
+    g.boot(BootKind::PowerOn, kBuild);
+    g.mark(77, kPhaseBucket);
+  }
+  for (int i = 0; i < 2 * kPoisonMaxTries; ++i) {
+    TgGuard g(plain);
+    TEST_ASSERT_TRUE(g.boot(bootKindOf((int)ResetReason::Sw), kBuild));
+    TEST_ASSERT_EQUAL_UINT8(0, g.tries());
+    TEST_ASSERT_FALSE(g.poisoned(77, kPhaseBucket));
+  }
+}
+
+// The notice promises a retry only for a request something will actually run again: a
+// Telegram chat's page, served again because its offset was not stored, while the Telegram
+// poll runs this boot and the poison guard has not skipped it. A web chat turn (the cloud
+// app uses the same page), an on-device voice turn and a console turn waited in the RAM
+// inbound queue, which the restart emptied: the owner must be told the reply was lost and
+// to send it again, or they wait for a reply that never comes.
+void test_stall_notice_promises_a_retry_only_when_telegram_serves_it_again() {
+  using nimbus::orch::StallReplay;
+  struct Case {
+    const char* why;
+    const char* chat;
+    const char* kind;
+    StallReplay r;
+    bool runsAgain;
+  };
+  const Case kCases[] = {
+      {"a Telegram message", "123456789", "message", {true, 1}, true},
+      {"a Telegram photo in a group", "-1001234567", "photo", {true, 1}, true},
+      {"a Telegram file", "987654321", "file", {true, 1}, true},
+      {"Telegram, no poll this boot", "123456789", "message", {false, 1}, false},
+      {"Telegram, the poison guard skips it", "123456789", "message", {true, 2}, false},
+      {"Telegram, skipped photo", "123456789", "photo", {true, 3}, false},
+      {"the web chat page", "web", "message", {true, 1}, false},
+      {"a photo from the web chat", "web", "photo", {true, 0}, false},
+      {"on-device voice", "voice", "voice", {true, 1}, false},
+      {"the console", "serial", "console", {true, 1}, false},
+      {"a journal rebuilt from the breadcrumb", "", "message", {true, 1}, false},
+      {"no chat, a photo", "", "photo", {true, 1}, false},
+      {"not a chat id", "12ab", "message", {true, 1}, false},
+      {"a lone minus", "-", "message", {true, 1}, false},
+  };
+  for (const Case& c : kCases) {
+    nimbus::orch::TurnJournal j;
+    j.chat = c.chat;
+    j.kind = c.kind;
+    TEST_ASSERT_EQUAL_MESSAGE(c.runsAgain, nimbus::orch::lostTurnRunsAgain(j, c.r), c.why);
+    const nimbus::orch::RestartNoticePlan p = nimbus::orch::planStallNotice("Lumi", &j, "20:26", 1, c.r);
+    TEST_ASSERT_EQUAL_MESSAGE(nimbus::orch::NoticeTiming::Now, p.timing, c.why);
+    const std::string& t = p.text;
+    TEST_ASSERT_TRUE_MESSAGE(t.find("Lumi stopped answering while working on your") == 0, c.why);
+    TEST_ASSERT_TRUE_MESSAGE(t.find("from 20:26") != std::string::npos, c.why);
+    const bool promises = t.find("again on its own") != std::string::npos;
+    TEST_ASSERT_EQUAL_MESSAGE(c.runsAgain, promises, c.why);
+    if (!c.runsAgain) {
+      TEST_ASSERT_TRUE_MESSAGE(t.find("reply was lost") != std::string::npos, c.why);
+      TEST_ASSERT_TRUE_MESSAGE(t.find("send it again") != std::string::npos, c.why);
+    }
+    // A message may have logged its row before it stuck (the 29 Oct boba mechanism).
+    if (std::string(c.kind) == "message")
+      TEST_ASSERT_TRUE_MESSAGE(t.find(c.runsAgain ? "saved twice" : "check whether it was saved") !=
+                                   std::string::npos,
+                               c.why);
+    TEST_ASSERT_TRUE_MESSAGE(t.find("\xE2\x80\x94") == std::string::npos, c.why);
+    TEST_ASSERT_TRUE_MESSAGE(t.find(" I ") == std::string::npos, c.why);
+    TEST_ASSERT_TRUE_MESSAGE(t.find("crash") == std::string::npos, c.why);
+  }
+
+  // No turn in flight: Telegram messages that waited on the server are answered now, but
+  // the web page and voice wait in RAM; without the Telegram poll (or with its page
+  // skipped), nothing sent meanwhile is promised.
+  const std::string served = nimbus::orch::stallNotice("Lumi", nullptr, "", StallReplay{true, 1});
+  TEST_ASSERT_TRUE(served.find("being answered now") != std::string::npos);
+  TEST_ASSERT_TRUE(served.find("web page") != std::string::npos);
+  TEST_ASSERT_TRUE(served.find("send that again") != std::string::npos);
+  for (const StallReplay r : {StallReplay{false, 0}, StallReplay{true, 2}}) {
+    const std::string none = nimbus::orch::stallNotice("Lumi", nullptr, "", r);
+    TEST_ASSERT_TRUE(none.find("Lumi stopped answering") == 0);
+    TEST_ASSERT_TRUE(none.find("being answered") == std::string::npos);
+    TEST_ASSERT_TRUE(none.find("send that message again") != std::string::npos);
+  }
 }
 
 // The owner notice: plain words, once per streak, at once for an owner request, held for
 // a routine, never an em dash, never "I".
 void test_owner_notice_plain_and_once_per_streak() {
+  const nimbus::orch::StallReplay tg{true, 1};   // the Telegram poll runs, first try
   nimbus::orch::TurnJournal msg;
+  msg.chat = "123456789";
   msg.kind = "message";
   nimbus::orch::TurnJournal photo;
+  photo.chat = "123456789";
   photo.kind = "photo";
   nimbus::orch::TurnJournal routine;
+  routine.chat = "123456789";
   routine.kind = "routine";
 
-  const nimbus::orch::RestartNoticePlan pm = nimbus::orch::planStallNotice("Lumi", &msg, "20:26", 1);
+  const nimbus::orch::RestartNoticePlan pm = nimbus::orch::planStallNotice("Lumi", &msg, "20:26", 1, tg);
   TEST_ASSERT_EQUAL(nimbus::orch::NoticeTiming::Now, pm.timing);
   TEST_ASSERT_TRUE(pm.text.find("Lumi") == 0);
   TEST_ASSERT_TRUE(pm.text.find("stopped answering") != std::string::npos);
@@ -319,21 +439,21 @@ void test_owner_notice_plain_and_once_per_streak() {
   TEST_ASSERT_TRUE(pm.text.find("message from 20:26") != std::string::npos);
   TEST_ASSERT_TRUE(pm.text.find("saved twice") != std::string::npos);
 
-  const nimbus::orch::RestartNoticePlan pp = nimbus::orch::planStallNotice("Lumi", &photo, "", 1);
+  const nimbus::orch::RestartNoticePlan pp = nimbus::orch::planStallNotice("Lumi", &photo, "", 1, tg);
   TEST_ASSERT_EQUAL(nimbus::orch::NoticeTiming::Now, pp.timing);
   TEST_ASSERT_TRUE(pp.text.find("photo") != std::string::npos);
   TEST_ASSERT_TRUE(pp.text.find("send it again") != std::string::npos);
 
-  const nimbus::orch::RestartNoticePlan pr = nimbus::orch::planStallNotice("Lumi", &routine, "03:30", 1);
+  const nimbus::orch::RestartNoticePlan pr = nimbus::orch::planStallNotice("Lumi", &routine, "03:30", 1, tg);
   TEST_ASSERT_EQUAL(nimbus::orch::NoticeTiming::Held, pr.timing);
   TEST_ASSERT_TRUE(pr.text.find("routine") != std::string::npos);
 
-  const nimbus::orch::RestartNoticePlan pn = nimbus::orch::planStallNotice("", nullptr, "", 1);
+  const nimbus::orch::RestartNoticePlan pn = nimbus::orch::planStallNotice("", nullptr, "", 1, tg);
   TEST_ASSERT_EQUAL(nimbus::orch::NoticeTiming::Now, pn.timing);
   TEST_ASSERT_TRUE(pn.text.find("Nimbus") == 0);
 
   for (uint8_t streak = 2; streak < 8; ++streak) {
-    const nimbus::orch::RestartNoticePlan again = nimbus::orch::planStallNotice("Lumi", &msg, "20:26", streak);
+    const nimbus::orch::RestartNoticePlan again = nimbus::orch::planStallNotice("Lumi", &msg, "20:26", streak, tg);
     TEST_ASSERT_EQUAL(nimbus::orch::NoticeTiming::None, again.timing);
     TEST_ASSERT_TRUE(again.text.empty());
   }
@@ -359,6 +479,7 @@ int main(int, char**) {
   RUN_TEST(test_stall_record_streak_and_boot);
   RUN_TEST(test_reason_is_bounded_and_names_the_stall);
   RUN_TEST(test_guard_restart_counts_a_poison_try);
+  RUN_TEST(test_stall_notice_promises_a_retry_only_when_telegram_serves_it_again);
   RUN_TEST(test_owner_notice_plain_and_once_per_streak);
   return UNITY_END();
 }

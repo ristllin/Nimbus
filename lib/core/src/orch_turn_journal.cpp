@@ -113,7 +113,13 @@ std::string crashNotice(const std::string& deviceName, const TurnJournal* j,
   return msg + " during a background task" + from + ". That task did not finish.";
 }
 
-std::string stallNotice(const std::string& deviceName, const TurnJournal* j, const std::string& hhmm) {
+// FAILING-FIRST STUB (lane TGSTALL fix pass): the pre-fix assumption, every request is
+// served again after a guard restart, whatever its chat.
+bool isTelegramChatId(const std::string&) { return true; }
+bool lostTurnRunsAgain(const TurnJournal&, const StallReplay&) { return true; }
+
+std::string stallNotice(const std::string& deviceName, const TurnJournal* j, const std::string& hhmm,
+                        const StallReplay&) {
   const std::string name = deviceName.empty() ? std::string("Nimbus") : deviceName;
   if (!j) return name + " stopped answering for a few minutes, so it restarted itself. Messages sent meanwhile "
                         "are being answered now.";

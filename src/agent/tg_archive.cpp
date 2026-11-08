@@ -288,6 +288,11 @@ class TgFileSource : public arc::Source {
   // Bytes as they arrive; 0 at the end of the body, -1 when the socket drops early or
   // stays silent for kReadIdleMs.
   int read(uint8_t* buf, size_t cap) override {
+    // Every read is the poll task's progress (lane TGSTALL), also while bytes keep coming:
+    // a file the server will not resume is fetched whole in one step (up to 20 MB, no
+    // time budget), and on a slow link that can outlast the liveness guard's 5 minutes.
+    // Each call itself is bounded (kReadIdleMs).
+    nimbus::pollwatch::beat("archive download");
 #ifdef NIMBUS_TEST
     if (localOpen_) {
       memory::Lock g;
@@ -306,7 +311,6 @@ class TgFileSource : public arc::Source {
         return n;
       }
       if (!sc_.available() && !sc_.connected()) return remaining_ > 0 ? -1 : 0;
-      nimbus::pollwatch::beat("archive download");
       vTaskDelay(1);
     }
     return -1;

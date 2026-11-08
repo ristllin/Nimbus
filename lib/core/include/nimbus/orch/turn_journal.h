@@ -56,11 +56,36 @@ std::string kindFromTurnMark(const std::string& mark);
 std::string crashNotice(const std::string& deviceName, const TurnJournal* j,
                         const std::string& hhmm, const std::string& cause = std::string());
 
+// What the boot after a poll-guard restart knows about the Telegram side of the request
+// it cut short (the device fills it from telegram::enabled() and guardStatus()).
+struct StallReplay {
+  bool telegramPolling = false;   // the Telegram poll runs this boot (a token, the task up)
+  uint8_t poisonTries = 0;        // crash resets counted against the Telegram work in flight
+};
+
+// A Telegram chat id: digits with an optional leading minus (a group). The device's own
+// channels ("web", "voice", "serial") and "" (a journal rebuilt from the breadcrumb, which
+// keeps no chat) are not.
+bool isTelegramChatId(const std::string& chat);
+
+// Whether the request a guard restart cut short runs again on its own. Only a Telegram
+// chat's page is served again: its offset is stored, and the message recorded as
+// answered, only after its turn returned (nimbus/net/tg_dup_guard.h, at-least-once). That
+// needs the Telegram poll running this boot, and the poison guard not to skip the work
+// (at kPoisonMaxTries crash resets it is acked unrun and the owner told to send it
+// again). A web chat turn (the cloud app reaches the same page), an on-device voice turn
+// and a console turn wait in the RAM inbound queue, which the restart empties: nothing
+// runs them again. Neither does anything when the journal names no chat.
+bool lostTurnRunsAgain(const TurnJournal& j, const StallReplay& r);
+
 // The owner notice after the poll task's liveness guard restarted the device
-// (nimbus/sys/poll_guard.h): it had stopped answering, so it restarted itself. A Telegram
-// request in flight is served again after the restart (the offset was not stored), so
-// the notice says it is being tried again, and, for a message, to check a logged row
-// was not saved twice. Same arguments as crashNotice.
-std::string stallNotice(const std::string& deviceName, const TurnJournal* j, const std::string& hhmm);
+// (nimbus/sys/poll_guard.h): it had stopped answering, so it restarted itself. It says
+// the request is tried again only when lostTurnRunsAgain() holds (and, for a message, to
+// check a logged row was not saved twice); otherwise that the reply was lost and to send
+// the request again. With no turn in flight, it says messages sent here meanwhile are
+// being answered only while the Telegram poll runs and nothing was skipped. Same
+// arguments as crashNotice, plus `r`.
+std::string stallNotice(const std::string& deviceName, const TurnJournal* j, const std::string& hhmm,
+                        const StallReplay& r);
 
 }  // namespace nimbus::orch

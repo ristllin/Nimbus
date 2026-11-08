@@ -23,10 +23,10 @@ RestartNoticePlan planRestartNotice(const std::string& deviceName, int resetReas
 }
 
 RestartNoticePlan planStallNotice(const std::string& deviceName, const TurnJournal* lost,
-                                  const std::string& hhmm, uint8_t streak) {
+                                  const std::string& hhmm, uint8_t streak, const StallReplay& r) {
   RestartNoticePlan p;
   if (streak != 1) return p;   // the first restart of a streak told the owner already
-  p.text = stallNotice(deviceName, lost, hhmm);
+  p.text = stallNotice(deviceName, lost, hhmm, r);
   const bool backgroundTurn = lost && !isOwnerRequestKind(lost->kind);
   p.timing = backgroundTurn ? NoticeTiming::Held : NoticeTiming::Now;
   return p;
