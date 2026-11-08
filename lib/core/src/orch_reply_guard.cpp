@@ -480,6 +480,13 @@ const char* const kNowVerbs[] = {
     "logging",  "saving",   "recording", "writing",  "adding",   "updating", "storing",  "noting",  "entering",
     "setting",  "sending",  "creating",  "deleting", "removing", "changing", "pinning",  "scheduling",
 };
+// The storage verbs among them: opening a sentence and followed by what they store, they announce the
+// write even without "now" ("Logging your lunch as roughly 670 kcal"); in a reply the head writes
+// instead of calling the tool, that is the whole answer (58 such replies in this lane's live records).
+const char* const kStoreVerbs[] = {"logging", "saving", "recording", "storing"};
+// What a storage verb is followed by: a pronoun, an article, a possessive, a meal word or a figure.
+const char* const kStoreObjects[] = {"it", "that", "this", "them", "these", "those", "your", "the", "my", "a", "an",
+                                     "everything", "all", "dinner", "lunch", "breakfast", "snack", "supper", "brunch"};
 // What may stand before the participle: "OK, logging it now", "Got it, saving that now", "I'm adding it now".
 const char* const kNowLeads[] = {"ok", "okay", "sure", "alright", "right", "yes", "great", "got", "it", "i", "i'm", "m", "am"};
 
@@ -497,7 +504,8 @@ std::string nextWord(const std::string& s, size_t& at, bool& clauseEnd) {
 }
 
 // "logging it now", "saving that to your food log now": a participle that opens the sentence
-// (leads aside) with "now" within six words, in the same clause. Not a question, not a condition.
+// (leads aside) with "now" within six words, in the same clause; or a storage verb that opens it
+// and is followed by what it stores. Not a question, not a condition.
 bool announcesNowIn(const std::string& s) {
   if (s.find('?') != std::string::npos || hasAnyWord(s, kConditional)) return false;
   size_t at = 0;
@@ -505,6 +513,11 @@ bool announcesNowIn(const std::string& s) {
   std::string w = nextWord(s, at, stop);
   while (!w.empty() && oneOf(w, kNowLeads)) w = nextWord(s, at, stop);
   if (!oneOf(w, kNowVerbs)) return false;
+  if (oneOf(w, kStoreVerbs)) {
+    size_t peek = at;
+    const std::string next = nextWord(s, peek, stop);
+    if (!stop && (oneOf(next, kStoreObjects) || (!next.empty() && std::isdigit((unsigned char)next[0])))) return true;
+  }
   for (int n = 0; n < 6; n++) {
     w = nextWord(s, at, stop);
     if (w.empty() || stop) return false;

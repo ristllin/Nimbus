@@ -226,6 +226,16 @@ static void test_announcing_work_now() {
            "Saving now",
            "Your plan is ready. Updating the ledger now.",
            "SAVING IT NOW!",
+           // A storage verb followed by what it stores announces the write without "now" (the live
+           // replies of 8 Nov that no tool call stood behind).
+           "Logging your lunch as roughly 670 kcal and 69 g protein.",
+           "Logging it as lunch at about 684 kcal and about 70 g protein.",
+           "Logging lunch as one meal: about 614 kcal, 20 g protein.",
+           "Logging 150 g skyr for breakfast at 175 kcal, going by your nutrition table.",
+           "Logging breakfast: 150 g skyr, 175 kcal (from your nutrition table).",
+           "Logging it under yesterday (2026-11-07), using the same figure.",
+           "Saving that for today.",
+           "Recording the snack at 220 kcal.",
        })
     TEST_ASSERT_TRUE_MESSAGE(announcesWorkNow(p), p);
   for (const char* p : {
@@ -236,6 +246,15 @@ static void test_announcing_work_now() {
            "If you want, tell me and I'm logging it now.",
            "Not logging it now.",
            "Logging: your dinner is now in the ledger.",
+           "Logging is on and the row goes in at the end of the day.",
+           "Saving for a house takes years.",
+           "Recording studios are loud.",
+           "Storing up for winter is wise.",
+           "Logging in requires a code.",
+           "Adding to that, the label also lists oats.",
+           "Noting that you are vegetarian, I left the chicken out.",
+           "Skipping the language app check-in, as you asked.",
+           "Setting expectations: I cannot see the photo.",
            "You are logging it now.",
            "Logging is on and the row goes in at the end of the day, so nothing is lost if you add the rest of the evening here later on now.",
            "The total now is 1,611 kcal.",

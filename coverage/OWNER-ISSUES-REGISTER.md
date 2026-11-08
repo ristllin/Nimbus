@@ -238,7 +238,9 @@ tests/evals/owner_regressions/runs/bf40a3edf9f401df83be010eac2d9847d82e2681/ (ta
   low-effort head thinks before it answers depends chaotically on the prompt bytes, and a
   prompt trim would hide it until the next edit. The device now holds the class itself, for
   every provider: orch::announcesWorkNow finds a sentence that opens with a work participle
-  (logging, saving, adding, ...) and says "now" within six words, and
+  (logging, saving, adding, ...) and says "now" within six words, or opens with a storage verb
+  (logging, saving, recording, storing) followed by what it stores ("Logging your lunch as
+  roughly 670 kcal"), and
   ClaimCheck::unbackedPromise treats it, when the turn changed nothing (a lookup, a failed
   write or a refused spawn is not work done; not while a sub-agent runs for the chat or a hosted
   tool ran), like a promise of later work: one [PROMISE CHECK] correction round in which the
@@ -248,4 +250,8 @@ tests/evals/owner_regressions/runs/bf40a3edf9f401df83be010eac2d9847d82e2681/ (ta
   test_announcing_work_now (positive and negative corpus), test_harness_claim_check
   test_round_an_announcement_with_nothing_run_gets_one_round and
   test_an_announcement_is_backed_only_by_work_that_changed_something (both fail with the
-  guard disabled, verified).
+  guard disabled, verified). The matcher was measured against every stored live reply of this
+  lane (3,656 replies, 1,357 without any tool call): it flags 58, every one a "Logging ..."
+  announcement with no tool call behind it (lc-two-ledgers, lc-consistency, lc-label-misread,
+  lc-near-match, lc-grams-vs-kcal, lc-album, lc-photo-misread, lc-silent-replace), and none of
+  the other 1,299 no-tool-call replies.
