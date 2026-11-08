@@ -685,11 +685,26 @@ void test_oir_06_owed_answers_and_reported_facts_are_in_scope() {
   // A sentence that reports a fact does not take the remark up.
   TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("You have had chicken salad and a latte, 870 kcal.",
                                             "What is my total now?", salad));
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged the pasta, 700 kcal. With the chicken salad you are at 1,240 kcal.",
+                                            "Log my dinner: pasta 700 kcal", salad));
   // A sentiment word is not a topic.
   const std::vector<std::string> trivia = {"I love tech trivia, ask me sometime."};
   const std::string dinner = "Log my dinner: pasta 700 kcal";
   TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged your dinner: pasta, 700 kcal. Love the choice!", dinner, trivia));
   TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged your dinner. Would you love a dessert idea?", dinner, trivia));
+  // One shared noun is chance (the stress corpus, lanes/MLQ/evidence/scope-corpus2): a
+  // sentence echoes a remark with two of its topic words, or its only one.
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("If you tell me the bagel's weight, I'll replace the row.",
+                                            "Here is a photo of my lunch.", {"My weight was down a kilo this morning."}));
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("If you tell me the protein in grams, I'll work it out.",
+                                            "Log my dinner.", {"That protein shake tasted awful."}));
+  TEST_ASSERT_EQUAL(0, unansweredTopicSpan("Logged. Want a new protein shake idea?", "Log my dinner.",
+                                           {"That protein shake tasted awful."}));
+  // An earlier request is owed too: the head may still do it.
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged the pasta. I'll log the salmon plate from earlier too?",
+                                            dinner, {"Save this into my meal log: a salmon plate, 620 kcal."}));
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged. Want me to stop the language app check-ins for good?", dinner,
+                                            {"To be clear: forget the daily language app check-in."}));
   // The class still holds: a promise, an acknowledgement, an offer, a question, an aside.
   const char* const taken[] = {
       "Logged. I'll remember you love tech trivia.",

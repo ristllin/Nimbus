@@ -98,6 +98,16 @@ const char* const kDirectAsks[] = {
     "can you", "could you", "would you", "will you", "please", "tell me", "remind me", "let me know",
     "do you know",
 };
+// The first word of a clause that asks the head to act now ("Log my lunch", "Here is my
+// lunch photo", "To be clear: forget the check-in"), after a lead-in word.
+const char* const kRequestVerbs[] = {
+    "log", "save", "add", "remember", "remind", "set", "delete", "remove", "forget", "stop", "check",
+    "find", "show", "tell", "send", "update", "cancel", "book", "schedule", "track", "note", "record",
+    "store", "write", "make", "give", "list", "look", "search", "start", "turn", "change", "edit",
+    "move", "put", "keep", "read", "open", "pin", "replace", "fix", "explain", "summarize", "summarise",
+    "translate", "convert", "count", "estimate", "plan", "help", "here",
+};
+const char* const kLeadIns[] = {"please", "also", "and", "then", "now", "just", "oh", "ok", "okay", "so", "hey", "hi"};
 const char* const kDeferrals[] = {
     "sometime", "some time", "someday", "some day", "one day", "at some point", "another time",
     "whenever you",
@@ -154,9 +164,48 @@ std::vector<std::string> topicWords(const std::string& lower) {
 
 bool holdsWord(const std::string& lower, const std::string& w) { return words::hasPhrase(lower, w); }
 
+bool listed(const std::string& w, const char* const* list, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    if (w == list[i]) return true;
+  return false;
+}
+
+// A clause of `lower` (split at . ! ? : ; , and line breaks, after any leading "(...)" day
+// or time label) opens with a request verb.
+bool opensWithARequest(const std::string& lower) {
+  size_t i = 0;
+  while (i < lower.size() && (lower[i] == ' ' || lower[i] == '(')) {
+    if (lower[i] == '(') {
+      const size_t close = lower.find(')', i);
+      if (close == std::string::npos) break;
+      i = close;
+    }
+    i++;
+  }
+  constexpr size_t nVerbs = sizeof(kRequestVerbs) / sizeof(kRequestVerbs[0]);
+  constexpr size_t nLeads = sizeof(kLeadIns) / sizeof(kLeadIns[0]);
+  bool clauseStart = true;
+  while (i < lower.size()) {
+    if (std::string(".!?:;,\n").find(lower[i]) != std::string::npos) {
+      clauseStart = true;
+      i++;
+      continue;
+    }
+    if (!tokenChar(lower[i])) {
+      i++;
+      continue;
+    }
+    const std::string w = nextToken(lower, i);
+    if (!clauseStart || listed(w, kLeadIns, nLeads)) continue;
+    if (listed(w, kRequestVerbs, nVerbs)) return true;
+    clauseStart = false;
+  }
+  return false;
+}
+
 bool asksNow(const std::string& lower) {
   if (words::anyPhrase(lower, kDeferrals)) return false;
-  return lower.find('?') != std::string::npos || words::anyPhrase(lower, kDirectAsks);
+  return lower.find('?') != std::string::npos || words::anyPhrase(lower, kDirectAsks) || opensWithARequest(lower);
 }
 
 // This message brings the earlier ones up without naming them: a pointer back, a ping, a
@@ -176,6 +225,20 @@ std::vector<std::string> unaskedWords(const std::string& earlier, const std::str
     out.push_back(w);
   }
   return out;
+}
+
+// A sentence echoes an earlier remark when it holds two of the remark's topic words (its
+// only one, when it has one): "tech trivia", not "the bagel's weight" against "My weight
+// was down a kilo". One shared noun is chance (the stress corpus, evidence/scope-corpus2).
+bool echoes(const std::string& sentence, const std::vector<std::string>& topic) {
+  std::vector<std::string> held;
+  for (const std::string& w : topic) {
+    bool again = false;
+    for (const std::string& h : held) again = again || h == w;
+    if (!again && holdsWord(sentence, w)) held.push_back(w);
+  }
+  const size_t need = topic.size() < 2 ? topic.size() : 2;
+  return need > 0 && held.size() >= need;
 }
 
 // A sentence that makes a move on what it mentions (not one that reports a fact).
@@ -202,8 +265,7 @@ int unansweredTopicSpan(const std::string& reply, const std::string& ownerText,
       const size_t stop = raw.find_first_of(".!?\n", from);
       const size_t e = stop == std::string::npos ? raw.size() : stop + 1;
       const std::string sentence = words::lowerAscii(straightApostrophes(raw.substr(from, e - from)));
-      for (const std::string& w : topic) {
-        if (!holdsWord(sentence, w) || !makesAMove(sentence)) continue;
+      if (echoes(sentence, topic) && makesAMove(sentence)) {
         if (begin) *begin = from;
         if (end) *end = e;
         return (int)m;
