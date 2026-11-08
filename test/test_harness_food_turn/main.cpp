@@ -412,6 +412,26 @@ static void test_the_wire_guard_on_a_device_shaped_loop_turn() {
       "the guard left out more history than the budget required");
 }
 
+// Lane QFIX (OIR-36): the [MEMORY ROUTING] hint names where a remember-request lands, on
+// the owner's own message only. A scheduled routine whose prompt happens to say "remember"
+// is not an owner asking for a save, so it never carries the hint.
+static void test_memory_routing_hint_rides_only_a_real_owner_message() {
+  Rig r;
+  r.eng->handleMessage("Also remember: always double-check my coffee orders before placing them.", "Roy", "1001");
+  TEST_ASSERT_EQUAL_INT(1, (int)r.instructions.size());
+  TEST_ASSERT_TRUE_MESSAGE(has(r.last().dyn, "[MEMORY ROUTING]"), r.last().dyn.c_str());
+  TEST_ASSERT_TRUE(has(r.last().dyn, "prefs.edit"));
+  TEST_ASSERT_FALSE(has(r.last().stat, "[MEMORY ROUTING]"));   // never the cached blocks
+  TEST_ASSERT_FALSE(has(r.last().shelf, "[MEMORY ROUTING]"));
+  r.eng->handleMessage("is it raining at the office?", "Roy", "1001");
+  TEST_ASSERT_FALSE(has(r.last().dyn, "[MEMORY ROUTING]"));
+  // Counter-test: the same words as a scheduled routine's prompt (nobody behind the turn).
+  Rig s;
+  s.eng->injectScheduledTurn("1001", "remember to check the weather and tell Roy", "morning", "L1");
+  TEST_ASSERT_TRUE_MESSAGE(!s.instructions.empty(), "the scheduled turn never reached the host");
+  TEST_ASSERT_FALSE_MESSAGE(has(s.last().dyn, "[MEMORY ROUTING]"), s.last().dyn.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_ledger_rides_every_turn_with_rows_today);
@@ -427,5 +447,6 @@ int main(int, char**) {
   RUN_TEST(test_the_whole_day_is_in_the_history);
   RUN_TEST(test_the_request_stays_under_the_body_budget);
   RUN_TEST(test_the_wire_guard_on_a_device_shaped_loop_turn);
+  RUN_TEST(test_memory_routing_hint_rides_only_a_real_owner_message);
   return UNITY_END();
 }

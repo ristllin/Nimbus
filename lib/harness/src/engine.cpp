@@ -1447,7 +1447,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   if (d_.skillsIndex) ci.skillsShelf = d_.skillsIndex();
   ci.recallDegraded = recall.degraded;
   applyFoodContext(ci, userText);   // lane CTX: today's ledger, and the food playbook on a food turn
-  ci.memoryRouting = nimbus::orch::renderMemoryRoutingHint(userText);   // lane QFIX: a remember-request names its landing
+  // Lane QFIX: a remember-request names its landing - on a REAL human message only. A scheduled
+  // loop's prompt and a synthesis turn's [FRESH RESULTS] (untrusted sub-agent output) also reach
+  // here as userText, and must not be told to save a rule or a fact because they say "remember".
+  if (ci.speakerPresent) ci.memoryRouting = nimbus::orch::renderMemoryRoutingHint(userText);
   std::string instructions = agent::composeInstructions(ci);
   if (fitHistoryToWire(ci.history, instructions.size(), wireToolBytes(specs, ci.loopOn), inputs.size(), ci.loopOn))
     instructions = agent::composeInstructions(ci);   // lane CTX: the history fits the request body

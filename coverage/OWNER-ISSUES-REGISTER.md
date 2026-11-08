@@ -188,3 +188,40 @@ tests/evals/owner_regressions/runs/bf40a3edf9f401df83be010eac2d9847d82e2681/ (ta
   clip floor: a longer carve-out pushed a 128 K head's fixture from clipping its capability
   list to dropping the section outright. Guard: the prompt goldens (orch_prompt_default,
   orch_prompt_recall_loopoff) plus that budget test.
+  Two more layers followed because the static carve-out alone still left zero-tool-call reps
+  (the 40e04a6e and 508c8fd7 runs): the STANDING RULES header now says "Add or change them
+  only with prefs.edit" ("Change them" did not read as covering an add), and a per-turn
+  [MEMORY ROUTING] hint (owner_prefs rememberRequest, a broad whole-word "remember" /
+  "don't forget" match) names the three landings on the turn that carries the request: a
+  rule goes to prefs.edit now (a full list is no refusal, the oldest retires), a fact to
+  mem_write now, a question to a search with nothing saved. The hint rides the per-turn
+  block only, so the cached blocks stay byte-identical, and it is attached on a real human
+  message only (ci.speakerPresent): a scheduled routine's prompt or a synthesis turn's
+  untrusted sub-agent text that says "remember" is not the owner asking for a save and never
+  gets it. Guards: test_owner_prefs (corpus plus hint), test_harness_compose (per-turn only),
+  test_harness_food_turn test_memory_routing_hint_rides_only_a_real_owner_message (an owner
+  turn carries it, a scheduled routine saying "remember" does not; verified to fail with the
+  gate removed).
+- OIR-12 / lc-grams-vs-kcal, OIR-35 / lc-photo-default, OIR-16 / lc-near-match (the 6a5d8fcc
+  glm-5.3 leg recorded 3/5, 1/5 and 3/5; one claude rep of lc-grams-vs-kcal the same way):
+  fixture ruling, not a threshold move. Every one of those failing reps logged the right
+  figure (238 kcal, 880 kcal, 885 kcal) in a row whose items text held a bare comma ("boba
+  tea 350 g (68 kcal/100 g, label)"), which rule 3 of the food-log playbook forbids but some
+  heads still write. csv.reader then sees six fields and puts the label text where the kcal
+  belongs, so the assertion failed a row the owner sees correctly: the device itself reads
+  such a row (readWideRow in lib/core/src/orch_file_append.cpp, the 31 Oct fix) and its own
+  files.append reply said "today's kcal: 238 from 1 row". assertions.ledger_rows now reads a
+  wide row the way the device does: the extra fields belong to the items when the date is a
+  day, the last two fields are a plain number or empty, and no absorbed field is a bare number
+  (a shifted figure is never words); any other wide row stays unread and still fails.
+  Counter-tests in tools/release_gate/test_owner_regression_assertions.py (run by the
+  battery's citools row): a comma row with the wrong figure (350 g as 350 kcal) still fails
+  ledger_row_kcal_near and ledger_row_kcal_ne, a shifted bare number still fails, a row whose
+  last fields are not figures still fails, and the tests fail under the old csv-only reading.
+  Offline re-grade of the stored records (no model call, record date pinned):
+  evidence/qfix-regrade-6a5d8fcc.txt flips exactly eight reps FAIL to PASS (glm
+  lc-grams-vs-kcal 2, lc-near-match 2, lc-photo-default 4; claude lc-grams-vs-kcal 1) and no
+  PASS to FAIL; evidence/qfix-regrade-bf40a3ed.txt applies the same reading to the REGR-RUN-2
+  before-run so before and after are graded alike. The comma habit is a prompt-rule violation
+  that predates this lane (the before-run's glm leg wrote five such rows), so it is not
+  counted as fixed; only the grading of a correct outcome changed.

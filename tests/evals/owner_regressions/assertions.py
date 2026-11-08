@@ -68,13 +68,42 @@ def files(t: dict) -> dict:
     return t.get("files") or {}
 
 
+LEDGER_WIDTH = 5  # date,meal,items,kcal,protein_g
+ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+PLAIN_NUMBER = re.compile(r"^\d+(\.\d+)?$")
+
+
+def widen_row(row: list) -> list:
+    """A ledger row read the way the device reads it (readWideRow, lib/core/src/orch_file_append.cpp).
+
+    A bare comma in the free-text items (rule 3 of the food-log playbook forbids it, and
+    some heads still write one) gives csv.reader more fields than the five columns, and
+    the figures land in the wrong ones. The device reads such a row anyway - on 31 Oct
+    rows with a comma were left out of the day's sum and the fix made them count - and the
+    owner sees the row's real figures. The assertions grade what the owner sees, so they
+    read it the same way: the extra fields belong to the items when the date is a day, the
+    last two fields (kcal, protein) are a plain number or empty, and no absorbed field is
+    a bare number (that is a shifted figure, never words). Any other wide row is returned
+    unchanged, so it still fails the figure checks."""
+    if len(row) <= LEDGER_WIDTH or not ISO_DAY.match(row[0].strip()):
+        return row
+    kcal, prot = row[-2].strip(), row[-1].strip()
+    absorbed = row[2:-2]
+    if any(f and not PLAIN_NUMBER.match(f) for f in (kcal, prot)):
+        return row
+    if any(PLAIN_NUMBER.match(f.strip()) for f in absorbed):
+        return row
+    return [row[0], row[1], ", ".join(f.strip() for f in absorbed), kcal, prot]
+
+
 def ledger_rows(t: dict, path: str = FOOD_LEDGER) -> list:
     """The food ledger's rows as dicts (header date,meal,items,kcal,protein_g)."""
     text = files(t).get(path, "")
     rows = []
-    for row in csv.reader(io.StringIO(text)):
-        if not row or row[0].strip().lower() == "date":
+    for raw_row in csv.reader(io.StringIO(text)):
+        if not raw_row or raw_row[0].strip().lower() == "date":
             continue
+        row = widen_row(raw_row)
         rows.append(
             {
                 "date": row[0].strip() if len(row) > 0 else "",
@@ -82,7 +111,7 @@ def ledger_rows(t: dict, path: str = FOOD_LEDGER) -> list:
                 "items": row[2].strip() if len(row) > 2 else "",
                 "kcal": row[3].strip() if len(row) > 3 else "",
                 "protein_g": row[4].strip() if len(row) > 4 else "",
-                "raw": ",".join(row),
+                "raw": ",".join(raw_row),
             }
         )
     return rows

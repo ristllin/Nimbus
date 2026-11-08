@@ -130,6 +130,11 @@ std::string leftText(const FoodLedger& l) {
   return out.empty() ? out : "Left today, worked out by the device: " + out + ".\n";
 }
 
+// The targets file that sits beside this ledger: food-log-<id>.csv -> food-targets-<id>.csv.
+std::string targetsFileOf(const FoodLedger& l) {
+  return l.name.rfind("food-log", 0) == 0 ? "food-targets" + l.name.substr(8) : l.name;
+}
+
 // With no target stored, on a food turn: where one comes from, and that none is stated before.
 std::string noTargetsText(const FoodLedger& l) {
   if (l.targets.kcal > 0 || l.targets.protein > 0) return std::string();
@@ -140,8 +145,7 @@ std::string noTargetsText(const FoodLedger& l) {
     for (size_t i = 0; i < l.planFiles.size(); i++) out += (i ? " or " : "") + l.planFiles[i];
     out += "), ";
   }
-  const std::string where = l.project + "\",\"name\":\"" +
-                            (l.name.rfind("food-log", 0) == 0 ? "food-targets" + l.name.substr(8) : l.name);
+  const std::string where = l.project + "\",\"name\":\"" + targetsFileOf(l);
   out += "their standing rules, their long-term memory or their own words, or ask. Then store it once, with no word to the "
          "owner about storing it, so the device does the sum: files.append {\"project\":\"" + where + "\",\"key\":\"metric\",\"text\":\"" +
          kFoodTargetsHeader + "\\n" + l.today + ",kcal,<number>,<the file or words it came from>\"} (protein_g the same way).\n";
@@ -155,8 +159,7 @@ std::string noTargetsText(const FoodLedger& l) {
 std::string targetsText(const FoodLedger& l) {
   const FoodTargets& t = l.targets;
   if (t.kcal <= 0 && t.protein <= 0) return std::string();
-  const std::string tname = l.name.rfind("food-log", 0) == 0 ? "food-targets" + l.name.substr(8) : l.name;
-  std::string out = "[FOOD TARGETS] stored in " + l.project + "/" + tname + ": ";
+  std::string out = "[FOOD TARGETS] stored in " + l.project + "/" + targetsFileOf(l) + ": ";
   bool first = true;
   if (t.kcal > 0) {
     out += "kcal " + num(t.kcal) + " (from " + t.kcalSource + ")";
