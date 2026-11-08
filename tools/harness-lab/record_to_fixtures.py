@@ -81,7 +81,7 @@ def collect(dirs: list[Path]) -> tuple[dict, list]:
 def _rows(path: Path):
     if not path.exists():
         return
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if line.strip():
             yield json.loads(line)
 

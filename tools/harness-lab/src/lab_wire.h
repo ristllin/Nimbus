@@ -8,6 +8,7 @@
 #include <regex>
 #include <string>
 
+#include "lab_text.h"   // capUtf8: the recorder's body cut never splits a character
 #include "nimbus/harness/http.h"
 
 // Lab-only transport decorators. They sit between the shipping provider adapters
@@ -204,7 +205,7 @@ class RecordingTransport : public agent::HttpTransport {
       if (!rq["max_output_tokens"].isNull()) row["max_tokens"] = rq["max_output_tokens"];
     }
     if (out.status >= 400) {
-      row["body"] = scrubSecrets(out.body.substr(0, 4096));
+      row["body"] = scrubSecrets(capUtf8(out.body, 4096));
       append("errors.jsonl", row);
       errorRows_++;
       return;

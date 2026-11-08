@@ -246,7 +246,7 @@ def run_one(sc: dict, model: str, host: str, args, rep: int, rep_dir: Path) -> d
         cmd += ["--system-out", str(rep_dir / "rep1.system.json")]
     t0 = time.time()
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900, env=driver_env())
+        proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=900, env=driver_env())
     except subprocess.TimeoutExpired as e:
         proc = subprocess.CompletedProcess(cmd, 124, str(e.stdout or ""), "timed out after 900 s")
     (rep_dir / f"rep{rep}.driver.log").write_text(proc.stdout[-20000:] + "\n--- stderr ---\n" + proc.stderr[-20000:])
@@ -259,7 +259,9 @@ def run_one(sc: dict, model: str, host: str, args, rep: int, rep_dir: Path) -> d
         "driver_rc": proc.returncode,
         "seconds": round(time.time() - t0, 1),
     }
-    transcript = json.loads(transcript_path.read_text()) if transcript_path.exists() else {}
+    transcript = (
+        json.loads(transcript_path.read_text(encoding="utf-8", errors="replace")) if transcript_path.exists() else {}
+    )
     record["transcript"] = transcript
     record["spend"] = price_usage(rec)
     record["assertions"] = A.run_all(sc, transcript)

@@ -190,7 +190,7 @@ void seedWorld(lab::LabRig& rig, JsonObjectConst seed) {
     serializeJson(d, args);
     const std::string out = rig.callTool("memory.write", args);
     if (out.find("error") != std::string::npos)
-      std::fprintf(stderr, "fc_driver: memory.write: %s\n", out.substr(0, 200).c_str());
+      std::fprintf(stderr, "fc_driver: memory.write: %s\n", lab::capUtf8(out, 200).c_str());
   }
   seedHistory(rig, seed["history"].as<JsonArrayConst>());
   seedPrefs(rig, seed["prefs"].as<JsonArrayConst>());

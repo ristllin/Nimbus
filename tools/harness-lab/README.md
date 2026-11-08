@@ -115,7 +115,12 @@ retry and failover paths run against otherwise real traffic, for example
 `--record=<dir>` appends every provider usage object to `<dir>/usage.jsonl` and
 every provider error body to `<dir>/errors.jsonl` (secret-shaped strings
 scrubbed). Spend is priced from those provider-reported numbers, never from a
-device ledger:
+device ledger. Every field the lab shortens for a record an eval reads back (the
+driver transcript, the error body, a driver's stderr) is cut by `lab::cutRecord` /
+`lab::capUtf8` (`src/lab_text.h`), never inside a UTF-8 character: a strict UTF-8
+reader would otherwise stop the whole sweep on the half character (REGR3E, 8 Nov
+2026). New cuts that land in a record use those two, and the runners read driver
+output with `errors="replace"` as a second line of defense:
 
 ```bash
 NIMBUS_LAB_MODEL=claude-haiku-5-5 ./build/nimbus-lab --record=/tmp/rec scenarios smoke

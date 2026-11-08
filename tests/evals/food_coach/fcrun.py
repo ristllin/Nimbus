@@ -163,10 +163,16 @@ def run_lab(t: Task, files: dict) -> dict:
         attempts += 1
         files["out"].unlink(missing_ok=True)
         try:
-            proc = subprocess.run(_driver_cmd(t, files), capture_output=True, text=True, timeout=t.timeout_s)
+            proc = subprocess.run(
+                _driver_cmd(t, files), capture_output=True, text=True, errors="replace", timeout=t.timeout_s
+            )
             stderr = proc.stderr[-600:]
             if proc.returncode == 0 and files["out"].exists():
-                return {"attempts": attempts, "driver": json.loads(files["out"].read_text()), "error": ""}
+                return {
+                    "attempts": attempts,
+                    "driver": json.loads(files["out"].read_text(encoding="utf-8", errors="replace")),
+                    "error": "",
+                }
         except subprocess.TimeoutExpired:
             stderr = "driver timed out"
         time.sleep(RETRY_WAIT_S * attempts)
