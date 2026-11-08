@@ -157,11 +157,15 @@ struct TlsIo {
   HeapSample sample() { return sampleHeap(); }
 
   // 3x connect with a 400 ms settle (rapid consecutive handshakes to the same host
-  // intermittently fail; a fresh socket clears it).
+  // intermittently fail; a fresh socket clears it). The dial names the client by its real
+  // type: through `client` (a Client*) it reached the overload that cannot carry the host,
+  // and every provider handshake went out with no SNI (lane SNI).
   bool connect() {
     for (int a = 0; a < 3 && !expired(); a++) {
       nimbus::pollwatch::beat("provider connect");
-      if (connectHost(*client, req.host.c_str(), req.port)) return true;
+      const int ok = req.tls ? connectHost(tls, req.host.c_str(), req.port)
+                             : connectHost(plain, req.host.c_str(), req.port);
+      if (ok) return true;
       close();
       if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
     }

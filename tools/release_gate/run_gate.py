@@ -35,6 +35,7 @@ import check_sram_staging
 import check_static_dram
 import check_storm_evidence
 import check_test_console_guard
+import check_tls_sni
 import model_id_lint
 
 HARDWARE_BATTERY = """\
@@ -145,6 +146,7 @@ def run_host_checks() -> bool:
         ("static-dram ceiling (p18-DEF)", check_static_dram.main),
         ("nothing logs under a spinlock", check_critical_sections.main),
         ("lwip core lock (CRASH2 A03)", check_lwip_core_lock.main),
+        ("tls names the host (SNI)", check_tls_sni.main),
         ("release notes line (D5)", check_release_notes.main),
         ("owner regressions (p18-REGR)", check_owner_regressions.main),
     ):

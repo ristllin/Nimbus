@@ -20,10 +20,11 @@ The scanner counts failed allocations in any case (bench_driver.scan_lines). The
 lower-case words and reported zero over 24 of these lines.
 
 Grades: FAIL (a restart, a new crash, low water under 8 KB after the first hour, a low-memory turn failure, a failed
-or slow turn, slow or failed polls, the settings store shrinking), BLOCKED (too short, a hole in the polls, a missing
-number in any answered poll - one that vanishes mid-run counts, not just one absent from all of them - no dream, a
-load that never ran), OPEN (it ran clean but memory failures were counted, for a person to read),
-else PASS.
+or slow turn, a provider exchange that failed at connect, slow or failed polls, the settings store shrinking), BLOCKED
+(too short, a hole in the polls, a missing number in any answered poll - one that vanishes mid-run counts, not just one
+absent from all of them - no dream, a load that never ran), OPEN (it ran clean but memory failures were counted, for a
+person to read), else PASS. A turn whose reply is the device's failure notice ("That didn't finish", "could not be
+reached") is a failed turn, whatever the driver recorded.
 """
 
 from __future__ import annotations
@@ -335,6 +336,7 @@ def scan_run(out: str) -> Dict[str, Any]:
         "console": from_console,
         "total": max(from_errlog["total"], from_console["total"]),
         "turnFailedLowMemory": max(from_errlog["turnFailedLowMemory"], from_console["turnFailedLowMemory"]),
+        "connectFailed": max(from_errlog["connectFailed"], from_console["connectFailed"]),
     }
 
 
@@ -439,11 +441,19 @@ def _grade_polls(polls, reasons) -> Dict[str, Any]:
     return {"polls": len(polls), "failedPolls": failed, "pollMedianS": median, "pollMaxS": max(times, default=None)}
 
 
+def _turn_failed(turn: Dict[str, Any]) -> bool:
+    """A turn failed when the driver said so, or when its reply is the device's failure notice. The second reads the
+    reply again, so a run recorded before the driver knew the notice (K01 on c168797b, every turn "ok") grades true."""
+    return not turn.get("ok") or bool(bd.failure_notice(str(turn.get("reply") or "")))
+
+
 def _grade_turn_failures(turns, reasons) -> int:
-    bad = [t for t in turns if not t.get("ok")]
+    bad = [t for t in turns if _turn_failed(t)]
     if bad:
-        reasons["FAIL"].append(f"{len(bad)} of {len(turns)} turns failed; first: {bad[0].get('error', '')[:120]}")
-    slow = [t for t in turns if t.get("kind") in ("text", "food") and t.get("ok") and t["s"] > TEXT_TURN_LIMIT_S]
+        first = bad[0].get("error") or bad[0].get("reply") or ""
+        reasons["FAIL"].append(f"{len(bad)} of {len(turns)} turns failed; first: {first[:120]}")
+    answered = [t for t in turns if t.get("kind") in ("text", "food") and not _turn_failed(t)]
+    slow = [t for t in answered if t["s"] > TEXT_TURN_LIMIT_S]
     if slow:
         reasons["FAIL"].append(
             f"{len(slow)} text turns over {TEXT_TURN_LIMIT_S:.0f} s; slowest {max(t['s'] for t in slow)} s"
@@ -489,12 +499,16 @@ def _grade_scan(answered, scan, reasons) -> Dict[str, Any]:
         reasons["BLOCKED"].append("no failed-allocation counter in any poll")
     if scan["turnFailedLowMemory"]:
         reasons["FAIL"].append(f"{scan['turnFailedLowMemory']} turns failed for low memory")
+    connect = scan.get("connectFailed", 0)
+    if connect:
+        hosts = scan["errlog"].get("connectFailedByHost") or scan["console"].get("connectFailedByHost") or {}
+        reasons["FAIL"].append(f"{connect} provider exchanges failed at connect: {json.dumps(hosts, sort_keys=True)}")
     if scan["total"] or delta:
         reasons["OPEN"].append(
             f"memory failures to read: {scan['total']} log lines, the device's own counter rose by {delta}. "
             f"Classes: {json.dumps(scan['errlog']['heapBySize'] or scan['console']['heapBySize'])}"
         )
-    return {"allocFailureLines": scan["total"], "allocFailsDelta": delta}
+    return {"allocFailureLines": scan["total"], "allocFailsDelta": delta, "connectFailedExchanges": connect}
 
 
 def grade_run(plan: Dict[str, Any], polls, turns, scan) -> Dict[str, Any]:

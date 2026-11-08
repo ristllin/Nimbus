@@ -472,8 +472,11 @@ def _trace(host, stage):
 
 
 def test_the_scanner_counts_exchanges_by_the_stage_they_stopped_at():
-    found = bd.scan_lines([_trace("api.mistral.ai", "none")] * 3 + [_trace("api.openai.com", "connect")] * 2
-                          + [_trace("api.mistral.ai", "connect"), _trace("api.anthropic.com", "read")])
+    found = bd.scan_lines(
+        [_trace("api.mistral.ai", "none")] * 3
+        + [_trace("api.openai.com", "connect")] * 2
+        + [_trace("api.mistral.ai", "connect"), _trace("api.anthropic.com", "read")]
+    )
     assert found["exchanges"] == {"none": 3, "connect": 3, "read": 1}
     assert found["connectFailed"] == 3
     assert found["connectFailedByHost"] == {"api.openai.com": 2, "api.mistral.ai": 1}
@@ -482,13 +485,24 @@ def test_the_scanner_counts_exchanges_by_the_stage_they_stopped_at():
 
 def test_an_exchange_that_failed_at_connect_fails_the_soak():
     found = bd.scan_lines([_trace("api.mistral.ai", "none"), _trace("api.openai.com", "connect")])
-    verdict = grade(scan={"errlog": found, "console": bd.scan_lines([]), "total": 0, "turnFailedLowMemory": 0,
-                          "connectFailed": found["connectFailed"]})
+    verdict = grade(
+        scan={
+            "errlog": found,
+            "console": bd.scan_lines([]),
+            "total": 0,
+            "turnFailedLowMemory": 0,
+            "connectFailed": found["connectFailed"],
+        }
+    )
     assert verdict["grade"] == "FAIL"
     assert any("1 provider exchanges failed at connect" in reason for reason in verdict["reasons"]["FAIL"])
     healthy = bd.scan_lines([_trace("api.mistral.ai", "none")] * 5)
-    assert grade(scan={"errlog": healthy, "console": healthy, "total": 0, "turnFailedLowMemory": 0,
-                       "connectFailed": 0})["grade"] == "PASS"
+    assert (
+        grade(scan={"errlog": healthy, "console": healthy, "total": 0, "turnFailedLowMemory": 0, "connectFailed": 0})[
+            "grade"
+        ]
+        == "PASS"
+    )
 
 
 def test_a_failure_notice_from_the_device_fails_the_run_end_to_end(run):

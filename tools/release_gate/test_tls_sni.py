@@ -64,7 +64,9 @@ def test_a_seam_without_the_deleted_base_overload_fails():
 
 
 def test_a_plain_overload_that_skips_connect_plain_fails():
-    src = FIXED_SEAM.replace("nimbus::net::connectPlain<IPAddress>(c, host, port, -1, Resolve{})", "c.connect(ip, port)")
+    src = FIXED_SEAM.replace(
+        "nimbus::net::connectPlain<IPAddress>(c, host, port, -1, Resolve{})", "c.connect(ip, port)"
+    )
     assert sni.RULE_SEAM in rules(src, sni.SEAM)
 
 

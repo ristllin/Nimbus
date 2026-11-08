@@ -170,3 +170,21 @@ def test_unclosed_lock_fails():
 
 def test_the_tree_is_clean():
     assert lw.main([]) == 0
+
+
+# Lane SNI: the dial template's address is its `Addr` parameter (IPAddress on the device). That
+# counts as an address in the template file only; anywhere else an `Addr` is not known to be one.
+TEMPLATE_DIAL = """
+template <class Addr, class Secure, class Resolve>
+int connectSecure(Secure& c, const char* host, uint16_t port, int32_t timeoutMs, Resolve resolve) {
+  Addr ip;
+  if (!resolve(host, ip)) return 0;
+  return c.connect(ip, port, host, nullptr, nullptr, nullptr);
+}
+"""
+
+
+def test_the_dial_templates_address_counts_only_in_the_template():
+    assert lines(TEMPLATE_DIAL, lw.DIAL_TEMPLATE) == []
+    assert rules(TEMPLATE_DIAL, "src/agent/other.cpp") == ["host-based connect not through connectHost"]
+    assert lines(TEMPLATE_DIAL.replace("Addr ip;", "Host ip;"), lw.DIAL_TEMPLATE) == [6]

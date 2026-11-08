@@ -100,6 +100,9 @@ _HELD_BY_CALLER = {
     ("agent/adapters/provider_file_fetch.cpp", "httpsGetToSink"): ["captureProviderFile"],
     ("agent/adapters/audio_tts.cpp", "connectTts"): ["synthesizeToFile"],
     ("sys/ota_update.cpp", "httpsGetOnce"): ["httpsGetUrl", "fetchManifest", "checkRun"],
+    # Lane SNI: the MCP dial takes the TLS client by its type (so it names the host); both
+    # callers, exchange and httpDo, hold the slot with the scope guard.
+    ("agent/connectors.cpp", "mcpConnect"): ["exchange"],
 }
 
 # Files whose TLS is outside the work slot by design.
@@ -317,3 +320,17 @@ def test_guard_parser_sees_the_relay_functions():
     for name in ("doLoopback", "wsWriteAll", "wsSendSmall", "emitResFrame", "handleReq", "runSession"):
         assert name in fns, f"guard parser no longer finds relay {name}()"
     assert len(fns) > 40
+
+
+def test_every_mcp_dial_caller_holds_the_slot():
+    """Lane SNI: mcpConnect takes the TLS client by its type, so the guard sees it as a TLS opener. Every function that
+    calls it must take the slot before the call, not only the one the allowlist names."""
+    fns = _fn_map("agent/connectors.cpp")
+    callers = [
+        name for name, (_, body) in fns.items() if name != "mcpConnect" and re.search(r"\bmcpConnect\s*\(", body)
+    ]
+    assert sorted(callers) == ["exchange", "httpDo"], callers
+    for name in callers:
+        code = _strip(fns[name][1])
+        take, dial = _TAKES_SLOT.search(code), re.search(r"\bmcpConnect\s*\(", code)
+        assert take and take.start() < dial.start(), f"{name}() dials MCP without the work slot"

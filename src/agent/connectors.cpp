@@ -777,10 +777,13 @@ struct McpResp {
   mc::ErrorKind kind = mc::ErrorKind::None;
 };
 
-// Open the socket (TLS or plain) with a short connect-retry, bounded by deadline.
-bool mcpConnect(Client& c, const UrlParts& u, uint32_t deadline) {
+// Open the socket (TLS or plain) with a short connect-retry, bounded by deadline. Both
+// clients come by their real types so the TLS dial carries the host for SNI (lane SNI: a
+// Client& here reached the overload that dialed TLS by address with no name).
+bool mcpConnect(WiFiClientSecure& tls, WiFiClient& plain, const UrlParts& u, uint32_t deadline) {
   for (int attempt = 0; attempt < 3 && (int32_t)(millis() - deadline) < 0; attempt++) {
-    if (connectHost(c, u.host.c_str(), u.port)) return true;
+    const int ok = u.tls ? connectHost(tls, u.host.c_str(), u.port) : connectHost(plain, u.host.c_str(), u.port);
+    if (ok) return true;
     delay(400);
   }
   return false;
@@ -847,7 +850,7 @@ void exchange(const McpReq& q, McpResp& r) {
     c = &plain;
   }
   const uint32_t deadline = millis() + q.timeoutMs;
-  if (!mcpConnect(*c, q.u, deadline)) {
+  if (!mcpConnect(tls, plain, q.u, deadline)) {
     c->stop(); slot.release();
     r.kind = mc::ErrorKind::Connect;
     return;
@@ -1267,7 +1270,7 @@ void httpDo(const HttpReq& q, HttpResp& r) {
     c = &plain;
   }
   const uint32_t deadline = millis() + q.timeoutMs;
-  if (!mcpConnect(*c, u, deadline)) {
+  if (!mcpConnect(tls, plain, u, deadline)) {
     c->stop(); slot.release();
     r.kind = mc::ErrorKind::Connect;
     return;

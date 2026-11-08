@@ -120,7 +120,9 @@ def declared_type(text: str, name: str, before: int) -> Optional[Tuple[str, str]
     """(type, "&" | "*" | "") of the nearest declaration of `name` above `before`, among the client
     types and auto; None when there is none."""
     decl = re.compile(
-        r"\b(" + "|".join(CLIENT_DECL_TYPES) + r")\b\s*(?:const\s*)?([&*]?)\s*(?:const\s+)?\b"
+        r"\b("
+        + "|".join(CLIENT_DECL_TYPES)
+        + r")\b\s*(?:const\s*)?([&*]?)\s*(?:const\s+)?\b"
         + re.escape(name)
         + r"\b(?!\s*\()"
     )

@@ -141,6 +141,19 @@ class Api:
         return self.post_form("/api/test/astool", {"chat": chat, "body": json.dumps(call)}, timeout)
 
 
+# The device's own words for a turn it could not answer (lib/harness engine.cpp deliverFailure: "That didn't finish -
+# <cause>."; lib/core orch_head_loop.cpp stepErrCause: "<host> could not be reached"). The web chat marks such a turn
+# done, because a reply was delivered, so a grader that read only `done` passed a build whose every turn failed: the
+# K01 soak on c168797b counted 28 of 28 of these turns ok (lane SNI).
+FAILURE_NOTICES = re.compile(r"\b(?:didn['\u2019]t|did not) finish\b|\bcould(?:n['\u2019]t| not) be reached\b", re.I)
+
+
+def failure_notice(reply: str) -> str:
+    """The failure phrase a reply carries, or "" when it is an answer."""
+    m = FAILURE_NOTICES.search(reply or "")
+    return m.group(0) if m else ""
+
+
 class TurnResult(NamedTuple):
     ok: bool
     reply: str
@@ -165,8 +178,13 @@ def chat_turn(api: Api, text: str, timeout: float = 90.0, poll_s: float = 2.0) -
         time.sleep(poll_s)
         view = api.get_json(path, 15.0)
         if view and not view.get("pending", True):
-            ok, reply = bool(view.get("done")), str(view.get("reply") or "")
-            error = "" if ok else f"the turn ended unanswered: {reply[:120] or 'no reply'}"
+            reply = str(view.get("reply") or "")
+            notice = failure_notice(reply)
+            ok = bool(view.get("done")) and not notice
+            if notice:
+                error = f"the turn ended with a failure notice ({notice!r}): {reply[:120]}"
+            else:
+                error = "" if ok else f"the turn ended unanswered: {reply[:120] or 'no reply'}"
             return TurnResult(ok, reply, error, time.time() - started, 200)
     return TurnResult(False, "", f"no reply within {timeout:.0f} s", time.time() - started, 200)
 
@@ -306,16 +324,29 @@ _ALLOC_CLASSES = (
     ("turnFailedLowMemory", re.compile(r"turn failed \(low memory", re.I)),
 )
 _TURN_END = re.compile(r"turn end:\s*(ok|fail)", re.I)
+# One provider exchange's record (src/agent/transport_tls.cpp, heapwatch ExchangeTrace::line): "transport: heaptrace
+# <host><path> ... fail=<stage> ...". fail=none is an exchange that completed; any other stage did not. An exchange that
+# failed at connect never reached the provider: on the build that dialed TLS by address it was every one of them.
+_EXCHANGE = re.compile(r"\bheaptrace\s+(?P<host>[^\s/]+)\S*\s.*?\bfail=(?P<stage>\w+)", re.I)
 
 
 def scan_lines(lines: Sequence[str]) -> Dict[str, Any]:
-    """Count every memory-failure line, whatever its case, and every turn end. ``total`` is the number of lines that
-    match any class; ``heapBySize`` breaks the firmware's own records down by size, capabilities and task."""
+    """Count every memory-failure line, whatever its case, every turn end, and every provider exchange by the stage it
+    stopped at. ``total`` is the number of lines that match a memory class; ``heapBySize`` breaks the firmware's own
+    records down by size, capabilities and task; ``connectFailed`` counts the exchanges that failed at connect."""
     counts = {name: 0 for name, _ in _ALLOC_CLASSES}
     by_size: Dict[str, int] = {}
     turn_ends = {"ok": 0, "fail": 0}
+    exchanges: Dict[str, int] = {}
+    connect_by_host: Dict[str, int] = {}
     total = 0
     for line in lines:
+        trace = _EXCHANGE.search(line)
+        if trace:
+            stage = trace["stage"].lower()
+            exchanges[stage] = exchanges.get(stage, 0) + 1
+            if stage == "connect":
+                connect_by_host[trace["host"]] = connect_by_host.get(trace["host"], 0) + 1
         hit = False
         for name, pattern in _ALLOC_CLASSES:
             if pattern.search(line):
@@ -329,7 +360,15 @@ def scan_lines(lines: Sequence[str]) -> Dict[str, Any]:
         end = _TURN_END.search(line)
         if end:
             turn_ends[end.group(1).lower()] += 1
-    return {"total": total, **counts, "heapBySize": by_size, "turnEnds": turn_ends}
+    return {
+        "total": total,
+        **counts,
+        "heapBySize": by_size,
+        "turnEnds": turn_ends,
+        "exchanges": exchanges,
+        "connectFailed": exchanges.get("connect", 0),
+        "connectFailedByHost": connect_by_host,
+    }
 
 
 def worst_grade(grades: Sequence[str]) -> str:

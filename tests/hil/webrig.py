@@ -30,6 +30,8 @@ import time
 
 import pytest
 
+from bench_driver import failure_notice
+
 try:
     import requests
 except ImportError:  # pragma: no cover - collection must still succeed
@@ -90,7 +92,10 @@ def chat_turn(session, ip: str, text: str, timeout_s: float = 150.0, poll_s: flo
     slot still holds the previous reply while the new message waits, so a reader of
     it lines up one reply behind (the v4.5.14 release run read "OK" from an earlier
     file as a /compact reply, and turn 1 as turn 2). Fails on a turn the device
-    forgot (``gone``) and on no answer within ``timeout_s``."""
+    forgot (``gone``), on no answer within ``timeout_s``, and on a reply that is the
+    device's failure notice ("That didn't finish", "could not be reached"): the chat
+    marks that turn done, and a leg that read only ``done`` passed a build whose
+    every provider exchange failed at connect (lane SNI)."""
     r = session.post(f"http://{ip}/api/chat", data={"text": text}, timeout=10)
     if r.status_code == 503:  # the previous reply is still finishing
         time.sleep(3)
@@ -104,7 +109,10 @@ def chat_turn(session, ip: str, text: str, timeout_s: float = 150.0, poll_s: flo
         j = session.get(f"http://{ip}/api/chat", params={"turn": turn}, timeout=10).json()
         assert not j.get("gone"), f"turn {turn} is gone before it was answered: {text[:60]}"
         if j.get("done"):
-            return str(j.get("reply") or "")
+            reply = str(j.get("reply") or "")
+            if failure_notice(reply):
+                pytest.fail(f"turn {turn} ended with the device's failure notice: {reply[:160]}")
+            return reply
     pytest.fail(f"turn {turn} was not answered within {timeout_s:.0f}s: {text[:60]}")
 
 

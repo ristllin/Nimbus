@@ -374,6 +374,15 @@ ERROR, not a security hole). ⚠ **Known limitation:** the flag is GLOBAL, not p
 providers. Per-provider granularity is the follow-up if a self-hosted + cloud mix ever
 needs both at once.
 
+**The host's name rides every TLS connection.** The device resolves a name itself and
+dials the address, so no DNS runs inside the connect call. Every dial goes through
+`connectHost()` in `src/sys/net_util.h`, and a TLS dial passes the host's name along with
+the address: the name is sent as SNI and the server certificate is checked against it. A
+client held through the `Client` base class cannot reach a dial (that overload is
+deleted), and `tools/release_gate/check_tls_sni.py` fails the release on any TLS dial
+outside the seam. A build between lane CRASH2 and lane SNI dialed by address with no name,
+so every CDN-fronted provider refused the handshake; no release carried it.
+
 ### Cloud relay socket always validates, never setInsecure (done)
 
 The cloud relay client (`src/net/relay_client.cpp`, see [cloud-relay.md](cloud-relay.md))

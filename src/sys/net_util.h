@@ -8,6 +8,7 @@
 #include <new>   // std::nothrow: the DNS wait's state lives on the heap (dns_lookup.h)
 
 #include "nimbus/net/dns_lookup.h"   // the lookup itself, host-tested against a fake lwIP
+#include "nimbus/net/tls_connect.h"  // the dial itself (lane SNI), host-tested against a fake client
 #include "poll_watch.h"              // lane TGSTALL: every connect and close is a poll-task beat
 
 // agent::store::tlsVerify() - the outbound-TLS security switch. Forward-declared
@@ -91,7 +92,9 @@ inline void tlsClose(WiFiClientSecure& c) {
 // So the seam resolves with the RAW dns_gethostbyname() under LOCK_TCPIP_CORE() (a raw
 // API: it asserts the lock held but never takes it - the webDnsReady pattern in
 // embeddings.cpp), then connects by IPAddress, whose connect() runs no DNS at all
-// (NetworkClient.cpp:312 / NetworkClientSecure.cpp:140,192 are the host overloads).
+// (NetworkClient.cpp:312 / NetworkClientSecure.cpp:140,192 are the host overloads). A TLS
+// client still passes the name with the address, for SNI and the certificate check (lane
+// SNI, connectHost below).
 // dns_clear_cache()'s only caller in the whole stack is NetworkManager.cpp:84, so with
 // no hostByName left in any task it is never called from outside the TCPIP thread.
 // tools/release_gate/check_lwip_core_lock.py fails the release on any raw lwIP core
@@ -153,25 +156,40 @@ inline bool resolveHostLocked(const char* host, IPAddress& out, uint32_t waitMs 
   return true;
 }
 
-// Host-based connect through the seam: resolve under the TCPIP core lock (see above),
-// then connect by IPAddress so the core's own hostByName inside connect(host, ...)
-// never runs. Use this for EVERY connect(host, ...); connecting by IPAddress stays
-// direct (no DNS inside).
-inline int connectHost(Client& c, const char* host, uint16_t port) {
-  nimbus::pollwatch::beat("connect");
-  IPAddress ip;
-  if (!resolveHostLocked(host, ip)) return 0;
-  return c.connect(ip, port);
-}
+namespace nimbus_net_detail {
+// The resolver the dial seam runs (nimbus/net/tls_connect.h): the locked lookup above.
+struct LockedResolve {
+  bool operator()(const char* host, IPAddress& out) const { return resolveHostLocked(host, out); }
+};
+}  // namespace nimbus_net_detail
+
+// Host-based connect through the seam: resolve under the TCPIP core lock (see above), then
+// dial the address, so the core's own hostByName inside connect(host, ...) never runs. Use
+// this for EVERY dial by name; the dial itself is nimbus::net::connectSecure or
+// connectPlain (nimbus/net/tls_connect.h, host-tested in test_tls_connect).
+//
+// A TLS client dials with the host's name (lane SNI): the address overloads of
+// WiFiClientSecure::connect pass no name, so the session was named after the address, the
+// ClientHello carried no SNI and every CDN front end refused the handshake (main from
+// e697fe87: every provider exchange of the K01 soak failed at connect). The overload is
+// picked by the client's declared type, so a Client& or Client* (which can hold either
+// kind and cannot carry a name) is a compile error: the base-class overloads are deleted.
+// tools/release_gate/check_tls_sni.py fails the release on a secure dial outside this seam,
+// a connectHost argument that is not a declared WiFiClientSecure or WiFiClient, and a
+// secure overload here that does not dial through connectSecure.
 inline int connectHost(WiFiClientSecure& c, const char* host, uint16_t port) {
   nimbus::pollwatch::beat("connect");
-  IPAddress ip;
-  if (!resolveHostLocked(host, ip)) return 0;
-  return c.connect(ip, port);
+  return nimbus::net::connectSecure<IPAddress>(c, host, port, nimbus::net::kKeepTimeout,
+                                               nimbus_net_detail::LockedResolve{});
 }
 inline int connectHost(WiFiClientSecure& c, const char* host, uint16_t port, int32_t timeoutMs) {
   nimbus::pollwatch::beat("connect");
-  IPAddress ip;
-  if (!resolveHostLocked(host, ip)) return 0;
-  return c.connect(ip, port, timeoutMs);
+  return nimbus::net::connectSecure<IPAddress>(c, host, port, timeoutMs, nimbus_net_detail::LockedResolve{});
 }
+inline int connectHost(NetworkClient& c, const char* host, uint16_t port) {   // WiFiClient
+  nimbus::pollwatch::beat("connect");
+  return nimbus::net::connectPlain<IPAddress>(c, host, port, nimbus::net::kKeepTimeout,
+                                              nimbus_net_detail::LockedResolve{});
+}
+int connectHost(Client& c, const char* host, uint16_t port) = delete;
+int connectHost(Client& c, const char* host, uint16_t port, int32_t timeoutMs) = delete;

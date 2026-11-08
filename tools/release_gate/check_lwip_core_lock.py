@@ -59,6 +59,11 @@ EXTENSIONS = (".cpp", ".cc", ".c", ".h", ".hpp")
 # through resolveHostLocked() (raw dns_gethostbyname under the lock) + connectHost()
 # (connect by IPAddress). The rules below apply to it like to every other file.
 SEAM = os.path.join("src", "sys", "net_util.h")
+# The dial itself (lane SNI): connectHost runs nimbus::net::connectSecure / connectPlain, templates
+# whose address type is a parameter the device instantiates with IPAddress. In that one file a name
+# declared `Addr` is the resolved address.
+DIAL_TEMPLATE = os.path.join("lib", "core", "include", "nimbus", "net", "tls_connect.h")
+ADDR_DECL = re.compile(r"\bAddr\s+([A-Za-z_]\w*)")
 
 # Raw lwIP core APIs: each asserts LWIP_ASSERT_CORE_LOCKED() when the caller is not the
 # lock holder. The socket API (lwip_socket, setsockopt, lwip_getaddrinfo, ...) and the
@@ -122,6 +127,8 @@ def scan_source(path: str, src: str) -> List[Finding]:
     rel = os.path.relpath(path, REPO) if os.path.isabs(path) else path
     regions = list(lock_regions(text))
     ip_names = set(IP_DECL.findall(text))
+    if rel == DIAL_TEMPLATE:
+        ip_names |= set(ADDR_DECL.findall(text))
 
     def in_lock(pos: int) -> bool:
         return any(s <= pos < e for _ls, s, e, _u in regions)
