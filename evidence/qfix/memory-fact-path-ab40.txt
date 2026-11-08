@@ -1,0 +1,4 @@
+# claude-haiku-5-5, effort low, 40 reps, same hour (started 18:45Z), lc-save-status with the durable-store assertion (fix pass F2)
+# 'landed-in-durable' = the long-term store holds the fact after the turn; 'turn-field-write' = the head wrote it through the orch_turn mem_write[] field (not a head-loop tool call)
+main 7631b6a2 (+new driver/fixtures)   lc-save-status pass 40/40 landed-in-durable 40 turn-field-write 40 no-head-loop-tool-call 40 correction-tail 0  PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
+final head 9ff6f73c                    lc-save-status pass 40/40 landed-in-durable 40 turn-field-write 40 no-head-loop-tool-call 40 correction-tail 0  PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP

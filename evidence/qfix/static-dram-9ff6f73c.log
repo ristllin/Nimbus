@@ -1,0 +1,6 @@
+# static DRAM on the ELFs battery QFIX-fix1 built for 9ff6f73c, measured 2026-11-08T18:54:48Z
+# command: python3 tools/release_gate/check_static_dram.py
+
+PASS nimbus-tft: static DRAM 89835 B (baseline 91195 B, -1360 B; ceiling 91635 B)
+PASS freenove-28: static DRAM 89915 B (baseline 91275 B, -1360 B; ceiling 91723 B)
+rc=0

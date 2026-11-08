@@ -1,0 +1,9 @@
+# mistral-large-4-0 targeted leg on the final head 9ff6f73c (5 reps each, effort low, judge none), 2026-11-08 18:39Z; log evidence/qfix/eval-final-ml4.log
+# cost 0.60 USD (guard --max-usd 0.7); the full 42-scenario mistral leg does not fit the 5 USD lane cap (lane total about 4.45 USD after it)
+lc-embed-parked          5/5
+lc-false-claim           5/5
+lc-photo-estimate        5/5
+lc-restaurant-lookup     5/5
+lc-save-status           5/5
+lc-silent-replace        5/5
+# earlier targeted legs on the same prompt (evidence/qfix/regrade-mistral-fixpass.txt): lc-defended-hallucination 5/5 (re-graded with the retraction-aware assertion), lc-defended-agreement 5/5, lc-photo-default 4/5, lc-photo-default-servings 5/5, lc-brief-sources 0/5 (main 0/5), lc-unasked-topic 2/5 (main 0/5)

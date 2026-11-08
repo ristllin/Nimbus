@@ -1,0 +1,14 @@
+# glm-5.3 lc-routine-content, every stored rep (no model call, no spend), analysed 2026-11-08 by the fix pass
+# source: tests/evals/owner_regressions/runs/<sha>/raw/glm-5.3/lc-routine-content/rep*.json (lane tree) and the REGR-RUN-2 run bf40a3ed in the main tree
+#
+head      static system prompt          passes  failing assertion / kind
+bf40a3ed  main-equivalent (20092 chars)  5/5
+b1601368  main-equivalent (20092 chars)  4/5     reply_forbids: the reply mentions the sub-agent's bonus trivia (rep5)
+40e04a6e  main-equivalent (20092 chars)  4/5     reply_forbids: the reply mentions the bonus trivia (rep1)
+6a5d8fcc  + memory-tier sentence (+84 B) 3/5     reply_forbids: raw-findings fallback carrying the blue whale fact (rep1); mentions the bonus trivia (rep5)
+#
+main-equivalent prompt, 3 heads pooled: 13/15 pass.  with the +84 B sentence (6a5d8fcc only): 3/5 pass.
+Fisher exact two-sided p = 0.25 (not significant; a 20-rep A/B on main vs head is what would settle it)
+Both failure kinds (the reply mentions the sub-agent's bonus facts) also occur at the main-equivalent prompt (2 of 15).
+The scenario turn carries no food playbook and no [MEMORY ROUTING] hint (scheduled routine, no human message).
+NOT SHOWN: no regression, and no proof of noise. Needed to settle it: about 0.2 USD of Z.ai (one 20-rep A/B) - lane cap already exceeded (5.91 of 5 USD).
