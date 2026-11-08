@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <type_traits>
 
 // tls_connect - the device's one dial seam (src/sys/net_util.h connectHost), as templates
 // over the client and address types so the host tests run the code the device runs
@@ -32,6 +33,15 @@ namespace nimbus::net {
 
 constexpr int32_t kKeepTimeout = -1;   // dial with the timeout the client already has
 
+// A client type that can carry TLS. The device specializes this for its Client base and its
+// secure class (WiFiClientSecure, a typedef of NetworkClientSecure) in src/sys/net_util.h;
+// the host tests specialize it for their fakes. connectPlain refuses such a type at compile
+// time: a plain dial on a client that can carry TLS would send the TLS session out by
+// address with no host name (no SNI, the certificate checked against an address) - the lane
+// SNI defect.
+template <class T>
+struct can_carry_tls : std::false_type {};
+
 // A TLS dial by name. A dial with no name is refused before any lookup: it could only
 // reach the peer by address.
 template <class Addr, class Secure, class Resolve>
@@ -43,9 +53,14 @@ int connectSecure(Secure& c, const char* host, uint16_t port, int32_t timeoutMs,
   return c.connect(ip, port, host, nullptr, nullptr, nullptr);
 }
 
-// A plain TCP dial by name (no TLS, so no name rides the connection).
+// A plain TCP dial by name (no TLS, so no name rides the connection). Only a client that
+// cannot carry TLS may take this path: the secure class derives from the plain one, so a
+// base-class reference can hold a secure client, and dialing it here would name the TLS
+// session after the address.
 template <class Addr, class Plain, class Resolve>
 int connectPlain(Plain& c, const char* host, uint16_t port, int32_t timeoutMs, Resolve resolve) {
+  static_assert(!can_carry_tls<Plain>::value,
+                "connectPlain on a client that can carry TLS would dial it by address with no host name");
   Addr ip;
   if (!resolve(host, ip)) return 0;
   return timeoutMs >= 0 ? c.connect(ip, port, timeoutMs) : c.connect(ip, port);

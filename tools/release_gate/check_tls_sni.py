@@ -13,21 +13,28 @@ The one dial for a secure client is nimbus::net::connectSecure (lib/core/include
 tls_connect.h, host-tested in test/test_tls_connect), reached only through connectHost in
 src/sys/net_util.h. The scan reads src/ and lib/ and fails on:
   1. a dial (X.connect(a, b, ...) or X->connect(...), two or more arguments) outside the two seam
-     files whose receiver is not declared as a plain WiFiClient or NetworkClient. A secure client
-     dialed directly, a Client, an auto, or a receiver the scan cannot find all fail: only the
-     seam dials a secure client.
+     files whose receiver is not declared as a plain WiFiClient. A secure client dialed
+     directly, a NetworkClient (a WiFiClientSecure can sit in one), a Client, an auto, or a
+     receiver the scan cannot find all fail: only the seam dials a secure client.
   2. a connectHost(arg, ...) call outside the seam whose arg is not a name (or *name of a pointer)
-     declared as WiFiClientSecure, NetworkClientSecure, WiFiClient or NetworkClient. A Client&
+     declared as WiFiClientSecure or WiFiClient. A Client&, NetworkClient&, NetworkClientSecure&
      or Client* reaches whatever overload takes the base class, and a base class cannot carry a
      name to the TLS layer.
-  3. the seam net_util.h: a connectHost overload taking a secure client that does not dial
-     through nimbus::net::connectSecure, one taking a plain client that does not dial through
-     nimbus::net::connectPlain, a Client& overload that is not "= delete", no deleted Client&
-     overload at all, or a dial of its own.
+  3. the seam net_util.h: a live Client& overload, a missing deleted Client& overload, any
+     NetworkClient/NetworkClientSecure declaration (the Network base names - WiFiClient and
+     WiFiClientSecure are typedefs of them, and a NetworkClient& can hold a secure client),
+     a missing live overload for WiFiClientSecure or WiFiClient, a secure overload that does
+     not dial through nimbus::net::connectSecure, a plain overload that does not dial through
+     nimbus::net::connectPlain, a missing can_carry_tls<> specialization for Client or the
+     secure class, or a dial of its own.
   4. the template tls_connect.h: connectSecure has no dial, or a dial that is not
      connect(<address>, <port>, host, nullptr, nullptr, nullptr) - the only framework overload that
      carries the name (the three null pointers keep the bundle or insecure mode the client was
-     set up with: start_ssl_client reads those from members, ssl_client.cpp:203-227).
+     set up with: start_ssl_client reads those from members, ssl_client.cpp:203-227) - or
+     connectPlain without the static_assert refusing a client that can carry TLS
+     (can_carry_tls, specialized for the device's types in the seam).
+  5. a direct instantiation of connectSecure or connectPlain outside the two seam files: the
+     templates are the seam's own, instantiated only by connectHost.
 
 The receiver's type is the nearest declaration of that name above the call in the same file, which
 is what the compiler sees for a local, a parameter or a member declared above its use.
@@ -53,21 +60,36 @@ EXTENSIONS = (".cpp", ".cc", ".c", ".h", ".hpp")
 SEAM = os.path.join("src", "sys", "net_util.h")
 TEMPLATE = os.path.join("lib", "core", "include", "nimbus", "net", "tls_connect.h")
 
-SECURE_TYPES = ("WiFiClientSecure", "NetworkClientSecure")
-PLAIN_TYPES = ("WiFiClient", "NetworkClient")
-CLIENT_DECL_TYPES = SECURE_TYPES + PLAIN_TYPES + ("Client", "auto")
+# Only the two WiFi client type names may be dialed. arduino-esp32 3.3.9 has two client
+# classes, NetworkClient and NetworkClientSecure (derived from it); WiFiClient and
+# WiFiClientSecure are typedefs of them (WiFiClient.h:3, WiFiClientSecure.h:3), so the WiFi
+# names are the convention, not distinct types. The Network base names can hold a secure
+# client and cannot carry its name to the TLS layer: the Client& overloads must be deleted,
+# and a NetworkClient/NetworkClientSecure declaration in the seam is a failure (a
+# NetworkClient& parameter is exactly the by-address TLS hole).
+SECURE_TYPES = ("WiFiClientSecure",)
+PLAIN_TYPES = ("WiFiClient",)
+CLIENT_BASE = "Client"
+NETWORK_BASE = ("NetworkClient", "NetworkClientSecure")
+BASE_TYPES = (CLIENT_BASE,) + NETWORK_BASE
+CLIENT_DECL_TYPES = SECURE_TYPES + PLAIN_TYPES + BASE_TYPES + ("auto",)
 
 DIAL = re.compile(r"(?:\.|->)\s*connect\s*\(|(?<![\w.>:])connect\s*\(")
 CONNECT_HOST = re.compile(r"\bconnectHost\s*\(")
+TEMPLATE_CALL = re.compile(r"\bconnect(?:Secure|Plain)\s*<")
 OVERLOAD = re.compile(
     r"\bint\s+connectHost\s*\(\s*(" + "|".join(CLIENT_DECL_TYPES[:-1]) + r")\s*&[^)]*\)\s*(=\s*delete\s*;|\{)"
 )
 SECURE_TEMPLATE = re.compile(r"\bint\s+connectSecure\s*\([^)]*\)\s*\{")
+PLAIN_TEMPLATE = re.compile(r"\bint\s+connectPlain\s*\([^)]*\)\s*\{")
+PLAIN_GUARD = re.compile(r"static_assert\s*\(\s*!\s*can_carry_tls\s*<\s*Plain\s*>")
+TRAIT_SPEC = "struct\\s+can_carry_tls\\s*<\\s*{kind}\\s*>\\s*:\\s*std::true_type"
 
 RULE_DIAL = "a dial outside the seam on a client that is not a declared plain WiFiClient"
 RULE_ARG = "connectHost on a client that is not a declared WiFiClientSecure or WiFiClient"
 RULE_SEAM = "the seam can dial a secure client without its host's name"
 RULE_TEMPLATE = "connectSecure does not dial with connect(ip, port, host, nullptr, nullptr, nullptr)"
+RULE_TPL = "the dial templates are instantiated only by the seam"
 
 
 class Finding(NamedTuple):
@@ -202,27 +224,79 @@ def _scan_connect_host_calls(rel, text, lines) -> List[Finding]:
     return out
 
 
+def _seam_overloads(text: str) -> "Tuple[dict[str, List[str]], set]":
+    """(live kind -> overload bodies, deleted kinds) of the seam's connectHost overloads."""
+    live: "dict[str, List[str]]" = {}
+    deleted = set()
+    for m in OVERLOAD.finditer(text):
+        kind, tail = m.group(1), m.group(2)
+        if tail.startswith("="):
+            deleted.add(kind)
+        else:
+            live.setdefault(kind, []).append(body_at(text, m.end() - 1))
+    return live, deleted
+
+
+def _seam_overload_findings(rel: str, live: "dict[str, List[str]]", deleted: set) -> List[Finding]:
+    out: List[Finding] = []
+    if CLIENT_BASE in live:
+        out.append(
+            Finding(
+                rel,
+                1,
+                RULE_SEAM,
+                "a Client& overload that dials: a secure client bound to it reaches a by-address dial",
+            )
+        )
+    elif CLIENT_BASE not in deleted:
+        out.append(Finding(rel, 1, RULE_SEAM, "no deleted connectHost(Client&, ...) overload poisons the base class"))
+    for kind in NETWORK_BASE:
+        if kind in live or kind in deleted:
+            out.append(
+                Finding(
+                    rel,
+                    1,
+                    RULE_SEAM,
+                    f"the seam declares connectHost({kind}&, ...): {kind} is the "
+                    "Network base name (WiFiClient/WiFiClientSecure are typedefs of "
+                    "it) and a reference to it can hold a secure client; declare the "
+                    "WiFi type name",
+                )
+            )
+    for kind in SECURE_TYPES + PLAIN_TYPES:
+        if kind in deleted:
+            out.append(Finding(rel, 1, RULE_SEAM, f"the {kind}& overload is deleted; only the Client& base is"))
+        elif kind not in live:
+            out.append(Finding(rel, 1, RULE_SEAM, f"no live connectHost({kind}&, ...) overload"))
+    for kind, bodies in live.items():
+        want = "connectSecure" if kind in SECURE_TYPES else "connectPlain"
+        for body in bodies:
+            if not re.search(r"\bnimbus\s*::\s*net\s*::\s*" + want + r"\s*<", body):
+                out.append(Finding(rel, 1, RULE_SEAM, f"the {kind}& overload does not call {want}"))
+    return out
+
+
+def _seam_trait_findings(rel: str, text: str) -> List[Finding]:
+    out: List[Finding] = []
+    specs = [
+        (CLIENT_BASE, TRAIT_SPEC.format(kind=CLIENT_BASE)),
+        ("WiFiClientSecure", TRAIT_SPEC.format(kind="WiFiClientSecure|NetworkClientSecure")),
+    ]
+    for name, pattern in specs:
+        if not re.search(pattern, text):
+            out.append(
+                Finding(
+                    rel, 1, RULE_SEAM, f"no can_carry_tls<{name}> specialization: connectPlain would accept a {name}"
+                )
+            )
+    return out
+
+
 def scan_seam(rel: str, src: str) -> List[Finding]:
     text = blank_comments_and_strings(src)
     lines = src.split("\n")
-    out: List[Finding] = []
-    deleted_base = 0
-    for m in OVERLOAD.finditer(text):
-        kind, tail = m.group(1), m.group(2)
-        if kind == "Client":
-            if tail.startswith("="):
-                deleted_base += 1
-            else:
-                out.append(_finding(rel, text, lines, m.start(), RULE_SEAM, "a Client& overload that dials"))
-            continue
-        if tail.startswith("="):
-            continue
-        body = body_at(text, m.end() - 1)
-        want = "connectSecure" if kind in SECURE_TYPES else "connectPlain"
-        if not re.search(r"\bnimbus\s*::\s*net\s*::\s*" + want + r"\s*<", body):
-            out.append(_finding(rel, text, lines, m.start(), RULE_SEAM, f"the {kind}& overload does not call {want}"))
-    if not deleted_base:
-        out.append(Finding(rel, 1, RULE_SEAM, "no deleted connectHost(Client&, ...) overload poisons the base class"))
+    live, deleted = _seam_overloads(text)
+    out = _seam_overload_findings(rel, live, deleted) + _seam_trait_findings(rel, text)
     for m in DIAL.finditer(text):
         args, _ = call_args(text, m.end() - 1)
         if len(args) >= 2:
@@ -246,6 +320,22 @@ def scan_template(rel: str, src: str) -> List[Finding]:
         args, _ = call_args(body, d.end() - 1)
         if len(args) != 6 or args[2] != "host" or any(a != "nullptr" for a in args[3:]):
             out.append(_finding(rel, text, lines, base + d.start(), RULE_TEMPLATE, f"dials with ({', '.join(args)})"))
+    p = PLAIN_TEMPLATE.search(text)
+    if not p:
+        out.append(Finding(rel, 1, RULE_TEMPLATE, "no connectPlain definition"))
+    else:
+        pbody = body_at(text, p.end() - 1)
+        if not PLAIN_GUARD.search(pbody):
+            out.append(
+                Finding(
+                    rel,
+                    1,
+                    RULE_TEMPLATE,
+                    "connectPlain has no static_assert refusing "
+                    "can_carry_tls<Plain>: a plain dial on a secure client "
+                    "would go out by address with no name",
+                )
+            )
     return out
 
 
@@ -258,6 +348,8 @@ def scan_source(path: str, src: str) -> List[Finding]:
     text = blank_comments_and_strings(src)
     lines = src.split("\n")
     found = _scan_dials(rel, text, lines) + _scan_connect_host_calls(rel, text, lines)
+    for m in TEMPLATE_CALL.finditer(text):
+        found.append(_finding(rel, text, lines, m.start(), RULE_TPL, "instantiated outside the seam"))
     return sorted(set(found))
 
 
@@ -335,7 +427,8 @@ def main(argv: "list[str] | None" = None) -> int:
         return 1
     print(
         f"PASS tls sni: {files} files, every secure dial goes through connectSecure with the host, "
-        "the base-class overload is deleted, every other dial is a declared plain WiFiClient"
+        "the base-class overloads are deleted, connectPlain refuses TLS-capable clients, "
+        "the templates are instantiated only by the seam, every other dial is a declared plain WiFiClient"
     )
     return 0
 

@@ -1,5 +1,6 @@
 #pragma once
-#include <WiFiClientSecure.h>
+#include <WiFiClient.h>        // the WiFiClient typedef (arduino-esp32 3.3.9: typedef NetworkClient WiFiClient)
+#include <WiFiClientSecure.h>  // the WiFiClientSecure typedef (typedef NetworkClientSecure WiFiClientSecure)
 #include <lwip/sockets.h>
 #include <lwip/tcpip.h>   // LOCK_TCPIP_CORE / sys_thread_tcpip (resolveHostLocked, connectHost)
 #include <lwip/dns.h>      // dns_gethostbyname (raw API: asserts the lock held, never takes it)
@@ -163,6 +164,20 @@ struct LockedResolve {
 };
 }  // namespace nimbus_net_detail
 
+// The device's client types for the template's plain-dial guard (nimbus/net/tls_connect.h).
+// arduino-esp32 3.3.9 has two client classes: NetworkClient and NetworkClientSecure (derived
+// from it); WiFiClient and WiFiClientSecure are typedefs of them (WiFiClient.h:3,
+// WiFiClientSecure.h:3). So the guard marks the Client base and the secure class: connectPlain
+// refuses them at compile time, and a plain dial can never send a TLS session out by address
+// with no host name. A NetworkClient& can still hold a secure client at runtime (the typedef
+// makes the two names the same type), so the naming convention is enforced by the gate:
+// every connectHost argument and every seam overload is declared with the WiFi type names.
+// tools/release_gate/check_tls_sni.py fails the release on a Network base name anywhere.
+namespace nimbus::net {
+template <> struct can_carry_tls<Client> : std::true_type {};
+template <> struct can_carry_tls<WiFiClientSecure> : std::true_type {};
+}  // namespace nimbus::net
+
 // Host-based connect through the seam: resolve under the TCPIP core lock (see above), then
 // dial the address, so the core's own hostByName inside connect(host, ...) never runs. Use
 // this for EVERY dial by name; the dial itself is nimbus::net::connectSecure or
@@ -172,11 +187,15 @@ struct LockedResolve {
 // WiFiClientSecure::connect pass no name, so the session was named after the address, the
 // ClientHello carried no SNI and every CDN front end refused the handshake (main from
 // e697fe87: every provider exchange of the K01 soak failed at connect). The overload is
-// picked by the client's declared type, so a Client& or Client* (which can hold either
-// kind and cannot carry a name) is a compile error: the base-class overloads are deleted.
+// picked by the client's declared type: the secure overload takes WiFiClientSecure& (an exact
+// match, so a secure client always reaches it), the plain overload takes WiFiClient&, and a
+// Client& (which can hold either kind and cannot carry a name) is a compile error: the
+// Client& overloads are deleted. Declare every client with its WiFi type name, never the
+// Network base names - a NetworkClient& parameter can hold a secure client and would route
+// it to the plain, by-address dial.
 // tools/release_gate/check_tls_sni.py fails the release on a secure dial outside this seam,
-// a connectHost argument that is not a declared WiFiClientSecure or WiFiClient, and a
-// secure overload here that does not dial through connectSecure.
+// a connectHost argument not declared WiFiClientSecure or WiFiClient, a Network base name in
+// the seam, and a secure overload that does not dial through connectSecure.
 inline int connectHost(WiFiClientSecure& c, const char* host, uint16_t port) {
   nimbus::pollwatch::beat("connect");
   return nimbus::net::connectSecure<IPAddress>(c, host, port, nimbus::net::kKeepTimeout,
@@ -186,7 +205,7 @@ inline int connectHost(WiFiClientSecure& c, const char* host, uint16_t port, int
   nimbus::pollwatch::beat("connect");
   return nimbus::net::connectSecure<IPAddress>(c, host, port, timeoutMs, nimbus_net_detail::LockedResolve{});
 }
-inline int connectHost(NetworkClient& c, const char* host, uint16_t port) {   // WiFiClient
+inline int connectHost(WiFiClient& c, const char* host, uint16_t port) {   // plain TCP
   nimbus::pollwatch::beat("connect");
   return nimbus::net::connectPlain<IPAddress>(c, host, port, nimbus::net::kKeepTimeout,
                                               nimbus_net_detail::LockedResolve{});

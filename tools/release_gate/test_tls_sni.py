@@ -32,7 +32,20 @@ inline int connectHost(WiFiClientSecure& c, const char* host, uint16_t port, int
 }
 """
 
-FIXED_SEAM = """
+# The fixed seam: live overloads only for the two concrete client types, every base class
+# The fixed seam: live overloads only for the two WiFi client type names (arduino-esp32 3.3.9
+# typedefs: WiFiClient = NetworkClient, WiFiClientSecure = NetworkClientSecure), the Client&
+# base poisoned with = delete, and the plain-dial guard's trait specialized for Client and the
+# secure class.
+SEAM_SPECIALIZATIONS = """
+namespace nimbus::net {
+template <> struct can_carry_tls<Client> : std::true_type {};
+template <> struct can_carry_tls<WiFiClientSecure> : std::true_type {};
+}
+"""
+
+FIXED_SEAM = (
+    """
 inline int connectHost(WiFiClientSecure& c, const char* host, uint16_t port, int32_t timeoutMs) {
   return nimbus::net::connectSecure<IPAddress>(c, host, port, timeoutMs, Resolve{});
 }
@@ -41,6 +54,8 @@ inline int connectHost(WiFiClient& c, const char* host, uint16_t port) {
 }
 int connectHost(Client& c, const char* host, uint16_t port) = delete;
 """
+    + SEAM_SPECIALIZATIONS
+)
 
 
 def test_the_seam_that_shipped_on_main_fails():
@@ -56,11 +71,10 @@ def test_the_fixed_seam_shape_passes():
     assert sni.scan_source(sni.SEAM, FIXED_SEAM) == []
 
 
-def test_a_seam_without_the_deleted_base_overload_fails():
+def test_a_seam_without_the_deleted_client_overload_fails():
     src = FIXED_SEAM.replace("int connectHost(Client& c, const char* host, uint16_t port) = delete;", "")
-    assert [f.text for f in sni.scan_source(sni.SEAM, src)] == [
-        "no deleted connectHost(Client&, ...) overload poisons the base class"
-    ]
+    texts = " | ".join(f.text for f in sni.scan_source(sni.SEAM, src))
+    assert "no deleted connectHost(Client&, ...) overload" in texts
 
 
 def test_a_plain_overload_that_skips_connect_plain_fails():
@@ -166,6 +180,10 @@ def template(dial):
         "template <class Addr, class Secure, class Resolve>\n"
         "int connectSecure(Secure& c, const char* host, uint16_t port, int32_t timeoutMs, Resolve resolve) {\n"
         "  Addr ip;\n  if (!resolve(host, ip)) return 0;\n  return " + dial + ";\n}\n"
+        "template <class Addr, class Plain, class Resolve>\n"
+        "int connectPlain(Plain& c, const char* host, uint16_t port, int32_t timeoutMs, Resolve resolve) {\n"
+        '  static_assert(!can_carry_tls<Plain>::value, "plain dial on a TLS-capable client");\n'
+        "  Addr ip;\n  if (!resolve(host, ip)) return 0;\n  return c.connect(ip, port);\n}\n"
     )
 
 
@@ -244,3 +262,93 @@ def test_only_the_six_argument_address_overload_carries_a_host():
     with_host = [d for d in decls if re.search(r"\bconst\s+char\s*\*\s*host\b", d)]
     assert len(with_host) == 1, decls
     assert len(with_host[0].split(",")) == 5, with_host  # port, host, CA, cert, key after the address
+
+
+# ---- review fix pass (REVIEW-FINDINGS.json finding 1): the Network base names must go --------
+#
+# arduino-esp32 3.3.9 has two client classes: NetworkClient and NetworkClientSecure (derived
+# from it); WiFiClient and WiFiClientSecure are typedefs of them (WiFiClient.h:3,
+# WiFiClientSecure.h:3). So a connectHost(NetworkClient&, ...) overload is the plain overload
+# under another name, and a NetworkClient& parameter can hold a secure client: routing it to
+# connectPlain dials connect(ip, port), and the TLS session goes out named after the address
+# string, no SNI - the exact defect this gate exists to kill. The old scan classified a
+# NetworkClient-declared argument as "plain" and a NetworkClientSecure-declared one as
+# "secure" and blessed the live base-named overload. The gate now requires the WiFi type
+# names everywhere and refuses any Network base name.
+
+RULE_TPL_LITERAL = "the dial templates are instantiated only by the seam"
+
+NETWORK_BASE_SEAM = (
+    FIXED_SEAM
+    + """
+inline int connectHost(NetworkClient& c, const char* host, uint16_t port) {
+  return nimbus::net::connectPlain<IPAddress>(c, host, port, -1, Resolve{});
+}
+"""
+)
+
+
+@pytest.mark.parametrize(
+    "decl",
+    [
+        "inline int connectHost(NetworkClient& c, const char* host, uint16_t port) { return 0; }",
+        "int connectHost(NetworkClient& c, const char* host, uint16_t port) = delete;",
+        "inline int connectHost(NetworkClientSecure& c, const char* host, uint16_t port) { return 0; }",
+    ],
+)
+def test_a_network_base_name_in_the_seam_fails(decl):
+    found = sni.scan_source(sni.SEAM, FIXED_SEAM + "\n" + decl + "\n")
+    assert any("Network base name" in f.text for f in found)
+    assert all(f.rule == sni.RULE_SEAM for f in found)
+
+
+@pytest.mark.parametrize("decl", ["NetworkClient& c", "NetworkClientSecure& c", "Client& c"])
+def test_a_base_class_argument_into_connect_host_fails(decl):
+    src = f"void f({decl}) {{ connectHost(c, h, 443); }}"
+    assert rules(src) == [sni.RULE_ARG]
+
+
+def test_a_direct_dial_on_a_network_client_receiver_fails():
+    assert rules("void f(NetworkClient& c) { c.connect(ip, 443); }") == [sni.RULE_DIAL]
+
+
+def test_a_seam_without_the_trait_specializations_fails():
+    src = FIXED_SEAM.replace(SEAM_SPECIALIZATIONS, "")
+    found = sni.scan_source(sni.SEAM, src)
+    assert any("can_carry_tls" in f.text for f in found)
+
+
+def template_file(plain_body):
+    return (
+        "template <class Addr, class Secure, class Resolve>\n"
+        "int connectSecure(Secure& c, const char* host, uint16_t port, int32_t timeoutMs, Resolve resolve) {\n"
+        "  Addr ip;\n  if (!resolve(host, ip)) return 0;\n"
+        "  return c.connect(ip, port, host, nullptr, nullptr, nullptr);\n}\n"
+        "template <class Addr, class Plain, class Resolve>\n"
+        "int connectPlain(Plain& c, const char* host, uint16_t port, int32_t timeoutMs, Resolve resolve) {\n"
+        + plain_body
+        + "\n}\n"
+    )
+
+
+def test_the_template_without_the_plain_dial_guard_fails():
+    src = template_file("  Addr ip;\n  if (!resolve(host, ip)) return 0;\n  return c.connect(ip, port);")
+    found = sni.scan_source(sni.TEMPLATE, src)
+    assert any("can_carry_tls" in f.text for f in found)
+
+
+def test_the_template_with_the_plain_dial_guard_passes():
+    src = template_file(
+        '  static_assert(!can_carry_tls<Plain>::value, "plain dial on a TLS-capable client");\n'
+        "  Addr ip;\n  if (!resolve(host, ip)) return 0;\n  return c.connect(ip, port);"
+    )
+    assert sni.scan_source(sni.TEMPLATE, src) == []
+
+
+def test_a_direct_template_call_outside_the_seam_fails():
+    src = """
+void f(WiFiClientSecure& c) {
+  nimbus::net::connectPlain<IPAddress>(c, host, 443, -1, Resolve{});
+}
+"""
+    assert rules(src) == [RULE_TPL_LITERAL]

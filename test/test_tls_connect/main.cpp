@@ -151,6 +151,15 @@ int dialSecure(FakeSecure& c, const char* host, int32_t timeoutMs, Lookups& l) {
 
 }  // namespace
 
+// The plain-dial guard's trait (tls_connect.h): a client type that can carry TLS is marked, so
+// connectPlain refuses it at compile time (the static_assert in the template). The device marks
+// its Client, NetworkClient, NetworkClientSecure and WiFiClientSecure in src/sys/net_util.h;
+// check_tls_sni.py fails the release without those specializations.
+namespace nimbus::net {
+template <>
+struct can_carry_tls<FakeSecure> : std::true_type {};
+}  // namespace nimbus::net
+
 // The fake reproduces the defect: the framework's address overloads give the TLS layer the
 // address string as the name, and the peer refuses it. Without this, a fake that ignored names
 // could let the tests below pass on the broken seam.
@@ -268,6 +277,14 @@ void test_a_plain_dial_goes_by_address_with_its_timeout() {
   TEST_ASSERT_TRUE(q.addrs.empty());
 }
 
+// The plain-dial guard's trait: a client that can carry TLS is marked (the device marks its
+// Client, NetworkClient, NetworkClientSecure and WiFiClientSecure in src/sys/net_util.h), so
+// connectPlain's static_assert refuses it; a plain client is not marked.
+void test_the_plain_dial_guard_marks_tls_capable_clients() {
+  TEST_ASSERT_TRUE(nimbus::net::can_carry_tls<FakeSecure>::value);
+  TEST_ASSERT_FALSE(nimbus::net::can_carry_tls<FakePlain>::value);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_an_address_dial_names_the_address_and_the_peer_refuses_it);
@@ -278,5 +295,6 @@ int main(int, char**) {
   RUN_TEST(test_a_failed_lookup_never_dials);
   RUN_TEST(test_a_secure_dial_without_a_name_is_refused);
   RUN_TEST(test_a_plain_dial_goes_by_address_with_its_timeout);
+  RUN_TEST(test_the_plain_dial_guard_marks_tls_capable_clients);
   return UNITY_END();
 }
