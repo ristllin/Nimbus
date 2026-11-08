@@ -1,8 +1,17 @@
 #include "nimbus/net/late_wait.h"
 
-// FAILING-FIRST STUB (lane TGSTALL step 1): the pre-fix shape, where the waiter always
-// frees the state on its way out and the callback always uses it.
 namespace nimbus::net {
-bool LateWait::callbackArrives() { st_ = State::Answered; return true; }
-bool LateWait::waiterLeaves() { return true; }
+
+bool LateWait::callbackArrives() {
+  if (st_ == State::Abandoned) return false;   // the waiter left: the state is ours to free
+  st_ = State::Answered;
+  return true;
+}
+
+bool LateWait::waiterLeaves() {
+  if (st_ == State::Answered) return true;   // the answer came: the state is the waiter's
+  st_ = State::Abandoned;                    // the callback frees it when it comes
+  return false;
+}
+
 }  // namespace nimbus::net

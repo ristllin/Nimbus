@@ -113,8 +113,25 @@ std::string crashNotice(const std::string& deviceName, const TurnJournal* j,
   return msg + " during a background task" + from + ". That task did not finish.";
 }
 
-std::string stallNotice(const std::string&, const TurnJournal*, const std::string&) {
-  return std::string();   // FAILING-FIRST STUB (lane TGSTALL step 1)
+std::string stallNotice(const std::string& deviceName, const TurnJournal* j, const std::string& hhmm) {
+  const std::string name = deviceName.empty() ? std::string("Nimbus") : deviceName;
+  if (!j) return name + " stopped answering for a few minutes, so it restarted itself. Messages sent meanwhile "
+                        "are being answered now.";
+  const std::string from = hhmm.empty() ? std::string() : " from " + hhmm;
+  const char* noun = requestNoun(j->kind);
+  if (noun[0]) {
+    const std::string msg = name + " stopped answering while working on your " + noun + from +
+                            ", so it restarted itself. It tries that " + noun + " again on its own";
+    // A message that was logging something may have saved its row before it stuck (the
+    // 29 Oct boba mechanism): the retry could save it again.
+    if (j->kind == "message")
+      return msg + "; if it was logging something, check it was not saved twice.";
+    return msg + "; if no reply comes in a few minutes, send it again.";
+  }
+  if (j->kind == "routine")
+    return name + " stopped answering during a routine" + from + ", so it restarted itself. That run did not finish.";
+  return name + " stopped answering during a background task" + from +
+         ", so it restarted itself. That task did not finish.";
 }
 
 }  // namespace nimbus::orch

@@ -22,8 +22,14 @@ RestartNoticePlan planRestartNotice(const std::string& deviceName, int resetReas
   return p;
 }
 
-RestartNoticePlan planStallNotice(const std::string&, const TurnJournal*, const std::string&, uint8_t) {
-  return RestartNoticePlan();   // FAILING-FIRST STUB (lane TGSTALL step 1): nobody is told
+RestartNoticePlan planStallNotice(const std::string& deviceName, const TurnJournal* lost,
+                                  const std::string& hhmm, uint8_t streak) {
+  RestartNoticePlan p;
+  if (streak != 1) return p;   // the first restart of a streak told the owner already
+  p.text = stallNotice(deviceName, lost, hhmm);
+  const bool backgroundTurn = lost && !isOwnerRequestKind(lost->kind);
+  p.timing = backgroundTurn ? NoticeTiming::Held : NoticeTiming::Now;
+  return p;
 }
 
 std::string RestartNoticeQueue::release() {
