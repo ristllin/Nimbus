@@ -226,8 +226,9 @@ tests/evals/owner_regressions/runs/bf40a3edf9f401df83be010eac2d9847d82e2681/ (ta
   that predates this lane (the before-run's glm leg wrote five such rows), so it is not
   counted as fixed; only the grading of a correct outcome changed.
 - OIR-48 / lc-two-ledgers, and the whole class "Logging it now." with nothing logged (found on
-  resume, 8 Nov: the 6a5d8fcc head read 5/5 in the 5 Nov leg and then 1/5, 0/5 and 5/20 in three
-  reruns; main 7631b6a2 read 20/20 in the same hour): product fix, not a fixture or threshold
+  resume, 8 Nov: the 6a5d8fcc prompt read 5/5 in the 5 Nov leg and then 1/5, 0/5 and 5/20 in three
+  reruns on 8 Nov - the two days' system prompts differ only in the date line, so the date or the
+  provider's side flips it; main 7631b6a2 read 20/20 in the same hour as the reruns): product fix, not a fixture or threshold
   move. Raw A/B and ablation records: evidence/qfix-ab/ (SUMMARY.txt is the table). The failing
   reps are a single model call that did not think (usage.jsonl thinking_tokens 0; 1 of 20 first
   calls thought on the head, 20 of 20 on main) and answered "Logging it now." / "Logging dinner
