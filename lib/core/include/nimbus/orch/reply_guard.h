@@ -15,6 +15,8 @@
 //     background, a report back) in a sentence the owner is not a condition of. Lumi,
 //     31 Oct: "I'll rewrite the whole file to correct it next turn." Nothing runs after
 //     a final answer unless a sub-agent, a routine or a wakeup does.
+//   - announcesWorkNow: a reply that says the work is happening right now ("Logging it now.")
+//     while the turn ran nothing: held to the same correction as a promise of later work.
 //   - cutRetryNote: what a round that ran out of room is told when it runs again.
 //
 // Deterministic token matchers over flash tables, English only like the claim scan.
@@ -60,6 +62,14 @@ enum class LaterWork : uint8_t { None, Standing, Live };
 // false when there is none. `begin`/`end` may be null.
 bool laterPromiseSpan(const std::string& reply, size_t* begin = nullptr, size_t* end = nullptr,
                       LaterWork behind = LaterWork::None);
+
+// Lane QFIX (lc-two-ledgers, OIR-48): the sentence that says work is happening right now
+// ("Logging it now.", "OK, saving that now", "I'm adding it now"), as a byte span; false when
+// there is none. After the answer nothing runs, so when the turn changed nothing it is a
+// promise with nothing behind it (a head that skips its thinking at low effort announces the
+// write instead of calling the tool): ClaimCheck::unbackedPromise holds it to the same
+// correction and owner line as a promise of later work. `begin`/`end` may be null.
+bool announcesWorkNow(const std::string& reply, size_t* begin = nullptr, size_t* end = nullptr);
 
 // The owner line a promise with nothing behind it gets, and the correction it gets while
 // a round can still run (model-facing; `excerpt` is the sentence).

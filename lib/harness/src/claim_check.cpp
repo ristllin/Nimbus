@@ -728,11 +728,37 @@ std::string ClaimCheck::correctionFor(const std::vector<orch::ClaimGap>& gaps,
   return fix;
 }
 
+namespace {
+// Lane QFIX: did this turn change anything? A lookup, a failed write and a refused spawn are
+// not work done, so a reply that says the work is happening now has nothing behind it.
+bool changedSomething(const orch::TurnEffects& fx) {
+  using orch::FxKind;
+  for (const orch::Effect& e : fx.all()) {
+    if (!e.ok) continue;
+    switch (e.kind) {
+      case FxKind::Read:
+      case FxKind::SubSourced:
+      case FxKind::SubUnsourced:
+      case FxKind::MemPinNoop:
+      case FxKind::ScratchRamOnly:
+      case FxKind::SpawnRefused: break;
+      default: return true;
+    }
+  }
+  return false;
+}
+}  // namespace
+
 std::string ClaimCheck::unbackedPromise(const std::string& reply, const orch::TurnEffects& fx) const {
   if (fx.anyOk(orch::FxKind::Spawn) || fx.anyOk(orch::FxKind::Schedule)) return std::string();
   size_t b = 0, e = 0;
-  if (!orch::laterPromiseSpan(reply, &b, &e, laterWork_)) return std::string();
-  return reply.substr(b, e - b);
+  if (orch::laterPromiseSpan(reply, &b, &e, laterWork_)) return reply.substr(b, e - b);
+  // "Logging it now." with no write behind it: a promise too, held to the same correction.
+  // Not while a sub-agent is running for the chat or a hosted tool ran where the device cannot see.
+  if (laterWork_ != orch::LaterWork::Live && !changedSomething(fx) && !hostedRan().any() &&
+      orch::announcesWorkNow(reply, &b, &e))
+    return reply.substr(b, e - b);
+  return std::string();
 }
 
 std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawned) {

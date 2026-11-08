@@ -211,6 +211,45 @@ static void test_promises() {
   TEST_ASSERT_EQUAL_STRING(" I'll finish the rest next turn.", t.substr(b, e - b).c_str());
 }
 
+// Lane QFIX (lc-two-ledgers): "Logging it now." as the whole answer. A head that skips its
+// thinking at low effort announces the write instead of calling the tool; nothing runs after
+// the answer, so the announcement is a promise with nothing behind it.
+static void test_announcing_work_now() {
+  for (const char* p : {
+           "Logging it now.",
+           "Logging dinner now.",
+           "Logging it now: boba tea, 350 g at 68 kcal per 100 g = 238 kcal. Protein is unknown.",
+           "OK, saving that now.",
+           "Got it, logging that to your food log now.",
+           "I'm adding it now.",
+           "I\xE2\x80\x99m logging it now.",
+           "Saving now",
+           "Your plan is ready. Updating the ledger now.",
+           "SAVING IT NOW!",
+       })
+    TEST_ASSERT_TRUE_MESSAGE(announcesWorkNow(p), p);
+  for (const char* p : {
+           "Logged: dinner, salmon plate, 620 kcal.",
+           "Logged it just now.",
+           "Should I be logging it now?",
+           "Want me to start logging it now?",
+           "If you want, tell me and I'm logging it now.",
+           "Not logging it now.",
+           "Logging: your dinner is now in the ledger.",
+           "You are logging it now.",
+           "Logging is on and the row goes in at the end of the day, so nothing is lost if you add the rest of the evening here later on now.",
+           "The total now is 1,611 kcal.",
+           "I will log it now.",
+           "Saved. Today's total is 620 kcal.",
+           "",
+       })
+    TEST_ASSERT_FALSE_MESSAGE(announcesWorkNow(p), p);
+  size_t b = 0, e = 0;
+  const std::string t = "Hello there. Logging it now. Enjoy.";
+  TEST_ASSERT_TRUE(announcesWorkNow(t, &b, &e));
+  TEST_ASSERT_EQUAL_STRING(" Logging it now.", t.substr(b, e - b).c_str());
+}
+
 static void test_ordinary_replies_are_not_promises() {
   int flagged = 0;
   for (const char* p : kOrdinaryReplies)
@@ -322,6 +361,7 @@ int main() {
   RUN_TEST(test_plumbing_check_text_holds_on_prose);
   RUN_TEST(test_work_and_chat);
   RUN_TEST(test_promises);
+  RUN_TEST(test_announcing_work_now);
   RUN_TEST(test_ordinary_replies_are_not_promises);
   RUN_TEST(test_what_stands_behind_a_promise);
   RUN_TEST(test_the_correction_does_not_repeat_work);

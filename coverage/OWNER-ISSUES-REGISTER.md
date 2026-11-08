@@ -225,3 +225,26 @@ tests/evals/owner_regressions/runs/bf40a3edf9f401df83be010eac2d9847d82e2681/ (ta
   before-run so before and after are graded alike. The comma habit is a prompt-rule violation
   that predates this lane (the before-run's glm leg wrote five such rows), so it is not
   counted as fixed; only the grading of a correct outcome changed.
+- OIR-48 / lc-two-ledgers, and the whole class "Logging it now." with nothing logged (found on
+  resume, 8 Nov: the 6a5d8fcc head read 5/5 in the 5 Nov leg and then 1/5, 0/5 and 5/20 in three
+  reruns; main 7631b6a2 read 20/20 in the same hour): product fix, not a fixture or threshold
+  move. Raw A/B and ablation records: evidence/qfix-ab/ (SUMMARY.txt is the table). The failing
+  reps are a single model call that did not think (usage.jsonl thinking_tokens 0; 1 of 20 first
+  calls thought on the head, 20 of 20 on main) and answered "Logging it now." / "Logging dinner
+  now." with no tool call, so the owner is told a meal is being logged and nothing is written.
+  Reverting any ONE change group of the lane (the kFoodCoach rules, all kFoodLog edits, or the
+  compose.cpp edits) restored 8/10 to 10/10, so no single sentence is the cause: whether a
+  low-effort head thinks before it answers depends chaotically on the prompt bytes, and a
+  prompt trim would hide it until the next edit. The device now holds the class itself, for
+  every provider: orch::announcesWorkNow finds a sentence that opens with a work participle
+  (logging, saving, adding, ...) and says "now" within six words, and
+  ClaimCheck::unbackedPromise treats it, when the turn changed nothing (a lookup, a failed
+  write or a refused spawn is not work done; not while a sub-agent runs for the chat or a hosted
+  tool ran), like a promise of later work: one [PROMISE CHECK] correction round in which the
+  head may do the work, and the owner line if it answers the same way again. With it the head
+  with the same prompt reads 20/20 on lc-two-ledgers while 19 of 20 first calls still skip
+  thinking (the correction round recovers them). Guards: test_reply_guard
+  test_announcing_work_now (positive and negative corpus), test_harness_claim_check
+  test_round_an_announcement_with_nothing_run_gets_one_round and
+  test_an_announcement_is_backed_only_by_work_that_changed_something (both fail with the
+  guard disabled, verified).

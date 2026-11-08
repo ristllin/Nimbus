@@ -1679,6 +1679,71 @@ static void test_second_read_disagreement_is_surfaced() {
   TEST_ASSERT_EQUAL_STRING("", ok.tailAfterApply(good).c_str());
 }
 
+// Lane QFIX (lc-two-ledgers, OIR-48): "Logging it now." with nothing run is a promise with
+// nothing behind it. It gets the one correction round (the model may then do the work), and
+// the owner line when it answers the same way again.
+static void test_round_an_announcement_with_nothing_run_gets_one_round() {
+  Round r;
+  r.script = {finalStep(turnJson("Logging it now.")), toolStep("files.append"),
+              finalStep(turnJson("Salmon plate, 620 kcal, for dinner."))};
+  const HeadOutcome o = r.run();
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL(1, o.corrections);
+  TEST_ASSERT_EQUAL(3u, r.idx);
+  TEST_ASSERT_EQUAL(0, (int)r.prior[1][0].output.find("[CLAIM CHECK]"));
+  TEST_ASSERT_TRUE(r.prior[1][0].output.find("[PROMISE CHECK]") != std::string::npos);
+  TEST_ASSERT_TRUE(r.prior[1][0].output.find("Logging it now.") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("", r.cc.tailAfterApply("Salmon plate, 620 kcal, for dinner.").c_str());
+  Round again;
+  again.script = {finalStep(turnJson("Logging it now.")), finalStep(turnJson("Logging it now.")),
+                  finalStep(turnJson("third"))};
+  const HeadOutcome o2 = again.run();
+  TEST_ASSERT_TRUE(o2.ok);
+  TEST_ASSERT_EQUAL(1, o2.corrections);
+  TEST_ASSERT_EQUAL(2u, again.idx);   // two model calls, never a third
+  TEST_ASSERT_TRUE(again.cc.tailAfterApply("Logging it now.").find("nothing is running for that") !=
+                   std::string::npos);
+}
+
+// What backs it: a write that landed. What does not: a lookup, a failed write, a refused spawn
+// (counter-tests - the class is "nothing changed", not "no tool ran").
+static void test_an_announcement_is_backed_only_by_work_that_changed_something() {
+  const std::string said = turnJson("Logging it now.");
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.noteTool(agent::fxKindForTool("files.append"), false, "appended 1 row to food/food-log.csv (now 90 bytes)",
+                nimbus::orch::kFxLogRow);
+    TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(said).c_str());
+  }
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.noteTool(agent::fxKindForTool("files.read"), false, "date,meal,items,kcal\n");
+    TEST_ASSERT_TRUE(cc.finalCheck(said).find("[PROMISE CHECK]") != std::string::npos);
+  }
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.noteTool(agent::fxKindForTool("files.append"), true, "refused: the file is full");
+    TEST_ASSERT_TRUE(cc.finalCheck(said).find("[PROMISE CHECK]") != std::string::npos);
+  }
+  {
+    ClaimCheck cc;   // nothing ran at all
+    cc.beginTurn();
+    TEST_ASSERT_TRUE(cc.finalCheck(said).find("[PROMISE CHECK]") != std::string::npos);
+    // The same words as a question, or past tense, are no announcement.
+    TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson("Should I be logging it now?")).c_str());
+    TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson("Dinner is in the ledger now.")).c_str());
+  }
+  {
+    ClaimCheck cc;   // a sub-agent running for the chat: the work may be its
+    cc.beginTurn();
+    cc.setLaterWork(nimbus::orch::LaterWork::Live);
+    TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(said).c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_promised_confirmation_gets_the_tail);
@@ -1704,6 +1769,8 @@ int main(int, char**) {
   RUN_TEST(test_every_tool_kind_comes_from_the_shared_table);
   RUN_TEST(test_round_unbacked_twice_gets_one_round_then_the_line);
   RUN_TEST(test_round_that_writes_the_file_adds_no_line);
+  RUN_TEST(test_round_an_announcement_with_nothing_run_gets_one_round);
+  RUN_TEST(test_an_announcement_is_backed_only_by_work_that_changed_something);
   RUN_TEST(test_round_forced_final_gets_the_line_and_no_extra_round);
   RUN_TEST(test_round_consistent_reply_and_spawn_claims_cost_no_claim_round);
   RUN_TEST(test_a_write_that_does_not_land_under_a_saved_reply_gets_one_corrected_reply);

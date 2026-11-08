@@ -473,6 +473,64 @@ bool sentencePromises(const std::string& s, LaterWork behind) {
 
 }  // namespace
 
+namespace {
+
+// Lane QFIX: work a reply can say is happening right now, as a present participle.
+const char* const kNowVerbs[] = {
+    "logging",  "saving",   "recording", "writing",  "adding",   "updating", "storing",  "noting",  "entering",
+    "setting",  "sending",  "creating",  "deleting", "removing", "changing", "pinning",  "scheduling",
+};
+// What may stand before the participle: "OK, logging it now", "Got it, saving that now", "I'm adding it now".
+const char* const kNowLeads[] = {"ok", "okay", "sure", "alright", "right", "yes", "great", "got", "it", "i", "i'm", "m", "am"};
+
+// The next word of `s` from `at` (advanced past it), "" at the end. `clauseEnd` is set when a
+// colon or semicolon lay between the previous word and this one.
+std::string nextWord(const std::string& s, size_t& at, bool& clauseEnd) {
+  clauseEnd = false;
+  while (at < s.size() && !isWordChar(s[at])) {
+    if (s[at] == ':' || s[at] == ';') clauseEnd = true;
+    at++;
+  }
+  const size_t b = at;
+  while (at < s.size() && isWordChar(s[at])) at++;
+  return s.substr(b, at - b);
+}
+
+// "logging it now", "saving that to your food log now": a participle that opens the sentence
+// (leads aside) with "now" within six words, in the same clause. Not a question, not a condition.
+bool announcesNowIn(const std::string& s) {
+  if (s.find('?') != std::string::npos || hasAnyWord(s, kConditional)) return false;
+  size_t at = 0;
+  bool stop = false;
+  std::string w = nextWord(s, at, stop);
+  while (!w.empty() && oneOf(w, kNowLeads)) w = nextWord(s, at, stop);
+  if (!oneOf(w, kNowVerbs)) return false;
+  for (int n = 0; n < 6; n++) {
+    w = nextWord(s, at, stop);
+    if (w.empty() || stop) return false;
+    if (w == "now") return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+bool announcesWorkNow(const std::string& reply, size_t* begin, size_t* end) {
+  const std::string t = lowered(reply.size() > 16384 ? reply.substr(0, 16384) : reply);
+  size_t from = 0;
+  while (from < t.size()) {
+    const size_t stop = t.find_first_of(".!?\n", from);
+    const size_t e = stop == std::string::npos ? t.size() : stop + 1;
+    if (announcesNowIn(t.substr(from, e - from))) {
+      if (begin) *begin = from;
+      if (end) *end = e;
+      return true;
+    }
+    from = e;
+  }
+  return false;
+}
+
 bool laterPromiseSpan(const std::string& reply, size_t* begin, size_t* end, LaterWork behind) {
   if (behind == LaterWork::Live) return false;
   // The reply as written: no scan past the claim scan's bound.
