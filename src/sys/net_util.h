@@ -5,10 +5,10 @@
 #include <lwip/dns.h>      // dns_gethostbyname (raw API: asserts the lock held, never takes it)
 #include <lwip/sys.h>      // sys_sem_t / sys_arch_sem_wait (the bounded wait for the answer)
 
-#include <new>   // std::nothrow: the DNS wait's state lives on the heap (late_wait.h)
+#include <new>   // std::nothrow: the DNS wait's state lives on the heap (dns_lookup.h)
 
-#include "nimbus/net/late_wait.h"   // who frees the DNS wait's state: the waiter or a late answer
-#include "poll_watch.h"             // lane TGSTALL: every connect and close is a poll-task beat
+#include "nimbus/net/dns_lookup.h"   // the lookup itself, host-tested against a fake lwIP
+#include "poll_watch.h"              // lane TGSTALL: every connect and close is a poll-task beat
 
 // agent::store::tlsVerify() - the outbound-TLS security switch. Forward-declared
 // (not #include "agent/store.h") so this sys-level header carries no dependency
@@ -99,78 +99,58 @@ inline void tlsClose(WiFiClientSecure& c) {
 // one self-deadlocks), any host-based connect that does not go through connectHost(),
 // and an unclosed LOCK_TCPIP_CORE.
 namespace nimbus_net_detail {
-struct DnsWait {
-  sys_sem_t sem;
-  ip_addr_t addr;
-  bool ok = false;
-  nimbus::net::LateWait cell;
+// The lwIP side of nimbus::net::DnsLookup (nimbus/net/dns_lookup.h has the algorithm and
+// its host tests). Each raw call sits in its own LOCK_TCPIP_CORE region, so the gate
+// above reads every one of them as locked.
+struct LwipDnsOps {
+  using Addr = ip_addr_t;
+  using Sem = sys_sem_t;
+  template <class T>
+  static T* make() { return new (std::nothrow) T(); }
+  template <class T>
+  static void destroy(T* p) { delete p; }
+  static bool semNew(Sem& s) { return sys_sem_new(&s, 0) == ERR_OK; }
+  static void semFree(Sem& s) { sys_sem_free(&s); }
+  static void semSignal(Sem& s) { sys_sem_signal(&s); }
+  static void semWait(Sem& s, uint32_t ms) { sys_arch_sem_wait(&s, ms); }
+  static bool onTcpipThread() { return sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER); }
+  // dns_gethostbyname asserts the core lock held and never takes it. The TCPIP thread
+  // already holds it (`own`).
+  static nimbus::net::DnsQuery query(bool own, const char* host, Addr& cached, dns_found_callback fn, void* arg) {
+    if (!own) LOCK_TCPIP_CORE();
+    const err_t e = dns_gethostbyname(host, &cached, fn, arg);
+    if (!own) UNLOCK_TCPIP_CORE();
+    if (e == ERR_OK) return nimbus::net::DnsQuery::Cached;
+    return e == ERR_INPROGRESS ? nimbus::net::DnsQuery::Pending : nimbus::net::DnsQuery::Failed;
+  }
+  // The waiter's side of the shared cell, under the core lock: the found callback runs
+  // on the TCPIP thread, which holds it, so the two never race.
+  static bool leave(bool own, nimbus::net::LateWait& cell) {
+    if (!own) LOCK_TCPIP_CORE();
+    const bool answered = cell.waiterLeaves();
+    if (!own) UNLOCK_TCPIP_CORE();
+    return answered;
+  }
 };
-inline void dnsWaitFree(DnsWait* w) {
-  sys_sem_free(&w->sem);
-  delete w;
-}
-// Runs on the TCPIP thread, which holds the core lock: the cell's two transitions
-// never race (late_wait.h).
-inline void dnsWaitFound(const char*, const ip_addr_t* addr, void* arg) {
-  auto* w = static_cast<DnsWait*>(arg);
-  if (!w->cell.callbackArrives()) {   // the waiter gave up: the state is ours to free
-    dnsWaitFree(w);
-    return;
-  }
-  if (addr != nullptr) {
-    w->addr = *addr;
-    w->ok = true;
-  } else {
-    w->ok = false;
-  }
-  sys_sem_signal(&w->sem);
-}
 }  // namespace nimbus_net_detail
 
 // Resolve a hostname with the RAW lwIP DNS API under the TCPIP core lock (see above).
-// Cache hit: ERR_OK with the address immediately. Miss: the query is sent while the
-// lock is held and ERR_INPROGRESS comes back; the answer arrives in the TCPIP thread,
-// which needs the lock, so the wait happens WITHOUT holding it (the same shape the
-// netconn layer uses, api_msg.c lwip_netconn_do_gethostbyname) and is bounded by
-// waitMs. lwIP's own retries can outlast that wait (1 + 1 + 2 + 3 s per server, up to
-// three servers), so the shared state lives on the heap and whichever side lets go
-// last frees it (nimbus/net/late_wait.h): an answer after the wait gave up frees it
-// in the callback instead of writing into this function's dead stack frame and
-// signalling a freed semaphore (lane TGSTALL; the first version did exactly that).
+// Cache hit: the address at once. Miss: the query is sent while the lock is held; the
+// answer arrives in the TCPIP thread, which needs the lock, so the wait happens WITHOUT
+// holding it (the same shape the netconn layer uses, api_msg.c
+// lwip_netconn_do_gethostbyname) and is bounded by waitMs. lwIP's own retries can
+// outlast that wait (1 + 1 + 2 + 3 s per server, up to three servers), so the shared
+// state lives on the heap and whichever side lets go last frees it: an answer after the
+// wait gave up frees it in the callback instead of writing into this function's dead
+// stack frame and signalling a freed semaphore (lane TGSTALL; the version before did
+// exactly that). The algorithm is nimbus::net::DnsLookup, host-tested in test_late_wait
+// at every point the answer can arrive.
 inline bool resolveHostLocked(const char* host, IPAddress& out, uint32_t waitMs = 10000) {
   if (out.fromString(host)) return true;  // literal address: no DNS involved
-  auto* w = new (std::nothrow) nimbus_net_detail::DnsWait();
-  if (!w) return false;
-  if (sys_sem_new(&w->sem, 0) != ERR_OK) {
-    delete w;
-    return false;
-  }
-  const bool own = sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER);
-  if (!own) LOCK_TCPIP_CORE();
-  ip_addr_t addr;
-  err_t e = dns_gethostbyname(host, &addr, nimbus_net_detail::dnsWaitFound, w);
-  bool callbackFrees = false;   // an answer still to come owns the state
-  if (e == ERR_OK) {
-    out.from_ip_addr_t(&addr);   // cached: no callback will come
-  } else if (e == ERR_INPROGRESS) {
-    // The lock holder (TCPIP thread) cannot block for the answer: it leaves at once.
-    if (!own) {
-      UNLOCK_TCPIP_CORE();
-      sys_arch_sem_wait(&w->sem, waitMs);
-      LOCK_TCPIP_CORE();
-    }
-    const bool answered = w->cell.waiterLeaves();   // under the lock: no race with the callback
-    callbackFrees = !answered;                       // gave up first: never touch w again
-    if (answered && w->ok) {
-      out.from_ip_addr_t(&w->addr);
-      e = ERR_OK;
-    } else {
-      e = ERR_VAL;
-    }
-  }
-  if (!callbackFrees) nimbus_net_detail::dnsWaitFree(w);
-  if (!own) UNLOCK_TCPIP_CORE();
-  return e == ERR_OK;
+  ip_addr_t a;
+  if (!nimbus::net::DnsLookup<nimbus_net_detail::LwipDnsOps>::resolve(host, a, waitMs)) return false;
+  out.from_ip_addr_t(&a);
+  return true;
 }
 
 // Host-based connect through the seam: resolve under the TCPIP core lock (see above),

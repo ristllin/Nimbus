@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 
+#include "nimbus/net/tg_dup_guard.h"   // kPoisonMaxTries: crash resets before the poison guard skips a request
 #include "nimbus/sys/log_window.h"
 
 namespace nimbus::orch {
@@ -113,31 +114,52 @@ std::string crashNotice(const std::string& deviceName, const TurnJournal* j,
   return msg + " during a background task" + from + ". That task did not finish.";
 }
 
-// FAILING-FIRST STUB (lane TGSTALL fix pass): the pre-fix assumption, every request is
-// served again after a guard restart, whatever its chat.
-bool isTelegramChatId(const std::string&) { return true; }
-bool lostTurnRunsAgain(const TurnJournal&, const StallReplay&) { return true; }
+bool isTelegramChatId(const std::string& chat) {
+  const size_t from = (!chat.empty() && chat[0] == '-') ? 1 : 0;
+  if (chat.size() <= from) return false;
+  for (size_t i = from; i < chat.size(); ++i)
+    if (chat[i] < '0' || chat[i] > '9') return false;
+  return true;
+}
+
+bool lostTurnRunsAgain(const TurnJournal& j, const StallReplay& r) {
+  return isTelegramChatId(j.chat) && r.telegramPolling && r.poisonTries < nimbus::net::kPoisonMaxTries;
+}
 
 std::string stallNotice(const std::string& deviceName, const TurnJournal* j, const std::string& hhmm,
-                        const StallReplay&) {
+                        const StallReplay& r) {
   const std::string name = deviceName.empty() ? std::string("Nimbus") : deviceName;
-  if (!j) return name + " stopped answering for a few minutes, so it restarted itself. Messages sent meanwhile "
-                        "are being answered now.";
+  const std::string stopped = name + " stopped answering";
+  if (!j) {
+    // Telegram keeps what was sent meanwhile on its server and serves it now; the web page
+    // and on-device voice queue in RAM, which the restart emptied.
+    if (r.telegramPolling && r.poisonTries < nimbus::net::kPoisonMaxTries)
+      return stopped + " for a few minutes, so it restarted itself. Messages sent here meanwhile are being "
+                       "answered now; anything typed in the web page or said to it in that time was not kept, "
+                       "so please send that again.";
+    return stopped + " for a few minutes, so it restarted itself. If a reply you were waiting for does not come "
+                     "in a few minutes, please send that message again.";
+  }
   const std::string from = hhmm.empty() ? std::string() : " from " + hhmm;
   const char* noun = requestNoun(j->kind);
   if (noun[0]) {
-    const std::string msg = name + " stopped answering while working on your " + noun + from +
-                            ", so it restarted itself. It tries that " + noun + " again on its own";
+    const std::string msg = stopped + " while working on your " + noun + from + ", so it restarted itself.";
     // A message that was logging something may have saved its row before it stuck (the
-    // 29 Oct boba mechanism): the retry could save it again.
+    // 29 Oct boba mechanism): a retry could save it again, a re-send too.
+    if (lostTurnRunsAgain(*j, r)) {
+      if (j->kind == "message")
+        return msg + " It tries that message again on its own; if it was logging something, check it was not "
+                     "saved twice.";
+      return msg + " It tries that " + noun + " again on its own; if no reply comes in a few minutes, send it again.";
+    }
     if (j->kind == "message")
-      return msg + "; if it was logging something, check it was not saved twice.";
-    return msg + "; if no reply comes in a few minutes, send it again.";
+      return msg + " That reply was lost and the message is not tried again; if it was logging something, check "
+                   "whether it was saved before you send it again.";
+    return msg + " That reply was lost, so please send it again if you still need it.";
   }
   if (j->kind == "routine")
-    return name + " stopped answering during a routine" + from + ", so it restarted itself. That run did not finish.";
-  return name + " stopped answering during a background task" + from +
-         ", so it restarted itself. That task did not finish.";
+    return stopped + " during a routine" + from + ", so it restarted itself. That run did not finish.";
+  return stopped + " during a background task" + from + ", so it restarted itself. That task did not finish.";
 }
 
 }  // namespace nimbus::orch

@@ -414,10 +414,16 @@ void queueCrashNotice() {
   // sent once at the owner's next turn (restart_notice.h). A restart the poll task's
   // liveness guard asked for says so in its own words, once per streak (poll_guard.h);
   // without its RTC record (it did not survive) the owner is told, never left guessing.
+  // Whether the cut request runs again: Telegram serves its page again only while the
+  // poll runs this boot and the poison guard has not skipped it (turn_journal.h). The
+  // orchestrator boot that started the poll task and read the guard record has joined.
   const bool stall = dump && nimbus::sys::isPollStallReason(dump->why);
+  const agent::telegram::GuardStatus gs = agent::telegram::guardStatus();
+  const nimbus::orch::StallReplay replay{agent::telegram::enabled() && gs.booted, gs.tries};
   nimbus::orch::RestartNoticePlan plan =
       stall ? nimbus::orch::planStallNotice(name, j, hhmm,
-                                            nimbus::pollwatch::bootAfterStall() ? nimbus::pollwatch::streakAtBoot() : 1)
+                                            nimbus::pollwatch::bootAfterStall() ? nimbus::pollwatch::streakAtBoot() : 1,
+                                            replay)
             : nimbus::orch::planRestartNotice(name, g_reason, j, hhmm, cause);
   const nimbus::orch::NoticeTiming timing = plan.timing;
   std::string now;

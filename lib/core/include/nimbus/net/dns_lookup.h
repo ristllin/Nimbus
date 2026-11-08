@@ -58,10 +58,10 @@ class DnsLookup {
       out = cached;
       return true;
     }
-    // FAILING-FIRST STUB: the pre-fix shape (lane CRASH2 on main) - the waiter frees the
-    // state whenever it returns, whether or not the answer came.
+    // The lock holder (the TCPIP thread itself) cannot block for the answer: it leaves
+    // at once and the callback frees the state.
     if (!own) Ops::semWait(s->sem, waitMs);
-    Ops::leave(own, s->cell);
+    if (!Ops::leave(own, s->cell)) return false;   // gave up first: never touch s again
     const bool ok = s->ok;
     if (ok) out = s->addr;
     release(s);
@@ -71,7 +71,11 @@ class DnsLookup {
   // lwIP's found callback: on the TCPIP thread, the core lock held, so it never races
   // leave(). `addr` is null when the lookup failed.
   static void found(const char*, const Addr* addr, void* arg) {
-    State* s = static_cast<State*>(arg);   // FAILING-FIRST STUB: never checks the waiter
+    State* s = static_cast<State*>(arg);
+    if (!s->cell.callbackArrives()) {   // the waiter left: the state is ours to free
+      release(s);
+      return;
+    }
     if (addr) {
       s->addr = *addr;
       s->ok = true;
