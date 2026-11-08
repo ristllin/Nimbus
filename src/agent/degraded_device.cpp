@@ -119,7 +119,18 @@ void logShown(const DegradedSet& set, uint32_t gen) {
 }  // namespace
 
 void begin() {
-  if (!s_state) s_state = new (std::nothrow) State();
+  if (s_state) return;
+  State* s = new (std::nothrow) State();
+  if (!s) return;
+  // A std::mutex is a pthread mutex on ESP-IDF: its FreeRTOS semaphore is created at the FIRST
+  // lock, from internal RAM, and a failed allocation there aborts. Allocating the State does
+  // not create it, so lock and unlock each one now, while memory is plentiful (the same
+  // prime as g_webChatMx in main.cpp and g_turnOwnerMx in orchestrator.cpp). Otherwise the
+  // first lock would be the main-loop tick at about 15 s uptime, a turn's noteTurn or an
+  // /api/state, on whatever the heap looks like then.
+  { std::lock_guard<std::mutex> prime(s->mx); }
+  s->tracker.prime();
+  s_state = s;   // published last: a task that sees the pointer never takes a first lock
 }
 
 void noteTurn(const std::string& requested, const std::string& served, const std::string& path, bool billed) {

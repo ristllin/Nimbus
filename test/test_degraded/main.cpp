@@ -865,6 +865,62 @@ static void test_device_wiring() {
   TEST_ASSERT_TRUE(contains(main, "buildCtx(-1, /*fullPaint=*/false)"));
 }
 
+// std::mutex on ESP-IDF is a pthread mutex whose FreeRTOS semaphore is created at its FIRST
+// lock (pthread_mutex_init_if_static), from internal RAM, and a failed allocation there
+// aborts. Allocating the State object does not create it. The repo's pattern (main.cpp
+// g_webChatMx, orchestrator.cpp g_turnOwnerMx) is to lock and unlock once in setup(), while
+// memory is plentiful. The first lock of these two would otherwise be the main-loop tick at
+// about 15 s uptime, or the turn task's noteTurn, or an /api/state on the AsyncTCP task.
+// The class: EVERY mutex the module owns is locked once in begin().
+static std::string functionBody(const std::string& src, const char* signature) {
+  const size_t at = src.find(signature);
+  if (at == std::string::npos) return std::string();
+  const size_t open = src.find('{', at);
+  int depth = 0;
+  for (size_t i = open; i < src.size(); ++i) {
+    if (src[i] == '{') ++depth;
+    if (src[i] == '}' && --depth == 0) return src.substr(open, i - open + 1);
+  }
+  return std::string();
+}
+
+static void test_begin_locks_every_mutex_the_module_owns_once() {
+  const std::string dev = readFile("src/agent/degraded_device.cpp");
+  const std::string hdr = readFile("lib/core/include/nimbus/orch/degraded.h");
+  // The mutexes that exist: State's own (degraded_device.cpp) and ServingTracker's (degraded.h).
+  TEST_ASSERT_EQUAL_size_t_MESSAGE(1, count(dev, "std::mutex mx;"), "a new mutex in State needs its prime in begin()");
+  TEST_ASSERT_EQUAL_size_t_MESSAGE(1, count(hdr, "std::mutex mx_;"), "a new mutex in ServingTracker needs its prime");
+  TEST_ASSERT_EQUAL_size_t_MESSAGE(0, count(dev, "static std::mutex") + count(dev, "std::mutex g_"), "no mutex outside State");
+  const std::string body = functionBody(dev, "void begin()");
+  TEST_ASSERT_TRUE_MESSAGE(!body.empty(), "begin() not found");
+  TEST_ASSERT_TRUE_MESSAGE(contains(body, "std::lock_guard<std::mutex> prime(s->mx);"), "State::mx is not primed in begin()");
+  TEST_ASSERT_TRUE_MESSAGE(contains(body, "s->tracker.prime();"), "ServingTracker::mx_ is not primed in begin()");
+  // Published only after both are created: a task that sees the pointer never takes a first lock.
+  const size_t primeAt = body.find("s->tracker.prime();");
+  const size_t publishAt = body.find("s_state = s;");
+  TEST_ASSERT_TRUE_MESSAGE(publishAt != std::string::npos && publishAt > primeAt, "publish s_state after the primes");
+  // The ServingTracker prime really is the lock and unlock of its own mutex.
+  const std::string prime = functionBody(readFile("lib/core/src/orch_degraded.cpp"), "void ServingTracker::prime()");
+  TEST_ASSERT_TRUE(contains(prime, "std::lock_guard<std::mutex> lk(mx_);"));
+  // main.cpp calls begin() from setup(), before any task that reads the module is started.
+  TEST_ASSERT_TRUE(contains(readFile("src/main.cpp"), "agent::degraded::begin();"));
+}
+
+// prime() takes and drops the tracker's lock and changes nothing.
+static void test_priming_the_tracker_changes_nothing() {
+  ServingTracker t;
+  t.noteTurn("anthropic", "mistral", "anthropic -> mistral", true, 1000);
+  t.prime();
+  const FallbackFact f = t.fact(2000);
+  TEST_ASSERT_TRUE(f.active);
+  TEST_ASSERT_EQUAL_STRING("mistral", f.served.c_str());
+  ServingTracker u;
+  u.prime();
+  TEST_ASSERT_FALSE(u.fact(5).active);
+  u.noteTurn("anthropic", "mistral", "", true, 5);
+  TEST_ASSERT_TRUE(u.fact(10).active);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_a_fresh_healthy_device_shows_nothing);
@@ -912,5 +968,7 @@ int main() {
   RUN_TEST(test_api_state_carries_the_same_set);
   RUN_TEST(test_the_copy_follows_the_style_guide);
   RUN_TEST(test_device_wiring);
+  RUN_TEST(test_begin_locks_every_mutex_the_module_owns_once);
+  RUN_TEST(test_priming_the_tracker_changes_nothing);
   return UNITY_END();
 }

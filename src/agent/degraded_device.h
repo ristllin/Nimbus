@@ -19,9 +19,10 @@
 namespace agent {
 namespace degraded {
 
-// Allocates the state. Called once from setup(), while memory is plentiful (its mutex is a
-// FreeRTOS object, and a failed allocation of one aborts); until then everything answers
-// "nothing degraded".
+// Allocates the state and locks and unlocks each of its mutexes once. Called once from setup(),
+// while memory is plentiful: a std::mutex creates its FreeRTOS semaphore at its first lock,
+// and a failed allocation there aborts, so the first lock must not be a runtime one. Until
+// then everything answers "nothing degraded".
 void begin();
 
 // A turn ended: `requested` is the head it started on, `served` the provider that answered,

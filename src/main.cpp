@@ -3552,7 +3552,7 @@ void setup() {
   // Lazily created mutexes allocate a FreeRTOS object from internal RAM on first use,
   // and a failed allocation there aborts. Create them now, while memory is plentiful.
   { std::lock_guard<std::mutex> prime(g_webChatMx); }
-  agent::degraded::begin();   // lane DEGRADE: its mutex and state, allocated while memory is plentiful
+  agent::degraded::begin();   // lane DEGRADE: its state, and each of its mutexes locked once, while memory is plentiful
   otaupd::setEventHook(otaEventHook);
   otaupd::setIdleProvider(otaIdleSnapshot);
   // A check or install whose own task does not fit (a loaded device sits just

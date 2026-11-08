@@ -346,6 +346,8 @@ FallbackFact ServingTracker::fact(uint32_t nowMs) const {
   return f;
 }
 
+void ServingTracker::prime() { std::lock_guard<std::mutex> lk(mx_); }
+
 void ServingTracker::clear() {
   std::lock_guard<std::mutex> lk(mx_);
   active_ = false;

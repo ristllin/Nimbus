@@ -154,6 +154,9 @@ class ServingTracker {
                 bool answered, uint32_t nowMs);
   FallbackFact fact(uint32_t nowMs) const;
   void clear();
+  // Locks and unlocks the mutex once, so a device creates its semaphore here (ESP-IDF makes a
+  // std::mutex's at its first lock) and not at a runtime lock: see begin() in agent/degraded_device.h.
+  void prime();
 
  private:
   mutable std::mutex mx_;
