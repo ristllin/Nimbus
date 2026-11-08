@@ -10,6 +10,7 @@
 #include "nimbus/harness/jobs.h"   // kLedgerRanLead: how a ledger line names what a sub ran
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/prompt_layout.h"   // the display labels: where the fixed instructions end
+#include "nimbus/mem_cap.h"   // utf8CapLen: a bounded message never ends inside a character
 #include "nimbus/orch/device_actions.h"
 #include "nimbus/orch/food_label.h"    // labelRowGate, unsupportedDetails: the ledger row gate
 #include "nimbus/orch/food_ledger.h"   // scanFoodTargets: a target this turn stored
@@ -229,6 +230,7 @@ void ClaimCheck::beginTurn() {
   records_.clear();
   toolText_.clear();
   ownerText_.clear();
+  unanswered_.clear();
   ledger_.clear();
   ownerAskedHow_ = false;
   ownerAskedKeep_ = false;
@@ -701,6 +703,29 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
             "Do not: ask for an update, or use something newer, or leave it out.\n";
   if (!later.empty()) hlog::log("claims: a promise of later work with nothing behind it -> correction round");
   return correctionFor(gaps, pending, more, later);
+}
+
+void ClaimCheck::noteUnanswered(std::vector<std::string> messages) {
+  // The newest few, each bounded: a long-silent chat never makes this check scan much.
+  constexpr size_t kKeep = 3, kEach = 1024;
+  if (messages.size() > kKeep) messages.erase(messages.begin(), messages.end() - (std::ptrdiff_t)kKeep);
+  for (std::string& m : messages)
+    if (m.size() > kEach) m.resize((size_t)nimbus::utf8CapLen(m.c_str(), (int)m.size(), (int)kEach));
+  unanswered_ = std::move(messages);
+}
+
+std::string ClaimCheck::scopeCheck(const std::string& finalTurnJson) const {
+  if (unanswered_.empty()) return std::string();
+  orch::Turn t;
+  orch::ParseError err;
+  if (!orch::parseTurn(finalTurnJson, t, err)) return std::string();   // the shape check's case
+  const std::string said = t.ask.empty() ? t.reply : t.reply + "\n\n" + t.ask;   // one message
+  size_t b = 0, e = 0;
+  const int m = orch::unansweredTopicSpan(said, ownerText_, unanswered_, &b, &e);
+  if (m < 0) return std::string();
+  hlog::log("claims: the reply takes up an earlier unanswered message -> correction round");
+  while (b < e && (said[b] == ' ' || said[b] == '\n')) b++;
+  return orch::replyScopeCorrection(unanswered_[(size_t)m], said.substr(b, e - b));
 }
 
 std::string ClaimCheck::citedTargetCorrection(const std::string& said, orch::FoodFacts& facts) const {

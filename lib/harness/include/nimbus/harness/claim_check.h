@@ -107,6 +107,9 @@ class ClaimCheck {
   void setFoodFacts(std::function<nimbus::orch::FoodFacts()> facts) { foodFacts_ = std::move(facts); }
   // The owner's own earlier messages in this request: a daily target's source.
   void noteOwnerHistory(const std::string& ownerRows);
+  // Lane MLQ (OIR-06): the earlier owner messages in this request that got no reply
+  // (oldest first), on a turn with a real human message; scopeCheck reads them.
+  void noteUnanswered(std::vector<std::string> messages);
   // A scheduled turn: `today` (YYYY-MM-DD) turns on the stale-status rule (food_figures.h).
   void setRoutineDay(const std::string& today) { routineDay_ = today; }
   // A memory about to be stored states a daily target nothing this turn holds: true, with the
@@ -157,6 +160,10 @@ class ClaimCheck {
   // `skipSpawned` leaves the spawn class to another check of the same chain.
   std::string finalCheck(const std::string& finalTurnJson, bool skipSpawned = false);
   bool corrected() const { return corrected_; }
+  // Lane MLQ: the reply-scope check of the same chain (owner_voice.h): "" unless the
+  // reply takes up an earlier owner message that got no reply and that this message does
+  // not bring up; then the correction text.
+  std::string scopeCheck(const std::string& finalTurnJson) const;
 
   // After apply: apply recorded the turn's real outcomes in effects() (each
   // memory write's result, each spawn the queue took or refused, the scratchpad
@@ -253,6 +260,7 @@ class ClaimCheck {
                                  // the second-read comparison reads them (food_label.h)
   std::string toolText_;         // the tool results in normalizedWords form (bounded)
   std::string ownerText_;        // the owner's message (bounded): a why-question's reasons
+  std::vector<std::string> unanswered_;   // earlier owner messages with no reply (bounded, lane MLQ)
   std::string ownerWords_;       // the owner's own words this turn (message + their history
                                  // rows), normalizedWords form: what backs "you told me"
   std::string ledger_;           // the spawn ledger block this turn read

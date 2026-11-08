@@ -1068,6 +1068,22 @@ struct TurnEngine::ApplyCapture {
   ApplyCapture& operator=(const ApplyCapture&) = delete;
 };
 
+// Lane MLQ (OIR-06): the owner messages of the rendered history that got no reply (their
+// assistant message is the "[no reply]" marker, after any "[did: ...]" tag), oldest first.
+// The summary pair is never one.
+static std::vector<std::string> unansweredOwnerMessages(const std::vector<HistMsg>& history) {
+  static const char kNoReply[] = "[no reply]";
+  const size_t n = sizeof(kNoReply) - 1;
+  std::vector<std::string> out;
+  for (size_t i = 0; i + 1 < history.size(); i++) {
+    const HistMsg& u = history[i];
+    const HistMsg& a = history[i + 1];
+    if (!u.user || a.user || u.text.rfind(kSummaryUserHead, 0) == 0) continue;
+    if (a.text.size() >= n && a.text.compare(a.text.size() - n, n, kNoReply) == 0) out.push_back(u.text);
+  }
+  return out;
+}
+
 // CUM-824: the parts of this turn's input the claim check reads, as the engine took them
 // (never re-parsed from the composed text, where a sub-agent's reply could pose as a block).
 // The owner's own history rows count as sources (a follow-up about the previous message's
@@ -1358,6 +1374,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       if (m.user && m.text.rfind(kSummaryUserHead, 0) != 0) ownerRows += m.text + "\n";
     claims_.noteOwnerHistory(ownerRows);
   }
+  if (ci.speakerPresent) claims_.noteUnanswered(unansweredOwnerMessages(ci.history));   // lane MLQ (OIR-06)
   turnMem().gate.phase("history", freeHeap(), largestFreeBlock());
   // R3: this chat's TTL table choice and its per-chat cache key.
   turnGaps_.note(chatId, nowMs());
@@ -1718,6 +1735,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         [pseudo](const std::string& finalTurn) { return turnShapeCorrection(finalTurn, pseudo.get()); },
         [this](const std::string& finalTurn) { return claims_.finalCheck(finalTurn, /*skipSpawned=*/true); },
         [&userText](const std::string& finalTurn) { return orch::placeholderCheck(finalTurn, userText); },
+        // Lane MLQ (OIR-06): an earlier owner message that got no reply is not taken up
+        // unless this message brings it up (owner_voice.h).
+        [this](const std::string& finalTurn) { return claims_.scopeCheck(finalTurn); },
         // Lane POL2: internal plumbing (memory ids, job ids, storage wording,
         // device paths) never reaches the owner; one correction round fixes it.
         [](const std::string& finalTurn) { return orch::plumbingCheck(finalTurn); },
