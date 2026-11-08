@@ -576,3 +576,155 @@ def test_file_store_leg_allows_one_send_per_photo_plus_the_notice():
     assert legg.MAX_SENDS == legg.PHOTOS + 1
     assert run(6).status == g.PASS
     assert run(10).status == g.FAIL and "identical log lines 10" in run(10).detail
+
+
+# ---- lane N429: a busy history read is never an empty chat ----------------------------
+#
+# Bench candidate 2 (bf40a3ed, 5 Nov 13:42Z) graded leg c FAIL told_once: the quota-429
+# episode counted 4 notices and 4 short answers where its two siblings counted 1 and 1,
+# while the device's own console showed ONE send of each and its durable log one failed
+# turn per message. The count is a diff of two reads of /api/mem/episodic. The unit answers
+# a read it cannot serve in time with HTTP 503 and the JSON body {"error":"busy",...}; the
+# kit's net.get_json parses ANY status, so that body read as a chat with no rows, and
+# every older assistant row of the chat's 60-row window (each leg has its own owner chat
+# full of earlier episodes whose notice and short answer texts are identical) counted as
+# the episode's own. These tests drive the kit against a fake unit that answers busy.
+
+BUSY_BODY = {"error": "busy", "message": "The device is busy right now. Try again in a few seconds."}
+NOTICE = "That didn't finish - Anthropic says the account is out of credit. Add credit on its billing page."
+SHORT = "Your message was not answered. Anthropic is checked again in 30 minutes, and replies resume."
+
+
+class _Resp:
+    def __init__(self, status, body):
+        self.status_code, self._body = status, body
+
+    def json(self):
+        return self._body
+
+
+class _HistoryNet:
+    """/api/mem/episodic and /api/tg/archive as the unit serves them: newest rows first
+    up to ``limit``, and HTTP 503 with the busy JSON on the reads listed in ``busy``
+    (0-based, in the order the kit reads). ``get_json`` parses any status, like net.py."""
+
+    def __init__(self, sessions, busy=(), archive=None):
+        self.sessions = {k: list(v) for k, v in sessions.items()}
+        self.busy = set(busy)
+        self.archive = list(archive or [])
+        self.reads = 0
+
+    def add(self, session, role, text):
+        rows = self.sessions.setdefault(session, [])
+        rows.append({"id": f"m{sum(len(v) for v in self.sessions.values()) + 1:08x}", "session": session,
+                     "role": role, "kind": "message", "text": text})
+
+    def get(self, path, timeout=None, **kw):
+        n = self.reads
+        self.reads += 1
+        if n in self.busy:
+            return _Resp(503, BUSY_BODY)
+        if path.startswith("/api/mem/episodic"):
+            m = re.search(r"session=([^&]+)&limit=(\d+)", path)
+            return _Resp(200, {"messages": list(reversed(self.sessions.get(m.group(1), [])))[: int(m.group(2))]})
+        if path.startswith("/api/tg/archive?"):
+            return _Resp(200, {"rows": list(self.archive), "more": False})
+        raise AssertionError(f"unexpected read {path}")
+
+    def get_json(self, path, timeout=None, **kw):
+        return self.get(path, timeout=timeout).json()
+
+
+class _SilentTap:
+    source = "console"
+
+    def arm(self):
+        return self
+
+    def poll(self):
+        return []
+
+    def parsed(self):
+        return []
+
+    def graded_lines(self):
+        return []
+
+
+def _history_bench(monkeypatch, net, tg=False):
+    monkeypatch.setattr(kit.time, "sleep", lambda s: None)
+    bench = kit.StormBench.__new__(kit.StormBench)
+    bench.net, bench.chat, bench.tg, bench.mock = net, 4747474703, tg, None
+    bench.tap, bench.windows, bench.sent_texts, bench._out_texts = _SilentTap(), [], [], {}
+    return bench
+
+
+def _earlier_episodes(net, chat="4747474703", episodes=3):
+    for _ in range(episodes):  # the chat's earlier leg-c runs: notice and short answer, identical every time
+        net.add(chat, "user", "storm c earlier")
+        net.add(chat, "assistant", NOTICE)
+        net.add(chat, "user", "storm c earlier probe")
+        net.add(chat, "assistant", SHORT)
+
+
+def _one_episode(net, chat="4747474703"):
+    net.add(chat, "user", "storm c quota-429: reply with the single word pong")
+    net.add(chat, "assistant", NOTICE)
+    net.add(chat, "user", "storm c quota-429 probe: reply pong")
+    net.add(chat, "assistant", SHORT)
+
+
+def test_a_busy_before_snapshot_cannot_make_old_notices_the_episodes_own(monkeypatch):
+    """The 5 Nov signature: the episode's opening read answers busy; the episode itself sent
+    one notice and one short answer; earlier episodes left six more rows of the same texts."""
+    net = _HistoryNet({}, busy=(0,))
+    _earlier_episodes(net)
+    bench = _history_bench(monkeypatch, net)
+    w = kit.Window(bench).open()
+    _one_episode(net)
+    w.close()
+    replies = w.replies(re.compile(r"credit|billing|quota|payment|paused|plan", re.I))
+    assert replies["notices"] == [NOTICE] and replies["other"] == [SHORT]
+    assert w.notices(re.compile(r"credit|billing|quota|payment|paused|plan", re.I)) == 1
+
+
+def test_a_busy_closing_read_is_retried_too(monkeypatch):
+    net = _HistoryNet({})
+    _earlier_episodes(net)
+    bench = _history_bench(monkeypatch, net)
+    w = kit.Window(bench).open()
+    _one_episode(net)
+    net.busy = {net.reads}  # the next read, the closing snapshot of the leg chat, answers busy
+    w.close()
+    assert len(w.rows) == 4 and w.replies(re.compile("credit"))["notices"] == [NOTICE]
+
+
+def test_a_history_that_stays_busy_is_an_error_never_an_empty_chat(monkeypatch):
+    net = _HistoryNet({})
+    _earlier_episodes(net)
+    bench = _history_bench(monkeypatch, net)
+    net.busy = set(range(100))
+    with pytest.raises(AssertionError, match="owner chat"):
+        bench.chat_rows()
+
+
+def test_the_web_chat_read_does_not_swallow_a_busy_answer_either(monkeypatch):
+    """The web session was read with its own try/except that turned any failure into {}."""
+    net = _HistoryNet({})
+    _earlier_episodes(net, chat="web")
+    bench = _history_bench(monkeypatch, net)
+    net.busy = {1}  # read 0 is the leg chat, read 1 the web chat
+    rows = bench.chat_rows()
+    assert sum(1 for k in rows if k.startswith("web:")) == 12  # retried, not dropped
+    net.busy = {net.reads + 1} | set(range(net.reads + 1, net.reads + 100))
+    with pytest.raises(AssertionError, match="web chat"):
+        bench.chat_rows()
+
+
+def test_a_busy_telegram_archive_read_is_not_an_empty_archive(monkeypatch):
+    """Bot mode counts the notices as outbound archive rows after the window opened: a busy
+    opening read must not make every earlier outbound row count."""
+    archive = [{"dir": "out", "raw": None, "text": NOTICE} for _ in range(5)]
+    net = _HistoryNet({}, busy=(0,), archive=archive)
+    bench = _history_bench(monkeypatch, net, tg=True)
+    assert len(bench.outbound()) == 5

@@ -392,17 +392,32 @@ class StormBench:
         points at the leg chat): the told-once grades must see them, so both sessions
         are read and the diff keys stay distinct per session."""
         q = f"/api/mem/episodic?session={self.chat}&limit={limit}"
-        page = self._retry(lambda: self.net.get_json(q, timeout=10.0), "reading the owner chat")
-        rows = {str(r.get("id")): r for r in page.get("messages", []) if r.get("kind", "message") == "message"}
+        page = self._page(q, "messages", "reading the owner chat")
+        rows = {str(r.get("id")): r for r in page["messages"] if r.get("kind", "message") == "message"}
         wq = f"/api/mem/episodic?session=web&limit={limit}"
-        try:
-            web = self.net.get_json(wq, timeout=10.0)
-        except Exception:  # noqa: BLE001 - a busy unit: the leg's retry loop covers the leg chat
-            web = {}
-        for r in web.get("messages", []) if isinstance(web, dict) else []:
+        for r in self._page(wq, "messages", "reading the web chat")["messages"]:
             if r.get("kind", "message") == "message":
                 rows[f"web:{r.get('id')}"] = r
         return rows
+
+    def _page(self, path: str, key: str, what: str, timeout: float = 10.0) -> dict:
+        """One history or archive page, VALIDATED: HTTP 200 and ``key`` a list. The unit
+        answers a read it cannot serve in time with HTTP 503 and {"error":"busy",...};
+        net.get_json parses any status, so that body used to read as a page with no rows -
+        an empty chat. Windows are diffs of two such reads: an empty opening read made every
+        older row of the chat count as the window's own (the 5 Nov 2026 quota-429 episode
+        read 4 notices where the device sent 1), an empty closing read hid the window's
+        own rows (a false pass). A busy or malformed answer is retried, then an error."""
+
+        def read():
+            r = self.net.get(path, timeout=timeout)
+            status = getattr(r, "status_code", 200)
+            body = r.json()
+            if status != 200 or not isinstance(body, dict) or not isinstance(body.get(key), list):
+                raise ValueError(f"HTTP {status} without a {key} list: {str(body)[:80]}")
+            return body
+
+        return self._retry(read, what)
 
     @staticmethod
     def _retry(call, what: str, tries: int = 5):
@@ -486,8 +501,8 @@ class StormBench:
         day = time.strftime("%Y-%m-%d", time.gmtime())
         while True:
             q = f"/api/tg/archive?chat={self.chat}&day={day}&limit=200&from={start}"
-            page = self._retry(lambda: self.net.get_json(q, timeout=15.0), "reading the Telegram archive")
-            rows += [r for r in page.get("rows", []) if r.get("dir") == "out"]
+            page = self._page(q, "rows", "reading the Telegram archive", timeout=15.0)
+            rows += [r for r in page["rows"] if r.get("dir") == "out"]
             if not page.get("more"):
                 return [self._with_text(r, day) for r in rows]
             start = page["next"]

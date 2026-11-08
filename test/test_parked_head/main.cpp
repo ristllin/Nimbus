@@ -15,6 +15,7 @@
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/harness/test_answer_transport.h"
 #include "nimbus/orch/billing_refusal.h"
 #include "nimbus/orch/head_loop.h"
 #include "nimbus/orch/provider_park.h"
@@ -162,6 +163,8 @@ struct ParkRig {
   FakeProviderDeps wire;
   providers::ProviderDeps pd;
   std::vector<std::string> delivered;
+  std::vector<std::string> rows;   // the chat's assistant history rows (apply.captureAssistant)
+  agent::TestAnswerTransport scripted{&wire.http};   // the bench's PROVFAULT seat (lane CLAMP)
   std::map<std::string, int> singleShotAttempts;
   std::map<std::string, std::string> singleShotErr;   // per host: "" = served
   std::unique_ptr<TurnEngine> eng;
@@ -184,6 +187,7 @@ struct ParkRig {
     d.platform = plat.contract();
     d.deliver = [this](const std::string&, const std::string& t) { delivered.push_back(t); };
     d.apply.deliver = d.deliver;
+    d.apply.captureAssistant = [this](const std::string&, const std::string& t) { rows.push_back(t); };
     d.toolSpecs = [](const orch::Principal&) {
       return std::vector<orch::ToolRegistry::Spec>{
           {"memory_search", "search the memory", "{\"type\":\"object\",\"properties\":{}}"}};
@@ -221,6 +225,15 @@ struct ParkRig {
       out = "{\"reply\":\"done\",\"memory\":\"\",\"ask\":\"\"}";
       return true;
     };
+  }
+
+  // The bench's PROVFAULT: every request to the provider's API host is answered locally
+  // with the shape's status and body, at the transport's seat (the fabric path only: the
+  // single-shot adapters are scripted by their error line).
+  void armFault(const Shape& sh) {
+    pd.http = &scripted;
+    providers::setTestStatusOverride(sh.apiHost, sh.status, sh.body);
+    singleShotErr[sh.host] = sh.errLine;
   }
 
   // What the provider answers next, on whichever path the turn takes.
@@ -294,6 +307,7 @@ void setUp() { LogCapture::install(); }
 void tearDown() {
   agent::hlog::setSink(nullptr);
   providers::clearHostParks();
+  providers::clearTestStatusOverride();
 }
 
 // The class, over every recorded refusal shape on both head paths: the first message
@@ -583,6 +597,104 @@ static void test_an_open_provider_answers_and_a_new_key_is_asked_at_once() {
   }
 }
 
+// Storm leg c, the owner's two messages of one refusal episode (the message, then the fresh
+// probe), on BOTH owner surfaces: what the sink delivered and the assistant rows the history
+// holds. Lane N429: the bench read four notice rows and four short-answer rows out of one
+// quota-429 episode while the device's own console showed one send of each. Every message the
+// owner sends is answered by at most one message, every message that goes out is exactly one
+// history row (never fewer: the unarmed owner reads rows; never more), and the notice words
+// reach the owner in one message of the whole episode - for every recorded refusal shape, on
+// every head path, with the refusal armed the way the bench arms it (PROVFAULT at the
+// transport's seat) as well as scripted per request.
+static void test_every_refusal_is_one_message_and_one_row_per_owner_message() {
+  int cases = 0;
+  for (const Shape& sh : kShapes) {
+    for (Path path : kPaths) {
+      for (int armed = 0; armed < 2; armed++) {
+        if (armed && path != Path::Fabric) continue;   // PROVFAULT is the wire's: fabric only
+        char what[160];
+        snprintf(what, sizeof what, "%s, %s%s", sh.name, pathName(path), armed ? ", PROVFAULT" : "");
+        ParkRig r({sh.host}, path);
+        if (armed) r.armFault(sh);
+        else r.refuseNext(sh);
+        size_t before = 0;
+        for (int msg = 0; msg < 6; msg++) {
+          before = r.delivered.size();
+          r.turn(msg == 0 ? "storm c: reply with the single word pong" : "storm c probe: reply pong");
+          const size_t sent = r.delivered.size() - before;
+          // one reply to the first message (the notice), one to the second (the short
+          // answer), then silence
+          TEST_ASSERT_EQUAL_MESSAGE(msg < 2 ? 1 : 0, (int)sent, what);
+          TEST_ASSERT_EQUAL_MESSAGE((int)r.delivered.size(), (int)r.rows.size(), what);
+        }
+        TEST_ASSERT_EQUAL_MESSAGE(2, (int)r.rows.size(), what);
+        // the armed refusal really was the answer (one request, then the park), so the
+        // run above is the bench's episode and not a quiet counterfeit of it
+        if (armed) TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.scripted.answered(), what);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(r.delivered[0].c_str(), r.rows[0].c_str(), what);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(r.delivered[1].c_str(), r.rows[1].c_str(), what);
+        int noticeRows = 0, shortRows = 0, wordRows = 0;
+        for (const std::string& t : r.rows) {
+          noticeRows += t.rfind("That didn't finish - ", 0) == 0 ? 1 : 0;
+          shortRows += t.rfind("Your message was not answered.", 0) == 0 ? 1 : 0;
+          wordRows += hasNoticeWords(t) ? 1 : 0;
+        }
+        TEST_ASSERT_EQUAL_MESSAGE(1, noticeRows, what);
+        TEST_ASSERT_EQUAL_MESSAGE(1, shortRows, what);
+        if (!sh.key) TEST_ASSERT_EQUAL_MESSAGE(1, wordRows, what);   // the storm grader's notice words
+        cases++;
+      }
+    }
+  }
+  printf("property: %d (refusal shape, head path, arming) cases: one message and one row per owner message\n",
+         cases);
+}
+
+// The same two surfaces for the refusals that are NOT parked: a rate limit, an overloaded
+// provider, a server error and a request the provider will not read fail the turn with no
+// latch, so every owner message is answered by exactly one message and one history row (a
+// retry or a failover inside the turn is never a second message to the owner).
+static void test_an_unparked_failure_is_one_message_and_one_row_per_owner_message() {
+  struct Failure {
+    const char* name;
+    int status;
+    const char* body;
+    const char* errLine;
+  };
+  const Failure kFailures[] = {
+      {"rate limit 429", 429,
+       "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Rate limit reached for requests\"}}",
+       "messages HTTP 429: Rate limit reached for requests"},
+      {"overloaded 529", 529, "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}",
+       "messages HTTP 529: Overloaded"},
+      {"server error 500", 500, "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Internal error\"}}",
+       "messages HTTP 500: Internal error"},
+      {"bad request 400", 400,
+       "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"messages.1.content: unexpected field\"}}",
+       "messages HTTP 400: messages.1.content: unexpected field"},
+  };
+  int cases = 0;
+  for (const Failure& f : kFailures) {
+    for (Path path : kPaths) {
+      char what[160];
+      snprintf(what, sizeof what, "%s, %s", f.name, pathName(path));
+      ParkRig r({"anthropic"}, path);
+      for (int copies = 0; copies < 16; copies++)
+        if (r.fabric) r.wire.http.script.push_back({"api.anthropic.com", "", f.status, f.body});
+      r.singleShotErr["anthropic"] = f.errLine;
+      for (int msg = 0; msg < 3; msg++) {
+        const size_t before = r.delivered.size();
+        r.turn("storm d: reply with the single word pong");
+        TEST_ASSERT_EQUAL_MESSAGE(1, (int)(r.delivered.size() - before), what);
+        TEST_ASSERT_EQUAL_MESSAGE((int)r.delivered.size(), (int)r.rows.size(), what);
+      }
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(r.delivered.back().c_str(), r.rows.back().c_str(), what);
+      cases++;
+    }
+  }
+  printf("property: %d (failure kind, head path) cases: one message and one row per owner message\n", cases);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_refusal_shape_asks_once_and_tells_once);
@@ -592,5 +704,7 @@ int main(int, char**) {
   RUN_TEST(test_routines_carry_the_notice_never_the_short_answer);
   RUN_TEST(test_every_keyed_host_closed_sends_nothing);
   RUN_TEST(test_an_open_provider_answers_and_a_new_key_is_asked_at_once);
+  RUN_TEST(test_every_refusal_is_one_message_and_one_row_per_owner_message);
+  RUN_TEST(test_an_unparked_failure_is_one_message_and_one_row_per_owner_message);
   return UNITY_END();
 }
