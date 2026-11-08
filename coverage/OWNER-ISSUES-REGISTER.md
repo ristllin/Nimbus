@@ -26,7 +26,7 @@ and PROG (a305cbfc) all landed before this lane did.
 | OIR-03 | 28 Oct 12:11 | Lunch photo read as beef, rice and coleslaw; the plate was chicken, lentils and hummus | vision misread | single vision read, no cross-check | 63264018 (LABEL) | test_media_label, test_food_label, oir_03 | lc-photo-misread |
 | OIR-04 | 28 Oct 12:13 | The owner's own 1,045 kcal breakdown was stored as 1,005 | owner's word beats the log | store path did not prefer the owner's figures over the model's | 63264018 (LABEL owner-first) | oir_04 (owner_first) | lc-owner-figures |
 | OIR-05 | 28 Oct 12:29 | "Total so far 1,461 kcal" while the reply's own rows sum to 1,611; the 150 kcal error rode all day | LLM arithmetic, no receipt | the model summed; no device receipt checked it | 73ba793b (V463 receipt) | test_food_log_day, oir_05 | lc-day-total |
-| OIR-06 | 28 Oct 18:10 | An unrelated tech quiz was stuck on the end of a food reply | unasked topic | no guard on extra content in routine/food replies | live-met on bf40a3ed (REGR-RUN-2: 5/5 on claude-haiku-5-5 and glm-5.3); xfail flipped to required | no native seam yet; live case lc-unasked-topic (required since REGR-RUN-2) | lc-unasked-topic |
+| OIR-06 | 28 Oct 18:10 | An unrelated tech quiz was stuck on the end of a food reply | unasked topic | no guard on extra content in routine/food replies; an earlier owner message with no reply ("[no reply]" in the history) reads as still owed an answer (lane MLQ) | live-met on bf40a3ed (REGR-RUN-2: 5/5 on claude-haiku-5-5 and glm-5.3); xfail flipped to required; lane MLQ: [REPLY SCOPE] line and the reply-scope check (mistral-large-4-0 1/5 on 48e166c2, 5/5 on 7e997875) | oir_06, test_harness_claim_check, test_harness_history; live case lc-unasked-topic | lc-unasked-topic |
 | OIR-07 | 29 Oct 06:01 | Brief called the prior day "finalised at 2,526 kcal", never confirmed by the owner | false claim | claim check did not catch an unconfirmed "finalised" | c0d7fc5b | test_orch_claims, oir_07 | lc-false-claim |
 | OIR-08 | 29 Oct 09:10, 13:01 | The owner's question was ignored, then a technically wrong answer was repeated as the daily nugget | ignored question | open questions not tracked; wrong answer re-served | open_questions on main; live case guards the nugget | oir_08 (open_questions), test_open_questions | lc-ignored-question |
 | OIR-09 | 29 Oct 09:03 | Reported total omitted the morning cappuccino (48 kcal understated) | understated total | rows not all counted in the day tally | 73ba793b | test_food_log_day, oir_09 | lc-day-total |
@@ -58,7 +58,7 @@ and PROG (a305cbfc) all landed before this lane did.
 | OIR-35 | 2 Nov 08:15 | A pack label photo was logged, then the owner was asked "did you eat the whole pack?" | photo default question | no whole-pack default for food photos | food_portions/photo defaults on main | no native seam (the whole-pack rule ships in the on-device docs, docs/orchestrator-world.md); live case lc-photo-default | lc-photo-default |
 | OIR-36 | 2 Nov 08:16 | The standing-rules list was full (12 rules, 1,200 chars), so an owner rule was refused into long-term memory where it is not guaranteed next turn | full rules list weakens an owner rule | prefs cap with no owner-rule guarantee | owner_prefs on main | oir_36, test_owner_prefs | lc-rules-full |
 | OIR-37 | 2 Nov 06:02 | Replies carried plumbing: artifact file paths, memory ids, "read back confirmed", row keys | plumbing in replies | no reply guard on internal identifiers | reply_guard hasPlumbing on main | oir_37, test_reply_guard | lc-plumbing |
-| OIR-38 | 2 Nov 06:01 | The commute brief credited disruptions to grandcentralrail.com and london-now.co.uk | weak sources | no source-quality rule in the brief | fetch_policy on main; live case guards | no native seam yet; live case lc-brief-sources | lc-brief-sources |
+| OIR-38 | 2 Nov 06:01 | The commute brief credited disruptions to grandcentralrail.com and london-now.co.uk | weak sources | no source-quality rule in the brief; the [FRESH RESULTS] line said keep the sources a result names, with no rule for a secondary one (lane MLQ) | fetch_policy on main; lane MLQ: the primary-source line on a fresh block whose results ran the web (mistral-large-4-0 0/5 on 48e166c2, 5/5 on 7e997875) | test_harness_jobs; live case lc-brief-sources | lc-brief-sources |
 | OIR-39 | 2 Nov 13:00 | The daily check-in fired after the owner said "forget duolingo, no reason to ask" | routine after "never ask" | the loop was not cancelled by the owner's refusal | PERSONA signals on main (319994e6); loop cancellation open | oir_39, test_orch_loops, test_owner_prefs | lc-never-ask |
 | OIR-40 | 4 Nov 16:17 | A lookup turn ran 5m12s with no visible sign of work; a second message waited behind it | frozen-looking long turn + queued message ignored | no progress signal; no queued ack | a305cbfc (PROG) | oir_40, test_orch_msg_batch (queued message Deferred, re-served); PROG progress signal via live case lc-frozen-turn | lc-frozen-turn |
 | OIR-41 | 4 Nov 16:18 | "Do you have access to my personal Gmail?" answered with device-page guidance although a Mistral console connector exists | Gmail/connector confusion | guidance did not name the provider's own console for Mistral clients | ec709ff0 (CONN) | test_connectors_wire, oir_41 | lc-gmail-mistral |
@@ -70,7 +70,7 @@ and PROG (a305cbfc) all landed before this lane did.
 | OIR-47 | 1 Nov 15:46 | "mistral ran out of room - switching to openai"; the answer landed 2m52s late | failover notice | cut with failover to another host | failure_chain on main | oir_47, test_orch_failure_chain | lc-failover |
 | OIR-48 | 31 Oct - 1 Nov | Two live food ledgers: a dead food/food-log.csv and the live nutrition/meal_log.csv | two ledgers | writes not refused outside the one ledger | secondFoodLogRefusal on main | oir_48, test_food_ledger | lc-two-ledgers |
 | OIR-49 | 30 Oct | The ledger migration dropped 2 rows without telling the owner | day rewrite loss | migration silent about unreadable rows | ledger_migrate on main | oir_49, test_ledger_migrate | lc-migration |
-| OIR-50 | 2 Nov | Challenged, the head defended invented rows with "you told me", "you photographed" - its own earlier writes as proof | defended hallucination | claim check did not require a real backing message | 63264018 (LABEL claim extension) + c0d7fc5b | oir_50, test_orch_claims, test_harness_claim_check | lc-defended-hallucination |
+| OIR-50 | 2 Nov | Challenged, the head defended invented rows with "you told me", "you photographed" - its own earlier writes as proof | defended hallucination | claim check did not require a real backing message; a quoted repeat in a retraction was skipped as the owner quoted back (lane MLQ) | 63264018 (LABEL claim extension) + c0d7fc5b; lane MLQ: [DISPUTED CLAIM] line, quoted owner-action phrase checked on a disputed turn (mistral-large-4-0 3/5 on 48e166c2, 5/5 on 7e997875) | oir_50, test_orch_claims, test_harness_claim_check (lane MLQ: a quoted repeat on a disputed turn) | lc-defended-hallucination |
 
 ## Guard inventory
 
@@ -331,3 +331,25 @@ Five review findings, each fixed with a test that failed first. Written reasons:
   from this lane, and are NOT fixed here (the first is a source-quality rule in the synthesis
   turn, the second a food-reply content rule that two prompt rounds in this lane showed to be
   fragile; both would need their own live loop).
+
+## Lane MLQ rulings (2026-11-08, mistral-large-4-0 on QFIX head 48e166c2)
+
+Cause, fix and the before/after table per model: coverage/MLQ-2026-11.md. In short, the head
+runs on the per-turn user message more than on the 19 KB system message for mistral-large-4-0,
+and on these three rows the per-turn block was silent or pulled the other way. Fixes are
+provider-neutral and ride the per-turn turn input and the device checks; the cached blocks are
+byte-identical. Not edited: any scenario, assertion or thresholds.json.
+- OIR-38: a fresh block whose results ran the web gets kFreshSourcesLine (jobs.h) under the
+  facts line. Guard: test_harness_jobs test_mlq_fresh_block_labels_a_secondary_source.
+- OIR-06: every human turn gets [REPLY SCOPE] before [USER] (owner_voice.h), and the
+  reply-scope final check gives one correction round when the reply takes up an earlier owner
+  message that got no reply and this message does not bring it up. Guards: oir_06,
+  test_harness_claim_check test_mlq_reply_scope_check_holds_an_unanswered_message,
+  test_harness_history test_mlq_unanswered_owner_message_reaches_the_scope_check (both fail with
+  the check disabled, verified). Precision over 4,287 stored live replies: 17 of 19 flags are the
+  unasked-topic replies; the other 2 exist only in a stress pairing a synthesis turn never runs.
+- OIR-50: a message that disputes an attribution gets [DISPUTED CLAIM], and on that turn a
+  quoted "you told me" that is not the owner's own words is checked; the owner-action correction
+  says to take the claim back without the phrase. Guards: oir_50
+  test_oir_50_disputed_quote_is_checked, test_harness_claim_check
+  test_mlq_disputed_attribution_checks_the_quoted_phrase.
