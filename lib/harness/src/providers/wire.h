@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <memory>   // unique_ptr: the request off the poll task stack (lane STACK)
 #include <string>
 #include <utility>
 #include <vector>
@@ -412,7 +413,10 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
     }
   }
 #endif
-  HttpRequest req;
+  // On the heap (lane STACK): every provider request is built here, deep in a turn on
+  // the Telegram poll task.
+  const std::unique_ptr<HttpRequest> request(new HttpRequest());
+  HttpRequest& req = *request;
   req.method = method;
   req.host = host;
   req.port = port;

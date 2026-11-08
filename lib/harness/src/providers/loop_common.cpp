@@ -519,14 +519,18 @@ bool runHostLoop(const HostLoop& loop, const std::string& instructions, const st
   orch::Transcript tr;
   tr.addUser(inputs);
   const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
-  RoundRecovery rec(tr, ht, instructions, inputs);
+  // The loop's largest locals live on the heap (lane STACK): this runs inside a turn on
+  // the Telegram poll task (176 B of recovery state, 164 B of hooks, 148 B of outcome).
+  const std::unique_ptr<RoundRecovery> recovery(new RoundRecovery(tr, ht, instructions, inputs));
+  RoundRecovery& rec = *recovery;
   // CUM-477: one same-host resend of a request that never left.
   orch::HeadStepFn inner = loop.make(instructions, tr);
   const ResendCtx resend{&pd, &ht.cfg, &inner, who};
   const orch::HeadStepFn send = resendUnsentOnce(&resend);
   rec.bind(nullptr, [&] { inner = loop.make(rec.instructions(), tr); });
 
-  orch::HeadLoopHooks hooks;
+  const std::unique_ptr<orch::HeadLoopHooks> loopHooksBox(new orch::HeadLoopHooks());
+  orch::HeadLoopHooks& hooks = *loopHooksBox;
   hooks.step = [&](bool allowTools, const std::vector<orch::HeadToolResult>& prior, uint32_t budgetAtEntry,
                    const std::string& capReason) -> orch::HeadStep {
     const uint32_t stepStart = pd.nowMs ? pd.nowMs() : 0;
@@ -549,7 +553,8 @@ bool runHostLoop(const HostLoop& loop, const std::string& instructions, const st
   };
   loopHooks(hooks, pd, ht, tr, rec);
 
-  const orch::HeadOutcome res = runHeadLoop(ht.cfg, hooks);
+  const std::unique_ptr<const orch::HeadOutcome> outcome(new orch::HeadOutcome(runHeadLoop(ht.cfg, hooks)));
+  const orch::HeadOutcome& res = *outcome;
   hlog::logf("%s: rounds=%d cap=%s ok=%d heap=%u", who, res.rounds, res.capReason.c_str(), (int)res.ok,
              (unsigned)(pd.freeHeap ? pd.freeHeap() : 0));
   // Glass Box P3: hand the canonical transcript to the engine BEFORE the failure return: a
@@ -598,7 +603,9 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
     resend[i] = ResendCtx{&pd, &ht.cfg, &inner[i], who};
     return resendUnsentOnce(&resend[i]);
   };
-  RoundRecovery rec(tr, ht, instructions, inputs);
+  // On the heap, as in runHostLoop (lane STACK).
+  const std::unique_ptr<RoundRecovery> recovery(new RoundRecovery(tr, ht, instructions, inputs));
+  RoundRecovery& rec = *recovery;
   auto makeStep = [&](size_t i) -> orch::HeadStepFn {
     const std::string& h = hostList[i];
     const std::string& ins = rec.instructions();
@@ -846,7 +853,8 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
     }
   };
 
-  orch::HeadLoopHooks hooks;
+  const std::unique_ptr<orch::HeadLoopHooks> loopHooksBox(new orch::HeadLoopHooks());
+  orch::HeadLoopHooks& hooks = *loopHooksBox;
   hooks.step = step;
   loopHooks(hooks, pd, ht, tr, rec);
 
@@ -856,7 +864,8 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       spend->add(hostList[i].c_str(), pd.orchModel ? pd.orchModel(hostList[i].c_str()).c_str() : "",
                  hostUse[i]);
   };
-  orch::HeadOutcome res;
+  const std::unique_ptr<orch::HeadOutcome> outcome(new orch::HeadOutcome());
+  orch::HeadOutcome& res = *outcome;
   try {
     res = runHeadLoop(ht.cfg, hooks);
   } catch (const std::bad_alloc&) {

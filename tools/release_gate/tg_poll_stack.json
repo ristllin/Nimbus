@@ -130,15 +130,6 @@
       "why": "the only HeldSlot is arbiter::WorkSlot(acquireWork, releaseWork)"
     },
     {
-      "in": "commitDrained",
-      "at": "orch_memory_tools\\.cpp",
-      "targets": [
-        "^agent::memory::persistPending\\(\\)$",
-        "^agent::memory::begin\\(\\)::\\{lambda\\(\\)#\\d+\\}::_FUN\\(\\)$"
-      ],
-      "why": "MemoryContext::persistPending, set in memory::begin to persistPending()"
-    },
-    {
       "in": "^otaupd::fireEvent\\(",
       "targets": [
         "^otaEventHook\\("
@@ -313,13 +304,6 @@
         "^nvs::NVSHandleSimple::(get|set)_\\w+\\("
       ],
       "why": "NVSHandleSimple, the only NVSHandle"
-    },
-    {
-      "in": "^otaupd::runOnPoll\\(",
-      "targets": [
-        "^otaupd::(checkTask|installTask)\\(void\\*\\)$"
-      ],
-      "why": "the staged job's TaskFunction_t: the check or install task body, run on the poll task instead of its own task (ota_update.cpp runOnPoll)"
     }
   ],
   "not_on_tg_poll": [
@@ -433,14 +417,14 @@
       "why": "the subject scan recurses per nesting level of the parsed reply (ArduinoJson limit 10)"
     },
     {
-      "function": "^(heap_caps_\\w+|multi_heap_\\w+|tlsf_\\w+|esp_heap_adjust_alignment_to_hw|_lock_\\w+|lock_\\w+_generic|__retarget_lock_\\w+|sdmmc_\\w+|vfs_fat_\\w+|_gettimeofday_r\\$part\\$0|esp_time_impl_\\w+|esp_cache_get_alignment)$",
+      "function": "^(heap_caps_\\w+|multi_heap_\\w+|tlsf_\\w+|esp_heap_adjust_alignment_to_hw|_lock_\\w+|lock_\\w+_generic|__retarget_lock_\\w+|sdmmc_\\w+|vfs_fat_\\w+|_gettimeofday_r\\$part\\$0|esp_time_impl_\\w+|esp_cache_get_alignment|f_lseek|validate|lock_volume|unlock_volume|ff_mutex_\\w+)$",
       "depth": 2,
       "why": "allocation and lock re-entry: a failed allocation or a lazily created lock logs, and that log's own allocation or lock can take the same path once more; the second failure is dropped, never logged again"
     },
     {
-      "function": "^(__sflush_r|_fflush_r|_fclose_r|lflush|__sbprintf|_vfprintf_r|_fwalk_sglue|_fwalk_reent)$",
+      "function": "^(_vfprintf_r|__sflush_r|_fflush_r|_fclose_r|lflush)$",
       "depth": 2,
-      "why": "newlib stdio: closing or flushing a FILE flushes it once; printing to an unbuffered stream goes through __sbprintf once"
+      "why": "newlib stdio: printing to an unbuffered stream re-enters _vfprintf_r once through __sbprintf on a buffered stand-in (so _vfprintf_r is counted twice, __sbprintf once); closing or flushing a FILE flushes it once"
     },
     {
       "function": "^(nd6_send_ns|ip6_output_if|ip6_output_if_src|nd6_\\w+)$",
@@ -456,6 +440,26 @@
       "function": "^std::(_Function_handler<nimbus::orch::HeadToolResult \\(nimbus::orch::HeadToolCall const&\\), agent::TurnEngine::runTurn|function<nimbus::orch::HeadToolResult \\(nimbus::orch::HeadToolCall const&\\)>::operator\\(\\))",
       "depth": 4,
       "why": "runTurn wraps the head tool dispatch in at most three decorators (the MCP loop tools, pseudo spawns, the claim gate: engine.cpp) over the registry's own dispatch"
+    },
+    {
+      "function": "^agent::providers::(stripDescriptions|mistralStripDescriptions|stripFieldDescriptions|wire::detail::(collectToolIds|findBadText))\\(",
+      "depth": 10,
+      "why": "walks of a provider's JSON tool schema or reply, one level per nesting level (ArduinoJson limit 10)"
+    },
+    {
+      "function": "^(agent::runsOnText\\(|std::function<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > \\((char const\\*|std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)\\)>::operator\\(\\)|std::_Function_handler<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > \\((char const\\*|std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)\\), (agent::TurnEngine::runTurn|agent::providers::runFabricLoop))",
+      "depth": 2,
+      "why": "a turn's text hooks (the head host's model text, the fabric's per-host input lead) wrap a hook of the same type once; none calls itself"
+    },
+    {
+      "function": "^(std::function<nimbus::orch::HeadStep \\(.*\\)>::operator\\(\\)|std::_Function_handler<nimbus::orch::HeadStep \\()",
+      "depth": 3,
+      "why": "a round's step is wrapped at most twice over the provider's own step: the same-host resend of an unsent request (resendUnsentOnce) and the fabric's per-host wrap"
+    },
+    {
+      "function": "^std::_Function_handler<nimbus::orch::SpeakOutcome \\(",
+      "depth": 2,
+      "why": "the turn's speak hook forwards once to the device's speaker hook"
     }
   ],
   "impossible_cycles": [
@@ -488,6 +492,11 @@
       "caller": "^(usb_serial_jtag|uart|console)_\\w*select$",
       "callee": "^esp_vfs_select_triggered",
       "why": "a device's select hook signals the waiting select; it does not run another select"
+    },
+    {
+      "caller": ".",
+      "callee": "^agent::providers::runFabricLoop\\(",
+      "why": "the fabric loop's steps are single-host loop steps (misLoopStep, antLoopStep, ...); none starts another fabric loop"
     }
   ],
   "dynamic_frames": [
@@ -559,10 +568,12 @@
       ]
     },
     {
-      "name": "OTA check",
+      "name": "OTA check or install, staged on the poll task",
       "through": [
+        "^otaupd::runOnPoll\\(",
         "^otaupd::checkRun\\("
-      ]
+      ],
+      "_why": "runOnPoll runs the staged check (checkRun, inlined into it) or install"
     },
     {
       "name": "OTA install",
@@ -1103,7 +1114,7 @@
   "_aliases_why": "Typedefs and macros the source uses for a class: FileImplPtr and FSImplPtr are shared_ptrs of fs::FileImpl and fs::FSImpl (FS.h); WiFiClient(Secure) are the Arduino 3 names of NetworkClient(Secure); Serial is HWCDCSerial on these boards (ARDUINO_USB_CDC_ON_BOOT=1, ARDUINO_USB_MODE=1 in platformio.ini)",
   "stdout_context": {
     "entries": "^(vprintf|printf|puts|putchar|esp_log_writev|esp_log_write)$",
-    "family": "^(_vfprintf_r|vfprintf|__sbprintf|_fflush_r|fflush|__sflush_r|__swrite|_write_r|write|__sfvwrite_r|__sprint_r|_putc_r|__swbuf_r|_puts_r|_putchar_r|__sinit|__smakebuf_r|__swsetup_r|_fwrite_r|esp_vfs_write|console_\\w+)$",
+    "family": "^(_vfprintf_r|vfprintf|__sbprintf|_fflush_r|fflush|__sflush_r|__swrite|_write_r|write|__sfvwrite_r|__sprint_r|_putc_r|__swbuf_r|_puts_r|_putchar_r|__sinit|__smakebuf_r|__swsetup_r|_fwrite_r|esp_vfs_write|__sseek|_lseek_r|lseek|esp_vfs_lseek|console_\\w+)$",
     "files": "^(vfs_fat|vfs_littlefs)_",
     "why": "printf, puts and esp_log write the console stream (stdout, fd 1, the console VFS over USB serial or UART); a file write never runs below them, so inside that stream's stdio calls the VFS reaches the console devices only"
   }

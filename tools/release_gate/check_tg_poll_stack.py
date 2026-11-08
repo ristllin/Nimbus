@@ -40,7 +40,9 @@ Usage:
     python3 tools/release_gate/check_tg_poll_stack.py                 # .pio/build/esp32s3-cyd
     python3 tools/release_gate/check_tg_poll_stack.py --elf <firmware.elf> [--report out.md]
 Exit 0 = every path leaves the floor; 1 = a path is under it, or the analysis is not
-sound (an undeclared cycle or dynamic frame, a stale config row, a missing tool or ELF).
+sound (an undeclared cycle or dynamic frame, a path that names nothing, a missing tool or
+ELF). A config row the image does not use is reported, not failed: the four release
+images share one config.
 """
 
 from __future__ import annotations
@@ -60,7 +62,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tg_poll_stack.json")
 DEFAULT_ENVS = ("esp32s3-cyd",)
 INCLUDE_ROOTS = ("lib/core/include", "lib/harness/include", "include", "src")
-CTX_BASE = 1 << 40   # ids of receiver-bound copies of Print / Stream helpers
+CTX_BASE = 1 << 40  # ids of receiver-bound copies of Print / Stream helpers
 RECEIVER_HELPER_RE = re.compile(r"^(Print|Stream)::")
 
 CALL_RE = re.compile(r"^call(0|4|8|12)$")
@@ -87,10 +89,13 @@ def handler_signature(dname: str, member: str) -> "str | None":
         elif c in ">)":
             depth -= 1
         elif c == "," and depth == 0:
-            sig = dname[len(HANDLER):i]
+            sig = dname[len(HANDLER) : i]
             return sig if ">::" + member + "(" in dname else None
     return None
+
+
 IDENT_CALL_RE = re.compile(r"(~?[A-Za-z_][A-Za-z0-9_]*)\s*\(")
+MEMBER_CALL_RE = re.compile(r"(?:\.|->)\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 
 # ---- toolchain -----------------------------------------------------------------------
@@ -139,9 +144,9 @@ class Fn:
         self.dname = name
         self.frame = 0
         self.dynamic = False
-        self.calls = []      # (site, target addr)
-        self.indirect = []   # (site, load offset or None): calls the disassembly cannot resolve
-        self.probes = []     # its first instruction addresses (where a lambda's source line is read)
+        self.calls = []  # (site, target addr)
+        self.indirect = []  # (site, load offset or None): calls the disassembly cannot resolve
+        self.probes = []  # its first instruction addresses (where a lambda's source line is read)
 
 
 def parse_nm(text: str, rom: bool = False) -> dict:
@@ -190,9 +195,11 @@ def call0_adjust(op: str, args: str) -> int:
     return 0
 
 
-NO_DEST_RE = re.compile(r"^(s8i|s16i|s32i|s32i\.n|s32c1i|s32e|s32ri|s32nb|ss\w*|b\w*|j|jx|call\w*|ret\w*|"
-                        r"entry|w\w*|memw|isync|dsync|esync|rsync|extw|nop\w*|loop\w*|mula\.\w*|mul\.\w*|"
-                        r"umul\.\w*|ee\.\w*|simcall|break\w*|ill\w*|rfe|rfi|rfwo|rfwu)$")
+NO_DEST_RE = re.compile(
+    r"^(s8i|s16i|s32i|s32i\.n|s32c1i|s32e|s32ri|s32nb|ss\w*|b\w*|j|jx|call\w*|ret\w*|"
+    r"entry|w\w*|memw|isync|dsync|esync|rsync|extw|nop\w*|loop\w*|mula\.\w*|mul\.\w*|"
+    r"umul\.\w*|ee\.\w*|simcall|break\w*|ill\w*|rfe|rfi|rfwo|rfwu)$"
+)
 CLOBBER = {"0": range(0, 16), "4": range(4, 8), "8": range(8, 16), "12": range(12, 16)}
 
 
@@ -205,7 +212,7 @@ class Regs:
 
     def __init__(self):
         self.last = {}
-        self.junk = False   # the previous line was data objdump decoded (.byte) or a DSP op
+        self.junk = False  # the previous line was data objdump decoded (.byte) or a DSP op
 
     def note(self, op: str, args: str) -> None:
         self.junk = op.startswith(".") or op.startswith("ee.")
@@ -233,12 +240,12 @@ def _callx(cur: Fn, addr: int, reg: str, regs: Regs, starts: set) -> None:
         if lm:
             target = int(lm.group(1), 16)
             if target in starts or target >= 0x40000000:
-                cur.calls.append((addr, target))   # an address not in the image resolves later
+                cur.calls.append((addr, target))  # an address not in the image resolves later
                 return
     slot = None
     if op in ("l32i", "l32i.n"):
         parts = _regs(args)
-        if len(parts) == 3 and parts[1] != "a1":   # a load from the stack is a spill reload, not a slot
+        if len(parts) == 3 and parts[1] != "a1":  # a load from the stack is a spill reload, not a slot
             slot = int(parts[2], 0)
     cur.indirect.append((addr, slot))
 
@@ -305,7 +312,7 @@ def parse_disassembly(text: str, funcs: dict, known: "set | None" = None) -> Non
     padding objdump decodes as code between functions never add a call.
     """
     starts = known if known is not None else set(funcs)
-    cur, end, insns, adjust = None, 0, [], 0
+    cur, end, insns = None, 0, []
 
     def finish() -> None:
         if cur is None:
@@ -341,7 +348,7 @@ def elf_reader(path: str):
     secs = []
     for i in range(shnum):
         _n, typ, flags, addr, off, size = struct.unpack_from("<IIIIII", blob, shoff + i * shentsize)
-        if flags & 0x2 and typ != 8 and size:   # SHF_ALLOC, not NOBITS
+        if flags & 0x2 and typ != 8 and size:  # SHF_ALLOC, not NOBITS
             secs.append((addr, size, off))
 
     def word(a: int) -> "int | None":
@@ -349,6 +356,7 @@ def elf_reader(path: str):
             if addr <= a and a + 4 <= addr + size:
                 return struct.unpack_from("<I", blob, off + a - addr)[0]
         return None
+
     return word
 
 
@@ -371,7 +379,7 @@ def split_name(dname: str) -> "tuple[str, str]":
     """(qualifier, unqualified name) of a demangled function: `ns::Cls::read(int)` -> (`ns::Cls`, `read`)."""
     for prefix in ("non-virtual thunk to ", "virtual thunk to "):
         if dname.startswith(prefix):
-            dname = dname[len(prefix):]
+            dname = dname[len(prefix) :]
     head = _strip_params(dname)
     depth = 0
     cut = 0
@@ -380,9 +388,15 @@ def split_name(dname: str) -> "tuple[str, str]":
             depth += 1
         elif c == ">":
             depth -= 1
-        elif c == ":" and depth == 0 and head[j + 1:j + 2] == ":":
+        elif c == ":" and depth == 0 and head[j + 1 : j + 2] == ":":
             cut = j + 2
-    return head[:max(cut - 2, 0)], head[cut:]
+    return head[: max(cut - 2, 0)], head[cut:]
+
+
+def plain(dname: str) -> str:
+    """A name without the receiver binding the walk adds (` [this: HWCDC]`)."""
+    cut = dname.find(" [this: ")
+    return dname if cut < 0 else dname[:cut]
 
 
 def last_name(qualified: str) -> str:
@@ -394,7 +408,7 @@ def last_name(qualified: str) -> str:
             depth += 1
         elif c == ">":
             depth -= 1
-        elif c == ":" and depth == 0 and qualified[j + 1:j + 2] == ":":
+        elif c == ":" and depth == 0 and qualified[j + 1 : j + 2] == ":":
             cut = j + 2
     return qualified[cut:]
 
@@ -412,6 +426,23 @@ def vtable_slots(nm_text: str, word, funcs: dict) -> dict:
     (0, or a small negative number for a secondary base) and a typeinfo pointer (0 here:
     the firmware builds with -fno-rtti). A class with several bases has several.
     """
+    typeinfo, tables = _vtable_symbols(nm_text)
+    out = defaultdict(set)
+    for base, size in tables:
+        words = [word(a) for a in range(base, base + size, 4)]
+        point = None
+        for i, w in enumerate(words):
+            if w not in funcs:
+                continue
+            if i >= 2 and _address_point(words[i - 2], words[i - 1], typeinfo):
+                point = i
+            if point is not None:
+                out[(method_name(funcs[w].dname), (i - point) * 4)].add(w)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def _vtable_symbols(nm_text: str) -> "tuple[set, list]":
+    """(typeinfo addresses, [(vtable addr, size)]) from `nm -S` text."""
     typeinfo = set()
     tables = []
     for line in nm_text.splitlines():
@@ -422,17 +453,13 @@ def vtable_slots(nm_text: str, word, funcs: dict) -> dict:
             typeinfo.add(int(p[0], 16))
         elif p[3].startswith("_ZTV"):
             tables.append((int(p[0], 16), int(p[1], 16)))
-    out = defaultdict(set)
-    for base, size in tables:
-        words = [word(a) for a in range(base, base + size, 4)]
-        point = None
-        for i, w in enumerate(words):
-            if i >= 2 and (words[i - 1] == 0 or words[i - 1] in typeinfo) and \
-                    (words[i - 2] == 0 or (words[i - 2] or 0) >= 0xFFFF0000) and w in funcs:
-                point = i
-            if point is not None and w in funcs:
-                out[(method_name(funcs[w].dname), (i - point) * 4)].add(w)
-    return {k: sorted(v) for k, v in out.items()}
+    return typeinfo, tables
+
+
+def _address_point(offset_to_top: "int | None", typeinfo_word: "int | None", typeinfo: set) -> bool:
+    """The two words before an address point: offset-to-top (0, or small negative) and typeinfo."""
+    top_ok = offset_to_top == 0 or (offset_to_top or 0) >= 0xFFFF0000
+    return top_ok and (typeinfo_word == 0 or typeinfo_word in typeinfo)
 
 
 STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
@@ -502,7 +529,7 @@ def demangle(funcs: dict, cxxfilt: str) -> None:
     bases = [f.name.split("$", 1)[0] for f in order]
     out = run([cxxfilt], "\n".join(bases) + "\n").splitlines()
     for f, base, d in zip(order, bases, out):
-        f.dname = d + (" [" + f.name[len(base):].replace("$", " ").strip() + "]" if f.name != base else "")
+        f.dname = d + (" [" + f.name[len(base) :].replace("$", " ").strip() + "]" if f.name != base else "")
 
 
 def addr2line(elf: str, tool: str, addrs: list) -> dict:
@@ -533,7 +560,7 @@ def lambda_parent(dname: str) -> "str | None":
     sig = handler_signature(dname, "_M_invoke")
     if sig is None:
         return None
-    rest = dname[len(HANDLER) + len(sig) + 2:]
+    rest = dname[len(HANDLER) + len(sig) + 2 :]
     cut = rest.find("::{lambda")
     return rest[:cut] if cut > 0 else None
 
@@ -560,8 +587,13 @@ def lambda_names(sources: "Sources", loc: str) -> set:
 
 def short_loc(loc: str) -> str:
     loc = loc.split(" (discriminator")[0]
-    for marker in ("/nimbus/", "/esp-idf/components/", "/packages/framework-arduinoespressif32/",
-                   "/libdeps/esp32s3-cyd/", "/libdeps/"):
+    for marker in (
+        "/nimbus/",
+        "/esp-idf/components/",
+        "/packages/framework-arduinoespressif32/",
+        "/libdeps/esp32s3-cyd/",
+        "/libdeps/",
+    ):
         if marker in loc:
             return loc.split(marker, 1)[1]
     return "/".join(loc.split("/")[-2:])
@@ -571,8 +603,9 @@ def short_loc(loc: str) -> str:
 
 
 class Model:
-    def __init__(self, funcs: dict, cfg: dict, inlines: dict, vslots: "dict | None" = None,
-                 sources: "Sources | None" = None):
+    def __init__(
+        self, funcs: dict, cfg: dict, inlines: dict, vslots: "dict | None" = None, sources: "Sources | None" = None
+    ):
         self.funcs = funcs
         self.cfg = cfg
         self.inlines = inlines
@@ -582,23 +615,23 @@ class Model:
             self.vnames[name].update(addrs)
         self.sources = sources or Sources()
         self.errors = []
-        self.edges = defaultdict(list)       # caller -> [(site, callee)]
+        self.edges = defaultdict(list)  # caller -> [(site, callee)]
         self.unresolved = defaultdict(list)  # caller -> [site]
-        self.hits = defaultdict(int)         # config row -> times it applied
-        self.how = defaultdict(int)          # how indirect sites were resolved
+        self.hits = defaultdict(int)  # config row -> times it applied
+        self.how = defaultdict(int)  # how indirect sites were resolved
         self.cache = {}
         self.elsewhere = [re.compile(r["function"]) for r in cfg.get("not_on_tg_poll", [])]
         self.dropped = 0
         self.mult = {}
-        self.deferred = []          # (caller, site, candidate handlers) of generic std::function calls
+        self.deferred = []  # (caller, site, candidate handlers) of generic std::function calls
         self.edge_set = set()
         self.fallen_back = set()
         self.callers = None
         self.callers_seen = []
-        self.ctx_ids = {}      # (helper addr, receiver class) -> the bound copy's id
-        self.ctx_class = {}    # bound copy id -> receiver class
+        self.ctx_ids = {}  # (helper addr, receiver class) -> the bound copy's id
+        self.ctx_class = {}  # bound copy id -> receiver class
         self.cur_ctx = None
-        self.lambda_names = {}      # handler -> names its lambda is assigned to
+        self.lambda_names = {}  # handler -> names its lambda is assigned to
 
     def match(self, pattern: str) -> list:
         if pattern not in self.cache:
@@ -637,16 +670,17 @@ class Model:
                 continue
             self.hits["indirect|" + rule["in"] + "|" + rule.get("at", "")] += 1
             self.how["config rule"] += 1
-            out = set()
-            for pat in rule["targets"]:
-                if "{1}" in pat:
-                    pat = pat.replace("{1}", m.group(1) or "")
-                out.update(self.match(pat))
-            sc = self.cfg.get("stdout_context")
-            if self.cur_ctx == "stdout" and sc:   # the console stream: its device, never a file
-                out = {t for t in out if not re.search(sc["files"], self.funcs[t].dname)}
-            return self.on_tg_poll(out)
+            return self.on_tg_poll(self._rule_targets(rule, m))
         return None
+
+    def _rule_targets(self, rule: dict, m) -> set:
+        out = set()
+        for pat in rule["targets"]:
+            out.update(self.match(pat.replace("{1}", m.group(1) or "") if "{1}" in pat else pat))
+        sc = self.cfg.get("stdout_context")
+        if self.cur_ctx == "stdout" and sc:  # the console stream: its device, never a file
+            out = {t for t in out if not re.search(sc["files"], self.funcs[t].dname)}
+        return out
 
     def managers(self, sig: "str | None") -> list:
         """_M_manager functions (copy, move, destroy a stored functor) of one signature, or of all."""
@@ -697,7 +731,9 @@ class Model:
         """The candidates whose lambda is assigned to a name the call site calls."""
         if not loc:
             return []
-        called = set(IDENT_CALL_RE.findall(code_only(self.sources.line(loc))))
+        # Only a member access binds (`d.headHost()`, `cfg->validate(...)`): a bare call
+        # (`read(buf, n)`) is a parameter or a local, which any caller may have filled.
+        called = set(MEMBER_CALL_RE.findall(code_only(self.sources.line(loc))))
         return [h for h in cands if called & self.lambda_names.get(h, set())]
 
     def creators_reached(self, cands: list) -> list:
@@ -722,7 +758,7 @@ class Model:
             cls = self.deleted_class(names) if name == "~" else self.receiver_class(locs[0], text, name, names)
             known = cls is not None and self.known_class(cls)
             if slot is None and not known:
-                continue   # no slot and no receiver type: nothing ties this call to a vtable
+                continue  # no slot and no receiver type: nothing ties this call to a vtable
             found = set(self.vslots.get((name, slot), ()) if slot is not None else self.vnames.get(name, ()))
             if found and known:
                 found = {t for t in found if self.derives(last_name(split_name(self.funcs[t].dname)[0]), cls)}
@@ -776,16 +812,18 @@ class Model:
     def declared_type(self, loc: str, ident: str) -> "str | None":
         """ident's declared class: the nearest declaration above the call, else in the sibling header."""
         aliases = self.cfg.get("aliases", {})
-        if ident in aliases:   # a macro or global the source never declares (Serial)
+        if ident in aliases:  # a macro or global the source never declares (Serial)
             return aliases[ident]
         path, _, num = loc.split(" (discriminator")[0].rpartition(":")
         if not num.isdigit():
             return None
-        decl = re.compile(r"((?:[A-Za-z_]\w*::)*[A-Za-z_]\w*)\s*(<[^;(){}]*>)?\s*(?:const\s*)?[&*]*\s*(?:const\s*)?"
-                          r"\b" + re.escape(ident) + r"\b\s*(?:[;,)=({\[]|$)")
+        decl = re.compile(
+            r"((?:[A-Za-z_]\w*::)*[A-Za-z_]\w*)\s*(<[^;(){}]*>)?\s*(?:const\s*)?[&*]*\s*(?:const\s*)?"
+            r"\b" + re.escape(ident) + r"\b\s*(?:[;,)=({\[]|$)"
+        )
         self.sources.line(loc)
         lines = self.sources.cache.get(path, [])
-        found = self._scan_decl(decl, lines[:int(num)][::-1])
+        found = self._scan_decl(decl, lines[: int(num)][::-1])
         for header in self.sources.headers(path) if found is None else ():
             found = self._scan_decl(decl, self.sources.cache.get(header, []))
             if found is not None:
@@ -946,50 +984,58 @@ class Model:
         """A direct call the config shows cannot run (an error branch whose condition the
         only callers never meet), with why."""
         for r in self.cfg.get("impossible_calls", []):
-            if re.search(r["caller"], caller.dname) and re.search(r["callee"], self.funcs[callee].dname):
+            if re.search(r["caller"], plain(caller.dname)) and re.search(r["callee"], plain(self.funcs[callee].dname)):
                 self.hits["impossible-call|" + r["caller"] + "|" + r["callee"]] += 1
                 return True
         return False
 
     def _walk(self, todo: list) -> None:
-        seen = self.reach
         terminal = [re.compile(r["function"]) for r in self.cfg.get("terminal", [])]
         while todo:
             a = todo.pop()
-            if a in seen or a not in self.funcs:
+            if a in self.reach or a not in self.funcs:
                 continue
-            seen.add(a)
+            self.reach.add(a)
             f = self.funcs[a]
-            hit = next((i for i, rx in enumerate(terminal) if rx.search(f.dname)), None)
-            if hit is not None:   # never returns: the device restarts; what it calls is not followed
+            hit = next((i for i, rx in enumerate(terminal) if rx.search(plain(f.dname))), None)
+            if hit is not None:  # never returns: the device restarts; what it calls is not followed
                 self.hits["terminal|" + self.cfg["terminal"][hit]["function"]] += 1
                 continue
-            for site, t in f.calls:
-                if t not in self.funcs:
-                    self.unresolved[a].append(site)
-                elif not self.impossible_call(f, t):
-                    t = self.with_receiver(a, f, site, t)
-                    self.edges[a].append((site, t))
-                    todo.append(t)
-            self.cur_ctx = self.ctx_class.get(a)
-            for site, slot in f.indirect:
-                targets = self.resolve_site(f, site, slot)
-                if targets is None:
-                    self.unresolved[a].append(site)
-                    continue
-                targets = [self.bound_copy(t, "stdout") if self.stdout_binding(a, self.funcs[t]) else t
-                           for t in targets]
-                for t in targets:
-                    self.edge_set.add((site, t))
-                self.edges[a].extend((site, t) for t in targets)
-                todo.extend(targets)
+            todo.extend(self._direct_calls(a, f))
+            todo.extend(self._indirect_calls(a, f))
+
+    def _direct_calls(self, a: int, f: Fn) -> list:
+        out = []
+        for site, t in f.calls:
+            if t not in self.funcs:
+                self.unresolved[a].append(site)
+            elif not self.impossible_call(f, t):
+                t = self.with_receiver(a, f, site, t)
+                self.edges[a].append((site, t))
+                out.append(t)
+        return out
+
+    def _indirect_calls(self, a: int, f: Fn) -> list:
+        self.cur_ctx = self.ctx_class.get(a)
+        out = []
+        for site, slot in f.indirect:
+            targets = self.resolve_site(f, site, slot)
+            if targets is None:
+                self.unresolved[a].append(site)
+                continue
+            for t in targets:
+                t = self.bound_copy(t, "stdout") if self.stdout_binding(a, self.funcs[t]) else t
+                self.edge_set.add((site, t))
+                self.edges[a].append((site, t))
+                out.append(t)
+        return out
 
     def cut_cycles(self, root: int) -> None:
         """Depth-first from root; every back edge is cut. Leaves self.order (callers first)."""
-        state = {root: 1}   # 1 on the walk, 2 done
+        state = {root: 1}  # 1 on the walk, 2 done
         post = []
-        self.back = []      # (caller, site, callee)
-        self.cyclic = set()   # every function on a cut cycle
+        self.back = []  # (caller, site, callee)
+        self.cyclic = set()  # every function on a cut cycle
         self.dag = defaultdict(list)
         stack = [(root, 0)]
         while stack:
@@ -1005,7 +1051,7 @@ class Model:
             if state.get(w) == 1:
                 self.back.append((v, site, w))
                 on_walk = [n for n, _ in stack]
-                self.cyclic.update(on_walk[on_walk.index(w):])   # the cycle: w ... v
+                self.cyclic.update(on_walk[on_walk.index(w) :])  # the cycle: w ... v
                 continue
             self.dag[v].append((site, w))
             if w not in state:
@@ -1023,17 +1069,16 @@ class Model:
         rec = self.cfg.get("recursion", [])
         fake = self.cfg.get("impossible_cycles", [])
         for a in self.cyclic:
-            row = next((r for r in rec if re.search(r["function"], self.funcs[a].dname)), None)
+            row = next((r for r in rec if re.search(r["function"], plain(self.funcs[a].dname))), None)
             if row is not None:
                 self.mult[a] = max(self.mult.get(a, 1), row["depth"])
         for caller, _site, callee in self.back:
-            names = (self.funcs[caller].dname, self.funcs[callee].dname)
+            names = (plain(self.funcs[caller].dname), plain(self.funcs[callee].dname))
             row = next((r for r in rec if any(re.search(r["function"], n) for n in names)), None)
             if row is not None:
                 self.hits["recursion|" + row["function"]] += 1
                 continue
-            row = next((r for r in fake if re.search(r["caller"], names[0]) and re.search(r["callee"], names[1])),
-                       None)
+            row = next((r for r in fake if re.search(r["caller"], names[0]) and re.search(r["callee"], names[1])), None)
             if row is not None:
                 self.hits["impossible|" + row["caller"] + "|" + row["callee"]] += 1
                 continue
@@ -1046,7 +1091,7 @@ class Model:
             f = self.funcs[a]
             fr = f.frame
             if f.dynamic:
-                row = next((r for r in dyn if re.search(r["function"], f.dname)), None)
+                row = next((r for r in dyn if re.search(r["function"], plain(f.dname))), None)
                 if row is None:
                     self.errors.append(f"dynamic stack frame with no bound in the config: {f.dname}")
                 else:
@@ -1148,32 +1193,50 @@ def load_image(elf: str, cfg: dict, tools: dict) -> "tuple[dict, str]":
     with tempfile.TemporaryDirectory() as tmp:
         bare = os.path.join(tmp, "noprop.elf")
         run([tools["objcopy"], "--remove-section", ".xt.prop", "--remove-section", ".xt.lit", elf, bare])
-        parse_disassembly(run([tools["objdump"], "-d", "--no-show-raw-insn", bare]),
-                          {a: f for a, f in funcs.items() if not f.rom}, known)
-    parse_disassembly(run([tools["objdump"], "-d", "--no-show-raw-insn", rom]),
-                      {a: f for a, f in funcs.items() if f.rom}, known)
+        parse_disassembly(
+            run([tools["objdump"], "-d", "--no-show-raw-insn", bare]),
+            {a: f for a, f in funcs.items() if not f.rom},
+            known,
+        )
+    parse_disassembly(
+        run([tools["objdump"], "-d", "--no-show-raw-insn", rom]), {a: f for a, f in funcs.items() if f.rom}, known
+    )
     demangle(funcs, tools["c++filt"])
     return funcs, nm_text
+
+
+def task_root(funcs: dict, cfg: dict) -> int:
+    """The task's entry: vPortTaskWrapper, which calls pollTask through a register."""
+    entry = [a for a, f in funcs.items() if f.name == cfg["entry"]]
+    if not entry:
+        raise ValueError(f"entry {cfg['entry']} not in the image")
+    wrapper = [a for a, f in funcs.items() if f.name == cfg["task_wrapper"]]
+    if not wrapper:
+        return entry[0]
+    funcs[wrapper[0]].calls = [(wrapper[0], entry[0])]
+    funcs[wrapper[0]].indirect = []
+    return wrapper[0]
+
+
+def inline_sites(funcs: dict) -> list:
+    """Sites whose inline chain the analysis reads: every indirect call, and every call into
+    a Print or Stream helper (its receiver is read from the source line)."""
+    sites = {s for f in funcs.values() if not f.rom for s, _ in f.indirect}
+    sites |= {
+        s
+        for f in funcs.values()
+        if not f.rom
+        for s, t in f.calls
+        if t in funcs and RECEIVER_HELPER_RE.match(funcs[t].dname)
+    }
+    return sorted(sites)
 
 
 def analyse_elf(elf: str, cfg: dict) -> "tuple[Model, dict]":
     tools = {n: find_tool(n) for n in ("nm", "objdump", "objcopy", "addr2line", "c++filt")}
     funcs, nm_text = load_image(elf, cfg, tools)
-    entry = [a for a, f in funcs.items() if f.name == cfg["entry"]]
-    if not entry:
-        raise ValueError(f"entry {cfg['entry']} not in the image")
-    # The task starts in vPortTaskWrapper, which calls pollTask through a register.
-    wrapper = [a for a, f in funcs.items() if f.name == cfg["task_wrapper"]]
-    root = entry[0]
-    if wrapper:
-        root = wrapper[0]
-        funcs[root].calls = [(root, entry[0])]
-        funcs[root].indirect = []
-    sites = {s for f in funcs.values() if not f.rom for s, _ in f.indirect}
-    sites |= {s for f in funcs.values() if not f.rom for s, t in f.calls
-              if t in funcs and RECEIVER_HELPER_RE.match(funcs[t].dname)}
-    sites = sorted(sites)
-    inlines = addr2line(elf, tools["addr2line"], sites)
+    root = task_root(funcs, cfg)
+    inlines = addr2line(elf, tools["addr2line"], inline_sites(funcs))
     vslots = vtable_slots(nm_text, elf_reader(elf), funcs)
     model = Model(funcs, cfg, inlines, vslots, Sources())
     model.lambda_names = handler_lambda_names(elf, tools, funcs, model.sources)
@@ -1217,34 +1280,40 @@ def describe(model: Model, chain: list, site_locs: dict) -> list:
     return rows
 
 
+STALE_CHECKS = (  # config section, the hit key of a row, what an unused row means
+    ("indirect", lambda r: "indirect|" + r["in"] + "|" + r.get("at", ""), "indirect rule (no call site on tg_poll)"),
+    ("recursion", lambda r: "recursion|" + r["function"], "recursion row (no cycle on tg_poll)"),
+    ("impossible_cycles", lambda r: "impossible|" + r["caller"] + "|" + r["callee"], "impossible-cycle row"),
+    ("hierarchies", lambda r: "hierarchy|" + r["names"][0], "hierarchy row (no virtual call site names it)"),
+    ("not_on_tg_poll", lambda r: "elsewhere|" + r["function"], "not-on-tg_poll row (never an indirect target)"),
+    ("impossible_calls", lambda r: "impossible-call|" + r["caller"] + "|" + r["callee"], "impossible-call row"),
+    ("terminal", lambda r: "terminal|" + r["function"], "terminal row (not reachable on tg_poll)"),
+    ("dynamic_frames", lambda r: "dynamic|" + r["function"], "dynamic-frame row (no such function on tg_poll)"),
+)
+
+
 def stale_rows(model: Model) -> list:
-    cfg = model.cfg
+    """Config rows this image never used."""
     out = []
-    for r in cfg["indirect"]:
-        if not model.hits.get("indirect|" + r["in"] + "|" + r.get("at", "")):
-            out.append(f"stale indirect rule (no call site on tg_poll): in={r['in']!r}")
-    for r in cfg.get("recursion", []):
-        if not model.hits.get("recursion|" + r["function"]):
-            out.append(f"stale recursion row (no cycle on tg_poll): {r['function']!r}")
-    for r in cfg.get("impossible_cycles", []):
-        if not model.hits.get("impossible|" + r["caller"] + "|" + r["callee"]):
-            out.append(f"stale impossible-cycle row: {r['caller']!r} -> {r['callee']!r}")
-    for r in cfg.get("hierarchies", []):
-        if not model.hits.get("hierarchy|" + r["names"][0]):
-            out.append(f"stale hierarchy row (no virtual call site names it): {r['names'][0]!r}")
-    for r in cfg.get("not_on_tg_poll", []):
-        if not model.hits.get("elsewhere|" + r["function"]):
-            out.append(f"stale not-on-tg_poll row (never an indirect target here): {r['function']!r}")
-    for r in cfg.get("impossible_calls", []):
-        if not model.hits.get("impossible-call|" + r["caller"] + "|" + r["callee"]):
-            out.append(f"stale impossible-call row: {r['caller']!r} -> {r['callee']!r}")
-    for r in cfg.get("terminal", []):
-        if not model.hits.get("terminal|" + r["function"]):
-            out.append(f"stale terminal row (not reachable on tg_poll): {r['function']!r}")
-    for r in cfg.get("dynamic_frames", []):
-        if not model.hits.get("dynamic|" + r["function"]):
-            out.append(f"stale dynamic-frame row (no such function on tg_poll): {r['function']!r}")
+    for section, key, what in STALE_CHECKS:
+        for r in model.cfg.get(section, []):
+            if not model.hits.get(key(r)):
+                shown = {k: v for k, v in r.items() if k not in ("why", "targets", "classes", "names")}
+                out.append(f"stale {what}: {shown or r.get('names', [''])[0]!r}")
     return out
+
+
+def named_paths(model: Model) -> list:
+    """[(name, (worst total, function))]: the whole task, then each configured path."""
+    paths = [("worst case (any path)", model.through([model.root]))]
+    for row in model.cfg["paths"]:
+        addrs = [a for pat in row["through"] for a in model.match(pat)]
+        hit = model.through(addrs) if addrs else None
+        if hit is None:
+            model.errors.append(f"path '{row['name']}': nothing matching {row['through']} is reachable")
+        else:
+            paths.append((row["name"], hit))
+    return paths
 
 
 def verdict(model: Model) -> dict:
@@ -1252,31 +1321,37 @@ def verdict(model: Model) -> dict:
     stack = cfg["stack_bytes"]
     fixed = sum(v for k, v in cfg["fixed_overhead"].items() if not k.startswith("_"))
     floor = cfg["min_free_bytes"]
-    paths = [("worst case (any path)", model.through([model.root]))]
-    for row in cfg["paths"]:
-        addrs = []
-        for pat in row["through"]:
-            addrs.extend(model.match(pat))
-        hit = model.through(addrs) if addrs else None
-        if hit is None:
-            model.errors.append(f"path '{row['name']}': nothing matching {row['through']} is reachable")
-            continue
-        paths.append((row["name"], hit))
+    paths = named_paths(model)
     chains = {name: model.chain_up(fn)[:-1] + model.chain_down(fn) for name, (_t, fn) in paths}
     sites = sorted({s for ch in chains.values() for _, s in ch if s is not None})
     locs = addr2line(model.elf, model.tools["addr2line"], sites)
     rows = []
     for name, (total, _fn) in paths:
         used = total + fixed
-        rows.append({"name": name, "used": used, "free": stack - used, "ok": stack - used >= floor,
-                     "chain": describe(model, chains[name], locs)})
-    errors = list(model.errors) + stale_rows(model)
+        rows.append(
+            {
+                "name": name,
+                "used": used,
+                "free": stack - used,
+                "ok": stack - used >= floor,
+                "chain": describe(model, chains[name], locs),
+            }
+        )
+    errors = list(model.errors)
     return {
-        "stack": stack, "fixed": fixed, "floor": floor, "rows": rows,
-        "reach": len(model.reach), "edges": sum(len(v) for v in model.edges.values()),
+        "stack": stack,
+        "fixed": fixed,
+        "floor": floor,
+        "rows": rows,
+        "reach": len(model.reach),
+        "edges": sum(len(v) for v in model.edges.values()),
         "unresolved": sum(len(v) for v in model.unresolved.values()),
-        "how": dict(model.how), "cut": len(model.back), "dropped": model.dropped,
-        "errors": errors, "ok": all(r["ok"] for r in rows) and not errors,
+        "how": dict(model.how),
+        "cut": len(model.back),
+        "dropped": model.dropped,
+        "errors": errors,
+        "stale": stale_rows(model),
+        "ok": all(r["ok"] for r in rows) and not errors,
     }
 
 
@@ -1296,8 +1371,13 @@ def render(v: dict, elf: str, chain_rows: int = 60) -> str:
     for r in v["rows"]:
         lines.append(f"| {r['name']} | {r['used']} | {r['free']} | {'ok' if r['ok'] else 'UNDER FLOOR'} |")
     for r in v["rows"]:
-        lines += ["", f"### {r['name']}: {r['used']} B used, {r['free']} B free", "",
-                  "| frame B | running B | function | called at |", "|---:|---:|---|---|"]
+        lines += [
+            "",
+            f"### {r['name']}: {r['used']} B used, {r['free']} B free",
+            "",
+            "| frame B | running B | function | called at |",
+            "|---:|---:|---|---|",
+        ]
         for b, tot, name, loc in r["chain"][:chain_rows]:
             lines.append(f"| {b} | {tot} | `{name[:150]}` | {loc} |")
         if len(r["chain"]) > chain_rows:
@@ -1305,6 +1385,9 @@ def render(v: dict, elf: str, chain_rows: int = 60) -> str:
     if v["errors"]:
         lines += ["", "Analysis errors (the gate fails on each):"]
         lines += ["- " + e for e in v["errors"]]
+    if v["stale"]:
+        lines += ["", "Config rows this image does not use (another image may; prune a row no image uses):"]
+        lines += ["- " + e for e in v["stale"]]
     return "\n".join(lines)
 
 
@@ -1319,8 +1402,10 @@ def check(elf: str, cfg: dict, report: "str | None" = None, quiet: bool = False)
         print(text)
         print()
     for r in v["rows"]:
-        print(("PASS " if r["ok"] else "FAIL ") + f"tg_poll {r['name']}: {r['used']} B used, {r['free']} B free "
-              f"(floor {v['floor']} B)")
+        print(
+            ("PASS " if r["ok"] else "FAIL ") + f"tg_poll {r['name']}: {r['used']} B used, {r['free']} B free "
+            f"(floor {v['floor']} B)"
+        )
     if v["errors"]:
         print(f"FAIL tg_poll stack analysis: {len(v['errors'])} error(s) listed above")
     return v["ok"]

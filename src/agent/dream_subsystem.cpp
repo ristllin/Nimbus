@@ -321,13 +321,18 @@ void pumpDrill() {
   memcpy(chat, g_drillChat, sizeof chat);
   portEXIT_CRITICAL(&g_drillMux);
   if (!pending) return;
-  const orch::LoopRecord rec = reservedLoopRecord();
-  orch::LoopFireRequest req;
+  // The record, request and outcome live on the heap (lane STACK): the night runs as a
+  // turn below this frame on the Telegram poll task. 432 B of locals otherwise.
+  const std::unique_ptr<const orch::LoopRecord> record(new orch::LoopRecord(reservedLoopRecord()));
+  const orch::LoopRecord& rec = *record;
+  const std::unique_ptr<orch::LoopFireRequest> fireReq(new orch::LoopFireRequest());
+  orch::LoopFireRequest& req = *fireReq;
   req.id = rec.id;
   req.name = rec.name;
   req.prompt = rec.prompt;
   req.chatId = chat;
-  const orch::FireOutcome o = fire(req, /*force=*/true);
+  const std::unique_ptr<const orch::FireOutcome> fired(new orch::FireOutcome(fire(req, /*force=*/true)));
+  const orch::FireOutcome& o = *fired;
   alogf("DREAM fired ok=%d detail=%s", o.ok ? 1 : 0, o.detail.c_str());
 }
 

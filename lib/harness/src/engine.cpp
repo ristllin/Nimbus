@@ -1327,7 +1327,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // Lane CTX: the ledger shown is a source. Its words ride the composed prompt
     // (lastInstructions_, set at compose below), so the quote rule sees them too.
     const std::string ledgerBlock = loadFoodLedger(chatId);
-    TurnSources sources = claimSources(chatId, userText, ci);
+    // On the heap with the turn's other large locals (lane STACK): 176 B.
+    const std::unique_ptr<TurnSources> claimed(new TurnSources(claimSources(chatId, userText, ci)));
+    TurnSources& sources = *claimed;
     if (ledger_.targets.kcal > 0) sources.targets += std::to_string((long)ledger_.targets.kcal) + " ";
     if (ledger_.targets.protein > 0) sources.targets += std::to_string((long)ledger_.targets.protein);
     claims_.setSources(inputs + ledgerBlock, rec, sources);
@@ -2306,7 +2308,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // Introspection snapshot - success AND failure, so /api/lastturn always shows
   // what the model actually received on the most recent attempt.
   if (d_.hooks.onTurnDebug) {
-    TurnDebugEv ev;
+    const std::unique_ptr<TurnDebugEv> debugEv(new TurnDebugEv());   // 128 B, off the stack (lane STACK)
+    TurnDebugEv& ev = *debugEv;
     ev.host = host;
     ev.convContinued = convContinued;
     ev.instructions = &lastInstructions_;   // the labelled form (layout::display)

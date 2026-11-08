@@ -24,6 +24,7 @@
 #include "net/wifi_portal.h"      // net::staConnected
 #include "prefs_subsystem.h"     // prefs::activeRuleTexts - the standing gate (lane POL2)
 #include "nimbus/orch/owner_prefs.h"   // standingBlocksFire - a rule binds a routine (lane POL2)
+#include <memory>   // unique_ptr: the fire outcome off the poll task stack (lane STACK)
 
 namespace agent {
 namespace loops {
@@ -424,7 +425,9 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
   const std::vector<std::string> standingRules = prefs::activeRuleTexts();
 
   // --- SELECT + advance + persist, all under the lock (fast); release before firing.
-  LoopFireRequest req;
+  // The request lives on the heap (lane STACK): the routine's turn runs below this frame.
+  const std::unique_ptr<LoopFireRequest> fireReq(new LoopFireRequest());
+  LoopFireRequest& req = *fireReq;
   bool haveFire = false;
   uint64_t prevLastRun = 0;   // restored if the fire turns out to be a memory defer
   {
@@ -535,7 +538,10 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
 
   const std::string id = req.id;
   s_firing = true;    // tg_poll only: read by the turn-completion wiring (firing())
-  FireOutcome o = g_fire ? g_fire(req) : FireOutcome{};
+  // The outcome lives on the heap (lane STACK): the routine's turn runs below this
+  // frame on the Telegram poll task. Built in place from the fire hook's result.
+  const std::unique_ptr<FireOutcome> fired(new FireOutcome(g_fire ? g_fire(req) : FireOutcome{}));
+  FireOutcome& o = *fired;
   s_firing = false;
 
   // Re-acquire: the turn (and any concurrent MCP/web mutation) may have changed
