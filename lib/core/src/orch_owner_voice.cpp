@@ -65,21 +65,36 @@ bool commonWord(const std::string& w) {
   return false;
 }
 
-// The topic words of a lowercase text: 4+ letters, not common.
+// A word character, or an apostrophe inside a word ("didn't").
+bool tokenChar(char c) { return words::isWordChar(c) || c == '\''; }
+
+// The token of `lower` that starts at or after `i` (advanced past it), apostrophes at its
+// ends trimmed; "" at the end of the text.
+std::string nextToken(const std::string& lower, size_t& i) {
+  while (i < lower.size() && !tokenChar(lower[i])) i++;
+  const size_t b = i;
+  while (i < lower.size() && tokenChar(lower[i])) i++;
+  std::string w = lower.substr(b, i - b);
+  while (!w.empty() && w.back() == '\'') w.pop_back();
+  while (!w.empty() && w.front() == '\'') w.erase(0, 1);
+  return w;
+}
+
+// A topic word: 4+ bytes, at least one letter, not a common word.
+bool topicWord(const std::string& w) {
+  if (w.size() < 4 || commonWord(w)) return false;
+  for (char c : w)
+    if (c >= 'a' && c <= 'z') return true;
+  return false;
+}
+
+// The topic words of a lowercase text.
 std::vector<std::string> topicWords(const std::string& lower) {
   std::vector<std::string> out;
   size_t i = 0;
   while (i < lower.size()) {
-    while (i < lower.size() && !words::isWordChar(lower[i]) && lower[i] != '\'') i++;
-    const size_t b = i;
-    while (i < lower.size() && (words::isWordChar(lower[i]) || lower[i] == '\'')) i++;
-    std::string w = lower.substr(b, i - b);
-    while (!w.empty() && w.back() == '\'') w.pop_back();
-    while (!w.empty() && w.front() == '\'') w.erase(0, 1);
-    if (w.size() < 4 || commonWord(w)) continue;
-    bool letters = false;
-    for (char c : w) letters = letters || (c >= 'a' && c <= 'z');
-    if (letters) out.push_back(w);
+    std::string w = nextToken(lower, i);
+    if (topicWord(w)) out.push_back(std::move(w));
   }
   return out;
 }
