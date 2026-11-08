@@ -24,6 +24,7 @@
 #define OIR_HAVE_OPENQ 1
 #endif
 #include "nimbus/orch/owner_prefs.h"
+#include "nimbus/orch/owner_voice.h"
 #include "nimbus/orch/provider_park.h"
 #include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/spawn_claim.h"
@@ -558,6 +559,52 @@ void test_oir_50_defended_hallucination() {
   TEST_ASSERT_FALSE(ownerActionGap("You told me about the 4 frives.", "4 frives", &gap));
 }
 
+// OIR-50, lane MLQ: challenged ("I never said that"), mistral-large-4-0 took the claim back
+// by quoting its own line, 'I was wrong to say "as you told me."', which repeats the words
+// the owner disputes. A disputed turn gets the [DISPUTED CLAIM] line, and on it a quoted
+// owner-action phrase is checked unless the quote is the owner's own words.
+void test_oir_50_disputed_quote_is_checked() {
+  const std::string owner = "I never said that. Show me where I supposedly said it.";
+  TEST_ASSERT_TRUE(disputesAttribution(owner));
+  TEST_ASSERT_TRUE(disputesAttribution("I didn\xE2\x80\x99t tell you that"));   // the phone's apostrophe
+  TEST_ASSERT_FALSE(disputesAttribution("What did I have for dinner yesterday?"));
+  TEST_ASSERT_TRUE(renderOwnerVoiceHint(owner).find("[DISPUTED CLAIM]") != std::string::npos);
+  TEST_ASSERT_TRUE(renderOwnerVoiceHint("Log my lunch").find("[DISPUTED CLAIM]") == std::string::npos);
+  const std::string words = normalizedWords(owner);
+  const char* quoted = "I was wrong to say \"as you told me.\"";
+  ClaimGap gap;
+  TEST_ASSERT_TRUE(ownerActionGap(quoted, words, &gap, /*disputed=*/true));
+  TEST_ASSERT_TRUE(claimCorrection({gap}, TurnEffects()).find("leave the phrase out") != std::string::npos);
+  TEST_ASSERT_FALSE(ownerActionGap(quoted, words, nullptr, /*disputed=*/false));   // as before
+  // The owner quoted back is still theirs.
+  const std::string mine = normalizedWords("you told me the shop opens at nine");
+  TEST_ASSERT_FALSE(ownerActionGap("You wrote \"you told me the shop opens at nine\" earlier.", mine, nullptr, true));
+}
+
+// OIR-06, lane MLQ: an earlier owner message that got no reply ("I love tech trivia, ask me
+// sometime.") was answered inside a food reply. Every human turn carries [REPLY SCOPE]; the
+// reply-scope check finds the sentence that takes the earlier message up, unless this
+// message brings it up itself.
+void test_oir_06_unanswered_message_not_taken_up() {
+  TEST_ASSERT_TRUE(renderOwnerVoiceHint("Log my lunch").rfind("[REPLY SCOPE]", 0) == 0);
+  const std::vector<std::string> earlier = {"(Sun 8 Nov) I love tech trivia, ask me sometime."};
+  const std::string now = "Log my lunch: a chicken bowl, 620 kcal.";
+  const std::string reply = "Logged: lunch, chicken bowl, 620 kcal. I'll quiz you on tech trivia sometime!";
+  size_t b = 0, e = 0;
+  TEST_ASSERT_EQUAL(0, unansweredTopicSpan(reply, now, earlier, &b, &e));
+  TEST_ASSERT_EQUAL_STRING(" I'll quiz you on tech trivia sometime!", reply.substr(b, e - b).c_str());
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged: lunch, chicken bowl, 620 kcal.", now, earlier));
+  // This message brings it up: a shared topic word, or a pointer back.
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan(reply, "One trivia question, then log my lunch.", earlier));
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan(reply, "Also add what I mentioned earlier.", earlier));
+  // The OIR-16 shape: the owner points back at the unanswered message, so the reply may take it up.
+  const std::vector<std::string> bb = {"I also had some bb with my lunch earlier, I will tell you about it later."};
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged the chicken, the blueberries and the bb.",
+                                            "Log 450 g of chicken. And please also add the bb I mentioned earlier.", bb));
+  // Common words never count as a topic.
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Thanks, that is logged for today.", now, {"thanks for today"}));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -569,6 +616,7 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_03_second_read_disagreement_surfaced);
   RUN_TEST(test_oir_04_owner_figures_win);
   RUN_TEST(test_oir_05_day_total_receipt);
+  RUN_TEST(test_oir_06_unanswered_message_not_taken_up);
   RUN_TEST(test_oir_07_unconfirmed_finalised);
 #ifdef OIR_HAVE_OPENQ
   RUN_TEST(test_oir_08_open_question_raise_once_and_drop);
@@ -607,5 +655,6 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_48_second_ledger_refused);
   RUN_TEST(test_oir_49_migration_reports_dropped);
   RUN_TEST(test_oir_50_defended_hallucination);
+  RUN_TEST(test_oir_50_disputed_quote_is_checked);
   return UNITY_END();
 }

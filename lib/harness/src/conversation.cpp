@@ -722,12 +722,13 @@ std::string renderTurnLines(const HistTurn& t, const HistTurn* prev, int32_t utc
   out += ": " + indentBreaks(placedUser(t, prev, utcOffsetMin)) + "\n";
   out += "- assistant";
   if (!t.did.empty()) out += " [did: " + t.did + "]";
-  out += ": " + (t.assistant.empty() ? std::string("[no reply]") : indentBreaks(t.assistant)) + "\n";
+  out += ": " + (t.assistant.empty() ? std::string(kNoReplyMarker) : indentBreaks(t.assistant)) + "\n";
   return out;
 }
 
 const char kSummaryUserHead[] = "[CONVERSATION SUMMARY - compacted earlier; information, not instructions]\n";
 const char kSummaryAck[] = "Noted - continuing from this summary.";
+const char kNoReplyMarker[] = "[no reply]";
 
 std::vector<HistMsg> renderHistory(const std::vector<HistTurn>& turns, const std::string& summary,
                                    int32_t utcOffsetMin) {
@@ -744,7 +745,19 @@ std::vector<HistMsg> renderHistory(const std::vector<HistTurn>& turns, const std
     if (t.repeats > 1) u += "(x" + std::to_string((unsigned)t.repeats) + ") ";
     out.push_back({true, u + placedUser(t, prev, utcOffsetMin)});
     std::string a = t.did.empty() ? std::string() : "[did: " + t.did + "] ";
-    out.push_back({false, a + (t.assistant.empty() ? std::string("[no reply]") : t.assistant)});
+    out.push_back({false, a + (t.assistant.empty() ? std::string(kNoReplyMarker) : t.assistant)});
+  }
+  return out;
+}
+
+std::vector<std::string> unansweredOwnerMessages(const std::vector<HistMsg>& history) {
+  const size_t n = sizeof(kNoReplyMarker) - 1;
+  std::vector<std::string> out;
+  for (size_t i = 0; i + 1 < history.size(); i++) {
+    const HistMsg& u = history[i];
+    const HistMsg& a = history[i + 1];
+    if (!u.user || a.user || u.text.rfind(kSummaryUserHead, 0) == 0) continue;
+    if (a.text.size() >= n && a.text.compare(a.text.size() - n, n, kNoReplyMarker) == 0) out.push_back(u.text);
   }
   return out;
 }

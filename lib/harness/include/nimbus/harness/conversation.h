@@ -203,6 +203,11 @@ extern const char kSummaryUserHead[];   // "[CONVERSATION SUMMARY - compacted ea
 extern const char kSummaryAck[];        // "Noted - continuing from this summary."
 std::vector<HistMsg> renderHistory(const std::vector<HistTurn>& turns, const std::string& summary,
                                    int32_t utcOffsetMin);
+// The marker an unanswered turn's assistant message carries (after any "[did: ...]" tag).
+extern const char kNoReplyMarker[];   // "[no reply]"
+// Lane MLQ (OIR-06): the owner messages of a rendered history that got no reply (their
+// assistant message ends with kNoReplyMarker), oldest first. The summary pair is never one.
+std::vector<std::string> unansweredOwnerMessages(const std::vector<HistMsg>& history);
 
 // Budgets of the verbatim history: past high water (bytes or rows) the oldest
 // whole turns drop until the rest fits low water. The newest kHistoryKeepTurns

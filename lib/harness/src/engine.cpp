@@ -1068,22 +1068,6 @@ struct TurnEngine::ApplyCapture {
   ApplyCapture& operator=(const ApplyCapture&) = delete;
 };
 
-// Lane MLQ (OIR-06): the owner messages of the rendered history that got no reply (their
-// assistant message is the "[no reply]" marker, after any "[did: ...]" tag), oldest first.
-// The summary pair is never one.
-static std::vector<std::string> unansweredOwnerMessages(const std::vector<HistMsg>& history) {
-  static const char kNoReply[] = "[no reply]";
-  const size_t n = sizeof(kNoReply) - 1;
-  std::vector<std::string> out;
-  for (size_t i = 0; i + 1 < history.size(); i++) {
-    const HistMsg& u = history[i];
-    const HistMsg& a = history[i + 1];
-    if (!u.user || a.user || u.text.rfind(kSummaryUserHead, 0) == 0) continue;
-    if (a.text.size() >= n && a.text.compare(a.text.size() - n, n, kNoReply) == 0) out.push_back(u.text);
-  }
-  return out;
-}
-
 // CUM-824: the parts of this turn's input the claim check reads, as the engine took them
 // (never re-parsed from the composed text, where a sub-agent's reply could pose as a block).
 // The owner's own history rows count as sources (a follow-up about the previous message's

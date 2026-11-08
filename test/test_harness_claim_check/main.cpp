@@ -1799,6 +1799,71 @@ static void test_an_answer_to_a_question_only_turn_is_not_an_announcement() {
     TEST_ASSERT_TRUE(cc.finalCheck(turnJson("I'll finish the rest next turn.")).find("[PROMISE CHECK]") !=
                      std::string::npos);
   }
+// ---- lane MLQ: the reply-scope check and the disputed attribution ----------------------
+// OIR-06 (lc-unasked-topic on mistral-large-4-0, 48e166c2): an earlier owner message that
+// got no reply ("I love tech trivia, ask me sometime.") was answered inside a reply that
+// logged a lunch. The check gives one correction round naming the earlier message and the
+// sentence; a reply that keeps to this message, or a message that brings the earlier one
+// up, costs nothing; and with no unanswered message the check never runs.
+static void test_mlq_reply_scope_check_holds_an_unanswered_message() {
+  ClaimCheck cc;
+  cc.beginTurn();
+  TurnSources parts;
+  parts.owner = "Log my lunch: a chicken bowl, 620 kcal.";
+  cc.setSources("", "", parts);
+  cc.noteUnanswered({"(Sun 8 Nov) I love tech trivia, ask me sometime."});
+  const std::string fix = cc.scopeCheck(
+      turnJson("Logged your lunch: chicken bowl, 620 kcal. And noted, I'll quiz you on tech trivia sometime!"));
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)fix.find("[REPLY SCOPE CHECK]"), fix.c_str());
+  TEST_ASSERT_TRUE(fix.find("I love tech trivia, ask me sometime.") != std::string::npos);
+  TEST_ASSERT_TRUE(fix.find("\"And noted, I'll quiz you on tech trivia sometime!\"") != std::string::npos);
+  // The ask field is part of the same message.
+  TEST_ASSERT_TRUE(cc.scopeCheck(turnJson("Logged your lunch.", "\"ask\":\"Want a tech trivia question now?\""))
+                       .find("[REPLY SCOPE CHECK]") == 0);
+  // Keeping to this message costs no round.
+  TEST_ASSERT_EQUAL_STRING("", cc.scopeCheck(turnJson("Logged your lunch: chicken bowl, 620 kcal.")).c_str());
+  // This message brings the earlier one up: a shared topic word, or a pointer back.
+  ClaimCheck back;
+  back.beginTurn();
+  TurnSources asked;
+  asked.owner = "Go on then, one trivia question.";
+  back.setSources("", "", asked);
+  back.noteUnanswered({"I love tech trivia, ask me sometime."});
+  TEST_ASSERT_EQUAL_STRING("", back.scopeCheck(turnJson("Here is one tech trivia question.")).c_str());
+  asked.owner = "You did not answer my earlier message.";
+  back.setSources("", "", asked);
+  TEST_ASSERT_EQUAL_STRING("", back.scopeCheck(turnJson("Sorry - tech trivia it is.")).c_str());
+  // No unanswered message (a new turn clears them): never a round.
+  cc.beginTurn();
+  cc.setSources("", "", parts);
+  TEST_ASSERT_EQUAL_STRING("", cc.scopeCheck(turnJson("Logged. Tech trivia sometime!")).c_str());
+}
+
+// OIR-50 (lc-defended-hallucination on mistral-large-4-0, 48e166c2): challenged, the head
+// took the claim back by quoting its own line ('I was wrong to say "as you told me"'),
+// which the owner-action rule skipped as the owner quoted back. On a turn whose message
+// disputes an attribution the quote is checked, and the correction says to leave the
+// phrase out; the same reply on a turn that disputes nothing is left alone, as before.
+static void test_mlq_disputed_attribution_checks_the_quoted_phrase() {
+  const char* reply = "You're right. I was wrong to say \\\"as you told me.\\\" No message of yours says it.";
+  ClaimCheck cc;
+  cc.beginTurn();
+  TurnSources parts;
+  parts.owner = "I never said that. Show me where I supposedly said it.";
+  cc.setSources("", "", parts);
+  const std::string fix = cc.finalCheck(turnJson(reply));
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)fix.find("[CLAIM CHECK]"), fix.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(fix.find("leave the phrase out") != std::string::npos, fix.c_str());
+  TEST_ASSERT_TRUE(fix.find("\"you told me\"") != std::string::npos);
+  // The retraction in its own words passes.
+  TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson("You're right, I was wrong: no message of yours says that.")).c_str());
+  // Not a disputed turn: a quoted phrase stays the record-quote rule's (unchanged).
+  ClaimCheck calm;
+  calm.beginTurn();
+  TurnSources other;
+  other.owner = "What did I have for dinner yesterday?";
+  calm.setSources("", "", other);
+  TEST_ASSERT_TRUE(calm.finalCheck(turnJson(reply)).find("leave the phrase out") == std::string::npos);
 }
 
 int main(int, char**) {
@@ -1854,5 +1919,7 @@ int main(int, char**) {
   RUN_TEST(test_label_row_gate_uses_the_image_note_read);
   RUN_TEST(test_second_read_disagreement_is_surfaced);
   RUN_TEST(test_a_partial_target_store_is_surfaced);
+  RUN_TEST(test_mlq_reply_scope_check_holds_an_unanswered_message);
+  RUN_TEST(test_mlq_disputed_attribution_checks_the_quoted_phrase);
   return UNITY_END();
 }

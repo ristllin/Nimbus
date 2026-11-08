@@ -45,6 +45,11 @@ struct Rig {
   bool speakOk = true;   // what the speak sink answers (QW6: a tts that was not spoken leaves no tts row)
   std::string reply = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
   std::vector<std::string> instructions;   // what each provider call received
+  std::vector<std::string> inputs;         // each provider call's per-turn input (lane MLQ)
+  // Lane MLQ: with the tool loop on, what the turn's final-answer check says about this
+  // answer (empty = not asked).
+  std::string finalProbe;
+  std::vector<std::string> finalChecks;
   std::vector<std::pair<std::string, std::string>> legacyCaptures;   // episodicCaptureUser
   std::string turnTag;                     // the in-flight turn's id (rows' turn: tag)
   HistoryMarks marks;
@@ -118,9 +123,12 @@ struct Rig {
     d.apply.captureAssistant = [this](const std::string& c, const std::string& t) {
       add(c, "assistant", MsgKind::Message, t, eng->assistantRowTags() + ",turn:" + turnTag);
     };
-    d.hosts.add("anthropic", [this](std::string&, const std::string& ins, const std::string&, std::string& out,
-                                    std::string&, const agent::HeadTools*, TokenUsage*) {
+    d.hosts.add("anthropic", [this](std::string&, const std::string& ins, const std::string& in, std::string& out,
+                                    std::string&, const agent::HeadTools* tools, TokenUsage*) {
       instructions.push_back(ins);
+      inputs.push_back(in);
+      if (tools && tools->cfg.validateFinal && !finalProbe.empty())
+        finalChecks.push_back(tools->cfg.validateFinal(finalProbe));
       out = reply;
       return true;
     });
@@ -864,6 +872,62 @@ static void test_engine_stamps_the_second_a_row_was_stored() {
   TEST_ASSERT_TRUE(off.legacyCaptures[0].second.find("at:") == std::string::npos);
 }
 
+// Lane MLQ (OIR-06): an owner message that got no reply renders with the "[no reply]"
+// marker, and unansweredOwnerMessages finds exactly those (an answered one, the summary
+// pair and the in-flight message never). The engine hands them to the reply-scope check of
+// a human turn: a final answer that takes the earlier message up draws the correction, and
+// the same answer after an answered message, or on a message that brings it up, does not.
+static void test_mlq_unanswered_owner_message_reaches_the_scope_check() {
+  using agent::HistMsg;
+  const std::vector<HistMsg> h = {{true, std::string(agent::kSummaryUserHead) + "older"},
+                                  {false, agent::kSummaryAck},
+                                  {true, "(Sun 8 Nov) I love tech trivia, ask me sometime."},
+                                  {false, "[no reply]"},
+                                  {true, "what is 2+2"},
+                                  {false, "4"},
+                                  {true, "save it"},
+                                  {false, "[did: nothing] [no reply]"}};
+  const std::vector<std::string> un = agent::unansweredOwnerMessages(h);
+  TEST_ASSERT_EQUAL(2, (int)un.size());
+  TEST_ASSERT_EQUAL_STRING("(Sun 8 Nov) I love tech trivia, ask me sometime.", un[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("save it", un[1].c_str());
+
+  const std::string probe = "{\"reply\":\"Logged your lunch. I'll quiz you on tech trivia sometime!\"}";
+  {
+    Rig r;
+    r.cfg.toolLoop = true;
+    r.finalProbe = probe;
+    r.add("123", "user", MsgKind::Message, "I love tech trivia, ask me sometime.", "from:Roy");
+    r.eng->handleMessage("Log my lunch: a chicken bowl, 620 kcal.", "Roy", "123");
+    TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
+    TEST_ASSERT_TRUE_MESSAGE(r.finalChecks[0].find("[REPLY SCOPE CHECK]") != std::string::npos, r.finalChecks[0].c_str());
+    // The per-turn lines ride the turn input, right before [USER].
+    const std::string& in = r.inputs.back();
+    TEST_ASSERT_TRUE(in.find("[REPLY SCOPE]") != std::string::npos);
+    TEST_ASSERT_TRUE(in.find("[REPLY SCOPE]") < in.find("[USER]\nLog my lunch"));
+    TEST_ASSERT_TRUE(in.find("[DISPUTED CLAIM]") == std::string::npos);
+  }
+  {
+    Rig r;   // the earlier message was answered: no round
+    r.cfg.toolLoop = true;
+    r.finalProbe = probe;
+    r.add("123", "user", MsgKind::Message, "I love tech trivia, ask me sometime.", "from:Roy");
+    r.add("123", "assistant", MsgKind::Message, "Noted.", "");
+    r.eng->handleMessage("Log my lunch: a chicken bowl, 620 kcal.", "Roy", "123");
+    TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
+    TEST_ASSERT_TRUE(r.finalChecks[0].find("[REPLY SCOPE CHECK]") == std::string::npos);
+  }
+  {
+    Rig r;   // this message brings the earlier one up: no round
+    r.cfg.toolLoop = true;
+    r.finalProbe = probe;
+    r.add("123", "user", MsgKind::Message, "I love tech trivia, ask me sometime.", "from:Roy");
+    r.eng->handleMessage("Log my lunch, then one trivia question.", "Roy", "123");
+    TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
+    TEST_ASSERT_TRUE(r.finalChecks[0].find("[REPLY SCOPE CHECK]") == std::string::npos);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_identical_messages_either_side_of_local_midnight_are_two_messages);
@@ -889,6 +953,7 @@ int main(int, char**) {
   RUN_TEST(test_switch_off_is_byte_identical);
   RUN_TEST(test_overflow_shift_is_recorded_and_stable);
   RUN_TEST(test_fold_slice_starts_after_the_anchor);
+  RUN_TEST(test_mlq_unanswered_owner_message_reaches_the_scope_check);
   UNITY_END();
   return 0;
 }

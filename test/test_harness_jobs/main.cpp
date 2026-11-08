@@ -1356,6 +1356,26 @@ static void test_cum822_web_results_carry_the_sources_and_no_stale_facts_line() 
   }
 }
 
+// Lane MLQ (OIR-38): a commute result that credits a delay to an aggregator site was relayed
+// as fact by mistral-large-4-0 5 of 5 times: "with only the sources they name" read as "pass
+// the source on". The facts line under the header says what such a fact becomes (labeled
+// unverified, naming the primary source to check), on every fresh block.
+static void test_mlq_fresh_block_labels_a_secondary_source() {
+  Rig r;
+  r.adapter.toolRuns = 4;
+  r.adapter.webRuns = 2;
+  r.adapter.doneReply = "Commute: the 07:42 district line service is delayed, per grandcentralrail.com.";
+  runOneDoneJob(r, sp("The daily commute brief: disruptions this morning."));
+  const std::string block = r.eng->takeFreshResults();
+  const size_t facts = block.find(agent::kFreshFactsLine);
+  TEST_ASSERT_TRUE_MESSAGE(facts != std::string::npos, block.c_str());
+  const std::string line = block.substr(facts, block.find('\n', facts) - facts);
+  TEST_ASSERT_TRUE_MESSAGE(line.find("time-sensitive fact") != std::string::npos, line.c_str());
+  TEST_ASSERT_TRUE(line.find("is said to be unverified, naming the primary source to check") != std::string::npos);
+  TEST_ASSERT_TRUE(line.find("National Rail") != std::string::npos);
+  TEST_ASSERT_TRUE(facts < block.find("grandcentralrail.com"));   // the rule comes before the result
+}
+
 // Check of c962b5d0: a sub that ran only a web search (weather) for "the weather for my
 // calendar events" never called the calendar: its result opens with the NOT called marker
 // and counts as unverified, though a tool ran.
@@ -3141,6 +3161,7 @@ int main(int, char**) {
   RUN_TEST(test_unverified_connector_result_opens_with_marker);
   RUN_TEST(test_provenance_property_live_research_connector_by_tool_runs);
   RUN_TEST(test_cum822_web_results_carry_the_sources_and_no_stale_facts_line);
+  RUN_TEST(test_mlq_fresh_block_labels_a_secondary_source);
   RUN_TEST(test_connector_that_ran_or_was_not_asked_is_not_marked);
   RUN_TEST(test_ledger_and_fresh_results_name_the_tools_each_sub_ran);
   RUN_TEST(test_every_fresh_block_says_to_state_only_the_results_facts);
