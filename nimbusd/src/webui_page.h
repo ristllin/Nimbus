@@ -1876,9 +1876,37 @@ function _nvsBanner(n,r){let b=$('nvsBanner');
   b.style.display='block';
   b.textContent='Device storage is almost full, so some changes may not save. Remove connectors you don\'t use.'+
     (n.fails>0?(' '+n.fails+(n.fails==1?' change':' changes')+' did not save since the last restart.'):'');}
+// The degraded banner on Home (lane DEGRADE): one line per condition the device runs
+// degraded on, the same set its screen shows (/api/state degraded). The reason opens under
+// its line (a native details row: keyboard reachable, no script state). Calm on purpose: no
+// motion, no toast, no sound. A row is updated in place, so a reason the page is reading
+// stays open across the 3 s poll.
+function _degradedBanner(g){
+  let b=$('degradedBar');
+  const items=(g&&g.items)||[];
+  if(!b){if(!items.length)return;const tiles=$('devtiles');if(!tiles||!tiles.parentNode)return;
+    b=document.createElement('div');b.id='degradedBar';b.className='warnbox';b.setAttribute('role','status');
+    b.style.margin='8px 0';tiles.parentNode.insertBefore(b,tiles);}
+  const rows={};
+  [].slice.call(b.children).forEach(ch=>{rows[ch.getAttribute('data-dg')]=ch;});
+  const keep={};
+  items.forEach(it=>{
+    keep[it.id]=1;
+    let row=rows[it.id];
+    if(!row){row=document.createElement('details');row.setAttribute('data-dg',it.id);
+      const sm=document.createElement('summary');sm.style.cursor='pointer';
+      const p=document.createElement('p');p.style.margin='4px 0 4px 16px';p.style.opacity='.85';
+      row.appendChild(sm);row.appendChild(p);}
+    row.firstChild.textContent=it.line;row.lastChild.textContent=it.why;
+    b.appendChild(row);   // in the device's order (a moved row keeps its open state)
+  });
+  Object.keys(rows).forEach(id=>{if(!keep[id])b.removeChild(rows[id]);});
+  b.style.display=items.length?'block':'none';
+}
 function applyState(d){
   if(d.storeSD!==undefined){GB.sd=!!d.storeSD&&!d.sdLost;_chatTraceHint();}
   if(d.nvs)_nvsBanner(d.nvs,d.nvsReserve);
+  _degradedBanner(d.degraded);
   // CUM-15: reveal the full-card Format control only when the driver supports it.
   if($('sdFormatRow'))$('sdFormatRow').style.display=(d.files&&d.files.canFormat)?'block':'none';
   // CUM-187: hide the ring simulator on a board with no physical LED ring (the
