@@ -6,6 +6,14 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v4.9.1 - The assistant no longer freezes on a number with two dots
+
+A fix release for the stalls seen on v4.9.0, where the assistant stopped
+answering until the device was restarted by hand. It changes only this one
+thing from v4.9.0.
+
+- **A number with two dots or a lone "&" no longer stops the assistant.** The check that reads nutrition-label figures out of a reply, a food log or your own message got stuck on text such as "2400...", "protein 1.6.", "08.11.2026", "3.14.1" or "Fish & chips": it read the same character again and again and never moved on. The turn never ended, or, with a lone "&" in a reply or a message, the assistant ran out of memory, which could end the turn with an out-of-memory note or restart the device. A second dot now ends the number before it, and a lone "&" is read as a word of its own, so every one of these is read once and the turn goes on.
+
 ## v4.9.0 - Interim build ahead of v5.0.0
 
 An interim build that carries the launch fixes landed so far, ahead of the full

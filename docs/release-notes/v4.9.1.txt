@@ -1,0 +1,1 @@
+Fixes a bug where some messages or replies could stop the assistant answering
