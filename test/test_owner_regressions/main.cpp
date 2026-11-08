@@ -567,7 +567,10 @@ void test_oir_50_disputed_quote_is_checked() {
   const std::string owner = "I never said that. Show me where I supposedly said it.";
   TEST_ASSERT_TRUE(disputesAttribution(owner));
   TEST_ASSERT_TRUE(disputesAttribution("I didn\xE2\x80\x99t say that"));   // the phone's apostrophe
-  TEST_ASSERT_TRUE(disputesAttribution("Where did I tell you I ate a burger?"));
+  // Fix pass: the plain "Where did I tell you I ate a burger?" reads as a recall question
+  // too ("Where did I tell you I parked?"), so the dispute form is the "ever" one.
+  TEST_ASSERT_TRUE(disputesAttribution("Where did I ever tell you I ate a burger?"));
+  TEST_ASSERT_FALSE(disputesAttribution("Where did I tell you I parked?"));
   TEST_ASSERT_FALSE(disputesAttribution("What did I have for dinner yesterday?"));
   // Not disputes: news the owner had not shared, a request to be shown something.
   TEST_ASSERT_FALSE(disputesAttribution("I didn't tell you, but I got the job!"));
@@ -609,6 +612,99 @@ void test_oir_06_unanswered_message_not_taken_up() {
   TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Thanks, that is logged for today.", now, {"thanks for today"}));
 }
 
+// OIR-50, lane MLQ fix pass (review of 77473103): a dispute is a denial of something the
+// head said they said, never a recall question or someone else's words. Each case below
+// read as a dispute in the first version, which then told the head it was wrong and banned
+// "you mentioned" from a reply that could answer the question from the record.
+void test_oir_50_recall_questions_are_not_disputes() {
+  const char* const recall[] = {
+      "When did I tell you about my dentist appointment?",
+      "Where did I say the meeting was?",
+      "Where did I tell you my sister's name?",
+      "When did I tell you that I was moving?",
+      "My boss never said that, she said Friday.",
+      "I never sent you the invoice, can you remind me tomorrow?",
+      "Is that not what I said yesterday about the gym?",
+      "I never photographed the receipt, remind me tonight.",
+  };
+  for (const char* m : recall) TEST_ASSERT_FALSE_MESSAGE(disputesAttribution(m), m);
+  const char* const disputes[] = {
+      "I never said that. Show me where I supposedly said it.",
+      "Where did I say that?",
+      "When did I say that?!",
+      "where did i tell you that",
+      "When did I ever tell you I ate a burger?",
+      "I didn't say that",
+      "That's not what I said.",
+      "I never sent you that photo.",
+      "I never said I had fries.",
+  };
+  for (const char* m : disputes) TEST_ASSERT_TRUE_MESSAGE(disputesAttribution(m), m);
+}
+
+// OIR-50, lane MLQ fix pass: the owner-action correction named only the phrase it found, so
+// the rewrite swapped "you told me" for "something you said" and the claim check fired again;
+// the device's own tail then said "something you said" too. The correction names every
+// attribution phrase, and the tail passes the very check that appends it.
+void test_oir_50_owner_action_tail_keeps_its_own_rule() {
+  const std::string words = normalizedWords("I never said that. Show me where I supposedly said it.");
+  ClaimGap gap;
+  TEST_ASSERT_TRUE(ownerActionGap("I was wrong to present it as something you said, sorry about the burger.", words,
+                                  &gap, /*disputed=*/true));
+  const std::string fix = claimCorrection({gap}, TurnEffects());
+  for (const char* p : {"\"you told me\"", "\"you said\"", "\"you mentioned\"", "\"you photographed\""})
+    TEST_ASSERT_TRUE_MESSAGE(fix.find(p) != std::string::npos, fix.c_str());
+  const std::string tail = claimTailLine(gap);
+  TEST_ASSERT_FALSE_MESSAGE(ownerActionGap(tail, words, nullptr, /*disputed=*/true), tail.c_str());
+  for (const char* p : {"you said", "you told me", "you mentioned"})
+    TEST_ASSERT_TRUE_MESSAGE(tail.find(p) == std::string::npos, tail.c_str());
+}
+
+// OIR-06, lane MLQ fix pass: the check holds back a remark the owner made in passing; it
+// never holds back what they are owed. Each negative is a case the first version flagged
+// (generic word overlap with any unanswered message), each positive a reply that took the
+// remark up on a live leg.
+void test_oir_06_owed_answers_and_reported_facts_are_in_scope() {
+  // The per-turn line says so too: an earlier question shown with [no reply] is owed.
+  TEST_ASSERT_TRUE(renderOwnerVoiceHint("Log my lunch").find("[no reply] still gets its answer") != std::string::npos);
+  // An earlier question that got no reply is owed its answer, pinged or not.
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Yes, I am here. Your protein target is 150 g.", "Hello? Are you there?",
+                                            {"What is my protein target?"}));
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged the pasta. And your protein target? I'll check: 150 g.",
+                                            "Log my dinner: pasta 700 kcal", {"What is my protein target?"}));
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged the pasta. I'll set the reminder for the dentist too.",
+                                            "Log my dinner: pasta 700 kcal", {"Please remind me about the dentist at 5."}));
+  // A ping asks after the earlier message, whatever it was.
+  const std::vector<std::string> salad = {"I had a chicken salad for lunch."};
+  for (const char* ping : {"Hello?", "Are you there?", "Did you get my last message", "??", "Any update?"})
+    TEST_ASSERT_EQUAL_MESSAGE(-1, unansweredTopicSpan("Sorry, I'm here. I'll log the chicken salad now.", ping, salad),
+                              ping);
+  // A recap asks about a span that holds it.
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("You have had chicken salad and a latte so far, 870 kcal. I'll keep adding.",
+                                            "How many calories have I had today?", salad));
+  // A sentence that reports a fact does not take the remark up.
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("You have had chicken salad and a latte, 870 kcal.",
+                                            "What is my total now?", salad));
+  // A sentiment word is not a topic.
+  const std::vector<std::string> trivia = {"I love tech trivia, ask me sometime."};
+  const std::string dinner = "Log my dinner: pasta 700 kcal";
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged your dinner: pasta, 700 kcal. Love the choice!", dinner, trivia));
+  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged your dinner. Would you love a dessert idea?", dinner, trivia));
+  // The class still holds: a promise, an acknowledgement, an offer, a question, an aside.
+  const char* const taken[] = {
+      "Logged. I'll remember you love tech trivia.",
+      "Logged. Noted on tech trivia.",
+      "Logged. Want me to ask you a tech trivia question now?",
+      "Logged. Good tech trivia offer, I will take you up on that sometime!",
+      "Logged. And since you love tech trivia, here's one: what was the first computer virus called?",
+      "Logged. By the way, tech trivia sounds like fun.",
+  };
+  for (const char* r : taken) TEST_ASSERT_EQUAL_MESSAGE(0, unansweredTopicSpan(r, dinner, trivia), r);
+  // A request deferred to "sometime" is a remark too, even as a question.
+  TEST_ASSERT_EQUAL(0, unansweredTopicSpan("Logged. I'll quiz you on trivia sometime!", dinner,
+                                           {"Could you quiz me on trivia sometime?"}));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -621,6 +717,7 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_04_owner_figures_win);
   RUN_TEST(test_oir_05_day_total_receipt);
   RUN_TEST(test_oir_06_unanswered_message_not_taken_up);
+  RUN_TEST(test_oir_06_owed_answers_and_reported_facts_are_in_scope);
   RUN_TEST(test_oir_07_unconfirmed_finalised);
 #ifdef OIR_HAVE_OPENQ
   RUN_TEST(test_oir_08_open_question_raise_once_and_drop);
@@ -660,5 +757,7 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_49_migration_reports_dropped);
   RUN_TEST(test_oir_50_defended_hallucination);
   RUN_TEST(test_oir_50_disputed_quote_is_checked);
+  RUN_TEST(test_oir_50_recall_questions_are_not_disputes);
+  RUN_TEST(test_oir_50_owner_action_tail_keeps_its_own_rule);
   return UNITY_END();
 }

@@ -13,6 +13,9 @@
 namespace nimbus {
 namespace orch {
 
+// Every owner-action phrase, each quoted, comma-separated (defined with kOwnerActionPhrases).
+static std::string ownerActionPhrasesQuoted();
+
 namespace {
 
 constexpr uint32_t fxBit(FxKind k) { return 1u << (unsigned)k; }
@@ -2445,12 +2448,15 @@ std::string sourceWhat(const ClaimGap& g) {
            "holds them; quote only words you can see, or say it is not recorded";
   // Lane MLQ (OIR-50): the generic "drop that source" left the attribution words in a
   // retraction ("I was wrong to present it as something you told me"), so the rewrite
-  // kept them. An owner-action gap says what the rewrite must do with the words.
+  // kept them; naming only the phrase found, the rewrite swapped "you told me" for
+  // "something you said". An owner-action gap says what the rewrite must do with all of them.
   if (g.variant == kGapOwnerAction)
     return "it says the owner did or said this (\"" + g.name +
            "\"), but no message of theirs this turn says it. If you are taking the claim back, say that no "
            "message of theirs says it and that you were wrong, in your own words, and leave the phrase out "
-           "entirely (not quoted, not in the apology); otherwise drop the claim";
+           "entirely (not quoted, not in the apology), and every phrase like it too: " +
+           ownerActionPhrasesQuoted() + " (say \"I had no message of yours behind it\" instead); otherwise "
+           "drop the claim";
   const std::string what = "it credits " + (g.name.empty() ? sourceNoun(g.source) : g.name) +
                            ", but nothing this turn names that source (no owner message, tool result or "
                            "sub-agent result mentions it); ";
@@ -3122,6 +3128,12 @@ constexpr const char* kOwnerActionPhrases[] = {
     "you sent", "you showed", "you mentioned", "your message said",
 };
 
+static std::string ownerActionPhrasesQuoted() {
+  std::string out;
+  for (const char* p : kOwnerActionPhrases) out += (out.empty() ? "\"" : ", \"") + std::string(p) + "\"";
+  return out;
+}
+
 // A word of the claim against the owner's words: the whole word, or its stem with the
 // word boundary kept ("frives" backs "frives", never "fries" - the 2 Nov near-match).
 bool ownerWordOnRecord(const std::string& w, const std::string& hay) {
@@ -3352,7 +3364,9 @@ std::string sentTail(uint8_t variant) {
 static std::string sourceTail(const ClaimGap& g) {
   if (g.variant == kGapQuote) return "(Correction: the device has no record of those words.)";
   if (g.variant == kGapOwnerAction)
-    return "(Correction: no message from you this turn says that, so I am not treating it as something you said.)";
+    // Lane MLQ: the tail holds none of the owner-action phrases, so it never breaks the
+    // rule it is appended for (test_oir_50_owner_action_tail_keeps_its_own_rule).
+    return "(Correction: no message from you this turn says that, so it should not have been put down to you.)";
   if (!g.name.empty())
     return "(Correction: nothing the device read this turn came from " + g.name + ", so that source is not confirmed.)";
   const std::string from = "(Correction: the device read nothing from " + sourceNoun(g.source) + " this turn";

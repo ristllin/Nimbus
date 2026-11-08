@@ -205,8 +205,10 @@ std::vector<HistMsg> renderHistory(const std::vector<HistTurn>& turns, const std
                                    int32_t utcOffsetMin);
 // The marker an unanswered turn's assistant message carries (after any "[did: ...]" tag).
 extern const char kNoReplyMarker[];   // "[no reply]"
-// Lane MLQ (OIR-06): the owner messages of a rendered history that got no reply (their
-// assistant message ends with kNoReplyMarker), oldest first. The summary pair is never one.
+// Lane MLQ (OIR-06): the owner messages of a rendered history that got no reply and that
+// the head did not act on (their assistant message is kNoReplyMarker, bare or after
+// "[did: nothing]"; "[did: memory] [no reply]" was taken up), oldest first. The summary
+// pair is never one.
 std::vector<std::string> unansweredOwnerMessages(const std::vector<HistMsg>& history);
 
 // Budgets of the verbatim history: past high water (bytes or rows) the oldest

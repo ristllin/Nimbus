@@ -562,6 +562,14 @@ ToolResult queuedResult(const MemoryContext& ctx, const PendingEmbed& p, const E
       kMemOutcomeQueued, ctx);
 }
 
+// Lane MLQ (OIR-02, glm-5.3 lc-save-status): what a refused write or update is followed
+// by. "embeddings: unavailable (memory not stored)" alone left the head to fill the gap,
+// and it promised "I'll try the save again on my next turn" or said the fact was queued,
+// which nothing does: the device keeps no copy of a refused write.
+const char kNothingRetries[] =
+    ". Nothing keeps or retries it: tell the owner it was not saved and that they can send it again "
+    "later; do not promise a retry or a later save";
+
 // Put a write the embedder cannot serve now into the durable queue. "queued" is
 // claimed only after the queue reached storage; a full queue or a failed persist
 // refuses honestly and nothing queued is evicted.
@@ -578,7 +586,7 @@ ToolResult enqueueOrRefuse(const MemoryContext& ctx, PendingEmbed p, const Embed
                                        noEmbedKeyWhy(ctx, t.detail) + ". Removing a memory also makes room. Tell the "
                                        "owner exactly that; do not say this one was saved."),
                       kMemOutcomeRefused, ctx);
-    return withCode(ToolResult::fail(cause + " (" + notStored + ": " + why + ")"),
+    return withCode(ToolResult::fail(cause + " (" + notStored + ": " + why + ")" + kNothingRetries),
                     kMemOutcomeRefused, ctx);
   };
   switch (ctx.pending->enqueue(p)) {
@@ -656,8 +664,9 @@ ToolResult doWrite(const MemoryContext& ctx, JsonObjectConst a, const Principal&
   // bound the fact waits for the embedder; without it (or with nothing to embed)
   // the write is refused with the real cause.
   if (!queueable(ctx, t.kind))
-    return withCode(ToolResult::fail(embedFailReasonFor(t.kind, t.detail) + " (memory not stored)"),
-                    kMemOutcomeRefused, ctx);
+    return withCode(
+        ToolResult::fail(embedFailReasonFor(t.kind, t.detail) + " (memory not stored)" + kNothingRetries),
+        kMemOutcomeRefused, ctx);
   // The exact same fact is already stored: nothing to wait for.
   if (ctx.vec->idVisible(e.id, readSetFor(who)))
     return withCode(ToolResult::ok("duplicate of an existing memory"), kMemOutcomeDuplicate, ctx);
@@ -706,7 +715,8 @@ ToolResult doUpdate(const MemoryContext& ctx, JsonObjectConst a, const Principal
   EmbedTry t = tryEmbed(ctx, ctx.vec->dims(), w.content);
   if (t.vec.empty()) {
     if (!queueable(ctx, t.kind) || !who.valid())
-      return withCode(ToolResult::fail(embedFailReasonFor(t.kind, t.detail) + " (memory not changed)"),
+      return withCode(ToolResult::fail(embedFailReasonFor(t.kind, t.detail) + " (memory not changed)" +
+                                       kNothingRetries),
                       kMemOutcomeRefused, ctx);
     VecEntry e;
     std::string note;

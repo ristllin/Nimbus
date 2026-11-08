@@ -546,6 +546,37 @@ static void test_queue_full_or_storage_down_refuses_honestly() {
   TEST_ASSERT_TRUE(has(y.error, "memory not stored"));
 }
 
+// OIR-02, lane MLQ fix pass (glm-5.3 lc-save-status 3/5 on 7e997875): a refused write said
+// only "embeddings: unavailable (memory not stored)", and the head filled the gap with "I'll
+// try the save again on my next turn" (or "it is queued on the device"), which nothing does.
+// Every refusal of a write or an update says that nothing keeps or retries it and that no
+// retry is to be promised; a queued write keeps its own "stored automatically" words.
+static void test_a_refused_write_says_nothing_retries_it() {
+  auto noRetry = [](const ToolResult& r, const char* what) {
+    TEST_ASSERT_FALSE_MESSAGE(r.success, what);
+    TEST_ASSERT_TRUE_MESSAGE(has(r.error, "Nothing keeps or retries it"), r.error.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(has(r.error, "do not promise a retry"), r.error.c_str());
+  };
+  Rig bare(/*bindQueue=*/false);   // no queue (the host lab, an MCP-only context)
+  bare.failWith = "HTTP 503 service unavailable";
+  noRetry(bare.write("my bike lock code is 8273", owner()), "no queue");
+  noRetry(bare.call("memory.update", R"({"old":"bike lock","content":"bike lock code 8274"})", owner()),
+          "update, no queue");
+  Rig full;   // the queue is full
+  full.failWith = "HTTP 429 credit_balance_exhausted";
+  for (int i = 0; i < 64; i++) full.write("fact " + std::to_string(i), owner());
+  noRetry(full.write("the 65th fact", owner()), "queue full");
+  Rig down;   // the queue cannot reach storage
+  down.failWith = "HTTP 429 credit_balance_exhausted";
+  down.persistPendingOk = false;
+  noRetry(down.write("my locker code is 4417", owner()), "storage unavailable");
+  Rig queued;   // a queued write is retried, and says so
+  queued.failWith = "HTTP 429 credit_balance_exhausted";
+  ToolResult q = queued.write("my locker code is 4417", owner());
+  TEST_ASSERT_TRUE(q.success);
+  TEST_ASSERT_FALSE(has(q.output, "Nothing keeps or retries it"));
+}
+
 static void test_parked_turn_spends_no_embed() {
   Rig r;
   r.failWith = "HTTP 429 credit_balance_exhausted";
@@ -1093,5 +1124,6 @@ int main(int, char**) {
   RUN_TEST(test_queued_fact_found_after_the_embedder_recovers);
   RUN_TEST(test_a_queued_match_never_takes_the_only_line_from_a_stored_row);
   RUN_TEST(test_member_memory_write_is_allowed_by_role);
+  RUN_TEST(test_a_refused_write_says_nothing_retries_it);
   return UNITY_END();
 }

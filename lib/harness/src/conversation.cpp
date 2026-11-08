@@ -751,13 +751,15 @@ std::vector<HistMsg> renderHistory(const std::vector<HistTurn>& turns, const std
 }
 
 std::vector<std::string> unansweredOwnerMessages(const std::vector<HistMsg>& history) {
-  const size_t n = sizeof(kNoReplyMarker) - 1;
+  const std::string bare = kNoReplyMarker;
+  const std::string idle = std::string("[did: nothing] ") + kNoReplyMarker;
   std::vector<std::string> out;
   for (size_t i = 0; i + 1 < history.size(); i++) {
     const HistMsg& u = history[i];
     const HistMsg& a = history[i + 1];
     if (!u.user || a.user || u.text.rfind(kSummaryUserHead, 0) == 0) continue;
-    if (a.text.size() >= n && a.text.compare(a.text.size() - n, n, kNoReplyMarker) == 0) out.push_back(u.text);
+    // "[did: memory] [no reply]": the head acted on it, so it was taken up already.
+    if (a.text == bare || a.text == idle) out.push_back(u.text);
   }
   return out;
 }

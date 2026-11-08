@@ -1383,6 +1383,37 @@ static void test_mlq_fresh_block_labels_a_secondary_source() {
   }
 }
 
+// Lane MLQ fix pass: the primary-source line rode every web result, so mistral-large-4-0
+// hedged a brief that names no source at all ("treat that as unverified", lc-routine-content
+// 1/5 -> 5/5 replies with the hedge). The line rides only a web result that credits a site
+// by name (a domain or a link), it names no agency list of its own (the role's rule has
+// it), and it says a fact with no site named gets no such label.
+static void test_mlq_primary_source_line_needs_a_credited_site() {
+  struct Case { const char* reply; bool line; };
+  const Case cases[] = {
+      {"Commute: the district line has severe delays this morning due to signal work.", false},
+      {"Weather: light rain from 08:00, about 1.5 mm. Trains run normally, e.g. the 07:42.", false},
+      {"Commute: the 07:42 is delayed, per grandcentralrail.com.", true},
+      {"Weather on the route: light rain, per london-now.co.uk.", true},
+      {"Delays on the Elizabeth line (https://example.org/status).", true},
+      {"Signal failure reported at www.example.net this morning.", true},
+  };
+  for (const Case& c : cases) {
+    Rig r;
+    r.adapter.toolRuns = 3;
+    r.adapter.webRuns = 2;
+    r.adapter.doneReply = c.reply;
+    runOneDoneJob(r, sp("The daily commute brief: disruptions this morning."));
+    const std::string block = r.eng->takeFreshResults();
+    TEST_ASSERT_TRUE_MESSAGE(block.find(agent::kFreshFactsLine) != std::string::npos, block.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(c.line, block.find(agent::kFreshSourcesLine) != std::string::npos, c.reply);
+  }
+  const std::string line = agent::kFreshSourcesLine;
+  for (const char* named : {"TfL", "Met Office", "National Rail", "BBC"})
+    TEST_ASSERT_TRUE_MESSAGE(line.find(named) == std::string::npos, named);
+  TEST_ASSERT_TRUE(line.find("no site named") != std::string::npos);
+}
+
 // Check of c962b5d0: a sub that ran only a web search (weather) for "the weather for my
 // calendar events" never called the calendar: its result opens with the NOT called marker
 // and counts as unverified, though a tool ran.
@@ -3169,6 +3200,7 @@ int main(int, char**) {
   RUN_TEST(test_provenance_property_live_research_connector_by_tool_runs);
   RUN_TEST(test_cum822_web_results_carry_the_sources_and_no_stale_facts_line);
   RUN_TEST(test_mlq_fresh_block_labels_a_secondary_source);
+  RUN_TEST(test_mlq_primary_source_line_needs_a_credited_site);
   RUN_TEST(test_connector_that_ran_or_was_not_asked_is_not_marked);
   RUN_TEST(test_ledger_and_fresh_results_name_the_tools_each_sub_ran);
   RUN_TEST(test_every_fresh_block_says_to_state_only_the_results_facts);

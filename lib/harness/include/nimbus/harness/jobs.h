@@ -51,15 +51,21 @@ inline constexpr const char* kFreshFactsLine =
     "not cover (a status from an earlier answer, a source they do not name) is left out or labeled "
     "as earlier, never stated as current or checked.\n";
 
-// Lane MLQ (OIR-38): the line after it when a result ran a web search or fetch. "With only
-// the sources they name" alone read as "relay the source as given": mistral-large-4-0
-// passed a commute delay on as fact on an aggregator's word 5 of 5 times (the role's
-// primary-source rule sits in the static block, far from the result). This says what such
-// a fact becomes. Web results only, so a synthesis of other work pays no bytes for it.
+// Lane MLQ (OIR-38): the line after it when a result that ran a web search or fetch credits
+// a site by name (freshCreditsASite). "With only the sources they name" alone read as "relay
+// the source as given": mistral-large-4-0 passed a commute delay on as fact on an
+// aggregator's word 5 of 5 times (the role's primary-source rule sits in the static block,
+// far from the result). This says what such a fact becomes. Only then: on every web result
+// it made the head hedge a brief that names no source at all (lc-routine-content), and a
+// synthesis of other work pays no bytes for it. The role's rule names the primary sources.
 inline constexpr const char* kFreshSourcesLine =
     "A time-sensitive fact (travel, weather, a disruption) credited only to a site that is not its "
-    "primary source (the operator, National Rail, TfL, the Met Office, BBC) is said to be "
-    "unverified, naming the primary source to check.\n";
+    "primary source is said to be unverified, naming the primary source to check; a fact with no "
+    "site named gets no such label.\n";
+
+// Does a result's text credit a site by name: a link, "www." or a domain ("per
+// grandcentralrail.com", "london-now.co.uk")? Decimals, times and "e.g." never count.
+bool freshCreditsASite(const std::string& text);
 
 // A stable ring key from a job tag (FNV-1a) - the attention Router keys jobs by a
 // uint32, not a string, so hash the tag into that key space. Exposed so the

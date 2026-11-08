@@ -928,6 +928,24 @@ static void test_mlq_unanswered_owner_message_reaches_the_scope_check() {
   }
 }
 
+// Lane MLQ fix pass: a turn the head acted on but did not answer in words ("[did: memory]
+// [no reply]": the write landed, the reply was lost) was taken up already, so the next reply
+// may speak of it; only a turn where nothing happened ("[did: nothing]", or no tag) is an
+// unanswered owner message.
+static void test_mlq_a_turn_the_head_acted_on_is_not_unanswered() {
+  using agent::HistMsg;
+  const std::vector<HistMsg> h = {{true, "log 2 eggs for breakfast"},
+                                  {false, "[did: food, memory] [no reply]"},
+                                  {true, "I love tech trivia, ask me sometime."},
+                                  {false, "[did: nothing] [no reply]"},
+                                  {true, "my sister is visiting"},
+                                  {false, "[no reply]"}};
+  const std::vector<std::string> un = agent::unansweredOwnerMessages(h);
+  TEST_ASSERT_EQUAL(2, (int)un.size());
+  TEST_ASSERT_EQUAL_STRING("I love tech trivia, ask me sometime.", un[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("my sister is visiting", un[1].c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_identical_messages_either_side_of_local_midnight_are_two_messages);
@@ -954,6 +972,7 @@ int main(int, char**) {
   RUN_TEST(test_overflow_shift_is_recorded_and_stable);
   RUN_TEST(test_fold_slice_starts_after_the_anchor);
   RUN_TEST(test_mlq_unanswered_owner_message_reaches_the_scope_check);
+  RUN_TEST(test_mlq_a_turn_the_head_acted_on_is_not_unanswered);
   UNITY_END();
   return 0;
 }

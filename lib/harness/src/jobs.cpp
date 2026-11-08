@@ -518,6 +518,47 @@ std::string JobEngine::takeFreshResultsFor(const FreshScope& scope, bool* unveri
 
 std::string JobEngine::takeFreshResults(bool* unverified) { return takeFresh(nullptr, unverified); }
 
+namespace {
+// The endings a domain in a result is read by (a label then one of these, then no letter).
+const char* const kSiteEndings[] = {
+    "com", "org", "net", "uk", "io", "gov", "info", "co", "news", "tv", "eu", "de", "fr", "ie",
+    "app", "dev", "ai", "me", "us", "ca", "au", "nl", "es", "it",
+};
+
+bool alnum(char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'); }
+
+// The label that ends at `dot` (letters, digits, hyphens) holds 2+ bytes and a letter.
+bool siteLabelBefore(const std::string& low, size_t dot) {
+  size_t b = dot, letters = 0;
+  while (b > 0 && (alnum(low[b - 1]) || low[b - 1] == '-')) {
+    b--;
+    if (low[b] >= 'a' && low[b] <= 'z') letters++;
+  }
+  return dot - b >= 2 && letters > 0;
+}
+
+// One of kSiteEndings starts right after `dot` and no letter or digit follows it.
+bool siteEndingAfter(const std::string& low, size_t dot) {
+  for (const char* e : kSiteEndings) {
+    const size_t n = std::strlen(e);
+    if (low.compare(dot + 1, n, e) == 0 && (dot + 1 + n >= low.size() || !alnum(low[dot + 1 + n]))) return true;
+  }
+  return false;
+}
+}  // namespace
+
+bool freshCreditsASite(const std::string& text) {
+  std::string low = text.substr(0, 16384);
+  for (char& c : low)
+    if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+  if (low.find("http://") != std::string::npos || low.find("https://") != std::string::npos ||
+      low.find("www.") != std::string::npos)
+    return true;
+  for (size_t d = low.find('.'); d != std::string::npos; d = low.find('.', d + 1))
+    if (siteLabelBefore(low, d) && siteEndingAfter(low, d)) return true;
+  return false;
+}
+
 // The seed body over the results a turn just took: full text until the block budget,
 // then one-line stubs whose full text stays fetchable with results.get (the sub-results
 // are already in the ring). Split out of takeFresh (lizard: the merged scope split and
@@ -530,9 +571,11 @@ static std::string freshSeedBody(const std::vector<JobEngine::FreshResult>& take
   // sources a result names and state only facts it contains, never facts from
   // earlier answers.
   b += kFreshFactsLine;
-  bool web = false;   // lane MLQ: a result that ran the web gets the primary-source line
-  for (const auto& f : taken) web = web || f.web || f.provenance.find(", web: ") != std::string::npos;
-  if (web) b += kFreshSourcesLine;
+  // Lane MLQ: a web result that credits a site by name gets the primary-source line.
+  bool credited = false;
+  for (const auto& f : taken)
+    credited = credited || ((f.web || f.provenance.find(", web: ") != std::string::npos) && freshCreditsASite(f.text));
+  if (credited) b += kFreshSourcesLine;
   // Bound the SEED (Context Fabric, 2026-08-05): a fan-out synthesis inlined all
   // sub-results here - 6 x 3500 chars = ~21 KB in the pinned user turn that the
   // in-turn fold can never trim, which (measured) floored the request body near
