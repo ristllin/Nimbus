@@ -24,8 +24,10 @@ namespace agent {
 // nesting for FILTERED-OUT subtrees too (it must descend a skipped value to find
 // its end), so this must clear the depth of the WHOLE raw response - e.g. a
 // connector tool-execution payload (a Notion block tree) that the filter discards.
-// 64 covers real connector responses; capped well below a level that could stress
-// the 16 KB tg_poll stack (recursion is bounded AT this limit).
+// 64 covers real connector responses. On the device each kept level costs 112 B of the
+// Telegram poll task's stack (the streaming parseVariant), so a reply nested 64 deep
+// takes about 7 KB there; tools/release_gate/check_tg_poll_stack.py counts all 64 levels
+// and fails a build that leaves under 4 KB of that stack free (lane STACK).
 static constexpr uint8_t kResponseNestingLimit = 64;
 
 using HeaderList = std::vector<std::pair<std::string, std::string>>;

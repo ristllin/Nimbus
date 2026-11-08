@@ -400,8 +400,12 @@ the heavy-connector-write restart, 2026-07).
   reserve (3.2 KB raw, 1.6 KB codec) and says when it cannot play. One sound holds the
   speaker at a time, and the memory is read on its turn (`nimbus/speaker_memory.h`).
 - **FreeRTOS task stacks** - e.g. `tg_poll` (24 KB, `POLL_STACK_BYTES`), which
-  runs the whole turn. Internal by nature. The response parse is bounded to
-  `NestingLimit(64)` (`kResponseNestingLimit`), well within this stack.
+  runs the whole turn. Internal by nature. The release gate
+  `tools/release_gate/check_tg_poll_stack.py` measures its worst case from the built
+  image (every frame and call chain, the 64 levels of a `NestingLimit(64)` response
+  parse included, at 112 B a level) and fails an image that leaves under 4 KB free.
+  So nothing large lives on it: the 4 KB Telegram queue items, the turn's large
+  locals and settings reads go through PSRAM.
 
 ### The size-transparency contract
 

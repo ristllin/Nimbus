@@ -36,6 +36,7 @@ import check_static_dram
 import check_storm_evidence
 import check_test_console_guard
 import check_tls_sni
+import check_tg_poll_stack
 import model_id_lint
 
 HARDWARE_BATTERY = """\
@@ -144,6 +145,7 @@ def run_host_checks() -> bool:
         ("test-console guard (p18-N)", check_test_console_guard.main),
         ("model-id lint (p18-N)", model_id_lint.main),
         ("static-dram ceiling (p18-DEF)", check_static_dram.main),
+        ("tg_poll stack budget (lane STACK)", lambda argv: check_tg_poll_stack.main(["--quiet"])),
         ("nothing logs under a spinlock", check_critical_sections.main),
         ("lwip core lock (CRASH2 A03)", check_lwip_core_lock.main),
         ("tls names the host (SNI)", check_tls_sni.main),

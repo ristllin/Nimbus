@@ -322,6 +322,16 @@
   ],
   "recursion": [
     {
+      "function": "JsonDeserializer<ArduinoJson::V743PB22::detail::Reader<(agent::\\(anonymous namespace\\)::BlockingClientReader|NetworkClientSecure|NetworkClient|agent::httpmp::post\\(.*\\)::ClientReader), void> >::parse(Variant|Object|Array)",
+      "depth": 64,
+      "why": "a provider response is parsed off the TLS stream with NestingLimit(kResponseNestingLimit = 64) (http.h, transport_tls.cpp execCore): a reply whose kept part nests 64 deep recurses 64 levels of parseVariant (112 B a level, parseObject and parseArray inlined)"
+    },
+    {
+      "function": "JsonDeserializer<ArduinoJson::V743PB22::detail::Reader<(agent::\\(anonymous namespace\\)::BlockingClientReader|NetworkClientSecure|NetworkClient|agent::httpmp::post\\(.*\\)::ClientReader), void> >::skip(Variant|Object|Array)",
+      "depth": 1,
+      "why": "the same limit counts skipped levels too, and a skipped level costs 64 B (skipVariant plus skipObject or skipArray) against a kept level's 112 B: the 64 kept levels above already bound a reply nested 64 deep however much of it the filter drops, so the skip recursion adds no level of its own"
+    },
+    {
       "function": "^(_ZN11ArduinoJson|_ZNK11ArduinoJson|ArduinoJson::|bool ArduinoJson::|.* ArduinoJson::V743PB22::detail::(JsonDeserializer|JsonSerializer|VariantData|VariantRefBase))",
       "depth": 10,
       "why": "ArduinoJson's parse, skip, serialize, copy and clear recurse once per nesting level; the deserializer stops at its nesting limit (ARDUINOJSON_DEFAULT_NESTING_LIMIT 10) and the device builds no deeper document"
@@ -520,6 +530,12 @@
         "^agent::providers::runHostLoop\\("
       ],
       "_why": "a cut (length) retry runs the same request again inside the same loop step, so it is no deeper than the round"
+    },
+    {
+      "name": "provider reply parsed off the TLS stream (64 levels)",
+      "through": [
+        "JsonDeserializer<ArduinoJson::V743PB22::detail::Reader<agent::\\(anonymous namespace\\)::BlockingClientReader, void> >::parseVariant"
+      ]
     },
     {
       "name": "claim check correction round",
@@ -1109,6 +1125,11 @@
       "caller": "^(ssl_check_ctr_renegotiate|ssl_handle_hs_message_post_handshake|mbedtls_ssl_read|mbedtls_ssl_write)$",
       "callee": "^(mbedtls_ssl_renegotiate|mbedtls_ssl_start_renegotiation)$",
       "why": "renegotiation stays at mbedTLS's default MBEDTLS_SSL_RENEGOTIATION_DISABLED: nothing in the firmware or its libraries calls mbedtls_ssl_conf_renegotiation, and both callers return before renegotiating when it is disabled"
+    },
+    {
+      "caller": "^(mbedtls_ssl_read|mbedtls_ssl_write)$",
+      "callee": "^mbedtls_ssl_handshake$",
+      "why": "read and write run the handshake only on a context whose handshake is not over; ssl_client.cpp start_ssl_client finishes the handshake (or fails the connect) before any read or write, and renegotiation is off"
     }
   ],
   "_aliases_why": "Typedefs and macros the source uses for a class: FileImplPtr and FSImplPtr are shared_ptrs of fs::FileImpl and fs::FSImpl (FS.h); WiFiClient(Secure) are the Arduino 3 names of NetworkClient(Secure); Serial is HWCDCSerial on these boards (ARDUINO_USB_CDC_ON_BOOT=1, ARDUINO_USB_MODE=1 in platformio.ini)",

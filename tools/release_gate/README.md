@@ -24,6 +24,7 @@ looking at the glass are all in scope.
 | Settings lost across an update (CUM-237) | the OTA flow writes only its own bookkeeping keys, never an owner's Wi-Fi / provider key / touch cal / theme | `check_ota_preserves_nvs.py`, plus the provision -> OTA -> power-cycle -> read-NVS bench leg |
 | N7 internal-SRAM win regressed (CUM-24) | the Telegram `tg_poll` TLS staging buffers stay PSRAM pointer handles, not inline internal `.bss` (the ~6.7 KB win merged as 2598499) | `check_sram_staging.py`, `test_sram_staging.py` |
 | Static internal RAM grows silently release to release (v4.5.14 grew it 4.5 KB, found only by a bench A/B) | `.dram0.bss` + `.dram0.data` of each of the four release images at or under its recorded ceiling (the v4.5.15 image plus 1 KB; the baseline in the report is the last measured tree); raising a ceiling needs a bench heap A/B | `check_static_dram.py`, `static_dram_ceilings.json`, `test_static_dram.py` |
+| The Telegram poll task (`tg_poll`, which runs the whole turn) runs out of stack: Lumi logged 936 B of 24576 left after a voice note that made a routine (8 Nov 2026), and the 29 Oct crash 2419bf4a aborted on that task | the worst case of every chain from the task entry, read from the built image (every function's `entry` frame, direct and long calls, std::function, virtual and configured indirect calls, declared recursion depths, the stack's fixed costs), and of each named path (turn start, head round, the 64-level reply parse, each tool, STT, media, OTA, archive): each must leave at least 4096 B of 24576 free. Every resolution, recursion bound and pruned call says why in `tg_poll_stack.json`; an undeclared cycle or a VLA fails. Method and tables: `coverage/STACK-2026-11.md` | `check_tg_poll_stack.py`, `tg_poll_stack.json`, `test_tg_poll_stack.py` (runs the gate on a built esp32s3-cyd image) |
 | A log line, a file touch or a blocking call inside a spinlock: newlib aborts at a raised interrupt level, so one such line restarts the device (the abort of the 29 Oct 2026 crash: the `devsink: lights` line under the config lock, confirmed by decoding its frames against the matching v4.6.1 build, `evidence/crash-2419bf4a/DECODE.md`) | every critical section in `src/` and `lib/` is read, and a forbidden call written inside one fails. It reads the section's own text and does not follow calls | `check_critical_sections.py`, `test_critical_sections.py` |
 | A TLS connection that goes out without its host's name: no SNI and a certificate checked against an address, so every CDN-fronted provider refuses the handshake (main from lane CRASH2 to lane SNI, Nov 2026: every provider exchange of the K01 soak failed at connect, and the soak still graded its turns ok) | every dial in `src/` and `lib/` is read: a TLS client is dialed only by `nimbus::net::connectSecure` (`connect(ip, port, host, nullptr, nullptr, nullptr)`) through `connectHost` in `src/sys/net_util.h`, whose `Client&` overloads are deleted, whose overloads and every `connectHost` argument use the WiFi type names (`WiFiClientSecure` / `WiFiClient`) and never the Network base names (`NetworkClient` / `NetworkClientSecure` are typedefs of the same classes and a `NetworkClient&` can hold a secure client), and whose `connectPlain` refuses any client that can carry TLS at compile time; the soak and HIL graders fail a turn whose reply is the device's failure notice | `check_tls_sni.py`, `test_tls_sni.py`, `test/test_tls_connect`, `tests/hil/test_soak_24h_host.py` |
 | A storm the device feeds itself: the same message taken in again and again, a refusing provider asked again and again, a notice per attempt (the 19 and 21 Oct 2026 storms) | the storm-suite step: every storm leg passed on the candidate after its commit, and has a v4.5.13 control run | `check_storm_evidence.py`, `tests/hil/storm/`, `test_release_gate.py` |
@@ -39,6 +40,14 @@ commit built (the build id inside it says which), fails. Run it after the device
 same tree. Its last line is `STATIC DRAM GREEN` or `STATIC DRAM RED`.
 
 ## Running it
+
+The tg_poll stack budget, on a built image (needs the PlatformIO Xtensa toolchain and ROM ELF,
+which `pio run` installs; about 20 s):
+
+```
+python3 tools/release_gate/check_tg_poll_stack.py                        # .pio/build/esp32s3-cyd (+ esp32s3 if built)
+python3 tools/release_gate/check_tg_poll_stack.py --elf <firmware.elf> --report out.md
+```
 
 Host checks (run in CI, fast):
 

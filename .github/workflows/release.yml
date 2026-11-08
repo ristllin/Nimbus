@@ -163,6 +163,9 @@ jobs:
             # Static internal RAM under the variant's recorded ceiling.
             python3 tools/release_gate/check_static_dram.py \
               --elf ".pio/build/$env/firmware.elf" --variant "$v"
+            # The Telegram poll task keeps 4 KB of its stack free on every path.
+            python3 tools/release_gate/check_tg_poll_stack.py \
+              --elf ".pio/build/$env/firmware.elf" --quiet
             xz -9 -c ".pio/build/$env/firmware.elf" > "elf-archive/firmware-$v.elf.xz"
           done
           cat elf-archive/elf-sha256.txt
