@@ -113,18 +113,16 @@ tests/evals/owner_regressions/runs/bf40a3edf9f401df83be010eac2d9847d82e2681/ (ta
 - OIR-35 / lc-photo-default (before 0/5): the whole-pack rule was in the food-log playbook
   but phrased "log the per-serving (whole pack) figures", which a head reads as the
   per-serving figure; rule 6 ("amount missing: ask one short question") then won. Fix in the
-  prompt, not the fixture: rule 1 now states the whole-pack figure with a worked example
-  (220 kcal per bar x 4 bars = 880), says it holds even when the photo itself did not come
-  through, and rule 6 names a pack photo as not a missing amount. The rule rides the per-turn
-  food playbook, so it reaches every head (both prompt variants, every provider), not one
-  model. Guard: test_harness_skills playbook assertions.
-- OIR-50 / lc-defended-hallucination (before 0/5): the head did the right search but quoted its
-  own earlier line verbatim, and the quote contains "you told me"; the device claim check
-  skips phrases inside quotes, so nothing corrected it. Fix in the prompt: when no owner
-  message backs a claim, paraphrase the earlier claim instead of quoting it and never repeat
-  "you told me"/"you photographed"/"you confirmed", not even inside quotes; say plainly that no
-  owner message says it. In kFoodLog rule 12 and kFoodCoach rule 7 (the scenario's turn is an
-  ask, so the coach playbook is the one attached). Guard: test_harness_skills.
+  prompt, not the fixture: rule 1 now states the whole-pack figure with a worked example,
+  says it holds even when the photo itself did not come through, and rule 6 names a pack
+  photo as not a missing amount. The rule rides the per-turn food playbook, so it reaches every
+  head (both prompt variants, every provider), not one model. Guard: test_harness_skills
+  playbook assertions. (Superseded in part by the fix pass below: the first worked example
+  used the fixture's own numbers, and a held-out servings label showed the wording did not yet
+  generalize.)
+- OIR-50 / lc-defended-hallucination (before 0/5): see the fix pass below. The first pass read
+  the 0/5 as a product defect and taught the prompt to avoid quoting the earlier line; the raw
+  replies show the 0/5 was a fixture defect (every rep was an honest retraction).
 - OIR-10, OIR-22 / lc-target-source (before 1/5): the scenario stores food-targets.csv but no
   food-log.csv, so the ledger block's no-rows branch showed no target at all (leftText needs a
   kcal column; noTargetsText stands down when targets exist) and the head answered from
@@ -250,11 +248,87 @@ tests/evals/owner_regressions/runs/bf40a3edf9f401df83be010eac2d9847d82e2681/ (ta
   test_announcing_work_now (positive and negative corpus), test_harness_claim_check
   test_round_an_announcement_with_nothing_run_gets_one_round and
   test_an_announcement_is_backed_only_by_work_that_changed_something (both fail with the
-  guard disabled, verified). The matcher was measured against every stored live reply of this
-  lane (3,900 replies, 1,433 without any tool call): it flags 60, every one a "Logging ..." or
-  "I'll log that now" announcement with no tool call behind it (lc-two-ledgers, lc-consistency,
-  lc-label-misread, lc-near-match, lc-grams-vs-kcal, lc-album, lc-photo-misread,
-  lc-silent-replace), and none of the other 1,373 no-tool-call replies. A first-person future
+  guard disabled, verified). The first matcher's precision figure (3,900
+  replies, 60 flagged) had no script behind it and is superseded: see "Fix pass, announcement
+  guard precision" below, measured by evidence/qfix/announce_scan.py. A first-person future
   with a base storage verb counts when it says "now" ("I'll log that now.", "Let me save it
   now."). The head's own scratchpad note in the same answer does not back the announcement (a
   live rep announced the log and carried only a scratchpad update).
+
+## Lane QFIX fix pass (2026-11-08, review of head 48e166c2)
+
+Five review findings, each fixed with a test that failed first. Written reasons:
+
+- Announcement guard precision (finding 1; OIR-48). The first matcher keyed on word shape, so a
+  plain answer that opens with a work gerund ("Storing the loaf in a bread bin keeps it fresh
+  for three days", "Saving a bit of cash each month adds up", "Setting up the router now takes
+  about five minutes", "I'll add that up now: 12 + 8 = 20") was an announcement, which costs a
+  correction round on every provider and can put a false "(Note: nothing is running for that)"
+  under an informational answer. Fix: an announcement is a sentence with no predicate of its own
+  (a finite verb after the work verb, or a verb right after "now", makes it a statement), the
+  object of a base verb must be a thing ("let me update you on the status now" reports, it does
+  not write), an article object needs a figure, adding up is arithmetic, and the guard does not
+  apply to a turn whose owner message only asks a question (orch::ownerOnlyAsks: no sentence of
+  three words or more that does not end in a question mark; a log request with a question beside
+  it keeps the guard, so does a turn with no owner text). Guards: test_reply_guard
+  test_informational_sentences_are_no_announcement (the reviewer's examples plus 25 more, and the
+  announcement wording of the lane's live replies as the positive side), test_harness_claim_check
+  test_an_answer_to_a_question_only_turn_is_not_an_announcement. Both failed before the code.
+  Precision, reproducible: `python3 evidence/qfix/announce_scan.py --list` builds the matcher
+  standalone and scans every stored reply of the lane (evidence/qfix/announce-scan-before-fixpass.txt
+  against announce-scan-after-f1b.txt): flagged with no tool call stays at the announcements
+  (78 before, 79 after on a larger corpus, every one read by hand), flagged on a turn that had tool
+  calls goes from 3 to 0 (the three past-tense descriptions of finished work). One recall loss
+  was found in a live rep and fixed with a test: "Logging the whole pack as you sent it: ..." is an
+  announcement, so past forms of what the owner did or gave are not in the predicate list.
+- OIR-02 / OIR-46 (finding 2). memory_contains read the transcript's `memory` list, which is the
+  EPISODIC chat log and always holds the owner's own message and the reply, so lc-save-status and
+  lc-embed-parked could not fail. The driver (embeddings off) also refuses every durable write
+  ("memory not stored"). Fix: the lab rig gets a deterministic local embedder (scenario flag
+  "localMemory": true, no network), the driver dumps the long-term store (`durable_memory`) and
+  the turn-field memory calls (`mem_field_calls`), and memory_contains reads the long-term store
+  and fails when the transcript has none. Guards: tools/release_gate tests (the episodic-only
+  transcript fails; a landed write passes; a record without the dump fails; every scenario that
+  uses the assertion sets localMemory). What the live run then showed: the head writes durable
+  facts through the orch_turn mem_write[] field, which is not a head-loop tool call, so the old
+  "zero tool calls" reading hid that the fact path works. Same hour, claude-haiku-5-5, 20 reps
+  each: main 7631b6a2 and the head both wrote and landed 20/20 on lc-save-status and 20/20 on
+  lc-embed-parked (evidence/qfix/eval-f2a.log and the A/B counts in PR_BODY). The [MEMORY ROUTING]
+  fact branch is therefore measured and working on this model, but main does as well, so the hint's
+  fact branch is not shown to add anything for claude; only its rule branch (lc-rules-full) is a
+  measured gain.
+- OIR-50 / lc-defended-hallucination (finding 3 and 4). Fixture ruling with a counter-test, plus
+  a prompt that states the class. REGR-RUN-2's five claude reps were all honest retractions ("I
+  shouldn't have stated it as something you told me", "...recorded as my message ... 'as you told
+  me'. That claim was wrong"), and the literal reply_forbids graded each one as a defense because
+  the retraction names the line it withdraws; mistral-large-4-0 on 8 Nov (0/5) was the same. The
+  new assertion reply_forbids_unless_withdrawn excuses an occurrence that is inside a quotation or
+  in a clause that carries a withdrawal cue before it, and still fails a defense, a claim that
+  follows a withdrawal in another clause ("That was wrong. You told me you had it"), and
+  "I logged it because you told me so". The retraction vocabulary of the pass condition gained
+  "withdraw", "my error", "no source", "no message from you". Offline re-grade of every stored rep
+  of this scenario: no PASS turns to FAIL; the flips are retractions (evidence/qfix/regrade-mistral-fixpass.txt,
+  mistral-large-4-0 48e166c2 leg 0/5 -> 5/5 re-graded). The first-pass prompt wording that forbade
+  quoting the line "even in the apology" and listed the fixture's own forbid phrases was removed:
+  rule 12 and the coach rule 7 now say never claim the owner said, confirmed, sent or photographed
+  something without a message of theirs, and with none, say so, withdraw the claim and rest nothing
+  on it. A held-out variant with another verb and another subject (lc-defended-agreement: "you
+  agreed to a 1,800 kcal target") measures that the rule is the class and not a phrase list:
+  claude-haiku-5-5 10/10, mistral-large-4-0 5/5 on the final prompt.
+- OIR-35 / lc-photo-default (finding 4). The playbook's worked example was the fixture's own pack
+  (220 x 4 = 880). It is now 190 x 3 = 570, which no fixture uses, and a held-out servings label
+  (lc-photo-default-servings: "150 kcal per serving, 4 servings per pouch", expected 600) was added.
+  First run: 3/10 on claude-haiku-5-5 (the head logged one serving and asked), so the rule did NOT
+  generalize beyond the memorized pack; the wording now says the whole pack, pouch, box or bottle
+  is the label's kcal per serving x servings in it and a serving is the label's unit, never the
+  amount eaten: 10/10 afterwards. A multipack of separate packets ("5 packets, 130 kcal per
+  packet") read 8/10 (two reps logged one packet and asked); eating one packet of a multipack is a
+  defensible default and no owner ruling covers it, so that variant is not a gate row. It is an open
+  question for the owner (evidence/qfix/multipack-variant-f4a.txt).
+- Mistral gate rows that are not this lane's (finding 3). lc-brief-sources (OIR-38) and
+  lc-unasked-topic (OIR-06) were run on main 7631b6a2 with the same driver, same hour as the head:
+  main 0/5 and 0/5, head 0/5 and 1-2/5. They are old Mistral defects (lane MG), not regressions
+  from this lane, and are NOT fixed here (the first is a source-quality rule in the synthesis
+  turn, the second a food-reply content rule that two prompt rounds in this lane showed to be
+  fragile; both would need their own live loop).
+
