@@ -1,13 +1,42 @@
 #include "sys/config_nvs.h"
 
+#include <esp_heap_caps.h>   // MALLOC_CAP_SPIRAM - nvsReadStr's copy buffer
 #include <nvs.h>   // nvs_get_stats - partition usage for /api/state + STATUS (CUM-479)
 #include <solide/memory.h>
+
+#include <mutex>
 
 #include "nimbus/config_store.h"
 #include "nimbus/device_identity.h"
 #include "sys/agent_log.h"   // alogcf + errlog::cat::kNvs - the one persist-failure line
 
 namespace nimbus::sys {
+
+// Lane STACK (8 Nov 2026). Arduino's Preferences::getString, which
+// solide::memory::getString runs, copies the value through a stack array as long as
+// the stored value (`char buf[len]`, up to NVS's 4000 B string limit). Settings are
+// read deep inside a turn on the Telegram poll task, whose 24 KB stack Lumi left 936 B
+// of; a long value (a persona, a rule list) put its whole length on that stack. This
+// reads the same namespace through a read-only handle into PSRAM instead. The handle
+// opens on the first read that finds the key (has() said the namespace exists) and is
+// kept; a value that cannot be read reads as its default, as an absent key does.
+String nvsReadStr(const char* key, const char* def) {
+  static std::mutex mx;
+  static nvs_handle_t h = 0;
+  static bool open = false;
+  {
+    std::lock_guard<std::mutex> lk(mx);
+    if (!open) open = nvs_open(kNvsNsSolide, NVS_READONLY, &h) == ESP_OK;
+    if (!open) return String(def);
+  }
+  size_t len = 0;
+  if (nvs_get_str(h, key, nullptr, &len) != ESP_OK || len == 0) return String(def);
+  char* buf = static_cast<char*>(heap_caps_malloc(len, MALLOC_CAP_SPIRAM));
+  if (buf == nullptr) return String(def);
+  String out = (nvs_get_str(h, key, buf, &len) == ESP_OK) ? String(buf) : String(def);
+  heap_caps_free(buf);
+  return out;
+}
 
 namespace {
 constexpr char kCfgBlob[] = "nimbus_cfg";   // SD blob: versioned Config

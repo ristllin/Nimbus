@@ -13,6 +13,7 @@
 #include "memory_subsystem.h"      // engines + Lock + stats + nowHours + opCounters
 #include "orchestrator.h"
 #include "store.h"                 // the legacy NVS quiet-night baseline (read only)
+#include <memory>   // unique_ptr: the night state off the poll task stack (lane STACK)
 
 namespace agent {
 namespace dream {
@@ -198,7 +199,11 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
   if (g_hooks.onDreamStart) g_hooks.onDreamStart(agent::DreamStartEv{clock.epoch});
   g_defersTonight = 0;
 
-  NightDeps d;
+  // The night's deps (196 B of hooks) and its result (304 B) live on the heap (lane
+  // STACK): a dream runs as a turn on the Telegram poll task, whose stack Lumi nearly
+  // exhausted on 8 Nov 2026.
+  const std::unique_ptr<NightDeps> deps(new NightDeps());
+  NightDeps& d = *deps;
   d.loadState = loadState;
   d.saveState = saveState;
   d.storeReady = flashMounted;
@@ -262,7 +267,8 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
   const memory::WriteOutcomes writesBefore = memory::writeOutcomes();
 
   g_firing = true;
-  NightResult night = runNight(d, clock, force);
+  const std::unique_ptr<NightResult> result(new NightResult(runNight(d, clock, force)));
+  NightResult& night = *result;
   g_firing = false;
 
   // The night's memory writes by outcome: "ok" never hides a write that was only

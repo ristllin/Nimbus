@@ -1096,6 +1096,16 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   return runTurn(inputs, chatId, userText, telegramOn(chatId));
 }
 
+namespace {
+// runTurn's largest locals, held on the heap (see runTurn).
+struct RunTurnLocals {
+  ComposeInputs ci;
+  HeadTools headTools;
+  orch::Turn turn;
+  ApplyState st;
+};
+}  // namespace
+
 bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                          const std::string& userText, bool telegram) try {
   // The whole turn keeps its small blocks in PSRAM (L24, turn_memory.h); a turn
@@ -1298,7 +1308,15 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   const std::string requestedModel =
       d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
 
-  ComposeInputs ci = d_.composeInputs ? d_.composeInputs(curChat_) : ComposeInputs{};
+  // Lane STACK (8 Nov 2026): the turn's largest locals live on the heap, which the
+  // PsramFirstScope above points at PSRAM, not on the stack of the Telegram poll task
+  // this turn runs on (552 B of inputs, 212 B of head tools, 256 B of parsed turn, 216 B
+  // of apply state: Lumi left 936 B of that 24 KB stack after a voice note that made a
+  // routine). Built in place: the inputs are the composeInputs result itself, never a
+  // stack copy.
+  std::unique_ptr<RunTurnLocals> locals(
+      new RunTurnLocals{d_.composeInputs ? d_.composeInputs(curChat_) : ComposeInputs{}, {}, {}, {}});
+  ComposeInputs& ci = locals->ci;
   turnMem().gate.phase("context", freeHeap(), largestFreeBlock());
   {
     // The figure check's sources: the input block (the owner's text, captions, the
@@ -1489,7 +1507,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // SAME handleMcp path external MCP clients use - so it takes the memory Lock and
   // persists/appliesConfig after a mutating tool, exactly once, in one place.
   // nullptr => adapters run their original single-shot structured turn.
-  HeadTools headTools;
+  HeadTools& headTools = locals->headTools;
   const HeadTools* headToolsPtr = nullptr;
   // Counts tools the loop actually EXECUTED this turn. Guards the retry/failover
   // below: replaying a whole tool loop would re-run its side effects (mem writes,
@@ -2437,7 +2455,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // JSON is usually syntactically valid (it came from a parsed tool_use input), so
   // pull reply/ask out of it loosely and deliver just that; only when nothing is
   // extractable fall back to a short human-readable error. Full JSON goes to the log.
-  orch::Turn turn;
+  orch::Turn& turn = locals->turn;
   orch::ParseError perr;
   // CUM-495: read the reply LENIENTLY. A head whose wire cannot pin the schema
   // (Z.ai ignored json_schema and answered in Markdown) still wrote a good
@@ -2508,7 +2526,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                added, pseudo->calls);
   }
   d_.apply.ttsEnabled = d_.cfg.ttsEnabled ? d_.cfg.ttsEnabled() : false;   // live per-turn (owner toggle)
-  ApplyState st;
+  ApplyState& st = locals->st;   // on the heap with the other large locals (lane STACK)
   st.scheduledTurn       = scheduledTurn_;
   st.quietFallback       = quietTurn_;
   st.toolRepliedThisTurn = toolReplied_;
@@ -2536,7 +2554,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // correction lines are held for the owner's next conversation (FireOutcome.held),
     // and its sound, attention and completion cues stay off; deliver() already holds
     // its engine notices.
-    agent::ApplyDeps held = d_.apply;
+    // On the heap (lane STACK): a 468 B copy of the apply hooks.
+    const std::unique_ptr<agent::ApplyDeps> heldDeps(new agent::ApplyDeps(d_.apply));
+    agent::ApplyDeps& held = *heldDeps;
     held.deliver = [this](const std::string&, const std::string& text) {
       if (text.empty()) return;
       heldReply_ += heldReply_.empty() ? text : "\n\n" + text;

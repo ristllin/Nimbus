@@ -40,6 +40,14 @@ static size_t countOf(const std::string& hay, const std::string& needle) {
   return n;
 }
 
+static std::string between(const std::string& src, const char* from, const char* to) {
+  const size_t a = src.find(from);
+  TEST_ASSERT_TRUE_MESSAGE(a != std::string::npos, from);
+  const size_t b = src.find(to, a);
+  TEST_ASSERT_TRUE_MESSAGE(b != std::string::npos, to);
+  return src.substr(a, b - a);
+}
+
 static const char* kGetter = "src/sys/config_nvs.h";   // home of nvsGetStr
 
 // Every firmware source under src/ and include/: no loud string read anywhere but
@@ -56,9 +64,10 @@ static void test_no_loud_string_reads_in_the_firmware() {
       if (ext != ".cpp" && ext != ".h") continue;
       if (path.rfind("src/bringup/", 0) == 0) continue;
       ++scanned;
-      const size_t hits = countOf(readFile(path), "memory::getString(");
-      const size_t allowed = (path == kGetter) ? 1 : 0;   // the getter's own body
-      if (hits != allowed) offenders += path + " ";
+      // Lane STACK: none at all now. The getter reads through nvsReadStr (a PSRAM copy),
+      // because Preferences::getString copies the value through a stack array as long
+      // as the value, deep inside a turn on the Telegram poll task.
+      if (countOf(readFile(path), "memory::getString(") != 0) offenders += path + " ";
     }
   }
   TEST_ASSERT_TRUE(scanned > 100);   // the walk really covered the firmware
@@ -66,14 +75,21 @@ static void test_no_loud_string_reads_in_the_firmware() {
                                    "read NVS strings through nimbus::sys::nvsGetStr");
 }
 
-// The getter itself probes has() before it ever calls the logging read.
+// The getter itself probes has() before it ever reads.
 static void test_the_getter_probes_before_it_reads() {
   const std::string h = readFile(kGetter);
   const size_t fn = h.find("inline String nvsGetStr(const char* key, const char* def = \"\")");
   TEST_ASSERT_TRUE(fn != std::string::npos);
   const std::string body = h.substr(fn, h.find('}', fn) - fn);
-  TEST_ASSERT_TRUE(body.find("solide::memory::has(key) ? solide::memory::getString(key, def)"
-                             " : String(def)") != std::string::npos);
+  TEST_ASSERT_TRUE(body.find("solide::memory::has(key) ? nvsReadStr(key, def) : String(def)") != std::string::npos);
+  // Lane STACK: the read copies into PSRAM through nvs_get_str, never a stack array the
+  // length of the value (Preferences::getString's `char buf[len]`, up to 4000 B).
+  const std::string cpp = readFile("src/sys/config_nvs.cpp");
+  const std::string read = between(cpp, "String nvsReadStr(const char* key, const char* def) {", "\n}\n");
+  TEST_ASSERT_TRUE(read.find("heap_caps_malloc(len, MALLOC_CAP_SPIRAM)") != std::string::npos);
+  TEST_ASSERT_TRUE(read.find("nvs_get_str(h, key, buf, &len)") != std::string::npos);
+  TEST_ASSERT_TRUE(read.find("getString") == std::string::npos);
+  TEST_ASSERT_TRUE(read.find("char buf[") == std::string::npos);
   // The persist seam's reads (agent::store, the Wi-Fi list) use it too.
   TEST_ASSERT_TRUE(h.find("String getString(const char* k, const char* def) { return nvsGetStr(k, def); }") !=
                    std::string::npos);
@@ -94,13 +110,6 @@ static void test_the_wifi_slot_readers_are_quiet() {
 // failed; the list now lives in the model store's flash file. A source guard over the
 // fetch region of provider_verify.cpp (streaming, paging, storing, router prices) and
 // the model store's readers and writer in store.cpp: no NVS write call of any kind.
-static std::string between(const std::string& src, const char* from, const char* to) {
-  const size_t a = src.find(from);
-  TEST_ASSERT_TRUE_MESSAGE(a != std::string::npos, from);
-  const size_t b = src.find(to, a);
-  TEST_ASSERT_TRUE_MESSAGE(b != std::string::npos, to);
-  return src.substr(a, b - a);
-}
 static void test_the_model_fetch_writes_no_nvs() {
   static const char* kNvsWrites[] = {"memory::set", "memory::eraseKey", "putStr(", "putOrClear(",
                                      "putInt(", "putBool(", "clearKey(", "setVerify(", "setReason(",

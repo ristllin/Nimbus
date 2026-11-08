@@ -60,13 +60,36 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tg_poll_stack.json")
 DEFAULT_ENVS = ("esp32s3-cyd",)
 INCLUDE_ROOTS = ("lib/core/include", "lib/harness/include", "include", "src")
+CTX_BASE = 1 << 40   # ids of receiver-bound copies of Print / Stream helpers
+RECEIVER_HELPER_RE = re.compile(r"^(Print|Stream)::")
 
 CALL_RE = re.compile(r"^call(0|4|8|12)$")
 CALLX_RE = re.compile(r"^callx(0|4|8|12)$")
 INSN_RE = re.compile(r"^\s*([0-9a-f]{8}):\s+(\S+)(?:\s+(.*))?$")
 LIT_RE = re.compile(r"\(([0-9a-f]{1,8}) <")
 STDFN_RE = re.compile(r"^std::function<(.*)>::operator\(\)\(")
-INVOKE_RE = re.compile(r"^std::_Function_handler<(.*?), .*>::_M_invoke\(")
+STDFN_MANAGE_RE = re.compile(r"^std::function<(.*)>::(function|operator=|~function)\(")
+HANDLER = "std::_Function_handler<"
+
+
+def handler_signature(dname: str, member: str) -> "str | None":
+    """The signature of `std::_Function_handler<SIG, Functor>::member(...)`, or None.
+
+    SIG is the first template argument, cut at its top-level comma: the signature
+    itself has commas inside brackets (`std::basic_string<char, ...>`)."""
+    if not dname.startswith(HANDLER):
+        return None
+    depth = 0
+    for i in range(len(HANDLER), len(dname)):
+        c = dname[i]
+        if c in "<(":
+            depth += 1
+        elif c in ">)":
+            depth -= 1
+        elif c == "," and depth == 0:
+            sig = dname[len(HANDLER):i]
+            return sig if ">::" + member + "(" in dname else None
+    return None
 IDENT_CALL_RE = re.compile(r"(~?[A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 
@@ -109,7 +132,7 @@ def run(cmd: list, stdin: "str | None" = None) -> str:
 
 
 class Fn:
-    __slots__ = ("addr", "size", "name", "dname", "frame", "dynamic", "calls", "indirect", "rom")
+    __slots__ = ("addr", "size", "name", "dname", "frame", "dynamic", "calls", "indirect", "rom", "probes")
 
     def __init__(self, addr: int, size: int, name: str, rom: bool = False):
         self.addr, self.size, self.name, self.rom = addr, size, name, rom
@@ -118,6 +141,7 @@ class Fn:
         self.dynamic = False
         self.calls = []      # (site, target addr)
         self.indirect = []   # (site, load offset or None): calls the disassembly cannot resolve
+        self.probes = []     # its first instruction addresses (where a lambda's source line is read)
 
 
 def parse_nm(text: str, rom: bool = False) -> dict:
@@ -290,6 +314,7 @@ def parse_disassembly(text: str, funcs: dict, known: "set | None" = None) -> Non
             f = frame_of(insns[0][1], insns[0][2])
             cur.frame = f if f is not None else sum(call0_adjust(op, a) for _x, op, a in insns)
         _function_body(cur, insns, starts)
+        cur.probes = [a for a, _op, _args in insns[:24]]
 
     for line in text.splitlines():
         m = INSN_RE.match(line)
@@ -470,10 +495,14 @@ class Sources:
 
 
 def demangle(funcs: dict, cxxfilt: str) -> None:
+    """Demangled names. The Xtensa toolchain marks a GCC clone with `$isra$0` or
+    `$constprop$0` where other targets write `.isra.0`; c++filt leaves such a name
+    mangled, so the base is demangled alone and the clone tag kept as a suffix."""
     order = list(funcs.values())
-    out = run([cxxfilt], "\n".join(f.name for f in order) + "\n").splitlines()
-    for f, d in zip(order, out):
-        f.dname = d
+    bases = [f.name.split("$", 1)[0] for f in order]
+    out = run([cxxfilt], "\n".join(bases) + "\n").splitlines()
+    for f, base, d in zip(order, bases, out):
+        f.dname = d + (" [" + f.name[len(base):].replace("$", " ").strip() + "]" if f.name != base else "")
 
 
 def addr2line(elf: str, tool: str, addrs: list) -> dict:
@@ -497,6 +526,36 @@ def addr2line(elf: str, tool: str, addrs: list) -> dict:
         else:
             i += 1
     return out
+
+
+def lambda_parent(dname: str) -> "str | None":
+    """The function a std::function handler's lambda is defined in, from the handler's name."""
+    sig = handler_signature(dname, "_M_invoke")
+    if sig is None:
+        return None
+    rest = dname[len(HANDLER) + len(sig) + 2:]
+    cut = rest.find("::{lambda")
+    return rest[:cut] if cut > 0 else None
+
+
+STDLIB_LOC_RE = re.compile(r"/include/c\+\+/|/bits/|^\?\?")
+LAMBDA_OPEN_RE = re.compile(r"\[[^\]]*\]\s*(\(|\{|mutable)")
+ASSIGNED_RE = re.compile(r"([A-Za-z_]\w*)\s*=\s*\[")
+
+
+def lambda_names(sources: "Sources", loc: str) -> set:
+    """Names a lambda is assigned to (`d.headHost = [..]` -> headHost): read from the
+    nearest lambda introducer at or above a line of its body."""
+    path, _, num = loc.split(" (discriminator")[0].rpartition(":")
+    if not num.isdigit():
+        return set()
+    sources.line(loc)
+    lines = sources.cache.get(path, [])
+    for i in range(min(int(num), len(lines)) - 1, max(int(num) - 80, 0) - 1, -1):
+        text = code_only(lines[i])
+        if LAMBDA_OPEN_RE.search(text):
+            return set(ASSIGNED_RE.findall(text))
+    return set()
 
 
 def short_loc(loc: str) -> str:
@@ -531,6 +590,15 @@ class Model:
         self.elsewhere = [re.compile(r["function"]) for r in cfg.get("not_on_tg_poll", [])]
         self.dropped = 0
         self.mult = {}
+        self.deferred = []          # (caller, site, candidate handlers) of generic std::function calls
+        self.edge_set = set()
+        self.fallen_back = set()
+        self.callers = None
+        self.callers_seen = []
+        self.ctx_ids = {}      # (helper addr, receiver class) -> the bound copy's id
+        self.ctx_class = {}    # bound copy id -> receiver class
+        self.cur_ctx = None
+        self.lambda_names = {}      # handler -> names its lambda is assigned to
 
     def match(self, pattern: str) -> list:
         if pattern not in self.cache:
@@ -541,11 +609,7 @@ class Model:
     def invokers(self, sig: str) -> list:
         key = ("invoke", sig)
         if key not in self.cache:
-            hits = []
-            for a, f in self.funcs.items():
-                m = INVOKE_RE.match(f.dname)
-                if m and m.group(1) == sig:
-                    hits.append(a)
+            hits = [a for a, f in self.funcs.items() if handler_signature(f.dname, "_M_invoke") == sig]
             self.cache[key] = sorted(hits)
         return self.cache[key]
 
@@ -563,8 +627,11 @@ class Model:
         return out
 
     def _by_rule(self, names: list, locs: list) -> "list | None":
+        """The first indirect rule whose `in` names a function of the inline chain (and whose
+        `at`, if any, a location of it). `{1}` in a target is the `in` match's first group."""
         for rule in self.cfg["indirect"]:
-            if not any(re.search(rule["in"], n) for n in names):
+            m = next((m for m in (re.search(rule["in"], n) for n in names) if m), None)
+            if m is None:
                 continue
             if "at" in rule and not any(re.search(rule["at"], loc) for loc in locs):
                 continue
@@ -572,17 +639,75 @@ class Model:
             self.how["config rule"] += 1
             out = set()
             for pat in rule["targets"]:
+                if "{1}" in pat:
+                    pat = pat.replace("{1}", m.group(1) or "")
                 out.update(self.match(pat))
+            sc = self.cfg.get("stdout_context")
+            if self.cur_ctx == "stdout" and sc:   # the console stream: its device, never a file
+                out = {t for t in out if not re.search(sc["files"], self.funcs[t].dname)}
             return self.on_tg_poll(out)
         return None
 
-    def _by_signature(self, names: list) -> "list | None":
-        for n in names:
+    def managers(self, sig: "str | None") -> list:
+        """_M_manager functions (copy, move, destroy a stored functor) of one signature, or of all."""
+        key = ("manager", sig)
+        if key not in self.cache:
+            hits = []
+            for a, f in self.funcs.items():
+                if f.dname.startswith("std::_Function_base::_Base_manager<") and "::_M_manager(" in f.dname:
+                    hits.append(a)
+                    continue
+                own = handler_signature(f.dname, "_M_manager")
+                if own is not None and (sig is None or own == sig):
+                    hits.append(a)
+            self.cache[key] = sorted(hits)
+        return self.cache[key]
+
+    def _by_signature(self, names: list, chain: list, caller: Fn, site: int) -> "list | None":
+        """A std::function call reaches the functors stored as that exact signature.
+
+        Narrowed, in order: to the lambdas assigned to the field the call names
+        (`d.headHost = [..]` for `d.headHost()`, read from each lambda's source); for a
+        signature many functors share, to the lambdas created by code this task runs
+        (decided after the walk, see `deferred`); otherwise every functor of the
+        signature. A copy, assignment or destruction reaches that signature's managers.
+        """
+        for i, n in enumerate(names):
             m = STDFN_RE.match(n)
             if m:
+                sig = m.group(1)
+                cands = self.invokers(sig)
+                bound = self.bind_by_field(cands, chain[i + 1][1] if i + 1 < len(chain) else "")
+                if bound:
+                    self.how["std::function, by the field it is called through"] += 1
+                    return self.on_tg_poll(bound)
+                if len(cands) > self.cfg.get("generic_signature_functors", 8):
+                    self.deferred.append((caller.addr, site, cands))
+                    self.how["std::function, by the functors this task creates"] += 1
+                    return []
                 self.how["std::function, by signature"] += 1
-                return self.on_tg_poll(self.invokers(m.group(1)))
+                return self.on_tg_poll(cands)
+            m = STDFN_MANAGE_RE.match(n)
+            if m or n.startswith("std::_Function_base::~_Function_base()"):
+                self.how["std::function manager, by signature"] += 1
+                return self.on_tg_poll(self.managers(m.group(1) if m else None))
         return None
+
+    def bind_by_field(self, cands: list, loc: str) -> list:
+        """The candidates whose lambda is assigned to a name the call site calls."""
+        if not loc:
+            return []
+        called = set(IDENT_CALL_RE.findall(code_only(self.sources.line(loc))))
+        return [h for h in cands if called & self.lambda_names.get(h, set())]
+
+    def creators_reached(self, cands: list) -> list:
+        """Handlers whose lambda is created inside a function this task reaches."""
+        out = []
+        for h in cands:
+            parent = lambda_parent(self.funcs[h].dname)
+            if parent and parent in self.reach_names:
+                out.append(h)
+        return out
 
     def _by_vtable(self, locs: list, slot: "int | None", names: list) -> "list | None":
         """A virtual call loads its target from a vtable slot: the methods at that slot named on the line."""
@@ -635,7 +760,7 @@ class Model:
         m = re.search(r"([A-Za-z_]\w*)\s*(?:\.|->)\s*" + re.escape(name) + r"\s*\(", code)
         if m is None:
             if re.search(r"(?<![\w.>:~])" + re.escape(name) + r"\s*\(", code) and names:
-                return last_name(split_name(names[0])[0]) or None
+                return self.cur_ctx or last_name(split_name(names[0])[0]) or None
             return None
         return self.declared_type(loc, m.group(1))
 
@@ -650,6 +775,9 @@ class Model:
 
     def declared_type(self, loc: str, ident: str) -> "str | None":
         """ident's declared class: the nearest declaration above the call, else in the sibling header."""
+        aliases = self.cfg.get("aliases", {})
+        if ident in aliases:   # a macro or global the source never declares (Serial)
+            return aliases[ident]
         path, _, num = loc.split(" (discriminator")[0].rpartition(":")
         if not num.isdigit():
             return None
@@ -706,7 +834,7 @@ class Model:
         locs = [loc for _, loc in chain]
         found = self._by_rule(names, locs)
         if found is None:
-            found = self._by_signature(names)
+            found = self._by_signature(names, chain, caller, site)
         if found is None:
             found = self._by_vtable(locs, slot, names)
         if found is None:
@@ -714,37 +842,154 @@ class Model:
         return found
 
     def build(self, root: int) -> None:
-        """Edges reachable from root, with indirect sites resolved."""
-        seen = set()
+        """Edges reachable from root, with indirect sites resolved; a deferred std::function
+        site gets its targets once the walk knows which lambdas this task creates, and
+        the walk goes on from them until nothing new is reached."""
+        self.reach = set()
+        self.reach_names = set()
         todo = [root]
+        while True:
+            while todo:
+                self._walk(todo)
+                todo = self._resolve_deferred(fallback=False)
+            todo = self._resolve_deferred(fallback=True)
+            if not todo:
+                break
+        for a in self.edges:
+            self.edges[a] = sorted(set(self.edges[a]))
+
+    def ancestors(self, fn: int, levels: int) -> set:
+        """Names of the functions up to `levels` calls above fn (direct and resolved edges)."""
+        if self.callers is None or len(self.callers_seen) != len(self.edge_set) + len(self.reach):
+            self.callers = defaultdict(set)
+            for a in self.reach:
+                for _site, t in self.funcs[a].calls:
+                    self.callers[t].add(a)
+            for a, es in self.edges.items():
+                for _site, t in es:
+                    self.callers[t].add(a)
+            self.callers_seen = [0] * (len(self.edge_set) + len(self.reach))
+        out, frontier = {fn}, {fn}
+        for _ in range(levels):
+            frontier = {c for f in frontier for c in self.callers.get(f, ())} - out
+            out |= frontier
+        return {self.funcs[a].dname for a in out}
+
+    def _resolve_deferred(self, fallback: bool) -> list:
+        """Targets of the deferred std::function sites, called through a parameter or a
+        local: the lambdas created in the calling function or up to three calls above it
+        (the lambda was passed down); with `fallback`, a site with none such is unresolved."""
+        todo = []
+        for caller, site, cands in self.deferred:
+            above = self.ancestors(caller, 3)
+            created = [h for h in cands if lambda_parent(self.funcs[h].dname) in above]
+            if not created and fallback and site not in self.fallen_back:
+                self.fallen_back.add(site)
+                self.unresolved[caller].append(site)
+            for t in self.on_tg_poll(created):
+                if (site, t) not in self.edge_set:
+                    self.edge_set.add((site, t))
+                    self.edges[caller].append((site, t))
+                    todo.append(t)
+        return todo
+
+    def with_receiver(self, a: int, f: Fn, site: int, t: int) -> int:
+        """A call into a Print or Stream helper (print, println, readBytes...) gets a copy of
+        that helper bound to the receiver's class, so the helper's own virtual write or
+        read goes to that class only: Serial.println reaches HWCDC::write, never the TLS
+        client a client.print in other code reaches. Inside a bound helper the binding
+        follows its calls on this; a receiver the source does not show stays unbound."""
+        callee = self.funcs[t]
+        stream = self.stdout_binding(a, callee)
+        if stream is not None:
+            return self.bound_copy(t, stream)
+        if not RECEIVER_HELPER_RE.match(callee.dname):
+            return t
+        cls = self.ctx_class.get(a) if RECEIVER_HELPER_RE.match(f.dname) else None
+        if cls is None:
+            chain = self.inlines.get(site, [])
+            if chain:
+                code = code_only(self.sources.line(chain[0][1]))
+                m = re.search(r"([A-Za-z_]\w*)\s*(?:\.|->)\s*" + re.escape(method_name(callee.dname)) + r"\s*\(", code)
+                cls = self.declared_type(chain[0][1], m.group(1)) if m else None
+        if cls is None or not self.known_class(cls):
+            return t
+        return self.bound_copy(t, cls)
+
+    def stdout_binding(self, a: int, callee: Fn) -> "str | None":
+        """`stdout` when the call prints to the console stream (config stdout_context): a
+        printf-family entry, or a stdio internal called from a copy already bound to it."""
+        sc = self.cfg.get("stdout_context")
+        if not sc:
+            return None
+        if re.search(sc["entries"], callee.dname):
+            self.hits["stdout|entries"] += 1
+            return "stdout"
+        if self.ctx_class.get(a) == "stdout" and re.search(sc["family"], callee.dname):
+            return "stdout"
+        return None
+
+    def bound_copy(self, t: int, cls: str) -> int:
+        callee = self.funcs[t]
+        key = (t, cls)
+        if key not in self.ctx_ids:
+            nid = CTX_BASE + len(self.ctx_ids)
+            g = Fn(nid, callee.size, callee.name, callee.rom)
+            g.dname = f"{callee.dname} [this: {cls}]"
+            g.frame, g.dynamic, g.calls, g.indirect = callee.frame, callee.dynamic, callee.calls, callee.indirect
+            self.funcs[nid] = g
+            self.ctx_ids[key] = nid
+            self.ctx_class[nid] = cls
+        return self.ctx_ids[key]
+
+    def impossible_call(self, caller: Fn, callee: int) -> bool:
+        """A direct call the config shows cannot run (an error branch whose condition the
+        only callers never meet), with why."""
+        for r in self.cfg.get("impossible_calls", []):
+            if re.search(r["caller"], caller.dname) and re.search(r["callee"], self.funcs[callee].dname):
+                self.hits["impossible-call|" + r["caller"] + "|" + r["callee"]] += 1
+                return True
+        return False
+
+    def _walk(self, todo: list) -> None:
+        seen = self.reach
+        terminal = [re.compile(r["function"]) for r in self.cfg.get("terminal", [])]
         while todo:
             a = todo.pop()
             if a in seen or a not in self.funcs:
                 continue
             seen.add(a)
             f = self.funcs[a]
+            hit = next((i for i, rx in enumerate(terminal) if rx.search(f.dname)), None)
+            if hit is not None:   # never returns: the device restarts; what it calls is not followed
+                self.hits["terminal|" + self.cfg["terminal"][hit]["function"]] += 1
+                continue
             for site, t in f.calls:
-                if t in self.funcs:
+                if t not in self.funcs:
+                    self.unresolved[a].append(site)
+                elif not self.impossible_call(f, t):
+                    t = self.with_receiver(a, f, site, t)
                     self.edges[a].append((site, t))
                     todo.append(t)
-                else:
-                    self.unresolved[a].append(site)
+            self.cur_ctx = self.ctx_class.get(a)
             for site, slot in f.indirect:
                 targets = self.resolve_site(f, site, slot)
                 if targets is None:
                     self.unresolved[a].append(site)
                     continue
+                targets = [self.bound_copy(t, "stdout") if self.stdout_binding(a, self.funcs[t]) else t
+                           for t in targets]
+                for t in targets:
+                    self.edge_set.add((site, t))
                 self.edges[a].extend((site, t) for t in targets)
                 todo.extend(targets)
-        self.reach = seen
-        for a in self.edges:
-            self.edges[a] = sorted(set(self.edges[a]))
 
     def cut_cycles(self, root: int) -> None:
         """Depth-first from root; every back edge is cut. Leaves self.order (callers first)."""
         state = {root: 1}   # 1 on the walk, 2 done
         post = []
         self.back = []      # (caller, site, callee)
+        self.cyclic = set()   # every function on a cut cycle
         self.dag = defaultdict(list)
         stack = [(root, 0)]
         while stack:
@@ -759,6 +1004,8 @@ class Model:
             site, w = succ[i]
             if state.get(w) == 1:
                 self.back.append((v, site, w))
+                on_walk = [n for n, _ in stack]
+                self.cyclic.update(on_walk[on_walk.index(w):])   # the cycle: w ... v
                 continue
             self.dag[v].append((site, w))
             if w not in state:
@@ -767,15 +1014,23 @@ class Model:
         self.order = post[::-1]
 
     def declare_cycles(self) -> None:
-        """Every cut cycle is declared real (with a depth) or impossible (with why)."""
+        """Every cut cycle is declared real (with a depth) or impossible (with why).
+
+        A real one counts the frame of every reachable function its row names `depth`
+        times, so a mutual recursion (parseVariant -> parseObject -> parseVariant) is paid
+        for at every level, not only at the function the walk happened to cut at.
+        """
         rec = self.cfg.get("recursion", [])
         fake = self.cfg.get("impossible_cycles", [])
+        for a in self.cyclic:
+            row = next((r for r in rec if re.search(r["function"], self.funcs[a].dname)), None)
+            if row is not None:
+                self.mult[a] = max(self.mult.get(a, 1), row["depth"])
         for caller, _site, callee in self.back:
             names = (self.funcs[caller].dname, self.funcs[callee].dname)
             row = next((r for r in rec if any(re.search(r["function"], n) for n in names)), None)
             if row is not None:
                 self.hits["recursion|" + row["function"]] += 1
-                self.mult[callee] = max(self.mult.get(callee, 1), row["depth"])
                 continue
             row = next((r for r in fake if re.search(r["caller"], names[0]) and re.search(r["callee"], names[1])),
                        None)
@@ -914,14 +1169,33 @@ def analyse_elf(elf: str, cfg: dict) -> "tuple[Model, dict]":
         root = wrapper[0]
         funcs[root].calls = [(root, entry[0])]
         funcs[root].indirect = []
-    sites = sorted({s for f in funcs.values() if not f.rom for s, _ in f.indirect})
+    sites = {s for f in funcs.values() if not f.rom for s, _ in f.indirect}
+    sites |= {s for f in funcs.values() if not f.rom for s, t in f.calls
+              if t in funcs and RECEIVER_HELPER_RE.match(funcs[t].dname)}
+    sites = sorted(sites)
     inlines = addr2line(elf, tools["addr2line"], sites)
     vslots = vtable_slots(nm_text, elf_reader(elf), funcs)
     model = Model(funcs, cfg, inlines, vslots, Sources())
+    model.lambda_names = handler_lambda_names(elf, tools, funcs, model.sources)
     model.analyse(root)
     model.tools = tools
     model.elf = elf
     return model, funcs
+
+
+def handler_lambda_names(elf: str, tools: dict, funcs: dict, sources: Sources) -> dict:
+    """handler addr -> the names its lambda is assigned to, for every std::function handler."""
+    handlers = [f for f in funcs.values() if not f.rom and handler_signature(f.dname, "_M_invoke") is not None]
+    probes = sorted({p for f in handlers for p in f.probes})
+    chains = addr2line(elf, tools["addr2line"], probes)
+    out = {}
+    for f in handlers:
+        for p in f.probes:
+            loc = next((loc for _name, loc in chains.get(p, []) if not STDLIB_LOC_RE.search(loc)), None)
+            if loc:
+                out[f.addr] = lambda_names(sources, loc)
+                break
+    return out
 
 
 def describe(model: Model, chain: list, site_locs: dict) -> list:
@@ -961,6 +1235,12 @@ def stale_rows(model: Model) -> list:
     for r in cfg.get("not_on_tg_poll", []):
         if not model.hits.get("elsewhere|" + r["function"]):
             out.append(f"stale not-on-tg_poll row (never an indirect target here): {r['function']!r}")
+    for r in cfg.get("impossible_calls", []):
+        if not model.hits.get("impossible-call|" + r["caller"] + "|" + r["callee"]):
+            out.append(f"stale impossible-call row: {r['caller']!r} -> {r['callee']!r}")
+    for r in cfg.get("terminal", []):
+        if not model.hits.get("terminal|" + r["function"]):
+            out.append(f"stale terminal row (not reachable on tg_poll): {r['function']!r}")
     for r in cfg.get("dynamic_frames", []):
         if not model.hits.get("dynamic|" + r["function"]):
             out.append(f"stale dynamic-frame row (no such function on tg_poll): {r['function']!r}")

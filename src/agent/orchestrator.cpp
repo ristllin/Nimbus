@@ -1091,7 +1091,10 @@ static bool cumuloAttempt(const std::string& sel, CumuloCall& c) {
   const nimbus::orch::RouterRoute rr = nimbus::orch::resolveRouterRoute(sel);
   const std::string upstream = rr.upstream;
   const std::string model = rr.model;
-  providers::ProviderDeps pd = deviceProviderDeps();
+  // On the heap (lane STACK): ProviderDeps is 416 B of hooks, and this runs inside a turn
+  // on the Telegram poll task. Built in place from deviceProviderDeps().
+  const std::unique_ptr<providers::ProviderDeps> deps(new providers::ProviderDeps(deviceProviderDeps()));
+  providers::ProviderDeps& pd = *deps;
   cumuloTap().setInner(pd.http);
   pd.http = &cumuloTap();
   pd.routerBase = [] { String b = store::cumuloBase();
@@ -1795,7 +1798,8 @@ static TurnEngine::Deps buildTurnDeps() {
   d.hosts.add("zai", [](std::string& cv, const std::string& ins, const std::string& inp,
                         std::string& out, std::string& err, const agent::HeadTools* tools,
                         nimbus::orch::TokenUsage* usage) {
-    providers::ProviderDeps pd = deviceProviderDeps();
+    const std::unique_ptr<providers::ProviderDeps> deps(new providers::ProviderDeps(deviceProviderDeps()));
+    providers::ProviderDeps& pd = *deps;   // on the heap (lane STACK, as in cumuloAttempt)
     pd.zaiHead(pd);
     return providers::orchTurnCustom(pd, cv, ins, inp, out, err, tools, usage);
   });

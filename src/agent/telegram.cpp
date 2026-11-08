@@ -322,6 +322,31 @@ static InboundMsg* ensureInboundStage() {
   return g_inboundStage;
 }
 
+// Lane STACK (8 Nov 2026): the reply drain's slot moves off tg_poll's stack too. A
+// PendingReply is 4134 B; as a pollTask local it made pollTask's own frame 4944 B,
+// under every turn this task runs (Lumi logged 936 B of 24576 left after a voice note
+// that created a routine). Single consumer (tg_poll), like the inbound slot above;
+// allocated in begin(). A null leaves replies queued for the next cycle.
+static PendingReply* g_replyStage = nullptr;
+static PendingReply* ensureReplyStage() {
+  if (!g_replyStage)
+    g_replyStage = (PendingReply*)heap_caps_malloc(sizeof(PendingReply), MALLOC_CAP_SPIRAM);
+  return g_replyStage;
+}
+
+// A queue item built in PSRAM, not on the caller's stack. send() runs deep inside a
+// turn (a tool's notice, a gate warning, the reply itself) and injectMessage() on the
+// web task's 12 KB stack; each used to put a ~4.1 KB item on the stack for the copy
+// the queue takes. Zeroed like the `T x{}` it replaces; null when PSRAM is exhausted.
+template <typename T>
+struct PsramItem {
+  T* const p = static_cast<T*>(heap_caps_calloc(1, sizeof(T), MALLOC_CAP_SPIRAM));
+  PsramItem() = default;
+  PsramItem(const PsramItem&) = delete;
+  PsramItem& operator=(const PsramItem&) = delete;
+  ~PsramItem() { heap_caps_free(p); }
+};
+
 // CUM-462: a local turn (voice / web / serial inject) is waiting AND this cycle's
 // inbound drain can take it (callback set, staging slot allocated - begin() does
 // that up front). The idle waits below end early on this, so it must never stay
@@ -2015,7 +2040,9 @@ static bool readTypingAnswer(uint32_t deadline) {
   return ok && drained && !serverClose;
 }
 
-static void holdTyping(const std::string& chat) {
+// noinline (lane STACK): its 512 B of reply buffers stay in its own frame, which exists
+// only while it runs, instead of widening pollTask's frame under every turn.
+__attribute__((noinline)) static void holdTyping(const std::string& chat) {
   if (!g_token.length() || !g_pollScOpen || !realChatId(chat) || !allowed(String(chat.c_str()))) return;
   char req[256];
   const int n = snprintf(req, sizeof(req),
@@ -2368,7 +2395,8 @@ static nimbus::net::TgReceipt uploadMedia(const MediaUpload& u, size_t* bytesOut
   return r;
 }
 
-static void drainMedia() {
+// noinline (lane STACK): its 398 B PendingMedia copy stays out of pollTask's frame.
+__attribute__((noinline)) static void drainMedia() {
   PendingMedia m;
   portENTER_CRITICAL(&g_mediaMux);
   if (!g_media.set) { portEXIT_CRITICAL(&g_mediaMux); return; }
@@ -2653,12 +2681,12 @@ void pollTask(void*) {
     // transient TLS failure). Without a token the reply was already mirrored to
     // serial by the send sink, so drain-and-discard to keep the queue from backing up.
     nimbus::pollwatch::beat("replies");
-    PendingReply reply;
-    while (xQueueReceive(g_replyQ, &reply, 0) == pdTRUE) {
+    PendingReply* reply = ensureReplyStage();
+    while (reply && xQueueReceive(g_replyQ, reply, 0) == pdTRUE) {
       if (!haveToken) continue;
-      if (!doSendMessage(reply.chatId, reply.text) && ++reply.tries < 6) {
-        alogf("telegram: send retry %u for %s", reply.tries, reply.chatId);
-        xQueueSend(g_replyQ, &reply, 0);
+      if (!doSendMessage(reply->chatId, reply->text) && ++reply->tries < 6) {
+        alogf("telegram: send retry %u for %s", reply->tries, reply->chatId);
+        xQueueSend(g_replyQ, reply, 0);
         break;   // don't hot-loop; let WiFi settle (heap recovers as TIME_WAIT drains)
       }
     }
@@ -2786,6 +2814,7 @@ void begin(const String& token, const String& allowlist, MessageCallback cb) {
   // the very first local turn after boot must find it allocated. A null here keeps
   // the old behavior (waits run full; the drain still retries the alloc lazily).
   ensureInboundStage();
+  ensureReplyStage();   // the reply drain's slot, off tg_poll's stack (lane STACK)
   bootGuard();   // before the task: its counters are right from the first moment
   g_running   = true;
   BaseType_t ok = xTaskCreatePinnedToCore(pollTask, "tg_poll", POLL_STACK_BYTES,
@@ -2942,7 +2971,12 @@ String injectRawPage(const String& body) {
 
 bool injectMessage(const String& chatId, const String& text) {
   if (!g_inboundQ) return false;
-  InboundMsg im{};
+  PsramItem<InboundMsg> item;   // ~4.1 KB the queue copies: PSRAM, not the caller's stack
+  if (!item.p) {
+    alogf("telegram: no memory to queue a message for %s", chatId.c_str());
+    return false;
+  }
+  InboundMsg& im = *item.p;
   chatId.toCharArray(im.chatId, sizeof(im.chatId));
   // For pseudo-channels the sender IS the channel ("web"/"voice"/"serial") - the
   // drain forwards it as `from`, so the episodic capture labels the origin honestly.
@@ -3081,8 +3115,10 @@ bool send(const String& chatId, const String& text, bool block) {
   const TickType_t wait = block ? pdMS_TO_TICKS(100) : 0;
 
   const int n = (int)text.length();
+  PsramItem<PendingReply> item;   // the queue copies it; PSRAM, not this (often deep) stack
+  if (!item.p) return false;
+  PendingReply& r = *item.p;
   if (n <= TG_CHUNK) {                      // fits one Telegram message - the common path
-    PendingReply r{};
     chatId.toCharArray(r.chatId, sizeof(r.chatId));
     text.toCharArray(r.text, sizeof(r.text));
     return xQueueSend(g_replyQ, &r, wait) == pdTRUE;
@@ -3096,7 +3132,7 @@ bool send(const String& chatId, const String& text, bool block) {
   if (overflow) parts = TG_MAX_PARTS;
   bool allOk = true;
   for (int k = 0; k < parts; k++) {
-    PendingReply r{};
+    memset(&r, 0, sizeof(r));   // not `r = PendingReply{}`: that temporary would sit on the stack
     chatId.toCharArray(r.chatId, sizeof(r.chatId));
     char hdr[16];
     snprintf(hdr, sizeof(hdr), "(%d/%d) ", k + 1, parts);

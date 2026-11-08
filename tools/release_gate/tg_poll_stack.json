@@ -15,7 +15,7 @@
     "tls_block": 16,
     "interrupt_frame": 208
   },
-  "unresolved_indirect_bytes": 0,
+  "unresolved_indirect_bytes": 512,
   "indirect": [
     {
       "in": "^agent::telegram::\\(anonymous namespace\\)::pollTask\\(",
@@ -26,12 +26,305 @@
         "^stagedWorkRun\\(\\)",
         "^stagedWorkPending\\(\\)"
       ],
-      "why": "pollTask's function pointers: g_cb, g_tick, g_stt, g_stagedRun and g_stagedPending, set once by main.cpp (telegram::begin, setTick, setSttSink, setStagedWork); g_attachSink is never set"
+      "why": "pollTask's function pointers g_cb, g_tick, g_stt, g_stagedRun, g_stagedPending, set once by main.cpp (telegram::begin, setTick, setSttSink, setStagedWork); g_attachSink is never set"
+    },
+    {
+      "in": "^agent::telegram::\\(anonymous namespace\\)::stagedWorkWaiting\\(",
+      "targets": [
+        "^stagedWorkPending\\(\\)"
+      ],
+      "why": "g_stagedPending (main.cpp setStagedWork)"
+    },
+    {
+      "in": "^agent::telegram::\\(anonymous namespace\\)::(handleUpdate|classifyFile)",
+      "at": "src/agent/telegram\\.cpp",
+      "targets": [],
+      "why": "g_attachSink: no caller of setAttachmentSink in the firmware"
+    },
+    {
+      "in": "^agent::telegram::\\(anonymous namespace\\)::sendOwnerNotice\\(",
+      "targets": [
+        "^agent::telegram::\\(anonymous namespace\\)::send(Storage|FileStore)Notice\\(\\)::\\{lambda\\(\\)#\\d+\\}::_FUN\\(\\)$"
+      ],
+      "why": "the take() argument: the lambdas sendStorageNotice and sendFileStoreNotice pass"
+    },
+    {
+      "in": "^void nimbus::core::TgOffsetCursor::attempt<",
+      "targets": [
+        "^agent::telegram::\\(anonymous namespace\\)::writeOffset\\(long\\)$"
+      ],
+      "why": "the write function the poll task hands the cursor (checkpointOffset, persistOffset)"
+    },
+    {
+      "in": "runDownloads",
+      "at": "src/agent/tg_archive\\.cpp",
+      "targets": [
+        "^agent::telegram::\\(anonymous namespace\\)::idleWaitEnds\\(\\)$"
+      ],
+      "why": "the archive's stop lambda calls the yield pointer pollTask passes to tgarchive::tick (idleWaitEnds)"
+    },
+    {
+      "in": "^nimbus::errlog::",
+      "at": "src/sys/errlog\\.h",
+      "targets": [
+        "^nimbus::errlog::\\(anonymous namespace\\)::nextStamp\\(\\)$"
+      ],
+      "why": "DurableLog's stamp_, the one instance g_log(nextStamp) in errlog_fs.cpp"
+    },
+    {
+      "in": "^nimbus::orch::working(Alloc|Free)\\(",
+      "targets": [
+        "^setup\\(\\)::\\{lambda\\((unsigned int|void\\*)\\)#1\\}::_FUN\\(",
+        "^nimbus::orch::\\(anonymous namespace\\)::default(Alloc|Free)\\("
+      ],
+      "why": "g_alloc / g_free: the PSRAM pair main.cpp setup() installs with setWorkingAllocators, or the malloc defaults"
+    },
+    {
+      "in": "^nimbus::orch::ProviderPark::",
+      "at": "orch_provider_park\\.cpp",
+      "targets": [
+        "^nimbus::psramOrInternalCalloc\\("
+      ],
+      "why": "recordAlloc_, set by provider_gate.cpp setRecordMemory(psramOrInternalCalloc)"
+    },
+    {
+      "in": "^agent::hlog::log",
+      "targets": [
+        "^agent::orchestrator::begin\\(agent::HeavyFabric\\*, agent::orchestrator::Sinks const&\\)::\\{lambda\\(char const\\*\\)#1\\}::_FUN"
+      ],
+      "why": "the harness log sink: orchestrator::begin installs it with hlog::setSink"
+    },
+    {
+      "in": "^nimbus::orch::noteFreeze\\(",
+      "targets": [
+        "^agent::spend::\\(anonymous namespace\\)::freezeToPark\\(bool\\)$"
+      ],
+      "why": "installFreezeListener(&freezeToPark), spend_ceiling_store.cpp"
+    },
+    {
+      "in": "^nimbus::orch::spendFrozen\\(",
+      "targets": [
+        "^agent::spend::frozen\\(\\)$"
+      ],
+      "why": "installSpendFreeze(&frozen), spend_ceiling_store.cpp"
+    },
+    {
+      "in": "^nimbus::orch::meterSeam",
+      "targets": [
+        "^agent::spend::\\(anonymous namespace\\)::meterSink\\("
+      ],
+      "why": "installSeamMeter(&meterSink), spend_ceiling_store.cpp"
+    },
+    {
+      "in": "^nimbus::orch::resolveServedModel\\(",
+      "targets": [
+        "^agent::model_refresh::begin\\(\\)::\\{lambda\\(char const\\*, char const\\*, char\\*, unsigned int\\)#1\\}::_FUN"
+      ],
+      "why": "installServedModelResolver, model_refresh.cpp"
+    },
+    {
+      "in": "^nimbus::HeldSlot::",
+      "targets": [
+        "^agent::arbiter::releaseWork\\(\\)$"
+      ],
+      "why": "the only HeldSlot is arbiter::WorkSlot(acquireWork, releaseWork)"
+    },
+    {
+      "in": "commitDrained",
+      "at": "orch_memory_tools\\.cpp",
+      "targets": [
+        "^agent::memory::persistPending\\(\\)$",
+        "^agent::memory::begin\\(\\)::\\{lambda\\(\\)#\\d+\\}::_FUN\\(\\)$"
+      ],
+      "why": "MemoryContext::persistPending, set in memory::begin to persistPending()"
+    },
+    {
+      "in": "^otaupd::fireEvent\\(",
+      "targets": [
+        "^otaEventHook\\("
+      ],
+      "why": "otaupd::setEventHook(otaEventHook), main.cpp"
+    },
+    {
+      "in": "^otaupd::httpsGetOnce\\(",
+      "at": "ota_update\\.cpp:4[5-7]\\d",
+      "targets": [
+        "^otaupd::(psSink|dlSink)\\("
+      ],
+      "why": "the two sinks httpsGetUrl is called with: the manifest buffer and the image writer"
+    },
+    {
+      "in": "^nimbus::usbfw::commitInstall\\(",
+      "targets": [
+        "^otaupd::storeCommitHooks\\(bool\\)::\\{lambda"
+      ],
+      "why": "the CommitHooks storeCommitHooks builds"
+    },
+    {
+      "in": "^agent::orchestrator::handleMessage\\(",
+      "at": "orchestrator\\.cpp",
+      "targets": [
+        "^setup\\(\\)::\\{lambda\\(\\)#\\d+\\}::_FUN\\(\\)$"
+      ],
+      "why": "g_otaInstallHook: the lambda setup() passes to setOtaInstallHook"
+    },
+    {
+      "in": "^agent::orchestrator::clearAsk\\(",
+      "targets": [
+        "^orchEventSink\\("
+      ],
+      "why": "g_sinks.event = orchEventSink, main.cpp"
+    },
+    {
+      "in": "^fs::File::operator bool\\(\\)",
+      "targets": [
+        "^VFSFileImpl::operator bool\\(\\)$"
+      ],
+      "why": "*_p != false: FileImpl's conversion, VFSFileImpl the only FileImpl"
+    },
+    {
+      "in": "^start_ssl_client\\(",
+      "targets": [
+        "^esp_crt_bundle_attach$"
+      ],
+      "why": "bundle_attach_cb, the certificate bundle tlsSetup attaches"
+    },
+    {
+      "in": "^esp_vfs_(open|read|write|close|fstat|stat|rename|unlink|link|mkdir|rmdir|opendir|readdir|readdir_r|closedir|seekdir|telldir|fsync|lseek|pread|pwrite|truncate|ftruncate|access|utime|tcsetattr|tcgetattr|tcdrain|tcflush|tcflow|tcgetsid|tcsendbreak|ioctl)(?:_r)?$",
+      "targets": [
+        "^(vfs_fat|vfs_littlefs|console|uart|usb_serial_jtag)_{1}(_p)?$"
+      ],
+      "why": "the VFS dispatch table, per operation: FATFS (the SD card), LittleFS (flash) and the console, UART and USB-serial devices are the registered file systems; esp_vfs_X reaches each one's X"
+    },
+    {
+      "in": "^esp_vfs_fcntl_r$",
+      "targets": [
+        "^(vfs_fat|vfs_littlefs|console|uart|usb_serial_jtag)_fcntl$"
+      ],
+      "why": "fcntl through the VFS table"
+    },
+    {
+      "in": "^(esp_vfs_select|call_end_selects)$",
+      "targets": [
+        "^(vfs_fat|vfs_littlefs|console|uart|usb_serial_jtag)_(start|end)_select$"
+      ],
+      "why": "select's per-device start and end hooks"
+    },
+    {
+      "in": "^ff_disk_(read|write|ioctl|initialize|status)$",
+      "targets": [
+        "^ff_sdmmc_{1}$"
+      ],
+      "why": "FATFS diskio, per operation: the SD card is the one registered drive (ff_diskio_register_sdmmc)"
+    },
+    {
+      "in": "^(__sflush_r|__sfvwrite_r)$",
+      "targets": [
+        "^(__swrite|__sseek)$"
+      ],
+      "why": "newlib FILE _write and _seek: the default stdio handlers every fopen/fdopen sets"
+    },
+    {
+      "in": "^(__srefill_r|_sfread_r)$",
+      "targets": [
+        "^(__sread|__seofread)$"
+      ],
+      "why": "newlib FILE _read"
+    },
+    {
+      "in": "^(_fseeko_r|_ftello_r)$",
+      "targets": [
+        "^__sseek$"
+      ],
+      "why": "newlib FILE _seek"
+    },
+    {
+      "in": "^_fclose_r$",
+      "targets": [
+        "^(__sclose|__swrite|__sseek)$"
+      ],
+      "why": "newlib FILE _close (after a flush through _write and _seek)"
+    },
+    {
+      "in": "^(_fwalk_sglue|_fwalk_reent)$",
+      "targets": [
+        "^(_fflush_r|__sflush_r|lflush|_fclose_r)$"
+      ],
+      "why": "the walk function _fwalk is given: flush or close every open FILE (fflush(NULL), exit cleanup)"
+    },
+    {
+      "in": "^(_mbrtowc_r|__ssvfscanf_r|__ssvfiscanf_r|__wctob)$",
+      "targets": [
+        "^(__ascii_mbtowc|__ascii_wctomb|__utf8_mbtowc|__utf8_wctomb)$"
+      ],
+      "why": "newlib locale conversion pointers"
+    },
+    {
+      "in": "^esp_log",
+      "at": "log/src/log\\.c",
+      "targets": [
+        "^vprintf$"
+      ],
+      "why": "esp_log's vprintf hook: nothing calls esp_log_set_vprintf, so the default vprintf"
+    },
+    {
+      "in": "^heap_caps_alloc_failed$",
+      "targets": [
+        "^nimbus::heapwatch::.*onAllocFailed\\("
+      ],
+      "why": "heap_caps_register_failed_alloc_callback(onAllocFailed), heap_watch.cpp"
+    },
+    {
+      "in": "^(tcpip_api_call|tcpip_send_msg_wait_sem)$",
+      "targets": [
+        "^lwip_netconn_do_\\w+$"
+      ],
+      "why": "CONFIG_LWIP_TCPIP_CORE_LOCKING=1: a socket call's API message runs on the caller's stack under the core lock (lwip_netconn_do_*); esp_netif calls go through esp_netif_lwip_ipc_call instead"
+    },
+    {
+      "in": "^(ip4_output_if_opt_src|ip6_output_if_src|ip4_frag|ip6_frag)$",
+      "targets": [
+        "^(etharp_output|ethip6_output|netif_loop_output_ipv4|netif_loop_output_ipv6)$"
+      ],
+      "why": "netif->output of the Wi-Fi station and loopback netifs"
+    },
+    {
+      "in": "^(ethernet_output|etharp_\\w+)$",
+      "targets": [
+        "^low_level_output$"
+      ],
+      "why": "netif->linkoutput of the Wi-Fi netif (wlanif)"
+    },
+    {
+      "in": "^_Unwind_(RaiseException|RaiseException_Phase2|ForcedUnwind_Phase2|Resume|Resume_or_Rethrow)$",
+      "targets": [
+        "^__gxx_personality_v0$"
+      ],
+      "why": "the one personality routine (C++)"
+    },
+    {
+      "in": "^operator new\\(unsigned int\\)$",
+      "targets": [],
+      "why": "the new_handler: none is installed (std::set_new_handler is never called)"
+    },
+    {
+      "in": "^int nvs::NVSHandle::(get|set)_item<",
+      "targets": [
+        "^nvs::NVSHandleSimple::(get|set)_\\w+\\("
+      ],
+      "why": "NVSHandleSimple, the only NVSHandle"
+    },
+    {
+      "in": "^otaupd::runOnPoll\\(",
+      "targets": [
+        "^otaupd::(checkTask|installTask)\\(void\\*\\)$"
+      ],
+      "why": "the staged job's TaskFunction_t: the check or install task body, run on the poll task instead of its own task (ota_update.cpp runOnPoll)"
     }
   ],
   "not_on_tg_poll": [
     {
-      "function": "^(Async|std::_Function_handler<void \\(AsyncWebServerRequest|std::_Sp_counted_ptr<AsyncWebServerRequest|AsyncUDP)",
+      "function": "^(Async|std::_Function_handler<void \\(AsyncWebServerRequest|std::_Function_handler<[^,]*, Async|std::_Sp_counted_ptr<AsyncWebServerRequest|AsyncUDP)",
       "why": "ESPAsyncWebServer and AsyncUDP run their handlers on the async_tcp task"
     },
     {
@@ -43,10 +336,254 @@
       "why": "Bluetooth callbacks run on the NimBLE host task"
     }
   ],
-  "recursion": [],
-  "impossible_cycles": [],
-  "dynamic_frames": [],
-  "paths": [],
+  "recursion": [
+    {
+      "function": "^(_ZN11ArduinoJson|_ZNK11ArduinoJson|ArduinoJson::|bool ArduinoJson::|.* ArduinoJson::V743PB22::detail::(JsonDeserializer|JsonSerializer|VariantData|VariantRefBase))",
+      "depth": 10,
+      "why": "ArduinoJson's parse, skip, serialize, copy and clear recurse once per nesting level; the deserializer stops at its nesting limit (ARDUINOJSON_DEFAULT_NESTING_LIMIT 10) and the device builds no deeper document"
+    },
+    {
+      "function": "(introsort_loop|__introsort_loop)",
+      "depth": 26,
+      "why": "std::sort: introsort bounds its depth at 2 log2(n); n < 8192 for every list sorted on the device"
+    },
+    {
+      "function": "(__inplace_stable_sort|__merge_without_buffer|__merge_adaptive_resize|__stable_sort_adaptive_resize|_ZSt21__inplace_stable_sort|_ZSt22__merge_without_buffer|_ZSt23__merge_adaptive_resize|_ZSt29__stable_sort_adaptive_resize)",
+      "depth": 13,
+      "why": "std::stable_sort: merge recursion depth log2(n), n < 8192"
+    },
+    {
+      "function": "(_Rb_tree.*_M_erase|_ZNSt8_Rb_tree\\w*_M_erase|_ZNSt8_Rb_tree\\w*8_M_erase)",
+      "depth": 16,
+      "why": "std::map destruction recurses per red-black tree level: height < 2 log2(n+1), maps here hold under 256 entries"
+    },
+    {
+      "function": "^__strftime( \\[isra 0\\])?$",
+      "depth": 2,
+      "why": "strftime recurses once for a composite conversion (%c, %x)"
+    },
+    {
+      "function": "^(gcm_mask|mbedtls_cipher_update|mbedtls_gcm_update|mbedtls_ccm_crypt|mbedtls_ccm_update|esp_aes_process_dma|mpi_mult_mpi_overlong\\$isra\\$0|mbedtls_mpi_mul_mpi)$",
+      "depth": 2,
+      "why": "mbedTLS: GCM and CCM run their block cipher through mbedtls_cipher_update on an inner AES-ECB context (one level); the S3 bignum splits an overlong multiply once"
+    },
+    {
+      "function": "^(netconn_drain|netconn_free|lwip_sendto|lwip_send|udp_sendto)$",
+      "depth": 2,
+      "why": "lwIP: draining a listening netconn frees its queued connections (one level); lwip_send and lwip_sendto fall back to each other once"
+    },
+    {
+      "function": "^(__gnu_cxx::__mutex::(lock|unlock)\\(\\)|__cxa_allocate_exception|__cxa_begin_catch|__cxa_get_globals|std::__throw_length_error|std::__throw_logic_error|std::logic_error::logic_error|std::length_error::length_error|std::basic_string<char, std::char_traits<char>, std::allocator<char> >::(_Rep::_S_create|_S_construct|basic_string)|char\\* std::basic_string<char, std::char_traits<char>, std::allocator<char> >::_S_construct)",
+      "depth": 2,
+      "why": "libstdc++ error paths: a failure while raising an exception raises once more, then terminates"
+    },
+    {
+      "function": "^(esp_log_impl_lock_timeout|xQueueCreateMutex|esp_log|esp_log_va)$",
+      "depth": 2,
+      "why": "esp_log's lazy lock creation can log one allocation failure, which takes the lock path once more"
+    },
+    {
+      "function": "^(agent::memory::lock\\(\\)|agent::alogf\\(char const\\*, \\.\\.\\.\\))$",
+      "depth": 2,
+      "why": "a memory-lock line is logged through alogf, whose durable write can take the memory lock path once; no deeper"
+    },
+    {
+      "function": "^(fs::File::close\\(\\)|std::__shared_count<\\(__gnu_cxx::_Lock_policy\\)2>::~__shared_count\\(\\)|agent::tgarchive::\\(anonymous namespace\\)::CardReader::~CardReader\\(\\))$",
+      "depth": 2,
+      "why": "a file handle's last reference closes the file, which drops the handle's own shared count once"
+    },
+    {
+      "function": "^agent::providers::wire::(meterCancelledJob|exchange)\\(",
+      "depth": 2,
+      "why": "a cancelled job is metered with one more exchange, which does not cancel again"
+    },
+    {
+      "function": "^nimbus::orch::(modelFamily|modelSizeClass|headTakesImages)\\(",
+      "depth": 3,
+      "why": "model-name helpers retry once on a stripped or aliased name"
+    },
+    {
+      "function": "^nimbus::orch::\\(anonymous namespace\\)::(spliceEmbedded|fixOpItem|fixOpObject|spliceOpList)\\(",
+      "depth": 3,
+      "why": "fixOpItem splices an embedded op list only while depth < 2 (orch_turn.cpp fixOpItem, spliceOpList at depth 0): at most three levels"
+    },
+    {
+      "function": "^agent::tgarchive::\\(anonymous namespace\\)::CardFs::removeTree\\(",
+      "depth": 5,
+      "why": "the archive tree is /tgarchive/<chat>/<day>/<item>: four levels"
+    },
+    {
+      "function": "(TgFileSource8startGet|TgFileSource::startGet)",
+      "depth": 2,
+      "why": "a Telegram file URL is re-resolved once after a 404"
+    },
+    {
+      "function": "^VFSFileImpl::openNextFile\\(",
+      "depth": 2,
+      "why": "openNextFile skips one unreadable entry by calling itself"
+    },
+    {
+      "function": "^__pinMode$",
+      "depth": 2,
+      "why": "pinMode detaches the pin's old bus, whose deinit sets the mode once"
+    },
+    {
+      "function": "^nimbus::orch::\\(anonymous namespace\\)::leadsASubject\\(",
+      "depth": 10,
+      "why": "the subject scan recurses per nesting level of the parsed reply (ArduinoJson limit 10)"
+    },
+    {
+      "function": "^(heap_caps_\\w+|multi_heap_\\w+|tlsf_\\w+|esp_heap_adjust_alignment_to_hw|_lock_\\w+|lock_\\w+_generic|__retarget_lock_\\w+|sdmmc_\\w+|vfs_fat_\\w+|_gettimeofday_r\\$part\\$0|esp_time_impl_\\w+|esp_cache_get_alignment)$",
+      "depth": 2,
+      "why": "allocation and lock re-entry: a failed allocation or a lazily created lock logs, and that log's own allocation or lock can take the same path once more; the second failure is dropped, never logged again"
+    },
+    {
+      "function": "^(__sflush_r|_fflush_r|_fclose_r|lflush|__sbprintf|_vfprintf_r|_fwalk_sglue|_fwalk_reent)$",
+      "depth": 2,
+      "why": "newlib stdio: closing or flushing a FILE flushes it once; printing to an unbuffered stream goes through __sbprintf once"
+    },
+    {
+      "function": "^(nd6_send_ns|ip6_output_if|ip6_output_if_src|nd6_\\w+)$",
+      "depth": 2,
+      "why": "IPv6 neighbour discovery: sending a packet to an unresolved neighbour sends one solicitation first"
+    },
+    {
+      "function": "^(std::_Function_base::~_Function_base\\(\\)|std::_Function_handler<.*>::_M_manager\\(|std::_Function_base::_Base_manager<.*>::_M_manager\\(|std::function<.*>::function\\()",
+      "depth": 3,
+      "why": "a functor that captures a std::function copies or destroys it through that function's manager; captures nest at most three deep (a tool lambda holding a deps struct holding a hook)"
+    },
+    {
+      "function": "^std::(_Function_handler<nimbus::orch::HeadToolResult \\(nimbus::orch::HeadToolCall const&\\), agent::TurnEngine::runTurn|function<nimbus::orch::HeadToolResult \\(nimbus::orch::HeadToolCall const&\\)>::operator\\(\\))",
+      "depth": 4,
+      "why": "runTurn wraps the head tool dispatch in at most three decorators (the MCP loop tools, pseudo spawns, the claim gate: engine.cpp) over the registry's own dispatch"
+    }
+  ],
+  "impossible_cycles": [
+    {
+      "caller": "^nimbus::orch::RowTextOverlay::",
+      "callee": "^nimbus::orch::RowTextOverlay::",
+      "why": "RowTextOverlay wraps the append-log store, never another overlay: its inner_ calls do not reach itself"
+    },
+    {
+      "caller": "^agent::\\(anonymous namespace\\)::BlockingClientReader::",
+      "callee": "^agent::\\(anonymous namespace\\)::BlockingClientReader::",
+      "why": "BlockingClientReader reads the NetworkClient it holds, never itself"
+    },
+    {
+      "caller": "^agent::router_refusal::RouterTap::",
+      "callee": "^agent::router_refusal::RouterTap::",
+      "why": "RouterTap wraps the TLS transport, never another tap"
+    },
+    {
+      "caller": ".",
+      "callee": "^std::function<void \\(\\)>::operator\\(\\)\\(\\) const$",
+      "why": "a void() std::function that reaches its own caller again: the deferred-work and middleware lambdas behind this signature do not call back into the code that runs them"
+    },
+    {
+      "caller": "^(read|write|fstat|close|open|fcntl|lseek|access|console_\\w+)$",
+      "callee": "^(_read_r|_write_r|_fstat_r|_close_r|_open_r|_fcntl_r|_lseek_r|esp_vfs_\\w+|read|write|fstat|close|open|fcntl|lseek|access)$",
+      "why": "the console VFS forwards to the UART or USB-serial device it wraps, never back to the console"
+    },
+    {
+      "caller": "^(usb_serial_jtag|uart|console)_\\w*select$",
+      "callee": "^esp_vfs_select_triggered",
+      "why": "a device's select hook signals the waiting select; it does not run another select"
+    }
+  ],
+  "dynamic_frames": [
+    {
+      "function": "^Preferences::getString\\(char const\\*, String\\)$",
+      "extra_bytes": 4000,
+      "why": "char buf[len] for the stored value, up to NVS's 4000 B string limit (Preferences.cpp); settings reads now go through nvsReadStr, which copies into PSRAM"
+    }
+  ],
+  "paths": [
+    {
+      "name": "turn start (inbound message to the head)",
+      "through": [
+        "^agent::TurnEngine::runTurn\\("
+      ]
+    },
+    {
+      "name": "head round, its cut retry included",
+      "through": [
+        "^agent::providers::(mis|ant|oai|zai)LoopStep\\(",
+        "^agent::providers::runHostLoop\\("
+      ],
+      "_why": "a cut (length) retry runs the same request again inside the same loop step, so it is no deeper than the round"
+    },
+    {
+      "name": "claim check correction round",
+      "through": [
+        "^agent::ClaimCheck::finalCheck\\("
+      ],
+      "_why": "the correction is sent as one more head round from runTurn; the check itself is what runs past it"
+    },
+    {
+      "name": "tool call: routines",
+      "through": [
+        "^agent::loops::createLoop\\(",
+        "^std::_Function_handler<nimbus::orch::ToolResult \\(.*\\), agent::loops::"
+      ]
+    },
+    {
+      "name": "tool call: files",
+      "through": [
+        "^std::_Function_handler<nimbus::orch::ToolResult \\(.*\\), agent::files::"
+      ]
+    },
+    {
+      "name": "tool call: memory",
+      "through": [
+        "^std::_Function_handler<nimbus::orch::ToolResult \\(.*\\), agent::memory::",
+        "^nimbus::orch::ToolRegistry::dispatch\\("
+      ]
+    },
+    {
+      "name": "tool call: spawn",
+      "through": [
+        "^agent::JobEngine::spawn",
+        "^agent::HeavyFabric::"
+      ]
+    },
+    {
+      "name": "voice note (STT)",
+      "through": [
+        "^agent::stt::transcribe\\("
+      ]
+    },
+    {
+      "name": "media download",
+      "through": [
+        "^agent::telegram::\\(anonymous namespace\\)::(fetchToLfs|downloadToLfs|processMedia)\\("
+      ]
+    },
+    {
+      "name": "OTA check",
+      "through": [
+        "^otaupd::checkRun\\("
+      ]
+    },
+    {
+      "name": "OTA install",
+      "through": [
+        "^otaupd::installRun\\(",
+        "^otaupd::dlSink\\("
+      ]
+    },
+    {
+      "name": "Telegram archive",
+      "through": [
+        "^agent::tgarchive::"
+      ]
+    },
+    {
+      "name": "reply send",
+      "through": [
+        "doSendMessage"
+      ]
+    }
+  ],
   "hierarchies": [
     {
       "names": [
@@ -534,6 +1071,40 @@
     "FileImplPtr": "FileImpl",
     "FSImplPtr": "FSImpl",
     "WiFiClientSecure": "NetworkClientSecure",
-    "WiFiClient": "NetworkClient"
+    "WiFiClient": "NetworkClient",
+    "Serial": "HWCDC",
+    "HWCDCSerial": "HWCDC",
+    "USBSerial": "HWCDC"
+  },
+  "_unresolved_why": "An indirect call no rule, signature or vtable resolves is charged 512 B below it: what is left after the rows below are shallow hooks (UART putc, ring-buffer copies, pin detach callbacks, std::function holding a plain pointer). The report counts them; a deep one must get a row.",
+  "terminal": [
+    {
+      "function": "^(abort|__assert_func|esp_system_abort|panic_abort|esp_panic_handler|std::terminate\\(\\)|__cxxabiv1::__terminate\\(void \\(\\*\\)\\(\\)\\)|__cxa_pure_virtual|__cxa_deleted_virtual|_exit|esp_restart|esp_restart_noos)$",
+      "why": "never returns: the device restarts. The bytes it takes decide only how the panic reads, so the gate counts its own frame and stops there"
+    }
+  ],
+  "impossible_calls": [
+    {
+      "caller": "^esp_cache_get_alignment$",
+      "callee": "^esp_log$",
+      "why": "its only log is ESP_RETURN_ON_FALSE(out_alignment, ..., \"null pointer\") (esp_mm/esp_cache_msync.c), and its only caller here, esp_heap_adjust_alignment_to_hw, passes the address of a local"
+    },
+    {
+      "caller": "^mbedtls_ssl_handshake_step$",
+      "callee": "^mbedtls_ssl_(tls13_)?handshake_server_step$",
+      "why": "every TLS context on the device is a client: ssl_client.cpp's mbedtls_ssl_config_defaults(..., MBEDTLS_SSL_IS_CLIENT, ...); the server step runs only for MBEDTLS_SSL_IS_SERVER"
+    },
+    {
+      "caller": "^(ssl_check_ctr_renegotiate|ssl_handle_hs_message_post_handshake|mbedtls_ssl_read|mbedtls_ssl_write)$",
+      "callee": "^(mbedtls_ssl_renegotiate|mbedtls_ssl_start_renegotiation)$",
+      "why": "renegotiation stays at mbedTLS's default MBEDTLS_SSL_RENEGOTIATION_DISABLED: nothing in the firmware or its libraries calls mbedtls_ssl_conf_renegotiation, and both callers return before renegotiating when it is disabled"
+    }
+  ],
+  "_aliases_why": "Typedefs and macros the source uses for a class: FileImplPtr and FSImplPtr are shared_ptrs of fs::FileImpl and fs::FSImpl (FS.h); WiFiClient(Secure) are the Arduino 3 names of NetworkClient(Secure); Serial is HWCDCSerial on these boards (ARDUINO_USB_CDC_ON_BOOT=1, ARDUINO_USB_MODE=1 in platformio.ini)",
+  "stdout_context": {
+    "entries": "^(vprintf|printf|puts|putchar|esp_log_writev|esp_log_write)$",
+    "family": "^(_vfprintf_r|vfprintf|__sbprintf|_fflush_r|fflush|__sflush_r|__swrite|_write_r|write|__sfvwrite_r|__sprint_r|_putc_r|__swbuf_r|_puts_r|_putchar_r|__sinit|__smakebuf_r|__swsetup_r|_fwrite_r|esp_vfs_write|console_\\w+)$",
+    "files": "^(vfs_fat|vfs_littlefs)_",
+    "why": "printf, puts and esp_log write the console stream (stdout, fd 1, the console VFS over USB serial or UART); a file write never runs below them, so inside that stream's stdio calls the VFS reaches the console devices only"
   }
 }

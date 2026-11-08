@@ -76,9 +76,11 @@ String saveDeviceName(const String& raw);
 // Wi-Fi slot reads alone (lane L31). has() probes the value types silently, so an
 // absent key never enters getString's error path. Values are unchanged; only the
 // noise goes. test/test_nvs_quiet_reads fails on any other solide::memory string
-// read in src/.
+// read in src/. The read itself is nvsReadStr (config_nvs.cpp): Preferences::getString
+// copies the value through a stack array as long as the value (lane STACK).
+String nvsReadStr(const char* key, const char* def);
 inline String nvsGetStr(const char* key, const char* def = "") {
-  return solide::memory::has(key) ? solide::memory::getString(key, def) : String(def);
+  return solide::memory::has(key) ? nvsReadStr(key, def) : String(def);
 }
 
 // ---- owner-config persistence honesty (CUM-479) -----------------------------
