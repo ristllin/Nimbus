@@ -21,6 +21,8 @@
 #include <vector>
 
 #include "nimbus/orch/degraded.h"
+#include "nimbus/orch/file_store.h"
+#include "nimbus/orch/store_full.h"
 
 using namespace nimbus::orch;
 
@@ -712,6 +714,77 @@ static void test_api_state_carries_the_same_set() {
   }
 }
 
+// ---- the file store: a routine reclaim is not a full store ------------------------------------
+
+// The designed steady state of lane FSCAP: the card sits at its byte quota, every inbound
+// photo makes the store reclaim the oldest regenerable copies and then SAVES. The device
+// reads `storeFull` from the episode's refusing(); a reclaim opens the episode (its one
+// owner notice) but refuses nothing, so the owner must never be told "File storage is
+// full ... new photos and files are not saved" while they are being saved.
+static void test_a_routine_reclaim_never_raises_the_full_store_line() {
+  FileStore::Limits lim;
+  lim.maxEntries = 1000;
+  lim.maxTotalBytes = 10000;
+  lim.maxFileBytes = 5000;
+  FileStore s(lim);
+  StoreFullEpisode ep;
+  std::string err;
+  auto photo = [](int k) {
+    FileEntry e;
+    e.project = "chat-1";
+    e.name = "photo-" + std::to_string(k) + ".jpg";
+    e.bytes = 4000;
+    e.createdAt = (uint32_t)k;
+    e.kind = fileKindForName(e.name);
+    return e;
+  };
+  int saved = 0, reclaims = 0;
+  for (int k = 0; k < 30; ++k) {
+    FileEntry e = photo(k);
+    if (s.wouldExceed(e.project, e.name, e.bytes, err)) {   // the device's reclaimRoomLocked
+      const auto plan = s.planEviction(s.totalBytes() + e.bytes - lim.maxTotalBytes);
+      TEST_ASSERT_FALSE(plan.empty());
+      std::vector<std::pair<std::string, std::string>> victims;
+      for (const auto* v : plan) victims.push_back({plainCopy(v->project), plainCopy(v->name)});
+      for (const auto& v : victims) s.remove(v.first, v.second);
+      ep.reclaimed();
+      ++reclaims;
+    }
+    TEST_ASSERT_TRUE(s.add(e, err));   // the save proceeds
+    ++saved;
+    DegradedFacts f;
+    f.uptimeMs = 10u * 60u * 1000u;
+    f.storeFull = ep.refusing();       // exactly what degraded_device.cpp collects
+    TEST_ASSERT_FALSE_MESSAGE(has(computeDegraded(f), DegradedId::StoreFull), "a save that lands is not a full store");
+  }
+  TEST_ASSERT_TRUE(reclaims > 10);     // the reclaim path really ran, again and again
+  TEST_ASSERT_EQUAL_INT(30, saved);
+  TEST_ASSERT_TRUE(ep.active());       // the episode is open (the owner's one notice) ...
+  TEST_ASSERT_FALSE(ep.refusing());    // ... and nothing was refused
+  // The counter-case: a store full of the owner's own files refuses, and THAT is the line.
+  FileStore own(lim);
+  FileEntry mine;
+  mine.project = "uploads";
+  mine.name = "big.bin";
+  mine.bytes = 5000;
+  mine.kind = fileKindForName(mine.name);
+  TEST_ASSERT_TRUE(own.add(mine, err));
+  mine.name = "big2.bin";
+  TEST_ASSERT_TRUE(own.add(mine, err));
+  StoreFullEpisode ep2;
+  FileEntry next = photo(99);
+  TEST_ASSERT_TRUE(own.wouldExceed(next.project, next.name, next.bytes, err));
+  TEST_ASSERT_TRUE(own.planEviction(next.bytes).empty());   // nothing regenerable to reclaim
+  ep2.refused(own.fullRefusal(err));
+  DegradedFacts g;
+  g.uptimeMs = 10u * 60u * 1000u;
+  g.storeFull = ep2.refusing();
+  TEST_ASSERT_TRUE(has(computeDegraded(g), DegradedId::StoreFull));
+  ep2.room();                                               // the owner made room: it clears
+  g.storeFull = ep2.refusing();
+  TEST_ASSERT_FALSE(has(computeDegraded(g), DegradedId::StoreFull));
+}
+
 // ---- copy ----------------------------------------------------------------------------------------------------
 
 static void test_the_copy_follows_the_style_guide() {
@@ -782,7 +855,7 @@ static void test_device_wiring() {
   const std::string tg = readFile("src/agent/telegram.cpp");
   TEST_ASSERT_TRUE(count(tg, "s_loopMs = millis();") >= 3);   // pollTask start, loop top, after staged work
   TEST_ASSERT_TRUE(contains(tg, "h.idleMs = millis() - s_loopMs;"));
-  TEST_ASSERT_TRUE(contains(readFile("src/agent/files_subsystem.cpp"), "bool storeFullActive() { return g_full.active(); }"));
+  TEST_ASSERT_TRUE(contains(readFile("src/agent/files_subsystem.cpp"), "bool storeFullActive() { return g_full.refusing(); }"));
   // The device keeps its degraded state on the heap: no static object here (static RAM is
   // about 400 B from its ceiling; check_static_dram.py is the gate, this keeps the shape).
   TEST_ASSERT_FALSE(contains(dev, "static State s"));
@@ -820,6 +893,7 @@ int main() {
   RUN_TEST(test_memory_says_keyword_only_queued_or_both);
   RUN_TEST(test_the_memory_line_never_carries_a_count);
   RUN_TEST(test_a_full_file_store_and_a_full_flash_each_show);
+  RUN_TEST(test_a_routine_reclaim_never_raises_the_full_store_line);
   RUN_TEST(test_telegram_is_silent_only_when_it_is_set_up_and_the_loop_stopped_checking_in);
   RUN_TEST(test_a_long_turn_on_the_poll_task_gets_the_longer_allowance);
   RUN_TEST(test_a_rejected_token_a_dead_task_and_repeated_failures_each_say_so);

@@ -246,6 +246,44 @@ static void test_reclaim_does_not_stack_on_a_full_notice() {
   TEST_ASSERT_FALSE(ep2.takeNotice());
 }
 
+// Lane DEGRADE (review): the episode is open after a reclaim too, but a reclaim REFUSES
+// nothing - the save that triggered it proceeded. Only a full refusal means "new photos
+// and files are not saved", and only the owner making room ends that.
+static void test_a_reclaim_alone_is_not_a_refusing_store() {
+  StoreFullEpisode ep;
+  TEST_ASSERT_FALSE(ep.refusing());
+  for (int k = 0; k < 20; ++k) {
+    ep.reclaimed();
+    TEST_ASSERT_TRUE(ep.active());       // the episode (and its one notice) is open ...
+    TEST_ASSERT_FALSE(ep.refusing());    // ... but nothing was refused
+  }
+  ep.room();
+  TEST_ASSERT_FALSE(ep.active());
+  TEST_ASSERT_FALSE(ep.refusing());
+}
+
+static void test_refusing_starts_at_a_full_refusal_and_ends_only_with_room() {
+  StoreFullEpisode ep;
+  for (int k = 0; k < 5; ++k) TEST_ASSERT_FALSE(ep.refused(false));   // not a full store: never
+  TEST_ASSERT_FALSE(ep.refusing());
+  TEST_ASSERT_TRUE(ep.refused(true));
+  TEST_ASSERT_TRUE(ep.refusing());
+  ep.reclaimed();                        // a later reclaim does not clear a standing refusal
+  TEST_ASSERT_TRUE(ep.refusing());
+  TEST_ASSERT_TRUE(ep.refused(true));    // a repeat keeps it
+  TEST_ASSERT_TRUE(ep.refusing());
+  ep.room();
+  TEST_ASSERT_FALSE(ep.refusing());
+  // A reclaim first, then a refusal in the same episode: refusing from the refusal on.
+  StoreFullEpisode ep2;
+  ep2.reclaimed();
+  TEST_ASSERT_FALSE(ep2.refusing());
+  TEST_ASSERT_TRUE(ep2.refused(true));
+  TEST_ASSERT_TRUE(ep2.refusing());
+  ep2.room();
+  TEST_ASSERT_FALSE(ep2.refusing());
+}
+
 // The reclaim notice's words: plain device copy (no I/me/my, no em dash, ASCII),
 // says what happened, that the owner's own files were not touched, and the one
 // next step; names no fixed count.
@@ -376,6 +414,8 @@ int main() {
   RUN_TEST(test_other_refusals_never_tell);
   RUN_TEST(test_reclaim_notice_once_per_episode);
   RUN_TEST(test_reclaim_does_not_stack_on_a_full_notice);
+  RUN_TEST(test_a_reclaim_alone_is_not_a_refusing_store);
+  RUN_TEST(test_refusing_starts_at_a_full_refusal_and_ends_only_with_room);
   RUN_TEST(test_reclaim_notice_words);
   RUN_TEST(test_owner_notice_words);
   RUN_TEST(test_head_fact_words);

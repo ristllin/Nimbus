@@ -397,7 +397,7 @@ bool noteRefusal(const std::string& err) {
 
 bool takeFullNotice() { return g_full.takeNotice(); }
 
-bool storeFullActive() { return g_full.active(); }   // lane DEGRADE: atomics, any task
+bool storeFullActive() { return g_full.refusing(); }   // lane DEGRADE: atomics, any task; a reclaim is not a refusal
 
 bool takeReclaimNotice() { return g_full.takeReclaimNotice(); }   // lane FSCAP
 

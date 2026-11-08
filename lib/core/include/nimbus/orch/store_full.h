@@ -42,11 +42,16 @@ class StoreFullEpisode {
   bool takeNotice();
   // The episode's one reclaim notice: true once, then false until the next episode.
   bool takeReclaimNotice();
-  // True from the episode's first full refusal until the store has room again.
+  // True from the episode's first full refusal or reclaim until the store has room again.
   bool active() const { return active_.load(); }
+  // True from a full refusal until the store has room again. A reclaim alone never sets it
+  // (the save that triggered the reclaim proceeded), which is what the device's "File
+  // storage is full" line reads: an open episode is not a refusing store.
+  bool refusing() const { return refusing_.load(); }
 
  private:
   std::atomic<bool> active_{false};
+  std::atomic<bool> refusing_{false};
   std::atomic<bool> notice_{false};
   std::atomic<bool> reclaimNotice_{false};
 };

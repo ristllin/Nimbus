@@ -5,6 +5,7 @@ namespace nimbus {
 namespace orch {
 
 bool StoreFullEpisode::refused(bool full) {
+  if (full) refusing_.store(true);
   if (full && !active_.exchange(true)) notice_.store(true);
   return full;
 }
@@ -17,6 +18,7 @@ bool StoreFullEpisode::reclaimed() {
 
 void StoreFullEpisode::room() {
   active_.store(false);
+  refusing_.store(false);
   notice_.store(false);
   reclaimNotice_.store(false);
 }
