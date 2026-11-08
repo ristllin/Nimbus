@@ -372,6 +372,8 @@ class StormBench:
         self.windows: List[Tuple[str, List[str]]] = []  # (log source, lines) of each closed window
         self.sent_texts: List[str] = []  # what reached the owner over Telegram in the windows (bot mode)
         self.history_windows: List[dict] = []  # what each closed window read from the chat history (audit)
+        self.page_events: List[dict] = []  # every history/archive read that was retried or found the card gone
+        self.poll_misses: List[str] = []  # reply polls that could not read (fresh_message)
         self.guard0: Optional[Dict[str, int]] = None  # storm-guard counters when the leg began
 
     # ---- reads --------------------------------------------------------------------
@@ -401,24 +403,55 @@ class StormBench:
                 rows[f"web:{r.get('id')}"] = r
         return rows
 
-    def _page(self, path: str, key: str, what: str, timeout: float = 10.0) -> dict:
+    def _page(self, path: str, key: str, what: str, timeout: float = 10.0, gone_key: Optional[str] = None) -> dict:
         """One history or archive page, VALIDATED: HTTP 200 and ``key`` a list. The unit
         answers a read it cannot serve in time with HTTP 503 and {"error":"busy",...};
         net.get_json parses any status, so that body used to read as a page with no rows -
         an empty chat. Windows are diffs of two such reads: an empty opening read makes every
         older row of the chat count as the window's own (the shape of the 5 Nov 2026 leg c
         count of 4 notices against one send), an empty closing read hides the window's own
-        rows (a false pass). A busy or malformed answer is retried, then an error."""
+        rows (a false pass). A busy or malformed answer is retried, then an error.
+
+        ``gone_key`` names the one other 200 answer that is not a failure: the Telegram
+        archive with its SD card out (web_tg_archive.cpp handleList) answers
+        {"stats":...,"chats":[]} with no rows. It is returned as an empty page marked
+        ``cardGone`` - the archive is unreadable, not empty - for the caller to grade from
+        the device log. Every retried attempt and every card-gone answer is kept in
+        ``page_events`` so a record can say how many of its reads were not clean."""
 
         def read():
-            r = self.net.get(path, timeout=timeout)
-            status = getattr(r, "status_code", 200)
-            body = r.json()
-            if status != 200 or not isinstance(body, dict) or not isinstance(body.get(key), list):
+            try:
+                r = self.net.get(path, timeout=timeout)
+                status = getattr(r, "status_code", 200)
+                body = r.json()
+                if status == 200 and isinstance(body, dict):
+                    if isinstance(body.get(key), list):
+                        return body
+                    if gone_key and key not in body and isinstance(body.get(gone_key), list):
+                        self.page_events.append({"read": what, "cardGone": True})
+                        return {key: [], "more": False, "cardGone": True}
                 raise ValueError(f"HTTP {status} without a {key} list: {str(body)[:80]}")
-            return body
+            except Exception as e:  # noqa: BLE001 - noted for the record, then retried by _retry
+                self.page_events.append({"read": what, "retry": f"{type(e).__name__}: {str(e)[:100]}"})
+                raise
 
         return self._retry(read, what)
+
+    def reads_since(self, mark: int) -> dict:
+        """What the history and archive reads since ``mark`` (a len(page_events)) were not
+        clean about: attempts retried, archive answers that found the card out, and the
+        first retry's reason."""
+        ev = self.page_events[mark:]
+        retries = [e["retry"] for e in ev if "retry" in e]
+        out = {"retried": len(retries), "cardGone": sum(1 for e in ev if e.get("cardGone"))}
+        if retries:
+            out["first"] = retries[0]
+        return out
+
+    def read_summary(self) -> dict:
+        """The whole run's totals of the same, plus the reply polls that could not read."""
+        r = self.reads_since(0)
+        return {"retried": r["retried"], "cardGone": r["cardGone"], "pollMisses": len(self.poll_misses)}
 
     @staticmethod
     def _retry(call, what: str, tries: int = 5):
@@ -495,17 +528,25 @@ class StormBench:
 
     def outbound(self) -> Optional[List[dict]]:
         """Today's outbound Telegram rows for the owner chat (the device's archive), or
-        None without a bot token (nothing is archived then)."""
+        None without a bot token (nothing is archived then). An archive whose card is out
+        reads as no rows (see ``outbound_read`` for the flag)."""
+        return self.outbound_read()[0]
+
+    def outbound_read(self) -> Tuple[Optional[List[dict]], bool]:
+        """(``outbound()``, whether any page found the archive's card out). With the card
+        out the archive cannot be diffed - an empty read is not an empty archive - so a
+        caller that diffs two reads must grade from the device log when either was gone."""
         if not self.tg:
-            return None
-        rows, start = [], 0
+            return None, False
+        rows, start, gone = [], 0, False
         day = time.strftime("%Y-%m-%d", time.gmtime())
         while True:
             q = f"/api/tg/archive?chat={self.chat}&day={day}&limit=200&from={start}"
-            page = self._page(q, "rows", "reading the Telegram archive", timeout=15.0)
+            page = self._page(q, "rows", "reading the Telegram archive", timeout=15.0, gone_key="chats")
+            gone = gone or bool(page.get("cardGone"))
             rows += [r for r in page["rows"] if r.get("dir") == "out"]
             if not page.get("more"):
-                return [self._with_text(r, day) for r in rows]
+                return [self._with_text(r, day) for r in rows], gone
             start = page["next"]
 
     def _with_text(self, row: dict, day: str) -> dict:
@@ -781,15 +822,26 @@ class StormBench:
         {"usable", "usable_s", "reply"}. An honest refusal (any reply) counts as usable;
         silence does not."""
         before = self.chat_rows()
-        sent_before = len(self.outbound() or [])
+        sent, gone_before = self.outbound_read()
+        sent_before = len(sent or [])
         t0 = time.time()
         self.inject(text, update_id, timeout=timeout)
         end = t0 + timeout
         while time.time() < end:
-            rows = [r for r in g.new_rows(before, self.chat_rows()) if r.get("role") == "assistant"]
+            # The snapshots above are diff bases and stay strict. A poll is not: one that
+            # cannot read (the page stayed busy) is a poll without an answer, tried again.
+            try:
+                rows = [r for r in g.new_rows(before, self.chat_rows()) if r.get("role") == "assistant"]
+                out, gone = self.outbound_read()
+            except AssertionError as e:
+                self.poll_misses.append(str(e)[:160])
+                time.sleep(3.0)
+                continue
             # In bot mode a reply that went to Telegram counts too: a failed turn's honest
-            # refusal is sent to the chat, never written to its history.
-            rows += (self.outbound() or [])[sent_before:]
+            # refusal is sent to the chat, never written to its history. With the card out
+            # at the start the archive has no usable base: its rows are not counted.
+            if out is not None and not gone_before and not gone:
+                rows += out[sent_before:]
             if rows:
                 return {"usable": True, "usable_s": time.time() - t0, "reply": rows[-1].get("text", "")}
             time.sleep(3.0)
@@ -836,6 +888,7 @@ class StormBench:
             metrics.extra.setdefault("telegramSent", [t[:160] for t in self.sent_texts])
         if self.history_windows:
             metrics.extra.setdefault("historyWindows", self.history_windows)
+        metrics.extra.setdefault("historyReads", self.read_summary())
         rec = g.evidence_record(
             g.RunId(leg, self.role, self.build, self.commit, self.unit, self.started, time.time()), metrics, bounds
         )
@@ -997,11 +1050,16 @@ class Window:
         self.rows: List[dict] = []
         self.mock_requests = 0
         self.out_before = 0
+        self.out_gone = False  # the archive's card was out when the window opened
+        self.open_reads: dict = {}
         self.sent: Optional[List[dict]] = None  # outbound Telegram rows of the window (bot mode)
 
     def open(self) -> "Window":
-        self.out_before = len(self.bench.outbound() or [])
+        mark = len(self.bench.page_events)
+        out, self.out_gone = self.bench.outbound_read()
+        self.out_before = len(out or [])
         self.rows_before = self.bench.chat_rows()
+        self.open_reads = self.bench.reads_since(mark)
         self.mock_before = len(self.bench.mock.completions()) if self.bench.mock else 0
         self.bench.tap.arm()
         return self
@@ -1010,25 +1068,46 @@ class Window:
         self.bench.tap.poll()
         self.lines = self.bench.tap.parsed()
         self.bench.windows.append((self.bench.tap.source, list(self.bench.tap.graded_lines())))
+        mark = len(self.bench.page_events)
         after = self.bench.chat_rows()
         self.rows = g.new_rows(self.rows_before, after)
-        # The raw reads behind a notice count, kept in the evidence: a count that disagrees
-        # with the device's own sends can then be audited row by row (ids and sessions).
-        self.bench.history_windows.append(
-            {
-                "rowsBefore": len(self.rows_before),
-                "rowsAfter": len(after),
-                "new": [
-                    {k: r.get(k) for k in ("id", "session", "role", "kind")} | {"text": str(r.get("text") or "")[:100]}
-                    for r in self.rows
-                ],
-            }
-        )
         self.mock_requests = (len(self.bench.mock.completions()) - self.mock_before) if self.bench.mock else 0
-        out = self.bench.outbound()
-        self.sent = None if out is None else out[self.out_before :]
+        out, gone = self.bench.outbound_read()
+        if out is None:
+            self.sent = None
+        elif self.out_gone or gone:
+            # The archive could not be read at one end of the window, so there is no diff:
+            # a card that is back must not make the day's older rows the window's own.
+            # Window.notices then grades from the sends the device logged.
+            self.sent = []
+        else:
+            self.sent = out[self.out_before :]
         self.bench.sent_texts += [str(r.get("text") or "") for r in self.sent or []]
+        self.bench.history_windows.append(self._history_record(after, self.bench.reads_since(mark)))
         return self
+
+    def _history_record(self, after: Dict[str, dict], close_reads: dict) -> dict:
+        """The raw reads behind a notice count, kept in the evidence so a count that
+        disagrees with the device's own sends can be audited row by row (ids and sessions),
+        and so a clean count can be told from one the fix rescued: how many reads of each
+        end were retried or found the card out, and ``olderSameText``, the rows of the
+        opening snapshot that carry the text of a row the window counted (what an empty
+        opening read would have added to the window's count)."""
+        counted = {str(r.get("text") or "") for r in self.rows if r.get("role") == "assistant"}
+        older = sum(
+            1 for r in self.rows_before.values() if r.get("role") == "assistant" and str(r.get("text") or "") in counted
+        )
+        return {
+            "rowsBefore": len(self.rows_before),
+            "rowsAfter": len(after),
+            "olderSameText": older,
+            "openReads": self.open_reads,
+            "closeReads": close_reads,
+            "new": [
+                {k: r.get(k) for k in ("id", "session", "role", "kind")} | {"text": str(r.get("text") or "")[:100]}
+                for r in self.rows
+            ],
+        }
 
     def notices(self, notice_re, exclude_re=None) -> int:
         """Owner notices of the window, on the owner's channel: in bot mode the Telegram

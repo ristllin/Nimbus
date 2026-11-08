@@ -240,9 +240,16 @@ and a "busy" body, so the kit accepts a page only when it is HTTP 200 and holds 
 retries a busy one, and fails the leg when the page stays busy. A busy page read as an
 empty one would count every older row of the owner chat as the episode's own (the shape of
 leg c's count of 4 notices against one send on 5 Nov 2026) or hide the episode's own rows.
+The one other 200 answer that is not a failure is the Telegram archive with its SD card out
+(`{"stats":...,"chats":[]}`, no rows): the archive is then unreadable, not empty, and a window
+with the card out at either end grades from the sends the device logged. The reply poll of
+`fresh_message` is not a diff base: a poll whose reads stay busy is skipped and tried again.
 The evidence record also keeps the rows each window counted (`historyWindows`: id, session,
-role, text, and the size of both reads), so a count that disagrees with the device's own
-sends can be audited row by row.
+role, text, the size of both reads, `olderSameText`, the rows of the opening snapshot that
+carry the text of a counted row, and `openReads` / `closeReads`, how many reads of each end
+were retried or found the card out), and `historyReads`, the run's totals with the reply
+polls that could not read. A count that disagrees with the device's own sends can be audited
+row by row, and a clean count can be told from one the validated read rescued.
 
 With `NIMBUS_STORM_TG=1` (and `NIMBUS_BENCH_LOCKS` pointing at the bench locks) a leg
 puts the dedicated test bot on the unit for its run, under the bench `tg-bot` lock, and

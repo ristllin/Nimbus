@@ -612,6 +612,7 @@ class _HistoryNet:
         self.sessions = {k: list(v) for k, v in sessions.items()}
         self.busy = set(busy)
         self.archive = list(archive or [])
+        self.archive_gone = False  # the SD card is out: handleList answers 200 {"stats":...,"chats":[]}
         self.reads = 0
 
     def add(self, session, role, text):
@@ -635,6 +636,8 @@ class _HistoryNet:
             m = re.search(r"session=([^&]+)&limit=(\d+)", path)
             return _Resp(200, {"messages": list(reversed(self.sessions.get(m.group(1), [])))[: int(m.group(2))]})
         if path.startswith("/api/tg/archive?"):
+            if self.archive_gone:  # src/net/web_tg_archive.cpp handleList: tgarchive::available() is false
+                return _Resp(200, {"stats": {"available": False}, "chats": []})
             return _Resp(200, {"rows": list(self.archive), "more": False})
         raise AssertionError(f"unexpected read {path}")
 
@@ -644,6 +647,7 @@ class _HistoryNet:
 
 class _SilentTap:
     source = "console"
+    log = ""  # device log text the window parses (what the tap read)
 
     def arm(self):
         return self
@@ -652,10 +656,10 @@ class _SilentTap:
         return []
 
     def parsed(self):
-        return []
+        return g.parse_log(self.log)
 
     def graded_lines(self):
-        return []
+        return self.parsed()
 
 
 def _history_bench(monkeypatch, net, tg=False):
@@ -663,7 +667,7 @@ def _history_bench(monkeypatch, net, tg=False):
     bench = kit.StormBench.__new__(kit.StormBench)
     bench.net, bench.chat, bench.tg, bench.mock = net, 4747474703, tg, None
     bench.tap, bench.windows, bench.sent_texts, bench._out_texts = _SilentTap(), [], [], {}
-    bench.history_windows = []
+    bench.history_windows, bench.page_events, bench.poll_misses = [], [], []
     return bench
 
 
@@ -752,3 +756,84 @@ def test_a_closed_window_keeps_the_raw_rows_behind_its_count(monkeypatch):
     assert [r["role"] for r in rec["new"]] == ["user", "assistant", "user", "assistant"]
     assert all(r["id"] and r["session"] == "4747474703" for r in rec["new"])
     assert [r["text"] for r in rec["new"] if r["role"] == "assistant"] == [NOTICE, SHORT]
+
+
+# ---- lane N429 fix pass: the card-gone answer, a poll that cannot read, the reads kept ----
+#
+# The strict page check (kit.StormBench._page) first read "HTTP 200 and the list" as the only
+# good answer. handleList answers HTTP 200 {"stats":...,"chats":[]} with no rows when the SD
+# card is out (low heap, erasing): the archive is then simply unreadable, the device log holds
+# the sends, and Window.notices grades from them (efc28b56). That answer must not end the leg.
+
+SEND_LINE = "5 500 - telegram: send ok to 4747474703"
+
+
+def test_a_card_that_is_gone_answers_an_empty_archive_not_an_error(monkeypatch):
+    net = _HistoryNet({}, archive=[{"dir": "out", "text": NOTICE}])
+    net.archive_gone = True
+    bench = _history_bench(monkeypatch, net, tg=True)
+    assert bench.outbound() == []  # main's kit read this answer as an empty archive
+    rows, gone = bench.outbound_read()
+    assert rows == [] and gone is True
+    assert [e.get("cardGone") for e in bench.page_events] == [True, True]
+
+
+def test_a_window_whose_card_drops_out_grades_from_the_devices_sends(monkeypatch):
+    """Leg e (low heap): the window opens with the archive readable and closes with the card
+    out. The notice was sent over Telegram and only the device log has it."""
+    net = _HistoryNet({})
+    bench = _history_bench(monkeypatch, net, tg=True)
+    w = kit.Window(bench).open()
+    net.archive_gone = True
+    bench.tap.log = SEND_LINE
+    w.close()
+    assert w.sent == []
+    assert w.notices(re.compile(r"credit")) == 1  # the one send in the log, no answer in the history
+    (rec,) = bench.history_windows
+    assert rec["closeReads"]["cardGone"] == 1 and rec["openReads"]["cardGone"] == 0
+
+
+def test_a_card_that_comes_back_does_not_make_the_days_old_rows_the_windows_own(monkeypatch):
+    """The opening archive read found the card out: its length is unknown, so the closing
+    read (the card back, five old rows of the day) must not count them as the window's."""
+    old = [{"dir": "out", "raw": None, "text": NOTICE} for _ in range(5)]
+    net = _HistoryNet({}, archive=old)
+    net.archive_gone = True
+    bench = _history_bench(monkeypatch, net, tg=True)
+    w = kit.Window(bench).open()
+    net.archive_gone = False
+    bench.tap.log = SEND_LINE
+    w.close()
+    assert w.sent == []
+    assert w.notices(re.compile(r"credit")) == 1  # the log's one send, not the day's five rows
+    assert bench.history_windows[0]["openReads"]["cardGone"] == 1
+
+
+def test_fresh_message_waits_through_a_poll_that_cannot_read(monkeypatch):
+    """The reply poll is not a diff base: five busy answers in a row cost one poll, not the leg.
+    The opening snapshot stays strict (test_a_history_that_stays_busy_is_an_error...)."""
+    net = _HistoryNet({})
+    _earlier_episodes(net)
+    bench = _history_bench(monkeypatch, net)
+    bench.inject = lambda text, uid, timeout=0: net.add("4747474703", "assistant", SHORT) or []
+    net.busy = set(range(2, 7))  # reads 0 and 1 are the opening snapshot; the first poll's five attempts are busy
+    got = bench.fresh_message(re.compile("not answered"), "probe", 7, timeout=180.0)
+    assert got["usable"] is True and got["reply"] == SHORT
+    assert len(bench.poll_misses) == 1 and "owner chat" in bench.poll_misses[0]
+
+
+def test_the_busy_reads_behind_a_window_are_counted_in_its_record(monkeypatch):
+    """A clean count after the fix has to be attributable: the record says how many reads of
+    each end were busy and retried, and how many older rows of the same text were in the
+    opening snapshot (the rows an empty opening read would have counted as the window's)."""
+    net = _HistoryNet({}, busy=(0,))
+    _earlier_episodes(net)
+    bench = _history_bench(monkeypatch, net)
+    w = kit.Window(bench).open()
+    _one_episode(net)
+    w.close()
+    (rec,) = bench.history_windows
+    assert rec["openReads"]["retried"] == 1 and "HTTP 503" in rec["openReads"]["first"]
+    assert rec["closeReads"]["retried"] == 0 and rec["closeReads"]["cardGone"] == 0
+    assert rec["olderSameText"] == 6  # three earlier episodes: three notices and three short answers
+    assert bench.read_summary() == {"retried": 1, "cardGone": 0, "pollMisses": 0}
