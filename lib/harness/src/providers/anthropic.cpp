@@ -973,6 +973,9 @@ struct AntLoopReq {
   const char* effort;
   int* reattached = nullptr;   // lane IMG: re-attach kept photos to the history (direct key); the count
 };
+// noinline (lane STACK): built before the request and done before it is sent, so its
+// documents never sit in the round's frame under the response parse on tg_poll.
+__attribute__((noinline))
 static bool antLoopBody(const ProviderDeps& pd, const AntLoopReq& a, JsonArray msgs,
                         std::string& body, std::string& err) {
   JsonDocument req = makeDoc(pd);
@@ -1045,6 +1048,7 @@ static bool antLoopBody(const ProviderDeps& pd, const AntLoopReq& a, JsonArray m
 // the scan goes on (calls after it are still tool calls - CUM-526); text blocks
 // are collected into HeadStep.text (Glass Box A4, observed only). Returns the
 // stop_reason.
+__attribute__((noinline))   // read after the response: kept out of the round's frame (lane STACK)
 static std::string antReadRound(const JsonDocument& resp, nimbus::orch::HeadStep& out,
                                  std::map<std::string, std::string>* thinkingByCall = nullptr) {
   std::string pendingThinking;   // this round's thinking blocks, serialized verbatim
@@ -1366,6 +1370,7 @@ struct AntShot {
   const char* effort;
 };
 
+__attribute__((noinline))   // done before the send: kept out of orchTurnAnthropic's frame (lane STACK)
 bool antShotBody(const AntShot& a, std::string& body, std::string& err) {
   JsonDocument d;
   d["model"] = *a.model;
@@ -1427,6 +1432,7 @@ struct AntShotReply {
   bool cut = false;
   std::string stop;
 };
+__attribute__((noinline))   // read after the response (lane STACK)
 AntShotReply antReadShot(const JsonDocument& doc) {
   AntShotReply r;
   r.stop = doc["stop_reason"] | "";

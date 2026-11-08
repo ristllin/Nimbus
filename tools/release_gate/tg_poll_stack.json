@@ -347,6 +347,16 @@
       "why": "std::stable_sort: merge recursion depth log2(n), n < 8192"
     },
     {
+      "function": "(__stable_partition_adaptive|_ZSt28__stable_partition_adaptive)",
+      "depth": 10,
+      "why": "std::stable_partition halves the range per level when its buffer is short: depth <= log2(n)+1. The only caller on tg_poll, router_catalog::protectHeads (router_catalog.h:421), partitions at most kHarvestCollectMax (512) rows: 10 levels"
+    },
+    {
+      "function": "^sdCommand\\(",
+      "depth": 2,
+      "why": "Arduino SD (sd_diskio.cpp:142): an application command first sends APP_CMD (55) through one nested sdCommand call; APP_CMD is not one of the four commands that do, so it nests once"
+    },
+    {
       "function": "(_Rb_tree.*_M_erase|_ZNSt8_Rb_tree\\w*_M_erase|_ZNSt8_Rb_tree\\w*8_M_erase)",
       "depth": 16,
       "why": "std::map destruction recurses per red-black tree level: height < 2 log2(n+1), maps here hold under 256 entries"

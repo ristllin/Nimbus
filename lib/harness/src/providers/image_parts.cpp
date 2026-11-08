@@ -504,6 +504,24 @@ HeaderList antFileHeaders(const ProviderDeps& pd, const char* contentType) {
 }
 }  // namespace
 
+// One photo's multipart body around its bytes (spliced in at send time) and its content
+// type. noinline (lane STACK): the string temporaries that build them stay out of
+// antUploadImages' frame, which is on the Telegram poll task under the upload's request.
+__attribute__((noinline)) static std::string uploadBody(const orch::TurnImage& it, const std::string& boundary,
+                                                        BodySplices& sp, std::string& ct) {
+  // The provider deletes the upload by itself after kUploadExpiryS whatever happens
+  // here (a restart loses the RAM ledger of kept ids), so no photo is left there for long.
+  std::string body = std::string("--") + boundary +
+                     "\r\nContent-Disposition: form-data; name=\"expires_in_seconds\"\r\n\r\n" +
+                     std::to_string(kUploadExpiryS) + "\r\n--" + boundary +
+                     "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + it.ref + "." +
+                     extOf(it.mime) + "\"\r\nContent-Type: " + it.mime + "\r\n\r\n";
+  sp = BodySplices{BodySplice{body.size(), it.bytes, it.len, false}};
+  body += std::string("\r\n--") + boundary + "--\r\n";
+  ct = std::string("multipart/form-data; boundary=") + boundary;
+  return body;
+}
+
 int antUploadImages(const ProviderDeps& pd, orch::TurnImages& imgs) {
   if (pd.routerBase && !pd.routerBase().empty()) return 0;   // a router head stays inline
   // Back-pressure: an upload is only made when its deletion can be queued, so no photo
@@ -519,20 +537,13 @@ int antUploadImages(const ProviderDeps& pd, orch::TurnImages& imgs) {
     if (!it.fileId.empty() || !it.bytes || !it.len) continue;
     const std::string kBoundary = boundaryFor(it, imgs.nonce);
     if (kBoundary.empty()) continue;
-    // The provider deletes the upload by itself after kUploadExpiryS whatever happens
-    // here (a restart loses the RAM ledger of kept ids), so no photo is left there for long.
-    std::string body = std::string("--") + kBoundary +
-                       "\r\nContent-Disposition: form-data; name=\"expires_in_seconds\"\r\n\r\n" +
-                       std::to_string(kUploadExpiryS) + "\r\n--" + kBoundary +
-                       "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + it.ref + "." +
-                       extOf(it.mime) + "\"\r\nContent-Type: " + it.mime + "\r\n\r\n";
-    BodySplices sp{BodySplice{body.size(), it.bytes, it.len, false}};
-    body += std::string("\r\n--") + kBoundary + "--\r\n";
+    BodySplices sp;
+    std::string ct;
+    std::string body = uploadBody(it, kBoundary, sp, ct);
     JsonDocument filter;
     filter["id"] = true;
     filter["error"]["message"] = true;
     JsonDocument resp;
-    const std::string ct = std::string("multipart/form-data; boundary=") + kBoundary;
     const int code = wire::exchange(pd, kAntHost, 443, true, "POST", "/v1/files",
                                     antFileHeaders(pd, ct.c_str()), std::move(body), 60000, resp, filter,
                                     nullptr, &sp);

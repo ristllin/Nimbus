@@ -103,6 +103,129 @@ def test_a_jump_into_another_function_is_a_call():
     assert funcs[0x42000010].calls == [(0x42000010, B)]
 
 
+# ---- decode resync and landing pads ------------------------------------------------
+
+# A landing pad right after an unconditional jump, behind 1 byte of alignment padding:
+# objdump's linear decode reads the padding as the start of a 3-byte instruction and stays
+# out of step until 0x42001010, inventing a call8 to b on the way (7631b6a2 had one such
+# call to runTurn, a cycle that is not in the code).
+PAD_DIS = """
+42001000 <f>:
+42001000:	entry	a1, 32
+42001003:	j	42001010 <f+0x10>
+42001006:	call8	42002000 <b>
+42001009:	addi	a8, a8, 1
+42001010:	retw.n
+
+42002000 <b>:
+42002000:	entry	a1, 2048
+42002003:	retw.n
+
+42003000 <c>:
+42003000:	entry	a1, 64
+42003003:	retw.n
+"""
+F, PAD = 0x42001000, 0x42001007
+REAL = [
+    (0x42001007, "l32r", "a8, 42000f00 <lit> (42003000 <x>)"),
+    (0x4200100A, "callx8", "a8"),
+    (0x4200100D, "j", "42001010 <x>"),
+]
+
+
+class FakeDecoder(st.Decoder):
+    """The pad's bytes (l32r, callx8, j: three 3-byte instructions) and its real decode."""
+
+    def __init__(self):
+        mem = {0x42001007: 0x81, 0x4200100A: 0xE0, 0x4200100D: 0x06}
+        super().__init__(lambda a, n: bytes(mem.get(a + i, 0) for i in range(n)), "objdump")
+        self.asked = []
+
+    def decode(self, stretches):
+        self.asked += stretches
+        return {e: [i for i in REAL if e <= i[0] < stop] for e, stop in stretches}
+
+
+def pad_funcs():
+    return {F: fn(F, 0x12, "f"), B: fn(B, 4, "b"), C: fn(C, 4, "c")}
+
+
+def test_instruction_length_follows_op0():
+    assert [st.insn_length(b) for b in (0x36, 0x81, 0x07, 0x1D, 0x88, 0xCD, 0x0E, 0x0F)] == [3, 3, 3, 2, 2, 2, 4, 4]
+
+
+def test_a_misaligned_landing_pad_is_decoded_again_and_the_invented_call_goes():
+    funcs = pad_funcs()
+    st.parse_disassembly(PAD_DIS, funcs)
+    assert B in [t for _s, t in funcs[F].calls]  # the linear decode alone: a call to b that is not there
+    funcs = pad_funcs()
+    dec = FakeDecoder()
+    st.parse_disassembly(PAD_DIS, funcs, None, dec, {F: {PAD}})
+    assert dec.asked == [(PAD, 0x42001010)]  # from the pad to the first shared boundary
+    assert [t for _s, t in funcs[F].calls] == [C]  # the pad's real long call, nothing else
+
+
+def test_objdump_decodes_a_stretch_at_its_real_address():
+    try:
+        objdump = st.find_tool("objdump")
+    except FileNotFoundError:
+        pytest.skip("no Xtensa objdump here")
+    # 0x42001007: l32r a8, [0x42001000] (= 0x42003000); callx8 a8; then call8 0x42002000.
+    mem = {0x42001000: bytes((0x00, 0x30, 0x00, 0x42)), 0x42001007: bytes((0x81, 0xFE, 0xFF, 0xE0, 0x08, 0x00))}
+    mem[0x4200100D] = bytes((0xE5, 0x0F, 0x00))  # call8, offset field 0x3f
+
+    def read(a, n):
+        for base, data in mem.items():
+            if base <= a and a + n <= base + len(data):
+                return data[a - base : a - base + n]
+        return None
+
+    out = st.Decoder(read, objdump).decode([(0x42001007, 0x4200100D), (0x4200100D, 0x42001010)])
+    assert out[0x42001007] == [
+        (0x42001007, "l32r", "a8, 42001000 <lit> (42003000 <x>)"),
+        (0x4200100A, "callx8", "a8"),
+    ]
+    ((addr, op, args),) = out[0x4200100D]
+    assert (addr, op) == (0x4200100D, "call8")
+    assert int(args.split()[0], 16) == (0x4200100D & ~3) + 4 + (0x3F << 2)  # pc-relative, at the real address
+
+
+def test_live_targets_ignore_branches_decoded_from_dead_bytes():
+    insns = [(1, "j", "00000009 <x>"), (4, "beqz", "a2, 00000007 <x>"), (9, "retw.n", "")]
+    assert st.live_targets(insns, {1}) == {9}
+
+
+def _uleb_bytes(v):
+    out = bytearray()
+    while True:
+        b, v = v & 0x7F, v >> 7
+        out.append(b | (0x80 if v else 0))
+        if not v:
+            return bytes(out)
+
+
+def test_eh_frame_and_lsda_give_the_landing_pads():
+    import struct
+
+    eh, lsda, func = 0x3C000000, 0x3C001000, 0x42001000
+    cie = struct.pack("<IB", 0, 1) + b"zLR\0" + b"\x01\x7c\x00" + _uleb_bytes(2) + b"\x00\x1b"
+    cie += b"\0" * (-(len(cie) + 4) % 4)
+    fde_at = eh + 4 + len(cie)
+    fde = struct.pack("<I", fde_at + 4 - eh)
+    fde += struct.pack("<i", func - (fde_at + 8)) + struct.pack("<i", 0x12) + _uleb_bytes(4) + struct.pack("<I", lsda)
+    frame = struct.pack("<I", len(cie)) + cie + struct.pack("<I", len(fde)) + fde + struct.pack("<I", 0)
+    table = bytes((0xFF, 0xFF, 0x01)) + _uleb_bytes(8) + bytes((0, 3, 7, 0, 3, 3, 0, 0))
+    mem = {eh + i: b for i, b in enumerate(frame)} | {lsda + i: b for i, b in enumerate(table)}
+
+    def read(a, n):
+        return bytes(mem[a + i] for i in range(n))
+
+    assert list(st.eh_frames(read, eh)) == [(func, lsda)]
+    assert st.landing_pads(read, func, lsda) == {func + 7}  # the second call site has no pad
+    nm = f"{eh:08x} A __eh_frame\n"
+    assert st.image_landing_pads(read, nm) == {func: {func + 7}}
+
+
 # ---- names ----------------------------------------------------------------------------
 
 

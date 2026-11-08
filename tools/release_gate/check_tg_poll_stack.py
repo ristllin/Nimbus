@@ -22,6 +22,11 @@ How it measures (coverage/STACK-2026-11.md has the full method):
   (the web server, Bluetooth, the relay task...) is listed in the config and never taken
   as an indirect target. An indirect site nothing resolves is charged
   `unresolved_indirect_bytes`.
+- Decode: objdump decodes each function linearly and loses step after the alignment
+  padding that may follow an unconditional jump. Every stretch whose real entry (a
+  branch target of reachable code, or a landing pad from the exception tables) it did
+  not decode as an instruction start is decoded again from that entry (resync), so no
+  call is invented there and none is missed.
 - Recursion: the graph is walked depth-first from the task entry and every back edge is
   cut. A cut cycle must be declared in the config: real recursion with its depth bound
   (the recursive function's frame is counted that many times), or a cycle the
@@ -48,6 +53,7 @@ images share one config.
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import os
 import re
@@ -283,13 +289,14 @@ UNCOND_RE = re.compile(r"^(j|jx|ret|ret\.n|retw|retw\.n|ill|ill\.n)$")
 TARGET_RE = re.compile(r"\b([0-9a-f]{8})\b")
 
 
-def _function_body(cur: Fn, insns: list, starts: set) -> None:
+def _function_body(cur: Fn, insns: list, starts: set, entries: "set | None" = None) -> None:
     """Calls of one function. Code after an unconditional jump or return is dead until a
-    branch lands there: objdump decodes the padding and data in it as instructions, and
-    a `callx` there that no long-call `l32r` of the same dead stretch loads is not a call."""
-    targets = set()
+    branch or a landing pad lands there: objdump decodes the padding and data in it as
+    instructions, and a `callx` there that no long-call `l32r` of the same dead stretch
+    loads is not a call."""
+    targets = set(entries or ())
     for _addr, op, args in insns:
-        if op.startswith("b") or op in ("j", "loop", "loopnez", "loopgtz"):
+        if _is_branch(op):
             targets.update(int(t, 16) for t in TARGET_RE.findall(args))
     regs = Regs()
     dead = False
@@ -305,40 +312,372 @@ def _function_body(cur: Fn, insns: list, starts: set) -> None:
             regs = Regs()
 
 
-def parse_disassembly(text: str, funcs: dict, known: "set | None" = None) -> None:
-    """Fill frame, calls and indirect sites of every Fn from `objdump -d` text.
+def _is_branch(op: str) -> bool:
+    return (op.startswith("b") and not op.startswith("break")) or op in ("j", "loop", "loopnez", "loopgtz")
+
+
+def function_bodies(text: str, funcs: dict) -> dict:
+    """addr -> [(insn addr, op, args)] of every Fn, from `objdump -d` text.
 
     Only instructions inside a symbol's [addr, addr+size) count, so literal pools and
     padding objdump decodes as code between functions never add a call.
     """
-    starts = known if known is not None else set(funcs)
-    cur, end, insns = None, 0, []
-
-    def finish() -> None:
-        if cur is None:
-            return
-        if insns:
-            f = frame_of(insns[0][1], insns[0][2])
-            cur.frame = f if f is not None else sum(call0_adjust(op, a) for _x, op, a in insns)
-        _function_body(cur, insns, starts)
-        cur.probes = [a for a, _op, _args in insns[:24]]
-
+    bodies = {}
+    cur, end = None, 0
     for line in text.splitlines():
         m = INSN_RE.match(line)
         if not m:
             continue
         addr = int(m.group(1), 16)
         if addr in funcs:
-            finish()
-            cur, end, insns = funcs[addr], addr + funcs[addr].size, []
+            cur, end = addr, addr + funcs[addr].size
+            bodies[cur] = []
         if cur is None or addr >= end:
             continue
-        insns.append((addr, m.group(2), (m.group(3) or "").strip()))
-    finish()
+        bodies[cur].append((addr, m.group(2), (m.group(3) or "").strip()))
+    return bodies
 
 
-def elf_reader(path: str):
-    """A function: addr -> the 4-byte little-endian word the ELF loads there (or None)."""
+def parse_disassembly(
+    text: str, funcs: dict, known: "set | None" = None, decoder: "Decoder | None" = None, pads: "dict | None" = None
+) -> None:
+    """Fill frame, calls and indirect sites of every Fn from `objdump -d` text.
+
+    With a decoder, the stretches objdump decoded out of step are decoded again from
+    their real entries first (resync); `pads` are the landing pads of each function.
+    """
+    starts = known if known is not None else set(funcs)
+    pads = pads or {}
+    bodies = function_bodies(text, funcs)
+    if decoder is not None:
+        resync(bodies, funcs, pads, decoder)
+    for a, insns in bodies.items():
+        cur = funcs[a]
+        if insns:
+            f = frame_of(insns[0][1], insns[0][2])
+            cur.frame = f if f is not None else sum(call0_adjust(op, x) for _y, op, x in insns)
+        _function_body(cur, insns, starts, pads.get(a))
+        cur.probes = [x for x, _op, _args in insns[:24]]
+
+
+# ---- decode resync --------------------------------------------------------------------
+#
+# objdump decodes a function linearly. After an unconditional jump the assembler may pad
+# to align the next instruction, and objdump then decodes out of step until it happens to
+# land on an instruction boundary again: it misses the real instructions there and
+# invents others, such as a `call8` into the middle of the image (7631b6a2: a landing pad
+# in a runTurn lambda decoded as a call to runTurn, a cycle that is not there). Every real
+# entry is known: the function start, a branch target of reachable code, and each landing
+# pad the exception tables (.eh_frame -> LSDA) list. A stretch whose entry objdump did not
+# decode as an instruction start is decoded again from that entry until it meets the
+# linear decode at a shared boundary, and replaces the instructions it overlaps.
+
+
+def insn_length(first_byte: int) -> int:
+    """Bytes of the ESP32-S3 instruction starting with this byte: op0 0-7 is 24-bit, 8-13
+    the 16-bit density forms, 14-15 the 32-bit TIE (ee.*) forms. Checked against every
+    instruction objdump decodes in the image (test_tg_poll_stack)."""
+    op0 = first_byte & 0xF
+    return 3 if op0 < 8 else 2 if op0 < 14 else 4
+
+
+class Decoder:
+    """Reads an ELF's loaded bytes and decodes chosen stretches of it with objdump."""
+
+    NOP3 = bytes((0xF0, 0x20, 0x00))  # nop
+    NOP2 = bytes((0x3D, 0xF0))  # nop.n
+    BLOB_VMA = 0x10000000
+
+    def __init__(self, read, objdump: str):
+        self.read, self.objdump = read, objdump
+
+    def length(self, addr: int, op: str = "") -> int:
+        if op.startswith("."):
+            return 1  # `.byte`: objdump could not decode it
+        b = self.read(addr, 1)
+        return insn_length(b[0]) if b else 1
+
+    def stretch_end(self, entry: int, starts: set, end: int) -> int:
+        """Where a decode from `entry` meets an instruction start of the linear decode."""
+        p = entry
+        while p < end and (p == entry or p not in starts) and p - entry < 4096:
+            p += self.length(p)
+        return p
+
+    def decode(self, stretches: list) -> dict:
+        """entry -> [(addr, op, args)] for each (entry, stop), with one objdump run.
+
+        The stretches go into one blob, each at the same address mod 4 as in the image
+        (l32r and call targets depend on it), joined by nops so the decode stays in step;
+        branch, call and literal operands are moved back to the stretch's real address.
+        """
+        blob, place = bytearray(), []
+        for entry, stop in stretches:
+            data = self.read(entry, stop - entry)
+            if not data:
+                continue
+            gap = (entry - len(blob)) % 4
+            gap = 5 if gap == 1 else gap
+            blob += self.NOP3 + self.NOP2 * ((gap - 3) // 2) if gap % 2 else self.NOP2 * (gap // 2)
+            place.append((len(blob), entry, len(data)))
+            blob += data
+        if not place:
+            return {}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "stretches.bin")
+            with open(path, "wb") as f:
+                f.write(bytes(blob))
+            text = run(
+                [
+                    self.objdump,
+                    "-D",
+                    "-z",
+                    "--no-show-raw-insn",
+                    "-b",
+                    "binary",
+                    "-m",
+                    "xtensa",
+                    f"--adjust-vma={self.BLOB_VMA:#x}",
+                    path,
+                ]
+            )
+        return self._parse(text, place)
+
+    def _parse(self, text: str, place: list) -> dict:
+        out = {entry: [] for _o, entry, _n in place}
+        i = 0
+        for line in text.splitlines():
+            m = BLOB_INSN_RE.match(line)
+            if not m:
+                continue
+            off = int(m.group(1), 16) - self.BLOB_VMA
+            while i < len(place) and off >= place[i][0] + place[i][2]:
+                i += 1
+            if i == len(place):
+                break
+            start, entry, _n = place[i]
+            if off < start:
+                continue  # the nops between stretches
+            delta = entry - (self.BLOB_VMA + start)
+            op, args = m.group(2), (m.group(3) or "").strip()
+            out[entry].append((entry + off - start, op, self._operands(op, args, delta)))
+        return out
+
+    def _operands(self, op: str, args: str, delta: int) -> str:
+        """The blob's pc-relative operands as the ELF decode prints them."""
+        parts = _regs(args) if args else []
+        if not parts or not parts[-1].startswith("0x"):
+            return args
+        real = (int(parts[-1].split()[0], 16) + delta) & 0xFFFFFFFF  # `0x... (0x<literal>)`
+        if op == "l32r":
+            raw = self.read(real, 4)
+            value = struct.unpack("<I", raw)[0] if raw else 0
+            return f"{parts[0]}, {real:08x} <lit> ({value:08x} <x>)"
+        if CALL_RE.match(op) or _is_branch(op):
+            return ", ".join(parts[:-1] + [f"{real:08x} <x>"])
+        return args
+
+
+BLOB_INSN_RE = re.compile(r"^\s*([0-9a-f]+):\s+(\S+)(?:\s+(.*))?$")
+
+
+def live_targets(insns: list, entries: set) -> set:
+    """Branch targets of the code the entries reach by falling through or branching."""
+    flow = [
+        (addr, tuple(int(t, 16) for t in TARGET_RE.findall(args)) if _is_branch(op) else (), bool(UNCOND_RE.match(op)))
+        for addr, op, args in insns
+    ]
+    targets = set()
+    while True:
+        revive = entries | targets
+        found = set()
+        dead = False
+        for addr, goes, stops in flow:
+            if addr in revive:
+                dead = False
+            if dead:
+                continue
+            found.update(goes)
+            dead = stops
+        if found <= targets:
+            return targets
+        targets |= found
+
+
+def _misaligned(a: int, insns: list, end: int, pads: dict, tried: set) -> list:
+    starts = {x for x, _op, _args in insns}
+    entries = {a} | pads.get(a, set())
+    return [
+        e
+        for e in sorted(entries | live_targets(insns, entries))
+        if a < e < end and e not in starts and (a, e) not in tried
+    ]
+
+
+def _splice(insns: list, redone: list, decoder: Decoder) -> list:
+    """insns with each (entry, stop, decoded) stretch put in place of what it overlaps."""
+    addrs = [i[0] for i in insns]
+    drop, add = set(), {}
+    for entry, stop, decoded in redone:
+        for k in range(bisect.bisect_left(addrs, entry - 3), bisect.bisect_left(addrs, stop)):
+            a, op, _args = insns[k]
+            if a >= entry or a + decoder.length(a, op) > entry:
+                drop.add(k)
+        add.update((i[0], i) for i in decoded if entry <= i[0] < stop)
+    keep = [i for k, i in enumerate(insns) if k not in drop and i[0] not in add]
+    return sorted(keep + list(add.values()), key=lambda i: i[0])
+
+
+def resync(bodies: dict, funcs: dict, pads: dict, decoder: Decoder, rounds: int = 6) -> int:
+    """Decode again every reachable stretch objdump decoded out of step; returns how many.
+
+    A decoded stretch can hold branches to further misaligned entries, so this repeats
+    on the functions it changed."""
+    tried, done = set(), 0
+    look = [a for a, insns in bodies.items() if insns]
+    for _ in range(rounds):
+        spans = defaultdict(list)
+        for a in look:
+            end = a + funcs[a].size
+            starts = {x for x, _op, _args in bodies[a]}
+            for e in _misaligned(a, bodies[a], end, pads, tried):
+                spans[a].append((e, decoder.stretch_end(e, starts, end)))
+                tried.add((a, e))
+        if not spans:
+            break
+        decoded = decoder.decode([span for a in spans for span in spans[a]])
+        for a, mine in spans.items():
+            redone = [(e, stop, decoded[e]) for e, stop in mine if decoded.get(e)]
+            bodies[a] = _splice(bodies[a], redone, decoder)
+            done += len(redone)
+        look = sorted(spans)
+    return done
+
+
+# ---- exception tables: landing pads ------------------------------------------------------
+
+
+def _uleb(read, p: int) -> "tuple[int, int]":
+    value = shift = 0
+    while True:
+        b = read(p, 1)[0]
+        p += 1
+        value |= (b & 0x7F) << shift
+        shift += 7
+        if not b & 0x80:
+            return value, p
+
+
+def _sleb(read, p: int) -> "tuple[int, int]":
+    value, q = _uleb(read, p)
+    bits = 7 * (q - p)
+    return (value - (1 << bits) if value >> (bits - 1) & 1 else value), q
+
+
+EH_FORMATS = {0x00: "<I", 0x02: "<H", 0x03: "<I", 0x0A: "<h", 0x0B: "<i"}
+
+
+def _eh_pointer(read, p: int, enc: int) -> "tuple[int | None, int]":
+    """One DW_EH_PE-encoded pointer at p: (value, the address after it)."""
+    if enc == 0xFF:
+        return None, p
+    fmt, base = enc & 0x0F, p
+    if fmt in (0x01, 0x09):
+        value, p = (_uleb if fmt == 0x01 else _sleb)(read, p)
+    elif fmt in EH_FORMATS:
+        size = struct.calcsize(EH_FORMATS[fmt])
+        value, p = struct.unpack(EH_FORMATS[fmt], read(p, size))[0], p + size
+    else:
+        raise ValueError(f"pointer encoding {enc:#x} not handled")
+    if enc & 0x70 == 0x10:
+        value = (value + base) & 0xFFFFFFFF
+    elif enc & 0x70:
+        raise ValueError(f"pointer encoding {enc:#x} not handled")
+    if enc & 0x80:
+        value = struct.unpack("<I", read(value, 4))[0]
+    return value, p
+
+
+def _cie(read, p: int) -> dict:
+    """The augmentation of the CIE whose body (after its id) starts at p."""
+    version = read(p, 1)[0]
+    aug, p = b"", p + 1
+    while read(p, 1) != b"\0":
+        aug, p = aug + read(p, 1), p + 1
+    _, p = _uleb(read, p + 1)
+    _, p = _sleb(read, p)
+    p = p + 1 if version == 1 else _uleb(read, p)[1]
+    info = {"z": aug.startswith(b"z"), "fde": 0x00, "lsda": 0xFF}
+    if info["z"]:
+        _, p = _uleb(read, p)
+        for c in aug[1:].decode():
+            if c in "LR":
+                info["lsda" if c == "L" else "fde"] = read(p, 1)[0]
+                p += 1
+            elif c == "P":
+                _, p = _eh_pointer(read, p + 1, read(p, 1)[0])
+    return info
+
+
+def eh_frames(read, start: int):
+    """(function start, LSDA address or None) of every FDE in the .eh_frame at start."""
+    cies, p = {}, start
+    while True:
+        length = struct.unpack("<I", read(p, 4))[0]
+        if length in (0, 0xFFFFFFFF):
+            return
+        body = p + 4
+        cie_id = struct.unpack("<I", read(body, 4))[0]
+        if cie_id == 0:
+            cies[p] = _cie(read, body + 4)
+        else:
+            cie = cies[body - cie_id]
+            pc, q = _eh_pointer(read, body + 4, cie["fde"])
+            _, q = _eh_pointer(read, q, cie["fde"] & 0x0F)
+            lsda = None
+            if cie["z"]:
+                _, q = _uleb(read, q)
+                lsda, q = _eh_pointer(read, q, cie["lsda"])
+            yield pc, lsda
+        p = body + length
+
+
+def landing_pads(read, func: int, lsda: int) -> set:
+    """The landing pads one LSDA (.gcc_except_table) lists for the function at func."""
+    lp_enc, p = read(lsda, 1)[0], lsda + 1
+    lp_start = func
+    if lp_enc != 0xFF:
+        lp_start, p = _eh_pointer(read, p, lp_enc)
+    tt_enc, p = read(p, 1)[0], p + 1
+    if tt_enc != 0xFF:
+        _, p = _uleb(read, p)
+    cs_enc, p = read(p, 1)[0], p + 1
+    length, p = _uleb(read, p)
+    end, pads = p + length, set()
+    while p < end:
+        _, p = _eh_pointer(read, p, cs_enc)
+        _, p = _eh_pointer(read, p, cs_enc)
+        pad, p = _eh_pointer(read, p, cs_enc)
+        _, p = _uleb(read, p)
+        if pad:
+            pads.add(lp_start + pad)
+    return pads
+
+
+def image_landing_pads(read, nm_text: str) -> dict:
+    """function addr -> its landing pads, from the image's .eh_frame (`__eh_frame`)."""
+    m = re.search(r"^([0-9a-f]{8}) (?:[0-9a-f]+ )?[AaDdRr] __eh_frame$", nm_text, re.M)
+    if not m:
+        return {}
+    pads = {}
+    for func, lsda in eh_frames(read, int(m.group(1), 16)):
+        if lsda:
+            pads[func] = landing_pads(read, func, lsda)
+    return pads
+
+
+def elf_memory(path: str):
+    """A function: (addr, n) -> the n bytes the ELF loads at addr (or None)."""
     with open(path, "rb") as f:
         blob = f.read()
     if blob[:4] != b"\x7fELF" or blob[4] != 1 or blob[5] != 1:
@@ -351,11 +690,27 @@ def elf_reader(path: str):
         if flags & 0x2 and typ != 8 and size:  # SHF_ALLOC, not NOBITS
             secs.append((addr, size, off))
 
+    hit = [secs[0] if secs else (0, 0, 0)]
+
+    def read(a: int, n: int) -> "bytes | None":
+        addr, size, off = hit[0]
+        if not (addr <= a and a + n <= addr + size):
+            sec = next((x for x in secs if x[0] <= a and a + n <= x[0] + x[1]), None)
+            if sec is None:
+                return None
+            hit[0] = addr, size, off = sec
+        return blob[off + a - addr : off + a - addr + n]
+
+    return read
+
+
+def elf_reader(path: str):
+    """A function: addr -> the 4-byte little-endian word the ELF loads there (or None)."""
+    read = elf_memory(path)
+
     def word(a: int) -> "int | None":
-        for addr, size, off in secs:
-            if addr <= a and a + 4 <= addr + size:
-                return struct.unpack_from("<I", blob, off + a - addr)[0]
-        return None
+        raw = read(a, 4)
+        return struct.unpack("<I", raw)[0] if raw else None
 
     return word
 
@@ -1253,8 +1608,10 @@ def load_image(elf: str, cfg: dict, tools: dict) -> "tuple[dict, str]":
     known = set(funcs)
     # The precompiled ESP-IDF libraries' Xtensa property tables (.xt.prop) mark their own
     # code as data, so objdump prints mbedTLS, lwIP and newlib as empty words. Without
-    # them objdump decodes every function; the dead-code rule (_function_body) keeps the
-    # data it then decodes inside functions from adding calls.
+    # them objdump decodes every function; resync then decodes again what it decoded out
+    # of step, and the dead-code rule (_function_body) keeps the data it decodes inside
+    # functions from adding calls.
+    read = elf_memory(elf)
     with tempfile.TemporaryDirectory() as tmp:
         bare = os.path.join(tmp, "noprop.elf")
         run([tools["objcopy"], "--remove-section", ".xt.prop", "--remove-section", ".xt.lit", elf, bare])
@@ -1262,9 +1619,14 @@ def load_image(elf: str, cfg: dict, tools: dict) -> "tuple[dict, str]":
             run([tools["objdump"], "-d", "--no-show-raw-insn", bare]),
             {a: f for a, f in funcs.items() if not f.rom},
             known,
+            Decoder(read, tools["objdump"]),
+            image_landing_pads(read, nm_text),
         )
     parse_disassembly(
-        run([tools["objdump"], "-d", "--no-show-raw-insn", rom]), {a: f for a, f in funcs.items() if f.rom}, known
+        run([tools["objdump"], "-d", "--no-show-raw-insn", rom]),
+        {a: f for a, f in funcs.items() if f.rom},
+        known,
+        Decoder(elf_memory(rom), tools["objdump"]),
     )
     demangle(funcs, tools["c++filt"])
     return funcs, nm_text

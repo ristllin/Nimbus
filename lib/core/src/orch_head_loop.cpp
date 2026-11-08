@@ -348,7 +348,9 @@ size_t refitEnough(Transcript& tr, const HeadLoopHooks& hooks, size_t want, size
   return freed;
 }
 
-bool refitToBudget(const HeadStep& sr, const HeadLoopHooks& hooks, int round) {
+// noinline (lane STACK): these run between rounds, never under a round's request, so
+// their strings and documents stay out of runHeadLoop's frame on tg_poll.
+__attribute__((noinline)) bool refitToBudget(const HeadStep& sr, const HeadLoopHooks& hooks, int round) {
   size_t budget = 0, size = 0;
   if (sr.ok || !hooks.transcript || !parseBodyBudgetError(sr.error, budget, size) || size <= budget)
     return false;
@@ -395,8 +397,8 @@ namespace {
 // Send a rejected final answer back for one correction: the answer is recorded as the
 // orch_turn call the correction answers, so every provider's replay stays well-formed (an
 // unanswered tool_use 400s on Anthropic).
-void sendFinalBack(const HeadStep& sr, const std::string& fix, int round, const HeadLoopHooks& hooks,
-                   std::vector<HeadToolResult>& prior) {
+__attribute__((noinline)) void sendFinalBack(const HeadStep& sr, const std::string& fix, int round,
+                                             const HeadLoopHooks& hooks, std::vector<HeadToolResult>& prior) {
   HeadToolCall call;
   call.id = kFinalCheckCallId;
   call.name = "orch_turn";
@@ -418,8 +420,8 @@ void sendFinalBack(const HeadStep& sr, const std::string& fix, int round, const 
 
 // A rejected PROSE final goes back the same way, wrapped so the orch_turn call
 // the correction answers holds JSON arguments (the prose itself is not JSON).
-void sendProseBack(const HeadStep& sr, const std::string& fix, int round, const HeadLoopHooks& hooks,
-                   std::vector<HeadToolResult>& prior) {
+__attribute__((noinline)) void sendProseBack(const HeadStep& sr, const std::string& fix, int round,
+                                             const HeadLoopHooks& hooks, std::vector<HeadToolResult>& prior) {
   JsonDocument d;
   d["reply"] = sr.finalTurn;
   std::string args;

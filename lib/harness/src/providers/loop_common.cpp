@@ -136,7 +136,7 @@ uint32_t budgetLeft(const ProviderDeps& pd, uint32_t budgetMs, uint32_t t0) {
 unsigned heapNow(const ProviderDeps& pd) { return pd.freeHeap ? (unsigned)pd.freeHeap() : 0u; }
 
 // A failed step without a typed kind (an older path) is typed from its error line.
-void typeStep(orch::HeadStep& sr) {
+__attribute__((noinline)) void typeStep(orch::HeadStep& sr) {
   if (sr.kind != orch::StepErr::None) return;
   int st = 0;
   sr.kind = orch::classifyStepError(sr.error, &st);
@@ -417,7 +417,9 @@ class RoundRecovery {
   // A provider refused the request for its size: nothing ran and nothing was billed. Trim
   // along the whole ladder and say to run it once more; the turn's photos are read as their
   // transcriptions on this host from here on. A second refusal in a row takes the caller's rules.
-  bool overflowRetry(const std::string& host, const std::string& why) {
+  // noinline (lane STACK), like noteCut, served and typeStep: they run after a round's
+  // request returns, never under it, so their locals stay out of the step's frame on tg_poll.
+  __attribute__((noinline)) bool overflowRetry(const std::string& host, const std::string& why) {
     if (overflowTried_ || !orch::isContextOverflowError(why)) return false;
     overflowTried_ = true;
     const size_t total = instructions().size() + (fitted_ ? fitInputs_.size() : inputs_.size()) + tr_.toolBytes();
@@ -431,7 +433,7 @@ class RoundRecovery {
   }
 
   // The next attempt at a cut round is told what happened and answers in less room.
-  void noteCut(const orch::HeadStep& sr) {
+  __attribute__((noinline)) void noteCut(const orch::HeadStep& sr) {
     savedCut_.reset(new orch::HeadStep(sr));
     orch::Salvage kept;
     orch::salvageTurnText(sr.finalTurn, kept);
@@ -453,7 +455,7 @@ class RoundRecovery {
 
   // The round is served. What was recovered is over: a later round's failure is about
   // itself, it may have its own trim and rerun, and it is not told about this cut.
-  void served() {
+  __attribute__((noinline)) void served() {
     overflowTried_ = cutRerun_ = false;
     savedCut_.reset();
     heldHost_.clear();
