@@ -29,11 +29,13 @@ struct Tok {
 bool numChar(char c) { return std::isdigit((unsigned char)c) || c == '.'; }
 
 // The token starting at p is a plain number (digits, at most one dot, a digit).
+// A second dot ends the number before it ("3.14.1" reads 3.14, then ".1"): the
+// scan always advances, so no reply text can stall it.
 bool scanNum(const std::string& text, size_t p, size_t& e, double& v) {
   e = p;
   bool dot = false, digit = false;
   while (e < text.size() && numChar(text[e])) {
-    if (text[e] == '.') { if (dot) return false; dot = true; }
+    if (text[e] == '.') { if (dot) break; dot = true; }
     else digit = true;
     ++e;
   }
@@ -80,6 +82,7 @@ void scanWordToken(const std::string& text, size_t p, std::vector<Tok>& out, siz
   while (e < text.size() && (std::isalnum((unsigned char)text[e]) || text[e] == '.' ||
                               (text[e] == '&' && e + 1 < text.size() && std::isalnum((unsigned char)text[e + 1]))))
     ++e;
+  if (e == p) ++e;   // a lone '&' ("Fish & chips") is its own token; the scan never stalls
   Tok t;
   t.w = text.substr(p, e - p);
   std::string low;
@@ -688,6 +691,7 @@ std::vector<std::string> brandCandidates(const std::string& rowText) {
     while (e < rowText.size() && (std::isalnum((unsigned char)rowText[e]) ||
                                   (rowText[e] == '&' && e + 1 < rowText.size() && std::isalnum((unsigned char)rowText[e + 1]))))
       ++e;
+    if (e == p) ++e;   // a lone '&' is consumed, not a brand; the scan never stalls
     const std::string cand = brandCandidate(rowText.substr(p, e - p));
     p = e;
     if (!cand.empty()) out.push_back(cand);

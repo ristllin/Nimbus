@@ -358,6 +358,58 @@ static void test_second_read_note_for_reply() {
                        .empty());
 }
 
+// ---- the scan never stalls ------------------------------------------------------------
+// The rig hang: a reply holding a version-like number ("Python 3.14.1") spun the
+// engine thread at 100% CPU forever. A second dot inside a digit run made scanNum
+// fail without advancing p, so tokenize revisited the same character forever; a
+// lone '&' ("Fish & chips") had the same effect in scanWordToken and in the brand
+// scan. The class rule: every scan over reply text makes progress whatever the
+// text. A regression hangs this suite, and the semantic cases below pin the token
+// shapes the fix chose.
+static void test_scan_never_stalls_on_any_text() {
+  const char* adversarial[] = {
+      "Python 3.14.1 is the newest patch", "v4.9.0 and 1.2.3.4", "3..5 and ..5 and 5.",
+      "Fish & chips", "M&S and M&S ", "& & &", "a& b &c &", "600/143/2", "565/135.5",
+      "per 3.14.1 g", "[image 1/2 ref=0123456789abcdef] 3.14.1 & 600/143 kcal per 100 g",
+  };
+  const std::string records = "[image 1/1 ref=aaaa] (transcribed by mistral) per 100 g 179 kcal";
+  for (const char* t : adversarial) {
+    parseLabelRead(t);
+    secondReadNoteForReply(t, records);
+    unsupportedDetails(t, "chimichurri beef bowl 388 g");
+  }
+  // Property: every 3-character combination over the scans' decision alphabet
+  // (a digit, the dot, the ampersand, the pair slash, a letter, a separator).
+  const std::string alpha = "3.&/a ";
+  for (char a : alpha)
+    for (char b : alpha)
+      for (char c : alpha) {
+        const std::string combo = std::string("per 100 g 41.0 g protein ") + a + b + c + " net 131 g";
+        parseLabelRead(combo);
+        secondReadNoteForReply(combo, records);
+        unsupportedDetails(combo, "chimichurri beef bowl 388 g");
+      }
+}
+
+// The token shapes the no-stall fix chose: a second dot ends the number before it
+// ("3.14.1" reads 3.14, then ".1"), and a lone '&' is its own word - the figures
+// around either still parse.
+static void test_double_dot_and_lone_amp_still_parse_figures() {
+  const LabelRead r = parseLabelRead("Python 3.14.1 per 100 g: 179 kcal, 31.3 g protein\nnet 131 g");
+  TEST_ASSERT_TRUE(r.hasPer100);
+  TEST_ASSERT_TRUE(r.per100.hasKcal);
+  TEST_ASSERT_EQUAL_FLOAT(179, r.per100.kcal);
+  TEST_ASSERT_EQUAL_FLOAT(31.3, r.per100.protein);
+  TEST_ASSERT_TRUE(r.netKnown);
+  TEST_ASSERT_EQUAL_FLOAT(131, r.netG);
+  const LabelRead amp = parseLabelRead("Fish & chips per 100 g: 200 kcal");
+  TEST_ASSERT_TRUE(amp.per100.hasKcal);
+  TEST_ASSERT_EQUAL_FLOAT(200, amp.per100.kcal);
+  // A lone '&' in a row is consumed by the brand scan and names no brand.
+  TEST_ASSERT_TRUE(unsupportedDetails("2026-11-02,lunch,\"Fish & chips, big plate\",500,30", "fish chips")
+                       .empty());
+}
+
 int main(int argc, char** argv) {
   (void)argc;
   (void)argv;
@@ -389,5 +441,7 @@ int main(int argc, char** argv) {
   RUN_TEST(test_gate_uses_the_heads_image_note_read);
   RUN_TEST(test_brand_backed_across_newlines_and_punctuation);
   RUN_TEST(test_second_read_note_for_reply);
+  RUN_TEST(test_scan_never_stalls_on_any_text);
+  RUN_TEST(test_double_dot_and_lone_amp_still_parse_figures);
   return UNITY_END();
 }
