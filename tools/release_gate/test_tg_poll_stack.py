@@ -248,6 +248,15 @@ def test_method_names():
     )
 
 
+def test_sources_of_an_older_build_are_read_from_its_checkout(tmp_path):
+    rel = os.path.join("lib", "x.cpp")
+    (tmp_path / "lib").mkdir()
+    (tmp_path / rel).write_text("old line one\nold line two\n")
+    here = os.path.join(st.REPO, rel)  # the path the ELF's line table names
+    assert st.Sources(str(tmp_path)).line(here + ":2") == "old line two"
+    assert st.Sources().line(here + ":2") == ""  # no such file in this checkout
+
+
 def test_code_only_drops_strings_and_comments():
     assert "delete" not in st.code_only('if (!strcmp(a, "delete")) go(); // delete x')
 
@@ -298,6 +307,15 @@ def test_a_dynamic_frame_needs_a_bound():
     assert any("dynamic stack frame" in e for e in model(funcs, config()).errors)
     m = model(funcs, config(dynamic_frames=[{"function": "^vla$", "extra_bytes": 500, "why": "t"}]))
     assert m.through([1])[0] == 530
+
+
+def test_a_wrong_inline_chain_without_gdb_fails_closed(monkeypatch):
+    f = fn(1, 4, "caller()", 10)
+    f.indirect = [(10, None)]
+    inlines = {10: [("unrelated<int>::run()", "??:0")]}  # what BFD gives when .debug_aranges misleads it
+    monkeypatch.setattr(st, "find_gdb", lambda: None)
+    assert st.repair_inlines("x.elf", {1: f}, inlines) == -1  # analyse_elf turns this into an error
+    assert inlines[10] == [("unrelated<int>::run()", "??:0")]
 
 
 def test_the_verdict_holds_the_floor():

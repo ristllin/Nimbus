@@ -42,12 +42,19 @@ same tree. Its last line is `STATIC DRAM GREEN` or `STATIC DRAM RED`.
 ## Running it
 
 The tg_poll stack budget, on a built image (needs the PlatformIO Xtensa toolchain and ROM ELF,
-which `pio run` installs; about 20 s):
+which `pio run` installs; about 80 s per image):
 
 ```
 python3 tools/release_gate/check_tg_poll_stack.py                        # .pio/build/esp32s3-cyd (+ esp32s3 if built)
 python3 tools/release_gate/check_tg_poll_stack.py --elf <firmware.elf> --report out.md
+python3 tools/release_gate/check_tg_poll_stack.py --elf <older.elf> --sources <checkout of its commit>
 ```
+
+An image built from another commit needs `--sources`: virtual calls are resolved from the
+source line the compiler saw, so reading today's files for an older image resolves them
+wrongly. Where `.debug_aranges` misleads addr2line, inline chains come from GDB
+(tool-xtensa-esp-elf-gdb, which the platform installs with the toolchain); if such a chain
+is needed and GDB is missing, the gate fails instead of resolving calls from a wrong chain.
 
 Host checks (run in CI, fast):
 

@@ -828,11 +828,22 @@ def code_only(line: str) -> str:
 
 
 class Sources:
-    """Source lines by path, read once (a missing file reads as empty)."""
+    """Source lines by path, read once (a missing file reads as empty).
 
-    def __init__(self):
+    The ELF names this checkout's files. `root`, a checkout of the commit the ELF was
+    built from, is read in their place: a call resolved by its source line must read the
+    line the compiler saw (an older image read against today's files resolves wrongly).
+    """
+
+    def __init__(self, root: "str | None" = None):
         self.cache = {}
         self.joined = {}
+        self.root = os.path.abspath(root) if root else None
+
+    def local(self, path: str) -> str:
+        if self.root and (path == REPO or path.startswith(REPO + os.sep)):
+            return self.root + path[len(REPO) :]
+        return path
 
     def headers(self, path: str) -> list:
         """The sibling header, then the project headers the file #includes (one level)."""
@@ -846,7 +857,7 @@ class Sources:
                 continue
             for root in roots:
                 cand = os.path.normpath(os.path.join(root, m.group(1)))
-                if os.path.exists(cand):
+                if os.path.exists(self.local(cand)):
                     out.append(cand)
                     break
         for h in out:
@@ -867,7 +878,7 @@ class Sources:
             return ""
         if path not in self.cache:
             try:
-                with open(path, encoding="utf-8", errors="replace") as f:
+                with open(self.local(path), encoding="utf-8", errors="replace") as f:
                     self.cache[path] = f.read().splitlines()
             except OSError:
                 self.cache[path] = []
@@ -970,7 +981,8 @@ def gdb_lines(elf: str, gdb: str, addrs: list) -> dict:
 
 
 def repair_inlines(elf: str, funcs: dict, inlines: dict) -> int:
-    """Replace inline chains addr2line got wrong with GDB's innermost frame; returns how many.
+    """Replace inline chains addr2line got wrong with GDB's innermost frame; returns how many
+    (minus how many need it when GDB is not installed: the caller fails the analysis).
 
     Some links carry a .debug_aranges entry that points past .debug_info (GDB warns about
     it); BFD trusts the table and then maps whole functions to an unrelated template, with
@@ -984,9 +996,11 @@ def repair_inlines(elf: str, funcs: dict, inlines: dict) -> int:
             for s, _slot in f.indirect:
                 owner[s] = f
     bad = [s for s, ch in inlines.items() if s in owner and _chain_wrong(ch, owner[s])]
-    gdb = find_gdb()
-    if not bad or gdb is None:
+    if not bad:
         return 0
+    gdb = find_gdb()
+    if gdb is None:  # the wrong chains would resolve these calls wrongly: fail closed
+        return -len(bad)
     fixed = gdb_lines(elf, gdb, bad)
     for s, ch in fixed.items():
         inner = ch[0]
@@ -1659,16 +1673,21 @@ def inline_sites(funcs: dict) -> list:
     return sorted(sites)
 
 
-def analyse_elf(elf: str, cfg: dict) -> "tuple[Model, dict]":
+def analyse_elf(elf: str, cfg: dict, sources: "str | None" = None) -> "tuple[Model, dict]":
     tools = {n: find_tool(n) for n in ("nm", "objdump", "objcopy", "addr2line", "c++filt")}
     funcs, nm_text = load_image(elf, cfg, tools)
     root = task_root(funcs, cfg)
     inlines = addr2line(elf, tools["addr2line"], inline_sites(funcs))
     repaired = repair_inlines(elf, funcs, inlines)
     vslots = vtable_slots(nm_text, elf_reader(elf), funcs)
-    model = Model(funcs, cfg, inlines, vslots, Sources())
+    model = Model(funcs, cfg, inlines, vslots, Sources(sources))
     model.lambda_names = handler_lambda_names(elf, tools, funcs, model.sources)
     model.analyse(root)
+    if repaired < 0:
+        model.errors.append(
+            f"{-repaired} indirect call sites have inline chains addr2line got wrong and GDB "
+            "(tool-xtensa-esp-elf-gdb, xtensa-esp-elf-gdb-no-python) is not installed to repair them"
+        )
     model.tools = tools
     model.elf = elf
     model.repaired = repaired
@@ -1834,8 +1853,8 @@ def render(v: dict, elf: str, chain_rows: int = 60) -> str:
     return "\n".join(lines)
 
 
-def check(elf: str, cfg: dict, report: "str | None" = None, quiet: bool = False) -> bool:
-    model, _ = analyse_elf(elf, cfg)
+def check(elf: str, cfg: dict, report: "str | None" = None, quiet: bool = False, sources: "str | None" = None) -> bool:
+    model, _ = analyse_elf(elf, cfg, sources)
     v = verdict(model)
     text = render(v, elf)
     if report:
@@ -1860,6 +1879,11 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument("--config", default=CONFIG, help=argparse.SUPPRESS)
     ap.add_argument("--report", help="also write the full report (markdown) here")
     ap.add_argument("--quiet", action="store_true", help="print only the verdict lines")
+    ap.add_argument(
+        "--sources",
+        help="a checkout of the commit the ELF was built from, read for its source lines "
+        "(default: this checkout; needed for an image older than the working tree)",
+    )
     args = ap.parse_args(argv)
     try:
         cfg = load_config(args.config)
@@ -1877,7 +1901,7 @@ def main(argv: "list[str] | None" = None) -> int:
     ok = True
     for elf in elfs:
         try:
-            ok = check(elf, cfg, args.report, args.quiet) and ok
+            ok = check(elf, cfg, args.report, args.quiet, args.sources) and ok
         except (OSError, ValueError, RuntimeError) as e:
             print(f"FAIL tg_poll stack: {elf}: {e}")
             ok = False
