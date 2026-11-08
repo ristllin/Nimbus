@@ -2386,7 +2386,7 @@ static void drainMedia() {
 // TGSTALL: the bench's poll-task stall (armTestStall). Volatile so the spin is not
 // folded away; the block waits on nothing.
 static volatile int s_testStall = 0;
-static void runTestStall() {
+__attribute__((noinline)) static void runTestStall() {   // noinline: the stall PC decodes here
   const int kind = s_testStall;
   if (kind == 0) return;
   s_testStall = 0;
