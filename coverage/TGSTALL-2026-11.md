@@ -136,7 +136,8 @@ PR_BODY from the battery images.
   and its spin or wait judgement; the long healthy work (a day of long-polls, a 12-minute turn,
   120 s silent tool calls, the longest tolerated silence, an update install) never trips it; a
   beat starts a new episode (no thrash); a disarmed guard (factory reset) stays quiet; millis()
-  wrap; the streak record across restarts, its pending flag read once, its garbage and
+  wrap; a beat that lands between the loop task's clock read and its beat read (a millisecond
+  newer than the clock) reads as fresh, never as a 49-day silence; the streak record across restarts, its pending flag read once, its garbage and
   other-build rejection, the long limit after 3 and the healthy reset; the panic reason bounded,
   printable, read back as the guard's and as a watchdog by the crash notice; a panic restart
   counts a poison try; the owner notice for every turn kind, once per streak, no em dash, no "I",
@@ -147,7 +148,10 @@ PR_BODY from the battery images.
 Failing first: both suites ran against stubs that keep the pre-fix behavior (nothing watches the
 poll task; the waiter always frees the state): 9 of 14 cases failed
 (`evidence/tgstall-tests/failing-first-stub.log`), then all passed with the implementation
-(`evidence/tgstall-tests/after-fix-1.log`).
+(`evidence/tgstall-tests/after-fix-1.log`). The clock race was found in self-review after the
+first implementation: its test failed against that implementation (`silentMs` read 4294967293,
+`evidence/tgstall-tests/failing-first-race.log`) and passes with the signed, clamped silence
+(`evidence/tgstall-tests/after-fix-3.log`).
 
 ## OPEN HARDWARE
 

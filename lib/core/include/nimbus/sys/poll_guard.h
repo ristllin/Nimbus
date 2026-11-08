@@ -74,7 +74,11 @@ class PollLiveness {
   void disarm();
   bool armed() const { return armed_.load(std::memory_order_acquire); }
   void beat(uint32_t nowMs, const char* step);
-  uint32_t silentMs(uint32_t nowMs) const { return nowMs - lastMs_.load(std::memory_order_relaxed); }
+  // Clamped at 0: a beat newer than `nowMs` (it landed after the caller read the clock).
+  uint32_t silentMs(uint32_t nowMs) const {
+    const int32_t d = (int32_t)(nowMs - lastMs_.load(std::memory_order_relaxed));
+    return d > 0 ? (uint32_t)d : 0u;
+  }
   const char* lastStep() const { return step_.load(std::memory_order_relaxed); }
   // One check: true exactly once per silent episode, when the silence reaches
   // `limitMs`; `out` then holds the episode. A beat starts a new episode.

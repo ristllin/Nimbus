@@ -184,6 +184,29 @@ void test_silence_across_the_millis_wrap() {
   TEST_ASSERT_TRUE(sim.firedAtSilentMs < kPollSilentLimitMs + 2 * kTickMs);
 }
 
+// The race the loop task always runs: it reads the clock, then the beat, and the poll task
+// can beat in between with a newer millisecond. That beat is fresh, never a 49-day
+// silence: thousands of such checks never fire, and the silence reads 0.
+void test_a_beat_newer_than_the_clock_is_fresh() {
+  PollLiveness live;
+  live.arm(1000);
+  int fired = 0;
+  for (uint32_t now = 2000; now < 2000 + 3600u * 1000u; now += 1000) {
+    live.beat(now + 1 + (now / 1000) % 3, "provider read");   // 1 to 3 ms after `now`
+    PollStall s;
+    if (live.check(now, RunState::Running, kPollSilentLimitMs, s)) ++fired;
+    TEST_ASSERT_EQUAL_UINT32(0, live.silentMs(now));
+  }
+  TEST_ASSERT_EQUAL_INT(0, fired);
+  // Near the wrap too.
+  PollLiveness w;
+  w.arm(0xFFFFFFF0u);
+  w.beat(0x00000002u, "provider read");   // after the wrap, newer than the clock below
+  PollStall s;
+  TEST_ASSERT_FALSE(w.check(0xFFFFFFFEu, RunState::Running, kPollSilentLimitMs, s));
+  TEST_ASSERT_EQUAL_UINT32(0, w.silentMs(0xFFFFFFFEu));
+}
+
 // The streak record: one guard restart, the boot after it knows, the owner is told on
 // the first restart of a streak only; past kPollStallRestartsMax the guard waits an hour;
 // a healthy half hour ends the streak; garbage, another build or a power-on clear it.
@@ -332,6 +355,7 @@ int main(int, char**) {
   RUN_TEST(test_a_beat_starts_a_new_episode);
   RUN_TEST(test_disarmed_guard_stays_quiet);
   RUN_TEST(test_silence_across_the_millis_wrap);
+  RUN_TEST(test_a_beat_newer_than_the_clock_is_fresh);
   RUN_TEST(test_stall_record_streak_and_boot);
   RUN_TEST(test_reason_is_bounded_and_names_the_stall);
   RUN_TEST(test_guard_restart_counts_a_poison_try);

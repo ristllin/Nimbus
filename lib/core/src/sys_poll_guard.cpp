@@ -38,7 +38,11 @@ bool PollLiveness::check(uint32_t nowMs, RunState state, uint32_t limitMs, PollS
     onCpu_ = 0;
     fired_ = false;
   }
-  const uint32_t silent = nowMs - last;   // wraps with millis()
+  // Signed and clamped: a beat can land between the loop task reading the clock and
+  // reading the beat, so `last` may be a millisecond or two AFTER `nowMs`. Unsigned, that
+  // read as a 49-day silence and restarted a healthy device. Wraps with millis().
+  const int32_t since = (int32_t)(nowMs - last);
+  const uint32_t silent = since > 0 ? (uint32_t)since : 0u;
   if (silent >= kPollSampleAfterMs && samples_ < UINT16_MAX) {
     ++samples_;
     if (state == RunState::Running || state == RunState::Ready) ++onCpu_;
