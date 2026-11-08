@@ -57,16 +57,34 @@ std::vector<std::string> splitPath(const std::string& path) {
 
 // ---- 1. the main provider is unavailable -----------------------------------------------------
 
+// A label's first word: the owner's short name for a two-word provider.
+std::string firstWord(const std::string& label) { return label.substr(0, label.find(' ')); }
+
+// "<down> down, <served> answers" in the longest form that fits kDegradedLineMax.
+std::string fallbackLine(const std::string& allDown, const std::string& head, const std::string& served) {
+  const std::string answers = " answers";
+  const std::string forms[] = {
+      allDown + " down, " + served + answers,
+      head + " down, " + served + answers,
+      firstWord(head) + " down, " + firstWord(served) + answers,
+      "Main provider down, " + firstWord(served) + answers,
+  };
+  for (const std::string& f : forms)
+    if (f.size() <= kDegradedLineMax) return f;
+  return "Main provider down, backup answers";
+}
+
 DegradedCondition headFallback(const FallbackFact& f) {
   DegradedCondition c;
   c.id = DegradedId::HeadFallback;
   const std::string served = degradedProviderLabel(f.served);
   std::vector<std::string> down = labels(f.down);
   if (down.empty()) down.push_back(degradedProviderLabel(f.head));
-  // Name the main provider and the one that answers; keep the providers between them
-  // when the line has room.
-  c.line = joinNames(down) + " down, " + served + " answers";
-  if (c.line.size() > kDegradedLineMax) c.line = down.front() + " down, " + served + " answers";
+  // Name the main provider and the one that answers; keep the providers between them when the
+  // line has room, then shorter forms of the names ("Cumulo Nimbus" is "Cumulo", "Custom
+  // endpoint" is "Custom"), and at the last "Main provider down" so the line never clips on the
+  // strip. The reason below always has the full names.
+  c.line = fallbackLine(joinNames(down), down.front(), served);
 
   const std::string head = down.front();
   const std::string phrase = f.headClosed && !f.headWhy.empty() ? f.headWhy : "did not answer the last turn";

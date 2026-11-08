@@ -22,6 +22,7 @@
 
 #include "nimbus/orch/degraded.h"
 #include "nimbus/orch/file_store.h"
+#include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/store_full.h"
 
 using namespace nimbus::orch;
@@ -242,6 +243,64 @@ static void test_a_long_pair_of_names_falls_back_to_the_head_and_the_answer() {
   TEST_ASSERT_TRUE(contains(c->line, "Cumulo Nimbus"));
   TEST_ASSERT_TRUE(contains(c->line, "Anthropic"));
   TEST_ASSERT_TRUE(contains(c->why, "Mistral"));   // the one the line had no room for
+}
+
+// The class: the line is <= kDegradedLineMax for EVERY provider the device can have as its
+// main provider or its answerer, down to the longest labels ("Custom endpoint" 15,
+// "Cumulo Nimbus" 13), with one, two or three providers passed over. The strip clips
+// anything longer on the 320 px panel, and the hardware test fails a longer line.
+static void test_the_fallback_line_fits_for_every_pair_of_providers() {
+  std::vector<std::string> slugs;
+  for (size_t i = 0; i < kProviderSlotCount; i++) slugs.push_back(kProviderSlots[i].slug);
+  slugs.push_back("custom");
+  size_t checked = 0;
+  for (const std::string& head : slugs)
+    for (const std::string& served : slugs) {
+      if (head == served) continue;
+      for (const std::string& mid : slugs) {
+        // paths: head -> served, and head -> mid -> served (mid a third provider)
+        std::vector<std::string> paths = {head + " -> " + served};
+        if (mid != head && mid != served) paths.push_back(head + " -> " + mid + " -> " + served);
+        for (const std::string& path : paths) {
+          ServingTracker t;
+          t.noteTurn(head, served, path, true, 1000);
+          DegradedFacts f;
+          f.uptimeMs = 600000;
+          f.fallback = t.fact(2000);
+          DegradedCondition c;
+          const std::string at = head + " -> " + served + " (" + path + ")";
+          TEST_ASSERT_TRUE_MESSAGE(pick(f, DegradedId::HeadFallback, c), at.c_str());
+          TEST_ASSERT_TRUE_MESSAGE(c.line.size() <= kDegradedLineMax, (c.line + " / " + at).c_str());
+          TEST_ASSERT_TRUE_MESSAGE(contains(c.line, " down, "), c.line.c_str());
+          TEST_ASSERT_TRUE_MESSAGE(contains(c.line, " answers"), c.line.c_str());
+          TEST_ASSERT_TRUE_MESSAGE(printableAscii(c.line), c.line.c_str());
+          // The reason always has the full names, whatever the line had to drop.
+          TEST_ASSERT_TRUE_MESSAGE(contains(c.why, degradedProviderLabel(head).c_str()), c.why.c_str());
+          TEST_ASSERT_TRUE_MESSAGE(contains(c.why, degradedProviderLabel(served).c_str()), c.why.c_str());
+          ++checked;
+        }
+      }
+    }
+  TEST_ASSERT_TRUE(checked > 100);
+}
+
+// The two longest labels, the case the review found (43 characters as "X down, Y answers").
+static void test_the_two_longest_names_still_say_who_is_down_and_who_answers() {
+  for (int swap = 0; swap < 2; swap++) {
+    ServingTracker t;
+    const char* head = swap ? "cumulo" : "custom";
+    const char* served = swap ? "custom" : "cumulo";
+    t.noteTurn(head, served, "", true, 1000);
+    DegradedFacts f;
+    f.uptimeMs = 600000;
+    f.fallback = t.fact(2000);
+    DegradedCondition c;
+    TEST_ASSERT_TRUE(pick(f, DegradedId::HeadFallback, c));
+    TEST_ASSERT_TRUE_MESSAGE(c.line.size() <= kDegradedLineMax, c.line.c_str());
+    // Still names both ends (a shortened name is the owner's own word for it).
+    TEST_ASSERT_TRUE_MESSAGE(contains(c.line, swap ? "Cumulo" : "Custom"), c.line.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(contains(c.line, swap ? "Custom" : "Cumulo"), c.line.c_str());
+  }
 }
 
 static void test_a_turn_served_by_the_head_clears_it() {
@@ -932,6 +991,8 @@ int main() {
   RUN_TEST(test_fallback_names_the_head_and_the_provider_that_answers);
   RUN_TEST(test_fallback_to_a_third_choice_names_every_provider_it_went_past);
   RUN_TEST(test_a_long_pair_of_names_falls_back_to_the_head_and_the_answer);
+  RUN_TEST(test_the_fallback_line_fits_for_every_pair_of_providers);
+  RUN_TEST(test_the_two_longest_names_still_say_who_is_down_and_who_answers);
   RUN_TEST(test_a_turn_served_by_the_head_clears_it);
   RUN_TEST(test_a_turn_nothing_answered_changes_nothing);
   RUN_TEST(test_a_path_with_no_arrows_is_just_the_head);
