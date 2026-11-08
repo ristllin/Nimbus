@@ -240,6 +240,9 @@ and a "busy" body, so the kit accepts a page only when it is HTTP 200 and holds 
 retries a busy one, and fails the leg when the page stays busy. A busy page read as an
 empty one would count every older row of the owner chat as the episode's own (the shape of
 leg c's count of 4 notices against one send on 5 Nov 2026) or hide the episode's own rows.
+The evidence record also keeps the rows each window counted (`historyWindows`: id, session,
+role, text, and the size of both reads), so a count that disagrees with the device's own
+sends can be audited row by row.
 
 With `NIMBUS_STORM_TG=1` (and `NIMBUS_BENCH_LOCKS` pointing at the bench locks) a leg
 puts the dedicated test bot on the unit for its run, under the bench `tg-bot` lock, and

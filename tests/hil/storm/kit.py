@@ -371,6 +371,7 @@ class StormBench:
         self._out_texts: Dict[str, str] = {}  # archived outbound item -> its text
         self.windows: List[Tuple[str, List[str]]] = []  # (log source, lines) of each closed window
         self.sent_texts: List[str] = []  # what reached the owner over Telegram in the windows (bot mode)
+        self.history_windows: List[dict] = []  # what each closed window read from the chat history (audit)
         self.guard0: Optional[Dict[str, int]] = None  # storm-guard counters when the leg began
 
     # ---- reads --------------------------------------------------------------------
@@ -833,6 +834,8 @@ class StormBench:
         metrics.extra.setdefault("logSource", ",".join(src for src, _ in self.windows) or self.tap.source)
         if self.sent_texts:
             metrics.extra.setdefault("telegramSent", [t[:160] for t in self.sent_texts])
+        if self.history_windows:
+            metrics.extra.setdefault("historyWindows", self.history_windows)
         rec = g.evidence_record(
             g.RunId(leg, self.role, self.build, self.commit, self.unit, self.started, time.time()), metrics, bounds
         )
@@ -1007,7 +1010,20 @@ class Window:
         self.bench.tap.poll()
         self.lines = self.bench.tap.parsed()
         self.bench.windows.append((self.bench.tap.source, list(self.bench.tap.graded_lines())))
-        self.rows = g.new_rows(self.rows_before, self.bench.chat_rows())
+        after = self.bench.chat_rows()
+        self.rows = g.new_rows(self.rows_before, after)
+        # The raw reads behind a notice count, kept in the evidence: a count that disagrees
+        # with the device's own sends can then be audited row by row (ids and sessions).
+        self.bench.history_windows.append(
+            {
+                "rowsBefore": len(self.rows_before),
+                "rowsAfter": len(after),
+                "new": [
+                    {k: r.get(k) for k in ("id", "session", "role", "kind")} | {"text": str(r.get("text") or "")[:100]}
+                    for r in self.rows
+                ],
+            }
+        )
         self.mock_requests = (len(self.bench.mock.completions()) - self.mock_before) if self.bench.mock else 0
         out = self.bench.outbound()
         self.sent = None if out is None else out[self.out_before :]

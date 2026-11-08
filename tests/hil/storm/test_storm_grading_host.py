@@ -663,6 +663,7 @@ def _history_bench(monkeypatch, net, tg=False):
     bench = kit.StormBench.__new__(kit.StormBench)
     bench.net, bench.chat, bench.tg, bench.mock = net, 4747474703, tg, None
     bench.tap, bench.windows, bench.sent_texts, bench._out_texts = _SilentTap(), [], [], {}
+    bench.history_windows = []
     return bench
 
 
@@ -735,3 +736,19 @@ def test_a_busy_telegram_archive_read_is_not_an_empty_archive(monkeypatch):
     net = _HistoryNet({}, busy=(0,), archive=archive)
     bench = _history_bench(monkeypatch, net, tg=True)
     assert len(bench.outbound()) == 5
+
+
+def test_a_closed_window_keeps_the_raw_rows_behind_its_count(monkeypatch):
+    """A notice count that disagrees with the device's own sends has to be auditable: the
+    evidence names the rows the window counted (id, session, role) and how big each read was."""
+    net = _HistoryNet({})
+    _earlier_episodes(net)
+    bench = _history_bench(monkeypatch, net)
+    w = kit.Window(bench).open()
+    _one_episode(net)
+    w.close()
+    (rec,) = bench.history_windows
+    assert rec["rowsBefore"] == 12 and rec["rowsAfter"] == 16
+    assert [r["role"] for r in rec["new"]] == ["user", "assistant", "user", "assistant"]
+    assert all(r["id"] and r["session"] == "4747474703" for r in rec["new"])
+    assert [r["text"] for r in rec["new"] if r["role"] == "assistant"] == [NOTICE, SHORT]
