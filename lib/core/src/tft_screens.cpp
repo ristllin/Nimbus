@@ -311,6 +311,43 @@ void ringVoiceStatus(Fb565& fb, int cx, int cy, int inner, const ScreenCtx& ctx)
   }
 }
 
+// ---- degraded strip (lane DEGRADE) -------------------------------------------------
+// One text row per condition the device runs degraded on, in a card at the bottom of the
+// home screen (nimbus/orch/degraded.h). Plain words, a calm amber bullet, no icon to
+// learn, and a chevron that says the card is tappable: the tap opens the reasons. It never
+// blinks or animates. The card is at least the 44 px tap floor, so the whole strip is the
+// target and no neighbour overlaps it.
+constexpr int kStripRowH = 12;        // pitch of a scale-1 text row
+constexpr size_t kStripMaxRows = 3;   // the caller folds the rest into "+N more"
+
+size_t stripRows(const ScreenCtx& ctx) { return std::min(ctx.degradedRows.size(), kStripMaxRows); }
+
+// The strip's height, 0 when nothing is degraded.
+int stripHeight(const Layout& L, size_t rows) {
+  return rows == 0 ? 0 : std::max(L.minTap, int(rows) * kStripRowH + 16);
+}
+
+// Gap between the strip and what sits above it.
+constexpr int kStripGap = 6;
+
+void drawDegradedStrip(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, int y, int h) {
+  const size_t rows = stripRows(ctx);
+  const int x = L.gut(), w = L.w - 2 * L.gut();
+  fb.card(x, y, w, h);
+  const int block = int(rows) * kStripRowH;
+  int ty = y + (h - block) / 2 + 2;
+  const int textX = x + 26;
+  const int textW = w - 26 - 30;
+  for (size_t i = 0; i < rows; ++i, ty += kStripRowH) {
+    const std::string& row = ctx.degradedRows[i];
+    const bool more = !row.empty() && row[0] == '+';   // the "+N more" row has no bullet
+    if (!more) fb.fillRect(x + 12, ty + 1, 5, 5, kWarn);
+    fb.textClipped(more ? x + 12 : textX, ty, row, more ? kInk3 : kInk, more ? w - 24 : textW, 1);
+  }
+  iconChevronRight(fb, x + w - 16, y + h / 2, kInk3);
+  push(r, x, y, w, h, TapRegion::Action::Degraded);
+}
+
 // Ring-dominant Notifier screen for boards with NO physical LED ring: the ring is
 // the whole display. Sessions are the arcs the ring already draws; a small legend
 // sits inside it (clipped to the inner circle), and orchestrator's hold-to-talk is
@@ -320,7 +357,9 @@ static void drawRingHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCt
   const bool showMic = ctx.modeName && std::string(ctx.modeName) == "orchestrator";
   const int micW = showMic ? 84 : 0;                  // right-side strip for the mic
   const int bodyTop = L.bodyTop();
-  const int bodyH = (L.h - L.gut()) - bodyTop;            // ring uses the FULL body height
+  const int stripH = stripHeight(L, stripRows(ctx));      // lane DEGRADE: 0 when nothing is degraded
+  const int bodyH = (L.h - L.gut()) - bodyTop -           // ring uses the FULL body height,
+                    (stripH ? stripH + kStripGap : 0);    // less the degraded strip under it
   const int ringAreaW = L.w - micW - 2 * L.gut();         // width left of the mic strip
 
   const int rs = std::min(ringAreaW, bodyH);
@@ -331,7 +370,9 @@ static void drawRingHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCt
   r.ringW = int16_t(rs); r.ringH = int16_t(rs);
 
   const int cx = rx + rs / 2, cy = ry + rs / 2;
-  const int inner = rs - 72;                           // text stays well inside the dots
+  // Text stays well inside the dots. Under a degraded strip the ring is small, so the
+  // text gets the measured chord of the smaller ring instead of the roomy margin.
+  const int inner = (stripH && rs < 160) ? std::min(rs - 24, 96) : rs - 72;
   if (!ctx.voiceTitle.empty()) {
     ringVoiceStatus(fb, cx, cy, inner, ctx);
   } else if (ctx.jobs.empty()) {
@@ -369,6 +410,7 @@ static void drawRingHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCt
     fb.text(bx + (bw - fb.textWidth(word, 1)) / 2, by + bh / 2 + 7, word, ink, 1);
     push(r, bx, by, bw, bh, TapRegion::Action::Mic);
   }
+  if (stripH) drawDegradedStrip(fb, L, r, ctx, L.h - L.gut() - stripH, stripH);
 }
 
 // Hold-to-talk is live on a ring board (CUM-456): the mic bar carries the voice
@@ -428,13 +470,15 @@ void drawStatusHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ct
   const bool showMic = ctx.modeName && std::string(ctx.modeName) == "orchestrator";
   const int micH = showMic ? 44 : 0;   // >= L.minTap when shown
   const int gridTop = L.bodyTop();
-  const int gridBot = L.h - L.gut() - (showMic ? micH + 8 : 0);
+  const int stripH = stripHeight(L, stripRows(ctx));   // lane DEGRADE: above the mic bar
+  const int gridBot = L.h - L.gut() - (showMic ? micH + 8 : 0) - (stripH ? stripH + kStripGap : 0);
 
   if (ctx.jobs.empty()) {
     // Empty state: say what the device is doing, not "no data". A running turn
     // (lane PROG) is work, not idle - the panel must never claim "Nothing
     // running" over a turn the owner is waiting on.
-    fb.card(L.gut(), gridTop, bodyRight - 2 * L.gut(), 84);
+    // Under a degraded strip the card gives up the room the strip takes (lane DEGRADE).
+    fb.card(L.gut(), gridTop, bodyRight - 2 * L.gut(), std::min(84, gridBot - gridTop));
     const std::string l1 = ctx.turnActive ? "Working on it" : "Nothing running";
     const std::string l2 = ctx.turnActive
                                ? "This may take a moment"
@@ -515,6 +559,11 @@ void drawStatusHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ct
 
       push(r, cx, cy, cardW, cardH, TapRegion::Action::SessionCard, i);
     }
+  }
+
+  if (stripH) {
+    const int stripY = L.h - L.gut() - (showMic ? micH + 8 : 0) - stripH;
+    drawDegradedStrip(fb, L, r, ctx, stripY, stripH);
   }
 
   // Hold-to-talk bar. Full width, unmissable, and the only accent-filled

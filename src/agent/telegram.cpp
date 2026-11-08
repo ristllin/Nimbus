@@ -195,6 +195,12 @@ TickCallback    g_tick  = nullptr;
 SttSink         g_stt   = nullptr;
 TaskHandle_t    g_task  = nullptr;
 bool            g_polledOk = false;
+// Lane DEGRADE: the poll loop's heartbeat, read by the degraded line (telegram::health). It
+// is stamped at the top of every cycle and around staged work, so a loop that stops
+// cycling (the 4-6 Nov 2026 outage: no log line, /api/state green for 28 hours) is seen
+// within minutes. Word-sized reads and writes: any task may read them.
+volatile uint32_t s_loopMs = 0;
+volatile bool     s_stagedRunning = false;   // staged work (an OTA check or install) is on this task
 // Every non-200 getUpdates (and a 200 that does not parse) backs off, honoring
 // Telegram's retry_after; no poll goes out before the deadline, even when a local
 // turn ends the pause early (nimbus/net/tg_backoff.h). Poll-task-owned.
@@ -2410,6 +2416,7 @@ static bool wifiReady() {
 }
 
 void pollTask(void*) {
+  s_loopMs = millis();
   bool haveToken = g_token.length() > 0;   // non-const: a live token swap updates it
   while (g_running && !wifiReady()) {
     nimbus::pollwatch::beat("wifi wait");
@@ -2435,6 +2442,7 @@ void pollTask(void*) {
   int activeJobs = 0;
   while (g_running) {
     nimbus::pollwatch::beat("poll loop");
+    s_loopMs = millis();   // lane DEGRADE: the loop is cycling
 #if defined(NIMBUS_TEST)
     runTestStall();   // TGSTALL: the bench's stall, at the loop top like any staged work
 #endif
@@ -2453,7 +2461,10 @@ void pollTask(void*) {
     if (ranStaged) {
       closePollSocket();   // one TLS session at a time: the staged work opens its own
       nimbus::pollwatch::beat("staged work");
+      s_stagedRunning = true;
       g_stagedRun();
+      s_stagedRunning = false;
+      s_loopMs = millis();
       if (!g_running) break;   // a quiesce arrived during the run: start nothing new
     }
 
@@ -3125,6 +3136,17 @@ bool quiesce(uint32_t timeoutMs) {
 }
 
 bool taskAlive() { return g_task != nullptr; }
+
+Health health() {
+  Health h;
+  h.tokenSet = g_token.length() > 0;
+  h.taskAlive = g_task != nullptr;
+  h.authRejected = g_authRejected;
+  h.fails = g_backoff.fails();
+  h.idleMs = millis() - s_loopMs;
+  h.busy = s_stagedRunning || agent::orchestrator::turnInFlight();
+  return h;
+}
 
 void setStagedWork(bool (*pending)(), void (*run)()) {
   g_stagedPending = pending;

@@ -2364,6 +2364,14 @@ String embedParkedWhy() {
   return String(nimbus::orch::embedFailWords(g_park.reason(), g_park.detail()).c_str());
 }
 
+bool embedHealth(EmbedHealth& out) {
+  LoopLock g(0);   // the main loop reads this: never wait for a turn's tool
+  if (!g) return false;
+  out.parked = g_park.parked();
+  out.pending = (int)g_pending.size();
+  return true;
+}
+
 void noteEmbedConfigChanged() { Lock g; g_park.clear(); }
 void noteProviderKeysChanged() {
   repickIfDue(200, true);   // usually immediate, so the Memory page and the wizard show it at once

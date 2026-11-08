@@ -57,6 +57,7 @@ struct TapRegion {
     ScrollDown,
     ShowCode,    // code card on the Sign-in QR / Setup screen: the enlarged code (TokenDetail)
     Setup,       // first-run CTA: return to the SetupInfo screen (CUM-259)
+    Degraded,    // the home screen's degraded strip: show the reasons (lane DEGRADE)
   };
   Action  action = Action::None;
   int16_t index = -1;   // row / session index where the action needs one

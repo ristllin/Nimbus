@@ -83,6 +83,7 @@
 #include "../agent/health.h"            // /api/health - device self-diagnosis (P5)
 #include "../agent/fs_atomic.h"         // flashMounted - /api/state fsMounted
 #include "../agent/dream_subsystem.h"   // the last night - /api/state dream
+#include "../agent/degraded_device.h"   // lane DEGRADE: /api/state degraded
 #include "../agent/spend_ceiling_store.h"   // lane DEF: the monthly spend ceiling (state + setting)
 #include "nimbus/orch/budget_command.h"      // lane BUD: runsWhilePaused (the paused web chat)
 #include "../agent/budget_command.h"         // lane BUD: the /budget changes the Usage page lists
@@ -985,6 +986,9 @@ static void buildState(String& out) {
       d["spend"] = cd.as<JsonObject>();
     d["setupDefaults"] = sp.setup;
   }
+  // Lane DEGRADE: what the device runs degraded on, the same set its screen shows (count 0
+  // and no items when nothing is). Always present, so a poller never meets an absent key.
+  agent::degraded::into(d["degraded"].to<JsonObject>());
   if (s_wc.testWakeInfo) d["testWake"] = s_wc.testWakeInfo();   // test image only (CUM-248)
   // Onboarding summary truth (CUM-233): at least one provider verified - the SAME
   // gate /api/onboard/complete enforces. Lets the wizard's Done step derive its

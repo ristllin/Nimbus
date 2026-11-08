@@ -59,6 +59,7 @@
 #include "agent/orchestrator.h"
 #include "agent/prefs_subsystem.h"   // lane J: standing rules (seed + store)
 #include "agent/spend_ceiling_store.h"        // lane DEF: the monthly spend ceiling (gate, notices)
+#include "agent/degraded_device.h"            // lane DEGRADE: what the device runs degraded on (strip, details, /api/state)
 #include "nimbus/harness/config.h"   // agent::voiceFallbackChatOf - where a spoken reply may fall back to
 #include "nimbus/harness/jobs.h"   // agent::keyFromTag - ring keys derive from session tags (CUM-243 reaper)
 #include "nimbus/harness/web_chat.h"   // CUM-482: per-turn web chat reply pairing
@@ -1283,7 +1284,14 @@ static void fillVoiceCtx(render::ScreenCtx& c) {
   c.micBusy = g_voice.busy();
 }
 
-static render::ScreenCtx buildCtx(int cursorJob) {
+// Lane DEGRADE: the strip rows the last FULL paint drew. The on-screen ring is repainted
+// alone at animation cadence (repaintRingRegion composes the whole frame and pushes only the
+// ring square), so it must compose the strip the panel shows or its square would not match
+// the layout around it. A changed set takes effect at the next full paint.
+static std::vector<std::string> g_paintedDegradedRows;
+
+// `fullPaint` false: the ring-only repaint, which keeps the strip of the last full paint.
+static render::ScreenCtx buildCtx(int cursorJob, bool fullPaint = true) {
   render::ScreenCtx c;
   fillHeaderCtx(c);   // mode/profile/posture + WiFi/BT/battery/net-degraded header
   c.needsSetup = deviceNeedsSetup();   // StatusIdle -> first-run CTA (CUM-259)
@@ -1385,6 +1393,10 @@ static render::ScreenCtx buildCtx(int cursorJob) {
     c.micHeld = g_voiceActive;   // instant pressed feedback on the hold-to-talk button
   }
   fillVoiceCtx(c);
+  if (g_orchMode) {
+    if (fullPaint) g_paintedDegradedRows = nimbus::orch::degradedStripRows(agent::degraded::shown(), 3);
+    c.degradedRows = g_paintedDegradedRows;
+  }
   return c;
 }
 
@@ -5573,6 +5585,48 @@ static bool voiceTapDismiss(const nimbus::tft::TapRegion* t, uint32_t now) {
   return !elsewhere;
 }
 
+// Lane DEGRADE: the details card behind the home screen's strip (the reason one tap away).
+// It is the Ask text card, held until Close, so it needs no screen of its own; while it is
+// up a change of the set rewrites it, and when nothing is degraded any more it closes.
+static String g_degradedDetailShown;   // the text on the card now ("" = the card is not up)
+
+static void showDegradedDetails() {
+  const std::string text = nimbus::orch::degradedDetailText(agent::degraded::shown());
+  if (text.empty()) {   // it cleared between the paint and the tap
+    g_degradedDetailShown = "";
+    renderScreen(attn::ScreenId::StatusIdle, -1);
+    return;
+  }
+  g_degradedDetailShown = text.c_str();
+  g_askOverride = g_degradedDetailShown;
+  g_askSticky = true; g_askPage = 0;
+  renderScreen(attn::ScreenId::Ask, -1);
+}
+
+// The shown set changed (agent::degraded::tick). The home screen repaints with the new
+// strip; an open details card is rewritten, or closed when nothing is degraded any more.
+static void onDegradedChanged(uint32_t now) {
+  const bool cardUp = g_degradedDetailShown.length() && g_askOverride == g_degradedDetailShown;
+  if (!cardUp) {
+    g_degradedDetailShown = "";
+    if (!g_menu.isOpen() && g_lastScreen == uint8_t(attn::ScreenId::StatusIdle))
+      g_sched.onIntent(uint8_t(attn::ScreenId::StatusIdle), false, now);
+    return;
+  }
+  const std::string text = nimbus::orch::degradedDetailText(agent::degraded::shown());
+  if (text.empty()) {
+    g_degradedDetailShown = "";
+    g_askOverride = "";
+    g_askSticky = false; g_askPage = 0;
+    renderScreen(attn::ScreenId::StatusIdle, -1);
+    return;
+  }
+  g_degradedDetailShown = text.c_str();
+  g_askOverride = g_degradedDetailShown;
+  g_askPage = 0;
+  renderScreen(attn::ScreenId::Ask, -1);
+}
+
 static void drainTouch(uint32_t now) {
   // First-run calibration GATE (CUM-245): while a fresh resistive panel is
   // uncalibrated, NO tap may drive navigation - the guided TouchCal flow
@@ -5721,6 +5775,9 @@ static void drainTouch(uint32_t now) {
       g_askOverride = "";
       refreshRing();
       renderScreen(attn::ScreenId::SetupInfo, -1);
+      break;
+    case Action::Degraded:
+      showDegradedDetails();
       break;
     case Action::Mic:
       break;   // a bare tap on the mic is not a hold; nothing to do
@@ -6615,6 +6672,12 @@ void loop() {
     }
   }
 
+  // Lane DEGRADE: what the device runs degraded on. The facts are read here (at most every
+  // 2 s, never waiting for the card lock) and a change of the SHOWN set repaints the home
+  // screen or rewrites the open details card. A status line, not an alert: no sound, no
+  // popup, no message.
+  if (agent::degraded::tick(now, g_orchMode, net::staConnected())) onDegradedChanged(now);
+
   // While the Software update submenu is showing, reseed its live status line
   // (~1 Hz) from the OTA engine so Checking../Up to date/Update found appear
   // WITHOUT any encoder event. Lives at loop-body scope (like the header
@@ -7432,7 +7495,7 @@ void loop() {
       hw::tft::backlight() > nimbus::kBacklightRestPct &&
       uint32_t(now - s_lastRingPaint) >= 33) {
     s_lastRingPaint = now;
-    hw::tft::repaintRingRegion(buildCtx(-1));
+    hw::tft::repaintRingRegion(buildCtx(-1, /*fullPaint=*/false));
   }
 
   delay(3);

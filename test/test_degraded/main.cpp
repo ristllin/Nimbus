@@ -769,6 +769,18 @@ static void test_device_wiring() {
   TEST_ASSERT_TRUE(contains(web, "agent::degraded::into("));        // /api/state
   const std::string js = readFile("include/web/ui_js.h");
   TEST_ASSERT_TRUE(contains(js, "d.degraded"));                     // the page reads it
+  // The facts: the embedding read never waits for the card lock (the main loop calls it),
+  // and the Telegram loop stamps its heartbeat at the top of every cycle and after staged work.
+  const std::string mem = readFile("src/agent/memory_subsystem.cpp");
+  const size_t eh = mem.find("bool embedHealth(");
+  TEST_ASSERT_TRUE(eh != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(mem.find("LoopLock g(0);", eh) - eh < 200, "embedHealth must open with LoopLock g(0)");
+  const std::string tg = readFile("src/agent/telegram.cpp");
+  TEST_ASSERT_TRUE(count(tg, "s_loopMs = millis();") >= 3);   // pollTask start, loop top, after staged work
+  TEST_ASSERT_TRUE(contains(tg, "h.idleMs = millis() - s_loopMs;"));
+  TEST_ASSERT_TRUE(contains(readFile("src/agent/files_subsystem.cpp"), "bool storeFullActive() { return g_full.active(); }"));
+  // The ring-only repaint keeps the strip of the last full paint.
+  TEST_ASSERT_TRUE(contains(main, "buildCtx(-1, /*fullPaint=*/false)"));
 }
 
 int main() {

@@ -25,6 +25,7 @@
 #include "nimbus/harness/turn_contract.h"   // kNoMessageAfterAction
 #include "loops_subsystem.h"            // loops::checkDue - Local Loops tick (on tg_poll)
 #include "dream_subsystem.h"            // DREAMING: noteTurnEnd (idle-gate quiet clock)
+#include "degraded_device.h"            // lane DEGRADE: the served-by memory behind the degraded line
 #include "connectors.h"                 // per-provider connector catalog + attach
 #include "nimbus/orch/action_rules.h"   // who may run each tool and device action (CUM-813)
 #include "nimbus/orch/loop_delivery.h"  // telegramOwnerOf: the owner rule from NVS lists (host-tested)
@@ -1634,6 +1635,9 @@ static TurnEngine::Deps buildTurnDeps() {
     const char* src = agent::turnSourceSlug(ev.source, ev.attribution);
     // Lane BUD: /model's "last reply" (the served provider and the model it billed under).
     budget::noteTurnEnd(ev.host, ev.servedModel, ev.requestedHost, src, ev.ok);
+    // Lane DEGRADE: which provider answered and which ones the turn went past, for the
+    // degraded line ("Anthropic down, Mistral answers"). Every turn source counts.
+    degraded::noteTurn(ev.requestedHost, ev.host, ev.path, ev.billed);
     if (memory::traceActive() && g_turnTag[0] && !ev.chatId.empty()) {
       // Served-by disclosure (CUM-236 device leg): the turn view (_turnChip) reads
       // model+fallback off this row. The shared rule decides it; it never names a

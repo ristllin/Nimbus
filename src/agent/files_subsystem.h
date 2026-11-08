@@ -63,6 +63,9 @@ StorageTruth storageTruth();
 bool noteRefusal(const std::string& err);
 // The episode's owner notice, once (the Telegram poll task sends it).
 bool takeFullNotice();
+// Lane DEGRADE: a full-store episode is in progress (from the first full refusal until the
+// store has room again). Lock-free: any task, the main loop included.
+bool storeFullActive();
 // Lane FSCAP: the episode's reclaim notice, once - the store's byte quota was
 // reached and the oldest regenerable copies were reclaimed (never the owner's
 // own files). The Telegram poll task sends it like the full notice.

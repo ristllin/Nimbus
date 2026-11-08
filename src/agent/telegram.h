@@ -215,6 +215,19 @@ void stop();
 // waiting out a TLS exchange. Returns true when the task is gone.
 bool quiesce(uint32_t timeoutMs);
 
+// Lane DEGRADE: what the degraded line reads about Telegram (nimbus/orch/degraded.h), any task.
+// idleMs is the time since the poll loop last started a cycle (a long poll is ~30 s, a turn
+// or staged work on the same task longer), `busy` says such work is running.
+struct Health {
+  bool     tokenSet;      // a bot token is set
+  bool     taskAlive;     // the poll task exists
+  bool     authRejected;  // authRejected(), below
+  uint32_t fails;         // consecutiveFails(), below
+  uint32_t idleMs;
+  bool     busy;          // a turn or staged work (an OTA check or install) runs on the poll task
+};
+Health health();
+
 // True while the poll task exists. Unlike enabled(), a bot token is not required:
 // the task is also the local turn processor (web / voice / serial injects).
 bool taskAlive();

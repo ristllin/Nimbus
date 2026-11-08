@@ -113,6 +113,12 @@ struct ScreenCtx {
   // existing render and golden byte-identical.
   bool turnActive = false;
 
+  // Lane DEGRADE: the home screen's degraded strip, one short text row per condition (at
+  // most three: nimbus/orch/degraded.h degradedStripRows, the last may be "+N more"). Empty
+  // means nothing runs degraded and draws nothing, so every render without it is
+  // byte-identical. A tap on the strip is TapRegion::Action::Degraded (the reasons).
+  std::vector<std::string> degradedRows;
+
   // setup info
   std::string apName, apPass, portalUrl;
   std::string fwVersion;  // firmware version string, shown small on the Setup screen

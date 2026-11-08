@@ -478,6 +478,14 @@ std::string queueFact(const std::string& content, const std::string& ns, float i
 // Drain notes for this namespace's next turn ("... -> now stored"), taken once.
 std::string pendingNotes(const std::string& ns);
 String embedParkedWhy();      // "" when embeddings are not parked
+// Lane DEGRADE: the embedding outage as the degraded line reads it. For the main loop: it
+// opens with a LoopLock(0) and never waits, so false means the card lock is busy and the
+// caller keeps its last answer.
+struct EmbedHealth {
+  bool parked = false;   // embeddings are parked
+  int  pending = 0;      // memory writes waiting for an embedding
+};
+bool embedHealth(EmbedHealth& out);
 void noteEmbedConfigChanged();// an embed config or key save: the park ends
 // A provider key was saved or cleared: re-decide which keyed provider embeds
 // (nimbus/orch/embed_pick.h), now if the card lock frees within 200 ms, else at the
