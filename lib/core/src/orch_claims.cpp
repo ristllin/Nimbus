@@ -2443,6 +2443,14 @@ std::string sourceWhat(const ClaimGap& g) {
   if (g.variant == kGapQuote)
     return "it quotes those words as a memory, a message or a record, but nothing you were given this turn "
            "holds them; quote only words you can see, or say it is not recorded";
+  // Lane MLQ (OIR-50): the generic "drop that source" left the attribution words in a
+  // retraction ("I was wrong to present it as something you told me"), so the rewrite
+  // kept them. An owner-action gap says what the rewrite must do with the words.
+  if (g.variant == kGapOwnerAction)
+    return "it says the owner did or said this (\"" + g.name +
+           "\"), but no message of theirs this turn says it. If you are taking the claim back, say that no "
+           "message of theirs says it and that you were wrong, in your own words, and leave the phrase out "
+           "entirely (not quoted, not in the apology); otherwise drop the claim";
   const std::string what = "it credits " + (g.name.empty() ? sourceNoun(g.source) : g.name) +
                            ", but nothing this turn names that source (no owner message, tool result or "
                            "sub-agent result mentions it); ";
@@ -3140,7 +3148,18 @@ bool ownerActionPhraseWord(const std::string& w) {
   return false;
 }
 
-bool ownerActionGap(const std::string& reply, const std::string& ownerWords, ClaimGap* out) {
+// Is the quote that holds `p` the owner's own words (the owner being quoted back)?
+static bool quoteIsOwners(const std::string& reply, const std::vector<std::pair<size_t, size_t>>& quotes,
+                          size_t p, const std::string& hay) {
+  for (const auto& q : quotes) {
+    if (p < q.first || p >= q.second) continue;
+    const std::string words = normalizedWords(reply.substr(q.first, q.second - q.first));
+    return !words.empty() && hay.find(" " + words + " ") != std::string::npos;
+  }
+  return false;
+}
+
+bool ownerActionGap(const std::string& reply, const std::string& ownerWords, ClaimGap* out, bool disputed) {
   if (ownerWords.empty()) return false;
   const std::string hay = " " + ownerWords + " ";
   // The owner sent media this turn (a photo, a file, a voice note: the message's
@@ -3171,7 +3190,10 @@ bool ownerActionGap(const std::string& reply, const std::string& ownerWords, Cla
     for (size_t p = low.find(phrase); p != std::string::npos; p = low.find(phrase, p + 1)) {
       const bool startOk = p == 0 || !wordish((unsigned char)low[p - 1]);
       const bool endOk = p + n >= low.size() || !wordish((unsigned char)low[p + n]);
-      if (!startOk || !endOk || inQuotes(p)) continue;
+      if (!startOk || !endOk) continue;
+      // Inside quotes: the owner being quoted back - except on a disputed turn, where a
+      // quote that is not the owner's words is the head repeating its own claim.
+      if (inQuotes(p) && (!disputed || quoteIsOwners(reply, quotes, p, hay))) continue;
       // The whole sentence the phrase sits in, minus the phrase itself.
       size_t sb = 0, se = low.size();
       for (const auto& sp : sentences)

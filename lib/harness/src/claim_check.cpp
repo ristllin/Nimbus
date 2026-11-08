@@ -13,6 +13,7 @@
 #include "nimbus/orch/device_actions.h"
 #include "nimbus/orch/food_label.h"    // labelRowGate, unsupportedDetails: the ledger row gate
 #include "nimbus/orch/food_ledger.h"   // scanFoodTargets: a target this turn stored
+#include "nimbus/orch/owner_voice.h"   // disputesAttribution: a turn that disputes "you told me" (lane MLQ)
 #include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/tool_taint.h"
 
@@ -550,7 +551,9 @@ std::vector<orch::ClaimGap> ClaimCheck::gapsFor(const std::string& reply,
   if (!already && orch::unsourcedResultGap(reply, fx, &unsourced)) kept.push_back(unsourced);
   // "You told me / confirmed / photographed ..." with no owner message saying it (lane LABEL).
   orch::ClaimGap ownerAction;
-  if (!clipped_ && orch::ownerActionGap(reply, ownerWords_, &ownerAction)) kept.push_back(ownerAction);
+  // Lane MLQ: on a turn whose owner message disputes an attribution, a quoted repeat counts too.
+  if (!clipped_ && orch::ownerActionGap(reply, ownerWords_, &ownerAction, orch::disputesAttribution(ownerText_)))
+    kept.push_back(ownerAction);
   return kept;
 }
 

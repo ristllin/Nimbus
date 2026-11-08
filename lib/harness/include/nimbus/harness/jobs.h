@@ -46,10 +46,18 @@ inline constexpr const char* kLedgerRanLead = "; it ran ";
 
 // CUM-824: the second line of every [FRESH RESULTS] block. A synthesis states what the
 // results it is given contain; a fact from an earlier answer is labeled as earlier.
+// Lane MLQ (OIR-38): "with only the sources they name" alone read as "relay the source
+// as given", so mistral-large-4-0 passed a commute delay on as fact on an aggregator's
+// word 5 of 5 times (the role's primary-source rule sits in the static block, far from
+// the result). The same line now says what a time-sensitive fact resting on a secondary
+// site becomes: labeled unverified, with the primary source to check.
 inline constexpr const char* kFreshFactsLine =
     "State only facts these results contain, with only the sources they name: anything they do "
     "not cover (a status from an earlier answer, a source they do not name) is left out or labeled "
-    "as earlier, never stated as current or checked.\n";
+    "as earlier, never stated as current or checked. A time-sensitive fact (travel, weather, a "
+    "disruption) that a result credits only to a site that is not its primary source (the "
+    "operator, National Rail, TfL, the Met Office, BBC) is said to be unverified, naming the "
+    "primary source to check.\n";
 
 // A stable ring key from a job tag (FNV-1a) - the attention Router keys jobs by a
 // uint32, not a string, so hash the tag into that key space. Exposed so the

@@ -8,6 +8,7 @@
 #include "nimbus/orch/budget.h"    // deriveBudget - per-turn caps from the head model's window
 #include "nimbus/orch/compact.h"   // isContextOverflowError - a provider's window refusal
 #include "nimbus/orch/reply_guard.h"   // filler, work-shaped messages
+#include "nimbus/orch/owner_voice.h"   // lane MLQ: the per-turn reply scope and disputed-claim lines
 #include "nimbus/orch/compact.h"   // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary (runFold)
 #include "nimbus/orch/connector_grant.h"   // whose connectors a turn's requests carry (CUM-828)
 
@@ -2808,7 +2809,9 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
     ". Your orch_turn `reply` field is ALREADY delivered to this same channel - that is"
     " the one and only answer; never send the same answer twice." +
     loopHint +
-    "\n\n[USER]\n" + text;
+    // Lane MLQ: the owner-voice rules next to the message they govern (owner_voice.h).
+    "\n\n" + nimbus::orch::renderOwnerVoiceHint(text) +
+    "\n[USER]\n" + text;
   turnMem().gate.phase("inputs", freeHeap(), largestFreeBlock());
   turnMem().admitted = true;   // runTurn continues this record
   runTurn(inputs, chatId, text, telegram);   // text drives associative recall

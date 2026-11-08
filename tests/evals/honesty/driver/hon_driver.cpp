@@ -2,7 +2,12 @@
 //
 //   hon_driver --scenario <file.json> --out <transcript.json> --host <h> --model <id>
 //              [--env <dotenv>] [--effort <e>] [--record <dir>] [--system-out <file>]
-//              [--rounds <n>] [--max-tokens <n>]
+//              [--rounds <n>] [--max-tokens <n>] [--wire-out <file>]
+//
+// --wire-out writes every request body the turn sent to the provider (the exact JSON
+// on the wire: system, history, per-turn block, tool rounds), for a diagnosis that
+// needs more than the turn's input block. Bodies only: headers (and so keys) are
+// never kept by the transport.
 //
 // It builds the host lab's LabRig (the device's TurnEngine, job engine, tool registry,
 // memory engines and provider adapters over libcurl), seeds the earlier chat, runs the
@@ -168,7 +173,7 @@ struct Subs {
 };
 
 struct Args {
-  std::string scenario, out, systemOut, env = lab::Env::defaultDotenvPath();
+  std::string scenario, out, systemOut, wireOut, env = lab::Env::defaultDotenvPath();
   std::string host = "anthropic", model, effort = "low", record;
   long maxTokens = 0, rounds = 0;
 };
@@ -177,7 +182,7 @@ bool parseArgs(int argc, char** argv, Args& a) {
   const std::map<std::string, std::string*> text = {
       {"--scenario", &a.scenario}, {"--out", &a.out},     {"--system-out", &a.systemOut},
       {"--env", &a.env},           {"--host", &a.host},   {"--model", &a.model},
-      {"--effort", &a.effort},     {"--record", &a.record}};
+      {"--effort", &a.effort},     {"--record", &a.record},   {"--wire-out", &a.wireOut}};
   const std::map<std::string, long*> number = {{"--max-tokens", &a.maxTokens}, {"--rounds", &a.rounds}};
   for (int i = 1; i < argc; i++) {
     const std::string k = argv[i];
@@ -411,6 +416,22 @@ bool writeSystemDump(const lab::LabRig& rig, const std::string& path) {
   return writeFile(path, s);
 }
 
+// The provider requests as sent, one object per exchange (host, path, status, body).
+bool writeWireDump(lab::LabRig& rig, const std::string& path) {
+  JsonDocument d;
+  JsonArray calls = d.to<JsonArray>();
+  for (const auto& c : rig.http().calls) {
+    JsonObject o = calls.add<JsonObject>();
+    o["host"] = c.host;
+    o["path"] = c.path;
+    o["status"] = c.status;
+    o["request"] = c.reqBody;
+  }
+  std::string s;
+  serializeJsonPretty(d, s);
+  return writeFile(path, s);
+}
+
 bool buildOptions(const Args& a, JsonObjectConst sc, lab::LabRig::Options& opt, std::string& err) {
   opt.priority = a.host;
   opt.models[a.host] = a.model;
@@ -472,5 +493,7 @@ int main(int argc, char** argv) {
   if (!writeFile(a.out, text)) return 2;
   if (!a.systemOut.empty() && !writeSystemDump(rig, a.systemOut))
     std::fprintf(stderr, "hon_driver: cannot write %s\n", a.systemOut.c_str());
+  if (!a.wireOut.empty() && !writeWireDump(rig, a.wireOut))
+    std::fprintf(stderr, "hon_driver: cannot write %s\n", a.wireOut.c_str());
   return ok ? 0 : 3;
 }

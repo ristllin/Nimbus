@@ -274,7 +274,14 @@ bool recordQuoteGap(const std::string& reply, const std::string& seen, const std
 // own words this turn, normalizedWords form). Quoted claims are recordQuoteGap's.
 // Lane LABEL, 2 Nov: the head defended a made-up row with "you told me about the 4
 // fries" and "the M&S pack you photographed" - neither was in any owner message.
-bool ownerActionGap(const std::string& reply, const std::string& ownerWords, ClaimGap* out);
+//
+// `disputed` (lane MLQ, OIR-50): the owner's message this turn disputes an attribution
+// ("I never said that", owner_voice.h). The head then often takes the claim back by
+// quoting its own line ("I was wrong to say "as you told me""), which repeats the very
+// words the owner disputes; so on such a turn a phrase inside quotes is checked too,
+// unless the quote is the owner's own words.
+bool ownerActionGap(const std::string& reply, const std::string& ownerWords, ClaimGap* out,
+                    bool disputed = false);
 // A reason given when the owner asks why (CUM-824, the eval's mistral-large-latest on
 // "Why notion?": "because the standing rule I recalled said to check your Notion commute
 // dashboard", "because I recalled you had set up a Notion database", none of it on
