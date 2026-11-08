@@ -300,10 +300,11 @@ bool disputesAttribution(const std::string& text) {
 
 std::string renderOwnerVoiceHint(const std::string& text) {
   std::string out =
-      "[REPLY SCOPE] Answer this message. An earlier question of theirs shown with [no reply] still gets "
-      "its answer. Any other earlier message (a remark, an invitation, one already answered) and a "
-      "memory are context, not requests still waiting for an answer: the reply adds no question, offer "
-      "or promise on a topic this message does not ask about. [OPEN QUESTIONS] keep their own rule.\n";
+      "[REPLY SCOPE] Answer this message. An earlier question or request of theirs shown with [no reply] "
+      "is still owed its answer, unless they left it for later. Any other earlier message (a remark, an "
+      "invitation, one already answered) and a memory are context, not requests still waiting for an "
+      "answer: the reply adds no question, offer or promise on a topic this message does not ask about. "
+      "[OPEN QUESTIONS] keep their own rule.\n";
   if (disputesAttribution(text))
     out += "[DISPUTED CLAIM] This message says they never said or did something you said they did. "
            "Search the episodic log first. If no message of theirs says it, say that plainly and that "

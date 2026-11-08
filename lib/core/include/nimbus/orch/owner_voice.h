@@ -28,8 +28,8 @@ namespace orch {
 bool disputesAttribution(const std::string& text);
 
 // The per-turn lines for a human message (each ends with a newline): [REPLY SCOPE] on
-// every one (answer this message; an earlier question shown with [no reply] still gets
-// its answer; any other earlier message and a memory are context, not topics to raise),
+// every one (answer this message; an earlier question or request shown with [no reply] is
+// still owed unless left for later; any other earlier message and a memory are context),
 // and [DISPUTED CLAIM] when disputesAttribution(text) (search first; with no message of
 // theirs behind the claim, say so and that you were wrong, in your own words, without the
 // attribution wording, not even quoted).

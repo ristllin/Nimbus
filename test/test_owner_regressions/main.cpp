@@ -665,8 +665,9 @@ void test_oir_50_owner_action_tail_keeps_its_own_rule() {
 // (generic word overlap with any unanswered message), each positive a reply that took the
 // remark up on a live leg.
 void test_oir_06_owed_answers_and_reported_facts_are_in_scope() {
-  // The per-turn line says so too: an earlier question shown with [no reply] is owed.
-  TEST_ASSERT_TRUE(renderOwnerVoiceHint("Log my lunch").find("[no reply] still gets its answer") != std::string::npos);
+  // The per-turn line says so too: an earlier question or request shown with [no reply] is owed.
+  TEST_ASSERT_TRUE(renderOwnerVoiceHint("Log my lunch").find("question or request of theirs shown with [no reply] is still owed") !=
+                   std::string::npos);
   // An earlier question that got no reply is owed its answer, pinged or not.
   TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Yes, I am here. Your protein target is 150 g.", "Hello? Are you there?",
                                             {"What is my protein target?"}));
