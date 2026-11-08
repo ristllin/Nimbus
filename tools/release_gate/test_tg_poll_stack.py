@@ -338,6 +338,23 @@ def test_a_stale_config_row_is_reported():
     assert any("stale indirect rule" in e for e in v["stale"]) and v["ok"]
 
 
+def test_the_config_about_text_matches_the_stale_verdict():
+    # verdict() treats a row this image does not use as a warning, not a failure
+    # (four release images share the config; coverage/STACK-2026-11.md section 2),
+    # and render() prints the stale rows in the report. The config's own about text
+    # must not claim the gate fails on a stale row.
+    cfg = st.load_config()
+    about = cfg["about"]
+    assert "fails the gate as stale" not in about
+    assert "warning" in about
+    funcs = {1: fn(1, 4, "root", 10)}
+    m = model(funcs, config(indirect=[{"in": "^nothing$", "targets": [], "why": "t"}]))
+    m.elf, m.tools = "x", {"addr2line": "true"}
+    v = st.verdict(m)
+    assert any("stale indirect rule" in e for e in v["stale"]) and v["ok"]
+    assert "stale indirect rule" in st.render(v, "x")
+
+
 # ---- the shipped config ---------------------------------------------------------------
 
 

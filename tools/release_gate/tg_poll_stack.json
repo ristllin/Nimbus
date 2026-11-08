@@ -1,5 +1,5 @@
 {
-  "about": "Worst-case stack of the Telegram poll task (tg_poll), checked on the built image by check_tg_poll_stack.py. Method and the measured tables: coverage/STACK-2026-11.md. Every row below says why it is true; a row that no longer matches anything fails the gate as stale.",
+  "about": "Worst-case stack of the Telegram poll task (tg_poll), checked on the built image by check_tg_poll_stack.py. Method and the measured tables: coverage/STACK-2026-11.md. Every row below says why it is true; a row this image does not use is reported as a warning in the report, not a failure (four release images share this config; coverage/STACK-2026-11.md section 2).",
   "entry": "_ZN5agent8telegram12_GLOBAL__N_18pollTaskEPv",
   "task_wrapper": "vPortTaskWrapper",
   "rom_elf": "esp32s3_rev0_rom.elf",

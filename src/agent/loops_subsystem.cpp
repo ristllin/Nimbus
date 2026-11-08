@@ -426,7 +426,15 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
 
   // --- SELECT + advance + persist, all under the lock (fast); release before firing.
   // The request lives on the heap (lane STACK): the routine's turn runs below this frame.
-  const std::unique_ptr<LoopFireRequest> fireReq(new LoopFireRequest());
+  // nothrow: nothing up this chain (pollTask -> orchTick -> pollJobs -> checkDue)
+  // catches std::bad_alloc, and an uncaught one aborts the device - a failed box
+  // just defers the fire this tick.
+  const std::unique_ptr<LoopFireRequest> fireReq(new (std::nothrow) LoopFireRequest());
+  if (!fireReq) {
+    s_memDefer = true;
+    alogf("loops: fires deferred (low memory) - the fire request could not be allocated");
+    return;
+  }
   LoopFireRequest& req = *fireReq;
   bool haveFire = false;
   uint64_t prevLastRun = 0;   // restored if the fire turns out to be a memory defer
@@ -540,9 +548,25 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
   s_firing = true;    // tg_poll only: read by the turn-completion wiring (firing())
   // The outcome lives on the heap (lane STACK): the routine's turn runs below this
   // frame on the Telegram poll task. Built in place from the fire hook's result.
-  const std::unique_ptr<FireOutcome> fired(new FireOutcome(g_fire ? g_fire(req) : FireOutcome{}));
-  FireOutcome& o = *fired;
+  // nothrow: nothing up this chain catches std::bad_alloc, and the allocation runs
+  // BEFORE g_fire(req), so a failed box means the fire never ran - the claim made
+  // above is undone below exactly like a memory defer, never an abort.
+  std::unique_ptr<FireOutcome> fired(new (std::nothrow) FireOutcome(g_fire ? g_fire(req) : FireOutcome{}));
   s_firing = false;
+  if (!fired) {
+    Lock lk;
+    LoopRecord* l = findById(id);
+    if (l) {
+      if (l->firesToday > 0) l->firesToday--;
+      if (g_dev.firesInWindow > 0) g_dev.firesInWindow--;
+      l->lastRun = prevLastRun;   // the fire did not happen; do not claim it did
+      persist();
+    }
+    s_memDefer = true;
+    alogf("loops: fire deferred (low memory) - the outcome could not be allocated, retrying next tick");
+    return;
+  }
+  FireOutcome& o = *fired;
 
   // Re-acquire: the turn (and any concurrent MCP/web mutation) may have changed
   // g_loops, so re-find by id - the earlier pointer is not safe to reuse.

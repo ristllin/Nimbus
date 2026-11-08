@@ -215,6 +215,27 @@ static void test_the_dream_fires_only_from_the_scheduler_and_the_drill_pump() {
   TEST_ASSERT_TRUE(pollJobs.find("dream::pumpBootReconcile();") < pollJobs.find("dream::pumpDrill();"));
 }
 
+// Lane STACK review (fix pass): the scheduler's fire path runs on tg_poll
+// (pollTask -> orchTick -> pollJobs -> checkDue / pumpDrill -> dream::fire), and
+// nothing up that chain catches std::bad_alloc - only runTurn's function-try-block
+// does, and the 29 Oct crash 2419bf4a was an abort on this very task. The lane moved
+// the fire's large locals into `new` boxes on that path, so every allocation in the
+// two scheduler files must be nothrow AND null-checked (a failed box defers the
+// fire with the CUM-404/403 semantics), never a throwing new that aborts the device.
+static void test_the_scheduler_fire_boxes_are_nothrow_and_checked() {
+  for (const char* path : {"src/agent/loops_subsystem.cpp", "src/agent/dream_subsystem.cpp"}) {
+    const std::string& c = codeOf(path);
+    const size_t news = countOf(c, "new(");
+    TEST_ASSERT_TRUE_MESSAGE(news > 0, path);   // the boxes are really there
+    TEST_ASSERT_EQUAL_MESSAGE(news, countOf(c, "new(std::nothrow)"), path);   // no throwing new left
+    for (size_t p = c.find("new(std::nothrow)"); p != std::string::npos;
+         p = c.find("new(std::nothrow)", p + 1)) {
+      const std::string after = c.substr(p, 400);
+      TEST_ASSERT_TRUE_MESSAGE(after.find("if(!") != std::string::npos, path);   // each box is null-checked
+    }
+  }
+}
+
 // File work (or a card probe) through the raw Arduino SD global ("SD." directly, not
 // "SD_MMC." and not a member such as "x.SD.").
 static size_t rawSdCalls(const std::string& code) {
@@ -261,6 +282,7 @@ int main(int, char**) {
   RUN_TEST(test_no_console_hook_runs_a_turn_inline);
   RUN_TEST(test_console_ping_answers_only_on_the_console_seam);
   RUN_TEST(test_the_dream_fires_only_from_the_scheduler_and_the_drill_pump);
+  RUN_TEST(test_the_scheduler_fire_boxes_are_nothrow_and_checked);
   RUN_TEST(test_raw_sd_file_work_stays_in_the_gated_sound_tier);
   RUN_TEST(test_the_atomic_writer_refuses_an_unmounted_file_area_first);
   return UNITY_END();

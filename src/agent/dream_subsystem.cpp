@@ -201,8 +201,17 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
 
   // The night's deps (196 B of hooks) and its result (304 B) live on the heap (lane
   // STACK): a dream runs as a turn on the Telegram poll task, whose stack Lumi nearly
-  // exhausted on 8 Nov 2026.
-  const std::unique_ptr<NightDeps> deps(new NightDeps());
+  // exhausted on 8 Nov 2026. nothrow: fire() runs on tg_poll with no bad_alloc handler
+  // up the chain (pollTask -> pollJobs -> checkDue/pumpDrill), so a failed box reports
+  // a memory defer instead of aborting the device.
+  const std::unique_ptr<NightDeps> deps(new (std::nothrow) NightDeps());
+  if (!deps) {
+    alogf("dream: fire deferred (low memory) - the night's deps could not be allocated");
+    nimbus::orch::FireOutcome o;
+    o.deferred = true;   // not a failure: it must not roll the breaker (lane M)
+    o.detail = "deferred: low memory (deps)";
+    return o;
+  }
   NightDeps& d = *deps;
   d.loadState = loadState;
   d.saveState = saveState;
@@ -267,9 +276,19 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
   const memory::WriteOutcomes writesBefore = memory::writeOutcomes();
 
   g_firing = true;
-  const std::unique_ptr<NightResult> result(new NightResult(runNight(d, clock, force)));
-  NightResult& night = *result;
+  // nothrow, and the allocation runs BEFORE runNight: a failed box means no night
+  // happened at all, so g_firing is cleared and a defer is reported - never an
+  // uncaught bad_alloc on tg_poll with g_firing stuck true.
+  std::unique_ptr<NightResult> result(new (std::nothrow) NightResult(runNight(d, clock, force)));
   g_firing = false;
+  if (!result) {
+    alogf("dream: fire deferred (low memory) - the night's result could not be allocated");
+    nimbus::orch::FireOutcome o;
+    o.deferred = true;
+    o.detail = "deferred: low memory (result)";
+    return o;
+  }
+  NightResult& night = *result;
 
   // The night's memory writes by outcome: "ok" never hides a write that was only
   // queued or was not stored (14 Oct: 6 of 6 failed under "Nightly dream ok"). The
@@ -323,15 +342,22 @@ void pumpDrill() {
   if (!pending) return;
   // The record, request and outcome live on the heap (lane STACK): the night runs as a
   // turn below this frame on the Telegram poll task. 432 B of locals otherwise.
-  const std::unique_ptr<const orch::LoopRecord> record(new orch::LoopRecord(reservedLoopRecord()));
+  // nothrow: pumpDrill runs on tg_poll with no bad_alloc handler up the chain, so a
+  // failed box skips the drill with a log line instead of aborting the device.
+  const std::unique_ptr<const orch::LoopRecord> record(
+      new (std::nothrow) orch::LoopRecord(reservedLoopRecord()));
+  if (!record) { alogf("DREAM drill skipped (low memory) - the record could not be allocated"); return; }
   const orch::LoopRecord& rec = *record;
-  const std::unique_ptr<orch::LoopFireRequest> fireReq(new orch::LoopFireRequest());
+  const std::unique_ptr<orch::LoopFireRequest> fireReq(new (std::nothrow) orch::LoopFireRequest());
+  if (!fireReq) { alogf("DREAM drill skipped (low memory) - the request could not be allocated"); return; }
   orch::LoopFireRequest& req = *fireReq;
   req.id = rec.id;
   req.name = rec.name;
   req.prompt = rec.prompt;
   req.chatId = chat;
-  const std::unique_ptr<const orch::FireOutcome> fired(new orch::FireOutcome(fire(req, /*force=*/true)));
+  const std::unique_ptr<const orch::FireOutcome> fired(
+      new (std::nothrow) orch::FireOutcome(fire(req, /*force=*/true)));
+  if (!fired) { alogf("DREAM drill skipped (low memory) - the outcome could not be allocated"); return; }
   const orch::FireOutcome& o = *fired;
   alogf("DREAM fired ok=%d detail=%s", o.ok ? 1 : 0, o.detail.c_str());
 }

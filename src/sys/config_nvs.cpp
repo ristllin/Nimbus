@@ -12,32 +12,6 @@
 
 namespace nimbus::sys {
 
-// Lane STACK (8 Nov 2026). Arduino's Preferences::getString, which
-// solide::memory::getString runs, copies the value through a stack array as long as
-// the stored value (`char buf[len]`, up to NVS's 4000 B string limit). Settings are
-// read deep inside a turn on the Telegram poll task, whose 24 KB stack Lumi left 936 B
-// of; a long value (a persona, a rule list) put its whole length on that stack. This
-// reads the same namespace through a read-only handle into PSRAM instead. The handle
-// opens on the first read that finds the key (has() said the namespace exists) and is
-// kept; a value that cannot be read reads as its default, as an absent key does.
-String nvsReadStr(const char* key, const char* def) {
-  static std::mutex mx;
-  static nvs_handle_t h = 0;
-  static bool open = false;
-  {
-    std::lock_guard<std::mutex> lk(mx);
-    if (!open) open = nvs_open(kNvsNsSolide, NVS_READONLY, &h) == ESP_OK;
-    if (!open) return String(def);
-  }
-  size_t len = 0;
-  if (nvs_get_str(h, key, nullptr, &len) != ESP_OK || len == 0) return String(def);
-  char* buf = static_cast<char*>(heap_caps_malloc(len, MALLOC_CAP_SPIRAM));
-  if (buf == nullptr) return String(def);
-  String out = (nvs_get_str(h, key, buf, &len) == ESP_OK) ? String(buf) : String(def);
-  heap_caps_free(buf);
-  return out;
-}
-
 namespace {
 constexpr char kCfgBlob[] = "nimbus_cfg";   // SD blob: versioned Config
 constexpr char kModeKey[] = "nimbus_mode";  // NVS int: active Mode (<=15 chars)
@@ -100,7 +74,52 @@ bool shouldLogLocked(const char* key, uint32_t now) {
   slot.ms = now;
   return true;
 }
+
+// The read-failure log line: key, the value length that could not be buffered. The
+// key sits in brackets, never after "key=": the redactor masks the value of any
+// key=/key: pair, so the old "key=%s" form logged every failure as "key=***".
+constexpr char kNvsReadFailedFmt[] =
+    "nvs: read FAILED [%s] - no PSRAM for the %u B value, returning the default";
 }  // namespace
+
+// Lane STACK (8 Nov 2026). Arduino's Preferences::getString, which
+// solide::memory::getString runs, copies the value through a stack array as long as
+// the stored value (`char buf[len]`, up to NVS's 4000 B string limit). Settings are
+// read deep inside a turn on the Telegram poll task, whose 24 KB stack Lumi left 936 B
+// of; a long value (a persona, a rule list) put its whole length on that stack. This
+// reads the same namespace through a read-only handle into PSRAM instead. The handle
+// opens on the first read that finds the key (has() said the namespace exists) and is
+// kept; a value that cannot be read reads as its default, as an absent key does - but
+// a PSRAM buffer that cannot be allocated is logged (rate-limited per key), because
+// the pre-lane read had no PSRAM dependency and a silent default here is a turn that
+// lost its persona or rules with nothing in the log to explain it.
+String nvsReadStr(const char* key, const char* def) {
+  static std::mutex mx;
+  static nvs_handle_t h = 0;
+  static bool open = false;
+  {
+    std::lock_guard<std::mutex> lk(mx);
+    if (!open) open = nvs_open(kNvsNsSolide, NVS_READONLY, &h) == ESP_OK;
+    if (!open) return String(def);
+  }
+  size_t len = 0;
+  if (nvs_get_str(h, key, nullptr, &len) != ESP_OK || len == 0) return String(def);
+  char* buf = static_cast<char*>(heap_caps_malloc(len, MALLOC_CAP_SPIRAM));
+  if (buf == nullptr) {
+    // Decided under the ledger lock (fixed table, no heap), logged after it is
+    // released - never inside the critical section.
+    const uint32_t now = millis();
+    bool log;
+    portENTER_CRITICAL(&s_ledgerMux);
+    log = shouldLogLocked(key, now);
+    portEXIT_CRITICAL(&s_ledgerMux);
+    if (log) agent::alogcf(nimbus::errlog::cat::kNvs, kNvsReadFailedFmt, key, (unsigned)len);
+    return String(def);
+  }
+  String out = (nvs_get_str(h, key, buf, &len) == ESP_OK) ? String(buf) : String(def);
+  heap_caps_free(buf);
+  return out;
+}
 
 // One NVS int save, reported: never written when NVS is not open (the short-circuit),
 // and a new key never spends the reserve (a rewrite of a stored int never grows).

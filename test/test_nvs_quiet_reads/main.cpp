@@ -95,6 +95,25 @@ static void test_the_getter_probes_before_it_reads() {
                    std::string::npos);
 }
 
+// Lane STACK review (fix pass): a PSRAM buffer that cannot be allocated must not
+// read as a silent default. The pre-lane path had no PSRAM dependency, so a state
+// the old read survived (PSRAM exhausted mid-turn) now returns the default with no
+// log line, and the caller cannot tell "stored value" from "allocation failed" - a
+// turn that lost its persona or rule list to a failed buffer leaves nothing in the
+// log. The failure branch logs, rate-limited per key like the write-failure line.
+static void test_a_failed_psram_buffer_is_logged_not_silent() {
+  const std::string cpp = readFile("src/sys/config_nvs.cpp");
+  const std::string read = between(cpp, "String nvsReadStr(const char* key, const char* def) {", "\n}\n");
+  const size_t fail = read.find("buf == nullptr");
+  TEST_ASSERT_TRUE_MESSAGE(fail != std::string::npos, "the alloc-failure branch exists");
+  const std::string branch = read.substr(fail, read.find("return String(def)", fail) - fail);
+  TEST_ASSERT_TRUE_MESSAGE(branch.find("alogcf(") != std::string::npos ||
+                               branch.find("alogf(") != std::string::npos,
+                           "the alloc-failure branch logs");
+  TEST_ASSERT_TRUE_MESSAGE(branch.find("shouldLogLocked") != std::string::npos,
+                           "the log is rate-limited per key, not one line per read");
+}
+
 // The instance that flooded the log: every Wi-Fi slot reader goes through it.
 static void test_the_wifi_slot_readers_are_quiet() {
   for (const char* path : {"src/net/wifi_link.cpp", "src/net/wifi_portal.cpp",
@@ -136,6 +155,7 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_no_loud_string_reads_in_the_firmware);
   RUN_TEST(test_the_getter_probes_before_it_reads);
+  RUN_TEST(test_a_failed_psram_buffer_is_logged_not_silent);
   RUN_TEST(test_the_wifi_slot_readers_are_quiet);
   RUN_TEST(test_the_model_fetch_writes_no_nvs);
   return UNITY_END();
