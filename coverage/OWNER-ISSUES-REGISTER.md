@@ -331,4 +331,3 @@ Five review findings, each fixed with a test that failed first. Written reasons:
   from this lane, and are NOT fixed here (the first is a source-quality rule in the synthesis
   turn, the second a food-reply content rule that two prompt rounds in this lane showed to be
   fragile; both would need their own live loop).
-
