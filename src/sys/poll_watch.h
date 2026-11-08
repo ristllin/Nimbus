@@ -13,10 +13,11 @@
 //               purpose (a quiesce, its own exit).
 //   beat(step)  any task may call it; only the watched task's calls count. `step` is a
 //               string literal naming where the task was ("provider read", "tool").
-//   tick()      loop(): at 1 Hz, the check. A task silent past the limit is suspended
-//               (so its saved frame is stable), its PC and a short backtrace are read,
-//               the durable log gets one line, and the device restarts through a
-//               deliberate panic whose reason carries the same facts.
+//   tick()      loop(): at 1 Hz, the check. For a task silent past the limit, its PC and
+//               a short backtrace are read from the frame it saved when last switched
+//               out (never suspended: test_ota_poll_guard), the durable log gets one
+//               line, and the device restarts through a deliberate panic whose reason
+//               carries the same facts.
 //
 // No task, no NVS, no allocation outside the two lines it writes once. The streak record
 // lives in RTC no-init memory.

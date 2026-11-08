@@ -93,8 +93,9 @@ recover in minutes instead of days.
 2. **Recovery: a device restart, never a task restart.** A stuck task keeps what it holds: the
    TLS work slot, a mutex, the AES engine's lock, sockets and PSRAM. A deleted FreeRTOS task gives
    none of it back, so a restarted poll task would inherit a dead TLS slot or a held card lock.
-   The guard suspends the stuck task (its saved frame stops moving), reads its PC and up to six
-   return addresses, writes one durable log line, and panics with `esp_system_abort` and a reason
+   The guard reads the stuck task's PC and up to six return addresses from the frame it saved
+   when last switched out (at a moment it is off its CPU; nothing in the firmware suspends a
+   task, `test_ota_poll_guard` pins that), writes one durable log line, and panics with `esp_system_abort` and a reason
    such as `poll watchdog: tg_poll silent 301 s after provider read, on the CPU 29/29 (a spin), pc
    0x4200a1b2 bt ...`. The panic, not `esp_restart()`, so that:
    - the poison guard counts a try against the Telegram work in flight (`tg_dup_guard.h`): a
@@ -161,8 +162,8 @@ Nothing here ran on a board. No bench unit is reachable and Lumi is read-only fo
    tgPoll.stallStreak` 3); after 30 healthy minutes the streak is 0.
 3. A real turn and an update install with the guard armed: `tgPoll.silentS` stays under 120 s
    throughout, no restart.
-4. The PC sampling (`readFrames`): that `vTaskSuspend` plus the saved `XtExcFrame` gives a PC in
-   the spinning function on the S3 (dual core, task on core 0, guard on core 1).
+4. The PC sampling (`readFrames`): that the frame a preempted or blocked task saved gives a PC
+   in the spinning (or waiting) function on the S3 (dual core, task on core 0, guard on core 1).
 5. DNS late answer: a resolver that answers after 10 s (a firewall delaying UDP 53) with the
    poll task connecting: no crash, the connect fails cleanly, the next one works.
 6. On Lumi after the next update: the guard's first real catch names the spin. Until then the

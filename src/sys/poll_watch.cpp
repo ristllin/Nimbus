@@ -5,8 +5,9 @@
 #include <esp_attr.h>   // RTC_NOINIT_ATTR
 #include <esp_debug_helpers.h>
 #include <esp_memory_utils.h>
-#include <esp_private/freertos_debug.h>   // vTaskGetSnapshot: the suspended task's saved frame
+#include <esp_private/freertos_debug.h>   // vTaskGetSnapshot: the frame a switched-out task saved
 #include <esp_system.h>
+#include <esp_rom_sys.h>   // esp_rom_delay_us
 
 #include <atomic>
 #include <string>
@@ -54,17 +55,34 @@ RunState runState(TaskHandle_t t) {
   }
 }
 
-// The stuck task's PC and caller chain, read from the frame it saved when it was
-// switched out. Only called once the task is suspended, so the frame does not move;
-// every step is checked (a sane stack pointer, an executable PC) before it is followed.
+// Nothing in the firmware suspends a task (test_ota_poll_guard pins that class), so the
+// frame is read at a moment the task is off its CPU: a blocked task stays that way, and a
+// spinning one at priority 3 is preempted by the radio and TCPIP tasks of its core every
+// few milliseconds. Polled tightly for at most 100 ms on the loop task.
+bool offCpu(TaskHandle_t t) {
+  for (int i = 0; i < 5000; ++i) {
+    const eTaskState st = eTaskGetState(t);
+    if (st == eDeleted || st == eInvalid) return false;
+    if (st != eRunning) return true;
+    esp_rom_delay_us(20);
+  }
+  return false;
+}
+
+// The stuck task's PC and caller chain, read from the frame it saved when it was last
+// switched out (the moment above). It may run again while the frame is read, so every
+// step is checked (a sane stack pointer, an executable PC) before it is followed: a frame
+// that moved yields a short or empty chain, never a bad read.
 size_t readFrames(TaskHandle_t t, uint32_t& pc, uint32_t* bt) {
   pc = 0;
 #ifdef NIMBUS_POLLWATCH_FRAMES
+  if (!offCpu(t)) return 0;
   TaskSnapshot_t snap;
   if (vTaskGetSnapshot(t, &snap) != pdTRUE || !snap.pxTopOfStack) return 0;
   const XtExcFrame* f = reinterpret_cast<const XtExcFrame*>(snap.pxTopOfStack);
   if (!esp_stack_ptr_is_sane((uint32_t)f)) return 0;
   esp_backtrace_frame_t fr = {(uint32_t)f->pc, (uint32_t)f->a1, (uint32_t)f->a0, f};
+  if (!esp_ptr_executable((void*)esp_cpu_process_stack_pc(fr.pc))) return 0;
   pc = esp_cpu_process_stack_pc(fr.pc);
   size_t n = 0;
   while (n < sys::kPollBacktraceMax) {
@@ -83,11 +101,7 @@ size_t readFrames(TaskHandle_t t, uint32_t& pc, uint32_t* bt) {
   uint32_t pc = 0;
   uint32_t bt[sys::kPollBacktraceMax] = {};
   size_t n = 0;
-  if (t && !s.gone) {
-    vTaskSuspend(t);                  // it never runs again: the restart follows
-    vTaskDelay(pdMS_TO_TICKS(20));    // let the other core switch it out
-    n = readFrames(t, pc, bt);
-  }
+  if (t && !s.gone) n = readFrames(t, pc, bt);
   g_rec.noteStall(s);
   // The durable line takes the card lock for at most 8 ms: when the stuck task holds the
   // card, the line stays in the RAM tail only, and the reason below still survives in the
