@@ -597,6 +597,35 @@ static void test_an_open_provider_answers_and_a_new_key_is_asked_at_once() {
   }
 }
 
+// What the owner's six messages of one refusal episode left on both surfaces: one reply to
+// the first (the notice), one to the second (the short answer), silence after, and a history
+// row for exactly each message that went out.
+static void assertEpisodeSurfaces(ParkRig& r, const char* what) {
+  for (int msg = 0; msg < 6; msg++) {
+    const size_t before = r.delivered.size();
+    r.turn(msg == 0 ? "storm c: reply with the single word pong" : "storm c probe: reply pong");
+    TEST_ASSERT_EQUAL_MESSAGE(msg < 2 ? 1 : 0, (int)(r.delivered.size() - before), what);
+    TEST_ASSERT_EQUAL_MESSAGE((int)r.delivered.size(), (int)r.rows.size(), what);
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(2, (int)r.rows.size(), what);
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(r.delivered[0].c_str(), r.rows[0].c_str(), what);
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(r.delivered[1].c_str(), r.rows[1].c_str(), what);
+}
+
+// The episode's rows hold the notice once, the short answer once, and (out of credit) the
+// storm grader's notice words in one row only.
+static void assertEpisodeRows(const ParkRig& r, bool key, const char* what) {
+  int noticeRows = 0, shortRows = 0, wordRows = 0;
+  for (const std::string& t : r.rows) {
+    noticeRows += t.rfind("That didn't finish - ", 0) == 0 ? 1 : 0;
+    shortRows += t.rfind("Your message was not answered.", 0) == 0 ? 1 : 0;
+    wordRows += hasNoticeWords(t) ? 1 : 0;
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(1, noticeRows, what);
+  TEST_ASSERT_EQUAL_MESSAGE(1, shortRows, what);
+  if (!key) TEST_ASSERT_EQUAL_MESSAGE(1, wordRows, what);
+}
+
 // Storm leg c, the owner's two messages of one refusal episode (the message, then the fresh
 // probe), on BOTH owner surfaces: what the sink delivered and the assistant rows the history
 // holds. Lane N429: the bench read four notice rows and four short-answer rows out of one
@@ -617,31 +646,11 @@ static void test_every_refusal_is_one_message_and_one_row_per_owner_message() {
         ParkRig r({sh.host}, path);
         if (armed) r.armFault(sh);
         else r.refuseNext(sh);
-        size_t before = 0;
-        for (int msg = 0; msg < 6; msg++) {
-          before = r.delivered.size();
-          r.turn(msg == 0 ? "storm c: reply with the single word pong" : "storm c probe: reply pong");
-          const size_t sent = r.delivered.size() - before;
-          // one reply to the first message (the notice), one to the second (the short
-          // answer), then silence
-          TEST_ASSERT_EQUAL_MESSAGE(msg < 2 ? 1 : 0, (int)sent, what);
-          TEST_ASSERT_EQUAL_MESSAGE((int)r.delivered.size(), (int)r.rows.size(), what);
-        }
-        TEST_ASSERT_EQUAL_MESSAGE(2, (int)r.rows.size(), what);
+        assertEpisodeSurfaces(r, what);
         // the armed refusal really was the answer (one request, then the park), so the
         // run above is the bench's episode and not a quiet counterfeit of it
         if (armed) TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.scripted.answered(), what);
-        TEST_ASSERT_EQUAL_STRING_MESSAGE(r.delivered[0].c_str(), r.rows[0].c_str(), what);
-        TEST_ASSERT_EQUAL_STRING_MESSAGE(r.delivered[1].c_str(), r.rows[1].c_str(), what);
-        int noticeRows = 0, shortRows = 0, wordRows = 0;
-        for (const std::string& t : r.rows) {
-          noticeRows += t.rfind("That didn't finish - ", 0) == 0 ? 1 : 0;
-          shortRows += t.rfind("Your message was not answered.", 0) == 0 ? 1 : 0;
-          wordRows += hasNoticeWords(t) ? 1 : 0;
-        }
-        TEST_ASSERT_EQUAL_MESSAGE(1, noticeRows, what);
-        TEST_ASSERT_EQUAL_MESSAGE(1, shortRows, what);
-        if (!sh.key) TEST_ASSERT_EQUAL_MESSAGE(1, wordRows, what);   // the storm grader's notice words
+        assertEpisodeRows(r, sh.key, what);
         cases++;
       }
     }

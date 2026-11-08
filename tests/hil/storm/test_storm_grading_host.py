@@ -616,8 +616,15 @@ class _HistoryNet:
 
     def add(self, session, role, text):
         rows = self.sessions.setdefault(session, [])
-        rows.append({"id": f"m{sum(len(v) for v in self.sessions.values()) + 1:08x}", "session": session,
-                     "role": role, "kind": "message", "text": text})
+        rows.append(
+            {
+                "id": f"m{sum(len(v) for v in self.sessions.values()) + 1:08x}",
+                "session": session,
+                "role": role,
+                "kind": "message",
+                "text": text,
+            }
+        )
 
     def get(self, path, timeout=None, **kw):
         n = self.reads
