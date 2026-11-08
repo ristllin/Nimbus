@@ -775,7 +775,8 @@ bool looksLikeStandingRule(const std::string& text, const std::string& devName) 
 }
 
 bool rememberRequest(const std::string& text) {
-  static const char* const kKeep[] = {"remember", "don't forget", "do not forget"};
+  // The curly apostrophe is what a phone keyboard types ("don't" with U+2019).
+  static const char* const kKeep[] = {"remember", "don't forget", "don\xe2\x80\x99" "t forget", "do not forget"};
   return words::anyPhrase(words::lowerAscii(text), kKeep);
 }
 

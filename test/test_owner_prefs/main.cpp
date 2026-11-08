@@ -545,6 +545,7 @@ static void test_remember_request_corpus() {
       "Please remember that my sister's name is Ada.",
       "Don't forget: no voice notes after 22:00.",
       "Do not forget the boiler service is due in October.",
+      "Don\xe2\x80\x99" "t forget: no voice notes after 22:00.",   // a phone keyboard's curly apostrophe
       "REMEMBER: metric units only.",
       // Broad by design: a question or the owner's own recalling still mentions
       // remembering, and the hint's routing covers both (search, save nothing).
