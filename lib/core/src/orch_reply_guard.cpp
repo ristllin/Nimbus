@@ -484,9 +484,12 @@ const char* const kNowVerbs[] = {
 // write even without "now" ("Logging your lunch as roughly 670 kcal"); in a reply the head writes
 // instead of calling the tool, that is the whole answer (58 such replies in this lane's live records).
 const char* const kStoreVerbs[] = {"logging", "saving", "recording", "storing"};
-// What a storage verb is followed by: a pronoun, an article, a possessive, a meal word or a figure.
-const char* const kStoreObjects[] = {"it", "that", "this", "them", "these", "those", "your", "the", "my", "a", "an",
-                                     "everything", "all", "dinner", "lunch", "breakfast", "snack", "supper", "brunch"};
+// What a verb is followed by when it names what it works on: a pronoun, a meal word, a possessive (the
+// owner's own item), or an article (a general noun: "Storing the loaf ..."; counted only with a figure).
+const char* const kThings[] = {"it",     "that",   "this",  "them",  "these", "those",  "everything", "all",
+                               "dinner", "lunch",  "breakfast", "snack", "supper", "brunch"};
+const char* const kPossessives[] = {"your", "my"};
+const char* const kArticles[] = {"the", "a", "an"};
 // What may stand before the participle: "OK, logging it now", "Got it, saving that now", "I'm adding it now".
 const char* const kNowLeads[] = {"ok",   "okay", "sure", "alright", "right",  "yes",   "great", "got", "it",    "i",
                                  "i'm",  "m",    "am",   "i'll",    "ll",     "will",  "let",   "me",  "going", "to",
@@ -495,13 +498,46 @@ const char* const kNowLeads[] = {"ok",   "okay", "sure", "alright", "right",  "y
 const char* const kFutureLeads[] = {"i'll", "ll", "will", "let", "going", "gonna"};
 const char* const kBaseVerbs[] = {"log",   "save",   "record", "store",  "add",    "write",    "update", "enter", "set",
                                   "send",  "create", "delete", "remove", "change", "pin",      "schedule", "note", "put"};
+// What may follow "now" in an announcement ("Logging it now as a snack", "... now from your description");
+// anything else ("Removing the battery now is safe") means "now" belongs to a statement of its own.
+const char* const kAfterNow[] = {"as",    "to",    "from", "in",    "into", "for",   "with",  "at",   "on",
+                                 "and",   "so",    "then", "using", "by",   "under", "before", "after", "since",
+                                 "because", "while"};
+// A finite verb. A work verb that opens a sentence with one of these after it is a gerund SUBJECT
+// ("Saving a bit of cash each month adds up", "Logging a workout takes ten seconds"), not an announcement,
+// and so is the same sentence in the past tense ("Saving this note worked").
+const char* const kFinite[] = {
+    "is",      "are",     "was",     "were",   "be",     "been",    "am",      "has",     "have",   "had",
+    "do",      "does",    "did",     "will",   "would",  "can",     "could",   "should",  "may",    "might",
+    "must",    "shall",   "cannot",  "isn't",  "aren't", "wasn't",  "weren't", "doesn't", "don't",  "didn't",
+    "won't",   "can't",   "couldn't", "wouldn't", "shouldn't",
+    "keeps",   "kept",    "works",   "worked", "takes",  "took",    "makes",   "made",    "adds",   "added",
+    "means",   "meant",   "helps",   "helped", "gives",  "gave",    "lets",    "costs",   "cost",   "requires",
+    "required", "needs",  "needed",  "depends", "saves", "saved",   "goes",    "went",    "gets",   "got",
+    "becomes", "became",  "comes",   "came",   "uses",   "used",    "shows",   "showed",  "tells",  "told",
+    "lasts",   "lasted",  "protects", "prevents", "avoids", "ensures", "reduces", "increases", "improves",
+    "matters", "counts",  "runs",    "ran",    "starts", "started", "stops",   "stopped", "turns",  "turned",
+    "brings",  "brought", "stays",   "stayed", "remains", "allows", "allowed", "causes",  "caused", "creates",
+    "created", "leads",   "led",     "tends",  "seems",  "seemed",  "looks",   "looked",  "feels",  "felt",
+    "appears", "covers",  "includes", "included", "holds", "held",   "risks",   "frees",   "freed",  "cools",
+    "wastes",  "slows",   "speeds",  "pays",   "paid",   "builds",  "built",   "moves",   "moved",  "lists",
+    "listed",  "stores",  "records", "logs",   "writes", "wrote",   "sends",   "sent",    "removes", "deletes",
+    "changes", "changed", "updates", "updated", "sets",   "pins",    "notes",   "noted",
+};
+
+bool isClauseBreak(const std::string& s, size_t at) {
+  const char c = s[at];
+  if (c == ':' || c == ';' || c == ',' || c == '(') return true;
+  // An em or en dash (E2 80 94, E2 80 93) breaks the clause too; a curly apostrophe (E2 80 99) does not.
+  return c == '\xE2' && at + 2 < s.size() && s[at + 1] == '\x80' && (s[at + 2] == '\x94' || s[at + 2] == '\x93');
+}
 
 // The next word of `s` from `at` (advanced past it), "" at the end. `clauseEnd` is set when a
-// colon or semicolon lay between the previous word and this one.
+// colon, semicolon, comma, opening bracket or dash lay between the previous word and this one.
 std::string nextWord(const std::string& s, size_t& at, bool& clauseEnd) {
   clauseEnd = false;
   while (at < s.size() && !isWordChar(s[at])) {
-    if (s[at] == ':' || s[at] == ';') clauseEnd = true;
+    if (isClauseBreak(s, at)) clauseEnd = true;
     at++;
   }
   const size_t b = at;
@@ -521,28 +557,71 @@ std::string skipLeads(const std::string& s, size_t& at, bool& future) {
   return w;
 }
 
-// A storage verb is announced when what it stores follows at once: a pronoun, an article, a meal word
-// or a figure ("Logging your lunch as roughly 670 kcal").
-bool storesSomething(const std::string& s, size_t at) {
-  bool stop = false;
-  const std::string next = nextWord(s, at, stop);
-  return !stop && (oneOf(next, kStoreObjects) || (!next.empty() && std::isdigit((unsigned char)next[0])));
+bool isThing(const std::string& w) {
+  return oneOf(w, kThings) || oneOf(w, kPossessives) || oneOf(w, kArticles) ||
+         (!w.empty() && std::isdigit((unsigned char)w[0]));
 }
 
-// "now" within six words of `at`, in the same clause.
-bool saysNowSoon(const std::string& s, size_t at) {
-  for (int n = 0; n < 6; n++) {
+bool hasDigit(const std::string& s) {
+  for (char c : s)
+    if (std::isdigit((unsigned char)c)) return true;
+  return false;
+}
+
+// A finite verb among the words of the clause that starts at `at`: the sentence has a predicate of its own.
+bool finiteInClause(const std::string& s, size_t at) {
+  for (;;) {
     bool stop = false;
     const std::string w = nextWord(s, at, stop);
     if (w.empty() || stop) return false;
-    if (w == "now") return true;
+    if (oneOf(w, kFinite)) return true;
+  }
+}
+
+// A storage verb is announced when what it stores follows at once and the clause has no predicate of its own:
+// a pronoun, a meal word, a possessive or a figure ("Logging your lunch as roughly 670 kcal"), or an article
+// when the sentence also holds a figure ("Logging a granola bar at 210 kcal"; "Storing the loaf in a bin keeps
+// it fresh" has a predicate, "Saving a bit of cash each month adds up" has no figure).
+bool storesSomething(const std::string& s, size_t at) {
+  bool stop = false;
+  const std::string next = nextWord(s, at, stop);
+  if (stop || !isThing(next)) return false;
+  if (oneOf(next, kArticles) && !hasDigit(s)) return false;
+  return !finiteInClause(s, at);
+}
+
+// What follows "now" (from `at`, just past it): the end of the sentence or the clause, or a word that
+// continues an announcement. "Removing the battery now is safe" does not.
+bool announcementContinuesAfterNow(const std::string& s, size_t at) {
+  while (at < s.size() && std::isspace((unsigned char)s[at])) at++;
+  if (at >= s.size() || s[at] == '.' || s[at] == '!' || isClauseBreak(s, at)) return true;
+  bool stop = false;
+  return oneOf(nextWord(s, at, stop), kAfterNow);
+}
+
+// "now" within six words of `at`, in the same clause, with no predicate of its own before it ("Saving that note
+// will take a moment now"), and an announcement's continuation after it. Adding up numbers is arithmetic.
+bool saysNowSoon(const std::string& s, size_t at, bool arithmetic) {
+  for (int n = 0; n < 6; n++) {
+    bool stop = false;
+    const std::string w = nextWord(s, at, stop);
+    if (w.empty() || stop || oneOf(w, kFinite)) return false;
+    if (arithmetic && (w == "up" || w == "together")) return false;
+    if (w == "now") return announcementContinuesAfterNow(s, at);
   }
   return false;
 }
 
+// "I'll log that now", "Let me save it now": the base verb names what it works on at once ("Let me update you
+// on the status now" and "I'll send you the details now" report, they do not write).
+bool baseVerbNamesAThing(const std::string& s, size_t at) {
+  bool stop = false;
+  return isThing(nextWord(s, at, stop)) && !stop;
+}
+
 // "logging it now", "saving that to your food log now", "I'll log that now": a work verb that opens the
 // sentence (leads aside) with "now" soon after it; or a storage verb that opens it and is followed by what
-// it stores. Not a question, not a condition.
+// it stores. Not a question, not a condition, not a sentence with a predicate of its own.
 bool announcesNowIn(const std::string& s) {
   if (s.find('?') != std::string::npos || hasAnyWord(s, kConditional)) return false;
   size_t at = 0;
@@ -550,8 +629,9 @@ bool announcesNowIn(const std::string& s) {
   const std::string w = skipLeads(s, at, future);
   const bool participle = oneOf(w, kNowVerbs);
   if (!participle && !(future && oneOf(w, kBaseVerbs))) return false;
+  if (!participle && !baseVerbNamesAThing(s, at)) return false;
   if (participle && oneOf(w, kStoreVerbs) && storesSomething(s, at)) return true;
-  return saysNowSoon(s, at);
+  return saysNowSoon(s, at, w == "adding" || w == "add");
 }
 
 }  // namespace
@@ -570,6 +650,27 @@ bool announcesWorkNow(const std::string& reply, size_t* begin, size_t* end) {
     from = e;
   }
   return false;
+}
+
+bool ownerOnlyAsks(const std::string& ownerText) {
+  const std::string t = lowered(ownerText);
+  bool question = false;
+  size_t from = 0;
+  while (from < t.size()) {
+    const size_t stop = t.find_first_of(".!?\n", from);
+    const size_t e = stop == std::string::npos ? t.size() : stop + 1;
+    const bool isQuestion = stop != std::string::npos && t[stop] == '?';
+    size_t words = 0;
+    for (size_t at = from; at < e;) {
+      bool unused = false;
+      if (nextWord(t, at, unused).empty()) break;
+      words++;
+    }
+    if (isQuestion) question = true;
+    else if (words >= 3) return false;   // a statement or an instruction: something to act on
+    from = e;
+  }
+  return question;
 }
 
 bool laterPromiseSpan(const std::string& reply, size_t* begin, size_t* end, LaterWork behind) {

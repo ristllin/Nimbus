@@ -1752,6 +1752,55 @@ static void test_an_announcement_is_backed_only_by_work_that_changed_something()
   }
 }
 
+// Fix pass F1: a turn where the owner only asked a question is an informational answer. Whatever
+// the answer says about logging or saving in general, the device had nothing to write, so it gets
+// no correction round and no "(Note: nothing is running ...)" tail. A turn that states something
+// (a log request, even with a question beside it) keeps the guard, and so does a turn with no
+// owner text at all (a routine).
+static void test_an_answer_to_a_question_only_turn_is_not_an_announcement() {
+  const std::string said = turnJson("Logging it now.");
+  {
+    ClaimCheck cc;
+    cc.beginTurn();
+    cc.setSources("", "", std::string("How many kcal is a banana?"));
+    TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(said).c_str());
+    TEST_ASSERT_EQUAL_STRING("", cc.tailAfterApply("Logging it now.").c_str());
+    TEST_ASSERT_EQUAL_STRING(
+        "", cc.finalCheck(turnJson("Storing the loaf in a bread bin keeps it fresh for three days.")).c_str());
+  }
+  {
+    ClaimCheck cc;   // a greeting beside the question is still a question-only message
+    cc.beginTurn();
+    cc.setSources("", "", std::string("Thanks! How do I log a workout?"));
+    TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(said).c_str());
+  }
+  {
+    ClaimCheck cc;   // a log request with a question beside it: the announcement still has nothing behind it
+    cc.beginTurn();
+    cc.setSources("", "", std::string("Log my banana, 105 kcal. And is that a lot for a snack?"));
+    TEST_ASSERT_TRUE(cc.finalCheck(said).find("[PROMISE CHECK]") != std::string::npos);
+    TEST_ASSERT_TRUE(cc.tailAfterApply("Logging it now.").find("nothing is running for that") != std::string::npos);
+  }
+  {
+    ClaimCheck cc;   // a plain statement
+    cc.beginTurn();
+    cc.setSources("", "", std::string("Save my dinner into my meal log: a salmon plate, 620 kcal."));
+    TEST_ASSERT_TRUE(cc.finalCheck(said).find("[PROMISE CHECK]") != std::string::npos);
+  }
+  {
+    ClaimCheck cc;   // no owner text (a routine, a synthesis turn): unchanged
+    cc.beginTurn();
+    TEST_ASSERT_TRUE(cc.finalCheck(said).find("[PROMISE CHECK]") != std::string::npos);
+  }
+  {
+    ClaimCheck cc;   // a promise of LATER work is not touched by the gate
+    cc.beginTurn();
+    cc.setSources("", "", std::string("How long will the check take?"));
+    TEST_ASSERT_TRUE(cc.finalCheck(turnJson("I'll finish the rest next turn.")).find("[PROMISE CHECK]") !=
+                     std::string::npos);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_promised_confirmation_gets_the_tail);
@@ -1779,6 +1828,7 @@ int main(int, char**) {
   RUN_TEST(test_round_that_writes_the_file_adds_no_line);
   RUN_TEST(test_round_an_announcement_with_nothing_run_gets_one_round);
   RUN_TEST(test_an_announcement_is_backed_only_by_work_that_changed_something);
+  RUN_TEST(test_an_answer_to_a_question_only_turn_is_not_an_announcement);
   RUN_TEST(test_round_forced_final_gets_the_line_and_no_extra_round);
   RUN_TEST(test_round_consistent_reply_and_spawn_claims_cost_no_claim_round);
   RUN_TEST(test_a_write_that_does_not_land_under_a_saved_reply_gets_one_corrected_reply);

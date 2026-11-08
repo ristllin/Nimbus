@@ -281,6 +281,67 @@ static void test_announcing_work_now() {
   TEST_ASSERT_EQUAL_STRING(" Logging it now.", t.substr(b, e - b).c_str());
 }
 
+// Fix pass F1 (review finding): the matcher keyed on word shape, so an ordinary informational
+// sentence that opens with a work gerund or says "now" next to one was an announcement. Each of
+// these is a plain answer, or the past tense of work already done; none may be flagged. The
+// reviewer's own examples come first.
+static void test_informational_sentences_are_no_announcement() {
+  for (const char* p : {
+           "Storing the loaf in a bread bin keeps it fresh for three days.",
+           "Recording a voice note works like this: hold the mic button.",
+           "Saving a bit of cash each month adds up.",
+           "Logging a workout takes about ten seconds in the app.",
+           "Setting up the router now takes about five minutes.",
+           "Removing the battery now is safe.",
+           "I'll add that up now: 12 + 8 = 20.",
+           "Let me update you on the status now: the build is green.",
+           // Past tense of finished work (stored replies whose turns happened to hold a write).
+           "Saving that as a standing rule made room by retiring the oldest one, \"Bins go out on Tuesday night.\"",
+           "Saving this note worked, so writes are going through at the moment.",
+           // The same shapes across the verbs.
+           "Storing leftovers in a shallow container cools them faster.",
+           "Writing the date in the margin helps you find the page again.",
+           "Logging every meal for a week gives a fair picture of your habits.",
+           "Recording 10 minutes of audio uses about 10 MB.",
+           "Saving 20 pounds a month is realistic for most budgets.",
+           "Saving it for later costs you nothing.",
+           "Adding the eggs now makes the batter lumpy.",
+           "Sending the form now means the deadline is met.",
+           "Deleting the cache now frees about 200 MB.",
+           "Removing the lid now lets the steam out.",
+           "Changing the filter now costs more than waiting a month.",
+           "Scheduling a call for next week works better than tonight.",
+           "Creating a folder per project keeps things tidy.",
+           "Pinning the tab now keeps it from closing.",
+           "Entering the code now is optional.",
+           "Updating the firmware now takes four minutes.",
+           "Noting your weight at the same time each day makes the trend clearer.",
+           "Putting the phone away now helps you sleep.",
+           "I'll add the numbers up now: 12 + 8 = 20.",
+           "Let me save you some time now: skip the second step.",
+           "I'll send you the short version now: it works.",
+           "Let me write that down for you in plain words: it keeps for a week.",
+           "I will update you tomorrow.",
+       })
+    TEST_ASSERT_FALSE_MESSAGE(announcesWorkNow(p), p);
+  // What the guard exists for stays caught: the wording of the lane's stored live replies that
+  // had nothing behind them (a bare announcement, with or without "now", with what it logs).
+  for (const char* p : {
+           "Logging dinner now.",
+           "Logging that now.",
+           "Logging lunch now: chicken and blueberries.",
+           "Logging it now from your description, since none of the six photos came through to me.",
+           "Logging it now as a snack at 17:10: boba tea no milk, 225 kcal, 0 g protein.",
+           "Logging it at the same figure as yesterday's boba tea (no milk), 225 kcal, 0 g protein.",
+           "Logging breakfast: 150 g skyr, 175 kcal (from your nutrition table).",
+           "I'm saving that as a lasting preference.",
+           "Saving it now.",
+           "Logging a granola bar at 210 kcal.",
+           "Recording the snack at 220 kcal.",
+       })
+    TEST_ASSERT_TRUE_MESSAGE(announcesWorkNow(p), p);
+}
+
 static void test_ordinary_replies_are_not_promises() {
   int flagged = 0;
   for (const char* p : kOrdinaryReplies)
@@ -393,6 +454,7 @@ int main() {
   RUN_TEST(test_work_and_chat);
   RUN_TEST(test_promises);
   RUN_TEST(test_announcing_work_now);
+  RUN_TEST(test_informational_sentences_are_no_announcement);
   RUN_TEST(test_ordinary_replies_are_not_promises);
   RUN_TEST(test_what_stands_behind_a_promise);
   RUN_TEST(test_the_correction_does_not_repeat_work);

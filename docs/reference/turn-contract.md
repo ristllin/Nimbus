@@ -134,7 +134,9 @@ a source) is sent back with the claims and the turn's record; sub-agent claims a
 left to the shape check. A reply that promises later work with nothing behind it, a reply
 that only says the work is happening right now ("Logging it now.", "I'll log that now.",
 "Logging your lunch as roughly 670 kcal") while the turn wrote, sent or scheduled nothing (a
-lookup, a failed write, a refused spawn or the head's own scratchpad note is not work done), and
+lookup, a failed write, a refused spawn or the head's own scratchpad note is not work done; a message that only asks a
+question is never held to this, and a sentence with a verb of its own such as "Saving a bit of cash adds up" is no
+announcement), and
 a reply that is template filler, join the chain too. At most one correction round runs
 per turn, shared by all of them, never on the forced final round, never for a cut answer
 and never for a prose answer (which carries no spawn). The one exception is filler: it

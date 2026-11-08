@@ -757,8 +757,9 @@ std::string ClaimCheck::unbackedPromise(const std::string& reply, const orch::Tu
   if (orch::laterPromiseSpan(reply, &b, &e, laterWork_)) return reply.substr(b, e - b);
   // "Logging it now." with no write behind it: a promise too, held to the same correction.
   // Not while a sub-agent is running for the chat or a hosted tool ran where the device cannot see.
+  // Not on a turn where the owner only asked a question: nothing was asked to be written.
   if (laterWork_ != orch::LaterWork::Live && !changedSomething(fx) && !hostedRan().any() &&
-      orch::announcesWorkNow(reply, &b, &e))
+      !orch::ownerOnlyAsks(ownerText_) && orch::announcesWorkNow(reply, &b, &e))
     return reply.substr(b, e - b);
   return std::string();
 }

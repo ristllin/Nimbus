@@ -71,6 +71,13 @@ bool laterPromiseSpan(const std::string& reply, size_t* begin = nullptr, size_t*
 // correction and owner line as a promise of later work. `begin`/`end` may be null.
 bool announcesWorkNow(const std::string& reply, size_t* begin = nullptr, size_t* end = nullptr);
 
+// Fix pass F1: true when the owner's message only asks, with no statement or instruction beside the
+// question (a sentence of three words or more that does not end in a question mark). Such a turn has
+// nothing to log or save, so a reply that mentions logging or saving is an informational answer and
+// never an announcement ("How do I log a workout?" -> "Logging a workout takes ten seconds"). Empty
+// text is not a question (a routine or a synthesis turn carries no owner message).
+bool ownerOnlyAsks(const std::string& ownerText);
+
 // The owner line a promise with nothing behind it gets, and the correction it gets while
 // a round can still run (model-facing; `excerpt` is the sentence).
 extern const char kLaterPromiseLine[];
