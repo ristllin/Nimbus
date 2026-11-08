@@ -89,6 +89,11 @@ struct ScreenCtx {
 
   // ask / voice / badge
   std::string askText;                 // Ask screen body
+  // Lane DEGRADE: the Ask card for long, structured text (the degraded details): its body
+  // draws at the small size, so a page holds about four times the words, and the header
+  // carries its own title instead of "Message". Both default off: every reply renders as before.
+  bool askCompact = false;
+  std::string askTitle;
   bool askClosable = true;             // false on a transient pre-reboot notice (mode
                                        // switch): the device restarts on its own, so no
                                        // Close button is drawn (nothing to close). Real

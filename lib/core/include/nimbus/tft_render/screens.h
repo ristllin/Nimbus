@@ -53,7 +53,7 @@ Rendered renderScreen(Fb565& fb, attn::ScreenId screen, const render::ScreenCtx&
 // is deliberately separate from the removed 48-col grid page count (which was hardcoded to the old
 // 48-col/7-line grid) rather than reusing it; a touch board's swipe-to-page must
 // clamp against what it will actually render, not a mismatched page count.
-int askPageCount(const std::string& text);
+int askPageCount(const std::string& text, bool compact = false);   // compact: ScreenCtx::askCompact
 
 // Map a wire status (solide::ring::Status) to the screen's status tone. Kept
 // here so the card tint and the ring's statusStyle() role stay in agreement.

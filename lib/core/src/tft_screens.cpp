@@ -973,12 +973,11 @@ void drawSessionDetail(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx&
 // card height (and the button's position) stay stable across single- and
 // multi-page replies.
 struct AskGeom { int perLine; int maxLines; int lineH; };
-AskGeom askGeometry(const Layout& L) {
-  constexpr int scale = 2;
+AskGeom askGeometry(const Layout& L, int scale = 2) {
   const int y = L.bodyTop();
   const int cardW = L.w - 2 * L.gut();
   const int innerW = cardW - 2 * 12;
-  const int lineH = Fb565::textHeight(scale) + 6;
+  const int lineH = Fb565::textHeight(scale) + (scale == 1 ? 5 : 6);
   const int perLine = std::max(1, innerW / (6 * scale));
   constexpr int kFooterGap = 6, kIndicatorH = 14;
   const int textBottom = (L.h - L.gut() - L.minTap) - kFooterGap - kIndicatorH;
@@ -993,9 +992,10 @@ AskGeom askGeometry(const Layout& L) {
 // encoder pages it (main.cpp); on a touch board a swipe does (also main.cpp) -
 // this renderer only draws whatever page it's asked for.
 void drawAsk(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
-  drawHeader(fb, L, r, ctx, {"Message", true});
+  drawHeader(fb, L, r, ctx, {ctx.askTitle.empty() ? std::string("Message") : ctx.askTitle, true});
   const std::string body = ctx.askText.empty() ? "(no message)" : ctx.askText;
-  const AskGeom g = askGeometry(L);
+  const int scale = ctx.askCompact ? 1 : 2;   // lane DEGRADE: the degraded details are long
+  const AskGeom g = askGeometry(L, scale);
   TextPager pager;
   pager.setText(body, size_t(g.perLine), size_t(g.maxLines));
   const size_t pages = pager.pageCount();
@@ -1006,7 +1006,7 @@ void drawAsk(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
   const int cardH = g.maxLines * g.lineH + 24;
   fb.card(L.gut(), L.bodyTop(), L.w - 2 * L.gut(), cardH);
   for (size_t i = 0; i < lines.size(); ++i)
-    fb.text(L.gut() + 12, L.bodyTop() + 12 + int(i) * g.lineH, lines[i], kInk, 2);
+    fb.text(L.gut() + 12, L.bodyTop() + 12 + int(i) * g.lineH, lines[i], kInk, scale);
 
   if (pages > 1) {
     char foot[32];
@@ -1459,11 +1459,11 @@ void drawScreensaver(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& c
 // draw* helper above, which is only ever reached via renderScreen's switch) so
 // a touch board's swipe-to-page (main.cpp) can clamp against exactly what this
 // renderer will draw.
-int askPageCount(const std::string& text) {
+int askPageCount(const std::string& text, bool compact) {
   // main.cpp drives a single, compiled panel, so the default-size geometry is the
   // one it will actually render (Ask never changes panel mid-run).
   const Layout L = defaultLayout();
-  const AskGeom g = askGeometry(L);
+  const AskGeom g = askGeometry(L, compact ? 1 : 2);
   TextPager pager;
   pager.setText(text, size_t(g.perLine), size_t(g.maxLines));
   return int(pager.pageCount());

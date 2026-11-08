@@ -190,8 +190,9 @@ class DegradedDebounce {
 // more) the first maxRows - 1 and "+N more".
 std::vector<std::string> degradedStripRows(const DegradedSet& set, size_t maxRows);
 
-// The details card (the reason one tap away): a title, then each condition's line and its
-// reason, blank-line separated. "" when nothing is degraded.
+// The details card (the reason one tap away): each condition's line (after a "- ") and its
+// reason, blank-line separated. "" when nothing is degraded. The card's header carries the
+// title, and its body draws at the small size (ScreenCtx::askCompact).
 std::string degradedDetailText(const DegradedSet& set);
 
 // /api/state "degraded": {"count":N,"gen":G,"items":[{"id","line","why"}]}. Always the

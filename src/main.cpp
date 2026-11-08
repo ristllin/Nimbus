@@ -1284,6 +1284,15 @@ static void fillVoiceCtx(render::ScreenCtx& c) {
   c.micBusy = g_voice.busy();
 }
 
+// Lane DEGRADE: the details card behind the home screen's strip (the reason one tap away).
+// It is the Ask text card, held until Close, so it needs no screen of its own. The card
+// counts as up while the Ask text is still exactly the text this put there, so a later
+// reply that replaces it is never mistaken for it.
+static String g_degradedDetailShown;   // the text this put on the card ("" = none)
+static bool askIsDegradedDetails() {
+  return g_degradedDetailShown.length() && g_askOverride == g_degradedDetailShown;
+}
+
 // Lane DEGRADE: the strip rows the last FULL paint drew. The on-screen ring is repainted
 // alone at animation cadence (repaintRingRegion composes the whole frame and pushes only the
 // ring square), so it must compose the strip the panel shows or its square would not match
@@ -1320,6 +1329,10 @@ static render::ScreenCtx buildCtx(int cursorJob, bool fullPaint = true) {
   if (g_askOverride.length()) {
     c.askText = std::string(g_askOverride.c_str());  // mode-switch / voice screen
     c.askClosable = !g_askTransient;                 // no Close on a pre-reboot notice
+    if (askIsDegradedDetails()) {                    // lane DEGRADE: long text, small type, own title
+      c.askCompact = true;
+      c.askTitle = "Degraded";
+    }
     c.detailPage = g_askPage;                        // rotate pages a held reply (P2.3)
   }
   // Copy the slots under the lock into a local buffer (tiny, no heap), then build
@@ -5565,7 +5578,7 @@ static void settleMenuAfterMutation(uint32_t now) {
 // page is never stranded unreachable.
 static void pageAskReply(int dir) {
   const std::string text(g_askOverride.c_str());
-  const int pages = nimbus::tft::askPageCount(text);
+  const int pages = nimbus::tft::askPageCount(text, askIsDegradedDetails());
   g_askPage = std::max(0, std::min(g_askPage + dir, pages > 0 ? pages - 1 : 0));
   renderScreen(attn::ScreenId::Ask, -1);
 }
@@ -5585,11 +5598,8 @@ static bool voiceTapDismiss(const nimbus::tft::TapRegion* t, uint32_t now) {
   return !elsewhere;
 }
 
-// Lane DEGRADE: the details card behind the home screen's strip (the reason one tap away).
-// It is the Ask text card, held until Close, so it needs no screen of its own; while it is
-// up a change of the set rewrites it, and when nothing is degraded any more it closes.
-static String g_degradedDetailShown;   // the text on the card now ("" = the card is not up)
-
+// While the card is up a change of the set rewrites it, and when nothing is degraded any
+// more it closes.
 static void showDegradedDetails() {
   const std::string text = nimbus::orch::degradedDetailText(agent::degraded::shown());
   if (text.empty()) {   // it cleared between the paint and the tap
@@ -5606,8 +5616,7 @@ static void showDegradedDetails() {
 // The shown set changed (agent::degraded::tick). The home screen repaints with the new
 // strip; an open details card is rewritten, or closed when nothing is degraded any more.
 static void onDegradedChanged(uint32_t now) {
-  const bool cardUp = g_degradedDetailShown.length() && g_askOverride == g_degradedDetailShown;
-  if (!cardUp) {
+  if (!askIsDegradedDetails()) {
     g_degradedDetailShown = "";
     if (!g_menu.isOpen() && g_lastScreen == uint8_t(attn::ScreenId::StatusIdle))
       g_sched.onIntent(uint8_t(attn::ScreenId::StatusIdle), false, now);
@@ -5760,10 +5769,13 @@ static void drainTouch(uint32_t now) {
       break;
     case Action::Back:
     case Action::Home:
-      // Same as a single click: clear any override and show live status.
+      // Same as a single click: clear any override and show live status. A held reply
+      // is dismissed with it: leaving g_askSticky true would keep the scheduler gate
+      // shut with plain status on the panel (lane DEGRADE: the details card is one).
       g_lightsOff = false;
       g_ledOverrideActive = false;
       g_askOverride = "";
+      g_askSticky = false; g_askPage = 0;
       refreshRing();
       renderScreen(attn::ScreenId::StatusIdle, -1);
       break;
@@ -5773,6 +5785,7 @@ static void drainTouch(uint32_t now) {
       g_lightsOff = false;
       g_ledOverrideActive = false;
       g_askOverride = "";
+      g_askSticky = false; g_askPage = 0;
       refreshRing();
       renderScreen(attn::ScreenId::SetupInfo, -1);
       break;

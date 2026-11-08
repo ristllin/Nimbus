@@ -420,9 +420,11 @@ std::vector<std::string> degradedStripRows(const DegradedSet& set, size_t maxRow
 }
 
 std::string degradedDetailText(const DegradedSet& set) {
-  if (set.empty()) return std::string();
-  std::string out = set.size() == 1 ? "Running degraded" : "Running degraded: " + std::to_string(set.size()) + " things";
-  for (const auto& c : set) out += "\n\n" + c.line + "\n" + c.why;
+  std::string out;
+  for (const auto& c : set) {
+    if (!out.empty()) out += "\n\n";
+    out += "- " + c.line + "\n" + c.why;
+  }
   return out;
 }
 
