@@ -167,36 +167,38 @@ DegradedCondition providerParked(const std::vector<ParkedFact>& held) {
 // ---- 3. memory without embeddings ---------------------------------------------------------
 
 // The one next step for an embedding outage, by what parked it. Credit advice for a width
-// mismatch sends the owner to the wrong page, and a passing timeout needs no step at all.
+// mismatch sends the owner to the wrong page, and a passing timeout needs no step at all. A table
+// (one row per cause) keeps this flat; test_every_embed_cause_has_its_own_honest_reason fails for
+// a cause with no row.
+struct EmbedFixRow {
+  EmbedFail kind;
+  const char* fix;
+};
+constexpr const char* kTriedAgain = "It is tried again by itself.";
+constexpr const char* kCreditPlan = "Check the provider's credit and plan under Assistant > Models.";
+const EmbedFixRow kEmbedFix[] = {
+    {EmbedFail::WidthMismatch, "Set Dimensions to the model's size under Memory > Embedding model."},
+    {EmbedFail::NoModel, "Choose an embedding model under Memory > Embedding model."},
+    {EmbedFail::RouteNotAllowed, "Choose another embedding provider under Memory > Embedding model."},
+    {EmbedFail::NoKey, "Add the embedding provider's key under Assistant > Models."},
+    {EmbedFail::KeyRejected, "Update the embedding provider's key under Assistant > Models."},
+    {EmbedFail::OutOfCredit, kCreditPlan},
+    {EmbedFail::CallTooLarge, kCreditPlan},
+    {EmbedFail::AccountHeld, kCreditPlan},
+    {EmbedFail::Busy, kTriedAgain},
+    {EmbedFail::Unreachable, kTriedAgain},
+    {EmbedFail::Timeout, kTriedAgain},
+    {EmbedFail::RateLimited, kTriedAgain},
+    {EmbedFail::RouterHeld, kTriedAgain},
+    {EmbedFail::ProviderError, kTriedAgain},
+    {EmbedFail::BadResponse, kTriedAgain},
+    {EmbedFail::BadRequest, kTriedAgain},
+    {EmbedFail::Unknown, kTriedAgain},
+};
+
 std::string embedFix(EmbedFail kind) {
-  switch (kind) {
-    case EmbedFail::WidthMismatch:
-      return "Set Dimensions to the model's size under Memory > Embedding model.";
-    case EmbedFail::NoModel:
-      return "Choose an embedding model under Memory > Embedding model.";
-    case EmbedFail::RouteNotAllowed:
-      return "Choose another embedding provider under Memory > Embedding model.";
-    case EmbedFail::NoKey:
-      return "Add the embedding provider's key under Assistant > Models.";
-    case EmbedFail::KeyRejected:
-      return "Update the embedding provider's key under Assistant > Models.";
-    case EmbedFail::OutOfCredit:
-    case EmbedFail::CallTooLarge:
-    case EmbedFail::AccountHeld:
-      return "Check the provider's credit and plan under Assistant > Models.";
-    case EmbedFail::Busy:
-    case EmbedFail::Unreachable:
-    case EmbedFail::Timeout:
-    case EmbedFail::RateLimited:
-    case EmbedFail::RouterHeld:
-    case EmbedFail::ProviderError:
-    case EmbedFail::BadResponse:
-    case EmbedFail::BadRequest:
-    case EmbedFail::Unknown:
-      return "It is tried again by itself.";
-    case EmbedFail::None:
-      break;
-  }
+  for (const EmbedFixRow& r : kEmbedFix)
+    if (r.kind == kind) return r.fix;
   return "Check the embedding model under Memory > Embedding model and the key under Assistant > Models.";
 }
 

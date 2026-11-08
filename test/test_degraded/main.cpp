@@ -599,6 +599,8 @@ static void test_every_embed_cause_has_its_own_honest_reason() {
       TEST_ASSERT_TRUE_MESSAGE(printableAscii(w), at.c_str());
       TEST_ASSERT_TRUE_MESSAGE(w.back() == '.', at.c_str());
       TEST_ASSERT_TRUE_MESSAGE(contains(w, "Nothing is lost"), at.c_str());
+      // Every named cause has its own row: only "cause not known" falls to the generic step.
+      TEST_ASSERT_TRUE_MESSAGE(contains(w, "Check the embedding model under Memory") == (k == EmbedFail::None), at.c_str());
       const bool creditCause = k == EmbedFail::OutOfCredit || k == EmbedFail::CallTooLarge || k == EmbedFail::AccountHeld;
       TEST_ASSERT_TRUE_MESSAGE(contains(w, "credit") == creditCause, at.c_str());
     }
