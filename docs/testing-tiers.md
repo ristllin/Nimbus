@@ -233,6 +233,14 @@ NIMBUS_STORM_UNIT=L NIMBUS_STORM_EVIDENCE=<evidence dir> NIMBUS_ENV_FILE=<bench 
   python3 -m pytest tests/hil/storm/test_storm_b_page_reserved.py -m "hil or net" --allow-hardware -s
 ```
 
+A leg counts the owner's notices as the difference between two reads of the unit's
+history (`/api/mem/episodic`) or Telegram record (`/api/tg/archive`), one when the window
+opens and one when it closes. The unit answers a read it cannot serve in time with HTTP 503
+and a "busy" body, so the kit accepts a page only when it is HTTP 200 and holds its list,
+retries a busy one, and fails the leg when the page stays busy. A busy page read as an
+empty one would count every older row of the owner chat as the episode's own (the shape of
+leg c's count of 4 notices against one send on 5 Nov 2026) or hide the episode's own rows.
+
 With `NIMBUS_STORM_TG=1` (and `NIMBUS_BENCH_LOCKS` pointing at the bench locks) a leg
 puts the dedicated test bot on the unit for its run, under the bench `tg-bot` lock, and
 the owner channel it grades is the device's own Telegram record (`/api/tg/archive`),
