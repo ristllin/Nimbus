@@ -404,10 +404,10 @@ class StormBench:
         """One history or archive page, VALIDATED: HTTP 200 and ``key`` a list. The unit
         answers a read it cannot serve in time with HTTP 503 and {"error":"busy",...};
         net.get_json parses any status, so that body used to read as a page with no rows -
-        an empty chat. Windows are diffs of two such reads: an empty opening read made every
-        older row of the chat count as the window's own (the 5 Nov 2026 quota-429 episode
-        read 4 notices where the device sent 1), an empty closing read hid the window's
-        own rows (a false pass). A busy or malformed answer is retried, then an error."""
+        an empty chat. Windows are diffs of two such reads: an empty opening read makes every
+        older row of the chat count as the window's own (the shape of the 5 Nov 2026 leg c
+        count of 4 notices against one send), an empty closing read hides the window's own
+        rows (a false pass). A busy or malformed answer is retried, then an error."""
 
         def read():
             r = self.net.get(path, timeout=timeout)
