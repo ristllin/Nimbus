@@ -1,22 +1,442 @@
 #include "nimbus/orch/degraded.h"
 
-// RED STUB (failing-first record): every entry point answers "nothing degraded". The real
-// implementation replaces this file in the next commit.
+#include <algorithm>
+
+#include "nimbus/orch/provider_slots.h"
+
 namespace nimbus {
 namespace orch {
 
-const char* degradedSlug(DegradedId) { return ""; }
-DegradedSet computeDegraded(const DegradedFacts&) { return DegradedSet(); }
-std::string degradedProviderLabel(const std::string& slug) { return slug; }
-ParkReason degradedParkReason(const ParkedFact&) { return ParkReason(); }
-void ServingTracker::noteTurn(const std::string&, const std::string&, const std::string&, bool, uint32_t) {}
-FallbackFact ServingTracker::fact(uint32_t) const { return FallbackFact(); }
-void ServingTracker::clear() {}
-bool DegradedDebounce::update(const DegradedSet&, uint32_t) { return false; }
-void DegradedDebounce::reset() {}
-std::vector<std::string> degradedStripRows(const DegradedSet&, size_t) { return {}; }
-std::string degradedDetailText(const DegradedSet&) { return std::string(); }
-void degradedInto(const DegradedSet&, uint32_t, JsonObject) {}
+namespace {
+
+// ---- small helpers ---------------------------------------------------------------------
+
+std::string joinNames(const std::vector<std::string>& v) {
+  std::string out;
+  for (size_t i = 0; i < v.size(); i++) {
+    if (i) out += ", ";
+    out += v[i];
+  }
+  return out;
+}
+
+std::vector<std::string> labels(const std::vector<std::string>& slugs) {
+  std::vector<std::string> out;
+  out.reserve(slugs.size());
+  for (const std::string& s : slugs) out.push_back(degradedProviderLabel(s));
+  return out;
+}
+
+std::string minutesWord(uint32_t ms) {
+  const uint32_t m = ms / 60000u;
+  return m <= 1 ? std::string("a minute") : std::to_string(m) + " minutes";
+}
+
+std::string ordinalChoice(size_t down) {
+  if (down == 1) return "2nd choice";
+  if (down == 2) return "3rd choice";
+  return "later choice";
+}
+
+// "a -> b -> c" into its trimmed, non-empty parts.
+std::vector<std::string> splitPath(const std::string& path) {
+  std::vector<std::string> out;
+  size_t pos = 0;
+  while (pos <= path.size()) {
+    size_t next = path.find("->", pos);
+    if (next == std::string::npos) next = path.size();
+    size_t b = pos, e = next;
+    while (b < e && path[b] == ' ') ++b;
+    while (e > b && path[e - 1] == ' ') --e;
+    if (e > b) out.push_back(path.substr(b, e - b));
+    if (next >= path.size()) break;
+    pos = next + 2;
+  }
+  return out;
+}
+
+// ---- 1. the main provider is unavailable -----------------------------------------------------
+
+DegradedCondition headFallback(const FallbackFact& f) {
+  DegradedCondition c;
+  c.id = DegradedId::HeadFallback;
+  const std::string served = degradedProviderLabel(f.served);
+  std::vector<std::string> down = labels(f.down);
+  if (down.empty()) down.push_back(degradedProviderLabel(f.head));
+  // Name the main provider and the one that answers; keep the providers between them
+  // when the line has room.
+  c.line = joinNames(down) + " down, " + served + " answers";
+  if (c.line.size() > kDegradedLineMax) c.line = down.front() + " down, " + served + " answers";
+
+  const std::string head = down.front();
+  const std::string phrase = f.headClosed && !f.headWhy.empty() ? f.headWhy : "did not answer the last turn";
+  c.why = head + ", your main provider, " + phrase + ".";
+  for (size_t i = 1; i < down.size(); i++) c.why += " " + down[i] + " did not answer either.";
+  c.why += " " + served + ", your " + ordinalChoice(f.down.size() ? f.down.size() : 1) + ", answered instead.";
+  if (f.headClosed && !f.headFix.empty()) c.why += " " + f.headFix + ".";
+  c.why += " Turns return to " + head + " once it answers again.";
+  return c;
+}
+
+// ---- 2. a parked or paused provider ---------------------------------------------------------
+
+struct ParkLine {
+  std::string tail;   // what follows the provider's name in the line
+};
+
+// The line's words after the name, for one provider.
+std::string parkTail(const ParkedFact& p) {
+  if (p.kind == ParkKind::Billing) {
+    switch (p.cause) {
+      case ParkCause::NeedsPlan: return "needs a plan";
+      case ParkCause::KeyBudget: return "budget used up";
+      case ParkCause::Suspended: return "account suspended";
+      case ParkCause::WalletEmpty:
+      case ParkCause::Unspecified: break;
+    }
+    return "is out of credit";
+  }
+  if (p.kind == ParkKind::Auth) return p.httpStatus == 403 ? "refuses some requests" : "key refused";
+  const uint8_t own = p.paused & uint8_t(~kPauseSpendCeiling);
+  if (own & kPauseProviderLimit) return "hit its monthly limit";
+  if (own & kPauseOwner) return "is paused";
+  return std::string();
+}
+
+bool holds(const ParkedFact& p) { return !parkTail(p).empty(); }
+
+DegradedCondition providerParked(const std::vector<ParkedFact>& held) {
+  DegradedCondition c;
+  c.id = DegradedId::ProviderParked;
+  std::vector<std::string> names;
+  for (const ParkedFact& p : held) names.push_back(degradedProviderLabel(p.provider));
+  if (held.size() == 1) {
+    c.line = names[0] + " " + parkTail(held[0]);
+  } else {
+    c.line = joinNames(names) + " unavailable";
+    if (c.line.size() > kDegradedLineMax) c.line = std::to_string(held.size()) + " providers unavailable";
+  }
+  for (const ParkedFact& p : held) {
+    const ParkReason r = degradedParkReason(p);
+    if (!c.why.empty()) c.why += " ";
+    c.why += degradedProviderLabel(p.provider) + " " + r.phrase + ".";
+    if (!r.fix.empty()) c.why += " " + r.fix + ".";
+  }
+  c.why += " Other providers answer meanwhile, and it is checked again by itself.";
+  return c;
+}
+
+// ---- 3. memory without embeddings ---------------------------------------------------------
+
+DegradedCondition memory(bool parked, int pending) {
+  DegradedCondition c;
+  c.id = DegradedId::Memory;
+  if (parked && pending > 0) c.line = "Memory is keyword-only, saves queued";
+  else if (parked) c.line = "Memory is keyword-only";
+  else c.line = "Memory saves are queued";
+  if (parked) {
+    c.why = "Embeddings are unavailable, so memory search matches words only";
+    c.why += pending > 0 ? " and " + std::to_string(pending) + (pending == 1 ? " new memory waits" : " new memories wait") +
+                               " in a queue."
+                         : ".";
+    c.why += " Nothing is lost: queued memories are stored once embeddings answer again."
+             " Check the provider's credit and key under Assistant > Models.";
+  } else {
+    c.why = std::to_string(pending) + (pending == 1 ? " new memory is" : " new memories are") +
+            " waiting for an embedding. They are stored as soon as embeddings answer.";
+  }
+  return c;
+}
+
+// ---- 4. the store is full -----------------------------------------------------------------------
+
+DegradedCondition storeFull(bool files) {
+  DegradedCondition c;
+  c.id = DegradedId::StoreFull;
+  if (files) {
+    c.line = "File storage is full";
+    c.why = "The file store has no room, so new photos and files are not saved. Delete files you do not need in the"
+            " Memory tab's Files section on the device web page.";
+  } else {
+    c.line = "Device storage is full";
+    c.why = "The device's internal storage is full, so new memories are not saved. Delete files you do not need in the"
+            " Memory tab's Files section on the device web page, or erase old data.";
+  }
+  return c;
+}
+
+// ---- 5. Telegram is silent ---------------------------------------------------------------------------
+
+bool telegramSilent(const TelegramFact& t, DegradedCondition& c) {
+  if (!t.configured || !t.wifiUp) return false;
+  c.id = DegradedId::TelegramSilent;
+  if (!t.taskAlive) {
+    c.line = "Telegram has stopped";
+    c.why = "The Telegram loop is not running, so messages are neither read nor answered. Restart the device to start it again.";
+    return true;
+  }
+  if (t.authRejected) {
+    c.line = "Telegram rejects the bot token";
+    c.why = "Telegram refused the bot token, so no message reaches the device. Set a new bot token under"
+            " Assistant > Connectors > Telegram.";
+    return true;
+  }
+  const uint32_t allowed = t.turnBusy ? kTgIdleBusyMs : kTgIdleMs;
+  if (t.idleMs > allowed) {
+    c.line = "Telegram is not responding";
+    c.why = "The Telegram loop has not checked in for " + minutesWord(t.idleMs) +
+            ", so messages may not arrive. It usually recovers by itself. If it does not, restart the device.";
+    return true;
+  }
+  if (t.fails >= kTgFailsUnreachable) {
+    c.line = "Telegram is unreachable";
+    c.why = "Telegram has not answered the last " + std::to_string(t.fails) +
+            " checks. Messages wait on Telegram and arrive once it answers again.";
+    return true;
+  }
+  return false;
+}
+
+// ---- 6. the clock -------------------------------------------------------------------------------------
+
+DegradedCondition clockUnsynced(bool wifiUp) {
+  DegradedCondition c;
+  c.id = DegradedId::ClockUnsynced;
+  c.line = "Clock not synced";
+  c.why = wifiUp ? "The device has not reached a time server yet, so routines, the nightly dream and dated memories wait."
+                   " It keeps trying."
+                 : "The device is not on Wi-Fi, so its clock cannot sync. Routines, the nightly dream and dated memories wait."
+                   " Reconnect it to Wi-Fi.";
+  return c;
+}
+
+}  // namespace
+
+const char* degradedSlug(DegradedId id) {
+  switch (id) {
+    case DegradedId::HeadFallback:   return "head_fallback";
+    case DegradedId::ProviderParked: return "provider_parked";
+    case DegradedId::Memory:         return "memory";
+    case DegradedId::StoreFull:      return "store_full";
+    case DegradedId::TelegramSilent: return "telegram_silent";
+    case DegradedId::ClockUnsynced:  return "clock_unsynced";
+  }
+  return "";
+}
+
+std::string degradedProviderLabel(const std::string& slug) {
+  if (const ProviderSlot* s = findProviderSlot(slug.c_str())) return s->label;
+  if (slug == "custom") return "Custom endpoint";
+  return slug;
+}
+
+ParkReason degradedParkReason(const ParkedFact& p) {
+  ParkReason r;
+  if (p.kind == ParkKind::Billing) {
+    switch (p.cause) {
+      case ParkCause::NeedsPlan:
+        r.phrase = "needs credits or a plan for this account";
+        r.fix = parkCauseFix(p.cause);
+        break;
+      case ParkCause::KeyBudget:
+        r.phrase = "reached this device's monthly budget";
+        r.fix = parkCauseFix(p.cause);
+        break;
+      case ParkCause::Suspended:
+        r.phrase = "says this account is suspended";
+        r.fix = parkCauseFix(p.cause);
+        break;
+      case ParkCause::WalletEmpty:
+        r.phrase = "is out of credit";
+        r.fix = parkCauseFix(p.cause);
+        break;
+      case ParkCause::Unspecified:
+        r.phrase = "is out of credit";
+        r.fix = "Add credit with the provider";
+        break;
+    }
+    return r;
+  }
+  if (p.kind == ParkKind::Auth) {
+    if (p.httpStatus == 403) {
+      r.phrase = "refuses some requests";
+      r.fix = "Check the key's access to the models in use with the provider";
+    } else {
+      r.phrase = "refused the key";
+      r.fix = "Update the key under Assistant > Models";
+    }
+    return r;
+  }
+  const uint8_t own = p.paused & uint8_t(~kPauseSpendCeiling);
+  if (own & kPauseProviderLimit) {
+    r.phrase = "reached its monthly limit";
+    r.fix = "Raise the limit under Assistant > Usage";
+  } else if (own & kPauseOwner) {
+    r.phrase = "is paused";
+    r.fix = "Resume it under Assistant > Usage";
+  }
+  return r;
+}
+
+DegradedSet computeDegraded(const DegradedFacts& f) {
+  DegradedSet out;
+  if (!f.orchestrator) return out;
+
+  // 1. The head's fallback: the providers it went past are named here, so a park on one
+  // of them is this line's cause and not a second line.
+  const FallbackFact& fb = f.fallback;
+  const bool fallback = fb.active && (fb.headClosed || fb.ageMs < kFallbackQuietMs);
+  if (fallback) out.push_back(headFallback(fb));
+
+  // 2. Every other provider the park holds off.
+  std::vector<ParkedFact> held;
+  for (const ParkedFact& p : f.parks) {
+    if (!holds(p)) continue;
+    if (fallback && std::find(fb.down.begin(), fb.down.end(), p.provider) != fb.down.end()) continue;
+    held.push_back(p);
+  }
+  if (!held.empty()) out.push_back(providerParked(held));
+
+  // 3. Memory.
+  if (f.embedParked || f.pendingEmbeds > 0) out.push_back(memory(f.embedParked, f.pendingEmbeds));
+
+  // 4. Storage.
+  if (f.storeFull || f.flashFull) out.push_back(storeFull(f.storeFull));
+
+  // 5. Telegram.
+  DegradedCondition tg;
+  if (telegramSilent(f.telegram, tg)) out.push_back(tg);
+
+  // 6. The clock gets the boot to sync before it counts.
+  if (!f.clockSynced && f.uptimeMs >= kClockGraceMs) out.push_back(clockUnsynced(f.wifiUp));
+  return out;
+}
+
+// ---- the served-by memory ---------------------------------------------------------------------------------
+
+void ServingTracker::noteTurn(const std::string& requested, const std::string& served, const std::string& path,
+                              bool answered, uint32_t nowMs) {
+  if (!answered || requested.empty() || served.empty()) return;
+  std::lock_guard<std::mutex> lk(mx_);
+  if (served == requested) {
+    active_ = false;
+    return;
+  }
+  std::vector<std::string> down;
+  for (const std::string& h : splitPath(path))
+    if (h != served && std::find(down.begin(), down.end(), h) == down.end()) down.push_back(h);
+  if (down.empty() || down.front() != requested) down.insert(down.begin(), requested);
+  active_ = true;
+  head_ = requested;
+  served_ = served;
+  down_ = std::move(down);
+  atMs_ = nowMs;
+}
+
+FallbackFact ServingTracker::fact(uint32_t nowMs) const {
+  std::lock_guard<std::mutex> lk(mx_);
+  FallbackFact f;
+  f.active = active_;
+  if (!active_) return f;
+  f.head = head_;
+  f.served = served_;
+  f.down = down_;
+  f.ageMs = nowMs - atMs_;
+  return f;
+}
+
+void ServingTracker::clear() {
+  std::lock_guard<std::mutex> lk(mx_);
+  active_ = false;
+  head_.clear();
+  served_.clear();
+  down_.clear();
+}
+
+// ---- the calm -----------------------------------------------------------------------------------------------
+
+bool DegradedDebounce::update(const DegradedSet& now, uint32_t nowMs) {
+  bool changed = false;
+  for (int i = 0; i < kDegradedCount; i++) {
+    const DegradedId id = DegradedId(i);
+    const DegradedCondition* c = nullptr;
+    for (const auto& x : now)
+      if (x.id == id) { c = &x; break; }
+    auto shownIt = std::find_if(shown_.begin(), shown_.end(), [id](const DegradedCondition& s) { return s.id == id; });
+    Slot& s = slot_[i];
+    if (c) {
+      if (shownIt != shown_.end()) {   // shown and still holding: a gap in it is forgotten
+        s.pending = false;
+        if (shownIt->line != c->line) {
+          *shownIt = *c;
+          changed = true;
+        } else {
+          shownIt->why = c->why;   // the reason moves silently
+        }
+        continue;
+      }
+      if (!s.pending) { s.pending = true; s.sinceMs = nowMs; }
+      if (nowMs - s.sinceMs >= kRaiseMs) {
+        auto at = std::find_if(shown_.begin(), shown_.end(), [id](const DegradedCondition& x) { return x.id > id; });
+        shown_.insert(at, *c);
+        s.pending = false;
+        changed = true;
+      }
+      continue;
+    }
+    if (shownIt == shown_.end()) {   // neither shown nor holding: a raise that never held is dropped
+      s.pending = false;
+      continue;
+    }
+    if (!s.pending) { s.pending = true; s.sinceMs = nowMs; }
+    if (nowMs - s.sinceMs >= kClearMs) {
+      shown_.erase(shownIt);
+      s.pending = false;
+      changed = true;
+    }
+  }
+  if (changed) ++gen_;
+  return changed;
+}
+
+void DegradedDebounce::reset() {
+  for (Slot& s : slot_) s = Slot();
+  shown_.clear();
+  gen_ = 0;
+}
+
+// ---- the surfaces --------------------------------------------------------------------------------------------
+
+std::vector<std::string> degradedStripRows(const DegradedSet& set, size_t maxRows) {
+  std::vector<std::string> rows;
+  if (set.empty() || maxRows == 0) return rows;
+  if (set.size() <= maxRows) {
+    for (const auto& c : set) rows.push_back(c.line);
+    return rows;
+  }
+  for (size_t i = 0; i + 1 < maxRows; i++) rows.push_back(set[i].line);
+  rows.push_back("+" + std::to_string(set.size() - (maxRows - 1)) + " more");
+  return rows;
+}
+
+std::string degradedDetailText(const DegradedSet& set) {
+  if (set.empty()) return std::string();
+  std::string out = set.size() == 1 ? "Running degraded" : "Running degraded: " + std::to_string(set.size()) + " things";
+  for (const auto& c : set) out += "\n\n" + c.line + "\n" + c.why;
+  return out;
+}
+
+void degradedInto(const DegradedSet& set, uint32_t generation, JsonObject out) {
+  out["count"] = (uint32_t)set.size();
+  out["gen"] = generation;
+  JsonArray items = out["items"].to<JsonArray>();
+  for (const auto& c : set) {
+    JsonObject o = items.add<JsonObject>();
+    o["id"] = degradedSlug(c.id);
+    o["line"] = c.line;
+    o["why"] = c.why;
+  }
+}
 
 }  // namespace orch
 }  // namespace nimbus

@@ -35,6 +35,18 @@ static const DegradedCondition* find(const DegradedSet& s, DegradedId id) {
   return nullptr;
 }
 
+// A pointer into a temporary set dangles: a call on a temporary is a compile error.
+static const DegradedCondition* find(DegradedSet&&, DegradedId) = delete;
+static const DegradedCondition* find(const DegradedSet&&, DegradedId) = delete;
+
+// The condition `id` that `f` raises, copied out (nullptr when it does not).
+static bool pick(const DegradedFacts& f, DegradedId id, DegradedCondition& out) {
+  const DegradedSet s = computeDegraded(f);
+  const DegradedCondition* c = find(s, id);
+  if (c) out = *c;
+  return c != nullptr;
+}
+
 static bool has(const DegradedSet& s, DegradedId id) { return find(s, id) != nullptr; }
 
 static bool contains(const std::string& hay, const char* needle) {
@@ -207,7 +219,8 @@ static void test_fallback_to_a_third_choice_names_every_provider_it_went_past() 
   DegradedFacts f;
   f.uptimeMs = 600000;
   f.fallback = t.fact(2000);
-  const DegradedCondition* c = find(computeDegraded(f), DegradedId::HeadFallback);
+  DegradedCondition cVal;
+  const DegradedCondition* c = pick(f, DegradedId::HeadFallback, cVal) ? &cVal : nullptr;
   TEST_ASSERT_NOT_NULL(c);
   TEST_ASSERT_EQUAL_STRING("Anthropic, OpenAI down, Z.ai answers", c->line.c_str());
   TEST_ASSERT_TRUE(contains(c->why, "3rd choice"));
@@ -220,7 +233,8 @@ static void test_a_long_pair_of_names_falls_back_to_the_head_and_the_answer() {
   DegradedFacts f;
   f.uptimeMs = 600000;
   f.fallback = t.fact(2000);
-  const DegradedCondition* c = find(computeDegraded(f), DegradedId::HeadFallback);
+  DegradedCondition cVal;
+  const DegradedCondition* c = pick(f, DegradedId::HeadFallback, cVal) ? &cVal : nullptr;
   TEST_ASSERT_NOT_NULL(c);
   TEST_ASSERT_TRUE(c->line.size() <= kDegradedLineMax);
   TEST_ASSERT_TRUE(contains(c->line, "Cumulo Nimbus"));
@@ -277,7 +291,8 @@ static void test_the_fallback_stays_while_the_head_is_held_off() {
   f.fallback.headClosed = true;
   f.fallback.headWhy = "is out of credit";
   f.fallback.headFix = "Add credit with the provider";
-  const DegradedCondition* c = find(computeDegraded(f), DegradedId::HeadFallback);
+  DegradedCondition cVal;
+  const DegradedCondition* c = pick(f, DegradedId::HeadFallback, cVal) ? &cVal : nullptr;
   TEST_ASSERT_NOT_NULL(c);
   TEST_ASSERT_TRUE(contains(c->why, "is out of credit"));
   TEST_ASSERT_TRUE(contains(c->why, "Add credit with the provider"));
@@ -301,7 +316,8 @@ static std::string parkLine(const ParkedFact& p) {
   DegradedFacts f;
   f.uptimeMs = 600000;
   f.parks.push_back(p);
-  const DegradedCondition* c = find(computeDegraded(f), DegradedId::ProviderParked);
+  DegradedCondition cVal;
+  const DegradedCondition* c = pick(f, DegradedId::ProviderParked, cVal) ? &cVal : nullptr;
   return c ? c->line : std::string("<none>");
 }
 
@@ -394,7 +410,8 @@ static std::string memoryLine(bool parkedNow, int pending) {
   f.uptimeMs = 600000;
   f.embedParked = parkedNow;
   f.pendingEmbeds = pending;
-  const DegradedCondition* c = find(computeDegraded(f), DegradedId::Memory);
+  DegradedCondition cVal;
+  const DegradedCondition* c = pick(f, DegradedId::Memory, cVal) ? &cVal : nullptr;
   return c ? c->line : std::string("<none>");
 }
 
@@ -417,18 +434,20 @@ static void test_a_full_file_store_and_a_full_flash_each_show() {
   DegradedFacts f;
   f.uptimeMs = 600000;
   f.storeFull = true;
-  const DegradedCondition* c = find(computeDegraded(f), DegradedId::StoreFull);
+  DegradedCondition cVal;
+  const DegradedCondition* c = pick(f, DegradedId::StoreFull, cVal) ? &cVal : nullptr;
   TEST_ASSERT_NOT_NULL(c);
   TEST_ASSERT_EQUAL_STRING("File storage is full", c->line.c_str());
   TEST_ASSERT_TRUE(contains(c->why, "Delete"));
   DegradedFacts g;
   g.uptimeMs = 600000;
   g.flashFull = true;
-  const DegradedCondition* d = find(computeDegraded(g), DegradedId::StoreFull);
+  DegradedCondition dVal;
+  const DegradedCondition* d = pick(g, DegradedId::StoreFull, dVal) ? &dVal : nullptr;
   TEST_ASSERT_NOT_NULL(d);
   TEST_ASSERT_EQUAL_STRING("Device storage is full", d->line.c_str());
   f.flashFull = true;   // both: one line, the file store first
-  TEST_ASSERT_EQUAL_STRING("File storage is full", find(computeDegraded(f), DegradedId::StoreFull)->line.c_str());
+  TEST_ASSERT_EQUAL_STRING("File storage is full", [&] { DegradedCondition v; pick(f, DegradedId::StoreFull, v); return v.line; }().c_str());
 }
 
 // ---- 5. Telegram is silent ----------------------------------------------------------------------
@@ -437,7 +456,8 @@ static std::string tgLine(const TelegramFact& t) {
   DegradedFacts f;
   f.uptimeMs = 3600u * 1000u;
   f.telegram = t;
-  const DegradedCondition* c = find(computeDegraded(f), DegradedId::TelegramSilent);
+  DegradedCondition cVal;
+  const DegradedCondition* c = pick(f, DegradedId::TelegramSilent, cVal) ? &cVal : nullptr;
   return c ? c->line : std::string("<none>");
 }
 
@@ -497,7 +517,8 @@ static void test_an_unsynced_clock_shows_after_the_boot_grace_only() {
   f.uptimeMs = kClockGraceMs - 1;
   TEST_ASSERT_FALSE(has(computeDegraded(f), DegradedId::ClockUnsynced));
   f.uptimeMs = kClockGraceMs + 1;
-  const DegradedCondition* c = find(computeDegraded(f), DegradedId::ClockUnsynced);
+  DegradedCondition cVal;
+  const DegradedCondition* c = pick(f, DegradedId::ClockUnsynced, cVal) ? &cVal : nullptr;
   TEST_ASSERT_NOT_NULL(c);
   TEST_ASSERT_EQUAL_STRING("Clock not synced", c->line.c_str());
   f.clockSynced = true;
@@ -509,9 +530,13 @@ static void test_the_clock_reason_tells_a_missing_network_from_a_silent_time_ser
   f.clockSynced = false;
   f.uptimeMs = 600000;
   f.wifiUp = true;
-  const std::string online = find(computeDegraded(f), DegradedId::ClockUnsynced)->why;
+  DegradedCondition onV;
+  pick(f, DegradedId::ClockUnsynced, onV);
+  const std::string online = onV.why;
   f.wifiUp = false;
-  const std::string offline = find(computeDegraded(f), DegradedId::ClockUnsynced)->why;
+  DegradedCondition offV;
+  pick(f, DegradedId::ClockUnsynced, offV);
+  const std::string offline = offV.why;
   TEST_ASSERT_TRUE(online != offline);
   TEST_ASSERT_TRUE(contains(offline, "Wi-Fi"));
   TEST_ASSERT_TRUE(contains(online, "time server"));
