@@ -2460,8 +2460,8 @@ void pollTask(void*) {
     const bool ranStaged = stagedWorkWaiting();
     if (ranStaged) {
       closePollSocket();   // one TLS session at a time: the staged work opens its own
-      nimbus::pollwatch::beat("staged work");
-      s_stagedRunning = true;
+      s_stagedRunning = true;   // lane DEGRADE: staged work is on this task (not a silent loop)
+      nimbus::pollwatch::beat("staged work");   // lane TGSTALL; adjacent to g_stagedRun() (test_poll_watch_wiring)
       g_stagedRun();
       s_stagedRunning = false;
       s_loopMs = millis();

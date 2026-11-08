@@ -209,6 +209,10 @@ void test_poll_task_armed_beating_and_disarmed() {
   assertHas(task, "nimbus::pollwatch::disarm(); g_task = nullptr; vTaskDelete(nullptr);", "pollTask exit");
   // The staged update work runs inline on this task: it beats before it starts.
   assertHas(task, "nimbus::pollwatch::beat(\"staged work\"); g_stagedRun();", "pollTask staged work");
+  // Lane DEGRADE: the staged run is bracketed by the busy flag the degraded Telegram line
+  // reads (Health.busy), set before the beat so the two lanes' statements keep this order.
+  assertHas(task, "s_stagedRunning = true; nimbus::pollwatch::beat(\"staged work\"); g_stagedRun(); s_stagedRunning = false;",
+            "pollTask staged work busy flag");
 
   const std::string quiesce = bodyOf(tg, "bool quiesce(uint32_t timeoutMs) {");
   TEST_ASSERT_TRUE_MESSAGE(quiesce.find(squeeze("nimbus::pollwatch::disarm();")) == 0,
