@@ -140,7 +140,7 @@ announcement), and
 a reply that is template filler, join the chain too, and so does a reply that takes up an
 earlier owner remark that got no reply when this message does not bring it up (the
 reply-scope check, [turn anatomy](../turn-anatomy.md); an earlier question is owed its
-answer and never counts). At most one correction round runs
+answer). At most one correction round runs
 per turn, shared by all of them, never on the forced final round, never for a cut answer
 and never for a prose answer (which carries no spawn). The one exception is filler: it
 gets one more tool-less round on the forced final round as well
