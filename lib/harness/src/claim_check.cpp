@@ -685,16 +685,24 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
   const std::string stale =
       routineDay_.empty() ? std::string() : orch::staleStatusIn(said, routineDay_, orch::kStaleStatusDays, &staleAge);
   const std::string later = unbackedPromise(said, pending);
+  // Lane FIX501 (OIR-35): a pack-photo meal is logged whole and the reply asks nothing about
+  // how much was eaten. The class the 2 Nov failure named: the head appended "tell me how many
+  // bars and I'll correct it" after logging the whole pack. Fires only when a log row really
+  // landed this turn, the owner's message sent a pack/label photo, and the owner did not ask
+  // how much themselves.
+  const bool pack = !ownerAskedHow_ && fx_.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow) &&
+                    orch::packMealAskedHowMuch(ownerText_, said);
   // A stored vision record of the same label (another provider's read) that disagrees
   // with this reply's figures is surfaced, never averaged (food_label.h).
   const std::string second = clipped_ ? std::string() : orch::secondReadNoteForReply(said, records_);
-  if (nothingToCorrect(gaps, food, cited, stale, later, second)) {
+  if (!pack && nothingToCorrect(gaps, food, cited, stale, later, second)) {
     hlog::logf("claims: ok n=%u", (unsigned)orch::scanClaims(said).claims.size());
     return std::string();
   }
   corrected_ = true;
   g_corrected++;
   std::string more;
+  if (pack) more += std::string(orch::kPackQuestionCorrection) + "\n";
   if (!second.empty()) more += "[SECOND READ] " + second + "\n";
   if (!food.empty()) more += orch::foodGapCorrection(food, facts);
   if (!cited.empty()) more += cited;

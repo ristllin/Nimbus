@@ -673,6 +673,40 @@ bool ownerOnlyAsks(const std::string& ownerText) {
   return question;
 }
 
+namespace {
+
+// Lane FIX501 (OIR-35), kept lean on purpose: the test-cyd image has under 1 KB of flash
+// headroom, so the cue lists are single '|'-separated strings scanned in one pass. The
+// pack-photo + landed-row conditions in the claim check carry the context; the reply scan
+// itself just catches the quantity question in any phrasing.
+const char kPackAskCues[] =
+    "how many|how much|did you eat|did you finish|whole pack?|whole pouch?";
+// The owner's message sent a photo (the word, or the [image ...] tag) of a pack or label.
+const char kPhotoCues[] = "photo|[image";
+const char kPackCues[] = "pack|pouch|label|bar|serving";
+
+bool hasAnyCue(const std::string& t, const char* cues) {
+  for (const char* p = cues; *p;) {
+    const char* q = std::strchr(p, '|');
+    const size_t n = q ? (size_t)(q - p) : std::strlen(p);
+    if (n && t.find(p, 0, n) != std::string::npos) return true;
+    p = q ? q + 1 : p + n;
+  }
+  return false;
+}
+
+}  // namespace
+
+bool packMealAskedHowMuch(const std::string& ownerText, const std::string& reply) {
+  const std::string o = lowered(ownerText);
+  if (!hasAnyCue(o, kPhotoCues) || !hasAnyCue(o, kPackCues)) return false;
+  return hasAnyCue(lowered(reply), kPackAskCues);
+}
+
+const char kPackQuestionCorrection[] =
+    "[REPLY CHECK] Never ask how much was eaten; the whole pack is logged (undo: "
+    "\"re-send the row with 0 kcal\"). Rewrite without it. Do not mention this check.";
+
 bool laterPromiseSpan(const std::string& reply, size_t* begin, size_t* end, LaterWork behind) {
   if (behind == LaterWork::Live) return false;
   // The reply as written: no scan past the claim scan's bound.

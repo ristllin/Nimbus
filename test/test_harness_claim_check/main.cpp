@@ -1868,6 +1868,73 @@ static void test_mlq_disputed_attribution_checks_the_quoted_phrase() {
   TEST_ASSERT_TRUE(calm.finalCheck(turnJson(reply)).find("leave the phrase out") == std::string::npos);
 }
 
+// Lane FIX501 (OIR-35): a pack-photo meal is logged whole and the reply asks nothing about
+// how much was eaten. The correction fires only when a log row really landed this turn on a
+// pack/label photo the owner sent and did not ask how much themselves; every other shape of
+// the same words stays clean.
+static void test_a_logged_pack_meal_never_asks_how_much_was_eaten() {
+  const std::string owner =
+      "Here is a photo of the label on my protein bar pack: 220 kcal per bar, 4 bars in the pack. Logging my snack.";
+  const std::string csv =
+      R"({"project":"food","name":"food-log.csv","text":"date,meal,items,kcal,protein_g\n2026-11-09,snack-0815,protein bar pack x4,880,"})";
+  const char* asking =
+      "Logged as a whole pack: 4 bars x 220 kcal = 880 kcal. If you only ate part of the pack, tell me how many bars and I'll correct it.";
+  const char* clean =
+      "Logged as a whole pack: 4 bars x 220 kcal = 880 kcal. To undo it, re-send the row with 0 kcal.";
+  const char* landed =
+      "replaced 0 rows, added 1 row in food/food-log.csv\n- added 2026-11-09 'snack-0815'\n"
+      "today's kcal (2026-11-09, GMT): 880 from 1 row";
+  {  // the class: row landed + pack photo + the question -> the pack correction round
+    ClaimCheck cc;
+    cc.beginTurn();
+    TurnSources parts;
+    parts.owner = owner;
+    cc.setSources("", "", parts);
+    cc.noteTool(FxKind::FileWrite, false, landed, ClaimCheck::toolCallFlags("files.append", csv));
+    const std::string fix = cc.finalCheck(turnJson(asking));
+    TEST_ASSERT_TRUE_MESSAGE(fix.find("REPLY CHECK") != std::string::npos, fix.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(fix.find("re-send the row with 0 kcal") != std::string::npos, fix.c_str());
+    TEST_ASSERT_TRUE(cc.corrected());
+  }
+  {  // the clean reply on the same turn costs no round
+    ClaimCheck cc;
+    cc.beginTurn();
+    TurnSources parts;
+    parts.owner = owner;
+    cc.setSources("", "", parts);
+    cc.noteTool(FxKind::FileWrite, false, landed, ClaimCheck::toolCallFlags("files.append", csv));
+    TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson(clean)).c_str());
+    TEST_ASSERT_FALSE(cc.corrected());
+  }
+  {  // no row landed: a missing-amount question is not the pack class (the log claim's own
+     // correction may fire; the pack correction must not)
+    ClaimCheck cc;
+    cc.beginTurn();
+    TurnSources parts;
+    parts.owner = owner;
+    cc.setSources("", "", parts);
+    TEST_ASSERT_TRUE_MESSAGE(cc.finalCheck(turnJson(asking)).find("REPLY CHECK") == std::string::npos, "pack correction fired");
+  }
+  {  // a plate photo, not a pack: the amount question stands
+    ClaimCheck cc;
+    cc.beginTurn();
+    TurnSources parts;
+    parts.owner = "Here is my lunch photo: a plate of chicken, lentils and hummus.";
+    cc.setSources("", "", parts);
+    cc.noteTool(FxKind::FileWrite, false, landed, ClaimCheck::toolCallFlags("files.append", csv));
+    TEST_ASSERT_TRUE_MESSAGE(cc.finalCheck(turnJson(asking)).find("REPLY CHECK") == std::string::npos, "pack correction fired");
+  }
+  {  // the owner asked how something works: their question is answered, not corrected
+    ClaimCheck cc;
+    cc.beginTurn();
+    TurnSources parts;
+    parts.owner = "Here is a photo of the label on my protein bar pack. How should I log this?";
+    cc.setSources("", "", parts);
+    cc.noteTool(FxKind::FileWrite, false, landed, ClaimCheck::toolCallFlags("files.append", csv));
+    TEST_ASSERT_TRUE_MESSAGE(cc.finalCheck(turnJson(asking)).find("REPLY CHECK") == std::string::npos, "pack correction fired");
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_promised_confirmation_gets_the_tail);
@@ -1923,5 +1990,6 @@ int main(int, char**) {
   RUN_TEST(test_a_partial_target_store_is_surfaced);
   RUN_TEST(test_mlq_reply_scope_check_holds_an_unanswered_message);
   RUN_TEST(test_mlq_disputed_attribution_checks_the_quoted_phrase);
+  RUN_TEST(test_a_logged_pack_meal_never_asks_how_much_was_eaten);
   return UNITY_END();
 }

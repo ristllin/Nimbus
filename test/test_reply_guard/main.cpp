@@ -446,6 +446,64 @@ static void test_trim_share_follows_the_figures() {
   TEST_ASSERT_EQUAL_UINT32(100000, (uint32_t)overflowTrimBytes("Prompt 1000000 > 10 maximum context length", 100000));
 }
 
+// ---- lane FIX501 (OIR-35): a logged pack meal never asks how much was eaten -------------
+// The 2 Nov class: the head logged the whole pack, then appended "tell me how many bars and
+// I'll correct it". The pack-photo condition carries the context (a plate photo may still ask),
+// so the reply scan itself is cue-based: any quantity-question phrasing must be caught, and
+// every plain statement about the pack (the logged row, the undo line, the label's own words)
+// must not.
+static const char* kPackPhotoOwner =
+    "Here is a photo of the label on my protein bar pack: 220 kcal per bar, 4 bars in the pack. Logging my snack.";
+
+static void test_pack_question_class() {
+  for (const char* p : {
+           "Did you eat the whole pack?",
+           "Did you eat all of it?",
+           "How many bars did you eat?",
+           "How many servings of the pouch was that?",
+           "How much of the pack did you eat?",
+           "Whole pack?",
+           "Whole pouch?",
+           "If you only ate part of the pack, tell me how many bars and I'll correct it.",
+           "Let me know how many pieces you had.",
+           "How many did you have?",
+           "How many of the four bars?",
+           "Did you finish the whole bottle?",
+           "How much is left in the pack?",
+       })
+    TEST_ASSERT_TRUE_MESSAGE(packMealAskedHowMuch(kPackPhotoOwner, p), p);
+  const std::string t =
+      "Logged as a whole pack: 4 bars x 220 kcal = 880 kcal. If you only ate part of the "
+      "pack, tell me how many bars and I'll correct it.";
+  TEST_ASSERT_TRUE(packMealAskedHowMuch(kPackPhotoOwner, t));
+}
+
+static void test_pack_question_negatives() {
+  for (const char* p : {
+           "Logged as a whole pack: 4 bars x 220 kcal = 880 kcal as snack-0815.",
+           "To undo it, re-send the row with 0 kcal.",
+           "The label says 4 bars in the pack, 220 kcal per bar.",
+           "I logged the whole pack, so today's total is 880 kcal.",
+           "The pack holds 4 bars; I logged all 4.",
+           "You said you ate the whole pack, so I logged 880 kcal.",
+           "",
+       })
+    TEST_ASSERT_FALSE_MESSAGE(packMealAskedHowMuch(kPackPhotoOwner, p), p);
+  // a plate or dish photo, not a pack: the amount question stands
+  for (const char* p : {
+           "Here is my lunch photo: a plate of chicken, lentils and hummus.",
+           "Here is a photo of my lunch from Big City Deli: a single sesame bagel.",
+           "Log my lunch: a chicken bowl, 620 kcal.",
+           "",
+       })
+    TEST_ASSERT_FALSE_MESSAGE(packMealAskedHowMuch(p, "How many bars did you eat?"), p);
+}
+
+static void test_pack_question_correction_text() {
+  TEST_ASSERT_TRUE(std::string(kPackQuestionCorrection).find("REPLY CHECK") != std::string::npos);
+  TEST_ASSERT_TRUE(std::string(kPackQuestionCorrection).find("re-send the row with 0 kcal") != std::string::npos);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_filler_class);
@@ -468,5 +526,8 @@ int main() {
   RUN_TEST(test_cut_note);
   RUN_TEST(test_overflow_recorded_lines);
   RUN_TEST(test_trim_share_follows_the_figures);
+  RUN_TEST(test_pack_question_class);
+  RUN_TEST(test_pack_question_negatives);
+  RUN_TEST(test_pack_question_correction_text);
   return UNITY_END();
 }

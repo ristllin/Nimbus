@@ -81,6 +81,16 @@ bool announcesWorkNow(const std::string& reply, size_t* begin = nullptr, size_t*
 // text is not a question (a routine or a synthesis turn carries no owner message).
 bool ownerOnlyAsks(const std::string& ownerText);
 
+// Lane FIX501 (OIR-35): the question a logged pack meal must never ask. A photo of a pack or label
+// with no question means the whole pack was eaten and logged; the reply asking how much of it was
+// eaten ("how many bars", "did you eat the whole pack", "tell me how many ... and I'll correct it")
+// is the 2 Nov class. True when the owner's message sent a pack/label photo and the reply carries
+// that quantity question in any phrasing.
+bool packMealAskedHowMuch(const std::string& ownerText, const std::string& reply);
+
+// The correction a pack-quantity question gets (model-facing).
+extern const char kPackQuestionCorrection[];
+
 // The owner line a promise with nothing behind it gets, and the correction it gets while
 // a round can still run (model-facing; `excerpt` is the sentence).
 extern const char kLaterPromiseLine[];
