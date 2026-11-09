@@ -60,7 +60,7 @@ int connectSecure(Secure& c, const char* host, uint16_t port, int32_t timeoutMs,
 template <class Addr, class Plain, class Resolve>
 int connectPlain(Plain& c, const char* host, uint16_t port, int32_t timeoutMs, Resolve resolve) {
   static_assert(!can_carry_tls<Plain>::value,
-                "connectPlain on a client that can carry TLS would dial it by address with no host name");
+                "connectPlain on a TLS-capable client dials by address with no host name");
   Addr ip;
   if (!resolve(host, ip)) return 0;
   return timeoutMs >= 0 ? c.connect(ip, port, timeoutMs) : c.connect(ip, port);
