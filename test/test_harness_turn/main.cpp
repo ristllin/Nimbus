@@ -2813,9 +2813,9 @@ static void test_synthesis_consolidation_and_raw_fallback() {
       "\n[SYSTEM]\nSub-agents just finished") != std::string::npos);
   // Lane FIX501 (OIR-01): a relayed brief carries only what the result's task asked for -
   // anything else the result carries is left out entirely, never repeated, not even to
-  // dismiss it. (The note is reworded within its old length: the synthesis margin pinned by
-  // test_synthesis_at_lumis_size_keeps_its_results_whole allows only 227 B at the tightest
-  // budget, and the test-cyd image has under 1 KB of flash headroom.)
+  // dismiss it. (The note is 157 B, 76 B shorter than the 233 B base note, so the
+  // synthesis margin pinned by test_synthesis_at_lumis_size_keeps_its_results_whole
+  // still passes and the test-cyd image keeps its flash margin.)
   TEST_ASSERT_TRUE(r.attempts[0].inputs.find("relay only what each result's task asked for") !=
                    std::string::npos);
   TEST_ASSERT_TRUE(r.attempts[0].inputs.find("never repeating it, not even to dismiss it") !=

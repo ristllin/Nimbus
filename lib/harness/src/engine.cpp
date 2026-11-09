@@ -2709,10 +2709,9 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
   bool ok = false;
   try {   // L24: a failed allocation from here is a failed synthesis: the raw results still go out
     std::string inputs = takePendingMemResults(chatId) + takeSpawnNotes(chatId) + fresh + buildDynamicContext(chatId) +
-      "\n[SYSTEM]\nSub-agents just finished (see [ACTIVE SESSIONS]). No new user "
-      "message. Synthesize: relay only what each result's task asked for, leave out the "
-      "rest, never repeating it, not even to dismiss it; fold what is worth keeping into "
-      "memory.";
+      "\n[SYSTEM]\nSub-agents just finished. Synthesize: relay only what each "
+      "result's task asked for, leave out the rest, never repeating it, not even to "
+      "dismiss it.";
     // CUM-536: only when a result's connector never ran (the prompt is otherwise
     // byte-identical), say what that marker means and that memory is closed.
     if (unverifiedTurn_)

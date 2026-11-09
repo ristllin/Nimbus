@@ -677,13 +677,17 @@ namespace {
 
 // Lane FIX501 (OIR-35), kept lean on purpose: the test-cyd image has under 1 KB of flash
 // headroom, so the cue lists are single '|'-separated strings scanned in one pass. The
-// pack-photo + landed-row conditions in the claim check carry the context; the reply scan
-// itself just catches the quantity question in any phrasing.
+// pack-photo + landed-row conditions in the claim check carry the context. Fix pass:
+// pack words match whole words only ("barbecue" is not "bar", "backpack" is not "pack"),
+// the owner asking a how-question themselves ("how many bars is one serving?") suppresses
+// the guard, and an ask cue counts only in a question - a '?' or an imperative
+// ("tell me ...") anywhere in the reply - so a declarative that merely contains "how much"
+// stays clean.
 const char kPackAskCues[] =
-    "how many|how much|did you eat|did you finish|whole pack?|whole pouch?";
-// The owner's message sent a photo (the word, or the [image ...] tag) of a pack or label.
+    "how many|how much|did you eat|whole pack|whole pouch|all of it|portion";
+const char kAskImperatives[] = "tell me|let me know";
+// The owner's message sent a photo (the word, or the [image ...] tag).
 const char kPhotoCues[] = "photo|[image";
-const char kPackCues[] = "pack|pouch|label|bar|serving";
 
 bool hasAnyCue(const std::string& t, const char* cues) {
   for (const char* p = cues; *p;) {
@@ -699,13 +703,20 @@ bool hasAnyCue(const std::string& t, const char* cues) {
 
 bool packMealAskedHowMuch(const std::string& ownerText, const std::string& reply) {
   const std::string o = lowered(ownerText);
-  if (!hasAnyCue(o, kPhotoCues) || !hasAnyCue(o, kPackCues)) return false;
-  return hasAnyCue(lowered(reply), kPackAskCues);
+  if (!hasAnyCue(o, kPhotoCues)) return false;
+  // the owner asked a how-question themselves: their question is answered, not corrected
+  if (hasWord(o, "how")) return false;
+  // a pack or label, as whole words ("barbecue"/"backpack" do not count)
+  if (!(hasWord(o, "pack") || hasWord(o, "label"))) return false;
+  // The question must be a question: an ask cue plus a '?' or an imperative
+  // ("tell me ...", "let me know ..."), not a statement that merely contains a cue.
+  const std::string t = lowered(reply);
+  return hasAnyCue(t, kPackAskCues) &&
+         (t.find('?') != std::string::npos || hasAnyCue(t, kAskImperatives));
 }
 
 const char kPackQuestionCorrection[] =
-    "[REPLY CHECK] Never ask how much was eaten; the whole pack is logged (undo: "
-    "\"re-send the row with 0 kcal\"). Rewrite without it. Do not mention this check.";
+    "[REPLY CHECK] Never ask how much was eaten (undo: re-send the row with 0 kcal).";
 
 bool laterPromiseSpan(const std::string& reply, size_t* begin, size_t* end, LaterWork behind) {
   if (behind == LaterWork::Live) return false;

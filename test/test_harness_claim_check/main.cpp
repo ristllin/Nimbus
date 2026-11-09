@@ -1933,6 +1933,19 @@ static void test_a_logged_pack_meal_never_asks_how_much_was_eaten() {
     cc.noteTool(FxKind::FileWrite, false, landed, ClaimCheck::toolCallFlags("files.append", csv));
     TEST_ASSERT_TRUE_MESSAGE(cc.finalCheck(turnJson(asking)).find("REPLY CHECK") == std::string::npos, "pack correction fired");
   }
+  {  // the owner asked the quantity themselves ("how many bars is one serving?"): the reply
+     // echoing "how many" answers their question, it is not the never-ask class
+    ClaimCheck cc;
+    cc.beginTurn();
+    TurnSources parts;
+    parts.owner = "Here is a photo of the label on my protein bar pack. Log my snack - how many bars is one serving?";
+    cc.setSources("", "", parts);
+    cc.noteTool(FxKind::FileWrite, false, landed, ClaimCheck::toolCallFlags("files.append", csv));
+    const char* echo =
+        "You asked how many: one serving is a single bar, so I logged 220 kcal.";
+    TEST_ASSERT_TRUE_MESSAGE(cc.finalCheck(turnJson(echo)).find("REPLY CHECK") == std::string::npos, "pack correction fired");
+    TEST_ASSERT_TRUE_MESSAGE(cc.finalCheck(turnJson(asking)).find("REPLY CHECK") == std::string::npos, "pack correction fired");
+  }
 }
 
 int main(int, char**) {

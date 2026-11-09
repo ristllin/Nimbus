@@ -468,7 +468,7 @@ static void test_pack_question_class() {
            "Let me know how many pieces you had.",
            "How many did you have?",
            "How many of the four bars?",
-           "Did you finish the whole bottle?",
+           "Did you eat the whole bottle?",
            "How much is left in the pack?",
        })
     TEST_ASSERT_TRUE_MESSAGE(packMealAskedHowMuch(kPackPhotoOwner, p), p);
@@ -504,6 +504,39 @@ static void test_pack_question_correction_text() {
   TEST_ASSERT_TRUE(std::string(kPackQuestionCorrection).find("re-send the row with 0 kcal") != std::string::npos);
 }
 
+// Fix pass (review findings 2-4): the pack cue matches whole words ("barbecue" is not
+// "bar", "backpack" is not "pack"), an ask cue counts only when the reply also carries a
+// '?' or an imperative (a declarative that merely contains "how much" is clean), and the
+// common uncued quantity phrasings are caught too.
+static void test_pack_question_word_and_question_awareness() {
+  // uncued quantity phrasings still fire
+  for (const char* p : {
+           "All of it?",
+           "Did you eat everything?",
+           "What percentage of the pack did you eat?",
+           "Tell me the portion you had.",
+       })
+    TEST_ASSERT_TRUE_MESSAGE(packMealAskedHowMuch(kPackPhotoOwner, p), p);
+  // a declarative that merely contains a cue is clean
+  for (const char* p : {
+           "The label shows how much sodium is in each bar; I logged the whole pack, 880 kcal.",
+           "You asked how many bars are in a serving, so one bar is logged: 220 kcal.",
+       })
+    TEST_ASSERT_FALSE_MESSAGE(packMealAskedHowMuch(kPackPhotoOwner, p), p);
+  // "bar" inside "barbecue" and "pack" inside "backpack" are not pack photos
+  for (const char* o : {
+           "Here is a photo of my barbecue lunch.",
+           "Here is a photo of the tag on my backpack.",
+       })
+    TEST_ASSERT_FALSE_MESSAGE(packMealAskedHowMuch(o, "How many ribs did you eat?"), o);
+  // the owner asked the amount themselves: their question is answered, not corrected
+  for (const char* o : {
+           "Here is a photo of the label on my protein bar pack. How many bars is one serving?",
+           "Photo of the pouch label - how much of the pack did you eat?",
+       })
+    TEST_ASSERT_FALSE_MESSAGE(packMealAskedHowMuch(o, "How many bars did you eat?"), o);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_filler_class);
@@ -529,5 +562,6 @@ int main() {
   RUN_TEST(test_pack_question_class);
   RUN_TEST(test_pack_question_negatives);
   RUN_TEST(test_pack_question_correction_text);
+  RUN_TEST(test_pack_question_word_and_question_awareness);
   return UNITY_END();
 }

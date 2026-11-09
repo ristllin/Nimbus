@@ -689,7 +689,9 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
   // how much was eaten. The class the 2 Nov failure named: the head appended "tell me how many
   // bars and I'll correct it" after logging the whole pack. Fires only when a log row really
   // landed this turn, the owner's message sent a pack/label photo, and the owner did not ask
-  // how much themselves.
+  // how much themselves - packMealAskedHowMuch returns false when the owner's own message
+  // asks the amount ("how many bars is one serving?" is the owner asking, and a reply echoing
+  // it answers them), and !ownerAskedHow_ covers the how-works question.
   const bool pack = !ownerAskedHow_ && fx_.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow) &&
                     orch::packMealAskedHowMuch(ownerText_, said);
   // A stored vision record of the same label (another provider's read) that disagrees

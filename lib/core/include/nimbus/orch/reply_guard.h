@@ -84,8 +84,11 @@ bool ownerOnlyAsks(const std::string& ownerText);
 // Lane FIX501 (OIR-35): the question a logged pack meal must never ask. A photo of a pack or label
 // with no question means the whole pack was eaten and logged; the reply asking how much of it was
 // eaten ("how many bars", "did you eat the whole pack", "tell me how many ... and I'll correct it")
-// is the 2 Nov class. True when the owner's message sent a pack/label photo and the reply carries
-// that quantity question in any phrasing.
+// is the 2 Nov class. True when the owner's message sent a pack/label photo (whole-word pack words,
+// so "barbecue"/"backpack" do not count) and did not itself ask the amount ("how many bars is one
+// serving?" suppresses the guard), and the reply carries that quantity question with a "?" or an
+// imperative ("tell me ...") - the common phrasings on the cue list, not every phrasing; a
+// declarative that merely contains "how much" is clean.
 bool packMealAskedHowMuch(const std::string& ownerText, const std::string& reply);
 
 // The correction a pack-quantity question gets (model-facing).
