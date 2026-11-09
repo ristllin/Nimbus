@@ -1799,6 +1799,8 @@ static void test_an_answer_to_a_question_only_turn_is_not_an_announcement() {
     TEST_ASSERT_TRUE(cc.finalCheck(turnJson("I'll finish the rest next turn.")).find("[PROMISE CHECK]") !=
                      std::string::npos);
   }
+}
+
 // ---- lane MLQ: the reply-scope check and the disputed attribution ----------------------
 // OIR-06 (lc-unasked-topic on mistral-large-4-0, 48e166c2): an earlier owner message that
 // got no reply ("I love tech trivia, ask me sometime.") was answered inside a reply that
