@@ -837,6 +837,8 @@ def test_the_busy_reads_behind_a_window_are_counted_in_its_record(monkeypatch):
     assert rec["closeReads"]["retried"] == 0 and rec["closeReads"]["cardGone"] == 0
     assert rec["olderSameText"] == 6  # three earlier episodes: three notices and three short answers
     assert bench.read_summary() == {"retried": 1, "cardGone": 0, "pollMisses": 0}
+
+
 # ---- lane SNI: a provider that could not be reached is not an honest refusal ----------------------------------
 
 
