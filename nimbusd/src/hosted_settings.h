@@ -256,7 +256,21 @@ inline const std::vector<FixedKnob>& fixedKnobs() {
 // blank on every Save Changes); a non-empty value would set something a hosted
 // instance does not store from the page.
 inline bool keepIfEmptyField(const std::string& f) {
-  return f == "custKey" || f == "tgToken" || f == "clr_custKey";
+  return f == "custKey" || f == "tgToken" || f == "clr_custKey" || f == "clr_tgToken";
+}
+// Secret fields a hosted instance takes only from the portal (VNSELF): the owner
+// sets, replaces and removes the bot token in the portal's settings for the
+// instance, so a non-empty value posted here is refused with plain copy that names
+// no internal field and points at the portal instead.
+inline bool portalOnlySecretField(const std::string& f) {
+  return f == "tgToken" || f == "clr_tgToken";
+}
+// The refusal copy for one refused field: portal-only secrets get the plain portal
+// pointer (never the internal field name); every other field is named as before.
+inline std::string orchRefusal(const std::string& field, const std::string& value) {
+  if (portalOnlySecretField(field) && !value.empty())
+    return "The Telegram bot token is set in the portal's settings for this instance, not here.";
+  return notAvailable(field);
 }
 inline std::string normBool(const std::string& v) {
   return (v == "1" || v == "true" || v == "on") ? "1" : "0";

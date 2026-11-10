@@ -27,7 +27,10 @@
 //       with quotes stays valid JSON in device.status;
 //   (p) a zone whose name the clock line cannot hold is refused, and even an
 //       operator TZ of any length renders a whole clock line (never an
-//       unterminated buffer in the prompt).
+//       unterminated buffer in the prompt);
+//   (q) VNSELF: the Telegram bot token is portal-only on a hosted instance - blank
+//       is a no-op, a non-empty value is refused with plain copy that names no
+//       internal field and points at the portal.
 // Offline: an injected FakeHttpTransport; no network, no real keys.
 #include <sys/stat.h>
 #include <unistd.h>
@@ -270,7 +273,12 @@ static void testRefusals(ndtest::Ctx& c) {
          std::string("/api/config refuses ") + name);
   }
   c.eqi(web.call("POST", "/api/config", "clockSync=1").status, 200, "Sync now is an honest no-op");
-  c.eqi(web.call("POST", "/api/orch", "tgToken=123:abc").status, 400, "a typed bot token is refused");
+  {
+    const ApiResp tg = web.call("POST", "/api/orch", "tgToken=123:abc");
+    c.eqi(tg.status, 400, "a typed bot token is refused");
+    c.ok(!has(tg.body, "tgToken"), "the refusal names no internal field");
+    c.ok(has(tg.body, "portal"), "the refusal points at the portal");
+  }
   c.eqi(web.call("POST", "/api/orch", "orchHost=custom").status, 400, "the custom endpoint is refused");
   // Prices and budgets (per-model prices, 2026-10): a hosted instance keeps no usage
   // ledger, so the model price, the provider fallback price and a budget are refused
@@ -505,6 +513,36 @@ static void testLongZoneName(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// (q) VNSELF: the Telegram bot token is portal-only on a hosted instance. A blank
+//     secret field is the form's "keep what is set" (a no-op); a non-empty value is
+//     refused with plain copy that names no internal field and points at the portal.
+static void testTelegramPortalOnly(ndtest::Ctx& c) {
+  std::printf("  -- (q) the bot token is portal-only: plain-copy refusal, no field names --\n");
+  clearEnv();
+  Config cfg;
+  NimbusdRig rig(cfg, opts("hs-q"));
+  Web web(rig);
+  c.eqi(web.call("POST", "/api/orch", "tgToken=").status, 200, "a blank tgToken is a no-op");
+  c.eqi(web.call("POST", "/api/orch", "clr_tgToken=").status, 200, "a blank clr_tgToken is a no-op");
+  const ApiResp set = web.call("POST", "/api/orch", "tgToken=123:abc");
+  c.eqi(set.status, 400, "a typed bot token is refused");
+  c.ok(!has(set.body, "tgToken"), "the set refusal names no internal field");
+  c.ok(has(set.body, "portal"), "the set refusal points at the portal");
+  const ApiResp clr = web.call("POST", "/api/orch", "clr_tgToken=1");
+  c.eqi(clr.status, 400, "clearing the bot token from the page is refused");
+  c.ok(!has(clr.body, "clr_tgToken"), "the clear refusal names no internal field");
+  c.ok(has(clr.body, "portal"), "the clear refusal points at the portal");
+  c.ok(hosted::orchFieldVerdict("tgToken", "") == hosted::Verdict::NoOp, "blank tgToken keeps");
+  c.ok(hosted::orchFieldVerdict("tgToken", "123:abc") == hosted::Verdict::Refuse, "typed tgToken refuses");
+  c.ok(hosted::orchFieldVerdict("clr_tgToken", "") == hosted::Verdict::NoOp, "blank clr_tgToken keeps");
+  c.ok(hosted::orchFieldVerdict("clr_tgToken", "1") == hosted::Verdict::Refuse, "clr_tgToken=1 refuses");
+  const std::string r = hosted::orchRefusal("tgToken", "123:abc");
+  c.ok(!has(r, "tgToken") && has(r, "portal"), "orchRefusal(tgToken) is plain copy with the portal");
+  c.eq(hosted::orchRefusal("sfxLvlN", "2"), hosted::notAvailable("sfxLvlN"),
+       "every other refused field is still named");
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== hosted settings apply or refuse (CUM-543, offline) ===\n");
@@ -524,6 +562,7 @@ int main() {
   testUnstorableWriteChangesNothing(c);
   testNoEchoAndSafeName(c);
   testLongZoneName(c);
+  testTelegramPortalOnly(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

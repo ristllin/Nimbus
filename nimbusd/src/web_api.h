@@ -1100,7 +1100,7 @@ class WebApi {
     const std::vector<std::string> names = formFieldNames(body);
     for (const std::string& f : names)
       if (hosted::orchFieldVerdict(f, formValue(body, f)) == hosted::Verdict::Refuse)
-        return hosted::notAvailable(f);
+        return hosted::orchRefusal(f, formValue(body, f));
     collectWrites(body, w.keys, w.models);
     formWrite(body, "tavKey", "tavily", w.tavily);
     for (const auto& t : w.tavily)

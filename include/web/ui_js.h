@@ -260,10 +260,9 @@ function applyHostedChrome(){
     ['midFail','loopRounds','loopDeadline','compactKB','tlsSlots','tlsVerify','capProbe','ttsOn','skAuto'].forEach(row);
     off($('capProbeActive'));
     off($('clockSyncBtn'));      // the platform keeps this clock
-    const tt=$('tgToken');      // a hosted bot is connected when the instance is created
-    if(tt){off(tt.parentElement); const tip=tt.parentElement.previousElementSibling; // the line above is the readiness line
-      const lb=tip&&tip.previousElementSibling&&tip.previousElementSibling.previousElementSibling; if(lb&&lb.tagName==='LABEL')off(lb);
-      if(tip&&tip.previousElementSibling&&tip.previousElementSibling.classList.contains('tip'))off(tip.previousElementSibling);}
+    const tt=$('tgToken');      // hosted: the bot token lives in the portal
+    if(tt){const r=tt.parentElement; off(r); const q=r.previousElementSibling; const t=q&&q.previousElementSibling; if(t&&t.classList.contains('tip'))off(t);
+      r.insertAdjacentHTML('afterend','<p class=hint style="margin:6px 0">Set the bot token in the <a href="https://app.cumulo-nimbus.ai/virtual-nimbus" target="_blank" rel="noopener">portal</a> for this instance.</p>');}
     off(document.querySelector('.subtab[data-sp=safety]'));
     ['prefslist','prefsnew','prefsmsg'].forEach(id=>{const e=$(id); if(id==='prefsnew')off(e&&e.parentElement); else if(id==='prefslist')row(id); else off(e);});
     const oh=$('orchHost'); if(oh)[].slice.call(oh.options).forEach(o=>{if(o.value==='custom')o.remove();});
