@@ -196,8 +196,9 @@ SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseD
   orch::Salvage sv;
   orch::salvageTurnText(raw, sv);
   const bool truncated = parseDetail.find("truncated") != std::string::npos;
-  std::string text = orch::cleanReplyMarkup(sv.reply);
-  const std::string ask = sv.askComplete ? orch::cleanReplyMarkup(sv.ask) : std::string();
+  std::string text = orch::dropEchoSentences(orch::cleanReplyMarkup(sv.reply));
+  const std::string ask =
+      sv.askComplete ? orch::dropEchoSentences(orch::cleanReplyMarkup(sv.ask)) : std::string();
   if (!ask.empty()) text += (text.empty() ? "" : "\n") + ask;
   if (orch::isPlaceholderReply(text)) text.clear();   // filler is nothing salvaged
   o.cut = reportedCut || truncated || (!sv.reply.empty() && !sv.replyComplete);

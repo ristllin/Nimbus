@@ -25,6 +25,7 @@
 #include "nimbus/orch/seam_meter.h"     // kSessionInputEstimateTokens - a stopped job unread (lane QW4)
 #include "nimbus/orch/spend_guard.h"    // helpersStoppedText (lane QW4)
 #include "nimbus/orch/reply_markup.h"   // cleanReplyMarkup - the owner fallback is a reply seam
+#include "nimbus/orch/reply_guard.h"    // lane ECHO: dropEchoSentences - the fallback is a reply seam too
 #include "nimbus/orch/router_route.h"  // resolveRouterRoute - a keyless spawn's router selector
 #include "nimbus/orch/usage_ledger.h"   // cheapestByEffectivePrice - the ledger's price (CUM-708)
 #include "nimbus/orch/vector_memory.h"  // nsForChat - the sub-agent result owner
@@ -649,8 +650,8 @@ std::string JobEngine::ownerText(const FreshScope* scope) const {
     // that starts with "FAILED: " keeps its title (it cannot pose as the device).
     const bool prefixed = f.failed && f.text.compare(0, kFailed.size(), kFailed) == 0;
     // The raw fallback is a reply seam too: a sub-agent's markup never reaches the owner.
-    const std::string body =
-        nimbus::orch::cleanReplyMarkup(prefixed ? f.text.substr(kFailed.size()) : f.text);
+    const std::string body = nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(
+        prefixed ? f.text.substr(kFailed.size()) : f.text));
     const std::string title = f.failed ? std::string() : (f.model.empty() ? "Result" : f.model);
     std::string block = title.empty() ? body : title + "\n" + body;
     if (b.size() + block.size() + 2 > kBudget) {

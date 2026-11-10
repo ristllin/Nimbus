@@ -63,6 +63,7 @@
 #include <time.h>
 #include "nimbus/tg_html.h"   // v4.1.1: markdown -> Telegram HTML (plain fallback below)
 #include "nimbus/orch/reply_markup.h"   // lane L: cleanReplyMarkup at the Telegram seam
+#include "nimbus/orch/reply_guard.h"    // lane ECHO: dropEchoSentences at the Telegram seam
 #include "nimbus/orch/spend_guard.h"    // lane QW4: noteHttpDateHeader - a time base without NTP
 
 #define TG_HOST "api.telegram.org"
@@ -1276,7 +1277,8 @@ bool doSendMessage(const char* chatId, const char* text) {
   // reply.telegram, loop deliveries, notices - passes the reply seam, so no
   // reasoning, tool-call markup or wrapper tag reaches the chat even from a path
   // the engine did not clean. Idempotent: an engine-cleaned reply is unchanged.
-  const std::string clean = nimbus::orch::cleanReplyMarkup(text ? text : "");
+  const std::string clean =
+      nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(text ? text : ""));
   const std::string html = nimbus::tgHtml(clean);
   bool ok = doSendMessageRaw(chatId, html.c_str(), /*htmlMode=*/true);
   if (!ok) {

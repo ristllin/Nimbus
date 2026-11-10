@@ -294,13 +294,210 @@ bool holdsALink(const std::string& t) {
 
 }  // namespace
 
-// Lane ECHO: stub for the failing-first test run; the detector lands in the next commit.
-bool echoSentenceSpan(const std::string& reply, size_t* begin, size_t* end) {
-  (void)reply; (void)begin; (void)end;
+namespace {
+
+// Lane ECHO: the request's own words a reply must never carry back to the owner
+// (Lumi v5.0.0, 10 Nov: "Reply.orch_turn.call must include all fields. Use empty
+// strings/arrays where none. No em dashes. Concise. No new topics."). Tool names
+// and turn fields in the folded spelling: '.', '-' and '_' are one separator on
+// the wire (the head loop advertises memory_write, the MCP endpoint memory.write).
+const char* const kEchoToolNames[] = {
+    "orch_turn",   "mem_write",     "mem_query",      "session_ops",   "scratchpad",
+    "memory_write", "memory_search", "memory_pin",    "memory_archive", "memory_config",
+    "memory_update", "memory_episodic", "memory_scratchpad",
+    "files_list",  "files_stat",    "files_read",     "files_search",  "files_append",
+    "files_edit",  "files_delete",  "files_fetch",    "files_send",    "files_share",
+    "files_pdf",   "artifact_save", "docs_list",      "docs_read",     "docs_search",
+    "skill_list",  "skill_get",     "skill_save",     "skill_delete",  "web_search",
+    "prefs_edit",  "openq_edit",    "device_control", "device_log",    "device_status",
+    "device_selftest", "system_health", "ota_status",  "media_play",    "media_pause",
+    "media_stop",  "media_list",    "reply_speak",    "reply_telegram", "loop_create",
+    "loop_list",   "loop_cancel",   "wakeup_set",     "image_look",    "image_note",
+    "image_generate", "session_spawn", "session_tell", "session_poll", "session_list",
+    "session_terminate", "results_get", "results_list", "food_portions",
+    "tenant_list", "tenant_set_role", "tenant_set_quota",
+};
+
+// Contract phrases: the orch_turn tool description, the strict schema's required
+// list, and the correction-round notes the device sends back in-round.
+const char* const kEchoContractPhrases[] = {
+    "must include all fields", "include all fields", "include every field", "include each field",
+    "all required fields", "required fields", "empty strings/arrays", "empty strings or arrays",
+    "empty strings", "empty arrays", "empty string", "empty array", "use empty strings",
+    "complete orchestrator turn", "orchestrator turn", "ends the turn", "final answer and ends the turn",
+    "do not mention this check", "mention this check", "mention the check",
+    "do not mention it to the owner",
+    "[reply check]", "[turn check]", "[promise check]", "[spawn refused]", "ran out of room",
+    "[last attempt",
+};
+
+// A short rule sentence aimed at the assistant opens with one of these (or is a
+// single rule word) and holds an assistant-facing word below. Advice to the owner
+// ("Don't add salt.", "Keep it short.") holds none of them and stays.
+const char* const kEchoRuleOpeners[] = {
+    "no", "never", "always", "be", "use", "keep", "avoid", "remember", "don't", "do", "note", "just",
+    "reply", "concise",
+};
+const char* const kEchoRuleWords[] = {
+    "concise", "brief", "topic", "json", "field", "tool", "ascii", "emoji", "bullet", "markdown",
+    "recite", "orchestrator", "reply", "answer", "em dash",
+};
+
+// `name` in `t` at `at`, with '.', '-' and '_' interchangeable inside the name and
+// word-char boundaries outside it: "reply.orch_turn.call" holds orch_turn.
+bool nameMatchesAt(const std::string& t, const char* name, size_t at) {
+  const size_t n = std::strlen(name);
+  if (at + n > t.size()) return false;
+  for (size_t i = 0; i < n; i++) {
+    const char c = name[i];
+    const char tc = t[at + i];
+    if (c == '.' || c == '-' || c == '_') {
+      if (tc != '.' && tc != '-' && tc != '_') return false;
+    } else if (std::tolower((unsigned char)tc) != std::tolower((unsigned char)c)) {
+      return false;
+    }
+  }
+  if (at > 0 && isWordChar(t[at - 1])) return false;
+  if (at + n < t.size() && isWordChar(t[at + n])) return false;
+  return true;
+}
+
+bool hasToolName(const std::string& t) {
+  for (const char* name : kEchoToolNames)
+    for (size_t at = t.find(name[0]); at != std::string::npos; at = t.find(name[0], at + 1))
+      if (nameMatchesAt(t, name, at)) return true;
   return false;
 }
 
-std::string dropEchoSentences(const std::string& reply) { return reply; }
+// A sentence ends at '.', '!', '?' or a newline - except a dot between two word
+// chars, which is part of a token (orch_turn.call, 39.3, e.g.).
+bool sentenceEndsAt(const std::string& t, size_t i) {
+  const char c = t[i];
+  if (c == '!' || c == '?' || c == '\n') return true;
+  if (c == '.') {
+    if (i > 0 && isWordChar(t[i - 1]) && i + 1 < t.size() && isWordChar(t[i + 1])) return false;
+    return true;
+  }
+  return false;
+}
+
+size_t wordCount(const std::string& s) {
+  size_t words = 0, at = 0;
+  while (at < s.size()) {
+    while (at < s.size() && !isWordChar(s[at])) at++;
+    if (at >= s.size()) break;
+    words++;
+    while (at < s.size() && isWordChar(s[at])) at++;
+  }
+  return words;
+}
+
+std::string firstWord(const std::string& s) {
+  size_t at = 0;
+  while (at < s.size() && !isWordChar(s[at])) at++;
+  const size_t b = at;
+  while (at < s.size() && isWordChar(s[at])) at++;
+  return s.substr(b, at - b);
+}
+
+// A rule word at a word start, plurals included ("topic" in "topics").
+bool hasWordPrefix(const std::string& s, const char* w) {
+  for (size_t at = s.find(w); at != std::string::npos; at = s.find(w, at + 1))
+    if (at == 0 || !isWordChar(s[at - 1])) return true;
+  return false;
+}
+
+bool isRuleEcho(const std::string& s) {
+  const size_t words = wordCount(s);
+  if (words == 0 || words > 5) return false;
+  const std::string w = firstWord(s);
+  if (w.empty()) return false;
+  bool opens = false;
+  for (const char* o : kEchoRuleOpeners)
+    if (w == o) { opens = true; break; }
+  if (!opens && words != 1) return false;
+  for (const char* rw : kEchoRuleWords)
+    if (hasWordPrefix(s, rw)) return true;
+  return false;
+}
+
+// One lowercased sentence: does it address the assistant or quote the contract?
+bool echoSentence(const std::string& s) {
+  if (s.find_first_not_of(" \t\r\n") == std::string::npos) return false;
+  if (hasToolName(s)) return true;
+  for (const char* p : kEchoContractPhrases)
+    if (s.find(p) != std::string::npos) return true;
+  return isRuleEcho(s);
+}
+
+// The next sentence span [from, e) of lowercased `t`; e includes the terminator.
+size_t nextSentence(const std::string& t, size_t from, size_t* e) {
+  size_t stop = from;
+  while (stop < t.size() && !sentenceEndsAt(t, stop)) stop++;
+  *e = stop < t.size() ? stop + 1 : t.size();
+  return from;
+}
+
+}  // namespace
+
+bool echoSentenceSpan(const std::string& reply, size_t* begin, size_t* end) {
+  const std::string t = lowered(reply);
+  size_t from = 0;
+  while (from < t.size()) {
+    size_t e = 0;
+    nextSentence(t, from, &e);
+    if (echoSentence(t.substr(from, e - from))) {
+      if (begin) *begin = from;
+      if (end) *end = e;
+      return true;
+    }
+    from = e;
+  }
+  return false;
+}
+
+std::string dropEchoSentences(const std::string& reply) {
+  const std::string t = lowered(reply);
+  bool any = false;
+  for (size_t from = 0; from < t.size();) {
+    size_t e = 0;
+    nextSentence(t, from, &e);
+    if (echoSentence(t.substr(from, e - from))) { any = true; break; }
+    from = e;
+  }
+  if (!any) return reply;   // a clean reply is byte-exact
+  std::string out;
+  out.reserve(reply.size());
+  for (size_t from = 0; from < t.size();) {
+    size_t e = 0;
+    nextSentence(t, from, &e);
+    if (!echoSentence(t.substr(from, e - from))) out.append(reply, from, e - from);
+    from = e;
+  }
+  // Only reached when something was dropped: collapse blank-line runs and trim.
+  std::string collapsed;
+  collapsed.reserve(out.size());
+  for (size_t i = 0; i < out.size();) {
+    if (out[i] == '\n') {
+      size_t j = i;
+      int breaks = 0;
+      while (j < out.size() && (out[j] == '\n' || out[j] == ' ' || out[j] == '\t' || out[j] == '\r')) {
+        if (out[j] == '\n') breaks++;
+        j++;
+      }
+      if (breaks >= 3) collapsed += "\n\n";
+      else collapsed.append(out, i, j - i);
+      i = j;
+    } else {
+      collapsed += out[i++];
+    }
+  }
+  const char* ws = " \t\r\n";
+  const size_t b = collapsed.find_first_not_of(ws);
+  if (b == std::string::npos) return std::string();
+  const size_t e = collapsed.find_last_not_of(ws);
+  return collapsed.substr(b, e - b + 1);
+}
 
 bool asksForWork(const std::string& ownerText) {
   if (ownerText.find_first_not_of(" \t\r\n") == std::string::npos) return false;

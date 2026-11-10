@@ -2494,8 +2494,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   }
   // Lane L (formatting F4): the reply seam - no channel (Telegram, web, voice,
   // the screen) ever gets reasoning, tool-call markup or a wrapper tag.
-  turn.reply = orch::cleanReplyMarkup(turn.reply);
-  turn.ask = orch::cleanReplyMarkup(turn.ask);
+  turn.reply = orch::dropEchoSentences(orch::cleanReplyMarkup(turn.reply));
+  turn.ask = orch::dropEchoSentences(orch::cleanReplyMarkup(turn.ask));
   // Template filler is not an answer, on any provider and any path (a single shot, a prose
   // head, a forced round that repeated it): the turn failed, and nothing in it is applied.
   if (orch::isPlaceholderReply(turn.reply, userText)) {
