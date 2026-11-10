@@ -302,32 +302,26 @@ namespace {
 // strings/arrays where none. No em dashes. Concise. No new topics."). Tool names
 // and turn fields in the folded spelling: '.', '-' and '_' are one separator on
 // the wire (the head loop advertises memory_write, the MCP endpoint memory.write).
+// Only the names the action table does not already carry (hasToolName scans it
+// below, separator-flexibly, so every device.* / memory.* / files.* / ... key is
+// covered there): the head loop's own turn/mem/session names and the bare noun
+// "scratchpad". The class test iterates both tables, so a name missing from
+// either fails it.
 const char* const kEchoToolNames[] = {
-    "orch_turn",   "mem_write",     "mem_query",      "session_ops",   "scratchpad",
-    "memory_write", "memory_search", "memory_pin",    "memory_archive", "memory_config",
-    "memory_update", "memory_episodic", "memory_scratchpad",
-    "files_list",  "files_stat",    "files_read",     "files_search",  "files_append",
-    "files_edit",  "files_delete",  "files_fetch",    "files_send",    "files_share",
-    "files_pdf",   "artifact_save", "docs_list",      "docs_read",     "docs_search",
-    "skill_list",  "skill_get",     "skill_save",     "skill_delete",  "web_search",
-    "prefs_edit",  "openq_edit",    "device_control", "device_log",    "device_status",
-    "device_selftest", "system_health", "ota_status",  "media_play",    "media_pause",
-    "media_stop",  "media_list",    "reply_speak",    "reply_telegram", "loop_create",
-    "loop_list",   "loop_cancel",   "wakeup_set",     "image_look",    "image_note",
-    "image_generate", "session_spawn", "session_tell", "session_poll", "session_list",
-    "session_terminate", "results_get", "results_list", "food_portions",
-    "tenant_list", "tenant_set_role", "tenant_set_quota",
+    "orch.turn", "mem.write", "mem.query", "session.ops", "scratchpad",
 };
 
 // Contract phrases: the orch_turn tool description, the strict schema's required
-// list, and the correction-round notes the device sends back in-round.
+// list, and the correction-round notes the device sends back in-round. Matching is
+// plain substring, so a phrase that CONTAINS another kept one is dropped: the
+// shorter one catches every sentence the longer would ("must include all fields"
+// is caught by "include all fields"). The class test iterates the full original
+// wording list, so a trim that loses coverage fails it.
 const char* const kEchoContractPhrases[] = {
-    "must include all fields", "include all fields", "include every field", "include each field",
-    "all required fields", "required fields", "empty strings/arrays", "empty strings or arrays",
-    "empty strings", "empty arrays", "empty string", "empty array", "use empty strings",
-    "complete orchestrator turn", "orchestrator turn", "ends the turn", "final answer and ends the turn",
-    "do not mention this check", "mention this check", "mention the check",
-    "do not mention it to the owner",
+    "include all fields", "include every field", "include each field",
+    "required fields", "empty string", "empty array",
+    "orchestrator turn", "ends the turn",
+    "mention this check", "mention the check", "do not mention it to the owner",
     "[reply check]", "[turn check]", "[promise check]", "[spawn refused]", "ran out of room",
     "[last attempt",
 };
@@ -340,53 +334,59 @@ const char* const kEchoRuleOpeners[] = {
     "no", "never", "always", "be", "use", "keep", "avoid", "remember", "don't", "do", "note", "just",
     "reply", "concise",
 };
-// Words that only ever describe the assistant's own output. Ordinary words an
-// owner-facing answer can hold ("answer", "brief") are NOT here: a short sentence
-// whose content is not entirely these words is an answer about the world, not an
-// echo of the request.
-const char* const kEchoRuleWords[] = {
-    "concise", "topic", "json", "field", "tool", "ascii", "emoji", "bullet", "markdown",
-    "recite", "orchestrator", "reply",
-};
-// Rule phrases that span words.
-const char* const kEchoRulePhrases[] = {"em dash"};
+// Words that only ever describe the assistant's own output, plurals included, as
+// one blank-separated blob (one flash string, no pointer table, matched whole-word
+// by findWord). Ordinary words an owner-facing answer can hold ("answer", "brief")
+// are NOT here: a short sentence whose content is not entirely these words is an
+// answer about the world, not an echo of the request.
+const char kEchoRuleWords[] =
+    "concise topic topics json field fields tool tools ascii emoji bullet bullets markdown recite "
+    "orchestrator reply replies em dash dashes";
 // Function words that carry no content of their own in a rule sentence, as one
-// blank-separated blob (one flash string, no pointer table). A word outside this
-// set and the rule set is content: the sentence is an answer, not an echo.
+// blank-separated blob. A word outside this set and the rule set is content: the
+// sentence is an answer, not an echo.
 const char kEchoLightWords[] =
     "it them that this the a an to one all any new only in of for from with on at by her his my your our "
     "their please be is are was do does did yes no or and not so if when while then than too very up out "
     "off there";
 
-// `name` in `t` at `at`, with '.', '-' and '_' interchangeable inside the name and
-// word-char boundaries outside it: "reply.orch_turn.call" holds orch_turn.
-bool nameMatchesAt(const std::string& t, const char* name, size_t at) {
-  const size_t n = std::strlen(name);
-  if (at + n > t.size()) return false;
-  for (size_t i = 0; i < n; i++) {
-    const char c = name[i];
-    const char tc = t[at + i];
-    if (c == '.' || c == '-' || c == '_') {
-      if (tc != '.' && tc != '-' && tc != '_') return false;
-    } else if (std::tolower((unsigned char)tc) != std::tolower((unsigned char)c)) {
-      return false;
-    }
-  }
-  if (at > 0 && isWordChar(t[at - 1])) return false;
-  if (at + n < t.size() && isWordChar(t[at + n])) return false;
-  return true;
+// The folded wire spelling: '.', '-' and '_' are one separator on the wire (the
+// head loop advertises memory_write, the MCP endpoint memory.write), so fold them
+// all to '.' once and match names with the plain whole-word findWord. The mapping
+// is 1:1, so positions in the folded copy still index the original.
+std::string foldSeparators(const std::string& t) {
+  std::string out(t);
+  for (char& c : out)
+    if (c == '-' || c == '_') c = '.';
+  return out;
 }
 
-bool hasSeparator(const char* name) { return std::strpbrk(name, "._-") != nullptr; }
+bool hasSeparator(const char* name) { return std::strchr(name, '.') != nullptr; }
+
+// A name in the folded spelling: '.', '-' and '_' in the name all fold to '.', so
+// both wire spellings match the folded text ("device.orch_model" and
+// "device_orch_model" both fold to "device.orch.model"). Names are short; the
+// stack buffer avoids a heap string per row per sentence.
+bool foldedNameIn(const std::string& n, const char* name) {
+  char buf[48];
+  const size_t len = std::strlen(name);
+  if (len >= sizeof(buf)) return findWord(n, name) != std::string::npos;
+  for (size_t i = 0; i < len; i++) {
+    const char c = name[i];
+    buf[i] = (c == '-' || c == '_') ? '.' : c;
+  }
+  buf[len] = '\0';
+  return findWord(n, buf) != std::string::npos;
+}
 
 bool hasToolName(const std::string& t, bool allowBare) {
+  const std::string n = foldSeparators(t);
   for (const char* name : kEchoToolNames) {
     // A bare feature noun ("scratchpad") is also a user-facing word: it counts only
     // inside a terse rule-shaped sentence, never in a longer answer
     // ("I saved it to your scratchpad.").
     if (!allowBare && !hasSeparator(name)) continue;
-    for (size_t at = t.find(name[0]); at != std::string::npos; at = t.find(name[0], at + 1))
-      if (nameMatchesAt(t, name, at)) return true;
+    if (foldedNameIn(n, name)) return true;
   }
   // The action table is the single source for the request-advertised action names
   // (device.*, turn.*, models.list, memory.*, ...): every row key is an echo when
@@ -397,8 +397,7 @@ bool hasToolName(const std::string& t, bool allowBare) {
   for (size_t i = 0; i < rows; i++) {
     const char* key = table[i].key;
     if (!key || !key[0] || !hasSeparator(key)) continue;
-    for (size_t at = t.find(key[0]); at != std::string::npos; at = t.find(key[0], at + 1))
-      if (nameMatchesAt(t, key, at)) return true;
+    if (foldedNameIn(n, key)) return true;
   }
   return false;
 }
@@ -434,23 +433,38 @@ std::string firstWord(const std::string& s) {
   return s.substr(b, at - b);
 }
 
-// "replies" -> "reply", "topics" -> "topic": plurals of rule words still match.
-std::string singular(const std::string& w) {
-  if (w.size() > 3 && w.compare(w.size() - 3, 3, "ies") == 0) return w.substr(0, w.size() - 3) + "y";
-  if (w.size() > 1 && w[w.size() - 1] == 's' && w[w.size() - 2] != 's') return w.substr(0, w.size() - 1);
-  return w;
-}
+// Both blobs are blank-separated single words, so the existing whole-word findWord
+// matches them directly (no per-call string building).
+bool isRuleWord(const std::string& word) { return findWord(kEchoRuleWords, word.c_str()) != std::string::npos; }
 
-bool isRuleWord(const std::string& word) {
-  const std::string norm = singular(word);
-  for (const char* rw : kEchoRuleWords)
-    if (norm == rw || norm.compare(0, std::strlen(rw), rw) == 0) return true;
+bool isLightWord(const std::string& w) { return findWord(kEchoLightWords, w.c_str()) != std::string::npos; }
+
+bool opensWithRuleOpener(const std::string& w) {
+  for (const char* o : kEchoRuleOpeners)
+    if (w == o) return true;
   return false;
 }
 
-bool isLightWord(const std::string& w) {
-  const std::string hay = std::string(" ") + kEchoLightWords + " ";
-  return hay.find(" " + w + " ") != std::string::npos;
+// The words after the opener: each must be light or a rule word. False on the
+// first content word (the sentence is an answer, not an echo).
+bool restIsRuleWords(const std::string& s, bool opens, bool* sawRule) {
+  size_t at = 0;
+  bool first = true;
+  while (at < s.size()) {
+    while (at < s.size() && !isWordChar(s[at])) at++;
+    if (at >= s.size()) break;
+    const size_t b = at;
+    while (at < s.size() && isWordChar(s[at])) at++;
+    const std::string word = s.substr(b, at - b);
+    if (first) {
+      first = false;
+      if (opens && !isRuleWord(word)) continue;   // the opener itself carries no content
+    }
+    if (isLightWord(word)) continue;
+    if (!isRuleWord(word)) return false;
+    *sawRule = true;
+  }
+  return true;
 }
 
 // A rule sentence is terse (at most 5 words), opens with a rule opener (or is a
@@ -463,43 +477,10 @@ bool isRuleEcho(const std::string& s) {
   if (words == 0 || words > 5) return false;
   const std::string w = firstWord(s);
   if (w.empty()) return false;
-  bool opens = false;
-  for (const char* o : kEchoRuleOpeners)
-    if (w == o) { opens = true; break; }
+  const bool opens = opensWithRuleOpener(w);
   if (!opens && words != 1) return false;
-  size_t at = 0;
-  bool first = true;
   bool sawRule = false;
-  while (at < s.size()) {
-    while (at < s.size() && !isWordChar(s[at])) at++;
-    if (at >= s.size()) break;
-    const size_t b = at;
-    while (at < s.size() && isWordChar(s[at])) at++;
-    const std::string word = s.substr(b, at - b);
-    if (first) {
-      first = false;
-      if (opens && !isRuleWord(word)) continue;   // the opener itself carries no content
-    }
-    if (isLightWord(word)) continue;
-    bool covered = false;
-    for (const char* p : kEchoRulePhrases) {
-      const size_t n = std::strlen(p);
-      if (s.compare(b, n, p) == 0) {
-        const size_t after = b + n;
-        if (after >= s.size() || !isWordChar(s[after]) || s[after] == 's' ||
-            s.compare(after, 2, "es") == 0) {
-          covered = true;
-          sawRule = true;
-          at = after;
-          while (at < s.size() && isWordChar(s[at])) at++;   // a plural suffix
-          break;
-        }
-      }
-    }
-    if (!covered && isRuleWord(word)) { covered = true; sawRule = true; }
-    if (!covered) return false;
-  }
-  return sawRule;
+  return restIsRuleWords(s, opens, &sawRule) && sawRule;
 }
 
 // One lowercased sentence: does it address the assistant or quote the contract?
@@ -508,11 +489,7 @@ bool echoSentence(const std::string& s) {
   // A terse rule-shaped sentence (at most 5 words, opening with a rule opener or a
   // single word) is where a bare tool name counts as an echo.
   const size_t words = wordCount(s);
-  const std::string w = firstWord(s);
-  bool opens = false;
-  for (const char* o : kEchoRuleOpeners)
-    if (w == o) { opens = true; break; }
-  const bool ruleShaped = words >= 1 && words <= 5 && (opens || words == 1);
+  const bool ruleShaped = words >= 1 && words <= 5 && (opensWithRuleOpener(firstWord(s)) || words == 1);
   if (hasToolName(s, ruleShaped)) return true;
   for (const char* p : kEchoContractPhrases)
     if (s.find(p) != std::string::npos) return true;
@@ -548,25 +525,8 @@ bool echoSentenceSpan(const std::string& reply, size_t* begin, size_t* end) {
   return false;
 }
 
-std::string dropEchoSentences(const std::string& reply) {
-  const std::string t = lowered(reply);
-  bool any = false;
-  for (size_t from = 0; from < t.size();) {
-    size_t e = 0;
-    nextSentence(t, from, &e);
-    if (echoSentence(t.substr(from, e - from))) { any = true; break; }
-    from = e;
-  }
-  if (!any) return reply;   // a clean reply is byte-exact
-  std::string out;
-  out.reserve(reply.size());
-  for (size_t from = 0; from < t.size();) {
-    size_t e = 0;
-    nextSentence(t, from, &e);
-    if (!echoSentence(t.substr(from, e - from))) out.append(reply, from, e - from);
-    from = e;
-  }
-  // Only reached when something was dropped: collapse blank-line runs and trim.
+// Only reached when something was dropped: collapse blank-line runs.
+std::string collapseBlankRuns(const std::string& out) {
   std::string collapsed;
   collapsed.reserve(out.size());
   for (size_t i = 0; i < out.size();) {
@@ -584,6 +544,25 @@ std::string dropEchoSentences(const std::string& reply) {
       collapsed += out[i++];
     }
   }
+  return collapsed;
+}
+
+std::string dropEchoSentences(const std::string& reply) {
+  const std::string t = lowered(reply);
+  // One pass: keep the non-echo sentences' original bytes, note whether any echo
+  // was found. A clean reply is returned byte-exact.
+  std::string out;
+  out.reserve(reply.size());
+  bool any = false;
+  for (size_t from = 0; from < t.size();) {
+    size_t e = 0;
+    nextSentence(t, from, &e);
+    if (echoSentence(t.substr(from, e - from))) any = true;
+    else out.append(reply, from, e - from);
+    from = e;
+  }
+  if (!any) return reply;
+  const std::string collapsed = collapseBlankRuns(out);
   const char* ws = " \t\r\n";
   const size_t b = collapsed.find_first_not_of(ws);
   if (b == std::string::npos) return std::string();

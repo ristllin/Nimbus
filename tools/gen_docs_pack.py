@@ -117,6 +117,45 @@ def paragraphs(lines: list[str]) -> list[list[str]]:
     return out
 
 
+def is_table_separator(line: str) -> bool:
+    """A markdown table's `|---|---|` alignment row: only pipes, dashes, colons
+    and spaces. It carries no content (the header row implies the columns), so
+    the pack drops it; the website renders from docs/ and keeps it."""
+    s = line.strip()
+    return "|" in s and "-" in s and set(s) <= set("|-: ")
+
+
+def trim_pack_body(lines: list[str]) -> list[str]:
+    """Drop what never renders: HTML comment lines, table alignment rows and
+    runs of blank lines, all only outside code fences (fences keep every byte).
+    The on-device pack is flash, and the rendered page is unchanged."""
+    out: list[str] = []
+    fenced = False
+    blanks = 0
+    for line in lines:
+        if is_fence(line):
+            fenced = not fenced
+            out.append(line)
+            continue
+        if fenced:
+            out.append(line)
+            continue
+        stripped = line.strip()
+        if stripped.startswith("<!--") and stripped.endswith("-->"):
+            continue
+        if is_table_separator(line):
+            continue
+        if not stripped:
+            blanks += 1
+            if blanks > 1:
+                continue
+            out.append(line)
+            continue
+        blanks = 0
+        out.append(line)
+    return out
+
+
 def body_bytes(lines: list[str]) -> int:
     return len("\n".join(lines).encode("utf-8"))
 
@@ -196,7 +235,7 @@ def sections_for_file(path: pathlib.Path, fslug: str) -> tuple[str, list[Section
     secs: list[Section] = []
 
     def emit(slug_base: str, title: str, body_lines: list[str]) -> None:
-        body_lines = strip_blank(body_lines)
+        body_lines = strip_blank(trim_pack_body(body_lines))
         if not body_lines:
             return
         if body_bytes(body_lines) <= MAX_BODY:

@@ -545,7 +545,10 @@ static void test_pack_question_word_and_question_awareness() {
 // missing from either, or removed from either, fails this test - the drift class
 // the provider list and the stuck ring already taught.
 static void test_echo_class_tool_names() {
-  TEST_ASSERT_TRUE_MESSAGE(echoToolNameCount() >= 50, "the guard's table must be read, not skipped");
+  // The guard's own table holds the names the action table does not carry; the
+  // action-table loop below pins every request-advertised key, so together the
+  // class is pinned: a name missing from either table fails this test.
+  TEST_ASSERT_TRUE_MESSAGE(echoToolNameCount() >= 5, "the guard's table must be read, not skipped");
   for (size_t i = 0; i < echoToolNameCount(); i++) {
     const char* n = echoToolName(i);
     const std::string s = std::string("Sure. Use ") + n + " for that.";
@@ -574,7 +577,9 @@ static void test_echo_class_tool_names() {
 }
 
 // The contract phrases the tool description, the strict schema's required list and
-// the correction-round notes carry.
+// the correction-round notes carry. The FULL original wording list, long and short
+// forms both: the guard keeps the shortest phrase of each subsumption group, and
+// this test pins that no wording - long or short - lost its catch.
 static void test_echo_class_contract_phrases() {
   for (const char* p : {"must include all fields", "include all fields", "include every field",
                         "include each field", "all required fields", "required fields",
@@ -582,9 +587,9 @@ static void test_echo_class_contract_phrases() {
                         "empty arrays", "empty string", "empty array", "use empty strings",
                         "complete orchestrator turn", "orchestrator turn", "ends the turn",
                         "final answer and ends the turn", "do not mention this check",
-                        "mention this check", "do not mention it to the owner", "[REPLY CHECK]",
-                        "[TURN CHECK]", "[PROMISE CHECK]", "[SPAWN REFUSED]", "ran out of room",
-                        "[LAST ATTEMPT"}) {
+                        "mention this check", "mention the check", "do not mention it to the owner",
+                        "[REPLY CHECK]", "[TURN CHECK]", "[PROMISE CHECK]", "[SPAWN REFUSED]",
+                        "ran out of room", "[LAST ATTEMPT"}) {
     const std::string s = std::string("All logged. The call ") + p + " when you answer.";
     size_t b = 0, e = 0;
     TEST_ASSERT_TRUE_MESSAGE(echoSentenceSpan(s, &b, &e), p);
