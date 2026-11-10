@@ -899,6 +899,21 @@ static void test_happy_turn_delivers_and_accounts() {
   TEST_ASSERT_FALSE(r.eng->turnInFlight());
 }
 
+// Lane ECHO: a head reply that echoes the request's own instructions (the 10 Nov
+// Lumi leak) is delivered with the echo sentences dropped and the rest kept.
+static void test_echo_reply_is_dropped_at_the_delivery_seam() {
+  Rig r;
+  Rig::Script sc;
+  sc.outJson =
+      "{\"reply\":\"Here you go. Reply.orch_turn.call must include all fields. Use "
+      "empty strings/arrays where none. No em dashes.\",\"memory\":\"\",\"ask\":\"\"}";
+  r.scripts["anthropic"] = {sc};
+  r.eng->handleMessage("hi there", "Roy", "1001");
+  TEST_ASSERT_EQUAL_STRING("Here you go.", r.lastText().c_str());
+  TEST_ASSERT_EQUAL(0, r.countDelivered("orch_turn"));
+  TEST_ASSERT_EQUAL(0, r.countDelivered("em dash"));
+}
+
 // ---- (2) recall gate --------------------------------------------------------
 
 // Lane P (F5): a recall seam returns RecallOut, so a fourth copy that hides an
@@ -5563,6 +5578,7 @@ static void runFirstHalf() {
   RUN_TEST(test_network_error_still_fails_over_not_misclassified_oom);
   RUN_TEST(test_two_turns_share_the_static_prompt_block);
   RUN_TEST(test_happy_turn_delivers_and_accounts);
+  RUN_TEST(test_echo_reply_is_dropped_at_the_delivery_seam);
   RUN_TEST(test_recall_injected_for_user_text_skipped_for_synthesis);
   RUN_TEST(test_same_host_fresh_conv_retry);
   RUN_TEST(test_failover_walks_priority_with_owner_notice);

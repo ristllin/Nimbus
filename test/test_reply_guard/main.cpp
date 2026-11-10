@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <ArduinoJson.h>
 #include <cstdio>
 #include <string>
 
@@ -535,6 +536,141 @@ static void test_pack_question_word_and_question_awareness() {
            "Photo of the pouch label - how much of the pack did you eat?",
        })
     TEST_ASSERT_FALSE_MESSAGE(packMealAskedHowMuch(o, "How many bars did you eat?"), o);
+// ---- lane ECHO: an echo of the request's instructions never reaches the owner ----
+// The class, over every tool name and turn field the request advertises, in both
+// wire spellings (dotted on MCP, underscored in the head loop).
+static void test_echo_class_tool_names() {
+  for (const char* n : {"orch_turn", "mem_write", "mem_query", "session_ops", "scratchpad",
+                        "memory.write", "memory_write", "memory.search", "memory_search",
+                        "memory.pin", "memory.episodic", "files.append", "files_append",
+                        "files.read", "files.list", "files.edit", "files.delete", "files.search",
+                        "files.stat", "files.fetch", "files.send", "files.share", "files.pdf",
+                        "artifact.save", "artifact_save", "docs.list", "docs.read", "docs.search",
+                        "docs_search", "skill.list", "skill.get", "skill_save", "skill.delete",
+                        "web.search", "web_search", "prefs.edit", "prefs_edit", "openq.edit",
+                        "device.control", "device_control", "device.log", "device.status",
+                        "device.selftest", "system.health", "ota.status", "media.play",
+                        "media.pause", "media.stop", "media.list", "reply.speak", "reply_speak",
+                        "reply.telegram", "loop.create", "loop_create", "loop.list", "loop.cancel",
+                        "wakeup.set", "wakeup_set", "image.look", "image_look", "image.note",
+                        "image.generate", "session.spawn", "session_spawn", "session.tell",
+                        "session.poll", "session.list", "session.terminate", "results.get",
+                        "results.list", "food.portions", "tenant.list", "tenant.set_role",
+                        "tenant.set_quota"}) {
+    const std::string s = std::string("Sure. Use ") + n + " for that.";
+    size_t b = 0, e = 0;
+    TEST_ASSERT_TRUE_MESSAGE(echoSentenceSpan(s, &b, &e), n);
+    TEST_ASSERT_TRUE_MESSAGE(s.substr(b, e - b).find(n) != std::string::npos, n);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("Sure.", dropEchoSentences(s).c_str(), n);
+  }
+}
+
+// The contract phrases the tool description, the strict schema's required list and
+// the correction-round notes carry.
+static void test_echo_class_contract_phrases() {
+  for (const char* p : {"must include all fields", "include all fields", "include every field",
+                        "include each field", "all required fields", "required fields",
+                        "empty strings/arrays", "empty strings or arrays", "empty strings",
+                        "empty arrays", "empty string", "empty array", "use empty strings",
+                        "complete orchestrator turn", "orchestrator turn", "ends the turn",
+                        "final answer and ends the turn", "do not mention this check",
+                        "mention this check", "do not mention it to the owner", "[REPLY CHECK]",
+                        "[TURN CHECK]", "[PROMISE CHECK]", "[SPAWN REFUSED]", "ran out of room",
+                        "[LAST ATTEMPT"}) {
+    const std::string s = std::string("All logged. The call ") + p + " when you answer.";
+    size_t b = 0, e = 0;
+    TEST_ASSERT_TRUE_MESSAGE(echoSentenceSpan(s, &b, &e), p);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("All logged.", dropEchoSentences(s).c_str(), p);
+  }
+}
+
+// Short rule sentences aimed at the assistant (the owner-rule echoes of the leak).
+static void test_echo_class_rule_sentences() {
+  for (const char* s : {"No em dashes.", "No em dash in replies.", "Concise.", "Be concise.",
+                        "No new topics.", "Never mention the check.", "Always reply in JSON.",
+                        "Use JSON only.", "Keep it to one field.", "Reply."}) {
+    TEST_ASSERT_TRUE_MESSAGE(echoSentenceSpan(s), s);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", dropEchoSentences(s).c_str(), s);
+  }
+}
+
+// The real reply, failing-first: Lumi v5.0.0, 10 Nov 2026, the llm_response m00001b3b in
+// evidence/lumi-v500-issue-20261110T172807Z/episodic.json (the prose the owner was sent).
+static const char* kEchoRealReply =
+    "Logged as eaten: snack-1723, Frive Firecracker Chicken Thighs (whole 388 g pack, label per-serving) "
+    "at 563 kcal / 39.3 g protein.\n\nToday now stands at 2,385 kcal and 106.4 g protein from 5 rows, "
+    "leaving 15 kcal and 43.6 g protein for the rest of the day. To undo, re-send the row with 0 kcal. "
+    "Nothing else needed from you. Reply.orch_turn.call must include all fields. Use empty strings/arrays "
+    "where none. No em dashes. Concise. No new topics.";
+
+static void test_echo_real_reply_from_the_evidence() {
+  size_t b = 0, e = 0;
+  TEST_ASSERT_TRUE(echoSentenceSpan(kEchoRealReply, &b, &e));
+  TEST_ASSERT_TRUE(std::string(kEchoRealReply).substr(b, e - b).find("orch_turn") != std::string::npos);
+  const std::string d = dropEchoSentences(kEchoRealReply);
+  const std::string real(kEchoRealReply);
+  const size_t cut = real.find(" Reply.orch_turn");
+  TEST_ASSERT_TRUE(cut != std::string::npos);
+  // The rest of the reply is kept byte-for-byte; every echo sentence is gone.
+  TEST_ASSERT_EQUAL_STRING(real.substr(0, cut).c_str(), d.c_str());
+  for (const char* leak : {"orch_turn", "all fields", "empty strings", "em dash", "Concise", "new topics"})
+    TEST_ASSERT_TRUE_MESSAGE(d.find(leak) == std::string::npos, leak);
+}
+
+// Precision: a normal reply that mentions food fields or "empty" in plain words is
+// untouched, as are advice sentences that merely start like a rule.
+static void test_echo_precision_plain_words_untouched() {
+  for (const char* r : {"Your protein field is empty.", "The kcal field shows 563 for the whole pack.",
+                        "The protein_g column is empty today.", "I left the string empty in the form.",
+                        "The array is empty.", "Use the app to log meals.", "Keep it short.",
+                        "Don't add salt.", "No salt, please.", "I never use em dashes in my replies.",
+                        "mem write the shopping list", "the tool worked fine", "my answer is 42",
+                        "turn left at the junction", "That is my final answer.", "Noted.",
+                        "Lunch is logged.", "Got it.", "Be kind.", "Do the dishes.",
+                        "Please reply soon.", "The reply was short and on topic."}) {
+    TEST_ASSERT_FALSE_MESSAGE(echoSentenceSpan(r), r);
+    TEST_ASSERT_EQUAL_STRING(r, dropEchoSentences(r).c_str());
+  }
+}
+
+// Precision over the stored replies corpus the QFIX lane graded against
+// (tests/evals/claim_corpus/noted.json): not one stored live reply may change.
+static void test_echo_precision_stored_replies_corpus() {
+  FILE* f = std::fopen("tests/evals/claim_corpus/noted.json", "rb");
+  TEST_ASSERT_NOT_NULL(f);
+  std::string raw;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) raw.append(buf, n);
+  std::fclose(f);
+  JsonDocument d;
+  TEST_ASSERT_TRUE(deserializeJson(d, raw) == ArduinoJson::DeserializationError::Ok);
+  JsonArray arr = d.as<JsonArray>();
+  TEST_ASSERT_TRUE_MESSAGE(arr.size() >= 30, "corpus must be read, not skipped");
+  for (JsonObject entry : arr) {
+    const char* r = entry["reply"] | "";
+    TEST_ASSERT_FALSE_MESSAGE(echoSentenceSpan(r), r);
+    TEST_ASSERT_EQUAL_STRING(r, dropEchoSentences(r).c_str());
+  }
+}
+
+static void test_echo_drop_semantics() {
+  // An all-echo reply comes back empty; the empty-answer path owns that case.
+  TEST_ASSERT_EQUAL_STRING("",
+                           dropEchoSentences("Reply.orch_turn.call must include all fields. Use empty "
+                                             "strings/arrays where none.").c_str());
+  // Idempotent and never grows.
+  const std::string once = dropEchoSentences(kEchoRealReply);
+  TEST_ASSERT_EQUAL_STRING(once.c_str(), dropEchoSentences(once).c_str());
+  TEST_ASSERT_TRUE(once.size() <= std::string(kEchoRealReply).size());
+  // A clean reply is byte-exact.
+  const char* clean = "Logged: snack-1723 at 563 kcal. Today: 2,385 kcal.";
+  TEST_ASSERT_EQUAL_STRING(clean, dropEchoSentences(clean).c_str());
+  // The span points at the echo sentence itself.
+  size_t b = 0, e = 0;
+  const std::string s = "All logged. No em dashes. Enjoy.";
+  TEST_ASSERT_TRUE(echoSentenceSpan(s, &b, &e));
+  TEST_ASSERT_EQUAL_STRING(" No em dashes.", s.substr(b, e - b).c_str());
 }
 
 int main() {
@@ -563,5 +699,12 @@ int main() {
   RUN_TEST(test_pack_question_negatives);
   RUN_TEST(test_pack_question_correction_text);
   RUN_TEST(test_pack_question_word_and_question_awareness);
+  RUN_TEST(test_echo_class_tool_names);
+  RUN_TEST(test_echo_class_contract_phrases);
+  RUN_TEST(test_echo_class_rule_sentences);
+  RUN_TEST(test_echo_real_reply_from_the_evidence);
+  RUN_TEST(test_echo_precision_plain_words_untouched);
+  RUN_TEST(test_echo_precision_stored_replies_corpus);
+  RUN_TEST(test_echo_drop_semantics);
   return UNITY_END();
 }

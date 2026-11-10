@@ -49,6 +49,22 @@ std::string plumbingCheck(const std::string& finalTurnJson);
 // the text IS the owner-facing reply. "" when clean, else the correction note.
 std::string plumbingCheckText(const std::string& prose);
 
+// Lane ECHO (Lumi v5.0.0, 10 Nov 2026, evidence/lumi-v500-issue-20261110T172807Z):
+// a head's reply ended with the request's own instructions paraphrased into it
+// ("Reply.orch_turn.call must include all fields. Use empty strings/arrays where
+// none. No em dashes. Concise. No new topics.") and nothing between the model and
+// the channel removed it. An echo sentence is one that addresses the assistant or
+// quotes the tool contract: it names a tool or a turn field (orch_turn, mem_write,
+// memory.write, ...), holds a contract phrase ("must include all fields", "empty
+// strings/arrays", ...), or is a short rule sentence aimed at the assistant ("No em
+// dashes.", "Concise."). `begin`/`end` may be null.
+bool echoSentenceSpan(const std::string& reply, size_t* begin = nullptr, size_t* end = nullptr);
+
+// The reply with every echo sentence dropped and the rest kept byte-for-byte.
+// Returns the input unchanged when it holds no echo; never grows the text; an
+// all-echo reply comes back empty (the empty-answer path owns that case).
+std::string dropEchoSentences(const std::string& reply);
+
 // True when the owner's message asks for work: an action, a lookup, a link, a long
 // brief, or words this reader cannot judge. False only for what reads as plain chat.
 bool asksForWork(const std::string& ownerText);

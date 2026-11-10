@@ -294,6 +294,14 @@ bool holdsALink(const std::string& t) {
 
 }  // namespace
 
+// Lane ECHO: stub for the failing-first test run; the detector lands in the next commit.
+bool echoSentenceSpan(const std::string& reply, size_t* begin, size_t* end) {
+  (void)reply; (void)begin; (void)end;
+  return false;
+}
+
+std::string dropEchoSentences(const std::string& reply) { return reply; }
+
 bool asksForWork(const std::string& ownerText) {
   if (ownerText.find_first_not_of(" \t\r\n") == std::string::npos) return false;
   if (ownerText.size() > kChatMaxBytes) return true;
