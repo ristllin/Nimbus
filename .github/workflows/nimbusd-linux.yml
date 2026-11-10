@@ -1,0 +1,45 @@
+name: nimbusd-linux
+
+# Lane LINUXFIX: the hosted nimbusd image must build with g++ on Linux, on every
+# push and every PR. Release run 42832344608 job nimbusd-image failed exactly here:
+# g++ 12 (libstdc++) in the debian:12-slim build stage rejected a construct that
+# macOS clang/libc++ accepts (std::hash for a basic_string with a custom
+# allocator, lib/core/src/orch_file_store.cpp), and no CI job ever built nimbusd
+# on Linux, so main shipped red for the hosted image. This workflow closes that
+# hole: it builds the SAME nimbusd/Dockerfile the release job builds, on an
+# ubuntu-latest runner (linux/amd64, so the g++ 12 compile runs natively, no
+# emulation), and the Dockerfile's own build stage runs `make test`, so a broken
+# engine never produces an image. The local lint that holds the class rule in
+# every battery is tools/check_custom_alloc_hash.py (run by
+# `make -C tools/harness-lab check`).
+#
+# Triggers: every push (any branch) and every pull_request. Not path-filtered:
+# the defect class lives in lib/core, but a rename or a new source file anywhere
+# can reintroduce it, and a filtered job reports nothing on PRs outside its
+# filter.
+on:
+  push:
+  pull_request:
+
+jobs:
+  nimbusd-image-linux:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      # Context is the repo root (the Dockerfile needs lib/, include/, nimbusd/,
+      # test/); the release job builds the same context. load: true puts the
+      # image in the local daemon; nothing is pushed from here.
+      - name: Build nimbusd image with g++ 12 on linux/amd64
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2 (pinned SHA)
+        with:
+          context: .
+          file: nimbusd/Dockerfile
+          platforms: linux/amd64
+          load: true
+          build-args: |
+            NIMBUSD_IMAGE_TAG=nimbusd:ci-${{ github.sha }}
+          tags: nimbusd:ci-${{ github.sha }}
+      - name: Custom-allocator-string hasher lint
+        run: python3 tools/check_custom_alloc_hash.py

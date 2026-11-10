@@ -285,9 +285,9 @@ bool FileStore::load(const std::string& blob) {
   // call that must stay bounded as the index scales with the card. The map's keys
   // AND nodes ride the working-set allocator too (review fix: sub-128 B map nodes
   // would otherwise land on the internal heap, one per row, at boot).
-  using FoldMap = std::unordered_map<WorkingString, size_t, std::hash<WorkingString>,
-                                     std::equal_to<WorkingString>,
-                                     WorkingAllocator<std::pair<const WorkingString, size_t>>>;
+  // Lane LINUXFIX: WorkingStringMap names an explicit content hasher - libstdc++
+  // (g++ 12, the nimbusd image) has no std::hash for a custom-allocator string.
+  using FoldMap = WorkingStringMap<size_t>;
   FoldMap byFolded;
   byFolded.reserve(1024);
   while (nextLine(line)) {

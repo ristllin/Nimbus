@@ -1,8 +1,11 @@
 #pragma once
 #include <cstddef>
 #include <cstdlib>
+#include <functional>
 #include <new>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 // psram_alloc - the seam that puts the memory WORKING SET in the 8 MB PSRAM instead
@@ -60,6 +63,30 @@ struct WorkingAllocator {
 using WorkingString = std::basic_string<char, std::char_traits<char>, WorkingAllocator<char>>;
 template <class T>
 using WorkingVector = std::vector<T, WorkingAllocator<T>>;
+
+// Lane LINUXFIX: libstdc++ (g++ 12, the debian:12-slim nimbusd image) provides
+// std::hash ONLY for basic_string with the default allocator; libc++ (macOS
+// clang - the battery and the device build) provides it for any allocator. An
+// unordered container keyed by WorkingString that names std::hash<WorkingString>
+// (or omits the hasher and gets it by default) therefore compiles on every Mac
+// and fails in the hosted image (release run 42832344608, job nimbusd-image).
+// WorkingStringHash hashes the string CONTENT through std::string_view, which
+// every standard library provides, so the key hashes identically on device,
+// host tests and the hosted daemon. tools/check_custom_alloc_hash.py fails the
+// battery if any unordered container keyed by a custom-allocator string ever
+// relies on std::hash again.
+struct WorkingStringHash {
+  std::size_t operator()(const WorkingString& s) const noexcept {
+    return std::hash<std::string_view>{}(std::string_view(s.data(), s.size()));
+  }
+};
+// The one unordered-map shape keyed by a working-set string: explicit hasher,
+// keys AND nodes on the working-set allocator.
+template <class V>
+using WorkingStringMap = std::unordered_map<
+    WorkingString, V, WorkingStringHash, std::equal_to<WorkingString>,
+    WorkingAllocator<std::pair<const WorkingString, V>>>;
+
 inline WorkingString workingCopy(const std::string& s) { return WorkingString(s.data(), s.size()); }
 inline std::string plainCopy(const WorkingString& s) { return std::string(s.data(), s.size()); }
 inline bool sameText(const WorkingString& a, const std::string& b) {

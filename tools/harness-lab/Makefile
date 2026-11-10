@@ -81,15 +81,19 @@ run: $(BIN)
 
 # The anti-rot gate, offline and keyless, cheap enough for every battery: the lab
 # still builds against the current harness, its own seams work (selftest), its
-# Python tools pass their tests, and no compiled-in model id has drifted from the
-# recorded provider lists or lost its price row (tools/model_id_lint.py). The
-# lint runs here so every lane's battery holds the class, not just CI.
+# Python tools pass their tests, no compiled-in model id has drifted from the
+# recorded provider lists or lost its price row (tools/model_id_lint.py), and no
+# unordered container keyed by a custom-allocator string relies on std::hash
+# (tools/check_custom_alloc_hash.py - libstdc++ g++ 12, the nimbusd image, cannot
+# compile that; lane LINUXFIX). The lints run here so every lane's battery holds
+# the class, not just CI.
 PY_TESTS  := $(wildcard $(CURDIR)/test_*.py)
 
 check: $(BIN)
 	@$(BIN) selftest
 	@python3 -m unittest -q $(PY_TESTS)
 	@python3 $(REPO)/tools/model_id_lint.py
+	@python3 $(REPO)/tools/check_custom_alloc_hash.py
 	@echo "harness-lab compiles against the current harness"
 
 clean:
