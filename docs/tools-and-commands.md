@@ -112,6 +112,7 @@ list, arm state, and approval mode) and `POST /api/wakeups` with
 `action=mode&value=ask|auto`, `action=approve&id=<id>`, or `action=cancel&id=<id>`.
 
 ## Contributor tools
+<!-- pack: exclude -->
 
 Everything below is for working on the firmware or driving a board over its
 serial console. Everyday use of a device needs none of it.

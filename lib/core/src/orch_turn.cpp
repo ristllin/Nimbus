@@ -783,32 +783,38 @@ ReplyShape unusable(Turn& out, ParseError& err, const char* why) {
 // makes a shown JSON example content, not an envelope - whole word "json", any case.
 bool ownerAsksForJson(const std::string& ownerText) {
   const std::string t = toLowerAscii(ownerText);
-  for (size_t at = t.find("json"); at != std::string::npos; at = t.find("json", at + 1)) {
-    const bool startOk = at == 0 || !std::isalnum((unsigned char)t[at - 1]);
-    const bool endOk = at + 4 >= t.size() || !std::isalnum((unsigned char)t[at + 4]);
-    if (startOk && endOk) return true;
-  }
+  for (size_t at = t.find("json"); at != std::string::npos; at = t.find("json", at + 1))
+    if ((at == 0 || !std::isalnum((unsigned char)t[at - 1])) &&
+        (at + 4 >= t.size() || !std::isalnum((unsigned char)t[at + 4])))
+      return true;
   return false;
 }
 
-// A JSON object that parses with the orch_turn fields: a string "reply" plus at least
-// two other turn fields. The 10 Nov leak carried all eight; a JSON example that is not
-// turn-shaped stays prose.
-bool envelopeShaped(const std::string& json) {
+// A JSON object that parses with the orch_turn fields is a turn envelope: a string
+// "reply" plus at least two other turn fields (the 10 Nov leak carried all eight).
+// True when `reply` was set to the envelope's reply; a JSON example that is not
+// turn-shaped is not an envelope.
+bool envelopeReplyAt(const std::string& obj, std::string& reply) {
   JsonDocument d;
-  if (deserializeJson(d, json)) return false;
-  if (!d.is<JsonObjectConst>()) return false;
-  if (!d["reply"].is<const char*>()) return false;
+  if (deserializeJson(d, obj)) return false;
+  if (!d.is<JsonObjectConst>() || !d["reply"].is<const char*>()) return false;
   int others = 0;
-  for (size_t i = 1; i < (size_t)TurnField::Count; i++)
+  for (size_t i = 1; i < (size_t)TurnField::Count && others < 2; i++)
     if (!d[turnFieldName((TurnField)i)].isNull()) others++;
-  return others >= 2;
+  if (others < 2) return false;
+  reply = trimCopy(d["reply"].as<const char*>());
+  return true;
 }
 
-// The first turn-shaped JSON object carried anywhere in `text` (fenced or bare), as its
-// exact text; "" when there is none. Bounded: the scan reads at most the first 64 KB and
-// tries at most 64 candidate objects.
-std::string embeddedTurnEnvelope(const std::string& text) {
+// Lane ECHO fix pass: a prose reply that CARRIES a turn envelope - a fenced or bare
+// JSON object with the orch_turn fields - delivers only the envelope's reply. The
+// prose around it, an apology and a duplicate never reach the owner, and the
+// envelope's other fields are dropped with a note (quoted JSON in prose never acts).
+// When the owner's message asks for JSON, a shown example is content and the whole
+// text stays. True when `out` was set to the envelope's reply. Bounded: the scan
+// reads at most the first 64 KB and tries at most 64 candidate objects.
+bool proseWithEnvelope(const std::string& text, const std::string& ownerText, Turn& out) {
+  if (ownerAsksForJson(ownerText)) return false;
   const size_t limit = text.size() < 65536 ? text.size() : 65536;
   size_t at = 0;
   int candidates = 0;
@@ -816,36 +822,18 @@ std::string embeddedTurnEnvelope(const std::string& text) {
     const size_t ob = text.find('{', at);
     if (ob == std::string::npos || ob >= limit) break;
     const size_t oe = objectEnd(text, ob);
-    if (oe != std::string::npos) {
-      const std::string obj = text.substr(ob, oe - ob + 1);
-      candidates++;
-      if (envelopeShaped(obj)) return obj;
-      at = oe + 1;
-    } else {
-      at = ob + 1;   // unbalanced from here; a later brace may still close its own object
+    if (oe == std::string::npos) { at = ob + 1; continue; }  // unbalanced; a later brace may still close its own object
+    candidates++;
+    at = oe + 1;
+    std::string reply;
+    if (envelopeReplyAt(text.substr(ob, oe - ob + 1), reply)) {
+      out = Turn{};
+      out.reply = reply;
+      out.parseNotes.push_back("prose carried a turn envelope; only its reply is delivered, its other fields were dropped");
+      return true;
     }
   }
-  return std::string();
-}
-
-// Lane ECHO fix pass: a prose reply that CARRIES a turn envelope - a fenced or bare
-// JSON object that parses with the orch_turn fields - delivers only the envelope's
-// reply. The prose around it, an apology and a duplicate never reach the owner, and
-// the envelope's other fields are dropped with a note (quoted JSON in prose never
-// acts). When the owner's message asks for JSON, a shown example is content and the
-// whole text stays. True when `out` was set to the envelope's reply.
-bool proseWithEnvelope(const std::string& text, const std::string& ownerText, Turn& out) {
-  if (ownerAsksForJson(ownerText)) return false;
-  const std::string env = embeddedTurnEnvelope(text);
-  if (env.empty()) return false;
-  JsonDocument d;
-  if (deserializeJson(d, env) || !d["reply"].is<const char*>()) return false;
-  out = Turn{};
-  out.reply = trimCopy(d["reply"].as<const char*>());
-  out.parseNotes.push_back("the reply carried a turn envelope inside prose (" +
-                           std::to_string(env.size()) +
-                           " B); only its reply is delivered, its other fields were dropped");
-  return true;
+  return false;
 }
 }  // namespace
 

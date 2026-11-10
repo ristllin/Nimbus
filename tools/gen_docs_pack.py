@@ -13,6 +13,9 @@ Sections are split at BUILD time on `##` headings; anything larger than
 MAX_BODY (~3.5 KB) is further split at `###` sub-headings, then at paragraph
 boundaries, so every body fits comfortably under the head-loop's per-tool-result
 clamp (4 KB floor). Section id = `<file-slug>#<heading-slug>`.
+A `<!-- pack: exclude -->` line directly under a `##` heading keeps that section
+on the published site but out of the pack (maintainer-only sections are not
+about the shipped device, and the pack is flash).
 
 Deterministic + idempotent: pure function of the curated inputs - running it
 twice produces a byte-identical header. The output is COMMITTED (like
@@ -55,6 +58,7 @@ CURATED = [
 
 MAX_BODY = 3500  # target ceiling per section body (bytes, UTF-8)
 RAW_DELIM = "NIMBUSDOC"  # raw-string delimiter - must not occur in any doc
+PACK_EXCLUDE = "<!-- pack: exclude -->"  # under a `##` heading: site-only section, not packed
 
 
 def slugify(text: str) -> str:
@@ -252,6 +256,12 @@ def sections_for_file(path: pathlib.Path, fslug: str) -> tuple[str, list[Section
     for h2, h2_lines in split_top(lines, "## "):
         if h2 is None:
             emit("intro", ftitle, h2_lines)
+            continue
+        # A `<!-- pack: exclude -->` line right under the `##` heading keeps the
+        # section on the published site (HTML comments render as nothing) but out
+        # of the flash pack: maintainer-only sections are not about the shipped
+        # device, and the pack is flash.
+        if h2_lines and h2_lines[0].strip() == PACK_EXCLUDE:
             continue
         h2_slug = slugify(h2)
         if body_bytes(strip_blank(h2_lines)) <= MAX_BODY:
