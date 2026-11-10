@@ -65,6 +65,12 @@ bool echoSentenceSpan(const std::string& reply, size_t* begin = nullptr, size_t*
 // all-echo reply comes back empty (the empty-answer path owns that case).
 std::string dropEchoSentences(const std::string& reply);
 
+// The echo tool-name table: the head-loop wire names the action table does not
+// carry (orch_turn, mem_write, ...). Exposed for the class test: every entry must
+// be caught in a sentence, and removing one from the table fails the test.
+size_t echoToolNameCount();
+const char* echoToolName(size_t i);
+
 // True when the owner's message asks for work: an action, a lookup, a link, a long
 // brief, or words this reader cannot judge. False only for what reads as plain chat.
 bool asksForWork(const std::string& ownerText);

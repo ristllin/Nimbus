@@ -2494,11 +2494,15 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   }
   // Lane L (formatting F4): the reply seam - no channel (Telegram, web, voice,
   // the screen) ever gets reasoning, tool-call markup or a wrapper tag.
-  turn.reply = orch::dropEchoSentences(orch::cleanReplyMarkup(turn.reply));
-  turn.ask = orch::dropEchoSentences(orch::cleanReplyMarkup(turn.ask));
+  turn.reply = orch::cleanReplyMarkup(turn.reply);
+  turn.ask = orch::cleanReplyMarkup(turn.ask);
   // Template filler is not an answer, on any provider and any path (a single shot, a prose
   // head, a forced round that repeated it): the turn failed, and nothing in it is applied.
-  if (orch::isPlaceholderReply(turn.reply, userText)) {
+  // Checked on the reply as written AND after the echo drop below: a filler reply can
+  // itself be an echo sentence ("[reply]" opens with a rule word), and the filler path
+  // must own it before the drop can empty it.
+  if (orch::isPlaceholderReply(turn.reply, userText) ||
+      orch::isPlaceholderReply(orch::dropEchoSentences(turn.reply), userText)) {
     hlog::logf("orchestrator: %s answered with template filler (%u B) - not delivered", host.c_str(),
                (unsigned)turn.reply.size());
     err = "placeholder: the model wrote template filler instead of an answer";
@@ -2508,6 +2512,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     fireTurnEnd(false, 0);
     return false;
   }
+  // Lane ECHO: an echo of the request's instructions never reaches the owner.
+  turn.reply = orch::dropEchoSentences(turn.reply);
+  turn.ask = orch::dropEchoSentences(turn.ask);
   // Lane L (formatting F1): fields recovered from leaked tool markup carry
   // actions, and quoted external content (a mail body, a web page) can carry
   // the same markers - so they apply only on an attended owner turn that read

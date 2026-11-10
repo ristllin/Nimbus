@@ -5,6 +5,7 @@
 #include <string>
 
 #include "nimbus/harness/turn_contract.h"
+#include "nimbus/orch/action_rules.h"
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/head_loop.h"
 #include "nimbus/orch/reply_guard.h"
@@ -538,31 +539,38 @@ static void test_pack_question_word_and_question_awareness() {
     TEST_ASSERT_FALSE_MESSAGE(packMealAskedHowMuch(o, "How many bars did you eat?"), o);
 // ---- lane ECHO: an echo of the request's instructions never reaches the owner ----
 // The class, over every tool name and turn field the request advertises, in both
-// wire spellings (dotted on MCP, underscored in the head loop).
+// wire spellings (dotted on MCP, underscored in the head loop). Fix pass: the test
+// iterates the guard's own table AND the action table (the single source for the
+// request-advertised action names: device.*, turn.*, models.list, ...), so a name
+// missing from either, or removed from either, fails this test - the drift class
+// the provider list and the stuck ring already taught.
 static void test_echo_class_tool_names() {
-  for (const char* n : {"orch_turn", "mem_write", "mem_query", "session_ops", "scratchpad",
-                        "memory.write", "memory_write", "memory.search", "memory_search",
-                        "memory.pin", "memory.episodic", "files.append", "files_append",
-                        "files.read", "files.list", "files.edit", "files.delete", "files.search",
-                        "files.stat", "files.fetch", "files.send", "files.share", "files.pdf",
-                        "artifact.save", "artifact_save", "docs.list", "docs.read", "docs.search",
-                        "docs_search", "skill.list", "skill.get", "skill_save", "skill.delete",
-                        "web.search", "web_search", "prefs.edit", "prefs_edit", "openq.edit",
-                        "device.control", "device_control", "device.log", "device.status",
-                        "device.selftest", "system.health", "ota.status", "media.play",
-                        "media.pause", "media.stop", "media.list", "reply.speak", "reply_speak",
-                        "reply.telegram", "loop.create", "loop_create", "loop.list", "loop.cancel",
-                        "wakeup.set", "wakeup_set", "image.look", "image_look", "image.note",
-                        "image.generate", "session.spawn", "session_spawn", "session.tell",
-                        "session.poll", "session.list", "session.terminate", "results.get",
-                        "results.list", "food.portions", "tenant.list", "tenant.set_role",
-                        "tenant.set_quota"}) {
+  TEST_ASSERT_TRUE_MESSAGE(echoToolNameCount() >= 50, "the guard's table must be read, not skipped");
+  for (size_t i = 0; i < echoToolNameCount(); i++) {
+    const char* n = echoToolName(i);
     const std::string s = std::string("Sure. Use ") + n + " for that.";
     size_t b = 0, e = 0;
     TEST_ASSERT_TRUE_MESSAGE(echoSentenceSpan(s, &b, &e), n);
     TEST_ASSERT_TRUE_MESSAGE(s.substr(b, e - b).find(n) != std::string::npos, n);
     TEST_ASSERT_EQUAL_STRING_MESSAGE("Sure.", dropEchoSentences(s).c_str(), n);
   }
+  size_t rows = 0;
+  const ActionRuleRow* table = actionRuleTable(rows);
+  TEST_ASSERT_TRUE_MESSAGE(rows >= 40, "the action table must be read, not skipped");
+  for (size_t i = 0; i < rows; i++) {
+    const char* key = table[i].key;
+    if (!key || !key[0]) continue;
+    const std::string s = std::string("Sure. Use ") + key + " for that.";
+    size_t b = 0, e = 0;
+    TEST_ASSERT_TRUE_MESSAGE(echoSentenceSpan(s, &b, &e), key);
+    TEST_ASSERT_TRUE_MESSAGE(s.substr(b, e - b).find(key) != std::string::npos, key);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("Sure.", dropEchoSentences(s).c_str(), key);
+  }
+  // The prompt's own line, verbatim (orch_models_tool.cpp instructs it): the exact
+  // leak class - request instructions delivered as the reply.
+  const char* promptLine = "Call models.list for the model ids each one offers.";
+  TEST_ASSERT_TRUE_MESSAGE(echoSentenceSpan(promptLine), promptLine);
+  TEST_ASSERT_EQUAL_STRING("", dropEchoSentences(promptLine).c_str());
 }
 
 // The contract phrases the tool description, the strict schema's required list and
@@ -633,10 +641,43 @@ static void test_echo_precision_plain_words_untouched() {
   }
 }
 
+// Fix pass (review finding 3): the class of legitimate owner-facing answers the
+// rule-sentence detector used to delete whole. Each is a plain answer or advice
+// to the owner - a short sentence whose content is not entirely assistant-facing
+// rule words. None may be flagged; each must pass through byte-exact. The owner
+// asking "Did the landlord reply?" must be able to be answered "No reply from
+// them yet."
+static void test_echo_precision_owner_answers_untouched() {
+  for (const char* r : {
+           "No answer yet.",
+           "No reply from them yet.",
+           "Keep it brief.",
+           "Just answer yes or no.",
+           "Note the answer below.",
+           "No tools required.",
+           "Reply to this message.",
+           "Do reply to her email.",
+           "Remember the answer.",
+           "Avoid markdown in emails.",
+           "Keep the answer short.",
+           "The landlord has not replied yet.",
+           "Did the landlord reply?",
+           "I saved it to your scratchpad.",
+           "I put it in the scratchpad for you.",
+           "The scratchpad is saved on the device.",
+       }) {
+    TEST_ASSERT_FALSE_MESSAGE(echoSentenceSpan(r), r);
+    TEST_ASSERT_EQUAL_STRING(r, dropEchoSentences(r).c_str());
+  }
+  // A whole reply made of these is delivered as-is, not emptied into the
+  // false "empty answer" notice.
+  const char* whole = "No reply from them yet.";
+  TEST_ASSERT_EQUAL_STRING(whole, dropEchoSentences(whole).c_str());
+}
+
 // Precision over the stored replies corpus the QFIX lane graded against
 // (tests/evals/claim_corpus/noted.json): not one stored live reply may change.
-static void test_echo_precision_stored_replies_corpus() {
-  FILE* f = std::fopen("tests/evals/claim_corpus/noted.json", "rb");
+static void test_echo_precision_stored_replies_corpus() {  FILE* f = std::fopen("tests/evals/claim_corpus/noted.json", "rb");
   TEST_ASSERT_NOT_NULL(f);
   std::string raw;
   char buf[4096];
@@ -704,6 +745,7 @@ int main() {
   RUN_TEST(test_echo_class_rule_sentences);
   RUN_TEST(test_echo_real_reply_from_the_evidence);
   RUN_TEST(test_echo_precision_plain_words_untouched);
+  RUN_TEST(test_echo_precision_owner_answers_untouched);
   RUN_TEST(test_echo_precision_stored_replies_corpus);
   RUN_TEST(test_echo_drop_semantics);
   return UNITY_END();

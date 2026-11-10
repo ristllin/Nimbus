@@ -5,7 +5,8 @@
 #include <cctype>
 #include <cstring>
 
-#include "nimbus/mem_cap.h"   // utf8CapLen - a quoted excerpt stays valid UTF-8
+#include "nimbus/mem_cap.h"           // utf8CapLen - a quoted excerpt stays valid UTF-8
+#include "nimbus/orch/action_rules.h"  // actionRuleTable - the request-advertised action names
 
 namespace nimbus {
 namespace orch {
@@ -332,16 +333,30 @@ const char* const kEchoContractPhrases[] = {
 };
 
 // A short rule sentence aimed at the assistant opens with one of these (or is a
-// single rule word) and holds an assistant-facing word below. Advice to the owner
-// ("Don't add salt.", "Keep it short.") holds none of them and stays.
+// single word) and holds nothing but assistant-facing words below. Advice to the
+// owner ("Don't add salt.", "Keep it short.", "No reply from them yet.") holds a
+// word that is neither light nor a rule word and stays.
 const char* const kEchoRuleOpeners[] = {
     "no", "never", "always", "be", "use", "keep", "avoid", "remember", "don't", "do", "note", "just",
     "reply", "concise",
 };
+// Words that only ever describe the assistant's own output. Ordinary words an
+// owner-facing answer can hold ("answer", "brief") are NOT here: a short sentence
+// whose content is not entirely these words is an answer about the world, not an
+// echo of the request.
 const char* const kEchoRuleWords[] = {
-    "concise", "brief", "topic", "json", "field", "tool", "ascii", "emoji", "bullet", "markdown",
-    "recite", "orchestrator", "reply", "answer", "em dash",
+    "concise", "topic", "json", "field", "tool", "ascii", "emoji", "bullet", "markdown",
+    "recite", "orchestrator", "reply",
 };
+// Rule phrases that span words.
+const char* const kEchoRulePhrases[] = {"em dash"};
+// Function words that carry no content of their own in a rule sentence, as one
+// blank-separated blob (one flash string, no pointer table). A word outside this
+// set and the rule set is content: the sentence is an answer, not an echo.
+const char kEchoLightWords[] =
+    "it them that this the a an to one all any new only in of for from with on at by her his my your our "
+    "their please be is are was do does did yes no or and not so if when while then than too very up out "
+    "off there";
 
 // `name` in `t` at `at`, with '.', '-' and '_' interchangeable inside the name and
 // word-char boundaries outside it: "reply.orch_turn.call" holds orch_turn.
@@ -362,10 +377,29 @@ bool nameMatchesAt(const std::string& t, const char* name, size_t at) {
   return true;
 }
 
-bool hasToolName(const std::string& t) {
-  for (const char* name : kEchoToolNames)
+bool hasSeparator(const char* name) { return std::strpbrk(name, "._-") != nullptr; }
+
+bool hasToolName(const std::string& t, bool allowBare) {
+  for (const char* name : kEchoToolNames) {
+    // A bare feature noun ("scratchpad") is also a user-facing word: it counts only
+    // inside a terse rule-shaped sentence, never in a longer answer
+    // ("I saved it to your scratchpad.").
+    if (!allowBare && !hasSeparator(name)) continue;
     for (size_t at = t.find(name[0]); at != std::string::npos; at = t.find(name[0], at + 1))
       if (nameMatchesAt(t, name, at)) return true;
+  }
+  // The action table is the single source for the request-advertised action names
+  // (device.*, turn.*, models.list, memory.*, ...): every row key is an echo when
+  // it appears in either wire spelling, and a row added there is caught here with
+  // no guard change - the class test iterates the same table.
+  size_t rows = 0;
+  const ActionRuleRow* table = actionRuleTable(rows);
+  for (size_t i = 0; i < rows; i++) {
+    const char* key = table[i].key;
+    if (!key || !key[0] || !hasSeparator(key)) continue;
+    for (size_t at = t.find(key[0]); at != std::string::npos; at = t.find(key[0], at + 1))
+      if (nameMatchesAt(t, key, at)) return true;
+  }
   return false;
 }
 
@@ -400,13 +434,30 @@ std::string firstWord(const std::string& s) {
   return s.substr(b, at - b);
 }
 
-// A rule word at a word start, plurals included ("topic" in "topics").
-bool hasWordPrefix(const std::string& s, const char* w) {
-  for (size_t at = s.find(w); at != std::string::npos; at = s.find(w, at + 1))
-    if (at == 0 || !isWordChar(s[at - 1])) return true;
+// "replies" -> "reply", "topics" -> "topic": plurals of rule words still match.
+std::string singular(const std::string& w) {
+  if (w.size() > 3 && w.compare(w.size() - 3, 3, "ies") == 0) return w.substr(0, w.size() - 3) + "y";
+  if (w.size() > 1 && w[w.size() - 1] == 's' && w[w.size() - 2] != 's') return w.substr(0, w.size() - 1);
+  return w;
+}
+
+bool isRuleWord(const std::string& word) {
+  const std::string norm = singular(word);
+  for (const char* rw : kEchoRuleWords)
+    if (norm == rw || norm.compare(0, std::strlen(rw), rw) == 0) return true;
   return false;
 }
 
+bool isLightWord(const std::string& w) {
+  const std::string hay = std::string(" ") + kEchoLightWords + " ";
+  return hay.find(" " + w + " ") != std::string::npos;
+}
+
+// A rule sentence is terse (at most 5 words), opens with a rule opener (or is a
+// single word), and every word after the opener is light or a rule word: the
+// sentence's whole content is assistant-facing. Any other content word makes it
+// an answer about the world ("No reply from them yet.", "No tools required.",
+// "Keep it brief.") and it stays.
 bool isRuleEcho(const std::string& s) {
   const size_t words = wordCount(s);
   if (words == 0 || words > 5) return false;
@@ -416,15 +467,53 @@ bool isRuleEcho(const std::string& s) {
   for (const char* o : kEchoRuleOpeners)
     if (w == o) { opens = true; break; }
   if (!opens && words != 1) return false;
-  for (const char* rw : kEchoRuleWords)
-    if (hasWordPrefix(s, rw)) return true;
-  return false;
+  size_t at = 0;
+  bool first = true;
+  bool sawRule = false;
+  while (at < s.size()) {
+    while (at < s.size() && !isWordChar(s[at])) at++;
+    if (at >= s.size()) break;
+    const size_t b = at;
+    while (at < s.size() && isWordChar(s[at])) at++;
+    const std::string word = s.substr(b, at - b);
+    if (first) {
+      first = false;
+      if (opens && !isRuleWord(word)) continue;   // the opener itself carries no content
+    }
+    if (isLightWord(word)) continue;
+    bool covered = false;
+    for (const char* p : kEchoRulePhrases) {
+      const size_t n = std::strlen(p);
+      if (s.compare(b, n, p) == 0) {
+        const size_t after = b + n;
+        if (after >= s.size() || !isWordChar(s[after]) || s[after] == 's' ||
+            s.compare(after, 2, "es") == 0) {
+          covered = true;
+          sawRule = true;
+          at = after;
+          while (at < s.size() && isWordChar(s[at])) at++;   // a plural suffix
+          break;
+        }
+      }
+    }
+    if (!covered && isRuleWord(word)) { covered = true; sawRule = true; }
+    if (!covered) return false;
+  }
+  return sawRule;
 }
 
 // One lowercased sentence: does it address the assistant or quote the contract?
 bool echoSentence(const std::string& s) {
   if (s.find_first_not_of(" \t\r\n") == std::string::npos) return false;
-  if (hasToolName(s)) return true;
+  // A terse rule-shaped sentence (at most 5 words, opening with a rule opener or a
+  // single word) is where a bare tool name counts as an echo.
+  const size_t words = wordCount(s);
+  const std::string w = firstWord(s);
+  bool opens = false;
+  for (const char* o : kEchoRuleOpeners)
+    if (w == o) { opens = true; break; }
+  const bool ruleShaped = words >= 1 && words <= 5 && (opens || words == 1);
+  if (hasToolName(s, ruleShaped)) return true;
   for (const char* p : kEchoContractPhrases)
     if (s.find(p) != std::string::npos) return true;
   return isRuleEcho(s);
@@ -439,6 +528,9 @@ size_t nextSentence(const std::string& t, size_t from, size_t* e) {
 }
 
 }  // namespace
+
+size_t echoToolNameCount() { return sizeof(kEchoToolNames) / sizeof(kEchoToolNames[0]); }
+const char* echoToolName(size_t i) { return kEchoToolNames[i]; }
 
 bool echoSentenceSpan(const std::string& reply, size_t* begin, size_t* end) {
   const std::string t = lowered(reply);
