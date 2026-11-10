@@ -6,6 +6,15 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v5.0.1 - The hosted image builds again, and pack photos stop re-asking
+
+A small fix release on top of v5.0.0, with three changes and one thing left out.
+
+- **The hosted Virtual Nimbus image builds on Linux again.** The v5.0.0 release could not build the hosted image on Linux, because the code used a hash that g++ 12 does not provide for a custom-allocator string, so hosted instances stayed on their previous version. The build is fixed, and a CI job now builds the same image on Linux on every push, so a hosted image that does not build is caught before release, not after.
+- **A pack photo no longer asks how much was eaten.** After a photo of a packed meal, the assistant could ask how much of it you ate even when you had not said you ate any: the question cues matched inside other words such as "barbecue" or "backpack", and inside statements that were not questions. The cues now match whole words and only fire on a real question.
+- **On a hosted instance, the Telegram bot token is set in the portal.** The instance page no longer shows a token box whose Save could only fail: it keeps the readiness line and points to the portal's settings for that instance, where the token is set, replaced or removed.
+- **Not in this release:** the fix for a reply that echoed internal instruction text (seen once on 10 November) is still being finished and is planned for the next release.
+
 ## v5.0.0 - The launch release
 
 The full launch release. It carries everything in the interim v4.9.0 build plus the
