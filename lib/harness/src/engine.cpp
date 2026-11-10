@@ -8,6 +8,7 @@
 #include "nimbus/orch/budget.h"    // deriveBudget - per-turn caps from the head model's window
 #include "nimbus/orch/compact.h"   // isContextOverflowError - a provider's window refusal
 #include "nimbus/orch/reply_guard.h"   // filler, work-shaped messages
+#include "nimbus/orch/action_rules.h"  // actionRuleRow - a tool's plain-words description
 #include "nimbus/orch/owner_voice.h"   // lane MLQ: the per-turn reply scope and disputed-claim lines
 #include "nimbus/orch/compact.h"   // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary (runFold)
 #include "nimbus/orch/connector_grant.h"   // whose connectors a turn's requests carry (CUM-828)
@@ -177,6 +178,19 @@ std::string afterFailure(int activeJobs, const std::string& advice) {
 // L19-14: what a failed turn had already done, from its transcript brief (one
 // "[result] <tool> ..." line per tool that ran): "Already done this turn:
 // memory_write, web_search (2)." so the owner keeps the work, not just the failure.
+// Lane ECHO fix pass: the reply seam drops any sentence that names a tool, so the
+// line renders each tool as its action table's plain description ("store a memory"),
+// never the wire name - the live check caught the wire name reaching the owner in a
+// delivered failure notice.
+std::string plainToolName(const std::string& name) {
+  std::string dotted = name;
+  for (char& c : dotted)
+    if (c == '_' || c == '-') c = '.';
+  if (const nimbus::orch::ActionRuleRow* r = nimbus::orch::actionRuleRow(dotted)) return r->what;
+  if (const nimbus::orch::ActionRuleRow* r = nimbus::orch::actionRuleRow(name)) return r->what;
+  return "a tool call";
+}
+
 std::string workDoneLine(const std::string& brief) {
   std::vector<std::pair<std::string, int>> ran;
   size_t at = 0;
@@ -193,7 +207,7 @@ std::string workDoneLine(const std::string& brief) {
   if (ran.empty()) return std::string();
   std::string out = "Already done this turn: ";
   for (size_t i = 0; i < ran.size(); ++i) {
-    out += (i ? ", " : "") + ran[i].first;
+    out += (i ? ", " : "") + plainToolName(ran[i].first);
     if (ran[i].second > 1) out += " (" + std::to_string(ran[i].second) + ")";
   }
   return out + ".";

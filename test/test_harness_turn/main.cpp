@@ -6,6 +6,7 @@
 #include "nimbus/orch/router_route.h"   // headRunsToolLoop
 
 #include "nimbus/orch/connector_grant.h"   // CUM-828: the grant a turn's requests carry
+#include "nimbus/orch/reply_guard.h"       // lane ECHO: the delivered text must be echo-free
 
 #include <cstdio>
 #include <cstdlib>
@@ -5274,9 +5275,13 @@ static void test_l19_14_unsent_reply_keeps_the_work() {
   w.fabricErr = "unsent: the device could not finish sending its request";
   TEST_ASSERT_FALSE(w.eng->runTurn("inputs", "1001", "hi"));
   TEST_ASSERT_EQUAL(1, (int)w.delivered.size());
-  TEST_ASSERT_TRUE_MESSAGE(w.anyDelivered("Already done this turn: memory_search, memory_write."),
+  TEST_ASSERT_TRUE_MESSAGE(w.anyDelivered("Already done this turn: search memory, store a memory."),
                            w.lastText().c_str());
   TEST_ASSERT_FALSE(w.anyDelivered("not answered"));
+  // Lane ECHO fix pass: the device's own copy must be echo-free too - a sentence
+  // naming a tool is dropped at the reply seam, so the work-done line may not
+  // name one (the live check caught exactly this in a delivered failure notice).
+  TEST_ASSERT_FALSE_MESSAGE(nimbus::orch::echoSentenceSpan(w.lastText()), w.lastText().c_str());
 }
 
 // Lane K2 (L19-13 d/e, L19-14): one honest owner message per failed turn.
