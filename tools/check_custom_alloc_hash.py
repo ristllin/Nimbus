@@ -37,9 +37,7 @@ SCAN_SUFFIXES = {".h", ".hpp", ".cpp", ".cc", ".cxx"}
 
 # A key type that is a basic_string with a custom allocator: WorkingString, or
 # basic_string<char, traits, SomeAllocator> (three template args).
-CUSTOM_ALLOC_STRING = re.compile(
-    r"(?:\bWorkingString\b|\bbasic_string\s*<[^;{}()]*?,\s*[^;{}()]*?,\s*[^;{}()]*?>)"
-)
+CUSTOM_ALLOC_STRING = re.compile(r"(?:\bWorkingString\b|\bbasic_string\s*<[^;{}()]*?,\s*[^;{}()]*?,\s*[^;{}()]*?>)")
 HASH_TMPL = re.compile(r"\bstd::hash\s*<")
 CONTAINER_TMPL = re.compile(r"\bstd::unordered_(?:map|set)\s*<")
 
@@ -94,7 +92,6 @@ def scan_file(path: Path) -> list[str]:
         return []
     text = strip_comments(raw)
     offences: list[str] = []
-    lines = text.split("\n")
 
     def line_of(pos: int) -> int:
         return text.count("\n", 0, pos) + 1
@@ -110,7 +107,7 @@ def scan_file(path: Path) -> list[str]:
             continue
         line_start = text.rfind("\n", 0, m.start()) + 1
         line_end = text.find("\n", m.start())
-        line = text[line_start: line_end if line_end != -1 else len(text)]
+        line = text[line_start : line_end if line_end != -1 else len(text)]
         if "static_assert" in line:
             continue
         offences.append(
