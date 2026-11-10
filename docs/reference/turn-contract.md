@@ -102,6 +102,15 @@ salvaged text and the fold summary, and Telegram runs it again before sending:
 reasoning, tool-call markup and wrapper tags never reach a channel, while
 unknown `<word>` content and code stay byte-exact.
 
+## An envelope carried inside prose
+
+A prose reply that carries a turn envelope - a fenced or bare JSON object with a
+string `reply` and at least two other orch_turn fields - delivers only the
+envelope's reply: the prose around it, an apology and a duplicate never are, and
+the envelope's other fields are dropped with a parse note (quoted JSON in prose
+never acts). When the owner's message asks for JSON, a shown example is content
+and the whole text is delivered.
+
 ## Cut and unreadable answers
 
 When the head's answer cannot be applied, `salvageTurnText()` reads only the

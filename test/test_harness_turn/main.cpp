@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "../support/code_snippet.h"   // CUM-485: the previous reply's code block
+#include "../support/echo_envelope_message.h"   // lane ECHO fix pass: the delivered Lumi message
 #include "../support/fake_config.h"
 #include "../support/fake_fabric.h"   // CUM-538: the opt-in sub-agent fabric
 #include "../support/fake_platform.h"
@@ -913,6 +914,36 @@ static void test_echo_reply_is_dropped_at_the_delivery_seam() {
   TEST_ASSERT_EQUAL_STRING("Here you go.", r.lastText().c_str());
   TEST_ASSERT_EQUAL(0, r.countDelivered("orch_turn"));
   TEST_ASSERT_EQUAL(0, r.countDelivered("em dash"));
+}
+
+// Lane ECHO fix pass (review finding, REVIEW-FINDINGS.json): the head's raw output was
+// the delivered Lumi message - prose, leaked contract sentences, the whole orch_turn
+// envelope as a fenced JSON block, an apology, and the reply again. End to end: only the
+// envelope's reply is delivered; the envelope's fields are dropped, not applied.
+static void test_echo_envelope_message_delivers_only_the_envelope_reply() {
+  Rig r;
+  r.cfg.toolLoop = false;   // single-shot: the scripted host IS the wire reply
+  Rig::Script sc;
+  sc.outJson = harness_test::kEchoEnvelopeMessage;
+  r.scripts["anthropic"] = {sc};
+  r.eng->handleMessage("Ofc log as eaten...", "Roy", "1001");
+  // The envelope's reply is delivered, plus the claim check's honest note that the
+  // envelope's mem_write was dropped and so the "Logged" claim is not backed.
+  const std::string want = std::string(harness_test::kEchoEnvelopeReply) + "\n\n(Correction: that has not been saved.)";
+  TEST_ASSERT_EQUAL_STRING(want.c_str(), r.lastText().c_str());
+  for (const char* leak : {"```", "orch_turn", "mem_write", "session_ops", "Sorry", "formatting slip",
+                           "Delivering the turn properly", "must include all fields", "empty strings"})
+    TEST_ASSERT_EQUAL_MESSAGE(0, r.countDelivered(leak), leak);
+  // The envelope's mem_write was dropped with a log line, never applied from prose.
+  TEST_ASSERT_EQUAL(0, (int)r.memCalls.size());
+  TEST_ASSERT_EQUAL(0, (int)r.staged.size());
+  TEST_ASSERT_EQUAL(0, (int)r.scratchApplied.size());
+  TEST_ASSERT_TRUE(LogCapture::contains("envelope"));
+  // The answer appears exactly once (no duplicate delivered).
+  const std::string t = r.lastText();
+  const size_t first = t.find("Logged: snack-1723");
+  TEST_ASSERT_TRUE(first != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("Logged: snack-1723", first + 1) == std::string::npos);
 }
 
 // ---- (2) recall gate --------------------------------------------------------
@@ -5584,6 +5615,7 @@ static void runFirstHalf() {
   RUN_TEST(test_two_turns_share_the_static_prompt_block);
   RUN_TEST(test_happy_turn_delivers_and_accounts);
   RUN_TEST(test_echo_reply_is_dropped_at_the_delivery_seam);
+  RUN_TEST(test_echo_envelope_message_delivers_only_the_envelope_reply);
   RUN_TEST(test_recall_injected_for_user_text_skipped_for_synthesis);
   RUN_TEST(test_same_host_fresh_conv_retry);
   RUN_TEST(test_failover_walks_priority_with_owner_notice);

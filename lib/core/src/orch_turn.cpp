@@ -778,6 +778,75 @@ ReplyShape unusable(Turn& out, ParseError& err, const char* why) {
   }
   return ReplyShape::Unusable;
 }
+
+// Lane ECHO fix pass: the owner's message asking for JSON ("send it to me as JSON")
+// makes a shown JSON example content, not an envelope - whole word "json", any case.
+bool ownerAsksForJson(const std::string& ownerText) {
+  const std::string t = toLowerAscii(ownerText);
+  for (size_t at = t.find("json"); at != std::string::npos; at = t.find("json", at + 1)) {
+    const bool startOk = at == 0 || !std::isalnum((unsigned char)t[at - 1]);
+    const bool endOk = at + 4 >= t.size() || !std::isalnum((unsigned char)t[at + 4]);
+    if (startOk && endOk) return true;
+  }
+  return false;
+}
+
+// A JSON object that parses with the orch_turn fields: a string "reply" plus at least
+// two other turn fields. The 10 Nov leak carried all eight; a JSON example that is not
+// turn-shaped stays prose.
+bool envelopeShaped(const std::string& json) {
+  JsonDocument d;
+  if (deserializeJson(d, json)) return false;
+  if (!d.is<JsonObjectConst>()) return false;
+  if (!d["reply"].is<const char*>()) return false;
+  int others = 0;
+  for (size_t i = 1; i < (size_t)TurnField::Count; i++)
+    if (!d[turnFieldName((TurnField)i)].isNull()) others++;
+  return others >= 2;
+}
+
+// The first turn-shaped JSON object carried anywhere in `text` (fenced or bare), as its
+// exact text; "" when there is none. Bounded: the scan reads at most the first 64 KB and
+// tries at most 64 candidate objects.
+std::string embeddedTurnEnvelope(const std::string& text) {
+  const size_t limit = text.size() < 65536 ? text.size() : 65536;
+  size_t at = 0;
+  int candidates = 0;
+  while (at < limit && candidates < 64) {
+    const size_t ob = text.find('{', at);
+    if (ob == std::string::npos || ob >= limit) break;
+    const size_t oe = objectEnd(text, ob);
+    if (oe != std::string::npos) {
+      const std::string obj = text.substr(ob, oe - ob + 1);
+      candidates++;
+      if (envelopeShaped(obj)) return obj;
+      at = oe + 1;
+    } else {
+      at = ob + 1;   // unbalanced from here; a later brace may still close its own object
+    }
+  }
+  return std::string();
+}
+
+// Lane ECHO fix pass: a prose reply that CARRIES a turn envelope - a fenced or bare
+// JSON object that parses with the orch_turn fields - delivers only the envelope's
+// reply. The prose around it, an apology and a duplicate never reach the owner, and
+// the envelope's other fields are dropped with a note (quoted JSON in prose never
+// acts). When the owner's message asks for JSON, a shown example is content and the
+// whole text stays. True when `out` was set to the envelope's reply.
+bool proseWithEnvelope(const std::string& text, const std::string& ownerText, Turn& out) {
+  if (ownerAsksForJson(ownerText)) return false;
+  const std::string env = embeddedTurnEnvelope(text);
+  if (env.empty()) return false;
+  JsonDocument d;
+  if (deserializeJson(d, env) || !d["reply"].is<const char*>()) return false;
+  out = Turn{};
+  out.reply = trimCopy(d["reply"].as<const char*>());
+  out.parseNotes.push_back("the reply carried a turn envelope inside prose (" +
+                           std::to_string(env.size()) +
+                           " B); only its reply is delivered, its other fields were dropped");
+  return true;
+}
 }  // namespace
 
 std::string leadingJsonObject(const std::string& text, bool* wholeReply) {
@@ -792,7 +861,8 @@ std::string leadingJsonObject(const std::string& text, bool* wholeReply) {
 }
 
 namespace {
-ReplyShape parseHeadReplyText(const std::string& text, Turn& out, ParseError& err) {
+ReplyShape parseHeadReplyText(const std::string& text, Turn& out, ParseError& err,
+                              const std::string& ownerText) {
   if (text.find_first_not_of(kSpace) == std::string::npos)
     return unusable(out, err, "empty reply");
   bool fenced = false;
@@ -806,6 +876,10 @@ ReplyShape parseHeadReplyText(const std::string& text, Turn& out, ParseError& er
       return unusable(out, err, "truncated JSON fence");
     if (trimCopy(text).find_first_not_of('`') == std::string::npos)   // "`" or "``": the same
       return unusable(out, err, "truncated JSON fence");
+    if (proseWithEnvelope(text, ownerText, out)) {
+      err = ParseError{};
+      return ReplyShape::Prose;
+    }
     return prose(text, out, err);
   }
   bool whole = false;
@@ -820,14 +894,15 @@ ReplyShape parseHeadReplyText(const std::string& text, Turn& out, ParseError& er
 }
 }  // namespace
 
-ReplyShape parseHeadReply(const std::string& rawText, Turn& out, ParseError& err) {
+ReplyShape parseHeadReply(const std::string& rawText, Turn& out, ParseError& err,
+                          const std::string& ownerText) {
   err = ParseError{};
   // Formatting F3: a leading reasoning block and a whole-reply wrapper are not
   // the answer. "<think>...</think>{json}" is a turn (its side effects apply),
   // never prose that shows the owner the reasoning AND the raw JSON.
   size_t stripped = 0;
   const std::string text = unwrapWholeReply(stripReasoningPreamble(rawText, &stripped));
-  const ReplyShape shape = parseHeadReplyText(text, out, err);
+  const ReplyShape shape = parseHeadReplyText(text, out, err, ownerText);
   if (stripped)
     out.parseNotes.push_back("reasoning preamble stripped (" + std::to_string(stripped) + " B)");
   if (text.size() + stripped != rawText.size() && shape != ReplyShape::Unusable)

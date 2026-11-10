@@ -46,7 +46,12 @@ IS one JSON object (bare, or the whole reply in one fence) is the turn; a reply
 that opens like JSON but is not a turn (or is wholly a JSON array, or an array
 of objects cut off before it closes) goes to the salvage path, so raw wire JSON never reaches a person; any other reply is prose and is delivered as the
 reply alone - prose (even prose quoting JSON) never becomes device actions,
-memory writes or spawns. The portable device-action validator
+memory writes or spawns. The one prose exception is a turn envelope carried
+inside the text (a fenced or bare JSON object with a string `reply` and at least
+two other orch_turn fields): only the envelope's reply is delivered, its other
+fields are dropped with a note, unless the owner's message asked for JSON, in
+which case the shown example is content and is delivered whole (see
+[turn contract](reference/turn-contract.md)). The portable device-action validator
 (`orch_device_actions.cpp`) re-checks every device action, including the
 protected-key refusal (API keys, provider routing), no matter what the wire
 promised. A provider bug can degrade a turn; it cannot make the device execute

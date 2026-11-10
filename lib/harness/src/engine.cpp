@@ -2478,8 +2478,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // (Z.ai ignored json_schema and answered in Markdown) still wrote a good
   // answer; it used to be thrown away for the "formatting error" apology. Prose
   // is delivered as the reply - and only the reply (no device actions, memory
-  // writes or spawns ride prose); a fenced JSON turn is the turn.
-  const orch::ReplyShape shape = orch::parseHeadReply(outJson, turn, perr);
+  // writes or spawns ride prose); a fenced JSON turn is the turn. Lane ECHO fix
+  // pass: the owner's message rides along so a reply that shows a JSON example
+  // because the owner asked for JSON is delivered whole, while a turn envelope
+  // carried inside prose delivers only its reply.
+  const orch::ReplyShape shape = orch::parseHeadReply(outJson, turn, perr, userText);
   // One line per field the parse boundary repaired or could not use - the
   // count the live checks grep for (lane L).
   for (const std::string& note : turn.parseNotes)

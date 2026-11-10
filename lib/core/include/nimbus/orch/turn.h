@@ -286,7 +286,14 @@ enum class ReplyShape {
 //     is not turn-shaped and goes on in prose. `out` carries the trimmed text as
 //     the reply and NOTHING else - quoted JSON never becomes device actions,
 //     memory writes or spawns.
-ReplyShape parseHeadReply(const std::string& text, Turn& out, ParseError& err);
+// Lane ECHO fix pass: a prose reply that CARRIES a turn envelope (a fenced or bare
+// JSON object with a string "reply" plus at least two other orch_turn fields) reads
+// as that envelope's reply only - the prose around it, an apology and a duplicate
+// are never delivered, and the envelope's other fields are dropped with a parse
+// note. `ownerText` is the owner's message for the round: when it asks for JSON,
+// a shown JSON example is content and the whole text is delivered.
+ReplyShape parseHeadReply(const std::string& text, Turn& out, ParseError& err,
+                          const std::string& ownerText = std::string());
 
 // The leading JSON object of a reply - bare at the start, or the content of a
 // leading ``` fence - as its exact text ("" when the reply does not open with a

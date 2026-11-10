@@ -8,6 +8,7 @@
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/orch_schema.h"
 #include "../support/zai_replies.h"   // CUM-495: captured Z.ai prose replies
+#include "../support/echo_envelope_message.h"   // lane ECHO fix pass: the delivered Lumi message
 
 using namespace nimbus::orch;
 using Code = ParseError::Code;
@@ -627,9 +628,9 @@ static void test_head_reply_json_lookalikes_are_unusable() {
 
 // Prose that merely QUOTES a JSON object, or carries a fenced code block, is
 // prose: the quoted payload never becomes device actions or memory writes.
+// (A quoted object that IS turn-shaped is the lane ECHO envelope case below.)
 static void test_head_reply_prose_quoting_json_never_acts() {
   const char* bodies[] = {
-      R"(Here is the shape: {"reply":"x","device":[{"type":"reboot"}],"mem_write":[{"content":"y"}]})",
       "Sure:\n```python\nprint({\"a\": 1})\n```",
       "```python\nprint(1)\n```",   // a reply that is ONLY a code block
   };
@@ -718,6 +719,122 @@ static void test_head_reply_turn_followed_by_more_text_never_acts() {
   TEST_ASSERT_EQUAL_STRING("{\"reply\":\"a } b \\\" { c\"}", obj.c_str());
 }
 
+// ---- lane ECHO fix pass: an envelope carried inside prose is the answer, never raw JSON ----
+// Review finding (REVIEW-FINDINGS.json): the delivered Telegram message held the whole
+// orch_turn envelope as a fenced JSON block, plus leaked instructions, an apology and the
+// reply twice. When a prose reply carries an envelope (a fenced or bare JSON object that
+// parses with the orch_turn fields), only the envelope's reply is delivered; the prose
+// around it, the apology and any duplicate never are, and the envelope's other fields are
+// dropped with a note (quoted JSON in prose never acts - the prism lens above).
+
+// The real message, failing-first: the head's raw output on Lumi v5.0.0, 10 Nov 2026
+// (llm_response m00001b3b; owner paste telegram-message-as-received.txt), verbatim in
+// harness_test::kEchoEnvelopeMessage. The owner's message was "Ofc log as eaten...".
+static void test_head_reply_embedded_envelope_real_message() {
+  Turn t;
+  ParseError e;
+  const ReplyShape shape = parseHeadReply(harness_test::kEchoEnvelopeMessage, t, e, "Ofc log as eaten...");
+  TEST_ASSERT_EQUAL(int(ReplyShape::Prose), int(shape));   // delivered as the reply only
+  TEST_ASSERT_TRUE(e.ok());
+  TEST_ASSERT_EQUAL_STRING(harness_test::kEchoEnvelopeReply, t.reply.c_str());
+  // The envelope's other fields are dropped with a log note, never applied from prose.
+  TEST_ASSERT_EQUAL(0u, t.mem_write.size());
+  TEST_ASSERT_EQUAL(0u, t.device.size());
+  TEST_ASSERT_EQUAL(0u, t.session_ops.size());
+  TEST_ASSERT_FALSE(t.scratchpad.present);
+  bool noted = false;
+  for (const auto& n : t.parseNotes)
+    if (n.find("envelope") != std::string::npos) noted = true;
+  TEST_ASSERT_TRUE_MESSAGE(noted, "the drop must be logged, not silent");
+  // Nothing of the wrapper, the apology or the duplicate reaches the reply.
+  for (const char* leak : {"```", "orch_turn", "mem_write", "session_ops", "Sorry", "formatting slip",
+                           "Delivering the turn properly", "must include all fields", "empty strings"})
+    TEST_ASSERT_TRUE_MESSAGE(t.reply.find(leak) == std::string::npos, leak);
+  // The answer appears exactly once (no duplicate).
+  const size_t first = t.reply.find("Logged: snack-1723");
+  TEST_ASSERT_TRUE(first != std::string::npos);
+  TEST_ASSERT_TRUE(t.reply.find("Logged: snack-1723", first + 1) == std::string::npos);
+}
+
+// The class: fenced json, bare json, xml-ish markup around the object, and a trailing
+// apology with a duplicate - each delivers only the envelope's reply.
+static void test_head_reply_embedded_envelope_class() {
+  const char* env = R"({"reply":"The answer.","ask":"","memory":"m","device":[],)"
+                    R"("mem_write":[{"content":"fact"}],"mem_query":[],"session_ops":[],"scratchpad":null})";
+  const std::string fenced = std::string("Working on it. Here is the turn:\n```json\n") + env +
+                             "\n``` Sorry, that trailing text was a formatting slip. Delivering the turn properly:The answer.";
+  const std::string bare = std::string("Sure: ") + env + " That is all.";
+  const std::string xml = std::string("Done: <orch_turn>") + env + "</orch_turn> thanks.";
+  for (const std::string& b : {fenced, bare, xml}) {
+    Turn t;
+    ParseError e;
+    TEST_ASSERT_EQUAL_MESSAGE(int(ReplyShape::Prose), int(parseHeadReply(b, t, e)), b.c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("The answer.", t.reply.c_str(), b.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(0u, t.mem_write.size(), b.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(0u, t.device.size(), b.c_str());
+    bool noted = false;
+    for (const auto& n : t.parseNotes)
+      if (n.find("envelope") != std::string::npos) noted = true;
+    TEST_ASSERT_TRUE_MESSAGE(noted, b.c_str());
+    for (const char* leak : {"```", "orch_turn", "mem_write", "Sorry", "formatting slip", "Delivering"})
+      TEST_ASSERT_TRUE_MESSAGE(t.reply.find(leak) == std::string::npos, b.c_str());
+  }
+}
+
+// Precision: the owner asked for JSON, so a reply that shows a JSON example - even a
+// turn-shaped one - is content and is delivered whole.
+static void test_head_reply_owner_asking_for_json_gets_the_whole_text() {
+  const char* env = R"({"reply":"The answer.","ask":"","memory":"m","device":[],)"
+                    R"("mem_write":[{"content":"fact"}],"session_ops":[],"scratchpad":null})";
+  const std::string b = std::string("Here it is as JSON:\n```json\n") + env + "\n```";
+  Turn t;
+  ParseError e;
+  TEST_ASSERT_EQUAL(int(ReplyShape::Prose), int(parseHeadReply(b, t, e, "send it to me as JSON please")));
+  TEST_ASSERT_EQUAL_STRING(b.c_str(), t.reply.c_str());   // whole, fences and all
+  TEST_ASSERT_EQUAL(0u, t.mem_write.size());
+  // The same text without the owner asking: the envelope's reply only.
+  Turn t2;
+  ParseError e2;
+  TEST_ASSERT_EQUAL(int(ReplyShape::Prose), int(parseHeadReply(b, t2, e2)));
+  TEST_ASSERT_EQUAL_STRING("The answer.", t2.reply.c_str());
+}
+
+// Precision: a JSON example that is not turn-shaped (no string "reply" plus at least two
+// other orch_turn fields) is content, delivered whole - including the prism case of a
+// quoted turn-shaped object when the owner asked to see the shape.
+static void test_head_reply_json_examples_that_are_not_turns_stay_prose() {
+  for (const char* b : {
+           "```json\n{\"name\":\"sensor-1\",\"rate\":10}\n```\nThis config samples every 10 s.",
+           "The shape is {\"food\":\"apple\",\"kcal\":95} - log it like that.",
+           "A sketch: {\"reply\":\"x\"} is not a turn, and neither is "
+           "{\"reply\":\"x\",\"mem_write\":[{\"content\":\"y\"}]} with only one other field.",
+           "{a, b} is how a set is written.",
+       }) {
+    Turn t;
+    ParseError e;
+    TEST_ASSERT_EQUAL_MESSAGE(int(ReplyShape::Prose), int(parseHeadReply(b, t, e)), b);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(b, t.reply.c_str(), b);
+    TEST_ASSERT_EQUAL(0u, t.mem_write.size());
+  }
+  // The prism case itself, with the owner asking to see the shape: delivered whole,
+  // and still no actions.
+  const char* prism = R"(Here is the shape: {"reply":"x","device":[{"type":"reboot"}],"mem_write":[{"content":"y"}]})";
+  Turn t;
+  ParseError e;
+  TEST_ASSERT_EQUAL(int(ReplyShape::Prose), int(parseHeadReply(prism, t, e, "show me an example turn as JSON")));
+  TEST_ASSERT_EQUAL_STRING(prism, t.reply.c_str());
+  TEST_ASSERT_EQUAL(0u, t.device.size());
+  TEST_ASSERT_EQUAL(0u, t.mem_write.size());
+  // Without the owner asking, the same text is the envelope's reply only - and still
+  // no actions (the quoted payload never acts either way).
+  Turn t2;
+  ParseError e2;
+  TEST_ASSERT_EQUAL(int(ReplyShape::Prose), int(parseHeadReply(prism, t2, e2)));
+  TEST_ASSERT_EQUAL_STRING("x", t2.reply.c_str());
+  TEST_ASSERT_EQUAL(0u, t2.device.size());
+  TEST_ASSERT_EQUAL(0u, t2.mem_write.size());
+}
+
 // The text of a mem_write item never loses a sibling string: GLM's {"key":"sister_cat",
 // "value":"Pixel"} must not store a bare "Pixel" that nothing retrieves and that the
 // reply reports as saved. The known fields stay fields.
@@ -783,6 +900,10 @@ int main() {
   RUN_TEST(test_head_reply_json_lookalikes_are_unusable);
   RUN_TEST(test_head_reply_prose_quoting_json_never_acts);
   RUN_TEST(test_head_reply_turn_followed_by_more_text_never_acts);
+  RUN_TEST(test_head_reply_embedded_envelope_real_message);
+  RUN_TEST(test_head_reply_embedded_envelope_class);
+  RUN_TEST(test_head_reply_owner_asking_for_json_gets_the_whole_text);
+  RUN_TEST(test_head_reply_json_examples_that_are_not_turns_stay_prose);
   RUN_TEST(test_mem_write_keeps_the_strings_beside_its_text);
   return UNITY_END();
 }
