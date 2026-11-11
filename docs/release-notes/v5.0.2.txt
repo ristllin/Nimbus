@@ -1,0 +1,1 @@
+Replies stop echoing internal instructions; night notes arrive as one wake-up

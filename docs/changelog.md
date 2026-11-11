@@ -6,6 +6,15 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v5.0.2 - Replies stop echoing internal instructions, and night notes arrive as one wake-up
+
+A small fix release on top of v5.0.1, with four changes.
+
+- **A reply never carries the request's own instructions.** On 10 November a reply ended with text from the request itself (the tool contract and the house rules), and nothing between the model and Telegram removed it. The reply guard now drops any sentence that names a tool or a turn field, quotes the request's contract, or reads as a terse rule for the assistant, and keeps the rest of the reply word for word. A reply that carried a whole turn envelope inside prose now delivers only the envelope's reply, and the work-done line names no tool.
+- **Replies stop telling you to operate its internals.** A reply could end with "To undo, re-send the row with 0 kcal", describing the device's own keyed storage as an instruction to you. Sentences that instruct you to operate an internal object are now dropped at every reply seam.
+- **"Still working" notices only come from your own messages.** A background turn (the nightly memory upkeep, a routine, a loop) no longer sends progress lines to your chat; the notice now speaks in the assistant's own voice and is sent as a reply to the message it answers.
+- **A note from the night arrives once, at the end of quiet hours.** The nightly upkeep no longer holds a note for your next message, which could deliver it hours later with model text in it. It arms one self-wakeup at the end of quiet hours; at wake time the note is re-checked for freshness and duplicates, then sent once, short, with no tools. The end of quiet hours is yours to set (default 09:00) in the Wake-ups card.
+
 ## v5.0.1 - The hosted image builds again, and pack photos stop re-asking
 
 A small fix release on top of v5.0.0, with three changes and one thing left out.
