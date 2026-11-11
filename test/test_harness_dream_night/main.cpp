@@ -353,14 +353,9 @@ static void test_quiet_dream_contacts_nobody_over_the_matrix() {
       scriptQuiet(q, k);
       const orch::FireOutcome o = q.dreamTurn("[DREAM] test", chat);
       TEST_ASSERT_EQUAL_MESSAGE(0, q.ownerContacts(), msg);
-      TEST_ASSERT_EQUAL_MESSAGE(k.held, !o.held.empty(), msg);
-      if (k.held && k.out) {
-        JsonDocument want;
-        deserializeJson(want, k.out);
-        const std::string reply = want["reply"] | "", ask = want["ask"] | "";
-        if (!reply.empty()) TEST_ASSERT_TRUE_MESSAGE(o.held.find(reply) != std::string::npos, msg);
-        if (!ask.empty()) TEST_ASSERT_TRUE_MESSAGE(o.held.find(ask) != std::string::npos, msg);
-      }
+      // Lane ECHO review (11 Nov): the held channel never carries the turn's model
+      // text - red on the old head, where the dream's reply came back in o.held.
+      TEST_ASSERT_TRUE_MESSAGE(o.held.empty(), msg);
       // Counter-test: the same kind on an ordinary routine reaches the owner.
       Rig n;
       scriptQuiet(n, k);
@@ -1765,17 +1760,92 @@ static void test_every_night_path_writes_exactly_one_row() {
                        .rfind("Nightly dream skipped tonight (device busy after 12 tries)", 0) == 0);
 }
 
-// The night carries what the reflection held to the glue, which hands it to the
-// owner at their next conversation (ownerNoteText).
-static void test_the_night_carries_the_held_note() {
+// ---- Lane ECHO review (11 Nov): a held note never carries model text -----------
+// REVIEW-FINDINGS.json: on Lumi v5.0.0 the src=dream turn at ~03:31Z wrote a
+// "06:00 commute brief: ..." line as an owner note; it was held and delivered at
+// ~12:33Z, right after the owner's next unrelated message, prefixed "From the
+// nightly memory upkeep:". The class: no turn source may hold model text for later
+// delivery, and the delivered note says when it is from.
+static const char* kTimeSensitiveReply =
+    "06:00 commute brief: Great Northern has crew shortages on the 06:00 service; "
+    "leave by 07:10 to catch it.";
+
+static void test_no_turn_source_holds_model_text() {
+  // (c) the delivered note says when it is from: the header carries the held time.
+  const std::string note = dream::ownerNoteText("streak", "Two notes clash.");
+  TEST_ASSERT_TRUE(note.find("nightly memory upkeep at") != std::string::npos);
+  // (a) every scheduled entry that returns a FireOutcome: the held channel is empty
+  // even when the model's reply is time-sensitive content.
+  Rig r;
+  r.outJson = std::string("{\"reply\":\"") + kTimeSensitiveReply + "\",\"memory\":\"\",\"ask\":\"\"}";
+  for (const char* id : {"L1", "dream", "system"}) {
+    const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "task", "T", id, /*quietOk=*/true);
+    TEST_ASSERT_TRUE_MESSAGE(o.held.empty(), id);
+  }
+  const orch::FireOutcome b =
+      r.eng->injectBoundedTurn("1001", "post-update", "Update", TurnEngine::TurnBounds{});
+  TEST_ASSERT_TRUE(b.held.empty());
+  // (b) the night never relays the turn's held text into its report, whatever the
+  // injected turn returned in FireOutcome.held.
   Night n;
   n.turn = [] {
     orch::FireOutcome o;
     o.ok = true;
-    o.held = "Two notes clash.";
+    o.held = kTimeSensitiveReply;
     return o;
   };
-  TEST_ASSERT_EQUAL_STRING("Two notes clash.", dream::runNight(n.deps(), clockAt(7, 210), false).report.held.c_str());
+  const dream::NightResult res = dream::runNight(n.deps(), clockAt(7, 210), false);
+  TEST_ASSERT_TRUE(res.report.held.find("commute brief") == std::string::npos);
+  TEST_ASSERT_TRUE(res.report.held.find("Great Northern") == std::string::npos);
+}
+
+static void test_held_note_class_over_every_turn_source() {
+  // Class over every TurnSource: a source added to the enum fails this test (the
+  // default arm), and each source's entry is driven with a time-sensitive reply.
+  for (int s = 0; s <= (int)agent::TurnSource::Serial; ++s) {
+    const agent::TurnSource src = (agent::TurnSource)s;
+    Rig r;
+    r.outJson = std::string("{\"reply\":\"") + kTimeSensitiveReply + "\",\"memory\":\"\",\"ask\":\"\"}";
+    switch (src) {
+      case agent::TurnSource::Owner:
+      case agent::TurnSource::Serial:
+        // A person's turn: the reply is delivered in context, never held.
+        r.eng->handleMessage("hi", "Roy", src == agent::TurnSource::Serial ? "serial" : "1001");
+        TEST_ASSERT_TRUE_MESSAGE(r.delivered.size() >= 1, agent::turnSourceSlug(src, "turn"));
+        break;
+      case agent::TurnSource::Loop: {
+        // A routine and the dream: nothing held for later.
+        const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "task", "T", "dream", true);
+        TEST_ASSERT_TRUE_MESSAGE(o.held.empty(), "loop");
+        break;
+      }
+      case agent::TurnSource::Synthesis:
+        // A sub-agent synthesis: its reply is delivered in-turn, never held.
+        r.jobs->addFreshResult("job1", "research-sub", "rail status: all lines running", "chat:1001");
+        r.eng->maybeConsolidate("1001");
+        TEST_ASSERT_TRUE_MESSAGE(r.delivered.size() >= 1, "synthesis");
+        break;
+      default:
+        TEST_FAIL_MESSAGE("a TurnSource was added: pin its held-note behavior here");
+    }
+  }
+}
+
+// Lane ECHO review (11 Nov): the night must NOT carry the reflection's model text
+// to the owner - red on the old head, where report.held was the turn's held reply
+// verbatim (the 03:31Z commute brief delivered at 12:33Z). What the upkeep may hold
+// is a firmware-worded note only (upkeepNoteText, added with the fix).
+static void test_the_night_never_relays_model_text() {
+  Night n;
+  n.turn = [] {
+    orch::FireOutcome o;
+    o.ok = true;
+    o.held = kTimeSensitiveReply;
+    return o;
+  };
+  const dream::NightResult res = dream::runNight(n.deps(), clockAt(7, 210), false);
+  TEST_ASSERT_TRUE(res.report.held.find("commute brief") == std::string::npos);
+  TEST_ASSERT_TRUE(res.report.held.find("Great Northern") == std::string::npos);
   Night quiet;
   TEST_ASSERT_TRUE(dream::runNight(quiet.deps(), clockAt(7, 210), false).report.held.empty());
 }
@@ -1963,7 +2033,9 @@ int main(int, char**) {
   RUN_TEST(test_boot_reconcile_keeps_the_working_copy_a_fire_opened);
   RUN_TEST(test_boot_reconcile_is_bounded_when_the_store_refuses);
   RUN_TEST(test_every_night_path_writes_exactly_one_row);
-  RUN_TEST(test_the_night_carries_the_held_note);
+  RUN_TEST(test_no_turn_source_holds_model_text);
+  RUN_TEST(test_held_note_class_over_every_turn_source);
+  RUN_TEST(test_the_night_never_relays_model_text);
   RUN_TEST(test_bounded_retries_whatever_the_store_does);
   RUN_TEST(test_unsynced_clock_skips_maintenance_honestly);
   RUN_TEST(test_memory_write_counters_on_the_registry_path);

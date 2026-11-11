@@ -727,13 +727,15 @@ static void test_empty_scheduled_turn_is_silent() {
   TEST_ASSERT_EQUAL(1, (int)r2.delivered.size());
   TEST_ASSERT_EQUAL_STRING("owner: your notes contradict", r2.delivered[0].second.c_str());
   TEST_ASSERT_TRUE(so.held.empty());
-  // ...but the nightly dream messages nobody while it runs (PG4, unit L 21 Oct): its
-  // reply is held for the owner's next conversation (FireOutcome.held).
+  // ...but the nightly dream messages nobody while it runs (PG4, unit L 21 Oct), and
+  // its reply is never held for later delivery either (lane ECHO review, 11 Nov: a
+  // held note reached the owner hours later, out of context) - red on the old head,
+  // where the reply came back in FireOutcome.held.
   Rig r3;
   r3.outJson = r2.outJson;
   orch::FireOutcome o = r3.eng->injectScheduledTurn("", "in", "Dream", "dream", /*quietOk=*/true);
   TEST_ASSERT_EQUAL(0, (int)r3.delivered.size());
-  TEST_ASSERT_EQUAL_STRING("owner: your notes contradict", o.held.c_str());
+  TEST_ASSERT_TRUE(o.held.empty());
   TEST_ASSERT_EQUAL_STRING("owner: your notes contradict", o.detail.c_str());
 }
 
