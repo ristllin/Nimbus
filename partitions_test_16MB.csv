@@ -1,0 +1,19 @@
+# Name,   Type, SubType, Offset,   Size,    Flags
+# Test-only partition table (lane TESTFIT). The NIMBUS_TEST console builds
+# (test, test-cyd, bttest, testuart) produce images slightly over the 6.5 MB
+# app0/app1 slots of default_16MB.csv, and the ROM refuses to boot an image
+# larger than its partition ("Image length ... doesn't fit in partition
+# length ...") even though PlatformIO's section-based report stays green.
+# Test images are only ever flashed to bench boards over USB, never
+# OTA-delivered to a fielded device, so they get 7 MB app slots carved out of
+# spiffs. nvs, otadata and coredump keep the stock offsets and sizes, so a
+# bench board's NVS survives a reflash. PRODUCTION envs keep default_16MB.csv:
+# a production partition change would break OTA for devices in the field.
+# tools/release_gate/check_image_size.py gates every built image against its
+# env's table.
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x700000,
+app1,     app,  ota_1,   0x710000, 0x700000,
+spiffs,   data, spiffs,  0xe10000, 0x1e0000,
+coredump, data, coredump,0xFF0000, 0x10000,

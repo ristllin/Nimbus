@@ -27,6 +27,7 @@ import check_config_mapping
 import check_critical_sections
 import check_driver_pin
 import check_elf_symbols
+import check_image_size
 import check_lwip_core_lock
 import check_ota_preserves_nvs
 import check_owner_regressions
@@ -139,6 +140,7 @@ def run_host_checks() -> bool:
     for name, fn in (
         ("driver-pin (CUM-167)", check_driver_pin.main),
         ("elf-symbols (CUM-167)", check_elf_symbols.main),
+        ("image-size vs app partition (lane TESTFIT)", check_image_size.main),
         ("sram-staging (CUM-24)", check_sram_staging.main),
         ("ota-nvs (CUM-237)", check_ota_preserves_nvs.main),
         ("config-mapping (CUM-388)", check_config_mapping.main),

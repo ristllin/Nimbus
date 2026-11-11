@@ -6,7 +6,10 @@ Nimbus updates itself over Wi-Fi from GitHub Releases. The flash layout is A/B
 (stock `default_16MB.csv`: `otadata` plus two 6.5 MB app slots), so OTA needs no
 partition change: the running slot downloads the new image into the inactive
 slot, verifies it, flips the boot flag and restarts, and rolls back by itself if
-the new firmware cannot boot.
+the new firmware cannot boot. The test-console builds (`test`/`test-cyd`/`bttest`/`testuart`)
+are the one exception: they are flashed to bench boards over USB only and use the
+test-only `partitions_test_16MB.csv` (7 MB app slots), so their larger images still
+boot. Production images always use the stock table above.
 
 ⚠ **Delivery is from the dedicated releases repo [`ristllin/nimbus-fw-releases`](https://github.com/ristllin/nimbus-fw-releases), not the source repo.** The device
 downloads over unauthenticated HTTPS with no repo credentials in the firmware,

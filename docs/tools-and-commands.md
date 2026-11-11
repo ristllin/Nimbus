@@ -206,6 +206,12 @@ Firmware variants are PlatformIO environments in `platformio.ini`. Build with
 | `provision-uart` | UART-console variant `setup_device.py` uses to seed a Nimbus board that is on its UART bridge port; the Freenove uses `provision-cyd`. The installer picks the variant that matches the board and the port on its own, so its serial reply always reaches the same cable. |
 | `provision-cyd` | The provisioning diagnostic for the all-in-one (Freenove CYD) board, on its native USB port; `setup_device.py` uses it for that board. |
 
+The test-console builds (`test`, `test-cyd`, `testuart`, `bttest`) use the test-only partition table
+`partitions_test_16MB.csv` (7 MB app slots instead of the stock 6.5 MB), because their images are slightly over
+the stock slot and the ROM refuses to boot an image larger than its partition. Production envs keep
+`default_16MB.csv`. `tools/release_gate/check_image_size.py` checks every built env's `firmware.bin` against its
+own table and fails the build on overflow.
+
 The `-uart` variants exist because the DevKit has two USB-C ports: native USB
 and UART. A factory-fresh board can only be flashed through the UART port, and
 on some boards the native USB console drops bytes. The `-uart` environments put

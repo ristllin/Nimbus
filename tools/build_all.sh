@@ -130,6 +130,14 @@ else
   failed_labels+=("harness-lab")
 fi
 
+# Image-size gate LAST: every built env's firmware.bin must fit the app
+# partition of ITS OWN partition table (lane TESTFIT - the test-console builds
+# overflow the stock 6.5 MB slot while PlatformIO's section report stays
+# green, and the ROM then refuses to boot the image). FAIL on overflow, WARN
+# under 64 KB of headroom; prints every env's headroom, production included.
+echo "== image-size gate (every built env vs its app partition) =="
+python3 tools/release_gate/check_image_size.py || { echo "== image-size gate FAILED ==" >&2; exit 1; }
+
 echo "== matrix: $pass passed, $fail failed =="
 if [ $fail -ne 0 ]; then
   echo "failed: ${failed_labels[*]}" >&2

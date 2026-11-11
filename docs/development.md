@@ -75,6 +75,14 @@ device environment still links.
 | `provision`, `provision-uart`, `provision-cyd` | Standalone serial network diagnostic and installer seed tool |
 | `beep`, `ledring`, `mictest`, `audio-cyd`, `tftmin`, `tfttouch`, `tftbringup` (some with `-uart` or `-cyd` variants) | Single-purpose hardware diagnostics |
 
+The test-console builds (`test`, `test-cyd`, `bttest`, `testuart`) use the test-only partition table
+[`partitions_test_16MB.csv`](../partitions_test_16MB.csv) (7 MB app slots carved out of spiffs): their images are
+slightly over the stock 6.5 MB app slot, and the ROM refuses to boot an image larger than its partition even though
+PlatformIO's section-based size report stays green. Production envs keep `default_16MB.csv`; a production partition
+change would break OTA for devices in the field. `tools/release_gate/check_image_size.py` gates every built env's
+`firmware.bin` against its own table (FAIL on overflow, WARN under 64 KB of headroom) and runs in the battery, in
+`tools/build_all.sh`, and in `run_gate.py`.
+
 `tools/build_all.sh` compiles the whole matrix: a compile-only gate before a
 release. CI runs the same script (the `build-all` workflow) on pull requests and
 pushes to `main` that touch a build input (`src/`, `lib/`, `include/`,
