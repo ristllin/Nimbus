@@ -650,8 +650,17 @@ std::string JobEngine::ownerText(const FreshScope* scope) const {
     // that starts with "FAILED: " keeps its title (it cannot pose as the device).
     const bool prefixed = f.failed && f.text.compare(0, kFailed.size(), kFailed) == 0;
     // The raw fallback is a reply seam too: a sub-agent's markup never reaches the owner.
-    const std::string body = nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(
-        prefixed ? f.text.substr(kFailed.size()) : f.text));
+    // Lane ECHO fix pass: same for a sentence telling the owner to operate internals
+    // (no owner text here - a sub-agent turn has none - so the asked-how gate is off).
+    // A FAILED report is quoted verbatim instead (the anti-spoof pin): it is a finding,
+    // not an instruction to the owner.
+    const std::string raw = prefixed ? f.text.substr(kFailed.size()) : f.text;
+    const bool report = f.text.compare(0, kFailed.size(), kFailed) == 0;
+    const std::string body =
+        report ? nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(raw))
+               : nimbus::orch::dropOwnerMechanics(
+                     nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(raw)),
+                     std::string());
     const std::string title = f.failed ? std::string() : (f.model.empty() ? "Result" : f.model);
     std::string block = title.empty() ? body : title + "\n" + body;
     if (b.size() + block.size() + 2 > kBudget) {

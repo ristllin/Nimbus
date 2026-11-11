@@ -58,7 +58,7 @@ static void test_failed_upload_tells_the_owner() {
   const std::string why = feedbackProblem(drain);
   TEST_ASSERT_TRUE_MESSAGE(why.empty(), why.c_str());
   // sendNow is the archived direct send (its own guard lives in test_tg_hooks).
-  TEST_ASSERT_TRUE(bodyOf(src, "static bool sendNow(const char* chatId, const char* text) {")
+  TEST_ASSERT_TRUE(bodyOf(src, "static bool sendNow(const char* chatId, const char* text, int64_t replyTo = 0) {")
                        .find("agent::tgarchive::onOutboundText(") != std::string::npos);
 }
 

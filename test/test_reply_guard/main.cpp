@@ -753,6 +753,7 @@ static void test_owner_mechanics_class() {
   const std::string owner = "log my lunch please";
   for (const char* s : {
            "To undo, re-send the row with 0 kcal.",
+           "Undo by re-sending the row with 0 kcal.",
            "Re-send the row with 0 kcal to undo it.",
            "Just resend that row with 0 kcal.",
            "Set the kcal field to 0 on that row.",

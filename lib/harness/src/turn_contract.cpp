@@ -191,14 +191,20 @@ const char kUnreadableNothingSalvaged[] =
     "out. Ask again.";
 
 SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseDetail,
-                               bool reportedCut, orch::LaterWork behind) {
+                               bool reportedCut, orch::LaterWork behind,
+                               const std::string& ownerText) {
   SalvageOutcome o;
   orch::Salvage sv;
   orch::salvageTurnText(raw, sv);
   const bool truncated = parseDetail.find("truncated") != std::string::npos;
-  std::string text = orch::dropEchoSentences(orch::cleanReplyMarkup(sv.reply));
+  // Lane ECHO fix pass: the echo drop AND the owner-mechanics drop both run on
+  // salvaged text - a cut answer is still an answer the owner reads.
+  std::string text =
+      orch::dropOwnerMechanics(orch::dropEchoSentences(orch::cleanReplyMarkup(sv.reply)), ownerText);
   const std::string ask =
-      sv.askComplete ? orch::dropEchoSentences(orch::cleanReplyMarkup(sv.ask)) : std::string();
+      sv.askComplete ? orch::dropOwnerMechanics(orch::dropEchoSentences(orch::cleanReplyMarkup(sv.ask)),
+                                                ownerText)
+                     : std::string();
   if (!ask.empty()) text += (text.empty() ? "" : "\n") + ask;
   if (orch::isPlaceholderReply(text)) text.clear();   // filler is nothing salvaged
   o.cut = reportedCut || truncated || (!sv.reply.empty() && !sv.replyComplete);

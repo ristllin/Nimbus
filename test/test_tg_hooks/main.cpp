@@ -117,8 +117,8 @@ static void test_one_archive_hook_path() {
   // only once Telegram named the delivered message.
   const std::string snd = bodyOf(code(), "bool send(const String& chatId, const String& text, bool block) {");
   TEST_ASSERT_TRUE(snd.find("agent::tgarchive::onOutboundText(") < snd.find("TG_CHUNK"));
-  const std::string now = bodyOf(code(), "static bool sendNow(const char* chatId, const char* text) {");
-  TEST_ASSERT_TRUE(now.find("agent::tgarchive::onOutboundText(") < now.find("doSendMessage("));
+  const std::string now = bodyOf(code(), "static bool sendNow(const char* chatId, const char* text, int64_t replyTo = 0) {");
+  TEST_ASSERT_TRUE(now.find("agent::tgarchive::onOutboundText(") < now.find("doSendMessageImpl("));
   const std::string media = bodyOf(code(), "static void drainMedia() {");
   TEST_ASSERT_TRUE(media.find("agent::tgarchive::onOutboundMedia(") != std::string::npos);
   TEST_ASSERT_TRUE(media.find("agent::tgarchive::onOutboundMedia(") < media.find("uploadMedia("));

@@ -696,6 +696,9 @@ static void freeSlots() {
 // The processed media of the turn about to run, in album order (turnMediaAt).
 static int8_t s_turnSlots[kMediaSlots];
 static size_t s_turnMedia = 0;
+// Lane ECHO fix pass: while Io::runTurn runs the turn, the Telegram message_id
+// the turn answers (0 for a non-Telegram turn); the progress line replies to it.
+static int64_t s_turnMsgId = 0;
 // histV2: the blob ref (16 hex) of the voice note processVoice just stored ("" = none).
 static char s_voiceRef[17] = {};
 
@@ -1231,14 +1234,22 @@ static void sendFileStoreNotice() {
 // ---- sendMessage ------------------------------------------------------------
 
 // One raw sendMessage POST. htmlMode adds parse_mode=HTML (the text must then
-// already BE converted HTML). Returns Telegram's ok verdict.
-static bool doSendMessageRaw(const char* chatId, const char* text, bool htmlMode) {
+// already BE converted HTML). replyTo > 0 adds reply_to_message_id (lane ECHO:
+// the turn's progress line answers the owner's message, so it has context).
+// Returns Telegram's ok verdict.
+static bool doSendMessageRaw(const char* chatId, const char* text, bool htmlMode, int64_t replyTo = 0) {
   WiFiClientSecure sc;   // workConnect frees the single arena first (never 2 resident TLS sessions)
   if (!workConnect(sc)) { alog("telegram: send connect fail"); return false; }
 
-  char prefix[72];
-  int prefixLen = snprintf(prefix, sizeof(prefix), "chat_id=%s%s&text=", chatId,
-                           htmlMode ? "&parse_mode=HTML" : "");
+  char prefix[96];
+  int prefixLen;
+  if (replyTo > 0)
+    prefixLen = snprintf(prefix, sizeof(prefix), "chat_id=%s%s&reply_to_message_id=%lld&text=", chatId,
+                         htmlMode ? "&parse_mode=HTML" : "", (long long)replyTo);
+  else
+    prefixLen = snprintf(prefix, sizeof(prefix), "chat_id=%s%s&text=", chatId,
+                         htmlMode ? "&parse_mode=HTML" : "");
+  if (prefixLen <= 0 || (size_t)prefixLen >= sizeof(prefix)) { tlsClose(sc); return false; }
   size_t bodyLen = (size_t)prefixLen + urlEncodedLen(text);
 
   char req[256];
@@ -1272,28 +1283,33 @@ static bool doSendMessageRaw(const char* chatId, const char* text, bool htmlMode
 // ORIGINAL text is resent plain. Formatting may degrade; a reply is never lost.
 // Delivery only: the reply-queue drain calls this for parts send() already observed
 // and archived whole; every other text goes through sendNow.
-bool doSendMessage(const char* chatId, const char* text) {
+static bool doSendMessageImpl(const char* chatId, const char* text, int64_t replyTo) {
   // Defense in depth (lane L, formatting F4): every Telegram send - turn replies,
   // reply.telegram, loop deliveries, notices - passes the reply seam, so no
   // reasoning, tool-call markup or wrapper tag reaches the chat even from a path
   // the engine did not clean. Idempotent: an engine-cleaned reply is unchanged.
-  const std::string clean =
-      nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(text ? text : ""));
+  // Lane ECHO fix pass: the owner-mechanics drop rides the same seam, gated on
+  // the in-flight turn's owner text (the asked-how exception).
+  const std::string ownerText = orchestrator::currentUserText().c_str();
+  const std::string clean = nimbus::orch::dropOwnerMechanics(
+      nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(text ? text : "")), ownerText);
   const std::string html = nimbus::tgHtml(clean);
-  bool ok = doSendMessageRaw(chatId, html.c_str(), /*htmlMode=*/true);
+  bool ok = doSendMessageRaw(chatId, html.c_str(), /*htmlMode=*/true, replyTo);
   if (!ok) {
     alogf("telegram: html send rejected - resending plain to %s", chatId);
-    ok = doSendMessageRaw(chatId, clean.c_str(), /*htmlMode=*/false);
+    ok = doSendMessageRaw(chatId, clean.c_str(), /*htmlMode=*/false, replyTo);
   }
   alogf("telegram: send %s to %s", ok ? "ok" : "FAIL", chatId);
   return ok;
 }
 
+bool doSendMessage(const char* chatId, const char* text) { return doSendMessageImpl(chatId, text, 0); }
+
 // A short notice the poll task sends at once, bypassing the reply queue (the voice
 // note path). Archived like every outbound send.
-static bool sendNow(const char* chatId, const char* text) {
+static bool sendNow(const char* chatId, const char* text, int64_t replyTo = 0) {
   agent::tgarchive::onOutboundText(String(chatId), String(text ? text : ""), "direct");   // archive hook
-  return doSendMessage(chatId, text);
+  return doSendMessageImpl(chatId, text, replyTo);
 }
 
 // ---- voice notes (LIVE-GATED + BENCH-BROKEN) --------------------------------
@@ -2106,7 +2122,9 @@ struct TgIo {
     // command or a refusal, frees them here).
     agent::vision::offerTurnSet(String(chat.c_str()), String(text.c_str()));
     noteCrossed(chat, text);
+    s_turnMsgId = turnMessageId();   // lane ECHO: the progress line replies to this message
     if (g_cb) g_cb(String(from.c_str()), String(chat.c_str()), String(text.c_str()));
+    s_turnMsgId = 0;
     agent::vision::dropTurnSet();
     s_turnMedia = 0;   // the ordered segment list belonged to that turn
   }
@@ -2747,7 +2765,9 @@ bool turnProgressLine(const String& chatId, const String& line) {
   if (!enabled() || !realChatId(chatId.c_str()) || !line.length()) return false;
   // sendNow, not doSendMessageRaw: the line is an outbound text the archive
   // keeps, like every other direct send (the archive-hook test walks the sites).
-  return sendNow(chatId.c_str(), line.c_str());
+  // Lane ECHO fix pass: it is sent as a reply to the owner's message the turn
+  // answers (s_turnMsgId), so it shows with context instead of floating.
+  return sendNow(chatId.c_str(), line.c_str(), s_turnMsgId);
 }
 
 // A message that arrived while the turn runs is invisible until the next poll
@@ -3231,6 +3251,8 @@ bool authRejected() { return g_authRejected; }
 // Lane BUD: the turn the MessageCallback is running (the spending commands' replay and
 // voice rules). Valid inside the callback only, on this task.
 int64_t turnMessageDate() { return g_receiver.currentTurnDate(); }
+// Lane ECHO fix pass: the message_id of the message the running turn answers.
+int64_t turnMessageId() { return g_receiver.currentTurnMessageId(); }
 bool turnIsVoiceNote() {
   const size_t i = g_receiver.currentTurn();
   return i < g_batch.turnCount() && g_batch.voiceAt(i);

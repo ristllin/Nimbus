@@ -143,15 +143,16 @@ void test_plan_quiet_on_forced_final_round() {
   TEST_ASSERT_FALSE(p.checkQueue);
 }
 
-// The line names what the turn is doing in plain words - a machine name never
-// reaches the owner - and gives an honest rough wait from the observed pace.
+// The line names what the turn is doing in plain words, in the assistant's own
+// voice - a machine name never reaches the owner - and gives an honest rough
+// wait from the observed pace.
 void test_plan_line_words_and_wait() {
   // The real case's shape: round 2 of an 8-round cap at ~35 s a round.
   const TurnProgressPlan p = planTurnProgress(hp(2, 70000), 8, false, TurnSource::Owner);
-  TEST_ASSERT_EQUAL_STRING("Searching the web for that, a few minutes more.", p.line.c_str());
+  TEST_ASSERT_EQUAL_STRING("Still searching the web for that, a few minutes more.", p.line.c_str());
   // A pace that fits in a minute says so.
   const TurnProgressPlan q = planTurnProgress(hp(2, 20000), 8, false, TurnSource::Owner);
-  TEST_ASSERT_EQUAL_STRING("Searching the web for that, about a minute more.", q.line.c_str());
+  TEST_ASSERT_EQUAL_STRING("Still searching the web for that, about a minute more.", q.line.c_str());
   // An unknown tool falls to the honest default, leaking no machine name.
   HeadProgress u = hp(2, 70000);
   u.tools = {"something_new"};
@@ -227,12 +228,17 @@ void test_system_turn_plan_is_quiet() {
     if (progressAllowedForSource(src)) continue;
     for (int round = 0; round <= 3; ++round) {
       const TurnProgressPlan p =
-          planTurnProgress(hp(round, 35000u * (uint32_t)round, round == 3), 8, false, src);
+          planTurnProgress(hp(round, 35000u * (uint32_t)round), 8, false, src);
       TEST_ASSERT_FALSE_MESSAGE(p.keepAlive, "system turn must not type");
       TEST_ASSERT_FALSE_MESSAGE(p.sayLine, "system turn must not send a line");
       TEST_ASSERT_EQUAL_STRING_MESSAGE("", p.line.c_str(), "no line text on a system turn");
       TEST_ASSERT_TRUE_MESSAGE(p.checkQueue, "the mid-turn queue check still runs");
     }
+    // On the forced final round even the queue check stays off (the answer is imminent).
+    const TurnProgressPlan last = planTurnProgress(hp(3, 120000, true), 8, false, src);
+    TEST_ASSERT_FALSE(last.keepAlive);
+    TEST_ASSERT_FALSE(last.sayLine);
+    TEST_ASSERT_FALSE(last.checkQueue);
   }
   // The dream specifically (loop attribution "loop:dream" rides the same source).
   const TurnProgressPlan d = planTurnProgress(hp(2, 70000), 8, false, TurnSource::Loop);
@@ -253,17 +259,23 @@ void test_line_is_first_person() {
   w.tools = {"web_search"};
   const TurnProgressPlan q = planTurnProgress(w, 8, false, TurnSource::Owner);
   TEST_ASSERT_EQUAL_STRING("Still searching the web for that, about a minute more.", q.line.c_str());
-  // Every mapped tool phrase is first person; the default too.
+  // Every mapped tool phrase is the assistant's own voice in chat: it opens with
+  // "Still " and never slips into the device's third person ("its memory").
   for (const char* t : {"web_search", "memory_search", "memory_episodic", "docs_search", "docs_read",
                         "files_search", "files_list", "files_read", "results_get", "results_list"}) {
     HeadProgress h = hp(2, 70000);
     h.tools = {t};
     const std::string line = planTurnProgress(h, 8, false, TurnSource::Owner).line;
     TEST_ASSERT_TRUE_MESSAGE(line.find("Still ") == 0, t);
-    TEST_ASSERT_TRUE_MESSAGE(line.find("my ") != std::string::npos || line.find("I ") != std::string::npos ||
-                             line.find("Still working") == 0, t);
+    TEST_ASSERT_TRUE_MESSAGE(line.find("its ") == std::string::npos &&
+                                 line.find("the device") == std::string::npos &&
+                                 line.find("the system") == std::string::npos,
+                             t);
   }
-  const TurnProgressPlan d = planTurnProgress(hp(2, 70000), 8, false, TurnSource::Owner);
+  // The default (no mapped tool): the honest "Still working" line.
+  HeadProgress d0 = hp(2, 70000);
+  d0.tools.clear();
+  const TurnProgressPlan d = planTurnProgress(d0, 8, false, TurnSource::Owner);
   TEST_ASSERT_EQUAL_STRING("Still working on that, a few minutes more.", d.line.c_str());
 }
 

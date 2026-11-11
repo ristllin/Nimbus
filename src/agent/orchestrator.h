@@ -258,6 +258,9 @@ bool   toolRidesLoop(const std::string& name);   // P7: is this registry tool lo
 
 // Output-channel helpers backing the reply.speak / reply.telegram tools (P6).
 String currentChat();                    // routing chatId of the in-flight turn ("" if none)
+// Lane ECHO fix pass: the owner's message of the in-flight turn ("" if none) -
+// the asked-how gate for the owner-mechanics drop at the Telegram send seam.
+String currentUserText();
 // TTS -> device speaker. True only once the sound task opened the speaker for the clip
 // (a bounded wait); false with `why` when it is unavailable, faulted, too long, or the
 // speaker would not start. capture=false when the caller already records the spoken

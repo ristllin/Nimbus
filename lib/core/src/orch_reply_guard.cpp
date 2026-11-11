@@ -7,6 +7,7 @@
 
 #include "nimbus/mem_cap.h"           // utf8CapLen - a quoted excerpt stays valid UTF-8
 #include "nimbus/orch/action_rules.h"  // actionRuleTable - the request-advertised action names
+#include "nimbus/orch/claims.h"        // ownerAskedHow - the asked-how gate
 
 namespace nimbus {
 namespace orch {
@@ -509,11 +510,112 @@ size_t nextSentence(const std::string& t, size_t from, size_t* e) {
 size_t echoToolNameCount() { return sizeof(kEchoToolNames) / sizeof(kEchoToolNames[0]); }
 const char* echoToolName(size_t i) { return kEchoToolNames[i]; }
 
-// STUB (failing-first, lane ECHO fix pass): v5.0.0 behavior - no owner-mechanics
-// detection. The failing-first tests (the real "re-send the row with 0 kcal"
-// sentence, the class, the precision corpus) are red against this stub.
-bool ownerMechanicsSpan(const std::string&, const std::string&, size_t*, size_t*) { return false; }
-std::string dropOwnerMechanics(const std::string& reply, const std::string&) { return reply; }
+// Defined below, next to dropEchoSentences.
+std::string collapseBlankRuns(const std::string& out);
+
+namespace {
+
+// Lane ECHO fix pass (review finding 2, 11 Nov): the internal objects an owner
+// must never be told to operate - a ledger row, a field, a key, a tool, a command,
+// a file path, json, a parameter, an id, the csv. One blank-separated blob, matched
+// whole-word per sentence word (the isRuleWord pattern).
+const char kMechanicNouns[] =
+    "row rows field fields key keys column columns cell cells tool tools command commands "
+    "path paths json parameter parameters argument arguments schema id ids ledger csv "
+    "endpoint endpoints function functions method methods api database table tables record records";
+
+// Verbs that operate an internal object when directed at the owner (imperative or
+// "you ..."): "re-send the row", "set the field", "call the tool", "edit the path".
+// Hyphenated forms match through their second half ("re-send" -> "send").
+const char kOperateVerbs[] =
+    "re-send resend send sends set sets change changes edit edits update updates delete deletes "
+    "remove removes call calls run runs use uses enter enters type types write writes add adds "
+    "put puts paste pastes open opens fill fills press presses click clicks select selects "
+    "toggle toggles adjust adjusts modify modifies append appends insert inserts replace replaces "
+    "overwrite overwrites copy copies";
+
+// First-person markers: with one of these in the sentence the ASSISTANT is the one
+// operating ("I'll re-send the row for you", "Let me set that field"), not the owner.
+const char kFirstPerson[] = "i i'm i'll i've i'd we we'll we're we've let let's";
+
+// Any word of `s` (blank/word-char tokenized) present in the blank-separated `blob`.
+// A word ending in "ing" also matches its stem ("re-sending" -> "send"), so the
+// verb table needs only the base forms.
+bool anyWordIn(const std::string& s, const char* blob) {
+  size_t at = 0;
+  while (at < s.size()) {
+    while (at < s.size() && !isWordChar(s[at])) at++;
+    const size_t b = at;
+    while (at < s.size() && isWordChar(s[at])) at++;
+    if (b < at) {
+      const std::string w = s.substr(b, at - b);
+      if (findWord(blob, w.c_str()) != std::string::npos) return true;
+      if (w.size() > 4 && w.compare(w.size() - 3, 3, "ing") == 0 &&
+          findWord(blob, w.substr(0, w.size() - 3).c_str()) != std::string::npos)
+        return true;
+    }
+  }
+  return false;
+}
+
+// One lowercased sentence: does it instruct the OWNER to operate an internal
+// object? Not a question (the owner asking the assistant "Can you re-send the
+// row?" is fine), no first person (the assistant doing it is fine), and it must
+// hold an operate verb and a mechanic noun ("To undo, re-send the row with 0
+// kcal."). Plain advice keeps its ordinary object ("Set the oven to 200.",
+// "Use the app to log meals.", "The steak row has no protein figure.").
+bool ownerMechanicsSentence(const std::string& s) {
+  if (s.find('?') != std::string::npos) return false;
+  if (anyWordIn(s, kFirstPerson)) return false;
+  if (!anyWordIn(s, kOperateVerbs)) return false;
+  return anyWordIn(s, kMechanicNouns);
+}
+
+}  // namespace
+
+bool ownerMechanicsSpan(const std::string& reply, const std::string& ownerText,
+                        size_t* begin, size_t* end) {
+  // The owner asking how the system works makes a mechanics description a real
+  // answer: nothing is flagged then.
+  if (ownerAskedHow(ownerText)) return false;
+  const std::string t = lowered(reply.size() > 16384 ? reply.substr(0, 16384) : reply);
+  size_t from = 0;
+  while (from < t.size()) {
+    size_t e = 0;
+    nextSentence(t, from, &e);
+    if (ownerMechanicsSentence(t.substr(from, e - from))) {
+      if (begin) *begin = from;
+      if (end) *end = e;
+      return true;
+    }
+    from = e;
+  }
+  return false;
+}
+
+std::string dropOwnerMechanics(const std::string& reply, const std::string& ownerText) {
+  if (ownerAskedHow(ownerText)) return reply;
+  const std::string t = lowered(reply.size() > 16384 ? reply.substr(0, 16384) : reply);
+  // One pass: keep the non-mechanics sentences' original bytes, note whether any
+  // was found. A clean reply is returned byte-exact.
+  std::string out;
+  out.reserve(reply.size());
+  bool any = false;
+  for (size_t from = 0; from < t.size();) {
+    size_t e = 0;
+    nextSentence(t, from, &e);
+    if (ownerMechanicsSentence(t.substr(from, e - from))) any = true;
+    else out.append(reply, from, e - from);
+    from = e;
+  }
+  if (!any) return reply;
+  const std::string collapsed = collapseBlankRuns(out);
+  const char* ws = " \t\r\n";
+  const size_t b = collapsed.find_first_not_of(ws);
+  if (b == std::string::npos) return std::string();
+  const size_t e = collapsed.find_last_not_of(ws);
+  return collapsed.substr(b, e - b + 1);
+}
 
 bool echoSentenceSpan(const std::string& reply, size_t* begin, size_t* end) {
   const std::string t = lowered(reply);

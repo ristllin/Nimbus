@@ -963,10 +963,16 @@ static void test_echo_envelope_message_delivers_only_the_envelope_reply() {
   r.eng->handleMessage("Ofc log as eaten...", "Roy", "1001");
   // The envelope's reply is delivered, plus the claim check's honest note that the
   // envelope's mem_write was dropped and so the "Logged" claim is not backed.
-  const std::string want = std::string(harness_test::kEchoEnvelopeReply) + "\n\n(Correction: that has not been saved.)";
+  // Lane ECHO fix pass (11 Nov finding): the envelope reply's own mechanics sentence
+  // ("Undo by re-sending the row with 0 kcal.") is dropped too - the owner did not ask
+  // how the system works - so the delivered text is the guarded envelope reply.
+  const std::string want =
+      nimbus::orch::dropOwnerMechanics(harness_test::kEchoEnvelopeReply, "Ofc log as eaten...") +
+      "\n\n(Correction: that has not been saved.)";
   TEST_ASSERT_EQUAL_STRING(want.c_str(), r.lastText().c_str());
   for (const char* leak : {"```", "orch_turn", "mem_write", "session_ops", "Sorry", "formatting slip",
-                           "Delivering the turn properly", "must include all fields", "empty strings"})
+                           "Delivering the turn properly", "must include all fields", "empty strings",
+                           "re-send", "0 kcal"})
     TEST_ASSERT_EQUAL_MESSAGE(0, r.countDelivered(leak), leak);
   // The envelope's mem_write was dropped with a log line, never applied from prose.
   TEST_ASSERT_EQUAL(0, (int)r.memCalls.size());

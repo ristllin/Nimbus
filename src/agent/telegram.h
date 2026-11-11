@@ -272,6 +272,9 @@ bool authRejected();
 // a transcript read but never change a limit.
 int64_t turnMessageDate();
 bool    turnIsVoiceNote();
+// Lane ECHO fix pass: inside the MessageCallback, the Telegram message_id of the
+// message the turn answers (0 when unknown) - the progress line replies to it.
+int64_t turnMessageId();
 
 }  // namespace telegram
 }  // namespace agent

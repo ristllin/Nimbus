@@ -10,8 +10,10 @@ constexpr uint32_t kLineAfterMs = 30000;
 // each took ~35 s, so the round rule fires first there).
 constexpr int kLineAtRound = 2;
 
-// The plain-words activity for the tools the previous round dispatched. The
-// names on the wire are the sanitized registry names (compose.h loopToolName:
+// The plain-words activity for the tools the previous round dispatched, in the
+// assistant's own voice in chat (the persona's first person in conversation,
+// AGENTS.md copy guide): "Still looking through my memory for that". The names
+// on the wire are the sanitized registry names (compose.h loopToolName:
 // '.' -> '_'), so match on those; anything unmapped falls to the honest
 // default and a machine name never reaches the owner.
 struct ToolPhrase {
@@ -19,16 +21,16 @@ struct ToolPhrase {
   const char* phrase;
 };
 const ToolPhrase kToolPhrases[] = {
-    {"web_search", "Searching the web for that"},
-    {"memory_search", "Checking its memory for that"},
-    {"memory_episodic", "Checking its memory for that"},
-    {"docs_search", "Looking through the documents for that"},
-    {"docs_read", "Reading a document for that"},
-    {"files_search", "Looking through the files for that"},
-    {"files_list", "Looking through the files for that"},
-    {"files_read", "Reading a file for that"},
-    {"results_get", "Reading back what it found"},
-    {"results_list", "Reading back what it found"},
+    {"web_search", "Still searching the web for that"},
+    {"memory_search", "Still looking through my memory for that"},
+    {"memory_episodic", "Still looking through my memory for that"},
+    {"docs_search", "Still looking through the documents for that"},
+    {"docs_read", "Still reading a document for that"},
+    {"files_search", "Still looking through the files for that"},
+    {"files_list", "Still looking through the files for that"},
+    {"files_read", "Still reading a file for that"},
+    {"results_get", "Still reading back what I found"},
+    {"results_list", "Still reading back what I found"},
 };
 }  // namespace
 
@@ -39,9 +41,14 @@ std::string progressActivity(const std::vector<std::string>& tools) {
   return "Still working on that";
 }
 
-// STUB (failing-first, lane ECHO fix pass): v5.0.0 behavior - every turn source
-// may signal. The class test over every turn source is red against this stub.
-bool progressAllowedForSource(agent::TurnSource) { return true; }
+// Only a turn a person started may signal the chat: the owner or an approved
+// member in chat (TurnSource::Owner), or the serial console (TurnSource::Serial).
+// A dream, routine, loop, sub-agent/synthesis or other system turn never does
+// (Lumi v5.0.0, 11 Nov 03:31Z: a dream turn's progress line reached the owner
+// with no message of theirs to relate it to).
+bool progressAllowedForSource(agent::TurnSource source) {
+  return source == agent::TurnSource::Owner || source == agent::TurnSource::Serial;
+}
 
 std::string progressWait(uint32_t elapsedMs, int round, int maxRounds) {
   // The pace the turn has actually run at, projected over the rounds the cap
@@ -57,12 +64,15 @@ std::string progressWait(uint32_t elapsedMs, int round, int maxRounds) {
 
 TurnProgressPlan planTurnProgress(const orch::HeadProgress& hp, int maxRounds, bool lineAlreadySent,
                                   agent::TurnSource source) {
-  (void)source;   // STUB: the source gate lands with the fix; v5.0.0 signals every turn
   TurnProgressPlan plan;
-  if (hp.lastRound) return plan;   // the answer is imminent: stay quiet
-  plan.keepAlive = true;
+  if (hp.lastRound) return plan;   // the answer is imminent: stay quiet (no queue ack either)
+  // A turn the owner never started (dream, routine, loop, synthesis) never
+  // signals the chat: no typing, no line. The queue check still runs - a
+  // message that arrived mid-turn is the owner's own and still deserves its ack.
+  const bool personTurn = progressAllowedForSource(source);
+  plan.keepAlive = personTurn;
   plan.checkQueue = true;
-  if (!lineAlreadySent && (hp.elapsedMs >= kLineAfterMs || hp.round >= kLineAtRound)) {
+  if (personTurn && !lineAlreadySent && (hp.elapsedMs >= kLineAfterMs || hp.round >= kLineAtRound)) {
     plan.sayLine = true;
     plan.line = progressActivity(hp.tools) + ", " + progressWait(hp.elapsedMs, hp.round, maxRounds) + ".";
   }

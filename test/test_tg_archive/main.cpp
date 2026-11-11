@@ -1339,8 +1339,11 @@ static void test_every_outbound_send_site_passes_an_archive_hook() {
   const std::string code = src::stripComments(src::readFile("src/agent/telegram.cpp"));
   TEST_ASSERT_TRUE_MESSAGE(code.size() > 10000, "telegram.cpp not found (run from the repo root)");
   const auto raw = src::bodyOf(code, "static bool doSendMessageRaw(");
-  const auto deliver = src::bodyOf(code, "bool doSendMessage(const char* chatId, const char* text) {");
-  const auto direct = src::bodyOf(code, "static bool sendNow(const char* chatId, const char* text) {");
+  // Lane ECHO fix pass: the reply seam moved into doSendMessageImpl (it also takes
+  // the reply_to id); doSendMessage stays a thin delivery-only wrapper over it.
+  const auto deliver = src::bodyOf(code, "static bool doSendMessageImpl(");
+  const auto wrap = src::bodyOf(code, "bool doSendMessage(const char* chatId, const char* text) {");
+  const auto direct = src::bodyOf(code, "static bool sendNow(const char* chatId, const char* text, int64_t replyTo = 0) {");
   const auto media = src::bodyOf(code, "static void drainMedia() {");
   // The media upload is factored out of the drain: the method table, the one upload,
   // and the synchronous send the voice reply uses (it archives what Telegram accepted).
@@ -1350,7 +1353,7 @@ static void test_every_outbound_send_site_passes_an_archive_hook() {
   const auto send = src::bodyOf(code, "bool send(const String& chatId, const String& text, bool block) {");
   const auto poll = src::bodyOf(code, "void pollTask(void*) {");
   const auto page = src::bodyOf(code, "static void fetchOnePage(");
-  for (auto b : {raw, deliver, direct, media, send, poll, page, methodTable, upload, now})
+  for (auto b : {raw, deliver, wrap, direct, media, send, poll, page, methodTable, upload, now})
     TEST_ASSERT_TRUE(b.second > b.first);
 
   // 1. Every Telegram send method on the wire sits in one of the two wire functions.
@@ -1367,7 +1370,7 @@ static void test_every_outbound_send_site_passes_an_archive_hook() {
   // 2. The wire primitives are called only from their hooked owners.
   for (size_t p : src::findAll(code, "doSendMessageRaw(")) {
     if (p == code.find("doSendMessageRaw(")) continue;   // the definition
-    TEST_ASSERT_TRUE_MESSAGE(src::inside(p, deliver), "doSendMessageRaw called outside doSendMessage");
+    TEST_ASSERT_TRUE_MESSAGE(src::inside(p, deliver), "doSendMessageRaw called outside doSendMessageImpl");
   }
   for (size_t p : src::findAll(code, "httpmp::post("))
     TEST_ASSERT_TRUE_MESSAGE(src::inside(p, upload), "httpmp::post called outside uploadMedia");
@@ -1376,11 +1379,14 @@ static void test_every_outbound_send_site_passes_an_archive_hook() {
   TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "uploadMedia(", media));
   TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "uploadMedia(", now));
   TEST_ASSERT_EQUAL_INT(1, (int)src::findAll(code, "mediaMethod(").size() - 1);   // + its definition
-  // doSendMessage (delivery only): the definition, the hooked sendNow, and the
-  // reply-queue drain (whose parts send() archived whole before splitting). Nothing else.
-  TEST_ASSERT_EQUAL_INT(3, (int)src::findAll(code, "doSendMessage(").size());
-  TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "doSendMessage(", direct));
+  // doSendMessage (delivery only): the definition and the reply-queue drain; the
+  // wrapper forwards to doSendMessageImpl, and the hooked sendNow calls it directly.
+  // Nothing else calls either.
+  TEST_ASSERT_EQUAL_INT(2, (int)src::findAll(code, "doSendMessage(").size());
   TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "doSendMessage(", poll));
+  TEST_ASSERT_EQUAL_INT(3, (int)src::findAll(code, "doSendMessageImpl(").size());
+  TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "doSendMessageImpl(", wrap));
+  TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "doSendMessageImpl(", direct));
 
   // 3. One archive hook per outbound entry point, and no other.
   const int hooks = (int)src::findAll(code, "tgarchive::onOutbound").size();
@@ -1394,7 +1400,7 @@ static void test_every_outbound_send_site_passes_an_archive_hook() {
   TEST_ASSERT_TRUE(code.find("tgarchive::onOutboundMedia(", media.first) < code.find("uploadMedia(", media.first));
   TEST_ASSERT_TRUE(code.find("uploadMedia(", now.first) < code.find("if (r.ok)", now.first));
   TEST_ASSERT_TRUE(code.find("if (r.ok)", now.first) < code.find("tgarchive::onOutboundMedia(", now.first));
-  TEST_ASSERT_TRUE(code.find("tgarchive::onOutboundText(", direct.first) < code.find("doSendMessage(", direct.first));
+  TEST_ASSERT_TRUE(code.find("tgarchive::onOutboundText(", direct.first) < code.find("doSendMessageImpl(", direct.first));
 
   // 4. Inbound: one hook, where the page is read, before the turn path parses it.
   TEST_ASSERT_EQUAL_INT(2, (int)src::findAll(code, "tgarchive::onInboundPage(").size());

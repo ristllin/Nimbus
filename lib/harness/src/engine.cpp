@@ -1142,6 +1142,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // at all in Full posture. Offline on destruction frees the arc (also on error
   // paths, since the dtor always runs).
   curChat_ = chatId;   // reply.speak / reply.telegram default target for this turn
+  // Lane ECHO fix pass: the owner's own words of this turn (capped), for the
+  // asked-how gate of the owner-mechanics drop at the send seam.
+  curUserText_.assign(userText.data(), userText.size() < 2048 ? userText.size() : 2048);
   // Every request this turn makes carries the connectors its chat may use (CUM-828):
   // the owner's for the owner, the provider's built-ins only for anyone else - a
   // member's, a guest's, and the synthesis turn that reads a member's sub-agent.
@@ -2360,7 +2363,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // a provider fault. Salvage what it wrote (when the adapter kept the partial
     // turn) with the honest marker, capture it, and record the cut.
     if (orch::isCutError(err)) {
-      const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true, laterBehind());
+      const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true, laterBehind(), userText);
       if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
       const std::string fold = foldHeldNotices();   // L19-13 d: one message
       // With no text to keep, what the turn did run is still told (Lumi, 31 Oct: four
@@ -2499,7 +2502,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // fenced, possibly cut short), and only its top-level reply/ask - never the
     // raw text and never a nested field. A cut answer gets the honest marker; the
     // delivered text is captured so the next turn sees what the owner saw.
-    const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false, laterBehind());
+    const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false, laterBehind(), userText);
     if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
     deliver(chatId, so.text, /*modelText=*/so.salvaged);   // captured as the row; salvaged text spoke
     err = (so.cut ? "cut: " : "parse: ") + perr.detail;
@@ -2534,6 +2537,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // Lane ECHO: an echo of the request's instructions never reaches the owner.
   turn.reply = orch::dropEchoSentences(turn.reply);
   turn.ask = orch::dropEchoSentences(turn.ask);
+  // Lane ECHO fix pass (review finding 2, 11 Nov): a sentence telling the owner
+  // to operate internals ("re-send the row with 0 kcal") never reaches them
+  // either - unless their message asked how the system works.
+  turn.reply = orch::dropOwnerMechanics(turn.reply, userText);
+  turn.ask = orch::dropOwnerMechanics(turn.ask, userText);
   // Lane L (formatting F1): fields recovered from leaked tool markup carry
   // actions, and quoted external content (a mail body, a web page) can carry
   // the same markers - so they apply only on an attended owner turn that read

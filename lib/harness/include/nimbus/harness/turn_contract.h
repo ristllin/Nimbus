@@ -82,8 +82,11 @@ struct SalvageOutcome {
   bool claimsSpawn = false;   // the salvaged text claims sub-agents (none started)
 };
 // `behind`: what stands behind a promise in the kept text (reply_guard.h).
+// `ownerText`: the owner's message this turn answers - the asked-how gate for
+// the owner-mechanics drop (reply_guard.h); "" when the turn has no owner text.
 SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseDetail, bool reportedCut,
-                               nimbus::orch::LaterWork behind = nimbus::orch::LaterWork::None);
+                               nimbus::orch::LaterWork behind = nimbus::orch::LaterWork::None,
+                               const std::string& ownerText = std::string());
 // The plain lines for an answer with nothing salvageable.
 extern const char kCutNothingSalvaged[];
 extern const char kUnreadableNothingSalvaged[];

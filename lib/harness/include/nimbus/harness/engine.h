@@ -480,6 +480,9 @@ class TurnEngine {
   bool externalContentSeen() const { return externalContentSeen_; }
   const std::string& lastInstructions() const { return lastInstructions_; }
   const std::string& currentChat() const { return curChat_; }
+  // Lane ECHO fix pass: the owner's message of the in-flight turn (capped), so
+  // the send seam can apply the asked-how gate of the owner-mechanics drop.
+  const std::string& currentUserText() const { return curUserText_; }
   // A mid-loop reply.telegram/reply.speak already answered THIS turn's chat -
   // applyTurn then suppresses its bare "Done." fallback (device sendToChat
   // reports it here). The reply reached the owner, so the fire spoke too.
@@ -633,6 +636,7 @@ class TurnEngine {
   volatile bool turnInFlight_ = false;
   volatile uint32_t turnStartMs_ = 0;   // nowMs() at TurnGuard ctor (stuck-turn reaper)
   std::string curChat_;                 // routing chatId of the in-flight turn
+  std::string curUserText_;             // lane ECHO: the in-flight turn's owner text (capped)
   volatile bool toolReplied_ = false;   // a mid-loop reply already answered this turn
   // CUM-826: the one "spoke" fact of a fire - model text reached the owner (apply's
   // delivery or speech, a salvaged answer, a tool's send), set only after the hand-over

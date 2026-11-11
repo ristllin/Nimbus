@@ -266,6 +266,18 @@ class TgReceiver {
     return date;
   }
 
+  // Lane ECHO fix pass: inside Io::runTurn, the Telegram message_id of the newest
+  // message of the bucket that turn renders; 0 when none is on the page. The
+  // turn's progress line is sent as a reply to it (reply_to), so it has context.
+  int64_t currentTurnMessageId() const {
+    if (current_ >= batch_.turnCount()) return 0;
+    int64_t id = 0;
+    for (size_t m = 0; m < batch_.messageCountAt(current_); ++m)
+      for (const tg::Update& u : page_)
+        if (u.updateId == batch_.updateIdAt(current_, m) && u.messageId > id) id = u.messageId;
+    return id;
+  }
+
  private:
   static TgCycle kind(TgCycle& out, TgCycle::Kind k) {
     out.kind = k;
