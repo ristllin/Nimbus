@@ -538,6 +538,8 @@ static void test_pack_question_word_and_question_awareness() {
            "Photo of the pouch label - how much of the pack did you eat?",
        })
     TEST_ASSERT_FALSE_MESSAGE(packMealAskedHowMuch(o, "How many bars did you eat?"), o);
+}
+
 // ---- lane ECHO: an echo of the request's instructions never reaches the owner ----
 // The class, over every tool name and turn field the request advertises, in both
 // wire spellings (dotted on MCP, underscored in the head loop). Fix pass: the test
