@@ -115,14 +115,17 @@ and the whole text is delivered.
 
 The reply guard drops two sentence classes from anything delivered to the owner, on
 every path (the served reply and ask, a salvaged answer, the Telegram send, the
-sub-agent fallback): a sentence echoing the request's own instructions (a tool name
-or a contract phrase such as "must include all fields"), and a sentence telling the
-owner to operate an internal object ("To undo, re-send the row with 0 kcal." - a
-row, field, key, tool, command, file path, json, parameter or id). The second class
-is gated on the owner's message: when it asks how the system works ("how do I undo a
-row?"), describing the mechanics is a real answer and stays. A question ("Can you
-re-send the row?") and a first-person offer ("I'll re-send the row for you.") are
-never dropped.
+spoken line, the sub-agent fallback): a sentence echoing the request's own
+instructions (a tool name or a contract phrase such as "must include all fields"),
+and a sentence telling the owner to operate an internal object ("To undo, re-send
+the row with 0 kcal." - a row, field, column, tool, command, file, json, parameter,
+schema, ledger, csv, endpoint, api or database). Everyday objects are not internal:
+a dinner table, a door key, a diary record, a student id and a garden path belong to
+the owner, so "Set the table for four." is kept. The second class is gated on the
+owner's message: when it asks how the system works ("how do I undo a row?"),
+describing the mechanics is a real answer and stays. A question ("Can you re-send
+the row?") and a first-person offer ("I'll re-send the row for you.") are never
+dropped.
 
 ## Cut and unreadable answers
 
