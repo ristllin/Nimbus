@@ -516,13 +516,16 @@ std::string collapseBlankRuns(const std::string& out);
 namespace {
 
 // Lane ECHO fix pass (review finding 2, 11 Nov): the internal objects an owner
-// must never be told to operate - a ledger row, a field, a key, a tool, a command,
-// a file path, json, a parameter, an id, the csv. One blank-separated blob, matched
-// whole-word per sentence word (the isRuleWord pattern).
+// must never be told to operate - a ledger row, a field, a tool, a command, a
+// file, json, a parameter, the csv. One blank-separated blob, matched whole-word
+// per sentence word (the isRuleWord pattern). Everyday nouns are NOT here: a
+// dinner table, a door key, a diary record, a student id, a garden path, a body
+// cell are the owner's own objects, and "Set the table for four." is legitimate
+// advice (adversarial review, 11 Nov: those collisions dropped whole sentences).
 const char kMechanicNouns[] =
-    "row rows field fields key keys column columns cell cells tool tools command commands "
-    "path paths json parameter parameters argument arguments schema id ids ledger csv "
-    "endpoint endpoints function functions method methods api database table tables record records";
+    "row rows field fields column columns tool tools command commands file files "
+    "json parameter parameters argument arguments schema ledger csv "
+    "endpoint endpoints function functions method methods api database";
 
 // Verbs that operate an internal object when directed at the owner (imperative or
 // "you ..."): "re-send the row", "set the field", "call the tool", "edit the path".
@@ -538,9 +541,18 @@ const char kOperateVerbs[] =
 // operating ("I'll re-send the row for you", "Let me set that field"), not the owner.
 const char kFirstPerson[] = "i i'm i'll i've i'd we we'll we're we've let let's";
 
+// Leading question words: a sentence that opens with one AND ends with "?" is a
+// question - the owner asking is content ("Can you re-send the row?"). A tag
+// question still instructs ("Set the field to 0, right?"), so a "?" anywhere else
+// does not make a sentence a question (adversarial review, 11 Nov).
+const char kQuestionWords[] =
+    "can could will would shall should do does did is are was were am has have had "
+    "how what when where which who whom whose why may might must";
+
 // Any word of `s` (blank/word-char tokenized) present in the blank-separated `blob`.
-// A word ending in "ing" also matches its stem ("re-sending" -> "send"), so the
-// verb table needs only the base forms.
+// A word ending in "ing" also matches its stem in every spelling: "re-sending" ->
+// "send", "writing" -> "write" (e-final), "setting" -> "set" / "running" -> "run"
+// (doubled consonant), so the verb table needs only the base forms.
 bool anyWordIn(const std::string& s, const char* blob) {
   size_t at = 0;
   while (at < s.size()) {
@@ -548,24 +560,37 @@ bool anyWordIn(const std::string& s, const char* blob) {
     const size_t b = at;
     while (at < s.size() && isWordChar(s[at])) at++;
     if (b < at) {
-      const std::string w = s.substr(b, at - b);
+      std::string w = s.substr(b, at - b);
+      // A possessive is one token ("row's"): match its base too ("row").
+      if (w.size() > 2 && w.compare(w.size() - 2, 2, "'s") == 0) w.resize(w.size() - 2);
       if (findWord(blob, w.c_str()) != std::string::npos) return true;
-      if (w.size() > 4 && w.compare(w.size() - 3, 3, "ing") == 0 &&
-          findWord(blob, w.substr(0, w.size() - 3).c_str()) != std::string::npos)
-        return true;
+      if (w.size() > 4 && w.compare(w.size() - 3, 3, "ing") == 0) {
+        const std::string base = w.substr(0, w.size() - 3);
+        if (findWord(blob, base.c_str()) != std::string::npos) return true;
+        if (findWord(blob, (base + "e").c_str()) != std::string::npos) return true;
+        if (base.size() >= 2 && base[base.size() - 1] == base[base.size() - 2] &&
+            findWord(blob, base.substr(0, base.size() - 1).c_str()) != std::string::npos)
+          return true;
+      }
     }
   }
   return false;
 }
 
 // One lowercased sentence: does it instruct the OWNER to operate an internal
-// object? Not a question (the owner asking the assistant "Can you re-send the
-// row?" is fine), no first person (the assistant doing it is fine), and it must
-// hold an operate verb and a mechanic noun ("To undo, re-send the row with 0
-// kcal."). Plain advice keeps its ordinary object ("Set the oven to 200.",
-// "Use the app to log meals.", "The steak row has no protein figure.").
+// object? Not a question (see kQuestionWords), no first person (the assistant
+// doing it is fine), and it must hold an operate verb and a mechanic noun ("To
+// undo, re-send the row with 0 kcal."). Plain advice keeps its ordinary object
+// ("Set the oven to 200.", "Use the app to log meals.", "Set the table for four.",
+// "The steak row has no protein figure.").
 bool ownerMechanicsSentence(const std::string& s) {
-  if (s.find('?') != std::string::npos) return false;
+  size_t at = 0;
+  while (at < s.size() && !isWordChar(s[at])) at++;
+  const size_t wb = at;
+  while (at < s.size() && isWordChar(s[at])) at++;
+  const bool leadsWithQuestionWord =
+      wb < at && findWord(kQuestionWords, s.substr(wb, at - wb).c_str()) != std::string::npos;
+  if (leadsWithQuestionWord && !s.empty() && s[s.size() - 1] == '?') return false;
   if (anyWordIn(s, kFirstPerson)) return false;
   if (!anyWordIn(s, kOperateVerbs)) return false;
   return anyWordIn(s, kMechanicNouns);
@@ -578,7 +603,10 @@ bool ownerMechanicsSpan(const std::string& reply, const std::string& ownerText,
   // The owner asking how the system works makes a mechanics description a real
   // answer: nothing is flagged then.
   if (ownerAskedHow(ownerText)) return false;
-  const std::string t = lowered(reply.size() > 16384 ? reply.substr(0, 16384) : reply);
+  // The whole reply is scanned (lowered() keeps byte offsets, so positions map
+  // 1:1 onto the original): a cap here would silently drop the tail of a long
+  // reply once any mechanics sentence is found (adversarial review, 11 Nov).
+  const std::string t = lowered(reply);
   size_t from = 0;
   while (from < t.size()) {
     size_t e = 0;
@@ -595,7 +623,7 @@ bool ownerMechanicsSpan(const std::string& reply, const std::string& ownerText,
 
 std::string dropOwnerMechanics(const std::string& reply, const std::string& ownerText) {
   if (ownerAskedHow(ownerText)) return reply;
-  const std::string t = lowered(reply.size() > 16384 ? reply.substr(0, 16384) : reply);
+  const std::string t = lowered(reply);
   // One pass: keep the non-mechanics sentences' original bytes, note whether any
   // was found. A clean reply is returned byte-exact.
   std::string out;

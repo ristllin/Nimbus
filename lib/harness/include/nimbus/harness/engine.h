@@ -482,6 +482,7 @@ class TurnEngine {
   const std::string& currentChat() const { return curChat_; }
   // Lane ECHO fix pass: the owner's message of the in-flight turn (capped), so
   // the send seam can apply the asked-how gate of the owner-mechanics drop.
+  // Turn-scoped: empty whenever no turn is in flight (cleared at turn end).
   const std::string& currentUserText() const { return curUserText_; }
   // A mid-loop reply.telegram/reply.speak already answered THIS turn's chat -
   // applyTurn then suppresses its bare "Done." fallback (device sendToChat

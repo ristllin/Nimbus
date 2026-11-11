@@ -9,6 +9,8 @@
 
 #include "nimbus/harness/log.h"
 #include "nimbus/orch/action_rules.h"   // who may run each action (CUM-813)
+#include "nimbus/orch/reply_guard.h"    // dropEchoSentences / dropOwnerMechanics: the speaker is a reply seam
+#include "nimbus/orch/reply_markup.h"   // cleanReplyMarkup
 #include "nimbus/orch/models_tool.h"     // the "not in <provider> list" answers
 #include "nimbus/orch/provider_slots.h"  // the orch_model provider enum
 #include "nimbus/orch/head_switch.h"     // a pause never moves the owner's head
@@ -204,7 +206,13 @@ static std::string applyTts(const ValidatedAction& va, const std::string& chatId
   using nimbus::orch::SpeakOutcome;
   const std::string refused = ttsRefusal(va, d);
   if (!refused.empty()) return refused;
-  const nimbus::orch::SpeechCut cut = nimbus::orch::cutForSpeech(va.text);
+  // Lane ECHO (adversarial review, 11 Nov): the speaker is a reply seam too - no
+  // echo and no owner-mechanics sentence is voiced. The asked-how gate reads the
+  // in-flight turn's owner message (empty for a turn the owner did not write).
+  const std::string ownerText = d.ownerMessage ? d.ownerMessage().text : std::string();
+  const std::string spoken = nimbus::orch::dropOwnerMechanics(
+      nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(va.text)), ownerText);
+  const nimbus::orch::SpeechCut cut = nimbus::orch::cutForSpeech(spoken);
   if (cut.text.empty()) return ttsNotSpoken("there was nothing to say");
   const SpeakOutcome o = d.speak(chatId, cut.text);
   if (!o.ok()) return ttsNotSpoken(notSpokenWhy(o));

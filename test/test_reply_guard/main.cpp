@@ -758,7 +758,7 @@ static void test_owner_mechanics_class() {
            "Just resend that row with 0 kcal.",
            "Set the kcal field to 0 on that row.",
            "Change the field to 0 and it is gone.",
-           "Call files_append with the same key to replace it.",
+           "Call the tool with the same key to replace it.",
            "Run the tool again with an empty value.",
            "Edit the file path projects/food/meal-log.csv directly.",
            "Update the row's key to something else.",
@@ -959,7 +959,7 @@ static void test_owner_mechanics_tag_question() {
 static void test_owner_mechanics_no_tail_truncation() {
   const std::string owner = "log my lunch please";
   std::string tail;
-  for (int i = 0; i < 2200; i++) tail += "All good. ";   // ~22 KB of plain sentences
+  for (int i = 0; i < 2200; i++) { if (!tail.empty()) tail += ' '; tail += "All good."; }   // ~22 KB
   const std::string reply = "Re-send the row with 0 kcal to undo it. " + tail;
   TEST_ASSERT_TRUE(reply.size() > 16384);
   const std::string d = dropOwnerMechanics(reply, owner);

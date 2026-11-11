@@ -1205,6 +1205,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     }
     ~TurnGuard() {
       e->turnInFlight_ = false;
+      // Lane ECHO (adversarial review, 11 Nov): the in-flight turn's owner text
+      // must not outlive the turn - a later non-turn send (a notice, a job
+      // delivery) reads currentUserText() at the Telegram seam and must see no
+      // owner text, so the asked-how gate is off for it.
+      e->curUserText_.clear();
       // W6: if this turn spawned sub-agents, DON'T collapse the head arc now -
       // the children are still running (or pending dispatch), and the main-loop
       // head-arc reconciler keeps it lit until the last one finishes. Only a
@@ -3660,6 +3665,7 @@ bool TurnEngine::reapStuckTurn(uint32_t nowMs) {
       (uint32_t)(d_.cfg.loop.deadlineS ? d_.cfg.loop.deadlineS() : 600) * 1000u + 120000u;
   if ((int32_t)(nowMs - turnStartMs_) < (int32_t)cap) return false;
   turnInFlight_ = false;
+  curUserText_.clear();   // lane ECHO: the reaped turn's owner text goes with it
   emitHead((uint8_t)Status::Offline);   // collapse the blue head arc
   return true;
 }
