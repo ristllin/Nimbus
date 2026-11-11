@@ -65,6 +65,24 @@ bool echoSentenceSpan(const std::string& reply, size_t* begin = nullptr, size_t*
 // all-echo reply comes back empty (the empty-answer path owns that case).
 std::string dropEchoSentences(const std::string& reply);
 
+// Lane ECHO fix pass (Lumi v5.0.0, 10 Nov, review finding 2): a reply sentence that
+// tells the OWNER to operate an internal mechanic - "To undo, re-send the row with
+// 0 kcal.", "Set the kcal field to 0", "Call files_append ..." - the owner cannot
+// send rows, set fields or call tools; the assistant offers plain actions instead
+// ("say undo and I will take it off"). True when a sentence is an instruction to
+// the owner to operate an internal object (a row, field, key, column, tool, command,
+// path, json, parameter, schema, id, ledger/csv file, ...) AND the owner's message
+// does not ask how the system works (claims.h's ownerAskedHow). `begin`/`end` may
+// be null.
+bool ownerMechanicsSpan(const std::string& reply, const std::string& ownerText,
+                        size_t* begin = nullptr, size_t* end = nullptr);
+
+// The reply with every owner-mechanics sentence dropped (the echo drop runs
+// separately). `ownerText` gates the check as above; "" means the owner did not
+// ask how the system works. Never grows the text; an all-mechanics reply comes
+// back empty (the empty-answer path owns that case).
+std::string dropOwnerMechanics(const std::string& reply, const std::string& ownerText);
+
 // The echo tool-name table: the head-loop wire names the action table does not
 // carry (orch_turn, mem_write, ...). Exposed for the class test: every entry must
 // be caught in a sentence, and removing one from the table fails the test.

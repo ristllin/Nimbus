@@ -39,6 +39,10 @@ std::string progressActivity(const std::vector<std::string>& tools) {
   return "Still working on that";
 }
 
+// STUB (failing-first, lane ECHO fix pass): v5.0.0 behavior - every turn source
+// may signal. The class test over every turn source is red against this stub.
+bool progressAllowedForSource(agent::TurnSource) { return true; }
+
 std::string progressWait(uint32_t elapsedMs, int round, int maxRounds) {
   // The pace the turn has actually run at, projected over the rounds the cap
   // still allows: an honest rough wait, not a fixed guess.
@@ -51,7 +55,9 @@ std::string progressWait(uint32_t elapsedMs, int round, int maxRounds) {
   return "a few minutes more";
 }
 
-TurnProgressPlan planTurnProgress(const orch::HeadProgress& hp, int maxRounds, bool lineAlreadySent) {
+TurnProgressPlan planTurnProgress(const orch::HeadProgress& hp, int maxRounds, bool lineAlreadySent,
+                                  agent::TurnSource source) {
+  (void)source;   // STUB: the source gate lands with the fix; v5.0.0 signals every turn
   TurnProgressPlan plan;
   if (hp.lastRound) return plan;   // the answer is imminent: stay quiet
   plan.keepAlive = true;

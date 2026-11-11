@@ -6,6 +6,7 @@
 
 #include "nimbus/harness/turn_contract.h"
 #include "nimbus/orch/action_rules.h"
+#include "nimbus/orch/claims.h"       // ownerAskedHow - the asked-how gate
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/head_loop.h"
 #include "nimbus/orch/reply_guard.h"
@@ -719,6 +720,164 @@ static void test_echo_drop_semantics() {
   TEST_ASSERT_EQUAL_STRING(" No em dashes.", s.substr(b, e - b).c_str());
 }
 
+// ---- lane ECHO fix pass (review finding 2, 11 Nov): the owner is never told to
+// operate internal mechanics -----------------------------------------------------
+// Lumi v5.0.0, 10 Nov: a food log reply ended with "To undo, re-send the row with
+// 0 kcal." - the model described its own keyed-upsert mechanics as an instruction
+// to the owner, who cannot send rows. The owner is offered plain actions only.
+
+// The real sentence, failing-first: the exact reply from the evidence, answered by
+// the owner's own message ("Ofc log as eaten..."), which does not ask how the
+// system works.
+static void test_owner_mechanics_real_sentence() {
+  const std::string owner = "Ofc log as eaten...";
+  size_t b = 0, e = 0;
+  TEST_ASSERT_TRUE_MESSAGE(ownerMechanicsSpan(kEchoRealReply, owner, &b, &e), kEchoRealReply);
+  const std::string span = std::string(kEchoRealReply).substr(b, e - b);
+  TEST_ASSERT_TRUE_MESSAGE(span.find("re-send the row") != std::string::npos, span.c_str());
+  // The drop removes exactly that sentence and keeps the rest byte-for-byte.
+  const std::string d = dropOwnerMechanics(kEchoRealReply, owner);
+  TEST_ASSERT_TRUE_MESSAGE(d.find("re-send the row") == std::string::npos, d.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(d.find("0 kcal") == std::string::npos, d.c_str());
+  TEST_ASSERT_TRUE(d.find("Today now stands at 2,385 kcal") != std::string::npos);
+  TEST_ASSERT_TRUE(d.find("Nothing else needed from you.") != std::string::npos);
+  // Echo drop and mechanics drop compose: the delivered reply holds neither leak.
+  const std::string both = dropOwnerMechanics(dropEchoSentences(kEchoRealReply), owner);
+  for (const char* leak : {"re-send the row", "orch_turn", "all fields", "empty strings", "em dash"})
+    TEST_ASSERT_TRUE_MESSAGE(both.find(leak) == std::string::npos, leak);
+  TEST_ASSERT_TRUE(both.find("Today now stands at 2,385 kcal") != std::string::npos);
+}
+
+// The class: a sentence that instructs the owner to operate an internal object.
+static void test_owner_mechanics_class() {
+  const std::string owner = "log my lunch please";
+  for (const char* s : {
+           "To undo, re-send the row with 0 kcal.",
+           "Re-send the row with 0 kcal to undo it.",
+           "Just resend that row with 0 kcal.",
+           "Set the kcal field to 0 on that row.",
+           "Change the field to 0 and it is gone.",
+           "Call files_append with the same key to replace it.",
+           "Run the tool again with an empty value.",
+           "Edit the file path projects/food/meal-log.csv directly.",
+           "Update the row's key to something else.",
+           "Delete the row from the csv.",
+           "Enter 0 in the kcal column of that row.",
+           "You can re-send the row with 0 kcal to remove it.",
+           "If you want to undo it, re-send the row with 0 kcal.",
+           "Copy the id and paste it into the command.",
+           "Write the json yourself in the reply field.",
+           "Use the parameter key to overwrite the row.",
+           "Append a new row with 0 kcal to cancel it.",
+           "Send the row back with 0 kcal.",
+       }) {
+    size_t b = 0, e = 0;
+    TEST_ASSERT_TRUE_MESSAGE(ownerMechanicsSpan(s, owner, &b, &e), s);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", dropOwnerMechanics(s, owner).c_str(), s);
+  }
+  // In a longer reply only the mechanics sentence goes.
+  const std::string t = "All logged. To undo, re-send the row with 0 kcal. Enjoy your day.";
+  TEST_ASSERT_EQUAL_STRING("All logged. Enjoy your day.", dropOwnerMechanics(t, owner).c_str());
+}
+
+// Precision: plain replies, questions, first-person offers and ordinary advice are
+// untouched - the owner CAN send photos, set ovens, call people and use apps.
+static void test_owner_mechanics_precision() {
+  const std::string owner = "log my lunch please";
+  for (const char* r : {
+           "Send me the photo and I'll log it.",
+           "Set the oven to 200 degrees.",
+           "Use the app to log meals.",
+           "Call me at six if it changes.",
+           "Delete the photo from your phone.",
+           "Add the eggs to the pan now.",
+           "Open the window, it's hot.",
+           "The steak dinner row has no protein figure, so the total is unknown.",
+           "Today you're at 1,792 kcal across 5 logged rows.",
+           "Can you re-send the row with 0 kcal?",       // a question: the owner asking the assistant
+           "I'll re-send the row with 0 kcal for you.",  // first person: the assistant doing it
+           "Let me set that field for you.",
+           "We can fix the row together.",
+           "You can ask me to undo it any time.",
+           "Just say undo and I will take it off.",
+           "Tell me what you ate and I'll write the row.",
+           "The row is in the ledger under today.",
+           "",
+       }) {
+    TEST_ASSERT_FALSE_MESSAGE(ownerMechanicsSpan(r, owner), r);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(r, dropOwnerMechanics(r, owner).c_str(), r);
+  }
+}
+
+// The gate: when the owner's message asks how the system works (claims.h's
+// ownerAskedHow: "how do I ...", "how does ... work", ...), describing the
+// mechanics is a real answer and stays.
+static void test_owner_mechanics_asked_how_gate() {
+  const std::string s = "To undo, re-send the row with 0 kcal.";
+  for (const char* owner : {
+           "How does the food log work?",
+           "How do I undo a row?",
+           "How do I use the file store?",
+           "How do you work?",
+           "How is the ledger stored?",
+           "How to delete a row?",
+       }) {
+    TEST_ASSERT_TRUE_MESSAGE(ownerAskedHow(owner), owner);
+    TEST_ASSERT_FALSE_MESSAGE(ownerMechanicsSpan(s, owner), owner);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(s.c_str(), dropOwnerMechanics(s, owner).c_str(), owner);
+  }
+  for (const char* owner : {
+           "Ofc log as eaten...",
+           "log my lunch please",
+           "So what are we at for today?",
+           "hi",
+           "",
+       }) {
+    TEST_ASSERT_FALSE_MESSAGE(ownerAskedHow(owner), owner);
+    TEST_ASSERT_TRUE_MESSAGE(ownerMechanicsSpan(s, owner), owner);
+  }
+}
+
+// Precision over the stored replies corpus (tests/evals/claim_corpus/noted.json),
+// graded with each entry's own owner message: not one stored live reply changes.
+static void test_owner_mechanics_stored_replies_corpus() {
+  FILE* f = std::fopen("tests/evals/claim_corpus/noted.json", "rb");
+  TEST_ASSERT_NOT_NULL(f);
+  std::string raw;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) raw.append(buf, n);
+  std::fclose(f);
+  JsonDocument d;
+  TEST_ASSERT_TRUE(deserializeJson(d, raw) == ArduinoJson::DeserializationError::Ok);
+  JsonArray arr = d.as<JsonArray>();
+  TEST_ASSERT_TRUE_MESSAGE(arr.size() >= 30, "corpus must be read, not skipped");
+  for (JsonObject entry : arr) {
+    const char* r = entry["reply"] | "";
+    const char* owner = entry["owner"] | "";
+    TEST_ASSERT_FALSE_MESSAGE(ownerMechanicsSpan(r, owner), r);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(r, dropOwnerMechanics(r, owner).c_str(), r);
+  }
+}
+
+static void test_owner_mechanics_drop_semantics() {
+  const std::string owner = "log my lunch please";
+  // Idempotent and never grows.
+  const std::string once = dropOwnerMechanics(kEchoRealReply, owner);
+  TEST_ASSERT_EQUAL_STRING(once.c_str(), dropOwnerMechanics(once, owner).c_str());
+  TEST_ASSERT_TRUE(once.size() <= std::string(kEchoRealReply).size());
+  // An all-mechanics reply comes back empty; the empty-answer path owns that case.
+  TEST_ASSERT_EQUAL_STRING("", dropOwnerMechanics("Re-send the row with 0 kcal.", owner).c_str());
+  // A clean reply is byte-exact.
+  const char* clean = "Logged: snack-1723 at 563 kcal. Today: 2,385 kcal.";
+  TEST_ASSERT_EQUAL_STRING(clean, dropOwnerMechanics(clean, owner).c_str());
+  // The span points at the mechanics sentence itself.
+  size_t b = 0, e = 0;
+  const std::string s = "All logged. To undo, re-send the row with 0 kcal. Enjoy.";
+  TEST_ASSERT_TRUE(ownerMechanicsSpan(s, owner, &b, &e));
+  TEST_ASSERT_EQUAL_STRING(" To undo, re-send the row with 0 kcal.", s.substr(b, e - b).c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_filler_class);
@@ -753,5 +912,11 @@ int main() {
   RUN_TEST(test_echo_precision_owner_answers_untouched);
   RUN_TEST(test_echo_precision_stored_replies_corpus);
   RUN_TEST(test_echo_drop_semantics);
+  RUN_TEST(test_owner_mechanics_real_sentence);
+  RUN_TEST(test_owner_mechanics_class);
+  RUN_TEST(test_owner_mechanics_precision);
+  RUN_TEST(test_owner_mechanics_asked_how_gate);
+  RUN_TEST(test_owner_mechanics_stored_replies_corpus);
+  RUN_TEST(test_owner_mechanics_drop_semantics);
   return UNITY_END();
 }

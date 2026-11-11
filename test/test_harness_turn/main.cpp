@@ -916,6 +916,40 @@ static void test_echo_reply_is_dropped_at_the_delivery_seam() {
   TEST_ASSERT_EQUAL(0, r.countDelivered("em dash"));
 }
 
+// Lane ECHO fix pass (review finding 2, 11 Nov): a reply sentence that tells the
+// OWNER to operate internal mechanics ("To undo, re-send the row with 0 kcal.")
+// is dropped at the delivery seam when the owner did not ask how the system
+// works; the rest of the reply is delivered. When the owner DID ask how, the
+// mechanics description is a real answer and stays.
+static void test_owner_mechanics_dropped_at_the_delivery_seam() {
+  {
+    Rig r;
+    Rig::Script sc;
+    sc.outJson =
+        "{\"reply\":\"Logged as eaten: snack-1723 at 563 kcal. Today now stands at 2,385 kcal. "
+        "To undo, re-send the row with 0 kcal. Nothing else needed from you.\",\"memory\":\"\",\"ask\":\"\"}";
+    r.scripts["anthropic"] = {sc};
+    r.eng->handleMessage("Ofc log as eaten...", "Roy", "1001");
+    // The mechanics sentence is dropped; the claim check's honest note (the reply
+    // says "Logged" with no write behind it) still rides at the end.
+    TEST_ASSERT_EQUAL_STRING("Logged as eaten: snack-1723 at 563 kcal. Today now stands at 2,385 kcal. "
+                             "Nothing else needed from you.\n\n(Correction: that has not been saved.)",
+                             r.lastText().c_str());
+    TEST_ASSERT_EQUAL(0, r.countDelivered("re-send the row"));
+    TEST_ASSERT_EQUAL(0, r.countDelivered("0 kcal"));
+  }
+  {
+    Rig r;
+    Rig::Script sc;
+    sc.outJson =
+        "{\"reply\":\"Each row is keyed by its meal. To undo, re-send the row with 0 kcal.\",\"memory\":\"\",\"ask\":\"\"}";
+    r.scripts["anthropic"] = {sc};
+    r.eng->handleMessage("How does the food log work?", "Roy", "1001");
+    TEST_ASSERT_EQUAL_STRING("Each row is keyed by its meal. To undo, re-send the row with 0 kcal.",
+                             r.lastText().c_str());
+  }
+}
+
 // Lane ECHO fix pass (review finding, REVIEW-FINDINGS.json): the head's raw output was
 // the delivered Lumi message - prose, leaked contract sentences, the whole orch_turn
 // envelope as a fenced JSON block, an apology, and the reply again. End to end: only the
@@ -5615,6 +5649,7 @@ static void runFirstHalf() {
   RUN_TEST(test_two_turns_share_the_static_prompt_block);
   RUN_TEST(test_happy_turn_delivers_and_accounts);
   RUN_TEST(test_echo_reply_is_dropped_at_the_delivery_seam);
+  RUN_TEST(test_owner_mechanics_dropped_at_the_delivery_seam);
   RUN_TEST(test_echo_envelope_message_delivers_only_the_envelope_reply);
   RUN_TEST(test_recall_injected_for_user_text_skipped_for_synthesis);
   RUN_TEST(test_same_host_fresh_conv_retry);

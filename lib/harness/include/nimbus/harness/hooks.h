@@ -147,6 +147,11 @@ struct TurnProgressEv {
   bool lastRound = false;
   std::vector<std::string> tools;
   int maxRounds = 0;
+  // Lane ECHO fix pass (review finding, 11 Nov): the turn's source, so a surface
+  // can keep progress signals (typing, the one line) to turns a person started -
+  // a dream, routine, loop or synthesis turn never signals the chat.
+  TurnSource source = TurnSource::Owner;
+  std::string attribution;   // spend tag: "turn" | "synthesis" | "loop:<id>"
 };
 
 struct Hooks {

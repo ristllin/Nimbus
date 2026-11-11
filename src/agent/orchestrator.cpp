@@ -1551,8 +1551,11 @@ static TurnEngine::Deps buildTurnDeps() {
     hp.elapsedMs = ev.elapsedMs;
     hp.lastRound = ev.lastRound;
     hp.tools = ev.tools;
+    // Lane ECHO fix pass: only a turn a person started (owner/member message,
+    // serial console) may signal the chat; a dream, routine, loop or synthesis
+    // turn stays quiet, so the owner never gets an unexplained progress line.
     const nimbus::harness::TurnProgressPlan plan =
-        nimbus::harness::planTurnProgress(hp, ev.maxRounds, s_progLineSent);
+        nimbus::harness::planTurnProgress(hp, ev.maxRounds, s_progLineSent, ev.source);
     if (plan.keepAlive) telegram::turnTyping(String(ev.chatId.c_str()));
     if (plan.sayLine) {
       if (telegram::turnProgressLine(String(ev.chatId.c_str()), String(plan.line.c_str())))

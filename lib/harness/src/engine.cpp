@@ -1585,6 +1585,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       ev.lastRound = hp.lastRound;
       ev.tools = hp.tools;
       ev.maxRounds = headTools.cfg.maxRounds;
+      ev.source = turnSource_;          // lane ECHO fix pass: the source gates the
+      ev.attribution = attribution_;    // surface's progress signals
       d_.hooks.onTurnProgress(ev);
     };
     // Canonical-transcript observer (Glass Box P3): each loop hands its brief

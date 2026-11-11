@@ -509,6 +509,12 @@ size_t nextSentence(const std::string& t, size_t from, size_t* e) {
 size_t echoToolNameCount() { return sizeof(kEchoToolNames) / sizeof(kEchoToolNames[0]); }
 const char* echoToolName(size_t i) { return kEchoToolNames[i]; }
 
+// STUB (failing-first, lane ECHO fix pass): v5.0.0 behavior - no owner-mechanics
+// detection. The failing-first tests (the real "re-send the row with 0 kcal"
+// sentence, the class, the precision corpus) are red against this stub.
+bool ownerMechanicsSpan(const std::string&, const std::string&, size_t*, size_t*) { return false; }
+std::string dropOwnerMechanics(const std::string& reply, const std::string&) { return reply; }
+
 bool echoSentenceSpan(const std::string& reply, size_t* begin, size_t* end) {
   const std::string t = lowered(reply);
   size_t from = 0;
