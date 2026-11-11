@@ -37,6 +37,12 @@ inline const char* turnSourceSlug(TurnSource s, const std::string& attribution) 
   return "owner";
 }
 
+// True for a turn a person started (the owner's chat or the serial console).
+// Spelled here, in this header: on device builds Arduino.h can macro-ize the
+// token `Serial`, so TUs that include Arduino.h (via ArduinoJson) before their
+// own body must use this helper instead of writing TurnSource::Serial.
+inline bool isPersonSource(TurnSource s) { return s == TurnSource::Owner || s == TurnSource::Serial; }
+
 struct TurnStartEv { TurnSource source; std::string chatId; };
 struct TurnEndEv {
   bool ok = false;
@@ -69,6 +75,13 @@ struct TurnEndEv {
   std::string model;           // the model key of the last host that billed ("" = none)
   TurnSource  source = TurnSource::Owner;
   std::string attribution;     // spend tag: "turn" | "synthesis" | "loop:<id>"
+  // Lane ECHO (owner design, 9/11 Nov): a background turn (routine, loop,
+  // sub-agent result, the upkeep) that ran during quiet hours and produced a
+  // reply does NOT deliver it at night and does NOT hold it for the owner's next
+  // message - the reply rides here so the onTurnEnd glue arms ONE self-wakeup
+  // (nimbus/orch/self_wakeup.h) due at the end of quiet hours. Empty on every
+  // other turn.
+  std::string wakeReply;
   // Borrowed, valid only during the hook call: the per-host spend (every host that
   // billed, filed under the model it billed with) and, when !ok, why it failed (the
   // first cause first; never empty on a failed turn).
@@ -167,6 +180,12 @@ struct Hooks {
   std::function<void(const DreamStartEv&)> onDreamStart;
   std::function<void(const DreamEndEv&)> onDreamEnd;
   std::function<void(const char* stage, const char* err)> onError;
+  // Lane ECHO (owner design, 9/11 Nov): is the local time inside quiet hours
+  // right now (the owner's quiet-hours-end setting, default 09:00 local)? A
+  // background turn that has something worth telling the owner while this is
+  // true arms a self-wakeup for the end of quiet hours instead of messaging at
+  // night or holding a note for the owner's next message.
+  std::function<bool()> quietHoursNow;
 };
 
 }  // namespace agent

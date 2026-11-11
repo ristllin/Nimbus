@@ -188,6 +188,10 @@ struct LoopFireRequest {
                        // (the recurring "[SCHEDULED LOOP]" text would LIE here)
   bool ownerReminder = false;  // owner-set one-time /remind - [REMINDER] framing
                                // (the OWNER scheduled it, not the model itself)
+  bool selfWakeup = false;     // a self-wakeup record (id prefix "sw", owner design
+                               // 9/11 Nov): the executor renders a [SELF-WAKEUP]
+                               // preamble, one short turn, no tools that change
+                               // anything (see nimbus/orch/self_wakeup.h)
 };
 
 // Parse a human duration ("45s", "30m", "2h", "1d", or a bare number = minutes)
@@ -364,11 +368,13 @@ bool        loadLoops(const std::string& json, std::vector<LoopRecord>& out);
 //        "pending": <bool>,             // enabled && !approved (awaiting the card)
 //        "nextRun": <epoch s>, "inSec": <int, >=0>,
 //        "lastResult":"none|ok|fail|skipped|paused"
-//     } ]
-//   }
+//     } ],
+//     "quietEnd": <int, minute of day>   // the owner's quiet-hours-end setting
+//   }                                    // (self-wakeups fire at it; 0xFFFF => omit)
 // `nowEpoch` lets the pure function report `inSec` without a clock dep (0 => omit).
 std::string dumpWakeupsApi(const std::vector<LoopRecord>& loops,
-                           bool wakeupsAskFirst, uint64_t nowEpoch = 0);
+                           bool wakeupsAskFirst, uint64_t nowEpoch = 0,
+                           uint16_t quietEndMinute = 0xFFFFu);
 
 }  // namespace orch
 }  // namespace nimbus

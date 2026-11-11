@@ -2015,7 +2015,7 @@ class NimbusdRig {
       wait.retryAfterSec = 60;
       return wait;
     }
-    orch::FireOutcome o = eng_->injectScheduledTurn(r.chatId, r.prompt, r.name, r.id, false, r.once, r.ownerReminder);
+    orch::FireOutcome o = eng_->injectScheduledTurn(r.chatId, r.prompt, r.name, r.id, false, r.once, r.ownerReminder, r.selfWakeup);
     if (!cur_.deliveries.empty()) cur_.reply = cur_.deliveries.back();
     cur_.ok = o.ok;
     turns_.push_back(cur_);

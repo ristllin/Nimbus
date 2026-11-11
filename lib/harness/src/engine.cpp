@@ -37,6 +37,8 @@
 
 #include "nimbus/harness/conversation.h"   // histV2: historyTurns / fitHistory / foldSlice
 #include "nimbus/harness/dream.h"      // the dream turn's memory-only surface (lane M)
+#include "nimbus/orch/self_wakeup.h"   // parseWakeNote / wakeKindSlug / restrictSelfWakeupTurn (owner design)
+#include "nimbus/harness/turn_progress.h"   // backgroundSource - every non-person turn source
 #include "nimbus/harness/turn_inbox.h"     // histV2: what the channel says the sender sent
 #include "nimbus/orch/turn_images.h"       // R1: the turn's photos, shown to the head as images
 #include "nimbus/net/tg_settle.h"          // withoutCrossedNote: the recall query is what was sent
@@ -1163,6 +1165,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   toolReplyTexts_.clear();
   lastBrief_.clear();  // per-turn: a single-shot turn must not inherit the last loop's brief
   heldNotices_.clear();   // L19-13 d: this turn's switch notices start empty
+  wakeReply_.clear();     // per-turn: a background turn's quiet-hours reply capture starts empty
   // Lane L: sub-agent results folded into this turn are external content (the
   // leak-repair gate reads it); a tool that returns external content sets it too.
   externalContentSeen_ = freshInTurn_;
@@ -1316,6 +1319,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                                  return !dream::toolAllowed(s.name);
                                }),
                 specs.end());
+  // A self-wakeup (owner design, 9/11 Nov) is one short turn whose only job is to
+  // re-check and deliver its one note: NO tools at all - nothing it does may
+  // change anything.
+  if (selfWakeupTurn_) specs.clear();
   turnMem().gate.phase("specs", freeHeap(), largestFreeBlock());
   // Pick the host BEFORE composing: the context budget is derived from the head
   // model's window (owner ask 2026-08-05 - caps derive from the context length
@@ -1897,6 +1904,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.spend = &tf.spend;
     ev.chain = okFlag ? nullptr : &tf.chain;
     ev.trimmedForSize = fit.historyTrimmed();
+    // Lane ECHO (owner design, 9/11 Nov): a background turn's reply captured
+    // during quiet hours (never delivered at night, never held for the next
+    // message) - the onTurnEnd glue arms ONE self-wakeup from it.
+    if (!wakeReply_.empty()) ev.wakeReply = wakeReply_;
     d_.hooks.onTurnEnd(ev);
   };
   // L24: under the floor at its provider request the turn ends before asking, with
@@ -2590,20 +2601,41 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     const int dropped = dream::restrictTurn(turn);
     if (dropped) hlog::logf("dream: dropped %d device/session item(s) (memory only)", dropped);
   }
+  if (selfWakeupTurn_) {
+    const int dropped = nimbus::orch::restrictSelfWakeupTurn(turn);
+    if (dropped) hlog::logf("self-wakeup: dropped %d tool item(s) (no tools on a wake turn)", dropped);
+  }
+  // Lane ECHO (owner design, 9/11 Nov): during quiet hours a background turn's
+  // (routine, loop, sub-agent synthesis, the upkeep) reply is NOT delivered at
+  // night and NOT held for the owner's next message - it is captured into
+  // wakeReply_ and rides TurnEndEv.wakeReply, so the onTurnEnd glue arms ONE
+  // self-wakeup due at the end of quiet hours. Outside quiet hours the reply
+  // takes its normal path (delivered now). The self-wakeup's own turn never
+  // captures: it fires at the END of quiet hours and delivers directly.
+  const bool captureWakeReply =
+      !selfWakeupTurn_ && nimbus::harness::backgroundSource(turnSource_) &&
+      d_.hooks.quietHoursNow && d_.hooks.quietHoursNow();
   if (memoryOnly) {
     // The nightly dream messages nobody while it runs (PG4; unit L, 21 Oct: its
     // "memory was unavailable tonight" summary went to Telegram). Its reply, ask and
     // correction lines are never sent and never held for later delivery either
     // (lane ECHO review, 11 Nov: a held note reached the owner hours later, out of
-    // context) - the upkeep's owner note is firmware-worded only (dream::upkeepNoteText,
-    // built from the night's own report). Its sound, attention and completion cues
-    // stay off; deliver() already holds its engine notices.
+    // context) - during quiet hours the reply is captured for the end-of-quiet
+    // self-wakeup (wakeReply_), outside quiet hours it is simply not sent. Its
+    // sound, attention and completion cues stay off; deliver() already holds its
+    // engine notices.
     // On the heap (lane STACK): a 468 B copy of the apply hooks.
     const std::unique_ptr<agent::ApplyDeps> heldDeps(new agent::ApplyDeps(d_.apply));
     agent::ApplyDeps& held = *heldDeps;
-    held.deliver = [](const std::string&, const std::string& text) {
+    held.deliver = [this, captureWakeReply](const std::string&, const std::string& text) {
       if (text.empty()) return;
-      hlog::logf("quiet turn: reply not held for the owner (%.96s)", text.c_str());
+      if (captureWakeReply) {
+        wakeReply_ += wakeReply_.empty() ? text : ("\n\n" + text);
+        hlog::logf("quiet hours: reply captured for the end-of-quiet self-wakeup (%.96s)",
+                   text.c_str());
+      } else {
+        hlog::logf("quiet turn: reply not sent (%.96s)", text.c_str());
+      }
     };
     held.emitAsk = nullptr;
     held.fire = nullptr;
@@ -2614,7 +2646,20 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   } else {
     ApplyCapture capture(this, !turn.reply.empty());
     AnswerMark answered(d_.apply, spoke_, d_.deliveryNeedsRow);
+    // Capture-instead-of-deliver during quiet hours: the wrapper sits OUTSIDE
+    // AnswerMark's, so spoke_ stays false (nothing reached the owner at night).
+    std::function<void(const std::string&, const std::string&)> innerDeliver;
+    if (captureWakeReply && d_.apply.deliver) {
+      innerDeliver = d_.apply.deliver;
+      d_.apply.deliver = [this](const std::string&, const std::string& text) {
+        if (text.empty()) return;
+        wakeReply_ += wakeReply_.empty() ? text : ("\n\n" + text);
+        hlog::logf("quiet hours: reply captured for the end-of-quiet self-wakeup (%.96s)",
+                   text.c_str());
+      };
+    }
     agent::applyTurn(turn, chatId, d_.apply, st, spawned);
+    if (innerDeliver) d_.apply.deliver = std::move(innerDeliver);
   }
   parkMemResults(chatId);
   // Lane POL2: the open-question list observes the completed turn (a reply that
@@ -2921,7 +2966,8 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
                                                           const std::string& name,
                                                           const std::string& loopId,
                                                           bool quietOk, bool once,
-                                                          bool ownerReminder) try {
+                                                          bool ownerReminder,
+                                                          bool selfWakeup) try {
   // This fire's flags start clear before anything can throw: the handler below reads
   // them to tell a fire whose turn never went out (a memory deferral) from one that
   // asked a provider or reached the owner (never a deferral), and one whose turn was
@@ -2970,8 +3016,10 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   // nothing): store::orchModel and the output caps read this role on this task.
   const nimbus::orch::BackgroundTurnScope backgroundTurn;
   lastReply_.clear();
+  wakeReply_.clear();
   scheduledTurn_ = true;
   quietTurn_ = quietOk;
+  selfWakeupTurn_ = selfWakeup;
   routineRecurs_ = !once && !ownerReminder && !loopId.empty() && !dream::isReserved(loopId);
   attribution_ = loopId.empty() ? "loop" : ("loop:" + loopId);   // spend attribution
   turnSource_ = TurnSource::Loop;
@@ -2983,8 +3031,23 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   // => associative recall runs for the scheduled task. A Once wakeup gets its own
   // honest framing: the model set it FOR ITSELF, it fires exactly once, and the
   // note is the context it asked to have restored.
+  // A self-wakeup (owner design, 9/11 Nov) fires ONE short turn whose only job is
+  // to re-check and deliver the one note it was armed with - no tools, nothing
+  // it does may change anything. The record's prompt is the note envelope; the
+  // note text is rendered here, never the raw JSON.
+  nimbus::orch::WakeNote wakeNote;
+  const bool noteParsed = selfWakeup && nimbus::orch::parseWakeNote(prompt, wakeNote);
   const std::string preamble =
-    ownerReminder
+    selfWakeup
+      ? std::string("\n[SELF-WAKEUP]\nA note from ") +
+            (noteParsed ? nimbus::orch::wakeKindSlug(wakeNote.kind) : "a background turn") +
+            " is due now (quiet hours have ended). Re-check it before sending: if it is "
+            "stale (its time has passed, e.g. a brief about delays that ended) or was "
+            "already delivered, reply with nothing at all; otherwise deliver it to the "
+            "owner in plain words, saying what it is and when it was noticed. One short "
+            "reply. No tools - this turn changes nothing.\n\nThe note:\n\n" +
+            (noteParsed ? wakeNote.text : prompt) + "\n\n"
+    : ownerReminder
       ? "\n[REMINDER]\nThe owner set a one-time reminder for this moment (with "
         "/remind) and it just fired. Deliver the reminder to them now - do what "
         "it asks if it's an action, otherwise just remind them plainly. There is "
@@ -3021,8 +3084,13 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
           ? "\n\n(Your reply is delivered to " + std::string(deliveryPlace(target)) +
                 ". Do not send a second copy over another messaging channel.)"
           : std::string();
-  std::string inputs = takePendingMemResults(target) + takeSpawnNotes(target) + buildDynamicContext(target) +
-                       preamble + prompt + where;
+  // A self-wakeup is one short turn: no memory results, no dynamic context, and
+  // the note text (not the raw envelope) is the turn's user text.
+  std::string inputs = selfWakeup
+      ? preamble + where
+      : takePendingMemResults(target) + takeSpawnNotes(target) + buildDynamicContext(target) +
+            preamble + prompt + where;
+  const std::string& userTextForTurn = selfWakeup ? wakeNote.text : prompt;
   unverifiedTurn_ = false;   // a scheduled turn reads no fresh results
   dreamTurn_ = dream::isReserved(loopId);
   // This fire reports its OWN spend and cause: a turn that fails before any billed
@@ -3036,7 +3104,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   else
     setTrigger("[routine \"" + name + "\" ran]", loopId.empty() ? std::string("loop") : "loop:" + loopId);
   turnMem().admitted = true;   // runTurn continues this record
-  o.ok = runTurn(inputs, target, prompt, telegram);
+  o.ok = runTurn(inputs, target, userTextForTurn, telegram);
   // Recorded before any bookkeeping below can allocate: a served fire whose
   // bookkeeping then fails still reports ok (the handler reads it).
   fireServed_ = o.ok;
@@ -3061,6 +3129,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   quietTurn_ = false;
   routineRecurs_ = false;
   dreamTurn_ = false;
+  selfWakeupTurn_ = false;
   attribution_ = "turn";                       // back to the owner default
   turnSource_ = TurnSource::Owner;
   loopName_.clear();
@@ -3087,6 +3156,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   quietTurn_ = false;
   routineRecurs_ = false;
   dreamTurn_ = false;
+  selfWakeupTurn_ = false;
   turnSource_ = TurnSource::Owner;
   nimbus::orch::FireOutcome o;
   o.answered = spoke_;

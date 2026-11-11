@@ -118,7 +118,8 @@ nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String
                                               const String& loopId = String(),
                                               bool quietOk = false,
                                               bool once = false,
-                                              bool ownerReminder = false);
+                                              bool ownerReminder = false,
+                                              bool selfWakeup = false);
 // True while a scheduled-loop turn is executing - the device-action validator
 // refuses `reboot` and `loop.create` in this window (prism fork-bomb/reset guard).
 bool inScheduledTurn();

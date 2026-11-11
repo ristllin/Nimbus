@@ -47,7 +47,28 @@ std::string progressActivity(const std::vector<std::string>& tools) {
 // (Lumi v5.0.0, 11 Nov 03:31Z: a dream turn's progress line reached the owner
 // with no message of theirs to relate it to).
 bool progressAllowedForSource(agent::TurnSource source) {
-  return source == agent::TurnSource::Owner || source == agent::TurnSource::Serial;
+  return agent::isPersonSource(source);
+}
+
+bool backgroundSource(agent::TurnSource source) {
+  return !progressAllowedForSource(source);
+}
+
+bool wakeKindForSource(agent::TurnSource source, const std::string& attribution,
+                       orch::WakeKind& out) {
+  // NB: no `TurnSource::Serial` spelling here - this TU includes ArduinoJson
+  // (via self_wakeup.h), which on device builds macro-izes `Serial`.
+  if (agent::isPersonSource(source)) return false;   // a person started it: it delivers directly, never arms
+  if (source == agent::TurnSource::Loop) {
+    // The reserved nightly loop (attribution "loop:dream") is the upkeep.
+    out = (attribution == "loop:dream") ? orch::WakeKind::Upkeep : orch::WakeKind::Routine;
+    return true;
+  }
+  if (source == agent::TurnSource::Synthesis) {
+    out = orch::WakeKind::Subagent;
+    return true;
+  }
+  return false;   // a source added to the enum without a classification fails the class test
 }
 
 std::string progressWait(uint32_t elapsedMs, int round, int maxRounds) {

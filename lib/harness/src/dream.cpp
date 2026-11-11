@@ -565,9 +565,10 @@ nimbus::orch::FireOutcome reflect(const NightDeps& d, const std::string& inputs,
   r.ops = after - before;
   r.tokens = o.tokens.total();
   r.error = o.ok ? std::string() : o.error;
-  // Lane ECHO review (11 Nov): the reflection's model text is never relayed to the
-  // owner - not even held (o.held is ignored here). The upkeep's note is built from
-  // the night's own report instead (upkeepNoteText, set in runNight).
+  // Lane ECHO review (11 Nov, owner design): the reflection's reply is not held
+  // for the owner's next message either - runNight turns it into the night's wake
+  // note (wakeNoteForNight), which the device glue arms as ONE self-wakeup due at
+  // the end of quiet hours. Nothing is ever held.
   return o;
 }
 
@@ -626,7 +627,7 @@ NightResult runNight(const NightDeps& d, const NightClock& c, bool force) {
                        // night a failing store kept on disk
     r.streak = st.streak;
     r.stateSaved = save(st);
-    r.held = upkeepNoteText(r);
+    r.wake = wakeNoteForNight(r, "", c.epoch, c.minuteOfDay);
     o.ok = true;
     closeNight(d, c, r, o);
     return res;
@@ -658,7 +659,7 @@ NightResult runNight(const NightDeps& d, const NightClock& c, bool force) {
   st.lastCause = r.cause;
   clearMarker(st);   // the outcome write clears the marker
   r.stateSaved = save(st);
-  r.held = upkeepNoteText(r);
+  r.wake = wakeNoteForNight(r, o.detail, c.epoch, c.minuteOfDay);
   o.retryAfterSec = r.retryAfterSec;
   closeNight(d, c, r, o);
   return res;
@@ -919,9 +920,9 @@ std::string streakAlertText(const NightReport& r) {
 }
 
 std::string upkeepNoteText(const NightReport& r) {
-  // Firmware-worded facts only (lane ECHO review, 11 Nov): the reflection's model
-  // text is never relayed to the owner, held or not - only what the device itself
-  // knows, each with what the owner can do.
+  // Firmware-worded facts only: what the device itself knows (storage not saved,
+  // memory writes failed), each with what the owner can do. Used as the wake
+  // note's text when the reflection itself said nothing.
   std::string out;
   if (!r.stateSaved)
     out = "Storage was not available during the nightly memory upkeep, so its state was not saved (" +
@@ -936,25 +937,36 @@ std::string upkeepNoteText(const NightReport& r) {
   return out;
 }
 
-std::string ownerNoteText(const std::string& streakAlert, const std::string& heldReply,
-                          uint16_t heldMinuteOfDay) {
-  std::string body = streakAlert;
-  if (!heldReply.empty()) {
-    std::string clipped = heldReply;
-    if (clipped.size() > kHeldNoteMax) {
-      clipped.resize((size_t)nimbus::utf8CapLen(clipped.c_str(), (int)clipped.size(), (int)kHeldNoteMax - 3));
-      clipped += "...";
-    }
-    if (!body.empty()) body += "\n\n";
-    body += clipped;
-  }
-  if (body.empty()) return "";
-  // The note says when it is from (lane ECHO review, 11 Nov: a held note arrived
-  // hours later with nothing to say why it was only now).
-  char at[8];
-  snprintf(at, sizeof at, "%02u:%02u", (unsigned)((heldMinuteOfDay / 60) % 24),
-           (unsigned)(heldMinuteOfDay % 60));
-  return std::string("From the nightly memory upkeep at ") + at + ":\n" + body;
+nimbus::orch::WakeNote wakeNoteForNight(const NightReport& r, const std::string& reflectionReply,
+                                        uint64_t epoch, uint16_t minuteOfDay) {
+  // Owner design (9/11 Nov): the note is the reflection's own reply when it said
+  // something worth telling the owner, else the firmware-worded upkeep facts.
+  // It is armed as a self-wakeup (never held); the wake re-checks it, so model
+  // text can go out promptly at the end of quiet hours with when it was noticed,
+  // and is dropped when stale or already delivered.
+  nimbus::orch::WakeNote n;
+  n.kind = nimbus::orch::WakeKind::Upkeep;
+  std::string text = reflectionReply;
+  for (size_t i = 0; i < text.size(); ++i)
+    if ((unsigned char)text[i] < 0x20 && text[i] != '\n' && text[i] != '\t') text[i] = ' ';
+  // Trim to the note budget so the envelope fits the loop prompt cap.
+  constexpr size_t kWakeNoteMax = 1200;
+  if (text.size() > kWakeNoteMax)
+    text.resize((size_t)nimbus::utf8CapLen(text.c_str(), (int)text.size(), (int)kWakeNoteMax - 3) + 3);
+  if (text.find_first_not_of(" \t\r\n") == std::string::npos) text = upkeepNoteText(r);
+  n.text = text;
+  n.noticedEpoch = epoch;
+  n.noticedMinute = minuteOfDay;
+  n.notAfterEpoch = 0;   // no firmware-known window; the wake turn re-checks
+  n.dedupKey = text.empty() ? 0 : nimbus::orch::fnv64(text);
+  return n;
+}
+
+std::string ownerNoteText(const std::string& streakAlert) {
+  // The failing-streak alert only, delivered at the owner's next conversation
+  // (never at night). The held upkeep note and its prefix are gone (owner design,
+  // 11 Nov): the note goes out via its self-wakeup at the end of quiet hours.
+  return streakAlert;
 }
 
 uint16_t windowEndFor(uint16_t slotMinute) {

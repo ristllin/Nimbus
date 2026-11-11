@@ -3,6 +3,8 @@
 
 #include <algorithm>
 
+#include "nimbus/orch/self_wakeup.h"   // isSelfWakeupId - the [SELF-WAKEUP] framing flag
+
 namespace nimbus {
 namespace orch {
 
@@ -156,6 +158,7 @@ LoopFireRequest buildFireRequest(const LoopRecord& l, const Delivery& d, uint64_
   // [REMINDER] - the owner scheduled it, not the model.
   req.once          = (l.sched.kind == SchedKind::Once);
   req.ownerReminder = (req.once && l.createdBy == CreatedBy::Owner);
+  req.selfWakeup    = isSelfWakeupId(l.id);   // owner design 9/11 Nov: its own framing
   req.scheduledFor  = nowEpoch;
   return req;
 }

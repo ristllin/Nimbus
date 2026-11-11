@@ -17,6 +17,7 @@
 #include "nimbus/store/moved_store.h"   // FailureLog - one refused-write line a minute
 #include "nimbus/harness/dream.h"           // applyInterruptedToLoop - the dream's boot reconcile
 #include "nimbus/orch/loop_delivery.h"   // resolveDelivery - where a fire delivers (CUM-505)
+#include "nimbus/orch/self_wakeup.h"      // armSelfWakeup / wakeupRecheck - the owner design (9/11 Nov)
 #include "nimbus/orch/spend_ceiling.h"   // isSpendFrozenError - a ceiling defer (lane DEF)
 #include "nimbus/wifi/net_up.h"   // SntpKick - the pure SNTP kick schedule (CUM-504)
 #include "store.h"
@@ -104,6 +105,36 @@ static void persistWakeupMode() {
     alog("loops: wakeup-mode write failed");
 }
 
+// Quiet hours (owner design, 9/11 Nov): the END of quiet hours is the owner's
+// setting (local minute of day, default 09:00 = 540); the night begins at 22:00
+// local (orch::kQuietHoursStart, firmware constant). Persisted in its own tiny
+// file so the loops.json array shape (and its roundtrip test) is untouched.
+static const char* kQuietEndPath = "/data/quiet_end";
+static uint16_t g_quietEnd = orch::kQuietHoursEndDefault;
+static void loadQuietEnd() {
+  File f = LittleFS.open(kQuietEndPath, FILE_READ);
+  if (!f) { g_quietEnd = orch::kQuietHoursEndDefault; return; }
+  String s = f.readString();
+  f.close();
+  const long v = s.length() ? atol(s.c_str()) : -1;
+  g_quietEnd = (v < 0 || v > 1439) ? orch::kQuietHoursEndDefault : (uint16_t)v;
+}
+static void persistQuietEnd() {
+  char b[8];
+  snprintf(b, sizeof b, "%u", (unsigned)g_quietEnd);
+  if (!agent::writeFileAtomic(kQuietEndPath, b, "quiet_end"))
+    alog("loops: quiet-end write failed");
+}
+
+uint16_t quietHoursEndMinute() { Lock lk; return g_quietEnd; }
+void setQuietHoursEndMinute(uint16_t minuteOfDay) {
+  Lock lk;
+  g_quietEnd = minuteOfDay > 1439u ? 1439u : minuteOfDay;
+  persistQuietEnd();
+  alogf("loops: quiet hours now end at %02u:%02u local", (unsigned)(g_quietEnd / 60),
+        (unsigned)(g_quietEnd % 60));
+}
+
 // ---- time helpers (the ONLY tz-aware code; libc, on tg_poll) --------------
 static bool clockValid() { time_t t = time(nullptr); return t > 1000000000; }
 
@@ -125,6 +156,34 @@ static uint64_t civilToEpoch(const CivilTime& c) {
 static uint32_t curLocalDay(uint64_t epoch) {
   CivilTime c = nowCivilLocal(epoch);
   return orch::daysFromCivil(c.year, (unsigned)c.month, (unsigned)c.day);
+}
+
+// Quiet hours right now (the engine's Hooks.quietHoursNow): false when the
+// clock is not synced - no local minute is real yet, so nothing is "quiet".
+bool quietHoursNow() {
+  if (!clockValid()) return false;
+  const CivilTime c = nowCivilLocal((uint64_t)time(nullptr));
+  return orch::inQuietHours((uint16_t)(c.hour * 60 + c.min), g_quietEnd);
+}
+
+// Arm ONE self-wakeup for `note` over the persisted table (owner design, 9/11
+// Nov). The pure rule owns every bound: not quiet hours => "" (and no hold - the
+// caller delivers by its normal path), one pending per kind => "", due within
+// 24 h at the end of quiet hours, auto-approved, listed with the routines.
+std::string armSelfWakeupNote(const orch::WakeNote& note) {
+  Lock lk;
+  if (!clockValid()) return "";
+  const uint64_t now = (uint64_t)time(nullptr);
+  const CivilTime c = nowCivilLocal(now);
+  const uint16_t minute = (uint16_t)(c.hour * 60 + c.min);
+  const std::string id = orch::armSelfWakeup(g_loops, note, now, minute, g_quietEnd);
+  if (!id.empty()) {
+    persist();
+    alogf("loops: self-wakeup %s armed (%s, due in %u s)", id.c_str(),
+          orch::wakeKindSlug(note.kind),
+          (unsigned)orch::selfWakeupDelaySec(now, minute, g_quietEnd));
+  }
+  return id;
 }
 
 // Next-fire: Interval off epoch (boot-relative pre-sync = monotonic uptime);
@@ -273,6 +332,7 @@ void begin(FireHook fire, ChatAllowedHook chatAllowed, AlertHook alert) {
   g_fire = fire; g_chatAllowed = chatAllowed; g_alert = alert;
   orch::loadLoops(loadRaw(), g_loops);
   loadWakeupMode();
+  loadQuietEnd();
   g_loaded = true;
   // The timezone is a local setting: apply it before any wall-clock math below, not on
   // the first SNTP kick (CUM-504: that lands on the first loop tick, after setup). A
@@ -489,6 +549,39 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
       return;
     }
     if (!due) return;
+
+    // --- self-wakeup re-check (owner design, 9/11 Nov): a self-wakeup record
+    // (id prefix "sw") fires ONE short turn whose only job is to re-check and
+    // deliver its one note. The firmware re-check is deterministic here: a note
+    // that is stale (its window passed) or already delivered by a routine (its
+    // dedup key is some other loop's lastReplyHash) is DROPPED - the record
+    // retires without running a turn at all. A surviving note fires with
+    // req.selfWakeup=true (buildFireRequest sets it from the id), and the turn
+    // re-checks time-sensitive content semantically before sending.
+    if (orch::isSelfWakeupId(due->id)) {
+      orch::WakeNote note;
+      const bool parsed = orch::parseWakeNote(due->prompt, note);
+      const std::string verdict = parsed
+          ? orch::wakeupRecheck(note, nowEpoch, orch::deliveredNoteKeys(g_loops, due->id))
+          : std::string();
+      if (!parsed || verdict.empty()) {
+        const char* why = !parsed ? "unreadable note envelope"
+                          : orch::wakeNoteStale(note, nowEpoch) ? "stale (its window passed)"
+                          : "already delivered by a routine";
+        const std::string wid = due->id;
+        const std::string wname = due->name;
+        // No fire ran, so no claim: the record is simply retired (Once) and the
+        // table persisted - it can never fire again.
+        for (auto it = g_loops.begin(); it != g_loops.end(); ++it)
+          if (it->id == wid) { g_loops.erase(it); break; }   // Once: gone after firing
+        persist();
+        alogf("loops: self-wakeup '%s' (%s) dropped at fire time: %s - retired, no turn ran",
+              wname.c_str(), wid.c_str(), why);
+        return;
+      }
+      alogf("loops: self-wakeup '%s' (%s) survives the re-check - firing the one-note turn",
+            due->name.c_str(), due->id.c_str());
+    }
 
     // --- lane POL2: the standing gate. "never ask about duolingo" defers a
     // "check the Duolingo streak" routine. A defer is not a fire (no counter
@@ -868,7 +961,7 @@ String loopsJson() {
 String wakeupsJson() {
   Lock lk;
   return String(orch::dumpWakeupsApi(g_loops, g_wakeupsAskFirst,
-                                     (uint64_t)time(nullptr)).c_str());
+                                     (uint64_t)time(nullptr), g_quietEnd).c_str());
 }
 
 bool wakeupsAskFirst() { Lock lk; return g_wakeupsAskFirst; }
@@ -925,6 +1018,15 @@ void stageWebMutation(const String& json) {
   portEXIT_CRITICAL(&s_mux);
 }
 
+// "quiet_end" staged value ("HH:MM" local) -> the setting; refuses anything else.
+static void applyQuietEndValue(const char* v) {
+  int h = -1, m = -1;
+  if (sscanf(v, "%d:%d", &h, &m) == 2 && h >= 0 && h < 24 && m >= 0 && m < 60)
+    setQuietHoursEndMinute((uint16_t)(h * 60 + m));
+  else
+    alogf("loops: refused quiet_end value '%.12s' (want HH:MM)", v);
+}
+
 void drainWebMutations() {
   std::vector<std::string> work;
   portENTER_CRITICAL(&s_mux);
@@ -949,6 +1051,10 @@ void drainWebMutations() {
       // "Wake-ups: ask me first" toggle from the web surface (CUM-27).
       const char* v = d["value"] | "";
       setWakeupsAskFirst(!strcmp(v, "ask"));
+    } else if (!strcmp(action, "quiet_end")) {
+      // "Quiet hours end at" from the web surface (owner design, 9/11 Nov):
+      // value is "HH:MM" local; self-wakeups fire at this minute.
+      applyQuietEndValue(d["value"] | "");
     } else if (!strcmp(action, "tzapply")) {
       // devTz was already persisted on the AsyncTCP task (NVS is mutexed);
       // the tz APPLY must run here - g_loops is single-writer on tg_poll, and

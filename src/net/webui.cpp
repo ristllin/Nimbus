@@ -2342,6 +2342,7 @@ void beginWeb(const WebConfig& wc) {
   // authority the wakeup.set tool checks via manageTenants - so arming/approving
   // here is already admin-gated. Actions:
   //   action=mode&value=ask|auto     - set "Wake-ups: ask me first"
+  //   action=quiet_end&value=HH:MM   - set when quiet hours end (self-wakeups fire then)
   //   action=approve&id=<id>         - approve a pending wake-up (the single card)
   //   action=cancel&id=<id>          - cancel a wake-up
   s_server.on("/api/wakeups", HTTP_GET, [](AsyncWebServerRequest* r) {
@@ -2366,12 +2367,21 @@ void beginWeb(const WebConfig& wc) {
       }
       d["action"] = "wakeup_mode";
       d["value"]  = v.c_str();
+    } else if (action == "quiet_end") {
+      const String v = p("value");
+      int h = -1, m = -1;
+      if (sscanf(v.c_str(), "%d:%d", &h, &m) != 2 || h < 0 || h > 23 || m < 0 || m > 59) {
+        r->send(400, "application/json", "{\"error\":\"value must be HH:MM (00:00-23:59)\"}");
+        return;
+      }
+      d["action"] = "quiet_end";
+      d["value"]  = v.c_str();
     } else if (action == "approve" || action == "cancel") {
       if (p("id").length() == 0) { r->send(400, "application/json", "{\"error\":\"id required\"}"); return; }
       d["action"] = (action == "approve") ? "approve" : "delete";
       d["id"]     = p("id").c_str();
     } else {
-      r->send(400, "application/json", "{\"error\":\"action must be mode, approve, or cancel\"}");
+      r->send(400, "application/json", "{\"error\":\"action must be mode, quiet_end, approve, or cancel\"}");
       return;
     }
     String out; serializeJson(d, out);

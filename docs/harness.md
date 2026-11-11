@@ -246,13 +246,21 @@ a quiet background turn; the next owner turn says it).
     the owner is told once, at their next conversation, never at night.
   - **Quiet.** The dream messages nobody while it runs: its failure, provider-switch
     and billing notices are held, and so are its own reply, question and correction
-    lines, with no sound or attention cue. Its model text is never held for later
-    delivery at all - the only thing that can go out later is a firmware-worded
-    upkeep note (facts only: storage not saved, memory writes failed), sent once,
-    with the streak alert when there is one, only when a turn a person started ends,
-    only within 4 h of the night, and the message says when it is from
-    ("From the nightly memory upkeep at HH:MM:"). RAM only: a restart before then
-    drops it.
+    lines, with no sound or attention cue. Nothing is ever held for the owner's next
+    message. Instead, when the night (or any background turn: a routine, a loop, a
+    sub-agent result) has something worth telling the owner during quiet hours
+    (22:00 until the owner's quiet-hours-end setting, default 09:00 local), it arms
+    ONE self-wakeup through the routines scheduler: a one-time loop record, created
+    without approval, at most one pending per kind, due at the end of quiet hours
+    (within 24 h), listed with the routines and cancellable like any of them, gone
+    after it fires, and persisted so it survives a restart. Its only job is one
+    short turn with no tools that change anything: at wake time the note is
+    re-checked - dropped when stale (its window passed, e.g. a brief about delays
+    that ended) or already delivered by a routine - otherwise sent in plain words
+    saying what it is and when it was noticed ("Noticed at HH:MM:"). The upkeep's
+    firmware-worded facts (storage not saved, memory writes failed) ride the same
+    path when the reflection itself said nothing. The failing-streak alert is the
+    one thing still told at the owner's next conversation, never at night.
   - **A night the restart cut short.** The reflection turn writes an in-flight
     marker (night, attempt, start time) into `/data/dream.json` before it starts and
     clears it with its outcome. A boot that finds the marker without an outcome

@@ -89,6 +89,10 @@ struct Rig {
   int spawns = 0, deviceActions = 0;
   int asks = 0, cues = 0, completes = 0, speaks = 0, captures = 0;   // the other channels
   bool memFails = false;                  // memory writes refused (an embedding outage)
+  // Lane ECHO owner design (9/11 Nov): quiet hours on => a background turn's reply
+  // is captured into TurnEndEv.wakeReply (never delivered at night, never held).
+  bool quietHours = false;
+  std::vector<std::string> wakeReplies;   // every TurnEndEv.wakeReply seen
   // Per call: ok + error + output + usage.
   bool ok = true;
   std::string err;
@@ -137,6 +141,10 @@ struct Rig {
       return std::string("{\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}");
     };
     d.firstAllowedChat = [] { return std::string("1001"); };
+    d.hooks.quietHoursNow = [this] { return quietHours; };
+    d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) {
+      if (!ev.wakeReply.empty()) wakeReplies.push_back(ev.wakeReply);
+    };
     d.apply.deliver = deliverFn;
     d.apply.principalFor = [](const std::string& chat) {
       return orch::principalForRole(chat, orch::Role::Admin);
@@ -387,40 +395,41 @@ static const char* kTimeSensitiveReply =
     "06:00 commute brief: Great Northern has crew shortages on the 06:00 service; "
     "leave by 07:10 to catch it.";
 
-static void test_held_note_reaches_the_owner_once_in_plain_words() {
-  // Lane ECHO review (11 Nov): the delivered note says when it is from - the header
-  // carries the held time (03:31 for a note held at minute 211).
-  TEST_ASSERT_EQUAL_STRING("", dream::ownerNoteText("", "", 211).c_str());
-  TEST_ASSERT_EQUAL_STRING("From the nightly memory upkeep at 03:31:\nstreak",
-                           dream::ownerNoteText("streak", "", 211).c_str());
-  TEST_ASSERT_EQUAL_STRING("From the nightly memory upkeep at 03:31:\nTwo notes clash.",
-                           dream::ownerNoteText("", "Two notes clash.", 211).c_str());
-  TEST_ASSERT_EQUAL_STRING("From the nightly memory upkeep at 03:31:\nstreak\n\nTwo notes clash.",
-                           dream::ownerNoteText("streak", "Two notes clash.", 211).c_str());
-  // A long note is clipped UTF-8 safe.
-  std::string big;
-  while (big.size() < 3 * dream::kHeldNoteMax) big += "caf\xC3\xA9 ";
-  const std::string note = dream::ownerNoteText("", big, 211);
-  // The body is clipped to kHeldNoteMax; the "From the nightly memory upkeep at
-  // HH:MM:\n" header adds exactly 41 B on top.
-  TEST_ASSERT_TRUE(note.size() <= dream::kHeldNoteMax + 41);
-  TEST_ASSERT_TRUE(validUtf8(note));
-  TEST_ASSERT_TRUE(note.size() >= 3 && note.compare(note.size() - 3, 3, "...") == 0);
+static void test_owner_note_is_the_streak_alert_only() {
+  // Owner design (9/11 Nov): the only message still delivered at the owner's next
+  // conversation is the failing-streak alert. The upkeep note is gone from this
+  // path entirely - it arms a self-wakeup instead (covered in test_self_wakeup),
+  // and the "From the nightly memory upkeep:" prefix with it.
+  TEST_ASSERT_EQUAL_STRING("", dream::ownerNoteText("").c_str());
+  TEST_ASSERT_EQUAL_STRING("three nights in a row", dream::ownerNoteText("three nights in a row").c_str());
+  TEST_ASSERT_TRUE(dream::ownerNoteText("x").find("nightly memory upkeep") == std::string::npos);
 }
 
-// Lane ECHO review (11 Nov): a held note expires within at most a few hours, and
-// the 11 Nov case itself - held at 03:31, the owner's next message at 12:33 - is
-// expired, never delivered stale.
-static void test_held_note_expires_within_a_few_hours() {
-  TEST_ASSERT_TRUE(dream::kHeldNoteMaxAgeSec <= 4u * 3600u);   // "at most a few hours"
-  // clockAt(7, 211).epoch = 7*86400 + 211*60 (03:31); clockAt is defined below.
-  const uint64_t held = 7ull * 86400u + 211ull * 60u;         // 03:31
-  TEST_ASSERT_FALSE(dream::heldNoteExpired(held, held));                       // just held
-  TEST_ASSERT_FALSE(dream::heldNoteExpired(held, held + dream::kHeldNoteMaxAgeSec));   // at the edge
-  TEST_ASSERT_TRUE(dream::heldNoteExpired(held, held + dream::kHeldNoteMaxAgeSec + 1));
-  TEST_ASSERT_TRUE(dream::heldNoteExpired(held, 7ull * 86400u + 753ull * 60u)); // 12:33: 9 h later
-  TEST_ASSERT_TRUE(dream::heldNoteExpired(0, held));                            // undated never delivers
-  TEST_ASSERT_TRUE(dream::heldNoteExpired(held, held - 1));                     // clock moved back
+// Owner design (9/11 Nov): the night's wake note carries the reflection's reply
+// (model text is allowed - the wake turn re-checks it before sending), stamped
+// with when it was noticed and a dedup key, and falls back to the firmware-worded
+// upkeep facts when the reflection said nothing.
+static void test_wake_note_carries_the_reply_with_when_noticed() {
+  dream::NightReport ok;
+  ok.outcome = dream::DreamOutcome::Ran;
+  ok.stateSaved = true;
+  const uint64_t at = 7ull * 86400u + 211ull * 60u;   // 03:31
+  const orch::WakeNote n = dream::wakeNoteForNight(ok, kTimeSensitiveReply, at, 211);
+  TEST_ASSERT_EQUAL((int)orch::WakeKind::Upkeep, (int)n.kind);
+  TEST_ASSERT_EQUAL_STRING(kTimeSensitiveReply, n.text.c_str());
+  TEST_ASSERT_EQUAL_UINT64(at, n.noticedEpoch);
+  TEST_ASSERT_EQUAL(211, (int)n.noticedMinute);
+  TEST_ASSERT_EQUAL_UINT64(orch::fnv64(kTimeSensitiveReply), n.dedupKey);
+  // A healthy night whose reflection said nothing has no note at all.
+  TEST_ASSERT_EQUAL_STRING("", dream::wakeNoteForNight(ok, "", 100, 100).text.c_str());
+  TEST_ASSERT_EQUAL_STRING("", dream::wakeNoteForNight(ok, "  \n ", 100, 100).text.c_str());
+  // ... but a night with a firmware-known problem words it itself.
+  dream::NightReport noStore = ok;
+  noStore.stateSaved = false;
+  noStore.stateWhy = "storage not mounted";
+  const std::string t = dream::wakeNoteForNight(noStore, "", 100, 100).text;
+  TEST_ASSERT_TRUE(t.find("Storage was not available") != std::string::npos);
+  TEST_ASSERT_EQUAL_UINT64(orch::fnv64(t), dream::wakeNoteForNight(noStore, "", 100, 100).dedupKey);
 }
 
 // Lane ECHO review (11 Nov): the upkeep's note is firmware-worded facts only, each
@@ -444,13 +453,18 @@ static void test_upkeep_note_is_firmware_worded_facts_only() {
   embedDown.cause = "memory-unavailable";
   TEST_ASSERT_TRUE(dream::upkeepNoteText(embedDown).find("embedding service was unavailable") !=
                    std::string::npos);
-  // A failed night says nothing here (the streak alert carries repeats); the note
-  // never contains model text whatever the report held.
+  // A failed night says nothing here (the streak alert carries repeats); the
+  // firmware-worded note never contains model text whatever the turn replied.
   dream::NightReport failed = ok;
   failed.outcome = dream::DreamOutcome::Failed;
   failed.cause = "key";
-  failed.held = kTimeSensitiveReply;
   TEST_ASSERT_EQUAL_STRING("", dream::upkeepNoteText(failed).c_str());
+  // The wake note, though, DOES carry the reflection's reply when there is one -
+  // model text is allowed in the note because the wake re-checks it (stale /
+  // already delivered) before anything is sent; it is never held for the next
+  // message. That is the owner design, and it is pinned in test_self_wakeup.
+  const orch::WakeNote w = dream::wakeNoteForNight(failed, kTimeSensitiveReply, 7ull * 86400u + 211ull * 60u, 211);
+  TEST_ASSERT_EQUAL_STRING(kTimeSensitiveReply, w.text.c_str());
 }
 
 // A quiet turn does not consume the one-notice billing latch (lane M x lane K).
@@ -560,6 +574,45 @@ static void test_dream_turn_fields_cannot_spawn_or_act() {
   TEST_ASSERT_EQUAL(1, (int)t.mem_write.size());
   TEST_ASSERT_EQUAL(1, (int)t.mem_query.size());
   TEST_ASSERT_EQUAL_STRING("r", t.reply.c_str());
+}
+
+// Lane ECHO owner design (9/11 Nov): a self-wakeup record fires ONE short turn
+// whose only job is to re-check and deliver its one note. The preamble carries
+// the note in plain words (never the raw JSON envelope), NO tools are advertised,
+// every tool-bearing field the model still wrote is dropped, and the reply is
+// delivered directly (the wake is at the END of quiet hours, so it captures
+// nothing for a later wake and arms nothing).
+static void test_self_wakeup_turn_is_one_short_toolless_turn() {
+  Rig r;
+  orch::WakeNote note;
+  note.kind = orch::WakeKind::Upkeep;
+  note.text = "06:00 commute brief: leave by 07:10 to catch the 06:00 service";
+  note.noticedEpoch = 7ull * 86400u + 211ull * 60u;
+  note.noticedMinute = 211;
+  note.dedupKey = orch::fnv64(note.text);
+  r.outJson = "{\"reply\":\"Noticed at 03:31:\\n06:00 commute brief: leave by 07:10\",\"memory\":\"\","
+              "\"ask\":\"\",\"device\":[{\"led\":\"red\"}],\"spawn\":[{\"task\":\"rebook\"}],"
+              "\"session_ops\":[{\"op\":\"spawn\",\"task\":\"x\"}],\"mem_write\":[{\"content\":\"y\"}]}";
+  const orch::FireOutcome o = r.eng->injectScheduledTurn(
+      "1001", orch::dumpWakeNote(note), "Self-wakeup: upkeep", "sw00a1b2",
+      /*quietOk=*/false, /*once=*/true, /*ownerReminder=*/false, /*selfWakeup=*/true);
+  TEST_ASSERT_TRUE(o.ok);
+  // The preamble names the wake and renders the note text, not the envelope JSON.
+  TEST_ASSERT_FALSE(r.inputsSeen.empty());
+  const std::string& inputs = r.inputsSeen.back();
+  TEST_ASSERT_TRUE(inputs.find("[SELF-WAKEUP]") != std::string::npos);
+  TEST_ASSERT_TRUE(inputs.find("06:00 commute brief") != std::string::npos);
+  TEST_ASSERT_TRUE(inputs.find("\"selfWakeup\"") == std::string::npos);
+  // No tools were advertised to the head.
+  TEST_ASSERT_TRUE(r.advertised.empty());
+  // Nothing the model wrote changed anything.
+  TEST_ASSERT_EQUAL(0, r.deviceActions);
+  TEST_ASSERT_EQUAL(0, r.spawns);
+  // The reply was delivered (the wake fires at the end of quiet hours).
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_TRUE(r.delivered[0].second.find("Noticed at 03:31") != std::string::npos);
+  // The self-wakeup turn itself never captures a wake reply (no wakeup loop).
+  TEST_ASSERT_TRUE(r.wakeReplies.empty());
 }
 
 static void test_quiet_preamble_never_asks_for_a_reply() {
@@ -1820,31 +1873,39 @@ static void test_every_night_path_writes_exactly_one_row() {
                        .rfind("Nightly dream skipped tonight (device busy after 12 tries)", 0) == 0);
 }
 
-// ---- Lane ECHO review (11 Nov): a held note never carries model text -----------
+// ---- Lane ECHO owner design (9/11 Nov): no turn source HOLDS a note -------------
 // REVIEW-FINDINGS.json: on Lumi v5.0.0 the src=dream turn at ~03:31Z wrote a
 // "06:00 commute brief: ..." line as an owner note; it was held and delivered at
-// ~12:33Z, right after the owner's next unrelated message, prefixed "From the
-// nightly memory upkeep:". The class: no turn source may hold model text for later
-// delivery, and the delivered note says when it is from.
+// ~12:33Z, right after the owner's next unrelated message. The owner design
+// replaces the hold with ONE self-wakeup at the end of quiet hours: during quiet
+// hours a background turn's reply is captured into TurnEndEv.wakeReply (never
+// delivered at night, never glued to the owner's next message); outside quiet
+// hours it is delivered by its normal path.
 
-static void test_no_turn_source_holds_model_text() {
-  // (c) the delivered note says when it is from: the header carries the held time.
-  const std::string note = dream::ownerNoteText("streak", "Two notes clash.", 211);
-  TEST_ASSERT_TRUE(note.find("nightly memory upkeep at 03:31") != std::string::npos);
-  // (a) every scheduled entry that returns a FireOutcome: the held channel
-  // (FireOutcome.held) no longer exists, so even a time-sensitive model reply can
-  // only be recorded in the outcome's detail (the timeline row) - never held.
+static void test_no_turn_source_holds_a_note_during_quiet_hours() {
+  // (a) every scheduled entry that returns a FireOutcome: during quiet hours the
+  // reply is captured into wakeReply, not delivered - whatever the id.
   Rig r;
+  r.quietHours = true;
   r.outJson = std::string("{\"reply\":\"") + kTimeSensitiveReply + "\",\"memory\":\"\",\"ask\":\"\"}";
   for (const char* id : {"L1", "dream", "system"}) {
+    r.wakeReplies.clear();
+    r.delivered.clear();
     const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "task", "T", id, /*quietOk=*/true);
     TEST_ASSERT_TRUE_MESSAGE(o.detail.find("commute brief") != std::string::npos, id);
+    TEST_ASSERT_TRUE_MESSAGE(r.delivered.empty(), id);   // nothing at night
+    TEST_ASSERT_TRUE_MESSAGE(r.wakeReplies.size() == 1, id);   // captured for the wake
+    TEST_ASSERT_TRUE_MESSAGE(r.wakeReplies[0].find("commute brief") != std::string::npos, id);
   }
-  const orch::FireOutcome b =
-      r.eng->injectBoundedTurn("1001", "post-update", "Update", TurnEngine::TurnBounds{});
-  TEST_ASSERT_TRUE(b.detail.find("commute brief") != std::string::npos);
-  // (b) the night never relays the turn's model text into its report, whatever the
-  // injected turn returned in its FireOutcome.detail.
+  // (b) outside quiet hours the same turn delivers by its normal path and captures
+  // nothing - the wake capture is quiet-hours-only.
+  Rig day;
+  day.outJson = std::string("{\"reply\":\"") + kTimeSensitiveReply + "\",\"memory\":\"\",\"ask\":\"\"}";
+  day.eng->injectScheduledTurn("1001", "task", "T", "L1", /*quietOk=*/false);
+  TEST_ASSERT_TRUE(day.delivered.size() >= 1);
+  TEST_ASSERT_TRUE(day.wakeReplies.empty());
+  // (c) the night turns the reflection's reply into its wake note (never a held
+  // note): the note carries the text, when it was noticed, and a dedup key.
   Night n;
   n.turn = [] {
     orch::FireOutcome o;
@@ -1853,49 +1914,60 @@ static void test_no_turn_source_holds_model_text() {
     return o;
   };
   const dream::NightResult res = dream::runNight(n.deps(), clockAt(7, 210), false);
-  TEST_ASSERT_TRUE(res.report.held.find("commute brief") == std::string::npos);
-  TEST_ASSERT_TRUE(res.report.held.find("Great Northern") == std::string::npos);
+  TEST_ASSERT_TRUE(res.report.wake.text.find("commute brief") != std::string::npos);
+  TEST_ASSERT_TRUE(res.report.wake.text.find("Great Northern") != std::string::npos);
+  TEST_ASSERT_EQUAL(210, (int)res.report.wake.noticedMinute);
+  TEST_ASSERT_EQUAL_UINT64(orch::fnv64(res.report.wake.text), res.report.wake.dedupKey);
 }
 
-static void test_held_note_class_over_every_turn_source() {
-  // Class over every TurnSource: a source added to the enum fails this test (the
-  // default arm), and each source's entry is driven with a time-sensitive reply.
+static void test_wake_capture_class_over_every_turn_source() {
+  // Class over every TurnSource during quiet hours: a source added to the enum
+  // fails this test (the default arm). A person's turn delivers in context and
+  // captures nothing; every background source captures its reply into wakeReply
+  // and delivers nothing at night.
   for (int s = 0; s <= (int)agent::TurnSource::Serial; ++s) {
     const agent::TurnSource src = (agent::TurnSource)s;
     Rig r;
+    r.quietHours = true;
     r.outJson = std::string("{\"reply\":\"") + kTimeSensitiveReply + "\",\"memory\":\"\",\"ask\":\"\"}";
     switch (src) {
       case agent::TurnSource::Owner:
       case agent::TurnSource::Serial:
-        // A person's turn: the reply is delivered in context, never held.
+        // A person's turn: the reply is delivered in context, never captured.
         r.eng->handleMessage("hi", "Roy", src == agent::TurnSource::Serial ? "serial" : "1001");
         TEST_ASSERT_TRUE_MESSAGE(r.delivered.size() >= 1, agent::turnSourceSlug(src, "turn"));
+        TEST_ASSERT_TRUE_MESSAGE(r.wakeReplies.empty(), agent::turnSourceSlug(src, "turn"));
         break;
       case agent::TurnSource::Loop: {
-        // A routine and the dream: nothing delivered at night, and with the held
-        // channel gone the reply is only recorded in the outcome's detail.
+        // A routine and the dream: nothing delivered at night; the reply rides
+        // wakeReply so the glue arms ONE self-wakeup for the end of quiet hours.
         const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "task", "T", "dream", true);
         TEST_ASSERT_TRUE_MESSAGE(r.delivered.empty(), "loop");
         TEST_ASSERT_TRUE_MESSAGE(o.detail.find("commute brief") != std::string::npos, "loop");
+        TEST_ASSERT_TRUE_MESSAGE(r.wakeReplies.size() == 1, "loop");
         break;
       }
-      case agent::TurnSource::Synthesis:
-        // A sub-agent synthesis: its reply is delivered in-turn, never held.
+      case agent::TurnSource::Synthesis: {
+        // A sub-agent synthesis during quiet hours: captured, not delivered.
         r.jobs->addFreshResult("job1", "research-sub", "rail status: all lines running", "chat:1001");
         r.eng->maybeConsolidate("1001");
-        TEST_ASSERT_TRUE_MESSAGE(r.delivered.size() >= 1, "synthesis");
+        TEST_ASSERT_TRUE_MESSAGE(r.delivered.empty(), "synthesis");
+        TEST_ASSERT_TRUE_MESSAGE(r.wakeReplies.size() == 1, "synthesis");
         break;
+      }
       default:
-        TEST_FAIL_MESSAGE("a TurnSource was added: pin its held-note behavior here");
+        TEST_FAIL_MESSAGE("a TurnSource was added: pin its wake-capture behavior here");
     }
   }
 }
 
-// Lane ECHO review (11 Nov): the night must NOT carry the reflection's model text
-// to the owner - red on the old head, where report.held was the turn's held reply
-// verbatim (the 03:31Z commute brief delivered at 12:33Z). What the upkeep may hold
-// is a firmware-worded note only (upkeepNoteText, added with the fix).
-static void test_the_night_never_relays_model_text() {
+// Lane ECHO owner design (9/11 Nov): the night never HOLDS the reflection's model
+// text for the owner's next message - red on the old head, where report.held was
+// the turn's reply verbatim (the 03:31Z commute brief delivered at 12:33Z). The
+// night's wake note carries the reply so the self-wakeup can deliver it at the end
+// of quiet hours saying when it was noticed; a quiet night with nothing to say
+// arms nothing.
+static void test_the_night_arms_a_wake_note_never_a_held_one() {
   Night n;
   n.turn = [] {
     orch::FireOutcome o;
@@ -1904,10 +1976,10 @@ static void test_the_night_never_relays_model_text() {
     return o;
   };
   const dream::NightResult res = dream::runNight(n.deps(), clockAt(7, 210), false);
-  TEST_ASSERT_TRUE(res.report.held.find("commute brief") == std::string::npos);
-  TEST_ASSERT_TRUE(res.report.held.find("Great Northern") == std::string::npos);
+  TEST_ASSERT_TRUE(res.report.wake.text.find("commute brief") != std::string::npos);
+  TEST_ASSERT_EQUAL((int)orch::WakeKind::Upkeep, (int)res.report.wake.kind);
   Night quiet;
-  TEST_ASSERT_TRUE(dream::runNight(quiet.deps(), clockAt(7, 210), false).report.held.empty());
+  TEST_ASSERT_TRUE(dream::runNight(quiet.deps(), clockAt(7, 210), false).report.wake.text.empty());
 }
 
 // One generated store and night sequence for the bounded-retry property.
@@ -2065,12 +2137,13 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_quiet_turn_notice_count_zero_on_every_failure_path);
   RUN_TEST(test_quiet_dream_contacts_nobody_over_the_matrix);
-  RUN_TEST(test_held_note_reaches_the_owner_once_in_plain_words);
-  RUN_TEST(test_held_note_expires_within_a_few_hours);
+  RUN_TEST(test_owner_note_is_the_streak_alert_only);
+  RUN_TEST(test_wake_note_carries_the_reply_with_when_noticed);
   RUN_TEST(test_upkeep_note_is_firmware_worded_facts_only);
   RUN_TEST(test_quiet_billing_switch_keeps_the_notice_latch_armed);
   RUN_TEST(test_dream_can_never_call_files_or_session_tools);
   RUN_TEST(test_dream_turn_fields_cannot_spawn_or_act);
+  RUN_TEST(test_self_wakeup_turn_is_one_short_toolless_turn);
   RUN_TEST(test_quiet_preamble_never_asks_for_a_reply);
   RUN_TEST(test_failed_fire_reports_no_stale_tokens);
   RUN_TEST(test_memory_results_stay_with_their_chat);
@@ -2095,9 +2168,9 @@ int main(int, char**) {
   RUN_TEST(test_boot_reconcile_keeps_the_working_copy_a_fire_opened);
   RUN_TEST(test_boot_reconcile_is_bounded_when_the_store_refuses);
   RUN_TEST(test_every_night_path_writes_exactly_one_row);
-  RUN_TEST(test_no_turn_source_holds_model_text);
-  RUN_TEST(test_held_note_class_over_every_turn_source);
-  RUN_TEST(test_the_night_never_relays_model_text);
+  RUN_TEST(test_no_turn_source_holds_a_note_during_quiet_hours);
+  RUN_TEST(test_wake_capture_class_over_every_turn_source);
+  RUN_TEST(test_the_night_arms_a_wake_note_never_a_held_one);
   RUN_TEST(test_bounded_retries_whatever_the_store_does);
   RUN_TEST(test_unsynced_clock_skips_maintenance_honestly);
   RUN_TEST(test_memory_write_counters_on_the_registry_path);

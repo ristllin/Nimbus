@@ -2865,13 +2865,13 @@ static void orchestratorBegin() {
   // tg_poll; chatAllowed = fire-time allowlist re-check; alert = owner ping.
   agent::loops::begin(
       [](const nimbus::orch::LoopFireRequest& r) -> nimbus::orch::FireOutcome {
-        // DREAMING: the reserved dream loop fires through its own two-phase
-        // path (maintenance + reflection turn); everything else is a plain
-        // scheduled turn. r.id rides through as the tag "loop:<id>".
+        // DREAMING: the reserved dream loop fires through its own two-phase path
+        // (maintenance + reflection turn); r.id rides as "loop:<id>", r.selfWakeup
+        // (owner design 9/11 Nov) fires a self-wakeup's one-note turn.
         if (agent::dream::isReserved(r.id)) return agent::dream::fire(r);
         return agent::orchestrator::injectScheduledTurn(
             String(r.chatId.c_str()), String(r.prompt.c_str()), String(r.name.c_str()),
-            String(r.id.c_str()), /*quietOk=*/false, r.once, r.ownerReminder);
+            String(r.id.c_str()), /*quietOk=*/false, r.once, r.ownerReminder, r.selfWakeup);
       },
       [](const std::string& cid) -> bool {
         // Still allowed = on the Telegram allowlist AND not revoked in the tenant table

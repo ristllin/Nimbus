@@ -178,7 +178,7 @@ export const FALLBACKS = { chain: ['anthropic', 'cumulo', 'zai'] };
 // N2 contract stub
 // The device's real GET /api/wakeups shape (lib/core orch_loops.cpp dumpWakeupsApi).
 export const WAKEUPS = {
-  approvalMode: 'auto', maxArmed: 4, armed: 1,
+  approvalMode: 'auto', maxArmed: 4, armed: 1, quietEnd: 540,
   wakeups: [
     { id: 'lp000a1', name: 'Morning brief', note: 'Send the morning brief.', createdBy: 'agent',
       enabled: true, approved: true, pending: false, nextRun: 1700000000, inSec: 1800, lastResult: 'none' },

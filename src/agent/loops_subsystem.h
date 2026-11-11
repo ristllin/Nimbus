@@ -7,6 +7,7 @@
 #include <ArduinoJson.h>
 
 #include "nimbus/orch/loops.h"
+#include "nimbus/orch/self_wakeup.h"   // WakeNote - armSelfWakeupNote (owner design, 9/11 Nov)
 
 // Local Loops device subsystem - the side-effecting glue around the pure core
 // (lib/core/orch_loops.cpp). Owns the LittleFS-persisted loop vector + device
@@ -123,6 +124,22 @@ String wakeupsJson();
 // on = they land pending for a single owner approval card. Persisted.
 bool wakeupsAskFirst();
 void setWakeupsAskFirst(bool on);
+
+// --- quiet hours + self-wakeups (owner design, 9/11 Nov) ----------------------
+// Quiet hours end at the owner's setting (local minute of day, default 09:00 =
+// 540); the night begins at 22:00 local (firmware constant, orch::kQuietHoursStart).
+// Persisted in /data/quiet_end so it survives a restart.
+uint16_t quietHoursEndMinute();
+void     setQuietHoursEndMinute(uint16_t minuteOfDay);   // clamped to 0..1439
+// Is the local time inside quiet hours right now? False when the clock is not
+// synced (no local minute is real yet). Wired as the engine's Hooks.quietHoursNow.
+bool quietHoursNow();
+// Arm ONE self-wakeup for `note` (orch::armSelfWakeup over the persisted table):
+// at most one pending per kind, due at the end of quiet hours (within 24 h),
+// auto-approved (11 Nov ruling), listed with the routines, cancellable, retiring
+// after it fires. Returns the new record's id, "" when nothing was armed (not
+// quiet hours now, or a self-wakeup of that kind is already pending).
+std::string armSelfWakeupNote(const nimbus::orch::WakeNote& note);
 
 // --- web staging (POST /api/loops runs on the AsyncTCP task) -----------------
 // Stage a mutation JSON ({"action":"create|approve|pause|resume|delete", ...});

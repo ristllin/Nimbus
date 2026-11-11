@@ -401,11 +401,13 @@ std::string dumpLoops(const std::vector<LoopRecord>& loops) {
 }
 
 std::string dumpWakeupsApi(const std::vector<LoopRecord>& loops,
-                           bool wakeupsAskFirst, uint64_t nowEpoch) {
+                           bool wakeupsAskFirst, uint64_t nowEpoch,
+                           uint16_t quietEndMinute) {
   static const char* kRes[] = {"none", "ok", "fail", "skipped", "paused"};
   ArduinoJson::JsonDocument d;
   d["approvalMode"] = wakeupsAskFirst ? "ask" : "auto";
   d["maxArmed"]     = (int)kWakeupMaxPending;
+  if (quietEndMinute != 0xFFFFu) d["quietEnd"] = (int)quietEndMinute;   // owner design 9/11 Nov
   int armed = 0;
   ArduinoJson::JsonArray arr = d["wakeups"].to<ArduinoJson::JsonArray>();
   for (const LoopRecord& l : loops) {

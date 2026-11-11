@@ -1043,12 +1043,14 @@ html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:h
 </div>
 <div class=sec>
 <h2>Wake-ups <button class=qh type=button aria-expanded=false aria-label="About wake-ups">?</button></h2>
-<p class="hint tip">A wake-up is a turn the assistant schedules for itself to follow up later. Allow silently lets them run; "Ask me first" holds each new one for a single yes/no, never a repeating prompt.</p>
+<p class="hint tip">A wake-up is a turn the assistant schedules for itself to follow up later. Allow silently lets them run; "Ask me first" holds each new one for a single yes/no, never a repeating prompt. During quiet hours (from 22:00 until the time below) a background turn never messages you: it arms one self-wakeup that re-checks its note and delivers it when quiet hours end.</p>
 <label>When the assistant schedules a wake-up</label>
 <select id=wkPolicy>
 <option value=auto>Allow silently</option>
 <option value=ask>Ask me first</option>
 </select>
+<label>Quiet hours end at (local time)</label>
+<div class=row><input id=wkQuietEnd type=time value="09:00"></div>
 <div class=hint id=wkMsg></div>
 <div id=wkPending style="display:none;margin-top:10px;padding:12px;border:1px solid var(--teal);border-radius:12px;background:var(--raise2)">
 <b id=wkPendLabel></b>
@@ -2748,8 +2750,9 @@ function loadLoops(){
 // Policy default silent-allow; "ask me first" surfaces at most ONE pending
 // approval as a single yes/no card - never a repeating prompt / loop.
 // CUM-514 (L20 docs audit): wired to the device's REAL contract. GET answers
-// {approvalMode:"ask"|"auto", wakeups:[{id,name,note,enabled,pending,inSec}]};
-// POST takes action=mode&value=ask|auto, or action=approve|cancel&id=<id>. The
+// {approvalMode:"ask"|"auto", quietEnd:<minute of day>, wakeups:[{id,name,note,enabled,pending,inSec}]};
+// POST takes action=mode&value=ask|auto, action=quiet_end&value=HH:MM, or
+// action=approve|cancel&id=<id>. The
 // control used to read policy/items/pending and post policy=..., none of which
 // the device has, so it could not save and the approval card never showed.
 function wkIn(s){if(s==null)return '';const m=Math.round(s/60);
@@ -2768,6 +2771,18 @@ function loadWakeups(){
       work:()=>wkPost({action:'mode',value:sel.value}),
       ok:()=>sel.value==='ask'?'Ask me first - new wake-ups wait for approval.':'Wake-ups run silently.',
       error:e=>e===WK_GONE?'That save did not apply - try again.':'Couldn\'t save'+(e?(' ('+e+')'):'')+' - try again.'});
+    // Quiet hours end (owner design 9/11 Nov): self-wakeups fire at this minute.
+    const qe=$('wkQuietEnd');
+    if(qe){
+      if(document.activeElement!==qe&&typeof d.quietEnd==='number'){
+        const mm=Math.max(0,Math.min(1439,d.quietEnd|0));
+        qe.value=String(Math.floor(mm/60)).padStart(2,'0')+':'+String(mm%60).padStart(2,'0');
+      }
+      qe.onchange=()=>run({status:'wkMsg',pending:'Saving…',
+        work:()=>wkPost({action:'quiet_end',value:qe.value}),
+        ok:()=>'Quiet hours now end at '+qe.value+'.',
+        error:e=>e===WK_GONE?'That save did not apply - try again.':'Couldn\'t save'+(e?(' ('+e+')'):'')+' - try again.'});
+    }
     const items=(d.wakeups||[]).filter(w=>w);
     // A single pending approval card (never a loop): only the FIRST pending item.
     const p=items.find(w=>w.pending), box=$('wkPending');

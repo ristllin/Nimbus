@@ -9,6 +9,7 @@
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/loops.h"
 #include "nimbus/orch/memory_tools.h"   // MemOpCounters - what the reflection's writes did
+#include "nimbus/orch/self_wakeup.h"    // WakeNote - the upkeep's note arms a self-wakeup
 #include "nimbus/orch/turn.h"           // Turn - the dream turn's field restriction
 #include "nimbus/orch/vector_memory.h"  // maintainVectors
 
@@ -275,8 +276,13 @@ struct NightReport {
   bool alert = false;           // tonight crossed an alert point (owner alert due)
   bool stateSaved = true;       // /data/dream.json landed
   std::string stateWhy;         // why it did not ("storage not mounted", "storage write failed")
-  std::string held;             // the upkeep's note for the owner, held: firmware-worded
-                                // facts only (upkeepNoteText), never the reflection's model text
+  // The upkeep's note for the owner (owner design, 9/11 Nov): NOT held for the
+  // owner's next message - it arms ONE self-wakeup (orch::armSelfWakeup) due at
+  // the end of quiet hours, which re-checks the note at wake time. The text is
+  // the reflection's own reply when it said something worth telling, else the
+  // firmware-worded upkeep facts (upkeepNoteText). Empty text = no note, no
+  // wakeup. The device glue arms it; nothing is ever held.
+  nimbus::orch::WakeNote wake;
 };
 
 // The boot's working copy of the dream state. RAM is the authority between fires and
@@ -418,26 +424,22 @@ std::string renderDreamRow(const NightReport& r, size_t cap = 240);
 std::string streakAlertText(const NightReport& r);
 // The upkeep's owner note, worded by the firmware only: a fact the device itself
 // knows (storage not saved, memory writes failed), each with what the owner can do.
-// Never model text - the reflection's reply is not relayed to the owner, held or
-// otherwise (review finding, 11 Nov: a held commute brief reached the owner 9 h
-// later, glued to an unrelated answer).
+// Used as the wake note's text when the reflection itself said nothing.
 std::string upkeepNoteText(const NightReport& r);
-// A held owner note expires: it is delivered only within kHeldNoteMaxAgeSec of when
-// it was held (review finding, 11 Nov: a note held at 03:31 arrived at 12:33, stale
-// and unexplained). An undated note (heldAtEpoch 0) or a clock that moved backwards
-// never delivers.
-constexpr uint32_t kHeldNoteMaxAgeSec = 4u * 3600u;   // 4 h: at most a few hours
-inline bool heldNoteExpired(uint64_t heldAtEpoch, uint64_t nowEpoch) {
-  return heldAtEpoch == 0 || nowEpoch < heldAtEpoch ||
-         nowEpoch - heldAtEpoch > (uint64_t)kHeldNoteMaxAgeSec;
-}
-// The one message the owner gets at their next conversation (never at night): the
-// streak alert and the upkeep's note (NightReport.held, clipped to kHeldNoteMax
-// bytes, UTF-8 safe), each when there is one, under a header that says when the
-// note is from (heldMinuteOfDay, local). "" = nothing to send.
-constexpr size_t kHeldNoteMax = 1500;
-std::string ownerNoteText(const std::string& streakAlert, const std::string& heldReply,
-                          uint16_t heldMinuteOfDay);
+// The wake note for a night: the reflection's reply when it said something worth
+// telling the owner, else the firmware-worded upkeep facts (upkeepNoteText).
+// Empty text = nothing worth telling = no note. The note carries when it was
+// noticed (the clock's epoch and local minute) and a dedup key (fnv64 of the
+// text) so the wake-time re-check can drop a brief a routine already delivered.
+// It is never held for the owner's next message - it arms a self-wakeup.
+nimbus::orch::WakeNote wakeNoteForNight(const NightReport& r, const std::string& reflectionReply,
+                                        uint64_t epoch, uint16_t minuteOfDay);
+// The one message the owner gets at their next conversation (never at night):
+// the failing-streak alert, when there is one. "" = nothing to send. (The held
+// upkeep note and its "From the nightly memory upkeep:" prefix are gone - the
+// note now goes out via its self-wakeup at the end of quiet hours, saying when
+// it was noticed.)
+std::string ownerNoteText(const std::string& streakAlert);
 
 // Seconds from `c` until the reserved slot (minuteOfDay `slot`) on the next local day.
 uint32_t secondsToNextSlot(const NightClock& c, uint16_t slot);

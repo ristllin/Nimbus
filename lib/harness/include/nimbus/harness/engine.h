@@ -372,14 +372,18 @@ class TurnEngine {
   // (calling a one-shot the model armed for itself a "recurring task" is a lie
   // the honesty rails would then have to argue with). ownerReminder (W22): the
   // one-shot was set by the OWNER via /remind - [REMINDER] framing, since "you
-  // scheduled this for yourself" would be false.
+  // scheduled this for yourself" would be false. selfWakeup (owner design,
+  // 9/11 Nov): a self-wakeup record (id prefix "sw") - renders a [SELF-WAKEUP]
+  // preamble carrying the note, one short turn, NO tools at all (nothing this
+  // turn does may change anything); the note is re-checked before it is sent.
   nimbus::orch::FireOutcome injectScheduledTurn(const std::string& chatId,
                                                 const std::string& prompt,
                                                 const std::string& name,
                                                 const std::string& loopId = "",
                                                 bool quietOk = false,
                                                 bool once = false,
-                                                bool ownerReminder = false);
+                                                bool ownerReminder = false,
+                                                bool selfWakeup = false);
 
   // A quiet system turn held to tighter bounds than the owner's loop config (the
   // post-update awareness turn, v4.6.1): at most `maxRounds` tool rounds, a small
@@ -656,6 +660,11 @@ class TurnEngine {
   bool routineRecurs_ = false;          // that turn is a run of a routine that will run again
   bool quietTurn_ = false;              // dream: suppress the bare-"Done." fallback this turn
   bool dreamTurn_ = false;              // the reserved dream loop: memory-only surface (lane M)
+  bool selfWakeupTurn_ = false;         // a self-wakeup record is firing: no tools, one short turn
+  // Lane ECHO (owner design, 9/11 Nov): a background turn's reply captured during
+  // quiet hours instead of delivered at night - rides TurnEndEv.wakeReply so the
+  // onTurnEnd glue arms ONE self-wakeup for the end of quiet hours.
+  std::string wakeReply_;
   // F1 (lane I): this turn's skills - what buildDynamicContext attached (the
   // picks) and what a head skill.get read. The ids join the assistant row's
   // skills: tag, so a later turn answers "did you use the skill?" from the row.

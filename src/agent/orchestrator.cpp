@@ -24,6 +24,7 @@
 #include "nimbus/harness/providers.h"   // providers::orchTurnCustom
 #include "nimbus/harness/turn_contract.h"   // kNoMessageAfterAction
 #include "loops_subsystem.h"            // loops::checkDue - Local Loops tick (on tg_poll)
+#include "nimbus/orch/self_wakeup.h"    // WakeNote / armSelfWakeupNote - the owner design (9/11 Nov)
 #include "dream_subsystem.h"            // DREAMING: noteTurnEnd (idle-gate quiet clock)
 #include "degraded_device.h"            // lane DEGRADE: the served-by memory behind the degraded line
 #include "connectors.h"                 // per-provider connector catalog + attach
@@ -57,6 +58,7 @@
 #include <atomic>                       // voiceTurnSeq - hold-to-talk completion edge
 #include <memory>                       // unique_ptr - heap Info[] (kMaxConnectors)
 #include <new>       // std::nothrow - alloc failure degrades, never panics
+#include <time.h>    // localtime_r - the self-wakeup note's local minute of day
 #include "telegram.h"                   // telegram::enabled - capability manifest
 #include "../sys/config_nvs.h"          // sys::deviceName - prompt identity (P2)
 #include "../hw/hal_status.h"           // live HAL health -> capability manifest (P5)
@@ -1481,6 +1483,10 @@ static TurnEngine::Deps buildTurnDeps() {
     // Crash UX: the in-flight turn is journaled (/crash/turn.json) until it ends.
     nimbus::crash::turnStarted((int)ev.source, ev.chatId, std::string());
   };
+  // Lane ECHO (owner design, 9/11 Nov): is the local time inside quiet hours
+  // right now? The engine reads this to capture a background turn's reply into
+  // TurnEndEv.wakeReply instead of delivering it at night.
+  d.hooks.quietHoursNow = [] { return loops::quietHoursNow(); };
   d.hooks.onToolCall = [](const orch::HeadToolCall& call) {
     nimbus::pollwatch::beat("tool");
     if (!memory::traceActive()) return;
@@ -1708,7 +1714,33 @@ static TurnEngine::Deps buildTurnDeps() {
     if (ev.ok && (ev.host == "openai" || ev.host == "anthropic" || ev.host == "mistral") &&
         store::verifyResult(ev.host.c_str()) != 1 && s_verifyMemo.shouldWrite(ev.host.c_str(), 1))
       (void)store::setVerify(ev.host.c_str(), 1, millis());   // a failure is in the ledger
-    dream::noteTurnEnd(millis(), ev.source);   // DREAMING idle gate: quiet clock + held-note delivery
+    // Lane ECHO (owner design, 9/11 Nov): a background turn (routine, loop,
+    // sub-agent synthesis, the upkeep) that ran during quiet hours captured its
+    // reply into ev.wakeReply - never delivered at night, never held for the
+    // owner's next message. Arm ONE self-wakeup for the end of quiet hours; the
+    // kind comes from the turn's source (the class rule in turn_progress.h), the
+    // one-pending-per-kind bound lives in orch::armSelfWakeup. The dream's own
+    // glue arms the upkeep kind from the night's report (it also covers the
+    // firmware-worded upkeep facts when the reflection said nothing); the bound
+    // makes a second arm of the same kind a no-op.
+    if (!ev.wakeReply.empty()) {
+      nimbus::orch::WakeKind kind;
+      if (nimbus::harness::wakeKindForSource(ev.source, ev.attribution, kind)) {
+        nimbus::orch::WakeNote note;
+        note.kind = kind;
+        note.text = ev.wakeReply;
+        note.noticedEpoch = (uint64_t)time(nullptr);
+        time_t t = (time_t)note.noticedEpoch;
+        struct tm lt;
+        if (localtime_r(&t, &lt)) note.noticedMinute = (uint16_t)(lt.tm_hour * 60 + lt.tm_min);
+        note.dedupKey = nimbus::orch::fnv64(ev.wakeReply);
+        const std::string wid = loops::armSelfWakeupNote(note);
+        if (!wid.empty())
+          alogf("turn end: %s reply captured during quiet hours - self-wakeup %s armed (%s)",
+                src, wid.c_str(), nimbus::orch::wakeKindSlug(kind));
+      }
+    }
+    dream::noteTurnEnd(millis(), ev.source);   // DREAMING idle gate: quiet clock + streak alert
     // v3.6.0 fold accounting: one persist per turn + the reactive overflow path.
     if (!ev.chatId.empty() && ev.chatId != "system") {
       strncpy(g_lastTurnChat, ev.chatId.c_str(), sizeof(g_lastTurnChat) - 1);
@@ -2454,7 +2486,8 @@ bool turnReadOutsideContent() {
 
 nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String& prompt,
                                               const String& name, const String& loopId,
-                                              bool quietOk, bool once, bool ownerReminder) {
+                                              bool quietOk, bool once, bool ownerReminder,
+                                              bool selfWakeup) {
   if (!g_engine) {   // loops only fire after begin(); belt-and-braces
     nimbus::orch::FireOutcome o;
     o.deferred = true;   // not a failure: it must not roll the breaker (lane M)
@@ -2465,7 +2498,7 @@ nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String
                                        std::string(prompt.c_str()),
                                        std::string(name.c_str()),
                                        std::string(loopId.c_str()), quietOk, once,
-                                       ownerReminder);
+                                       ownerReminder, selfWakeup);
 }
 
 // Staged system turn (Glass Box A2): set from any task (the OTA hook fires in

@@ -23,12 +23,14 @@ static const char UI_LOOPS[] PROGMEM = R"=====(<div class=pane id=pane-gov style
 </div>
 <div class=sec>
 <h2>Wake-ups <button class=qh type=button aria-expanded=false aria-label="About wake-ups">?</button></h2>
-<p class="hint tip">A wake-up is a turn the assistant schedules for itself to follow up later. Allow silently lets them run; "Ask me first" holds each new one for a single yes/no, never a repeating prompt.</p>
+<p class="hint tip">A wake-up is a turn the assistant schedules for itself to follow up later. Allow silently lets them run; "Ask me first" holds each new one for a single yes/no, never a repeating prompt. During quiet hours (from 22:00 until the time below) a background turn never messages you: it arms one self-wakeup that re-checks its note and delivers it when quiet hours end.</p>
 <label>When the assistant schedules a wake-up</label>
 <select id=wkPolicy>
 <option value=auto>Allow silently</option>
 <option value=ask>Ask me first</option>
 </select>
+<label>Quiet hours end at (local time)</label>
+<div class=row><input id=wkQuietEnd type=time value="09:00"></div>
 <div class=hint id=wkMsg></div>
 <div id=wkPending style="display:none;margin-top:10px;padding:12px;border:1px solid var(--teal);border-radius:12px;background:var(--raise2)">
 <b id=wkPendLabel></b>

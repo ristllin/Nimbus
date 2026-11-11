@@ -1612,8 +1612,9 @@ function loadLoops(){
 // Policy default silent-allow; "ask me first" surfaces at most ONE pending
 // approval as a single yes/no card - never a repeating prompt / loop.
 // CUM-514 (L20 docs audit): wired to the device's REAL contract. GET answers
-// {approvalMode:"ask"|"auto", wakeups:[{id,name,note,enabled,pending,inSec}]};
-// POST takes action=mode&value=ask|auto, or action=approve|cancel&id=<id>. The
+// {approvalMode:"ask"|"auto", quietEnd:<minute of day>, wakeups:[{id,name,note,enabled,pending,inSec}]};
+// POST takes action=mode&value=ask|auto, action=quiet_end&value=HH:MM, or
+// action=approve|cancel&id=<id>. The
 // control used to read policy/items/pending and post policy=..., none of which
 // the device has, so it could not save and the approval card never showed.
 function wkIn(s){if(s==null)return '';const m=Math.round(s/60);
@@ -1632,6 +1633,18 @@ function loadWakeups(){
       work:()=>wkPost({action:'mode',value:sel.value}),
       ok:()=>sel.value==='ask'?'Ask me first - new wake-ups wait for approval.':'Wake-ups run silently.',
       error:e=>e===WK_GONE?'That save did not apply - try again.':'Couldn\'t save'+(e?(' ('+e+')'):'')+' - try again.'});
+    // Quiet hours end (owner design 9/11 Nov): self-wakeups fire at this minute.
+    const qe=$('wkQuietEnd');
+    if(qe){
+      if(document.activeElement!==qe&&typeof d.quietEnd==='number'){
+        const mm=Math.max(0,Math.min(1439,d.quietEnd|0));
+        qe.value=String(Math.floor(mm/60)).padStart(2,'0')+':'+String(mm%60).padStart(2,'0');
+      }
+      qe.onchange=()=>run({status:'wkMsg',pending:'Saving…',
+        work:()=>wkPost({action:'quiet_end',value:qe.value}),
+        ok:()=>'Quiet hours now end at '+qe.value+'.',
+        error:e=>e===WK_GONE?'That save did not apply - try again.':'Couldn\'t save'+(e?(' ('+e+')'):'')+' - try again.'});
+    }
     const items=(d.wakeups||[]).filter(w=>w);
     // A single pending approval card (never a loop): only the FIRST pending item.
     const p=items.find(w=>w.pending), box=$('wkPending');

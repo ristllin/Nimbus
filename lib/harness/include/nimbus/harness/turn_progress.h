@@ -4,6 +4,7 @@
 
 #include "nimbus/harness/hooks.h"      // agent::TurnSource
 #include "nimbus/orch/head_loop.h"   // HeadProgress
+#include "nimbus/orch/self_wakeup.h"  // orch::WakeKind
 
 // turn_progress (lane PROG) - the portable plan for what a surface should show
 // at a round boundary of a long turn, so a turn never looks frozen. The head
@@ -67,6 +68,21 @@ std::string progressActivity(const std::vector<std::string>& tools);
 // The rough-wait tail for the line ("about a minute more"), derived from the
 // observed pace and the rounds left. Host-tested buckets.
 std::string progressWait(uint32_t elapsedMs, int round, int maxRounds);
+
+// --- self-wakeup kinds per turn source (owner design, 9/11 Nov) --------------
+// True when the turn was NOT started by a person: a dream, routine, loop or
+// sub-agent/synthesis turn. Such a turn never messages the owner during quiet
+// hours and never holds a note for their next message - it arms ONE self-wakeup
+// (nimbus/orch/self_wakeup.h) for the end of quiet hours instead.
+bool backgroundSource(agent::TurnSource source);
+// The self-wakeup kind for a background turn: the reserved dream loop
+// (attribution "loop:dream") is the nightly Upkeep; any other loop/routine turn
+// is Routine; a sub-agent result (synthesis) is Subagent. Returns false for a
+// person-started turn (Owner/Serial): those deliver directly, they never arm.
+// Host-tested over EVERY TurnSource value, so a source added to the enum fails
+// the class test until it is classified here.
+bool wakeKindForSource(agent::TurnSource source, const std::string& attribution,
+                       orch::WakeKind& out);
 
 }  // namespace harness
 }  // namespace nimbus

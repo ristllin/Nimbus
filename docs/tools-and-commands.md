@@ -101,6 +101,18 @@ out): it fires once without approval, shows up in `/loops` like any routine, and
 can be canceled the same way. Managing people, keys, and other settings is
 web-only; the bot has no commands for them.
 
+During quiet hours (from 22:00 until the quiet-hours-end setting, default 09:00
+local) a background turn - the nightly upkeep, a routine, a sub-agent result -
+never messages you and never holds a note for your next message. It arms ONE
+self-wakeup instead: a one-time wake-up due at the end of quiet hours (within
+24 h, at most one pending per kind, no approval needed), listed with the
+routines and cancellable like any of them, gone after it fires, and kept across
+a restart. At wake time the note is re-checked first: dropped when it is stale
+(its window passed, e.g. a brief about delays that ended) or already delivered
+by a routine; otherwise it is sent in plain words saying what it is and when it
+was noticed. The self-wakeup's turn is one short turn with no tools that change
+anything.
+
 If you would rather approve even those one-time wake-ups, open Assistant →
 Routines on the web page and, under Wake-ups, set "When the assistant schedules a
 wake-up" to "Ask me first" (if the page does not keep the choice, set it with
@@ -108,8 +120,11 @@ wake-up" to "Ask me first" (if the page does not keep the choice, set it with
 the assistant arms lands pending and you get a single approval card (the same
 approve/deny as a routine); it never re-asks while it waits. Only an admin can arm
 or approve a wake-up. The web surface for this is `GET /api/wakeups` (the wake-up
-list, arm state, and approval mode) and `POST /api/wakeups` with
-`action=mode&value=ask|auto`, `action=approve&id=<id>`, or `action=cancel&id=<id>`.
+list, arm state, approval mode, and `quietEnd`, the quiet-hours-end minute) and
+`POST /api/wakeups` with `action=mode&value=ask|auto`,
+`action=quiet_end&value=HH:MM` (when quiet hours end, local; self-wakeups fire
+then), `action=approve&id=<id>`, or `action=cancel&id=<id>`. The quiet-hours-end
+setting is also on the Wake-ups card as "Quiet hours end at".
 
 ## Contributor tools
 <!-- pack: exclude -->
