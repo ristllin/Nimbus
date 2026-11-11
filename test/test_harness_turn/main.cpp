@@ -950,6 +950,24 @@ static void test_owner_mechanics_dropped_at_the_delivery_seam() {
   }
 }
 
+// Adversarial review of the 11 Nov fix, finding 6: the in-flight turn's owner text
+// (the asked-how gate of the Telegram send seam) must not outlive the turn - a
+// later non-turn send (a notice, a job delivery) must see no owner text, so the
+// gate is off for it. After a turn ends, currentUserText() is empty even when the
+// turn's owner message asked how the system works.
+static void test_user_text_cleared_after_turn() {
+  Rig r;
+  Rig::Script sc;
+  sc.outJson = "{\"reply\":\"Each row is keyed by its meal.\",\"memory\":\"\",\"ask\":\"\"}";
+  r.scripts["anthropic"] = {sc};
+  r.eng->handleMessage("How does the food log work?", "Roy", "1001");
+  TEST_ASSERT_EQUAL_STRING("Each row is keyed by its meal.", r.lastText().c_str());
+  TEST_ASSERT_EQUAL_STRING("", r.eng->currentUserText().c_str());
+  // And a second turn re-arms it only while it runs.
+  r.eng->handleMessage("log my lunch please", "Roy", "1001");
+  TEST_ASSERT_EQUAL_STRING("", r.eng->currentUserText().c_str());
+}
+
 // Lane ECHO fix pass (review finding, REVIEW-FINDINGS.json): the head's raw output was
 // the delivered Lumi message - prose, leaked contract sentences, the whole orch_turn
 // envelope as a fenced JSON block, an apology, and the reply again. End to end: only the
@@ -5656,6 +5674,7 @@ static void runFirstHalf() {
   RUN_TEST(test_happy_turn_delivers_and_accounts);
   RUN_TEST(test_echo_reply_is_dropped_at_the_delivery_seam);
   RUN_TEST(test_owner_mechanics_dropped_at_the_delivery_seam);
+  RUN_TEST(test_user_text_cleared_after_turn);
   RUN_TEST(test_echo_envelope_message_delivers_only_the_envelope_reply);
   RUN_TEST(test_recall_injected_for_user_text_skipped_for_synthesis);
   RUN_TEST(test_same_host_fresh_conv_retry);

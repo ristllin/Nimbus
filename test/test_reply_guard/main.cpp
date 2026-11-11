@@ -879,6 +879,99 @@ static void test_owner_mechanics_drop_semantics() {
   TEST_ASSERT_EQUAL_STRING(" To undo, re-send the row with 0 kcal.", s.substr(b, e - b).c_str());
 }
 
+// Adversarial review of the fix (echoreview, 11 Nov), finding 1: everyday nouns
+// collided with mechanic nouns, so legitimate owner-facing sentences were dropped
+// whole ("Set the table for four.", "Use the key to open the door."). The noun
+// table must hold only objects the owner cannot operate: a dinner table, a door
+// key, a diary record, a student id, a garden path are the owner's own.
+static void test_owner_mechanics_precision_everyday_objects() {
+  const std::string owner = "log my lunch please";
+  for (const char* r : {
+           "Set the table for four.",
+           "Please set the table before dinner.",
+           "Add the guest to the table.",
+           "Select the table by the window.",
+           "Use the key to open the door.",
+           "Press the key to start the machine.",
+           "Add a record of the dose to your diary.",
+           "Update the record when it changes.",
+           "Delete the record from your notebook.",
+           "Enter your student id in the form.",
+           "Edit the path in the garden.",
+           "The cell in the spreadsheet is empty.",
+       }) {
+    TEST_ASSERT_FALSE_MESSAGE(ownerMechanicsSpan(r, owner), r);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(r, dropOwnerMechanics(r, owner).c_str(), r);
+  }
+}
+
+// Adversarial review, finding 2: the "-ing" stem rule only stripped "ing", so
+// e-final and doubled verbs never matched ("writing" -> "writ", "setting" ->
+// "sett", "running" -> "runn"). Every one of these is an instruction to the owner.
+static void test_owner_mechanics_ing_stem_class() {
+  const std::string owner = "log my lunch please";
+  for (const char* s : {
+           "Setting the field to 0 undoes it.",
+           "Updating the row with 0 kcal undoes it.",
+           "Writing the json yourself works too.",
+           "Using the tool again with an empty value undoes it.",
+           "Removing the row from the csv clears it.",
+           "Changing the column to 0 undoes the entry.",
+           "Running the command again clears it.",
+           "Typing the parameter yourself works.",
+           "Deleting the file removes the log.",
+       }) {
+    size_t b = 0, e = 0;
+    TEST_ASSERT_TRUE_MESSAGE(ownerMechanicsSpan(s, owner, &b, &e), s);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", dropOwnerMechanics(s, owner).c_str(), s);
+  }
+}
+
+// Adversarial review, finding 3: any "?" anywhere disabled the whole sentence, so
+// a tag question ("Set the field to 0, right?") still instructed the owner. Only a
+// sentence that LEADS with a question word is a question.
+static void test_owner_mechanics_tag_question() {
+  const std::string owner = "log my lunch please";
+  for (const char* s : {
+           "Set the field to 0, right?",
+           "Re-send the row with 0 kcal?",
+           "You can update the row with 0 kcal, correct?",
+       }) {
+    size_t b = 0, e = 0;
+    TEST_ASSERT_TRUE_MESSAGE(ownerMechanicsSpan(s, owner, &b, &e), s);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", dropOwnerMechanics(s, owner).c_str(), s);
+  }
+  for (const char* r : {
+           "Can you re-send the row with 0 kcal?",
+           "What does the row say?",
+           "Is the row still there?",
+           "How do I undo it?",
+       }) {
+    TEST_ASSERT_FALSE_MESSAGE(ownerMechanicsSpan(r, owner), r);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(r, dropOwnerMechanics(r, owner).c_str(), r);
+  }
+}
+
+// Adversarial review, finding 4: the drop scanned only the first 16384 bytes but
+// built the output from the scanned range only, so a mechanics sentence in the
+// head silently dropped the whole tail of a long reply. The drop must never
+// shrink the reply beyond the dropped sentences.
+static void test_owner_mechanics_no_tail_truncation() {
+  const std::string owner = "log my lunch please";
+  std::string tail;
+  for (int i = 0; i < 2200; i++) tail += "All good. ";   // ~22 KB of plain sentences
+  const std::string reply = "Re-send the row with 0 kcal to undo it. " + tail;
+  TEST_ASSERT_TRUE(reply.size() > 16384);
+  const std::string d = dropOwnerMechanics(reply, owner);
+  TEST_ASSERT_TRUE_MESSAGE(d.size() > 16384, "the tail past 16 KB must survive");
+  TEST_ASSERT_TRUE_MESSAGE(d.find("All good.") != std::string::npos, d.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(d.find("re-send the row") == std::string::npos, d.c_str());
+  TEST_ASSERT_EQUAL_STRING(tail.c_str(), d.c_str());
+  // A clean long reply is byte-exact too.
+  const std::string clean = "All good. " + tail;
+  TEST_ASSERT_EQUAL_STRING(clean.c_str(), dropOwnerMechanics(clean, owner).c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_filler_class);
@@ -919,5 +1012,9 @@ int main() {
   RUN_TEST(test_owner_mechanics_asked_how_gate);
   RUN_TEST(test_owner_mechanics_stored_replies_corpus);
   RUN_TEST(test_owner_mechanics_drop_semantics);
+  RUN_TEST(test_owner_mechanics_precision_everyday_objects);
+  RUN_TEST(test_owner_mechanics_ing_stem_class);
+  RUN_TEST(test_owner_mechanics_tag_question);
+  RUN_TEST(test_owner_mechanics_no_tail_truncation);
   return UNITY_END();
 }

@@ -209,21 +209,26 @@ void test_source_class_progress_allowed() {
   TEST_ASSERT_TRUE(progressAllowedForSource(TurnSource::Serial));     // the console
   TEST_ASSERT_FALSE(progressAllowedForSource(TurnSource::Synthesis)); // sub-agent synthesis
   TEST_ASSERT_FALSE(progressAllowedForSource(TurnSource::Loop));      // routines, loops, dream
-  // The enum is iterated by value, so a source added to the enum fails this
-  // test until it is classified here.
-  for (int s = 0; s <= 3; s++) {
+  // The enum is iterated by value up to its LAST enumerator (not a literal), and
+  // the allowed set is pinned to exactly {Owner, Serial}: a source appended to the
+  // enum is iterated here, and allowing any further source fails the count pin
+  // until the test is deliberately updated.
+  int allowedCount = 0;
+  for (int s = 0; s <= (int)TurnSource::Serial; s++) {
     const TurnSource src = (TurnSource)s;
     const bool allowed = progressAllowedForSource(src);
     TEST_ASSERT_EQUAL_MESSAGE(src == TurnSource::Owner || src == TurnSource::Serial, allowed,
                               "every turn source must be classified");
+    if (allowed) allowedCount++;
   }
+  TEST_ASSERT_EQUAL_MESSAGE(2, allowedCount, "exactly the person-started sources may signal");
 }
 
 // A system turn's plan is quiet at every boundary: no keep-alive, no line, no
 // line text - but the queue check still runs (a message that arrived mid-turn
 // is the owner's own and still deserves its ack).
 void test_system_turn_plan_is_quiet() {
-  for (int s = 0; s <= 3; s++) {
+  for (int s = 0; s <= (int)TurnSource::Serial; s++) {
     const TurnSource src = (TurnSource)s;
     if (progressAllowedForSource(src)) continue;
     for (int round = 0; round <= 3; ++round) {

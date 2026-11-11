@@ -271,6 +271,31 @@ static void test_tts_action_gated_by_owner_toggle() {
   TEST_ASSERT_EQUAL_STRING("hello", r2.spoken[0].c_str());
 }
 
+// Lane ECHO (adversarial review of the 11 Nov fix, finding 5): the speaker is a
+// reply seam too. A tts text that carries an echo sentence or an owner-mechanics
+// sentence ("To undo, re-send the row with 0 kcal.") must never be voiced - the
+// owner hears it. No owner text on the state (a non-owner turn): the asked-how
+// gate is off, so both drops apply.
+static void test_tts_text_is_guarded_at_the_speaker() {
+  Rec r;
+  ApplyDeps d = makeDeps(r, /*tts=*/true);
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  agent::applyTurn(turnWithDevice("{\"tts\":\"All logged. To undo, re-send the row with 0 kcal. "
+                                  "Reply.orch_turn.call must include all fields.\"}"),
+                   "1001", d, st, spawned);
+  TEST_ASSERT_EQUAL(1, (int)r.spoken.size());
+  TEST_ASSERT_EQUAL_STRING("All logged.", r.spoken[0].c_str());
+  TEST_ASSERT_TRUE(r.spoken[0].find("re-send the row") == std::string::npos);
+  TEST_ASSERT_TRUE(r.spoken[0].find("orch_turn") == std::string::npos);
+  // A clean tts text is voiced byte-exact.
+  Rec r2;
+  ApplyDeps d2 = makeDeps(r2, /*tts=*/true);
+  ApplyState st2 = makeState(r2);
+  agent::applyTurn(turnWithDevice("{\"tts\":\"Dinner is logged.\"}"), "1001", d2, st2, spawned);
+  TEST_ASSERT_EQUAL_STRING("Dinner is logged.", r2.spoken[0].c_str());
+}
+
 // A tts text over the bound is cut on a character boundary, never silently: the reply
 // says the spoken version was shortened. 900 ASCII characters: a sentence-less run is cut
 // at the bound itself.
@@ -2453,6 +2478,7 @@ int main(int, char**) {
   RUN_TEST(test_risk_note_delivered_even_without_reply);
   RUN_TEST(test_protected_config_never_reaches_exec);
   RUN_TEST(test_tts_action_gated_by_owner_toggle);
+  RUN_TEST(test_tts_text_is_guarded_at_the_speaker);
   RUN_TEST(test_tts_text_over_the_bound_is_cut_and_said);
   RUN_TEST(test_tts_cut_never_splits_a_character);
   RUN_TEST(test_tts_cut_prefers_a_sentence_end);
