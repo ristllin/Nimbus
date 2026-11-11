@@ -49,7 +49,9 @@ SignalCounts walkBoundaries(const TurnRecord& t, const Report& r) {
     hp.elapsedMs = m.elapsedMs;
     hp.lastRound = m.lastRound;
     hp.tools = m.tools;
-    const auto plan = nimbus::harness::planTurnProgress(hp, m.maxRounds, lineSent);
+    // Lane ECHO fix pass: the plan takes the turn's source; a lab scenario turn is
+    // an owner message (handleMessage), so the replay walks it as Owner.
+    const auto plan = nimbus::harness::planTurnProgress(hp, m.maxRounds, lineSent, agent::TurnSource::Owner);
     if (plan.keepAlive) s.keepAlives++;
     if (plan.checkQueue) s.queueChecks++;
     if (plan.sayLine) {
