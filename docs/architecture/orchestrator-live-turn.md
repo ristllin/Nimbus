@@ -42,6 +42,14 @@ Memory is folded around the turn on two sides, whichever path runs:
 Both sides run on the `tg_poll` turn task, which is off the main-loop watchdog, so
 a multi-second turn does not restart the device.
 
+At every round boundary the turn keeps the chat alive (a typing indicator) and checks
+for messages that arrived mid-turn, but it sends the chat one progress line at most,
+and only for a turn a person started (the owner's or an approved member's message, or
+the serial console): a dream, routine, loop or sub-agent turn never signals the chat.
+The line is phrased in the assistant's own voice ("Still looking through my memory for
+that, a few minutes more.") and, on Telegram, is sent as a reply to the message the
+turn answers, so it shows with context.
+
 ## Read side - recall then assemble
 
 `runTurn(inputs, chatId, userText)` composes context before choosing a host:

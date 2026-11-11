@@ -111,6 +111,19 @@ the envelope's other fields are dropped with a parse note (quoted JSON in prose
 never acts). When the owner's message asks for JSON, a shown example is content
 and the whole text is delivered.
 
+## Echoed instructions and owner-mechanics sentences
+
+The reply guard drops two sentence classes from anything delivered to the owner, on
+every path (the served reply and ask, a salvaged answer, the Telegram send, the
+sub-agent fallback): a sentence echoing the request's own instructions (a tool name
+or a contract phrase such as "must include all fields"), and a sentence telling the
+owner to operate an internal object ("To undo, re-send the row with 0 kcal." - a
+row, field, key, tool, command, file path, json, parameter or id). The second class
+is gated on the owner's message: when it asks how the system works ("how do I undo a
+row?"), describing the mechanics is a real answer and stays. A question ("Can you
+re-send the row?") and a first-person offer ("I'll re-send the row for you.") are
+never dropped.
+
 ## Cut and unreadable answers
 
 When the head's answer cannot be applied, `salvageTurnText()` reads only the

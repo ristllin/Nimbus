@@ -428,6 +428,13 @@ often a place in a photo and counts only with a first person doing work there; "
 on" is often the owner's goal and counts only with a first person as its subject; a next turn
 or round can be on a road or in a contest.
 
+Two sentence classes never reach the owner at all, on any delivery path: a sentence echoing
+the request's own instructions (a tool name, a contract phrase), and a sentence telling the
+owner to operate an internal object ("To undo, re-send the row with 0 kcal."). The second is
+dropped unless the owner's message asks how the system works; a question ("Can you re-send
+the row?") and a first-person offer ("I'll re-send the row for you.") are kept. The guard
+itself is specified in [turn-contract.md](reference/turn-contract.md#echoed-instructions-and-owner-mechanics-sentences).
+
 A plain chat line runs at most 2 tool rounds, stated in the per-turn block so the cached
 static block does not change between turns. A message that asks for work keeps the
 configured rounds: an action or lookup verb where a request starts, a link, a word such as
