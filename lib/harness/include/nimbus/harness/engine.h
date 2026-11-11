@@ -365,7 +365,9 @@ class TurnEngine {
   // quietOk (additive; the DREAM loop): an all-empty turn delivers nothing -
   // the bare "Done." fallback is suppressed (ApplyState.quietFallback), and every
   // engine notice is held. The reserved dream goes further: its own reply, ask and
-  // correction lines are never sent either, but come back in FireOutcome.held.
+  // correction lines are never sent and never held for later delivery either
+  // (lane ECHO review, 11 Nov: a held note reached the owner hours later, out of
+  // context) - the upkeep's owner note is firmware-worded only (dream::upkeepNoteText).
   // once (W20): a self-set single wakeup - renders a [WAKEUP] preamble instead
   // (calling a one-shot the model armed for itself a "recurring task" is a lie
   // the honesty rails would then have to argue with). ownerReminder (W22): the
@@ -670,7 +672,6 @@ class TurnEngine {
   };
   std::vector<HeldNotice> heldNotices_;   // this turn's switch notices (L19-13 d)
   std::string keylessPinTold_;            // HOST-FALLBACK: the keyless pin the owner was told about
-  std::string heldReply_;               // the dream turn's output, held (FireOutcome.held)
   // True while a quiet scheduled turn runs: every engine notice is held (deliver)
   // and the one-notice billing latch is left armed (lane M x lane K).
   bool holdingNotices() const { return scheduledTurn_ && quietTurn_; }

@@ -13,6 +13,7 @@
 #include "memory_subsystem.h"      // engines + Lock + stats + nowHours + opCounters
 #include "orchestrator.h"
 #include "store.h"                 // the legacy NVS quiet-night baseline (read only)
+#include "nimbus/harness/turn_progress.h"   // progressAllowedForSource - person-started turns
 #include <memory>   // unique_ptr: the night state off the poll task stack (lane STACK)
 
 namespace agent {
@@ -53,7 +54,9 @@ static uint8_t  g_defersTonight = 0;
 static uint32_t g_deferDay = 0;
 static bool     g_firing = false;        // the dream's own turn is running
 static std::string g_pendingAlert;       // sent at the next owner turn, never at night
-static std::string g_pendingReply;       // what the reflection held for the owner (latest)
+static std::string g_pendingReply;       // the upkeep's firmware-worded note (latest)
+static uint64_t g_pendingAt = 0;         // epoch the pending note was held at (0 = none)
+static uint16_t g_pendingMinute = 0;     // its local minute of day, for the delivered header
 // A starved night's row, decided in the gate. The gate runs under the loops lock and
 // the timeline write takes the memory lock - the opposite order to loop.create (memory
 // lock, then loops lock) - so the row is written later, from tg_poll with no loops lock
@@ -121,17 +124,30 @@ void begin(const agent::Hooks& hooks, AlertSink alert) {
   g_gateCfg.minHeap = ORCH_AUTO_TURN_MIN_HEAP;  // device-authoritative floor
 }
 
-void noteTurnEnd(uint32_t nowMs) {
+void noteTurnEnd(uint32_t nowMs, agent::TurnSource src) {
   g_lastTurnEndMs = nowMs ? nowMs : 1;
   if (!g_firing) emitStarvedRow();
-  // A failing streak, and anything the reflection had for the owner, is told when
-  // the owner is next around (any turn of theirs ends), never by a 04:00 message.
-  if (!g_firing && g_alert && (!g_pendingAlert.empty() || !g_pendingReply.empty())) {
-    const std::string msg = ownerNoteText(g_pendingAlert, g_pendingReply);
+  // A failing streak, and the upkeep's note, are told when the owner is next around,
+  // never by a 04:00 message. Lane ECHO review (11 Nov): the note is delivered only
+  // on a turn a person started (a routine ending at 05:00 must not push it out
+  // unprompted), it expires after kHeldNoteMaxAgeSec (a note held at 03:31 must not
+  // arrive at 12:33 stale and unexplained), and the message says when it is from.
+  if (g_firing || !g_alert || (g_pendingAlert.empty() && g_pendingReply.empty())) return;
+  const uint64_t now = (uint64_t)time(nullptr);
+  if (heldNoteExpired(g_pendingAt, now)) {
+    alogf("dream: held owner note expired (held %llu s ago) - dropped",
+          (unsigned long long)(now > g_pendingAt ? now - g_pendingAt : 0));
     g_pendingAlert.clear();
     g_pendingReply.clear();
-    g_alert(msg);
+    g_pendingAt = 0;
+    return;
   }
+  if (!nimbus::harness::progressAllowedForSource(src)) return;   // keep holding
+  const std::string msg = ownerNoteText(g_pendingAlert, g_pendingReply, g_pendingMinute);
+  g_pendingAlert.clear();
+  g_pendingReply.clear();
+  g_pendingAt = 0;
+  g_alert(msg);
 }
 
 uint32_t gateDefer(const orch::LoopRecord& l) {
@@ -307,10 +323,17 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
         (unsigned)rep.attempt, (unsigned)rep.retryAfterSec, (unsigned)rep.streak);
   if (!rep.stateSaved)
     alogf("dream: state not saved (%s) - this boot keeps the count in RAM", rep.stateWhy.c_str());
-  if (rep.alert) g_pendingAlert = streakAlertText(rep);
+  if (rep.alert) {
+    g_pendingAlert = streakAlertText(rep);
+    g_pendingAt = clock.epoch;
+    g_pendingMinute = clock.minuteOfDay;
+  }
   if (!rep.held.empty()) {
     g_pendingReply = rep.held;   // the latest night's note replaces an unsent older one
-    alogf("dream: a note for the owner is held for their next turn (%u B)", (unsigned)rep.held.size());
+    g_pendingAt = clock.epoch;
+    g_pendingMinute = clock.minuteOfDay;
+    alogf("dream: a firmware-worded note for the owner is held for their next turn (%u B)",
+          (unsigned)rep.held.size());
   }
   publishStatus(rep);
   return night.fire;
@@ -373,7 +396,12 @@ static void publishInterrupted(const NightReport& rep) {
         (unsigned)rep.attempt, (unsigned)kMaxAttempts,
         rep.retryAfterSec ? ", retry scheduled" : ", no retry inside the window");
   publishStatus(rep);
-  if (rep.alert) g_pendingAlert = streakAlertText(rep);
+  if (rep.alert) {
+    g_pendingAlert = streakAlertText(rep);
+    const NightClock c = nightClock();
+    g_pendingAt = c.epoch;
+    g_pendingMinute = c.minuteOfDay;
+  }
   emitRow(dreamEndEvent(rep, false));
 }
 

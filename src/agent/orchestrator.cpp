@@ -1708,7 +1708,7 @@ static TurnEngine::Deps buildTurnDeps() {
     if (ev.ok && (ev.host == "openai" || ev.host == "anthropic" || ev.host == "mistral") &&
         store::verifyResult(ev.host.c_str()) != 1 && s_verifyMemo.shouldWrite(ev.host.c_str(), 1))
       (void)store::setVerify(ev.host.c_str(), 1, millis());   // a failure is in the ledger
-    dream::noteTurnEnd(millis());   // DREAMING idle gate: quiet clock
+    dream::noteTurnEnd(millis(), ev.source);   // DREAMING idle gate: quiet clock + held-note delivery
     // v3.6.0 fold accounting: one persist per turn + the reactive overflow path.
     if (!ev.chatId.empty() && ev.chatId != "system") {
       strncpy(g_lastTurnChat, ev.chatId.c_str(), sizeof(g_lastTurnChat) - 1);

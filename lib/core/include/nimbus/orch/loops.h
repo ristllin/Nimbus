@@ -211,10 +211,6 @@ struct FireOutcome {
   // idempotent may set it - today the dream, which runs maintenance once per
   // local day and retries a deferred or transiently failed reflection that night.
   uint32_t    retryAfterSec = 0;
-  // PG4: what a quiet turn would have sent and held back instead - the nightly dream
-  // messages nobody while it runs, and its glue hands this text to the owner at
-  // their next conversation. "" = nothing held.
-  std::string held;
   // CUM-826: the fire's turn reached the owner (its answer was delivered, or a tool
   // replied mid-loop) - also when the fire then failed. Such a fire is never run again
   // early: a retry would send the owner the same message twice.

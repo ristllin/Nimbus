@@ -246,9 +246,13 @@ a quiet background turn; the next owner turn says it).
     the owner is told once, at their next conversation, never at night.
   - **Quiet.** The dream messages nobody while it runs: its failure, provider-switch
     and billing notices are held, and so are its own reply, question and correction
-    lines, with no sound or attention cue. Anything it had for the owner goes out
-    once, with the streak alert when there is one, when the owner's next turn ends
-    (RAM only: a restart before then drops it).
+    lines, with no sound or attention cue. Its model text is never held for later
+    delivery at all - the only thing that can go out later is a firmware-worded
+    upkeep note (facts only: storage not saved, memory writes failed), sent once,
+    with the streak alert when there is one, only when a turn a person started ends,
+    only within 4 h of the night, and the message says when it is from
+    ("From the nightly memory upkeep at HH:MM:"). RAM only: a restart before then
+    drops it.
   - **A night the restart cut short.** The reflection turn writes an in-flight
     marker (night, attempt, start time) into `/data/dream.json` before it starts and
     clears it with its outcome. A boot that finds the marker without an outcome

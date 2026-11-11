@@ -2593,16 +2593,17 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   if (memoryOnly) {
     // The nightly dream messages nobody while it runs (PG4; unit L, 21 Oct: its
     // "memory was unavailable tonight" summary went to Telegram). Its reply, ask and
-    // correction lines are held for the owner's next conversation (FireOutcome.held),
-    // and its sound, attention and completion cues stay off; deliver() already holds
-    // its engine notices.
+    // correction lines are never sent and never held for later delivery either
+    // (lane ECHO review, 11 Nov: a held note reached the owner hours later, out of
+    // context) - the upkeep's owner note is firmware-worded only (dream::upkeepNoteText,
+    // built from the night's own report). Its sound, attention and completion cues
+    // stay off; deliver() already holds its engine notices.
     // On the heap (lane STACK): a 468 B copy of the apply hooks.
     const std::unique_ptr<agent::ApplyDeps> heldDeps(new agent::ApplyDeps(d_.apply));
     agent::ApplyDeps& held = *heldDeps;
-    held.deliver = [this](const std::string&, const std::string& text) {
+    held.deliver = [](const std::string&, const std::string& text) {
       if (text.empty()) return;
-      heldReply_ += heldReply_.empty() ? text : "\n\n" + text;
-      hlog::logf("quiet turn: reply held for the owner's next turn (%.96s)", text.c_str());
+      hlog::logf("quiet turn: reply not held for the owner (%.96s)", text.c_str());
     };
     held.emitAsk = nullptr;
     held.fire = nullptr;
@@ -2969,7 +2970,6 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   // nothing): store::orchModel and the output caps read this role on this task.
   const nimbus::orch::BackgroundTurnScope backgroundTurn;
   lastReply_.clear();
-  heldReply_.clear();
   scheduledTurn_ = true;
   quietTurn_ = quietOk;
   routineRecurs_ = !once && !ownerReminder && !loopId.empty() && !dream::isReserved(loopId);
@@ -3066,8 +3066,6 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   loopName_.clear();
   o.tokens  = lastTurnUsage_;   // this fire's own spend, set on every exit (lane T)
   o.detail  = lastReply_;
-  o.held = std::move(heldReply_);
-  heldReply_.clear();
   if (!o.ok) o.error = facts().chain.render(nimbus::orch::FailureChain::kTextMax);
   if (!o.ok && turnMem().refused) {   // L24: a memory end is a defer, not a failure (CUM-403)
     o.deferred = true;
@@ -3104,8 +3102,6 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
       o.tokens = lastTurnUsage_;
       if (o.ok) {
         o.detail = lastReply_;
-        o.held = std::move(heldReply_);
-        heldReply_.clear();
         hlog::log("loops: scheduled turn served, then an allocation failed in its bookkeeping - reported ok");
       } else {
         o.error = "low memory: an allocation failed after the turn ran";

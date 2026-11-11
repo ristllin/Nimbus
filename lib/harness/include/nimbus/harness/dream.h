@@ -275,7 +275,8 @@ struct NightReport {
   bool alert = false;           // tonight crossed an alert point (owner alert due)
   bool stateSaved = true;       // /data/dream.json landed
   std::string stateWhy;         // why it did not ("storage not mounted", "storage write failed")
-  std::string held;             // what the reflection had for the owner, held (FireOutcome.held)
+  std::string held;             // the upkeep's note for the owner, held: firmware-worded
+                                // facts only (upkeepNoteText), never the reflection's model text
 };
 
 // The boot's working copy of the dream state. RAM is the authority between fires and
@@ -415,11 +416,28 @@ struct BootReconcile {
 std::string renderDreamRow(const NightReport& r, size_t cap = 240);
 // The owner alert when report.alert is set (plain words, no ticket numbers).
 std::string streakAlertText(const NightReport& r);
+// The upkeep's owner note, worded by the firmware only: a fact the device itself
+// knows (storage not saved, memory writes failed), each with what the owner can do.
+// Never model text - the reflection's reply is not relayed to the owner, held or
+// otherwise (review finding, 11 Nov: a held commute brief reached the owner 9 h
+// later, glued to an unrelated answer).
+std::string upkeepNoteText(const NightReport& r);
+// A held owner note expires: it is delivered only within kHeldNoteMaxAgeSec of when
+// it was held (review finding, 11 Nov: a note held at 03:31 arrived at 12:33, stale
+// and unexplained). An undated note (heldAtEpoch 0) or a clock that moved backwards
+// never delivers.
+constexpr uint32_t kHeldNoteMaxAgeSec = 4u * 3600u;   // 4 h: at most a few hours
+inline bool heldNoteExpired(uint64_t heldAtEpoch, uint64_t nowEpoch) {
+  return heldAtEpoch == 0 || nowEpoch < heldAtEpoch ||
+         nowEpoch - heldAtEpoch > (uint64_t)kHeldNoteMaxAgeSec;
+}
 // The one message the owner gets at their next conversation (never at night): the
-// streak alert and what the reflection held for them (NightReport.held, clipped to
-// kHeldNoteMax bytes, UTF-8 safe), each when there is one. "" = nothing to send.
+// streak alert and the upkeep's note (NightReport.held, clipped to kHeldNoteMax
+// bytes, UTF-8 safe), each when there is one, under a header that says when the
+// note is from (heldMinuteOfDay, local). "" = nothing to send.
 constexpr size_t kHeldNoteMax = 1500;
-std::string ownerNoteText(const std::string& streakAlert, const std::string& heldReply);
+std::string ownerNoteText(const std::string& streakAlert, const std::string& heldReply,
+                          uint16_t heldMinuteOfDay);
 
 // Seconds from `c` until the reserved slot (minuteOfDay `slot`) on the next local day.
 uint32_t secondsToNextSlot(const NightClock& c, uint16_t slot);

@@ -565,7 +565,9 @@ nimbus::orch::FireOutcome reflect(const NightDeps& d, const std::string& inputs,
   r.ops = after - before;
   r.tokens = o.tokens.total();
   r.error = o.ok ? std::string() : o.error;
-  r.held = o.held;
+  // Lane ECHO review (11 Nov): the reflection's model text is never relayed to the
+  // owner - not even held (o.held is ignored here). The upkeep's note is built from
+  // the night's own report instead (upkeepNoteText, set in runNight).
   return o;
 }
 
@@ -624,6 +626,7 @@ NightResult runNight(const NightDeps& d, const NightClock& c, bool force) {
                        // night a failing store kept on disk
     r.streak = st.streak;
     r.stateSaved = save(st);
+    r.held = upkeepNoteText(r);
     o.ok = true;
     closeNight(d, c, r, o);
     return res;
@@ -655,6 +658,7 @@ NightResult runNight(const NightDeps& d, const NightClock& c, bool force) {
   st.lastCause = r.cause;
   clearMarker(st);   // the outcome write clears the marker
   r.stateSaved = save(st);
+  r.held = upkeepNoteText(r);
   o.retryAfterSec = r.retryAfterSec;
   closeNight(d, c, r, o);
   return res;
@@ -909,22 +913,48 @@ std::string streakAlertText(const NightReport& r) {
   else if (r.cause == "budget") why = "the monthly token budget is used up";
   else if (r.cause == "memory-writes-failed" || r.cause == "memory-unavailable")
     why = "memories could not be saved";
-  return "Nightly memory upkeep has not worked for " + std::to_string(r.streak) +
+  return "It has not worked for " + std::to_string(r.streak) +
          " nights in a row (" + why + "). It keeps trying each night. To pause it, send "
          "/loop off dream.";
 }
 
-std::string ownerNoteText(const std::string& streakAlert, const std::string& heldReply) {
-  std::string out = streakAlert;
-  if (heldReply.empty()) return out;
-  std::string body = heldReply;
-  if (body.size() > kHeldNoteMax) {
-    body.resize((size_t)nimbus::utf8CapLen(body.c_str(), (int)body.size(), (int)kHeldNoteMax - 3));
-    body += "...";
+std::string upkeepNoteText(const NightReport& r) {
+  // Firmware-worded facts only (lane ECHO review, 11 Nov): the reflection's model
+  // text is never relayed to the owner, held or not - only what the device itself
+  // knows, each with what the owner can do.
+  std::string out;
+  if (!r.stateSaved)
+    out = "Storage was not available during the nightly memory upkeep, so its state was not saved (" +
+          r.stateWhy + "). Check the SD card.";
+  if (r.outcome == DreamOutcome::Degraded) {
+    const char* why = r.cause == "memory-unavailable" ? "the embedding service was unavailable"
+                                                       : "memory writes failed";
+    if (!out.empty()) out += " ";
+    out += std::string("Some memories could not be saved during the nightly memory upkeep (") + why +
+           "). It keeps trying each night.";
   }
-  if (!out.empty()) out += "\n\n";
-  out += "From the nightly memory upkeep:\n" + body;
   return out;
+}
+
+std::string ownerNoteText(const std::string& streakAlert, const std::string& heldReply,
+                          uint16_t heldMinuteOfDay) {
+  std::string body = streakAlert;
+  if (!heldReply.empty()) {
+    std::string clipped = heldReply;
+    if (clipped.size() > kHeldNoteMax) {
+      clipped.resize((size_t)nimbus::utf8CapLen(clipped.c_str(), (int)clipped.size(), (int)kHeldNoteMax - 3));
+      clipped += "...";
+    }
+    if (!body.empty()) body += "\n\n";
+    body += clipped;
+  }
+  if (body.empty()) return "";
+  // The note says when it is from (lane ECHO review, 11 Nov: a held note arrived
+  // hours later with nothing to say why it was only now).
+  char at[8];
+  snprintf(at, sizeof at, "%02u:%02u", (unsigned)((heldMinuteOfDay / 60) % 24),
+           (unsigned)(heldMinuteOfDay % 60));
+  return std::string("From the nightly memory upkeep at ") + at + ":\n" + body;
 }
 
 uint16_t windowEndFor(uint16_t slotMinute) {
