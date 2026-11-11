@@ -631,6 +631,21 @@ std::string JobEngine::ownerResultsText() const { return ownerText(nullptr); }
 
 std::string JobEngine::ownerResultsText(const FreshScope& s) const { return ownerText(&s); }
 
+// One fresh result's body for the raw fallback. The fallback is a reply seam too:
+// a sub-agent's markup never reaches the owner. Lane ECHO fix pass: same for a
+// sentence telling the owner to operate internals (no owner text here - a sub-agent
+// turn has none - so the asked-how gate is off). A FAILED report is quoted verbatim
+// instead (the anti-spoof pin): it is a finding, not an instruction to the owner.
+static std::string freshBodyText(const JobEngine::FreshResult& f) {
+  static const std::string kFailed = "FAILED: ";
+  const bool prefixed = f.failed && f.text.compare(0, kFailed.size(), kFailed) == 0;
+  const std::string raw = prefixed ? f.text.substr(kFailed.size()) : f.text;
+  const bool report = f.text.compare(0, kFailed.size(), kFailed) == 0;
+  if (report) return nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(raw));
+  return nimbus::orch::dropOwnerMechanics(
+      nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(raw)), std::string());
+}
+
 std::string JobEngine::ownerText(const FreshScope* scope) const {
   bool any = false;
   for (const auto& f : fresh_) any = any || !scope || inScope(f, *scope);
@@ -641,26 +656,13 @@ std::string JobEngine::ownerText(const FreshScope* scope) const {
   std::string b = "Here are the raw findings; the summary step did not complete.\n";
   const size_t kBudget = 8192;   // same bound as the seed: Telegram splits, the web
                                  // reply slot does not
-  const std::string kFailed = "FAILED: ";
   for (const auto& f : fresh_) {
     if (scope && !inScope(f, *scope)) continue;
     // An engine failure line already names its sub ("Job [label] failed: why") -
     // the same line the owner gets when it fails alone - so it needs no title.
     // Decided by the out-of-band flag, never by the text: a sub-agent's own reply
     // that starts with "FAILED: " keeps its title (it cannot pose as the device).
-    const bool prefixed = f.failed && f.text.compare(0, kFailed.size(), kFailed) == 0;
-    // The raw fallback is a reply seam too: a sub-agent's markup never reaches the owner.
-    // Lane ECHO fix pass: same for a sentence telling the owner to operate internals
-    // (no owner text here - a sub-agent turn has none - so the asked-how gate is off).
-    // A FAILED report is quoted verbatim instead (the anti-spoof pin): it is a finding,
-    // not an instruction to the owner.
-    const std::string raw = prefixed ? f.text.substr(kFailed.size()) : f.text;
-    const bool report = f.text.compare(0, kFailed.size(), kFailed) == 0;
-    const std::string body =
-        report ? nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(raw))
-               : nimbus::orch::dropOwnerMechanics(
-                     nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(raw)),
-                     std::string());
+    const std::string body = freshBodyText(f);
     const std::string title = f.failed ? std::string() : (f.model.empty() ? "Result" : f.model);
     std::string block = title.empty() ? body : title + "\n" + body;
     if (b.size() + block.size() + 2 > kBudget) {

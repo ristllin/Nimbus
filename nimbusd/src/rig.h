@@ -2785,7 +2785,7 @@ class NimbusdRig {
       hp.lastRound = ev.lastRound;
       hp.tools = ev.tools;
       const nimbus::harness::TurnProgressPlan plan =
-          nimbus::harness::planTurnProgress(hp, ev.maxRounds, progLineSent_);
+          nimbus::harness::planTurnProgress(hp, ev.maxRounds, progLineSent_, ev.source);
       if (plan.sayLine) progLineSent_ = true;
       if (plan.keepAlive || plan.sayLine)
         onTurnProgress_(ev.chatId, plan.keepAlive, plan.sayLine ? plan.line : std::string());

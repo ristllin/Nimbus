@@ -549,10 +549,19 @@ const char kQuestionWords[] =
     "can could will would shall should do does did is are was were am has have had "
     "how what when where which who whom whose why may might must";
 
-// Any word of `s` (blank/word-char tokenized) present in the blank-separated `blob`.
-// A word ending in "ing" also matches its stem in every spelling: "re-sending" ->
+// A word ending in "ing" matches its stem in every spelling: "re-sending" ->
 // "send", "writing" -> "write" (e-final), "setting" -> "set" / "running" -> "run"
 // (doubled consonant), so the verb table needs only the base forms.
+bool ingStemIn(const char* blob, const std::string& w) {
+  if (w.size() <= 4 || w.compare(w.size() - 3, 3, "ing") != 0) return false;
+  const std::string base = w.substr(0, w.size() - 3);
+  if (findWord(blob, base.c_str()) != std::string::npos) return true;
+  if (findWord(blob, (base + "e").c_str()) != std::string::npos) return true;
+  return base.size() >= 2 && base[base.size() - 1] == base[base.size() - 2] &&
+         findWord(blob, base.substr(0, base.size() - 1).c_str()) != std::string::npos;
+}
+
+// Any word of `s` (blank/word-char tokenized) present in the blank-separated `blob`.
 bool anyWordIn(const std::string& s, const char* blob) {
   size_t at = 0;
   while (at < s.size()) {
@@ -564,14 +573,7 @@ bool anyWordIn(const std::string& s, const char* blob) {
       // A possessive is one token ("row's"): match its base too ("row").
       if (w.size() > 2 && w.compare(w.size() - 2, 2, "'s") == 0) w.resize(w.size() - 2);
       if (findWord(blob, w.c_str()) != std::string::npos) return true;
-      if (w.size() > 4 && w.compare(w.size() - 3, 3, "ing") == 0) {
-        const std::string base = w.substr(0, w.size() - 3);
-        if (findWord(blob, base.c_str()) != std::string::npos) return true;
-        if (findWord(blob, (base + "e").c_str()) != std::string::npos) return true;
-        if (base.size() >= 2 && base[base.size() - 1] == base[base.size() - 2] &&
-            findWord(blob, base.substr(0, base.size() - 1).c_str()) != std::string::npos)
-          return true;
-      }
+      if (ingStemIn(blob, w)) return true;
     }
   }
   return false;
