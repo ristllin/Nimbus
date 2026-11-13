@@ -94,6 +94,66 @@ static void checkTokenRotationResetsOffset(ndtest::Ctx& c, const std::string& di
   }
 }
 
+// ---- 5b-5d. CUM-995 (lane MD51): sends go out as parse_mode=HTML with the
+// markdown converted and everything else entity-escaped; a rejected-entities
+// 400 falls back to a plain resend of the ORIGINAL text (a reply is never
+// lost), and only when both sends fail is failure reported, with a reason.
+static void checkCum995HtmlSendMode(ndtest::Ctx& c, const std::string& offsetPath) {
+  {
+    FakeTg tg;
+    tg.queue.push_back({200, R"({"ok":true})"});
+    TelegramChannel ch("t", &tg, offsetPath);
+    std::string err;
+    c.ok(ch.sendMessage("555", "**bold** and `code`", err), "html send succeeds");
+    c.ok(tg.bodies[0].find("\"parse_mode\":\"HTML\"") != std::string::npos,
+         "the body carries parse_mode HTML");
+    c.ok(tg.bodies[0].find("<b>bold</b>") != std::string::npos &&
+             tg.bodies[0].find("<code>code</code>") != std::string::npos,
+         "markdown markers convert to Telegram HTML entities");
+    c.ok(tg.bodies[0].find("**") == std::string::npos && tg.bodies[0].find("`code`") == std::string::npos,
+         "no raw markdown markers reach the wire");
+  }
+  {
+    FakeTg tg;
+    tg.queue.push_back({200, R"({"ok":true})"});
+    TelegramChannel ch("t", &tg, offsetPath);
+    std::string err;
+    c.ok(ch.sendMessage("555", "<script>alert(1)</script> & <b>fake</b>", err), "send succeeds");
+    c.ok(tg.bodies[0].find("&lt;script&gt;") != std::string::npos &&
+             tg.bodies[0].find("&lt;b&gt;fake&lt;/b&gt;") != std::string::npos,
+         "HTML in the text is entity-escaped");
+    c.ok(tg.bodies[0].find("<script>") == std::string::npos &&
+             tg.bodies[0].find("<b>fake</b>") == std::string::npos,
+         "no raw markup reaches the wire");
+  }
+  {
+    FakeTg tg;
+    tg.queue.push_back({400, R"({"ok":false,"error_code":400,"description":"Bad Request: can't parse entities"})"});
+    tg.queue.push_back({200, R"({"ok":true})"});
+    TelegramChannel ch("t", &tg, offsetPath);
+    std::string err;
+    c.ok(ch.sendMessage("555", "**bold** <b>x</b>", err), "the plain resend succeeds after a 400");
+    c.eqi((long)tg.bodies.size(), 2, "two sendMessage calls were made");
+    c.ok(tg.bodies[0].find("\"parse_mode\":\"HTML\"") != std::string::npos,
+         "the first attempt was the HTML one");
+    c.ok(tg.bodies[1].find("parse_mode") == std::string::npos,
+         "the fallback carries no parse_mode");
+    c.ok(tg.bodies[1].find("**bold**") != std::string::npos &&
+             tg.bodies[1].find("<b>x</b>") != std::string::npos,
+         "the fallback resends the ORIGINAL text verbatim");
+  }
+  {
+    FakeTg tg;
+    tg.queue.push_back({400, R"({"ok":false})"});
+    tg.queue.push_back({400, R"({"ok":false})"});
+    TelegramChannel ch("t", &tg, offsetPath);
+    std::string err;
+    c.ok(!ch.sendMessage("555", "hi", err), "both sends failing reports failure");
+    c.ok(!err.empty(), "the failure carries a reason");
+    c.eqi((long)tg.bodies.size(), 2, "the plain resend was attempted before failing");
+  }
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== telegram channel (T2, offline, fake server) ===\n");
@@ -176,65 +236,7 @@ int main() {
          "a numeric chat id is sent unquoted");
   }
 
-  // ---- 5b. CUM-995: sends go out as parse_mode=HTML with the markdown converted
-  {
-    FakeTg tg;
-    tg.queue.push_back({200, R"({"ok":true})"});
-    TelegramChannel ch("t", &tg, offsetPath);
-    std::string err;
-    c.ok(ch.sendMessage("555", "**bold** and `code`", err), "html send succeeds");
-    c.ok(tg.bodies[0].find("\"parse_mode\":\"HTML\"") != std::string::npos,
-         "the body carries parse_mode HTML");
-    c.ok(tg.bodies[0].find("<b>bold</b>") != std::string::npos &&
-             tg.bodies[0].find("<code>code</code>") != std::string::npos,
-         "markdown markers convert to Telegram HTML entities");
-    c.ok(tg.bodies[0].find("**") == std::string::npos && tg.bodies[0].find("`code`") == std::string::npos,
-         "no raw markdown markers reach the wire");
-  }
-
-  // ---- 5c. CUM-995: markup in the text is escaped, never injected ------------
-  {
-    FakeTg tg;
-    tg.queue.push_back({200, R"({"ok":true})"});
-    TelegramChannel ch("t", &tg, offsetPath);
-    std::string err;
-    c.ok(ch.sendMessage("555", "<script>alert(1)</script> & <b>fake</b>", err), "send succeeds");
-    c.ok(tg.bodies[0].find("&lt;script&gt;") != std::string::npos &&
-             tg.bodies[0].find("&lt;b&gt;fake&lt;/b&gt;") != std::string::npos,
-         "HTML in the text is entity-escaped");
-    c.ok(tg.bodies[0].find("<script>") == std::string::npos &&
-             tg.bodies[0].find("<b>fake</b>") == std::string::npos,
-         "no raw markup reaches the wire");
-  }
-
-  // ---- 5d. CUM-995: Telegram rejects the entities -> the original text is
-  // resent plain (a reply is never lost), and only then does it fail --------
-  {
-    FakeTg tg;
-    tg.queue.push_back({400, R"({"ok":false,"error_code":400,"description":"Bad Request: can't parse entities"})"});
-    tg.queue.push_back({200, R"({"ok":true})"});
-    TelegramChannel ch("t", &tg, offsetPath);
-    std::string err;
-    c.ok(ch.sendMessage("555", "**bold** <b>x</b>", err), "the plain resend succeeds after a 400");
-    c.eqi((long)tg.bodies.size(), 2, "two sendMessage calls were made");
-    c.ok(tg.bodies[0].find("\"parse_mode\":\"HTML\"") != std::string::npos,
-         "the first attempt was the HTML one");
-    c.ok(tg.bodies[1].find("parse_mode") == std::string::npos,
-         "the fallback carries no parse_mode");
-    c.ok(tg.bodies[1].find("**bold**") != std::string::npos &&
-             tg.bodies[1].find("<b>x</b>") != std::string::npos,
-         "the fallback resends the ORIGINAL text verbatim");
-  }
-  {
-    FakeTg tg;
-    tg.queue.push_back({400, R"({"ok":false})"});
-    tg.queue.push_back({400, R"({"ok":false})"});
-    TelegramChannel ch("t", &tg, offsetPath);
-    std::string err;
-    c.ok(!ch.sendMessage("555", "hi", err), "both sends failing reports failure");
-    c.ok(!err.empty(), "the failure carries a reason");
-    c.eqi((long)tg.bodies.size(), 2, "the plain resend was attempted before failing");
-  }
+  checkCum995HtmlSendMode(c, offsetPath);
 
   checkTokenRotationResetsOffset(c, dir, offsetPath);
 

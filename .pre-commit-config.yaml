@@ -12,6 +12,7 @@
 exclude: |
   (?x)^(
     test/golden[^/]*/.*|
+    tools/webui_harness/golden/.*|
     tools/webui_page\.snapshot|
     website/docs/.*|
     hardware/fab/.*|
