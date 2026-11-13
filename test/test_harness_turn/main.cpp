@@ -1557,6 +1557,29 @@ static void test_cum542_web_page_chat_is_the_web_ui() {
   nimbus::orch::setHostedWebChatAlias(false);
 }
 
+// ---- CUM-995 (lane MD51): the head knows its surface - the [CHANNEL] line
+// says how the reply renders there. Voice is spoken: no Markdown. Web and
+// Telegram render the markdown subset.
+static void test_cum995_channel_line_names_the_rendering() {
+  Rig r;
+  r.eng->handleMessage("hi", "", "web");
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find(
+      "arrived via the web UI. Your orch_turn") != std::string::npos);
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find(
+      "Your reply renders Markdown in the chat (bold, lists, code, links).") != std::string::npos);
+  r.eng->handleMessage("hi", "Ana", "424242");
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find(
+      "Your reply is sent with HTML formatting (bold, lists, code, links render).") !=
+      std::string::npos);
+  r.eng->handleMessage("hi", "", "voice");
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find(
+      "Your reply is spoken aloud when voice replies are on: plain spoken sentences,"
+      " no Markdown (no asterisks, backticks or bullet dashes).") != std::string::npos);
+  r.eng->handleMessage("hi", "", "serial");
+  TEST_ASSERT_FALSE(r.attempts.back().inputs.find("renders Markdown") != std::string::npos);
+  TEST_ASSERT_FALSE(r.attempts.back().inputs.find("HTML formatting") != std::string::npos);
+}
+
 // ---- CUM-544: a timeout fails over at once, and the notice says why ---------
 // Bench (nimbus-light): the Z.ai head timed out, the engine retried the same host
 // on a fresh conversation (another full timeout), then failed over at 268 s with
@@ -5691,6 +5714,7 @@ static void runFirstHalf() {
   RUN_TEST(test_a_live_session_restores_the_session_tools);
   RUN_TEST(test_cum544_timeout_fails_over_without_same_host_retry);
   RUN_TEST(test_cum542_web_page_chat_is_the_web_ui);
+  RUN_TEST(test_cum995_channel_line_names_the_rendering);
   RUN_TEST(test_cum544_all_timeouts_say_no_answer_in_time);
   RUN_TEST(test_cum530_router_refusal_notice_is_never_unavailable);
   RUN_TEST(test_a_cumulo_only_client_hears_the_clamp_not_add_credits);

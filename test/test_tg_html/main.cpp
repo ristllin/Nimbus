@@ -111,6 +111,56 @@ static void test_inline_triple_backtick_is_not_a_fence() {
   TEST_ASSERT_EQUAL_STRING("<pre>x=1</pre>", tgHtml("```python\nx=1\n```").c_str());
 }
 
+// CUM-995 (lane MD51): escaping cases from REAL replies. The 10 Nov food-log
+// reply (evidence/lumi-v500-issue-20261110T172807Z/telegram-message-as-received.txt,
+// the clean reply half) is numbers, commas and slashes - it must pass through
+// byte-identical (no marker in it may convert or vanish).
+static void test_real_10nov_food_log_reply_passes_through() {
+  const std::string in =
+      "Logged: snack-1723, Frive Firecracker Chicken Thighs (whole 388 g pack, "
+      "label per-serving) = 563 kcal / 39.3 g protein.\n\n"
+      "Today: 2,385 kcal / 106.4 g protein (5 rows). Left: 15 kcal and 43.6 g "
+      "protein. Undo by re-sending the row with 0 kcal.";
+  TEST_ASSERT_EQUAL_STRING(in.c_str(), tgHtml(in).c_str());
+}
+
+// CUM-995 (lane MD51): a real reply carrying *, _, [ ] and code (corpus shapes:
+// 2026-10-30T19:30-120's `nutrition/meal_log.csv` + numbered list + **bold**,
+// 2026-10-28T18:10-82's *speculative decoding*). The contract: **bold** and
+// `code` convert; single * and intra-word _ stay literal; only an http(s)
+// [text](url) converts.
+static void test_real_reply_with_markers_and_code() {
+  const std::string in =
+      "The log is saved in `nutrition/meal_log.csv`.\n\n"
+      "**Today's total**: **1,547 kcal, 176 g protein**.\n\n"
+      "The check-in covered *speculative decoding*:\n"
+      "- Memory-bound decoding, rejection sampling r<=p/q\n\n"
+      "1. Apply the addenda rule to branded items\n"
+      "2. Use the science skill for portions\n\n"
+      "See [the docs](https://docs.cumulo-nimbus.ai/) and [not a link](ftp://x).";
+  const std::string out = tgHtml(in);
+  TEST_ASSERT_TRUE(out.find("<code>nutrition/meal_log.csv</code>") != std::string::npos);
+  TEST_ASSERT_TRUE(out.find("<b>1,547 kcal, 176 g protein</b>") != std::string::npos);
+  TEST_ASSERT_TRUE(out.find("*speculative decoding*") != std::string::npos);   // single * literal
+  TEST_ASSERT_TRUE(out.find("r&lt;=p/q") != std::string::npos);                 // < escaped, text intact
+  TEST_ASSERT_TRUE(out.find("<a href=\"https://docs.cumulo-nimbus.ai/\">the docs</a>") != std::string::npos);
+  TEST_ASSERT_TRUE(out.find("[not a link](ftp://x)") != std::string::npos);     // non-http stays literal
+  // No raw markers leaked into tags: every ** pair converted, none left dangling.
+  TEST_ASSERT_TRUE(out.find("**") == std::string::npos);
+  // And the whole thing stays balanced (the property that avoids the 400).
+  for (const char* tag : {"b", "code", "pre", "a"}) {
+    size_t opens = 0, closes = 0, p = 0;
+    const std::string o = std::string("<") + tag, c = std::string("</") + tag + ">";
+    while ((p = out.find(o, p)) != std::string::npos) {
+      if (out[p + o.size()] == '>' || out[p + o.size()] == ' ') opens++;
+      p++;
+    }
+    p = 0;
+    while ((p = out.find(c, p)) != std::string::npos) { closes++; p++; }
+    TEST_ASSERT_EQUAL(opens, closes);
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_escapes_html_and_never_injects);
@@ -122,5 +172,7 @@ int main() {
   RUN_TEST(test_a_real_reply_shape);
   RUN_TEST(test_tags_always_balanced);
   RUN_TEST(test_inline_triple_backtick_is_not_a_fence);
+  RUN_TEST(test_real_10nov_food_log_reply_passes_through);
+  RUN_TEST(test_real_reply_with_markers_and_code);
   return UNITY_END();
 }

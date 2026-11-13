@@ -256,6 +256,14 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
    mode switch are hidden outright, not merely covered. Removed on sign-in. */
 html.authlock,html.authlock body{overflow:hidden;overscroll-behavior:none}
 html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:hidden}
+/* CUM-995 (lane MD51): chat markdown render classes, used by _mdInto/_mdInline in ui_js.h.
+   They live here, not as inline cssText in the script, so app.js stays under the loopback
+   response cap (test_loopback_capacity). */
+code.mdc{background:var(--raise);border:1px solid var(--line);border-radius:4px;padding:0 4px;font-family:var(--mono);font-size:.92em}
+pre.mdpre{white-space:pre-wrap;word-break:break-word;background:var(--raise);border:1px solid var(--line);border-radius:8px;padding:7px 9px;margin:5px 0;font-size:12px;font-family:var(--mono)}
+div.mdp{margin:2px 0}
+ul.mdls,ol.mdls{margin:3px 0;padding-left:20px}
+a.mdlk{color:var(--teal)}
 </style>
 
 <aside class=side>

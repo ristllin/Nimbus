@@ -256,6 +256,14 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
    mode switch are hidden outright, not merely covered. Removed on sign-in. */
 html.authlock,html.authlock body{overflow:hidden;overscroll-behavior:none}
 html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:hidden}
+/* CUM-995 (lane MD51): chat markdown render classes, used by _mdInto/_mdInline in ui_js.h.
+   They live here, not as inline cssText in the script, so app.js stays under the loopback
+   response cap (test_loopback_capacity). */
+code.mdc{background:var(--raise);border:1px solid var(--line);border-radius:4px;padding:0 4px;font-family:var(--mono);font-size:.92em}
+pre.mdpre{white-space:pre-wrap;word-break:break-word;background:var(--raise);border:1px solid var(--line);border-radius:8px;padding:7px 9px;margin:5px 0;font-size:12px;font-family:var(--mono)}
+div.mdp{margin:2px 0}
+ul.mdls,ol.mdls{margin:3px 0;padding-left:20px}
+a.mdlk{color:var(--teal)}
 </style>
 
 <aside class=side>
@@ -5799,6 +5807,24 @@ setInterval(()=>loadTenants().then(loadTelegram),7000);
 // voice, serial) are auto-captured to the episodic store on-device - the pane renders
 // that store, so history survives refresh and Telegram/voice conversations appear
 // here labeled by channel + sender. Sending still POSTs /api/chat (one real turn).
+// CUM-995 (lane MD51): assistant bubbles render a safe Markdown subset; model text only ever becomes text nodes, never innerHTML. User bubbles stay plain.
+const _E=t=>document.createElement(t),_A=(p,c)=>p.appendChild(c);
+function _mdInline(el,s){const n=s.length;let i=0;
+  while(i<n){const c=s[i];
+    if(c==='`'){const e=s.indexOf('`',i+1);if(e>i+1){const ce=_E('code');ce.className='mdc';ce.textContent=s.slice(i+1,e);_A(el,ce);i=e+1;continue;}}
+    if(c==='*'&&s[i+1]==='*'){const e=s.indexOf('**',i+2);if(e>i+2){const b=_E('b');_mdInline(b,s.slice(i+2,e));_A(el,b);i=e+2;continue;}}
+    if(c==='*'||c==='_'){const e=s.indexOf(c,i+1);if((i===0||/\s/.test(s[i-1]))&&e>i+1&&(e+1>=n||/[\s.,;:!?)\]]/.test(s[e+1]))){const w=s.slice(i+1,e);if(!/\s/.test(w[0])&&!/\s/.test(w[w.length-1])&&!/^\d/.test(w)){const em=_E('i');_mdInline(em,w);_A(el,em);i=e+1;continue;}}}
+    if(c==='['){const m=s.slice(i).match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/);if(m){const a=_E('a');a.href=m[2];a.target='_blank';a.rel='noopener noreferrer';a.className='mdlk';_mdInline(a,m[1]);_A(el,a);i+=m[0].length;continue;}}
+    const k=s.slice(i+1).search(/[`*_\[]/);const j=k<0?n:i+1+k;_A(el,document.createTextNode(s.slice(i,j)));i=j;}}
+function _mdInto(el,text){el.textContent='';const L=(text??'').split('\n');let i=0,pa=[],ls=null;
+  const fp=()=>{if(pa.length){const p=_E('div');p.className='mdp';pa.forEach((l,k)=>{if(k)_A(p,_E('br'));_mdInline(p,l);});_A(el,p);pa=[];}};
+  const fl=()=>{fp();if(ls){_A(el,ls.el);ls=null;}};
+  while(i<L.length){let ln=L[i];
+    if(/^```/.test(ln)){fl();const b=[];i++;while(i<L.length&&!/^```/.test(L[i])){b.push(L[i]);i++;}if(i<L.length)i++;const pr=_E('pre');pr.className='mdpre';pr.textContent=b.join('\n');_A(el,pr);continue;}
+    const m=ln.match(/^\s*([-*+]|\d+[.)])\s+(.*)$/);if(m){fp();const tg=/^\d/.test(m[1])?'ol':'ul';if(!ls||ls.tag!==tg){if(ls)_A(el,ls.el);ls={tag:tg,el:_E(tg)};ls.el.className='mdls';}const it=_E('li');_mdInline(it,m[2]);_A(ls.el,it);i++;continue;}
+    if(/^\s*$/.test(ln)){fl();i++;continue;}
+    pa.push(ln);i++;}
+  fl();}
 function _chatBubble(who,text,meta){const log=$('chatLog');const d=document.createElement('div');
   d.style.cssText=who==='u'
     ?'align-self:flex-end;background:var(--teal-soft);border:1px solid rgba(90,214,196,.2);padding:9px 13px;border-radius:14px;border-bottom-right-radius:5px;max-width:84%'
@@ -5806,7 +5832,9 @@ function _chatBubble(who,text,meta){const log=$('chatLog');const d=document.crea
   if(meta){const lb=document.createElement('div');
     lb.style.cssText='font-size:9.5px;color:var(--ink3);margin-bottom:3px;letter-spacing:.06em;text-transform:uppercase;font-weight:650';
     lb.textContent=meta; d.appendChild(lb);}                       // textContent - never innerHTML a sender name
-  const tx=document.createElement('div'); tx.textContent=text; d.appendChild(tx);
+  const tx=document.createElement('div');
+  who==='a'?_mdInto(tx,text):tx.textContent=text;
+  d.appendChild(tx); d._tx=tx;
   log.appendChild(d); log.scrollTop=log.scrollHeight; return d;}
 // Sender label per row: tags "from:<name>" captured at message time; for Telegram
 // prefer the CURRENT display name from the allowlist sidecar (renames re-label
@@ -6060,7 +6088,7 @@ function _chatPump(){
       const url=turn!==undefined&&turn!==null?('/api/chat?turn='+encodeURIComponent(turn)):'/api/chat';
       let tries=0; const poll=()=>{tries++;
         fetch(url).then(r=>r.json()).then(d=>{
-          if(d.reply){pend.textContent=d.reply;pend.style.opacity=1;
+          if(d.reply){_mdInto(pend._tx,d.reply);pend.style.opacity=1;
             // Served-by disclosure (CUM-236): a fallback reply says so under the bubble.
             if(d.fallback&&d.servedBy){const f=document.createElement('div');
               f.style.cssText='font-size:9.5px;color:var(--ink3);margin-top:4px;opacity:.85';

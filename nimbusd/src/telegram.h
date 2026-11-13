@@ -7,6 +7,7 @@
 #include "daemon_config.h"
 #include "nimbus/harness/http.h"
 #include "nimbus/telegram_offset.h"
+#include "nimbus/tg_html.h"   // CUM-995 (lane MD51): markdown -> Telegram HTML, device parity
 #include "nimbus/tg_updates.h"
 #include "posix_fs.h"
 
@@ -101,14 +102,29 @@ class TelegramChannel {
     return true;
   }
 
-  // Send a plain-text message to a chat. Returns false + err on failure.
+  // Send a message to a chat. CUM-995 (lane MD51), device parity with
+  // telegram.cpp v4.1.1: the text goes out as parse_mode=HTML - nimbus::tgHtml
+  // converts the markdown subset (**bold**, `code`, ``` blocks, headings,
+  // links) and entity-escapes everything else, so a model reply can never
+  // inject markup. If Telegram rejects the entities (a 400), the ORIGINAL
+  // text is resent plain: formatting may degrade, a reply is never lost.
+  // Returns false + err only when both sends fail.
   bool sendMessage(const std::string& chatId, const std::string& text, std::string& err) {
+    const std::string html = nimbus::tgHtml(text);
     const std::string body = std::string("{\"chat_id\":") + jsonNum(chatId) +
-                             ",\"text\":" + jsonQuote(text) + "}";
+                             ",\"text\":" + jsonQuote(html) + ",\"parse_mode\":\"HTML\"}";
     agent::HttpResponse resp;
-    if (!call("sendMessage", body, resp, err)) return false;
-    if (resp.status != 200) { err = "sendMessage HTTP " + std::to_string(resp.status); return false; }
-    return true;
+    if (call("sendMessage", body, resp, err) && resp.status == 200) return true;
+    const std::string firstErr =
+        err.empty() ? "sendMessage HTTP " + std::to_string(resp.status) : err;
+    const std::string plain = std::string("{\"chat_id\":") + jsonNum(chatId) +
+                              ",\"text\":" + jsonQuote(text) + "}";
+    agent::HttpResponse resp2;
+    std::string err2;
+    if (call("sendMessage", plain, resp2, err2) && resp2.status == 200) return true;
+    err = err2.empty() ? firstErr : err2;
+    if (err.empty()) err = "sendMessage HTTP " + std::to_string(resp2.status);
+    return false;
   }
 
   // The typing indicator (lane PROG): Telegram shows it ~5 s, so a long turn's

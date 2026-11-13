@@ -800,6 +800,20 @@ const char* TurnEngine::channelOf(const std::string& chatId) {
   return "Telegram; your reply is delivered as a Telegram message to that chat";
 }
 
+// CUM-995 (lane MD51): the head knows its surface - how the reply RENDERS there.
+// Web chat and Telegram render the markdown subset (bold, lists, code, links);
+// a voice turn's reply is spoken aloud, so it must be plain spoken sentences.
+// Appended after the [CHANNEL] sentence so the channel naming stays byte-stable.
+static const char* channelFormatHint(const std::string& chatId) {
+  if (chatId == "voice")
+    return " Your reply is spoken aloud when voice replies are on: plain spoken"
+           " sentences, no Markdown (no asterisks, backticks or bullet dashes).";
+  if (isWebChat(chatId))
+    return " Your reply renders Markdown in the chat (bold, lists, code, links).";
+  if (chatId == "serial") return "";
+  return " Your reply is sent with HTML formatting (bold, lists, code, links render).";
+}
+
 // [ACTIVE SESSIONS] body - byte-identical to the device jobsSummary() (same
 // journal source, reached through JobEngine::sessionInfos).
 // L19-35: after a restart the job table and the spawn ledger start empty, so the jobs
@@ -2923,6 +2937,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
     "\n[CHANNEL] This message arrived via " + channelOf(chatId) +
     ". Your orch_turn `reply` field is ALREADY delivered to this same channel - that is"
     " the one and only answer; never send the same answer twice." +
+    channelFormatHint(chatId) +
     loopHint +
     // Lane MLQ: a message that disputes an attribution gets its line right before it.
     "\n\n" + nimbus::orch::renderDisputedClaimHint(text) + "[USER]\n" + text;

@@ -19,6 +19,10 @@ walks through each one and ends with a short tour of the device's web page.
    to Telegram instead. Spoken replies need a Mistral, OpenAI or Cumulo key;
    an Anthropic key alone has no voice.
 
+Replies can carry light formatting: bold, italics, bullet and numbered lists,
+inline code, code blocks and links all render in Telegram. A spoken reply is
+the exception: it is read aloud, so the assistant keeps it to plain sentences.
+
 The first approved account becomes the **owner**. Only the owner can run the
 management commands such as `/update`, `/loops`, `/compact` and `/skill`; send
 `/help` for the full list. Everyone else you approve can converse but not
@@ -78,6 +82,7 @@ has not signed in yet):
 
 - **Home** - health, battery, storage, and active sessions.
 - **Chat** - a browser conversation with the same assistant, same memory.
+  Replies render formatting here too: bold, lists, code and links.
 - **Memory** - what the assistant remembers (your directive, its notes, and the
   long-term memories you can search) and every file it has saved.
 - **Assistant** - one page with seven subtabs: provider keys and routing
