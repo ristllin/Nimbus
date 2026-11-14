@@ -3551,10 +3551,10 @@ function provRow(name,p){
   const mrow=document.createElement('div'); mrow.className='row';
   const l1=document.createElement('div'); l1.style.flex='1';
   l1.innerHTML='<label>Orchestrator model</label>';
-  l1.appendChild(modelSel('orchM_'+name,p.orchModel,p.choices,p.verify===1));
+  l1.appendChild(modelSel('orchM_'+name,p.orchModelName||p.orchModel,p.choices,p.verify===1));
   const l2=document.createElement('div'); l2.style.flex='1';
   l2.innerHTML='<label>Session model</label>';
-  l2.appendChild(modelSel('subM_'+name,p.subModel,p.choices,p.verify===1));
+  l2.appendChild(modelSel('subM_'+name,p.subModelName||p.subModel,p.choices,p.verify===1));
   mrow.appendChild(l1); mrow.appendChild(l2); w.appendChild(mrow);
   const mu=document.createElement('div'); mu.className='hint'; mu.id='mupd_'+name;   // R5: "Updated <time>"
   if(MODELFETCH[name])mu.textContent=updLabel(MODELFETCH[name]);
@@ -3587,12 +3587,12 @@ function provSync(name,p){
   if(vb&&!vb.disabled){const canV=(!ORCH||ORCH.running)&&!HOSTED;
     vb.textContent=canV?(p.hasKey?'Verify':'Save & Verify'):'Save Key';}
   setDeferHint(name,p);
-  syncModelSel('orchM_'+name,p.orchModel,p.choices,p.verify===1);
-  syncModelSel('subM_'+name,p.subModel,p.choices,p.verify===1);
+  syncModelSel('orchM_'+name,p.orchModelName||p.orchModel,p.choices,p.verify===1);
+  syncModelSel('subM_'+name,p.subModelName||p.subModel,p.choices,p.verify===1);
 }
 // One signature for a model select, shared by the build and the poll's sync: they
 // used to differ once prices loaded (the build added '|p'), so every 5 s poll rebuilt
-// every model select. Prices arrive later than the catalog, so they are part of it.
+// every model select.
 function modelSelSig(choices,verified){return (choices||'')+'|'+(verified?1:0)+'|'+MODELCAT_SIG+'|'+(_um()?'p':'');}
 function syncModelSel(id,cur,choices,verified){
   const s=$(id); if(!s||document.activeElement===s)return;   // mid-pick: hands off
@@ -3604,11 +3604,11 @@ function syncModelSel(id,cur,choices,verified){
 // Fetch the uncapped catalog (GET /api/models) into MODELCAT, then re-sync any
 // open provider selects so they upgrade from the CSV fallback to the grouped list.
 // Not on the 5s poll (the PSRAM-built payload is multi-KB): called when the Models
-// pane opens and after a verify harvest, which is when the catalog can change.
+// pane opens and after a verify harvest.
 function resyncModelSels(){
   if(ORCH&&ORCH.providers)Object.keys(ORCH.providers).forEach(n=>{const pp=ORCH.providers[n];if(!pp)return;
-    syncModelSel('orchM_'+n,pp.orchModel,pp.choices,pp.verify===1);
-    syncModelSel('subM_'+n,pp.subModel,pp.choices,pp.verify===1);});
+    syncModelSel('orchM_'+n,pp.orchModelName||pp.orchModel,pp.choices,pp.verify===1);
+    syncModelSel('subM_'+n,pp.subModelName||pp.subModel,pp.choices,pp.verify===1);});
 }
 function loadModels(){
   if(!canPoll())return;

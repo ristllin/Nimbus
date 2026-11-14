@@ -910,6 +910,76 @@ static void test_store_image_input_from_api_capabilities() {
   TEST_ASSERT_EQUAL_INT(-1, storeImageInput("mistral", mistral, ""));
 }
 
+// ==== lane ALIAS: the 14 Nov 2026 /v1/models shape (aliases[], no keys) ==============
+// Mistral renamed mistral-large-4-0 to an alias of the canonical mistral-large-4:
+// the alias has no data[] entry of its own, only a place in the row's aliases[].
+static const char* kFix11 = "test/support/fixtures/models_2026-11";
+static std::string readFix11(const char* name) {
+  std::string path = std::string(kFix11) + "/" + name;
+  FILE* f = std::fopen(path.c_str(), "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, path.c_str());
+  std::string out;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return out;
+}
+
+static void test_nov_2026_alias_shape_harvest_store_and_json() {
+  const ModelHarvest h = harvestOf("mistral", readFix11("mistral.json"), kOct22);
+  // The renamed id is not a row of its own: it is an alias of the canonical row.
+  TEST_ASSERT_NULL(find(h.rows, "mistral-large-4-0"));
+  TEST_ASSERT_NULL(find(h.rows, "mistral-large-4"));
+  const ModelInfo* large = find(h.rows, "mistral-large-latest");   // canonicalized from mistral-large-4
+  TEST_ASSERT_NOT_NULL(large);
+  TEST_ASSERT_TRUE(large->hasRole(RoleOrchestrator));
+  TEST_ASSERT_TRUE(csvHasId(large->aliases, "mistral-large-4-0"));
+  TEST_ASSERT_FALSE(csvHasId(large->aliases, "mistral-large-latest"));   // the row's own id is never kept
+  // The cap: mistral-medium-latest carries 8 aliases in the recording, at most 6 are kept.
+  const ModelInfo* med = find(h.rows, "mistral-medium-latest");
+  TEST_ASSERT_NOT_NULL(med);
+  size_t nAl = 1;
+  for (char c : med->aliases) if (c == ',') ++nAl;
+  TEST_ASSERT_TRUE_MESSAGE(nAl <= kModelAliasesMax, med->aliases.c_str());
+  // The store round-trip: the aliases ride the optional 15th field and read back.
+  ModelStoreMeta meta;
+  meta.fetchedAt = kOct22;
+  meta.fw = "v5.1.1";
+  meta.total = (uint32_t)h.rows.size();
+  meta.choices = directChoices("mistral", h.rows, kOct22);
+  const std::string text = serializeModelStore(meta, h.rows);
+  ModelStoreMeta back;
+  std::vector<ModelInfo> rows;
+  TEST_ASSERT_TRUE(parseModelStore("mistral", text, back, &rows));
+  const ModelInfo* large2 = find(rows, "mistral-large-latest");
+  TEST_ASSERT_NOT_NULL(large2);
+  TEST_ASSERT_EQUAL_STRING(large->aliases.c_str(), large2->aliases.c_str());
+  // Rollback-safe: a pre-ALIAS line (14 fields, no aliases) still reads, with none.
+  ModelInfo row = *large;
+  row.aliases.clear();
+  const std::string oldText = serializeModelStore(ModelStoreMeta{}, {row});
+  const size_t nl = oldText.find('\n');
+  TEST_ASSERT_TRUE(nl != std::string::npos);
+  const std::string line = oldText.substr(nl + 1);   // the row line, trailing '\n' kept off
+  ModelInfo back2;
+  TEST_ASSERT_TRUE(parseModelStoreLine("mistral", line.data(), line.size() - 1, back2));
+  TEST_ASSERT_EQUAL_STRING("mistral-large-latest", back2.id.c_str());
+  TEST_ASSERT_EQUAL_STRING("", back2.aliases.c_str());
+  // The JSON catalog round-trip keeps the aliases too (GET /api/models rows carry them).
+  JsonDocument d;
+  modelsToJson("mistral", h.rows, d.to<JsonArray>(), true, kOct22);
+  std::string blob;
+  serializeJson(d, blob);
+  JsonDocument re;
+  TEST_ASSERT_TRUE(deserializeJson(re, blob) == DeserializationError::Ok);
+  std::vector<ModelInfo> jrows;
+  modelsFromJson(re.as<JsonArrayConst>(), jrows);
+  const ModelInfo* large3 = find(jrows, "mistral-large-latest");
+  TEST_ASSERT_NOT_NULL(large3);
+  TEST_ASSERT_EQUAL_STRING(large->aliases.c_str(), large3->aliases.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_probe_verdict);
@@ -948,6 +1018,7 @@ int main(int, char**) {
   RUN_TEST(test_mistral_aliases_resolve_to_their_dated_model);
   RUN_TEST(test_store_image_input_from_api_capabilities);
   RUN_TEST(test_mistral_and_zai_short_lists_on_the_recorded_lists);
+  RUN_TEST(test_nov_2026_alias_shape_harvest_store_and_json);
   UNITY_END();
   return 0;
 }

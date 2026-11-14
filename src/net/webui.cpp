@@ -1481,6 +1481,20 @@ static void buildOrchState(String& out) {
     o["vfyFloor"]    = agent::provider_verify::deferFloor();
     o["orchModel"]   = agent::store::orchModel(slot.slug);
     o["subModel"]    = agent::store::subModel(slot.slug);
+    // Lane ALIAS: the chosen model under its current name. A provider that renamed a
+    // model to an alias of a live row keeps the owner's pick; the settings show the
+    // row that names it (canonicalModelFor), falling back to the pick itself when no
+    // row holds it (a truly gone model) or no list is stored yet.
+    {
+      std::string mtext;
+      agent::store::modelSources(slot.slug, mtext);
+      const std::string om = std::string(agent::store::orchModel(slot.slug).c_str());
+      const std::string sm = std::string(agent::store::subModel(slot.slug).c_str());
+      std::string on = om.empty() ? std::string() : nimbus::orch::canonicalModelFor(slot.slug, mtext, om);
+      std::string sn = sm.empty() ? std::string() : nimbus::orch::canonicalModelFor(slot.slug, mtext, sm);
+      o["orchModelName"] = on.empty() ? om : on;
+      o["subModelName"]  = sn.empty() ? sm : sn;
+    }
     // Live-harvested list first (the verify pass reads /v1/models), static fallback
     // second. cumulo/zai carry a small compiled default so a model is selectable
     // before the first harvest; the harvested list wins once it lands.

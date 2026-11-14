@@ -207,6 +207,33 @@ static void test_background_turn_pins_low_effort() {
   TEST_ASSERT_EQUAL_STRING("low", outputCapFor("anthropic", "claude-sonnet-5-5", RoundKind::Fold).effort);
 }
 
+// Lane ALIAS: the 14 Nov 2026 Mistral list (mistral-large-4 canonical, its aliases
+// listed on the row) still carries every named fallback, so the release-time
+// agreement holds over the new shape and no role default is lost to the rename.
+static void test_class_pick_over_the_14_nov_catalog_is_the_named_fallback() {
+  std::ifstream f("test/support/fixtures/models_2026-11/mistral.json", std::ios::binary);
+  std::stringstream ss;
+  ss << f.rdbuf();
+  JsonDocument doc;
+  TEST_ASSERT_TRUE(deserializeJson(doc, ss.str()) == DeserializationError::Ok);
+  std::string csv;
+  for (JsonObjectConst m : doc["data"].as<JsonArrayConst>()) {
+    const char* id = m["id"] | "";
+    if (!*id) continue;
+    if (!csv.empty()) csv += ',';
+    csv += id;
+  }
+  TEST_ASSERT_TRUE(csv.find("mistral-large-4") != std::string::npos);    // the canonical row
+  TEST_ASSERT_TRUE(csv.find("mistral-large-4-0") == std::string::npos);  // only an alias now
+  for (int r = 0; r < kDefaultRoleCount; ++r) {
+    const RoleDefault* row = roleDefaultRow("mistral", (DefaultRole)r);
+    TEST_ASSERT_TRUE_MESSAGE(modelInChoices(csv, row->fallback), row->fallback);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(row->fallback,
+                                     roleDefaultModel("mistral", (DefaultRole)r, csv, true).c_str(),
+                                     row->fallback);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_slot_has_every_role);
@@ -218,5 +245,6 @@ int main(int, char**) {
   RUN_TEST(test_harvested_list_picks_the_cheapest_class_member);
   RUN_TEST(test_background_scope_is_thread_local_and_nests);
   RUN_TEST(test_background_turn_pins_low_effort);
+  RUN_TEST(test_class_pick_over_the_14_nov_catalog_is_the_named_fallback);
   return UNITY_END();
 }

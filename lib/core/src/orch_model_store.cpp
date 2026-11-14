@@ -109,7 +109,8 @@ void offInternal(std::string& s) {
 }  // namespace
 
 void keepOffInternalHeap(ModelInfo& m) {
-  for (std::string* s : {&m.id, &m.name, &m.family, &m.line, &m.life, &m.upstream}) offInternal(*s);
+  for (std::string* s : {&m.id, &m.name, &m.family, &m.line, &m.life, &m.upstream, &m.aliases})
+    offInternal(*s);
 }
 
 void assignOffInternal(std::string& dst, const char* p, size_t n) {
@@ -342,6 +343,10 @@ void appendRow(std::string& out, const ModelInfo& m) {
   if (m.priced) appendU32(out, m.priceIn);
   out += '\t';
   if (m.priced) appendU32(out, m.priceOut);
+  if (!m.aliases.empty()) {   // lane ALIAS: optional 15th field, CSV of clean ids
+    out += '\t';
+    appendField(out, m.aliases);
+  }
   out += '\n';
 }
 
@@ -423,7 +428,10 @@ bool parseModelStoreHeader(const std::string& text, ModelStoreMeta& meta) {
 }
 
 namespace {
-constexpr size_t kStoreFields = 14;
+// 14 fields is the pre-ALIAS line; the 15th (aliases) is optional, so a line
+// written by an older build (14 fields) and one written now (15) both read.
+constexpr size_t kStoreFields = 15;
+constexpr size_t kStoreFieldsMin = 14;
 
 // The tab-separated fields of one line; returns how many (at most kStoreFields).
 size_t splitFields(const char* line, size_t len, const char* f[], size_t fl[]) {
@@ -453,7 +461,8 @@ void applySelector(const std::string& provider, const char* sel, size_t n, Model
 // Every field of a reused row reset, its strings' capacity kept (a scan over the
 // store allocates nothing after its first long string).
 void resetRow(ModelInfo& out) {
-  for (std::string* s : {&out.id, &out.name, &out.family, &out.line, &out.life, &out.upstream}) s->clear();
+  for (std::string* s : {&out.id, &out.name, &out.family, &out.line, &out.life, &out.upstream, &out.aliases})
+    s->clear();
   out.roles = out.caps = 0;
   out.usable = true;
   out.probed = out.apiCaps = out.deprecated = out.priced = false;
@@ -473,7 +482,8 @@ void applyFlags(const char* p, size_t n, ModelInfo& out) {
 bool parseModelStoreLine(const std::string& provider, const char* line, size_t len, ModelInfo& out) {
   const char* f[kStoreFields];
   size_t fl[kStoreFields];
-  if (splitFields(line, len, f, fl) < kStoreFields) return false;
+  const size_t nf = splitFields(line, len, f, fl);
+  if (nf < kStoreFieldsMin) return false;
   if (fl[0] < 2) return false;
   const std::string sel(f[0], fl[0]);   // at most 64 chars once clean: one short allocation
   if (!cleanModelId(sel)) return false;
@@ -496,6 +506,7 @@ bool parseModelStoreLine(const std::string& provider, const char* line, size_t l
   out.priced = fl[12] > 0 || fl[13] > 0;
   out.priceIn = u32Of(f[12], fl[12]);
   out.priceOut = u32Of(f[13], fl[13]);
+  if (nf >= kStoreFields) assignOffInternal(out.aliases, f[14], fl[14]);   // lane ALIAS
   out.family = modelFamily(out.upstream.empty() ? provider : out.upstream, out.id);
   offInternal(out.family);
   return true;

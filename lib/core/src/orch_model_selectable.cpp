@@ -33,6 +33,22 @@ struct StoreVerdict {
   bool anyOffered = false;
   bool accepted = false;
 };
+// Lane ALIAS: does row `m` name `want` - as its own selector or as one of its aliases
+// (a provider that renamed a model to an alias of a live model keeps the choice)?
+bool rowNames(bool router, const ModelInfo& m, const std::string& want) {
+  if (pickKey(router, modelSelector(m)) == want) return true;
+  if (m.aliases.empty()) return false;
+  size_t b = 0;
+  while (b <= m.aliases.size()) {
+    const size_t e = m.aliases.find(',', b);
+    const std::string al = m.aliases.substr(b, e == std::string::npos ? e : e - b);
+    if (!al.empty() && pickKey(router, router && !m.upstream.empty() ? m.upstream + "/" + al : al) == want)
+      return true;
+    if (e == std::string::npos) break;
+    b = e + 1;
+  }
+  return false;
+}
 StoreVerdict scanStore(const std::string& provider, bool router, const std::string& want, uint16_t bit,
                        const SelectableSources& src) {
   StoreVerdict v;
@@ -40,7 +56,7 @@ StoreVerdict scanStore(const std::string& provider, bool router, const std::stri
   forEachStoreRow(provider, *src.storeText, [&](const ModelInfo& m) {
     const bool offered = rowOffered(m, bit, src.now);
     v.anyOffered = v.anyOffered || offered;
-    v.accepted = offered && pickKey(router, modelSelector(m)) == want;
+    v.accepted = offered && rowNames(router, m, want);
     return !v.accepted;
   });
   return v;
@@ -111,6 +127,24 @@ bool modelSelectable(const std::string& provider, const std::string& id, PickRol
   const std::string want = pickKey(router, id);
   if (!want.empty() && isConfigured(router, want, src)) return true;   // never refuse a stored pick
   return modelListed(provider, id, role, src);
+}
+
+std::string canonicalModelFor(const std::string& provider, const std::string& storeText,
+                              const std::string& id) {
+  if (id.empty() || storeText.empty()) return std::string();
+  const bool router = provider == "cumulo";
+  if (router && !routableSelector(id)) return std::string();
+  const std::string want = pickKey(router, id);
+  if (want.empty()) return std::string();
+  std::string found;
+  forEachStoreRow(provider, storeText, [&](const ModelInfo& m) {
+    if (rowNames(router, m, want)) {
+      found = modelSelector(m);
+      return false;
+    }
+    return true;
+  });
+  return found;
 }
 
 }  // namespace orch

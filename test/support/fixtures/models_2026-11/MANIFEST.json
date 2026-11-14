@@ -1,0 +1,12 @@
+{
+  "recorded_utc": "2026-11-14T00:00Z",
+  "recorded_by": "lane ALIAS, program-2026-10-18 (shape per GET /v1/models facts in lanes/ALIAS/TASK.md: mistral-large-4 canonical, mistral-large-4-0 and mistral-large-latest its aliases; derived from the 2026-10 recording, no keys)",
+  "files": {
+    "mistral.json": "GET https://api.mistral.ai/v1/models (14 Nov 2026 shape)"
+  },
+  "consumers": [
+    "test/test_model_catalog",
+    "test/test_model_selectable",
+    "test/test_model_defaults"
+  ]
+}

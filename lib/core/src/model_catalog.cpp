@@ -429,6 +429,24 @@ const char* mistralDatedName(JsonObjectConst m) {
   return nullptr;
 }
 
+// Lane ALIAS: the provider's aliases[] for a row, kept as a CSV of clean ids (the
+// row's own id excluded, at most kModelAliasesMax). A chosen id that is a listed
+// alias of a live model is present: no warning, no coercion.
+void readAliases(JsonObjectConst m, const std::string& ownId, std::string& out) {
+  out.clear();
+  size_t n = 0;
+  for (JsonVariantConst a : m["aliases"].as<JsonArrayConst>()) {
+    if (n >= kModelAliasesMax) break;
+    const char* raw = a | (const char*)nullptr;
+    if (!raw) continue;
+    const std::string al = raw;
+    if (al == ownId || !cleanModelId(al)) continue;
+    if (!out.empty()) out += ',';
+    out += al;
+    ++n;
+  }
+}
+
 void overlayMeta(const std::string& provider, JsonObjectConst m, ModelInfo& mi) {
   const char* nm = m["display_name"] | (const char*)nullptr;
   if (!nm && provider == "mistral") {
@@ -442,6 +460,7 @@ void overlayMeta(const std::string& provider, JsonObjectConst m, ModelInfo& mi) 
   mi.retires = announcedEnd(m);
   if (!m["deprecated_at"].isNull() || mi.life == "deprecated" || mi.life == "retired")
     mi.deprecated = true;
+  readAliases(m, mi.id, mi.aliases);
 }
 
 // The Cumulo router bills each row at its own price (micro-USD per 1M tokens).
@@ -664,6 +683,7 @@ size_t modelsFromJson(JsonArrayConst arr, std::vector<ModelInfo>& out) {
     mi.apiCaps = (std::string((const char*)(o["source"] | "")) == "api");
     mi.deprecated = o["deprecated"] | false;
     mi.upstream = (const char*)(o["upstream"] | "");
+    readAliases(o, mi.id, mi.aliases);   // lane ALIAS
     out.push_back(std::move(mi));
   }
   return out.size() - start;
@@ -694,6 +714,16 @@ void rowJson(const ModelInfo& mi, JsonObject o, uint16_t roleMask) {
   o["source"] = mi.apiCaps ? "api" : "heuristic";
   o["deprecated"] = mi.deprecated;
   if (!mi.upstream.empty()) o["upstream"] = mi.upstream;
+  if (!mi.aliases.empty()) {   // lane ALIAS: the ids this row also answers as
+    JsonArray al = o["aliases"].to<JsonArray>();
+    size_t b = 0;
+    while (b <= mi.aliases.size()) {
+      const size_t e = mi.aliases.find(',', b);
+      al.add(mi.aliases.substr(b, e == std::string::npos ? e : e - b));
+      if (e == std::string::npos) break;
+      b = e + 1;
+    }
+  }
 }
 }  // namespace
 

@@ -15,7 +15,9 @@
 #include "nimbus/harness/jobs.h"
 #include "nimbus/orch/spend_ceiling.h"
 #include "nimbus/orch/provider_park.h"   // lane DEF2: the provider-limit pause
+#include "nimbus/orch/model_catalog.h"    // lane ALIAS: the 14 Nov 2026 alias-shape store
 #include "nimbus/orch/model_choices.h"   // staticModelChoices / modelInChoices
+#include "nimbus/orch/model_selectable.h" // lane ALIAS: modelSelectable over the store
 #include "nimbus/orch/model_price_defaults.h"   // builtinModelPrice - the cheapest fallback
 #include "nimbus/orch/models_tool.h"   // routerIdOnDirectProvider (L19-39)
 #include "nimbus/harness/providers.h"
@@ -3148,10 +3150,71 @@ static void test_a_file_task_stays_on_its_provider() {
   TEST_ASSERT_EQUAL(1, (int)other.dispatched.size());
 }
 
+
+// ---- lane ALIAS: bench A06, the 14 Nov 2026 rename -----------------------------------
+// On v5.1.0 a spawn asking for mistral-large-4-0 (renamed to an alias of the canonical
+// mistral-large-4 on 14 Nov 2026) was not in the device's list, so it was coerced to
+// the cheapest listed model (mistral-small-2603), capping output. With the
+// alias-aware list the asked model is valid: the spawn runs it as asked, no coercion.
+static std::string readTextFile(const char* path) {
+  FILE* f = std::fopen(path, "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
+  std::string out;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return out;
+}
+
+static void test_lane_alias_spawn_runs_an_alias_of_a_live_model_as_asked() {
+  // The device's real wiring (orchestrator.cpp): modelIsValid is store::modelSelectable
+  // over the cached store text, modelChoices the store's effective short list.
+  const std::string body = readTextFile("test/support/fixtures/models_2026-11/mistral.json");
+  nimbus::orch::ModelHarvest h;
+  h.provider = "mistral";
+  h.now = 1792670400u;
+  nimbus::orch::harvestBody(h, body.data(), body.size());
+  nimbus::orch::finishHarvest(h);
+  (void)nimbus::orch::boundModelRows(h.rows);
+  nimbus::orch::ModelStoreMeta meta;
+  meta.fetchedAt = h.now;
+  meta.total = (uint32_t)h.rows.size();
+  meta.choices = nimbus::orch::directChoices("mistral", h.rows, h.now);
+  const std::string text = nimbus::orch::serializeModelStore(meta, h.rows);
+  const std::string list = nimbus::orch::effectiveModelChoices("mistral", meta.choices);
+
+  FakeAdapter mistral;
+  mistral.backend = "mistral";
+  Rig r;
+  r.fabric.registerAdapter(&mistral);
+  r.keyed.insert("mistral");
+  r.modelValid = [&text](const std::string& p, const std::string& m) {
+    nimbus::orch::SelectableSources src;
+    src.storeText = &text;
+    src.coldStart = nimbus::orch::staticModelChoices(p.c_str());
+    src.defaultModel = "mistral-medium-latest";
+    src.subDefaultModel = "mistral-small-latest";
+    src.now = 1792670400u;
+    return nimbus::orch::modelSelectable(p, m, nimbus::orch::PickRole::Any, src);
+  };
+  r.modelChoices = [&list](const std::string&) { return list; };
+  r.build();
+  orch::Spawn s = sp("research it");
+  s.provider = "mistral";
+  s.model = "mistral-large-4-0";
+  r.eng->enqueueSpawn(s, "chat1");
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(1, (int)mistral.dispatched.size());
+  TEST_ASSERT_EQUAL_STRING("mistral-large-4-0", mistral.dispatched[0].model.c_str());
+  TEST_ASSERT_FALSE(LogCapture::contains("spawn model coerced"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_lane_l_spawn_model_coercion_only_lands_on_a_listed_model);
   RUN_TEST(test_spawn_model_fallback_is_the_cheapest_listed_model);
+  RUN_TEST(test_lane_alias_spawn_runs_an_alias_of_a_live_model_as_asked);
   RUN_TEST(test_spawn_model_refusal_and_default_swap_are_disclosed);
   RUN_TEST(test_lane_l_the_spawn_ledger_tracks_each_spawn_per_chat);
   RUN_TEST(test_lane_l_every_spawn_ends_in_a_result_or_a_reasoned_refusal);

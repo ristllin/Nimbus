@@ -146,9 +146,20 @@ static void test_accepted_if_and_only_if_offered() {
     for (const std::string& id : pickerIds(p, text, "orchestrator", kOct22)) heads.insert(id);
     forEachStoreRow(p, text, [&](const ModelInfo& m) {
       if (m.id == defaultFor(p)) return true;
+      // Lane ALIAS: an id is accepted when its own row is offered OR a live row
+      // lists it in its aliases (a rename keeps the choice present).
+      bool aliasOfOffered = false;
+      forEachStoreRow(p, text, [&](const ModelInfo& r) {
+        if (rowOffered(r, RoleOrchestrator, kOct22) &&
+            ("," + r.aliases + ",").find("," + m.id + ",") != std::string::npos)
+          aliasOfOffered = true;
+        return true;
+      });
       const bool ok = modelSelectable(p, m.id, PickRole::Head, src);
-      TEST_ASSERT_EQUAL_MESSAGE(rowOffered(m, RoleOrchestrator, kOct22), ok, (p + ": " + m.id).c_str());
-      TEST_ASSERT_EQUAL_MESSAGE(heads.count(m.id) > 0, ok, (p + ": " + m.id).c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(rowOffered(m, RoleOrchestrator, kOct22) || aliasOfOffered, ok,
+                                (p + ": " + m.id).c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(heads.count(m.id) > 0, rowOffered(m, RoleOrchestrator, kOct22),
+                                (p + ": " + m.id).c_str());
       return true;
     });
   }
@@ -259,6 +270,51 @@ static void test_a_narrow_account_still_lists_what_the_store_offers() {
   TEST_ASSERT_TRUE(none.choices.empty());
 }
 
+// ==== lane ALIAS: the 14 Nov 2026 list shape ==========================================
+// A chosen id that is a listed alias of a live model is present: no warning, no
+// coercion (bench A06 on v5.1.0 coerced mistral-large-4-0 to mistral-small-2603).
+static void test_alias_of_a_live_model_is_present_and_named() {
+  const std::string text =
+      storeFrom("mistral", readFile("test/support/fixtures/models_2026-11/mistral.json"), kOct22);
+  const SelectableSources src = sourcesFor("mistral", &text, kOct22);
+  // Listed: the one-time "no longer names" notice does not fire for it.
+  TEST_ASSERT_TRUE(modelListed("mistral", "mistral-large-4-0", PickRole::Head, src));
+  TEST_ASSERT_TRUE(modelListed("mistral", "mistral-large-4-0", PickRole::Any, src));
+  // Selectable by every check: orch_model, the web pick, a spawn asking for it.
+  TEST_ASSERT_TRUE(modelSelectable("mistral", "mistral-large-4-0", PickRole::Any, src));
+  TEST_ASSERT_TRUE(agent::model_pick::allowed("mistral", "mistral-large-4-0", PickRole::Head, src));
+  TEST_ASSERT_TRUE(agent::model_pick::allowed("mistral", "mistral-large-4-0", PickRole::Sub, src));
+  // The settings show it under its current name: the row that names it.
+  TEST_ASSERT_EQUAL_STRING("mistral-large-latest",
+                           canonicalModelFor("mistral", text, "mistral-large-4-0").c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral-large-latest",
+                           canonicalModelFor("mistral", text, "mistral-large-latest").c_str());
+  // A truly gone model (not an id, not an alias) is not listed: the warning fires.
+  TEST_ASSERT_FALSE(modelListed("mistral", "mistral-large-3", PickRole::Head, src));
+  TEST_ASSERT_FALSE(modelSelectable("mistral", "mistral-large-3", PickRole::Any, src));
+  TEST_ASSERT_EQUAL_STRING("", canonicalModelFor("mistral", text, "mistral-large-3").c_str());
+}
+
+// The compiled ids are checked against aliases too: over the 14 Nov list every
+// cold-start id and the compiled default is still present, and a compiled default
+// that is only an alias of a live row resolves to that row.
+static void test_compiled_ids_are_present_on_the_14_nov_list() {
+  const std::string text =
+      storeFrom("mistral", readFile("test/support/fixtures/models_2026-11/mistral.json"), kOct22);
+  const SelectableSources src = sourcesFor("mistral", &text, kOct22);
+  for (const std::string& id : choiceItems(staticModelChoices("mistral")))
+    TEST_ASSERT_TRUE_MESSAGE(modelListed("mistral", id, PickRole::Any, src), id.c_str());
+  TEST_ASSERT_TRUE(modelListed("mistral", MISTRAL_MODEL, PickRole::Head, src));
+  const std::string body = std::string("{\"object\":\"list\",\"data\":[{") +
+                           "\"id\":\"gpt-6-sol\",\"object\":\"model\",\"created\":1790000000,"
+                           "\"owned_by\":\"openai\",\"aliases\":[\"" +
+                           std::string(OPENAI_MODEL) + "\"]}]}";
+  const std::string otext = storeFrom("openai", body, kOct22);
+  const SelectableSources osrc = sourcesFor("openai", &otext, kOct22);
+  TEST_ASSERT_TRUE(modelListed("openai", OPENAI_MODEL, PickRole::Head, osrc));
+  TEST_ASSERT_EQUAL_STRING("gpt-6-sol", canonicalModelFor("openai", otext, OPENAI_MODEL).c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_listed_id_passes_every_check);
@@ -266,6 +322,8 @@ int main(int, char**) {
   RUN_TEST(test_refusals);
   RUN_TEST(test_cold_start_without_a_store);
   RUN_TEST(test_a_narrow_account_still_lists_what_the_store_offers);
+  RUN_TEST(test_alias_of_a_live_model_is_present_and_named);
+  RUN_TEST(test_compiled_ids_are_present_on_the_14_nov_list);
   UNITY_END();
   return 0;
 }

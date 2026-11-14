@@ -6,6 +6,12 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v5.1.1 - A renamed model keeps your choice, and a gone model says what answers now
+
+A small fix release on top of v5.1.0, with one change.
+
+- **A model the provider renamed to an alias keeps working and keeps your choice.** On 14 November Mistral renamed `mistral-large-4-0` to an alias of `mistral-large-4`: the id still answers, but it no longer appeared as its own entry in the model list. The device now reads each model's `aliases`, so a chosen id that is a listed alias of a live model is present: no "no longer names" warning, no switch to a smaller model, and the settings show the pick under its current name. Only a model that is truly gone (not an id, not an alias) warns, and the warning now names the model the device will run if the pick ever stops answering, so a downgrade is never silent.
+
 ## v5.1.0 - Chat replies render bold, lists and code on the web chat and Telegram
 
 A feature release on top of v5.0.2, with one change.

@@ -575,11 +575,13 @@ boot, on the same verify task, when no turn is running.
 switch, by every sub-agent spawn and by the web picker's save: a model the store
 lists that the key can run (not marked unusable by the probe, not a non-chat family,
 not past its shutdown date), or an id the provider serves under another name (OpenAI's
-`gpt-5.6`, answered as `gpt-5.6-sol`), else, before the first fetch, the built-in
-starting list; the provider's default models can always be picked again, and a model
-you already chose is never refused: if a later list no longer names it, it keeps
-running and you are told once. So every model the
-picker or the head's model line offers is accepted, and a model pick the device
+`gpt-5.6`, answered as `gpt-5.6-sol`), or an alias a live model lists (Mistral's
+`mistral-large-4-0`, answered as `mistral-large-4`), else, before the first fetch, the
+built-in starting list; the provider's default models can always be picked again, and
+a model you already chose is never refused: if a later list no longer names it, as an
+id or an alias, it keeps running and you are told once, with the model that answers if
+it ever stops. The settings show a renamed pick under its current name. So every model
+the picker or the head's model line offers is accepted, and a model pick the device
 cannot run is refused with the models it accepts. Each model in `GET /api/models`
 carries its price and where it comes from (`priceSrc`: the router's price, the
 built-in estimate, or `unknown`, shown as "price unknown"). A one-shot cheap

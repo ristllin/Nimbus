@@ -52,6 +52,9 @@ enum ModelCap : uint16_t {
 
 inline constexpr size_t kModelNameMax = 48;   // display name bytes kept (UTF-8 safe)
 inline constexpr size_t kModelLineMax = 16;   // model line bytes kept
+// Lane ALIAS: how many of a row's aliases[] the store keeps (CSV). Mistral rows
+// carry 2-9; the cap bounds the store line, and the row's own id is never kept.
+inline constexpr size_t kModelAliasesMax = 6;
 
 struct ModelInfo {
   std::string id;
@@ -76,6 +79,10 @@ struct ModelInfo {
   bool        priced = false;    // the row carried its own price (the Cumulo router's)
   uint32_t    priceIn = 0;       // that price, micro-USD per 1M input tokens
   uint32_t    priceOut = 0;      // micro-USD per 1M output tokens
+  // Lane ALIAS: the provider's aliases[] for this row (CSV of clean ids, the row's
+  // own id excluded), at most kModelAliasesMax. A chosen id that is a listed alias
+  // of a live model is present: no warning, no coercion (model_selectable.h).
+  std::string aliases;
 
   bool hasRole(ModelRole r) const { return (roles & r) != 0; }
   bool hasCap(ModelCap c) const { return (caps & c) != 0; }
@@ -288,10 +295,14 @@ void finishHarvest(ModelHarvest& h);
 // fw=<firmware version> total=<models listed> more=<not kept> cut=<0|1> src=<api|legacy>"
 // (space-separated key=value; readers ignore keys they do not know). Every other line
 // is one model, tab-separated:
-//   id name line size created ctx maxOut life retires roles caps flags priceIn priceOut
+//   id name line size created ctx maxOut life retires roles caps flags priceIn priceOut [aliases]
 // `id` is the selector (a router row's "<upstream>/<model>"), roles and caps are hex
 // bitmasks, flags letters (u usable, p probed, a API capabilities, d deprecated) and the
-// prices are empty when the row carried none. About 85 B per model.
+// prices are empty when the row carried none. The 15th field `aliases` (lane ALIAS: the
+// provider's aliases[] for the row, CSV) is OPTIONAL: a line written before it existed
+// has 14 fields and reads back with no aliases, and an older build reading a 15-field
+// line stops at 14 and drops the aliases, so a rollback keeps working.
+// About 85 B per model.
 // Bound: at most kModelStoreMaxRows models and kModelStoreMaxBytes per provider; what
 // does not fit is counted in `more` (docs/reference/config-and-nvs.md states it).
 inline constexpr size_t kModelStoreMaxRows  = 160;

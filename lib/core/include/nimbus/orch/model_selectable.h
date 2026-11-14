@@ -62,16 +62,27 @@ inline constexpr ServedAlias kServedAliases[] = {
 //   - a probed alias (kServedAliases) whose served model the store offers;
 //   - with a store holding any offered model for the role: a row with that id that
 //     rowOffered() accepts (usable, carries the role, not a non-chat family, not past
-//     its retire date). A listed but unusable or retired model is refused;
+//     its retire date), OR a row that lists `id` in its aliases (lane ALIAS: a provider
+//     that renamed a model to an alias of a live model keeps the choice present - no
+//     warning, no coercion). A listed but unusable or retired model is refused;
 //   - with none: membership of the cold-start list.
 bool modelSelectable(const std::string& provider, const std::string& id, PickRole role,
                      const SelectableSources& src);
 
 // The same check without the owner's stored picks: whether the provider's current list
-// (or, before the first fetch, the cold-start list), a probed alias or a role default
-// names `id`. False for a stored pick a fresh list dropped (the one-time owner notice).
+// (or, before the first fetch, the cold-start list), a probed alias, a listed alias of
+// a live row (lane ALIAS) or a role default names `id`. False for a stored pick a fresh
+// list dropped (the one-time owner notice).
 bool modelListed(const std::string& provider, const std::string& id, PickRole role,
                  const SelectableSources& src);
+
+// Lane ALIAS: the row a chosen id currently names, from the store text: the row whose
+// selector is `id`, else the row that lists `id` in its aliases (a provider that renamed
+// a model to an alias keeps the owner's choice under its current name). Returns the
+// row's selector ("<upstream>/<id>" for a router row), or "" when no row holds `id` as
+// an id or an alias (a truly gone model).
+std::string canonicalModelFor(const std::string& provider, const std::string& storeText,
+                              const std::string& id);
 
 }  // namespace orch
 }  // namespace nimbus

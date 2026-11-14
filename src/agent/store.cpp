@@ -855,17 +855,25 @@ void noteUnlistedPicks(const String& provider) {
     const std::string& m = picks[i];
     if (m.empty() || (i == 1 && m == picks[0])) continue;
     const nimbus::orch::PickRole role = i == 0 ? nimbus::orch::PickRole::Head : nimbus::orch::PickRole::Sub;
+    // Lane ALIAS: a chosen id that is a listed alias of a live model is present
+    // (modelListed matches the row's aliases), so only a truly gone model warns.
     if (nimbus::orch::modelListed(provider.c_str(), m, role, src)) continue;
     const std::string key = std::string(provider.c_str()) + "/" + m;
+    // What the device will do (the warning says it): the pick keeps running while the
+    // provider answers it; if it stops, the role falls back to the provider's current
+    // default, named here - never a silent downgrade to a smaller model.
+    const std::string fallback =
+        defaultModelFor(provider, i == 0 ? nimbus::orch::DefaultRole::Head : nimbus::orch::DefaultRole::Sub)
+            .c_str();
     std::lock_guard<std::mutex> lk(g_pickNoticeMx);
     if (std::find(g_pickNoticeTold.begin(), g_pickNoticeTold.end(), key) != g_pickNoticeTold.end()) continue;
     if (g_pickNoticeTold.size() < 16) g_pickNoticeTold.push_back(key);
-    agent::alogf("models: %s no longer lists %s (the %s model the owner chose) - it keeps running",
-                 provider.c_str(), m.c_str(), i == 0 ? "assistant" : "helper");
+    agent::alogf("models: %s no longer lists %s (the %s model the owner chose) - it keeps running; fallback %s",
+                 provider.c_str(), m.c_str(), i == 0 ? "assistant" : "helper", fallback.c_str());
     g_pickNotice += (g_pickNotice.empty() ? "" : " ") + label + "'s model list no longer names " + m +
-                    ", the " + (i == 0 ? "assistant" : "helper") +
-                    " model you chose; it keeps running. Choose another under Assistant > Models if it "
-                    "stops answering.";
+                    ", the " + (i == 0 ? "assistant" : "helper") + " model you chose. It keeps running while " +
+                    label + " answers it; if it stops, the device will run on " + fallback +
+                    ". Choose another under Assistant > Models.";
   }
 }
 
