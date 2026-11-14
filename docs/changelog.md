@@ -10,7 +10,7 @@ installs it when you approve ([how updates work](ota.md)).
 
 A small fix release on top of v5.1.0, with one change.
 
-- **A model the provider renamed to an alias keeps working and keeps your choice.** On 14 November Mistral renamed `mistral-large-4-0` to an alias of `mistral-large-4`: the id still answers, but it no longer appeared as its own entry in the model list. The device now reads each model's `aliases`, so a chosen id that is a listed alias of a live model is present: no "no longer names" warning, no switch to a smaller model, and the settings show the pick under its current name. Only a model that is truly gone (not an id, not an alias) warns, and the warning now names the model the device will run if the pick ever stops answering, so a downgrade is never silent.
+- **A model the provider renamed to an alias keeps working and keeps your choice.** On 14 November Mistral renamed `mistral-large-4-0` to an alias of `mistral-large-4`: the id still answers, but it no longer appeared as its own entry in the model list. The device now reads each model's `aliases`, so a chosen id that is a listed alias of a live model is present: no "no longer names" warning, no switch to a smaller model, and the settings show the pick under its current name. The renamed row's own id (`mistral-large-4`) stays listed too, so the canonical name keeps working. Only a model that is truly gone (not an id, not an alias) warns, and the warning names the provider's current default model, so you know what to switch to if the pick ever stops answering; a downgrade is never silent.
 
 ## v5.1.0 - Chat replies render bold, lists and code on the web chat and Telegram
 

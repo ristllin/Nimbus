@@ -77,12 +77,21 @@ bool modelListed(const std::string& provider, const std::string& id, PickRole ro
                  const SelectableSources& src);
 
 // Lane ALIAS: the row a chosen id currently names, from the store text: the row whose
-// selector is `id`, else the row that lists `id` in its aliases (a provider that renamed
-// a model to an alias keeps the owner's choice under its current name). Returns the
-// row's selector ("<upstream>/<id>" for a router row), or "" when no row holds `id` as
-// an id or an alias (a truly gone model).
+// selector is `id` (its own row always wins, whatever the server's row order), else the
+// row that lists `id` in its aliases (a provider that renamed a model to an alias keeps
+// the owner's choice under its current name). Returns the row's selector
+// ("<upstream>/<id>" for a router row), or "" when no row holds `id` as an id or an
+// alias (a truly gone model).
 std::string canonicalModelFor(const std::string& provider, const std::string& storeText,
                               const std::string& id);
+
+// The one-time owner notice for a stored pick a fresh list dropped (lane F2, reworded
+// lane ALIAS): what the device does - the pick keeps running while the provider answers
+// it - and the role's current default, named so the owner knows what to switch to. It
+// must never promise an automatic swap: nothing in the firmware moves a stored pick on
+// its own (the pick is only ever changed by the owner's save or the orch_model tool).
+std::string gonePickNoticeText(const std::string& providerLabel, const std::string& pick,
+                               const char* roleWord, const std::string& roleDefault);
 
 }  // namespace orch
 }  // namespace nimbus

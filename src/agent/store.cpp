@@ -859,21 +859,20 @@ void noteUnlistedPicks(const String& provider) {
     // (modelListed matches the row's aliases), so only a truly gone model warns.
     if (nimbus::orch::modelListed(provider.c_str(), m, role, src)) continue;
     const std::string key = std::string(provider.c_str()) + "/" + m;
-    // What the device will do (the warning says it): the pick keeps running while the
-    // provider answers it; if it stops, the role falls back to the provider's current
-    // default, named here - never a silent downgrade to a smaller model.
-    const std::string fallback =
+    // What the device will do (the notice says it, and only that): the pick keeps
+    // running while the provider answers it; the role's current default is named as the
+    // model to switch to. Nothing swaps a stored pick by itself - never a silent
+    // downgrade, and never a promised fallback that does not exist.
+    const std::string roleDefault =
         defaultModelFor(provider, i == 0 ? nimbus::orch::DefaultRole::Head : nimbus::orch::DefaultRole::Sub)
             .c_str();
     std::lock_guard<std::mutex> lk(g_pickNoticeMx);
     if (std::find(g_pickNoticeTold.begin(), g_pickNoticeTold.end(), key) != g_pickNoticeTold.end()) continue;
     if (g_pickNoticeTold.size() < 16) g_pickNoticeTold.push_back(key);
-    agent::alogf("models: %s no longer lists %s (the %s model the owner chose) - it keeps running; fallback %s",
-                 provider.c_str(), m.c_str(), i == 0 ? "assistant" : "helper", fallback.c_str());
-    g_pickNotice += (g_pickNotice.empty() ? "" : " ") + label + "'s model list no longer names " + m +
-                    ", the " + (i == 0 ? "assistant" : "helper") + " model you chose. It keeps running while " +
-                    label + " answers it; if it stops, the device will run on " + fallback +
-                    ". Choose another under Assistant > Models.";
+    agent::alogf("models: %s no longer lists %s (the %s model the owner chose) - it keeps running; role default %s",
+                 provider.c_str(), m.c_str(), i == 0 ? "assistant" : "helper", roleDefault.c_str());
+    g_pickNotice += (g_pickNotice.empty() ? "" : " ") +
+                    nimbus::orch::gonePickNoticeText(label, m, i == 0 ? "assistant" : "helper", roleDefault);
   }
 }
 

@@ -136,15 +136,35 @@ std::string canonicalModelFor(const std::string& provider, const std::string& st
   if (router && !routableSelector(id)) return std::string();
   const std::string want = pickKey(router, id);
   if (want.empty()) return std::string();
-  std::string found;
+  // Fix pass F2: a row whose OWN selector is the pick wins over a sibling row that
+  // merely lists the pick as an alias. The server's data[] order is arbitrary (a
+  // magistral row can list mistral-medium-latest as its first alias), so a first-match
+  // scan could show - and a save rewrite - a different model than the owner picked.
+  std::string own, viaAlias;
   forEachStoreRow(provider, storeText, [&](const ModelInfo& m) {
-    if (rowNames(router, m, want)) {
-      found = modelSelector(m);
+    const std::string sel = modelSelector(m);
+    if (pickKey(router, sel) == want) {
+      own = sel;
       return false;
     }
+    if (viaAlias.empty() && rowNames(router, m, want)) viaAlias = sel;
     return true;
   });
-  return found;
+  return !own.empty() ? own : viaAlias;
+}
+
+// Lane ALIAS fix pass F1: the notice says what the device actually does - the pick keeps
+// running while the provider answers it - and names the role's current default as the
+// model to switch to. It never promises an automatic swap: nothing in the firmware
+// moves a stored pick on its own (only the owner's save or the orch_model tool does).
+std::string gonePickNoticeText(const std::string& providerLabel, const std::string& pick,
+                               const char* roleWord, const std::string& roleDefault) {
+  std::string s = providerLabel + "'s model list no longer names " + pick + ", the " + roleWord +
+                  " model you chose. It keeps running while " + providerLabel +
+                  " answers it; if it stops answering, choose another under Assistant > Models";
+  if (!roleDefault.empty()) s += "; the current default is " + roleDefault;
+  s += ".";
+  return s;
 }
 
 }  // namespace orch

@@ -315,6 +315,86 @@ static void test_compiled_ids_are_present_on_the_14_nov_list() {
   TEST_ASSERT_EQUAL_STRING("gpt-6-sol", canonicalModelFor("openai", otext, OPENAI_MODEL).c_str());
 }
 
+// ==== lane ALIAS fix pass: review findings ===========================================
+// F1: the one-time notice for a truly gone pick must say what the device does (the pick
+// keeps running while the provider answers it) and name the role's current default -
+// but never promise an automatic swap, because nothing in the firmware moves a stored
+// pick on its own (orchModel()/subModel() return the stored pick; setOrchModel is only
+// called by the owner's save and the orch_model tool).
+static void test_gone_pick_notice_names_the_default_without_promising_a_swap() {
+  const std::string n =
+      gonePickNoticeText("Mistral", "mistral-large-3", "assistant", "mistral-medium-latest");
+  TEST_ASSERT_TRUE(n.find("Mistral") != std::string::npos);
+  TEST_ASSERT_TRUE(n.find("mistral-large-3") != std::string::npos);
+  TEST_ASSERT_TRUE(n.find("assistant") != std::string::npos);
+  TEST_ASSERT_TRUE(n.find("keeps running") != std::string::npos);
+  // Which model answers now: the role default is named.
+  TEST_ASSERT_TRUE(n.find("mistral-medium-latest") != std::string::npos);
+  // No automatic fallback is promised: the device never swaps a stored pick by itself.
+  TEST_ASSERT_TRUE_MESSAGE(n.find("will run on") == std::string::npos, n.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(n.find("device will run") == std::string::npos, n.c_str());
+  // The helper role word rides too.
+  const std::string h = gonePickNoticeText("Mistral", "mistral-large-3", "helper", "mistral-small-latest");
+  TEST_ASSERT_TRUE(h.find("helper") != std::string::npos);
+  TEST_ASSERT_TRUE(h.find("mistral-small-latest") != std::string::npos);
+}
+
+// F2: canonicalModelFor must resolve a pick to the row whose OWN selector is the pick,
+// never to a sibling row that merely lists the pick as an alias (the server's data[]
+// order is arbitrary: magistral-medium-latest lists mistral-medium-latest as its first
+// alias, and its display name is even "mistral-medium-latest"). Otherwise the settings
+// show - and a save silently rewrites - a different model than the owner picked.
+static std::string storeWithRows(const std::vector<ModelInfo>& rows) {
+  ModelStoreMeta meta;
+  meta.fetchedAt = kOct22;
+  meta.total = (uint32_t)rows.size();
+  return serializeModelStore(meta, rows);
+}
+static ModelInfo chatRow(const std::string& id, const std::string& aliases) {
+  ModelInfo m;
+  m.id = id;
+  m.roles = RoleOrchestrator | RoleSubAgent;
+  m.caps = CapTools | CapJson;
+  m.usable = true;
+  m.aliases = aliases;
+  return m;
+}
+static void test_canonical_prefers_the_picks_own_row_over_a_sibling_alias() {
+  const ModelInfo magistral = chatRow("magistral-medium-latest", "mistral-medium-latest");
+  const ModelInfo medium = chatRow("mistral-medium-latest", "mistral-medium,magistral-medium-latest");
+  // Sibling row first (server order is arbitrary), own row second.
+  const std::string text = storeWithRows({magistral, medium});
+  TEST_ASSERT_EQUAL_STRING("mistral-medium-latest",
+                           canonicalModelFor("mistral", text, "mistral-medium-latest").c_str());
+  TEST_ASSERT_EQUAL_STRING("magistral-medium-latest",
+                           canonicalModelFor("mistral", text, "magistral-medium-latest").c_str());
+  // And the mirror order: own row first, sibling second.
+  const std::string text2 = storeWithRows({medium, magistral});
+  TEST_ASSERT_EQUAL_STRING("mistral-medium-latest",
+                           canonicalModelFor("mistral", text2, "mistral-medium-latest").c_str());
+  TEST_ASSERT_EQUAL_STRING("magistral-medium-latest",
+                           canonicalModelFor("mistral", text2, "magistral-medium-latest").c_str());
+  // An id only a live row lists as an alias still resolves to that row.
+  TEST_ASSERT_EQUAL_STRING("mistral-medium-latest",
+                           canonicalModelFor("mistral", text, "mistral-medium").c_str());
+}
+
+// F3: a Mistral row canonicalized to its -latest alias still serves its original id
+// (mistral-large-4 answers; the changelog teaches it as the canonical name), so the raw
+// row id must stay named - as the row's own id or in its aliases. On the 14 Nov list
+// modelListed("mistral", "mistral-large-4") was false: the A06 class one level up.
+static void test_the_rows_own_id_stays_named_when_canonicalized_to_latest() {
+  const std::string text =
+      storeFrom("mistral", readFile("test/support/fixtures/models_2026-11/mistral.json"), kOct22);
+  const SelectableSources src = sourcesFor("mistral", &text, kOct22);
+  TEST_ASSERT_TRUE_MESSAGE(modelListed("mistral", "mistral-large-4", PickRole::Head, src),
+                           "mistral-large-4 is the row's own id and must stay listed");
+  TEST_ASSERT_TRUE(modelSelectable("mistral", "mistral-large-4", PickRole::Any, src));
+  TEST_ASSERT_TRUE(agent::model_pick::allowed("mistral", "mistral-large-4", PickRole::Head, src));
+  TEST_ASSERT_EQUAL_STRING("mistral-large-latest",
+                           canonicalModelFor("mistral", text, "mistral-large-4").c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_listed_id_passes_every_check);
@@ -324,6 +404,9 @@ int main(int, char**) {
   RUN_TEST(test_a_narrow_account_still_lists_what_the_store_offers);
   RUN_TEST(test_alias_of_a_live_model_is_present_and_named);
   RUN_TEST(test_compiled_ids_are_present_on_the_14_nov_list);
+  RUN_TEST(test_gone_pick_notice_names_the_default_without_promising_a_swap);
+  RUN_TEST(test_canonical_prefers_the_picks_own_row_over_a_sibling_alias);
+  RUN_TEST(test_the_rows_own_id_stays_named_when_canonicalized_to_latest);
   UNITY_END();
   return 0;
 }

@@ -431,16 +431,23 @@ const char* mistralDatedName(JsonObjectConst m) {
 
 // Lane ALIAS: the provider's aliases[] for a row, kept as a CSV of clean ids (the
 // row's own id excluded, at most kModelAliasesMax). A chosen id that is a listed
-// alias of a live model is present: no warning, no coercion.
-void readAliases(JsonObjectConst m, const std::string& ownId, std::string& out) {
+// alias of a live model is present: no warning, no coercion. `keepFirst` is the row's
+// RAW API id: when the row id was canonicalized (Mistral's -latest alias), the raw id
+// still answers, so it is kept first and counts toward the cap (fix pass F3).
+void readAliases(JsonObjectConst m, const std::string& ownId, std::string& out,
+                 const std::string& keepFirst = std::string()) {
   out.clear();
   size_t n = 0;
+  if (!keepFirst.empty() && keepFirst != ownId && cleanModelId(keepFirst)) {
+    out = keepFirst;
+    n = 1;
+  }
   for (JsonVariantConst a : m["aliases"].as<JsonArrayConst>()) {
     if (n >= kModelAliasesMax) break;
     const char* raw = a | (const char*)nullptr;
     if (!raw) continue;
     const std::string al = raw;
-    if (al == ownId || !cleanModelId(al)) continue;
+    if (al == ownId || al == keepFirst || !cleanModelId(al)) continue;
     if (!out.empty()) out += ',';
     out += al;
     ++n;
@@ -460,7 +467,13 @@ void overlayMeta(const std::string& provider, JsonObjectConst m, ModelInfo& mi) 
   mi.retires = announcedEnd(m);
   if (!m["deprecated_at"].isNull() || mi.life == "deprecated" || mi.life == "retired")
     mi.deprecated = true;
-  readAliases(m, mi.id, mi.aliases);
+  // Fix pass F3: keep the row's raw API id named. For Mistral the row id was
+  // canonicalized to its -latest alias, and the raw id (e.g. mistral-large-4) is not in
+  // the provider's aliases[] - without this it would be dropped from the list entirely
+  // and a pick of it falsely refused. For every other provider raw id == mi.id, so this
+  // changes nothing there.
+  const char* rawId = m["id"] | (const char*)nullptr;
+  readAliases(m, mi.id, mi.aliases, rawId ? std::string(rawId) : std::string());
 }
 
 // The Cumulo router bills each row at its own price (micro-USD per 1M tokens).

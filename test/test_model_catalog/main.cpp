@@ -936,6 +936,10 @@ static void test_nov_2026_alias_shape_harvest_store_and_json() {
   TEST_ASSERT_TRUE(large->hasRole(RoleOrchestrator));
   TEST_ASSERT_TRUE(csvHasId(large->aliases, "mistral-large-4-0"));
   TEST_ASSERT_FALSE(csvHasId(large->aliases, "mistral-large-latest"));   // the row's own id is never kept
+  // Fix pass F3: the row's RAW id (mistral-large-4) still answers, so it stays named as
+  // an alias when the row is canonicalized to its -latest alias - otherwise a pick of
+  // the canonical id is falsely refused after the refresh (the A06 class one level up).
+  TEST_ASSERT_TRUE_MESSAGE(csvHasId(large->aliases, "mistral-large-4"), large->aliases.c_str());
   // The cap: mistral-medium-latest carries 8 aliases in the recording, at most 6 are kept.
   const ModelInfo* med = find(h.rows, "mistral-medium-latest");
   TEST_ASSERT_NOT_NULL(med);

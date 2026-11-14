@@ -579,8 +579,10 @@ not past its shutdown date), or an id the provider serves under another name (Op
 `mistral-large-4-0`, answered as `mistral-large-4`), else, before the first fetch, the
 built-in starting list; the provider's default models can always be picked again, and
 a model you already chose is never refused: if a later list no longer names it, as an
-id or an alias, it keeps running and you are told once, with the model that answers if
-it ever stops. The settings show a renamed pick under its current name. So every model
+id or an alias, it keeps running and you are told once, with the provider's current
+default named as the model to switch to if it ever stops answering. The settings show
+a renamed pick under its current name, and a pick whose own row exists is shown under
+that row, never under a sibling row that merely lists it as an alias. So every model
 the picker or the head's model line offers is accepted, and a model pick the device
 cannot run is refused with the models it accepts. Each model in `GET /api/models`
 carries its price and where it comes from (`priceSrc`: the router's price, the
