@@ -1,0 +1,1 @@
+Chat replies render bold, lists and code on the web chat and Telegram

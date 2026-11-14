@@ -6,6 +6,12 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v5.1.0 - Chat replies render bold, lists and code on the web chat and Telegram
+
+A feature release on top of v5.0.2, with one change.
+
+- **Assistant replies render their formatting.** On the device web chat and the hosted Virtual Nimbus page, assistant bubbles now render a safe Markdown subset - bold, italic, inline code, fenced code blocks, bullet and numbered lists, http(s) links and single line breaks - through a DOM builder, so a reply can never inject markup into the page. User bubbles stay plain text. On Telegram, replies are sent with HTML formatting converted from the same subset; if Telegram rejects the formatting, the original plain text is resent, so a reply is never lost. A voice turn is still spoken as plain sentences, with no Markdown markers read aloud.
+
 ## v5.0.2 - Replies stop echoing internal instructions, and night notes arrive as one wake-up
 
 A small fix release on top of v5.0.1, with four changes.
