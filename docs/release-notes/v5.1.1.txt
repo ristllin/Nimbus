@@ -1,0 +1,1 @@
+A renamed model keeps your pick; a gone model warns and names the fallback
