@@ -12,12 +12,17 @@
 //
 // Conversion contract (conservative by construction):
 //   - & < > are entity-escaped FIRST - a model reply can never inject markup.
-//   - Only CLOSED marker pairs convert: **bold**, `code`, ```pre blocks```,
-//     [text](http://url). An unpaired marker stays a literal (escaped) char -
-//     the converter must never emit unbalanced tags (Telegram rejects them).
+//   - Only CLOSED marker pairs convert: **bold**, *italic* / _italic_,
+//     `code`, ```pre blocks```, [text](http://url). An unpaired marker stays
+//     a literal (escaped) char - the converter must never emit unbalanced
+//     tags (Telegram rejects them).
 //   - #/##/### heading lines render as <b>line</b> (Telegram has no headings).
-//   - Single *asterisk* emphasis is left ALONE: models rarely use it for
-//     emphasis but math/globs use it constantly ("2*3", "*.cpp").
+//   - Italic uses the web renderer's boundary rules (opened after whitespace,
+//     closed before punctuation/whitespace/end on the same line, no edge
+//     whitespace, no leading digit), so math/globs stay literal ("2*3",
+//     "*.cpp", "snake_case").
+//   - Bullet lines (-, *, + at line start) render as a text bullet U+2022:
+//     Telegram HTML has no list elements; numbered items read as a list as-is.
 //   - Inside `code`/```pre``` nothing else converts (verbatim, escaped).
 //   - Links: only http/https URLs convert; the URL's quotes are escaped.
 //

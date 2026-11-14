@@ -104,11 +104,11 @@ class TelegramChannel {
 
   // Send a message to a chat. CUM-995 (lane MD51), device parity with
   // telegram.cpp v4.1.1: the text goes out as parse_mode=HTML - nimbus::tgHtml
-  // converts the markdown subset (**bold**, `code`, ``` blocks, headings,
-  // links) and entity-escapes everything else, so a model reply can never
-  // inject markup. If Telegram rejects the entities (a 400), the ORIGINAL
-  // text is resent plain: formatting may degrade, a reply is never lost.
-  // Returns false + err only when both sends fail.
+  // converts the markdown subset (**bold**, *italic*, `code`, ``` blocks,
+  // headings, links, bullet lines) and entity-escapes everything else, so a
+  // model reply can never inject markup. If Telegram rejects the entities
+  // (a 400), the ORIGINAL text is resent plain: formatting may degrade, a
+  // reply is never lost. Returns false + err only when both sends fail.
   bool sendMessage(const std::string& chatId, const std::string& text, std::string& err) {
     const std::string html = nimbus::tgHtml(text);
     const std::string body = std::string("{\"chat_id\":") + jsonNum(chatId) +

@@ -1,5 +1,8 @@
 #include "nimbus/tg_html.h"
 
+#include <cctype>
+#include <cstring>
+
 namespace nimbus {
 namespace {
 
@@ -87,6 +90,46 @@ std::string tgHtml(const std::string& text) {
         out += "</b>";
         i = close + 2;
         continue;
+      }
+    }
+    // bullet line (line start, optional indent) -> text bullet U+2022.
+    // Telegram HTML has no list elements, so a text bullet is the only safe
+    // rendering; numbered items already read as a list as plain text.
+    if (atLineStart(text, i)) {
+      size_t j = i;
+      while (j < n && (text[j] == ' ' || text[j] == '\t')) j++;
+      if (j + 1 < n && (text[j] == '-' || text[j] == '*' || text[j] == '+') &&
+          text[j + 1] == ' ') {
+        out += "\xE2\x80\xA2" " ";
+        i = j + 2;
+        continue;
+      }
+    }
+    // *italic* / _italic_ -> <i> (same boundary rules as the web renderer
+    // _mdInline in ui_js.h: opened at start/after whitespace, closed before
+    // punctuation/whitespace/end on the SAME line, the word has no edge
+    // whitespace and does not start with a digit - so 2*3*4, *.cpp and
+    // snake_case stay literal)
+    if (text[i] == '*' || text[i] == '_') {
+      const char c = text[i];
+      if (i == 0 || std::isspace((unsigned char)text[i - 1])) {
+        const size_t close = text.find(c, i + 1);
+        const size_t nl = text.find('\n', i + 1);
+        if (close != std::string::npos && close > i + 1 &&
+            (nl == std::string::npos || close < nl) &&
+            (close + 1 >= n ||
+             std::strchr(" \t\n\r\v\f.,;:!?)\\]", text[close + 1]) != nullptr)) {
+          const std::string w = text.substr(i + 1, close - i - 1);
+          if (!std::isspace((unsigned char)w.front()) &&
+              !std::isspace((unsigned char)w.back()) &&
+              !std::isdigit((unsigned char)w.front())) {
+            out += "<i>";
+            escapeInto(out, text, i + 1, close);
+            out += "</i>";
+            i = close + 1;
+            continue;
+          }
+        }
       }
     }
     // # heading line -> <b>line</b>

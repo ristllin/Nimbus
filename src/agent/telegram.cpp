@@ -1277,10 +1277,11 @@ static bool doSendMessageRaw(const char* chatId, const char* text, bool htmlMode
 }
 
 // v4.1.1: messages go out as parse_mode=HTML (the model writes markdown; the
-// portable nimbus::tgHtml converter maps **bold** / `code` / ``` / headings /
-// links and escapes everything else) - previously every reply reached the owner
-// with literal asterisks. FALLBACK: if Telegram rejects the entities, the
-// ORIGINAL text is resent plain. Formatting may degrade; a reply is never lost.
+// portable nimbus::tgHtml converter maps **bold** / *italic* / `code` / ``` /
+// headings / links / bullet lines and escapes everything else) - previously
+// every reply reached the owner with literal asterisks. FALLBACK: if Telegram
+// rejects the entities, the ORIGINAL text is resent plain. Formatting may
+// degrade; a reply is never lost.
 // Delivery only: the reply-queue drain calls this for parts send() already observed
 // and archived whole; every other text goes through sendNow.
 static bool doSendMessageImpl(const char* chatId, const char* text, int64_t replyTo) {

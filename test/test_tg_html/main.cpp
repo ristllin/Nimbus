@@ -51,6 +51,44 @@ static void test_math_and_globs_survive() {
                            tgHtml("2*3*4 = 24 and *.cpp files").c_str());
 }
 
+// CUM-995 fix pass (review finding): the published quick-start promises italics
+// render in Telegram and the web renderer converts them, so tgHtml must too -
+// with the SAME boundary rules as the web renderer (_mdInline in ui_js.h), so
+// math, globs and snake_case stay literal.
+static void test_italic_converts_with_web_boundary_rules() {
+  TEST_ASSERT_EQUAL_STRING("<i>speculative decoding</i>",
+                           tgHtml("*speculative decoding*").c_str());
+  TEST_ASSERT_EQUAL_STRING("covered <i>emphasis</i> here",
+                           tgHtml("covered _emphasis_ here").c_str());
+  TEST_ASSERT_EQUAL_STRING("<i>word</i>, next", tgHtml("*word*, next").c_str());
+  // Guards (web boundary rules): these must stay literal.
+  TEST_ASSERT_EQUAL_STRING("2*3*4 = 24 and *.cpp files",
+                           tgHtml("2*3*4 = 24 and *.cpp files").c_str());
+  TEST_ASSERT_EQUAL_STRING("snake_case_name stays", tgHtml("snake_case_name stays").c_str());
+  TEST_ASSERT_EQUAL_STRING("a * b and * spaced *", tgHtml("a * b and * spaced *").c_str());
+  TEST_ASSERT_EQUAL_STRING("*1st* digit start", tgHtml("*1st* digit start").c_str());
+  TEST_ASSERT_EQUAL_STRING("word*tail* no open boundary",
+                           tgHtml("word*tail* no open boundary").c_str());
+  TEST_ASSERT_EQUAL_STRING("*cross\nline* stays literal",
+                           tgHtml("*cross\nline* stays literal").c_str());
+}
+
+// CUM-995 fix pass: Telegram HTML has no list elements, so a bullet line
+// renders as a text bullet (U+2022); numbered items already read as a list.
+static void test_bullet_lines_render_as_text_bullets() {
+  TEST_ASSERT_EQUAL_STRING("\xE2\x80\xA2 one\n\xE2\x80\xA2 two",
+                           tgHtml("- one\n- two").c_str());
+  TEST_ASSERT_EQUAL_STRING("\xE2\x80\xA2 indented", tgHtml("  - indented").c_str());
+  TEST_ASSERT_EQUAL_STRING("\xE2\x80\xA2 star\n\xE2\x80\xA2 plus",
+                           tgHtml("* star\n+ plus").c_str());
+  TEST_ASSERT_EQUAL_STRING("1. numbered stays", tgHtml("1. numbered stays").c_str());
+  TEST_ASSERT_EQUAL_STRING("mid - line stays", tgHtml("mid - line stays").c_str());
+  TEST_ASSERT_EQUAL_STRING("-", tgHtml("-").c_str());
+  // A bullet item's text still gets inline formatting.
+  TEST_ASSERT_EQUAL_STRING("\xE2\x80\xA2 <b>bold</b> item",
+                           tgHtml("- **bold** item").c_str());
+}
+
 static void test_utf8_passes_through() {
   TEST_ASSERT_EQUAL_STRING("✅ <b>готово</b> - done",
                            tgHtml("✅ **готово** - done").c_str());
@@ -76,10 +114,11 @@ static void test_tags_always_balanced() {
   const char* nasty[] = {
       "** ` [ ( ``` #", "```", "**a`b**`c", "[x](https://a\").com)",
       "`a**b`c**d", "# \n## x\n**y", "***bold?***", "``", "**``**",
+      "*a* _b_ * c*", "*a\nb*", "- x\n* y\n+ z", "_a_b_ c_d", "***x***",
   };
   for (const char* s : nasty) {
     const std::string h = tgHtml(s);
-    for (const char* tag : {"b", "code", "pre", "a"}) {
+    for (const char* tag : {"b", "i", "code", "pre", "a"}) {
       size_t opens = 0, closes = 0, p = 0;
       const std::string o = std::string("<") + tag, c = std::string("</") + tag + ">";
       while ((p = h.find(o, p)) != std::string::npos) {
@@ -126,9 +165,9 @@ static void test_real_10nov_food_log_reply_passes_through() {
 
 // CUM-995 (lane MD51): a real reply carrying *, _, [ ] and code (corpus shapes:
 // 2026-10-30T19:30-120's `nutrition/meal_log.csv` + numbered list + **bold**,
-// 2026-10-28T18:10-82's *speculative decoding*). The contract: **bold** and
-// `code` convert; single * and intra-word _ stay literal; only an http(s)
-// [text](url) converts.
+// 2026-10-28T18:10-82's *speculative decoding*). The contract: **bold**, *italic*
+// and `code` convert; bullet lines render as text bullets; math/globs and
+// intra-word _ stay literal; only an http(s) [text](url) converts.
 static void test_real_reply_with_markers_and_code() {
   const std::string in =
       "The log is saved in `nutrition/meal_log.csv`.\n\n"
@@ -141,7 +180,8 @@ static void test_real_reply_with_markers_and_code() {
   const std::string out = tgHtml(in);
   TEST_ASSERT_TRUE(out.find("<code>nutrition/meal_log.csv</code>") != std::string::npos);
   TEST_ASSERT_TRUE(out.find("<b>1,547 kcal, 176 g protein</b>") != std::string::npos);
-  TEST_ASSERT_TRUE(out.find("*speculative decoding*") != std::string::npos);   // single * literal
+  TEST_ASSERT_TRUE(out.find("<i>speculative decoding</i>") != std::string::npos);  // italic converts
+  TEST_ASSERT_TRUE(out.find("\xE2\x80\xA2 Memory-bound decoding") != std::string::npos);  // bullet line
   TEST_ASSERT_TRUE(out.find("r&lt;=p/q") != std::string::npos);                 // < escaped, text intact
   TEST_ASSERT_TRUE(out.find("<a href=\"https://docs.cumulo-nimbus.ai/\">the docs</a>") != std::string::npos);
   TEST_ASSERT_TRUE(out.find("[not a link](ftp://x)") != std::string::npos);     // non-http stays literal
@@ -168,6 +208,8 @@ int main() {
   RUN_TEST(test_unclosed_markers_stay_literal);
   RUN_TEST(test_code_spans_are_verbatim);
   RUN_TEST(test_math_and_globs_survive);
+  RUN_TEST(test_italic_converts_with_web_boundary_rules);
+  RUN_TEST(test_bullet_lines_render_as_text_bullets);
   RUN_TEST(test_utf8_passes_through);
   RUN_TEST(test_a_real_reply_shape);
   RUN_TEST(test_tags_always_balanced);
