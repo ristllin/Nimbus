@@ -159,6 +159,10 @@ class FoldDriver {
   FoldTick runRung(uint32_t nowMs, uint32_t nowEpoch);
   FoldTick landed(const FoldRungReport& rep, const std::string& summary, uint32_t nowMs, uint32_t nowEpoch);
   FoldTick cycleFailed(uint32_t nowMs, uint32_t nowEpoch);
+  void maybeAlert(const std::string& chat, const nimbus::orch::ChatFold* f, uint32_t nowEpoch, int32_t off);
+  bool gatesOpen() const;
+  bool automaticRungWaits() const;
+  FoldTick stopAtCap();
   bool pickManual(uint32_t nowMs, std::string& chat) const;
   bool pickAutomatic(uint32_t nowMs, uint32_t nowEpoch, std::string& chat);
   bool dueNow(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch);

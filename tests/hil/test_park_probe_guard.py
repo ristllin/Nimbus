@@ -154,7 +154,11 @@ def test_the_device_recheck_waits_for_the_owner_and_comes_first():
     gate = body.find("parkRecheckMayStart(")
     assert ask >= 0, "the device's only call of the idle re-check is gone"
     assert 0 <= gate < ask, "the idle re-check blocks the task that reads the owner's messages"
-    assert ask < body.find("canFoldNow()"), "the re-check comes before the fold's gates"
+    # The fold's gates live in the fold driver's tick since v5.1.2 (FoldDriver::gatesOpen asks
+    # canFoldNow): the re-check comes before that tick.
+    assert ask < body.find("g_foldDriver->tick("), "the re-check comes before the fold's gates"
+    driver = (_REPO / "lib" / "harness" / "src" / "fold_driver.cpp").read_text()
+    assert "eng_->canFoldNow()" in _function_body(driver, "bool FoldDriver::gatesOpen(")
     assert body.count("recheckParkedHost()") == 1
     assert text.count("recheckParkedHost()") == 1
     assert "compactTick();" in text[text.find("pollJobs") :]

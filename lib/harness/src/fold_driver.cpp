@@ -160,27 +160,38 @@ void FoldDriver::resetDailyCount() {
   changed();
 }
 
+// The network, then no turn in flight, the heap floor and a rung to ask: nothing visible
+// or paid happens before these pass (prism v3.6.0 HIGH), and a cycle keeps its place meanwhile.
+bool FoldDriver::gatesOpen() const {
+  if (hooks_.online && !hooks_.online()) return false;
+  return eng_->canFoldNow();
+}
+
+// A later automatic rung waits for the owner again (an overflow fold does not wait).
+bool FoldDriver::automaticRungWaits() const {
+  if (cycle_.manual || cycle_.overflow || !hooks_.quiet) return false;
+  return !hooks_.quiet(false);
+}
+
+FoldTick FoldDriver::stopAtCap() {
+  hlog::logf("fold(%s): the cycle stops at rung %u/%u for the daily cap, uncounted", cycle_.chat.c_str(),
+             (unsigned)(cycle_.idx + 1), (unsigned)cycle_.rungs.size());
+  cycle_ = Cycle();
+  changed();
+  return FoldTick::Deferred;
+}
+
 FoldTick FoldDriver::tick(uint32_t nowMs, uint32_t nowEpoch) {
-  const bool waiting = cycleActive() || !ctl_.manualPendingChat.empty();
-  if (hooks_.online && !hooks_.online()) return waiting ? FoldTick::Deferred : FoldTick::Idle;
-  // No turn in flight, the heap floor, a rung to ask: nothing visible or paid happens
-  // before these pass (prism v3.6.0 HIGH), and a cycle keeps its place meanwhile.
-  if (!eng_->canFoldNow()) return waiting ? FoldTick::Deferred : FoldTick::Idle;
+  if (!gatesOpen()) return cycleActive() || !ctl_.manualPendingChat.empty() ? FoldTick::Deferred : FoldTick::Idle;
   std::string ready;
   if (pickManual(nowMs, ready)) endAutomaticForManual();
   if (!cycleActive()) {
     const FoldTick started = startCycle(nowMs, nowEpoch);
     if (!cycleActive()) return started;
-  } else if (!cycle_.manual && !cycle_.overflow && hooks_.quiet && !hooks_.quiet(false)) {
-    return FoldTick::Deferred;   // a later automatic rung waits for the owner again
-  }
-  if (!cycle_.manual && capReached(nowEpoch)) {
-    hlog::logf("fold(%s): the cycle stops at rung %u/%u for the daily cap, uncounted", cycle_.chat.c_str(),
-               (unsigned)(cycle_.idx + 1), (unsigned)cycle_.rungs.size());
-    cycle_ = Cycle();
-    changed();
+  } else if (automaticRungWaits()) {
     return FoldTick::Deferred;
   }
+  if (!cycle_.manual && capReached(nowEpoch)) return stopAtCap();
   return runRung(nowMs, nowEpoch);
 }
 
@@ -411,17 +422,23 @@ FoldTick FoldDriver::cycleFailed(uint32_t nowMs, uint32_t nowEpoch) {
     if (hooks_.tell) hooks_.tell(c.chat, failureNotice(next, waitS, off));
     catchUp_ = CatchUp();
     endManual(c.chat, nowMs);
-  } else if (f && nowEpoch && f->firstFail && nowEpoch > f->firstFail &&
-             nowEpoch - f->firstFail >= orch::kFoldAlertAfterS && ctl_.lastAlertDay != today(nowEpoch)) {
-    // One owner alert a local day on the whole device, and only after a day of failing.
-    ctl_.lastAlertDay = today(nowEpoch);
-    saveCtl();
-    const std::string text = alertNotice(f->lastFoldEpoch ? f->lastFoldEpoch : f->firstFail, off);
-    if (hooks_.alert) hooks_.alert(c.chat, text);
-    else if (hooks_.tell) hooks_.tell(c.chat, text);
+  } else {
+    maybeAlert(c.chat, f, nowEpoch, off);
   }
   changed(c.chat);
   return FoldTick::CycleFailed;
+}
+
+// One owner alert a local day on the whole device, and only after a day of failing (a
+// clock that stepped back before firstFail never alerts).
+void FoldDriver::maybeAlert(const std::string& chat, const orch::ChatFold* f, uint32_t nowEpoch, int32_t off) {
+  if (!f || !nowEpoch || !f->firstFail || nowEpoch <= f->firstFail) return;
+  if (nowEpoch - f->firstFail < orch::kFoldAlertAfterS || ctl_.lastAlertDay == today(nowEpoch)) return;
+  ctl_.lastAlertDay = today(nowEpoch);
+  saveCtl();
+  const std::string text = alertNotice(f->lastFoldEpoch ? f->lastFoldEpoch : f->firstFail, off);
+  if (hooks_.alert) hooks_.alert(chat, text);
+  else if (hooks_.tell) hooks_.tell(chat, text);
 }
 
 void FoldDriver::endManual(const std::string& chat, uint32_t nowMs) {
