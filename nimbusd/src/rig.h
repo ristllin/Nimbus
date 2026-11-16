@@ -34,6 +34,7 @@
 #include "nimbus/harness/dream.h"
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/fold_driver.h"   // FoldDriver - the one fold driver (lane F)
+#include "nimbus/orch/request_budget.h"    // requestBudgetFor, installBudgetLink - the fold's trigger and step
 #include "nimbus/harness/turn_progress.h"  // lane PROG: the round-boundary signal plan
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"
@@ -211,7 +212,7 @@ class NimbusdRig {
     int         maxVectors = 5000;
     std::map<std::string, std::string> models;
     // Test seam (test_vn_parity): the automatic fold trigger in bytes (0 = the hosted
-    // trigger: kHostedCompactKb over the head's derived history, foldTriggerBytes).
+    // trigger: kHostedCompactKb through lane B's foldTriggerBytes over the head's budget).
     uint32_t    foldTriggerBytes = 0;
     // Test seam (NIMBUSD_FOLD_FAULT, the device's PROVFAULT for the fold): a fold request
     // on this direct host answers with no summary and sends nothing, so a persona can
@@ -227,6 +228,9 @@ class NimbusdRig {
     // The hosted page chats as "owner" (kWebChatId): make the shared chat rule read it
     // as the web chat for this process (a device never does this).
     nimbus::orch::setHostedWebChatAlias(true);
+    // Lane B's request budgets on a server link (no device upload or pacing terms); the
+    // fold reads its trigger and step from them (lane F).
+    nimbus::orch::installBudgetLink(nimbus::orch::BudgetLink::Server);
     if (httpOverride) {
       http_ = httpOverride;
     } else {
@@ -3526,13 +3530,9 @@ class NimbusdRig {
     // history (RULINGS-v3 item 3), or the test seam's bytes.
     h.triggerBytes = [this]() -> uint32_t {
       if (opt_.foldTriggerBytes) return opt_.foldTriggerBytes;
-      const orch::ContextBudget b = orch::headContextBudget(eng_->headHost(), modelFor(eng_->headHost()), {});
-      return orch::foldTriggerBytes(kHostedCompactKb, b.historySoftBytes, b.historyMaxBytes);
+      return (uint32_t)orch::foldTriggerBytes(headRequestContext(), kHostedCompactKb);
     };
-    h.foldStepBytes = [this] {   // never below v5.1.1's slice
-      const orch::ContextBudget b = orch::headContextBudget(eng_->headHost(), modelFor(eng_->headHost()), {});
-      return std::max(b.foldSliceBytes, b.foldStepBytes);
-    };
+    h.foldStepBytes = [this] { return headRequestContext().foldStepBytes; };   // one fold's step (lane B)
     h.utcOffsetMin = [](uint32_t epoch) { return hostedOffsetAt(epoch); };
     h.folded = [this](const agent::FoldDone& d) { foldLanded(d); };
     h.tell = [this](const std::string& chat, const std::string& text) { record(chat, text); };
@@ -3547,6 +3547,11 @@ class NimbusdRig {
     };
     h.firmware = NIMBUS_FW_BUILD;
     return h;
+  }
+  // The head's request context (lane B, on the Server link: no upload or pacing terms).
+  orch::ContextBudget headRequestContext() {
+    const std::string host = eng_->headHost();
+    return orch::deriveRequestContext(orch::requestBudgetFor(host, modelFor(host), host == kCumuloSlug), {});
   }
   // A summary landed (the store is written): the chain reset, then the boundary row.
   void foldLanded(const agent::FoldDone& d) {

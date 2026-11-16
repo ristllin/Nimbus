@@ -70,6 +70,15 @@ The matcher passes every live fold output recorded in
 answered at least 800 B but named too few sections (a summary in another language, or
 with renamed headings), the longest of those is stored instead of failing the cycle.
 
+## Trigger and step
+
+The fold reads lane B's request context for the head (`deriveRequestContext` over
+`requestBudgetFor`; the VN on the server link): `foldTriggerBytes(budget, compactAtKB)`
+makes a chat due (0 off; 48, the default, the derived soft mark; another value that mark
+clamped inside the history; on the floor branch v5.1.1's reading, compactAtKB KB) and
+`foldStepBytes` is what one fold takes (on the floor branch v5.1.1's slice). The VN reads
+`kHostedCompactKb` (48) the same way.
+
 ## The schedule (FoldStore and FoldCtl)
 
 Per chat, in `/data/chatsum.txt` (`nimbus::orch::FoldStore`, `compact.h`):
@@ -119,8 +128,9 @@ every 5 s; the VN builds it on the engine thread. The CTX echo (`CTX?`,
 
 ## Summary size
 
-`summaryCapFor()`: 6,144 B for a head of 60k tokens or more, else 4,096 B (the input
-names the larger budget in a `[SUMMARY BUDGET]` line). `capSummary()` keeps every
+The head's cap is lane B's `chatSummaryBytes` (`deriveRequestContext`): 6,144 B for a
+request target of 60k tokens or more, else 4,096 B (the input names the larger budget in a
+`[SUMMARY BUDGET]` line). `capSummary()` keeps every
 section header and trims each body in proportion to its size, whole lines from the
 end.
 

@@ -9,7 +9,9 @@
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/output_caps.h"   // mistralHeadEffort - which heads are forced reasoners
 #include "nimbus/harness/providers.h"   // ScopedModelOverride - a rung on its own model
+#include "nimbus/orch/budget.h"            // deriveRequestContext - the head's summary cap (lane B)
 #include "nimbus/orch/compact.h"           // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary
+#include "nimbus/orch/request_budget.h"    // requestBudgetFor
 #include "nimbus/orch/connector_grant.h"   // whose connectors a fold's request carries (CUM-828)
 #include "nimbus/orch/head_loop.h"         // classifyStepError - a rung's failure kind
 #include "nimbus/orch/provider_error.h"    // oneLineText - the rung line's detail
@@ -39,6 +41,13 @@ std::string foldModelFor(const TurnEngine::Deps& d, const std::string& h) {
 // The host's own model (no pin).
 std::string ownModel(const TurnEngine::Deps& d, const std::string& h) {
   return d.cfg.provider.orchModel ? d.cfg.provider.orchModel(h) : std::string();
+}
+
+// The head's request context (lane B, deriveRequestContext over requestBudgetFor): the
+// summary cap the fold writes for, the same the turn's prompt carries it at.
+orch::ContextBudget headFoldContext(const TurnEngine::Deps& d) {
+  const std::string host = detail::resolveTurnHost(d);
+  return orch::deriveRequestContext(orch::requestBudgetFor(host, detail::headModelOf(d, host), host == "cumulo"), {});
 }
 
 // A direct host: its requests read orchModel, so a rung there can run another model.
@@ -232,9 +241,9 @@ TurnEngine::FoldResult TurnEngine::runFoldOn(const std::string& chatId, const st
   // no device actions, no mem writes, no spawns), so a cycle may ask every keyed
   // provider in turn (fold_ladder.h). ALWAYS a fresh, throwaway provider thread: the
   // fold must never ride or extend the chat's chain (that is the thing being reset),
-  // and its convId is never persisted. The head's summary cap (6,144 B at 60k tokens
-  // and above, else 4,096 B) is named in the input when it is the larger one.
-  const size_t cap = orch::summaryCapFor(detail::headCtxTokens(d_));
+  // and its convId is never persisted. The head's summary cap (lane B: 6,144 B at a
+  // 60k-token target and above, else 4,096 B) is named in the input when it is the larger one.
+  const size_t cap = headFoldContext(d_).chatSummaryBytes;
   const std::string inputs = orch::buildCompactInputs(prevSummary, digest, foldDayContext(chatId), cap);
   // The attempt's spend, a failed one included, filed under its own host and model and
   // metered once as "compact" (lane T: the same per-host rule and R4 cache split as a

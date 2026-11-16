@@ -260,11 +260,7 @@ static void test_l1931_two_successive_folds_do_not_recut_a_cut_line() {
     const std::string line = again.substr(p, eol == std::string::npos ? std::string::npos : eol - p);
     TEST_ASSERT_TRUE_MESSAGE(line.find(": keep the label figures") != std::string::npos, line.c_str());
   }
-  // The head's cap: under 60k tokens 4,096 B, else 6,144 B.
-  TEST_ASSERT_EQUAL_UINT32(kChatSummarySmall, summaryCapFor(32000));
-  TEST_ASSERT_EQUAL_UINT32(kChatSummarySmall, summaryCapFor(kSummaryLargeHeadTokens - 1));
-  TEST_ASSERT_EQUAL_UINT32(kChatSummaryMax, summaryCapFor(kSummaryLargeHeadTokens));
-  TEST_ASSERT_EQUAL_UINT32(kChatSummaryMax, summaryCapFor(1048576));
+  // The smaller head cap (lane B's chatSummaryBytes under a 60k-token target).
   TEST_ASSERT_TRUE(capSummary(big, kChatSummarySmall).size() <= kChatSummarySmall);
 }
 
@@ -663,26 +659,6 @@ static void test_foldstore_no_reachable_state_stays_off() {
   }
 }
 
-// The automatic trigger: v5.1.1 exactly while the history is v5.1.1's size; derived (the
-// soft mark, never below 24 KB) for the stored 48; an owner's own value clamped inside
-// the history; 0 is off. Over every legacy window and a sweep of derived ones.
-static void test_fold_trigger_follows_compact_at_kb() {
-  for (size_t legacyMax : {(size_t)3000, (size_t)8192, kLegacyHistoryMaxBytes})
-    for (uint32_t kb : {0u, 8u, 48u, 96u, 512u}) TEST_ASSERT_EQUAL_UINT32(kb * 1024u, foldTriggerBytes(kb, 4096, legacyMax));
-  for (size_t max = kLegacyHistoryMaxBytes + 1024; max < 400u * 1024u; max += 7 * 1024) {
-    const size_t soft = max * 8 / 10;
-    TEST_ASSERT_EQUAL_UINT32(0, foldTriggerBytes(0, soft, max));
-    const uint32_t derived = foldTriggerBytes(kCompactAtKbDefault, soft, max);
-    TEST_ASSERT_TRUE(derived >= kFoldTriggerFloor);
-    TEST_ASSERT_EQUAL_UINT32((uint32_t)std::max<size_t>(soft, kFoldTriggerFloor), derived);
-    for (uint32_t kb : {1u, 8u, 96u, 512u}) {
-      const uint32_t t = foldTriggerBytes(kb, soft, max);
-      TEST_ASSERT_TRUE(t >= 8u * 1024u || max < 16u * 1024u);
-      TEST_ASSERT_TRUE(t <= max - 8u * 1024u);
-    }
-  }
-}
-
 // FoldCtl: the device-wide record round-trips, reads a missing or damaged file as a fresh
 // device, counts paid calls per local day and queues manual requests once each, bounded.
 static void test_fold_ctl_codec_and_queue() {
@@ -938,7 +914,6 @@ int main(int, char**) {
   RUN_TEST(test_candidate_blob_fixture_matches_the_encoder);
   RUN_TEST(test_foldstore_no_reachable_state_stays_off);
   RUN_TEST(test_fold_ctl_codec_and_queue);
-  RUN_TEST(test_fold_trigger_follows_compact_at_kb);
   RUN_TEST(test_foldstore_blob_is_byte_bounded_dropping_oldest);
   RUN_TEST(test_foldstore_lru);
   RUN_TEST(test_foldstore_summary_separators_stripped);

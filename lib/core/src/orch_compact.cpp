@@ -514,14 +514,6 @@ size_t foldDigestAfterFailures(size_t stepBytes, uint32_t failedCycles) {
   return v < kFoldDigestFloor ? kFoldDigestFloor : v;
 }
 
-uint32_t foldTriggerBytes(uint32_t compactAtKB, size_t softBytes, size_t historyMaxBytes) {
-  if (compactAtKB == 0) return 0;
-  if (historyMaxBytes <= kLegacyHistoryMaxBytes) return compactAtKB * 1024u;   // exactly v5.1.1
-  if (compactAtKB == kCompactAtKbDefault) return (uint32_t)std::max<size_t>(softBytes, kFoldTriggerFloor);
-  const size_t hi = historyMaxBytes - 8u * 1024u;
-  return (uint32_t)std::min<size_t>(std::max<size_t>((size_t)compactAtKB * 1024u, 8u * 1024u), hi);
-}
-
 uint32_t foldLocalDay(uint32_t epoch, int32_t utcOffsetMin) {
   if (epoch == 0) return 0;
   const int64_t local = (int64_t)epoch + (int64_t)utcOffsetMin * 60;

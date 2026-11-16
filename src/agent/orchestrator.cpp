@@ -76,6 +76,7 @@
 #include "../sys/psram_static.h"         // long-lived buffers and the two engines in PSRAM, not internal .bss
 
 #include "nimbus/orch/budget.h"         // headContextBudget - brief/fold-slice bytes from the head window
+#include "nimbus/orch/request_budget.h" // requestBudgetFor - the fold's trigger and step (lane B)
 #include "nimbus/harness/fold_driver.h" // FoldDriver - the one fold driver (lane F: never a permanent pause)
 #include <map>
 #include <mutex>
@@ -429,6 +430,15 @@ static nimbus::orch::ModAction moderateGate(nimbus::orch::ModGate gate, const St
 static nimbus::orch::ContextBudget headBudget() {
   const String h = g_engine ? String(g_engine->headHost().c_str()) : store::resolvedOrchHost();
   return nimbus::orch::headContextBudget(h.c_str(), store::orchModel(h).c_str(), {});
+}
+
+// The head's request context (lane B: deriveRequestContext over requestBudgetFor), which
+// the fold reads directly (lane F): its trigger, one fold's step. On the floor branch it
+// is v5.1.1's (the 48 KB compactAtKB trigger, the v5.1.1 slice).
+static nimbus::orch::ContextBudget headRequestContext() {
+  const String h = g_engine ? String(g_engine->headHost().c_str()) : String();   // the fold runs with an engine
+  return nimbus::orch::deriveRequestContext(
+      nimbus::orch::requestBudgetFor(h.c_str(), store::orchModel(h).c_str(), h == "cumulo"), {});
 }
 
 // ---- delivery helpers -------------------------------------------------------
@@ -2917,13 +2927,9 @@ static agent::FoldDriverHooks foldHooks() {
   };
   h.notDue = [] { g_ownerFirst.noteFoldNotDue(); };
   h.triggerBytes = [] {
-    const nimbus::orch::ContextBudget b = headBudget();
-    return nimbus::orch::foldTriggerBytes(store::compactAtKB(), b.historySoftBytes, b.historyMaxBytes);
+    return (uint32_t)nimbus::orch::foldTriggerBytes(headRequestContext(), store::compactAtKB());
   };
-  h.foldStepBytes = [] {   // never below v5.1.1's slice (RULINGS-v3 item 8)
-    const nimbus::orch::ContextBudget b = headBudget();
-    return std::max(b.foldSliceBytes, b.foldStepBytes);
-  };
+  h.foldStepBytes = [] { return headRequestContext().foldStepBytes; };   // one fold's step (lane B)
   h.slice = [](const std::string& chat, size_t cap, bool manual) {
     return g_engine->histV2On() ? g_engine->historyFoldSlice(chat, cap, manual) : legacyFoldSlice(chat, cap);
   };

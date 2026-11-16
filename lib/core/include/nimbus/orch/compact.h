@@ -124,15 +124,13 @@ std::string buildCompactInputs(const std::string& prevSummary,
 
 // Cap a produced summary, UTF-8-safe (the fold output is re-injected into every
 // future prompt - a torn sequence would 400 them all). The cap follows the head
-// (lane F of the history fix): 6,144 B for a head of 60k tokens or more, else
-// 4,096 B (v5.1.1's single cap). A v5.1.1 image re-caps a longer stored summary to
+// (lane F of the history fix): 6,144 B for a head whose request target is 60k tokens or
+// more, else 4,096 B (v5.1.1's single cap). A v5.1.1 image re-caps a longer stored summary to
 // 4,096 B on load, so a rollback keeps the summary, shortened.
 constexpr size_t kChatSummaryMax = 6144;     // the largest summary any head keeps
-constexpr size_t kChatSummarySmall = 4096;   // heads under kSummaryLargeHeadTokens
-constexpr uint32_t kSummaryLargeHeadTokens = 60000;
-inline size_t summaryCapFor(uint32_t headCtxTokens) {
-  return headCtxTokens >= kSummaryLargeHeadTokens ? kChatSummaryMax : kChatSummarySmall;
-}
+constexpr size_t kChatSummarySmall = 4096;   // the smaller cap (and v5.1.1's single one)
+// The head's own cap is lane B's ContextBudget::chatSummaryBytes (deriveRequestContext:
+// 6,144 at a 60k-token target and above, else 4,096).
 
 // capSummary is SECTION-AWARE: a summary that fits is kept whole; one that does not
 // keeps EVERY section header and trims each section's body in proportion to its
@@ -198,17 +196,6 @@ struct ChatFold {
   // so a re-served copy of it adds nothing toward the next fold.
   uint32_t lastOwnerHash = 0;
 };
-
-// The automatic trigger (lane F, ruling 3): the owner's compactAtKB over the head's
-// derived history. 0 = off. While the derived history is no bigger than v5.1.1's
-// window (kLegacyHistoryMaxBytes: the floor branch, and every head until lane B's
-// derivation lands) it is exactly v5.1.1: compactAtKB KB. Above it, 48 (the stored
-// default) means derived: the history's soft mark, never below 24 KB; any other value
-// is the soft mark itself, clamped to [8 KB, historyMax - 8 KB].
-constexpr uint32_t kCompactAtKbDefault = 48;
-constexpr size_t kLegacyHistoryMaxBytes = 16384;
-constexpr uint32_t kFoldTriggerFloor = 24u * 1024u;
-uint32_t foldTriggerBytes(uint32_t compactAtKB, size_t softBytes, size_t historyMaxBytes);
 
 // Owner messages a chat may gather before a fold is due by count alone (the
 // byte threshold is the owner's compactAtK). Only DISTINCT messages count.

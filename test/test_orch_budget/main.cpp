@@ -170,8 +170,11 @@ static void test_orchestrator_sizes_off_one_head_budget() {
   TEST_ASSERT_TRUE(fn.find("g_engine->headHost()") != std::string::npos);
   TEST_ASSERT_TRUE(fn.find("resolvedOrchHost()") != std::string::npos);
   TEST_ASSERT_TRUE(fn.find("headContextBudget(") != std::string::npos);
-  for (const char* use : {"headBudget().briefBytes", "headBudget().recentConvBytes", "headBudget().foldSliceBytes"})
+  for (const char* use : {"headBudget().briefBytes", "headBudget().recentConvBytes"})
     TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, use), use);
+  // Lane F switched the fold to lane B's request context: one fold's step and the trigger.
+  TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "headRequestContext().foldStepBytes"), "the fold step");
+  TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "foldTriggerBytes(headRequestContext()"), "the fold trigger");
 }
 
 // ---- the one budget seam (lane P0 of the history fix) -----------------------
@@ -202,10 +205,13 @@ static int deriveCallsOutsideTheSeam(std::string& where) {
 static void test_every_budget_consumer_reads_the_one_seam() {
   std::string where;
   TEST_ASSERT_EQUAL_MESSAGE(0, deriveCallsOutsideTheSeam(where), where.c_str());
-  // The six legacy consumers each read the seam.
-  for (const char* f : {"src/agent/store.cpp", "src/net/webui.cpp", "src/agent/orchestrator.cpp", "nimbusd/src/rig.h",
+  // The legacy consumers each read the seam. The VN's only one was its fold slice, which
+  // lane F switched to lane B's request context (deriveRequestContext), as on the device.
+  for (const char* f : {"src/agent/store.cpp", "src/net/webui.cpp", "src/agent/orchestrator.cpp",
                         "lib/harness/src/engine.cpp", "lib/harness/src/engine_history.cpp"})
     TEST_ASSERT_TRUE_MESSAGE(countOf(stripLineComments(readFile(f)), "headContextBudget(") >= 1, f);
+  TEST_ASSERT_TRUE_MESSAGE(countOf(stripLineComments(readFile("nimbusd/src/rig.h")), "deriveRequestContext(") >= 1,
+                           "the VN fold reads the request context");
   // Today's body: the seam is the derivation over the window table.
   for (const char* host : {"anthropic", "openai", "mistral", "zai", "cumulo", "custom"})
     for (const char* model : {"", "claude-sonnet-5-5", "gpt-5.6", "mistral-large-4-0", "glm-5.3", "openai/gpt-5.6"}) {
