@@ -96,6 +96,7 @@ static const char UI_AGENT[] PROGMEM = R"=====(<div class=pane id=pane-harness s
 <label>Compact conversations after, KB <span class=hint>(8&ndash;512; 48 follows the model; 0 turns automatic compaction off)</span> <button class=qh type=button aria-expanded=false aria-label="About compaction">?</button></label>
 <p class="hint tip">When a chat accumulates this much history, the assistant folds it into a compact summary and starts a fresh provider thread - conversations stay fast and inexpensive without losing continuity. The default, 48, follows the model in use. Send /compact, or use Summarize Now on the Memory page, to run it on demand.</p>
 <input id=compactKB type=number min=0 max=512>
+<p class=hint id=compactEff></p>
 <label>Concurrent connections <button class=qh type=button aria-expanded=false aria-label="About concurrent connections">?</button></label>
 <p class="hint tip">One is the default and the stable choice - the device does one secure connection at a time, which uses the least memory. Two lets voice transcription run alongside a provider turn, but needs memory headroom and can fail a heavy turn. Applies after restart.</p>
 <select id=tlsSlots><option value=1>1 (default) - one at a time</option><option value=2>2 - concurrent (needs headroom)</option></select>

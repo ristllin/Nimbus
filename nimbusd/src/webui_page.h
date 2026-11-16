@@ -732,6 +732,7 @@ a.mdlk{color:var(--teal)}
 <label>Compact conversations after, KB <span class=hint>(8&ndash;512; 48 follows the model; 0 turns automatic compaction off)</span> <button class=qh type=button aria-expanded=false aria-label="About compaction">?</button></label>
 <p class="hint tip">When a chat accumulates this much history, the assistant folds it into a compact summary and starts a fresh provider thread - conversations stay fast and inexpensive without losing continuity. The default, 48, follows the model in use. Send /compact, or use Summarize Now on the Memory page, to run it on demand.</p>
 <input id=compactKB type=number min=0 max=512>
+<p class=hint id=compactEff></p>
 <label>Concurrent connections <button class=qh type=button aria-expanded=false aria-label="About concurrent connections">?</button></label>
 <p class="hint tip">One is the default and the stable choice - the device does one secure connection at a time, which uses the least memory. Two lets voice transcription run alongside a provider turn, but needs memory headroom and can fail a heavy turn. Applies after restart.</p>
 <select id=tlsSlots><option value=1>1 (default) - one at a time</option><option value=2>2 - concurrent (needs headroom)</option></select>
@@ -1171,16 +1172,10 @@ const $=id=>document.getElementById(id);
 // dead on a hosted instance (no ring, screen, mic, AP, or ESP OTA).
 let HOSTED=false;try{HOSTED=(window.NIMBUS_HOSTED===true);}catch(e){}
 // --- Per-device auth (owner R2: identify ONCE per browser, then forever) ---
-// The token persists in localStorage (NOT per-tab sessionStorage - that was the
-// "QR is a dead end" bug: phones open QR links in an ephemeral webview, the token
-// died with the tab and the URL had been stripped, forcing a manual copy every
-// time). Every request carries it (the server now gates ALL routes); with no
-// token stored, the page renders an identify gate and NOTHING else.
-// Storage access can THROW (Safari private browsing, blocked site data). It used to
-// throw straight out of the init block below, so the fetch shim never installed and
-// every request went out token-less - a permanent identify gate with no way to explain
-// it. Every storage touch is guarded now, with an in-memory token so the session still
-// works when nothing can be persisted.
+// The token persists in localStorage, never per-tab sessionStorage (a QR link opened in
+// a phone's ephemeral webview lost it). Every request carries it; with no token the page
+// renders only the identify gate. Storage access can throw (Safari private browsing,
+// blocked site data): every touch is guarded, with an in-memory token as the fallback.
 let _memTok='';
 function nimbusTok(){try{return localStorage.getItem('nimbusTok')||_memTok;}catch(e){return _memTok;}}
 // Store the token. Returns true only when it is DURABLY stored (survives a reload).
@@ -1192,15 +1187,11 @@ let _signinMigrated=false;
   try{const legacy=sessionStorage.getItem('nimbusTok');   // migrate pre-R2 tabs
       if(legacy&&!nimbusTok())setTok(legacy);}catch(e){}
   const u=new URLSearchParams(location.search).get('t');
-  // Legacy ?t= sign-in link (deprecated, CUM-45). The durable token must never
-  // stay in a URL: the navigation is committed to browser history before any
-  // script runs, and browsers sync history across machines while localStorage is
-  // never synced, so a ?t= link silently authenticates a machine you never used.
-  // Accept it ONCE for backward compatibility (existing QR codes / bookmarks),
-  // store it client-side so every later request carries it in the X-Nimbus-Token
-  // header, strip it from the address bar, and flag the migration hint. New
-  // sign-ins use the one-time ?c= exchange below - nothing durable in the URL.
-  // Preserve non-secret handoff state (notably ?onboard=provider) when stripping.
+  // Legacy ?t= sign-in link (deprecated, CUM-45). A durable token must never stay in a
+  // URL (browser history syncs across machines). Accept it ONCE for old QR codes and
+  // bookmarks: store it for the X-Nimbus-Token header, strip it from the address bar
+  // (keeping non-secret state such as ?onboard=provider) and flag the migration hint.
+  // New sign-ins use the one-time ?c= exchange below.
   if(u&&setTok(u)){
     _signinMigrated=true;
     const q=new URLSearchParams(location.search);q.delete('t');
@@ -1732,14 +1723,10 @@ function fillVoices(prov, sel, ck){
 }
 // Provider priority as an ordered, checkable list -> a comma string (no free-text).
 function renderPrio(hostId, field, csv){
-  // cumulo/zai are first-class, reorderable rows here alongside the BYOK heads:
-  // both are runnable orchestrator heads (CUM-242 registered them), so a router
-  // key belongs in the fallback order like any other provider. A stored priority
-  // is NEVER auto-reordered - the saved order is honored as-is and any provider it
-  // omits is appended (off) in ALL's order, so this only ADDS choices, it never
-  // moves what the owner set. Primary-provider (orchHost) still lists only the
-  // BYOK heads, since the router is the deterministic fallback source, not the
-  // one head that "runs the assistant".
+  // cumulo/zai are reorderable rows beside the BYOK heads (both are runnable heads,
+  // CUM-242). A stored priority is NEVER reordered: the saved order is kept and any
+  // provider it omits is appended (off) in ALL's order. orchHost still lists only the
+  // BYOK heads: the router is the fallback source, not the head.
   const ALL=['openai','anthropic','mistral','cumulo','zai'].concat(HOSTED?[]:['custom']), host=$(hostId); if(!host)return;
   let order=csv.split(',').map(s=>s.trim()).filter(x=>ALL.includes(x));
   let rows=order.map(p=>({p,on:true})).concat(ALL.filter(x=>!order.includes(x)).map(p=>({p,on:false})));
@@ -2766,14 +2753,10 @@ function loadLoops(){
   }).catch(()=>{el.innerHTML='<span class=hint>Couldn\'t load routines</span>';});
 }
 // ---- Wake-ups (CUM-72, N2 /api/wakeups) ------------------------------------
-// Policy default silent-allow; "ask me first" surfaces at most ONE pending
-// approval as a single yes/no card - never a repeating prompt / loop.
-// CUM-514 (L20 docs audit): wired to the device's REAL contract. GET answers
-// {approvalMode:"ask"|"auto", quietEnd:<minute of day>, wakeups:[{id,name,note,enabled,pending,inSec}]};
-// POST takes action=mode&value=ask|auto, action=quiet_end&value=HH:MM, or
-// action=approve|cancel&id=<id>. The
-// control used to read policy/items/pending and post policy=..., none of which
-// the device has, so it could not save and the approval card never showed.
+// Default silent-allow; "ask me first" surfaces at most ONE pending approval as a single
+// yes/no card. The device's contract (CUM-514): GET answers {approvalMode:"ask"|"auto",
+// quietEnd:<minute of day>, wakeups:[{id,name,note,enabled,pending,inSec}]}; POST takes
+// action=mode&value=ask|auto, action=quiet_end&value=HH:MM, or action=approve|cancel&id=<id>.
 function wkIn(s){if(s==null)return '';const m=Math.round(s/60);
   return m<1?'in under a minute':(m<120?'in ~'+m+' min':'in ~'+Math.round(m/60)+' h');}
 // GATE2: a 200 body of {"ok":false} is the server's honest no-op (a stale row:
@@ -2847,17 +2830,11 @@ function initLoopForm(){
   };
 }
 document.addEventListener('DOMContentLoaded',initLoopForm);
-// Shared response guard: a 401 body is valid JSON, so `.then(r=>r.json())` alone
-// used to toast a false "Saved" while the auth bar appeared. Throw the status so
-// the catch can say what actually happened.
-// CUM-479: a save the device could not store (its settings storage is full) answers
-// 507 with a sentence for the owner; jok() keeps that sentence so failToast and the
-// inline status lines show it - never "Saved". STORAGE_FULL_MSG mirrors the device's
-// own text (nimbus::store::kStorageFullMessage) for a body that did not parse.
-// CUM-514: a value the device refuses (a key with a space in it, a directive that
-// is too long) answers 400 with the sentence to show in "error"; jok() keeps that
-// too, so the owner reads why instead of "Couldn't save - try again", which no
-// retry would ever clear. A code ("bad_action") is not a sentence and is not shown.
+// Shared response guard: a 401 body is valid JSON, so jok() throws the status rather
+// than let a false "Saved" toast. A 507 (CUM-479, settings storage full) and a 400
+// (CUM-514, a refused value) keep the device's sentence for failToast and the inline
+// status; a code ("bad_action") is not a sentence and is not shown. STORAGE_FULL_MSG
+// mirrors nimbus::store::kStorageFullMessage for a body that did not parse.
 const STORAGE_FULL_MSG='Couldn\'t save: device storage is full. Remove an unused provider key or connector and try again.';
 let _saveErr='',_refuseErr='',_lastFail=0;
 function refusalText(j){const s=j&&j.error;
@@ -2881,13 +2858,11 @@ function saveFailText(e,dflt){
 // For callers that only see apply()/orchApply()'s false: the last failure's text.
 function lastFailText(dflt){return saveFailText(_lastFail,dflt);}
 // ---- Busy answers (503 + Retry-After) ----------------------------------------------
-// The device never waits for its SD card on the web server: while a tool holds the
-// card, a card-backed endpoint answers 503 with Retry-After and {"error":"busy"}, and a
-// device short of working memory answers 503 with Retry-After too. That is "busy,
-// retrying", never an error or an empty state: the last view stays, a busy note shows
-// above it, and the load runs again after Retry-After. cardJson reads an answer like
-// r.json(), and jok() like itself, but a busy one rejects with CARD_BUSY. (A 503 with
-// no Retry-After, such as "the archive needs the SD card", is an answer, not busy.)
+// While a tool holds the SD card, or working memory is short, the device answers 503
+// with Retry-After (card: {"error":"busy"}): "busy, retrying", never an error or an empty
+// state. The last view stays, a busy note shows above it, and the load runs again after
+// Retry-After. cardJson reads an answer like r.json() and jok() like itself, but a busy
+// one rejects with CARD_BUSY. A 503 with no Retry-After is an answer, not busy.
 const CARD_BUSY='card-busy';
 let _busyMs=5000,_busyCard=true;
 // A hosted instance answers any read during a turn with a plain 503: the same wait.
@@ -3035,18 +3010,12 @@ function apply(body){
    .catch(e=>{failToast(e);return false;});
 }
 
-// Switching Notifier<->Orchestrator reboots the device (the two modes bring up
-// different subsystems), so the config POST's connection drops mid-flight. Don't
-// surface that as a save error the way apply() would: fire the change, tell the
-// owner it is restarting, then (Orchestrator direction only) poll until the device
-// answers again and reload into the new mode. Resolves false if the owner cancels
-// (so the caller can revert a dropdown - the styled modal is async, so this returns
-// a Promise now). This is why the mode controls do NOT go through apply().
-//
-// Notifier mode runs with NO WiFi radio at all (main.cpp: WiFi.mode(WIFI_OFF),
-// frees SRAM for BLE) - the web server never starts there. So switching TO Notifier
-// can never be followed by a reconnect: polling /api/state would just spin until it
-// gives up. Tell the owner that plainly instead of pretending a reconnect is coming.
+// Switching Notifier<->Orchestrator restarts the device, so the config POST's connection
+// drops mid-flight: fire the change, tell the owner it is restarting, then (Orchestrator
+// direction only) poll until it answers and reload; that is why the mode controls skip
+// apply(). Notifier runs with Wi-Fi off (no web server), so switching to it never
+// reconnects: say so plainly. Resolves false if the owner cancels (the caller reverts the
+// dropdown).
 function switchMode(mv){
   return uiConfirm('Switch to '+(mv?'Orchestrator':'Notifier')+'?\n\nThe device restarts to change modes. This takes a few seconds.',{ok:mv?'Switch To Orchestrator':'Switch To Notifier'}).then(go=>{
     if(!go)return false;
@@ -3316,14 +3285,11 @@ function vfyState(d,p){
   if(p==='telegram')return {verify:d.tgVerify,vts:d.tgVts,bot:d.tgBot,vfyReason:d.tgVfyReason||''};
   return (d.providers&&d.providers[p])||null;
 }
-// Start a check of provider p and report once it LANDS (QW5: the wizard ignored a
-// refused start and every outcome but verified/rejected, then spun for 40 s).
-// say(text) shows progress; done(outcome, state) ends it. afterSave: the key was just
-// saved, which resets the verdict time to 0 and, for Cumulo, Z.ai and Telegram,
-// starts the check on the device by itself - so watch first and ask only when the
-// device is free and nothing landed. A start the device refuses (409) names why: a
-// reply in flight (the check runs right after it), low memory (a recorded deferral),
-// or another check running (wait for it, then ask again).
+// Start a check of provider p and report once it LANDS (QW5). say(text) shows progress;
+// done(outcome, state) ends it. afterSave: the key was just saved (verdict time reset;
+// Cumulo, Z.ai and Telegram start the check by themselves), so watch first and ask only
+// when the device is free and nothing landed. A refused start (409) names why: a reply in
+// flight, low memory (a recorded deferral), or another check running (wait, then ask).
 function runVerify(p,say,done,afterSave){
   let prevVts=0,starts=0,needStart=true;
   const lost=()=>done({ok:false,txt:'Lost contact with the device. Check that this computer is on the same Wi-Fi, then try again.'},null);
@@ -3764,9 +3730,7 @@ function applyOrch(d){
     if(tv){tv.checked=!!d.ttsOn; tv.onchange=()=>orchApply({ttsOn:tv.checked?1:0});}}
   if(d.loopRounds!==undefined)set('loopRounds',d.loopRounds);
   if(d.compactKB!==undefined)set('compactKB',d.compactKB);
-  if(d.compactEffKB!==undefined&&$('compactKB')){   // the trigger in effect (48 follows the model)
-    let e=$('compactEff');if(!e){e=document.createElement('p');e.id='compactEff';e.className='hint';$('compactKB').after(e);}
-    e.textContent='In effect now: '+d.compactEffKB+' KB.';}
+  if(d.compactEffKB!==undefined)$('compactEff').textContent='In effect now: '+d.compactEffKB+' KB.';
   if(d.tlsSlots!==undefined)set('tlsSlots',d.tlsSlots);
   if(d.tlsVerify!==undefined){const tf=$('tlsVerify');if(tf)tf.checked=!!d.tlsVerify;}
   if(d.capProbe!==undefined)set('capProbe',d.capProbe);
@@ -4292,15 +4256,12 @@ function connAvail(prov,host,keyed,auth,ws){
   if(prov==='openai')return host==='openai'?{cls:'ok',txt:'live on your turns'}:{cls:'ext',txt:'via sessions'};
   if(prov==='anthropic')return{cls:'ext',txt:'via sessions'};
   if(prov==='mistral'){
-    // A Mistral Studio connector authenticates in the owner's Mistral account, not on
-    // the device (auth==2 means it is not connected there yet), so say exactly that
-    // instead of implying it is ready. Once connected, it runs on Mistral turns or via
-    // a spawned Mistral sub-session, same as the OpenAI case and the core connectorScope
-    // SubsessionsOnly rule the Capabilities table shows.
-    // CUM-537: the device checks the Mistral workspace after a save; until that check
-    // lands the connector is unchecked, not missing, so say so instead.
-    // Lane CONN: a head model that refuses the built-in connectors (mistral-large-4-0)
-    // never runs them on its own turns, so even a connected one is via sessions.
+    // A Mistral Studio connector authenticates in the owner's Mistral account (auth==2: not
+    // connected there yet), so say exactly that. Once connected it runs on Mistral turns or a
+    // spawned Mistral sub-session (core connectorScope SubsessionsOnly). CUM-537: until the
+    // device's post-save workspace check lands it is unchecked, not missing. Lane CONN: a head
+    // that refuses built-in connectors (mistral-large-4-0) never runs them on its own turns,
+    // so even a connected one is via sessions.
     if(ws==='checking')return{cls:'unk',txt:'checking your Mistral workspace'};
     if(ws==='unchecked')return{cls:'unk',txt:'Mistral workspace not checked'};
     if(auth===2)return{cls:'unk',txt:'connect it in Mistral'};
@@ -4671,14 +4632,10 @@ function _orchHostSync(v){const oh=$('orchHost');if(!oh)return;
   if(!oh.dataset.wired){oh.dataset.wired='1';
     oh.onchange=()=>{oh.dataset.dirty='1';orchApply({orchHost:oh.value}).then(()=>{delete oh.dataset.dirty;});};}
   if(document.activeElement!==oh&&!oh.dataset.dirty)oh.value=v;}
-// The Models "Save Changes" and the Tools "Save Changes" (the relocated Tool use
-// group, CUM-163) both persist the whole orch field set: every input is read by id
-// and both subtabs' inputs stay in the DOM even while hidden, so either button
-// stores the current value of every field. provPrio/subPrio deliberately NOT here
-// (review HIGH): those inputs were replaced by the #provPrioList/#subPrioList
-// checkbox lists, which persist per-interaction via renderPrio's own save() - the
-// stale $('provPrio').value deref threw a TypeError that made this button store
-// NOTHING, silently, for every field.
+// The Models and the Tools "Save Changes" (CUM-163) both persist the whole orch field
+// set: every input is read by id and stays in the DOM while hidden. provPrio/subPrio are
+// deliberately NOT here: the #provPrioList/#subPrioList lists save per interaction
+// (renderPrio), and a stale $('provPrio') read threw and stored nothing.
 function _orchSavePayload(){
   if(HOSTED)return {orchLoop:$('orchLoop').checked?1:0,orchTrace:$('orchTrace').checked?1:0};   // the rest is fixed here
   return {custBase:$('custBase').value,custKey:$('custKey').value,
@@ -4783,13 +4740,9 @@ $('clearconv')&&($('clearconv').onclick=()=>{
 });
 
 // ---- Wi-Fi: saved networks, scan, join (P3: BOUNDED, visible timeout, explicit verdicts) ----
-// The old flow polled /scan forever and left "Saving..." on screen when the
-// device reassociated mid-request - both read as "stuck". Every wait is now
-// capped with a live countdown and ends in an explicit verdict.
-// The device remembers several networks, so this is list CRUD (same shape as
-// Routines above): loadWifi() renders what is saved, every button posts ONE
-// action to /api/wifi, and the list is re-read afterwards rather than guessed at.
-// No password is ever read back - joining a saved network re-uses the stored one.
+// Every wait is capped with a live countdown and ends in an explicit verdict. List CRUD
+// like Routines: loadWifi() renders what is saved, each button posts ONE action to
+// /api/wifi, then the list is re-read. No password is ever read back.
 let timer;
 let _wifiSaved=[];              // SSIDs already remembered - marks the scan rows
 function _wesc(s){return (s||'').replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));}
@@ -5263,56 +5216,39 @@ $('embsave').onclick=()=>{
     .catch(e=>{btn.disabled=false;failToast(e);msg.textContent=saveFailText(e,'Couldn\'t verify - try again.');});
 };
 function loadMemDash(){loadMemStats();loadMemList();loadNsUsage();loadScratch();loadMemCfg();loadPrefs();loadFold();}
-// ---- Conversation summary (v5.1.2): the summary's health per conversation and
-// Summarize Now (GET /api/fold/status, POST /api/fold/run). While a summary runs, is
-// queued or cools down, the card re-reads every few seconds while the pane is open.
-let _foldChat='',_foldSeen='',_foldTimer=0;
-function _foldName(c){return c==='web'||(HOSTED&&c==='owner')?'Web chat':c==='serial'?'Console':c==='voice'?'Voice':'Telegram chat '+c;}
-function _foldAge(h){if(h<1)return 'under an hour ago';if(h<48)return Math.round(h)+' h ago';return Math.round(h/24)+' days ago';}
-function _foldIn(s){if(s<120)return 'in a moment';if(s<7200)return 'in '+Math.round(s/60)+' minutes';return 'in about '+Math.round(s/3600)+' hours';}
-const _FOLD_BADGE={fresh:'Fresh',stale:'Stale',behind:'Behind',none:'Not made yet'};
-function _foldLines(d){
-  const l=[];
-  l.push(d.lastOk?'Last updated '+(d.lastOkDate||'')+' ('+_foldAge(d.summaryAgeH)+').':'No summary yet.');
+// Conversation summary card (docs/architecture/fold-ladder.md): re-read while a summary runs, waits or cools down.
+let _fc='',_fs='',_ft=0;
+function renderFold(d){
+  _fc=d.chat;const st=d.state,h=d.summaryAgeH,w=d.nextTryInS,b=$('foldBadge'),run=$('foldRun'),r=d.running&&d.rung?d.rung.split('/'):0;
+  const o=(d.chats||[]).map(c=>{const x=c.chat;return '<option value="'+_fesc(x)+'"'+(x===d.chat?' selected':'')+'>'+_fesc(x==='web'||HOSTED&&x==='owner'?'Web chat':x==='serial'?'Console':x==='voice'?'Voice':'Telegram chat '+x)+'</option>';}).join('');
+  if($('foldChat').innerHTML!==o)$('foldChat').innerHTML=o;
+  b.textContent={fresh:'Fresh',stale:'Stale',behind:'Behind',none:'Not made yet'}[st]||'';b.className='badge'+(st==='none'?' un':st==='fresh'?'':' ext');b.style.color=st==='behind'?'#e0a349':'';
+  const l=[d.lastOk?'Last updated '+(d.lastOkDate||'')+' ('+(h<1?'under an hour ago':h<48?Math.round(h)+' h ago':Math.round(h/24)+' days ago')+').':'No summary yet.'];
   if(d.thruDate)l.push('It covers the conversation up to '+d.thruDate+'.');
   if(d.uncovered)l.push('Some older messages are not in it yet.');
-  if(d.failedCycles&&!d.running)l.push('The last '+(d.failedCycles>1?d.failedCycles+' tries':'try')+' did not finish.'+(d.nextTryInS?' It tries again '+_foldIn(d.nextTryInS)+'.':''));
+  if(d.failedCycles&&!d.running)l.push('The last '+(d.failedCycles>1?d.failedCycles+' tries':'try')+' did not finish.'+(w?' It tries again '+(w<120?'in a moment':w<7200?'in '+Math.round(w/60)+' minutes':'in about '+Math.round(w/3600)+' hours')+'.':''));
   l.push('Summary requests today: '+d.paidToday+' (automatic ones stop at '+d.cap+').');
-  return l;
-}
-function renderFold(d){
-  _foldChat=d.chat;
-  const sel=$('foldChat');
-  if(sel){const opts=(d.chats||[]).map(c=>'<option value="'+_fesc(c.chat)+'"'+(c.chat===d.chat?' selected':'')+'>'+_fesc(_foldName(c.chat))+'</option>').join('');
-    if(sel.innerHTML!==opts)sel.innerHTML=opts;}
-  const b=$('foldBadge');if(b){b.textContent=_FOLD_BADGE[d.state]||'';b.className='badge'+(d.state==='none'?' un':d.state==='fresh'?'':' ext');
-    b.style.color=d.state==='behind'?'#e0a349':'';}
-  const info=$('foldInfo');if(info)info.innerHTML=_foldLines(d).map(x=>'<div>'+_fesc(x)+'</div>').join('');
-  const run=$('foldRun');if(run){run.disabled=!d.canRun;run.style.opacity=d.canRun?'':'.5';}
-  // Under the button: what a running summary is doing (its provider, of how many), else why it waits.
-  const step=d.running&&d.rung?d.rung.split('/'):null;
-  const m=$('foldMsg');if(m)m.textContent=step?'Summarizing now: provider '+step[0]+' of '+step[1]+(d.rungHost?' ('+d.rungHost+')':'')+'.':(d.canRun?'':(d.why||''));
+  $('foldInfo').innerHTML=l.map(x=>'<div>'+_fesc(x)+'</div>').join('');
+  run.disabled=!d.canRun;run.style.opacity=d.canRun?'':'.5';
+  $('foldMsg').textContent=r?'Summarizing now: provider '+r[0]+' of '+r[1]+(d.rungHost?' ('+d.rungHost+')':'')+'.':d.canRun?'':d.why||'';
 }
 function loadFold(){
-  const info=$('foldInfo');if(!info)return;
-  clearTimeout(_foldTimer);
-  fetch('/api/fold/status'+(_foldChat?'?chat='+encodeURIComponent(_foldChat):'')).then(jok).then(d=>{
-    const now=JSON.stringify(d);
-    if(now!==_foldSeen){_foldSeen=now;renderFold(d);}
-    const pane=$('pane-mem');
-    if((d.running||d.queued||d.cooldownS)&&pane&&pane.style.display!=='none')_foldTimer=setTimeout(loadFold,4000);
-  }).catch(()=>{info.textContent='Summary status unavailable. Try again in a moment.';});
+  const i=$('foldInfo'),p=$('pane-mem'),c=_fc;clearTimeout(_ft);
+  fetch('/api/fold/status'+(c?'?chat='+encodeURIComponent(c):'')).then(jok).then(d=>{
+    if(c!==_fc)return;   // the owner picked another conversation meanwhile
+    const n=JSON.stringify(d);if(n!==_fs){_fs=n;renderFold(d);}
+    if((d.running||d.queued||d.cooldownS)&&p&&p.style.display!=='none')_ft=setTimeout(loadFold,4000);
+  }).catch(()=>{i.textContent='Summary status unavailable. Try again in a moment.';});
 }
-$('foldChat')&&($('foldChat').onchange=e=>{_foldChat=e.target.value;_foldSeen='';loadFold();});
-$('foldRun')&&($('foldRun').onclick=()=>{
-  const fd=new FormData();if(_foldChat)fd.append('chat',_foldChat);
-  const m=$('foldMsg'),run=$('foldRun');if(run)run.disabled=true;
-  fetch('/api/fold/run',{method:'POST',body:fd}).then(async r=>{
+$('foldChat').onchange=e=>{_fc=e.target.value;_fs='';loadFold();};
+$('foldRun').onclick=()=>{
+  const f=new FormData(),m=$('foldMsg'),run=$('foldRun'),no=t=>{m.textContent=t;run.disabled=false;};if(_fc)f.append('chat',_fc);run.disabled=true;
+  fetch('/api/fold/run',{method:'POST',body:f}).then(async r=>{
     const j=await r.json().catch(()=>({}));
-    if(!r.ok){if(m)m.textContent=j.error||('Could not start ('+r.status+'). Try again.');if(run)run.disabled=false;return;}
-    toast('Summarizing now');_foldSeen='';loadFold();
-  }).catch(()=>{if(m)m.textContent='Could not reach the device. Try again.';if(run)run.disabled=false;});
-});
+    if(!r.ok)return no(j.error||'Could not start ('+r.status+'). Try again.');
+    toast('Summarizing now');_fs='';loadFold();
+  }).catch(()=>no('Could not reach the device. Try again.'));
+};
 
 // ---- Files (E1 artifact store): browse /mem/files, download, delete, upload ----
 function _fbytes(n){n=n||0;return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB';}
