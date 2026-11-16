@@ -458,13 +458,15 @@ class TurnEngine {
   // Keyed, in-budget fold hosts (orchHost first, then priority; <=3). Public so
   // tests can pin the ladder order without scripting a provider.
   std::vector<std::string> foldHostCandidates() const;
+  // A whole fold cycle in one call (tools and tests): every rung of foldRungs() in
+  // order until one answers. The device and the VN pace a cycle with FoldDriver.
   // `producedBytes`, when given, receives the model's raw summary size before
   // capSummary trimmed it (L19-27: the ev:compact row reports both).
   FoldResult runFold(const std::string& chatId, const std::string& prevSummary,
                      const std::string& digest, std::string& outSummary,
                      size_t* producedBytes = nullptr);
-  // The fold's ladder (fold_ladder.h), in the order a cycle tries it. Today: the
-  // hosts of foldHostCandidates(), each on its own model.
+  // The fold's ladder (fold_ladder.h), in the order a cycle tries it, each rung's
+  // model resolved (no (host, model) twice).
   std::vector<FoldRung> foldRungs() const;
   // ONE rung of a fold: runFold's gates, then its attempt on `rung.host` alone (on
   // `rung.model` when set and the host is a direct one, through
@@ -589,9 +591,9 @@ class TurnEngine {
   // A billing refusal's owner notice: once per episode (billingNoticeDue, shared
   // with the embedding seam), held without taking the latch on a quiet turn.
   bool recheckableHost(const std::string& host) const;   // recheckParkedHost's gates
-  // runFold's body: the whole ladder (`onlyHost` null, foldHostCandidates()) or one rung's host.
+  // One fold request on `host` (a rung's), gated, metered and read; `report` says what came of it.
   FoldResult runFoldOn(const std::string& chatId, const std::string& prevSummary, const std::string& digest,
-                       const std::string* onlyHost, std::string& outSummary, size_t* producedBytes);
+                       const std::string& host, std::string& outSummary, FoldRungReport& report);
   void askParkedHost(const std::string& host);           // its one small request
   void deliverBillingNotice(const std::string& chatId, const std::string& host,
                             const std::string& text);

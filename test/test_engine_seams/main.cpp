@@ -126,8 +126,9 @@ struct Rig {
 
 // ---- the fold ladder ------------------------------------------------------------
 
-// Every host failing is a failed fold: Failed, never the paced cycle's Pending (no
-// cycle runs today), with a real attempt on each host of the ladder.
+// Every host failing is a failed fold: Failed, never the paced cycle's Pending (runFold
+// is the one-call cycle), with a real attempt on each rung of the ladder (lane F: the
+// three keyed hosts, then the head host on its Sub model).
 static void test_all_hosts_failing_is_failed_never_pending() {
   Rig r;
   for (const char* h : {"anthropic", "openai", "mistral"}) r.failing[h] = true;
@@ -135,7 +136,8 @@ static void test_all_hosts_failing_is_failed_never_pending() {
   const FoldResult res = r.eng->runFold("1001", "", "- user: hi\n", sum);
   TEST_ASSERT_TRUE(res == FoldResult::Failed);
   TEST_ASSERT_TRUE(res != FoldResult::Pending);
-  TEST_ASSERT_EQUAL(3, (int)r.calls.size());
+  TEST_ASSERT_EQUAL(4, (int)r.calls.size());
+  TEST_ASSERT_EQUAL_STRING("sub-anthropic", r.calls[3].pinned.c_str());
   TEST_ASSERT_EQUAL_STRING("", sum.c_str());
   // The same on one rung.
   FoldRungReport rep;
@@ -150,9 +152,10 @@ static void test_all_hosts_failing_is_failed_never_pending() {
   TEST_ASSERT_EQUAL(3, (int)FoldResult::Pending);
 }
 
-// foldRungs() is today's candidate list, host for host and in order, over every
-// configuration that shapes it: the priority order, a pinned head, a capped or
-// unkeyed host, and the router fallback when no BYOK key is set.
+// foldRungs() (lane F, fold_ladder.h): today's candidates in order, each on its own
+// model, then the head host on its Sub model, over every configuration that shapes it:
+// the priority order, a pinned head, a capped or unkeyed host, and the router fallback
+// when no BYOK key is set. test_fold_ladder holds the ladder's class properties.
 static void test_fold_rungs_are_todays_candidates() {
   struct Case {
     std::string orchHost, priority;
@@ -176,12 +179,15 @@ static void test_fold_rungs_are_todays_candidates() {
     r.cfg.routerHost = c.routerHost;
     const std::vector<std::string> cands = r.eng->foldHostCandidates();
     const std::vector<FoldRung> rungs = r.eng->foldRungs();
-    TEST_ASSERT_EQUAL_MESSAGE((int)cands.size(), (int)rungs.size(), c.priority.c_str());
+    const bool sub = !rungs.empty() && rungs.back().kind == FoldRungKind::SubModel;
+    TEST_ASSERT_EQUAL_MESSAGE((int)cands.size() + (sub ? 1 : 0), (int)rungs.size(), c.priority.c_str());
     for (size_t i = 0; i < cands.size(); i++) {
       TEST_ASSERT_EQUAL_STRING(cands[i].c_str(), rungs[i].host.c_str());
-      TEST_ASSERT_EQUAL_STRING("", rungs[i].model.c_str());   // each host on its own model
+      TEST_ASSERT_EQUAL_STRING(("model-" + cands[i]).c_str(), rungs[i].model.c_str());   // its own model
     }
-    if (!rungs.empty() && rungs[0].host == r.eng->headHost()) TEST_ASSERT_TRUE(rungs[0].kind == FoldRungKind::HeadHost);
+    if (sub) TEST_ASSERT_EQUAL_STRING(("sub-" + rungs[0].host).c_str(), rungs.back().model.c_str());
+    if (!rungs.empty() && rungs[0].host == r.eng->headHost() && rungs[0].host != c.routerHost)
+      TEST_ASSERT_TRUE(rungs[0].kind == FoldRungKind::HeadHost);
   }
   // The router fallback is the ladder's only rung on a router-only device, and the head.
   Rig r;
@@ -190,6 +196,7 @@ static void test_fold_rungs_are_todays_candidates() {
   const std::vector<FoldRung> rungs = r.eng->foldRungs();
   TEST_ASSERT_EQUAL(1, (int)rungs.size());
   TEST_ASSERT_EQUAL_STRING("cumulo", rungs[0].host.c_str());
+  TEST_ASSERT_TRUE(rungs[0].kind == FoldRungKind::RouterFallback);
 }
 
 // One rung is one host: the request goes to that host alone, on the rung's model when

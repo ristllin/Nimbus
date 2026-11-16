@@ -3310,14 +3310,15 @@ static void test_runfold_gates_and_failure() {
   TEST_ASSERT_TRUE(r.eng->runFold("1001", "", "d", sum) == FR::Deferred);
   TEST_ASSERT_EQUAL(0, (int)r.attempts.size());
   r.cfg.overBudgetHosts.clear();
-  // EVERY host failing -> FAILED, and the ladder provably walked all three
-  // (a real attempt each; the breaker counts the episode as one failure).
+  // EVERY host failing -> FAILED, and the ladder provably walked every rung: the
+  // three keyed hosts, then the head host on its Sub model (lane F: a real attempt
+  // each; the cycle counts as one failure).
   Rig::Script bad; bad.ok = false; bad.err = "network";
-  r.scripts["anthropic"] = {bad};
+  r.scripts["anthropic"] = {bad, bad};
   r.scripts["openai"] = {bad};
   r.scripts["mistral"] = {bad};
   TEST_ASSERT_TRUE(r.eng->runFold("1001", "", "d", sum) == FR::Failed);
-  TEST_ASSERT_EQUAL(3, (int)r.attempts.size());
+  TEST_ASSERT_EQUAL(4, (int)r.attempts.size());
   TEST_ASSERT_EQUAL(0, (int)r.delivered.size());
   r.attempts.clear();
   r.scripts.clear(); r.scriptIdx.clear();
@@ -3325,14 +3326,15 @@ static void test_runfold_gates_and_failure() {
   Rig::Script empty;
   empty.outJson = "{\"reply\":\"\",\"ask\":\"\",\"memory\":\"\",\"device\":[],"
                   "\"mem_write\":[],\"mem_query\":[],\"session_ops\":[]}";
-  r.scripts["anthropic"] = {empty};
+  r.scripts["anthropic"] = {empty, empty};
   r.scripts["openai"] = {empty};
   r.scripts["mistral"] = {empty};
   TEST_ASSERT_TRUE(r.eng->runFold("1001", "", "d", sum) == FR::Failed);
   TEST_ASSERT_EQUAL_STRING("", sum.c_str());
-  TEST_ASSERT_TRUE(LogCapture::contains("no summary in reply on anthropic (the reply field was empty"));
-  // CUM-890: an answer with no summary in it is no fold, and the next host gets the job.
-  TEST_ASSERT_EQUAL(3, (int)r.attempts.size());
+  TEST_ASSERT_TRUE(LogCapture::contains("rung 1/4 anthropic/"));
+  TEST_ASSERT_TRUE(LogCapture::contains("failed -> empty (no summary in reply: the reply field was empty"));
+  // CUM-890: an answer with no summary in it is no fold, and the next rung gets the job.
+  TEST_ASSERT_EQUAL(4, (int)r.attempts.size());
   r.attempts.clear();
   r.scripts.clear(); r.scriptIdx.clear();
   Rig::Script good;

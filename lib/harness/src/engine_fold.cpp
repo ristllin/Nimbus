@@ -2,6 +2,7 @@
 #include "engine_internal.h"   // trimInPlace - shared with engine.cpp
 
 #include <algorithm>
+#include <cctype>
 #include <string>
 #include <vector>
 
@@ -9,17 +10,22 @@
 #include "nimbus/harness/providers.h"   // ScopedModelOverride - a rung on its own model
 #include "nimbus/orch/compact.h"           // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary
 #include "nimbus/orch/connector_grant.h"   // whose connectors a fold's request carries (CUM-828)
+#include "nimbus/orch/head_loop.h"         // classifyStepError - a rung's failure kind
+#include "nimbus/orch/provider_error.h"    // oneLineText - the rung line's detail
+#include "nimbus/orch/provider_slots.h"    // kProviderSlots - keyed providers the priority leaves out
 #include "nimbus/orch/reply_markup.h"      // cleanReplyMarkup - the summary passes the reply seam
 #include "nimbus/orch/spend_ceiling.h"     // paidCallAllowed - the fold waits at the spend ceiling
 #include "nimbus/orch/turn.h"              // parseHeadReply - the lenient summary read
 
-// engine_fold - the TurnEngine's compaction fold: the fold host ladder, its gate and the
-// fold call itself. Moved out of engine.cpp verbatim (lane P0 of the history fix, 16 Nov
-// 2026) so the fold's owner edits this file alone; engine.h declares every function here.
+// engine_fold - the TurnEngine's compaction fold: the fold ladder, its gate and the
+// fold request itself. Moved out of engine.cpp by lane P0 of the history fix (16 Nov
+// 2026); lane F builds the whole ladder here (fold_ladder.h) and paces a cycle in
+// fold_driver.cpp.
 
 namespace agent {
 
 using detail::trimInPlace;
+namespace orch = nimbus::orch;
 
 namespace {
 // The model a fold request on `h` runs: a rung's pinned model, else the host's own.
@@ -28,7 +34,92 @@ std::string foldModelFor(const TurnEngine::Deps& d, const std::string& h) {
   if (!pinned.empty()) return pinned;
   return d.cfg.provider.orchModel ? d.cfg.provider.orchModel(h) : std::string();
 }
+
+// The host's own model (no pin).
+std::string ownModel(const TurnEngine::Deps& d, const std::string& h) {
+  return d.cfg.provider.orchModel ? d.cfg.provider.orchModel(h) : std::string();
+}
+
+// A direct host: its requests read orchModel, so a rung there can run another model.
+bool directHost(const std::string& h) { return h == "anthropic" || h == "openai" || h == "mistral"; }
+
+std::string lowered(const std::string& s) {
+  std::string o = s;
+  std::transform(o.begin(), o.end(), o.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+  return o;
+}
+
+FoldFailKind failKindOf(const std::string& err) {
+  switch (orch::classifyStepError(err)) {
+    case orch::StepErr::Timeout: return FoldFailKind::Timeout;
+    case orch::StepErr::Billing:
+    case orch::StepErr::Auth:
+    case orch::StepErr::Paused: return FoldFailKind::Park;
+    case orch::StepErr::RateLimited:
+    case orch::StepErr::BadRequest:
+    case orch::StepErr::Rejected: return FoldFailKind::Http4xx;
+    case orch::StepErr::ServerError: return FoldFailKind::Http5xx;
+    case orch::StepErr::Cut: return FoldFailKind::Cut;
+    default: return FoldFailKind::Transport;
+  }
+}
 }  // namespace
+
+const char* foldFailKindName(FoldFailKind k) {
+  switch (k) {
+    case FoldFailKind::None: return "none";
+    case FoldFailKind::Transport: return "transport";
+    case FoldFailKind::Timeout: return "timeout";
+    case FoldFailKind::Http4xx: return "4xx";
+    case FoldFailKind::Park: return "402 park";
+    case FoldFailKind::Http5xx: return "5xx";
+    case FoldFailKind::Cut: return "cut twice";
+    case FoldFailKind::Empty: return "empty";
+    case FoldFailKind::Thin: return "thin";
+  }
+  return "unknown";
+}
+
+std::string foldModelForHead(const std::string& host, const std::string& model) {
+  if (host != "mistral") return std::string();
+  const std::string m = model.rfind("mistral/", 0) == 0 ? model.substr(8) : model;
+  // Large 4 refuses effort "none", so it is the one forced reasoner today. Small folds
+  // at "none" (mistralHeadEffort), well inside the 60 s gateway at a 53.9 KB step.
+  return m.rfind("mistral-large-4", 0) == 0 ? std::string("mistral-small-latest") : std::string();
+}
+
+int foldSectionsNamed(const std::string& summary) {
+  // The prompt's five sections, each by a few lenient keywords: a model may number
+  // them, bold them, rename them a little or translate the punctuation.
+  static const char* const kSections[][3] = {
+      {"decision", "preference", nullptr},
+      {"pending", "next step", nullptr},
+      {"fact", "long-term", "remember"},
+      {"intent", "thread", nullptr},
+      {"device", "task state", nullptr},
+  };
+  const std::string s = lowered(summary);
+  int named = 0;
+  for (const auto& sec : kSections)
+    for (const char* k : sec)
+      if (k && s.find(k) != std::string::npos) {
+        named++;
+        break;
+      }
+  return named;
+}
+
+bool foldAnswerThin(const std::string& summary, size_t digestBytes, size_t prevSummaryBytes) {
+  if (digestBytes < kFoldQualityDigestMin) return false;   // a small digest may fold small
+  const size_t floor = std::min(kFoldThinFloor, prevSummaryBytes * 30 / 100);   // 0 with no previous summary
+  return summary.size() < floor || foldSectionsNamed(summary) < 2;
+}
+
+std::string foldRungFailLine(const std::string& chatId, size_t index, size_t count, const FoldRungReport& r) {
+  return "fold(" + chatId + "): rung " + std::to_string(index + 1) + "/" + std::to_string(count) + " " + r.host + "/" +
+         (r.model.empty() ? std::string("-") : r.model) + " failed -> " + foldFailKindName(r.fail) + " (" +
+         r.detail + ")";
+}
 
 // Fold host candidates: explicit orchHost (if usable) first, then the priority
 // list in order - each must exist, have a key, and be in budget. Bounded at 3.
@@ -83,7 +174,7 @@ bool TurnEngine::canFoldNow() const {
   // just total free. Unwired closures read 0xFFFFFFFF => the guard is a host-test no-op.
   if (!turnHeapOk(freeHeap(), largestFreeBlock(), t_.autoTurnMinHeap, t_.turnMinLargestBlock))
     return false;
-  return !foldHostCandidates().empty();
+  return !foldRungs().empty();
 }
 
 TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
@@ -91,17 +182,31 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
                                            const std::string& digest,
                                            std::string& outSummary,
                                            size_t* producedBytes) {
-  return runFoldOn(chatId, prevSummary, digest, nullptr, outSummary, producedBytes);
+  outSummary.clear();
+  const std::vector<FoldRung> rungs = foldRungs();
+  if (rungs.empty()) return FoldResult::Deferred;
+  for (size_t i = 0; i < rungs.size(); i++) {
+    FoldRungReport rep;
+    const FoldResult r = runFoldRung(chatId, prevSummary, digest, rungs[i], outSummary, &rep);
+    if (r == FoldResult::Ok) {
+      if (producedBytes) *producedBytes = rep.producedBytes;
+      return r;
+    }
+    if (r == FoldResult::Deferred) return r;   // a gate closed: not a failure
+    hlog::log(foldRungFailLine(chatId, i, rungs.size(), rep).c_str());
+  }
+  return FoldResult::Failed;
 }
 
 TurnEngine::FoldResult TurnEngine::runFoldOn(const std::string& chatId, const std::string& prevSummary,
-                                             const std::string& digest, const std::string* onlyHost,
-                                             std::string& outSummary, size_t* producedBytes) {
-  namespace orch = nimbus::orch;
+                                             const std::string& digest, const std::string& host,
+                                             std::string& outSummary, FoldRungReport& rep) {
   outSummary.clear();
+  rep = FoldRungReport();
+  rep.host = host;
   const orch::ConnectorGrantScope grant(orch::connectorGrantFor(d_.apply.whoFor(chatId)));   // CUM-828
   // Gate like an unattended turn: the fold is background work - defer, never
-  // squeeze, under memory pressure. Defers are NOT failures (no breaker burn).
+  // squeeze, under memory pressure. Defers are NOT failures (no backoff, no count).
   if (!turnHeapOk(freeHeap(), largestFreeBlock(), t_.autoTurnMinHeap, t_.turnMinLargestBlock)) {
     hlog::logf("fold(%s): deferred, heap %u/floor %u largest %u/floor %u", chatId.c_str(),
                (unsigned)freeHeap(), (unsigned)t_.autoTurnMinHeap,
@@ -114,85 +219,149 @@ TurnEngine::FoldResult TurnEngine::runFoldOn(const std::string& chatId, const st
     hlog::logf("fold(%s): deferred - %s", chatId.c_str(), orch::kSpendFrozenError);
     return FoldResult::Deferred;
   }
-
-  // Failover ladder (field 2026-08-11): the fold used to pin ONE host - while
-  // the head turn's fabric failed over openai->anthropic and succeeded, the
-  // fold burned its breaker retrying the same dead provider and spammed the
-  // owner. A fold is replay-safe by construction (the reply IS the summary; no
-  // applyTurn - no device actions, no mem writes, no spawns), so walking the
-  // same <=3-host candidate list the fabric uses is strictly better.
-  const std::vector<std::string> hostsToTry =
-      onlyHost ? std::vector<std::string>{*onlyHost} : foldHostCandidates();   // one rung: its host alone
-  if (hostsToTry.empty()) return FoldResult::Deferred;
-
-  // ALWAYS a fresh, throwaway provider thread: the fold must never ride or
-  // extend the chat's chain (that is the thing being reset), and its convId is
-  // never persisted.
-  std::string outJson, err;
-  std::string host;
-  orch::TokenUsage usage;
-  const std::string inputs = orch::buildCompactInputs(prevSummary, digest, foldDayContext(chatId));
-  bool ok = false;
-  // Every attempt's spend, failed ones included, filed under its own host and model and
+  // A fold is replay-safe by construction (the reply IS the summary; no applyTurn -
+  // no device actions, no mem writes, no spawns), so a cycle may ask every keyed
+  // provider in turn (fold_ladder.h). ALWAYS a fresh, throwaway provider thread: the
+  // fold must never ride or extend the chat's chain (that is the thing being reset),
+  // and its convId is never persisted. The head's summary cap (6,144 B at 60k tokens
+  // and above, else 4,096 B) is named in the input when it is the larger one.
+  const size_t cap = orch::summaryCapFor(detail::headCtxTokens(d_));
+  const std::string inputs = orch::buildCompactInputs(prevSummary, digest, foldDayContext(chatId), cap);
+  // The attempt's spend, a failed one included, filed under its own host and model and
   // metered once as "compact" (lane T: the same per-host rule and R4 cache split as a
   // turn). The turn's spend table is free here: a fold never runs while a turn does.
   orch::TurnSpend& foldSpend = facts().spend;
   foldSpend.clear();
-  orch::Turn t;
-  for (const auto& h : hostsToTry) {
-    std::string convId;
-    outJson.clear(); err.clear();
-    orch::TokenUsage u;
-    ok = d_.hosts.run(h, convId, orch::ORCH_COMPACT_PROMPT, inputs,
-                      outJson, err, /*tools=*/nullptr, &u);
-    foldSpend.add(h.c_str(), foldModelFor(d_, h).c_str(), u);
-    if (!ok) {
-      d_.hosts.noteFailed(h, err);
-      hlog::logf("fold(%s): %s failed: %s", chatId.c_str(), h.c_str(), err.c_str());
-      continue;
-    }
-    d_.hosts.noteAnswered(h);
-    // Same lenient read as a head turn (CUM-495): a prose summary IS the summary. An
-    // answer with no summary in it is no fold: the next host gets the job (CUM-890),
-    // and the log says what came back.
-    t = orch::Turn();
-    orch::ParseError perr;
-    if (orch::parseHeadReply(outJson, t, perr) != orch::ReplyShape::Unusable && !t.reply.empty()) {
-      host = h;
-      usage = u;
-      break;
-    }
-    ok = false;
-    hlog::logf("fold(%s): no summary in reply on %s (%s, %u B answered)", chatId.c_str(), h.c_str(),
-               perr.detail.empty() ? "the reply field was empty" : perr.detail.c_str(), (unsigned)outJson.size());
-  }
+  std::string convId, outJson, err;
+  orch::TokenUsage u;
+  const uint32_t t0 = nowMs();
+  const bool ok = d_.hosts.run(host, convId, orch::ORCH_COMPACT_PROMPT, inputs, outJson, err, /*tools=*/nullptr, &u);
+  rep.elapsedMs = nowMs() - t0;
+  rep.model = foldModelFor(d_, host);
+  foldSpend.add(host.c_str(), rep.model.c_str(), u);
   meterSpend(foldSpend, "compact");
-  if (!ok) return FoldResult::Failed;
+  rep.promptTokens = u.promptTokens;
+  rep.completionTokens = u.completionTokens;
+  rep.paidRequests = u.responses + (!ok && orch::isTimeoutError(err) ? 1u : 0u);
+  if (!ok) {
+    d_.hosts.noteFailed(host, err);
+    rep.fail = failKindOf(err);
+    rep.detail = orch::oneLineText(err, 160);
+    rep.result = FoldResult::Failed;
+    return FoldResult::Failed;
+  }
+  d_.hosts.noteAnswered(host);
+  // Same lenient read as a head turn (CUM-495): a prose summary IS the summary. An
+  // answer with no summary in it, or too thin to be one, is no fold: the next rung
+  // gets the job (CUM-890), and this (host, model) goes last next cycle.
+  orch::Turn t;
+  orch::ParseError perr;
+  if (orch::parseHeadReply(outJson, t, perr) == orch::ReplyShape::Unusable || t.reply.empty()) {
+    rep.fail = FoldFailKind::Empty;
+    rep.degraded = true;
+    rep.detail = "no summary in reply: " + (perr.detail.empty() ? std::string("the reply field was empty")
+                                                                : orch::oneLineText(perr.detail, 100)) +
+                 ", " + std::to_string(outJson.size()) + " B answered";
+    rep.result = FoldResult::Failed;
+    return FoldResult::Failed;
+  }
   // The reply IS the summary; every other field of the turn is deliberately
   // ignored (no applyTurn - device actions, mem writes, spawns are all inert).
   // The summary feeds every later prompt: a leaked tag here would come back in
   // later replies, so it passes the same reply seam (lane L, formatting F4).
   const std::string raw = orch::cleanReplyMarkup(t.reply);
-  if (producedBytes) *producedBytes = raw.size();
-  outSummary = orch::capSummary(raw);
-  hlog::logf("fold(%s): ok on %s (%u in / %u out)", chatId.c_str(), host.c_str(),
-             (unsigned)usage.promptTokens, (unsigned)usage.completionTokens);
+  if (foldAnswerThin(raw, digest.size(), prevSummary.size())) {
+    rep.fail = FoldFailKind::Thin;
+    rep.degraded = true;
+    rep.detail = std::to_string(raw.size()) + " B naming " + std::to_string(foldSectionsNamed(raw)) +
+                 " of 5 sections for a " + std::to_string(digest.size()) + " B digest";
+    rep.result = FoldResult::Failed;
+    return FoldResult::Failed;
+  }
+  rep.producedBytes = raw.size();
+  outSummary = orch::capSummary(raw, cap);
+  hlog::logf("fold(%s): ok on %s (%u in / %u out, %s)", chatId.c_str(), host.c_str(),
+             (unsigned)u.promptTokens, (unsigned)u.completionTokens, rep.model.c_str());
+  rep.result = FoldResult::Ok;
   return FoldResult::Ok;
 }
 
-std::vector<FoldRung> TurnEngine::foldRungs() const {
-  const std::string head = headHost();
-  const std::string router = d_.cfg.provider.routerFallbackHost ? d_.cfg.provider.routerFallbackHost() : std::string();
+namespace {
+// The ladder as it is built: each (host, model) once, in the order added.
+struct LadderBuild {
+  const TurnEngine::Deps& d;
   std::vector<FoldRung> rungs;
-  for (const std::string& h : foldHostCandidates()) {
-    FoldRung r;
-    r.host = h;
-    if (h == head) r.kind = FoldRungKind::HeadHost;
-    else if (h == router) r.kind = FoldRungKind::RouterFallback;
-    else r.kind = FoldRungKind::OtherHost;
-    rungs.push_back(std::move(r));
+
+  // In budget and not parked (lane K: a host refused for billing or auth waits).
+  bool inBudget(const std::string& h) const {
+    return !(d.cfg.budget.overBudget && d.cfg.budget.overBudget(h)) && !d.hosts.isParked(h);
   }
-  return rungs;
+  // A keyed provider: registered, keyed, in budget and not parked.
+  bool keyed(const std::string& h) const {
+    return !h.empty() && d.hosts.has(h) && (!d.cfg.provider.hasKey || d.cfg.provider.hasKey(h)) && inBudget(h);
+  }
+  void add(std::string h, std::string model, FoldRungKind kind) {
+    if (model.empty()) model = ownModel(d, h);
+    for (const FoldRung& r : rungs)
+      if (r.host == h && r.model == model) return;   // no (host, model) twice
+    rungs.push_back(FoldRung{std::move(h), std::move(model), kind});
+  }
+  bool isRouterHead(const std::string& head, const std::string& router) const {
+    if (head.empty() || head != router) return false;
+    return !(d.cfg.provider.hasKey && d.cfg.provider.hasKey(head));
+  }
+  void addRouter(const std::string& router) {
+    if (!router.empty() && d.hosts.has(router) && inBudget(router)) add(router, std::string(), FoldRungKind::RouterFallback);
+  }
+  void addHead(const std::string& head, bool isRouter) {
+    if (isRouter) return addRouter(head);
+    if (keyed(head)) add(head, foldModelForHead(head, ownModel(d, head)), FoldRungKind::HeadHost);
+  }
+  void addSub(const std::string& head) {
+    if (!directHost(head) || !keyed(head) || !d.cfg.provider.subModel) return;
+    add(head, d.cfg.provider.subModel(head), FoldRungKind::SubModel);
+  }
+};
+
+// The owner's order of providers: the pinned head, the priority list, then every
+// provider the list leaves out (the registry's order, then the custom endpoint).
+std::vector<std::string> ownerOrder(const ProviderConfig& p) {
+  std::vector<std::string> order;
+  if (p.orchHost) order.push_back(p.orchHost());
+  const std::string pr = p.providerPriority ? p.providerPriority() : std::string();
+  for (size_t at = 0; at <= pr.size();) {
+    const size_t comma = pr.find(',', at);
+    order.push_back(pr.substr(at, (comma == std::string::npos ? pr.size() : comma) - at));
+    if (comma == std::string::npos) break;
+    at = comma + 1;
+  }
+  for (const orch::ProviderSlot& slot : orch::kProviderSlots) order.push_back(slot.slug);
+  order.push_back("custom");
+  for (std::string& h : order) trimInPlace(h);
+  return order;
+}
+}  // namespace
+
+std::vector<FoldRung> TurnEngine::foldRungs() const {
+  const auto& p = d_.cfg.provider;
+  LadderBuild b{d_, {}};
+  const std::string head = headHost();
+  std::string router = p.routerFallbackHost ? p.routerFallbackHost() : std::string();
+  trimInPlace(router);
+  // 1. The head host on its fold model. A head that is the router fallback (no
+  //    provider key set: CUM-288, the verified router key runs the assistant) is
+  //    gated by its own key check, not by hasKey.
+  const bool headIsRouter = b.isRouterHead(head, router);
+  b.addHead(head, headIsRouter);
+  // 2. Every other keyed provider in the owner's order (ruling 2: the digest goes to
+  //    every keyed provider; Cumulo only with a Cumulo key).
+  for (const std::string& h : ownerOrder(p))
+    if (h != head && b.keyed(h)) b.add(h, std::string(), FoldRungKind::OtherHost);
+  // 3. The router fallback when no provider key is set and the head is not it already.
+  if (b.rungs.empty()) b.addRouter(router);
+  // 4. The head host on its Sub model, last (a direct host only: the pin needs one).
+  if (!headIsRouter) b.addSub(head);
+  return b.rungs;
 }
 
 TurnEngine::FoldResult TurnEngine::runFoldRung(const std::string& chatId, const std::string& prevSummary,
@@ -200,22 +369,20 @@ TurnEngine::FoldResult TurnEngine::runFoldRung(const std::string& chatId, const 
                                                std::string& outSummary, FoldRungReport* report) {
   // Only a host the ladder holds now (keyed, in budget, not parked), on the rung's model
   // while the request runs (a direct host's; any other runs on its own model).
-  const std::vector<std::string> ladder = foldHostCandidates();
-  FoldResult r = FoldResult::Deferred;
-  size_t produced = 0;
-  bool pinned = false;
   outSummary.clear();
-  if (std::find(ladder.begin(), ladder.end(), rung.host) != ladder.end()) {
-    const providers::ScopedModelOverride pin(rung.host, rung.model);
-    pinned = pin.active();
-    r = runFoldOn(chatId, prevSummary, digest, &rung.host, outSummary, &produced);
+  FoldRungReport rep;
+  rep.host = rung.host;
+  rep.model = rung.model;
+  FoldResult r = FoldResult::Deferred;
+  const std::vector<FoldRung> ladder = foldRungs();
+  const bool held = std::any_of(ladder.begin(), ladder.end(), [&](const FoldRung& l) { return l.host == rung.host; });
+  if (held) {
+    const bool pin = !rung.model.empty() && rung.model != ownModel(d_, rung.host);
+    const providers::ScopedModelOverride scope(pin ? rung.host : std::string(), pin ? rung.model : std::string());
+    r = runFoldOn(chatId, prevSummary, digest, rung.host, outSummary, rep);
   }
-  if (report) {
-    report->result = r;
-    report->host = rung.host;
-    report->model = pinned ? rung.model : std::string();
-    report->producedBytes = produced;
-  }
+  rep.result = r;
+  if (report) *report = rep;
   return r;
 }
 
