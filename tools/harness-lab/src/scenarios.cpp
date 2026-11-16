@@ -23,6 +23,10 @@
 #include "scenarios_dispo.h"    // lane DISPO: model-choice rate legs (F03/H09/H20)
 #include "scenarios_conn.h"    // lane CONN: connector honesty legs (live + scripted)
 #include "scenarios_prog.h"    // lane PROG: the long-turn progress replay
+#include "scenarios_calib.h"        // the history fix, lane B: the request budget's calibration (stub)
+#include "scenarios_budget.h"       // the history fix, lane W: each wire at its own budget (stub)
+#include "scenarios_history.h"      // the history fix, lane H: the history window (stub)
+#include "scenarios_foldladder.h"   // the history fix, lane F: the fold ladder (stub)
 
 namespace lab {
 namespace {
@@ -40,6 +44,12 @@ struct Ctx {
   void note(const std::string& n) {
     std::printf("    ...  %s\n", n.c_str());
     notes.push_back(n);
+  }
+  // A leg that could not run (a stub, a missing prerequisite): counted as skipped, loudly.
+  bool skipped = false;
+  void skip(const std::string& why) {
+    std::printf("    SKIPPED - %s\n", why.c_str());
+    skipped = true;
   }
 };
 
@@ -430,6 +440,15 @@ void scMonlyStepdown(LabRig& rig, Ctx& c) { monly::cutStepsDownSameHost(rig, mon
 prog::Report progReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
 void scProgLongTurn(LabRig& rig, Ctx& c) { prog::longTurnReplay(rig, progReport(c)); }
 
+// The history fix's live legs, one file per lane (stubs until each lane fills its own).
+std::function<void(const std::string&)> skipOf(Ctx& c) {
+  return [&c](const std::string& why) { c.skip(why); };
+}
+void scCalib(LabRig& rig, Ctx& c) { calib::run(rig, {checkOf(c), noteOf(c), skipOf(c)}); }
+void scBudget(LabRig& rig, Ctx& c) { budget::run(rig, {checkOf(c), noteOf(c), skipOf(c)}); }
+void scHistory(LabRig& rig, Ctx& c) { histfix::run(rig, {checkOf(c), noteOf(c), skipOf(c)}); }
+void scFoldLadder(LabRig& rig, Ctx& c) { foldladder::run(rig, {checkOf(c), noteOf(c), skipOf(c)}); }
+
 struct Scenario {
   const char* name;
   const char* what;
@@ -498,6 +517,10 @@ const Scenario kScenarios[] = {
     {"conn-gmail-unauth", "a Mistral connector the provider refuses for real: the owner hears it", scConnNoop, false},
     {"conn-notion-success", "Notion via Mistral: the refusal is paid once, the run lands on the tools model", scConnNoop, false},
     {"prog-long-turn", "the real Waitrose case: boundaries signal all turn, one line, one-cycle folds", scProgLongTurn, false},
+    {"calib",          "the request budget's calibration on every provider leg (lane B)", scCalib, false},
+    {"budget",         "each wire at its own request budget: long history, long answer (lane W)", scBudget, false},
+    {"history",        "every live row is in the request, the summary or the LEFT OUT note (lane H)", scHistory, false},
+    {"foldladder",     "a fold cycle walks its rungs a pass at a time; Summarize now answers (lane F)", scFoldLadder, false},
 };
 
 }  // namespace
@@ -664,6 +687,10 @@ int runScenarios(const Env& env, const LabRig::Options& opt,
     s.fn(rig, c);
     tokIn += rig.totalIn();
     tokOut += rig.totalOut();
+    if (c.skipped) {
+      skipped++;
+      continue;
+    }
     ran++;
     if (!c.failures.empty()) {
       failed++;

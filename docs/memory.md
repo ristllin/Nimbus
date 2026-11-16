@@ -556,7 +556,8 @@ flowchart LR
 
 ### Verification
 
-Host: `test_orch_compact` (trigger math, breaker, thrash guard, codec,
+Host: `test_model_window` (the per-model window table), `test_orch_compact`
+(trigger math, breaker, thrash guard, codec,
 UTF-8-safe caps, fold-prompt contract, the anchor and shift round trip, a
 repeat counted once), `test_fold_backlog` (a replay of a long chat's first
 anchored fold: a backlog folds again without an alert, a real refill still
@@ -585,8 +586,9 @@ don't spill to PSRAM), which is why the ring deliberately stays at 512.
 | boundary record | episodic row, kind=log, tag `ev:compact`, in the chat's session |
 | prompt section | `## CONVERSATION SUMMARY` (above the recent window) |
 | state file | LittleFS `/data/chatsum.txt` (rollback-safe; LRU-16 chats, byte-bounded, written atomically) |
-| fold prompt + trigger core | `lib/core/{include/nimbus/orch/compact.h, src/orch_compact.cpp}` |
-| engine call | `TurnEngine::runFold` / `clearChatConv` (lib/harness) |
+| fold prompt + breaker | `lib/core/{include/nimbus/orch/compact.h, src/orch_compact.cpp}` |
+| window table + trigger math | `lib/core/{include/nimbus/orch/model_window.h, src/orch_model_window.cpp}` |
+| engine call | `TurnEngine::runFold` (`lib/harness/src/engine_fold.cpp`) / `clearChatConv` |
 | device pump | `compactTick()` in `src/agent/orchestrator.cpp` |
 | test seams (TEST builds) | `CTX?` / `COMPACT <chat>` / `MEMFILL` console + `/api/test/{ctx,compact,memfill,epiprune}` (`memfill` `kind=epiday` writes dated rows with sidecars) |
 
@@ -603,7 +605,11 @@ rather than hardcoded: `nimbus::orch::deriveBudget(ctxTokens, overrides)`
 (`lib/core/src/orch_budget.cpp`) turns the window into a system-prompt budget,
 summary cap, verbatim-tail cap, per-tool-result clamp, cumulative tool budget,
 sub-agent brief size and fold-slice size - each a ratio with a floor and a cap.
-The window comes from the existing `modelCtxTokens()` table. A Cumulo router
+Every reader of those sizes (the turn, the history window, the fold slice, the
+`results.get` view cap, the web console's auto values, the hosted daemon's fold)
+asks one seam, `nimbus::orch::headContextBudget(host, model, overrides)`, which
+derives over the head's window; `test_orch_budget` fails on a size derived
+around it. The window comes from the `modelCtxTokens()` table (`model_window.h`). A Cumulo router
 pick is stored as `<upstream>/<model>` (the model picker saves `openai/gpt-5.6`
 for the default); the table splits it with the same router rule the head uses
 and reads the upstream model's window, so a prefixed pick gets the same budget

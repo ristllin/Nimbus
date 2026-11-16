@@ -11,7 +11,7 @@
     {"id": "dall-e-2", "file": "lib/core/include/nimbus/orch/image_gen.h", "why": "size table key for a model the owner configures"},
     {"id": "dall-e-3", "file": "lib/core/include/nimbus/orch/image_gen.h", "why": "size table key for a model the owner configures"},
     {"id": "gpt-4o", "file": "lib/core/src/model_catalog.cpp", "why": "family prefix used to classify catalog rows"},
-    {"id": "gpt-4o", "file": "lib/core/src/orch_compact.cpp", "why": "context-window family prefix"},
+    {"id": "gpt-4o", "file": "lib/core/src/orch_model_window.cpp", "why": "context-window family prefix"},
     {"id": "gpt-4o", "file": "lib/core/src/orch_turn_images.cpp", "why": "image-input family prefix (headTakesImages); compared, never sent"},
     {"id": "gpt-4.1", "file": "lib/core/src/orch_turn_images.cpp", "why": "image-input family prefix (headTakesImages); compared, never sent"},
     {"id": "o4-mini", "file": "lib/core/src/orch_turn_images.cpp", "why": "image-input family prefix (headTakesImages); compared, never sent"},
