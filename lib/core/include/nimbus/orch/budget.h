@@ -111,6 +111,9 @@ inline constexpr size_t kFoldTriggerMinBytes = 24 * 1024;
 // soft mark would fall under kFoldTriggerMinBytes, the history fields are v5.1.1's
 // exactly (today's window, the 48 KB compactAtKB trigger) and floorBranch is set.
 // recentConvBytes follows historyMaxBytes; toolTotalBytes and briefBytes stay v5.1.1's.
+// ctxTokens is the head's real window (rb.windowTokens), not an allocation: a provider list
+// that says less than v5.1.1's table (a 32K voxtral) lowers it. foldStepBytes is the one
+// new mark (soft - keep) and may sit under v5.1.1's alias of the fold slice.
 ContextBudget deriveRequestContext(const RequestBudget& rb, const BudgetOverrides& ov);
 
 // The fold trigger an owner's compactAtKB setting gives: 0 = off (0); the floor branch:

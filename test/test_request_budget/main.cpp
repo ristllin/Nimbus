@@ -210,6 +210,19 @@ static void test_custom_gets_the_floor_on_the_flat_wire() {
     TEST_ASSERT_EQUAL((int)BudgetBound::Floor, (int)b.bound);
   }
   TEST_ASSERT_FALSE(requestBudgetFor("zai", "glm-5.3", false).flat);
+  // A custom endpoint's id is the server's own: a prefix that names a router upstream (what
+  // Groq, vLLM or OpenRouter serve) or a GLM name never takes that provider's budget or rates.
+  for (const char* id : {"openai/gpt-oss-120b", "anthropic/claude-sonnet-5", "glm-5.3", "mistral/mistral-large-4-0"}) {
+    const RequestBudget b = requestBudgetFor("custom", id, false);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(kLegacyWireBodyBytes, b.wireBodyBytes, id);
+    TEST_ASSERT_TRUE_MESSAGE(b.flat, id);
+    TEST_ASSERT_EQUAL_UINT16_MESSAGE(300, b.rNomX100, id);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1000, b.prefillTokPerS, id);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(3000, b.minFinalTokens, id);
+  }
+  // A GLM name on OpenAI's wire reads OpenAI's figures, not Z.ai's.
+  TEST_ASSERT_EQUAL_UINT16(390, requestBudgetFor("openai", "glm-5.3", false).rNomX100);
+  TEST_ASSERT_EQUAL_UINT32(25000, prefillFloorTokPerS("openai", "glm-5.3"));
 }
 
 // nimbusd: no upload or pace term (RULINGS-v3), so a Linux VN's latency-bound heads go

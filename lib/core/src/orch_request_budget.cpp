@@ -27,8 +27,9 @@ bool isRouterUpstream(const std::string& up) {
 }
 
 // The wire a request goes out on and the bare model it names there. Host "cumulo" reads
-// its selector's upstream (and is routed); a direct host's id splits only when its prefix
-// names a router upstream ("mistral/mistral-large-4-0", what a router pick stores).
+// its selector's upstream (and is routed); a direct host's id drops only its OWN prefix
+// ("mistral/mistral-large-4-0" on mistral, what a router pick stores). Any other id is the
+// server's own: a custom endpoint serving "openai/gpt-oss-120b" stays custom.
 struct WireKey {
   std::string host;
   std::string model;
@@ -42,8 +43,8 @@ WireKey wireKey(const std::string& host, const std::string& model) {
     return {r.upstream, r.model, true};
   }
   const std::string::size_type slash = m.find('/');
-  if (slash != std::string::npos && slash > 0 && isRouterUpstream(m.substr(0, slash)))
-    return {m.substr(0, slash), m.substr(slash + 1), false};
+  if (slash != std::string::npos && isRouterUpstream(h) && m.compare(0, slash, h) == 0)
+    return {h, m.substr(slash + 1), false};
   return {h, m, false};
 }
 
@@ -94,10 +95,13 @@ uint32_t mistralDecode(const std::string& m, uint32_t ctx) {
   return 55;   // any other Mistral id: v5.1.1's floor
 }
 
+// GLM's tokenizer on the wires that serve GLM (Z.ai, and Mistral's hosted GLM).
+bool glmWire(const WireKey& k) { return k.host == "zai" || (k.host == "mistral" && isGlm(k.model)); }
+
 uint32_t ratioNomX100(const WireKey& k) {
   if (k.host == "anthropic") return 250;
   if (k.host == "openai") return 390;
-  if (k.host == "zai" || isGlm(k.model)) return 330;
+  if (glmWire(k)) return 330;
   if (k.host == "mistral") return isLarge4(k.model) ? 360 : 310;
   return 300;   // custom, unknown
 }
@@ -176,13 +180,16 @@ uint32_t latencyBound(const RequestBudget& b, const WireKey& k) {
 uint64_t atRatio(uint64_t tokens, uint32_t x100) { return tokens * x100 / 100; }
 
 // The rates and windows of the head, before the bytes.
-RequestBudget rates(const WireKey& k, bool routed, BudgetLink link) {
+RequestBudget rates(const std::string& host, const std::string& model, const WireKey& k, bool routed,
+                    BudgetLink link) {
   RequestBudget b;
   b.routed = routed;
   b.link = link;
   b.flat = k.host == "custom";
-  b.windowTokens = headWindowTokens(k.host, k.model);
-  b.v511CtxTokens = legacyCtxTokens(k.host, k.model);
+  // The window reads the ids as the window table does (a selector on any host names its
+  // upstream's window, as in v5.1.1); the rates and the floor read the wire.
+  b.windowTokens = headWindowTokens(host, model);
+  b.v511CtxTokens = legacyCtxTokens(host, model);
   b.v511ReplayBytes = v511Replay(k.host);
   b.rNomX100 = (uint16_t)ratioNomX100(k);
   b.rSafeX100 = (uint16_t)ratioSafeX100(k);
@@ -242,7 +249,7 @@ uint32_t prefillFloorTokPerS(const std::string& host, const std::string& model) 
     return line == "sonnet" || line == "haiku" ? 60000 : 30000;
   }
   if (k.host == "openai") return 25000;
-  if (k.host == "zai" || isGlm(k.model)) return 9000;
+  if (glmWire(k)) return 9000;
   if (k.host == "mistral") return isLarge4(k.model) ? 9000 : 2500;
   return 1000;   // custom: an unknown server
 }
@@ -294,7 +301,7 @@ RequestBudget requestBudgetFor(const std::string& host, const std::string& model
                                bool routedLift) {
   const WireKey k = wireKey(host, model);
   routed = routed || k.cumulo;
-  RequestBudget b = rates(k, routed, link);
+  RequestBudget b = rates(host, model, k, routed, link);
   bound(b, k);
   if (b.flat || (routed && !routedLift) || b.wireBodyBytes < b.floorBytes) {
     b.wireBodyBytes = b.floorBytes;

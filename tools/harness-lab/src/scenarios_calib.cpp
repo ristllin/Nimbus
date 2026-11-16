@@ -2,8 +2,10 @@
 
 #include <ArduinoJson.h>
 
+#include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -122,19 +124,29 @@ struct Shape {
   bool extension = false;   // an append-only next round (the cache leg)
 };
 
+// A registry name as every provider takes it ([A-Za-z0-9_-]: "memory.search" becomes
+// "memory_search", the head loop's own mapping), the same length so the bytes hold.
+std::string wireToolName(const std::string& n) {
+  std::string out = n;
+  for (char& c : out)
+    if (!std::isalnum((unsigned char)c) && c != '_' && c != '-') c = '_';
+  return out;
+}
+
 void putTools(JsonArray tools, LabRig& rig, const std::string& host) {
   for (const auto& sp : rig.registry().toolSpecs()) {
     JsonDocument schema;
     if (deserializeJson(schema, sp.schemaJson)) deserializeJson(schema, "{\"type\":\"object\"}");
     JsonObject t = tools.add<JsonObject>();
+    const std::string name = wireToolName(sp.name);
     if (host == "anthropic") {
-      t["name"] = sp.name, t["description"] = sp.description, t["input_schema"] = schema;
+      t["name"] = name, t["description"] = sp.description, t["input_schema"] = schema;
     } else if (host == "openai") {
-      t["type"] = "function", t["name"] = sp.name, t["description"] = sp.description, t["parameters"] = schema;
+      t["type"] = "function", t["name"] = name, t["description"] = sp.description, t["parameters"] = schema;
     } else {
       t["type"] = "function";
       JsonObject f = t["function"].to<JsonObject>();
-      f["name"] = sp.name, f["description"] = sp.description, f["parameters"] = schema;
+      f["name"] = name, f["description"] = sp.description, f["parameters"] = schema;
     }
   }
 }
@@ -238,6 +250,26 @@ agent::HttpRequest requestFor(const Env& env, const Leg& leg, const std::string&
   return r;
 }
 
+// An error body's type and message only, with anything key-shaped masked: a provider can
+// echo part of a rejected key ("Incorrect API key provided: sk-...abcd"), and this line is
+// printed and saved.
+std::string maskKeys(std::string s) {
+  for (const char* p : {"sk-", "Bearer ", "key "}) {
+    for (size_t at = s.find(p); at != std::string::npos; at = s.find(p, at + 1)) {
+      size_t end = at + std::strlen(p);
+      while (end < s.size() && !std::isspace((unsigned char)s[end]) && s[end] != '"' && s[end] != ',') end++;
+      s.replace(at, end - at, std::string(p) + "[masked]");
+    }
+  }
+  return s;
+}
+
+std::string errorLine(JsonDocument& d) {
+  JsonVariantConst e = d["error"];
+  const std::string type = e["type"] | e["code"] | "", msg = e["message"] | d["message"] | d["detail"] | "";
+  return maskKeys(type + ": " + msg.substr(0, 240));
+}
+
 struct Outcome {
   int status = 0;
   uint32_t ms = 0, prompt = 0, cached = 0, output = 0;
@@ -252,7 +284,11 @@ Outcome send(LabRig& rig, const Leg& leg, const std::string& body) {
   o.ms = (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
   o.status = ok ? resp.status : 0;
   JsonDocument d;
-  if (!ok || deserializeJson(d, resp.body)) return o;
+  if (!ok || deserializeJson(d, resp.body)) {
+    if (ok && o.status >= 400) o.err = "unreadable error body";
+    o.err = maskKeys(o.err);
+    return o;
+  }
   JsonObjectConst u = d["usage"];
   o.prompt = u["input_tokens"] | u["prompt_tokens"] | 0u;
   o.cached = u["cache_read_input_tokens"] | u["input_tokens_details"]["cached_tokens"] |
@@ -260,7 +296,7 @@ Outcome send(LabRig& rig, const Leg& leg, const std::string& body) {
   if (leg.host == "anthropic") o.prompt += o.cached + (u["cache_creation_input_tokens"] | 0u);
   o.output = u["output_tokens"] | u["completion_tokens"] | 0u;
   o.finish = d["stop_reason"] | d["status"] | d["choices"][0]["finish_reason"] | "";
-  if (o.status >= 400) o.err = resp.body.substr(0, 200);
+  if (o.status >= 400) o.err = errorLine(d);
   return o;
 }
 
