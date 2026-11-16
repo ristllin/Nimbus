@@ -14,7 +14,7 @@
 //
 // The formula, per (host, model, routed):
 //   window   headWindowTokens (the listed window, else the corrected table);
-//   ratios   rNom bytes per token (anthropic 2.5, openai 3.9, mistral-large-4 3.6, other
+//   ratios   rNom bytes per token (anthropic 2.5, openai 3.6, mistral-large-4 3.6, other
 //            Mistral 3.1, GLM 3.3, custom 3.0) and the dense rSafe (Claude 2.0, else 2.5);
 //   T_lat    the largest T (1k steps) with connect 1.5 s + T x rNom at 70,000 B/s + the
 //            fragmented-heap pace (2 s + 0.1 s per 4 KB slice, no deadline/10 cap)

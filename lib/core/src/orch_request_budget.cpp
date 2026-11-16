@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cctype>
 #include <mutex>
+#include <vector>
 
 #include "nimbus/orch/model_price_defaults.h"   // builtinModelPrice - the price tier (longOver)
 #include "nimbus/orch/model_window.h"           // headWindowTokens, legacyCtxTokens
@@ -100,7 +101,10 @@ bool glmWire(const WireKey& k) { return k.host == "zai" || (k.host == "mistral" 
 
 uint32_t ratioNomX100(const WireKey& k) {
   if (k.host == "anthropic") return 250;
-  if (k.host == "openai") return 390;
+  // OpenAI: plan v3's 3.9 (Lumi's content measured 4.1 on 15 Nov) put 110k tokens in a
+  // 390 KB body of the calibration's fixture content (3.54 B/token, lane B's live leg, 16 Nov),
+  // over the 100k ruling. 3.6 keeps both inside the -15%/+5% band (101.7k and 87.8k).
+  if (k.host == "openai") return 360;
   if (glmWire(k)) return 330;
   if (k.host == "mistral") return isLarge4(k.model) ? 360 : 310;
   return 300;   // custom, unknown
@@ -137,6 +141,8 @@ bool heldAtV511(const WireKey& k) {
 std::atomic<BudgetLink> g_link{BudgetLink::Device};
 
 // ---- the memo ------------------------------------------------------------------------
+// A few heads per device (the head, its sub and fold models): a small table, made on first
+// use so an image that never reads it carries only its pointer in static memory.
 struct Memo {
   std::string host, model;
   uint16_t ratioX100 = 0;
@@ -144,13 +150,21 @@ struct Memo {
 constexpr size_t kMemoSlots = 16;
 constexpr uint32_t kMemoMinPromptTokens = 2048;
 constexpr uint16_t kMemoFloorX100 = 150;
-std::mutex g_memoMx;
-Memo g_memo[kMemoSlots];
+
+struct MemoTable {
+  std::mutex mx;
+  std::vector<Memo> rows;
+};
+MemoTable& memoTable() {
+  static MemoTable* t = new MemoTable();
+  return *t;
+}
 
 uint16_t memoFor(const WireKey& k) {
-  std::lock_guard<std::mutex> lk(g_memoMx);
-  for (const Memo& m : g_memo)
-    if (m.ratioX100 && m.host == k.host && m.model == k.model) return m.ratioX100;
+  MemoTable& t = memoTable();
+  std::lock_guard<std::mutex> lk(t.mx);
+  for (const Memo& m : t.rows)
+    if (m.host == k.host && m.model == k.model) return m.ratioX100;
   return 0;
 }
 
@@ -321,26 +335,23 @@ void noteObservedRatio(const std::string& host, const std::string& model, size_t
   const WireKey k = wireKey(host, model);
   const uint64_t r = (uint64_t)textBytes * 100 / promptTokens;
   const uint16_t x100 = (uint16_t)std::max<uint64_t>(kMemoFloorX100, std::min<uint64_t>(r, UINT16_MAX));
-  std::lock_guard<std::mutex> lk(g_memoMx);
-  Memo* free = nullptr;
-  for (Memo& m : g_memo) {
-    if (!m.ratioX100) {
-      if (!free) free = &m;
-      continue;
-    }
+  MemoTable& t = memoTable();
+  std::lock_guard<std::mutex> lk(t.mx);
+  for (Memo& m : t.rows) {
     if (m.host != k.host || m.model != k.model) continue;
     if (x100 < m.ratioX100) m.ratioX100 = x100;   // tighten only
     return;
   }
   // A new head is remembered only while a slot is free: evicting one would loosen it.
-  if (free && x100 < ratioSafeX100(k)) *free = Memo{k.host, k.model, x100};
+  if (t.rows.size() < kMemoSlots && x100 < ratioSafeX100(k)) t.rows.push_back(Memo{k.host, k.model, x100});
 }
 
 uint16_t observedRatioX100(const std::string& host, const std::string& model) { return memoFor(wireKey(host, model)); }
 
 void clearObservedRatios() {
-  std::lock_guard<std::mutex> lk(g_memoMx);
-  for (Memo& m : g_memo) m = Memo{};
+  MemoTable& t = memoTable();
+  std::lock_guard<std::mutex> lk(t.mx);
+  t.rows.clear();
 }
 
 }  // namespace orch

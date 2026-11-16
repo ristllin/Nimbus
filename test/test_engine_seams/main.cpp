@@ -420,7 +420,7 @@ static void test_request_budget_is_lane_bs() {
   struct Row { const char* host; const char* model; uint32_t roundMs; bool flat; uint32_t bytes; };
   const Row rows[] = {
       {"anthropic", "claude-sonnet-5-5", providers::kHeadRoundCeilingMs, false, 250000},
-      {"openai", "gpt-5.6", providers::kHeadRoundCeilingMs, false, 390000},
+      {"openai", "gpt-5.6", providers::kHeadRoundCeilingMs, false, 360000},
       {"mistral", "mistral-large-4-0", providers::kMistralRoundMs, false, 360000},
       {"zai", "glm-5.3", providers::kZaiHeadTimeoutMs, false, 0},
       {"cumulo", "openai/gpt-5.6", 90000, false, 85000},

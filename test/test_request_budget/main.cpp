@@ -129,8 +129,8 @@ static void test_the_plan_figures() {
       {"mistral", "mistral-large-4-0", 360000, BudgetBound::Clamp},
       {"mistral", "mistral-medium-latest", 151000, BudgetBound::Latency},
       {"mistral", "mistral-small-latest", 151000, BudgetBound::Latency},
-      {"openai", "gpt-5.6-luna", 390000, BudgetBound::Clamp},
-      {"openai", "gpt-5.6", 390000, BudgetBound::Clamp},
+      {"openai", "gpt-5.6-luna", 360000, BudgetBound::Clamp},   // 3.6 B/token after the live calibration
+      {"openai", "gpt-5.6", 360000, BudgetBound::Clamp},
       {"anthropic", "claude-sonnet-5-5", 250000, BudgetBound::Clamp},
       {"anthropic", "claude-opus-5-5", 250000, BudgetBound::Clamp},
       {"anthropic", "claude-haiku-5-5", 180000, BudgetBound::Tier},
@@ -221,7 +221,7 @@ static void test_custom_gets_the_floor_on_the_flat_wire() {
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(3000, b.minFinalTokens, id);
   }
   // A GLM name on OpenAI's wire reads OpenAI's figures, not Z.ai's.
-  TEST_ASSERT_EQUAL_UINT16(390, requestBudgetFor("openai", "glm-5.3", false).rNomX100);
+  TEST_ASSERT_EQUAL_UINT16(360, requestBudgetFor("openai", "glm-5.3", false).rNomX100);
   TEST_ASSERT_EQUAL_UINT32(25000, prefillFloorTokPerS("openai", "glm-5.3"));
 }
 
@@ -259,6 +259,12 @@ static void test_the_memo_only_ever_lowers() {
   TEST_ASSERT_EQUAL_UINT16(0, observedRatioX100("openai", "gpt-5.6"));
   noteObservedRatio("anthropic", "claude-sonnet-5-5", 200000, 100000);
   TEST_ASSERT_EQUAL_UINT32(250000, requestBudgetFor("anthropic", "claude-sonnet-5-5", false).wireBodyBytes);
+  // A full memo never evicts a head it holds (that would loosen it): a new head waits.
+  for (int i = 0; i < 40; i++) noteObservedRatio("openai", "gpt-x-" + std::to_string(i), 200000, 100000);
+  TEST_ASSERT_EQUAL_UINT16(150, observedRatioX100("openai", "gpt-4o"));
+  TEST_ASSERT_EQUAL_UINT16(0, observedRatioX100("openai", "gpt-x-39"));
+  // The router's selector and the direct id share a wire, so they share a memo.
+  TEST_ASSERT_EQUAL_UINT16(150, observedRatioX100("cumulo", "openai/gpt-4o"));
 }
 
 // ---- every ContextBudget field: no shrink, the floor branch ---------------------------------
