@@ -2981,8 +2981,10 @@ static void drainStagedFolds() {
 // pass, tg_poll only (fold_driver.h). Runs at the END of pollJobs (after
 // loops::checkDue consumed its FireOutcome, so fold spend can never leak into loop
 // metering). Write order on success: summary blob FIRST, then the chain reset, then
-// the ev:compact boundary row (foldLanded).
-static void compactTick() {
+// the ev:compact boundary row (foldLanded). noinline (lane STACK): inlined, its locals
+// grew pollJobs' frame from 48 to 240 B, and pollJobs sits on tg_poll's worst path (a
+// scheduled turn's head round), 288 B over the floor before this lane.
+__attribute__((noinline)) static void compactTick() {
   if (!g_engine || !g_foldDriver) return;
   drainStagedFolds();
   if (g_engine->turnInFlight()) return;
