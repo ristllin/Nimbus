@@ -34,7 +34,7 @@
 //     the wire's (the prefix moved) or the provider's (it did not); no read timeout; the
 //     custom leg answers through its one flat string;
 //   - one plain-text fold on a digest of the host's fold step, on the model a fold for that
-//     head runs (a Large 4 head folds on Mistral Small, ruling of 16 Nov), its summary
+//     head runs (a Large 4 head folds on Mistral Small, RULINGS-v3), its summary
 //     carrying the sections the fold prompt asks for;
 //   - one photo round with a 3-photo album (LAB_BUDGET_PHOTOS: a directory of JPEGs) sent
 //     as each host's image parts, its window estimate logged against the prompt tokens.
@@ -378,7 +378,7 @@ void legRound(const Leg& leg, LegTransport& http, const agent::providers::Provid
 
 // The model a fold for this head runs: a Mistral head forced to reason (Large 4: it refuses
 // effort "none") cannot write a fold inside its 60 s fit at its 50 tok/s floor, so its fold
-// runs on Mistral Small (orchestrator ruling of 16 Nov; the fold ladder pins it). Every other
+// runs on Mistral Small (RULINGS-v3, answer 5; the fold ladder pins it). Every other
 // head folds on itself.
 std::string foldModelFor(const Leg& leg) {
   const bool forced = std::string(leg.host) == "mistral" &&
