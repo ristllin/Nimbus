@@ -1,0 +1,24 @@
+Decisions & preferences
+- No explicit standing instructions from the owner in this conversation. Implicit habit: the owner logs meals with weights and expects kcal and protein estimates plus a running day total; label figures (e.g. yoghurt 9 g protein per 100 g) are used when given.
+
+Pending items & next steps
+- No [FOOD LEDGER] block was supplied, so no day totals are recorded here and none are computed from the conversation.
+- Open food question: none stated explicitly. Dinner and snack entries repeat in the log without a clear ledger, so the per-day totals cannot be confirmed from the conversation alone.
+- Next long run: 14 km at easy pace (about 6:15 per km), then stretch and refuel, on the coming Sunday.
+
+Facts worth remembering long-term
+- Usual breakfast: 60 g oats, 200 ml semi-skimmed milk, a banana, black coffee. Logged at about 390 kcal and 17 g protein.
+- Usual lunch: chicken and lentil soup (about 400 g) with a slice of rye bread. Logged at about 520 kcal and 31 g protein.
+- Usual dinner: salmon 140 g, roast potatoes 200 g, green beans. Logged at about 610 kcal and 38 g protein.
+- Usual snack: Greek yoghurt 170 g with honey. Logged at about 160 kcal and 15 g protein.
+- Weight reported as 82.4 kg, 0.3 kg down on the previous week. The same figure was repeated across many days, so the real trend is unclear.
+- Regular run: 7 km along the canal in 41 minutes (about 5:51 per km); legs feel heavy after the hill.
+- The owner shops at the market for bread, apples and eggs.
+
+Owner intent & active threads
+- Tracking food intake (kcal and protein), weight and running training.
+- Building toward a 14 km easy long run each Sunday.
+- Planning weekly meals around market purchases.
+
+Device & task state
+- The conversation covers 2026-03-29 to 2026-04-24 with the same daily entries repeated. Nothing was configured or changed on the device beyond logging meals, weight and runs.

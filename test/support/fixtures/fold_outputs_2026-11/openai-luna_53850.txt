@@ -1,0 +1,21 @@
+1. Decisions & preferences
+- Owner is tracking nutrition, calories/protein, body weight, and running training.
+- Preferred long-run guidance previously given: easy pace around 6:15/km, followed by stretching and refuelling.
+
+2. Pending items & next steps
+- No currently open food questions or unconfirmed weights are recorded.
+- If the fitness thread resumes, confirm the current running plan and latest weight rather than relying on the historical plan.
+
+3. Facts worth remembering long-term
+- Owner reported a weight of 82.4 kg on 2026-03-29, 0.3 kg lower than the prior week.
+- Owner has run 7 km in 41 minutes (5:51/km), reporting heavy legs after a hill.
+- Typical logged foods include oats with semi-skimmed milk and banana; chicken-and-lentil soup with rye bread; salmon with roast potatoes and green beans; Greek yoghurt with honey.
+- Owner bought bread, apples, and eggs while planning meals; breakfasts were expected to be covered through Thursday at that time.
+
+4. Owner intent & active threads
+- Maintain meal and nutrition logging.
+- Monitor weight trend.
+- Continue structured running, including a longer easy run when appropriate.
+
+5. Device & task state
+- Historical meal entries and running details were recorded in the conversation, but no device configuration, reminder, schedule, or external action is recorded.

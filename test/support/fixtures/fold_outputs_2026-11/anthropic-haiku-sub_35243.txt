@@ -1,0 +1,21 @@
+Decisions & preferences
+- No explicit standing instructions from the owner in this conversation. Observed habit: the owner logs meals by description and weight and wants running calorie/protein totals. For packaged foods, the owner gives the label figure (e.g. Greek yoghurt 9 g protein per 100 g) and the assistant logs with that figure.
+
+Pending items & next steps
+- No [FOOD LEDGER] block was provided, so no day totals are confirmed here. No food question is known to be open (no missing weight or unlogged meal was flagged).
+- The Sunday long run is still the standing plan: 14 km at easy pace (about 6:15 per km), then stretch and refuel.
+
+Facts worth remembering long-term
+- Typical breakfast: 60 g oats, 200 ml semi-skimmed milk, a banana, black coffee. Logged at about 390 kcal and 17 g protein.
+- Typical lunch: chicken and lentil soup (about 400 g) plus a slice of rye bread. Logged at about 520 kcal and 31 g protein.
+- Typical dinner: salmon 140 g, roast potatoes 200 g, green beans. Logged at about 610 kcal and 38 g protein.
+- Typical snack: Greek yoghurt 170 g with honey. Logged at about 160 kcal and 15 g protein.
+- Weight reported as 82.4 kg, 0.3 kg down on the previous week, trend steady.
+- Regular run: 7 km along the canal in 41 minutes (5:51 pace). The owner reports heavy legs after the hill.
+- Shops at the market for bread, apples and eggs. Apples and eggs cover breakfasts through Thursday.
+
+Owner intent & active threads
+- Tracking food intake, weight and running. Planning weekly meals, with long runs on Sundays.
+
+Device & task state
+- The conversation from 2026-03-29 to 2026-04-24 repeats the same daily pattern of meal logs, a weigh-in, a canal run and a Sunday-plan reminder. No settings were changed and nothing is outstanding.

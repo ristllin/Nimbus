@@ -1,0 +1,21 @@
+1. Decisions & preferences
+- Owner tracks meals with estimated calories and protein, using package-label nutrition figures when supplied.
+- Owner tracks running distance, time/pace, how the legs feel, and weekly weigh-ins.
+
+2. Pending items & next steps
+- No current pending item is established; the 14 km Sunday long-run plan and weekly meal-planning notes from 2026-03-29 through 2026-05-07 are now stale.
+
+3. Facts worth remembering long-term
+- Latest reported weight: 82.4 kg on 2026-05-07; owner described it as 0.3 kg below the prior week. The same figure appears repeatedly in the supplied history.
+- Typical logged breakfast: 60 g oats, 200 ml semi-skimmed milk, banana, and black coffee; estimated at about 390 kcal and 17 g protein.
+- Repeated lunch: about 400 g chicken and lentil soup with one slice of rye bread; estimated at about 520 kcal and 31 g protein.
+- Greek yoghurt label states 9 g protein per 100 g; a 170 g serving with honey was estimated at about 160 kcal and 15 g protein.
+- A recurring run entry was 7 km along the canal in 41 minutes, approximately 5:51/km, with heavy legs after a hill.
+
+4. Owner intent & active threads
+- Maintain nutrition, weight, and running records while planning meals around training.
+- The earlier training plan called for a 14 km easy run at about 6:15/km, followed by stretching and refuelling.
+
+5. Device & task state
+- Food, weight, shopping, and run details were acknowledged in conversation through 2026-05-07; no separate durable ledger or reminder confirmation is present.
+- One reported daily total was 1,860 kcal and 112 g protein after a dinner of 140 g salmon, 200 g roast potatoes, and green beans; because the supplied conversation repeats the same entries across many dates, do not infer distinct meals or runs beyond what the owner newly reports.

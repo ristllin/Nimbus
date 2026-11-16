@@ -1,0 +1,23 @@
+Decisions & preferences
+- Owner logs meals with weights and asks for kcal/protein estimates; when a label gives protein per 100 g, use the label figure rather than a generic estimate.
+- Weigh-ins are compared to the previous Monday's weight; steady downward trend is the goal.
+- Running: 7 km canal runs are routine; Sunday long run should stay at easy pace (~6:15 per km), never hard.
+
+Pending items & next steps
+- Sunday long run planned: 14 km at easy pace (around 6:15 per km), then stretch and refuel. (Stated repeatedly; still the standing Sunday plan.)
+- Weekly meal planning: owner buys staples at the market and plans the week's meals; with bread, apples and eggs on hand, breakfasts were covered through Thursday of that week.
+- No food ledger totals are recorded in this summary; if the owner asks for day totals, log each meal individually and only report totals the device has computed.
+
+Facts worth remembering long-term
+- Weight: 82.4 kg on 2026-04-16 (also reported identically on many prior days from 2026-03-29 onward), down 0.3 kg on the previous Monday; trend steady.
+- Standard breakfast: 60 g oats, 200 ml semi-skimmed milk, a banana, black coffee (~390 kcal, 17 g protein).
+- Standard lunch: chicken and lentil soup ~400 g plus a slice of rye bread (~520 kcal, 31 g protein).
+- Standard dinner: salmon fillet 140 g, roast potatoes 200 g, green beans (~610 kcal, 38 g protein); a day with breakfast, lunch, dinner and yoghurt snack comes to about 1,860 kcal and 112 g protein.
+- Snack: Greek yoghurt 170 g with honey, label 9 g protein/100 g (~160 kcal, 15 g protein).
+- Typical run: 7 km along the canal in 41 minutes (5:51 per km); legs felt heavy after the hill.
+
+Owner intent & active threads
+- Owner is maintaining a steady routine of daily meal logging (kcal + protein), weekly Monday weigh-ins, and regular 7 km runs, with a Sunday easy long run as the weekly key session. Repeatedly asks for the Sunday plan and day-total confirmations.
+
+Device & task state
+- Meals, weigh-ins and runs have been logged as reported across 2026-03-29 to 2026-04-17; the day-to-day conversation content is identical (same breakfast, lunch, run, dinner, snack, weigh-in reported on each date), so those entries repeat rather than track new data - treat any identical repeat of a previously logged meal/run/weight as likely a duplicate before logging it again.
