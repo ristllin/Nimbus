@@ -234,7 +234,13 @@ bool tenantSetQuota(const std::string& chatId, const nimbus::orch::Quota& q,
                     std::string& err);
 bool tenantRemove(const std::string& chatId, std::string& err);
 
+// A manual fold request (/compact, Summarize now, the console): staged from any task,
+// drained into the fold driver's persisted queue on the next pump pass (lane F).
 void stageManualFold(const char* chatId);
+// GET /api/fold/status's body for `chat` ("" = the default chat: the owner's Telegram
+// chat, else the web chat), from the tg_poll-published copy; any task. False when the
+// device knows no conversation by that name.
+bool foldStatusJsonFor(const std::string& chat, std::string& out);
 
 #ifdef NIMBUS_TEST
 // HIL seam: request a clean restart from the web task. The flag is drained by
@@ -243,6 +249,8 @@ void stageManualFold(const char* chatId);
 // resets the board and wedges the host CDC driver.
 void stageTestReboot();
 bool testRebootRequested();
+// FOLDRESET (bench rows reset between rows): today's paid fold count restarts at 0.
+void stageFoldDailyReset();
 #endif
 String foldStatusText(const char* chatArg = nullptr);
 

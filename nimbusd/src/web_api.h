@@ -118,7 +118,7 @@ class WebApi {
   // dispatchers so each stays within the complexity gate.
   bool tryMemory(const std::string& m, const std::string& base, const std::string& path,
                  const std::string& body, ApiResp& out) {
-    return tryMemReads(m, base, out) || tryMemData(m, base, path, body, out);
+    return tryMemReads(m, base, out) || tryMemData(m, base, path, body, out) || tryFold(m, base, path, body, out);
   }
   bool tryMemReads(const std::string& m, const std::string& base, ApiResp& out) {
     if (m != "GET") return false;
@@ -138,6 +138,47 @@ class WebApi {
     if (base == "/api/mem/embedverify" && m == "POST") { out = embedVerify(body); return true; }
     if (base == "/api/mem/embedcfg")    { out = m == "POST" ? embedCfgPost(body) : embedCfgGet(); return true; }
     return false;
+  }
+
+  // Summarize now and the summary's health (lane F, device fold_routes.cpp): the shared
+  // FoldDriver on the engine thread. Behind the same token gate as every /api route.
+  bool tryFold(const std::string& m, const std::string& base, const std::string& path, const std::string& body,
+               ApiResp& out) {
+    if (base == "/api/fold/status" && m == "GET") {
+      const std::string chat = queryParam(path, "chat");
+      NimbusdRig* rig = rig_;
+      auto known = std::make_shared<bool>(true);
+      out = engineRead([rig, chat, known] {
+        std::string j;
+        *known = rig->foldStatusJson(chat, j);
+        return j;
+      });
+      if (out.status == 200 && !*known) out = noFoldChat();
+      return true;
+    }
+    if (base == "/api/fold/run" && m == "POST") {
+      const std::string chat = formValue(body, "chat");
+      NimbusdRig* rig = rig_;
+      auto known = std::make_shared<bool>(true);
+      out = engineWrite([rig, chat, known] {
+        std::string chosen;
+        *known = rig->requestManualFold(chat, chosen);
+        JsonDocument d;
+        d["ok"] = true;
+        d["queued"] = true;
+        d["chat"] = chosen;
+        std::string j;
+        serializeJson(d, j);
+        return j;
+      }, 5);
+      if (out.status == 200) out.status = *known ? 202 : 404;
+      if (out.status == 404) out = noFoldChat();
+      return true;
+    }
+    return false;
+  }
+  static ApiResp noFoldChat() {
+    return ApiResp{404, "application/json", R"({"error":"No conversation by that name on this instance."})"};
   }
 
   // Telegram access + people (CUM-459): the device's routes over the instance's

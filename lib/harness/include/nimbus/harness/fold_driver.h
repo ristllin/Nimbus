@@ -97,6 +97,7 @@ struct FoldDriverHooks {
   std::function<void(const FoldDone&)> folded;         // a summary landed (after the store)
   std::function<void(const std::string& chat, const std::string& text)> tell;   // an owner notice
   std::function<void()> changed;                       // the status moved
+  std::function<void(bool)> asking;                    // true just before a rung's request, false after
   std::string firmware;                                // this image's version
 };
 
@@ -110,6 +111,9 @@ class FoldDriver {
   // Load the control file; a new firmware restarts every chat's wait. Once, after the
   // fold store began.
   void begin();
+  // The engine was rebuilt (the VN rebuilds it on a key or model change): later rungs
+  // run on the new one; a running cycle keeps its frozen slice and rungs.
+  void rebind(TurnEngine& eng) { eng_ = &eng; }
   // One pump pass: at most one rung.
   FoldTick tick(uint32_t nowMs, uint32_t nowEpoch);
   // The chat the last turn ran in: looked at first.
@@ -117,6 +121,8 @@ class FoldDriver {
 
   enum class Manual : uint8_t { Queued = 0, AlreadyRunning, Full };
   Manual requestManual(const std::string& chat);
+  // A /clear: a cycle or catch-up for the chat ends with its slice, uncounted.
+  void noteCleared(const std::string& chat);
 
   FoldStatus status(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch) const;
   bool cycleActive() const { return !cycle_.chat.empty(); }
@@ -159,7 +165,7 @@ class FoldDriver {
   uint32_t today(uint32_t nowEpoch) const;
   int32_t offsetAt(uint32_t epoch) const;
 
-  TurnEngine& eng_;
+  TurnEngine* eng_;
   nimbus::orch::FoldStore& folds_;
   nimbus::orch::FoldCtlIO ctlIO_;
   FoldDriverHooks hooks_;

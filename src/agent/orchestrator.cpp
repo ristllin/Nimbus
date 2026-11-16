@@ -76,6 +76,9 @@
 #include "../sys/psram_static.h"         // long-lived buffers and the two engines in PSRAM, not internal .bss
 
 #include "nimbus/orch/budget.h"         // headContextBudget - brief/fold-slice bytes from the head window
+#include "nimbus/harness/fold_driver.h" // FoldDriver - the one fold driver (lane F: never a permanent pause)
+#include <map>
+#include <mutex>
 #include "nimbus/orch/result_store.h"   // recent-results ring (results.get/list)
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/compact.h"        // modelCtxTokens (window table)
@@ -152,7 +155,6 @@ static LittleFsMemoryStore   g_memStore;
 // (capture hooks, onTurnEnd, pollJobs, handleMessage) - no lock needed.
 static LittleFsFoldStoreIO      g_foldIO;
 static nimbus::orch::FoldStore  g_folds;
-static char g_lastTurnChat[32]  = {};   // the chat compactTick() watches
 // An auto fold and the staged system turn wait for the owner (owner_first.h): onTurnEnd
 // and pollJobs feed it, compactTick and drainSystemTurn ask it, tg_poll only.
 static nimbus::orch::OwnerFirstGate g_ownerFirst;
@@ -203,16 +205,31 @@ struct TenantLock {
   TenantLock(const TenantLock&) = delete;
   TenantLock& operator=(const TenantLock&) = delete;
 };
-static char g_manualFoldChat[32] = {};  // staged /compact target (bypasses thresholds)
+// Staged manual requests (/compact, Summarize now, the console): a few slots, so two
+// requests between pump passes both reach the driver's persisted queue.
+static constexpr int kFoldStageSlots = 4;
+static char g_manualFoldChat[kFoldStageSlots][32] = {};
 static portMUX_TYPE g_foldSpin = portMUX_INITIALIZER_UNLOCKED;   // console (main) stages too
+static volatile bool g_foldResetStaged = false;   // NIMBUS_TEST FOLDRESET (console task)
+// Lane F: the one fold driver (fold_driver.h), tg_poll only; built in begin().
+static agent::FoldDriver* g_foldDriver = nullptr;
+// The web task's copy of the fold status (GET /api/fold/status): written on tg_poll
+// whenever the driver's state moves, read under the mutex by the route. A std::mutex,
+// never the spinlock: the copy holds strings.
+static std::mutex g_foldStatusMx;
+static std::map<std::string, agent::FoldStatus> g_foldStatusSnap;   // under g_foldStatusMx
+static std::string g_foldDefaultChat;                               // under g_foldStatusMx
 // Cross-task fold-state ECHO (prism v3.6.0): foldStatusText runs on AsyncTCP /
 // the console task, but FoldStore is tg_poll-owned and its ChatFold carries a
 // heap std::string - copying it while applyFold reassigns the summary (or
 // upsert moves the slot vector) is a use-after-free, not a skewed counter. Only
 // tg_poll writes this fixed buffer; readers copy it under the spinlock. Same
 // pattern as g_memEcho.
-static char (&g_foldEcho)[224] = ::nimbus::psramStatic<char[224]>();   // PSRAM (psram_static.h)
+static char (&g_foldEcho)[320] = ::nimbus::psramStatic<char[320]>();   // PSRAM (psram_static.h)
 static void publishFoldStatus(const std::string& chat);   // fwd (defined below)
+static void publishFoldAll(const std::string& chat);      // fwd: the echo and the web status
+static void publishFoldWebStatus();                        // fwd: the web status copy
+static agent::FoldDriverHooks foldHooks();                 // fwd: the fold driver over this device
 
 // Cross-task model-memory echo for the web UI. g_mem's std::string may be
 // reassigned mid-turn on THIS (poll) task; letting the AsyncTCP task copy it
@@ -1744,10 +1761,9 @@ static TurnEngine::Deps buildTurnDeps() {
     dream::noteTurnEnd(millis(), ev.source);   // DREAMING idle gate: quiet clock + streak alert
     // v3.6.0 fold accounting: one persist per turn + the reactive overflow path.
     if (!ev.chatId.empty() && ev.chatId != "system") {
-      strncpy(g_lastTurnChat, ev.chatId.c_str(), sizeof(g_lastTurnChat) - 1);
-      g_lastTurnChat[sizeof(g_lastTurnChat) - 1] = 0;
+      if (g_foldDriver) g_foldDriver->noteTurnChat(ev.chatId);
       g_folds.noteTurn(ev.chatId);
-      publishFoldStatus(ev.chatId);
+      publishFoldAll(ev.chatId);
       if (!ev.ok && anyContextOverflow(ev)) {
         g_folds.markOverflow(ev.chatId);   // next compactTick() folds this chat
         alogf("fold: context-overflow classified on %s - fold queued", ev.chatId.c_str());
@@ -1951,6 +1967,12 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   nimbus::orch::clearServedModels();
   g_mem.begin(&g_memStore, std::string(store::sysPrompt().c_str()));
   g_folds.begin(&g_foldIO);   // v3.6.0 per-chat fold state (/data/chatsum.txt)
+  // Lane F: the one fold driver over the store and /data/fold_ctl.txt (PSRAM, task-only).
+  static agent::FoldDriver& foldDriver =
+      ::nimbus::psramObject<agent::FoldDriver>(turnEngine, g_folds, LittleFsFoldCtlIO::io(), foldHooks());
+  g_foldDriver = &foldDriver;
+  foldDriver.begin();
+  publishFoldWebStatus();
   loadTenants();              // v3.7.0 RBAC roles/quotas (+ legacy adoption)
   syncMemEcho();
   registerDeviceControl();
@@ -2731,29 +2753,69 @@ bool tenantRemove(const std::string& chatId, std::string& err) {
 
 void stageManualFold(const char* chatId) {
   if (!chatId || !chatId[0]) return;
+  bool staged = false;
   portENTER_CRITICAL(&g_foldSpin);
-  strncpy(g_manualFoldChat, chatId, sizeof(g_manualFoldChat) - 1);
-  g_manualFoldChat[sizeof(g_manualFoldChat) - 1] = 0;
+  for (int i = 0; i < kFoldStageSlots && !staged; i++) {
+    if (g_manualFoldChat[i][0] && strncmp(g_manualFoldChat[i], chatId, sizeof(g_manualFoldChat[i])) != 0) continue;
+    strncpy(g_manualFoldChat[i], chatId, sizeof(g_manualFoldChat[i]) - 1);
+    g_manualFoldChat[i][sizeof(g_manualFoldChat[i]) - 1] = 0;
+    staged = true;
+  }
   portEXIT_CRITICAL(&g_foldSpin);
+  if (!staged) alogf("fold(%s): manual request not staged - %d others are waiting", chatId, kFoldStageSlots);
 }
 
+#ifdef NIMBUS_TEST
+void stageFoldDailyReset() { g_foldResetStaged = true; }
+#endif
+
 // Refresh the cross-task fold echo. tg_poll ONLY (every turn end + every fold
-// outcome) - the sole reader of the live FoldStore off-task is the echo.
+// outcome) - the sole reader of the live FoldStore off-task is the echo. Lane F
+// appends the schedule (paused stays 0: nothing pauses since v5.1.2).
 static void publishFoldStatus(const std::string& chat) {
   if (chat.empty()) return;
-  nimbus::orch::ChatFold f = g_folds.get(chat);
+  const nimbus::orch::ChatFold* f = g_folds.peek(chat);
+  const nimbus::orch::ChatFold none;
+  const nimbus::orch::ChatFold& c = f ? *f : none;
   const uint32_t kb = store::compactAtKB();
+  agent::FoldStatus st;
+  if (g_foldDriver) st = g_foldDriver->status(chat, millis(), (uint32_t)(memory::clockSynced() ? time(nullptr) : 0));
   char buf[sizeof(g_foldEcho)];
   snprintf(buf, sizeof(buf),
-           "CTX chat=%s bytes=%lu msgs=%lu turns=%lu paused=%d fails=%u lastFold=%lu "
-           "sumBytes=%u threshKB=%u",
-           chat.c_str(), (unsigned long)f.bytesSinceFold, (unsigned long)f.msgsSinceFold,
-           (unsigned long)f.turnsSinceFold, (int)f.breakerPaused, (unsigned)f.breakerFails,
-           (unsigned long)f.lastFoldEpoch, (unsigned)f.summary.size(), (unsigned)kb);
+           "CTX chat=%s bytes=%lu msgs=%lu turns=%lu paused=0 fails=%u lastFold=%lu "
+           "sumBytes=%u threshKB=%u nextTry=%lu firstFail=%lu rung=%u/%u paidToday=%u cap=%u queued=%d",
+           chat.c_str(), (unsigned long)c.bytesSinceFold, (unsigned long)c.msgsSinceFold,
+           (unsigned long)c.turnsSinceFold, (unsigned)c.failedCycles, (unsigned long)c.lastFoldEpoch,
+           (unsigned)c.summary.size(), (unsigned)kb, (unsigned long)c.nextTry, (unsigned long)c.firstFail,
+           (unsigned)st.rungIndex, (unsigned)st.rungCount, (unsigned)st.paidToday, (unsigned)st.cap, (int)st.queued);
   portENTER_CRITICAL(&g_foldSpin);
   strncpy(g_foldEcho, buf, sizeof(g_foldEcho) - 1);
   g_foldEcho[sizeof(g_foldEcho) - 1] = 0;
   portEXIT_CRITICAL(&g_foldSpin);
+}
+
+// The web task's status copy: every chat with a fold state, the queued ones and the
+// default (the owner's Telegram chat, else the web chat). tg_poll only.
+static void publishFoldWebStatus() {
+  if (!g_foldDriver) return;
+  const uint32_t epoch = memory::clockSynced() ? (uint32_t)time(nullptr) : 0;
+  std::map<std::string, agent::FoldStatus> snap;
+  std::vector<std::string> chats = g_folds.chatIds();
+  for (const std::string& q : g_foldDriver->ctl().manualPendingChat) chats.push_back(q);
+  const String owner = agent::telegram::ownerChat();
+  std::string def = owner.length() ? std::string(owner.c_str()) : std::string("web");
+  chats.push_back(def);
+  chats.push_back("web");
+  for (const std::string& c : chats)
+    if (!c.empty() && c != "system" && !snap.count(c)) snap[c] = g_foldDriver->status(c, millis(), epoch);
+  std::lock_guard<std::mutex> lk(g_foldStatusMx);
+  g_foldStatusSnap.swap(snap);
+  g_foldDefaultChat.swap(def);
+}
+
+static void publishFoldAll(const std::string& chat) {
+  publishFoldStatus(chat);
+  publishFoldWebStatus();
 }
 
 // One-line fold state for the HIL harness (CTX? console / GET /api/test/ctx).
@@ -2774,188 +2836,163 @@ String foldStatusText(const char* chatArg) {
   return String(snap);
 }
 
-// v3.6.0 fold pump - one auto/manual compaction cycle per pass, tg_poll only.
-// Runs at the END of pollJobs (after loops::checkDue consumed its FireOutcome,
-// so fold spend can never leak into loop metering; runFold also never touches
-// lastTurnUsage_). The cycle: notice -> episodic digest (64 KB budget) ->
-// engine runFold (single-shot, no side effects) -> write order summary-blob
-// FIRST, then chain reset, then the ev:compact boundary row + completion notice.
+bool foldStatusJsonFor(const std::string& chatArg, std::string& out) {
+  agent::FoldStatus st;
+  std::string chat = chatArg;
+  std::vector<std::pair<std::string, agent::FoldStatus>> all;
+  {
+    std::lock_guard<std::mutex> lk(g_foldStatusMx);
+    if (chat.empty()) chat = g_foldDefaultChat;
+    const auto it = g_foldStatusSnap.find(chat);
+    if (it == g_foldStatusSnap.end()) return false;
+    st = it->second;
+    all.assign(g_foldStatusSnap.begin(), g_foldStatusSnap.end());
+  }
+  const uint32_t epoch = memory::clockSynced() ? (uint32_t)time(nullptr) : 0;
+  const int32_t off = agent::utcOffsetAtUnix(epoch);
+  out = agent::foldStatusJson(st, epoch, off);
+  // The chats the page can pick, with their badge.
+  std::string list = ",\"chats\":[";
+  for (size_t i = 0; i < all.size(); i++) {
+    const std::string one = agent::foldStatusJson(all[i].second, epoch, off);
+    const size_t at = one.find("\"state\":\"");
+    const std::string state = at == std::string::npos ? "none" : one.substr(at + 9, one.find('"', at + 9) - at - 9);
+    JsonDocument d;
+    d["chat"] = all[i].first;
+    d["state"] = state;
+    std::string item;
+    serializeJson(d, item);
+    list += (i ? "," : "") + item;
+  }
+  out.insert(out.size() - 1, list + "]");
+  return true;
+}
+
+// The fold's owner notices. A Telegram chat gets a message; the web chat a history row
+// (its reply slot belongs to the turn being polled, live-caught: an async notice there
+// displaced every later web reply); serial and voice only the log.
+static void foldTell(const std::string& chat, const std::string& text) {
+  if (chat == "web") {
+    memory::captureMessage("web", "assistant", nimbus::orch::MsgKind::Message, String(text.c_str()), "",
+                           "ev:foldnote");
+    return;
+  }
+  if (chat == "serial" || chat == "voice") {
+    alogf("fold(%s): %s", chat.c_str(), text.c_str());
+    return;
+  }
+  deliver(String(chat.c_str()), String(text.c_str()), /*system=*/true);
+}
+
+// A summary landed (the store is written): the chain reset, then the boundary row.
+static void foldLanded(const agent::FoldDone& d) {
+  publishFoldStatus(d.chat);
+  g_engine->clearChatConv(d.chat);
+  if (const nimbus::orch::ChatFold* after = g_folds.peek(d.chat))
+    alogf("fold(%s): digest %u B, anchor %s, shift %s, on %s/%s", d.chat.c_str(), (unsigned)d.slice.digest.size(),
+          after->thru.empty() ? "-" : after->thru.c_str(), after->softStart.empty() ? "-" : after->softStart.c_str(),
+          d.host.c_str(), d.model.c_str());
+  const std::string& thru = d.slice.thru;
+  memory::captureMessage(d.chat.c_str(), "system", nimbus::orch::MsgKind::Log,
+      String("Conversation compacted: ") + String((unsigned)d.bytesFolded) + " B / " + String((unsigned)d.msgsFolded) +
+          " msgs folded into a " + String((unsigned)d.summary.size()) + " B summary (produced " +
+          String((unsigned)d.producedBytes) + " B, kept " + String((unsigned)d.summary.size()) + " B) (" +
+          String((unsigned)(d.elapsedMs / 1000)) + " s)",
+      "", thru.empty() ? String("ev:compact") : String("ev:compact,thru:") + thru.c_str());
+}
+
+// The fold slice when the turn-structured history is off: the live conversation's
+// rows, repeats collapsed, as one digest (no anchor).
+static agent::FoldSlice legacyFoldSlice(const std::string& chat, size_t cap) {
+  using namespace nimbus::orch;
+  MsgQuery q;
+  q.sessionId = chat;
+  q.haveKind = true; q.kind = MsgKind::Message;
+  q.alsoKinds = {MsgKind::Image, MsgKind::File, MsgKind::Audio};   // media is conversation
+  q.limit = 400;
+  // NO sinceHours bound (prism v3.6.0): row stamps are boot-relative until SNTP syncs;
+  // the 400-row limit and the digest budget bound the slice, and the summary is
+  // anchored, so re-including already-folded rows costs a few tokens.
+  std::vector<EpisodicMessage> rows;
+  { memory::Lock lk; rows = memory::episodic().query(q); }
+  // CUM-511: only the live conversation; L19-26: a run of one repeated owner message is one line.
+  rows = agent::collapseRepeats(agent::liveConversation(rows, std::string(), 0), agent::utcOffsetAtUnix);
+  agent::FoldSlice s;
+  s.digest = dream::buildEpisodicDigest(rows, cap);
+  s.rows = s.digest.empty() ? 0 : rows.size();
+  return s;
+}
+
+static agent::FoldDriverHooks foldHooks() {
+  agent::FoldDriverHooks h;
+  h.online = [] { return nimbus::net::staConnected(); };   // an offline fold is a guaranteed failure
+  // A due automatic fold waits for the owner (owner_first.h: two quiet minutes, or at
+  // most 10 minutes / 6 turns and then right after a reply went out). An overflow fold
+  // is needed by the next turn.
+  h.quiet = [](bool overflow) {
+    return overflow || g_ownerFirst.foldMayStart(telegram::guardStatus().holding, millis());
+  };
+  h.notDue = [] { g_ownerFirst.noteFoldNotDue(); };
+  h.triggerBytes = [] {
+    const nimbus::orch::ContextBudget b = headBudget();
+    return nimbus::orch::foldTriggerBytes(store::compactAtKB(), b.historySoftBytes, b.historyMaxBytes);
+  };
+  h.foldStepBytes = [] {   // never below v5.1.1's slice (RULINGS-v3 item 8)
+    const nimbus::orch::ContextBudget b = headBudget();
+    return std::max(b.foldSliceBytes, b.foldStepBytes);
+  };
+  h.slice = [](const std::string& chat, size_t cap, bool manual) {
+    return g_engine->histV2On() ? g_engine->historyFoldSlice(chat, cap, manual) : legacyFoldSlice(chat, cap);
+  };
+  h.utcOffsetMin = [](uint32_t epoch) -> int32_t { return agent::utcOffsetAtUnix(epoch); };
+  h.folded = foldLanded;
+  h.tell = foldTell;
+  h.changed = [] { publishFoldWebStatus(); };
+  h.firmware = NIMBUS_FW_BUILD;
+  return h;
+}
+
+// Staged manual requests (web, console, /compact) into the driver's persisted queue.
+static void drainStagedFolds() {
+  char staged[kFoldStageSlots][32];
+  portENTER_CRITICAL(&g_foldSpin);
+  memcpy(staged, g_manualFoldChat, sizeof(staged));
+  memset(g_manualFoldChat, 0, sizeof(g_manualFoldChat));
+  portEXIT_CRITICAL(&g_foldSpin);
+  for (int i = 0; i < kFoldStageSlots; i++) {
+    if (!staged[i][0]) continue;
+    if (g_foldDriver->requestManual(staged[i]) == agent::FoldDriver::Manual::Full)
+      foldTell(staged[i], "\xE2\x9A\xA0 Other summaries are waiting. Try again in a few minutes.");
+  }
+  if (g_foldResetStaged) {
+    g_foldResetStaged = false;
+    g_foldDriver->resetDailyCount();
+    alog("fold: FOLDRESET - today's paid fold count restarts at 0");
+  }
+}
+
+// The fold pump (lane F of the history fix): at most one rung of one fold cycle per
+// pass, tg_poll only (fold_driver.h). Runs at the END of pollJobs (after
+// loops::checkDue consumed its FireOutcome, so fold spend can never leak into loop
+// metering). Write order on success: summary blob FIRST, then the chain reset, then
+// the ev:compact boundary row (foldLanded).
 static void compactTick() {
-  using nimbus::orch::FoldDue;
-  if (!g_engine || g_engine->turnInFlight()) return;
-  if (!nimbus::net::staConnected()) return;   // offline fold = guaranteed breaker burn
+  if (!g_engine || !g_foldDriver) return;
+  drainStagedFolds();
+  if (g_engine->turnInFlight()) return;
   // A parked provider nothing else is calling is asked here, so it recovers by itself
   // (one request at most per pass; the fold waits for the next pass). It waits for the
   // owner: the request blocks this task, and this task reads the owner's messages.
-  if (g_ownerFirst.parkRecheckMayStart(telegram::guardStatus().holding, millis()) && g_engine->recheckParkedHost())
+  if (nimbus::net::staConnected() &&
+      g_ownerFirst.parkRecheckMayStart(telegram::guardStatus().holding, millis()) && g_engine->recheckParkedHost())
     return;
-
-  // Gate FIRST (prism v3.6.0 HIGH): runFold's own heap/key/budget gates fire
-  // AFTER the owner-visible notice and the 64 KB digest would already be paid,
-  // and a Deferred leaves the trigger state intact - so a persistent defer
-  // (board resting under the 30 K floor, a month-long budget cap) turned into a
-  // notice + SD-digest loop once per pump pass. Nothing visible or expensive
-  // happens until a fold can actually run. The staged manual slot is NOT
-  // consumed here, so /compact survives the wait instead of vanishing.
-  if (!g_engine->canFoldNow()) return;
-
-  std::string chat;
-  bool manual = false;
-  portENTER_CRITICAL(&g_foldSpin);
-  if (g_manualFoldChat[0]) { chat = g_manualFoldChat; manual = true; g_manualFoldChat[0] = 0; }
-  portEXIT_CRITICAL(&g_foldSpin);
-  if (!manual && g_lastTurnChat[0]) chat = g_lastTurnChat;
-  if (chat.empty()) return;
-
-  // Pseudo channels (web/serial/voice) hold ONE reply slot: any async fold
-  // notice lands in it and offsets the request/reply pairing by one (live-
-  // caught: "✓ Compacted." displaced every later web reply). They get NO fold
-  // notices - the ev:compact row in the chat history is their visible record.
-  const bool pseudo = (chat == "web" || chat == "serial" || chat == "voice");
-
-  if (manual) {
-    g_folds.resume(chat);   // manual /compact overrides a paused breaker
-  } else {
-    const uint32_t kb = store::compactAtKB();
-    FoldDue due = g_folds.evaluateDue(chat, kb * 1024u, nimbus::orch::kFoldMsgsThreshold);
-    if (due == FoldDue::ThrashPaused) {   // a real refill only (evaluateDue)
-      if (!pseudo)
-        deliver(String(chat.c_str()),
-                String("\xE2\x9A\xA0 Automatic summaries are paused for this chat because the "
-                       "conversation grew too long again right after the last one. Send /compact "
-                       "to summarize it now."),
-                /*system=*/true);
-      return;
-    }
-    if (due != FoldDue::Yes) {
-      g_ownerFirst.noteFoldNotDue();
-      return;
-    }
-    // A due auto fold waits for the owner (owner_first.h: two quiet minutes, or at
-    // most 10 minutes / 6 turns and then right after a reply went out). A manual
-    // /compact is owner work and an overflow fold is needed by the next turn.
-    if (!g_folds.overflowQueued(chat) &&
-        !g_ownerFirst.foldMayStart(telegram::guardStatus().holding, millis()))
-      return;
-  }
-
-  nimbus::orch::ChatFold prev = g_folds.get(chat);
-  if (manual && prev.msgsSinceFold == 0 && prev.summary.empty()) {
-    if (!pseudo) deliver(String(chat.c_str()), String("Nothing to compact yet."), /*system=*/true);
-    return;
-  }
-  // No pre-notice (field 2026-08-11: "triple message on Compaction then
-  // failure"). This ran on EVERY pump pass the fold was due - a failing fold
-  // left the trigger counters intact, so the owner got "Compacting our
-  // conversation" once per retry (3x before the breaker) and then the pause
-  // alert. Auto folds are background maintenance: silent unless something
-  // needs the owner (the breaker alert below). Manual /compact already ack'd
-  // synchronously in handleMessage and gets its result message below.
-
-  std::string digest;
-  std::string thru;   // H3: the newest row the new summary covers ("" = no anchor)
-  const size_t digestCap =
-      std::min(headBudget().foldSliceBytes, nimbus::orch::foldDigestCap(prev.summary.size()));
-  if (g_engine->histV2On()) {
-    // H3 + L19-26: only the turns after the last anchor that lie beyond the kept
-    // verbatim history (half the history budget), repeats collapsed. Nothing new
-    // there = no paid call: a flood of one line never folds.
-    const agent::FoldSlice slice = g_engine->historyFoldSlice(chat, digestCap, manual);
-    if (slice.digest.empty()) {
-      if (manual) {
-        if (!pseudo) deliver(String(chat.c_str()), String("Nothing to compact yet."), /*system=*/true);
-        return;
-      }
-      g_folds.noteFoldSkipped(chat);
-      publishFoldStatus(chat);
-      alogf("fold(%s): nothing new beyond the kept history - skipped", chat.c_str());
-      return;
-    }
-    digest = slice.digest;
-    thru = slice.thru;
-  } else {
-    using namespace nimbus::orch;
-    MsgQuery q;
-    q.sessionId = chat;
-    q.haveKind = true; q.kind = MsgKind::Message;
-    q.alsoKinds = {MsgKind::Image, MsgKind::File, MsgKind::Audio};   // media is conversation
-    q.limit = 400;
-    // NO sinceHours bound (prism v3.6.0): row stamps are nowHours(), which is
-    // BOOT-RELATIVE until SNTP syncs, while lastFoldEpoch is a real epoch -
-    // rows captured in a pre-sync window would sit below every later bound and
-    // never reach any summary. The 400-row limit + the 64 KB digest budget
-    // bound the slice instead, and the summary is ANCHORED (an update, not a
-    // rewrite), so re-including already-folded rows costs a few tokens and can
-    // never lose what the owner said.
-    std::vector<EpisodicMessage> rows;
-    { memory::Lock lk; rows = memory::episodic().query(q); }
-    // CUM-511: a fold summarizes only the live conversation - re-folding rows
-    // from before a /clear would bring the cleared conversation straight back.
-    // L19-26: a run of one repeated owner message is one line with its count.
-    rows = agent::collapseRepeats(agent::liveConversation(rows, std::string(), 0), agent::utcOffsetAtUnix);
-    // Fold-slice bytes derive from the head model's window (65536 at the 200K
-    // anchor), bounded so summary + digest stay ONE whole provider string
-    // (foldDigestCap; a 64 KB string goes null and the provider answers 400).
-    digest = dream::buildEpisodicDigest(rows, digestCap);
-  }
-
-  std::string summary;
-  size_t producedBytes = 0;
-  const uint32_t t0 = millis();
-  const auto res = g_engine->runFold(chat, prev.summary, digest, summary, &producedBytes);
-  if (res == agent::TurnEngine::FoldResult::Deferred) {
-    // A gate closed between canFoldNow() and the call - leave all state
-    // untouched. A MANUAL request must not evaporate silently after the device
-    // promised a confirmation: re-stage it for the next pass.
-    if (manual) stageManualFold(chat.c_str());
-    return;
-  }
-  if (res == agent::TurnEngine::FoldResult::Ok) {
-    g_folds.applyFold(chat, summary, (uint32_t)time(nullptr), thru);   // blob FIRST (anchor with it)
-    {
-      const nimbus::orch::ChatFold after = g_folds.get(chat);   // a backlog left: shift after anchor
-      alogf("fold(%s): digest %u B, anchor %s, shift %s", chat.c_str(), (unsigned)digest.size(),
-            after.thru.empty() ? "-" : after.thru.c_str(), after.softStart.empty() ? "-" : after.softStart.c_str());
-    }
-    // ...and republish, which this function's own contract says to do on
-    // "every turn end AND every fold outcome" - only the first half was ever
-    // implemented. The echo has ONE writer, the onTurnEnd hook, so until now
-    // the diagnostic always reported the stamp as of the last turn, i.e. the
-    // value BEFORE this fold. Anything watching it saw a fold appear only when
-    // the NEXT turn ended, which made a compaction look like it had not
-    // happened. Safe here: compactTick already runs on tg_poll, the same task
-    // that owns g_folds and performs the existing publish.
-    publishFoldStatus(chat);
-    g_engine->clearChatConv(chat);                               // then the chain
-    memory::captureMessage(chat.c_str(), "system", nimbus::orch::MsgKind::Log,
-        String("Conversation compacted: ") + String((unsigned)prev.bytesSinceFold) +
-            " B / " + String((unsigned)prev.msgsSinceFold) + " msgs folded into a " +
-            String((unsigned)summary.size()) + " B summary (produced " +
-            String((unsigned)producedBytes) + " B, kept " + String((unsigned)summary.size()) +
-            " B) (" +
-            String((unsigned)((millis() - t0) / 1000)) + " s)",
-        "", thru.empty() ? String("ev:compact") : String("ev:compact,thru:") + thru.c_str());
-    // Success confirmation only for MANUAL /compact (the owner asked and was
-    // promised a result). Auto folds complete silently - the ev:compact history
-    // row + publishFoldStatus are their record.
-    if (!pseudo && manual) deliver(String(chat.c_str()), String("\xE2\x9C\x93 Compacted."), /*system=*/true);
-  } else if (manual) {
-    // Manual attempts reset the breaker (resume() above), so the 3-fail alert
-    // edge can never fire for them - report the failure directly instead of
-    // leaving "I'll confirm shortly" unanswered forever (prism v3.6.0).
-    g_folds.noteFoldFailed(chat);
-    publishFoldStatus(chat);   // a failed fold is an outcome too - make it readable
-    if (!pseudo)
-      deliver(String(chat.c_str()),
-              String("\xE2\x9A\xA0 Couldn't compact this conversation just now. "
-                     "Try /compact again in a moment."),
-              /*system=*/true);
-  } else if (g_folds.noteFoldFailed(chat)) {
-    publishFoldStatus(chat);
-    if (!pseudo) deliver(String(chat.c_str()),
-            String("\xE2\x9A\xA0 Automatic summaries of this chat keep failing, so they "
-                   "are paused. Send /compact to try again."),
-            /*system=*/true);
+  g_foldDriver->tick(millis(), memory::clockSynced() ? (uint32_t)time(nullptr) : 0);
+  // The status's clock-derived parts (the manual cooldown, the badge's age) move by
+  // themselves: refresh the web copy now and then.
+  static uint32_t lastPublishMs = 0;
+  if (millis() - lastPublishMs >= 5000) {
+    lastPublishMs = millis();
+    publishFoldWebStatus();
   }
 }
 
@@ -3113,7 +3150,8 @@ static void clearConversation(const String& chatId) {
   // A clear is not a fold: empty summary, zeroed counters, epoch 0 (never folded,
   // so the thrash guard cannot mistake the reset for a fold that failed to shrink).
   g_folds.applyFold(cid, std::string(), 0);
-  publishFoldStatus(cid);
+  if (g_foldDriver) g_foldDriver->noteCleared(cid);   // a cycle's slice is gone with it
+  publishFoldAll(cid);
   {
     memory::Lock lk;
     memory::scratchpad().setActiveTask("");   // clears just the active line, tiers untouched

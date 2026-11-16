@@ -127,7 +127,10 @@ static void testHistoryAndFold(ndtest::Ctx& c) {
   clearEnv();
   setenv("CUMULO_API_KEY", "cumulo_sk_test_FOLD", 1);
   FakeHttpTransport tx;
-  const auto opt = opts("vp-a");
+  // The hosted trigger follows the head's derived history once lane B's budget lands
+  // (foldTriggerBytes); 24 KB keeps 40 padded 3 KB turns over it on every head.
+  auto opt = opts("vp-a");
+  opt.foldTriggerBytes = 24 * 1024;
   const auto noBusy = [](bool) {};
   {
     Config cfg;
@@ -141,7 +144,11 @@ static void testHistoryAndFold(ndtest::Ctx& c) {
     c.ok(!has(tx.seen[1].body, "RECENT CONVERSATION"), "not the old text window");
 
     // Enough new rows to be due, with the fold waiting its quiet bound (6 turns).
-    Exchange foldAnswer = headTurn("SUMMARY-OF-EARLIER: the codeword is PERSIMMON.");
+    // A summary the fold's quality gate takes for a digest this size (sections named).
+    Exchange foldAnswer = headTurn(
+        "1. Decisions & preferences\\n- SUMMARY-OF-EARLIER: the codeword is PERSIMMON.\\n"
+        "2. Pending items & next steps\\n- Keep the notes coming.\\n"
+        "3. Facts worth remembering long-term\\n- The owner writes long daily notes.");
     bool folded = false;
     for (int i = 0; i < 40 && !folded; i++) {
       tx.script.push_back(headTurn("noted"));

@@ -228,6 +228,24 @@ static void checkRoutines(ndtest::Ctx& c, DaemonHttpTransport& cl, int port, con
        "wakeup cancel of a missing id answers ok:false");
 }
 
+// Summarize now (lane F): the fold routes sit behind the same token gate as every /api
+// route; with it, the status names every field (none null) and a run is queued (202).
+static void checkFold(ndtest::Ctx& c, DaemonHttpTransport& cl, int port, const std::string& tok) {
+  c.ok(G(cl, port, "/api/fold/status", "").status == 401, "GET /api/fold/status without a token -> 401");
+  c.ok(P(cl, port, "/api/fold/run", "", "").status == 401, "POST /api/fold/run without a token -> 401");
+  c.ok(P(cl, port, "/api/fold/run", "wrong-token", "").status == 401, "a wrong token -> 401");
+  // No chat named: the default, the hosted web chat ("owner").
+  const Out st = G(cl, port, "/api/fold/status", tok);
+  c.ok(st.status == 200 && has(st.body, "\"cap\":12") && has(st.body, "\"canRun\":true") && !has(st.body, "null"),
+       "GET /api/fold/status with the token -> 200, every field present (" + std::to_string(st.status) + ": " +
+           st.body.substr(0, 160) + ")");
+  c.ok(G(cl, port, "/api/fold/status?chat=stranger", tok).status == 404, "an unknown chat -> 404");
+  c.ok(has(st.body, "\"chat\":\"owner\""), "the default is the hosted web chat");
+  const Out run = P(cl, port, "/api/fold/run", tok, "chat=owner");
+  c.ok(run.status == 202 && has(run.body, "\"queued\":true"),
+       "POST /api/fold/run with the token -> 202 queued (" + std::to_string(run.status) + ")");
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== virtual nimbus web surface (T2, offline, loopback) ===\n");
@@ -281,6 +299,7 @@ int main() {
   checkChat(c, cl, port, token);
   checkHardware(c, cl, port, token);
   checkRoutines(c, cl, port, token);
+  checkFold(c, cl, port, token);
 
   http.stop();
   eng.stop();

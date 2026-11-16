@@ -33,6 +33,7 @@
 #include "nimbus/harness/conversation.h"
 #include "nimbus/harness/dream.h"
 #include "nimbus/harness/engine.h"
+#include "nimbus/harness/fold_driver.h"   // FoldDriver - the one fold driver (lane F)
 #include "nimbus/harness/turn_progress.h"  // lane PROG: the round-boundary signal plan
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"
@@ -209,6 +210,9 @@ class NimbusdRig {
     int         embedDims = 1024;
     int         maxVectors = 5000;
     std::map<std::string, std::string> models;
+    // Test seam (test_vn_parity): the automatic fold trigger in bytes (0 = the hosted
+    // trigger: kHostedCompactKb over the head's derived history, foldTriggerBytes).
+    uint32_t    foldTriggerBytes = 0;
   };
 
   // `httpOverride` lets a host test inject a FakeHttpTransport in place of the
@@ -499,12 +503,15 @@ class NimbusdRig {
       record(chat, "Only the owner can compact this conversation.");
       return;
     }
-    const orch::ChatFold f = folds_.get(chat);
-    if (f.msgsSinceFold == 0 && f.summary.empty()) {
+    const orch::ChatFold* f = folds_.peek(chat);
+    if (!f || (f->msgsSinceFold == 0 && f->summary.empty())) {
       record(chat, "Nothing to compact yet.");
       return;
     }
-    manualFoldChat_ = chat;
+    if (foldDriver_->requestManual(chat) == agent::FoldDriver::Manual::Full) {
+      record(chat, "Other summaries are waiting. Try again in a few minutes.");
+      return;
+    }
     record(chat, "Compacting this conversation. A message follows when it is done.");
   }
   void commandClear(const std::string& chat, std::string arg) {
@@ -763,28 +770,18 @@ class NimbusdRig {
   int activeJobCount() const { return jobs_ ? (int)jobs_->sessionInfos().size() : 0; }
 
   // ---- the conversation fold (device compactTick, over the same engine calls) ---
-  // One step per engine-thread tick: nothing runs unless the shared store says the
-  // chat is due, and a due automatic fold waits for a quiet moment (OwnerFirstGate).
-  // The summary is stored first, then the provider chain reset, then the boundary row:
-  // the write order the engine's runFold documents. A pseudo notice is never sent on
-  // an automatic fold; its record is the ev:compact row and the log.
-  // `busy` marks the thread in flight around a fold that really runs.
-  void foldTick(const std::function<void(bool)>& busy) {
-    if (!eng_ || !eng_->canFoldNow()) return;
-    std::string chat;
-    bool manual = false;
-    if (!manualFoldChat_.empty()) {
-      chat.swap(manualFoldChat_);
-      manual = true;
-    } else {
-      chat = lastTurnChat_;
-    }
-    if (chat.empty()) return;
-    if (manual) folds_.resume(chat);
-    else if (!foldDue(chat)) return;
-    busy(true);
-    runFoldFor(chat, manual);
-    busy(false);
+  // One step per engine-thread tick through the shared FoldDriver (fold_driver.h): at
+  // most one rung of one cycle, nothing unless a chat is due, and a due automatic fold
+  // waits for a quiet moment (OwnerFirstGate). The summary is stored first, then the
+  // provider chain reset, then the boundary row (foldLanded). An automatic fold tells
+  // the owner nothing; its record is the ev:compact row and the log.
+  // `busy` marks the thread in flight around each rung's request.
+  agent::FoldTick foldTick(const std::function<void(bool)>& busy) {
+    if (!eng_ || !foldDriver_) return agent::FoldTick::Idle;
+    foldBusy_ = &busy;
+    const agent::FoldTick t = foldDriver_->tick(steadyMs(), (uint32_t)time(nullptr));
+    foldBusy_ = nullptr;
+    return t;
   }
   void noteFoldPumpEnd() { ownerFirst_.notePumpEnd(); }
   // Routines: one due fire per sweep (engine thread, between turns).
@@ -796,6 +793,36 @@ class NimbusdRig {
   HostedSkills& skills() { return *skills_; }
   // The chat's anchored summary ("" = never folded): diagnostics and the tests.
   orch::ChatFold foldState(const std::string& chat) const { return folds_.get(chat); }
+  agent::FoldDriver& foldDriver() { return *foldDriver_; }
+  // GET /api/fold/status (engine thread): the chat's fold health ("" = the default
+  // chat: the Telegram owner when a bot runs here, else the web chat). False for a chat
+  // the instance does not know.
+  bool foldStatusJson(std::string chat, std::string& out) const {
+    if (chat.empty()) chat = foldDefaultChat();
+    if (!foldChatKnown(chat)) return false;
+    const uint32_t now = (uint32_t)time(nullptr);
+    out = agent::foldStatusJson(foldDriver_->status(chat, steadyMs(), now), now, hostedOffsetAt(now));
+    std::string list = ",\"chats\":[";
+    bool first = true;
+    for (const std::string& c : foldChats()) {
+      const std::string one = agent::foldStatusJson(foldDriver_->status(c, steadyMs(), now), now, 0);
+      const size_t at = one.find("\"state\":\"");
+      list += std::string(first ? "" : ",") + "{\"chat\":\"" + jsonEsc(c) + "\",\"state\":\"" +
+              one.substr(at + 9, one.find('"', at + 9) - at - 9) + "\"}";
+      first = false;
+    }
+    out.insert(out.size() - 1, list + "]");
+    return true;
+  }
+  // POST /api/fold/run (engine thread): queue a manual catch-up. False for an unknown chat.
+  bool requestManualFold(std::string chat, std::string& chosen) {
+    if (chat.empty()) chat = foldDefaultChat();
+    if (!foldChatKnown(chat)) return false;
+    chosen = chat;
+    if (foldDriver_->requestManual(chat) == agent::FoldDriver::Manual::Full)
+      record(chat, "Other summaries are waiting. Try again in a few minutes.");
+    return true;
+  }
 
   // ---- Mistral workspace probe (device parity: provider_verify syncMistralConnectors)
   // A Mistral Studio connector is usable once the key's workspace LISTS it as active
@@ -1178,6 +1205,7 @@ class NimbusdRig {
     scratch_.setActiveTask("");
     // A clear is not a fold: empty summary, zeroed counters, epoch 0 (device parity).
     folds_.applyFold(chat, std::string(), 0);
+    if (foldDriver_) foldDriver_->noteCleared(chat);   // a cycle's slice is gone with it
     if (skills_) skills_->dropChat(chat);
     flush();
   }
@@ -1852,6 +1880,7 @@ class NimbusdRig {
     overlay_.bind(epi_.get());      // a photo row's settled text, on every read
     foldIO_.setPath(memDir() + "/chatsum.txt");
     folds_.begin(&foldIO_);
+    foldCtlIO_.setPath(memDir() + "/fold_ctl.txt");   // the device's /data/fold_ctl.txt
 
     files_.reset(new PosixFiles(filesDir()));
 
@@ -2782,6 +2811,16 @@ class NimbusdRig {
       carriedTurns_ += eng_->turnCount();
     }
     eng_.reset(new agent::TurnEngine(std::move(d)));
+    bindFoldDriver();
+  }
+  // The fold driver over the (re)built engine: built once, rebound on a rebuild.
+  void bindFoldDriver() {
+    if (foldDriver_) {
+      foldDriver_->rebind(*eng_);
+      return;
+    }
+    foldDriver_.reset(new agent::FoldDriver(*eng_, folds_, foldCtlIO_.io(), foldHooks()));
+    foldDriver_->begin();
   }
 
   // What each turn leaves behind: its identity, its tool rows, its end-of-turn accounting.
@@ -3470,82 +3509,82 @@ class NimbusdRig {
   void noteFoldTurnEnd(const agent::TurnEndEv& ev) {
     ownerFirst_.noteTurnEnd(steadyMs());
     if (ev.chatId.empty() || ev.chatId == "system") return;
-    lastTurnChat_ = ev.chatId;
+    if (foldDriver_) foldDriver_->noteTurnChat(ev.chatId);
     folds_.noteTurn(ev.chatId);
     if (!ev.ok && anyContextOverflow(ev)) {
       folds_.markOverflow(ev.chatId);
       agent::hlog::logf("fold: context-overflow classified on %s - fold queued", ev.chatId.c_str());
     }
   }
-  bool foldDue(const std::string& chat) {
-    const orch::FoldDue due = folds_.evaluateDue(chat, kHostedCompactKb * 1024u, orch::kFoldMsgsThreshold);
-    if (due == orch::FoldDue::ThrashPaused) {
-      record(chat, "Automatic summaries are paused for this chat because the conversation grew too long "
-                   "again right after the last one. Send /compact to summarize it now.");
-      return false;
-    }
-    if (due != orch::FoldDue::Yes) {
-      ownerFirst_.noteFoldNotDue();
-      return false;
-    }
-    return folds_.overflowQueued(chat) || ownerFirst_.foldMayStart(false, steadyMs());
+  // The fold driver's hooks over this instance (the device's are compactTick's).
+  agent::FoldDriverHooks foldHooks() {
+    agent::FoldDriverHooks h;
+    h.quiet = [this](bool overflow) { return overflow || ownerFirst_.foldMayStart(false, steadyMs()); };
+    h.notDue = [this] { ownerFirst_.noteFoldNotDue(); };
+    // The VN has no compactAtKB setting: the hosted value over the head's derived
+    // history (RULINGS-v3 item 3), or the test seam's bytes.
+    h.triggerBytes = [this]() -> uint32_t {
+      if (opt_.foldTriggerBytes) return opt_.foldTriggerBytes;
+      const orch::ContextBudget b = orch::headContextBudget(eng_->headHost(), modelFor(eng_->headHost()), {});
+      return orch::foldTriggerBytes(kHostedCompactKb, b.historySoftBytes, b.historyMaxBytes);
+    };
+    h.foldStepBytes = [this] {   // never below v5.1.1's slice
+      const orch::ContextBudget b = orch::headContextBudget(eng_->headHost(), modelFor(eng_->headHost()), {});
+      return std::max(b.foldSliceBytes, b.foldStepBytes);
+    };
+    h.utcOffsetMin = [](uint32_t epoch) { return hostedOffsetAt(epoch); };
+    h.folded = [this](const agent::FoldDone& d) { foldLanded(d); };
+    h.tell = [this](const std::string& chat, const std::string& text) { record(chat, text); };
+    h.asking = [this](bool on) {
+      if (foldBusy_ && *foldBusy_) (*foldBusy_)(on);
+    };
+    h.firmware = NIMBUS_FW_BUILD;
+    return h;
   }
-  // The slice the new summary takes. False when there is nothing new beyond the kept
-  // verbatim history (no paid call).
-  bool foldDigest(const std::string& chat, const orch::ChatFold& prev, bool manual, std::string& digest,
-                  std::string& thru) {
-    const orch::ContextBudget b = orch::headContextBudget(eng_->headHost(), modelFor(eng_->headHost()), {});
-    const agent::FoldSlice slice =
-        eng_->historyFoldSlice(chat, std::min(b.foldSliceBytes, orch::foldDigestCap(prev.summary.size())), manual);
-    digest = slice.digest;
-    thru = slice.thru;
-    return !digest.empty();
-  }
-  void runFoldFor(const std::string& chat, bool manual) {
-    const orch::ChatFold prev = folds_.get(chat);
-    std::string digest, thru;
-    if (!foldDigest(chat, prev, manual, digest, thru)) {
-      if (manual) {
-        record(chat, "Nothing to compact yet.");
-        return;
-      }
-      folds_.noteFoldSkipped(chat);
-      agent::hlog::logf("fold(%s): nothing new beyond the kept history - skipped", chat.c_str());
-      return;
-    }
-    std::string summary;
-    size_t produced = 0;
-    const auto t0 = std::chrono::steady_clock::now();
-    const auto res = eng_->runFold(chat, prev.summary, digest, summary, &produced);
-    if (res == agent::TurnEngine::FoldResult::Deferred) {
-      if (manual) manualFoldChat_ = chat;
-      return;
-    }
-    if (res != agent::TurnEngine::FoldResult::Ok) {
-      noteFoldFailure(chat, manual);
-      return;
-    }
-    folds_.applyFold(chat, summary, (uint32_t)time(nullptr), thru);   // the summary first...
-    eng_->clearChatConv(chat);                                        // ...then the chain
-    const orch::ChatFold after = folds_.get(chat);
-    agent::hlog::logf("fold(%s): digest %u B, anchor %s, shift %s", chat.c_str(), (unsigned)digest.size(),
-                      after.thru.empty() ? "-" : after.thru.c_str(),
-                      after.softStart.empty() ? "-" : after.softStart.c_str());
-    const auto secs = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - t0).count();
-    captureKind(chat, "system", orch::MsgKind::Log,
-                "Conversation compacted: " + std::to_string(prev.bytesSinceFold) + " B / " +
-                    std::to_string(prev.msgsSinceFold) + " msgs folded into a " + std::to_string(summary.size()) +
-                    " B summary (produced " + std::to_string(produced) + " B, kept " +
-                    std::to_string(summary.size()) + " B) (" + std::to_string(secs) + " s)",
+  // A summary landed (the store is written): the chain reset, then the boundary row.
+  void foldLanded(const agent::FoldDone& d) {
+    eng_->clearChatConv(d.chat);
+    const orch::ChatFold* after = folds_.peek(d.chat);
+    agent::hlog::logf("fold(%s): digest %u B, anchor %s, shift %s, on %s/%s", d.chat.c_str(),
+                      (unsigned)d.slice.digest.size(), after && !after->thru.empty() ? after->thru.c_str() : "-",
+                      after && !after->softStart.empty() ? after->softStart.c_str() : "-", d.host.c_str(),
+                      d.model.c_str());
+    const std::string& thru = d.slice.thru;
+    captureKind(d.chat, "system", orch::MsgKind::Log,
+                "Conversation compacted: " + std::to_string(d.bytesFolded) + " B / " + std::to_string(d.msgsFolded) +
+                    " msgs folded into a " + std::to_string(d.summary.size()) + " B summary (produced " +
+                    std::to_string(d.producedBytes) + " B, kept " + std::to_string(d.summary.size()) + " B) (" +
+                    std::to_string(d.elapsedMs / 1000) + " s)",
                 thru.empty() ? std::string("ev:compact") : "ev:compact,thru:" + thru);
-    if (manual) record(chat, "Compacted.");
     flush();
   }
-  void noteFoldFailure(const std::string& chat, bool manual) {
-    const bool paused = folds_.noteFoldFailed(chat);
-    if (manual) record(chat, "Couldn't compact this conversation just now. Try /compact again in a moment.");
-    else if (paused)
-      record(chat, "Automatic summaries of this chat keep failing, so they are paused. Send /compact to try again.");
+  // The chat Summarize now takes by default: the Telegram owner when a bot runs here,
+  // else the web chat.
+  std::string foldDefaultChat() const {
+    if (cfg_.has("TELEGRAM_BOT_TOKEN") && access_) {
+      const std::string allow = access_->allowCsv();
+      const std::string owner = allow.substr(0, allow.find(','));
+      if (!owner.empty()) return owner;
+    }
+    return kWebChatId;
+  }
+  std::vector<std::string> foldChats() const {
+    std::vector<std::string> out = folds_.chatIds();
+    for (const std::string& c : {foldDefaultChat(), std::string(kWebChatId)})
+      if (std::find(out.begin(), out.end(), c) == out.end()) out.push_back(c);
+    return out;
+  }
+  bool foldChatKnown(const std::string& chat) const {
+    const std::vector<std::string> all = foldChats();
+    return std::find(all.begin(), all.end(), chat) != all.end();
+  }
+  static std::string jsonEsc(const std::string& s) {
+    std::string o;
+    for (char c : s) {
+      if (c == '"' || c == '\\') o += '\\';
+      if ((unsigned char)c >= 0x20) o += c;
+    }
+    return o;
   }
 
   static std::string trunc(const std::string& s, size_t n) {
@@ -3577,9 +3616,11 @@ class NimbusdRig {
   std::string turnTag_;          // "turn:<row id>" of the turn in flight ("" between turns)
   std::map<std::string, std::string> traceArgs_;   // call id -> args, until its result
   FileFoldIO foldIO_;
+  FileFoldCtlIO foldCtlIO_;      // the device-wide fold control (fold_ctl.txt)
   orch::FoldStore folds_;        // per-chat fold state (the shared store)
   orch::OwnerFirstGate ownerFirst_;   // a due automatic fold waits for a quiet moment
-  std::string lastTurnChat_, manualFoldChat_;   // what the fold tick looks at
+  std::unique_ptr<agent::FoldDriver> foldDriver_;   // the one fold driver (engine thread)
+  const std::function<void(bool)>* foldBusy_ = nullptr;   // foldTick's busy marker, while it runs
   uint32_t epiSeq_ = 0;          // episodic row id sequence (engine thread)
   orch::TokenUsage carriedUsage_;   // session usage of engines a rebuild replaced (CUM-546)
   uint32_t carriedTurns_ = 0;

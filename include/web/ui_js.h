@@ -2607,6 +2607,9 @@ function applyOrch(d){
     if(tv){tv.checked=!!d.ttsOn; tv.onchange=()=>orchApply({ttsOn:tv.checked?1:0});}}
   if(d.loopRounds!==undefined)set('loopRounds',d.loopRounds);
   if(d.compactKB!==undefined)set('compactKB',d.compactKB);
+  if(d.compactEffKB!==undefined&&$('compactKB')){   // the trigger in effect (48 follows the model)
+    let e=$('compactEff');if(!e){e=document.createElement('p');e.id='compactEff';e.className='hint';$('compactKB').after(e);}
+    e.textContent='In effect now: '+d.compactEffKB+' KB.';}
   if(d.tlsSlots!==undefined)set('tlsSlots',d.tlsSlots);
   if(d.tlsVerify!==undefined){const tf=$('tlsVerify');if(tf)tf.checked=!!d.tlsVerify;}
   if(d.capProbe!==undefined)set('capProbe',d.capProbe);
@@ -4102,7 +4105,57 @@ $('embsave').onclick=()=>{
     })
     .catch(e=>{btn.disabled=false;failToast(e);msg.textContent=saveFailText(e,'Couldn\'t verify - try again.');});
 };
-function loadMemDash(){loadMemStats();loadMemList();loadNsUsage();loadScratch();loadMemCfg();loadPrefs();}
+function loadMemDash(){loadMemStats();loadMemList();loadNsUsage();loadScratch();loadMemCfg();loadPrefs();loadFold();}
+// ---- Conversation summary (v5.1.2): the summary's health per conversation and
+// Summarize Now (GET /api/fold/status, POST /api/fold/run). While a summary runs, is
+// queued or cools down, the card re-reads every few seconds while the pane is open.
+let _foldChat='',_foldSeen='',_foldTimer=0;
+function _foldName(c){return c==='web'||(HOSTED&&c==='owner')?'Web chat':c==='serial'?'Console':c==='voice'?'Voice':'Telegram chat '+c;}
+function _foldAge(h){if(h<1)return 'under an hour ago';if(h<48)return Math.round(h)+' h ago';return Math.round(h/24)+' days ago';}
+function _foldIn(s){if(s<120)return 'in a moment';if(s<7200)return 'in '+Math.round(s/60)+' minutes';return 'in about '+Math.round(s/3600)+' hours';}
+const _FOLD_BADGE={fresh:'Fresh',stale:'Stale',behind:'Behind',none:'Not made yet'};
+function _foldLines(d){
+  const l=[];
+  l.push(d.lastOk?'Last updated '+(d.lastOkDate||'')+' ('+_foldAge(d.summaryAgeH)+').':'No summary yet.');
+  if(d.thruDate)l.push('It covers the conversation up to '+d.thruDate+'.');
+  if(d.uncovered)l.push('Some older messages are not in it yet.');
+  if(d.running)l.push('Summarizing now, provider '+d.rung+(d.rungHost?' ('+d.rungHost+')':'')+'.');
+  else if(d.queued)l.push('Queued. It starts in a moment.');
+  if(d.failedCycles&&!d.running)l.push('The last '+(d.failedCycles>1?d.failedCycles+' tries':'try')+' did not finish.'+(d.nextTryInS?' It tries again '+_foldIn(d.nextTryInS)+'.':''));
+  l.push('Summary requests today: '+d.paidToday+' (automatic ones stop at '+d.cap+').');
+  return l;
+}
+function renderFold(d){
+  _foldChat=d.chat;
+  const sel=$('foldChat');
+  if(sel){const opts=(d.chats||[]).map(c=>'<option value="'+_fesc(c.chat)+'"'+(c.chat===d.chat?' selected':'')+'>'+_fesc(_foldName(c.chat))+'</option>').join('');
+    if(sel.innerHTML!==opts)sel.innerHTML=opts;}
+  const b=$('foldBadge');if(b){b.textContent=_FOLD_BADGE[d.state]||'';b.className='badge'+(d.state==='none'?' un':d.state==='fresh'?'':' ext');
+    b.style.color=d.state==='behind'?'#e0a349':'';}
+  const info=$('foldInfo');if(info)info.innerHTML=_foldLines(d).map(x=>'<div>'+_fesc(x)+'</div>').join('');
+  const run=$('foldRun');if(run)run.disabled=!d.canRun;
+  const m=$('foldMsg');if(m&&!m.dataset.keep)m.textContent=d.canRun?'':(d.why||'');
+}
+function loadFold(){
+  const info=$('foldInfo');if(!info)return;
+  clearTimeout(_foldTimer);
+  fetch('/api/fold/status'+(_foldChat?'?chat='+encodeURIComponent(_foldChat):'')).then(jok).then(d=>{
+    const now=JSON.stringify(d);
+    if(now!==_foldSeen){_foldSeen=now;renderFold(d);}
+    const pane=$('pane-mem');
+    if((d.running||d.queued||d.cooldownS)&&pane&&pane.style.display!=='none')_foldTimer=setTimeout(loadFold,4000);
+  }).catch(()=>{info.textContent='Summary status unavailable. Try again in a moment.';});
+}
+$('foldChat')&&($('foldChat').onchange=e=>{_foldChat=e.target.value;_foldSeen='';loadFold();});
+$('foldRun')&&($('foldRun').onclick=()=>{
+  const fd=new FormData();if(_foldChat)fd.append('chat',_foldChat);
+  const m=$('foldMsg'),run=$('foldRun');if(run)run.disabled=true;
+  fetch('/api/fold/run',{method:'POST',body:fd}).then(async r=>{
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){if(m)m.textContent=j.error||('Could not start ('+r.status+'). Try again.');if(run)run.disabled=false;return;}
+    toast('Summarizing now');_foldSeen='';loadFold();
+  }).catch(()=>{if(m)m.textContent='Could not reach the device. Try again.';if(run)run.disabled=false;});
+});
 
 // ---- Files (E1 artifact store): browse /mem/files, download, delete, upload ----
 function _fbytes(n){n=n||0;return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB';}

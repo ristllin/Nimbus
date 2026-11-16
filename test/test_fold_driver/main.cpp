@@ -303,6 +303,14 @@ static void test_manual_restarts_an_automatic_cycle_with_keep_zero() {
   TEST_ASSERT_EQUAL_STRING("mistral/model-mistral", d.askedKeys[2].c_str());
   TEST_ASSERT_EQUAL_STRING("anthropic/sub-anthropic", (st.rungHost + "/" + st.rungModel).c_str());
   TEST_ASSERT_TRUE(d.drv->requestManual("c") == FoldDriver::Manual::AlreadyRunning);
+  // A /clear ends the cycle with its slice, uncounted; the queued request is answered.
+  d.drv->noteCleared("c");
+  TEST_ASSERT_FALSE(d.drv->cycleActive());
+  TEST_ASSERT_EQUAL_UINT32(0, d.folds.get("c").failedCycles);
+  d.rows["c"].clear();
+  d.plat.ms += FoldDriver::kManualCooldownMs;
+  TEST_ASSERT_TRUE(d.tick(kT0 + 2) == FoldTick::Skipped);
+  TEST_ASSERT_EQUAL_STRING("Nothing to compact yet.", d.told.back().second.c_str());
 }
 
 // The daily cap is the device's: five chats due and failing share 12 paid requests a

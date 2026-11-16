@@ -59,7 +59,30 @@ std::string LittleFsFoldStoreIO::load() {
 }
 
 void LittleFsFoldStoreIO::save(const std::string& blob) {
-  writeFileAtomic(kFoldPath, blob, "chatsum");
+  // The whole blob (up to kFoldBlobMax, 64 KB) is rewritten on every turn: its write
+  // time is logged so a bench row (B05) and the owner's log can see what it costs.
+  const uint32_t t0 = millis();
+  const bool ok = writeFileAtomic(kFoldPath, blob, "chatsum");
+  alogf("fold: chatsum.txt %u B %s in %u ms", (unsigned)blob.size(), ok ? "saved" : "NOT saved",
+        (unsigned)(millis() - t0));
+}
+
+// Lane F: the device-wide fold control (the daily paid count, the alert day, the
+// queued manual requests, the firmware at the last failure). A pre-v5.1.2 image never
+// reads it, and a missing or damaged file reads as a fresh device.
+static const char* kFoldCtlPath = "/data/fold_ctl.txt";
+
+nimbus::orch::FoldCtlIO LittleFsFoldCtlIO::io() {
+  nimbus::orch::FoldCtlIO io;
+  io.load = [] {
+    File f = LittleFS.open(kFoldCtlPath, FILE_READ);
+    if (!f) return std::string();
+    String s = f.readString();
+    f.close();
+    return std::string(s.c_str(), s.length());
+  };
+  io.save = [](const std::string& text) { return writeFileAtomic(kFoldCtlPath, text, "fold_ctl"); };
+  return io;
 }
 
 void LittleFsMemoryStore::clearModel() {

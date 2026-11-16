@@ -66,4 +66,8 @@ struct LittleFsFoldStoreIO : nimbus::orch::FoldStoreIO {
   std::string load() override;
   void        save(const std::string& blob) override;
 };
+// Lane F of the history fix: the device-wide fold control, /data/fold_ctl.txt.
+struct LittleFsFoldCtlIO {
+  static nimbus::orch::FoldCtlIO io();
+};
 }  // namespace agent

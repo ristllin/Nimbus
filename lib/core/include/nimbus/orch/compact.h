@@ -199,6 +199,17 @@ struct ChatFold {
   uint32_t lastOwnerHash = 0;
 };
 
+// The automatic trigger (lane F, ruling 3): the owner's compactAtKB over the head's
+// derived history. 0 = off. While the derived history is no bigger than v5.1.1's
+// window (kLegacyHistoryMaxBytes: the floor branch, and every head until lane B's
+// derivation lands) it is exactly v5.1.1: compactAtKB KB. Above it, 48 (the stored
+// default) means derived: the history's soft mark, never below 24 KB; any other value
+// is the soft mark itself, clamped to [8 KB, historyMax - 8 KB].
+constexpr uint32_t kCompactAtKbDefault = 48;
+constexpr size_t kLegacyHistoryMaxBytes = 16384;
+constexpr uint32_t kFoldTriggerFloor = 24u * 1024u;
+uint32_t foldTriggerBytes(uint32_t compactAtKB, size_t softBytes, size_t historyMaxBytes);
+
 // Owner messages a chat may gather before a fold is due by count alone (the
 // byte threshold is the owner's compactAtK). Only DISTINCT messages count.
 constexpr uint32_t kFoldMsgsThreshold = 200;

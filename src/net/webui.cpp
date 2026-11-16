@@ -1387,6 +1387,9 @@ static void buildOrchState(String& out) {
     d["loopRescapEff"] = (int)b.toolResultBytes;
     d["loopTotcapEff"] = (int)b.toolTotalBytes;
     d["ctxTokens"] = b.ctxTokens;
+    // Lane F: the automatic summary's trigger in effect (48, the default, follows the model).
+    d["compactEffKB"] = nimbus::orch::foldTriggerBytes(agent::store::compactAtKB(), b.historySoftBytes,
+                                                      b.historyMaxBytes) / 1024u;
   }
   d["compactKB"]    = agent::store::compactAtKB();
   d["tlsSlots"]     = agent::store::tlsSlots();

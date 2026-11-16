@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -587,6 +588,39 @@ static void test_foldstore_rollback_round_trip() {
   TEST_ASSERT_EQUAL_STRING("m00001c96", f.softStart.c_str());
 }
 
+// The candidate blob fixture (test/support/fixtures/fold_blob_v5_1_2_lumi.txt): Lumi's
+// v5.1.1 blob after the update, two failed cycles on her chat and a fold of the web
+// chat, as this encoder writes it. check_fold_health.py reads it under the v5.1.1 parser
+// (the rollback). Written once when absent; afterwards the encoder must reproduce it.
+static void test_candidate_blob_fixture_matches_the_encoder() {
+  std::ifstream lf("test/support/fixtures/fold_blob_v5_1_1_lumi.txt", std::ios::binary);
+  std::stringstream ls;
+  ls << lf.rdbuf();
+  FakeIO io;
+  io.blob = ls.str();
+  FoldStore fs;
+  fs.begin(&io);
+  const uint32_t t0 = 1794787200;   // 2026-11-16 00:00 UTC
+  fs.noteCycleFailed("1000000001", t0);
+  fs.noteCycleFailed("1000000001", t0 + 900);
+  fs.applyFold("web", "1. Decisions & preferences\n- Replies stay short.\n", t0 + 60, "m000013f9");
+  const std::string blob = fs.serialize();
+  const std::string file = blob + "\n";   // the repo's end-of-file rule; a reader drops the partial record
+  const char* path = "test/support/fixtures/fold_blob_v5_1_2_lumi.txt";
+  std::ifstream cf(path, std::ios::binary);
+  if (!cf.good()) {
+    std::ofstream(path, std::ios::binary) << file;
+    std::printf("wrote %s (%u B)\n", path, (unsigned)blob.size());
+    return;
+  }
+  std::stringstream cs;
+  cs << cf.rdbuf();
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(cs.str().c_str(), file.c_str(), "the encoder no longer writes the fixture");
+  const std::vector<LegacyChat> old = legacyParse(blob);
+  TEST_ASSERT_EQUAL(2, (int)old.size());
+  for (const LegacyChat& c : old) TEST_ASSERT_FALSE(c.paused);
+}
+
 // The class property (DoD): from every state any sequence of failures, thrash refills,
 // folds, reloads and planted legacy blobs (v4.6.4 and v5.1.1 shapes) can reach, a chat
 // with hidden rows is due 12 h later, with no resume and no manual request.
@@ -626,6 +660,26 @@ static void test_foldstore_no_reachable_state_stays_off() {
     fs->setSoftStart("c", hidden);
     TEST_ASSERT_EQUAL_INT_MESSAGE((int)FoldDue::Yes, (int)fs->evaluateDue("c", 48000, 200, now + 12 * 3600),
                                   "a reachable state stayed off past 12 h");
+  }
+}
+
+// The automatic trigger: v5.1.1 exactly while the history is v5.1.1's size; derived (the
+// soft mark, never below 24 KB) for the stored 48; an owner's own value clamped inside
+// the history; 0 is off. Over every legacy window and a sweep of derived ones.
+static void test_fold_trigger_follows_compact_at_kb() {
+  for (size_t legacyMax : {(size_t)3000, (size_t)8192, kLegacyHistoryMaxBytes})
+    for (uint32_t kb : {0u, 8u, 48u, 96u, 512u}) TEST_ASSERT_EQUAL_UINT32(kb * 1024u, foldTriggerBytes(kb, 4096, legacyMax));
+  for (size_t max = kLegacyHistoryMaxBytes + 1024; max < 400u * 1024u; max += 7 * 1024) {
+    const size_t soft = max * 8 / 10;
+    TEST_ASSERT_EQUAL_UINT32(0, foldTriggerBytes(0, soft, max));
+    const uint32_t derived = foldTriggerBytes(kCompactAtKbDefault, soft, max);
+    TEST_ASSERT_TRUE(derived >= kFoldTriggerFloor);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)std::max<size_t>(soft, kFoldTriggerFloor), derived);
+    for (uint32_t kb : {1u, 8u, 96u, 512u}) {
+      const uint32_t t = foldTriggerBytes(kb, soft, max);
+      TEST_ASSERT_TRUE(t >= 8u * 1024u || max < 16u * 1024u);
+      TEST_ASSERT_TRUE(t <= max - 8u * 1024u);
+    }
   }
 }
 
@@ -881,8 +935,10 @@ int main(int, char**) {
   RUN_TEST(test_foldstore_legacy_pauses_lift_on_load);
   RUN_TEST(test_foldstore_lumi_fixture_is_due_at_once);
   RUN_TEST(test_foldstore_rollback_round_trip);
+  RUN_TEST(test_candidate_blob_fixture_matches_the_encoder);
   RUN_TEST(test_foldstore_no_reachable_state_stays_off);
   RUN_TEST(test_fold_ctl_codec_and_queue);
+  RUN_TEST(test_fold_trigger_follows_compact_at_kb);
   RUN_TEST(test_foldstore_blob_is_byte_bounded_dropping_oldest);
   RUN_TEST(test_foldstore_lru);
   RUN_TEST(test_foldstore_summary_separators_stripped);

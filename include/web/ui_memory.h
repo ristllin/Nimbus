@@ -56,6 +56,17 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 </div>
 </details>
 
+<details class=setgroup id=foldGroup><summary>Conversation summary <span class="badge" id=foldBadge></span><span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
+<p class=hint>The assistant keeps a running summary of each conversation, so it still knows what you talked about once older messages leave its view. It updates by itself; Summarize Now catches up right away.</p>
+<label for=foldChat>Conversation</label>
+<select id=foldChat></select>
+<div id=foldInfo class=hint>loading&hellip;</div>
+<div class=row><button id=foldRun type=button>Summarize Now</button></div>
+<p class=hint id=foldMsg></p>
+</div>
+</details>
+
 <details class=setgroup><summary>Long-term memory <span class="badge" id=memstat></span><span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <div id=tierbanner style="display:none;margin:6px 0;padding:8px;border-radius:8px;background:#3a2a15;color:#f0c890;font-size:13px;line-height:1.35"></div>

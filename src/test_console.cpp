@@ -1434,6 +1434,13 @@ void dispatch(String line) {
     reply(s_h.ctxInfo ? s_h.ctxInfo(chat) : String("ERR ctx unavailable"));
     return;
   }
+  if (line == "FOLDRESET") {
+    // Lane F: bench rows reset the device-wide daily fold count between rows (the
+    // cap would otherwise carry from one row into the next). Drained on tg_poll.
+    agent::orchestrator::stageFoldDailyReset();
+    reply("FOLDRESET staged (CTX? shows paidToday=0 after the next pump pass)");
+    return;
+  }
   if (line.startsWith("COMPACT")) {
     String chat = line.length() > 7 ? line.substring(8) : String("");
     chat.trim();

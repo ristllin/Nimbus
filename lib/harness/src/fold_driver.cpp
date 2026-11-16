@@ -118,7 +118,7 @@ std::string foldStatusJson(const FoldStatus& s, uint32_t nowEpoch, int32_t utcOf
 }
 
 FoldDriver::FoldDriver(TurnEngine& eng, orch::FoldStore& folds, orch::FoldCtlIO ctlIO, FoldDriverHooks hooks)
-    : eng_(eng), folds_(folds), ctlIO_(std::move(ctlIO)), hooks_(std::move(hooks)) {}
+    : eng_(&eng), folds_(folds), ctlIO_(std::move(ctlIO)), hooks_(std::move(hooks)) {}
 
 void FoldDriver::begin() {
   ctl_ = orch::FoldCtl::decode(ctlIO_.load ? ctlIO_.load() : std::string());
@@ -155,7 +155,7 @@ FoldTick FoldDriver::tick(uint32_t nowMs, uint32_t nowEpoch) {
   if (hooks_.online && !hooks_.online()) return waiting ? FoldTick::Deferred : FoldTick::Idle;
   // No turn in flight, the heap floor, a rung to ask: nothing visible or paid happens
   // before these pass (prism v3.6.0 HIGH), and a cycle keeps its place meanwhile.
-  if (!eng_.canFoldNow()) return waiting ? FoldTick::Deferred : FoldTick::Idle;
+  if (!eng_->canFoldNow()) return waiting ? FoldTick::Deferred : FoldTick::Idle;
   if (!cycleActive()) {
     const FoldTick started = startCycle(nowMs, nowEpoch);
     if (!cycleActive()) return started;
@@ -218,7 +218,7 @@ bool FoldDriver::pickAutomatic(uint32_t nowMs, uint32_t nowEpoch, std::string& c
 }
 
 std::vector<FoldRung> FoldDriver::orderedRungs() const {
-  std::vector<FoldRung> rungs = eng_.foldRungs();
+  std::vector<FoldRung> rungs = eng_->foldRungs();
   // A (host, model) that answered empty or thin goes last (stable among the rest).
   std::stable_partition(rungs.begin(), rungs.end(),
                         [this](const FoldRung& r) { return !degraded_.count(rungKey(r.host, r.model)); });
@@ -269,7 +269,7 @@ FoldTick FoldDriver::startCycle(uint32_t nowMs, uint32_t nowEpoch) {
   const size_t step = hooks_.foldStepBytes ? hooks_.foldStepBytes() : kDefaultFoldStep;
   const size_t cap =
       std::min(orch::foldDigestAfterFailures(step, f ? f->failedCycles : 0), orch::foldDigestCap(c.prevSummary.size()));
-  c.slice = hooks_.slice ? hooks_.slice(chat, cap, manual) : eng_.historyFoldSlice(chat, cap, manual);
+  c.slice = hooks_.slice ? hooks_.slice(chat, cap, manual) : eng_->historyFoldSlice(chat, cap, manual);
   if (c.slice.digest.empty()) return nothingToFold(chat, manual, nowMs);
   c.chat = chat;
   c.manual = manual;
@@ -292,7 +292,7 @@ FoldTick FoldDriver::runRung(uint32_t nowMs, uint32_t nowEpoch) {
   const FoldRung rung = cycle_.rungs[cycle_.idx];
   // A rung whose host left the ladder since the cycle froze it (parked, capped, its key
   // removed) is passed over, not asked.
-  const std::vector<FoldRung> now = eng_.foldRungs();
+  const std::vector<FoldRung> now = eng_->foldRungs();
   if (std::none_of(now.begin(), now.end(), [&](const FoldRung& r) { return r.host == rung.host; })) {
     hlog::logf("fold(%s): rung %u/%u %s/%s passed over - not usable now", cycle_.chat.c_str(),
                (unsigned)(cycle_.idx + 1), (unsigned)n, rung.host.c_str(), rung.model.c_str());
@@ -300,7 +300,9 @@ FoldTick FoldDriver::runRung(uint32_t nowMs, uint32_t nowEpoch) {
   }
   FoldRungReport rep;
   std::string summary;
-  const FoldResult r = eng_.runFoldRung(cycle_.chat, cycle_.prevSummary, cycle_.slice.digest, rung, summary, &rep);
+  if (hooks_.asking) hooks_.asking(true);
+  const FoldResult r = eng_->runFoldRung(cycle_.chat, cycle_.prevSummary, cycle_.slice.digest, rung, summary, &rep);
+  if (hooks_.asking) hooks_.asking(false);
   if (rep.paidRequests) {
     ctl_.notePaid(today(nowEpoch), rep.paidRequests);
     saveCtl();
@@ -410,6 +412,18 @@ FoldDriver::Manual FoldDriver::requestManual(const std::string& chat) {
   saveCtl();
   changed();
   return Manual::Queued;
+}
+
+void FoldDriver::noteCleared(const std::string& chat) {
+  if (cycle_.chat == chat) {
+    hlog::logf("fold(%s): /clear ends the cycle at rung %u/%u, uncounted", chat.c_str(), (unsigned)(cycle_.idx + 1),
+               (unsigned)cycle_.rungs.size());
+    cycle_ = Cycle();
+  }
+  if (catchUp_.chat == chat) catchUp_ = CatchUp();
+  ramWaitMs_.erase(chat);
+  thruDate_.erase(chat);
+  changed();
 }
 
 FoldStatus FoldDriver::status(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch) const {

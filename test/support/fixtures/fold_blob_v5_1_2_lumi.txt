@@ -1,0 +1,14 @@
+1000000001612341871793642050;m000017d9158;m00001c960;2;1794787200;179479170001. Decisions & preferences
+- Daily targets 1,900 kcal and 120 g protein; label figures win over estimates.
+- Log every meal in food/food-log.csv with kcal and protein per item.
+2. Pending items & next steps
+- 2026-11-02: weigh-in Monday morning.
+3. Facts worth remembering long-term
+- Training for a 10 km run in March; long runs on Sunday mornings.
+4. Owner intent & active threads
+- Logging every meal; asks why estimates miss labels.
+5. Device & task state
+- Food ledger migrated to food/food-log.csv on 2026-10-30.
+web001794787260;m000013f90001. Decisions & preferences
+- Replies stay short.
+
