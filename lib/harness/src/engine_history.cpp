@@ -44,6 +44,16 @@ std::string atItem(const TurnEngine::Deps& d) {
 }
 }  // namespace
 
+bool historyAfterUnserved(const HistoryQuery& q) {
+  if (q.after.empty()) return false;
+  static bool said = false;   // once a boot: nothing sets the cursor until lane H serves it
+  if (!said) {
+    said = true;
+    hlog::logf("history: a read after %s is not served yet - no rows", q.after.c_str());
+  }
+  return true;
+}
+
 bool TurnEngine::histV2On() const {
   return d_.histV2 && d_.histV2() && d_.historyRows && d_.captureUserRow;
 }
@@ -108,7 +118,7 @@ void readHistory(const TurnEngine::Deps& d, const std::string& chatId, HistoryOp
   RepeatStamp chain;   // the row just newer than the one being read: a run is chained row by row
   std::string before;
   for (int page = 0; page < kHistoryMaxPages; page++) {
-    std::vector<nimbus::orch::EpisodicMessage> got = d.historyRows(chatId, kHistoryPageRows, before);
+    std::vector<nimbus::orch::EpisodicMessage> got = d.historyRows(chatId, HistoryQuery(kHistoryPageRows, before));
     const bool full = got.size() >= kHistoryPageRows;
     if (full) before = got.back().id;
     for (auto& m : got) {
@@ -157,7 +167,7 @@ std::string ownerRowTags(const std::string& fromTag, const history::Inbound& in,
 // H7: a source already in the chat's recent history (a re-served update, a
 // redelivery after a restart).
 bool sourceSeen(const TurnEngine::Deps& d, const std::string& chatId, const std::string& src) {
-  for (const auto& m : d.historyRows(chatId, 2 * kHistoryPageRows, std::string()))   // 48 rows
+  for (const auto& m : d.historyRows(chatId, HistoryQuery(2 * kHistoryPageRows)))   // 48 rows
     if (tagValue(m.tags, kSrcTag) == src) return true;
   return false;
 }

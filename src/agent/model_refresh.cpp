@@ -19,6 +19,7 @@
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/served_model.h"   // the concrete model behind an answer's alias
 #include "nimbus/orch/turn_images.h"    // installImageInputLookup - photos only to a seeing head
+#include "nimbus/orch/model_window.h"   // installListedCtxLookup - the listed window
 #include "nimbus/orch/usage_ledger.h"   // rateSrcName
 #include "orchestrator.h"               // turnInFlight
 #include "provider_verify.h"
@@ -242,6 +243,10 @@ void begin() {
   // list decides when it says (Mistral's and Anthropic's do), else the name rule.
   nimbus::orch::installImageInputLookup([](const char* host, const char* model) {
     return store::modelImageInput(String(host), model ? std::string(model) : std::string());
+  });
+  // The window the provider's own list gives a model (model_window.h listedWindowTokens).
+  nimbus::orch::installListedCtxLookup([](const char* host, const char* model) {
+    return store::modelListedCtxTokens(String(host), model ? std::string(model) : std::string());
   });
 }
 

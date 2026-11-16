@@ -46,7 +46,7 @@
 #include "nimbus/signin_codes.h"   // CUM-45: one-time sign-in codes (token out of URLs)
 #include "nimbus/qr.h"             // CUM-51: server-rendered QR for the pairing card
 #include "nimbus/docs_pack.h"      // CUM-62: global search over the embedded docs pack
-#include "nimbus/orch/budget.h"    // deriveBudget - "auto (currently N)" effective caps
+#include "nimbus/orch/budget.h"    // headContextBudget - "auto (currently N)" effective caps
 #include "nimbus/orch/compact.h"   // modelCtxTokens (window table)
 #include "nimbus/power/bright_cap.h"          // resilience: simulated mic/speaker faults
 #include "nimbus/power/power_monitor.h"       // battery chemistry + custom curve parse (config)

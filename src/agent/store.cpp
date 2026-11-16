@@ -1,4 +1,4 @@
-#include "nimbus/orch/budget.h"    // deriveBudget - the effective tool-result cap
+#include "nimbus/orch/budget.h"    // headContextBudget - the effective tool-result cap
 #include "nimbus/orch/caps.h"      // kMemDirectiveMax - owner-directive byte cap
 #include "nimbus/orch/compact.h"   // modelCtxTokens
 #include "store.h"
@@ -770,6 +770,13 @@ int modelImageInput(const String& provider, const std::string& id) {
   if (slot < 0) return -1;
   std::lock_guard<std::mutex> lk(g_modelMx);   // scanned in place: no copy of the text
   return nimbus::orch::storeImageInput(std::string(provider.c_str()), modelStoreLocked(slot, provider).text, id);
+}
+
+uint32_t modelListedCtxTokens(const String& provider, const std::string& id) {
+  const int slot = modelSlot(provider);
+  if (slot < 0) return 0;
+  std::lock_guard<std::mutex> lk(g_modelMx);   // scanned in place: no copy of the text
+  return nimbus::orch::listedCtxTokens(std::string(provider.c_str()), modelStoreLocked(slot, provider).text, id);
 }
 
 // The flash write runs outside g_modelMx (readers on the web and turn tasks never wait

@@ -93,6 +93,10 @@ struct MsgQuery {
   // The store emits the exact token to pass next (EpiQueryInfo::nextBefore) -
   // no caller, and certainly no model, computes a cursor itself.
   std::string before;
+  // The other paging cursor (lane P0 declares it; lane H serves it): only rows
+  // STRICTLY NEWER than this row id, oldest first. No backend reads it yet, so the
+  // history bindings answer a query that sets it with no rows (historyAfterUnserved).
+  std::string after;
 
   bool kindVisible(MsgKind k) const {
     if (!haveKind) return true;

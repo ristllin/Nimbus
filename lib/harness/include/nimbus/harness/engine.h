@@ -4,6 +4,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "nimbus/attention.h"           // nimbus::attn::Event (head Running/Offline arc)
@@ -15,6 +16,7 @@
 #include "nimbus/harness/jobs.h"        // JobEngine (fresh results + keyFromTag)
 #include "nimbus/harness/platform.h"    // Platform (nowMs / freeHeap / delayMs)
 #include "nimbus/harness/conversation.h"   // FoldSlice - the history fold slice (histV2)
+#include "nimbus/harness/fold_ladder.h"    // FoldResult / FoldRung - the fold's ladder
 #include "nimbus/harness/skill_attach.h"   // AttachPick - the [ACTIVE SKILLS] picks (F1)
 #include "nimbus/orch/food_ledger.h"   // lane CTX: Deps::foodLedger
 #include "nimbus/orch/owner_prefs.h"     // lane QFIX: renderMemoryRoutingHint
@@ -156,7 +158,24 @@ bool isTelegramOnlyTool(const std::string& name);
 struct HistoryMarks {
   std::string thru;        // the newest row the fold summary covers
   std::string softStart;   // the overflow shift: rows up to it are hidden until a fold
+  uint32_t foldEpoch = 0;  // the chat's fold count, for a cache that must drop on a fold (0 = unknown)
 };
+
+// histV2: one read of a chat's conversation rows (Deps::historyRows): at most `limit`,
+// newest first, strictly older than `before` ("" = from the newest) and, when `after`
+// is set, strictly newer than it. Today's bindings serve `before` only: a read with
+// `after` set returns no rows (historyAfterUnserved).
+struct HistoryQuery {
+  HistoryQuery() = default;
+  explicit HistoryQuery(size_t lim, std::string beforeId = std::string(), std::string afterId = std::string())
+      : limit(lim), before(std::move(beforeId)), after(std::move(afterId)) {}
+  size_t limit = 0;
+  std::string before;
+  std::string after;
+};
+// True when `q` asks for rows after a cursor, which no store serves yet: the binding
+// then returns no rows. The first such read in a boot logs that it was refused.
+bool historyAfterUnserved(const HistoryQuery& q);
 
 // Lane CTX: the bytes a turn's tool list adds to its request (each advertised tool's
 // name, description and schema with its envelope, and the final-answer schema; a
@@ -280,10 +299,10 @@ class TurnEngine {
     // read and the user row's id comes back; otherwise the device's window and
     // the previous capture stay byte-identical.
     std::function<bool()> histV2;
-    // The chat's conversation rows (message and media kinds), newest first,
-    // strictly older than `before` ("" = from the newest), at most `limit`.
-    std::function<std::vector<nimbus::orch::EpisodicMessage>(
-        const std::string& chatId, size_t limit, const std::string& before)> historyRows;
+    // The chat's conversation rows (message and media kinds), newest first, the
+    // read HistoryQuery describes (strictly older than `before`, at most `limit`).
+    std::function<std::vector<nimbus::orch::EpisodicMessage>(const std::string& chatId, const HistoryQuery& q)>
+        historyRows;
     // Capture the owner's row (text = what the sender sent, tags = from:, att:,
     // src:, sent:) and return its id: the in-flight turn the window leaves out.
     std::function<std::string(const std::string& chatId, const std::string& text,
@@ -423,7 +442,8 @@ class TurnEngine {
   // later pump pass, and the caller must NOT count it against the breaker (a
   // low-heap window after a turn burned the breaker as if the provider failed -
   // live-caught by the L15 degraded-fold row). Failed = a real attempt failed.
-  enum class FoldResult : uint8_t { Ok = 0, Deferred, Failed };
+  // The values and Pending (a paced cycle with rungs left) are fold_ladder.h's.
+  using FoldResult = agent::FoldResult;
 
   // TRUE when a fold could run right now (heap, keyed host, budget, no turn in
   // flight). The caller MUST check this before doing anything visible or
@@ -443,6 +463,15 @@ class TurnEngine {
   FoldResult runFold(const std::string& chatId, const std::string& prevSummary,
                      const std::string& digest, std::string& outSummary,
                      size_t* producedBytes = nullptr);
+  // The fold's ladder (fold_ladder.h), in the order a cycle tries it. Today: the
+  // hosts of foldHostCandidates(), each on its own model.
+  std::vector<FoldRung> foldRungs() const;
+  // ONE rung of a fold: runFold's gates, then its attempt on `rung.host` alone (on
+  // `rung.model` when set, through providers::ScopedModelOverride), metered and read
+  // as runFold reads it. `report`, when given, says what the rung came to.
+  FoldResult runFoldRung(const std::string& chatId, const std::string& prevSummary,
+                         const std::string& digest, const FoldRung& rung, std::string& outSummary,
+                         FoldRungReport* report = nullptr);
 
   // Reset ONE chat's provider conversation (fold write-order step 2; also the
   // reactive-overflow recovery). Other chats' threads stay intact - unlike the
@@ -558,6 +587,9 @@ class TurnEngine {
   // A billing refusal's owner notice: once per episode (billingNoticeDue, shared
   // with the embedding seam), held without taking the latch on a quiet turn.
   bool recheckableHost(const std::string& host) const;   // recheckParkedHost's gates
+  // runFold's body: the whole ladder (`onlyRung` null, foldHostCandidates()) or one rung.
+  FoldResult runFoldOn(const std::string& chatId, const std::string& prevSummary, const std::string& digest,
+                       const FoldRung* onlyRung, std::string& outSummary, size_t* producedBytes);
   void askParkedHost(const std::string& host);           // its one small request
   void deliverBillingNotice(const std::string& chatId, const std::string& host,
                             const std::string& text);

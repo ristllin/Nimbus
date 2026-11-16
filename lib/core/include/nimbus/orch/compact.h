@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,17 @@ bool isContextOverflowError(const std::string& err);
 inline constexpr size_t kOverflowTrimPercent = 40;
 inline constexpr size_t kOverflowTrimMargin = 10;
 size_t overflowTrimBytes(const std::string& err, size_t totalBytes);
+
+// ---- the device-wide fold state's storage -------------------------------------
+// The fold keeps a little device-wide state beside each chat's own (the paid fold
+// count of the day, the last alert, a pending manual request): one small text file,
+// /fold_ctl.txt on the device and a sibling file on the VN. Declared by lane P0 of the
+// history fix so lane F adds the file without touching this header's consumers; the
+// default reads nothing and stores nothing.
+struct FoldCtlIO {
+  std::function<std::string()> load = [] { return std::string(); };
+  std::function<bool(const std::string& text)> save = [](const std::string&) { return true; };
+};
 
 // ---- circuit breaker ---------------------------------------------------------
 // 3 consecutive compaction failures pause AUTO compaction (manual stays allowed)

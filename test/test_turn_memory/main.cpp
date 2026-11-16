@@ -166,7 +166,7 @@ struct Rig {
       return in;
     };
     d.histV2 = [this] { return histV2; };
-    d.historyRows = [](const std::string&, size_t, const std::string&) {
+    d.historyRows = [](const std::string&, const agent::HistoryQuery&) {
       return std::vector<orch::EpisodicMessage>{};
     };
     d.captureUserRow = [](const std::string&, const std::string&, const std::string&) { return std::string("m1"); };

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "nimbus/harness/log.h"
+#include "nimbus/harness/providers.h"   // ScopedModelOverride - a rung on its own model
 #include "nimbus/orch/compact.h"           // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary
 #include "nimbus/orch/connector_grant.h"   // whose connectors a fold's request carries (CUM-828)
 #include "nimbus/orch/reply_markup.h"      // cleanReplyMarkup - the summary passes the reply seam
@@ -18,6 +19,15 @@
 namespace agent {
 
 using detail::trimInPlace;
+
+namespace {
+// The model a fold request on `h` runs: a rung's pinned model, else the host's own.
+std::string foldModelFor(const TurnEngine::Deps& d, const std::string& h) {
+  const std::string pinned = providers::modelOverrideFor(h.c_str());
+  if (!pinned.empty()) return pinned;
+  return d.cfg.provider.orchModel ? d.cfg.provider.orchModel(h) : std::string();
+}
+}  // namespace
 
 // Fold host candidates: explicit orchHost (if usable) first, then the priority
 // list in order - each must exist, have a key, and be in budget. Bounded at 3.
@@ -80,6 +90,12 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
                                            const std::string& digest,
                                            std::string& outSummary,
                                            size_t* producedBytes) {
+  return runFoldOn(chatId, prevSummary, digest, nullptr, outSummary, producedBytes);
+}
+
+TurnEngine::FoldResult TurnEngine::runFoldOn(const std::string& chatId, const std::string& prevSummary,
+                                             const std::string& digest, const FoldRung* onlyRung,
+                                             std::string& outSummary, size_t* producedBytes) {
   namespace orch = nimbus::orch;
   outSummary.clear();
   const orch::ConnectorGrantScope grant(orch::connectorGrantFor(d_.apply.whoFor(chatId)));   // CUM-828
@@ -104,8 +120,9 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
   // owner. A fold is replay-safe by construction (the reply IS the summary; no
   // applyTurn - no device actions, no mem writes, no spawns), so walking the
   // same <=3-host candidate list the fabric uses is strictly better.
-  const std::vector<std::string> hostsToTry = foldHostCandidates();
-  if (hostsToTry.empty()) return FoldResult::Deferred;
+  const std::vector<std::string> hostsToTry =
+      onlyRung ? std::vector<std::string>{onlyRung->host} : foldHostCandidates();
+  if (hostsToTry.empty() || hostsToTry.front().empty()) return FoldResult::Deferred;
 
   // ALWAYS a fresh, throwaway provider thread: the fold must never ride or
   // extend the chat's chain (that is the thing being reset), and its convId is
@@ -125,9 +142,10 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
     std::string convId;
     outJson.clear(); err.clear();
     orch::TokenUsage u;
+    const providers::ScopedModelOverride rungModel(h, onlyRung ? onlyRung->model : std::string());
     ok = d_.hosts.run(h, convId, orch::ORCH_COMPACT_PROMPT, inputs,
                       outJson, err, /*tools=*/nullptr, &u);
-    foldSpend.add(h.c_str(), d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(h).c_str() : "", u);
+    foldSpend.add(h.c_str(), foldModelFor(d_, h).c_str(), u);
     if (!ok) {
       d_.hosts.noteFailed(h, err);
       hlog::logf("fold(%s): %s failed: %s", chatId.c_str(), h.c_str(), err.c_str());
@@ -160,6 +178,35 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
   hlog::logf("fold(%s): ok on %s (%u in / %u out)", chatId.c_str(), host.c_str(),
              (unsigned)usage.promptTokens, (unsigned)usage.completionTokens);
   return FoldResult::Ok;
+}
+
+std::vector<FoldRung> TurnEngine::foldRungs() const {
+  const std::string head = headHost();
+  const std::string router = d_.cfg.provider.routerFallbackHost ? d_.cfg.provider.routerFallbackHost() : std::string();
+  std::vector<FoldRung> rungs;
+  for (const std::string& h : foldHostCandidates()) {
+    FoldRung r;
+    r.host = h;
+    if (h == head) r.kind = FoldRungKind::HeadHost;
+    else if (h == router) r.kind = FoldRungKind::RouterFallback;
+    else r.kind = FoldRungKind::OtherHost;
+    rungs.push_back(std::move(r));
+  }
+  return rungs;
+}
+
+TurnEngine::FoldResult TurnEngine::runFoldRung(const std::string& chatId, const std::string& prevSummary,
+                                               const std::string& digest, const FoldRung& rung,
+                                               std::string& outSummary, FoldRungReport* report) {
+  size_t produced = 0;
+  const FoldResult r = runFoldOn(chatId, prevSummary, digest, &rung, outSummary, &produced);
+  if (report) {
+    report->result = r;
+    report->host = rung.host;
+    report->model = rung.model;
+    report->producedBytes = produced;
+  }
+  return r;
 }
 
 }  // namespace agent

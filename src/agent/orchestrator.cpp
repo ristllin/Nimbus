@@ -75,7 +75,7 @@
 #include "../sys/ps_json.h"              // PsramJsonAllocator - the refusal tap's filter copy stays off internal heap
 #include "../sys/psram_static.h"         // long-lived buffers and the two engines in PSRAM, not internal .bss
 
-#include "nimbus/orch/budget.h"         // deriveBudget - brief/fold-slice bytes from the head window
+#include "nimbus/orch/budget.h"         // headContextBudget - brief/fold-slice bytes from the head window
 #include "nimbus/orch/result_store.h"   // recent-results ring (results.get/list)
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/compact.h"        // modelCtxTokens (window table)
@@ -1400,15 +1400,17 @@ static TurnEngine::Deps buildTurnDeps() {
   // previous window and capture byte for byte.
   d.histV2 = [] { return agent::history::v2Enabled(); };
   d.captureUserRow = captureOwner;
-  d.historyRows = [](const std::string& chatId, size_t limit, const std::string& before) {
+  d.historyRows = [](const std::string& chatId, const agent::HistoryQuery& hq) {
     using namespace nimbus::orch;
+    std::vector<EpisodicMessage> rows;
+    if (agent::historyAfterUnserved(hq)) return rows;
     MsgQuery q;
     q.sessionId = chatId;
     q.haveKind = true; q.kind = MsgKind::Message;
     q.alsoKinds = {MsgKind::Image, MsgKind::File, MsgKind::Audio};
-    q.limit = (int)limit;
-    q.before = before;
-    std::vector<EpisodicMessage> rows;
+    q.limit = (int)hq.limit;
+    q.before = hq.before;
+    q.after = hq.after;
     { memory::Lock lk; rows = memory::episodic().query(q); }   // newest-first, ring-served
     return rows;
   };
@@ -1419,7 +1421,7 @@ static TurnEngine::Deps buildTurnDeps() {
   };
   d.historyMarks = [](const std::string& chatId) {
     const nimbus::orch::ChatFold f = g_folds.get(chatId);
-    return agent::HistoryMarks{f.thru, f.softStart};
+    return agent::HistoryMarks{f.thru, f.softStart, 0};
   };
   d.noteHistoryShift = [](const std::string& chatId, const std::string& softStart) {
     g_folds.setSoftStart(chatId, softStart);   // persisted with the turn's blob write

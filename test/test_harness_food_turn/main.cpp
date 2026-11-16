@@ -133,8 +133,8 @@ struct Rig {
       return true;
     });
     d.histV2 = [] { return true; };
-    d.historyRows = [this](const std::string& c, size_t limit, const std::string& before) {
-      return rows(c, limit, before);
+    d.historyRows = [this](const std::string& c, const agent::HistoryQuery& hq) {
+      return rows(c, hq.limit, hq.before);
     };
     d.captureUserRow = [this](const std::string&, const std::string& t, const std::string& tags) {
       turnTag = add((uint32_t)(kNow / 3600), "user", t, tags);

@@ -471,6 +471,8 @@ providers::ProviderDeps deviceProviderDeps() {
     return std::string();
   };
   pd.orchModel = [](const char* host) {
+    std::string pinned = providers::modelOverrideFor(host);   // a fold rung on its own model
+    if (!pinned.empty()) return pinned;
     String m = store::orchModel(host);
     // The Z.ai head's default when nothing is picked: the fabric files spend under this.
     if (!m.length() && !strcmp(host, "zai")) m = ZAI_MODEL;

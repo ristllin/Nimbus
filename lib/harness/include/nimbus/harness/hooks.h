@@ -87,6 +87,13 @@ struct TurnEndEv {
   // first cause first; never empty on a failed turn).
   const nimbus::orch::TurnSpend*    spend = nullptr;
   const nimbus::orch::FailureChain* chain = nullptr;
+  // The history in this turn's request (lane P0 declares them; lane H fills them): its
+  // rendered bytes, the window's max and soft marks, and the live rows left out of it
+  // (named in its [LEFT OUT] note). 0 until the history window reports them.
+  size_t historyBytes = 0;
+  size_t historyMaxBytes = 0;
+  size_t historySoftBytes = 0;
+  uint32_t leftOutRows = 0;
 };
 struct SpawnEv  {
   std::string tag, backend, category, model;

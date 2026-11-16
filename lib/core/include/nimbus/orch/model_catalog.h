@@ -416,6 +416,11 @@ bool isLatestAlias(const std::string& id);
 // capabilities are the id heuristic's (an OpenAI or Z.ai list, a legacy merge), -2 = no
 // list at all (an empty store text).
 int storeImageInput(const std::string& provider, const std::string& storeText, const std::string& id);
+// The input window a store text lists for `id`, in tokens: its own row, else the row
+// that lists `id` among its aliases (canonicalModelFor), when that row's window came
+// from the provider's API (Mistral and Anthropic lists say it). 0 = no row holds `id`,
+// or its window is the id heuristic's (an OpenAI or Z.ai list), or there is no list.
+uint32_t listedCtxTokens(const std::string& provider, const std::string& storeText, const std::string& id);
 
 // Honest freshness for the prompt's model line: "(list from 2026-10-22, may miss newer
 // models)", "(list date unknown, may miss newer models)" for a store written while the

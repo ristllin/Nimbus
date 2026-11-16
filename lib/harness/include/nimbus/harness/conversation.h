@@ -4,6 +4,7 @@
 #include <ctime>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "nimbus/orch/episodic.h"       // EpisodicMessage
@@ -192,8 +193,18 @@ std::string renderTurnLines(const HistTurn& t, const HistTurn* prev, int32_t utc
 // The message form (G1 builds provider messages from it): one user and one
 // assistant message per turn, strict alternation, the summary pair first.
 struct HistMsg {
+  HistMsg() = default;
+  HistMsg(bool isUser, std::string body) : user(isUser), text(std::move(body)) {}
   bool user = true;
   std::string text;
+  // Where the message came from (lane P0 declares them; lane H fills them), never
+  // rendered: the first and last row ids it carries, its local day (days since
+  // 1970-01-01 in the owner's zone) and its newest row's time (unix seconds). 0 or "" =
+  // unknown (the summary pair, and every message today).
+  std::string firstId;
+  std::string lastId;
+  uint32_t localDay = 0;
+  uint32_t atUnix = 0;
 };
 // One of the summary pair's two messages (what a fold left), which every trim keeps longest.
 bool isSummaryMessage(const HistMsg& m);

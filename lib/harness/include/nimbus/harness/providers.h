@@ -62,6 +62,35 @@ namespace providers {
 inline constexpr size_t kWireBodyMax = 85000;
 static_assert(kWireBodyMax % 1000 == 0, "bodyBudgetError states the budget in whole KB");
 
+// The budget of a flat single shot's one prompt string (the custom wire, a loop-off
+// head): the provider string guard less 4 KB for the turn's input and the envelope, so
+// the history fitted into it is announced, never cut by the guard (lane W fits it).
+inline constexpr size_t flatPromptBudget() { return nimbus::orch::kJsonStrGuard - 4096; }
+
+// A model pinned for one host while this object lives (RAII): a fold rung asks a host
+// on a model other than the owner's pick (the Sub step-down) without touching the
+// stored pick. The device's and the VN's orchModel closures read modelOverrideFor
+// first. One pin at a time: a pin made while another is held logs and pins nothing,
+// so the outer value stays. An empty host or model pins nothing. The turn task (the
+// VN's engine thread) is the only one that pins or reads it: no on-device concurrency.
+class ScopedModelOverride {
+ public:
+  ScopedModelOverride(std::string host, std::string model);
+  ~ScopedModelOverride();
+  ScopedModelOverride(const ScopedModelOverride&) = delete;
+  ScopedModelOverride& operator=(const ScopedModelOverride&) = delete;
+  bool active() const { return active_; }   // this object holds the pin
+  const std::string& host() const { return host_; }
+  const std::string& model() const { return model_; }
+
+ private:
+  std::string host_;
+  std::string model_;
+  bool active_ = false;
+};
+// The model the live pin names for `host`, "" when none does.
+std::string modelOverrideFor(const char* host);
+
 // The last step of a body build, after serializeChecked: hold the assembled
 // body under kWireBodyMax. False + err (the provider refuses the send) when
 // the turn outgrew the budget; err is nimbus::orch::bodyBudgetError's wording.

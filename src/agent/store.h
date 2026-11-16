@@ -132,6 +132,9 @@ std::string concreteModelId(const String& provider, const std::string& alias);
 // Does the stored list say `id` takes image input? 1 / 0 from the provider's own
 // capabilities, -1 when it holds no row for it or does not say (nimbus::orch::storeImageInput).
 int modelImageInput(const String& provider, const std::string& id);
+// The input window the stored list gives `id`, in tokens (nimbus::orch::listedCtxTokens):
+// 0 when it holds no row for it or the window is not the provider's own figure.
+uint32_t modelListedCtxTokens(const String& provider, const std::string& id);
 // The short list (CSV) the prompt's [AVAILABLE MODELS] line and the picker's quick
 // picks show: the store header's choices, "" with no store (callers then use the
 // cold-start list through nimbus::orch::effectiveModelChoices).

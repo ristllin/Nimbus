@@ -40,7 +40,8 @@
 #include "nimbus/harness/turn_contract.h"
 #include "nimbus/harness/websearch.h"
 #include "nimbus/orch/action_rules.h"  // who may call what, on every route
-#include "nimbus/orch/budget.h"       // the fold slice bytes (deriveBudget)
+#include "nimbus/orch/budget.h"       // the fold slice bytes (headContextBudget)
+#include "nimbus/orch/model_window.h"   // installListedCtxLookup - the listed window
 #include "nimbus/orch/tool_gates.h"
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/command.h"
@@ -247,11 +248,18 @@ class NimbusdRig {
     conns_.setPath(memDir() + "/connectors.json");
     conns_.load();   // connector registry (CUM-424); tolerant of absent/torn
     installToolHints();
+    installListedWindows();   // the window each harvested catalog lists (model_window.h)
     buildFabric();   // sub-agent adapters + the durable job journal (device parity)
     buildEngine();
   }
 
-  ~NimbusdRig() { flush(); }
+  ~NimbusdRig() {
+    if (listedSelf().load() == this) {
+      nimbus::orch::installListedCtxLookup(nullptr);
+      listedSelf().store(nullptr);
+    }
+    flush();
+  }
 
   // ---- durable data layout --------------------------------------------------
   std::string memDir() const { return opt_.dataDir + "/mem"; }
@@ -903,6 +911,25 @@ class NimbusdRig {
     return status == 200;
   }
   ProviderVerify verifyState(const std::string& slug) const { return verify_.get(slug); }
+  // The listed window (model_window.h listedWindowTokens): this instance's harvested
+  // catalog answers by the device's rule (orch::listedCtxTokens). The lookup is
+  // process-wide and the daemon runs one rig, as the spend ceiling's install does.
+  static std::atomic<NimbusdRig*>& listedSelf() {
+    static std::atomic<NimbusdRig*> self{nullptr};
+    return self;
+  }
+  void installListedWindows() {
+    listedSelf().store(this);
+    nimbus::orch::installListedCtxLookup(+[](const char* host, const char* model) -> uint32_t {
+      NimbusdRig* rig = listedSelf().load();
+      return rig ? rig->listedWindow(host, model) : 0;
+    });
+  }
+  uint32_t listedWindow(const std::string& host, const std::string& model) const {
+    const std::vector<nimbus::orch::ModelInfo> rows = verify_.get(host).models;
+    if (rows.empty()) return 0;
+    return nimbus::orch::listedCtxTokens(host, nimbus::orch::serializeModelStore({}, rows), model);
+  }
   // At most one verify queued per provider (claim before posting; the verify
   // releases the claim as it starts, so a request mid-verify queues one more).
   bool claimVerify(const std::string& slug) {
@@ -2419,7 +2446,10 @@ class NimbusdRig {
     agent::providers::ProviderDeps pd;
     pd.http = http_;
     pd.key = [this](const char* h) { return cfg_.providerKey(h); };
-    pd.orchModel = [this](const char* h) { return modelFor(h); };
+    pd.orchModel = [this](const char* h) {
+      std::string pinned = agent::providers::modelOverrideFor(h);   // a fold rung on its own model
+      return pinned.empty() ? modelFor(h) : pinned;
+    };
     pd.toolLoopOn = [this] { return settings_.get().toolLoop; };
     pd.zaiHead = [this](agent::providers::ProviderDeps& z) { pointAtZai(z); };
     pd.antEnvId = [this] { return antEnv_; };
@@ -3339,14 +3369,16 @@ class NimbusdRig {
     d.captureUserRow = [this](const std::string& c, const std::string& t, const std::string& tags) {
       return captureOwnerRow(c, t, tags);
     };
-    d.historyRows = [this](const std::string& c, size_t limit, const std::string& before) {
+    d.historyRows = [this](const std::string& c, const agent::HistoryQuery& hq) {
+      if (agent::historyAfterUnserved(hq)) return std::vector<orch::EpisodicMessage>();
       orch::MsgQuery q;
       q.sessionId = c;
       q.haveKind = true;
       q.kind = orch::MsgKind::Message;
       q.alsoKinds = {orch::MsgKind::Image, orch::MsgKind::File, orch::MsgKind::Audio};
-      q.limit = (int)limit;
-      q.before = before;
+      q.limit = (int)hq.limit;
+      q.before = hq.before;
+      q.after = hq.after;
       return overlay_.query(q);
     };
     d.captureTrigger = [this](const std::string& c, const std::string& t, const std::string& tags) {
@@ -3354,7 +3386,7 @@ class NimbusdRig {
     };
     d.historyMarks = [this](const std::string& c) {
       const orch::ChatFold f = folds_.get(c);
-      return agent::HistoryMarks{f.thru, f.softStart};
+      return agent::HistoryMarks{f.thru, f.softStart, 0};
     };
     d.noteHistoryShift = [this](const std::string& c, const std::string& soft) { folds_.setSoftStart(c, soft); };
     d.utcOffsetMin = [] { return hostedOffsetAt((uint32_t)time(nullptr)); };

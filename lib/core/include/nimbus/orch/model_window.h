@@ -25,6 +25,15 @@ constexpr uint32_t kCtxDefaultTokens = 100000;
 // router upstream (openai/anthropic/mistral/zai).
 uint32_t modelCtxTokens(const std::string& provider, const std::string& model);
 
+// The listed window: what the device's stored model list (the VN: its harvested
+// catalog) says `model` takes on `host`, in tokens (listedCtxTokens, model_catalog.h);
+// 0 = the list does not say, or no lookup is installed (host tests). Installed by the
+// device (src/agent/model_refresh.cpp) and the VN (nimbusd rig.h). Nothing reads it
+// yet: lane B prefers it over the family table above.
+using ListedCtxLookup = uint32_t (*)(const char* host, const char* model);
+void installListedCtxLookup(ListedCtxLookup f);
+uint32_t listedWindowTokens(const std::string& host, const std::string& model);
+
 // ---- trigger math ------------------------------------------------------------
 // threshold = min(ctx − reservedOut − kCompactBufferTokens, ownerCapTokens).
 // reservedOut is the caller's REQUESTED max_tokens (the head asks ~3-4K, not the

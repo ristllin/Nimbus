@@ -968,14 +968,16 @@ class LabRig {
   // The device's history seams over the lab's store (engine.h, histV2).
   void wireHistory(agent::TurnEngine::Deps& d) {
     d.histV2 = [this] { return opt_.histV2; };
-    d.historyRows = [this](const std::string& chat, size_t limit, const std::string& before) {
+    d.historyRows = [this](const std::string& chat, const agent::HistoryQuery& hq) {
+      if (agent::historyAfterUnserved(hq)) return std::vector<orch::EpisodicMessage>();
       orch::MsgQuery q;
       q.sessionId = chat;
       q.haveKind = true;
       q.kind = orch::MsgKind::Message;
       q.alsoKinds = {orch::MsgKind::Image, orch::MsgKind::File, orch::MsgKind::Audio};
-      q.limit = (int)limit;
-      q.before = before;
+      q.limit = (int)hq.limit;
+      q.before = hq.before;
+      q.after = hq.after;
       return epi_->query(q);
     };
     d.captureUserRow = [this](const std::string& c, const std::string& t, const std::string& tags) {

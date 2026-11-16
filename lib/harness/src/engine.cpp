@@ -6,7 +6,7 @@
 
 #include "nimbus/harness/turn_fit.h"   // what a request gives up when it does not fit
 #include "nimbus/orch/body_budget.h"   // parseBodyBudgetError - the wire budget's refusal
-#include "nimbus/orch/budget.h"    // deriveBudget - per-turn caps from the head model's window
+#include "nimbus/orch/budget.h"    // headContextBudget - per-turn caps from the head model's window
 #include "nimbus/orch/compact.h"   // isContextOverflowError - a provider's window refusal
 #include "nimbus/orch/reply_guard.h"   // filler, work-shaped messages
 #include "nimbus/orch/action_rules.h"  // actionRuleRow - a tool's plain-words description

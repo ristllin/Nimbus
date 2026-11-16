@@ -258,10 +258,10 @@ struct Rig {
     d.hosts.failed = [this](const std::string& h, orch::StepErr k, int status) { providers::noteHostFailed(pd, h, k, status); };
     d.hosts.answered = [](const std::string& h) { providers::unparkHost(h); };
     d.histV2 = [] { return true; };
-    d.historyRows = [this](const std::string&, size_t limit, const std::string& before) {
+    d.historyRows = [this](const std::string&, const agent::HistoryQuery& hq) {
       std::vector<orch::EpisodicMessage> out;
-      for (auto it = rows.rbegin(); it != rows.rend() && out.size() < limit; ++it) {
-        if (!before.empty() && it->id >= before) continue;
+      for (auto it = rows.rbegin(); it != rows.rend() && out.size() < hq.limit; ++it) {
+        if (!hq.before.empty() && it->id >= hq.before) continue;
         out.push_back(*it);
       }
       return out;

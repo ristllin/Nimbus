@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -49,6 +50,26 @@ struct OutputCap {
 // 0 = no time clamp.
 OutputCap outputCapFor(const std::string& host, const std::string& model, RoundKind kind,
                        uint32_t roundMs = 0);
+
+// What a round carries, for a cap that fits the round's time (lane P0 declares it; lane
+// B's time fit reads it): the body's bytes with any photo base64 spliced in, the photos'
+// share of them, the prompt's tokens, whether the Cumulo router relays the request, and
+// whether the heap was fragmented at round start (largest free block under 12,288 B, so
+// the transport paces its slices).
+struct RoundLoad {
+  size_t bodyBytes = 0;
+  size_t imageBytes = 0;
+  uint32_t promptTokens = 0;
+  bool routed = false;
+  bool fragmented = false;
+};
+// The table for a round with its load. Today's body ignores the load: the caps are
+// outputCapFor(host, model, kind, roundMs)'s.
+inline OutputCap outputCapFor(const std::string& host, const std::string& model, RoundKind kind,
+                              uint32_t roundMs, const RoundLoad& load) {
+  (void)load;
+  return outputCapFor(host, model, kind, roundMs);
+}
 
 // The one note a person hears when they pick a model the parity eval found unfit for
 // daily use ("" for the others). Plain words, for the reply. Evidence:

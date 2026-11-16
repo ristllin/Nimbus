@@ -10,6 +10,7 @@
 #include "nimbus/orch/model_catalog.h"
 #include "nimbus/orch/model_choices.h"   // choiceItems - the one CSV reader
 #include "nimbus/orch/model_price_defaults.h"   // builtinModelPrice - the estimate per model
+#include "nimbus/orch/model_selectable.h"       // canonicalModelFor - an id's row, own or by alias
 #include "nimbus/orch/router_route.h"           // routableSelector - a router row some upstream runs
 #include "nimbus/mem_cap.h"                     // utf8CapLen - names cut on a code point
 
@@ -770,6 +771,18 @@ int storeImageInput(const std::string& provider, const std::string& storeText, c
     return -1;
   if (!m.apiCaps) return -1;
   return m.hasCap(CapVision) ? 1 : 0;
+}
+
+uint32_t listedCtxTokens(const std::string& provider, const std::string& storeText, const std::string& id) {
+  const std::string selector = canonicalModelFor(provider, storeText, id);
+  if (selector.empty()) return 0;
+  uint32_t ctx = 0;
+  forEachStoreRow(provider, storeText, [&](const ModelInfo& m) {
+    if (modelSelector(m) != selector) return true;
+    if (m.apiCaps) ctx = m.ctxTokens;
+    return false;
+  });
+  return ctx;
 }
 
 std::string modelListNote(bool haveStore, const ModelStoreMeta& meta) {

@@ -1,6 +1,7 @@
 #include "nimbus/orch/model_window.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 
 #include "nimbus/orch/model_catalog.h"  // gptGeneration - the one gpt-<N> parser
@@ -64,6 +65,17 @@ uint32_t modelCtxTokens(const std::string& provider, const std::string& model) {
   if (slash != std::string::npos && slash > 0 && isRouterUpstream(m.substr(0, slash)))
     return familyCtxTokens(m.substr(0, slash), m.substr(slash + 1));
   return familyCtxTokens(p, m);
+}
+
+namespace {
+std::atomic<ListedCtxLookup> g_listedCtx{nullptr};
+}  // namespace
+
+void installListedCtxLookup(ListedCtxLookup f) { g_listedCtx.store(f); }
+
+uint32_t listedWindowTokens(const std::string& host, const std::string& model) {
+  const ListedCtxLookup f = g_listedCtx.load();
+  return f ? f(host.c_str(), model.c_str()) : 0;
 }
 
 uint32_t compactThreshold(uint32_t ctxTokens, uint32_t reservedOutTokens,
