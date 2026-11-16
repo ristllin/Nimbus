@@ -25,6 +25,9 @@
 // loop turns), function.result pairing, and the synchronous chat/completions
 // sub-session + result cache.
 
+#include "nimbus/orch/body_budget.h"
+#include "nimbus/orch/transcript.h"
+
 using harness_test::FakeProviderDeps;
 using harness_test::LogCapture;
 using harness_test::bodyHas;
@@ -1979,6 +1982,38 @@ static void test_a_long_mistral_answer_in_the_round_text_reaches_the_owner() {
   TEST_ASSERT_TRUE_MESSAGE(out.find("written out in full above") == std::string::npos, out.c_str());
 }
 
+// Lane W: the flat single shot's one instructions string over flatPromptBudget() is
+// refused with the size wording (the turn's give-up order reads it and builds the request
+// again), never the string ceiling's "request field over 60 KB"; nothing is sent. A loop's
+// seeded user message over the same guard is refused the same way.
+static void test_flat_strings_over_the_guard_are_refused_with_the_size_wording() {
+  {
+    FakeProviderDeps d;
+    d.toolLoop = false;
+    auto pd = d.contract();
+    std::string conv, out, err;
+    const std::string ins(providers::flatPromptBudget() + 1, 's');
+    TEST_ASSERT_FALSE(providers::orchTurnMistral(pd, conv, ins, "U", out, err, nullptr, nullptr));
+    TEST_ASSERT_EQUAL_INT(0, (int)d.http.seen.size());
+    TEST_ASSERT_EQUAL_STRING(
+        nimbus::orch::bodyBudgetError(providers::flatPromptBudget(), providers::flatPromptBudget() + 1).c_str(),
+        err.c_str());
+  }
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, chatFinalBody()});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    nimbus::orch::Transcript tr;
+    tr.addUser(std::string(providers::flatPromptBudget() + 10, 'u'));
+    const nimbus::orch::HeadStep st = providers::misLoopStep(pd, "SYS", rig.ht, nullptr, tr)(true, {}, UINT32_MAX, "");
+    TEST_ASSERT_FALSE(st.ok);
+    TEST_ASSERT_EQUAL_INT(0, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE_MESSAGE(st.error.find("request body over the 55 KB budget") == 0, st.error.c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_reserved_toolname_renamed_and_inverted);
@@ -2037,6 +2072,7 @@ int main(int, char**) {
   RUN_TEST(test_a_mistral_sub_error_says_whether_it_may_have_run);
   RUN_TEST(test_mistral_caps_are_the_documented_numbers);
   RUN_TEST(test_a_long_mistral_answer_in_the_round_text_reaches_the_owner);
+  RUN_TEST(test_flat_strings_over_the_guard_are_refused_with_the_size_wording);
   UNITY_END();
   return 0;
 }

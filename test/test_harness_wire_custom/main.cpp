@@ -992,6 +992,27 @@ static void test_custom_sub_errors_say_whether_it_may_have_run() {
   }
 }
 
+// Lane W: the custom endpoint's one flat system string over flatPromptBudget() is refused
+// with the size wording before the send (the give-up order then fits the history into it).
+static void test_custom_flat_string_over_the_guard_is_refused_with_the_size_wording() {
+  FakeProviderDeps d;
+  d.custBase = "https://llm.example.lan";
+  auto pd = d.contract();
+  std::string conv, out, err;
+  const std::string ins(providers::flatPromptBudget() + 1, 's');
+  TEST_ASSERT_FALSE(providers::orchTurnCustom(pd, conv, ins, "U", out, err, nullptr, nullptr));
+  TEST_ASSERT_EQUAL_INT(0, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE_MESSAGE(err.find("request body over the 55 KB budget") == 0, err.c_str());
+  // At the guard it is sent.
+  FakeProviderDeps ok;
+  ok.custBase = "https://llm.example.lan";
+  ok.http.script.push_back({"", "", 200, "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"{\\\"reply\\\":\\\"hi\\\"}\"}}]}"});
+  auto okPd = ok.contract();
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnCustom(okPd, conv, ins.substr(1), "U", out, err, nullptr, nullptr),
+                           err.c_str());
+  TEST_ASSERT_EQUAL_INT(1, (int)ok.http.seen.size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_keyless_on_http);
@@ -1033,6 +1054,7 @@ int main(int, char**) {
   RUN_TEST(test_zai_loop_fails_on_any_other_400);
   RUN_TEST(test_a_long_answer_in_the_round_text_reaches_the_owner);
   RUN_TEST(test_custom_sub_errors_say_whether_it_may_have_run);
+  RUN_TEST(test_custom_flat_string_over_the_guard_is_refused_with_the_size_wording);
   UNITY_END();
   return 0;
 }
