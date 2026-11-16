@@ -838,6 +838,19 @@ class TurnEngine {
   ConvCache convCache_;
   HistoryReadStats histRead_;
   HistoryWindow lastWindow_;
+  // The turn's budget line (lane H): "budget: <host>/<model> window <W>K target <T>K tok (<B> KB)
+  // hist <max>/<soft>/<keep> KB (auto|owner)"; returns the request's body budget.
+  uint32_t logBudgetLine(const std::string& host, const std::string& model, const nimbus::orch::ContextBudget& b,
+                         bool owner) const;
+  // The turn's input with the seed's coverage line in front of it (historyCoverageLine).
+  std::string coverageSeed(const std::string& chatId, bool hasSummary, const std::string& inputs) const;
+  // Which history is today's, and the zone the [LEFT OUT] note tells times in.
+  struct FitContext fitContextNow() const;
+  // The turn's history messages and its fit, built out of runTurn's frame (the poll task's
+  // stack keeps its floor: lane STACK).
+  std::vector<HistMsg> turnHistory(const std::string& chatId, const nimbus::orch::ContextBudget& cb,
+                                   const std::string& host, const std::string& model, const std::string& summary);
+  class TurnFit* newTurnFit(ComposeInputs& ci, const std::string& seed, HeadTools* tools) const;
   // The turn's context line (lane H): "context: sent k/n live rows (today t/T), cut c (B B),
   // summary age h, round0 <bytes> B / budget <B> B, hist <ms> ms <n> card reads lock <ms> ms".
   void logContextLine(const ComposeInputs& ci, const class TurnFit& fit, uint32_t budgetBytes, size_t round0Bytes,

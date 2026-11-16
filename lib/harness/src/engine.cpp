@@ -1109,6 +1109,10 @@ struct RunTurnLocals {
   HeadTools headTools;
   orch::Turn turn;
   ApplyState st;
+  std::string seed;   // lane H: the input with its coverage line (the request's per-turn part)
+  std::unique_ptr<TurnFit> fit;   // lane H: what the request gives up when it does not fit
+  uint32_t reqBodyBytes = 0;      // the head's request body budget (the context line)
+  size_t round0Bytes = 0;         // the round-0 request as composed (the context line)
 };
 }  // namespace
 
@@ -1338,7 +1342,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // routine). Built in place: the inputs are the composeInputs result itself, never a
   // stack copy.
   std::unique_ptr<RunTurnLocals> locals(
-      new RunTurnLocals{d_.composeInputs ? d_.composeInputs(curChat_) : ComposeInputs{}, {}, {}, {}});
+      new RunTurnLocals{d_.composeInputs ? d_.composeInputs(curChat_) : ComposeInputs{}, {}, {}, {}, {}, {}, 0, 0});
   ComposeInputs& ci = locals->ci;
   turnMem().gate.phase("context", freeHeap(), largestFreeBlock());
   {
@@ -1389,7 +1393,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   if (!ci.chatSummary.empty())
     ci.chatSummary = rawFoldSummary(ci.chatSummary);   // header stripped; measureHistory sees it below
   if (histV2On()) {
-    ci.history = historyMessages(chatId, historyBudgetOf(budget, host, headModel), ci.chatSummary);
+    ci.history = turnHistory(chatId, budget, host, headModel, ci.chatSummary);
     ci.recentConversation.clear();   // the history rides as messages; the closure's
                                      // text window was the histV1 shape
   } else if (!ci.chatSummary.empty()) {
@@ -1413,13 +1417,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   ci.cache.longTtl = turnGaps_.longTtl(chatId);
   ci.cache.key = layout::cacheKey(ci.devName, chatId);
   // Lane H: what this head's request is budgeted at (request_budget.h), and its history marks.
-  const orch::RequestBudget reqBudget = orch::requestBudgetFor(host, headModel, false);
-  hlog::logf("budget: %s/%s window %uK target %uK tok (%u KB) hist %u/%u/%u KB (%s)", host.c_str(),
-             headModel.empty() ? "-" : headModel.c_str(), (unsigned)(budget.ctxTokens / 1000),
-             (unsigned)(reqBudget.targetTokens / 1000), (unsigned)(reqBudget.wireBodyBytes / 1000),
-             (unsigned)(budget.historyMaxBytes / 1024), (unsigned)(budget.historySoftBytes / 1024),
-             (unsigned)(budget.historyKeepBytes / 1024),
-             (bov.maxContextBytes > 0 || bov.toolResultCap > 0 || bov.toolTotalCap > 0) ? "owner" : "auto");
+  locals->reqBodyBytes =
+      logBudgetLine(host, headModel, budget, bov.maxContextBytes > 0 || bov.toolResultCap > 0 || bov.toolTotalCap > 0);
   // Advertise only tools that are LIVE on this fabric, under the SANITIZED names
   // the wire accepts (loopToolHidden/loopToolName - shared with the dispatch
   // wiring below so "advertised == callable" can't drift). Verified live:
@@ -1827,22 +1826,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
 
   // What the request gives up when it does not fit, and what it says about it (turn_fit.h).
   // Lane H: the seed's coverage line - the live rows after the summary this request does not
-  // carry (a shift, rows not read yet), and a summary more than a day old - only then.
-  const std::string seed = [&]() {
-    if (!histV2On() || chatId.empty() || chatId == "system") return inputs;
-    const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
-    const std::string line = historyCoverageLine(lastWindow_.leftOut, ci.chatSummary.empty() ? 0u : marks.foldUnix,
-                                                 d_.platform.nowEpoch ? d_.platform.nowEpoch() : 0,
-                                                 d_.utcOffsetMin ? d_.utcOffsetMin() : 0);
-    return line + inputs;
-  }();
-  FitContext fitCtx;   // which history is today's, and the note's local times
-  fitCtx.utcOffsetMin = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
-  {
-    const uint32_t dayStart = localDayStartUnix(d_.platform.nowEpoch ? d_.platform.nowEpoch() : 0, fitCtx.utcOffsetMin);
-    if (dayStart) fitCtx.todayLocalDay = (int32_t)(((int64_t)dayStart + fitCtx.utcOffsetMin * 60) / 86400);
-  }
-  TurnFit fit(ci, seed, headToolsPtr ? &headTools : nullptr, fitCtx);
+  // carry (a shift, rows not read yet), and a summary more than a day old - only then. The
+  // seed and the fit live on the heap with the turn's other large locals (lane STACK: the
+  // poll task's stack keeps its floor).
+  std::string& seed = locals->seed;
+  seed = coverageSeed(chatId, !ci.chatSummary.empty(), inputs);
+  locals->fit.reset(newTurnFit(ci, seed, headToolsPtr ? &headTools : nullptr));
+  TurnFit& fit = *locals->fit;
   std::function<std::string()> requestInputs;   // the input as the running attempt sends it
   auto takeFit = [&]() {
     instructions = fit.instructions();
@@ -1860,8 +1850,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     };
   std::string outJson, err;
   // The round-0 request as composed (prompt, history, input, tools): the context line's round0.
-  size_t round0Bytes = instructions.size() + seed.size();
-  for (const auto& sp : headTools.specs) round0Bytes += sp.name.size() + sp.description.size() + sp.schemaJson.size();
+  locals->round0Bytes = instructions.size() + seed.size();
+  for (const auto& sp : headTools.specs)
+    locals->round0Bytes += sp.name.size() + sp.description.size() + sp.schemaJson.size();
   // Lifecycle hook: turn end - fired exactly once on EVERY exit path below
   // (budget refusal, provider failure, parse fail, success), observer-only.
   // `rounds` carries the executed tool-call count (v1 proxy; see hooks.h).
@@ -1892,7 +1883,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // fallback=false on its row, and the next turn gets no [FALLBACK] note about it.
     const orch::SpendSlot* last = tf.spend.lastBilled();
     if (!last && tf.switched) pendingFallbackPath_.clear();
-    logContextLine(ci, fit, reqBudget.wireBodyBytes, round0Bytes, chatId);
+    logContextLine(ci, fit, locals->reqBodyBytes, locals->round0Bytes, chatId);
     if (!d_.hooks.onTurnEnd) return;
     TurnEndEv ev;
     ev.ok = okFlag;

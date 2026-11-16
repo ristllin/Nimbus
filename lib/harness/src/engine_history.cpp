@@ -14,6 +14,7 @@
 #include "nimbus/orch/budget.h"            // headContextBudget - the head's derived caps
 #include "nimbus/orch/episodic_log.h"      // epiCardReads - the history read's card reads
 #include "nimbus/orch/model_window.h"      // legacyCtxTokens - the floor branch's day floor
+#include "nimbus/orch/request_budget.h"    // requestBudgetFor - the budget line
 
 // engine_history - the TurnEngine's turn-structured history (histV2, conversation.h): the
 // rows a turn reads, the window it sends, the owner and trigger rows it captures and the
@@ -418,6 +419,45 @@ FoldSlice TurnEngine::historyFoldSlice(const std::string& chatId, size_t capByte
   FoldSlice s = foldSlice(turns, 0, capBytes, /*manual=*/true, o.utcOffsetMin);
   if (!manual && !hidden && s.digest.size() < kFoldMinNewBytes) return FoldSlice();
   return s;
+}
+
+__attribute__((noinline)) uint32_t TurnEngine::logBudgetLine(const std::string& host, const std::string& model,
+                                                              const nimbus::orch::ContextBudget& b, bool owner) const {
+  const orch::RequestBudget rb = orch::requestBudgetFor(host, model, false);
+  hlog::logf("budget: %s/%s window %uK target %uK tok (%u KB) hist %u/%u/%u KB (%s)", host.c_str(),
+             model.empty() ? "-" : model.c_str(), (unsigned)(b.ctxTokens / 1000), (unsigned)(rb.targetTokens / 1000),
+             (unsigned)(rb.wireBodyBytes / 1000), (unsigned)(b.historyMaxBytes / 1024),
+             (unsigned)(b.historySoftBytes / 1024), (unsigned)(b.historyKeepBytes / 1024), owner ? "owner" : "auto");
+  return rb.wireBodyBytes;
+}
+
+__attribute__((noinline)) std::string TurnEngine::coverageSeed(const std::string& chatId, bool hasSummary,
+                                                               const std::string& inputs) const {
+  if (!histV2On() || chatId.empty() || chatId == "system") return inputs;
+  const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
+  return historyCoverageLine(lastWindow_.leftOut, hasSummary ? marks.foldUnix : 0u,
+                             d_.platform.nowEpoch ? d_.platform.nowEpoch() : 0, d_.utcOffsetMin ? d_.utcOffsetMin() : 0) +
+         inputs;
+}
+
+__attribute__((noinline)) std::vector<HistMsg> TurnEngine::turnHistory(const std::string& chatId,
+                                                                        const nimbus::orch::ContextBudget& cb,
+                                                                        const std::string& host,
+                                                                        const std::string& model,
+                                                                        const std::string& summary) {
+  return historyMessages(chatId, historyBudgetOf(cb, host, model), summary);
+}
+
+__attribute__((noinline)) TurnFit* TurnEngine::newTurnFit(ComposeInputs& ci, const std::string& seed, HeadTools* tools) const {
+  return new TurnFit(ci, seed, tools, fitContextNow());
+}
+
+FitContext TurnEngine::fitContextNow() const {
+  FitContext c;
+  c.utcOffsetMin = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
+  const uint32_t dayStart = localDayStartUnix(d_.platform.nowEpoch ? d_.platform.nowEpoch() : 0, c.utcOffsetMin);
+  if (dayStart) c.todayLocalDay = (int32_t)(((int64_t)dayStart + c.utcOffsetMin * 60) / 86400);
+  return c;
 }
 
 void TurnEngine::logContextLine(const ComposeInputs& ci, const TurnFit& fit, uint32_t budgetBytes,
