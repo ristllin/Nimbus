@@ -384,11 +384,13 @@ struct EngineRig {
   uint32_t seq;
   std::unique_ptr<agent::TurnEngine> eng;
 
-  EngineRig(FakeFs& f, uint32_t nextId, const std::string& thru) : fs(&f), log(f, "/mem/episodic", 64), seq(nextId) {
+  EngineRig(FakeFs& f, uint32_t nextId, const std::string& thru, const std::string& model = "")
+      : fs(&f), log(f, "/mem/episodic", 64), seq(nextId) {
     log.hydrate(300, 0);   // a truncated boot scan
     overlay.bind(&log);
     marks.thru = thru;
     cfg.toolLoop = false;
+    if (!model.empty()) cfg.orchModels["anthropic"] = model;
     agent::TurnEngine::Deps d;
     d.cfg = cfg.contract();
     d.platform = plat.contract();
@@ -459,8 +461,17 @@ static void test_the_first_turn_after_a_restart_carries_the_newest_exchanges() {
   // At most one page of card reads on the turn.
   TEST_ASSERT_TRUE(r.eng->historyRead().cardReads > 0);
   TEST_ASSERT_TRUE_MESSAGE(r.eng->historyRead().cardReads <= 24, std::to_string(r.eng->historyRead().cardReads).c_str());
-  // The idle pump fills toward thru, a page a pass, and the next turn reads no card row.
+  // The idle pump fills toward thru a page a pass, as far as the store's index reaches; the
+  // rows below it stay named as unread until the index's backfill (the device's loop task)
+  // reaches them, and then the fill completes.
   int passes = 0;
+  for (int i = 0; i < 40; i++) passes += r.eng->historyIdleStep() ? 1 : 0;
+  TEST_ASSERT_TRUE(r.log.hydrateTruncated());
+  r.eng->handleMessage("still there?", "Roy", "c1");
+  TEST_ASSERT_TRUE_MESSAGE(r.inputs.back().find("still reading them") != std::string::npos, "the unindexed rows are named");
+  while (r.log.backfillStep()) {
+  }
+  passes = 0;
   while (passes < 100 && r.eng->historyIdleStep()) passes++;
   TEST_ASSERT_TRUE(passes > 1 && passes < 100);
   r.eng->handleMessage("and the first thing I asked today?", "Roy", "c1");

@@ -135,9 +135,12 @@ bool ConvCache::fillPage(Entry& e, const Bound& bound, const ReadFn& read) {
   }
   e.started = true;
   std::vector<EpisodicMessage> older;   // newest first
-  // Only an empty page is the chat's start: a store under its per-call read budget answers
-  // a short page with more below it (the next page continues from its oldest row).
-  bool reached = got.empty();
+  // Only an empty page can be the chat's start: a store under its per-call read budget answers
+  // a short page with more below it (the next page continues from its oldest row). And an
+  // empty page is the start only when nothing lies between thru and the oldest row held: after
+  // a restart the store's index may not reach that far yet (its backfill indexes the card in
+  // the background); the rows below stay named as unread and a later fill reads them.
+  bool reached = got.empty() && !gapAfterThru(e, read);
   for (auto& m : got) {
     if (!e.thru.empty() && !rowIdAfter(m.id, e.thru)) {
       reached = true;
@@ -160,6 +163,16 @@ bool ConvCache::fillPage(Entry& e, const Bound& bound, const ReadFn& read) {
   if (reached) e.complete = true;
   enforce(e, bound);
   return true;
+}
+
+// One forward read of the row right after thru (the after cursor walks the rows the store's
+// index does not hold yet): true when it is older than the oldest row held, i.e. rows after
+// thru exist that the backward fill has not reached.
+bool ConvCache::gapAfterThru(const Entry& e, const ReadFn& read) {
+  const std::vector<EpisodicMessage> first =
+      read(HistoryQuery(1, std::string(), e.thru.empty() ? std::string("m00000000") : e.thru));
+  if (first.empty()) return false;
+  return e.rows.empty() || rowIdAfter(e.rows.front().id, first.front().id);
 }
 
 // The bound: the oldest rows go, counted in the span (the rows after thru the cache does

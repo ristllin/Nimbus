@@ -25,7 +25,10 @@
 //     cache is more than a page behind) drops the entry: it is filled again newest first;
 //   - filled NEWEST FIRST with the before cursor down to the fold anchor (thru), one page
 //     per call: one on a turn, one per idle pump pass (RULINGS-v3 item 4: the first turn
-//     after a boot with a 400-row backlog carries the newest exchanges, not the oldest);
+//     after a boot with a 400-row backlog carries the newest exchanges, not the oldest).
+//     The fill is done only when it reaches thru, a /clear or the chat's start: a store
+//     whose index does not reach that far yet (its backfill indexes the card after a boot)
+//     leaves the rows below named as unread until a later fill reads them;
 //   - trimmed when a fold moves thru (rows at or before it go), and dropped when thru moves
 //     back; a /clear boundary row ends the conversation (older rows go);
 //   - patched by the photo-record overlay (row_overlay.h's patch journal: a record that
@@ -107,6 +110,7 @@ class ConvCache {
   void applyPatches(Entry& e);
   int readNewer(Entry& e, const ReadFn& read);
   bool fillPage(Entry& e, const Bound& bound, const ReadFn& read);
+  static bool gapAfterThru(const Entry& e, const ReadFn& read);
   void enforce(Entry& e, const Bound& bound);
   static size_t rowBytes(const nimbus::orch::EpisodicMessage& m);
   View viewOf(const Entry& e) const;
