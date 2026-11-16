@@ -1,6 +1,7 @@
 #include "nimbus/harness/engine.h"
 #include "engine_internal.h"   // trimInPlace - shared with engine.cpp
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -94,7 +95,7 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
 }
 
 TurnEngine::FoldResult TurnEngine::runFoldOn(const std::string& chatId, const std::string& prevSummary,
-                                             const std::string& digest, const FoldRung* onlyRung,
+                                             const std::string& digest, const std::string* onlyHost,
                                              std::string& outSummary, size_t* producedBytes) {
   namespace orch = nimbus::orch;
   outSummary.clear();
@@ -121,8 +122,8 @@ TurnEngine::FoldResult TurnEngine::runFoldOn(const std::string& chatId, const st
   // applyTurn - no device actions, no mem writes, no spawns), so walking the
   // same <=3-host candidate list the fabric uses is strictly better.
   const std::vector<std::string> hostsToTry =
-      onlyRung ? std::vector<std::string>{onlyRung->host} : foldHostCandidates();
-  if (hostsToTry.empty() || hostsToTry.front().empty()) return FoldResult::Deferred;
+      onlyHost ? std::vector<std::string>{*onlyHost} : foldHostCandidates();   // one rung: its host alone
+  if (hostsToTry.empty()) return FoldResult::Deferred;
 
   // ALWAYS a fresh, throwaway provider thread: the fold must never ride or
   // extend the chat's chain (that is the thing being reset), and its convId is
@@ -142,7 +143,6 @@ TurnEngine::FoldResult TurnEngine::runFoldOn(const std::string& chatId, const st
     std::string convId;
     outJson.clear(); err.clear();
     orch::TokenUsage u;
-    const providers::ScopedModelOverride rungModel(h, onlyRung ? onlyRung->model : std::string());
     ok = d_.hosts.run(h, convId, orch::ORCH_COMPACT_PROMPT, inputs,
                       outJson, err, /*tools=*/nullptr, &u);
     foldSpend.add(h.c_str(), foldModelFor(d_, h).c_str(), u);
@@ -198,12 +198,22 @@ std::vector<FoldRung> TurnEngine::foldRungs() const {
 TurnEngine::FoldResult TurnEngine::runFoldRung(const std::string& chatId, const std::string& prevSummary,
                                                const std::string& digest, const FoldRung& rung,
                                                std::string& outSummary, FoldRungReport* report) {
+  // Only a host the ladder holds now (keyed, in budget, not parked), on the rung's model
+  // while the request runs (a direct host's; any other runs on its own model).
+  const std::vector<std::string> ladder = foldHostCandidates();
+  FoldResult r = FoldResult::Deferred;
   size_t produced = 0;
-  const FoldResult r = runFoldOn(chatId, prevSummary, digest, &rung, outSummary, &produced);
+  bool pinned = false;
+  outSummary.clear();
+  if (std::find(ladder.begin(), ladder.end(), rung.host) != ladder.end()) {
+    const providers::ScopedModelOverride pin(rung.host, rung.model);
+    pinned = pin.active();
+    r = runFoldOn(chatId, prevSummary, digest, &rung.host, outSummary, &produced);
+  }
   if (report) {
     report->result = r;
     report->host = rung.host;
-    report->model = rung.model;
+    report->model = pinned ? rung.model : std::string();
     report->producedBytes = produced;
   }
   return r;

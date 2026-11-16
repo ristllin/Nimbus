@@ -49,7 +49,7 @@ inline std::string headModelOf(const TurnEngine::Deps& d, const std::string& hos
 // The head the next turn runs on, as a context window in tokens.
 inline uint32_t headCtxTokens(const TurnEngine::Deps& d) {
   const std::string host = resolveTurnHost(d);
-  return nimbus::orch::modelCtxTokens(host, d.cfg.provider.orchModel ? d.cfg.provider.orchModel(host) : std::string());
+  return nimbus::orch::modelCtxTokens(host, headModelOf(d, host));
 }
 
 }  // namespace detail

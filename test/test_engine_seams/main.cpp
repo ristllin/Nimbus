@@ -16,6 +16,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -208,6 +209,7 @@ static void test_one_rung_asks_its_host_on_its_model() {
   TEST_ASSERT_EQUAL_STRING("1. Owner intent: testing", sum.c_str());
   TEST_ASSERT_TRUE(rep.result == FoldResult::Ok);
   TEST_ASSERT_EQUAL_STRING("openai", rep.host.c_str());
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6-luna", rep.model.c_str());
   TEST_ASSERT_TRUE(rep.producedBytes > 0);
   TEST_ASSERT_EQUAL(1, (int)r.cfg.recorded.size());
   TEST_ASSERT_EQUAL_STRING("compact", r.cfg.recorded[0].tag.c_str());
@@ -224,9 +226,16 @@ static void test_one_rung_asks_its_host_on_its_model() {
   TEST_ASSERT_TRUE(r.eng->runFold("1001", "", "- user: hi\n", sum) == FoldResult::Ok);
   TEST_ASSERT_EQUAL_STRING("anthropic", r.calls[0].host.c_str());
   TEST_ASSERT_EQUAL_STRING("", r.calls[0].pinned.c_str());
-  // A rung with no host defers: nothing is sent.
+  // A rung on a host the ladder does not hold now defers, nothing sent: no host, an
+  // unkeyed host, a host over its budget.
   r.calls.clear();
   TEST_ASSERT_TRUE(r.eng->runFoldRung("1001", "", "d", FoldRung(), sum) == FoldResult::Deferred);
+  FoldRung off;
+  off.host = "zai";
+  TEST_ASSERT_TRUE(r.eng->runFoldRung("1001", "", "d", off, sum) == FoldResult::Deferred);
+  r.cfg.overBudgetHosts.insert("openai");
+  TEST_ASSERT_TRUE(r.eng->runFoldRung("1001", "", "d", rung, sum) == FoldResult::Deferred);
+  r.cfg.overBudgetHosts.clear();
   TEST_ASSERT_EQUAL(0, (int)r.calls.size());
   // A rung keeps runFold's gates: a turn-time heap floor defers it.
   r.plat.heap = 13000;
@@ -265,6 +274,30 @@ static void test_model_pin_is_its_hosts_and_ends_with_its_scope() {
     TEST_ASSERT_EQUAL_STRING("", providers::modelOverrideFor("mistral").c_str());
   }
   TEST_ASSERT_EQUAL(0, (int)LogCapture::lines().size());
+  // Only a direct host's model can be pinned: Z.ai, the router and the custom endpoint
+  // read theirs elsewhere, so a pin there would bill one model and send another.
+  for (const char* h : {"zai", "cumulo", "custom"}) {
+    const providers::ScopedModelOverride pin(h, "some-model");
+    TEST_ASSERT_FALSE_MESSAGE(pin.active(), h);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", providers::modelOverrideFor(h).c_str(), h);
+  }
+  TEST_ASSERT_TRUE(LogCapture::contains("model pin: some-model on zai not taken, only a direct host"));
+  // The pin is the pinning thread's own: a request on another task never sees it, and
+  // another task's pin never shows here.
+  {
+    const providers::ScopedModelOverride pin("openai", "gpt-5.6-luna");
+    std::string seen = "unset";
+    bool otherPinned = false;
+    std::thread([&] {
+      seen = providers::modelOverrideFor("openai");
+      const providers::ScopedModelOverride own("anthropic", "claude-haiku-5-5");
+      otherPinned = own.active();
+    }).join();
+    TEST_ASSERT_EQUAL_STRING("", seen.c_str());
+    TEST_ASSERT_TRUE(otherPinned);   // its own pin, not nested under this thread's
+    TEST_ASSERT_EQUAL_STRING("gpt-5.6-luna", providers::modelOverrideFor("openai").c_str());
+    TEST_ASSERT_EQUAL_STRING("", providers::modelOverrideFor("anthropic").c_str());
+  }
 }
 
 // ---- the history read's cursors -------------------------------------------------
@@ -298,7 +331,7 @@ static void test_an_after_cursor_reads_no_rows_and_says_so_once() {
   TEST_ASSERT_TRUE(agent::historyAfterUnserved(q));
   int said = 0;
   for (const auto& l : LogCapture::lines()) said += l.find("history: a read after m0005") != std::string::npos;
-  TEST_ASSERT_TRUE(said <= 1);   // once a boot (an earlier test in this process may have said it)
+  TEST_ASSERT_TRUE(said <= 1);   // once per task (an earlier test on this thread may have said it)
   Rig r;
   r.addTurns(3);
   TEST_ASSERT_EQUAL(0, (int)r.readRows("1001", q).size());

@@ -70,9 +70,11 @@ inline constexpr size_t flatPromptBudget() { return nimbus::orch::kJsonStrGuard 
 // A model pinned for one host while this object lives (RAII): a fold rung asks a host
 // on a model other than the owner's pick (the Sub step-down) without touching the
 // stored pick. The device's and the VN's orchModel closures read modelOverrideFor
-// first. One pin at a time: a pin made while another is held logs and pins nothing,
-// so the outer value stays. An empty host or model pins nothing. The turn task (the
-// VN's engine thread) is the only one that pins or reads it: no on-device concurrency.
+// first. Only a direct host (anthropic, openai, mistral: the hosts whose requests read
+// orchModel) can be pinned; another host logs and pins nothing. One pin at a time: a pin
+// made while another is held logs and pins nothing, so the outer value stays. An empty
+// host or model pins nothing. The pin is the pinning thread's own (thread-local, like
+// the connector grant's scope): a request on another task never sees it.
 class ScopedModelOverride {
  public:
   ScopedModelOverride(std::string host, std::string model);

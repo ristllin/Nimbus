@@ -46,7 +46,7 @@ std::string atItem(const TurnEngine::Deps& d) {
 
 bool historyAfterUnserved(const HistoryQuery& q) {
   if (q.after.empty()) return false;
-  static bool said = false;   // once a boot: nothing sets the cursor until lane H serves it
+  thread_local bool said = false;   // once per task: nothing sets the cursor until lane H serves it
   if (!said) {
     said = true;
     hlog::logf("history: a read after %s is not served yet - no rows", q.after.c_str());

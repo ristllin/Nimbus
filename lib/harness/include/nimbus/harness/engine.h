@@ -174,7 +174,7 @@ struct HistoryQuery {
   std::string after;
 };
 // True when `q` asks for rows after a cursor, which no store serves yet: the binding
-// then returns no rows. The first such read in a boot logs that it was refused.
+// then returns no rows. The first such read on a task logs that it was refused.
 bool historyAfterUnserved(const HistoryQuery& q);
 
 // Lane CTX: the bytes a turn's tool list adds to its request (each advertised tool's
@@ -467,8 +467,10 @@ class TurnEngine {
   // hosts of foldHostCandidates(), each on its own model.
   std::vector<FoldRung> foldRungs() const;
   // ONE rung of a fold: runFold's gates, then its attempt on `rung.host` alone (on
-  // `rung.model` when set, through providers::ScopedModelOverride), metered and read
-  // as runFold reads it. `report`, when given, says what the rung came to.
+  // `rung.model` when set and the host is a direct one, through
+  // providers::ScopedModelOverride), metered and read as runFold reads it. A host the
+  // ladder does not hold now (unkeyed, over budget, parked) defers, as an empty ladder
+  // does. `report`, when given, says what came of it (`model`: "" = the host's own).
   FoldResult runFoldRung(const std::string& chatId, const std::string& prevSummary,
                          const std::string& digest, const FoldRung& rung, std::string& outSummary,
                          FoldRungReport* report = nullptr);
@@ -587,9 +589,9 @@ class TurnEngine {
   // A billing refusal's owner notice: once per episode (billingNoticeDue, shared
   // with the embedding seam), held without taking the latch on a quiet turn.
   bool recheckableHost(const std::string& host) const;   // recheckParkedHost's gates
-  // runFold's body: the whole ladder (`onlyRung` null, foldHostCandidates()) or one rung.
+  // runFold's body: the whole ladder (`onlyHost` null, foldHostCandidates()) or one rung's host.
   FoldResult runFoldOn(const std::string& chatId, const std::string& prevSummary, const std::string& digest,
-                       const FoldRung* onlyRung, std::string& outSummary, size_t* producedBytes);
+                       const std::string* onlyHost, std::string& outSummary, size_t* producedBytes);
   void askParkedHost(const std::string& host);           // its one small request
   void deliverBillingNotice(const std::string& chatId, const std::string& host,
                             const std::string& text);
