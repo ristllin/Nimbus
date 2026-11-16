@@ -148,32 +148,48 @@ void TurnFit::dropShelf() {
 }
 
 // One rung, measured on the rendered request with this note: a rung that does not make it
-// smaller is undone and reports 0 (no note, no trim).
+// smaller is undone and reports 0 (no note, no trim). Only what the rung may change is kept.
 size_t TurnFit::runRung(int rung, size_t want) {
   const size_t before = rendered();
-  // What the rung may change, kept to undo a rung that frees nothing.
-  const ComposeInputs ciWas = ci_;
-  const std::string inputWas = input_;
   const Cuts cutWas = cut_;
+  std::vector<std::string> recalledWas;
+  std::vector<HistMsg> historyWas;
   std::vector<nimbus::orch::ToolRegistry::Spec> specsWas;
-  if (rung == kTools && tools_) specsWas = tools_->specs;
+  std::vector<nimbus::orch::ToolInfo> toolsWas;
+  std::string playbookWas, shelfWas, prefsWas, inputWas;
   switch (rung) {
-    case kRecalled: dropRecalled(); break;
-    case kSkills:   dropSkills(); break;
-    case kOlderDays: dropHistory(false, want); break;
-    case kToday:    dropHistory(true, want); break;
-    case kResults:  clipResults(want); break;
-    case kInput:    clipInput(want); break;
-    case kTools:    dropTools(); break;
-    case kShelf:    dropShelf(); break;
+    case kRecalled: recalledWas = ci_.recalled; dropRecalled(); break;
+    case kSkills:   playbookWas = ci_.foodPlaybook; inputWas = input_; dropSkills(); break;
+    case kOlderDays:
+    case kToday:    historyWas = ci_.history; dropHistory(rung == kToday, want); break;
+    case kResults:  inputWas = input_; clipResults(want); break;
+    case kInput:    inputWas = input_; clipInput(want); break;
+    case kTools:
+      if (tools_) specsWas = tools_->specs;
+      toolsWas = ci_.tools;
+      dropTools();
+      break;
+    case kShelf:    shelfWas = ci_.skillsShelf; prefsWas = ci_.standingPrefs; dropShelf(); break;
     default:        return 0;
   }
   const size_t after = rendered();
   if (after < before) return before - after;
-  ci_ = ciWas;   // nothing gained: as it was, no note
-  if (rung == kTools && tools_) tools_->specs = specsWas;
+  // Nothing gained: as it was, and no note.
+  switch (rung) {
+    case kRecalled: ci_.recalled = std::move(recalledWas); break;
+    case kSkills:   ci_.foodPlaybook = std::move(playbookWas); input_ = std::move(inputWas); break;
+    case kOlderDays:
+    case kToday:    ci_.history = std::move(historyWas); break;
+    case kResults:
+    case kInput:    input_ = std::move(inputWas); break;
+    case kTools:
+      if (tools_) tools_->specs = std::move(specsWas);
+      ci_.tools = std::move(toolsWas);
+      break;
+    case kShelf:    ci_.skillsShelf = std::move(shelfWas); ci_.standingPrefs = std::move(prefsWas); break;
+    default:        break;
+  }
   cut_ = cutWas;
-  input_ = inputWas;
   return 0;
 }
 

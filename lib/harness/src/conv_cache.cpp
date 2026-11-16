@@ -11,6 +11,10 @@ namespace agent {
 
 using nimbus::orch::EpisodicMessage;
 
+namespace {
+size_t less(size_t a, size_t b) { return a > b ? a - b : 0; }
+}  // namespace
+
 size_t ConvCache::rowBytes(const EpisodicMessage& m) {
   return m.id.size() + m.text.size() + m.tags.size() + m.blobPath.size() + m.role.size() + 32;
 }
@@ -69,7 +73,7 @@ void ConvCache::syncThru(Entry& e, const std::string& thru) {
   size_t drop = 0, freed = 0;
   while (drop < e.rows.size() && !rowIdAfter(e.rows[drop].id, thru)) freed += rowBytes(e.rows[drop++]);
   e.rows.erase(e.rows.begin(), e.rows.begin() + (long)drop);
-  e.bytes -= freed;
+  e.bytes = less(e.bytes, freed);
   e.thru = thru;
   e.span = ConvSpan();   // the whole span is at or before the new anchor
   if (drop) e.complete = true;   // the rows reached the new anchor
@@ -79,8 +83,10 @@ void ConvCache::applyPatches(Entry& e) {
   const bool whole = nimbus::orch::rowPatchesSince(e.patchSeq, [&e](const std::string& id, const std::string& text) {
     for (auto& m : e.rows)
       if (m.id == id) {
+        e.bytes = less(e.bytes, rowBytes(m));
         m.text = text;
         spillToPsram(m.text);
+        e.bytes += rowBytes(m);
       }
   });
   if (!whole) {   // records left the journal unseen: read the rows again
@@ -129,7 +135,9 @@ bool ConvCache::fillPage(Entry& e, const Bound& bound, const ReadFn& read) {
   }
   e.started = true;
   std::vector<EpisodicMessage> older;   // newest first
-  bool reached = got.size() < kPageRows;
+  // Only an empty page is the chat's start: a store under its per-call read budget answers
+  // a short page with more below it (the next page continues from its oldest row).
+  bool reached = got.empty();
   for (auto& m : got) {
     if (!e.thru.empty() && !rowIdAfter(m.id, e.thru)) {
       reached = true;
@@ -170,7 +178,7 @@ void ConvCache::enforce(Entry& e, const Bound& bound) {
     e.span.toId = m.id;
     e.span.toHours = m.tsHours;
     e.span.rows++;
-    e.bytes -= rowBytes(m);
+    e.bytes = less(e.bytes, rowBytes(m));
     drop++;
   }
   if (!drop) return;
@@ -222,6 +230,14 @@ bool ConvCache::fillStep(const std::function<ReadFn(const std::string& chat)>& r
     if (!e.complete && (!best || e.lastUse > best->lastUse)) best = &e;
   if (!best) return false;
   return fillPage(*best, lastBound_, readerFor(best->chat));
+}
+
+std::vector<EpisodicMessage> ConvCache::newest(const std::string& chat, size_t n) const {
+  std::lock_guard<std::mutex> lk(mu_);
+  std::vector<EpisodicMessage> out;
+  if (const Entry* e = find(chat))
+    for (auto it = e->rows.rbegin(); it != e->rows.rend() && out.size() < n; ++it) out.push_back(*it);
+  return out;
 }
 
 void ConvCache::drop(const std::string& chat) {

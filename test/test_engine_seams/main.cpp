@@ -321,7 +321,8 @@ static void test_model_pin_is_its_hosts_and_ends_with_its_scope() {
 // ---- the history read's cursors -------------------------------------------------
 
 // The fold's slice reads FORWARD from thru (lane H): the after cursor, 48 rows a page,
-// oldest first, each page strictly after the last one's newest row - never the newest
+// oldest first, each page strictly after the last one's newest row, until an empty page (a
+// store under its read budget answers a short page with more after it) - never the newest
 // rows first (v5.1.1 read 400 rows newest first and could anchor past rows it never read).
 static void test_the_fold_slice_reads_forward_from_thru() {
   Rig r;
@@ -332,8 +333,8 @@ static void test_the_fold_slice_reads_forward_from_thru() {
   std::vector<HistoryQuery> fwd;
   for (const auto& q : r.reads)
     if (!q.after.empty()) fwd.push_back(q);
-  TEST_ASSERT_EQUAL(2, (int)fwd.size());
-  const char* afters[] = {"m00000000", "m0048"};
+  TEST_ASSERT_EQUAL(3, (int)fwd.size());   // the last page is empty: only an empty page is the end
+  const char* afters[] = {"m00000000", "m0048", "m0060"};
   for (size_t i = 0; i < fwd.size(); i++) {
     TEST_ASSERT_EQUAL(48, (int)fwd[i].limit);
     TEST_ASSERT_EQUAL_STRING(afters[i], fwd[i].after.c_str());

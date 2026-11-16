@@ -216,29 +216,23 @@ static void test_no_clock_history_goes_oldest_first() {
   TEST_ASSERT_TRUE(hasQ(ci, 6));
 }
 
-// A chat's fold pays only when real conversation went, not when a sliver did to make room for
-// a large payload, and not when something else was cut.
-static void test_history_trimmed_says_when_a_fold_can_help() {
-  ComposeInputs big = baseInputs();
-  for (auto& m : big.history)
-    if (!agent::isSummaryMessage(m)) m.text += std::string(4000, 'x');
-  TurnFit bigFit(big, inputWithResults(), nullptr, today());
-  TEST_ASSERT_FALSE(bigFit.historyTrimmed());
-  bigFit.shrink(20000, FitScope::OlderHistory);
-  TEST_ASSERT_TRUE(bigFit.historyTrimmed());
-
-  ComposeInputs small = baseInputs();
-  TurnFit smallFit(small, inputWithResults(), nullptr, today());
-  smallFit.shrink(1500, FitScope::OlderHistory);   // one pair of 1 KB messages
-  TEST_ASSERT_TRUE(smallFit.trimmed());
-  TEST_ASSERT_FALSE_MESSAGE(smallFit.historyTrimmed(), "a sliver of history is no reason for a paid fold");
+// Every history cut is counted (rows, messages, bytes): any of it makes the fold due; other
+// cuts count none.
+static void test_history_cuts_are_counted() {
+  ComposeInputs ci = baseInputs();
+  TurnFit fit(ci, inputWithResults(), nullptr, today());
+  fit.shrink(1500, FitScope::OlderHistory);   // one pair of 1 KB messages
+  TEST_ASSERT_TRUE(fit.trimmed());
+  TEST_ASSERT_EQUAL(2, fit.historyMessagesLeftOut());
+  TEST_ASSERT_EQUAL_UINT32(2, (uint32_t)fit.historyRowsLeftOut());
+  TEST_ASSERT_TRUE(fit.historyBytesLeftOut() >= 2000);
 
   ComposeInputs other = baseInputs();
   other.history.clear();
   TurnFit otherFit(other, inputWithResults(), nullptr, today());
   otherFit.shrink(3000, FitScope::Ladder);
   TEST_ASSERT_TRUE(otherFit.trimmed());
-  TEST_ASSERT_FALSE(otherFit.historyTrimmed());
+  TEST_ASSERT_EQUAL(0, otherFit.historyMessagesLeftOut());
 }
 
 // An owner hears when today's earlier messages went, or part of the results.
@@ -279,7 +273,7 @@ int main() {
   RUN_TEST(test_older_history_scope_is_history_only);
   RUN_TEST(test_context_scope_stops_before_the_results);
   RUN_TEST(test_no_clock_history_goes_oldest_first);
-  RUN_TEST(test_history_trimmed_says_when_a_fold_can_help);
+  RUN_TEST(test_history_cuts_are_counted);
   RUN_TEST(test_the_owner_line);
   RUN_TEST(test_clips_stay_valid_utf8);
   return UNITY_END();

@@ -801,20 +801,26 @@ void AppendLogEpisodicStore::queryAfter(const MsgQuery& q, std::vector<EpisodicM
   const EpiAfterFilter f(q, afterSfx);
   if (f.impossible()) return;
   // The index is a contiguous suffix of history (hydrate, then the backfill downward):
-  // rows newer than the cursor and older than its floor are on the card, unindexed.
+  // rows newer than the cursor and older than its floor are on the card, unindexed. An
+  // after read always walks them (its reader, the fold, starts from the summary's last
+  // row and must never anchor past rows it did not read), under the cold budget.
   uint32_t floorSfx = UINT32_MAX;
   for (const auto& r : index_) floorSfx = std::min(floorSfx, r.idSfx);
   const bool belowIndex = hydrateTruncated_ && (byteCur || (uint64_t)afterSfx + 1 < floorSfx);
-  if (belowIndex) {
-    if (!q.coldScan) {
-      info.olderExists = true;   // a gap between the cursor and the index: said, not read
-    } else if (!queryAfterCold(q, f, afterSfx, out, info)) {
-      return;
-    }
-  }
+  if (belowIndex && !queryAfterCold(q, f, afterSfx, out, info)) return;
   if (byteCur && !belowIndex) return;   // a cold cursor on a store whose index has no gap left
   // Past the cold region every indexed row is newer than the cursor.
-  const EpiAfterFilter rest(q, belowIndex ? 0 : afterSfx);
+  const uint32_t from = belowIndex ? 0 : afterSfx;
+  const EpiAfterFilter rest(q, from);
+  if (unpersisted_ > 0 && !ringResident()) {
+    // The card is failing: only the RAM ring answers, and only when it holds the row right
+    // after the cursor (it is a contiguous suffix of arrivals). Otherwise nothing: a reader
+    // that takes a short page for the end must never see a gap as the history.
+    const bool covers = !recent_.empty() && (uint64_t)epiIdSuffix(st(recent_.front().id)) <= (uint64_t)from + 1;
+    if (covers) queryAfterRing(q, rest, out, info);
+    else info.olderExists = true;
+    return;
+  }
   if (unpersisted_ > 0 || ringResident())
     queryAfterRing(q, rest, out, info);
   else
@@ -823,20 +829,30 @@ void AppendLogEpisodicStore::queryAfter(const MsgQuery& q, std::vector<EpisodicM
 
 void AppendLogEpisodicStore::queryAfterRing(const MsgQuery& q, const EpiAfterFilter& f,
                                             std::vector<EpisodicMessage>& out, EpiQueryInfo& info) const {
-  for (const CachedMsg& c : recent_) {
-    if (!f.newer(epiIdSuffix(st(c.id)))) continue;
+  // In id order: rows stored before the clock was set sit in the day-0 stream, ahead of
+  // their ids, after a restart.
+  std::vector<std::pair<uint32_t, size_t>> rows;
+  for (size_t i = 0; i < recent_.size(); i++) {
+    const CachedMsg& c = recent_[i];
+    const uint32_t sfx = epiIdSuffix(st(c.id));
+    if (!f.newer(sfx)) continue;
     if (!q.sessionId.empty() && q.sessionId != c.sessionId.c_str()) continue;
     if (!q.sessionVisible(st(c.sessionId))) continue;   // v3.7.0 read boundary
     if (!q.kindVisible(c.kind)) continue;
     if (q.sinceHours && c.tsHours < q.sinceHours) continue;
     if (q.beforeHours && c.tsHours >= q.beforeHours) continue;
     if (!f.text(c.text.data(), c.text.size())) continue;
+    rows.push_back({sfx, i});
+  }
+  std::stable_sort(rows.begin(), rows.end(),
+                   [](const std::pair<uint32_t, size_t>& a, const std::pair<uint32_t, size_t>& b) { return a.first < b.first; });
+  for (const auto& r : rows) {
     if (pageFull(q, out)) {
       info.newerExists = true;
-      info.nextAfter = out.back().id;
+      info.nextAfter = out.back().id;   // the newest served: everything older was served
       return;
     }
-    out.push_back(msgOf(c));
+    out.push_back(msgOf(recent_[r.second]));
     info.matched++;
   }
 }
@@ -864,21 +880,40 @@ size_t AppendLogEpisodicStore::loadRecBlockFwd(const MsgQuery& q, const EpiAfter
 
 void AppendLogEpisodicStore::queryAfterIndex(const MsgQuery& q, const EpiAfterFilter& f,
                                              std::vector<EpisodicMessage>& out, EpiQueryInfo& info) const {
+  const size_t n = index_.size(), ringN = recent_.size();
+  // The candidates in id order, never the index's (rows stored before the clock was set sit
+  // in the day-0 stream, ahead of their ids): the `want` smallest ids newer than the cursor,
+  // one more than the page holds so a newer row is known to remain. A max-heap keeps them.
+  const size_t want = q.limit > 0 ? (size_t)q.limit - out.size() + 1 : n;
+  using Cand = std::pair<uint32_t, size_t>;   // (id suffix, index position)
+  std::vector<Cand, WorkingAllocator<Cand>> heap;
+  for (size_t i = 0; i < n && want; i++) {
+    const IdxRec& r = index_[i];
+    if (!f.newer(r.idSfx) || !indexRowPasses(q, r, 0)) continue;
+    if (heap.size() < want) {
+      heap.push_back({r.idSfx, i});
+      std::push_heap(heap.begin(), heap.end());
+    } else if (r.idSfx < heap.front().first) {
+      std::pop_heap(heap.begin(), heap.end());
+      heap.back() = {r.idSfx, i};
+      std::push_heap(heap.begin(), heap.end());
+    }
+  }
+  std::sort_heap(heap.begin(), heap.end());   // ascending ids
+  const bool more = heap.size() >= want && want < n;   // a newer candidate may lie past the kept ones
   // The ring mirrors the index's newest rows (unpersisted_ is 0 on this path): those come
   // from RAM, each matched to its index row (id and hour) before it is trusted.
-  const size_t n = index_.size(), ringN = recent_.size();
   int reads = 0;
   size_t bytes = 0;
   RecBlock blk;
-  for (size_t i = 0; i < n; i++) {
-    const IdxRec& r = index_[i];
-    if (!f.newer(r.idSfx) || !indexRowPasses(q, r, 0)) continue;
+  for (const Cand& cand : heap) {
+    const IdxRec& r = index_[cand.second];
     if (pageFull(q, out)) {
       info.newerExists = true;
-      info.nextAfter = out.back().id;
+      info.nextAfter = out.back().id;   // the newest served: every smaller id was served
       return;
     }
-    const size_t fromNewest = n - 1 - i;
+    const size_t fromNewest = n - 1 - cand.second;
     const CachedMsg* c = fromNewest < ringN ? &recent_[ringN - 1 - fromNewest] : nullptr;
     if (c && c->tsHours == r.tsHours && epiIdSuffix(st(c->id)) == r.idSfx) {
       if (f.text(c->text.data(), c->text.size())) {
@@ -890,10 +925,10 @@ void AppendLogEpisodicStore::queryAfterIndex(const MsgQuery& q, const EpiAfterFi
     if (!blk.covers(r)) {
       if (reads > 0 && (reads >= kIndexReadsPerCall || bytes >= kIndexBytesPerCall)) {   // bounded, then paged
         info.newerExists = true;
-        info.nextAfter = idCursor(r.idSfx - 1);   // the next call starts exactly at this row
+        info.nextAfter = idCursor(r.idSfx ? r.idSfx - 1 : 0);   // the next call starts exactly at this row
         return;
       }
-      bytes += loadRecBlockFwd(q, f, i, blk);
+      bytes += loadRecBlockFwd(q, f, cand.second, blk);
       reads++;
     }
     EpisodicMessage m;
@@ -901,6 +936,10 @@ void AppendLogEpisodicStore::queryAfterIndex(const MsgQuery& q, const EpiAfterFi
     if (!f.text(m.text.data(), m.text.size())) continue;
     out.push_back(std::move(m));
     info.matched++;
+  }
+  if (more && !heap.empty()) {   // the text filter thinned the kept candidates: page on after the last
+    info.newerExists = true;
+    info.nextAfter = idCursor(heap.back().first);
   }
 }
 
@@ -934,6 +973,9 @@ void AppendLogEpisodicStore::coldAfterStart(const EpiPsVec<uint32_t>& days, uint
   // taken as newer: the walk then starts earlier and skips, never later and loses rows.
   dayIdx = 0;
   off = 0;
+  // A day-0 stream (rows stored before the clock was set) holds ids out of day order: the
+  // walk then starts at the beginning and the id filter does the rest (slower, never lossy).
+  if (!days.empty() && days.front() == 0) return;
   size_t lo = 0, hi = days.size();
   while (lo < hi) {
     const size_t mid = lo + (hi - lo) / 2;

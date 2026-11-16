@@ -71,6 +71,8 @@ class ConvCache {
   // One fill page for the most recently used chat that is still filling (the idle pump).
   // False when every entry is complete (nothing was read).
   bool fillStep(const std::function<ReadFn(const std::string& chat)>& readerFor);
+  // The chat's newest `n` rows held, newest first (no read; [] when the chat is not held).
+  std::vector<nimbus::orch::EpisodicMessage> newest(const std::string& chat, size_t n) const;
   // The chat's entry is dropped (/clear, a reset): the next access fills it again.
   void drop(const std::string& chat);
   void clear();

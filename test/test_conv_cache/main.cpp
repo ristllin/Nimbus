@@ -330,6 +330,44 @@ static void test_three_chats_lru() {
   TEST_ASSERT_FALSE(cache.holds("a"));
 }
 
+// A store under its per-call read budget answers short pages: a short page is not the start
+// of the chat, so the cache keeps filling until a page comes back empty, and holds every row.
+static void test_a_short_page_is_not_the_start() {
+  Store s;
+  for (int i = 0; i < 20; i++) s.turn("c1", i);
+  const ConvCache::ReadFn full = s.reader("c1");
+  const ConvCache::ReadFn stingy = [&full](const HistoryQuery& q) {
+    std::vector<EpisodicMessage> rows = full(q);
+    if (q.after.empty() && rows.size() > 5) rows.resize(5);   // the budget stopped the call
+    return rows;
+  };
+  ConvCache cache;
+  ConvCache::View v;
+  for (int i = 0; i < 40 && !v.complete; i++) v = cache.access("c1", "", kWide, 1, stingy);
+  TEST_ASSERT_TRUE(v.complete);
+  assertIds(s.truth("c1", ""), ids(v));
+}
+
+// A record that grew a row's text keeps the byte count true: a fold that then takes every
+// row leaves the cache at zero, never wrapped around (which would evict every later row).
+static void test_a_patch_keeps_the_byte_count() {
+  Store s;
+  std::string last;
+  for (int i = 0; i < 4; i++) last = s.turn("c1", i);
+  const std::string photo = s.add("c1", "user", MsgKind::Image, "[image 1/1 ref=abc] (pending)");
+  const std::string after = s.turn("c1", 9);
+  ConvCache cache;
+  fillAll(cache, s, "c1");
+  s.overlay.put(photo, "[image 1/1 ref=abc] " + std::string(3000, 'p'));
+  cache.access("c1", "", kWide, 1, s.reader("c1"));
+  cache.access("c1", after, kWide, 1, s.reader("c1"));   // a fold took every row
+  TEST_ASSERT_TRUE_MESSAGE(cache.bytesOf("c1") < 100, std::to_string(cache.bytesOf("c1")).c_str());
+  s.turn("c1", 10);
+  const ConvCache::View v = cache.access("c1", after, kWide, 1, s.reader("c1"));
+  TEST_ASSERT_EQUAL(2, (int)v.rows.size());
+  TEST_ASSERT_TRUE(v.span.empty());
+}
+
 // ---- through the engine (RULINGS-v3 item 4) ------------------------------------------
 
 namespace {
@@ -441,6 +479,8 @@ int main(int, char**) {
   RUN_TEST(test_the_bound_holds_and_names_what_left);
   RUN_TEST(test_a_full_delta_refills_newest_first);
   RUN_TEST(test_three_chats_lru);
+  RUN_TEST(test_a_short_page_is_not_the_start);
+  RUN_TEST(test_a_patch_keeps_the_byte_count);
   RUN_TEST(test_the_first_turn_after_a_restart_carries_the_newest_exchanges);
   return UNITY_END();
 }

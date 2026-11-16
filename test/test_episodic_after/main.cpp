@@ -237,12 +237,41 @@ static void test_cold_after_reads_forward_then_joins_the_index() {
   TEST_ASSERT_TRUE(fs.bytesRead <= (long)(kColdMaxBytes + kColdWindowMax + kIndexBytesPerCall));
   TEST_ASSERT_TRUE(info.newerExists);
   TEST_ASSERT_TRUE_MESSAGE(info.nextAfter.find(':') != std::string::npos, "a cold page continues by byte cursor");
-  // Without coldScan the index alone answers, and says it is not the whole story.
-  EpiQueryInfo hot;
-  const auto rows = s.query(chatAfter(after, 1000, false), &hot);
-  TEST_ASSERT_TRUE(!rows.empty());
-  TEST_ASSERT_TRUE(epiIdSuffix(rows.front().id) > 5 + 80);   // the index's oldest rows, not the cursor's
-  TEST_ASSERT_TRUE_MESSAGE(hot.olderExists, "rows between the cursor and the index are on the card, unread");
+  // An after read walks the gap whether or not it asked for a cold scan: its reader (the
+  // fold, from the summary's last row) must never be handed the index's rows as if they
+  // followed the cursor.
+  assertSame(c.expectAfter(after), pageAll(s, after, 1000, false));
+}
+
+// Rows stored before the clock was set sit in the day-0 stream, which a restart indexes first:
+// the index is then out of id order. An after read still pages in id order, losing nothing.
+static void test_after_reads_follow_ids_when_the_index_does_not() {
+  FakeFs fs;
+  std::vector<std::string> want;
+  uint32_t seq = 0;
+  {
+    AppendLogEpisodicStore w(fs, "/mem/episodic", 512);
+    for (int i = 0; i < 30; i++) {
+      EpisodicMessage m;
+      m.id = idOf(++seq);
+      m.sessionId = "c1";
+      m.role = "user";
+      m.kind = MsgKind::Message;
+      // A reboot with no clock in the middle: rows 11-15 are stamped with boot hours (day 0).
+      m.tsHours = (i >= 10 && i < 15) ? (uint32_t)i : (kDay0 + (i < 10 ? 0u : 1u)) * 24 + 1;
+      m.text = "row " + m.id;
+      w.addMessage(m);
+      if (i >= 3) want.push_back(m.id);
+    }
+  }
+  for (int ring : {512, 4}) {   // the RAM ring alone, and the index read off the card
+    AppendLogEpisodicStore s(fs, "/mem/episodic", ring);
+    s.hydrate(0, 0);
+    std::vector<uint32_t> order;
+    s.forEachIndexed([&](uint32_t, uint32_t, uint32_t, uint32_t sfx) { order.push_back(sfx); });
+    TEST_ASSERT_EQUAL_UINT32(11, order.front());   // the day-0 rows come first in the index
+    assertSame(want, pageAll(s, idOf(3), 4, false));
+  }
 }
 
 // A day-stream the card will not read is named as an unreadable span; the rows after it
@@ -308,6 +337,7 @@ int main(int, char**) {
   RUN_TEST(test_ring_resident_after_reads_no_card);
   RUN_TEST(test_index_after_pages_under_the_read_budget);
   RUN_TEST(test_cold_after_reads_forward_then_joins_the_index);
+  RUN_TEST(test_after_reads_follow_ids_when_the_index_does_not);
   RUN_TEST(test_an_unreadable_span_is_reported);
   RUN_TEST(test_the_overlay_patches_after_reads);
   RUN_TEST(test_text_filter_keeps_the_order);

@@ -46,7 +46,11 @@ bool rowPatchesSince(uint32_t seq, const std::function<void(const std::string&, 
 
 void RowTextOverlay::put(const std::string& id, const std::string& text) {
   if (id.empty()) return;
-  journal(id, text);
+  putText(id, text);
+  journal(id, text);   // after the overlay holds it: a reader that re-reads now sees the new text
+}
+
+void RowTextOverlay::putText(const std::string& id, const std::string& text) {
   for (size_t i = 0; i < ids_.size(); ++i) {
     if (!sameText(ids_[i], id)) continue;
     ids_.erase(ids_.begin() + (long)i);

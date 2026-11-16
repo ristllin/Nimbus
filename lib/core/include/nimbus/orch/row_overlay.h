@@ -72,6 +72,7 @@ class RowTextOverlay : public EpisodicStore {
 
  private:
   void apply(std::vector<EpisodicMessage>& rows) const;
+  void putText(const std::string& id, const std::string& text);   // put() without the journal
   EpisodicStore* inner_ = nullptr;
   // Oldest first, through the working-set allocator (PSRAM on the device): the
   // overlay lives as long as the device runs and is replayed at boot.

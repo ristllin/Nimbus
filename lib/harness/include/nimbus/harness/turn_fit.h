@@ -70,12 +70,8 @@ class TurnFit {
   // The input as the request should send it: the note, then what is left of the input.
   std::string inputs() const;
   bool trimmed() const { return trimmed_; }
-  // Enough conversation history was left out that the chat needs its fold. A fold is a paid call:
-  // other cuts would come back the same after one, and a sliver of history to make room for a
-  // large payload is no reason for one.
-  bool historyTrimmed() const { return cut_.historyBytesDropped >= kFoldWorthBytes; }
-  static constexpr size_t kFoldWorthBytes = 4096;
-  // The live history rows and messages left out of this request (the turn's leftOutRows).
+  // The live history rows and messages left out of this request (the turn's leftOutRows; any
+  // of them makes the chat's fold due: the protocol's "every live-row cut sets trimmedForSize").
   size_t historyRowsLeftOut() const { return cut_.historyRowsDropped; }
   int historyMessagesLeftOut() const { return cut_.olderDropped + cut_.todayDropped; }
   size_t historyBytesLeftOut() const { return cut_.historyBytesDropped; }
