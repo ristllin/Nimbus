@@ -59,6 +59,8 @@ def load_scenarios(only: str | None = None) -> list:
     out = []
     for path in sorted((HERE / "scenarios").glob("*.json")):
         sc = json.loads(path.read_text())
+        if sc.get("mode") == "offline":  # replayed with scripted answers by run_offline.py, not live
+            continue
         sc["_path"] = str(path)
         out.append(sc)
     if only:

@@ -1,0 +1,4 @@
+# the offline fold replay build and local run records (live gate records are kept on disk, not committed)
+fold_replay/build/
+runs/
+__pycache__/

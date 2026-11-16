@@ -1,0 +1,153 @@
+{
+  "id": "lc-day-boundary",
+  "title": "Last night's estimate is still there just after midnight",
+  "rows": [
+    "OIR-54"
+  ],
+  "replays": "Bench row B09 and the 15 Nov 2026 class at midnight: on v5.1.1 the owner's day switches at local midnight and the turns before it fall to the small recent-history share, so a 23:50 estimate followed by two short turns is gone from the 00:05 request. Synthetic evening of the same shape; the estimate was never logged, so only the conversation holds it.",
+  "clock": "{{TODAY}} {{DOW}} 00:05 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "history": [
+    {
+      "role": "user",
+      "text": "Morning. Breakfast was porridge made with 60 g oats and 250 ml semi-skimmed milk, plus a banana. Log it please.",
+      "at": "{{YESTERDAY}} 08:10"
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as breakfast: porridge (60 g oats, 250 ml semi-skimmed milk) 351 kcal, 18 g protein; banana (medium, 118 g) 105 kcal, 1 g protein. Breakfast total 456 kcal, 19 g protein. Day so far: 456 kcal, 19 g protein against your 1,900 kcal and 120 g protein targets.",
+      "at": "{{YESTERDAY}} 08:11"
+    },
+    {
+      "role": "user",
+      "text": "Lunch: chicken and avocado wrap from the cafe downstairs, the label said 540 kcal and 32 g protein. Also a small apple.",
+      "at": "{{YESTERDAY}} 12:40"
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as lunch: chicken and avocado wrap 540 kcal, 32 g protein (from the label); small apple (150 g) 78 kcal, 0 g protein. Lunch total 618 kcal, 32 g protein. Day so far: 1,074 kcal, 51 g protein, so 826 kcal and 69 g protein left. Protein is the gap so far; a protein-led dinner would close most of it.",
+      "at": "{{YESTERDAY}} 12:41"
+    },
+    {
+      "role": "user",
+      "text": "Afternoon snack, 2 rice cakes with peanut butter, about a tablespoon in total.",
+      "at": "{{YESTERDAY}} 15:20"
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-1520: 2 plain rice cakes 70 kcal, 1.5 g protein; peanut butter, 1 tablespoon (16 g) 94 kcal, 4 g protein. Snack total 164 kcal, 5.5 g protein. Day so far: 1,238 kcal, 56.5 g protein, so 662 kcal and 63.5 g protein left.",
+      "at": "{{YESTERDAY}} 15:21"
+    },
+    {
+      "role": "user",
+      "text": "Dinner was chicken curry with rice: about 300 g of curry and 180 g of cooked basmati, plus a small naan. Log it please.",
+      "at": "{{YESTERDAY}} 18:40"
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as dinner: chicken curry (300 g) 420 kcal, 38 g protein; cooked basmati rice (180 g) 234 kcal, 4.9 g protein; small plain naan (60 g) 157 kcal, 5.2 g protein. Dinner total 811 kcal, 48.1 g protein. Day so far: 1,612 kcal, 98.4 g protein against your 1,900 kcal and 120 g protein targets, so 288 kcal and 21.6 g protein left for the evening. A protein-led snack later would close the protein gap without many calories.",
+      "at": "{{YESTERDAY}} 18:41"
+    },
+    {
+      "role": "user",
+      "text": "Glass of red wine, a normal pour, maybe 150 ml.",
+      "at": "{{YESTERDAY}} 19:30"
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-1930: red wine (150 ml) 125 kcal, 0.1 g protein. Day so far: 1,737 kcal, 98.5 g protein, so 163 kcal and 21.5 g protein left. The wine has almost no protein, so the protein gap is unchanged at 21.5 g.",
+      "at": "{{YESTERDAY}} 19:31"
+    },
+    {
+      "role": "user",
+      "text": "What could I have later that closes the protein gap and stays under what's left?",
+      "at": "{{YESTERDAY}} 20:15"
+    },
+    {
+      "role": "assistant",
+      "text": "With 163 kcal and 21.5 g protein left, the closest fits are: plain 0% greek yogurt, 170 g: 100 kcal, 17 g protein; cottage cheese, 150 g: 147 kcal, 16.5 g protein; a protein shake with water, one scoop: 120 kcal, 24 g protein. The shake alone closes the protein gap and leaves 43 kcal. The yogurt leaves 63 kcal and 4.5 g protein short.",
+      "at": "{{YESTERDAY}} 20:16"
+    },
+    {
+      "role": "user",
+      "text": "Had a protein shake with water, one scoop of the vanilla whey.",
+      "at": "{{YESTERDAY}} 21:05"
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-2105: vanilla whey protein shake with water, 1 scoop (30 g) 120 kcal, 24 g protein. Day so far: 1,857 kcal, 122.5 g protein. Both targets met: 43 kcal under 1,900 and 2.5 g over 120 g protein.",
+      "at": "{{YESTERDAY}} 21:06"
+    },
+    {
+      "role": "user",
+      "text": "Late snack: a bowl of blueberries with skyr, roughly a cereal bowl, the blueberries fill about half of it with a big dollop of skyr. Estimate it, don't log yet.",
+      "at": "{{YESTERDAY}} 23:30"
+    },
+    {
+      "role": "assistant",
+      "text": "Estimate, not logged: blueberries about 190 g, 108 kcal, 1.4 g protein; plain skyr about 170 g, 107 kcal, 19 g protein. Bowl total about 215 kcal and 20 g protein, which would take the day to about 2,072 kcal. Tell me the pack sizes and I will log the exact figures.",
+      "at": "{{YESTERDAY}} 23:30"
+    },
+    {
+      "role": "user",
+      "text": "The blueberry punnet label says 125 g and I ate the whole punnet. The skyr pot is 150 g, I had all of it. Log those.",
+      "at": "{{YESTERDAY}} 23:35"
+    },
+    {
+      "role": "assistant",
+      "text": "With the labels: blueberries 125 g, 71 kcal, 0.9 g protein; skyr 150 g, 95 kcal, 16.5 g protein. Bowl total 166 kcal, 17.4 g protein, 49 kcal under my estimate. Logged as snack-2353. The day closes at 2,023 kcal and 139.9 g protein.",
+      "at": "{{YESTERDAY}} 23:35"
+    },
+    {
+      "role": "user",
+      "text": "Give me a quick review of today before I sleep: totals, protein by meal, and anything to change tomorrow.",
+      "at": "{{YESTERDAY}} 23:45"
+    },
+    {
+      "role": "assistant",
+      "text": "Today closes at 2,023 kcal and 139.9 g protein against 1,900 kcal and 120 g. By entry: breakfast porridge with banana 456 kcal, 19 g protein; lunch wrap with an apple 618 kcal, 32 g; the afternoon rice cakes with peanut butter 164 kcal, 5.5 g; dinner curry with rice and naan 811 kcal, 48.1 g; red wine 125 kcal, 0.1 g; the whey shake 120 kcal, 24 g; the late blueberries and skyr 166 kcal, 17.4 g. Protein was strong all day, with dinner and the shake doing most of the work. Calories ran 123 kcal over, almost all of it from the wine and the late bowl. For tomorrow: keep the shake, which closed the protein gap cheaply; move the fruit and skyr earlier so it replaces a snack instead of adding one; and if there is wine with dinner, take a smaller rice portion, about 120 g cooked, which saves about 80 kcal. Breakfast and lunch worked well as they are.",
+      "at": "{{YESTERDAY}} 23:45"
+    },
+    {
+      "role": "user",
+      "text": "And what's the plan for tomorrow's meals, roughly?",
+      "at": "{{YESTERDAY}} 23:50"
+    },
+    {
+      "role": "assistant",
+      "text": "A plan for tomorrow at 1,900 kcal and 120 g protein: breakfast, your usual porridge with 60 g oats and 250 ml semi-skimmed milk plus a banana, 456 kcal and 19 g protein. Mid-morning, plain 0% greek yogurt 170 g with a few berries, about 130 kcal and 17 g protein. Lunch, the cafe chicken and avocado wrap, 540 kcal and 32 g protein, with an apple for 78 kcal. Afternoon, a handful of almonds (20 g), 116 kcal and 4 g protein. Dinner, baked salmon 130 g with 150 g new potatoes and green beans, about 444 kcal and 32 g protein. Evening, the whey shake with water, 120 kcal and 24 g protein. That comes to about 1,884 kcal and 128 g protein, with room for a small treat of about 15 kcal or a splash of milk in coffee. If you have wine with dinner, drop the almonds to stay inside the target.",
+      "at": "{{YESTERDAY}} 23:50"
+    },
+    {
+      "role": "user",
+      "text": "Thanks, good night.",
+      "at": "{{YESTERDAY}} 23:55"
+    },
+    {
+      "role": "assistant",
+      "text": "Good night. Everything from today is logged.",
+      "at": "{{YESTERDAY}} 23:55"
+    }
+  ],
+  "steps": [
+    {
+      "do": "file",
+      "path": "food/food-log.csv",
+      "text": "date,meal,items,kcal,protein_g\n{{YESTERDAY}},dinner,chicken curry 300 g; basmati rice 180 g; small naan,811,48.1\n{{YESTERDAY}},snack-1930,red wine 150 ml,125,0.1\n{{YESTERDAY}},snack-2105,vanilla whey shake with water 1 scoop,120,24\n{{YESTERDAY}},snack-2353,blueberries 125 g (label) with skyr 150 g,166,17.4\n"
+    },
+    {
+      "do": "say",
+      "text": "Before I sleep: why was your blueberry estimate off? What did you first estimate for the blueberries, before I gave you the label?"
+    }
+  ],
+  "assertions": [
+    "reply_ok",
+    {
+      "id": "reply_contains_re",
+      "params": {
+        "re": "\\b190\\s*(g|grams?)\\b|\\b108\\s*kcal\\b"
+      }
+    }
+  ]
+}

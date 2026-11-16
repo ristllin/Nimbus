@@ -1,0 +1,244 @@
+{
+  "id": "lc-context-own-estimate",
+  "title": "The head still has its own estimate from earlier today",
+  "rows": [
+    "OIR-51"
+  ],
+  "replays": "The 15 Nov 2026 class: on a food day the 85,000 B wire guard silently left out the head's own estimate and its comparison with the label, so 'Do you understand why?' got an answer without them. Synthetic busy food day of the same shape: the estimate was never logged, so only the conversation holds it.",
+  "clock": "{{TODAY}} {{DOW}} 21:45 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "history": [
+    {
+      "role": "user",
+      "text": "Morning. Breakfast was porridge made with 60 g oats and 250 ml semi-skimmed milk, plus a banana. Log it please."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as breakfast: porridge (60 g oats, 250 ml semi-skimmed milk) 351 kcal, 18 g protein; banana (medium, 118 g) 105 kcal, 1 g protein. Breakfast total 456 kcal, 19 g protein. Day so far: 456 kcal, 19 g protein."
+    },
+    {
+      "role": "user",
+      "text": "Mid-morning I'm having a bowl of blueberries with skyr, roughly a cereal bowl, the blueberries fill about half of it and there's a big dollop of skyr. Estimate it, don't log yet."
+    },
+    {
+      "role": "assistant",
+      "text": "Estimate, not logged: blueberries about 190 g, 108 kcal, 1.4 g protein; plain skyr about 170 g, 107 kcal, 19 g protein. Bowl total about 215 kcal and 20 g protein. Tell me the pack sizes and I will log the exact figures."
+    },
+    {
+      "role": "user",
+      "text": "The blueberry punnet label says 125 g and I ate the whole punnet. The skyr pot is 150 g, I had all of it."
+    },
+    {
+      "role": "assistant",
+      "text": "Thanks, with the labels: blueberries 125 g, 71 kcal, 0.9 g protein; skyr 150 g, 95 kcal, 16.5 g protein. Bowl total 166 kcal, 17.4 g protein, which is 49 kcal under my estimate. Logged as snack-1030. Day so far: 622 kcal, 36.4 g protein."
+    },
+    {
+      "role": "user",
+      "text": "Log flat white with whole milk, regular, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-1100: flat white, whole milk, regular (about 240 ml) 110 kcal, 6 g protein. Entry total 110 kcal, 6 g protein. Day so far: 732 kcal, 42.4 g protein against your 1,900 kcal and 120 g protein targets, so 1,168 kcal and 77.6 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log chicken and avocado wrap from the cafe, label 540 kcal and 32 g protein, plus a small apple, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as lunch: chicken and avocado wrap (label) 540 kcal, 32 g protein; small apple (150 g) 78 kcal, 0 g protein. Entry total 618 kcal, 32 g protein. Day so far: 1,350 kcal, 74.4 g protein against your 1,900 kcal and 120 g protein targets, so 550 kcal and 45.6 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log two rice cakes with a tablespoon of peanut butter, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-1400: 2 plain rice cakes 70 kcal, 1.5 g protein; peanut butter, 1 tbsp (16 g) 94 kcal, 4 g protein. Entry total 164 kcal, 5.5 g protein. Day so far: 1,514 kcal, 79.9 g protein against your 1,900 kcal and 120 g protein targets, so 386 kcal and 40.1 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log a protein bar, the chocolate peanut one, 60 g, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-1500: chocolate peanut protein bar (60 g) 212 kcal, 20 g protein. Entry total 212 kcal, 20 g protein. Day so far: 1,726 kcal, 99.9 g protein against your 1,900 kcal and 120 g protein targets, so 174 kcal and 20.1 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log a mug of tomato soup from a carton, about 300 ml, with a slice of rye bread, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-1530: tomato soup, carton (300 ml) 114 kcal, 3 g protein; rye bread, 1 slice (32 g) 83 kcal, 2.7 g protein. Entry total 197 kcal, 5.7 g protein. Day so far: 1,923 kcal, 105.6 g protein against your 1,900 kcal and 120 g protein targets, so -23 kcal and 14.4 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log a handful of almonds, maybe 20 g, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-1600: almonds (20 g) 116 kcal, 4.2 g protein. Entry total 116 kcal, 4.2 g protein. Day so far: 2,039 kcal, 109.8 g protein against your 1,900 kcal and 120 g protein targets, so -139 kcal and 10.2 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log a pear and a cheese stick, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-1630: pear (170 g) 97 kcal, 0.6 g protein; mozzarella cheese stick (21 g) 80 kcal, 6 g protein. Entry total 177 kcal, 6.6 g protein. Day so far: 2,216 kcal, 116.4 g protein against your 1,900 kcal and 120 g protein targets, so -316 kcal and 3.6 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log salmon fillet 130 g baked, 150 g new potatoes, and a big handful of green beans with a teaspoon of butter, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as dinner: baked salmon fillet (130 g) 270 kcal, 28 g protein; new potatoes, boiled (150 g) 113 kcal, 2.7 g protein; green beans (80 g) 25 kcal, 1.5 g protein; butter, 1 tsp (5 g) 36 kcal, 0 g protein. Entry total 444 kcal, 32.2 g protein. Day so far: 2,660 kcal, 148.6 g protein against your 1,900 kcal and 120 g protein targets, so -760 kcal and -28.6 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log greek yogurt 0% 170 g with a teaspoon of honey, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-2000: greek yogurt 0% fat (170 g) 100 kcal, 17 g protein; honey, 1 tsp (7 g) 21 kcal, 0 g protein. Entry total 121 kcal, 17 g protein. Day so far: 2,781 kcal, 165.6 g protein against your 1,900 kcal and 120 g protein targets, so -881 kcal and -45.6 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log a decaf latte with oat milk, medium, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-2030: decaf latte, oat milk, medium (350 ml) 130 kcal, 2.5 g protein. Entry total 130 kcal, 2.5 g protein. Day so far: 2,911 kcal, 168.1 g protein against your 1,900 kcal and 120 g protein targets, so -1,011 kcal and -48.1 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log two squares of dark chocolate, 85%, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-2100: dark chocolate 85%, 2 squares (20 g) 120 kcal, 2.2 g protein. Entry total 120 kcal, 2.2 g protein. Day so far: 3,031 kcal, 170.3 g protein against your 1,900 kcal and 120 g protein targets, so -1,131 kcal and -50.3 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log a glass of semi-skimmed milk, 250 ml, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-2130: semi-skimmed milk (250 ml) 125 kcal, 9 g protein. Entry total 125 kcal, 9 g protein. Day so far: 3,156 kcal, 179.3 g protein against your 1,900 kcal and 120 g protein targets, so -1,256 kcal and -59.3 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log a banana and a black coffee, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-1730: banana (medium, 118 g) 105 kcal, 1.3 g protein. Entry total 105 kcal, 1.3 g protein. Day so far: 3,261 kcal, 180.6 g protein against your 1,900 kcal and 120 g protein targets, so -1,361 kcal and -60.6 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log a slice of toast with cottage cheese, 100 g, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-1800: wholemeal toast, 1 slice (36 g) 86 kcal, 3.6 g protein; cottage cheese (100 g) 98 kcal, 11 g protein. Entry total 184 kcal, 14.6 g protein. Day so far: 3,445 kcal, 195.2 g protein against your 1,900 kcal and 120 g protein targets, so -1,545 kcal and -75.2 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log a satsuma and a few grapes, about 80 g, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-1830: satsuma (70 g) 33 kcal, 0.6 g protein; grapes (80 g) 55 kcal, 0.6 g protein. Entry total 88 kcal, 1.2 g protein. Day so far: 3,533 kcal, 196.4 g protein against your 1,900 kcal and 120 g protein targets, so -1,633 kcal and -76.4 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log a boiled egg, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-1900: boiled egg (large, 50 g) 78 kcal, 6.3 g protein. Entry total 78 kcal, 6.3 g protein. Day so far: 3,611 kcal, 202.7 g protein against your 1,900 kcal and 120 g protein targets, so -1,711 kcal and -82.7 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log a cup of chamomile tea with a teaspoon of honey, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-2200: honey, 1 tsp (7 g) 21 kcal, 0 g protein. Entry total 21 kcal, 0 g protein. Day so far: 3,632 kcal, 202.7 g protein against your 1,900 kcal and 120 g protein targets, so -1,732 kcal and -82.7 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    },
+    {
+      "role": "user",
+      "text": "Log a small bowl of popcorn, about 15 g, please. Use the label figures where I gave them and your usual portions otherwise."
+    },
+    {
+      "role": "assistant",
+      "text": "Logged as snack-2215: air-popped popcorn (15 g) 58 kcal, 1.9 g protein. Entry total 58 kcal, 1.9 g protein. Day so far: 3,690 kcal, 204.6 g protein against your 1,900 kcal and 120 g protein targets, so -1,790 kcal and -84.6 g protein left. Protein is still the gap for the day; a protein-led option next would close it without many extra calories. Nothing else changed in today's ledger, and the earlier rows still add up to the same day total. Portions follow your standing rules: label figures where you gave them, your usual sizes otherwise, and weights in grams. If any of these portions were bigger or smaller than usual, tell me the weight and I will correct the row."
+    }
+  ],
+  "steps": [
+    {
+      "do": "pref",
+      "texts": [
+        "Daily targets: 1,900 kcal and 120 g protein; weekends may go to 2,100 kcal.",
+        "Log every meal and drink in the food ledger as soon as I report it, with kcal and protein per item.",
+        "For packaged food, use the label figures I give; ask for the pack size before estimating fruit or yogurt.",
+        "Round kcal to whole numbers and protein to one decimal place in replies.",
+        "Do not suggest skipping meals; suggest protein-led swaps instead.",
+        "I do not eat pork; flag it if a dish I describe usually contains it.",
+        "Coffee is always with whole milk unless I say oat milk or decaf.",
+        "My usual porridge is 60 g oats with 250 ml semi-skimmed milk.",
+        "My usual lunch wrap from the cafe downstairs is 540 kcal and 32 g protein per the label.",
+        "Weigh-ins are Monday mornings; remind me only if I ask about progress.",
+        "Keep replies short on weekdays: the logged line, the day total and what is left.",
+        "When I ask why an estimate was off, compare your estimate with the label figures item by item.",
+        "Gym days are Tuesday, Thursday and Saturday; on those days protein matters more than calories.",
+        "I am training for a 10 km run in March; long runs are on Sunday mornings.",
+        "Do not count black coffee, tea without milk or water as entries.",
+        "Treat a handful of nuts as 20 g unless I give a weight.",
+        "When a day goes over target, say so once, plainly, with no lecture.",
+        "Use metric units for food weights and millilitres for drinks.",
+        "The kids' leftovers I eat count as a snack entry with my best guess of the portion.",
+        "Remind me to drink water only if I ask for a daily review.",
+        "Bins go out on Tuesday night.",
+        "Water the ferns on Saturday morning.",
+        "The car service is due every 12 months, next in April.",
+        "Call my sister on Sunday evenings.",
+        "Back up the laptop on the first of each month.",
+        "The boiler service is due every October.",
+        "My dentist check-ups are every six months; the next is in January.",
+        "Order coffee beans when the bag is a quarter full.",
+        "The spare key is with the neighbor at number 4.",
+        "Replace the smoke alarm batteries each spring.",
+        "Do not book anything before 9 am on weekends.",
+        "Prefer trains over driving for trips to London.",
+        "My partner is vegetarian; suggest dinners we can share.",
+        "Pay the window cleaner on the last Friday of the month.",
+        "Recycling goes out on alternate Wednesdays.",
+        "The vet appointment for the cat is the first Monday of each month.",
+        "Check the plant food stock at the start of each season.",
+        "Renew the parking permit every January."
+      ]
+    },
+    {
+      "do": "file",
+      "path": "food/food-log.csv",
+      "text": "date,meal,items,kcal,protein_g\n{{TODAY}},breakfast,porridge 60 g oats with 250 ml semi-skimmed milk; banana,456,19\n{{TODAY}},snack-1030,blueberries 125 g (label) with skyr 150 g,166,17.4\n{{TODAY}},snack-1100,flat white whole milk regular (about 240 ml),110,6\n{{TODAY}},lunch,chicken and avocado wrap (label); small apple (150 g),618,32\n{{TODAY}},snack-1400,2 plain rice cakes; peanut butter 1 tbsp (16 g),164,5.5\n{{TODAY}},snack-1500,chocolate peanut protein bar (60 g),212,20\n{{TODAY}},snack-1530,tomato soup carton (300 ml); rye bread 1 slice (32 g),197,5.7\n{{TODAY}},snack-1600,almonds (20 g),116,4.2\n{{TODAY}},snack-1630,pear (170 g); mozzarella cheese stick (21 g),177,6.6\n{{TODAY}},dinner,baked salmon fillet (130 g); new potatoes boiled (150 g); green beans (80 g); butter 1 tsp (5 g),444,32.2\n{{TODAY}},snack-2000,greek yogurt 0% fat (170 g); honey 1 tsp (7 g),121,17\n{{TODAY}},snack-2030,decaf latte oat milk medium (350 ml),130,2.5\n{{TODAY}},snack-2100,dark chocolate 85% 2 squares (20 g),120,2.2\n{{TODAY}},snack-2130,semi-skimmed milk (250 ml),125,9\n{{TODAY}},snack-1730,banana (medium 118 g),105,1.3\n{{TODAY}},snack-1800,wholemeal toast 1 slice (36 g); cottage cheese (100 g),184,14.6\n{{TODAY}},snack-1830,satsuma (70 g); grapes (80 g),88,1.2\n{{TODAY}},snack-1900,boiled egg (large 50 g),78,6.3\n{{TODAY}},snack-2200,honey 1 tsp (7 g),21,0\n{{TODAY}},snack-2215,air-popped popcorn (15 g),58,1.9\n"
+    },
+    {
+      "do": "say",
+      "text": "Thinking back to the blueberry bowl this morning: do you understand why your estimate was off? What did you first estimate for the blueberries, before I gave you the label?"
+    }
+  ],
+  "assertions": [
+    "reply_ok",
+    {
+      "id": "reply_contains_re",
+      "params": {
+        "re": "\\b190\\s*(g|grams?)\\b|\\b108\\s*kcal\\b"
+      }
+    }
+  ]
+}

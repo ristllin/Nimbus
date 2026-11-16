@@ -22,7 +22,9 @@
 //        the device sent at the time as history; "synthesize" runs the live synthesis
 //        turn; "keep" leaves it for the next owner turn.
 //   say  an owner message, answered live.
-//   row  a message of the earlier chat that comes between steps (seeded, no live turn).
+//   row  a message of the earlier chat that comes between steps (seeded, no live turn);
+//        `at` ("{{YESTERDAY}} 23:50", local) places it on an earlier day, as can a
+//        "history" entry's `at`; without it the row is stamped now.
 //   file a file on the card before the steps run; {{TODAY}}/{{YESTERDAY}}/{{TOMORROW}}
 //        in its text expand to the device's local day strings.
 //   pref standing rules already on the device ("texts": [rule, ...]).
@@ -37,6 +39,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -229,12 +232,23 @@ std::string substituteDays(const std::string& text) {
   return out;
 }
 
-void seedRow(lab::LabRig& rig, const std::string& chat, const std::string& role, const std::string& text) {
+// A seeded row's hour: now, or the local "YYYY-MM-DD HH:MM" its `at` names ({{YESTERDAY}}
+// and the other day tokens expand first), so a scenario can place a turn on an earlier day.
+uint32_t rowHours(const std::string& at) {
+  std::tm tm{};
+  const std::string when = substituteDays(at);
+  if (when.empty() || !strptime(when.c_str(), "%Y-%m-%d %H:%M", &tm)) return nowHours();
+  tm.tm_isdst = -1;
+  return (uint32_t)(std::mktime(&tm) / 3600);
+}
+
+void seedRow(lab::LabRig& rig, const std::string& chat, const std::string& role, const std::string& text,
+             const std::string& at = std::string()) {
   lab::LabRig::Row row;
   row.chat = chat;
   row.role = role == "assistant" ? "assistant" : "user";
   row.text = text;
-  row.tsHours = nowHours();
+  row.tsHours = rowHours(at);
   rig.addRow(row);
 }
 
@@ -298,7 +312,7 @@ bool runSub(lab::LabRig& rig, Subs& subs, const std::string& chat, JsonObjectCon
 // Returns true when the step was handled, so runSteps can skip to the next one.
 bool seedStep(lab::LabRig& rig, const std::string& chat, const std::string& kind, JsonObjectConst st) {
   if (kind == "row") {   // a message the owner saw between steps (no live turn)
-    seedRow(rig, chat, str(st["role"]), str(st["text"]));
+    seedRow(rig, chat, str(st["role"]), str(st["text"]), str(st["at"]));
     return true;
   }
   if (kind == "file") {  // a file on the card before the steps run ({{TODAY}} & co. expand)
@@ -480,7 +494,8 @@ int main(int argc, char** argv) {
   subs.journal.begin(&subs.store);
   rig.attachSubAgents(&subs.fabric, &subs.journal);
   const std::string chat = str(sc["chat"]).empty() ? "owner" : str(sc["chat"]);
-  for (JsonObjectConst r : sc["history"].as<JsonArrayConst>()) seedRow(rig, chat, str(r["role"]), str(r["text"]));
+  for (JsonObjectConst r : sc["history"].as<JsonArrayConst>())
+    seedRow(rig, chat, str(r["role"]), str(r["text"]), str(r["at"]));
   JsonDocument out;
   const bool ok = runSteps(rig, subs, sc.as<JsonObjectConst>(), out);
   dumpState(rig, out.as<JsonObject>());

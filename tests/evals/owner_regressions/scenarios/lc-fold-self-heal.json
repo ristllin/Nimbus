@@ -1,0 +1,48 @@
+{
+  "id": "lc-fold-self-heal",
+  "mode": "offline",
+  "runner": "fold_replay",
+  "title": "A summary left paused by an older release resumes on its own",
+  "rows": [
+    "OIR-52"
+  ],
+  "replays": "The 2 Nov 2026 class: three failed folds paused automatic summaries (breaker fails=3, paused=1) and nothing lifted the pause for 13 days; the owner had to send /compact. Replayed offline on a hosted instance: the fold store an older release left (paused=1 fails=3, last fold 13 days ago, a backlog over the fold trigger), then owner turns, then a quiet evening of pump passes with a good fold answer scripted.",
+  "plant": {
+    "bytesSinceFold": 60000,
+    "msgsSinceFold": 120,
+    "lastFoldDaysAgo": 13,
+    "turnsSinceFold": 158,
+    "breakerFails": 3,
+    "paused": 1,
+    "summary": "1. Decisions & preferences\n- Daily targets 1,900 kcal and 120 g protein.\n2. Pending items & next steps\n- 2026-11-02: weigh-in on Monday.\n3. Facts worth remembering long-term\n- Training for a 10 km run in March.\n4. Owner intent & active threads\n- Logging every meal.\n5. Device & task state\n- Food ledger in food/food-log.csv."
+  },
+  "turns": 20,
+  "quietMs": 121000,
+  "ticks": 4,
+  "foldAnswers": [
+    "1. Decisions & preferences\n- Daily targets 1,900 kcal and 120 g protein; label figures win over estimates.\n- Diary notes are kept short; the owner plans the week's meals on market days.\n2. Pending items & next steps\n- Plan the week's meals from the market shopping (bread, apples).\n- Weigh-in on Monday morning; report progress only when asked.\n3. Facts worth remembering long-term\n- Training for a 10 km run in March; long runs on Sunday mornings.\n- Walks to the market most days and buys bread and apples there.\n4. Owner intent & active threads\n- SUMMARY-HEALED: keeping a daily diary of market walks and meal planning.\n- Logging every meal with kcal and protein.\n5. Device & task state\n- Food ledger in food/food-log.csv; diary notes captured in the chat."
+  ],
+  "assertions": [
+    {
+      "id": "fold_requests_min",
+      "params": {
+        "n": 1
+      }
+    },
+    {
+      "id": "summary_contains",
+      "params": {
+        "text": "SUMMARY-HEALED"
+      }
+    },
+    {
+      "id": "messages_forbid",
+      "params": {
+        "any": [
+          "paused",
+          "/compact"
+        ]
+      }
+    }
+  ]
+}
