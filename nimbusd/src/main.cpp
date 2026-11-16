@@ -72,6 +72,8 @@ nimbusd::NimbusdRig::Options buildOptions(const nimbusd::Config& cfg) {
   // over these defaults (<data>/mem/embed.txt).
   opt.histV2 = cfg.getInt("NIMBUSD_HISTV2", 1) != 0;
   opt.foldFaultHost = cfg.get("NIMBUSD_FOLD_FAULT");   // a test seam: "" in production
+  if (!opt.foldFaultHost.empty())
+    logLine("NIMBUSD_FOLD_FAULT=" + opt.foldFaultHost + " - that host's fold answers empty (a test seam)");
   opt.embedHost = cfg.get("NIMBUSD_EMBED_HOST", "mistral");
   opt.embeddings = cfg.getInt("NIMBUSD_EMBEDDINGS", 1) != 0;
   opt.embedModel = cfg.get("NIMBUSD_EMBED_MODEL", "mistral-embed");

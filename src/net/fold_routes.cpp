@@ -44,9 +44,15 @@ void handleRun(AsyncWebServerRequest* r) {
   // the web chat): a summary's notices go to that chat, never to a stranger's id.
   if (!agent::orchestrator::foldStatusJsonFor(chatParam(r, true), status)) return sendNoChat(r);
   JsonDocument st;
-  deserializeJson(st, status);
-  const std::string chat = st["chat"] | "";
-  agent::orchestrator::stageManualFold(chat.c_str());
+  const std::string chat = deserializeJson(st, status) ? std::string() : std::string(st["chat"] | "");
+  if (chat.empty()) {
+    r->send(500, "application/json", "{\"error\":\"Couldn't read the summary state. Try again.\"}");
+    return;
+  }
+  if (!agent::orchestrator::stageManualFold(chat.c_str())) {
+    r->send(429, "application/json", "{\"error\":\"Other summaries are waiting. Try again in a few minutes.\"}");
+    return;
+  }
   JsonDocument d;
   d["ok"] = true;
   d["queued"] = true;

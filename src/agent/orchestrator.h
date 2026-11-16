@@ -236,7 +236,9 @@ bool tenantRemove(const std::string& chatId, std::string& err);
 
 // A manual fold request (/compact, Summarize now, the console): staged from any task,
 // drained into the fold driver's persisted queue on the next pump pass (lane F).
-void stageManualFold(const char* chatId);
+// False when it was not staged (no id, an id too long for a chat, or every slot holds
+// another chat's request).
+bool stageManualFold(const char* chatId);
 // GET /api/fold/status's body for `chat` ("" = the default chat: the owner's Telegram
 // chat, else the web chat), from the tg_poll-published copy; any task. False when the
 // device knows no conversation by that name.

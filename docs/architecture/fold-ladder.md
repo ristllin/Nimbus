@@ -66,7 +66,9 @@ A success keeps `fold(<chat>): ok on <host> (...)`; a failed cycle logs
 shorter than min(800 B, 30% of the previous summary) or naming fewer than 2 of the
 prompt's 5 sections (case-insensitive keywords) is thin: the next rung gets the job.
 The matcher passes every live fold output recorded in
-`test/support/fixtures/fold_outputs_2026-11/`.
+`test/support/fixtures/fold_outputs_2026-11/`. When every rung failed, and one or more
+answered at least 800 B but named too few sections (a summary in another language, or
+with renamed headings), the longest of those is stored instead of failing the cycle.
 
 ## The schedule (FoldStore and FoldCtl)
 
@@ -82,12 +84,14 @@ v5.1.1 image reads a chat that is neither failing nor paused.
 | a refill within 2 turns of a fold (thrash) | due once, `nextTry` = now + 15 min; never a pause |
 | a legacy pause (`paused=1` or `2`) | ignored on load: due on the first pass |
 | a new firmware (`fwAtLastFail` differs) | every chat's wait and failure count restart |
-| no clock | the wait is kept in RAM on the monotonic clock; no alert |
+| no clock | the wait is kept in RAM on the monotonic clock; paid requests count under day 0 in RAM, never over a real day's count; no alert |
+| a wait longer than 12 h 15 min (the clock stepped back) | read as due |
 
 Device-wide, in `/data/fold_ctl.txt` (`nimbus::orch::FoldCtl`; on the VN
 `<data>/mem/fold_ctl.txt`): `paidDay` and `paidCount` (at most 12 paid automatic fold
 requests a local day, every chat together; 2xx answers and timeouts after the upload
-count, refusals do not), `lastAlertDay` (one owner alert a day, after 24 h of failing),
+count, refusals do not), `lastAlertDay` (one owner alert a day, after 24 h of failing, sent to the owner's
+Telegram chat or the web chat; another chat's is only logged),
 `manualPendingChat` (up to 4 queued manual requests) and `fwAtLastFail`. Because this
 lives outside the per-chat blob, evicting a chat's record (the blob keeps the 16 most
 recently used chats inside 64 KB, about ten with a full summary) never resets the cap
@@ -100,8 +104,9 @@ or loses a request.
 time, two minutes apart, skip the daily cap (they are counted in it) and the quiet wait,
 and take a keep-0 slice. A manual request is a catch-up: while the chat still has rows
 the history hides behind the anchor, its cycles chain oldest first (at most 64) and one
-confirmation names the whole span. A manual request for a chat whose automatic cycle is
-running ends that cycle uncounted. Every manual request is answered: the confirmation,
+confirmation names the whole span. A manual request never waits behind an automatic cycle:
+one that is between rungs when a manual request is ready ends uncounted, its failed
+rungs going last. Every manual request is answered: the confirmation,
 a failure with the next try time, or "Nothing to compact yet."
 
 ## Status

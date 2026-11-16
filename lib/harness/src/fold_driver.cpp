@@ -81,7 +81,8 @@ const char* foldTickName(FoldTick t) {
   return "unknown";
 }
 
-std::string foldStatusJson(const FoldStatus& s, uint32_t nowEpoch, int32_t utcOffsetMin) {
+std::string foldStatusJson(const FoldStatus& s, uint32_t nowEpoch, int32_t utcOffsetMin,
+                           const std::vector<FoldStatus>* chats) {
   JsonDocument d;
   d["chat"] = s.chat;
   const bool aged = s.lastOk != 0 && nowEpoch != 0;
@@ -112,6 +113,14 @@ std::string foldStatusJson(const FoldStatus& s, uint32_t nowEpoch, int32_t utcOf
   const char* why = blockedWhy(s);
   d["canRun"] = *why == 0;
   d["why"] = why;
+  if (chats) {
+    JsonArray list = d["chats"].to<JsonArray>();
+    for (const FoldStatus& c : *chats) {
+      JsonObject o = list.add<JsonObject>();
+      o["chat"] = c.chat;
+      o["state"] = stateOf(c, nowEpoch);
+    }
+  }
   std::string out;
   serializeJson(d, out);
   return out;
@@ -146,6 +155,7 @@ uint32_t FoldDriver::today(uint32_t nowEpoch) const { return orch::foldLocalDay(
 
 void FoldDriver::resetDailyCount() {
   ctl_.paidCount = 0;
+  clocklessPaid_ = 0;
   saveCtl();
   changed();
 }
@@ -156,6 +166,8 @@ FoldTick FoldDriver::tick(uint32_t nowMs, uint32_t nowEpoch) {
   // No turn in flight, the heap floor, a rung to ask: nothing visible or paid happens
   // before these pass (prism v3.6.0 HIGH), and a cycle keeps its place meanwhile.
   if (!eng_->canFoldNow()) return waiting ? FoldTick::Deferred : FoldTick::Idle;
+  std::string ready;
+  if (pickManual(nowMs, ready)) endAutomaticForManual();
   if (!cycleActive()) {
     const FoldTick started = startCycle(nowMs, nowEpoch);
     if (!cycleActive()) return started;
@@ -172,13 +184,27 @@ FoldTick FoldDriver::tick(uint32_t nowMs, uint32_t nowEpoch) {
   return runRung(nowMs, nowEpoch);
 }
 
+void FoldDriver::notePaid(uint32_t nowEpoch, uint32_t n) {
+  if (nowEpoch == 0) {   // no clock: day 0, in RAM
+    clocklessPaid_ += n;
+    return;
+  }
+  ctl_.notePaid(today(nowEpoch), n);
+  saveCtl();
+}
+
+uint32_t FoldDriver::paidToday(uint32_t nowEpoch) const {
+  return nowEpoch == 0 ? clocklessPaid_ : ctl_.paidOn(today(nowEpoch));
+}
+
 bool FoldDriver::capReached(uint32_t nowEpoch) {
+  const uint32_t paid = paidToday(nowEpoch);
+  if (paid < orch::kFoldPaidPerDay) return false;
   const uint32_t day = today(nowEpoch);
-  if (ctl_.paidOn(day) < orch::kFoldPaidPerDay) return false;
   if (capLoggedDay_ != day) {
     capLoggedDay_ = day;
     hlog::logf("fold: %u paid fold requests today, the daily cap - automatic folds wait for the next local day",
-               (unsigned)ctl_.paidOn(day));
+               (unsigned)paid);
   }
   return true;
 }
@@ -303,14 +329,12 @@ FoldTick FoldDriver::runRung(uint32_t nowMs, uint32_t nowEpoch) {
   if (hooks_.asking) hooks_.asking(true);
   const FoldResult r = eng_->runFoldRung(cycle_.chat, cycle_.prevSummary, cycle_.slice.digest, rung, summary, &rep);
   if (hooks_.asking) hooks_.asking(false);
-  if (rep.paidRequests) {
-    ctl_.notePaid(today(nowEpoch), rep.paidRequests);
-    saveCtl();
-  }
+  if (rep.paidRequests) notePaid(nowEpoch, rep.paidRequests);
   if (r == FoldResult::Deferred) return FoldTick::Deferred;   // a gate closed: the rung waits
   if (r == FoldResult::Ok) return landed(rep, summary, nowMs, nowEpoch);
   hlog::log(foldRungFailLine(cycle_.chat, cycle_.idx, n, rep).c_str());
   if (rep.degraded) degraded_.insert(rungKey(rep.host, rep.model));
+  if (rep.thinSummary.size() > cycle_.bestThin.thinSummary.size()) cycle_.bestThin = rep;
   if (++cycle_.idx < n) {
     changed();
     return FoldTick::Pending;
@@ -362,6 +386,15 @@ bool FoldDriver::catchUpContinues(const std::string& chat, const FoldSlice& land
 }
 
 FoldTick FoldDriver::cycleFailed(uint32_t nowMs, uint32_t nowEpoch) {
+  if (!cycle_.bestThin.thinSummary.empty()) {
+    // Every rung answered, none with the sections the gate looks for: a summary in
+    // another language or with renamed headings is better than none, and a backoff that
+    // never ends. The longest is kept.
+    hlog::logf("fold(%s): every rung answered without the expected sections - keeping the longest (%s/%s)",
+               cycle_.chat.c_str(), cycle_.bestThin.host.c_str(), cycle_.bestThin.model.c_str());
+    const FoldRungReport best = cycle_.bestThin;
+    return landed(best, best.thinSummary, nowMs, nowEpoch);
+  }
   const Cycle c = cycle_;
   cycle_ = Cycle();
   const uint32_t next = folds_.noteCycleFailed(c.chat, nowEpoch);
@@ -378,12 +411,14 @@ FoldTick FoldDriver::cycleFailed(uint32_t nowMs, uint32_t nowEpoch) {
     if (hooks_.tell) hooks_.tell(c.chat, failureNotice(next, waitS, off));
     catchUp_ = CatchUp();
     endManual(c.chat, nowMs);
-  } else if (f && nowEpoch && f->firstFail && nowEpoch - f->firstFail >= orch::kFoldAlertAfterS &&
-             ctl_.lastAlertDay != today(nowEpoch)) {
+  } else if (f && nowEpoch && f->firstFail && nowEpoch > f->firstFail &&
+             nowEpoch - f->firstFail >= orch::kFoldAlertAfterS && ctl_.lastAlertDay != today(nowEpoch)) {
     // One owner alert a local day on the whole device, and only after a day of failing.
     ctl_.lastAlertDay = today(nowEpoch);
     saveCtl();
-    if (hooks_.tell) hooks_.tell(c.chat, alertNotice(f->lastFoldEpoch ? f->lastFoldEpoch : f->firstFail, off));
+    const std::string text = alertNotice(f->lastFoldEpoch ? f->lastFoldEpoch : f->firstFail, off);
+    if (hooks_.alert) hooks_.alert(c.chat, text);
+    else if (hooks_.tell) hooks_.tell(c.chat, text);
   }
   changed();
   return FoldTick::CycleFailed;
@@ -397,8 +432,10 @@ void FoldDriver::endManual(const std::string& chat, uint32_t nowMs) {
 }
 
 FoldDriver::Manual FoldDriver::requestManual(const std::string& chat) {
+  if (cycle_.chat == chat && cycle_.manual) return Manual::AlreadyRunning;
+  if (!ctl_.queueManual(chat)) return Manual::Full;   // before anything is ended for it
+  saveCtl();
   if (cycle_.chat == chat) {
-    if (cycle_.manual) return Manual::AlreadyRunning;
     // The owner asked for this chat while its automatic cycle runs: that cycle ends
     // uncounted, its failed rungs go last, and a manual cycle with a fresh keep-0
     // slice starts on a later pass.
@@ -408,10 +445,20 @@ FoldDriver::Manual FoldDriver::requestManual(const std::string& chat) {
                (unsigned)(cycle_.idx + 1), (unsigned)cycle_.rungs.size());
     cycle_ = Cycle();
   }
-  if (!ctl_.queueManual(chat)) return Manual::Full;
-  saveCtl();
   changed();
   return Manual::Queued;
+}
+
+// A manual request waits for no automatic cycle (fold_driver.h): one that is between
+// rungs when a request is ready to start ends uncounted, its failed rungs going last.
+bool FoldDriver::endAutomaticForManual() {
+  if (!cycleActive() || cycle_.manual || ctl_.manualPendingChat.empty()) return false;
+  for (size_t i = 0; i < cycle_.idx && i < cycle_.rungs.size(); i++)
+    degraded_.insert(rungKey(cycle_.rungs[i].host, cycle_.rungs[i].model));
+  hlog::logf("fold(%s): the automatic cycle yields to a manual request at rung %u/%u, uncounted",
+             cycle_.chat.c_str(), (unsigned)(cycle_.idx + 1), (unsigned)cycle_.rungs.size());
+  cycle_ = Cycle();
+  return true;
 }
 
 void FoldDriver::noteCleared(const std::string& chat) {
@@ -440,7 +487,7 @@ FoldStatus FoldDriver::status(const std::string& chat, uint32_t nowMs, uint32_t 
   }
   const auto d = thruDate_.find(chat);
   if (d != thruDate_.end()) s.thruDate = d->second;
-  s.paidToday = ctl_.paidOn(today(nowEpoch));
+  s.paidToday = paidToday(nowEpoch);
   s.running = cycle_.chat == chat && cycleActive();
   s.manual = s.running && cycle_.manual;
   s.manualBusy = cycleActive() && cycle_.manual;

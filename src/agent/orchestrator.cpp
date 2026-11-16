@@ -2751,8 +2751,8 @@ bool tenantRemove(const std::string& chatId, std::string& err) {
   return true;
 }
 
-void stageManualFold(const char* chatId) {
-  if (!chatId || !chatId[0]) return;
+bool stageManualFold(const char* chatId) {
+  if (!chatId || !chatId[0] || strlen(chatId) >= sizeof(g_manualFoldChat[0])) return false;
   bool staged = false;
   portENTER_CRITICAL(&g_foldSpin);
   for (int i = 0; i < kFoldStageSlots && !staged; i++) {
@@ -2763,6 +2763,7 @@ void stageManualFold(const char* chatId) {
   }
   portEXIT_CRITICAL(&g_foldSpin);
   if (!staged) alogf("fold(%s): manual request not staged - %d others are waiting", chatId, kFoldStageSlots);
+  return staged;
 }
 
 #ifdef NIMBUS_TEST
@@ -2838,33 +2839,16 @@ String foldStatusText(const char* chatArg) {
 
 bool foldStatusJsonFor(const std::string& chatArg, std::string& out) {
   agent::FoldStatus st;
-  std::string chat = chatArg;
-  std::vector<std::pair<std::string, agent::FoldStatus>> all;
+  std::vector<agent::FoldStatus> all;
   {
     std::lock_guard<std::mutex> lk(g_foldStatusMx);
-    if (chat.empty()) chat = g_foldDefaultChat;
-    const auto it = g_foldStatusSnap.find(chat);
+    const auto it = g_foldStatusSnap.find(chatArg.empty() ? g_foldDefaultChat : chatArg);
     if (it == g_foldStatusSnap.end()) return false;
     st = it->second;
-    all.assign(g_foldStatusSnap.begin(), g_foldStatusSnap.end());
+    for (const auto& c : g_foldStatusSnap) all.push_back(c.second);
   }
   const uint32_t epoch = memory::clockSynced() ? (uint32_t)time(nullptr) : 0;
-  const int32_t off = agent::utcOffsetAtUnix(epoch);
-  out = agent::foldStatusJson(st, epoch, off);
-  // The chats the page can pick, with their badge.
-  std::string list = ",\"chats\":[";
-  for (size_t i = 0; i < all.size(); i++) {
-    const std::string one = agent::foldStatusJson(all[i].second, epoch, off);
-    const size_t at = one.find("\"state\":\"");
-    const std::string state = at == std::string::npos ? "none" : one.substr(at + 9, one.find('"', at + 9) - at - 9);
-    JsonDocument d;
-    d["chat"] = all[i].first;
-    d["state"] = state;
-    std::string item;
-    serializeJson(d, item);
-    list += (i ? "," : "") + item;
-  }
-  out.insert(out.size() - 1, list + "]");
+  out = agent::foldStatusJson(st, epoch, agent::utcOffsetAtUnix(epoch), &all);
   return true;
 }
 
@@ -2947,6 +2931,13 @@ static agent::FoldDriverHooks foldHooks() {
   h.utcOffsetMin = [](uint32_t epoch) -> int32_t { return agent::utcOffsetAtUnix(epoch); };
   h.folded = foldLanded;
   h.tell = foldTell;
+  // The daily alert is the owner's: their Telegram chat or the web chat; a guest chat's
+  // failing summary is only logged.
+  h.alert = [](const std::string& chat, const std::string& text) {
+    const String owner = agent::telegram::ownerChat();
+    if (chat == "web" || (owner.length() && chat == owner.c_str())) return foldTell(chat, text);
+    alogf("fold(%s): not the owner's chat - the daily alert is logged only", chat.c_str());
+  };
   h.changed = [] { publishFoldWebStatus(); };
   h.firmware = NIMBUS_FW_BUILD;
   return h;

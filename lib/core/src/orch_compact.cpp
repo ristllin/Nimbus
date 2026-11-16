@@ -548,7 +548,11 @@ FoldDue FoldStore::evaluateDue(const std::string& chatId, uint32_t bytesThreshol
   if (!s) return FoldDue::No;
   const bool refill = refilled(s->f, bytesThreshold, msgsThreshold);
   if (!refill && !hidesRows(s->f)) return FoldDue::No;
-  if (nowEpoch != 0 && s->f.nextTry != 0 && nowEpoch < s->f.nextTry) return FoldDue::No;   // its wait
+  // Its wait. A wait longer than the longest backoff (the clock stepped back after it
+  // was set) is read as due: no wait outlives 12 h.
+  if (nowEpoch != 0 && s->f.nextTry != 0 && nowEpoch < s->f.nextTry &&
+      s->f.nextTry - nowEpoch <= foldBackoffS(0xFFFF) + kFoldThrashRetryS)
+    return FoldDue::No;
   // Thrash guard: over the restarted counters again within kThrashTurns of a
   // COMPLETED fold. It folds once now and the next try waits kFoldThrashRetryS, so
   // a fold that does not shrink the chat costs one request per 15 minutes at most

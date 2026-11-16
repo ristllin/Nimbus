@@ -62,6 +62,11 @@ struct FoldRungReport {
   bool degraded = false;
   uint32_t promptTokens = 0, completionTokens = 0;
   uint32_t elapsedMs = 0;
+  // A Thin answer of at least kFoldThinFloor bytes that only named too few sections (a
+  // summary written in another language, or with renamed headings), capped: the cycle
+  // keeps the longest and stores it when every rung failed, so such an owner still gets
+  // a summary instead of an endless backoff.
+  std::string thinSummary;
 };
 
 // The model the head host's rung folds on ("" = the head's own model). A forced

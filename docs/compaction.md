@@ -45,7 +45,7 @@ owner route:
 | route | what it does |
 |---|---|
 | `GET /api/fold/status[?chat=<id>]` | the summary's health: `summaryAgeH` (-1 = none), `lastOk`, `thru`, `thruDate`, `uncovered`, `failedCycles`, `nextTry`, `paidToday`, `cap`, `rung` ("2/5" while running), `queued`, `cooldownS`, `state`, `canRun`, `why`, and `chats` (every conversation with its badge) |
-| `POST /api/fold/run` (form `chat=<id>`) | queue a summary now: `202 {"queued":true}`; `404` for a conversation the device does not know; `401` without the sign-in code |
+| `POST /api/fold/run` (form `chat=<id>`) | queue a summary now: `202 {"queued":true}`; `404` for a conversation the device does not know; `429` while other requests fill the queue; `401` without the sign-in code |
 
 With no `chat`, both take the owner's Telegram chat, else the web chat (on a
 Virtual Nimbus, the hosted web chat).
@@ -63,7 +63,11 @@ Virtual Nimbus, the hosted web chat).
   restarts the wait. Versions up to v5.1.1 paused summaries after three failures
   until you sent `/compact`; that pause lifts by itself on the first start of
   v5.1.2.
-- **You hear about it once a day at most**, and only after a day of failing:
+- **A summary in other words still counts**: when every provider answered with a
+  long summary that does not use the expected section names (another language, say),
+  the longest is kept rather than retried.
+- **You hear about it once a day at most**, in your own chat, and only after a day of
+  failing:
   "This chat's summary hasn't updated since 2026-11-02. It keeps retrying on its
   own; send /compact to try now."
 - **Cost stays bounded**: at most 12 paid summary requests a day on the whole

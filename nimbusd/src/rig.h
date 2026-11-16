@@ -805,27 +805,18 @@ class NimbusdRig {
     if (chat.empty()) chat = foldDefaultChat();
     if (!foldChatKnown(chat)) return false;
     const uint32_t now = (uint32_t)time(nullptr);
-    out = agent::foldStatusJson(foldDriver_->status(chat, steadyMs(), now), now, hostedOffsetAt(now));
-    std::string list = ",\"chats\":[";
-    bool first = true;
-    for (const std::string& c : foldChats()) {
-      const std::string one = agent::foldStatusJson(foldDriver_->status(c, steadyMs(), now), now, 0);
-      const size_t at = one.find("\"state\":\"");
-      list += std::string(first ? "" : ",") + "{\"chat\":\"" + jsonEsc(c) + "\",\"state\":\"" +
-              one.substr(at + 9, one.find('"', at + 9) - at - 9) + "\"}";
-      first = false;
-    }
-    out.insert(out.size() - 1, list + "]");
+    std::vector<agent::FoldStatus> all;
+    for (const std::string& c : foldChats()) all.push_back(foldDriver_->status(c, steadyMs(), now));
+    out = agent::foldStatusJson(foldDriver_->status(chat, steadyMs(), now), now, hostedOffsetAt(now), &all);
     return true;
   }
-  // POST /api/fold/run (engine thread): queue a manual catch-up. False for an unknown chat.
-  bool requestManualFold(std::string chat, std::string& chosen) {
+  // POST /api/fold/run (engine thread): queue a manual catch-up. 404 for an unknown chat,
+  // 429 when the queue is full, else 202.
+  int requestManualFold(std::string chat, std::string& chosen) {
     if (chat.empty()) chat = foldDefaultChat();
-    if (!foldChatKnown(chat)) return false;
+    if (!foldChatKnown(chat)) return 404;
     chosen = chat;
-    if (foldDriver_->requestManual(chat) == agent::FoldDriver::Manual::Full)
-      record(chat, "Other summaries are waiting. Try again in a few minutes.");
-    return true;
+    return foldDriver_->requestManual(chat) == agent::FoldDriver::Manual::Full ? 429 : 202;
   }
 
   // ---- Mistral workspace probe (device parity: provider_verify syncMistralConnectors)
@@ -3081,7 +3072,8 @@ class NimbusdRig {
                                      const std::string& rawInp, std::string& out,
                                      std::string& err, const agent::HeadTools* tools,
                                      orch::TokenUsage* usage) -> bool {
-        if (host == opt_.foldFaultHost && rawIns == orch::ORCH_COMPACT_PROMPT) {   // the fold fault seam
+        if (!opt_.foldFaultHost.empty() && host == opt_.foldFaultHost &&
+            rawIns == orch::ORCH_COMPACT_PROMPT) {   // the fold fault seam (test runs only)
           out = "{\"reply\":\"\",\"memory\":\"\"}";
           if (usage) usage->responses = 1;
           return true;
@@ -3544,6 +3536,12 @@ class NimbusdRig {
     h.utcOffsetMin = [](uint32_t epoch) { return hostedOffsetAt(epoch); };
     h.folded = [this](const agent::FoldDone& d) { foldLanded(d); };
     h.tell = [this](const std::string& chat, const std::string& text) { record(chat, text); };
+    // The daily alert is the owner's (the web chat, or the Telegram owner): another chat's
+    // failing summary is only logged.
+    h.alert = [this](const std::string& chat, const std::string& text) {
+      if (chat == kWebChatId || chat == foldDefaultChat()) return record(chat, text);
+      agent::hlog::logf("fold(%s): not the owner's chat - the daily alert is logged only", chat.c_str());
+    };
     h.asking = [this](bool on) {
       if (foldBusy_ && *foldBusy_) (*foldBusy_)(on);
     };
@@ -3587,15 +3585,6 @@ class NimbusdRig {
     const std::vector<std::string> all = foldChats();
     return std::find(all.begin(), all.end(), chat) != all.end();
   }
-  static std::string jsonEsc(const std::string& s) {
-    std::string o;
-    for (char c : s) {
-      if (c == '"' || c == '\\') o += '\\';
-      if ((unsigned char)c >= 0x20) o += c;
-    }
-    return o;
-  }
-
   static std::string trunc(const std::string& s, size_t n) {
     return s.size() <= n ? s : s.substr(0, n) + "...";
   }

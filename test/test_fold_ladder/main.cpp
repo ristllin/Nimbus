@@ -61,7 +61,7 @@ const char kGoodSummary[] =
     "- Totals for 2026-11-15: 1,240 kcal from 3 rows, 82 g protein.";
 
 // How one (host, model) answers a fold request.
-enum class Answer { Good, Transport, Http4xx, Http5xx, Park, Cut, Empty, Thin };
+enum class Answer { Good, Transport, Http4xx, Http5xx, Park, Cut, Empty, Thin, NoUsage };   // NoUsage: a 2xx with no usage object
 
 const Answer kFailures[] = {Answer::Transport, Answer::Http4xx, Answer::Http5xx, Answer::Park,
                             Answer::Cut,       Answer::Empty,   Answer::Thin};
@@ -109,7 +109,7 @@ struct Rig {
       asked.push_back({host, model});
       const auto it = answers.find(host + "/" + model);
       const Answer a = it == answers.end() ? Answer::Good : it->second;
-      if (usage && a != Answer::Transport) usage->responses = 1;
+      if (usage && a != Answer::Transport && a != Answer::NoUsage) usage->responses = 1;
       switch (a) {
         case Answer::Transport: err = "connect failed"; return false;
         case Answer::Http4xx: err = "fold HTTP 400: invalid request"; return false;
@@ -168,7 +168,8 @@ static void test_every_failure_kind_at_every_rung_is_answered_by_the_next() {
 static void test_rung_report_names_kind_paid_and_degraded() {
   struct Case { Answer a; uint32_t paid; bool degraded; };
   const Case cases[] = {{Answer::Transport, 0, false}, {Answer::Http4xx, 1, false}, {Answer::Park, 1, false},
-                        {Answer::Empty, 1, true},      {Answer::Thin, 1, true},     {Answer::Good, 1, false}};
+                        {Answer::Empty, 1, true},      {Answer::Thin, 1, true},     {Answer::Good, 1, false},
+                        {Answer::NoUsage, 1, false}};
   for (const Case& c : cases) {
     Rig r;
     const FoldRung rung = r.eng->foldRungs()[0];

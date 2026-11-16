@@ -159,10 +159,10 @@ class WebApi {
     if (base == "/api/fold/run" && m == "POST") {
       const std::string chat = formValue(body, "chat");
       NimbusdRig* rig = rig_;
-      auto known = std::make_shared<bool>(true);
-      out = engineWrite([rig, chat, known] {
+      auto code = std::make_shared<int>(202);
+      out = engineWrite([rig, chat, code] {
         std::string chosen;
-        *known = rig->requestManualFold(chat, chosen);
+        *code = rig->requestManualFold(chat, chosen);
         JsonDocument d;
         d["ok"] = true;
         d["queued"] = true;
@@ -171,8 +171,11 @@ class WebApi {
         serializeJson(d, j);
         return j;
       }, 5);
-      if (out.status == 200) out.status = *known ? 202 : 404;
-      if (out.status == 404) out = noFoldChat();
+      if (out.status != 200) return true;   // busy or queued behind a turn: the engine's own answer
+      if (*code == 404) out = noFoldChat();
+      else if (*code == 429)
+        out = ApiResp{429, "application/json", R"({"error":"Other summaries are waiting. Try again in a few minutes."})"};
+      else out.status = 202;
       return true;
     }
     return false;

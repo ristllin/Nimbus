@@ -71,6 +71,7 @@ struct Device {
   std::unique_ptr<TurnEngine> eng;
   std::unique_ptr<FoldDriver> drv;
   bool failing = true;                 // every rung answers thin (a 2xx: paid)
+  std::string thinText = "Noted.";     // what a failing rung answers
   std::set<std::string> answering;     // "host/model" that answer with a summary
   int asked = 0;
   std::vector<std::string> askedKeys;                      // "host/model" per request
@@ -98,7 +99,7 @@ struct Device {
       const std::string model = agent::providers::modelOverrideFor(host.c_str());
       const std::string key = host + "/" + (model.empty() ? "model-" + host : model);
       askedKeys.push_back(key);
-      out = !failing || answering.count(key) ? goodSummary(key) : std::string("Noted.");
+      out = !failing || answering.count(key) ? goodSummary(key) : thinText;
       return true;
     };
   }
@@ -370,7 +371,8 @@ static void test_no_clock_uses_ram_backoff() {
   for (int i = 0; i < 4; i++) d.tick(0);
   TEST_ASSERT_EQUAL_UINT32(1, d.folds.get("c").failedCycles);
   TEST_ASSERT_EQUAL_UINT32(0, d.folds.get("c").nextTry);
-  TEST_ASSERT_EQUAL_UINT32(4, d.drv->ctl().paidOn(0));
+  TEST_ASSERT_EQUAL_UINT32(4, d.drv->status("c", d.plat.ms, 0).paidToday);   // day 0, in RAM
+  TEST_ASSERT_EQUAL_UINT32(0, d.drv->ctl().paidCount);                        // nothing persisted
   const int asked = d.asked;
   for (int i = 0; i < 100; i++) d.tick(0);   // 100 s: inside the 15 min RAM wait
   TEST_ASSERT_EQUAL(asked, d.asked);
@@ -494,6 +496,58 @@ static void test_status_json_fields_and_badge() {
   TEST_ASSERT_TRUE(agent::foldStatusJson(st, kT0 + 80 * 3600, 0).find("\"state\":\"behind\"") != std::string::npos);
 }
 
+// Review fixes (prism, 16 Nov). (1) No clock: paid requests count under day 0 in RAM and
+// never overwrite a real day's persisted count. (2) A manual request for another chat does
+// not wait behind an automatic cycle the quiet gate holds. (3) Every rung answering a long
+// summary with other headings (another language) lands the longest instead of a backoff;
+// "Noted." from every rung still fails the cycle.
+static void test_review_fixes_cap_preemption_and_thin_fallback() {
+  {
+    Device d;
+    d.boot();
+    for (int c = 0; c < 3; c++) d.backlog("chat" + std::to_string(c), 40, 0x100 + c * 0x100);
+    for (int i = 0; i < 400; i++) d.tick(kT0 + (uint32_t)i * 30);   // day D: the cap
+    TEST_ASSERT_EQUAL_UINT32(12, d.drv->ctl().paidOn(orch::foldLocalDay(kT0, 0)));
+    d.reboot();
+    d.plat.ms += 10 * 3600 * 1000;   // the RAM waits are long over
+    for (int i = 0; i < 400; i++) d.tick(0);   // before the clock syncs
+    TEST_ASSERT_EQUAL_UINT32(12, d.drv->ctl().paidOn(orch::foldLocalDay(kT0, 0)));   // day D's count kept
+    const int asked = d.asked;
+    for (int i = 0; i < 50; i++) d.tick(kT0 + 13000 + (uint32_t)i);   // synced, still day D
+    TEST_ASSERT_EQUAL(asked, d.asked);
+  }
+  {
+    Device d;
+    d.boot();
+    d.backlog("a", 40);
+    d.backlog("web", 30, 0x500);
+    TEST_ASSERT_TRUE(d.tick(kT0) == FoldTick::Pending);   // an automatic cycle on "a"
+    d.quiet = false;                                       // the owner keeps writing
+    TEST_ASSERT_TRUE(d.tick(kT0 + 1) == FoldTick::Deferred);
+    d.drv->requestManual("web");
+    TEST_ASSERT_TRUE(d.tick(kT0 + 2) == FoldTick::Pending);   // the manual one starts at once
+    TEST_ASSERT_TRUE(d.drv->status("web", d.plat.ms, kT0 + 2).running);
+    TEST_ASSERT_EQUAL_UINT32(0, d.folds.get("a").failedCycles);   // the automatic one yielded, uncounted
+  }
+  {
+    Device d;
+    d.boot();
+    d.backlog("c", 40);
+    d.thinText = "Resume de la conversation.\n";
+    while (d.thinText.size() < 1200) d.thinText += "- Le proprietaire note ses repas et ses courses au marche.\n";
+    for (int i = 0; i < 3; i++) TEST_ASSERT_TRUE(d.tick(kT0) == FoldTick::Pending);
+    TEST_ASSERT_TRUE(d.tick(kT0) == FoldTick::Ok);
+    TEST_ASSERT_TRUE(d.folds.get("c").summary.find("Le proprietaire") != std::string::npos);
+    TEST_ASSERT_TRUE(LogCapture::contains("keeping the longest"));
+    Device n;
+    n.boot();
+    n.backlog("c", 40);
+    for (int i = 0; i < 3; i++) n.tick(kT0);
+    TEST_ASSERT_TRUE(n.tick(kT0) == FoldTick::CycleFailed);
+    TEST_ASSERT_TRUE(n.folds.get("c").summary.empty());
+  }
+}
+
 // The copy: the confirmation, the failure notice and the daily alert; never "paused".
 static void test_owner_copy() {
   FoldSlice s;
@@ -529,5 +583,6 @@ int main(int, char**) {
   RUN_TEST(test_lumi_blob_folds_forward_with_no_id_gap);
   RUN_TEST(test_status_json_fields_and_badge);
   RUN_TEST(test_owner_copy);
+  RUN_TEST(test_review_fixes_cap_preemption_and_thin_fallback);
   return UNITY_END();
 }

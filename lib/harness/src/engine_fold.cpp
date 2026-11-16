@@ -175,6 +175,9 @@ bool TurnEngine::canFoldNow() const {
   // just total free. Unwired closures read 0xFFFFFFFF => the guard is a host-test no-op.
   if (!turnHeapOk(freeHeap(), largestFreeBlock(), t_.autoTurnMinHeap, t_.turnMinLargestBlock))
     return false;
+  // At the monthly spend ceiling every fold request would defer: say so here, once per
+  // pass and silently, rather than from each rung's request (lane DEF).
+  if (!nimbus::orch::paidCallAllowed(nimbus::orch::SpendSeam::Fold)) return false;
   return !foldRungs().empty();
 }
 
@@ -243,7 +246,9 @@ TurnEngine::FoldResult TurnEngine::runFoldOn(const std::string& chatId, const st
   meterSpend(foldSpend, "compact");
   rep.promptTokens = u.promptTokens;
   rep.completionTokens = u.completionTokens;
-  rep.paidRequests = u.responses + (!ok && orch::isTimeoutError(err) ? 1u : 0u);
+  // A 2xx counts even when its usage object was missing (the spend ceiling's rule).
+  rep.paidRequests = u.responses ? u.responses : (ok ? 1u : 0u);
+  if (!ok && orch::isTimeoutError(err)) rep.paidRequests++;
   if (!ok) {
     d_.hosts.noteFailed(host, err);
     rep.fail = failKindOf(err);
@@ -274,6 +279,7 @@ TurnEngine::FoldResult TurnEngine::runFoldOn(const std::string& chatId, const st
   if (foldAnswerThin(raw, digest.size(), prevSummary.size())) {
     rep.fail = FoldFailKind::Thin;
     rep.degraded = true;
+    if (raw.size() >= kFoldThinFloor) rep.thinSummary = orch::capSummary(raw, cap);   // named too few sections only
     rep.detail = std::to_string(raw.size()) + " B naming " + std::to_string(foldSectionsNamed(raw)) +
                  " of 5 sections for a " + std::to_string(digest.size()) + " B digest";
     rep.result = FoldResult::Failed;

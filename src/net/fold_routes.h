@@ -8,7 +8,8 @@
 //   GET  /api/fold/status[?chat=]  -> the chat's fold health (agent::foldStatusJson) plus
 //                                     "chats": every conversation with its badge
 //   POST /api/fold/run   [chat=]   -> stage a manual catch-up (the queue the fold driver
-//                                     keeps), 202; 404 for a chat the device does not know
+//                                     keeps), 202; 404 for a chat the device does not know,
+//                                     429 while every staging slot holds another request
 // "" chat = the default: the owner's Telegram chat, else the web chat.
 
 #include <ESPAsyncWebServer.h>

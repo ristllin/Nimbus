@@ -82,8 +82,10 @@ struct FoldStatus {
   bool queued = false;            // a manual request for this chat waits
   uint32_t cooldownS = 0;         // until a new manual cycle may start
 };
-// The status as JSON (every field present, never null: -1 = no age).
-std::string foldStatusJson(const FoldStatus& s, uint32_t nowEpoch, int32_t utcOffsetMin);
+// The status as JSON (every field present, never null: -1 = no age). `chats`, when
+// given, adds "chats": every conversation the page can pick, with its badge's state.
+std::string foldStatusJson(const FoldStatus& s, uint32_t nowEpoch, int32_t utcOffsetMin,
+                           const std::vector<FoldStatus>* chats = nullptr);
 
 struct FoldDriverHooks {
   std::function<bool()> online;                        // the network is up (unset = yes)
@@ -96,6 +98,8 @@ struct FoldDriverHooks {
   std::function<int32_t(uint32_t epoch)> utcOffsetMin;   // the owner's zone (unset = UTC)
   std::function<void(const FoldDone&)> folded;         // a summary landed (after the store)
   std::function<void(const std::string& chat, const std::string& text)> tell;   // an owner notice
+  // The daily alert (unset = tell): the binding sends it to the owner's chats only.
+  std::function<void(const std::string& chat, const std::string& text)> alert;
   std::function<void()> changed;                       // the status moved
   std::function<void(bool)> asking;                    // true just before a rung's request, false after
   std::string firmware;                                // this image's version
@@ -146,6 +150,7 @@ class FoldDriver {
     std::vector<FoldRung> rungs;
     size_t idx = 0;
     uint32_t startedMs = 0;
+    FoldRungReport bestThin;   // the longest answer that only named too few sections
   };
 
   FoldTick startCycle(uint32_t nowMs, uint32_t nowEpoch);
@@ -186,6 +191,12 @@ class FoldDriver {
   uint32_t lastManualEndMs_ = 0;
   bool manualEnded_ = false;
   uint32_t capLoggedDay_ = 0xFFFFFFFFu;
+  // Paid requests made with no clock: counted here, never under a real day's persisted
+  // count (a boot before the clock syncs must not reset day D's cap).
+  uint32_t clocklessPaid_ = 0;
+  void notePaid(uint32_t nowEpoch, uint32_t n);
+  uint32_t paidToday(uint32_t nowEpoch) const;
+  bool endAutomaticForManual();
 };
 
 }  // namespace agent
