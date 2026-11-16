@@ -249,7 +249,7 @@ static void test_l1931_two_successive_folds_do_not_recut_a_cut_line() {
   TEST_ASSERT_TRUE(cut.size() > kChatSummaryMax - 200);
   TEST_ASSERT_TRUE(cut.rfind("\xE2\x80\xA6") == cut.size() - 3);   // the visible cut
   TEST_ASSERT_TRUE(cut.find("4. Owner intent & active threads") != std::string::npos);
-  const std::string next = cut + "\n- one more device note: the hallway light is on a timer, the spare key is with the neighbour\n";
+  const std::string next = cut + "\n- one more device note: the hallway light is on a timer, the spare key is with the neighbor\n";
   TEST_ASSERT_TRUE(next.size() > kChatSummaryMax);
   const std::string again = capSummary(next);
   TEST_ASSERT_TRUE(again.size() <= kChatSummaryMax);
