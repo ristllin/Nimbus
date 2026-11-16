@@ -4,14 +4,17 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/model_window.h"   // modelCtxTokens + compactThreshold: the window table
+
 // compact - the portable core of context compaction (plans/compaction-plan.md,
 // v3.6.0). Nimbus cannot edit provider-side conversation chains (opaque ids), so
 // compaction is: summarize the chat FROM THE EPISODIC STORE into an anchored
 // per-chat summary, then RESET the provider chain; the existing per-chat
 // RECENT CONVERSATION window supplies the verbatim tail. This module owns every
-// decision that can be host-tested: the per-model context table, the trigger
-// threshold math, the breaker, and the fold-prompt assembly. Device/engine glue
-// (episodic slice, provider call, chain reset, UX) stays out.
+// decision that can be host-tested: the breaker and the fold-prompt assembly; the
+// per-model context table and the trigger threshold math live in model_window.h,
+// which this header includes. Device/engine glue (episodic slice, provider call,
+// chain reset, UX) stays out.
 //
 // Research grounding (2026-07-27): every surveyed harness anchors token counts
 // on PROVIDER-REPORTED usage (no client tokenizer) and compacts at
@@ -20,36 +23,6 @@
 // 13K buffer (≈167K trigger on a 200K window).
 namespace nimbus {
 namespace orch {
-
-// ---- per-model context windows ----------------------------------------------
-// Family-prefix table, deliberately conservative: an unknown model gets
-// kCtxDefaultTokens so a wrong guess compacts EARLY (cheap), never late (400s).
-// The device may layer an NVS override on top (store::ctxTokensOverride).
-constexpr uint32_t kCtxDefaultTokens = 100000;
-
-// Returns the context window (tokens) for a provider/model pair.
-// Matching: exact family prefixes on the known catalogs - "claude-*" 200K,
-// "gpt-5*" 272K, "gpt-6*" and newer 922K, "o<digit>*" 200K, "mistral-*" 128K -
-// else the default. A router selector ("<upstream>/<model>", what the Cumulo
-// picker stores) is split by resolveRouterRoute first and read as (upstream,
-// bare model); provider "cumulo" with a bare id reads as the router's default
-// upstream (openai). Another provider's id is split only when its prefix is a
-// router upstream (openai/anthropic/mistral/zai).
-uint32_t modelCtxTokens(const std::string& provider, const std::string& model);
-
-// ---- trigger math ------------------------------------------------------------
-// threshold = min(ctx − reservedOut − kCompactBufferTokens, ownerCapTokens).
-// reservedOut is the caller's REQUESTED max_tokens (the head asks ~3-4K, not the
-// model max). ownerCapTokens (NVS compactAtK, default 60K) exists because a desk
-// assistant gains nothing from a 150K tail - compacting earlier keeps every turn
-// faster and cheaper. 0 disables the owner cap (window math only). The result is
-// floored at kCompactMinThreshold so a tiny/misconfigured window can't make the
-// device compact on every turn.
-constexpr uint32_t kCompactBufferTokens  = 13000;
-constexpr uint32_t kCompactMinThreshold  = 1000;
-
-uint32_t compactThreshold(uint32_t ctxTokens, uint32_t reservedOutTokens,
-                          uint32_t ownerCapTokens);
 
 // True when the chat's chain (provider-reported input tokens of its last turn)
 // has reached the threshold.
