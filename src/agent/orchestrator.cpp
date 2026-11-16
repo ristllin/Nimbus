@@ -408,11 +408,10 @@ static nimbus::orch::ModAction moderateGate(nimbus::orch::ModGate gate, const St
 // store-side guess - store::resolvedOrchHost does not know the router fallback,
 // and on a Z.ai-only device it sized a 272K window for a 100K model (CUM-485).
 // Before the engine exists (boot), the store's resolution is the best answer.
-// test_orch_budget pins that this is the only deriveBudget call in this file.
+// test_orch_budget pins that this is the only headContextBudget call in this file.
 static nimbus::orch::ContextBudget headBudget() {
   const String h = g_engine ? String(g_engine->headHost().c_str()) : store::resolvedOrchHost();
-  return nimbus::orch::deriveBudget(
-      nimbus::orch::modelCtxTokens(h.c_str(), store::orchModel(h).c_str()), {});
+  return nimbus::orch::headContextBudget(h.c_str(), store::orchModel(h).c_str(), {});
 }
 
 // ---- delivery helpers -------------------------------------------------------

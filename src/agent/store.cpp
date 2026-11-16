@@ -481,9 +481,7 @@ int effectiveToolResultCap() {
   nimbus::orch::BudgetOverrides ov;
   ov.toolResultCap = orchLoopResultCap();
   const String h = resolvedOrchHost();
-  return (int)nimbus::orch::deriveBudget(
-             nimbus::orch::modelCtxTokens(h.c_str(), orchModel(h).c_str()), ov)
-      .toolResultBytes;
+  return (int)nimbus::orch::headContextBudget(h.c_str(), orchModel(h).c_str(), ov).toolResultBytes;
 }
 bool   allowHwTests() { return solide::memory::getBool(AKEY_ALLOW_HW_TESTS, true); }  // default ON
 bool   onboarded()    { return solide::memory::getBool(AKEY_ONBOARDED, false); }      // default false => wizard

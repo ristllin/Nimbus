@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 
 #include "nimbus/orch/budget.h"
@@ -127,8 +128,8 @@ static void test_mistral_128k_derivation() {
 // src/agent/orchestrator.cpp, and only the window used the engine's head
 // (headHost, router fallback included); the brief and the fold kept the store's
 // guess. Static guard over the device source (code lines, comments stripped):
-// exactly ONE deriveBudget call and ONE store::resolvedOrchHost call, both in the
-// shared headBudget() helper, so a new size site cannot drift to another head.
+// exactly ONE headContextBudget call and ONE store::resolvedOrchHost call, both in
+// the shared headBudget() helper, so a new size site cannot drift to another head.
 static std::string readFile(const char* path) {
   FILE* f = std::fopen(path, "rb");
   TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
@@ -159,7 +160,8 @@ static int countOf(const std::string& hay, const std::string& needle) {
 }
 static void test_orchestrator_sizes_off_one_head_budget() {
   const std::string src = stripLineComments(readFile("src/agent/orchestrator.cpp"));
-  TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "deriveBudget("), "a second budget derivation in orchestrator.cpp");
+  TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "headContextBudget("), "a second budget read in orchestrator.cpp");
+  TEST_ASSERT_EQUAL_MESSAGE(0, countOf(src, "deriveBudget("), "a budget derived around the seam in orchestrator.cpp");
   TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "resolvedOrchHost()"), "a size sited off the store's head guess");
   const size_t helper = src.find("ContextBudget headBudget()");
   TEST_ASSERT_TRUE(helper != std::string::npos);
@@ -167,9 +169,80 @@ static void test_orchestrator_sizes_off_one_head_budget() {
   const std::string fn = src.substr(helper, body - helper);
   TEST_ASSERT_TRUE(fn.find("g_engine->headHost()") != std::string::npos);
   TEST_ASSERT_TRUE(fn.find("resolvedOrchHost()") != std::string::npos);
-  TEST_ASSERT_TRUE(fn.find("deriveBudget(") != std::string::npos);
+  TEST_ASSERT_TRUE(fn.find("headContextBudget(") != std::string::npos);
   for (const char* use : {"headBudget().briefBytes", "headBudget().recentConvBytes", "headBudget().foldSliceBytes"})
     TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, use), use);
+}
+
+// ---- the one budget seam (lane P0 of the history fix) -----------------------
+// The class: every consumer of the head's budget reads headContextBudget. A
+// deriveBudget call anywhere in the firmware, the harness, the core or the hosted
+// daemon outside the seam's own file is a second source of truth: the history fix
+// changes the seam's body, and a consumer that derived around it would keep the old
+// figures (the results.get view cap against the engine's clamp, review v3).
+static bool sourceFile(const std::string& path) {
+  const size_t dot = path.rfind('.');
+  if (dot == std::string::npos) return false;
+  const std::string ext = path.substr(dot);
+  return ext == ".cpp" || ext == ".h";
+}
+static int deriveCallsOutsideTheSeam(std::string& where) {
+  int n = 0;
+  for (const char* dir : {"src", "lib/harness/src", "lib/core/src", "nimbusd/src", "tools/harness-lab/src"}) {
+    for (const auto& e : std::filesystem::recursive_directory_iterator(dir)) {
+      const std::string path = e.path().string();
+      if (!e.is_regular_file() || !sourceFile(path) || path == "lib/core/src/orch_budget.cpp") continue;
+      const int k = countOf(stripLineComments(readFile(path.c_str())), "deriveBudget(");
+      if (k) where += path + " ";
+      n += k;
+    }
+  }
+  return n;
+}
+static void test_every_budget_consumer_reads_the_one_seam() {
+  std::string where;
+  TEST_ASSERT_EQUAL_MESSAGE(0, deriveCallsOutsideTheSeam(where), where.c_str());
+  // The six legacy consumers each read the seam.
+  for (const char* f : {"src/agent/store.cpp", "src/net/webui.cpp", "src/agent/orchestrator.cpp", "nimbusd/src/rig.h",
+                        "lib/harness/src/engine.cpp", "lib/harness/src/engine_history.cpp"})
+    TEST_ASSERT_TRUE_MESSAGE(countOf(stripLineComments(readFile(f)), "headContextBudget(") >= 1, f);
+  // Today's body: the seam is the derivation over the window table.
+  for (const char* host : {"anthropic", "openai", "mistral", "zai", "cumulo", "custom"})
+    for (const char* model : {"", "claude-sonnet-5-5", "gpt-5.6", "mistral-large-4-0", "glm-5.3", "openai/gpt-5.6"}) {
+      BudgetOverrides ov;
+      ov.toolResultCap = 4000;
+      const ContextBudget a = headContextBudget(host, model, ov);
+      const ContextBudget b = deriveBudget(modelCtxTokens(host, model), ov);
+      TEST_ASSERT_EQUAL_UINT32(b.ctxTokens, a.ctxTokens);
+      TEST_ASSERT_EQUAL_UINT32(b.toolResultBytes, a.toolResultBytes);
+      TEST_ASSERT_EQUAL_UINT32(b.recentConvBytes, a.recentConvBytes);
+    }
+}
+
+// The history fix's fields hold today's figures, so nothing reads a value the device
+// does not apply: the window and its halves, the slice, the recall bound.
+static void test_history_fields_hold_todays_figures() {
+  for (uint32_t w : {0u, 8000u, 128000u, 200000u, 272000u, 1000000u}) {
+    BudgetOverrides ov;
+    ov.maxContextBytes = w == 128000u ? 20000 : 0;
+    const ContextBudget b = deriveBudget(w, ov);
+    TEST_ASSERT_EQUAL_UINT32(b.recentConvBytes, b.historyMaxBytes);
+    TEST_ASSERT_EQUAL_UINT32(b.recentConvBytes / 2, b.historySoftBytes);
+    TEST_ASSERT_EQUAL_UINT32(b.recentConvBytes / 2, b.historyKeepBytes);
+    TEST_ASSERT_EQUAL_UINT32(b.foldSliceBytes, b.foldStepBytes);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)b.systemPromptBytes, b.recallBytes);
+    TEST_ASSERT_EQUAL_UINT32(64, b.historyRows);
+    TEST_ASSERT_EQUAL_UINT32(16384, b.replayBytes);
+    TEST_ASSERT_EQUAL_UINT32(0, b.perTurnFloorBytes);
+    TEST_ASSERT_EQUAL_UINT32(6144, b.historyMessageCap);
+  }
+  // The struct's defaults are the 200K anchor's derivation, field by field.
+  const ContextBudget d, a = deriveBudget(200000, {});
+  TEST_ASSERT_EQUAL_UINT32(a.historyMaxBytes, d.historyMaxBytes);
+  TEST_ASSERT_EQUAL_UINT32(a.historySoftBytes, d.historySoftBytes);
+  TEST_ASSERT_EQUAL_UINT32(a.historyKeepBytes, d.historyKeepBytes);
+  TEST_ASSERT_EQUAL_UINT32(a.foldStepBytes, d.foldStepBytes);
+  TEST_ASSERT_EQUAL_UINT32(a.recallBytes, d.recallBytes);
 }
 
 // ---- the fold input is ONE provider string ------------------------------------
@@ -334,6 +407,8 @@ int main(int, char**) {
   RUN_TEST(test_monotonic_in_window);
   RUN_TEST(test_mistral_128k_derivation);
   RUN_TEST(test_orchestrator_sizes_off_one_head_budget);
+  RUN_TEST(test_every_budget_consumer_reads_the_one_seam);
+  RUN_TEST(test_history_fields_hold_todays_figures);
   RUN_TEST(test_fold_input_fits_the_string_guard);
   RUN_TEST(test_nvs_budget_model_keeps_the_reserve);
   return UNITY_END();

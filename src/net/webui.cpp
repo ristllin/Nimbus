@@ -1383,8 +1383,7 @@ static void buildOrchState(String& out) {
     bov.toolResultCap = agent::store::orchLoopResultCap();
     bov.toolTotalCap = agent::store::orchLoopTotalCap();
     const String h = agent::store::resolvedOrchHost();
-    const auto b = nimbus::orch::deriveBudget(
-        nimbus::orch::modelCtxTokens(h.c_str(), agent::store::orchModel(h).c_str()), bov);
+    const auto b = nimbus::orch::headContextBudget(h.c_str(), agent::store::orchModel(h).c_str(), bov);
     d["loopRescapEff"] = (int)b.toolResultBytes;
     d["loopTotcapEff"] = (int)b.toolTotalBytes;
     d["ctxTokens"] = b.ctxTokens;

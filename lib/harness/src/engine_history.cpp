@@ -243,7 +243,8 @@ std::vector<HistMsg> TurnEngine::historyMessages(const std::string& chatId, size
 
 FoldSlice TurnEngine::historyFoldSlice(const std::string& chatId, size_t capBytes, bool manual) {
   if (!histV2On() || chatId.empty()) return FoldSlice();
-  const HistoryBudget b = historyBudgetFor(orch::deriveBudget(headCtxTokens(d_), {}).recentConvBytes);
+  const std::string host = resolveTurnHost(d_);
+  const HistoryBudget b = historyBudgetFor(orch::headContextBudget(host, detail::headModelOf(d_, host), {}).recentConvBytes);
   const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
   HistoryOptions o;
   o.startAfter = marks.thru;   // the shift's hidden rows are exactly what a fold must take

@@ -3462,8 +3462,7 @@ class NimbusdRig {
   // verbatim history (no paid call).
   bool foldDigest(const std::string& chat, const orch::ChatFold& prev, bool manual, std::string& digest,
                   std::string& thru) {
-    const orch::ContextBudget b =
-        orch::deriveBudget(orch::modelCtxTokens(eng_->headHost(), modelFor(eng_->headHost())), {});
+    const orch::ContextBudget b = orch::headContextBudget(eng_->headHost(), modelFor(eng_->headHost()), {});
     const agent::FoldSlice slice =
         eng_->historyFoldSlice(chat, std::min(b.foldSliceBytes, orch::foldDigestCap(prev.summary.size())), manual);
     digest = slice.digest;

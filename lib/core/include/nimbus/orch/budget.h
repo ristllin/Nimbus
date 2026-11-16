@@ -18,10 +18,18 @@
 // strings under the 128 B extmem-spill threshold), not window size.
 //
 // Arduino-free, host-tested. Window resolution reuses modelCtxTokens()
-// (compact.h) - no second table.
+// (model_window.h) - no second table.
+//
+// ONE SEAM (lane P0 of the history fix, 16 Nov 2026): every consumer of the head's
+// budget - the turn's caps, the history window, the fold slice, the results.get view
+// cap, the web console's auto values, the device's brief and the VN's fold slice -
+// reads headContextBudget(host, model, overrides), never deriveBudget directly
+// (test_orch_budget pins it). Its body is today's derivation; the history fix changes
+// the body, and every consumer follows at once.
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 namespace nimbus {
 namespace orch {
@@ -40,6 +48,17 @@ struct ContextBudget {
   size_t   toolTotalBytes = 65536;     // cumulative tool-output budget
   size_t   briefBytes = 1200;          // sub-agent brief digest bytes
   size_t   foldSliceBytes = 65536;     // compaction fold digest slice bytes
+  // The history fix's fields (lane P0). Each holds the figure the code applies today,
+  // so a reader of the budget sees what the device does; nothing reads them yet.
+  size_t   historyMaxBytes = 8192;     // the verbatim history's high water (recentConvBytes)
+  size_t   historySoftBytes = 4096;    // where the overflow shift lands (half of high water)
+  size_t   historyKeepBytes = 4096;    // the verbatim tail a fold keeps (half of high water)
+  size_t   historyRows = 64;           // the history's row bound (HistoryBudget::highRows)
+  size_t   replayBytes = 16384;        // the tool-round replay cap every wire keeps at least
+  size_t   foldStepBytes = 65536;      // what one fold takes at most (foldSliceBytes)
+  size_t   perTurnFloorBytes = 0;      // bytes held back for the per-turn block (none today)
+  size_t   historyMessageCap = 6144;   // one history message's clip (kHistoryMessageCap)
+  size_t   recallBytes = 32768;        // the recall block's bound: the system budget today
 };
 
 // 0 == "auto/derive". Non-zero == owner override, wins verbatim then clamps.
@@ -53,6 +72,10 @@ struct BudgetOverrides {
 // conservative compaction default window. Monotonic: a bigger window never
 // shrinks an allocation (floors/caps preserve that).
 ContextBudget deriveBudget(uint32_t ctxTokens, const BudgetOverrides& ov);
+
+// The budget of a request the head `host` sends on `model`: the one seam above.
+// Today's body: deriveBudget(modelCtxTokens(host, model), ov).
+ContextBudget headContextBudget(const std::string& host, const std::string& model, const BudgetOverrides& ov);
 
 }  // namespace orch
 }  // namespace nimbus

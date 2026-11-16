@@ -1374,8 +1374,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   bov.toolTotalCap = d_.cfg.loop.totalCap ? d_.cfg.loop.totalCap() : 0;
   const std::string headModel =
       d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
-  const orch::ContextBudget budget =
-      orch::deriveBudget(orch::modelCtxTokens(host, headModel), bov);
+  const orch::ContextBudget budget = orch::headContextBudget(host, headModel, bov);
   ci.budgetBytes = budget.systemPromptBytes;
   // H2/R3: the turn-structured history as REAL messages the providers send as
   // history items (prompt_layout.h) - the text window stays empty. Without

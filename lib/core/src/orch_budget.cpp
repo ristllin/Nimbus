@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-#include "nimbus/orch/compact.h"     // kCtxDefaultTokens + the modelCtxTokens convention
+#include "nimbus/orch/model_window.h"   // kCtxDefaultTokens + modelCtxTokens - the window table
 #include "nimbus/orch/mem_config.h"  // MemConfig::kContextMin/Max - the owner-override clamp
 #include "nimbus/orch/wire_limits.h" // kToolResultCapMax - the per-result ceiling
 
@@ -61,7 +61,22 @@ ContextBudget deriveBudget(uint32_t ctxTokens, const BudgetOverrides& ov) {
     b.toolResultBytes = (size_t)clampI(ov.toolResultCap, 512, (int)kToolResultCapMax);
   if (ov.toolTotalCap > 0)
     b.toolTotalBytes = (size_t)clampI(ov.toolTotalCap, 2048, 1048576);
+
+  // The history fix's fields at today's figures (lane P0): the window is the recent
+  // window's high water and the shift and the fold both stop at half of it
+  // (conversation.h HistoryBudget::lowBytes), one fold takes the fold slice, the replay
+  // cap is the smallest any wire keeps (Anthropic's 16 KB), and recall has no bound of
+  // its own beyond the system budget it shares.
+  b.historyMaxBytes = b.recentConvBytes;
+  b.historySoftBytes = b.recentConvBytes / 2;
+  b.historyKeepBytes = b.recentConvBytes / 2;
+  b.foldStepBytes = b.foldSliceBytes;
+  b.recallBytes = (size_t)b.systemPromptBytes;
   return b;
+}
+
+ContextBudget headContextBudget(const std::string& host, const std::string& model, const BudgetOverrides& ov) {
+  return deriveBudget(modelCtxTokens(host, model), ov);
 }
 
 }  // namespace orch
