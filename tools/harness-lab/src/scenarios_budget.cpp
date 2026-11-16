@@ -16,6 +16,7 @@
 
 #include "../../../lib/harness/src/providers/image_parts.h"   // photoTokens - a photo's window estimate
 #include "curl_transport.h"
+#include "nimbus/harness/output_caps.h"   // mistralHeadEffort: a Mistral head forced to reason
 #include "nimbus/harness/prompt_layout.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/budget.h"
@@ -375,12 +376,14 @@ void legRound(const Leg& leg, LegTransport& http, const agent::providers::Provid
   }
 }
 
-// The model a fold for this head runs: Large 4 refuses effort "none" and cannot write a
-// fold inside its 60 s fit at its 50 tok/s floor, so its fold runs on Mistral Small
-// (orchestrator ruling of 16 Nov; the fold ladder pins it). Every other head folds on itself.
+// The model a fold for this head runs: a Mistral head forced to reason (Large 4: it refuses
+// effort "none") cannot write a fold inside its 60 s fit at its 50 tok/s floor, so its fold
+// runs on Mistral Small (orchestrator ruling of 16 Nov; the fold ladder pins it). Every other
+// head folds on itself.
 std::string foldModelFor(const Leg& leg) {
-  const std::string m = leg.model;
-  return m.rfind("mistral-large-4", 0) == 0 ? "mistral-small-latest" : m;
+  const bool forced = std::string(leg.host) == "mistral" &&
+                      std::strcmp(agent::providers::mistralHeadEffort(leg.model), "low") == 0;
+  return forced ? "mistral-small-latest" : leg.model;
 }
 
 // The fold: one plain-text request on a digest of the host's fold step.
