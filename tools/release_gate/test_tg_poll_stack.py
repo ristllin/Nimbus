@@ -355,6 +355,52 @@ def test_the_config_about_text_matches_the_stale_verdict():
     assert "stale indirect rule" in st.render(v, "x")
 
 
+# ---- config fragments (one per lane) ---------------------------------------------------
+
+
+def _write(path, obj):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f)
+
+
+def test_fragments_add_rows_in_name_order(tmp_path):
+    base = tmp_path / "stack.json"
+    _write(base, {"about": "a", "indirect": [{"in": "a"}], "bases": {"x": "y"}, "stack_bytes": 1})
+    frags = tmp_path / "stack.d"
+    frags.mkdir()
+    _write(frags / "b_lane.json", {"_why": "note", "indirect": [{"in": "c"}]})
+    _write(frags / "a_lane.json", {"about": "lane a", "indirect": [{"in": "b"}], "bases": {"z": "w"}})
+    (frags / "README").write_text("not a fragment")
+    cfg = st.load_config(str(base))
+    assert [r["in"] for r in cfg["indirect"]] == ["a", "b", "c"]
+    assert cfg["bases"] == {"x": "y", "z": "w"}
+    assert cfg["about"] == "a" and cfg["stack_bytes"] == 1
+
+
+@pytest.mark.parametrize(
+    "frag, why",
+    [
+        ({"stack_bytes": 2}, "can only gain rows"),
+        ({"bases": {"x": "other"}}, "bases.x is already set"),
+        ({"indirectt": []}, "is not a config section"),
+        ({"indirect": {"in": "x"}}, "can only gain rows"),
+    ],
+)
+def test_a_fragment_never_replaces_what_is_there(tmp_path, frag, why):
+    base = tmp_path / "stack.json"
+    _write(base, {"indirect": [], "bases": {"x": "y"}, "stack_bytes": 1})
+    (tmp_path / "stack.d").mkdir()
+    _write(tmp_path / "stack.d" / "lane.json", frag)
+    with pytest.raises(ValueError, match=why):
+        st.load_config(str(base))
+
+
+def test_no_fragment_directory_is_the_config_alone(tmp_path):
+    base = tmp_path / "stack.json"
+    _write(base, {"indirect": [1]})
+    assert st.load_config(str(base)) == {"indirect": [1]}
+
+
 # ---- the shipped config ---------------------------------------------------------------
 
 

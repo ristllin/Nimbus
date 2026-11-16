@@ -47,7 +47,8 @@ Usage:
 Exit 0 = every path leaves the floor; 1 = a path is under it, or the analysis is not
 sound (an undeclared cycle or dynamic frame, a path that names nothing, a missing tool or
 ELF). A config row the image does not use is reported, not failed: the four release
-images share one config.
+images share one config. The config is tg_poll_stack.json plus each fragment in
+tg_poll_stack.d/ (one file per lane, merged in name order; a fragment only adds rows).
 """
 
 from __future__ import annotations
@@ -1606,9 +1607,41 @@ class Model:
 # ---- the verdict -------------------------------------------------------------------
 
 
+def merge_fragment(cfg: dict, frag: dict, name: str) -> None:
+    """Add one fragment's rows to the config. A fragment only adds: a list section gets
+    its rows appended and a table section its new keys. Replacing a value, re-setting a
+    table key or naming a section the config does not have is an error, so two lanes'
+    fragments can never silently override each other. "about" and "_" keys are notes."""
+    for key, val in frag.items():
+        if key == "about" or key.startswith("_"):
+            continue
+        if key not in cfg:
+            raise ValueError(f"{name}: {key!r} is not a config section")
+        base = cfg[key]
+        if isinstance(base, list) and isinstance(val, list):
+            base.extend(val)
+        elif isinstance(base, dict) and isinstance(val, dict):
+            for k, v in val.items():
+                if k in base:
+                    raise ValueError(f"{name}: {key}.{k} is already set")
+                base[k] = v
+        else:
+            raise ValueError(f"{name}: {key!r} can only gain rows, not be replaced")
+
+
 def load_config(path: str = CONFIG) -> dict:
+    """The config, then each fragment beside it (<config>.d/*.json, in name order): one
+    file per lane, so lanes that add rows in parallel never edit one shared file."""
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        cfg = json.load(f)
+    frag_dir = os.path.splitext(path)[0] + ".d"
+    if os.path.isdir(frag_dir):
+        for name in sorted(os.listdir(frag_dir)):
+            if not name.endswith(".json"):
+                continue
+            with open(os.path.join(frag_dir, name), encoding="utf-8") as f:
+                merge_fragment(cfg, json.load(f), name)
+    return cfg
 
 
 def load_image(elf: str, cfg: dict, tools: dict) -> "tuple[dict, str]":
