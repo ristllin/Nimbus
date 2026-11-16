@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -11,6 +12,7 @@
 #include "nimbus/harness/conv_cache.h"
 #include "nimbus/harness/conversation.h"
 #include "nimbus/harness/engine.h"   // HistoryQuery
+#include "nimbus/harness/turn_inbox.h"   // noteInbound: the channel names a turn's source
 #include "nimbus/orch/episodic_log.h"
 #include "nimbus/orch/row_overlay.h"
 #include "../support/fake_config.h"
@@ -114,7 +116,7 @@ struct Store {
       q.limit = (int)hq.limit;
       q.before = hq.before;
       q.after = hq.after;
-      return overlay.query(q);
+      return overlay.query(q, hq.info);
     };
   }
   // The chat's conversation rows after `thru`, oldest first, from what was written.
@@ -348,6 +350,54 @@ static void test_a_short_page_is_not_the_start() {
   assertIds(s.truth("c1", ""), ids(v));
 }
 
+// The probe after thru comes back EMPTY because the store's cold walk spent its read budget
+// before it met a row of this chat (other chats' bytes, tool outputs): rows may still follow
+// thru, so the fill is not done and the rows below the oldest held are named as unread.
+static void test_an_empty_probe_the_store_cut_short_is_not_the_end() {
+  Store s;
+  const std::string thru = s.turn("c1", 0);
+  std::string floorId;
+  for (int i = 1; i <= 4; i++) {
+    const std::string last = s.turn("c1", i);
+    if (i == 2) floorId = last;   // the index reaches only the rows after it
+  }
+  const ConvCache::ReadFn full = s.reader("c1");
+  const ConvCache::ReadFn cut = [&full, &floorId](const HistoryQuery& q) {
+    if (!q.after.empty()) {   // the cold walk: out of budget, more after
+      if (q.info) {
+        q.info->newerExists = true;
+        q.info->nextAfter = "20591:131072";
+      }
+      return std::vector<EpisodicMessage>();
+    }
+    std::vector<EpisodicMessage> rows = full(q);
+    rows.erase(std::remove_if(rows.begin(), rows.end(),
+                              [&](const EpisodicMessage& m) { return !agent::rowIdAfter(m.id, floorId); }),
+               rows.end());
+    return rows;
+  };
+  ConvCache cache;
+  ConvCache::View v;
+  for (int i = 0; i < 4; i++) v = cache.access("c1", thru, kWide, 1, cut);
+  TEST_ASSERT_FALSE_MESSAGE(v.complete, "rows after thru may remain unread");
+  TEST_ASSERT_TRUE(v.span.uncounted);
+  TEST_ASSERT_EQUAL(4, (int)v.rows.size());   // turns 3 and 4
+}
+
+// A device boot replays the photo records it kept: no cache holds a row yet, so the replay
+// does not fill the patch journal (it would push out records a running cache still needs).
+static void test_a_boot_replay_is_not_journaled() {
+  RowTextOverlay o;
+  const uint32_t seq0 = rowPatchSeq();
+  const std::string lines = RowTextOverlay::line("m00000007", "[image 1/1 ref=abc] a bowl") + "\n" +
+                            RowTextOverlay::line("m00000009", "[image 1/1 ref=def] a mug") + "\n";
+  TEST_ASSERT_EQUAL(2, (int)o.load(lines));
+  TEST_ASSERT_TRUE(o.has("m00000009"));
+  TEST_ASSERT_EQUAL_UINT32(seq0, rowPatchSeq());
+  o.put("m00000009", "[image 1/1 ref=def] a blue mug");   // a record landing later is journaled
+  TEST_ASSERT_EQUAL_UINT32(seq0 + 1, rowPatchSeq());
+}
+
 // A record that grew a row's text keeps the byte count true: a fold that then takes every
 // row leaves the cache at zero, never wrapped around (which would evict every later row).
 static void test_a_patch_keeps_the_byte_count() {
@@ -419,7 +469,7 @@ struct EngineRig {
       q.limit = (int)hq.limit;
       q.before = hq.before;
       q.after = hq.after;
-      return overlay.query(q);
+      return overlay.query(q, hq.info);
     };
     d.captureUserRow = [this](const std::string& c, const std::string& t, const std::string& tags) {
       EpisodicMessage m;
@@ -461,22 +511,51 @@ static void test_the_first_turn_after_a_restart_carries_the_newest_exchanges() {
   // At most one page of card reads on the turn.
   TEST_ASSERT_TRUE(r.eng->historyRead().cardReads > 0);
   TEST_ASSERT_TRUE_MESSAGE(r.eng->historyRead().cardReads <= 24, std::to_string(r.eng->historyRead().cardReads).c_str());
-  // The idle pump fills toward thru a page a pass, as far as the store's index reaches; the
-  // rows below it stay named as unread until the index's backfill (the device's loop task)
-  // reaches them, and then the fill completes.
+  // The idle pump fills toward thru a page a pass, as far as the store's index reaches, and
+  // then stops reading for nothing (kIdleStalls pages that found no row); the rows below stay
+  // named as unread until the index's backfill (the device's loop task) reaches them.
   int passes = 0;
   for (int i = 0; i < 40; i++) passes += r.eng->historyIdleStep() ? 1 : 0;
+  TEST_ASSERT_TRUE_MESSAGE(passes > (int)agent::ConvCache::kIdleStalls && passes < 40, std::to_string(passes).c_str());
   TEST_ASSERT_TRUE(r.log.hydrateTruncated());
   r.eng->handleMessage("still there?", "Roy", "c1");
   TEST_ASSERT_TRUE_MESSAGE(r.inputs.back().find("still reading them") != std::string::npos, "the unindexed rows are named");
+  TEST_ASSERT_TRUE(r.eng->historyRead().cardReads <= 24);
   while (r.log.backfillStep()) {
   }
+  // A stalled chat waits for its next turn, whose page now finds rows; the pump goes on.
+  TEST_ASSERT_FALSE(r.eng->historyIdleStep());
+  r.eng->handleMessage("are you back?", "Roy", "c1");
   passes = 0;
   while (passes < 100 && r.eng->historyIdleStep()) passes++;
-  TEST_ASSERT_TRUE(passes > 1 && passes < 100);
+  TEST_ASSERT_TRUE_MESSAGE(passes > 1 && passes < 100, std::to_string(passes).c_str());
   r.eng->handleMessage("and the first thing I asked today?", "Roy", "c1");
   TEST_ASSERT_EQUAL_UINT32(0, r.eng->historyRead().cardReads);   // steady state
   TEST_ASSERT_TRUE(r.inputs.back().find("still reading them") == std::string::npos);
+}
+
+// The same restart when the channel names the turn's source (a Telegram delivery): the
+// duplicate check reads the newest rows first, and the window's read then takes no second
+// page of card reads: the turn reads the card exactly as much as one without the check.
+static uint32_t firstTurnCardReads(bool namedSource) {
+  Store s;
+  const std::string thru = s.turn("c1", 0);
+  for (int i = 1; i <= 200; i++) s.turn("c1", i, 500);
+  EngineRig r(s.fs, s.seq, thru);
+  if (namedSource) {
+    agent::history::Inbound in;
+    in.chatId = "c1";
+    in.src = "tg:1:4100x1";
+    agent::history::noteInbound(in, "what did you just say?");
+  }
+  r.eng->handleMessage("what did you just say?", "Roy", "c1");
+  TEST_ASSERT_TRUE(r.instructions.back().find("answer 200 ") != std::string::npos);
+  return r.eng->historyRead().cardReads;
+}
+static void test_one_card_page_with_the_duplicate_check() {
+  const uint32_t plain = firstTurnCardReads(false);
+  TEST_ASSERT_TRUE(plain > 0);
+  TEST_ASSERT_EQUAL_UINT32(plain, firstTurnCardReads(true));
 }
 
 int main(int, char**) {
@@ -493,5 +572,8 @@ int main(int, char**) {
   RUN_TEST(test_a_short_page_is_not_the_start);
   RUN_TEST(test_a_patch_keeps_the_byte_count);
   RUN_TEST(test_the_first_turn_after_a_restart_carries_the_newest_exchanges);
+  RUN_TEST(test_an_empty_probe_the_store_cut_short_is_not_the_end);
+  RUN_TEST(test_a_boot_replay_is_not_journaled);
+  RUN_TEST(test_one_card_page_with_the_duplicate_check);
   return UNITY_END();
 }

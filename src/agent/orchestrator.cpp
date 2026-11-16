@@ -1437,7 +1437,6 @@ static TurnEngine::Deps buildTurnDeps() {
   d.historyRows = [](const std::string& chatId, const agent::HistoryQuery& hq) {
     using namespace nimbus::orch;
     std::vector<EpisodicMessage> rows;
-    if (agent::historyAfterUnserved(hq)) return rows;
     MsgQuery q;
     q.sessionId = chatId;
     q.haveKind = true; q.kind = MsgKind::Message;
@@ -1445,7 +1444,7 @@ static TurnEngine::Deps buildTurnDeps() {
     q.limit = (int)hq.limit;
     q.before = hq.before;
     q.after = hq.after;
-    { memory::Lock lk; rows = memory::episodic().query(q); }   // newest-first, ring-served
+    { memory::Lock lk; rows = memory::episodic().query(q, hq.info); }   // ring-served when it can
     return rows;
   };
   // A seedless turn's trigger row joins the turn by its turn: tag.
@@ -1455,7 +1454,7 @@ static TurnEngine::Deps buildTurnDeps() {
   };
   d.historyMarks = [](const std::string& chatId) {
     const nimbus::orch::ChatFold f = g_folds.get(chatId);
-    return agent::HistoryMarks{f.thru, f.softStart, 0};
+    return agent::HistoryMarks{f.thru, f.softStart, 0, f.lastFoldEpoch};
   };
   d.noteHistoryShift = [](const std::string& chatId, const std::string& softStart) {
     g_folds.setSoftStart(chatId, softStart);   // persisted with the turn's blob write
@@ -3004,6 +3003,14 @@ __attribute__((noinline)) static void compactTick() {
   }
 }
 
+// The conversation cache's idle fill (lane H, conv_cache.h): after a restart a chat's rows
+// after thru are read back newest first, one page of at most 24 rows per pass, between
+// turns (a turn reads at most one page itself). Card reads only, no request: not gated on
+// the owner. noinline: pollJobs sits on tg_poll's worst path, so its frame stays flat.
+__attribute__((noinline)) static void historyCacheTick() {
+  if (g_engine) g_engine->historyIdleStep();
+}
+
 int pollJobs() {
   if (!g_fabric || !g_jobs) return 0;
   drainStaged();      // apply web-staged directive/memory edits between turns
@@ -3030,6 +3037,7 @@ int pollJobs() {
   int n = g_jobs->pump();
   refreshSessionSnapshot();  // mirror the post-pump journal for AsyncTCP readers (F24)
   compactTick();             // v3.6.0 fold pump (after loops consumed their usage)
+  historyCacheTick();        // a restart's conversation cache fill, a page a pass
   g_ownerFirst.notePumpEnd();   // the next pass follows this cycle's poll and reply drain
   // Lane QW4 round 3: the stop list makes its own TLS requests, so it counts as active
   // work: the Telegram loop then frees the TLS arena and keeps the pump coming.

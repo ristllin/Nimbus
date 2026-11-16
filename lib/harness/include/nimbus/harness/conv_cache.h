@@ -48,6 +48,12 @@ class ConvCache {
  public:
   static constexpr size_t kChats = 3;
   static constexpr size_t kPageRows = 24;   // one read (a page) of a chat's rows
+  // The after cursor from a chat's very first row (no fold anchor yet).
+  static constexpr const char* kBeforeFirstRow = "m00000000";
+  // Idle fill passes in a row that may read nothing new before the idle pump leaves the
+  // chat to its turns (each turn still tries one page): a store whose index has not
+  // reached the rows yet would otherwise be read every pump pass for nothing.
+  static constexpr uint8_t kIdleStalls = 3;
 
   // One read of a chat's rows (Deps::historyRows bound to the chat).
   using ReadFn = std::function<std::vector<nimbus::orch::EpisodicMessage>(const HistoryQuery&)>;
@@ -66,26 +72,23 @@ class ConvCache {
   };
 
   // Bring `chat`'s entry up to date against `thru` and return its rows: the delta read,
-  // then at most `fillPages` pages of the newest-first fill; past the first page only while
-  // `freePage` (when set) says the page before cost nothing (the engine: no card read, the
-  // rows came from the store's RAM ring), so a turn makes at most one page of card reads.
+  // then at most `fillPages` pages of the newest-first fill, each only while `pageAllowed`
+  // (when set) says so. The engine allows the first while its turn has read no card row
+  // yet and each later one while the page before read none (the store's RAM ring served
+  // it), so a turn makes at most one page of card reads in all.
   View access(const std::string& chat, const std::string& thru, const Bound& bound, int fillPages,
-              const ReadFn& read, const std::function<bool()>& freePage = std::function<bool()>());
-  // One fill page for the most recently used chat that is still filling (the idle pump).
-  // False when every entry is complete (nothing was read).
+              const ReadFn& read, const std::function<bool()>& pageAllowed = std::function<bool()>());
+  // One fill page for the most recently used chat that is still filling and not stalled
+  // (the idle pump). False when there is none (nothing was read).
   bool fillStep(const std::function<ReadFn(const std::string& chat)>& readerFor);
   // The chat's newest `n` rows held, newest first (no read; [] when the chat is not held).
   std::vector<nimbus::orch::EpisodicMessage> newest(const std::string& chat, size_t n) const;
-  // The chat's entry is dropped (/clear, a reset): the next access fills it again.
-  void drop(const std::string& chat);
-  void clear();
 
   // Diagnostics and tests.
   size_t chats() const;
   size_t bytesOf(const std::string& chat) const;
   bool holds(const std::string& chat) const;
-  // The chat that fillStep would fill next ("" = none).
-  std::string filling() const;
+  void drop(const std::string& chat);   // the next access fills the chat again
 
  private:
   struct Entry {
@@ -100,6 +103,7 @@ class ConvCache {
     ConvSpan span;                    // evicted rows (counted) and the unread rest
     uint32_t lastUse = 0;
     uint32_t patchSeq = 0;            // row_overlay's patch journal, applied up to here
+    uint8_t stalls = 0;               // fill pages in a row that read nothing new
   };
 
   Entry* find(const std::string& chat);

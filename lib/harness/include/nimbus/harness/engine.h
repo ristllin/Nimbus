@@ -165,15 +165,12 @@ struct HistoryMarks {
 };
 
 // What one turn's history read cost (the context line's "hist ... ms ... card reads lock
-// ... ms"): wall time of the whole read, card reads the store made for it, time inside the
-// store reads (memory::Lock is held there), store reads (pages), and the live rows after
-// thru it found (cached plus the span it names).
+// ... ms"): wall time of the whole read, card reads the store made for it, and time inside
+// the store reads (memory::Lock is held there).
 struct HistoryReadStats {
   uint32_t ms = 0;
   uint32_t lockMs = 0;
   uint32_t cardReads = 0;
-  int pages = 0;
-  size_t liveRows = 0;
 };
 
 // histV2: one read of a chat's conversation rows (Deps::historyRows): at most `limit`,
@@ -187,10 +184,12 @@ struct HistoryQuery {
   size_t limit = 0;
   std::string before;
   std::string after;
+  // Where the binding puts what the store says about the page (nullptr = not wanted):
+  // above all, for an after read, that newer rows remain past a page the store's read
+  // budget cut short (newerExists, nextAfter; an EMPTY page can carry it) and a span the
+  // card would not give back (unreadable). Bindings pass it to EpisodicStore::query.
+  nimbus::orch::EpiQueryInfo* info = nullptr;
 };
-// False: every store serves the after cursor (lane H). Kept for the bindings that still
-// ask (they drop the call with their next edit).
-bool historyAfterUnserved(const HistoryQuery& q);
 
 class TurnEngine {
  public:
@@ -824,10 +823,10 @@ class TurnEngine {
   std::vector<HistMsg> historyMessages(const std::string& chatId, const HistoryBudget& b,
                                        const std::string& summary);
   // The conversation cache's read of a chat (Deps::historyRows, timed and counted into
-  // histRead_), and an access through it with `fillPages` fill pages at most.
+  // histRead_), and an access through it: `fill` lets it read fill pages within the turn's
+  // one page of card reads (a turn's reads), none when false (the fold's look at the tail).
   ConvCache::ReadFn cacheReader(const std::string& chatId);
-  ConvCache::View cachedRows(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
-                             int fillPages);
+  ConvCache::View cachedRows(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b, bool fill);
   // The fold slice's parts: the kept tail's first row, and the forward read from thru.
   bool foldKeepFrom(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
                     const HistoryOptions& o, bool hidden, std::string& keepFrom);

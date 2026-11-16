@@ -5,6 +5,7 @@
 #include "nimbus/orch/billing_refusal.h"   // isBillingRefusal - the Billing step kind
 #include "nimbus/orch/body_budget.h"   // parseBodyBudgetError - a round too big to send
 #include "nimbus/orch/transcript.h"  // the canonical record the controller fills
+#include <cstring>  // strcmp: the refit rung that ends the refits
 #include <memory>   // unique_ptr: a round's step result off the poll task stack (lane STACK)
 
 namespace nimbus {
@@ -347,7 +348,7 @@ size_t refitEnough(Transcript& tr, const HeadLoopHooks& hooks, size_t want, size
     if (!got) break;
     freed += got;
     if (freed >= want) break;
-    if (rungWhat == kRefitContext || rungWhat == kRefitPrompt)
+    if (std::strcmp(rungWhat, kRefitContext) == 0 || std::strcmp(rungWhat, kRefitPrompt) == 0)
       break;   // the wire escapes history at up to twice its size: only the re-run can measure it
   }
   return freed;

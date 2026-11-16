@@ -258,7 +258,8 @@ struct HistoryBudget {
 };
 constexpr size_t kHistoryKeepTurns = 2;
 // The day floor's cap: about 4,000 tokens on any head with a 64K window or more,
-// a sixteenth of a smaller window; the request's wire guard (engine) bounds it too.
+// a sixteenth of a smaller window (the floor branch's window; a refusal's give-up order,
+// turn_fit.h, can still cut it, with the [LEFT OUT] note).
 constexpr size_t kHistoryDayBytesMax = 16384;
 size_t historyDayBytes(uint32_t ctxTokens);
 // Extra rows a read may take so a busy day is read whole (rows ride PSRAM).

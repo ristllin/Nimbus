@@ -252,8 +252,10 @@ into the past, the store answers a read of the rows **after** a row id, oldest
 first, a page at a time: the conversation summary reads its next slice forward
 from the last row it covers, so a backlog longer than one read is summarized in
 order with no gap. The read reaches the rows the boot scan has not indexed yet
-under the same per-call budget, and names a span the card would not give back
-instead of skipping it silently. The conversation history a turn sends is kept
+under the same per-call budget (a page the budget cut short, even an empty one,
+says where to go on), and names a span the card would not give back instead of
+skipping it silently: the summary stops before such a span rather than move past
+rows it never read. The conversation history a turn sends is kept
 in a per-chat cache between turns, so a steady-state turn reads nothing from the
 card; when a request has to leave earlier messages out, it names them and the
 `memory.episodic` call that reads them back. The memory tiers in the prompt tell

@@ -41,6 +41,7 @@ void ConvCache::reset(Entry& e, const std::string& thru) {
   e.started = false;
   e.bytes = 0;
   e.span = ConvSpan();
+  e.stalls = 0;
   e.patchSeq = nimbus::orch::rowPatchSeq();   // rows read from here on carry every earlier record
 }
 
@@ -96,13 +97,13 @@ void ConvCache::applyPatches(Entry& e) {
   e.patchSeq = nimbus::orch::rowPatchSeq();
 }
 
-// The rows newer than the newest held: one read, oldest first. A full page means the
-// entry is more than a page behind: it is filled again newest first instead (an after
-// read that pages forward would carry the oldest of them first).
+// The rows newer than the newest held: one read, oldest first. More than a page means the
+// entry is far behind (a burst between turns): it is filled again newest first instead, so
+// the turn's one card page goes to the newest rows, not to the oldest of the burst.
 int ConvCache::readNewer(Entry& e, const ReadFn& read) {
   if (e.newestId.empty()) return 0;
-  std::vector<EpisodicMessage> got = read(HistoryQuery(kPageRows, std::string(), e.newestId));
-  if (got.size() >= kPageRows) {
+  std::vector<EpisodicMessage> got = read(HistoryQuery(kPageRows + 1, std::string(), e.newestId));
+  if (got.size() > kPageRows) {
     reset(e, e.thru);
     return 1;
   }
@@ -161,17 +162,23 @@ bool ConvCache::fillPage(Entry& e, const Bound& bound, const ReadFn& read) {
   }
   e.rows.insert(e.rows.begin(), std::make_move_iterator(older.rbegin()), std::make_move_iterator(older.rend()));
   if (reached) e.complete = true;
+  // A page that read nothing new (an index that does not reach the rows yet) is a stall.
+  e.stalls = !older.empty() || e.complete ? 0 : (uint8_t)std::min<int>(e.stalls + 1, 255);
   enforce(e, bound);
   return true;
 }
 
 // One forward read of the row right after thru (the after cursor walks the rows the store's
 // index does not hold yet): true when it is older than the oldest row held, i.e. rows after
-// thru exist that the backward fill has not reached.
+// thru exist that the backward fill has not reached. An empty answer means none only when
+// the store read to the end: a cold walk its read budget stopped (newerExists) or a span
+// the card would not give back leaves rows unread.
 bool ConvCache::gapAfterThru(const Entry& e, const ReadFn& read) {
-  const std::vector<EpisodicMessage> first =
-      read(HistoryQuery(1, std::string(), e.thru.empty() ? std::string("m00000000") : e.thru));
-  if (first.empty()) return false;
+  nimbus::orch::EpiQueryInfo info;
+  HistoryQuery q(1, std::string(), e.thru.empty() ? std::string(kBeforeFirstRow) : e.thru);
+  q.info = &info;
+  const std::vector<EpisodicMessage> first = read(q);
+  if (first.empty()) return info.newerExists || !info.unreadable.empty();
   return e.rows.empty() || rowIdAfter(e.rows.front().id, first.front().id);
 }
 
@@ -217,7 +224,7 @@ ConvCache::View ConvCache::viewOf(const Entry& e) const {
 }
 
 ConvCache::View ConvCache::access(const std::string& chat, const std::string& thru, const Bound& bound,
-                                  int fillPages, const ReadFn& read, const std::function<bool()>& freePage) {
+                                  int fillPages, const ReadFn& read, const std::function<bool()>& pageAllowed) {
   std::lock_guard<std::mutex> lk(mu_);
   lastBound_ = bound;
   Entry& e = open(chat, thru);
@@ -227,7 +234,7 @@ ConvCache::View ConvCache::access(const std::string& chat, const std::string& th
   if (e.complete && e.newestId.empty()) reset(e, thru);   // a chat that had no row yet: read from the newest
   int pages = readNewer(e, read);
   for (int i = 0; i < fillPages && !e.complete; i++) {
-    if (i > 0 && (!freePage || !freePage())) break;
+    if (pageAllowed && !pageAllowed()) break;
     pages += fillPage(e, bound, read) ? 1 : 0;
   }
   enforce(e, bound);
@@ -240,7 +247,7 @@ bool ConvCache::fillStep(const std::function<ReadFn(const std::string& chat)>& r
   std::lock_guard<std::mutex> lk(mu_);
   Entry* best = nullptr;
   for (auto& e : entries_)
-    if (!e.complete && (!best || e.lastUse > best->lastUse)) best = &e;
+    if (!e.complete && e.stalls < kIdleStalls && (!best || e.lastUse > best->lastUse)) best = &e;
   if (!best) return false;
   return fillPage(*best, lastBound_, readerFor(best->chat));
 }
@@ -259,11 +266,6 @@ void ConvCache::drop(const std::string& chat) {
                  entries_.end());
 }
 
-void ConvCache::clear() {
-  std::lock_guard<std::mutex> lk(mu_);
-  entries_.clear();
-}
-
 size_t ConvCache::chats() const {
   std::lock_guard<std::mutex> lk(mu_);
   return entries_.size();
@@ -278,14 +280,6 @@ size_t ConvCache::bytesOf(const std::string& chat) const {
 bool ConvCache::holds(const std::string& chat) const {
   std::lock_guard<std::mutex> lk(mu_);
   return find(chat) != nullptr;
-}
-
-std::string ConvCache::filling() const {
-  std::lock_guard<std::mutex> lk(mu_);
-  const Entry* best = nullptr;
-  for (const auto& e : entries_)
-    if (!e.complete && (!best || e.lastUse > best->lastUse)) best = &e;
-  return best ? best->chat : std::string();
 }
 
 }  // namespace agent

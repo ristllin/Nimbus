@@ -629,7 +629,9 @@ richer prompt.
 NVS keys now treat **0 / absent as "auto"**; any value you set is used verbatim
 under the same clamps as before. `/api/orch` reports `loopRescapEff`,
 `loopTotcapEff` and `ctxTokens` so the UI can show "auto (currently N)". Each
-turn logs one line: `budget: ctx=200K sys=32768 res=8192 tot=65536 (auto|owner)`.
+turn logs one line: `budget: <host>/<model> window <W>K target <T>K tok (<B> KB) hist
+<max>/<soft>/<keep> KB (auto|owner)`: the head's window, its request budget, and the
+history marks (v5.1.1 and earlier logged `budget: ctx=200K sys=32768 res=8192 tot=65536`).
 
 ### Gradient trimming - never a dumb clip
 

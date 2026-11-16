@@ -67,6 +67,9 @@ struct Rig {
   std::vector<orch::EpisodicMessage> rows;   // the chat's rows, oldest first
   std::vector<HistoryQuery> reads;           // every historyRows read, in order
   std::function<std::vector<orch::EpisodicMessage>(const std::string&, const HistoryQuery&)> readRows;
+  agent::HistoryMarks marks;                 // the chat's fold anchor and shift
+  int cutAfterPages = 0;          // after reads the store's budget cuts to an EMPTY page first
+  std::string unreadableAfter;    // an after read from this row meets a span the card won't give
   std::unique_ptr<TurnEngine> eng;
 
   Rig() {
@@ -81,6 +84,13 @@ struct Rig {
     readRows = [this](const std::string&, const HistoryQuery& q) {
       reads.push_back(q);
       std::vector<orch::EpisodicMessage> out;
+      if (!q.after.empty() && q.info && cutAfterPages > 0) {   // the cold walk ran out of budget
+        cutAfterPages--;
+        q.info->newerExists = true;
+        q.info->nextAfter = q.after;   // nothing of this chat in the bytes it walked
+        return out;
+      }
+      if (!q.after.empty() && q.info && q.after == unreadableAfter) q.info->unreadable = "20591:4096-36864";
       if (!q.after.empty()) {
         for (auto it = rows.begin(); it != rows.end() && out.size() < q.limit; ++it)
           if (it->id > q.after && (q.before.empty() || it->id < q.before)) out.push_back(*it);
@@ -91,6 +101,7 @@ struct Rig {
       return out;
     };
     d.historyRows = readRows;
+    d.historyMarks = [this](const std::string&) { return marks; };
     eng.reset(new TurnEngine(std::move(d)));
   }
 
@@ -344,13 +355,69 @@ static void test_the_fold_slice_reads_forward_from_thru() {
   TEST_ASSERT_EQUAL(30, (int)slice.turns);
 }
 
-// Every store serves the after cursor (lane H): the seam the bindings still ask refuses
-// nothing, and a read after a cursor returns the rows newer than it, oldest first.
+// The store's cold walk spent its read budget before it met a row of this chat and answered
+// an EMPTY page that says more follows (newerExists, nextAfter): the fold read goes on from
+// where the store stopped, never takes the empty page for the end (it would fold nothing, or
+// anchor short of rows it never saw).
+static void test_the_fold_read_goes_on_past_a_page_the_store_cut_short() {
+  Rig r;
+  r.addTurns(30);
+  r.cutAfterPages = 2;
+  const agent::FoldSlice slice = r.eng->historyFoldSlice("1001", 65536, true);
+  TEST_ASSERT_EQUAL(30, (int)slice.turns);
+  TEST_ASSERT_EQUAL_STRING("m0060", slice.thru.c_str());
+}
+
+// A span the card would not give back stops the fold's read before it: the fold anchors on
+// the rows it read, so the rows past the span are folded once the card reads them, never
+// skipped by an anchor moved past them.
+static void test_the_fold_read_stops_before_rows_the_card_will_not_give_back() {
+  Rig r;
+  r.addTurns(30);
+  r.unreadableAfter = "m0048";
+  const agent::FoldSlice slice = r.eng->historyFoldSlice("1001", 65536, true);
+  // The read stopped short of the end, so the slice holds whole turns only (its last turn
+  // waits for the next fold too): rows m0001..m0046, never past the span.
+  TEST_ASSERT_EQUAL_STRING("m0046", slice.thru.c_str());
+  TEST_ASSERT_EQUAL(23, (int)slice.turns);
+}
+
+// After a restart a shift's hidden rows make an automatic fold due before the conversation
+// cache has read anything: the turns the fold must keep verbatim are not known yet, so the
+// slice waits for the fill rather than fold the newest exchange into the summary.
+static void test_an_automatic_fold_waits_for_the_tail_after_a_restart() {
+  Rig r;
+  r.addTurns(30);
+  r.marks.softStart = "m0020";   // a shift hid rows m0001..m0020 before the restart
+  TEST_ASSERT_TRUE(r.eng->historyFoldSlice("1001", 65536, false).digest.empty());
+  TEST_ASSERT_TRUE(r.eng->historyIdleStep());   // the fill's first page: the newest rows
+  const agent::FoldSlice slice = r.eng->historyFoldSlice("1001", 65536, false);
+  TEST_ASSERT_FALSE(slice.digest.empty());
+  TEST_ASSERT_TRUE_MESSAGE(slice.thru != "m0060", slice.thru.c_str());   // the newest exchange stays
+}
+
+// How often `needle` appears in a source file's code (paths from the repo root, where pio
+// runs; // comments do not count).
+static int countIn(const char* path, const std::string& needle) {
+  std::ifstream f(path);
+  TEST_ASSERT_TRUE_MESSAGE(f.good(), path);
+  std::string text, line;
+  while (std::getline(f, line)) text += line.substr(0, line.find("//")) + "\n";
+  int n = 0;
+  for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) n++;
+  return n;
+}
+
+// Every store serves the after cursor (lane H): each binding hands the query's cursor to
+// its store with the page info (an empty page past the store's read budget is not the
+// end), and a read after a cursor returns the rows newer than it, oldest first.
 static void test_an_after_cursor_is_served() {
+  for (const char* f : {"src/agent/orchestrator.cpp", "nimbusd/src/rig.h", "tools/harness-lab/src/lab_rig.h"}) {
+    TEST_ASSERT_EQUAL_MESSAGE(1, countIn(f, "q.after = hq.after;"), f);
+    TEST_ASSERT_EQUAL_MESSAGE(1, countIn(f, "query(q, hq.info)"), f);
+  }
   HistoryQuery q(24);
-  TEST_ASSERT_FALSE(agent::historyAfterUnserved(q));
   q.after = "m0005";
-  TEST_ASSERT_FALSE(agent::historyAfterUnserved(q));
   Rig r;
   r.addTurns(3);
   const auto rows = r.readRows("1001", q);
@@ -671,6 +738,9 @@ int main(int, char**) {
   RUN_TEST(test_model_pin_is_its_hosts_and_ends_with_its_scope);
   RUN_TEST(test_the_fold_slice_reads_forward_from_thru);
   RUN_TEST(test_an_after_cursor_is_served);
+  RUN_TEST(test_the_fold_read_goes_on_past_a_page_the_store_cut_short);
+  RUN_TEST(test_the_fold_read_stops_before_rows_the_card_will_not_give_back);
+  RUN_TEST(test_an_automatic_fold_waits_for_the_tail_after_a_restart);
   RUN_TEST(test_listed_window_from_the_stored_list);
   RUN_TEST(test_listed_window_lookup_install);
   RUN_TEST(test_request_budget_is_lane_bs);

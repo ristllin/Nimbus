@@ -24,7 +24,8 @@
 //   2. recalled     the memories recall put in the prompt (a tool can search them again),
 //                   only when its rendered bytes are in the body
 //   3. skills       the food playbook and the auto-attached skills ([ACTIVE SKILLS])
-//   4. results already read (the transcript's older rounds, rung 1)
+//   4. results already read: the protocol's own step, which rung 1 has already taken (the
+//      transcript's older rounds); no rung of its own here
 //   5. older days   live history before today, oldest whole turns first
 //   6. today        today's turns beyond the newest exchange, oldest first
 //   7. results      the newest unread results (the turn input's [FRESH RESULTS] and

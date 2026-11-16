@@ -969,7 +969,6 @@ class LabRig {
   void wireHistory(agent::TurnEngine::Deps& d) {
     d.histV2 = [this] { return opt_.histV2; };
     d.historyRows = [this](const std::string& chat, const agent::HistoryQuery& hq) {
-      if (agent::historyAfterUnserved(hq)) return std::vector<orch::EpisodicMessage>();
       orch::MsgQuery q;
       q.sessionId = chat;
       q.haveKind = true;
@@ -978,7 +977,7 @@ class LabRig {
       q.limit = (int)hq.limit;
       q.before = hq.before;
       q.after = hq.after;
-      return epi_->query(q);
+      return epi_->query(q, hq.info);
     };
     d.captureUserRow = [this](const std::string& c, const std::string& t, const std::string& tags) {
       return turnTag_ = capture(c, "user", t, tags);

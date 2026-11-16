@@ -11,15 +11,17 @@
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/turn_fit.h"       // TurnFit - the context line reads what the turn cut
 #include "nimbus/harness/turn_inbox.h"     // what the channel says the sender sent
+#include "nimbus/harness/turn_memory.h"    // PsramFirstScope - the cache's rows go to PSRAM
 #include "nimbus/orch/budget.h"            // headContextBudget - the head's derived caps
 #include "nimbus/orch/episodic_log.h"      // epiCardReads - the history read's card reads
 #include "nimbus/orch/model_window.h"      // legacyCtxTokens - the floor branch's day floor
 #include "nimbus/orch/request_budget.h"    // requestBudgetFor - the budget line
 
 // engine_history - the TurnEngine's turn-structured history (histV2, conversation.h): the
-// rows a turn reads, the window it sends, the owner and trigger rows it captures and the
-// fold's slice. Moved out of engine.cpp verbatim (lane P0 of the history fix, 16 Nov
-// 2026) so the history's owner edits this file alone; engine.h declares every function here.
+// rows a turn reads (through the conversation cache, conv_cache.h), the window it sends,
+// the owner and trigger rows it captures and the fold's slice. Split out of engine.cpp (lane
+// P0 of the history fix) so the history's owner edits this file alone; engine.h declares
+// every function here.
 
 namespace agent {
 
@@ -49,10 +51,6 @@ std::string atItem(const TurnEngine::Deps& d) {
   return std::string(kAtTag) + std::to_string((unsigned long)now);
 }
 }  // namespace
-
-bool historyAfterUnserved(const HistoryQuery&) {
-  return false;   // every store serves the after cursor (lane H): MsgQuery::after
-}
 
 bool TurnEngine::histV2On() const {
   return d_.histV2 && d_.histV2() && d_.historyRows && d_.captureUserRow;
@@ -242,12 +240,16 @@ static size_t historyReadRows(const HistoryBudget& b) {
   return 2 * b.highRows + (b.dayStartUnix ? kHistoryDayRows : 0);
 }
 
-// What the cache holds per chat: the window's high water and a quarter (lane H); on the
-// floor branch v5.1.1's read (twice its rows, which a flood folds, within 256 KB).
+// What the cache holds per chat: the window's high water and a quarter (lane H), and never
+// more than kCacheMaxRows rows (a flood of one-word messages costs a row's fixed size each,
+// which the byte count does not see); on the floor branch v5.1.1's read (twice its rows,
+// which a flood folds, within 256 KB).
+constexpr size_t kCacheMaxRows = 4096;
 static ConvCache::Bound cacheBound(const HistoryBudget& b) {
   ConvCache::Bound c;
   if (b.derived) {
     c.bytes = b.maxBytes + b.maxBytes / 4;
+    c.rows = kCacheMaxRows;
   } else {
     c.rows = 2 * historyReadRows(b);
     c.bytes = 256 * 1024;
@@ -262,39 +264,45 @@ ConvCache::ReadFn TurnEngine::cacheReader(const std::string& chatId) {
     std::vector<nimbus::orch::EpisodicMessage> rows = d_.historyRows(chatId, q);   // memory::Lock inside
     histRead_.lockMs += (d_.platform.nowMs ? d_.platform.nowMs() : 0) - t0;
     histRead_.cardReads += orch::epiCardReads() - reads0;
-    histRead_.pages++;
     return rows;
   };
 }
 
 // A page more while the page before read no card row (the store's RAM ring served it):
-// at most one page of card reads, however much of the chat RAM already holds.
+// at most one page of card reads on a turn, however much of the chat RAM already holds.
 constexpr int kRamFillPages = 32;
 
 ConvCache::View TurnEngine::cachedRows(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
-                                       int fillPages) {
+                                       bool fill) {
+  // The cache's rows outlive the turn: their small blocks go to PSRAM, never the scarce
+  // internal heap (turn_memory.h; the idle pump and the fold run outside a turn's scope).
+  const PsramFirstScope psramFirst;
   uint32_t reads = orch::epiCardReads();
-  const auto freePage = [&reads]() {
+  bool first = true;
+  // The turn's one card page is spent once any of its history reads went to the card (the
+  // duplicate check's read included); past it, a page only while the page before was free.
+  const auto pageAllowed = [this, &reads, &first]() {
     const uint32_t now = orch::epiCardReads();
-    const bool free = now == reads;
+    const bool ok = first ? histRead_.cardReads == 0 : now == reads;
+    first = false;
     reads = now;
-    return free;
+    return ok;
   };
-  return convCache_.access(chatId, marks.thru, cacheBound(b), fillPages ? kRamFillPages : 0, cacheReader(chatId),
-                           freePage);
+  return convCache_.access(chatId, marks.thru, cacheBound(b), fill ? kRamFillPages : 0, cacheReader(chatId),
+                           pageAllowed);
 }
 
 std::vector<nimbus::orch::EpisodicMessage> TurnEngine::recentRows(const std::string& chatId, size_t rows) {
   const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
-  cachedRows(chatId, marks, headHistoryBudget(), 1);   // brought up to date (the newest rows first)
+  cachedRows(chatId, marks, headHistoryBudget(), true);   // brought up to date (the newest rows first)
   return convCache_.newest(chatId, rows);
 }
 
 HistoryWindow TurnEngine::historyWindow(const std::string& chatId, const HistoryBudget& b) {
   const uint32_t t0 = d_.platform.nowMs ? d_.platform.nowMs() : 0;
   const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
-  // One page of the newest-first fill on a turn at most (the idle pump does the rest).
-  const ConvCache::View view = cachedRows(chatId, marks, b, 1);
+  // One page of card reads on a turn at most (the idle pump does the rest).
+  const ConvCache::View view = cachedRows(chatId, marks, b, true);
   HistoryOptions o;
   o.inFlightId = curUserRowId_;
   o.startAfter = rowIdAfter(marks.softStart, marks.thru) ? marks.softStart : marks.thru;
@@ -320,7 +328,6 @@ HistoryWindow TurnEngine::historyWindow(const std::string& chatId, const History
   if (!span.empty()) span.beforeId = firstKept;
   w.leftOut = span;
   histRead_.ms += (d_.platform.nowMs ? d_.platform.nowMs() : 0) - t0;
-  histRead_.liveRows = view.rows.size() + span.rows;
   return w;
 }
 
@@ -341,7 +348,7 @@ std::vector<HistMsg> TurnEngine::historyMessages(const std::string& chatId, cons
 // down to thru yet, so the tail's start is not known and the fold waits for the fill).
 bool TurnEngine::foldKeepFrom(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
                               const HistoryOptions& o, bool hidden, std::string& keepFrom) {
-  const ConvCache::View view = cachedRows(chatId, marks, b, 0);
+  const ConvCache::View view = cachedRows(chatId, marks, b, false);
   std::vector<nimbus::orch::EpisodicMessage> rows;
   std::vector<uint32_t> repeats;
   HistoryOptions to = o;
@@ -351,7 +358,10 @@ bool TurnEngine::foldKeepFrom(const std::string& chatId, const HistoryMarks& mar
   const size_t keep = b.derived ? b.keepBytes : b.lowBytes();
   const HistoryBudget day = b.derived ? HistoryBudget() : b;   // v5.1.1 keeps the owner's day too
   const size_t kept = std::max(foldKeptTail(tail, keep, o.utcOffsetMin), dayTailTurns(tail, day, o.utcOffsetMin));
-  if (kept >= tail.size() && !hidden) {
+  // Nothing held yet (a restart, before the fill's first page): the newest turns the fold must
+  // keep are unknown, so it waits rather than fold them.
+  const bool unknownTail = tail.empty() && !view.complete;
+  if ((kept >= tail.size() && !hidden) || unknownTail) {
     if (!view.complete || !view.span.empty())
       hlog::logf("fold(%s): the history is still being read - the slice waits", chatId.c_str());
     return false;
@@ -361,16 +371,29 @@ bool TurnEngine::foldKeepFrom(const std::string& chatId, const HistoryMarks& mar
 }
 
 // The rows after thru, read forward a page at a time, oldest first, until `keepFrom`, about
-// one and a half fold steps, or an empty page (the end: a store under its read budget answers
-// a short page with more after it). True when the read reached the tail or the end.
+// one and a half fold steps, or the end (an empty page the store did not cut short: a store
+// under its read budget answers a short or even empty page with more after it, and says so).
+// A span the card would not give back stops the read before it, so the fold never anchors
+// past rows it did not read. True when the read reached the tail or the end.
 bool TurnEngine::readFoldRows(const std::string& chatId, const std::string& thru, const std::string& keepFrom,
                               size_t capBytes, std::vector<nimbus::orch::EpisodicMessage>& fwd) {
-  std::string cursor = thru.empty() ? std::string("m00000000") : thru;
+  std::string cursor = thru.empty() ? std::string(ConvCache::kBeforeFirstRow) : thru;
   size_t bytes = 0;
   for (int page = 0; page < kFoldMaxPages; page++) {
-    std::vector<nimbus::orch::EpisodicMessage> got =
-        d_.historyRows(chatId, HistoryQuery(kFoldPageRows, std::string(), cursor));
-    if (got.empty()) return true;
+    nimbus::orch::EpiQueryInfo info;
+    HistoryQuery q(kFoldPageRows, std::string(), cursor);
+    q.info = &info;
+    std::vector<nimbus::orch::EpisodicMessage> got = d_.historyRows(chatId, q);
+    if (!info.unreadable.empty()) {
+      hlog::logf("fold(%s): rows after %s are not readable yet (%s) - the slice stops before them", chatId.c_str(),
+                 cursor.c_str(), info.unreadable.c_str());
+      return false;
+    }
+    if (got.empty()) {
+      if (!info.newerExists || info.nextAfter.empty()) return true;
+      cursor = info.nextAfter;   // the store's read budget stopped first: go on from where it did
+      continue;
+    }
     cursor = got.back().id;   // every row seen, kept or not (a /clear included)
     for (auto& m : got) {
       if (!keepFrom.empty() && !rowIdAfter(keepFrom, m.id)) return true;
@@ -489,6 +512,7 @@ void TurnEngine::logContextLine(const ComposeInputs& ci, const TurnFit& fit, uin
 
 bool TurnEngine::historyIdleStep() {
   if (!histV2On() || turnInFlight()) return false;
+  const PsramFirstScope psramFirst;   // the cache keeps the rows this page reads (cachedRows)
   // The plain read: the idle pump's pages are not a turn's (histRead_ is the turn's own).
   return convCache_.fillStep([this](const std::string& chat) -> ConvCache::ReadFn {
     return [this, chat](const HistoryQuery& q) { return d_.historyRows(chat, q); };

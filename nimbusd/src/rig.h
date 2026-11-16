@@ -792,6 +792,9 @@ class NimbusdRig {
     foldBusy_ = &busy;
     const agent::FoldTick t = foldDriver_->tick(steadyMs(), (uint32_t)time(nullptr));
     foldBusy_ = nullptr;
+    // The conversation cache's idle fill (device historyCacheTick): a page a pass after a
+    // restart, between turns.
+    eng_->historyIdleStep();
     return t;
   }
   void noteFoldPumpEnd() { ownerFirst_.notePumpEnd(); }
@@ -3417,7 +3420,6 @@ class NimbusdRig {
       return captureOwnerRow(c, t, tags);
     };
     d.historyRows = [this](const std::string& c, const agent::HistoryQuery& hq) {
-      if (agent::historyAfterUnserved(hq)) return std::vector<orch::EpisodicMessage>();
       orch::MsgQuery q;
       q.sessionId = c;
       q.haveKind = true;
@@ -3426,14 +3428,14 @@ class NimbusdRig {
       q.limit = (int)hq.limit;
       q.before = hq.before;
       q.after = hq.after;
-      return overlay_.query(q);
+      return overlay_.query(q, hq.info);
     };
     d.captureTrigger = [this](const std::string& c, const std::string& t, const std::string& tags) {
       capture(c, "system", t, withTurnTag(tags));
     };
     d.historyMarks = [this](const std::string& c) {
       const orch::ChatFold f = folds_.get(c);
-      return agent::HistoryMarks{f.thru, f.softStart, 0};
+      return agent::HistoryMarks{f.thru, f.softStart, 0, f.lastFoldEpoch};
     };
     d.noteHistoryShift = [this](const std::string& c, const std::string& soft) { folds_.setSoftStart(c, soft); };
     d.utcOffsetMin = [] { return hostedOffsetAt((uint32_t)time(nullptr)); };

@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 
+#include <algorithm>
 #include <deque>
 #include <mutex>
 #include <vector>
@@ -20,8 +21,15 @@ std::deque<Patch> g_patches;   // the newest kPatchJournal, oldest first
 uint32_t g_patchSeq = 0;
 
 void journal(const std::string& id, const std::string& text) {
+  Patch p;
+  p.id = id;
+  // Its small text block on PSRAM, never the scarce internal heap (the device's spill limit
+  // is 128 B outside a turn; conversation.h spillToPsram is the same rule).
+  p.text.reserve(std::max<size_t>(text.size(), 128));
+  p.text = text;
   std::lock_guard<std::mutex> lk(g_patchMu);
-  g_patches.push_back({++g_patchSeq, id, text});
+  p.seq = ++g_patchSeq;
+  g_patches.push_back(std::move(p));
   while (g_patches.size() > kPatchJournal) g_patches.pop_front();
 }
 }  // namespace
@@ -90,7 +98,7 @@ size_t RowTextOverlay::load(const std::string& lines) {
       const char* id = d["id"] | "";
       const char* text = d["text"] | (const char*)nullptr;
       if (*id && text) {
-        put(id, text);
+        putText(id, text);   // a boot's replay: no cache holds a row yet, so nothing to journal
         ++n;
       }
     }

@@ -1912,7 +1912,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.attribution = attribution_;
     ev.spend = &tf.spend;
     ev.chain = okFlag ? nullptr : &tf.chain;
-    ev.trimmedForSize = fit.historyMessagesLeftOut() > 0;   // every live-row cut (lane H): the fold covers it
+    // Every live-row cut (lane H) makes a fold due: a cut comes only after a real refusal of
+    // the body (the history no longer fits the provider), never a speculative sliver, and the
+    // fold driver's thrash window and daily cap bound the paid calls.
+    ev.trimmedForSize = fit.historyMessagesLeftOut() > 0;
     ev.historyBytes = lastWindow_.bytes;
     ev.historyMaxBytes = budget.historyMaxBytes;
     ev.historySoftBytes = budget.historySoftBytes;
