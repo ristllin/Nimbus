@@ -523,11 +523,13 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       const size_t seedIdx = round.split ? 2 + round.history.size() : 0;
       if (in.size() > seedIdx && !strcmp(in[seedIdx]["role"] | "", "user")) {
         JsonObject m = in[seedIdx];
-        const std::string seed = round.split ? layout::userWithDynamic(round, m["content"] | "")
-                                             : std::string(m["content"] | "");
         seedErr.clear();
-        fieldWithinFlatBudget(seed, seedErr);
-        if (round.split) wire::putFieldStr(m["content"], seed, "the user message");
+        if (round.split) {
+          // A head turn's seed over flatPromptBudget(): refused with the size wording.
+          const std::string seed = layout::userWithDynamic(round, m["content"] | "");
+          fieldWithinFlatBudget(seed, seedErr);
+          wire::putFieldStr(m["content"], seed, "the user message");
+        }
         if (imgs) imageparts::putParts(m, *imgs, imageparts::Dialect::OpenAIResponses);
       }
       // Forced final after a STALL: if the newest round carried no tool calls

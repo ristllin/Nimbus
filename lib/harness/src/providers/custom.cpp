@@ -232,10 +232,12 @@ struct HeadBody {
 static bool customHeadBody(const ProviderDeps& pd, const std::string& instructions,
                            const std::string& inputs, HeadFormat fmt, HeadBody& out,
                            bool withEffort = true) {
-  // The flat wire's one system string, and the input: over flatPromptBudget() the request
-  // is refused with the size wording, so the turn's give-up order runs (H) and the string
-  // is built again (never the string ceiling's refusal, which no refit reads).
-  if (!fieldWithinFlatBudget(instructions, out.err) || !fieldWithinFlatBudget(inputs, out.err)) return false;
+  // The flat wire's one system string, and a head turn's input: over flatPromptBudget() the
+  // request is refused with the size wording, so the turn's give-up order runs (H) and the
+  // string is built again (never the string ceiling's refusal, which no refit reads). The
+  // fold's input (Prose) keeps the string ceiling alone: it is sized under it already.
+  if (!fieldWithinFlatBudget(instructions, out.err)) return false;
+  if (fmt != HeadFormat::Prose && !fieldWithinFlatBudget(inputs, out.err)) return false;
   JsonDocument d;
   d["model"] = s(pd.customModel);
   JsonArray msgs = d["messages"].to<JsonArray>();

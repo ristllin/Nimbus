@@ -25,6 +25,7 @@
 // loop turns), function.result pairing, and the synchronous chat/completions
 // sub-session + result cache.
 
+#include "nimbus/harness/prompt_layout.h"
 #include "nimbus/orch/body_budget.h"
 #include "nimbus/orch/transcript.h"
 
@@ -2005,12 +2006,27 @@ static void test_flat_strings_over_the_guard_are_refused_with_the_size_wording()
     auto pd = d.contract();
     FakeProviderDeps::ToolRig rig;
     d.fillTools(rig);
+    // A head turn's split prompt: its seed is the per-turn block plus the input.
+    agent::layout::PromptParts parts;
+    parts.split = true;
+    parts.stat = "SYS";
+    parts.dyn = "[NOW] 09:00";
+    const std::string ins = agent::layout::join(parts);
     nimbus::orch::Transcript tr;
-    tr.addUser(std::string(providers::flatPromptBudget() + 10, 'u'));
-    const nimbus::orch::HeadStep st = providers::misLoopStep(pd, "SYS", rig.ht, nullptr, tr)(true, {}, UINT32_MAX, "");
+    tr.addUser(std::string(providers::flatPromptBudget(), 'u'));
+    const nimbus::orch::HeadStep st = providers::misLoopStep(pd, ins, rig.ht, nullptr, tr)(true, {}, UINT32_MAX, "");
     TEST_ASSERT_FALSE(st.ok);
     TEST_ASSERT_EQUAL_INT(0, (int)d.http.seen.size());
     TEST_ASSERT_TRUE_MESSAGE(st.error.find("request body over the 55 KB budget") == 0, st.error.c_str());
+    // An unsplit prompt (a sub-agent brief, the dream) keeps the string ceiling alone.
+    FakeProviderDeps u;
+    u.http.script.push_back({"", "", 200, chatFinalBody()});
+    auto upd = u.contract();
+    nimbus::orch::Transcript utr;
+    utr.addUser(std::string(providers::flatPromptBudget() + 10, 'u'));
+    const nimbus::orch::HeadStep ust = providers::misLoopStep(upd, "SYS", rig.ht, nullptr, utr)(true, {}, UINT32_MAX, "");
+    TEST_ASSERT_TRUE_MESSAGE(ust.ok, ust.error.c_str());
+    TEST_ASSERT_EQUAL_INT(1, (int)u.http.seen.size());
   }
 }
 

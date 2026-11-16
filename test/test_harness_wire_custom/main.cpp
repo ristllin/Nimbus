@@ -1011,6 +1011,15 @@ static void test_custom_flat_string_over_the_guard_is_refused_with_the_size_word
   TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnCustom(okPd, conv, ins.substr(1), "U", out, err, nullptr, nullptr),
                            err.c_str());
   TEST_ASSERT_EQUAL_INT(1, (int)ok.http.seen.size());
+  // The fold's input is sized under the string ceiling already: a 57 KB one still goes.
+  FakeProviderDeps fold;
+  fold.custBase = "https://llm.example.lan";
+  fold.http.script.push_back({"", "", 200, "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"[SUMMARY] s\"}}]}"});
+  auto foldPd = fold.contract();
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnCustom(foldPd, conv, nimbus::orch::ORCH_COMPACT_PROMPT,
+                                                     std::string(57000, 'd'), out, err, nullptr, nullptr),
+                           err.c_str());
+  TEST_ASSERT_EQUAL_INT(1, (int)fold.http.seen.size());
 }
 
 int main(int, char**) {

@@ -1176,13 +1176,13 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
       // byte-stable across rounds and turns. Once per render: the messages
       // array is rebuilt above, so a re-render never doubles the prefix.
       seedErr.clear();
-      if (msgs.size() > 0 && !strcmp(msgs[0]["role"] | "", "user")) {
+      if (parts.split && msgs.size() > 0 && !strcmp(msgs[0]["role"] | "", "user")) {
         layout::PromptParts led = parts;
         led.dyn = wire::roundInstructions(led.dyn, capReason);
-        const std::string seed = parts.split ? layout::userWithDynamic(led, msgs[0]["content"] | "")
-                                             : std::string(msgs[0]["content"] | "");
-        fieldWithinFlatBudget(seed, seedErr);   // over it: refused with the size wording below
-        if (parts.split) wire::putFieldStr(msgs[0]["content"], seed, "the user message");
+        const std::string seed = layout::userWithDynamic(led, msgs[0]["content"] | "");
+        // A head turn's seed over flatPromptBudget(): refused with the size wording below.
+        fieldWithinFlatBudget(seed, seedErr);
+        wire::putFieldStr(msgs[0]["content"], seed, "the user message");
       }
       if (!allowTools && capReason == "stalled") antEchoStall(tr, msgs);
       if (msgs.size() > 0 && !strcmp(msgs[msgs.size() - 1]["role"] | "", "assistant")) {

@@ -494,9 +494,12 @@ bool seedChatUserMessage(JsonArray msgs, const layout::PromptParts& p, nimbus::o
   const size_t seedIdx = 1 + (p.split ? p.history.size() : 0);
   if (msgs.size() <= seedIdx || strcmp(msgs[seedIdx]["role"] | "", "user")) return true;
   JsonObject m = msgs[seedIdx];
-  const std::string seed = p.split ? layout::userWithDynamic(p, m["content"] | "") : std::string(m["content"] | "");
-  if (!fieldWithinFlatBudget(seed, err)) return false;   // the give-up order runs, never the string ceiling
-  if (p.split) wire::putFieldStr(m["content"], seed, "the user message");
+  if (p.split) {
+    // A head turn's seed over flatPromptBudget(): the give-up order runs, never the string ceiling.
+    const std::string seed = layout::userWithDynamic(p, m["content"] | "");
+    if (!fieldWithinFlatBudget(seed, err)) return false;
+    wire::putFieldStr(m["content"], seed, "the user message");
+  }
   if (imgs) imageparts::putParts(m, *imgs, imageparts::Dialect::MistralChat);
   return true;
 }
