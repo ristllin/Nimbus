@@ -25,14 +25,39 @@ constexpr uint32_t kCtxDefaultTokens = 100000;
 // router upstream (openai/anthropic/mistral/zai).
 uint32_t modelCtxTokens(const std::string& provider, const std::string& model);
 
+// v5.1.1's table above, frozen (lane B of the history fix, 16 Nov 2026). modelCtxTokens
+// reads it until lane H switches modelCtxTokens to headWindowTokens; the request budget
+// derives its no-shrink baseline from it (test/support/fixtures/budgets_v5_1_1.json was
+// written from it), so that switch can never raise the baseline a budget is held to.
+uint32_t legacyCtxTokens(const std::string& provider, const std::string& model);
+
 // The listed window: what the device's stored model list (the VN: its harvested
 // catalog) says `model` takes on `host`, in tokens (listedCtxTokens, model_catalog.h);
 // 0 = the list does not say, or no lookup is installed (host tests). Installed by the
-// device (src/agent/model_refresh.cpp) and the VN (nimbusd rig.h). Nothing reads it
-// yet: lane B prefers it over the family table above.
+// device (src/agent/model_refresh.cpp) and the VN (nimbusd rig.h). headWindowTokens
+// reads it first.
 using ListedCtxLookup = uint32_t (*)(const char* host, const char* model);
 void installListedCtxLookup(ListedCtxLookup f);
 uint32_t listedWindowTokens(const std::string& host, const std::string& model);
+
+// ---- the head's real window (lane B) -------------------------------------------
+// The corrected family table: a model's INPUT window when no provider list says it.
+//   - Claude 4.6 and later and every Claude 5: 1,000,000; older Claude: 200,000.
+//   - mistral-large-4*: 1,048,576; mistral-large-2512 / -latest, Medium, Small,
+//     Magistral, ministral-8b/14b, devstral, Leanstral and the Vibe aliases: 262,144;
+//     ministral-3b: 131,072; codestral: 256,000; voxtral: 32,768 (mini 16,384, mini TTS
+//     4,096); OCR 16,384; embeddings 8,192; moderation 131,072; any other Mistral id:
+//     v5.1.1's 128,000.
+//   - glm-5 and later and zai-glm-* (on Z.ai or on Mistral): 917,504 (1M total less the
+//     128K output reserve); glm-4.x: 128,000.
+//   - OpenAI ids: v5.1.1's figures. A router selector reads its upstream's row.
+// Never above a recorded provider list (test_model_window pins it on every recorded id).
+uint32_t tableWindowTokens(const std::string& host, const std::string& model);
+
+// The window a request's budget is derived from: the listed window, else the table.
+// A router selector ("openai/gpt-5.6" on cumulo, or an upstream-prefixed id on a direct
+// host) resolves to its upstream first, as modelCtxTokens does.
+uint32_t headWindowTokens(const std::string& host, const std::string& model);
 
 // ---- trigger math ------------------------------------------------------------
 // threshold = min(ctx − reservedOut − kCompactBufferTokens, ownerCapTokens).

@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include "../support/recorded_models.h"
+#include "nimbus/orch/model_defaults.h"
 #include "nimbus/orch/model_window.h"
 
 // test_model_window - the per-model context window table (model_window.h). These
@@ -11,7 +13,8 @@
 using namespace nimbus::orch;
 
 void setUp() {}
-void tearDown() {}
+// A failed assertion leaves its test early: never let its listed lookup leak into the next.
+void tearDown() { installListedCtxLookup(nullptr); }
 
 // ---- model context table -----------------------------------------------------
 static void test_ctx_table_families() {
@@ -97,6 +100,118 @@ static void test_ctx_table_unknown_is_conservative() {
   TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, modelCtxTokens("custom", "omni-chat"));
 }
 
+
+// ---- the head's real window (lane B of the history fix) -----------------------
+// The class: with the device's listed lookup installed over the recorded provider lists,
+// every recorded model's window is its listed window where a list says one, else the
+// corrected table; and the table never exceeds what any recorded list says (so a fresh
+// device, before its first list refresh, never assumes a bigger window than the
+// provider's).
+static void test_head_window_is_listed_else_table_for_every_recorded_model() {
+  const auto& models = recorded::models();
+  TEST_ASSERT_TRUE(models.size() > 200);
+  installListedCtxLookup(&recorded::listedLookup);
+  size_t listed = 0;
+  for (const recorded::Model& m : models) {
+    const std::string what = m.provider + "/" + m.id;
+    const uint32_t l = recorded::listedLookup(m.provider.c_str(), m.id.c_str());
+    const uint32_t table = tableWindowTokens(m.provider, m.id);
+    TEST_ASSERT_TRUE_MESSAGE(table > 0, what.c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(l ? l : table, headWindowTokens(m.provider, m.id), what.c_str());
+    for (bool october : {false, true}) {
+      const uint32_t said = recorded::listedIn(m.provider, m.id, october);
+      if (said) TEST_ASSERT_TRUE_MESSAGE(table <= said, what.c_str());
+    }
+    listed += l ? 1 : 0;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(listed >= 60, std::to_string(listed).c_str());   // the Mistral and Anthropic rows say it
+  installListedCtxLookup(nullptr);
+}
+
+// The table's rows, one per family (plan v3 lane B), and OpenAI unchanged for every
+// recorded id.
+static void test_head_window_table_rows() {
+  struct Row { const char* host; const char* model; uint32_t window; };
+  static const Row kRows[] = {
+      {"anthropic", "claude-sonnet-5-5", 1000000},       {"anthropic", "claude-haiku-5-5", 1000000},
+      {"anthropic", "claude-opus-5", 1000000},           {"anthropic", "claude-mythos-5-1", 1000000},
+      {"anthropic", "claude-sonnet-4-6", 1000000},       {"anthropic", "claude-opus-4-8", 1000000},
+      {"anthropic", "claude-opus-4-5-20251101", 200000}, {"anthropic", "claude-haiku-4-5", 200000},
+      {"anthropic", "claude-3-5-haiku-latest", 200000},  {"anthropic", "claude-quill", 200000},
+      {"mistral", "mistral-large-4-0", 1048576},         {"mistral", "mistral-large-4", 1048576},
+      {"mistral", "mistral-large-2512", 262144},         {"mistral", "mistral-large-latest", 262144},
+      {"mistral", "mistral-large-2411", 128000},         {"mistral", "mistral-medium-latest", 262144},
+      {"mistral", "mistral-small-latest", 262144},       {"mistral", "magistral-medium-latest", 262144},
+      {"mistral", "ministral-8b-latest", 262144},        {"mistral", "ministral-14b-2512", 262144},
+      {"mistral", "ministral-3b-latest", 131072},        {"mistral", "devstral-medium-latest", 262144},
+      {"mistral", "mistral-vibe-cli-latest", 262144},    {"mistral", "labs-leanstral-1-5", 262144},
+      {"mistral", "codestral-latest", 256000},           {"mistral", "voxtral-small-latest", 32768},
+      {"mistral", "voxtral-mini-latest", 16384},         {"mistral", "voxtral-mini-tts-latest", 4096},
+      {"mistral", "mistral-ocr-latest", 16384},          {"mistral", "mistral-embed", 8192},
+      {"mistral", "zai-glm-5-3", 917504},                {"mistral", "glm-5-2", 917504},
+      {"zai", "glm-5.3", 917504},                        {"zai", "glm-5", 917504},
+      {"zai", "glm-5.3-flash", 917504},                  {"zai", "glm-4.6", 128000},
+      {"zai", "glm-4.5v", 128000},                       {"zai", "glm-4.6v", 128000},
+      {"cumulo", "zai/glm-5.3", 917504},                 {"cumulo", "anthropic/claude-sonnet-5-5", 1000000},
+      {"cumulo", "mistral/mistral-large-4-0", 1048576},  {"cumulo", "openai/gpt-5.6", 272000},
+      {"custom", "gpt-5.6-luna", 272000},                {"custom", "meta-llama/llama-3-70b", kCtxDefaultTokens},
+  };
+  for (const Row& r : kRows) {
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(r.window, tableWindowTokens(r.host, r.model), r.model);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(r.window, headWindowTokens(r.host, r.model), r.model);   // nothing listed
+  }
+  for (const recorded::Model& m : recorded::models())
+    if (m.provider == "openai")
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(legacyCtxTokens("openai", m.id), tableWindowTokens("openai", m.id), m.id.c_str());
+}
+
+// Counter-test: Lumi's head is 1,048,576 tokens here and 128,000 in the legacy table,
+// which stays v5.1.1's until lane H switches modelCtxTokens.
+static void test_large4_window_here_and_legacy() {
+  TEST_ASSERT_EQUAL_UINT32(1048576, headWindowTokens("mistral", "mistral-large-4-0"));
+  TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("mistral", "mistral-large-4-0"));
+  TEST_ASSERT_EQUAL_UINT32(128000, legacyCtxTokens("mistral", "mistral-large-4-0"));
+  for (const recorded::Model& m : recorded::models())
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(legacyCtxTokens(m.provider, m.id), modelCtxTokens(m.provider, m.id), m.id.c_str());
+}
+
+// Fresh device (no model list fetched yet): every default head model, Lumi's
+// mistral-large-4-0 and the ruled Anthropic head claude-sonnet-5-5 get from the table
+// exactly what the provider's list says once it is fetched.
+static void test_fresh_device_table_equals_listed_for_default_heads() {
+  std::vector<recorded::Model> heads = {{"mistral", "mistral-large-4-0"}, {"anthropic", "claude-sonnet-5-5"}};
+  for (const RoleDefault& r : kRoleDefaults) heads.push_back({r.slot, r.fallback});
+  size_t checked = 0;
+  for (const recorded::Model& h : heads) {
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(tableWindowTokens(h.provider, h.id), headWindowTokens(h.provider, h.id),
+                                     h.id.c_str());   // no lookup installed
+    const uint32_t listed = recorded::listedLookup(h.provider.c_str(), h.id.c_str());
+    if (!listed) continue;
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(listed, tableWindowTokens(h.provider, h.id), h.id.c_str());
+    checked++;
+  }
+  TEST_ASSERT_TRUE(checked >= 6);
+}
+
+// The router class for the new table: a selector reads its upstream's window, listed or
+// table, and a bare id on the router reads the default upstream's.
+static void test_head_window_router_selector_class() {
+  installListedCtxLookup(&recorded::listedLookup);
+  struct Pick { const char* up; const char* id; };
+  static const Pick kPicks[] = {
+      {"openai", "gpt-5.6"},           {"openai", "gpt-6-astra"},          {"anthropic", "claude-sonnet-5-5"},
+      {"anthropic", "claude-haiku-4-5"}, {"mistral", "mistral-large-4-0"}, {"mistral", "mistral-medium-latest"},
+      {"zai", "glm-5.3"},              {"zai", "glm-4.6v"},
+  };
+  for (const Pick& k : kPicks) {
+    const std::string sel = std::string(k.up) + "/" + k.id;
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(headWindowTokens(k.up, k.id), headWindowTokens("cumulo", sel), sel.c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(headWindowTokens(k.up, k.id), headWindowTokens(k.up, sel), sel.c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(headWindowTokens("openai", k.id), headWindowTokens("cumulo", k.id), k.id);
+  }
+  installListedCtxLookup(nullptr);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_ctx_table_families);
@@ -104,5 +219,10 @@ int main(int, char**) {
   RUN_TEST(test_ctx_table_unknown_is_conservative);
   RUN_TEST(test_ctx_router_selectors_resolve_to_the_upstream_window);
   RUN_TEST(test_ctx_router_selector_class);
+  RUN_TEST(test_head_window_is_listed_else_table_for_every_recorded_model);
+  RUN_TEST(test_head_window_table_rows);
+  RUN_TEST(test_large4_window_here_and_legacy);
+  RUN_TEST(test_fresh_device_table_equals_listed_for_default_heads);
+  RUN_TEST(test_head_window_router_selector_class);
   return UNITY_END();
 }

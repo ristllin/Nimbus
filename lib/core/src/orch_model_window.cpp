@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <utility>
 
 #include "nimbus/orch/model_catalog.h"  // gptGeneration - the one gpt-<N> parser
 #include "nimbus/orch/router_route.h"   // resolveRouterRoute - the one selector split
@@ -47,6 +48,10 @@ uint32_t familyCtxTokens(const std::string& p, const std::string& m) {
 }  // namespace
 
 uint32_t modelCtxTokens(const std::string& provider, const std::string& model) {
+  return legacyCtxTokens(provider, model);
+}
+
+uint32_t legacyCtxTokens(const std::string& provider, const std::string& model) {
   const std::string m = lower(model);
   const std::string p = lower(provider);
   // CUM-530: a router selector names its upstream ("openai/gpt-5.6" is what the
@@ -76,6 +81,108 @@ void installListedCtxLookup(ListedCtxLookup f) { g_listedCtx.store(f); }
 uint32_t listedWindowTokens(const std::string& host, const std::string& model) {
   const ListedCtxLookup f = g_listedCtx.load();
   return f ? f(host.c_str(), model.c_str()) : 0;
+}
+
+namespace {
+
+// A Claude id's version as major*10 + minor ("claude-sonnet-4-6" 46, "claude-opus-5" 50,
+// "claude-opus-4-5-20251101" 45); 0 for the old "claude-3-5-haiku" shape and anything
+// else (a date suffix is not a minor).
+int claudeVersion(const std::string& m) {
+  if (!startsWith(m, "claude-")) return 0;
+  size_t i = 7;
+  while (i < m.size() && std::isalpha((unsigned char)m[i])) i++;
+  if (i == 7 || i + 1 >= m.size() || m[i] != '-' || !std::isdigit((unsigned char)m[i + 1])) return 0;
+  const int major = m[i + 1] - '0';
+  int minor = 0;
+  const size_t j = i + 2;
+  const bool shortGroup = j + 1 < m.size() && m[j] == '-' && std::isdigit((unsigned char)m[j + 1]) &&
+                          (j + 2 >= m.size() || !std::isdigit((unsigned char)m[j + 2]));
+  if (shortGroup) minor = m[j + 1] - '0';
+  return major * 10 + minor;
+}
+
+// The first prefix of `rows` that `m` starts with decides (longest first where they nest).
+struct PrefixWindow {
+  const char* prefix;
+  uint32_t window;
+};
+uint32_t prefixWindow(const std::string& m, const PrefixWindow* rows, size_t n, uint32_t otherwise) {
+  for (size_t i = 0; i < n; i++)
+    if (startsWith(m, rows[i].prefix)) return rows[i].window;
+  return otherwise;
+}
+
+// GLM: glm-5 and later 1M total less the 128K output reserve; glm-4.x 128K.
+uint32_t glmWindow(const std::string& m) {
+  if (startsWith(m, "zai-glm")) return 917504;
+  const size_t at = startsWith(m, "glm-") ? 4 : std::string::npos;
+  if (at == std::string::npos || at >= m.size() || !std::isdigit((unsigned char)m[at])) return 0;
+  return m[at] >= '5' ? 917504 : 128000;
+}
+
+// Mistral's ids, recorded 2026-10 and 2026-11 (every row under its provider-listed
+// window; test_model_window pins it).
+constexpr PrefixWindow kMistralRows[] = {
+    {"mistral-large-4", 1048576},
+    {"mistral-large-2512", 262144},
+    {"mistral-large-latest", 262144},
+    {"mistral-medium", 262144},
+    {"mistral-small", 262144},
+    {"magistral-", 262144},
+    {"mistral-vibe-cli", 262144},
+    {"ministral-3b", 131072},
+    {"ministral-", 262144},
+    {"devstral", 262144},
+    {"labs-leanstral", 262144},
+    {"codestral-embed", 8192},
+    {"codestral", 256000},
+    {"mistral-code", 256000},
+    {"voxtral-mini-tts", 4096},
+    {"voxtral-mini-transcribe-realtime", 32768},
+    {"voxtral-mini-realtime", 32768},
+    {"voxtral-mini", 16384},
+    {"voxtral", 32768},
+    {"mistral-ocr", 16384},
+    {"mistral-embed", 8192},
+    {"mistral-moderation", 131072},
+};
+
+// The corrected table on a lowercased (upstream or host, bare model) pair.
+uint32_t familyWindow(const std::string& p, const std::string& m) {
+  if (p == "anthropic" || startsWith(m, "claude-")) return claudeVersion(m) >= 46 ? 1000000 : 200000;
+  if (const uint32_t glm = glmWindow(m)) return glm;
+  if (p == "mistral" || startsWith(m, "mistral-"))
+    return prefixWindow(m, kMistralRows, sizeof(kMistralRows) / sizeof(kMistralRows[0]), 128000);
+  return familyCtxTokens(p, m);   // OpenAI and everything else: v5.1.1's figures
+}
+
+// (upstream, bare model) of a head: a router selector on cumulo splits by the router
+// rule; another host's id splits only when its prefix names a router upstream.
+std::pair<std::string, std::string> windowKey(const std::string& host, const std::string& model) {
+  const std::string m = lower(model);
+  const std::string p = lower(host);
+  if (p == "cumulo") {
+    const RouterRoute r = resolveRouterRoute(m);
+    return {r.upstream, r.model};
+  }
+  const std::string::size_type slash = m.find('/');
+  if (slash != std::string::npos && slash > 0 && isRouterUpstream(m.substr(0, slash)))
+    return {m.substr(0, slash), m.substr(slash + 1)};
+  return {p, m};
+}
+
+}  // namespace
+
+uint32_t tableWindowTokens(const std::string& host, const std::string& model) {
+  const auto k = windowKey(host, model);
+  return familyWindow(k.first, k.second);
+}
+
+uint32_t headWindowTokens(const std::string& host, const std::string& model) {
+  const auto k = windowKey(host, model);
+  const uint32_t listed = listedWindowTokens(k.first, k.second);
+  return listed ? listed : familyWindow(k.first, k.second);
 }
 
 uint32_t compactThreshold(uint32_t ctxTokens, uint32_t reservedOutTokens,
