@@ -718,6 +718,9 @@ static void test_every_wire_accepts_its_own_budget_and_refuses_one_more() {
     std::snprintf(msg, sizeof msg, "%s: budget %zu, sent %zu, err %s", w.name, B, over.sent, over.err.c_str());
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)over.sent, msg);   // refused locally: nothing left the device
     TEST_ASSERT_EQUAL_STRING_MESSAGE(nimbus::orch::bodyBudgetError(B, B + 1).c_str(), over.err.c_str(), msg);
+    std::snprintf(msg, sizeof msg, "%s: accepts %zu B (1 request sent), refuses %zu B locally (0 sent)", w.name, B,
+                  B + 1);
+    TEST_MESSAGE(msg);
   }
 }
 
