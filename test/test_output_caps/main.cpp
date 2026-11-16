@@ -8,18 +8,27 @@
 
 #include <ArduinoJson.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <map>
+#include <vector>
 #include <iterator>
 #include <string>
 
+#include "../support/recorded_models.h"
+#include "nimbus/exchange_trace.h"
+#include "nimbus/harness/http.h"
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/orch/request_budget.h"
 
 namespace providers = agent::providers;
 
+namespace orch = nimbus::orch;
+
 void setUp() { providers::setTestFirstAttemptCap(0); }
-void tearDown() {}
+void tearDown() { orch::installBudgetLink(orch::BudgetLink::Device); }
 
 // Every Anthropic model id the device can be pointed at, plus unknowns. Models
 // are parameters: a new id joins this list, never a literal inside a test.
@@ -194,6 +203,199 @@ static void test_cum616_effort_table_matches_the_recorded_model_list() {
   TEST_ASSERT_TRUE(checked > 10);
 }
 
+
+// ---- the load-aware caps (lane B of the history fix) ------------------------------------
+
+// One adapter row at its own request budget: the host the request goes out on, the model
+// it names there, and whether the router relays it.
+struct CapRow {
+  std::string host;
+  std::string model;
+  bool routed = false;
+};
+
+static std::vector<CapRow> capRows() {
+  std::vector<CapRow> out;
+  for (const recorded::Model& m : recorded::models()) out.push_back({m.provider, m.id, false});
+  for (const char* up : {"openai", "anthropic", "mistral", "zai"}) {
+    static const std::map<std::string, std::string> kPick = {{"openai", "gpt-5.6"}, {"anthropic", "claude-sonnet-5-5"},
+                                                             {"mistral", "mistral-large-4-0"}, {"zai", "glm-5.3"}};
+    out.push_back({up, kPick.at(up), true});
+  }
+  out.push_back({"custom", "gpt-5.6-luna", false});
+  return out;
+}
+
+// The load of a round at the head's budget: the whole body, the target's prompt, nothing
+// cached.
+static providers::RoundLoad budgetLoad(const orch::RequestBudget& b, bool fragmented) {
+  providers::RoundLoad l;
+  l.bodyBytes = b.wireBodyBytes;
+  l.promptTokens = b.targetTokens;
+  l.routed = b.routed;
+  l.fragmented = fragmented;
+  return l;
+}
+
+// The time a round asking for `tokens` takes at the floors, in ms.
+static uint64_t roundTimeMs(const CapRow& r, const orch::RequestBudget& b, bool fragmented, uint32_t tokens) {
+  return orch::roundOverheadMs(b.link, b.wireBodyBytes, fragmented, b.targetTokens, b.prefillTokPerS) +
+         (uint64_t)tokens * 1000 / orch::decodeFloorTokPerS(r.host, r.model, b.targetTokens);
+}
+
+using CapFn = providers::OutputCap (*)(const CapRow&, const orch::RequestBudget&, providers::RoundKind, bool);
+static providers::OutputCap loadAware(const CapRow& r, const orch::RequestBudget& b, providers::RoundKind k, bool frag) {
+  return providers::outputCapFor(r.host, r.model, k, b.roundMs, budgetLoad(b, frag));
+}
+static providers::OutputCap legacyTable(const CapRow& r, const orch::RequestBudget& b, providers::RoundKind k, bool) {
+  return providers::outputCapFor(r.host, r.model, k, b.roundMs);
+}
+
+// The class over every row, healthy and fragmented, every round kind: the first attempt
+// and the retry each finish inside the read window at the floors, the first never asks
+// past the fit, and a retry is sent only for 400 more tokens or a lower effort. Returns
+// each violation as "<model> <what>".
+static std::vector<std::string> capViolations(CapFn fn) {
+  std::vector<std::string> out;
+  for (const CapRow& r : capRows()) {
+    const orch::RequestBudget b = orch::requestBudgetFor(r.host, r.model, r.routed);
+    for (bool frag : {false, true}) {
+      const uint32_t fit = providers::roundFitTokens(r.host, r.model, b.roundMs, budgetLoad(b, frag));
+      for (int k = 0; k < providers::kRoundKindCount; k++) {
+        const providers::OutputCap c = fn(r, b, (providers::RoundKind)k, frag);
+        if (!c.maxTokens) continue;   // uncapped (OpenAI, custom): completeness is read instead
+        const bool lower = std::string(c.retryEffort) != c.effort;
+        if (roundTimeMs(r, b, frag, c.maxTokens) > b.readWindowMs) out.push_back(r.model + " first " + std::to_string(c.maxTokens));
+        if (c.maxTokens > fit && c.maxTokens > 1) out.push_back(r.model + " first over the fit");
+        if (c.retryTokens && roundTimeMs(r, b, frag, c.retryTokens) > b.readWindowMs)
+          out.push_back(r.model + " retry " + std::to_string(c.retryTokens));
+        if (c.retryTokens && c.retryTokens < c.maxTokens + providers::kRetryGainTokens && !lower)
+          out.push_back(r.model + " retry under +400");
+      }
+    }
+  }
+  return out;
+}
+
+static bool hasViolation(const std::vector<std::string>& v, const std::string& what) {
+  for (const std::string& s : v)
+    if (s.rfind(what, 0) == 0) return true;
+  return false;
+}
+
+static void test_load_aware_caps_fit_every_row() {
+  const std::vector<std::string> v = capViolations(&loadAware);
+  TEST_ASSERT_TRUE_MESSAGE(v.empty(), v.empty() ? "" : v.front().c_str());
+}
+
+// Counter-test: the legacy table (10 s of prefill, 90 tok/s Sonnet, a flat 2,400 on Z.ai)
+// fails the same class at the new budgets - the cases plan v3 names.
+static void test_the_legacy_caps_fail_the_class() {
+  const std::vector<std::string> v = capViolations(&legacyTable);
+  TEST_ASSERT_TRUE(hasViolation(v, "claude-sonnet-5-5 retry 9900"));
+  TEST_ASSERT_TRUE(hasViolation(v, "glm-5.3 first 2400"));
+  TEST_ASSERT_TRUE(hasViolation(v, "mistral-medium-latest first 5361"));
+  TEST_ASSERT_TRUE(hasViolation(v, "mistral-large-4-0 first 4125"));
+}
+
+// The caps the plan quotes, at each head's budget.
+static void test_the_plan_caps() {
+  struct Row { const char* host; const char* model; bool frag; uint32_t first, retry; };
+  static const Row kRows[] = {
+      {"anthropic", "claude-sonnet-5-5", true, 5909, 7879},   // 14.9 s of overhead at 250 KB
+      {"anthropic", "claude-sonnet-5-5", false, 6370, 8494},
+      {"mistral", "mistral-large-4-0", true, 1500, 0},        // the forced reasoner's minFinal, no +400 retry
+      {"mistral", "mistral-medium-latest", true, 3000, 0},    // fit 3,075: no retry
+      {"zai", "glm-5.3", true, 1600, 0},
+      {"anthropic", "claude-haiku-5-5", true, 8192, 12000},
+  };
+  for (const Row& r : kRows) {
+    const orch::RequestBudget b = orch::requestBudgetFor(r.host, r.model, false);
+    const providers::OutputCap c =
+        providers::outputCapFor(r.host, r.model, providers::RoundKind::FinalRound, b.roundMs, budgetLoad(b, r.frag));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(r.first, c.maxTokens, r.model);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(r.retry, c.retryTokens, r.model);
+  }
+  for (const char* host : {"openai", "custom"}) {
+    providers::RoundLoad heavy;
+    heavy.bodyBytes = 390000;
+    heavy.fragmented = true;
+    const providers::OutputCap o = providers::outputCapFor(host, "gpt-5.6", providers::RoundKind::FinalRound, 120000, heavy);
+    TEST_ASSERT_EQUAL_UINT32(0, o.maxTokens + o.retryTokens);   // never a max_output_tokens
+  }
+}
+
+// The fit reads the load: photos' bytes upload and pace, a cached prefix skips prefill, a
+// shorter round deadline binds, a second upload (a router 402 resend) counts, the prompt
+// is estimated from the text when not given, and a Server link has no upload or pace.
+static void test_the_fit_reads_the_load() {
+  providers::RoundLoad l;
+  l.bodyBytes = 250000;
+  l.promptTokens = 100000;
+  const uint32_t base = providers::roundFitTokens("anthropic", "claude-sonnet-5-5", 0, l);
+  providers::RoundLoad photos = l;
+  photos.bodyBytes += 600000;
+  photos.imageBytes = 600000;
+  TEST_ASSERT_TRUE(providers::roundFitTokens("anthropic", "claude-sonnet-5-5", 0, photos) < base);
+  providers::RoundLoad cached = l;
+  cached.cachedTokens = 99000;
+  TEST_ASSERT_TRUE(providers::roundFitTokens("anthropic", "claude-sonnet-5-5", 0, cached) > base);
+  TEST_ASSERT_TRUE(providers::roundFitTokens("anthropic", "claude-sonnet-5-5", 60000, l) < base);
+  providers::RoundLoad twice = l;
+  twice.uploads = 2;
+  TEST_ASSERT_TRUE(providers::roundFitTokens("anthropic", "claude-sonnet-5-5", 0, twice) < base);
+  providers::RoundLoad noTokens = l;
+  noTokens.promptTokens = 0;   // 250,000 B at 2.5 B/token: the same 100k
+  TEST_ASSERT_EQUAL_UINT32(base, providers::roundFitTokens("anthropic", "claude-sonnet-5-5", 0, noTokens));
+  providers::RoundLoad frag = l;
+  frag.fragmented = true;
+  const uint32_t fragFit = providers::roundFitTokens("anthropic", "claude-sonnet-5-5", 0, frag);
+  TEST_ASSERT_TRUE(fragFit < base);
+  orch::installBudgetLink(orch::BudgetLink::Server);
+  TEST_ASSERT_TRUE(providers::roundFitTokens("anthropic", "claude-sonnet-5-5", 0, frag) > base);
+  // Nothing fits: the field is still sent, at 1 token, and the fit says 0.
+  orch::installBudgetLink(orch::BudgetLink::Device);
+  providers::RoundLoad huge;
+  huge.bodyBytes = 4000000;
+  huge.fragmented = true;
+  TEST_ASSERT_EQUAL_UINT32(0, providers::roundFitTokens("zai", "glm-5.3", 0, huge));
+  TEST_ASSERT_EQUAL_UINT32(1, providers::outputCapFor("zai", "glm-5.3", providers::RoundKind::ToolRound, 0, huge).maxTokens);
+}
+
+// The bench seams reach the load-aware caps too (W switches the wires to them).
+static void test_the_bench_seams_reach_the_load_aware_caps() {
+  providers::RoundLoad l;
+  l.bodyBytes = 85000;
+  providers::setTestFirstAttemptCap(256);
+  TEST_ASSERT_EQUAL_UINT32(256, providers::outputCapFor("anthropic", "claude-haiku-5-5",
+                                                        providers::RoundKind::ToolRound, 0, l).maxTokens);
+  providers::setTestFirstAttemptCap(0);
+}
+
+// The prediction uses the transport's own pacing constants, and the fragmented predicate
+// is the transport's (the DMA-capable pool against kDmaChunkFloor; RULINGS-v3 item 8).
+static void test_pacing_and_fragmentation_are_the_transports() {
+  TEST_ASSERT_EQUAL_UINT32(agent::kRequestPaceMaxMs, orch::kBudgetPaceBaseMs);
+  TEST_ASSERT_EQUAL_UINT32(agent::kSliceStallMs, orch::kBudgetPaceSliceMs);
+  TEST_ASSERT_EQUAL_UINT32(nimbus::heapwatch::kBodySliceBytes, orch::kBudgetPaceSliceBytes);
+  // The prediction is the transport's body budget without the deadline's tenth.
+  TEST_ASSERT_EQUAL_UINT32(agent::paceCapForBody(UINT32_MAX, 360000), orch::predictedPaceMs(360000));
+  TEST_ASSERT_TRUE(providers::heapFragmented(agent::kDmaChunkFloor - 1));
+  TEST_ASSERT_FALSE(providers::heapFragmented(agent::kDmaChunkFloor));
+  TEST_ASSERT_FALSE(providers::heapFragmented(7156));   // Lumi's internal block: the DMA pool decides
+}
+
+// minFinal 1,500 goes to exactly the Mistral heads that cannot turn reasoning off (the
+// recorded effort table), over every recorded Mistral id.
+static void test_forced_reasoner_min_final_matches_the_effort_table() {
+  for (const recorded::Model& m : recorded::models()) {
+    if (m.provider != "mistral") continue;
+    const bool forced = std::string(providers::mistralHeadEffort(m.id)) == "low";
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(forced ? 1500 : 3000, orch::minFinalTokensFor("mistral", m.id), m.id.c_str());
+  }
+  TEST_ASSERT_EQUAL_UINT32(1600, orch::minFinalTokensFor("zai", "glm-5.3"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_cap_table_rows);
@@ -202,5 +404,12 @@ int main(int, char**) {
   RUN_TEST(test_the_same_host_step_down_table);
   RUN_TEST(test_mistral_rounds_fit_the_gateway);
   RUN_TEST(test_cum616_effort_table_matches_the_recorded_model_list);
+  RUN_TEST(test_load_aware_caps_fit_every_row);
+  RUN_TEST(test_the_legacy_caps_fail_the_class);
+  RUN_TEST(test_the_plan_caps);
+  RUN_TEST(test_the_fit_reads_the_load);
+  RUN_TEST(test_the_bench_seams_reach_the_load_aware_caps);
+  RUN_TEST(test_pacing_and_fragmentation_are_the_transports);
+  RUN_TEST(test_forced_reasoner_min_final_matches_the_effort_table);
   return UNITY_END();
 }

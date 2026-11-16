@@ -441,32 +441,35 @@ static void test_request_budget_is_lane_bs() {
   }
 }
 
-static bool sameCap(const providers::OutputCap& a, const providers::OutputCap& b) {
-  return a.maxTokens == b.maxTokens && a.retryTokens == b.retryTokens && std::string(a.effort) == b.effort &&
-         std::string(a.retryEffort) == b.retryEffort;
-}
-
-// The load-aware overload is today's table whatever the load: every adapter, kind,
-// model and round length, with an empty, a heavy and a fragmented load.
-static void test_round_load_changes_no_cap() {
+// Lane B made the load-aware overload read the load (test_output_caps holds the class).
+// The pins here keep the seam's contract for the wires that switch to it: it never asks
+// past the table, OpenAI and custom stay uncapped whatever the load, a capped host always
+// sends a cap, a heavier load never gets a bigger first attempt, and the legacy overload
+// is still v5.1.1's table (test_todays_table_is_v5_1_1).
+static void test_round_load_reads_the_load_within_the_table() {
+  providers::RoundLoad light;
+  light.bodyBytes = 20000;
   providers::RoundLoad heavy;
-  heavy.bodyBytes = 84000;
-  heavy.imageBytes = 600000;
-  heavy.promptTokens = 30000;
-  heavy.routed = true;
+  heavy.bodyBytes = 340000;
+  heavy.imageBytes = 250000;
+  heavy.promptTokens = 90000;
   heavy.fragmented = true;
-  const providers::RoundLoad loads[] = {providers::RoundLoad(), heavy};
   const char* hosts[][2] = {{"anthropic", "claude-sonnet-5-5"}, {"anthropic", "claude-haiku-4-5"},
                             {"openai", "gpt-5.6"},              {"mistral", "mistral-large-4-0"},
                             {"mistral", "mistral-small-latest"}, {"zai", "glm-5.3"},
                             {"custom", "x"}};
   for (const auto& hm : hosts)
     for (int k = 0; k < providers::kRoundKindCount; k++)
-      for (uint32_t ms : {0u, 8000u, 50000u, 65000u, 120000u})
-        for (const providers::RoundLoad& l : loads)
-          TEST_ASSERT_TRUE_MESSAGE(sameCap(providers::outputCapFor(hm[0], hm[1], (providers::RoundKind)k, ms),
-                                           providers::outputCapFor(hm[0], hm[1], (providers::RoundKind)k, ms, l)),
-                                   hm[1]);
+      for (uint32_t ms : {0u, 8000u, 50000u, 65000u, 120000u}) {
+        const providers::OutputCap table = providers::outputCapFor(hm[0], hm[1], (providers::RoundKind)k, 0);
+        const providers::OutputCap a = providers::outputCapFor(hm[0], hm[1], (providers::RoundKind)k, ms, light);
+        const providers::OutputCap b = providers::outputCapFor(hm[0], hm[1], (providers::RoundKind)k, ms, heavy);
+        TEST_ASSERT_TRUE_MESSAGE(a.maxTokens <= table.maxTokens && b.maxTokens <= table.maxTokens, hm[1]);
+        TEST_ASSERT_TRUE_MESSAGE(b.maxTokens <= a.maxTokens, hm[1]);
+        TEST_ASSERT_EQUAL_MESSAGE(table.maxTokens == 0, a.maxTokens == 0, hm[1]);
+        TEST_ASSERT_EQUAL_MESSAGE(table.maxTokens == 0, b.maxTokens == 0, hm[1]);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(table.effort, b.effort, hm[1]);
+      }
 }
 
 // ---- the declared fields hold today's values ----------------------------------------
@@ -651,7 +654,7 @@ int main(int, char**) {
   RUN_TEST(test_listed_window_from_the_stored_list);
   RUN_TEST(test_listed_window_lookup_install);
   RUN_TEST(test_request_budget_is_lane_bs);
-  RUN_TEST(test_round_load_changes_no_cap);
+  RUN_TEST(test_round_load_reads_the_load_within_the_table);
   RUN_TEST(test_declared_fields_start_empty);
   RUN_TEST(test_head_budget_is_todays_for_every_recorded_model);
   RUN_TEST(test_budgets_v5_1_1_fixture_holds_every_recorded_model);

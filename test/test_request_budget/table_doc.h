@@ -74,9 +74,13 @@ static std::string separator(size_t n) {
   return s + "\n";
 }
 
+// The caps read the installed link, so the table installs its own while it is written.
 static std::string tableOf(const std::vector<Head>& heads, BudgetLink link) {
+  const BudgetLink was = budgetLink();
+  installBudgetLink(link);
   std::string t = std::string(kHeadColumns) + separator(28);
   for (const Head& h : heads) t += headRow(h, link);
+  installBudgetLink(was);
   return t;
 }
 

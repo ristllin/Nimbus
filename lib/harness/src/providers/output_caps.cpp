@@ -1,6 +1,8 @@
 #include "nimbus/harness/output_caps.h"
 
-#include "nimbus/orch/model_defaults.h"   // lane DEF: a background turn thinks little
+#include "nimbus/harness/http.h"            // kDmaChunkFloor - the transport's pacing floor
+#include "nimbus/orch/model_defaults.h"     // lane DEF: a background turn thinks little
+#include "nimbus/orch/request_budget.h"     // lane B: the read window, rates and minFinal of the fit
 
 #include <cctype>
 #include <cstdlib>
@@ -211,17 +213,21 @@ uint32_t slowestTokensPerSecond(const std::string& host, const std::string& mode
   return 50;
 }
 
-OutputCap outputCapFor(const std::string& host, const std::string& model, RoundKind kind,
-                       uint32_t roundMs) {
-  OutputCap c;
-  if (host == "anthropic") c = anthropicCap(model, kind);
-  else if (host == "mistral") c = mistralCap(model);
-  else if (host == "zai") c = zaiCap();
-  // OpenAI: no max_output_tokens - reasoning tokens count toward it and would
-  // starve the answer; completeness is read from status:"incomplete" instead.
-  // Custom: the head sends no cap either; finish_reason "length" is read.
-  else return c;
-  clampToTime(c, roundMs, slowestTokensPerSecond(host, model));
+namespace {
+
+// The table row before any time clamp: OpenAI and custom send no cap (maxTokens 0).
+// OpenAI: no max_output_tokens - reasoning tokens count toward it and would starve the
+// answer; completeness is read from status:"incomplete" instead. Custom: the head sends
+// no cap either; finish_reason "length" is read.
+OutputCap tableCap(const std::string& host, const std::string& model, RoundKind kind) {
+  if (host == "anthropic") return anthropicCap(model, kind);
+  if (host == "mistral") return mistralCap(model);
+  if (host == "zai") return zaiCap();
+  return OutputCap();
+}
+
+// The bench seams (test and host builds): a forced first attempt, or forced cuts.
+void applyTestSeams(OutputCap& c) {
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
   if (g_testFirstAttemptCap && c.maxTokens) c.maxTokens = g_testFirstAttemptCap;
   if (g_testCutRounds > 0 && c.maxTokens) {
@@ -229,17 +235,55 @@ OutputCap outputCapFor(const std::string& host, const std::string& model, RoundK
     c.maxTokens = g_testCutTokens;
     c.retryTokens = g_testCutTokens + 16;   // a retry that differs, and is cut again
   }
+#else
+  (void)c;
 #endif
+}
+
+}  // namespace
+
+OutputCap outputCapFor(const std::string& host, const std::string& model, RoundKind kind,
+                       uint32_t roundMs) {
+  OutputCap c = tableCap(host, model, kind);
+  if (!c.maxTokens) return c;
+  clampToTime(c, roundMs, slowestTokensPerSecond(host, model));
+  applyTestSeams(c);
   return c;
 }
 
-// STUB (red run): the load is ignored.
-OutputCap outputCapFor(const std::string& host, const std::string& model, RoundKind kind, uint32_t roundMs,
-                       const RoundLoad&) {
-  return outputCapFor(host, model, kind, roundMs);
+uint32_t roundFitTokens(const std::string& host, const std::string& model, uint32_t roundMs,
+                        const RoundLoad& load) {
+  namespace orch = nimbus::orch;
+  uint32_t window = orch::readWindowMsFor(host, model, load.routed);
+  if (roundMs && roundMs < window) window = roundMs;
+  uint32_t prompt = load.promptTokens;
+  if (!prompt) {   // estimated from the text at the wire's nominal ratio
+    const size_t text = load.bodyBytes > load.imageBytes ? load.bodyBytes - load.imageBytes : 0;
+    prompt = (uint32_t)((uint64_t)text * 100 / orch::requestBudgetFor(host, model, load.routed).rNomX100);
+  }
+  const uint32_t uncached = prompt - atMost(load.cachedTokens, prompt);
+  const uint32_t over = orch::roundOverheadMs(orch::budgetLink(), load.bodyBytes, load.fragmented, uncached,
+                                              orch::prefillFloorTokPerS(host, model), load.uploads);
+  if (over >= window) return 0;
+  return (uint32_t)((uint64_t)(window - over) * orch::decodeFloorTokPerS(host, model, prompt) / 1000);
 }
-uint32_t roundFitTokens(const std::string&, const std::string&, uint32_t, const RoundLoad&) { return 0; }
-bool heapFragmented(uint32_t) { return false; }
+
+OutputCap outputCapFor(const std::string& host, const std::string& model, RoundKind kind, uint32_t roundMs,
+                       const RoundLoad& load) {
+  OutputCap c = tableCap(host, model, kind);
+  if (!c.maxTokens) return c;   // uncapped hosts stay uncapped
+  const uint32_t fit = roundFitTokens(host, model, roundMs, load);
+  const uint32_t minFinal = nimbus::orch::minFinalTokensFor(host, model);
+  const uint32_t first = atMost(atMost(c.maxTokens, fit), atLeast(minFinal, (uint32_t)((uint64_t)fit * 3 / 4)));
+  const uint32_t retry = atMost(c.retryTokens, fit);
+  const bool lowerEffort = std::strcmp(c.retryEffort, c.effort) != 0;
+  c.maxTokens = atLeast(first, 1);   // a capped round always sends its cap (the wire checks the fit)
+  c.retryTokens = (retry >= first + kRetryGainTokens || lowerEffort) ? atLeast(retry, c.maxTokens) : 0;
+  applyTestSeams(c);
+  return c;
+}
+
+bool heapFragmented(uint32_t largestDmaFreeBlock) { return largestDmaFreeBlock < agent::kDmaChunkFloor; }
 
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
 bool setTestFirstAttemptCap(uint32_t tokens) {
