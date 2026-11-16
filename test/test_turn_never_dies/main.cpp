@@ -196,6 +196,12 @@ struct Rig {
     cfg.orchHost = keyed.front();
     specs = sizedSpecs(toolBytes);
     pd = wire.contract();
+    // Lane W: each round's cap comes from its load (lane B's fit), and an unknown Mistral id
+    // gets no retry after a cut (the fit leaves no 400 more tokens). The cut flows below are
+    // about the fabric, so the Mistral head is a real model whose caps keep that retry.
+    pd.orchModel = [](const char* h) {
+      return std::string(h) == "mistral" ? std::string("mistral-medium-latest") : "model-" + std::string(h);
+    };
     pd.nowMs = [this] { return plat.ms; };
     pd.key = [this](const char* h) {
       auto it = cfg.keys.find(h);

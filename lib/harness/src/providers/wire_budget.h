@@ -23,7 +23,7 @@
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"
-#include "nimbus/orch/budget.h"           // headContextBudget - the replay floor (the derived replay at B)
+#include "nimbus/orch/budget.h"           // deriveRequestContext - the derived replay
 #include "nimbus/orch/request_budget.h"
 #include "nimbus/orch/token_usage_json.h"   // tokenUsageFromJson - a round's usage
 
@@ -47,7 +47,7 @@ inline bool routedDeps(const ProviderDeps& pd) { return pd.routerBase && !pd.rou
 // kDmaChunkFloor (transport_tls.cpp paceForHeadroom); a round that starts there is
 // fragmented and its time fit counts the pacing.
 inline bool fragmentedNow(const ProviderDeps& pd) {
-  return pd.dmaLargestBlock && pd.dmaLargestBlock() < kDmaChunkFloor;
+  return pd.dmaLargestBlock && heapFragmented(pd.dmaLargestBlock());
 }
 
 RoundBudget roundBudget(const ProviderDeps& pd, const std::string& host, const std::string& model, bool routed);
@@ -115,21 +115,11 @@ bool replaceMaxTokens(std::string& body, BodySplices& splices, uint32_t from, ui
 bool fitCapToLoad(std::string& body, BodySplices& splices, OutputCap& cap, const RoundBudget& rb, RoundKind kind,
                   uint32_t roundMs, const RoundLoad& load);
 
-// ---- the time fit (interim: lane B's derivation replaces these at its merge) -----------
-// The protocol's fit: the output tokens a round can produce inside its read window after
-// the connect, the upload at 70 KB/s, the pacing a fragmented heap pays (2 s plus 100 ms
-// per 4 KB slice, the slice wait the transport may spend) and the prefill, at the model's
-// slowest decode rate. minFinal is the smallest final answer a round must have room for.
-struct FitRates {
-  uint32_t windowMs;
-  uint32_t prefill;    // tokens per second
-  uint32_t decode;     // tokens per second, at this context
-  uint32_t minFinal;   // tokens
-};
-FitRates fitRates(const RoundBudget& rb, uint32_t promptTokens);
-uint32_t paceMsForBody(size_t bodyBytes);
-// The round's overhead before the first output token, in ms.
-uint64_t overheadMs(const FitRates& f, const RoundLoad& load);
+// ---- the time fit ------------------------------------------------------------------------
+// The round's fit and the host's minimum final come from the request budget (lane B,
+// output_caps.h roundFitTokens and request_budget.h minFinalTokensFor): the output tokens a
+// round can produce inside its read window after the connect, the upload, the pacing a
+// fragmented heap pays and the prefill, at the model's slowest decode rate.
 uint32_t roundFitTokens(const RoundBudget& rb, uint32_t roundMs, const RoundLoad& load);
 uint32_t minFinalTokens(const RoundBudget& rb);
 
@@ -149,6 +139,14 @@ bool parsePhotoFitError(const std::string& err, size_t& overBytes);
 // final inside its window: the step fails it before the send, as a refused request.
 bool photosOverFit(const RoundBudget& rb, uint32_t roundMs, const RoundLoad& load, uint32_t photoTokens,
                    std::string& err);
+
+// True (with `err` set) when a round with no photos, over v5.1.1's 85,000 B, cannot carry
+// the host's minimum final inside the host's whole read window: its body is too big for the
+// window (the turn's own shortened deadline is the loop's to handle, not this). It is
+// refused with the body-budget wording at the size whose fit does carry it, never under
+// 85,000 B, so the turn gives up what it can and builds the round again (lane B's caps: "a
+// capped round always sends a cap; when nothing fits the wire refuses the round locally").
+bool textOverFit(const RoundBudget& rb, const RoundLoad& load, std::string& err);
 
 // ---- one round, sized to its load (lane STACK: out of the round's frame) ------------------
 enum class RoundFit : uint8_t {
@@ -171,9 +169,10 @@ struct RoundFitIn {
 RoundFit fitRoundToLoad(const RoundFitIn& in, std::string& body, BodySplices& splices, OutputCap& cap,
                         std::string& err);
 
-// ---- the observed ratio (interim: lane B's tighten-only memo replaces it) ---------------
+// ---- the observed ratio -------------------------------------------------------------------
 // After a 2xx: the text bytes the request carried and the prompt tokens the provider
-// counted for them (the photos' estimate taken off).
+// counted for them (the photos' estimate taken off) feed the request budget's tighten-only
+// memo (request_budget.h noteObservedRatio); the newest note is kept for the host suites.
 struct ObservedRatio {
   std::string host, model;
   size_t textBytes = 0;

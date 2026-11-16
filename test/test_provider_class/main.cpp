@@ -31,6 +31,7 @@
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/result_envelope.h"
 #include "nimbus/orch/transcript.h"
+#include "../../lib/harness/src/providers/wire.h"   // wire::lastRound - the cap a round sent
 
 using harness_test::Exchange;
 using harness_test::FakeProviderDeps;
@@ -183,10 +184,9 @@ struct CutCase {
 
 static void runCutCase(const CutCase& c, bool allowTools) {
   const providers::RoundKind kind = allowTools ? providers::RoundKind::ToolRound : providers::RoundKind::FinalRound;
-  const providers::OutputCap cap = providers::outputCapFor(c.host, c.model, kind, 60000);
   FakeProviderDeps d;
   d.http.script.push_back({"", "", 200, c.cutReply});
-  if (cap.hasRetry()) d.http.script.push_back({"", "", 200, c.cutReply});
+  d.http.script.push_back({"", "", 200, c.cutReply});
   providers::ProviderDeps pd = d.contract();
   const std::string model = c.model;
   pd.orchModel = [model](const char*) { return model; };
@@ -203,8 +203,13 @@ static void runCutCase(const CutCase& c, bool allowTools) {
   TEST_ASSERT_EQUAL_MESSAGE(0, (int)st.toolCalls.size(), what.c_str());
   TEST_ASSERT_EQUAL_MESSAGE((int)StepErr::Cut, (int)st.kind, what.c_str());
   TEST_ASSERT_FALSE_MESSAGE(st.cut.empty(), what.c_str());
-  // The retry, when the table has one, sent a different body; never a second
-  // identical one.
+  // The cap the round sent is the table's for the load it carried (lane W: the wire
+  // measures its round and asks outputCapFor(..., RoundLoad)), OpenAI and custom none.
+  const providers::wire::RoundRecord& sent = providers::wire::lastRound();
+  const providers::OutputCap cap = providers::outputCapFor(c.host, c.model, kind, sent.roundMs, sent.load);
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(cap.maxTokens, sent.cap.maxTokens, what.c_str());
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(cap.retryTokens, sent.cap.retryTokens, what.c_str());
+  // The retry, when the cap has one, sent a different body; never a second identical one.
   TEST_ASSERT_EQUAL_MESSAGE(cap.hasRetry() ? 2 : 1, (int)d.http.seen.size(), what.c_str());
   if (cap.hasRetry()) TEST_ASSERT_TRUE_MESSAGE(retryDiffers(reqBody(d, 0), reqBody(d, 1)), what.c_str());
 }

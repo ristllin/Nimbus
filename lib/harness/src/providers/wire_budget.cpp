@@ -29,7 +29,7 @@ std::unique_ptr<const RoundBudget> newRoundBudget(const ProviderDeps& pd, const 
 }
 
 size_t replayBytesFor(const RoundBudget& rb, size_t v511Bytes) {
-  const size_t derived = nimbus::orch::headContextBudget(rb.host, rb.model, nimbus::orch::BudgetOverrides()).replayBytes;
+  const size_t derived = nimbus::orch::deriveRequestContext(rb.budget, nimbus::orch::BudgetOverrides()).replayBytes;
   return std::max(v511Bytes, derived);
 }
 
@@ -45,6 +45,10 @@ RoundLoad roundLoad(const RoundBudget& rb, size_t textBytes, size_t imageBytes, 
   l.promptTokens = textTokens(rb, textBytes) + photoTokens;
   l.routed = rb.routed;
   l.fragmented = rb.fragmented;
+  // RULINGS-v3 W(3): a low-balance Cumulo wallet answers 402 with what fits and the wire
+  // sends the body again, capped. Every routed round counts that second upload in its fit
+  // (at the 85,000 B routed floor about 1.2 s).
+  l.uploads = rb.routed ? 2 : 1;
   return l;
 }
 
@@ -97,69 +101,27 @@ bool fitCapToLoad(std::string& body, BodySplices& splices, OutputCap& cap, const
   return inPlace;
 }
 
-FitRates fitRates(const RoundBudget& rb, uint32_t promptTokens) {
-  std::string m = rb.model;
-  const size_t slash = m.find('/');
-  if (slash != std::string::npos) m = m.substr(slash + 1);
-  FitRates f{120000, 1000, 50, 3000};
-  if (rb.host == "mistral") {
-    f.windowMs = 60000;
-    if (*sameHostNonReasoningModel("mistral", m)) {   // the forced reasoner (Large 4)
-      f.prefill = 9000;
-      f.decode = 50;
-      f.minFinal = 1500;
-    } else {
-      f.prefill = 2500;
-      f.decode = promptTokens < 32000 ? 130 : 70;
-    }
-  } else if (rb.host == "zai") {
-    f.windowMs = 50000;
-    f.prefill = 9000;
-    f.decode = promptTokens < 32000 ? 55 : 48;
-    f.minFinal = 1600;
-  } else if (rb.host == "anthropic") {
-    f.prefill = m.find("opus") != std::string::npos ? 30000 : 60000;
-    f.decode = m.find("haiku") != std::string::npos ? 120 : m.find("opus") != std::string::npos ? 50 : 75;
-  } else if (rb.host == "openai") {
-    f.prefill = 25000;
-  }
-  if (rb.routed && f.windowMs > kRoutedRoundCeilingMs) f.windowMs = kRoutedRoundCeilingMs;
-  return f;
-}
-
-uint32_t paceMsForBody(size_t bodyBytes) {
-  const size_t slices = (bodyBytes + nimbus::heapwatch::kBodySliceBytes - 1) / nimbus::heapwatch::kBodySliceBytes;
-  return kRequestPaceMaxMs + (uint32_t)slices * kSliceStallMs;
-}
-
-uint64_t overheadMs(const FitRates& f, const RoundLoad& load) {
-  const uint64_t uploadMs = (uint64_t)load.bodyBytes * 1000 / 70000;
-  const uint64_t paceMs = load.fragmented ? paceMsForBody(load.bodyBytes) : 0;
-  const uint64_t prefillMs = (uint64_t)load.promptTokens * 1000 / (f.prefill ? f.prefill : 1);
-  return 1500 + uploadMs + paceMs + prefillMs;
-}
-
 uint32_t roundFitTokens(const RoundBudget& rb, uint32_t roundMs, const RoundLoad& load) {
-  const FitRates f = fitRates(rb, load.promptTokens);
-  const uint64_t window = roundMs && roundMs < f.windowMs ? roundMs : f.windowMs;
-  const uint64_t over = overheadMs(f, load);
-  return over >= window ? 0 : (uint32_t)((window - over) * f.decode / 1000);
+  return providers::roundFitTokens(rb.host, rb.model, roundMs, load);
 }
 
-uint32_t minFinalTokens(const RoundBudget& rb) { return fitRates(rb, 0).minFinal; }
+uint32_t minFinalTokens(const RoundBudget& rb) { return nimbus::orch::minFinalTokensFor(rb.host, rb.model); }
 
 size_t photoFitShedBytes(const RoundBudget& rb, uint32_t roundMs, const RoundLoad& load) {
-  const FitRates f = fitRates(rb, load.promptTokens);
   const uint32_t fit = roundFitTokens(rb, roundMs, load);
   const uint32_t want = minFinalTokens(rb);
   if (fit >= want) return 0;
-  const uint64_t shortMs = (uint64_t)(want - fit) * 1000 / (f.decode ? f.decode : 1);
-  // micro-seconds one text byte costs: 1/70 KB/s upload, 100 ms per 4 KB slice paced,
-  // and its share of a token at the prefill rate
+  const uint32_t decode = nimbus::orch::decodeFloorTokPerS(rb.host, rb.model, load.promptTokens);
+  const uint32_t prefill = nimbus::orch::prefillFloorTokPerS(rb.host, rb.model);
+  const uint64_t shortMs = (uint64_t)(want - fit) * 1000 / (decode ? decode : 1);
+  // What one text byte costs, in ns: its upload (every time the body goes up), its share
+  // of a paced slice on a fragmented heap, and its share of a token at the prefill rate.
   const uint32_t r = rb.budget.rNomX100 ? rb.budget.rNomX100 : 400;
-  const uint64_t perByteNs = 1000000000ull / 70000 + (load.fragmented ? 1000000000ull / 4096 / 10 : 0) +
-                             1000000000ull * 100 / r / (f.prefill ? f.prefill : 1);
-  return (size_t)(shortMs * 1000000ull / perByteNs) + 1024;
+  const uint64_t perByteNs =
+      (uint64_t)load.uploads * 1000000000ull / nimbus::orch::kBudgetUploadBytesPerS +
+      (load.fragmented ? 1000000ull * nimbus::orch::kBudgetPaceSliceMs / nimbus::orch::kBudgetPaceSliceBytes : 0) +
+      1000000000ull * 100 / r / (prefill ? prefill : 1);
+  return (size_t)(shortMs * 1000000ull / (perByteNs ? perByteNs : 1)) + 1024;
 }
 
 std::string photoFitError(const std::string& host, uint32_t fit, uint32_t minFinal, size_t overBytes) {
@@ -190,6 +152,22 @@ bool photosOverFit(const RoundBudget& rb, uint32_t roundMs, const RoundLoad& loa
   return true;
 }
 
+bool textOverFit(const RoundBudget& rb, const RoundLoad& load, std::string& err) {
+  // A photo round's own rule decides (photosOverFit); a body inside v5.1.1's budget is sent
+  // as v5.1.1 sent it (no head below its v5.1.1 budget), with the cap its fit allows.
+  if (load.imageBytes || load.bodyBytes <= kWireBodyMax) return false;
+  const uint32_t fit = roundFitTokens(rb, 0, load);
+  const uint32_t want = minFinalTokens(rb);
+  if (fit >= want) return false;
+  const size_t text = load.bodyBytes;
+  const size_t shed = photoFitShedBytes(rb, 0, load);
+  const size_t budget = std::max(kWireBodyMax, text > shed ? (text - shed) / 1000 * 1000 : 0);
+  err = nimbus::orch::bodyBudgetError(budget, text);
+  hlog::logf("wire: %s/%s round over its time fit (fit %u of %u tokens in the %s window) - %s", rb.host.c_str(),
+             rb.model.c_str(), (unsigned)fit, (unsigned)want, rb.routed ? "routed" : "host's", err.c_str());
+  return true;
+}
+
 RoundFit fitRoundToLoad(const RoundFitIn& in, std::string& body, BodySplices& splices, OutputCap& cap,
                         std::string& err) {
   const RoundLoad load = roundLoad(in.rb, body.size(), splicedBytes(splices), in.photoTokens);
@@ -199,6 +177,7 @@ RoundFit fitRoundToLoad(const RoundFitIn& in, std::string& body, BodySplices& sp
   lastRound().textBudget = in.textBudget;
   lastRound().photoTokens = in.photoTokens;
   if (photosOverFit(in.rb, in.roundMs, load, in.photoTokens, err)) return RoundFit::Refused;
+  if (textOverFit(in.rb, load, err)) return RoundFit::Refused;
   if (fit == RoundFit::Ready && !bodyWithinBudget(body, in.textBudget, err)) return RoundFit::Refused;   // a digit wider
   return fit;
 }
@@ -215,6 +194,7 @@ void noteObservedRatio(const RoundBudget& rb, size_t textBytes, uint32_t request
   o.model = rb.model;
   o.textBytes = textBytes;
   o.promptTokens = requestTokens > photoTokens ? requestTokens - photoTokens : 0;
+  nimbus::orch::noteObservedRatio(rb.host, rb.model, textBytes, o.promptTokens);
 }
 
 void addRoundUsage(ArduinoJson::JsonObjectConst usageJson, nimbus::orch::TokenUsage* usage, const RoundBudget& rb,

@@ -8,6 +8,7 @@
 
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
+#include "nimbus/harness/prompt_layout.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/body_budget.h"
 #include "nimbus/orch/head_loop.h"
@@ -1009,6 +1010,72 @@ static void test_photo_rounds_never_exceed_the_fit_on_short_windows() {
   TEST_ASSERT_TRUE(transcribed > 0);   // and really crosses the fit
 }
 
+// Lane B's caps send at least 1 token and leave it to the wire to refuse a round whose fit
+// cannot carry the host's minimum final. A text round over v5.1.1's 85,000 B that is too big
+// for its host's read window (a budget larger than the window allows) is refused with the
+// size wording at the size whose fit carries it, so the turn gives up older history and the
+// round goes. A round inside 85,000 B goes as v5.1.1 sent it, whatever its fit.
+static void test_text_round_over_its_time_fit_is_refused_and_refit() {
+  auto table = [](const std::string& host, const std::string& model, bool routed) {
+    nimbus::orch::RequestBudget b = nimbus::orch::requestBudgetFor(host, model, routed);
+    b.wireBodyBytes = 900000;   // more than Large 4's 60 s window can read and answer in
+    return b;
+  };
+  BudgetScope scope(+table);
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200, finalResponse("mistral")});
+  providers::ProviderDeps pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+  pd.dmaLargestBlock = [] { return (uint32_t)4000; };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  agent::layout::PromptParts parts;
+  parts.split = true;
+  parts.stat = "SYS";
+  parts.dyn = "[NOW] 09:00";
+  for (int i = 0; i < 150; ++i) {
+    parts.history.push_back({true, "question " + std::to_string(i) + " " + std::string(1600, 'q')});
+    parts.history.push_back({false, "answer " + std::to_string(i) + " " + std::string(1600, 'a')});
+  }
+  int gives = 0;
+  rig.ht.fitPrompt = [&parts, &gives](size_t want, nimbus::orch::FitScope, std::string& ins, std::string& inp) {
+    size_t freed = 0;
+    while (freed < want && parts.history.size() > 2) {
+      freed += parts.history[0].text.size() + parts.history[1].text.size();
+      parts.history.erase(parts.history.begin(), parts.history.begin() + 2);
+    }
+    ins = agent::layout::join(parts);
+    inp = "hi";
+    ++gives;
+    return freed;
+  };
+  LogCapture::install();
+  std::string conv, out, err;
+  const bool ok = providers::orchTurnMistral(pd, conv, agent::layout::join(parts), "hi", out, err, &rig.ht, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_TRUE(LogCapture::contains("round over its time fit"));
+  TEST_ASSERT_TRUE(gives > 0);
+  TEST_ASSERT_EQUAL_INT(1, (int)d.http.seen.size());   // only the round that fits was sent
+  const providers::wire::RoundRecord& sent = providers::wire::lastRound();
+  const providers::wire::RoundBudget rb =
+      providers::wire::roundBudget(providers::ProviderDeps(), "mistral", "mistral-large-4-0", false);
+  TEST_ASSERT_TRUE(sent.load.bodyBytes > providers::kWireBodyMax);
+  TEST_ASSERT_TRUE(providers::wire::roundFitTokens(rb, 0, sent.load) >= providers::wire::minFinalTokens(rb));
+  // Inside 85,000 B the round goes whatever its fit (an id with the slowest rates).
+  FakeProviderDeps s;
+  s.http.script.push_back({"", "", 200, finalResponse("mistral")});
+  providers::ProviderDeps spd = s.contract();
+  spd.orchModel = [](const char*) { return std::string("model-mistral"); };
+  spd.dmaLargestBlock = [] { return (uint32_t)4000; };
+  FakeProviderDeps::ToolRig srig;
+  s.fillTools(srig);
+  std::string sout, serr;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(spd, conv, "SYS " + std::string(50000, 's'),
+                                                      std::string(30000, 'u'), sout, serr, &srig.ht, nullptr),
+                           serr.c_str());
+  TEST_ASSERT_EQUAL_INT(1, (int)s.http.seen.size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_refusal_wording_round_trips);
@@ -1028,5 +1095,6 @@ int main(int, char**) {
   RUN_TEST(test_album_on_large4_fragmented_goes_natively);
   RUN_TEST(test_album_that_cannot_fit_goes_as_transcriptions);
   RUN_TEST(test_photo_rounds_never_exceed_the_fit_on_short_windows);
+  RUN_TEST(test_text_round_over_its_time_fit_is_refused_and_refit);
   return UNITY_END();
 }

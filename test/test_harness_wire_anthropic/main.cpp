@@ -10,6 +10,7 @@
 #include "../support/fake_provider_deps.h"
 #include "../support/image_turn_fixture.h"
 #include "../../lib/harness/src/providers/image_parts.h"   // refusedImages - the image refusal rule
+#include "../../lib/harness/src/providers/wire.h"          // wire::lastRound - the load a round carried
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/prompt_layout.h"
 #include "nimbus/harness/providers.h"
@@ -78,11 +79,13 @@ static void test_single_shot_request_shape() {
   TEST_ASSERT_EQUAL_STRING("managed-agents-2026-04-01", headerOf(r, "anthropic-beta").c_str());
   TEST_ASSERT_EQUAL_STRING("", headerOf(r, "Authorization").c_str());
   TEST_ASSERT_TRUE(bodyHas(d, 0, "\"model\":\"model-anthropic\""));
-  // The output-cap table decides max_tokens (time-clamped for an unknown id's
-  // slowest rate); no effort for an id the table does not know (the field 400s
-  // on families without it).
-  const providers::OutputCap cap =
-      providers::outputCapFor("anthropic", "model-anthropic", providers::RoundKind::SingleShot, 120000);
+  // The output-cap table decides max_tokens for the load the request carried (lane W:
+  // fitted to the round's read window at an unknown id's slowest rate); no effort for an
+  // id the table does not know (the field 400s on families without it).
+  const providers::wire::RoundRecord& sent = providers::wire::lastRound();
+  const providers::OutputCap cap = providers::outputCapFor("anthropic", "model-anthropic",
+                                                           providers::RoundKind::SingleShot, sent.roundMs, sent.load);
+  TEST_ASSERT_EQUAL_UINT32(r.body.size(), (uint32_t)sent.load.bodyBytes);
   TEST_ASSERT_TRUE(bodyHas(d, 0, ("\"max_tokens\":" + std::to_string(cap.maxTokens)).c_str()));
   TEST_ASSERT_TRUE(cap.maxTokens > 3000);   // the old cap that cut thinking models' turns
   TEST_ASSERT_FALSE(bodyHas(d, 0, "output_config"));
@@ -384,6 +387,9 @@ static void test_loop_replay_folds_with_hysteresis_over_budget() {
   rig.ht.cfg.maxToolResultBytes = 0;   // isolate the replay budget from the clamp
   rig.ht.cfg.maxTotalToolBytes = 0;
   rig.ht.cfg.maxRounds = 8;
+  // The 16 KB replay is the replay of v5.1.1's 85,000 B budget (each request now derives its
+  // own from its budget, never under 16 KB): pinned to that budget, as the console's BUDGET does.
+  providers::setTestBudgetOverride(85000);
   std::string conv, out, err;
   bool ok = providers::orchTurnAnthropic(pd, conv, "SYS", "USER", out, err, &rig.ht, nullptr);
   TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
@@ -403,6 +409,7 @@ static void test_loop_replay_folds_with_hysteresis_over_budget() {
   TEST_ASSERT_TRUE(b.find("[not shown") == std::string::npos);
   TEST_ASSERT_TRUE(b.find("[cut:") == std::string::npos);
   TEST_ASSERT_TRUE(b.find("EARLIER TOOL ROUNDS OF THIS TURN") != std::string::npos);
+  providers::setTestBudgetOverride(0);
   TEST_ASSERT_TRUE(b.find("- round 0: memory_search") != std::string::npos);
   TEST_ASSERT_TRUE(bodyHas(d, 5, "USER"));
   for (int i = 1; i <= 5; i++) {
@@ -929,10 +936,15 @@ static void test_fold_request_has_its_own_budget_and_no_tool() {
                            err.c_str());
   // The summary comes back as prose; the engine reads it as the reply.
   TEST_ASSERT_EQUAL_STRING("1. Owner intent: plan the trip.", out.c_str());
-  // Its own budget from the table: Opus at its slowest rate fits 5500 tokens in
-  // the 120 s round; the first attempt takes three quarters of that (the retry
-  // keeps the rest, L19-44), at low effort (a summary needs little thinking).
-  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"max_tokens\":4125,\"output_config\":{\"effort\":\"low\"}"));
+  // Its own budget: the fit of the fold body in the 120 s round at Opus's slowest rate (lane
+  // W: the cap that fits the load it carries), at low effort (a summary needs little thinking).
+  const providers::wire::RoundRecord& sent = providers::wire::lastRound();
+  TEST_ASSERT_TRUE(sent.kind == providers::RoundKind::Fold);
+  const providers::OutputCap cap =
+      providers::outputCapFor("anthropic", "claude-opus-5", providers::RoundKind::Fold, sent.roundMs, sent.load);
+  TEST_ASSERT_TRUE(cap.maxTokens >= 3000);
+  TEST_ASSERT_TRUE(bodyHas(d, 0, ("\"max_tokens\":" + std::to_string(cap.maxTokens) +
+                                  ",\"output_config\":{\"effort\":\"low\"}").c_str()));
   TEST_ASSERT_FALSE(bodyHas(d, 0, "\"tools\""));        // no 10 KB schema on the fold
   TEST_ASSERT_FALSE(bodyHas(d, 0, "\"tool_choice\""));
 }
@@ -1842,6 +1854,47 @@ static void test_r1_no_photos_no_change() {
   TEST_ASSERT_TRUE(d.http.spliced[0].empty());
 }
 
+// Lane W: each round's cap comes from what it carries (RoundLoad: its body, and whether the
+// DMA pool was short at round start so its slices will be paced). The same large round gets
+// a smaller cap on a fragmented heap than on a healthy one, and the body carries exactly the
+// cap outputCapFor gives that load.
+static void test_caps_follow_the_round_load() {
+  uint32_t caps[2] = {0, 0};
+  for (int fragmented = 0; fragmented < 2; ++fragmented) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, finalToolBody()});
+    auto pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("claude-sonnet-5-5"); };
+    if (fragmented) pd.dmaLargestBlock = [] { return (uint32_t)4000; };
+    else pd.dmaLargestBlock = [] { return (uint32_t)30000; };
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    agent::layout::PromptParts parts;
+    parts.split = true;
+    parts.stat = "SYS";
+    parts.dyn = "[NOW] 09:00";
+    for (int i = 0; i < 40; ++i) {
+      parts.history.push_back({true, "q " + std::to_string(i) + " " + std::string(2000, 'q')});
+      parts.history.push_back({false, "a " + std::to_string(i) + " " + std::string(2000, 'a')});
+    }
+    const std::string ins = agent::layout::join(parts);
+    nimbus::orch::Transcript tr;
+    tr.addUser("hi");
+    const nimbus::orch::HeadStep st = providers::antLoopStep(pd, ins, rig.ht, nullptr, tr)(true, {}, UINT32_MAX, "");
+    TEST_ASSERT_TRUE_MESSAGE(st.ok, st.error.c_str());
+    const providers::wire::RoundRecord& sent = providers::wire::lastRound();
+    TEST_ASSERT_EQUAL((bool)fragmented, sent.load.fragmented);
+    const providers::OutputCap cap = providers::outputCapFor("anthropic", "claude-sonnet-5-5", providers::RoundKind::ToolRound,
+                                                             sent.roundMs, sent.load);
+    TEST_ASSERT_TRUE(bodyHas(d, 0, ("\"max_tokens\":" + std::to_string(cap.maxTokens)).c_str()));
+    caps[fragmented] = cap.maxTokens;
+  }
+  char msg[96];
+  std::snprintf(msg, sizeof msg, "healthy %u, fragmented %u", (unsigned)caps[0], (unsigned)caps[1]);
+  TEST_MESSAGE(msg);
+  TEST_ASSERT_TRUE_MESSAGE(caps[1] < caps[0], msg);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_fold_request_has_its_own_budget_and_no_tool);
@@ -1896,6 +1949,7 @@ int main(int, char**) {
   RUN_TEST(test_img_look_render_attaches_each_photo_once_in_every_dialect);
   RUN_TEST(test_img_file_ids_never_leave_a_marker_on_another_host);
   RUN_TEST(test_img_kept_files_stay_in_their_chat);
+  RUN_TEST(test_caps_follow_the_round_load);
   UNITY_END();
   return 0;
 }

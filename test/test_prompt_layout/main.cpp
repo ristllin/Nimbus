@@ -676,6 +676,12 @@ static void test_tools_array_never_grows_more_than_five_percent() {
 // refuses a turn that is inside its component budgets. The newest result still
 // rides whole (the clip only touches a round that alone overflows).
 static void test_long_loop_replay_stays_within_the_body_budget() {
+  // The measurement is v5.1.1's 85,000 B budget and its 16 KB replay (each request now derives
+  // both from its own budget): pinned to that budget, as the console's BUDGET does.
+  struct Pin {
+    Pin() { providers::setTestBudgetOverride(85000); }
+    ~Pin() { providers::setTestBudgetOverride(0); }
+  } pin;
   FakeProviderDeps d;
   for (int i = 1; i <= 12; i++) {
     const std::string body =

@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include <cstdio>
+
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -28,6 +30,8 @@
 #include "nimbus/harness/prompt_layout.h"
 #include "nimbus/orch/body_budget.h"
 #include "nimbus/orch/transcript.h"
+
+#include "../../lib/harness/src/providers/wire.h"   // wire::lastRound - the load a round carried
 
 using harness_test::FakeProviderDeps;
 using harness_test::LogCapture;
@@ -2030,6 +2034,47 @@ static void test_flat_strings_over_the_guard_are_refused_with_the_size_wording()
   }
 }
 
+// Lane W: each round's cap comes from what it carries (RoundLoad: its body, and whether the
+// DMA pool was short at round start so its slices will be paced). The same large round gets
+// a smaller cap on a fragmented heap than on a healthy one, and the body carries exactly the
+// cap outputCapFor gives that load.
+static void test_caps_follow_the_round_load() {
+  uint32_t caps[2] = {0, 0};
+  for (int fragmented = 0; fragmented < 2; ++fragmented) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, chatFinalBody()});
+    auto pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+    if (fragmented) pd.dmaLargestBlock = [] { return (uint32_t)4000; };
+    else pd.dmaLargestBlock = [] { return (uint32_t)30000; };
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    agent::layout::PromptParts parts;
+    parts.split = true;
+    parts.stat = "SYS";
+    parts.dyn = "[NOW] 09:00";
+    for (int i = 0; i < 40; ++i) {
+      parts.history.push_back({true, "q " + std::to_string(i) + " " + std::string(2000, 'q')});
+      parts.history.push_back({false, "a " + std::to_string(i) + " " + std::string(2000, 'a')});
+    }
+    const std::string ins = agent::layout::join(parts);
+    nimbus::orch::Transcript tr;
+    tr.addUser("hi");
+    const nimbus::orch::HeadStep st = providers::misLoopStep(pd, ins, rig.ht, nullptr, tr)(true, {}, UINT32_MAX, "");
+    TEST_ASSERT_TRUE_MESSAGE(st.ok, st.error.c_str());
+    const providers::wire::RoundRecord& sent = providers::wire::lastRound();
+    TEST_ASSERT_EQUAL((bool)fragmented, sent.load.fragmented);
+    const providers::OutputCap cap = providers::outputCapFor("mistral", "mistral-large-4-0", providers::RoundKind::ToolRound,
+                                                             sent.roundMs, sent.load);
+    TEST_ASSERT_TRUE(bodyHas(d, 0, ("\"max_tokens\":" + std::to_string(cap.maxTokens)).c_str()));
+    caps[fragmented] = cap.maxTokens;
+  }
+  char msg[96];
+  std::snprintf(msg, sizeof msg, "healthy %u, fragmented %u", (unsigned)caps[0], (unsigned)caps[1]);
+  TEST_MESSAGE(msg);
+  TEST_ASSERT_TRUE_MESSAGE(caps[1] < caps[0], msg);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_reserved_toolname_renamed_and_inverted);
@@ -2089,6 +2134,7 @@ int main(int, char**) {
   RUN_TEST(test_mistral_caps_are_the_documented_numbers);
   RUN_TEST(test_a_long_mistral_answer_in_the_round_text_reaches_the_owner);
   RUN_TEST(test_flat_strings_over_the_guard_are_refused_with_the_size_wording);
+  RUN_TEST(test_caps_follow_the_round_load);
   UNITY_END();
   return 0;
 }
