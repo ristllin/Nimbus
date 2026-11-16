@@ -29,6 +29,9 @@ from webrig import chat_turn, ip_tok_or_skip, make_session, require_orchestrator
 pytestmark = [pytest.mark.hil, pytest.mark.net, pytest.mark.agent]
 
 MARKER = f"Quokka-{int(time.time()) % 100000}"  # unique per run - reruns can't alias
+# A manual fold walks its rungs one per pump pass from v5.1.2 (lane F), each rung up to two
+# requests of up to 65 s (Mistral) or 120 s: 600 s covers a ladder that needs a later rung.
+FOLD_WAIT_S = 600
 
 # The shared header-authed session for the DEVICE (not Telegram), built by `board`.
 _S = None
@@ -78,14 +81,14 @@ def test_fold_cycle_end_to_end(board):
     cmd = _chat(ip, tok, "/compact")
     assert "Compacting" in cmd, f"unexpected /compact reply: {cmd[:120]}"
     boundary = None
-    deadline = time.time() + 90
+    deadline = time.time() + FOLD_WAIT_S
     while time.time() < deadline and boundary is None:
         time.sleep(5)
         for m in _episodic(ip, tok, session="web", kind="log", limit=5):
             if "ev:compact" in m.get("tags", "") and "Conversation compacted" in m.get("text", ""):
                 boundary = m
                 break
-    assert boundary, "no ev:compact boundary row within 90s of /compact"
+    assert boundary, f"no ev:compact boundary row within {FOLD_WAIT_S}s of /compact"
 
     # 3. Seven fillers -> 14 message rows: the marker turn falls out of the
     #    12-row verbatim window (the prism vacuous-test fix - without this step
@@ -221,7 +224,7 @@ def test_fold_failure_is_bounded_and_recovers(board, bench):
     # confirms exactly once.
     r = _S.post(f"http://{ip}/api/test/compact", data={"chat": chat}, timeout=10)
     assert r.status_code == 202
-    _wait_out(ip, chat, day, seen, 90.0, want="✓ Compacted.")
+    _wait_out(ip, chat, day, seen, FOLD_WAIT_S, want="✓ Compacted.")
     time.sleep(10)  # a second confirmation would land in this window
     texts = _out_texts(ip, chat, day)[seen:]
     assert sum("✓ Compacted." in t for t in texts) == 1, f"expected one confirmation, got {texts}"

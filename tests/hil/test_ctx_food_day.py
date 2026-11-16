@@ -147,9 +147,14 @@ def _newest_compact(net) -> str:
     return max(ids) if ids else ""
 
 
+# A manual fold walks its rungs one per pump pass from v5.1.2 (lane F), each rung up to two
+# requests of up to 65 s (Mistral) or 120 s: 600 s covers a ladder that needs a later rung.
+FOLD_WAIT_S = 600
+
+
 def _wait_for_fold(net, before: str) -> bool:
-    """A new ev:compact row (the manual fold landed), within 120 s."""
-    deadline = time.time() + 120
+    """A new ev:compact row (the manual fold landed), within FOLD_WAIT_S."""
+    deadline = time.time() + FOLD_WAIT_S
     while time.time() < deadline:
         time.sleep(5)
         if _newest_compact(net) > before:
@@ -167,7 +172,7 @@ def _turn(bench, net, at: int, text: str):
     with LogFollower(s, net.ip) as follow:
         reply = chat_turn(s, net.ip, text, timeout_s=240)
         if text == COMPACT:
-            assert _wait_for_fold(net, before), "no new ev:compact row within 120 s of /compact"
+            assert _wait_for_fold(net, before), f"no new ev:compact row within {FOLD_WAIT_S} s of /compact"
     return reply, follow.text
 
 
