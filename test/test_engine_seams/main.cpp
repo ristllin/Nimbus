@@ -402,6 +402,28 @@ static void test_an_automatic_fold_waits_for_the_tail_after_a_restart() {
   TEST_ASSERT_TRUE_MESSAGE(slice.thru != "m0060", slice.thru.c_str());   // the newest exchange stays
 }
 
+// An owner's own Compact threshold below the head's keep mark (24 KB on a Sonnet head, which
+// keeps 59 KB of its 94 KB soft mark since the switch-over): the fold driver finds the chat
+// due at 24 KB, so the slice keeps a tail in proportion (about 15 KB) and folds the rest. With
+// the head's own trigger the same 30 KB conversation is all within the keep mark: no fold.
+static void test_an_owner_trigger_below_the_keep_mark_still_folds() {
+  Rig r;
+  r.cfg.orchModels["anthropic"] = "claude-sonnet-5-5";   // the rig's head (top of its priority)
+  r.addTurns(100);   // 200 rows, about 30 KB after thru
+  r.eng->historyFoldSlice("1001", 65536, false);   // opens the chat's cache
+  while (r.eng->historyIdleStep()) {
+  }
+  TEST_ASSERT_TRUE_MESSAGE(r.eng->historyFoldSlice("1001", 65536, false).digest.empty(), "within the head's keep mark");
+  r.foldTrigger = 24 * 1024;
+  const agent::FoldSlice slice = r.eng->historyFoldSlice("1001", 65536, false);
+  TEST_ASSERT_FALSE_MESSAGE(slice.digest.empty(), "due at the owner's trigger: something to fold");
+  // The kept tail: 59,040 B x 24,576 / 94,464 = 15,360 B of the newest turns stay verbatim.
+  size_t kept = 0;
+  for (const auto& m : r.rows)
+    if (m.id > slice.thru) kept += m.text.size();
+  TEST_ASSERT_TRUE_MESSAGE(kept > 8000 && kept < 16000, std::to_string(kept).c_str());
+}
+
 // How often `needle` appears in a source file's code (paths from the repo root, where pio
 // runs; // comments do not count).
 static int countIn(const char* path, const std::string& needle) {
@@ -493,8 +515,9 @@ static void test_listed_window_lookup_install() {
   orch::installListedCtxLookup(&fakeListed);
   TEST_ASSERT_EQUAL_UINT32(1048576, orch::listedWindowTokens("mistral", "mistral-large-4-0"));
   TEST_ASSERT_EQUAL_UINT32(0, orch::listedWindowTokens("openai", "gpt-5.6"));
-  // Nothing reads it yet: the window table is unchanged by it.
-  TEST_ASSERT_EQUAL_UINT32(128000, orch::modelCtxTokens("mistral", "mistral-large-4-0"));
+  // Since lane H's switch-over the window table reads it; v5.1.1's frozen table does not.
+  TEST_ASSERT_EQUAL_UINT32(1048576, orch::modelCtxTokens("mistral", "mistral-large-4-0"));
+  TEST_ASSERT_EQUAL_UINT32(128000, orch::legacyCtxTokens("mistral", "mistral-large-4-0"));
   orch::installListedCtxLookup(nullptr);
   TEST_ASSERT_EQUAL_UINT32(0, orch::listedWindowTokens("mistral", "mistral-large-4-0"));
 }
@@ -626,13 +649,15 @@ static std::vector<Recorded> recordedModels() {
   return out;
 }
 
-static void test_head_budget_is_todays_for_every_recorded_model() {
+// Lane H's switch-over: the seam's body is the request budget's derivation for every
+// recorded model (deriveRequestContext over requestBudgetFor), every field of it.
+static void test_head_budget_is_the_request_budget_for_every_recorded_model() {
   const std::vector<Recorded> models = recordedModels();
   TEST_ASSERT_TRUE(models.size() > 200);
   for (const Recorded& m : models) {
     orch::BudgetOverrides ov;
     const orch::ContextBudget a = orch::headContextBudget(m.provider, m.id, ov);
-    const orch::ContextBudget b = orch::deriveBudget(orch::modelCtxTokens(m.provider, m.id), ov);
+    const orch::ContextBudget b = orch::deriveRequestContext(orch::requestBudgetFor(m.provider, m.id, false), ov);
     const std::string what = m.provider + "/" + m.id;
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(b.ctxTokens, a.ctxTokens, what.c_str());
     TEST_ASSERT_EQUAL_INT_MESSAGE(b.systemPromptBytes, a.systemPromptBytes, what.c_str());
@@ -660,7 +685,7 @@ static uint32_t capRoundMs(const std::string& host) {
 }
 
 static std::string budgetRow(const Recorded& m) {
-  const orch::ContextBudget b = orch::deriveBudget(orch::modelCtxTokens(m.provider, m.id), {});
+  const orch::ContextBudget b = orch::deriveBudget(orch::legacyCtxTokens(m.provider, m.id), {});
   char buf[640];
   std::snprintf(buf, sizeof(buf),
                 "{\"provider\":\"%s\",\"id\":\"%s\",\"ctxTokens\":%u,\"systemPromptBytes\":%d,"
@@ -729,11 +754,12 @@ static void test_budgets_v5_1_1_fixture_holds_every_recorded_model() {
   }
 }
 
-// Today's window table and caps are exactly v5.1.1's, row for row. Lane H re-pins this
-// when it switches modelCtxTokens; the fixture itself never changes.
+// v5.1.1's frozen window table and caps still derive budgets_v5_1_1.json row for row: the
+// no-shrink baseline a request budget is held to (lane H re-pinned it to legacyCtxTokens at
+// its switch-over; the fixture itself never changes).
 static void test_todays_table_is_v5_1_1() {
   const std::string have = readFixture(kBudgetsFixture);
-  TEST_ASSERT_TRUE_MESSAGE(have == budgetsFixtureText(), "today's budgets or caps differ from budgets_v5_1_1.json");
+  TEST_ASSERT_TRUE_MESSAGE(have == budgetsFixtureText(), "v5.1.1's budgets or caps differ from budgets_v5_1_1.json");
 }
 
 int main(int, char**) {
@@ -747,12 +773,13 @@ int main(int, char**) {
   RUN_TEST(test_the_fold_read_goes_on_past_a_page_the_store_cut_short);
   RUN_TEST(test_the_fold_read_stops_before_rows_the_card_will_not_give_back);
   RUN_TEST(test_an_automatic_fold_waits_for_the_tail_after_a_restart);
+  RUN_TEST(test_an_owner_trigger_below_the_keep_mark_still_folds);
   RUN_TEST(test_listed_window_from_the_stored_list);
   RUN_TEST(test_listed_window_lookup_install);
   RUN_TEST(test_request_budget_is_lane_bs);
   RUN_TEST(test_round_load_reads_the_load_within_the_table);
   RUN_TEST(test_declared_fields_start_empty);
-  RUN_TEST(test_head_budget_is_todays_for_every_recorded_model);
+  RUN_TEST(test_head_budget_is_the_request_budget_for_every_recorded_model);
   RUN_TEST(test_budgets_v5_1_1_fixture_holds_every_recorded_model);
   RUN_TEST(test_todays_table_is_v5_1_1);
   return UNITY_END();

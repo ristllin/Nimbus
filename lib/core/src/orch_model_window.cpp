@@ -48,7 +48,7 @@ uint32_t familyCtxTokens(const std::string& p, const std::string& m) {
 }  // namespace
 
 uint32_t modelCtxTokens(const std::string& provider, const std::string& model) {
-  return legacyCtxTokens(provider, model);
+  return headWindowTokens(provider, model);   // lane H's switch-over: the head's real window
 }
 
 uint32_t legacyCtxTokens(const std::string& provider, const std::string& model) {

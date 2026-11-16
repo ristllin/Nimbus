@@ -17,15 +17,15 @@
 // rows, fold 400 rows): their cost is internal-SRAM row overhead (many SMALL
 // strings under the 128 B extmem-spill threshold), not window size.
 //
-// Arduino-free, host-tested. Window resolution reuses modelCtxTokens()
-// (model_window.h) - no second table.
+// Arduino-free, host-tested. Window resolution reuses the window table (model_window.h) -
+// no second table.
 //
 // ONE SEAM (lane P0 of the history fix, 16 Nov 2026): every consumer of the head's
 // budget - the turn's caps, the history window, the fold slice, the results.get view
 // cap, the web console's auto values, the device's brief and the VN's fold slice -
 // reads headContextBudget(host, model, overrides), never deriveBudget directly
-// (test_orch_budget pins it). Its body is today's derivation; the history fix changes
-// the body, and every consumer follows at once.
+// (test_orch_budget pins it). Since lane H's switch-over its body is
+// deriveRequestContext(requestBudgetFor(host, model)): every consumer moved at once.
 
 #include <cstddef>
 #include <cstdint>
@@ -80,8 +80,9 @@ struct BudgetOverrides {
 // shrinks an allocation (floors/caps preserve that).
 ContextBudget deriveBudget(uint32_t ctxTokens, const BudgetOverrides& ov);
 
-// The budget of a request the head `host` sends on `model`: the one seam above.
-// Today's body: deriveBudget(modelCtxTokens(host, model), ov).
+// The budget of a request the head `host` sends on `model`: the one seam above,
+// deriveRequestContext(requestBudgetFor(host, model, false), ov) (host "cumulo" is always
+// routed there: requestBudgetFor reads its selector's upstream).
 ContextBudget headContextBudget(const std::string& host, const std::string& model, const BudgetOverrides& ov);
 
 // ---- lane B: every field from the one request budget (plan v3 protocols) -------------

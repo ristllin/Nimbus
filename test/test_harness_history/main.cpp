@@ -419,18 +419,22 @@ static void test_switch_off_is_byte_identical() {
 // window is stable across turns between shifts and across a restart (a fresh
 // engine over the same rows and marks renders the same block).
 static void test_overflow_shift_is_recorded_and_stable() {
+  // Lane H: the head's derived history (Claude Haiku 5.5: max 62,080 B, soft 49,664 B) holds
+  // every turn until max; only past it are the oldest hidden, down to soft.
   Rig r;
+  r.cfg.orchModels["anthropic"] = "claude-haiku-5-5";
   const std::string longText(700, 'w');
-  for (int i = 0; i < 14; i++) r.eng->handleMessage("q" + std::to_string(i) + " " + longText, "Roy", "123");
+  for (int i = 0; i < 120; i++) r.eng->handleMessage("q" + std::to_string(i) + " " + longText, "Roy", "123");
   TEST_ASSERT_TRUE(r.shifts >= 1);
-  TEST_ASSERT_TRUE(r.shifts <= 4);   // steps of about high - low bytes, not one per turn
+  TEST_ASSERT_TRUE(r.shifts <= 4);   // steps of a fifth of the window, not one per turn
   const std::string soft = r.marks.softStart;
   TEST_ASSERT_FALSE(soft.empty());
   // The window holds only rows after the shift.
   TEST_ASSERT_TRUE(r.lastWindow().find("q0 ") == std::string::npos);
-  TEST_ASSERT_TRUE(r.lastWindow().find("q12 ") != std::string::npos);
+  TEST_ASSERT_TRUE(r.lastWindow().find("q118 ") != std::string::npos);
   // A restart: a new engine over the same store and marks renders the same history.
   Rig fresh;
+  fresh.cfg.orchModels["anthropic"] = "claude-haiku-5-5";
   fresh.store = r.store;
   fresh.seq = r.seq;
   fresh.marks = r.marks;
@@ -447,7 +451,7 @@ static void test_overflow_shift_is_recorded_and_stable() {
 static void test_fold_slice_starts_after_the_anchor() {
   Rig r;
   for (int i = 0; i < 40; i++) r.eng->handleMessage("note " + std::to_string(i) + std::string(240, 'n'), "Roy", "123");
-  const agent::FoldSlice first = r.eng->historyFoldSlice("123", 65536, false);
+  const agent::FoldSlice first = r.eng->historyFoldSlice("123", 65536, true);
   TEST_ASSERT_FALSE(first.digest.empty());
   TEST_ASSERT_TRUE(first.digest.find("note 0n") != std::string::npos);
   r.marks.thru = first.thru;

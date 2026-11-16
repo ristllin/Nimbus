@@ -4,7 +4,7 @@
 #include <cctype>
 #include <cstring>
 
-#include "nimbus/orch/compact.h"       // modelCtxTokens - the family context-window table
+#include "nimbus/orch/model_window.h"  // tableWindowTokens - the family context-window table
 #include "nimbus/orch/router_route.h"  // resolveRouterRoute - a router pick's upstream model
 
 namespace nimbus {
@@ -196,7 +196,9 @@ ModelInfo classifyModel(const std::string& provider, const std::string& id) {
   mi.id = id;
   mi.family = modelFamily(provider, id);
   mi.size = modelSizeClass(provider, id);
-  mi.ctxTokens = modelCtxTokens(provider, id);
+  // The table, never the listed lookup: that lookup reads lists this parse builds
+  // (a parse inside it would recurse). The list's own figure overrides below.
+  mi.ctxTokens = tableWindowTokens(provider, id);
   const Kind k = kindFromId(id);
   switch (k) {
     case Kind::Embedding:

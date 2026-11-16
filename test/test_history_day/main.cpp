@@ -7,7 +7,6 @@
 
 #include "nimbus/harness/conversation.h"
 #include "nimbus/orch/budget.h"
-#include "nimbus/orch/compact.h"   // modelCtxTokens
 #include "nimbus/orch/model_window.h"   // legacyCtxTokens
 #include "nimbus/orch/request_budget.h"   // requestBudgetFor - lane B's derived marks
 #include "nimbus/orch/episodic.h"
@@ -85,8 +84,10 @@ Chat dayOfFood(int todayTurns, size_t bytes = 400) {
 // The 128K head's window on a busy day: every turn of today survives the shift;
 // yesterday's do not. Counter-test: without the floor the morning is gone.
 static void test_the_whole_day_survives_the_overflow_shift() {
-  const ContextBudget mistral = deriveBudget(modelCtxTokens("mistral", "mistral-large-latest"), {});
-  TEST_ASSERT_EQUAL(5242, (int)mistral.recentConvBytes);   // the 26 Oct figure
+  // v5.1.1's 128K window (the 26 Oct figure; since lane H's switch-over the head's real
+  // window is larger and its history derived, test_derived_window_* below).
+  const ContextBudget mistral = deriveBudget(legacyCtxTokens("mistral", "mistral-large-latest"), {});
+  TEST_ASSERT_EQUAL(5242, (int)mistral.recentConvBytes);
   const Chat c = dayOfFood(20);
   const agent::HistoryWindow w = agent::fitHistory(c.turns(), "", headBudget(mistral.recentConvBytes, true), 0);
   TEST_ASSERT_TRUE(w.shifted);

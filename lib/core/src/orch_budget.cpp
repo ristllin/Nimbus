@@ -2,7 +2,8 @@
 
 #include <algorithm>
 
-#include "nimbus/orch/model_window.h"   // kCtxDefaultTokens + modelCtxTokens - the window table
+#include "nimbus/orch/model_window.h"   // kCtxDefaultTokens - the window table
+#include "nimbus/orch/request_budget.h" // requestBudgetFor - the seam's body
 #include "nimbus/orch/mem_config.h"  // MemConfig::kContextMin/Max - the owner-override clamp
 #include "nimbus/orch/wire_limits.h" // kToolResultCapMax - the per-result ceiling; foldDigestCap
 
@@ -76,7 +77,9 @@ ContextBudget deriveBudget(uint32_t ctxTokens, const BudgetOverrides& ov) {
 }
 
 ContextBudget headContextBudget(const std::string& host, const std::string& model, const BudgetOverrides& ov) {
-  return deriveBudget(modelCtxTokens(host, model), ov);
+  // Lane H's switch-over: every consumer reads the head's request budget (a Cumulo head is
+  // budgeted as its upstream, routed: requestBudgetFor reads the selector).
+  return deriveRequestContext(requestBudgetFor(host, model, false), ov);
 }
 
 namespace {

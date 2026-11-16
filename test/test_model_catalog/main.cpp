@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include <cstdlib>
+
 #include <algorithm>
 #include <cstdio>
 #include <string>
@@ -534,6 +536,16 @@ static void test_streamed_parse_matches_the_old_parse_on_byok_lists() {
                     m.maxOutTokens, (int)m.deprecated, (int)m.apiCaps);
       got += line;
     }
+  }
+  // The window column reads the window table (modelCtxTokens): lane H's switch-over moved it to
+  // the head's real window; GOLDEN_UPDATE=1 re-blesses (read the diff first).
+  const char* bless = std::getenv("GOLDEN_UPDATE");
+  if (bless && std::string(bless) == "1") {
+    FILE* w = std::fopen("test/test_model_catalog/byok_parse_golden_2026-10.txt", "wb");
+    TEST_ASSERT_NOT_NULL(w);
+    std::fwrite(got.data(), 1, got.size(), w);
+    std::fclose(w);
+    return;
   }
   TEST_ASSERT_EQUAL_STRING(golden.c_str(), got.c_str());
 }

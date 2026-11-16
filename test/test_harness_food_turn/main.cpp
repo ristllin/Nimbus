@@ -378,6 +378,26 @@ static void test_history_leaves_only_after_a_real_refusal() {
   TEST_ASSERT_TRUE(has(in, "memory_episodic {\"kind\":\"message\",\"before\":\"m0000"));
 }
 
+// Device scale, the tool loop on (plan v3 lane H): a day of food chat on Lumi's head (Mistral
+// Large 4, its derived history of 206 KB since the switch-over) keeps the morning's estimate in
+// the request at 18:35, with nothing left out (v5.1.1's 128K window for the same head kept
+// 5,242 B and the 16 KB day: test_history_day's counter-tests).
+static void test_device_scale_loop_turn_keeps_the_mornings_estimate() {
+  Rig r;
+  r.cfg.toolLoop = true;
+  r.cfg.orchModels["mistral"] = "mistral-large-4-0";
+  const uint32_t h0 = kDay / 3600;
+  for (int i = 0; i < 4; i++) r.turn(h0 - 5, "yesterday " + std::to_string(i), std::string(500, 'y'));
+  r.turn(h0 + 8, "breakfast photo: skyr, berries, granola", "Breakfast about 450 kcal / 30 g protein.");
+  for (int i = 0; i < 30; i++) r.turn(h0 + 9 + (uint32_t)i / 4, "meal chat " + std::to_string(i), std::string(1400, 'e'));
+  r.eng->handleMessage("you estimated breakfast earlier, use that number", "Roy", "1001");
+  const std::string h = r.history();
+  TEST_ASSERT_TRUE_MESSAGE(has(h, "Breakfast about 450 kcal"), "the morning's estimate rides the request");
+  TEST_ASSERT_TRUE(has(h, "meal chat 29"));
+  TEST_ASSERT_TRUE(has(h, "yesterday 0"));   // nothing moved at midnight either
+  TEST_ASSERT_FALSE(has(r.inputs.back(), "[LEFT OUT"));
+}
+
 // Lane QFIX (OIR-36): the [MEMORY ROUTING] hint names where a remember-request lands, on
 // the owner's own message only. A scheduled routine whose prompt happens to say "remember"
 // is not an owner asking for a save, so it never carries the hint.
@@ -412,6 +432,7 @@ int main(int, char**) {
   RUN_TEST(test_the_fold_carries_the_day);
   RUN_TEST(test_the_whole_day_is_in_the_history);
   RUN_TEST(test_history_leaves_only_after_a_real_refusal);
+  RUN_TEST(test_device_scale_loop_turn_keeps_the_mornings_estimate);
   RUN_TEST(test_memory_routing_hint_rides_only_a_real_owner_message);
   return UNITY_END();
 }

@@ -216,13 +216,14 @@ static void test_every_budget_consumer_reads_the_one_seam() {
     TEST_ASSERT_TRUE_MESSAGE(countOf(stripLineComments(readFile(f)), "headContextBudget(") >= 1, f);
   TEST_ASSERT_TRUE_MESSAGE(countOf(stripLineComments(readFile("nimbusd/src/rig.h")), "deriveRequestContext(") >= 1,
                            "the VN fold reads the request context");
-  // Today's body: the seam is the derivation over the window table.
+  // Lane H's switch-over: the seam is the request budget's derivation (a Cumulo selector is
+  // budgeted as its upstream, routed).
   for (const char* host : {"anthropic", "openai", "mistral", "zai", "cumulo", "custom"})
     for (const char* model : {"", "claude-sonnet-5-5", "gpt-5.6", "mistral-large-4-0", "glm-5.3", "openai/gpt-5.6"}) {
       BudgetOverrides ov;
       ov.toolResultCap = 4000;
       const ContextBudget a = headContextBudget(host, model, ov);
-      const ContextBudget b = deriveBudget(modelCtxTokens(host, model), ov);
+      const ContextBudget b = deriveRequestContext(requestBudgetFor(host, model, false), ov);
       TEST_ASSERT_EQUAL_UINT32(b.ctxTokens, a.ctxTokens);
       TEST_ASSERT_EQUAL_UINT32(b.toolResultBytes, a.toolResultBytes);
       TEST_ASSERT_EQUAL_UINT32(b.recentConvBytes, a.recentConvBytes);

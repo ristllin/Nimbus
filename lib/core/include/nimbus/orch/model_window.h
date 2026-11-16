@@ -15,20 +15,21 @@ namespace orch {
 // The device may layer an NVS override on top (store::ctxTokensOverride).
 constexpr uint32_t kCtxDefaultTokens = 100000;
 
-// Returns the context window (tokens) for a provider/model pair.
-// Matching: exact family prefixes on the known catalogs - "claude-*" 200K,
-// "gpt-5*" 272K, "gpt-6*" and newer 922K, "o<digit>*" 200K, "mistral-*" 128K -
-// else the default. A router selector ("<upstream>/<model>", what the Cumulo
-// picker stores) is split by resolveRouterRoute first and read as (upstream,
-// bare model); provider "cumulo" with a bare id reads as the router's default
-// upstream (openai). Another provider's id is split only when its prefix is a
-// router upstream (openai/anthropic/mistral/zai).
+// Returns the context window (tokens) for a provider/model pair: since lane H's switch-over
+// (v5.1.2) the head's real window, headWindowTokens below (the listed window, else the
+// corrected family table). Every reader of a model's window reads it: the model catalog,
+// the compaction threshold and the request budget.
 uint32_t modelCtxTokens(const std::string& provider, const std::string& model);
 
-// v5.1.1's table above, frozen (lane B of the history fix, 16 Nov 2026). modelCtxTokens
-// reads it until lane H switches modelCtxTokens to headWindowTokens; the request budget
-// derives its no-shrink baseline from it (test/support/fixtures/budgets_v5_1_1.json was
-// written from it), so that switch can never raise the baseline a budget is held to.
+// v5.1.1's table, frozen (lane B of the history fix, 16 Nov 2026). Matching: exact family
+// prefixes on the known catalogs - "claude-*" 200K, "gpt-5*" 272K, "gpt-6*" and newer 922K,
+// "o<digit>*" 200K, "mistral-*" 128K - else the default. A router selector ("<upstream>/<model>",
+// what the Cumulo picker stores) is split by resolveRouterRoute first and read as (upstream,
+// bare model); provider "cumulo" with a bare id reads as the router's default upstream
+// (openai). Another provider's id is split only when its prefix is a router upstream. The
+// request budget derives its no-shrink baseline from it (test/support/fixtures/
+// budgets_v5_1_1.json was written from it), so the switch-over never raised the baseline a
+// budget is held to.
 uint32_t legacyCtxTokens(const std::string& provider, const std::string& model);
 
 // The listed window: what the device's stored model list (the VN: its harvested

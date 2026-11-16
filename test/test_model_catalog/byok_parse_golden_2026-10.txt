@@ -164,14 +164,14 @@ codestral-embed-2505||r4|c16|-|ctx8192|out0|dep0|api1
 mistral-embed-2312||r4|c16|-|ctx8192|out0|dep0|api1
 mistral-embed||r4|c16|-|ctx8192|out0|dep0|api1
 == zai 11
-glm-4.5||r3|c13|L|ctx100000|out0|dep0|api0
-glm-4.6||r3|c13|L|ctx100000|out0|dep0|api0
-glm-4.7||r3|c13|L|ctx100000|out0|dep0|api0
-glm-5||r3|c13|L|ctx100000|out0|dep0|api0
-glm-5.1||r3|c13|L|ctx100000|out0|dep0|api0
-glm-5.2||r3|c13|L|ctx100000|out0|dep0|api0
-glm-5.3||r3|c13|L|ctx100000|out0|dep0|api0
-glm-5-turbo||r3|c13|M|ctx100000|out0|dep0|api0
-glm-4.5-air||r3|c13|S|ctx100000|out0|dep0|api0
-glm-5.3-flash||r3|c13|S|ctx100000|out0|dep0|api0
-glm-5.3-flashx||r3|c13|S|ctx100000|out0|dep0|api0
+glm-4.5||r3|c13|L|ctx128000|out0|dep0|api0
+glm-4.6||r3|c13|L|ctx128000|out0|dep0|api0
+glm-4.7||r3|c13|L|ctx128000|out0|dep0|api0
+glm-5||r3|c13|L|ctx917504|out0|dep0|api0
+glm-5.1||r3|c13|L|ctx917504|out0|dep0|api0
+glm-5.2||r3|c13|L|ctx917504|out0|dep0|api0
+glm-5.3||r3|c13|L|ctx917504|out0|dep0|api0
+glm-5-turbo||r3|c13|M|ctx917504|out0|dep0|api0
+glm-4.5-air||r3|c13|S|ctx128000|out0|dep0|api0
+glm-5.3-flash||r3|c13|S|ctx917504|out0|dep0|api0
+glm-5.3-flashx||r3|c13|S|ctx917504|out0|dep0|api0

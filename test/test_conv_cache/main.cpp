@@ -559,6 +559,27 @@ static void test_one_card_page_with_the_duplicate_check() {
   TEST_ASSERT_EQUAL_UINT32(plain, firstTurnCardReads(true));
 }
 
+// The same restart on a head with room (Claude Sonnet: 118 KB of history since the
+// switch-over): once the idle pump has filled the cache, the whole backlog after thru rides
+// the request and nothing is named as missing.
+static void test_after_the_fill_the_whole_backlog_rides_the_request() {
+  Store s;
+  const std::string thru = s.turn("c1", 0);
+  for (int i = 1; i <= 120; i++) s.turn("c1", i, 300);
+  EngineRig r(s.fs, s.seq, thru, "claude-sonnet-5-5");
+  r.eng->handleMessage("what did you just say?", "Roy", "c1");
+  TEST_ASSERT_TRUE(r.instructions.back().find("answer 120 ") != std::string::npos);
+  TEST_ASSERT_TRUE(r.inputs.back().find("still reading them") != std::string::npos);
+  while (r.log.backfillStep()) {   // the device's loop task indexes the card meanwhile
+  }
+  int passes = 0;
+  while (passes < 100 && r.eng->historyIdleStep()) passes++;
+  r.eng->handleMessage("and the first thing I asked today?", "Roy", "c1");
+  TEST_ASSERT_TRUE_MESSAGE(r.instructions.back().find("answer 1 ") != std::string::npos, "the oldest exchange after thru");
+  TEST_ASSERT_TRUE_MESSAGE(r.inputs.back().find("[CONVERSATION COVERAGE]") == std::string::npos, r.inputs.back().c_str());
+  TEST_ASSERT_EQUAL_UINT32(0, r.eng->historyRead().cardReads);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_appends_match_store_rows_with_no_card_read);
@@ -576,5 +597,6 @@ int main(int, char**) {
   RUN_TEST(test_an_empty_probe_the_store_cut_short_is_not_the_end);
   RUN_TEST(test_a_boot_replay_is_not_journaled);
   RUN_TEST(test_one_card_page_with_the_duplicate_check);
+  RUN_TEST(test_after_the_fill_the_whole_backlog_rides_the_request);
   return UNITY_END();
 }

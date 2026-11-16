@@ -6,9 +6,10 @@
 #include "nimbus/orch/model_defaults.h"
 #include "nimbus/orch/model_window.h"
 
-// test_model_window - the per-model context window table (model_window.h). These
+// test_model_window - the per-model context window table (model_window.h). The first
 // assertions moved here verbatim from test_orch_compact (lane P0 of the history fix,
-// 16 Nov 2026), so the window's owner changes them without touching the fold's suite.
+// 16 Nov 2026); since lane H's switch-over they pin v5.1.1's frozen table
+// (legacyCtxTokens), the no-shrink baseline, and modelCtxTokens is the head's real window.
 
 using namespace nimbus::orch;
 
@@ -18,22 +19,22 @@ void tearDown() { installListedCtxLookup(nullptr); }
 
 // ---- model context table -----------------------------------------------------
 static void test_ctx_table_families() {
-  TEST_ASSERT_EQUAL_UINT32(200000, modelCtxTokens("anthropic", "claude-sonnet-4-6"));
-  TEST_ASSERT_EQUAL_UINT32(200000, modelCtxTokens("anthropic", "claude-sonnet-4-7"));  // unseen snapshot, family match
-  TEST_ASSERT_EQUAL_UINT32(272000, modelCtxTokens("openai", "gpt-5.5"));
-  TEST_ASSERT_EQUAL_UINT32(272000, modelCtxTokens("openai", "gpt-5.4-mini"));
+  TEST_ASSERT_EQUAL_UINT32(200000, legacyCtxTokens("anthropic", "claude-sonnet-4-6"));
+  TEST_ASSERT_EQUAL_UINT32(200000, legacyCtxTokens("anthropic", "claude-sonnet-4-7"));  // unseen snapshot, family match
+  TEST_ASSERT_EQUAL_UINT32(272000, legacyCtxTokens("openai", "gpt-5.5"));
+  TEST_ASSERT_EQUAL_UINT32(272000, legacyCtxTokens("openai", "gpt-5.4-mini"));
   // gpt-6-astra (2026-09): 1,050,000 published context minus the 128,000 max
   // output = the 922K INPUT window LiteLLM reports. Later generations inherit it.
-  TEST_ASSERT_EQUAL_UINT32(922000, modelCtxTokens("openai", "gpt-6-astra"));
-  TEST_ASSERT_EQUAL_UINT32(922000, modelCtxTokens("openai", "gpt-7-x"));
-  TEST_ASSERT_EQUAL_UINT32(200000, modelCtxTokens("openai", "o4-mini-deep-research"));
-  TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("mistral", "mistral-large-latest"));
+  TEST_ASSERT_EQUAL_UINT32(922000, legacyCtxTokens("openai", "gpt-6-astra"));
+  TEST_ASSERT_EQUAL_UINT32(922000, legacyCtxTokens("openai", "gpt-7-x"));
+  TEST_ASSERT_EQUAL_UINT32(200000, legacyCtxTokens("openai", "o4-mini-deep-research"));
+  TEST_ASSERT_EQUAL_UINT32(128000, legacyCtxTokens("mistral", "mistral-large-latest"));
   // CUM-288 class rule: whatever model the Cumulo router head resolves to must
   // get its real family window, never the conservative 100K default a "" model
   // or an unknown family would produce (which compacted the router head early).
-  TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("cumulo", "gpt-4o"));
-  TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("cumulo", "gpt-4o-mini"));
-  TEST_ASSERT_EQUAL_UINT32(272000, modelCtxTokens("cumulo", "gpt-5.6"));  // the 2026-09 default
+  TEST_ASSERT_EQUAL_UINT32(128000, legacyCtxTokens("cumulo", "gpt-4o"));
+  TEST_ASSERT_EQUAL_UINT32(128000, legacyCtxTokens("cumulo", "gpt-4o-mini"));
+  TEST_ASSERT_EQUAL_UINT32(272000, legacyCtxTokens("cumulo", "gpt-5.6"));  // the 2026-09 default
 }
 
 // Class rule: no gpt-5-or-newer generation may fall through to the conservative
@@ -42,7 +43,7 @@ static void test_ctx_table_families() {
 static void test_ctx_table_every_gpt_generation_is_known() {
   for (int gen = 5; gen <= 9; ++gen) {
     const std::string id = "gpt-" + std::to_string(gen) + "-x";
-    TEST_ASSERT_TRUE_MESSAGE(modelCtxTokens("openai", id) >= 272000, id.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(legacyCtxTokens("openai", id) >= 272000, id.c_str());
   }
 }
 
@@ -52,24 +53,24 @@ static void test_ctx_table_every_gpt_generation_is_known() {
 // the upstream's window for the bare id: the prefixed default fell to the 100K
 // default, a 2.7x smaller recent window and compaction at a third of the window.
 static void test_ctx_router_selectors_resolve_to_the_upstream_window() {
-  TEST_ASSERT_EQUAL_UINT32(272000, modelCtxTokens("cumulo", "openai/gpt-5.6"));
-  TEST_ASSERT_EQUAL_UINT32(200000, modelCtxTokens("cumulo", "anthropic/claude-opus-5"));
-  TEST_ASSERT_EQUAL_UINT32(922000, modelCtxTokens("cumulo", "openai/gpt-6-astra"));
-  TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("cumulo", "mistral/mistral-large-latest"));
-  TEST_ASSERT_EQUAL_UINT32(272000, modelCtxTokens("cumulo", "OpenAI/GPT-5.6"));   // case-insensitive
+  TEST_ASSERT_EQUAL_UINT32(272000, legacyCtxTokens("cumulo", "openai/gpt-5.6"));
+  TEST_ASSERT_EQUAL_UINT32(200000, legacyCtxTokens("cumulo", "anthropic/claude-opus-5"));
+  TEST_ASSERT_EQUAL_UINT32(922000, legacyCtxTokens("cumulo", "openai/gpt-6-astra"));
+  TEST_ASSERT_EQUAL_UINT32(128000, legacyCtxTokens("cumulo", "mistral/mistral-large-latest"));
+  TEST_ASSERT_EQUAL_UINT32(272000, legacyCtxTokens("cumulo", "OpenAI/GPT-5.6"));   // case-insensitive
   // The bare spelling keeps the router's default upstream (openai): unchanged.
-  TEST_ASSERT_EQUAL_UINT32(272000, modelCtxTokens("cumulo", "gpt-5.6"));
-  TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("cumulo", "gpt-4o"));
+  TEST_ASSERT_EQUAL_UINT32(272000, legacyCtxTokens("cumulo", "gpt-5.6"));
+  TEST_ASSERT_EQUAL_UINT32(128000, legacyCtxTokens("cumulo", "gpt-4o"));
   // Another provider's id is split only when its prefix is a router upstream; a
   // LAN server's namespaced id keeps the conservative default (never a bigger
   // family window: "mistralai/Mistral-7B" is a 32K model, not mistral-* 128K).
-  TEST_ASSERT_EQUAL_UINT32(200000, modelCtxTokens("custom", "anthropic/claude-sonnet-5"));
-  TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, modelCtxTokens("custom", "meta-llama/llama-3-70b"));
+  TEST_ASSERT_EQUAL_UINT32(200000, legacyCtxTokens("custom", "anthropic/claude-sonnet-5"));
+  TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, legacyCtxTokens("custom", "meta-llama/llama-3-70b"));
   TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens,
-                           modelCtxTokens("custom", "mistralai/Mistral-7B-Instruct-v0.3"));
-  TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, modelCtxTokens("custom", "TheBloke/Mistral-7B-GGUF"));
+                           legacyCtxTokens("custom", "mistralai/Mistral-7B-Instruct-v0.3"));
+  TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, legacyCtxTokens("custom", "TheBloke/Mistral-7B-GGUF"));
   // A leading '/' is not an upstream marker (the router rule's own semantics).
-  TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, modelCtxTokens("custom", "/gpt-5.6"));
+  TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, legacyCtxTokens("custom", "/gpt-5.6"));
 }
 
 // The class: whatever (upstream, model) the router serves, the selector's window
@@ -86,18 +87,18 @@ static void test_ctx_router_selector_class() {
   };
   for (const Pick& k : kPicks) {
     const std::string sel = std::string(k.up) + "/" + k.id;
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(modelCtxTokens(k.up, k.id), modelCtxTokens("cumulo", sel),
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(legacyCtxTokens(k.up, k.id), legacyCtxTokens("cumulo", sel),
                                      sel.c_str());
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(modelCtxTokens("openai", k.id), modelCtxTokens("cumulo", k.id),
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(legacyCtxTokens("openai", k.id), legacyCtxTokens("cumulo", k.id),
                                      k.id);
   }
 }
 
 static void test_ctx_table_unknown_is_conservative() {
   // Unknown family -> the conservative default (compacts EARLY, never late).
-  TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, modelCtxTokens("custom", "llama-3-70b"));
+  TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, legacyCtxTokens("custom", "llama-3-70b"));
   // "openai"/"omni"-style names must not match the o-series rule.
-  TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, modelCtxTokens("custom", "omni-chat"));
+  TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, legacyCtxTokens("custom", "omni-chat"));
 }
 
 
@@ -165,14 +166,21 @@ static void test_head_window_table_rows() {
       TEST_ASSERT_EQUAL_UINT32_MESSAGE(legacyCtxTokens("openai", m.id), tableWindowTokens("openai", m.id), m.id.c_str());
 }
 
-// Counter-test: Lumi's head is 1,048,576 tokens here and 128,000 in the legacy table,
-// which stays v5.1.1's until lane H switches modelCtxTokens.
-static void test_large4_window_here_and_legacy() {
-  TEST_ASSERT_EQUAL_UINT32(1048576, headWindowTokens("mistral", "mistral-large-4-0"));
-  TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("mistral", "mistral-large-4-0"));
+// Lane H's switch-over: modelCtxTokens is the head's real window for every recorded model,
+// with and without the device's listed lookup; v5.1.1's table stays frozen beside it (Lumi's
+// head: 1,048,576 tokens now, 128,000 in the baseline).
+static void test_model_window_is_the_heads_real_window() {
+  TEST_ASSERT_EQUAL_UINT32(1048576, modelCtxTokens("mistral", "mistral-large-4-0"));
   TEST_ASSERT_EQUAL_UINT32(128000, legacyCtxTokens("mistral", "mistral-large-4-0"));
   for (const recorded::Model& m : recorded::models())
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(legacyCtxTokens(m.provider, m.id), modelCtxTokens(m.provider, m.id), m.id.c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(headWindowTokens(m.provider, m.id), modelCtxTokens(m.provider, m.id), m.id.c_str());
+  installListedCtxLookup(&recorded::listedLookup);
+  for (const recorded::Model& m : recorded::models())
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(headWindowTokens(m.provider, m.id), modelCtxTokens(m.provider, m.id), m.id.c_str());
+  installListedCtxLookup(nullptr);
+  // A selector on the router reads its upstream's real window too.
+  TEST_ASSERT_EQUAL_UINT32(headWindowTokens("anthropic", "claude-sonnet-5-5"),
+                           modelCtxTokens("cumulo", "anthropic/claude-sonnet-5-5"));
 }
 
 // Fresh device (no model list fetched yet): every default head model, Lumi's
@@ -221,7 +229,7 @@ int main(int, char**) {
   RUN_TEST(test_ctx_router_selector_class);
   RUN_TEST(test_head_window_is_listed_else_table_for_every_recorded_model);
   RUN_TEST(test_head_window_table_rows);
-  RUN_TEST(test_large4_window_here_and_legacy);
+  RUN_TEST(test_model_window_is_the_heads_real_window);
   RUN_TEST(test_fresh_device_table_equals_listed_for_default_heads);
   RUN_TEST(test_head_window_router_selector_class);
   return UNITY_END();
