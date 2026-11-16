@@ -235,6 +235,12 @@
   "assertions": [
     "reply_ok",
     {
+      "id": "request_contains",
+      "params": {
+        "text": "blueberries about 190 g, 108 kcal"
+      }
+    },
+    {
       "id": "reply_contains_re",
       "params": {
         "re": "\\b190\\s*(g|grams?)\\b|\\b108\\s*kcal\\b"

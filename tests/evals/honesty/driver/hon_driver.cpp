@@ -32,7 +32,8 @@
 //        prompt, the name the routine's display name, loopId its loop id. The
 //        turn runs exactly as the device would fire it (the prefs rails read the
 //        scheduled flag), and its reply is graded like any other.
-// The transcript also carries the final state: files, prefs and memory rows.
+// The transcript also carries the final state: files, prefs and memory rows, and each
+// owner turn its first provider request body (request0).
 // The graded turn is the last live one. Web search is left out of the lab when the
 // scenario says so (the device head it replays had none), and the scenario's clock
 // replaces the host clock.
@@ -371,8 +372,13 @@ bool runSteps(lab::LabRig& rig, Subs& subs, JsonObjectConst sc, JsonDocument& ou
       continue;
     }
     if (kind == "say") {
+      const size_t sentBefore = rig.http().calls.size();
       const lab::TurnRecord t = rig.say(chat, str(st["text"]));
       addTurn(turns, "owner", t, logFrom);
+      // The turn's first provider request as sent (history, per-turn block, tools): what
+      // the head had before it called any tool. Bodies only; headers are never kept.
+      if (rig.http().calls.size() > sentBefore)
+        turns[turns.size() - 1]["request0"] = rig.http().calls[sentBefore].reqBody;
       ok = ok && t.ok;
       continue;
     }

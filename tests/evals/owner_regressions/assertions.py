@@ -319,6 +319,20 @@ def reply_contains_re(sc: dict, t: dict, params: dict):
 
 
 @assertion
+def request_contains(sc: dict, t: dict, params: dict):
+    """The graded turn's first provider request carried params['text'] (case-sensitive).
+
+    What the head had before any tool call: the history fix's invariant is that the
+    conversation reaches the request (a head that searches the log for what was left out
+    still answers, so the reply alone cannot show the cut). Needs the driver's request0."""
+    body = last_turn(t).get("request0")
+    if body is None:
+        return False, "no request0 in the transcript (driver too old, or the turn sent nothing)"
+    ok = params["text"] in body
+    return ok, f"{params['text']!r} {'in' if ok else 'missing from'} the {len(body)} B first request"
+
+
+@assertion
 def tool_called(sc: dict, t: dict, params: dict):
     """Some tool call contains params['name'] (e.g. 'web.' for any web lookup)."""
     name = params.get("name", "")

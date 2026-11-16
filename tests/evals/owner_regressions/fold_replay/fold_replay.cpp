@@ -17,8 +17,8 @@
 //   foldAnswers  the provider's answer to each fold request, in order ("" = an empty
 //                reply); requests past the list get an empty reply
 // The result names every request a pump pass made (pass, host, model, path), the summary
-// before and after, and every message the instance sent the owner. Grading is
-// run_offline.py's.
+// before and after, every message the instance sent the owner, and the fold-store file it
+// left (blob_after). Grading is run_offline.py's.
 #include <unistd.h>
 
 #include <chrono>
@@ -193,6 +193,9 @@ int main(int argc, char** argv) {
     rp.out["summary_after"] = rig.foldState(kChat).summary;
     rig.setDeliver(nullptr);
   }
+  // The fold-store file the instance left (the release's own blob encoding): the sample
+  // check_fold_health.py reads under the v5.1.1 parser for the rollback round trip.
+  rp.out["blob_after"] = readFile(opt.dataDir + "/mem/chatsum.txt");
   JsonArray msgs = rp.out["messages"].to<JsonArray>();
   for (const auto& m : sent) msgs.add(m);
   rp.out["scenario"] = sc["id"].as<std::string>();
