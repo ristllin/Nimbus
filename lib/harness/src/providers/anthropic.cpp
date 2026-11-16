@@ -1137,7 +1137,8 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     const bool routed = wire::routedDeps(pd);
     const uint32_t roundMs = wire::clampRoundMs(budgetMs, wire::headCeilingMs(routed, kHeadRoundCeilingMs));
     // This round's own budget (the host and model that send it).
-    const wire::RoundBudget rb = wire::roundBudget(pd, "anthropic", model, routed);
+    const std::unique_ptr<const wire::RoundBudget> rbBox = wire::newRoundBudget(pd, "anthropic", model, routed);
+    const wire::RoundBudget& rb = *rbBox;
     const size_t replay = wire::replayBytesFor(rb, kReplayFloorBytes);
     const RoundKind kind = allowTools ? RoundKind::ToolRound : RoundKind::FinalRound;
     OutputCap cap = outputCapFor("anthropic", model, kind, roundMs);   // the table's, until the load is known
@@ -1254,19 +1255,15 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
         // The load is known: a photo round that cannot carry a final answer inside the
         // window is refused (the loop gives up older history, then reads the photos as
         // text), and the cap that fits the load replaces the table's.
-        const RoundLoad load = wire::roundLoad(rb, body.size(), wire::splicedBytes(splices), photoTok);
-        if (wire::photosOverFit(rb, roundMs, load, photoTok, out.error)) {
+        const wire::RoundFit fit = wire::fitRoundToLoad(
+            wire::RoundFitIn{rb, kind, roundMs, photoTok, a.textBudget, true}, body, splices, cap, out.error);
+        a.maxTokens = cap.maxTokens;
+        if (fit == wire::RoundFit::Refused) {
           built = false;
-        } else if (!wire::fitCapToLoad(body, splices, cap, rb, kind, roundMs, load)) {
-          a.maxTokens = cap.maxTokens;
+        } else if (fit == wire::RoundFit::Rebuild) {
           a.effort = cap.effort;
           built = build();
-        } else {
-          a.maxTokens = cap.maxTokens;
-          built = bodyWithinBudget(body, a.textBudget, out.error);   // the patched cap is a digit wider at most
         }
-        wire::lastRound().textBudget = a.textBudget;
-        wire::lastRound().photoTokens = photoTok;
       }
       if (!built) {
         out.ok = false;
@@ -1315,9 +1312,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
         hlog::logf("orchTurn(ant-loop): %s", e.c_str());
         return out;
       }
-      const orch::TokenUsage roundUse = orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
-      if (usage) *usage += roundUse;
-      wire::noteObservedRatio(rb, textBytes, roundUse.maxRequestIn, photoTok);
+      wire::addRoundUsage(resp["usage"].as<ArduinoJson::JsonObjectConst>(), usage, rb, textBytes, photoTok);
       orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
       JsonArrayConst content = resp["content"].as<JsonArrayConst>();
       if ((content.isNull() || content.size() == 0) && strcmp(resp["stop_reason"] | "", "max_tokens") != 0) {
@@ -1515,7 +1510,8 @@ bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
   // the body's load (the table's until the load is known).
   const bool routed = wire::routedDeps(pd);
   const uint32_t roundMs = wire::headCeilingMs(routed, kHeadRoundCeilingMs);
-  const wire::RoundBudget rb = wire::roundBudget(pd, "anthropic", model, routed);
+  const std::unique_ptr<const wire::RoundBudget> rbBox = wire::newRoundBudget(pd, "anthropic", model, routed);
+  const wire::RoundBudget& rb = *rbBox;
   OutputCap cap = outputCapFor("anthropic", model, kind, roundMs);
   // Keep the tool_use input UNFILTERED (it is the whole turn object); filter the
   // rest of the response envelope down to what we read.
@@ -1540,14 +1536,14 @@ bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
     if (!antShotBody(shot, body, err)) return false;
     if (attempt == 0) {
       BodySplices none;
-      if (!wire::fitCapToLoad(body, none, cap, rb, kind, roundMs, wire::roundLoad(rb, body.size(), 0, 0))) {
-        shot.maxTokens = cap.maxTokens;
+      const wire::RoundFit fit =
+          wire::fitRoundToLoad(wire::RoundFitIn{rb, kind, roundMs, 0, shot.budget, true}, body, none, cap, err);
+      if (fit == wire::RoundFit::Refused) return false;
+      shot.maxTokens = cap.maxTokens;
+      if (fit == wire::RoundFit::Rebuild) {
         shot.effort = cap.effort;
         if (!antShotBody(shot, body, err)) return false;
-      } else if (!bodyWithinBudget(body, shot.budget, err)) {
-        return false;   // the patched cap is a digit wider at most
       }
-      shot.maxTokens = cap.maxTokens;
     }
     const size_t textBytes = body.size();
     JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
@@ -1559,10 +1555,7 @@ bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
       hlog::logf("orchTurn(ant): %s", err.c_str());
       return false;
     }
-    const nimbus::orch::TokenUsage roundUse =
-        nimbus::orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
-    if (usage) *usage += roundUse;
-    wire::noteObservedRatio(rb, textBytes, roundUse.maxRequestIn, 0);
+    wire::addRoundUsage(doc["usage"].as<ArduinoJson::JsonObjectConst>(), usage, rb, textBytes, 0);
     nimbus::orch::captureServedModel(usage, doc.as<ArduinoJson::JsonVariantConst>());
     const AntShotReply r = antReadShot(doc);
     if (r.cut && attempt == 0 && cap.hasRetry()) {

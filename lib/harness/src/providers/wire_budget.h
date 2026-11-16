@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 
 #include "nimbus/harness/http.h"
@@ -24,6 +25,7 @@
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/budget.h"           // headContextBudget - the replay floor (the derived replay at B)
 #include "nimbus/orch/request_budget.h"
+#include "nimbus/orch/token_usage_json.h"   // tokenUsageFromJson - a round's usage
 
 namespace agent {
 namespace providers {
@@ -57,6 +59,14 @@ inline RoundBudget roundBudget(const ProviderDeps& pd, const std::string& host, 
   rb.budget = wireBudgetFor(host, model, routed);
   rb.fragmented = fragmentedNow(pd);
   return rb;
+}
+// The same, on the heap (lane STACK): a head round's step runs deep in a turn on the
+// Telegram poll task, so its budget (two strings and the figures) stays off that stack.
+__attribute__((noinline)) inline std::unique_ptr<const RoundBudget> newRoundBudget(const ProviderDeps& pd,
+                                                                                  const std::string& host,
+                                                                                  const std::string& model,
+                                                                                  bool routed) {
+  return std::unique_ptr<const RoundBudget>(new RoundBudget(roundBudget(pd, host, model, routed)));
 }
 
 // The budget host of the custom wire: "zai" on a deps bundle the Z.ai policy pointed at
@@ -278,6 +288,37 @@ inline bool photosOverFit(const RoundBudget& rb, uint32_t roundMs, const RoundLo
   return true;
 }
 
+// ---- one round, sized to its load (lane STACK: out of the round's frame) ------------------
+enum class RoundFit : uint8_t {
+  Ready,     // the body carries the cap that fits its load, inside its budget
+  Rebuild,   // the cap changed shape (its effort, or the field itself): build the body again with `cap`
+  Refused,   // not sent: photos over the round's time fit, or the patched body over its budget (`err`)
+};
+// The body was built with `cap`, the table's. With its load known: a photo round that cannot
+// carry the host's minimum final is refused; a capped round takes the load-aware cap
+// (`capped` false: OpenAI and the custom endpoint, which never send one - the load is still
+// recorded). `textBudget` is the request's own budget less a photo round's share.
+struct RoundFitIn {
+  const RoundBudget& rb;
+  RoundKind kind;
+  uint32_t roundMs;
+  uint32_t photoTokens;
+  size_t textBudget;
+  bool capped;
+};
+__attribute__((noinline)) inline RoundFit fitRoundToLoad(const RoundFitIn& in, std::string& body, BodySplices& splices,
+                                                         OutputCap& cap, std::string& err) {
+  const RoundLoad load = roundLoad(in.rb, body.size(), splicedBytes(splices), in.photoTokens);
+  RoundFit fit = RoundFit::Ready;
+  if (!in.capped) recordRound(in.rb, in.kind, in.roundMs, load, OutputCap());
+  else if (!fitCapToLoad(body, splices, cap, in.rb, in.kind, in.roundMs, load)) fit = RoundFit::Rebuild;
+  lastRound().textBudget = in.textBudget;
+  lastRound().photoTokens = in.photoTokens;
+  if (photosOverFit(in.rb, in.roundMs, load, in.photoTokens, err)) return RoundFit::Refused;
+  if (fit == RoundFit::Ready && !bodyWithinBudget(body, in.textBudget, err)) return RoundFit::Refused;   // a digit wider
+  return fit;
+}
+
 // ---- the observed ratio (interim: lane B's tighten-only memo replaces it) ---------------
 // After a 2xx: the text bytes the request carried and the prompt tokens the provider
 // counted for them (the photos' estimate taken off).
@@ -297,6 +338,16 @@ inline void noteObservedRatio(const RoundBudget& rb, size_t textBytes, uint32_t 
   o.model = rb.model;
   o.textBytes = textBytes;
   o.promptTokens = requestTokens > photoTokens ? requestTokens - photoTokens : 0;
+}
+
+// After a 2xx: the round's usage joins the turn's and its observed ratio is noted.
+// noinline (lane STACK): the usage copy stays out of the round's frame.
+__attribute__((noinline)) inline void addRoundUsage(ArduinoJson::JsonObjectConst usageJson,
+                                                    nimbus::orch::TokenUsage* usage, const RoundBudget& rb,
+                                                    size_t textBytes, uint32_t photoTokens) {
+  const nimbus::orch::TokenUsage round = nimbus::orch::tokenUsageFromJson(usageJson);
+  if (usage) *usage += round;
+  noteObservedRatio(rb, textBytes, round.maxRequestIn, photoTokens);
 }
 
 }  // namespace wire

@@ -590,18 +590,26 @@ static void test_marker_never_on_any_wire() {
 // weeks of history at the window cap, a full recall, the scratchpad and the
 // sessions - assembles under providers::kWireBodyMax on every wire, and a body
 // over the cap is refused before the send (fail closed, named).
-// The REAL device shape (test_prompt_budget's deviceShapedTools): ~42 tools,
-// 309 B descriptions (784 B for device_status), ~220 B schemas.
+// The REAL device manifest: the tool list an owner turn's head gets, captured from a bench
+// unit's TOOLS? (tools/gen_tool_manifest_fixture.py writes the fixture; 58 tools, 27,213 B
+// of names, descriptions and schemas at v5.1.1). It replaces the synthetic 42 x 309 B
+// stand-in, so every body measured here carries the tools array the device sends.
+static const char kManifestFixture[] = "test/support/fixtures/tool_manifest_v5_1_1.json";
+// The tools array each loop wire renders for that manifest (measured at the capture, with
+// orch_turn's schema): about 34-36 KB, the figure the 15 Nov investigation inferred.
+static constexpr size_t kToolsAnt = 34062, kToolsOai = 35894, kToolsMis = 35732;
 static std::vector<nimbus::orch::ToolRegistry::Spec> deviceShapedSpecs() {
   std::vector<nimbus::orch::ToolRegistry::Spec> specs;
-  const std::string schema =
-      R"({"type":"object","additionalProperties":false,"required":["project","name"],)"
-      R"("properties":{"project":{"type":"string"},"name":{"type":"string"},"q":{"type":"string"},)"
-      R"("text":{"type":"string"},"id":{"type":"string"},"content":{"type":"string"},)"
-      R"("offset":{"type":"integer"},"limit":{"type":"integer"}}})";
-  for (int i = 0; i < 42; i++)
-    specs.push_back({"tool_" + std::to_string(i),
-                     std::string(i == 0 ? 784 : 309, 'd') + " tool", schema});
+  FILE* f = std::fopen(kManifestFixture, "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, kManifestFixture);
+  std::string text;
+  char buf[4096];
+  for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) text.append(buf, n);
+  std::fclose(f);
+  JsonDocument d;
+  TEST_ASSERT_TRUE(deserializeJson(d, text) == DeserializationError::Ok);
+  for (JsonObjectConst t : d["tools"].as<JsonArrayConst>())
+    specs.push_back({t["name"] | "", t["description"] | "", t["schema"] | ""});
   return specs;
 }
 
@@ -635,6 +643,29 @@ static void test_wire_body_size_guard() {
   TEST_ASSERT_FALSE(providers::bodyWithinBudget(body, providers::kWireBodyMax, err));
   TEST_ASSERT_TRUE(err.find("request body over") == 0);
   TEST_ASSERT_TRUE(providers::bodyWithinBudget(body.substr(0, providers::kWireBodyMax), providers::kWireBodyMax, err));
+}
+
+// The tools array each loop wire sends for the captured manifest, pinned: a wire change that
+// makes the same manifest grow more than 5 % on the wire (a field added per tool, the
+// orch_turn schema growing) fails here, before it eats every request's budget. The fixture
+// itself is pinned at its capture (a new capture re-pins both, on purpose).
+static void test_tools_array_never_grows_more_than_five_percent() {
+  const std::vector<nimbus::orch::ToolRegistry::Spec> specs = deviceShapedSpecs();
+  size_t raw = 0;
+  for (const auto& sp : specs) raw += sp.name.size() + sp.description.size() + sp.schemaJson.size();
+  TEST_ASSERT_EQUAL_UINT32(58, (uint32_t)specs.size());
+  TEST_ASSERT_EQUAL_UINT32(27213, (uint32_t)raw);
+  struct Pin { Wire w; size_t bytes; };
+  for (const Pin& p : {Pin{Wire::AntLoop, kToolsAnt}, Pin{Wire::OaiLoop, kToolsOai}, Pin{Wire::MisLoop, kToolsMis}}) {
+    const auto bodies = runTurn(p.w, "SYS", "hi", &specs);
+    JsonDocument doc = parse(bodies[0]);
+    std::string tools;
+    serializeJson(doc["tools"], tools);
+    char msg[128];
+    std::snprintf(msg, sizeof msg, "%s: tools[] %zu B on the wire (pinned %zu B)", wireName(p.w), tools.size(), p.bytes);
+    TEST_MESSAGE(msg);
+    TEST_ASSERT_TRUE_MESSAGE(tools.size() * 100 <= p.bytes * 105, msg);
+  }
 }
 
 // CUM-642, the measurement: a LONG tool loop (12 rounds of 1.5 KB results, the
@@ -1016,6 +1047,7 @@ int main(int, char**) {
   RUN_TEST(test_wire_prefix_stable_and_tools_byte_identical);
   RUN_TEST(test_marker_never_on_any_wire);
   RUN_TEST(test_wire_body_size_guard);
+  RUN_TEST(test_tools_array_never_grows_more_than_five_percent);
   RUN_TEST(test_long_loop_replay_stays_within_the_body_budget);
   RUN_TEST(test_anthropic_breakpoints_never_exceed_four);
   RUN_TEST(test_image_parts_never_carry_cache_control);

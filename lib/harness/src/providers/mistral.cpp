@@ -645,7 +645,8 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     const std::string model = pd.orchModel ? pd.orchModel("mistral") : std::string();
     // This round's own budget: the host and model that send it (a step-down or a
     // failover to a smaller budget refuses an oversize round here, before the send).
-    const wire::RoundBudget rb = wire::roundBudget(pd, "mistral", model, routed);
+    const std::unique_ptr<const wire::RoundBudget> rbBox = wire::newRoundBudget(pd, "mistral", model, routed);
+    const wire::RoundBudget& rb = *rbBox;
     const size_t replay = wire::replayBytesFor(rb, kReplayFloorBytes);
     if (tr.toolBytes() > replay) tr.trimToolOutputs(replay);
     const RoundKind kind = allowTools ? RoundKind::ToolRound : RoundKind::FinalRound;
@@ -685,13 +686,11 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
         // The load is known: a photo round that cannot carry a final answer inside the
         // window is refused (the loop gives up older history, then reads the photos as
         // text), and the cap that fits the load replaces the table's.
-        const RoundLoad load = wire::roundLoad(rb, body.size(), wire::splicedBytes(splices), photoTok);
-        if (wire::photosOverFit(rb, roundMs, load, photoTok, out.error)) built = false;
-        else if (!wire::fitCapToLoad(body, splices, cap, rb, kind, roundMs, load)) built = build(cap.maxTokens, cap.effort);
-        else built = bodyWithinBudget(body, req.textBudget, out.error);   // the patched cap is a digit wider at most
+        const wire::RoundFit fit = wire::fitRoundToLoad(
+            wire::RoundFitIn{rb, kind, roundMs, photoTok, req.textBudget, true}, body, splices, cap, out.error);
+        if (fit == wire::RoundFit::Refused) built = false;
+        else if (fit == wire::RoundFit::Rebuild) built = build(cap.maxTokens, cap.effort);
         req.maxTokens = cap.maxTokens;
-        wire::lastRound().textBudget = req.textBudget;
-        wire::lastRound().photoTokens = photoTok;
       }
       if (!built) {
         out.ok = false;
@@ -732,9 +731,7 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
         hlog::logf("orchTurn(mistral-loop): %s", e.c_str());
         return out;
       }
-      const orch::TokenUsage roundUse = orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
-      if (usage) *usage += roundUse;
-      wire::noteObservedRatio(rb, textBytes, roundUse.maxRequestIn, photoTok);
+      wire::addRoundUsage(resp["usage"].as<ArduinoJson::JsonObjectConst>(), usage, rb, textBytes, photoTok);
       orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
       std::string cutWhy;
       if (readChatRound(resp, out, cutWhy, kMistralDialect)) return out;   // finished, a tool round, or prose (stall)
@@ -996,15 +993,16 @@ static bool mistralFold(const ProviderDeps& pd, const std::string& inputs, std::
     if (!mistralFoldBody(pd, f, body, err)) return false;
     if (attempt == 0) {
       BodySplices none;
-      const RoundLoad load = wire::roundLoad(rb, body.size(), 0, 0);
-      if (!wire::fitCapToLoad(body, none, cap, rb, RoundKind::Fold, roundMs, load)) {
+      const wire::RoundFit fit = wire::fitRoundToLoad(
+          wire::RoundFitIn{rb, RoundKind::Fold, roundMs, 0, f.budget, true}, body, none, cap, err);
+      if (fit == wire::RoundFit::Refused) return false;
+      if (fit == wire::RoundFit::Rebuild) {
         f.maxTokens = cap.maxTokens;
         f.effort = misEffortRefusedBefore(model) ? "" : cap.effort;
         body.clear();
         if (!mistralFoldBody(pd, f, body, err)) return false;
       }
       f.maxTokens = cap.maxTokens;
-      if (!bodyWithinBudget(body, f.budget, err)) return false;   // the patched cap is a digit wider at most
     }
     const uint32_t maxTokens = f.maxTokens;
     const char* effort = f.effort;

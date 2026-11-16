@@ -360,6 +360,15 @@ struct CancelMeterOnExit {
   }
 };
 
+// A routed request tells the router when the device gives up on it (lane W): the router
+// starts no retry or fallback it cannot finish before then, and aborts its upstream call at
+// that time. Old routers ignore the header. noinline (lane STACK): its strings stay out of
+// exchange()'s frame on the poll task.
+__attribute__((noinline)) inline void addRoutedDeadline(HttpRequest& req, uint32_t timeoutMs) {
+  if (req.path.rfind("/router/", 0) != 0 || timeoutMs <= kRoutedDeadlineSlackMs) return;
+  req.headers.emplace_back(kRoutedDeadlineHeader, std::to_string(timeoutMs - kRoutedDeadlineSlackMs));
+}
+
 // One provider REST exchange through the transport: complete request in, HTTP
 // status out, response body filter-parsed into `doc` (the same bounded-memory
 // ArduinoJson filter reads the pre-split adapters did from the socket - now
@@ -424,11 +433,7 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   req.tls = tls;
   req.path = path;
   req.headers = std::move(headers);
-  // A routed request tells the router when the device gives up on it (lane W): the router
-  // starts no retry or fallback it cannot finish before then, and aborts its upstream call
-  // at that time. Old routers ignore the header.
-  if (paidRequest && path.rfind("/router/", 0) == 0 && timeoutMs > kRoutedDeadlineSlackMs)
-    req.headers.push_back({kRoutedDeadlineHeader, std::to_string(timeoutMs - kRoutedDeadlineSlackMs)});
+  if (paidRequest) addRoutedDeadline(req, timeoutMs);
   req.body = std::move(body);
   if (splices) req.splices = *splices;   // R1: photos written into the body at send time
   req.timeoutMs = timeoutMs;

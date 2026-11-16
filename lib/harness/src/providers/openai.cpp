@@ -471,7 +471,8 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     const bool routed = wire::routedDeps(pd);
     const uint32_t roundMs = wire::clampRoundMs(budgetMs, wire::headCeilingMs(routed, kHeadRoundCeilingMs));
     // This round's own budget (the host and model that send it).
-    const wire::RoundBudget rb = wire::roundBudget(pd, "openai", model, routed);
+    const std::unique_ptr<const wire::RoundBudget> rbBox = wire::newRoundBudget(pd, "openai", model, routed);
+    const wire::RoundBudget& rb = *rbBox;
     const size_t replay = wire::replayBytesFor(rb, kReplayFloorBytes);
     if (tr.toolBytes() > replay) tr.trimToolOutputs(replay);
     JsonDocument req = makeDoc(pd);
@@ -642,11 +643,10 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       // The load is known. OpenAI never gets max_output_tokens (reasoning would starve
       // the answer); the round's load is still recorded, and a photo round that cannot
       // carry a final answer inside the window is refused before the send.
-      const RoundLoad load = wire::roundLoad(rb, body.size(), wire::splicedBytes(splices), photoTok);
-      wire::recordRound(rb, allowTools ? RoundKind::ToolRound : RoundKind::FinalRound, roundMs, load, OutputCap());
-      wire::lastRound().textBudget = textBudget();
-      wire::lastRound().photoTokens = photoTok;
-      if (wire::photosOverFit(rb, roundMs, load, photoTok, out.error)) {
+      OutputCap none;
+      if (wire::fitRoundToLoad(wire::RoundFitIn{rb, allowTools ? RoundKind::ToolRound : RoundKind::FinalRound, roundMs,
+                                                photoTok, textBudget(), false},
+                               body, splices, none, out.error) == wire::RoundFit::Refused) {
         out.ok = false;
         out.kind = orch::StepErr::BadRequest;
         return out;
@@ -703,9 +703,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       hlog::logf("orchTurn(oai-loop): %s", e.c_str());
       return out;
     }
-    const orch::TokenUsage roundUse = orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
-    if (usage) *usage += roundUse;
-    wire::noteObservedRatio(rb, textBytes, roundUse.maxRequestIn, photoTok);
+    wire::addRoundUsage(resp["usage"].as<ArduinoJson::JsonObjectConst>(), usage, rb, textBytes, photoTok);
     nimbus::orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
     // The completeness gate: an incomplete response (the output limit, a content
     // filter) is never run or accepted - a cut `arguments` string would be
@@ -816,8 +814,10 @@ static bool oaiFoldBody(const ProviderDeps& pd, const std::string& model, const 
   return wire::serializeChecked(d, body, err) && bodyWithinBudget(body, budget, err);
 }
 
-static bool oaiFold(const ProviderDeps& pd, const std::string& inputs, std::string& outJson, std::string& err,
-                    nimbus::orch::TokenUsage* usage) {
+// noinline (lane STACK): a background fold, never a head round; its locals stay out of
+// orchTurnOpenAI's frame, which the Cumulo head's rounds run under on the poll task.
+__attribute__((noinline)) static bool oaiFold(const ProviderDeps& pd, const std::string& inputs, std::string& outJson,
+                                              std::string& err, nimbus::orch::TokenUsage* usage) {
   namespace orch = nimbus::orch;
   const std::string model = pd.orchModel ? pd.orchModel("openai") : std::string();
   const bool routed = wire::routedDeps(pd);
@@ -853,9 +853,7 @@ static bool oaiFold(const ProviderDeps& pd, const std::string& inputs, std::stri
       hlog::logf("orchTurn(oai): %s", err.c_str());
       return false;
     }
-    const orch::TokenUsage roundUse = orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
-    if (usage) *usage += roundUse;
-    wire::noteObservedRatio(rb, textBytes, roundUse.maxRequestIn, 0);
+    wire::addRoundUsage(doc["usage"].as<ArduinoJson::JsonObjectConst>(), usage, rb, textBytes, 0);
     orch::captureServedModel(usage, doc.as<ArduinoJson::JsonVariantConst>());
     if (!strcmp(doc["status"] | "", "incomplete")) {
       const char* why = doc["incomplete_details"]["reason"] | "unknown";

@@ -102,6 +102,16 @@ using nimbus::heapwatch::ExchangeTrace;
 using nimbus::heapwatch::HeapSample;
 using nimbus::heapwatch::Stage;
 
+// Lane W: one durable line for a large body's upload, rate-limited (exchange_trace.h
+// upLineDue). noinline (lane STACK): its string stays out of execCore's frame.
+__attribute__((noinline)) void logUpload(const ExchangeTrace& t) {
+  static uint32_t lastUpMs = 0;   // exchanges are serialized (one TLS work slot)
+  const uint32_t now = millis();
+  if (!nimbus::heapwatch::upLineDue(t, now, lastUpMs)) return;
+  lastUpMs = now ? now : 1;
+  alogf("%s", nimbus::heapwatch::upLine(t).c_str());
+}
+
 HeapSample sampleHeap() {
   return HeapSample{
       (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
@@ -436,12 +446,7 @@ class TlsTransport : public HttpTransport {
       // memory near its floor is durable evidence.
       alogLevelf(t.abnormal() ? nimbus::errlog::Level::Warn : nimbus::errlog::Level::Info, "%s",
                  t.line().c_str());
-      static uint32_t lastUpMs = 0;   // the poll task's exchanges are serialized (one TLS slot)
-      const uint32_t now = millis();
-      if (nimbus::heapwatch::upLineDue(t, now, lastUpMs)) {
-        lastUpMs = now ? now : 1;
-        alogf("%s", nimbus::heapwatch::upLine(t).c_str());
-      }
+      logUpload(t);
     });
 
     if (trace.fail != Stage::None) {

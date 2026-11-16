@@ -476,7 +476,9 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
                                                                                 : kHeadRoundCeilingMs);
     const uint32_t roundMs = wire::clampRoundMs(budgetMs, ceiling);
     const std::string model = s(pd.customModel);
-    const wire::RoundBudget rb = wire::roundBudget(pd, wire::customBudgetHost(pd), model, routed);
+    const std::unique_ptr<const wire::RoundBudget> rbBox =
+        wire::newRoundBudget(pd, wire::customBudgetHost(pd), model, routed);
+    const wire::RoundBudget& rb = *rbBox;
     const size_t replay = wire::replayBytesFor(rb, kReplayFloorBytes);
     if (tr.toolBytes() > replay) tr.trimToolOutputs(replay);
     const RoundKind kind = allowTools ? RoundKind::ToolRound : RoundKind::FinalRound;
@@ -499,13 +501,14 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
         // The load is known: the cap that fits it inside the round replaces the table's
         // (GLM always reasons; its effort is the policy's, not the cap's).
         BodySplices none;
-        if (!wire::fitCapToLoad(body, none, cap, rb, kind, roundMs, wire::roundLoad(rb, body.size(), 0, 0))) {
-          zr.maxTokens = cap.maxTokens;
+        const wire::RoundFit fit =
+            wire::fitRoundToLoad(wire::RoundFitIn{rb, kind, roundMs, 0, zr.budget, true}, body, none, cap, out.error);
+        zr.maxTokens = cap.maxTokens;
+        if (fit == wire::RoundFit::Refused) {
+          built = false;
+        } else if (fit == wire::RoundFit::Rebuild) {
           body.clear();
           built = zaiLoopBody(pd, zr, body, out.error);
-        } else {
-          zr.maxTokens = cap.maxTokens;
-          built = bodyWithinBudget(body, zr.budget, out.error);   // the patched cap is a digit wider at most
         }
       }
       if (!built) {
@@ -525,8 +528,7 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
         continue;
       }
       if (code != 200) { zaiHttpFailure(code, resp, out); return out; }
-      wire::noteObservedRatio(rb, textBytes,
-                              orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>()).maxRequestIn, 0);
+      wire::addRoundUsage(resp["usage"].as<ArduinoJson::JsonObjectConst>(), nullptr, rb, textBytes, 0);
       std::string cutWhy;
       if (zaiRoundDone(resp, usage, out, cutWhy)) return out;
       if (attempt == 0 && cap.hasRetry()) {
