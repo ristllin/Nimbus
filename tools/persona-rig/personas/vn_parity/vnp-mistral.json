@@ -333,7 +333,7 @@
               "turn_resolved": true
             },
             {
-              "log_not_regex": "fold\\(.*failed|no summary in reply"
+              "log_not_regex": "fold\\(.*failed|no summary in reply|fold\\(.*\\): cycle failed"
             }
           ]
         },

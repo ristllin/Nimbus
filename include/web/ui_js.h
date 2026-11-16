@@ -4119,8 +4119,6 @@ function _foldLines(d){
   l.push(d.lastOk?'Last updated '+(d.lastOkDate||'')+' ('+_foldAge(d.summaryAgeH)+').':'No summary yet.');
   if(d.thruDate)l.push('It covers the conversation up to '+d.thruDate+'.');
   if(d.uncovered)l.push('Some older messages are not in it yet.');
-  if(d.running)l.push('Summarizing now, provider '+d.rung+(d.rungHost?' ('+d.rungHost+')':'')+'.');
-  else if(d.queued)l.push('Queued. It starts in a moment.');
   if(d.failedCycles&&!d.running)l.push('The last '+(d.failedCycles>1?d.failedCycles+' tries':'try')+' did not finish.'+(d.nextTryInS?' It tries again '+_foldIn(d.nextTryInS)+'.':''));
   l.push('Summary requests today: '+d.paidToday+' (automatic ones stop at '+d.cap+').');
   return l;
@@ -4133,8 +4131,10 @@ function renderFold(d){
   const b=$('foldBadge');if(b){b.textContent=_FOLD_BADGE[d.state]||'';b.className='badge'+(d.state==='none'?' un':d.state==='fresh'?'':' ext');
     b.style.color=d.state==='behind'?'#e0a349':'';}
   const info=$('foldInfo');if(info)info.innerHTML=_foldLines(d).map(x=>'<div>'+_fesc(x)+'</div>').join('');
-  const run=$('foldRun');if(run)run.disabled=!d.canRun;
-  const m=$('foldMsg');if(m&&!m.dataset.keep)m.textContent=d.canRun?'':(d.why||'');
+  const run=$('foldRun');if(run){run.disabled=!d.canRun;run.style.opacity=d.canRun?'':'.5';}
+  // Under the button: what a running summary is doing (its provider, of how many), else why it waits.
+  const step=d.running&&d.rung?d.rung.split('/'):null;
+  const m=$('foldMsg');if(m)m.textContent=step?'Summarizing now: provider '+step[0]+' of '+step[1]+(d.rungHost?' ('+d.rungHost+')':'')+'.':(d.canRun?'':(d.why||''));
 }
 function loadFold(){
   const info=$('foldInfo');if(!info)return;

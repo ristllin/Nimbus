@@ -21,7 +21,7 @@
         {"say": "Note $i of a long working session. Reply in one short sentence acknowledging the note.",
          "repeat": 20, "pad": 3200, "settle_s": 2, "timeout_s": 300,
          "expect": [{"turn_resolved": true}, {"no_error_reply": true, "known_defect": "${tools_defect}", "may_pass": true},
-                    {"log_not_regex": "fold\\(.*failed|no summary in reply"}]},
+                    {"log_not_regex": "fold\\(.*failed|no summary in reply|fold\\(.*\\): cycle failed"}]},
         {"sleep": 5},
         {"http": {"method": "GET", "path": "/api/log"},
          "expect": [{"http_status": 200}, {"body_regex": "fold\\(owner\\): ok"}]},

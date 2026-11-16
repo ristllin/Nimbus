@@ -74,6 +74,8 @@ const sidebars = {
         'guides/orchestrator-live-turn',
         'guides/orchestrator-world',
         'guides/memory',
+        'guides/compaction',
+        'guides/fold-ladder',
         'guides/orchestrator-storage',
         'guides/sub-sessions',
         'guides/harness',

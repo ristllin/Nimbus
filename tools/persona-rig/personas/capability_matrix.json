@@ -487,7 +487,7 @@
         "reply_not_regex": "correction: that has not been saved"
        },
        {
-        "log_not_regex": "fold\\(.*failed|no summary in reply"
+        "log_not_regex": "fold\\(.*failed|no summary in reply|fold\\(.*\\): cycle failed"
        }
       ]
      },

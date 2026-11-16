@@ -71,6 +71,7 @@ nimbusd::NimbusdRig::Options buildOptions(const nimbusd::Config& cfg) {
   // embeddings off entirely. The web app's embedding settings, once saved, win
   // over these defaults (<data>/mem/embed.txt).
   opt.histV2 = cfg.getInt("NIMBUSD_HISTV2", 1) != 0;
+  opt.foldFaultHost = cfg.get("NIMBUSD_FOLD_FAULT");   // a test seam: "" in production
   opt.embedHost = cfg.get("NIMBUSD_EMBED_HOST", "mistral");
   opt.embeddings = cfg.getInt("NIMBUSD_EMBEDDINGS", 1) != 0;
   opt.embedModel = cfg.get("NIMBUSD_EMBED_MODEL", "mistral-embed");

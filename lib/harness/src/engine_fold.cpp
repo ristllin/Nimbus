@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "nimbus/harness/log.h"
+#include "nimbus/harness/output_caps.h"   // mistralHeadEffort - which heads are forced reasoners
 #include "nimbus/harness/providers.h"   // ScopedModelOverride - a rung on its own model
 #include "nimbus/orch/compact.h"           // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary
 #include "nimbus/orch/connector_grant.h"   // whose connectors a fold's request carries (CUM-828)
@@ -81,11 +82,11 @@ const char* foldFailKindName(FoldFailKind k) {
 }
 
 std::string foldModelForHead(const std::string& host, const std::string& model) {
-  if (host != "mistral") return std::string();
-  const std::string m = model.rfind("mistral/", 0) == 0 ? model.substr(8) : model;
-  // Large 4 refuses effort "none", so it is the one forced reasoner today. Small folds
-  // at "none" (mistralHeadEffort), well inside the 60 s gateway at a 53.9 KB step.
-  return m.rfind("mistral-large-4", 0) == 0 ? std::string("mistral-small-latest") : std::string();
+  if (host != "mistral" || model.empty()) return std::string();
+  // A forced reasoner is a model that refuses effort "none" (mistralHeadEffort answers
+  // "low": Large 4, the hosted GLM). Small folds at "none", well inside the 60 s gateway
+  // at a 53.9 KB step.
+  return std::string(providers::mistralHeadEffort(model)) == "low" ? std::string("mistral-small-latest") : std::string();
 }
 
 int foldSectionsNamed(const std::string& summary) {

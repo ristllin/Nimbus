@@ -213,6 +213,10 @@ class NimbusdRig {
     // Test seam (test_vn_parity): the automatic fold trigger in bytes (0 = the hosted
     // trigger: kHostedCompactKb over the head's derived history, foldTriggerBytes).
     uint32_t    foldTriggerBytes = 0;
+    // Test seam (NIMBUSD_FOLD_FAULT, the device's PROVFAULT for the fold): a fold request
+    // on this direct host answers with no summary and sends nothing, so a persona can
+    // watch the ladder walk to the next provider. "" = off (always, in production).
+    std::string foldFaultHost;
   };
 
   // `httpOverride` lets a host test inject a FakeHttpTransport in place of the
@@ -3077,6 +3081,11 @@ class NimbusdRig {
                                      const std::string& rawInp, std::string& out,
                                      std::string& err, const agent::HeadTools* tools,
                                      orch::TokenUsage* usage) -> bool {
+        if (host == opt_.foldFaultHost && rawIns == orch::ORCH_COMPACT_PROMPT) {   // the fold fault seam
+          out = "{\"reply\":\"\",\"memory\":\"\"}";
+          if (usage) usage->responses = 1;
+          return true;
+        }
         auto pd = headProviderDeps();
         const std::string ins = hostedPrompt(rawIns);
         const std::string inp = hostedInput(rawInp);

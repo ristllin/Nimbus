@@ -49,7 +49,7 @@ confused.
 | `/remind <when> <what>` | Set a one-time reminder. `<when>` is a span (`45s`, `30m`, `2h`, `1d`; a bare number is minutes) from 2 minutes to 7 days. At that time the assistant delivers the reminder in this chat. Cancel with `/loop deny <id>`. Example: `/remind 30m take the cake out`. |
 | `/loops` | List the device's routines (and any reminders you've set). |
 | `/loop approve\|deny\|off\|on <id>` | Approve, remove, pause, or resume one routine. |
-| `/compact` | Summarize this conversation into memory. Runs in the background. |
+| `/compact` | Summarize this conversation into memory now. Runs in the background and confirms once when done; a long backlog catches up in one request. The Memory page's Summarize Now does the same. |
 | `/clear` | Forget the current conversation and its active task and start fresh: the next reply sees none of this chat's earlier messages, summary, or working notes. Long-term memory, files, and the chat history are kept. A bare `/clear` explains what will happen and asks; `/clear yes` does it. The web page has the same action for the web chat (Memory, then "Clear conversation"). |
 | `/skill approve\|deny <id>` | Approve a saved skill so it can be used, or remove it. |
 | `/prefs` | List your standing rules: short always/never rules the assistant follows in every reply. `/prefs add <rule>` saves one, `/prefs rm <id>` removes one, `/prefs approve <id>` turns on a rule that waits for your approval, `/prefs restore <id>` brings back a rule that was moved to memory because it read as a dated fact, `/prefs clear yes` removes them all. The list shows how old each rule is. The same list is on the web page under Memory, beside the directive. |
@@ -297,7 +297,8 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `VOICE?` | Report the hold-to-talk state: phase, outcome, transition count, the ms from release to the first repaint and to the speech-to-text call (0 = never started), and the status line. |
 | `STTKEY placeholder` / `STTKEY off` | Test image only: a memory-only placeholder speech-to-text key so hold-to-talk can be exercised on a board with no key. Never saved; a provider answers it with HTTP 401. |
 | `PROMPT?` | Dump the last composed system prompt. |
-| `CTX? [chat]` / `COMPACT <chat>` | Inspect a conversation's context size; force compaction now. |
+| `CTX? [chat]` / `COMPACT <chat>` | Inspect a conversation's context size and its summary's schedule (`nextTry`, `firstFail`, the active `rung`, `paidToday` of the daily `cap`, a `queued` manual request); force compaction now. |
+| `FOLDRESET` | Restart today's count of paid summary requests at 0 (bench rows reset it between rows). Shows in `CTX?` after the next pump pass. |
 | `EPIQ [@<cursor>] [--full] <text>` | Run a cold episodic-memory query over deep history and time it; page further back by passing `@<cursor>` from the previous result. Each row prints as a 48-byte preview, or whole (up to 1024 bytes) with `--full`. |
 | `DREAM` | Fire the reserved maintenance-and-reflection loop now. Replies `DREAM queued` (`DREAM already queued` while one is waiting); the night runs on the turn task and logs `DREAM fired ok=<0\|1> detail=<...>` when it ends. |
 | `EPIPRUNE [days]` | Run the six-hourly history clean-up now (default 30 days). Replies `EPIPRUNE days=<n> status=<ran\|deferred-turn\|deferred-busy\|no-store\|clock-unset>`; a pass that ran adds `dayfiles=<n> blobs=<n> kept=<n>`, with `blobs=deferred` while the history index is still being rebuilt after a restart. A deferred pass removed nothing. |

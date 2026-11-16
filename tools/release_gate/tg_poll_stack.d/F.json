@@ -1,0 +1,15 @@
+{
+  "about": "Lane F of the history fix (v5.1.2): the fold driver runs on tg_poll (compactTick at the end of pollJobs), one rung of the fold ladder per pump pass. Its paths are measured on their own so a deeper rung (the Mistral fold on the Small model, the OpenAI fold's retry) shows here first.",
+  "paths": [
+    {
+      "name": "fold pump pass (FoldDriver::tick)",
+      "through": ["^agent::FoldDriver::tick\\("],
+      "_why": "compactTick calls it once per pump pass: the start of a cycle (the slice read) and at most one rung"
+    },
+    {
+      "name": "fold rung (one request of the ladder)",
+      "through": ["^agent::TurnEngine::runFoldRung\\(", "^agent::TurnEngine::runFoldOn\\("],
+      "_why": "the request itself, under the model pin, on whichever wire the rung names"
+    }
+  ]
+}

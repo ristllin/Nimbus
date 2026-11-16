@@ -446,42 +446,34 @@ summary instead of an ever-growing transcript.
 
 ### Owner's view
 
-- **When it happens**: automatically, after roughly 48 KB of conversation on a
-  chat since its last fold (knob: `compactKB`, 8–512, 0 turns auto-fold off),
-  after 200 distinct messages, or once the recent history has outgrown its
-  budget - and only when there is something new to summarize. The same message
-  arriving again and again (a re-sent or replayed update) counts once, so a
-  flood of one line never costs a summary. Or on demand with the **`/compact`**
-  command (owner-only, also listed in /help).
+The owner's page is [compaction.md](compaction.md) (when it runs, Summarize Now, the
+Memory page's Conversation summary card, what happens when a provider has trouble);
+the fold's ladder, schedule and driver are in
+[architecture/fold-ladder.md](architecture/fold-ladder.md). In short:
+
+- **When it happens**: automatically, once a chat has grown enough since its last
+  fold (knob: `compactKB`, 8–512; 48, the default, follows the model in use; 0 turns
+  auto-fold off), after 200 distinct messages, or once the recent history has
+  outgrown its budget - and only when there is something new to summarize. The same
+  message arriving again and again counts once, so a flood of one line never costs a
+  summary. Or on demand with **`/compact`** (owner-only, also listed in /help) or
+  **Summarize Now** on the Memory page (`POST /api/fold/run`).
 - **What you see**: automatic compaction is silent - its record is the
-  "Conversation compacted: … folded into a … summary" row in the chat history.
-  An automatic fold waits until the chat has been quiet for two minutes, so it
-  does not start between the messages of a conversation - for at most 6 turns or
-  10 minutes, after which it runs right after a reply went out (in a chat with no
-  pause at all, after 12 turns or 20 minutes, right after a turn), so a long
-  conversation still gets its summary. A message that arrives while a fold is
-  running waits for it to finish. A fold that a context overflow queued runs at
-  once (the next turn needs it).
-  A manual `/compact` acknowledges immediately and then confirms with
-  "✓ Compacted." (or tells you it couldn't, with the next step). The web chat
-  never gets notices (they would desync the reply pairing).
-- **What changes**: nothing you'd notice in conversation quality - the recent
-  turns stay verbatim in the model's context, the summary carries everything
-  older, and long-term facts were already in vector memory. What improves:
-  turns stop getting slower and more expensive as a chat ages.
-- **If a provider is down**: the fold tries the device's other configured
-  providers before counting a failure (the same order turns use), so one
-  provider having trouble doesn't stall compaction - or message you about it.
-  A provider that refused for credit or its key is skipped until that is fixed,
-  the same as for turns.
-- **If it keeps failing**: after 3 consecutive failures, or when the chat
-  grows past the size or message limit again within two turns of a summary,
-  automatic compaction pauses for that chat and you get ONE alert;
-  `/compact` always remains available and un-pauses it. A long backlog that
-  takes more than one summary to catch up (the first summary of a long chat
-  after an update) keeps folding, one summary at a time, and never alerts; a
-  pause an older version set on such a backlog lifts by itself, and a pause set
-  for a real refill stays across restarts until `/compact`.
+  "Conversation compacted: … folded into a … summary" row in the chat history. An
+  automatic fold waits until the chat has been quiet for two minutes (at most 6
+  turns or 10 minutes; in a chat with no pause at all, 12 turns or 20 minutes), and
+  each fold request after the first waits for quiet again, so an owner message waits
+  at most one request. A manual request acknowledges immediately and then confirms
+  once with "✓ Compacted. Summary updated: covered N messages from D1 to D2" (or
+  says it couldn't, with the time of the next try). In the web chat the confirmation
+  is a history row, never the reply slot.
+- **If a provider is down**: the fold walks every provider you have a key for, one
+  request per pump pass, before a cycle counts as failed (fold-ladder.md).
+- **If it keeps failing**: it never pauses. A failed cycle tries again after 15
+  minutes, 1 hour, 4 hours, then every 12 hours, each time on a smaller slice; a new
+  firmware restarts the wait; a pause an older version left lifts on the first
+  start. The owner hears about it at most once a day, and only after a day of
+  failing. At most 12 paid automatic fold requests run a day on the whole device.
 
 ### How it works (the design, in one page)
 
@@ -496,7 +488,7 @@ flowchart LR
     A["every chat message bumps<br/>bytes/msgs counters per chat<br/>(one flash write per turn)"]
   end
   subgraph FOLD["fold - on the tg_poll pump, never blocking a reply"]
-    D["1. digest: episodic slice<br/>since the last fold (summary + digest<br/>under 60,000 B, one provider string)"] --> L["2. one single-shot LLM call<br/>(the fold prompt): update the<br/>ANCHORED summary (≤4 KB, UTF-8-safe cap)"]
+    D["1. digest: episodic slice<br/>since the last fold (summary + digest<br/>under 60,000 B, one provider string)"] --> L["2. one rung of the fold ladder<br/>per pump pass (the fold prompt): update the<br/>ANCHORED summary (4 or 6 KB, UTF-8-safe cap)"]
     L --> W["3. write order: summary blob FIRST<br/>→ provider thread reset<br/>→ 'ev:compact' boundary row (pre/post sizes)"]
   end
   A -->|"threshold reached"| D
@@ -518,7 +510,9 @@ flowchart LR
   is skipped. A manual `/compact` digests every turn.
   The anchor and the overflow shift ride the fold blob as suffixes of its
   numeric fields, which an older image's parser stops before.
-- **The fold call** (`TurnEngine::runFold`) is deliberately NOT a turn: no
+- **The fold call** (`TurnEngine::runFoldRung`, one rung of the ladder that
+  `FoldDriver` paces; `runFold` walks the whole ladder in one call for tools and
+  tests) is deliberately NOT a turn: no
   delivery, no recall, no tool loop, no conversation-map writes, no capture of
   the summary as chat history - the model's reply IS the summary and every
   other field of its output is structurally inert. It has its own output
@@ -527,8 +521,8 @@ flowchart LR
   with more room. The digest is bounded so summary plus digest stay one whole
   provider string (ArduinoJson stores a 64 KB string as null). Its spend is metered under
   the `compact` attribution (never a routine's budget). Gates (low heap, over
-  budget, turn in flight) **defer** - only a real failed attempt counts
-  against the breaker.
+  budget, turn in flight) **defer** - only a cycle whose every rung failed counts,
+  and it schedules the next try (fold-ladder.md), never a pause.
 - **Dated, with the day's ledger**: the fold input closes with `[TODAY]` and
   the person's food ledger for the day (its rows and totals; only the date and
   totals when the input is near the one-string limit). The prompt has every
@@ -547,21 +541,27 @@ flowchart LR
   CONVERSATION window, the shape every surveyed harness (Claude Code, codex,
   opencode, aider) converged on. Under prompt-budget pressure the summary is
   sacrificed BEFORE the window (the tail is the fresher signal).
-- **Durability & rollback**: all fold state (summary, counters, breaker) lives
-  in one tolerant-load LittleFS blob (`/data/chatsum.txt`, LRU-16 chats). The
-  NVS conversation map is untouched, so an OTA rollback to pre-v3.6 firmware
-  simply ignores the file - rollback-safe by construction. Crash mid-fold:
-  the write order (summary first, thread reset second) means the worst case is
-  a fold that re-runs, never a lost summary with a reset thread.
+- **Durability & rollback**: all per-chat fold state (summary, counters, the
+  anchor, the schedule) lives in one tolerant-load LittleFS blob
+  (`/data/chatsum.txt`, LRU-16 chats inside 64 KB, about ten with a full summary;
+  an evicted chat loses its summary). The device-wide state (the daily cap, the
+  alert day, queued manual requests) is `/data/fold_ctl.txt`, so an eviction
+  never resets it. The NVS conversation map is untouched, so an OTA rollback to
+  pre-v3.6 firmware simply ignores the file. A rollback to v5.1.1 reads the blob
+  (summary, anchor and shift intact, nothing paused), re-caps a summary over
+  4,096 B, and writes the blob back at 48 KB, which can drop the oldest chats'
+  records. Crash mid-fold: the write order (summary first, thread reset second)
+  means the worst case is a fold that re-runs, never a lost summary with a reset
+  thread.
 
 ### Verification
 
 Host: `test_model_window` (the per-model window table), `test_orch_compact`
-(trigger math, breaker, thrash guard, codec,
-UTF-8-safe caps, fold-prompt contract, the anchor and shift round trip, a
-repeat counted once), `test_fold_backlog` (a replay of a long chat's first
-anchored fold: a backlog folds again without an alert, a real refill still
-pauses once), `test_owner_first` (an automatic fold never starts between the
+(trigger math, backoff, thrash wait, legacy lift, codec and rollback round trip,
+UTF-8-safe proportional caps, fold-prompt contract, the anchor and shift round
+trip, a repeat counted once), `test_fold_backlog` (a replay of a long chat's first
+anchored fold: a backlog folds again without an alert, a real refill only waits),
+`test_fold_ladder` and `test_fold_driver` (fold-ladder.md), `test_owner_first` (an automatic fold never starts between the
 messages of a conversation), `test_harness_chatwindow` (the fold slice: 500 identical
 messages never fold, 200 distinct 30-byte lines do), `test_harness_history`
 (the slice starts after the anchor), `test_harness_turn` (runFold's
@@ -581,16 +581,18 @@ don't spill to PSRAM), which is why the ring deliberately stays at 512.
 
 | thing | where |
 |---|---|
-| knob | `compactKB` (NVS; default 48, clamp 8–512, 0 = auto off) |
+| knob | `compactKB` (NVS; default 48 = follows the model, clamp 8–512, 0 = auto off) |
 | command | `/compact` (owner-only; async - runs on the next pump pass) |
+| API | `GET /api/fold/status`, `POST /api/fold/run` (`src/net/fold_routes.cpp`; compaction.md) |
 | boundary record | episodic row, kind=log, tag `ev:compact`, in the chat's session |
 | prompt section | `## CONVERSATION SUMMARY` (above the recent window) |
-| state file | LittleFS `/data/chatsum.txt` (rollback-safe; LRU-16 chats, byte-bounded, written atomically) |
-| fold prompt + breaker | `lib/core/{include/nimbus/orch/compact.h, src/orch_compact.cpp}` |
+| state files | LittleFS `/data/chatsum.txt` (rollback-safe; LRU-16 chats inside 64 KB, written atomically, its write time logged) and `/data/fold_ctl.txt` (device-wide) |
+| fold prompt + schedule | `lib/core/{include/nimbus/orch/compact.h, src/orch_compact.cpp}` |
+| driver + ladder | `lib/harness/src/fold_driver.cpp`, `lib/harness/src/engine_fold.cpp` (fold-ladder.md) |
 | window table + trigger math | `lib/core/{include/nimbus/orch/model_window.h, src/orch_model_window.cpp}` |
 | engine call | `TurnEngine::runFold` (`lib/harness/src/engine_fold.cpp`) / `clearChatConv` |
 | device pump | `compactTick()` in `src/agent/orchestrator.cpp` |
-| test seams (TEST builds) | `CTX?` / `COMPACT <chat>` / `MEMFILL` console + `/api/test/{ctx,compact,memfill,epiprune}` (`memfill` `kind=epiday` writes dated rows with sidecars) |
+| test seams (TEST builds) | `CTX?` / `COMPACT <chat>` / `FOLDRESET` / `MEMFILL` console + `/api/test/{ctx,compact,memfill,epiprune}` (`memfill` `kind=epiday` writes dated rows with sidecars) |
 
 **Assert on the `ev:compact` row, not on `CTX?`.** The diagnostic reads a
 cross-task echo buffer that is republished on every fold outcome, success or

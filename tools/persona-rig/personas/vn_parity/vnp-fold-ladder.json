@@ -1,0 +1,98 @@
+{
+ "name": "vnp-fold-ladder",
+ "description": "The fold ladder (v5.1.2): the head's fold answers with no summary (the NIMBUSD_FOLD_FAULT seam, the device's PROVFAULT), the cycle walks to the next keyed provider, and the summary lands there. Rung failures are logged with their kind; no cycle fails and the owner hears nothing.",
+ "keys": {
+  "anthropic": "ANTHROPIC_API_KEY",
+  "openai": "OPENAI_API_KEY"
+ },
+ "models": {
+  "head": {
+   "anthropic": "claude-haiku-5-5",
+   "openai": "gpt-5.6-luna"
+  }
+ },
+ "host": "anthropic",
+ "env": {
+  "NIMBUSD_FOLD_FAULT": "anthropic",
+  "NIMBUSD_PRIORITY": "anthropic,openai"
+ },
+ "timezone": "Europe/London",
+ "monthly_cap_cents": 500,
+ "scenarios": [
+  {
+   "id": "fold-ladder",
+   "steps": [
+    {
+     "say": "The codeword for this conversation is QUINCE-41. Acknowledge it in one short sentence.",
+     "expect": [
+      {
+       "turn_resolved": true
+      },
+      {
+       "no_error_reply": true
+      }
+     ]
+    },
+    {
+     "say": "Note $i of a long working session. Reply in one short sentence acknowledging the note.",
+     "repeat": 20,
+     "pad": 3200,
+     "settle_s": 2,
+     "expect": [
+      {
+       "turn_resolved": true
+      },
+      {
+       "log_not_regex": "fold\\(.*\\): cycle failed|no summary in reply on"
+      }
+     ]
+    },
+    {
+     "sleep": 150
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/log"
+     },
+     "expect": [
+      {
+       "body_regex": "fold\\(owner\\): rung 1/\\d+ anthropic/\\S+ failed -> empty"
+      },
+      {
+       "body_regex": "fold\\(owner\\): ok on openai"
+      },
+      {
+       "body_not_contains": "cycle failed"
+      }
+     ]
+    },
+    {
+     "http": {
+      "method": "GET",
+      "path": "/api/fold/status"
+     },
+     "expect": [
+      {
+       "http_status": 200
+      },
+      {
+       "body_contains": "\"state\":\"fresh\""
+      }
+     ]
+    },
+    {
+     "say": "Earlier in this conversation I told you a codeword. What was it? Answer with the codeword only.",
+     "expect": [
+      {
+       "turn_resolved": true
+      },
+      {
+       "reply_contains": "QUINCE-41"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

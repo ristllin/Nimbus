@@ -62,6 +62,8 @@ const PAGES = [
   ['architecture/orchestrator-live-turn.md', 'guides/orchestrator-live-turn.md', 'Orchestrator live turn', 'Live turn'],
   ['orchestrator-world.md', 'guides/orchestrator-world.md', 'Orchestrator World - memory & control surface', 'Orchestrator World'],
   ['memory.md', 'guides/memory.md', 'Memory - RAM pools, turn budget, and compaction', 'Memory'],
+  ['compaction.md', 'guides/compaction.md', 'Conversation summary', 'Conversation summary'],
+  ['architecture/fold-ladder.md', 'guides/fold-ladder.md', 'The fold ladder and its driver', 'Fold ladder'],
   ['orchestrator-storage.md', 'guides/orchestrator-storage.md', 'Orchestrator storage tiering', 'Storage tiering'],
   ['sub-sessions.md', 'guides/sub-sessions.md', 'Sub-sessions - background agents end to end', 'Sub-sessions'],
   ['harness.md', 'guides/harness.md', 'The agentic harness', 'Harness'],
