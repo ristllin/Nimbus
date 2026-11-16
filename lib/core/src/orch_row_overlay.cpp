@@ -2,12 +2,51 @@
 
 #include <ArduinoJson.h>
 
+#include <deque>
+#include <mutex>
+#include <vector>
+
 // A photo row's replaced text (see row_overlay.h).
 namespace nimbus {
 namespace orch {
 
+namespace {
+struct Patch {
+  uint32_t seq = 0;
+  std::string id, text;
+};
+std::mutex g_patchMu;
+std::deque<Patch> g_patches;   // the newest kPatchJournal, oldest first
+uint32_t g_patchSeq = 0;
+
+void journal(const std::string& id, const std::string& text) {
+  std::lock_guard<std::mutex> lk(g_patchMu);
+  g_patches.push_back({++g_patchSeq, id, text});
+  while (g_patches.size() > kPatchJournal) g_patches.pop_front();
+}
+}  // namespace
+
+uint32_t rowPatchSeq() {
+  std::lock_guard<std::mutex> lk(g_patchMu);
+  return g_patchSeq;
+}
+
+bool rowPatchesSince(uint32_t seq, const std::function<void(const std::string&, const std::string&)>& fn) {
+  std::vector<Patch> mine;
+  {
+    std::lock_guard<std::mutex> lk(g_patchMu);
+    if (seq >= g_patchSeq) return true;
+    if (g_patches.empty() || g_patches.front().seq > seq + 1) return false;   // some already left
+    for (const Patch& p : g_patches)
+      if (p.seq > seq) mine.push_back(p);
+  }
+  for (const Patch& p : mine) fn(p.id, p.text);   // outside the lock: the reader may take its own
+  return true;
+}
+
 void RowTextOverlay::put(const std::string& id, const std::string& text) {
   if (id.empty()) return;
+  journal(id, text);
   for (size_t i = 0; i < ids_.size(); ++i) {
     if (!sameText(ids_[i], id)) continue;
     ids_.erase(ids_.begin() + (long)i);

@@ -1,5 +1,7 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -22,6 +24,17 @@
 // Portable, host-tested (test_image_records).
 namespace nimbus {
 namespace orch {
+
+// The patch journal (lane H of the history fix): every put() also lands here, the newest
+// kPatchJournal replacements with a sequence number, so a copy of a row read before its
+// record arrived (the engine's conversation cache, conv_cache.h) can take the new text.
+// Process-wide and thread-safe (a put may come from another task than the turn's).
+constexpr size_t kPatchJournal = 32;
+// The sequence number of the newest patch (0 = none yet).
+uint32_t rowPatchSeq();
+// Each patch after `seq`, oldest first; false (nothing called) when some of them already
+// left the journal: the reader then reads its rows again.
+bool rowPatchesSince(uint32_t seq, const std::function<void(const std::string& id, const std::string& text)>& fn);
 
 class RowTextOverlay : public EpisodicStore {
  public:

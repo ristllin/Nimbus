@@ -16,6 +16,17 @@ namespace nimbus {
 namespace orch {
 
 namespace {
+thread_local uint32_t t_cardReads = 0;   // card reads this task made (epiCardReads)
+}  // namespace
+
+uint32_t epiCardReads() { return t_cardReads; }
+
+std::string AppendLogEpisodicStore::readCard(const std::string& path, long offset, long len) const {
+  t_cardReads++;
+  return fs_.readRange(path, offset, len);
+}
+
+namespace {
 // ArduinoJson allocator over the working-set hooks (PSRAM on the device, malloc
 // on the host), so the document behind every decode of a stored row stays off
 // the internal heap. ArduinoJson grows its pools with reallocate(), which the
@@ -374,7 +385,7 @@ size_t AppendLogEpisodicStore::loadRecBlock(const MsgQuery& q, IdxRevIt it, uint
   }
   blk.day = r.dayNum;
   blk.start = start;
-  blk.buf = fs_.readRange(dayFile(r.dayNum), start, end - start);
+  blk.buf = readCard(dayFile(r.dayNum), start, end - start);
   blk.end = start + (long)blk.buf.size();
   return (size_t)(end - start);
 }
@@ -604,7 +615,7 @@ AppendLogEpisodicStore::WinRead AppendLogEpisodicStore::readBackWindow(
   if (maxWindow < window) maxWindow = window;
   long start = end > (long)window ? end - (long)window : 0;
   w.start = start;
-  std::string buf = fs_.readRange(path, start, end - start);
+  std::string buf = readCard(path, start, end - start);
   w.bytesRead = buf.size();
   if (buf.empty()) return WinRead::Empty;
   // A record boundary inside the window is a '\n' BEFORE its last byte: when
@@ -621,7 +632,7 @@ AppendLogEpisodicStore::WinRead AppendLogEpisodicStore::readBackWindow(
     // Grow backward: read only the earlier bytes (doubling, capped) and prepend.
     long add = (long)std::min(win, maxWindow - win);
     if (add > start) add = start;
-    std::string head = fs_.readRange(path, start - add, add);
+    std::string head = readCard(path, start - add, add);
     if (head.empty()) { w.start = start; return WinRead::Empty; }
     w.bytesRead += head.size();
     head.append(buf);
@@ -846,7 +857,7 @@ size_t AppendLogEpisodicStore::loadRecBlockFwd(const MsgQuery& q, const EpiAfter
   }
   blk.day = r.dayNum;
   blk.start = start;
-  blk.buf = fs_.readRange(dayFile(r.dayNum), start, end - start);
+  blk.buf = readCard(dayFile(r.dayNum), start, end - start);
   blk.end = start + (long)blk.buf.size();
   return (size_t)(end - start);
 }
@@ -897,7 +908,7 @@ bool AppendLogEpisodicStore::probeRecordAt(const std::string& path, long pos, lo
                                            uint32_t& idSfx, size_t& bytes) const {
   if (pos >= end) return false;
   long len = std::min<long>((long)kColdWindow, end - pos);
-  std::string buf = fs_.readRange(path, pos, len);
+  std::string buf = readCard(path, pos, len);
   bytes += buf.size();
   if (buf.empty()) return false;
   // A position inside a record: its record starts after the next newline.
@@ -999,7 +1010,7 @@ bool AppendLogEpisodicStore::queryAfterCold(const MsgQuery& q, const EpiAfterFil
       }
       // One forward window of whole records, growing (without re-reading) while a single
       // record spans it, up to kColdWindowMax.
-      std::string buf = fs_.readRange(path, off, std::min<long>((long)kColdWindow, end - off));
+      std::string buf = readCard(path, off, std::min<long>((long)kColdWindow, end - off));
       bytes += buf.size();
       if (buf.empty()) {   // the card would not give it back: the rest of this day's cold bytes
         noteUnreadable(info, day, off, end);
@@ -1008,7 +1019,7 @@ bool AppendLogEpisodicStore::queryAfterCold(const MsgQuery& q, const EpiAfterFil
       size_t last = buf.rfind('\n');
       while (last == std::string::npos && off + (long)buf.size() < end && buf.size() < kColdWindowMax) {
         const long more = std::min<long>((long)buf.size(), end - off - (long)buf.size());
-        const std::string tail = fs_.readRange(path, off + (long)buf.size(), more);
+        const std::string tail = readCard(path, off + (long)buf.size(), more);
         bytes += tail.size();
         if (tail.empty()) break;
         buf += tail;
@@ -1113,7 +1124,7 @@ int AppendLogEpisodicStore::hydrate(int maxRows, size_t maxBytes,
     if (window > 0 && (size_t)fsize > window) {
       // Take the NEWEST bytes, then drop the partial first record a tail read
       // almost certainly starts inside, so decodeEpisodicLine never sees a torn row.
-      buf = fs_.readRange(path, fsize - (long)window, (long)window);
+      buf = readCard(path, fsize - (long)window, (long)window);
       bytesRead += window;
       const size_t nl = buf.find('\n');
       // ⚠ The index stores FILE offsets; forEachLine reports offsets within

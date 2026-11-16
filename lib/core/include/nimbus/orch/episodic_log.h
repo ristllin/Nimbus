@@ -162,6 +162,11 @@ inline constexpr int    kIndexReadsPerCall = 120;
 // progress.
 inline constexpr size_t kIndexBytesPerCall = kColdMaxBytes;
 
+// Card reads (EpiFs::readRange calls) the calling task's SD log made so far, every store
+// counted (lane H of the history fix): a turn's history read reports the difference, so a
+// steady-state turn is seen to read none.
+uint32_t epiCardReads();
+
 // "2026-07-16.jsonl" -> epoch-day number (0 when the name is not a day-stream).
 uint32_t dayNumFromName(const std::string& name);
 
@@ -336,6 +341,9 @@ class AppendLogEpisodicStore : public EpisodicStore {
   // std::string - conversion happens only at the ring boundary (transient, bounded
   // by the query limit), so the wire/query semantics are byte-identical.
   using PsString = std::basic_string<char, std::char_traits<char>, WorkingAllocator<char>>;
+
+  // Every byte-range read goes through here: it counts toward epiCardReads().
+  std::string readCard(const std::string& path, long offset, long len) const;
 
   struct IdxRec {
     uint32_t tsHours = 0;
