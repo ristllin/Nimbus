@@ -9,7 +9,8 @@
 //   5. the one time policy: every request's deadline comes from one table;
 //   6. a 2xx that did not arrive whole is a transport failure, never an answer;
 //   7. Mistral's error text comes from every body shape it answers with;
-//   8. sub-agent provenance is counted from each provider's own run record.
+//   8. sub-agent provenance is counted from each provider's own run record;
+//   9. the compaction fold is plain text on every wire, direct and routed.
 #include <unity.h>
 
 #include <type_traits>
@@ -805,6 +806,81 @@ static void test_cum620_one_error_line_for_every_seam() {
   }
 }
 
+// ---- 9. the fold is plain text on every wire (lane W, v5.1.2) ---------------------------
+// The compaction fold's reply IS the summary. On every wire, direct and through the Cumulo
+// router, a request carrying ORCH_COMPACT_PROMPT sends no orch_turn schema, no text.format,
+// no response_format, no tools and no connectors; OpenAI's is store false. Counter-test:
+// the same predicate refuses the v5.1.1 OpenAI fold (a strict text.format, store true).
+static std::string foldProblem(const std::string& body) {
+  JsonDocument b;
+  if (deserializeJson(b, body, DeserializationOption::NestingLimit(32))) return "not JSON";
+  if (body.find("orch_turn") != std::string::npos) return "the orch_turn schema";
+  if (!b["text"]["format"].isNull()) return "text.format";
+  if (!b["response_format"].isNull()) return "response_format";
+  if (!b["completion_args"]["response_format"].isNull()) return "completion_args.response_format";
+  if (!b["tools"].isNull() || !b["tool_choice"].isNull()) return "tools";
+  if (!b["mcp_servers"].isNull()) return "connectors";
+  if (!b["store"].isNull() && b["store"].as<bool>()) return "store true";
+  return "";
+}
+
+static void test_fold_is_plain_text_on_every_wire() {
+  TEST_ASSERT_EQUAL_STRING("text.format",
+                           foldProblem("{\"model\":\"m\",\"store\":true,\"text\":{\"format\":{\"type\":\"json_schema\"}}}").c_str());
+  struct Leg {
+    const char* name;
+    const char* wire;   // anthropic | openai | mistral | zai | custom
+    bool routed;
+  };
+  const Leg legs[] = {
+      {"anthropic", "anthropic", false}, {"openai", "openai", false}, {"mistral", "mistral", false},
+      {"zai", "zai", false},             {"custom", "custom", false},  {"cumulo/anthropic", "anthropic", true},
+      {"cumulo/openai", "openai", true}, {"cumulo/mistral", "mistral", true}, {"cumulo/zai", "zai", true},
+  };
+  const std::string chat = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"[SUMMARY] s\"}}]}";
+  for (const Leg& l : legs) {
+    const std::string w = l.wire;
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200,
+                             w == "anthropic" ? std::string("{\"content\":[{\"type\":\"text\",\"text\":\"[SUMMARY] s\"}],"
+                                                            "\"stop_reason\":\"end_turn\"}")
+                             : w == "openai" ? std::string("{\"status\":\"completed\",\"output\":[{\"type\":\"message\","
+                                                           "\"content\":[{\"type\":\"output_text\",\"text\":\"[SUMMARY] s\"}]}]}")
+                                             : chat});
+    providers::ProviderDeps pd = d.contract();
+    if (l.routed) {
+      pd.routerBase = [] { return std::string("https://app.cumulo-nimbus.ai"); };
+      pd.routerKey = [] { return std::string("cumulo_sk_test"); };
+    }
+    std::string conv, out, err;
+    bool ok = false;
+    if (w == "anthropic") ok = providers::orchTurnAnthropic(pd, conv, orch::ORCH_COMPACT_PROMPT, "digest", out, err, nullptr, nullptr);
+    if (w == "openai") ok = providers::orchTurnOpenAI(pd, conv, orch::ORCH_COMPACT_PROMPT, "digest", out, err, nullptr, nullptr);
+    if (w == "mistral") ok = providers::orchTurnMistral(pd, conv, orch::ORCH_COMPACT_PROMPT, "digest", out, err, nullptr, nullptr);
+    if (w == "zai" || w == "custom") {
+      if (w == "zai" && l.routed) {
+        providers::configureRouterCompatHead(pd, "zai", "glm-5.3");
+      } else if (w == "zai") {
+        pd.customBase = [] { return std::string("https://api.z.ai"); };
+        pd.customPathPrefix = [] { return std::string("/api/paas/v4"); };
+        pd.customKey = [] { return std::string("zai-key"); };
+        pd.customModel = [] { return std::string("glm-5.3"); };
+        providers::applyZaiHeadPolicy(pd);
+      } else {
+        pd.customBase = [] { return std::string("https://llm.example.lan"); };
+      }
+      ok = providers::orchTurnCustom(pd, conv, orch::ORCH_COMPACT_PROMPT, "digest", out, err, nullptr, nullptr);
+    }
+    TEST_ASSERT_TRUE_MESSAGE(ok, (std::string(l.name) + ": " + err).c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("[SUMMARY] s", out.c_str(), l.name);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)d.http.seen.size(), l.name);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", foldProblem(reqBody(d, 0)).c_str(), l.name);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, d.openAiAttaches + d.mistralAttaches + d.anthropicAttaches, l.name);
+    if (w == "openai") TEST_ASSERT_TRUE_MESSAGE(reqBody(d, 0).find("\"store\":false") != std::string::npos, l.name);
+    if (l.routed) TEST_ASSERT_TRUE_MESSAGE(d.http.seen[0].path.rfind("/router/", 0) == 0, l.name);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_tool_choice_never_forced_any_model_any_path);
@@ -824,5 +900,6 @@ int main(int, char**) {
   RUN_TEST(test_sub_provenance_counts_per_provider);
   RUN_TEST(test_test_status_override_answers_locally);
   RUN_TEST(test_test_unsent_override_is_unsent_with_no_switch);
+  RUN_TEST(test_fold_is_plain_text_on_every_wire);
   return UNITY_END();
 }

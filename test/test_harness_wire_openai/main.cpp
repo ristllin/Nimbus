@@ -1,12 +1,15 @@
 #include <unity.h>
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
 #include "../support/image_turn_fixture.h"
+#include "nimbus/orch/compact.h"       // ORCH_COMPACT_PROMPT - the fold
 #include "nimbus/orch/hosted_runs.h"   // CUM-835: what a head response ran server-side
+#include "nimbus/orch/transcript.h"
 #include "nimbus/orch/turn_images.h"
 #include "nimbus/harness/prompt_layout.h"
 #include "nimbus/harness/providers.h"
@@ -1286,6 +1289,184 @@ static void test_breakpoint_retry_is_only_for_that_refusal() {
   }
 }
 
+// ---- lane W (v5.1.2): the routed deadline, no output cap, the plain fold -------------------
+namespace {
+void routeThroughCumulo(agent::providers::ProviderDeps& pd) {
+  pd.routerBase = [] { return std::string("https://app.cumulo-nimbus.ai"); };
+  pd.routerKey = [] { return std::string("cumulo_sk_test"); };
+}
+std::string foldAnswer(const char* status = "completed") {
+  return std::string("{\"id\":\"resp_f\",\"status\":\"") + status +
+         "\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[{\"type\":\"message\","
+         "\"content\":[{\"type\":\"output_text\",\"text\":\"[SUMMARY] the owner tracks food\"}]}],"
+         "\"usage\":{\"input_tokens\":900,\"output_tokens\":40}}";
+}
+}  // namespace
+
+// A routed round gives up at 90 s (the egress gives up at 95 s) and tells the router when:
+// x-cumulo-deadline-ms is its socket deadline less 5 s. A shorter turn budget shortens
+// both. A direct round keeps 120 s and sends no such header.
+static void test_routed_round_socket_is_90s_and_carries_the_deadline() {
+  for (bool routed : {false, true})
+    for (uint32_t budget : {UINT32_MAX, 30000u}) {
+      FakeProviderDeps d;
+      d.http.script.push_back({"", "", 200, finalCallBody("r1")});
+      auto pd = d.contract();
+      if (routed) routeThroughCumulo(pd);
+      FakeProviderDeps::ToolRig rig;
+      d.fillTools(rig);
+      orch::Transcript tr;
+      tr.addUser("hi");
+      providers::oaiLoopStep(pd, "SYS", rig.ht, nullptr, tr)(true, {}, budget, "");
+      const uint32_t want = budget == 30000u ? 30000u : (routed ? 90000u : 120000u);
+      TEST_ASSERT_EQUAL_UINT32(want, d.http.seen[0].timeoutMs);
+      const std::string deadline = headerOf(d.http.seen[0], "x-cumulo-deadline-ms");
+      TEST_ASSERT_EQUAL_STRING(routed ? std::to_string(want - 5000).c_str() : "", deadline.c_str());
+    }
+  // The single shot and the fold get the same ceiling through the router.
+  for (const char* ins : {"SYS", orch::ORCH_COMPACT_PROMPT}) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, !strcmp(ins, "SYS") ? singleShotBody() : foldAnswer()});
+    auto pd = d.contract();
+    routeThroughCumulo(pd);
+    std::string conv, out, err;
+    providers::orchTurnOpenAI(pd, conv, ins, "U", out, err, nullptr, nullptr);
+    TEST_ASSERT_EQUAL_UINT32(90000u, d.http.seen[0].timeoutMs);
+    TEST_ASSERT_EQUAL_STRING("85000", headerOf(d.http.seen[0], "x-cumulo-deadline-ms").c_str());
+  }
+}
+
+// DoD (class): no OpenAI or Cumulo/openai body ever carries max_output_tokens on its
+// first send: tool rounds, the forced final round, the single shot and the fold, direct
+// and routed (reasoning tokens count toward it and would starve the answer).
+static void test_no_max_output_tokens_on_any_openai_body() {
+  for (bool routed : {false, true}) {
+    for (const char* cap : {"", "rounds", "stalled"}) {
+      FakeProviderDeps d;
+      d.http.script.push_back({"", "", 200, finalCallBody("r1")});
+      auto pd = d.contract();
+      if (routed) routeThroughCumulo(pd);
+      FakeProviderDeps::ToolRig rig;
+      d.fillTools(rig);
+      orch::Transcript tr;
+      tr.addUser("hi");
+      providers::oaiLoopStep(pd, "SYS", rig.ht, nullptr, tr)(!*cap, {}, UINT32_MAX, cap);
+      TEST_ASSERT_FALSE_MESSAGE(bodyHas(d, 0, "max_output_tokens"), cap);
+    }
+    for (const char* ins : {"SYS", orch::ORCH_COMPACT_PROMPT}) {
+      FakeProviderDeps d;
+      d.http.script.push_back({"", "", 200, !strcmp(ins, "SYS") ? singleShotBody() : foldAnswer()});
+      auto pd = d.contract();
+      if (routed) routeThroughCumulo(pd);
+      std::string conv, out, err;
+      providers::orchTurnOpenAI(pd, conv, ins, "U", out, err, nullptr, nullptr);
+      TEST_ASSERT_FALSE(bodyHas(d, 0, "max_output_tokens"));
+    }
+  }
+}
+
+// The router's low-balance clamp (402 insufficient_credits_for_call with what fits) gets
+// the one capped resend: the only OpenAI body that ever carries max_output_tokens.
+static void test_router_402_clamp_gets_the_capped_resend() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 402,
+                           "{\"error\":\"insufficient_credits_for_call\",\"reason\":\"insufficient_credits_for_call\","
+                           "\"maxAffordableOutputTokens\":2000,\"charged\":false}"});
+  d.http.script.push_back({"", "", 200, finalCallBody("r1")});
+  auto pd = d.contract();
+  routeThroughCumulo(pd);
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  orch::Transcript tr;
+  tr.addUser("hi");
+  const orch::HeadStep st = providers::oaiLoopStep(pd, "SYS", rig.ht, nullptr, tr)(true, {}, UINT32_MAX, "");
+  TEST_ASSERT_TRUE_MESSAGE(st.ok, st.error.c_str());
+  TEST_ASSERT_EQUAL_INT(2, (int)d.http.seen.size());
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "max_output_tokens"));
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "\"max_output_tokens\":2000"));
+}
+
+// The compaction fold is one plain Responses request: the fold prompt as instructions, the
+// fold string as input, no text.format, no tools or connectors, store false, effort low on
+// a reasoning model; output_text is the summary. Direct and through the router alike.
+static void test_plain_fold_body_is_pinned() {
+  for (bool routed : {false, true}) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, foldAnswer()});
+    auto pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("gpt-5.6"); };
+    if (routed) routeThroughCumulo(pd);
+    std::string conv, out, err;
+    const bool ok = providers::orchTurnOpenAI(pd, conv, orch::ORCH_COMPACT_PROMPT, "[CONVERSATION SINCE]\ndigest", out,
+                                              err, nullptr, nullptr);
+    TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+    TEST_ASSERT_EQUAL_STRING("[SUMMARY] the owner tracks food", out.c_str());
+    TEST_ASSERT_EQUAL_STRING(routed ? "/router/openai/v1/responses" : "/v1/responses", d.http.seen[0].path.c_str());
+    JsonDocument b;
+    TEST_ASSERT_TRUE(deserializeJson(b, reqBody(d, 0)) == DeserializationError::Ok);
+    TEST_ASSERT_EQUAL_STRING("gpt-5.6", b["model"] | "");
+    TEST_ASSERT_EQUAL_STRING(orch::ORCH_COMPACT_PROMPT, b["instructions"] | "");
+    TEST_ASSERT_EQUAL_STRING("[CONVERSATION SINCE]\ndigest", b["input"] | "");
+    TEST_ASSERT_TRUE(b["store"].is<bool>() && !b["store"].as<bool>());
+    TEST_ASSERT_EQUAL_STRING("low", b["reasoning"]["effort"] | "");
+    for (const char* absent : {"text", "tools", "tool_choice", "max_output_tokens", "previous_response_id", "include"})
+      TEST_ASSERT_TRUE_MESSAGE(b[absent].isNull(), absent);
+    TEST_ASSERT_EQUAL_INT(0, d.openAiAttaches);   // no connector rode it
+  }
+}
+
+// An incomplete fold is retried once at a lower effort (there is no cap to raise: none
+// is sent); a second incomplete fails as a cut.
+static void test_incomplete_fold_retries_once_at_a_lower_effort() {
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, foldAnswer("incomplete")});
+    d.http.script.push_back({"", "", 200, foldAnswer()});
+    auto pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("gpt-5.6-luna"); };
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnOpenAI(pd, conv, orch::ORCH_COMPACT_PROMPT, "d", out, err, nullptr,
+                                                       nullptr),
+                             err.c_str());
+    TEST_ASSERT_EQUAL_INT(2, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"effort\":\"low\""));
+    TEST_ASSERT_TRUE(bodyHas(d, 1, "\"effort\":\"none\""));
+    TEST_ASSERT_FALSE(bodyHas(d, 1, "max_output_tokens"));
+  }
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, foldAnswer("incomplete")});
+    d.http.script.push_back({"", "", 200, foldAnswer("incomplete")});
+    auto pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("gpt-5.6"); };
+    std::string conv, out, err;
+    TEST_ASSERT_FALSE(providers::orchTurnOpenAI(pd, conv, orch::ORCH_COMPACT_PROMPT, "d", out, err, nullptr, nullptr));
+    TEST_ASSERT_EQUAL_INT(2, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE_MESSAGE(err.find("cut at the output limit") == 0, err.c_str());
+  }
+  // gpt-5 itself steps down to "minimal"; a model with nothing lower is not retried.
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, foldAnswer("incomplete")});
+    d.http.script.push_back({"", "", 200, foldAnswer()});
+    auto pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("gpt-5"); };
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE(providers::orchTurnOpenAI(pd, conv, orch::ORCH_COMPACT_PROMPT, "d", out, err, nullptr, nullptr));
+    TEST_ASSERT_TRUE(bodyHas(d, 1, "\"effort\":\"minimal\""));
+  }
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, foldAnswer("incomplete")});
+    auto pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("gpt-4.1"); };
+    std::string conv, out, err;
+    TEST_ASSERT_FALSE(providers::orchTurnOpenAI(pd, conv, orch::ORCH_COMPACT_PROMPT, "d", out, err, nullptr, nullptr));
+    TEST_ASSERT_EQUAL_INT(1, (int)d.http.seen.size());
+    TEST_ASSERT_FALSE(bodyHas(d, 0, "reasoning"));   // a chat model takes no reasoning field
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_single_shot_request_shape);
@@ -1335,6 +1516,11 @@ int main(int, char**) {
   RUN_TEST(test_breakpoint_hint_follows_the_model_on_both_paths);
   RUN_TEST(test_breakpoint_refused_by_a_model_the_gate_trusted_retries_once);
   RUN_TEST(test_breakpoint_retry_is_only_for_that_refusal);
+  RUN_TEST(test_routed_round_socket_is_90s_and_carries_the_deadline);
+  RUN_TEST(test_no_max_output_tokens_on_any_openai_body);
+  RUN_TEST(test_router_402_clamp_gets_the_capped_resend);
+  RUN_TEST(test_plain_fold_body_is_pinned);
+  RUN_TEST(test_incomplete_fold_retries_once_at_a_lower_effort);
   UNITY_END();
   return 0;
 }
