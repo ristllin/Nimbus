@@ -506,6 +506,31 @@ static void test_every_request_deadline_comes_from_the_policy() {
       TEST_ASSERT_EQUAL_UINT32_MESSAGE(want, d.http.seen[0].timeoutMs, host);
     }
   }
+  // Through the Cumulo router every head round gives up at 90 s at most (the egress gives
+  // up at 95 s), Mistral's shorter ceiling kept, and says so in x-cumulo-deadline-ms.
+  for (uint32_t budget : {60000u, 89999u, 120000u, UINT32_MAX}) {
+    for (const char* host : {"anthropic", "openai", "mistral"}) {
+      const uint32_t ceiling = !strcmp(host, "mistral") ? providers::kMistralRoundMs : providers::kRoutedRoundCeilingMs;
+      const uint32_t want = budget >= ceiling ? ceiling : budget;
+      FakeProviderDeps d;
+      d.http.script.push_back({"", "", 200, !strcmp(host, "anthropic") ? antFinal()
+                                           : !strcmp(host, "openai")    ? oaiFinal() : misFinal()});
+      providers::ProviderDeps pd = d.contract();
+      pd.routerBase = [] { return std::string("https://app.cumulo-nimbus.ai"); };
+      pd.routerKey = [] { return std::string("cumulo_sk_test"); };
+      FakeProviderDeps::ToolRig rig;
+      d.fillTools(rig);
+      orch::Transcript tr;
+      tr.addUser("hi");
+      const std::string instr = "S";
+      auto make = !strcmp(host, "anthropic") ? providers::antLoopStep
+                : !strcmp(host, "openai")    ? providers::oaiLoopStep : providers::misLoopStep;
+      make(pd, instr, rig.ht, nullptr, tr)(true, {}, budget, "");
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(want, d.http.seen[0].timeoutMs, host);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(std::to_string(want - 5000).c_str(),
+                                       harness_test::headerOf(d.http.seen[0], "x-cumulo-deadline-ms").c_str(), host);
+    }
+  }
   // The single shots get the same ceilings.
   for (const char* host : {"anthropic", "openai", "mistral"}) {
     FakeProviderDeps d;
