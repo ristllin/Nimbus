@@ -321,6 +321,7 @@ uint32_t photoTokens(const orch::TurnImages* imgs, bool photos, bool looked, Dia
 
 size_t photoTextBudget(const orch::RequestBudget& b, uint32_t tokens) {
   const size_t whole = b.wireBodyBytes;
+  if (tokens == 0) return whole;
   const size_t floor = whole < kWireBodyMax ? whole : kWireBodyMax;
   const uint64_t photoBytes = (uint64_t)tokens * (b.rNomX100 ? b.rNomX100 : 400) / 100;
   if (photoBytes + floor >= whole) return floor;

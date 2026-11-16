@@ -1989,8 +1989,8 @@ static void test_a_long_mistral_answer_in_the_round_text_reaches_the_owner() {
 
 // Lane W: the flat single shot's one instructions string over flatPromptBudget() is
 // refused with the size wording (the turn's give-up order reads it and builds the request
-// again), never the string ceiling's "request field over 60 KB"; nothing is sent. A loop's
-// seeded user message over the same guard is refused the same way.
+// again), never the string ceiling's "request field over 60 KB"; nothing is sent. A head
+// loop's seeded user message over the same guard is refused with its own wording.
 static void test_flat_strings_over_the_guard_are_refused_with_the_size_wording() {
   {
     FakeProviderDeps d;
@@ -2021,7 +2021,10 @@ static void test_flat_strings_over_the_guard_are_refused_with_the_size_wording()
     const nimbus::orch::HeadStep st = providers::misLoopStep(pd, ins, rig.ht, nullptr, tr)(true, {}, UINT32_MAX, "");
     TEST_ASSERT_FALSE(st.ok);
     TEST_ASSERT_EQUAL_INT(0, (int)d.http.seen.size());
-    TEST_ASSERT_TRUE_MESSAGE(st.error.find("request body over the 55 KB budget") == 0, st.error.c_str());
+    // Its own wording: the loop gives up what the message holds (RoundRecovery::seedFit).
+    TEST_ASSERT_TRUE_MESSAGE(st.error.find("the newest message is over the 55 KB message budget") == 0,
+                             st.error.c_str());
+    TEST_ASSERT_TRUE(st.kind == nimbus::orch::StepErr::BadRequest);
     // An unsplit prompt (a sub-agent brief, the dream) keeps the string ceiling alone.
     FakeProviderDeps u;
     u.http.script.push_back({"", "", 200, chatFinalBody()});

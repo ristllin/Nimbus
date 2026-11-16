@@ -34,7 +34,7 @@ size_t replayBytesFor(const RoundBudget& rb, size_t v511Bytes) {
 }
 
 uint32_t textTokens(const RoundBudget& rb, size_t textBytes) {
-  const uint32_t r = rb.budget.rNomX100 ? rb.budget.rNomX100 : 400;
+  const uint32_t r = rNomOf(rb);
   return (uint32_t)((uint64_t)textBytes * 100 / r);
 }
 
@@ -91,14 +91,15 @@ bool replaceMaxTokens(std::string& body, BodySplices& splices, uint32_t from, ui
   return true;
 }
 
-bool fitCapToLoad(std::string& body, BodySplices& splices, OutputCap& cap, const RoundBudget& rb, RoundKind kind,
-                  uint32_t roundMs, const RoundLoad& load) {
-  const OutputCap fitted = outputCapFor(rb.host, rb.model, kind, roundMs, load);
-  const bool sameShape = std::strcmp(fitted.effort, cap.effort) == 0 && (fitted.maxTokens == 0) == (cap.maxTokens == 0);
-  const bool inPlace = sameShape && (cap.maxTokens == 0 || replaceMaxTokens(body, splices, cap.maxTokens, fitted.maxTokens));
-  cap = fitted;
-  recordRound(rb, kind, roundMs, load, fitted);
-  return inPlace;
+OutputCap fittedCap(const RoundBudget& rb, RoundKind kind, uint32_t roundMs, const RoundLoad& load) {
+  OutputCap c = outputCapFor(rb.host, rb.model, kind, roundMs, load);
+  const uint32_t want = minFinalTokens(rb);
+  if (!c.maxTokens || c.maxTokens >= want || roundFitTokens(rb, roundMs, load) >= want) return c;
+  c.maxTokens = want;
+  const bool lowerEffort = std::strcmp(c.retryEffort, c.effort) != 0;
+  if (c.retryTokens && !lowerEffort && c.retryTokens < want + kRetryGainTokens) c.retryTokens = 0;
+  else if (c.retryTokens && c.retryTokens < want) c.retryTokens = want;
+  return c;
 }
 
 uint32_t roundFitTokens(const RoundBudget& rb, uint32_t roundMs, const RoundLoad& load) {
@@ -116,7 +117,7 @@ size_t photoFitShedBytes(const RoundBudget& rb, uint32_t roundMs, const RoundLoa
   const uint64_t shortMs = (uint64_t)(want - fit) * 1000 / (decode ? decode : 1);
   // What one text byte costs, in ns: its upload (every time the body goes up), its share
   // of a paced slice on a fragmented heap, and its share of a token at the prefill rate.
-  const uint32_t r = rb.budget.rNomX100 ? rb.budget.rNomX100 : 400;
+  const uint32_t r = rNomOf(rb);
   const uint64_t perByteNs =
       (uint64_t)load.uploads * 1000000000ull / nimbus::orch::kBudgetUploadBytesPerS +
       (load.fragmented ? 1000000ull * nimbus::orch::kBudgetPaceSliceMs / nimbus::orch::kBudgetPaceSliceBytes : 0) +
@@ -168,18 +169,43 @@ bool textOverFit(const RoundBudget& rb, const RoundLoad& load, std::string& err)
   return true;
 }
 
-RoundFit fitRoundToLoad(const RoundFitIn& in, std::string& body, BodySplices& splices, OutputCap& cap,
-                        std::string& err) {
+bool fitRoundToLoad(const RoundFitIn& in, std::string& body, BodySplices& splices, OutputCap& cap, std::string& err) {
   const RoundLoad load = roundLoad(in.rb, body.size(), splicedBytes(splices), in.photoTokens);
-  RoundFit fit = RoundFit::Ready;
-  if (!in.capped) recordRound(in.rb, in.kind, in.roundMs, load, OutputCap());
-  else if (!fitCapToLoad(body, splices, cap, in.rb, in.kind, in.roundMs, load)) fit = RoundFit::Rebuild;
+  const OutputCap sent = in.capped ? fittedCap(in.rb, in.kind, in.roundMs, load) : OutputCap();
+  recordRound(in.rb, in.kind, in.roundMs, load, sent);
   lastRound().textBudget = in.textBudget;
   lastRound().photoTokens = in.photoTokens;
-  if (photosOverFit(in.rb, in.roundMs, load, in.photoTokens, err)) return RoundFit::Refused;
-  if (textOverFit(in.rb, load, err)) return RoundFit::Refused;
-  if (fit == RoundFit::Ready && !bodyWithinBudget(body, in.textBudget, err)) return RoundFit::Refused;   // a digit wider
-  return fit;
+  // Both fits are the host's whole read window: what the request carries decides them, and
+  // the turn's own deadline is the loop's to handle (it forces the final round).
+  if (photosOverFit(in.rb, 0, load, in.photoTokens, err) || textOverFit(in.rb, load, err)) return false;
+  if (in.capped) {
+    const bool sameShape = std::strcmp(sent.effort, cap.effort) == 0 && (sent.maxTokens == 0) == (cap.maxTokens == 0);
+    if (!sameShape || (cap.maxTokens && !replaceMaxTokens(body, splices, cap.maxTokens, sent.maxTokens))) {
+      err = "the round's output cap could not be set in its request";
+      hlog::logf("wire: %s/%s %s", in.rb.host.c_str(), in.rb.model.c_str(), err.c_str());
+      return false;
+    }
+    cap = sent;
+  }
+  return bodyWithinBudget(body, in.textBudget, err);   // the patched cap is a digit wider at most
+}
+
+bool seedWithinBudget(const std::string& seed, std::string& err) {
+  if (seed.size() <= flatPromptBudget()) return true;
+  err = "the newest message is over the " + std::to_string(flatPromptBudget() / 1000) +
+        " KB message budget: " + std::to_string(seed.size()) + " B";
+  return false;
+}
+
+bool parseSeedBudgetError(const std::string& err, size_t& overBytes) {
+  static const char kHead[] = "the newest message is over the ";
+  static const char kMid[] = " KB message budget: ";
+  if (err.rfind(kHead, 0) != 0) return false;
+  const size_t at = err.find(kMid);
+  if (at == std::string::npos) return false;
+  const size_t size = (size_t)std::strtoul(err.c_str() + at + sizeof(kMid) - 1, nullptr, 10);
+  overBytes = size > flatPromptBudget() ? size - flatPromptBudget() : 0;
+  return true;
 }
 
 ObservedRatio& lastObservedRatio() {

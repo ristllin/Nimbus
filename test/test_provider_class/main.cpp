@@ -203,10 +203,14 @@ static void runCutCase(const CutCase& c, bool allowTools) {
   TEST_ASSERT_EQUAL_MESSAGE(0, (int)st.toolCalls.size(), what.c_str());
   TEST_ASSERT_EQUAL_MESSAGE((int)StepErr::Cut, (int)st.kind, what.c_str());
   TEST_ASSERT_FALSE_MESSAGE(st.cut.empty(), what.c_str());
-  // The cap the round sent is the table's for the load it carried (lane W: the wire
-  // measures its round and asks outputCapFor(..., RoundLoad)), OpenAI and custom none.
+  // The cap the round sent is the one that fits the load it carried (lane W: the wire
+  // measures its round and sends fittedCap, outputCapFor(..., RoundLoad) never under the
+  // host's minimum final when the round's time is short), OpenAI and custom none.
   const providers::wire::RoundRecord& sent = providers::wire::lastRound();
-  const providers::OutputCap cap = providers::outputCapFor(c.host, c.model, kind, sent.roundMs, sent.load);
+  const providers::wire::RoundBudget rb = providers::wire::roundBudget(providers::ProviderDeps(), c.host, c.model, false);
+  const providers::OutputCap cap = providers::wire::fittedCap(rb, kind, sent.roundMs, sent.load);
+  const providers::OutputCap fit = providers::outputCapFor(c.host, c.model, kind, sent.roundMs, sent.load);
+  if (fit.maxTokens) TEST_ASSERT_TRUE_MESSAGE(cap.maxTokens >= fit.maxTokens, what.c_str());
   TEST_ASSERT_EQUAL_UINT32_MESSAGE(cap.maxTokens, sent.cap.maxTokens, what.c_str());
   TEST_ASSERT_EQUAL_UINT32_MESSAGE(cap.retryTokens, sent.cap.retryTokens, what.c_str());
   // The retry, when the cap has one, sent a different body; never a second identical one.

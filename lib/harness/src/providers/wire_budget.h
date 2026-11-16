@@ -101,19 +101,19 @@ void recordRound(const RoundBudget& rb, RoundKind kind, uint32_t roundMs, const 
                  const OutputCap& cap);
 
 // ---- the cap that fits the load --------------------------------------------------------
-// The body was built with the table's cap before its load was known. The load-aware cap
-// replaces the first attempt's max_tokens in place (the request's first "max_tokens" key:
-// the builders write it right after the model, so a tool schema's own field of that name
-// never comes first); the photo splices after it move with it. False when the body has no
-// such field to change (the caller builds it again).
+// The body was built with the table's cap (tableCap: no clamp, no bench seam) before its load
+// was known. The load-aware cap replaces the first attempt's max_tokens in place (the
+// request's first "max_tokens" key: the builders write it right after the model, so a tool
+// schema's own field of that name never comes first); the photo splices after it move with
+// it. False when the body has no such field to change.
 bool replaceMaxTokens(std::string& body, BodySplices& splices, uint32_t from, uint32_t to);
 
-// The round's cap from its load: `cap` is the table cap the body was built with; on
-// return it is the load-aware cap, and true when the body already carries its first
-// attempt (patched in place). False: the effort or the field's presence changed, and the
-// caller builds the body again with `cap`.
-bool fitCapToLoad(std::string& body, BodySplices& splices, OutputCap& cap, const RoundBudget& rb, RoundKind kind,
-                  uint32_t roundMs, const RoundLoad& load);
+// The cap a round sends for its load: outputCapFor(..., RoundLoad) (lane B's fit), and never
+// a first attempt under the host's minimum final when the round's own time is what leaves
+// less (late in a turn, or a small body on a slow unknown model): v5.1.1 never went under its
+// 3,000-token floor, the socket deadline bounds the round, and a cap the model cannot finish
+// an answer in is a certain cut. The bench seams (a forced cut) pass through untouched.
+OutputCap fittedCap(const RoundBudget& rb, RoundKind kind, uint32_t roundMs, const RoundLoad& load);
 
 // ---- the time fit ------------------------------------------------------------------------
 // The round's fit and the host's minimum final come from the request budget (lane B,
@@ -149,15 +149,11 @@ bool photosOverFit(const RoundBudget& rb, uint32_t roundMs, const RoundLoad& loa
 bool textOverFit(const RoundBudget& rb, const RoundLoad& load, std::string& err);
 
 // ---- one round, sized to its load (lane STACK: out of the round's frame) ------------------
-enum class RoundFit : uint8_t {
-  Ready,     // the body carries the cap that fits its load, inside its budget
-  Rebuild,   // the cap changed shape (its effort, or the field itself): build the body again with `cap`
-  Refused,   // not sent: photos over the round's time fit, or the patched body over its budget (`err`)
-};
 // The body was built with `cap`, the table's. With its load known: a photo round that cannot
-// carry the host's minimum final is refused; a capped round takes the load-aware cap
-// (`capped` false: OpenAI and the custom endpoint, which never send one - the load is still
-// recorded). `textBudget` is the request's own budget less a photo round's share.
+// carry the host's minimum final, or a text round over 85,000 B too big for its window, is
+// refused (`err`); a capped round takes fittedCap in place (`capped` false: OpenAI and the
+// custom endpoint, which never send one - the load is still recorded). `textBudget` is the
+// request's own budget less a photo round's share. False = not sent.
 struct RoundFitIn {
   const RoundBudget& rb;
   RoundKind kind;
@@ -166,8 +162,18 @@ struct RoundFitIn {
   size_t textBudget;
   bool capped;
 };
-RoundFit fitRoundToLoad(const RoundFitIn& in, std::string& body, BodySplices& splices, OutputCap& cap,
-                        std::string& err);
+bool fitRoundToLoad(const RoundFitIn& in, std::string& body, BodySplices& splices, OutputCap& cap, std::string& err);
+
+// ---- a head turn's newest message --------------------------------------------------------
+// A head turn's seed (its per-turn block and the input) over flatPromptBudget() is refused
+// with its own wording, "the newest message is over the 55 KB message budget: 60123 B", so the
+// loop gives up what that message holds (RoundRecovery::seedFit: the turn's ladder, a rung at
+// a time: recall, then the input's middle), never the tool rounds or the older history first.
+bool seedWithinBudget(const std::string& seed, std::string& err);
+bool parseSeedBudgetError(const std::string& err, size_t& overBytes);
+
+// The bytes-per-token figure of a budget (x100), 400 when it carries none.
+inline uint32_t rNomOf(const RoundBudget& rb) { return rb.budget.rNomX100 ? rb.budget.rNomX100 : 400; }
 
 // ---- the observed ratio -------------------------------------------------------------------
 // After a 2xx: the text bytes the request carried and the prompt tokens the provider

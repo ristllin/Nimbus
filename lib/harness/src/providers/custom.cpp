@@ -470,6 +470,7 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
                                       uint32_t budgetMs, const std::string& capReason) -> orch::HeadStep {
     (void)prior;   // the transcript already carries every result
     orch::HeadStep out;
+    wire::lastExchange() = wire::LastExchange{};   // a step refused before the wire inherits nothing
     // The replayed tool results: the derived replay of the round's own budget, never
     // under v5.1.1's 24 KB (Mistral's measured wire-ceiling bound).
     constexpr size_t kReplayFloorBytes = 24576;
@@ -484,7 +485,7 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
     const size_t replay = wire::replayBytesFor(rb, kReplayFloorBytes);
     if (tr.toolBytes() > replay) tr.trimToolOutputs(replay);
     const RoundKind kind = allowTools ? RoundKind::ToolRound : RoundKind::FinalRound;
-    OutputCap cap = outputCapFor("zai", model, kind, roundMs);   // the table's, until the load is known
+    OutputCap cap = tableCap("zai", model, kind);   // the table's, until the load is known
     layout::PromptParts round = parts;
     std::string& tail = round.split ? round.dyn : round.stat;
     tail = wire::roundInstructions(tail, capReason);
@@ -503,15 +504,9 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
         // The load is known: the cap that fits it inside the round replaces the table's
         // (GLM always reasons; its effort is the policy's, not the cap's).
         BodySplices none;
-        const wire::RoundFit fit =
-            wire::fitRoundToLoad(wire::RoundFitIn{rb, kind, roundMs, 0, zr.budget, true}, body, none, cap, out.error);
+        built = wire::fitRoundToLoad(wire::RoundFitIn{rb, kind, roundMs, 0, zr.budget, true}, body, none, cap,
+                                     out.error);
         zr.maxTokens = cap.maxTokens;
-        if (fit == wire::RoundFit::Refused) {
-          built = false;
-        } else if (fit == wire::RoundFit::Rebuild) {
-          body.clear();
-          built = zaiLoopBody(pd, zr, body, out.error);
-        }
       }
       if (!built) {
         out.ok = false;

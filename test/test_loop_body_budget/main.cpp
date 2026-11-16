@@ -8,6 +8,7 @@
 
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
+#include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/prompt_layout.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/body_budget.h"
@@ -26,6 +27,8 @@
 
 using harness_test::FakeProviderDeps;
 using harness_test::LogCapture;
+using harness_test::bodyHas;
+using harness_test::reqBody;
 using nimbus::orch::HeadLoopConfig;
 using nimbus::orch::HeadLoopHooks;
 using nimbus::orch::HeadOutcome;
@@ -1076,6 +1079,74 @@ static void test_text_round_over_its_time_fit_is_refused_and_refit() {
   TEST_ASSERT_EQUAL_INT(1, (int)s.http.seen.size());
 }
 
+// A head turn's newest message over its string budget gives up what that message holds (the
+// turn's ladder a rung at a time: NextRung), never the tool rounds or the older history
+// first, and the round goes once it fits.
+static void test_seed_over_its_budget_gives_up_its_own_content() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200, finalResponse("mistral")});
+  providers::ProviderDeps pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  agent::layout::PromptParts parts;
+  parts.split = true;
+  parts.stat = "SYS";
+  parts.dyn = "[NOW] 09:00\n[RELEVANT MEMORIES] " + std::string(20000, 'm');
+  std::string input = std::string(40000, 'u');
+  std::vector<nimbus::orch::FitScope> scopes;
+  rig.ht.fitPrompt = [&](size_t want, nimbus::orch::FitScope scope, std::string& ins, std::string& inp) {
+    scopes.push_back(scope);
+    const size_t had = parts.dyn.size();
+    parts.dyn = "[NOW] 09:00";   // the recall rung
+    ins = agent::layout::join(parts);
+    inp = input;
+    (void)want;
+    return had - parts.dyn.size();
+  };
+  LogCapture::install();
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(
+      providers::orchTurnMistral(pd, conv, agent::layout::join(parts), input, out, err, &rig.ht, nullptr), err.c_str());
+  TEST_ASSERT_EQUAL_INT(1, (int)scopes.size());
+  TEST_ASSERT_TRUE(scopes[0] == nimbus::orch::FitScope::NextRung);
+  TEST_ASSERT_EQUAL_INT(1, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(LogCapture::contains("newest message over its budget"));
+}
+
+// A round late in a turn (8 s left) never asks for less than the host's minimum final: the
+// fit of its time would be a certain cut, and the socket deadline bounds it anyway (v5.1.1's
+// floor was 3,000 tokens). A bench seam's forced cut still goes out as set, spent once.
+static void test_a_short_round_keeps_the_minimum_final_and_seams_spend_once() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200, finalResponse("mistral")});
+  providers::ProviderDeps pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  Transcript tr;
+  tr.addUser("hi");
+  const HeadStep st = providers::misLoopStep(pd, "SYS " + std::string(50000, 's'), rig.ht, nullptr, tr)(
+      false, {}, providers::kMinRoundMs, "deadline");
+  TEST_ASSERT_TRUE_MESSAGE(st.ok, st.error.c_str());
+  const providers::wire::RoundRecord& sent = providers::wire::lastRound();
+  const providers::wire::RoundBudget rb =
+      providers::wire::roundBudget(providers::ProviderDeps(), "mistral", "mistral-large-4-0", false);
+  TEST_ASSERT_TRUE(providers::wire::roundFitTokens(rb, sent.roundMs, sent.load) < providers::wire::minFinalTokens(rb));
+  TEST_ASSERT_EQUAL_UINT32(providers::wire::minFinalTokens(rb), sent.cap.maxTokens);
+  TEST_ASSERT_TRUE(bodyHas(d, 0, ("\"max_tokens\":" + std::to_string(sent.cap.maxTokens)).c_str()));
+  // The bench's forced cut (setTestCutRounds): one round, 48 tokens, spent by that round.
+  providers::setTestCutRounds(1, 48);
+  FakeProviderDeps c;
+  c.http.script.push_back({"", "", 200, finalResponse("mistral")});
+  providers::ProviderDeps cpd = c.contract();
+  cpd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+  Transcript ctr;
+  ctr.addUser("hi");
+  providers::misLoopStep(cpd, "SYS", rig.ht, nullptr, ctr)(true, {}, UINT32_MAX, "");
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(c, 0, "\"max_tokens\":48"), reqBody(c, 0).substr(0, 200).c_str());
+  TEST_ASSERT_TRUE(providers::outputCapFor("mistral", "mistral-large-4-0", providers::RoundKind::ToolRound, 0).maxTokens > 48);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_refusal_wording_round_trips);
@@ -1096,5 +1167,7 @@ int main(int, char**) {
   RUN_TEST(test_album_that_cannot_fit_goes_as_transcriptions);
   RUN_TEST(test_photo_rounds_never_exceed_the_fit_on_short_windows);
   RUN_TEST(test_text_round_over_its_time_fit_is_refused_and_refit);
+  RUN_TEST(test_seed_over_its_budget_gives_up_its_own_content);
+  RUN_TEST(test_a_short_round_keeps_the_minimum_final_and_seams_spend_once);
   return UNITY_END();
 }

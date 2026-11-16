@@ -1134,6 +1134,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     (void)prior;   // the transcript already carries every result (recorded by the
                    // controller after dispatch, before this step runs)
     orch::HeadStep out;
+    wire::lastExchange() = wire::LastExchange{};   // a step refused before the wire inherits nothing
     const bool routed = wire::routedDeps(pd);
     const uint32_t roundMs = wire::clampRoundMs(budgetMs, wire::headCeilingMs(routed, kHeadRoundCeilingMs));
     // This round's own budget (the host and model that send it).
@@ -1141,7 +1142,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     const wire::RoundBudget& rb = *rbBox;
     const size_t replay = wire::replayBytesFor(rb, kReplayFloorBytes);
     const RoundKind kind = allowTools ? RoundKind::ToolRound : RoundKind::FinalRound;
-    OutputCap cap = outputCapFor("anthropic", model, kind, roundMs);   // the table's, until the load is known
+    OutputCap cap = tableCap("anthropic", model, kind);   // the table's, until the load is known
 
     // 1) render messages[] from the canonical transcript (fresh doc per round -
     //    no cross-round accumulator to leak or drift). Append-only replay
@@ -1180,8 +1181,8 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
         layout::PromptParts led = parts;
         led.dyn = wire::roundInstructions(led.dyn, capReason);
         const std::string seed = layout::userWithDynamic(led, msgs[0]["content"] | "");
-        // A head turn's seed over flatPromptBudget(): refused with the size wording below.
-        fieldWithinFlatBudget(seed, seedErr);
+        // A head turn's seed over flatPromptBudget(): refused with its own wording below.
+        wire::seedWithinBudget(seed, seedErr);
         wire::putFieldStr(msgs[0]["content"], seed, "the user message");
       }
       if (!allowTools && capReason == "stalled") antEchoStall(tr, msgs);
@@ -1237,7 +1238,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
                                                         imageparts::Dialect::Anthropic);
       AntLoopReq a{&model, &parts, &capReason, &ht, allowTools, attempt ? cap.retryTokens : cap.maxTokens,
                    attempt ? cap.retryEffort : cap.effort, direct && sees ? &reattached : nullptr,
-                   photoTok ? imageparts::photoTextBudget(rb.budget, photoTok) : (size_t)rb.budget.wireBodyBytes};
+                   imageparts::photoTextBudget(rb.budget, photoTok)};
       std::string body;
       BodySplices splices;
       auto build = [&] {
@@ -1255,15 +1256,9 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
         // The load is known: a photo round that cannot carry a final answer inside the
         // window is refused (the loop gives up older history, then reads the photos as
         // text), and the cap that fits the load replaces the table's.
-        const wire::RoundFit fit = wire::fitRoundToLoad(
-            wire::RoundFitIn{rb, kind, roundMs, photoTok, a.textBudget, true}, body, splices, cap, out.error);
+        built = wire::fitRoundToLoad(wire::RoundFitIn{rb, kind, roundMs, photoTok, a.textBudget, true}, body,
+                                     splices, cap, out.error);
         a.maxTokens = cap.maxTokens;
-        if (fit == wire::RoundFit::Refused) {
-          built = false;
-        } else if (fit == wire::RoundFit::Rebuild) {
-          a.effort = cap.effort;
-          built = build();
-        }
       }
       if (!built) {
         out.ok = false;
@@ -1512,7 +1507,7 @@ bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
   const uint32_t roundMs = wire::headCeilingMs(routed, kHeadRoundCeilingMs);
   const std::unique_ptr<const wire::RoundBudget> rbBox = wire::newRoundBudget(pd, "anthropic", model, routed);
   const wire::RoundBudget& rb = *rbBox;
-  OutputCap cap = outputCapFor("anthropic", model, kind, roundMs);
+  OutputCap cap = tableCap("anthropic", model, kind);   // the table's, until the load is known
   // Keep the tool_use input UNFILTERED (it is the whole turn object); filter the
   // rest of the response envelope down to what we read.
   JsonDocument filter;
@@ -1536,14 +1531,9 @@ bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
     if (!antShotBody(shot, body, err)) return false;
     if (attempt == 0) {
       BodySplices none;
-      const wire::RoundFit fit =
-          wire::fitRoundToLoad(wire::RoundFitIn{rb, kind, roundMs, 0, shot.budget, true}, body, none, cap, err);
-      if (fit == wire::RoundFit::Refused) return false;
+      if (!wire::fitRoundToLoad(wire::RoundFitIn{rb, kind, roundMs, 0, shot.budget, true}, body, none, cap, err))
+        return false;
       shot.maxTokens = cap.maxTokens;
-      if (fit == wire::RoundFit::Rebuild) {
-        shot.effort = cap.effort;
-        if (!antShotBody(shot, body, err)) return false;
-      }
     }
     const size_t textBytes = body.size();
     JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)

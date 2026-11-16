@@ -213,8 +213,6 @@ uint32_t slowestTokensPerSecond(const std::string& host, const std::string& mode
   return 50;
 }
 
-namespace {
-
 // The table row before any time clamp: OpenAI and custom send no cap (maxTokens 0).
 // OpenAI: no max_output_tokens - reasoning tokens count toward it and would starve the
 // answer; completeness is read from status:"incomplete" instead. Custom: the head sends
@@ -225,6 +223,8 @@ OutputCap tableCap(const std::string& host, const std::string& model, RoundKind 
   if (host == "zai") return zaiCap();
   return OutputCap();
 }
+
+namespace {
 
 // The bench seams (test and host builds): a forced first attempt, or forced cuts.
 void applyTestSeams(OutputCap& c) {

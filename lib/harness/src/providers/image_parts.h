@@ -121,9 +121,10 @@ size_t readAsText(nimbus::orch::TurnImages* imgs, const std::string& host);
 uint32_t photoTokens(const nimbus::orch::TurnImage& img, Dialect d);
 // The photos a request shows: the seeded ones when `photos`, the looked ones when `looked`.
 uint32_t photoTokens(const nimbus::orch::TurnImages* imgs, bool photos, bool looked, Dialect d);
-// The text budget of a photo round: the request budget less the photos' tokens at its
-// nominal bytes per token, in whole KB (the refusal states whole KB), and never under the
-// budget every head had in v5.1.1 (kWireBodyMax, or the budget itself when smaller).
+// The text budget of a round: the request budget less its photos' tokens at its nominal
+// bytes per token, in whole KB (the refusal states whole KB), and never under the budget
+// every head had in v5.1.1 (kWireBodyMax, or the budget itself when smaller). With no photo,
+// the request budget itself.
 size_t photoTextBudget(const nimbus::orch::RequestBudget& b, uint32_t tokens);
 // Log the decision a photo-fit refusal ends in: the photos are read as text on `host`
 // for the rest of the turn ("transcribed: did not fit the <host> time window"). Returns

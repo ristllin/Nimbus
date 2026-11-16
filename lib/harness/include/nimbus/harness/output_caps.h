@@ -51,6 +51,11 @@ struct OutputCap {
 OutputCap outputCapFor(const std::string& host, const std::string& model, RoundKind kind,
                        uint32_t roundMs = 0);
 
+// The table row alone: no time clamp, no load, and none of the bench seams below (lane W
+// builds a round's first body with it, then sends the cap that fits the body's load, so a
+// bench seam is spent once per round, by that load-aware cap).
+OutputCap tableCap(const std::string& host, const std::string& model, RoundKind kind);
+
 // What a round carries, for a cap that fits the round's time (lane P0 declared it; lane
 // B's time fit reads it): the body's bytes with any photo base64 spliced in, the photos'
 // share of them, the prompt's tokens (photo tokens included; 0 = estimated from the text

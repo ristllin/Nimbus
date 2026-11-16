@@ -478,6 +478,19 @@ class RoundRecovery {
     return imageparts::transcribeForTime(tr_.images(), host) > 0;
   }
 
+  // A head turn's newest message over its string budget (wire_budget.h seedWithinBudget):
+  // nothing was sent. What that message holds goes, a rung of the turn's ladder at a time
+  // (recall, then the input's middle), never the tool rounds or the older history first.
+  // True when the round runs again.
+  __attribute__((noinline)) bool seedFit(const std::string& host, const orch::HeadStep& sr) {
+    size_t over = 0;
+    if (sr.ok || !wire::parseSeedBudgetError(sr.error, over)) return false;
+    if (fitPrompt(over + 512, orch::FitScope::NextRung) == 0) return false;
+    hlog::logf("fabric: %s newest message over its budget - gave up part of it, running the round again",
+               host.c_str());
+    return true;
+  }
+
   // The next attempt at a cut round is told what happened and answers in less room.
   __attribute__((noinline)) void noteCut(const orch::HeadStep& sr) {
     savedCut_.reset(new orch::HeadStep(sr));
@@ -588,7 +601,7 @@ bool runHostLoop(const HostLoop& loop, const std::string& instructions, const st
         rec.served();
         return sr;
       }
-      if (rec.photoFit(loop.host, sr)) continue;   // older history, then the photos as text
+      if (rec.photoFit(loop.host, sr) || rec.seedFit(loop.host, sr)) continue;   // what the round can give up
       // Too big to send: the controller refits and runs it again (head_loop.h).
       size_t budget = 0, size = 0;
       if (orch::parseBodyBudgetError(sr.error, budget, size)) return sr;
@@ -778,7 +791,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
         rec.served();
         return sr;
       }
-      if (rec.photoFit(hostList[hostIdx], sr)) continue;   // older history, then the photos as text
+      if (rec.photoFit(hostList[hostIdx], sr) || rec.seedFit(hostList[hostIdx], sr)) continue;   // what the round can give up
       // A round too big to SEND never left the device: the controller folds older
       // tool rounds and runs it again (head_loop.h refitToBudget). It is not a host
       // failure and not a cause in the engine's chain (the owner hears the chain's

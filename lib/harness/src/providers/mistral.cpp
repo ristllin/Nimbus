@@ -495,9 +495,10 @@ bool seedChatUserMessage(JsonArray msgs, const layout::PromptParts& p, nimbus::o
   if (msgs.size() <= seedIdx || strcmp(msgs[seedIdx]["role"] | "", "user")) return true;
   JsonObject m = msgs[seedIdx];
   if (p.split) {
-    // A head turn's seed over flatPromptBudget(): the give-up order runs, never the string ceiling.
+    // A head turn's seed over flatPromptBudget(): refused with its own wording, so the loop
+    // gives up what the message holds (wire_budget.h seedWithinBudget).
     const std::string seed = layout::userWithDynamic(p, m["content"] | "");
-    if (!fieldWithinFlatBudget(seed, err)) return false;
+    if (!wire::seedWithinBudget(seed, err)) return false;
     wire::putFieldStr(m["content"], seed, "the user message");
   }
   if (imgs) imageparts::putParts(m, *imgs, imageparts::Dialect::MistralChat);
@@ -641,6 +642,7 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     namespace orch = nimbus::orch;
     (void)prior;   // the transcript already carries every result
     orch::HeadStep out;
+    wire::lastExchange() = wire::LastExchange{};   // a step refused before the wire inherits nothing
     // F25 + the one time policy: this round's socket timeout is the turn's
     // remaining budget, at most Mistral's round ceiling (and the router's, routed).
     const bool routed = wire::routedDeps(pd);
@@ -653,7 +655,7 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     const size_t replay = wire::replayBytesFor(rb, kReplayFloorBytes);
     if (tr.toolBytes() > replay) tr.trimToolOutputs(replay);
     const RoundKind kind = allowTools ? RoundKind::ToolRound : RoundKind::FinalRound;
-    OutputCap cap = outputCapFor("mistral", model, kind, roundMs);   // the table's, until the load is known
+    OutputCap cap = tableCap("mistral", model, kind);   // the table's, until the load is known
     // Final-round notice when a cap forced this tool-less round (wire.h). It
     // rides the per-turn part, so the system message stays a cached prefix.
     layout::PromptParts round = parts;
@@ -676,7 +678,7 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
       std::string body;
       BodySplices splices;
       MisLoopReq req{&round, &ht, allowTools, 0, "", imgs, &splices, sees,
-                     photoTok ? imageparts::photoTextBudget(rb.budget, photoTok) : rb.budget.wireBodyBytes};
+                     imageparts::photoTextBudget(rb.budget, photoTok)};
       auto build = [&](uint32_t maxTokens, const char* effort) {
         body.clear();
         splices.clear();
@@ -689,10 +691,8 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
         // The load is known: a photo round that cannot carry a final answer inside the
         // window is refused (the loop gives up older history, then reads the photos as
         // text), and the cap that fits the load replaces the table's.
-        const wire::RoundFit fit = wire::fitRoundToLoad(
-            wire::RoundFitIn{rb, kind, roundMs, photoTok, req.textBudget, true}, body, splices, cap, out.error);
-        if (fit == wire::RoundFit::Refused) built = false;
-        else if (fit == wire::RoundFit::Rebuild) built = build(cap.maxTokens, cap.effort);
+        built = wire::fitRoundToLoad(wire::RoundFitIn{rb, kind, roundMs, photoTok, req.textBudget, true}, body,
+                                     splices, cap, out.error);
         req.maxTokens = cap.maxTokens;
       }
       if (!built) {
@@ -900,10 +900,11 @@ struct MistralHeadBody {
 static bool mistralHeadBody(const ProviderDeps& pd, const std::string& convId,
                             const std::string& instructions, const std::string& inputs,
                             MistralHeadBody& out) {
-  // The flat wire's one instructions string: over flatPromptBudget() the request is
-  // refused with the size wording, so the turn's give-up order runs (H) and the string is
-  // built again; the input gets the same guard.
-  if (!fieldWithinFlatBudget(instructions, out.err) || !fieldWithinFlatBudget(inputs, out.err)) return false;
+  // The flat wire's one instructions string (sent only when a conversation starts): over
+  // flatPromptBudget() the request is refused with the size wording, so the turn's give-up
+  // order runs (H) and the string is built again; the input gets the same guard.
+  if ((convId.empty() && !fieldWithinFlatBudget(instructions, out.err)) || !fieldWithinFlatBudget(inputs, out.err))
+    return false;
   JsonDocument d;
   d["store"]  = true;
   wire::putFieldStr(d["inputs"], inputs, "the user message");
@@ -987,7 +988,7 @@ static bool mistralFold(const ProviderDeps& pd, const std::string& inputs, std::
   const bool routed = wire::routedDeps(pd);
   const uint32_t roundMs = wire::headCeilingMs(routed, kMistralRoundMs);
   const wire::RoundBudget rb = wire::roundBudget(pd, "mistral", model, routed);
-  OutputCap cap = outputCapFor("mistral", model, RoundKind::Fold, roundMs);
+  OutputCap cap = tableCap("mistral", model, RoundKind::Fold);   // the table's, until the load is known
   bool effortRetried = false;
   for (int attempt = 0; attempt < 2; ++attempt) {
     FoldRequest f{model, inputs, attempt ? cap.retryTokens : cap.maxTokens,
@@ -996,19 +997,14 @@ static bool mistralFold(const ProviderDeps& pd, const std::string& inputs, std::
     if (!mistralFoldBody(pd, f, body, err)) return false;
     if (attempt == 0) {
       BodySplices none;
-      const wire::RoundFit fit = wire::fitRoundToLoad(
-          wire::RoundFitIn{rb, RoundKind::Fold, roundMs, 0, f.budget, true}, body, none, cap, err);
-      if (fit == wire::RoundFit::Refused) return false;
-      if (fit == wire::RoundFit::Rebuild) {
-        f.maxTokens = cap.maxTokens;
-        f.effort = misEffortRefusedBefore(model) ? "" : cap.effort;
-        body.clear();
-        if (!mistralFoldBody(pd, f, body, err)) return false;
-      }
+      if (!wire::fitRoundToLoad(wire::RoundFitIn{rb, RoundKind::Fold, roundMs, 0, f.budget, true}, body, none, cap,
+                                err))
+        return false;
       f.maxTokens = cap.maxTokens;
     }
     const uint32_t maxTokens = f.maxTokens;
     const char* effort = f.effort;
+    const size_t textBytes = body.size();
     JsonDocument resp = makeDoc(pd);
     HeaderList quota;
     const int code = mistralFoldRequest(pd, f, std::move(body), resp, quota, err);
@@ -1024,7 +1020,7 @@ static bool mistralFold(const ProviderDeps& pd, const std::string& inputs, std::
       hlog::logf("orchTurn(mistral): %s", err.c_str());
       return false;
     }
-    if (usage) *usage += nimbus::orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
+    wire::addRoundUsage(resp["usage"].as<ArduinoJson::JsonObjectConst>(), usage, rb, textBytes, 0);
     nimbus::orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
     if (isLengthCut(resp)) {
       if (attempt == 0 && cap.hasRetry()) continue;

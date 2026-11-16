@@ -465,6 +465,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     namespace orch = nimbus::orch;
     (void)prior;   // the transcript already carries every result
     orch::HeadStep out;
+    wire::lastExchange() = wire::LastExchange{};   // a step refused before the wire inherits nothing
     // F25: clamp this round's socket timeout to the turn's remaining budget so
     // slow rounds can't stack past the deadline (no-op when budgetMs==UINT32_MAX);
     // through the router at most its 90 s ceiling.
@@ -525,9 +526,9 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
         JsonObject m = in[seedIdx];
         seedErr.clear();
         if (round.split) {
-          // A head turn's seed over flatPromptBudget(): refused with the size wording.
+          // A head turn's seed over flatPromptBudget(): refused with its own wording.
           const std::string seed = layout::userWithDynamic(round, m["content"] | "");
-          fieldWithinFlatBudget(seed, seedErr);
+          wire::seedWithinBudget(seed, seedErr);
           wire::putFieldStr(m["content"], seed, "the user message");
         }
         if (imgs) imageparts::putParts(m, *imgs, imageparts::Dialect::OpenAIResponses);
@@ -623,9 +624,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     // The request's own budget, less what the photos it shows take of the window.
     uint32_t photoTok = imageparts::photoTokens(tr.images(), imgs != nullptr, sees,
                                                 imageparts::Dialect::OpenAIResponses);
-    auto textBudget = [&] {
-      return photoTok ? imageparts::photoTextBudget(rb.budget, photoTok) : (size_t)rb.budget.wireBodyBytes;
-    };
+    auto textBudget = [&] { return imageparts::photoTextBudget(rb.budget, photoTok); };
     auto build = [&](std::string& body, BodySplices& splices, bool withPhotos) {
       if (!seedErr.empty()) {
         out.error = seedErr;
@@ -637,8 +636,9 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     };
     std::string body;
     BodySplices splices;
-    if (!build(body, splices, true)) {
+    if (!build(body, splices, true)) {   // refused before the send: never retried as if in transit
       out.ok = false;
+      out.kind = orch::StepErr::BadRequest;
       return out;
     }
     {
@@ -646,9 +646,9 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       // the answer); the round's load is still recorded, and a photo round that cannot
       // carry a final answer inside the window is refused before the send.
       OutputCap none;
-      if (wire::fitRoundToLoad(wire::RoundFitIn{rb, allowTools ? RoundKind::ToolRound : RoundKind::FinalRound, roundMs,
-                                                photoTok, textBudget(), false},
-                               body, splices, none, out.error) == wire::RoundFit::Refused) {
+      if (!wire::fitRoundToLoad(wire::RoundFitIn{rb, allowTools ? RoundKind::ToolRound : RoundKind::FinalRound,
+                                                 roundMs, photoTok, textBudget(), false},
+                                body, splices, none, out.error)) {
         out.ok = false;
         out.kind = orch::StepErr::BadRequest;
         return out;
@@ -671,6 +671,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       splices = BodySplices();
       if (!build(body, splices, true)) {
         out.ok = false;
+        out.kind = orch::StepErr::BadRequest;
         return out;
       }
       textBytes = body.size();
@@ -689,7 +690,11 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       renderInput();
       body.clear();
       splices = BodySplices();
-      if (!build(body, splices, false)) { out.ok = false; return out; }
+      if (!build(body, splices, false)) {
+        out.ok = false;
+        out.kind = orch::StepErr::BadRequest;
+        return out;
+      }
       textBytes = body.size();
       resp.clear();
       const uint32_t t1 = pd.nowMs ? pd.nowMs() : 0;
