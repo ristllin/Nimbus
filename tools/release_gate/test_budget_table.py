@@ -31,7 +31,7 @@ LEAD = ("provider", "model", "window", "target", "nbytes", "rnom", "rsafe", "rea
 def row(spec: dict, over: dict) -> str:
     """One table row from a head's inputs, its derived columns from the protocol (over replaces cells)."""
     hist_max = spec["hist_max"]
-    d = G.derived(spec["nbytes"], spec["target"], hist_max)
+    d = G.derived(spec["nbytes"], spec["target"], hist_max, G.wire_of(spec["provider"], spec["model"]))
     if hist_max <= 8192:  # the floor branch keeps v5.1.1's marks (RULINGS item 3)
         d.update(historySoftBytes=4096, historyRows=64)
     cells = {
@@ -121,6 +121,26 @@ def test_a_floor_head_keeps_v511_marks_and_a_lifted_one_does_not(tmp_path):
     assert any("custom/custom: historySoftBytes 6554, the protocol gives 4096" in e for e in G.problems(t, v))
     t, v = write(tmp_path, clean_rows(large4={"Hist soft": 4096}))
     assert any("mistral-large-4-0: historySoftBytes 4096, the protocol gives 164800" in e for e in G.problems(t, v))
+
+
+def test_the_replay_floor_is_the_wires_v511_cap(tmp_path):
+    # Mistral, OpenAI and custom kept 24,576 B of tool rounds in v5.1.1; Anthropic 16,384.
+    t, v = write(tmp_path, clean_rows(custom={"Replay": 16384}))
+    assert any("custom/custom: replayBytes 16384, the protocol gives 24576" in e for e in G.problems(t, v))
+    t, v = write(tmp_path, clean_rows())
+    assert G.problems(t, v) == []
+    assert (
+        G.wire_of("cumulo", "anthropic/claude-sonnet-5-5") == "anthropic" and G.wire_of("cumulo", "gpt-5.6") == "openai"
+    )
+
+
+def test_a_floor_head_is_exempt_from_the_worst_round_only(tmp_path):
+    # At the floor (v5.1.1's 85,000 B) a slow decode does not fail the gate: the caps fit
+    # the round instead. The same decode above the floor still fails (large4 above).
+    t, v = write(tmp_path, clean_rows(custom={"decode": 10}))
+    assert G.problems(t, v) == []
+    t, v = write(tmp_path, clean_rows(custom={"decode": 10, "nbytes": 120000}))
+    assert any("custom/custom: worst round" in e for e in G.problems(t, v))
 
 
 def test_a_field_under_v511_fails(tmp_path):

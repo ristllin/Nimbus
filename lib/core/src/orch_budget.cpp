@@ -4,7 +4,7 @@
 
 #include "nimbus/orch/model_window.h"   // kCtxDefaultTokens + modelCtxTokens - the window table
 #include "nimbus/orch/mem_config.h"  // MemConfig::kContextMin/Max - the owner-override clamp
-#include "nimbus/orch/wire_limits.h" // kToolResultCapMax - the per-result ceiling
+#include "nimbus/orch/wire_limits.h" // kToolResultCapMax - the per-result ceiling; foldDigestCap
 
 namespace nimbus {
 namespace orch {
@@ -77,6 +77,73 @@ ContextBudget deriveBudget(uint32_t ctxTokens, const BudgetOverrides& ov) {
 
 ContextBudget headContextBudget(const std::string& host, const std::string& model, const BudgetOverrides& ov) {
   return deriveBudget(modelCtxTokens(host, model), ov);
+}
+
+namespace {
+
+// The protocol's KB (plan v3: its figures reproduce at 1,024 B).
+constexpr size_t kKB = 1024;
+// What a request carries besides the history (plan v3 protocols): the tools array, the
+// static system block, the per-turn block and a slack.
+constexpr size_t kToolsBytes = 34 * kKB;
+constexpr size_t kSystemNominalBytes = 24 * kKB;
+constexpr size_t kPerTurnBytes = 8 * kKB;
+constexpr size_t kSlackBytes = 8 * kKB;
+// A head at or above this target gets the larger summary and message clip.
+constexpr uint32_t kLargeTargetTokens = 60000;
+
+size_t pct(uint64_t bytes, unsigned p, size_t lo, size_t hi) {
+  const uint64_t v = bytes * p / 100;
+  return (size_t)(v < lo ? lo : v > hi ? hi : v);
+}
+
+// The history marks of a head with room (not the floor branch).
+void deriveHistory(ContextBudget& b, size_t historyMax) {
+  b.historyMaxBytes = historyMax;
+  b.recentConvBytes = historyMax;
+  b.historySoftBytes = historyMax * 4 / 5;
+  const size_t digest = foldDigestCap(b.chatSummaryBytes);
+  const size_t byDigest = b.historySoftBytes > digest ? b.historySoftBytes - digest : 0;
+  b.historyKeepBytes = std::max(historyMax / 2, byDigest);
+  b.foldStepBytes = b.historySoftBytes - b.historyKeepBytes;
+  b.historyRows = std::max<size_t>(64, historyMax / 192);
+  b.foldTriggerBytes = b.historySoftBytes;
+  b.floorBranch = false;
+}
+
+}  // namespace
+
+ContextBudget deriveRequestContext(const RequestBudget& rb, const BudgetOverrides& ov) {
+  const ContextBudget old = deriveBudget(rb.v511CtxTokens, ov);   // v5.1.1, owner overrides applied
+  ContextBudget b = old;
+  b.ctxTokens = rb.windowTokens;
+  const uint64_t body = rb.wireBodyBytes;
+  const bool large = rb.targetTokens >= kLargeTargetTokens;
+  b.chatSummaryBytes = std::max<size_t>(old.chatSummaryBytes, large ? 6144 : 4096);
+  if (ov.maxContextBytes <= 0)
+    b.systemPromptBytes = std::max(old.systemPromptBytes, (int)pct(body, 12, 32768, 56000));
+  if (ov.toolResultCap <= 0) b.toolResultBytes = std::max(old.toolResultBytes, pct(body, 3, 8192, 16384));
+  b.recallBytes = std::max(old.recallBytes, pct(body, 3, 4096, 12288));
+  b.replayBytes = std::max({old.replayBytes, (size_t)rb.v511ReplayBytes, pct(body, 15, 16384, 65536)});
+  b.perTurnFloorBytes = std::max(old.perTurnFloorBytes, kPerTurnBytes);
+  b.historyMessageCap = std::max<size_t>(old.historyMessageCap, large ? 12288 : 6144);
+  const int64_t fixed = (int64_t)(kToolsBytes + kSystemNominalBytes + b.chatSummaryBytes + kPerTurnBytes + kSlackBytes);
+  const int64_t historyMax = (int64_t)body - fixed - (int64_t)b.replayBytes - (int64_t)(body / 20);
+  // The floor branch (RULINGS-v3 item 3): no more room than v5.1.1's window, or a trigger
+  // under kFoldTriggerMinBytes - the history stays exactly v5.1.1's (old's fields).
+  const bool room = historyMax > (int64_t)old.historyMaxBytes && historyMax * 4 / 5 >= (int64_t)kFoldTriggerMinBytes;
+  if (room) deriveHistory(b, (size_t)historyMax);
+  b.foldSliceBytes = std::max(old.foldSliceBytes, b.foldStepBytes);
+  return b;
+}
+
+size_t foldTriggerBytes(const ContextBudget& b, uint32_t compactAtKB) {
+  if (compactAtKB == 0) return 0;
+  if (b.floorBranch) return (size_t)compactAtKB * kKB;
+  if (compactAtKB == kCompactAtKbDefault) return b.historySoftBytes;
+  const size_t lo = 8 * kKB;
+  const size_t hi = b.historyMaxBytes > 2 * lo ? b.historyMaxBytes - lo : lo;
+  return std::min(std::max((size_t)compactAtKB * kKB, lo), hi);
 }
 
 }  // namespace orch

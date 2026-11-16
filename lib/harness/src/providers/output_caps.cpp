@@ -233,6 +233,14 @@ OutputCap outputCapFor(const std::string& host, const std::string& model, RoundK
   return c;
 }
 
+// STUB (red run): the load is ignored.
+OutputCap outputCapFor(const std::string& host, const std::string& model, RoundKind kind, uint32_t roundMs,
+                       const RoundLoad&) {
+  return outputCapFor(host, model, kind, roundMs);
+}
+uint32_t roundFitTokens(const std::string&, const std::string&, uint32_t, const RoundLoad&) { return 0; }
+bool heapFragmented(uint32_t) { return false; }
+
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
 bool setTestFirstAttemptCap(uint32_t tokens) {
   g_testFirstAttemptCap = tokens;

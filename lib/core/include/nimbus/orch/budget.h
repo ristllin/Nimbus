@@ -31,6 +31,8 @@
 #include <cstdint>
 #include <string>
 
+#include "nimbus/orch/request_budget.h"
+
 namespace nimbus {
 namespace orch {
 
@@ -59,6 +61,11 @@ struct ContextBudget {
   size_t   perTurnFloorBytes = 0;      // bytes held back for the per-turn block (none today)
   size_t   historyMessageCap = 6144;   // one history message's clip (kHistoryMessageCap)
   size_t   recallBytes = 32768;        // the recall block's bound: the system budget today
+  // Lane B: the fold trigger (bytes of history after thru that make a fold due) and
+  // whether the history follows v5.1.1 (the floor branch: today's window, the 48 KB
+  // compactAtKB trigger). deriveBudget leaves both at v5.1.1's.
+  size_t   foldTriggerBytes = 48 * 1024;
+  bool     floorBranch = true;
 };
 
 // 0 == "auto/derive". Non-zero == owner override, wins verbatim then clamps.
@@ -76,6 +83,40 @@ ContextBudget deriveBudget(uint32_t ctxTokens, const BudgetOverrides& ov);
 // The budget of a request the head `host` sends on `model`: the one seam above.
 // Today's body: deriveBudget(modelCtxTokens(host, model), ov).
 ContextBudget headContextBudget(const std::string& host, const std::string& model, const BudgetOverrides& ov);
+
+// ---- lane B: every field from the one request budget (plan v3 protocols) -------------
+// The stored compactAtKB default (store.cpp): it means "derived".
+inline constexpr uint32_t kCompactAtKbDefault = 48;
+// No automatic fold trigger goes under this (RULINGS-v3 item 3).
+inline constexpr size_t kFoldTriggerMinBytes = 24 * 1024;
+
+// Every ContextBudget field derived from `rb` (requestBudgetFor), each at least its v5.1.1
+// value for the same head (deriveBudget over rb.v511CtxTokens; budgets_v5_1_1.json), owner
+// overrides verbatim as deriveBudget applies them:
+//   system cap   max(32,768, 12% of the body bytes B), at most 56,000;
+//   summary      6,144 at a 60k-token target and above, else 4,096;
+//   tool result  max(8,192, 3% of B), at most 16,384;
+//   recall       3% of B in 4,096-12,288;
+//   replay       15% of B in 16,384-65,536, and never under the sending wire's v5.1.1 cap;
+//   per turn     8,192;
+//   message cap  12,288 at a 60k-token target and above, else 6,144;
+//   historyMax   B - (tools 34 KB + system 24 KB + summary + per-turn 8 KB + slack 8 KB)
+//                - replay - 5% of B (KB = 1,024 B);
+//   soft         0.8 x historyMax (the fold trigger);
+//   keep         max(0.5 x historyMax, soft - foldDigestCap(summary));
+//   foldStep     soft - keep (one fold's input stays one string under kJsonStrGuard);
+//   rows         max(64, historyMax / 192);
+//   fold slice   max(v5.1.1's, foldStep).
+// The floor branch (RULINGS-v3 item 3): when historyMax is at or below v5.1.1's, or its
+// soft mark would fall under kFoldTriggerMinBytes, the history fields are v5.1.1's
+// exactly (today's window, the 48 KB compactAtKB trigger) and floorBranch is set.
+// recentConvBytes follows historyMaxBytes; toolTotalBytes and briefBytes stay v5.1.1's.
+ContextBudget deriveRequestContext(const RequestBudget& rb, const BudgetOverrides& ov);
+
+// The fold trigger an owner's compactAtKB setting gives: 0 = off (0); the floor branch:
+// the setting as v5.1.1 reads it (KB x 1,024); kCompactAtKbDefault: the derived soft mark;
+// any other value: that soft mark, clamped to [8 KB, historyMax - 8 KB].
+size_t foldTriggerBytes(const ContextBudget& b, uint32_t compactAtKB);
 
 }  // namespace orch
 }  // namespace nimbus

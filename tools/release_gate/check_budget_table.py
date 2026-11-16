@@ -12,12 +12,15 @@ test/support/fixtures/budgets_v5_1_1.json. This gate reads both and fails on:
      min(85,000, 0.85 x window x rSafe); a custom endpoint off the 85,000 B floor;
   3. the worst round: connect 1.5 s + bytes at 70 KB/s + the fragmented-heap pace (2 s plus
      0.1 s per 4 KB slice, no deadline/10 cap, RULINGS item 1) + target / prefill floor +
-     minFinal / decode floor must fit the read window;
+     minFinal / decode floor must fit the read window. A head at the floor is exempt: the
+     floor is v5.1.1's budget, which no head goes under (RULINGS-v3), and its rounds fit
+     through the load-aware caps (lane B's test_output_caps), not through minFinal;
   4. no field below v5.1.1: every budget field the table shows is at least that model's
      budgets_v5_1_1.json value (RULINGS: no field shrinks);
   5. the derived fields agree with the protocol: system cap max(32,768, 12%) at most 56,000;
      tool result max(8,192, 3%) at most 16,384; recall 3% in 4,096-12,288; replay 15% in
-     16,384-65,536; summary 6,144 at 60k tokens and above, else 4,096; message cap 12,288 at
+     16,384-65,536 and never under the sending wire's v5.1.1 cap (16,384 on the Anthropic
+     wire, 24,576 on every other); summary 6,144 at 60k tokens and above, else 4,096; message cap 12,288 at
      60k and above, else 6,144; soft 0.8 x max; rows max(64, max/192). Each is compared after
      the no-shrink max with the v5.1.1 value, within 1% or 1,000 B for rounding.
 
@@ -76,6 +79,21 @@ COLUMNS = {
     "foldSliceBytes": ("fold slice", "foldslicebytes"),
     "perTurnFloorBytes": ("per turn floor", "perturnfloorbytes"),
 }
+# The replay floor is the sending wire's v5.1.1 cap (RULINGS-v3 item 8: no field shrinks):
+# kReplayToolBytes is 16,384 in anthropic.cpp and 24,576 in mistral.cpp, openai.cpp and
+# custom.cpp, while budgets_v5_1_1.json records the smallest, 16,384, for every model.
+REPLAY_V511 = {"anthropic": 16_384}
+REPLAY_V511_OTHER = 24_576
+
+
+def wire_of(provider: str, model: str) -> str:
+    """The adapter a head's requests go out on: a router selector's upstream ("openai" when bare)."""
+    if provider != "cumulo":
+        return provider
+    head, sep, _ = model.partition("/")
+    return head if sep and head else "openai"
+
+
 NO_SHRINK = (
     "systemPromptBytes", "toolResultBytes", "recallBytes", "replayBytes", "chatSummaryBytes", "historyMessageCap",
     "historyMaxBytes", "historyRows", "foldSliceBytes", "perTurnFloorBytes",
@@ -170,6 +188,13 @@ def bound_problems(row: dict) -> "list[str]":
     return errs
 
 
+def at_floor(row: dict) -> bool:
+    nbytes, window, rsafe = val(row, "bytes"), val(row, "window"), ratio(row, "rsafe")
+    if None in (nbytes, window, rsafe):
+        return False
+    return abs(nbytes - min(FLOOR_BYTES, 0.85 * window * rsafe)) <= 1000
+
+
 def worst_round_s(row: dict) -> "float | None":
     need = [val(row, k) for k in ("bytes", "target", "prefill", "decode", "min_final")]
     if None in need or not need[2] or not need[3]:
@@ -180,6 +205,8 @@ def worst_round_s(row: dict) -> "float | None":
 
 
 def round_problems(row: dict) -> "list[str]":
+    if at_floor(row):
+        return []  # v5.1.1's budget: its rounds fit through the load-aware caps (item 3 above)
     t, window = worst_round_s(row), seconds(row)
     if t is None or window is None:
         return [f"{row_name(row)}: needs bytes, target, prefill, decode, minfinal and read window columns"]
@@ -188,13 +215,14 @@ def round_problems(row: dict) -> "list[str]":
     return []
 
 
-def derived(nbytes: float, target: float, hist_max: "float | None") -> dict:
+def derived(nbytes: float, target: float, hist_max: "float | None", wire: str = "") -> dict:
     clamp = lambda v, lo, hi: max(lo, min(hi, v))  # noqa: E731
+    replay_floor = REPLAY_V511.get(wire, REPLAY_V511_OTHER) if wire else 16_384
     out = {
         "systemPromptBytes": min(56_000, max(32_768, 0.12 * nbytes)),
         "toolResultBytes": min(16_384, max(8_192, 0.03 * nbytes)),
         "recallBytes": clamp(0.03 * nbytes, 4_096, 12_288),
-        "replayBytes": clamp(0.15 * nbytes, 16_384, 65_536),
+        "replayBytes": max(replay_floor, clamp(0.15 * nbytes, 16_384, 65_536)),
         "chatSummaryBytes": 6_144 if target >= 60_000 else 4_096,
         "historyMessageCap": 12_288 if target >= 60_000 else 6_144,
     }
@@ -209,7 +237,9 @@ def derivation_problems(row: dict, old: "dict | None") -> "list[str]":
     nbytes, target = val(row, "bytes"), val(row, "target")
     if None in (nbytes, target):
         return []
-    want_all = derived(nbytes, target, val(row, "historyMaxBytes"))
+    want_all = derived(
+        nbytes, target, val(row, "historyMaxBytes"), wire_of(row.get("provider", ""), row.get("model", ""))
+    )
     hist_max = val(row, "historyMaxBytes")
     if old and hist_max is not None and hist_max <= old.get("historyMaxBytes", 0):
         # The floor branch (RULINGS item 3): at or below v5.1.1's history the head keeps

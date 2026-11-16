@@ -51,25 +51,44 @@ struct OutputCap {
 OutputCap outputCapFor(const std::string& host, const std::string& model, RoundKind kind,
                        uint32_t roundMs = 0);
 
-// What a round carries, for a cap that fits the round's time (lane P0 declares it; lane
+// What a round carries, for a cap that fits the round's time (lane P0 declared it; lane
 // B's time fit reads it): the body's bytes with any photo base64 spliced in, the photos'
-// share of them, the prompt's tokens, whether the Cumulo router relays the request, and
-// whether the heap was fragmented at round start (largest free block under 12,288 B, so
-// the transport paces its slices).
+// share of them, the prompt's tokens (photo tokens included; 0 = estimated from the text
+// bytes), whether the Cumulo router relays the request, and whether the heap was
+// fragmented at round start (heapFragmented: the transport paces its slices then).
 struct RoundLoad {
   size_t bodyBytes = 0;
   size_t imageBytes = 0;
   uint32_t promptTokens = 0;
   bool routed = false;
   bool fragmented = false;
+  uint32_t cachedTokens = 0;   // prompt tokens the provider reads from its cache (0 = none: the worst case)
+  uint8_t uploads = 1;         // times the body goes up for this answer (2: a router 402 clamp, then the capped resend)
 };
-// The table for a round with its load. Today's body ignores the load: the caps are
-// outputCapFor(host, model, kind, roundMs)'s.
-inline OutputCap outputCapFor(const std::string& host, const std::string& model, RoundKind kind,
-                              uint32_t roundMs, const RoundLoad& load) {
-  (void)load;
-  return outputCapFor(host, model, kind, roundMs);
-}
+
+// The load-aware caps (lane B; plan v3 caps protocol). The round's read window W is the
+// host's (request_budget.h readWindowMsFor: Mistral 60 s, Z.ai 50 s, routed at most 90 s),
+// or `roundMs` when that is shorter (0 = the host's). The fit is
+//   (W - connect - upload - (fragmented ? pace : 0) - uncached prompt / prefill floor)
+//     x the decode floor at the prompt's context
+// (roundFitTokens; a Server link has no upload or pace term). Then
+//   first = min(table cap, fit, max(minFinal, 0.75 x fit));
+//   retry = min(table retry, fit), sent only when it gives at least kRetryGainTokens more
+//           than the first attempt or a lower effort (else no retry).
+// The table caps and efforts are outputCapFor's above. OpenAI and custom get no cap, as
+// before; a fold round uses the same fit on the fold body. A capped round always sends a
+// cap: when nothing fits it is 1 token, and the wire, which checks roundFitTokens against
+// minFinal before it sends, refuses the round locally instead.
+OutputCap outputCapFor(const std::string& host, const std::string& model, RoundKind kind,
+                       uint32_t roundMs, const RoundLoad& load);
+uint32_t roundFitTokens(const std::string& host, const std::string& model, uint32_t roundMs,
+                        const RoundLoad& load);
+inline constexpr uint32_t kRetryGainTokens = 400;
+
+// Whether the transport will pace this round's slices: the largest free block of the
+// DMA-capable pool under kDmaChunkFloor (http.h), the pool and the floor the transport's
+// own pacing samples (RULINGS-v3 item 8).
+bool heapFragmented(uint32_t largestDmaFreeBlock);
 
 // The one note a person hears when they pick a model the parity eval found unfit for
 // daily use ("" for the others). Plain words, for the reply. Evidence:

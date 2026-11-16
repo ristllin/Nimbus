@@ -7,6 +7,7 @@
 
 #include <ArduinoJson.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -407,31 +408,35 @@ static void test_listed_window_lookup_install() {
 
 // ---- the request budget and the round load -----------------------------------------
 
-static void test_request_budget_is_todays() {
+// Lane B filled the request budget (its own suite, test_request_budget, holds the class):
+// the pins here keep the seam's shape for its consumers - the round deadlines are still
+// the wires' socket ceilings (a routed one at most 90 s), the custom endpoint is the only
+// flat wire, a routed head sits on the v5.1.1 floor until kRoutedBudgetLift flips, and the
+// head budgets are the plan's figures.
+static void test_request_budget_is_lane_bs() {
   TEST_ASSERT_EQUAL_UINT32(providers::kWireBodyMax, orch::kLegacyWireBodyBytes);
   TEST_ASSERT_EQUAL_UINT32(55904, providers::flatPromptBudget());
   TEST_ASSERT_EQUAL_UINT32(orch::kJsonStrGuard - 4096, providers::flatPromptBudget());
-  struct Row { const char* host; const char* model; uint32_t roundMs; bool flat; };
+  struct Row { const char* host; const char* model; uint32_t roundMs; bool flat; uint32_t bytes; };
   const Row rows[] = {
-      {"anthropic", "claude-sonnet-5-5", providers::kHeadRoundCeilingMs, false},
-      {"openai", "gpt-5.6", providers::kHeadRoundCeilingMs, false},
-      {"mistral", "mistral-large-4-0", providers::kMistralRoundMs, false},
-      {"zai", "glm-5.3", providers::kZaiHeadTimeoutMs, false},
-      {"cumulo", "openai/gpt-5.6", providers::kHeadRoundCeilingMs, false},
-      {"custom", "gpt-5.6-luna", providers::kHeadRoundCeilingMs, true},
+      {"anthropic", "claude-sonnet-5-5", providers::kHeadRoundCeilingMs, false, 250000},
+      {"openai", "gpt-5.6", providers::kHeadRoundCeilingMs, false, 390000},
+      {"mistral", "mistral-large-4-0", providers::kMistralRoundMs, false, 360000},
+      {"zai", "glm-5.3", providers::kZaiHeadTimeoutMs, false, 0},
+      {"cumulo", "openai/gpt-5.6", 90000, false, 85000},
+      {"custom", "gpt-5.6-luna", providers::kHeadRoundCeilingMs, true, 85000},
   };
   for (const Row& r : rows) {
     for (bool routed : {false, true}) {
       const orch::RequestBudget b = orch::requestBudgetFor(r.host, r.model, routed);
-      TEST_ASSERT_EQUAL_UINT32_MESSAGE(85000, b.wireBodyBytes, r.host);
-      TEST_ASSERT_EQUAL_UINT32_MESSAGE(orch::modelCtxTokens(r.host, r.model), b.windowTokens, r.host);
-      TEST_ASSERT_EQUAL_UINT32_MESSAGE(85000 / orch::kBudgetBytesPerToken, b.targetTokens, r.host);
-      TEST_ASSERT_EQUAL_UINT32_MESSAGE(400, b.rNomX100, r.host);
-      TEST_ASSERT_EQUAL_UINT32_MESSAGE(400, b.rSafeX100, r.host);
-      TEST_ASSERT_EQUAL_UINT32_MESSAGE(r.roundMs, b.roundMs, r.host);
-      TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, b.prefillTokPerS + b.decodeTokPerS, r.host);
-      TEST_ASSERT_EQUAL_MESSAGE(routed, b.routed, r.host);
+      const bool viaRouter = routed || std::string(r.host) == "cumulo";
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(viaRouter ? std::min<uint32_t>(r.roundMs, 90000) : r.roundMs, b.roundMs, r.host);
+      TEST_ASSERT_EQUAL_MESSAGE(viaRouter, b.routed, r.host);
       TEST_ASSERT_EQUAL_MESSAGE(r.flat, b.flat, r.host);
+      TEST_ASSERT_TRUE_MESSAGE(b.prefillTokPerS > 0 && b.decodeTokPerS > 0, r.host);
+      const uint32_t want = viaRouter && !orch::kRoutedBudgetLift ? 85000 : r.bytes;
+      if (want) TEST_ASSERT_EQUAL_UINT32_MESSAGE(want, b.wireBodyBytes, r.host);
+      TEST_ASSERT_TRUE_MESSAGE(b.wireBodyBytes >= orch::kLegacyWireBodyBytes, r.host);
     }
   }
 }
@@ -645,7 +650,7 @@ int main(int, char**) {
   RUN_TEST(test_an_after_cursor_reads_no_rows_and_says_so_once);
   RUN_TEST(test_listed_window_from_the_stored_list);
   RUN_TEST(test_listed_window_lookup_install);
-  RUN_TEST(test_request_budget_is_todays);
+  RUN_TEST(test_request_budget_is_lane_bs);
   RUN_TEST(test_round_load_changes_no_cap);
   RUN_TEST(test_declared_fields_start_empty);
   RUN_TEST(test_head_budget_is_todays_for_every_recorded_model);
