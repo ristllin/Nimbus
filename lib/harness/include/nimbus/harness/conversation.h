@@ -283,6 +283,10 @@ struct FoldSlice {
   std::string digest;
   std::string thru;
   size_t turns = 0;
+  // Lane F: what the Summarize now confirmation names - the rows the slice holds and
+  // the local dates of its first and last turn (YYYY-MM-DD, "" with no clock).
+  size_t rows = 0;
+  std::string firstDate, lastDate;
 };
 // Lane CTX: `day` keeps the current local day out of the slice too (its day floor,
 // HistoryBudget); a manual /compact still folds every turn.

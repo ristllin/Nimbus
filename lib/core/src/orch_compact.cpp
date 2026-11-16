@@ -445,6 +445,11 @@ FoldStore::Slot& FoldStore::upsert(const std::string& chatId) {
   return chats_.back();
 }
 
+const ChatFold* FoldStore::peek(const std::string& chatId) const {
+  const Slot* s = find(stripCtl(chatId));
+  return s ? &s->f : nullptr;
+}
+
 ChatFold FoldStore::get(const std::string& chatId) const {
   const Slot* s = find(stripCtl(chatId));
   return s ? s->f : ChatFold{};

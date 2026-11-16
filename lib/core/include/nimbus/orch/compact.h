@@ -224,6 +224,9 @@ class FoldStore {
   void begin(FoldStoreIO* io);                 // load + parse (tolerant)
 
   ChatFold get(const std::string& chatId) const;   // default-constructed if absent
+  // The chat's state in place, no copy of the summary (nullptr if absent). Valid until
+  // the next call that changes the store; the owning task only.
+  const ChatFold* peek(const std::string& chatId) const;
 
   // Accumulate one captured message on the chat (called at episodic capture
   // time for kind=message rows). Persist is DEFERRED to the next noteTurn/

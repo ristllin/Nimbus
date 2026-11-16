@@ -233,6 +233,16 @@ int64_t turnDay(const HistTurn& t, int32_t fixedOffMin) {
   return t.tsHours < kClockValidHours ? kNoDate : localDay(t.tsHours, fixedOffMin);
 }
 
+// The turn's local date, "YYYY-MM-DD" ("" when it has none): the fold confirmation's span.
+std::string isoDayOf(const HistTurn& t, int32_t offMin) {
+  const int64_t day = turnDay(t, offMin);
+  if (day == kNoDate) return std::string();
+  const nimbus::orch::CivilTime c = nimbus::orch::civilFromDays((uint32_t)day);
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02d", c.year, c.month, c.day);
+  return buf;
+}
+
 std::string dayLabel(const HistTurn& t, int32_t offMin) {
   const nimbus::orch::CivilTime c = nimbus::orch::civilFromDays((uint32_t)turnDay(t, offMin));
   char buf[24];
@@ -874,6 +884,10 @@ FoldSlice foldSlice(const std::vector<HistTurn>& turns, size_t keepBytes, size_t
     digest += lines;
     s.thru = turns[i].lastId;
     s.turns++;
+    s.rows += turns[i].rows ? turns[i].rows : 1;
+    const std::string date = isoDayOf(turns[i], utcOffsetMin);
+    if (s.firstDate.empty()) s.firstDate = date;
+    if (!date.empty()) s.lastDate = date;
   }
   if (!manual && digest.size() < kFoldMinNewBytes) return FoldSlice();
   s.digest = std::move(digest);
