@@ -972,6 +972,7 @@ struct AntLoopReq {
   uint32_t maxTokens;
   const char* effort;
   int* reattached = nullptr;   // lane IMG: re-attach kept photos to the history (direct key); the count
+  size_t textBudget = kWireBodyMax;   // the request's own budget, less a photo round's share
 };
 // noinline (lane STACK): built before the request and done before it is sent, so its
 // documents never sit in the round's frame under the response parse on tg_poll.
@@ -1041,7 +1042,7 @@ static bool antLoopBody(const ProviderDeps& pd, const AntLoopReq& a, JsonArray m
   if (!a.parts->split)
     toolsArr[toolsArr.size() - 1]["cache_control"]["type"] = "ephemeral";
   if (!wire::serializeChecked(req, body, err)) return false;
-  return bodyWithinBudget(body, err);   // R3: the stated body budget (photos splice after)
+  return bodyWithinBudget(body, a.textBudget, err);   // this request's own budget (photos splice after)
 }
 
 // Read one loop response into `out`: the FIRST orch_turn's input is the turn and
@@ -1107,16 +1108,13 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
                                      nimbus::orch::Transcript& tr) {
   namespace orch = nimbus::orch;
   const std::string model = pd.orchModel ? pd.orchModel("anthropic") : std::string();
-  // Replay budget - NOT the token window. The request body breaks long before the
-  // window, at the DEVICE's contiguous-heap ceiling for the TLS send. MEASURED on
-  // Board 1 (2026-08-05): a 6-way fan-out synthesis grew its replay to body=65672
-  // over 12 rounds and failed at intLargest~19 K ("no response"->network), while
-  // bodies <=52 KB sent fine. The tool results ride the transcript under this
-  // budget (Transcript::trimToolOutputs, append-only), so system + transcript +
-  // tools stays in the ~48 K working range however many rounds a turn takes.
-  // Smaller than the OpenAI/Mistral 24 KB: the old fold counted the user seed
-  // against its 24 KB trigger, this budget counts tool results only.
-  const size_t kReplayToolBytes = 16384;
+  // Replay budget - the replayed tool results a round keeps: the derived replay of the
+  // round's own budget, never under v5.1.1's 16 KB. That figure was the DEVICE's
+  // contiguous-heap ceiling for the TLS send (Board 1, 2026-08-05: a 65,672 B body
+  // failed at intLargest~19 K while bodies <=52 KB sent fine); bodies now go out in
+  // paced 4 KB slices from PSRAM. The tool results ride the transcript under it
+  // (Transcript::trimToolOutputs, append-only).
+  constexpr size_t kReplayFloorBytes = 16384;
   // The static, summary and dynamic parts, split once per turn (prompt_layout.h)
   // from the prompt repaired to valid UTF-8 (wire.h: the system prompt is
   // repaired, never clipped; serializeChecked still guards every body).
@@ -1127,7 +1125,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
   // transcript: a refit rebuilds this step on a shortened prompt, and the replay still needs them.
   auto* thinkingByCall = &tr.signedThinking();
 
-  return [&ht, usage, &tr, pd, model, kReplayToolBytes, parts, thinkingByCall](
+  return [&ht, usage, &tr, pd, model, parts, thinkingByCall](
              bool allowTools,
              const std::vector<orch::HeadToolResult>& prior,
              uint32_t budgetMs,
@@ -1136,9 +1134,13 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     (void)prior;   // the transcript already carries every result (recorded by the
                    // controller after dispatch, before this step runs)
     orch::HeadStep out;
-    const uint32_t roundMs = wire::clampRoundMs(budgetMs, kHeadRoundCeilingMs);
-    const OutputCap cap = outputCapFor("anthropic", model,
-                                       allowTools ? RoundKind::ToolRound : RoundKind::FinalRound, roundMs);
+    const bool routed = wire::routedDeps(pd);
+    const uint32_t roundMs = wire::clampRoundMs(budgetMs, wire::headCeilingMs(routed, kHeadRoundCeilingMs));
+    // This round's own budget (the host and model that send it).
+    const wire::RoundBudget rb = wire::roundBudget(pd, "anthropic", model, routed);
+    const size_t replay = wire::replayBytesFor(rb, kReplayFloorBytes);
+    const RoundKind kind = allowTools ? RoundKind::ToolRound : RoundKind::FinalRound;
+    OutputCap cap = outputCapFor("anthropic", model, kind, roundMs);   // the table's, until the load is known
 
     // 1) render messages[] from the canonical transcript (fresh doc per round -
     //    no cross-round accumulator to leak or drift). Append-only replay
@@ -1146,7 +1148,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     //    round reads the previous round's request from the cache. The newest
     //    results are clipped to the room left under the replay budget instead of
     //    folding older rounds (which rewrote them every round).
-    if (tr.toolBytes() > kReplayToolBytes) tr.trimToolOutputs(kReplayToolBytes);
+    if (tr.toolBytes() > replay) tr.trimToolOutputs(replay);
     // R1: the photos ride the seeded user message when this model takes images and
     // no provider refused them this turn; uploaded once (the Files API) where the key
     // is direct, so the later rounds reference them instead of re-sending them.
@@ -1163,6 +1165,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     imageparts::setLoopChat(parts.cache.key, pd.nowMs ? pd.nowMs() : 0);
     JsonDocument conv = makeDoc(pd);
     JsonArray msgs;
+    std::string seedErr;   // the seed over flatPromptBudget()
     auto render = [&]() {
       msgs = conv.to<JsonArray>();
       if (direct && sees) imageparts::useFileRefs(*tr.images());
@@ -1171,12 +1174,14 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
       // seeded user message, so the system blocks and the history stay
       // byte-stable across rounds and turns. Once per render: the messages
       // array is rebuilt above, so a re-render never doubles the prefix.
-      if (parts.split && msgs.size() > 0 && !strcmp(msgs[0]["role"] | "", "user")) {
+      seedErr.clear();
+      if (msgs.size() > 0 && !strcmp(msgs[0]["role"] | "", "user")) {
         layout::PromptParts led = parts;
         led.dyn = wire::roundInstructions(led.dyn, capReason);
-        wire::putFieldStr(msgs[0]["content"],
-                          layout::userWithDynamic(led, msgs[0]["content"] | ""),
-                          "the user message");
+        const std::string seed = parts.split ? layout::userWithDynamic(led, msgs[0]["content"] | "")
+                                             : std::string(msgs[0]["content"] | "");
+        fieldWithinFlatBudget(seed, seedErr);   // over it: refused with the size wording below
+        if (parts.split) wire::putFieldStr(msgs[0]["content"], seed, "the user message");
       }
       if (!allowTools && capReason == "stalled") antEchoStall(tr, msgs);
       if (msgs.size() > 0 && !strcmp(msgs[msgs.size() - 1]["role"] | "", "assistant")) {
@@ -1224,18 +1229,52 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     //    (more room, one effort step down) - never the identical body.
     for (int attempt = 0; attempt < 2; ++attempt) {
       out = orch::HeadStep();
-      const uint32_t maxTokens = attempt ? cap.retryTokens : cap.maxTokens;
       int reattached = 0;
-      const AntLoopReq a{&model, &parts, &capReason, &ht, allowTools, maxTokens,
-                         attempt ? cap.retryEffort : cap.effort, direct && sees ? &reattached : nullptr};
+      // The photos' window cost comes off the text budget (a file reference costs the same
+      // tokens as inline bytes; only the inline ones add upload time).
+      const uint32_t photoTok = imageparts::photoTokens(tr.images(), imgs != nullptr, sees,
+                                                        imageparts::Dialect::Anthropic);
+      AntLoopReq a{&model, &parts, &capReason, &ht, allowTools, attempt ? cap.retryTokens : cap.maxTokens,
+                   attempt ? cap.retryEffort : cap.effort, direct && sees ? &reattached : nullptr,
+                   photoTok ? imageparts::photoTextBudget(rb.budget, photoTok) : (size_t)rb.budget.wireBodyBytes};
       std::string body;
       BodySplices splices;
-      if (!antLoopBody(pd, a, msgs, body, out.error) ||
-          !imageparts::spliceAll(body, sees ? tr.images() : nullptr, imgs != nullptr, splices, out.error)) {
+      auto build = [&] {
+        body.clear();
+        splices.clear();
+        if (!seedErr.empty()) {
+          out.error = seedErr;
+          return false;
+        }
+        return antLoopBody(pd, a, msgs, body, out.error) &&
+               imageparts::spliceAll(body, sees ? tr.images() : nullptr, imgs != nullptr, splices, out.error);
+      };
+      bool built = build();
+      if (built && attempt == 0) {
+        // The load is known: a photo round that cannot carry a final answer inside the
+        // window is refused (the loop gives up older history, then reads the photos as
+        // text), and the cap that fits the load replaces the table's.
+        const RoundLoad load = wire::roundLoad(rb, body.size(), wire::splicedBytes(splices), photoTok);
+        if (wire::photosOverFit(rb, roundMs, load, photoTok, out.error)) {
+          built = false;
+        } else if (!wire::fitCapToLoad(body, splices, cap, rb, kind, roundMs, load)) {
+          a.maxTokens = cap.maxTokens;
+          a.effort = cap.effort;
+          built = build();
+        } else {
+          a.maxTokens = cap.maxTokens;
+          built = bodyWithinBudget(body, a.textBudget, out.error);   // the patched cap is a digit wider at most
+        }
+        wire::lastRound().textBudget = a.textBudget;
+        wire::lastRound().photoTokens = photoTok;
+      }
+      if (!built) {
         out.ok = false;
         out.kind = orch::StepErr::BadRequest;
         return out;
       }
+      const uint32_t maxTokens = a.maxTokens;
+      const size_t textBytes = body.size();
       // 3) send - the body is serialized ONCE into a contiguous buffer and handed
       //    to the transport whole (single TLS write); the photos are spliced in at
       //    send time.
@@ -1276,7 +1315,9 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
         hlog::logf("orchTurn(ant-loop): %s", e.c_str());
         return out;
       }
-      if (usage) *usage += orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
+      const orch::TokenUsage roundUse = orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
+      if (usage) *usage += roundUse;
+      wire::noteObservedRatio(rb, textBytes, roundUse.maxRequestIn, photoTok);
       orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
       JsonArrayConst content = resp["content"].as<JsonArrayConst>();
       if ((content.isNull() || content.size() == 0) && strcmp(resp["stop_reason"] | "", "max_tokens") != 0) {
@@ -1368,6 +1409,7 @@ struct AntShot {
   bool fold;
   uint32_t maxTokens;
   const char* effort;
+  size_t budget;   // the request's own body budget
 };
 
 __attribute__((noinline))   // done before the send: kept out of orchTurnAnthropic's frame (lane STACK)
@@ -1422,7 +1464,7 @@ bool antShotBody(const AntShot& a, std::string& body, std::string& err) {
       tool["cache_control"]["type"] = "ephemeral";   // an unsplit prompt: the tools prefix segment
   }
   if (!wire::serializeChecked(d, body, err)) return false;
-  return bodyWithinBudget(body, err);   // R3: the stated body budget (photos splice after)
+  return bodyWithinBudget(body, a.budget, err);   // this request's own budget
 }
 
 // What one single-shot reply holds: the orch_turn input (the turn), else the
@@ -1468,8 +1510,13 @@ bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
 
   const std::string model = pd.orchModel ? pd.orchModel("anthropic") : std::string();
   const bool fold = instructions == nimbus::orch::ORCH_COMPACT_PROMPT;
-  const OutputCap cap = outputCapFor("anthropic", model, fold ? RoundKind::Fold : RoundKind::SingleShot,
-                                     kHeadRoundCeilingMs);
+  const RoundKind kind = fold ? RoundKind::Fold : RoundKind::SingleShot;
+  // Its own budget and round (through the router at most its 90 s), and the cap that fits
+  // the body's load (the table's until the load is known).
+  const bool routed = wire::routedDeps(pd);
+  const uint32_t roundMs = wire::headCeilingMs(routed, kHeadRoundCeilingMs);
+  const wire::RoundBudget rb = wire::roundBudget(pd, "anthropic", model, routed);
+  OutputCap cap = outputCapFor("anthropic", model, kind, roundMs);
   // Keep the tool_use input UNFILTERED (it is the whole turn object); filter the
   // rest of the response envelope down to what we read.
   JsonDocument filter;
@@ -1487,25 +1534,40 @@ bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
   // A single shot shows no photo: the turn's photos read as their transcriptions (R1).
   const std::string seen = fold ? inputs : imageparts::blindInputs(inputs);
   for (int attempt = 0; attempt < 2; ++attempt) {
-    const AntShot shot{&model, &instructions, &seen, fold,
-                       attempt ? cap.retryTokens : cap.maxTokens, attempt ? cap.retryEffort : cap.effort};
+    AntShot shot{&model, &instructions, &seen, fold, attempt ? cap.retryTokens : cap.maxTokens,
+                 attempt ? cap.retryEffort : cap.effort, rb.budget.wireBodyBytes};
     std::string body;
     if (!antShotBody(shot, body, err)) return false;
+    if (attempt == 0) {
+      BodySplices none;
+      if (!wire::fitCapToLoad(body, none, cap, rb, kind, roundMs, wire::roundLoad(rb, body.size(), 0, 0))) {
+        shot.maxTokens = cap.maxTokens;
+        shot.effort = cap.effort;
+        if (!antShotBody(shot, body, err)) return false;
+      } else if (!bodyWithinBudget(body, shot.budget, err)) {
+        return false;   // the patched cap is a digit wider at most
+      }
+      shot.maxTokens = cap.maxTokens;
+    }
+    const size_t textBytes = body.size();
     JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
     const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
-    const int code = antRequest(pd, "POST", "/v1/messages", std::move(body), doc, filter);
-    if (code <= 0)   { err = wire::headTransportError(pd, t0, kHeadRoundCeilingMs); return false; }
+    const int code = antRequest(pd, "POST", "/v1/messages", std::move(body), doc, filter, roundMs);
+    if (code <= 0)   { err = wire::headTransportError(pd, t0, roundMs); return false; }
     if (code != 200) {
       err = wire::httpErrLine("messages", code, doc["error"]["message"] | "");
       hlog::logf("orchTurn(ant): %s", err.c_str());
       return false;
     }
-    if (usage) *usage += nimbus::orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
+    const nimbus::orch::TokenUsage roundUse =
+        nimbus::orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
+    if (usage) *usage += roundUse;
+    wire::noteObservedRatio(rb, textBytes, roundUse.maxRequestIn, 0);
     nimbus::orch::captureServedModel(usage, doc.as<ArduinoJson::JsonVariantConst>());
     const AntShotReply r = antReadShot(doc);
     if (r.cut && attempt == 0 && cap.hasRetry()) {
       hlog::logf("orchTurn(ant): %s cut at %u tokens - one retry with %u (effort %s)",
-                 fold ? "fold" : "turn", (unsigned)cap.maxTokens, (unsigned)cap.retryTokens,
+                 fold ? "fold" : "turn", (unsigned)shot.maxTokens, (unsigned)cap.retryTokens,
                  *cap.retryEffort ? cap.retryEffort : "-");
       continue;
     }

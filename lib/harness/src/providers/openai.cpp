@@ -5,6 +5,7 @@
 
 #include "nimbus/harness/prompt_layout.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/orch/compact.h"      // ORCH_COMPACT_PROMPT: the fold asks for plain text
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
 #include "nimbus/orch/model_catalog.h" // gptGeneration - the reasoning-family gate
 #include "nimbus/orch/model_defaults.h" // currentTurnRole - a background turn thinks little
@@ -444,11 +445,11 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
                                      nimbus::orch::Transcript& tr) {
   namespace orch = nimbus::orch;
   const std::string model = pd.orchModel ? pd.orchModel("openai") : std::string();
-  // The wire-ceiling bound: the replayed tool outputs must stay under the
-  // measured ~52 KB body ceiling. trimToolOutputs clips only the NEWEST results
+  // The replayed tool outputs a round keeps: the derived replay of the round's own
+  // budget, never under v5.1.1's 24 KB. trimToolOutputs clips only the NEWEST results
   // (never a round already sent, so each round extends the cached prefix) - the
   // pairing invariant holds and the full text is already in the results ring.
-  const size_t kReplayToolBytes = 24576;
+  constexpr size_t kReplayFloorBytes = 24576;
 
   // The static, summary and dynamic parts, split once per turn (prompt_layout.h)
   // from the prompt repaired to valid UTF-8 (wire.h: repaired, never clipped).
@@ -456,7 +457,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
   wire::putFieldStr(sys, instructions, "the system prompt");
   const layout::PromptParts parts = layout::split(sys);
 
-  return [&ht, usage, &tr, pd, model, kReplayToolBytes, parts](
+  return [&ht, usage, &tr, pd, model, parts](
              bool allowTools,
              const std::vector<orch::HeadToolResult>& prior,
              uint32_t budgetMs,
@@ -465,9 +466,14 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     (void)prior;   // the transcript already carries every result
     orch::HeadStep out;
     // F25: clamp this round's socket timeout to the turn's remaining budget so
-    // slow rounds can't stack past the deadline (no-op when budgetMs==UINT32_MAX).
-    const uint32_t roundMs = wire::clampRoundMs(budgetMs, kHeadRoundCeilingMs);
-    if (tr.toolBytes() > kReplayToolBytes) tr.trimToolOutputs(kReplayToolBytes);
+    // slow rounds can't stack past the deadline (no-op when budgetMs==UINT32_MAX);
+    // through the router at most its 90 s ceiling.
+    const bool routed = wire::routedDeps(pd);
+    const uint32_t roundMs = wire::clampRoundMs(budgetMs, wire::headCeilingMs(routed, kHeadRoundCeilingMs));
+    // This round's own budget (the host and model that send it).
+    const wire::RoundBudget rb = wire::roundBudget(pd, "openai", model, routed);
+    const size_t replay = wire::replayBytesFor(rb, kReplayFloorBytes);
+    if (tr.toolBytes() > replay) tr.trimToolOutputs(replay);
     JsonDocument req = makeDoc(pd);
     req["model"]        = model;
     // roundInstructions() appends the final-round notice when a cap forced this
@@ -500,6 +506,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     orch::TurnImages* imgs = imageparts::shown(tr, "openai", model);
     bool sees = imageparts::sees(tr, "openai", model);   // image.look's photos too
     bool breakpoints = layout::openAITakesBreakpoints(model);
+    std::string seedErr;   // the seed over flatPromptBudget(): refused with the size wording
     auto renderInput = [&]() {
       JsonArray in = req["input"].to<JsonArray>();
       // A split prompt (prompt_layout.h): the static block and the shelf as
@@ -515,9 +522,11 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       const size_t seedIdx = round.split ? 2 + round.history.size() : 0;
       if (in.size() > seedIdx && !strcmp(in[seedIdx]["role"] | "", "user")) {
         JsonObject m = in[seedIdx];
-        if (round.split)
-          wire::putFieldStr(m["content"], layout::userWithDynamic(round, m["content"] | ""),
-                            "the user message");
+        const std::string seed = round.split ? layout::userWithDynamic(round, m["content"] | "")
+                                             : std::string(m["content"] | "");
+        seedErr.clear();
+        fieldWithinFlatBudget(seed, seedErr);
+        if (round.split) wire::putFieldStr(m["content"], seed, "the user message");
         if (imgs) imageparts::putParts(m, *imgs, imageparts::Dialect::OpenAIResponses);
       }
       // Forced final after a STALL: if the newest round carried no tool calls
@@ -608,14 +617,42 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     filter["usage"] = true;   // whole usage object -> per-round token accounting
     filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
+    // The request's own budget, less what the photos it shows take of the window.
+    uint32_t photoTok = imageparts::photoTokens(tr.images(), imgs != nullptr, sees,
+                                                imageparts::Dialect::OpenAIResponses);
+    auto textBudget = [&] {
+      return photoTok ? imageparts::photoTextBudget(rb.budget, photoTok) : (size_t)rb.budget.wireBodyBytes;
+    };
+    auto build = [&](std::string& body, BodySplices& splices, bool withPhotos) {
+      if (!seedErr.empty()) {
+        out.error = seedErr;
+        return false;
+      }
+      return wire::serializeChecked(req, body, out.error) && bodyWithinBudget(body, textBudget(), out.error) &&
+             (!withPhotos ||
+              imageparts::spliceAll(body, sees ? tr.images() : nullptr, imgs != nullptr, splices, out.error));
+    };
     std::string body;
     BodySplices splices;
-    if (!wire::serializeChecked(req, body, out.error) ||
-        !bodyWithinBudget(body, out.error) ||   // R3: the stated budget, before the photo splice
-        !imageparts::spliceAll(body, sees ? tr.images() : nullptr, imgs != nullptr, splices, out.error)) {
+    if (!build(body, splices, true)) {
       out.ok = false;
       return out;
     }
+    {
+      // The load is known. OpenAI never gets max_output_tokens (reasoning would starve
+      // the answer); the round's load is still recorded, and a photo round that cannot
+      // carry a final answer inside the window is refused before the send.
+      const RoundLoad load = wire::roundLoad(rb, body.size(), wire::splicedBytes(splices), photoTok);
+      wire::recordRound(rb, allowTools ? RoundKind::ToolRound : RoundKind::FinalRound, roundMs, load, OutputCap());
+      wire::lastRound().textBudget = textBudget();
+      wire::lastRound().photoTokens = photoTok;
+      if (wire::photosOverFit(rb, roundMs, load, photoTok, out.error)) {
+        out.ok = false;
+        out.kind = orch::StepErr::BadRequest;
+        return out;
+      }
+    }
+    size_t textBytes = body.size();
     JsonDocument resp = makeDoc(pd);
     const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
     int code = oaiResponses(pd, std::move(body), roundMs, resp, filter, splices.empty() ? nullptr : &splices);
@@ -630,12 +667,11 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       renderInput();
       body.clear();
       splices = BodySplices();
-      if (!wire::serializeChecked(req, body, out.error) ||
-          !bodyWithinBudget(body, out.error) ||
-          !imageparts::spliceAll(body, sees ? tr.images() : nullptr, imgs != nullptr, splices, out.error)) {
+      if (!build(body, splices, true)) {
         out.ok = false;
         return out;
       }
+      textBytes = body.size();
       resp.clear();
       const uint32_t t1 = pd.nowMs ? pd.nowMs() : 0;
       code = oaiResponses(pd, std::move(body), roundMs, resp, filter, splices.empty() ? nullptr : &splices);
@@ -647,10 +683,12 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       // transcriptions (the fallback captioner), and so does the rest of the turn.
       imgs = nullptr;
       sees = false;
+      photoTok = 0;
       renderInput();
       body.clear();
-      if (!wire::serializeChecked(req, body, out.error) ||
-          !bodyWithinBudget(body, out.error)) { out.ok = false; return out; }
+      splices = BodySplices();
+      if (!build(body, splices, false)) { out.ok = false; return out; }
+      textBytes = body.size();
       resp.clear();
       const uint32_t t1 = pd.nowMs ? pd.nowMs() : 0;
       code = oaiResponses(pd, std::move(body), roundMs, resp, filter);
@@ -665,7 +703,9 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       hlog::logf("orchTurn(oai-loop): %s", e.c_str());
       return out;
     }
-    if (usage) *usage += nimbus::orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
+    const orch::TokenUsage roundUse = orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
+    if (usage) *usage += roundUse;
+    wire::noteObservedRatio(rb, textBytes, roundUse.maxRequestIn, photoTok);
     nimbus::orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
     // The completeness gate: an incomplete response (the output limit, a content
     // filter) is never run or accepted - a cut `arguments` string would be
@@ -745,6 +785,97 @@ static bool runOaiLoop(const ProviderDeps& pd, std::string& convId,
   return ok;
 }
 
+// ---- the compaction fold: plain text (lane W, v5.1.2) ------------------------------
+// The fold's reply IS the summary (its instructions are ORCH_COMPACT_PROMPT). It went out
+// as a head turn: the strict orch_turn text.format, the hosted connectors and store true,
+// so a model could fill the shape and leave the summary empty. Now it is one plain
+// Responses request: instructions = the fold prompt, input = the fold string, no
+// text.format, no tools or connectors, store false, reasoning effort low on a reasoning
+// model, and never max_output_tokens. An incomplete answer is retried once at a lower
+// effort (there is no cap to raise), then fails as a cut. output_text is the summary.
+// The same request travels through the Cumulo router for a routed openai head.
+
+// The effort a reasoning model's fold retry steps down to ("" = none lower: no retry).
+// gpt-5 takes "minimal"; gpt-5.1 and later, and every later generation, take "none".
+static const char* oaiFoldRetryEffort(const std::string& model) {
+  if (!oaiIsReasoningModel(model)) return "";
+  const int gen = nimbus::orch::gptGeneration(model);
+  if (gen == 0) return "";   // the o-series: "low" is its lowest
+  if (gen == 5 && model.compare(0, 6, "gpt-5.") != 0) return "minimal";
+  return "none";
+}
+
+static bool oaiFoldBody(const ProviderDeps& pd, const std::string& model, const std::string& inputs,
+                        const char* effort, size_t budget, std::string& body, std::string& err) {
+  JsonDocument d = makeDoc(pd);
+  d["model"] = model;
+  d["instructions"] = nimbus::orch::ORCH_COMPACT_PROMPT;
+  wire::putFieldStr(d["input"], inputs, "the conversation to summarize");
+  d["store"] = false;
+  if (*effort) d["reasoning"]["effort"] = effort;
+  return wire::serializeChecked(d, body, err) && bodyWithinBudget(body, budget, err);
+}
+
+static bool oaiFold(const ProviderDeps& pd, const std::string& inputs, std::string& outJson, std::string& err,
+                    nimbus::orch::TokenUsage* usage) {
+  namespace orch = nimbus::orch;
+  const std::string model = pd.orchModel ? pd.orchModel("openai") : std::string();
+  const bool routed = wire::routedDeps(pd);
+  const uint32_t roundMs = wire::headCeilingMs(routed, OAI_TIMEOUT_MS);
+  const wire::RoundBudget rb = wire::roundBudget(pd, "openai", model, routed);
+  const char* efforts[2] = {oaiIsReasoningModel(model) ? "low" : "", oaiFoldRetryEffort(model)};
+  JsonDocument filter;
+  filter["status"] = true;
+  filter["error"]["message"] = true;
+  filter["error"]["code"] = true;
+  filter["incomplete_details"]["reason"] = true;
+  JsonObject oi = filter["output"].add<JsonObject>();
+  oi["type"] = true;
+  JsonObject ci = oi["content"].add<JsonObject>();
+  ci["type"] = true;
+  ci["text"] = true;
+  filter["usage"] = true;
+  filter["model"] = true;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    std::string body;
+    if (!oaiFoldBody(pd, model, inputs, efforts[attempt], rb.budget.wireBodyBytes, body, err)) return false;
+    wire::recordRound(rb, RoundKind::Fold, roundMs, wire::roundLoad(rb, body.size(), 0, 0), OutputCap());
+    const size_t textBytes = body.size();
+    JsonDocument doc = makeDoc(pd);
+    const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
+    const int code = oaiResponses(pd, std::move(body), roundMs, doc, filter);
+    if (code <= 0) {
+      err = wire::headTransportError(pd, t0, roundMs);
+      return false;
+    }
+    if (code != 200) {
+      err = wire::httpErrLine("fold", code, doc["error"]["message"] | "");
+      hlog::logf("orchTurn(oai): %s", err.c_str());
+      return false;
+    }
+    const orch::TokenUsage roundUse = orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
+    if (usage) *usage += roundUse;
+    wire::noteObservedRatio(rb, textBytes, roundUse.maxRequestIn, 0);
+    orch::captureServedModel(usage, doc.as<ArduinoJson::JsonVariantConst>());
+    if (!strcmp(doc["status"] | "", "incomplete")) {
+      const char* why = doc["incomplete_details"]["reason"] | "unknown";
+      if (attempt == 0 && *efforts[1] && strcmp(efforts[0], efforts[1]) != 0) {
+        hlog::logf("orchTurn(oai): fold incomplete (%s) - one retry at effort %s", why, efforts[1]);
+        continue;
+      }
+      err = std::string("cut at the output limit (incomplete:") + why + ")";
+      return false;
+    }
+    outJson.clear();
+    for (JsonObjectConst item : doc["output"].as<JsonArrayConst>())
+      for (JsonObjectConst c : item["content"].as<JsonArrayConst>())
+        if (strcmp(c["type"] | "", "output_text") == 0) outJson += (const char*)(c["text"] | "");
+    if (outJson.empty()) err = "the fold came back with no text";
+    return !outJson.empty();
+  }
+  return false;
+}
+
 bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
                     const std::string& instructions, const std::string& inputs,
                     std::string& outJson, std::string& err,
@@ -752,6 +883,7 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
   outJson.clear(); err.clear();
   const std::string key = pd.key ? pd.key("openai") : std::string();
   if (key.empty()) { err = "no OpenAI key"; return false; }
+  if (instructions == nimbus::orch::ORCH_COMPACT_PROMPT) return oaiFold(pd, inputs, outJson, err, usage);
 
   // Multi-turn tool-use loop (opt-in): falls through to the single-shot strict
   // structured turn below when the knob is off or no tools were supplied.
@@ -760,6 +892,8 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
 
   // A single shot shows no photo: the turn's photos read as their transcriptions (R1).
   const std::string seen = imageparts::blindInputs(inputs);
+  const bool routed = wire::routedDeps(pd);
+  const uint32_t roundMs = wire::headCeilingMs(routed, OAI_TIMEOUT_MS);
   std::string body;
   {
     JsonDocument d;
@@ -801,7 +935,8 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
     // turn can use them mid-turn even with a strict json_schema text format.
     if (pd.attachOpenAI) pd.attachOpenAI(d);
     if (!wire::serializeChecked(d, body, err)) return false;
-    if (!bodyWithinBudget(body, err)) return false;   // R3: the stated body budget
+    const nimbus::orch::RequestBudget b = wireBudgetFor("openai", d["model"] | "", routed);
+    if (!bodyWithinBudget(body, b.wireBodyBytes, err)) return false;   // this request's own budget
   }
 
   JsonDocument filter;
@@ -818,8 +953,8 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
 
   JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
   const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
-  int code = oaiResponses(pd, std::move(body), OAI_TIMEOUT_MS, doc, filter);
-  if (code <= 0)   { err = wire::headTransportError(pd, t0, OAI_TIMEOUT_MS); return false; }
+  int code = oaiResponses(pd, std::move(body), roundMs, doc, filter);
+  if (code <= 0)   { err = wire::headTransportError(pd, t0, roundMs); return false; }
   if (code != 200) {
     err = wire::httpErrLine("resp", code, doc["error"]["message"] | "");
     const char* ec = doc["error"]["code"] | "";

@@ -5,6 +5,8 @@
 #include <cstring>
 
 #include "nimbus/harness/log.h"
+#include "nimbus/orch/budget.h"       // kBudgetBytesPerToken - a window refusal's bytes per token
+#include "nimbus/orch/image_dims.h"   // a photo's pixel size, for its window cost
 #include "nimbus/orch/psram_alloc.h"
 #include "wire.h"
 
@@ -263,12 +265,84 @@ bool rejectAndRetry(orch::TurnImages* imgs, const char* who, int httpStatus, con
   return true;
 }
 
+namespace {
+Dialect dialectOf(const std::string& host) {
+  if (host == "anthropic") return Dialect::Anthropic;
+  if (host == "openai") return Dialect::OpenAIResponses;
+  return Dialect::MistralChat;
+}
+// Scale (w, h) down so its long edge is at most `edge` (aspect kept).
+void fitLongEdge(uint64_t& w, uint64_t& h, uint64_t edge) {
+  const uint64_t longer = w > h ? w : h;
+  if (longer <= edge) return;
+  w = w * edge / longer;
+  h = h * edge / longer;
+}
+uint64_t ceilDiv(uint64_t a, uint64_t b) { return (a + b - 1) / b; }
+}  // namespace
+
+uint32_t photoTokens(const orch::TurnImage& img, Dialect d) {
+  const orch::ImageDims dims = orch::imageDims(img.bytes, img.len);
+  if (!dims.known()) return (uint32_t)(img.len / 3);
+  uint64_t w = dims.width, h = dims.height;
+  switch (d) {
+    case Dialect::Anthropic: {
+      fitLongEdge(w, h, 1568);
+      const uint64_t t = ceilDiv(w * h, 750);
+      return (uint32_t)(t < 1600 ? t : 1600);
+    }
+    case Dialect::OpenAIResponses: {
+      fitLongEdge(w, h, 2048);
+      const uint64_t shorter = w < h ? w : h;
+      if (shorter > 768) {
+        w = w * 768 / shorter;
+        h = h * 768 / shorter;
+      }
+      return (uint32_t)(85 + 170 * ceilDiv(w, 512) * ceilDiv(h, 512));
+    }
+    case Dialect::MistralChat: {
+      fitLongEdge(w, h, 1540);
+      const uint64_t rows = ceilDiv(h, 16);
+      return (uint32_t)(ceilDiv(w, 16) * rows + rows);
+    }
+  }
+  return (uint32_t)(img.len / 3);
+}
+
+uint32_t photoTokens(const orch::TurnImages* imgs, bool photos, bool looked, Dialect d) {
+  if (!imgs) return 0;
+  uint64_t t = 0;
+  if (photos)
+    for (const orch::TurnImage& it : imgs->items) t += photoTokens(it, d);
+  if (looked)
+    for (const orch::LookedImage& l : imgs->looked) t += photoTokens(l.img, d);
+  return (uint32_t)(t > 0xFFFFFFFFull ? 0xFFFFFFFFull : t);
+}
+
+size_t photoTextBudget(const orch::RequestBudget& b, uint32_t tokens) {
+  const size_t whole = b.wireBodyBytes;
+  const size_t floor = whole < kWireBodyMax ? whole : kWireBodyMax;
+  const uint64_t photoBytes = (uint64_t)tokens * (b.rNomX100 ? b.rNomX100 : 400) / 100;
+  if (photoBytes + floor >= whole) return floor;
+  return (size_t)((whole - photoBytes) / 1000 * 1000);
+}
+
 size_t readAsText(orch::TurnImages* imgs, const std::string& host) {
   if (!imgs || imgs->empty() || imgs->refusedBy(host)) return 0;
-  constexpr size_t kBytesPerImage = 4096;   // about a window's cost of one photo, in prompt bytes
-  const size_t n = imgs->items.size();
+  const size_t freed = (size_t)photoTokens(imgs, true, false, dialectOf(host)) * orch::kBudgetBytesPerToken;
   rejectAndRetry(imgs, "fabric: the request overflowed", 400, host);
-  return n * kBytesPerImage;
+  return freed;
+}
+
+size_t transcribeForTime(orch::TurnImages* imgs, const std::string& host) {
+  if (!imgs || imgs->refusedBy(host) || (imgs->empty() && imgs->looked.empty())) return 0;
+  hlog::logf("imageparts: transcribed: did not fit the %s time window (%u photos read as text)", host.c_str(),
+             (unsigned)(imgs->items.size() + imgs->looked.size()));
+  const size_t freed = (size_t)photoTokens(imgs, true, true, dialectOf(host)) * orch::kBudgetBytesPerToken;
+  imgs->rejected = true;
+  imgs->rejectedBy = host;
+  imgs->shown = false;
+  return freed;
 }
 
 std::string blindInputs(const std::string& inputs) {

@@ -232,6 +232,10 @@ struct HeadBody {
 static bool customHeadBody(const ProviderDeps& pd, const std::string& instructions,
                            const std::string& inputs, HeadFormat fmt, HeadBody& out,
                            bool withEffort = true) {
+  // The flat wire's one system string, and the input: over flatPromptBudget() the request
+  // is refused with the size wording, so the turn's give-up order runs (H) and the string
+  // is built again (never the string ceiling's refusal, which no refit reads).
+  if (!fieldWithinFlatBudget(instructions, out.err) || !fieldWithinFlatBudget(inputs, out.err)) return false;
   JsonDocument d;
   d["model"] = s(pd.customModel);
   JsonArray msgs = d["messages"].to<JsonArray>();
@@ -264,7 +268,9 @@ static bool customHeadBody(const ProviderDeps& pd, const std::string& instructio
     }
     rf["json_schema"]["schema"] = sd;
   }
-  return wire::serializeChecked(d, out.body, out.err);
+  if (!wire::serializeChecked(d, out.body, out.err)) return false;
+  const nimbus::orch::RequestBudget b = wireBudgetFor(wire::customBudgetHost(pd), s(pd.customModel), wire::customRouted(pd));
+  return bodyWithinBudget(out.body, b.wireBodyBytes, out.err);
 }
 // CUM-544: why a head request got no HTTP answer - the shared rule every head
 // uses (wire::headTransportError): "timeout: ..." when the request went out and the
@@ -351,6 +357,7 @@ struct ZaiRound {
   bool allowTools;
   uint32_t maxTokens;
   bool withEffort;
+  size_t budget;   // the request's own body budget
 };
 
 // The picker offers older GLM models too. One that refuses reasoning_effort answers without
@@ -389,7 +396,7 @@ static bool zaiLoopBody(const ProviderDeps& pd, const ZaiRound& a, std::string& 
   const std::string sysText = p.stat + p.shelf;
   renderChatMessages(ChatRender{a.tr, sysText, /*showingImages=*/false, p.split ? &p : nullptr, /*sees=*/false, kZaiDialect},
                      msgs);
-  seedChatUserMessage(msgs, p, nullptr);
+  if (!seedChatUserMessage(msgs, p, nullptr, err)) return false;
   if (!putChatTools(pd, req["tools"].to<JsonArray>(), &a.ht, kZaiDialect, /*onlyFinal=*/!a.allowTools, err)) return false;
   if (a.allowTools) {
     req["tool_choice"] = "required";
@@ -399,7 +406,7 @@ static bool zaiLoopBody(const ProviderDeps& pd, const ZaiRound& a, std::string& 
     tc["function"]["name"] = "orch_turn";
   }
   if (!wire::serializeChecked(req, body, err)) return false;
-  return bodyWithinBudget(body, err);
+  return bodyWithinBudget(body, a.budget, err);
 }
 
 // An answer that came back as text instead of an orch_turn call IS the answer: glm-5.3
@@ -461,12 +468,19 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
                                       uint32_t budgetMs, const std::string& capReason) -> orch::HeadStep {
     (void)prior;   // the transcript already carries every result
     orch::HeadStep out;
-    const size_t kReplayToolBytes = 24576;   // the measured wire-ceiling bound (Mistral's)
-    const uint32_t ceiling = pd.customHeadTimeoutMs ? pd.customHeadTimeoutMs : kHeadRoundCeilingMs;
+    // The replayed tool results: the derived replay of the round's own budget, never
+    // under v5.1.1's 24 KB (Mistral's measured wire-ceiling bound).
+    constexpr size_t kReplayFloorBytes = 24576;
+    const bool routed = wire::customRouted(pd);
+    const uint32_t ceiling = wire::headCeilingMs(routed, pd.customHeadTimeoutMs ? pd.customHeadTimeoutMs
+                                                                                : kHeadRoundCeilingMs);
     const uint32_t roundMs = wire::clampRoundMs(budgetMs, ceiling);
-    if (tr.toolBytes() > kReplayToolBytes) tr.trimToolOutputs(kReplayToolBytes);
-    const OutputCap cap = outputCapFor("zai", s(pd.customModel),
-                                       allowTools ? RoundKind::ToolRound : RoundKind::FinalRound, roundMs);
+    const std::string model = s(pd.customModel);
+    const wire::RoundBudget rb = wire::roundBudget(pd, wire::customBudgetHost(pd), model, routed);
+    const size_t replay = wire::replayBytesFor(rb, kReplayFloorBytes);
+    if (tr.toolBytes() > replay) tr.trimToolOutputs(replay);
+    const RoundKind kind = allowTools ? RoundKind::ToolRound : RoundKind::FinalRound;
+    OutputCap cap = outputCapFor("zai", model, kind, roundMs);   // the table's, until the load is known
     layout::PromptParts round = parts;
     std::string& tail = round.split ? round.dyn : round.stat;
     tail = wire::roundInstructions(tail, capReason);
@@ -476,14 +490,31 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
     filter["message"] = true;
     for (int attempt = 0; attempt < 2; ++attempt) {
       out = orch::HeadStep();
-      const uint32_t maxTokens = attempt ? cap.retryTokens : cap.maxTokens;
-      const bool withEffort = !zaiEffortRefusedBefore(s(pd.customModel));
+      const bool withEffort = !zaiEffortRefusedBefore(model);
+      ZaiRound zr{tr, round, ht, allowTools, attempt ? cap.retryTokens : cap.maxTokens, withEffort,
+                  rb.budget.wireBodyBytes};
       std::string body;
-      if (!zaiLoopBody(pd, ZaiRound{tr, round, ht, allowTools, maxTokens, withEffort}, body, out.error)) {
+      bool built = zaiLoopBody(pd, zr, body, out.error);
+      if (built && attempt == 0) {
+        // The load is known: the cap that fits it inside the round replaces the table's
+        // (GLM always reasons; its effort is the policy's, not the cap's).
+        BodySplices none;
+        if (!wire::fitCapToLoad(body, none, cap, rb, kind, roundMs, wire::roundLoad(rb, body.size(), 0, 0))) {
+          zr.maxTokens = cap.maxTokens;
+          body.clear();
+          built = zaiLoopBody(pd, zr, body, out.error);
+        } else {
+          zr.maxTokens = cap.maxTokens;
+          built = bodyWithinBudget(body, zr.budget, out.error);   // the patched cap is a digit wider at most
+        }
+      }
+      if (!built) {
         out.ok = false;
         out.kind = orch::StepErr::BadRequest;
         return out;
       }
+      const uint32_t maxTokens = zr.maxTokens;
+      const size_t textBytes = body.size();
       JsonDocument resp = wire::makeDoc(pd);
       const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
       const int code = custRequest(pd, "POST", "/v1/chat/completions", std::move(body), /*anthropicAuth=*/false, resp,
@@ -494,6 +525,8 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
         continue;
       }
       if (code != 200) { zaiHttpFailure(code, resp, out); return out; }
+      wire::noteObservedRatio(rb, textBytes,
+                              orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>()).maxRequestIn, 0);
       std::string cutWhy;
       if (zaiRoundDone(resp, usage, out, cutWhy)) return out;
       if (attempt == 0 && cap.hasRetry()) {
@@ -586,7 +619,8 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
   const HeadFormat first = fold ? HeadFormat::Prose
                                 : (pd.customJsonMode && pd.customJsonMode() == "object") ? HeadFormat::Object
                                                                                         : HeadFormat::Schema;
-  const uint32_t timeoutMs = pd.customHeadTimeoutMs ? pd.customHeadTimeoutMs : CUST_HEAD_TIMEOUT_MS;
+  const uint32_t timeoutMs =
+      wire::headCeilingMs(wire::customRouted(pd), pd.customHeadTimeoutMs ? pd.customHeadTimeoutMs : CUST_HEAD_TIMEOUT_MS);
   // One system message: the layout flat (prompt_layout.h). Its order (static,
   // summary, per-turn) still gives a prefix-caching backend a stable prefix.
   const std::string sys = layout::flat(instructions);
@@ -724,6 +758,7 @@ void applyZaiHeadPolicy(ProviderDeps& pd) {
   pd.customReasoningEffort = [] { return std::string(kZaiReasoningEffort); };
   pd.customHeadTimeoutMs   = kZaiHeadTimeoutMs;
   pd.customToolLoop        = true;
+  pd.customBudgetHost      = "zai";   // its requests carry Z.ai's own budget
 }
 
 void configureRouterCompatHead(ProviderDeps& pd, const std::string& upstream,

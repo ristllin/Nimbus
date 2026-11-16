@@ -41,9 +41,10 @@ void renderChatMessages(const ChatRender& r, ArduinoJson::JsonArray msgs);
 bool putChatTools(const ProviderDeps& pd, ArduinoJson::JsonArray tools, const HeadTools* ht,
                   const ChatDialect& dialect, bool onlyFinal, std::string& err);
 
-// The per-turn block and the photos join the seeded user message.
-void seedChatUserMessage(ArduinoJson::JsonArray msgs, const layout::PromptParts& p,
-                         nimbus::orch::TurnImages* imgs);
+// The per-turn block and the photos join the seeded user message. False (err: the size
+// wording, providers.h fieldWithinFlatBudget) when the seed is over flatPromptBudget().
+bool seedChatUserMessage(ArduinoJson::JsonArray msgs, const layout::PromptParts& p,
+                         nimbus::orch::TurnImages* imgs, std::string& err);
 
 // Read one reply into `out`. False when it is cut (finish_reason "length" or
 // "model_length", or arguments that do not parse): a cut argument string must never be

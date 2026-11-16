@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,9 @@
 #include "nimbus/orch/body_budget.h"
 #include "nimbus/orch/head_loop.h"
 #include "nimbus/orch/transcript.h"
+#include "nimbus/orch/turn_images.h"
+#include "../../lib/harness/src/providers/image_parts.h"   // photoTokens, photoTextBudget, LoopImages
+#include "../../lib/harness/src/providers/wire.h"          // wire::lastRound, the round fit
 
 // A tool loop whose next request would outgrow the wire body budget never fails the
 // whole turn after paying its rounds (Lumi, v4.6.0, 26 Oct 2026: the post-update turn
@@ -30,8 +34,16 @@ using nimbus::orch::HeadToolResult;
 using nimbus::orch::Transcript;
 namespace providers = agent::providers;
 
-void setUp() { LogCapture::install(); }
-void tearDown() {}
+// The suite's real-wire legs are calibrated to the 85,000 B budget every head had in
+// v5.1.1 (Lumi's turn shape crosses it); the per-wire legs set their own table.
+void setUp() {
+  LogCapture::install();
+  providers::setTestBudgetOverride((uint32_t)providers::kWireBodyMax);
+}
+void tearDown() {
+  providers::setTestBudgetOverride(0);
+  providers::setTestBudgetSource(nullptr);
+}
 
 // ---- the refusal's one wording --------------------------------------------------
 static void test_refusal_wording_round_trips() {
@@ -43,7 +55,7 @@ static void test_refusal_wording_round_trips() {
   TEST_ASSERT_EQUAL_UINT32(86865, (uint32_t)size);
   // The provider guard speaks it.
   std::string err;
-  TEST_ASSERT_FALSE(providers::bodyWithinBudget(std::string(providers::kWireBodyMax + 7, 'x'), err));
+  TEST_ASSERT_FALSE(providers::bodyWithinBudget(std::string(providers::kWireBodyMax + 7, 'x'), providers::kWireBodyMax, err));
   TEST_ASSERT_TRUE(nimbus::orch::parseBodyBudgetError(err, budget, size));
   TEST_ASSERT_EQUAL_UINT32((uint32_t)providers::kWireBodyMax, (uint32_t)budget);
   TEST_ASSERT_EQUAL_UINT32((uint32_t)providers::kWireBodyMax + 7, (uint32_t)size);
@@ -555,6 +567,448 @@ static void test_big_write_on_every_loop_wire() {
   }
 }
 
+// ---- every wire carries its own budget (lane W, v5.1.2) ---------------------------------
+// The budget of a request is the one its host and model have (wireBudgetFor), read per
+// round: a wire that reads a turn-global figure, another host's budget, the v5.1.1
+// constant or the direct row on a routed request fails these. The table below stands in
+// for the derived budgets (request_budget.h): a distinct figure per host and model,
+// routed or not.
+namespace {
+nimbus::orch::RequestBudget tableBudget(const std::string& host, const std::string& model, bool routed) {
+  nimbus::orch::RequestBudget b = nimbus::orch::requestBudgetFor(host, model, routed);
+  uint32_t bytes = 69000;   // custom: the floor-shaped row
+  if (host == "mistral") bytes = model.rfind("mistral-medium", 0) == 0 ? 71000 : 73000;
+  else if (host == "openai") bytes = 75000;
+  else if (host == "anthropic") bytes = 77000;
+  else if (host == "zai") bytes = 79000;
+  if (routed) bytes += 10000;
+  b.wireBodyBytes = bytes;
+  return b;
+}
+// The test's budget source for the rest of a case, and the override, both cleared after.
+struct BudgetScope {
+  uint32_t before;
+  explicit BudgetScope(providers::WireBudgetFn fn, uint32_t bytes = 0) : before(providers::testBudgetOverride()) {
+    providers::setTestBudgetSource(fn);
+    providers::setTestBudgetOverride(bytes);
+  }
+  ~BudgetScope() {
+    providers::setTestBudgetSource(nullptr);
+    providers::setTestBudgetOverride(before);
+  }
+};
+
+enum class WireKind { Anthropic, OpenAI, Mistral, ZaiLoop, CustomShot };
+struct WireCase {
+  const char* name;
+  const char* host;    // the budget's host
+  const char* model;
+  bool routed;
+  WireKind kind;
+};
+const WireCase kWires[] = {
+    {"anthropic", "anthropic", "claude-sonnet-5-5", false, WireKind::Anthropic},
+    {"openai", "openai", "gpt-5.6", false, WireKind::OpenAI},
+    {"mistral", "mistral", "mistral-large-4-0", false, WireKind::Mistral},
+    {"zai", "zai", "glm-5.3", false, WireKind::ZaiLoop},
+    {"custom", "custom", "gpt-5.6-luna", false, WireKind::CustomShot},
+    {"cumulo/anthropic", "anthropic", "claude-sonnet-5-5", true, WireKind::Anthropic},
+    {"cumulo/openai", "openai", "gpt-5.6", true, WireKind::OpenAI},
+    {"cumulo/mistral", "mistral", "mistral-large-4-0", true, WireKind::Mistral},
+    {"cumulo/zai", "zai", "glm-5.3", true, WireKind::ZaiLoop},
+};
+std::string finalFor(WireKind k) {
+  if (k == WireKind::Anthropic) return finalResponse("anthropic");
+  if (k == WireKind::OpenAI) return finalResponse("openai");
+  if (k == WireKind::CustomShot) return "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"{\\\"reply\\\":\\\"done\\\"}\"}}]}";
+  return finalResponse("mistral");
+}
+struct WireRun {
+  size_t sent = 0;
+  size_t bodySize = 0;
+  std::string err;
+  agent::HttpRequest req;
+};
+// One round on the wire (the custom endpoint: its single shot) with this prompt and seed.
+WireRun runWire(const WireCase& w, const std::string& ins, const std::string& seed) {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200, finalFor(w.kind)});
+  providers::ProviderDeps pd = d.contract();
+  const std::string model = w.model;
+  pd.orchModel = [model](const char*) { return model; };
+  if (w.routed) {
+    pd.routerBase = [] { return std::string("https://router.example"); };
+    pd.routerKey = [] { return std::string("cumulo_sk_test"); };
+  }
+  if (w.kind == WireKind::ZaiLoop) {
+    if (w.routed) {
+      providers::configureRouterCompatHead(pd, "zai", model);
+    } else {
+      pd.customBase = [] { return std::string("https://api.z.ai"); };
+      pd.customPathPrefix = [] { return std::string("/api/paas/v4"); };
+      pd.customKey = [] { return std::string("zai-key"); };
+      pd.customConv = [] { return std::string("openai"); };
+      pd.customModel = [model] { return model; };
+      providers::applyZaiHeadPolicy(pd);
+    }
+  }
+  if (w.kind == WireKind::CustomShot) {
+    pd.customBase = [] { return std::string("https://llm.example.lan"); };
+    pd.customModel = [model] { return model; };
+  }
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  Transcript tr;
+  tr.addUser(seed);
+  HeadStep st;
+  std::string conv, out, err;
+  switch (w.kind) {
+    case WireKind::Anthropic: st = providers::antLoopStep(pd, ins, rig.ht, nullptr, tr)(true, {}, UINT32_MAX, ""); break;
+    case WireKind::OpenAI: st = providers::oaiLoopStep(pd, ins, rig.ht, nullptr, tr)(true, {}, UINT32_MAX, ""); break;
+    case WireKind::Mistral: st = providers::misLoopStep(pd, ins, rig.ht, nullptr, tr)(true, {}, UINT32_MAX, ""); break;
+    case WireKind::ZaiLoop: st = providers::zaiLoopStep(pd, ins, rig.ht, nullptr, tr)(true, {}, UINT32_MAX, ""); break;
+    case WireKind::CustomShot:
+      st.ok = providers::orchTurnCustom(pd, conv, ins, seed, out, err, nullptr, nullptr);
+      st.error = err;
+      break;
+  }
+  WireRun r;
+  r.sent = d.http.seen.size();
+  if (r.sent) {
+    r.req = d.http.seen[0];
+    r.bodySize = d.http.seen[0].body.size();
+  }
+  r.err = st.ok ? std::string() : st.error;
+  return r;
+}
+// The seed that makes this wire's body exactly `want` bytes under prompt `ins` (ASCII,
+// so a seed byte is a body byte), found by measuring with the budget out of the way.
+std::string seedFor(const WireCase& w, const std::string& ins, size_t want) {
+  BudgetScope wide(nullptr, 1000000);
+  std::string seed = "x";
+  for (int i = 0; i < 4; ++i) {
+    const size_t got = runWire(w, ins, seed).bodySize;
+    if (got == want) return seed;
+    seed.resize(seed.size() + want - got, 'x');
+  }
+  return seed;
+}
+}  // namespace
+
+// DoD: under each head's own budget, every loop wire (and the custom single shot)
+// accepts a body of exactly B and refuses B + 1 locally, with nothing sent.
+static void test_every_wire_accepts_its_own_budget_and_refuses_one_more() {
+  const std::string ins = "SYS " + std::string(40000, 's');
+  for (const WireCase& w : kWires) {
+    const size_t B = tableBudget(w.host, w.model, w.routed).wireBodyBytes;
+    const std::string seed = seedFor(w, ins, B);
+    BudgetScope table(tableBudget);
+    LogCapture::install();
+    const WireRun at = runWire(w, ins, seed);
+    char msg[220];
+    std::snprintf(msg, sizeof msg, "%s: budget %zu, body %zu, sent %zu, err %s", w.name, B, at.bodySize, at.sent,
+                  at.err.c_str());
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)at.sent, msg);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)B, (uint32_t)at.bodySize, msg);
+    const WireRun over = runWire(w, ins, seed + "x");
+    std::snprintf(msg, sizeof msg, "%s: budget %zu, sent %zu, err %s", w.name, B, over.sent, over.err.c_str());
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)over.sent, msg);   // refused locally: nothing left the device
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(nimbus::orch::bodyBudgetError(B, B + 1).c_str(), over.err.c_str(), msg);
+  }
+}
+
+// The class guard's counter-test: the same request under the v5.1.1 figure (85,000 B)
+// is refused on every wire whose own budget is larger, and sent under its own.
+static void test_the_wire_reads_the_budget_not_the_constant() {
+  auto big = [](const std::string& host, const std::string& model, bool routed) {
+    nimbus::orch::RequestBudget b = nimbus::orch::requestBudgetFor(host, model, routed);
+    b.wireBodyBytes = 100000;
+    return b;
+  };
+  const std::string ins = "SYS " + std::string(50000, 's');
+  for (const WireCase& w : kWires) {
+    const std::string seed = seedFor(w, ins, 95000);
+    {
+      BudgetScope own(+big);
+      TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)runWire(w, ins, seed).sent, w.name);
+    }
+    BudgetScope legacy(nullptr, (uint32_t)providers::kWireBodyMax);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)runWire(w, ins, seed).sent, w.name);
+  }
+}
+
+// A Large 4 head cut twice steps down to Medium on the same host (the fabric's one
+// same-host step): Medium's budget is smaller, and the round that fit Large 4 is refused
+// locally on Medium, before anything is sent there.
+static void test_large4_to_medium_refuses_the_oversize_round_locally() {
+  auto table = [](const std::string& host, const std::string& model, bool routed) {
+    nimbus::orch::RequestBudget b = nimbus::orch::requestBudgetFor(host, model, routed);
+    b.wireBodyBytes = model.rfind("mistral-medium", 0) == 0 ? 90000 : 120000;
+    return b;
+  };
+  BudgetScope scope(+table);
+  FakeProviderDeps d;
+  const std::string cut =
+      "{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"\",\"tool_calls\":[{\"id\":\"abcdefghi\","
+      "\"function\":{\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"do\"}}]}}]}";
+  d.http.script.push_back({"", "", 200, cut});
+  d.http.script.push_back({"", "", 200, cut});
+  providers::ProviderDeps pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  LogCapture::install();
+  std::string out, err;
+  const bool ok = providers::runFabricLoop(pd, {"mistral"}, "SYS " + std::string(50000, 's'),
+                                           std::string(50000, 'u'), out, err, rig.ht, nullptr, nullptr);
+  TEST_ASSERT_FALSE(ok);
+  TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("one same-host step on mistral-medium-latest"), err.c_str());
+  TEST_ASSERT_EQUAL_INT(2, (int)d.http.seen.size());   // the two Large 4 attempts; nothing reached Medium
+  for (const auto& r : d.http.seen) TEST_ASSERT_TRUE(r.body.find("mistral-large-4-0") != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(err.find("request body over the 90 KB budget") == 0, err.c_str());
+}
+
+// ---- photos inside the budget and the time fit -------------------------------------------
+namespace {
+// A JPEG of `w` x `h` (its frame header, then filler) of `len` bytes: what photoTokens reads.
+std::vector<uint8_t> jpegOf(uint32_t w, uint32_t h, size_t len) {
+  std::vector<uint8_t> b(len, 0);
+  const uint8_t head[] = {0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, (uint8_t)(h >> 8), (uint8_t)h,
+                          (uint8_t)(w >> 8), (uint8_t)w, 0x03};
+  std::memcpy(b.data(), head, sizeof head);
+  return b;
+}
+struct Album {
+  std::vector<std::vector<uint8_t>> bytes;
+  nimbus::orch::TurnImages set;
+  int transcribed = 0;
+  std::string text;
+  Album(size_t n, size_t len, uint32_t w, uint32_t h) {
+    set.nonce = "w4lb";
+    set.uploadOnce = false;
+    for (size_t i = 0; i < n; ++i) bytes.push_back(jpegOf(w, h, len));
+    text = "[USER]\n";
+    for (size_t i = 0; i < n; ++i) {
+      nimbus::orch::TurnImage it;
+      char ref[17];
+      std::snprintf(ref, sizeof ref, "%016zx", i + 1);
+      it.ref = ref;
+      it.mime = "image/jpeg";
+      it.bytes = bytes[i].data();
+      it.len = bytes[i].size();
+      it.k = (int)i + 1;
+      it.n = (int)n;
+      it.tag = "[image " + std::to_string(i + 1) + "/" + std::to_string(n) + " ref=" + ref + "]";
+      it.segment = it.tag + " (attached: the photo itself is in this message)";
+      text += it.segment + "\n";
+      set.items.push_back(it);
+    }
+    text += "What is on these?";
+    set.transcribe = [this](nimbus::orch::TurnImage& it) {
+      ++transcribed;
+      return it.tag + " (machine transcription: a shelf label)";
+    };
+  }
+};
+size_t imageParts(const std::string& body) {
+  size_t n = 0;
+  for (size_t p = body.find("\"image_url\""); p != std::string::npos; p = body.find("\"image_url\"", p + 1)) ++n;
+  return n;
+}
+}  // namespace
+
+// A photo round's text budget is the request budget less the photos' window cost, and a
+// body over it is refused before the send; the same body with no photos is sent.
+static void test_photo_round_text_budget_shrinks_by_the_estimate() {
+  auto table = [](const std::string& host, const std::string& model, bool routed) {
+    nimbus::orch::RequestBudget b = nimbus::orch::requestBudgetFor(host, model, routed);
+    b.wireBodyBytes = model == "big" ? 200000 : 100000;
+    b.rNomX100 = 250;
+    return b;
+  };
+  BudgetScope scope(+table);
+  Album album(3, 2000, 1280, 960);   // 1,600 tokens each on Anthropic (1,638 before its cap)
+  const uint32_t tokens = providers::imageparts::photoTokens(&album.set, true, false,
+                                                             providers::imageparts::Dialect::Anthropic);
+  TEST_ASSERT_EQUAL_UINT32(4800, tokens);
+  TEST_ASSERT_EQUAL_UINT32(188000, (uint32_t)providers::imageparts::photoTextBudget(table("anthropic", "big", false), tokens));
+  // Never under the budget every head had in v5.1.1.
+  TEST_ASSERT_EQUAL_UINT32(85000, (uint32_t)providers::imageparts::photoTextBudget(table("anthropic", "x", false), 60000));
+  // On the wire: a 100,000 B budget less 4,800 photo tokens at 2.5 B is 88,000 B of text.
+  const std::string ins = "SYS " + std::string(50000, 's');
+  const std::string seed = album.text + std::string(42000, 'u');
+  for (bool withPhotos : {true, false}) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, finalResponse("anthropic")});
+    providers::ProviderDeps pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("claude-sonnet-5-5"); };
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    const nimbus::orch::ActiveTurnImages active(withPhotos ? &album.set : nullptr);
+    Transcript tr;
+    tr.addUser(seed);
+    const providers::imageparts::LoopImages photos(tr);
+    const HeadStep st = providers::antLoopStep(pd, ins, rig.ht, nullptr, tr)(true, {}, UINT32_MAX, "");
+    if (withPhotos) {
+      TEST_ASSERT_EQUAL_INT(0, (int)d.http.seen.size());
+      TEST_ASSERT_TRUE_MESSAGE(st.error.find("request body over the 88 KB budget") == 0, st.error.c_str());
+    } else {
+      TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)d.http.seen.size(), st.error.c_str());
+    }
+  }
+}
+
+namespace {
+// The Mistral loop with a turn's album on Large 4, the DMA pool fragmented (the round's fit
+// counts the transport's pacing), and a prompt whose older history the engine can give up
+// down to `keepFloor` bytes (the turn's give-up order, in miniature).
+struct AlbumRun {
+  bool ok = false;
+  std::string err;
+  std::vector<agent::HttpRequest> seen;
+  std::vector<agent::BodySplices> spliced;
+  int historyGives = 0;
+};
+AlbumRun runAlbum(Album& album, size_t promptBytes, size_t seedPad, size_t keepFloor) {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200, finalResponse("mistral")});
+  providers::ProviderDeps pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+  pd.dmaLargestBlock = [] { return (uint32_t)4000; };   // under kDmaChunkFloor: paced
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  AlbumRun r;
+  // The engine's side of a refit hands back the whole prompt and input the next request
+  // sends (engine.cpp fitPrompt): the "history" here is the prompt's tail.
+  std::string prompt = "SYS " + std::string(promptBytes, 's');
+  const std::string seed = album.text + std::string(seedPad, 'u');
+  rig.ht.fitPrompt = [&r, &prompt, &seed, keepFloor](size_t want, nimbus::orch::FitScope scope, std::string& ins,
+                                                      std::string& inp) {
+    if (scope != nimbus::orch::FitScope::OlderHistory || prompt.size() <= keepFloor) return (size_t)0;
+    const size_t give = std::min(want, prompt.size() - keepFloor);
+    prompt.resize(prompt.size() - give);
+    ins = prompt;
+    inp = seed;
+    ++r.historyGives;
+    return give;
+  };
+  const nimbus::orch::ActiveTurnImages active(&album.set);
+  std::string conv, out;
+  r.ok = providers::orchTurnMistral(pd, conv, prompt, seed, out, r.err, &rig.ht, nullptr);
+  r.seen = d.http.seen;
+  r.spliced = d.http.spliced;
+  return r;
+}
+}  // namespace
+
+// Ruling 5 (photos come before older history): a 10-photo album on Large 4 with a
+// fragmented heap goes natively. Its first build cannot carry the minimum final inside
+// Mistral's 60 s window, so the round gives up older history first and goes with every
+// photo as an image part, inside its fit.
+static void test_album_on_large4_fragmented_goes_natively() {
+  auto table = [](const std::string& host, const std::string& model, bool routed) {
+    nimbus::orch::RequestBudget b = nimbus::orch::requestBudgetFor(host, model, routed);
+    b.wireBodyBytes = 360000;
+    b.rNomX100 = 360;
+    return b;
+  };
+  BudgetScope scope(+table);
+  Album album(10, 40000, 640, 480);
+  LogCapture::install();
+  const AlbumRun r = runAlbum(album, 55000, 50000, 8000);
+  TEST_ASSERT_TRUE_MESSAGE(r.ok, r.err.c_str());
+  TEST_ASSERT_TRUE(r.historyGives > 0);                 // older history went first
+  TEST_ASSERT_EQUAL_INT(1, (int)r.seen.size());         // nothing over the fit was sent
+  TEST_ASSERT_EQUAL_INT(10, (int)r.spliced[0].size());  // every photo as an image part
+  TEST_ASSERT_EQUAL_INT(0, album.transcribed);
+  TEST_ASSERT_FALSE(LogCapture::contains("transcribed: did not fit"));
+  const providers::wire::RoundRecord& rec = providers::wire::lastRound();
+  const providers::wire::RoundBudget rb = providers::wire::roundBudget(providers::ProviderDeps(), "mistral",
+                                                                       "mistral-large-4-0", false);
+  TEST_ASSERT_TRUE(rec.load.fragmented);
+  TEST_ASSERT_TRUE(rec.load.imageBytes > 0);
+  TEST_ASSERT_TRUE(providers::wire::roundFitTokens(rb, rec.roundMs, rec.load) >= providers::wire::minFinalTokens(rb));
+}
+
+// The other half: an album no history cut can fit (2 MB of photos on a fragmented heap
+// outlast the 60 s window by themselves) goes as transcriptions, said so in the log, once
+// the older history is at its floor.
+static void test_album_that_cannot_fit_goes_as_transcriptions() {
+  auto table = [](const std::string& host, const std::string& model, bool routed) {
+    nimbus::orch::RequestBudget b = nimbus::orch::requestBudgetFor(host, model, routed);
+    b.wireBodyBytes = 360000;
+    b.rNomX100 = 360;
+    return b;
+  };
+  BudgetScope scope(+table);
+  Album album(10, 200000, 1600, 1200);
+  LogCapture::install();
+  const AlbumRun r = runAlbum(album, 30000, 0, 8000);
+  TEST_ASSERT_TRUE_MESSAGE(r.ok, r.err.c_str());
+  TEST_ASSERT_TRUE(r.historyGives > 0);   // history first, even here
+  TEST_ASSERT_EQUAL_INT(1, (int)r.seen.size());
+  TEST_ASSERT_EQUAL_INT(0, (int)r.spliced[0].size());   // no photo bytes on the wire
+  TEST_ASSERT_EQUAL_INT(0, (int)imageParts(r.seen[0].body));
+  TEST_ASSERT_TRUE(r.seen[0].body.find("machine transcription") != std::string::npos);
+  TEST_ASSERT_TRUE(LogCapture::contains("transcribed: did not fit the mistral time window"));
+}
+
+// DoD: photo rounds never exceed the fit on any 50 or 60 s host. The class: albums of 1 to
+// 10 photos and several sizes, healthy and fragmented, on every photo-capable head whose
+// window is 60 s (Mistral direct and routed; Z.ai's GLM is text-only and never shows one):
+// every request that left carried a fit of at least the head's minimum final.
+static void test_photo_rounds_never_exceed_the_fit_on_short_windows() {
+  auto table = [](const std::string& host, const std::string& model, bool routed) {
+    nimbus::orch::RequestBudget b = nimbus::orch::requestBudgetFor(host, model, routed);
+    b.wireBodyBytes = 360000;
+    b.rNomX100 = 360;
+    return b;
+  };
+  BudgetScope scope(+table);
+  int native = 0, transcribed = 0;
+  for (const char* model : {"mistral-large-4-0", "mistral-medium-latest"})
+    for (bool routed : {false, true})
+      for (bool fragmented : {false, true})
+        for (size_t n : {1u, 3u, 10u})
+          for (size_t len : {20000u, 120000u, 200000u}) {
+            Album album(n, len, 1280, 960);
+            FakeProviderDeps d;
+            d.http.script.push_back({"", "", 200, finalResponse("mistral")});
+            providers::ProviderDeps pd = d.contract();
+            const std::string m = model;
+            pd.orchModel = [m](const char*) { return m; };
+            if (fragmented) pd.dmaLargestBlock = [] { return (uint32_t)4000; };
+            if (routed) {
+              pd.routerBase = [] { return std::string("https://router.example"); };
+              pd.routerKey = [] { return std::string("cumulo_sk_test"); };
+            }
+            FakeProviderDeps::ToolRig rig;
+            d.fillTools(rig);
+            const nimbus::orch::ActiveTurnImages active(&album.set);
+            std::string conv, out, err;
+            const bool ok = providers::orchTurnMistral(pd, conv, "SYS " + std::string(30000, 's'), album.text, out,
+                                                       err, &rig.ht, nullptr);
+            char msg[160];
+            std::snprintf(msg, sizeof msg, "%s routed=%d frag=%d n=%zu len=%zu: %s", model, (int)routed,
+                          (int)fragmented, n, len, err.c_str());
+            TEST_ASSERT_TRUE_MESSAGE(ok, msg);
+            TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)d.http.seen.size(), msg);
+            const providers::wire::RoundRecord& rec = providers::wire::lastRound();
+            const providers::wire::RoundBudget rb =
+                providers::wire::roundBudget(providers::ProviderDeps(), "mistral", m, routed);
+            TEST_ASSERT_TRUE_MESSAGE(rec.roundMs <= 65000, msg);
+            if (rec.load.imageBytes > 0) {
+              ++native;
+              TEST_ASSERT_TRUE_MESSAGE(
+                  providers::wire::roundFitTokens(rb, rec.roundMs, rec.load) >= providers::wire::minFinalTokens(rb), msg);
+            } else {
+              ++transcribed;
+            }
+          }
+  TEST_ASSERT_TRUE(native > 0);        // the matrix really sends photos
+  TEST_ASSERT_TRUE(transcribed > 0);   // and really crosses the fit
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_refusal_wording_round_trips);
@@ -567,5 +1021,12 @@ int main(int, char**) {
   RUN_TEST(test_big_write_arguments_still_answer);
   RUN_TEST(test_stub_arguments_keeps_pairs);
   RUN_TEST(test_big_write_on_every_loop_wire);
+  RUN_TEST(test_every_wire_accepts_its_own_budget_and_refuses_one_more);
+  RUN_TEST(test_the_wire_reads_the_budget_not_the_constant);
+  RUN_TEST(test_large4_to_medium_refuses_the_oversize_round_locally);
+  RUN_TEST(test_photo_round_text_budget_shrinks_by_the_estimate);
+  RUN_TEST(test_album_on_large4_fragmented_goes_natively);
+  RUN_TEST(test_album_that_cannot_fit_goes_as_transcriptions);
+  RUN_TEST(test_photo_rounds_never_exceed_the_fit_on_short_windows);
   return UNITY_END();
 }

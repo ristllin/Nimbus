@@ -13,6 +13,7 @@
 #include "nimbus/harness/websearch.h"   // websearch::Result - the provider-hosted search
 #include "nimbus/orch/head_loop.h"      // StepErr - the typed step error
 #include "nimbus/orch/provider_park.h"  // the one per-provider park (the host park's store)
+#include "nimbus/orch/request_budget.h"  // RequestBudget - each request's own budget (lane W)
 #include "nimbus/orch/token_usage.h"
 #include "nimbus/orch/turn_spend.h"     // TurnSpend - per-host spend of a fabric turn
 #include "nimbus/orch/wire_limits.h"    // kJsonStrGuard, foldDigestCap - the string ceilings
@@ -26,9 +27,9 @@
 // with FakeHttpTransport (test/test_harness_wire_*).
 //
 // The DEVICE keeps only: the TLS transport (src/agent/transport_tls.cpp -
-// WiFiClientSecure + tls_arbiter + the one-buffer-single-write rule) and thin
-// String<->std::string wrappers in src/agent/adapters/*.cpp (public surfaces
-// unchanged).
+// WiFiClientSecure + tls_arbiter, the body written as 4,096 B slices of the one
+// buffer, paced while the DMA pool is short) and thin String<->std::string wrappers
+// in src/agent/adapters/*.cpp (public surfaces unchanged).
 //
 // Every AGENTS.md wire lesson moved verbatim - the comments ride with the code:
 // Anthropic ADVISORY schema + echo-assistant-only-with-tool_use, OpenAI strict
@@ -37,30 +38,50 @@
 // custom keyless-on-http. Bodies are built as ONE contiguous std::string and
 // handed to the transport whole (on the device, malloc >=128 B spills to PSRAM
 // via heap_caps_malloc_extmem_enable(128) - see main.cpp - so large bodies
-// never sit on internal SRAM; the transport then does a single client.write).
+// never sit on internal SRAM). The transport writes that buffer as 4,096 B slices
+// (the record size the TLS client cuts a big write into anyway), with the photos
+// base64-encoded into each slice at send time (http.h BodySplice).
 namespace agent {
 namespace providers {
 
-// R3 (22 Oct prompt-size item): the whole request body stays under this stated
-// budget. A one-word owner turn on a bench unit with weeks of history sent a
-// 56,504 B body (v4.5.15 soak); the composed parts are each capped now (the
-// system block by its budget, the window by recentConvBytes, recall and
-// scratchpad by the same budget), and the measured worst HEALTHY case - the
-// full 42-tool manifest on the wire, a device-scale system budget, a full
-// recent window, a full recall - assembles at 62.8-64.9 KB across the loop
-// wires, dominated by the tools array (~32 KB, the API contract); a LONG
-// tool loop adds its replay budget on top (16 KB of tool results, CUM-642),
-// for a measured worst of about 80 KB mid-loop. The 85 KB budget sits above
-// that case (test_prompt_layout asserts it, per wire and mid-loop) and
-// a body over it is REFUSED before the send (fail closed, named, the way
-// serializeChecked refuses an over-long string): a component that escapes
-// its cap costs one honest turn, not a TLS stall (lane O3's memory pressure).
-// The refusal is recoverable: nothing was sent, so the turn gives up what it can in a
-// defined order (older tool rounds, then history and the rest, turn_fit.h) and runs the
-// round again (orch_head_loop.cpp).
-// Photos splice in AFTER the check: they are their own bounded channel.
+// The body budget every head had in v5.1.1, and the floor no head's own budget goes
+// below (R3, 22 Oct: the measured worst healthy case assembled at 62.8-64.9 KB, about
+// 80 KB mid-loop). Each request now carries its OWN budget: the one the host and model
+// that send it have (wireBudgetFor below, nimbus/orch/request_budget.h), so a failover
+// to a host with a smaller budget refuses the oversize round locally, before anything
+// is sent. A body over its budget is REFUSED before the send (fail closed, named, the
+// way serializeChecked refuses an over-long string). The refusal is recoverable:
+// nothing was sent, so the turn gives up what it can in a defined order (older tool
+// rounds, then history and the rest, turn_fit.h) and runs the round again
+// (orch_head_loop.cpp). Photos splice in after the check; their share of the window
+// comes off the text budget (photoTextBudget, image_parts.h) and their bytes count in
+// the round's time fit (RoundLoad, output_caps.h).
 inline constexpr size_t kWireBodyMax = 85000;
 static_assert(kWireBodyMax % 1000 == 0, "bodyBudgetError states the budget in whole KB");
+
+// The Cumulo router's socket ceiling for one round (lane W, v5.1.2): the egress gives up
+// at 95 s, so the device gives up first and fails over instead of waiting for a 504. A
+// routed round's ceiling is min(its host's ceiling, this), and every routed request
+// carries x-cumulo-deadline-ms = its socket deadline less kRoutedDeadlineSlackMs, so the
+// router starts no retry or fallback it cannot finish in time.
+inline constexpr uint32_t kRoutedRoundCeilingMs = 90000;
+inline constexpr uint32_t kRoutedDeadlineSlackMs = 5000;
+inline constexpr const char* kRoutedDeadlineHeader = "x-cumulo-deadline-ms";
+
+// The budget of one request: the host and model that SEND it (`routed`: through the
+// Cumulo router, upstream named as the host). requestBudgetFor's, unless a test build
+// pins it (below). Every wire reads it per round, never a turn-global value.
+nimbus::orch::RequestBudget wireBudgetFor(const std::string& host, const std::string& model, bool routed);
+
+// Test and host builds only (NIMBUS_TEST / NIMBUS_NATIVE): `bytes` != 0 pins every
+// wire budget's body bytes (the console's BUDGET <bytes|0>, the HIL legs' calibration,
+// test_turn_never_dies' 85,000 B rig); `fn` != nullptr replaces requestBudgetFor for
+// the wires (a host suite's per-model table). Both return true when they took effect.
+using WireBudgetFn = nimbus::orch::RequestBudget (*)(const std::string& host, const std::string& model,
+                                                     bool routed);
+bool setTestBudgetOverride(uint32_t bytes);
+uint32_t testBudgetOverride();
+bool setTestBudgetSource(WireBudgetFn fn);
 
 // The budget of a flat single shot's one prompt string (the custom wire, a loop-off
 // head): the provider string guard less 4 KB for the turn's input and the envelope, so
@@ -93,12 +114,23 @@ class ScopedModelOverride {
 // The model the live pin names for `host`, "" when none does.
 std::string modelOverrideFor(const char* host);
 
-// The last step of a body build, after serializeChecked: hold the assembled
-// body under kWireBodyMax. False + err (the provider refuses the send) when
-// the turn outgrew the budget; err is nimbus::orch::bodyBudgetError's wording.
-inline bool bodyWithinBudget(const std::string& body, std::string& err) {
-  if (body.size() <= kWireBodyMax) return true;
-  err = nimbus::orch::bodyBudgetError(kWireBodyMax, body.size());
+// The last step of a body build, after serializeChecked: hold the assembled body
+// under the request's own `budget` (wireBudgetFor(...).wireBodyBytes, less a photo
+// round's share). False + err (the provider refuses the send) when the turn outgrew
+// it; err is nimbus::orch::bodyBudgetError's wording, which the refit reads back.
+inline bool bodyWithinBudget(const std::string& body, size_t budget, std::string& err) {
+  if (body.size() <= budget) return true;
+  err = nimbus::orch::bodyBudgetError(budget, body.size());
+  return false;
+}
+
+// A flat single shot's one prompt string, and a loop's seeded user message: over
+// flatPromptBudget() the request is refused with the same size wording (never the
+// string ceiling's "request field over 60 KB", which no refit reads), so the turn's
+// give-up order runs and the request is built again.
+inline bool fieldWithinFlatBudget(const std::string& field, std::string& err) {
+  if (field.size() <= flatPromptBudget()) return true;
+  err = nimbus::orch::bodyBudgetError(flatPromptBudget(), field.size());
   return false;
 }
 
@@ -155,6 +187,10 @@ struct ProviderDeps {
   // by applyZaiHeadPolicy. A LAN model keeps the single shot: a small model can wedge
   // itself in a forced tool loop.
   bool customToolLoop = false;
+  // Whose request budget the custom wire sends under (wireBudgetFor's host): "zai" once
+  // applyZaiHeadPolicy pointed these deps at Z.ai (direct or the router's zai upstream);
+  // null = "custom" (a LAN or proxy endpoint: the floor, on the flat wire).
+  const char* customBudgetHost = nullptr;
   // Points a copy of these deps at the Z.ai head, so the fabric can run a round there.
   // Unset = no Z.ai step on this surface.
   std::function<void(ProviderDeps&)> zaiHead;
@@ -196,6 +232,11 @@ struct ProviderDeps {
   // Optional: largest contiguous free INTERNAL block (fragmentation trace for the
   // per-round headloop log - free-vs-largest divergence IS fragmentation).
   std::function<uint32_t()> largestBlock;
+  // Optional: largest free block of the DMA-capable pool, the one the transport paces
+  // its body slices on (http.h kDmaChunkFloor). Sampled at round start: under that
+  // floor the round is FRAGMENTED and its time fit counts the pacing (RoundLoad).
+  // Null (host tests, the hosted daemon) = never fragmented.
+  std::function<uint32_t()> dmaLargestBlock;
   // Optional: block the calling task for ms (device: vTaskDelay - yields, no new
   // task). Used to let the internal heap recover before the one same-host resend
   // of a request the device could not finish sending (CUM-477). Null = no wait:

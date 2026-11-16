@@ -521,7 +521,7 @@ static void test_cum544_router_zai_head_gets_the_same_policy() {
                            headerOf(d.http.seen[0], "Authorization").c_str());
   TEST_ASSERT_EQUAL_UINT32(providers::kZaiHeadTimeoutMs, d.http.seen[0].timeoutMs);
 
-  FakeProviderDeps o;   // a non-zai upstream on the same path: no effort, default budget
+  FakeProviderDeps o;   // a non-zai upstream on the same path: no effort, the router's ceiling
   o.http.script.push_back({"", "/router/groq/chat/completions", 200, zaiOkBody()});
   auto opd = o.contract();
   opd.routerBase = pd.routerBase;
@@ -530,7 +530,9 @@ static void test_cum544_router_zai_head_gets_the_same_policy() {
   TEST_ASSERT_TRUE(providers::orchTurnCustom(opd, conv, "S", "U", out, err, nullptr, nullptr));
   TEST_ASSERT_FALSE(bodyHas(o, 0, "reasoning_effort"));
   TEST_ASSERT_TRUE(bodyHas(o, 0, "json_object"));
-  TEST_ASSERT_EQUAL_UINT32(120000u, o.http.seen[0].timeoutMs);
+  // Through the router a round gives up at 90 s (the egress gives up at 95 s), not the
+  // direct head's 120 s.
+  TEST_ASSERT_EQUAL_UINT32(providers::kRoutedRoundCeilingMs, o.http.seen[0].timeoutMs);
 }
 
 // prism (peer review): a model that refuses the effort field (a 400 naming it)

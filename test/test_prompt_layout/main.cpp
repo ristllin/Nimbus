@@ -632,9 +632,9 @@ static void test_wire_body_size_guard() {
   }
   // The counter: the guard itself refuses an oversized body, by name.
   std::string body(providers::kWireBodyMax + 1, 'x'), err;
-  TEST_ASSERT_FALSE(providers::bodyWithinBudget(body, err));
+  TEST_ASSERT_FALSE(providers::bodyWithinBudget(body, providers::kWireBodyMax, err));
   TEST_ASSERT_TRUE(err.find("request body over") == 0);
-  TEST_ASSERT_TRUE(providers::bodyWithinBudget(body.substr(0, providers::kWireBodyMax), err));
+  TEST_ASSERT_TRUE(providers::bodyWithinBudget(body.substr(0, providers::kWireBodyMax), providers::kWireBodyMax, err));
 }
 
 // CUM-642, the measurement: a LONG tool loop (12 rounds of 1.5 KB results, the

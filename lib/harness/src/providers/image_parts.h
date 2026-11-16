@@ -105,9 +105,30 @@ bool refusedImages(int httpStatus, const std::string& errText);
 // should re-send. Another host a failover reaches still gets the pixels.
 bool rejectAndRetry(nimbus::orch::TurnImages* imgs, const char* who, int httpStatus, const std::string& host = "");
 // A request that overflowed the provider's window: `host` reads the turn's photos as their
-// transcriptions from here on. Returns about what that frees (a rough figure per image,
-// since a window counts tokens and not bytes), 0 when no photo was being shown.
+// transcriptions from here on. Returns about what that frees: the photos' window cost
+// (photoTokens, by the host's dialect) at the budget's 4 bytes per token, 0 when no photo
+// was being shown.
 size_t readAsText(nimbus::orch::TurnImages* imgs, const std::string& host);
+
+// ---- what a photo costs in the window (v5.1.2) -----------------------------------
+// The window tokens one photo takes on a host, from its pixel size (nimbus/orch/
+// image_dims.h; each provider counts an image by its pixels, not its bytes):
+//   Anthropic: the long edge scaled to 1,568 px, then width x height / 750, at most 1,600;
+//   OpenAI (detail high): fit in 2,048 px, the short side scaled to 768, 85 + 170 per
+//     512 px tile;
+//   Mistral: the long edge scaled to 1,540 px, one token per 16 px patch plus one per row;
+//   a size that cannot be read, or any other host: one token per 3 bytes.
+uint32_t photoTokens(const nimbus::orch::TurnImage& img, Dialect d);
+// The photos a request shows: the seeded ones when `photos`, the looked ones when `looked`.
+uint32_t photoTokens(const nimbus::orch::TurnImages* imgs, bool photos, bool looked, Dialect d);
+// The text budget of a photo round: the request budget less the photos' tokens at its
+// nominal bytes per token, in whole KB (the refusal states whole KB), and never under the
+// budget every head had in v5.1.1 (kWireBodyMax, or the budget itself when smaller).
+size_t photoTextBudget(const nimbus::orch::RequestBudget& b, uint32_t tokens);
+// Log the decision a photo-fit refusal ends in: the photos are read as text on `host`
+// for the rest of the turn ("transcribed: did not fit the <host> time window"). Returns
+// what readAsText returns.
+size_t transcribeForTime(nimbus::orch::TurnImages* imgs, const std::string& host);
 
 // The turn input for a request path that cannot show photos (a single-shot head):
 // the photos of the turn in flight read as their machine transcriptions.

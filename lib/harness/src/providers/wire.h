@@ -25,6 +25,7 @@
 #include "nimbus/orch/wire_limits.h"   // kJsonStrGuard - the provider-bound string ceiling
 #include "nimbus/json_strict.h"        // serializeStrictJson: no raw control byte leaves
 #include "nimbus/utf8.h"               // utf8Valid / utf8Repair / boundary-safe cuts
+#include "wire_budget.h"               // each request's own budget, load and cap (lane W)
 
 // wire.h - INTERNAL helpers shared by the four portable provider files. Not part
 // of the public harness surface (lives under src/, not include/).
@@ -423,6 +424,11 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   req.tls = tls;
   req.path = path;
   req.headers = std::move(headers);
+  // A routed request tells the router when the device gives up on it (lane W): the router
+  // starts no retry or fallback it cannot finish before then, and aborts its upstream call
+  // at that time. Old routers ignore the header.
+  if (paidRequest && path.rfind("/router/", 0) == 0 && timeoutMs > kRoutedDeadlineSlackMs)
+    req.headers.push_back({kRoutedDeadlineHeader, std::to_string(timeoutMs - kRoutedDeadlineSlackMs)});
   req.body = std::move(body);
   if (splices) req.splices = *splices;   // R1: photos written into the body at send time
   req.timeoutMs = timeoutMs;

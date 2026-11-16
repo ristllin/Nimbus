@@ -325,6 +325,37 @@ void clearHostParks() { orch::providerPark().clear(); }
 const FabricSwitch& lastFabricSwitch() { return g_lastSwitch; }
 void setTestFabricSwitch(const FabricSwitch& sw) { g_lastSwitch = sw; }
 
+// ---- each request's own budget (lane W) ------------------------------------------
+#if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
+namespace {
+uint32_t g_testBudgetBytes = 0;          // setTestBudgetOverride: every wire budget's body bytes
+WireBudgetFn g_testBudgetSource = nullptr;   // setTestBudgetSource: the host suites' table
+}  // namespace
+bool setTestBudgetOverride(uint32_t bytes) {
+  g_testBudgetBytes = bytes;
+  return true;
+}
+uint32_t testBudgetOverride() { return g_testBudgetBytes; }
+bool setTestBudgetSource(WireBudgetFn fn) {
+  g_testBudgetSource = fn;
+  return true;
+}
+#endif
+
+orch::RequestBudget wireBudgetFor(const std::string& host, const std::string& model, bool routed) {
+#if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
+  orch::RequestBudget b = g_testBudgetSource ? g_testBudgetSource(host, model, routed)
+                                             : orch::requestBudgetFor(host, model, routed);
+  if (g_testBudgetBytes) {
+    b.wireBodyBytes = g_testBudgetBytes;
+    b.targetTokens = (uint32_t)((uint64_t)g_testBudgetBytes * 100 / (b.rNomX100 ? b.rNomX100 : 400));
+  }
+  return b;
+#else
+  return orch::requestBudgetFor(host, model, routed);
+#endif
+}
+
 // The bench seams exist only in test and host builds: the production image has
 // neither the setter nor the check, so nothing can script a provider answer there.
 #if defined(NIMBUS_TEST) || defined(NIMBUS_NATIVE)
@@ -430,6 +461,21 @@ class RoundRecovery {
     hlog::logf("fabric: %s refused the request for its size - gave up %u of %u B, one retry", host.c_str(),
                (unsigned)freed, (unsigned)want);
     return freed > 0;
+  }
+
+  // A photo round whose fit cannot carry the host's minimum final answer (wire_budget.h
+  // photosOverFit): nothing was sent. Photos come before older history: the older
+  // history goes first (the give-up order's own rung, with its LEFT OUT note), and only
+  // when none is left are the photos read as text on this host for the rest of the turn
+  // ("transcribed: did not fit the <host> time window"). True when the round runs again.
+  __attribute__((noinline)) bool photoFit(const std::string& host, const orch::HeadStep& sr) {
+    size_t over = 0;
+    if (sr.ok || !wire::parsePhotoFitError(sr.error, over)) return false;
+    if (fitPrompt(over, orch::FitScope::OlderHistory) > 0) {
+      hlog::logf("fabric: %s photo round over its time fit - gave up older history, running it again", host.c_str());
+      return true;
+    }
+    return imageparts::transcribeForTime(tr_.images(), host) > 0;
   }
 
   // The next attempt at a cut round is told what happened and answers in less room.
@@ -542,6 +588,7 @@ bool runHostLoop(const HostLoop& loop, const std::string& instructions, const st
         rec.served();
         return sr;
       }
+      if (rec.photoFit(loop.host, sr)) continue;   // older history, then the photos as text
       // Too big to send: the controller refits and runs it again (head_loop.h).
       size_t budget = 0, size = 0;
       if (orch::parseBodyBudgetError(sr.error, budget, size)) return sr;
@@ -731,6 +778,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
         rec.served();
         return sr;
       }
+      if (rec.photoFit(hostList[hostIdx], sr)) continue;   // older history, then the photos as text
       // A round too big to SEND never left the device: the controller folds older
       // tool rounds and runs it again (head_loop.h refitToBudget). It is not a host
       // failure and not a cause in the engine's chain (the owner hears the chain's
