@@ -197,6 +197,50 @@ void testAutomaticCycleMatchesTheDevice(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// A Cumulo head on a routed forced reasoner ("mistral/mistral-large-4-0"): the fold asks
+// the router for Mistral Small, on the wire (lane W's live legs: Large 4 folding on itself
+// is cut at its fit), and the head's own pick is untouched.
+void testRoutedForcedReasonerFoldsOnSmall(ndtest::Ctx& c) {
+  std::printf("  -- (c) a Cumulo head on routed Large 4 folds on mistral/mistral-small-latest --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", "cumulo_sk_test_FOLDVN", 1);   // a test value: the transport is scripted
+  FakeHttpTransport tx;
+  Config cfg;
+  NimbusdRig::Options o = opts("fold-vn-c");
+  o.models["cumulo"] = "mistral/mistral-large-4-0";
+  NimbusdRig rig(cfg, o, &tx);
+  const std::vector<agent::FoldRung> rungs = rig.engine().foldRungs();
+  bool onSmall = false;
+  for (const agent::FoldRung& r : rungs) {
+    c.ok(r.model.find("large-4") == std::string::npos, "no rung on Large 4 (" + r.host + "/" + r.model + ")");
+    if (r.host == "cumulo" && r.model == "mistral/mistral-small-latest") onSmall = true;
+  }
+  c.ok(onSmall, "the Cumulo rung is mistral/mistral-small-latest");
+  const std::string chat = "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"";
+  const std::string usage = "\"}}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}";
+  const auto noBusy = [](bool) {};
+  std::string folded;
+  for (int i = 0; i < 40 && folded.empty(); i++) {
+    Exchange turn;
+    turn.body = chat + esc("{\"reply\":\"noted\",\"memory\":\"\"}") + usage;
+    tx.script.push_back(turn);
+    rig.say("owner", padded(i));
+    rig.noteFoldPumpEnd();
+    const size_t before = tx.seen.size();
+    Exchange fold;
+    fold.body = chat + esc(kSummary) + usage;
+    tx.script.push_back(fold);
+    rig.foldTick(noBusy);
+    if (tx.seen.size() > before) folded = tx.seen.back().body;
+    else tx.script.pop_back();
+  }
+  c.ok(!folded.empty(), "a fold request went out");
+  c.ok(has(folded, "\"model\":\"mistral-small-latest\""), "the fold asked the router for Mistral Small");
+  c.ok(!has(folded, "large-4"), "and never for Large 4");
+  c.ok(rig.cumuloModel() == "mistral/mistral-large-4-0", "the head's own pick is unchanged");
+  clearEnv();
+}
+
 struct Web {
   explicit Web(NimbusdRig& r) : rig(r), eng(&r), api(&r, &eng, &replies) { eng.start(); }
   ~Web() { eng.stop(); }
@@ -270,6 +314,7 @@ int main() {
   std::printf("=== the hosted fold driver is the device's (offline) ===\n");
   testAutomaticCycleMatchesTheDevice(c);
   testSummarizeNowRoutes(c);
+  testRoutedForcedReasonerFoldsOnSmall(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf(c.failures == 0 ? "PASSED\n" : "FAILED\n");
   return c.failures == 0 ? 0 : 1;

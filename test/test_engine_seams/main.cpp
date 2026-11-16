@@ -282,9 +282,15 @@ static void test_model_pin_is_its_hosts_and_ends_with_its_scope() {
     TEST_ASSERT_EQUAL_STRING("", providers::modelOverrideFor("mistral").c_str());
   }
   TEST_ASSERT_EQUAL(0, (int)LogCapture::lines().size());
-  // Only a direct host's model can be pinned: Z.ai, the router and the custom endpoint
-  // read theirs elsewhere, so a pin there would bill one model and send another.
-  for (const char* h : {"zai", "cumulo", "custom"}) {
+  // Only a direct host's model, or the Cumulo router head's (its pick reads the pin), can
+  // be pinned: Z.ai and the custom endpoint read theirs elsewhere, so a pin there would
+  // bill one model and send another.
+  {
+    const providers::ScopedModelOverride pin("cumulo", "mistral/mistral-small-latest");
+    TEST_ASSERT_TRUE(pin.active());
+    TEST_ASSERT_EQUAL_STRING("mistral/mistral-small-latest", providers::modelOverrideFor("cumulo").c_str());
+  }
+  for (const char* h : {"zai", "custom"}) {
     const providers::ScopedModelOverride pin(h, "some-model");
     TEST_ASSERT_FALSE_MESSAGE(pin.active(), h);
     TEST_ASSERT_EQUAL_STRING_MESSAGE("", providers::modelOverrideFor(h).c_str(), h);

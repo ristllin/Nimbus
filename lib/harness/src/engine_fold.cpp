@@ -96,11 +96,16 @@ const char* foldFailKindName(FoldFailKind k) {
 }
 
 std::string foldModelForHead(const std::string& host, const std::string& model) {
-  if (host != "mistral" || model.empty()) return std::string();
+  // Mistral directly, or a Mistral model on Cumulo's router ("mistral/<id>", the same
+  // upstream and the same thinking).
+  const bool routed = host == "cumulo" && model.rfind("mistral/", 0) == 0;
+  if ((host != "mistral" && !routed) || model.empty()) return std::string();
   // A forced reasoner is a model that refuses effort "none" (mistralHeadEffort answers
   // "low": Large 4, the hosted GLM). Small folds at "none", well inside the 60 s gateway
   // at a 53.9 KB step.
-  return std::string(providers::mistralHeadEffort(model)) == "low" ? std::string("mistral-small-latest") : std::string();
+  if (std::string(providers::mistralHeadEffort(model)) != "low") return std::string();
+  const std::string small = "mistral-small-latest";
+  return routed ? "mistral/" + small : small;
 }
 
 int foldSectionsNamed(const std::string& summary) {

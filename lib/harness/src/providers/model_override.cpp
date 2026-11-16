@@ -15,12 +15,13 @@ namespace providers {
 namespace {
 thread_local const ScopedModelOverride* t_pin = nullptr;
 
-// The hosts whose requests read their model through ProviderDeps::orchModel, the
-// closure that consults the pin. Z.ai, the Cumulo router and the custom endpoint read
-// theirs elsewhere (customModel, the router's pick), so a pin there could not take
-// effect while its spend was filed under it.
+// The hosts whose requests read the pin: the direct hosts through ProviderDeps::orchModel,
+// and the Cumulo router head through its pick (the device's cumuloPick, the VN's
+// cumuloModel), whose attempt then sends and bills that one model. Z.ai and the custom
+// endpoint read theirs elsewhere (customModel), so a pin there could not take effect
+// while its spend was filed under it.
 bool pinnable(const std::string& host) {
-  return host == "anthropic" || host == "openai" || host == "mistral";
+  return host == "anthropic" || host == "openai" || host == "mistral" || host == "cumulo";
 }
 }  // namespace
 

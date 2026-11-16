@@ -92,7 +92,8 @@ inline constexpr size_t flatPromptBudget() { return nimbus::orch::kJsonStrGuard 
 // on a model other than the owner's pick (the Sub step-down) without touching the
 // stored pick. The device's and the VN's orchModel closures read modelOverrideFor
 // first. Only a direct host (anthropic, openai, mistral: the hosts whose requests read
-// orchModel) can be pinned; another host logs and pins nothing. One pin at a time: a pin
+// orchModel) or the Cumulo router head (its pick reads the pin) can be pinned; another
+// host logs and pins nothing. One pin at a time: a pin
 // made while another is held logs and pins nothing, so the outer value stays. An empty
 // host or model pins nothing. The pin is the pinning thread's own (thread-local, like
 // the connector grant's scope): a request on another task never sees it.

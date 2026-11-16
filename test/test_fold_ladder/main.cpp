@@ -342,39 +342,74 @@ static std::vector<std::string> recordedMistralModels() {
   for (JsonVariantConst m : d["data"].as<JsonArrayConst>()) ids.push_back(m["id"].as<std::string>());
   return ids;
 }
+
+// One Mistral head model on the direct host, with every Sub model, and as another keyed
+// provider: no Mistral rung runs a forced reasoner; a forced-reasoner head has one, Small.
+static void checkDirectHead(const std::string& head, int& forcedHeads) {
+  for (const char* sub : {"", "mistral-large-4-0", "mistral-medium-latest", "mistral-small-latest", "zai-glm-5-3"}) {
+    Rig r;
+    r.cfg.keyed = {"mistral", "openai"};
+    r.cfg.priority = "mistral,openai";
+    r.cfg.orchModels["mistral"] = head;
+    r.cfg.subModels["mistral"] = *sub ? std::string(sub) : head;
+    int mistralRungs = 0;
+    for (const FoldRung& g : r.eng->foldRungs()) {
+      if (g.host != "mistral") continue;
+      mistralRungs++;
+      TEST_ASSERT_FALSE_MESSAGE(forcedReasoner(g.model), (head + " folds on " + g.model).c_str());
+    }
+    if (!forcedReasoner(head)) continue;
+    forcedHeads++;
+    TEST_ASSERT_EQUAL_MESSAGE(1, mistralRungs, head.c_str());
+    TEST_ASSERT_EQUAL_STRING("mistral-small-latest", r.eng->foldRungs()[0].model.c_str());
+  }
+  // Mistral as another keyed provider, behind an Anthropic head.
+  Rig o;
+  o.cfg.keyed = {"anthropic", "mistral"};
+  o.cfg.priority = "anthropic,mistral";
+  o.cfg.orchModels["mistral"] = head;
+  for (const FoldRung& g : o.eng->foldRungs())
+    if (g.host == "mistral") TEST_ASSERT_FALSE_MESSAGE(forcedReasoner(g.model), (head + " as another host").c_str());
+}
+
+// The routed form on Cumulo's router ("mistral/<id>"): as the keyed head, as another keyed
+// provider, and as the router fallback with no provider key. One Cumulo rung, never a
+// forced reasoner; a forced reasoner steps down to mistral/mistral-small-latest.
+static void checkRoutedOnCumulo(const std::string& id, int& routedForced) {
+  const std::string routed = "mistral/" + id;
+  for (int shape = 0; shape < 3; shape++) {
+    Rig c;
+    c.cfg.orchModels["cumulo"] = routed;
+    if (shape == 0) { c.cfg.keyed = {"cumulo", "openai"}; c.cfg.priority = "cumulo,openai"; c.cfg.orchHost = "cumulo"; }
+    if (shape == 1) { c.cfg.keyed = {"openai", "cumulo"}; c.cfg.priority = "openai,cumulo"; }
+    if (shape == 2) { c.cfg.keyed.clear(); c.cfg.routerKeyed = true; c.cfg.routerHost = "cumulo"; c.cfg.orchHost = "cumulo"; }
+    int cumuloRungs = 0;
+    for (const FoldRung& g : c.eng->foldRungs()) {
+      if (g.host != "cumulo") continue;
+      cumuloRungs++;
+      TEST_ASSERT_FALSE_MESSAGE(forcedReasoner(g.model), ("cumulo " + routed + " folds on " + g.model).c_str());
+      if (!forcedReasoner(routed)) continue;
+      routedForced++;
+      TEST_ASSERT_EQUAL_STRING("mistral/mistral-small-latest", g.model.c_str());
+    }
+    TEST_ASSERT_EQUAL_MESSAGE(1, cumuloRungs, ("cumulo carries " + routed).c_str());
+  }
+}
+
+// Lane W's live legs (16 Nov): Large 4 folding on itself is cut at its fit. The class:
+// for every recorded Mistral model, as a head (direct, routed) or another provider, no
+// fold rung runs a forced reasoner.
 static void test_no_rung_runs_a_forced_reasoner() {
   const std::vector<std::string> ids = recordedMistralModels();
   TEST_ASSERT_TRUE(ids.size() > 20);
-  int forcedHeads = 0;
+  int forcedHeads = 0, routedForced = 0;
   for (const std::string& id : ids) {
-    for (const std::string& head : {id, "mistral/" + id}) {
-      for (const char* sub : {"", "mistral-large-4-0", "mistral-medium-latest", "mistral-small-latest", "zai-glm-5-3"}) {
-        Rig r;
-        r.cfg.keyed = {"mistral", "openai"};
-        r.cfg.priority = "mistral,openai";
-        r.cfg.orchModels["mistral"] = head;
-        r.cfg.subModels["mistral"] = *sub ? std::string(sub) : head;
-        int mistralRungs = 0;
-        for (const FoldRung& g : r.eng->foldRungs()) {
-          if (g.host != "mistral") continue;
-          mistralRungs++;
-          TEST_ASSERT_FALSE_MESSAGE(forcedReasoner(g.model), (head + " folds on " + g.model).c_str());
-        }
-        if (!forcedReasoner(head)) continue;
-        forcedHeads++;
-        TEST_ASSERT_EQUAL_MESSAGE(1, mistralRungs, head.c_str());
-        TEST_ASSERT_EQUAL_STRING("mistral-small-latest", r.eng->foldRungs()[0].model.c_str());
-      }
-      // Mistral as another keyed provider, behind an Anthropic head.
-      Rig o;
-      o.cfg.keyed = {"anthropic", "mistral"};
-      o.cfg.priority = "anthropic,mistral";
-      o.cfg.orchModels["mistral"] = head;
-      for (const FoldRung& g : o.eng->foldRungs())
-        if (g.host == "mistral") TEST_ASSERT_FALSE_MESSAGE(forcedReasoner(g.model), (head + " as another host").c_str());
-    }
+    checkDirectHead(id, forcedHeads);
+    checkDirectHead("mistral/" + id, forcedHeads);
+    checkRoutedOnCumulo(id, routedForced);
   }
   TEST_ASSERT_TRUE_MESSAGE(forcedHeads > 0, "the list holds a forced reasoner (Large 4)");
+  TEST_ASSERT_TRUE_MESSAGE(routedForced > 0, "the routed legs reached a forced reasoner on Cumulo");
 }
 
 // The quality gate: only digests of 8 KB or more are judged; the floor is min(800 B, 30%

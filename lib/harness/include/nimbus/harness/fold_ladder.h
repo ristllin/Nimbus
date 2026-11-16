@@ -76,7 +76,8 @@ struct FoldRungReport {
 // reasoner (it refuses effort "none", so a fold's output budget goes to thinking: Lumi,
 // 2 Nov, 4,194 tokens of thought for a 1 KB summary) folds on its host's non-reasoning
 // model. Mistral Large 4 -> mistral-small-latest at effort "none" (orchestrator ruling
-// of 16 Nov: Medium is deprecated upstream; the ladder covers Small's failure).
+// of 16 Nov: Medium is deprecated upstream; the ladder covers Small's failure); on
+// Cumulo's router, "mistral/<forced reasoner>" -> "mistral/mistral-small-latest".
 std::string foldModelForHead(const std::string& host, const std::string& model);
 
 // The quality gate, for digests of kFoldQualityDigestMin or more: a 2xx answer is thin

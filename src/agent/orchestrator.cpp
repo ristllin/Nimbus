@@ -1034,11 +1034,17 @@ static agent::ApplyDeps buildApplyDeps() {
 // router identically: base /router/<upstream>/v1 and the bare model the router
 // prices. A bare id (no '/') keeps the openai upstream. store::orchModel already
 // defaults an empty selector to CUMULO_MODEL; the belt-and-suspenders default
-// keeps it non-empty.
-static std::string cumuloPick() {
+// keeps it non-empty. A fold rung pinned on another router model (a routed forced
+// reasoner folds on Small) wins: the pin is the fold task's own, so a turn never sees
+// it. noinline (lane STACK): the lookups stay out of cumuloTurn's frame on tg_poll.
+__attribute__((noinline)) static std::string cumuloPick() {
+  const std::string pinned = providers::modelOverrideFor("cumulo");
+  if (!pinned.empty()) return pinned;
   String m = store::orchModel("cumulo");
   return std::string((m.length() ? m : String(CUMULO_MODEL)).c_str());
 }
+
+__attribute__((noinline)) static bool cumuloFoldPinned() { return !providers::modelOverrideFor("cumulo").empty(); }
 
 // CUM-539 on the device (bench CUM-530: a router id the upstream refused read as
 // "cumulo is unavailable" and the bad pick stayed): the cumulo head reads WHY the
@@ -1197,7 +1203,8 @@ static bool cumuloTurn(CumuloCall& c) {
     if (!cause.empty()) c.err = cause;
     return false;
   }
-  copyWholeOrClear(g_cumuloLastGood, r.used);
+  // A pinned fold rung leaves the head's last good model alone (the pick never moves).
+  if (!cumuloFoldPinned()) copyWholeOrClear(g_cumuloLastGood, r.used);
   if (g_engine && g_engine->turnInFlight()) rf::settleClamp(tap.servedCapped(), (uint32_t)millis(), c.out);
   if (!r.fellBack() || !g_engine || !g_engine->turnInFlight()) return true;
   rf::settleFallback(r, picked, std::string(CUMULO_MODEL), c.out, [] { return cumuloPick(); },

@@ -689,6 +689,9 @@ class NimbusdRig {
   // The model the cumulo head requests: an operator override (opt.models
   // ["cumulo"]) or the router default. Mirrors the device's orchModel("cumulo").
   std::string cumuloModel() const {
+    // A fold rung pinned on another router model (thread-local: the engine thread's fold only).
+    const std::string pinned = agent::providers::modelOverrideFor(kCumuloSlug);
+    if (!pinned.empty()) return pinned;
     std::lock_guard<std::mutex> lk(modelsMu_);
     auto it = opt_.models.find(kCumuloSlug);
     return (it != opt_.models.end() && !it->second.empty()) ? it->second
