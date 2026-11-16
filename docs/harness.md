@@ -122,9 +122,11 @@ its own counter, the legacy ladder each attempt, and the engine meters the whole
 table once at turn end (`BudgetConfig::recordSpend`; one NVS ledger write per turn
 on the device). `nimbus::orch::ledgerDelta` is the one place that knows what each
 provider's counts mean: Anthropic leaves cache reads and writes out of its input
-count, OpenAI includes them (so its input is split into uncached, cached and
-cache-written, each at the model's own rate, else 0.1x and 1.25x of the input
-rate), other providers are billed at the input rate. A failed turn keeps a bounded
+count, OpenAI, Mistral and Z.ai include them (so their input is split into uncached,
+cached and cache-written, each at the model's own rate, else 0.1x and 1.25x of the
+input rate), and Cumulo and a custom endpoint are billed at the input rate (Cumulo
+splits by its upstream once the router bills cached tokens at their own rate, behind
+`kRoutedBudgetLift`). A failed turn keeps a bounded
 failure chain (at most three hosts, each host's first error and its attempt count,
 160 bytes each): the owner notice names the first cause, and the turn-end row, the
 error timeline row, the dream row, the routine record (`lastErr`) and

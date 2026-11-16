@@ -209,10 +209,16 @@ std::string dailyWarnNotice(const std::string& prov, const DailyWarn& w);
 // SpendSlot (one provider's billed responses), never a bare TokenUsage, so a sum of
 // two providers' usage cannot reach it.
 //   anthropic: input_tokens EXCLUDES cache reads and writes -> (in, cacheR, cacheW);
-//   openai:    input_tokens INCLUDES cached and cache-write tokens ->
-//              (in - cached - written, cached, written), clamped so it never wraps;
+//   openai, mistral, zai: prompt/input tokens INCLUDE the cached (and, on OpenAI, the
+//              cache-write) tokens -> (in - cached - written, cached, written), clamped so
+//              it never wraps (mistral and zai since lane B of the history fix, v5.1.2);
+//   cumulo:    by its upstream's shape (the selector's prefix; a bare id is openai's) once
+//              the router meters cached tokens (kRoutedBudgetLift, request_budget.h); until
+//              then (in, 0, 0), what the router bills;
 //   any other: its cache counts are not split (billed at the input rate) -> (in, 0, 0).
 TokenDelta ledgerDelta(const SpendSlot& s);
+// The same with the cumulo gate given (tests; ledgerDelta(s) passes kRoutedBudgetLift).
+TokenDelta ledgerDelta(const SpendSlot& s, bool routedLift);
 // Providers whose input count includes their cache tokens and whose cache split the
 // usgLedger NVS blob does not carry (critique D2: the blob must not grow while it
 // lives in NVS). Their period split lives in RAM and in the LittleFS model rows and

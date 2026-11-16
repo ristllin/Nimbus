@@ -50,7 +50,7 @@ struct BuiltinPrice {
 // Prices are list prices as of kBuiltinPricesAsOf. Where a provider runs a time-
 // limited promotion, the row keeps the regular price (fail-closed money: an estimate
 // never reads cheaper than the bill once the promotion ends) and says so in `note`.
-inline constexpr const char* kGpt56PromoNote = "promo $4 / $20 until at least 21 Nov 2026";
+inline constexpr const char* kGpt56PromoNote = "promo $4 / $20 until at least 30 Nov 2026";
 
 inline constexpr BuiltinPrice kBuiltinPrices[] = {
     {"openai", "gpt-6-astra", 10000000, 50000000, 0},
@@ -74,7 +74,8 @@ inline constexpr BuiltinPrice kBuiltinPrices[] = {
     {"anthropic", "claude-fable-5-1", 10000000, 50000000, 0},
     {"anthropic", "claude-opus-5-5", 4000000, 20000000, 0},
     {"anthropic", "claude-opus-5", 5000000, 25000000, 0},
-    {"anthropic", "claude-sonnet-5-5", 2000000, 10000000, 0},
+    // Cache read $0.10 (half of Sonnet 5's $0.20; measured on the 15 Nov repeat-100k leg).
+    {"anthropic", "claude-sonnet-5-5", 2000000, 10000000, 0, 100000},
     {"anthropic", "claude-sonnet-5", 2000000, 10000000, 0},
     // Cache read $0.01, 5-minute write $0.125; a prompt over 100K tokens: $0.50 / $2.50.
     {"anthropic", "claude-haiku-5-5", 100000, 500000, 0, 10000, 125000, 100000},
@@ -88,7 +89,8 @@ inline constexpr BuiltinPrice kBuiltinPrices[] = {
     {"mistral", "mistral-embed", 100000, 0, 0},        // lane DEF: memory embeddings
     {"mistral", "mistral-moderation", 100000, 0, 0},   // lane DEF: the message classifier
     {"mistral", "*", 2000000, 6000000, 0},
-    {"zai", "glm-5.3", 1400000, 4400000, 0},
+    // Cached input $0.26 (the 15 Nov z100_repeat leg: $0.028 against $0.139 cold).
+    {"zai", "glm-5.3", 1400000, 4400000, 0, 260000},
     {"zai", "glm-5.2", 1400000, 4400000, 0},
     {"zai", "glm-5.3-flash", 150000, 500000, 0},
     {"zai", "*", 1400000, 4400000, 0},

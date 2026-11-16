@@ -143,7 +143,8 @@ static void test_property_every_response_filed_once_under_its_host() {
       if (std::strcmp(sp.slot[i].host, "mistral") == 0) TEST_ASSERT_EQUAL_UINT32(0, sp.slot[i].cacheW);
       // (e) the ledger delta never wraps and keeps every token of the slot.
       const TokenDelta d = ledgerDelta(sp.slot[i]);
-      if (std::strcmp(sp.slot[i].host, "openai") == 0) {
+      // OpenAI and (since v5.1.2) Mistral count their cached tokens inside the input.
+      if (std::strcmp(sp.slot[i].host, "openai") == 0 || std::strcmp(sp.slot[i].host, "mistral") == 0) {
         TEST_ASSERT_TRUE(d.in <= sp.slot[i].in);
         TEST_ASSERT_EQUAL_UINT64(sp.slot[i].in, d.in + d.cacheR + d.cacheW);
       } else if (std::strcmp(sp.slot[i].host, "anthropic") == 0) {

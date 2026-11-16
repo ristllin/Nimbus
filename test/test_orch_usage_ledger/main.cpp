@@ -12,6 +12,7 @@
 #include "nimbus/orch/loops.h"   // daysFromCivil / civilFromDays (L19-52 legs)
 #include "nimbus/orch/model_price_defaults.h"
 #include "nimbus/orch/provider_park.h"   // the daily warning latch (L19-2)
+#include "nimbus/orch/request_budget.h"  // kRoutedBudgetLift - the cumulo split's gate
 #include "nimbus/orch/turn_spend.h"
 #include "nimbus/orch/usage_ledger.h"
 #include "nimbus/orch/usage_models_json.h"
@@ -3128,6 +3129,126 @@ static void test_row21_turns_on_the_nvs_fallback_still_trip_the_cap() {
   TEST_ASSERT_EQUAL_UINT64(5000, L2.find("anthropic")->tokensIn);
 }
 
+// ---- lane B of the history fix: honest cache accounting ------------------------------------
+
+static SpendSlot slotFor(const char* host, const char* model, uint32_t in, uint32_t out, uint32_t cr, uint32_t cw) {
+  SpendSlot s = slotOf(host, in, out, cr, cw);
+  std::snprintf(s.model, sizeof(s.model), "%s", model);
+  return s;
+}
+
+// The class: every OpenAI-shaped slot (its input count INCLUDES the cached tokens: openai,
+// mistral, zai) files (in - cached - written, cached, written); Anthropic's reads and writes
+// stay outside its input; any other host (custom, an unknown one, and cumulo until the router
+// meters cached tokens) is billed whole at the input rate (fail-closed money).
+static void test_b_every_openai_shaped_slot_splits_its_cached_tokens() {
+  for (const char* host : {"openai", "mistral", "zai"}) {
+    const TokenDelta d = ledgerDelta(slotOf(host, 100000, 500, 90000, 0));
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(10000, d.in, host);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(90000, d.cacheR, host);
+    // A malformed usage object never wraps the remainder.
+    const TokenDelta bad = ledgerDelta(slotOf(host, 1000, 0, 5000, 0));
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(0, bad.in, host);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(1000, bad.cacheR, host);
+  }
+  const TokenDelta a = ledgerDelta(slotOf("anthropic", 1000, 100, 90000, 2000));
+  TEST_ASSERT_EQUAL_UINT64(1000, a.in);
+  TEST_ASSERT_EQUAL_UINT64(90000, a.cacheR);
+  TEST_ASSERT_EQUAL_UINT64(2000, a.cacheW);
+  for (const char* host : {"custom", "cumulo", "somehost"}) {
+    const TokenDelta d = ledgerDelta(slotFor(host, "openai/gpt-5.6", 100000, 500, 90000, 0));
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(100000, d.in, host);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(0, d.cacheR + d.cacheW, host);
+  }
+}
+
+// Mistral Large 4 at 100k with 99% read from the cache (the 15 Nov repeat): the ledger
+// prices the cached part at the cache rate (0.1x of the row's input; the price row itself
+// is unchanged, RULINGS-v3 item 9), not at the full input rate as v5.1.1 did.
+static void test_b_mistral_cached_reads_bill_at_the_cache_rate() {
+  UsageLedger L;
+  turn(L, "mistral", "mistral-large-4-0", ledgerDelta(slotOf("mistral", 10000000, 0, 9000000, 0)));
+  // 1M x $2 + 9M x $0.20 = $2.00 + $1.80
+  TEST_ASSERT_EQUAL_UINT64(380, L.estCents("mistral"));
+  UsageLedger Old;   // what v5.1.1 filed for the same responses
+  turn(Old, "mistral", "mistral-large-4-0", td(10000000, 0));
+  TEST_ASSERT_EQUAL_UINT64(2000, Old.estCents("mistral"));
+  // The budget-limit counter keeps the native count (cached tokens still count).
+  TEST_ASSERT_EQUAL_UINT64(10000000, L.find("mistral")->tokens);
+  TEST_ASSERT_EQUAL_UINT64(1000000, L.find("mistral")->tokensIn);
+}
+
+// GLM-5.3's own cache rate ($0.26 of $1.40) and Sonnet 5.5's ($0.10 of $2), from the price
+// rows; the gpt-5.6 promotion note runs to 30 Nov.
+static void test_b_price_rows() {
+  const EffRate glm = UsageLedger().effectiveRate("zai", "glm-5.3");
+  TEST_ASSERT_EQUAL_UINT64(260000, glm.cacheR);
+  const EffRate son = UsageLedger().effectiveRate("anthropic", "claude-sonnet-5-5");
+  TEST_ASSERT_EQUAL_UINT64(100000, son.cacheR);
+  UsageLedger L;
+  turn(L, "zai", "glm-5.3", ledgerDelta(slotOf("zai", 10000000, 0, 9000000, 0)));
+  // 1M x $1.40 + 9M x $0.26 = $1.40 + $2.34
+  TEST_ASSERT_EQUAL_UINT64(374, L.estCents("zai"));
+  for (const char* m : {"gpt-5.6", "gpt-5.6-sol"}) {
+    const nimbus::orch::BuiltinPrice* p = nimbus::orch::builtinModelPrice("openai", m);
+    TEST_ASSERT_NOT_NULL(p);
+    TEST_ASSERT_NOT_NULL(std::strstr(p->note, "30 Nov"));
+    TEST_ASSERT_EQUAL_UINT32(5000000, p->microIn);   // the regular price stays (fail-closed money)
+  }
+  // Mistral's row is unchanged until the owner confirms the console price.
+  const EffRate l4 = UsageLedger().effectiveRate("mistral", "mistral-large-4-0");
+  TEST_ASSERT_EQUAL_UINT64(2000000, l4.in);
+  TEST_ASSERT_EQUAL_UINT64(6000000, l4.out);
+}
+
+// The NVS blob keeps Mistral's and Z.ai's input in its native, cache-included form with the
+// cache fields 0, as v5.1.1 wrote them (a rollback reads the same blob), and a restart puts
+// the split back from the per-model rows.
+static void test_b_mistral_and_zai_cache_folded_in_nvs_and_reloaded() {
+  UsageLedger L;
+  turn(L, "mistral", "mistral-large-4-0", ledgerDelta(slotOf("mistral", 3000000, 100000, 2000000, 0)));
+  turn(L, "zai", "glm-5.3", ledgerDelta(slotOf("zai", 500000, 1000, 400000, 0)));
+  UsageLedger Old;   // what v5.1.1 recorded for the same responses
+  turn(Old, "mistral", "mistral-large-4-0", td(3000000, 100000));
+  turn(Old, "zai", "glm-5.3", td(500000, 1000));
+  const std::string nvs = L.serialize();
+  TEST_ASSERT_EQUAL_STRING(Old.serialize().c_str(), nvs.c_str());
+  UsageHistory h;
+  h.record("mistral", "mistral-large-4-0", 20650, td(1000000, 100000, 2000000, 0), 0);
+  h.record("zai", "glm-5.3", 20650, td(100000, 1000, 400000, 0), 0);
+  UsageLedger R = load(nvs, L.models().serializeSpend(), "", h);
+  TEST_ASSERT_EQUAL_UINT64(1000000, R.find("mistral")->tokensIn);
+  TEST_ASSERT_EQUAL_UINT64(2000000, R.find("mistral")->cacheRead);
+  TEST_ASSERT_EQUAL_UINT64(400000, R.find("zai")->cacheRead);
+  TEST_ASSERT_EQUAL_UINT64(L.estCents("mistral"), R.estCents("mistral"));
+  TEST_ASSERT_EQUAL_UINT64(L.estCents("zai"), R.estCents("zai"));
+  TEST_ASSERT_EQUAL_STRING(nvs.c_str(), R.serialize().c_str());
+}
+
+// Cumulo: the router bills cached input whole until CUM-R1 is live, so the device files it
+// whole too (RULINGS-v3: the split is gated on kRoutedBudgetLift). Once the lift is on, a
+// router slot splits by its upstream's shape: OpenAI-shaped for openai, mistral, zai and a
+// bare id (the default upstream), Anthropic-shaped for anthropic.
+static void test_b_cumulo_split_waits_for_the_lift() {
+  TEST_ASSERT_FALSE(nimbus::orch::kRoutedBudgetLift);
+  const SpendSlot oai = slotFor("cumulo", "openai/gpt-5.6", 100000, 500, 90000, 0);
+  TEST_ASSERT_EQUAL_UINT64(100000, ledgerDelta(oai).in);
+  TEST_ASSERT_FALSE(nimbus::orch::cacheFoldedInNvs("cumulo"));
+  for (const char* m : {"openai/gpt-5.6", "mistral/mistral-large-4-0", "zai/glm-5.3", "gpt-5.6"}) {
+    const TokenDelta d = ledgerDelta(slotFor("cumulo", m, 100000, 500, 90000, 0), true);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(10000, d.in, m);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(90000, d.cacheR, m);
+  }
+  const TokenDelta a = ledgerDelta(slotFor("cumulo", "anthropic/claude-sonnet-5-5", 1000, 100, 90000, 2000), true);
+  TEST_ASSERT_EQUAL_UINT64(1000, a.in);
+  TEST_ASSERT_EQUAL_UINT64(90000, a.cacheR);
+  TEST_ASSERT_EQUAL_UINT64(2000, a.cacheW);
+  // The same slot with the lift off: whole.
+  const TokenDelta off = ledgerDelta(slotFor("cumulo", "anthropic/claude-sonnet-5-5", 1000, 100, 90000, 2000), false);
+  TEST_ASSERT_EQUAL_UINT64(1000, off.in);   // v5.1.1's filing: the router bills no cache traffic yet
+  TEST_ASSERT_EQUAL_UINT64(0, off.cacheR + off.cacheW);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_period_key_default_reset_day_1);
@@ -3195,6 +3316,11 @@ int main() {
   RUN_TEST(test_r4_unknown_id_never_below_top_builtin_price);
   RUN_TEST(test_r4_openai_cache_fields_stay_zero_in_nvs_and_reload);
   RUN_TEST(test_r4_fresh_device_switched_turn);
+  RUN_TEST(test_b_every_openai_shaped_slot_splits_its_cached_tokens);
+  RUN_TEST(test_b_mistral_cached_reads_bill_at_the_cache_rate);
+  RUN_TEST(test_b_price_rows);
+  RUN_TEST(test_b_mistral_and_zai_cache_folded_in_nvs_and_reloaded);
+  RUN_TEST(test_b_cumulo_split_waits_for_the_lift);
   RUN_TEST(test_r4_resplit_fails_closed_without_rows);
   RUN_TEST(test_r4_no_new_tag_rows_while_in_nvs);
   RUN_TEST(test_ledger_byte_guard_keeps_serialize_under_the_cap);

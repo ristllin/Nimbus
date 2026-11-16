@@ -9,6 +9,7 @@
 #include "nimbus/orch/model_choices.h"   // cheapestChoice - the built-in ranking (CUM-708)
 #include "nimbus/orch/model_price_defaults.h"
 #include "nimbus/orch/provider_park.h"   // the daily warning latch (L19-2)
+#include "nimbus/orch/request_budget.h"  // kRoutedBudgetLift - the cumulo cache split waits for it
 
 namespace nimbus {
 namespace orch {
@@ -91,28 +92,67 @@ void UsageLedger::recordTokens(const std::string& name, uint64_t tokIn, uint64_t
   e->totalOut  += tokOut;
 }
 
-TokenDelta ledgerDelta(const SpendSlot& s) {
+namespace {
+
+// How a host's usage counts its cache traffic (usage_ledger.h ledgerDelta).
+enum class CacheShape : uint8_t { Excluded, Included, Unsplit };
+
+CacheShape upstreamShape(const char* up) {
+  if (std::strcmp(up, "anthropic") == 0) return CacheShape::Excluded;
+  for (const char* h : {"openai", "mistral", "zai"})
+    if (std::strcmp(up, h) == 0) return CacheShape::Included;
+  return CacheShape::Unsplit;
+}
+
+// A Cumulo slot's model is the router selector ("<upstream>/<model>"; a bare id runs on
+// the default upstream, openai).
+CacheShape shapeOf(const SpendSlot& s, bool routedLift) {
+  if (std::strcmp(s.host, "cumulo") != 0) return upstreamShape(s.host);
+  if (!routedLift) return CacheShape::Unsplit;   // the router bills cached input whole until CUM-R1
+  const char* slash = std::strchr(s.model, '/');
+  if (!slash || slash == s.model) return CacheShape::Included;
+  char up[kProvKeyCap] = {0};
+  const size_t n = (size_t)(slash - s.model) < sizeof(up) - 1 ? (size_t)(slash - s.model) : sizeof(up) - 1;
+  std::memcpy(up, s.model, n);
+  return upstreamShape(up);
+}
+
+}  // namespace
+
+TokenDelta ledgerDelta(const SpendSlot& s) { return ledgerDelta(s, kRoutedBudgetLift); }
+
+TokenDelta ledgerDelta(const SpendSlot& s, bool routedLift) {
   TokenDelta d;
   d.out = s.out;
-  if (std::strcmp(s.host, "anthropic") == 0) {
-    d.in = s.in;
-    d.cacheR = s.cacheR;
-    d.cacheW = s.cacheW;
-    d.cacheW1h = s.cacheW1h < s.cacheW ? s.cacheW1h : s.cacheW;   // R3: the TTL split
-  } else if (std::strcmp(s.host, "openai") == 0) {
-    // Both cache counts are PART of input_tokens: never more than it (a malformed
-    // usage object must not wrap the remainder).
-    d.cacheR = s.cacheR < s.in ? s.cacheR : s.in;
-    const uint64_t left = s.in - d.cacheR;
-    d.cacheW = s.cacheW < left ? s.cacheW : left;
-    d.in = left - d.cacheW;
-  } else {
-    d.in = s.in;   // cache traffic not split: billed at the input rate (fail-closed)
+  switch (shapeOf(s, routedLift)) {
+    case CacheShape::Excluded: {
+      d.in = s.in;
+      d.cacheR = s.cacheR;
+      d.cacheW = s.cacheW;
+      d.cacheW1h = s.cacheW1h < s.cacheW ? s.cacheW1h : s.cacheW;   // R3: the TTL split
+      break;
+    }
+    case CacheShape::Included: {
+      // Both cache counts are PART of the input count: never more than it (a malformed
+      // usage object must not wrap the remainder).
+      d.cacheR = s.cacheR < s.in ? s.cacheR : s.in;
+      const uint64_t left = s.in - d.cacheR;
+      d.cacheW = s.cacheW < left ? s.cacheW : left;
+      d.in = left - d.cacheW;
+      break;
+    }
+    case CacheShape::Unsplit:
+      d.in = s.in;   // cache traffic not split: billed at the input rate (fail-closed)
+      break;
   }
   return d;
 }
 
-bool cacheFoldedInNvs(const std::string& prov) { return prov == "openai"; }
+// Every provider whose input count includes its cache tokens (the Included shape).
+bool cacheFoldedInNvs(const std::string& prov) {
+  if (prov == "cumulo") return kRoutedBudgetLift;
+  return prov == "openai" || prov == "mistral" || prov == "zai";
+}
 
 void UsageLedger::recordTokens(const std::string& name, uint64_t tokIn, uint64_t tokOut,
                                uint64_t cacheRead, uint64_t cacheWrite,
