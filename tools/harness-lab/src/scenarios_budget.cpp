@@ -283,7 +283,7 @@ CallUse useOf(const CurlHttpTransport::Call& c) {
   u.seconds = c.seconds;
   u.body = c.reqBody.size();
   JsonDocument d;
-  if (deserializeJson(d, c.respBody)) return u;
+  if (deserializeJson(d, c.respBody, DeserializationOption::NestingLimit(64))) return u;
   const nimbus::orch::TokenUsage t = nimbus::orch::tokenUsageFromJson(d["usage"].as<ArduinoJson::JsonObjectConst>());
   u.prompt = t.maxRequestIn;
   u.cached = t.cacheReadTokens;
