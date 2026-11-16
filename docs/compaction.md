@@ -54,8 +54,8 @@ Virtual Nimbus, the hosted web chat).
 
 - **It tries every provider you have a key for**, one per pass: the model you chat
   with first (Mistral Large 4 summarizes on Mistral Small, which does not spend the
-  answer on thinking), then your other providers in your priority order, then the
-  head provider's sub-agent model. A provider that answered with nothing usable
+  answer on thinking; Large 4 itself is never asked for a summary), then your other
+  providers in your priority order, then the head provider's sub-agent model. A provider that answered with nothing usable
   goes last next time.
 - **It never pauses for good.** When every provider failed, it tries again after
   15 minutes, then 1 hour, then 4 hours, then every 12 hours, and each try after a

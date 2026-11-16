@@ -324,6 +324,10 @@ struct LadderBuild {
   }
   void add(std::string h, std::string model, FoldRungKind kind) {
     if (model.empty()) model = ownModel(d, h);
+    // Never a forced reasoner on any rung (lane W's live legs: Large 4 folding on itself is
+    // cut at its fit): its host's non-reasoning model instead, deduplicated below.
+    const std::string alt = foldModelForHead(h, model);
+    if (!alt.empty()) model = alt;
     for (const FoldRung& r : rungs)
       if (r.host == h && r.model == model) return;   // no (host, model) twice
     rungs.push_back(FoldRung{std::move(h), std::move(model), kind});
@@ -337,10 +341,13 @@ struct LadderBuild {
   }
   void addHead(const std::string& head, bool isRouter) {
     if (isRouter) return addRouter(head);
-    if (keyed(head)) add(head, foldModelForHead(head, ownModel(d, head)), FoldRungKind::HeadHost);
+    if (keyed(head)) add(head, std::string(), FoldRungKind::HeadHost);   // add() steps a forced reasoner down
   }
   void addSub(const std::string& head) {
     if (!directHost(head) || !keyed(head) || !d.cfg.provider.subModel) return;
+    // A forced-reasoner head already stepped down on its first rung (Large 4 -> Small): its
+    // only rung on that host is that one.
+    if (!foldModelForHead(head, ownModel(d, head)).empty()) return;
     add(head, d.cfg.provider.subModel(head), FoldRungKind::SubModel);
   }
 };

@@ -13,8 +13,11 @@
 //   2. every other keyed, unparked, in-budget host, in the owner's priority order
 //      (then any keyed provider the list leaves out), each on its own model;
 //   3. the router fallback (Cumulo, then Z.ai) when no provider key is set;
-//   4. the head host on its Sub model (a direct host only).
-// No (host, model) appears twice. A cycle asks each rung once.
+//   4. the head host on its Sub model (a direct host only; none for a forced-reasoner head,
+//      whose first rung already stepped down).
+// No rung runs a forced reasoner (lane W's live legs, 16 Nov: Large 4 folding on itself is
+// cut at its fit): such a model is replaced by its host's non-reasoning model. No (host,
+// model) appears twice. A cycle asks each rung once.
 namespace agent {
 
 // What a fold came to. Ok: a summary to store. Deferred: a gate (heap, a turn in

@@ -9,6 +9,8 @@
 // digest.
 #include <unity.h>
 
+#include <ArduinoJson.h>
+
 #include <dirent.h>
 
 #include <cstdio>
@@ -239,18 +241,25 @@ static void test_rung_order_and_kinds() {
   r.cfg.orchModels["mistral"] = "mistral-large-4-0";
   r.cfg.subModels["mistral"] = "mistral-medium-latest";
   const std::vector<FoldRung> rungs = r.eng->foldRungs();
+  // A Large 4 head: Small is its only Mistral rung (no Sub step-down after it).
   const char* const want[][2] = {{"mistral", "mistral-small-latest"},
                                  {"anthropic", "model-anthropic"},
                                  {"cumulo", "model-cumulo"},
-                                 {"openai", "model-openai"},
-                                 {"mistral", "mistral-medium-latest"}};
-  TEST_ASSERT_EQUAL(5, (int)rungs.size());
-  for (size_t i = 0; i < 5; i++) {
+                                 {"openai", "model-openai"}};
+  TEST_ASSERT_EQUAL(4, (int)rungs.size());
+  for (size_t i = 0; i < 4; i++) {
     TEST_ASSERT_EQUAL_STRING(want[i][0], rungs[i].host.c_str());
     TEST_ASSERT_EQUAL_STRING(want[i][1], rungs[i].model.c_str());
   }
   TEST_ASSERT_TRUE(rungs[0].kind == FoldRungKind::HeadHost);
-  TEST_ASSERT_TRUE(rungs[4].kind == FoldRungKind::SubModel);
+  // A head that is not a forced reasoner keeps its Sub step-down, last.
+  r.cfg.orchModels["mistral"] = "mistral-medium-latest";
+  r.cfg.subModels["mistral"] = "mistral-small-latest";
+  const std::vector<FoldRung> med = r.eng->foldRungs();
+  TEST_ASSERT_EQUAL(5, (int)med.size());
+  TEST_ASSERT_EQUAL_STRING("mistral-medium-latest", med[0].model.c_str());
+  TEST_ASSERT_TRUE(med[4].kind == FoldRungKind::SubModel);
+  TEST_ASSERT_EQUAL_STRING("mistral-small-latest", med[4].model.c_str());
   // A parked or capped provider is not a rung; with no key the router is the only rung.
   r.cfg.overBudgetHosts.insert("anthropic");
   for (const FoldRung& g : r.eng->foldRungs()) TEST_ASSERT_TRUE(g.host != "anthropic");
@@ -315,6 +324,59 @@ static void test_large4_head_folds_on_small_at_effort_none() {
   TEST_ASSERT_EQUAL_UINT32(1, rep.paidRequests);
 }
 
+// Lane W's live legs (16 Nov): a Large 4 head folding on Large 4 is cut at its fit (2,118
+// and 2,824 tokens) while mistral-small-latest folds fine. The class, over every model in
+// the recorded Mistral list (and its routed form): as the head with any Sub model, and as
+// another keyed provider, no fold rung runs a forced-reasoning model (one mistralHeadEffort
+// answers "low" for), and a forced-reasoner head's only Mistral rung is mistral-small-latest.
+static bool forcedReasoner(const std::string& model) {
+  return std::string(providers::mistralHeadEffort(model)) == "low";
+}
+static std::vector<std::string> recordedMistralModels() {
+  std::ifstream f("test/support/fixtures/models_2026-11/mistral.json", std::ios::binary);
+  std::stringstream ss;
+  ss << f.rdbuf();
+  JsonDocument d;
+  deserializeJson(d, ss.str());
+  std::vector<std::string> ids;
+  for (JsonVariantConst m : d["data"].as<JsonArrayConst>()) ids.push_back(m["id"].as<std::string>());
+  return ids;
+}
+static void test_no_rung_runs_a_forced_reasoner() {
+  const std::vector<std::string> ids = recordedMistralModels();
+  TEST_ASSERT_TRUE(ids.size() > 20);
+  int forcedHeads = 0;
+  for (const std::string& id : ids) {
+    for (const std::string& head : {id, "mistral/" + id}) {
+      for (const char* sub : {"", "mistral-large-4-0", "mistral-medium-latest", "mistral-small-latest", "zai-glm-5-3"}) {
+        Rig r;
+        r.cfg.keyed = {"mistral", "openai"};
+        r.cfg.priority = "mistral,openai";
+        r.cfg.orchModels["mistral"] = head;
+        r.cfg.subModels["mistral"] = *sub ? std::string(sub) : head;
+        int mistralRungs = 0;
+        for (const FoldRung& g : r.eng->foldRungs()) {
+          if (g.host != "mistral") continue;
+          mistralRungs++;
+          TEST_ASSERT_FALSE_MESSAGE(forcedReasoner(g.model), (head + " folds on " + g.model).c_str());
+        }
+        if (!forcedReasoner(head)) continue;
+        forcedHeads++;
+        TEST_ASSERT_EQUAL_MESSAGE(1, mistralRungs, head.c_str());
+        TEST_ASSERT_EQUAL_STRING("mistral-small-latest", r.eng->foldRungs()[0].model.c_str());
+      }
+      // Mistral as another keyed provider, behind an Anthropic head.
+      Rig o;
+      o.cfg.keyed = {"anthropic", "mistral"};
+      o.cfg.priority = "anthropic,mistral";
+      o.cfg.orchModels["mistral"] = head;
+      for (const FoldRung& g : o.eng->foldRungs())
+        if (g.host == "mistral") TEST_ASSERT_FALSE_MESSAGE(forcedReasoner(g.model), (head + " as another host").c_str());
+    }
+  }
+  TEST_ASSERT_TRUE_MESSAGE(forcedHeads > 0, "the list holds a forced reasoner (Large 4)");
+}
+
 // The quality gate: only digests of 8 KB or more are judged; the floor is min(800 B, 30%
 // of the previous summary) (none for a first summary); 2 of 5 sections named, leniently.
 static void test_quality_gate_bounds() {
@@ -368,6 +430,7 @@ int main(int, char**) {
   RUN_TEST(test_no_host_model_is_asked_twice_per_cycle);
   RUN_TEST(test_rung_order_and_kinds);
   RUN_TEST(test_large4_head_folds_on_small_at_effort_none);
+  RUN_TEST(test_no_rung_runs_a_forced_reasoner);
   RUN_TEST(test_quality_gate_bounds);
   RUN_TEST(test_matcher_passes_every_recorded_fold_output);
   return UNITY_END();

@@ -48,8 +48,12 @@ quiet gate; a manual one does not wait for quiet.
 2. every other keyed, unparked, in-budget provider, in the owner's priority order, then
    any keyed provider the list leaves out (Cumulo only with a Cumulo key);
 3. the router fallback (Cumulo, then Z.ai) when no provider key is set;
-4. the head host on its Sub model (a direct host only: the model pin needs one).
+4. the head host on its Sub model (a direct host only: the model pin needs one; none for a
+   forced-reasoner head, whose first rung already stepped down).
 
+No rung ever runs a forced reasoner: lane W's live legs (16 Nov) found Large 4 folding on
+itself cut at its fit (2,118 and 2,824 tokens) while Small folds fine, so on any rung (the
+head, another provider, the Sub model) such a model is replaced by `mistral-small-latest`.
 No (host, model) appears twice. A rung that answered empty or thin goes last in the
 next cycle. A rung whose host left the ladder since the cycle started (parked, capped)
 is passed over. Every failed rung logs one line the persona rig reads:
