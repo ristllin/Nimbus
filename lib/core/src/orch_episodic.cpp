@@ -36,6 +36,34 @@ bool epiPassesFilters(const MsgQuery& q, const EpisodicMessage& m, uint32_t befo
   return true;
 }
 
+// ---- the after cursor (lane H) ------------------------------------------------
+EpiAfterFilter::EpiAfterFilter(const MsgQuery& q, uint32_t afterSfx)
+    : q_(q), afterSfx_(afterSfx), beforeSfx_(epiIdSuffix(q.before)), lq_(lexParse(q.textContains)) {}
+
+bool EpiAfterFilter::text(const char* t, size_t n) const { return !lq_.filters() || lexCoverage(t, n, lq_) > 0; }
+
+bool EpiAfterFilter::passes(const EpisodicMessage& m) const {
+  return newer(epiIdSuffix(m.id)) && epiPassesFilters(q_, m, 0) && text(m.text.data(), m.text.size());
+}
+
+void epiQueryAfter(const MsgQuery& q, std::vector<EpisodicMessage>::const_iterator first,
+                   std::vector<EpisodicMessage>::const_iterator last, std::vector<EpisodicMessage>& out,
+                   EpiQueryInfo& info) {
+  out.clear();
+  const EpiAfterFilter f(q, epiIdSuffix(q.after));
+  if (f.impossible()) return;
+  for (auto it = first; it != last; ++it) {
+    if (!f.passes(*it)) continue;
+    if (q.limit > 0 && (int)out.size() >= q.limit) {   // a newer match remains
+      info.newerExists = true;
+      info.nextAfter = out.back().id;
+      return;
+    }
+    out.push_back(*it);
+    info.matched++;
+  }
+}
+
 // ---- EpiCollector -----------------------------------------------------------
 EpiCollector::EpiCollector(const MsgQuery& q, std::vector<EpisodicMessage>& out)
     : lq_(lexParse(q.textContains)), out_(out), limit_(q.limit) {
@@ -224,6 +252,12 @@ std::vector<EpisodicMessage> InMemoryEpisodicStore::query(const MsgQuery& q) con
 std::vector<EpisodicMessage> InMemoryEpisodicStore::query(const MsgQuery& q,
                                                           EpiQueryInfo* info) const {
   std::vector<EpisodicMessage> out;
+  if (!q.after.empty()) {   // the forward cursor: oldest first (no cold tier here)
+    EpiQueryInfo local;
+    epiQueryAfter(q, msgs_.cbegin(), msgs_.cend(), out, local);
+    if (info) *info = local;
+    return out;
+  }
   EpiCollector col(q, out);
   if (info) *info = EpiQueryInfo();
   if (col.impossible()) return out;   // only common words: nothing can match

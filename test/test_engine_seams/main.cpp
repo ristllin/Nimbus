@@ -77,11 +77,15 @@ struct Rig {
       d.hosts.add(h, hostFn(h));
     d.histV2 = [] { return true; };
     d.captureUserRow = [](const std::string&, const std::string&, const std::string&) { return std::string("m9999"); };
-    // The bindings' shape (orchestrator.cpp, rig.h): an after-cursor read is refused.
+    // The stores' shape: `before` pages newest first, `after` oldest first (lane H).
     readRows = [this](const std::string&, const HistoryQuery& q) {
       reads.push_back(q);
       std::vector<orch::EpisodicMessage> out;
-      if (agent::historyAfterUnserved(q)) return out;
+      if (!q.after.empty()) {
+        for (auto it = rows.begin(); it != rows.end() && out.size() < q.limit; ++it)
+          if (it->id > q.after && (q.before.empty() || it->id < q.before)) out.push_back(*it);
+        return out;
+      }
       for (auto it = rows.rbegin(); it != rows.rend() && out.size() < q.limit; ++it)
         if (q.before.empty() || it->id < q.before) out.push_back(*it);
       return out;
@@ -336,20 +340,19 @@ static void test_before_only_reads_return_todays_rows() {
   TEST_ASSERT_EQUAL(30, (int)slice.turns);
 }
 
-// A read after a cursor is not served yet: no rows, said once a boot.
-static void test_an_after_cursor_reads_no_rows_and_says_so_once() {
+// Every store serves the after cursor (lane H): the seam the bindings still ask refuses
+// nothing, and a read after a cursor returns the rows newer than it, oldest first.
+static void test_an_after_cursor_is_served() {
   HistoryQuery q(24);
   TEST_ASSERT_FALSE(agent::historyAfterUnserved(q));
   q.after = "m0005";
-  TEST_ASSERT_TRUE(agent::historyAfterUnserved(q));
-  TEST_ASSERT_TRUE(agent::historyAfterUnserved(q));
-  int said = 0;
-  for (const auto& l : LogCapture::lines()) said += l.find("history: a read after m0005") != std::string::npos;
-  TEST_ASSERT_TRUE(said <= 1);   // once per task (an earlier test on this thread may have said it)
+  TEST_ASSERT_FALSE(agent::historyAfterUnserved(q));
   Rig r;
   r.addTurns(3);
-  TEST_ASSERT_EQUAL(0, (int)r.readRows("1001", q).size());
-  // The query's own cursor field rides MsgQuery for the stores that will serve it.
+  const auto rows = r.readRows("1001", q);
+  TEST_ASSERT_EQUAL(1, (int)rows.size());
+  TEST_ASSERT_EQUAL_STRING("m0006", rows[0].id.c_str());
+  // The query's own cursor field rides MsgQuery to the store.
   orch::MsgQuery mq;
   TEST_ASSERT_EQUAL_STRING("", mq.after.c_str());
 }
@@ -663,7 +666,7 @@ int main(int, char**) {
   RUN_TEST(test_one_rung_asks_its_host_on_its_model);
   RUN_TEST(test_model_pin_is_its_hosts_and_ends_with_its_scope);
   RUN_TEST(test_before_only_reads_return_todays_rows);
-  RUN_TEST(test_an_after_cursor_reads_no_rows_and_says_so_once);
+  RUN_TEST(test_an_after_cursor_is_served);
   RUN_TEST(test_listed_window_from_the_stored_list);
   RUN_TEST(test_listed_window_lookup_install);
   RUN_TEST(test_request_budget_is_lane_bs);

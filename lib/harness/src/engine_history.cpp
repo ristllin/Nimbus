@@ -44,14 +44,8 @@ std::string atItem(const TurnEngine::Deps& d) {
 }
 }  // namespace
 
-bool historyAfterUnserved(const HistoryQuery& q) {
-  if (q.after.empty()) return false;
-  thread_local bool said = false;   // once per task: nothing sets the cursor until lane H serves it
-  if (!said) {
-    said = true;
-    hlog::logf("history: a read after %s is not served yet - no rows", q.after.c_str());
-  }
-  return true;
+bool historyAfterUnserved(const HistoryQuery&) {
+  return false;   // every store serves the after cursor (lane H): MsgQuery::after
 }
 
 bool TurnEngine::histV2On() const {

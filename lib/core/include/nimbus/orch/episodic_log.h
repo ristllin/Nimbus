@@ -447,6 +447,33 @@ class AppendLogEpisodicStore : public EpisodicStore {
   // straddling a window boundary is read whole by the next one).
   void queryCold(const MsgQuery& q, EpiCollector& col, EpiQueryInfo& info) const;
 
+  // ---- the after cursor (MsgQuery::after, lane H of the history fix) -------------
+  // Oldest first: the cold region forward from the cursor (coldScan only), then the
+  // ring or the index forward, each under its own per-call budget.
+  void queryAfter(const MsgQuery& q, std::vector<EpisodicMessage>& out, EpiQueryInfo& info) const;
+  // The ring, oldest first (the whole history is resident, or the card is failing).
+  void queryAfterRing(const MsgQuery& q, const EpiAfterFilter& f, std::vector<EpisodicMessage>& out,
+                      EpiQueryInfo& info) const;
+  // The index forward: ring rows from RAM, older rows off the card in blocks that run
+  // up over the newer rows of the same day-stream (loadRecBlockFwd).
+  void queryAfterIndex(const MsgQuery& q, const EpiAfterFilter& f, std::vector<EpisodicMessage>& out,
+                       EpiQueryInfo& info) const;
+  size_t loadRecBlockFwd(const MsgQuery& q, const EpiAfterFilter& f, size_t i, RecBlock& blk) const;
+  // The cold region forward from the cursor. True when it was read to its end (the
+  // index continues the page); false when the page filled or the budget ran out (the
+  // byte cursor is set).
+  bool queryAfterCold(const MsgQuery& q, const EpiAfterFilter& f, uint32_t afterSfx,
+                      std::vector<EpisodicMessage>& out, EpiQueryInfo& info) const;
+  // Where the cold walk for `afterSfx` starts: the day-stream holding it (the last one
+  // whose first record is at or before it) and, inside it, a record start at or before it
+  // (a binary search on byte offsets, a few window reads). Probe bytes join `bytes`.
+  void coldAfterStart(const EpiPsVec<uint32_t>& days, uint32_t afterSfx, size_t& dayIdx, long& off,
+                      size_t& bytes) const;
+  // The record that starts at or after `pos` in `path` (below `end`): its start and id
+  // suffix. False when the card would not read it or no whole record starts there.
+  bool probeRecordAt(const std::string& path, long pos, long end, long& start, uint32_t& idSfx,
+                     size_t& bytes) const;
+
   EpiFs& fs_;
   std::string dir_;
   int recentCap_;

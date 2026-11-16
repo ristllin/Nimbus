@@ -162,9 +162,9 @@ struct HistoryMarks {
 };
 
 // histV2: one read of a chat's conversation rows (Deps::historyRows): at most `limit`,
-// newest first, strictly older than `before` ("" = from the newest) and, when `after`
-// is set, strictly newer than it. Today's bindings serve `before` only: a read with
-// `after` set returns no rows (historyAfterUnserved).
+// newest first and strictly older than `before` ("" = from the newest); or, when `after`
+// is set, strictly newer than it and OLDEST first (MsgQuery::after: the fold's forward
+// read from thru, and the conversation cache's read of what is newer than it holds).
 struct HistoryQuery {
   HistoryQuery() = default;
   explicit HistoryQuery(size_t lim, std::string beforeId = std::string(), std::string afterId = std::string())
@@ -173,8 +173,8 @@ struct HistoryQuery {
   std::string before;
   std::string after;
 };
-// True when `q` asks for rows after a cursor, which no store serves yet: the binding
-// then returns no rows. The first such read on a task logs that it was refused.
+// False: every store serves the after cursor (lane H). Kept for the bindings that still
+// ask (they drop the call with their next edit).
 bool historyAfterUnserved(const HistoryQuery& q);
 
 // Lane CTX: the bytes a turn's tool list adds to its request (each advertised tool's

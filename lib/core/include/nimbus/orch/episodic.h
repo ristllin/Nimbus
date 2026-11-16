@@ -93,9 +93,15 @@ struct MsgQuery {
   // The store emits the exact token to pass next (EpiQueryInfo::nextBefore) -
   // no caller, and certainly no model, computes a cursor itself.
   std::string before;
-  // The other paging cursor (lane P0 declares it; lane H serves it): only rows
-  // STRICTLY NEWER than this row id, oldest first. No backend reads it yet, so the
-  // history bindings answer a query that sets it with no rows (historyAfterUnserved).
+  // The other paging cursor (lane H of the history fix): only rows STRICTLY NEWER than
+  // this position, OLDEST FIRST, at most `limit`; `before`, when set too, still bounds the
+  // page from above. Accepts a row id, or the cold region's forward byte cursor
+  // "<dayNum>:<offset>" (the next record to read). The store emits the exact token to
+  // pass next (EpiQueryInfo::nextAfter, with newerExists). A text filter is a yes/no
+  // filter here (the order stays oldest first). The fold reads its slice forward from
+  // the summary's last row with it; with coldScan it also walks the rows the boot scan
+  // left unindexed, under the cold budget, and names a span the card will not give back
+  // (EpiQueryInfo::unreadable).
   std::string after;
 
   bool kindVisible(MsgKind k) const {
@@ -125,6 +131,13 @@ struct EpiQueryInfo {
   // the rows returned - the caller says so instead of implying the page is
   // everything.
   int      matched = 0;
+  // An `after` read (MsgQuery::after): rows newer than the page remain, and the token
+  // that continues exactly after it (a row id, or "<day>:<offset>" in the cold region).
+  bool        newerExists = false;
+  std::string nextAfter;
+  // A span the card would not give back ("<day>:<from>-<to>", byte offsets in that
+  // day-stream; "" = none): its rows are skipped, and the caller names the gap.
+  std::string unreadable;
 };
 
 // The lexical.h word match as a yes/no: true when ANY counted word of `needle`
@@ -149,6 +162,31 @@ inline constexpr int kEpiRankedMax = 200;
 // Every non-text filter of `q` on one row: the paging cursor (skipped when
 // beforeSfx is 0), session, the v3.7.0 read boundary, kind, and time window.
 bool epiPassesFilters(const MsgQuery& q, const EpisodicMessage& m, uint32_t beforeSfx);
+
+// An `after` read's row rule (MsgQuery::after): strictly newer than the cursor row,
+// strictly older than `before` when set, every non-text filter, and the text as a
+// yes/no match. `afterSfx` is the cursor row's id suffix (0 for a byte cursor: the
+// position already bounds it).
+struct EpiAfterFilter {
+  EpiAfterFilter(const MsgQuery& q, uint32_t afterSfx);
+  bool newer(uint32_t idSfx) const { return idSfx > afterSfx_ && (!beforeSfx_ || idSfx < beforeSfx_); }
+  bool text(const char* t, size_t n) const;
+  bool passes(const EpisodicMessage& m) const;
+  bool impossible() const { return lq_.onlyCommonWords(); }
+
+ private:
+  const MsgQuery& q_;
+  uint32_t afterSfx_;
+  uint32_t beforeSfx_;
+  LexQuery lq_;
+};
+
+// An after-read over rows held in memory, oldest first ([first, last) is oldest first):
+// at most q.limit rows (<= 0: no limit); `info` says whether newer rows remain and the
+// cursor that continues after the page.
+void epiQueryAfter(const MsgQuery& q, std::vector<EpisodicMessage>::const_iterator first,
+                   std::vector<EpisodicMessage>::const_iterator last, std::vector<EpisodicMessage>& out,
+                   EpiQueryInfo& info);
 
 // One query's result page, shared by every EpisodicStore backend so the text
 // rule and the ranking are identical everywhere (the in-memory reference, the
