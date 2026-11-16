@@ -6,6 +6,10 @@
 #include <string>
 
 #include "nimbus/orch/budget.h"
+#include "../support/recorded_models.h"   // every recorded head
+#include "../support/fake_config.h"
+#include "../support/fake_platform.h"
+#include "nimbus/harness/engine.h"
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/wire_limits.h"
@@ -403,6 +407,62 @@ static void test_nvs_budget_model_keeps_the_reserve() {
   }
 }
 
+// results.get's view cap is the engine's per-result clamp, for every head (plan v3, lane H):
+// the device sizes the view from the seam with the owner's result cap
+// (store.cpp effectiveToolResultCap), the engine clamps each tool result from the same seam
+// with the turn's overrides (engine.cpp). One seam, one figure: a view never asks for more than
+// the clamp kept, whatever the window, the owner's prompt budget or the tool total.
+static void test_view_cap_is_the_engine_clamp_for_every_head() {
+  std::vector<recorded::Model> heads = recorded::models();
+  for (const char* sel : {"openai/gpt-5.6", "anthropic/claude-sonnet-5-5", "mistral/mistral-large-4-0", "zai/glm-5.3"})
+    heads.push_back({"cumulo", sel});
+  heads.push_back({"custom", "gpt-5.6-luna"});
+  int checked = 0;
+  for (const auto& m : heads)
+    for (int resultCap : {0, 4096, 12000}) {
+      BudgetOverrides store;   // effectiveToolResultCap: the owner's result cap alone
+      store.toolResultCap = resultCap;
+      const size_t view = headContextBudget(m.provider, m.id, store).toolResultBytes;
+      for (int prompt : {0, 20000, 56000})
+        for (int total : {0, 24576}) {
+          BudgetOverrides turn;   // the engine: the prompt budget and the tool total ride too
+          turn.maxContextBytes = prompt;
+          turn.toolResultCap = resultCap;
+          turn.toolTotalCap = total;
+          const size_t clamp = headContextBudget(m.provider, m.id, turn).toolResultBytes;
+          TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)view, (uint32_t)clamp, (m.provider + "/" + m.id).c_str());
+          checked++;
+        }
+    }
+  TEST_ASSERT_TRUE(checked > 500);
+  // ... and through a turn: the clamp the engine hands the head loop is the view cap.
+  for (const char* host : {"anthropic", "openai", "mistral"})
+    for (const char* model : {"claude-sonnet-5-5", "gpt-5.6-luna", "mistral-large-4-0", ""}) {
+      harness_test::FakeConfig cfg;
+      harness_test::FakePlatform plat;
+      cfg.orchHost = host;
+      cfg.orchModels[host] = model;
+      cfg.resultCap = 0;   // auto, as on a device with no owner cap
+      size_t clamp = 0;
+      agent::TurnEngine::Deps d;
+      d.cfg = cfg.contract();
+      d.platform = plat.contract();
+      d.deliver = [](const std::string&, const std::string&) {};
+      d.apply.deliver = d.deliver;
+      d.hosts.add(host, [&clamp](std::string&, const std::string&, const std::string&, std::string& out, std::string&,
+                                 const agent::HeadTools* tools, nimbus::orch::TokenUsage*) {
+        if (tools) clamp = tools->cfg.maxToolResultBytes;
+        out = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
+        return true;
+      });
+      agent::TurnEngine eng(std::move(d));
+      eng.handleMessage("hello", "Roy", "1001");
+      BudgetOverrides store;
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)headContextBudget(host, model, store).toolResultBytes, (uint32_t)clamp,
+                                       (std::string(host) + "/" + model).c_str());
+    }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_anchor_identity_at_200k);
@@ -417,5 +477,6 @@ int main(int, char**) {
   RUN_TEST(test_history_fields_hold_todays_figures);
   RUN_TEST(test_fold_input_fits_the_string_guard);
   RUN_TEST(test_nvs_budget_model_keeps_the_reserve);
+  RUN_TEST(test_view_cap_is_the_engine_clamp_for_every_head);
   return UNITY_END();
 }
