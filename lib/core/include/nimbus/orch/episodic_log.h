@@ -4,6 +4,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "nimbus/orch/episodic.h"
@@ -472,6 +473,38 @@ class AppendLogEpisodicStore : public EpisodicStore {
   // byte cursor is set).
   bool queryAfterCold(const MsgQuery& q, const EpiAfterFilter& f, uint32_t afterSfx,
                       std::vector<EpisodicMessage>& out, EpiQueryInfo& info) const;
+  // The cold walk's parts: where it starts (a byte cursor, or coldAfterStart), one forward
+  // window of whole records (false: the card would not give it back), and one day's cold
+  // bytes (false: the walk stopped, its cursor set).
+  void coldStart(const MsgQuery& q, const EpiPsVec<uint32_t>& days, uint32_t afterSfx, size_t& di, long& off,
+                 size_t& bytes) const;
+  bool coldWindow(const std::string& path, long off, long end, std::string& buf, size_t& last, size_t& bytes) const;
+  // One after read's page and what the store says about it.
+  struct AfterPage {
+    const MsgQuery& q;
+    const EpiAfterFilter& f;
+    std::vector<EpisodicMessage>& out;
+    EpiQueryInfo& info;
+  };
+  bool coldDay(AfterPage& p, uint32_t day, long off, long end, size_t& bytes) const;
+  static bool emitColdLines(AfterPage& p, const std::string& buf, size_t last, uint32_t day, long off);
+  // The index tier's card reads within one call (the per-call budget), and its current block.
+  struct AfterReads {
+    int reads = 0;
+    size_t bytes = 0;
+    RecBlock blk;
+  };
+  bool serveAfterRow(AfterPage& p, size_t pos, AfterReads& rd) const;
+  // The card is failing (rows held): the ring answers only when it covers the cursor.
+  void queryAfterFailing(const MsgQuery& q, const EpiAfterFilter& f, uint32_t from,
+                         std::vector<EpisodicMessage>& out, EpiQueryInfo& info) const;
+  // The smallest id suffix the index holds (UINT32_MAX when empty).
+  uint32_t indexFloorSfx() const;
+  // The index rows an after read serves, in id order: the `want` smallest ids newer than the
+  // cursor (id suffix, index position).
+  using AfterCand = std::pair<uint32_t, size_t>;
+  using AfterCands = std::vector<AfterCand, WorkingAllocator<AfterCand>>;
+  AfterCands afterCandidates(const MsgQuery& q, const EpiAfterFilter& f, size_t want) const;
   // Where the cold walk for `afterSfx` starts: the day-stream holding it (the last one
   // whose first record is at or before it) and, inside it, a record start at or before it
   // (a binary search on byte offsets, a few window reads). Probe bytes join `bytes`.

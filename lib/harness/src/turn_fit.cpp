@@ -1,6 +1,9 @@
 #include "nimbus/harness/turn_fit.h"
 
 #include <algorithm>
+#include <functional>
+#include <memory>
+#include <utility>
 #include <cstdio>
 
 #include "nimbus/harness/head_tools.h"
@@ -83,13 +86,21 @@ void TurnFit::dropHistory(bool today, size_t want) {
   auto& h = ci_.history;
   const size_t first = (h.size() >= 2 && isSummaryMessage(h[0])) ? 2 : 0;
   size_t drop = 0, freed = 0;
-  while (first + drop + 2 < h.size() && freed < want) {   // the newest exchange stays
-    const size_t i = first + drop;
-    if (isToday(i) != today) break;   // rung 5 stops at today's first turn; rung 6 starts there
-    freed += h[i].text.size() + h[i + 1].text.size();
+  // Rung 5 stops at today's first turn; rung 6 starts there; the newest exchange stays.
+  while (first + drop + 2 < h.size() && freed < want && isToday(first + drop) == today) {
+    freed += h[first + drop].text.size() + h[first + drop + 1].text.size();
     drop += 2;
   }
   if (!drop) return;
+  noteHistoryCut(first, drop);
+  h.erase(h.begin() + (long)first, h.begin() + (long)(first + drop));
+  (today ? cut_.todayDropped : cut_.olderDropped) += (int)drop;
+  cut_.historyBytesDropped += freed;
+}
+
+// What the note names of a history cut: its rows, its time range, the first row kept.
+void TurnFit::noteHistoryCut(size_t first, size_t drop) {
+  const auto& h = ci_.history;
   for (size_t i = first; i < first + drop; i++) {
     const HistMsg& m = h[i];
     if (cut_.cutFirstId.empty() && !m.firstId.empty()) cut_.cutFirstId = m.firstId;
@@ -99,9 +110,6 @@ void TurnFit::dropHistory(bool today, size_t want) {
     cut_.historyRowsDropped += m.rows;
   }
   cut_.keptFirstId = first + drop < h.size() ? h[first + drop].firstId : std::string();
-  h.erase(h.begin() + (long)first, h.begin() + (long)(first + drop));
-  (today ? cut_.todayDropped : cut_.olderDropped) += (int)drop;
-  cut_.historyBytesDropped += freed;
 }
 
 void TurnFit::clipResults(size_t want) {
@@ -147,48 +155,63 @@ void TurnFit::dropShelf() {
   ci_.standingPrefs.clear();
 }
 
+// One rung applied; it returns what puts back exactly what it changed.
+std::function<void()> TurnFit::applyRung(int rung, size_t want) {
+  switch (rung) {
+    case kRecalled: {
+      auto was = std::make_shared<std::vector<std::string>>(ci_.recalled);
+      dropRecalled();
+      return [this, was] { ci_.recalled = std::move(*was); };
+    }
+    case kSkills: {
+      auto was = std::make_shared<std::pair<std::string, std::string>>(ci_.foodPlaybook, input_);
+      dropSkills();
+      return [this, was] { ci_.foodPlaybook = std::move(was->first); input_ = std::move(was->second); };
+    }
+    case kOlderDays:
+    case kToday: {
+      auto was = std::make_shared<std::vector<HistMsg>>(ci_.history);
+      dropHistory(rung == kToday, want);
+      return [this, was] { ci_.history = std::move(*was); };
+    }
+    case kResults:
+    case kInput: {
+      auto was = std::make_shared<std::string>(input_);
+      if (rung == kResults) clipResults(want);
+      else clipInput(want);
+      return [this, was] { input_ = std::move(*was); };
+    }
+    case kTools: return dropToolsUndoable();
+    case kShelf: {
+      auto was = std::make_shared<std::pair<std::string, std::string>>(ci_.skillsShelf, ci_.standingPrefs);
+      dropShelf();
+      return [this, was] { ci_.skillsShelf = std::move(was->first); ci_.standingPrefs = std::move(was->second); };
+    }
+    default: return std::function<void()>();
+  }
+}
+
+std::function<void()> TurnFit::dropToolsUndoable() {
+  auto specs = std::make_shared<std::vector<nimbus::orch::ToolRegistry::Spec>>();
+  if (tools_) *specs = tools_->specs;
+  auto infos = std::make_shared<std::vector<nimbus::orch::ToolInfo>>(ci_.tools);
+  dropTools();
+  return [this, specs, infos] {
+    if (tools_) tools_->specs = std::move(*specs);
+    ci_.tools = std::move(*infos);
+  };
+}
+
 // One rung, measured on the rendered request with this note: a rung that does not make it
 // smaller is undone and reports 0 (no note, no trim). Only what the rung may change is kept.
 size_t TurnFit::runRung(int rung, size_t want) {
   const size_t before = rendered();
   const Cuts cutWas = cut_;
-  std::vector<std::string> recalledWas;
-  std::vector<HistMsg> historyWas;
-  std::vector<nimbus::orch::ToolRegistry::Spec> specsWas;
-  std::vector<nimbus::orch::ToolInfo> toolsWas;
-  std::string playbookWas, shelfWas, prefsWas, inputWas;
-  switch (rung) {
-    case kRecalled: recalledWas = ci_.recalled; dropRecalled(); break;
-    case kSkills:   playbookWas = ci_.foodPlaybook; inputWas = input_; dropSkills(); break;
-    case kOlderDays:
-    case kToday:    historyWas = ci_.history; dropHistory(rung == kToday, want); break;
-    case kResults:  inputWas = input_; clipResults(want); break;
-    case kInput:    inputWas = input_; clipInput(want); break;
-    case kTools:
-      if (tools_) specsWas = tools_->specs;
-      toolsWas = ci_.tools;
-      dropTools();
-      break;
-    case kShelf:    shelfWas = ci_.skillsShelf; prefsWas = ci_.standingPrefs; dropShelf(); break;
-    default:        return 0;
-  }
+  const std::function<void()> undo = applyRung(rung, want);
+  if (!undo) return 0;
   const size_t after = rendered();
   if (after < before) return before - after;
-  // Nothing gained: as it was, and no note.
-  switch (rung) {
-    case kRecalled: ci_.recalled = std::move(recalledWas); break;
-    case kSkills:   ci_.foodPlaybook = std::move(playbookWas); input_ = std::move(inputWas); break;
-    case kOlderDays:
-    case kToday:    ci_.history = std::move(historyWas); break;
-    case kResults:
-    case kInput:    input_ = std::move(inputWas); break;
-    case kTools:
-      if (tools_) tools_->specs = std::move(specsWas);
-      ci_.tools = std::move(toolsWas);
-      break;
-    case kShelf:    ci_.skillsShelf = std::move(shelfWas); ci_.standingPrefs = std::move(prefsWas); break;
-    default:        break;
-  }
+  undo();   // nothing gained: as it was, and no note
   cut_ = cutWas;
   return 0;
 }

@@ -947,33 +947,42 @@ std::string localTimeLabel(uint32_t unixSec, int32_t utcOffsetMin) {
 
 const char kCoverageHeader[] = "[CONVERSATION COVERAGE]";
 
+namespace {
+// The coverage line's span part: how many, when, and the call that reads them back.
+std::string coverageSpan(const ConvSpan& span, int32_t utcOffsetMin) {
+  const std::string n = span.rows ? std::to_string((unsigned)span.rows) : std::string();
+  std::string out = span.uncounted ? (n.empty() ? "Earlier messages" : "At least " + n + " earlier message(s)")
+                                   : n + " earlier message(s)";
+  out += " of this chat";
+  if (span.fromHours >= kClockValidHours) {
+    out += " from " + localTimeLabel(span.fromHours * 3600u, utcOffsetMin);
+    if (span.toHours > span.fromHours) out += " to " + localTimeLabel(span.toHours * 3600u + 3599u, utcOffsetMin);
+  }
+  out += " are in neither your conversation summary nor this request";
+  if (span.uncounted) out += " (the device is still reading them from its card)";
+  out += ". If your answer depends on them, read them with memory_episodic {\"kind\":\"message\"";
+  if (!span.beforeId.empty()) out += ",\"before\":\"" + span.beforeId + "\"";
+  return out + "}.";
+}
+
+// The coverage line's age part, for a summary more than a day old ("" otherwise).
+std::string coverageAge(uint32_t summaryUnix, uint64_t nowUnix, int32_t utcOffsetMin, bool spanNamed) {
+  if (!summaryUnix || nowUnix <= summaryUnix || nowUnix - summaryUnix <= 24u * 3600u) return std::string();
+  const uint64_t hours = (nowUnix - summaryUnix) / 3600u;
+  const std::string age =
+      hours >= 48 ? std::to_string((unsigned)(hours / 24)) + " days" : std::to_string((unsigned)hours) + " hours";
+  return "Your conversation summary was last updated " + age + " ago (" + localTimeLabel(summaryUnix, utcOffsetMin) +
+         "); what happened since is in the messages below" + (spanNamed ? " or named above." : ".");
+}
+}  // namespace
+
 std::string historyCoverageLine(const ConvSpan& span, uint32_t summaryUnix, uint64_t nowUnix,
                                 int32_t utcOffsetMin) {
-  std::string out;
-  if (!span.empty()) {
-    const std::string n = span.rows ? std::to_string((unsigned)span.rows) : std::string();
-    out += span.uncounted ? (n.empty() ? "Earlier messages" : "At least " + n + " earlier message(s)")
-                          : n + " earlier message(s)";
-    out += " of this chat";
-    const bool clock = span.fromHours >= kClockValidHours;
-    if (clock) {
-      out += " from " + localTimeLabel(span.fromHours * 3600u, utcOffsetMin);
-      if (span.toHours > span.fromHours) out += " to " + localTimeLabel(span.toHours * 3600u + 3599u, utcOffsetMin);
-    }
-    out += " are in neither your conversation summary nor this request";
-    if (span.uncounted) out += " (the device is still reading them from its card)";
-    out += ". If your answer depends on them, read them with memory_episodic {\"kind\":\"message\"";
-    if (!span.beforeId.empty()) out += ",\"before\":\"" + span.beforeId + "\"";
-    out += "}.";
-  }
-  if (summaryUnix && nowUnix > summaryUnix && nowUnix - summaryUnix > 24u * 3600u) {
-    const uint64_t hours = (nowUnix - summaryUnix) / 3600u;
-    out += std::string(out.empty() ? "" : " ") + "Your conversation summary was last updated " +
-           (hours >= 48 ? std::to_string((unsigned)(hours / 24)) + " days" : std::to_string((unsigned)hours) + " hours") +
-           " ago (" + localTimeLabel(summaryUnix, utcOffsetMin) + "); what happened since is in the messages below" +
-           (span.empty() ? "." : " or named above.");
-  }
-  return out.empty() ? out : std::string(kCoverageHeader) + " " + out + "\n";
+  const std::string spanPart = span.empty() ? std::string() : coverageSpan(span, utcOffsetMin);
+  const std::string agePart = coverageAge(summaryUnix, nowUnix, utcOffsetMin, !span.empty());
+  if (spanPart.empty() && agePart.empty()) return std::string();
+  return std::string(kCoverageHeader) + " " + spanPart + (spanPart.empty() || agePart.empty() ? "" : " ") + agePart +
+         "\n";
 }
 
 std::vector<EpisodicMessage> collapseRepeats(const std::vector<EpisodicMessage>& newestFirst,

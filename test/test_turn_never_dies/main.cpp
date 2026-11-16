@@ -139,6 +139,20 @@ const Refusal kNearMiss[] = {
      "\"code\":\"3058\",\"raw_status_code\":400}"},
 };
 
+// The store's reads over the rig's rows: `before` newest first, `after` oldest first.
+std::vector<orch::EpisodicMessage> readRows(const std::vector<orch::EpisodicMessage>& rows,
+                                            const agent::HistoryQuery& hq) {
+  std::vector<orch::EpisodicMessage> out;
+  if (!hq.after.empty()) {
+    for (auto it = rows.begin(); it != rows.end() && out.size() < hq.limit; ++it)
+      if (it->id > hq.after) out.push_back(*it);
+    return out;
+  }
+  for (auto it = rows.rbegin(); it != rows.rend() && out.size() < hq.limit; ++it)
+    if (hq.before.empty() || it->id < hq.before) out.push_back(*it);
+  return out;
+}
+
 std::vector<orch::ToolRegistry::Spec> sizedSpecs(size_t totalBytes) {
   std::vector<orch::ToolRegistry::Spec> specs;
   specs.push_back({"memory_search", "search the memory", "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}}}"});
@@ -264,19 +278,7 @@ struct Rig {
     d.hosts.failed = [this](const std::string& h, orch::StepErr k, int status) { providers::noteHostFailed(pd, h, k, status); };
     d.hosts.answered = [](const std::string& h) { providers::unparkHost(h); };
     d.histV2 = [] { return true; };
-    d.historyRows = [this](const std::string&, const agent::HistoryQuery& hq) {
-      std::vector<orch::EpisodicMessage> out;
-      if (!hq.after.empty()) {   // the store's after cursor: oldest first
-        for (auto it = rows.begin(); it != rows.end() && out.size() < hq.limit; ++it)
-          if (it->id > hq.after) out.push_back(*it);
-        return out;
-      }
-      for (auto it = rows.rbegin(); it != rows.rend() && out.size() < hq.limit; ++it) {
-        if (!hq.before.empty() && it->id >= hq.before) continue;
-        out.push_back(*it);
-      }
-      return out;
-    };
+    d.historyRows = [this](const std::string&, const agent::HistoryQuery& hq) { return readRows(rows, hq); };
     d.captureUserRow = [this](const std::string&, const std::string& t, const std::string&) {
       turnTag = addRow("user", t);
       return turnTag;

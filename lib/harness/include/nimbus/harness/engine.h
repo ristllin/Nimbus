@@ -828,6 +828,11 @@ class TurnEngine {
   ConvCache::ReadFn cacheReader(const std::string& chatId);
   ConvCache::View cachedRows(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
                              int fillPages);
+  // The fold slice's parts: the kept tail's first row, and the forward read from thru.
+  bool foldKeepFrom(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
+                    const HistoryOptions& o, bool hidden, std::string& keepFrom);
+  bool readFoldRows(const std::string& chatId, const std::string& thru, const std::string& keepFrom, size_t capBytes,
+                    std::vector<nimbus::orch::EpisodicMessage>& fwd);
   // The chat's newest `rows` rows, newest first, from the cache (H7's duplicate check).
   std::vector<nimbus::orch::EpisodicMessage> recentRows(const std::string& chatId, size_t rows);
   ConvCache convCache_;

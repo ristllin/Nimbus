@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include "nimbus/harness/compose.h"
@@ -84,12 +85,15 @@ class TurnFit {
  private:
   enum Rung : int { kRecalled, kSkills, kOlderDays, kToday, kResults, kInput, kTools, kShelf, kRungs };
   size_t runRung(int rung, size_t want);
+  std::function<void()> applyRung(int rung, size_t want);   // applied; the result undoes it
+  std::function<void()> dropToolsUndoable();
   size_t walk(int from, int to, size_t want, bool whole);
   size_t rendered() const;
   // Each rung, applied; the measure and the revert are runRung's.
   void dropRecalled();
   void dropSkills();
   void dropHistory(bool today, size_t want);
+  void noteHistoryCut(size_t first, size_t drop);
   void clipResults(size_t want);
   void clipInput(size_t want);
   void dropTools();

@@ -335,64 +335,44 @@ std::vector<HistMsg> TurnEngine::historyMessages(const std::string& chatId, cons
   return renderHistory(lastWindow_.kept, summary, off);
 }
 
-// The fold's slice: the turns after thru, read FORWARD from it (the after cursor, the
-// cold region included), oldest first, up to `capBytes`, never the newest turns the fold
-// keeps verbatim (keepBytes; on the floor branch v5.1.1's low water and the owner's day).
-// The slice therefore always starts at the row right after thru: a backlog longer than
-// one read is folded oldest first, cycle after cycle, with no gap (v5.1.1 read only the
-// newest 400 rows and could anchor past rows it never read).
-FoldSlice TurnEngine::historyFoldSlice(const std::string& chatId, size_t capBytes, bool manual) {
-  if (!histV2On() || chatId.empty()) return FoldSlice();
-  const HistoryBudget b = headHistoryBudget();
-  const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
-  const int32_t off = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
-  HistoryOptions o;
-  o.startAfter = marks.thru;   // the shift's hidden rows are exactly what a fold must take
-  o.utcOffsetMin = off;
-  o.utcOffsetAt = d_.utcOffsetAt;
-  o.messageCap = b.messageCap;
-  // Rows a shift hid (after thru, up to the soft start) are in neither the summary nor the
-  // request: a fold always takes them, however small (the 1 KB floor never strands them).
-  const bool hidden = rowIdAfter(marks.softStart, marks.thru);
-  // The kept tail, from the cache (its newest rows): the first row the slice stops before.
-  // It is never a hidden row: the tail is read after the soft start.
-  std::string keepFrom;
-  if (!manual) {
-    const ConvCache::View view = cachedRows(chatId, marks, b, 0);
-    std::vector<nimbus::orch::EpisodicMessage> rows;
-    std::vector<uint32_t> repeats;
-    HistoryOptions to = o;
-    if (hidden) to.startAfter = marks.softStart;
-    foldRuns(view.rows, to, 0, rows, repeats);
-    const std::vector<HistTurn> tail = historyTurns(rows, to, &repeats);
-    const size_t keep = b.derived ? b.keepBytes : b.lowBytes();
-    const HistoryBudget day = b.derived ? HistoryBudget() : b;   // v5.1.1 keeps the owner's day too
-    const size_t kept = std::max(foldKeptTail(tail, keep, off), dayTailTurns(tail, day, off));
-    // Every turn stays: nothing to fold, unless a shift hid rows (they fold) or the cache has
-    // not read down to thru yet (the tail's start is not known: the fold waits for the fill).
-    if (kept >= tail.size() && !hidden) {
-      if (!view.complete || !view.span.empty()) hlog::logf("fold(%s): the history is still being read - the slice waits", chatId.c_str());
-      return FoldSlice();
-    }
-    if (kept > 0 && kept <= tail.size()) keepFrom = tail[tail.size() - kept].firstId;
+// The first row of the verbatim tail an automatic fold keeps ("" = keep none). False when
+// every turn after thru stays and none was hidden: nothing to fold (or the cache has not read
+// down to thru yet, so the tail's start is not known and the fold waits for the fill).
+bool TurnEngine::foldKeepFrom(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
+                              const HistoryOptions& o, bool hidden, std::string& keepFrom) {
+  const ConvCache::View view = cachedRows(chatId, marks, b, 0);
+  std::vector<nimbus::orch::EpisodicMessage> rows;
+  std::vector<uint32_t> repeats;
+  HistoryOptions to = o;
+  if (hidden) to.startAfter = marks.softStart;   // the tail is never a hidden row
+  foldRuns(view.rows, to, 0, rows, repeats);
+  const std::vector<HistTurn> tail = historyTurns(rows, to, &repeats);
+  const size_t keep = b.derived ? b.keepBytes : b.lowBytes();
+  const HistoryBudget day = b.derived ? HistoryBudget() : b;   // v5.1.1 keeps the owner's day too
+  const size_t kept = std::max(foldKeptTail(tail, keep, o.utcOffsetMin), dayTailTurns(tail, day, o.utcOffsetMin));
+  if (kept >= tail.size() && !hidden) {
+    if (!view.complete || !view.span.empty())
+      hlog::logf("fold(%s): the history is still being read - the slice waits", chatId.c_str());
+    return false;
   }
-  // Forward from thru, a page at a time, until the kept tail, the cap or the end.
-  std::vector<nimbus::orch::EpisodicMessage> fwd;   // oldest first
-  std::string cursor = marks.thru.empty() ? std::string("m00000000") : marks.thru;
+  if (kept > 0 && kept <= tail.size()) keepFrom = tail[tail.size() - kept].firstId;
+  return true;
+}
+
+// The rows after thru, read forward a page at a time, oldest first, until `keepFrom`, about
+// one and a half fold steps, or an empty page (the end: a store under its read budget answers
+// a short page with more after it). True when the read reached the tail or the end.
+bool TurnEngine::readFoldRows(const std::string& chatId, const std::string& thru, const std::string& keepFrom,
+                              size_t capBytes, std::vector<nimbus::orch::EpisodicMessage>& fwd) {
+  std::string cursor = thru.empty() ? std::string("m00000000") : thru;
   size_t bytes = 0;
-  bool ended = false;
-  for (int page = 0; page < kFoldMaxPages && !ended; page++) {
+  for (int page = 0; page < kFoldMaxPages; page++) {
     std::vector<nimbus::orch::EpisodicMessage> got =
         d_.historyRows(chatId, HistoryQuery(kFoldPageRows, std::string(), cursor));
-    // Only an empty page is the end: a store under its per-call budget answers a short page
-    // with more after it.
-    ended = got.empty();
-    if (!got.empty()) cursor = got.back().id;   // every row seen, kept or not (a /clear included)
+    if (got.empty()) return true;
+    cursor = got.back().id;   // every row seen, kept or not (a /clear included)
     for (auto& m : got) {
-      if (!keepFrom.empty() && !rowIdAfter(keepFrom, m.id)) {
-        ended = true;
-        break;
-      }
+      if (!keepFrom.empty() && !rowIdAfter(keepFrom, m.id)) return true;
       if (isClearBoundary(m)) {   // a /clear after thru: the slice before it was cleared
         fwd.clear();
         bytes = 0;
@@ -401,16 +381,41 @@ FoldSlice TurnEngine::historyFoldSlice(const std::string& chatId, size_t capByte
       bytes += m.text.size() + 64;
       fwd.push_back(std::move(m));
     }
-    if (bytes > capBytes + capBytes / 2) break;   // enough for one fold: the rest is the next one's
+    if (bytes > capBytes + capBytes / 2) return false;   // enough for one fold: the rest is the next one's
   }
-  // A read that stopped inside a turn (the cap, the page bound) leaves that turn to the next
-  // fold: the slice holds whole turns only.
+  return false;
+}
+
+// The fold's slice: the turns after thru, read FORWARD from it (the after cursor, the cold
+// region included), oldest first, up to `capBytes`, never the newest turns the fold keeps
+// verbatim (keepBytes; on the floor branch v5.1.1's low water and the owner's day). The
+// slice therefore always starts at the row right after thru: a backlog longer than one read
+// is folded oldest first, cycle after cycle, with no gap (v5.1.1 read only the newest 400
+// rows and could anchor past rows it never read).
+FoldSlice TurnEngine::historyFoldSlice(const std::string& chatId, size_t capBytes, bool manual) {
+  if (!histV2On() || chatId.empty()) return FoldSlice();
+  const HistoryBudget b = headHistoryBudget();
+  const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
+  HistoryOptions o;
+  o.startAfter = marks.thru;   // the shift's hidden rows are exactly what a fold must take
+  o.utcOffsetMin = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
+  o.utcOffsetAt = d_.utcOffsetAt;
+  o.messageCap = b.messageCap;
+  // Rows a shift hid (after thru, up to the soft start) are in neither the summary nor the
+  // request: a fold always takes them, however small (the 1 KB floor never strands them).
+  const bool hidden = rowIdAfter(marks.softStart, marks.thru);
+  std::string keepFrom;
+  if (!manual && !foldKeepFrom(chatId, marks, b, o, hidden, keepFrom)) return FoldSlice();
+  std::vector<nimbus::orch::EpisodicMessage> fwd;
+  const bool ended = readFoldRows(chatId, marks.thru, keepFrom, capBytes, fwd);
   std::vector<nimbus::orch::EpisodicMessage> rows;
   std::vector<uint32_t> repeats;
   foldRuns(fwd, o, 0, rows, repeats);
   std::vector<HistTurn> turns = historyTurns(rows, o, &repeats);
+  // A read that stopped inside a turn (the cap, the page bound) leaves that turn to the next
+  // fold: the slice holds whole turns only.
   if (!ended && turns.size() > 1) turns.pop_back();
-  FoldSlice s = foldSlice(turns, 0, capBytes, /*manual=*/true, off);
+  FoldSlice s = foldSlice(turns, 0, capBytes, /*manual=*/true, o.utcOffsetMin);
   if (!manual && !hidden && s.digest.size() < kFoldMinNewBytes) return FoldSlice();
   return s;
 }

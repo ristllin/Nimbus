@@ -793,6 +793,12 @@ bool pageFull(const MsgQuery& q, const std::vector<EpisodicMessage>& out) {
 }
 }  // namespace
 
+uint32_t AppendLogEpisodicStore::indexFloorSfx() const {
+  uint32_t floorSfx = UINT32_MAX;
+  for (const auto& r : index_) floorSfx = std::min(floorSfx, r.idSfx);
+  return floorSfx;
+}
+
 void AppendLogEpisodicStore::queryAfter(const MsgQuery& q, std::vector<EpisodicMessage>& out,
                                         EpiQueryInfo& info) const {
   out.clear();
@@ -804,27 +810,30 @@ void AppendLogEpisodicStore::queryAfter(const MsgQuery& q, std::vector<EpisodicM
   // rows newer than the cursor and older than its floor are on the card, unindexed. An
   // after read always walks them (its reader, the fold, starts from the summary's last
   // row and must never anchor past rows it did not read), under the cold budget.
-  uint32_t floorSfx = UINT32_MAX;
-  for (const auto& r : index_) floorSfx = std::min(floorSfx, r.idSfx);
-  const bool belowIndex = hydrateTruncated_ && (byteCur || (uint64_t)afterSfx + 1 < floorSfx);
+  const bool belowIndex = hydrateTruncated_ && (byteCur || (uint64_t)afterSfx + 1 < indexFloorSfx());
   if (belowIndex && !queryAfterCold(q, f, afterSfx, out, info)) return;
   if (byteCur && !belowIndex) return;   // a cold cursor on a store whose index has no gap left
   // Past the cold region every indexed row is newer than the cursor.
   const uint32_t from = belowIndex ? 0 : afterSfx;
   const EpiAfterFilter rest(q, from);
   if (unpersisted_ > 0 && !ringResident()) {
-    // The card is failing: only the RAM ring answers, and only when it holds the row right
-    // after the cursor (it is a contiguous suffix of arrivals). Otherwise nothing: a reader
-    // that takes a short page for the end must never see a gap as the history.
-    const bool covers = !recent_.empty() && (uint64_t)epiIdSuffix(st(recent_.front().id)) <= (uint64_t)from + 1;
-    if (covers) queryAfterRing(q, rest, out, info);
-    else info.olderExists = true;
+    queryAfterFailing(q, rest, from, out, info);
     return;
   }
   if (unpersisted_ > 0 || ringResident())
     queryAfterRing(q, rest, out, info);
   else
     queryAfterIndex(q, rest, out, info);
+}
+
+void AppendLogEpisodicStore::queryAfterFailing(const MsgQuery& q, const EpiAfterFilter& f, uint32_t from,
+                                               std::vector<EpisodicMessage>& out, EpiQueryInfo& info) const {
+  // The card is failing: only the RAM ring answers, and only when it holds the row right
+  // after the cursor (it is a contiguous suffix of arrivals). Otherwise nothing: a reader
+  // that takes an empty page for the end must never see a gap as the history.
+  const bool covers = !recent_.empty() && (uint64_t)epiIdSuffix(st(recent_.front().id)) <= (uint64_t)from + 1;
+  if (covers) queryAfterRing(q, f, out, info);
+  else info.olderExists = true;
 }
 
 void AppendLogEpisodicStore::queryAfterRing(const MsgQuery& q, const EpiAfterFilter& f,
@@ -878,16 +887,13 @@ size_t AppendLogEpisodicStore::loadRecBlockFwd(const MsgQuery& q, const EpiAfter
   return (size_t)(end - start);
 }
 
-void AppendLogEpisodicStore::queryAfterIndex(const MsgQuery& q, const EpiAfterFilter& f,
-                                             std::vector<EpisodicMessage>& out, EpiQueryInfo& info) const {
-  const size_t n = index_.size(), ringN = recent_.size();
+AppendLogEpisodicStore::AfterCands AppendLogEpisodicStore::afterCandidates(const MsgQuery& q, const EpiAfterFilter& f,
+                                                                           size_t want) const {
   // The candidates in id order, never the index's (rows stored before the clock was set sit
   // in the day-0 stream, ahead of their ids): the `want` smallest ids newer than the cursor,
   // one more than the page holds so a newer row is known to remain. A max-heap keeps them.
-  const size_t want = q.limit > 0 ? (size_t)q.limit - out.size() + 1 : n;
-  using Cand = std::pair<uint32_t, size_t>;   // (id suffix, index position)
-  std::vector<Cand, WorkingAllocator<Cand>> heap;
-  for (size_t i = 0; i < n && want; i++) {
+  AfterCands heap;
+  for (size_t i = 0; i < index_.size() && want; i++) {
     const IdxRec& r = index_[i];
     if (!f.newer(r.idSfx) || !indexRowPasses(q, r, 0)) continue;
     if (heap.size() < want) {
@@ -900,42 +906,56 @@ void AppendLogEpisodicStore::queryAfterIndex(const MsgQuery& q, const EpiAfterFi
     }
   }
   std::sort_heap(heap.begin(), heap.end());   // ascending ids
+  return heap;
+}
+
+// One indexed candidate of an after read into the page: from the RAM ring when it holds the
+// row (matched by id and hour), else off the card in a forward block. False when the per-call
+// read budget stopped the call (its cursor set: the next call starts exactly at this row).
+bool AppendLogEpisodicStore::serveAfterRow(AfterPage& p, size_t pos, AfterReads& rd) const {
+  const IdxRec& r = index_[pos];
+  const size_t n = index_.size(), ringN = recent_.size();
+  const size_t fromNewest = n - 1 - pos;
+  const CachedMsg* c = fromNewest < ringN ? &recent_[ringN - 1 - fromNewest] : nullptr;
+  if (c && c->tsHours == r.tsHours && epiIdSuffix(st(c->id)) == r.idSfx) {
+    if (p.f.text(c->text.data(), c->text.size())) {
+      p.out.push_back(msgOf(*c));
+      p.info.matched++;
+    }
+    return true;
+  }
+  if (!rd.blk.covers(r)) {
+    if (rd.reads > 0 && (rd.reads >= kIndexReadsPerCall || rd.bytes >= kIndexBytesPerCall)) {
+      p.info.newerExists = true;
+      p.info.nextAfter = idCursor(r.idSfx ? r.idSfx - 1 : 0);
+      return false;
+    }
+    rd.bytes += loadRecBlockFwd(p.q, p.f, pos, rd.blk);
+    rd.reads++;
+  }
+  EpisodicMessage m;
+  if (!decodeFromBlock(rd.blk, r, m)) return true;   // tolerant: a torn line drops out
+  if (!p.f.text(m.text.data(), m.text.size())) return true;
+  p.out.push_back(std::move(m));
+  p.info.matched++;
+  return true;
+}
+
+void AppendLogEpisodicStore::queryAfterIndex(const MsgQuery& q, const EpiAfterFilter& f,
+                                             std::vector<EpisodicMessage>& out, EpiQueryInfo& info) const {
+  const size_t n = index_.size();
+  const size_t want = q.limit > 0 ? (size_t)q.limit - out.size() + 1 : n;
+  const AfterCands heap = afterCandidates(q, f, want);
   const bool more = heap.size() >= want && want < n;   // a newer candidate may lie past the kept ones
-  // The ring mirrors the index's newest rows (unpersisted_ is 0 on this path): those come
-  // from RAM, each matched to its index row (id and hour) before it is trusted.
-  int reads = 0;
-  size_t bytes = 0;
-  RecBlock blk;
-  for (const Cand& cand : heap) {
-    const IdxRec& r = index_[cand.second];
+  AfterPage page{q, f, out, info};
+  AfterReads rd;
+  for (const AfterCand& cand : heap) {
     if (pageFull(q, out)) {
       info.newerExists = true;
       info.nextAfter = out.back().id;   // the newest served: every smaller id was served
       return;
     }
-    const size_t fromNewest = n - 1 - cand.second;
-    const CachedMsg* c = fromNewest < ringN ? &recent_[ringN - 1 - fromNewest] : nullptr;
-    if (c && c->tsHours == r.tsHours && epiIdSuffix(st(c->id)) == r.idSfx) {
-      if (f.text(c->text.data(), c->text.size())) {
-        out.push_back(msgOf(*c));
-        info.matched++;
-      }
-      continue;
-    }
-    if (!blk.covers(r)) {
-      if (reads > 0 && (reads >= kIndexReadsPerCall || bytes >= kIndexBytesPerCall)) {   // bounded, then paged
-        info.newerExists = true;
-        info.nextAfter = idCursor(r.idSfx ? r.idSfx - 1 : 0);   // the next call starts exactly at this row
-        return;
-      }
-      bytes += loadRecBlockFwd(q, f, cand.second, blk);
-      reads++;
-    }
-    EpisodicMessage m;
-    if (!decodeFromBlock(blk, r, m)) continue;   // tolerant: a torn line drops out
-    if (!f.text(m.text.data(), m.text.size())) continue;
-    out.push_back(std::move(m));
-    info.matched++;
+    if (!serveAfterRow(page, cand.second, rd)) return;
   }
   if (more && !heap.empty()) {   // the text filter thinned the kept candidates: page on after the last
     info.newerExists = true;
@@ -1007,6 +1027,83 @@ void AppendLogEpisodicStore::coldAfterStart(const EpiPsVec<uint32_t>& days, uint
   off = lowOff;
 }
 
+void AppendLogEpisodicStore::coldStart(const MsgQuery& q, const EpiPsVec<uint32_t>& days, uint32_t afterSfx,
+                                       size_t& di, long& off, size_t& bytes) const {
+  di = 0;
+  off = 0;
+  const size_t colon = q.after.find(':');
+  if (colon == std::string::npos) {
+    coldAfterStart(days, afterSfx, di, off, bytes);
+    return;
+  }
+  // A cold page continues exactly where the last one stopped.
+  const uint32_t day = (uint32_t)std::strtoul(q.after.substr(0, colon).c_str(), nullptr, 10);
+  off = std::max(0L, std::strtol(q.after.substr(colon + 1).c_str(), nullptr, 10));
+  while (di < days.size() && days[di] < day) di++;
+  if (di < days.size() && days[di] != day) off = 0;
+}
+
+bool AppendLogEpisodicStore::coldWindow(const std::string& path, long off, long end, std::string& buf, size_t& last,
+                                        size_t& bytes) const {
+  // One forward window of whole records, growing (without re-reading) while a single record
+  // spans it, up to kColdWindowMax.
+  buf = readCard(path, off, std::min<long>((long)kColdWindow, end - off));
+  bytes += buf.size();
+  if (buf.empty()) return false;
+  last = buf.rfind('\n');
+  while (last == std::string::npos && off + (long)buf.size() < end && buf.size() < kColdWindowMax) {
+    const long more = std::min<long>((long)buf.size(), end - off - (long)buf.size());
+    const std::string tail = readCard(path, off + (long)buf.size(), more);
+    bytes += tail.size();
+    if (tail.empty()) break;
+    buf += tail;
+    last = buf.rfind('\n');
+  }
+  return last != std::string::npos;   // false: one record longer than the window cap, or a torn read
+}
+
+// The whole records of `buf` up to `last` (read at file offset `off` of day-stream `day`),
+// oldest first, into the page. True when the page filled (the cursor names the next record).
+bool AppendLogEpisodicStore::emitColdLines(AfterPage& p, const std::string& buf, size_t last, uint32_t day,
+                                           long off) {
+  for (size_t s = 0; s <= last;) {
+    const size_t e = buf.find('\n', s);
+    const long lineAt = off + (long)s;
+    EpisodicMessage m;
+    const bool ok = e > s && decodeEpisodicLine(buf.data() + s, e - s, m);
+    s = e + 1;
+    if (!ok || !p.f.passes(m)) continue;
+    if (pageFull(p.q, p.out)) {
+      p.info.newerExists = true;
+      p.info.nextAfter = byteCursor(day, lineAt);
+      return true;
+    }
+    p.out.push_back(std::move(m));
+    p.info.matched++;
+  }
+  return false;
+}
+
+bool AppendLogEpisodicStore::coldDay(AfterPage& p, uint32_t day, long off, long end, size_t& bytes) const {
+  const std::string path = dayFile(day);
+  while (off < end) {
+    if (bytes >= kColdMaxBytes) {
+      p.info.newerExists = true;
+      p.info.nextAfter = byteCursor(day, off);
+      return false;
+    }
+    std::string buf;
+    size_t last = 0;
+    if (!coldWindow(path, off, end, buf, last, bytes)) {   // the card would not give it back
+      noteUnreadable(p.info, day, off, end);
+      return true;   // the rest of this day's cold bytes: named, and the walk goes on
+    }
+    if (emitColdLines(p, buf, last, day, off)) return false;
+    off += (long)last + 1;
+  }
+  return true;
+}
+
 bool AppendLogEpisodicStore::queryAfterCold(const MsgQuery& q, const EpiAfterFilter& f, uint32_t afterSfx,
                                             std::vector<EpisodicMessage>& out, EpiQueryInfo& info) const {
   const EpiPsVec<uint32_t> days = dayStreams();   // oldest first
@@ -1018,23 +1115,13 @@ bool AppendLogEpisodicStore::queryAfterCold(const MsgQuery& q, const EpiAfterFil
     auto it = floorOfDay.find(r.dayNum);
     if (it == floorOfDay.end() || r.offset < it->second) floorOfDay[r.dayNum] = r.offset;
   }
-  size_t bytes = 0;
-  size_t di = 0;
+  size_t bytes = 0, di = 0;
   long off = 0;
-  const size_t colon = q.after.find(':');
-  if (colon != std::string::npos) {   // a cold page continues exactly where the last stopped
-    const uint32_t day = (uint32_t)std::strtoul(q.after.substr(0, colon).c_str(), nullptr, 10);
-    off = std::max(0L, std::strtol(q.after.substr(colon + 1).c_str(), nullptr, 10));
-    while (di < days.size() && days[di] < day) di++;
-    if (di < days.size() && days[di] != day) off = 0;
-  } else {
-    coldAfterStart(days, afterSfx, di, off, bytes);
-  }
+  coldStart(q, days, afterSfx, di, off, bytes);
   int files = 0;
   for (; di < days.size(); ++di, off = 0) {
     const uint32_t day = days[di];
-    const std::string path = dayFile(day);
-    long end = fs_.size(path);
+    long end = fs_.size(dayFile(day));
     auto fit = floorOfDay.find(day);
     if (fit != floorOfDay.end()) end = std::min(end, (long)fit->second);
     if (end <= off) continue;   // no cold bytes left in this day
@@ -1044,51 +1131,8 @@ bool AppendLogEpisodicStore::queryAfterCold(const MsgQuery& q, const EpiAfterFil
       return false;
     }
     files++;
-    while (off < end) {
-      if (bytes >= kColdMaxBytes) {
-        info.newerExists = true;
-        info.nextAfter = byteCursor(day, off);
-        return false;
-      }
-      // One forward window of whole records, growing (without re-reading) while a single
-      // record spans it, up to kColdWindowMax.
-      std::string buf = readCard(path, off, std::min<long>((long)kColdWindow, end - off));
-      bytes += buf.size();
-      if (buf.empty()) {   // the card would not give it back: the rest of this day's cold bytes
-        noteUnreadable(info, day, off, end);
-        break;
-      }
-      size_t last = buf.rfind('\n');
-      while (last == std::string::npos && off + (long)buf.size() < end && buf.size() < kColdWindowMax) {
-        const long more = std::min<long>((long)buf.size(), end - off - (long)buf.size());
-        const std::string tail = readCard(path, off + (long)buf.size(), more);
-        bytes += tail.size();
-        if (tail.empty()) break;
-        buf += tail;
-        last = buf.rfind('\n');
-      }
-      if (last == std::string::npos) {   // one record longer than the window cap, or a torn read
-        noteUnreadable(info, day, off, end);
-        break;
-      }
-      size_t s = 0;
-      while (s <= last) {
-        const size_t e = buf.find('\n', s);
-        const long lineAt = off + (long)s;
-        EpisodicMessage m;
-        const bool ok = e > s && decodeEpisodicLine(buf.data() + s, e - s, m);
-        s = e + 1;
-        if (!ok || !f.passes(m)) continue;
-        if (pageFull(q, out)) {
-          info.newerExists = true;
-          info.nextAfter = byteCursor(day, lineAt);
-          return false;
-        }
-        out.push_back(std::move(m));
-        info.matched++;
-      }
-      off += (long)last + 1;
-    }
+    AfterPage page{q, f, out, info};
+    if (!coldDay(page, day, off, end, bytes)) return false;
   }
   info.coldFiles = files;
   info.coldBytes = bytes;
