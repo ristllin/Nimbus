@@ -32,7 +32,7 @@ channel:
 
 | provider | single-shot channel | tool-loop channel | schema enforced at the wire? |
 |---|---|---|---|
-| **OpenAI** (Responses API) | `text.format` `json_schema`, `strict:true` | `orch_turn` function tool, `strict:true` parameters | **Yes**, both channels - the model cannot emit an out-of-schema `orch_turn` |
+| **OpenAI** (Responses API) | `text.format` `json_schema`, `strict:true`. The compaction fold is plain text: the fold prompt as `instructions`, the conversation as `input`, no format, no tools or connectors, `store:false`, reasoning effort low | `orch_turn` function tool, `strict:true` parameters | **Yes**, both channels - the model cannot emit an out-of-schema `orch_turn` |
 | **Anthropic** (Messages API) | the `orch_turn` tool with `tool_choice:auto` - never forced (Sonnet 5.5, Opus 5.5 and Fable 5.1 answer a forced `tool_choice` with a 400); a prose answer is delivered as the reply. The compaction fold offers no tool: its reply is the summary | `orch_turn` offered alongside the registry tools (`tool_choice:auto`) | **No** - the strict-grammar budget rejects a schema this size, so descriptions are stripped and the schema is advisory; its top-level `required` list is just `reply` and the tool description says to OMIT fields the turn is not using (the device parser treats every other field as optional), so the head stops re-emitting unchanged fields as empty values. The device parser + validator are the enforcement |
 | **Mistral** | Conversations API, `response_format.json_schema`, `strict:true`. The compaction fold is a plain chat completion with no format: its reply is the summary | chat/completions, `orch_turn` function tool (no `strict` flag; the schema's shapes only - the field descriptions ride the prompt, so 10 KB of them no longer ride every round) | single-shot **yes**; loop **advisory** - the device parser + validator enforce it |
 | **Z.ai** (direct, or Cumulo with the zai upstream) | chat/completions, `response_format:{type:"json_object"}` + a JSON-only instruction | chat/completions, `orch_turn` function tool with `tool_choice:"required"`; the forced final round offers only `orch_turn` | **No** - Z.ai answers `json_schema` requests with plain Markdown, so a single shot asks for `json_object`; the loop's schema is advisory. A reply that is still prose is delivered as the reply (nothing else rides it) |
@@ -138,22 +138,38 @@ serves:
   inverted before dispatch.
 - **Serialization**: never `serializeJson` straight into the TLS client -
   per-chunk TLS records fragment the internal heap. Every request body is
-  serialized into one PSRAM buffer and written once.
-- **A stated body budget**: the whole request body stays under 85 KB
-  (`providers.h kWireBodyMax`). The measured worst healthy turn - the full
-  42-tool manifest on the wire, a device-scale system budget, a full recent
-  window and recall - assembles at 62.8-64.9 KB, and a long tool loop adds
-  its replay budget for a measured mid-loop worst of about 80 KB; a body
-  over the budget is refused before the send (fail closed, named), so a
-  component that escapes its cap costs one honest turn instead of a TLS
-  stall. Inside a tool loop the refusal does not end the turn: nothing was
-  sent, so the loop (`runHeadLoop`) shrinks the arguments of calls that already
-  ran to a short stub (each call keeps its id and name, so it stays paired with
-  its result on every wire), folds the older tool rounds to one-line stubs,
-  clips the newest round only if nothing else frees room, and runs the same
-  round again (`nimbus/orch/body_budget.h` holds the one wording both
-  sides read). Photos splice in after the check: they are their own bounded
-  channel.
+  serialized into one PSRAM buffer and written as 4,096 B slices of it (the record
+  size the TLS client uses anyway), with the photos base64-encoded into each slice
+  at send time. While the DMA-capable pool is under 6 KB the transport waits between
+  slices for the previous slice's buffers to come back (the pacing).
+- **Each request carries its own budget**: the host and model that send a request
+  decide its body budget (`wireBudgetFor`, `nimbus/orch/request_budget.h`), read every
+  round, never a turn-global figure. So a round the fabric moves to a host with a
+  smaller budget, or Large 4's step down to Medium, is refused locally, before
+  anything is sent. No budget is under 85 KB (`providers.h kWireBodyMax`), the one
+  every head had before v5.1.2; a head routed through Cumulo keeps it. A body over its
+  budget is refused before the send (fail closed, named), so a component that escapes
+  its cap costs one honest turn instead of a stall. Inside a tool loop the refusal does
+  not end the turn: nothing was sent, so the loop (`runHeadLoop`) shrinks the
+  arguments of calls that already ran to a short stub (each call keeps its id and
+  name, so it stays paired with its result on every wire), folds the older tool rounds
+  to one-line stubs, clips the newest round only if nothing else frees room, and runs
+  the same round again (`nimbus/orch/body_budget.h` holds the one wording both sides
+  read). The tool results a round replays are kept under the replay figure derived
+  from the same budget, never under the wire's earlier figure (24 KB, Anthropic 16 KB).
+  A flat single shot's one prompt string (the Mistral Conversations head, the custom
+  endpoint) and a loop's newest user message are held under 55,904 B
+  (`flatPromptBudget`) with the same size wording, so the turn gives things up and
+  builds the request again instead of failing on the string ceiling.
+- **Photos inside the budget and the time fit**: each photo's window cost comes from
+  its pixel size (read from its own header: JPEG, PNG, WebP, GIF), by the host's rule
+  (Anthropic about width x height / 750 after its resize, OpenAI's 512 px tiles at
+  high detail, Mistral's 16 px patches), and comes off the text budget (never under
+  85 KB). The photo bytes count in the round's time fit. A photo round that cannot
+  leave room for the host's minimum final answer inside its read window is not sent:
+  older history goes first (the turn's give-up order, with its note), and only when
+  none is left are the photos read as text on that host for the rest of the turn (the
+  log line `transcribed: did not fit the <host> time window`).
 - **Valid UTF-8, whole strings**: every provider answers a body that is not
   valid UTF-8 with a 400 that is the same on every host, and ArduinoJson stores a
   string of 64 KB or more as null. So every registry tool's text is repaired
@@ -191,7 +207,13 @@ serves:
   which refuse `"low"`. A refused value is retried once without the field (HTTP 400
   code 3051, or 422); with no field Large 4 thinks at its default and runs out of
   output. Z.ai rounds get 2,400 (3,000 on the retry) inside their 50 s. OpenAI sends
-  no output cap (reasoning would starve the answer). Under the time clamp the first attempt takes three quarters of what
+  no output cap (reasoning would starve the answer), direct or through the router; the
+  only OpenAI body that carries `max_output_tokens` is the router's capped resend after a
+  low-balance 402. Every round and fold measures what it carries before it is sent (the
+  body, the photo bytes spliced in, the prompt's tokens, routed or not, and whether the
+  DMA pool was short at round start so the slices will be paced: `RoundLoad`) and sends
+  the cap that fits that load (`outputCapFor(..., RoundLoad)`), replacing the table's
+  `max_tokens` in place. Under the time clamp the first attempt takes three quarters of what
   the round's time allows (never under 3,000 tokens) and the retry after a cut the
   whole fit, at least a third more - a full 120 s round on claude-opus-5 is 4,125
   then 5,500, so every capped round, a Claude id that takes no effort included, has a
@@ -215,6 +237,10 @@ serves:
 - **Per-round socket budget**: each round's exchange timeout is clamped to
   the turn's remaining wall-clock budget (8 s floor), so N slow rounds cannot
   stack past the 600 s turn deadline.
+- **Upload timing**: every exchange's trace line ends with `wms=` (the body's upload,
+  first slice to last byte) and `pms=` (the part of it spent pacing), and a body of
+  100 KB or more writes one durable `transport: up <B> B in <ms> ms, paced <ms>` line
+  (at most one every 30 s), the two terms a round's time fit predicts.
 - **Thinking**: Anthropic non-tool text blocks and OpenAI reasoning summaries
   (requested via `reasoning:{summary:"auto"}`, gated off the `-chat` variants
   that reject the parameter) are observed into the glass box, never replayed into
@@ -510,6 +536,13 @@ A reasoning model may answer with a list of content chunks instead of a string
 (Mistral's `mistral-large-4-0` sends a `thinking` chunk, then `text` chunks; an
 Anthropic reply can lead with a `thinking` block): every reader on the device and a
 hosted instance takes only the `text` chunks, in order, as the answer.
+
+A head round through the router gives up at 90 s (the router's egress gives up at
+95 s), or at its host's own ceiling when that is shorter (Mistral 65 s, Z.ai 50 s), and
+every routed request tells the router when: `x-cumulo-deadline-ms` is its socket
+deadline less 5 s, so the router starts no retry or fallback it cannot finish in time.
+Routers that do not know the header ignore it.
+
 Get the key from your Cumulo Nimbus account (see
 [Use your Cumulo key](cloud/cumulo-key.md)); paste it into the Cumulo Nimbus row
 under Assistant > Models > Providers & keys.
