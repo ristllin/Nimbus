@@ -247,6 +247,19 @@ keyword fallback of `memory.search` and `memory.archive`, `files.search`, and
 Before this rule, every word had to appear, so adding a synonym guaranteed an
 empty answer and the assistant concluded it had never been told.
 
+**Reading forward from a row (v5.1.2).** Besides the `before` cursor that pages
+into the past, the store answers a read of the rows **after** a row id, oldest
+first, a page at a time: the conversation summary reads its next slice forward
+from the last row it covers, so a backlog longer than one read is summarized in
+order with no gap. The read reaches the rows the boot scan has not indexed yet
+under the same per-call budget, and names a span the card would not give back
+instead of skipping it silently. The conversation history a turn sends is kept
+in a per-chat cache between turns, so a steady-state turn reads nothing from the
+card; when a request has to leave earlier messages out, it names them and the
+`memory.episodic` call that reads them back. The memory tiers in the prompt tell
+the assistant to search the log before saying it does not remember what either
+of them said: its own earlier estimates and answers are there too.
+
 The original design split this into (a) an **SQLite DB** for structured rows
 and (b) an **append-only JSONL day-file stream** (`/data/blob/YYYY-MM-DD.jsonl`)
 for the raw audit trail, plus adapter transcripts; it was proposed to serve both

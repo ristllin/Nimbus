@@ -260,6 +260,10 @@ constexpr int kBudgetRefits = 14;
 // Arguments over this many bytes shrink to a stub (a write of a document, not a query).
 constexpr size_t kArgStubOver = 512;
 
+// What a prompt-side refit rung is called in the log line.
+constexpr const char* kRefitContext = "the prompt's context";
+constexpr const char* kRefitPrompt = "the prompt and input";
+
 // The replayed bytes of the newest round (the results the model has not seen yet).
 size_t newestRoundBytes(const Transcript& tr) {
   int newest = -1;
@@ -293,14 +297,15 @@ size_t refitOneRung(Transcript& tr, const HeadLoopHooks& hooks, size_t want, siz
   // folds older rounds and clips nothing.
   if (freed == 0) freed = cap < newest ? tr.foldOlderRounds(newest) : tr.trimToolOutputs(cap);
   if (freed) return freed;
-  // Round 0, or nothing left to fold: the prompt's older history before any result
-  // the model has not read (Lumi, 1 Nov: 90519 B at round 0 with 0 B to fold).
-  if (hooks.fitPrompt && (freed = hooks.fitPrompt(want, FitScope::OlderHistory)) != 0) {
-    what = "the older history";
+  // Round 0, or nothing left to fold: the prompt's context, one rung at a time (recall, the
+  // skills, history before today, today's beyond the newest exchange) before any result the
+  // model has not read (Lumi, 1 Nov: 90519 B at round 0 with 0 B to fold).
+  if (hooks.fitPrompt && (freed = hooks.fitPrompt(want, FitScope::Context)) != 0) {
+    what = kRefitContext;
     return freed;
   }
   if ((freed = tr.trimToolOutputs(cap)) != 0) return freed;
-  if (hooks.fitPrompt && (freed = hooks.fitPrompt(want, FitScope::NextRung)) != 0) what = "the prompt and input";
+  if (hooks.fitPrompt && (freed = hooks.fitPrompt(want, FitScope::NextRung)) != 0) what = kRefitPrompt;
   return freed;
 }
 
@@ -342,7 +347,7 @@ size_t refitEnough(Transcript& tr, const HeadLoopHooks& hooks, size_t want, size
     if (!got) break;
     freed += got;
     if (freed >= want) break;
-    if (std::string(rungWhat) == "the older history" || std::string(rungWhat) == "the prompt and input")
+    if (rungWhat == kRefitContext || rungWhat == kRefitPrompt)
       break;   // the wire escapes history at up to twice its size: only the re-run can measure it
   }
   return freed;
@@ -382,7 +387,10 @@ size_t trimForOverflow(Transcript& tr, size_t want, const std::function<size_t(s
   size_t freed = tr.stubArguments(kArgStubOver);
   const size_t newest = newestRoundBytes(tr);
   if (freed < want) freed += tr.foldOlderRounds(newest);
-  if (freed < want && fitPrompt) freed += fitPrompt(want - freed, FitScope::OlderHistory);
+  for (size_t got = 1; freed < want && fitPrompt && got != 0;) {   // the context's rungs, in order
+    got = fitPrompt(want - freed, FitScope::Context);
+    freed += got;
+  }
   if (freed < want && dropImages) freed += dropImages();
   if (freed < want) {
     const size_t have = tr.toolBytes();

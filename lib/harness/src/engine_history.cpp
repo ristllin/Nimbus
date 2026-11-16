@@ -1,6 +1,7 @@
 #include "nimbus/harness/engine.h"
 #include "engine_internal.h"   // resolveTurnHost / headCtxTokens - shared with engine.cpp
 
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -8,6 +9,7 @@
 #include "nimbus/harness/conversation.h"   // historyTurns / fitHistory / foldSlice / renderHistory
 #include "nimbus/harness/jobs.h"           // isJobDelivery
 #include "nimbus/harness/log.h"
+#include "nimbus/harness/turn_fit.h"       // TurnFit - the context line reads what the turn cut
 #include "nimbus/harness/turn_inbox.h"     // what the channel says the sender sent
 #include "nimbus/orch/budget.h"            // headContextBudget - the head's derived caps
 #include "nimbus/orch/episodic_log.h"      // epiCardReads - the history read's card reads
@@ -408,6 +410,33 @@ FoldSlice TurnEngine::historyFoldSlice(const std::string& chatId, size_t capByte
   FoldSlice s = foldSlice(turns, 0, capBytes, /*manual=*/true, off);
   if (!manual && !hidden && s.digest.size() < kFoldMinNewBytes) return FoldSlice();
   return s;
+}
+
+void TurnEngine::logContextLine(const ComposeInputs& ci, const TurnFit& fit, uint32_t budgetBytes,
+                                size_t round0Bytes, const std::string& chatId) const {
+  if (!histV2On() || chatId.empty() || chatId == "system") return;
+  const int32_t off = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
+  const uint64_t now = d_.platform.nowEpoch ? d_.platform.nowEpoch() : 0;
+  const uint32_t dayStart = localDayStartUnix(now, off);
+  const int32_t today = dayStart ? (int32_t)(((int64_t)dayStart + off * 60) / 86400) : -1;
+  size_t sent = 0, todaySent = 0, todayLive = 0;
+  for (const HistMsg& m : ci.history) {
+    sent += m.rows;
+    if ((int32_t)m.localDay == today) todaySent += m.rows;
+  }
+  for (const HistTurn& t : lastWindow_.kept)
+    if (t.localDay == today) todayLive += t.rows;
+  const size_t live = sent + fit.historyRowsLeftOut() + lastWindow_.leftOut.rows;
+  const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
+  char age[16] = "-";
+  if (!ci.chatSummary.empty() && marks.foldUnix && now > marks.foldUnix)
+    snprintf(age, sizeof(age), "%u.%uh", (unsigned)((now - marks.foldUnix) / 3600u),
+             (unsigned)((now - marks.foldUnix) % 3600u / 360u));
+  hlog::logf("context: sent %u/%u live rows (today %u/%u), cut %d (%u B), summary age %s, round0 %u B / budget %u B, "
+             "hist %u ms %u card reads lock %u ms",
+             (unsigned)sent, (unsigned)live, (unsigned)todaySent, (unsigned)todayLive, fit.historyMessagesLeftOut(),
+             (unsigned)fit.historyBytesLeftOut(), age, (unsigned)round0Bytes, (unsigned)budgetBytes,
+             (unsigned)histRead_.ms, (unsigned)histRead_.cardReads, (unsigned)histRead_.lockMs);
 }
 
 bool TurnEngine::historyIdleStep() {

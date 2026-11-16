@@ -9,6 +9,7 @@
 #include "nimbus/harness/conversation.h"
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/prompt_layout.h"
+#include "nimbus/orch/body_budget.h"   // bodyBudgetError - a wire's refusal of a body too big to send
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/food_ledger.h"
 #include "../support/fake_config.h"
@@ -51,6 +52,7 @@ struct Rig {
   std::string skillText;   // the owner's stored food skill ("" = none)
   std::string reply = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
   std::vector<std::string> instructions, inputs, delivered;
+  std::vector<std::string> refusals;   // lane H: the host refuses these calls for size first, in order
   std::string turnTag;
   agent::HistoryMarks marks;
   std::unique_ptr<TurnEngine> eng;
@@ -128,9 +130,14 @@ struct Rig {
       store.addMessage(m);
     };
     d.hosts.add("mistral", [this](std::string&, const std::string& ins, const std::string& inp, std::string& out,
-                                  std::string&, const agent::HeadTools*, TokenUsage*) {
+                                  std::string& err, const agent::HeadTools*, TokenUsage*) {
       instructions.push_back(ins);
       inputs.push_back(inp);
+      if (!refusals.empty()) {
+        err = refusals.front();
+        refusals.erase(refusals.begin());
+        return false;
+      }
       out = reply;
       return true;
     });
@@ -342,76 +349,33 @@ static void test_the_whole_day_is_in_the_history() {
   TEST_ASSERT_FALSE(has(h, "yesterday 0"));
 }
 
-// A request that would pass the body budget leaves out the oldest history turns
-// (never the newest), and says so in the log.
-static void test_the_request_stays_under_the_body_budget() {
-  Rig r;
+// Lane H: no history leaves a request before a real refusal of its body. A long message on a
+// day of history is sent whole (v5.1.1's wire guard cut the oldest turns from an estimate,
+// on 121 of 123 owner turns); when the wire does refuse the body for its size, the oldest of
+// today's turns go (never the newest exchange), and the request says what went, with the
+// rows, the time range and the call that reads them back.
+static void test_history_leaves_only_after_a_real_refusal() {
   const uint32_t h0 = kDay / 3600;
+  Rig r;
   for (int i = 0; i < 12; i++) r.turn(h0 + 10 + (uint32_t)i / 2, "turn " + std::to_string(i), std::string(900, 'z'));
   r.eng->handleMessage("here is a long document: " + std::string(52000, 'd'), "Roy", "1001");
-  const std::string h = r.history();
-  TEST_ASSERT_FALSE_MESSAGE(has(h, "turn 0\n"), "the oldest turn should have been left out");
-  TEST_ASSERT_TRUE(has(h, "turn 11"));   // the newest turn stays
-  // Counter-test: the same history with a short message is sent whole.
-  Rig s;
-  for (int i = 0; i < 12; i++) s.turn(h0 + 10 + (uint32_t)i / 2, "turn " + std::to_string(i), std::string(900, 'z'));
-  s.eng->handleMessage("short", "Roy", "1001");
-  TEST_ASSERT_TRUE(has(s.history(), "turn 0\n"));
-}
-
-// The guard's arithmetic on the device's real shape: a loop turn advertises about
-// 42 tools (test_loop_body_budget's deviceShapedSpecs) and keeps room for its tool
-// rounds, so it leaves out more history than a single-shot turn with the same text;
-// the summary pair and the newest turn always stay, and what is left fits.
-static void test_the_wire_guard_on_a_device_shaped_loop_turn() {
-  std::vector<nimbus::orch::ToolRegistry::Spec> specs;
-  const std::string schema = R"({"type":"object","properties":{"project":{"type":"string"},"q":{"type":"string"}}})";
-  for (int i = 0; i < 42; i++) specs.push_back({"tool_" + std::to_string(i), std::string(309, 'd'), schema});
-  const size_t loopTools = agent::wireToolBytes(specs, true), shotTools = agent::wireToolBytes(specs, false);
-  TEST_ASSERT_TRUE(loopTools > shotTools + 42 * 309);   // a single-shot turn sends the answer schema alone
-  const auto chat = [] {
-    std::vector<agent::HistMsg> h = {{true, std::string(agent::kSummaryUserHead) + "earlier"}, {false, agent::kSummaryAck}};
-    for (int i = 0; i < 30; i++) {
-      h.push_back({true, "turn " + std::to_string(i) + " " + std::string(900, 'u')});
-      h.push_back({false, "reply " + std::to_string(i) + " " + std::string(900, 'a')});
-    }
-    return h;
-  };
-  // The instructions carry the history (compose renders it in), as the engine passes them.
-  const auto histBytes = [](const std::vector<agent::HistMsg>& h) {
-    size_t n = 0;
-    for (const auto& m : h) n += m.text.size();
-    return n;
-  };
-  std::vector<agent::HistMsg> loop = chat(), shot = chat();
-  const size_t base = 20000, inp = 20000;
-  const size_t droppedLoop = agent::fitHistoryToWire(loop, base + histBytes(loop), loopTools, inp, true);
-  const size_t droppedShot = agent::fitHistoryToWire(shot, base + histBytes(shot), shotTools, inp, false);
-  TEST_ASSERT_TRUE(droppedLoop > 0 && droppedLoop % 2 == 0);   // whole exchanges only
-  TEST_ASSERT_TRUE_MESSAGE(droppedLoop > droppedShot, (std::to_string(droppedLoop) + " vs " + std::to_string(droppedShot)).c_str());
-  for (const auto* h : {&loop, &shot}) {
-    TEST_ASSERT_TRUE(h->front().text.rfind(agent::kSummaryUserHead, 0) == 0);
-    TEST_ASSERT_TRUE(h->back().text.rfind("reply 29 ", 0) == 0);
-  }
-  // What is left fits: the guard run again on it leaves out nothing more (its
-  // accounting of what a dropped message saves matches what the request costs).
-  TEST_ASSERT_EQUAL(0, (int)agent::fitHistoryToWire(loop, base + histBytes(loop), loopTools, inp, true));
-  TEST_ASSERT_EQUAL(0, (int)agent::fitHistoryToWire(shot, base + histBytes(shot), shotTools, inp, false));
-  // Nothing to do when it already fits.
-  std::vector<agent::HistMsg> small = chat();
-  small.resize(6);
-  TEST_ASSERT_EQUAL(0, (int)agent::fitHistoryToWire(small, 4000 + histBytes(small), loopTools, 2000, true));
-  // Ruling 3 Nov 09:15Z asked whether recent history is dropped too eagerly (Lumi:
-  // 10 messages left out on a one-line turn). The guard drops the OLDEST whole
-  // exchanges, so the drop above is also the MINIMUM: keeping one more pair would
-  // not fit, and the pair it kept back is the newest exchange, not an old one.
-  TEST_ASSERT_TRUE(droppedLoop >= 2);
-  std::vector<agent::HistMsg> onePairMore = chat();
-  onePairMore.erase(onePairMore.begin() + 2,
-                    onePairMore.begin() + 2 + (long)(droppedLoop - 2));
-  TEST_ASSERT_TRUE_MESSAGE(
-      agent::fitHistoryToWire(onePairMore, base + histBytes(onePairMore), loopTools, inp, true) > 0,
-      "the guard left out more history than the budget required");
+  TEST_ASSERT_EQUAL(1, (int)r.instructions.size());
+  TEST_ASSERT_TRUE_MESSAGE(has(r.history(), "turn 0\n"), "nothing is cut before a refusal");
+  TEST_ASSERT_FALSE(has(r.inputs.back(), "[LEFT OUT"));
+  // The wire refuses the body: the turn gives up history, oldest first, and says so.
+  Rig q;
+  for (int i = 0; i < 12; i++) q.turn(h0 + 10 + (uint32_t)i / 2, "turn " + std::to_string(i), std::string(900, 'z'));
+  q.refusals.push_back(nimbus::orch::bodyBudgetError(85000, 89000));
+  q.eng->handleMessage("here is a long document: " + std::string(52000, 'd'), "Roy", "1001");
+  TEST_ASSERT_EQUAL(2, (int)q.instructions.size());
+  const std::string h = q.history();
+  TEST_ASSERT_FALSE_MESSAGE(has(h, "turn 0\n"), h.c_str());
+  TEST_ASSERT_TRUE(has(h, "turn 11"));   // the newest exchange stays
+  const std::string in = q.inputs.back();
+  TEST_ASSERT_TRUE_MESSAGE(has(in, "[LEFT OUT TO FIT THIS REQUEST]"), in.c_str());
+  TEST_ASSERT_TRUE(has(in, "of today's earlier conversation message(s) from Mon 26 Oct 10:00"));
+  TEST_ASSERT_TRUE(has(in, "(rows m00000001 to "));
+  TEST_ASSERT_TRUE(has(in, "memory_episodic {\"kind\":\"message\",\"before\":\"m0000"));
 }
 
 // Lane QFIX (OIR-36): the [MEMORY ROUTING] hint names where a remember-request lands, on
@@ -447,8 +411,7 @@ int main(int, char**) {
   RUN_TEST(test_the_day_total_in_a_reply_is_checked_against_the_ledger);
   RUN_TEST(test_the_fold_carries_the_day);
   RUN_TEST(test_the_whole_day_is_in_the_history);
-  RUN_TEST(test_the_request_stays_under_the_body_budget);
-  RUN_TEST(test_the_wire_guard_on_a_device_shaped_loop_turn);
+  RUN_TEST(test_history_leaves_only_after_a_real_refusal);
   RUN_TEST(test_memory_routing_hint_rides_only_a_real_owner_message);
   return UNITY_END();
 }

@@ -329,6 +329,18 @@ size_t foldKeptTail(const std::vector<HistTurn>& turns, size_t keepBytes, int32_
 FoldSlice foldSlice(const std::vector<HistTurn>& turns, size_t keepBytes, size_t capBytes,
                     bool manual, int32_t utcOffsetMin, const HistoryBudget& day = HistoryBudget());
 
+// "Sat 15 Nov 09:12" at `unixSec` in a zone `utcOffsetMin` east of UTC; "" for 0 (no clock).
+std::string localTimeLabel(uint32_t unixSec, int32_t utcOffsetMin);
+
+// Lane H: the seed's coverage line - what of the conversation after the summary the request
+// does not carry (`span`, the window's HistoryWindow::leftOut) and, when the summary is more
+// than a day old, its age. "" while everything after thru is in the request and the summary
+// is fresh (or there is none). `summaryUnix` 0 = no summary time known; `nowUnix` 0 = no clock.
+std::string historyCoverageLine(const ConvSpan& span, uint32_t summaryUnix, uint64_t nowUnix,
+                                int32_t utcOffsetMin);
+// The seed's coverage line opens with this.
+extern const char kCoverageHeader[];   // "[CONVERSATION COVERAGE]"
+
 // Consecutive identical owner rows (newest first) as one row with " (xN)" - the
 // fold input of a chat that has no turn-structured history yet. The same rule
 // as isRepeatRow: `zoneAt` tells the owner's local days (empty = the UTC day).

@@ -321,6 +321,37 @@ static void test_a_long_day_folds_todays_oldest_beyond_keep() {
   TEST_ASSERT_TRUE(tail >= b.keepBytes - 2000);
 }
 
+// The seed's coverage line (lane H): said only while live rows after the summary are not in
+// the request, or the summary is more than a day old; it names the rows the way the [LEFT OUT]
+// note does (count, local time range, the call that reads them back).
+static void test_the_coverage_line() {
+  agent::ConvSpan none;
+  TEST_ASSERT_EQUAL_STRING("", agent::historyCoverageLine(none, kDay - 3600, kDay, 0).c_str());   // fresh summary
+  TEST_ASSERT_EQUAL_STRING("", agent::historyCoverageLine(none, 0, kDay, 0).c_str());             // no summary
+  agent::ConvSpan hidden;
+  hidden.afterId = "m000017d9";
+  hidden.beforeId = "m00001c97";
+  hidden.toId = "m00001c96";
+  hidden.rows = 412;
+  hidden.fromHours = kHourToday - 13 * 24 + 18;   // Tue 13 Oct 18:00 (UTC)
+  hidden.toHours = kHourToday + 14;
+  const std::string line = agent::historyCoverageLine(hidden, kDay - 13 * 86400 + 15 * 3600, kDay + 16 * 3600, 60);
+  TEST_ASSERT_TRUE_MESSAGE(line.rfind("[CONVERSATION COVERAGE] 412 earlier message(s) of this chat from ", 0) == 0, line.c_str());
+  TEST_ASSERT_TRUE(has(line, " to Mon 26 Oct 15:59 are in neither your conversation summary nor this request."));
+  TEST_ASSERT_TRUE(has(line, "memory_episodic {\"kind\":\"message\",\"before\":\"m00001c97\"}"));
+  TEST_ASSERT_TRUE(has(line, "Your conversation summary was last updated 13 days ago"));
+  TEST_ASSERT_TRUE(line.back() == '\n');
+  agent::ConvSpan unread;
+  unread.afterId = "m000017d9";
+  unread.beforeId = "m00001cb0";
+  unread.uncounted = true;
+  const std::string u = agent::historyCoverageLine(unread, 0, kDay, 0);
+  TEST_ASSERT_TRUE_MESSAGE(has(u, "Earlier messages of this chat are in neither"), u.c_str());
+  TEST_ASSERT_TRUE(has(u, "(the device is still reading them from its card)"));
+  // A summary a day and a half old alone: the age, in hours.
+  TEST_ASSERT_TRUE(has(agent::historyCoverageLine(none, kDay, kDay + 36 * 3600, 0), "last updated 36 hours ago"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_the_whole_day_survives_the_overflow_shift);
@@ -335,5 +366,6 @@ int main(int, char**) {
   RUN_TEST(test_the_2350_estimate_is_in_the_0005_request);
   RUN_TEST(test_derived_window_does_not_move_at_midnight_or_without_a_clock);
   RUN_TEST(test_a_long_day_folds_todays_oldest_beyond_keep);
+  RUN_TEST(test_the_coverage_line);
   return UNITY_END();
 }

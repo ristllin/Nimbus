@@ -1,18 +1,16 @@
 // day_context - lane CTX's part of the turn: today's food ledger in the per-turn
-// block, the food playbooks on a food turn, the fold's day, and the wire guard that
-// keeps a whole day of history inside the request body budget. TurnEngine members
+// block, the food playbooks on a food turn and the fold's day. TurnEngine members
 // and their free helpers (engine.h), kept apart from engine.cpp so the turn core
-// stays readable.
+// stays readable. (The speculative wire guard that cut history before any request,
+// fitHistoryToWire, is gone - lane H of the history fix: history leaves a request
+// only after a real refusal of its body, in the give-up order, turn_fit.h.)
 #include <algorithm>
 
 #include "nimbus/harness/builtin_skills.h"   // kFoodLogSkillId, kFoodCoachSkillId, builtinSkillBody
 #include "nimbus/harness/engine.h"
-#include "nimbus/harness/log.h"              // hlog
 #include "nimbus/harness/skill_attach.h"     // kSkillAttachCap
 #include "nimbus/harness/skill_md.h"         // skillUtf8Prefix
-#include "nimbus/harness/providers.h"        // providers::kWireBodyMax - the request body budget
 #include "nimbus/orch/food_ledger.h"
-#include "nimbus/orch/orch_schema.h"         // ORCH_SCHEMA_BODY - the final-answer tool
 
 namespace agent {
 
@@ -127,43 +125,6 @@ void TurnEngine::applyFoodContext(ComposeInputs& ci, const std::string& userText
 std::string TurnEngine::foldDayContext(const std::string& chatId) const {
   if (!d_.foodLedger || !personChat(chatId)) return std::string();
   return nimbus::orch::renderFoldDay(d_.foodLedger(chatId));
-}
-
-size_t wireToolBytes(const std::vector<nimbus::orch::ToolRegistry::Spec>& specs, bool loopOn) {
-  size_t n = sizeof(nimbus::orch::ORCH_SCHEMA_BODY) + 256;
-  if (!loopOn) return n;
-  for (const auto& s : specs)
-    if (!loopToolHidden(s.name)) n += s.name.size() + s.description.size() + s.schemaJson.size() + 64;
-  return n;
-}
-
-size_t fitHistoryToWire(std::vector<HistMsg>& history, size_t instructionBytes, size_t toolBytes,
-                        size_t inputBytes, bool loopOn) {
-  // JSON escaping grows a text by a few percent; each history message (its text is
-  // in instructionBytes) adds its own envelope, and the request one more.
-  const auto escaped = [](size_t b) { return b + b / 16; };
-  constexpr size_t kEnvelope = 48;
-  // Room the tool rounds need on top: round 0 and a round or two must fit as sent
-  // (past that the loop folds older rounds itself); a single-shot turn has none.
-  const size_t reserve = loopOn ? 8000 : 2000;
-  const size_t need = escaped(instructionBytes) + (history.size() + 1) * kEnvelope + toolBytes +
-                      escaped(inputBytes) + reserve;
-  if (need <= providers::kWireBodyMax) return 0;
-  size_t excess = need - providers::kWireBodyMax;
-  // The summary pair stays (it carries what was folded), and so does the newest turn.
-  const size_t first = (history.size() >= 2 && isSummaryMessage(history[0])) ? 2 : 0;
-  size_t drop = 0;
-  while (first + drop + 2 < history.size() && excess > 0) {
-    const size_t pair = escaped(history[first + drop].text.size()) + escaped(history[first + drop + 1].text.size()) +
-                        2 * kEnvelope;
-    excess = pair >= excess ? 0 : excess - pair;
-    drop += 2;
-  }
-  if (!drop) return 0;
-  history.erase(history.begin() + (long)first, history.begin() + (long)(first + drop));
-  hlog::logf("history: %u message(s) left out to keep the request under %u B", (unsigned)drop,
-             (unsigned)providers::kWireBodyMax);
-  return drop;
 }
 
 }  // namespace agent

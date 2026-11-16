@@ -90,18 +90,23 @@ entry (owner msg | sub-agents finished | loop fired | post-OTA)   [tg_poll]
   → composeInstructions: role/contract → identity+time → directive+running-memory
     → capabilities (live manifest + tool list) → running sessions
     → RECENT CONVERSATION (per-chat, one exchange per turn, append-only between
-      boundaries, budget derived from the head's window) → scratchpad → recall → memory-howto
+      boundaries, every turn after the fold anchor up to the head's history budget,
+      read from the per-chat conversation cache: no card read on a steady-state turn)
+      → scratchpad → recall (its own byte bound, and a per-turn floor so it always
+      has room) → memory-howto
   → input: [MEMORY RESULTS] + [FRESH RESULTS] + [ACTIVE SESSIONS] + providers/models
     /connectors digest + [CHANNEL]/[USER] (or [SYSTEM]/[SCHEDULED LOOP])
   → host pick (resolveHeadHost: a keyed orchHost, else the first keyed provider) + per-chat conv chain
   → budget gate → head tool loop (≤8 rounds / 600 s wall clock / heap re-gate
     / byte budgets; each round's socket timeout clamped to the REMAINING budget;
-    a round whose request would outgrow the 85 KB body budget shrinks the
-    arguments of calls that already ran, folds the older tool rounds to one-line
-    stubs and runs again - never clipping the newest round's results, the ones
-    the model has not seen yet; only a round that still does not fit after all
-    of that gets its newest results clipped - so a long loop or a big write
-    still answers)
+    a round whose request would outgrow its body budget gives up, in one order
+    (turn_fit.h), the arguments of calls that already ran and the older tool
+    rounds, then recall, the food playbook and attached skills, history before
+    today and today's beyond the newest exchange - each named in the request's
+    [LEFT OUT] note - and only then the newest round's results, the ones the
+    model has not seen yet; nothing goes before a real refusal, and the summary
+    pair and the newest exchange never go - so a long loop or a big write still
+    answers)
       round: model → tool calls → registry dispatch (memory.*, web.search,
       device.control, files.*, loop.*, session terminate…) → results fed back;
       thinking + merged tool rows captured to episodic (glass box)

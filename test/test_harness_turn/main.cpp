@@ -3470,8 +3470,8 @@ static void test_cum530_router_selector_head_gets_its_real_window() {
     r.scripts["cumulo"] = {{true, kGoodTurn, "", 0, "c1", 50, 10}};
     LogCapture::lines().clear();
     TEST_ASSERT_TRUE(r.eng->runTurn("hello", "1001", "hello"));
-    TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("budget: ctx=272K"), sel);
-    TEST_ASSERT_FALSE_MESSAGE(LogCapture::contains("budget: ctx=100K"), sel);
+    TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains((std::string("budget: cumulo/") + sel + " window 272K").c_str()), sel);
+    TEST_ASSERT_FALSE_MESSAGE(LogCapture::contains("window 100K"), sel);
   }
 }
 

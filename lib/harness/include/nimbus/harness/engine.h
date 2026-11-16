@@ -192,16 +192,6 @@ struct HistoryQuery {
 // ask (they drop the call with their next edit).
 bool historyAfterUnserved(const HistoryQuery& q);
 
-// Lane CTX: the bytes a turn's tool list adds to its request (each advertised tool's
-// name, description and schema with its envelope, and the final-answer schema; a
-// single-shot turn sends the schema alone) - the history's wire guard reads it.
-size_t wireToolBytes(const std::vector<nimbus::orch::ToolRegistry::Spec>& specs, bool loopOn);
-// Lane CTX, the history's wire guard: drop the oldest turns of `history` (never the
-// summary pair or the newest turn) until the request this turn sends fits the body
-// budget with room for its tool rounds. Returns the messages dropped (0 = none).
-size_t fitHistoryToWire(std::vector<HistMsg>& history, size_t instructionBytes, size_t toolBytes,
-                        size_t inputBytes, bool loopOn);
-
 class TurnEngine {
  public:
   struct Deps {
@@ -843,6 +833,10 @@ class TurnEngine {
   ConvCache convCache_;
   HistoryReadStats histRead_;
   HistoryWindow lastWindow_;
+  // The turn's context line (lane H): "context: sent k/n live rows (today t/T), cut c (B B),
+  // summary age h, round0 <bytes> B / budget <B> B, hist <ms> ms <n> card reads lock <ms> ms".
+  void logContextLine(const ComposeInputs& ci, const class TurnFit& fit, uint32_t budgetBytes, size_t round0Bytes,
+                      const std::string& chatId) const;
   // Capture one assistant row with its out: kind (and the trigger row first).
   void captureAssistantRow(const std::string& chatId, const std::string& text, const char* outKind);
   void flushTrigger(const std::string& chatId);   // the pending trigger row, once

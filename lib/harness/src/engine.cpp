@@ -1122,6 +1122,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   if (!admitted) {
     turnMem().clearTaken();      // only an entry's own takes can be put back
     histRead_ = HistoryReadStats();   // a turn with no owner capture: its read starts here
+    lastWindow_ = HistoryWindow();
   }
   turnMem().started = false;
   turnMem().refused = false;
@@ -1379,6 +1380,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
   const orch::ContextBudget budget = orch::headContextBudget(host, headModel, bov);
   ci.budgetBytes = budget.systemPromptBytes;
+  ci.perTurnFloorBytes = (int)budget.perTurnFloorBytes;   // lane H: recall always has room
+  ci.recallBytes = (int)budget.recallBytes;               // ... and a bound of its own
   // H2/R3: the turn-structured history as REAL messages the providers send as
   // history items (prompt_layout.h) - the text window stays empty. Without
   // histV2 the device's rendered window rides the per-turn block and only the
@@ -1409,12 +1412,14 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   turnGaps_.note(chatId, nowMs());
   ci.cache.longTtl = turnGaps_.longTtl(chatId);
   ci.cache.key = layout::cacheKey(ci.devName, chatId);
-  hlog::logf("budget: ctx=%uK sys=%d res=%u tot=%u (%s)", (unsigned)(budget.ctxTokens / 1000),
-             budget.systemPromptBytes, (unsigned)budget.toolResultBytes,
-             (unsigned)budget.toolTotalBytes,
-             (bov.maxContextBytes > 0 || bov.toolResultCap > 0 || bov.toolTotalCap > 0)
-                 ? "owner"
-                 : "auto");
+  // Lane H: what this head's request is budgeted at (request_budget.h), and its history marks.
+  const orch::RequestBudget reqBudget = orch::requestBudgetFor(host, headModel, false);
+  hlog::logf("budget: %s/%s window %uK target %uK tok (%u KB) hist %u/%u/%u KB (%s)", host.c_str(),
+             headModel.empty() ? "-" : headModel.c_str(), (unsigned)(budget.ctxTokens / 1000),
+             (unsigned)(reqBudget.targetTokens / 1000), (unsigned)(reqBudget.wireBodyBytes / 1000),
+             (unsigned)(budget.historyMaxBytes / 1024), (unsigned)(budget.historySoftBytes / 1024),
+             (unsigned)(budget.historyKeepBytes / 1024),
+             (bov.maxContextBytes > 0 || bov.toolResultCap > 0 || bov.toolTotalCap > 0) ? "owner" : "auto");
   // Advertise only tools that are LIVE on this fabric, under the SANITIZED names
   // the wire accepts (loopToolHidden/loopToolName - shared with the dispatch
   // wiring below so "advertised == callable" can't drift). Verified live:
@@ -1498,9 +1503,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // loop's prompt and a synthesis turn's [FRESH RESULTS] (untrusted sub-agent output) also reach
   // here as userText, and must not be told to save a rule or a fact because they say "remember".
   if (ci.speakerPresent) ci.memoryRouting = nimbus::orch::renderMemoryRoutingHint(userText);
+  // Lane H: nothing is cut here. The request goes as composed, and only a real refusal of
+  // its body (the wire's budget, a provider's window) gives anything up, in the give-up
+  // order (turn_fit.h), with the note that names it.
   std::string instructions = agent::composeInstructions(ci);
-  if (fitHistoryToWire(ci.history, instructions.size(), wireToolBytes(specs, ci.loopOn), inputs.size(), ci.loopOn))
-    instructions = agent::composeInstructions(ci);   // lane CTX: the history fits the request body
   turnMem().gate.phase("prompt", freeHeap(), largestFreeBlock());
   // ONE line, only when the loop was actually withheld - the interesting case,
   // and it keeps a healthy device's log clean. entry -> recall -> compose shows
@@ -1820,7 +1826,23 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   turnMem().gate.phase("tools", freeHeap(), largestFreeBlock());
 
   // What the request gives up when it does not fit, and what it says about it (turn_fit.h).
-  TurnFit fit(ci, inputs, headToolsPtr ? &headTools : nullptr);
+  // Lane H: the seed's coverage line - the live rows after the summary this request does not
+  // carry (a shift, rows not read yet), and a summary more than a day old - only then.
+  const std::string seed = [&]() {
+    if (!histV2On() || chatId.empty() || chatId == "system") return inputs;
+    const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
+    const std::string line = historyCoverageLine(lastWindow_.leftOut, ci.chatSummary.empty() ? 0u : marks.foldUnix,
+                                                 d_.platform.nowEpoch ? d_.platform.nowEpoch() : 0,
+                                                 d_.utcOffsetMin ? d_.utcOffsetMin() : 0);
+    return line + inputs;
+  }();
+  FitContext fitCtx;   // which history is today's, and the note's local times
+  fitCtx.utcOffsetMin = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
+  {
+    const uint32_t dayStart = localDayStartUnix(d_.platform.nowEpoch ? d_.platform.nowEpoch() : 0, fitCtx.utcOffsetMin);
+    if (dayStart) fitCtx.todayLocalDay = (int32_t)(((int64_t)dayStart + fitCtx.utcOffsetMin * 60) / 86400);
+  }
+  TurnFit fit(ci, seed, headToolsPtr ? &headTools : nullptr, fitCtx);
   std::function<std::string()> requestInputs;   // the input as the running attempt sends it
   auto takeFit = [&]() {
     instructions = fit.instructions();
@@ -1837,6 +1859,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       return freed;
     };
   std::string outJson, err;
+  // The round-0 request as composed (prompt, history, input, tools): the context line's round0.
+  size_t round0Bytes = instructions.size() + seed.size();
+  for (const auto& sp : headTools.specs) round0Bytes += sp.name.size() + sp.description.size() + sp.schemaJson.size();
   // Lifecycle hook: turn end - fired exactly once on EVERY exit path below
   // (budget refusal, provider failure, parse fail, success), observer-only.
   // `rounds` carries the executed tool-call count (v1 proxy; see hooks.h).
@@ -1867,6 +1892,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // fallback=false on its row, and the next turn gets no [FALLBACK] note about it.
     const orch::SpendSlot* last = tf.spend.lastBilled();
     if (!last && tf.switched) pendingFallbackPath_.clear();
+    logContextLine(ci, fit, reqBudget.wireBodyBytes, round0Bytes, chatId);
     if (!d_.hooks.onTurnEnd) return;
     TurnEndEv ev;
     ev.ok = okFlag;
@@ -1895,7 +1921,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.attribution = attribution_;
     ev.spend = &tf.spend;
     ev.chain = okFlag ? nullptr : &tf.chain;
-    ev.trimmedForSize = fit.historyTrimmed();
+    ev.trimmedForSize = fit.historyMessagesLeftOut() > 0;   // every live-row cut (lane H): the fold covers it
+    ev.historyBytes = lastWindow_.bytes;
+    ev.historyMaxBytes = budget.historyMaxBytes;
+    ev.historySoftBytes = budget.historySoftBytes;
+    ev.leftOutRows = (uint32_t)(fit.historyRowsLeftOut() + lastWindow_.leftOut.rows);
     // Lane ECHO (owner design, 9/11 Nov): a background turn's reply captured
     // during quiet hours (never delivered at night, never held for the next
     // message) - the onTurnEnd glue arms ONE self-wakeup from it.
@@ -1926,9 +1956,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // instead of the single shot.
   // The turn's input as each request sends it: the per-turn line for the host it runs on, then
   // the input (lane HFM; the cached system prompt carries none of it). Rebuilt per host tried.
-  std::string turnInputs = inputs;
+  std::string turnInputs = seed;
   auto inputsFor = [&](const std::string& h) -> const std::string& {
-    turnInputs = runsOnText(d_, h, requestedHost) + (fit.trimmed() ? fit.inputs() : inputs);
+    turnInputs = runsOnText(d_, h, requestedHost) + (fit.trimmed() ? fit.inputs() : seed);
     return turnInputs;
   };
   auto runTurnHost = [&](const std::string& h, std::string& cv) -> bool {
@@ -2198,7 +2228,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       return runsOnText(d_, h, requestedHost);
     };
     ok = d_.hosts.fabric(
-        hostList, instructions, inputs, outJson, err, *headToolsPtr, &tf.spend,
+        hostList, instructions, seed, outJson, err, *headToolsPtr, &tf.spend,
         [&](const std::string& from, const std::string& to) {
           // The notice carries the cause and its HTTP status (lastFabricSwitch).
           // A billing refusal or a refused key is told once per episode (shared with
@@ -2237,15 +2267,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     size_t budget = 0, size = 0;   // the wire budget's figures, read to tell the two refusals apart
     for (int tries = 0; !ok && *loopDispatched == 0 && tries < kSingleShotRefits; ++tries) {
       // A window refusal the head's own loop already trimmed for has had its one retry.
-      const size_t want = sizeRefusalBytes(err, instructions.size() + inputs.size(), fit.trimmed() ? tries + 1 : tries);
+      const size_t want = sizeRefusalBytes(err, instructions.size() + seed.size(), fit.trimmed() ? tries + 1 : tries);
       if (!want) break;
-      // A window refusal has one retry, so it takes the whole ladder; the wire budget's next
-      // build checks the work, so it gives up one rung at a time.
-      size_t freed = fit.shrink(want, orch::FitScope::OlderHistory);
-      if (freed < want && !orch::parseBodyBudgetError(err, budget, size))
-        freed += fit.shrink(want - freed, orch::FitScope::Ladder);
-      else if (!freed)
-        freed = fit.shrink(want, orch::FitScope::NextRung);
+      // A window refusal has one retry, so it takes the whole give-up order; the wire budget's
+      // next build checks the work, so it gives up one rung at a time.
+      const bool wireBudget = orch::parseBodyBudgetError(err, budget, size);
+      const size_t freed = fit.shrink(want, wireBudget ? orch::FitScope::NextRung : orch::FitScope::Ladder);
       if (!freed) break;
       takeFit();
       hlog::logf("orchestrator: %s refused the request for its size - gave up %u B, sending it again", host.c_str(),
@@ -2892,6 +2919,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
     }
   }
   histRead_ = HistoryReadStats();   // the turn's history read starts with its own capture
+  lastWindow_ = HistoryWindow();
   if (!captureOwnerRow(chatId, text, fromTag)) return;   // H7: already captured, no paid call
   turnMem().gate.phase("row", freeHeap(), largestFreeBlock());
 

@@ -424,10 +424,13 @@ static void test_synthesis_never_fails_on_size() {
   TEST_ASSERT_TRUE(crossed > 3);   // the matrix really crosses the budget
 }
 
-// The results are what a synthesis is for: at Lumi's size they go out whole, the past turns
-// pay. The owner hears nothing about it, since nothing they asked about was cut.
+// The results are what a synthesis is for: at Lumi's size the past turns pay first (lane H: the
+// give-up order - history before today, then today's beyond the newest exchange), and the
+// results are clipped only once the history is down to the newest exchange, which is never
+// dropped. While the results go whole the owner hears nothing about it, since nothing they asked
+// about was cut.
 static void test_synthesis_at_lumis_size_keeps_its_results_whole() {
-  int crossed = 0;
+  int crossed = 0, whole = 0;
   for (size_t tools = 44000; tools <= 58000; tools += 2000) {
     Rig r({"mistral"}, tools);
     r.quotedHistory(8, 1500);
@@ -436,13 +439,18 @@ static void test_synthesis_at_lumis_size_keeps_its_results_whole() {
     r.script(ok("mistral", finalBody("mistral", "synthesis done")));
     r.eng->maybeConsolidate("1001");
     assertAnswered(r, "lumi size", "synthesis done");
-    crossed += r.wire.http.seen[0].body.find("LEFT OUT") != std::string::npos ? 1 : 0;
-    const bool whole = r.wire.http.seen[0].body.find("cut to fit") == std::string::npos;
-    if (tools > 56000) continue;   // past this the past turns are not enough, and the results do pay
-    TEST_ASSERT_TRUE_MESSAGE(whole, "the result is whole");
+    const std::string& body = r.wire.http.seen[0].body;
+    crossed += body.find("LEFT OUT") != std::string::npos ? 1 : 0;
+    const bool resultWhole = body.find("cut to fit") == std::string::npos;
+    whole += resultWhole ? 1 : 0;
+    if (!resultWhole) {
+      TEST_ASSERT_EQUAL_MESSAGE(7, oldestShown(body), "results clipped before the history was spent");
+      continue;   // the owner then hears that part of the results did not fit
+    }
     TEST_ASSERT_FALSE_MESSAGE(r.saidAny("did not fit"), r.all().c_str());
   }
   TEST_ASSERT_TRUE(crossed > 0);
+  TEST_ASSERT_TRUE_MESSAGE(whole > 0, "at the smaller sizes the history alone pays");
 }
 
 // The same on an owner turn, and what the turn leaves out is said: the model reads it in the
@@ -800,6 +808,9 @@ static void test_a_recovered_overflow_is_not_the_cause() {
 static void test_a_later_overflow_gets_its_own_trim() {
   Rig r({"mistral"}, 2000);
   r.quotedHistory(8, 1200);
+  // Lane H: the second trim finds the newest round's results (the newest exchange is never
+  // dropped, so a later overflow needs something else to give).
+  r.toolOutput = std::string(6000, 'o');
   r.script(refused("mistral", 400, kNearOverflowMistral));
   r.script(overloaded("mistral"));
   r.script(ok("mistral", toolBody("mistral", 1)));   // the same-host resend serves it

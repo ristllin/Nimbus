@@ -1,10 +1,11 @@
 #include "nimbus/harness/turn_fit.h"
 
 #include <algorithm>
+#include <cstdio>
 
 #include "nimbus/harness/head_tools.h"
 #include "nimbus/harness/log.h"
-#include "nimbus/mem_cap.h"   // utf8CapLen - every clip stays valid UTF-8
+#include "nimbus/mem_cap.h"         // utf8CapLen - every clip stays valid UTF-8
 
 namespace agent {
 
@@ -15,6 +16,7 @@ constexpr size_t kBlockFloor = 1024;
 constexpr size_t kTailKeep = 240;
 constexpr size_t kInputFloor = 6000;
 constexpr size_t kInputTailKeep = 3000;
+constexpr const char kSkillsHeader[] = "[ACTIVE SKILLS]";
 
 // `text` with its middle cut and marked, `keep` bytes in all. UTF-8 safe.
 std::string clipMiddle(const std::string& text, size_t keep, size_t tailKeep, const char* what) {
@@ -39,28 +41,70 @@ size_t nextBlockAt(const std::string& s, size_t from) {
   return s.size();
 }
 
+void addPart(std::string& s, const std::string& part) { s += (s.empty() ? "" : "; ") + part; }
+
 }  // namespace
 
-TurnFit::TurnFit(ComposeInputs& ci, const std::string& inputs, HeadTools* tools)
-    : ci_(ci), tools_(tools), input_(inputs) {}
+TurnFit::TurnFit(ComposeInputs& ci, const std::string& inputs, HeadTools* tools, const FitContext& ctx)
+    : ci_(ci), tools_(tools), ctx_(ctx), input_(inputs) {}
 
-size_t TurnFit::dropOlderHistory(size_t want) {
-  auto& h = ci_.history;
-  // The summary pair stays (it carries what was folded), and so does the newest turn.
-  const size_t first = (h.size() >= 2 && isSummaryMessage(h[0])) ? 2 : 0;
-  size_t drop = 0, freed = 0;
-  while (first + drop + 2 < h.size() && freed < want) {
-    freed += h[first + drop].text.size() + h[first + drop + 1].text.size();
-    drop += 2;
-  }
-  if (!drop) return 0;
-  h.erase(h.begin() + (long)first, h.begin() + (long)(first + drop));
-  historyDropped_ += (int)drop;
-  historyBytesDropped_ += freed;
-  return freed;
+// The request as the wire sends it, less its fixed envelope: the composed prompt (its
+// history messages included), the input with this note, and the tools array.
+size_t TurnFit::rendered() const {
+  size_t n = composeInstructions(ci_).size() + inputs().size();
+  if (tools_)
+    for (const auto& t : tools_->specs) n += t.name.size() + t.description.size() + t.schemaJson.size();
+  return n;
 }
 
-size_t TurnFit::clipResults(size_t want) {
+void TurnFit::dropRecalled() {
+  cut_.recalledDropped += (int)ci_.recalled.size();
+  ci_.recalled.clear();
+}
+
+void TurnFit::dropSkills() {
+  if (!ci_.foodPlaybook.empty()) cut_.playbookDropped = true;
+  ci_.foodPlaybook.clear();
+  const size_t at = input_.find(kSkillsHeader);
+  if (at == std::string::npos) return;
+  const size_t end = nextBlockAt(input_, at + 1);
+  input_.erase(at, end - at);
+  cut_.skillsDropped = true;
+}
+
+bool TurnFit::isToday(size_t i) const {
+  return ctx_.todayLocalDay > 0 && (int32_t)ci_.history[i].localDay == ctx_.todayLocalDay;
+}
+
+// Live history, oldest whole turns first (a history that opens on an assistant message is a
+// refusal on some wires): before today on rung 5, today's on rung 6. The summary pair and the
+// newest exchange are never dropped.
+void TurnFit::dropHistory(bool today, size_t want) {
+  auto& h = ci_.history;
+  const size_t first = (h.size() >= 2 && isSummaryMessage(h[0])) ? 2 : 0;
+  size_t drop = 0, freed = 0;
+  while (first + drop + 2 < h.size() && freed < want) {   // the newest exchange stays
+    const size_t i = first + drop;
+    if (isToday(i) != today) break;   // rung 5 stops at today's first turn; rung 6 starts there
+    freed += h[i].text.size() + h[i + 1].text.size();
+    drop += 2;
+  }
+  if (!drop) return;
+  for (size_t i = first; i < first + drop; i++) {
+    const HistMsg& m = h[i];
+    if (cut_.cutFirstId.empty() && !m.firstId.empty()) cut_.cutFirstId = m.firstId;
+    if (!m.lastId.empty()) cut_.cutLastId = m.lastId;
+    if (m.atUnix && !cut_.cutFromUnix) cut_.cutFromUnix = m.atUnix;
+    if (m.atUnix) cut_.cutToUnix = m.atUnix;
+    cut_.historyRowsDropped += m.rows;
+  }
+  cut_.keptFirstId = first + drop < h.size() ? h[first + drop].firstId : std::string();
+  h.erase(h.begin() + (long)first, h.begin() + (long)(first + drop));
+  (today ? cut_.todayDropped : cut_.olderDropped) += (int)drop;
+  cut_.historyBytesDropped += freed;
+}
+
+void TurnFit::clipResults(size_t want) {
   size_t freed = 0;
   for (const char* title : {"[FRESH RESULTS]", "[MEMORY RESULTS]"}) {
     if (freed >= want) break;
@@ -74,107 +118,69 @@ size_t TurnFit::clipResults(size_t want) {
     const std::string kept = clipMiddle(input_.substr(at, len), keep, kTailKeep, "these results");
     if (kept.size() >= len) continue;
     freed += len - kept.size();
-    resultBytesCut_ += len - kept.size();
-    resultBlocksClipped_++;
+    cut_.resultBytesCut += len - kept.size();
+    cut_.resultBlocksClipped++;
     input_.replace(at, len, kept);
   }
-  return freed;
 }
 
-size_t TurnFit::dropRecalled() {
-  size_t freed = 0;
-  for (const auto& r : ci_.recalled) freed += r.size();
-  recalledDropped_ += (int)ci_.recalled.size();
-  ci_.recalled.clear();
-  return freed;
-}
-
-size_t TurnFit::dropPlaybook() {
-  const size_t freed = ci_.foodPlaybook.size();
-  if (freed) playbookDropped_ = true;
-  ci_.foodPlaybook.clear();
-  return freed;
-}
-
-size_t TurnFit::dropNewestHistory(size_t want) {
-  auto& h = ci_.history;
-  size_t freed = 0;
-  // The wire writes a quoted text at up to twice its size, so this rung stops at what it can
-  // measure and the next body build says whether it was enough.
-  // Past turns go whole, as user and assistant pairs (a history that opens on an assistant
-  // message is a refusal on some wires), the oldest of them first; the summary pair last.
-  const size_t first = (h.size() >= 2 && isSummaryMessage(h[0])) ? 2 : 0;
-  while (h.size() >= first + 2 && freed < want) {
-    freed += h[first].text.size() + h[first + 1].text.size();
-    h.erase(h.begin() + (long)first, h.begin() + (long)first + 2);
-    newestDropped_ += 2;
-  }
-  if (freed < want && !h.empty()) {
-    for (const auto& m : h) freed += m.text.size();
-    newestDropped_ += (int)h.size();
-    h.clear();
-  }
-  historyBytesDropped_ += freed;
-  return freed;
-}
-
-size_t TurnFit::dropShelf() {
-  const size_t freed = ci_.skillsShelf.size() + ci_.standingPrefs.size();
-  if (freed) shelfDropped_ = true;
-  ci_.skillsShelf.clear();
-  ci_.standingPrefs.clear();
-  return freed;
-}
-
-size_t TurnFit::clipInput(size_t want) {
-  if (input_.size() <= kInputFloor) return 0;
+void TurnFit::clipInput(size_t want) {
+  if (input_.size() <= kInputFloor) return;
   const size_t keep = input_.size() > want + kInputFloor ? input_.size() - want : kInputFloor;
   const std::string kept = clipMiddle(input_, keep, kInputTailKeep, "this turn's input");
-  if (kept.size() >= input_.size()) return 0;
-  const size_t freed = input_.size() - kept.size();
-  inputBytesCut_ += freed;
+  if (kept.size() >= input_.size()) return;
+  cut_.inputBytesCut += input_.size() - kept.size();
   input_ = kept;
-  return freed;
 }
 
-size_t TurnFit::dropTools() {
-  if (!tools_ || tools_->specs.empty()) return 0;
-  size_t freed = 0;
-  for (const auto& s : tools_->specs) freed += s.name.size() + s.description.size() + s.schemaJson.size();
+void TurnFit::dropTools() {
+  if (!tools_ || tools_->specs.empty()) return;
   tools_->specs.clear();
   ci_.tools.clear();
-  toolsDropped_ = true;
-  return freed;
+  cut_.toolsDropped = true;
 }
 
-namespace {
-enum Rung : int { kRecalled, kPlaybook, kResults, kNewest, kInput, kTools, kShelf };
-// What a tool can read back goes first. Then a turn with nobody's message in it (a synthesis,
-// a routine) exists for its results: the past turns go before they do. An owner's turn is the
-// other way round: "its pumpkin soup" means nothing without the last exchange, and a clipped
-// result can be fetched again.
-constexpr int kOwnerOrder[] = {kRecalled, kPlaybook, kResults, kNewest, kInput, kTools, kShelf};
-constexpr int kUnattendedOrder[] = {kRecalled, kPlaybook, kNewest, kResults, kInput, kTools, kShelf};
-}  // namespace
+void TurnFit::dropShelf() {
+  if (ci_.skillsShelf.empty() && ci_.standingPrefs.empty()) return;
+  cut_.shelfDropped = true;
+  ci_.skillsShelf.clear();
+  ci_.standingPrefs.clear();
+}
 
+// One rung, measured on the rendered request with this note: a rung that does not make it
+// smaller is undone and reports 0 (no note, no trim).
 size_t TurnFit::runRung(int rung, size_t want) {
+  const size_t before = rendered();
+  // What the rung may change, kept to undo a rung that frees nothing.
+  const ComposeInputs ciWas = ci_;
+  const std::string inputWas = input_;
+  const Cuts cutWas = cut_;
+  std::vector<nimbus::orch::ToolRegistry::Spec> specsWas;
+  if (rung == kTools && tools_) specsWas = tools_->specs;
   switch (rung) {
-    case kRecalled: return dropRecalled();
-    case kPlaybook: return dropPlaybook();
-    case kResults:  return clipResults(want);
-    case kNewest:   return dropNewestHistory(want);
-    case kInput:    return clipInput(want);
-    case kTools:    return dropTools();
-    case kShelf:    return dropShelf();
+    case kRecalled: dropRecalled(); break;
+    case kSkills:   dropSkills(); break;
+    case kOlderDays: dropHistory(false, want); break;
+    case kToday:    dropHistory(true, want); break;
+    case kResults:  clipResults(want); break;
+    case kInput:    clipInput(want); break;
+    case kTools:    dropTools(); break;
+    case kShelf:    dropShelf(); break;
     default:        return 0;
   }
+  const size_t after = rendered();
+  if (after < before) return before - after;
+  ci_ = ciWas;   // nothing gained: as it was, no note
+  if (rung == kTools && tools_) tools_->specs = specsWas;
+  cut_ = cutWas;
+  input_ = inputWas;
+  return 0;
 }
 
-size_t TurnFit::walkLadder(size_t want, bool whole) {
-  const int* order = ci_.speakerPresent ? kOwnerOrder : kUnattendedOrder;
+size_t TurnFit::walk(int from, int to, size_t want, bool whole) {
   size_t freed = 0;
-  for (size_t i = 0; i < sizeof(kOwnerOrder) / sizeof(kOwnerOrder[0]); i++) {
-    freed += runRung(order[i], want > freed ? want - freed : 0);
+  for (int r = from; r <= to; r++) {
+    freed += runRung(r, want > freed ? want - freed : 1);
     if (whole ? freed >= want : freed > 0) break;
   }
   return freed;
@@ -182,8 +188,13 @@ size_t TurnFit::walkLadder(size_t want, bool whole) {
 
 size_t TurnFit::shrink(size_t want, nimbus::orch::FitScope scope) {
   using nimbus::orch::FitScope;
-  const size_t freed = scope == FitScope::OlderHistory ? dropOlderHistory(want)
-                                                       : walkLadder(want, scope == FitScope::Ladder);
+  size_t freed = 0;
+  switch (scope) {
+    case FitScope::OlderHistory: freed = walk(kOlderDays, kToday, want, true); break;
+    case FitScope::Context:      freed = walk(kRecalled, kToday, want, false); break;
+    case FitScope::NextRung:     freed = walk(kRecalled, kShelf, want, false); break;
+    case FitScope::Ladder:       freed = walk(kRecalled, kShelf, want, true); break;
+  }
   if (!freed) return 0;
   trimmed_ = true;
   instructions_ = composeInstructions(ci_);
@@ -191,20 +202,31 @@ size_t TurnFit::shrink(size_t want, nimbus::orch::FitScope scope) {
   return freed;
 }
 
-namespace {
-void addPart(std::string& s, const std::string& part) { s += (s.empty() ? "" : "; ") + part; }
-}  // namespace
+std::string TurnFit::historyPart() const {
+  const int n = cut_.olderDropped + cut_.todayDropped;
+  if (!n) return std::string();
+  std::string s = std::to_string(n) + (cut_.todayDropped && !cut_.olderDropped ? " of today's earlier" : " older") +
+                  " conversation message(s)";
+  const std::string from = localTimeLabel(cut_.cutFromUnix, ctx_.utcOffsetMin);
+  const std::string to = localTimeLabel(cut_.cutToUnix, ctx_.utcOffsetMin);
+  if (!from.empty()) s += " from " + from + (to.empty() || to == from ? std::string() : " to " + to);
+  if (!cut_.cutFirstId.empty()) s += " (rows " + cut_.cutFirstId + " to " + cut_.cutLastId + ")";
+  s += ", read them back with memory_episodic {\"kind\":\"message\"";
+  if (!cut_.keptFirstId.empty()) s += ",\"before\":\"" + cut_.keptFirstId + "\"";
+  return s + "}";
+}
 
 std::string TurnFit::note() const {
   std::string s;
-  if (historyDropped_) addPart(s, std::to_string(historyDropped_) + " older conversation message(s)");
-  if (resultBlocksClipped_) addPart(s, std::to_string((unsigned)resultBytesCut_) + " B of the results below");
-  if (recalledDropped_) addPart(s, std::to_string(recalledDropped_) + " recalled memory item(s)");
-  if (playbookDropped_) addPart(s, "the attached food playbook");
-  if (newestDropped_) addPart(s, std::to_string(newestDropped_) + " of the newest conversation message(s)");
-  if (shelfDropped_) addPart(s, "the skills list and standing preferences");
-  if (inputBytesCut_) addPart(s, std::to_string((unsigned)inputBytesCut_) + " B of this turn's input");
-  if (toolsDropped_) addPart(s, "every tool");
+  const std::string history = historyPart();
+  if (!history.empty()) addPart(s, history);
+  if (cut_.resultBlocksClipped) addPart(s, std::to_string((unsigned)cut_.resultBytesCut) + " B of the results below");
+  if (cut_.recalledDropped) addPart(s, std::to_string(cut_.recalledDropped) + " recalled memory item(s)");
+  if (cut_.playbookDropped) addPart(s, "the attached food playbook");
+  if (cut_.skillsDropped) addPart(s, "the attached skills (skill_get reads them)");
+  if (cut_.shelfDropped) addPart(s, "the skills list and standing preferences");
+  if (cut_.inputBytesCut) addPart(s, std::to_string((unsigned)cut_.inputBytesCut) + " B of this turn's input");
+  if (cut_.toolsDropped) addPart(s, "every tool");
   return s;
 }
 
@@ -212,7 +234,7 @@ std::string TurnFit::inputs() const {
   const std::string what = note();
   if (what.empty()) return input_;
   std::string head = "[LEFT OUT TO FIT THIS REQUEST] " + what + ". ";
-  head += toolsDropped_
+  head += cut_.toolsDropped
               ? "Your tools did not fit, so answer now from what you have and say plainly what you could not do.\n"
               : "If your answer depends on any of it, read it back with your tools, or say what you could not see.\n";
   return head + input_;
@@ -220,10 +242,10 @@ std::string TurnFit::inputs() const {
 
 std::string TurnFit::ownerLine() const {
   std::string s;
-  if (resultBlocksClipped_) addPart(s, "part of the results");
-  if (newestDropped_ && ci_.speakerPresent) addPart(s, "the latest messages");
-  if (inputBytesCut_) addPart(s, "part of this message");
-  if (toolsDropped_) addPart(s, "its tools");
+  if (cut_.resultBlocksClipped) addPart(s, "part of the results");
+  if (cut_.todayDropped && ci_.speakerPresent) addPart(s, "some of today's earlier messages");
+  if (cut_.inputBytesCut) addPart(s, "part of this message");
+  if (cut_.toolsDropped) addPart(s, "its tools");
   if (s.empty()) return s;
   return "This answer was written without " + s + ", which did not fit the request. Ask again for anything missing.";
 }

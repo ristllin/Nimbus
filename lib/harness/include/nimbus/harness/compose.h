@@ -96,6 +96,13 @@ struct ComposeInputs {
   // says so even with no hits, so an outage never reads as "nothing relevant".
   std::string recallDegraded;
   int budgetBytes = nimbus::orch::kContextBudgetMax;
+  // Lane H of the history fix (ContextBudget::perTurnFloorBytes, recallBytes): the per-turn
+  // block keeps at least this much room however much the cached blocks take (0 = no floor:
+  // v5.1.1, where a 128K head's static block left recall no room and it rendered nothing),
+  // and the RELEVANT MEMORIES bullets take at most recallBytes of it (0 = no own bound; the
+  // number recalled stays MemConfig.retrievalCount).
+  int perTurnFloorBytes = 0;
+  int recallBytes = 0;
   // W10: who THIS turn's message is from - the prompt used to claim every
   // conversation was "your owner", which is wrong for member/guest chats (the
   // device is multi-tenant since v3.7.0). "" leaves the speaker line out

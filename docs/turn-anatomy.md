@@ -99,7 +99,7 @@ of the table first, then recall bullets one at a time:
 | 5 | static | `## HOW YOUR MEMORY WORKS` | `compose.cpp` | the memory-tier usage instructions (v1 prompt only) |
 | 6 | static | catalogs | `engine.cpp::buildStableCatalogs` | `[AVAILABLE PROVIDERS]` (sub-session priority, then "(paused now: ...)" for paused providers), `[AVAILABLE MODELS]` (one line naming the keyed providers, pointing to the `models.list` tool when the tool loop is on - a config-keyed shape, never this turn's heap gate, so the cached block cannot flip per turn; heads with inline per-provider short lists show each list's age and "may miss newer models"; every listed model passes the spawn and model-switch checks; when the loop is off for a turn, the loop-off note says the pointer tool cannot run either), `[PROVIDERS & CONNECTORS]` (a head that refuses its model shows as paused for your own turns; a paused provider's row says why and when it returns and names its connectors as waiting - no spawn, PDF or sandbox route; a `PUBLIC WEB FACTS` line names the open web search routes). Counted against the static part's budget since the shelf split |
 | 7 | shelf | the skills index | `engine.cpp` | the playbook list (`[SKILLS]`), the same index the skill.get tool serves from; an edit re-caches only the shelf |
-| 8 | history | the conversation messages | `conversation.cpp::renderHistory` | the fold summary's message pair first, then **per-chat history: one user and one assistant message per turn, oldest first, append-only between boundaries, byte budget from the head model's window (8 KB at 200K, 3000 B floor, 16 KB cap), the owner's current local day kept whole on top (up to 16 KB), stopping at the newest `/clear` boundary or the fold anchor** (shared photos, files and voice notes appear once, in the turn that carried them; the in-flight turn arrives as `[USER]`). Providers send these as real history messages; a flat head reads them as `## RECENT CONVERSATION`. Rules: see below |
+| 8 | history | the conversation messages | `conversation.cpp::renderHistory` | the fold summary's message pair first, then **per-chat history: one user and one assistant message per turn, oldest first, append-only between boundaries, every turn after the fold anchor up to the head's history budget (derived from its request budget: 206 KB on Mistral Large 4, 118 KB on Claude Sonnet; on a head at v5.1.1's room, v5.1.1's window with the owner's local day on top), stopping at the newest `/clear` boundary or the fold anchor** (shared photos, files and voice notes appear once, in the turn that carried them; the in-flight turn arrives as `[USER]`). Providers send these as real history messages; a flat head reads them as `## RECENT CONVERSATION`. Rules: see below |
 | 9 | per-turn | clock, speaker, `[RUNNING MEMORY]`, tool-loop note | `compose.cpp` | the time of day, who sent this message (human turns only), the model's own `memory` field from last turn, and whether the tool loop is ON this turn. On a "remember" message, a `[MEMORY ROUTING]` line names where it lands: an always/never rule to the standing rules via `prefs.edit` (a full list retires the oldest rule), a lasting fact to `mem_write`, a recall question to a search with nothing saved. It rides this part only, so cached blocks stay identical, and never a routine's prompt or a sub-agent's results. On a turn whose history holds an earlier unreplied owner message, a `[REPLY SCOPE]` line follows: answer this message; an earlier question or request with `[no reply]` is still owed its answer; other earlier messages are context. Absent otherwise |
 | 10 | per-turn | `[TODAY'S FOOD LEDGER]`, `[FOOD TARGETS]`, `[THE SAME FOOD ON EARLIER DAYS]`, `[FOOD PLAYBOOK]` | the food ledger file (`nimbus/orch/food_ledger.h`), the `food-log` built-in | today's rows of the owner's food ledger (`food/food-log.csv`) with kcal and protein totals, on every turn with rows today (newest 24 rows or 1,400 B shown; totals count every row), with what is left against stored targets; no rows yet: the one `files.append` that starts them; no stored target: where to read one; stored target but no rows today: the stored figures with their sources (`[FOOD TARGETS]`); the earlier rows of the foods the message names. A food turn (the message, the exchange before it, or a question about the ledger) also gets a food playbook with no `skill.get` round: `food-log` when the message reports food, `food-coach` (answer first, plans from the owner's foods, amounts from `food.portions`) when it asks, both when its words say neither, then one line naming which. Never dropped, and never takes the rest of the per-turn part's room |
 | 11 | per-turn | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
@@ -293,30 +293,56 @@ called by the engine for every turn:
   answered never joins it. The same message sent
   yesterday and again today, or a minute either side of local midnight, stays
   two lines under their own days.
-- **Append-only between boundaries.** A closed turn's bytes depend only on its
-  own rows, so each turn's history continues the previous one byte for byte.
-  The start moves only at a `/clear`, at a fold (the history starts after the
-  newest row the summary covers) or at an overflow shift: past high water (the
-  byte budget, or 64 rows) the oldest whole turns drop until the rest fits half
-  of it, never one row per message, and never the newest turn or the last
-  answered one.
-- **The whole day stays.** The owner's current local day is a floor under the
-  budget: its turns never shift out and never fold, up to 16 KB (a sixteenth of
-  a window under 64K tokens), the newest first; past that cap the oldest quarter
-  of the day leaves at once, so the window grows again before the next shift.
-  Each turn's day is the one its row was stored on, in the owner's zone at that
-  time, so a clock-change day is still one day. At the next local midnight they
-  become yesterday's and leave with the next shift. A request that would pass
-  the 85 KB body budget with room for its tool rounds leaves out the oldest
-  history turns first (never the summary or the newest turn) and logs one
-  `history: N message(s) left out` line. The shift is kept with the fold state (`/data/chatsum.txt`), so
-  a restart renders the same history, and the rows it hid make the next fold
-  due.
+- **Append-only between boundaries; fold before shift.** A closed turn's bytes
+  depend only on its own rows, so each turn's history continues the previous one
+  byte for byte. The history is every turn after the fold anchor. It grows
+  append-only to the head's soft mark (`historySoftBytes`), where a fold is due;
+  the fold takes the oldest turns beyond the newest `historyKeepBytes`, at most one
+  fold step. Only past `historyMaxBytes` (or its row bound) are the oldest whole
+  turns hidden, down to the soft mark, never one row per message and never the
+  newest turn or the last answered one; the hidden rows are named in the request
+  (below) and make the next fold due. Nothing moves at local midnight: today folds
+  only when today alone is longer than the keep mark. The shift is kept with the
+  fold state (`/data/chatsum.txt`), so a restart renders the same history.
+- **A head at v5.1.1's room keeps v5.1.1's window.** When a head's derived history
+  is no larger than v5.1.1's (the 85 KB floor: a custom endpoint, a Cumulo head
+  until the routed lift), the window is v5.1.1's exactly: past high water (the
+  byte budget, or 64 rows) the oldest whole turns drop until half of it is left,
+  and the owner's current local day is a floor under it (its turns never shift out
+  and never fold, up to 16 KB, the newest first; past that cap the oldest quarter
+  of the day leaves at once). Each turn's day is the one its row was stored on, in
+  the owner's zone at that time, so a clock-change day is still one day.
+- **Nothing leaves before a refusal.** The request goes as composed. Only when the
+  wire refuses its body for its size (or a provider refuses it for its window)
+  does the turn give anything up, in one order (`turn_fit.h`): the replayed tool
+  rounds' arguments and older rounds, then recall (only when its bullets are in the
+  body), the food playbook and the attached skills, history before today (oldest
+  whole turns first), today's turns beyond the newest exchange, the newest unread
+  results, the middle of the input, the tools, the skills list and standing rules.
+  The summary pair and the newest exchange are never dropped. Each step is measured
+  on the request as rendered, and a step that would not make it smaller gives
+  nothing and says nothing. A photo round that cannot carry its answer in time
+  gives up older history first and reads its photos as text only when history is
+  down to the newest exchange.
+- **What is left out is said.** A history cut opens the input with `[LEFT OUT TO FIT
+  THIS REQUEST]`, naming how many messages, their local time range, their row ids
+  and a ready `memory_episodic {"kind":"message","before":"<first row kept>"}` call.
+  While rows after the fold anchor are not in the request (a shift hid them, or the
+  history is still being read after a restart), or the summary is more than a day
+  old, the input opens with one `[CONVERSATION COVERAGE]` line that names them the
+  same way, or the summary's age.
 - **One message's cap.** A single message over 6 KB is clipped once, at a fixed
-  cap, so its bytes never change as the history grows.
-- **The rows it holds ride PSRAM.** The history reads the chat's rows a page at
-  a time, folds a run of identical owner rows into one as it reads, and keeps
-  the rows it holds in PSRAM-sized buffers, not internal heap.
+  cap, so its bytes never change as the history grows (12 KB on a head with a
+  60k-token request or more).
+- **The rows ride a cache in PSRAM.** The chat's rows after the fold anchor are
+  kept between turns (`conv_cache.h`: up to 3 chats, each up to its history budget
+  and a quarter): a turn reads only the rows newer than the newest it holds, which
+  are still in the store's RAM ring, so a steady-state turn reads no card row.
+  After a restart the cache fills newest first, one page per idle pump pass and at
+  most one page of card reads on a turn, so the first turn after a restart carries
+  the newest exchanges and names the rest as not read yet. A fold trims it, a
+  `/clear` clears it, and a photo record that arrives later patches it. A run of
+  identical owner rows still folds into one as it is read.
 
 The switch behind it (`histV2`) is on by default and kept in RAM, never in
 settings; the test console's `HISTV2 0` restores the window below byte for byte.

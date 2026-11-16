@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/body_budget.h"   // bodyBudgetError - the wire's refusal of a body over budget
 #include "nimbus/orch/head_loop.h"
 #include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/transcript.h"
@@ -885,6 +886,93 @@ static void test_final_checks_chain_into_one_correction() {
   TEST_ASSERT_FALSE((bool)chainFinalChecks({none, none}));
 }
 
+// ---- the give-up order in the loop (lane H of the history fix) ----------------------
+// A loop whose request is the prompt (recall, history before today, today's) plus the replay,
+// refused by the wire's byte budget when over it, with a prompt ladder in the give-up order.
+namespace {
+struct EdgeRig {
+  Transcript tr;
+  size_t budget = 40000;
+  size_t recall = 2000, olderDays = 20000, today = 10000, newestExchange = 1500;
+  std::vector<std::string> gave;   // the prompt rungs that gave, in order
+  int historyRungs = 0;
+  std::vector<size_t> resultBytes;   // what each round's tool returns
+  int round = 0;
+  std::vector<size_t> sizes;         // each request's size (sent or refused)
+  std::string newestSeenWhole;       // the newest round's result, as the request carried it
+
+  size_t prompt() const { return recall + olderDays + today + newestExchange; }
+  HeadLoopHooks hooks() {
+    HeadLoopHooks h;
+    h.transcript = &tr;
+    h.step = [this](bool allowTools, const std::vector<HeadToolResult>& prior, uint32_t, const std::string&) {
+      const size_t size = prompt() + tr.toolBytes();
+      sizes.push_back(size);
+      if (size > budget) return stepFail(bodyBudgetError(budget, size));
+      if (!prior.empty()) newestSeenWhole = prior.back().output;
+      if (!allowTools || round >= (int)resultBytes.size()) return stepFinished("{\"reply\":\"done\"}");
+      return stepCall("memory_search", "{\"q\":\"r" + std::to_string(round++) + "\"}");
+    };
+    h.dispatch = [this](const HeadToolCall& c) {
+      HeadToolResult r;
+      r.id = c.id;
+      r.name = c.name;
+      r.output = std::string(resultBytes[(size_t)(round - 1)], (char)('a' + round));
+      return r;
+    };
+    h.nowMs = [] { return 0u; };
+    h.fitPrompt = [this](size_t want, FitScope scope) -> size_t {
+      // The give-up order's prompt rungs, one per call (Context / NextRung).
+      if (scope == FitScope::Context || scope == FitScope::NextRung) {
+        if (recall) { gave.push_back("recall"); const size_t f = recall; recall = 0; return f; }
+        if (olderDays) { gave.push_back("older days"); historyRungs++; const size_t f = olderDays; olderDays = 0; return f; }
+        if (today) { gave.push_back("today"); historyRungs++; const size_t f = today; today = 0; return f; }
+      }
+      (void)want;
+      return 0;
+    };
+    return h;
+  }
+};
+}  // namespace
+
+// At round 2 the request is over its budget: the transcript's own rungs go first (the older
+// round the model has read is folded), then the prompt's context in order (recall, history
+// before today) - and the newest round, whose results the model has not read, arrives whole.
+static void test_round2_keeps_the_newest_unread_round_and_gives_up_older_history() {
+  EdgeRig r;
+  r.resultBytes = {9000, 14000};
+  HeadLoopConfig cfg;
+  cfg.maxRounds = 4;
+  cfg.maxToolResultBytes = 0;
+  cfg.maxTotalToolBytes = 0;
+  const HeadOutcome out = runHeadLoop(cfg, r.hooks());
+  TEST_ASSERT_TRUE(out.ok);
+  TEST_ASSERT_TRUE_MESSAGE(!r.gave.empty() && r.gave[0] == "recall", "recall goes before any history");
+  bool olderWent = false;
+  for (const auto& g : r.gave) olderWent = olderWent || g == "older days";
+  TEST_ASSERT_TRUE(olderWent);
+  TEST_ASSERT_EQUAL_MESSAGE(14000, (int)r.newestSeenWhole.size(), "the unread newest round reaches the model whole");
+  TEST_ASSERT_TRUE(r.today > 0);   // today's turns stayed: older history was enough
+}
+
+// Seven rounds at the edge of the budget: every refusal is answered by the transcript's own
+// rungs (stubbed arguments, older rounds folded), so no history rung ever fires.
+static void test_seven_rounds_at_the_edge_fire_no_history_rung() {
+  EdgeRig r;
+  r.budget = r.prompt() + 9000;   // room for about two rounds of results
+  r.resultBytes = {3500, 3500, 3500, 3500, 3500, 3500, 3500};
+  HeadLoopConfig cfg;
+  cfg.maxRounds = 8;
+  cfg.maxToolResultBytes = 0;
+  cfg.maxTotalToolBytes = 0;
+  const HeadOutcome out = runHeadLoop(cfg, r.hooks());
+  TEST_ASSERT_TRUE(out.ok);
+  TEST_ASSERT_EQUAL(7, out.rounds);
+  TEST_ASSERT_EQUAL_MESSAGE(0, r.historyRungs, "the loop's own rounds fold before any conversation goes");
+  TEST_ASSERT_EQUAL(2000, (int)r.recall);   // nothing on the prompt side moved at all
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_final_check_runs_one_correction_round);
@@ -894,6 +982,8 @@ int main(int, char**) {
   RUN_TEST(test_prose_final_is_never_checked);
   RUN_TEST(test_prose_final_check_corrects_plumbing_once);
   RUN_TEST(test_final_checks_chain_into_one_correction);
+  RUN_TEST(test_round2_keeps_the_newest_unread_round_and_gives_up_older_history);
+  RUN_TEST(test_seven_rounds_at_the_edge_fire_no_history_rung);
   RUN_TEST(test_cum506_siblings_of_the_final_turn_run_before_any_reply);
   RUN_TEST(test_g1_all_write_siblings_accept_the_final_turn);
   RUN_TEST(test_img_photo_note_with_the_final_turn_costs_no_round);

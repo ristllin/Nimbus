@@ -302,6 +302,20 @@ static int foodAllowance(int budgetBytes, size_t foodBytes) {
   return (int)foodBytes < room ? (int)foodBytes : room;
 }
 
+// Lane H: the recalled items that fit `bytes` as RELEVANT MEMORIES bullets ("- " + item +
+// "\n"), best first (recall ranks them); 0 = no bound of their own.
+static std::vector<std::string> recallWithin(const std::vector<std::string>& recalled, int bytes) {
+  if (bytes <= 0) return recalled;
+  std::vector<std::string> out;
+  size_t used = 0;
+  for (const auto& r : recalled) {
+    if (used + r.size() + 3 > (size_t)bytes) break;
+    used += r.size() + 3;
+    out.push_back(r);
+  }
+  return out;
+}
+
 // R1 / L19-4: what the photo labels mean, in one line. A photo the head sees itself
 // rides the message as an image; a transcription is another model's text; a photo
 // nobody could read names the reason, and the head says so instead of guessing or
@@ -347,7 +361,7 @@ std::string composeInstructions(const ComposeInputs& in) {
       "prefs.edit, not here), and the episodic log "
       "(memory.episodic - full past history). The episodic log reaches MONTHS "
       "back, far beyond the recent messages here: SEARCH it before telling the "
-      "owner you don't know or don't remember something they told you. It answers "
+      "owner you don't know or don't remember what either of you said. It answers "
       "a page at a time; pass its 'to continue' token back as `before` to read "
       "further, and if you stop before the end, say so.\n";
   const std::string memTiersV1 =
@@ -368,7 +382,7 @@ std::string composeInstructions(const ComposeInputs& in) {
                 std::string(kStandingRuleTest) + "), and the episodic log (memory.episodic - past conversation "
                 "history, auto-captured). The episodic log reaches MONTHS back, far "
                 "beyond the recent messages in this prompt: SEARCH it before telling "
-                "the owner you don't know or don't remember something they told you. "
+                "the owner you don't know or don't remember what either of you said. "
                 "It answers a page at a time and tells you how far back it looked - "
                 "pass its 'to continue' token back as `before` to read further, and "
                 "if you stop before the end, say so.\n";
@@ -570,11 +584,10 @@ std::string composeInstructions(const ComposeInputs& in) {
   dyn.sessions = renderSessions(in.sessions);
   dyn.recentConversation = in.recentConversation;
   dyn.scratchpad = in.scratchpad;
-  dyn.recalled = in.recalled;
+  dyn.recalled = recallWithin(in.recalled, in.recallBytes);
   dyn.recallDegraded = in.recallDegraded;
-  parts.dyn = assembleContext(dyn, budget - (int)parts.stat.size() - (int)shelf.size() +
-                                       foodAllowance(budget, food.size()))
-                  .prompt;
+  const int left = budget - (int)parts.stat.size() - (int)shelf.size();
+  parts.dyn = assembleContext(dyn, std::max(left, in.perTurnFloorBytes) + foodAllowance(budget, food.size())).prompt;
 
   // 5. the cached blocks and the history the providers render as messages, and
   // the turn's cache settings.

@@ -4,6 +4,7 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,8 @@
 #include "nimbus/harness/engine.h"   // HistoryQuery
 #include "nimbus/orch/episodic_log.h"
 #include "nimbus/orch/row_overlay.h"
+#include "../support/fake_config.h"
+#include "../support/fake_platform.h"
 
 // The conversation cache (lane H of the history fix, conv_cache.h): a chat's rows after
 // its fold anchor kept between turns, so a steady-state turn reads no card row, the first
@@ -327,6 +330,106 @@ static void test_three_chats_lru() {
   TEST_ASSERT_FALSE(cache.holds("a"));
 }
 
+// ---- through the engine (RULINGS-v3 item 4) ------------------------------------------
+
+namespace {
+// A device's turn engine over the SD log after a restart: the boot scan indexed only the
+// newest rows, the ring holds 64.
+struct EngineRig {
+  harness_test::FakePlatform plat;
+  harness_test::FakeConfig cfg;
+  FakeFs* fs;
+  AppendLogEpisodicStore log;
+  RowTextOverlay overlay;
+  agent::HistoryMarks marks;
+  std::vector<std::string> instructions, inputs;
+  uint32_t seq;
+  std::unique_ptr<agent::TurnEngine> eng;
+
+  EngineRig(FakeFs& f, uint32_t nextId, const std::string& thru) : fs(&f), log(f, "/mem/episodic", 64), seq(nextId) {
+    log.hydrate(300, 0);   // a truncated boot scan
+    overlay.bind(&log);
+    marks.thru = thru;
+    cfg.toolLoop = false;
+    agent::TurnEngine::Deps d;
+    d.cfg = cfg.contract();
+    d.platform = plat.contract();
+    d.deliver = [](const std::string&, const std::string&) {};
+    d.composeInputs = [](const std::string&) {
+      agent::ComposeInputs in;
+      in.devName = "Nimbus";
+      return in;
+    };
+    d.apply.deliver = d.deliver;
+    d.apply.principalFor = [](const std::string& chat) { return principalForRole(chat, Role::Admin); };
+    d.hosts.add("anthropic", [this](std::string&, const std::string& ins, const std::string& in, std::string& out,
+                                    std::string&, const agent::HeadTools*, TokenUsage*) {
+      instructions.push_back(ins);
+      inputs.push_back(in);
+      out = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
+      return true;
+    });
+    d.histV2 = [] { return true; };
+    d.historyRows = [this](const std::string& c, const HistoryQuery& hq) {
+      MsgQuery q;
+      q.sessionId = c;
+      q.haveKind = true;
+      q.kind = MsgKind::Message;
+      q.alsoKinds = {MsgKind::Image, MsgKind::File, MsgKind::Audio};
+      q.limit = (int)hq.limit;
+      q.before = hq.before;
+      q.after = hq.after;
+      return overlay.query(q);
+    };
+    d.captureUserRow = [this](const std::string& c, const std::string& t, const std::string& tags) {
+      EpisodicMessage m;
+      char id[16];
+      snprintf(id, sizeof(id), "m%08x", (unsigned)(++seq));
+      m.id = id;
+      m.sessionId = c;
+      m.tsHours = kHour0 + seq / 8;
+      m.role = "user";
+      m.text = t;
+      m.tags = tags;
+      overlay.addMessage(m);
+      return m.id;
+    };
+    d.historyMarks = [this](const std::string&) { return marks; };
+    eng.reset(new agent::TurnEngine(std::move(d)));
+  }
+};
+}  // namespace
+
+// The first turn after a restart with a 400-row backlog after thru carries the NEWEST
+// exchanges before the restart (the one card page a turn may read), names the rest as not
+// read yet, and the idle pump fills the rest a page a pass.
+static void test_the_first_turn_after_a_restart_carries_the_newest_exchanges() {
+  Store s;
+  const std::string thru = s.turn("c1", 0);
+  for (int i = 1; i <= 200; i++) s.turn("c1", i, 500);   // 400 conversation rows, 1,200 rows in all
+  EngineRig r(s.fs, s.seq, thru);
+  TEST_ASSERT_TRUE(r.log.hydrateTruncated());
+  r.eng->handleMessage("what did you just say?", "Roy", "c1");
+  TEST_ASSERT_EQUAL(1, (int)r.instructions.size());
+  const std::string& ins = r.instructions.back();
+  TEST_ASSERT_TRUE_MESSAGE(ins.find("answer 200 ") != std::string::npos, "the newest exchange before the restart");
+  TEST_ASSERT_TRUE(ins.find("answer 199 ") != std::string::npos);
+  TEST_ASSERT_TRUE(ins.find("answer 1 ") == std::string::npos);
+  const std::string& in = r.inputs.back();
+  TEST_ASSERT_TRUE_MESSAGE(in.find("[CONVERSATION COVERAGE]") != std::string::npos, in.c_str());
+  TEST_ASSERT_TRUE(in.find("still reading them") != std::string::npos);
+  // At most one page of card reads on the turn.
+  TEST_ASSERT_TRUE(r.eng->historyRead().cardReads > 0);
+  TEST_ASSERT_TRUE_MESSAGE(r.eng->historyRead().cardReads <= 24, std::to_string(r.eng->historyRead().cardReads).c_str());
+  // The idle pump fills toward thru, a page a pass, and the next turn reads no card row.
+  int passes = 0;
+  while (passes < 100 && r.eng->historyIdleStep()) passes++;
+  TEST_ASSERT_TRUE(passes > 1 && passes < 100);
+  r.eng->handleMessage("and the first thing I asked today?", "Roy", "c1");
+  TEST_ASSERT_EQUAL_UINT32(0, r.eng->historyRead().cardReads);   // steady state
+  TEST_ASSERT_TRUE(r.inputs.back().find("still reading them") == std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_appends_match_store_rows_with_no_card_read);
@@ -338,5 +441,6 @@ int main(int, char**) {
   RUN_TEST(test_the_bound_holds_and_names_what_left);
   RUN_TEST(test_a_full_delta_refills_newest_first);
   RUN_TEST(test_three_chats_lru);
+  RUN_TEST(test_the_first_turn_after_a_restart_carries_the_newest_exchanges);
   return UNITY_END();
 }

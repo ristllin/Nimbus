@@ -250,10 +250,18 @@ FinalCheck chainFinalChecks(std::vector<FinalCheck> checks);
 // tool-call id rule, and valid on every other wire.
 extern const char kFinalCheckCallId[];
 
-// How far a refit may go on the prompt side. A refusal of the byte budget can check its
-// work (the next build measures it), so it takes one rung at a time and gives up no more
-// than it must. A provider's window refusal gets one retry, so it takes the whole ladder.
-enum class FitScope : uint8_t { OlderHistory, NextRung, Ladder };
+// How far a refit may go on the prompt side (the give-up order, nimbus/harness/turn_fit.h).
+// A refusal of the byte budget can check its work (the next build measures it), so it takes
+// one rung at a time and gives up no more than it must; a provider's window refusal gets one
+// retry, so it takes the whole ladder.
+//   OlderHistory  the history rungs only (before today, then today's beyond the newest
+//                 exchange) until the bytes asked for: a photo round's time fit gives up
+//                 older history before its photos are read as text (RULINGS-v3 item 5)
+//   NextRung      the next rung of the whole order that gives anything
+//   Ladder        the whole order until the bytes asked for
+//   Context       the next of the rungs that go before the newest unread results (recall,
+//                 skills, history): the loop clips the newest round only after them
+enum class FitScope : uint8_t { OlderHistory, NextRung, Ladder, Context };
 
 // Forward decl: transcript.h includes THIS header (it uses HeadToolCall/Result),
 // so the dependency runs one way only - hooks hold a pointer, never a value.
@@ -316,11 +324,12 @@ struct HeadOutcome {
 };
 
 // A provider refused the request for its size (compact.h isContextOverflowError): nothing
-// ran, so the turn gives up `want` bytes along the whole ladder at once, in order, since
-// it gets one retry: arguments of calls that ran, older tool rounds, older history
-// (`fitPrompt`), the turn's photos as images (`dropImages`: they are outside the byte
-// budget but not outside the window), the newest results, the rest of the prompt ladder.
-// Returns the bytes given up. `fitPrompt` and `dropImages` may be null.
+// ran, so the turn gives up `want` bytes along the whole give-up order at once, since it gets
+// one retry: arguments of calls that ran, older tool rounds, the prompt's context (recall,
+// skills, history before today, today's beyond the newest exchange: `fitPrompt` Context), the
+// turn's photos as images (`dropImages`: they are outside the byte budget but not outside the
+// window), the newest results, the rest of the order. Returns the bytes given up.
+// `fitPrompt` and `dropImages` may be null.
 size_t trimForOverflow(Transcript& tr, size_t want, const std::function<size_t(size_t, FitScope)>& fitPrompt,
                        const std::function<size_t()>& dropImages);
 

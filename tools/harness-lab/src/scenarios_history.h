@@ -4,11 +4,10 @@
 
 #include "lab_rig.h"
 
-// Live legs for the history window: every live row after the fold's anchor is in the request,
-// covered by the summary, or named in its LEFT OUT note, across a long conversation
-// (lane H of the history fix). A STUB from lane P0, registered so lane H fills
-// this file without touching scenarios.cpp: it sends nothing and reports itself skipped,
-// which the suite counts as not a pass.
+// Live legs for the history window (lane H of the history fix): a 12-turn food day whose
+// every earlier exchange rides each request (or is named in its LEFT OUT note), and the
+// 15 Nov complaint replayed with fixture rows (the 15:55 estimate and the 15:57 comparison
+// in the 16:00 request). One head per run (--host, --model); see scenarios_history.cpp.
 namespace lab {
 namespace histfix {
 
