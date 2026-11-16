@@ -810,15 +810,40 @@ static const char* oaiFoldRetryEffort(const std::string& model) {
   return "none";
 }
 
-static bool oaiFoldBody(const ProviderDeps& pd, const std::string& model, const std::string& inputs,
-                        const char* effort, size_t budget, std::string& body, std::string& err) {
+static bool oaiFoldBody(const ProviderDeps& pd, const wire::RoundBudget& rb, const std::string& inputs,
+                        const char* effort, std::string& body, std::string& err) {
   JsonDocument d = makeDoc(pd);
-  d["model"] = model;
+  d["model"] = rb.model;
   d["instructions"] = nimbus::orch::ORCH_COMPACT_PROMPT;
   wire::putFieldStr(d["input"], inputs, "the conversation to summarize");
   d["store"] = false;
   if (*effort) d["reasoning"]["effort"] = effort;
-  return wire::serializeChecked(d, body, err) && bodyWithinBudget(body, budget, err);
+  return wire::serializeChecked(d, body, err) && bodyWithinBudget(body, rb.budget.wireBodyBytes, err);
+}
+
+// What a fold reads back: the status, the error, why it is incomplete, the output text,
+// the usage and the served model.
+static void oaiFoldFilter(JsonDocument& filter) {
+  filter["status"] = true;
+  filter["error"]["message"] = true;
+  filter["error"]["code"] = true;
+  filter["incomplete_details"]["reason"] = true;
+  JsonObject oi = filter["output"].add<JsonObject>();
+  oi["type"] = true;
+  JsonObject ci = oi["content"].add<JsonObject>();
+  ci["type"] = true;
+  ci["text"] = true;
+  filter["usage"] = true;
+  filter["model"] = true;
+}
+
+// Every output_text part of a Responses answer, in order.
+static std::string oaiOutputText(const JsonDocument& doc) {
+  std::string text;
+  for (JsonObjectConst item : doc["output"].as<JsonArrayConst>())
+    for (JsonObjectConst c : item["content"].as<JsonArrayConst>())
+      if (strcmp(c["type"] | "", "output_text") == 0) text += (const char*)(c["text"] | "");
+  return text;
 }
 
 // noinline (lane STACK): a background fold, never a head round; its locals stay out of
@@ -832,20 +857,10 @@ __attribute__((noinline)) static bool oaiFold(const ProviderDeps& pd, const std:
   const wire::RoundBudget rb = wire::roundBudget(pd, "openai", model, routed);
   const char* efforts[2] = {oaiIsReasoningModel(model) ? "low" : "", oaiFoldRetryEffort(model)};
   JsonDocument filter;
-  filter["status"] = true;
-  filter["error"]["message"] = true;
-  filter["error"]["code"] = true;
-  filter["incomplete_details"]["reason"] = true;
-  JsonObject oi = filter["output"].add<JsonObject>();
-  oi["type"] = true;
-  JsonObject ci = oi["content"].add<JsonObject>();
-  ci["type"] = true;
-  ci["text"] = true;
-  filter["usage"] = true;
-  filter["model"] = true;
+  oaiFoldFilter(filter);
   for (int attempt = 0; attempt < 2; ++attempt) {
     std::string body;
-    if (!oaiFoldBody(pd, model, inputs, efforts[attempt], rb.budget.wireBodyBytes, body, err)) return false;
+    if (!oaiFoldBody(pd, rb, inputs, efforts[attempt], body, err)) return false;
     wire::recordRound(rb, RoundKind::Fold, roundMs, wire::roundLoad(rb, body.size(), 0, 0), OutputCap());
     const size_t textBytes = body.size();
     JsonDocument doc = makeDoc(pd);
@@ -871,10 +886,7 @@ __attribute__((noinline)) static bool oaiFold(const ProviderDeps& pd, const std:
       err = std::string("cut at the output limit (incomplete:") + why + ")";
       return false;
     }
-    outJson.clear();
-    for (JsonObjectConst item : doc["output"].as<JsonArrayConst>())
-      for (JsonObjectConst c : item["content"].as<JsonArrayConst>())
-        if (strcmp(c["type"] | "", "output_text") == 0) outJson += (const char*)(c["text"] | "");
+    outJson = oaiOutputText(doc);
     if (outJson.empty()) err = "the fold came back with no text";
     return !outJson.empty();
   }

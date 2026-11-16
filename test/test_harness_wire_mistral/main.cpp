@@ -29,6 +29,7 @@
 
 #include "nimbus/harness/prompt_layout.h"
 #include "nimbus/orch/body_budget.h"
+#include "nimbus/orch/request_budget.h"   // minFinalTokensFor: the minimum final the doc states
 #include "nimbus/orch/transcript.h"
 
 #include "../../lib/harness/src/providers/wire.h"   // wire::lastRound - the load a round carried
@@ -1932,29 +1933,29 @@ static void test_a_mistral_sub_error_says_whether_it_may_have_run() {
   }
 }
 
-// The exact numbers a round gets at the real 65 s deadline, and the page that states them.
-// Large 4's retry is 5,500: the time clamp holds it, so effort "low" is what stops the cut.
+// The table each round starts from, the minimum final under it, and the page that states
+// them. A round sends the load-aware cap inside these (test_output_caps pins the fit).
 static void test_mistral_caps_are_the_documented_numbers() {
   std::ifstream f("docs/provider-wire.md");
   TEST_ASSERT_TRUE(f.good());
   const std::string doc((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-  auto withComma = [](uint32_t n) { return std::to_string(n / 1000) + "," + (n % 1000 < 100 ? "0" : "") + (n % 1000 < 10 ? "0" : "") + std::to_string(n % 1000); };
-  const struct { const char* model; uint32_t first, retry; const char* words; } rows[] = {
-      {"mistral-large-4-0", 4125, 5500, "Large 4 gets %1 tokens (%2 on the retry)"},
-      {"mistral-medium-latest", 5361, 7150, "Medium and Small get %1 (%2)"},
-      {"mistral-small-latest", 5361, 7150, "Medium and Small get %1 (%2)"},
-      {"mistral-large-latest", 3000, 4000, "older models %1 (%2)"},
+  const struct { const char* model; uint32_t first, retry; } rows[] = {
+      {"mistral-large-4-0", 6000, 12000},
+      {"mistral-medium-latest", 6000, 12000},
+      {"mistral-small-latest", 6000, 12000},
+      {"magistral-medium-latest", 6000, 12000},
+      {"mistral-large-latest", 4096, 6144},
   };
   for (const auto& r : rows) {
-    const providers::OutputCap c =
-        providers::outputCapFor("mistral", r.model, providers::RoundKind::ToolRound, providers::kMistralRoundMs);
+    const providers::OutputCap c = providers::tableCap("mistral", r.model, providers::RoundKind::ToolRound);
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(r.first, c.maxTokens, r.model);
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(r.retry, c.retryTokens, r.model);
-    std::string want = r.words;
-    want.replace(want.find("%1"), 2, withComma(r.first));
-    want.replace(want.find("%2"), 2, withComma(r.retry));
-    TEST_ASSERT_TRUE_MESSAGE(doc.find(want) != std::string::npos, want.c_str());
   }
+  TEST_ASSERT_EQUAL_UINT32(1500, nimbus::orch::minFinalTokensFor("mistral", "mistral-large-4-0"));
+  TEST_ASSERT_EQUAL_UINT32(3000, nimbus::orch::minFinalTokensFor("mistral", "mistral-medium-latest"));
+  for (const char* words : {"Mistral 6,000 (12,000) on Large 4, Medium, Small and Magistral, 4,096 (6,144) on",
+                            "3,000 tokens; 1,500 on Large 4"})
+    TEST_ASSERT_TRUE_MESSAGE(doc.find(words) != std::string::npos, words);
 }
 
 // A long answer in the round's text on the Mistral wire (the case that was measured).

@@ -459,6 +459,25 @@ static void zaiHttpFailure(int code, const JsonDocument& resp, nimbus::orch::Hea
   hlog::logf("orchTurn(zai-loop): %s", e.c_str());
 }
 
+// One attempt's body at the attempt's cap. On the first attempt (`fit` set) the load is
+// known: the cap that fits it inside the round replaces the table's (GLM always reasons;
+// its effort is the policy's, not the cap's), and a retry steps up from it.
+static bool zaiAttemptBody(const ProviderDeps& pd, ZaiRound& zr, const wire::RoundFitIn* fit, OutputCap& cap,
+                           std::string& body, std::string& err) {
+  if (!zaiLoopBody(pd, zr, body, err)) return false;
+  if (!fit) return true;
+  BodySplices none;
+  if (!wire::fitRoundToLoad(*fit, body, none, cap, err)) return false;
+  zr.maxTokens = cap.maxTokens;
+  return true;
+}
+
+// A loop round's socket ceiling: the head's own budget (the Z.ai heads), else the shared one,
+// and at most the router's when routed.
+static uint32_t zaiRoundCeilingMs(const ProviderDeps& pd, bool routed) {
+  return wire::headCeilingMs(routed, pd.customHeadTimeoutMs ? pd.customHeadTimeoutMs : kHeadRoundCeilingMs);
+}
+
 nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& instructions,
                                      const HeadTools& ht, nimbus::orch::TokenUsage* usage,
                                      nimbus::orch::Transcript& tr) {
@@ -475,9 +494,7 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
     // under v5.1.1's 24 KB (Mistral's measured wire-ceiling bound).
     constexpr size_t kReplayFloorBytes = 24576;
     const bool routed = wire::customRouted(pd);
-    const uint32_t ceiling = wire::headCeilingMs(routed, pd.customHeadTimeoutMs ? pd.customHeadTimeoutMs
-                                                                                : kHeadRoundCeilingMs);
-    const uint32_t roundMs = wire::clampRoundMs(budgetMs, ceiling);
+    const uint32_t roundMs = wire::clampRoundMs(budgetMs, zaiRoundCeilingMs(pd, routed));
     const std::string model = s(pd.customModel);
     const std::unique_ptr<const wire::RoundBudget> rbBox =
         wire::newRoundBudget(pd, wire::customBudgetHost(pd), model, routed);
@@ -499,16 +516,8 @@ nimbus::orch::HeadStepFn zaiLoopStep(const ProviderDeps& pd, const std::string& 
       ZaiRound zr{tr, round, ht, allowTools, attempt ? cap.retryTokens : cap.maxTokens, withEffort,
                   rb.budget.wireBodyBytes};
       std::string body;
-      bool built = zaiLoopBody(pd, zr, body, out.error);
-      if (built && attempt == 0) {
-        // The load is known: the cap that fits it inside the round replaces the table's
-        // (GLM always reasons; its effort is the policy's, not the cap's).
-        BodySplices none;
-        built = wire::fitRoundToLoad(wire::RoundFitIn{rb, kind, roundMs, 0, zr.budget, true}, body, none, cap,
-                                     out.error);
-        zr.maxTokens = cap.maxTokens;
-      }
-      if (!built) {
+      const wire::RoundFitIn fit{rb, kind, roundMs, 0, zr.budget, true};
+      if (!zaiAttemptBody(pd, zr, attempt ? nullptr : &fit, cap, body, out.error)) {
         out.ok = false;
         out.kind = orch::StepErr::BadRequest;
         return out;

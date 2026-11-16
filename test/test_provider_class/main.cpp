@@ -494,6 +494,22 @@ static void test_timeout_switches_without_retry_fast_cut_retries() {
 
 // ---- 5. the one time policy -----------------------------------------------------------
 
+// A loop step's final answer on `host`, and one round of that host's loop with `budget`
+// left, through `pd` (the request lands in d.http.seen).
+static std::string finalFor(const char* host) {
+  return !strcmp(host, "anthropic") ? antFinal() : !strcmp(host, "openai") ? oaiFinal() : misFinal();
+}
+static void runOneRound(const char* host, FakeProviderDeps& d, const providers::ProviderDeps& pd, uint32_t budget) {
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  orch::Transcript tr;
+  tr.addUser("hi");
+  const std::string instr = "S";
+  auto make = !strcmp(host, "anthropic") ? providers::antLoopStep
+            : !strcmp(host, "openai")    ? providers::oaiLoopStep : providers::misLoopStep;
+  make(pd, instr, rig.ht, nullptr, tr)(true, {}, budget, "");
+}
+
 static void test_every_request_deadline_comes_from_the_policy() {
   for (uint32_t budget : {0u, 5000u, 60000u, 119999u, 120000u, 600000u, UINT32_MAX}) {
     for (const char* host : {"anthropic", "openai", "mistral"}) {
@@ -501,43 +517,10 @@ static void test_every_request_deadline_comes_from_the_policy() {
       const uint32_t ceiling = !strcmp(host, "mistral") ? providers::kMistralRoundMs : providers::kHeadRoundCeilingMs;
       const uint32_t want = budget >= ceiling ? ceiling : budget < providers::kMinRoundMs ? providers::kMinRoundMs : budget;
       FakeProviderDeps d;
-      d.http.script.push_back({"", "", 200, !strcmp(host, "anthropic") ? antFinal()
-                                           : !strcmp(host, "openai")    ? oaiFinal() : misFinal()});
-      providers::ProviderDeps pd = d.contract();
-      FakeProviderDeps::ToolRig rig;
-      d.fillTools(rig);
-      orch::Transcript tr;
-      tr.addUser("hi");
-      const std::string instr = "S";
-      auto make = !strcmp(host, "anthropic") ? providers::antLoopStep
-                : !strcmp(host, "openai")    ? providers::oaiLoopStep : providers::misLoopStep;
-      make(pd, instr, rig.ht, nullptr, tr)(true, {}, budget, "");
+      d.http.script.push_back({"", "", 200, finalFor(host)});
+      const providers::ProviderDeps pd = d.contract();
+      runOneRound(host, d, pd, budget);
       TEST_ASSERT_EQUAL_UINT32_MESSAGE(want, d.http.seen[0].timeoutMs, host);
-    }
-  }
-  // Through the Cumulo router every head round gives up at 90 s at most (the egress gives
-  // up at 95 s), Mistral's shorter ceiling kept, and says so in x-cumulo-deadline-ms.
-  for (uint32_t budget : {60000u, 89999u, 120000u, UINT32_MAX}) {
-    for (const char* host : {"anthropic", "openai", "mistral"}) {
-      const uint32_t ceiling = !strcmp(host, "mistral") ? providers::kMistralRoundMs : providers::kRoutedRoundCeilingMs;
-      const uint32_t want = budget >= ceiling ? ceiling : budget;
-      FakeProviderDeps d;
-      d.http.script.push_back({"", "", 200, !strcmp(host, "anthropic") ? antFinal()
-                                           : !strcmp(host, "openai")    ? oaiFinal() : misFinal()});
-      providers::ProviderDeps pd = d.contract();
-      pd.routerBase = [] { return std::string("https://app.cumulo-nimbus.ai"); };
-      pd.routerKey = [] { return std::string("cumulo_sk_test"); };
-      FakeProviderDeps::ToolRig rig;
-      d.fillTools(rig);
-      orch::Transcript tr;
-      tr.addUser("hi");
-      const std::string instr = "S";
-      auto make = !strcmp(host, "anthropic") ? providers::antLoopStep
-                : !strcmp(host, "openai")    ? providers::oaiLoopStep : providers::misLoopStep;
-      make(pd, instr, rig.ht, nullptr, tr)(true, {}, budget, "");
-      TEST_ASSERT_EQUAL_UINT32_MESSAGE(want, d.http.seen[0].timeoutMs, host);
-      TEST_ASSERT_EQUAL_STRING_MESSAGE(std::to_string(want - 5000).c_str(),
-                                       harness_test::headerOf(d.http.seen[0], "x-cumulo-deadline-ms").c_str(), host);
     }
   }
   // The single shots get the same ceilings.
@@ -556,6 +539,26 @@ static void test_every_request_deadline_comes_from_the_policy() {
   // largest single request ceiling.
   static_assert(120000u >= providers::kHeadRoundCeilingMs, "reaper slack below the head ceiling");
   static_assert(120000u >= providers::kSyncSubCeilingMs, "reaper slack below the sync-sub ceiling");
+}
+
+// Through the Cumulo router every head round gives up at 90 s at most (the egress gives
+// up at 95 s), Mistral's shorter ceiling kept, and says so in x-cumulo-deadline-ms.
+static void test_every_routed_round_gives_up_at_90s_and_says_so() {
+  for (uint32_t budget : {60000u, 89999u, 120000u, UINT32_MAX}) {
+    for (const char* host : {"anthropic", "openai", "mistral"}) {
+      const uint32_t ceiling = !strcmp(host, "mistral") ? providers::kMistralRoundMs : providers::kRoutedRoundCeilingMs;
+      const uint32_t want = budget >= ceiling ? ceiling : budget;
+      FakeProviderDeps d;
+      d.http.script.push_back({"", "", 200, finalFor(host)});
+      providers::ProviderDeps pd = d.contract();
+      pd.routerBase = [] { return std::string("https://app.cumulo-nimbus.ai"); };
+      pd.routerKey = [] { return std::string("cumulo_sk_test"); };
+      runOneRound(host, d, pd, budget);
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(want, d.http.seen[0].timeoutMs, host);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(std::to_string(want - 5000).c_str(),
+                                       harness_test::headerOf(d.http.seen[0], "x-cumulo-deadline-ms").c_str(), host);
+    }
+  }
 }
 
 // ---- 6. a 2xx that did not arrive whole -----------------------------------------------
@@ -927,6 +930,7 @@ int main(int, char**) {
   RUN_TEST(test_cum404_v2_status0_without_evidence_still_fails_over);
   RUN_TEST(test_timeout_switches_without_retry_fast_cut_retries);
   RUN_TEST(test_every_request_deadline_comes_from_the_policy);
+  RUN_TEST(test_every_routed_round_gives_up_at_90s_and_says_so);
   RUN_TEST(test_partial_200_is_a_transport_failure_every_provider);
   RUN_TEST(test_no_memory_parse_with_evidence_is_low_memory_every_provider);
   RUN_TEST(test_too_large_without_evidence_stays_cut_every_provider);

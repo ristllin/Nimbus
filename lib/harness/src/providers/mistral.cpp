@@ -943,6 +943,7 @@ struct FoldRequest {
   const char* effort;
   size_t budget;       // the request's own body budget
   uint32_t roundMs;    // its socket deadline
+  bool fit;            // the first attempt: its cap is fitted to the body's load
 };
 static bool mistralFoldBody(const ProviderDeps& pd, const FoldRequest& f, std::string& body, std::string& err) {
   JsonDocument req = makeDoc(pd);
@@ -976,6 +977,19 @@ static int mistralFoldRequest(const ProviderDeps& pd, const FoldRequest& f, std:
   return code;
 }
 
+// One attempt's body, built at the attempt's cap. The first attempt's cap is then fitted
+// to the body's load (the table's until the load is known), and a retry steps up from it.
+static bool mistralFoldAttemptBody(const ProviderDeps& pd, const wire::RoundBudget& rb, FoldRequest& f,
+                                   OutputCap& cap, std::string& body, std::string& err) {
+  if (!mistralFoldBody(pd, f, body, err)) return false;
+  if (!f.fit) return true;
+  BodySplices none;
+  if (!wire::fitRoundToLoad(wire::RoundFitIn{rb, RoundKind::Fold, f.roundMs, 0, f.budget, true}, body, none, cap, err))
+    return false;
+  f.maxTokens = cap.maxTokens;
+  return true;
+}
+
 static bool foldRefusedEffort(int code, const JsonDocument& resp) {
   return code != 200 && misRefusedEffort(code, mistralErrText(resp) + " " + (const char*)(resp["code"] | ""));
 }
@@ -992,16 +1006,9 @@ static bool mistralFold(const ProviderDeps& pd, const std::string& inputs, std::
   bool effortRetried = false;
   for (int attempt = 0; attempt < 2; ++attempt) {
     FoldRequest f{model, inputs, attempt ? cap.retryTokens : cap.maxTokens,
-                  misEffortRefusedBefore(model) ? "" : cap.effort, rb.budget.wireBodyBytes, roundMs};
+                  misEffortRefusedBefore(model) ? "" : cap.effort, rb.budget.wireBodyBytes, roundMs, attempt == 0};
     std::string body;
-    if (!mistralFoldBody(pd, f, body, err)) return false;
-    if (attempt == 0) {
-      BodySplices none;
-      if (!wire::fitRoundToLoad(wire::RoundFitIn{rb, RoundKind::Fold, roundMs, 0, f.budget, true}, body, none, cap,
-                                err))
-        return false;
-      f.maxTokens = cap.maxTokens;
-    }
+    if (!mistralFoldAttemptBody(pd, rb, f, cap, body, err)) return false;
     const uint32_t maxTokens = f.maxTokens;
     const char* effort = f.effort;
     const size_t textBytes = body.size();
