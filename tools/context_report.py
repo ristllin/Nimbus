@@ -73,6 +73,8 @@ BASELINE = {
     "capped_finals": 28,
     "xturn_hits": 18,
     "xturn_turns": 201,
+    "recall_fits_freeing_nothing": 4,
+    "recall_fits_measurable": 4,
 }
 # The release that added the wire guard ('history: N message(s) left out'): the
 # baseline counts owner turns from its first boot on.
@@ -167,6 +169,7 @@ def slots_of(text: str) -> list[dict]:
 
 def new_turn() -> dict:
     return dict(
+        order=[],
         hist_cut=[],
         shifts=0,
         fits=[],
@@ -264,12 +267,20 @@ class Log:
         m = TURN_FIT.match(text)
         if m:
             cur["fits"].append(m.group(1))
+            cur["order"].append(("fit", fit_kinds(m.group(1))))
             self.turn_fits.append(dict(wall=w, what=fit_kinds(m.group(1))))
             return
         m = REFUSAL.match(text)
         if m:
-            r = dict(round=int(m.group(1)), body=int(m.group(2)), budget=int(m.group(3)), wall=w)
+            r = dict(
+                round=int(m.group(1)),
+                body=int(m.group(2)),
+                budget=int(m.group(3)),
+                wall=w,
+                tools="replayed tool rounds" in text,
+            )
             cur["refusals"].append(r)
+            cur["order"].append(("refusal", r))
             self.refusals.append(r)
             return
         m = FABRIC_LOOP.match(text)
@@ -660,12 +671,36 @@ def refit_figures(log: Log) -> dict:
     }
 
 
+def recall_only_deltas(t: dict) -> list:
+    """The body change each recall-only turn fit made, where the log shows it (bytes).
+
+    The refit line that follows a turn fit names the body measured before that fit ('round N
+    body B B over ... folded <what the fit gave>'), so a recall-only fit's effect is the next
+    same-round refit's body minus its own, read only where the very next event is the next fit
+    and its refit (nothing else moved the body). A rung that frees nothing but adds its
+    '[LEFT OUT ...]' note grows the body: the phantom recall note (recall was not in it)."""
+    out, ev = [], t["order"]
+    for i, (kind, what) in enumerate(ev):
+        if kind != "fit" or what != ["recalled"]:
+            continue
+        # fit A, its refit, the next fit B, B's refit: nothing else moved the body in between
+        nxt = [e[0] for e in ev[i + 1 : i + 4]]
+        clean = nxt == ["refusal", "fit", "refusal"] and not ev[i + 1][1]["tools"]  # A's refit folded only A
+        if clean and ev[i + 1][1]["round"] == ev[i + 3][1]["round"]:
+            out.append(ev[i + 3][1]["body"] - ev[i + 1][1]["body"])
+    return out
+
+
 def fit_figures(log: Log) -> dict:
     kinds = tally(k for f in log.turn_fits for k in f["what"])
     walls = [f["wall"] for f in log.turn_fits if f["wall"]]
+    deltas = [d for t in log.turns + log.unfinished for d in recall_only_deltas(t)]
     return {
         "turn_fits": len(log.turn_fits),
         "dropped": kinds,
+        "recall_only_measurable": len(deltas),
+        "recall_only_freed_nothing": count(deltas, lambda d: d >= 0),
+        "recall_only_body_change": sorted(set(deltas)),
         "first": stamp(min(walls)) if walls else None,
         "last": stamp(max(walls)) if walls else None,
     }
@@ -787,6 +822,8 @@ def baseline_view(r: dict) -> dict:
         "capped_finals": r["capped"]["capped_finals"],
         "xturn_hits": r["xturn"]["hits"],
         "xturn_turns": r["xturn"]["turns"],
+        "recall_fits_freeing_nothing": r["turn_fit"]["recall_only_freed_nothing"],
+        "recall_fits_measurable": r["turn_fit"]["recall_only_measurable"],
     }
 
 
@@ -840,7 +877,9 @@ def text_report(r: dict) -> str:
         f"refits: {rf['refusals']} over-budget refusals ({rf['at_round0']} at round 0, {rf['after_round0']} later; "
         f"budgets {rf['budgets']}); Large turns with a later refit {rf['large_refit_turns']} holding "
         f"{rf['large_refits_after_round0']} refits, cache shortfall {rf['large_refit_shortfall_tokens']} tokens",
-        f"turn fit: {tf['turn_fits']} ({tf['first']} .. {tf['last']}), dropped {tf['dropped']}",
+        f"turn fit: {tf['turn_fits']} ({tf['first']} .. {tf['last']}), dropped {tf['dropped']}; recall-only fits "
+        f"freeing nothing {tf['recall_only_freed_nothing']} of {tf['recall_only_measurable']} measurable "
+        f"(body change {tf['recall_only_body_change']} B)",
         f"capped final rounds: {cp['capped_finals']} {cp['by_reason']}",
         f"cross-turn round-0 hits (Mistral): {x['hits']} of {x['turns']}; by idle {x['by_idle']}",
         f"fold: ok {f['ok']}, last ok {f['last_ok']}, failures {f['failures']}, lines after the last fold line "

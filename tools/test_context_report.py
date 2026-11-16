@@ -294,6 +294,33 @@ def test_anthropic_share_counts_cache_outside_input(tmp_path):
         assert c[key]["usd"]["ledger"] == round((1000 * 2 + 90000 * 0.2 + 9000 * 2.5 + 100 * 10) / 1e6, 2)
 
 
+PHANTOM = """\
+0 158 boot boot: n=21 fw=v5.1.1 build=v5.1.1 reason=software-restart(0x0c) wake=none mode=orch t=1794714153 ota=installing_v5.1.1 prev=n20/55467s/idle/h15796
+318 44043971 - orchestrator: tool-loop ON (56 tools, 8 rounds/600s)
+319 44043977 - orchestrator: turn host=mistral (conv=0 heap=36852)
+320 44045370 - turn fit: left out 10 recalled memory item(s) (asked for 1407 B, gave 4236 B)
+321 44045432 - headloop: round 0 body 85895 B over the 85000 B budget - folded 4236 B of the prompt and input, running the round again
+322 44045715 - turn fit: left out 10 recalled memory item(s); the attached food playbook (asked for 1565 B, gave 12754 B)
+323 44045767 - headloop: round 0 body 86053 B over the 85000 B budget - folded 12754 B of the prompt and input, running the round again
+330 44077488 - turn spend: ok owner | mistral/mistral-large-4-0 in=40000 out=500 cR=0 cW=0 n=2 id=mistral-large-4-0
+331 44077500 - turn end: ok host=mistral tokens in=40000 out=500 tools=1 reply=300B src=owner
+"""
+
+
+def test_a_recall_only_fit_that_grows_the_body_is_a_phantom_note(tmp_path):
+    # 15 Nov 2026 (v5.1.1): the recall rung 'gave 4236 B' and the next refit body grew by 158 B,
+    # the size of its own [LEFT OUT] note: recall was never in the request.
+    tf = cr.report(cr.parse([write(tmp_path, "p.log", PHANTOM)]))["turn_fit"]
+    assert (tf["recall_only_freed_nothing"], tf["recall_only_measurable"]) == (1, 1)
+    assert tf["recall_only_body_change"] == [158]
+
+
+def test_a_refit_that_also_folded_tool_rounds_is_not_measurable(tmp_path):
+    text = PHANTOM.replace("folded 4236 B of the prompt", "folded 6738 B of the replayed tool rounds then the prompt")
+    tf = cr.report(cr.parse([write(tmp_path, "q.log", text)]))["turn_fit"]
+    assert tf["recall_only_measurable"] == 0
+
+
 def test_repo_price_rows_come_from_the_header():
     rows = cr.repo_price_rows()
     assert rows[("mistral", "mistral-large-4-0")][:2] == (2.0, 6.0)

@@ -2,7 +2,7 @@
   "id": "lc-day-boundary",
   "title": "Last night's estimate is still there just after midnight",
   "rows": [
-    "OIR-54"
+    "OIR-51"
   ],
   "replays": "Bench row B09 and the 15 Nov 2026 class at midnight: on v5.1.1 the owner's day switches at local midnight and the turns before it fall to the small recent-history share, so a 23:50 estimate followed by two short turns is gone from the 00:05 request. Synthetic evening of the same shape; the estimate was never logged, so only the conversation holds it.",
   "clock": "{{TODAY}} {{DOW}} 00:05 GMT",

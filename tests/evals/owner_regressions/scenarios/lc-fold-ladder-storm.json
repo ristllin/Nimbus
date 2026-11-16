@@ -4,7 +4,7 @@
   "runner": "fold_replay",
   "title": "A failing summary is never retried back to back on the same provider",
   "rows": [
-    "OIR-53"
+    "OIR-54"
   ],
   "replays": "The 2 Nov 2026 class: the fold to mistral-large-4-0 answered with no summary three times, 31.6 s apart on the same host and model, and the third failure paused summaries. Replayed offline on a hosted instance: owner turns past the fold trigger, a quiet evening, and every fold answer empty. A cycle may walk its rungs once each; it never asks one host and model twice, and it never pauses or asks the owner for /compact.",
   "turns": 20,

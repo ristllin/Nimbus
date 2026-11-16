@@ -71,6 +71,11 @@ and PROG (a305cbfc) all landed before this lane did.
 | OIR-48 | 31 Oct - 1 Nov | Two live food ledgers: a dead food/food-log.csv and the live nutrition/meal_log.csv | two ledgers | writes not refused outside the one ledger | secondFoodLogRefusal on main | oir_48, test_food_ledger | lc-two-ledgers |
 | OIR-49 | 30 Oct | The ledger migration dropped 2 rows without telling the owner | day rewrite loss | migration silent about unreadable rows | ledger_migrate on main | oir_49, test_ledger_migrate | lc-migration |
 | OIR-50 | 2 Nov | Challenged, the head defended invented rows with "you told me", "you photographed" - its own earlier writes as proof | defended hallucination | claim check did not require a real backing message; a quoted repeat in a retraction was skipped as the owner quoted back (lane MLQ) | 63264018 (LABEL claim extension) + c0d7fc5b; lane MLQ: [DISPUTED CLAIM] line, quoted owner-action phrase checked on a disputed turn (mistral-large-4-0 3/5 on 48e166c2, 5/5 on 7e997875) | oir_50, test_orch_claims, test_harness_claim_check (lane MLQ: a quoted repeat on a disputed turn) | lc-defended-hallucination |
+| OIR-51 | 15 Nov 16:00 | Asked why its estimate was off, the assistant no longer had its own estimate from two turns before, nor its comparison with the label | conversation left out of the request | the 85,000 B wire guard (fitHistoryToWire) cut the history on 121 of 123 owner turns since v4.9.0, here 14 messages, with no note and no fold flag; the 16 KB day cap and the midnight switch drop the same kind of rows | open: v5.1.2 lane H (history from the derived budget, LEFT OUT notes, nothing moves at midnight) | test_context_report (the log measure: owner turns cut, messages left out), test_owner_offline (request_contains) | lc-context-own-estimate, lc-day-boundary |
+| OIR-52 | 2-15 Nov | Automatic summaries stopped on 2 Nov and stayed off for 13 days; only /compact started them again | permanent fold pause | three failed folds tripped the breaker (fails=3, paused=1) and nothing lifted it, through 11 boots and 7 installs | open: v5.1.2 lane F (no permanent pause; a legacy pause lifts on load) | tools/release_gate/check_fold_health.py, test_fold_health | lc-fold-self-heal |
+| OIR-53 | 6-15 Nov | A request was told 10 recalled memories were left out to fit, when none had been sent; the body grew instead of shrinking | phantom recall note | the turn-fit recall rung wrote its [LEFT OUT] note without checking the recall bytes were in the body: +158 B, 0 B freed, in 4 of 4 measurable cases | open: v5.1.2 lane H (a rung that frees 0 B is skipped with no note) | test_turn_fit, test_context_report (recall-only fits freeing nothing) | n/a (model-facing note; guarded natively) |
+| OIR-54 | 2 Nov 17:5x | The summary was asked three times in 2.5 minutes of the same model, then switched off | fold retried back to back | each pump pass re-ran the same host and model with the same body; no ladder across providers, no backoff | open: v5.1.2 lane F (one rung per pass across keyed hosts, then 15 min, 1 h, 4 h, 12 h) | test_owner_offline, tools/release_gate/check_fold_health.py | lc-fold-ladder-storm |
+| OIR-55 | 16 Nov (plan review) | The daily limit on paid summary calls would have counted per chat, so several failing chats could spend several times the limit | fold spend bound per chat | the plan kept the paid-call count in each chat's fold record | open: v5.1.2 lane F (one device-wide count in /fold_ctl.txt) | tools/release_gate/check_fold_health.py (device-wide fold control), bench row B10 | n/a (bench row B10) |
 
 ## Guard inventory
 
@@ -93,7 +98,16 @@ and PROG (a305cbfc) all landed before this lane did.
   (tests/evals/honesty/driver) with real provider calls on mistral-large-4-0,
   mistral-medium-latest, glm-5.3, claude-haiku-5-5 and gpt-6-luna, 5 reps each, hard assertions
   first (assertions.py), the judge as a soft signal only. Thresholds are pre-written in
-  thresholds.json and were not tuned after seeing results.
+  thresholds.json and were not tuned after seeing results. The history rows (OIR-51) also
+  grade what the turn's first request carried (request_contains on the driver's request0):
+  on v5.1.1 both heads found their own estimate by searching the log, so the reply alone
+  passed while the request had lost it (lane CTXE, 16 Nov 2026).
+- Offline: a scenario marked "mode": "offline" is replayed by run_offline.py instead of a live
+  model, because a provider cannot be made to fail on cue: fold_replay drives a hosted
+  instance's fold path (NimbusdRig over the shared fold store and engine fold) with every
+  answer scripted, no network and no keys (OIR-52 lc-fold-self-heal, OIR-54
+  lc-fold-ladder-storm). On v5.1.1 both fail: the planted paused blob never folds again, and
+  an empty answer is retried three passes running on one host and model before the pause.
 - Release gate: tools/release_gate/check_owner_regressions.py refuses a release unless a full live
   run on the exact candidate sha exists on disk under tests/evals/owner_regressions/runs/<sha>/,
   every hard row passes its threshold on mistral-large-4-0 and on claude-haiku-5-5, and no row
