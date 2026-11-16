@@ -69,6 +69,7 @@ a generated file.
 | `tftpreview.py` | Color counterpart for the TFT golden suite - `contact` sheet + tap-`regions` linter. |
 | `nsn_send.py` | End-to-end broker→Bluetooth→device validation (needs `bleak` + macOS BT entitlement). |
 | `harness-lab/` | Runs the real agent harness on the Mac instead of the device (see its README). |
+| `context_report.py` | Context, cache, fold and cost figures per provider and turn from saved device logs (never contacts a device); `--check-baseline` re-derives the 15 Nov 2026 Lumi baseline. Tests: `test_context_report.py`. |
 | `test_setup_device.py` | Unit tests for `setup_device.py`. |
 | `test_usb_reset.py` | Unit tests for `usb_reset.py`'s setup error paths (no USB bus touched). |
 | `test_device_http_auth.py` | Every tool that calls the device API signs in with the `X-Nimbus-Token` header, never a URL token (fake device, no network). |
