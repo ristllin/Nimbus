@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <dirent.h>
 #include <fstream>
 #include <iterator>
@@ -26,11 +27,14 @@
 // v5.1.2). Wire-level legs: each builds its request through the device's own provider
 // code (the same files the board runs) at the target its host and model have
 // (wireBudgetFor), on the real API, and reads the answers back:
-//   - round 0 at the target is accepted, and the next round reads the first from the cache
-//     (OpenAI, Anthropic and Z.ai at least 90 %, Mistral at least 50 %), with no read
-//     timeout; the custom leg answers through its one flat string;
-//   - one plain-text fold on a digest of the host's fold step, its summary carrying the
-//     sections the fold prompt asks for;
+//   - round 0 at the target is accepted, and every later round reads the earlier ones from
+//     the cache (OpenAI, Anthropic and Z.ai at least 90 %, Mistral at least 50 %), with
+//     each round's body prefix shared with the round before it logged, so a miss reads as
+//     the wire's (the prefix moved) or the provider's (it did not); no read timeout; the
+//     custom leg answers through its one flat string;
+//   - one plain-text fold on a digest of the host's fold step, on the model a fold for that
+//     head runs (a Large 4 head folds on Mistral Small, ruling of 16 Nov), its summary
+//     carrying the sections the fold prompt asks for;
 //   - one photo round with a 3-photo album (LAB_BUDGET_PHOTOS: a directory of JPEGs) sent
 //     as each host's image parts, its window estimate logged against the prompt tokens.
 // The environment picks the legs:
@@ -226,9 +230,16 @@ agent::HeadTools labTools(int& looked) {
   return ht;
 }
 
+// Where a turn's answer and error land.
+struct TurnText {
+  std::string& out;
+  std::string& err;
+};
 bool runTurn(const Leg& leg, const agent::providers::ProviderDeps& pd, const std::string& ins, const std::string& seed,
-             agent::HeadTools* ht, std::string& out, std::string& err) {
+             agent::HeadTools* ht, TurnText t) {
   std::string conv;
+  std::string& out = t.out;
+  std::string& err = t.err;
   const std::string host = leg.host;
   if (leg.custom || host == "zai") return agent::providers::orchTurnCustom(pd, conv, ins, seed, out, err, ht, nullptr);
   if (host == "anthropic") return agent::providers::orchTurnAnthropic(pd, conv, ins, seed, out, err, ht, nullptr);
@@ -259,7 +270,7 @@ Prompt promptAt(const Leg& leg, agent::providers::ProviderDeps pd, size_t want, 
       // The custom wire sends one flat string under flatPromptBudget(): stop before it.
       if (agent::layout::flat(p.instructions).size() > agent::providers::flatPromptBudget() - 2048) break;
     }
-    runTurn(leg, pd, p.instructions, p.seed, leg.custom ? nullptr : &ht, out, err);
+    runTurn(leg, pd, p.instructions, p.seed, leg.custom ? nullptr : &ht, {out, err});
     if (dry.body > want) {
       parts.history.resize(parts.history.size() - 2);
       p.instructions = agent::layout::join(parts);
@@ -270,12 +281,35 @@ Prompt promptAt(const Leg& leg, agent::providers::ProviderDeps pd, size_t want, 
   return p;
 }
 
+// A body without its output cap field: the cap is fitted per round and is not part of the
+// prompt the provider caches, so it must not end the shared prefix.
+std::string withoutCap(std::string body) {
+  for (const char* key : {"\"max_tokens\":", "\"max_output_tokens\":"}) {
+    const size_t at = body.find(key);
+    if (at == std::string::npos) continue;
+    size_t end = at + std::strlen(key);
+    while (end < body.size() && std::isdigit((unsigned char)body[end])) ++end;
+    if (end < body.size() && body[end] == ',') ++end;
+    body.erase(at, end - at);
+  }
+  return body;
+}
+// The bytes two request bodies share from their start, the output cap aside.
+size_t sharedPrefix(const std::string& a0, const std::string& b0) {
+  const std::string a = withoutCap(a0), b = withoutCap(b0);
+  const size_t n = std::min(a.size(), b.size());
+  size_t i = 0;
+  while (i < n && a[i] == b[i]) ++i;
+  return i;
+}
+
 // The cached share of a call's prompt: cache reads over the whole prompt.
 struct CallUse {
   int status = 0;
   double seconds = 0;
   uint32_t prompt = 0, cached = 0, output = 0;
   size_t body = 0;
+  size_t sharedPrefix = 0;   // bytes of this request's body equal to the previous request's
 };
 CallUse useOf(const CurlHttpTransport::Call& c) {
   CallUse u;
@@ -310,14 +344,18 @@ void legRound(const Leg& leg, LegTransport& http, const agent::providers::Provid
   int looked = 0;
   agent::HeadTools ht = labTools(looked);
   std::string out, err;
-  const bool ok = runTurn(leg, pd, p.instructions, p.seed, leg.custom ? nullptr : &ht, out, err);
+  const bool ok = runTurn(leg, pd, p.instructions, p.seed, leg.custom ? nullptr : &ht, {out, err});
   std::vector<CallUse> use;
-  for (size_t i = first; i < http.curl.calls.size(); ++i) use.push_back(useOf(http.curl.calls[i]));
+  for (size_t i = first; i < http.curl.calls.size(); ++i) {
+    use.push_back(useOf(http.curl.calls[i]));
+    if (i > first) use.back().sharedPrefix = sharedPrefix(http.curl.calls[i - 1].reqBody, http.curl.calls[i].reqBody);
+  }
   for (size_t i = 0; i < use.size(); ++i)
     r.note(std::string(leg.name) + ": request " + std::to_string(i) + " " + std::to_string(use[i].body) + " B -> HTTP " +
            std::to_string(use[i].status) +
            fmt(" in %.1f s, prompt %.0f tokens, cached %.0f, output %.0f", use[i].seconds, use[i].prompt,
-               use[i].cached, use[i].output));
+               use[i].cached, use[i].output) +
+           (i ? ", prefix shared with the round before " + std::to_string(use[i].sharedPrefix) + " B" : ""));
   r.check(ok, std::string(leg.name) + ": the turn answered" + (ok ? "" : ": " + err));
   r.check(!use.empty() && use[0].status == 200, std::string(leg.name) + ": round 0 at its target was accepted");
   bool timedOut = false;
@@ -328,12 +366,21 @@ void legRound(const Leg& leg, LegTransport& http, const agent::providers::Provid
     return;
   }
   r.check(looked >= 1 && use.size() >= 2, std::string(leg.name) + ": the tool ran and a second round went out");
-  if (use.size() >= 2 && use[1].prompt) {
-    const int pct = (int)(100.0 * use[1].cached / use[1].prompt);
-    r.check(pct >= cachePercentFloor(leg), std::string(leg.name) + ": round 1 read " + std::to_string(pct) +
-                                               "% from the cache (at least " +
+  for (size_t i = 1; i < use.size(); ++i) {
+    if (!use[i].prompt) continue;
+    const int pct = (int)(100.0 * use[i].cached / use[i].prompt);
+    r.check(pct >= cachePercentFloor(leg), std::string(leg.name) + ": round " + std::to_string(i) + " read " +
+                                               std::to_string(pct) + "% from the cache (at least " +
                                                std::to_string(cachePercentFloor(leg)) + "%)");
   }
+}
+
+// The model a fold for this head runs: Large 4 refuses effort "none" and cannot write a
+// fold inside its 60 s fit at its 50 tok/s floor, so its fold runs on Mistral Small
+// (orchestrator ruling of 16 Nov; the fold ladder pins it). Every other head folds on itself.
+std::string foldModelFor(const Leg& leg) {
+  const std::string m = leg.model;
+  return m.rfind("mistral-large-4", 0) == 0 ? "mistral-small-latest" : m;
 }
 
 // The fold: one plain-text request on a digest of the host's fold step.
@@ -349,8 +396,9 @@ int sectionsNamed(const std::string& summary) {
     if (low.find(k) != std::string::npos) ++n;
   return n;
 }
-void legFold(const Leg& leg, LegTransport& http, const agent::providers::ProviderDeps& pd, double scale,
-             const Report& r) {
+void legFold(const Leg& leg, LegTransport& http, agent::providers::ProviderDeps pd, double scale, const Report& r) {
+  const std::string model = foldModelFor(leg);
+  pd.orchModel = [model](const char*) { return model; };
   const size_t step = (size_t)((double)foldStepFor(leg) * scale);
   std::string digest;
   for (int i = 0; digest.size() < step; ++i) digest += "- owner: " + loggedDay(i) + "\n- assistant: Logged.\n";
@@ -358,11 +406,12 @@ void legFold(const Leg& leg, LegTransport& http, const agent::providers::Provide
   const std::string inputs = nimbus::orch::buildCompactInputs("", digest, "[TODAY] 2026-11-16 (Europe/London)");
   const size_t first = http.curl.calls.size();
   std::string out, err;
-  const bool ok = runTurn(leg, pd, nimbus::orch::ORCH_COMPACT_PROMPT, inputs, nullptr, out, err);
+  const bool ok = runTurn(leg, pd, nimbus::orch::ORCH_COMPACT_PROMPT, inputs, nullptr, {out, err});
   std::vector<CallUse> use;
   for (size_t i = first; i < http.curl.calls.size(); ++i) use.push_back(useOf(http.curl.calls[i]));
   for (const CallUse& u : use)
-    r.note(std::string(leg.name) + ": fold " + std::to_string(u.body) + " B -> HTTP " + std::to_string(u.status) +
+    r.note(std::string(leg.name) + ": fold on " + model + " " + std::to_string(u.body) + " B -> HTTP " +
+           std::to_string(u.status) +
            fmt(" in %.1f s, prompt %.0f tokens, output %.0f", u.seconds, u.prompt, u.output));
   r.check(ok && !out.empty(), std::string(leg.name) + ": the plain fold on a " + std::to_string(step) +
                                   " B digest answered" + (ok ? "" : ": " + err));
@@ -423,7 +472,7 @@ void legPhoto(const Leg& leg, LegTransport& http, const agent::providers::Provid
   agent::HeadTools ht = labTools(looked);
   std::string out, err;
   const bool ok = runTurn(leg, pd, "You are the owner's desk assistant. Answer briefly.", text,
-                          leg.custom ? nullptr : &ht, out, err);
+                          leg.custom ? nullptr : &ht, {out, err});
   const std::string host = leg.host;
   const agent::providers::imageparts::Dialect d =
       host == "anthropic" ? agent::providers::imageparts::Dialect::Anthropic
