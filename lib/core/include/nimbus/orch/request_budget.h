@@ -81,7 +81,7 @@ struct RequestBudget {
   // Lane B's derivation (P0 declared the fields above).
   uint32_t readWindowMs = 0;     // the effective read window every fit uses (gateway, router)
   uint32_t minFinalTokens = 0;   // the answer a round must be able to carry
-  uint32_t latencyTokens = 0;    // T_lat (0 = no 1k step fits)
+  uint32_t latencyTokens = 0;    // T_lat, walked up to the 100k clamp (0 = no 1k step fits)
   uint32_t tierTokens = 0;       // the model's price tier (a prompt over it bills higher); 0 = none
   uint32_t floorBytes = 0;       // min(85,000, 0.85 x window x rSafe)
   BudgetBound bound = BudgetBound::Floor;

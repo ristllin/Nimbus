@@ -72,6 +72,7 @@ const PAGES = [
   ['reference/tool-catalog.md', 'reference/tool-catalog.md', 'Tool catalog', 'Tool catalog'],
   ['reference/turn-contract.md', 'reference/turn-contract.md', 'Turn contract', 'Turn contract'],
   ['reference/capabilities-matrix.md', 'reference/capabilities-matrix.md', 'Provider capability matrix', 'Capability matrix'],
+  ['reference/request-budgets.md', 'reference/request-budgets.md', 'Request budgets per model', 'Request budgets'],
   ['tools-and-commands.md', 'reference/tools-and-commands.md', 'Tools & Commands', 'Tools & commands'],
   ['changelog.md', 'reference/changelog.md', 'Changelog', 'Changelog'],
   // Forking & Contributing

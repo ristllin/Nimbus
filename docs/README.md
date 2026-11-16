@@ -79,6 +79,7 @@ Three other generators read this tree - keep them in sync when you edit:
 | `reference/tool-catalog.md` | The tool catalog |
 | `reference/turn-contract.md` | The turn contract |
 | `reference/capabilities-matrix.md` | Provider x role x feature matrix, plus the memory-embeddings request per provider (generated from the catalog and the embeddings builder) |
+| `reference/request-budgets.md` | Every model's request budget, context allocations and output caps (generated from the request budget code by `test_request_budget`) |
 | `tools-and-commands.md` | User and contributor tools and console commands |
 | `changelog.md` | Release history |
 

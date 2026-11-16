@@ -151,18 +151,25 @@ uint16_t memoFor(const WireKey& k) {
 }
 
 // ---- the latency bound -----------------------------------------------------------------
+uint32_t decodeFor(const WireKey& k, uint32_t ctx) {
+  if (k.host == "anthropic") return anthropicDecode(k.model);
+  if (k.host == "mistral") return mistralDecode(k.model, ctx);
+  if (k.host == "zai") return byContext(ctx, 55, 48);
+  return 50;   // OpenAI and custom: never capped, the target check only
+}
+
 uint64_t timeAtMs(const RequestBudget& b, const WireKey& k, uint32_t tokens) {
   const uint64_t bytes = (uint64_t)tokens * b.rNomX100 / 100;
   return roundOverheadMs(b.link, (size_t)bytes, true, tokens, b.prefillTokPerS) +
-         (uint64_t)b.minFinalTokens * 1000 / decodeFloorTokPerS(k.host, k.model, tokens);
+         (uint64_t)b.minFinalTokens * 1000 / decodeFor(k, tokens);
 }
 
-// The largest T (1k steps) whose worst round fits the read window; 0 when none does. The
-// round time only grows with T, so the walk stops at the first step over.
+// The largest T (1k steps, up to the clamp) whose worst round fits the read window; 0 when
+// none does. The round time only grows with T, so the walk stops at the first step over.
 uint32_t latencyBound(const RequestBudget& b, const WireKey& k) {
-  constexpr uint32_t kStep = 1000, kMax = 2000000;
+  constexpr uint32_t kStep = 1000;
   uint32_t fit = 0;
-  for (uint32_t t = kStep; t <= kMax && timeAtMs(b, k, t) <= b.readWindowMs; t += kStep) fit = t;
+  for (uint32_t t = kStep; t <= kBudgetTargetClampTokens && timeAtMs(b, k, t) <= b.readWindowMs; t += kStep) fit = t;
   return fit;
 }
 
@@ -241,11 +248,7 @@ uint32_t prefillFloorTokPerS(const std::string& host, const std::string& model) 
 }
 
 uint32_t decodeFloorTokPerS(const std::string& host, const std::string& model, uint32_t contextTokens) {
-  const WireKey k = wireKey(host, model);
-  if (k.host == "anthropic") return anthropicDecode(k.model);
-  if (k.host == "mistral") return mistralDecode(k.model, contextTokens);
-  if (k.host == "zai") return byContext(contextTokens, 55, 48);
-  return 50;   // OpenAI and custom: never capped, the target check only
+  return decodeFor(wireKey(host, model), contextTokens);
 }
 
 uint32_t minFinalTokensFor(const std::string& host, const std::string& model) {
@@ -302,7 +305,7 @@ RequestBudget requestBudgetFor(const std::string& host, const std::string& model
     b.bound = BudgetBound::Held;
   }
   b.targetTokens = (uint32_t)((uint64_t)b.wireBodyBytes * 100 / b.rNomX100);
-  b.decodeTokPerS = decodeFloorTokPerS(k.host, k.model, b.targetTokens);
+  b.decodeTokPerS = decodeFor(k, b.targetTokens);
   return b;
 }
 
