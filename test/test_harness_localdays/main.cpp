@@ -674,7 +674,7 @@ static void test_the_device_wires_the_clock_and_the_zone_the_history_reads() {
   TEST_ASSERT_TRUE(fold != std::string::npos);
   TEST_ASSERT_TRUE(has(src.substr(fold, 220), "agent::utcOffsetAtUnix"));
   // The engine reads the clock it was given, and only that.
-  const std::string eng = readFile("lib/harness/src/engine.cpp");
+  const std::string eng = readFile("lib/harness/src/engine_history.cpp");
   TEST_ASSERT_TRUE(has(eng, "d.platform.nowEpoch ? d.platform.nowEpoch() : 0"));
 }
 

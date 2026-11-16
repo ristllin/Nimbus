@@ -93,7 +93,7 @@ lib/core/src/settings_menu.cpp:nimbus::SettingsMenu::itemCount
 lib/core/src/orch_tool_registry.cpp:nimbus::orch::ToolRegistry::handleRpc
 lib/harness/src/providers/mistral.cpp:agent::providers::mistralDispatch
 lib/core/src/qr.cpp:nimbus::qr::Grid::getPenaltyScore
-lib/harness/src/engine.cpp:agent::TurnEngine::runFold
+lib/harness/src/engine_fold.cpp:agent::TurnEngine::runFold
 tools/usb_reset.py:main
 lib/core/src/tft_menu_tap.cpp:nimbus::tft::applyMenuTap
 tools/setup_device.py:prompt_bootstrap
@@ -179,7 +179,7 @@ tests/hil/device.py:__init__
 tests/hil/test_l12_mock_llm.py:__init__
 lib/core/src/tft_fb565.cpp:nimbus::tft::Fb565::card
 lib/core/src/orch_loops.cpp:nimbus::orch::parseSpec
-lib/harness/src/engine.cpp:agent::TurnEngine::foldHostCandidates
+lib/harness/src/engine_fold.cpp:agent::TurnEngine::foldHostCandidates
 src/net/web_memory.cpp:nimbus::net::registerMemoryRoutes
 src/agent/orchestrator.cpp:agent::orchestrator::injectScheduledTurn
 lib/core/src/orch_loops.cpp:nimbus::orch::parseDurationSecs
