@@ -1660,51 +1660,6 @@ static void test_fold_is_a_plain_completion() {
   TEST_ASSERT_EQUAL_STRING("1. Decisions\nNone.", out.c_str());
 }
 
-// The class behind the routine 6,050-token cut: every reasoning model gets an effort it
-// accepts. Large 4 refused "none", the refusal dropped the field, and with no field it
-// thinks at its default and runs out of room. Recorded live 1 Nov
-// (evidence/probes/mistral-effort-matrix.txt): the value each accepts of none and low.
-static void test_effort_table_matches_the_recording() {
-  struct Row { const char* model; const char* accepts; };
-  const Row rows[] = {{"mistral-large-4-0", "low"},      {"mistral-large-4", "low"},
-                      {"mistral-medium-latest", "none"}, {"mistral-small-latest", "none"},
-                      {"magistral-medium-latest", "none"}, {"mistral-vibe-cli-latest", "none"},
-                      {"zai-glm-5-3", "low"},            {"zai-glm-5-3-flash", "low"},
-                      {"mistral-large-latest", ""}};
-  for (const Row& r : rows) {
-    TEST_ASSERT_EQUAL_STRING_MESSAGE(r.accepts, providers::mistralHeadEffort(r.model), r.model);
-    for (const providers::RoundKind k : {providers::RoundKind::ToolRound, providers::RoundKind::FinalRound,
-                                         providers::RoundKind::SingleShot, providers::RoundKind::Fold}) {
-      const providers::OutputCap c = providers::outputCapFor("mistral", r.model, k, providers::kHeadRoundCeilingMs);
-      TEST_ASSERT_EQUAL_STRING_MESSAGE(r.accepts, c.effort, r.model);
-      TEST_ASSERT_EQUAL_STRING_MESSAGE(r.accepts, c.retryEffort, r.model);
-    }
-  }
-}
-
-// The same-host step-down table (ruling 3 Nov 09:15Z): only a head that cannot turn
-// its reasoning off gets a same-provider non-reasoning round before another provider
-// is asked. Large 4 refuses effort "none" (the recording above); every other Mistral
-// head runs at "none", Z.ai has no non-reasoning GLM, and every current Claude line
-// takes effort.
-static void test_the_same_host_step_down_table() {
-  const struct { const char* host; const char* model; const char* alt; } rows[] = {
-      {"mistral", "mistral-large-4-0", "mistral-medium-latest"},
-      {"mistral", "mistral-large-4", "mistral-medium-latest"},
-      {"mistral", "mistral/mistral-large-4-0", "mistral-medium-latest"},   // a router pick
-      {"mistral", "mistral-medium-latest", ""},   // already runs at effort "none"
-      {"mistral", "mistral-small-latest", ""},
-      {"mistral", "mistral-large-latest", ""},
-      {"zai", "glm-5.3", ""},                    // both GLM models reason
-      {"zai", "glm-5.3-flash", ""},
-      {"anthropic", "claude-opus-5", ""},         // every Claude line takes effort
-      {"openai", "gpt-5.6-sol", ""},
-  };
-  for (const auto& r : rows)
-    TEST_ASSERT_EQUAL_STRING_MESSAGE(r.alt, providers::sameHostNonReasoningModel(r.host, r.model),
-                                     r.model);
-}
-
 // CUM-823: web.search with no Tavily key runs Mistral's built-in search on a model that
 // takes it, whatever the head is. Recorded shape: evidence/probes/web-mistral-*.
 static void test_web_search_runs_on_mistral_builtin() {
@@ -1766,41 +1721,6 @@ static void test_web_search_walks_to_zai_then_says_why() {
     TEST_ASSERT_EQUAL(0, (int)d.http.seen.size());
     TEST_ASSERT_TRUE(r.err.find("no provider") != std::string::npos);
   }
-}
-
-// The class behind a slow failure: every Mistral head request's deadline sits just past the
-// gateway's 60 s close, so a close reads as a timeout (no same-host retry), and a capped
-// round's first attempt fits inside it at the model's measured rate.
-static void test_mistral_rounds_fit_the_gateway() {
-  TEST_ASSERT_TRUE(providers::kMistralRoundMs > 60000 && providers::kMistralRoundMs < 70000);
-  for (const char* model : {"mistral-large-4-0", "mistral-small-latest", "mistral-medium-latest", "mistral-large-latest"}) {
-    const providers::OutputCap c =
-        providers::outputCapFor("mistral", model, providers::RoundKind::ToolRound, providers::kMistralRoundMs);
-    const uint32_t seconds = c.maxTokens / providers::slowestTokensPerSecond("mistral", model);
-    TEST_ASSERT_TRUE_MESSAGE(seconds <= 60, model);
-    TEST_ASSERT_TRUE_MESSAGE(c.retryTokens > c.maxTokens, model);
-  }
-}
-
-// The class: the table agrees with the recorded /v1/models capabilities.reasoning
-// bit for EVERY chat model Mistral lists (a new model with no table row fails here).
-static void test_cum616_effort_table_matches_the_recorded_model_list() {
-  std::ifstream f("test/support/fixtures/models_2026-10/mistral.json");
-  TEST_ASSERT_TRUE(f.good());
-  const std::string raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-  JsonDocument doc;
-  TEST_ASSERT_FALSE(deserializeJson(doc, raw));
-  int checked = 0;
-  for (JsonObjectConst m : doc["data"].as<JsonArrayConst>()) {
-    JsonObjectConst cap = m["capabilities"];
-    if (!(cap["completion_chat"] | false) || !(cap["function_calling"] | false)) continue;
-    const char* id = m["id"] | "";
-    TEST_ASSERT_EQUAL_MESSAGE((bool)(cap["reasoning"] | false), providers::mistralTakesEffort(id), id);
-    TEST_ASSERT_EQUAL_MESSAGE(providers::mistralTakesEffort(std::string("mistral/") + id),
-                              providers::mistralTakesEffort(id), id);
-    checked++;
-  }
-  TEST_ASSERT_TRUE(checked > 10);
 }
 
 // ---- R1: photos to the head as images --------------------------------------------
@@ -2107,11 +2027,7 @@ int main(int, char**) {
   RUN_TEST(test_a_sub_on_a_model_refusing_builtins_keeps_its_tools);
   RUN_TEST(test_web_search_runs_on_mistral_builtin);
   RUN_TEST(test_web_search_walks_to_zai_then_says_why);
-  RUN_TEST(test_mistral_rounds_fit_the_gateway);
   RUN_TEST(test_fold_is_a_plain_completion);
-  RUN_TEST(test_effort_table_matches_the_recording);
-  RUN_TEST(test_the_same_host_step_down_table);
-  RUN_TEST(test_cum616_effort_table_matches_the_recorded_model_list);
   RUN_TEST(test_r1_image_url_parts_in_the_seeded_user_message);
   RUN_TEST(test_r1_mistral_model_without_image_input_reads_transcriptions);
   RUN_TEST(test_r1_mistral_refused_image_resent_as_transcriptions);

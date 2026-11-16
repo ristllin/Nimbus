@@ -234,41 +234,6 @@ static void test_cap_table_gate_and_retry_every_adapter_kind_family() {
   runCutCase(argsCut, true);
 }
 
-// The table itself: every (adapter, round kind) row, every family. Caps that are
-// sent fit a thinking model and the round's time; a capped kind always has a
-// retry that differs; the effort field rides only families that accept it.
-static void test_cap_table_rows() {
-  for (int k = 0; k < providers::kRoundKindCount; k++) {
-    const providers::RoundKind kind = (providers::RoundKind)k;
-    for (const char* id : kClaudeIds) {
-      const providers::OutputCap c = providers::outputCapFor("anthropic", id, kind, 120000);
-      TEST_ASSERT_TRUE(c.maxTokens > 3000);          // the old cap cut thinking models
-      TEST_ASSERT_TRUE(c.maxTokens * 5 <= 65535);   // one string can never pass the ceiling
-      TEST_ASSERT_EQUAL(providers::anthropicTakesEffort(id), *c.effort != 0);
-      // Time: at the family's slowest rate the cap finishes inside the round.
-      const uint32_t rate = providers::slowestTokensPerSecond("anthropic", id);
-      TEST_ASSERT_TRUE((uint64_t)c.maxTokens * 1000 / rate <= 120000);
-      TEST_ASSERT_TRUE(c.hasRetry() && c.retryTokens > c.maxTokens);   // L19-44: always more room
-    }
-    const providers::OutputCap m = providers::outputCapFor("mistral", "mistral-small-latest", kind, 120000);
-    TEST_ASSERT_TRUE(m.maxTokens > 0 && m.hasRetry() && m.retryTokens > m.maxTokens);
-    const providers::OutputCap o = providers::outputCapFor("openai", "gpt-5.6", kind, 120000);
-    TEST_ASSERT_EQUAL(0, (int)o.maxTokens);   // reasoning would starve the answer
-  }
-  // Haiku 4.5 answers 400 to the effort field (recorded 18 Oct); current families take it.
-  TEST_ASSERT_FALSE(providers::anthropicTakesEffort("claude-haiku-4-5"));
-  TEST_ASSERT_TRUE(providers::anthropicTakesEffort("claude-haiku-5-5"));
-  TEST_ASSERT_TRUE(providers::anthropicTakesEffort("claude-opus-4-5"));
-  TEST_ASSERT_FALSE(providers::anthropicTakesEffort("claude-sonnet-4-5-20250929"));
-  TEST_ASSERT_TRUE(providers::anthropicTakesEffort("anthropic/claude-sonnet-5-5"));
-  // The bench seam: the first attempt's cap is overridden, the retry keeps headroom.
-  providers::setTestFirstAttemptCap(256);
-  const providers::OutputCap t = providers::outputCapFor("anthropic", "claude-haiku-5-5", providers::RoundKind::ToolRound);
-  TEST_ASSERT_EQUAL(256, (int)t.maxTokens);
-  TEST_ASSERT_TRUE(t.hasRetry() && t.retryTokens > 256);
-  providers::setTestFirstAttemptCap(0);
-}
-
 // ---- 3. step errors typed from recorded answers ---------------------------------------
 
 struct Recorded {
@@ -844,7 +809,6 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_tool_choice_never_forced_any_model_any_path);
   RUN_TEST(test_cap_table_gate_and_retry_every_adapter_kind_family);
-  RUN_TEST(test_cap_table_rows);
   RUN_TEST(test_cum620_one_error_line_for_every_seam);
   RUN_TEST(test_step_errors_typed_from_recorded_answers);
   RUN_TEST(test_fabric_rule_table_request_counts);

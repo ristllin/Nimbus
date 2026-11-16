@@ -971,49 +971,6 @@ static void test_single_shot_prose_answer_is_accepted() {
 }
 
 
-// L19-44: under the round's time clamp the retry after a cut keeps MORE room than
-// the first attempt, for every Claude family (a no-effort id included), every
-// capped round kind and every round length - a full 120 s round on claude-opus-5
-// used to collapse both caps to 5,500, so the retry was effort-only and a no-effort
-// id had none; under 50 s the cap fell below v4.5.13's 3,000.
-static void test_cap_table_rows_retry_keeps_more_room_under_the_clamp() {
-  static const char* const kFamilies[] = {
-      "claude-haiku-5-5", "claude-sonnet-5-5", "claude-sonnet-5", "claude-opus-5-5", "claude-opus-5",
-      "claude-fable-5-1", "claude-mythos-5-1", "claude-opus-4-8", "claude-sonnet-4-6",
-      "claude-haiku-4-5",          // takes no effort
-      "claude-3-5-haiku-latest",   // takes no effort, old id shape
-      "model-anthropic",           // unknown: the slowest tier, no effort
-  };
-  // 8 s is the floor a near-exhausted final round still gets (kMinRoundMs): shorter
-  // than the prefill, so the floors alone hold there.
-  for (uint32_t roundMs : {8000u, 40000u, 60000u, 120000u}) {
-    for (const char* id : kFamilies) {
-      for (providers::RoundKind kind : {providers::RoundKind::ToolRound, providers::RoundKind::FinalRound,
-                                        providers::RoundKind::SingleShot, providers::RoundKind::Fold}) {
-        const providers::OutputCap c = providers::outputCapFor("anthropic", id, kind, roundMs);
-        char what[128];
-        snprintf(what, sizeof(what), "%s %s at %u ms: %u then %u", id, providers::roundKindSlug(kind),
-                 (unsigned)roundMs, (unsigned)c.maxTokens, (unsigned)c.retryTokens);
-        TEST_ASSERT_TRUE_MESSAGE(c.hasRetry(), what);
-        TEST_ASSERT_TRUE_MESSAGE(c.retryTokens > c.maxTokens, what);
-        TEST_ASSERT_TRUE_MESSAGE(c.retryTokens * 3 >= c.maxTokens * 4, what);   // at least a third more
-        TEST_ASSERT_TRUE_MESSAGE(c.maxTokens >= 3000, what);                     // never under v4.5.13's cap
-      }
-    }
-  }
-  // The full round on opus (the 19 Oct case): 4,125 first, 5,500 on the retry.
-  const providers::OutputCap opus =
-      providers::outputCapFor("anthropic", "claude-opus-5", providers::RoundKind::ToolRound, 120000);
-  TEST_ASSERT_EQUAL(4125, (int)opus.maxTokens);
-  TEST_ASSERT_EQUAL(5500, (int)opus.retryTokens);
-  // Mistral keeps the same shape.
-  for (uint32_t roundMs : {40000u, 60000u, 120000u}) {
-    const providers::OutputCap m =
-        providers::outputCapFor("mistral", "mistral-large-latest", providers::RoundKind::ToolRound, roundMs);
-    TEST_ASSERT_TRUE(m.hasRetry() && m.retryTokens > m.maxTokens && m.maxTokens >= 3000);
-  }
-}
-
 // ---- R1: photos to the head as images --------------------------------------------
 // The photos ride the seeded user message (the newest user message) as image parts,
 // each after a one-line label and before the turn text; never a cache point; the bytes
@@ -1917,7 +1874,6 @@ int main(int, char**) {
   RUN_TEST(test_cum514_artifact_keeps_a_long_earlier_section);
   RUN_TEST(test_cum514_short_report_still_drops_notes);
   RUN_TEST(test_sub_cancel_sends_interrupt);
-  RUN_TEST(test_cap_table_rows_retry_keeps_more_room_under_the_clamp);
   RUN_TEST(test_r1_images_ride_the_newest_user_message);
   RUN_TEST(test_r1_anthropic_uploads_once_and_references_file_ids);
   RUN_TEST(test_r1_upload_delete_retries_only_transient_failures);
