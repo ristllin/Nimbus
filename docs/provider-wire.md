@@ -158,9 +158,11 @@ serves:
   read). The tool results a round replays are kept under the replay figure derived
   from the same budget, never under the wire's earlier figure (24 KB, Anthropic 16 KB).
   A flat single shot's one prompt string (the Mistral Conversations head, the custom
-  endpoint) and a loop's newest user message are held under 55,904 B
-  (`flatPromptBudget`) with the same size wording, so the turn gives things up and
-  builds the request again instead of failing on the string ceiling.
+  endpoint) is held under 55,904 B (`flatPromptBudget`) with the same size wording, so the
+  turn fits its history into it and builds the request again instead of failing on the
+  string ceiling. A head turn's newest message (its per-turn block and the input) is held
+  under the same figure with its own wording, and the loop gives up what that message holds
+  (recalled memories first, then the middle of the input) before anything else.
 - **Photos inside the budget and the time fit**: each photo's window cost comes from
   its pixel size (read from its own header: JPEG, PNG, WebP, GIF), by the host's rule
   (Anthropic about width x height / 750 after its resize, OpenAI's 512 px tiles at
@@ -193,39 +195,37 @@ serves:
   round answered in prose is delivered as the reply only (no device action,
   memory write or spawn rides prose).
 - **Output budget and completeness**: one table (`output_caps.h`) gives each
-  adapter and round kind (tool round, final round, single shot, fold) its
-  `max_tokens` and its reasoning effort. Anthropic rounds get 8,192 tokens with
-  `output_config.effort` pinned (medium; low for the fold) on the families that
-  accept it, clamped so a generation at the family's slowest measured rate still
-  finishes inside the round's 120 s; Mistral's gateway closes a non-streamed request
-  at 60 s, so its rounds have a 65 s deadline and the close reads as a timeout (no
-  same-host retry). Inside that, Large 4 gets 4,125 tokens (5,500 on the retry),
-  Medium and Small get 5,361 (7,150) and older models 3,000 (4,000), and a Mistral
-  head that can reason (the models whose `/v1/models` entry says
-  `capabilities.reasoning`) gets the lowest `reasoning_effort` it takes: `"low"` on
-  Large 4 and the hosted GLM, which refuse `"none"`, and `"none"` on the others,
-  which refuse `"low"`. A refused value is retried once without the field (HTTP 400
-  code 3051, or 422); with no field Large 4 thinks at its default and runs out of
-  output. Z.ai rounds get 2,400 (3,000 on the retry) inside their 50 s. OpenAI sends
-  no output cap (reasoning would starve the answer), direct or through the router; the
-  only OpenAI body that carries `max_output_tokens` is the router's capped resend after a
-  low-balance 402. Every round and fold measures what it carries before it is sent (the
-  body, the photo bytes spliced in, the prompt's tokens, routed or not, and whether the
-  DMA pool was short at round start so the slices will be paced: `RoundLoad`) and sends
-  the cap that fits that load (`outputCapFor(..., RoundLoad)`), replacing the table's
-  `max_tokens` in place. Under the time clamp the first attempt takes three quarters of what
-  the round's time allows (never under 3,000 tokens) and the retry after a cut the
-  whole fit, at least a third more - a full 120 s round on claude-opus-5 is 4,125
-  then 5,500, so every capped round, a Claude id that takes no effort included, has a
-  retry with more room. Every adapter reads
-  completeness - Anthropic `stop_reason:"max_tokens"`, Mistral
-  `finish_reason:"length"` (or tool arguments that do not parse), OpenAI
-  `status:"incomplete"`, the custom head `finish_reason:"length"` - and a cut
-  answer is never run or delivered as complete. A cut round is retried once in
-  the same step with a body that differs (more room, effort one step lower),
-  never an identical one; still cut, it fails as a Cut, and the fabric takes over
-  (below). Thinking is never disabled (a 400 on Opus 5.5 and Fable 5.1); effort is
-  the lever.
+  adapter and round kind (tool round, final round, single shot, fold) its largest
+  `max_tokens` and its reasoning effort: Anthropic 8,192 (12,000 on the retry) with
+  `output_config.effort` pinned (medium; low for the fold) on the families that accept
+  it; Mistral 6,000 (12,000) on Large 4, Medium, Small and Magistral, 4,096 (6,144) on
+  older models, with the lowest `reasoning_effort` each takes (`"low"` on Large 4 and the
+  hosted GLM, which refuse `"none"`; `"none"` on the others, which refuse `"low"`; a
+  refused value is retried once without the field, HTTP 400 code 3051 or 422); Z.ai
+  2,400 (3,000). OpenAI sends no output cap (reasoning would starve the answer), direct
+  or through the router; the only OpenAI body that carries `max_output_tokens` is the
+  router's capped resend after a low-balance 402. Every round and fold measures what it
+  carries before it is sent (the body, the photo bytes spliced in, the prompt's tokens,
+  routed or not, and whether the DMA pool was short at round start so the slices will be
+  paced: `RoundLoad`) and sends the cap that fits that load inside the host's read window
+  (`outputCapFor(..., RoundLoad)`: the window less the connect, the upload, the pacing and
+  the prefill, at the model's slowest decode rate), replacing the table's `max_tokens` in
+  place. The first attempt takes three quarters of that fit (all of it when three quarters
+  is under the host's minimum final answer), never more than the table, and never under
+  that minimum (3,000 tokens; 1,500 on Large 4 and GLM through Mistral, 1,600 on Z.ai);
+  the retry after a cut is sent only when it gives at least 400 tokens more or a lower
+  effort. The read windows are Mistral 60 s (the gateway closes a non-streamed
+  request there; its rounds time out at 65 s), Z.ai 50 s, the others 120 s, and at most
+  90 s through the router; `docs/reference/request-budgets.md` lists every model's caps.
+  A text round over 85,000 B whose fit cannot carry the minimum final is not sent: it is
+  refused with the body-budget wording at the size whose fit does, so the turn gives up
+  what it can and builds it again. Every adapter reads completeness - Anthropic
+  `stop_reason:"max_tokens"`, Mistral `finish_reason:"length"` (or tool arguments that
+  do not parse), OpenAI `status:"incomplete"`, the custom head `finish_reason:"length"`
+  - and a cut answer is never run or delivered as complete. A cut round is retried once
+  in the same step with a body that differs (more room, effort one step lower), never an
+  identical one; still cut, it fails as a Cut, and the fabric takes over (below).
+  Thinking is never disabled (a 400 on Opus 5.5 and Fable 5.1); effort is the lever.
 - **A long answer in the round's text**: Mistral and Z.ai can write the answer as the
   round's text with only a pointer or a digest of it in `orch_turn`, and only `reply` is
   delivered. Text of at least 1,200 bytes and at least twice the reply replaces it; the
