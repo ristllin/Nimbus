@@ -1,4 +1,5 @@
 #include "scenarios_ovf.h"
+#include "scenarios_budget.h"   // BudgetPin, headBudget - the head's own request budget
 
 #include <ArduinoJson.h>
 
@@ -196,6 +197,9 @@ void refitAfterATool(LabRig& rig, const Report& r) {
 
 void synthesisOverBudget(LabRig& rig, const Report& r) {
   const std::string chat = "ovf-round0";
+  // Calibrated to the 85,000 B budget every head had in v5.1.1 (the device's BUDGET 85000):
+  // since v5.1.2 each head's own budget is larger, and the first request must cross it.
+  const budget::BudgetPin pin(85000);
   // What the request's own estimate cannot see: text the wire writes at twice its size.
   std::string heavy;
   while (heavy.size() < 2400) heavy += "\"x\"\n";
@@ -230,7 +234,7 @@ void synthesisOverBudget(LabRig& rig, const Report& r) {
   printCalls(rig, r);
   r.note("largest request " + std::to_string(largest) + " B; reply: " + t.reply.substr(0, 300));
   r.check(saidLeftOut, "the first body really crossed the budget, and the request says what it left out");
-  r.check(largest <= agent::providers::kWireBodyMax, "every request sent was inside the wire budget");
+  r.check(largest <= budget::headBudget(rig), "every request sent was inside the head's own budget");
   r.check(!t.reply.empty() && t.reply.find("didn't finish") == std::string::npos, "the synthesis answered");
   r.check(t.reply.find("raw findings") == std::string::npos, "not the raw fallback");
 }

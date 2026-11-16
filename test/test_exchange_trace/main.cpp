@@ -153,7 +153,53 @@ static void test_healthy_line_keeps_the_field_order() {
   TEST_ASSERT_EQUAL_STRING("24760", m[3].str().c_str());
   TEST_ASSERT_EQUAL_STRING("11764", m[4].str().c_str());
   const std::string tail = line.substr((size_t)m.length(0));
-  TEST_ASSERT_EQUAL_STRING(" fail=none af=0 min=18000 at=42651042 ms=1712", tail.c_str());
+  TEST_ASSERT_EQUAL_STRING(" fail=none af=0 min=18000 at=42651042 ms=1712 wms=0 pms=0", tail.c_str());
+}
+
+// Lane W: the upload's time and its pacing are the line's last two fields (after every
+// field the analysis scripts read by position), and the line stays under 320 B with every
+// field at its widest and the longest host and path, ending whole.
+static void test_upload_and_pacing_ride_last_and_the_line_stays_short() {
+  FakeIo io;
+  Run r = runOne(io, 389000);
+  r.t.wms = 5571;
+  r.t.pms = 3400;
+  std::string line = r.t.line();
+  const std::regex last(" wms=(\\d+) pms=(\\d+)$");
+  std::smatch m;
+  TEST_ASSERT_TRUE_MESSAGE(std::regex_search(line, m, last), line.c_str());
+  TEST_ASSERT_EQUAL_STRING("5571", m[1].str().c_str());
+  TEST_ASSERT_EQUAL_STRING("3400", m[2].str().c_str());
+  ExchangeTrace w;
+  const std::string host = "app.cumulo-nimbus.ai";
+  const std::string path = "/router/anthropic/v1/messages?beta=" + std::string(200, 'p');
+  w.host = host.c_str();
+  w.path = path.c_str();
+  w.body = w.bodySent = UINT32_MAX - 1;
+  w.pre = w.conn = w.wrote = w.done = {UINT32_MAX, UINT32_MAX};
+  w.fail = Stage::Body;
+  w.af = w.minFree = w.atMs = w.durMs = w.wms = w.pms = UINT32_MAX - 1;
+  line = w.line();
+  TEST_ASSERT_TRUE_MESSAGE(line.size() < kTraceLineMax, line.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(line.rfind("transport: heaptrace app.cumulo-nimbus.ai/router/", 0) == 0, line.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(std::regex_search(line, m, last), line.c_str());
+}
+
+// The durable upload line: bodies of 100 KB or more, at most one per 30 s.
+static void test_up_line_for_large_bodies_rate_limited() {
+  ExchangeTrace t;
+  t.body = t.bodySent = 389000;
+  t.wms = 5571;
+  t.pms = 3400;
+  TEST_ASSERT_EQUAL_STRING("transport: up 389000 B in 5571 ms, paced 3400", upLine(t).c_str());
+  TEST_ASSERT_TRUE(upLineDue(t, 1000, 0));
+  TEST_ASSERT_FALSE(upLineDue(t, 20000, 1000));
+  TEST_ASSERT_TRUE(upLineDue(t, 31000, 1000));
+  t.body = kUpLineMinBytes - 1;
+  TEST_ASSERT_FALSE(upLineDue(t, 1000, 0));
+  t.body = kUpLineMinBytes;
+  t.fail = Stage::Connect;   // nothing went up
+  TEST_ASSERT_FALSE(upLineDue(t, 1000, 0));
 }
 
 // ---- error texts and evidence ---------------------------------------------------
@@ -285,5 +331,7 @@ int main() {
   RUN_TEST(test_abnormal_predicate);
   RUN_TEST(test_retained_guard_fires_over_the_cap);
   RUN_TEST(test_retained_guard_quiet_under_the_cap);
+  RUN_TEST(test_upload_and_pacing_ride_last_and_the_line_stays_short);
+  RUN_TEST(test_up_line_for_large_bodies_rate_limited);
   return UNITY_END();
 }

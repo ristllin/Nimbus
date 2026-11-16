@@ -1,6 +1,7 @@
 #include "nimbus/exchange_trace.h"
 
 #include <cstdio>
+#include <cstring>
 
 namespace nimbus::heapwatch {
 
@@ -25,15 +26,26 @@ std::string ExchangeTrace::line() const {
   if (minFree == UINT32_MAX) snprintf(minBuf, sizeof(minBuf), "-");
   else snprintf(minBuf, sizeof(minBuf), "%u", (unsigned)minFree);
   // Today's fields first, in today's order (the analysis scripts read them), then
-  // the new ones.
-  char b[320];
-  snprintf(b, sizeof(b),
-           "transport: heaptrace %s%s body=%u pre=%u/%u conn=%u/%u wrote=%u/%u done=%u/%u "
-           "fail=%s af=%u min=%s at=%u ms=%u",
-           host ? host : "", path ? path : "", (unsigned)body, (unsigned)pre.free,
-           (unsigned)pre.largest, (unsigned)conn.free, (unsigned)conn.largest, (unsigned)wrote.free,
-           (unsigned)wrote.largest, (unsigned)done.free, (unsigned)done.largest, fail,
-           (unsigned)af, minBuf, (unsigned)atMs, (unsigned)durMs);
+  // the new ones, wms and pms last. The numeric tail is written first and the host and
+  // path take what is left, so the line stays under kTraceLineMax and always ends whole.
+  char tail[256];
+  snprintf(tail, sizeof(tail),
+           " body=%u pre=%u/%u conn=%u/%u wrote=%u/%u done=%u/%u fail=%s af=%u min=%s at=%u ms=%u wms=%u pms=%u",
+           (unsigned)body, (unsigned)pre.free, (unsigned)pre.largest, (unsigned)conn.free, (unsigned)conn.largest,
+           (unsigned)wrote.free, (unsigned)wrote.largest, (unsigned)done.free, (unsigned)done.largest, fail,
+           (unsigned)af, minBuf, (unsigned)atMs, (unsigned)durMs, (unsigned)wms, (unsigned)pms);
+  std::string where = std::string(host ? host : "") + (path ? path : "");
+  static const char kHead[] = "transport: heaptrace ";
+  const size_t used = (sizeof(kHead) - 1) + std::strlen(tail);
+  const size_t room = used < kTraceLineMax - 1 ? kTraceLineMax - 1 - used : 0;
+  if (where.size() > room) where.resize(room);
+  return kHead + where + tail;
+}
+
+std::string upLine(const ExchangeTrace& t) {
+  char b[96];
+  snprintf(b, sizeof(b), "transport: up %u B in %u ms, paced %u", (unsigned)t.bodySent, (unsigned)t.wms,
+           (unsigned)t.pms);
   return b;
 }
 

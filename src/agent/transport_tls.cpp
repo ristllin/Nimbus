@@ -124,6 +124,8 @@ struct TlsIo {
   std::string tooLarge;   // set when the body parsed whole but was over the retained cap
   uint8_t* slice = nullptr;   // R1: one PSRAM slice buffer a spliced/external body is encoded into
   uint32_t pacedMs = 0;       // time spent waiting for internal headroom between slices
+  uint32_t bodyStartMs = 0;   // lane W: when the first body slice started, and the last one ended
+  uint32_t bodyEndMs = 0;
 
   ~TlsIo() {
     free(slice);
@@ -193,7 +195,15 @@ struct TlsIo {
     if (off == 0) nimbus::crash::testPanicPoint();   // L39: an armed panic lands here, before any body byte
 #endif
     nimbus::pollwatch::beat("provider write");
+    if (off == 0) bodyStartMs = millis();
     if (off > 0) paceForHeadroom();
+    const size_t wrote = writeSlice(off, want);
+    bodyEndMs = millis();
+    return wrote;
+  }
+
+  // One slice onto the socket (writeBody's write, after its pacing).
+  size_t writeSlice(size_t off, size_t want) {
     // In place only when the AES engine can read the bytes directly (a plain body
     // in internal DMA-capable memory, the ordinary small request): zero copies.
     // Everything else - a spliced body (the photo's PSRAM copy) or a body string
@@ -417,11 +427,21 @@ class TlsTransport : public HttpTransport {
       slot.release();
       t.af = nimbus::heapwatch::allocFails() - afStart;
       t.done = sampleHeap();
+      // Lane W: the upload and the pacing inside it, the two terms a round's time fit
+      // predicts (the heaptrace line's last fields; the durable line for a large body).
+      t.wms = io.bodyEndMs - io.bodyStartMs;
+      t.pms = io.pacedMs;
       // Forensic window (heap F1.5): a healthy exchange's trace stays in the RAM ring and
       // serial; a failed one, one with a failed allocation, or one that took internal
       // memory near its floor is durable evidence.
       alogLevelf(t.abnormal() ? nimbus::errlog::Level::Warn : nimbus::errlog::Level::Info, "%s",
                  t.line().c_str());
+      static uint32_t lastUpMs = 0;   // the poll task's exchanges are serialized (one TLS slot)
+      const uint32_t now = millis();
+      if (nimbus::heapwatch::upLineDue(t, now, lastUpMs)) {
+        lastUpMs = now ? now : 1;
+        alogf("%s", nimbus::heapwatch::upLine(t).c_str());
+      }
     });
 
     if (trace.fail != Stage::None) {
@@ -512,6 +532,11 @@ providers::ProviderDeps deviceProviderDeps() {
   pd.freeHeap = [] { return (uint32_t)ESP.getFreeHeap(); };
   pd.largestBlock = [] {
     return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  };
+  // Lane W: the pool the transport paces its slices on (paceForHeadroom); under
+  // kDmaChunkFloor at round start, the round's time fit counts the pacing.
+  pd.dmaLargestBlock = [] {
+    return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
   };
   pd.alloc = &PsramJsonAllocator::instance();
   return pd;

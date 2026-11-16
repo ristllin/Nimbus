@@ -59,7 +59,8 @@
 #include "nimbus/tg_updates.h"         // TGINJECT - parse a raw getUpdates page (host-tested)
 #include "nimbus/harness/turn_inbox.h"  // HISTV2 - the turn-structured history switch
 #include "nimbus/harness/output_caps.h"  // CAPTEST - the first-attempt cap (test builds)
-#include "nimbus/harness/providers.h"    // PROVFAULT - the canned provider answer (test builds)
+#include "nimbus/harness/providers.h"    // PROVFAULT, BUDGET - the canned answer, the budget pin (test builds)
+#include "nimbus/harness/compose.h"      // TOOLS? - loopToolHidden / loopToolName, as the head advertises
 #include "agent/spend_ceiling_store.h"   // SPENDSET - seed the monthly spend ceiling's count
 #include <solide/selftest.h>
 #include "hw/selftest.h"               // SELFTEST - firmware health-check engine
@@ -382,6 +383,56 @@ void tgInject(const String& json) {
   Serial.printf("TGINJECT parsed=%u text=%d media=%d injected=%d trunc=%d "
                 "(media/albums need the telegram receive hook - lane R)\n",
                 (unsigned)ups.size(), text, media, injected, int(trunc));
+  Serial.flush();
+}
+
+// BUDGET <bytes> | BUDGET 0: pin every wire's request body budget (lane W, v5.1.2), so a
+// HIL or bench leg calibrated to a figure (A07/A08, test_l78: BUDGET 85000) keeps it
+// whatever the head's own budget is; 0 gives every request its own budget back.
+void budgetTest(String arg) {
+  arg.trim();
+  const long n = arg.toInt();
+  if (arg == "0") {
+    agent::providers::setTestBudgetOverride(0);
+    reply("BUDGET off");
+    return;
+  }
+  if (n < 1000 || n > 4000000) { reply("BUDGET usage: BUDGET <bytes 1000..4000000> | BUDGET 0"); return; }
+  agent::providers::setTestBudgetOverride((uint32_t)n);
+  reply(String("BUDGET ") + n);
+}
+
+// TOOLS?: the tool manifest an owner turn's head gets (the registry's specs for an admin
+// chat, minus the tools the loop never advertises, under their wire names), one JSON
+// object per line between TOOLS BEGIN and TOOLS END, chunked for the shared serial.
+// tools/gen_tool_manifest_fixture.py turns a capture into the host suites' fixture.
+void toolsManifest() {
+  const nimbus::orch::Principal owner = nimbus::orch::principalForRole("serial", nimbus::orch::Role::Admin);
+  const std::vector<nimbus::orch::ToolRegistry::Spec> specs = agent::memory::registry().toolSpecsFor(owner);
+  size_t n = 0, bytes = 0;
+  for (const auto& sp : specs)
+    if (!agent::loopToolHidden(sp.name)) {
+      ++n;
+      bytes += sp.name.size() + sp.description.size() + sp.schemaJson.size();
+    }
+  Serial.printf("TOOLS BEGIN n=%u bytes=%u\n", (unsigned)n, (unsigned)bytes);
+  Serial.flush();
+  for (const auto& sp : specs) {
+    if (agent::loopToolHidden(sp.name)) continue;
+    JsonDocument d;
+    d["name"] = agent::loopToolName(sp.name);
+    d["description"] = sp.description;
+    d["schema"] = sp.schemaJson;
+    std::string line;
+    serializeJson(d, line);
+    for (size_t i = 0; i < line.size(); i += 256) {
+      Serial.write((const uint8_t*)line.data() + i, std::min<size_t>(256, line.size() - i));
+      Serial.flush();
+      delay(5);
+    }
+    Serial.print("\n");
+  }
+  Serial.print("TOOLS END\n");
   Serial.flush();
 }
 
@@ -2139,6 +2190,14 @@ void dispatch(String line) {
   }
   if (line.startsWith("CAPTEST ")) {
     capTest(line.substring(8));
+    return;
+  }
+  if (line.startsWith("BUDGET ")) {
+    budgetTest(line.substring(7));
+    return;
+  }
+  if (line == "TOOLS?") {
+    toolsManifest();
     return;
   }
   if (line.startsWith("PROVFAULT ")) {

@@ -20,5 +20,19 @@ struct Report {
 
 void run(LabRig& rig, const Report& r);
 
+// The head's own request budget: what its wire refuses a body over (the first host of the
+// lab's priority, on its model, direct).
+size_t headBudget(LabRig& rig);
+
+// Pins every wire budget at `bytes` while it lives (the device's BUDGET <bytes>): a scenario
+// built to cross the 85,000 B budget every head had in v5.1.1 keeps its calibration.
+struct BudgetPin {
+  uint32_t before;
+  explicit BudgetPin(uint32_t bytes);
+  ~BudgetPin();
+  BudgetPin(const BudgetPin&) = delete;
+  BudgetPin& operator=(const BudgetPin&) = delete;
+};
+
 }  // namespace budget
 }  // namespace lab

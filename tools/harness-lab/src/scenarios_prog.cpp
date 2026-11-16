@@ -1,4 +1,5 @@
 #include "scenarios_prog.h"
+#include "scenarios_budget.h"   // BudgetPin, headBudget - the head's own request budget
 
 #include <ArduinoJson.h>
 
@@ -116,7 +117,7 @@ void checkFoldShape(const Report& r, LabRig& rig, const TurnRecord& t, size_t la
   r.check(folds >= 1, "the replay crossed the wire budget mid-turn, after tools ran");
   r.check(folds == (int)foldedRounds.size(),
           "each crossing folded enough in one cycle, no round refused twice");
-  r.check(largest <= agent::providers::kWireBodyMax, "every request sent was inside the wire budget");
+  r.check(largest <= budget::headBudget(rig), "every request sent was inside the head's own budget");
   r.check(ovf::lastCallServed(rig), "the provider accepted the refitted replay");
   r.check(!t.reply.empty() && t.reply.find("didn't finish") == std::string::npos,
           "the turn answered after the folds");
@@ -132,6 +133,9 @@ void longTurnReplay(LabRig& rig, const Report& r) {
   // 16:23:39.
   r.note("before: the real case ran 8 tool rounds for 5 min 12 s with no signal; "
          "a mid-turn message waited 5 min 10 s for its acknowledgement");
+  // Calibrated to the 85,000 B budget every head had in v5.1.1 (the device's BUDGET 85000):
+  // since v5.1.2 each head's own budget is larger, and the replay must cross it mid-turn.
+  const budget::BudgetPin pin(85000);
 
   // The lab's own round-0 body size, measured with one cheap turn, so the
   // seeded history lands the budget crossing mid-turn (after tools ran)
@@ -143,7 +147,7 @@ void longTurnReplay(LabRig& rig, const Report& r) {
   rig.say("prog-probe", "Reply with exactly the word: ok");
   rig.shim().onRequest = nullptr;
   r.note("probe: a bare chat's round-0 body is " + std::to_string(base) + " B");
-  r.check(base > 0 && base + 3 * kBulkRecord < agent::providers::kWireBodyMax,
+  r.check(base > 0 && base + 3 * kBulkRecord < budget::headBudget(rig),
           "the probe measured a round-0 body with room to grow past the budget");
 
   // The replay chat: no seeded history (the window folds it); the body is grown

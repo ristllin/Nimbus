@@ -11,10 +11,12 @@
 #include "nimbus/exchange_trace.h"   // heapwatch::kBodySliceBytes: the one slice constant (4,096 B)
 
 // HttpTransport - the seam that makes the provider adapters portable. The
-// harness builds a complete request (headers + one contiguous body - the
-// serialize-into-one-buffer-then-single-write rule that keeps TLS records off
-// the internal heap lives on the CALLER side of this seam) and receives a
-// complete response. TLS, the work-slot arbiter, cert policy, and chunked
+// harness builds a complete request (headers + one contiguous body, serialized
+// into one buffer on the CALLER side of this seam, so no chunked serialization
+// puts small TLS records on the internal heap) and receives a complete response.
+// The device transport writes that buffer as 4,096 B slices, the record size the
+// TLS client cuts a big write into anyway, paced while the DMA pool is short
+// (paceSlice below), with the photos base64-encoded into each slice (BodySplice). TLS, the work-slot arbiter, cert policy, and chunked
 // decoding all live in the device implementation (src/agent/transport_tls.cpp);
 // host tests script a FakeHttpTransport with canned exchanges.
 namespace agent {

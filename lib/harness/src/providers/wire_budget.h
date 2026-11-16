@@ -180,7 +180,6 @@ struct FitRates {
   uint32_t decode;     // tokens per second, at this context
   uint32_t minFinal;   // tokens
 };
-inline bool startsWithStr(const std::string& s, const char* p) { return s.rfind(p, 0) == 0; }
 inline FitRates fitRates(const RoundBudget& rb, uint32_t promptTokens) {
   std::string m = rb.model;
   const size_t slash = m.find('/');
@@ -188,7 +187,7 @@ inline FitRates fitRates(const RoundBudget& rb, uint32_t promptTokens) {
   FitRates f{120000, 1000, 50, 3000};
   if (rb.host == "mistral") {
     f.windowMs = 60000;
-    if (startsWithStr(m, "mistral-large-4")) {
+    if (*sameHostNonReasoningModel("mistral", m)) {   // the forced reasoner (Large 4)
       f.prefill = 9000;
       f.decode = 50;
       f.minFinal = 1500;

@@ -20,8 +20,11 @@
 //     uses internally, so no small records), so a failure says how many bytes left;
 //   - the trace line keeps today's field order (pre/conn/wrote/done, read by the
 //     analysis scripts) and appends fail=, af= (failed allocations during the
-//     exchange), min= (the local minimum free, monitored only inside the slot), and
-//     at=/ms= (when it held the slot, so overlaps with other work can be read off).
+//     exchange), min= (the local minimum free, monitored only inside the slot),
+//     at=/ms= (when it held the slot, so overlaps with other work can be read off),
+//     and last wms=/pms= (lane W, v5.1.2: how long the body took to upload, and how
+//     much of that the transport spent pacing its slices for DMA headroom), the two
+//     terms a round's time fit predicts.
 //
 // No Arduino.
 namespace nimbus::heapwatch {
@@ -68,13 +71,32 @@ struct ExchangeTrace {
   uint32_t minFree = UINT32_MAX;   // local minimum free; UINT32_MAX = not monitored
   uint32_t atMs = 0;       // uptime when the exchange took the slot
   uint32_t durMs = 0;      // how long it held the slot
+  uint32_t wms = 0;        // the body's upload: its first slice to its last byte written
+  uint32_t pms = 0;        // the part of wms spent waiting for DMA headroom between slices
 
   // "transport: heaptrace api.x.com/v1/messages body=71508 pre=24760/11764 conn=20792/7156
-  //  wrote=22128/10228 done=24600/11764 fail=body@8192 af=1 min=6900 at=42651042 ms=1712"
+  //  wrote=22128/10228 done=24600/11764 fail=body@8192 af=1 min=6900 at=42651042 ms=1712
+  //  wms=830 pms=0" (always under kTraceLineMax).
   std::string line() const;
   // Worth the durable log: a failure, a failed allocation, or memory near its floor.
   bool abnormal() const;
 };
+
+inline constexpr size_t kTraceLineMax = 320;
+
+// The upload of a large body, one durable line ("transport: up 390123 B in 5571 ms, paced
+// 3400"): what bench A10 and Lumi's watch read per body against the round's time fit.
+// Bodies of kUpLineMinBytes or more, at most one durable line per kUpLineGapMs (a turn's
+// rounds would otherwise fill the durable log; the heaptrace line keeps every one).
+inline constexpr uint32_t kUpLineMinBytes = 100000;
+inline constexpr uint32_t kUpLineGapMs = 30000;
+// Due for the durable line: a body that big that finished its upload, and the gap since
+// the last line (`lastMs` 0 = none yet) has passed.
+inline bool upLineDue(const ExchangeTrace& t, uint32_t nowMs, uint32_t lastMs) {
+  if (t.body < kUpLineMinBytes || t.fail == Stage::Connect || t.fail == Stage::Head) return false;
+  return lastMs == 0 || (uint32_t)(nowMs - lastMs) >= kUpLineGapMs;
+}
+std::string upLine(const ExchangeTrace& t);
 
 // Drive one exchange through `io` and record where it stopped. Returns the HTTP
 // status (0 when no status line came back or a request phase failed). A response

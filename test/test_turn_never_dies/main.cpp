@@ -367,15 +367,26 @@ std::string thinkingToolBody(size_t thoughtBytes = 3) {
 
 const char* const kWorkTurn = "Use a web lookup and analyze these six photos in detail";
 
+// The calibration every sweep below crosses: 85,000 B, the budget every head had in
+// v5.1.1. Since v5.1.2 each request carries its own (larger) budget, so the suite pins
+// this one through the console's seam (providers::setTestBudgetOverride, BUDGET 85000).
+constexpr uint32_t kRigBudget = 85000;
+
 void assertBodiesFit(const Rig& r, const char* what) {
   for (const auto& req : r.wire.http.seen)
-    TEST_ASSERT_TRUE_MESSAGE(req.body.size() <= providers::kWireBodyMax, what);
+    TEST_ASSERT_TRUE_MESSAGE(req.body.size() <= providers::testBudgetOverride(), what);
 }
 
 }  // namespace
 
-void setUp() { LogCapture::install(); }
-void tearDown() { agent::hlog::setSink(nullptr); }
+void setUp() {
+  LogCapture::install();
+  providers::setTestBudgetOverride(kRigBudget);
+}
+void tearDown() {
+  agent::hlog::setSink(nullptr);
+  providers::setTestBudgetOverride(0);
+}
 
 // ---- 1. A synthesis turn never fails on size ---------------------------------------
 // The class: every tool size around the budget, on every wire, a synthesis turn with
