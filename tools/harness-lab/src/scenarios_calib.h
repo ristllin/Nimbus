@@ -4,11 +4,12 @@
 
 #include "lab_rig.h"
 
-// Live legs for the request budget's calibration: the live prefill and decode rates and the bytes per
-// token each provider leg measures, which the request budget (request_budget.h) is fitted to
-// (lane B of the history fix). A STUB from lane P0, registered so lane B fills
-// this file without touching scenarios.cpp: it sends nothing and reports itself skipped,
-// which the suite counts as not a pass.
+// Live legs for the request budget's calibration (lane B of the history fix): per PL provider
+// leg, one cold request at the head's own request budget (request_budget.h) asking for a long
+// final under the load-aware cap, checked for prompt tokens within -15%/+5% of the target, bytes
+// per token at or above the dense ratio, and a round inside the host's read window; plus Mistral
+// Medium's repeat and extension cache leg. Fixture content only; see scenarios_calib.cpp for the
+// environment switches (NIMBUS_CALIB_LEGS, _DRY, _MISTRAL_PROXY, _OUT).
 namespace lab {
 namespace calib {
 
