@@ -73,13 +73,15 @@ struct Rig {
     const std::string u = add(hour, "user", owner, "from:Roy");
     add(hour, "assistant", answer, "fx:none,out:reply,turn:" + u);
   }
-  std::vector<EpisodicMessage> rows(const std::string& chat, size_t limit, const std::string& before) const {
+  std::vector<EpisodicMessage> rows(const std::string& chat, size_t limit, const std::string& before,
+                                    const std::string& after = std::string()) const {
     MsgQuery q;
     q.sessionId = chat;
     q.haveKind = true;
     q.kind = MsgKind::Message;
     q.limit = (int)limit;
     q.before = before;
+    q.after = after;
     return store.query(q);
   }
 
@@ -134,7 +136,7 @@ struct Rig {
     });
     d.histV2 = [] { return true; };
     d.historyRows = [this](const std::string& c, const agent::HistoryQuery& hq) {
-      return rows(c, hq.limit, hq.before);
+      return rows(c, hq.limit, hq.before, hq.after);
     };
     d.captureUserRow = [this](const std::string&, const std::string& t, const std::string& tags) {
       turnTag = add((uint32_t)(kNow / 3600), "user", t, tags);

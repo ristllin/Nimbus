@@ -140,10 +140,11 @@ std::string indentBreaks(const std::string& t) {
   return out;
 }
 
-std::string clipMessage(const std::string& s) {
-  if (s.size() <= kHistoryMessageCap) return s;
+std::string clipMessage(const std::string& s, size_t cap) {
+  if (cap < 64) cap = kHistoryMessageCap;
+  if (s.size() <= cap) return s;
   static const char kCut[] = " ...(cut)";
-  const int keep = nimbus::utf8CapLen(s.c_str(), (int)s.size(), (int)(kHistoryMessageCap - sizeof(kCut)));
+  const int keep = nimbus::utf8CapLen(s.c_str(), (int)s.size(), (int)(cap - sizeof(kCut)));
   return s.substr(0, (size_t)keep) + kCut;
 }
 
@@ -189,6 +190,14 @@ uint32_t stampOf(uint32_t sentUnix, uint32_t atUnix) {
   const auto real = [](uint32_t s) { return s >= nimbus::orch::kClockValidHours * 3600u && s != UINT32_MAX; };
   if (real(sentUnix)) return sentUnix;
   return real(atUnix) ? atUnix : 0u;
+}
+
+// The second a turn's user half was sent or stored (0 = only an hour before the clock
+// was set): its stamp, else its hour's first second.
+uint32_t turnSecond(const HistTurn& t) {
+  const uint32_t s = stampOf(t.sentUnix, t.atUnix);
+  if (s) return s;
+  return t.tsHours >= kClockValidHours ? t.tsHours * 3600u : 0u;
 }
 
 // The unix second a row's day marker is told at. The at: tag (the device's own clock) or the
@@ -397,15 +406,15 @@ std::string assistantHalf(const Building& b, std::string& did, uint32_t& replyHo
   return joinAssistantText(replies, asks, spoken, turnSkills(b));
 }
 
-HistTurn finish(const Building& b, const OffsetAt& zoneAt) {
+HistTurn finish(const Building& b, const OffsetAt& zoneAt, size_t cap) {
   HistTurn t;
   t.firstId = b.firstId;
   t.lastId = b.lastId;
   t.seedless = b.seedless;
   t.repeats = b.repeats;
   t.rows = b.rows;
-  t.user = clipMessage(userHalf(b));
-  t.assistant = clipMessage(assistantHalf(b, t.did, t.replyHours));
+  t.user = clipMessage(userHalf(b), cap);
+  t.assistant = clipMessage(assistantHalf(b, t.did, t.replyHours), cap);
   spillToPsram(t.user);
   spillToPsram(t.assistant);
   spillToPsram(t.did);
@@ -418,7 +427,10 @@ HistTurn finish(const Building& b, const OffsetAt& zoneAt) {
     t.localDay = at ? (int32_t)localDaySec(at, zoneAt) : kDayNone;
     t.dayStamped = stamped;
   }
-  if (b.lastRow) t.lastDay = rowLocalDay(*b.lastRow, zoneAt);
+  if (b.lastRow) {
+    t.lastDay = rowLocalDay(*b.lastRow, zoneAt);
+    t.lastUnix = placedSecond(*b.lastRow);
+  }
   if (b.userRow) {
     t.sentUnix = toU32(tagValue(b.userRow->tags, kSentTag));
     t.atUnix = toU32(tagValue(b.userRow->tags, kAtTag));
@@ -718,7 +730,7 @@ std::vector<HistTurn> historyTurns(const std::vector<EpisodicMessage>& newestFir
   const OffsetAt zoneAt = localZone(opt);
   std::vector<HistTurn> turns;
   turns.reserve(g.turns.size());
-  for (const Building& b : g.turns) turns.push_back(finish(b, zoneAt));
+  for (const Building& b : g.turns) turns.push_back(finish(b, zoneAt, opt.messageCap));
   collapseTurns(turns, zoneAt);
   keepDaysForward(turns, opt.dayFloor);
   return turns;
@@ -756,6 +768,17 @@ std::vector<HistMsg> renderHistory(const std::vector<HistTurn>& turns, const std
     out.push_back({true, u + placedUser(t, prev, utcOffsetMin)});
     std::string a = t.did.empty() ? std::string() : "[did: " + t.did + "] ";
     out.push_back({false, a + (t.assistant.empty() ? std::string(kNoReplyMarker) : t.assistant)});
+    // Where the pair came from (never rendered): the give-up order and its note read it.
+    const int64_t day = turnDay(t, utcOffsetMin);
+    for (size_t k = out.size() - 2; k < out.size(); k++) {
+      HistMsg& m = out[k];
+      m.firstId = t.firstId;
+      m.lastId = t.lastId;
+      m.localDay = day == kNoDate || day < 0 ? 0u : (uint32_t)day;
+    }
+    out[out.size() - 2].atUnix = turnSecond(t);
+    out[out.size() - 2].rows = (uint32_t)t.rows;
+    out.back().atUnix = t.lastUnix;
   }
   return out;
 }
@@ -809,6 +832,36 @@ size_t dayTailTurns(const std::vector<HistTurn>& turns, const HistoryBudget& b, 
   return kept;
 }
 
+namespace {
+// How many of the oldest turns a window drops. v5.1.1 (the floor branch): past high water
+// (bytes or rows) down to low water, never the owner's current day up to its cap. Lane H
+// (derived): only past maxBytes (or the row bound), down to softBytes; no day floor and
+// nothing at midnight. Either way the newest turn and every turn back to the last answered
+// one stay.
+size_t droppedTurns(const std::vector<HistTurn>& turns, const std::vector<size_t>& len, size_t bytes,
+                    size_t rows, const HistoryBudget& b, int32_t utcOffsetMin) {
+  size_t keepFrom = turns.size() > kHistoryKeepTurns ? turns.size() - kHistoryKeepTurns : 0;
+  for (size_t i = turns.size(); i-- > 0;)
+    if (!turns[i].assistant.empty()) {
+      keepFrom = std::min(keepFrom, i);
+      break;
+    }
+  const bool over = b.derived ? bytes > b.maxBytes || rows > b.highRows : bytes > b.highBytes || rows > b.highRows;
+  if (!over) return 0;
+  // Lane CTX: and the owner's current day, up to its cap (v5.1.1 only).
+  if (!b.derived) keepFrom = std::min(keepFrom, turns.size() - dayTailTurns(turns, b, utcOffsetMin));
+  const size_t lowB = b.derived ? b.softBytes : b.lowBytes();
+  const size_t lowR = b.derived ? b.highRows * 4 / 5 : b.lowRows();
+  size_t drop = 0;
+  while (drop < keepFrom && (bytes > lowB || rows > lowR)) {
+    bytes -= len[drop];
+    rows -= turns[drop].rows;
+    drop++;
+  }
+  return drop;
+}
+}  // namespace
+
 HistoryWindow fitHistory(const std::vector<HistTurn>& turns, const std::string& softStart,
                          const HistoryBudget& b, int32_t utcOffsetMin) {
   HistoryWindow w;
@@ -821,25 +874,7 @@ HistoryWindow fitHistory(const std::vector<HistTurn>& turns, const std::string& 
     bytes += len[i];
     rows += turns[i].rows;
   }
-  // The newest turn always stays, and so does every turn back to the last one
-  // that was answered: the newest owner message and the last reply survive any
-  // shift.
-  size_t keepFrom = turns.size() > kHistoryKeepTurns ? turns.size() - kHistoryKeepTurns : 0;
-  for (size_t i = turns.size(); i-- > 0;)
-    if (!turns[i].assistant.empty()) {
-      keepFrom = std::min(keepFrom, i);
-      break;
-    }
-  // Lane CTX: and the owner's current day, up to its cap.
-  keepFrom = std::min(keepFrom, turns.size() - dayTailTurns(turns, b, utcOffsetMin));
-  size_t drop = 0;
-  if (bytes > b.highBytes || rows > b.highRows) {
-    while (drop < keepFrom && (bytes > b.lowBytes() || rows > b.lowRows())) {
-      bytes -= len[drop];
-      rows -= turns[drop].rows;
-      drop++;
-    }
-  }
+  const size_t drop = droppedTurns(turns, len, bytes, rows, b, utcOffsetMin);
   if (drop) {
     w.softStart = turns[drop - 1].lastId;
     w.shifted = true;
@@ -867,6 +902,10 @@ size_t keptTail(const std::vector<HistTurn>& turns, size_t keepBytes, int32_t ut
   return kept;
 }
 }  // namespace
+
+size_t foldKeptTail(const std::vector<HistTurn>& turns, size_t keepBytes, int32_t utcOffsetMin) {
+  return keptTail(turns, keepBytes, utcOffsetMin);
+}
 
 FoldSlice foldSlice(const std::vector<HistTurn>& turns, size_t keepBytes, size_t capBytes, bool manual,
                     int32_t utcOffsetMin, const HistoryBudget& day) {

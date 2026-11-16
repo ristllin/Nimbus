@@ -15,7 +15,9 @@
 #include "nimbus/harness/hooks.h"       // Hooks / TurnDebugEv
 #include "nimbus/harness/jobs.h"        // JobEngine (fresh results + keyFromTag)
 #include "nimbus/harness/platform.h"    // Platform (nowMs / freeHeap / delayMs)
+#include "nimbus/harness/conv_cache.h"     // ConvCache - the chat's rows after thru between turns
 #include "nimbus/harness/conversation.h"   // FoldSlice - the history fold slice (histV2)
+#include "nimbus/orch/budget.h"            // ContextBudget - the head's history marks
 #include "nimbus/harness/fold_ladder.h"    // FoldResult / FoldRung - the fold's ladder
 #include "nimbus/harness/skill_attach.h"   // AttachPick - the [ACTIVE SKILLS] picks (F1)
 #include "nimbus/orch/food_ledger.h"   // lane CTX: Deps::foodLedger
@@ -159,6 +161,19 @@ struct HistoryMarks {
   std::string thru;        // the newest row the fold summary covers
   std::string softStart;   // the overflow shift: rows up to it are hidden until a fold
   uint32_t foldEpoch = 0;  // the chat's fold count, for a cache that must drop on a fold (0 = unknown)
+  uint32_t foldUnix = 0;   // when the summary was last written (unix seconds; 0 = never or no clock)
+};
+
+// What one turn's history read cost (the context line's "hist ... ms ... card reads lock
+// ... ms"): wall time of the whole read, card reads the store made for it, time inside the
+// store reads (memory::Lock is held there), store reads (pages), and the live rows after
+// thru it found (cached plus the span it names).
+struct HistoryReadStats {
+  uint32_t ms = 0;
+  uint32_t lockMs = 0;
+  uint32_t cardReads = 0;
+  int pages = 0;
+  size_t liveRows = 0;
 };
 
 // histV2: one read of a chat's conversation rows (Deps::historyRows): at most `limit`,
@@ -549,11 +564,21 @@ class TurnEngine {
   std::string assistantRowTags() const;
   // histV2 on for this engine (the switch and the seams it needs are wired).
   bool histV2On() const;
-  // H3: the next fold's slice of this chat - the turns after the fold anchor
-  // beyond the verbatim history's low water (half the head's history budget, the
-  // same budget the window shifts to), rendered up to `capBytes`
-  // (conversation.h foldSlice). Empty = nothing worth a summary.
+  // H3: the next fold's slice of this chat - the turns after the fold anchor, read
+  // forward from it (oldest first, the cold region included), beyond the verbatim tail
+  // the fold keeps (the head's historyKeepBytes; v5.1.1's low water and day on the floor
+  // branch), rendered up to `capBytes` (conversation.h foldSlice). Empty = nothing worth
+  // a summary.
   FoldSlice historyFoldSlice(const std::string& chatId, size_t capBytes, bool manual);
+  // Lane H: one page of the conversation cache's newest-first fill (the chat filled last,
+  // still short of its anchor), for the idle pump: after a boot the chat's rows reach the
+  // cache a page a pass. False = nothing to fill (or a turn is running).
+  bool historyIdleStep();
+  // The history read of the turn in flight (or the last one): what it cost and found.
+  const HistoryReadStats& historyRead() const { return histRead_; }
+  // The window the turn in flight (or the last one) sent: kept turns, the shift, and the
+  // live rows after thru it does not carry (HistoryWindow::leftOut).
+  const HistoryWindow& lastHistoryWindow() const { return lastWindow_; }
   // Engine notices a quiet background turn held back since boot (never delivered).
   uint32_t quietNoticesHeld() const { return quietNoticesHeld_; }
   nimbus::orch::TokenUsage sessionUsage() const { return sessionUsage_; }
@@ -794,23 +819,33 @@ class TurnEngine {
   // The capture of a turn's own owner row (H1 tags, H7 duplicate source).
   // False = a delivery already in the history: the turn is dropped.
   bool captureOwnerRow(const std::string& chatId, const std::string& text, const std::string& fromTag);
-  // The history budget for a window of `highBytes`, with (lane CTX) the owner's
-  // current local day as its floor, sized for the head the next turn runs on.
-  HistoryBudget historyBudgetFor(size_t highBytes) const;
-  // The chat's verbatim history fitted to that budget (the overflow shift noted).
-  HistoryWindow historyWindow(const std::string& chatId, size_t highBytes);
-  // H2/H3: the RECENT CONVERSATION block for this turn ("" = none).
-  std::string historyBlock(const std::string& chatId, size_t highBytes);
+  // The history budget of a head (lane H): the derived marks (fold before shift), or on
+  // the floor branch v5.1.1's window with (lane CTX) the owner's local day as its floor.
+  HistoryBudget historyBudgetOf(const nimbus::orch::ContextBudget& cb, const std::string& host,
+                                const std::string& model) const;
+  // The same for the head the next turn runs on.
+  HistoryBudget headHistoryBudget() const;
+  // The chat's verbatim history fitted to that budget (the overflow shift noted, the live
+  // rows it does not carry named in HistoryWindow::leftOut), from the conversation cache.
+  HistoryWindow historyWindow(const std::string& chatId, const HistoryBudget& b);
   // R3 (G1): the same turns as real messages (renderHistory - the summary pair
   // first), for the providers' history items. `summary` is the chat's fold
   // summary, its header line stripped when the caller sent a rendered block.
-  std::vector<HistMsg> historyMessages(const std::string& chatId, size_t highBytes,
+  std::vector<HistMsg> historyMessages(const std::string& chatId, const HistoryBudget& b,
                                        const std::string& summary);
+  // The conversation cache's read of a chat (Deps::historyRows, timed and counted into
+  // histRead_), and an access through it with `fillPages` fill pages at most.
+  ConvCache::ReadFn cacheReader(const std::string& chatId);
+  ConvCache::View cachedRows(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
+                             int fillPages);
+  // The chat's newest `rows` rows, newest first, from the cache (H7's duplicate check).
+  std::vector<nimbus::orch::EpisodicMessage> recentRows(const std::string& chatId, size_t rows);
+  ConvCache convCache_;
+  HistoryReadStats histRead_;
+  HistoryWindow lastWindow_;
   // Capture one assistant row with its out: kind (and the trigger row first).
   void captureAssistantRow(const std::string& chatId, const std::string& text, const char* outKind);
   void flushTrigger(const std::string& chatId);   // the pending trigger row, once
-  // The chat's turns after o.startAfter, read a page at a time (repeats folded).
-  std::vector<HistTurn> loadTurns(const std::string& chatId, const HistoryOptions& o, size_t maxRows) const;
   struct ApplyCapture;   // swaps apply's capture and speak hooks for one applyTurn
 
   // Lane T: the turn's spend per host and its failure chain - one allocation per

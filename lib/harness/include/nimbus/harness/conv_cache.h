@@ -6,7 +6,8 @@
 #include <string>
 #include <vector>
 
-#include "nimbus/orch/episodic.h"   // EpisodicMessage
+#include "nimbus/harness/conversation.h"   // ConvSpan
+#include "nimbus/orch/episodic.h"          // EpisodicMessage
 
 // conv_cache - a chat's conversation rows after its fold anchor, kept in RAM between turns
 // (lane H of the history fix, 16 Nov 2026).
@@ -40,19 +41,6 @@ namespace agent {
 
 struct HistoryQuery;
 
-// Rows after thru that a cache does not hold: those strictly after `afterId` and strictly
-// before `beforeId`, oldest first (memory.episodic {"before": beforeId} pages them).
-struct ConvSpan {
-  std::string afterId;     // the span starts just after this row ("" = the chat's start)
-  std::string beforeId;    // ... and ends just before this one ("" = up to the newest row)
-  std::string toId;        // its newest counted row ("" = none counted)
-  size_t rows = 0;         // rows counted in it (evicted rows are counted; unread ones are not)
-  bool uncounted = false;  // part of it was never read: `rows` is a floor
-  uint32_t fromHours = 0;  // the oldest counted row's hour (0 = unknown)
-  uint32_t toHours = 0;    // the newest counted row's hour
-  bool empty() const { return rows == 0 && !uncounted; }
-};
-
 class ConvCache {
  public:
   static constexpr size_t kChats = 3;
@@ -75,9 +63,11 @@ class ConvCache {
   };
 
   // Bring `chat`'s entry up to date against `thru` and return its rows: the delta read,
-  // then at most `fillPages` pages of the newest-first fill.
+  // then at most `fillPages` pages of the newest-first fill; past the first page only while
+  // `freePage` (when set) says the page before cost nothing (the engine: no card read, the
+  // rows came from the store's RAM ring), so a turn makes at most one page of card reads.
   View access(const std::string& chat, const std::string& thru, const Bound& bound, int fillPages,
-              const ReadFn& read);
+              const ReadFn& read, const std::function<bool()>& freePage = std::function<bool()>());
   // One fill page for the most recently used chat that is still filling (the idle pump).
   // False when every entry is complete (nothing was read).
   bool fillStep(const std::function<ReadFn(const std::string& chat)>& readerFor);

@@ -320,23 +320,26 @@ static void test_model_pin_is_its_hosts_and_ends_with_its_scope() {
 
 // ---- the history read's cursors -------------------------------------------------
 
-// The history reads it pages exactly as before: 24 rows a page, each page strictly
-// older than the last one's oldest row, `before` only.
-static void test_before_only_reads_return_todays_rows() {
+// The fold's slice reads FORWARD from thru (lane H): the after cursor, 48 rows a page,
+// oldest first, each page strictly after the last one's newest row - never the newest
+// rows first (v5.1.1 read 400 rows newest first and could anchor past rows it never read).
+static void test_the_fold_slice_reads_forward_from_thru() {
   Rig r;
-  r.addTurns(30);   // 60 rows: pages of 24, 24 and 12
+  r.addTurns(30);   // 60 rows: pages of 48 and 12
   const agent::FoldSlice slice = r.eng->historyFoldSlice("1001", 65536, true);
   TEST_ASSERT_FALSE(slice.digest.empty());
   TEST_ASSERT_EQUAL_STRING("m0060", slice.thru.c_str());
-  TEST_ASSERT_EQUAL(3, (int)r.reads.size());
-  const char* befores[] = {"", "m0037", "m0013"};
-  for (size_t i = 0; i < r.reads.size(); i++) {
-    TEST_ASSERT_EQUAL(24, (int)r.reads[i].limit);
-    TEST_ASSERT_EQUAL_STRING(befores[i], r.reads[i].before.c_str());
-    TEST_ASSERT_EQUAL_STRING("", r.reads[i].after.c_str());
-    TEST_ASSERT_FALSE(agent::historyAfterUnserved(r.reads[i]));
+  std::vector<HistoryQuery> fwd;
+  for (const auto& q : r.reads)
+    if (!q.after.empty()) fwd.push_back(q);
+  TEST_ASSERT_EQUAL(2, (int)fwd.size());
+  const char* afters[] = {"m00000000", "m0048"};
+  for (size_t i = 0; i < fwd.size(); i++) {
+    TEST_ASSERT_EQUAL(48, (int)fwd[i].limit);
+    TEST_ASSERT_EQUAL_STRING(afters[i], fwd[i].after.c_str());
+    TEST_ASSERT_EQUAL_STRING("", fwd[i].before.c_str());
   }
-  // Every row the chat holds was read, newest first, and the slice took them all.
+  // Every row the chat holds was read, oldest first, and the slice took them all.
   TEST_ASSERT_EQUAL(30, (int)slice.turns);
 }
 
@@ -665,7 +668,7 @@ int main(int, char**) {
   RUN_TEST(test_fold_rungs_are_todays_candidates);
   RUN_TEST(test_one_rung_asks_its_host_on_its_model);
   RUN_TEST(test_model_pin_is_its_hosts_and_ends_with_its_scope);
-  RUN_TEST(test_before_only_reads_return_todays_rows);
+  RUN_TEST(test_the_fold_slice_reads_forward_from_thru);
   RUN_TEST(test_an_after_cursor_is_served);
   RUN_TEST(test_listed_window_from_the_stored_list);
   RUN_TEST(test_listed_window_lookup_install);

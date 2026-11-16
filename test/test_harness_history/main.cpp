@@ -75,7 +75,8 @@ struct Rig {
     store.addMessage(m);
     return m.id;
   }
-  std::vector<EpisodicMessage> rows(const std::string& chat, size_t limit, const std::string& before) const {
+  std::vector<EpisodicMessage> rows(const std::string& chat, size_t limit, const std::string& before,
+                                    const std::string& after = std::string()) const {
     MsgQuery q;
     q.sessionId = chat;
     q.haveKind = true;
@@ -83,6 +84,7 @@ struct Rig {
     q.alsoKinds = {MsgKind::Image, MsgKind::File, MsgKind::Audio};
     q.limit = (int)limit;
     q.before = before;
+    q.after = after;
     return store.query(q);
   }
   std::vector<EpisodicMessage> all(const std::string& chat) const { return rows(chat, 500, ""); }
@@ -135,7 +137,7 @@ struct Rig {
     if (wireV2) {
       d.histV2 = [this] { return v2; };
       d.historyRows = [this](const std::string& c, const agent::HistoryQuery& hq) {
-        return rows(c, hq.limit, hq.before);
+        return rows(c, hq.limit, hq.before, hq.after);
       };
       d.captureUserRow = [this](const std::string& c, const std::string& t, const std::string& tags) {
         turnTag = add(c, "user", MsgKind::Message, t, tags);
@@ -459,6 +461,19 @@ static void test_fold_slice_starts_after_the_anchor() {
   TEST_ASSERT_TRUE(off.eng->historyFoldSlice("123", 65536, true).digest.empty());
 }
 
+// Lane H: rows a shift hid (between thru and the soft start) are in neither the summary nor
+// the request, so a fold takes them however small: the 1 KB "worth a paid summary" floor
+// never strands them. Counter-test: the same small slice with nothing hidden waits.
+static void test_a_hidden_slice_under_1_kb_is_digested() {
+  Rig r;
+  for (int i = 0; i < 3; i++) r.eng->handleMessage("tiny " + std::to_string(i), "Roy", "123");
+  TEST_ASSERT_TRUE(r.eng->historyFoldSlice("123", 65536, false).digest.empty());   // under 1 KB, nothing hidden
+  r.marks.softStart = r.all("123")[2].id;   // a shift hid the oldest rows
+  const agent::FoldSlice s = r.eng->historyFoldSlice("123", 65536, false);
+  TEST_ASSERT_FALSE(s.digest.empty());
+  TEST_ASSERT_TRUE(s.digest.size() < 1024);
+  TEST_ASSERT_TRUE(s.digest.find("tiny 0") != std::string::npos);
+}
 
 // An album turn from lane D's batcher (three photos, a caption, a text in one bucket)
 // is captured once with its refs: the media rows keep the descriptions, the owner row
@@ -974,6 +989,7 @@ int main(int, char**) {
   RUN_TEST(test_switch_off_is_byte_identical);
   RUN_TEST(test_overflow_shift_is_recorded_and_stable);
   RUN_TEST(test_fold_slice_starts_after_the_anchor);
+  RUN_TEST(test_a_hidden_slice_under_1_kb_is_digested);
   RUN_TEST(test_mlq_unanswered_owner_message_reaches_the_scope_check);
   RUN_TEST(test_mlq_a_turn_the_head_acted_on_is_not_unanswered);
   UNITY_END();

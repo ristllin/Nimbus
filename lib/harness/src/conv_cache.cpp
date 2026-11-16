@@ -196,7 +196,7 @@ ConvCache::View ConvCache::viewOf(const Entry& e) const {
 }
 
 ConvCache::View ConvCache::access(const std::string& chat, const std::string& thru, const Bound& bound,
-                                  int fillPages, const ReadFn& read) {
+                                  int fillPages, const ReadFn& read, const std::function<bool()>& freePage) {
   std::lock_guard<std::mutex> lk(mu_);
   lastBound_ = bound;
   Entry& e = open(chat, thru);
@@ -205,7 +205,10 @@ ConvCache::View ConvCache::access(const std::string& chat, const std::string& th
   applyPatches(e);
   if (e.complete && e.newestId.empty()) reset(e, thru);   // a chat that had no row yet: read from the newest
   int pages = readNewer(e, read);
-  for (int i = 0; i < fillPages && !e.complete; i++) pages += fillPage(e, bound, read) ? 1 : 0;
+  for (int i = 0; i < fillPages && !e.complete; i++) {
+    if (i > 0 && (!freePage || !freePage())) break;
+    pages += fillPage(e, bound, read) ? 1 : 0;
+  }
   enforce(e, bound);
   View v = viewOf(e);
   v.pages = pages;

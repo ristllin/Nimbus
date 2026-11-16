@@ -8,6 +8,8 @@
 #include "nimbus/harness/conversation.h"
 #include "nimbus/orch/budget.h"
 #include "nimbus/orch/compact.h"   // modelCtxTokens
+#include "nimbus/orch/model_window.h"   // legacyCtxTokens
+#include "nimbus/orch/request_budget.h"   // requestBudgetFor - lane B's derived marks
 #include "nimbus/orch/episodic.h"
 
 // The history's day floor (lane CTX, conversation.h HistoryBudget): the owner's
@@ -228,6 +230,97 @@ static void test_local_day_start() {
   TEST_ASSERT_EQUAL_UINT32(0, agent::localDayStartUnix(3600, 60));   // boot-relative: no clock
 }
 
+// ---- lane H: the derived window (fold before shift; nothing moves at midnight) --------
+
+namespace {
+// A head with room: lane B's derived marks for Mistral Large 4 (360 KB, history 206/165/111 KB).
+agent::HistoryBudget derivedBudget(uint32_t dayStart = kDay) {
+  const ContextBudget cb = deriveRequestContext(requestBudgetFor("mistral", "mistral-large-4-0", false), {});
+  agent::HistoryBudget b;
+  b.highBytes = cb.recentConvBytes;
+  b.highRows = cb.historyRows;
+  b.dayStartUnix = dayStart;
+  b.derived = !cb.floorBranch;
+  b.maxBytes = cb.historyMaxBytes;
+  b.softBytes = cb.historySoftBytes;
+  b.keepBytes = cb.historyKeepBytes;
+  b.messageCap = cb.historyMessageCap;
+  return b;
+}
+}  // namespace
+
+// The window grows append-only to historyMax with no shift at all; past it the oldest turns
+// are hidden down to the soft mark, never below it, and the newest turn stays.
+static void test_derived_window_grows_to_max_then_shifts_to_soft() {
+  const agent::HistoryBudget b = derivedBudget();
+  TEST_ASSERT_TRUE(b.derived);
+  TEST_ASSERT_EQUAL_UINT32(206080, (uint32_t)b.maxBytes);
+  Chat c;
+  std::string soft, prev;
+  int shifts = 0, breaks = 0, firstShiftAt = -1;
+  for (int i = 0; i < 260; i++) {
+    c.turn(kHourToday - 200 + (uint32_t)i, "turn " + std::to_string(i), 1200);
+    const agent::HistoryWindow w = agent::fitHistory(c.turns(soft), soft, b, 0);
+    TEST_ASSERT_TRUE(has(w.block, "turn " + std::to_string(i) + "\n"));
+    TEST_ASSERT_TRUE_MESSAGE(w.bytes <= b.maxBytes, std::to_string(w.bytes).c_str());
+    if (w.shifted) {
+      shifts++;
+      if (firstShiftAt < 0) firstShiftAt = i;
+      TEST_ASSERT_TRUE(w.bytes <= b.softBytes);
+      soft = w.softStart;
+    }
+    const std::string body = w.block.empty() ? std::string() : w.block.substr(std::strlen(agent::kHistoryHeader));
+    if (!prev.empty() && body.compare(0, prev.size(), prev) != 0) breaks++;
+    prev = body;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(firstShiftAt > 100, std::to_string(firstShiftAt).c_str());   // about 206 KB of turns first
+  TEST_ASSERT_TRUE(shifts >= 1 && shifts <= 3);   // a shift takes a fifth of the window, not a turn
+  TEST_ASSERT_EQUAL(shifts, breaks);               // between shifts the history only appends
+}
+
+// Day boundary (plan v3, lane H): a 23:50 estimate followed by three more exchanges is in the
+// 00:05 request on a head with room. Counter-test: v5.1.1's 128K window (5,242 B, the day
+// floor of a day that has just begun) shifts it out.
+static void test_the_2350_estimate_is_in_the_0005_request() {
+  Chat c;
+  for (int i = 0; i < 30; i++) c.turn(kHourToday - 4, "evening " + std::to_string(i), 500);
+  c.turn(kHourToday - 1, "ESTIMATE bowl 290 g, about 330 kcal", 600);   // 23:50
+  for (int i = 0; i < 3; i++) c.turn(kHourToday - 1, "after " + std::to_string(i), 1000);
+  const uint32_t tomorrow = kDay + 86400u;   // the 00:05 turn's day
+  const agent::HistoryWindow w = agent::fitHistory(c.turns(), "", derivedBudget(tomorrow), 0);
+  TEST_ASSERT_FALSE(w.shifted);
+  TEST_ASSERT_TRUE(has(w.block, "ESTIMATE bowl 290 g"));
+  const ContextBudget legacy = deriveBudget(legacyCtxTokens("mistral", "mistral-large-4-0"), {});
+  const agent::HistoryWindow old = agent::fitHistory(c.turns(), "", headBudget(legacy.recentConvBytes, true), 0);
+  TEST_ASSERT_TRUE(old.shifted);
+  TEST_ASSERT_FALSE(has(old.block, "ESTIMATE bowl 290 g"));
+}
+
+// Nothing moves at local midnight: the same turns give the same window whatever day the clock
+// says, and with no clock at all (the derived window keeps no day floor).
+static void test_derived_window_does_not_move_at_midnight_or_without_a_clock() {
+  const Chat c = dayOfFood(40, 1500);
+  const std::string at2359 = agent::fitHistory(c.turns(), "", derivedBudget(kDay), 0).block;
+  TEST_ASSERT_EQUAL_STRING(at2359.c_str(), agent::fitHistory(c.turns(), "", derivedBudget(kDay + 86400u), 0).block.c_str());
+  TEST_ASSERT_EQUAL_STRING(at2359.c_str(), agent::fitHistory(c.turns(), "", derivedBudget(0), 0).block.c_str());
+}
+
+// A long day folds today's own oldest turns beyond keep: the fold keeps the newest
+// historyKeepBytes (111 KB), not the day, so a day past keep is summarized oldest first and
+// its newest part stays verbatim.
+static void test_a_long_day_folds_todays_oldest_beyond_keep() {
+  const agent::HistoryBudget b = derivedBudget();
+  Chat c;
+  for (int i = 0; i < 120; i++) c.turn(kHourToday + 6 + (uint32_t)i / 10, "today " + std::to_string(i), 1500);
+  const auto t = c.turns();
+  const agent::FoldSlice s = agent::foldSlice(t, b.keepBytes, 53792, false, 0);
+  TEST_ASSERT_TRUE(has(s.digest, "today 0\n"));
+  TEST_ASSERT_FALSE(has(s.digest, "today 119\n"));
+  size_t tail = 0;   // what stays verbatim: at least the keep mark's worth of today
+  for (size_t i = s.turns; i < t.size(); i++) tail += agent::renderTurnLines(t[i], i ? &t[i - 1] : nullptr, 0).size();
+  TEST_ASSERT_TRUE(tail >= b.keepBytes - 2000);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_the_whole_day_survives_the_overflow_shift);
@@ -238,5 +331,9 @@ int main(int, char**) {
   RUN_TEST(test_the_fold_keeps_today);
   RUN_TEST(test_a_clock_change_day_is_one_day);
   RUN_TEST(test_local_day_start);
+  RUN_TEST(test_derived_window_grows_to_max_then_shifts_to_soft);
+  RUN_TEST(test_the_2350_estimate_is_in_the_0005_request);
+  RUN_TEST(test_derived_window_does_not_move_at_midnight_or_without_a_clock);
+  RUN_TEST(test_a_long_day_folds_todays_oldest_beyond_keep);
   return UNITY_END();
 }

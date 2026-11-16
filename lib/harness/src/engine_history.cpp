@@ -4,10 +4,14 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/conv_cache.h"     // the chat's rows after thru, kept between turns
 #include "nimbus/harness/conversation.h"   // historyTurns / fitHistory / foldSlice / renderHistory
+#include "nimbus/harness/jobs.h"           // isJobDelivery
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/turn_inbox.h"     // what the channel says the sender sent
 #include "nimbus/orch/budget.h"            // headContextBudget - the head's derived caps
+#include "nimbus/orch/episodic_log.h"      // epiCardReads - the history read's card reads
+#include "nimbus/orch/model_window.h"      // legacyCtxTokens - the floor branch's day floor
 
 // engine_history - the TurnEngine's turn-structured history (histV2, conversation.h): the
 // rows a turn reads, the window it sends, the owner and trigger rows it captures and the
@@ -17,7 +21,6 @@
 namespace agent {
 
 namespace orch = nimbus::orch;
-using detail::headCtxTokens;
 using detail::resolveTurnHost;
 
 // ---- histV2: the turn-structured history (conversation.h) --------------------
@@ -82,7 +85,10 @@ void TurnEngine::noteSkillUsed(const std::string& id) {
 namespace {
 
 constexpr size_t kHistoryPageRows = 24;   // one read of the chat's rows (transient)
-constexpr int kHistoryMaxPages = 32;      // a flood of one repeated line folds as it is read
+// One forward read of the fold's slice (rows after thru, oldest first), and how many a
+// slice may make (the slice is a fold's input: at most foldStep, so a few pages).
+constexpr size_t kFoldPageRows = 48;
+constexpr int kFoldMaxPages = 24;
 
 // True when `m` ends the window (a /clear, or the row the window starts after). The row the
 // window starts after is context only: its local day becomes `o.dayFloor`.
@@ -101,37 +107,40 @@ bool joinsRun(const std::vector<nimbus::orch::EpisodicMessage>& rows, const Hist
   return isRepeatOf(rows.back(), chain, m, zoneAt);
 }
 
-// The chat's rows after `startAfter`, newest first, a page at a time. An owner
-// row identical to the one read just before it folds into that row's count as
-// it is read, so a flood of one message holds one row of memory; reading stops
-// at the newest /clear, at `o.startAfter` and at `maxRows` distinct rows. `o`'s zone tells the
-// owner's local days: two identical messages either side of LOCAL midnight are two messages.
-void readHistory(const TurnEngine::Deps& d, const std::string& chatId, HistoryOptions& o, size_t maxRows,
-                 std::vector<nimbus::orch::EpisodicMessage>& rows, std::vector<uint32_t>& repeats) {
+// The chat's rows after `o.startAfter`, newest first (`newestFirst`): an owner row identical
+// to the one read just before it folds into that row's count, so a flood of one message
+// holds one row of memory; reading stops at the newest /clear, at `o.startAfter` and at
+// `maxRows` distinct rows (0 = none). `o`'s zone tells the owner's local days: two
+// identical messages either side of LOCAL midnight are two messages.
+void foldRuns(const std::vector<nimbus::orch::EpisodicMessage>& newestFirst, HistoryOptions& o, size_t maxRows,
+              std::vector<nimbus::orch::EpisodicMessage>& rows, std::vector<uint32_t>& repeats) {
   const OffsetAt zoneAt = localZone(o);
   RepeatStamp chain;   // the row just newer than the one being read: a run is chained row by row
-  std::string before;
-  for (int page = 0; page < kHistoryMaxPages; page++) {
-    std::vector<nimbus::orch::EpisodicMessage> got = d.historyRows(chatId, HistoryQuery(kHistoryPageRows, before));
-    const bool full = got.size() >= kHistoryPageRows;
-    if (full) before = got.back().id;
-    for (auto& m : got) {
-      if (windowEnds(m, o, zoneAt)) return;
-      if (isJobDelivery(m.tags)) continue;   // never conversation: transparent to a run of repeats
-      if (joinsRun(rows, o, chain, zoneAt, m)) {
-        repeats.back()++;
-        chain = repeatStampOf(m);
-        continue;
-      }
-      if (rows.size() >= maxRows) return;
+  for (const auto& m : newestFirst) {
+    if (windowEnds(m, o, zoneAt)) return;
+    if (isJobDelivery(m.tags)) continue;   // never conversation: transparent to a run of repeats
+    if (joinsRun(rows, o, chain, zoneAt, m)) {
+      repeats.back()++;
       chain = repeatStampOf(m);
-      rows.push_back(std::move(m));
-      repeats.push_back(1);
-      spillToPsram(rows.back().text);   // the kept rows ride PSRAM, the page is transient
-      spillToPsram(rows.back().tags);
-      spillToPsram(rows.back().blobPath);
+      continue;
     }
-    if (!full) return;
+    if (maxRows && rows.size() >= maxRows) return;
+    chain = repeatStampOf(m);
+    rows.push_back(m);
+    repeats.push_back(1);
+  }
+}
+
+// Conversation rows of the window (message, media; not a job delivery or a trigger's
+// bookkeeping) in (afterId, beforeId) of `rows` (oldest first): counted into `span`.
+void countHidden(const std::vector<nimbus::orch::EpisodicMessage>& rows, const std::string& upTo, ConvSpan& span) {
+  for (const auto& m : rows) {
+    if (!rowIdAfter(upTo, m.id) && m.id != upTo) break;   // past the hidden part
+    if (isClearBoundary(m) || isJobDelivery(m.tags)) continue;
+    if (span.rows == 0 && span.fromHours == 0) span.fromHours = m.tsHours;
+    span.toId = m.id;
+    span.toHours = m.tsHours;
+    span.rows++;
   }
 }
 }  // namespace
@@ -159,10 +168,13 @@ std::string ownerRowTags(const std::string& fromTag, const history::Inbound& in,
 }
 
 // H7: a source already in the chat's recent history (a re-served update, a
-// redelivery after a restart).
-bool sourceSeen(const TurnEngine::Deps& d, const std::string& chatId, const std::string& src) {
-  for (const auto& m : d.historyRows(chatId, HistoryQuery(2 * kHistoryPageRows)))   // 48 rows
+// redelivery after a restart): its newest 48 rows, from the conversation cache.
+bool sourceSeen(const std::vector<nimbus::orch::EpisodicMessage>& newestFirst, const std::string& src) {
+  size_t n = 0;
+  for (const auto& m : newestFirst) {
+    if (n++ >= 2 * kHistoryPageRows) break;
     if (tagValue(m.tags, kSrcTag) == src) return true;
+  }
   return false;
 }
 }  // namespace
@@ -177,7 +189,7 @@ bool TurnEngine::captureOwnerRow(const std::string& chatId, const std::string& t
   }
   history::Inbound in;
   const bool noted = history::takeInbound(chatId, text, in);
-  if (noted && !in.src.empty() && sourceSeen(d_, chatId, in.src)) {
+  if (noted && !in.src.empty() && sourceSeen(recentRows(chatId, 2 * kHistoryPageRows), in.src)) {
     hlog::logf("history: %s%s is already in this chat's history - delivery dropped", kSrcTag, in.src.c_str());
     return false;   // captured once, answered once
   }
@@ -187,73 +199,220 @@ bool TurnEngine::captureOwnerRow(const std::string& chatId, const std::string& t
   return true;
 }
 
-std::vector<HistTurn> TurnEngine::loadTurns(const std::string& chatId, const HistoryOptions& o,
-                                            size_t maxRows) const {
-  // The device's own zone, in force at each row's time, tells the days (day markers, repeats).
-  HistoryOptions zoned = o;
-  if (!zoned.utcOffsetAt) zoned.utcOffsetAt = d_.utcOffsetAt;
-  std::vector<nimbus::orch::EpisodicMessage> rows;
-  std::vector<uint32_t> repeats;
-  readHistory(d_, chatId, zoned, maxRows, rows, repeats);
-  return historyTurns(rows, zoned, &repeats);
-}
+// ---- the window and the fold read the conversation cache (lane H) -------------------
 
-HistoryBudget TurnEngine::historyBudgetFor(size_t highBytes) const {
+HistoryBudget TurnEngine::historyBudgetOf(const nimbus::orch::ContextBudget& cb, const std::string& host,
+                                          const std::string& model) const {
   HistoryBudget b;
-  b.highBytes = highBytes;
-  b.dayBytes = historyDayBytes(headCtxTokens(d_));
+  b.highBytes = cb.recentConvBytes;
+  b.messageCap = cb.historyMessageCap;
   b.dayStartUnix = localDayStartUnix(d_.platform.nowEpoch ? d_.platform.nowEpoch() : 0,
                                      d_.utcOffsetMin ? d_.utcOffsetMin() : 0);
+  if (cb.floorBranch) {   // v5.1.1's window exactly: its day floor from v5.1.1's window table
+    b.dayBytes = historyDayBytes(orch::legacyCtxTokens(host, model));
+    return b;
+  }
+  b.derived = true;
+  b.maxBytes = cb.historyMaxBytes;
+  b.softBytes = cb.historySoftBytes;
+  b.keepBytes = cb.historyKeepBytes;
+  b.highRows = cb.historyRows;
   return b;
+}
+
+HistoryBudget TurnEngine::headHistoryBudget() const {
+  const std::string host = resolveTurnHost(d_);
+  const std::string model = detail::headModelOf(d_, host);
+  return historyBudgetOf(orch::headContextBudget(host, model, {}), host, model);
 }
 
 // Twice the row budget: enough to see past high water and shift once; after the
 // shift the whole history after the soft start fits one read. Lane CTX: plus the
-// rows a busy day needs, so the day floor sees the whole day.
+// rows a busy day needs, so the day floor sees the whole day. (v5.1.1's read, the
+// floor branch's window.)
 static size_t historyReadRows(const HistoryBudget& b) {
   return 2 * b.highRows + (b.dayStartUnix ? kHistoryDayRows : 0);
 }
 
-HistoryWindow TurnEngine::historyWindow(const std::string& chatId, size_t highBytes) {
+// What the cache holds per chat: the window's high water and a quarter (lane H); on the
+// floor branch v5.1.1's read (twice its rows, which a flood folds, within 256 KB).
+static ConvCache::Bound cacheBound(const HistoryBudget& b) {
+  ConvCache::Bound c;
+  if (b.derived) {
+    c.bytes = b.maxBytes + b.maxBytes / 4;
+  } else {
+    c.rows = 2 * historyReadRows(b);
+    c.bytes = 256 * 1024;
+  }
+  return c;
+}
+
+ConvCache::ReadFn TurnEngine::cacheReader(const std::string& chatId) {
+  return [this, chatId](const HistoryQuery& q) {
+    const uint32_t t0 = d_.platform.nowMs ? d_.platform.nowMs() : 0;
+    const uint32_t reads0 = orch::epiCardReads();
+    std::vector<nimbus::orch::EpisodicMessage> rows = d_.historyRows(chatId, q);   // memory::Lock inside
+    histRead_.lockMs += (d_.platform.nowMs ? d_.platform.nowMs() : 0) - t0;
+    histRead_.cardReads += orch::epiCardReads() - reads0;
+    histRead_.pages++;
+    return rows;
+  };
+}
+
+// A page more while the page before read no card row (the store's RAM ring served it):
+// at most one page of card reads, however much of the chat RAM already holds.
+constexpr int kRamFillPages = 32;
+
+ConvCache::View TurnEngine::cachedRows(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
+                                       int fillPages) {
+  uint32_t reads = orch::epiCardReads();
+  const auto freePage = [&reads]() {
+    const uint32_t now = orch::epiCardReads();
+    const bool free = now == reads;
+    reads = now;
+    return free;
+  };
+  return convCache_.access(chatId, marks.thru, cacheBound(b), fillPages ? kRamFillPages : 0, cacheReader(chatId),
+                           freePage);
+}
+
+std::vector<nimbus::orch::EpisodicMessage> TurnEngine::recentRows(const std::string& chatId, size_t rows) {
   const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
-  const HistoryBudget b = historyBudgetFor(highBytes);
+  const ConvCache::View v = cachedRows(chatId, marks, headHistoryBudget(), 1);
+  std::vector<nimbus::orch::EpisodicMessage> out;
+  for (auto it = v.rows.rbegin(); it != v.rows.rend() && out.size() < rows; ++it) out.push_back(*it);
+  return out;
+}
+
+HistoryWindow TurnEngine::historyWindow(const std::string& chatId, const HistoryBudget& b) {
+  const uint32_t t0 = d_.platform.nowMs ? d_.platform.nowMs() : 0;
+  const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
+  // One page of the newest-first fill on a turn at most (the idle pump does the rest).
+  const ConvCache::View view = cachedRows(chatId, marks, b, 1);
   HistoryOptions o;
   o.inFlightId = curUserRowId_;
   o.startAfter = rowIdAfter(marks.softStart, marks.thru) ? marks.softStart : marks.thru;
   o.utcOffsetMin = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
-  HistoryWindow w = fitHistory(loadTurns(chatId, o, historyReadRows(b)), marks.softStart, b, o.utcOffsetMin);
+  o.utcOffsetAt = d_.utcOffsetAt;
+  o.messageCap = b.messageCap;
+  std::vector<nimbus::orch::EpisodicMessage> rows;
+  std::vector<uint32_t> repeats;
+  foldRuns(std::vector<nimbus::orch::EpisodicMessage>(view.rows.rbegin(), view.rows.rend()), o,
+           b.derived ? 0 : historyReadRows(b), rows, repeats);
+  HistoryWindow w = fitHistory(historyTurns(rows, o, &repeats), marks.softStart, b, o.utcOffsetMin);
   if (w.shifted) {
     hlog::logf("history(%s): overflow shift to %s (%u B kept)", chatId.c_str(), w.softStart.c_str(),
                (unsigned)w.bytes);
     if (d_.noteHistoryShift) d_.noteHistoryShift(chatId, w.softStart);
   }
+  // What the request does not carry of the rows after thru: the cache's span (rows it
+  // does not hold), then the rows it holds up to the window's first kept turn (a shift).
+  ConvSpan span = view.span;
+  span.afterId = marks.thru;
+  const std::string firstKept = w.kept.empty() ? std::string() : w.kept.front().firstId;
+  const std::string hiddenTo = rowIdAfter(w.softStart, marks.thru) ? w.softStart : std::string();
+  if (!hiddenTo.empty()) countHidden(view.rows, hiddenTo, span);
+  if (!span.empty()) span.beforeId = firstKept;
+  w.leftOut = span;
+  histRead_.ms += (d_.platform.nowMs ? d_.platform.nowMs() : 0) - t0;
+  histRead_.liveRows = view.rows.size() + span.rows;
   return w;
-}
-
-std::string TurnEngine::historyBlock(const std::string& chatId, size_t highBytes) {
-  if (chatId.empty() || chatId == "system") return std::string();
-  return historyWindow(chatId, highBytes).block;
 }
 
 // R3 (G1): the same fitted turns as real messages (renderHistory), the summary
 // pair first (the caller passes the RAW summary; rawFoldSummary).
-std::vector<HistMsg> TurnEngine::historyMessages(const std::string& chatId, size_t highBytes,
+std::vector<HistMsg> TurnEngine::historyMessages(const std::string& chatId, const HistoryBudget& b,
                                                  const std::string& summary) {
+  lastWindow_ = HistoryWindow();
   if (chatId.empty() || chatId == "system")
     return summary.empty() ? std::vector<HistMsg>() : renderHistory({}, summary, 0);
   const int32_t off = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
-  return renderHistory(historyWindow(chatId, highBytes).kept, summary, off);
+  lastWindow_ = historyWindow(chatId, b);
+  return renderHistory(lastWindow_.kept, summary, off);
 }
 
+// The fold's slice: the turns after thru, read FORWARD from it (the after cursor, the
+// cold region included), oldest first, up to `capBytes`, never the newest turns the fold
+// keeps verbatim (keepBytes; on the floor branch v5.1.1's low water and the owner's day).
+// The slice therefore always starts at the row right after thru: a backlog longer than
+// one read is folded oldest first, cycle after cycle, with no gap (v5.1.1 read only the
+// newest 400 rows and could anchor past rows it never read).
 FoldSlice TurnEngine::historyFoldSlice(const std::string& chatId, size_t capBytes, bool manual) {
   if (!histV2On() || chatId.empty()) return FoldSlice();
-  const std::string host = resolveTurnHost(d_);
-  const HistoryBudget b = historyBudgetFor(orch::headContextBudget(host, detail::headModelOf(d_, host), {}).recentConvBytes);
+  const HistoryBudget b = headHistoryBudget();
   const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
+  const int32_t off = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
   HistoryOptions o;
   o.startAfter = marks.thru;   // the shift's hidden rows are exactly what a fold must take
-  o.utcOffsetMin = d_.utcOffsetMin ? d_.utcOffsetMin() : 0;
-  return foldSlice(loadTurns(chatId, o, 400), b.lowBytes(), capBytes, manual, o.utcOffsetMin, b);
+  o.utcOffsetMin = off;
+  o.utcOffsetAt = d_.utcOffsetAt;
+  o.messageCap = b.messageCap;
+  // Rows a shift hid (after thru, up to the soft start) are in neither the summary nor the
+  // request: a fold always takes them, however small (the 1 KB floor never strands them).
+  const bool hidden = rowIdAfter(marks.softStart, marks.thru);
+  // The kept tail, from the cache (its newest rows): the first row the slice stops before.
+  // It is never a hidden row: the tail is read after the soft start.
+  std::string keepFrom;
+  if (!manual) {
+    const ConvCache::View view = cachedRows(chatId, marks, b, 0);
+    std::vector<nimbus::orch::EpisodicMessage> rows;
+    std::vector<uint32_t> repeats;
+    HistoryOptions to = o;
+    if (hidden) to.startAfter = marks.softStart;
+    foldRuns(std::vector<nimbus::orch::EpisodicMessage>(view.rows.rbegin(), view.rows.rend()), to, 0, rows, repeats);
+    const std::vector<HistTurn> tail = historyTurns(rows, to, &repeats);
+    const size_t keep = b.derived ? b.keepBytes : b.lowBytes();
+    const HistoryBudget day = b.derived ? HistoryBudget() : b;   // v5.1.1 keeps the owner's day too
+    const size_t kept = std::max(foldKeptTail(tail, keep, off), dayTailTurns(tail, day, off));
+    // Every turn stays: nothing to fold, unless a shift hid rows (they fold) or the cache has
+    // not read down to thru yet (the tail's start is not known: the fold waits for the fill).
+    if (kept >= tail.size() && !hidden) {
+      if (!view.complete || !view.span.empty()) hlog::logf("fold(%s): the history is still being read - the slice waits", chatId.c_str());
+      return FoldSlice();
+    }
+    if (kept > 0 && kept <= tail.size()) keepFrom = tail[tail.size() - kept].firstId;
+  }
+  // Forward from thru, a page at a time, until the kept tail, the cap or the end.
+  std::vector<nimbus::orch::EpisodicMessage> fwd;   // oldest first
+  std::string cursor = marks.thru.empty() ? std::string("m00000000") : marks.thru;
+  size_t bytes = 0;
+  bool ended = false;
+  std::string unread;
+  for (int page = 0; page < kFoldMaxPages && !ended; page++) {
+    std::vector<nimbus::orch::EpisodicMessage> got =
+        d_.historyRows(chatId, HistoryQuery(kFoldPageRows, std::string(), cursor));
+    ended = got.size() < kFoldPageRows;
+    for (auto& m : got) {
+      if (!keepFrom.empty() && !rowIdAfter(keepFrom, m.id)) {
+        ended = true;
+        break;
+      }
+      if (isClearBoundary(m)) {   // a /clear after thru: the slice before it was cleared
+        fwd.clear();
+        bytes = 0;
+        continue;
+      }
+      bytes += m.text.size() + 64;
+      fwd.push_back(std::move(m));
+    }
+    if (!fwd.empty()) cursor = fwd.back().id;
+    if (bytes > capBytes + capBytes / 2) break;   // enough for one fold: the rest is the next one's
+  }
+  // A read that stopped inside a turn (the cap, the page bound) leaves that turn to the next
+  // fold: the slice holds whole turns only.
+  std::vector<nimbus::orch::EpisodicMessage> rows;
+  std::vector<uint32_t> repeats;
+  foldRuns(std::vector<nimbus::orch::EpisodicMessage>(fwd.rbegin(), fwd.rend()), o, 0, rows, repeats);
+  std::vector<HistTurn> turns = historyTurns(rows, o, &repeats);
+  if (!ended && turns.size() > 1) turns.pop_back();
+  FoldSlice s = foldSlice(turns, 0, capBytes, /*manual=*/true, off);
+  if (!manual && !hidden && s.digest.size() < kFoldMinNewBytes) return FoldSlice();
+  return s;
+}
+
+bool TurnEngine::historyIdleStep() {
+  if (!histV2On() || turnInFlight()) return false;
+  return convCache_.fillStep([this](const std::string& chat) { return cacheReader(chat); });
 }
 
 }  // namespace agent

@@ -266,6 +266,11 @@ struct Rig {
     d.histV2 = [] { return true; };
     d.historyRows = [this](const std::string&, const agent::HistoryQuery& hq) {
       std::vector<orch::EpisodicMessage> out;
+      if (!hq.after.empty()) {   // the store's after cursor: oldest first
+        for (auto it = rows.begin(); it != rows.end() && out.size() < hq.limit; ++it)
+          if (it->id > hq.after) out.push_back(*it);
+        return out;
+      }
       for (auto it = rows.rbegin(); it != rows.rend() && out.size() < hq.limit; ++it) {
         if (!hq.before.empty() && it->id >= hq.before) continue;
         out.push_back(*it);

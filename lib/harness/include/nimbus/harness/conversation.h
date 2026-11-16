@@ -109,6 +109,7 @@ struct HistTurn {
   int32_t lastDay = kDayNone;   // the local day of the turn's latest row (the floor for what follows)
   int32_t sentOffMin = 0;  // minutes east of UTC when it was sent (the "sent hh:mm" label)
   uint32_t replyHours = 0; // the hour of the turn's last assistant row (0 = none)
+  uint32_t lastUnix = 0;   // the second its newest row was stored (at:/sent:, else its hour; 0 = no clock)
   uint32_t repeats = 1;    // consecutive identical owner messages folded in (xN)
   size_t rows = 0;         // distinct rows the turn holds (the row budget)
   bool seedless = false;   // a scheduled, wakeup or synthesis turn (no owner message)
@@ -117,6 +118,7 @@ struct HistTurn {
 struct HistoryOptions {
   std::string inFlightId;     // the turn's own user row: it and its media are [USER]
   std::string startAfter;     // rows with an id at or before this are not history
+  size_t messageCap = 6144;   // one half's clip (ContextBudget::historyMessageCap; kHistoryMessageCap)
   int32_t utcOffsetMin = 0;   // local day markers and send times (a fixed offset)
   OffsetAt utcOffsetAt;       // the offset valid at a unix time; when set it replaces utcOffsetMin
   // The local day of the row the window starts after (the soft start or fold anchor): a turn
@@ -197,14 +199,17 @@ struct HistMsg {
   HistMsg(bool isUser, std::string body) : user(isUser), text(std::move(body)) {}
   bool user = true;
   std::string text;
-  // Where the message came from (lane P0 declares them; lane H fills them), never
-  // rendered: the first and last row ids it carries, its local day (days since
-  // 1970-01-01 in the owner's zone) and its newest row's time (unix seconds). 0 or "" =
-  // unknown (the summary pair, and every message today).
+  // Where the message came from (renderHistory fills them), never rendered: the first
+  // and last row ids of its turn, the turn's local day (days since 1970-01-01 in the
+  // owner's zone), the time of the half it carries (unix seconds) and, on the user half,
+  // the rows the turn holds. 0 or "" = unknown (the summary pair; a row stored before the
+  // clock was set). The give-up order reads them: which messages are today's, and what
+  // its [LEFT OUT] note names.
   std::string firstId;
   std::string lastId;
   uint32_t localDay = 0;
   uint32_t atUnix = 0;
+  uint32_t rows = 0;
 };
 // One of the summary pair's two messages (what a fold left), which every trim keeps longest.
 bool isSummaryMessage(const HistMsg& m);
@@ -231,11 +236,23 @@ std::vector<std::string> unansweredOwnerMessages(const std::vector<HistMsg>& his
 // first. On 26 Oct a 128K head kept 2.6 to 5.2 KB (about 10 messages) and the fold
 // took the morning's meal estimates at 15:03, so at 18:35 the head asked for
 // weights it had estimated itself. dayStartUnix 0 (no clock) = no floor.
+//
+// Lane H (the history fix, 16 Nov 2026): a head with room (ContextBudget's derived
+// branch, `derived` set) keeps no day floor and never shifts at midnight. The window
+// grows append-only; at softBytes a fold is due (the fold takes the oldest turns beyond
+// keepBytes); only past maxBytes are the oldest turns hidden, down to softBytes, and the
+// request names them. A head at or under v5.1.1's room (the floor branch) keeps the
+// v5.1.1 window above exactly (RULINGS-v3 item 3).
 struct HistoryBudget {
   size_t highBytes = 8192;   // ContextBudget::recentConvBytes
   size_t highRows = 64;
   uint32_t dayStartUnix = 0; // the first second of the owner's local day
   size_t dayBytes = 0;       // the day floor's cap (historyDayBytes)
+  bool derived = false;      // the fold-before-shift window (lane H) instead of v5.1.1's
+  size_t maxBytes = 0;       // historyMaxBytes: past it the oldest turns are hidden
+  size_t softBytes = 0;      // historySoftBytes: where a shift lands (and a fold is due)
+  size_t keepBytes = 0;      // historyKeepBytes: the newest history a fold keeps verbatim
+  size_t messageCap = 6144;  // historyMessageCap: one half's clip
   size_t lowBytes() const { return highBytes / 2; }
   size_t lowRows() const { return highRows / 2; }
 };
@@ -258,11 +275,27 @@ size_t dayTailTurns(const std::vector<HistTurn>& turns, const HistoryBudget& b, 
 constexpr size_t kHistoryMessageCap = 6144;   // one message's fixed clip (UTF-8 safe)
 extern const char kHistoryHeader[];
 
+// Live rows after thru that a request does not carry: those strictly after `afterId`
+// and strictly before `beforeId`, oldest first (memory.episodic {"before": beforeId} reads
+// them). Counted when they were read (hidden by a shift, or evicted from the conversation
+// cache); `uncounted` when part of them was never read (the cache is still filling).
+struct ConvSpan {
+  std::string afterId;     // the span starts just after this row ("" = the chat's start)
+  std::string beforeId;    // ... and ends just before this one ("" = up to the newest row)
+  std::string toId;        // its newest counted row ("" = none counted)
+  size_t rows = 0;         // rows counted in it
+  bool uncounted = false;  // part of it was never read: `rows` is a floor
+  uint32_t fromHours = 0;  // the oldest counted row's hour (0 = unknown)
+  uint32_t toHours = 0;    // the newest counted row's hour
+  bool empty() const { return rows == 0 && !uncounted; }
+};
+
 struct HistoryWindow {
   std::string block;       // "" when nothing is live
   std::string softStart;   // the soft start after this call (forward only)
   bool shifted = false;    // the start moved now: rows are hidden until a fold
   size_t bytes = 0;        // rendered turn bytes kept
+  ConvSpan leftOut;        // lane H: the live rows after thru this window does not carry
   // The kept turns themselves (R3/G1: renderHistory turns them into the
   // history messages the providers send as items).
   std::vector<HistTurn> kept;
@@ -288,6 +321,9 @@ struct FoldSlice {
   size_t rows = 0;
   std::string firstDate, lastDate;
 };
+// How many of the newest turns a fold keeps verbatim: while they fit keepBytes, the
+// newest one always.
+size_t foldKeptTail(const std::vector<HistTurn>& turns, size_t keepBytes, int32_t utcOffsetMin);
 // Lane CTX: `day` keeps the current local day out of the slice too (its day floor,
 // HistoryBudget); a manual /compact still folds every turn.
 FoldSlice foldSlice(const std::vector<HistTurn>& turns, size_t keepBytes, size_t capBytes,

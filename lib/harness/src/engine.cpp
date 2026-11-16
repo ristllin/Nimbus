@@ -1119,7 +1119,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   const PsramFirstScope psramFirst;
   const bool admitted = turnMem().admitted;   // else the entry sample below starts the record
   turnMem().admitted = false;                 // the next turn takes its own sample
-  if (!admitted) turnMem().clearTaken();      // only an entry's own takes can be put back
+  if (!admitted) {
+    turnMem().clearTaken();      // only an entry's own takes can be put back
+    histRead_ = HistoryReadStats();   // a turn with no owner capture: its read starts here
+  }
   turnMem().started = false;
   turnMem().refused = false;
   turnMem().applied = false;
@@ -1383,7 +1386,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   if (!ci.chatSummary.empty())
     ci.chatSummary = rawFoldSummary(ci.chatSummary);   // header stripped; measureHistory sees it below
   if (histV2On()) {
-    ci.history = historyMessages(chatId, budget.recentConvBytes, ci.chatSummary);
+    ci.history = historyMessages(chatId, historyBudgetOf(budget, host, headModel), ci.chatSummary);
     ci.recentConversation.clear();   // the history rides as messages; the closure's
                                      // text window was the histV1 shape
   } else if (!ci.chatSummary.empty()) {
@@ -2888,6 +2891,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
       if (ch >= 0x20 && ch != ',' && ch != ':') fromTag += ch;
     }
   }
+  histRead_ = HistoryReadStats();   // the turn's history read starts with its own capture
   if (!captureOwnerRow(chatId, text, fromTag)) return;   // H7: already captured, no paid call
   turnMem().gate.phase("row", freeHeap(), largestFreeBlock());
 
