@@ -77,6 +77,7 @@ struct Device {
   std::vector<std::string> askedKeys;                      // "host/model" per request
   std::vector<std::pair<std::string, std::string>> told;   // (chat, text)
   std::vector<agent::FoldDone> done;
+  std::vector<std::string> changedChats;                  // every status change, by chat
   std::map<std::string, std::vector<std::string>> rows;    // chat -> row ids, oldest first
   std::vector<std::pair<std::string, bool>> sliced;        // (chat, manual) per slice read
   bool quiet = true;
@@ -114,6 +115,7 @@ struct Device {
     h.slice = [this](const std::string& chat, size_t cap, bool manual) { return slice(chat, cap, manual); };
     h.tell = [this](const std::string& chat, const std::string& text) { told.push_back({chat, text}); };
     h.folded = [this](const agent::FoldDone& d) { done.push_back(d); };
+    h.changed = [this](const std::string& chat) { changedChats.push_back(chat); };
     h.firmware = firmware;
     orch::FoldCtlIO io;
     io.load = [this] { return ctlText; };
@@ -231,6 +233,10 @@ static void test_answer_at_rung_k_lands_and_confirms_once() {
             "\xE2\x9C\x93 Compacted. Summary updated: covered 40 messages from 2026-11-02 to 2026-11-15.",
             d.told[0].second.c_str());
       TEST_ASSERT_TRUE(d.ctlText.find("manualPendingChat=\n") != std::string::npos);
+      // The last status change names the chat, after its request was dropped (bench B08: the
+      // CTX echo showed queued=1 after the landing).
+      TEST_ASSERT_EQUAL_STRING("c", d.changedChats.back().c_str());
+      TEST_ASSERT_FALSE(d.drv->status("c", d.plat.ms, kT0).queued);
     }
   }
 }

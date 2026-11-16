@@ -2870,7 +2870,6 @@ static void foldTell(const std::string& chat, const std::string& text) {
 
 // A summary landed (the store is written): the chain reset, then the boundary row.
 static void foldLanded(const agent::FoldDone& d) {
-  publishFoldStatus(d.chat);
   g_engine->clearChatConv(d.chat);
   if (const nimbus::orch::ChatFold* after = g_folds.peek(d.chat))
     alogf("fold(%s): digest %u B, anchor %s, shift %s, on %s/%s", d.chat.c_str(), (unsigned)d.slice.digest.size(),
@@ -2938,7 +2937,10 @@ static agent::FoldDriverHooks foldHooks() {
     if (chat == "web" || (owner.length() && chat == owner.c_str())) return foldTell(chat, text);
     alogf("fold(%s): not the owner's chat - the daily alert is logged only", chat.c_str());
   };
-  h.changed = [] { publishFoldWebStatus(); };
+  h.changed = [](const std::string& chat) {
+    if (!chat.empty()) publishFoldStatus(chat);   // the CTX echo, then the web copy
+    publishFoldWebStatus();
+  };
   h.firmware = NIMBUS_FW_BUILD;
   return h;
 }

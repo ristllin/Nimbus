@@ -100,7 +100,7 @@ struct FoldDriverHooks {
   std::function<void(const std::string& chat, const std::string& text)> tell;   // an owner notice
   // The daily alert (unset = tell): the binding sends it to the owner's chats only.
   std::function<void(const std::string& chat, const std::string& text)> alert;
-  std::function<void()> changed;                       // the status moved
+  std::function<void(const std::string& chat)> changed;   // the status moved ("" = no one chat)
   std::function<void(bool)> asking;                    // true just before a rung's request, false after
   std::string firmware;                                // this image's version
 };
@@ -166,7 +166,7 @@ class FoldDriver {
   bool capReached(uint32_t nowEpoch);
   void endManual(const std::string& chat, uint32_t nowMs);
   void saveCtl();
-  void changed() const;
+  void changed(const std::string& chat = std::string()) const;
   uint32_t today(uint32_t nowEpoch) const;
   int32_t offsetAt(uint32_t epoch) const;
 

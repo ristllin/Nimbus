@@ -145,8 +145,8 @@ void FoldDriver::saveCtl() {
   if (ctlIO_.save && !ctlIO_.save(ctl_.encode())) hlog::log("fold: the fold control file was not saved");
 }
 
-void FoldDriver::changed() const {
-  if (hooks_.changed) hooks_.changed();
+void FoldDriver::changed(const std::string& chat) const {
+  if (hooks_.changed) hooks_.changed(chat);
 }
 
 int32_t FoldDriver::offsetAt(uint32_t epoch) const { return hooks_.utcOffsetMin ? hooks_.utcOffsetMin(epoch) : 0; }
@@ -280,7 +280,7 @@ FoldTick FoldDriver::nothingToFold(const std::string& chat, bool manual, uint32_
     folds_.noteFoldSkipped(chat);
     hlog::logf("fold(%s): nothing new beyond the kept history - skipped", chat.c_str());
   }
-  changed();
+  changed(chat);
   return FoldTick::Skipped;
 }
 
@@ -308,7 +308,7 @@ FoldTick FoldDriver::startCycle(uint32_t nowMs, uint32_t nowEpoch) {
   hlog::logf("fold(%s): cycle start (%s, %u rungs, %u B digest, %u rows)", chat.c_str(),
              manual ? "manual" : "automatic", (unsigned)cycle_.rungs.size(), (unsigned)cycle_.slice.digest.size(),
              (unsigned)cycle_.slice.rows);
-  changed();
+  changed(chat);
   return FoldTick::Pending;
 }
 
@@ -336,7 +336,7 @@ FoldTick FoldDriver::runRung(uint32_t nowMs, uint32_t nowEpoch) {
   if (rep.degraded) degraded_.insert(rungKey(rep.host, rep.model));
   if (rep.thinSummary.size() > cycle_.bestThin.thinSummary.size()) cycle_.bestThin = rep;
   if (++cycle_.idx < n) {
-    changed();
+    changed(cycle_.chat);
     return FoldTick::Pending;
   }
   return cycleFailed(nowMs, nowEpoch);
@@ -367,7 +367,7 @@ FoldTick FoldDriver::landed(const FoldRungReport& rep, const std::string& summar
     catchUp_ = CatchUp();
     endManual(c.chat, nowMs);
   }
-  changed();
+  changed(c.chat);
   return FoldTick::Ok;
 }
 
@@ -420,7 +420,7 @@ FoldTick FoldDriver::cycleFailed(uint32_t nowMs, uint32_t nowEpoch) {
     if (hooks_.alert) hooks_.alert(c.chat, text);
     else if (hooks_.tell) hooks_.tell(c.chat, text);
   }
-  changed();
+  changed(c.chat);
   return FoldTick::CycleFailed;
 }
 
@@ -445,7 +445,7 @@ FoldDriver::Manual FoldDriver::requestManual(const std::string& chat) {
                (unsigned)(cycle_.idx + 1), (unsigned)cycle_.rungs.size());
     cycle_ = Cycle();
   }
-  changed();
+  changed(chat);
   return Manual::Queued;
 }
 
@@ -470,7 +470,7 @@ void FoldDriver::noteCleared(const std::string& chat) {
   if (catchUp_.chat == chat) catchUp_ = CatchUp();
   ramWaitMs_.erase(chat);
   thruDate_.erase(chat);
-  changed();
+  changed(chat);
 }
 
 FoldStatus FoldDriver::status(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch) const {

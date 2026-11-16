@@ -304,6 +304,15 @@ static void test_large4_head_folds_on_small_at_effort_none() {
   TEST_ASSERT_TRUE(harness_test::bodyHas(wire, 0, "\"reasoning_effort\":\"none\""));
   TEST_ASSERT_EQUAL_STRING("mistral-small-latest", rep.model.c_str());
   TEST_ASSERT_EQUAL_STRING("", providers::modelOverrideFor("mistral").c_str());   // released
+  // Bench B07 (16 Nov): the Mistral wire reads a 2xx with no text as an error line; that is
+  // an empty answer (degraded, paid), never a transport failure.
+  wire.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200,
+                              "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"\"}}],"
+                              "\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":0}}"});
+  TEST_ASSERT_TRUE(eng.runFoldRung("owner", "", "- user: hi\n", first, sum, &rep) == FoldResult::Failed);
+  TEST_ASSERT_TRUE(rep.fail == FoldFailKind::Empty);
+  TEST_ASSERT_TRUE(rep.degraded);
+  TEST_ASSERT_EQUAL_UINT32(1, rep.paidRequests);
 }
 
 // The quality gate: only digests of 8 KB or more are judged; the floor is min(800 B, 30%

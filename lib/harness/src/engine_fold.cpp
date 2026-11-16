@@ -50,7 +50,12 @@ std::string lowered(const std::string& s) {
   return o;
 }
 
+// A wire that reads its own fold answer (Mistral's plain completion) reports a 2xx with
+// no text as an error line: that is an empty answer, not a transport failure.
+bool emptyAnswerError(const std::string& err) { return err.find("came back with no text") != std::string::npos; }
+
 FoldFailKind failKindOf(const std::string& err) {
+  if (emptyAnswerError(err)) return FoldFailKind::Empty;
   switch (orch::classifyStepError(err)) {
     case orch::StepErr::Timeout: return FoldFailKind::Timeout;
     case orch::StepErr::Billing:
@@ -252,6 +257,7 @@ TurnEngine::FoldResult TurnEngine::runFoldOn(const std::string& chatId, const st
   if (!ok) {
     d_.hosts.noteFailed(host, err);
     rep.fail = failKindOf(err);
+    rep.degraded = rep.fail == FoldFailKind::Empty;   // a 2xx with nothing in it goes last next cycle
     rep.detail = orch::oneLineText(err, 160);
     rep.result = FoldResult::Failed;
     return FoldResult::Failed;
