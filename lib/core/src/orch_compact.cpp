@@ -113,8 +113,9 @@ const char* const ORCH_COMPACT_PROMPT =
     "3. Facts worth remembering long-term - names, dates, durable preferences.\n"
     "4. Owner intent & active threads - what the owner is trying to get done.\n"
     "5. Device & task state - what has been done, changed, or configured.\n"
-    "The COMPLETE summary must stay within about 3,500 bytes: keep each section "
-    "to its still-true essentials rather than padding it.\n"
+    "The COMPLETE summary must stay within about 3,500 bytes, or the [SUMMARY "
+    "BUDGET] when the input names one: keep each section to its still-true "
+    "essentials rather than padding it.\n"
     "Be dense and specific (names, numbers, exact wording where it matters). "
     "Do not invent or embellish; omit sections with nothing to say.";
 
@@ -134,9 +135,27 @@ std::string dayEssentials(const std::string& day) {
 }
 }  // namespace
 
+namespace {
+// "5,200": the figure the budget line names, with a thousands separator.
+std::string withComma(size_t v) {
+  std::string d = std::to_string(v);
+  for (int i = (int)d.size() - 3; i > 0; i -= 3) d.insert((size_t)i, ",");
+  return d;
+}
+// A head over the 4,096 B cap is told its budget, about 85% of the cap (3,500 of
+// 4,096 is the prompt's own figure), rounded down to a hundred.
+std::string withBudget(const std::string& in, size_t summaryCap) {
+  if (summaryCap <= kChatSummarySmall) return in;
+  const std::string line =
+      "[SUMMARY BUDGET] Keep the complete summary within about " + withComma(summaryCap * 85 / 100 / 100 * 100) +
+      " bytes.\n\n";
+  return line.size() + in.size() <= kJsonStrGuard ? line + in : in;
+}
+}  // namespace
+
 std::string buildCompactInputs(const std::string& prevSummary,
                                const std::string& digest,
-                               const std::string& day) {
+                               const std::string& day, size_t summaryCap) {
   std::string in;
   if (!prevSummary.empty()) {
     in += "[PREVIOUS SUMMARY]\n";
@@ -145,13 +164,14 @@ std::string buildCompactInputs(const std::string& prevSummary,
   }
   in += "[CONVERSATION SINCE]\n";
   in += digest.empty() ? "(no new messages)" : digest;
-  if (day.empty()) return in;
+  if (day.empty()) return withBudget(in, summaryCap);
   // The day closes the input, inside the one-string guard (wire_limits.h): whole,
   // else its short form, else not at all.
-  if (in.size() + 2 + day.size() <= kJsonStrGuard) return in + "\n\n" + day;
+  if (in.size() + 2 + day.size() <= kJsonStrGuard) return withBudget(in + "\n\n" + day, summaryCap);
   const std::string brief = dayEssentials(day);
-  if (!brief.empty() && in.size() + 2 + brief.size() <= kJsonStrGuard) return in + "\n\n" + brief;
-  return in;
+  if (!brief.empty() && in.size() + 2 + brief.size() <= kJsonStrGuard)
+    return withBudget(in + "\n\n" + brief, summaryCap);
+  return withBudget(in, summaryCap);
 }
 
 namespace {
@@ -160,16 +180,7 @@ namespace {
 struct SummarySection {
   std::string header;   // the full header line, with its newline ("" for a preamble)
   std::string body;
-  bool durable = false;
 };
-
-// The durable sections (by header title, whatever their number): dropping one
-// whole is what lost pending items and long-term facts to the old tail cut.
-bool sectionIsDurable(const std::string& header) {
-  for (const char* k : {"ecision", "ending item", "ong-term", "acts worth"})
-    if (header.find(k) != std::string::npos) return true;
-  return false;
-}
 
 std::vector<SummarySection> splitSections(const std::string& s) {
   std::vector<SummarySection> out;
@@ -182,7 +193,6 @@ std::vector<SummarySection> splitSections(const std::string& s) {
     if (line.size() > 3 && line[0] >= '0' && line[0] <= '9' && line[1] == '.' && line[2] == ' ') {
       SummarySection sec;
       sec.header = line;
-      sec.durable = sectionIsDurable(sec.header);
       out.push_back(std::move(sec));
     } else if (!out.empty()) {
       out.back().body += line;   // a section's body line
@@ -196,115 +206,87 @@ std::vector<SummarySection> splitSections(const std::string& s) {
   return out;
 }
 
-void joinSections(const std::vector<SummarySection>& secs, std::string& out) {
-  out.clear();
+std::string joinSections(const std::vector<SummarySection>& secs) {
+  std::string out;
   for (const SummarySection& sec : secs) {
     out += sec.header;
     out += sec.body;
   }
+  return out;
 }
 
-// Drop the last whole line of `body` (its trailing newline included). Returns
-// false when there is no line to drop (the body is already empty).
-bool dropLastLine(std::string& body) {
-  if (body.empty()) return false;
-  size_t end = body.size();   // one past the final newline
-  if (body[end - 1] == '\n') end--;
-  if (end == 0) {   // the whole body was one (empty) line
-    body.clear();
-    return true;
+// Take `take` bytes off the end of `body`: whole lines from the end; a body down to
+// its first line, longer than what is still to take, loses only that line's tail
+// (UTF-8-safe, its line end kept). Returns the bytes removed.
+size_t trimBodyBy(std::string& body, size_t take) {
+  const size_t before = body.size();
+  while (before - body.size() < take && !body.empty()) {
+    const size_t end = body.back() == '\n' ? body.size() - 1 : body.size();
+    const size_t nl = end == 0 ? std::string::npos : body.rfind('\n', end - 1);
+    const size_t start = nl == std::string::npos ? 0 : nl + 1;
+    const size_t need = take - (before - body.size());
+    if (start == 0 && body.size() > need) {
+      const int keep = nimbus::utf8CapLen(body.c_str(), (int)end, (int)(body.size() - need) - 1);
+      body.resize(keep > 0 ? (size_t)keep : 0);
+      if (!body.empty()) body += '\n';
+      break;
+    }
+    body.resize(start);
   }
-  const size_t nl = body.rfind('\n', end - 1);
-  body.resize(nl == std::string::npos ? 0 : nl + 1);
-  return true;
+  return before - body.size();
 }
-
-// The volatile sections, most volatile first (L19-27: device state is
-// re-learnable from the log; intent is re-stated by the owner; anything else -
-// a preamble, an unrecognized section - goes last).
-int volatileRank(const SummarySection& sec) {
-  if (sec.header.find("evice & task") != std::string::npos) return 0;
-  if (sec.header.find("wner intent") != std::string::npos) return 1;
-  return 2;
-}
-}  // namespace
 
 // The visible cut marker (one, flush against the last kept text).
 const char kSumEllipsis[] = "\xE2\x80\xA6";
+constexpr size_t kSumEllipsisLen = sizeof(kSumEllipsis) - 1;
 
-bool sectionsFit(const std::vector<SummarySection>& secs) {
-  std::string joined;
-  joinSections(secs, joined);
-  return joined.size() + sizeof(kSumEllipsis) - 1 <= kChatSummaryMax;
-}
-
-// 1. drop whole VOLATILE sections, the most volatile first, while over the cap.
-// The last section always stays (a headerless prose summary is one section:
-// the UTF-8-safe tail cut takes it). True when any section was dropped.
-bool dropVolatileSections(std::vector<SummarySection>& secs) {
-  bool dropped = false;
-  while (!sectionsFit(secs)) {
-    int worst = -1;
-    int worstRank = 3;
-    for (size_t i = 0; i < secs.size(); i++) {
-      if (secs[i].durable) continue;
-      const int rank = volatileRank(secs[i]);
-      if (rank < worstRank) { worstRank = rank; worst = (int)i; }
+// Proportional passes: the excess comes off every body in proportion to its size,
+// until the joined sections fit `limit` or no body is left.
+void trimProportionally(std::vector<SummarySection>& secs, size_t limit) {
+  for (int pass = 0; pass < 16; pass++) {
+    size_t total = 0, bodies = 0;
+    for (const SummarySection& sec : secs) {
+      total += sec.header.size() + sec.body.size();
+      bodies += sec.body.size();
     }
-    if (worst < 0 || secs.size() <= 1) break;   // nothing volatile left
-    secs.erase(secs.begin() + worst);
-    dropped = true;
+    if (total <= limit || bodies == 0) return;
+    const size_t excess = total - limit;
+    for (SummarySection& sec : secs) {
+      if (sec.body.empty()) continue;
+      const size_t share = (size_t)(((uint64_t)excess * sec.body.size() + bodies - 1) / bodies);
+      trimBodyBy(sec.body, share);
+    }
   }
-  return dropped;
 }
 
-// 2. trim the durable BODIES from the last durable section backwards, a whole
-//    line at a time; their headers always stay whole. True when any line went.
-bool trimDurableBodies(std::vector<SummarySection>& secs) {
-  bool trimmed = false;
-  while (!sectionsFit(secs)) {
-    int target = -1;
-    for (size_t i = secs.size(); i-- > 0;)
-      if (secs[i].durable && !secs[i].body.empty()) { target = (int)i; break; }
-    if (target < 0) break;   // only headers left: fall through to the tail cut
-    dropLastLine(secs[target].body);
-    trimmed = true;
-  }
-  return trimmed;
+bool endsWithMarker(const std::string& s) {
+  return s.size() >= kSumEllipsisLen && s.compare(s.size() - kSumEllipsisLen, kSumEllipsisLen, kSumEllipsis) == 0;
 }
+}  // namespace
 
-std::string capSummary(const std::string& s) {
-  if (s.size() <= kChatSummaryMax) return s;
+std::string capSummary(const std::string& s, size_t maxBytes) {
+  if (s.size() <= maxBytes) return s;
+  if (maxBytes <= kSumEllipsisLen) return std::string();
+  const size_t limit = maxBytes - kSumEllipsisLen;   // room before the one marker
   std::vector<SummarySection> secs = splitSections(s);
-  const bool trimmed = dropVolatileSections(secs) | trimDurableBodies(secs);
-  std::string joined;
-  joinSections(secs, joined);
-  if (joined.size() + sizeof(kSumEllipsis) - 1 <= kChatSummaryMax) {
-    if (!trimmed) return joined;
-    // The cut is visible, exactly one marker: it lands flush against the last
-    // kept text (its trailing line end is dropped first), so a re-cap of an
-    // already capped summary - the next anchored fold - finds it and never
-    // doubles it.
-    while (!joined.empty() && joined.back() == '\n') joined.pop_back();
-    if (joined.size() >= sizeof(kSumEllipsis) - 1 &&
-        joined.compare(joined.size() - (sizeof(kSumEllipsis) - 1), sizeof(kSumEllipsis) - 1,
-                       kSumEllipsis) == 0)
-      return joined;
-    joined += kSumEllipsis;
-    return joined;
-  }
-  // 3. the pathological case (the durable headers alone near the cap): one
-  //    UTF-8-safe tail cut. Never a torn sequence.
-  const int keep = nimbus::utf8CapLen(joined.c_str(), (int)joined.size(),
-                                      (int)kChatSummaryMax - (sizeof(kSumEllipsis) - 1));
-  joined.resize((size_t)keep);
-  joined += kSumEllipsis;
-  return joined;
+  trimProportionally(secs, limit);
+  std::string joined = joinSections(secs);
+  // The cut is visible, exactly one marker, flush against the last kept text (its
+  // trailing line ends dropped first), so a re-cap of a capped summary - the next
+  // anchored fold - finds it and never doubles it.
+  while (!joined.empty() && joined.back() == '\n') joined.pop_back();
+  if (joined.size() <= limit) return endsWithMarker(joined) ? joined : joined + kSumEllipsis;
+  // The headers alone are over the cap (no summary the prompt asks for): one
+  // UTF-8-safe tail cut. Never a torn sequence.
+  joined.resize((size_t)nimbus::utf8CapLen(joined.c_str(), (int)joined.size(), (int)limit));
+  return joined + kSumEllipsis;
 }
 
 // ---- FoldStore ---------------------------------------------------------------
 // Blob format, one record per chat, oldest first (load order = LRU order):
-//   chatId \x1F bytes \x1F msgs \x1F epoch \x1F turns \x1F fails \x1F paused \x1F summary \x1E
+//   chatId \x1F bytes \x1F msgs \x1F epoch[;thru] \x1F turns[;softStart]
+//          \x1F 0[;failedCycles;firstFail;nextTry] \x1F 0 \x1F summary \x1E
+// (fields 6 and 7 were v5.1.1's breaker failures and pause; lane F writes them 0)
 // The summary is LAST so its free text can never masquerade as a numeric field;
 // \x1E/\x1F are stripped from stored strings (the OrchMemory codec rule). A
 // malformed record is dropped, never fatal (tolerant load - the file is new
@@ -334,6 +316,14 @@ std::string cleanId(const std::string& v) {
     o += c;
   }
   return o;
+}
+// "0;2;1763200100;1763205600" -> {2, 1763200100, 1763205600}: the numbers after
+// the first ';' (none when there is no suffix).
+std::vector<uint32_t> numSuffixes(const std::string& field) {
+  std::vector<uint32_t> out;
+  for (size_t semi = field.find(';'); semi != std::string::npos; semi = field.find(';', semi + 1))
+    out.push_back(toU32(field.substr(semi + 1)));
+  return out;
 }
 // "1234;m0000a1f3" -> the id after ';' ("" when none).
 std::string idSuffix(const std::string& field) {
@@ -371,9 +361,12 @@ void FoldStore::begin(FoldStoreIO* io) {
     s.f.thru            = idSuffix(f[3]);
     s.f.turnsSinceFold  = toU32(f[4]);
     s.f.softStart       = idSuffix(f[4]);
-    s.f.breakerFails    = (uint8_t)toU32(f[5]);
-    s.f.breakerPaused   = toU32(f[6]) != 0;
-    s.f.thrashPaused    = toU32(f[6]) == 2;
+    // f[5] "<legacy fails>[;failedCycles;firstFail;nextTry]": a legacy failure count
+    // and the pause field (f[6]) are dropped - every pause lifts on load (ruling 2).
+    const std::vector<uint32_t> sched = numSuffixes(f[5]);
+    s.f.failedCycles    = sched.size() > 0 ? sched[0] : 0;
+    s.f.firstFail       = sched.size() > 1 ? sched[1] : 0;
+    s.f.nextTry         = sched.size() > 2 ? sched[2] : 0;
     s.f.summary         = capSummary(rec.substr(p));   // re-cap on load (defense)
     chats_.push_back(std::move(s));
   }
@@ -392,7 +385,7 @@ std::string FoldStore::serialize() const {
     // CONTINUE, not break: records are wildly uneven (a full 4 KB summary vs a
     // few dozen bytes for a chat that has only accumulated counters), so one
     // fat record must not discard every older slot that would still fit -
-    // including the breaker state that stops a chat thrash-folding forever.
+    // including the schedule that keeps a failing chat from retrying back to back.
     if (total + rec.size() > kFoldBlobMax) continue;
     total += rec.size();
     recs.push_back(std::move(rec));
@@ -412,8 +405,13 @@ std::string FoldStore::encodeSlot(const Slot& s) {
   if (!s.f.thru.empty()) out += ";" + cleanId(s.f.thru);
   out += '\x1F'; out += std::to_string(s.f.turnsSinceFold);
   if (!s.f.softStart.empty()) out += ";" + cleanId(s.f.softStart);
-  out += '\x1F'; out += std::to_string((unsigned)s.f.breakerFails);
-  out += '\x1F'; out += s.f.breakerPaused ? (s.f.thrashPaused ? "2" : "1") : "0";
+  // The failures and pause fields read 0 on an older image (it stops at ';'): a
+  // rollback starts neither failing nor paused, and this image reads its schedule.
+  out += '\x1F'; out += "0";
+  if (s.f.failedCycles || s.f.firstFail || s.f.nextTry)
+    out += ";" + std::to_string(s.f.failedCycles) + ";" + std::to_string(s.f.firstFail) + ";" +
+           std::to_string(s.f.nextTry);
+  out += '\x1F'; out += "0";
   out += '\x1F'; out += stripCtl(s.f.summary);
   out += '\x1E';
   return out;
@@ -498,6 +496,25 @@ void FoldStore::noteTurn(const std::string& chatId) {
   persist();
 }
 
+uint32_t foldBackoffS(uint32_t failedCycles) {
+  static const uint32_t kWaitS[] = {0, 15u * 60u, 3600u, 4u * 3600u, 12u * 3600u};
+  const uint32_t last = (uint32_t)(sizeof(kWaitS) / sizeof(kWaitS[0])) - 1;
+  return kWaitS[failedCycles < last ? failedCycles : last];
+}
+
+size_t foldDigestAfterFailures(size_t stepBytes, uint32_t failedCycles) {
+  if (stepBytes <= kFoldDigestFloor) return stepBytes;
+  size_t v = stepBytes;
+  for (uint32_t i = 0; i < failedCycles && v > kFoldDigestFloor; i++) v /= 2;
+  return v < kFoldDigestFloor ? kFoldDigestFloor : v;
+}
+
+uint32_t foldLocalDay(uint32_t epoch, int32_t utcOffsetMin) {
+  if (epoch == 0) return 0;
+  const int64_t local = (int64_t)epoch + (int64_t)utcOffsetMin * 60;
+  return local <= 0 ? 0 : (uint32_t)(local / 86400);
+}
+
 namespace {
 // The counters every fold restarts: over them again soon after a fold means the
 // fold is not shrinking this chat.
@@ -508,46 +525,34 @@ bool refilled(const ChatFold& f, uint32_t bytesThreshold, uint32_t msgsThreshold
 bool hidesRows(const ChatFold& f) {
   return !f.softStart.empty() && (f.thru.empty() || rowIdAfter(f.softStart, f.thru));
 }
-// A pause an older image set (paused=1) with no failure behind it is a thrash pause
-// under the old guard; one whose chat is due on hidden rows is what v4.6.0 set on
-// Lumi's first histV2 catch-up, which the guard no longer pauses on: lifted, but
-// only past the thrash window (inside it the lift would re-pause at once and send a
-// second notice). A v4.6.1 thrash pause (a real refill) and a failure pause stay.
-bool liftsLegacyPause(const ChatFold& f, bool hidden) {
-  return f.breakerFails == 0 && !f.thrashPaused && hidden && f.turnsSinceFold > kThrashTurns;
-}
 }  // namespace
 
 FoldDue FoldStore::evaluateDue(const std::string& chatId, uint32_t bytesThreshold,
-                               uint32_t msgsThreshold) {
+                               uint32_t msgsThreshold, uint32_t nowEpoch, bool* thrash) {
+  if (thrash) *thrash = false;
   if (bytesThreshold == 0) return FoldDue::No;   // auto-fold disabled
   Slot* s = find(stripCtl(chatId));
   if (!s) return FoldDue::No;
   const bool refill = refilled(s->f, bytesThreshold, msgsThreshold);
-  const bool hidden = hidesRows(s->f);
-  if (s->f.breakerPaused) {
-    if (!liftsLegacyPause(s->f, hidden)) return FoldDue::No;
-    s->f.breakerPaused = false;
-    persist();
-  }
-  if (!refill && !hidden) return FoldDue::No;
+  if (!refill && !hidesRows(s->f)) return FoldDue::No;
+  if (nowEpoch != 0 && s->f.nextTry != 0 && nowEpoch < s->f.nextTry) return FoldDue::No;   // its wait
   // Thrash guard: over the restarted counters again within kThrashTurns of a
-  // COMPLETED fold means the fold isn't shrinking this chat - pause (alert
-  // edge) instead of burning summarization calls in a loop. Hidden rows alone
-  // are not that: a fold digests them oldest first, at most its digest cap at
-  // a time, and moves the anchor forward each time (an empty slice gives the
-  // rest up), so a backlog larger than one fold is folded again, never paused.
+  // COMPLETED fold. It folds once now and the next try waits kFoldThrashRetryS, so
+  // a fold that does not shrink the chat costs one request per 15 minutes at most
+  // (inside the daily cap), never a loop, never a pause. Hidden rows alone are not
+  // that: a backlog larger than one fold is folded again, oldest first.
   if (refill && s->f.lastFoldEpoch != 0 && s->f.turnsSinceFold <= kThrashTurns) {
-    s->f.breakerPaused = true;
-    s->f.thrashPaused = true;   // a real refill: persisted, never lifted
-    persist();
-    return FoldDue::ThrashPaused;
+    if (thrash) *thrash = true;
+    if (nowEpoch != 0) {
+      s->f.nextTry = nowEpoch + kFoldThrashRetryS;
+      persist();
+    }
   }
   return FoldDue::Yes;
 }
 
 void FoldStore::applyFold(const std::string& chatId, const std::string& summary,
-                          uint32_t epoch, const std::string& thru) {
+                          uint32_t epoch, const std::string& thru, size_t summaryCap) {
   Slot& s = upsert(chatId);
   const std::string id = cleanId(thru);
   if (summary.empty()) {   // a /clear: the history restarts at its boundary row
@@ -561,26 +566,124 @@ void FoldStore::applyFold(const std::string& chatId, const std::string& summary,
   // leaves no row hidden behind a shift: `hidden` stays a histV2-only trigger, so
   // it can never re-fire on a fold that cannot move the anchor.
   if (id.empty()) s.f.softStart.clear();
-  s.f.summary        = capSummary(summary);
+  s.f.summary        = capSummary(summary, summaryCap);
   s.f.bytesSinceFold = 0;
   s.f.msgsSinceFold  = 0;
   s.f.turnsSinceFold = 0;
   s.f.lastFoldEpoch  = epoch;
-  s.f.breakerFails   = 0;
-  s.f.breakerPaused  = false;
-  s.f.thrashPaused   = false;
+  if (s.f.failedCycles) s.f.nextTry = 0;   // a backoff wait ends; a thrash wait stays
+  s.f.failedCycles   = 0;
+  s.f.firstFail      = 0;
   persist();
 }
 
-bool FoldStore::noteFoldFailed(const std::string& chatId) {
+uint32_t FoldStore::noteCycleFailed(const std::string& chatId, uint32_t nowEpoch) {
   Slot& s = upsert(chatId);
-  bool edge = false;
-  if (!s.f.breakerPaused && ++s.f.breakerFails >= 3) {
-    s.f.breakerPaused = true;
-    edge = true;
+  if (s.f.failedCycles < 0xFFFFu) s.f.failedCycles++;
+  s.f.nextTry = 0;   // no clock: the caller's RAM wait
+  if (nowEpoch != 0) {
+    if (s.f.firstFail == 0) s.f.firstFail = nowEpoch;
+    s.f.nextTry = nowEpoch + foldBackoffS(s.f.failedCycles);
   }
   persist();
-  return edge;
+  return s.f.nextTry;
+}
+
+void FoldStore::resetWaits() {
+  for (Slot& s : chats_) {
+    s.f.nextTry = 0;
+    s.f.failedCycles = 0;
+  }
+  persist();
+}
+
+std::vector<std::string> FoldStore::chatIds() const {
+  std::vector<std::string> out;
+  out.reserve(chats_.size());
+  for (const Slot& s : chats_) out.push_back(s.chatId);
+  return out;
+}
+
+// ---- FoldCtl: /data/fold_ctl.txt ------------------------------------------------
+namespace {
+// A chat id the control file keeps: a Telegram id, a pseudo channel or a hosted
+// chat name. Anything else (a separator, a line end) is refused, never rewritten.
+bool ctlIdOk(const std::string& id) {
+  if (id.empty() || id.size() > 63) return false;
+  for (char c : id) {
+    const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' ||
+                    c == '_' || c == ':' || c == '.' || c == '@';
+    if (!ok) return false;
+  }
+  return true;
+}
+// A firmware id: printable ASCII up to the first blank, at most 32 bytes.
+std::string ctlText(const std::string& v) {
+  std::string o;
+  for (char c : v) {
+    if (c <= ' ' || c > '~' || o.size() >= 32) break;
+    o += c;
+  }
+  return o;
+}
+}  // namespace
+
+void FoldCtl::notePaid(uint32_t day, uint32_t n) {
+  if (paidDay != day) {
+    paidDay = day;
+    paidCount = 0;
+  }
+  paidCount += n;
+}
+
+bool FoldCtl::queueManual(const std::string& chatId) {
+  if (!ctlIdOk(chatId)) return false;
+  for (const std::string& c : manualPendingChat)
+    if (c == chatId) return true;
+  if (manualPendingChat.size() >= kFoldManualQueueMax) return false;
+  manualPendingChat.push_back(chatId);
+  return true;
+}
+
+void FoldCtl::dropManual(const std::string& chatId) {
+  for (size_t i = 0; i < manualPendingChat.size(); i++)
+    if (manualPendingChat[i] == chatId) {
+      manualPendingChat.erase(manualPendingChat.begin() + (long)i);
+      return;
+    }
+}
+
+std::string FoldCtl::encode() const {
+  std::string q;
+  for (const std::string& c : manualPendingChat) q += (q.empty() ? "" : ",") + c;
+  return "paidDay=" + std::to_string(paidDay) + "\npaidCount=" + std::to_string(paidCount) +
+         "\nlastAlertDay=" + std::to_string(lastAlertDay) + "\nmanualPendingChat=" + q +
+         "\nfwAtLastFail=" + ctlText(fwAtLastFail) + "\n";
+}
+
+FoldCtl FoldCtl::decode(const std::string& text) {
+  FoldCtl c;
+  size_t p = 0;
+  while (p < text.size()) {
+    const size_t nl = text.find('\n', p);
+    const std::string line = text.substr(p, (nl == std::string::npos ? text.size() : nl) - p);
+    p = nl == std::string::npos ? text.size() : nl + 1;
+    const size_t eq = line.find('=');
+    if (eq == std::string::npos) continue;
+    const std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+    if (k == "paidDay") c.paidDay = toU32(v);
+    else if (k == "paidCount") c.paidCount = toU32(v);
+    else if (k == "lastAlertDay") c.lastAlertDay = toU32(v);
+    else if (k == "fwAtLastFail") c.fwAtLastFail = ctlText(v);
+    else if (k == "manualPendingChat")
+      for (size_t a = 0; a <= v.size();) {
+        const size_t comma = v.find(',', a);
+        c.queueManual(v.substr(a, (comma == std::string::npos ? v.size() : comma) - a));
+        if (comma == std::string::npos) break;
+        a = comma + 1;
+      }
+  }
+  return c;
 }
 
 void FoldStore::markOverflow(const std::string& chatId) {
@@ -593,15 +696,6 @@ void FoldStore::noteHistoryTrimmed(const std::string& chatId) {
   const ChatFold f = get(chatId);
   if (f.lastFoldEpoch != 0 && f.turnsSinceFold <= kThrashTurns) return;
   markOverflow(chatId);
-}
-
-void FoldStore::resume(const std::string& chatId) {
-  Slot* s = find(stripCtl(chatId));
-  if (!s) return;
-  s->f.breakerPaused = false;
-  s->f.thrashPaused  = false;
-  s->f.breakerFails  = 0;
-  persist();
 }
 
 }  // namespace orch

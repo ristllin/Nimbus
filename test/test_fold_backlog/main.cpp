@@ -7,7 +7,7 @@
 
 #include "nimbus/harness/conversation.h"   // historyTurns / fitHistory / foldSlice - the histV2 pieces
 #include "nimbus/orch/budget.h"            // deriveBudget - the device's history and fold budgets
-#include "nimbus/orch/compact.h"           // FoldStore - the fold trigger and its thrash guard
+#include "nimbus/orch/compact.h"           // FoldStore - the fold trigger, its thrash wait and backoff
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/wire_limits.h"       // foldDigestCap
 
@@ -16,7 +16,9 @@
 // paused - it kept refilling immediately". This suite replays that sequence with the
 // device's own history and fold code (the same budgets, read limits and anchors the
 // engine and compactTick use) and pins the class: a backlog larger than one fold is
-// folded again, and only a real refill pauses.
+// folded again, and nothing pauses. Lane F of the history fix (16 Nov 2026, owner
+// ruling 2): a real refill only schedules the next try 15 min out, a failed cycle
+// schedules a retry by the backoff, and every legacy pause lifts on load.
 
 using namespace nimbus::orch;
 
@@ -119,8 +121,9 @@ struct Device {
     folds.noteTurn(kChat);
   }
   FoldDue pump() {
-    const FoldDue due = folds.evaluateDue(kChat, kCompactBytes, kFoldMsgsThreshold);
-    if (due == FoldDue::ThrashPaused) thrash++;
+    bool th = false;
+    const FoldDue due = folds.evaluateDue(kChat, kCompactBytes, kFoldMsgsThreshold, epoch += 60, &th);
+    if (th) thrash++;
     if (due != FoldDue::Yes) return due;
     const ChatFold f = folds.get(kChat);
     agent::HistoryOptions o;
@@ -156,8 +159,9 @@ void seedLumi(Device& d, int exchanges = 360, size_t replyBase = 300, size_t rep
 
 }  // namespace
 
-// The replay. Before the fix the pump after the first owner turn returned
-// ThrashPaused (the owner notice) although the fold had just completed fine.
+// The replay. Before the v4.6.1 fix the pump after the first owner turn returned
+// ThrashPaused (the owner notice) although the fold had just completed fine. Since
+// lane F a thrash is only a 15 min wait; this backlog raises none at all.
 static void test_lumi_first_histv2_hour_raises_no_thrash() {
   Device d;
   seedLumi(d);
@@ -184,7 +188,7 @@ static void test_lumi_first_histv2_hour_raises_no_thrash() {
   }
   TEST_ASSERT_EQUAL_INT(0, d.thrash);
   TEST_ASSERT_FALSE(d.hidden());
-  TEST_ASSERT_FALSE(d.folds.get(kChat).breakerPaused);
+  TEST_ASSERT_EQUAL_UINT32(0, d.folds.get(kChat).nextTry);
   // Bounded work: the catch-up (the slice read is 400 rows, so at most a few capped
   // folds) plus one fold per later history shift, never a fold per pump pass.
   printf("replay: folds=%d skips=%d shifts=%d cap=%u\n", d.folds_run, d.skips, d.shifts, (unsigned)d.sliceCap);
@@ -212,7 +216,7 @@ static void test_short_rows_shift_raises_no_thrash() {
   }
   TEST_ASSERT_EQUAL_INT(0, d.thrash);
   TEST_ASSERT_FALSE(d.hidden());
-  TEST_ASSERT_FALSE(d.folds.get(kChat).breakerPaused);
+  TEST_ASSERT_EQUAL_UINT32(0, d.folds.get(kChat).nextTry);
 }
 
 // The same chat with no backlog: a fold, then ordinary turns, never an alarm and
@@ -232,59 +236,71 @@ static void test_fold_then_normal_turns_no_notice() {
 }
 
 // A turn that left out history to fit asks for a fold. Soon after a fold that is not a refill:
-// no pause, no false "grew too long" alert, however many large turns come in a row.
+// no thrash wait, no alert, however many large turns come in a row.
 static void test_trimmed_turns_never_trip_the_thrash_guard() {
   FakeIO io;
   FoldStore fs;
   fs.begin(&io);
+  uint32_t now = 1793026543;
   fs.noteTurn("c");
   fs.noteHistoryTrimmed("c");   // no fold yet: it is due
-  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
-  fs.applyFold("c", "summary", 1000, "m00000010");
-  int paused = 0, dues = 0;
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold, now));
+  fs.applyFold("c", "summary", now, "m00000010");
+  int thrash = 0, dues = 0;
   for (int turn = 0; turn < 40; turn++) {
+    now += 60;
     fs.noteTurn("c");
     fs.noteHistoryTrimmed("c");
-    const FoldDue due = fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold);
-    if (due == FoldDue::ThrashPaused) paused++;
+    bool th = false;
+    const FoldDue due = fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold, now, &th);
+    thrash += th ? 1 : 0;
     if (due == FoldDue::Yes) {
       dues++;
-      fs.applyFold("c", "summary", 1000 + (uint32_t)turn, "m" + std::to_string(10000000 + turn));
+      fs.applyFold("c", "summary", now, "m" + std::to_string(10000000 + turn));
     }
   }
-  TEST_ASSERT_EQUAL_INT(0, paused);
-  TEST_ASSERT_FALSE(fs.get("c").breakerPaused);
+  TEST_ASSERT_EQUAL_INT(0, thrash);
   TEST_ASSERT_TRUE_MESSAGE(dues > 0, "a chat that keeps losing history is still folded");
   TEST_ASSERT_TRUE_MESSAGE(dues <= 40 / ((int)kThrashTurns + 1), "at most one paid fold per thrash window");
 }
 
-// Counter-test (the dimension the guard no longer reads): a real refill - the
-// restarted counters over the threshold again right after a fold - still pauses,
-// exactly once, and stays paused.
-static void test_real_refill_still_pauses_once() {
+// Counter-test (the dimension the guard no longer pauses on): a real refill - the
+// restarted counters over the threshold again right after a fold - folds once and
+// waits 15 minutes for the next try, however often it is asked; never a pause.
+static void test_real_refill_only_schedules() {
   FakeIO io;
   FoldStore fs;
   fs.begin(&io);
+  const uint32_t t0 = 1793026543;
   fs.noteMessage("c", 60000);
   fs.noteTurn("c");
-  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
-  fs.applyFold("c", "sum", 1000, "m00000010");
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold, t0));
+  fs.applyFold("c", "sum", t0, "m00000010");
   fs.noteMessage("c", 60000);   // one huge turn refills it at once
   fs.noteTurn("c");
-  fs.setSoftStart("c", "m00000040");   // hidden rows on top do not excuse a refill
-  int paused = 0;
-  for (int i = 0; i < 20; i++)
-    if (fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold) == FoldDue::ThrashPaused) paused++;
-  TEST_ASSERT_EQUAL_INT(1, paused);
-  TEST_ASSERT_TRUE(fs.get("c").breakerPaused);
+  fs.setSoftStart("c", "m00000040");   // hidden rows on top do not skip the wait
+  int dues = 0, thrash = 0;
+  for (int i = 0; i < 20; i++) {
+    bool th = false;
+    dues += fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold, t0 + 10 + (uint32_t)i, &th) == FoldDue::Yes;
+    thrash += th ? 1 : 0;
+  }
+  TEST_ASSERT_EQUAL_INT(1, dues);
+  TEST_ASSERT_EQUAL_INT(1, thrash);
+  TEST_ASSERT_EQUAL_UINT32(t0 + 10 + kFoldThrashRetryS, fs.get("c").nextTry);
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes,
+                        (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold, t0 + 10 + kFoldThrashRetryS));
   // The message-count trigger is a refill too.
   FoldStore fm;
   FakeIO io2;
   fm.begin(&io2);
-  fm.applyFold("m", "sum", 1000, "m00000010");
+  fm.applyFold("m", "sum", t0, "m00000010");
   for (uint32_t i = 0; i < kFoldMsgsThreshold; i++) fm.noteMessage("m", 10);
   fm.noteTurn("m");
-  TEST_ASSERT_EQUAL_INT((int)FoldDue::ThrashPaused, (int)fm.evaluateDue("m", kCompactBytes, kFoldMsgsThreshold));
+  bool th = false;
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fm.evaluateDue("m", kCompactBytes, kFoldMsgsThreshold, t0 + 5, &th));
+  TEST_ASSERT_TRUE(th);
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::No, (int)fm.evaluateDue("m", kCompactBytes, kFoldMsgsThreshold, t0 + 6));
 }
 
 // One slot as v4.6.0 wrote it (the blob format is unchanged): chatId, bytes, msgs,
@@ -295,50 +311,50 @@ std::string legacySlot(const std::string& chat, uint32_t bytes, uint32_t turns, 
          ";m00000040\x1F" "0\x1F" + paused + "\x1F" "sum\x1E";
 }
 
-// The pause v4.6.0 left on Lumi (paused=1, no failures, hidden rows due): lifted at the
-// first evaluation after the update, with the counters under the threshold and over it.
-static void test_legacy_false_pause_heals() {
-  for (uint32_t bytes : {500u, 60000u}) {
-    FakeIO io;
-    io.blob = legacySlot("c", bytes, 12, "1");
-    FoldStore fs;
-    fs.begin(&io);
-    TEST_ASSERT_TRUE(fs.get("c").breakerPaused);
-    TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
-    TEST_ASSERT_FALSE(fs.get("c").breakerPaused);
-    FakeIO io2;   // the lift was persisted
-    io2.blob = io.blob;
-    FoldStore reread;
-    reread.begin(&io2);
-    TEST_ASSERT_FALSE(reread.get("c").breakerPaused);
+// Every pause an older image left (v4.6.0 paused=1, v4.6.1+ paused=2) lifts at the
+// first evaluation after the update, with the counters under the threshold and over
+// it, and the next write stores it unpaused.
+static void test_legacy_pauses_heal_on_load() {
+  for (const char* paused : {"1", "2"}) {
+    for (uint32_t bytes : {500u, 60000u}) {
+      FakeIO io;
+      io.blob = legacySlot("c", bytes, 12, paused);
+      FoldStore fs;
+      fs.begin(&io);
+      TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes,
+                            (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold, 1793026543));
+      fs.noteTurn("c");   // the next write
+      TEST_ASSERT_TRUE(io.blob.find("\x1F" "0\x1F" "0\x1F" "sum") != std::string::npos);
+    }
   }
 }
 
-// ...but not within kThrashTurns of its fold: lifting it there would re-pause it in the
-// same evaluation and send a second notice right after the update.
-static void test_legacy_pause_not_lifted_within_thrash_turns() {
+// ...and within kThrashTurns of its fold a refilled legacy pause is a thrash: it folds
+// once and waits 15 min, with no notice and no pause.
+static void test_legacy_pause_within_thrash_turns_only_waits() {
   FakeIO io;
   io.blob = legacySlot("c", 60000, kThrashTurns, "1");
   FoldStore fs;
   fs.begin(&io);
-  int pauses = 0;
-  for (int i = 0; i < 5; i++) pauses += fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold) == FoldDue::ThrashPaused;
-  TEST_ASSERT_EQUAL_INT(0, pauses);
-  TEST_ASSERT_TRUE(fs.get("c").breakerPaused);
-  fs.noteTurn("c");   // past the thrash window: re-checked now
-  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
+  const uint32_t t0 = 1793026543;
+  int dues = 0;
+  for (int i = 0; i < 5; i++) dues += fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold, t0) == FoldDue::Yes;
+  TEST_ASSERT_EQUAL_INT(1, dues);
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes,
+                        (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold, t0 + kFoldThrashRetryS));
 }
 
-// A pause v4.6.1 sets on a real refill is never lifted - not by hidden rows, not by a
-// restart (it is persisted as a v4.6.1 pause). A failure pause stays as well.
-static void test_v461_pause_survives_reboot() {
+// A thrash wait survives a reboot and ends on time; a failed cycle schedules a retry
+// by the backoff (this replaced v5.1.1's failure pause, which never lifted).
+static void test_waits_survive_reboot_and_a_failure_schedules_a_retry() {
   FakeIO io;
   FoldStore fs;
   fs.begin(&io);
-  fs.applyFold("c", "sum", 1000, "m00000010");
+  const uint32_t t0 = 1793026543;
+  fs.applyFold("c", "sum", t0, "m00000010");
   fs.noteMessage("c", 60000);
   fs.noteTurn("c");
-  TEST_ASSERT_EQUAL_INT((int)FoldDue::ThrashPaused, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold, t0 + 1));
   fs.setSoftStart("c", "m00000040");
   for (int i = 0; i < 6; i++) fs.noteTurn("c");
   for (int boot = 0; boot < 3; boot++) {
@@ -346,24 +362,22 @@ static void test_v461_pause_survives_reboot() {
     next.blob = io.blob;
     FoldStore after;
     after.begin(&next);
-    int dues = 0;
-    for (int i = 0; i < 5; i++) dues += after.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold) != FoldDue::No;
-    TEST_ASSERT_EQUAL_INT(0, dues);
-    TEST_ASSERT_TRUE(after.get("c").breakerPaused);
+    TEST_ASSERT_EQUAL_INT((int)FoldDue::No, (int)after.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold, t0 + 2));
+    TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes,
+                          (int)after.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold, t0 + 1 + kFoldThrashRetryS));
     io.blob = next.blob;
   }
-  // /compact (resume) still clears it.
-  fs.resume("c");
-  TEST_ASSERT_FALSE(fs.get("c").breakerPaused);
-  // A failure pause stays.
+  // A failure schedules a retry: three failed cycles wait 15 min, 1 h, then 4 h.
   FakeIO io4;
   FoldStore failed;
   failed.begin(&io4);
   failed.setSoftStart("f", "m00000040");
-  for (int i = 0; i < 3; i++) failed.noteFoldFailed("f");
+  uint32_t now = t0;
+  for (int i = 0; i < 3; i++) now = failed.noteCycleFailed("f", now);
+  TEST_ASSERT_EQUAL_UINT32(t0 + 15 * 60 + 3600 + 4 * 3600, now);
   for (int i = 0; i < 4; i++) failed.noteTurn("f");
-  TEST_ASSERT_EQUAL_INT((int)FoldDue::No, (int)failed.evaluateDue("f", kCompactBytes, kFoldMsgsThreshold));
-  TEST_ASSERT_TRUE(failed.get("f").breakerPaused);
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::No, (int)failed.evaluateDue("f", kCompactBytes, kFoldMsgsThreshold, now - 1));
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)failed.evaluateDue("f", kCompactBytes, kFoldMsgsThreshold, now));
 }
 
 // A fold with no anchor (the pre-histV2 path) leaves no hidden rows behind, so the
@@ -374,13 +388,13 @@ static void test_anchorless_fold_clears_the_shift() {
   FoldStore fs;
   fs.begin(&io);
   fs.setSoftStart("c", "m00000040");
-  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold));
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold, 1000));
   fs.applyFold("c", "a summary of the whole live conversation", 1000);
   TEST_ASSERT_EQUAL_STRING("", fs.get("c").softStart.c_str());
   int dues = 0;
   for (int i = 0; i < 10; i++) {
     fs.noteTurn("c");
-    dues += fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold) != FoldDue::No;
+    dues += fs.evaluateDue("c", kCompactBytes, kFoldMsgsThreshold, 1000 + (uint32_t)i) != FoldDue::No;
   }
   TEST_ASSERT_EQUAL_INT(0, dues);
 }
@@ -390,10 +404,10 @@ int main(int, char**) {
   RUN_TEST(test_lumi_first_histv2_hour_raises_no_thrash);
   RUN_TEST(test_short_rows_shift_raises_no_thrash);
   RUN_TEST(test_fold_then_normal_turns_no_notice);
-  RUN_TEST(test_real_refill_still_pauses_once);
-  RUN_TEST(test_legacy_false_pause_heals);
-  RUN_TEST(test_legacy_pause_not_lifted_within_thrash_turns);
-  RUN_TEST(test_v461_pause_survives_reboot);
+  RUN_TEST(test_real_refill_only_schedules);
+  RUN_TEST(test_legacy_pauses_heal_on_load);
+  RUN_TEST(test_legacy_pause_within_thrash_turns_only_waits);
+  RUN_TEST(test_waits_survive_reboot_and_a_failure_schedules_a_retry);
   RUN_TEST(test_anchorless_fold_clears_the_shift);
   RUN_TEST(test_trimmed_turns_never_trip_the_thrash_guard);
   return UNITY_END();

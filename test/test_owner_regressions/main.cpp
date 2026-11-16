@@ -334,16 +334,23 @@ void test_oir_23_cut_retry_note() {
   TEST_ASSERT_FALSE(note.empty());
 }
 
-// OIR-24: repeated fold failures pause the thrash (FoldDue::ThrashPaused), so a
-// 400 loop cannot re-send the identical request forever.
+// OIR-24: a fold that does not shrink the chat cannot re-send the identical request in
+// a loop. Since lane F (ruling 2: never a permanent pause) the refill right after a
+// completed fold is due once and schedules its next try 15 min out; a second
+// evaluateDue before then is No, and it is due again at that time, never paused.
 void test_oir_24_compact_thrash_pause() {
   FoldIO io;
   FoldStore st;
   st.begin(&io);
+  const uint32_t t0 = 1700000000;
   for (int i = 0; i < 5; i++) st.noteMessage("c1", 2000);   // over the 1000-byte threshold
-  st.applyFold("c1", "summary", 1700000000);                 // a completed fold
+  st.applyFold("c1", "summary", t0);                         // a completed fold
   st.noteMessage("c1", 2000);                                // refills within kThrashTurns
-  TEST_ASSERT_EQUAL(int(FoldDue::ThrashPaused), int(st.evaluateDue("c1", 1000, 200)));
+  TEST_ASSERT_EQUAL(int(FoldDue::Yes), int(st.evaluateDue("c1", 1000, 200, t0 + 30)));
+  TEST_ASSERT_EQUAL_UINT32(t0 + 30 + 15 * 60, st.get("c1").nextTry);
+  TEST_ASSERT_EQUAL(int(FoldDue::No), int(st.evaluateDue("c1", 1000, 200, t0 + 31)));
+  TEST_ASSERT_EQUAL(int(FoldDue::No), int(st.evaluateDue("c1", 1000, 200, t0 + 29 + 15 * 60)));
+  TEST_ASSERT_EQUAL(int(FoldDue::Yes), int(st.evaluateDue("c1", 1000, 200, t0 + 30 + 15 * 60)));
 }
 
 // OIR-25/OIR-33: the body-budget error round-trips (85,000 B budget, 90,519 B body).

@@ -12,7 +12,8 @@
 // compaction is: summarize the chat FROM THE EPISODIC STORE into an anchored
 // per-chat summary, then RESET the provider chain; the existing per-chat
 // RECENT CONVERSATION window supplies the verbatim tail. This module owns every
-// decision that can be host-tested: the breaker and the fold-prompt assembly; the
+// decision that can be host-tested: the fold's schedule (backoff, the daily cap's
+// record, never a pause) and the fold-prompt assembly; the
 // per-model context table and the trigger threshold math live in model_window.h,
 // which this header includes. Device/engine glue (episodic slice, provider call,
 // chain reset, UX) stays out.
@@ -46,28 +47,54 @@ size_t overflowTrimBytes(const std::string& err, size_t totalBytes);
 // ---- the device-wide fold state's storage -------------------------------------
 // The fold keeps a little device-wide state beside each chat's own (the paid fold
 // count of the day, the last alert, a pending manual request): one small text file,
-// /fold_ctl.txt on the device and a sibling file on the VN. Declared by lane P0 of the
-// history fix so lane F adds the file without touching this header's consumers; the
-// default reads nothing and stores nothing.
+// /data/fold_ctl.txt on the device and a sibling file on the VN. The default reads
+// nothing and stores nothing.
 struct FoldCtlIO {
   std::function<std::string()> load = [] { return std::string(); };
   std::function<bool(const std::string& text)> save = [](const std::string&) { return true; };
 };
 
-// ---- circuit breaker ---------------------------------------------------------
-// 3 consecutive compaction failures pause AUTO compaction (manual stays allowed)
-// until a success or an explicit reset; the device alerts the owner ONCE on the
-// pause edge (loop-breaker pattern).
-struct CompactBreaker {
-  uint8_t fails  = 0;
-  bool    paused = false;
-  // Returns true exactly when this failure newly paused the breaker (alert edge).
-  bool noteResult(bool ok) {
-    if (ok) { fails = 0; paused = false; return false; }
-    if (paused) return false;
-    if (++fails >= 3) { paused = true; return true; }
-    return false;
-  }
+// ---- the fold's schedule (owner ruling 2, 15 Nov 2026: never a permanent pause) ----
+// A failed fold cycle waits 15 min, then 1 h, then 4 h, then every 12 h; nothing ever
+// pauses the summary for good (v5.1.1 paused it after three failures, and on Lumi the
+// pause held for 13 days). A refill right after a completed fold (the thrash case)
+// only schedules the next try 15 min out.
+constexpr uint32_t kFoldThrashRetryS = 15u * 60u;
+// The wait after the n-th failed cycle in a row (n >= 1; 0 = no wait).
+uint32_t foldBackoffS(uint32_t failedCycles);
+// At most this many paid fold requests a local day on the whole device (automatic
+// cycles; a manual Summarize now or /compact is exempt but still counted).
+constexpr uint32_t kFoldPaidPerDay = 12;
+// The owner hears about a failing summary once a local day, and only after it has
+// been failing this long.
+constexpr uint32_t kFoldAlertAfterS = 24u * 3600u;
+// The digest a cycle takes halves after each failed cycle, never below this.
+constexpr size_t kFoldDigestFloor = 8u * 1024u;
+size_t foldDigestAfterFailures(size_t stepBytes, uint32_t failedCycles);
+// The owner's local day number of `epoch` (0 = the clock is not set: every count
+// then sits under day 0).
+uint32_t foldLocalDay(uint32_t epoch, int32_t utcOffsetMin);
+
+// The device-wide record /data/fold_ctl.txt holds (lane F of the history fix). A text
+// file of "key=value" lines; a line it does not know is ignored, a missing file is a
+// fresh device (no paid calls, no alert, nothing queued).
+constexpr size_t kFoldManualQueueMax = 4;
+struct FoldCtl {
+  uint32_t paidDay = 0;        // the local day paidCount counts (0 = clock unset)
+  uint32_t paidCount = 0;      // paid fold requests on paidDay, every chat together
+  uint32_t lastAlertDay = 0;   // the local day the owner was last told (0 = never)
+  // Manual requests not started yet, oldest first (a chat appears once): a request
+  // survives a reboot and its chat's slot being evicted from the fold blob.
+  std::vector<std::string> manualPendingChat;
+  std::string fwAtLastFail;    // the firmware that last failed a cycle ("" = none)
+
+  uint32_t paidOn(uint32_t day) const { return paidDay == day ? paidCount : 0; }
+  void notePaid(uint32_t day, uint32_t n);
+  // Queue a manual request (a chat already queued keeps its place). False when full.
+  bool queueManual(const std::string& chatId);
+  void dropManual(const std::string& chatId);
+  std::string encode() const;
+  static FoldCtl decode(const std::string& text);
 };
 
 // ---- the fold prompt ---------------------------------------------------------
@@ -87,21 +114,33 @@ extern const char* const ORCH_PARK_RECHECK_PROMPT;
 // and the food ledger's view) closes the input so the summary dates its facts and
 // carries today's ledger totals. It is added only while the whole input stays
 // under kJsonStrGuard: whole, else its [TODAY] and totals lines, else not at all.
+// `summaryCap` (lane F): a head that keeps a summary over 4,096 B is told its
+// budget in a [SUMMARY BUDGET] line ahead of the rest, while the input stays under
+// the guard; 0 or 4,096 adds nothing (the prompt's own "about 3,500 bytes" holds).
 std::string buildCompactInputs(const std::string& prevSummary,
                                const std::string& digest,
-                               const std::string& day = std::string());
+                               const std::string& day = std::string(),
+                               size_t summaryCap = 0);
 
-// Cap a produced summary to kChatSummaryMax bytes, UTF-8-safe (the fold output
-// is re-injected into every future prompt - a torn sequence would 400 them all).
-constexpr size_t kChatSummaryMax = 4096;
+// Cap a produced summary, UTF-8-safe (the fold output is re-injected into every
+// future prompt - a torn sequence would 400 them all). The cap follows the head
+// (lane F of the history fix): 6,144 B for a head of 60k tokens or more, else
+// 4,096 B (v5.1.1's single cap). A v5.1.1 image re-caps a longer stored summary to
+// 4,096 B on load, so a rollback keeps the summary, shortened.
+constexpr size_t kChatSummaryMax = 6144;     // the largest summary any head keeps
+constexpr size_t kChatSummarySmall = 4096;   // heads under kSummaryLargeHeadTokens
+constexpr uint32_t kSummaryLargeHeadTokens = 60000;
+inline size_t summaryCapFor(uint32_t headCtxTokens) {
+  return headCtxTokens >= kSummaryLargeHeadTokens ? kChatSummaryMax : kChatSummarySmall;
+}
 
-// capSummary is SECTION-AWARE (L19-27): a summary that fits is kept whole; one
-// that does not drops whole low-priority sections first (device & task state,
-// then owner intent - the durable sections, decisions/preferences, pending
-// items and long-term facts, are never dropped whole), then trims the durable
-// sections' BODIES from the last one backwards, a whole line at a time, their
-// headers always whole, and never splits a UTF-8 sequence. The cut is visible
-// (one ellipsis), so the next anchored fold re-digests from it, not behind it.
+// capSummary is SECTION-AWARE: a summary that fits is kept whole; one that does not
+// keeps EVERY section header and trims each section's body in proportion to its
+// size, whole lines from the end of the body (a body down to one line longer than
+// its share loses that line's tail, UTF-8-safe). The cut is visible (one ellipsis
+// at the end), and a capped summary that fits is never cut again, so the next
+// anchored fold re-digests from it, not behind it. Headers alone over the cap (no
+// summary the fold prompt asks for) take one UTF-8-safe tail cut.
 
 // How many chats keep a fold state. Raised 8 -> 16 (R5): a household or a small
 // group easily exceeds eight correspondents, and evicting a chat's slot discards
@@ -112,12 +151,15 @@ constexpr size_t kFoldMaxChats = 16;
 
 // ...but slot COUNT alone does not bound the blob, because a summary is capped
 // per chat and nothing capped the total. Sixteen full summaries serialize to
-// ~66 KB, and the whole blob is rewritten on every fold. This is the real
-// ceiling: serialize() drops the least-recently-used slots until the blob fits,
-// so a device with many chatty correspondents degrades by forgetting the oldest
-// conversation's summary rather than by growing without limit.
-constexpr size_t kFoldBlobMax = 48u * 1024;
-std::string capSummary(const std::string& s);
+// ~99 KB, and the whole blob is rewritten on every turn. This is the real
+// ceiling: serialize() drops whole least-recently-used records - summary and all -
+// until the blob fits, so a device with many chatty correspondents degrades by
+// forgetting the oldest conversation's summary rather than by growing without
+// limit. 64 KB keeps about ten chats with a full 6,144 B summary. The device-wide
+// fold state (the daily cap, a queued manual request) lives in FoldCtl, so an
+// eviction never resets it.
+constexpr size_t kFoldBlobMax = 64u * 1024;
+std::string capSummary(const std::string& s, size_t maxBytes = kChatSummaryMax);
 
 // ---- per-chat fold state (the durable store) ---------------------------------
 // PRISM plan-review revision 2: fold state must NOT ride the NVS conv map (the
@@ -134,11 +176,16 @@ struct ChatFold {
   uint32_t msgsSinceFold   = 0;
   uint32_t lastFoldEpoch   = 0;    // wall epoch of the last fold (0 = never/pre-sync)
   uint32_t turnsSinceFold  = 0;    // thrash guard input (saturating)
-  uint8_t  breakerFails    = 0;    // per-chat CompactBreaker persistence
-  bool     breakerPaused   = false;
-  // The pause is a thrash pause v4.6.1 or later set (a real refill). Persisted as
-  // paused=2, which an older image reads as paused (non-zero) - rollback-safe.
-  bool     thrashPaused    = false;
+  // Lane F (ruling 2): the schedule that replaced the pause. failedCycles counts
+  // failed cycles in a row (the backoff step and the digest halving), firstFail is
+  // the epoch of the first of them (the 24 h alert), nextTry the epoch before which
+  // an automatic cycle does not start (0 = due when the trigger says so). Stored as
+  // ';' suffixes of the failures field, which an older image's number parser stops
+  // before; the field itself and the pause field are written 0, so a rollback
+  // reads a chat that is neither failing nor paused.
+  uint32_t failedCycles    = 0;
+  uint32_t firstFail       = 0;
+  uint32_t nextTry         = 0;
   // H3 (turn-structured history): the newest row id the summary covers (the
   // history starts after it) and the overflow shift (rows up to it are neither
   // verbatim nor summarized until the next fold digests them). Both forward
@@ -163,12 +210,13 @@ struct FoldStoreIO {
   virtual void        save(const std::string& blob) = 0;
 };
 
-// The fold-due decision, including the thrash guard (revision 7): a chat over
-// the byte or message threshold again within kThrashTurns turns of a completed
-// fold is paused instead of re-folded (the fold isn't shrinking it - alert the
-// owner once). Hidden rows alone never pause: a backlog larger than one fold is
-// folded again, each fold moving the anchor forward.
-enum class FoldDue : uint8_t { No = 0, Yes, ThrashPaused };
+// The fold-due decision, including the thrash guard (revision 7, lane F): a chat
+// over the byte or message threshold again within kThrashTurns turns of a
+// completed fold is due once and its next try is scheduled kFoldThrashRetryS out,
+// so the identical request can never loop and nothing ever pauses. Hidden rows
+// alone are never thrash: a backlog larger than one fold is folded again, each
+// fold moving the anchor forward.
+enum class FoldDue : uint8_t { No = 0, Yes };
 constexpr uint32_t kThrashTurns = 2;
 
 class FoldStore {
@@ -199,27 +247,33 @@ class FoldStore {
 
   // Evaluate the auto-fold trigger. bytesThreshold==0 disables (manual only).
   // Also due when the history's overflow shift hides rows the summary does not
-  // cover yet (softStart after thru).
-  // Returns ThrashPaused EXACTLY ONCE on the pause edge (alert seam). A pause an
-  // older image set (paused=1, no failures) whose chat is due on hidden rows is
-  // lifted once it is past kThrashTurns; a v4.6.1 thrash pause is never lifted.
+  // cover yet (softStart after thru). Never due before the chat's nextTry
+  // (`nowEpoch` 0 = the clock is not set: the caller keeps its own wait). A
+  // thrash refill returns Yes once and schedules nextTry kFoldThrashRetryS out
+  // (`thrash`, when given, says so: with no clock the caller keeps that wait).
   FoldDue evaluateDue(const std::string& chatId, uint32_t bytesThreshold,
-                      uint32_t msgsThreshold);
+                      uint32_t msgsThreshold, uint32_t nowEpoch, bool* thrash = nullptr);
 
-  // A fold completed: store the capped summary, reset the counters, stamp the
-  // epoch, clear the breaker, persist. (Write order: this blob FIRST - the
+  // A fold completed: store the summary (capped at `summaryCap`, the head's cap),
+  // reset the counters, stamp the epoch, clear the failure count and a backoff
+  // wait (a thrash wait stays), persist. (Write order: this blob FIRST - the
   // caller resets the provider chain only after this returns.) `thru` (H3) is
   // the newest row the summary now covers; a shift it covers is cleared.
   void applyFold(const std::string& chatId, const std::string& summary,
-                 uint32_t epoch, const std::string& thru = std::string());
+                 uint32_t epoch, const std::string& thru = std::string(),
+                 size_t summaryCap = kChatSummaryMax);
 
-  // A fold attempt failed: breaker bookkeeping. True on the 3-fail pause edge
-  // (alert once). Persisted.
-  bool noteFoldFailed(const std::string& chatId);
+  // A fold cycle failed (every rung): the chat's next try is scheduled by the
+  // backoff (foldBackoffS) and the failure is counted. Returns nextTry (0 when the
+  // clock is not set: the caller keeps the wait in RAM). Persisted.
+  uint32_t noteCycleFailed(const std::string& chatId, uint32_t nowEpoch);
 
-  // Manual override: un-pause a chat's auto-fold (owner /compact succeeds, or
-  // an explicit resume). Persisted.
-  void resume(const std::string& chatId);
+  // A new firmware is running: every chat's wait restarts (the update may have
+  // fixed what failed), so a chat with a reason to fold folds on the next pass.
+  void resetWaits();
+
+  // Every chat with a fold state, least recently used first.
+  std::vector<std::string> chatIds() const;
 
   // Reactive path: a provider context-overflow error was classified on this chat
   // - force it over any byte threshold so the next pump pass folds it. The
