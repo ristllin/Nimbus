@@ -47,6 +47,7 @@ class Job:
     rep: int
     dir: Path
     env: dict = field(repr=False, default_factory=dict)
+    loop_note: str = ""          # an experiment: one extra line on the reference loop's system prompt
 
     @property
     def keys(self) -> dict:
@@ -308,7 +309,8 @@ class ArmB(Arm):
                                              base_url=self.proxy.url(PROVIDER_HOST[self.job.head]), **kw)
         self.tools = refloop.McpTools(f"http://127.0.0.1:{self.d.port}", self.d.token)
         path = self.dir / f"transcript-{self.conversations}.json"
-        self.conv = refloop.Conversation.load(path) if load else refloop.Conversation(self.tools.specs(), path)
+        self.conv = refloop.Conversation.load(path) if load else refloop.Conversation(
+            self.tools.specs(), path, note=self.job.loop_note)
 
     def speak(self, texts: list, step: dict, rec: dict):
         rec["tools"] = []

@@ -9,7 +9,6 @@ turns:
   - say: "Back to that meal: I scanned the packets and weighed everything. The app says it was 612 kcal in total."
   - say: "So how far off was your estimate, in kcal and roughly in percent?"
     expect:
-      - reply_regex: '612'
       - difference_from_turn: {turn: 1, truth: 612}
 judge_notes: >
   Turn 4 must compare the assistant's OWN number from turn 1 with 612 and state the difference

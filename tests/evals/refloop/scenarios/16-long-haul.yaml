@@ -1,0 +1,97 @@
+id: long-haul
+title: A long conversation - twelve 40 KB documents read one by one, then questions about early and late ones
+pain: Compaction and cost. The reference loop keeps every tool result, so this takes it past 150k tokens and through its one summary.
+models: [claude-sonnet-5-5, claude-haiku-5-5]
+reps: 1
+seed:
+  files:
+    - {project: minutes, name: volume-01.txt, fixture: volume01}
+    - {project: minutes, name: volume-02.txt, fixture: volume02}
+    - {project: minutes, name: volume-03.txt, fixture: volume03}
+    - {project: minutes, name: volume-04.txt, fixture: volume04}
+    - {project: minutes, name: volume-05.txt, fixture: volume05}
+    - {project: minutes, name: volume-06.txt, fixture: volume06}
+    - {project: minutes, name: volume-07.txt, fixture: volume07}
+    - {project: minutes, name: volume-08.txt, fixture: volume08}
+    - {project: minutes, name: volume-09.txt, fixture: volume09}
+    - {project: minutes, name: volume-10.txt, fixture: volume10}
+    - {project: minutes, name: volume-11.txt, fixture: volume11}
+    - {project: minutes, name: volume-12.txt, fixture: volume12}
+turns:
+  - say: "Read volume-01.txt in my minutes project and tell me which site it is and its main gate code. One line."
+    expect:
+      - reply_regex: '2924'
+  - say: "Now volume-02.txt, same thing."
+    expect:
+      - reply_regex: '9502'
+  - say: "Now volume-03.txt, same thing."
+    expect:
+      - reply_regex: '3045'
+  - say: "Now volume-04.txt, same thing."
+    expect:
+      - reply_regex: '3460'
+  - say: "Now volume-05.txt, same thing."
+    expect:
+      - reply_regex: '7672'
+  - say: "Now volume-06.txt, same thing."
+    expect:
+      - reply_regex: '6850'
+  - say: "Now volume-07.txt, same thing."
+    expect:
+      - reply_regex: '9716'
+  - say: "Now volume-08.txt, same thing."
+    expect:
+      - reply_regex: '5391'
+  - say: "Now volume-09.txt, same thing."
+    expect:
+      - reply_regex: '6163'
+  - say: "Now volume-10.txt, same thing."
+    expect:
+      - reply_regex: '2546'
+  - say: "Now volume-11.txt, same thing."
+    expect:
+      - reply_regex: '6829'
+  - say: "Now volume-12.txt, same thing."
+    expect:
+      - reply_regex: '8601'
+  - say: "What was the gate code for the Birch Road site again?"
+    expect:
+      - reply_regex: '9502'
+  - say: "And for Kestrel Road?"
+    expect:
+      - reply_regex: '6829'
+  - say: "What balance did the treasurer carry forward at Cedar Road? It is on the very last line of that volume."
+    expect:
+      - reply_regex: '1,619|1619'
+  - say: "List all twelve gate codes with their site names, one per line."
+    expect:
+      - reply_regex: '2924'
+      - reply_regex: '9502'
+      - reply_regex: '3045'
+      - reply_regex: '3460'
+      - reply_regex: '7672'
+      - reply_regex: '6850'
+      - reply_regex: '9716'
+      - reply_regex: '5391'
+      - reply_regex: '6163'
+      - reply_regex: '2546'
+      - reply_regex: '6829'
+      - reply_regex: '8601'
+judge_notes: >
+  Twelve minute books of about 40 KB each. Site, gate code, treasurer's balance:
+  volume 1: Alder Road allotments, gate code 2924, balance 1642 pounds;
+  volume 2: Birch Road allotments, gate code 9502, balance 252 pounds;
+  volume 3: Cedar Road allotments, gate code 3045, balance 1619 pounds;
+  volume 4: Dove Road allotments, gate code 3460, balance 1425 pounds;
+  volume 5: Elm Road allotments, gate code 7672, balance 1275 pounds;
+  volume 6: Fern Road allotments, gate code 6850, balance 1863 pounds;
+  volume 7: Gorse Road allotments, gate code 9716, balance 959 pounds;
+  volume 8: Hazel Road allotments, gate code 5391, balance 1680 pounds;
+  volume 9: Iris Road allotments, gate code 6163, balance 1091 pounds;
+  volume 10: Juniper Road allotments, gate code 2546, balance 1421 pounds;
+  volume 11: Kestrel Road allotments, gate code 6829, balance 1538 pounds;
+  volume 12: Larch Road allotments, gate code 8601, balance 705 pounds;
+  The gate code is near the top of each volume and the balance is on its last line. Turns 13 and 14 ask for
+  codes read earlier (Birch Road is volume 2, Kestrel Road volume 11). Turn 15 asks for a figure nobody asked
+  about before (Cedar Road, volume 3): reading the file again is fine, a wrong or invented figure is not.
+  Turn 16 must list all twelve codes correctly.

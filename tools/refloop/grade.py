@@ -20,6 +20,7 @@ import hashlib
 import json
 import random
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import fixtures
@@ -246,11 +247,9 @@ def grade_all(evidence: Path, scenarios: list, env: dict, judge: bool = True, fo
         import anthropic
         client = anthropic.Anthropic(api_key=env.get(PROVIDER_ENV["anthropic"]))
     by_id = {s["id"]: s for s in scenarios}
-    grades = []
-    for job_dir in sorted(evidence.glob("*/*/rep*")):
-        sc = by_id.get(job_dir.parent.name)
-        g = grade_job(job_dir, sc, client, evidence / "spend.jsonl", force) if sc else None
-        if g:
-            grades.append(g)
+    dirs = [d for d in sorted(evidence.glob("*/*/rep*")) if d.parent.name in by_id]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        grades = [g for g in pool.map(
+            lambda d: grade_job(d, by_id[d.parent.name], client, evidence / "spend.jsonl", force), dirs) if g]
     print(f"graded {len(grades)} repetitions", flush=True)
     return grades

@@ -8,7 +8,7 @@ One command runs everything, grades it and writes the tables:
 
   python3 tools/refloop/compare.py run --evidence <dir> --env-file <dotenv>
       [--models claude-sonnet-5-5,gpt-5.6-luna] [--reps 3] [--only id,id] [--arms A,B]
-      [--parallel 4] [--max-usd 40] [--no-judge] [--force]
+      [--parallel 4] [--max-usd 40] [--no-judge] [--force] [--loop-note "one line"]
 
   compare.py grade  --evidence <dir> --env-file <dotenv>   grade stored runs again (checks + judge)
   compare.py report --evidence <dir>                       rebuild RESULTS.md and summary.json
@@ -36,7 +36,7 @@ import report  # noqa: E402
 import scenario  # noqa: E402
 from arms import ARMS, HEAD_PATHS, Job  # noqa: E402
 from costs import add_spend, rows_cost, total_spend  # noqa: E402
-from nimbusd_ctl import load_env  # noqa: E402
+from nimbusd_ctl import build_shim, load_env  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 SCENARIO_DIR = REPO / "tests" / "evals" / "refloop" / "scenarios"
@@ -66,7 +66,7 @@ def make_jobs(args, scenarios: list, env: dict) -> list:
             if sc.get("models") and model not in sc["models"]:
                 continue
             for rep in range(1, min(args.reps, sc.get("reps", args.reps)) + 1):
-                jobs.append(Job(model=model, scenario=sc, rep=rep, env=env,
+                jobs.append(Job(model=model, scenario=sc, rep=rep, env=env, loop_note=args.loop_note,
                                 dir=run_dir(args.evidence, model, sc["id"], rep), **MODELS[model]))
     return jobs
 
@@ -89,7 +89,7 @@ def run_task(job: Job, arm_name: str, args) -> str:
         return f"HELD  {tag}: the spend ledger reached --max-usd {args.max_usd}"
     arm = ARMS[arm_name](job)
     rec = {"arm": arm_name, "model": job.model, "scenario": job.scenario["id"], "rep": job.rep,
-           "effort": job.effort, "started": utc(), "steps": []}
+           "effort": job.effort, "loop_note": job.loop_note, "started": utc(), "steps": []}
     try:
         arm.start()
         arm.seed()
@@ -136,6 +136,7 @@ def cmd_run(args):
         scenarios = [s for s in scenarios if s["id"] in wanted]
     jobs = make_jobs(args, scenarios, env)
     tasks = [(job, arm) for job in jobs for arm in args.arms.split(",")]
+    build_shim()        # once, before the parallel runs start their daemons
     print(f"{len(tasks)} runs ({len(jobs)} scenario repetitions x {args.arms}), "
           f"spent so far ${total_spend(args.evidence / 'spend.jsonl'):.2f} of ${args.max_usd}", flush=True)
     with ThreadPoolExecutor(max_workers=args.parallel) as pool:
@@ -226,6 +227,8 @@ def main():
     run.add_argument("--arms", default="A,B")
     run.add_argument("--parallel", type=int, default=4)
     run.add_argument("--max-usd", type=float, default=40.0)
+    run.add_argument("--loop-note", default="", help="an experiment: one extra line on the reference loop's "
+                     "system prompt. Use a separate --evidence dir: it is not the reference loop any more")
     show = sub.add_parser("show")
     show.add_argument("--run", required=True, help="an arm directory: <evidence>/<model>/<scenario>/repN/A")
     show.add_argument("--turn", type=int, required=True)

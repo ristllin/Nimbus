@@ -4,16 +4,20 @@
 // override for Anthropic or OpenAI, and the rig may not change its source, so this
 // interposes on libcurl's curl_easy_setopt from outside the process image:
 //
-//   DYLD_INSERT_LIBRARIES=capture_shim.dylib  (macOS)
-//   LD_PRELOAD=capture_shim.so                (Linux)
+//   macOS: DYLD_INSERT_LIBRARIES=capture_shim.dylib   (the path the rig uses and tests)
+//   Linux: LD_PRELOAD=capture_shim.so                 (written, not yet run)
 //   REFLOOP_CAPTURE=http://127.0.0.1:<port>/<label>
 //
-// Only CURLOPT_URL is touched, and only for the hosts listed in kHosts:
+// Only CURLOPT_URL is touched, and only for the hosts in kHosts:
 //   https://api.anthropic.com/v1/messages
 //   -> http://127.0.0.1:<port>/<label>/api.anthropic.com/v1/messages
 // The proxy forwards the same method, headers and body bytes to the real host over
 // TLS. Every other option and every other host passes through untouched. With
 // REFLOOP_CAPTURE unset the shim does nothing.
+#ifndef __APPLE__
+#define _GNU_SOURCE   // RTLD_NEXT
+#include <dlfcn.h>
+#endif
 #include <curl/curl.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -30,21 +34,22 @@ static int captured_host(const char* rest) {
   return 0;
 }
 
+// curl.h wraps curl_easy_setopt in a type-checking macro: the parentheses below name
+// the function itself.
 #ifdef __APPLE__
-#define REAL_SETOPT curl_easy_setopt
-static CURLcode shim_setopt(CURL* h, CURLoption opt, ...);
+// dyld interposing: calls from this image still reach the real function.
+#define REAL_SETOPT (curl_easy_setopt)
+#define SHIM_SETOPT static CURLcode shim_setopt
 #else
-#define _GNU_SOURCE_SHIM 1
-#include <dlfcn.h>
 typedef CURLcode (*setopt_fn)(CURL*, CURLoption, ...);
 static setopt_fn real_setopt(void) {
   static setopt_fn fn;
   if (!fn) fn = (setopt_fn)dlsym(RTLD_NEXT, "curl_easy_setopt");
   return fn;
 }
-#define REAL_SETOPT real_setopt()
-#define shim_setopt curl_easy_setopt
 #undef curl_easy_setopt
+#define REAL_SETOPT (real_setopt())
+#define SHIM_SETOPT CURLcode curl_easy_setopt
 #endif
 
 static CURLcode set_url(CURL* h, const char* url) {
@@ -52,24 +57,21 @@ static CURLcode set_url(CURL* h, const char* url) {
   if (base && *base && url && strncmp(url, "https://", 8) == 0 && captured_host(url + 8)) {
     char buf[4096];
     const int n = snprintf(buf, sizeof(buf), "%s/%s", base, url + 8);
-    if (n > 0 && (size_t)n < sizeof(buf)) return (REAL_SETOPT)(h, CURLOPT_URL, buf);
+    if (n > 0 && (size_t)n < sizeof(buf)) return REAL_SETOPT(h, CURLOPT_URL, buf);
   }
-  return (REAL_SETOPT)(h, CURLOPT_URL, url);
+  return REAL_SETOPT(h, CURLOPT_URL, url);
 }
 
-#ifdef __APPLE__
-static
-#endif
-CURLcode shim_setopt(CURL* h, CURLoption opt, ...) {
+SHIM_SETOPT(CURL* h, CURLoption opt, ...) {
   va_list ap;
   va_start(ap, opt);
   CURLcode rc;
-  // libcurl's option numbering: 0 long, 10000 object pointer, 20000 function pointer,
-  // 30000 curl_off_t, 40000 blob pointer.
+  // libcurl numbers its options by argument type: 0 long, 10000 object pointer,
+  // 20000 function pointer, 30000 curl_off_t, 40000 blob pointer.
   if (opt == CURLOPT_URL) rc = set_url(h, va_arg(ap, const char*));
-  else if (opt < 10000) rc = (REAL_SETOPT)(h, opt, va_arg(ap, long));
-  else if (opt >= 30000 && opt < 40000) rc = (REAL_SETOPT)(h, opt, va_arg(ap, curl_off_t));
-  else rc = (REAL_SETOPT)(h, opt, va_arg(ap, void*));
+  else if (opt < 10000) rc = REAL_SETOPT(h, opt, va_arg(ap, long));
+  else if (opt >= 30000 && opt < 40000) rc = REAL_SETOPT(h, opt, va_arg(ap, curl_off_t));
+  else rc = REAL_SETOPT(h, opt, va_arg(ap, void*));
   va_end(ap);
   return rc;
 }

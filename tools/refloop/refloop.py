@@ -213,10 +213,10 @@ class Conversation:
     """The state of one conversation: system prompt, tool list and messages, saved after every step."""
 
     def __init__(self, specs: list, path: Path | None = None, channel: str = "the web chat",
-                 tz: str = "Europe/London"):
+                 tz: str = "Europe/London", note: str = ""):
         now = datetime.now(ZoneInfo(tz))
         self.system = SYSTEM.format(date=now.strftime("%A %d %B %Y"), time=now.strftime("%H:%M"), tz=tz,
-                                    channel=channel)
+                                    channel=channel) + (f"\n{note}" if note else "")   # note: for experiments
         self.specs, self.messages, self.tz = specs, [], tz
         self.path = Path(path) if path else None
         self.prompt_tokens = 0

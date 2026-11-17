@@ -1,0 +1,4 @@
+anthropic>=2.10
+openai>=3.50
+pyyaml>=6
+pillow>=10.1
