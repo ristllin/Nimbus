@@ -37,6 +37,15 @@ bool listed(const std::string& csv, const char* name) {
 // What a request carried: its prompt (history messages included) and its input.
 std::string sent(const TurnRecord& t) { return t.systemPrompt + "\n" + t.turnInputs; }
 
+// The first `n` bytes of `text` as the recorded prompt shows a history message: the lab keeps
+// the prompt's display form (layout::display), where a newline inside a message is a space.
+std::string asShown(const std::string& text, size_t n) {
+  std::string out = text.substr(0, n);
+  for (char& c : out)
+    if (c == '\n') c = ' ';
+  return out;
+}
+
 // Refusals after round 0 in the harness log since `from` (a round that grew past its budget
 // mid-loop, or a provider window refusal on a later round).
 int laterRefusals(size_t from) {
@@ -123,7 +132,8 @@ void blueberry(LabRig& rig, const Report& r) {
                                        "with my weights. How did you miss that?");
   const std::string req = sent(why);
   r.check(has(req, "blueberries 50 g (40-60 g"), "the 15:55 estimate rides the 16:00 request");
-  r.check(has(req, truth.reply.substr(0, 40)), "the 15:57 comparison rides the 16:00 request");
+  r.check(has(req, asShown(truth.reply, 40)), "the 15:57 comparison rides the 16:00 request");
+  r.note("15:57 reply began: " + asShown(truth.reply, 60));
   r.check(has(why.reply, "50") && has(why.reply, "150"), "the reply names 50 g against 150 g");
   r.note("16:00 reply: " + why.reply.substr(0, 240));
   (void)missed;
