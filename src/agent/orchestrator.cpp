@@ -3009,11 +3009,16 @@ __attribute__((noinline)) static void compactTick() {
 }
 
 // The conversation cache's idle fill (lane H, conv_cache.h): after a restart a chat's rows
-// after thru are read back newest first, one page of at most 24 rows per pass, between
-// turns (a turn reads at most one page itself). Card reads only, no request: not gated on
-// the owner. noinline: pollJobs sits on tg_poll's worst path, so its frame stays flat.
+// after thru are read back newest first, between turns (a turn reads at most one page
+// itself): up to four pages of 24 rows a pass, within a quarter second (an idle pass comes
+// once per Telegram long poll, so one page a pass would take over 15 minutes for a 200 KB
+// history). Card reads only, no request: not gated on the owner. noinline: pollJobs sits
+// on tg_poll's worst path, so its frame stays flat.
 __attribute__((noinline)) static void historyCacheTick() {
-  if (g_engine) g_engine->historyIdleStep();
+  if (!g_engine) return;
+  const uint32_t t0 = millis();
+  for (int page = 0; page < 4 && g_engine->historyIdleStep(); page++)
+    if (millis() - t0 >= 250) break;
 }
 
 int pollJobs() {

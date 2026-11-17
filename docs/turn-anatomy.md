@@ -339,12 +339,12 @@ called by the engine for every turn:
   kept between turns (`conv_cache.h`: up to 3 chats, each up to its history budget
   and a quarter): a turn reads only the rows newer than the newest it holds, which
   are still in the store's RAM ring, so a steady-state turn reads no card row.
-  After a restart the cache fills newest first, one page per idle pump pass and at
-  most one page of card reads on a turn (the duplicate-delivery check included), so
-  the first turn after a restart carries the newest exchanges and names the rest as
-  not read yet. Rows the store's index does not reach yet stay named until its
-  background indexing reaches them; the idle pump stops after three pages that find
-  nothing and leaves the chat to its next turn. A fold trims it, a `/clear` clears
+  After a restart the cache fills newest first, a few pages per idle pump pass and
+  at most one page of card reads on a turn (the duplicate-delivery check included),
+  so the first turn after a restart carries the newest exchanges and names the rest
+  as not read yet. Rows the store's index does not reach yet stay named until its
+  background indexing reaches them; after three pages that find nothing the idle
+  pump tries that chat again at a growing interval, so the fill resumes by itself. A fold trims it, a `/clear` clears
   it, and a photo record that arrives later patches it. A run of identical owner
   rows still folds into one as it is read.
 

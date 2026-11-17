@@ -246,10 +246,16 @@ ConvCache::View ConvCache::access(const std::string& chat, const std::string& th
 bool ConvCache::fillStep(const std::function<ReadFn(const std::string& chat)>& readerFor) {
   std::lock_guard<std::mutex> lk(mu_);
   Entry* best = nullptr;
-  for (auto& e : entries_)
-    if (!e.complete && e.stalls < kIdleStalls && (!best || e.lastUse > best->lastUse)) best = &e;
+  ++idlePasses_;
+  for (auto& e : entries_) {
+    const bool waiting = e.stalls >= kIdleStalls && (int32_t)(e.nextTry - idlePasses_) > 0;
+    if (!e.complete && !waiting && (!best || e.lastUse > best->lastUse)) best = &e;
+  }
   if (!best) return false;
-  return fillPage(*best, lastBound_, readerFor(best->chat));
+  const bool read = fillPage(*best, lastBound_, readerFor(best->chat));
+  if (best->stalls >= kIdleStalls)   // still nothing: the next try waits 4 passes, then 8 ... 256
+    best->nextTry = idlePasses_ + (4u << std::min<int>(best->stalls - kIdleStalls, 6));
+  return read;
 }
 
 std::vector<EpisodicMessage> ConvCache::newest(const std::string& chat, size_t n) const {

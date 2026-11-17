@@ -50,9 +50,11 @@ class ConvCache {
   static constexpr size_t kPageRows = 24;   // one read (a page) of a chat's rows
   // The after cursor from a chat's very first row (no fold anchor yet).
   static constexpr const char* kBeforeFirstRow = "m00000000";
-  // Idle fill passes in a row that may read nothing new before the idle pump leaves the
-  // chat to its turns (each turn still tries one page): a store whose index has not
-  // reached the rows yet would otherwise be read every pump pass for nothing.
+  // Idle fill pages in a row that may read nothing new before the idle pump slows down for
+  // the chat: a store whose index has not reached the rows yet would otherwise be read every
+  // pump pass for nothing. A stalled chat is tried again after 4 passes, then 8, 16 ... 256
+  // (each turn still tries one page), so the fill resumes by itself once the index has the
+  // rows.
   static constexpr uint8_t kIdleStalls = 3;
 
   // One read of a chat's rows (Deps::historyRows bound to the chat).
@@ -78,8 +80,8 @@ class ConvCache {
   // it), so a turn makes at most one page of card reads in all.
   View access(const std::string& chat, const std::string& thru, const Bound& bound, int fillPages,
               const ReadFn& read, const std::function<bool()>& pageAllowed = std::function<bool()>());
-  // One fill page for the most recently used chat that is still filling and not stalled
-  // (the idle pump). False when there is none (nothing was read).
+  // One fill page for the most recently used chat that is still filling and not waiting
+  // out a stall (the idle pump). False when there is none (nothing was read).
   bool fillStep(const std::function<ReadFn(const std::string& chat)>& readerFor);
   // The chat's newest `n` rows held, newest first (no read; [] when the chat is not held).
   std::vector<nimbus::orch::EpisodicMessage> newest(const std::string& chat, size_t n) const;
@@ -104,6 +106,7 @@ class ConvCache {
     uint32_t lastUse = 0;
     uint32_t patchSeq = 0;            // row_overlay's patch journal, applied up to here
     uint8_t stalls = 0;               // fill pages in a row that read nothing new
+    uint32_t nextTry = 0;             // the idle pass a stalled chat is tried again at
   };
 
   Entry* find(const std::string& chat);
@@ -122,6 +125,7 @@ class ConvCache {
   mutable std::mutex mu_;
   std::vector<Entry> entries_;
   uint32_t tick_ = 0;
+  uint32_t idlePasses_ = 0;   // fillStep calls (a stalled chat's wait is counted in them)
   Bound lastBound_;   // the bound of the latest access (the idle fill uses it)
 };
 

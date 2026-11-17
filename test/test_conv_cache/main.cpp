@@ -512,8 +512,9 @@ static void test_the_first_turn_after_a_restart_carries_the_newest_exchanges() {
   TEST_ASSERT_TRUE(r.eng->historyRead().cardReads > 0);
   TEST_ASSERT_TRUE_MESSAGE(r.eng->historyRead().cardReads <= 24, std::to_string(r.eng->historyRead().cardReads).c_str());
   // The idle pump fills toward thru a page a pass, as far as the store's index reaches, and
-  // then stops reading for nothing (kIdleStalls pages that found no row); the rows below stay
-  // named as unread until the index's backfill (the device's loop task) reaches them.
+  // then stops reading for nothing on every pass (kIdleStalls pages that found no row, then a
+  // try at a growing interval); the rows below stay named as unread until the index's backfill
+  // (the device's loop task) reaches them.
   int passes = 0;
   for (int i = 0; i < 40; i++) passes += r.eng->historyIdleStep() ? 1 : 0;
   TEST_ASSERT_TRUE_MESSAGE(passes > (int)agent::ConvCache::kIdleStalls && passes < 40, std::to_string(passes).c_str());
@@ -523,11 +524,11 @@ static void test_the_first_turn_after_a_restart_carries_the_newest_exchanges() {
   TEST_ASSERT_TRUE(r.eng->historyRead().cardReads <= 24);
   while (r.log.backfillStep()) {
   }
-  // A stalled chat waits for its next turn, whose page now finds rows; the pump goes on.
-  TEST_ASSERT_FALSE(r.eng->historyIdleStep());
-  r.eng->handleMessage("are you back?", "Roy", "c1");
+  // A stalled chat is tried again at a growing interval, so once the index has the rows the
+  // fill resumes by itself, with no turn in between, and reads down to thru (bench A10b: the
+  // cold fill completes on idle passes).
   passes = 0;
-  while (passes < 100 && r.eng->historyIdleStep()) passes++;
+  for (int i = 0; i < 300; i++) passes += r.eng->historyIdleStep() ? 1 : 0;
   TEST_ASSERT_TRUE_MESSAGE(passes > 1 && passes < 100, std::to_string(passes).c_str());
   r.eng->handleMessage("and the first thing I asked today?", "Roy", "c1");
   TEST_ASSERT_EQUAL_UINT32(0, r.eng->historyRead().cardReads);   // steady state
