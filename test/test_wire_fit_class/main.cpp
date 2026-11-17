@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <unity.h>
 
 #include <cstdio>
@@ -263,6 +264,26 @@ struct Verdict {
   std::string first;
 };
 
+void violation(Verdict& v, const std::string& what) {
+  v.violations++;
+  if (v.first.empty()) v.first = what;
+}
+
+// 1. every live row after thru is in the request or named (the owner's in-flight row arrives
+// as the input).
+void checkRows(const Rig& r, const Shape& s, const std::string& body, const std::string& what, Verdict& v) {
+  const std::vector<std::string> befores = namedBefores(body);
+  const std::string inFlight = s.owner && !r.rows.empty() ? r.rows.back().id : std::string();
+  for (const auto& m : r.rows) {
+    const bool summarized = !r.marks.thru.empty() && !orch::rowIdAfter(m.id, r.marks.thru);
+    if (summarized || m.id == inFlight || body.find("tok" + m.id.substr(1)) != std::string::npos) continue;
+    const bool named = std::any_of(befores.begin(), befores.end(),
+                                   [&m](const std::string& b) { return orch::rowIdAfter(b, m.id); });
+    if (!named) return violation(v, what + ": row " + m.id + " neither sent nor named");
+    v.named++;
+  }
+}
+
 void check(const Head& h, const Shape& s, Verdict& v) {
   LogCapture::install();
   Rig r(h, s);
@@ -275,37 +296,15 @@ void check(const Head& h, const Shape& s, Verdict& v) {
   char what[200];
   snprintf(what, sizeof what, "%s before=%d today=%d in=%zuKB recall=%d loop=%d owner=%d photo=%d clock=%d sum=%d long=%d",
            h.name, s.before, s.today, s.inputKB, s.recalled, s.loop, s.owner, s.photo, s.clock, s.summary, s.longDay);
-  if (r.wire.http.seen.empty()) {   // nothing was sent: the turn failed before any request
-    v.violations++;
-    if (v.first.empty()) v.first = std::string(what) + ": no request was sent";
-    return;
-  }
+  if (r.wire.http.seen.empty())   // nothing was sent: the turn failed before any request
+    return violation(v, std::string(what) + ": no request was sent");
   const std::string& body = r.wire.http.seen[0].body;   // round 0 as it was sent
-  const std::vector<std::string> befores = namedBefores(body);
   const bool refused = LogCapture::contains(" B budget") || LogCapture::contains("refused the request for its size");
   const bool leftOut = body.find("LEFT OUT TO FIT THIS REQUEST") != std::string::npos;
   v.refusals += refused ? 1 : 0;
   // 2. a cut by the give-up order follows a real refusal.
-  if (leftOut && !refused) {
-    v.violations++;
-    if (v.first.empty()) v.first = std::string(what) + ": history left out with no refusal";
-  }
-  // 1. every live row after thru is in the request or named.
-  const std::string inFlight = s.owner && !r.rows.empty() ? r.rows.back().id : std::string();   // arrives as the input
-  for (const auto& m : r.rows) {
-    if (!r.marks.thru.empty() && !orch::rowIdAfter(m.id, r.marks.thru)) continue;   // the summary's
-    if (m.id == inFlight) continue;
-    if (body.find("tok" + m.id.substr(1)) != std::string::npos) continue;
-    bool named = false;
-    for (const auto& b : befores) named = named || orch::rowIdAfter(b, m.id);
-    if (named) {
-      v.named++;
-      continue;
-    }
-    v.violations++;
-    if (v.first.empty()) v.first = std::string(what) + ": row " + m.id + " neither sent nor named";
-    break;
-  }
+  if (leftOut && !refused) violation(v, std::string(what) + ": history left out with no refusal");
+  checkRows(r, s, body, what, v);
 }
 
 // A deterministic spread of shapes (the matrix's corners and a sample of its inside).

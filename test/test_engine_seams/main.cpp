@@ -80,29 +80,33 @@ struct Rig {
       d.hosts.add(h, hostFn(h));
     d.histV2 = [] { return true; };
     d.captureUserRow = [](const std::string&, const std::string&, const std::string&) { return std::string("m9999"); };
-    // The stores' shape: `before` pages newest first, `after` oldest first (lane H).
-    readRows = [this](const std::string&, const HistoryQuery& q) {
-      reads.push_back(q);
-      std::vector<orch::EpisodicMessage> out;
-      if (!q.after.empty() && q.info && cutAfterPages > 0) {   // the cold walk ran out of budget
-        cutAfterPages--;
-        q.info->newerExists = true;
-        q.info->nextAfter = q.after;   // nothing of this chat in the bytes it walked
-        return out;
-      }
-      if (!q.after.empty() && q.info && q.after == unreadableAfter) q.info->unreadable = "20591:4096-36864";
-      if (!q.after.empty()) {
-        for (auto it = rows.begin(); it != rows.end() && out.size() < q.limit; ++it)
-          if (it->id > q.after && (q.before.empty() || it->id < q.before)) out.push_back(*it);
-        return out;
-      }
-      for (auto it = rows.rbegin(); it != rows.rend() && out.size() < q.limit; ++it)
-        if (q.before.empty() || it->id < q.before) out.push_back(*it);
-      return out;
-    };
+    readRows = [this](const std::string&, const HistoryQuery& q) { return storeRead(q); };
     d.historyRows = readRows;
     d.historyMarks = [this](const std::string&) { return marks; };
     eng.reset(new TurnEngine(std::move(d)));
+  }
+
+  // The stores' shape: `before` pages newest first, `after` oldest first (lane H).
+  std::vector<orch::EpisodicMessage> storeRead(const HistoryQuery& q) {
+    reads.push_back(q);
+    if (!q.after.empty()) return afterRead(q);
+    std::vector<orch::EpisodicMessage> out;
+    for (auto it = rows.rbegin(); it != rows.rend() && out.size() < q.limit; ++it)
+      if (q.before.empty() || it->id < q.before) out.push_back(*it);
+    return out;
+  }
+  std::vector<orch::EpisodicMessage> afterRead(const HistoryQuery& q) {
+    std::vector<orch::EpisodicMessage> out;
+    if (q.info && cutAfterPages > 0) {   // the cold walk ran out of budget
+      cutAfterPages--;
+      q.info->newerExists = true;
+      q.info->nextAfter = q.after;   // nothing of this chat in the bytes it walked
+      return out;
+    }
+    if (q.info && q.after == unreadableAfter) q.info->unreadable = "20591:4096-36864";
+    for (auto it = rows.begin(); it != rows.end() && out.size() < q.limit; ++it)
+      if (it->id > q.after && (q.before.empty() || it->id < q.before)) out.push_back(*it);
+    return out;
   }
 
   agent::ProviderTurnFn hostFn(const std::string& host) {
