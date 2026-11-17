@@ -315,6 +315,27 @@ class GradeTest(unittest.TestCase):
         self.assertEqual(grade.outcome(0.80, 0.90), "loss")
         self.assertEqual(grade.outcome(0.90, 0.80), "win")
 
+    def test_two_judge_passes_are_averaged_and_a_disagreement_is_a_split(self):
+        def one(order, a, b, better):
+            scores = lambda n: {**{k: n for k in grade.RUBRIC}, "notes": f"n{n}"}  # noqa: E731
+            return {
+                "A": scores(a),
+                "B": scores(b),
+                "better": better,
+                "why": "w",
+                "order": order,
+                "judge_model": "m",
+                "cost_usd": 0.01,
+            }
+
+        merged = grade.merge_passes([one("A=X", 3, 5, "B"), one("A=Y", 4, 5, "B")])
+        self.assertEqual((merged["A"]["correct"], merged["B"]["correct"], merged["better"]), (3.5, 5.0, "B"))
+        self.assertEqual((merged["passes"], merged["cost_usd"], merged["order"]), (2, 0.02, "A=X+A=Y"))
+        self.assertEqual(grade.merge_passes([one("A=X", 3, 5, "B"), one("A=Y", 5, 4, "A")])["better"], "split")
+        self.assertIsNone(grade.merge_passes([]))
+        self.assertEqual(grade._stored_passes({"judge": one("A=X", 3, 5, "B")}), [one("A=X", 3, 5, "B")])
+        self.assertEqual(grade._stored_passes({"judge": merged, "judge_passes": [1, 2]}), [1, 2])
+
     def test_the_judge_transcript_names_no_arm(self):
         rec = {
             "steps": [
@@ -392,6 +413,24 @@ class WireTest(unittest.TestCase):
         tools, harness = arms.harness_calls(first + [{"request": {"messages": []}, "response": {"content": [later]}}])
         self.assertEqual([t["name"] for t in tools], ["session_spawn", "memory_write"])
         self.assertEqual(set(harness["fields"]), {"session_ops", "mem_write"})
+
+    def test_automatic_recall_is_read_off_the_request_and_shown_to_the_judge(self):
+        block = "Current time: 09:00.\nThis turn you may call tools.\n\n## RELEVANT MEMORIES\n- Locker number is 86.\n- Car reg KN19 ZTF.\n\n\n[CHANNEL] web\n[USER]\nWhich locker is mine?"
+        ant = [
+            {"request": {"messages": [{"role": "user", "content": [{"type": "text", "text": block}]}]}, "response": {}}
+        ]
+        oai = [{"request": {"input": [{"role": "user", "content": block}]}, "response": {}}]
+        self.assertEqual(arms.recalled_memories(ant), ["Locker number is 86.", "Car reg KN19 ZTF."])
+        self.assertEqual(arms.recalled_memories(oai), ["Locker number is 86.", "Car reg KN19 ZTF."])
+        self.assertEqual(arms.recalled_memories([{"request": {"messages": []}, "response": {}}]), [])
+        text = grade.render_transcript(
+            {
+                "steps": [
+                    {"kind": "say", "turn": 1, "user": ["x"], "replies": ["86"], "recalled": ["Locker number is 86."]}
+                ]
+            }
+        )
+        self.assertIn("put in front of the assistant for this turn: Locker number is 86.", text)
 
     def test_openai_exchanges_and_a_bounced_final(self):
         call = {

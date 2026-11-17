@@ -152,6 +152,25 @@ def harness_calls(exchanges: list) -> tuple:
     return _clip(tools), {"fields": merged, "bounced": bounced, "orch_turn_calls": len(finals)}
 
 
+RECALL_HEAD = "## RELEVANT MEMORIES"
+
+
+def recalled_memories(exchanges: list) -> list:
+    """The long-term memories the harness itself put into the turn's context (its automatic recall).
+
+    They reach the model with no tool call, so without this the record (and the judge) could not
+    tell an answer from memory apart from a guess.
+    """
+    request = exchanges[0].get("request") if exchanges else None
+    for m in reversed((request or {}).get("messages") or (request or {}).get("input") or []):
+        content = m.get("content") if isinstance(m, dict) else None
+        text = content if isinstance(content, str) else _result_text(content)
+        if RECALL_HEAD in (text or ""):
+            block = text.split(RECALL_HEAD, 1)[1].split("\n\n", 1)[0]
+            return [line[2:].strip() for line in block.splitlines() if line.startswith("- ")]
+    return []
+
+
 def spawned(exchanges: list) -> bool:
     """True when the turn started a sub-agent: its result arrives later, as another chat message."""
     return any(t.get("via") == "session_ops" for t in harness_calls(exchanges)[0])
@@ -313,7 +332,9 @@ class ArmA(Arm):
             # owner waits for it. Wait too, so the record holds what the owner finally got.
             rec["awaited_s"] = self._await_more(seq0, len(self._chat_rows(seq0)))
         rec["replies"], rec["notices"] = split_notices(self._chat_rows(seq0))
-        rec["tools"], rec["harness"] = harness_calls(self._head_bodies())
+        bodies = self._head_bodies()
+        rec["tools"], rec["harness"] = harness_calls(bodies)
+        rec["recalled"] = recalled_memories(bodies)
         (self.dir / f"lastturn-{self.turn:02d}.txt").write_text(self.d.get_text("/api/lastturn"))
 
     def _head_bodies(self, keep: bool = False) -> list:

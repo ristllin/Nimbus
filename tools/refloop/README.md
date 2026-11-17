@@ -116,6 +116,9 @@ The shim's Linux path (`LD_PRELOAD`) is written but has not been run.
 ## Scenarios (`tests/evals/refloop/scenarios/*.yaml`)
 
 Every scenario is synthetic: made-up text, generated photos and files (`fixtures.py`).
+Seventeen ship here: the fourteen shapes of the lane brief (the 15 Nov shape twice, with and
+without food), plus `long-haul` (twelve 40 KB documents: the reference loop's 150k-token
+summary and its cost) and `long-chat` (22 long messages: the harness's 48 KB fold).
 
 | Key | Meaning |
 |---|---|
@@ -132,7 +135,9 @@ Steps:
 | Step | Arm A | Arm B |
 |---|---|---|
 | `say: text` (+ `photos: [fixture]`) | `POST /api/chat` (photos uploaded to Files and attached), polled until done and idle | `run_turn` with the photos as image parts |
+| `say: "{fixture:name}"` | the same, with that text fixture as the message (long made-up text stays out of the YAML) | the same |
 | `burst: [a, b, c]`, `gap_s` | the messages posted `gap_s` apart, replies collected until idle | the messages put on the loop's inbox `gap_s` apart |
+| (a turn that starts a sub-agent) | the runner waits up to 300 s for the result's own chat message, so the record holds what the owner finally got | no sub-agents |
 | `restart: true` | the daemon stops and starts on the same data dir | its daemon restarts and the loop reloads its saved transcript |
 | `new_conversation: true` | Clear conversation (`clearConv`) | a new transcript; memory and files stay |
 
@@ -143,11 +148,18 @@ failing case each in the self-test): `reply_regex`, `reply_not_regex`, `last_rep
 `loops_regex`, `loops_not_regex`, `memory_regex`, `memory_not_regex`. An unknown key or
 check stops the load.
 
+A known trap, found by this rig on 17 Nov 2026: on a brand-new nimbusd the files directory
+does not exist until the first save, and `files.append` with no `key` then answers `write
+failed`. `meal-log-day` seeds one file so that defect is not what it measures.
+
 ## Grading
 
 - **Deterministic checks**, the same on both arms, mostly on the instance's state.
-- **A blind judge** (`claude-sonnet-5-5`): both transcripts as X and Y in a seeded random
-  order, with the ground truth; 1 to 5 on correct, context, tools, honest, concise.
+- **A blind judge** (`claude-sonnet-5-5`): both transcripts as X and Y with the ground truth;
+  1 to 5 on correct, context, tools, honest, concise. Every repetition is judged twice, the
+  second time with X and Y swapped, and scored on the mean of the two passes. The judge sees
+  owner messages, tool calls with results, replies, the daemon's own notices (labelled as the
+  system's), and the memories the harness's automatic recall put in front of the model.
 - **composite** = half the share of checks passed + half the judge mean scaled to 0..1.
   The harness wins a repetition when its composite is more than 0.05 above the loop's,
   loses when more than 0.05 below, ties otherwise.
@@ -160,7 +172,7 @@ check stops the load.
   MECHANISMS.md, LOSSES.md     from mechanisms.py: harness behaviors counted per scenario; every lost repetition
   spend.jsonl                  one line per paid run and judge call
   <model>/<scenario>/repN/
-    grade.json                 checks per arm, the judge's scores and notes, the outcome
+    grade.json                 checks per arm, both judge passes and their mean, the outcome
     A/turns.json               per step: owner text, replies, latency, requests, tokens, cost, tool calls, harness fields
     A/requests.jsonl.gz        every provider exchange, exact request and response bodies
     A/lastturn-NN.txt          the daemon's own anatomy of each turn

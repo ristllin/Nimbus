@@ -81,7 +81,7 @@ def grade_stats(grades: list) -> dict:
         **{k: sum(1 for g in grades if g["outcome_for_A"] == k) for k in ("win", "tie", "loss")},
         "A": _arm_scores(grades, "A"),
         "B": _arm_scores(grades, "B"),
-        "judge_prefers": {k: prefers.count(k) for k in ("A", "B", "tie")},
+        "judge_prefers": {k: prefers.count(k) for k in ("A", "B", "tie", "split")},
     }
 
 

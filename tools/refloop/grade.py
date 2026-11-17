@@ -5,9 +5,10 @@ Checks: every `expect` item of a turn and every `final` item of a scenario is on
 check (CHECKS below), run the same way on both arms' records. Prefer a check on the
 instance's state (a file, a routine, a memory) over the wording of a reply.
 
-Judge: claude-sonnet-5-5 reads both arms' transcripts of one repetition as "X" and "Y" in
-a seeded random order, with the scenario's ground truth, and scores each on five
-criteria (1 to 5): correct, context, tools, honest, concise.
+Judge: claude-sonnet-5-5 reads both arms' transcripts of one repetition as "X" and "Y", with
+the scenario's ground truth, and scores each on five criteria (1 to 5): correct, context,
+tools, honest, concise. It does so twice, the second time with X and Y swapped, and a
+repetition is scored on the mean of the two passes.
 
 Outcome of one repetition, from the harness's side (arm A):
   composite = 0.5 * share of checks passed + 0.5 * (judge mean - 1) / 4      (0 to 1)
@@ -29,6 +30,7 @@ from nimbusd_ctl import PROVIDER_ENV
 from scenario import user_turns
 
 JUDGE_MODEL = "claude-sonnet-5-5"
+JUDGE_PASSES = 2  # the second pass shows the two transcripts in the opposite order
 RUBRIC = ("correct", "context", "tools", "honest", "concise")
 TIE_BAND = 0.05
 FLAGS = re.I | re.S
@@ -184,6 +186,9 @@ def _render_turn(step: dict) -> list:
         + " / ".join(said)
     ]
     lines += [f"  [photo attached: {fixtures.photo_truth(name)}]" for name in step.get("photos", [])]
+    if step.get("recalled"):
+        shown = "; ".join(_cut(m, 200) for m in step["recalled"][:8])
+        lines.append(f"  [long-term memories the system itself put in front of the assistant for this turn: {shown}]")
     for t in step.get("tools") or []:
         lines.append(
             f"  tool {t['name'].replace('.', '_')}({_cut(t.get('args'), 300)}) -> {_cut(t.get('result', ''), 300)}"
@@ -218,9 +223,8 @@ def render_transcript(record: dict) -> str:
     return "\n".join(lines)
 
 
-def judge_pair(client, sc: dict, rec_a: dict, rec_b: dict, seed: str) -> dict:
+def judge_pair(client, sc: dict, rec_a: dict, rec_b: dict, a_is_x: bool) -> dict:
     """One blind judgment of both arms. Returns per-arm scores, the verdict and the order used."""
-    a_is_x = random.Random(seed).random() < 0.5
     first, second = (rec_a, rec_b) if a_is_x else (rec_b, rec_a)
     prompt = (
         f"SCENARIO: {sc['title']}\nWHAT IT TESTS: {sc.get('pain', '')}\nGROUND TRUTH: {sc['judge_notes']}\n\n"
@@ -248,6 +252,29 @@ def judge_pair(client, sc: dict, rec_a: dict, rec_b: dict, seed: str) -> dict:
     }
 
 
+def merge_passes(passes: list) -> dict | None:
+    """The judgment a repetition is scored on: the mean of its passes, per arm and criterion.
+
+    Two passes see the two transcripts in opposite order, so a preference for X or Y as such
+    cancels out. `better` is the arm both passes preferred, else "split".
+    """
+    if not passes:
+        return None
+    out = {
+        "passes": len(passes),
+        "order": "+".join(p["order"] for p in passes),
+        "judge_model": passes[0]["judge_model"],
+    }
+    for arm in ("A", "B"):
+        out[arm] = {k: sum(p[arm][k] for p in passes) / len(passes) for k in RUBRIC}
+        out[arm]["notes"] = " / ".join(p[arm]["notes"] for p in passes)
+    prefers = {p["better"] for p in passes}
+    out["better"] = prefers.pop() if len(prefers) == 1 else "split"
+    out["why"] = " / ".join(p["why"] for p in passes)
+    out["cost_usd"] = round(sum(p["cost_usd"] for p in passes), 6)
+    return out
+
+
 # ------------------------------------------------------------------- scoring
 def judge_mean(scores: dict | None) -> float | None:
     return sum(scores[k] for k in RUBRIC) / len(RUBRIC) if scores else None
@@ -263,6 +290,40 @@ def outcome(a: float, b: float) -> str:
     return "win" if a - b > TIE_BAND else "loss" if b - a > TIE_BAND else "tie"
 
 
+def _checked(sc: dict, rec: dict) -> dict:
+    checks = run_checks(sc, rec)
+    passed = sum(c["pass"] for c in checks)
+    return {
+        "checks": checks,
+        "passed": passed,
+        "total": len(checks),
+        "check_rate": round(passed / max(len(checks), 1), 4),
+        "crashed": "error" in rec,
+    }
+
+
+def _stored_passes(old: dict) -> list:
+    """The judge passes a stored grade holds (a grade from before two-pass judging holds one)."""
+    if old.get("judge_passes"):
+        return old["judge_passes"]
+    return [old["judge"]] if old.get("judge") and "passes" not in old["judge"] else []
+
+
+def _judge(client, sc: dict, recs: dict, g: dict, ledger: Path):
+    """Fill the passes g is missing. The first order is seeded; the second is its opposite."""
+    tag = f"{g['model']} {sc['id']} rep{g['rep']}"
+    seed = hashlib.sha256(f"{g['model']}/{sc['id']}/{g['rep']}".encode()).hexdigest()
+    while len(g["judge_passes"]) < JUDGE_PASSES:
+        done = g["judge_passes"]
+        a_is_x = done[-1]["order"] != "A=X" if done else random.Random(seed).random() < 0.5
+        try:
+            done.append(judge_pair(client, sc, recs["A"], recs["B"], a_is_x))
+            add_spend(ledger, f"judge {tag} pass {len(done)}", done[-1]["cost_usd"])
+        except Exception as e:  # a judge failure leaves what is there standing and is retried on the next grade
+            g["judge_error"] = f"{type(e).__name__}: {e}"[:400]
+            return
+
+
 def grade_job(job_dir: Path, sc: dict, client, ledger: Path, force: bool = False) -> dict | None:
     """Grade one repetition (both arms must be stored). Writes grade.json and returns it."""
     paths = {arm: job_dir / arm / "turns.json" for arm in ("A", "B")}
@@ -271,24 +332,12 @@ def grade_job(job_dir: Path, sc: dict, client, ledger: Path, force: bool = False
     recs = {arm: json.loads(p.read_text()) for arm, p in paths.items()}
     out_path = job_dir / "grade.json"
     old = json.loads(out_path.read_text()) if out_path.exists() else {}
-    g = {"scenario": sc["id"], "model": recs["A"]["model"], "rep": recs["A"]["rep"], "arms": {}}
-    for arm, rec in recs.items():
-        checks = run_checks(sc, rec)
-        g["arms"][arm] = {
-            "checks": checks,
-            "passed": sum(c["pass"] for c in checks),
-            "total": len(checks),
-            "check_rate": round(sum(c["pass"] for c in checks) / max(len(checks), 1), 4),
-            "crashed": "error" in rec,
-        }
-    g["judge"] = old.get("judge") if not force else None
-    if client and not g["judge"]:
-        seed = hashlib.sha256(f"{g['model']}/{sc['id']}/{g['rep']}".encode()).hexdigest()
-        try:
-            g["judge"] = judge_pair(client, sc, recs["A"], recs["B"], seed)
-            add_spend(ledger, f"judge {g['model']} {sc['id']} rep{g['rep']}", g["judge"]["cost_usd"])
-        except Exception as e:  # a judge failure leaves the checks standing and is retried on the next grade
-            g["judge_error"] = f"{type(e).__name__}: {e}"[:400]
+    g = {"scenario": sc["id"], "model": recs["A"]["model"], "rep": recs["A"]["rep"]}
+    g["arms"] = {arm: _checked(sc, rec) for arm, rec in recs.items()}
+    g["judge_passes"] = [] if force else _stored_passes(old)
+    if client:
+        _judge(client, sc, recs, g, ledger)
+    g["judge"] = merge_passes(g["judge_passes"])
     for arm in ("A", "B"):
         scores = (g["judge"] or {}).get(arm)
         g["arms"][arm]["judge_mean"] = judge_mean(scores)
