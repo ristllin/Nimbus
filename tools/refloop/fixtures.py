@@ -191,6 +191,73 @@ paint roller,2,B2
 dust sheets,5,B2
 """
 
+# The long-chat scenario: twenty-two travel journal entries of about 2.5 KB each, dictated one per
+# turn. Together they pass the harness's 48 KB fold trigger; each stays under its 6 KB row clip.
+JOURNAL_DAYS = 22
+_TOWNS = ["Porto", "Aveiro", "Coimbra", "Nazare", "Obidos", "Sintra", "Lisbon", "Setubal", "Evora", "Beja", "Lagos"]
+_TOWNS += ["Sagres", "Faro", "Tavira", "Mertola", "Elvas", "Marvao", "Tomar", "Viseu", "Guarda", "Braga", "Viana"]
+_PEOPLE = ["Ines", "Rui", "Marta", "Tiago", "Sofia", "Duarte", "Leonor", "Nuno", "Beatriz", "Goncalo", "Carla"]
+_PEOPLE += ["Vasco", "Helena", "Jorge", "Rita", "Paulo", "Teresa", "Miguel", "Clara", "Andre", "Filipa", "Hugo"]
+_DISHES = ["grilled sardines", "octopus rice", "caldo verde", "custard tarts", "clam stew", "black pork", "salt cod"]
+_DISHES += ["almond cake", "goat stew", "fig jam on toast", "razor clams", "chestnut soup", "orange sponge"]
+_SIGHTS = ["the old cathedral", "the fish market", "a tiled chapel", "the river walk", "the castle walls"]
+_SIGHTS += ["a cork workshop", "the lighthouse", "a hillside vineyard", "the covered market", "the Roman bridge"]
+_WEATHER = ["bright and windy", "hot and still", "grey with a little drizzle", "cool and clear", "hazy and warm"]
+
+
+def journal_facts(day: int) -> dict:
+    """The checkable facts of one journal day: where, who, what they recommended, and the day's costs."""
+    rng = random.Random(4100 + day)
+    costs = {"room": rng.randint(38, 96), "food": rng.randint(14, 47), "transport": rng.randint(4, 33)}
+    return {
+        "town": _TOWNS[day - 1],
+        "met": _PEOPLE[day - 1],
+        "dish": rng.choice(_DISHES),
+        "sight": rng.choice(_SIGHTS),
+        "weather": rng.choice(_WEATHER),
+        **costs,
+        "total": sum(costs.values()),
+        "woke": f"{rng.randint(6, 9)}:{rng.choice(['00', '15', '30', '45'])}",
+        "steps": rng.randint(7, 24) * 1000,
+    }
+
+
+def journal(day: int) -> str:
+    f = journal_facts(day)
+    special = {
+        1: "The flight out was fine. I was in seat 23F by the window and slept most of the way. ",
+        2: "I took the small ferry across the estuary before lunch. The ferry ticket was 14 pounds 50, cash only. ",
+    }.get(day, "")
+    return (
+        f"Journal, day {day}, {f['town']}. Woke at {f['woke']}. The weather was {f['weather']}. {special}"
+        f"I spent the morning at {f['sight']} and walked far more than I meant to, about {f['steps']:,} steps by the "
+        f"end of the day according to my watch. The streets here are steep and the pavements are those small "
+        f"polished stones that look lovely and are slippery when wet, so I took it slowly. I stopped twice for "
+        f"coffee and once just to sit on a wall and watch people go by. Around midday I got talking to {f['met']}, "
+        f"who runs a small shop near the square and has lived in {f['town']} all their life. {f['met']} told me I "
+        f"had to try the {f['dish']} while I was here and wrote the name of a place on the back of my map. I went "
+        f"there in the evening and it was every bit as good as promised, a plain room with paper tablecloths and "
+        f"a television in the corner that nobody was watching. In the afternoon I did some washing in the sink, "
+        f"wrote two postcards, and tried to plan tomorrow without much success because the bus timetable on the "
+        f"wall of the station does not match the one online. I asked at the desk and was told, kindly, that "
+        f"neither is right and I should just turn up early. Money for the day: the room was {f['room']} pounds, "
+        f"food came to {f['food']} pounds altogether, and transport was {f['transport']} pounds, which makes "
+        f"{f['total']} pounds for day {day}. I am keeping an eye on that because the first week ran higher than "
+        f"I planned. Small things I want to remember: the smell of woodsmoke in the lane behind the guest house, "
+        f"a dog asleep in the doorway of the bakery, and the way the light came through the shutters at about "
+        f"six in the evening. My feet hurt, but in the good way. I also noticed my left boot is rubbing at the "
+        f"heel again, so I have put a plaster on it and will see how it is in the morning. Tomorrow I move on, "
+        f"and I want to be up early enough to see the market before the bus. One more note to myself: I keep "
+        f"meaning to ring home and keep forgetting until it is too late in the evening, so tomorrow I will do it "
+        f"at lunch. I should also back up the photos from the camera, because the card is nearly full and I "
+        f"would hate to lose the ones from {f['sight']}. The guest house has a shelf of books other travellers "
+        f"left behind, and I swapped my finished paperback for a battered guide to the birds of the region, "
+        f"which I will probably never open but could not resist. Dinner tonight is the last of the bread and "
+        f"cheese from the market unless I find the energy to go back out. That is all for day {day}. "
+        f"No need to comment on it, just say you have it."
+    )
+
+
 TEXTS = {
     "handbook": {
         "make": handbook,
@@ -200,6 +267,10 @@ TEXTS = {
     "inventory": {
         "make": lambda: INVENTORY,
         "truth": "A 12-item garage inventory CSV; torque wrench: qty 2, shelf C3.",
+    },
+    **{
+        f"journal{d:02d}": {"make": (lambda d=d: journal(d)), "truth": f"Journal day {d}: {journal_facts(d)}"}
+        for d in range(1, JOURNAL_DAYS + 1)
     },
     **{
         f"volume{i:02d}": {

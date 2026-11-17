@@ -98,24 +98,35 @@ def collect(evidence: Path) -> dict:
     return data
 
 
+def _scope(cells: dict, ids) -> dict:
+    """Grades and per-turn stats over the scenarios named in ids."""
+    picked = [cells[i] for i in ids if i in cells]
+    grades = [g for cell in picked for g in cell["grades"]]
+    return {
+        **grade_stats(grades),
+        "stats": {arm: arm_stats([r for cell in picked for r in cell[arm]]) for arm in ("A", "B")},
+    }
+
+
 def summarize(evidence: Path) -> dict:
     data = collect(evidence)
-    summary = {"models": {}}
+    # The scenarios every model ran: the like-for-like set. A scenario limited to some models
+    # (long-haul) is reported on its own row and in "all scenarios".
+    common = sorted(set.intersection(*(set(cells) for cells in data.values()))) if data else []
+    summary = {"common_scenarios": common, "models": {}}
     for model, cells in data.items():
-        per = {}
-        for sid, cell in cells.items():
-            per[sid] = {**grade_stats(cell["grades"]), "stats": {arm: arm_stats(cell[arm]) for arm in ("A", "B")}}
-        every = [g for cell in cells.values() for g in cell["grades"]]
-        overall = {
-            **grade_stats(every),
-            "stats": {arm: arm_stats([r for cell in cells.values() for r in cell[arm]]) for arm in ("A", "B")},
-        }
+        per = {sid: _scope(cells, [sid]) for sid in cells}
         losses = []
         for sid, cell in cells.items():
             for g, d in zip(cell["grades"], cell["dirs"]):
                 if g["outcome_for_A"] == "loss":
                     losses.append(_loss_row(g, d, evidence))
-        summary["models"][model] = {"overall": overall, "scenarios": per, "losses": losses}
+        summary["models"][model] = {
+            "overall": _scope(cells, list(cells)),
+            "common": _scope(cells, common),
+            "scenarios": per,
+            "losses": losses,
+        }
     return summary
 
 
@@ -183,7 +194,9 @@ def markdown(summary: dict) -> str:
     ]
     for model, m in summary["models"].items():
         o = m["overall"]
-        out += [f"## {model}", "", HEAD.format(first="scope"), "|" + "---|" * 12, _row("all scenarios", o), ""]
+        shared = f"the {len(summary['common_scenarios'])} scenarios every model ran"
+        out += [f"## {model}", "", HEAD.format(first="scope"), "|" + "---|" * 12, _row(shared, m["common"])]
+        out += [_row("all scenarios", o), ""]
         ja, jb = o["A"], o["B"]
         out += [
             "Judge criteria (1 to 5), A / B: "

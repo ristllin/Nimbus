@@ -8,7 +8,8 @@ full table):
   seed.files                 files both instances hold before turn 1: {project, name, text | fixture}
   seed.memories              facts stored with memory.write before turn 1
   turns                      a list of steps, each exactly one of:
-      say: text              one owner message   (+ photos: [fixture, ...])
+      say: text              one owner message   (+ photos: [fixture, ...]); "{fixture:name}" in the
+                             text is replaced by that text fixture
       burst: [text, ...]     messages sent gap_s apart, before any reply
       restart: true          restart nimbusd; the reference loop reloads its transcript
       new_conversation: true a new conversation (earlier chat out of view; memory and files stay)
@@ -22,9 +23,12 @@ An unknown key or check anywhere stops the load, so a typo can never read as a p
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
+
+import fixtures
 
 TOP_KEYS = {"id", "title", "pain", "seed", "turns", "final", "judge_notes", "models", "reps"}
 STEP_ACTIONS = ("say", "burst", "restart", "new_conversation")
@@ -107,8 +111,19 @@ def needs_state(step: dict) -> bool:
     return any(next(iter(c)) in STATE_CHECKS for c in step.get("expect") or [])
 
 
+FIXTURE_RE = re.compile(r"\{fixture:(\w+)\}")
+
+
+def _expand(sc: dict) -> dict:
+    """A say of "{fixture:name}" is that text fixture's content: long made-up text stays out of the YAML."""
+    for step in sc["turns"]:
+        if isinstance(step.get("say"), str) and "{fixture:" in step["say"]:
+            step["say"] = FIXTURE_RE.sub(lambda m: fixtures.text(m.group(1)), step["say"])
+    return sc
+
+
 def load(path: Path) -> dict:
-    return validate(yaml.safe_load(Path(path).read_text()), Path(path).name)
+    return _expand(validate(yaml.safe_load(Path(path).read_text()), Path(path).name))
 
 
 def load_all(paths: list) -> list:

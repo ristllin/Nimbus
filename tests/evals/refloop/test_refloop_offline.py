@@ -210,6 +210,18 @@ class ScenarioTest(unittest.TestCase):
             self.assertIn(f"gate code {code}, balance {balance} pounds", sc["judge_notes"])
         self.assertEqual(len(sc["turns"][-1]["expect"]), fixtures.VOLUMES)
 
+    def test_the_long_chat_scenario_matches_its_fixtures(self):
+        sc = {s["id"]: s for s in scenario.load_all([SCENARIOS])}["long-chat"]
+        entries = [s["say"] for s in sc["turns"][: fixtures.JOURNAL_DAYS]]
+        self.assertEqual(entries, [fixtures.journal(d) for d in range(1, fixtures.JOURNAL_DAYS + 1)])
+        self.assertGreater(sum(len(e) for e in entries), 48 * 1024)  # past the harness's fold trigger
+        self.assertLess(max(len(e) for e in entries), 6144)  # each under its history row clip
+        day4, day16, day9 = fixtures.journal_facts(4), fixtures.journal_facts(16), fixtures.journal_facts(9)
+        self.assertIn(f"day 4 cost {day4['total']} pounds in total and day 16 cost {day16['total']}", sc["judge_notes"])
+        self.assertIn({"reply_regex": day9["met"]}, sc["turns"][23]["expect"])
+        self.assertIn("23F", fixtures.journal(1))
+        self.assertIn("14 pounds 50", fixtures.journal(2))
+
     def test_a_typo_never_loads(self):
         good = {"id": "x", "title": "t", "judge_notes": "n", "turns": [{"say": "hi"}]}
         scenario.validate(dict(good))

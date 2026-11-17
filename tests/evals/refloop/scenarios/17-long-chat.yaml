@@ -1,0 +1,56 @@
+id: long-chat
+title: A long chat - twenty-two long journal entries, then questions about early, middle and late ones
+pain: Conversation history and compaction. The chat passes the harness's 48 KB fold trigger, so answers about early days depend on what its summary kept.
+turns:
+  - say: "{fixture:journal01}"
+  - say: "{fixture:journal02}"
+  - say: "{fixture:journal03}"
+  - say: "{fixture:journal04}"
+  - say: "{fixture:journal05}"
+  - say: "{fixture:journal06}"
+  - say: "{fixture:journal07}"
+  - say: "{fixture:journal08}"
+  - say: "{fixture:journal09}"
+  - say: "{fixture:journal10}"
+  - say: "{fixture:journal11}"
+  - say: "{fixture:journal12}"
+  - say: "{fixture:journal13}"
+  - say: "{fixture:journal14}"
+  - say: "{fixture:journal15}"
+  - say: "{fixture:journal16}"
+  - say: "{fixture:journal17}"
+  - say: "{fixture:journal18}"
+  - say: "{fixture:journal19}"
+  - say: "{fixture:journal20}"
+  - say: "{fixture:journal21}"
+  - say: "{fixture:journal22}"
+  - say: "What did I pay for the ferry on day 2?"
+    expect:
+      - reply_regex: '14[.,]50|14 pounds 50'
+  - say: "Who did I get talking to on day 9, and what did they tell me to try?"
+    expect:
+      - reply_regex: 'Beatriz'
+      - reply_regex: '(?i)caldo verde'
+  - say: "Which day cost me more in total, day 4 or day 16, and by how much?"
+    expect:
+      - reply_regex: '\b119\b'
+      - reply_regex: '\b85\b'
+      - reply_regex: '\b34\b'
+  - say: "What was my seat number on the flight out?"
+    expect:
+      - reply_regex: '23 ?F'
+  - say: "Which town was I in on day 12?"
+    expect:
+      - reply_regex: 'Sagres'
+  - say: "Add up what the rooms cost me on days 20, 21 and 22."
+    expect:
+      - reply_regex: '\b172\b'
+judge_notes: >
+  The owner dictates 22 journal entries (one per turn, about 2.5 KB each) and asks only that the assistant
+  says it has them. Then six questions. Ground truth: the ferry on day 2 cost 14 pounds 50;
+  on day 9 the owner talked to Beatriz, who said to try the caldo verde;
+  day 4 cost 119 pounds in total and day 16 cost 85, so day 4 cost more, by 34 pounds;
+  the seat on the flight out (day 1) was 23F; on day 12 the owner was in Sagres;
+  rooms on days 20, 21 and 22 cost 47, 81 and 44 pounds, 172 in total.
+  Nothing was asked to be saved: answers should come from the conversation. A wrong figure, or saying the entry
+  is no longer available, is a context failure. Long replies to the journal entries go against the owner's request.
