@@ -177,33 +177,36 @@ def _cut(text, n: int) -> str:
     return text if len(text) <= n else text[:n] + f" ...[{len(text) - n} more chars]"
 
 
-def _render_turn(step: dict) -> list:
-    said = step["user"]
-    lines = [
-        f"Turn {step['turn']} - Owner"
-        + (f" ({len(said)} quick messages)" if len(said) > 1 else "")
-        + ": "
-        + " / ".join(said)
-    ]
-    lines += [f"  [photo attached: {fixtures.photo_truth(name)}]" for name in step.get("photos", [])]
+def _render_context(step: dict) -> list:
+    """What the assistant was handed for the turn: the photos, and any memory the system recalled for it."""
+    lines = [f"  [photo attached: {fixtures.photo_truth(name)}]" for name in step.get("photos", [])]
     if step.get("recalled"):
         shown = "; ".join(_cut(m, 200) for m in step["recalled"][:8])
         lines.append(f"  [long-term memories the system itself put in front of the assistant for this turn: {shown}]")
-    for t in step.get("tools") or []:
-        lines.append(
-            f"  tool {t['name'].replace('.', '_')}({_cut(t.get('args'), 300)}) -> {_cut(t.get('result', ''), 300)}"
-        )
-    replies = step.get("replies") or []
+    return lines
+
+
+def _render_outcome(step: dict) -> list:
+    """What came back: a failure, the system's own notices, the assistant's replies."""
+    lines = []
     if step.get("error") or step.get("timed_out"):
         lines.append(f"  [the turn failed: {step.get('error') or 'no reply in time'}]")
-    lines += [
-        f"  [the system itself also showed the owner this notice: {_cut(n, 300)}]" for n in step.get("notices") or []
-    ]
-    many = len(replies) > 1
-    lines += [
-        f"  Assistant{f' (reply {n + 1})' if many else ''}: {_cut(reply, 3000)}" for n, reply in enumerate(replies)
-    ]
+    for notice in step.get("notices") or []:
+        lines.append(f"  [the system itself also showed the owner this notice: {_cut(notice, 300)}]")
+    replies = step.get("replies") or []
+    for n, reply in enumerate(replies):
+        lines.append(f"  Assistant{f' (reply {n + 1})' if len(replies) > 1 else ''}: {_cut(reply, 3000)}")
     return lines if replies else [*lines, "  Assistant: (no reply)"]
+
+
+def _render_turn(step: dict) -> list:
+    said = step["user"]
+    several = f" ({len(said)} quick messages)" if len(said) > 1 else ""
+    lines = [f"Turn {step['turn']} - Owner{several}: " + " / ".join(said), *_render_context(step)]
+    for t in step.get("tools") or []:
+        name = t["name"].replace(".", "_")
+        lines.append(f"  tool {name}({_cut(t.get('args'), 300)}) -> {_cut(t.get('result', ''), 300)}")
+    return lines + _render_outcome(step)
 
 
 MARKERS = {
