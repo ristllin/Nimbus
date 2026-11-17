@@ -10,6 +10,7 @@
 #include <iterator>
 
 #include "nimbus/orch/blob_store.h"
+#include "nimbus/orch/history_rows.h"   // kClockValidHours - a no-clock day-stream
 #include "nimbus/orch/retention.h"
 
 namespace nimbus {
@@ -791,6 +792,9 @@ void noteUnreadable(EpiQueryInfo& info, uint32_t day, long from, long to) {
 bool pageFull(const MsgQuery& q, const std::vector<EpisodicMessage>& out) {
   return q.limit > 0 && (int)out.size() >= q.limit;
 }
+// A day-stream of rows stored before the clock was set (boot-relative hours): its ids
+// interleave with the dated days', so the card alone cannot put it in id order.
+bool noClockDay(uint32_t day) { return day < kClockValidHours / 24u; }
 }  // namespace
 
 uint32_t AppendLogEpisodicStore::indexFloorSfx() const {
@@ -991,12 +995,15 @@ void AppendLogEpisodicStore::coldAfterStart(const EpiPsVec<uint32_t>& days, uint
   // The day: the last one whose first record is at or before the cursor (ids are minted
   // in arrival order, and day-streams hold arrival order). A day that will not read is
   // taken as newer: the walk then starts earlier and skips, never later and loses rows.
-  dayIdx = 0;
+  // The no-clock streams sort first and hold ids out of day order: the search runs over the
+  // dated days only, so the walk starts at the cursor's own day and a page the budget cuts
+  // continues past the cursor row (queryAfterCold stops at a no-clock stream with cold bytes).
+  size_t first = 0;
+  while (first < days.size() && noClockDay(days[first])) first++;
+  dayIdx = first;
   off = 0;
-  // A day-0 stream (rows stored before the clock was set) holds ids out of day order: the
-  // walk then starts at the beginning and the id filter does the rest (slower, never lossy).
-  if (!days.empty() && days.front() == 0) return;
-  size_t lo = 0, hi = days.size();
+  if (first >= days.size()) return;
+  size_t lo = first, hi = days.size();
   while (lo < hi) {
     const size_t mid = lo + (hi - lo) / 2;
     long s = 0;
@@ -1104,6 +1111,28 @@ bool AppendLogEpisodicStore::coldDay(AfterPage& p, uint32_t day, long off, long 
   return true;
 }
 
+long AppendLogEpisodicStore::coldEndOf(uint32_t day, const std::map<uint32_t, uint32_t>& floorOfDay) const {
+  const long size = fs_.size(dayFile(day));
+  const auto fit = floorOfDay.find(day);
+  return fit == floorOfDay.end() ? size : std::min(size, (long)fit->second);
+}
+
+// A no-clock stream the index has not read whole: its rows cannot be placed among the dated
+// days' from the card, so the read names it and gives nothing (its reader waits; the
+// background indexing reads the stream, and the index serves every row in id order).
+bool AppendLogEpisodicStore::noClockColdSpan(const EpiPsVec<uint32_t>& days,
+                                             const std::map<uint32_t, uint32_t>& floorOfDay,
+                                             EpiQueryInfo& info) const {
+  for (const uint32_t day : days) {
+    if (!noClockDay(day)) return false;   // days are sorted: the no-clock ones come first
+    const long end = coldEndOf(day, floorOfDay);
+    if (end <= 0) continue;
+    noteUnreadable(info, day, 0, end);
+    return true;
+  }
+  return false;
+}
+
 bool AppendLogEpisodicStore::queryAfterCold(const MsgQuery& q, const EpiAfterFilter& f, uint32_t afterSfx,
                                             std::vector<EpisodicMessage>& out, EpiQueryInfo& info) const {
   const EpiPsVec<uint32_t> days = dayStreams();   // oldest first
@@ -1115,15 +1144,14 @@ bool AppendLogEpisodicStore::queryAfterCold(const MsgQuery& q, const EpiAfterFil
     auto it = floorOfDay.find(r.dayNum);
     if (it == floorOfDay.end() || r.offset < it->second) floorOfDay[r.dayNum] = r.offset;
   }
+  if (noClockColdSpan(days, floorOfDay, info)) return false;
   size_t bytes = 0, di = 0;
   long off = 0;
   coldStart(q, days, afterSfx, di, off, bytes);
   int files = 0;
   for (; di < days.size(); ++di, off = 0) {
     const uint32_t day = days[di];
-    long end = fs_.size(dayFile(day));
-    auto fit = floorOfDay.find(day);
-    if (fit != floorOfDay.end()) end = std::min(end, (long)fit->second);
+    const long end = coldEndOf(day, floorOfDay);
     if (end <= off) continue;   // no cold bytes left in this day
     if (files >= kColdMaxFiles || bytes >= kColdMaxBytes) {
       info.newerExists = true;

@@ -251,7 +251,10 @@ order with no gap. The read reaches the rows the boot scan has not indexed yet
 under the same per-call budget (a page the budget cut short, even an empty one,
 says where to go on), and names a span the card would not give back instead of
 skipping it silently: the summary stops before such a span rather than move past
-rows it never read. The conversation history a turn sends is kept
+rows it never read. Rows stored before the clock was set sit in their own stream,
+out of order with the dated days; until the background indexing has read that
+stream after a restart, a forward read below the index names it and waits, since
+the card alone cannot put those rows in order. The conversation history a turn sends is kept
 in a per-chat cache between turns, so a steady-state turn reads nothing from the
 card; when a request has to leave earlier messages out, it names them and the
 `memory.episodic` call that reads them back. The memory tiers in the prompt tell

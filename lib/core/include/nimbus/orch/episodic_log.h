@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <set>
 #include <string>
 #include <string_view>
@@ -470,9 +471,15 @@ class AppendLogEpisodicStore : public EpisodicStore {
   size_t loadRecBlockFwd(const MsgQuery& q, const EpiAfterFilter& f, size_t i, RecBlock& blk) const;
   // The cold region forward from the cursor. True when it was read to its end (the
   // index continues the page); false when the page filled or the budget ran out (the
-  // byte cursor is set).
+  // byte cursor is set), or when a no-clock stream is still unindexed (named in
+  // info.unreadable, nothing read: its ids interleave with the dated days').
   bool queryAfterCold(const MsgQuery& q, const EpiAfterFilter& f, uint32_t afterSfx,
                       std::vector<EpisodicMessage>& out, EpiQueryInfo& info) const;
+  // Where a day-stream's cold bytes end (its oldest indexed offset, or its size), and the
+  // no-clock stream that still has some (true: named in `info`).
+  long coldEndOf(uint32_t day, const std::map<uint32_t, uint32_t>& floorOfDay) const;
+  bool noClockColdSpan(const EpiPsVec<uint32_t>& days, const std::map<uint32_t, uint32_t>& floorOfDay,
+                       EpiQueryInfo& info) const;
   // The cold walk's parts: where it starts (a byte cursor, or coldAfterStart), one forward
   // window of whole records (false: the card would not give it back), and one day's cold
   // bytes (false: the walk stopped, its cursor set).

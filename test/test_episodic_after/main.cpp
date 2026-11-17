@@ -274,6 +274,76 @@ static void test_after_reads_follow_ids_when_the_index_does_not() {
   }
 }
 
+// A chat row for the two no-clock tests: `hours` picks its day-stream.
+static EpisodicMessage chatRow(uint32_t n, uint32_t hours, size_t bytes) {
+  EpisodicMessage m;
+  m.id = idOf(n);
+  m.sessionId = "c1";
+  m.role = "user";
+  m.kind = MsgKind::Message;
+  m.tsHours = hours;
+  m.text = "row " + m.id + " " + std::string(bytes, 'x');
+  return m;
+}
+
+// Rows stored before the clock was set sit in a no-clock day-stream (day 0), whose ids
+// interleave with the dated days'. A boot scan that stopped early leaves it unindexed (day 0
+// sorts oldest), and the card alone cannot put its rows in id order: a forward read below the
+// index would hand day-0 rows out ahead of older dated rows, and a reader that pages by the
+// last id (the fold) would then anchor past rows it never read. So the read names the stream
+// and returns nothing (its reader waits), and once the background indexing has read the card
+// the same read is whole and in id order.
+static void test_a_cold_no_clock_stream_is_named_not_misordered() {
+  FakeFs fs;
+  std::vector<std::string> want;
+  {
+    AppendLogEpisodicStore w(fs, "/mem/episodic", 512);
+    for (uint32_t i = 1; i <= 300; i++) {
+      // Rows 41-120 arrive during a restart with no clock (boot hours 0-7: day 0).
+      const uint32_t hours = (i > 40 && i <= 120) ? (i - 41) / 10 : (kDay0 + (i <= 40 ? 0u : 1u)) * 24 + 1;
+      w.addMessage(chatRow(i, hours, 200));
+      if (i > 5) want.push_back(idOf(i));
+    }
+  }
+  AppendLogEpisodicStore s(fs, "/mem/episodic", 16);
+  s.hydrate(40, 0);   // a truncated boot scan: the newest rows only
+  TEST_ASSERT_TRUE(s.hydrateTruncated());
+  EpiQueryInfo info;
+  const auto rows = s.query(chatAfter(idOf(5), 24), &info);
+  TEST_ASSERT_TRUE_MESSAGE(rows.empty(), rows.empty() ? "" : rows.front().id.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(info.unreadable.compare(0, 2, "0:") == 0, info.unreadable.c_str());
+  TEST_ASSERT_FALSE(info.newerExists);
+  while (s.backfillStep()) {
+  }
+  TEST_ASSERT_FALSE(s.hydrateTruncated());
+  assertSame(want, pageAll(s, idOf(5), 24, false));
+}
+
+// A no-clock stream that is wholly indexed (it began this session) does not move where the
+// cold walk starts: the walk still begins at the cursor's own dated day, so a page the cold
+// budget cuts short continues by byte cursor past the cursor row, never from the first day
+// (which would hand out rows at or before the cursor as if they followed it).
+static void test_a_no_clock_stream_does_not_move_the_cold_start() {
+  FakeFs fs;
+  std::vector<std::string> want;
+  const uint32_t kRows = 400, kAfter = 330;
+  {
+    AppendLogEpisodicStore w(fs, "/mem/episodic", 64);
+    for (uint32_t i = 1; i <= kRows; i++) {   // five dated days of 80 rows
+      w.addMessage(chatRow(i, (kDay0 + (i - 1) / 80) * 24 + 1, 600));
+      if (i > kAfter) want.push_back(idOf(i));
+    }
+  }
+  AppendLogEpisodicStore s(fs, "/mem/episodic", 64);
+  s.hydrate(20, 0);   // rows 381-400 indexed: the cursor's day is cold below them
+  TEST_ASSERT_TRUE(s.hydrateTruncated());
+  for (uint32_t i = kRows + 1; i <= kRows + 6; i++) {   // this session, before the clock is set
+    s.addMessage(chatRow(i, 0, 600));
+    want.push_back(idOf(i));
+  }
+  assertSame(want, pageAll(s, idOf(kAfter), 1000, false));
+}
+
 // A day-stream the card will not read is named as an unreadable span; the rows after it
 // still come back, in order.
 static void test_an_unreadable_span_is_reported() {
@@ -338,6 +408,8 @@ int main(int, char**) {
   RUN_TEST(test_index_after_pages_under_the_read_budget);
   RUN_TEST(test_cold_after_reads_forward_then_joins_the_index);
   RUN_TEST(test_after_reads_follow_ids_when_the_index_does_not);
+  RUN_TEST(test_a_cold_no_clock_stream_is_named_not_misordered);
+  RUN_TEST(test_a_no_clock_stream_does_not_move_the_cold_start);
   RUN_TEST(test_an_unreadable_span_is_reported);
   RUN_TEST(test_the_overlay_patches_after_reads);
   RUN_TEST(test_text_filter_keeps_the_order);
