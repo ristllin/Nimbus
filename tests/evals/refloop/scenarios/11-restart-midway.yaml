@@ -1,0 +1,23 @@
+id: restart-midway
+title: A restart in the middle of the conversation
+pain: Conversation history across a restart. Nothing was saved on purpose, so only the history can answer.
+turns:
+  - say: "I'm comparing two flats. Flat A is 1,150 a month, 42 square metres, 12 minutes' walk to the station. Don't save anything, just keep it in mind for this chat."
+  - say: "Flat B is 1,320 a month, 55 square metres, 25 minutes' walk."
+  - say: "Which is cheaper per square metre? Show both numbers."
+    expect:
+      - reply_regex: '27[.,][34]'
+      - reply_regex: '\b24\b|24[.,]0'
+  - restart: true
+  - say: "Remind me, how long was the walk to the station for each flat?"
+    expect:
+      - reply_regex: '\b12\b'
+      - reply_regex: '\b25\b'
+  - say: "If I take the one that's cheaper per square metre, what does it cost over 12 months?"
+    expect:
+      - reply_regex: '15[, ]?840'
+judge_notes: >
+  Flat A: 1,150 a month, 42 square metres (27.38 per square metre), 12 minutes' walk. Flat B: 1,320 a month,
+  55 square metres (24.00 per square metre), 25 minutes' walk. B is cheaper per square metre; 12 months of B is
+  15,840. The process restarted between turns 3 and 4, and the owner asked for nothing to be saved, so turns 4
+  and 5 test whether the conversation itself survived. Saving to memory or a file against the request is a fault.

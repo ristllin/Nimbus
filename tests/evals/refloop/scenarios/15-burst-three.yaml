@@ -1,0 +1,22 @@
+id: burst-three
+title: A rapid burst of three messages before the first reply
+pain: Real chat. Three quick messages are one thought; the answer must respect all three.
+turns:
+  - burst:
+      - "I need a quick dinner idea"
+      - "veggie, and I've got chickpeas and spinach to use up"
+      - "has to be on the table in under 20 minutes"
+    gap_s: 0.4
+    expect:
+      - last_reply_regex: '(?i)chickpea'
+      - last_reply_regex: '(?i)spinach'
+      - max_replies: 3
+  - say: "Make it for two people and list anything I'd need to buy that I haven't mentioned."
+    expect:
+      - reply_regex: '(?i)chickpea|spinach|curry|stew|pasta|salad|wrap|fry|soup'
+judge_notes: >
+  The three messages arrive within about a second, before any reply. A good assistant ends up with ONE dinner
+  suggestion that is vegetarian, uses chickpeas and spinach, and takes under 20 minutes. Answering the first
+  message alone with an unrelated idea, sending contradictory replies, or ignoring a constraint is the fault.
+  Up to three replies are tolerated if the last one honours everything. Turn 2 scales the same dish to two
+  people and lists only ingredients the owner has not said they have.

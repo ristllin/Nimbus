@@ -1,0 +1,25 @@
+id: tool-result-recall
+title: A question about a tool result from three turns ago, after the source is gone
+pain: Conversation history. What a tool returned earlier is part of the conversation and must stay usable.
+seed:
+  files:
+    - {project: garage, name: inventory.csv, fixture: inventory}
+turns:
+  - say: "Read the inventory file in my garage project and tell me how many different items are on it."
+    expect:
+      - reply_regex: '\b12\b|twelve'
+      - tool_called: [files_read]
+  - say: "Great. I have a copy on my laptop now, so delete that file from here."
+    expect:
+      - file_absent: {project: garage, name: inventory.csv}
+  - say: "How many days does February have in 2028?"
+    expect:
+      - reply_regex: '\b29\b'
+  - say: "In that inventory you read earlier, how many torque wrenches did I have, and which shelf were they on?"
+    expect:
+      - reply_regex: '\b2\b|two'
+      - reply_regex: 'C3'
+judge_notes: >
+  The inventory (12 items) was read in turn 1 and the file deleted in turn 2, so in turn 4 the only source is the
+  earlier tool result in the conversation: torque wrench, quantity 2, shelf C3. Answering correctly is the goal.
+  Saying the data is gone, or guessing, is a context failure.

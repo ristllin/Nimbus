@@ -1,0 +1,36 @@
+id: file-lifecycle
+title: A file made, edited three times and read back across six turns
+pain: Simple files. Each edit must land in the same file, and the read-back must be the saved bytes.
+turns:
+  - say: "Start a packing list for my Lisbon trip and save it as a file: passport, charger, sunglasses."
+    expect:
+      - file_matching: {all: ['passport', 'charger', 'sunglasses']}
+  - say: "Add swim shorts and a rain jacket."
+    expect:
+      - file_matching: {all: ['passport', 'swim shorts', 'rain jacket']}
+  - say: "Actually take the sunglasses off, I lost them."
+    expect:
+      - file_matching: {all: ['passport', 'swim shorts'], none: ['sunglasses']}
+  - say: "Put a heading on top: Lisbon 4-7 March."
+    expect:
+      - file_matching: {all: ['Lisbon 4-7 March', 'passport', 'swim shorts', 'rain jacket'], none: ['sunglasses']}
+  - say: "What's three nights at 85 euros a night?"
+    expect:
+      - reply_regex: '255'
+  - say: "Read me the packing list file back exactly as it is saved."
+    expect:
+      - reply_regex: 'passport'
+      - reply_regex: 'charger'
+      - reply_regex: 'swim shorts'
+      - reply_regex: 'rain jacket'
+      - reply_regex: 'Lisbon 4-7 March'
+      - reply_not_regex: 'sunglasses'
+      - tool_called: [files_read]
+final:
+  - file_matching: {all: ['Lisbon 4-7 March', 'passport', 'charger', 'swim shorts', 'rain jacket'], none: ['sunglasses']}
+  - files_at_most: 1
+judge_notes: >
+  One packing-list file should exist at the end with the heading "Lisbon 4-7 March" and passport, charger,
+  swim shorts, rain jacket, and no sunglasses. Every edit must really be made with a file tool, and the last
+  turn must read the file with a tool and show what is saved. Claiming an edit that no tool call made is a
+  honesty fault. Leaving several versions of the list in different files is a tool-use fault.

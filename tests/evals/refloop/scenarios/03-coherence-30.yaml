@@ -1,0 +1,64 @@
+id: coherence-30
+title: Thirty turns of party planning with callbacks to turns 3, 11 and 19
+pain: Loses coherency over very few messages. Facts stated once must still be there many turns later.
+turns:
+  - say: "I'm organising my dad's 70th birthday party and I'll think out loud with you. Keep answers short. Don't save anything to memory or files, this is just chat."
+  - say: "It's on Saturday 12 December at the Rowan Tree hall."
+  - say: "Important: my sister Priya is allergic to walnuts."
+  - say: "Give me three cake flavour ideas, one line."
+  - say: "We're expecting 24 guests. How many tables of 6 is that?"
+    expect:
+      - reply_regex: '\b4\b|four'
+  - say: "What's a good first song for a 70th? One suggestion."
+  - say: "Dad loves Motown. Give me two Motown tracks everyone knows."
+  - say: "Should speeches come before or after food? One line."
+  - say: "My brother Callum will do the speech. Roughly how long should it be?"
+  - say: "Give me a two-word theme idea."
+  - say: "Money: the budget is capped at 480 pounds all in."
+  - say: "The hall costs 150. What's left?"
+    expect:
+      - reply_regex: '330'
+  - say: "Is a buffet or a sit-down meal usually cheaper?"
+  - say: "Two more people can come after all."
+  - say: "Suggest one non-alcoholic drink for the toast."
+  - say: "What should go on the invitation? Four bullet points max."
+  - say: "Balloons or flowers on the tables? Pick one."
+  - say: "Callum asked if he can bring his guitar. Good idea?"
+  - say: "Change of plan: the hall is busy earlier, so the start moves from 3pm to 5pm."
+  - say: "What's a simple game that works for all ages?"
+  - say: "I want a photo corner. One cheap idea."
+  - say: "Remind me: is there anything I have to keep out of the food?"
+    expect:
+      - reply_regex: 'walnut'
+  - say: "The caterer quoted 9 pounds a head. What does that come to for all the guests?"
+    expect:
+      - reply_regex: '234'
+  - say: "How many guests are we at now?"
+    expect:
+      - reply_regex: '\b26\b'
+  - say: "Who was doing the speech again?"
+    expect:
+      - reply_regex: 'Callum'
+  - say: "How much money did I say we have for all of this?"
+    expect:
+      - reply_regex: '480'
+  - say: "After the hall and the caterer, how much is left?"
+    expect:
+      - reply_regex: '\b96\b'
+  - say: "One idea for a small gift from all of us."
+  - say: "What time should I tell people to arrive?"
+    expect:
+      - reply_regex: '\b5\s?(pm|p\.m\.|o.clock)|17[:.]00|\b5:00'
+  - say: "Give me a five-line summary of the plan: date, place, time, budget, dietary."
+    expect:
+      - reply_regex: '12(th)? (of )?Dec|Dec(ember)? 12'
+      - reply_regex: 'Rowan Tree'
+      - reply_regex: '\b5\s?(pm|p\.m\.)|17[:.]00|\b5:00'
+      - reply_regex: '480'
+      - reply_regex: 'walnut'
+judge_notes: >
+  Ground truth: party Saturday 12 December at the Rowan Tree hall; Priya is allergic to walnuts (turn 3);
+  budget 480 pounds (turn 11); hall 150 so 330 left; guests 24 then 26 (turn 14); caterer 9 a head for 26 = 234;
+  left after hall and caterer = 96; Callum does the speech; start moved from 3pm to 5pm (turn 19).
+  The owner asked for short answers and for nothing to be saved to memory or files: saving is a tool-use fault.
+  Every callback (turns 22, 24, 25, 26, 27, 29, 30) must be answered from the conversation, correctly.

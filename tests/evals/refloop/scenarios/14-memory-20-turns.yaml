@@ -1,0 +1,55 @@
+id: memory-20-turns
+title: A memory saved in one conversation and used twenty turns into the next
+pain: Long-term memory. A fact saved on request must come back in a later conversation without being re-told.
+turns:
+  - say: "Two things to remember for good: my car's registration is KN19 ZTF, and my locker at the climbing gym is number 86."
+    expect:
+      - memory_regex: 'KN19 ?ZTF'
+      - memory_regex: '\b86\b'
+  - say: "Thanks, that's all for now."
+  - new_conversation: true
+  - say: "Morning. Keep answers to one line today please."
+  - say: "What's 12 times 12?"
+    expect:
+      - reply_regex: '144'
+  - say: "Capital of Norway?"
+  - say: "How many minutes in a day?"
+    expect:
+      - reply_regex: '1[, ]?440'
+  - say: "Spell 'necessary' for me."
+  - say: "What's the boiling point of water in Fahrenheit?"
+    expect:
+      - reply_regex: '212'
+  - say: "Give me a synonym for 'quick'."
+  - say: "What's 250 divided by 4?"
+    expect:
+      - reply_regex: '62[.,]5'
+  - say: "Which planet is closest to the sun?"
+  - say: "How many sides does a hexagon have?"
+  - say: "What's the past tense of 'swim'?"
+  - say: "Name a primary colour."
+  - say: "What's 7 squared?"
+    expect:
+      - reply_regex: '49'
+  - say: "Which ocean is between Europe and America?"
+  - say: "How many grams in a kilogram?"
+  - say: "What's the opposite of 'ancient'?"
+  - say: "How many strings on a standard guitar?"
+  - say: "What's 1000 minus 387?"
+    expect:
+      - reply_regex: '613'
+  - say: "Which month comes after August?"
+  - say: "One word for a baby cat?"
+  - say: "I'm at the gym desk. Which locker is mine?"
+    expect:
+      - reply_regex: '\b86\b'
+  - say: "And the parking machine wants my reg. What is it?"
+    expect:
+      - reply_regex: 'KN19 ?ZTF'
+final:
+  - memory_regex: 'KN19 ?ZTF'
+judge_notes: >
+  In the first conversation the owner asks for two facts to be remembered: car registration KN19 ZTF and gym
+  locker number 86. Then a NEW conversation starts (the earlier chat is not in view) with twenty unrelated
+  one-line questions. The last two turns need the saved facts: locker 86, registration KN19 ZTF. They must come
+  from long-term memory. Asking the owner for the fact, or guessing, is a failure.

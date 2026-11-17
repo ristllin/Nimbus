@@ -1,0 +1,17 @@
+id: recent-compare-plain
+title: The same shape with no food in it - a distance guess, the real figure, then the difference
+pain: The 15 Nov incident shape outside the food machinery.
+turns:
+  - say: "I'm driving from Leeds to Edinburgh on Saturday. Roughly how many miles is that by road? One number please."
+    expect:
+      - reply_regex: '\d{3}'
+  - say: "And what's the motorway speed limit for a normal car in the UK?"
+    expect:
+      - reply_regex: '70'
+  - say: "OK, I just checked the route planner: it says 219 miles door to door."
+  - say: "How close was your guess? Give me the difference in miles."
+    expect:
+      - difference_from_turn: {turn: 1, truth: 219}
+judge_notes: >
+  Turn 4 must use the assistant's OWN number from turn 1 and the owner's 219 and give the difference
+  between them. Nothing here needs a tool.

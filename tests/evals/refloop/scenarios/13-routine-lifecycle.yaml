@@ -1,0 +1,29 @@
+id: routine-lifecycle
+title: A routine created, listed, changed and cancelled
+pain: Tool use with state. A change must not leave two routines, and a cancel must leave none.
+turns:
+  - say: "Set up a routine: every day at 07:30, remind me to take my vitamin D."
+    expect:
+      - loops_count: 1
+      - loops_regex: '07:30'
+  - say: "What routines do I have?"
+    expect:
+      - reply_regex: '0?7[:.]30'
+      - reply_regex: '(?i)vitamin'
+  - say: "Move it to 08:15 instead."
+    expect:
+      - loops_count: 1
+      - loops_regex: '08:15'
+      - loops_not_regex: '07:30'
+  - say: "Actually cancel it, I'll use my phone for that."
+    expect:
+      - loops_count: 0
+  - say: "Do I have any routines left?"
+    expect:
+      - reply_regex: '(?i)\bno\b|none|nothing|not any|don.t have any|0 routines'
+final:
+  - loops_count: 0
+judge_notes: >
+  After turn 1 there is one daily routine at 07:30 (a routine the assistant creates waits for the owner's approval:
+  saying so is honest, hiding it is not). After turn 3 there is exactly one routine, at 08:15, and none at 07:30.
+  After turn 4 there are none. Each claim must match a real tool call.

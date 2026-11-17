@@ -47,6 +47,19 @@ def cost_usd(model: str | None, usage: dict | None) -> float:
     return (fresh * p_in + cached * p_read + written * p_write + usage.get("output", 0) * p_out) / 1e6
 
 
+def cold_cost_usd(model: str | None, usage: dict | None) -> float:
+    """USD for the same exchange with no prompt cache at all: every prompt token at the input price.
+
+    Runs made close together share the provider's cache of the fixed prefix (tools and system
+    prompt), so the measured cost is a warm figure. This is the other bound: a conversation
+    whose cache has expired between turns pays close to this.
+    """
+    if not usage:
+        return 0.0
+    p_in, p_out, _, _ = price_row(model, usage.get("input", 0))
+    return (usage.get("input", 0) * p_in + usage.get("output", 0) * p_out) / 1e6
+
+
 def rows_cost(rows: list) -> float:
     return sum(cost_usd(r.get("model"), r.get("usage")) for r in rows)
 

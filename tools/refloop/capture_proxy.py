@@ -88,10 +88,12 @@ class _Upstream:
 class CaptureProxy:
     """Start with start(), point clients at url(), read the records from `path` after stop()."""
 
-    def __init__(self, path: Path, label: str = "cap"):
+    def __init__(self, path: Path, label: str = "cap", keep_bodies: bool = False):
         self.path, self.label = Path(path), label
         self.ctx = {}
         self.records = []          # compact per-exchange rows (no bodies), for the runner
+        self.keep_bodies = keep_bodies
+        self.bodies = []           # full exchanges not yet taken (only with keep_bodies)
         self._lock = threading.Lock()
         self._seq = 0
         self._upstream = _Upstream()
@@ -141,6 +143,14 @@ class CaptureProxy:
         with self._lock:
             return [r for r in self.records if all(r["ctx"].get(k) == v for k, v in match.items())]
 
+    def take_bodies(self, **match) -> list:
+        """The full exchanges (bodies included) recorded under this context, removed from memory."""
+        with self._lock:
+            hit = [r for r in self.bodies if all(r["ctx"].get(k) == v for k, v in match.items())]
+            taken = {r["seq"] for r in hit}
+            self.bodies = [r for r in self.bodies if r["seq"] not in taken]
+            return hit
+
     def _reply(self, handler, status: int, headers, body: bytes):
         handler.send_response(status)
         for k, v in headers:
@@ -188,6 +198,8 @@ class CaptureProxy:
             self._seq += 1
             row["seq"] = full["seq"] = self._seq
             self.records.append(row)
+            if self.keep_bodies:
+                self.bodies.append(full)
             if self._file:
                 self._file.write(json.dumps(full, ensure_ascii=False) + "\n")
                 self._file.flush()

@@ -1,0 +1,33 @@
+id: correction-replace
+title: A correction ("no, I meant ...") that must replace, not add
+pain: A corrected fact must not leave the old one behind, in memory or in a file.
+turns:
+  - say: "Please remember that my dentist appointment is on the 14th of December at 10:00."
+    expect:
+      - memory_regex: '(?i)dentist'
+  - say: "No, I meant the 24th of December. Same time."
+    expect:
+      - memory_regex: '(?i)dentist.*24|24.*dentist'
+      - memory_not_regex: '(?i)\b14(th)?\b( of)? Dec|Dec(ember)? 14'
+  - say: "When is my dentist appointment?"
+    expect:
+      - reply_regex: '\b24(th)?\b'
+      - reply_not_regex: '\b14th\b'
+  - say: "Set up a shopping list file: apples, bread, 2 litres of milk."
+    expect:
+      - file_matching: {all: ['apples', 'bread', 'milk']}
+  - say: "No, I meant oat milk, and just 1 litre."
+    expect:
+      - file_matching: {all: ['apples', 'bread', '(?i)oat milk'], none: ['(?i)2 ?(l|litres?|liters?)\b']}
+  - say: "What's on the shopping list now?"
+    expect:
+      - reply_regex: '(?i)oat milk'
+      - reply_not_regex: '(?i)2 ?(litres?|liters?)'
+final:
+  - memory_not_regex: '(?i)\b14(th)?\b( of)? Dec|Dec(ember)? 14'
+  - file_matching: {all: ['apples', 'bread', '(?i)oat milk'], none: ['(?i)2 ?(l|litres?|liters?)\b']}
+judge_notes: >
+  After turn 2 long-term memory must hold the dentist appointment on 24 December at 10:00 and no entry still
+  saying the 14th. After turn 5 the shopping list file must hold apples, bread and 1 litre of oat milk, with no
+  "2 litres of milk" line left. A correction that adds a second entry and keeps the wrong one is the fault this
+  scenario looks for.

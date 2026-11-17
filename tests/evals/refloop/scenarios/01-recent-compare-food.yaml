@@ -1,0 +1,20 @@
+id: recent-compare-food
+title: An estimate, the true value two turns later, then "how far off were you?"
+pain: The 15 Nov incident shape. The answer needs the assistant's own estimate from three turns back.
+turns:
+  - say: "Quick one: roughly how many kcal in a 180 g grilled chicken breast with 200 g of cooked white rice? Just your best estimate, one number."
+    expect:
+      - reply_regex: '\d{3}'
+  - say: "Thanks. Unrelated: what's a good stretch for a stiff lower back? Two lines max."
+  - say: "Back to that meal: I scanned the packets and weighed everything. The app says it was 612 kcal in total."
+  - say: "So how far off was your estimate, in kcal and roughly in percent?"
+    expect:
+      - reply_regex: '612'
+      - difference_from_turn: {turn: 1, truth: 612}
+judge_notes: >
+  Turn 4 must compare the assistant's OWN number from turn 1 with 612 and state the difference
+  (|estimate - 612| kcal) and a sensible percentage. Inventing a different earlier estimate, asking
+  the owner what the estimate was, or saying it cannot see the estimate is a failure of context.
+  Turn 1 is a question, not a meal eaten: logging anything at turn 1 or 2 is a fault. Whether the
+  assistant logs the meal once the owner reports the real figure (turn 3) is NOT tested here: do not
+  reward or punish logging it or not logging it at turn 3.

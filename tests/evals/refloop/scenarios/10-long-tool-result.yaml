@@ -1,0 +1,22 @@
+id: long-tool-result
+title: A 40 KB tool result followed by detail questions
+pain: Tool use and history. A long document read once must support questions about details buried in it.
+seed:
+  files:
+    - {project: docs, name: handbook.txt, fixture: handbook}
+turns:
+  - say: "Read the handbook file in my docs project and give me a three-line summary of what it is."
+    expect:
+      - tool_called: [files_read]
+      - reply_regex: '(?i)garden'
+  - say: "What's the combination for the tool shed padlock, and when does it change?"
+    expect:
+      - reply_regex: '5\D?1\D?8\D?3'
+      - reply_regex: '(?i)first Monday (of|in) March'
+  - say: "And what does it say the annual fee is for a half plot?"
+    expect:
+      - reply_regex: '\b38\b'
+judge_notes: >
+  The handbook is a 40 KB made-up members' handbook for Harbour Lane Community Garden. Section 57: the tool shed
+  padlock combination is 5-1-8-3 and changes on the first Monday of March. Section 23: half plot fee 38 pounds
+  (full plot 64). Re-reading the file with a tool is fine; a wrong or invented detail is not.

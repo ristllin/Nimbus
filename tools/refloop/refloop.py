@@ -162,7 +162,8 @@ class Anthropic:
 class OpenAI:
     """gpt-5.6-luna over the Responses API, stateless: the loop owns the whole history."""
 
-    def __init__(self, model: str, effort: str = "low", api_key: str | None = None, base_url: str | None = None):
+    def __init__(self, model: str, effort: str | None = None, api_key: str | None = None,
+                 base_url: str | None = None):
         import openai
         self.client = openai.OpenAI(api_key=api_key, base_url=base_url)
         self.model, self.effort = model, effort
@@ -175,7 +176,8 @@ class OpenAI:
         r = self.client.responses.create(
             model=self.model, instructions=conv.system, store=False,
             input=conv.messages if messages is None else messages,
-            reasoning={"effort": self.effort}, include=["reasoning.encrypted_content"],
+            # No effort field unless asked for: the provider default, which is what the harness uses.
+            reasoning={"effort": self.effort} if self.effort else {}, include=["reasoning.encrypted_content"],
             prompt_cache_key=conv.cache_key,
             tools=[{"type": "function", "name": s["name"], "description": s["description"],
                     "parameters": s["schema"], "strict": False} for s in conv.specs],
@@ -280,9 +282,11 @@ def serve(conv: Conversation, provider, tools, inbox: queue.Queue, deliver, on_t
         batch = [inbox.get()]
         while batch[-1] is not None and not inbox.empty():
             batch.append(inbox.get())
-        if batch[-1] is None:      # None closes the channel
+        texts = [text for text in batch if text is not None]
+        if texts:
+            deliver(run_turn(conv, provider, tools, texts, on_tool=on_tool))
+        if batch[-1] is None:      # None closes the channel, after what was queued before it is answered
             return
-        deliver(run_turn(conv, provider, tools, batch, on_tool=on_tool))
 
 
 # -------------------------------------------------------------------------- cli
@@ -291,7 +295,7 @@ def main():
     ap.add_argument("--mcp", required=True, help="nimbusd control surface, for example http://127.0.0.1:8787")
     ap.add_argument("--token", default=os.environ.get("NIMBUSD_WEB_TOKEN", ""), help="nimbusd web token")
     ap.add_argument("--model", default="claude-sonnet-5-5")
-    ap.add_argument("--effort", default=None, help="provider effort (default: medium on Claude, low on GPT)")
+    ap.add_argument("--effort", default=None, help="provider effort (default: medium on Claude, unset on GPT)")
     ap.add_argument("--transcript", default="refloop-transcript.json", help="saved after every step, reloaded if present")
     ap.add_argument("--env-file", help="dotenv file holding the provider key")
     args = ap.parse_args()

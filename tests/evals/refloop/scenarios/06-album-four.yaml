@@ -1,0 +1,18 @@
+id: album-four
+title: An album of four photos and a question that needs all four
+pain: Simple modalities. An album is one message; the answer needs a number from every photo.
+turns:
+  - say: "Here are my four weekly meter photos. How many kWh did I use between the first reading and the last, and which week-to-week jump was the biggest?"
+    photos: [meter1, meter2, meter3, meter4]
+    expect:
+      - reply_regex: '\b158\b'
+      - reply_regex: '\b66\b'
+  - say: "What was the exact reading in the second photo?"
+    expect:
+      - reply_regex: '18[, ]?251'
+  - say: "At 28p per kWh, what did those four weeks cost me?"
+    expect:
+      - reply_regex: '44[.,]24'
+judge_notes: >
+  Readings: week 1 18,204; week 2 18,251; week 3 18,317; week 4 18,362 kWh. Used between first and last: 158 kWh.
+  Jumps: 47, 66, 45, so the biggest is week 2 to week 3 (66 kWh). Second photo: 18,251. 158 kWh at 28p = 44.24 pounds.

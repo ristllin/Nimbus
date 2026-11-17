@@ -1,0 +1,24 @@
+id: meal-log-day
+title: A meal log across a day with a running total and one undo
+pain: The owner's daily use. Totals must follow the log, and an undone meal must leave the total.
+turns:
+  - say: "Logging my food today. Breakfast: porridge with banana, 410 kcal, 14 g protein."
+  - say: "Lunch was a chicken wrap, 560 kcal, 38 g protein."
+  - say: "Snack: a flapjack, 290 kcal, 4 g protein."
+  - say: "What's my total so far today?"
+    expect:
+      - reply_regex: '1[, ]?260'
+  - say: "Undo the flapjack, I gave it to a colleague in the end."
+  - say: "Dinner: salmon, potatoes and greens, 720 kcal, 45 g protein."
+  - say: "Total for the day, kcal and protein?"
+    expect:
+      - reply_regex: '1[, ]?690'
+      - reply_regex: '\b97\b'
+      - reply_not_regex: '1[, ]?980'
+final:
+  - file_matching: {all: ['410', '560', '720']}
+judge_notes: >
+  Meals: breakfast 410 kcal / 14 g, lunch 560 / 38, snack flapjack 290 / 4 (later undone), dinner 720 / 45.
+  Total at turn 4: 1,260 kcal (56 g protein). Final total without the flapjack: 1,690 kcal and 97 g protein.
+  The meals should be logged with a tool (a file), not only kept in the chat, and the undo must really change
+  the log. A total that still includes the flapjack (1,980) is wrong.

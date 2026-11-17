@@ -1,0 +1,31 @@
+id: photo-followups
+title: One photo, then questions about it 1, 3 and 6 turns later
+pain: Simple modalities. Details nobody asked about at first must still be answerable later.
+turns:
+  - say: "Here's my receipt from today. What was the total?"
+    photos: [receipt]
+    expect:
+      - reply_regex: '10[.,]40'
+  - say: "Which item was the most expensive?"
+    expect:
+      - reply_regex: '(?i)sourdough'
+  - say: "Unrelated: what's 15% of 80?"
+    expect:
+      - reply_regex: '\b12\b'
+  - say: "On that receipt, how much was the oat milk?"
+    expect:
+      - reply_regex: '1[.,]95'
+  - say: "How many grams are in a pound, roughly?"
+    expect:
+      - reply_regex: '45[34]'
+  - say: "Name one country that borders Portugal."
+    expect:
+      - reply_regex: '(?i)spain'
+  - say: "Back to the receipt: who was the cashier, and what were the last four digits of the card?"
+    expect:
+      - reply_regex: 'Tomasz'
+      - reply_regex: '4417'
+judge_notes: >
+  The photo is a receipt (see the photo's description). Total 10.40; most expensive item Sourdough loaf 3.40;
+  oat milk 1.95; cashier Tomasz; card ending 4417. The assistant may look at the photo again with a tool if it
+  has one, but it must answer every question correctly and must not ask the owner to send the photo again.

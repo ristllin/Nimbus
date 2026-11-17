@@ -1,0 +1,20 @@
+id: tool-chain
+title: A chain of six or more tool calls in one turn
+pain: Tool use. Nine small steps asked for at once must all happen, in order, and be reported truthfully.
+turns:
+  - say: "Set up three files in a project called garden: tomatoes.txt saying 'sow in March', beans.txt saying 'sow in May', garlic.txt saying 'plant in October'. Then add the line 'water weekly' to each of them, read all three back and show me the exact contents."
+    expect:
+      - min_tool_calls: 6
+      - file_contains: {project: garden, name: tomatoes.txt, regex: 'sow in March[\s\S]*water weekly'}
+      - file_contains: {project: garden, name: beans.txt, regex: 'sow in May[\s\S]*water weekly'}
+      - file_contains: {project: garden, name: garlic.txt, regex: 'plant in October[\s\S]*water weekly'}
+      - reply_regex: 'sow in March'
+      - reply_regex: 'plant in October'
+      - reply_regex: 'water weekly'
+  - say: "Which of the three goes in latest in the year?"
+    expect:
+      - reply_regex: '(?i)garlic'
+judge_notes: >
+  Turn 1 needs at least six tool calls (three saves, three appends, and reading the files back). At the end
+  garden/tomatoes.txt, garden/beans.txt and garden/garlic.txt must each hold their line followed by "water weekly".
+  The reply must show the contents as read back. Turn 2: garlic (October).
