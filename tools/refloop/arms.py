@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import queue
+import re
 import shutil
 import threading
 import time
@@ -33,7 +34,11 @@ HEAD_PATHS = ("/v1/messages", "/v1/responses")
 PROVIDER_HOST = {"anthropic": "api.anthropic.com", "openai": "api.openai.com/v1"}
 TURN_TIMEOUT_S = 300
 SETTLE_MAX_S = 90
+ASYNC_MAX_S = 300  # how long a spawned sub-agent's result is waited for
 RESULT_KEEP = 4000  # characters of a tool result kept in a step record (the capture has it whole)
+# Chat rows the daemon itself posts beside the turn's reply (fixed product copy, not the model's words):
+# the approval notice for a routine the assistant created, and the standing-rule notice.
+NOTICE_RE = re.compile(r"^(The assistant wants to schedule |Standing rule saved \()")
 
 
 @dataclass
@@ -133,21 +138,34 @@ def harness_calls(exchanges: list) -> tuple:
     """One harness turn's tool calls and reply fields, read from its captured head exchanges.
 
     Returns (tools, harness): tools is the registry calls in order with their results, plus one
-    entry per acting reply field; harness holds the final orch_turn fields and any orch_turn the
-    harness sent back.
+    entry per acting reply field of every accepted orch_turn (the owner's turn, and the follow-up
+    turn a finished sub-agent triggers); harness holds those fields and any orch_turn sent back.
     """
     calls = _paired_calls(exchanges)
     finals = [c for c in calls if c["name"] == "orch_turn"]
-    fields = {k: v for k, v in (finals[-1]["args"] if finals else {}).items() if k != "reply" and v}
-    tools = [c for c in calls if c["name"] != "orch_turn"] + _field_calls(fields)
+    accepted = [{k: v for k, v in c["args"].items() if k != "reply" and v} for c in finals if not c.get("result")]
+    tools = [c for c in calls if c["name"] != "orch_turn"]
+    for fields in accepted:
+        tools += _field_calls(fields)
     bounced = [c["result"][:600] for c in finals if c.get("result")]
-    return _clip(tools), {"fields": fields, "bounced": bounced, "orch_turn_calls": len(finals)}
+    merged = {k: v for fields in accepted for k, v in fields.items()}
+    return _clip(tools), {"fields": merged, "bounced": bounced, "orch_turn_calls": len(finals)}
+
+
+def spawned(exchanges: list) -> bool:
+    """True when the turn started a sub-agent: its result arrives later, as another chat message."""
+    return any(t.get("via") == "session_ops" for t in harness_calls(exchanges)[0])
 
 
 def _clip(tools: list) -> list:
     for t in tools:
         t["result"] = (t.get("result") or "")[:RESULT_KEEP]
     return tools
+
+
+def split_notices(texts: list) -> tuple:
+    """(the assistant's replies, the daemon's own notices) among the chat rows a turn produced."""
+    return [t for t in texts if not NOTICE_RE.match(t)], [t for t in texts if NOTICE_RE.match(t)]
 
 
 # ------------------------------------------------------------------------ state
@@ -290,12 +308,28 @@ class ArmA(Arm):
         rec["timed_out"] = not self._wait_turns(ids, started + step.get("timeout_s", TURN_TIMEOUT_S))
         rec["latency_s"] = round(time.time() - started, 2)
         self._settle()
-        rows = self.d.get_json(f"/api/replies?after={seq0}").get("replies", [])
-        rec["replies"] = [r.get("text", "") for r in rows if r.get("role") == "assistant" and r.get("text")]
-        rec["tools"], rec["harness"] = harness_calls(
-            [b for b in self.proxy.take_bodies(turn=self.turn) if b["path"] in HEAD_PATHS]
-        )
+        if spawned(self._head_bodies(keep=True)):
+            # A sub-agent was started: its result is delivered later as one more message, and the
+            # owner waits for it. Wait too, so the record holds what the owner finally got.
+            rec["awaited_s"] = self._await_more(seq0, len(self._chat_rows(seq0)))
+        rec["replies"], rec["notices"] = split_notices(self._chat_rows(seq0))
+        rec["tools"], rec["harness"] = harness_calls(self._head_bodies())
         (self.dir / f"lastturn-{self.turn:02d}.txt").write_text(self.d.get_text("/api/lastturn"))
+
+    def _head_bodies(self, keep: bool = False) -> list:
+        return [b for b in self.proxy.take_bodies(keep=keep, turn=self.turn) if b["path"] in HEAD_PATHS]
+
+    def _chat_rows(self, seq0: int) -> list:
+        rows = self.d.get_json(f"/api/replies?after={seq0}").get("replies", [])
+        return [r.get("text", "") for r in rows if r.get("role") == "assistant" and r.get("text")]
+
+    def _await_more(self, seq0: int, have: int) -> float:
+        """Wait for one more chat row than `have` (the sub-agent's result), then for the engine to go idle."""
+        started = time.time()
+        while time.time() - started < ASYNC_MAX_S and len(self._chat_rows(seq0)) <= have:
+            time.sleep(1)
+        self._settle()
+        return round(time.time() - started, 1)
 
     def _wait_turns(self, ids: list, deadline: float) -> bool:
         """Poll each web turn's own reply until every one is over. False when time runs out."""

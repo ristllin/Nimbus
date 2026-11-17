@@ -361,6 +361,26 @@ class WireTest(unittest.TestCase):
         self.assertEqual(harness["fields"], {"mem_write": [{"content": "fact"}]})
         self.assertEqual(harness["orch_turn_calls"], 1)
 
+    def test_a_spawn_is_seen_and_its_follow_up_turn_is_kept(self):
+        spawn = {
+            "type": "tool_use",
+            "id": "o1",
+            "name": "orch_turn",
+            "input": {"reply": "started a reader", "session_ops": [{"op": "spawn", "task": "read it all"}]},
+        }
+        later = {
+            "type": "tool_use",
+            "id": "o2",
+            "name": "orch_turn",
+            "input": {"reply": "the fee is 38", "mem_write": [{"content": "fee 38"}]},
+        }
+        first = [{"request": {"messages": []}, "response": {"content": [spawn]}}]
+        self.assertTrue(arms.spawned(first))
+        self.assertFalse(arms.spawned([{"request": {"messages": []}, "response": {"content": [later]}}]))
+        tools, harness = arms.harness_calls(first + [{"request": {"messages": []}, "response": {"content": [later]}}])
+        self.assertEqual([t["name"] for t in tools], ["session_spawn", "memory_write"])
+        self.assertEqual(set(harness["fields"]), {"session_ops", "mem_write"})
+
     def test_openai_exchanges_and_a_bounced_final(self):
         call = {
             "type": "function_call",
@@ -453,6 +473,21 @@ class WireTest(unittest.TestCase):
             {"reply": "ok"},
         )
         self.assertEqual(forced["forced_final"], 1)
+
+    def test_the_daemon_notices_are_not_the_assistants_replies(self):
+        rows = [
+            "The assistant wants to schedule 'Vitamin D reminder'. Approve it under Assistant > Routines, or ignore this and it never runs.",
+            "I've created the daily 07:30 reminder. It waits for your approval.",
+            "Standing rule saved (p1): Keep answers to one line. Review or remove: /prefs",
+        ]
+        replies, notices = arms.split_notices(rows)
+        self.assertEqual(replies, [rows[1]])
+        self.assertEqual(notices, [rows[0], rows[2]])
+        text = grade.render_transcript(
+            {"steps": [{"kind": "say", "turn": 1, "user": ["x"], "replies": replies, "notices": notices}]}
+        )
+        self.assertIn("the system itself also showed the owner this notice: The assistant wants to schedule", text)
+        self.assertNotIn("(reply 2)", text)
 
     def test_usage_is_one_shape_for_both_providers(self):
         ant = normalize_usage(

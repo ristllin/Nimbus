@@ -191,6 +191,9 @@ def _render_turn(step: dict) -> list:
     replies = step.get("replies") or []
     if step.get("error") or step.get("timed_out"):
         lines.append(f"  [the turn failed: {step.get('error') or 'no reply in time'}]")
+    lines += [
+        f"  [the system itself also showed the owner this notice: {_cut(n, 300)}]" for n in step.get("notices") or []
+    ]
     many = len(replies) > 1
     lines += [
         f"  Assistant{f' (reply {n + 1})' if many else ''}: {_cut(reply, 3000)}" for n, reply in enumerate(replies)
