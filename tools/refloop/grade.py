@@ -35,9 +35,15 @@ FLAGS = re.I | re.S
 
 
 # ------------------------------------------------------------------- checks
+WORDS = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen".split()
+WORDS += "seventeen eighteen nineteen twenty".split()
+
+
 def _ints(text: str) -> set:
-    """Whole numbers in a text, thousands separators removed ("1,260" is 1260)."""
-    return {int(m.replace(",", "")) for m in re.findall(r"(?<![\d.])\d{1,3}(?:,\d{3})+|\d+", text or "")}
+    """Whole numbers in a text: digits with thousands separators removed ("1,260" is 1260), and "nine" as 9."""
+    text = text or ""
+    found = {int(m.replace(",", "")) for m in re.findall(r"(?<![\d.])\d{1,3}(?:,\d{3})+|\d+", text)}
+    return found | {n for n, word in enumerate(WORDS) if re.search(rf"\b{word}\b", text, re.I)}
 
 
 def _memory_text(state: dict) -> str:

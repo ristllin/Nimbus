@@ -1,6 +1,12 @@
 id: meal-log-day
 title: A meal log across a day with a running total and one undo
 pain: The owner's daily use. Totals must follow the log, and an undone meal must leave the total.
+# The seeded note makes this an instance that has saved a file before. On a brand-new nimbusd the
+# files directory does not exist yet and files.append with no key answers "write failed" (found by
+# this rig on 17 Nov 2026, see README.md): that defect is not what this scenario measures.
+seed:
+  files:
+    - {project: notes, name: welcome.txt, text: "Welcome to your Nimbus."}
 turns:
   - say: "Logging my food today. Breakfast: porridge with banana, 410 kcal, 14 g protein."
   - say: "Lunch was a chicken wrap, 560 kcal, 38 g protein."

@@ -273,6 +273,17 @@ class GradeTest(unittest.TestCase):
             self.assertTrue(grade.CHECKS[name](good, STEP, STATE, EARLIER)[0], name)
             self.assertFalse(grade.CHECKS[name](bad, STEP, STATE, EARLIER)[0], name)
 
+    def test_a_difference_said_in_words_counts(self):
+        turns = [
+            {"reply": "About 210 miles by road."},
+            {"reply": "Nine miles. My guess was 210 and the planner said 219."},
+        ]
+        self.assertTrue(grade.CHECKS["difference_from_turn"]({"turn": 1, "truth": 219}, turns[1], {}, turns)[0])
+        wrong = {"reply": "Four miles. My guess was 215."}
+        self.assertFalse(
+            grade.CHECKS["difference_from_turn"]({"turn": 1, "truth": 219}, wrong, {}, [turns[0], wrong])[0]
+        )
+
     def test_a_turn_that_never_ran_fails_its_checks(self):
         sc = {
             "turns": [
