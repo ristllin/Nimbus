@@ -15,9 +15,11 @@
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/history_rows.h"
+#include "nimbus/orch/router_route.h"
 
 // The history's invariant, as a class (lane H of the history fix, plan v3): on every head
-// wire (Anthropic, OpenAI, Mistral, the Z.ai and custom single shots), loop on and off, an
+// wire (Anthropic, OpenAI, Mistral, Z.ai, the custom single shot, and the Cumulo head through
+// each of its four upstreams), loop on and off, an
 // owner's turn and a routine's, with or without a summary, a clock, a photo, recall and a
 // large input, over days of history before today and a long today:
 //   1. every live row after the summary's last row (thru) is in the request, or named with
@@ -26,7 +28,10 @@
 //   2. no live row leaves the request by the give-up order unless the real body was refused
 //      for its size first (v5.1.1's wire guard cut on 121 of 123 owner turns from an
 //      estimate, day_context.cpp:140-167 at v5.1.1, and said nothing).
-// Requests go through the device's own provider code to a scripted transport.
+// Requests go through the device's own provider code to a scripted transport, each wire at
+// its head's own request budget (the wire reads the head's model; the Z.ai head is pointed
+// as the device points it), and again with every wire at the 85,000 B floor, the budget of
+// a routed or custom head, where nearly every shape is refused at round 0.
 
 namespace {
 
@@ -79,6 +84,12 @@ const Head kHeads[] = {
     {"mistral/medium", "mistral", "mistral-medium-latest", "mistral"},
     {"zai/glm-5.3", "zai", "glm-5.3", "custom"},
     {"custom", "custom", "gpt-5.6-luna", "custom"},
+    // The Cumulo head through each upstream (the device's cumuloAttempt): the upstream's own
+    // wire over the router, at the routed floor.
+    {"cumulo/openai", "cumulo", "openai/gpt-5.6", "openai"},
+    {"cumulo/anthropic", "cumulo", "anthropic/claude-sonnet-5-5", "anthropic"},
+    {"cumulo/mistral", "cumulo", "mistral/mistral-large-4-0", "mistral"},
+    {"cumulo/zai", "cumulo", "zai/glm-5.3", "custom"},
 };
 
 struct Shape {
@@ -139,13 +150,18 @@ struct Rig {
     pd = wire.contract();
     pd.nowMs = [this] { return plat.ms; };
     pd.key = [](const char*) { return std::string("fake"); };
+    pd.orchModel = [this](const char* host) { return cfg.orchModels[host]; };   // the wire budgets its own head
+    const bool zai = std::string(h.host) == "zai";
     if (std::string(h.wire) == "custom") {
-      wire.custBase = std::string(h.host) == "zai" ? "https://api.z.ai" : "https://llm.example.lan";
-      wire.custPathPrefix = std::string(h.host) == "zai" ? "/api/paas/v4" : "";
+      wire.custBase = zai ? "https://api.z.ai" : "https://llm.example.lan";
+      wire.custPathPrefix = zai ? "/api/paas/v4" : "";
       wire.custKey = "fake";
       wire.custModel = h.model;
     }
-    for (int i = 0; i < 12; i++) wire.http.script.push_back(Exchange{"", "", 200, finalBody(h.wire)});
+    if (zai) pointAtZai(h.model);
+    // A Z.ai turn under the loop answers with a tool call (chat completions), a flat one in content.
+    const std::string final = finalBody(zai && s.loop ? "mistral" : h.wire);
+    for (int i = 0; i < 12; i++) wire.http.script.push_back(Exchange{"", "", 200, final});
     build(h, s);
     TurnEngine::Deps d;
     d.cfg = cfg.contract();
@@ -182,10 +198,7 @@ struct Rig {
     const std::string host = h.host;
     d.hosts.add(host, [this, host](std::string& conv, const std::string& ins, const std::string& inp, std::string& out,
                                    std::string& err, const agent::HeadTools* tools, orch::TokenUsage* use) {
-      if (host == "mistral") return providers::orchTurnMistral(pd, conv, ins, inp, out, err, tools, use);
-      if (host == "anthropic") return providers::orchTurnAnthropic(pd, conv, ins, inp, out, err, tools, use);
-      if (host == "openai") return providers::orchTurnOpenAI(pd, conv, ins, inp, out, err, tools, use);
-      return providers::orchTurnCustom(pd, conv, ins, inp, out, err, tools, use);
+      return hostTurn(host, HostCall{conv, ins, inp, out, err, tools, use});
     });
     d.hosts.fabricSupports = [](const std::string& x) { return providers::fabricSupports(x); };
     d.histV2 = [] { return true; };
@@ -199,6 +212,56 @@ struct Rig {
     eng.reset(new TurnEngine(std::move(d)));
   }
   ~Rig() { providers::clearHostParks(); }
+
+  // One head request, as the engine hands it to a host.
+  struct HostCall {
+    std::string& conv;
+    const std::string& ins;
+    const std::string& inp;
+    std::string& out;
+    std::string& err;
+    const agent::HeadTools* tools;
+    orch::TokenUsage* use;
+  };
+  // The upstream's own wire for `upstream` over `deps` (the custom single shot for the rest).
+  static bool wireTurn(const std::string& upstream, const providers::ProviderDeps& deps, const HostCall& c) {
+    if (upstream == "mistral") return providers::orchTurnMistral(deps, c.conv, c.ins, c.inp, c.out, c.err, c.tools, c.use);
+    if (upstream == "anthropic")
+      return providers::orchTurnAnthropic(deps, c.conv, c.ins, c.inp, c.out, c.err, c.tools, c.use);
+    if (upstream == "openai") return providers::orchTurnOpenAI(deps, c.conv, c.ins, c.inp, c.out, c.err, c.tools, c.use);
+    return providers::orchTurnCustom(deps, c.conv, c.ins, c.inp, c.out, c.err, c.tools, c.use);
+  }
+  // A direct head on its own wire; the Cumulo head as the device runs it (orchestrator.cpp
+  // cumuloAttempt): the selector's upstream on its own wire through the router, on the model
+  // the selector names; Z.ai and any other upstream as a single shot over the router's chat
+  // completions.
+  bool hostTurn(const std::string& host, const HostCall& c) {
+    if (host != "cumulo") return wireTurn(host, pd, c);
+    const orch::RouterRoute rr = orch::resolveRouterRoute(cfg.orchModels["cumulo"]);
+    providers::ProviderDeps r = pd;
+    r.routerBase = [] { return std::string("https://app.cumulo-nimbus.ai"); };
+    r.routerKey = [] { return std::string("cumulo_sk_test"); };
+    const std::string model = rr.model;
+    r.orchModel = [model](const char*) { return model; };
+    const bool native = rr.upstream == "anthropic" || rr.upstream == "openai" || rr.upstream == "mistral";
+    if (rr.upstream == "mistral") c.conv.clear();   // the router admits a new conversation only
+    if (!native) providers::configureRouterCompatHead(r, rr.upstream, model);
+    return wireTurn(native ? rr.upstream : "custom", r, c);
+  }
+
+  // The Z.ai head as the device points it (transport_tls.cpp zaiHead): its own budget and
+  // the tool loop, for its head requests and its fabric rounds.
+  void pointAtZai(const std::string& model) {
+    pd.zaiHead = [model](providers::ProviderDeps& z) {
+      z.customBase = [] { return std::string("https://api.z.ai"); };
+      z.customPathPrefix = [] { return std::string("/api/paas/v4"); };
+      z.customKey = [] { return std::string("fake"); };
+      z.customConv = [] { return std::string("openai"); };
+      z.customModel = [model] { return model; };
+      providers::applyZaiHeadPolicy(z);
+    };
+    pd.zaiHead(pd);
+  }
 
   void build(const Head&, const Shape& s) {
     const uint32_t now = plat.epoch ? (uint32_t)plat.epoch : 0;
@@ -421,41 +484,69 @@ void complaintChat(Rig& r) {
 
 // Plan v3 lane H DoD: the 16:00 request keeps the 15:55 estimate and the 15:57 comparison at
 // the Mistral, Sonnet, luna and glm budgets, and anything it leaves out it names.
+// The 16:00 request of one head: what it carried.
+static void replayOn(const ReplayHead& rh, const char* budget) {
+  LogCapture::install();
+  Shape shape;
+  shape.clock = 0;
+  Rig r(rh.head, shape);
+  r.plat.epoch = k15Nov + 16 * 3600;
+  complaintChat(r);
+  r.recalled.assign(10, "[70%] a remembered food fact " + std::string(260, 'r'));
+  r.eng->handleMessage("Do you understand why? It is easy to compare the grams you estimated with my weights. "
+                       "How did you miss that?",
+                       "R", "1001");
+  TEST_ASSERT_FALSE_MESSAGE(r.wire.http.seen.empty(), rh.name);
+  const std::string& body = r.wire.http.seen[0].body;
+  const bool estimate = body.find("50 g (40-60)") != std::string::npos;
+  const bool comparison = body.find("400 g vs ~290 g") != std::string::npos;
+  printf("complaint replay %s (%s budget): body %zu B, estimate %s, comparison %s\n", rh.name, budget, body.size(),
+         estimate ? "sent" : "MISSING", comparison ? "sent" : "MISSING");
+  TEST_ASSERT_TRUE_MESSAGE(estimate, rh.name);
+  TEST_ASSERT_TRUE_MESSAGE(comparison, rh.name);
+  TEST_ASSERT_TRUE_MESSAGE(body.find("CONVERSATION COVERAGE") != std::string::npos, rh.name);   // the hidden 13 days, named
+}
+
 static void test_the_15_nov_complaint_keeps_the_estimate_and_the_comparison() {
-  for (const ReplayHead& rh : kReplayHeads) {
-    LogCapture::install();
-    Shape shape;
-    shape.clock = 0;
-    Rig r(rh.head, shape);
-    r.plat.epoch = k15Nov + 16 * 3600;
-    complaintChat(r);
-    r.recalled.assign(10, "[70%] a remembered food fact " + std::string(260, 'r'));
-    r.eng->handleMessage("Do you understand why? It is easy to compare the grams you estimated with my weights. "
-                         "How did you miss that?",
-                         "R", "1001");
-    TEST_ASSERT_FALSE_MESSAGE(r.wire.http.seen.empty(), rh.name);
-    const std::string& body = r.wire.http.seen[0].body;
-    const bool estimate = body.find("50 g (40-60)") != std::string::npos;
-    const bool comparison = body.find("400 g vs ~290 g") != std::string::npos;
-    printf("complaint replay %s: body %zu B, estimate %s, comparison %s\n", rh.name, body.size(),
-           estimate ? "sent" : "MISSING", comparison ? "sent" : "MISSING");
-    TEST_ASSERT_TRUE_MESSAGE(estimate, rh.name);
-    TEST_ASSERT_TRUE_MESSAGE(comparison, rh.name);
-    TEST_ASSERT_TRUE_MESSAGE(body.find("CONVERSATION COVERAGE") != std::string::npos, rh.name);   // the hidden 13 days, named
-  }
+  for (const ReplayHead& rh : kReplayHeads) replayOn(rh, "its own");
+  providers::setTestBudgetOverride(85000);   // and where v5.1.1 stood: every wire at the floor
+  for (const ReplayHead& rh : kReplayHeads) replayOn(rh, "the 85,000 B");
+  providers::setTestBudgetOverride(0);
 }
 
 void setUp() { LogCapture::install(); }
 void tearDown() { agent::hlog::setSink(nullptr); }
 
+// Every head over every shape; one line per head.
+static Verdict everyHead(const char* budget) {
+  Verdict all;
+  for (const Head& h : kHeads) {
+    Verdict one;
+    for (const Shape& s : shapes()) check(h, s, one);
+    printf("wire fit class, %s budget, %s: %d cases, %d refused at round 0, %d rows named, %d violations\n", budget,
+           h.name, one.cases, one.refusals, one.named, one.violations);
+    all.cases += one.cases;
+    all.refusals += one.refusals;
+    all.named += one.named;
+    all.violations += one.violations;
+    if (all.first.empty()) all.first = one.first;
+  }
+  return all;
+}
+
 static void test_every_live_row_is_sent_or_named_on_every_head_wire() {
-  Verdict v;
-  for (const Head& h : kHeads)
-    for (const Shape& s : shapes()) check(h, s, v);
-  printf("wire fit class: %d cases, %d refused at round 0, %d rows named, %d violations\n", v.cases, v.refusals,
-         v.named, v.violations);
-  TEST_ASSERT_EQUAL_MESSAGE(0, v.violations, v.first.c_str());
-  TEST_ASSERT_TRUE(v.cases >= 150);
+  const Verdict own = everyHead("its own");
+  providers::setTestBudgetOverride(85000);
+  const Verdict floor = everyHead("the 85,000 B");
+  providers::setTestBudgetOverride(0);
+  printf("wire fit class: own budgets %d cases, %d refused at round 0, %d rows named, %d violations; at the floor "
+         "%d cases, %d refused, %d named, %d violations\n",
+         own.cases, own.refusals, own.named, own.violations, floor.cases, floor.refusals, floor.named, floor.violations);
+  TEST_ASSERT_EQUAL_MESSAGE(0, own.violations, own.first.c_str());
+  TEST_ASSERT_EQUAL_MESSAGE(0, floor.violations, floor.first.c_str());
+  TEST_ASSERT_TRUE(own.cases >= 150 && floor.cases >= 150);
+  // The floor pass is the stress: most shapes are over 85,000 B and go through the give-up order.
+  TEST_ASSERT_TRUE_MESSAGE(floor.refusals > own.refusals && floor.refusals * 2 > floor.cases, "the floor refuses most shapes");
 }
 
 int main(int, char**) {

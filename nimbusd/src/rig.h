@@ -3438,6 +3438,7 @@ class NimbusdRig {
       return agent::HistoryMarks{f.thru, f.softStart, 0, f.lastFoldEpoch};
     };
     d.noteHistoryShift = [this](const std::string& c, const std::string& soft) { folds_.setSoftStart(c, soft); };
+    d.foldTriggerBytes = [this] { return foldTriggerNow(); };
     d.utcOffsetMin = [] { return hostedOffsetAt((uint32_t)time(nullptr)); };
     d.utcOffsetAt = [](uint32_t unixSec) { return hostedOffsetAt(unixSec); };
   }
@@ -3533,10 +3534,7 @@ class NimbusdRig {
     h.notDue = [this] { ownerFirst_.noteFoldNotDue(); };
     // The VN has no compactAtKB setting: the hosted value over the head's derived
     // history (RULINGS-v3 item 3), or the test seam's bytes.
-    h.triggerBytes = [this]() -> uint32_t {
-      if (opt_.foldTriggerBytes) return opt_.foldTriggerBytes;
-      return (uint32_t)orch::foldTriggerBytes(headRequestContext(), kHostedCompactKb);
-    };
+    h.triggerBytes = [this]() -> uint32_t { return foldTriggerNow(); };
     h.foldStepBytes = [this] { return headRequestContext().foldStepBytes; };   // one fold's step (lane B)
     h.utcOffsetMin = [](uint32_t epoch) { return hostedOffsetAt(epoch); };
     h.folded = [this](const agent::FoldDone& d) { foldLanded(d); };
@@ -3552,6 +3550,12 @@ class NimbusdRig {
     };
     h.firmware = NIMBUS_FW_BUILD;
     return h;
+  }
+  // The automatic fold's trigger: the fold driver's, and the engine's fold slice keeps a
+  // tail that fits it.
+  uint32_t foldTriggerNow() {
+    if (opt_.foldTriggerBytes) return opt_.foldTriggerBytes;
+    return (uint32_t)orch::foldTriggerBytes(headRequestContext(), kHostedCompactKb);
   }
   // The head's request context (lane B, on the Server link: no upload or pacing terms).
   orch::ContextBudget headRequestContext() {

@@ -4747,7 +4747,8 @@ called by the engine for every turn:)NIMBUSDOC"},
   byte for byte. The history is every turn after the fold anchor. It grows
   append-only to the head's soft mark (`historySoftBytes`), where a fold is due;
   the fold takes the oldest turns beyond the newest `historyKeepBytes`, at most one
-  fold step. Only past `historyMaxBytes` (or its row bound) are the oldest whole
+  fold step (an owner's own Compact threshold below the soft mark folds earlier and
+  keeps a tail in proportion). Only past `historyMaxBytes` (or its row bound) are the oldest whole
   turns hidden, down to the soft mark, never one row per message and never the
   newest turn or the last answered one; the hidden rows are named in the request
   (below) and make the next fold due. Nothing moves at local midnight: today folds
@@ -4777,11 +4778,11 @@ called by the engine for every turn:)NIMBUSDOC"},
   THIS REQUEST]`, naming how many messages, their local time range, their row ids
   and a ready `memory_episodic {"kind":"message","before":"<first row kept>"}` call.
   While rows after the fold anchor are not in the request (a shift hid them, or the
-  history is still being read after a restart), or the summary is more than a day
-  old, the input opens with one `[CONVERSATION COVERAGE]` line that names them the
-  same way, or the summary's age.)NIMBUSDOC"},
+  history is still being read after a restart), or the summary is more than a day)NIMBUSDOC"},
   {"turn-anatomy#the-three-parts-of-a-turn-3-conversation-history-no-transcript-replay-4", "The three parts of a turn - 3. Conversation history - no transcript replay (4/5)",
-   R"NIMBUSDOC(- **One message's cap.** A single message over 6 KB is clipped once, at a fixed
+   R"NIMBUSDOC(  old, the input opens with one `[CONVERSATION COVERAGE]` line that names them the
+  same way, or the summary's age.
+- **One message's cap.** A single message over 6 KB is clipped once, at a fixed
   cap, so its bytes never change as the history grows (12 KB on a head with a
   60k-token request or more).
 - **The rows ride a cache in PSRAM.** The chat's rows after the fold anchor are

@@ -68,6 +68,7 @@ struct Rig {
   std::vector<HistoryQuery> reads;           // every historyRows read, in order
   std::function<std::vector<orch::EpisodicMessage>(const std::string&, const HistoryQuery&)> readRows;
   agent::HistoryMarks marks;                 // the chat's fold anchor and shift
+  uint32_t foldTrigger = 0;       // the fold driver's trigger as the engine reads it (0 = the head's)
   int cutAfterPages = 0;          // after reads the store's budget cuts to an EMPTY page first
   std::string unreadableAfter;    // an after read from this row meets a span the card won't give
   std::unique_ptr<TurnEngine> eng;
@@ -83,6 +84,7 @@ struct Rig {
     readRows = [this](const std::string&, const HistoryQuery& q) { return storeRead(q); };
     d.historyRows = readRows;
     d.historyMarks = [this](const std::string&) { return marks; };
+    d.foldTriggerBytes = [this] { return foldTrigger; };
     eng.reset(new TurnEngine(std::move(d)));
   }
 

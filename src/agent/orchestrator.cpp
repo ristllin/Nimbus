@@ -440,6 +440,12 @@ static nimbus::orch::ContextBudget headRequestContext() {
   return nimbus::orch::deriveRequestContext(
       nimbus::orch::requestBudgetFor(h.c_str(), store::orchModel(h).c_str(), h == "cumulo"), {});
 }
+// The automatic fold's trigger: the owner's Compact threshold over the head's budget. One
+// figure for the fold driver (when a chat is due) and the engine's fold slice (the tail it
+// keeps fits it).
+static uint32_t foldTriggerNow() {
+  return (uint32_t)nimbus::orch::foldTriggerBytes(headRequestContext(), store::compactAtKB());
+}
 
 // ---- delivery helpers -------------------------------------------------------
 
@@ -1459,6 +1465,7 @@ static TurnEngine::Deps buildTurnDeps() {
   d.noteHistoryShift = [](const std::string& chatId, const std::string& softStart) {
     g_folds.setSoftStart(chatId, softStart);   // persisted with the turn's blob write
   };
+  d.foldTriggerBytes = [] { return foldTriggerNow(); };   // the fold driver's own (foldHooks)
   // Minutes east of UTC from the device's own TZ, now and at any row's time (the TZ rule
   // decides DST for a past time, so a row stored before a clock change keeps its offset).
   d.utcOffsetMin = []() -> int32_t { return agent::utcOffsetAtUnix((uint32_t)time(nullptr)); };
@@ -2932,9 +2939,7 @@ static agent::FoldDriverHooks foldHooks() {
     return overflow || g_ownerFirst.foldMayStart(telegram::guardStatus().holding, millis());
   };
   h.notDue = [] { g_ownerFirst.noteFoldNotDue(); };
-  h.triggerBytes = [] {
-    return (uint32_t)nimbus::orch::foldTriggerBytes(headRequestContext(), store::compactAtKB());
-  };
+  h.triggerBytes = [] { return foldTriggerNow(); };
   h.foldStepBytes = [] { return headRequestContext().foldStepBytes; };   // one fold's step (lane B)
   h.slice = [](const std::string& chat, size_t cap, bool manual) {
     return g_engine->histV2On() ? g_engine->historyFoldSlice(chat, cap, manual) : legacyFoldSlice(chat, cap);

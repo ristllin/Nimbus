@@ -343,6 +343,17 @@ std::vector<HistMsg> TurnEngine::historyMessages(const std::string& chatId, cons
   return renderHistory(lastWindow_.kept, summary, off);
 }
 
+// The verbatim tail an automatic fold keeps: the head's keep mark (v5.1.1's low water on the
+// floor branch). An owner's own trigger below the head's soft mark (Compact at 24 KB on a head
+// that keeps 111 KB) makes the fold due at that trigger, so the tail shrinks in proportion, or
+// every due fold would find nothing beyond the kept history.
+size_t TurnEngine::foldKeepBytes(const HistoryBudget& b) const {
+  if (!b.derived) return b.lowBytes();
+  const uint32_t trigger = d_.foldTriggerBytes ? d_.foldTriggerBytes() : 0;
+  if (trigger && trigger < b.softBytes) return (size_t)((uint64_t)b.keepBytes * trigger / b.softBytes);
+  return b.keepBytes;
+}
+
 // The first row of the verbatim tail an automatic fold keeps ("" = keep none). False when
 // every turn after thru stays and none was hidden: nothing to fold (or the cache has not read
 // down to thru yet, so the tail's start is not known and the fold waits for the fill).
@@ -355,7 +366,7 @@ bool TurnEngine::foldKeepFrom(const std::string& chatId, const HistoryMarks& mar
   if (hidden) to.startAfter = marks.softStart;   // the tail is never a hidden row
   foldRuns(view.rows, to, 0, rows, repeats);
   const std::vector<HistTurn> tail = historyTurns(rows, to, &repeats);
-  const size_t keep = b.derived ? b.keepBytes : b.lowBytes();
+  const size_t keep = foldKeepBytes(b);
   const HistoryBudget day = b.derived ? HistoryBudget() : b;   // v5.1.1 keeps the owner's day too
   const size_t kept = std::max(foldKeptTail(tail, keep, o.utcOffsetMin), dayTailTurns(tail, day, o.utcOffsetMin));
   // Nothing held yet (a restart, before the fill's first page): the newest turns the fold must

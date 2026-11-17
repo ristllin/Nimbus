@@ -319,6 +319,11 @@ class TurnEngine {
     // shift's advance (persisted with the turn).
     std::function<HistoryMarks(const std::string& chatId)> historyMarks;
     std::function<void(const std::string& chatId, const std::string& softStart)> noteHistoryShift;
+    // The automatic fold's byte trigger, as the fold driver reads it (its triggerBytes hook:
+    // the owner's Compact threshold over the head's budget). An owner's trigger below the
+    // head's soft mark makes the fold slice keep a tail in proportion; unwired or 0 = the
+    // head's own marks.
+    std::function<uint32_t()> foldTriggerBytes;
     // The prompt as this fabric's requests send it, for a request refitted inside a head's own
     // loop (the hosted Virtual Nimbus rewrites its device wording). Unwired = as composed.
     std::function<std::string(const std::string& instructions)> requestPrompt;
@@ -827,7 +832,8 @@ class TurnEngine {
   // one page of card reads (a turn's reads), none when false (the fold's look at the tail).
   ConvCache::ReadFn cacheReader(const std::string& chatId);
   ConvCache::View cachedRows(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b, bool fill);
-  // The fold slice's parts: the kept tail's first row, and the forward read from thru.
+  // The fold slice's parts: the kept tail's size and first row, and the forward read from thru.
+  size_t foldKeepBytes(const HistoryBudget& b) const;
   bool foldKeepFrom(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
                     const HistoryOptions& o, bool hidden, std::string& keepFrom);
   bool readFoldRows(const std::string& chatId, const std::string& thru, const std::string& keepFrom, size_t capBytes,

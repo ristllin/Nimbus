@@ -298,7 +298,8 @@ called by the engine for every turn:
   byte for byte. The history is every turn after the fold anchor. It grows
   append-only to the head's soft mark (`historySoftBytes`), where a fold is due;
   the fold takes the oldest turns beyond the newest `historyKeepBytes`, at most one
-  fold step. Only past `historyMaxBytes` (or its row bound) are the oldest whole
+  fold step (an owner's own Compact threshold below the soft mark folds earlier and
+  keeps a tail in proportion). Only past `historyMaxBytes` (or its row bound) are the oldest whole
   turns hidden, down to the soft mark, never one row per message and never the
   newest turn or the last answered one; the hidden rows are named in the request
   (below) and make the next fold due. Nothing moves at local midnight: today folds
