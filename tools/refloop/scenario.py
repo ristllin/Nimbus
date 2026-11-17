@@ -30,10 +30,27 @@ TOP_KEYS = {"id", "title", "pain", "seed", "turns", "final", "judge_notes", "mod
 STEP_ACTIONS = ("say", "burst", "restart", "new_conversation")
 STEP_KEYS = {*STEP_ACTIONS, "photos", "gap_s", "expect", "timeout_s"}
 # Checks that read the instance's state right after the turn (the runner snapshots it then).
-STATE_CHECKS = {"file_matching", "file_contains", "file_absent", "files_at_most", "loops_count", "loops_regex",
-                "loops_not_regex", "memory_regex", "memory_not_regex"}
-REPLY_CHECKS = {"reply_regex", "reply_not_regex", "last_reply_regex", "max_replies", "difference_from_turn",
-                "tool_called", "tool_not_called", "min_tool_calls"}
+STATE_CHECKS = {
+    "file_matching",
+    "file_contains",
+    "file_absent",
+    "files_at_most",
+    "loops_count",
+    "loops_regex",
+    "loops_not_regex",
+    "memory_regex",
+    "memory_not_regex",
+}
+REPLY_CHECKS = {
+    "reply_regex",
+    "reply_not_regex",
+    "last_reply_regex",
+    "max_replies",
+    "difference_from_turn",
+    "tool_called",
+    "tool_not_called",
+    "min_tool_calls",
+}
 CHECK_NAMES = STATE_CHECKS | REPLY_CHECKS
 
 

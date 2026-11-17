@@ -24,6 +24,7 @@ import arms  # noqa: E402
 import costs  # noqa: E402
 import fixtures  # noqa: E402
 import grade  # noqa: E402
+import mechanisms  # noqa: E402
 import refloop  # noqa: E402
 import scenario  # noqa: E402
 from capture_proxy import normalize_usage  # noqa: E402
@@ -66,8 +67,9 @@ class ScriptedProvider:
 class LoopTest(unittest.TestCase):
     def test_loops_until_no_tool_call_and_appends_only(self):
         tools = FakeTools()
-        provider = ScriptedProvider([([("c1", "files_read", {"name": "a"})], ""), ([("c2", "files_read", {"name": "b"})], ""),
-                                     ([], "done")])
+        provider = ScriptedProvider(
+            [([("c1", "files_read", {"name": "a"})], ""), ([("c2", "files_read", {"name": "b"})], ""), ([], "done")]
+        )
         conv = refloop.Conversation(tools.specs())
         self.assertEqual(refloop.run_turn(conv, provider, tools, ["read both"]), "done")
         self.assertEqual([c[1]["name"] for c in tools.calls], ["a", "b"])
@@ -96,7 +98,9 @@ class LoopTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "t.json"
             conv = refloop.Conversation(FakeTools().specs(), path)
-            refloop.run_turn(conv, ScriptedProvider([([("c1", "files_read", {})], ""), ([], "first")]), FakeTools(), ["one"])
+            refloop.run_turn(
+                conv, ScriptedProvider([([("c1", "files_read", {})], ""), ([], "first")]), FakeTools(), ["one"]
+            )
             again = refloop.Conversation.load(path)
             self.assertEqual(again.messages, conv.messages)
             self.assertEqual(again.system, conv.system)
@@ -111,7 +115,7 @@ class LoopTest(unittest.TestCase):
         conv = refloop.Conversation([])
         for n in range(3):
             refloop.run_turn(conv, provider, FakeTools(), [f"question {n}"])
-        self.assertEqual(len(conv.messages), 6)                 # nothing summarized under the threshold
+        self.assertEqual(len(conv.messages), 6)  # nothing summarized under the threshold
         provider.prompt_tokens = refloop.SUMMARIZE_AT + 1
         refloop.run_turn(conv, provider, FakeTools(), ["question 3"])
         texts = [b.get("text", "") for m in conv.messages for b in m["content"]]
@@ -128,7 +132,7 @@ class LoopTest(unittest.TestCase):
 
         class SlowFirst(ScriptedProvider):
             def step(self, conv, messages=None):
-                if not started.is_set():       # the first turn holds here until the burst has arrived
+                if not started.is_set():  # the first turn holds here until the burst has arrived
                     started.set()
                     gate.wait(5)
                 return super().step(conv, messages)
@@ -150,14 +154,20 @@ class LoopTest(unittest.TestCase):
 
     def test_mcp_tool_names_lose_their_dot_and_map_back(self):
         tools = refloop.McpTools("http://127.0.0.1:1", "t")
-        listing = {"tools": [{"name": "files.read", "description": "d", "inputSchema": {"type": "object", "properties": {}}},
-                             {"name": "device.status", "description": "d", "inputSchema": {}},
-                             {"name": "image.look", "description": "d", "inputSchema": {}}]}
+        listing = {
+            "tools": [
+                {"name": "files.read", "description": "d", "inputSchema": {"type": "object", "properties": {}}},
+                {"name": "device.status", "description": "d", "inputSchema": {}},
+                {"name": "image.look", "description": "d", "inputSchema": {}},
+            ]
+        }
         sent = []
-        tools._rpc = lambda method, params: sent.append((method, params)) or (
-            listing if method == "tools/list" else {"content": [{"type": "text", "text": "ok"}], "isError": False})
+        tools._rpc = lambda method, params: (
+            sent.append((method, params))
+            or (listing if method == "tools/list" else {"content": [{"type": "text", "text": "ok"}], "isError": False})
+        )
         specs = tools.specs()
-        self.assertEqual([s["name"] for s in specs], ["files_read", "device_status"])      # image.look is not offered
+        self.assertEqual([s["name"] for s in specs], ["files_read", "device_status"])  # image.look is not offered
         self.assertEqual(specs[1]["schema"], {"type": "object", "properties": {}})
         self.assertEqual(tools.call("files_read", {"name": "x"}), ("ok", False))
         self.assertEqual(sent[-1], ("tools/call", {"name": "files.read", "arguments": {"name": "x"}}))
@@ -185,7 +195,7 @@ class ScenarioTest(unittest.TestCase):
         self.assertEqual(len(by_id["burst-three"]["turns"][0]["burst"]), 3)
         steps = by_id["memory-20-turns"]["turns"]
         cut = next(i for i, s in enumerate(steps) if "new_conversation" in s)
-        self.assertGreaterEqual(len(steps) - cut - 1 - 2, 20)       # twenty turns before the two that need the memory
+        self.assertGreaterEqual(len(steps) - cut - 1 - 2, 20)  # twenty turns before the two that need the memory
         self.assertGreater(len(fixtures.handbook().encode()), 39_000)
 
     def test_the_long_haul_scenario_matches_its_fixtures(self):
@@ -194,7 +204,7 @@ class ScenarioTest(unittest.TestCase):
         for i in range(1, fixtures.VOLUMES + 1):
             site, code, balance = fixtures.volume_facts(i)
             body = fixtures.volume(i)
-            self.assertIn(code, body[:4000])                       # the gate code is near the top
+            self.assertIn(code, body[:4000])  # the gate code is near the top
             self.assertTrue(body.rstrip().endswith(f"{balance} pounds."))
             self.assertEqual(sc["turns"][i - 1]["expect"], [{"reply_regex": code}])
             self.assertIn(f"gate code {code}, balance {balance} pounds", sc["judge_notes"])
@@ -203,17 +213,29 @@ class ScenarioTest(unittest.TestCase):
     def test_a_typo_never_loads(self):
         good = {"id": "x", "title": "t", "judge_notes": "n", "turns": [{"say": "hi"}]}
         scenario.validate(dict(good))
-        for bad in ({**good, "turnz": []}, {**good, "turns": [{"say": "hi", "expect": [{"reply_regx": "a"}]}]},
-                    {**good, "turns": [{"say": "a", "burst": ["b", "c"]}]}, {**good, "final": [{"reply_regex": "a"}]},
-                    {**good, "turns": [{"restart": True, "expect": [{"reply_regex": "a"}]}]}):
+        for bad in (
+            {**good, "turnz": []},
+            {**good, "turns": [{"say": "hi", "expect": [{"reply_regx": "a"}]}]},
+            {**good, "turns": [{"say": "a", "burst": ["b", "c"]}]},
+            {**good, "final": [{"reply_regex": "a"}]},
+            {**good, "turns": [{"restart": True, "expect": [{"reply_regex": "a"}]}]},
+        ):
             with self.assertRaises(scenario.ScenarioError):
                 scenario.validate(bad)
 
 
-STATE = {"files": {"trips/list.md": "# Lisbon 4-7 March\n- passport\n- oat milk 1 litre"}, "loops": [{"id": "l1", "at": "08:15"}],
-         "memories": ["Dentist appointment is on 24 December at 10:00"], "rules": "", "scratchpad": ""}
-STEP = {"reply": "It was 560 against 612, so 52 kcal off.", "replies": ["first idea", "chickpea and spinach curry"],
-        "tools": [{"name": "files.read"}, {"name": "artifact_save"}]}
+STATE = {
+    "files": {"trips/list.md": "# Lisbon 4-7 March\n- passport\n- oat milk 1 litre"},
+    "loops": [{"id": "l1", "at": "08:15"}],
+    "memories": ["Dentist appointment is on 24 December at 10:00"],
+    "rules": "",
+    "scratchpad": "",
+}
+STEP = {
+    "reply": "It was 560 against 612, so 52 kcal off.",
+    "replies": ["first idea", "chickpea and spinach curry"],
+    "tools": [{"name": "files.read"}, {"name": "artifact_save"}],
+}
 EARLIER = [{"reply": "About 560 kcal for 180 g of chicken."}, STEP]
 # check -> (argument that passes, argument that fails) against STEP / STATE / EARLIER.
 CASES = {
@@ -225,8 +247,14 @@ CASES = {
     "tool_called": (["files_read"], ["files_delete"]),
     "tool_not_called": (["files_delete"], ["artifact_save"]),
     "min_tool_calls": (2, 3),
-    "file_matching": ({"all": ["passport", "Lisbon"], "none": ["sunglasses"]}, {"all": ["passport"], "none": ["oat milk"]}),
-    "file_contains": ({"project": "trips", "name": "list.md", "regex": "oat milk"}, {"project": "trips", "name": "list.md", "regex": "bread"}),
+    "file_matching": (
+        {"all": ["passport", "Lisbon"], "none": ["sunglasses"]},
+        {"all": ["passport"], "none": ["oat milk"]},
+    ),
+    "file_contains": (
+        {"project": "trips", "name": "list.md", "regex": "oat milk"},
+        {"project": "trips", "name": "list.md", "regex": "bread"},
+    ),
     "file_absent": ({"project": "trips", "name": "gone.md"}, {"project": "trips", "name": "list.md"}),
     "files_at_most": (1, 0),
     "loops_count": (1, 0),
@@ -246,8 +274,13 @@ class GradeTest(unittest.TestCase):
             self.assertFalse(grade.CHECKS[name](bad, STEP, STATE, EARLIER)[0], name)
 
     def test_a_turn_that_never_ran_fails_its_checks(self):
-        sc = {"turns": [{"say": "a", "expect": [{"reply_regex": "x"}]}, {"say": "b", "expect": [{"reply_not_regex": "x"}]}],
-              "final": [{"loops_count": 0}]}
+        sc = {
+            "turns": [
+                {"say": "a", "expect": [{"reply_regex": "x"}]},
+                {"say": "b", "expect": [{"reply_not_regex": "x"}]},
+            ],
+            "final": [{"loops_count": 0}],
+        }
         rows = grade.run_checks(sc, {"steps": [{"kind": "say", "turn": 1, "reply": "x"}]})
         self.assertEqual([r["pass"] for r in rows], [True, False, False])
 
@@ -260,9 +293,21 @@ class GradeTest(unittest.TestCase):
         self.assertEqual(grade.outcome(0.90, 0.80), "win")
 
     def test_the_judge_transcript_names_no_arm(self):
-        rec = {"steps": [{"kind": "say", "turn": 1, "user": ["hi"], "photos": ["receipt"], "replies": ["hello"],
-                          "tools": [{"name": "memory.write", "args": {"content": "x"}, "result": "stored", "via": "mem_write"}]},
-                         {"kind": "restart"}]}
+        rec = {
+            "steps": [
+                {
+                    "kind": "say",
+                    "turn": 1,
+                    "user": ["hi"],
+                    "photos": ["receipt"],
+                    "replies": ["hello"],
+                    "tools": [
+                        {"name": "memory.write", "args": {"content": "x"}, "result": "stored", "via": "mem_write"}
+                    ],
+                },
+                {"kind": "restart"},
+            ]
+        }
         text = grade.render_transcript(rec)
         self.assertIn("memory_write(", text)
         self.assertIn("GREENLEAF MARKET", text)
@@ -274,33 +319,145 @@ class GradeTest(unittest.TestCase):
 class WireTest(unittest.TestCase):
     def test_anthropic_exchanges_give_calls_results_and_reply_fields(self):
         exchanges = [
-            {"request": {"messages": []},
-             "response": {"content": [{"type": "tool_use", "id": "t1", "name": "files_read", "input": {"name": "a"}}]}},
-            {"request": {"messages": [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "bytes"}]}]},
-             "response": {"content": [{"type": "tool_use", "id": "t2", "name": "orch_turn",
-                                       "input": {"reply": "ok", "mem_write": [{"content": "fact"}], "ask": ""}}]}},
+            {
+                "request": {"messages": []},
+                "response": {
+                    "content": [{"type": "tool_use", "id": "t1", "name": "files_read", "input": {"name": "a"}}]
+                },
+            },
+            {
+                "request": {
+                    "messages": [
+                        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "bytes"}]}
+                    ]
+                },
+                "response": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "t2",
+                            "name": "orch_turn",
+                            "input": {"reply": "ok", "mem_write": [{"content": "fact"}], "ask": ""},
+                        }
+                    ]
+                },
+            },
         ]
         tools, harness = arms.harness_calls(exchanges)
-        self.assertEqual([(t["name"], t["result"][:5]) for t in tools], [("files_read", "bytes"), ("memory_write", "(repl")])
+        self.assertEqual(
+            [(t["name"], t["result"][:5]) for t in tools], [("files_read", "bytes"), ("memory_write", "(repl")]
+        )
         self.assertEqual(harness["fields"], {"mem_write": [{"content": "fact"}]})
         self.assertEqual(harness["orch_turn_calls"], 1)
 
     def test_openai_exchanges_and_a_bounced_final(self):
-        call = {"type": "function_call", "call_id": "c1", "name": "orch_turn", "arguments": json.dumps({"reply": "path x"})}
+        call = {
+            "type": "function_call",
+            "call_id": "c1",
+            "name": "orch_turn",
+            "arguments": json.dumps({"reply": "path x"}),
+        }
         exchanges = [
             {"request": {"input": []}, "response": {"output": [call]}},
-            {"request": {"input": [call, {"type": "function_call_output", "call_id": "c1", "output": "ERROR: [REPLY CHECK] plumbing"}]},
-             "response": {"output": [{"type": "function_call", "call_id": "c2", "name": "orch_turn", "arguments": "{\"reply\": \"ok\"}"}]}},
+            {
+                "request": {
+                    "input": [
+                        call,
+                        {"type": "function_call_output", "call_id": "c1", "output": "ERROR: [REPLY CHECK] plumbing"},
+                    ]
+                },
+                "response": {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "c2",
+                            "name": "orch_turn",
+                            "arguments": "{\"reply\": \"ok\"}",
+                        }
+                    ]
+                },
+            },
         ]
         tools, harness = arms.harness_calls(exchanges)
         self.assertEqual(tools, [])
         self.assertEqual(harness["orch_turn_calls"], 2)
         self.assertEqual(len(harness["bounced"]), 1)
 
+    def test_mechanisms_are_read_off_the_wire(self):
+        block = "Current time: 22:30 GMT.\nyou may call tools over several rounds (at most 2), not more.\n[FOOD PLAYBOOK]\n[USER]\nhi"
+        owner = {"role": "user", "content": [{"type": "text", "text": block}]}
+        final = {"role": "user", "content": [{"type": "text", "text": block + "\n[SYSTEM] " + mechanisms.FINAL_NOTICE}]}
+        prose = {"content": [{"type": "text", "text": "an answer"}]}
+        wrapped = {"content": [{"type": "tool_use", "id": "t", "name": "orch_turn", "input": {"reply": "an answer"}}]}
+        nudge = {
+            "role": "user",
+            "content": [{"type": "text", "text": mechanisms.NUDGE + ", keeping the answer you gave above."}],
+        }
+        cut = {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "x", "content": "first bytes…[truncated]"}],
+        }
+        step = {
+            "reply": "It is saved.\n\n(Correction: that has not been saved.)",
+            "tools": [{"name": "files_read"}],
+            "harness": {},
+        }
+        kept = mechanisms.scan_turn(
+            [
+                {"status": 200, "request": {"messages": [owner]}, "response": prose},
+                {
+                    "status": 200,
+                    "request": {"messages": [final, {"role": "assistant", "content": prose["content"]}, nudge]},
+                    "response": wrapped,
+                },
+            ],
+            step,
+        )
+        self.assertEqual((kept["finalize_nudge"], kept["final_notice"], kept["discarded_answers"]), (1, 1, 0))
+        self.assertEqual((kept["round_cap"], kept["food_block"], kept["earlier_tool_rows"]), (2, 1, 0))
+        self.assertEqual((kept["correction_added"], kept["requests"], kept["tool_calls"]), (1, 2, 1))
+        redone = mechanisms.scan_turn(
+            [
+                {"status": 200, "request": {"messages": [owner]}, "response": prose},
+                {"status": 200, "request": {"messages": [final, cut]}, "response": wrapped},
+            ],
+            step,
+        )
+        self.assertEqual(
+            (redone["finalize_nudge"], redone["discarded_answers"], redone["truncated_results"]), (0, 1, 1)
+        )
+        forced = mechanisms.scan_turn(
+            [
+                {
+                    "status": 200,
+                    "request": {
+                        "input": [{"role": "user", "content": block}],
+                        "tool_choice": {"type": "function", "name": "orch_turn"},
+                    },
+                    "response": {
+                        "output": [{"type": "function_call", "call_id": "c", "name": "orch_turn", "arguments": "{}"}]
+                    },
+                }
+            ],
+            {"reply": "ok"},
+        )
+        self.assertEqual(forced["forced_final"], 1)
+
     def test_usage_is_one_shape_for_both_providers(self):
-        ant = normalize_usage({"usage": {"input_tokens": 2, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 10, "output_tokens": 7}})
+        ant = normalize_usage(
+            {
+                "usage": {
+                    "input_tokens": 2,
+                    "cache_read_input_tokens": 100,
+                    "cache_creation_input_tokens": 10,
+                    "output_tokens": 7,
+                }
+            }
+        )
         self.assertEqual(ant, {"input": 112, "cached": 100, "cache_write": 10, "output": 7})
-        oai = normalize_usage({"usage": {"input_tokens": 50, "input_tokens_details": {"cached_tokens": 40}, "output_tokens": 5}})
+        oai = normalize_usage(
+            {"usage": {"input_tokens": 50, "input_tokens_details": {"cached_tokens": 40}, "output_tokens": 5}}
+        )
         self.assertEqual(oai, {"input": 50, "cached": 40, "cache_write": 0, "output": 5})
         self.assertIsNone(normalize_usage({"data": []}))
 
@@ -309,11 +466,11 @@ class WireTest(unittest.TestCase):
         self.assertAlmostEqual(costs.cost_usd("claude-sonnet-5-5", usage), 2.00)
         self.assertAlmostEqual(costs.cost_usd("gpt-5.6-luna", usage), 0.20)
         self.assertAlmostEqual(costs.cost_usd("claude-haiku-5-5", {**usage, "input": 50_000}), 0.005)
-        self.assertAlmostEqual(costs.cost_usd("claude-haiku-5-5", usage), 0.50)      # over 100K: the long tier
+        self.assertAlmostEqual(costs.cost_usd("claude-haiku-5-5", usage), 0.50)  # over 100K: the long tier
         cached = {"input": 1_000_000, "cached": 900_000, "cache_write": 100_000, "output": 0}
         self.assertAlmostEqual(costs.cost_usd("claude-sonnet-5-5", cached), 0.09 + 0.25)
         self.assertAlmostEqual(costs.cold_cost_usd("claude-sonnet-5-5", cached), 2.00)
-        self.assertGreater(costs.cost_usd("some-new-model", usage), 2.0)             # unknown never prices as free
+        self.assertGreater(costs.cost_usd("some-new-model", usage), 2.0)  # unknown never prices as free
 
 
 if __name__ == "__main__":

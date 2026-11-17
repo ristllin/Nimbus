@@ -39,8 +39,8 @@ SYSTEM = (
     "you did; never claim an action that no tool call made. Lead with the answer and keep replies short. "
     "Light Markdown is fine."
 )
-MAX_ROUNDS = 40             # provider requests in one owner turn before the loop gives up
-SUMMARIZE_AT = 150_000      # prompt tokens: past this, the oldest half becomes one summary
+MAX_ROUNDS = 40  # provider requests in one owner turn before the loop gives up
+SUMMARIZE_AT = 150_000  # prompt tokens: past this, the oldest half becomes one summary
 MAX_TOKENS = 16000
 SUMMARY_ASK = (
     "Summarize everything above for your own later use: facts about the owner, decisions, numbers, names, "
@@ -55,10 +55,11 @@ SKIP_TOOLS = ("image.look", "image.note")
 @dataclass
 class Step:
     """One provider answer: the items to append verbatim, the tool calls in them, the text."""
+
     items: list
-    calls: list          # (call id, tool name, arguments)
+    calls: list  # (call id, tool name, arguments)
     text: str
-    prompt_tokens: int   # the whole prompt of this request, cached part included
+    prompt_tokens: int  # the whole prompt of this request, cached part included
 
 
 # ------------------------------------------------------------------------- tools
@@ -71,7 +72,7 @@ class McpTools:
 
     def _rpc(self, method: str, params: dict) -> dict:
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
-        for _ in range(240):     # 503 is the daemon's "engine busy": wait it out
+        for _ in range(240):  # 503 is the daemon's "engine busy": wait it out
             req = urllib.request.Request(self.url, data=body, method="POST")
             req.add_header("X-Nimbus-Token", self.token)
             req.add_header("Content-Type", "application/json")
@@ -111,6 +112,7 @@ class Anthropic:
 
     def __init__(self, model: str, effort: str = "medium", api_key: str | None = None, base_url: str | None = None):
         import anthropic
+
         self.client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
         self.model, self.effort = model, effort
 
@@ -120,17 +122,19 @@ class Anthropic:
 
     def step(self, conv, messages=None) -> Step:
         r = self.client.messages.create(
-            model=self.model, max_tokens=MAX_TOKENS,
+            model=self.model,
+            max_tokens=MAX_TOKENS,
             # Thinking stays adaptive (the default); effort is the one knob, as in the harness.
             output_config={"effort": self.effort},
             # Two cache points: the fixed tools + system prefix, and the end of the history.
             system=[{"type": "text", "text": conv.system, "cache_control": {"type": "ephemeral"}}],
             cache_control={"type": "ephemeral"},
-            tools=[{"name": s["name"], "description": s["description"], "input_schema": s["schema"]}
-                   for s in conv.specs],
+            tools=[
+                {"name": s["name"], "description": s["description"], "input_schema": s["schema"]} for s in conv.specs
+            ],
             messages=conv.messages if messages is None else messages,
         )
-        content = r.to_dict()["content"]     # the blocks as served: thinking and signatures intact
+        content = r.to_dict()["content"]  # the blocks as served: thinking and signatures intact
         calls = [(b["id"], b["name"], b["input"]) for b in content if b["type"] == "tool_use"]
         text = "".join(b["text"] for b in content if b["type"] == "text")
         if r.stop_reason in ("max_tokens", "refusal"):
@@ -140,8 +144,15 @@ class Anthropic:
         return Step([{"role": "assistant", "content": content}], calls, text, prompt)
 
     def results(self, results: list) -> list:
-        return [{"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": i, "content": text, "is_error": err} for i, text, err in results]}]
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": i, "content": text, "is_error": err}
+                    for i, text, err in results
+                ],
+            }
+        ]
 
     @staticmethod
     def is_owner(item: dict) -> bool:
@@ -162,9 +173,9 @@ class Anthropic:
 class OpenAI:
     """gpt-5.6-luna over the Responses API, stateless: the loop owns the whole history."""
 
-    def __init__(self, model: str, effort: str | None = None, api_key: str | None = None,
-                 base_url: str | None = None):
+    def __init__(self, model: str, effort: str | None = None, api_key: str | None = None, base_url: str | None = None):
         import openai
+
         self.client = openai.OpenAI(api_key=api_key, base_url=base_url)
         self.model, self.effort = model, effort
 
@@ -174,15 +185,26 @@ class OpenAI:
 
     def step(self, conv, messages=None) -> Step:
         r = self.client.responses.create(
-            model=self.model, instructions=conv.system, store=False,
+            model=self.model,
+            instructions=conv.system,
+            store=False,
             input=conv.messages if messages is None else messages,
             # No effort field unless asked for: the provider default, which is what the harness uses.
-            reasoning={"effort": self.effort} if self.effort else {}, include=["reasoning.encrypted_content"],
+            reasoning={"effort": self.effort} if self.effort else {},
+            include=["reasoning.encrypted_content"],
             prompt_cache_key=conv.cache_key,
-            tools=[{"type": "function", "name": s["name"], "description": s["description"],
-                    "parameters": s["schema"], "strict": False} for s in conv.specs],
+            tools=[
+                {
+                    "type": "function",
+                    "name": s["name"],
+                    "description": s["description"],
+                    "parameters": s["schema"],
+                    "strict": False,
+                }
+                for s in conv.specs
+            ],
         )
-        items = [item.to_dict() for item in r.output]   # reasoning, function_call and message items
+        items = [item.to_dict() for item in r.output]  # reasoning, function_call and message items
         calls = []
         for item in items:
             if item["type"] == "function_call":
@@ -201,7 +223,7 @@ class OpenAI:
 
     @staticmethod
     def without_thinking(items: list) -> list:
-        return items     # an encrypted reasoning item stands on its own
+        return items  # an encrypted reasoning item stands on its own
 
 
 def provider_for(model: str, **kw):
@@ -212,11 +234,18 @@ def provider_for(model: str, **kw):
 class Conversation:
     """The state of one conversation: system prompt, tool list and messages, saved after every step."""
 
-    def __init__(self, specs: list, path: Path | None = None, channel: str = "the web chat",
-                 tz: str = "Europe/London", note: str = ""):
+    def __init__(
+        self,
+        specs: list,
+        path: Path | None = None,
+        channel: str = "the web chat",
+        tz: str = "Europe/London",
+        note: str = "",
+    ):
         now = datetime.now(ZoneInfo(tz))
-        self.system = SYSTEM.format(date=now.strftime("%A %d %B %Y"), time=now.strftime("%H:%M"), tz=tz,
-                                    channel=channel) + (f"\n{note}" if note else "")   # note: for experiments
+        self.system = SYSTEM.format(
+            date=now.strftime("%A %d %B %Y"), time=now.strftime("%H:%M"), tz=tz, channel=channel
+        ) + (f"\n{note}" if note else "")  # note: for experiments
         self.specs, self.messages, self.tz = specs, [], tz
         self.path = Path(path) if path else None
         self.prompt_tokens = 0
@@ -285,7 +314,7 @@ def serve(conv: Conversation, provider, tools, inbox: queue.Queue, deliver, on_t
         texts = [text for text in batch if text is not None]
         if texts:
             deliver(run_turn(conv, provider, tools, texts, on_tool=on_tool))
-        if batch[-1] is None:      # None closes the channel, after what was queued before it is answered
+        if batch[-1] is None:  # None closes the channel, after what was queued before it is answered
             return
 
 
@@ -296,7 +325,9 @@ def main():
     ap.add_argument("--token", default=os.environ.get("NIMBUSD_WEB_TOKEN", ""), help="nimbusd web token")
     ap.add_argument("--model", default="claude-sonnet-5-5")
     ap.add_argument("--effort", default=None, help="provider effort (default: medium on Claude, unset on GPT)")
-    ap.add_argument("--transcript", default="refloop-transcript.json", help="saved after every step, reloaded if present")
+    ap.add_argument(
+        "--transcript", default="refloop-transcript.json", help="saved after every step, reloaded if present"
+    )
     ap.add_argument("--env-file", help="dotenv file holding the provider key")
     args = ap.parse_args()
     if args.env_file:
@@ -315,8 +346,15 @@ def main():
         except EOFError:
             return
         if text:
-            print(run_turn(conv, provider, tools, [text],
-                           on_tool=lambda name, a, out, err: print(f"  [{name}] {json.dumps(a)[:100]}")))
+            print(
+                run_turn(
+                    conv,
+                    provider,
+                    tools,
+                    [text],
+                    on_tool=lambda name, a, out, err: print(f"  [{name}] {json.dumps(a)[:100]}"),
+                )
+            )
 
 
 if __name__ == "__main__":

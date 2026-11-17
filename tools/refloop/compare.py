@@ -66,8 +66,17 @@ def make_jobs(args, scenarios: list, env: dict) -> list:
             if sc.get("models") and model not in sc["models"]:
                 continue
             for rep in range(1, min(args.reps, sc.get("reps", args.reps)) + 1):
-                jobs.append(Job(model=model, scenario=sc, rep=rep, env=env, loop_note=args.loop_note,
-                                dir=run_dir(args.evidence, model, sc["id"], rep), **MODELS[model]))
+                jobs.append(
+                    Job(
+                        model=model,
+                        scenario=sc,
+                        rep=rep,
+                        env=env,
+                        loop_note=args.loop_note,
+                        dir=run_dir(args.evidence, model, sc["id"], rep),
+                        **MODELS[model],
+                    )
+                )
     return jobs
 
 
@@ -88,8 +97,16 @@ def run_task(job: Job, arm_name: str, args) -> str:
     if total_spend(ledger) >= args.max_usd:
         return f"HELD  {tag}: the spend ledger reached --max-usd {args.max_usd}"
     arm = ARMS[arm_name](job)
-    rec = {"arm": arm_name, "model": job.model, "scenario": job.scenario["id"], "rep": job.rep,
-           "effort": job.effort, "loop_note": job.loop_note, "started": utc(), "steps": []}
+    rec = {
+        "arm": arm_name,
+        "model": job.model,
+        "scenario": job.scenario["id"],
+        "rep": job.rep,
+        "effort": job.effort,
+        "loop_note": job.loop_note,
+        "started": utc(),
+        "steps": [],
+    }
     try:
         arm.start()
         arm.seed()
@@ -110,8 +127,10 @@ def run_task(job: Job, arm_name: str, args) -> str:
     turns = [s for s in rec["steps"] if s.get("kind") in ("say", "burst")]
     errors = sum(1 for s in turns if s.get("error") or s.get("timed_out"))
     state = "FAIL " if "error" in rec else "done "
-    return (f"{state} {tag}: {len(turns)} turns, {sum(s['latency_s'] for s in turns):.0f} s, "
-            f"${rec['cost_usd']:.3f}, {errors} failed turns {rec.get('error', '')}")
+    return (
+        f"{state} {tag}: {len(turns)} turns, {sum(s['latency_s'] for s in turns):.0f} s, "
+        f"${rec['cost_usd']:.3f}, {errors} failed turns {rec.get('error', '')}"
+    )
 
 
 def secret_scan(evidence: Path, env: dict) -> int:
@@ -136,9 +155,12 @@ def cmd_run(args):
         scenarios = [s for s in scenarios if s["id"] in wanted]
     jobs = make_jobs(args, scenarios, env)
     tasks = [(job, arm) for job in jobs for arm in args.arms.split(",")]
-    build_shim()        # once, before the parallel runs start their daemons
-    print(f"{len(tasks)} runs ({len(jobs)} scenario repetitions x {args.arms}), "
-          f"spent so far ${total_spend(args.evidence / 'spend.jsonl'):.2f} of ${args.max_usd}", flush=True)
+    build_shim()  # once, before the parallel runs start their daemons
+    print(
+        f"{len(tasks)} runs ({len(jobs)} scenario repetitions x {args.arms}), "
+        f"spent so far ${total_spend(args.evidence / 'spend.jsonl'):.2f} of ${args.max_usd}",
+        flush=True,
+    )
     with ThreadPoolExecutor(max_workers=args.parallel) as pool:
         for line in pool.map(lambda t: run_task(t[0], t[1], args), tasks):
             print(line, flush=True)
@@ -167,40 +189,61 @@ def _brief(value, width: int) -> str:
     return text if len(text) <= width else f"{text[:width]} ...[{len(text)} chars]"
 
 
+TEXT_BLOCKS = ("text", "input_text", "output_text")
+IMAGE_BLOCKS = ("image", "input_image")
+
+
+def _show_block(role: str, block: dict, width: int):
+    kind = block.get("type")
+    body = block.get("text") if kind in TEXT_BLOCKS else block
+    if kind in IMAGE_BLOCKS:
+        body = f"<{kind} {len(json.dumps(block))} bytes>"
+    print(f"  [{role}/{kind}] {_brief(body, width)}")
+
+
 def _show_items(items: list, width: int):
     for item in items:
         role = item.get("role") or item.get("type")
         content = item.get("content")
         if isinstance(content, list):
             for block in content:
-                kind = block.get("type")
-                body = block.get("text") if kind in ("text", "input_text", "output_text") else block
-                if kind in ("image", "input_image"):
-                    body = f"<{kind} {len(json.dumps(block))} bytes>"
-                print(f"  [{role}/{kind}] {_brief(body, width)}")
+                _show_block(role, block, width)
         else:
             print(f"  [{role}] {_brief(content if content is not None else item, width)}")
 
 
+def _head_rows(run: str, turn: int) -> list:
+    rows = [json.loads(line) for line in gzip.open(Path(run) / "requests.jsonl.gz", "rt")]
+    return [r for r in rows if r["ctx"].get("turn") == turn and r["path"] in HEAD_PATHS]
+
+
+def _show_prompt(req: dict, full: bool):
+    system = req.get("system") or req.get("instructions") or ""
+    blocks = system if isinstance(system, list) else [{"text": system}]
+    tools = req.get("tools") or []
+    print(
+        f"system: {[len(b.get('text', '')) for b in blocks]} chars; tools: {len(tools)} ({len(json.dumps(tools))} bytes)"
+    )
+    if full:
+        for b in blocks:
+            print(b.get("text", ""))
+
+
 def cmd_show(args):
     """Print what the model was shown on one turn: the last head request of that turn, and its answer."""
-    rows = [json.loads(line) for line in gzip.open(Path(args.run) / "requests.jsonl.gz", "rt")]
-    rows = [r for r in rows if r["ctx"].get("turn") == args.turn and r["path"] in HEAD_PATHS]
+    rows = _head_rows(args.run, args.turn)
     if not rows:
         print("no head request recorded for that turn")
         return 1
-    print(f"{len(rows)} head request(s) on turn {args.turn}; showing #{args.request if args.request else len(rows)}")
-    row = rows[(args.request or len(rows)) - 1]
+    pick = args.request or len(rows)
+    print(f"{len(rows)} head request(s) on turn {args.turn}; showing #{pick}")
+    row = rows[pick - 1]
     req = row["request"]
     print(f"model {req.get('model')}  request {row['req_bytes']} bytes  usage {row['usage']}  {row['ms']} ms")
-    print("params:", {k: v for k, v in req.items() if k not in ("system", "messages", "tools", "input", "instructions")})
-    system = req.get("system") or req.get("instructions") or ""
-    blocks = system if isinstance(system, list) else [{"text": system}]
-    print(f"system: {[len(b.get('text', '')) for b in blocks]} chars; tools: {len(req.get('tools') or [])}"
-          f" ({len(json.dumps(req.get('tools') or []))} bytes)")
-    if args.system:
-        for b in blocks:
-            print(b.get("text", ""))
+    print(
+        "params:", {k: v for k, v in req.items() if k not in ("system", "messages", "tools", "input", "instructions")}
+    )
+    _show_prompt(req, args.system)
     print("--- messages")
     _show_items(req.get("messages") or req.get("input") or [], args.width)
     print("--- response")
@@ -227,8 +270,12 @@ def main():
     run.add_argument("--arms", default="A,B")
     run.add_argument("--parallel", type=int, default=4)
     run.add_argument("--max-usd", type=float, default=40.0)
-    run.add_argument("--loop-note", default="", help="an experiment: one extra line on the reference loop's "
-                     "system prompt. Use a separate --evidence dir: it is not the reference loop any more")
+    run.add_argument(
+        "--loop-note",
+        default="",
+        help="an experiment: one extra line on the reference loop's "
+        "system prompt. Use a separate --evidence dir: it is not the reference loop any more",
+    )
     show = sub.add_parser("show")
     show.add_argument("--run", required=True, help="an arm directory: <evidence>/<model>/<scenario>/repN/A")
     show.add_argument("--turn", type=int, required=True)

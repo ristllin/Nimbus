@@ -33,21 +33,22 @@ HEAD_PATHS = ("/v1/messages", "/v1/responses")
 PROVIDER_HOST = {"anthropic": "api.anthropic.com", "openai": "api.openai.com/v1"}
 TURN_TIMEOUT_S = 300
 SETTLE_MAX_S = 90
-RESULT_KEEP = 4000          # characters of a tool result kept in a step record (the capture has it whole)
+RESULT_KEEP = 4000  # characters of a tool result kept in a step record (the capture has it whole)
 
 
 @dataclass
 class Job:
     """One scenario repetition on one model: everything an arm needs."""
+
     model: str
-    head: str                    # provider slug: anthropic or openai
-    effort: str | None           # what the harness sends for this model, mirrored by the reference loop
+    head: str  # provider slug: anthropic or openai
+    effort: str | None  # what the harness sends for this model, mirrored by the reference loop
     sub_model: str
     scenario: dict
     rep: int
     dir: Path
     env: dict = field(repr=False, default_factory=dict)
-    loop_note: str = ""          # an experiment: one extra line on the reference loop's system prompt
+    loop_note: str = ""  # an experiment: one extra line on the reference loop's system prompt
 
     @property
     def keys(self) -> dict:
@@ -59,8 +60,11 @@ def _tool_uses(response) -> list:
     """(call id, name, arguments) of every tool call in one provider response, either wire."""
     if not isinstance(response, dict):
         return []
-    out = [(b.get("id"), b.get("name"), b.get("input") or {})
-           for b in response.get("content") or [] if isinstance(b, dict) and b.get("type") == "tool_use"]
+    out = [
+        (b.get("id"), b.get("name"), b.get("input") or {})
+        for b in response.get("content") or []
+        if isinstance(b, dict) and b.get("type") == "tool_use"
+    ]
     for item in response.get("output") or []:
         if isinstance(item, dict) and item.get("type") == "function_call":
             try:
@@ -83,7 +87,7 @@ def _tool_results(request) -> list:
         return []
     out = []
     for m in request.get("messages") or []:
-        for b in (m.get("content") if isinstance(m.get("content"), list) else []):
+        for b in m.get("content") if isinstance(m.get("content"), list) else []:
             if isinstance(b, dict) and b.get("type") == "tool_result":
                 out.append((b.get("tool_use_id"), _result_text(b.get("content"))))
     for item in request.get("input") if isinstance(request.get("input"), list) else []:
@@ -96,13 +100,8 @@ def _tool_results(request) -> list:
 FIELD_TOOLS = {"mem_write": "memory_write", "mem_query": "memory_search", "session_ops": "session_spawn"}
 
 
-def harness_calls(exchanges: list) -> tuple:
-    """One harness turn's tool calls and reply fields, read from its captured head exchanges.
-
-    Returns (tools, harness): tools is the registry calls in order with their results, plus one
-    entry per acting reply field (a mem_write item is a memory write the harness performs);
-    harness holds the final orch_turn fields and any orch_turn the harness sent back.
-    """
+def _paired_calls(exchanges: list) -> list:
+    """Every tool call of one turn in order, each with the result a later request carried for it."""
     calls, by_id = [], {}
     for ex in exchanges:
         for cid, text in _tool_results(ex.get("request")):
@@ -111,13 +110,36 @@ def harness_calls(exchanges: list) -> tuple:
         for cid, name, args in _tool_uses(ex.get("response")):
             by_id[cid] = {"name": name, "args": args}
             calls.append(by_id[cid])
-    finals = [c for c in calls if c["name"] == "orch_turn"]
-    tools = [c for c in calls if c["name"] != "orch_turn"]
-    fields = {k: v for k, v in (finals[-1]["args"] if finals else {}).items() if k != "reply" and v}
+    return calls
+
+
+def _field_calls(fields: dict) -> list:
+    """The acting reply fields of an orch_turn as tool calls (a mem_write item is a memory write)."""
+    out = []
     for name, tool in FIELD_TOOLS.items():
         for item in fields.get(name) or []:
-            tools.append({"name": tool, "args": item if isinstance(item, dict) else {"query": item},
-                          "result": f"(reply field {name}, applied by the harness after the turn)", "via": name})
+            out.append(
+                {
+                    "name": tool,
+                    "args": item if isinstance(item, dict) else {"query": item},
+                    "result": f"(reply field {name}, applied by the harness after the turn)",
+                    "via": name,
+                }
+            )
+    return out
+
+
+def harness_calls(exchanges: list) -> tuple:
+    """One harness turn's tool calls and reply fields, read from its captured head exchanges.
+
+    Returns (tools, harness): tools is the registry calls in order with their results, plus one
+    entry per acting reply field; harness holds the final orch_turn fields and any orch_turn the
+    harness sent back.
+    """
+    calls = _paired_calls(exchanges)
+    finals = [c for c in calls if c["name"] == "orch_turn"]
+    fields = {k: v for k, v in (finals[-1]["args"] if finals else {}).items() if k != "reply" and v}
+    tools = [c for c in calls if c["name"] != "orch_turn"] + _field_calls(fields)
     bounced = [c["result"][:600] for c in finals if c.get("result")]
     return _clip(tools), {"fields": fields, "bounced": bounced, "orch_turn_calls": len(finals)}
 
@@ -139,8 +161,17 @@ def snapshot_state(d: Nimbusd) -> dict:
     memories = [e.get("content", "") for e in d.get_json("/api/mem/vector?limit=200").get("entries", [])]
     rules, _ = d.call_tool("prefs.edit", {"action": "list"})
     status, scratch = d.call("GET", "/api/mem/scratchpad")
-    return {"files": files, "loops": d.get_json("/api/loops"), "memories": memories, "rules": rules,
-            "scratchpad": scratch if status == 200 else ""}
+    return {
+        "files": files,
+        "loops": d.get_json("/api/loops"),
+        "memories": memories,
+        "rules": rules,
+        "scratchpad": scratch if status == 200 else "",
+    }
+
+
+def _token_sums(rows: list) -> dict:
+    return {k: sum((r["usage"] or {}).get(k, 0) for r in rows) for k in ("input", "cached", "cache_write", "output")}
 
 
 # ------------------------------------------------------------------------- arms
@@ -179,7 +210,7 @@ class Arm:
         if self.d:
             self.d.stop()
         self.proxy.stop()
-        shutil.rmtree(self.dir / "data", ignore_errors=True)   # the instance volume is not evidence
+        shutil.rmtree(self.dir / "data", ignore_errors=True)  # the instance volume is not evidence
 
     def step(self, step: dict) -> dict:
         if "restart" in step:
@@ -191,12 +222,16 @@ class Arm:
         self.turn += 1
         self.proxy.mark(turn=self.turn)
         texts = step["burst"] if "burst" in step else [step["say"]]
-        rec = {"kind": "burst" if "burst" in step else "say", "turn": self.turn, "user": texts,
-               "photos": step.get("photos", [])}
+        rec = {
+            "kind": "burst" if "burst" in step else "say",
+            "turn": self.turn,
+            "user": texts,
+            "photos": step.get("photos", []),
+        }
         started = time.time()
         try:
             self.speak(texts, step, rec)
-        except Exception as e:      # a failed turn is a result, not the end of the run
+        except Exception as e:  # a failed turn is a result, not the end of the run
             rec.setdefault("replies", [])
             rec["error"] = f"{type(e).__name__}: {e}"[:600]
         rec.setdefault("latency_s", round(time.time() - started, 2))
@@ -212,11 +247,12 @@ class Arm:
         head = [r for r in rows if r["path"] in HEAD_PATHS and r["model"] == self.job.model]
         head_seqs = {r["seq"] for r in head}
         other = [r for r in rows if r["seq"] not in head_seqs and r["method"] == "POST"]
-        tokens = {k: sum((r["usage"] or {}).get(k, 0) for r in head) for k in ("input", "cached", "cache_write", "output")}
         return {
-            "head_requests": len(head), "other_requests": len(other),
+            "head_requests": len(head),
+            "other_requests": len(other),
             "other_models": sorted({r["model"] or r["path"] for r in other}),
-            "tokens": tokens, "provider_ms": sum(r["ms"] for r in head),
+            "tokens": _token_sums(head),
+            "provider_ms": sum(r["ms"] for r in head),
             "failed_requests": sum(1 for r in rows if r["status"] >= 400),
             "cost_usd": round(sum(cost_usd(r["model"], r["usage"]) for r in rows), 6),
             "cold_cost_usd": round(sum(cold_cost_usd(r["model"], r["usage"]) for r in rows), 6),
@@ -228,6 +264,7 @@ class Arm:
 
 class ArmA(Arm):
     """nimbusd's own harness over POST /api/chat, polled the way the page polls."""
+
     name = "A"
 
     def _replies_seq(self) -> int:
@@ -256,7 +293,8 @@ class ArmA(Arm):
         rows = self.d.get_json(f"/api/replies?after={seq0}").get("replies", [])
         rec["replies"] = [r.get("text", "") for r in rows if r.get("role") == "assistant" and r.get("text")]
         rec["tools"], rec["harness"] = harness_calls(
-            [b for b in self.proxy.take_bodies(turn=self.turn) if b["path"] in HEAD_PATHS])
+            [b for b in self.proxy.take_bodies(turn=self.turn) if b["path"] in HEAD_PATHS]
+        )
         (self.dir / f"lastturn-{self.turn:02d}.txt").write_text(self.d.get_text("/api/lastturn"))
 
     def _wait_turns(self, ids: list, deadline: float) -> bool:
@@ -295,6 +333,7 @@ class ArmA(Arm):
 
 class ArmB(Arm):
     """The reference loop, with the same model, on the tools of its own nimbusd."""
+
     name = "B"
 
     def start(self):
@@ -305,12 +344,16 @@ class ArmB(Arm):
     def _open(self, load: bool):
         key = self.job.env.get(PROVIDER_ENV[self.job.head], "")
         kw = {"effort": self.job.effort} if self.job.effort else {}
-        self.provider = refloop.provider_for(self.job.model, api_key=key,
-                                             base_url=self.proxy.url(PROVIDER_HOST[self.job.head]), **kw)
+        self.provider = refloop.provider_for(
+            self.job.model, api_key=key, base_url=self.proxy.url(PROVIDER_HOST[self.job.head]), **kw
+        )
         self.tools = refloop.McpTools(f"http://127.0.0.1:{self.d.port}", self.d.token)
         path = self.dir / f"transcript-{self.conversations}.json"
-        self.conv = refloop.Conversation.load(path) if load else refloop.Conversation(
-            self.tools.specs(), path, note=self.job.loop_note)
+        self.conv = (
+            refloop.Conversation.load(path)
+            if load
+            else refloop.Conversation(self.tools.specs(), path, note=self.job.loop_note)
+        )
 
     def speak(self, texts: list, step: dict, rec: dict):
         rec["tools"] = []
@@ -329,8 +372,11 @@ class ArmB(Arm):
     def _burst(self, texts: list, gap_s: float, on_tool) -> list:
         """Messages arrive gap_s apart while the loop's channel side (refloop.serve) is running."""
         inbox, replies = queue.Queue(), []
-        worker = threading.Thread(target=refloop.serve, daemon=True,
-                                  args=(self.conv, self.provider, self.tools, inbox, replies.append, on_tool))
+        worker = threading.Thread(
+            target=refloop.serve,
+            daemon=True,
+            args=(self.conv, self.provider, self.tools, inbox, replies.append, on_tool),
+        )
         worker.start()
         for n, text in enumerate(texts):
             inbox.put(text)

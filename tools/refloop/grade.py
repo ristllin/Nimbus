@@ -49,7 +49,7 @@ def _difference_from_turn(arg: dict, step: dict, turns: list) -> tuple:
     source = turns[arg["turn"] - 1].get("reply", "") if arg["turn"] <= len(turns) else ""
     low, high = arg.get("range", (arg["truth"] // 4, arg["truth"] * 4))
     said = sorted(n for n in _ints(source) if low <= n <= high)
-    said += [(a + b) // 2 for a, b in zip(said, said[1:])]      # "500 to 550" may be used as 525
+    said += [(a + b) // 2 for a, b in zip(said, said[1:])]  # "500 to 550" may be used as 525
     seen = _ints(step.get("reply", ""))
     for estimate in said:
         gap = abs(estimate - arg["truth"])
@@ -60,8 +60,9 @@ def _difference_from_turn(arg: dict, step: dict, turns: list) -> tuple:
 
 def _file_matching(arg: dict, state: dict) -> tuple:
     for path, body in state.get("files", {}).items():
-        if all(re.search(p, body, FLAGS) for p in arg.get("all", [])) and \
-                not any(re.search(p, body, FLAGS) for p in arg.get("none", [])):
+        if all(re.search(p, body, FLAGS) for p in arg.get("all", [])) and not any(
+            re.search(p, body, FLAGS) for p in arg.get("none", [])
+        ):
             return True, path
     return False, f"no file fits; files: {sorted(state.get('files', {}))}"
 
@@ -79,23 +80,31 @@ def _one_file(arg: dict, state: dict) -> str | None:
 CHECKS = {
     "reply_regex": lambda a, s, st, t: (bool(re.search(a, s.get("reply", ""), FLAGS)), s.get("reply", "")[:200]),
     "reply_not_regex": lambda a, s, st, t: (not re.search(a, s.get("reply", ""), FLAGS), s.get("reply", "")[:200]),
-    "last_reply_regex": lambda a, s, st, t: (bool(s.get("replies")) and bool(re.search(a, s["replies"][-1], FLAGS)),
-                                             (s.get("replies") or [""])[-1][:200]),
+    "last_reply_regex": lambda a, s, st, t: (
+        bool(s.get("replies")) and bool(re.search(a, s["replies"][-1], FLAGS)),
+        (s.get("replies") or [""])[-1][:200],
+    ),
     "max_replies": lambda a, s, st, t: (0 < len(s.get("replies") or []) <= a, f"{len(s.get('replies') or [])} replies"),
     "difference_from_turn": lambda a, s, st, t: _difference_from_turn(a, s, t),
     "tool_called": lambda a, s, st, t: (any(n in _tool_names(s) for n in a), str(_tool_names(s))),
     "tool_not_called": lambda a, s, st, t: (not any(n in _tool_names(s) for n in a), str(_tool_names(s))),
     "min_tool_calls": lambda a, s, st, t: (len(_tool_names(s)) >= a, f"{len(_tool_names(s))} calls"),
     "file_matching": lambda a, s, st, t: _file_matching(a, st),
-    "file_contains": lambda a, s, st, t: (bool(re.search(a["regex"], _one_file(a, st) or "", FLAGS)),
-                                          (_one_file(a, st) or "(no such file)")[:200]),
+    "file_contains": lambda a, s, st, t: (
+        bool(re.search(a["regex"], _one_file(a, st) or "", FLAGS)),
+        (_one_file(a, st) or "(no such file)")[:200],
+    ),
     "file_absent": lambda a, s, st, t: (_one_file(a, st) is None, str(sorted(st.get("files", {})))),
     "files_at_most": lambda a, s, st, t: (len(st.get("files", {})) <= a, str(sorted(st.get("files", {})))),
     "loops_count": lambda a, s, st, t: (len(st.get("loops") or []) == a, json.dumps(st.get("loops"))[:300]),
-    "loops_regex": lambda a, s, st, t: (bool(re.search(a, json.dumps(st.get("loops")), FLAGS)),
-                                        json.dumps(st.get("loops"))[:300]),
-    "loops_not_regex": lambda a, s, st, t: (not re.search(a, json.dumps(st.get("loops")), FLAGS),
-                                            json.dumps(st.get("loops"))[:300]),
+    "loops_regex": lambda a, s, st, t: (
+        bool(re.search(a, json.dumps(st.get("loops")), FLAGS)),
+        json.dumps(st.get("loops"))[:300],
+    ),
+    "loops_not_regex": lambda a, s, st, t: (
+        not re.search(a, json.dumps(st.get("loops")), FLAGS),
+        json.dumps(st.get("loops"))[:300],
+    ),
     "memory_regex": lambda a, s, st, t: (bool(re.search(a, _memory_text(st), FLAGS)), _memory_text(st)[:300]),
     "memory_not_regex": lambda a, s, st, t: (not re.search(a, _memory_text(st), FLAGS), _memory_text(st)[:300]),
 }
@@ -108,11 +117,13 @@ def run_checks(sc: dict, record: dict) -> list:
     for n, step in enumerate(user_turns(sc)):
         got = turns[n] if n < len(turns) else {}
         for check in step.get("expect") or []:
-            (name, arg), = check.items()
-            passed, seen = CHECKS[name](arg, got, got.get("state") or {}, turns[: n + 1]) if got else (False, "turn not run")
+            ((name, arg),) = check.items()
+            passed, seen = (
+                CHECKS[name](arg, got, got.get("state") or {}, turns[: n + 1]) if got else (False, "turn not run")
+            )
             out.append({"turn": n + 1, "check": name, "arg": arg, "pass": bool(passed), "seen": str(seen)[:300]})
     for check in sc.get("final") or []:
-        (name, arg), = check.items()
+        ((name, arg),) = check.items()
         state = record.get("final_state")
         passed, seen = CHECKS[name](arg, {}, state, turns) if state else (False, "no final state")
         out.append({"turn": "final", "check": name, "arg": arg, "pass": bool(passed), "seen": str(seen)[:300]})
@@ -134,11 +145,23 @@ JUDGE_SYSTEM = (
     "- concise: as short as the owner's request allows; no filler, no internal ids or plumbing\n"
     "Then say which assistant served the owner better overall: X, Y or tie."
 )
-_SCORES = {"type": "object", "additionalProperties": False, "required": [*RUBRIC, "notes"],
-           "properties": {**{k: {"type": "integer"} for k in RUBRIC}, "notes": {"type": "string"}}}
-JUDGE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["X", "Y", "better", "why"],
-                "properties": {"X": _SCORES, "Y": _SCORES, "better": {"type": "string", "enum": ["X", "Y", "tie"]},
-                               "why": {"type": "string"}}}
+_SCORES = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [*RUBRIC, "notes"],
+    "properties": {**{k: {"type": "integer"} for k in RUBRIC}, "notes": {"type": "string"}},
+}
+JUDGE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["X", "Y", "better", "why"],
+    "properties": {
+        "X": _SCORES,
+        "Y": _SCORES,
+        "better": {"type": "string", "enum": ["X", "Y", "tie"]},
+        "why": {"type": "string"},
+    },
+}
 
 
 def _cut(text, n: int) -> str:
@@ -146,30 +169,41 @@ def _cut(text, n: int) -> str:
     return text if len(text) <= n else text[:n] + f" ...[{len(text) - n} more chars]"
 
 
+def _render_turn(step: dict) -> list:
+    said = step["user"]
+    lines = [
+        f"Turn {step['turn']} - Owner"
+        + (f" ({len(said)} quick messages)" if len(said) > 1 else "")
+        + ": "
+        + " / ".join(said)
+    ]
+    lines += [f"  [photo attached: {fixtures.photo_truth(name)}]" for name in step.get("photos", [])]
+    for t in step.get("tools") or []:
+        lines.append(
+            f"  tool {t['name'].replace('.', '_')}({_cut(t.get('args'), 300)}) -> {_cut(t.get('result', ''), 300)}"
+        )
+    replies = step.get("replies") or []
+    if step.get("error") or step.get("timed_out"):
+        lines.append(f"  [the turn failed: {step.get('error') or 'no reply in time'}]")
+    many = len(replies) > 1
+    lines += [
+        f"  Assistant{f' (reply {n + 1})' if many else ''}: {_cut(reply, 3000)}" for n, reply in enumerate(replies)
+    ]
+    return lines if replies else [*lines, "  Assistant: (no reply)"]
+
+
+MARKERS = {
+    "restart": "[the assistant's process was restarted here]",
+    "new_conversation": "[a NEW conversation starts here: the earlier chat is no longer in view; memory and files remain]",
+}
+
+
 def render_transcript(record: dict) -> str:
     """One arm's run as the judge sees it: owner messages, tool calls with results, replies. No arm names."""
     lines = []
     for step in record.get("steps", []):
-        if step.get("kind") == "restart":
-            lines.append("[the assistant's process was restarted here]")
-        elif step.get("kind") == "new_conversation":
-            lines.append("[a NEW conversation starts here: the earlier chat is no longer in view; memory and files remain]")
-        if step.get("kind") not in ("say", "burst"):
-            continue
-        said = step["user"]
-        lines.append(f"Turn {step['turn']} - Owner" + (f" ({len(said)} quick messages)" if len(said) > 1 else "") + ": "
-                     + " / ".join(said))
-        for name in step.get("photos", []):
-            lines.append(f"  [photo attached: {fixtures.photo_truth(name)}]")
-        for t in step.get("tools") or []:
-            lines.append(f"  tool {t['name'].replace('.', '_')}({_cut(t.get('args'), 300)}) -> {_cut(t.get('result', ''), 300)}")
-        replies = step.get("replies") or []
-        if step.get("error") or step.get("timed_out"):
-            lines.append(f"  [the turn failed: {step.get('error') or 'no reply in time'}]")
-        for n, reply in enumerate(replies):
-            lines.append(f"  Assistant{f' (reply {n + 1})' if len(replies) > 1 else ''}: {_cut(reply, 3000)}")
-        if not replies:
-            lines.append("  Assistant: (no reply)")
+        kind = step.get("kind")
+        lines += [MARKERS[kind]] if kind in MARKERS else _render_turn(step) if kind in ("say", "burst") else []
     if record.get("error"):
         lines.append(f"[the run stopped early: {record['error']}]")
     return "\n".join(lines)
@@ -179,20 +213,30 @@ def judge_pair(client, sc: dict, rec_a: dict, rec_b: dict, seed: str) -> dict:
     """One blind judgment of both arms. Returns per-arm scores, the verdict and the order used."""
     a_is_x = random.Random(seed).random() < 0.5
     first, second = (rec_a, rec_b) if a_is_x else (rec_b, rec_a)
-    prompt = (f"SCENARIO: {sc['title']}\nWHAT IT TESTS: {sc.get('pain', '')}\nGROUND TRUTH: {sc['judge_notes']}\n\n"
-              f"===== ASSISTANT X =====\n{render_transcript(first)}\n\n"
-              f"===== ASSISTANT Y =====\n{render_transcript(second)}\n\nGrade X and Y.")
+    prompt = (
+        f"SCENARIO: {sc['title']}\nWHAT IT TESTS: {sc.get('pain', '')}\nGROUND TRUTH: {sc['judge_notes']}\n\n"
+        f"===== ASSISTANT X =====\n{render_transcript(first)}\n\n"
+        f"===== ASSISTANT Y =====\n{render_transcript(second)}\n\nGrade X and Y."
+    )
     resp = client.messages.create(
-        model=JUDGE_MODEL, max_tokens=4000, system=JUDGE_SYSTEM,
+        model=JUDGE_MODEL,
+        max_tokens=4000,
+        system=JUDGE_SYSTEM,
         output_config={"effort": "medium", "format": {"type": "json_schema", "schema": JUDGE_SCHEMA}},
         messages=[{"role": "user", "content": prompt}],
     )
     verdict = json.loads(next(b.text for b in resp.content if b.type == "text"))
     usage = {"input": resp.usage.input_tokens, "cached": 0, "cache_write": 0, "output": resp.usage.output_tokens}
     arm_of = {"X": "A" if a_is_x else "B", "Y": "B" if a_is_x else "A", "tie": "tie"}
-    return {"A": verdict["X" if a_is_x else "Y"], "B": verdict["Y" if a_is_x else "X"],
-            "better": arm_of[verdict["better"]], "why": verdict["why"], "order": "A=X" if a_is_x else "A=Y",
-            "judge_model": JUDGE_MODEL, "cost_usd": round(cost_usd(JUDGE_MODEL, usage), 6)}
+    return {
+        "A": verdict["X" if a_is_x else "Y"],
+        "B": verdict["Y" if a_is_x else "X"],
+        "better": arm_of[verdict["better"]],
+        "why": verdict["why"],
+        "order": "A=X" if a_is_x else "A=Y",
+        "judge_model": JUDGE_MODEL,
+        "cost_usd": round(cost_usd(JUDGE_MODEL, usage), 6),
+    }
 
 
 # ------------------------------------------------------------------- scoring
@@ -221,16 +265,20 @@ def grade_job(job_dir: Path, sc: dict, client, ledger: Path, force: bool = False
     g = {"scenario": sc["id"], "model": recs["A"]["model"], "rep": recs["A"]["rep"], "arms": {}}
     for arm, rec in recs.items():
         checks = run_checks(sc, rec)
-        g["arms"][arm] = {"checks": checks, "passed": sum(c["pass"] for c in checks), "total": len(checks),
-                          "check_rate": round(sum(c["pass"] for c in checks) / max(len(checks), 1), 4),
-                          "crashed": "error" in rec}
+        g["arms"][arm] = {
+            "checks": checks,
+            "passed": sum(c["pass"] for c in checks),
+            "total": len(checks),
+            "check_rate": round(sum(c["pass"] for c in checks) / max(len(checks), 1), 4),
+            "crashed": "error" in rec,
+        }
     g["judge"] = old.get("judge") if not force else None
     if client and not g["judge"]:
         seed = hashlib.sha256(f"{g['model']}/{sc['id']}/{g['rep']}".encode()).hexdigest()
         try:
             g["judge"] = judge_pair(client, sc, recs["A"], recs["B"], seed)
             add_spend(ledger, f"judge {g['model']} {sc['id']} rep{g['rep']}", g["judge"]["cost_usd"])
-        except Exception as e:      # a judge failure leaves the checks standing and is retried on the next grade
+        except Exception as e:  # a judge failure leaves the checks standing and is retried on the next grade
             g["judge_error"] = f"{type(e).__name__}: {e}"[:400]
     for arm in ("A", "B"):
         scores = (g["judge"] or {}).get(arm)
@@ -245,11 +293,17 @@ def grade_all(evidence: Path, scenarios: list, env: dict, judge: bool = True, fo
     client = None
     if judge:
         import anthropic
+
         client = anthropic.Anthropic(api_key=env.get(PROVIDER_ENV["anthropic"]))
     by_id = {s["id"]: s for s in scenarios}
     dirs = [d for d in sorted(evidence.glob("*/*/rep*")) if d.parent.name in by_id]
     with ThreadPoolExecutor(max_workers=4) as pool:
-        grades = [g for g in pool.map(
-            lambda d: grade_job(d, by_id[d.parent.name], client, evidence / "spend.jsonl", force), dirs) if g]
+        grades = [
+            g
+            for g in pool.map(
+                lambda d: grade_job(d, by_id[d.parent.name], client, evidence / "spend.jsonl", force), dirs
+            )
+            if g
+        ]
     print(f"graded {len(grades)} repetitions", flush=True)
     return grades

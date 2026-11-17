@@ -43,6 +43,8 @@ compare.py grade  --evidence <dir> --env-file <dotenv>   # grade stored runs aga
 compare.py report --evidence <dir>                       # rebuild RESULTS.md and summary.json
 compare.py show   --run <dir>/<model>/<scenario>/rep1/A --turn 4 [--system] [--request N]
                                                          # what the model was shown on that turn
+mechanisms.py --evidence <dir>                           # count known harness behaviors in arm A's captures;
+                                                         # writes MECHANISMS.md and LOSSES.md (one line per lost repetition)
 python3 tests/evals/refloop/test_refloop_offline.py      # the free self-test: no keys, no network
 refloop.py --mcp http://127.0.0.1:8787 --token <web token> --model claude-sonnet-5-5
                                                          # chat with the reference loop by hand
@@ -155,6 +157,7 @@ check stops the load.
 ```
 <evidence>/
   RESULTS.md, summary.json     the tables and every number behind them
+  MECHANISMS.md, LOSSES.md     from mechanisms.py: harness behaviors counted per scenario; every lost repetition
   spend.jsonl                  one line per paid run and judge call
   <model>/<scenario>/repN/
     grade.json                 checks per arm, the judge's scores and notes, the outcome

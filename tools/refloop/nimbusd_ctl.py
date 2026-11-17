@@ -109,8 +109,9 @@ class Nimbusd:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.port = free_port()
         log = open(self.log_path, "ab")
-        self.proc = subprocess.Popen([str(DAEMON)], env=self._environment(head), stdout=log, stderr=log,
-                                     cwd=str(self.data_dir))
+        self.proc = subprocess.Popen(
+            [str(DAEMON)], env=self._environment(head), stdout=log, stderr=log, cwd=str(self.data_dir)
+        )
         log.close()
         self.wait_ready()
 
@@ -189,12 +190,15 @@ class Nimbusd:
 
     def upload(self, project: str, name: str, content: bytes):
         boundary = uuid.uuid4().hex
-        head = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
-                "Content-Type: application/octet-stream\r\n\r\n").encode()
+        head = (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode()
         body = head + content + f"\r\n--{boundary}--\r\n".encode()
         q = urllib.parse.urlencode({"project": project, "name": name})
-        status, text = self.call("POST", f"/api/files/upload?{q}", data=body,
-                                 ctype=f"multipart/form-data; boundary={boundary}")
+        status, text = self.call(
+            "POST", f"/api/files/upload?{q}", data=body, ctype=f"multipart/form-data; boundary={boundary}"
+        )
         if not 200 <= status < 300:
             raise RuntimeError(f"upload {project}/{name} answered {status}: {text[:200]}")
 

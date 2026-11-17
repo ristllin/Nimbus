@@ -42,8 +42,12 @@ def normalize_usage(body) -> dict | None:
         cached = usage.get("cache_read_input_tokens") or 0
         written = usage.get("cache_creation_input_tokens") or 0
         fresh = usage.get("input_tokens") or 0
-        return {"input": fresh + cached + written, "cached": cached, "cache_write": written,
-                "output": usage.get("output_tokens") or 0}
+        return {
+            "input": fresh + cached + written,
+            "cached": cached,
+            "cache_write": written,
+            "output": usage.get("output_tokens") or 0,
+        }
     details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
     total_in = usage.get("input_tokens", usage.get("prompt_tokens")) or 0
     out = usage.get("output_tokens", usage.get("completion_tokens")) or 0
@@ -91,9 +95,9 @@ class CaptureProxy:
     def __init__(self, path: Path, label: str = "cap", keep_bodies: bool = False):
         self.path, self.label = Path(path), label
         self.ctx = {}
-        self.records = []          # compact per-exchange rows (no bodies), for the runner
+        self.records = []  # compact per-exchange rows (no bodies), for the runner
         self.keep_bodies = keep_bodies
-        self.bodies = []           # full exchanges not yet taken (only with keep_bodies)
+        self.bodies = []  # full exchanges not yet taken (only with keep_bodies)
         self._lock = threading.Lock()
         self._seq = 0
         self._upstream = _Upstream()
@@ -108,7 +112,7 @@ class CaptureProxy:
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
 
-            def log_message(self, *args):   # quiet: the JSONL is the log
+            def log_message(self, *args):  # quiet: the JSONL is the log
                 pass
 
             def _serve(self):
@@ -169,7 +173,7 @@ class CaptureProxy:
             return
         host, path = parts[1], "/" + parts[2]
         headers = {k: v for k, v in handler.headers.items() if k.lower() not in HOP_HEADERS}
-        headers["Accept-Encoding"] = "identity"    # plain bodies, so the record is readable
+        headers["Accept-Encoding"] = "identity"  # plain bodies, so the record is readable
         with self._lock:
             ctx = dict(self.ctx)
         started = time.time()
@@ -178,22 +182,26 @@ class CaptureProxy:
         except (http.client.HTTPException, OSError) as e:
             status, resp_headers = 502, [("Content-Type", "application/json")]
             resp_body = json.dumps({"error": f"capture proxy: upstream failed: {type(e).__name__}"}).encode()
-        ended = time.time()
-        self._record(ctx, handler, host, path, body, status, resp_body, started, ended)
+        row = {
+            "ctx": ctx,
+            "host": host,
+            "path": path.split("?")[0],
+            "method": handler.command,
+            "status": status,
+            "t_start": round(started, 3),
+            "ms": int((time.time() - started) * 1000),
+            "req_bytes": len(body),
+            "resp_bytes": len(resp_body),
+        }
+        kept = {k.lower(): v for k, v in handler.headers.items() if k.lower() in KEPT_HEADERS}
+        self._record(row, kept, body, resp_body)
         self._reply(handler, status, resp_headers, resp_body)
 
-    def _record(self, ctx, handler, host, path, body, status, resp_body, started, ended):
+    def _record(self, row: dict, kept_headers: dict, body: bytes, resp_body: bytes):
         request, response = _parse(body), _parse(resp_body)
-        row = {
-            "ctx": ctx, "host": host, "path": path.split("?")[0], "method": handler.command, "status": status,
-            "t_start": round(started, 3), "ms": int((ended - started) * 1000),
-            "req_bytes": len(body), "resp_bytes": len(resp_body),
-            "model": request.get("model") if isinstance(request, dict) else None,
-            "usage": normalize_usage(response),
-        }
-        full = dict(row)
-        full["req_headers"] = {k.lower(): v for k, v in handler.headers.items() if k.lower() in KEPT_HEADERS}
-        full["request"], full["response"] = request, response
+        row["model"] = request.get("model") if isinstance(request, dict) else None
+        row["usage"] = normalize_usage(response)
+        full = {**row, "req_headers": kept_headers, "request": request, "response": response}
         with self._lock:
             self._seq += 1
             row["seq"] = full["seq"] = self._seq

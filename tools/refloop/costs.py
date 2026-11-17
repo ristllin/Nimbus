@@ -24,7 +24,7 @@ PRICES = {
 # claude-haiku-5-5 bills a request whose prompt is over 100K tokens at its own rates.
 HAIKU_LONG_OVER = 100_000
 HAIKU_LONG = (0.50, 2.50, 0.05, 0.625)
-UNKNOWN = (3.00, 15.00, 0.30, 3.75)   # an unlisted model prices high, never free
+UNKNOWN = (3.00, 15.00, 0.30, 3.75)  # an unlisted model prices high, never free
 
 _lock = threading.Lock()
 

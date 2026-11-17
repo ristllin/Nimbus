@@ -41,14 +41,21 @@ RECEIPT_LINES = [
     "Paid: card ending 4417",
 ]
 
-METER_WEEKS = [("Week 1", "4 Oct", "18,204"), ("Week 2", "11 Oct", "18,251"),
-               ("Week 3", "18 Oct", "18,317"), ("Week 4", "25 Oct", "18,362")]
+METER_WEEKS = [
+    ("Week 1", "4 Oct", "18,204"),
+    ("Week 2", "11 Oct", "18,251"),
+    ("Week 3", "18 Oct", "18,317"),
+    ("Week 4", "25 Oct", "18,362"),
+]
 
 
 def _meter(i: int) -> bytes:
     week, date, reading = METER_WEEKS[i]
-    return _card(["ELECTRICITY METER", f"{week}  -  {date} 2026", "", f"  {reading} kWh", "", "Serial MX-20417"],
-                 bg=(232, 238, 240), font_px=44)
+    return _card(
+        ["ELECTRICITY METER", f"{week}  -  {date} 2026", "", f"  {reading} kWh", "", "Serial MX-20417"],
+        bg=(232, 238, 240),
+        font_px=44,
+    )
 
 
 PHOTOS = {
@@ -75,9 +82,26 @@ def photo_truth(name: str) -> str:
 
 
 # ----------------------------------------------------------------- text files
-_TOPICS = ["compost bays", "water butts", "the polytunnel", "seed swaps", "the bee corner", "shared wheelbarrows",
-           "path edging", "the notice board", "bonfire days", "the tool shed", "fruit cages", "the pond",
-           "children's plots", "winter mulching", "hedge trimming", "the car park", "plot inspections", "open days"]
+_TOPICS = [
+    "compost bays",
+    "water butts",
+    "the polytunnel",
+    "seed swaps",
+    "the bee corner",
+    "shared wheelbarrows",
+    "path edging",
+    "the notice board",
+    "bonfire days",
+    "the tool shed",
+    "fruit cages",
+    "the pond",
+    "children's plots",
+    "winter mulching",
+    "hedge trimming",
+    "the car park",
+    "plot inspections",
+    "open days",
+]
 _NAMES = ["Agnes", "Bilal", "Carys", "Dmitri", "Esme", "Farid", "Greta", "Hamza", "Ingrid", "Jonas", "Kirsty", "Lev"]
 _DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 _MONTHS = ["January", "February", "April", "May", "June", "July", "August", "September", "October", "November"]
@@ -86,11 +110,13 @@ _MONTHS = ["January", "February", "April", "May", "June", "July", "August", "Sep
 def _filler(rng: random.Random, n: int) -> str:
     topic, who, day = rng.choice(_TOPICS), rng.choice(_NAMES), rng.choice(_DAYS)
     month, num, hour = rng.choice(_MONTHS), rng.randint(2, 29), rng.randint(8, 18)
-    return (f"Section {n}. On {topic}. Members who use {topic} should sign the sheet kept by {who}, who looks "
-            f"after this area on {day}s from {hour}:00. No more than {num} people may use it at one time, and "
-            f"anything left out after dusk is tidied away by the committee. Problems go to {who} first, then "
-            f"to the secretary. This rule was last reviewed in {month} and applies to plots {num} to "
-            f"{num + rng.randint(3, 40)} as well as the shared beds.")
+    return (
+        f"Section {n}. On {topic}. Members who use {topic} should sign the sheet kept by {who}, who looks "
+        f"after this area on {day}s from {hour}:00. No more than {num} people may use it at one time, and "
+        f"anything left out after dusk is tidied away by the committee. Problems go to {who} first, then "
+        f"to the secretary. This rule was last reviewed in {month} and applies to plots {num} to "
+        f"{num + rng.randint(3, 40)} as well as the shared beds."
+    )
 
 
 def handbook(target_bytes: int = 40_000) -> str:
@@ -101,14 +127,18 @@ def handbook(target_bytes: int = 40_000) -> str:
     while sum(len(s) + 1 for s in out) < target_bytes:
         n += 1
         if n == 23:
-            out.append("Section 23. Fees. The annual fee for a full plot is 64 pounds and for a half plot it is "
-                       "38 pounds, due by the last Friday of January. A raised bed for members with limited "
-                       "mobility is 15 pounds. Fees unpaid after six weeks mean the plot is offered to the "
-                       "waiting list.")
+            out.append(
+                "Section 23. Fees. The annual fee for a full plot is 64 pounds and for a half plot it is "
+                "38 pounds, due by the last Friday of January. A raised bed for members with limited "
+                "mobility is 15 pounds. Fees unpaid after six weeks mean the plot is offered to the "
+                "waiting list."
+            )
         elif n == 57:
-            out.append("Section 57. Tool shed access. The combination for the tool shed padlock is 5-1-8-3. "
-                       "It changes on the first Monday of March each year, and the new combination is given out "
-                       "at the spring meeting only, never by text or email.")
+            out.append(
+                "Section 57. Tool shed access. The combination for the tool shed padlock is 5-1-8-3. "
+                "It changes on the first Monday of March each year, and the new combination is given out "
+                "at the spring meeting only, never by text or email."
+            )
         else:
             out.append(_filler(rng, n))
         out.append("")
@@ -135,8 +165,10 @@ def volume(i: int, target_bytes: int = 40_000) -> str:
     while sum(len(s) + 1 for s in out) < target_bytes:
         n += 1
         if n == 3:
-            out.append(f"Section 3. Gate. The code for the main gate at {site} is {code}. It is told to plot "
-                       f"holders in person and never written on the notice board.")
+            out.append(
+                f"Section 3. Gate. The code for the main gate at {site} is {code}. It is told to plot "
+                f"holders in person and never written on the notice board."
+            )
         else:
             out.append(_filler(rng, n))
         out.append("")
@@ -160,12 +192,20 @@ dust sheets,5,B2
 """
 
 TEXTS = {
-    "handbook": {"make": handbook, "truth": "A 40 KB handbook. Section 23: half plot fee is 38 pounds (full plot 64). "
-                 "Section 57: tool shed padlock combination 5-1-8-3, changes on the first Monday of March."},
-    "inventory": {"make": lambda: INVENTORY, "truth": "A 12-item garage inventory CSV; torque wrench: qty 2, shelf C3."},
+    "handbook": {
+        "make": handbook,
+        "truth": "A 40 KB handbook. Section 23: half plot fee is 38 pounds (full plot 64). "
+        "Section 57: tool shed padlock combination 5-1-8-3, changes on the first Monday of March.",
+    },
+    "inventory": {
+        "make": lambda: INVENTORY,
+        "truth": "A 12-item garage inventory CSV; torque wrench: qty 2, shelf C3.",
+    },
     **{
-        f"volume{i:02d}": {"make": (lambda i=i: volume(i)),
-                           "truth": "A 40 KB minute book of {}: gate code {}, balance {} pounds.".format(*volume_facts(i))}
+        f"volume{i:02d}": {
+            "make": (lambda i=i: volume(i)),
+            "truth": "A 40 KB minute book of {}: gate code {}, balance {} pounds.".format(*volume_facts(i)),
+        }
         for i in range(1, VOLUMES + 1)
     },
 }
