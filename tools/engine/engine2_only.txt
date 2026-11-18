@@ -1,0 +1,31 @@
+# Engine-2 sources: compiled for the host (pio test -e native, nimbusd, harness-lab) and for
+# engine-2 device envs only. tools/engine_filter.py drops every file listed here from an
+# engine-1 device build, so new engine code costs no device byte until it is switched on.
+#
+# One repo-relative source path per line; '#' starts a comment. Every lib/core/src/orch_tx_*,
+# lib/harness/src/plain_* and lib/harness/src/providers/plain_wire_* source must be listed
+# (tools/release_gate/check_engine_filter.py fails otherwise, and on an entry that does not exist).
+# A lane that adds an engine-2 source adds its line here in the same commit.
+
+lib/core/src/orch_tx_arena.cpp
+lib/core/src/orch_tx_budget.cpp
+lib/core/src/orch_tx_digest.cpp
+lib/core/src/orch_tx_item.cpp
+lib/core/src/orch_tx_log.cpp
+lib/core/src/orch_tx_migrate.cpp
+lib/core/src/orch_tx_rules.cpp
+
+lib/harness/src/plain_agents.cpp
+lib/harness/src/plain_compact.cpp
+lib/harness/src/plain_deliver.cpp
+lib/harness/src/plain_docs.cpp
+lib/harness/src/plain_engine.cpp
+lib/harness/src/plain_exchange.cpp
+lib/harness/src/plain_guards.cpp
+lib/harness/src/plain_media.cpp
+lib/harness/src/plain_rails.cpp
+lib/harness/src/plain_request.cpp
+lib/harness/src/plain_resume.cpp
+lib/harness/src/plain_truth.cpp
+lib/harness/src/plain_unattended.cpp
+lib/harness/src/plain_wire.cpp

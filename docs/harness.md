@@ -418,8 +418,19 @@ dir separately - include them relatively).
 ## Engine 2 seams (the rebuild)
 
 The plain engine of the harness rebuild is built beside the current one and is not
-linked into any device image yet. Its seams are declared up front so each lane fills
-one body:
+linked into any device image yet.
+
+The host builds (`pio test -e native`, nimbusd, harness-lab) compile both engines. A
+device env compiles one: `tools/engine_filter.py`, a pre-script every `[s3]` env runs,
+drops each source listed in `tools/engine/engine2_only.txt` from an engine-1 build (the
+env option `custom_nimbus_engine`, 1 when absent). Leaving the files unreferenced is not
+enough: the device link loads every lib/core and lib/harness object, and `--gc-sections`
+keeps the unwind tables of one whose code it drops. A lane that adds a lib/core
+`orch_tx_*`, lib/harness `plain_*` or `providers/plain_wire_*` source lists it there in
+the same commit; `tools/release_gate/check_engine_filter.py` fails otherwise, and on any
+built engine-1 `firmware.map` that names an engine-2 object.
+
+The seams are declared up front so each lane fills one body:
 
 - `lib/core/include/nimbus/orch/tx/` - the transcript: items and their line codec
   (`item.h`), the RAM arena (`arena.h`), the log on storage over a `TxFiles` interface
