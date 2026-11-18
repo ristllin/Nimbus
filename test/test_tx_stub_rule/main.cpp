@@ -390,6 +390,343 @@ void test_ladder_climbs_one_rung_at_a_time() {
   }
 }
 
+
+// ---- lane RB-T3 additions: the rest of each rule's class -----------------------------------
+
+// A stub is computed once at capture, stored on the r line and read back byte for byte after
+// a restart (encode, decode); recomputing from the same facts gives the same bytes.
+void test_rules_stub_survives_a_restart() {
+  for (const std::string& p : previews())
+    for (int outside = 0; outside < 2; ++outside) {
+      const tx::StubFacts f = outside ? outsideFacts(R"({"q":"tide"})", p) : internalFacts(p);
+      tx::Item r;
+      r.q = f.q;
+      r.kind = tx::ItemKind::Result;
+      r.id = "toolu_0001";
+      r.n = f.tool;
+      r.cls = f.cls;
+      TXB_OK(tx::stubText(f, r.st));
+      std::string line;
+      TXB_OK(tx::encodeLine(r, line));
+      tx::Item back;
+      TXB_OK(tx::decodeLine(line.data(), line.size(), back));
+      TEST_ASSERT_EQUAL_STRING(r.st.c_str(), back.st.c_str());
+      std::string again;
+      TXB_OK(tx::stubText(f, again));
+      TEST_ASSERT_EQUAL_STRING(r.st.c_str(), again.c_str());
+    }
+}
+
+// Outside content never rides a stub: over generated payloads, no 8-byte window of the
+// result appears in its stub (with and without a card).
+void test_rules_outside_stub_never_carries_result_bytes() {
+  uint32_t seed = 12345;
+  auto next = [&seed] { return seed = seed * 1103515245u + 12345u; };
+  const char alpha[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  for (int k = 0; k < 200; ++k) {
+    std::string body;
+    const size_t len = 8 + next() % 600;
+    for (size_t i = 0; i < len; ++i) body += alpha[(next() >> 8) % 62];
+    tx::StubFacts f = outsideFacts(R"({"q":"x"})", body);
+    f.noCard = (k % 2) == 1;
+    f.bytes = (uint32_t)body.size();
+    std::string s;
+    TXB_OK(tx::stubText(f, s));
+    for (size_t i = 0; i + 8 <= body.size(); ++i)
+      TEST_ASSERT_TRUE_MESSAGE(s.find(body.substr(i, 8)) == std::string::npos, s.c_str());
+  }
+}
+
+// Every byte value in a preview, a tool name, a path or the outside arguments gives one line
+// of valid UTF-8 with no control byte, within 400 B.
+void test_rules_every_byte_gives_one_clean_line() {
+  for (int b = 0; b < 256; ++b) {
+    const std::string odd = std::string("a") + (char)b + "b" + (char)b;
+    for (int field = 0; field < 4; ++field) {
+      tx::StubFacts f = field == 3 ? outsideFacts(odd, odd) : internalFacts(odd);
+      if (field == 1) f.tool = "t" + odd;
+      if (field == 2) f.path = odd;
+      std::string s;
+      TXB_OK(tx::stubText(f, s));
+      TEST_ASSERT_TRUE(validUtf8(s));
+      TEST_ASSERT_TRUE(s.size() <= tx::kStubMaxBytes);
+      for (char c : s) TEST_ASSERT_FALSE_MESSAGE((unsigned char)c < 0x20 || c == 0x7F, "a control byte in a stub");
+    }
+  }
+}
+
+// No card: no view hint (nothing to view), and still the PRD's frame.
+void test_rules_no_card_stub_says_not_kept() {
+  tx::StubFacts f = internalFacts("abc");
+  f.noCard = true;
+  std::string s;
+  TXB_OK(tx::stubText(f, s));
+  TEST_ASSERT_EQUAL_STRING("[stub read_file r42 15204B 310L 13:02] abc ... (full result not kept: no storage card)",
+                           s.c_str());
+  f.hhmm = "";
+  f.noCard = false;
+  TXB_OK(tx::stubText(f, s));
+  TEST_ASSERT_TRUE_MESSAGE(s.rfind("[stub read_file r42 15204B 310L --:--] abc", 0) == 0, s.c_str());
+}
+
+// Every path write supersedes reads of its path; nothing else does.
+void test_rules_every_path_write_supersedes_its_reads() {
+  const char* writes[] = {R"(write_file|{"path":"n/a.md","content":"x"})", R"(append_file|{"path":"n/a.md","text":"x"})",
+                          R"(edit_file|{"path":"n/a.md","old":"a","new":"b"})", R"(delete_file|{"path":"n/a.md"})",
+                          R"(move_file|{"from":"n/a.md","to":"n/c.md"})"};
+  for (const char* w : writes) {
+    const std::string spec = w;
+    const std::string name = spec.substr(0, spec.find('|')), args = spec.substr(spec.find('|') + 1);
+    txb::Convo c;
+    c.openTurn();
+    const uint64_t r1 = c.receipt(c.call("read_file", R"({"path":"n/a.md"})"), "read_file", "alpha");
+    const uint64_t r2 = c.receipt(c.call("file_stat", R"({"path":"n/a.md"})"), "file_stat", "size=5");
+    const uint64_t r3 = c.receipt(c.call("read_pdf", R"({"path":"n/a.md"})"), "read_pdf", "alpha");
+    c.receipt(c.call("read_file", R"({"path":"n/b.md"})"), "read_file", "beta");
+    c.receipt(c.call("list_files", R"({"path":"n/a.md"})"), "list_files", "a.md");
+    c.receipt(c.call("search", R"({"query":"n/a.md"})"), "search", "n/a.md");
+    const std::vector<tx::Item> earlier = c.items;
+    c.call(name, args, true);
+    std::vector<uint64_t> sup;
+    TXB_OK(tx::supersededBy(c.items.back(), earlier, sup));
+    TEST_ASSERT_EQUAL_MESSAGE(3, (int)sup.size(), w);
+    TEST_ASSERT_EQUAL_UINT64(r1, sup[0]);
+    TEST_ASSERT_EQUAL_UINT64(r2, sup[1]);
+    TEST_ASSERT_EQUAL_UINT64(r3, sup[2]);
+  }
+  // A read is not a write; a long-argument stub supersedes nothing; a non-call is refused.
+  txb::Convo c;
+  c.openTurn();
+  c.receipt(c.call("read_file", R"({"path":"n/a.md"})"), "read_file", "alpha");
+  const std::vector<tx::Item> earlier = c.items;
+  std::vector<uint64_t> sup;
+  c.call("read_file", R"({"path":"n/a.md"})");
+  TXB_OK(tx::supersededBy(c.items.back(), earlier, sup));
+  TEST_ASSERT_EQUAL(0, (int)sup.size());
+  c.call("write_file", "[stub 15204B sha:ab12cd34: view id=r9]", true);
+  TXB_OK(tx::supersededBy(c.items.back(), earlier, sup));
+  TEST_ASSERT_EQUAL(0, (int)sup.size());
+  TEST_ASSERT_TRUE(tx::supersededBy(earlier.back(), earlier, sup).err == tx::Err::InvalidArgument);
+}
+
+// One stale read costs one change point: a read already superseded, or tier-2 already a stub
+// at or below the pointer, is not superseded again. A receipt at or below the pointer is
+// still verbatim (Ruling 16), so it is.
+void test_rules_supersede_counts_each_read_once() {
+  txb::Convo c;
+  c.openTurn();
+  const uint64_t r1 = c.receipt(c.call("read_file", R"({"path":"n/a.md"})"), "read_file", "v1");
+  const std::string big = c.call("read_file", R"({"path":"n/a.md","offset":0})");
+  c.bulkResult(big, "read_file", txb::payload("BIG", 30000));
+  const uint64_t r3 = c.receipt(c.call("read_file", R"({"path":"n/a.md"})"), "read_file", "v1");
+  c.move(c.q, "cold", {r1});
+  const std::vector<tx::Item> earlier = c.items;
+  c.call("write_file", R"({"path":"n/a.md","content":"x"})", true);
+  std::vector<uint64_t> sup;
+  TXB_OK(tx::supersededBy(c.items.back(), earlier, sup));
+  TEST_ASSERT_EQUAL(1, (int)sup.size());
+  TEST_ASSERT_EQUAL_UINT64(r3, sup[0]);
+}
+
+// ledger_write in every shape Ruling 11 allows: ops with day, a move's target day, rows named
+// by id or ids, and (with the write's own receipt) its day lines, which resolve "today".
+void test_rules_ledger_write_shapes_supersede_their_days() {
+  auto build = [](txb::Convo& c, uint64_t& r17, uint64_t& r16, uint64_t& r15) {
+    c.openTurn();
+    r17 = c.receipt(c.call("ledger_day", R"({"day":"2026-11-17"})"), "ledger_day", "L00A3 skyr 150 g");
+    r16 = c.receipt(c.call("ledger_day", R"({"day":"today"})"), "ledger_day",
+                    "L0099 oats 40 g\nday 2026-11-16 (ledger day, 04:00 to 04:00): 1 rows");
+    r15 = c.receipt(c.call("ledger_day", R"({"day":"2026-11-15"})"), "ledger_day", "L0077 rice 80 g");
+  };
+  struct Row {
+    const char* args;
+    const char* receipt;
+    int want;   // bit 0: r17, bit 1: r16, bit 2: r15
+  } rows[] = {
+      {R"({"ops":[{"op":"add","row":{"item":"apple"},"day":"2026-11-17"}]})", nullptr, 1},
+      {R"({"ops":[{"op":"move","ids":["L0077"],"day":"2026-11-16"}]})", nullptr, 6},
+      {R"({"ops":[{"op":"update","id":"L00A3","set":{"qty":200}}]})", nullptr, 1},
+      {R"({"ops":[{"op":"remove","ids":"L0099"}]})", nullptr, 2},
+      {R"({"ops":[{"op":"add","row":{"item":"tea"},"day":"today"}]})", nullptr, 0},
+      {R"({"ops":[{"op":"add","row":{"item":"tea"},"day":"today"}]})", "L00B1 tea\nday 2026-11-16 (ledger day, 04:00 to 04:00): 2 rows", 2},
+      {R"({"ops":[{"op":"add","row":{"item":"L0077 lookalike","note":"day 2026-11-15"}}]})", nullptr, 0},
+  };
+  for (const Row& row : rows) {
+    txb::Convo c;
+    uint64_t r17, r16, r15;
+    build(c, r17, r16, r15);
+    const std::vector<tx::Item> earlier = c.items;
+    const std::string id = c.call("ledger_write", row.args, true);
+    const tx::Item call = c.items.back();
+    std::vector<uint64_t> sup;
+    if (row.receipt) {
+      c.receipt(id, "ledger_write", row.receipt);
+      TXB_OK(tx::supersededBy(call, c.items.back(), earlier, sup));
+    } else {
+      TXB_OK(tx::supersededBy(call, earlier, sup));
+    }
+    std::vector<uint64_t> want;
+    if (row.want & 1) want.push_back(r17);
+    if (row.want & 2) want.push_back(r16);
+    if (row.want & 4) want.push_back(r15);
+    std::sort(want.begin(), want.end());
+    TEST_ASSERT_EQUAL_MESSAGE((int)want.size(), (int)sup.size(), row.args);
+    for (size_t i = 0; i < want.size(); ++i) TEST_ASSERT_EQUAL_UINT64_MESSAGE(want[i], sup[i], row.args);
+  }
+}
+
+// Whole or stub, over every result class, pointer side, turn and supersession.
+void test_rules_show_result_table() {
+  const tx::ResultClass classes[] = {tx::ResultClass::Receipt, tx::ResultClass::Bulk, tx::ResultClass::Outside};
+  for (tx::ResultClass cls : classes)
+    for (uint64_t q : {5ull, 10ull, 11ull})
+      for (uint32_t turn : {1u, 2u})
+        for (int sup = 0; sup < 2; ++sup)
+          for (uint64_t ladder : {0ull, 11ull}) {
+            tx::Item r;
+            r.kind = tx::ItemKind::Result;
+            r.q = q;
+            r.turn = turn;
+            r.cls = cls;
+            const std::vector<uint64_t> s = sup ? std::vector<uint64_t>{q} : std::vector<uint64_t>{};
+            tx::ShowFacts f;
+            f.pointer = 10;
+            f.openTurn = 2;
+            f.superseded = &s;
+            f.ladderStubThrough = ladder;
+            tx::ShowAs got;
+            TXB_OK(tx::showResult(r, f, got));
+            bool stub = false;
+            if (sup) stub = true;
+            else if (cls == tx::ResultClass::Receipt) stub = false;
+            else if (q <= 10) stub = true;
+            else if (cls == tx::ResultClass::Outside && turn != 2) stub = true;
+            else if (turn == 2 && q <= ladder) stub = true;
+            char msg[96];
+            std::snprintf(msg, sizeof msg, "cls %d q %llu turn %u sup %d ladder %llu", (int)cls, (unsigned long long)q,
+                          turn, sup, (unsigned long long)ladder);
+            TEST_ASSERT_EQUAL_MESSAGE((int)stub, (int)(got == tx::ShowAs::Stub), msg);
+          }
+  tx::ShowAs got;
+  TEST_ASSERT_TRUE(tx::showResult(tx::Item{}, tx::ShowFacts{}, got).err == tx::Err::InvalidArgument);
+}
+
+// The rest of the photo table: floor heads are inline heads with the base64 bound; no card
+// and no clock carry nothing; a file-reference head keeps the last two photo turns; the
+// arrival turn shows at most 4.
+void test_rules_photo_table_edges() {
+  tx::PhotoFacts floor = photoFacts(tx::PhotoMode::Inline, 2, 1, 30);
+  floor.b64Bytes = {150000, 150000};
+  expectVisible(floor, 1, "floor head: base64 bound");
+  floor.b64Bytes = {90000, 90000};
+  expectVisible(floor, 2, "floor head: both fit");
+  floor.b64Bytes = {250000, 1000};
+  expectVisible(floor, 0, "floor head: the newest does not fit");
+  tx::PhotoFacts noCard = photoFacts(tx::PhotoMode::FileRef, 2, 1, 60);
+  noCard.noCard = true;
+  expectVisible(noCard, 0, "no card: carried photos");
+  noCard.ownerTurnsSince = {0, 0};
+  expectVisible(noCard, 2, "no card: the arrival turn");
+  tx::PhotoFacts noClock = photoFacts(tx::PhotoMode::FileRef, 2, 1, 60);
+  noClock.now = 0;
+  expectVisible(noClock, 0, "clock not set");
+  tx::PhotoFacts ages = photoFacts(tx::PhotoMode::FileRef, 3, 1, 60);
+  ages.ownerTurnsSince = {0, 1, 2};
+  expectVisible(ages, 2, "the last two photo turns");
+  expectVisible(photoFacts(tx::PhotoMode::FileRef, 6, 0, 0), 4, "arrival at most 4");
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 6, 0, 0), 4, "inline arrival at most 4");
+  expectVisible(photoFacts(tx::PhotoMode::None, 2, 0, 0), 0, "no vision: not even on arrival");
+  tx::PhotoFacts bad = photoFacts(tx::PhotoMode::FileRef, 2, 1, 60);
+  bad.ownerTurnsSince.pop_back();
+  std::vector<std::string> v;
+  TEST_ASSERT_TRUE(tx::visiblePhotos(bad, v).err == tx::Err::InvalidArgument);
+}
+
+// Rung 3 over its class: the omitted prefix never reaches the newest 6 owner turns, frees
+// enough when it can, and omits no more turns than it needs.
+void test_rules_omission_span_keeps_the_newest_six_owner_turns() {
+  for (uint32_t n = 0; n <= 14; ++n)
+    for (uint32_t pattern = 0; pattern < 4; ++pattern)
+      for (size_t need : {(size_t)0, (size_t)1, (size_t)2500, (size_t)9000, (size_t)1000000}) {
+        std::vector<tx::TurnSpan> turns;
+        for (uint32_t i = 0; i < n; ++i) {
+          tx::TurnSpan t;
+          t.turn = i + 1;
+          t.owner = pattern == 0 || (i + pattern) % 3 != 0;
+          t.bytes = 1000 + 100 * i;
+          turns.push_back(t);
+        }
+        uint32_t omit = 99;
+        TXB_OK(tx::omissionSpan(turns, need, omit));
+        // The protected boundary: the oldest of the newest 6 owner turns (none with fewer).
+        size_t bound = 0, owners = 0;
+        for (size_t i = turns.size(); i-- > 0;)
+          if (turns[i].owner && ++owners == tx::kNewestOwnerTurnsKept) {
+            bound = i;
+            break;
+          }
+        TEST_ASSERT_TRUE_MESSAGE(omit <= bound, "the omission reached into the newest 6 owner turns");
+        size_t freed = 0;
+        for (uint32_t i = 0; i < omit; ++i) freed += turns[i].bytes;
+        if (omit > 0) TEST_ASSERT_TRUE_MESSAGE(freed - turns[omit - 1].bytes < need, "omitted more than needed");
+        if (freed < need) TEST_ASSERT_EQUAL_MESSAGE((int)bound, (int)omit, "stopped short of the protected turns");
+      }
+  std::vector<tx::TurnSpan> backwards(2);
+  backwards[0].turn = 5;
+  backwards[1].turn = 4;
+  uint32_t omit;
+  TEST_ASSERT_TRUE(tx::omissionSpan(backwards, 1, omit).err == tx::Err::InvalidArgument);
+}
+
+// Ruling 11: the year in every stamp the rules write.
+void test_rules_stamps_carry_the_year() {
+  std::string s;
+  TXB_OK(tx::photoWhen(txb::kT0, 0, s));
+  TEST_ASSERT_EQUAL_STRING("Tue 17 Nov 2026 13:02", s.c_str());
+  TXB_OK(tx::photoWhen(txb::kT0, 60, s));
+  TEST_ASSERT_EQUAL_STRING("Tue 17 Nov 2026 14:02", s.c_str());
+  TXB_OK(tx::photoWhen(0, 0, s));
+  TEST_ASSERT_EQUAL_STRING("", s.c_str());
+  TXB_OK(tx::stubTime(txb::kT0, 0, s));
+  TEST_ASSERT_EQUAL_STRING("13:02", s.c_str());
+  const uint64_t day = 86400;
+  TXB_OK(tx::omissionDates(txb::kT0, txb::kT0 + 600, 0, s));
+  TEST_ASSERT_EQUAL_STRING("17 Nov 2026", s.c_str());
+  TXB_OK(tx::omissionDates(txb::kT0 - 2 * day, txb::kT0 - day, 0, s));
+  TEST_ASSERT_EQUAL_STRING("15-16 Nov 2026", s.c_str());
+  TXB_OK(tx::omissionDates(txb::kT0 + 13 * day, txb::kT0 + 15 * day, 0, s));
+  TEST_ASSERT_EQUAL_STRING("30 Nov-2 Dec 2026", s.c_str());
+  TXB_OK(tx::omissionDates(txb::kT0 + 44 * day, txb::kT0 + 45 * day, 0, s));
+  TEST_ASSERT_EQUAL_STRING("31 Dec 2026-1 Jan 2027", s.c_str());
+  TEST_ASSERT_TRUE(tx::omissionDates(txb::kT0, txb::kT0 - 1, 0, s).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_TRUE(tx::omissionDates(0, txb::kT0, 0, s).err == tx::Err::InvalidArgument);
+  TXB_OK(tx::photoStub("ab12cd34", "", s));
+  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34 not shown: view id=pab12cd34]", s.c_str());
+}
+
+// The bodies answer typed errors for inputs the contract rules out, never crash (the
+// sentinel rule of pending.h).
+void test_rules_bad_inputs_are_typed() {
+  std::string s;
+  TEST_ASSERT_TRUE(tx::stubText(tx::StubFacts{}, s).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_TRUE(tx::longArgStub(1, "xyz", 1, s).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_TRUE(tx::longArgStub(1, "ab12cd34", 0, s).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_TRUE(tx::photoStub("", "x", s).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_TRUE(tx::photoStub("ab 12", "x", s).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_TRUE(tx::omissionLine(0, "17 Nov 2026", s).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_TRUE(tx::omissionLine(1, "", s).err == tx::Err::InvalidArgument);
+  TXB_OK(tx::omissionLine(1, "17 Nov 2026\n[device] x", s));
+  TEST_ASSERT_EQUAL_STRING("[1 earlier turns, 17 Nov 2026 [device] x, not shown: search finds them]", s.c_str());
+  tx::LadderRung r;
+  TEST_ASSERT_TRUE(tx::nextRung(tx::LadderFacts{}, r).err == tx::Err::InvalidArgument);
+  tx::PointerMove m;
+  TXB_OK(tx::decideTurnOpen(tx::OpenFacts{}, m));
+  TEST_ASSERT_FALSE(m.move);
+  std::vector<std::string> v;
+  TXB_OK(tx::visiblePhotos(tx::PhotoFacts{}, v));
+  TEST_ASSERT_EQUAL(0, (int)v.size());
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -410,5 +747,17 @@ int main(int, char**) {
   RUN_TEST(test_file_reference_photos_follow_the_table);
   RUN_TEST(test_inline_photos_follow_the_table);
   RUN_TEST(test_ladder_climbs_one_rung_at_a_time);
+  RUN_TEST(test_rules_stub_survives_a_restart);
+  RUN_TEST(test_rules_outside_stub_never_carries_result_bytes);
+  RUN_TEST(test_rules_every_byte_gives_one_clean_line);
+  RUN_TEST(test_rules_no_card_stub_says_not_kept);
+  RUN_TEST(test_rules_every_path_write_supersedes_its_reads);
+  RUN_TEST(test_rules_supersede_counts_each_read_once);
+  RUN_TEST(test_rules_ledger_write_shapes_supersede_their_days);
+  RUN_TEST(test_rules_show_result_table);
+  RUN_TEST(test_rules_photo_table_edges);
+  RUN_TEST(test_rules_omission_span_keeps_the_newest_six_owner_turns);
+  RUN_TEST(test_rules_stamps_carry_the_year);
+  RUN_TEST(test_rules_bad_inputs_are_typed);
   return UNITY_END();
 }

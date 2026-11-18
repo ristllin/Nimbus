@@ -488,6 +488,40 @@ reference loop through `scripted_provider.py`, so one script can run both arms o
 parity check offline. `test/test_scripted_provider` proves the old engine's parsers read
 its answers; `test/test_plain_seams` pins the stubs and the hooks registry.
 
+### What a request shows: the stub rule
+
+`orch_tx_rules.cpp` (`rules.h`) holds the rules that decide what the model is shown. Each is
+a pure function of stored facts (no clock, no file, no global state), so a restart renders
+the same request, and none of them drops anything without a line that names it.
+
+- **Stub texts** are computed once when a result is captured and stored on its `r` line
+  (`stubText`). Internal results: `[stub <tool> r<q> <bytes>B <lines>L <HH:MM>] <first 200 B>
+  ... (full: view id=r<q>)`, with `path=` and `sha8=` for file tools. Outside results (web,
+  fetch, connectors): `[stub <tool>(<args, 120 B>) r<q> <bytes>B outside content, not shown:
+  view id=r<q>]`, built from the call and the size only, so outside content cannot ride into
+  later turns through a stub. Every stub is one line of valid UTF-8 of at most 400 B.
+  `longArgStub`, `photoStub` and `omissionLine` write the other three shapes; `stubTime`,
+  `photoWhen` and `omissionDates` write their times, with the year in every date.
+- **The pointer** moves only at turn open (`decideTurnOpen`), forward, to the last closed
+  turn: on a cold open (over 270 s since the last request, no clock, or after a restart), or
+  on a warm open when whole internal bulk above it passes 24,576 B (8,192 B on 85,000 B
+  heads). At or below it only tier-2 bulk and outside results render as stubs; receipts stay
+  verbatim until compacted (`showResult`).
+- **Superseded reads** (`supersededBy`): a successful file write marks earlier reads of the
+  same path stale; a `ledger_write` marks earlier `ledger_day` views of each day it touches
+  (by its `day` fields, its receipt's day lines, or the row ids its ops name). Each stale
+  read is listed once, in the `sup` list of an `x` item.
+- **Photos** (`visiblePhotos`): heads with file references keep the last two photo turns for
+  two more owner turns, at most 4, until an hour idle or a restart; inline heads (routed and
+  other 85,000 B heads too) carry the newest 2 to the next owner turn only, within 270 s and
+  200,000 B of base64. The rest render as `[photo p<ref> <date> not shown: view id=p<ref>]`.
+- **The overflow ladder** (`nextRung`, one rung at a time): stub closed turns, stub this
+  turn's older bulk, omit the oldest whole turns as one named line (`omissionSpan` never
+  reaches the newest 6 owner turns), then the size guard.
+
+`test/test_tx_stub_rule` checks each rule over its class (every byte value, every write tool
+and ledger shape, the photo table per head kind, every split of turns for the ladder).
+
 ### The battery's property suites (layer L1)
 
 Nine suites state what the plain engine must keep true before it exists:

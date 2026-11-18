@@ -80,8 +80,6 @@ std::vector<StubRow> stubs() {
   static tx::Item item;
   static tx::HeadState head;
   static std::vector<tx::Item> items;
-  static std::vector<uint64_t> qs;
-  static std::vector<string> refs;
   static std::vector<tx::DigestEntry> digests;
   static std::vector<tx::DayRow> rows;
   static bool flag;
@@ -100,14 +98,6 @@ std::vector<StubRow> stubs() {
       {"tx::bulkPath", [] { return tx::bulkPath("1001", 1, s); }},
       {"tx::digestArchivePath", [] { return tx::digestArchivePath("1001", "2026-11", s); }},
       {"tx::migratedPath", [] { return tx::migratedPath("1001", s); }},
-      {"tx::decideTurnOpen", [] { tx::PointerMove m; return tx::decideTurnOpen(tx::OpenFacts{}, m); }},
-      {"tx::stubText", [] { return tx::stubText(tx::StubFacts{}, s); }},
-      {"tx::longArgStub", [] { return tx::longArgStub(1, "ab12cd34", 1, s); }},
-      {"tx::photoStub", [] { return tx::photoStub("ab12cd34", "Tue 17 Nov 13:02", s); }},
-      {"tx::supersededBy", [] { return tx::supersededBy(item, items, qs); }},
-      {"tx::visiblePhotos", [] { return tx::visiblePhotos(tx::PhotoFacts{}, refs); }},
-      {"tx::nextRung", [] { tx::LadderRung r; return tx::nextRung(tx::LadderFacts{}, r); }},
-      {"tx::omissionLine", [] { return tx::omissionLine(3, "15-16 Nov", s); }},
       {"tx::profileMarks", [] { tx::ProfileMarks m; return tx::profileMarks(tx::Profile::Standard, m); }},
       {"tx::budgetFor", [] { tx::HeadBudget b; return tx::budgetFor(tx::HeadKey{}, tx::Profile::Lean, b); }},
       {"tx::digestBlock", [] { std::vector<tx::DigestEntry> a; return tx::digestBlock(digests, tx::Profile::Lean, s, a); }},

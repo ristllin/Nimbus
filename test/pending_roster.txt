@@ -41,20 +41,6 @@ test_tx_coverage::test_compaction_covers_every_row RB-C2
 test_tx_coverage::test_a_failed_compaction_leaves_every_row_covered RB-C2
 
 # test_tx_stub_rule
-test_tx_stub_rule::test_internal_stub_has_the_prd_shape RB-T3
-test_tx_stub_rule::test_stub_text_is_bounded_for_every_tool_and_size RB-T3
-test_tx_stub_rule::test_outside_stub_holds_no_outside_bytes RB-T3
-test_tx_stub_rule::test_file_tool_stub_names_path_and_sha RB-T3
-test_tx_stub_rule::test_long_argument_and_photo_stubs_have_the_prd_shape RB-T3
-test_tx_stub_rule::test_stub_text_is_a_pure_function RB-T3
-test_tx_stub_rule::test_cold_open_moves_to_the_last_closed_turn RB-T3
-test_tx_stub_rule::test_warm_open_moves_only_past_the_bulk_threshold RB-T3
-test_tx_stub_rule::test_pointer_never_moves_backwards RB-T3
-test_tx_stub_rule::test_a_write_supersedes_earlier_reads_of_that_path_only RB-T3
-test_tx_stub_rule::test_a_ledger_write_supersedes_views_of_that_day_only RB-T3
-test_tx_stub_rule::test_file_reference_photos_follow_the_table RB-T3
-test_tx_stub_rule::test_inline_photos_follow_the_table RB-T3
-test_tx_stub_rule::test_ladder_climbs_one_rung_at_a_time RB-T3
 
 # test_tx_log
 test_tx_log::test_reopen_gives_back_every_item_byte_for_byte RB-T2
