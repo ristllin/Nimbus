@@ -15,6 +15,7 @@
 
 #include "nimbus/ota/ota_headroom.h"   // OtaJob (portable, host-tested)
 #include "nimbus/ota/ota_logic.h"      // IdleSnapshot (portable, host-tested)
+#include "nimbus/ota/ota_channel.h"    // ChannelOps (RB-OTA2, host-tested)
 
 namespace otaupd {
 
@@ -150,11 +151,17 @@ const char* runningSlot();
 // RB-OTA1. held(): the last check found a newer release the manifest holds for one of
 // this device's heads (the resolved head or any keyed provider): the automatic
 // install skips it, every manual install still works. channel(): the update channel
-// as last read from /data/ota_channel.txt (each check re-reads it). setChannel():
-// write ("candidate") or remove (stable) that file; true when it reads back as `c`.
+// the next check uses, read now from /data/ota_channel.txt. setChannel(): write
+// ("candidate") or remove (stable) that file; true when it reads back as `c`. It fails
+// closed (RB-OTA2, nimbus/ota/ota_channel.h): on false the stable channel is in force,
+// held in RAM for this boot when even the file could not be cleared. Callers: the
+// owner's /ota command, the route /api/ota/channel, the OTACHAN console command.
 bool held();
 nimbus::ota::Channel channel();
 bool setChannel(nimbus::ota::Channel c);
+// setChannel and channel as the owner's switch takes them (nimbus::ota::channelCommandReply,
+// nimbus::ota::channelRoute).
+const nimbus::ota::ChannelOps& channelOps();
 
 #ifdef NIMBUS_TEST
 // HIL seams. simArm(prevLabel): arm the pend/boots/prev guard as if an update

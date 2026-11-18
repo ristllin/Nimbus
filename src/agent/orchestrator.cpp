@@ -38,6 +38,7 @@
 #include "skills.h"                     // skills::spawnCapsule - per-spawn injection (P2)
 #include "prefs_subsystem.h"            // standing rules: the block, /prefs, the delivery filter
 #include "budget_command.h"             // lane BUD: /usage, /budget, /model (the spending commands)
+#include "../sys/ota_update.h"          // RB-OTA2: /ota, the owner's update channel switch
 #include "nimbus/orch/no_dash.h"         // applyOutputFilters (the delivery seam filter)
 #include "memory_subsystem.h"           // memory::registry/scratchpad/vectors (live World)
 #include "adapters/moderation.h"        // CUM-69 device classifier (behind the gate decision core)
@@ -2100,6 +2101,10 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                                                     : String("Updates aren't available on this build.")));
         return;
       }
+      if (v == "ota") {   // RB-OTA2: the update channel (owner only, by the table)
+        say(selfTag + nimbus::ota::channelCommandReply(cmd.args, otaupd::channelOps()).c_str());
+        return;
+      }
       if (v == "play") {
         // Music control (CUM-40): "/play" all of /music, "/play <name>.mp3" one
         // track, "/play stop|pause". WAV plays today; MP3 needs the decoder build.
@@ -2339,6 +2344,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                         " (firmware " NIMBUS_FW_VERSION
                         "). Send a message and I'll reply here.\n\nOwner commands:\n"
                         "/update - install a pending firmware update\n"
+                        "/ota [candidate|stable] - show or change the update channel\n"
                         "/loops - list routines\n"
                         "/remind <when> <what> - one-time reminder (e.g. /remind 30m ...)\n"
                         "/compact - summarize this conversation into memory\n"

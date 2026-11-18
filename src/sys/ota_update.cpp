@@ -25,6 +25,7 @@
 #include "tls_arbiter.h"
 #include "nimbus/ota/ota_headroom.h"   // dedicated task or poll task (host-tested)
 #include "nimbus/ota/ota_logic.h"
+#include "nimbus/ota/ota_channel.h"   // RB-OTA2: the fail-closed owner switch
 #include "nimbus/store/write_pacing.h"   // NoticeLatch - one update notice per version per boot
 #include "ota_pubkey.h"
 #include "usb_updater.h"          // nimbus::usbfw wire protocol + commit-order sequencer
@@ -663,7 +664,7 @@ static const char* fetchOne(const char* url, nimbus::ota::ManifestInfo& out, boo
 
 // The channel file (/data/ota_channel.txt). Missing, unmounted, unreadable, too long
 // or any text but "candidate": the stable channel.
-static nimbus::ota::Channel readChannel() {
+static nimbus::ota::Channel readChannelFile() {
   if (!LittleFS.exists(nimbus::ota::kChannelPath)) return nimbus::ota::Channel::Stable;
   File f = LittleFS.open(nimbus::ota::kChannelPath, "r");
   if (!f) return nimbus::ota::Channel::Stable;
@@ -672,6 +673,23 @@ static nimbus::ota::Channel readChannel() {
   const size_t n = size <= sizeof t ? f.read((uint8_t*)t, sizeof t) : 0;
   f.close();
   return n == size ? nimbus::ota::parseChannel(t, n) : nimbus::ota::Channel::Stable;
+}
+static bool writeChannelFile(const char* text, size_t n) {
+  File f = LittleFS.open(nimbus::ota::kChannelPath, "w");
+  if (!f) return false;
+  const bool ok = f.write((const uint8_t*)text, n) == n;
+  f.close();
+  return ok;
+}
+static bool removeChannelFile() {
+  return !LittleFS.exists(nimbus::ota::kChannelPath) || LittleFS.remove(nimbus::ota::kChannelPath);
+}
+static const nimbus::ota::ChannelFile kChannelFile{&writeChannelFile, &removeChannelFile, &readChannelFile};
+// RB-OTA2: set when a switch could not clear the file; the stable channel holds until
+// the next successful set (nimbus/ota/ota_channel.h, fail closed).
+static std::atomic<bool> g_stableLatch{false};
+static nimbus::ota::Channel readChannel() {
+  return nimbus::ota::channelInForce(kChannelFile, g_stableLatch.load());
 }
 
 // On the candidate channel: the candidate manifest beside the stable one, or a reason
@@ -1462,19 +1480,19 @@ String lastResult() {
 }
 const char* runningSlot() { return runningLabel(); }  // "app0"/"app1" - flip observability
 bool held() { return g_held; }
-nimbus::ota::Channel channel() { return g_channel; }
+nimbus::ota::Channel channel() { return readChannel(); }
 
 bool setChannel(nimbus::ota::Channel c) {
-  bool ok;
-  if (c == nimbus::ota::Channel::Candidate) {
-    File f = LittleFS.open(nimbus::ota::kChannelPath, "w");
-    ok = f && f.print("candidate\n") == 10;
-    if (f) f.close();
-  } else {
-    ok = !LittleFS.exists(nimbus::ota::kChannelPath) || LittleFS.remove(nimbus::ota::kChannelPath);
-  }
+  bool latch = g_stableLatch.load();
+  const bool ok = nimbus::ota::applyChannel(kChannelFile, c, latch);
+  g_stableLatch.store(latch);
   g_channel = readChannel();   // what the next check will read
   return ok && g_channel == c;
+}
+
+const nimbus::ota::ChannelOps& channelOps() {
+  static const nimbus::ota::ChannelOps ops{&setChannel, &channel};
+  return ops;
 }
 
 // ---- HIL seams --------------------------------------------------------------

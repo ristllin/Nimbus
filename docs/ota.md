@@ -284,6 +284,29 @@ is ignored and the stable manifest decides. A missing or unreadable channel file
 or any other text in it, means the stable channel. Firmware before this change
 reads neither file, so only devices switched on take a candidate.
 
+### Switching the channel
+
+The owner switches the channel without a cable, from Telegram or the web API.
+Both answer with one plain line: the channel now in force and what it means.
+
+- Telegram: `/ota candidate`, `/ota stable`, and `/ota` on its own to see the
+  channel. Owner only: a member or guest gets the standard owner-only answer.
+- Web API: `GET /api/ota/channel` shows the channel; `POST /api/ota/channel` with
+  the form field `channel=candidate` or `channel=stable` sets it. Both need the
+  device sign-in code in the `X-Nimbus-Token` header (or the `t` form field), like
+  every other owner route; a `?t=` query never counts, and without the code the
+  answer is 401 and nothing is read or changed. The value is read from the POST
+  body only. Answers: `{"channel":"...","line":"..."}` for GET; for POST 200 with
+  `"ok":true` when set, 400 for a missing or unknown value (nothing changes), 500
+  when the switch failed. Only GET and POST are bound.
+
+Every failure leaves the device on the stable channel. A switch to candidate that
+cannot be written and read back clears the file again. A switch to stable that
+cannot clear the file (remove, then overwrite it with `stable`) holds the stable
+channel in memory until the next successful switch, and the answer says the
+setting was not saved, so set it again after a restart. The web page has no
+switch: it is unchanged until v6.1.0.
+
 ## On a busy device: the update runs between messages
 
 The check and the install each run on one short-lived worker whose stack needs
@@ -432,6 +455,14 @@ easy to read amid ordinary log output.
   install, a malformed and a missing candidate falling back, a truncated candidate
   download failing, and no slot flip. Console: `OTACHAN candidate|stable`, and
   `OTA?` reports `held=` and `chan=`.
+- Host (the owner switch): `pio test -e native -f test_ota_channel -f
+  test_orch_command_parse` (every combination of file faults ends on stable, the
+  one line per state, `/ota` owner-only in the verb table, the route sets the
+  channel only on an authenticated POST naming a channel, 401 reads nothing).
+- HIL (the owner switch): `python3 -m pytest tests/hil/test_ota_channel.py -m net
+  --allow-hardware` with `NIMBUS_TEST_IP` and `NIMBUS_TEST_TOKEN`: the route's
+  auth, method and value checks, set and show both ways, `/ota` through the web
+  chat, and the device left on stable.
 - Rollback drill (console, `env:test`, both slots flashed): `OTASIM arm app0`
   (label from `OTA?` `slot=`) + `OTASIM crash` + `REBOOT` → three synthetic
   crash-boots → device returns on the previous slot with `lastOta=rollback`.

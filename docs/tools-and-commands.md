@@ -46,6 +46,7 @@ confused.
 |---|---|
 | `/help` (or `/start`) | Greet and list the owner commands. Available to anyone who can chat with the bot. |
 | `/update` | Install a pending firmware update. |
+| `/ota candidate\|stable` | Choose the update channel: `candidate` also gets test releases before everyone else, `stable` gets regular releases only. `/ota` on its own shows the channel. See [Switching the channel](ota.md#switching-the-channel). |
 | `/remind <when> <what>` | Set a one-time reminder. `<when>` is a span (`45s`, `30m`, `2h`, `1d`; a bare number is minutes) from 2 minutes to 7 days. At that time the assistant delivers the reminder in this chat. Cancel with `/loop deny <id>`. Example: `/remind 30m take the cake out`. |
 | `/loops` | List the device's routines (and any reminders you've set). |
 | `/loop approve\|deny\|off\|on <id>` | Approve, remove, pause, or resume one routine. |

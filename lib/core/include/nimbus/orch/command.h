@@ -66,6 +66,7 @@ inline constexpr CommandVerb kCommandVerbs[] = {
     {"loop", true},    {"compact", true}, {"skill", true},  {"fetch", true},
     {"remind", true},  {"clear", true},   {"mcp", true},    {"play", true},
     {"prefs", true},   {"usage", true},   {"budget", true}, {"model", true},
+    {"ota", true},
 };
 inline constexpr size_t kCommandVerbCount = sizeof(kCommandVerbs) / sizeof(kCommandVerbs[0]);
 
