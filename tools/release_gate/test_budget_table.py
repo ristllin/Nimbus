@@ -292,6 +292,44 @@ def test_a_row_with_no_v511_record_uses_the_nearest_one(tmp_path):
     assert pick("custom", "llama-3-70b") is None
 
 
+# ---- a floor head's cap: the wire's fitted cap (lane CTXR2) ----------------------------------
+
+# Codestral at the floor, as the table has it since CTXR2: the wire's fittedCap raises a cap the
+# round cannot fit to the host's minimum final (3000), v5.1.1's first floor (kFirstFloor), and a
+# round at that cap runs past the 60 s read window at 55 tok/s. v5.1.1 sent the same cap.
+FLOOR_MISTRAL = dict(provider="mistral", model="codestral-2508", window=256000, bound="floor", target=27419,
+                     nbytes=85000, rnom=3.1, rsafe=2.5, read_s=60, prefill=2500, decode=55, min_final=3000,
+                     hist_max=8192, caps_healthy="3000 / -", caps_fragmented="3000 / -")  # fmt: skip
+
+
+def floor_table(tmp_path, **changes):
+    rows = clean_rows() + [one_row(FLOOR_MISTRAL, **changes)]
+    v511 = [v511_model(r["provider"], r["model"]) for r in ROWS.values()]
+    v511.append(v511_model("mistral", "codestral-2508"))
+    return write(tmp_path, rows, v511=v511)
+
+
+def test_a_floor_heads_cap_raised_to_minfinal_is_v511s_and_passes(tmp_path):
+    t, v = floor_table(tmp_path)
+    assert [e for e in G.problems(t, v) if "codestral" in e] == []
+
+
+@pytest.mark.parametrize("cell", ["3500 / -", "4000 / 4400"])
+def test_a_floor_cap_above_minfinal_still_has_to_fit_the_window(tmp_path, cell):
+    # Only the raise to the minimum final is v5.1.1's: a cap above it at the floor is a choice
+    # this release made, and its round must fit the read window like any other.
+    t, v = floor_table(tmp_path, caps_healthy=cell)
+    errs = [e for e in G.problems(t, v) if "codestral" in e]
+    assert any("healthy round at its" in e for e in errs), errs
+
+
+def test_a_head_above_the_floor_gets_no_minfinal_exemption(tmp_path):
+    # The same slow rates on a head with room: a cap of minFinal whose round does not fit fails.
+    t, v = write(tmp_path, clean_rows(large4=dict(decode=40, caps_healthy="3000 / -", caps_fragmented="3000 / -")))
+    errs = G.problems(t, v)
+    assert any("large-4-0" in e and "round at its 3000 cap" in e for e in errs), errs
+
+
 # ---- with the tool loop off (lane CTXL) -------------------------------------------------------
 
 LOOP_COLS = (

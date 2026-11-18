@@ -29,7 +29,8 @@ test/support/fixtures/budgets_v5_1_1.json. This gate reads both and fails on:
   7. the output caps of a final round (first / retry, healthy and fragmented heap): a first
      cap under minFinal on a head above the floor, a retry that adds under 400 tokens, a
      fragmented cap over the healthy one, or a first cap whose round does not fit the read
-     window;
+     window (at the floor a cap the wire raised to minFinal is v5.1.1's and exempt; the
+     cap columns are the wire's own fittedCap, lane CTXR2);
   8. the release shape: while kRoutedBudgetLift is false in request_budget.h (v5.1.2 ships
      that way, RULINGS-v3), every routed head sits on the 85,000 B floor.
 
@@ -358,6 +359,12 @@ def one_cap_problems(row: dict, label: str, caps: tuple, server: bool) -> "list[
         errs.append(f"{name}: {label} cap {first:.0f} under minFinal {min_final:.0f} above the floor")
     if retry is not None and retry < first + RETRY_GAIN:
         errs.append(f"{name}: {label} retry {retry:.0f} adds under {RETRY_GAIN} tokens to {first:.0f}")
+    # At the floor the wire's fittedCap raises a cap the round cannot fit to the host's minimum
+    # final, as v5.1.1 sent it (output_caps.cpp kFirstFloor, 3000): that round is v5.1.1's and
+    # is exempt like the floor's worst round. Any other cap is checked: fittedCap leaves a cap
+    # under the minimum only when the round fits it, and one above it is this release's choice.
+    if at_floor(row) and min_final is not None and first == min_final:
+        return errs
     t = round_s(row, first, server, paced=label == "fragmented")
     if t is not None and window is not None and t > window + 0.5:
         errs.append(f"{name}: a {label} round at its {first:.0f} cap takes {t:.1f} s of {window:.0f} s")
