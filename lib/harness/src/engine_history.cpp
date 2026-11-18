@@ -412,16 +412,21 @@ SliceState TurnEngine::foldBounds(const std::string& chatId, const HistoryMarks&
 }
 
 TurnEngine::FoldCursor& TurnEngine::foldCursor(const std::string& chatId, const std::string& anchor) {
-  auto it = foldCursors_.find(chatId);
-  if (it == foldCursors_.end()) {
-    if (foldCursors_.size() >= 8) foldCursors_.erase(foldCursors_.begin());   // a few chats at a time
-    it = foldCursors_.emplace(chatId, FoldCursor()).first;
+  FoldCursor* fc = nullptr;
+  for (FoldCursor& c : foldCursors_)
+    if (c.chat == chatId) fc = &c;
+  if (!fc) {   // a few chats at a time, the oldest goes (only on a new chat: no cursor is held then)
+    if (foldCursors_.size() >= 8) foldCursors_.erase(foldCursors_.begin());
+    foldCursors_.emplace_back();
+    fc = &foldCursors_.back();
+    fc->chat = chatId;
   }
-  if (it->second.anchor != anchor) {   // a fold or a /clear moved the anchor: start over
-    it->second = FoldCursor();
-    it->second.anchor = anchor;
+  if (fc->anchor != anchor) {   // a fold or a /clear moved the anchor: start over
+    *fc = FoldCursor();
+    fc->chat = chatId;
+    fc->anchor = anchor;
   }
-  return it->second;
+  return *fc;
 }
 
 // The read's start: thru; for a chat with no anchor (never folded, or cleared before a /clear

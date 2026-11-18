@@ -197,12 +197,13 @@ class FoldDriver {
   std::string lastTurnChat_;
   std::set<std::string> degraded_;             // "host/model" that answered empty or thin
   std::map<std::string, uint32_t> ramWaitMs_;  // no clock: chat -> monotonic ms of its next try
-  // A chat whose slice could not read its rows (SliceState Wait/Unread): when to look again.
-  struct ReadWait {
-    uint32_t waits = 0;     // looks in a row that read nothing new
-    uint32_t untilMs = 0;   // monotonic ms of the next look
-  };
-  std::map<std::string, ReadWait> readWaits_;
+  // A chat whose slice could not read its rows (SliceState Wait/Unread): looks in a row that
+  // read nothing new, and the monotonic ms of the next look.
+  std::map<std::string, uint32_t> readWaitCount_, readWaitUntilMs_;
+  void clearReadWait(const std::string& chat) {
+    readWaitCount_.erase(chat);
+    readWaitUntilMs_.erase(chat);
+  }
   std::map<std::string, std::string> thruDate_;   // chat -> the local date its summary reaches
   // The manual catch-up in progress: what its landed cycles covered so far.
   struct CatchUp {

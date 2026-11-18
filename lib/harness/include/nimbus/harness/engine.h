@@ -858,6 +858,7 @@ class TurnEngine {
   // that found none of the chat's rows, and the scan for the newest /clear of a chat with no
   // anchor. Keyed by the anchor it was made for: a fold that moves thru starts it over.
   struct FoldCursor {
+    std::string chat;
     std::string anchor;    // marks.thru when this was recorded
     std::string resume;    // the read starts here instead of at its start ("" = the start)
     std::string scanAt;    // no anchor: the scan for the newest /clear goes on after this
@@ -887,7 +888,7 @@ class TurnEngine {
   FoldRead readFoldRows(const std::string& chatId, const std::string& from, const FoldBounds& bounds, size_t capBytes,
                         std::vector<nimbus::orch::EpisodicMessage>* fwd);
   FoldCursor& foldCursor(const std::string& chatId, const std::string& anchor);
-  std::map<std::string, FoldCursor> foldCursors_;
+  std::vector<FoldCursor> foldCursors_;   // a few chats, oldest first
   // The chat's newest `rows` rows, newest first, from the cache (H7's duplicate check).
   std::vector<nimbus::orch::EpisodicMessage> recentRows(const std::string& chatId, size_t rows);
   ConvCache convCache_;

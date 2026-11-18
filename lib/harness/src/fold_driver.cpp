@@ -248,8 +248,8 @@ bool FoldDriver::pickManual(uint32_t nowMs, std::string& chat) const {
 bool FoldDriver::dueNow(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch) {
   const auto w = ramWaitMs_.find(chat);
   if (w != ramWaitMs_.end() && (int32_t)(w->second - nowMs) > 0) return false;   // no clock: its RAM wait
-  const auto r = readWaits_.find(chat);
-  if (r != readWaits_.end() && (int32_t)(r->second.untilMs - nowMs) > 0) return false;   // its rows' read waits
+  const auto r = readWaitUntilMs_.find(chat);
+  if (r != readWaitUntilMs_.end() && (int32_t)(r->second - nowMs) > 0) return false;   // its rows' read waits
   // No clock yet: a chat that carries a persisted wait is held a few minutes for the clock,
   // not retried at once on every boot (its wait cannot be read without one).
   if (nowEpoch == 0 && nowMs - firstTickMs_ < FoldDriverHooks::kNoClockGraceMs) {
@@ -315,7 +315,7 @@ FoldTick FoldDriver::pickChat(uint32_t nowMs, uint32_t nowEpoch, std::string& ch
 // (what an unfinished catch-up covered, else "nothing yet"), an automatic one restarts its
 // counters (and gives up hidden rows only up to where the read reached).
 FoldTick FoldDriver::nothingToFold(const std::string& chat, bool manual, uint32_t nowMs, const FoldSlice& s) {
-  readWaits_.erase(chat);
+  clearReadWait(chat);
   if (manual) {
     const bool caughtUp = catchUp_.chat == chat && catchUp_.span.rows;
     if (hooks_.tell) hooks_.tell(chat, caughtUp ? confirmation(catchUp_.span) : "Nothing to compact yet.");
@@ -345,13 +345,13 @@ uint32_t FoldDriver::readWaitMs(uint32_t waits) {
 // good and never reads the card every pass. A manual request is answered: a catch-up says
 // what it covered, else the owner is told the rows could not be read.
 FoldTick FoldDriver::sliceWaits(const std::string& chat, bool manual, uint32_t nowMs, const FoldSlice& s) {
-  ReadWait& w = readWaits_[chat];
-  if (!s.progressed) w.waits++;
-  w.untilMs = nowMs + readWaitMs(s.progressed ? 0 : w.waits);
+  uint32_t& waits = readWaitCount_[chat];
+  if (!s.progressed) waits++;
+  const uint32_t waitMs = readWaitMs(s.progressed ? 0 : waits);
+  readWaitUntilMs_[chat] = nowMs + waitMs;
   hlog::logf("fold(%s): the slice %s (%s), the anchor stays - next look in %u s", chat.c_str(),
              s.state == SliceState::Unread ? "meets rows the card will not give back" : "waits for its rows",
-             s.progressed ? "progress" : std::to_string((unsigned)w.waits).c_str(),
-             (unsigned)(readWaitMs(s.progressed ? 0 : w.waits) / 1000));
+             s.progressed ? "progress" : std::to_string((unsigned)waits).c_str(), (unsigned)(waitMs / 1000));
   if (manual && (!s.progressed || s.state == SliceState::Unread)) {
     const bool caughtUp = catchUp_.chat == chat && catchUp_.span.rows;
     if (hooks_.tell)
@@ -381,7 +381,7 @@ FoldTick FoldDriver::startCycle(uint32_t nowMs, uint32_t nowEpoch) {
       return sliceWaits(chat, manual, nowMs, c.slice);
     return nothingToFold(chat, manual, nowMs, c.slice);
   }
-  readWaits_.erase(chat);
+  clearReadWait(chat);
   c.chat = chat;
   c.manual = manual;
   c.overflow = overflow;
@@ -573,7 +573,7 @@ void FoldDriver::noteCleared(const std::string& chat) {
   }
   if (catchUp_.chat == chat) catchUp_ = CatchUp();
   ramWaitMs_.erase(chat);
-  readWaits_.erase(chat);
+  clearReadWait(chat);
   thruDate_.erase(chat);
   changed(chat);
 }
