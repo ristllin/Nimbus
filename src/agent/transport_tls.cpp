@@ -174,11 +174,6 @@ struct TlsIo {
   // type: through `client` (a Client*) it reached the overload that cannot carry the host,
   // and every provider handshake went out with no SNI (lane SNI).
   bool connect() {
-    const bool ok = connectTries();
-    LINKTIME_MARK(conn);
-    return ok;
-  }
-  bool connectTries() {
     for (int a = 0; a < 3 && !expired(); a++) {
       nimbus::pollwatch::beat("provider connect");
       const int ok = req.tls ? connectHost(tls, req.host.c_str(), req.port)
@@ -194,6 +189,7 @@ struct TlsIo {
   // write results are CHECKED: a short write used to read as "no response" after the
   // server waited forever for the announced Content-Length.
   bool writeHead() {
+    LINKTIME_MARK(conn);   // lane RB-M2 (test builds): the handshake ended; the head goes out next
     String head = String(req.method.c_str()) + " " + req.path.c_str() + " HTTP/1.0\r\n" +
                   "Host: " + req.host.c_str() + "\r\n";
     for (const auto& h : req.headers)

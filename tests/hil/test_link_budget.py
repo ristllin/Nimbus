@@ -490,6 +490,10 @@ class Bench:
         self.tok = open(f"{SECRETS}/unitF1_webtok.txt").read().strip()
         self.secrets = [self.tok]
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import port_guard  # noqa: PLC0415 - the one forbidden-device guard, before any port opens
+
+        port_guard.check_port(PORT, "test_link_budget")
         self.s = serial.Serial()
         self.s.port, self.s.baudrate, self.s.timeout = PORT, 115200, 0.1
         self.s.dtr = self.s.rts = False  # an asserted line resets the board
