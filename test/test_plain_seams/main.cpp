@@ -80,16 +80,11 @@ std::vector<StubRow> stubs() {
   static tx::Item item;
   static tx::HeadState head;
   static std::vector<tx::Item> items;
-  static std::vector<tx::DigestEntry> digests;
   static std::vector<tx::DayRow> rows;
   static bool flag;
   return {
       {"tx::profileMarks", [] { tx::ProfileMarks m; return tx::profileMarks(tx::Profile::Standard, m); }},
       {"tx::budgetFor", [] { tx::HeadBudget b; return tx::budgetFor(tx::HeadKey{}, tx::Profile::Lean, b); }},
-      {"tx::digestBlock", [] { std::vector<tx::DigestEntry> a; return tx::digestBlock(digests, tx::Profile::Lean, s, a); }},
-      {"tx::archiveDigest", [] { return tx::archiveDigest(gFiles, "1001", tx::DigestEntry{}); }},
-      {"tx::recentFilesList", [] { return tx::recentFilesList({}, s); }},
-      {"tx::chatsumMirror", [] { return tx::chatsumMirror(digests, 0, s); }},
       {"tx::dryRun", [] { tx::MigrationReport r; return tx::dryRun(gFiles, "1001", rows, r); }},
       {"tx::migrateStep", [] { tx::MigrationState m; return tx::migrateStep(gFiles, "1001", rows, m); }},
       {"tx::isReentry", [] { return tx::isReentry(gFiles, "1001", flag); }},

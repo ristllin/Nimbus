@@ -601,6 +601,34 @@ tool and caller class). A group's listing is at most 2,048 B; the tools index
 unknown name gets back the callable names, at most 640 B. The before-dispatch seam reads
 `callClass` or `moreTarget` to see the tool a `more` call reaches.
 
+### Digests, their archive, recent files and the chatsum mirror
+
+`lib/core/include/nimbus/orch/tx/digest.h` (body `orch_tx_digest.cpp`, lane RB-C1) holds
+what keeps a long conversation in the request without the old summary. A compaction
+writes one digest per local day as an s item, one line of at most 768 B that starts with
+the device's day header (`digestText`: "Tue 17 Nov 2026: ..."). The digest block is the
+newest digests that fit the profile's cap (tight 2,048, lean 4,096, standard and wide
+6,144 B), oldest first, one per line (`digestBlock`). It is a pure function of the
+digests: it stays byte-identical until a compaction appends a digest at its end, and
+only a move to the archive changes its start.
+
+`settleDigests` moves the oldest digests that no longer fit to
+`/mem/tx/<chatKey>/digests-YYYY-MM.md` (the month of the digest's day), one line each,
+oldest first, and stops at the first refused write; what did not move stays live and
+moves at the next settle. A line is appended only when the month file does not hold it
+yet, and a torn last line is closed before the next one, so a cut at any step leaves
+every digest in the block or in the archive, once. After a restart `loadDigests` reads
+the segments newest first until it reaches the newest archived digest (the last whole
+line of the newest month file); a chat with no digest reads nothing.
+
+The recent-files list (`recentFilesList`, at most 600 B) is the device's own: path and
+last write, newest first. `RecentFilesBlock` rebuilds it at a cold turn open and at the
+close of a turn that moved or deleted a file (`changesFileSet`), and keeps it byte for
+byte otherwise. A rollback to v5.1.1 still has a summary: `mirrorChatsum` writes this
+chat's record of `/data/chatsum.txt` in the v5.1.1 FoldStore format, with the newest
+digests that fit 4,096 B as its summary, the counters, failure count and pause at 0, and
+a row pointer ("m%08x") that never moves back; other chats' records stay byte for byte.
+
 ### Request composition and the text catalog
 
 Every model-facing string of engine 2 lives in `lib/harness/include/nimbus/harness/plain/texts.h`,

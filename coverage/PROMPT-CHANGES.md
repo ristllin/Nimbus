@@ -298,3 +298,13 @@ deleted. Engine 2 has no baseline.
   text (engine.cpp noteUnappliedSpawns, now read from the answer's structure, not its words). Left for
   a later lane (an edit there is a swap with rates, not a deletion): the mem_write description in
   orch_schema.h and compose.cpp still says the device confirms or corrects a save claim.
+
+### PC-0007: the digest block's and the recent-files list's device-written pieces
+- catalog: e2
+- class: core
+- kind: build
+- bytes: 1680 -> 1685
+- sha8: 16b607df -> 6e260cff
+- lane: RB-C1
+- prd: section 3 (Shape: one digest per local day with a device-written day header; the device's own recent-files list, path and last write)
+- why: the separator after a digest's day header ("Tue 17 Nov 2026: ...") and the brackets around a recent file's last write ("notes/boat.md (Tue 17 Nov 2026 13:02)"), in lib/core/include/nimbus/orch/tx/digest.h, listed in E2_EXTRA_SOURCES; the dates are tx::photoWhen's (Ruling 11)
