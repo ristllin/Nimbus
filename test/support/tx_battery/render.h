@@ -1,0 +1,130 @@
+#pragma once
+#include <cstdlib>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "../scripted_provider/request_view.h"
+#include "items.h"
+#include "nimbus/harness/http.h"
+#include "nimbus/harness/plain/wire.h"
+#include "nimbus/orch/tx/arena.h"
+#include "props.h"
+
+// tx_battery/render.h - one request rendered from a stored transcript through a dialect's
+// real WireCodec (lane RB-B0b), read back into a RequestView. The wire-level properties
+// (prefix, pairing, coverage, overhead) run on this: no engine, no network.
+namespace txb {
+
+namespace plain = agent::plain;
+
+inline sp::Dialect viewDialect(plain::Dialect d, const std::string& path) {
+  sp::Dialect out;
+  if (sp::dialectOfPath(path, out)) return out;
+  switch (d) {
+    case plain::Dialect::AnthropicMessages: return sp::Dialect::Anthropic;
+    case plain::Dialect::OpenAIResponses: return sp::Dialect::Responses;
+    default: return sp::Dialect::Chat;
+  }
+}
+
+// The fixed inputs around the transcript: system blocks, three tools, a head.
+struct RenderFixture {
+  plain::Dialect dialect = plain::Dialect::AnthropicMessages;
+  plain::TurnCtx turn;
+  plain::HeadEndpoint head;
+  plain::SystemBlocks system;
+  std::vector<plain::ToolSpec> tools;
+  std::map<std::string, std::string> photoBytes;   // ref -> jpeg bytes
+
+  explicit RenderFixture(plain::Dialect d = plain::Dialect::AnthropicMessages) : dialect(d) {
+    turn.chatKey = "1001";
+    turn.chatId = "1001";
+    turn.dialect = d;
+    turn.host = "api.anthropic.com";
+    turn.model = "claude-sonnet-5-5";
+    head.host = turn.host;
+    head.key = [] { return std::string("sk-fake-battery"); };
+    system.core = "You are Nimbus, a pocket assistant. [battery core]";
+    system.notes = "Pinned: the boat is the Nereid II.";
+    system.digests = "Mon 16 Nov: talked about the boat engine.";
+    tools = {{"read_file", "Read a file.", R"({"type":"object","properties":{"path":{"type":"string"}}})"},
+             {"ledger_write", "Change the ledger.", R"({"type":"object","properties":{"day":{"type":"string"}}})"},
+             {"web_search", "Search the web.", R"({"type":"object","properties":{"q":{"type":"string"}}})"}};
+    photoBytes["pab12cd34"] = std::string("\xFF\xD8\xFF\xE0", 4) + std::string(996, 'j');
+  }
+};
+
+struct Rendered {
+  agent::HttpRequest req;
+  std::string body;
+  sp::RequestView view;
+};
+
+// Load `items` into a fresh arena (RB-T1) and render one request (the dialect's lane).
+inline tx::Status renderItems(const RenderFixture& fx, const Convo& c, uint64_t pointer, Rendered& out,
+                              uint32_t openTurn = 0) {
+  tx::TxArena arena;
+  tx::Status st = arena.init(tx::kActiveChatArenaBytes, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); });
+  if (!st.ok()) return st;
+  for (const tx::Item& it : c.items)
+    if (!(st = arena.append(it)).ok()) return st;
+  const plain::WireCodec* wire = nullptr;
+  if (!(st = plain::wireFor(fx.dialect, wire)).ok()) return st;
+  if (!wire) return tx::Status::fail(tx::Err::NotFound, "txb::renderItems: wireFor gave no codec");
+  plain::TurnCtx turn = fx.turn;
+  turn.turn = openTurn ? openTurn : c.turn;
+  plain::RenderInput in;
+  in.turn = &turn;
+  in.head = &fx.head;
+  in.system = &fx.system;
+  in.tools = &fx.tools;
+  in.items = &arena;
+  in.stubPointer = pointer;
+  in.maxTokens = 4096;
+  const auto* bulk = &c.bulk;
+  in.bulk = [bulk](const std::string& handle, std::string& o) {
+    auto it = bulk->find(handle);
+    if (it == bulk->end()) return tx::Status::fail(tx::Err::NotFound, "txb bulk");
+    o = it->second;
+    return tx::Status::success();
+  };
+  const auto* photos = &fx.photoBytes;
+  in.photo = [photos](const std::string& ref, plain::PhotoBytes& o) {
+    auto it = photos->find(ref);
+    if (it == photos->end()) return tx::Status::fail(tx::Err::NotFound, "txb photo");
+    o.bytes = (const uint8_t*)it->second.data();
+    o.len = it->second.size();
+    o.mime = "image/jpeg";
+    o.fileId = "file_" + ref;
+    return tx::Status::success();
+  };
+  if (!(st = wire->render(in, out.req)).ok()) return st;
+  out.body = agent::materializeBody(out.req);
+  sp::parseRequest(viewDialect(fx.dialect, out.req.path), out.body, out.view);
+  return tx::Status::success();
+}
+
+// The stored bytes of the items a request renders (u a c r h; k of the open turn), plus
+// the whole bulk payloads it shows, as JSON string bytes (RB-T1's encoder).
+inline tx::Status renderedItemBytes(const Convo& c, const CoverInput& in, size_t& out) {
+  out = 0;
+  const std::set<uint64_t> sup = detail::supersededSet(c.items);
+  for (const tx::Item& it : c.items) {
+    const bool shown = it.kind == tx::ItemKind::User || it.kind == tx::ItemKind::Assistant ||
+                       it.kind == tx::ItemKind::Call || it.kind == tx::ItemKind::Result ||
+                       it.kind == tx::ItemKind::DeviceNote ||
+                       (it.kind == tx::ItemKind::RoundMeta && it.turn == in.openTurn);
+    if (!shown || it.q <= in.thru) continue;
+    std::string line;
+    tx::Status st = tx::encodeLine(it, line);
+    if (!st.ok()) return st;
+    out += line.size();
+    if (it.kind == tx::ItemKind::Result && !it.handle.empty() && expectedShow(it, in, sup) == Shown::Whole)
+      out += jsonStringBytes(detail::resultWhole(it, in));
+  }
+  return tx::Status::success();
+}
+
+}  // namespace txb
