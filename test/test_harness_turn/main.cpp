@@ -280,7 +280,6 @@ struct Rig {
     d.cfg = cfg.contract();
     d.platform = plat.contract();
     d.jobs = jobs.get();
-    d.truth = &truth;   // RB-G0
     d.deliver = [this](const std::string& c, const std::string& t) {
       delivered.push_back({c, t});
       if (onDeliver) onDeliver();
@@ -467,6 +466,7 @@ struct Rig {
   // Lane L: the delivered text is captured, and the sub-agent rig queues spawns
   // into its job engine, like the device.
   void wireLaneL(TurnEngine::Deps& d, bool withSubFabric) {
+    d.truth = &truth;   // RB-G0: the truth check's binding (off unless a test turns it on)
     d.apply.captureAssistant = [this](const std::string& c, const std::string& t) {
       assistantRows.push_back({c, t});
       assistantRowTags.push_back(eng ? eng->assistantRowTags() : std::string());
