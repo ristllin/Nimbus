@@ -50,8 +50,10 @@ quiet gate; a manual one does not wait for quiet.
    order, and nothing else: a keyed provider the owner left unchecked (a key kept for
    voice, embeddings or sub-agents) and a custom endpoint not in the list never receive
    the digest (privacy ruling, v5.1.2 review);
-3. the router fallback (Cumulo, then Z.ai) when no provider key is set, and Cumulo when the
-   device holds a Cumulo key (RULINGS-v3 item 15);
+3. the router fallback (Cumulo, then Z.ai) only on a router-only device, one with no direct
+   provider key at all (CUM-288). Cumulo the owner put in the list is a rung of step 2 (with
+   a Cumulo key, RULINGS-v3 item 15); one left out of it never receives the digest (privacy
+   ruling, v5.1.2 fix review);
 4. the head host on its Sub model (a direct host only; none for a forced-reasoner head, whose
    first rung already stepped down).
 
@@ -96,12 +98,16 @@ clamped inside the history; on the floor branch v5.1.1's reading, compactAtKB KB
 one cycle may take: the slice stops at the kept tail, so a steady-state fold takes about
 `foldStepBytes` (soft - keep) and only a backlog takes more per paid request.
 
-On a head with room the trigger compares the soft mark with the history after `thru`: a
-landed fold restarts the byte count at the conversation it kept after the new anchor
-(`applyFold`'s `keptBytes`), and each turn lifts it to the bytes its window renders
-(`noteHistoryBytes`), so after the first fold the next one is due at the soft mark, before
-the window reaches its maximum and shifts. The thrash wait counts only the bytes that came
-after the fold. The floor branch keeps v5.1.1's reading (the count restarts at 0). The VN reads
+On a head with room the trigger compares the soft mark with the history after `thru`,
+`bytesAfterThru()`: the conversation the last fold kept after the new anchor (`keptAtFold`,
+from `applyFold`'s `keptBytes`) plus the bytes captured since, or the bytes the turn's window
+rendered (`noteHistoryBytes`, RAM only), whichever is more. So after the first fold the next
+one is due at the soft mark, before the window reaches its maximum and shifts.
+`bytesSinceFold` keeps v5.1.1's meaning (bytes since the last fold, restarting at 0): the
+thrash wait counts it, and the blob's bytes field holds it, with `keptAtFold` as a `;` suffix
+that v5.1.1's number parser stops before. A rollback therefore reads the bytes since the fold,
+never the kept tail, and is not due on its first pass because of a figure v5.1.2 wrote; a
+restart reads the kept tail back. The floor branch keeps v5.1.1's reading (nothing kept). The VN reads
 `kHostedCompactKb` (48) the same way. A head whose turn is one flat prompt string (a
 custom endpoint; Mistral or Z.ai with the tool loop off) is on the floor branch: the fold
 keeps the tail that string can carry.
@@ -115,15 +121,19 @@ why (`SliceState`), and only one outcome may give rows up:
 | outcome | when | the driver |
 |---|---|---|
 | Ready | a digest to summarize | runs the cycle |
-| Nothing | the read reached the kept tail or the end and found nothing worth a summary | restarts the counters; gives up hidden rows only up to where the read reached (`readTo`) |
-| Wait | the rows are not readable yet: the cache has not read far enough to know the kept tail (with rows hidden the slice takes those rows alone instead), a store read budget, a failing card, the scan for the newest `/clear` of a chat with no anchor | Deferred, the store untouched |
-| Unread | the store named a span after the anchor it will not give back | Deferred, the store untouched |
+| Nothing | the read reached the kept tail or the end (and only then) and found nothing worth a summary | restarts the counters; gives up hidden rows only up to where the read reached (`readTo`) |
+| Wait | the rows are not readable yet: the cache has not read far enough to know the kept tail (with rows hidden the slice takes those rows alone instead), a store read budget, a failing card, the scan for the newest `/clear` of a chat with no anchor, a read that stopped short holding nothing to summarize, a stale cursor | Deferred, the store untouched |
+| Unread | the store named a span after the anchor it will not give back | Deferred, the store untouched; after 24 h of it, the owner's daily alert (fail-closed: the anchor never passes the span) |
 
 So `thru` moves only past rows a landed summary took. A `/clear` anchors the chat at its
 boundary row (device and VN); for a chat cleared before that (no anchor), only a read that
 reached its bound is folded, so nothing before the newest `/clear` is ever summarized. A read
 budget that found none of the chat's rows is resumed from where the store stopped on the next
-pass. The slice runs inside a `PsramFirstScope` and spills each kept row as it is read: the
+pass. Such a cursor is a byte position (`day:off`) that only fits the store state it came from:
+when the store answers it with an empty page and nothing more (its index completed meanwhile),
+or with rows at or before the anchor, it is dropped and the read starts again from the anchor
+(Wait, never the end). The cache's gap probe (one store read a call) treats its own cursor the
+same way. A cold no-clock day-stream blocks only cursors it could hold rows after. The slice runs inside a `PsramFirstScope` and spills each kept row as it is read: the
 fold runs outside a turn, where a block of 128 B or less would otherwise stay in internal SRAM.
 
 ## The schedule (FoldStore and FoldCtl)

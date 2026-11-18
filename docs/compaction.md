@@ -30,7 +30,9 @@ device's memory is in [memory.md](memory.md#3-conversation-compaction---the-fold
 - **When older messages can't be read yet** (right after a restart, while the device
   is still indexing its card, or while the card has trouble), the summary waits for
   them and tries again by itself, a minute later and then less often. It never skips
-  them: until they are summarized, each request names them as not included.
+  them: until they are summarized, each request names them as not included. If some
+  stay unreadable for a day, you hear about it once a day in your own chat, with the
+  next step (restart the device, then check the memory card).
 
 ## The Memory page
 
@@ -63,7 +65,8 @@ Virtual Nimbus, the hosted web chat).
   with first (Mistral Large 4, under any of its names, summarizes on Mistral Small,
   which does not spend the answer on thinking; Large 4 itself is never asked for a
   summary), then the other providers you checked in Settings, in your order, then
-  Cumulo when the device has a Cumulo key, then the head provider's sub-agent model.
+  then the head provider's sub-agent model. Cumulo takes part only when it is in your
+  list, or when it is the device's only provider.
   A provider you left unchecked, or a custom endpoint not in the list, never receives
   your conversation. A provider that answered with nothing usable, or ran out of room
   thinking, goes last next time.

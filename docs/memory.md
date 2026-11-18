@@ -468,12 +468,13 @@ the fold's ladder, schedule and driver are in
   says it couldn't, with the time of the next try). In the web chat the confirmation
   is a history row, never the reply slot.
 - **If a provider is down**: the fold walks the providers of your priority list (then
-  Cumulo with a Cumulo key, then the head's Sub model), one request per pump pass, before
+  the head's Sub model; Cumulo only when it is listed or the only provider), one request per pump pass, before
   a cycle counts as failed (fold-ladder.md). A provider left out of the list never
   receives the conversation.
 - **If older rows cannot be read yet** (after a restart, while the card is indexed, a card
   outage): the fold waits and looks again, and never moves the summary's anchor past a
-  row it has not summarized; those rows stay named in each request as not included.
+  row it has not summarized; those rows stay named in each request as not included. Rows
+  that stay unreadable for a day are reported to you once a day.
 - **If it keeps failing**: it never pauses. A failed cycle tries again after 15
   minutes, 1 hour, 4 hours, then every 12 hours, each time on a smaller slice; a new
   firmware restarts the wait; a pause an older version left lifts on the first
