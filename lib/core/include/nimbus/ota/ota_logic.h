@@ -80,8 +80,8 @@ bool parseManifest(const char* json, size_t len, const char* variant,
 // page, /update, the device menu) never consults this.
 bool headHeld(const ManifestInfo& m, const char* host, const char* model);
 // The one owner line a held release sends instead of the "available" notice.
-// `host`/`model` name the held head ("" reads as unknown). Returns the length, or 0
-// when buf is too small.
+// `host`/`model` name the held head ("" reads as unknown; at most 24 and 64 bytes of
+// them are shown). Returns the length, or 0 when buf is too small.
 size_t holdNotice(char* buf, size_t cap, const char* version, const char* host,
                   const char* model);
 

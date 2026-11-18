@@ -833,6 +833,7 @@ static void test_hold_names_head_or_fallback() {
   TEST_ASSERT_FALSE(headHeld(m, "anthropic", "claude-sonnet-5-5"));
   TEST_ASSERT_TRUE(headHeld(m, "anthropic", "claude-sonnet-5-5-old"));
   TEST_ASSERT_TRUE(headHeld(m, "anthropic", "claude-haiku-5-5"));
+  TEST_ASSERT_TRUE(headHeld(m, "anthropic", "claude-sonnet-5"));   // not the 5-5 family
   TEST_ASSERT_TRUE(headHeld(m, "google", "gemini-9"));   // a host nobody listed
 }
 
@@ -887,6 +888,15 @@ static void test_hold_malformed_rejects_manifest() {
   many += "]";
   TEST_ASSERT_TRUE(parseHeld(many.c_str(), m));
   TEST_ASSERT_EQUAL_UINT8(kMaxHoldHeads, m.holdCount);
+  // A device with no image in the manifest still settles on "variant" (no update, not
+  // an error) whatever the holdHeads field holds.
+  {
+    char json[600];
+    makeHeldJson(json, sizeof json, "v5.2.0", "\"holdHeads\":3");
+    const char* err = nullptr;
+    TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "freenove-40", m, &err));
+    TEST_ASSERT_EQUAL_STRING("variant", err);
+  }
   // A truncated manifest (cut inside holdHeads) is no update either.
   char json[600];
   makeHeldJson(json, sizeof json, "v5.2.0", "\"holdHeads\":[\"*/*\"]");
@@ -917,6 +927,10 @@ static void test_hold_notice_is_one_line() {
   TEST_ASSERT_NULL(strstr(buf, "\xE2\x80\x94"));     // no em dash
   TEST_ASSERT_TRUE(holdNotice(buf, sizeof buf, "v5.2.0", "", "") > 0);
   TEST_ASSERT_NOT_NULL(strstr(buf, "(unknown)"));
+  // A free-text model id (a custom endpoint) is cut, so the line always fits the
+  // device's 384 B buffer and the version's one notice is never lost.
+  const std::string longModel(300, 'm');
+  TEST_ASSERT_TRUE(holdNotice(buf, 384, "v10.20.30", "anthropic", longModel.c_str()) > 0);
   TEST_ASSERT_EQUAL_UINT(0, holdNotice(buf, 20, "v5.2.0", "mistral", "x"));
   TEST_ASSERT_EQUAL_STRING("", buf);
 }
@@ -1009,6 +1023,14 @@ static void test_rendered_table_holds_what_the_table_holds() {
       TEST_ASSERT_EQUAL_MESSAGE(hq::holds(v.state), headHeld(m, rows[i].host, model.c_str()),
                                 (std::string(rows[i].host) + "/" + model).c_str());
     }
+    // Ids on the boundary between overlapping families agree too.
+    const char* probes[][2] = {{"anthropic", "claude-sonnet-5"}, {"anthropic", "claude-sonnet-5-5"},
+                               {"anthropic", "claude-sonnet-5-50"}, {"anthropic", "claude-sonnet-5-5-20261001"},
+                               {"anthropic", "claude-sonnet-6"},
+                               {"openai", "gpt-5.6"}, {"openai", "gpt-5.6-luna"}, {"openai", "gpt-5.60"},
+                               {"zai", "glm-5.3-flash"}, {"cumulo", "claude-sonnet-5-5"}};
+    for (const auto& p : probes)
+      TEST_ASSERT_EQUAL_MESSAGE(hq::holds(hq::lookup(p[0], p[1], line).state), headHeld(m, p[0], p[1]), p[1]);
     TEST_ASSERT_TRUE(headHeld(m, "google", "gemini-9"));
   }
 }

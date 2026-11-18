@@ -214,7 +214,7 @@ size_t holdNotice(char* buf, size_t cap, const char* version, const char* host,
   const int n = snprintf(
       buf, cap,
       "Firmware %s is available. It does not install by itself, because this device's "
-      "model (%s%s%s) is not qualified for it yet. Reply /update to install it anyway, "
+      "model (%.24s%s%.64s) is not qualified for it yet. Reply /update to install it anyway, "
       "or open Settings \xE2\x86\x92 Software update on the device's web page.",
       version ? version : "", known ? host : "unknown", known ? " " : "", known ? model : "");
   if (n < 0 || (size_t)n >= cap) {
@@ -305,10 +305,10 @@ bool parseManifest(const char* json, size_t len, const char* variant,
   if (*minV && !parseVersion(minV, mj, mi, pa)) return fail(errOut, "version");
   copyStr(out.minVersion, sizeof(out.minVersion), minV);
 
-  if (!parseHoldHeads(doc["holdHeads"], out)) return fail(errOut, "holdHeads");
-
   JsonObject v = doc["variants"][variant];
-  if (v.isNull()) return fail(errOut, "variant");
+  if (v.isNull()) return fail(errOut, "variant");   // settled "no update" stays first
+
+  if (!parseHoldHeads(doc["holdHeads"], out)) return fail(errOut, "holdHeads");
 
   const char* url = v["url"] | (const char*)nullptr;
   if (!url || strncmp(url, "https://", 8) != 0 ||

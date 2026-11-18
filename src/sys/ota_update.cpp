@@ -741,6 +741,8 @@ static void fireHeld(const String& host, const String& model) {
   if (!line) return;
   if (nimbus::ota::holdNotice(line.get(), 384, g_manifest.version, host.c_str(), model.c_str()))
     fireEvent(EvHeld, g_manifest.version, line.get());
+  else   // never lose the version's one notice (the latch is already claimed)
+    fireEvent(EvAvailable, g_manifest.version, g_manifest.notes);
 }
 
 // ---- check task -------------------------------------------------------------
@@ -781,6 +783,7 @@ static void checkRun() {
   nimbus::heapwatch::Scope updating(nimbus::heapwatch::kOta);
   g_state = State::Checking;
   g_lastCheckReached = false;   // set true iff fetchManifest reaches the server
+  g_held = false;               // finishCheck sets it again for a held release
   const char* err = "arbiter";
   if (agent::arbiter::acquireWork(10000)) {
     err = fetchManifest();
@@ -942,7 +945,9 @@ static const char* commitAndFlip() {
 // committed install never returns: it restarts the device holding the claim.
 static void installRun() {
   nimbus::heapwatch::Scope updating(nimbus::heapwatch::kOta);
-  fireEvent(EvInstallStart, g_installDry ? "dry" : "real", "");
+  // An automatic install announces its start only once the hold re-check passed, so a
+  // held one leaves no start without an end on the timeline.
+  if (!g_installAuto) fireEvent(EvInstallStart, g_installDry ? "dry" : "real", "");
   g_state = State::Checking;
 
   const char* err = "arbiter";
@@ -981,12 +986,15 @@ static void installRun() {
     if (heldNow(heldHost, heldModel)) {
       agent::arbiter::releaseWork();
       g_held = true;
+      g_latestVersion = g_manifest.version;   // the re-fetched release is the one shown
+      g_latestNotes = g_manifest.notes;
       g_state = State::Available;
       agent::alogf("ota: automatic install of %s held for %s %s", g_manifest.version,
                    heldHost.length() ? heldHost.c_str() : "?",
                    heldModel.length() ? heldModel.c_str() : "?");
       return;
     }
+    fireEvent(EvInstallStart, "real", "");
   }
 
   g_state = State::Downloading;

@@ -253,8 +253,8 @@ A release can be held back from the devices whose model it was not measured on.
 The manifest then carries `holdHeads`, an array of `host/model` entries: `model`
 is an exact id, a prefix ending in `*`, or `*`; `host` is a provider slug or `*`;
 a leading `!` excepts instead of holding; for each model the last matching entry
-decides. For example `["*/*","!anthropic/claude-sonnet-5-5*"]` holds every model
-except Sonnet 5.5.
+decides. For example `["*/*","!anthropic/claude-sonnet-5-5","!anthropic/claude-sonnet-5-5-*"]`
+holds every model except Sonnet 5.5 and its dated ids.
 
 - **Which models count**: the one the device answers with, and the model of
   every other provider that holds a key (a provider with a key can answer a turn

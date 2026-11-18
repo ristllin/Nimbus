@@ -15,7 +15,8 @@ void tearDown() {}
 // The holdHeads each line renders. The SAME literals are pinned in
 // tools/test_make_manifest.py (test_hold_heads_golden), which renders them from the
 // HQ_ROW lines in Python: change a row, change both goldens.
-static const char* kGoldenE1 = "[\"*/*\",\"!anthropic/claude-haiku-5-5*\",\"!anthropic/claude-sonnet-5-5*\"]";
+static const char* kGoldenE1 =
+    "[\"*/*\",\"!anthropic/claude-haiku-5-5-*\",\"!anthropic/claude-haiku-5-5\",\"!anthropic/claude-sonnet-5-5-*\",\"!anthropic/claude-sonnet-5-5\"]";
 static const char* kGoldenE2 = "[\"*/*\"]";
 
 static void test_render_golden() {

@@ -16,7 +16,9 @@ constexpr State H = State::Held;
 // One row per line, in this exact shape: tools/make_manifest.py --hold-line parses
 // these HQ_ROW lines to render a manifest's holdHeads, and tools/test_make_manifest.py
 // pins its rendering to the same golden as test/test_head_qual. Keep each row on one
-// line. Within a host, specific families come before the host's "*" row.
+// line. Within a host, specific families come before the host's "*" row. A family is
+// the exact id plus its dated forms ("<id>-*"), never a bare prefix that would also
+// match a different model ("claude-sonnet-5-5*" would take claude-sonnet-5-50).
 #define HQ_ROW(host, family, wire, e1, e2, cap, prof, truth) \
   Row{host, family, Wire::wire, e1, e2, cap, Profile::prof, Truth::truth}
 
@@ -26,8 +28,10 @@ constexpr State H = State::Held;
 // (RB-R1 for e1, RB-W2 to RB-W4 for e2); Mistral and custom are held. Nothing is
 // qualified on e2 before its parity run.
 const Row kRows[] = {
-    HQ_ROW("anthropic", "claude-sonnet-5-5*", AnthropicMessages, Q, A, kNoTableCap, Wide, Enforce),
-    HQ_ROW("anthropic", "claude-haiku-5-5*", AnthropicMessages, Q, A, kNoTableCap, Wide, Enforce),
+    HQ_ROW("anthropic", "claude-sonnet-5-5", AnthropicMessages, Q, A, kNoTableCap, Wide, Enforce),
+    HQ_ROW("anthropic", "claude-sonnet-5-5-*", AnthropicMessages, Q, A, kNoTableCap, Wide, Enforce),
+    HQ_ROW("anthropic", "claude-haiku-5-5", AnthropicMessages, Q, A, kNoTableCap, Wide, Enforce),
+    HQ_ROW("anthropic", "claude-haiku-5-5-*", AnthropicMessages, Q, A, kNoTableCap, Wide, Enforce),
     HQ_ROW("anthropic", "claude-sonnet-5", AnthropicMessages, A, A, kNoTableCap, Wide, Enforce),
     HQ_ROW("anthropic", "*", AnthropicMessages, H, H, kUnqualifiedBodyCap, Lean, Enforce),
     HQ_ROW("openai", "gpt-5.6-luna*", OpenAiResponses, A, A, kNoTableCap, Wide, ReceiptOnly),

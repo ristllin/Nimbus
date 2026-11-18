@@ -87,8 +87,8 @@ struct Verdict {
 Verdict lookup(const char* host, const char* model, Line line, Wire wire = Wire::Any);
 
 // The holdHeads array for a manifest of `line`, as compact JSON
-// (["*/*","!anthropic/claude-sonnet-5-5*",...]): every head is held, then each
-// qualified row is excepted, later entries winning (nimbus::ota holdVerdict reads
+// (["*/*","!anthropic/claude-sonnet-5-5",...]): every head is held, then each
+// qualified row is excepted, later entries winning (nimbus::ota::headHeld reads
 // it that way). Entries that cannot change a verdict are left out.
 std::string renderHoldHeads(Line line);
 
