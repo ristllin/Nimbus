@@ -3,8 +3,8 @@
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=47989 ceiling=47989 entries=542 sha8=faa8207c
 # class device_notes bytes=74350 ceiling=74350 entries=2376 sha8=5460c809
-# class tool_descriptions bytes=23055 ceiling=23055 entries=97 sha8=a62706dc
-# class tool_results bytes=41269 ceiling=41269 entries=1221 sha8=eb3909ce
+# class tool_descriptions bytes=23131 ceiling=23055 entries=98 sha8=542ad7ca
+# class tool_results bytes=41962 ceiling=41269 entries=1249 sha8=63debd41
 # class side_prompts bytes=8078 ceiling=8078 entries=157 sha8=14424ae7
 # class skills bytes=23264 ceiling=23264 entries=35 sha8=cef6121d
 system	lib/core/include/nimbus/orch/orch_schema.h	4bbc63be	1005	"Text to send the owner now; empty string if none. Say only what actually happened this turn and only what you actually saw: a claim that something was saved, written, started, sent, spoken, scheduled, pinned or changed, that it survives a restart, that you checked live data, that a figure or fact came from a source (a label, a receipt, a gauge, an app or website, the owner's watch; what the owner just told you is the owner's, so say so), or that something caused a failure - the owner's phone, app or connection, a damaged file, one of your own subsystems - needs a tool result, a field of this reply or a source text this turn that shows it; quote the real id. If a step only drafted, failed or was refused, say exactly that; if nothing you read names the cause, say the cause is not recorded. Writing 'sent' or 'saved' does not make it so. The device checks each claim against this turn's recorded effects and sources and corrects the reply when they disagree. Never invent ids, links, or successes."
@@ -2948,6 +2948,7 @@ tool_descriptions	lib/core/src/orch_session_tools.cpp	240c9e92	63	"Send a messag
 tool_descriptions	lib/core/src/orch_session_tools.cpp	eafed563	73	"Read the latest reply from a sub-agent (like reading its message to you)."
 tool_descriptions	lib/core/src/orch_session_tools.cpp	9c9aee00	25	"Stop a running sub-agent."
 tool_descriptions	lib/core/src/orch_session_tools.cpp	f745b564	45	"List your running sub-agents and their state."
+tool_descriptions	lib/core/src/orch_tool_groups.cpp	def3a27e	76	"List a group's tools with their arguments (group), or call one (name, args)."
 tool_descriptions	lib/harness/src/providers/custom.cpp	47cb4e47	81	"\nRespond with ONLY the JSON object for your orch_turn - no prose, no code fences."
 tool_descriptions	lib/harness/src/providers/custom.cpp	d7ed66b8	17	"the system prompt"
 tool_descriptions	lib/harness/src/skill_md.cpp	0b84cd11	6	"desc: "
@@ -3645,6 +3646,34 @@ tool_results	lib/core/src/orch_session_tools.cpp	34a70e0d	16	"terminate failed"
 tool_results	lib/core/src/orch_session_tools.cpp	c3f0c1b8	11	"terminated "
 tool_results	lib/core/src/orch_session_tools.cpp	5c290604	33	"list not supported on this device"
 tool_results	lib/core/src/orch_session_tools.cpp	acc2a9e7	20	"No running sessions."
+tool_results	lib/core/src/orch_tool_groups.cpp	1f87db8b	54	"device state, control, updates, self test, health, log"
+tool_results	lib/core/src/orch_tool_groups.cpp	1f6d54f2	14	"sub-agent jobs"
+tool_results	lib/core/src/orch_tool_groups.cpp	bdf9ec2e	52	"file deletion, moves, downloads, sharing, stat, PDFs"
+tool_results	lib/core/src/orch_tool_groups.cpp	a6580dc6	21	"images, speech, music"
+tool_results	lib/core/src/orch_tool_groups.cpp	01fc8637	20	"targets and portions"
+tool_results	lib/core/src/orch_tool_groups.cpp	c640341e	35	"who may use the device (admin only)"
+tool_results	lib/core/src/orch_tool_groups.cpp	16c339ef	26	"the providers' model lists"
+tool_results	lib/core/src/orch_tool_groups.cpp	4887bcc6	30	"the device's own documentation"
+tool_results	lib/core/src/orch_tool_groups.cpp	49e12ad1	12	"saved skills"
+tool_results	lib/core/src/orch_tool_groups.cpp	c0a22eab	32	"old-engine memory administration"
+tool_results	lib/core/src/orch_tool_groups.cpp	d5892887	22	"connected tool servers"
+tool_results	lib/core/src/orch_tool_groups.cpp	9a559d3c	11	"not shown: "
+tool_results	lib/core/src/orch_tool_groups.cpp	a127a5bf	18	"also behind more: "
+tool_results	lib/core/src/orch_tool_groups.cpp	ca286044	28	"Nothing is behind more here."
+tool_results	lib/core/src/orch_tool_groups.cpp	f5978132	23	"Callable through more: "
+tool_results	lib/core/src/orch_tool_groups.cpp	21f5c69f	6	" more)"
+tool_results	lib/core/src/orch_tool_groups.cpp	ca286044	28	"Nothing is behind more here."
+tool_results	lib/core/src/orch_tool_groups.cpp	2dd593cc	28	"group must be a group name: "
+tool_results	lib/core/src/orch_tool_groups.cpp	a98077f3	9	"no group "
+tool_results	lib/core/src/orch_tool_groups.cpp	eea0fda0	10	". Groups: "
+tool_results	lib/core/src/orch_tool_groups.cpp	9f1e4c10	6	"group "
+tool_results	lib/core/src/orch_tool_groups.cpp	43da4e42	24	": nothing callable here."
+tool_results	lib/core/src/orch_tool_groups.cpp	421765a4	77	"more takes group, name and args (the tool's arguments go in args); not read: "
+tool_results	lib/core/src/orch_tool_groups.cpp	79b30fdf	26	"name must be a tool name. "
+tool_results	lib/core/src/orch_tool_groups.cpp	f4b09c1b	35	"more calls other tools, not itself."
+tool_results	lib/core/src/orch_tool_groups.cpp	c17779c1	8	"no tool "
+tool_results	lib/core/src/orch_tool_groups.cpp	d1e05614	14	" behind more. "
+tool_results	lib/core/src/orch_tool_groups.cpp	611d03d7	24	"args must be an object: "
 tool_results	lib/core/src/orch_tool_registry.cpp	2834eca1	23	"tool denied by policy: "
 tool_results	lib/core/src/orch_tool_registry.cpp	a0060433	35	"tool gated pending owner approval: "
 tool_results	lib/core/src/orch_tool_registry.cpp	44a6aa86	29	"not allowed for this caller: "

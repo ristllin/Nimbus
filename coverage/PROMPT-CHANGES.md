@@ -226,4 +226,26 @@ deleted. Engine 2 has no baseline.
 
 ## Changes
 
-None yet.
+### PC-0001: RB-N4's tools groups (more) catalogued: its description
+- catalog: e1
+- class: tool_descriptions
+- kind: spec
+- bytes: 23055 -> 23131
+- sha8: a62706dc -> 542ad7ca
+- lane: RB-N4
+- prd: section 4 (groups behind more: the more tool and its group listing)
+- why: RB-N4 (merged on rb-main before this entry) added lib/core/src/orch_tool_groups.cpp, which registers the
+  more tool; the coverage check found it outside the catalog, so RB-B5 listed it under tool_results and logs its
+  76 B description here. Planned work by a lane of the plan (ruling 18), not a fix.
+
+### PC-0002: RB-N4's tools groups (more) catalogued: its results and group lines
+- catalog: e1
+- class: tool_results
+- kind: spec
+- bytes: 41269 -> 41962
+- sha8: eb3909ce -> 63debd41
+- lane: RB-N4
+- prd: section 4 (groups behind more: device, agents, files_admin, media, food, people, models, docs, skills,
+  connectors)
+- why: the group one-liners, the tools-index lines and the more tool's results and errors of
+  lib/core/src/orch_tool_groups.cpp (693 B), catalogued by RB-B5 with the file. Planned work (ruling 18).
