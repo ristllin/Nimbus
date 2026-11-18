@@ -32,6 +32,7 @@ import check_engine_filter
 import check_fold_health
 import check_image_size
 import check_lwip_core_lock
+import check_no_harness_lines
 import check_no_prompt_patch
 import check_ota_preserves_nvs
 import check_owner_regressions
@@ -164,6 +165,7 @@ def run_host_checks() -> bool:
         ("release notes line (D5)", check_release_notes.main),
         ("owner regressions (p18-REGR)", check_owner_regressions.main),
         ("no prompt patch: model-text catalog, ceilings, ledger (RB-B5)", check_no_prompt_patch.main),
+        ("no reply-check line in a device image (RB-Q1b)", check_no_harness_lines.main),
         ("tool results state facts, not orders (RB-B5)", check_tool_result_imperatives.main),
         ("plain engine request ceilings: system, core, tools, catalog (RB-E2)", check_plain_ceilings.main),
         ("fold health: the summary never pauses for good (v5.1.2)", check_fold_health.main),

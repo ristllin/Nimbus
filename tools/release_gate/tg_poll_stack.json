@@ -454,7 +454,7 @@
     {
       "function": "^std::(_Function_handler<nimbus::orch::HeadToolResult \\(nimbus::orch::HeadToolCall const&\\), agent::TurnEngine::runTurn|function<nimbus::orch::HeadToolResult \\(nimbus::orch::HeadToolCall const&\\)>::operator\\(\\))",
       "depth": 4,
-      "why": "runTurn wraps the head tool dispatch in at most three decorators (the MCP loop tools, pseudo spawns, the claim gate: engine.cpp) over the registry's own dispatch"
+      "why": "runTurn wraps the head tool dispatch in at most three decorators (the MCP loop tools, pseudo spawns, the turn ledger: engine.cpp) over the registry's own dispatch"
     },
     {
       "function": "^agent::providers::(stripDescriptions|mistralStripDescriptions|stripFieldDescriptions|wire::detail::(collectToolIds|findBadText))\\(",
@@ -548,11 +548,11 @@
       ]
     },
     {
-      "name": "claim check correction round",
+      "name": "final-answer check round",
       "through": [
-        "^agent::ClaimCheck::finalCheck\\("
+        "^agent::turnShapeCorrection\\("
       ],
-      "_why": "the correction is sent as one more head round from runTurn; the check itself is what runs past it"
+      "_why": "the final-answer checks (turn shape, placeholder) run inside the head loop and a correction is one more head round; the claim check that ran here is gone (RB-Q1b)"
     },
     {
       "name": "tool call: routines",

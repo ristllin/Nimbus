@@ -2847,7 +2847,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
     ". Your orch_turn `reply` field is ALREADY delivered to this same channel - that is"
     " the one and only answer; never send the same answer twice." +
     channelFormatHint(chatId) +
-    loopHint + "\n\n[USER]\n" + text;
+    loopHint + "\n\n" + "[USER]\n" + text;
   turnMem().gate.phase("inputs", freeHeap(), largestFreeBlock());
   turnMem().admitted = true;   // runTurn continues this record
   runTurn(inputs, chatId, text, telegram);   // text drives associative recall

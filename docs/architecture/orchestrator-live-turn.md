@@ -460,8 +460,8 @@ the TLS arena during a turn), reads Telegram's `message_id` from the answer
 `FAIL` with the reason, and deletes the file after the archive hook copied it. The
 whole call has one 150 s budget (it holds the poll task), so on a slow network it stops
 before a message that cannot finish and says how many arrived. The
-tool's result carries those receipts, and the claim check accepts a voice-message
-claim only with one. Text-to-speech gets a read window sized to its text (25 s up to
+tool's result carries those receipts, and the turn's effect ledger records a voice send as
+delivered only with one. Text-to-speech gets a read window sized to its text (25 s up to
 60 s), and a clip the window or a dropped connection cut short is removed and
 reported as "truncated at N B", never used; a failed flash write is reported as that instead. A raw body (OpenAI, the router) that ends by
 the server closing the connection with no stated length is judged by its own framing
@@ -475,7 +475,7 @@ sink answers with how it ended (`nimbus/orch/speak_outcome.h`: the speaker, a Te
 message id, or why not) and `apply.cpp` records exactly that: nothing is captured to
 history unless it was voiced, volume 0 is refused before any synthesis, text over 400 bytes
 is cut on a character boundary and the reply says so, a tts-only turn that could not be spoken
-sends its text in writing with the same claim check as a reply, and the claim ledger holds a Speak
-that landed or a voice send with a receipt behind any "read it aloud".
+sends its text in writing with the reason, and the turn's effect ledger holds a Speak that
+landed or a voice send with a receipt.
 The reply tools run outside the memory card lock (`handleMcp`): only their history
 row takes it.

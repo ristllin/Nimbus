@@ -273,7 +273,7 @@ tests/evals/owner_regressions/runs/bf40a3edf9f401df83be010eac2d9847d82e2681/ (ta
   head may do the work, and the owner line if it answers the same way again. With it the head
   with the same prompt reads 20/20 on lc-two-ledgers while 19 of 20 first calls still skip
   thinking (the correction round recovers them). Guards: test_reply_guard
-  test_announcing_work_now (positive and negative corpus), test_harness_claim_check
+  test_announcing_work_now (positive and negative corpus), test_harness_claim_check (deleted in v5.2.0 with the claim check, lane RB-Q1b; the seam is held by test_delivery_e1)
   test_round_an_announcement_with_nothing_run_gets_one_round and
   test_an_announcement_is_backed_only_by_work_that_changed_something (both fail with the
   guard disabled, verified). The first matcher's precision figure (3,900
@@ -300,7 +300,7 @@ Five review findings, each fixed with a test that failed first. Written reasons:
   three words or more that does not end in a question mark; a log request with a question beside
   it keeps the guard, so does a turn with no owner text). Guards: test_reply_guard
   test_informational_sentences_are_no_announcement (the reviewer's examples plus 25 more, and the
-  announcement wording of the lane's live replies as the positive side), test_harness_claim_check
+  announcement wording of the lane's live replies as the positive side), test_harness_claim_check (deleted in v5.2.0 with the claim check, lane RB-Q1b; the seam is held by test_delivery_e1)
   test_an_answer_to_a_question_only_turn_is_not_an_announcement. Both failed before the code.
   Precision, reproducible: `python3 evidence/qfix/announce_scan.py --list` builds the matcher
   standalone and scans every stored reply of the lane (evidence/qfix/announce-scan-before-fixpass.txt
@@ -372,12 +372,12 @@ byte-identical. Not edited: any scenario, assertion or thresholds.json.
 - OIR-06: every human turn gets [REPLY SCOPE] before [USER] (owner_voice.h), and the
   reply-scope final check gives one correction round when the reply takes up an earlier owner
   message that got no reply and this message does not bring it up. Guards: oir_06,
-  test_harness_claim_check test_mlq_reply_scope_check_holds_an_unanswered_message,
+  test_harness_claim_check (deleted in v5.2.0 with the claim check, lane RB-Q1b; the seam is held by test_delivery_e1) test_mlq_reply_scope_check_holds_an_unanswered_message,
   test_harness_history test_mlq_unanswered_owner_message_reaches_the_scope_check (both fail with
   the check disabled, verified). Precision over 4,287 stored live replies: 17 of 19 flags are the
   unasked-topic replies; the other 2 exist only in a stress pairing a synthesis turn never runs.
 - OIR-50: a message that disputes an attribution gets [DISPUTED CLAIM], and on that turn a
   quoted "you told me" that is not the owner's own words is checked; the owner-action correction
   says to take the claim back without the phrase. Guards: oir_50
-  test_oir_50_disputed_quote_is_checked, test_harness_claim_check
+  test_oir_50_disputed_quote_is_checked, test_harness_claim_check (deleted in v5.2.0 with the claim check, lane RB-Q1b; the seam is held by test_delivery_e1)
   test_mlq_disputed_attribution_checks_the_quoted_phrase.

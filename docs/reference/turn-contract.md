@@ -150,25 +150,16 @@ is not a cut.
 
 On a tool-loop turn, a terminal `orch_turn` passes `validateFinal` before it is
 accepted (`HeadLoopConfig::validateFinal`, built with `chainFinalChecks`). An
-answer whose spawn list cannot be read, whose spawn items cannot start, or whose
-reply says sub-agents started while no spawn item is present is sent back once,
-with the problems named and the array form shown. The claim check joins the same
-chain: an answer whose reply claims an effect that neither this turn's tools nor
-its own items back (a file written, a memory saved, a pin, a check, a figure from
-a source) is sent back with the claims and the turn's record; sub-agent claims are
-left to the shape check. A reply that promises later work with nothing behind it, a reply
-that only says the work is happening right now ("Logging it now.", "I'll log that now.",
-"Logging your lunch as roughly 670 kcal") while the turn wrote, sent or scheduled nothing (a
-lookup, a failed write, a refused spawn or the head's own scratchpad note is not work done; a message that only asks a
-question is never held to this, and a sentence with a verb of its own such as "Saving a bit of cash adds up" is no
-announcement), and
-a reply that is template filler, join the chain too, and so does a reply taking up an
-earlier unreplied owner remark this message does not bring up (the reply-scope check,
-[turn anatomy](../turn-anatomy.md); an earlier question is owed its answer). At most one
-correction round runs
-per turn, shared by all of them, never on the forced final round, never for a cut answer
-and never for a prose answer (which carries no spawn). The one exception is filler: it
-gets one more tool-less round on the forced final round as well
+answer whose spawn list cannot be read or whose spawn items cannot start is sent back
+once, with the problems named and the array form shown; so is an answer that is template
+filler or, on a turn with nothing to say, empty, and one that names internal plumbing.
+The reply's words are not held against what the turn did: the claim check, the
+promise and work-now checks it carried, the reply-scope check and the check of a reply
+that says sub-agents started were deleted in v5.2.0 (lane RB-Q1b; the truth check of
+RB-G0 replaces them). At most one correction round runs per turn, shared by all of
+them, never on the forced final round, never for a cut answer and never for a prose
+answer. The one exception is filler: it gets one more tool-less round on the forced
+final round as well
 (`HeadLoopConfig::forcedFinalCheck`), and is never delivered.
 
 ## Contract shape

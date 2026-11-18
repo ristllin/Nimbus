@@ -279,3 +279,19 @@ deleted. Engine 2 has no baseline.
 - lane: RB-N2a
 - prd: section 4
 - why: read_file, write_file, append_file, edit_file and list_files results and errors (lib/core/src/orch_file_tools.cpp, listed in E2_EXTRA_SOURCES, so every literal of the file counts: 1,539 B of templates plus the argument names and format pieces), facts only; RB-E2 or RB-N2a moves the templates into plain/texts.h
+
+### PC-0006: the claim check, the spawn-claim and owner-voice checks deleted (v5.2.0)
+- catalog: e1
+- class: device_notes
+- kind: remove
+- bytes: 74350 -> 56924
+- sha8: 5460c809 -> 69778190
+- lane: RB-Q1b
+- why: the old engine's reply guards read one turn and matched words, so they sent correct answers back
+  or appended "(Correction: ...)" and "(Note: ...)" lines to them (rebuild/evidence/DIAGNOSIS.md RC-09:
+  39 of 702 replies, 21 incidents). Deleted with their files: orch_claims.cpp (the claim scanner, its
+  correction rounds and owner lines), claim_check.cpp ([CLAIM CHECK] and the scope check's round),
+  orch_spawn_claim.cpp (the spawn correction line), orch_owner_voice.cpp (the per-turn [REPLY SCOPE] and
+  [DISPUTED CLAIM] lines), and in turn_contract.cpp the [TURN CHECK] item for a reply that says
+  sub-agents started. Nothing was added: ownerAskedHow moved byte for byte into orch_reply_guard.cpp
+  (same class).

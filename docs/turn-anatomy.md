@@ -164,7 +164,6 @@ Concatenated in `handleMessage()` / synthesis / scheduled-loop paths
 | `[ACTIVE SESSIONS]` | always | live sub-agent digest - authoritative ("if it lists none, nothing is running") |
 | `[SPAWN CAPACITY]` | always | how many sub-agents this turn can start, and that a big fan-out runs over waves |
 | `[CHANNEL]` | owner turns | which channel the message arrived on (the web UI for the device's own page and a Virtual Nimbus page, Telegram for a Telegram chat) + reply-routing rules |
-| `[DISPUTED CLAIM]` | right before `[USER]`, on owner turns disputing an attribution (a first-person denial like "I never said that", or "Where did I say that?") | search the episodic log first; with no message of theirs behind the claim, say the head was wrong in its own words, no "you told me" and the like, not even quoted |
 | `[USER]` | owner turns | your message - **the only thing you typed that the model sees this turn** |
 | `[SYSTEM]` | synthesis turns | "sub-agents finished, no new user message - synthesize" |
 | `[SCHEDULED LOOP]` | routine firings | the routine's stored prompt; no user message |
@@ -433,25 +432,15 @@ dots) gets one more round, on the forced final round too, and is never delivered
 that repeats it ends the turn with "That didn't finish". A word the owner's message holds
 is an answer.
 
-A reply that promises later work ("I'll finish this next turn", "I'll report back") has
-to have something behind it: a sub-agent running or started this turn, or a routine or
-wakeup set this turn. A promise to report back ("I'll let you know when it arrives") also
-stands on a routine or wakeup set earlier for this chat, or on the routine this turn is a run
-of; it cannot tell which routine, so any of them counts. Nothing else continues after a final
-answer. Without one the model gets one correction round, and a reply that still promises
-reaches the owner with a plain line saying nothing is running for it. The check sits on every
-path that delivers the model's words: the served reply, the forced final round, a prose answer,
-a cut or unreadable answer.
+A reply that promises later work ("I'll finish this next turn", "I'll report back") is no
+longer held to what stands behind it on the served reply (the claim check that sent it back
+was deleted in v5.2.0, lane RB-Q1b). A cut or unreadable answer, where nothing runs, still
+gets a plain line saying nothing is running for a promise in its kept text (lane RB-Q1c
+removes that line with the reply guard).
 
-An earlier owner remark with no reply (`[no reply]`, bare or after `[did: nothing]`) is not
-taken up by a reply to a later message unless that message brings it up (a shared topic word,
-a pointer back, a recap, a bare question). An earlier question or request is owed its answer
-and never counts (one deferred to "sometime" is a remark), and neither does a turn the head
-acted on (`[did: memory] [no reply]`). A reply sentence echoing such a remark (its topic
-words, 4+ letters, not a common word, not held by the current message) that makes a move on
-it ("I'll", "noted", "want me to") gets one correction round naming the earlier message and
-the sentence (`[REPLY SCOPE CHECK]`, `owner_voice.h`); a fact-reporting sentence never does.
-Shared with the other final-answer checks, newest three, human turns only.
+An earlier owner remark with no reply shows as `[no reply]` in the history; nothing checks
+whether a reply takes it up (the reply-scope check and its `[REPLY SCOPE]` line were deleted
+in v5.2.0, lane RB-Q1b).
 
 The words are read in their sentence, since they alone prove little: "in the background" is
 often a place in a photo and counts only with a first person doing work there; "still working
@@ -472,118 +461,29 @@ static block does not change between turns. A message that asks for work keeps t
 configured rounds: an action or lookup verb where a request starts, a link, a word such as
 web, search, file or calendar, more than 240 bytes, or text this check cannot read.
 
-## The claim check
+## What the device checks in a reply (since v5.2.0)
 
-Before a reply goes out, the device compares what it says the turn did with what
-the turn actually did. Each turn keeps a small effect ledger in RAM (at most 32
-entries, never stored): every tool call and its result, the memory writes, the
-scratchpad save, the sub-agents the job queue accepted, and every sub-agent result
-it read, with how many tools that sub-agent ran. The ledger also carries what this
-turn's records show about CAUSES (the input block and every tool result: a network
-failure, a client error, a damaged file, a timeout, a billing refusal, a health
-read). A scanner reads the reply for
-claims in ten classes:
+The device no longer reads a reply's words against what the turn did. The claim check
+(a scanner of ten claim classes, its correction round and its "(Correction: ...)" and
+"(Note: ...)" lines), the spawn-claim line, the owner-action and reply-scope checks and the
+refusal of a memory write that stated a cause or a daily target were deleted in v5.2.0
+(lane RB-Q1b): they read one turn and matched words, so they sent correct answers back or
+appended lines to them (39 of 702 replies in the owner's month carried such a line). The
+model's reply is delivered once, as written; `tools/release_gate/check_no_harness_lines.py`
+fails a build whose image holds such a line. What stays:
 
-| Class | Example | Backed by |
-|---|---|---|
-| saved | "Logged.", "Noted, I'll remember that" | a memory write, file write, skill save or scratchpad write; a log claim ("updated the day log", "logged it in your food log") needs a row or a rewrite that landed: a `files.append` of any extension whose result counts at least one row appended, added or replaced, or a whole-file `artifact.save` of a `.txt`/`.md` document whose save receipt landed (correcting a line of a free-text log is a save). A memory "entry" is a save, never a log file row |
-| deliverable | "written and waiting", "saved as plan.md" | a file or skill written this turn |
-| spawned | "I started three research sub-agents" | that many accepted spawns |
-| sent | "sent", "reminder set", "read it aloud" | a send, a schedule, speech; "read it aloud", "spoken", "out loud", "aloud", "on the speaker" need speech that really played on the speaker (a `tts` refused at volume 0, or that the speaker or Telegram could not carry, backs nothing and the line says it was not spoken) or a voice message with Telegram's `message_id`; "laughed out loud" is no claim, and a confirmed `media.play` also backs "played it on the speaker"; a voice send whose result names `message_id` backs "voice message sent" (upload out but no usable Telegram answer: the line says not confirmed, may not have arrived); any other Telegram send (text, document, photo) is the same: a queued send with no `message_id` backs no "sent", and the line says queued, not delivered |
-| changed | "pinned", "switched", "turned off", "I've set" | a real change: a config action that actually changed a stored value, or a routine ("cfg(no change)" backs nothing); a pin on an already pinned memory is not one |
-| durable | "survives a restart", "never decays" | a save that landed (not RAM only); a pin for "never decays" |
-| checked | "I checked", "live data" | a lookup, or a sub-agent result with a lookup behind it; a pin call for "confirmed it's pinned" |
-| figure | "200 kcal (label)", "your watch said 408" | the number appears in a source the turn was given |
-| source | "Rain gauge at the office roof: 3.0 mm", "the live gauge says", "per the label", "according to the app", "Source: National Rail Enquiries", "checked live on National Rail" | that source (a gauge, sensor, label, receipt, menu, watch, scale, app, website, ...) named this turn by the owner's message (or the owner's earlier rows in the window: a follow-up about the previous message's photo or label credits a source the owner really gave), a tool result, a sub-agent result or a memory search result; a photo this turn may show any of them, and a sub-agent result with web runs names a website; recalled memories name only the owner's own devices; the assistant's earlier replies name nothing. A source credited by name (a citation, a check, or "according to" it in a sentence about now: "today", "live", "this morning", a live status) needs every word of the name in those texts; a sentence-case phrase after a colon ("Source: Your food log") names nothing. A quote presented as on record from before ("I recalled a memory: \"...\"", "you said \"...\"") needs those words, in order, in something the turn was given (prompt with history, input block, tool result, or this turn's own writes); the phrase must introduce the quote directly - a draft, translation or save confirmation in quotes is not checked. An explanation of how an instrument works credits nothing. A claim about what the owner said or did this turn needs a content word of its clause in the owner's own words this turn - a stored row is not evidence against the owner. When the owner disputes such a claim ("I never said that"), the phrase counts inside quotes too, unless the quote is the owner's own words; the correction takes the claim back in the head's own words, without the phrase or any like it; the tail line holds none of them |
-| cause | "your connection", "corrupt", "it timed out", "my vision path is working", "you keep sending" | a record this turn that shows it: a network failure, a client error, a damaged file, a timeout, a billing refusal; "it is working" needs a health read this turn and no failure on record; "you keep sending" is refused when the records show the DEVICE repeated the deliveries; guesses and hedges do not exempt a cause |
-
-A plain "Noted." is an acknowledgement, not a save claim: it claims a save only when the
-owner asked for something to be kept or its own sentence speaks of keeping it
-(`tests/evals/claim_corpus/noted.json` holds the real replies).
-
-Food figures have their own check (`food_figures.h`): a stated daily target, or a figure
-"left" that implies one, needs its number in what the owner said or the turn read (never
-the assistant's earlier replies or the fold summary); a stated day total must be the food
-ledger's, read after the turn's own writes; a "you need" over a row of unknown protein is
-not a figure. A memory that would store a sourceless target is refused. A stored target
-row whose own citation states more targets than the row stored (a plan that sets both
-kcal and protein, only one of which landed) gets the same correction round, and a note
-names what is not stored. On a scheduled
-turn, a status citing a record older than a week as the state of things is held the same way.
-
-A source claim is a credit: the source said, showed or read something ("the gauge
-says", "watch data"), the reply cites it ("per the label", "according to the app", or
-"from your watch" and "on the website" with a figure next to them), or an instrument
-names a reading by itself ("Rain gauge: 3.0 mm"). A kind ("a rain gauge would
-help"), a hypothetical ("the gauge would show more"), the owner's own report ("the
-label you sent says") and a source labeled as earlier are not claims. The correction
-round for a source names the figures the owner gave this turn, so the rewrite credits
-the owner ("you said 3.0 mm") instead of a source the device never read.
-
-When the owner asks why about a past sub-agent (the question names one of the spawn
-ledger's connectors or job tags, or a sub-agent; a provider's built-in tool words - the
-weather, code, an image - are everyday words and never name one), each reason the reply
-gives in a sentence about its action ("It used Notion because ...") or claiming a record
-("because ...", "the fallback", "was configured to", "I recalled ...")
-must be built from words the turn's records hold: the history, the standing preferences,
-the input block and the tool results, not the fixed instructions. Two or more content
-words found in none of them (one, when the reason cites a memory, a rule or the owner's
-own request) make it a cause gap (the ledger's own header words are not records);
-the correction round hands the model the
-spawn ledger's lines and asks it to say what they show and that the reason is not
-recorded. A reason about anything else ("sourdough rises because wild yeast ferments the
-flour", or the weather when a job is named after it) is not checked. The claim check reads
-the owner's message, the sub-agent results, the memory results and the spawn ledger as
-the engine took them, never by searching the composed input for a block's title, so a
-sub-agent's reply cannot pose as one. When a tool result is too long to read whole, or an
-evidence store fills, the source, quote and reason rules stand down for the turn rather
-than state that something is missing.
-
-Questions, offers, conditions, possibilities and plain futures ("want me to", "I'll",
-"it may have been lost, or saved elsewhere"), a running total ("1,600 kcal logged so far",
-"you're at 1,600 kcal logged": a figure beside "logged" with a progress phrase reports what is
-already on record), a negation within four words, a clause
-whose subject is "nothing", "none" or "no record" ("nothing in the logs shows it was
-saved"), quoted text, another person's action and references to earlier turns are not
-claims. Replies that are mostly not English are not scanned. Provider-hosted tools
-(a connector, a hosted web search) run where the device cannot see them, so when one
-really ran this turn, what it could have done is not checked: the head's response
-listed a server-side tool run, or a sub-agent result's provider record names one. A
-connector run stands for claims of sending or changing something, any run for checking
-something. For a source such a tool may have read (a website, an app, a feed, a
-report, a receipt), only the head's own server-side tools count: a sub-agent's reads
-are visible on this device in its result text, so what that text does not name is not
-backed whatever the sub ran (a weather-only result backs no "Source: National Rail
-Enquiries"). An enabled connector that did not run backs nothing. Everything the
-device does itself (memory, files, skills, notes, sub-agents, a Telegram voice message
-from its own bot, speech on its own speaker) is always checked, and so is a source no hosted tool can read (a
-gauge, a sensor, a label, a watch).
-Cause claims are always checked: the records are the device's own.
-
-A memory write that states an unbacked cause as a fact ("the owner's Telegram
-client had a stuck outbox") is refused at apply time, before it reaches the store,
-and the reason is fed back to the model in the next turn's memory results.
-
-When a claim has no backing, the model gets one correction round: the claim check
-is one of the final-answer checks (see [the final check](reference/turn-contract.md#the-final-check)),
-so the answer is sent back once with the claims and the turn's real record, and its
-tools are still available to do the work or rewrite the reply. The round shares the
-one-per-turn limit with the turn-shape check, which owns sub-agent claims. If the
-round cannot run (the forced final round) or the claim is still unbacked after it,
-or the claimed effect failed when the turn was applied, the reply gets one calm line
-per class (the sent class gets one per different thing it says, so "not spoken aloud" never
-hides an unbacked email in the same reply) that says what did not happen, for example "(Correction: that has not
-been saved.)", "(Correction: nothing was pinned this turn.)", "(Note: this is kept
-only until the next restart; saving it permanently failed.)", "(Note: that is
-queued for Telegram; the device has no delivery receipt for it yet.)", for a
-cause, "(Note: the device has no record of a problem with your phone, app or
-connection, so that cause is not confirmed.)", for a source, "(Correction: the device
-read nothing from a gauge this turn; 3.0 is the figure you gave.)" or, for a log
-claim, "(Correction: no row was added to the log.)". A reply that already
-says so itself ("it was already pinned, so nothing changed") gets no line. The
-conversation history keeps the delivered text, lines included. `/api/state` counts
-both outcomes (`claimsCorrected` for correction rounds, `claimsTailed` for lines;
-RAM only).
+- the turn's effect ledger in RAM (at most 32 entries, never stored): every tool call and
+  its result, the memory writes, the scratchpad save, the sub-agents the job queue accepted,
+  the sub-agent results the turn read. The history row's `fx:` tag and the empty-answer
+  check read it; RB-FX stores the chat's recent effects from it, for the truth check of
+  RB-G0 that replaces the claim check;
+- the final-answer checks of [the final check](reference/turn-contract.md#the-final-check):
+  the turn shape (a field the device cannot use) and a placeholder answer;
+- the device's own lines about its own actions: a `tts` that did not play gets "(Note: that
+  could not be spoken aloud: <reason>.)", a voiced text cut to the speech bound says so, and
+  a chat that may not start sub-agents is told so. A sub-agent intent that did not start
+  reaches the head as a `[SPAWN REFUSED]` line on the chat's next turn;
+- `/api/state` keeps `claimsCorrected` and `claimsTailed` at 0 for the readers that poll them.
 
 A sub-agent result for a live-data task (a status, the weather, prices, news) that
 ran no tool is marked `[NOT CHECKED]`, and every `[FRESH RESULTS]` line says how
@@ -592,9 +492,7 @@ record names them, which ones (`[ran: web_search x2, notion x0]`: a tool the run
 offered and never used counts 0). The spawn ledger keeps the same names for two
 hours, with the sub-agent's task (the head's own words, never the sub-agent's reply) and
 a note that why it picked those tools is not recorded, so "why did it use Notion?" is
-answered from what the sub-agent was asked and ran. A reply
-built on an unchecked result must say the data was not checked, or it gets the "not
-checked live" line. The block opens with one line telling the head to state only
+answered from what the sub-agent was asked and ran. The block opens with one line telling the head to state only
 facts the results contain, to keep the sources a result names, and to label anything
 from an earlier answer as earlier.
 
