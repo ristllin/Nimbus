@@ -249,8 +249,21 @@ void test_block_refuses_what_it_cannot_show() {
 
 // ---- archive, settle and restart over the real log ----------------------------------
 
+// MemFiles with a cut that keeps a chosen part of the cut append: all but its last byte
+// (a digest line without its line end) or its first byte only.
+struct TearFiles : txb::MemFiles {
+  long tearAt = -1;
+  bool keepAllButLast = false;
+  bool append(const std::string& path, const char* data, size_t len) override {
+    if ((long)appends != tearAt) return MemFiles::append(path, data, len);
+    ++appends;
+    files[path].append(data, keepAllButLast ? len - 1 : 1);
+    throw txb::Killed{"tear " + path};
+  }
+};
+
 struct Chat {
-  txb::MemFiles files;
+  TearFiles files;
   std::vector<std::string> stored;   // every digest text whose s item was stored
   uint64_t nextQ = 1;
 };
@@ -263,7 +276,7 @@ bool stored(const tx::Status& st) {
 }
 
 // One compaction step: an owner item, then the s item that covers it.
-void appendDay(Chat& c, tx::TxLog& log, int n, size_t bytes, std::vector<tx::DigestEntry>& live) {
+void appendDay(Chat& c, tx::TxLog& log, int n, size_t bytes, std::vector<tx::DigestEntry>& live, int dayN = -1) {
   tx::Item u;
   u.kind = tx::ItemKind::User;
   u.q = c.nextQ++;
@@ -273,7 +286,7 @@ void appendDay(Chat& c, tx::TxLog& log, int n, size_t bytes, std::vector<tx::Dig
   u.m = 100 + (uint64_t)n;
   tx::StoreState st = tx::StoreState::NotStored;
   stored(log.append(u, st));
-  tx::DigestEntry d = makeDigest(n, bytes, c.nextQ++, u.q);
+  tx::DigestEntry d = makeDigest(dayN < 0 ? n : dayN, bytes, c.nextQ++, u.q);
   tx::Item s;
   TXB_OK(tx::digestItem(d, u.turn, txb::kT0, s));
   if (!stored(log.append(s, st)) || st != tx::StoreState::Stored) return;
@@ -342,18 +355,26 @@ void test_archive_is_idempotent_and_heals_a_torn_tail() {
   TXB_OK(tx::archiveDigest(files, kChat, d));
   const std::string path = "/mem/tx/1001/digests-2026-11.md";
   TEST_ASSERT_EQUAL_STRING((d.text + "\n").c_str(), files.files[path].c_str());
-  // A torn line (half an append) is never glued to the next one.
+  // A torn line of this digest (half an append, or all but its line end) is completed,
+  // never repeated.
   tx::DigestEntry e = makeDigest(26, 300, 11, 10);
-  files.files[path] += e.text.substr(0, 50);
-  TXB_OK(tx::archiveDigest(files, kChat, e));
+  for (size_t keep : {(size_t)50, e.text.size()}) {
+    files.files[path] = d.text + "\n" + e.text.substr(0, keep);
+    TXB_OK(tx::archiveDigest(files, kChat, e));
+    TEST_ASSERT_EQUAL_STRING((d.text + "\n" + e.text + "\n").c_str(), files.files[path].c_str());
+  }
+  // A torn line of another digest is closed first, never glued to this one.
+  tx::DigestEntry f = makeDigest(27, 300, 13, 12);
+  files.files[path] += f.text.substr(0, 40);
+  TXB_OK(tx::archiveDigest(files, kChat, makeDigest(28, 300, 15, 14)));
   std::vector<std::string> lines = archivedLines(files);
-  TEST_ASSERT_EQUAL(3u, lines.size());
-  TEST_ASSERT_TRUE(lines[0] == d.text && lines[2] == e.text);
+  TEST_ASSERT_EQUAL(4u, lines.size());
+  TEST_ASSERT_TRUE(lines[2] == f.text.substr(0, 40) && lines[3] == makeDigest(28, 300, 15, 14).text);
   // A refusal answers Io and leaves no whole line behind.
   files.refuseAll = true;
-  TEST_ASSERT_TRUE(tx::archiveDigest(files, kChat, makeDigest(27, 300, 13, 12)).err == tx::Err::Io);
+  TEST_ASSERT_TRUE(tx::archiveDigest(files, kChat, makeDigest(29, 300, 17, 16)).err == tx::Err::Io);
   files.refuseAll = false;
-  TEST_ASSERT_EQUAL(3u, archivedLines(files).size());
+  TEST_ASSERT_EQUAL(4u, archivedLines(files).size());
   TEST_ASSERT_TRUE(tx::archiveDigest(files, "BAD", d).err == tx::Err::InvalidArgument);
 }
 
@@ -379,12 +400,17 @@ void test_nothing_lost_across_a_cut_at_any_step() {
     total = c.files.appends;
   }
   TEST_ASSERT_TRUE(total > 2 * kDays);
-  for (int mode = 0; mode < 3; ++mode)
+  // Modes: 0 a clean cut, 1 a cut that keeps half the append, 2 a refusal, 3 a cut that
+  // keeps all but the last byte (the line end), 4 a cut that keeps only the first byte.
+  for (int mode = 0; mode < 5; ++mode)
     for (size_t at = 0; at < total; ++at) {
       Chat c;
-      if (mode == 2)
+      if (mode == 2) {
         c.files.refuseAppend = (long)at;
-      else {
+      } else if (mode >= 3) {
+        c.files.tearAt = (long)at;
+        c.files.keepAllButLast = mode == 3;
+      } else {
         c.files.killAtAppend = (long)at;
         c.files.tornKill = mode == 1;
       }
@@ -408,6 +434,7 @@ void test_nothing_lost_across_a_cut_at_any_step() {
         }
       }
       c.files.clearFaults();
+      c.files.tearAt = -1;
       // Restart: open, load, settle, then the rest of the days.
       tx::TxLog log(c.files, kChat);
       tx::HeadState head;
@@ -504,6 +531,40 @@ void test_restart_gives_the_same_block_and_stops_at_the_archive() {
   }
 }
 
+// A clock set back: a later digest belongs to an earlier month and is archived last.
+// The restart still finds the same live digests and the same block.
+void test_a_clock_set_back_keeps_the_restart_exact() {
+  for (int jump = 3; jump < 12; ++jump) {
+    Chat c;
+    std::vector<tx::DigestEntry> live;
+    std::string block;
+    {
+      tx::TxLog log(c.files, kChat);
+      tx::HeadState head;
+      TXB_OK(log.open(head));
+      tx::SettleReport rep;
+      for (int n = 0; n < 16; ++n) {
+        // Days run 20 Nov onward, then fall back to October after `jump` days.
+        appendDay(c, log, n, 600, live, n < jump ? 31 + n : n - jump);
+        TXB_OK(tx::settleDigests(c.files, kChat, tx::Profile::Tight, live, block, rep));
+        checkNothingLost(c, block, "clock set back");
+      }
+      head.thru = c.nextQ - 2;
+      head.nextQ = c.nextQ;
+      TXB_OK(log.writeHead(head));
+    }
+    tx::TxLog log(c.files, kChat);
+    tx::HeadState head;
+    TXB_OK(log.open(head));
+    std::vector<tx::DigestEntry> again;
+    tx::DigestScan scan;
+    TXB_OK(tx::loadDigests(c.files, kChat, head, again, &scan));
+    TEST_ASSERT_TRUE(scan.reachedArchive);
+    TEST_ASSERT_EQUAL(live.size(), again.size());
+    for (size_t i = 0; i < live.size(); ++i) TEST_ASSERT_TRUE(live[i].text == again[i].text);
+  }
+}
+
 void test_a_chat_without_digests_reads_nothing() {
   txb::MemFiles files;
   tx::HeadState head;
@@ -549,9 +610,11 @@ void test_recent_files_list_shape() {
       {"x/" + std::string(200, 'y'), txb::kT0 + 120},   // too long: left out
       {"misc/unknown.txt", 0},
       {"", txb::kT0},
+      {"bad/ms.md", txb::kT0 * 1000},   // milliseconds passed as seconds: shown without a time
   };
   TXB_OK(tx::recentFilesList(f, 60, s));
   TEST_ASSERT_EQUAL_STRING(
+      "bad/ms.md\n"
       "food/2026-11.csv (Tue 17 Nov 2026 14:03)\n"
       "notes/boat.md (Tue 17 Nov 2026 14:02)\n"
       "inbox/a b.txt (Tue 17 Nov 2026 14:01)\n"
@@ -641,7 +704,9 @@ struct BlobIO : orch::FoldStoreIO {
   void save(const std::string& b) override { blob = b; }
 };
 
-// The real decoder of the shipped codec.
+// The real decoder of the shipped codec (FoldStore::begin of lib/core/src/orch_compact.cpp).
+// v5.1.1's begin splits a record the same way (v511Fields below mirrors its split) and its
+// capSummary keeps a summary of at most 4,096 B whole, which the test also asserts.
 orch::ChatFold decoded(const std::string& blob, const std::string& chat, size_t* chats = nullptr) {
   BlobIO io;
   io.blob = blob;
@@ -697,7 +762,7 @@ void test_mirror_text_newest_through_thru() {
   TEST_ASSERT_TRUE(s.empty());
 }
 
-void test_mirror_is_read_by_the_v511_decoder() {
+void test_mirror_is_read_by_the_fold_store_decoder() {
   std::mt19937 rng(51);
   // Other chats as engine 1 wrote them: one paused with failures (v5.1.1), one with lane F's schedule.
   const std::string other1 = std::string("2002\x1F") + "500\x1F" "3\x1F" "1794000000;m00000010\x1F" "1\x1F" "3\x1F" "1\x1F" +
@@ -831,12 +896,13 @@ int main(int, char**) {
   RUN_TEST(test_nothing_lost_across_a_cut_at_any_step);
   RUN_TEST(test_a_refused_move_stays_live_and_moves_later);
   RUN_TEST(test_restart_gives_the_same_block_and_stops_at_the_archive);
+  RUN_TEST(test_a_clock_set_back_keeps_the_restart_exact);
   RUN_TEST(test_a_chat_without_digests_reads_nothing);
   RUN_TEST(test_recent_files_list_shape);
   RUN_TEST(test_changes_file_set);
   RUN_TEST(test_recent_files_rebuilt_only_at_its_change_points);
   RUN_TEST(test_mirror_text_newest_through_thru);
-  RUN_TEST(test_mirror_is_read_by_the_v511_decoder);
+  RUN_TEST(test_mirror_is_read_by_the_fold_store_decoder);
   RUN_TEST(test_mirror_pointer_only_moves_forward);
   RUN_TEST(test_mirror_limits_and_refusals);
   RUN_TEST(test_row_thru);

@@ -618,8 +618,9 @@ oldest first, and stops at the first refused write; what did not move stays live
 moves at the next settle. A line is appended only when the month file does not hold it
 yet, and a torn last line is closed before the next one, so a cut at any step leaves
 every digest in the block or in the archive, once. After a restart `loadDigests` reads
-the segments newest first until it reaches the newest archived digest (the last whole
-line of the newest month file); a chat with no digest reads nothing.
+the segments newest first until it reaches the newest archived digest (the first digest
+it meets that is the last whole line of a month file, so a clock set back cannot fool
+it); a chat with no digest reads nothing.
 
 The recent-files list (`recentFilesList`, at most 600 B) is the device's own: path and
 last write, newest first. `RecentFilesBlock` rebuilds it at a cold turn open and at the

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
 
 #include "nimbus/mem_cap.h"
 #include "nimbus/orch/tx/rules.h"
@@ -195,15 +196,9 @@ bool segmentNumber(const std::string& n, uint32_t& seg) {
   return true;
 }
 
-// The last whole line of the newest month file: the newest archived digest ("" if none).
-bool newestArchived(TxFiles& files, const std::string& dir, const std::vector<std::string>& names,
-                    std::string& line, DigestScan& scan) {
+// The last whole line of one month file ("" when it has none).
+bool lastWholeLine(TxFiles& files, const std::string& path, std::string& line, DigestScan& scan) {
   line.clear();
-  std::string newest;
-  for (const std::string& n : names)
-    if (isArchiveName(n) && n > newest) newest = n;
-  if (newest.empty()) return true;
-  const std::string path = dir + "/" + newest;
   size_t size = 0;
   if (!files.size(path, size)) return false;
   const size_t want = std::min(size, (size_t)(2 * kDigestMaxBytes + 4));
@@ -217,7 +212,24 @@ bool newestArchived(TxFiles& files, const std::string& dir, const std::vector<st
   if (end == std::string::npos) return true;
   const size_t start = end == 0 ? std::string::npos : tail.rfind('\n', end - 1);
   if (start == std::string::npos && got < size) return true;   // a line longer than a digest: none
-  line = tail.substr(start == std::string::npos ? 0 : start + 1, end - (start == std::string::npos ? 0 : start + 1));
+  const size_t from = start == std::string::npos ? 0 : start + 1;
+  line = tail.substr(from, end - from);
+  return true;
+}
+
+// The last whole line of every month file. The newest archived digest is the last line of
+// the file it went to, and no digest newer than it is archived (archiving runs in q order
+// and stops at a refusal), so the first of these a backward scan meets is that digest,
+// whatever order the months' names have (a clock set back can archive an older month last).
+bool archiveMarks(TxFiles& files, const std::string& dir, const std::vector<std::string>& names,
+                  std::set<std::string>& marks, DigestScan& scan) {
+  marks.clear();
+  for (const std::string& n : names) {
+    if (!isArchiveName(n)) continue;
+    std::string line;
+    if (!lastWholeLine(files, dir + "/" + n, line, scan)) return false;
+    if (!line.empty()) marks.insert(line);
+  }
   return true;
 }
 
@@ -261,11 +273,11 @@ bool segmentDigests(TxFiles& files, const std::string& path, std::vector<DigestE
   return true;
 }
 
-// The chat's segment numbers, newest first, and the newest archived digest's line.
-bool chatFiles(TxFiles& files, const std::string& dir, std::vector<uint32_t>& segs, std::string& mark,
+// The chat's segment numbers, newest first, and the archive marks.
+bool chatFiles(TxFiles& files, const std::string& dir, std::vector<uint32_t>& segs, std::set<std::string>& marks,
                DigestScan& scan) {
   std::vector<std::string> names;
-  if (!files.list(dir, names) || !newestArchived(files, dir, names, mark, scan)) return false;
+  if (!files.list(dir, names) || !archiveMarks(files, dir, names, marks, scan)) return false;
   for (const std::string& n : names) {
     uint32_t seg = 0;
     if (segmentNumber(n, seg)) segs.push_back(seg);
@@ -278,8 +290,8 @@ bool chatFiles(TxFiles& files, const std::string& dir, std::vector<uint32_t>& se
 Status scanBack(TxFiles& files, const std::string& chatKey, const std::string& dir, std::vector<DigestEntry>& found,
                 DigestScan& scan) {
   std::vector<uint32_t> segs;
-  std::string mark;
-  if (!chatFiles(files, dir, segs, mark, scan)) return Status::fail(Err::Io, "tx::loadDigests");
+  std::set<std::string> marks;
+  if (!chatFiles(files, dir, segs, marks, scan)) return Status::fail(Err::Io, "tx::loadDigests");
   std::vector<DigestEntry> seg;
   for (uint32_t s : segs) {
     std::string path;
@@ -288,7 +300,7 @@ Status scanBack(TxFiles& files, const std::string& chatKey, const std::string& d
     ++scan.segments;
     std::sort(seg.begin(), seg.end(), [](const DigestEntry& a, const DigestEntry& b) { return a.q > b.q; });
     for (const DigestEntry& d : seg) {
-      if (!mark.empty() && d.text == mark) {
+      if (marks.count(d.text)) {
         scan.reachedArchive = true;
         return Status::success();
       }
@@ -430,9 +442,14 @@ Status archiveDigest(TxFiles& files, const std::string& chatKey, const DigestEnt
   std::string file;
   if (!readWhole(files, path, file)) return Status::fail(Err::Io, "tx::archiveDigest: read");
   if (holdsLine(file, digest.text)) return Status::success();
-  // A torn tail (a cut inside an earlier append) ends before its line end: close it first
-  // so this line is never glued onto it.
-  const std::string line = (file.empty() || file.back() == '\n' ? "" : "\n") + digest.text + "\n";
+  // A torn tail (a cut inside an earlier append) ends before its line end. When it is the
+  // start of this digest, the rest completes it (a cut just before the line end must not
+  // archive the digest twice); otherwise it is closed first so this line is never glued on.
+  const size_t nl = file.rfind('\n');
+  const std::string torn = file.substr(nl == std::string::npos ? 0 : nl + 1);
+  const bool resumes = !torn.empty() && digest.text.compare(0, torn.size(), torn) == 0;
+  const std::string line =
+      resumes ? digest.text.substr(torn.size()) + "\n" : (torn.empty() ? "" : "\n") + digest.text + "\n";
   if (!files.append(path, line.data(), line.size())) return Status::fail(Err::Io, "tx::archiveDigest");
   return Status::success();
 }
@@ -485,8 +502,8 @@ Status recentFilesList(const std::vector<RecentFile>& files, int16_t tzMinutes, 
                    [](const RecentFile& a, const RecentFile& b) { return a.lastWrite > b.lastWrite; });
   for (const RecentFile& f : order) {
     std::string line = f.path, when;
-    Status st = photoWhen(f.lastWrite, tzMinutes, when);
-    if (!st.ok()) return Status::fail(st.err, "tx::recentFilesList");
+    // A write time the clock cannot show (a bad timestamp) reads as not known: the path alone.
+    if (!photoWhen(f.lastWrite, tzMinutes, when).ok()) when.clear();
     if (!when.empty()) line += digest_text::kWhenOpen + when + digest_text::kWhenClose;
     const size_t add = line.size() + (out.empty() ? 0 : 1);
     if (out.size() + add > kRecentFilesMaxBytes) break;

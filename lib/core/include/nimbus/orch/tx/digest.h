@@ -32,7 +32,8 @@
 //   and never twice.
 // - loadDigests rebuilds the live list after a restart from the segments (digests older
 //   than thru are not in the arena): newest segment first, until the newest archived
-//   digest (the last whole line of the newest month file) is reached. A chat with no
+//   digest is reached (the first digest that is the last whole line of a month file:
+//   one short tail read per month file). A chat with no
 //   digest (head.thru 0) reads nothing.
 //
 // Recent files: the device's own list of the live file store (path and last write),
@@ -105,7 +106,8 @@ Status digestOf(const Item& s, DigestEntry& out);
 Status digestBlock(const std::vector<DigestEntry>& digests, Profile profile, std::string& block,
                    std::vector<DigestEntry>& archive);
 // Append one digest to its month's archive file, unless the file already holds it as a
-// whole line. One append of at most kDigestMaxBytes + 2 B. Io when the storage refused.
+// whole line. One append of at most kDigestMaxBytes + 2 B; a torn last line that is the
+// start of this digest is completed rather than repeated. Io when the storage refused.
 Status archiveDigest(TxFiles& files, const std::string& chatKey, const DigestEntry& digest);
 
 // What a boot load read.
