@@ -278,6 +278,12 @@ def round_problems(row: dict, server: bool = False) -> "list[str]":
     return []
 
 
+# What the fold store keeps of a summary (compact.h kChatSummaryMax): no head's summary field
+# may exceed it, and v5.1.1's figure counts only up to it (lane CTXR1: a gpt-6 row was told
+# 8,192 B and stored at 6,144 B).
+CHAT_SUMMARY_MAX = 6_144
+
+
 def derived(nbytes: float, target: float, hist_max: "float | None", wire: str = "") -> dict:
     clamp = lambda v, lo, hi: max(lo, min(hi, v))  # noqa: E731
     replay_floor = REPLAY_V511.get(wire, REPLAY_V511_OTHER) if wire else 16_384
@@ -317,6 +323,8 @@ def derivation_problems(row: dict, old: "dict | None") -> "list[str]":
             continue
         if old and field in old and field != "historySoftBytes":
             want = max(want, old[field])
+        if field == "chatSummaryBytes":
+            want = min(want, CHAT_SUMMARY_MAX)
         if abs(got - want) > max(1000, 0.01 * want):
             errs.append(f"{name}: {field} {got:.0f}, the protocol gives {want:.0f}")
     return errs
@@ -326,8 +334,14 @@ def shrink_problems(row: dict, old: dict) -> "list[str]":
     errs = []
     for field in NO_SHRINK:
         got = val(row, field)
-        if got is not None and field in old and got < old[field]:
+        floor = old.get(field)
+        if field == "chatSummaryBytes" and floor is not None:
+            floor = min(floor, CHAT_SUMMARY_MAX)
+        if got is not None and floor is not None and got < floor:
             errs.append(f"{row_name(row)}: {field} {got:.0f} under its v5.1.1 value {old[field]}")
+    got = val(row, "chatSummaryBytes")
+    if got is not None and got > CHAT_SUMMARY_MAX:
+        errs.append(f"{row_name(row)}: chatSummaryBytes {got:.0f} over the {CHAT_SUMMARY_MAX} B the fold store keeps")
     return errs
 
 

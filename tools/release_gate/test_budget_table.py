@@ -136,6 +136,7 @@ def test_a_protocol_table_passes(tmp_path):
         ({"large4": {"Recall": 20000}}, "recallBytes 20000, the protocol gives"),
         ({"sonnet": {"System cap": 30000}}, "systemPromptBytes 30000"),
         ({"large4": {"Summary": 4096}}, "chatSummaryBytes 4096"),
+        ({"large4": {"Summary": 8192}}, "chatSummaryBytes 8192 over the 6144 B the fold store keeps"),
         ({"large4": {"Trigger": 20000}}, "fold trigger 20000 B under 24576 B"),
         ({"large4": {"Trigger": 49152}}, "fold trigger 49152 B, expected 164864 B (clamp bound)"),
         ({"custom": {"Trigger": 30000}}, "fold trigger 30000 B, expected 49152 B (floor bound)"),
