@@ -8,12 +8,18 @@ files_owned text of the program's PLAN.json; this gate reads the files the lane'
 changed since its merge base with the integration branch (a move counts as both paths, a
 deletion counts) and fails on any file outside:
 
-- the lane's own entry (globs: '*' stays inside one folder, '**' spans folders),
-  plus the files listed in each file its entry names under files_from;
-- the shared entries every lane may touch (docs ride the change, the generated docs pack);
+- the lane's own entry (globs: '*' stays inside one folder, '**' spans folders), plus the
+  literal paths listed in each file its entry names under files_from (printed as LISTED);
+- the shared entries every lane may touch (docs ride the change, the generated docs packs,
+  the pending roster, which check_pending_roster.py only lets shrink);
 - the per-lane entries (its own tools/release_gate/image_budget.d/<lane>.json, ...);
+- test/<suite>/** for each suite where the base roster names the lane for a pending test;
 - with --declared PR_BODY.md, the backticked paths under its "Cross-lane edits" heading,
-  printed as DECLARED so the merge review sees each one.
+  printed as DECLARED so the merge review sees each one. The gates and their data
+  (owners.json, the three check scripts, the image baseline and budget files) cannot be declared.
+
+owners.json and the roster are read as they are at merge-base(HEAD, rb-main), so a lane cannot
+widen its own entry; the tree's copy is used only when the base has none yet.
 
 Reports:
     --overlaps        every path two lanes own, and whether the hot-file order of PRD
@@ -22,6 +28,7 @@ Reports:
 
 Usage:
     python3 tools/release_gate/check_lane_files.py [--lane RB-X] [--base-ref rb-main] [--declared PR_BODY.md]
+    python3 tools/release_gate/check_lane_files.py --overlaps | --check-plan PLAN.json
 Exit 0 with "LANE FILES GREEN <lane>", exit 1 with "LANE FILES RED <lane>".
 """
 
@@ -52,8 +59,8 @@ def glob_regex(pattern: str) -> "re.Pattern[str]":
     """'**' spans folders, '*' and '?' stay inside one."""
     if pattern not in _REGEX_CACHE:
         out = []
-        for tok in re.split(r"(\*\*|\*|\?)", pattern):
-            out.append({"**": ".*", "*": "[^/]*", "?": "[^/]"}.get(tok, re.escape(tok)))
+        for tok in re.split(r"(\*\*/|\*\*|\*|\?)", pattern):
+            out.append({"**/": "(?:.*/)?", "**": ".*", "*": "[^/]*", "?": "[^/]"}.get(tok, re.escape(tok)))
         _REGEX_CACHE[pattern] = re.compile("".join(out))
     return _REGEX_CACHE[pattern]
 
@@ -63,11 +70,13 @@ def matches(pattern: str, path: str) -> bool:
 
 
 def listed_files(root: "str | None", rel: str) -> "list[str]":
-    """Paths listed one per line in a repo file ('#' comments), for files_from."""
+    """Literal paths listed one per line in a repo file ('#' comments), for files_from.
+    A line that is a glob, absolute or climbs out of the repo is ignored: it grants nothing."""
     if not root or not os.path.isfile(os.path.join(root, rel)):
         return []
     with open(os.path.join(root, rel), encoding="utf-8") as fh:
-        return [ln.split("#", 1)[0].strip() for ln in fh if ln.split("#", 1)[0].strip()]
+        lines = [ln.split("#", 1)[0].strip() for ln in fh]
+    return [ln for ln in lines if ln and not glob_problems(rel, [ln]) and not re.search(r"[*?\[]", ln)]
 
 
 def lane_globs(table: dict, lane: str, root: "str | None" = None) -> "list[str]":
@@ -76,6 +85,13 @@ def lane_globs(table: dict, lane: str, root: "str | None" = None) -> "list[str]"
     for rel in entry.get("files_from", []):
         globs += listed_files(root, rel)
     return globs
+
+
+def listed_via(table: dict, lane: str, root: "str | None", path: str) -> "str | None":
+    """The files_from list that grants path to the lane, when that is the only grant."""
+    if any(matches(g, path) for g in table["lanes"][lane]["files"]):
+        return None
+    return next((rel for rel in table["lanes"][lane].get("files_from", []) if path in listed_files(root, rel)), None)
 
 
 def common_globs(table: dict, lane: str) -> "list[str]":
@@ -91,27 +107,50 @@ def owners_of(table: dict, path: str, root: "str | None") -> "list[str]":
     ]
 
 
-def check(table: dict, lane: str, changed: "list[str]", root: "str | None" = None, declared=frozenset()):
-    """(ok, report lines, failures) for the files one lane's branch changed."""
+# The gates and their data: a lane may not grant itself an edit of these by declaring it.
+PROTECTED = (
+    "tools/engine/owners.json",
+    "tools/release_gate/check_lane_files.py",
+    "tools/release_gate/check_pending_roster.py",
+    "tools/release_gate/check_image_size.py",
+    "tools/release_gate/image_baseline.json",
+    "tools/release_gate/image_budget.d/*.json",
+)
+
+
+def check(table: dict, lane: str, changed: "list[str]", root=None, declared=frozenset(), roster_lanes=None):
+    """(ok, report lines, failures) for the files one lane's branch changed.
+
+    roster_lanes: suite -> lanes the base roster names for it; a lane may edit the suites
+    whose pending tests it implements (test/<suite>/**)."""
     if lane not in table["lanes"]:
         return False, [], [f"{lane} has no entry in tools/engine/owners.json"]
     repo = table["lanes"][lane].get("repo", THIS_REPO)
     own = lane_globs(table, lane, root) if repo == THIS_REPO else []
-    allowed = own + common_globs(table, lane)
+    pending = [f"test/{suite}/**" for suite, lanes in (roster_lanes or {}).items() if lane in lanes]
+    allowed = own + common_globs(table, lane) + pending
     lines, fails = [f"{lane}: {len(changed)} file(s) changed since the merge base"], []
     for path in sorted(changed):
         if any(matches(g, path) for g in allowed):
+            via = listed_via(table, lane, root, path) if repo == THIS_REPO else None
+            lines += [f"LISTED in {via}: {path}"] if via else []
             continue
-        if path in declared:
-            lines.append(
-                f"DECLARED cross-lane edit: {path} (owners: {', '.join(owners_of(table, path, root)) or 'none'})"
-            )
-            continue
-        who = [o for o in owners_of(table, path, root) if o != lane]
-        owner = f"owned by {', '.join(who)}" if who else "owned by no lane"
-        where = f"; {lane} owns files only in the {repo} repo" if repo != THIS_REPO else ""
-        fails.append(f"{path} is outside {lane}'s entry ({owner}{where})")
+        line, fail = judge_outside(table, lane, repo, path, root, declared)
+        lines += [line] if line else []
+        fails += [fail] if fail else []
     return not fails, lines, fails
+
+
+def judge_outside(table: dict, lane: str, repo: str, path: str, root, declared) -> "tuple[str | None, str | None]":
+    """(report line, failure) for a changed path outside the lane's grants."""
+    if path in declared and any(matches(g, path) for g in PROTECTED):
+        return None, f"{path} is a gate or its data: it cannot be declared as a cross-lane edit"
+    if path in declared:
+        return f"DECLARED cross-lane edit: {path} (owners: {', '.join(owners_of(table, path, root)) or 'none'})", None
+    who = [o for o in owners_of(table, path, root) if o != lane]
+    owner = f"owned by {', '.join(who)}" if who else "owned by no lane"
+    where = f"; {lane} owns files only in the {repo} repo" if repo != THIS_REPO else ""
+    return None, f"{path} is outside {lane}'s entry ({owner}{where})"
 
 
 def declared_paths(body: str) -> "set[str]":
@@ -203,18 +242,33 @@ def git(root: str, *args: str) -> "tuple[int, str]":
     return r.returncode, (r.stdout if r.returncode == 0 else r.stderr).strip()
 
 
-def default_base_ref(root: str) -> str:
-    return "rb-main" if git(root, "rev-parse", "--verify", "-q", "rb-main^{commit}")[0] == 0 else "main"
-
-
 def changed_files(root: str, base_ref: str, head: str) -> "tuple[list[str], str | None]":
     rc, mb = git(root, "merge-base", head, base_ref)
     if rc != 0:
         return [], f"cannot find the merge base of {head} and '{base_ref}': {mb}"
-    rc, out = git(root, "diff", "--name-only", "--no-renames", mb, head)
+    r = subprocess.run(["git", "-C", root, "diff", "-z", "--name-only", "--no-renames", mb, head], capture_output=True)
+    if r.returncode != 0:
+        return [], f"git diff failed: {r.stderr.decode(errors='replace').strip()}"
+    return [p for p in r.stdout.decode("utf-8", "surrogateescape").split("\0") if p], None
+
+
+def at_merge_base(root: str, base_ref: str, head: str, rel: str) -> "str | None":
+    """A file's text at merge-base(head, base_ref), None when it is not there."""
+    rc, mb = git(root, "merge-base", head, base_ref)
     if rc != 0:
-        return [], f"git diff failed: {out}"
-    return [ln for ln in out.splitlines() if ln], None
+        return None
+    r = subprocess.run(["git", "-C", root, "show", f"{mb}:{rel}"], capture_output=True)
+    return r.stdout.decode("utf-8") if r.returncode == 0 else None
+
+
+def roster_lanes_at(text: "str | None") -> "dict[str, set[str]]":
+    """suite -> lanes, from roster text ('<suite>::<test> RB-<lane>' lines)."""
+    out: "dict[str, set[str]]" = {}
+    for raw in (text or "").splitlines():
+        m = re.match(r"^(test_[A-Za-z0-9_]+)::\S+ (RB-[A-Za-z0-9]+)$", raw.split("#", 1)[0].strip())
+        if m:
+            out.setdefault(m.group(1), set()).add(m.group(2))
+    return out
 
 
 def lane_from_branch(root: str) -> "str | None":
@@ -243,18 +297,34 @@ def print_plan(table: dict, plan_path: str) -> int:
     return 1 if errs else 0
 
 
-def run_gate(args, table: dict, root: str) -> int:
+def load_table(args, root: str) -> "tuple[dict, str]":
+    """owners.json as the integration branch has it (a lane cannot widen its own entry),
+    or the tree's copy when the base has none yet (the lane that creates it)."""
+    if args.owners:
+        return load_owners(args.owners), args.owners
+    base = at_merge_base(root, args.base_ref, args.head, "tools/engine/owners.json")
+    if base is not None:
+        return json.loads(base), f"tools/engine/owners.json at merge-base with {args.base_ref}"
+    return load_owners(
+        os.path.join(root, "tools", "engine", "owners.json")
+    ), "tools/engine/owners.json (not in the base)"
+
+
+def run_gate(args, root: str) -> int:
     lane = args.lane or lane_from_branch(root)
     if not lane:
         print(f"{TAG} FAIL: not on a lane/<id> branch: pass --lane")
         print(f"{TAG} LANE FILES RED ?")
         return 1
-    changed, err = changed_files(root, args.base_ref or default_base_ref(root), args.head)
+    table, source = load_table(args, root)
+    print(f"{TAG} owners: {source}")
+    roster = roster_lanes_at(at_merge_base(root, args.base_ref, args.head, "test/pending_roster.txt"))
+    changed, err = changed_files(root, args.base_ref, args.head)
     declared: "set[str]" = set()
     if args.declared:
         with open(args.declared, encoding="utf-8") as fh:
             declared = declared_paths(fh.read())
-    ok, lines, fails = check(table, lane, changed, root, declared)
+    ok, lines, fails = check(table, lane, changed, root, declared, roster)
     if err:
         ok, fails = False, [err, *fails]
     for line in lines:
@@ -270,19 +340,22 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument("--root", default=REPO, help="repo root (default: this file's repo)")
     ap.add_argument("--owners", default=None, help="owners table (default: <root>/tools/engine/owners.json)")
     ap.add_argument("--lane", help="lane id (default: from a lane/<id> branch)")
-    ap.add_argument("--base-ref", help="integration branch (default rb-main, else main)")
+    ap.add_argument("--base-ref", default="rb-main", help="integration branch (default rb-main)")
     ap.add_argument("--head", default="HEAD", help="the lane tip to check (default HEAD)")
     ap.add_argument("--declared", help="PR_BODY.md whose 'Cross-lane edits' section declares edits outside the entry")
     ap.add_argument("--overlaps", action="store_true", help="report every path two lanes own")
     ap.add_argument("--check-plan", metavar="PLAN_JSON", help="check owners.json covers every lane of PLAN.json")
     args = ap.parse_args(argv)
     root = os.path.abspath(args.root)
-    table = load_owners(args.owners or os.path.join(root, "tools", "engine", "owners.json"))
-    if args.overlaps:
-        return print_overlaps(table)
-    if args.check_plan:
-        return print_plan(table, args.check_plan)
-    return run_gate(args, table, root)
+    try:
+        if args.overlaps or args.check_plan:
+            table = load_owners(args.owners or os.path.join(root, "tools", "engine", "owners.json"))
+            return print_overlaps(table) if args.overlaps else print_plan(table, args.check_plan)
+        return run_gate(args, root)
+    except Exception as e:  # a gate never ends in a traceback without its marker
+        print(f"{TAG} FAIL: {type(e).__name__}: {e}")
+        print(f"{TAG} LANE FILES RED (the gate itself failed)")
+        return 1
 
 
 if __name__ == "__main__":

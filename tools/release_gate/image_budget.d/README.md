@@ -29,10 +29,17 @@ What is counted:
   they point at. It is counted apart, so regenerating the pack never spends a lane's
   allowance, and a cut in the docs cannot hide code growth.
 - Every image must still fit its app slot (the same script's partition check).
+- Every env with a baseline row must be built, from this commit with a clean tree: the
+  build id (`git describe`) must be inside both `firmware.bin` and `firmware.elf`, so a
+  stale `.pio`, a stale ELF or a `-dirty` build fails. A built env with no baseline row is
+  printed as NOT GATED until the baseline records it.
+- A new docs pack (the engine-2 pack of RB-D0) adds its tables to the baseline's
+  `docs_pack_tables`, or its bytes count as code.
 - The baseline is the integration branch at its last merge. After a merge the
   orchestrator builds the merged commit and runs
   `python3 tools/release_gate/check_image_size.py --record-baseline`, then commits
-  `image_baseline.json`. A baseline whose sha is not an ancestor of the lane's HEAD fails.
+  `image_baseline.json`. A baseline whose sha is not an ancestor of the lane's HEAD fails, and so does one that is
+  stale: a firmware source changed between its sha and the lane's merge base with rb-main.
 
 Never raise an allowance to make a merge pass: an image over its allowance is cut, or
 the figure in the PRD's flash ledger is changed by an orchestrator ruling first.

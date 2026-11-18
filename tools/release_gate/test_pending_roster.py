@@ -295,3 +295,78 @@ def test_real_tree_static_leg():
     """The roster in this tree names only tests that exist and say PENDING for their lane."""
     rc = gate.main(["--root", REPO, "--static-only", "--base-ref", "HEAD"])
     assert rc == 0
+
+
+# --- review findings: a red or crashed run, other summary shapes, lane boundaries ---------
+
+
+def test_counter_a_failed_case_makes_the_ignored_set_unknown():
+    log = native_log([PASS_1, case("test_ledger", "test_bad", "FAILED", "Expected 1 Was 2")])
+    ok, _, fails = run(log, None)
+    assert not ok
+    assert any("not green" in f for f in fails)
+
+
+def test_counter_an_errored_suite_fails_even_when_the_counts_agree():
+    log = native_log([PASS_1]) + "------ native:test_tx_log [ERRORED] Took 2.21 seconds ------\n"
+    ok, _, fails = run(log, None)
+    assert not ok
+    assert any("ERRORED" in f for f in fails)
+
+
+def test_counter_summary_with_errored_and_skipped_counts_is_read_token_by_token():
+    log = "========= 2 test cases: 1 errored, 1 skipped, 0 succeeded in 00:00:01.000 =========\n"
+    ok, _, fails = run(log, None)
+    assert not ok
+    assert any("1 errored" in f for f in fails)
+    assert any("1 skipped" in f for f in fails)
+
+
+def test_summary_with_only_skipped_cases_is_read():
+    log = PENDING_A + "\n========= 1 test cases: 1 skipped in 00:00:01.000 =========\n"
+    ok, _, fails = run(log, "test_tx_prefix::test_prefix_is_stable RB-T3\n")
+    assert ok, fails
+
+
+def test_counter_pending_lane_prefix_is_not_another_lane():
+    log = native_log([case("test_tx_prefix", "test_prefix_is_stable", "SKIPPED", "PENDING RB-T30")])
+    ok, _, fails = run(log, "test_tx_prefix::test_prefix_is_stable RB-T3\n")
+    assert not ok
+    log = native_log([case("test_tx_prefix", "test_prefix_is_stable", "SKIPPED", "PENDING RB-T3-x")])
+    ok, _, fails = run(log, "test_tx_prefix::test_prefix_is_stable RB-T3\n")
+    assert not ok
+
+
+def test_pending_message_with_a_reason_after_the_lane_passes():
+    log = native_log(
+        [case("test_tx_prefix", "test_prefix_is_stable", "SKIPPED", "PENDING RB-T3: waits for the stub rule")]
+    )
+    ok, _, fails = run(log, "test_tx_prefix::test_prefix_is_stable RB-T3\n")
+    assert ok, fails
+
+
+def test_counter_static_leg_lane_prefix_is_not_another_lane(tmp_path):
+    src = 'void test_prefix_is_stable() { TEST_IGNORE_MESSAGE("PENDING RB-T30"); }\n'
+    root = make_tree(tmp_path, {"test/test_tx_prefix/main.cpp": src})
+    assert gate.static_problems(root, {"test_tx_prefix::test_prefix_is_stable": "RB-T3"}) != []
+
+
+def test_counter_main_without_rb_main_has_no_fallback(tmp_path, capsys):
+    # A clone without rb-main must not compare against main (which has no roster) and pass.
+    root = make_git_tree(tmp_path, None, ROSTER_AB)
+    git(root, "branch", "-m", "rb-main", "main")
+    assert gate.main(["--root", root, "--static-only", "--no-static"]) == 1
+    assert "rb-main" in capsys.readouterr().out
+
+
+def test_main_native_log_that_is_a_directory_is_red_not_a_traceback(tmp_path, capsys):
+    root = make_git_tree(tmp_path, None, "")
+    assert gate.main(["--root", root, "--native-log", str(tmp_path)]) == 1
+    assert "PENDING ROSTER RED" in capsys.readouterr().out
+
+
+def test_marker_names_the_legs_that_did_not_run(tmp_path, capsys):
+    root = make_git_tree(tmp_path, None, "")
+    assert gate.main(["--root", root, "--static-only", "--no-static"]) == 0
+    out = capsys.readouterr().out
+    assert "equality leg not run" in out and "static leg not run" in out

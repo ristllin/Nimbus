@@ -260,7 +260,10 @@ def string_bytes(blob: bytes, sections: "list[dict[str, int]]", ptr: int, seen: 
     off = file_offset(sections, ptr)
     if off is None:
         raise ValueError(f"docs pack string at {ptr:#x} is not in a loaded section")
-    return blob.find(b"\x00", off) - off + 1
+    end = blob.find(b"\x00", off)
+    if end < 0:
+        raise ValueError(f"docs pack string at {ptr:#x} has no terminating NUL")
+    return end - off + 1
 
 
 def measure(env_dir: str, tables: "list[dict]") -> "dict[str, int]":
@@ -275,10 +278,7 @@ def measure(env_dir: str, tables: "list[dict]") -> "dict[str, int]":
 
 
 def record_baseline(build_dir: str, sha: str, path: str, tables: "list[dict]", about: str = "") -> "dict":
-    envs = {}
-    for env in sorted(os.listdir(build_dir)):
-        if os.path.isfile(os.path.join(build_dir, env, "firmware.bin")):
-            envs[env] = measure(os.path.join(build_dir, env), tables)
+    envs = {env: measure(os.path.join(build_dir, env), tables) for env in built_envs(build_dir)}
     row = {"about": about, "sha": sha, "docs_pack_tables": tables, "envs": envs}
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(row, fh, indent=2)
@@ -301,7 +301,11 @@ def load_budget(budget_dir: str, lane: str) -> "tuple[dict | None, list[str]]":
     if not isinstance(row, dict) or row.get("lane") != lane:
         errs.append(f"{name}: 'lane' must be {lane}")
         row = row if isinstance(row, dict) else {}
-    values = [row.get("allowance_bytes"), *dict(row.get("envs") or {}).values()]
+    envs = row.get("envs", {})
+    if not isinstance(envs, dict):
+        errs.append(f"{name}: 'envs' must map env names to integers")
+        envs = {}
+    values = [row.get("allowance_bytes"), *envs.values()]
     if not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
         errs.append(f"{name}: allowance_bytes and every envs value must be integers (bytes)")
     if not str(row.get("why") or "").strip():
@@ -328,13 +332,19 @@ def judge_env(env: str, now: "dict[str, int]", base: "dict[str, int]", allow: in
 
 
 def built_from(env_dir: str, build_id: "str | None") -> "str | None":
-    """A problem when firmware.bin does not carry this commit's build id (a stale .pio)."""
-    if not build_id:
+    """A problem when firmware.bin or firmware.elf does not carry this commit's clean build id
+    (a stale .pio, a stale ELF beside a fresh bin, or a build of an uncommitted tree: '-dirty')."""
+    if build_id is None:
         return None
-    with open(os.path.join(env_dir, "firmware.bin"), "rb") as fh:
-        if build_id.encode() in fh.read():
-            return None
-    return f"firmware.bin is not this commit's build (no {build_id} inside): build it first"
+    want = build_id.encode() + b"\x00"
+    for name in ("firmware.bin", "firmware.elf"):
+        path = os.path.join(env_dir, name)
+        if not os.path.isfile(path):
+            return f"{name} is missing"
+        with open(path, "rb") as fh, mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as blob:
+            if blob.find(want) < 0:
+                return f"{name} is not this commit's clean build (no '{build_id}' inside): commit, then build it"
+    return None
 
 
 def check_allowance(
@@ -352,12 +362,11 @@ def check_allowance(
     lines = [f"{lane}: " + ("no budget file: allowance 0 B" if budget is None else f"budget {lane}.json")]
     if baseline_problems is not None:
         fails += baseline_problems(baseline["sha"])
-    checked = 0
     for env, base in sorted(baseline["envs"].items()):
         env_dir = os.path.join(build_dir, env)
         if not os.path.isfile(os.path.join(env_dir, "firmware.bin")):
+            fails.append(f"{env} has a baseline row but is not built: build every baseline env (pio run -e {env})")
             continue
-        checked += 1
         try:
             stale = built_from(env_dir, build_id)
             if stale:
@@ -370,23 +379,39 @@ def check_allowance(
         lines.append(line)
         if fail:
             fails.append(fail)
-    if checked == 0:
-        fails.append(f"no image with a baseline row is built under {build_dir}; nothing was measured")
+    lines += [f"{env}: built, no baseline row: NOT GATED (record one)" for env in unbaselined(build_dir, baseline)]
     return not fails, lines, fails
 
 
+def built_envs(build_dir: str) -> "list[str]":
+    if not os.path.isdir(build_dir):
+        return []
+    return sorted(e for e in os.listdir(build_dir) if os.path.isfile(os.path.join(build_dir, e, "firmware.bin")))
+
+
+def unbaselined(build_dir: str, baseline: dict) -> "list[str]":
+    return [e for e in built_envs(build_dir) if e not in baseline["envs"]]
+
+
 # Paths whose change moves code bytes. The generated docs packs only move docs bytes.
-FIRMWARE_PATHS = ("src/", "lib/", "include/", "platformio.ini", "partitions")
+FIRMWARE_PATHS = (
+    "src/",
+    "lib/",
+    "include/",
+    "patches/",
+    "boards/",
+    "platformio.ini",
+    "partitions",
+    "tools/git_version.py",
+    "tools/engine/engine",
+    "tools/engine_filter.py",
+)
 DOCS_PACK_HEADERS = ("lib/core/include/nimbus/docs_pack_data.h", "lib/core/include/nimbus/docs_pack_e2_data.h")
 
 
 def git(root: str, *args: str) -> "tuple[int, str]":
     r = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True)
     return r.returncode, (r.stdout if r.returncode == 0 else r.stderr).strip()
-
-
-def default_base_ref(root: str) -> str:
-    return "rb-main" if git(root, "rev-parse", "--verify", "-q", "rb-main^{commit}")[0] == 0 else "main"
 
 
 def git_baseline_problems(root: str, base_ref: str):
@@ -400,6 +425,8 @@ def git_baseline_problems(root: str, base_ref: str):
         if rc != 0:
             return [f"cannot find the merge base of HEAD and '{base_ref}': {mb}"]
         rc, out = git(root, "diff", "--name-only", sha, mb)
+        if rc != 0:
+            return [f"git diff {sha[:12]} {mb[:12]} failed: {out}"]
         moved = [f for f in out.splitlines() if f.startswith(FIRMWARE_PATHS) and f not in DOCS_PACK_HEADERS]
         if moved:
             return [
@@ -418,17 +445,20 @@ def git_build_id(root: str) -> "str | None":
 
 
 def run_allowance(args, root: str, build_dir: str) -> int:
-    probe = None if args.no_ancestry else git_baseline_problems(root, args.base_ref or default_base_ref(root))
+    probe = None if args.no_ancestry else git_baseline_problems(root, args.base_ref)
     want = None if args.no_ancestry else git_build_id(root)
     try:
+        if not args.no_ancestry and want is None:
+            raise ValueError("no git build id for HEAD (git describe failed): cannot tell this commit's build")
         ok, lines, fails = check_allowance(build_dir, args.lane, args.baseline, args.budget_dir, probe, want)
-    except (OSError, ValueError, KeyError) as e:
-        ok, lines, fails = False, [], [f"cannot read {args.baseline}: {e}"]
+    except (OSError, ValueError, KeyError, TypeError, struct.error) as e:
+        ok, lines, fails = False, [], [f"{type(e).__name__}: {e}"]
     for line in lines:
         print(f"{ATAG} {line}")
     for detail in fails:
         print(f"{ATAG} FAIL: {detail}")
-    print(f"{ATAG} IMAGE ALLOWANCE {'GREEN' if ok else 'RED'} {args.lane}")
+    off = " (provenance checks off)" if args.no_ancestry else ""
+    print(f"{ATAG} IMAGE ALLOWANCE {'GREEN' if ok else 'RED'} {args.lane}{off}")
     return 0 if ok else 1
 
 
@@ -438,21 +468,19 @@ def run_record(args, root: str, build_dir: str) -> int:
     try:
         with open(args.baseline, encoding="utf-8") as fh:
             old = json.load(fh)
-        stale = [
-            env for env in sorted(os.listdir(build_dir)) if os.path.isfile(os.path.join(build_dir, env, "firmware.bin"))
-        ]
-        stale = [env for env in stale if built_from(os.path.join(build_dir, env), want)]
+        missing = [env for env in old["envs"] if env not in built_envs(build_dir)]
+        if missing:
+            raise ValueError(f"baseline env(s) not built: {', '.join(missing)}; a baseline never drops an env")
+        stale = [env for env in built_envs(build_dir) if built_from(os.path.join(build_dir, env), want)]
         if rc != 0 or not want or stale:
-            raise ValueError(
-                f"not every built image is this commit's ({', '.join(stale) or 'no git id'}): build them first"
-            )
+            raise ValueError(f"not every built image is this commit's ({', '.join(stale) or 'no git id'}): build first")
         row = record_baseline(build_dir, sha, args.baseline, old["docs_pack_tables"], old.get("about", ""))
-    except (OSError, ValueError, KeyError) as e:
+    except (OSError, ValueError, KeyError, struct.error) as e:
         print(f"{ATAG} FAIL: cannot record the baseline: {e}")
         return 1
     for env, e in row["envs"].items():
         print(f"{ATAG} recorded {env}: {e} at {sha[:12]}")
-    return 0 if row["envs"] else 1
+    return 0
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -471,9 +499,7 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument("--baseline", default=BASELINE, help="recorded baseline (default: image_baseline.json)")
     ap.add_argument("--budget-dir", default=BUDGET_DIR, help="lane budget files (default: image_budget.d)")
     ap.add_argument("--record-baseline", action="store_true", help="re-record the baseline from the built images")
-    ap.add_argument(
-        "--base-ref", help="integration branch for the baseline freshness check (default rb-main, else main)"
-    )
+    ap.add_argument("--base-ref", default="rb-main", help="integration branch for the baseline freshness check")
     ap.add_argument("--no-ancestry", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 

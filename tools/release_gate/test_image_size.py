@@ -256,13 +256,14 @@ def pack_bytes(section_bodies, file_entries=(("slug", "Title"),)):
 DOCS = [("a#one", "One", "x" * 300), ("a#two", "Two", "y" * 500)]
 
 
-def build_image(root, env, image_bytes, sections=DOCS):
+def build_image(root, env, image_bytes, sections=DOCS, stamp=b""):
+    """firmware.bin of image_bytes and its ELF; stamp is the build id string both carry."""
     d = os.path.join(root, ".pio", "build", env)
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "firmware.bin"), "wb") as f:
-        f.write(b"\xe9" + b"\x00" * (image_bytes - 1))
+        f.write(b"\xe9" + stamp + b"\x00" * (image_bytes - 1 - len(stamp)))
     with open(os.path.join(d, "firmware.elf"), "wb") as f:
-        f.write(fake_elf(sections))
+        f.write(fake_elf(sections) + stamp)
 
 
 def allowance_root(tmp_path, budgets=None, base_image=6_000_000, base_docs=DOCS):
@@ -376,6 +377,8 @@ def test_per_env_allowance_overrides_the_lane_default(tmp_path):
         {"lane": "RB-X", "allowance_bytes": "10", "why": "w"},  # not an integer
         {"lane": "RB-X", "allowance_bytes": 10},  # no why
         {"lane": "RB-X", "allowance_bytes": 10, "why": "w", "envs": {"esp32s3-cyd": 1.5}},
+        {"lane": "RB-X", "allowance_bytes": 10, "why": "w", "envs": [1, 2]},  # not a map
+        {"lane": "RB-X", "allowance_bytes": 10, "why": "w", "envs": 5},
     ],
 )
 def test_counter_malformed_budget_file_fails(tmp_path, row):
@@ -386,12 +389,56 @@ def test_counter_malformed_budget_file_fails(tmp_path, row):
     assert any("RB-X.json" in f for f in fails)
 
 
-def test_counter_image_from_another_build_fails(tmp_path):
-    # A stale .pio directory: the bin does not carry this commit's build id.
+ID = "v5.1.1-99-gabcdef12"
+
+
+def test_image_carrying_this_commits_build_id_passes(tmp_path):
     root, baseline, bdir = allowance_root(tmp_path)
-    ok, _, fails = allowance(root, baseline, bdir, "RB-Y", build_id="v5.1.1-99-gabcdef12")
+    build_image(root, "esp32s3-cyd", 6_000_000, stamp=ID.encode() + b"\x00")
+    ok, _, fails = allowance(root, baseline, bdir, "RB-Y", build_id=ID)
+    assert ok, fails
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        b"",  # a stale .pio directory: no id at all
+        b"v5.1.1-98-g12345678\x00",  # another commit's build
+        ID.encode() + b"-dirty\x00",  # this commit plus uncommitted changes
+    ],
+)
+def test_counter_image_from_another_build_fails(tmp_path, stamp):
+    root, baseline, bdir = allowance_root(tmp_path)
+    build_image(root, "esp32s3-cyd", 6_000_000, stamp=stamp)
+    ok, _, fails = allowance(root, baseline, bdir, "RB-Y", build_id=ID)
     assert not ok
-    assert any("not this commit's build" in f for f in fails)
+    assert any("not this commit's clean build" in f for f in fails)
+
+
+def test_counter_stale_elf_beside_a_fresh_bin_fails(tmp_path):
+    root, baseline, bdir = allowance_root(tmp_path)
+    build_image(root, "esp32s3-cyd", 6_000_000, stamp=ID.encode() + b"\x00")
+    with open(os.path.join(root, ".pio", "build", "esp32s3-cyd", "firmware.elf"), "wb") as f:
+        f.write(fake_elf(DOCS))  # an older link: no id
+    ok, _, fails = allowance(root, baseline, bdir, "RB-Y", build_id=ID)
+    assert not ok
+    assert any("firmware.elf is not this commit's" in f for f in fails)
+
+
+def test_counter_unterminated_docs_string_is_an_error_not_a_size():
+    sections = [{"name": 0, "type": 1, "flags": 2, "addr": 0x1000, "offset": 0, "size": 3, "link": 0}]
+    with pytest.raises(ValueError, match="no terminating NUL"):
+        gate.string_bytes(b"abc", sections, 0x1000, set())
+
+
+def test_counter_record_refuses_to_drop_a_baseline_env(tmp_path, capsys):
+    root, baseline, _ = allowance_root(tmp_path)
+    shutil.rmtree(os.path.join(root, ".pio", "build", "esp32s3-cyd"))
+    build_image(root, "esp32s3", 6_000_000)
+    git_out(root, "init", "-q")
+    rc = gate.main(["--root", root, "--baseline", baseline, "--record-baseline"])
+    assert rc == 1
+    assert "never drops an env" in capsys.readouterr().out
 
 
 def git_out(root, *args):
@@ -451,7 +498,26 @@ def test_counter_nothing_built_fails(tmp_path):
     shutil.rmtree(os.path.join(root, ".pio", "build", "esp32s3-cyd"))
     ok, _, fails = allowance(root, baseline, bdir, "RB-Y")
     assert not ok
-    assert any("no image with a baseline row" in f for f in fails)
+    assert any("esp32s3-cyd has a baseline row but is not built" in f for f in fails)
+
+
+def test_counter_a_partial_build_fails(tmp_path):
+    # Two envs in the baseline, the lane built one: the other's growth would be invisible.
+    root, baseline, bdir = allowance_root(tmp_path)
+    build_image(root, "test-cyd", 6_100_000)
+    gate.record_baseline(os.path.join(root, ".pio", "build"), "a" * 40, baseline, TABLES)
+    shutil.rmtree(os.path.join(root, ".pio", "build", "test-cyd"))
+    ok, _, fails = allowance(root, baseline, bdir, "RB-Y")
+    assert not ok
+    assert any("test-cyd has a baseline row but is not built" in f for f in fails)
+
+
+def test_an_env_without_a_baseline_row_is_named_not_gated(tmp_path):
+    root, baseline, bdir = allowance_root(tmp_path)
+    build_image(root, "esp32s3-cyd-e2", 5_000_000)
+    ok, lines, fails = allowance(root, baseline, bdir, "RB-Y")
+    assert ok, fails
+    assert any("esp32s3-cyd-e2" in ln and "NOT GATED" in ln for ln in lines)
 
 
 def test_counter_bin_without_its_elf_fails(tmp_path):

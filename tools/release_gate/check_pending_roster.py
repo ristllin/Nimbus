@@ -9,10 +9,12 @@ keeps the roster honest in both directions:
 - every test the native run ignored is on the roster with the lane its message names, and
   every roster line is a test the run ignored (a test that now passes leaves the roster);
 - an ignore whose message is not "PENDING RB-<lane>" fails: a native run ignores nothing else;
-- the log is a whole run: PlatformIO's "N test cases: ..." summary is present and its skipped
-  count equals the ignored cases read (a case line in an unknown shape cannot hide a skip);
-- against the merge base with the integration branch the roster only shrinks: a line that is
-  not in the base roster fails. The first holder may create the file when the base has none;
+- the log is a whole, green run: PlatformIO's "N test cases: ..." summary is present, reports
+  nothing failed or errored, and its skipped count equals the ignored cases read (a case line
+  in an unknown shape cannot hide a skip, and a crashed suite cannot hide its ignores);
+- against merge-base(HEAD, rb-main) the roster only shrinks: a line that is not in the base
+  roster fails (a missing ref fails too: there is no fallback). The first holder may create
+  the file when the base has none;
 - static leg: each roster line names a suite under test/ whose sources hold the test name and
   its "PENDING RB-<lane>" message.
 
@@ -45,31 +47,36 @@ PIO_CASE_RE = re.compile(
 )
 # Unity's raw line (verbose runs): "test/<suite>/<file>:<line>:<name>:IGNORE[: <message>]"
 UNITY_CASE_RE = re.compile(r"^test/(?P<suite>[^/\s]+)/\S+?:\d+:(?P<name>[^\s:]+):IGNORE(?::\s*(?P<msg>.*))?$")
-SUMMARY_RE = re.compile(r"(?P<total>\d+) test cases: (?:(?P<failed>\d+) failed, )?(?:(?P<skipped>\d+) skipped, )?")
-PENDING_RE = re.compile(r"^PENDING (?P<lane>RB-[A-Za-z0-9]+)\b")
+SUMMARY_RE = re.compile(r"\b\d+ test cases: (?P<counts>.*?) in \d")
+COUNT_RE = re.compile(r"(?P<n>\d+) (?P<what>failed|errored|skipped|succeeded)\b")
+NOT_GREEN_RE = re.compile(r"\[(FAILED|ERRORED)\]")
+LANE_END = r"(?![A-Za-z0-9-])"  # RB-T3 is not RB-T30 nor RB-T3-x
+PENDING_RE = re.compile(r"^PENDING (?P<lane>RB-[A-Za-z0-9]+)" + LANE_END)
 ROSTER_LINE_RE = re.compile(
     r"^(?P<suite>test_[A-Za-z0-9_]+)::(?P<name>[A-Za-z_][A-Za-z0-9_]*) (?P<lane>RB-[A-Za-z0-9]+)$"
 )
 
 
-def parse_native_log(text: str) -> "tuple[dict[str, str], int | None]":
-    """(ignored test key -> message, skipped count from the summary or None when absent)."""
+def parse_native_log(text: str) -> "tuple[dict[str, str], int | None, list[str]]":
+    """(ignored test key -> message, skipped count from the summary or None when absent,
+    reasons the run is not green: failed or errored cases or suites hide what they would ignore)."""
     ignored: "dict[str, str]" = {}
     skipped: "int | None" = None
+    red: "list[str]" = []
     for raw in text.splitlines():
         line = ANSI_RE.sub("", raw).strip()
-        m = PIO_CASE_RE.match(line)
-        if m and m.group("status") == "SKIPPED":
-            ignored[f"{m.group('suite')}::{m.group('name')}"] = (m.group("msg") or "").strip()
-            continue
-        m = UNITY_CASE_RE.match(line)
-        if m:
+        m = PIO_CASE_RE.match(line) or UNITY_CASE_RE.match(line)
+        if m and (m.re is UNITY_CASE_RE or m.group("status") == "SKIPPED"):
             ignored[f"{m.group('suite')}::{m.group('name')}"] = (m.group("msg") or "").strip()
             continue
         m = SUMMARY_RE.search(line)
         if m:
-            skipped = (skipped or 0) + int(m.group("skipped") or 0)
-    return ignored, skipped
+            counts = {c.group("what"): int(c.group("n")) for c in COUNT_RE.finditer(m.group("counts"))}
+            skipped = (skipped or 0) + counts.get("skipped", 0)
+            red += [f"the summary reports {counts[k]} {k}" for k in ("failed", "errored") if counts.get(k)]
+        elif NOT_GREEN_RE.search(line):
+            red.append(f"not green: {line[:160]}")
+    return ignored, skipped, red
 
 
 def parse_roster(text: "str | None") -> "tuple[dict[str, str], list[str]]":
@@ -130,7 +137,8 @@ def check(
     roster, fails = parse_roster(roster_text)
     lines: "list[str]" = []
     if log_text is not None:
-        ignored, skipped = parse_native_log(log_text)
+        ignored, skipped, red = parse_native_log(log_text)
+        fails += [f"the native run is not green, so its ignored set is not known: {r}" for r in red[:5]]
         fails += equality_problems(ignored, skipped, roster)
         lines.append(f"native run: {len(ignored)} ignored, {len(roster)} on the roster")
     errs, line = shrink_problems(roster, base)
@@ -149,7 +157,9 @@ def static_problems(root: str, roster: "dict[str, str]") -> "list[str]":
         text = suite_sources(os.path.join(root, "test", suite))
         if text is None:
             errs.append(f"{key}: no suite test/{suite}")
-        elif not re.search(rf"\b{re.escape(name)}\b", text) or f"PENDING {lane}" not in text:
+        elif not re.search(rf"\b{re.escape(name)}\b", text) or not re.search(
+            f"PENDING {re.escape(lane)}" + LANE_END, text
+        ):
             errs.append(f"{key}: test/{suite} does not hold {name} with 'PENDING {lane}'")
     return errs
 
@@ -170,11 +180,6 @@ def git(root: str, *args: str) -> "subprocess.CompletedProcess[str]":
     return subprocess.run(["git", "-C", root, *args], capture_output=True, text=True)
 
 
-def default_base_ref(root: str) -> str:
-    """The rebuild integrates on rb-main; elsewhere the integration branch is main."""
-    return "rb-main" if git(root, "rev-parse", "--verify", "-q", "rb-main^{commit}").returncode == 0 else "main"
-
-
 def base_roster(root: str, ref: str) -> "tuple[object, str | None]":
     """(roster text at merge-base(HEAD, ref) or ABSENT, error)."""
     mb = git(root, "merge-base", "HEAD", ref)
@@ -186,13 +191,22 @@ def base_roster(root: str, ref: str) -> "tuple[object, str | None]":
 
 
 def read_optional(path: str) -> "str | None":
-    if not os.path.exists(path):
+    if not os.path.isfile(path):
         return None
     with open(path, encoding="utf-8", errors="replace") as fh:
         return fh.read()
 
 
 def main(argv: "list[str] | None" = None) -> int:
+    try:
+        return run(argv)
+    except Exception as e:  # a gate never ends in a traceback without its marker
+        print(f"{TAG} FAIL: {type(e).__name__}: {e}")
+        print(f"{TAG} PENDING ROSTER RED (the gate itself failed)")
+        return 1
+
+
+def run(argv: "list[str] | None") -> int:
     ap = argparse.ArgumentParser(description="Pending-test roster gate (lane RB-GATE0)")
     default_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     ap.add_argument("--root", default=default_root, help="repo root (default: this file's repo)")
@@ -200,7 +214,7 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument(
         "--static-only", action="store_true", help="no native run: only the roster's shape, base and sources"
     )
-    ap.add_argument("--base-ref", help="integration branch to compare against (default rb-main, else main)")
+    ap.add_argument("--base-ref", default="rb-main", help="integration branch to compare against (default rb-main)")
     ap.add_argument("--require-empty", action="store_true", help="fail while any roster line remains")
     ap.add_argument("--no-static", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
@@ -215,7 +229,7 @@ def main(argv: "list[str] | None" = None) -> int:
     elif not args.static_only:
         fails.append("no --native-log given: the equality leg needs a native run (or pass --static-only)")
     roster_text = read_optional(os.path.join(root, ROSTER_REL))
-    ref = args.base_ref or default_base_ref(root)
+    ref = args.base_ref
     base, err = base_roster(root, ref)
     if err:
         fails.append(err)
@@ -230,7 +244,8 @@ def main(argv: "list[str] | None" = None) -> int:
     if fails:
         print(f"{TAG} PENDING ROSTER RED ({len(fails)} problem(s); base {ref})")
         return 1
-    print(f"{TAG} PENDING ROSTER GREEN (base {ref}{', static only' if log_text is None else ''})")
+    skipped = [n for n, off in (("equality leg", log_text is None), ("static leg", args.no_static)) if off]
+    print(f"{TAG} PENDING ROSTER GREEN (base {ref}{''.join(f', {n} not run' for n in skipped)})")
     return 0
 
 

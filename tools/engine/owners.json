@@ -1,5 +1,5 @@
 {
-  "about": "Lane file ownership for the Nimbus harness rebuild, read by tools/release_gate/check_lane_files.py: a lane's merge may touch only the files of its entry, the shared entries and its per-lane entries. Built by hand from each lane's files_owned text in the program's PLAN.json (plan_text keeps that text verbatim, so a change in the plan fails --check-plan until the entry is rebuilt). Globs: '*' stays inside one folder, '**' spans folders. hot_files is the one-writer-at-a-time order of PRD section 10; --overlaps lists every path two lanes own and whether that order sequences it.",
+  "about": "Lane file ownership for the Nimbus harness rebuild, read by tools/release_gate/check_lane_files.py: a lane's merge may touch only the files of its entry, the shared entries and its per-lane entries. Built by hand from each lane's files_owned text in the program's PLAN.json (plan_text keeps that text verbatim, so a change in the plan fails --check-plan until the entry is rebuilt). Globs: '*' stays inside one folder, '**' spans folders. hot_files is the one-writer-at-a-time order of PRD section 10; --overlaps lists every path two lanes own and whether that order sequences it. The gate sees whole files: qualifiers in the plan text such as (first holder), (format only), (engine-2 part) or a line range are not enforced by it, only by review. A lane may also edit test/<suite>/** where the base roster names it for a pending test there.",
   "source": "program-2026-10-18/rebuild/PLAN.json lanes[].files_owned and PRD.md section 10, 18 Nov 2026",
   "shared": [
     {
@@ -13,6 +13,10 @@
     {
       "glob": "lib/core/include/nimbus/docs_pack_e2_data.h",
       "why": "The engine-2 docs pack, generated the same way once RB-D0 lands."
+    },
+    {
+      "glob": "test/pending_roster.txt",
+      "why": "An implementing lane removes its own roster lines; check_pending_roster.py fails any line that is not in the base roster, so the file can only shrink."
     }
   ],
   "per_lane": [

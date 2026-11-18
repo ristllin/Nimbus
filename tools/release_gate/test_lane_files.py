@@ -334,3 +334,84 @@ def test_real_owners_hot_files_match_the_prd_order():
     assert hot["src/agent/telegram.cpp"] == ["RB-Q1c", "RB-TS1", "RB-TG1", "RB-TG2", "RB-P2"]
     assert hot["lib/harness/src/plain_engine.cpp"] == ["RB-E1a", "RB-E1b"]
     assert len(hot) >= 17
+
+
+# --- review findings: the gate cannot be widened from inside the lane -------------------
+
+
+def test_double_star_slash_also_matches_no_folder():
+    table = owners(RB_A=["src/**/x.c"])
+    assert run(table, "RB-A", ["src/x.c", "src/a/b/x.c"])[0]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tools/engine/owners.json",
+        "tools/release_gate/check_lane_files.py",
+        "tools/release_gate/image_baseline.json",
+        "tools/release_gate/image_budget.d/RB-B.json",
+    ],
+)
+def test_counter_a_gate_or_its_data_cannot_be_declared(path):
+    ok, _, fails = run(BASIC, "RB-A", [path], declared={path})
+    assert not ok
+    assert any("cannot be declared" in f for f in fails)
+
+
+def test_a_lane_edits_the_suites_whose_pending_tests_it_implements():
+    roster = gate.roster_lanes_at("test_tx_prefix::test_prefix_is_stable RB-A\ntest_tx_log::test_torn RB-B\n")
+    ok, _, fails = run(BASIC, "RB-A", ["test/test_tx_prefix/main.cpp"], roster_lanes=roster)
+    assert ok, fails
+
+
+def test_counter_a_suite_pending_for_another_lane_stays_closed():
+    roster = gate.roster_lanes_at("test_tx_log::test_torn RB-B\n")
+    ok, _, _ = run(BASIC, "RB-A", ["test/test_tx_log/main.cpp"], roster_lanes=roster)
+    assert not ok
+
+
+def test_counter_files_from_lines_that_are_globs_or_climb_out_grant_nothing(tmp_path):
+    (tmp_path / "tools" / "engine").mkdir(parents=True)
+    listed = "src/**\n../etc/passwd\n/abs.cpp\nsrc/agent/store.cpp\n"
+    (tmp_path / "tools" / "engine" / "guard_files.txt").write_text(listed, encoding="utf-8")
+    table = owners(RB_S=["tools/engine/guard_files.txt"])
+    table["lanes"]["RB-S"]["files_from"] = ["tools/engine/guard_files.txt"]
+    ok, lines, _ = run(table, "RB-S", ["src/agent/store.cpp"], root=str(tmp_path))
+    assert ok and any("LISTED in tools/engine/guard_files.txt: src/agent/store.cpp" in ln for ln in lines)
+    ok, _, _ = run(table, "RB-S", ["src/main.cpp"], root=str(tmp_path))
+    assert not ok, "a glob line in the list must not grant src/**"
+
+
+def test_counter_main_reads_owners_from_the_merge_base_not_the_lane(tmp_path, capsys):
+    # The lane widens its own entry on its branch: the gate still judges by the base's table.
+    root = make_repo(tmp_path)
+    git(root, "checkout", "-q", "rb-main")
+    commit(root, "tools/engine/owners.json", json.dumps(BASIC))
+    git(root, "checkout", "-q", "lane/RB-A")
+    git(root, "merge", "-q", "--ff-only", "rb-main")
+    wide = json.loads(json.dumps(BASIC))
+    wide["lanes"]["RB-A"]["files"].append("src/**")
+    commit(root, "tools/engine/owners.json", json.dumps(wide))
+    commit(root, "src/main.cpp")
+    assert gate.main(["--root", root]) == 1
+    out = capsys.readouterr().out
+    assert "at merge-base" in out and "src/main.cpp" in out
+
+
+def test_main_non_ascii_path_is_read_whole(tmp_path, capsys):
+    root = make_repo(tmp_path)
+    commit(root, "docs/café.md")
+    assert gate.main(["--root", root, "--owners", write_owners(tmp_path, BASIC)]) == 0, capsys.readouterr().out
+
+
+def test_counter_main_missing_declared_file_is_red_not_a_traceback(tmp_path, capsys):
+    root = make_repo(tmp_path)
+    args = ["--root", root, "--owners", write_owners(tmp_path, BASIC), "--declared", str(tmp_path / "none.md")]
+    assert gate.main(args) == 1
+    assert "LANE FILES RED" in capsys.readouterr().out
+
+
+def test_real_owners_share_the_roster_file():
+    # The roster only shrinks (check_pending_roster.py), so every implementing lane may remove its line.
+    assert any(r["glob"] == "test/pending_roster.txt" for r in real_owners()["shared"])
