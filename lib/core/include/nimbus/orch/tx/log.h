@@ -69,7 +69,8 @@ inline constexpr uint32_t kMaxSegment = 999999;       // seg-NNNNNN: six digits
 inline constexpr size_t kHeadMaxBytes = 16384;        // head.json, crc tail included
 inline constexpr size_t kHeadMaxPinned = 64;          // HeadState::pinned entries
 inline constexpr size_t kHeadMaxString = 128;         // profile and each pinned entry
-inline constexpr size_t kBulkMaxBytes = 512 * 1024;   // one bulk payload (the binding splits card writes)
+inline constexpr size_t kBulkMaxBytes = 512 * 1024;   // one bulk payload
+inline constexpr size_t kBulkChunkBytes = 32 * 1024;  // one bulk append: about 50 ms of card lock (Ruling 19)
 
 // The storage the log runs over. Every call is one bounded operation; false is a
 // refusal (no card, lock not taken, write failed) and never throws. A binding keeps to:
@@ -124,7 +125,7 @@ enum class StoreState : uint8_t { Stored = 0, NotStored = 1 };
 struct FillReport {
   size_t lines = 0;         // lines appended to the arena
   size_t torn = 0;          // lines dropped for framing or crc (torn tails, garbage)
-  size_t invalid = 0;       // crc-valid lines decodeLine cannot read (a writer bug): dropped
+  size_t invalid = 0;       // crc-valid lines checkLine or decodeLine cannot read: dropped
   size_t skipped = 0;       // lines at or below thru, or not above the arena's last q
   size_t dropped = 0;       // resident items given up because the arena was full
   uint64_t droppedThru = 0; // the newest q given up that way (0 = none): name it as omitted
@@ -156,8 +157,8 @@ class TxLog {
   // full: the caller compacts or names an omission; InvalidArgument for q out of order) is
   // returned and nothing is written anywhere.
   Status store(const Item& item, TxArena& arena, StoreState& state);
-  // Append one payload to b/<turn>.txb in one append; `handle` ("b/<turn>.txb@<off>+<len>")
-  // names where it landed. NotStored when storage refused; InvalidArgument for an empty
+  // Append one payload to b/<turn>.txb in appends of at most kBulkChunkBytes; `handle`
+  // ("b/<turn>.txb@<off>+<len>") names where it landed. NotStored when storage refused; InvalidArgument for an empty
   // payload or turn 0; TooLarge over kBulkMaxBytes (nothing written).
   Status appendBulk(uint32_t turn, const std::string& payload, std::string& handle);
   // Read [offset, offset + limit) of a bulk payload, clipped to its end (view and exact

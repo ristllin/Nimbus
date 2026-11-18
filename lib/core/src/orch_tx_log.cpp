@@ -75,7 +75,8 @@ bool segmentNumber(const std::string& name, uint32_t& seg) {
 // ---- the forward scan -----------------------------------------------------------------
 
 struct ScanStats {
-  size_t torn = 0;
+  size_t torn = 0;      // framing or crc failed (cuts, garbage)
+  size_t invalid = 0;   // crc-valid, but checkLine cannot read its header (a writer bug)
   size_t reads = 0;
   uint64_t bytes = 0;
 };
@@ -105,8 +106,10 @@ bool walkLines(Carry& c, ScanStats& st, Fn& fn) {
     if (!nl) break;
     const size_t end = static_cast<size_t>(nl - c.b) + 1;
     LineAt line{c.b + at, end - at, c.start + end, LineHeader{}};
-    const bool good = !c.skipping && checkLine(line.data, line.len, line.h).ok();
-    st.torn += !good;
+    const Status hs = c.skipping ? Status::fail(Err::Torn, "skip") : checkLine(line.data, line.len, line.h);
+    const bool good = hs.ok();
+    st.torn += hs.err == Err::Torn;
+    st.invalid += hs.err == Err::InvalidArgument;
     c.skipping = false;
     going = !good || fn(line);
     at = end;
@@ -885,11 +888,15 @@ Status TxLog::appendBulk(uint32_t turn, const std::string& payload, std::string&
   Status st = bulkPath(chatKey_, turn, path);
   if (!st.ok() || payload.empty()) return Status::fail(Err::InvalidArgument, "tx::TxLog::appendBulk");
   if (payload.size() > kBulkMaxBytes) return Status::fail(Err::TooLarge, "tx::TxLog::appendBulk");
-  // The offset is read after the append (TxFiles::size cannot tell a missing file from a
-  // refusal): the payload ends at the file's end. Without a size there is no handle.
+  // Appends of kBulkChunkBytes at most, so no one card-lock hold passes the 150 ms gate
+  // (Ruling 19: 16 KB holds 28 ms). The offset is read after the last chunk (TxFiles::size
+  // cannot tell a missing file from a refusal): the payload ends at the file's end. A
+  // refused chunk leaves bytes no handle names; without a size there is no handle.
+  for (size_t at = 0; at < payload.size(); at += kBulkChunkBytes)
+    if (!files_.append(path, payload.data() + at, std::min(kBulkChunkBytes, payload.size() - at)))
+      return Status::fail(Err::NotStored, "tx::TxLog::appendBulk");
   size_t size = 0;
-  if (!files_.append(path, payload.data(), payload.size()) || !files_.size(path, size) || size < payload.size())
-    return Status::fail(Err::NotStored, "tx::TxLog::appendBulk");
+  if (!files_.size(path, size) || size < payload.size()) return Status::fail(Err::NotStored, "tx::TxLog::appendBulk");
   const size_t off = size - payload.size();
   handle = "b/";
   putU64(handle, turn);
@@ -1011,6 +1018,7 @@ Status TxLog::fill(const HeadState& head, TxArena& arena, FillReport& report) {
     if (!st.ok()) return st.err == Err::NotFound ? Status::fail(Err::Io, "tx::TxLog::fill") : st;
   }
   report.torn = ss.torn;
+  report.invalid += ss.invalid;
   report.reads = ss.reads;
   report.bytes = ss.bytes;
   return Status::success();

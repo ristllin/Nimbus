@@ -681,6 +681,14 @@ void test_fill_drops_crc_valid_lines_it_cannot_read() {
   tx::StoreState st;
   TXB_OK(log.appendLine(bad.data(), bad.size(), st));
   c.q += 1;
+  // crc-valid with no readable header (k not first): appendLine refuses it, so it is
+  // written raw, as a writer bug would.
+  const std::string headless = seal("{\"q\":" + std::to_string(c.q + 1) + ",\"k\":\"u\"");
+  TEST_ASSERT_TRUE(log.appendLine(headless.data(), headless.size(), st).err == tx::Err::InvalidArgument);
+  std::string seg;
+  TXB_OK(tx::segmentPath(kKey, 1, seg));
+  files.files[seg] += headless;
+  c.q += 1;
   const size_t before = c.items.size();
   for (int i = 0; i < 2; ++i) c.ownerTurn("q2", "a2");
   appendItems(log, std::vector<tx::Item>(c.items.begin() + (long)before, c.items.end()));
@@ -688,7 +696,8 @@ void test_fill_drops_crc_valid_lines_it_cannot_read() {
   initArena(arena);
   tx::FillReport rep;
   TXB_OK(log.fill(tx::HeadState{}, arena, rep));
-  TEST_ASSERT_EQUAL(1, (int)rep.invalid);
+  TEST_ASSERT_EQUAL(2, (int)rep.invalid);
+  TEST_ASSERT_EQUAL(0, (int)rep.torn);
   TEST_ASSERT_EQUAL((int)c.items.size(), (int)arena.count());
   for (size_t i = 0; i < arena.count(); ++i) {
     tx::Item it;
@@ -907,6 +916,34 @@ void test_one_turn_larger_than_the_arena_keeps_its_start() {
   TEST_ASSERT_EQUAL((int)c.items.size(), (int)(arena.count() + rep.dropped));
 }
 
+// A bulk payload is written in appends of at most 32 KB (Ruling 19: about 50 ms of card lock
+// each) and reads back whole; a refused chunk is NotStored and the next payload's handle
+// is still exact.
+void test_bulk_is_written_in_lock_sized_chunks() {
+  struct Sizes : txb::MemFiles {
+    std::vector<size_t> lens;
+    bool append(const std::string& path, const char* data, size_t len) override {
+      lens.push_back(len);
+      return txb::MemFiles::append(path, data, len);
+    }
+  } files;
+  tx::TxLog log(files, kKey);
+  const std::string big = txb::payload("BIG", 100 * 1024), small = txb::payload("SMALL", 5000);
+  std::string h, out;
+  TXB_OK(log.appendBulk(4, big, h));
+  TEST_ASSERT_EQUAL(4, (int)files.lens.size());
+  for (size_t n : files.lens) TEST_ASSERT_TRUE(n <= tx::kBulkChunkBytes);
+  TXB_OK(log.readBulk(h, 0, big.size(), out));
+  TEST_ASSERT_TRUE(out == big);
+  files.refuseAppend = (long)files.appends + 1;   // the second chunk of the next payload
+  TEST_ASSERT_TRUE(log.appendBulk(4, big, h).err == tx::Err::NotStored);
+  TEST_ASSERT_TRUE(h.empty());
+  files.clearFaults();
+  TXB_OK(log.appendBulk(4, small, h));
+  TXB_OK(log.readBulk(h, 0, small.size(), out));
+  TEST_ASSERT_TRUE(out == small);
+}
+
 inline void run() {
   RUN_TEST(test_restart_fill_gives_the_same_arena_bytes);
   RUN_TEST(test_restart_fill_is_one_bounded_sequential_read);
@@ -934,6 +971,7 @@ inline void run() {
   RUN_TEST(test_a_head_with_newer_keys_is_read);
   RUN_TEST(test_keys_are_lower_case_and_bulk_is_capped);
   RUN_TEST(test_one_turn_larger_than_the_arena_keeps_its_start);
+  RUN_TEST(test_bulk_is_written_in_lock_sized_chunks);
 }
 
 }  // namespace store_tests
