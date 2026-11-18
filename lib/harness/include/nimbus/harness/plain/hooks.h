@@ -22,8 +22,10 @@
 //
 // Order never depends on who registered first: each handler sits in a HookSlot, and a
 // seam runs its handlers in slot order. One handler per slot per seam; a second
-// registration in a taken slot is refused (Err::Busy). Handlers are registered once at
-// boot, before the first turn; registering while a turn runs is not supported.
+// registration in a taken slot is refused (Err::Busy). The Observer slot observes only:
+// it is refused on the deciding seams (beforeDispatch, beforeDeliver, idleStep). Handlers
+// are registered once at boot, before the first turn; registering while a turn runs is
+// not supported.
 //
 // Seam declared by lane RB-B0a (with the registry itself, plain_hooks.cpp). The engine
 // lanes RB-E1a and RB-E1b call the run* functions at their points.
@@ -64,6 +66,7 @@ enum class HookSlot : uint8_t {
   ShadowProbe = 9,  // shadow-mode truth probes
   Resume = 10,      // crash resume and stored-not-sent replies
   Observer = 11,    // metrics and traces: observes, never decides; always last
+  None = 255,       // in a decision: no slot decided
 };
 inline constexpr size_t kHookSlotCount = 12;
 
@@ -82,7 +85,7 @@ struct DispatchCtx {
 struct DispatchDecision {
   DispatchVerdict verdict = DispatchVerdict::Run;
   std::string text;      // Answer and Refuse: the result text the model sees
-  HookSlot by = HookSlot::Observer;   // set by the runner: the slot that decided
+  HookSlot by = HookSlot::None;       // set by the runner: the slot that decided
 };
 
 // ---- afterResult -----------------------------------------------------------------
@@ -107,7 +110,7 @@ struct DeliverCtx {
 struct DeliverDecision {
   DeliverVerdict verdict = DeliverVerdict::Deliver;
   std::string deviceNote;              // Hold: facts only, starting '[device]'
-  HookSlot by = HookSlot::Observer;
+  HookSlot by = HookSlot::None;
 };
 
 // ---- afterDeliver ----------------------------------------------------------------
@@ -124,10 +127,12 @@ struct IdleCtx {
   uint32_t nowMs = 0;
   bool ownerWaiting = false;     // an owner message is queued: idle work must yield
   uint32_t quietForS = 0;        // seconds since the last turn ended
+  int16_t tzMinutes = 0;         // local offset from UTC (the 03:00 to 05:00 window, local days)
+  bool clockSet = false;         // false: no local-time rule may fire
 };
 struct IdleOutcome {
   bool worked = false;           // this handler did one unit of work
-  HookSlot by = HookSlot::Observer;
+  HookSlot by = HookSlot::None;
 };
 
 // ---- bootResume ------------------------------------------------------------------

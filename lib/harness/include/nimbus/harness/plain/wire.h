@@ -1,5 +1,7 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -36,14 +38,40 @@ struct SystemBlocks {
   std::string digests;
 };
 
+// Where the head lives and how it is asked: what render() needs beyond the transcript.
+// The key is read through a function at render time and never stored by a wire.
+struct HeadEndpoint {
+  std::string host;                 // "api.anthropic.com", a custom base's host, the router
+  uint16_t port = 443;
+  bool tls = true;
+  std::string basePath;             // "" = the dialect's default ("/v1")
+  std::string effort;               // reasoning effort ("" = the provider default)
+  bool routed = false;              // through the Cumulo router (deadline header, refusal contract)
+  std::function<std::string()> key;
+};
+
+// A tier-2 payload shown whole in its own turn, read back by the r item's handle.
+using BulkReadFn = std::function<Status(const std::string& handle, std::string& out)>;
+// A visible photo by ref: its bytes for an inline splice, or a provider file id.
+struct PhotoBytes {
+  const uint8_t* bytes = nullptr;
+  size_t len = 0;
+  std::string mime;
+  std::string fileId;               // Anthropic Files API id when uploaded, else ""
+};
+using PhotoFn = std::function<Status(const std::string& ref, PhotoBytes& out)>;
+
 struct RenderInput {
   const TurnCtx* turn = nullptr;
+  const HeadEndpoint* head = nullptr;
   const SystemBlocks* system = nullptr;
   const std::vector<ToolSpec>* tools = nullptr;
   const nimbus::orch::tx::TxArena* items = nullptr;   // the transcript to render
   uint64_t stubPointer = 0;                           // items at or below render as stubs
   bool toolChoiceNone = false;                        // the last round after a guard trip
   uint32_t maxTokens = 0;                             // the output cap for this request
+  BulkReadFn bulk;                                    // whole bulk results of the open turn
+  PhotoFn photo;                                      // pixels of the visible photos
 };
 
 // Why the model stopped.
@@ -59,18 +87,28 @@ inline const char* stopSlug(StopReason s) {
   return "other";
 }
 
+// One opaque piece of round meta (signed thinking, a reasoning item), kept where it sat
+// so a resume renders the same bytes: it came before call `beforeCall` (calls.size() =
+// after the last call).
+struct MetaPart {
+  uint16_t beforeCall = 0;
+  std::string bytes;
+};
+
 // One response, parsed.
 struct ParsedStep {
   std::string text;                 // assistant text (empty when the round only calls)
   std::vector<ToolCall> calls;
-  std::string meta;                 // opaque round meta stored as a k item (signed thinking)
+  std::vector<MetaPart> meta;       // stored as k items, in order
+  std::string refusal;              // the provider's refusal text, when it refused
   StopReason stop = StopReason::Other;
   nimbus::orch::TokenUsage usage;
 };
 
-class Wire {
+// Named WireCodec, not Wire: Arduino's global I2C object is called Wire.
+class WireCodec {
  public:
-  virtual ~Wire() = default;
+  virtual ~WireCodec() = default;
   virtual Dialect dialect() const = 0;
   // Fill `out` (host, path, headers, body, splices) for one request.
   virtual Status render(const RenderInput& in, HttpRequest& out) const = 0;
@@ -79,7 +117,7 @@ class Wire {
 };
 
 // The wire of a dialect. NotImplemented until that dialect's lane merges.
-Status wireFor(Dialect dialect, const Wire*& out);
+Status wireFor(Dialect dialect, const WireCodec*& out);
 
 }  // namespace plain
 }  // namespace agent

@@ -1,4 +1,5 @@
 #pragma once
+#include <cctype>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -33,6 +34,7 @@
 //   deps.transport = &model;  ...run the turn...
 //   TEST_ASSERT_EQUAL(2, model.requests().size());
 //   TEST_ASSERT_TRUE(model.allPrefixStable(why));
+//   TEST_ASSERT_TRUE_MESSAGE(model.verify(why), why.c_str());   // last: nothing swallowed
 namespace harness_test {
 namespace scripted {
 
@@ -76,6 +78,11 @@ class ScriptedProvider : public agent::HttpTransport {
 
   bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
     Recorded rec = record(req);
+    Dialect fromPath;
+    if (!fixed_ && !dialectOfPath(req.path, fromPath))
+      failures_.push_back("request " + std::to_string(seen_.size()) + ": no dialect answers " + req.path);
+    if (!rec.view.parsed)
+      failures_.push_back("request " + std::to_string(seen_.size()) + ": body is not JSON (" + rec.view.parseError + ")");
     if (expect_) {
       std::string why;
       if (!expect_(rec, why)) failures_.push_back("request " + std::to_string(seen_.size()) + ": " + why);
@@ -99,6 +106,19 @@ class ScriptedProvider : public agent::HttpTransport {
   size_t remaining() const { return script_.size() - next_; }
   bool allUsed() const { return next_ == script_.size(); }
   const std::vector<std::string>& failures() const { return failures_; }
+  // The end-of-test check: no failure recorded and every scripted step used. A run that
+  // swallowed an exhausted script (an engine retry, an error path) still goes red here.
+  bool verify(std::string& why) const {
+    if (!failures_.empty()) {
+      why = failures_.front();
+      return false;
+    }
+    if (!allUsed()) {
+      why = std::to_string(remaining()) + " scripted steps never requested";
+      return false;
+    }
+    return true;
+  }
 
   // Every request after the first keeps the one before it as a prefix (one turn's rounds).
   bool allPrefixStable(std::string& why) const {
@@ -128,11 +148,21 @@ class ScriptedProvider : public agent::HttpTransport {
     rec.body = agent::materializeBody(req);
     rec.req.body = rec.body;
     rec.req.splices.clear();
+    redactKeys(rec.req.headers);
     rec.dialect = dialect_;
     if (!fixed_) dialectOfPath(req.path, rec.dialect);
     rec.step = seen_.size();
     parseRequest(rec.dialect, rec.body, rec.view);
     return rec;
+  }
+
+  // A recorded request never keeps a credential, so dumping one in a failure is safe.
+  static void redactKeys(agent::HeaderList& headers) {
+    for (auto& h : headers) {
+      std::string n = h.first;
+      for (char& c : n) c = (char)std::tolower((unsigned char)c);
+      if (n == "authorization" || n == "x-api-key" || n == "api-key" || n == "x-goog-api-key") h.second = "[redacted]";
+    }
   }
 
   bool nextStep(const Recorded& rec, Step& out) {

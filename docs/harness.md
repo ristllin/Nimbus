@@ -372,7 +372,7 @@ and are golden-pinned - never device-side.
 |---|---|---|---|
 | Platform (clock/heap/delay/PSRAM alloc) | `nimbus/harness/platform.h` | closures over `millis`/`ESP` (orchestrator.cpp) | `test/support/fake_platform.h` |
 | HarnessConfig (provider/loop/budget/tts) | `nimbus/harness/config.h` | `src/agent/store_config.cpp` over NVS `store::` | `test/support/fake_config.h` |
-| HttpTransport (whole-body request/response) | `nimbus/harness/http.h` | `src/agent/transport_tls.cpp` (TLS, arbiter, CA policy) | `test/support/fake_http.h` (scripted exchanges) |
+| HttpTransport (whole-body request/response) | `nimbus/harness/http.h` | `src/agent/transport_tls.cpp` (TLS, arbiter, CA policy) | `test/support/fake_http.h` (scripted exchanges); `test/support/scripted_provider/` (a scripted model in each wire dialect) |
 | Channel (send/speak/allowlist) | `nimbus/harness/channel.h` | Telegram + TTS sinks | `test/support/fake_channel.h` |
 | Fabric (sub-agent backends) | `nimbus/harness/fabric.h` | provider adapters via `adapter_factory` | `test/support/fake_fabric.h` |
 | Tools | `nimbus/orch/tool_registry.h` + one MCP-dispatch closure | `memory::handleMcp` (Lock + persist) | inline recorders |
@@ -414,6 +414,36 @@ device wraps in the Lock (`withMemoryLock`).
 
 Shared fakes are header-only in `test/support/` (PlatformIO compiles each test
 dir separately - include them relatively).
+
+## Engine 2 seams (the rebuild)
+
+The plain engine of the harness rebuild is built beside the current one and is not
+linked into any device image yet. Its seams are declared up front so each lane fills
+one body:
+
+- `lib/core/include/nimbus/orch/tx/` - the transcript: items and their line codec
+  (`item.h`), the RAM arena (`arena.h`), the log on storage over a `TxFiles` interface
+  (`log.h`), the stub rules (`rules.h`), profiles and budgets (`budget.h`), digests
+  (`digest.h`) and migration (`migrate.h`). Every function returns a typed
+  `tx::Status`; a body not written yet answers `Err::NotImplemented` with its own name.
+- `lib/harness/include/nimbus/harness/plain/` - the engine (`engine.h`), one exchange
+  (`exchange.h`), the per-dialect wire interface (`wire.h`, reached through
+  `plain::wireFor`), request composition (`request.h`), guards, delivery, and one header
+  per module that hooks in (resume, compaction, rails, media, routines, agents, truth,
+  documents).
+- `plain/hooks.h` - the six seams the engine calls: `beforeDispatch`, `afterResult`,
+  `beforeDeliver`, `afterDeliver`, `idleStep`, `bootResume`. Modules register into a
+  fixed `HookSlot`; a seam runs its handlers in slot order, never registration order,
+  and a slot holds one handler.
+
+`test/support/scripted_provider/` is the scripted model these suites run against. It
+sits at the `HttpTransport` seam, answers each request with the next scripted step in
+the request's dialect (Anthropic Messages, OpenAI Responses, chat completions), records
+every request and reads it back into one view per dialect, with prefix and pairing
+checks. Running out of script fails the request. The same JSON script drives the
+reference loop through `scripted_provider.py`, so one script can run both arms of a
+parity check offline. `test/test_scripted_provider` proves the old engine's parsers read
+its answers; `test/test_plain_seams` pins the stubs and the hooks registry.
 
 ## Extension points
 

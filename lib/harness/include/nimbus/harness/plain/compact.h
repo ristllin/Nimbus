@@ -7,6 +7,7 @@
 
 namespace agent {
 class HttpTransport;
+struct Platform;
 }  // namespace agent
 namespace nimbus {
 namespace orch {
@@ -33,6 +34,7 @@ inline constexpr uint32_t kCompactRequestMs = 45000;
 inline constexpr uint16_t kSummarizerMaxTokens = 400;
 
 struct CompactDeps {
+  const Platform* platform = nullptr;
   HttpTransport* transport = nullptr;
   nimbus::orch::tx::TxLog* log = nullptr;
   nimbus::orch::tx::TxArena* arena = nullptr;

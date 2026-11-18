@@ -5,7 +5,7 @@
 namespace agent {
 namespace plain {
 
-Status wireFor(Dialect dialect, const Wire*& out) {
+Status wireFor(Dialect dialect, const WireCodec*& out) {
   out = nullptr;
   switch (dialect) {
     case Dialect::AnthropicMessages: return Status::pending("plain::wireFor anthropic");

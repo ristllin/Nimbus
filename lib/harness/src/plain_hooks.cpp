@@ -2,15 +2,19 @@
 // a lane that registers a handler can test its registration before the engine exists.
 #include "nimbus/harness/plain/hooks.h"
 
+#include <utility>
+
 namespace agent {
 namespace plain {
 
 namespace {
 
+// `decides`: the seam's handlers return a decision, which the Observer slot may not make.
 template <class Fn>
-Status put(std::array<Fn, kHookSlotCount>& slots, HookSlot slot, Fn fn, const char* where) {
+Status put(std::array<Fn, kHookSlotCount>& slots, HookSlot slot, Fn fn, const char* where, bool decides) {
   const size_t i = static_cast<size_t>(slot);
   if (i >= kHookSlotCount || !fn) return Status::fail(Err::InvalidArgument, where);
+  if (decides && slot == HookSlot::Observer) return Status::fail(Err::InvalidArgument, where);
   if (slots[i]) return Status::fail(Err::Busy, where);
   slots[i] = std::move(fn);
   return Status::success();
@@ -33,22 +37,22 @@ bool taken(const std::array<Fn, kHookSlotCount>& slots, HookSlot slot) {
 }  // namespace
 
 Status PlainHooks::beforeDispatch(HookSlot slot, BeforeDispatchFn fn) {
-  return put(beforeDispatch_, slot, std::move(fn), "plain::PlainHooks::beforeDispatch");
+  return put(beforeDispatch_, slot, std::move(fn), "plain::PlainHooks::beforeDispatch", true);
 }
 Status PlainHooks::afterResult(HookSlot slot, AfterResultFn fn) {
-  return put(afterResult_, slot, std::move(fn), "plain::PlainHooks::afterResult");
+  return put(afterResult_, slot, std::move(fn), "plain::PlainHooks::afterResult", false);
 }
 Status PlainHooks::beforeDeliver(HookSlot slot, BeforeDeliverFn fn) {
-  return put(beforeDeliver_, slot, std::move(fn), "plain::PlainHooks::beforeDeliver");
+  return put(beforeDeliver_, slot, std::move(fn), "plain::PlainHooks::beforeDeliver", true);
 }
 Status PlainHooks::afterDeliver(HookSlot slot, AfterDeliverFn fn) {
-  return put(afterDeliver_, slot, std::move(fn), "plain::PlainHooks::afterDeliver");
+  return put(afterDeliver_, slot, std::move(fn), "plain::PlainHooks::afterDeliver", false);
 }
 Status PlainHooks::idleStep(HookSlot slot, IdleStepFn fn) {
-  return put(idleStep_, slot, std::move(fn), "plain::PlainHooks::idleStep");
+  return put(idleStep_, slot, std::move(fn), "plain::PlainHooks::idleStep", true);
 }
 Status PlainHooks::bootResume(HookSlot slot, BootResumeFn fn) {
-  return put(bootResume_, slot, std::move(fn), "plain::PlainHooks::bootResume");
+  return put(bootResume_, slot, std::move(fn), "plain::PlainHooks::bootResume", false);
 }
 
 DispatchDecision PlainHooks::runBeforeDispatch(const DispatchCtx& ctx) const {

@@ -33,11 +33,12 @@ struct Head {
   const char* name;
   Maker make;
   sp::Dialect dialect;
+  bool readsProse;   // the old engine's step reads message text (its OpenAI step reads only calls)
 };
 const Head kHeads[] = {
-    {"anthropic", providers::antLoopStep, sp::Dialect::Anthropic},
-    {"openai", providers::oaiLoopStep, sp::Dialect::Responses},
-    {"mistral", providers::misLoopStep, sp::Dialect::Chat},
+    {"anthropic", providers::antLoopStep, sp::Dialect::Anthropic, true},
+    {"openai", providers::oaiLoopStep, sp::Dialect::Responses, false},
+    {"mistral", providers::misLoopStep, sp::Dialect::Chat, true},
 };
 
 // One loop step of `head` answered by `model`.
@@ -93,8 +94,37 @@ static void test_tool_call_is_parsed_by_every_dialect() {
     TEST_ASSERT_TRUE_MESSAGE(hasTool(rec.view, "memory_search"), h.name);
     TEST_ASSERT_TRUE_MESSAGE(rec.view.system().find("SYS") != std::string::npos, h.name);
     TEST_ASSERT_TRUE_MESSAGE(userSaid(rec.view, "hi"), h.name);
-    TEST_ASSERT_TRUE_MESSAGE(model.allUsed() && model.failures().empty(), h.name);
+    std::string why;
+    TEST_ASSERT_TRUE_MESSAGE(model.verify(why), (std::string(h.name) + ": " + why).c_str());
   }
+}
+
+// A plain text answer parses on every loop step, and reaches the model's text where the
+// old step reads prose.
+static void test_text_answer_is_read_by_every_dialect() {
+  for (const Head& h : kHeads) {
+    sp::ScriptedProvider model;
+    model.push(sp::say("Your boat is the Nereid II."));
+    const Run r = stepOn(h, model);
+    TEST_ASSERT_TRUE_MESSAGE(r.step.ok, (std::string(h.name) + ": " + r.step.error).c_str());
+    const bool seen = r.step.text.find("Nereid II") != std::string::npos ||
+                      r.step.finalTurn.find("Nereid II") != std::string::npos;
+    TEST_ASSERT_TRUE_MESSAGE(seen || !h.readsProse, h.name);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.step.toolCalls.size(), h.name);
+  }
+}
+
+// A path no dialect answers is recorded as a failure, not silently answered.
+static void test_unknown_path_is_a_failure() {
+  sp::ScriptedProvider model;
+  model.push(sp::say("x"));
+  agent::HttpRequest req;
+  req.path = "/v1/embeddings";
+  req.body = "{}";
+  agent::HttpResponse out;
+  std::string err;
+  (void)model.exec(req, out, err);
+  TEST_ASSERT_EQUAL(1, (int)model.failures().size());
 }
 
 // The Anthropic cache split reaches the usage the loop reports.
@@ -198,6 +228,72 @@ static void test_json_script_loads() {
   TEST_ASSERT_TRUE(err.find("no name") != std::string::npos);
   TEST_ASSERT_FALSE(sp::loadScript("{\"dialect\":\"smoke\",\"steps\":[]}", d, steps, err));
   TEST_ASSERT_FALSE(sp::loadScript("[", d, steps, err));
+  // A typo, a wrong type, or a finish that contradicts the calls is refused, and a
+  // refused script leaves the caller's steps and dialect as they were.
+  steps.assign(1, sp::say("kept"));
+  const char* bad[] = {
+      "{\"steps\":[{\"call\":[]}]}",
+      "{\"steps\":[{\"status\":\"500\"}]}",
+      "{\"steps\":[{\"usage\":{\"inptu\":1}}]}",
+      "{\"steps\":[{\"finish\":\"tool\"}]}",
+      "{\"steps\":[{\"finish\":\"end\",\"calls\":[{\"name\":\"x\"}]}]}",
+      "{\"steps\":[7]}",
+      "{\"dialect\":\"responses\",\"steps\":[{\"calls\":\"x\"}]}",
+      "{\"steps\":[],\"extra\":1}",
+  };
+  for (const char* b : bad) {
+    d = sp::Dialect::Chat;
+    TEST_ASSERT_FALSE_MESSAGE(sp::loadScript(b, d, steps, err), b);
+    TEST_ASSERT_TRUE_MESSAGE(d == sp::Dialect::Chat, b);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)steps.size(), b);
+  }
+}
+
+// verify() is the end-of-test check: a swallowed exhaustion or an unused step goes red.
+static void test_verify_catches_swallowed_and_unused() {
+  sp::ScriptedProvider model;
+  model.push(sp::say("one")).push(sp::say("two"));
+  std::string why;
+  TEST_ASSERT_FALSE(model.verify(why));   // nothing requested yet
+  agent::HttpRequest req;
+  req.path = "/v1/messages";
+  req.body = "{\"messages\":[]}";
+  req.headers = {{"x-api-key", "sk-fake-ant"}, {"Authorization", "Bearer sk-fake"}, {"anthropic-version", "1"}};
+  agent::HttpResponse out;
+  std::string err;
+  TEST_ASSERT_TRUE(model.exec(req, out, err));
+  TEST_ASSERT_TRUE(model.exec(req, out, err));
+  TEST_ASSERT_TRUE_MESSAGE(model.verify(why), why.c_str());
+  // Credentials never stay in the record.
+  for (const auto& h : model.last().req.headers)
+    TEST_ASSERT_TRUE(h.second.find("sk-fake") == std::string::npos);
+  TEST_ASSERT_FALSE(model.exec(req, out, err));   // exhausted
+  TEST_ASSERT_FALSE(model.verify(why));
+  // A body that is not JSON is a failure, and fails both properties.
+  sp::ScriptedProvider garbage;
+  garbage.push(sp::say("x"));
+  req.body = "not json";
+  TEST_ASSERT_TRUE(garbage.exec(req, out, err));
+  TEST_ASSERT_FALSE(garbage.verify(why));
+  TEST_ASSERT_FALSE(garbage.allPaired(why));
+}
+
+// A refusal is rendered in each dialect's own refusal shape.
+static void test_refusal_shapes() {
+  sp::Step s = sp::say("I can't help with that.");
+  s.finish = sp::Finish::Refusal;
+  TEST_ASSERT_TRUE(sp::renderAnswer(sp::Dialect::Anthropic, s, 0).find("\"stop_reason\":\"refusal\"") != std::string::npos);
+  TEST_ASSERT_TRUE(sp::renderAnswer(sp::Dialect::Responses, s, 0).find("\"type\":\"refusal\"") != std::string::npos);
+  const std::string chat = sp::renderAnswer(sp::Dialect::Chat, s, 0);
+  TEST_ASSERT_TRUE(chat.find("\"refusal\":\"I can't") != std::string::npos);
+  TEST_ASSERT_TRUE(chat.find("\"finish_reason\":\"stop\"") != std::string::npos);
+  // The 1-hour cache write rides Anthropic's cache_creation split.
+  sp::Step c = sp::say("x");
+  c.usage.cacheWrite = 300;
+  c.usage.cacheWrite1h = 100;
+  const std::string ant = sp::renderAnswer(sp::Dialect::Anthropic, c, 0);
+  TEST_ASSERT_TRUE(ant.find("\"ephemeral_1h_input_tokens\":100") != std::string::npos);
+  TEST_ASSERT_TRUE(ant.find("\"ephemeral_5m_input_tokens\":200") != std::string::npos);
 }
 
 // ---- the request view, over every dialect -----------------------------------------
@@ -325,6 +421,15 @@ static void test_pairing_property_and_its_counter_cases() {
                                    why));
   // A call never answered.
   TEST_ASSERT_FALSE(sp::callsPaired(viewOf({{"user", {textB("hi")}}, {"assistant", {callB("c1")}}}), why));
+  // Something else between a call and its result (Anthropic and chat need it right after).
+  TEST_ASSERT_FALSE(sp::callsPaired(
+      viewOf({{"assistant", {callB("c1")}}, {"user", {textB("wait")}}, {"user", {resultB("c1")}}}), why));
+  // Two assistant call items in a row are one round only on the Responses wire.
+  sp::RequestView split = viewOf({{"assistant", {callB("c1")}}, {"assistant", {callB("c2")}},
+                                  {"tool", {resultB("c1")}}, {"tool", {resultB("c2")}}});
+  TEST_ASSERT_FALSE(sp::callsPaired(split, why));
+  split.dialect = sp::Dialect::Responses;
+  TEST_ASSERT_TRUE_MESSAGE(sp::callsPaired(split, why), why.c_str());
   // A call answered only after the next assistant message.
   TEST_ASSERT_FALSE(sp::callsPaired(
       viewOf({{"assistant", {callB("c1")}}, {"assistant", {textB("x")}}, {"user", {resultB("c1")}}}), why));
@@ -370,12 +475,16 @@ static void test_provider_checks_recorded_rounds() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_tool_call_is_parsed_by_every_dialect);
+  RUN_TEST(test_text_answer_is_read_by_every_dialect);
+  RUN_TEST(test_unknown_path_is_a_failure);
   RUN_TEST(test_anthropic_cache_split_is_parsed);
   RUN_TEST(test_cut_answer_reads_as_cut_on_every_dialect);
   RUN_TEST(test_http_error_reaches_the_loop);
   RUN_TEST(test_exhausted_script_is_loud);
   RUN_TEST(test_responder_and_clock);
   RUN_TEST(test_json_script_loads);
+  RUN_TEST(test_verify_catches_swallowed_and_unused);
+  RUN_TEST(test_refusal_shapes);
   RUN_TEST(test_request_view_reads_every_dialect_alike);
   RUN_TEST(test_prefix_property_and_its_counter_cases);
   RUN_TEST(test_pairing_property_and_its_counter_cases);

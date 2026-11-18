@@ -1,6 +1,7 @@
 #pragma once
 #include <ArduinoJson.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -10,6 +11,9 @@
 // provider sends for that dialect: Anthropic Messages, OpenAI Responses, or chat
 // completions. Usage follows each provider's own meaning: Anthropic's input_tokens
 // excludes the cache, OpenAI's input_tokens and prompt_tokens include it.
+// The chat answer is OpenAI's shape (tool_calls with type "function", null content beside
+// calls, the error nested under "error"); Mistral's own variants (no type, "" content,
+// a top-level error object) are what lane RB-W3's recorded fixtures cover.
 namespace harness_test {
 namespace scripted {
 
@@ -78,6 +82,8 @@ inline std::string anthropicAnswer(const Step& s, size_t step) {
   u["output_tokens"] = s.usage.output;
   u["cache_read_input_tokens"] = s.usage.cacheRead;
   u["cache_creation_input_tokens"] = s.usage.cacheWrite;
+  u["cache_creation"]["ephemeral_5m_input_tokens"] = s.usage.cacheWrite - std::min(s.usage.cacheWrite, s.usage.cacheWrite1h);
+  u["cache_creation"]["ephemeral_1h_input_tokens"] = std::min(s.usage.cacheWrite, s.usage.cacheWrite1h);
   std::string out;
   serializeJson(doc, out);
   return out;
@@ -98,9 +104,14 @@ inline void responsesOutput(JsonArray output, const Step& s, size_t step) {
     m["role"] = "assistant";
     m["status"] = "completed";
     JsonObject t = m["content"].to<JsonArray>().add<JsonObject>();
-    t["type"] = "output_text";
-    t["text"] = s.text;
-    t["annotations"].to<JsonArray>();
+    if (finishOf(s) == Finish::Refusal) {   // a refusal is its own content part
+      t["type"] = "refusal";
+      t["refusal"] = s.text;
+    } else {
+      t["type"] = "output_text";
+      t["text"] = s.text;
+      t["annotations"].to<JsonArray>();
+    }
   }
   for (size_t i = 0; i < s.calls.size(); ++i) {
     JsonObject c = output.add<JsonObject>();
@@ -123,7 +134,6 @@ inline std::string responsesAnswer(const Step& s, size_t step) {
   else doc["incomplete_details"] = nullptr;
   doc["model"] = s.model;
   responsesOutput(doc["output"].to<JsonArray>(), s, step);
-  if (!s.text.empty()) doc["output_text"] = s.text;
   JsonObject u = doc["usage"].to<JsonObject>();
   u["input_tokens"] = s.usage.input + s.usage.cacheRead;
   u["input_tokens_details"]["cached_tokens"] = s.usage.cacheRead;
@@ -139,7 +149,6 @@ inline const char* chatFinish(Finish f) {
   switch (f) {
     case Finish::ToolUse: return "tool_calls";
     case Finish::MaxTokens: return "length";
-    case Finish::Refusal: return "content_filter";
     default: return "stop";
   }
 }
@@ -154,8 +163,11 @@ inline std::string chatAnswer(const Step& s, size_t step) {
   choice["index"] = 0;
   JsonObject msg = choice["message"].to<JsonObject>();
   msg["role"] = "assistant";
-  if (s.text.empty()) msg["content"] = nullptr;
+  const bool refused = finishOf(s) == Finish::Refusal;
+  if (s.text.empty() || refused) msg["content"] = nullptr;
   else msg["content"] = s.text;
+  if (refused) msg["refusal"] = s.text;   // OpenAI's shape: finish_reason stays "stop"
+  if (!s.thinking.empty()) msg["reasoning_content"] = s.thinking;   // the Z.ai and DeepSeek field
   if (!s.calls.empty()) {
     JsonArray tcs = msg["tool_calls"].to<JsonArray>();
     for (size_t i = 0; i < s.calls.size(); ++i) {

@@ -23,8 +23,10 @@ struct Block {
   std::string name;      // ToolCall: the tool name
   std::string args;      // ToolCall: the arguments as JSON text
   bool isError = false;  // ToolResult
+  std::string ref;       // Image: the file id or source as sent; Thinking: the signature
   bool operator==(const Block& o) const {
-    return kind == o.kind && text == o.text && id == o.id && name == o.name && args == o.args && isError == o.isError;
+    return kind == o.kind && text == o.text && id == o.id && name == o.name && args == o.args &&
+           isError == o.isError && ref == o.ref;
   }
 };
 
@@ -35,11 +37,13 @@ struct Message {
 };
 
 struct RequestView {
+  Dialect dialect = Dialect::Anthropic;
   bool parsed = false;
   std::string parseError;
   std::string model;
   std::vector<std::string> systemBlocks;   // in order
   std::vector<std::string> tools;          // advertised names, in order
+  std::vector<std::string> toolsJson;      // each tool entry as sent (schema and description)
   std::string toolChoice;                  // "auto" | "none" | "any" | "required" | a name | ""
   std::vector<Message> messages;           // system-role chat messages are in systemBlocks
   uint32_t maxTokens = 0;
@@ -93,7 +97,10 @@ inline Block anthropicBlock(JsonObjectConst o) {
   const std::string type = o["type"] | "";
   Block b;
   if (type == "text") return textBlock(o["text"] | "");
-  if (type == "image" || type == "document") b.kind = BlockKind::Image;
+  if (type == "image" || type == "document") {
+    b.kind = BlockKind::Image;
+    b.ref = jsonText(o["source"]);
+  }
   else if (type == "tool_use") {
     b.kind = BlockKind::ToolCall;
     b.id = o["id"] | "";
@@ -107,6 +114,7 @@ inline Block anthropicBlock(JsonObjectConst o) {
   } else if (type == "thinking" || type == "redacted_thinking") {
     b.kind = BlockKind::Thinking;
     b.text = o["thinking"] | (o["data"] | "");
+    b.ref = o["signature"] | "";
   }
   return b;
 }
@@ -134,7 +142,10 @@ inline Block responsesPart(JsonObjectConst p) {
   const std::string type = p["type"] | "";
   if (type == "input_text" || type == "output_text" || type == "text") return textBlock(p["text"] | "");
   Block b;
-  if (type == "input_image" || type == "input_file") b.kind = BlockKind::Image;
+  if (type == "input_image" || type == "input_file") {
+    b.kind = BlockKind::Image;
+    b.ref = p["file_id"] | (p["image_url"] | "");
+  }
   return b;
 }
 
@@ -159,6 +170,7 @@ inline Message responsesItem(JsonObjectConst it) {
     msg.role = "assistant";
     b.kind = BlockKind::Thinking;
     b.text = it["encrypted_content"] | "";
+    b.ref = it["id"] | "";
     msg.blocks.push_back(b);
   } else {
     msg.role = it["role"] | "";
@@ -196,7 +208,10 @@ inline void chatContent(JsonVariantConst c, Message& msg) {
     if (type == "text") msg.blocks.push_back(textBlock(p["text"] | ""));
     else {
       Block b;
-      if (type == "image_url") b.kind = BlockKind::Image;
+      if (type == "image_url") {
+        b.kind = BlockKind::Image;
+        b.ref = jsonText(p["image_url"]);
+      }
       msg.blocks.push_back(b);
     }
   }
@@ -251,7 +266,9 @@ inline bool parseRequest(Dialect d, const std::string& body, RequestView& out) {
     return false;
   }
   JsonObjectConst root = doc.as<JsonObjectConst>();
+  out.dialect = d;
   out.model = root["model"] | "";
+  for (JsonVariantConst t : root["tools"].as<JsonArrayConst>()) out.toolsJson.push_back(detail::jsonText(t));
   switch (d) {
     case Dialect::Anthropic: detail::readAnthropic(root, out); break;
     case Dialect::Responses: detail::readResponses(root, out); break;
@@ -263,14 +280,21 @@ inline bool parseRequest(Dialect d, const std::string& body, RequestView& out) {
 
 // ---- properties ------------------------------------------------------------------
 
-// The prefix property at message level: `later` shows the same system, the same tools and
-// every message of `earlier` unchanged, in order, before anything new.
+// The prefix property at message level: `later` shows the same system, the same tools
+// (names, descriptions and schemas) and every message of `earlier` unchanged, in order,
+// before anything new (images by their source, thinking with its signature). The model
+// and tool_choice are not compared: the last round after a guard trip sets tool_choice
+// none. Both views must have parsed.
 inline bool isPrefix(const RequestView& earlier, const RequestView& later, std::string& why) {
   if (earlier.systemBlocks != later.systemBlocks) {
     why = "system changed";
     return false;
   }
-  if (earlier.tools != later.tools) {
+  if (!earlier.parsed || !later.parsed) {
+    why = "a request did not parse";
+    return false;
+  }
+  if (earlier.tools != later.tools || earlier.toolsJson != later.toolsJson) {
     why = "tools changed";
     return false;
   }
@@ -338,20 +362,32 @@ inline bool hasCall(const Message& m) {
 // An assistant message that only continues the previous assistant message's round of
 // calls (the Responses wire has one item per call).
 inline bool sameRound(const RequestView& v, size_t i) {
-  return i > 0 && hasCall(v.messages[i]) && v.messages[i - 1].role == "assistant";
+  return v.dialect == Dialect::Responses && i > 0 && hasCall(v.messages[i]) && v.messages[i - 1].role == "assistant";
+}
+
+// While calls wait, the next message must open with a result: Anthropic puts the results
+// first in the next user message, chat puts tool messages straight after the call.
+inline bool opensWithResult(const Message& m) {
+  return !m.blocks.empty() && m.blocks.front().kind == BlockKind::ToolResult;
 }
 
 }  // namespace detail
 
-// The pairing property: every tool call id is unique and answered by exactly one result,
-// after the call and before the next assistant message that is not part of the same
-// round's calls; no result answers a call that was never made.
+// The pairing property: every tool call id is unique and answered by exactly one result;
+// while calls wait, the next message opens with a result (on the Responses wire, one
+// item per call, the round's further call items come first); no result answers a call
+// that was never made.
 inline bool callsPaired(const RequestView& v, std::string& why) {
+  if (!v.parsed) {
+    why = "the request did not parse";
+    return false;
+  }
   detail::Pairing p;
   for (size_t i = 0; i < v.messages.size(); ++i) {
     const Message& m = v.messages[i];
-    if (m.role == "assistant" && !p.pending.empty() && !detail::sameRound(v, i)) {
-      why = "call " + p.pending.front() + " has no result before message " + std::to_string(i);
+    const bool waiting = !p.pending.empty() && !detail::sameRound(v, i);
+    if (waiting && (m.role == "assistant" || !detail::opensWithResult(m))) {
+      why = "call " + p.pending.front() + " has no result right after it (message " + std::to_string(i) + ")";
       return false;
     }
     for (const Block& b : m.blocks)

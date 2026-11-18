@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <utility>
 #include <vector>
@@ -14,11 +15,11 @@
 // a raw body). The same script format loads from JSON (loadScript) and drives the
 // reference loop's Python twin (scripted_provider.py), so one script can run both arms.
 //
-// JSON format (every field optional):
+// JSON format (every field optional; an unknown key or a wrongly typed field is refused):
 //   {"dialect": "anthropic" | "responses" | "chat",
 //    "steps": [{"text": "...", "calls": [{"name": "read_file", "args": {...}, "id": "..."}],
 //               "thinking": "...", "finish": "auto" | "end" | "tool" | "cut" | "refusal",
-//               "usage": {"input": 100, "output": 20, "cache_read": 0, "cache_write": 0},
+//               "usage": {"input": 100, "output": 20, "cache_read": 0, "cache_write": 0, "cache_write_1h": 0},
 //               "model": "...", "status": 200, "error_body": "...", "raw_body": "...",
 //               "transport_cut": false, "takes_ms": 0}]}
 namespace harness_test {
@@ -75,6 +76,7 @@ struct Usage {
   uint32_t output = 20;
   uint32_t cacheRead = 0;
   uint32_t cacheWrite = 0;
+  uint32_t cacheWrite1h = 0;  // the part of cacheWrite written with the 1-hour TTL (Anthropic)
 };
 
 enum class Finish : uint8_t {
@@ -164,50 +166,119 @@ inline bool finishFromName(const std::string& s, Finish& out) {
   return false;
 }
 
-inline void loadUsage(JsonObjectConst u, Usage& out) {
-  out.input = u["input"] | out.input;
-  out.output = u["output"] | out.output;
-  out.cacheRead = u["cache_read"] | out.cacheRead;
-  out.cacheWrite = u["cache_write"] | out.cacheWrite;
-}
-
-inline bool loadCalls(JsonArrayConst arr, std::vector<Call>& out, std::string& err) {
-  for (JsonObjectConst c : arr) {
-    Call k;
-    k.name = c["name"] | "";
-    if (k.name.empty()) {
-      err = "a call has no name";
+// A key the format does not define is an error, so a typo ("call" for "calls") cannot
+// load as an empty answer.
+inline bool onlyKeys(JsonObjectConst o, std::initializer_list<const char*> allowed, const char* what,
+                     std::string& err) {
+  for (JsonPairConst kv : o) {
+    bool known = false;
+    for (const char* k : allowed) known = known || kv.key() == k;
+    if (!known) {
+      err = std::string("unknown key ") + kv.key().c_str() + " in " + what;
       return false;
     }
-    if (!c["args"].isNull()) {
-      k.argsJson.clear();
-      serializeJson(c["args"], k.argsJson);
-    }
-    k.id = c["id"] | "";
+  }
+  return true;
+}
+
+// A present field must have its type; an absent one keeps the default.
+template <class T>
+inline bool typed(JsonObjectConst o, const char* key, T& out, std::string& err) {
+  JsonVariantConst v = o[key];
+  if (v.isNull()) return true;
+  if (!v.is<T>()) {
+    err = std::string(key) + " has the wrong type";
+    return false;
+  }
+  out = v.as<T>();
+  return true;
+}
+
+inline bool loadUsage(JsonVariantConst v, Usage& out, std::string& err) {
+  if (v.isNull()) return true;
+  JsonObjectConst u = v.as<JsonObjectConst>();
+  if (u.isNull()) {
+    err = "usage is not an object";
+    return false;
+  }
+  return onlyKeys(u, {"input", "output", "cache_read", "cache_write", "cache_write_1h"}, "usage", err) &&
+         typed(u, "input", out.input, err) && typed(u, "output", out.output, err) &&
+         typed(u, "cache_read", out.cacheRead, err) && typed(u, "cache_write", out.cacheWrite, err) &&
+         typed(u, "cache_write_1h", out.cacheWrite1h, err);
+}
+
+inline bool loadCall(JsonVariantConst v, Call& k, std::string& err) {
+  JsonObjectConst c = v.as<JsonObjectConst>();
+  if (c.isNull()) {
+    err = "a call is not an object";
+    return false;
+  }
+  if (!onlyKeys(c, {"name", "args", "id"}, "a call", err) || !typed(c, "name", k.name, err) ||
+      !typed(c, "id", k.id, err))
+    return false;
+  if (k.name.empty()) {
+    err = "a call has no name";
+    return false;
+  }
+  if (!c["args"].isNull()) {
+    k.argsJson.clear();
+    serializeJson(c["args"], k.argsJson);
+  }
+  return true;
+}
+
+inline bool loadCalls(JsonVariantConst v, std::vector<Call>& out, std::string& err) {
+  if (v.isNull()) return true;
+  if (!v.is<JsonArrayConst>()) {
+    err = "calls is not an array";
+    return false;
+  }
+  for (JsonVariantConst c : v.as<JsonArrayConst>()) {
+    Call k;
+    if (!loadCall(c, k, err)) return false;
     out.push_back(std::move(k));
   }
   return true;
 }
 
-inline bool loadStep(JsonObjectConst o, Step& s, std::string& err) {
-  s.text = o["text"] | "";
-  s.thinking = o["thinking"] | "";
-  s.model = o["model"] | s.model;
-  s.status = o["status"] | 200;
-  s.errorBody = o["error_body"] | "";
-  s.rawBody = o["raw_body"] | "";
-  s.transportCut = o["transport_cut"] | false;
-  s.takesMs = o["takes_ms"] | 0u;
-  loadUsage(o["usage"], s.usage);
-  if (!o["finish"].isNull() && !finishFromName(o["finish"] | "", s.finish)) {
-    err = "unknown finish";
-    return false;
-  }
-  return loadCalls(o["calls"], s.calls, err);
+// A finish that contradicts the calls renders an answer no provider sends.
+inline bool finishFits(const Step& s, std::string& err) {
+  if (s.finish == Finish::ToolUse && s.calls.empty()) err = "finish tool with no calls";
+  else if (s.finish == Finish::End && !s.calls.empty()) err = "finish end with calls";
+  else return true;
+  return false;
 }
 
-// Parse a script. `dialect` is set when the script names one (else left as it was), and
-// then *named (when given) is true.
+inline bool loadFields(JsonObjectConst o, Step& s, std::string& err) {
+  return typed(o, "text", s.text, err) && typed(o, "thinking", s.thinking, err) && typed(o, "model", s.model, err) &&
+         typed(o, "status", s.status, err) && typed(o, "error_body", s.errorBody, err) &&
+         typed(o, "raw_body", s.rawBody, err) && typed(o, "transport_cut", s.transportCut, err) &&
+         typed(o, "takes_ms", s.takesMs, err);
+}
+
+inline bool loadStep(JsonVariantConst v, Step& s, std::string& err) {
+  JsonObjectConst o = v.as<JsonObjectConst>();
+  if (o.isNull()) {
+    err = "not an object";
+    return false;
+  }
+  static const std::initializer_list<const char*> keys = {
+      "text", "calls", "thinking", "finish", "usage", "model", "status", "error_body", "raw_body", "transport_cut",
+      "takes_ms"};
+  if (!onlyKeys(o, keys, "a step", err) || !loadFields(o, s, err) || !loadUsage(o["usage"], s.usage, err) ||
+      !loadCalls(o["calls"], s.calls, err))
+    return false;
+  std::string finish;
+  if (!typed(o, "finish", finish, err)) return false;
+  if (!finish.empty() && !finishFromName(finish, s.finish)) {
+    err = "unknown finish " + finish;
+    return false;
+  }
+  return finishFits(s, err);
+}
+
+// Parse a script. On success `steps` holds it and `dialect` is set when the script names
+// one (then *named, when given, is true); on failure neither is touched.
 inline bool loadScript(const std::string& json, Dialect& dialect, std::vector<Step>& steps, std::string& err,
                        bool* named = nullptr) {
   JsonDocument doc;
@@ -216,24 +287,32 @@ inline bool loadScript(const std::string& json, Dialect& dialect, std::vector<St
     err = std::string("script is not JSON: ") + e.c_str();
     return false;
   }
-  if (!doc["dialect"].isNull() && !dialectFromName(doc["dialect"] | "", dialect)) {
+  JsonObjectConst root = doc.as<JsonObjectConst>();
+  if (root.isNull() || !onlyKeys(root, {"dialect", "steps"}, "the script", err)) {
+    if (err.empty()) err = "script is not an object";
+    return false;
+  }
+  Dialect d = dialect;
+  if (!root["dialect"].isNull() && !dialectFromName(root["dialect"] | "", d)) {
     err = "unknown dialect";
     return false;
   }
-  if (named) *named = !doc["dialect"].isNull();
-  if (!doc["steps"].is<JsonArrayConst>()) {
+  if (!root["steps"].is<JsonArrayConst>()) {
     err = "script has no steps array";
     return false;
   }
-  steps.clear();
-  for (JsonObjectConst o : doc["steps"].as<JsonArrayConst>()) {
+  std::vector<Step> loaded;
+  for (JsonVariantConst v : root["steps"].as<JsonArrayConst>()) {
     Step s;
-    if (!loadStep(o, s, err)) {
-      err = "step " + std::to_string(steps.size()) + ": " + err;
+    if (!loadStep(v, s, err)) {
+      err = "step " + std::to_string(loaded.size()) + ": " + err;
       return false;
     }
-    steps.push_back(std::move(s));
+    loaded.push_back(std::move(s));
   }
+  steps = std::move(loaded);
+  dialect = d;
+  if (named) *named = !root["dialect"].isNull();
   return true;
 }
 

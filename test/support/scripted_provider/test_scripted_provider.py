@@ -57,6 +57,12 @@ class ScriptedModelTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             ScriptedModel.from_script({"dialect": "chat", "steps": []})
 
+    def test_unreplayable_or_malformed_steps_are_refused(self):
+        for bad in ({"status": 503}, {"transport_cut": True}, {"calls": [{"args": {}}]}, {"cals": []}):
+            with self.assertRaises(ValueError):
+                ScriptedModel([bad])
+        ScriptedModel([{"text": "ok", "status": 200}])
+
     def test_call_ids_match_the_cpp_provider(self):
         self.assertEqual(call_id(0, 0), "toolu_s000c00")
         self.assertEqual(call_id(12, 3), "toolu_s012c03")

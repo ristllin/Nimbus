@@ -30,6 +30,7 @@ enum class ExchangeErr : uint8_t {
   Cut = 6,             // the answer was cut after its retry
   Malformed = 7,       // the answer did not parse
   Other = 8,           // anything else: one plain line
+  Blocked = 9,         // a moderation block (the router's): the moderation status line
 };
 inline const char* exchangeErrSlug(ExchangeErr e) {
   switch (e) {
@@ -42,6 +43,7 @@ inline const char* exchangeErrSlug(ExchangeErr e) {
     case ExchangeErr::Cut: return "cut";
     case ExchangeErr::Malformed: return "malformed";
     case ExchangeErr::Other: return "other";
+    case ExchangeErr::Blocked: return "blocked";
   }
   return "other";
 }
@@ -52,7 +54,7 @@ struct ExchangeDeps {
 };
 
 struct ExchangeRequest {
-  const Wire* wire = nullptr;
+  const WireCodec* wire = nullptr;
   const RenderInput* render = nullptr;
   uint32_t timeoutMs = 0;      // the host's read window (Anthropic 120 s, ...)
   uint32_t deadlineMs = 0;     // the turn's remaining soft wall clock

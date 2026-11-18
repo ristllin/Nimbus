@@ -43,8 +43,9 @@ inline const char* triggerSlug(Trigger t) {
   }
   return "owner";
 }
-// A turn a person is waiting on (progress signals, the late-message join).
-inline bool personTrigger(Trigger t) { return t == Trigger::Owner || t == Trigger::Console; }
+// A turn a person is waiting on (progress signals, the late-message join). The one
+// automatic resume answers an owner message, so it counts.
+inline bool personTrigger(Trigger t) { return t == Trigger::Owner || t == Trigger::Console || t == Trigger::Resume; }
 
 // The request shape a head speaks (PRD section 1, "Request on each wire").
 enum class Dialect : uint8_t {
@@ -70,6 +71,7 @@ struct ToolCall {
   std::string id;        // the provider's call id
   std::string name;      // the tool name as advertised (read_file, ledger_write, ...)
   std::string argsJson;  // the raw JSON arguments object ("{}" if none)
+  bool complete = true;  // false: cut or not valid JSON; never dispatched
 };
 struct ToolOutput {
   std::string id;        // echoes ToolCall::id

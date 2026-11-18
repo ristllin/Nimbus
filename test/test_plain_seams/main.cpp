@@ -126,10 +126,10 @@ std::vector<StubRow> stubs() {
       {"tx::migrateStep", [] { tx::MigrationState m; return tx::migrateStep(gFiles, "1001", rows, m); }},
       {"tx::isReentry", [] { return tx::isReentry(gFiles, "1001", flag); }},
       {"tx::reentryItems", [] { return tx::reentryItems(head, rows, items); }},
-      {"plain::wireFor anthropic", [] { const plain::Wire* w; return plain::wireFor(plain::Dialect::AnthropicMessages, w); }},
-      {"plain::wireFor responses", [] { const plain::Wire* w; return plain::wireFor(plain::Dialect::OpenAIResponses, w); }},
-      {"plain::wireFor chat", [] { const plain::Wire* w; return plain::wireFor(plain::Dialect::ChatCompletions, w); }},
-      {"plain::wireFor flat", [] { const plain::Wire* w; return plain::wireFor(plain::Dialect::Flat, w); }},
+      {"plain::wireFor anthropic", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::AnthropicMessages, w); }},
+      {"plain::wireFor responses", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::OpenAIResponses, w); }},
+      {"plain::wireFor chat", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::ChatCompletions, w); }},
+      {"plain::wireFor flat", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::Flat, w); }},
       {"plain::PlainEngine::runTurn", [] { plain::PlainEngine e(plain::EngineDeps{}); plain::TurnOutcome o; return e.runTurn({}, o); }},
       {"plain::PlainEngine::idle", [] { plain::PlainEngine e(plain::EngineDeps{}); plain::IdleOutcome o; return e.idle({}, o); }},
       {"plain::PlainEngine::boot", [] { plain::PlainEngine e(plain::EngineDeps{}); return e.boot({}); }},
@@ -175,7 +175,7 @@ static void test_every_stub_answers_not_implemented() {
   tx::StoreState state = tx::StoreState::Stored;
   (void)gLog.append(tx::Item{}, state);
   TEST_ASSERT_TRUE(state == tx::StoreState::NotStored);
-  const plain::Wire* w = reinterpret_cast<const plain::Wire*>(&state);
+  const plain::WireCodec* w = reinterpret_cast<const plain::WireCodec*>(&state);
   (void)plain::wireFor(plain::Dialect::Flat, w);
   TEST_ASSERT_NULL(w);
 }
@@ -220,10 +220,21 @@ static void test_registration_rules() {
   TEST_ASSERT_TRUE(h.beforeDispatch(plain::HookSlot::Media, nullptr).err == tx::Err::InvalidArgument);
   TEST_ASSERT_TRUE(h.beforeDispatch(static_cast<plain::HookSlot>(plain::kHookSlotCount), run).err ==
                    tx::Err::InvalidArgument);
+  // The Observer slot never decides: refused on the deciding seams, allowed elsewhere.
+  TEST_ASSERT_TRUE(h.beforeDispatch(plain::HookSlot::Observer, run).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_TRUE(h.beforeDeliver(plain::HookSlot::Observer, [](const plain::DeliverCtx&) {
+                     return plain::DeliverDecision{};
+                   }).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_TRUE(h.idleStep(plain::HookSlot::Observer, [](const plain::IdleCtx&) { return plain::IdleOutcome{}; }).err ==
+                   tx::Err::InvalidArgument);
+  TEST_ASSERT_TRUE(h.afterDeliver(plain::HookSlot::Observer, [](const plain::DeliveredCtx&) {}).ok());
+  // Nobody decided reads as no slot, not as some slot.
+  TEST_ASSERT_TRUE(h.runBeforeDispatch({}).by == plain::HookSlot::None);
   // The same slot on another seam is free.
   TEST_ASSERT_TRUE(h.afterResult(plain::HookSlot::Rails, [](const plain::ResultCtx&) {}).ok());
   TEST_ASSERT_EQUAL(2, (int)h.registered(plain::Seam::BeforeDispatch));
   TEST_ASSERT_EQUAL(1, (int)h.registered(plain::Seam::AfterResult));
+  TEST_ASSERT_EQUAL(1, (int)h.registered(plain::Seam::AfterDeliver));
   TEST_ASSERT_TRUE(h.has(plain::Seam::BeforeDispatch, plain::HookSlot::Intents));
   TEST_ASSERT_FALSE(h.has(plain::Seam::BeforeDispatch, plain::HookSlot::Media));
   h.clear();
@@ -371,6 +382,8 @@ static void test_slug_tables_are_whole() {
   tx::ItemKind none;
   TEST_ASSERT_FALSE(tx::kindFromLetter('z', none));   // z is the crc key, never a kind
   assertUniqueSlugs(plain::kAllStatusLines, plain::statusLineSlug, "status line");
+  TEST_ASSERT_TRUE(plain::personTrigger(plain::Trigger::Resume));
+  TEST_ASSERT_FALSE(plain::personTrigger(plain::Trigger::Routine));
   assertUniqueSlugs(plain::kAllDialects, plain::dialectSlug, "dialect");
   const plain::Trigger triggers[] = {plain::Trigger::Owner,       plain::Trigger::Console, plain::Trigger::Routine,
                                      plain::Trigger::AgentResult, plain::Trigger::Notice,  plain::Trigger::Resume};

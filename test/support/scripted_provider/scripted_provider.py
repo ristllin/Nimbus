@@ -29,6 +29,26 @@ class ScriptExhausted(RuntimeError):
     pass
 
 
+STEP_KEYS = {"text", "calls", "thinking", "finish", "usage", "model"}
+# Exchange failures the C++ provider renders (an HTTP error, a raw body, a transport cut).
+# The reference loop has no transport to fail, so a script that uses them is refused here
+# rather than answered as a normal step, which would make a parity run green for the
+# wrong reason.
+FAILURE_KEYS = {"status", "error_body", "raw_body", "transport_cut", "takes_ms"}
+
+
+def check_step(n: int, s: dict) -> None:
+    unknown = set(s) - STEP_KEYS - FAILURE_KEYS
+    if unknown:
+        raise ValueError(f"step {n}: unknown keys {sorted(unknown)}")
+    failure = (set(s) & FAILURE_KEYS) - ({"status"} if s.get("status", 200) == 200 else set())
+    if failure:
+        raise ValueError(f"step {n}: the reference loop cannot replay {sorted(failure)}")
+    for c in s.get("calls", []):
+        if not c.get("name"):
+            raise ValueError(f"step {n}: a call has no name")
+
+
 def call_id(step: int, i: int) -> str:
     """The Anthropic call id the C++ provider gives call i of request `step` (wire_answers.h)."""
     return f"toolu_s{step % 1000:03d}c{i % 100:02d}"
@@ -43,6 +63,8 @@ class ScriptedModel:
     results = refloop.Anthropic.results
 
     def __init__(self, steps: list):
+        for n, s in enumerate(steps):
+            check_step(n, s)
         self.steps, self.seen = list(steps), []
 
     @classmethod
@@ -73,6 +95,8 @@ class ScriptedModel:
             content.append({"type": "tool_use", "id": cid, "name": c["name"], "input": args})
             calls.append((cid, c["name"], args))
         u = s.get("usage", {})
+        # refloop's Step counts the whole prompt, cached parts included (its Anthropic
+        # provider adds input, cache read and cache write the same way).
         prompt = u.get("input", 100) + u.get("cache_read", 0) + u.get("cache_write", 0)
         text = s.get("text", "")
         if s.get("finish") in ("cut", "refusal"):
