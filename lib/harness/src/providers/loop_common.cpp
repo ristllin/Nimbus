@@ -465,9 +465,10 @@ class RoundRecovery {
 
   // A photo round whose fit cannot carry the host's minimum final answer (wire_budget.h
   // photosOverFit): nothing was sent. Photos come before older history: the older
-  // history goes first (the give-up order's own rung, with its LEFT OUT note), and only
-  // when none is left are the photos read as text on this host for the rest of the turn
-  // ("transcribed: did not fit the <host> time window"). True when the round runs again.
+  // history goes first (the give-up order's own rung, with its LEFT OUT note), down to
+  // its keep floor, and only then are the photos read as text on this host for the rest
+  // of the turn ("transcribed: did not fit the <host> time window"); the history given up
+  // for them comes back, since the text round has room for it. True when the round runs again.
   __attribute__((noinline)) bool photoFit(const std::string& host, const orch::HeadStep& sr) {
     size_t over = 0;
     if (sr.ok || !wire::parsePhotoFitError(sr.error, over)) return false;
@@ -475,17 +476,22 @@ class RoundRecovery {
       hlog::logf("fabric: %s photo round over its time fit - gave up older history, running it again", host.c_str());
       return true;
     }
-    return imageparts::transcribeForTime(tr_.images(), host) > 0;
+    if (imageparts::transcribeForTime(tr_.images(), host) == 0) return false;
+    if (fitPrompt(0, orch::FitScope::GiveBackHistory) > 0)
+      hlog::logf("fabric: %s photos went as text - the history given up for them is back", host.c_str());
+    return true;
   }
 
   // A head turn's newest message over its string budget (wire_budget.h seedWithinBudget):
-  // nothing was sent. What that message holds goes, a rung of the turn's ladder at a time
-  // (recall, then the input's middle), never the tool rounds or the older history first.
-  // True when the round runs again.
+  // nothing was sent. Only what that message holds goes (recall, the skills, the results
+  // blocks, then the input's middle: FitScope::NewestMessage), never the tool rounds, the
+  // history or the shelf, and in a bounded number of passes. True when the round runs again.
   __attribute__((noinline)) bool seedFit(const std::string& host, const orch::HeadStep& sr) {
     size_t over = 0;
     if (sr.ok || !wire::parseSeedBudgetError(sr.error, over)) return false;
-    if (fitPrompt(over + 512, orch::FitScope::NextRung) == 0) return false;
+    if (seedFits_ >= kSeedFitPasses) return false;
+    ++seedFits_;
+    if (fitPrompt(over + 512, orch::FitScope::NewestMessage) == 0) return false;
     hlog::logf("fabric: %s newest message over its budget - gave up part of it, running the round again",
                host.c_str());
     return true;
@@ -549,6 +555,10 @@ class RoundRecovery {
   std::string fitInstructions_, fitInputs_;
   bool fitted_ = false;
   bool overflowTried_ = false, cutRerun_ = false;
+  // A seed refit measures the rendered prompt, not the seed alone: a pass that freed bytes
+  // elsewhere (the playbook) is tried again, a few times at most.
+  static constexpr int kSeedFitPasses = 4;
+  int seedFits_ = 0;
   std::unique_ptr<orch::HeadStep> savedCut_;
   std::string cutNote_;
   std::string heldHost_, heldCause_;

@@ -2,7 +2,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "nimbus/harness/compose.h"
 #include "nimbus/orch/head_loop.h"   // FitScope
@@ -59,13 +61,22 @@ class TurnFit {
   TurnFit(ComposeInputs& ci, const std::string& inputs, HeadTools* tools, const FitContext& ctx = FitContext());
 
   // Give up bytes within `scope` (head_loop.h FitScope):
-  //   OlderHistory  the history rungs (5 then 6) until `want`, down to the newest exchange
-  //                 (a photo round's time fit: older history goes before its photos);
+  //   OlderHistory  the history rungs (5 then 6) until `want`, down to the keep floor
+  //                 (setHistoryKeepFloor; the newest exchange when none is set): a photo
+  //                 round's time fit gives up older history before its photos, and only to
+  //                 there (RULINGS-v3 item 5);
   //   Context       the next of rungs 2-6 that gives anything (one rung);
   //   NextRung      the next rung of the whole order that gives anything (one rung);
-  //   Ladder        the rungs in order until `want` is met.
+  //   Ladder        the rungs in order until `want` is met;
+  //   NewestMessage rungs 2, 3, 7 and 8 (what the newest message holds) until `want`;
+  //   GiveBackHistory  the history OlderHistory gave up comes back (its photos went as text
+  //                 after all); returns the rendered bytes put back. A later cut of history
+  //                 by another scope keeps what it cut (nothing is given back then).
   // Returns the rendered bytes given up; 0 = nothing left there.
   size_t shrink(size_t want, nimbus::orch::FitScope scope);
+  // The live history (the summary pair aside) OlderHistory never cuts under: the head's
+  // historyKeepBytes (ContextBudget). 0 = down to the newest exchange.
+  void setHistoryKeepFloor(size_t bytes) { keepFloor_ = bytes; }
 
   // The prompt recomposed from what is left. Valid after shrink() gave something up.
   const std::string& instructions() const { return instructions_; }
@@ -89,6 +100,10 @@ class TurnFit {
   std::function<void()> applyRung(int rung, size_t want);   // applied; the result undoes it
   std::function<void()> dropToolsUndoable();
   size_t walk(int from, int to, size_t want, bool whole);
+  size_t walkNewestMessage(size_t want);
+  size_t shedOlderHistory(size_t want);
+  size_t giveBackHistory();
+  size_t liveHistoryBytes() const;
   size_t rendered() const;
   // Each rung, applied; the measure and the revert are runRung's.
   void dropRecalled();
@@ -109,6 +124,8 @@ class TurnFit {
   std::string input_;
   std::string instructions_;
   bool trimmed_ = false;
+  size_t keepFloor_ = 0;      // setHistoryKeepFloor
+  size_t floorNow_ = 0;       // the floor dropHistory keeps to (OlderHistory only)
   // What went, for the note (one struct: a rung that frees nothing puts it back).
   struct Cuts {
     int olderDropped = 0;     // history messages before today
@@ -126,6 +143,12 @@ class TurnFit {
     bool shelfDropped = false;
     bool toolsDropped = false;
   } cut_;
+  // The history before OlderHistory's first cut, to give back (GiveBackHistory).
+  struct HistoryShed {
+    std::vector<HistMsg> history;
+    Cuts cut;
+  };
+  std::unique_ptr<HistoryShed> shed_;
 };
 
 }  // namespace agent

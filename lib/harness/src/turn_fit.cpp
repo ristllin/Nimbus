@@ -85,10 +85,14 @@ bool TurnFit::isToday(size_t i) const {
 void TurnFit::dropHistory(bool today, size_t want) {
   auto& h = ci_.history;
   const size_t first = (h.size() >= 2 && isSummaryMessage(h[0])) ? 2 : 0;
+  const size_t live = floorNow_ ? liveHistoryBytes() : 0;
   size_t drop = 0, freed = 0;
-  // Rung 5 stops at today's first turn; rung 6 starts there; the newest exchange stays.
+  // Rung 5 stops at today's first turn; rung 6 starts there; the newest exchange stays, and
+  // under OlderHistory the live history never goes under the keep floor.
   while (first + drop + 2 < h.size() && freed < want && isToday(first + drop) == today) {
-    freed += h[first + drop].text.size() + h[first + drop + 1].text.size();
+    const size_t pair = h[first + drop].text.size() + h[first + drop + 1].text.size();
+    if (floorNow_ && live < freed + pair + floorNow_) break;
+    freed += pair;
     drop += 2;
   }
   if (!drop) return;
@@ -225,15 +229,72 @@ size_t TurnFit::walk(int from, int to, size_t want, bool whole) {
   return freed;
 }
 
+// What the newest message holds, in the order's own sequence: recall, the skills, the
+// results blocks, the input's middle (never history, tools or the shelf).
+size_t TurnFit::walkNewestMessage(size_t want) {
+  size_t freed = 0;
+  for (int r : {kRecalled, kSkills, kResults, kInput}) {
+    freed += runRung(r, want > freed ? want - freed : 1);
+    if (freed >= want) break;
+  }
+  return freed;
+}
+
+size_t TurnFit::liveHistoryBytes() const {
+  const auto& h = ci_.history;
+  size_t n = 0;
+  for (size_t i = (h.size() >= 2 && isSummaryMessage(h[0])) ? 2 : 0; i < h.size(); i++) n += h[i].text.size();
+  return n;
+}
+
+// The history rungs down to the keep floor, remembering what was there before the first cut.
+size_t TurnFit::shedOlderHistory(size_t want) {
+  const bool first = !shed_;
+  if (first) shed_.reset(new HistoryShed{ci_.history, cut_});
+  floorNow_ = keepFloor_;
+  const size_t freed = walk(kOlderDays, kToday, want, true);
+  floorNow_ = 0;
+  if (!freed && first) shed_.reset();
+  return freed;
+}
+
+size_t TurnFit::giveBackHistory() {
+  if (!shed_) return 0;
+  const size_t before = rendered();
+  ci_.history = std::move(shed_->history);
+  const Cuts& was = shed_->cut;
+  cut_.olderDropped = was.olderDropped;
+  cut_.todayDropped = was.todayDropped;
+  cut_.historyBytesDropped = was.historyBytesDropped;
+  cut_.historyRowsDropped = was.historyRowsDropped;
+  cut_.cutFirstId = was.cutFirstId;
+  cut_.cutLastId = was.cutLastId;
+  cut_.keptFirstId = was.keptFirstId;
+  cut_.cutFromUnix = was.cutFromUnix;
+  cut_.cutToUnix = was.cutToUnix;
+  shed_.reset();
+  instructions_ = composeInstructions(ci_);
+  trimmed_ = !note().empty();
+  const size_t after = rendered();
+  hlog::logf("turn fit: put back %u B of history (its photos went as text)", (unsigned)(after - std::min(after, before)));
+  return after > before ? after - before : 1;
+}
+
 size_t TurnFit::shrink(size_t want, nimbus::orch::FitScope scope) {
   using nimbus::orch::FitScope;
+  if (scope == FitScope::GiveBackHistory) return giveBackHistory();
+  const size_t historyWas = ci_.history.size();
   size_t freed = 0;
   switch (scope) {
-    case FitScope::OlderHistory: freed = walk(kOlderDays, kToday, want, true); break;
-    case FitScope::Context:      freed = walk(kRecalled, kToday, want, false); break;
-    case FitScope::NextRung:     freed = walk(kRecalled, kShelf, want, false); break;
-    case FitScope::Ladder:       freed = walk(kRecalled, kShelf, want, true); break;
+    case FitScope::OlderHistory:  freed = shedOlderHistory(want); break;
+    case FitScope::Context:       freed = walk(kRecalled, kToday, want, false); break;
+    case FitScope::NextRung:      freed = walk(kRecalled, kShelf, want, false); break;
+    case FitScope::Ladder:        freed = walk(kRecalled, kShelf, want, true); break;
+    case FitScope::NewestMessage: freed = walkNewestMessage(want); break;
+    case FitScope::GiveBackHistory: break;
   }
+  // History another scope cut stays cut: what it was given up for still holds.
+  if (scope != FitScope::OlderHistory && ci_.history.size() != historyWas) shed_.reset();
   if (!freed) return 0;
   trimmed_ = true;
   instructions_ = composeInstructions(ci_);

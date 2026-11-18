@@ -265,6 +265,80 @@ static void test_clips_stay_valid_utf8() {
   }
 }
 
+// Release review v5.1.2, finding 4 (RULINGS-v3 item 5): a photo round's history cut stops at
+// the head's keep floor, whatever it asks for, and returns 0 there so the photos go as text;
+// then the history it gave up comes back whole, with no LEFT OUT note and no row left out.
+// The class: every floor from none to more than the whole history, every request size.
+static void test_photo_history_cut_stops_at_the_keep_floor_and_comes_back() {
+  const size_t live = [] {
+    ComposeInputs ci = baseInputs();
+    size_t n = 0;
+    for (size_t i = 2; i < ci.history.size(); i++) n += ci.history[i].text.size();
+    return n;
+  }();
+  for (size_t floor : {(size_t)0, (size_t)2000, (size_t)5000, (size_t)9000, live + 1}) {
+    for (size_t want : {(size_t)1500, (size_t)4000, (size_t)1000000}) {
+      ComposeInputs ci = baseInputs();
+      const size_t messages = ci.history.size();
+      const std::string composed = agent::composeInstructions(ci);
+      TurnFit fit(ci, "hello", nullptr, today());
+      fit.setHistoryKeepFloor(floor);
+      const std::string what = "floor " + std::to_string(floor) + " want " + std::to_string(want);
+      for (int i = 0; i < 20 && fit.shrink(want, FitScope::OlderHistory) > 0; i++) {
+      }
+      size_t left = 0;
+      for (size_t i = 2; i < ci.history.size(); i++) left += ci.history[i].text.size();
+      if (floor) TEST_ASSERT_TRUE_MESSAGE(left >= std::min(floor, live), what.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(hasQ(ci, 6), what.c_str());   // the newest exchange stays
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, (uint32_t)fit.shrink(want, FitScope::OlderHistory), what.c_str());
+      // Given back: as it was, nothing left out, nothing said.
+      const bool cut = ci.history.size() < messages;
+      TEST_ASSERT_EQUAL_MESSAGE(cut, fit.shrink(0, FitScope::GiveBackHistory) > 0, what.c_str());
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)messages, (uint32_t)ci.history.size(), what.c_str());
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, (uint32_t)fit.historyRowsLeftOut(), what.c_str());
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("", fit.note().c_str(), what.c_str());
+      TEST_ASSERT_FALSE_MESSAGE(fit.trimmed(), what.c_str());
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(composed.c_str(), agent::composeInstructions(ci).c_str(), what.c_str());
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, (uint32_t)fit.shrink(0, FitScope::GiveBackHistory), what.c_str());
+    }
+  }
+  // A cut another scope made (a body over budget) stays: nothing is given back over it, and
+  // what another rung gave up stays said.
+  ComposeInputs ci = baseInputs();
+  TurnFit fit(ci, inputWithResults(), nullptr, today());
+  TEST_ASSERT_TRUE(fit.shrink(1500, FitScope::OlderHistory) > 0);
+  TEST_ASSERT_TRUE(fit.shrink(100, FitScope::NextRung) > 0);    // recall
+  TEST_ASSERT_TRUE(fit.shrink(100000, FitScope::Ladder) > 0);   // more history, and beyond
+  const size_t after = ci.history.size();
+  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)fit.shrink(0, FitScope::GiveBackHistory));
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)after, (uint32_t)ci.history.size());
+  TEST_ASSERT_TRUE(fit.note().find("recalled") != std::string::npos);
+}
+
+// Release review v5.1.2, finding 5: a newest message over its string budget gives up only
+// what that message holds (recall, the skills, the results, the input's middle), never the
+// history, the tools or the shelf, and one call meets what it asks for.
+static void test_newest_message_scope_never_touches_history_tools_or_shelf() {
+  ComposeInputs ci = baseInputs();
+  const size_t messages = ci.history.size();
+  const std::string shelf = ci.skillsShelf;
+  agent::HeadTools tools;
+  tools.specs.push_back({"memory_search", std::string(4000, 'd'), "{}"});
+  TurnFit fit(ci, inputWithResults() + std::string(40000, 'i'), &tools, today());
+  const size_t want = 30000;
+  TEST_ASSERT_TRUE(fit.shrink(want, FitScope::NewestMessage) + 512 >= want);   // one call, one pass (less a marker)
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)messages, (uint32_t)ci.history.size());
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)tools.specs.size());
+  TEST_ASSERT_EQUAL_STRING(shelf.c_str(), ci.skillsShelf.c_str());
+  TEST_ASSERT_TRUE(fit.note().find("input") != std::string::npos);
+  // With nothing of its own left to give, it gives nothing (no history, no tools).
+  for (int i = 0; i < 10 && fit.shrink(want, FitScope::NewestMessage) > 0; i++) {
+  }
+  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)fit.shrink(want, FitScope::NewestMessage));
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)messages, (uint32_t)ci.history.size());
+  TEST_ASSERT_EQUAL_UINT32(1, (uint32_t)tools.specs.size());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_every_rung_strictly_shrinks_or_gives_nothing);
@@ -276,5 +350,7 @@ int main() {
   RUN_TEST(test_history_cuts_are_counted);
   RUN_TEST(test_the_owner_line);
   RUN_TEST(test_clips_stay_valid_utf8);
+  RUN_TEST(test_photo_history_cut_stops_at_the_keep_floor_and_comes_back);
+  RUN_TEST(test_newest_message_scope_never_touches_history_tools_or_shelf);
   return UNITY_END();
 }

@@ -1,6 +1,7 @@
 #include <unity.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 #include "../support/fake_platform.h"
@@ -851,23 +852,29 @@ static void test_zai_cut_round_retries_with_room_then_fails_as_cut() {
       "{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"partial\"}}],"
       "\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":2400}}";
   ZaiRig r;
-  r.d.http.script.push_back({"api.z.ai", kPath, 200, cut});
-  r.d.http.script.push_back({"api.z.ai", kPath, 200, cut});
+  for (int i = 0; i < 4; ++i) r.d.http.script.push_back({"api.z.ai", kPath, 200, cut});
   std::string out, err;
   TEST_ASSERT_FALSE(r.run(out, err));
   TEST_ASSERT_TRUE_MESSAGE(err.find("cut at the output limit") != std::string::npos, err.c_str());
+  // The attempt and its retry, then the host loop's one rerun with the cut note (the Z.ai
+  // loop runs through runHostLoop since release review v5.1.2, as every host's loop does).
+  TEST_ASSERT_EQUAL(4, (int)r.d.http.seen.size());
   // A small round on a healthy heap has room for a retry 400 tokens roomier (lane B's rule).
-  const providers::OutputCap cap = providers::wire::lastRound().cap;
-  TEST_ASSERT_TRUE(cap.hasRetry() && cap.retryTokens >= cap.maxTokens + providers::kRetryGainTokens);
-  TEST_ASSERT_EQUAL(2, (int)r.d.http.seen.size());
-  TEST_ASSERT_TRUE(bodyHas(r.d, 0, ("\"max_tokens\":" + std::to_string(cap.maxTokens)).c_str()));
-  TEST_ASSERT_TRUE(bodyHas(r.d, 1, ("\"max_tokens\":" + std::to_string(cap.retryTokens)).c_str()));
+  auto maxTokensOf = [&](size_t i) {
+    const std::string& b = r.d.http.seen[i].body;
+    const size_t at = b.find("\"max_tokens\":");
+    return at == std::string::npos ? 0ul : std::strtoul(b.c_str() + at + 13, nullptr, 10);
+  };
+  TEST_ASSERT_TRUE(maxTokensOf(0) > 0);
+  TEST_ASSERT_TRUE(maxTokensOf(1) >= maxTokensOf(0) + providers::kRetryGainTokens);
+  TEST_ASSERT_FALSE(bodyHas(r.d, 1, "LAST ATTEMPT RAN OUT OF ROOM"));
+  TEST_ASSERT_TRUE(bodyHas(r.d, 2, "LAST ATTEMPT RAN OUT OF ROOM"));
 }
 
 // Z.ai at its 64k target (211 KB) on a fragmented heap: the fit after the upload, the paced
 // slices and the prefill leaves GLM about its minimum final, so the round asks for 1,600
-// tokens and has no retry (it would not give 400 more): a cut fails over at once instead of
-// paying a second cut (the provider gap item of plan v3).
+// tokens and has no retry (it would not give 400 more): the step pays no second cut (the
+// provider gap item of plan v3); the host loop's one rerun with the cut note is all that follows.
 static void test_zai_at_64k_fragmented_sends_1600_and_no_retry() {
   ZaiRig r;
   r.pd.dmaLargestBlock = [] { return (uint32_t)4000; };   // under kDmaChunkFloor: paced
@@ -885,6 +892,7 @@ static void test_zai_at_64k_fragmented_sends_1600_and_no_retry() {
       "{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"partial\"}}],"
       "\"usage\":{\"prompt_tokens\":64000,\"completion_tokens\":1600}}";
   r.d.http.script.push_back({"api.z.ai", kPath, 200, cut});
+  r.d.http.script.push_back({"api.z.ai", kPath, 200, cut});
   std::string conv, out, err;
   TEST_ASSERT_FALSE(providers::orchTurnCustom(r.pd, conv, agent::layout::join(parts), "USER", out, err, &r.ht, nullptr));
   const providers::wire::RoundRecord& sent = providers::wire::lastRound();
@@ -897,8 +905,10 @@ static void test_zai_at_64k_fragmented_sends_1600_and_no_retry() {
   TEST_ASSERT_TRUE_MESSAGE(sent.load.bodyBytes > 150000, msg);
   TEST_ASSERT_EQUAL_UINT32_MESSAGE(1600, sent.cap.maxTokens, msg);
   TEST_ASSERT_FALSE_MESSAGE(sent.cap.hasRetry(), msg);
-  TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)r.d.http.seen.size(), msg);   // no second cut paid
+  TEST_ASSERT_EQUAL_INT_MESSAGE(2, (int)r.d.http.seen.size(), msg);   // no in-step retry, one rerun
   TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"max_tokens\":1600"));
+  TEST_ASSERT_FALSE(bodyHas(r.d, 0, "LAST ATTEMPT RAN OUT OF ROOM"));
+  TEST_ASSERT_TRUE(bodyHas(r.d, 1, "LAST ATTEMPT RAN OUT OF ROOM"));
 }
 
 // Z.ai's content filter ends a round with no answer: a failed round, never an empty reply.

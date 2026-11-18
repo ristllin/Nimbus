@@ -555,32 +555,18 @@ struct ZaiTurn {
   std::string& outJson;
   std::string& err;
 };
+// The Z.ai head's own loop (a direct Z.ai head with failover off, a Cumulo zai selector):
+// the one host loop every other host runs (runHostLoop), so its rounds get the same
+// recovery: the newest-message fit, the prompt refit, the photo fit (a photo reads as its
+// transcription here: GLM is blind), the overflow trim and the cut rerun.
 static bool runZaiLoop(const ProviderDeps& pd, std::string& convId, const ZaiTurn& t, const HeadTools& ht,
                        nimbus::orch::TokenUsage* usage) {
-  namespace orch = nimbus::orch;
-  orch::Transcript tr;
-  tr.addUser(t.inputs);
-  const imageparts::LoopImages photos(tr);   // a photo reads as its transcription: GLM here is blind
-  const orch::HeadStepFn inner = zaiLoopStep(pd, t.instructions, ht, usage, tr);
-  const ResendCtx resend{&pd, &ht.cfg, &inner, "orchTurn(zai-loop)"};
-  orch::HeadLoopHooks hooks;
-  hooks.step     = resendUnsentOnce(&resend);
-  hooks.dispatch = ht.dispatch;
-  hooks.nowMs    = pd.nowMs;
-  hooks.freeHeap = pd.freeHeap;
-  hooks.largestBlock = pd.largestBlock;
-  hooks.log      = [](const std::string& m) { hlog::logf("%s", m.c_str()); };
-  hooks.onText   = ht.onRoundText;
-  hooks.progress = ht.onRoundProgress;   // round boundaries -> engine (lane PROG)
-  hooks.spill    = ht.spill;
-  hooks.transcript = &tr;
-  orch::HeadOutcome res = runHeadLoop(ht.cfg, hooks);
-  hlog::logf("orchTurn(zai-loop): rounds=%d cap=%s ok=%d heap=%u", res.rounds, res.capReason.c_str(), (int)res.ok,
-             (unsigned)(pd.freeHeap ? pd.freeHeap() : 0));
-  if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));
-  if (!res.ok) return wire::loopFailed(res, t.outJson, t.err);
-  t.outJson = res.finalTurn;
-  convId  = "chat";
+  const HostLoop loop{pd, ht, "orchTurn(zai-loop)", "zai",
+                      [&](const std::string& ins, nimbus::orch::Transcript& tr) {
+                        return zaiLoopStep(pd, ins, ht, usage, tr);
+                      }};
+  if (!runHostLoop(loop, t.instructions, t.inputs, t.outJson, t.err)) return false;
+  convId = "chat";
   return true;
 }
 

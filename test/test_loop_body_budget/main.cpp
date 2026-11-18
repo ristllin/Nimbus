@@ -11,7 +11,9 @@
 #include "../support/recorded_models.h"
 #include "nimbus/orch/model_catalog.h"
 #include "nimbus/harness/output_caps.h"
+#include "nimbus/harness/compose.h"
 #include "nimbus/harness/prompt_layout.h"
+#include "nimbus/harness/turn_fit.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/body_budget.h"
 #include "nimbus/orch/head_loop.h"
@@ -1162,6 +1164,165 @@ static void test_slow_floor_mistral_heads_show_their_photo() {
   }
 }
 
+// ---- the photo fit and the seed fit with the real give-up order (findings 4 and 5) -------
+namespace {
+// The engine's side of a refit (engine.cpp fitPrompt) over the real TurnFit: `exchanges` of
+// history, `each` bytes a message, and the head's keep floor.
+struct RealFit {
+  agent::ComposeInputs ci;
+  std::unique_ptr<agent::TurnFit> fit;
+  size_t minLive = SIZE_MAX;   // the least live history any request carried
+  RealFit(int exchanges, size_t each, const std::string& seed, agent::HeadTools* tools, size_t keepFloor) {
+    ci.devName = "Nimbus";
+    for (int i = 0; i < exchanges; i++) {
+      ci.history.push_back(agent::HistMsg(true, "Q" + std::to_string(i) + " " + std::string(each, 'q')));
+      ci.history.push_back(agent::HistMsg(false, "A" + std::to_string(i) + " " + std::string(each, 'a')));
+    }
+    fit.reset(new agent::TurnFit(ci, seed, tools));
+    fit->setHistoryKeepFloor(keepFloor);
+  }
+  size_t live() const {
+    size_t n = 0;
+    for (const auto& m : ci.history) n += m.text.size();
+    return n;
+  }
+  void bind(agent::HeadTools& ht) {
+    ht.fitPrompt = [this](size_t want, nimbus::orch::FitScope scope, std::string& ins, std::string& inp) {
+      const size_t freed = fit->shrink(want, scope);
+      if (!freed) return (size_t)0;
+      ins = fit->instructions();
+      inp = fit->inputs();
+      minLive = std::min(minLive, live());
+      return freed;
+    };
+  }
+};
+}  // namespace
+
+// Finding 4 (RULINGS-v3 item 5), with the real TurnFit: an album no history cut can fit gives
+// history up only to the head's keep floor, then goes as transcriptions, and that request
+// carries the whole history again (no LEFT OUT note, no row left out: no fold made due).
+// Before the fix the history went down to the newest exchange and never came back.
+static void test_album_transcribed_keeps_the_whole_history() {
+  auto table = [](const std::string& host, const std::string& model, bool routed) {
+    nimbus::orch::RequestBudget b = nimbus::orch::requestBudgetFor(host, model, routed);
+    b.wireBodyBytes = 360000;
+    b.rNomX100 = 360;
+    return b;
+  };
+  BudgetScope scope(+table);
+  Album album(10, 200000, 1600, 1200);
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200, finalResponse("mistral")});
+  providers::ProviderDeps pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+  pd.dmaLargestBlock = [] { return (uint32_t)4000; };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  const size_t keep = 30000;   // the history fits the photo round's text budget: only the time fit cuts it
+  RealFit f(30, 1000, album.text, &rig.ht, keep);
+  const size_t whole = f.live();
+  f.bind(rig.ht);
+  const nimbus::orch::ActiveTurnImages active(&album.set);
+  LogCapture::install();
+  std::string conv, out, err;
+  const bool ok = providers::orchTurnMistral(pd, conv, agent::composeInstructions(f.ci), album.text, out, err, &rig.ht,
+                                             nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_TRUE(f.minLive < whole);                    // history went first
+  TEST_ASSERT_TRUE_MESSAGE(f.minLive >= keep, std::to_string(f.minLive).c_str());   // only to its keep floor
+  TEST_ASSERT_EQUAL_INT(10, album.transcribed);
+  TEST_ASSERT_EQUAL_INT(1, (int)d.http.seen.size());
+  const std::string& body = d.http.seen[0].body;
+  TEST_ASSERT_TRUE(body.find("Q0 ") != std::string::npos);   // the oldest exchange is back
+  TEST_ASSERT_TRUE(body.find("LEFT OUT TO FIT") == std::string::npos);
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)whole, (uint32_t)f.live());
+  TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)f.fit->historyRowsLeftOut());
+  TEST_ASSERT_FALSE(f.fit->trimmed());
+  TEST_ASSERT_TRUE(LogCapture::contains("the history given up for them is back"));
+}
+
+// Finding 5, with the real TurnFit: a newest message over its 55,904 B budget gives up its
+// own input, once, and never the history (before the fix: 22 passes, 118 of 120 history
+// messages left out, then the input clipped).
+static void test_seed_over_its_budget_keeps_the_history() {
+  BudgetScope wide(nullptr, 360000);   // a derived head's budget: the body itself fits
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200, finalResponse("mistral")});
+  providers::ProviderDeps pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  const std::string seed = std::string(58806, 'u');
+  RealFit f(60, 600, seed, &rig.ht, 0);
+  const size_t whole = f.live();
+  f.bind(rig.ht);
+  int passes = 0;
+  auto inner = rig.ht.fitPrompt;
+  rig.ht.fitPrompt = [&](size_t want, nimbus::orch::FitScope scope, std::string& ins, std::string& inp) {
+    ++passes;
+    return inner(want, scope, ins, inp);
+  };
+  LogCapture::install();
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(
+      providers::orchTurnMistral(pd, conv, agent::composeInstructions(f.ci), seed, out, err, &rig.ht, nullptr),
+      err.c_str());
+  TEST_ASSERT_EQUAL_INT(1, passes);
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)whole, (uint32_t)f.live());
+  TEST_ASSERT_EQUAL_INT(1, (int)d.http.seen.size());
+  TEST_ASSERT_TRUE(d.http.seen[0].body.find("Q0 ") != std::string::npos);
+  TEST_ASSERT_TRUE(f.fit->note().find("this turn's input") != std::string::npos);
+}
+
+// Finding 5, the Z.ai head's own loop (a direct Z.ai head, failover off, and a Cumulo zai
+// selector): a newest message over its 55,904 B budget is given up like on every other host
+// (its loop runs through runHostLoop and its RoundRecovery). Before the fix the turn failed
+// with "the newest message is over the 55 KB message budget" and no request, where v5.1.1
+// clipped the input and answered.
+static void test_zai_loop_recovers_from_an_oversize_newest_message() {
+  for (bool routed : {false, true}) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, finalFor(WireKind::ZaiLoop)});
+    providers::ProviderDeps pd = d.contract();
+    pd.toolLoopOn = [] { return true; };
+    if (routed) {
+      pd.routerBase = [] { return std::string("https://router.example"); };
+      pd.routerKey = [] { return std::string("cumulo_sk_test"); };
+      providers::configureRouterCompatHead(pd, "zai", "glm-5.3");
+    } else {
+      pd.customBase = [] { return std::string("https://api.z.ai"); };
+      pd.customPathPrefix = [] { return std::string("/api/paas/v4"); };
+      pd.customKey = [] { return std::string("zai-key"); };
+      pd.customConv = [] { return std::string("openai"); };
+      pd.customModel = [] { return std::string("glm-5.3"); };
+      providers::applyZaiHeadPolicy(pd);
+    }
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    agent::layout::PromptParts parts;   // the head's split prompt: the seed is its per-turn block and input
+    parts.split = true;
+    parts.stat = "SYS";
+    parts.dyn = "[NOW] 09:00";
+    std::string input = std::string(57013, 'u');
+    std::vector<nimbus::orch::FitScope> scopes;
+    rig.ht.fitPrompt = [&](size_t want, nimbus::orch::FitScope scope, std::string& ins, std::string& inp) {
+      scopes.push_back(scope);
+      input.resize(input.size() - std::min(input.size() / 2, want));
+      ins = agent::layout::join(parts);
+      inp = input;
+      return want;
+    };
+    std::string conv, out, err;
+    const bool ok = providers::orchTurnCustom(pd, conv, agent::layout::join(parts), input, out, err, &rig.ht, nullptr);
+    const char* what = routed ? "cumulo zai" : "zai";
+    TEST_ASSERT_TRUE_MESSAGE(ok, (std::string(what) + ": " + err).c_str());
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)scopes.size(), what);
+    TEST_ASSERT_TRUE_MESSAGE(scopes[0] == nimbus::orch::FitScope::NewestMessage, what);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)d.http.seen.size(), what);
+  }
+}
+
 // Lane B's caps send at least 1 token and leave it to the wire to refuse a round whose fit
 // cannot carry the host's minimum final. A text round over v5.1.1's 85,000 B that is too big
 // for its host's read window (a budget larger than the window allows) is refused with the
@@ -1257,7 +1418,7 @@ static void test_seed_over_its_budget_gives_up_its_own_content() {
   TEST_ASSERT_TRUE_MESSAGE(
       providers::orchTurnMistral(pd, conv, agent::layout::join(parts), input, out, err, &rig.ht, nullptr), err.c_str());
   TEST_ASSERT_EQUAL_INT(1, (int)scopes.size());
-  TEST_ASSERT_TRUE(scopes[0] == nimbus::orch::FitScope::NextRung);
+  TEST_ASSERT_TRUE(scopes[0] == nimbus::orch::FitScope::NewestMessage);
   TEST_ASSERT_EQUAL_INT(1, (int)d.http.seen.size());
   TEST_ASSERT_TRUE(LogCapture::contains("newest message over its budget"));
 }
@@ -1314,6 +1475,9 @@ int main(int, char**) {
   RUN_TEST(test_large4_step_down_holds_through_the_refit);
   RUN_TEST(test_one_photo_goes_natively_on_every_vision_head);
   RUN_TEST(test_slow_floor_mistral_heads_show_their_photo);
+  RUN_TEST(test_album_transcribed_keeps_the_whole_history);
+  RUN_TEST(test_seed_over_its_budget_keeps_the_history);
+  RUN_TEST(test_zai_loop_recovers_from_an_oversize_newest_message);
   RUN_TEST(test_photo_round_text_budget_shrinks_by_the_estimate);
   RUN_TEST(test_album_on_large4_fragmented_goes_natively);
   RUN_TEST(test_album_that_cannot_fit_goes_as_transcriptions);
