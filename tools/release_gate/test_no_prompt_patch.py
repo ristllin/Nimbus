@@ -632,3 +632,72 @@ def test_register_grandfathered_rows_are_left_alone():
     text = read(REPO, gate.REGISTER)
     assert "| OIR-55 |" in text and gate.REGISTER_LAST_GRANDFATHERED == 55
     assert gate.check_register(REPO) == []
+
+
+# ---------------------------------------------------------------------------
+# Re-baseline: the orchestrator's repeatable step when a release line arrives
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def isolated_baseline(monkeypatch):
+    """rebaseline() updates the module's baseline in place: keep that inside the test."""
+    monkeypatch.setattr(cat, "E1_BASELINE", dict(cat.E1_BASELINE))
+    monkeypatch.setattr(cat, "E1_CEILINGS", dict(cat.E1_CEILINGS))
+
+
+def _release_line_growth(tree):
+    path, lit = plain_literal(tree, "side_prompts")
+    edit_literal(tree, path, lit, lit + " (a notice the release line added)")
+
+
+def test_a_rebaseline_makes_a_release_line_growth_the_baseline(tree, isolated_baseline):
+    _release_line_growth(tree)
+    regen(tree)
+    assert any("e1 side_prompts" in e for e in errors(tree))
+    record = cat.rebaseline(tree, "a release line added a notice")
+    assert "- e1 side_prompts: " in record and "(+" in record
+    assert errors(tree) == []
+    assert cat.main(["--root", tree]) == 0
+
+
+def test_a_rebaseline_is_repeatable_and_records_chain(tree, isolated_baseline):
+    already = len(gate.parse_changes(read(tree, gate.CHANGES))["rebaselines"])
+    _release_line_growth(tree)
+    cat.rebaseline(tree, "round 1")
+    merge(tree)
+    path, lit = plain_literal(tree, "device_notes")
+    edit_literal(tree, path, lit, lit + " (round 2)")
+    cat.rebaseline(tree, "round 2")
+    assert errors(tree) == []
+    assert len(gate.parse_changes(read(tree, gate.CHANGES))["rebaselines"]) == already + 2
+
+
+def test_a_moved_baseline_without_a_record_fails(tree, isolated_baseline):
+    _release_line_growth(tree)
+    cat.rebaseline(tree, "a release line added a notice")
+    text = read(tree, gate.CHANGES)
+    start = text.rindex("### RBL-")
+    write(tree, gate.CHANGES, text[:start] + text[text.index("\n## Changes", start) + 1 :])
+    errs = errors(tree)
+    assert any("without a re-baseline record" in e for e in errs), errs
+
+
+def test_a_merged_rebaseline_record_cannot_be_edited(tree, isolated_baseline):
+    _release_line_growth(tree)
+    cat.rebaseline(tree, "a release line added a notice")
+    merge(tree)
+    write(tree, gate.CHANGES, read(tree, gate.CHANGES).replace("a release line added a notice", "nothing moved"))
+    assert any("a merged re-baseline was edited" in e for e in errors(tree))
+
+
+def test_a_rebaseline_record_that_does_not_end_at_the_table_fails(tree, isolated_baseline):
+    _release_line_growth(tree)
+    cat.rebaseline(tree, "a release line added a notice")
+    text = read(tree, gate.CHANGES)
+    row = list(re.finditer(r"^- e1 side_prompts: \d+ [0-9a-f]{8} -> (\d+) ", text, re.M))[-1]
+    write(
+        tree, gate.CHANGES, text.replace(row.group(0), row.group(0).replace(row.group(1), str(int(row.group(1)) + 1)))
+    )
+    errs = errors(tree, use_base=False)
+    assert any("does not end at the baseline table" in e for e in errs), errs

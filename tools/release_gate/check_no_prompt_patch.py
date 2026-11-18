@@ -62,6 +62,8 @@ MISSING_CHECK = re.compile(
 BASE_REFS = ("rb-main", "origin/rb-main", "main", "origin/main")
 
 _ENTRY_HEAD = re.compile(r"^### (PC-\d{4})\b")
+_REBASE_HEAD = re.compile(r"^### (RBL-\d{4})\b")
+_REBASE_ROW = re.compile(r"^- (e\d) (\w+): (\d+) ([0-9a-f]{8}) -> (\d+) ([0-9a-f]{8})\b")
 _FIELD = re.compile(r"^- (\w+):\s*(.*?)\s*$")
 _BASELINE_ROW = re.compile(r"^\| (e\d) \| (\w+) \| (\d+) \| ([0-9a-f]{8}) \|\s*$")
 _PAIR_INT = re.compile(r"^(\d+)\s*->\s*(\d+)$")
@@ -75,43 +77,56 @@ _COMMIT = re.compile(r"^[0-9a-f]{7,40}$")
 # ---------------------------------------------------------------------------
 
 
+def _baseline_line(out: dict, line: str) -> None:
+    m = _BASELINE_ROW.match(line)
+    if not m:
+        return
+    key = (m.group(1), m.group(2))
+    if key in out["baseline"]:
+        out["errors"].append(f"baseline: {key[0]} {key[1]} listed twice")
+    out["baseline"][key] = (int(m.group(3)), m.group(4))
+
+
+def _block_line(blocks: list, head: re.Pattern, line: str) -> None:
+    """Fields of an entry or re-baseline record: '### ID' starts one, '- key: value' lines fill it."""
+    m = head.match(line)
+    if m:
+        blocks.append({"id": m.group(1), "_text": [line], "rows": {}})
+        return
+    if not blocks:
+        return
+    cur = blocks[-1]
+    cur["_text"].append(line)
+    r = _REBASE_ROW.match(line)
+    if r:
+        cur["rows"][(r.group(1), r.group(2))] = ((int(r.group(3)), r.group(4)), (int(r.group(5)), r.group(6)))
+    f = _FIELD.match(line)
+    if f and f.group(1) not in cur:
+        cur[f.group(1)] = f.group(2)
+
+
 def parse_changes(text: str) -> dict:
-    """{"baseline": {(catalog, class): (bytes, sha8)}, "entries": [dict], "errors": [str]}."""
-    baseline, entries, errors = {}, [], []
+    """{"baseline": {(catalog, class): (bytes, sha8)}, "entries": [dict], "rebaselines": [dict], "errors": [str]}.
+
+    The baseline table always holds the current baseline; each re-baseline record states what
+    moved (old -> new per class) and which entries it supersedes."""
+    out = {"baseline": {}, "entries": [], "rebaselines": [], "errors": []}
     section = ""
-    cur = None
     for raw in text.splitlines():
         line = raw.rstrip()
         if line.startswith("## "):
             section = line[3:].strip().lower()
-            cur = None
-            continue
-        if section.startswith("baseline"):
-            m = _BASELINE_ROW.match(line)
-            if m:
-                key = (m.group(1), m.group(2))
-                if key in baseline:
-                    errors.append(f"baseline: {key[0]} {key[1]} listed twice")
-                baseline[key] = (int(m.group(3)), m.group(4))
-            continue
-        if not section.startswith("changes"):
-            continue
-        m = _ENTRY_HEAD.match(line)
-        if m:
-            cur = {"id": m.group(1), "_text": [line]}
-            entries.append(cur)
-            continue
-        if cur is None:
-            continue
-        cur["_text"].append(line)
-        m = _FIELD.match(line)
-        if m and m.group(1) not in cur:
-            cur[m.group(1)] = m.group(2)
-    ids = Counter(e["id"] for e in entries)
-    errors += [f"{i}: entry id used {n} times" for i, n in ids.items() if n > 1]
-    for e in entries:
+        elif section.startswith("baseline"):
+            _baseline_line(out, line)
+        elif section.startswith("re-baselines"):
+            _block_line(out["rebaselines"], _REBASE_HEAD, line)
+        elif section.startswith("changes"):
+            _block_line(out["entries"], _ENTRY_HEAD, line)
+    ids = Counter(e["id"] for e in out["entries"])
+    out["errors"] += [f"{i}: entry id used {n} times" for i, n in ids.items() if n > 1]
+    for e in out["entries"] + out["rebaselines"]:
         e["_text"] = "\n".join(e["_text"]).strip()
-    return {"baseline": baseline, "entries": entries, "errors": errors}
+    return out
 
 
 SCENARIO_EXT = (".json", ".yaml", ".yml")
@@ -211,14 +226,46 @@ def check_entry(root: str, e: dict) -> "tuple[list, tuple | None]":
     return errs, (e["catalog"], e["class"], b0, b1, ms.group(1), ms.group(2))
 
 
+def live_entries(changes: dict) -> list:
+    """The entries after the latest re-baseline's 'supersedes' id: the ones the chain still applies."""
+    if not changes["rebaselines"]:
+        return list(changes["entries"])
+    last = _first_word(changes["rebaselines"][-1].get("supersedes", ""))
+    ids = [e["id"] for e in changes["entries"]]
+    if last in ("", "none") or last not in ids:
+        return list(changes["entries"])
+    return changes["entries"][ids.index(last) + 1 :]
+
+
+def rebaseline_errors(changes: dict) -> "list[str]":
+    """Each record is well formed; the latest one ends at the baseline table, and records chain."""
+    errs = []
+    ids = {e["id"] for e in changes["entries"]}
+    prev = None
+    for r in changes["rebaselines"]:
+        sup = _first_word(r.get("supersedes", ""))
+        if not r["rows"] or not r.get("why") or not r.get("base") or (sup not in ("none",) and sup not in ids):
+            errs.append(
+                f"{r['id']}: a re-baseline names its base, the entry it supersedes (or none), every class "
+                "old -> new, and why"
+            )
+        if prev is not None and any(r["rows"].get(k, (None,))[0] != v[1] for k, v in prev["rows"].items()):
+            errs.append(f"{r['id']}: its old figures are not where {prev['id']} ended")
+        prev = r
+    if prev is not None and {k: v[1] for k, v in prev["rows"].items()} != changes["baseline"]:
+        errs.append(f"{prev['id']}: the latest re-baseline does not end at the baseline table")
+    return errs
+
+
 def check_ledger(root: str, changes: dict, current: dict) -> "list[str]":
     """current: {catalog: {class: {bytes, sha8, ...}}} of the live catalogs."""
     errs = list(changes["errors"])
     state = {k: v for k, v in changes["baseline"].items()}
+    errs += rebaseline_errors(changes)
     for (catalog, cls), (b, _s) in changes["baseline"].items():
         if catalog not in cat.CATALOGS or cls not in cat.CATALOGS[catalog]["classes"]:
             errs.append(f"baseline: {catalog} {cls} is not a catalog class")
-    for e in changes["entries"]:
+    for e in live_entries(changes):
         problems, tr = check_entry(root, e)
         errs += problems
         if tr is None:
@@ -337,8 +384,20 @@ def show(root: str, base: str, rel: str) -> "str | None":
 
 def _merged_entry_errors(changes: dict, old: dict) -> "list[str]":
     errs = []
+    old_rbl = {r["id"]: r["_text"] for r in old.get("rebaselines", [])}
+    new_rbl = [r for r in changes["rebaselines"] if r["id"] not in old_rbl]
     if old["baseline"] != changes["baseline"]:
-        errs.append(f"{CHANGES}: the baseline differs from the base commit's; it is written once")
+        # Only a re-baseline record added in this change, starting at the base's baseline, may move it.
+        starts = new_rbl and {k: v[0] for k, v in new_rbl[0]["rows"].items()} == old["baseline"]
+        if not starts:
+            errs.append(
+                f"{CHANGES}: the baseline differs from the base commit's without a re-baseline record that "
+                "starts there (gen_model_text_catalog.py --rebaseline)"
+            )
+    now_rbl = {r["id"]: r["_text"] for r in changes["rebaselines"]}
+    for rid, text in old_rbl.items():
+        if now_rbl.get(rid) != text:
+            errs.append(f"{rid}: a merged re-baseline was edited or removed")
     now = {e["id"]: e["_text"] for e in changes["entries"]}
     for e in old["entries"]:
         if now.get(e["id"]) != e["_text"]:

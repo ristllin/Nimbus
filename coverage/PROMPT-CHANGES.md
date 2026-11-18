@@ -29,6 +29,22 @@ for the plain engine once its `texts.h` exists). This file is the gate's ledger:
 - Kind `remove`: the class only shrank. With a git base the gate compares the class's texts
   with the base golden, and an added text fails the entry.
 
+**Re-baseline (the orchestrator's step, not a lane's).** When a release line is taken into the
+integration branch (v5.1.2 into rb-main, and its later rounds), the orchestrator re-measures the
+baseline on the merged tree with one command, reviews the diff, and commits it:
+
+```
+python3 tools/release_gate/gen_model_text_catalog.py --rebaseline "<what moved, per class, and which lane it came from>"
+python3 tools/release_gate/check_no_prompt_patch.py && python3 tools/release_gate/check_tool_result_imperatives.py
+```
+
+It regenerates the golden, rewrites `E1_BASELINE` (the engine-1 ceilings) and the baseline table,
+and appends a record under **Re-baselines** with each class's old and new bytes and sha8, the
+commit, and the entries it supersedes. With a git base, the gate accepts a moved baseline only
+with such a record added in the same change and starting at the base's baseline; merged records
+are never edited. If the imperative lint then flags a template the release line added, that row
+is added to the imperative baseline in the same commit and named in the record's why.
+
 How to make a change (normally only a deletion should ever need one):
 
 1. Run `python3 tools/release_gate/gen_model_text_catalog.py --write` and read the golden's diff.
@@ -56,7 +72,7 @@ A `build` entry has `prd: section 4` in place of `scenario`, `red_at` and `rates
 
 ## Baseline
 
-Measured on lane RB-B5's tip (base rb-main 831986f9). The engine-1 ceilings in
+Measured on rb-main 9b17824d (the latest re-baseline below). The engine-1 ceilings in
 `gen_model_text_catalog.py` equal these figures; engine 1 only shrinks.
 
 | Catalog | Class | Bytes | sha8 |
@@ -65,7 +81,7 @@ Measured on lane RB-B5's tip (base rb-main 831986f9). The engine-1 ceilings in
 | e1 | device_notes | 74350 | 5460c809 |
 | e1 | tool_descriptions | 23055 | a62706dc |
 | e1 | tool_results | 41269 | eb3909ce |
-| e1 | side_prompts | 7641 | 041badf6 |
+| e1 | side_prompts | 8078 | 14424ae7 |
 | e1 | skills | 23264 | cef6121d |
 
 ## Imperative baseline
@@ -186,6 +202,19 @@ deleted. Engine 2 has no baseline.
 | src/agent/memory_subsystem.cpp | 7d158dd0 | try different | no sections match - try different keywords, or browse docs.l |
 | src/agent/memory_subsystem.cpp | bf9ef5bb | reply in | ; reply in text instead |
 | src/agent/memory_subsystem.cpp | eb3b2bc3 | tell the | ), pending the owner's approval. It will NOT fire until they |
+
+## Re-baselines
+
+### RBL-0001: re-measured on 9b17824d
+- base: 9b17824d
+- supersedes: none
+- e1 system: 47989 faa8207c -> 47989 faa8207c (+0 B)
+- e1 device_notes: 74350 5460c809 -> 74350 5460c809 (+0 B)
+- e1 tool_descriptions: 23055 a62706dc -> 23055 a62706dc (+0 B)
+- e1 tool_results: 41269 eb3909ce -> 41269 eb3909ce (+0 B)
+- e1 side_prompts: 7641 041badf6 -> 8078 14424ae7 (+437 B)
+- e1 skills: 23264 cef6121d -> 23264 cef6121d (+0 B)
+- why: rb-main 9b17824d took the v5.1.2 release line (main d5afa30a). Against 831986f9 only side_prompts moved (+437 B): lane CTXR1 added three owner alerts in lib/harness/src/fold_driver.cpp (older messages unreadable from storage: 175, 82 and 169 B) and the fold blob's guestPaid field (11 B) in lib/core/src/orch_compact.cpp. The rest of v5.1.2 (CTXR2, CTXE, REL512) changed no catalogued text. The v5.1.2 line predates the rule and is the baseline (coordinator, 18 Nov).
 
 ## Changes
 

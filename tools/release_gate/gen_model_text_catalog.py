@@ -148,7 +148,7 @@ E1_BASELINE = {
     "device_notes": (74350, "5460c809"),
     "tool_descriptions": (23055, "a62706dc"),
     "tool_results": (41269, "eb3909ce"),
-    "side_prompts": (7641, "041badf6"),
+    "side_prompts": (8078, "14424ae7"),
     "skills": (23264, "cef6121d"),
 }
 E1_CEILINGS = {cls: size for cls, (size, _sha) in E1_BASELINE.items()}
@@ -718,12 +718,103 @@ def build_all(root: str) -> dict:
     return {name: BUILDERS[name](root) for name in CATALOGS}
 
 
+# ---------------------------------------------------------------------------
+# Re-baseline (the orchestrator's step when a release line is taken into the integration branch)
+# ---------------------------------------------------------------------------
+
+CHANGES = "coverage/PROMPT-CHANGES.md"
+SELF = "tools/release_gate/gen_model_text_catalog.py"
+_REBASE_HEAD = re.compile(r"^### (RBL-(\d{4}))\b", re.M)
+
+
+def _git_short(root: str) -> str:
+    import subprocess
+
+    r = subprocess.run(["git", "-C", root, "rev-parse", "--short=8", "HEAD"], capture_output=True, text=True)
+    return r.stdout.strip() or "unknown"
+
+
+def _last_entry_id(changes: str) -> str:
+    ids = re.findall(r"^### (PC-\d{4})\b", changes.split("\n## Changes", 1)[-1], re.M)
+    return ids[-1] if ids else "none"
+
+
+def rebaseline(root: str, why: str) -> str:
+    """Re-measure engine 1 on this tree and record it as the new baseline.
+
+    Rewrites the golden, E1_BASELINE in this file (the engine-1 ceilings) and the ledger's
+    baseline table, and appends a re-baseline record (old -> new per class, the commit, the entries
+    it supersedes, why). check_no_prompt_patch.py accepts a changed baseline only with such a
+    record. Returns the record."""
+    entries = build_e1(root)
+    stats = class_stats("e1", entries)
+    E1_BASELINE.clear()
+    E1_BASELINE.update({c: (v["bytes"], v["sha8"]) for c, v in stats.items()})
+    E1_CEILINGS.clear()
+    E1_CEILINGS.update({c: v["bytes"] for c, v in stats.items()})
+    with open(os.path.join(root, CATALOGS["e1"]["golden"]), "w", encoding="utf-8") as f:
+        f.write(render("e1", entries))  # its class lines carry the new ceilings
+    src = _read(root, SELF) or ""
+    m = re.search(r"^E1_BASELINE = \{\n(?:    .*\n)*\}", src, re.M)
+    if m is None:
+        raise CatalogError(f"{SELF}: no E1_BASELINE block")
+    old = {c: (int(b), sh) for c, b, sh in re.findall(r'"(\w+)": \((\d+), "([0-9a-f]{8})"\)', m.group(0))}
+    block = (
+        "E1_BASELINE = {\n" + "".join(f'    "{c}": ({v["bytes"]}, "{v["sha8"]}"),\n' for c, v in stats.items()) + "}"
+    )
+    with open(os.path.join(root, SELF), "w", encoding="utf-8") as f:
+        f.write(src[: m.start()] + block + src[m.end() :])
+    changes = _read(root, CHANGES) or ""
+    head = _git_short(root)
+    table = "".join(f"| e1 | {c} | {v['bytes']} | {v['sha8']} |\n" for c, v in stats.items())
+    changes = re.sub(
+        r"(\| Catalog \| Class \| Bytes \| sha8 \|\n\|---\|---\|---\|---\|\n)(?:\| e1 .*\n)*",
+        lambda mm: mm.group(1) + table,
+        changes,
+        count=1,
+    )
+    changes = re.sub(
+        r"^Measured on .*?\. The engine-1 ceilings in$",
+        f"Measured on rb-main {head} (the latest re-baseline below). The engine-1 ceilings in",
+        changes,
+        count=1,
+        flags=re.M,
+    )
+    n = max([int(x) for _, x in _REBASE_HEAD.findall(changes)] + [0]) + 1
+    lines = [f"### RBL-{n:04d}: re-measured on {head}", f"- base: {head}", f"- supersedes: {_last_entry_id(changes)}"]
+    for c, v in stats.items():
+        b0, s0 = old.get(c, (0, "00000000"))
+        lines.append(f"- e1 {c}: {b0} {s0} -> {v['bytes']} {v['sha8']} ({v['bytes'] - b0:+d} B)")
+    lines.append(f"- why: {why}")
+    record = "\n".join(lines) + "\n"
+    if "\n## Re-baselines\n" not in changes:
+        changes = changes.replace("\n## Changes\n", "\n## Re-baselines\n\n## Changes\n", 1)
+    changes = changes.replace("\n## Changes\n", "\n" + record + "\n## Changes\n", 1)
+    with open(os.path.join(root, CHANGES), "w", encoding="utf-8") as f:
+        f.write(changes)
+    return record
+
+
 def main(argv: "list[str] | None" = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--root", default=REPO)
     ap.add_argument("--write", action="store_true", help="regenerate the goldens")
     ap.add_argument("--summary", action="store_true", help="print bytes per class")
+    ap.add_argument(
+        "--rebaseline",
+        metavar="WHY",
+        help="orchestrator only: re-measure engine 1 here as the new baseline, with the reason",
+    )
     args = ap.parse_args(argv)
+    if args.rebaseline:
+        try:
+            print(rebaseline(args.root, args.rebaseline), end="")
+        except CatalogError as e:
+            print(f"model text catalog: {e}")
+            print("MODEL TEXT CATALOG RED")
+            return 1
+        print("REBASELINE WRITTEN: review the diff, then run check_no_prompt_patch.py")
+        return 0
     try:
         built = build_all(args.root)
     except CatalogError as e:

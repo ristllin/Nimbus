@@ -87,6 +87,9 @@ python3 tools/release_gate/check_tool_result_imperatives.py [--base REF]     # T
   it exists, and a new file under `lib/`, `src/` or `nimbusd/src/` with prose literals that is in
   no catalog (or in `NON_MODEL_FILES` with its reason). In a checkout with no history (GitHub's shallow clone) those history checks
   are skipped; elsewhere a missing base fails.
+- When a release line is taken into the integration branch, the orchestrator re-measures the
+  baseline with `gen_model_text_catalog.py --rebaseline "<why>"` (golden, `E1_BASELINE`, the
+  ledger's baseline table and a re-baseline record); see `coverage/PROMPT-CHANGES.md`.
 - The lint fails a tool result or error template that gives the model an order; engine 1's existing
   ones are listed in the ledger's imperative baseline, which only shrinks.
 
