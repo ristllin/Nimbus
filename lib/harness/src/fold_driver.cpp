@@ -389,6 +389,10 @@ FoldTick FoldDriver::startCycle(uint32_t nowMs, uint32_t nowEpoch) {
   hlog::logf("fold(%s): cycle start (%s, %u rungs, %u B digest, %u rows)", chat.c_str(),
              manual ? "manual" : "automatic", (unsigned)cycle_.rungs.size(), (unsigned)cycle_.slice.digest.size(),
              (unsigned)cycle_.slice.rows);
+  // The slice's range (bench B11 checks that each fold starts where the last one ended).
+  hlog::logf("fold(%s): slice of the rows after %s through %s (first %s)", chat.c_str(),
+             f && !f->thru.empty() ? f->thru.c_str() : "the chat's start", cycle_.slice.thru.c_str(),
+             cycle_.slice.firstId.empty() ? "-" : cycle_.slice.firstId.c_str());
   changed(chat);
   return FoldTick::Pending;
 }

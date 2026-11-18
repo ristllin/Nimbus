@@ -331,6 +331,7 @@ struct FoldSlice {
   // the local dates of its first and last turn (YYYY-MM-DD, "" with no clock).
   size_t rows = 0;
   std::string firstDate, lastDate;
+  std::string firstId;   // the first row the digest holds (lane CTXR1: the fold log names the range)
   SliceState state = SliceState::Nothing;   // Ready whenever `digest` is set
   // Nothing: the newest row the read examined ("" = none). Rows a shift hid up to here
   // held nothing to summarize, so the anchor may move to them, never past.

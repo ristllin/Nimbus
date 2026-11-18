@@ -650,6 +650,7 @@ FoldSlice TurnEngine::historyFoldSlice(const std::string& chatId, size_t capByte
   if (built.digest.empty() || (!manual && !p.hidden && built.digest.size() < kFoldMinNewBytes))
     return sliceWithoutDigest(chatId, p, r, true);
   built.state = SliceState::Ready;
+  built.firstId = turns.front().firstId;
   built.more = !ended || rowIdAfter(lastRead, built.thru);   // read short, or the digest cap left rows
   built.keptBytes = bytesAfter(p.bounds.held, built.thru);
   return built;

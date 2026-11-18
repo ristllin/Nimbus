@@ -784,6 +784,9 @@ static void test_production_device_shape_folds_forward_with_no_gap() {
   TEST_ASSERT_FALSE_MESSAGE(agent::rowIdAfter("m00001c96", folds.get(chat).thru), "the backlog is folded");
   TEST_ASSERT_TRUE(done.size() > 3);
   assertLumiSlicesHaveNoGap(done);
+  // The log names each slice's range (bench B11 reads it): the first starts right after the blob's thru.
+  TEST_ASSERT_TRUE(LogCapture::contains(("fold(" + chat + "): slice of the rows after m000017d9 through ").c_str()));
+  TEST_ASSERT_FALSE(LogCapture::contains("nothing new beyond the kept history - skipped"));
   std::printf("production shape: %u folds to %s\n", (unsigned)done.size(), folds.get(chat).thru.c_str());
 }
 
