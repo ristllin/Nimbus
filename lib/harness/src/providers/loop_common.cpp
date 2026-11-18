@@ -567,6 +567,20 @@ void loopHooks(orch::HeadLoopHooks& hooks, const ProviderDeps& pd, const HeadToo
   hooks.transcript = &tr;            // the controller records; step() renders
   if (ht.fitPrompt) hooks.fitPrompt = rec.fitHook();
 }
+
+// The Mistral step on `model` (the same-host step-down) instead of the configured head:
+// every other host's model is the configured one. noinline: the deps copy lives in this
+// frame only while the step is built (the step keeps its own copy, as every step does).
+__attribute__((noinline)) orch::HeadStepFn misStepOn(const ProviderDeps& pd, const std::string& model,
+                                                     const std::string& ins, const HeadTools& ht,
+                                                     orch::TokenUsage* use, orch::Transcript& tr) {
+  ProviderDeps alt = pd;
+  auto orig = pd.orchModel;
+  alt.orchModel = [orig, model](const char* h) {
+    return std::string(h) == "mistral" ? model : (orig ? orig(h) : std::string());
+  };
+  return misLoopStep(alt, ins, ht, use, tr);
+}
 }  // namespace
 
 bool runHostLoop(const HostLoop& loop, const std::string& instructions, const std::string& inputs,
@@ -668,12 +682,17 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   // On the heap, as in runHostLoop (lane STACK).
   const std::unique_ptr<RoundRecovery> recovery(new RoundRecovery(tr, ht, instructions, inputs));
   RoundRecovery& rec = *recovery;
+  // The same-host step-down model once a cut forced it ("" = none). It holds for the rest of
+  // the turn: every later build of the Mistral step (a refit's rebuild included) is on it.
+  std::string stepDownModel;
   auto makeStep = [&](size_t i) -> orch::HeadStepFn {
     const std::string& h = hostList[i];
     const std::string& ins = rec.instructions();
     orch::TokenUsage* use = &hostUse[i];
     if (h == "anthropic") return wrap(i, antLoopStep(pd, ins, ht, use, tr), "orchTurn(ant-loop)");
     if (h == "openai")    return wrap(i, oaiLoopStep(pd, ins, ht, use, tr), "orchTurn(oai-loop)");
+    if (h == "mistral" && !stepDownModel.empty())
+      return wrap(i, misStepOn(pd, stepDownModel, ins, ht, use, tr), "orchTurn(mistral-loop)");
     if (h == "mistral")   return wrap(i, misLoopStep(pd, ins, ht, use, tr), "orchTurn(mistral-loop)");
     if (h == "zai" && pd.zaiHead) {
       ProviderDeps zai = pd;   // the step keeps its own copy, as every step does
@@ -722,7 +741,6 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
   int    switches = 0;
   const int kMaxSwitches = 2;
-  bool   steppedDown = false;   // the one same-host non-reasoning step after a cut
   cur = makeStep(hostIdx);
   if (!cur) { err = "unknown host " + hostList[hostIdx]; return false; }
   if (hostIdx > 0) {
@@ -858,25 +876,19 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       // the rest of the turn: the configured head already spiralled once.
       // The mistral host check is structural, not redundant: the step below
       // speaks the Mistral wire (misLoopStep), so a future table entry for
-      // another host needs its own loop step here, never this one.
-      if (sr2.kind == orch::StepErr::Cut && !steppedDown && hostList[hostIdx] == "mistral") {
+      // another host needs its own loop step here, never this one. makeStep
+      // builds every later Mistral step on stepDownModel (its own budget), so a
+      // refit's rebuild never puts the round back on the configured head.
+      if (sr2.kind == orch::StepErr::Cut && stepDownModel.empty() && hostList[hostIdx] == "mistral") {
         const std::string headModel =
             pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()) : std::string();
         const char* alt = providers::sameHostNonReasoningModel(hostList[hostIdx], headModel);
         if (alt && *alt && headModel != alt) {
-          steppedDown = true;
+          stepDownModel = alt;
           hlog::logf("fabric: %s (%s) cut at its output cap - one same-host step on %s "
                      "before another provider",
                      hostList[hostIdx].c_str(), headModel.c_str(), alt);
-          ProviderDeps altPd = pd;   // the step keeps its own copy, as every step does
-          const std::string altModel = alt;
-          auto origModel = pd.orchModel;
-          altPd.orchModel = [origModel, altModel](const char* h) {
-            return std::string(h) == "mistral" ? altModel
-                                              : (origModel ? origModel(h) : std::string());
-          };
-          cur = wrap(hostIdx, misLoopStep(altPd, rec.instructions(), ht, &hostUse[hostIdx], tr),
-                     "orchTurn(mistral-loop)");
+          cur = makeStep(hostIdx);
           continue;   // the SAME round re-runs on the stepped-down model
         }
       }

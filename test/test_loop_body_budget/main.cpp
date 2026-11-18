@@ -775,6 +775,63 @@ static void test_large4_to_medium_refuses_the_oversize_round_locally() {
   TEST_ASSERT_TRUE_MESSAGE(err.find("request body over the 90 KB budget") == 0, err.c_str());
 }
 
+// The step-down holds for the rest of the turn (release review v5.1.2, finding 1): every
+// rebuild of the host's step after it (the controller's prompt refit, a photo or a seed fit,
+// all through RoundRecovery::fitPrompt) builds it on the stepped-down model, at that model's
+// own budget. Before the fix the refit rebuilt the step on the configured Large 4: request 2
+// went out on mistral-large-4-0 and nothing ever reached Medium.
+static void test_large4_step_down_holds_through_the_refit() {
+  auto table = [](const std::string& host, const std::string& model, bool routed) {
+    nimbus::orch::RequestBudget b = nimbus::orch::requestBudgetFor(host, model, routed);
+    b.wireBodyBytes = model.rfind("mistral-medium", 0) == 0 ? 90000 : 120000;
+    return b;
+  };
+  BudgetScope scope(+table);
+  for (const char* head : {"mistral-large-4-0", "mistral-large-latest"}) {
+    FakeProviderDeps d;
+    const std::string cut =
+        "{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"\",\"tool_calls\":[{\"id\":\"abcdefghi\","
+        "\"function\":{\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"do\"}}]}}]}";
+    const std::string tool =
+        "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"content\":\"\",\"tool_calls\":[{\"id\":"
+        "\"abcdefghj\",\"function\":{\"name\":\"memory_search\",\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\"}}]}}]}";
+    d.http.script.push_back({"", "", 200, cut});
+    d.http.script.push_back({"", "", 200, cut});
+    d.http.script.push_back({"", "", 200, tool});
+    d.http.script.push_back({"", "", 200, finalResponse("mistral")});
+    providers::ProviderDeps pd = d.contract();
+    const std::string m = head;
+    pd.orchModel = [m](const char*) { return m; };
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    std::string prompt = "SYS " + std::string(50000, 's');
+    const std::string input = std::string(50000, 'u');
+    int refits = 0;
+    rig.ht.fitPrompt = [&](size_t want, nimbus::orch::FitScope, std::string& ins, std::string& inp) {
+      const size_t give = std::min(want, prompt.size() - 1000);
+      prompt.resize(prompt.size() - give);
+      ins = prompt;
+      inp = input;
+      ++refits;
+      return give;
+    };
+    LogCapture::install();
+    std::string out, err;
+    const bool ok = providers::runFabricLoop(pd, {"mistral"}, prompt, input, out, err, rig.ht, nullptr, nullptr);
+    TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("one same-host step on mistral-medium-latest"), head);
+    TEST_ASSERT_TRUE_MESSAGE(refits > 0, head);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(4, (int)d.http.seen.size(), head);
+    for (size_t i = 0; i < d.http.seen.size(); ++i) {
+      const bool onMedium = d.http.seen[i].body.find("\"model\":\"mistral-medium-latest\"") != std::string::npos;
+      char what[96];
+      std::snprintf(what, sizeof what, "%s request %u", head, (unsigned)i);
+      TEST_ASSERT_EQUAL_MESSAGE(i >= 2, onMedium, what);   // every request after the step is on Medium
+      if (i >= 2) TEST_ASSERT_TRUE_MESSAGE(d.http.seen[i].body.size() <= 90000, what);   // at Medium's budget
+    }
+  }
+}
+
 // ---- photos inside the budget and the time fit -------------------------------------------
 namespace {
 // A JPEG of `w` x `h` (its frame header, then filler) of `len` bytes: what photoTokens reads.
@@ -1165,6 +1222,7 @@ int main(int, char**) {
   RUN_TEST(test_every_wire_accepts_its_own_budget_and_refuses_one_more);
   RUN_TEST(test_the_wire_reads_the_budget_not_the_constant);
   RUN_TEST(test_large4_to_medium_refuses_the_oversize_round_locally);
+  RUN_TEST(test_large4_step_down_holds_through_the_refit);
   RUN_TEST(test_photo_round_text_budget_shrinks_by_the_estimate);
   RUN_TEST(test_album_on_large4_fragmented_goes_natively);
   RUN_TEST(test_album_that_cannot_fit_goes_as_transcriptions);
