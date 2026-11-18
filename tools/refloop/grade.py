@@ -220,6 +220,9 @@ def render_transcript(record: dict) -> str:
     lines = []
     for step in record.get("steps", []):
         kind = step.get("kind")
+        if kind == "advance":  # the judge needs the gap: "this morning" after it means another day
+            lines.append(f"[time passes: it is now {step.get('local', 'later')}]")
+            continue
         lines += [MARKERS[kind]] if kind in MARKERS else _render_turn(step) if kind in ("say", "burst") else []
     if record.get("error"):
         lines.append(f"[the run stopped early: {record['error']}]")

@@ -125,7 +125,7 @@ summary and its cost) and `long-chat` (22 long messages: the harness's 48 KB fol
 | `id`, `title`, `pain` | what it is and which owner pain it stands for |
 | `seed.files` | files both instances hold before turn 1: `{project, name, text}` or `{project, name, fixture}` |
 | `seed.memories` | facts stored with `memory.write` before turn 1 |
-| `turns` | steps, each exactly one of `say`, `burst`, `restart`, `new_conversation` |
+| `turns` | steps, each exactly one of `say`, `burst`, `restart`, `new_conversation`, `advance` |
 | `final` | checks on the instance's state after the last turn |
 | `judge_notes` | the ground truth the judge is given |
 | `models`, `reps` | optional limits for one scenario |
@@ -139,7 +139,8 @@ Steps:
 | `burst: [a, b, c]`, `gap_s` | the messages posted `gap_s` apart, replies collected until idle | the messages put on the loop's inbox `gap_s` apart |
 | (a turn that starts a sub-agent) | the runner waits up to 300 s for the result's own chat message, so the record holds what the owner finally got | no sub-agents |
 | `restart: true` | the daemon stops and starts on the same data dir | its daemon restarts and the loop reloads its saved transcript |
-| `new_conversation: true` | Clear conversation (`clearConv`) | a new transcript; memory and files stay |
+| `new_conversation: true` | Clear conversation (`clearConv`), on a new chat key | a new transcript on a new chat key (its provider cache key); memory and files stay; the clock does not go back |
+| `advance: N`, `"90m"`, `"04:00"` | its daemon's clock moves (`POST /test/clock`), then idle steps run until no compaction is running or queued | the same on its daemon, and the loop's own stamps move with it |
 
 Checks (`expect` on a turn, `final` on the scenario; table in `grade.py`, one passing and one
 failing case each in the self-test): `reply_regex`, `reply_not_regex`, `last_reply_regex`,
@@ -184,3 +185,31 @@ failed`. `meal-log-day` seeds one file so that defect is not what it measures.
 Cost is priced from provider-reported usage with the list prices in `costs.py`. Runs made
 close together share the provider's cache of the fixed prefix, so the measured cost is a
 warm figure; `cold_cost_usd` prices the same turn with no cache at all, the other bound.
+
+## Time
+
+Every rig daemon runs with the test clock (`NIMBUSD_TEST_CLOCK=1`; nimbusd/README.md, "One
+clock"). An `advance` step takes whole seconds, a duration (`90m`, `8h`, `7d`) or a local wall
+time `HH:MM`: the next time that wall time comes round in Europe/London, strictly after the
+arm's current virtual time (so `"04:00"` from 23:10 is the next morning, across a DST change
+too). Each arm reads its own daemon's virtual time and moves by the difference, so both land
+on the same wall time. The move runs one idle step on the engine thread; the rig then runs
+more (`advance_s: 0`, at least two) while `/api/fold/status` says a compaction is running or
+queued, so the compaction an overnight gap makes due is done before the next turn. A restart
+puts the offset back. Advance only between turns: a pending web turn past its 900 s deadline
+is dropped.
+
+A provider's prompt cache lives in real time, so after an advance it is still warm. Each
+turn's record therefore carries:
+
+- `cost_usd`: what was billed (the spend ledger's figure);
+- `virtual_cost_usd`: the same requests on the virtual clock. A request whose virtual gap
+  since the previous request on the same model is over 300 s (`costs.COLD_GAP_S`) is priced
+  cold from its token counts: every cached prompt token at the cache-write price, the rest
+  as reported. `cold_requests` counts them;
+- `chat_key`, `gap_s` (virtual seconds since the previous turn on that chat ended) and
+  `cold_transition`: the first turn on a chat key, the turn after a restart, or a gap over
+  270 s.
+
+The run record has `virtual_cost_usd` too. The judge sees an advance as
+`[time passes: it is now Wed 18 Nov 2026 04:00]`.

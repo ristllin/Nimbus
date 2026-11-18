@@ -8,6 +8,10 @@
 Both arms send every provider request through a capture proxy, so each step's record
 holds the same things, measured the same way: the replies, the latency, the provider
 requests, the tokens and cost, and every tool call with its result.
+
+Time: an advance step moves the arm's daemon clock (and arm B's own stamps) and runs its
+idle work; each turn's record carries its chat key, its virtual gap and whether it is a
+cold transition, and its cost on the virtual clock (costs.virtual_costs).
 """
 
 from __future__ import annotations
@@ -21,19 +25,25 @@ import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import fixtures
 import refloop
 from capture_proxy import CaptureProxy
-from costs import cold_cost_usd, cost_usd
+from costs import cold_cost_usd, cost_usd, virtual_costs
 from nimbusd_ctl import PROVIDER_ENV, Nimbusd
-from scenario import needs_state
+from scenario import RIG_TZ, advance_target, needs_state
 
 HEAD_PATHS = ("/v1/messages", "/v1/responses")
 PROVIDER_HOST = {"anthropic": "api.anthropic.com", "openai": "api.openai.com/v1"}
 TURN_TIMEOUT_S = 300
 SETTLE_MAX_S = 90
+SETTLE_POLL_S = 0.25
+# A turn opens cold (PRD section 2) when it is the first on its chat key, follows a restart,
+# or comes more than this many virtual seconds after the previous turn on that chat ended.
+COLD_TURN_GAP_S = 270
 ASYNC_MAX_S = 300  # how long a spawned sub-agent's result is waited for
 RESULT_KEEP = 4000  # characters of a tool result kept in a step record (the capture has it whole)
 # Chat rows the daemon itself posts beside the turn's reply (fixed product copy, not the model's words):
@@ -220,6 +230,22 @@ class Arm:
         self.proxy = CaptureProxy(self.dir / "requests.jsonl.gz", self.name, keep_bodies=self.name == "A")
         self.d = None
         self.turn = 0
+        self.advances = 0
+        self.clock_marks = []  # (real time, clock offset from then on): one per advance
+        self.conversations = 0
+        self.chat_key = self._chat_key()
+        self.cold_next = True  # the next turn opens cold (first on its chat key, or after a restart)
+        self.last_end_vt = None  # virtual time the previous turn on this chat key ended
+
+    def _chat_key(self) -> str:
+        return f"{self.job.scenario['id']}-rep{self.job.rep}-c{self.conversations}"
+
+    @property
+    def offset_s(self) -> int:
+        return self.clock_marks[-1][1] if self.clock_marks else 0
+
+    def vnow(self) -> float:
+        return time.time() + self.offset_s
 
     def start(self):
         if self.dir.exists():
@@ -252,18 +278,27 @@ class Arm:
     def step(self, step: dict) -> dict:
         if "restart" in step:
             self.restart()
+            self.cold_next = True
             return {"kind": "restart"}
         if "new_conversation" in step:
+            self.conversations += 1
+            self.chat_key, self.cold_next, self.last_end_vt = self._chat_key(), True, None
             self.new_conversation()
-            return {"kind": "new_conversation"}
+            return {"kind": "new_conversation", "chat_key": self.chat_key}
+        if "advance" in step:
+            return self.advance(step["advance"])
         self.turn += 1
         self.proxy.mark(turn=self.turn)
         texts = step["burst"] if "burst" in step else [step["say"]]
+        gap = None if self.last_end_vt is None else round(self.vnow() - self.last_end_vt)
         rec = {
             "kind": "burst" if "burst" in step else "say",
             "turn": self.turn,
             "user": texts,
             "photos": step.get("photos", []),
+            "chat_key": self.chat_key,
+            "gap_s": gap,
+            "cold_transition": self.cold_next or (gap is not None and gap > COLD_TURN_GAP_S),
         }
         started = time.time()
         try:
@@ -273,14 +308,58 @@ class Arm:
             rec["error"] = f"{type(e).__name__}: {e}"[:600]
         rec.setdefault("latency_s", round(time.time() - started, 2))
         rec["reply"] = "\n".join(rec["replies"])
+        self.cold_next, self.last_end_vt = False, self.vnow()
         rec.update(self.metrics(self.turn))
         if needs_state(step):
             rec["state"] = snapshot_state(self.d)
         return rec
 
+    def advance(self, value) -> dict:
+        """Move this arm's clock (its daemon's, and arm B's stamps), then run the daemon's idle work."""
+        self.advances += 1
+        self.proxy.mark(advance=self.advances)
+        before = self.d.clock()
+        seconds = max(advance_target(value, before["epoch"], RIG_TZ) - before["epoch"], 0)
+        started = time.time()
+        # Marked before the move: a request the idle step makes is already on the new clock.
+        self.clock_marks.append((started, before["offset_s"] + seconds))
+        after = self.d.advance(seconds)
+        self.clock_marks[-1] = (started, after["offset_s"])
+        self.clock_moved()
+        ticks = self.d.tick_idle()
+        self._settle()
+        now = self.d.clock()
+        rec = {
+            "kind": "advance",
+            "advance": value,
+            "advanced_s": seconds,
+            "epoch": now["epoch"],
+            "local": datetime.fromtimestamp(now["epoch"], ZoneInfo(RIG_TZ)).strftime("%a %d %b %Y %H:%M"),
+            "idle_steps": 1 + ticks,
+            "latency_s": round(time.time() - started, 2),
+        }
+        rec.update(self._metrics(self.proxy.rows(advance=self.advances)))
+        return rec
+
+    def clock_moved(self):
+        """The arm's own side of an advance (arm B's stamps). The daemon has already moved."""
+
+    def _settle(self):
+        """Wait until the engine is idle, so work a step leaves behind is counted on that step."""
+        end, quiet = time.time() + SETTLE_MAX_S, 0
+        while time.time() < end and quiet < 4:
+            status, body = self.d.call("GET", "/api/chat?watch=1")
+            busy = json.loads(body).get("busy", 1) if status == 200 else 1
+            quiet = quiet + 1 if not busy else 0
+            time.sleep(SETTLE_POLL_S)
+
     def metrics(self, turn: int) -> dict:
         """Provider requests, tokens and cost of one turn, from the capture."""
-        rows = self.proxy.rows(turn=turn)
+        return self._metrics(self.proxy.rows(turn=turn))
+
+    def _metrics(self, rows: list) -> dict:
+        """Provider requests, tokens and cost of a step's rows. virtual_cost_usd prices each request on
+        the virtual clock (costs.virtual_costs: cold after a gap over 300 s); cost_usd is what was billed."""
         head = [r for r in rows if r["path"] in HEAD_PATHS and r["model"] == self.job.model]
         head_seqs = {r["seq"] for r in head}
         other = [r for r in rows if r["seq"] not in head_seqs and r["method"] == "POST"]
@@ -292,7 +371,16 @@ class Arm:
             "provider_ms": sum(r["ms"] for r in head),
             "failed_requests": sum(1 for r in rows if r["status"] >= 400),
             "cost_usd": round(sum(cost_usd(r["model"], r["usage"]) for r in rows), 6),
+            **self._virtual(rows),
             "cold_cost_usd": round(sum(cold_cost_usd(r["model"], r["usage"]) for r in rows), 6),
+        }
+
+    def _virtual(self, rows: list) -> dict:
+        """The step's cost on the virtual clock, and how many of its requests were priced cold."""
+        priced = virtual_costs(self.proxy.rows(), self.clock_marks)
+        return {
+            "virtual_cost_usd": round(sum(priced[r["seq"]][0] for r in rows), 6),
+            "cold_requests": sum(1 for r in rows if priced[r["seq"]][1]),
         }
 
     def final_state(self) -> dict:
@@ -364,15 +452,6 @@ class ArmA(Arm):
             time.sleep(0.1)
         return not pending
 
-    def _settle(self):
-        """Wait until the engine is idle, so work a turn leaves behind is counted on that turn."""
-        end, quiet = time.time() + SETTLE_MAX_S, 0
-        while time.time() < end and quiet < 4:
-            status, body = self.d.call("GET", "/api/chat?watch=1")
-            busy = json.loads(body).get("busy", 1) if status == 200 else 1
-            quiet = quiet + 1 if not busy else 0
-            time.sleep(0.25)
-
     def restart(self):
         (self.dir / f"api-log-before-restart-{self.turn:02d}.txt").write_text(self.d.get_text("/api/log"))
         self.d.restart()
@@ -393,22 +472,29 @@ class ArmB(Arm):
 
     def start(self):
         super().start()
-        self.conversations = 0
-        self._open(load=False)
+        self._connect()
+        self.conv = self._conversation(load=False)
 
-    def _open(self, load: bool):
+    def _connect(self):
+        """The provider client and the daemon's tools (its port changes on a restart)."""
         key = self.job.env.get(PROVIDER_ENV[self.job.head], "")
         kw = {"effort": self.job.effort} if self.job.effort else {}
         self.provider = refloop.provider_for(
             self.job.model, api_key=key, base_url=self.proxy.url(PROVIDER_HOST[self.job.head]), **kw
         )
         self.tools = refloop.McpTools(f"http://127.0.0.1:{self.d.port}", self.d.token)
+
+    def _conversation(self, load: bool):
+        """This chat key's conversation: reloaded from its saved transcript, or a new one on the arm's clock."""
         path = self.dir / f"transcript-{self.conversations}.json"
-        self.conv = (
-            refloop.Conversation.load(path)
-            if load
-            else refloop.Conversation(self.tools.specs(), path, note=self.job.loop_note)
+        if load:
+            return refloop.Conversation.load(path)
+        return refloop.Conversation(
+            self.tools.specs(), path, note=self.job.loop_note, chat_key=self.chat_key, clock_offset_s=self.offset_s
         )
+
+    def clock_moved(self):
+        self.conv.advance(self.offset_s - self.conv.clock_offset_s)
 
     def speak(self, texts: list, step: dict, rec: dict):
         rec["tools"] = []
@@ -444,11 +530,11 @@ class ArmB(Arm):
     def restart(self):
         """nimbusd restarts and the loop's process state is thrown away: only the saved transcript survives."""
         self.d.restart()
-        self._open(load=True)
+        self._connect()
+        self.conv = self._conversation(load=True)
 
     def new_conversation(self):
-        self.conversations += 1
-        self._open(load=False)
+        self.conv = self._conversation(load=False)
 
 
 ARMS = {"A": ArmA, "B": ArmB}

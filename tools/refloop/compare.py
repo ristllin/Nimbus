@@ -35,7 +35,7 @@ import grade  # noqa: E402
 import report  # noqa: E402
 import scenario  # noqa: E402
 from arms import ARMS, HEAD_PATHS, Job  # noqa: E402
-from costs import add_spend, rows_cost, total_spend  # noqa: E402
+from costs import add_spend, rows_cost, total_spend, virtual_costs  # noqa: E402
 from nimbusd_ctl import build_shim, load_env  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
@@ -118,6 +118,8 @@ def run_task(job: Job, arm_name: str, args) -> str:
         rec["traceback"] = traceback.format_exc()[-3000:]
     finally:
         rec["cost_usd"] = round(rows_cost(arm.proxy.records), 6)
+        # On the virtual clock: a request after an advance over 300 s priced cold (costs.py).
+        rec["virtual_cost_usd"] = round(sum(u for u, _ in virtual_costs(arm.proxy.rows(), arm.clock_marks).values()), 6)
         rec["provider_exchanges"] = len(arm.proxy.records)
         arm.close()
     rec["ended"] = utc()

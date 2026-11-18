@@ -7,6 +7,10 @@ with the same keys and settings, so the tools behave the same in both arms.
 
 Keys are read from a dotenv file inside this process and reach the daemon only in
 its environment. Nothing here prints a key or writes one to disk.
+
+Every rig daemon runs with the test clock (NIMBUSD_TEST_CLOCK=1, its token, the loopback
+bind): advance() moves it through POST /test/clock, and a restart puts the offset back,
+because a new process starts at the host clock and a scenario's time never runs backwards.
 """
 
 from __future__ import annotations
@@ -24,11 +28,20 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from scenario import RIG_TZ
+
 REPO = Path(__file__).resolve().parents[2]
 DAEMON = REPO / "nimbusd" / "build" / "nimbusd"
 SHIM_SRC = Path(__file__).resolve().parent / "capture_shim.c"
 SHIM_OUT = REPO / "nimbusd" / "build" / "capture_shim.dylib"
 HTTP_TIMEOUT_S = 60
+# An advance answers after one idle step, which may be a due routine or a compaction (a paid
+# call): nimbusd gives it up to 600 s (RB-VCa), so the rig waits a little longer.
+CLOCK_TIMEOUT_S = 630
+# Idle steps run after an advance: at least this many, then more while a compaction is running
+# or queued, up to the cap, so the compaction a gap makes due has finished before the next turn.
+IDLE_TICKS_MIN = 2
+IDLE_TICKS_MAX = 60
 # The slug -> env name pairs the daemon reads (nimbusd/src/daemon_config.h).
 PROVIDER_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 
@@ -75,16 +88,19 @@ class Nimbusd:
         self.port = 0
         self.proc = None
         self.head = ""
+        self.offset_s = 0  # the test clock's offset as last read; put back after a restart
 
     # ---------------------------------------------------------------- process
     def _environment(self, head: str) -> dict:
         env = {
             "PATH": "/usr/bin:/bin",
             "HOME": str(self.data_dir),
-            "TZ": "Europe/London",
+            "TZ": RIG_TZ,
             "NIMBUSD_DATA_DIR": str(self.data_dir),
             "NIMBUSD_WEB_TOKEN": self.token,
             "NIMBUSD_CONTROL_PORT": str(self.port),
+            # The test clock: /test/clock exists (token-gated, loopback bind only).
+            "NIMBUSD_TEST_CLOCK": "1",
             "NIMBUSD_DEVICE_NAME": "Nimbus",
             # One head provider and no other in the failover order: a turn that fails
             # must fail, not be answered by another model.
@@ -127,9 +143,16 @@ class Nimbusd:
         self.proc = None
 
     def restart(self):
-        """Stop cleanly and start again on the same data dir, as a container restart does."""
+        """Stop cleanly and start again on the same data dir, as a container restart does.
+
+        The new process starts at the host clock, so the offset the scenario had reached is put
+        back before anything else runs on it (one idle step, like any advance)."""
+        offset = self.offset_s
         self.stop()
         self.start(self.head)
+        self.offset_s = 0
+        if offset:
+            self.advance(offset)
 
     def wait_ready(self, timeout_s: float = 30):
         end = time.time() + timeout_s
@@ -146,12 +169,18 @@ class Nimbusd:
         """(status, text). A transport failure reads as status 0, never as a raise."""
         if form is not None:
             data, ctype = urllib.parse.urlencode(form).encode(), "application/x-www-form-urlencoded"
+        return self._send(self._request(method, path, data, ctype))
+
+    def _request(self, method: str, path: str, data=None, ctype=None) -> urllib.request.Request:
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=data, method=method)
         req.add_header("X-Nimbus-Token", self.token)
         if ctype:
             req.add_header("Content-Type", ctype)
+        return req
+
+    def _send(self, req: urllib.request.Request, timeout: float = HTTP_TIMEOUT_S) -> tuple:
         try:
-            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.status, r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode("utf-8", "replace")
@@ -201,6 +230,42 @@ class Nimbusd:
         )
         if not 200 <= status < 300:
             raise RuntimeError(f"upload {project}/{name} answered {status}: {text[:200]}")
+
+    # ------------------------------------------------------------------ clock
+    def _clock_answer(self, status: int, body: str, what: str) -> dict:
+        if status != 200:
+            raise RuntimeError(f"{what} answered {status}: {body[:200]} (is nimbusd built from rb-main?)")
+        answer = json.loads(body)
+        self.offset_s = int(answer["offset_s"])
+        return answer
+
+    def clock(self) -> dict:
+        """{offset_s, epoch, idle_steps}: the daemon's virtual clock."""
+        return self._clock_answer(*self.call("GET", "/test/clock"), "GET /test/clock")
+
+    def advance(self, seconds: int) -> dict:
+        """Move the clock forward by whole seconds and run one idle step; answers after that step."""
+        payload = json.dumps({"advance_s": int(seconds)}).encode()
+        reply = self._send(self._request("POST", "/test/clock", payload, "application/json"), CLOCK_TIMEOUT_S)
+        return self._clock_answer(*reply, f"POST /test/clock advance_s={int(seconds)}")
+
+    def fold_busy(self) -> bool:
+        """A compaction is running or queued. No fold chat yet (404) is not busy; engine busy (503) is."""
+        status, body = self.call("GET", "/api/fold/status")
+        if status == 503:
+            return True
+        if status != 200:
+            return False
+        d = json.loads(body)
+        return bool(d.get("running") or d.get("queued"))
+
+    def tick_idle(self) -> int:
+        """Idle steps after an advance, until no compaction is running or queued. Returns how many ran."""
+        for n in range(1, IDLE_TICKS_MAX + 1):
+            self.advance(0)
+            if n >= IDLE_TICKS_MIN and not self.fold_busy():
+                return n
+        return IDLE_TICKS_MAX
 
     # -------------------------------------------------------------------- mcp
     def mcp(self, method: str, params: dict | None = None, wait_s: float = 120) -> dict:

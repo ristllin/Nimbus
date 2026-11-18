@@ -4,6 +4,12 @@
 Prices are USD per million tokens, list prices as recorded in
 lib/core/include/nimbus/orch/model_price_defaults.h (as of 2026-10). Both arms are
 priced by the same function from the usage each provider reported on the wire.
+
+Virtual time: a scenario's advance step moves the daemons' clocks, but a provider's
+prompt cache lives in real time and is still warm after an advance. So a request whose
+gap on the virtual clock since the previous request on the same model is over
+COLD_GAP_S is priced cold from its token counts (cold_priced_usd): what it would have
+cost had the gap been real. What was billed stays the spend ledger's figure.
 """
 
 from __future__ import annotations
@@ -27,6 +33,9 @@ HAIKU_LONG = (0.50, 2.50, 0.05, 0.625)
 UNKNOWN = (3.00, 15.00, 0.30, 3.75)  # an unlisted model prices high, never free
 
 _lock = threading.Lock()
+# A provider prompt cache lives 5 minutes from its last use (the default write). A virtual gap
+# longer than this means the request would have found it expired.
+COLD_GAP_S = 300
 
 
 def price_row(model: str | None, prompt_tokens: int = 0) -> tuple:
@@ -58,6 +67,44 @@ def cold_cost_usd(model: str | None, usage: dict | None) -> float:
         return 0.0
     p_in, p_out, _, _ = price_row(model, usage.get("input", 0))
     return (usage.get("input", 0) * p_in + usage.get("output", 0) * p_out) / 1e6
+
+
+def cold_priced_usd(model: str | None, usage: dict | None) -> float:
+    """USD for the same exchange had its cache expired: every token it read from the cache is
+    written again at the cache-write price (on a model with no write premium that is the input
+    price); fresh, written and output tokens price as reported."""
+    if not usage:
+        return 0.0
+    cached = usage.get("cached", 0)
+    return cost_usd(model, {**usage, "cached": 0, "cache_write": usage.get("cache_write", 0) + cached})
+
+
+def offset_at(clock_marks: list, t: float) -> int:
+    """The clock offset in force at real time t: the last (real time, offset) mark at or before t."""
+    offset = 0
+    for at, off in clock_marks:
+        if at <= t:
+            offset = off
+    return offset
+
+
+def virtual_costs(rows: list, clock_marks: list) -> dict:
+    """{seq: (usd, cold)} for every row, in the order the requests were made.
+
+    A row is cold when the virtual gap from the end of the previous request on the same model
+    (for a model's first request: from the start of the run's first request) to its start is
+    over COLD_GAP_S; its cost is then cold_priced_usd, else what was billed.
+    """
+    last_end, out, first = {}, {}, None
+    for r in sorted(rows, key=lambda r: r["seq"]):
+        offset = offset_at(clock_marks, r["t_start"])
+        start, model = r["t_start"] + offset, r.get("model")
+        first = start if first is None else first
+        cold = start - last_end.get(model, first) > COLD_GAP_S
+        usd = (cold_priced_usd if cold else cost_usd)(model, r.get("usage"))
+        out[r["seq"]] = (usd, cold)
+        last_end[model] = start + r.get("ms", 0) / 1000
+    return out
 
 
 def rows_cost(rows: list) -> float:

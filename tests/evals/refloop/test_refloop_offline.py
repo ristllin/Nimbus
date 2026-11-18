@@ -6,7 +6,9 @@
 Covers the loop itself (with a scripted provider), the transcript save and reload, the
 summary of the oldest half, the burst channel, the scenario files, every check of the
 grader (one passing and one failing case each), the wire parsing of both providers,
-the usage normalization and the price table.
+the usage normalization and the price table, and virtual time: the advance step on both
+arms (a 04:00 rollover, an overnight gap, a week), the idle ticks after it, cold pricing
+after a gap over 300 s, restarts that keep the offset, and a new chat key per conversation.
 """
 
 import json
@@ -14,8 +16,11 @@ import queue
 import sys
 import tempfile
 import threading
+import time
 import unittest
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "tools" / "refloop"))
@@ -25,6 +30,7 @@ import costs  # noqa: E402
 import fixtures  # noqa: E402
 import grade  # noqa: E402
 import mechanisms  # noqa: E402
+import nimbusd_ctl  # noqa: E402
 import refloop  # noqa: E402
 import scenario  # noqa: E402
 from capture_proxy import normalize_usage  # noqa: E402
@@ -568,6 +574,258 @@ class WireTest(unittest.TestCase):
         self.assertAlmostEqual(costs.cost_usd("claude-sonnet-5-5", cached), 0.09 + 0.25)
         self.assertAlmostEqual(costs.cold_cost_usd("claude-sonnet-5-5", cached), 2.00)
         self.assertGreater(costs.cost_usd("some-new-model", usage), 2.0)  # unknown never prices as free
+
+
+LONDON = ZoneInfo("Europe/London")
+
+
+def london(*args) -> int:
+    return int(datetime(*args, tzinfo=LONDON).timestamp())
+
+
+class FakeClockDaemon:
+    """The test clock routes of a nimbusd: GET/POST /test/clock, /api/fold/status, the watch poll."""
+
+    def __init__(self, fold_rungs=0):
+        self.offset, self.idle_steps, self.posts, self.fold_rungs = 0, 0, [], fold_rungs
+
+    def clock(self):
+        return {"offset_s": self.offset, "epoch": int(time.time()) + self.offset, "idle_steps": self.idle_steps}
+
+    def advance(self, seconds):
+        self.posts.append(seconds)
+        self.offset += seconds
+        self.idle_steps += 1
+        self.fold_rungs = max(self.fold_rungs - 1, 0)  # each idle step runs one rung of a due compaction
+        return self.clock()
+
+    fold_busy = nimbusd_ctl.Nimbusd.fold_busy
+    tick_idle = nimbusd_ctl.Nimbusd.tick_idle
+
+    def call(self, method, path, **kw):
+        if path.startswith("/api/fold/status"):
+            return 200, json.dumps({"running": self.fold_rungs > 0, "queued": False})
+        return 200, json.dumps({"busy": 0})
+
+
+def job_for(tmp, sc_id="t"):
+    return arms.Job("claude-sonnet-5-5", "anthropic", None, "", {"id": sc_id, "turns": []}, 1, Path(tmp))
+
+
+def row(seq, t, model="claude-sonnet-5-5", **ctx):
+    """One captured exchange: 9,000 cached prompt tokens, 1,000 fresh, 100 out."""
+    usage = {"input": 10000, "cached": 9000, "cache_write": 0, "output": 100}
+    return {
+        "seq": seq,
+        "t_start": t,
+        "ms": 2000,
+        "model": model,
+        "usage": usage,
+        "path": "/v1/messages",
+        "method": "POST",
+        "status": 200,
+        "ctx": ctx,
+    }
+
+
+class TimeTest(unittest.TestCase):
+    def setUp(self):
+        self._poll = arms.SETTLE_POLL_S
+        arms.SETTLE_POLL_S = 0
+
+    def tearDown(self):
+        arms.SETTLE_POLL_S = self._poll
+
+    def test_an_advance_is_seconds_a_duration_or_a_wall_time(self):
+        self.assertEqual(scenario.parse_advance(90), ("seconds", 90))
+        self.assertEqual(scenario.parse_advance("8h"), ("seconds", 28800))
+        self.assertEqual(scenario.parse_advance("7d"), ("seconds", 604800))
+        self.assertEqual(scenario.parse_advance("04:00"), ("wall", 4, 0))
+        for bad in (0, -5, True, 1.5, "4:00", "24:00", "8 h", "tomorrow", 367 * 86400, None):
+            with self.assertRaises(scenario.ScenarioError, msg=repr(bad)):
+                scenario.parse_advance(bad)
+        good = {"id": "x", "title": "t", "judge_notes": "n", "turns": [{"say": "hi"}, {"advance": "04:00"}]}
+        scenario.validate(good)
+        for bad_step in (
+            {"advance": "soon"},
+            {"advance": 60, "expect": [{"reply_regex": "a"}]},
+            {"advance": 60, "say": "x"},
+        ):
+            with self.assertRaises(scenario.ScenarioError, msg=repr(bad_step)):
+                scenario.validate({**good, "turns": [{"say": "hi"}, bad_step]})
+
+    def test_the_0400_rollover_lands_on_the_next_0400(self):
+        late = london(2026, 11, 17, 23, 10)
+        self.assertEqual(scenario.advance_target("04:00", late), london(2026, 11, 18, 4, 0))
+        self.assertEqual(scenario.advance_target("04:00", london(2026, 11, 18, 3, 59)), london(2026, 11, 18, 4, 0))
+        on_it = london(2026, 11, 18, 4, 0)  # strictly after: an advance always moves
+        self.assertEqual(scenario.advance_target("04:00", on_it), london(2026, 11, 19, 4, 0))
+        # The night British Summer Time ends (25 Oct 2026): 23:00 BST to 04:00 GMT is six real hours.
+        bst = london(2026, 10, 24, 23, 0)
+        self.assertEqual(scenario.advance_target("04:00", bst) - bst, 6 * 3600)
+        self.assertEqual(scenario.advance_target("8h", late), late + 8 * 3600)
+
+    def test_the_reference_loop_stamps_move_with_its_clock(self):
+        conv = refloop.Conversation([], chat_key="k")
+        before = conv.stamp("x")
+        conv.advance(7 * 86400)
+        week = datetime.now(LONDON).timestamp() + 7 * 86400
+        self.assertEqual(conv.stamp("x")[:16], datetime.fromtimestamp(week, LONDON).strftime("[%a %d %b %Y"))
+        self.assertNotEqual(conv.stamp("x"), before)
+        with self.assertRaises(ValueError):
+            conv.advance(-1)
+        later = refloop.Conversation([], clock_offset_s=7 * 86400)  # a new conversation starts on the same clock
+        self.assertIn(datetime.fromtimestamp(week, LONDON).strftime("%A %d %B %Y"), later.system)
+
+    def test_a_saved_transcript_keeps_its_clock_and_an_old_one_loads_at_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.json"
+            conv = refloop.Conversation([], path, chat_key="k")
+            conv.advance(3600)
+            self.assertEqual(refloop.Conversation.load(path).clock_offset_s, 3600)
+            old = json.loads(path.read_text())
+            del old["clock_offset_s"]
+            path.write_text(json.dumps(old))
+            self.assertEqual(refloop.Conversation.load(path).clock_offset_s, 0)
+
+    def test_both_arms_honour_an_advance_and_land_on_the_same_wall_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a, b = arms.ArmA(job_for(tmp)), arms.ArmB(job_for(tmp))
+            a.d, b.d = FakeClockDaemon(), FakeClockDaemon()
+            b.conv = refloop.Conversation([], Path(tmp) / "b.json", chat_key=b.chat_key)
+            recs = [arm.step({"advance": "04:00"}) for arm in (a, b)]
+            for arm, rec in zip((a, b), recs):
+                self.assertEqual(rec["kind"], "advance")
+                self.assertTrue(rec["local"].endswith("04:00"), rec)
+                self.assertEqual(arm.d.posts[0], rec["advanced_s"])
+                self.assertGreater(rec["advanced_s"], 0)
+                self.assertEqual(arm.offset_s, arm.d.offset)
+            self.assertEqual(recs[0]["local"], recs[1]["local"])
+            self.assertEqual(b.conv.clock_offset_s, b.d.offset)  # arm B's own stamps moved too
+            self.assertIn(" 04:0", b.conv.stamp("x"))
+
+    def test_idle_steps_run_until_the_compaction_an_overnight_gap_made_due_is_done(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            arm = arms.ArmA(job_for(tmp))
+            arm.d = FakeClockDaemon(fold_rungs=5)
+            rec = arm.step({"advance": "8h"})
+            self.assertEqual(arm.d.posts, [28800, 0, 0, 0, 0])  # the move, then idle steps until it is done
+            self.assertEqual(arm.d.fold_rungs, 0)
+            self.assertEqual(rec["idle_steps"], 5)
+            quiet = arms.ArmA(job_for(tmp))
+            quiet.d = FakeClockDaemon()
+            quiet.step({"advance": 60})
+            self.assertEqual(quiet.d.posts, [60] + [0] * nimbusd_ctl.IDLE_TICKS_MIN)
+
+    def test_a_request_after_an_overnight_gap_is_priced_cold_and_billed_as_billed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            arm = arms.ArmA(job_for(tmp))
+            arm.d = FakeClockDaemon()
+            now = time.time()
+            arm.proxy.records += [row(1, now - 20, turn=1), row(2, now - 15, turn=1)]
+            arm.step({"advance": "8h"})
+            arm.proxy.records += [row(3, now + 1, turn=2), row(4, now + 4, turn=2), row(5, now + 60, turn=3)]
+            warm = costs.cost_usd("claude-sonnet-5-5", row(0, 0)["usage"])
+            cold = costs.cold_priced_usd("claude-sonnet-5-5", row(0, 0)["usage"])
+            self.assertAlmostEqual(warm, (1000 * 2.00 + 9000 * 0.10 + 100 * 10.0) / 1e6)
+            self.assertAlmostEqual(cold, (1000 * 2.00 + 9000 * 2.50 + 100 * 10.0) / 1e6)
+            m1, m2, m3 = arm.metrics(1), arm.metrics(2), arm.metrics(3)
+            self.assertEqual((m1["cold_requests"], m2["cold_requests"], m3["cold_requests"]), (0, 1, 0))
+            self.assertAlmostEqual(m2["virtual_cost_usd"], cold + warm)  # the second round found it warm
+            self.assertAlmostEqual(m2["cost_usd"], 2 * warm)  # billed is what the provider charged
+            self.assertAlmostEqual(m3["virtual_cost_usd"], warm)  # a minute later: warm
+
+    def test_the_cold_rule_is_the_gap_on_the_same_model_over_300_s(self):
+        t = 1_000_000.0
+        rows = [row(1, t), row(2, t + 2 + 299), row(3, t + 600, model="claude-haiku-5-5"), row(4, t + 1000)]
+        priced = costs.virtual_costs(rows, [])
+        self.assertEqual([priced[n][1] for n in (1, 2, 3, 4)], [False, False, True, True])
+        marks = [(t + 100, 301)]  # a 301 s advance between rows 1 and 2 makes row 2 cold
+        self.assertTrue(costs.virtual_costs(rows, marks)[2][1])
+        self.assertEqual(costs.offset_at(marks, t), 0)
+        self.assertEqual(costs.offset_at(marks, t + 100), 301)
+        # A model with no cache-write premium re-reads at its input price.
+        luna = {"input": 1000, "cached": 800, "cache_write": 0, "output": 0}
+        self.assertAlmostEqual(costs.cold_priced_usd("gpt-5.6-luna", luna), 1000 * 0.20 / 1e6)
+
+    def test_turns_carry_the_chat_key_the_gap_and_the_cold_transition(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            arm = arms.ArmA(job_for(tmp, "night"))
+            arm.d = FakeClockDaemon()
+            arm.speak = lambda texts, step, rec: rec.update(replies=["ok"], tools=[])
+            arm.metrics = lambda turn: {}
+            first, warm = arm.step({"say": "a"}), arm.step({"say": "b"})
+            arm.step({"advance": "04:00"})
+            after = arm.step({"say": "c"})
+            self.assertEqual([first["chat_key"], after["chat_key"]], ["night-rep1-c0"] * 2)
+            self.assertEqual(
+                [first["cold_transition"], warm["cold_transition"], after["cold_transition"]], [True, False, True]
+            )
+            self.assertIsNone(first["gap_s"])
+            self.assertGreater(after["gap_s"], 270)
+            arm.restart = lambda: None
+            arm.step({"restart": True})
+            self.assertTrue(arm.step({"say": "d"})["cold_transition"])
+
+    def test_new_conversation_is_a_new_chat_key_on_the_same_clock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            arm = arms.ArmB(job_for(tmp, "mem"))
+            arm.d, arm.tools = FakeClockDaemon(), FakeTools()
+            arm.dir.mkdir(parents=True)
+            arm.conv = arm._conversation(load=False)
+            arm.step({"advance": "7d"})
+            first_key = arm.conv.cache_key
+            rec = arm.step({"new_conversation": True})
+            self.assertEqual(rec, {"kind": "new_conversation", "chat_key": "mem-rep1-c1"})
+            self.assertNotEqual(arm.conv.cache_key, first_key)
+            self.assertEqual(arm.conv.cache_key, "refloop-mem-rep1-c1")
+            self.assertEqual(arm.conv.clock_offset_s, 7 * 86400)  # time does not go back with a new chat
+            self.assertEqual(arm.conv.messages, [])
+            arm.speak = lambda texts, step, rec: rec.update(replies=["ok"], tools=[])
+            arm.metrics = lambda turn: {}
+            turn = arm.step({"say": "remember?"})
+            self.assertEqual((turn["chat_key"], turn["cold_transition"]), ("mem-rep1-c1", True))
+            unnamed = [refloop.Conversation([]).cache_key for _ in range(2)]
+            self.assertNotEqual(unnamed[0], unnamed[1])  # never the same key by the clock's second
+
+    def test_a_restart_puts_the_offset_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+
+            class Daemon(nimbusd_ctl.Nimbusd):
+                def __init__(self):
+                    super().__init__(Path(tmp), {}, Path(tmp) / "log")
+                    self.server_offset, self.bodies = 0, []
+
+                def start(self, head):
+                    self.server_offset = 0  # a new process starts at the host clock
+
+                def stop(self):
+                    pass
+
+                def _send(self, req, timeout=60):
+                    if req.get_method() == "POST":
+                        self.bodies.append((json.loads(req.data), timeout))
+                        self.server_offset += json.loads(req.data)["advance_s"]
+                    answer = {"offset_s": self.server_offset, "epoch": 0, "idle_steps": 0}
+                    return 200, json.dumps(answer)
+
+            d = Daemon()
+            d.advance(5000)
+            d.restart()
+            self.assertEqual(d.server_offset, 5000)
+            self.assertEqual(d.clock()["offset_s"], 5000)
+            self.assertEqual(d.bodies[-1], ({"advance_s": 5000}, nimbusd_ctl.CLOCK_TIMEOUT_S))
+            self.assertGreaterEqual(nimbusd_ctl.CLOCK_TIMEOUT_S, 600)  # the route may run a paid idle step
+
+    def test_every_rig_daemon_runs_the_test_clock(self):
+        env = nimbusd_ctl.Nimbusd(Path("/tmp/x"), {}, Path("/tmp/x/log"))._environment("anthropic")
+        self.assertEqual(env["NIMBUSD_TEST_CLOCK"], "1")
+        self.assertTrue(env["NIMBUSD_WEB_TOKEN"])
+        self.assertEqual(env["TZ"], scenario.RIG_TZ)
+
+    def test_the_judge_is_told_time_passed(self):
+        rec = {"steps": [{"kind": "advance", "local": "Wed 18 Nov 2026 04:00"}]}
+        self.assertIn("[time passes: it is now Wed 18 Nov 2026 04:00]", grade.render_transcript(rec))
 
 
 if __name__ == "__main__":

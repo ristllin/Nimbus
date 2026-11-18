@@ -12,7 +12,12 @@ full table):
                              text is replaced by that text fixture
       burst: [text, ...]     messages sent gap_s apart, before any reply
       restart: true          restart nimbusd; the reference loop reloads its transcript
-      new_conversation: true a new conversation (earlier chat out of view; memory and files stay)
+      new_conversation: true a new conversation (earlier chat out of view; memory and files stay),
+                             on a new chat key
+      advance: N | "90m" | "04:00"
+                             move both arms' clocks: N whole seconds, a duration (s, m, h, d), or
+                             the next time that local wall time comes round in the rig TZ; the
+                             daemons then run idle work (routines, compaction) before the next turn
     say and burst take expect: a list of one-key checks (grade.CHECKS)
   final                      checks on the instance's state after the last turn
   judge_notes                the ground truth the blind judge is given
@@ -24,14 +29,23 @@ An unknown key or check anywhere stops the load, so a typo can never read as a p
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import yaml
 
 import fixtures
 
 TOP_KEYS = {"id", "title", "pain", "seed", "turns", "final", "judge_notes", "models", "reps"}
-STEP_ACTIONS = ("say", "burst", "restart", "new_conversation")
+STEP_ACTIONS = ("say", "burst", "restart", "new_conversation", "advance")
+# The time zone both arms run in (nimbusd's TZ, the reference loop's stamps, a wall-time advance).
+RIG_TZ = "Europe/London"
+# The test clock's own limit on one advance (nimbusd vclock::kMaxAdvanceSec: 366 days).
+MAX_ADVANCE_S = 366 * 86400
+DURATION_RE = re.compile(r"^(\d+)([smhd])$")
+WALL_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+UNIT_S = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 STEP_KEYS = {*STEP_ACTIONS, "photos", "gap_s", "expect", "timeout_s"}
 # Checks that read the instance's state right after the turn (the runner snapshots it then).
 STATE_CHECKS = {
@@ -62,6 +76,37 @@ class ScenarioError(ValueError):
     pass
 
 
+def parse_advance(value) -> tuple:
+    """("seconds", n) or ("wall", hour, minute) for an advance step's value. Anything else is refused."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        seconds = value
+    elif isinstance(value, str) and WALL_RE.match(value):
+        hour, minute = WALL_RE.match(value).groups()
+        return ("wall", int(hour), int(minute))
+    elif isinstance(value, str) and DURATION_RE.match(value):
+        n, unit = DURATION_RE.match(value).groups()
+        seconds = int(n) * UNIT_S[unit]
+    else:
+        raise ScenarioError(f"advance takes whole seconds, a duration like 90m, or a wall time HH:MM, got {value!r}")
+    if not 0 < seconds <= MAX_ADVANCE_S:
+        raise ScenarioError(f"advance of {seconds} s is outside 1..{MAX_ADVANCE_S}")
+    return ("seconds", seconds)
+
+
+def advance_target(value, epoch: int, tz: str = RIG_TZ) -> int:
+    """The unix time an advance from `epoch` lands on. A wall time is the next one strictly after epoch."""
+    kind, *rest = parse_advance(value)
+    if kind == "seconds":
+        return int(epoch) + rest[0]
+    now = datetime.fromtimestamp(int(epoch), ZoneInfo(tz))
+    day = now.date()
+    while True:  # today's, else tomorrow's; the calendar date steps, so a DST change keeps the wall time
+        at = datetime(day.year, day.month, day.day, rest[0], rest[1], tzinfo=ZoneInfo(tz))
+        if at.timestamp() > epoch:
+            return int(at.timestamp())
+        day += timedelta(days=1)
+
+
 def _check_list(checks, where: str, allowed: set):
     for c in checks or []:
         if not isinstance(c, dict) or len(c) != 1:
@@ -77,8 +122,13 @@ def _check_step(step, where: str):
     actions = [a for a in STEP_ACTIONS if a in step]
     if len(actions) != 1:
         raise ScenarioError(f"{where}: a step has exactly one of {STEP_ACTIONS}")
-    if actions[0] in ("restart", "new_conversation") and (step.get("expect") or step.get("photos")):
+    if actions[0] in ("restart", "new_conversation", "advance") and (step.get("expect") or step.get("photos")):
         raise ScenarioError(f"{where}: {actions[0]} takes no expect and no photos")
+    if actions[0] == "advance":
+        try:
+            parse_advance(step["advance"])
+        except ScenarioError as e:
+            raise ScenarioError(f"{where}: {e}") from None
     if actions[0] == "burst" and (not isinstance(step["burst"], list) or len(step["burst"]) < 2):
         raise ScenarioError(f"{where}: burst is a list of at least two messages")
     _check_list(step.get("expect"), where, CHECK_NAMES)

@@ -26,8 +26,9 @@ import queue
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -232,27 +233,40 @@ def provider_for(model: str, **kw):
 
 # ----------------------------------------------------------------- conversation
 class Conversation:
-    """The state of one conversation: system prompt, tool list and messages, saved after every step."""
+    """The state of one conversation: system prompt, tool list and messages, saved after every step.
 
-    def __init__(
-        self,
-        specs: list,
-        path: Path | None = None,
-        channel: str = "the web chat",
-        tz: str = "Europe/London",
-        note: str = "",
-    ):
-        now = datetime.now(ZoneInfo(tz))
+    Its clock is the host clock plus clock_offset_s, which only the rig moves (advance), so a
+    scenario's virtual time reaches the stamps exactly as it reaches nimbusd. chat_key names the
+    conversation; it is the provider's cache key, so two conversations never share one.
+    """
+
+    clock_offset_s = 0  # transcripts saved before the virtual clock existed load at offset 0
+    CHANNEL = "the web chat"
+    TZ = "Europe/London"
+
+    def __init__(self, specs: list, path: Path | None = None, note: str = "", chat_key: str = "", clock_offset_s=0):
+        self.tz, self.clock_offset_s = self.TZ, int(clock_offset_s)
+        now = self.now()
         self.system = SYSTEM.format(
-            date=now.strftime("%A %d %B %Y"), time=now.strftime("%H:%M"), tz=tz, channel=channel
+            date=now.strftime("%A %d %B %Y"), time=now.strftime("%H:%M"), tz=self.tz, channel=self.CHANNEL
         ) + (f"\n{note}" if note else "")  # note: for experiments
-        self.specs, self.messages, self.tz = specs, [], tz
+        self.specs, self.messages = specs, []
         self.path = Path(path) if path else None
         self.prompt_tokens = 0
-        self.cache_key = f"refloop-{int(now.timestamp())}"
+        self.cache_key = f"refloop-{chat_key}" if chat_key else f"refloop-{uuid.uuid4().hex[:12]}"
+
+    def now(self) -> datetime:
+        return datetime.now(ZoneInfo(self.tz)) + timedelta(seconds=self.clock_offset_s)
+
+    def advance(self, seconds: int):
+        """Move this conversation's clock forward (the rig's advance step), and save it."""
+        if seconds < 0:
+            raise ValueError("the clock only moves forward")
+        self.clock_offset_s += int(seconds)
+        self.save()
 
     def stamp(self, text: str) -> str:
-        return datetime.now(ZoneInfo(self.tz)).strftime("[%a %d %b %Y %H:%M] ") + text
+        return self.now().strftime("[%a %d %b %Y %H:%M] ") + text
 
     def save(self):
         if self.path:
