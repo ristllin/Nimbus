@@ -1117,16 +1117,36 @@ long AppendLogEpisodicStore::coldEndOf(uint32_t day, const std::map<uint32_t, ui
   return fit == floorOfDay.end() ? size : std::min(size, (long)fit->second);
 }
 
+// The id suffix of the newest cold row of a day-stream (the last whole record before `end`;
+// 0 = unknown): one window read at the end of its cold bytes.
+uint32_t AppendLogEpisodicStore::newestColdSfx(uint32_t day, long end) const {
+  const long from = std::max(0L, end - (long)kColdWindow);
+  const std::string buf = readCard(dayFile(day), from, end - from);
+  if (buf.empty()) return 0;
+  size_t e = buf.size();
+  while (e > 0 && buf[e - 1] == '\n') e--;
+  const size_t s = buf.rfind('\n', e ? e - 1 : 0);
+  if (s == std::string::npos || e <= s + 1) return 0;   // no whole record in the window
+  EpisodicMessage m;
+  return decodeEpisodicLine(buf.data() + s + 1, e - s - 1, m) ? epiIdSuffix(m.id) : 0;
+}
+
 // A no-clock stream the index has not read whole: its rows cannot be placed among the dated
 // days' from the card, so the read names it and gives nothing (its reader waits; the
-// background indexing reads the stream, and the index serves every row in id order).
+// background indexing reads the stream, and the index serves every row in id order). Unless
+// the cursor is newer than every row it holds (lane CTXR1): an id cursor past its newest cold
+// row, or a byte cursor already in a dated day's walk, reads on, the stream has nothing for it.
 bool AppendLogEpisodicStore::noClockColdSpan(const EpiPsVec<uint32_t>& days,
-                                             const std::map<uint32_t, uint32_t>& floorOfDay,
-                                             EpiQueryInfo& info) const {
+                                             const std::map<uint32_t, uint32_t>& floorOfDay, const MsgQuery& q,
+                                             uint32_t afterSfx, EpiQueryInfo& info) const {
+  const size_t colon = q.after.find(':');
+  if (colon != std::string::npos && !noClockDay((uint32_t)std::strtoul(q.after.c_str(), nullptr, 10))) return false;
   for (const uint32_t day : days) {
     if (!noClockDay(day)) return false;   // days are sorted: the no-clock ones come first
     const long end = coldEndOf(day, floorOfDay);
     if (end <= 0) continue;
+    const uint32_t newest = colon == std::string::npos ? newestColdSfx(day, end) : 0;
+    if (newest && afterSfx >= newest) continue;   // every row of it is at or before the cursor
     noteUnreadable(info, day, 0, end);
     return true;
   }
@@ -1144,7 +1164,7 @@ bool AppendLogEpisodicStore::queryAfterCold(const MsgQuery& q, const EpiAfterFil
     auto it = floorOfDay.find(r.dayNum);
     if (it == floorOfDay.end() || r.offset < it->second) floorOfDay[r.dayNum] = r.offset;
   }
-  if (noClockColdSpan(days, floorOfDay, info)) return false;
+  if (noClockColdSpan(days, floorOfDay, q, afterSfx, info)) return false;
   size_t bytes = 0, di = 0;
   long off = 0;
   coldStart(q, days, afterSfx, di, off, bytes);
