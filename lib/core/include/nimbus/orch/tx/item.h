@@ -7,11 +7,29 @@
 #include "nimbus/orch/tx/status.h"
 
 // tx/item.h - the transcript item (PRD section 2), the unit the plain engine stores
-// before it renders a request. On disk an item is one JSON object per line, short
-// keys, at most kMaxLineBytes, last key z = crc32 of the bytes before it, so a torn
-// tail is dropped. q is a per-chat sequence number; order comes from q, never t.
+// before it renders a request. Items are appended and never rewritten. q is a per-chat
+// sequence number; order comes from q, never t.
 //
-// Seam declared by lane RB-B0a; the codec body (orch_tx_item.cpp) is lane RB-T1's.
+// The line (lane RB-T1, lib/core/src/orch_tx_item.cpp): one JSON object, one line,
+//   {"k":"u","q":12,"turn":3,"t":1763384520,"x":"...","z":"1a2b3c4d"}\n
+// "k" (the kind letter) and "q" come first and are always written; then the kind's own
+// fields, each only when it differs from its default; "z" is last: the crc32 (IEEE) of
+// every byte before ',"z":"', as 8 lowercase hex digits. The tail ',"z":"xxxxxxxx"}\n'
+// has a fixed width, so a torn tail, a glued line or a flipped byte fails the crc and is
+// dropped, never repaired. A line is at most kMaxLineBytes including its newline.
+// Strings are stored byte for byte (renderers repair UTF-8; capture never rewrites);
+// '"', '\\' and control bytes are escaped, so a line never holds a raw newline.
+// Keys (short, per kind):
+//   all  k q turn t            u  x tz ch src m parts[{k img|file|voice, ref, mime, b}]
+//   t  tr hd pf at ph          a  x rd fin            c  id n args eff rd
+//   i  id n                    r  id n ok cls x hdl b l st
+//   k  x rd                    h  x cls (note class)  s  x day thru ext
+//   x  stub why sup            d  ids                 e  cause rds tools hr pr pt ot cr cw usd ms
+//                                                        ex[[b,ms,st]] ev[] ph mh
+// Decoding skips keys it does not know (the format only grows), answers Torn for a
+// framing or crc failure and InvalidArgument for a whole line it cannot read (an unknown
+// kind letter, a malformed value).
+//
 // This struct is the decoded value type. The RAM arena (arena.h) keeps encoded bytes,
 // never one std::string per item.
 namespace nimbus {
@@ -163,7 +181,10 @@ struct Item {
   bool ext = false;                // archived out of the block
 
   // x
-  uint64_t stub = 0;               // the new pointer: items at or below it render as stubs
+  // The new stub pointer. At or below it only tier-2 bulk renders as its stub (bulk and
+  // outside results, string arguments over 1,024 B, pixels, document bodies); receipts,
+  // owner and assistant text stay verbatim until compacted (PRD section 2, Ruling 16).
+  uint64_t stub = 0;
   std::string why;                 // tx::moveWhySlug
   std::vector<uint64_t> sup;       // superseded result q's
 
@@ -174,7 +195,7 @@ struct Item {
   TurnEndFacts end;
 };
 
-inline constexpr size_t kMaxLineBytes = 60000;      // a longer line is refused, never cut
+inline constexpr size_t kMaxLineBytes = 60000;      // with its newline; a longer line is refused, never cut
 inline constexpr size_t kTier1OwnerText = 12288;    // owner text kept inline
 inline constexpr size_t kTier1AssistantText = 12288;
 inline constexpr size_t kTier1CallArgs = 1024;      // longer string arguments go to bulk
@@ -182,12 +203,49 @@ inline constexpr size_t kTier1Receipt = 2048;       // internal results kept inl
 inline constexpr size_t kTier1LedgerReceipt = 4096; // ledger tools: a 15-row day keeps its ids
 inline constexpr size_t kLongPasteHead = 4096;      // the part of a long paste the message carries
 
+inline constexpr size_t kLineTailBytes = 16;        // ',"z":"xxxxxxxx"}' before the newline
+
 // Encode one item as one line: a JSON object with the kind's short keys, last key z =
-// crc32, ending in '\n'. TooLarge when the line would pass kMaxLineBytes.
+// crc32, ending in '\n'. TooLarge (out empty) when the line would pass kMaxLineBytes;
+// InvalidArgument for a kind outside the 12.
 Status encodeLine(const Item& item, std::string& out);
+
+// Where encodeLineTo writes: the arena writes straight into its block, so an append
+// allocates nothing. put is called with consecutive pieces of the line.
+class LineSink {
+ public:
+  virtual void put(const char* data, size_t len) = 0;
+
+ protected:
+  ~LineSink() = default;
+};
+// Encode one item into `sink` and set `lineBytes` to the full line length (newline
+// included). The sink receives every byte even when the line is too long: on TooLarge
+// (line over kMaxLineBytes) or InvalidArgument the caller discards what it got.
+Status encodeLineTo(const Item& item, LineSink& sink, size_t& lineBytes);
 // Decode one stored line (with or without its '\n'). Torn when the crc does not match or
-// the object does not close: the caller drops it.
+// the object does not close: the caller drops it. InvalidArgument for a whole line it
+// cannot read. `out` is reset first; on failure its contents are unspecified.
 Status decodeLine(const char* data, size_t len, Item& out);
+
+// What a stored line says about itself without decoding its strings: the crc is checked
+// and only k, q, turn and t are read. No allocation; used by the restart fill and by
+// scans that look for the newest s and x items.
+struct LineHeader {
+  uint64_t q = 0;
+  uint64_t t = 0;
+  uint32_t turn = 0;
+  ItemKind kind = ItemKind::User;
+};
+Status checkLine(const char* data, size_t len, LineHeader& out);
+
+// The send-time stamp every rendered message carries (Ruling 11: with the year):
+// "[Tue 17 Nov 2026 13:02]" for `epoch` seconds at `tzMinutes` east of UTC; the day of
+// the month has no leading zero, the clock is 24 h. Writes a NUL-terminated string of at
+// most kStampMaxBytes - 1 characters. InvalidArgument when the clock was not set
+// (epoch 0) or `cap` is under kStampMaxBytes. No allocation.
+inline constexpr size_t kStampMaxBytes = 32;
+Status messageStamp(uint64_t epoch, int16_t tzMinutes, char* out, size_t cap);
 
 }  // namespace tx
 }  // namespace orch

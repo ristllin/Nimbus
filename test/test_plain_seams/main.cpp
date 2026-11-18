@@ -85,16 +85,8 @@ std::vector<StubRow> stubs() {
   static std::vector<tx::DigestEntry> digests;
   static std::vector<tx::DayRow> rows;
   static bool flag;
-  static size_t index;
   static tx::StoreState state;
   return {
-      {"tx::encodeLine", [] { return tx::encodeLine(item, s); }},
-      {"tx::decodeLine", [] { return tx::decodeLine("{}", 2, item); }},
-      {"tx::TxArena::init", [] { return gArena.init(64, nullptr, nullptr); }},
-      {"tx::TxArena::append", [] { return gArena.append(item); }},
-      {"tx::TxArena::get", [] { return gArena.get(0, item); }},
-      {"tx::TxArena::find", [] { return gArena.find(1, index); }},
-      {"tx::TxArena::dropThrough", [] { return gArena.dropThrough(1); }},
       {"tx::TxLog::open", [] { return gLog.open(head); }},
       {"tx::TxLog::append", [] { return gLog.append(item, state); }},
       {"tx::TxLog::appendBulk", [] { return gLog.appendBulk(1, "x", s); }},

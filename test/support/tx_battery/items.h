@@ -16,7 +16,7 @@ namespace txb {
 namespace tx = nimbus::orch::tx;
 
 // 2026-11-17 13:02:00 UTC, a Tuesday.
-inline constexpr uint64_t kT0 = 1763384520ULL;
+inline constexpr uint64_t kT0 = 1794920520ULL;
 
 struct Convo {
   std::vector<tx::Item> items;
