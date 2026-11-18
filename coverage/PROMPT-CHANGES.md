@@ -408,10 +408,13 @@ deleted. Engine 2 has no baseline.
 ### PC-0014: the keyword food playbooks leave the built-in skills
 - catalog: e1
 - class: skills
-- kind: remove
-- bytes: 23264 -> 12663
-- sha8: cef6121d -> c2e15d81
+- kind: spec
+- bytes: 23264 -> 12623
+- sha8: cef6121d -> f8884363
 - lane: RB-Q3a
-- why: food-log (7,117 B) and food-coach (3,160 B) and their two index lines (324 B) were attached by
-  keyword to food turns (PRD section 1, item 9: off in v5.2.0); on the owner's 26 Oct shape they were
-  7,415 B of a 9,055 B per-turn block. Nothing replaces them in the prompt.
+- prd: section 1 (item 9: keyword playbooks and the per-turn ledger block off in v5.2.0)
+- why: planned work (ruling 18), a deletion. food-log (7,117 B) and food-coach (3,160 B) and their
+  two index lines (324 B) were attached by keyword to food turns; on the owner's 26 Oct shape they
+  were 7,415 B of a 9,055 B per-turn block. Nothing replaces them in the prompt. log-rows rule 6
+  loses its pointer to the [TODAY'S FOOD LEDGER] block, which no longer exists (-40 B; the rule's
+  literal is rewritten, so the entry is spec, not remove).

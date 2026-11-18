@@ -470,8 +470,8 @@ static void test_cum523_builtin_capsules_follow_the_turn() {
   TEST_ASSERT_TRUE(rows.find("a correction adds its own row") == std::string::npos);
   TEST_ASSERT_TRUE(rows.find("the latest row for a date is the current one") == std::string::npos);
   TEST_ASSERT_TRUE(webPdf.find("files.read {project, name, tail: N}") != std::string::npos);
-  // Lane CTX: the food log is the one ledger the per-turn block names.
-  TEST_ASSERT_TRUE(rows.find("the ledger [TODAY'S FOOD LEDGER] names") != std::string::npos);
+  // Lane CTX: the food log is one file; RB-Q3a: no block names it any more, so log-rows does.
+  TEST_ASSERT_TRUE(rows.find("[TODAY'S FOOD LEDGER]") == std::string::npos);
   TEST_ASSERT_TRUE(rows.find("food/food-log.csv") != std::string::npos);
   TEST_ASSERT_TRUE(rows.find("e.g. food-log.csv in") == std::string::npos);
   TEST_ASSERT_EQUAL_STRING("", agent::builtinSkillBody("no-such-skill", true).c_str());

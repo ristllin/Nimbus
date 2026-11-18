@@ -139,7 +139,8 @@ static void testFoodLedgerRidesTheHostedTurn(ndtest::Ctx& c) {
     c.ok(!tx.seen.empty(), "the ledger turn dispatched");
     c.ok(!has(tx.seen[0].body, "[TODAY'S FOOD LEDGER"), "no ledger block rides the VN turn");
     c.ok(!has(tx.seen[0].body, "[FOOD PLAYBOOK"), "no food playbook rides the VN turn");
-    c.ok(!has(tx.seen[0].body, "date,time,food,amount_unit,kcal,note"), "no ledger row rides");
+    c.ok(!has(tx.seen[0].body, "date,time,food,amount_unit,kcal,note"), "no ledger header row rides");
+    c.ok(!has(tx.seen[0].body, where), "the turn never names the ledger file");
     clearEnv();
   }
   // Without one: no block, no phantom day.

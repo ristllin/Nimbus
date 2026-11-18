@@ -454,12 +454,17 @@ def test_editing_a_merged_entry_fails(tree):
 
 @pytest.mark.parametrize("use_base", [True, False])
 def test_editing_the_baseline_fails_with_or_without_a_base(tree, use_base):
-    before = _swap(tree, "system")  # a swap, then the baseline row rewritten to match it
-    now = stats(tree)["system"]
+    # A class no ledger entry has moved yet (RB-Q3a: an entry moves system), so its state is
+    # its baseline row; a swap, then that row rewritten to match it.
     text = read(tree, gate.CHANGES)
-    row = f"| e1 | system | {before['bytes']} | {before['sha8']} |"
+    cls = next(
+        c for c in cat.E1_CLASSES if f"| e1 | {c} | {stats(tree)[c]['bytes']} | {stats(tree)[c]['sha8']} |" in text
+    )
+    before = _swap(tree, cls)
+    now = stats(tree)[cls]
+    row = f"| e1 | {cls} | {before['bytes']} | {before['sha8']} |"
     assert row in text
-    write(tree, gate.CHANGES, text.replace(row, f"| e1 | system | {now['bytes']} | {now['sha8']} |"))
+    write(tree, gate.CHANGES, text.replace(row, f"| e1 | {cls} | {now['bytes']} | {now['sha8']} |"))
     errs = errors(tree, use_base=use_base)
     assert any("baseline" in e and "differs" in e for e in errs), errs
 
