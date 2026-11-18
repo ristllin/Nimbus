@@ -365,14 +365,10 @@ bool EffectRing::rewrite(Slot& s, const std::string& path) {
   } catch (const std::bad_alloc&) {
     ++stats_.noMemory;
   }
-  if (renaming) {   // the rename may have removed the file first: the temp may be the only copy
-    s.unsettled = true;
-    return false;
-  }
-  try {   // a binding refused inside its whole write may leave a part temp: the file is whole
-    files_->remove(path + ".tmp");
-  } catch (const std::bad_alloc&) {   // left for the next load, which removes it beside a whole file
-  }
+  // Refused inside the whole write: a part temp may be left beside the whole file, and the
+  // next use removes it. Refused inside the rename: the rename may have removed the file first,
+  // so the temp may be the only copy; it is settled before the next write.
+  if (renaming) s.unsettled = true;
   return false;
 }
 

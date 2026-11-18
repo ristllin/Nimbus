@@ -1020,7 +1020,7 @@ void test_the_least_recently_used_chat_is_evicted() {
 void test_a_refused_allocation_at_every_site_is_a_designed_state() {
   nimbus::orch::setWorkingAllocators(refusingWorkingAlloc, workingFreeHook);
   const int pre = (int)fx::kCompactLines - 1;
-  int hits = 0;
+  int hits = 0, ramOnly = 0;
   for (int mode = 0; mode < 2; ++mode)
   for (long k = 0;; ++k) {
     FxFiles f;
@@ -1048,6 +1048,7 @@ void test_a_refused_allocation_at_every_site_is_a_designed_state() {
     if (!gHit) break;   // every allocation of the call has been refused once
     ++hits;
     auto ram = receipts(r, "31");
+    ramOnly += res == fx::AppendResult::RamOnly;
     if (res == fx::AppendResult::NoMemory) {
       TEST_ASSERT_TRUE(std::find(ram.begin(), ram.end(), X) == ram.end());
       TEST_ASSERT_TRUE(f.files["/mem/fx/31.ring"] == fileBefore);   // nothing written
@@ -1058,20 +1059,27 @@ void test_a_refused_allocation_at_every_site_is_a_designed_state() {
       TEST_ASSERT_EQUAL(int(fx::AppendResult::Stored), int(res));
       TEST_ASSERT_TRUE(ram == expected("31", 0, pre + 1));          // a refused rewrite lost nothing
     }
-    // Storage holds every stored entry, in order, and a fresh load settles any temp.
+    // Memory is back: the same ring goes on first (before any other load could settle the
+    // files for it), then storage holds every stored entry in order and no temp is left.
+    // Whole writes are refused for it, so no rewrite can mend a line written in the wrong place.
+    f.refuseWhole = true;
+    TEST_ASSERT_EQUAL(int(fx::AppendResult::Stored), int(r.append("31", 500, "t", "after")));
+    f.refuseWhole = false;
     {
       fx::EffectRing fresh(&f);
-      const int stored = res == fx::AppendResult::Stored ? pre + 1 : pre;
-      TEST_ASSERT_TRUE(receipts(fresh, "31") == expected("31", 0, stored));
+      auto want = expected("31", 0, res == fx::AppendResult::Stored ? pre + 1 : pre);
+      want.push_back("after");
+      if (want.size() > fx::kRingEntries) want.erase(want.begin());
+      // Either exactly the stored entries, or (when "after" reached the rewrite bound) the
+      // ring as RAM holds it, RAM-only entries included: the order of record.
+      const auto onDisk = receipts(fresh, "31");
+      TEST_ASSERT_TRUE(onDisk == want || onDisk == receipts(r, "31"));
+      TEST_ASSERT_EQUAL_STRING("after", onDisk.back().c_str());
       TEST_ASSERT_EQUAL_UINT32(0, f.files.count("/mem/fx/31.ring.tmp"));
     }
-    // Memory is back: the same ring goes on, and a restart agrees with it.
-    TEST_ASSERT_EQUAL(int(fx::AppendResult::Stored), int(r.append("31", 500, "t", "after")));
-    TEST_ASSERT_EQUAL_STRING("after", receipts(r, "31").back().c_str());
-    fx::EffectRing again(&f);
-    TEST_ASSERT_EQUAL_STRING("after", receipts(again, "31").back().c_str());
   }
   TEST_ASSERT_TRUE(hits > 5);   // the sweep reached the load, the append and the rewrite
+  TEST_ASSERT_TRUE(ramOnly > 0);  // a refused load still keeps the effect, in RAM
   // Reads: recent and visit at every allocation answer 0 or the whole, never throw.
   for (long k = 0;; ++k) {
     FxFiles f;
