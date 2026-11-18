@@ -517,6 +517,31 @@ host builds and the static gates, each with its real exit status, and lists gate
 lane has not landed as `PENDING <lane>`; the `live` and `bench` tiers say which lane
 builds them. CI runs the roster gate after `pio test -e native` (`checks.yml`).
 
+### Tool classes and `more`
+
+Every tool has a class in the registration spec (`lib/core/include/nimbus/orch/tool_groups.h`):
+its group (empty for the always-on list, otherwise the group behind `more`), the taint
+of its output and its effect class (`pure`, `read` or `effect`). The engine's rails read
+the class, never the tool's name: a turn that saw an outside result is tainted, only a
+pure tool may be answered by identical-call suppression, and only an effect tool gets an
+intent item first. `ToolRegistry::classOf(name)` is the one query. It reads a class
+declared with `setClass` (a tool registered at runtime), else the class table in
+`lib/core/src/orch_tool_groups.cpp` for the group and effect class and the taint table
+(`orch_tool_taint.cpp`) for the taint. A tool with no row reads as group `connectors`,
+outside content, with effects.
+
+`more({group, name, args})` lists a group's tools with their arguments, lists the groups
+when called with nothing, or calls one tool by name. `registerMore(reg)` adds it; nothing
+in the old engine does yet. A call through it is a full `ToolRegistry::dispatch` with
+the caller's own Principal (policy, access rules with the real arguments, live gates,
+the handler's checks and the unknown-argument note), and an admin-only tool is neither
+listed nor callable for a non-admin, so a person can never reach through `more` a tool
+they could not call directly (`test/test_tool_groups` proves it for every registered
+tool and caller class). A group's listing is at most 2,048 B; the tools index
+(`toolsIndex`) is at most 512 B and names each tool with its required arguments; an
+unknown name gets back the callable names, at most 640 B. The before-dispatch seam reads
+`callClass` or `moreTarget` to see the tool a `more` call reaches.
+
 ## Extension points
 
 - **New provider backend**: subclass `ManagedAgentAdapter` + one
@@ -524,6 +549,10 @@ builds them. CI runs the roster gate after `pio test -e native` (`checks.yml`).
   `ProviderTurnFn`.
 - **New tool**: `memory::registry().add(...)` - it surfaces automatically to
   the model (tool loop), the LAN MCP server (`POST /mcp`), and `/api/tools`.
+  Give it a row in the class table (`lib/core/src/orch_tool_groups.cpp`: group and
+  effect class), a taint row (`orch_tool_taint.cpp`) and an access rule
+  (`orch_action_rules.cpp`); `test_tool_groups`, `test_tool_taint` and
+  `test_action_rules` fail a registered name without them.
   A tool whose handler waits on the network must be listed in
   `nimbus::sys::toolWaitsOnNetwork` (`lib/core/include/nimbus/sys/web_guard.h`; a
   connected tool server's `mcp.*` tools are covered by their prefix): the dispatcher

@@ -40,6 +40,44 @@ bool ToolRegistry::isAdminOnly(const std::string& name) const {
   return t && t->adminOnly;
 }
 
+void ToolRegistry::setClass(const std::string& name, const ToolClass& c) {
+  for (auto& t : tools_)
+    if (t.name == name) { t.hasClass = true; t.cls = c; return; }
+}
+
+ToolClass ToolRegistry::classOf(const std::string& name) const {
+  const Tool* t = find(name);
+  return (t && t->hasClass) ? t->cls : toolClassFor(name);
+}
+
+void ToolRegistry::setRouter(const std::string& name, bool v) {
+  for (auto& t : tools_)
+    if (t.name == name) { t.router = v; return; }
+}
+
+bool ToolRegistry::isRouter(const std::string& name) const {
+  const Tool* t = find(name);
+  return t && t->router;
+}
+
+namespace {
+// The head loop's spelling of a registry name: '.' -> '_'.
+bool sameFolded(const std::string& reg, const std::string& spelled) {
+  if (reg.size() != spelled.size()) return false;
+  for (size_t i = 0; i < reg.size(); ++i)
+    if ((reg[i] == '.' ? '_' : reg[i]) != spelled[i]) return false;
+  return true;
+}
+}  // namespace
+
+std::string ToolRegistry::resolveName(const std::string& spelled) const {
+  if (spelled.empty()) return std::string();
+  if (find(spelled)) return spelled;
+  for (const auto& t : tools_)
+    if (sameFolded(t.name, spelled)) return t.name;
+  return std::string();
+}
+
 const Tool* ToolRegistry::find(const std::string& name) const {
   for (const auto& t : tools_) if (t.name == name) return &t;
   return nullptr;
@@ -176,8 +214,10 @@ bool namedIn(const std::string& csv, const char* name) {
   return padded.find("," + std::string(name) + ",") != std::string::npos;
 }
 
-// The call's argument names the tool neither lists nor reads, comma separated.
+// The call's argument names the tool neither lists nor reads, comma separated. A router
+// checks its own arguments (ToolRegistry::setRouter).
 std::string unknownArgs(const Tool& t, JsonObjectConst args) {
+  if (t.router) return "";
   if (args.isNull() || args.size() == 0 || t.schemaJson.find("\"properties\"") == std::string::npos) return "";
   JsonDocument schema;
   if (deserializeJson(schema, t.schemaJson) || !schemaClosesArgs(schema.as<JsonObjectConst>())) return "";
@@ -187,6 +227,12 @@ std::string unknownArgs(const Tool& t, JsonObjectConst args) {
     if (props[kv.key()].isNull() && !namedIn(t.alsoReads, kv.key().c_str()))
       out += (out.empty() ? "" : ", ") + std::string(kv.key().c_str());
   return out;
+}
+// The access verdict for a call: a router's own call is allowed here, because each tool
+// it reaches is checked by name, arguments and caller on its own dispatch.
+ToolRegistry::Verdict routerOrAccess(const ToolRegistry& reg, const Tool& t, JsonObjectConst args,
+                                     const Principal& who) {
+  return t.router ? ToolRegistry::Verdict::allow() : reg.accessFor(t.name, args, who);
 }
 }  // namespace
 
@@ -212,8 +258,8 @@ ToolResult ToolRegistry::dispatch(const std::string& name, JsonObjectConst args,
   const Tool* t = find(name);
   if (!t) return ToolResult::fail(unknownToolText(name, who));
   // Who is calling (action_rules.h): a refused caller never reaches the handler
-  // and learns nothing about the tool's live gate.
-  const Verdict a = accessFor(name, args, who);
+  // and learns nothing about the tool's live gate (a router: see routerOrAccess).
+  const Verdict a = routerOrAccess(*this, *t, args, who);
   if (a.kind != Verdict::Allow)
     return ToolResult::fail(a.reason.empty() ? ("not allowed for this caller: " + name) : a.reason);
   // CUM-508: a gated tool whose prerequisite is missing right now refuses with

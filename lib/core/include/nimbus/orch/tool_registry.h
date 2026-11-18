@@ -6,6 +6,7 @@
 #include <string>
 
 #include "nimbus/orch/rbac.h"            // Role / Perms / Quota
+#include "nimbus/orch/tool_groups.h"     // ToolClass - group, taint and effect class
 #include "nimbus/orch/vector_memory.h"   // kOwnerNs / kSharedNs / kMcpNs
 #include <vector>
 
@@ -112,6 +113,14 @@ struct Tool {
   // Comma-separated argument names the handler reads that the schema does not offer the
   // model (an alias, a first-party flag). They are read, so they are not "unknown".
   std::string alsoReads{};
+  // The registration spec's class (tool_groups.h): group, taint, effect class. Declared
+  // here only by setClass (a tool registered at runtime); otherwise classOf reads the
+  // class table, whose default for a name with no row is outside content with effects.
+  bool      hasClass = false;
+  ToolClass cls{};
+  // A router (`more`) only reaches other tools, each through a full dispatch with the
+  // caller's Principal; see ToolRegistry::setRouter.
+  bool router = false;
 };
 
 class ToolRegistry {
@@ -176,6 +185,25 @@ class ToolRegistry {
   // handler) rather than silently vanishing from every prompt.
   void setAdminOnly(const std::string& name, bool v = true);
   bool isAdminOnly(const std::string& name) const;
+
+  // ---- the registration spec's class (RB-N4) -------------------------------------
+  // Declare a registered tool's class explicitly (a connector's remote tool, a test).
+  // An unknown name is a no-op. Re-adding the tool keeps the declaration.
+  void setClass(const std::string& name, const ToolClass& c);
+  // The class the rails read: the declared one, else toolClassFor(name) (the table, or
+  // the fail-closed default: group "connectors", taint External, effect Effect).
+  ToolClass classOf(const std::string& name) const;
+  // Mark a registered tool as a router. dispatch() then skips, for the router call
+  // itself, the access check and the unknown-argument note: the router checks its own
+  // arguments, and every tool it reaches is a full dispatch() with the same Principal
+  // (policy, access with the real arguments, gate, handler). Policy and gates on the
+  // router's own name still apply. An unknown name is a no-op.
+  void setRouter(const std::string& name, bool v = true);
+  bool isRouter(const std::string& name) const;
+  // The registry name a caller's spelling stands for: the exact name, else the one
+  // whose '.' folded to '_' matches (the head loop's spelling), first in add order;
+  // "" when none.
+  std::string resolveName(const std::string& spelled) const;
 
   bool has(const std::string& name) const;
   int  size() const { return (int)tools_.size(); }
