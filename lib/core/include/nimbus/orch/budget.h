@@ -59,6 +59,7 @@ struct ContextBudget {
   size_t   historyMaxBytes = 8192;     // the verbatim history's high water (recentConvBytes)
   size_t   historySoftBytes = 4096;    // where the overflow shift lands (half of high water)
   size_t   historyKeepBytes = 4096;    // the verbatim tail a fold keeps (half of high water)
+  size_t   v511KeepBytes = 4096;       // v5.1.1's tail on this head (a fold after a send-floor cut)
   size_t   historyRows = 64;           // the history's row bound (HistoryBudget::highRows)
   size_t   replayBytes = 16384;        // the tool-round replay cap every wire keeps at least
   size_t   foldStepBytes = 65536;      // what one fold takes at most (foldSliceBytes)

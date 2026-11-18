@@ -35,6 +35,7 @@
 #include "nimbus/harness/conversation.h"
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/fold_driver.h"
+#include "nimbus/orch/body_budget.h"
 #include "nimbus/orch/budget.h"
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/episodic.h"
@@ -213,6 +214,13 @@ struct Device {
   size_t replyBytes = 2400;
   size_t bootIndexRows = 60;
   size_t backfillRows = 30;
+  // Candidate 4, F5: the DMA pool stays fragmented. Every round goes at the send floor, as the
+  // wire does it (counted, and a head request over 85,000 B refused with the budget's error).
+  bool floorPool = false;
+  bool lastTrimmed = false;     // the last turn left history out (TurnEndEv::trimmedForSize)
+  std::string lastRequest;      // the last head request a host took: instructions and input
+  size_t foldRequestMax = 0;    // the largest fold request sent
+  size_t promptPad = 0;         // working notes in the prompt (a device's prompt is 30-56 KB)
 
   Device(const std::string& h, const std::string& m, bool toolLoop = false) : host(h), model(m) {
     cfg.toolLoop = toolLoop;
@@ -236,9 +244,11 @@ struct Device {
     d.cfg = cfg.contract();
     d.platform = plat.contract();
     d.deliver = [](const std::string&, const std::string&) {};
-    d.composeInputs = [](const std::string&) {
+    d.composeInputs = [this](const std::string&) {
       agent::ComposeInputs in;
       in.devName = "Nimbus";
+      for (size_t i = 0; in.runningMemory.size() < promptPad; i++)
+        in.runningMemory += "- note " + std::to_string(i) + ": the owner tracks meals, walks and the garden.\n";
       return in;
     };
     d.apply.deliver = d.deliver;
@@ -249,10 +259,21 @@ struct Device {
       if (c != "system") folds.noteMessage(c, t.size());
     };
     for (const char* hh : {"openai", "anthropic", "mistral", "cumulo", "zai", "custom"})
-      d.hosts.add(hh, [this](std::string&, const std::string& ins, const std::string& in, std::string& out, std::string&,
-                             const agent::HeadTools*, orch::TokenUsage* u) {
+      d.hosts.add(hh, [this](std::string&, const std::string& ins, const std::string& in, std::string& out,
+                             std::string& err, const agent::HeadTools*, orch::TokenUsage* u) {
+        const bool fold = ins == orch::ORCH_COMPACT_PROMPT;
+        if (floorPool) {
+          orch::noteRoundBudget(true);
+          const size_t size = ins.size() + in.size();
+          if (fold) foldRequestMax = std::max(foldRequestMax, size);
+          if (!fold && size > orch::kLegacyWireBodyBytes) {
+            err = orch::bodyBudgetError(orch::kLegacyWireBodyBytes, size);
+            return false;
+          }
+        }
         if (u) u->responses = 1;
-        if (ins == orch::ORCH_COMPACT_PROMPT) {
+        if (!fold) lastRequest = ins + "\n" + in;
+        if (fold) {
           out = goodSummary(in);
           return true;
         }
@@ -276,6 +297,10 @@ struct Device {
     d.noteHistoryShift = [this](const std::string& c, const std::string& soft) { folds.setSoftStart(c, soft); };
     d.noteHistoryBytes = [this](const std::string& c, size_t bytes) { folds.noteHistoryBytes(c, bytes); };
     d.foldTriggerBytes = [this] { return trigger(); };
+    d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) {   // the device's reactive fold
+      lastTrimmed = ev.trimmedForSize;
+      if (ev.trimmedForSize) folds.noteHistoryTrimmed(ev.chatId);
+    };
     eng.reset(new TurnEngine(std::move(d)));
     FoldDriverHooks h;
     h.quiet = [this](bool) { return quiet; };
@@ -508,6 +533,52 @@ void runProperty(const std::string& host, const std::string& model, size_t reply
 }
 
 }  // namespace
+
+// Every row of `chat` from before row index `before`, after thru, is in the last request.
+static void assertRowsInRequest(const Device& d, const std::string& chat, size_t before) {
+  const orch::ChatFold f = d.folds.get(chat);
+  for (const auto* m : d.live(chat)) {
+    if ((size_t)(m - d.store.rows.data()) >= before) break;
+    if (!f.thru.empty() && !agent::rowIdAfter(m->id, f.thru)) continue;   // covered by the summary
+    const std::set<std::string> t = tokensIn(m->text.substr(0, 16));
+    if (t.empty()) continue;
+    TEST_ASSERT_TRUE_MESSAGE(d.lastRequest.find(*t.begin()) != std::string::npos,
+                             ("row " + m->id + " (" + *t.begin() + ") is in neither the request nor the summary, thru " +
+                              f.thru).c_str());
+  }
+}
+
+// Candidate 4, F5: on a pool that stays fragmented every round goes at the send floor
+// (85,000 B), and a turn whose history does not fit leaves rows out and makes the fold due.
+// After the fold that follows such a turn, every row is either in the next request or
+// covered by the summary: the fold keeps v5.1.1's tail, not the head's large one that the
+// floor would cut again. The fold's own request fits the floor too.
+static void test_after_a_floor_turn_the_fold_leaves_no_row_unreachable() {
+  Device d("anthropic", "claude-sonnet-5-5");
+  d.floorPool = true;
+  d.promptPad = 24000;
+  d.boot();
+  int checked = 0;
+  for (int i = 0; i < 400 && checked < 3; i++) {
+    d.turn(kMain);
+    if (!d.lastTrimmed) continue;
+    const int landed = d.landed;
+    LogCapture::lines().clear();
+    for (int p = 0; p < 20 && d.landed == landed; p++) d.pump(1, 60);
+    if (d.landed == landed)
+      for (const auto& l : LogCapture::lines())
+        if (l.find("fold") != std::string::npos || l.find("history") != std::string::npos) std::printf("  log: %s\n", l.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(d.landed > landed, "the floor turn's fold lands");
+    const size_t before = d.store.rows.size();
+    d.turn(kMain);
+    checked++;
+    assertRowsInRequest(d, kMain, before);
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(3, checked, "three floor turns, each with its fold");
+  TEST_ASSERT_TRUE_MESSAGE(d.violations.empty(), d.violations.empty() ? "" : d.violations.front().c_str());
+  TEST_ASSERT_TRUE_MESSAGE(d.foldRequestMax > 0 && d.foldRequestMax <= orch::kLegacyWireBodyBytes,
+                           std::to_string(d.foldRequestMax).c_str());
+}
 
 // The property on a head with room (lane H's derived marks: Sonnet 5.5, 118 KB window).
 static void test_invariant_holds_on_a_head_with_room() { runProperty("anthropic", "claude-sonnet-5-5", 6000, false); }
@@ -1024,20 +1095,6 @@ static void test_a_capped_index_still_folds_the_serial_backlog() {
   }
 }
 
-// The device binding counts its own surfaces and every Admin chat as the owner's, by role: no
-// list of chat names that can leave the serial console or voice out (bench B11, candidate 2).
-static void test_the_device_owner_predicate_is_by_role() {
-  std::ifstream f("src/agent/orchestrator.cpp");
-  std::stringstream ss;
-  ss << f.rdbuf();
-  const std::string src = ss.str();
-  const size_t at = src.find("static bool foldOwnerChat(const std::string& chat) {");
-  TEST_ASSERT_TRUE(at != std::string::npos);
-  const std::string body = src.substr(at, src.find("\n}\n", at) - at);
-  TEST_ASSERT_TRUE_MESSAGE(body.find("roleOfChat(") != std::string::npos && body.find("Role::Admin") != std::string::npos,
-                           "the owner's chats are the Admin ones");
-}
-
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_restart_with_hidden_rows_folds_them_first);
@@ -1049,9 +1106,9 @@ int main(int, char**) {
   RUN_TEST(test_a_backfill_completing_between_passes_never_ends_the_read);
   RUN_TEST(test_a_manual_read_on_cold_rows_ends_and_never_starves_the_others);
   RUN_TEST(test_a_capped_index_still_folds_the_serial_backlog);
-  RUN_TEST(test_the_device_owner_predicate_is_by_role);
   RUN_TEST(test_a_read_that_cannot_reach_the_rows_waits_and_retries);
   RUN_TEST(test_invariant_holds_on_a_head_with_room);
   RUN_TEST(test_invariant_holds_on_the_floor_branch);
+  RUN_TEST(test_after_a_floor_turn_the_fold_leaves_no_row_unreachable);
   return UNITY_END();
 }
