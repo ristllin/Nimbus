@@ -851,10 +851,17 @@ static void test_foldstore_hidden_rows_make_a_fold_due() {
   TEST_ASSERT_EQUAL_STRING("", fs.get("c").softStart.c_str());
   fs.applyFold("c", "older anchor", 1001, "m00000010");   // the anchor never moves back
   TEST_ASSERT_EQUAL_STRING("m00000044", fs.get("c").thru.c_str());
-  // A skipped fold gives the hidden rows up instead of asking on every pass.
+  // A skipped fold gives the hidden rows up instead of asking on every pass, but only when
+  // its read examined them (lane CTXR1): a skip whose read reached no row, or stopped short of
+  // the soft start, leaves the anchor and keeps the chat due.
   fs.noteTurn("c"); fs.noteTurn("c"); fs.noteTurn("c");
   fs.setSoftStart("c", "m00000060");
   fs.noteFoldSkipped("c");
+  TEST_ASSERT_EQUAL_STRING("m00000044", fs.get("c").thru.c_str());
+  fs.noteFoldSkipped("c", "m00000050");
+  TEST_ASSERT_EQUAL_STRING("m00000044", fs.get("c").thru.c_str());
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)fs.evaluateDue("c", 48000, kFoldMsgsThreshold, 1000));
+  fs.noteFoldSkipped("c", "m00000060");
   TEST_ASSERT_EQUAL_INT((int)FoldDue::No, (int)fs.evaluateDue("c", 48000, kFoldMsgsThreshold, 1000));
   TEST_ASSERT_EQUAL_STRING("m00000060", fs.get("c").thru.c_str());
   // A /clear (empty summary, epoch 0) restarts the history: no anchor, no shift.

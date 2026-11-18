@@ -129,10 +129,10 @@ struct Device {
     agent::HistoryOptions o;
     o.startAfter = f.thru;
     sliceCap = std::min(deriveBudget(200000, {}).foldSliceBytes, foldDigestCap(f.summary.size()));
-    const agent::FoldSlice s =
-        agent::foldSlice(agent::historyTurns(chat.read(f.thru, 400), o), hist.lowBytes(), sliceCap, false, 0);
+    const std::vector<EpisodicMessage> read = chat.read(f.thru, 400);
+    const agent::FoldSlice s = agent::foldSlice(agent::historyTurns(read, o), hist.lowBytes(), sliceCap, false, 0);
     if (s.digest.empty()) {
-      folds.noteFoldSkipped(kChat);
+      folds.noteFoldSkipped(kChat, read.empty() ? std::string() : read.front().id);   // the newest row it read
       skips++;
       return due;
     }

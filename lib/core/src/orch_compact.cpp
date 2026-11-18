@@ -481,14 +481,17 @@ void FoldStore::setSoftStart(const std::string& chatId, const std::string& rowId
   s.f.softStart = id;   // persisted with the turn's blob write (noteTurn)
 }
 
-void FoldStore::noteFoldSkipped(const std::string& chatId) {
+void FoldStore::noteFoldSkipped(const std::string& chatId, const std::string& readTo, uint32_t keptBytes) {
   Slot* s = find(stripCtl(chatId));
   if (!s) return;
-  s->f.bytesSinceFold = 0;
+  s->f.bytesSinceFold = keptBytes;
   s->f.msgsSinceFold = 0;
-  // Rows a shift hid and the slice did not take (under the byte floor, or behind
-  // a /clear) are given up rather than asked about on every pass.
-  if (!s->f.softStart.empty()) {
+  // Rows a shift hid that the read examined and found nothing to summarize in (job
+  // deliveries, rows behind a /clear) are given up rather than asked about on every
+  // pass. Rows no read reached stay hidden and due (lane CTXR1: a slice that only
+  // waited once moved the anchor past 1,213 unread rows).
+  const std::string seen = cleanId(readTo);
+  if (!s->f.softStart.empty() && !seen.empty() && !rowIdAfter(s->f.softStart, seen)) {
     s->f.thru = s->f.softStart;
     s->f.softStart.clear();
   }
@@ -561,7 +564,7 @@ FoldDue FoldStore::evaluateDue(const std::string& chatId, uint32_t bytesThreshol
 }
 
 void FoldStore::applyFold(const std::string& chatId, const std::string& summary,
-                          uint32_t epoch, const std::string& thru, size_t summaryCap) {
+                          uint32_t epoch, const std::string& thru, size_t summaryCap, uint32_t keptBytes) {
   Slot& s = upsert(chatId);
   const std::string id = cleanId(thru);
   if (summary.empty()) {   // a /clear: the history restarts at its boundary row
@@ -576,7 +579,7 @@ void FoldStore::applyFold(const std::string& chatId, const std::string& summary,
   // it can never re-fire on a fold that cannot move the anchor.
   if (id.empty()) s.f.softStart.clear();
   s.f.summary        = capSummary(summary, summaryCap);
-  s.f.bytesSinceFold = 0;
+  s.f.bytesSinceFold = summary.empty() ? 0 : keptBytes;
   s.f.msgsSinceFold  = 0;
   s.f.turnsSinceFold = 0;
   s.f.lastFoldEpoch  = epoch;

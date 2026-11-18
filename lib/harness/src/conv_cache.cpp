@@ -171,14 +171,18 @@ bool ConvCache::fillPage(Entry& e, const Bound& bound, const ReadFn& read) {
 // One forward read of the row right after thru (the after cursor walks the rows the store's
 // index does not hold yet): true when it is older than the oldest row held, i.e. rows after
 // thru exist that the backward fill has not reached. An empty answer means none only when
-// the store read to the end: a cold walk its read budget stopped (newerExists) or a span
-// the card would not give back leaves rows unread.
+// the store read to the end: a cold walk its read budget stopped (newerExists), a span
+// the card would not give back, or a failing card whose RAM ring does not reach thru
+// (olderExists: lane CTXR1, a fill once completed on the ring's rows alone) leaves rows unread.
 bool ConvCache::gapAfterThru(const Entry& e, const ReadFn& read) {
   nimbus::orch::EpiQueryInfo info;
   HistoryQuery q(1, std::string(), e.thru.empty() ? std::string(kBeforeFirstRow) : e.thru);
   q.info = &info;
   const std::vector<EpisodicMessage> first = read(q);
-  if (first.empty()) return info.newerExists || !info.unreadable.empty();
+  // A span the card would not give back is a gap even when rows after it came back: the
+  // store skips it and reads on (lane CTXR1: the fill completed past unread rows).
+  if (!info.unreadable.empty()) return true;
+  if (first.empty()) return info.newerExists || info.olderExists;
   return e.rows.empty() || rowIdAfter(e.rows.front().id, first.front().id);
 }
 

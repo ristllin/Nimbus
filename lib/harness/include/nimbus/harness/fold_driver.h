@@ -109,6 +109,10 @@ class FoldDriver {
  public:
   static constexpr uint32_t kManualCooldownMs = 120000;
   static constexpr uint32_t kCatchUpCycles = 64;   // one manual catch-up: about 3.4 MB at a 53.9 KB step
+  // A slice that could not read its rows looks again 1 minute out, doubling to 1 hour.
+  static constexpr uint32_t kReadWaitFirstMs = 60000;
+  static constexpr uint32_t kReadWaitMaxMs = 3600000;
+  static uint32_t readWaitMs(uint32_t waits);
 
   FoldDriver(TurnEngine& eng, nimbus::orch::FoldStore& folds, nimbus::orch::FoldCtlIO ctlIO, FoldDriverHooks hooks);
 
@@ -155,7 +159,8 @@ class FoldDriver {
 
   FoldTick startCycle(uint32_t nowMs, uint32_t nowEpoch);
   FoldTick pickChat(uint32_t nowMs, uint32_t nowEpoch, std::string& chat, bool& manual, bool& overflow);
-  FoldTick nothingToFold(const std::string& chat, bool manual, uint32_t nowMs);
+  FoldTick nothingToFold(const std::string& chat, bool manual, uint32_t nowMs, const FoldSlice& s);
+  FoldTick sliceWaits(const std::string& chat, bool manual, uint32_t nowMs, const FoldSlice& s);
   FoldTick runRung(uint32_t nowMs, uint32_t nowEpoch);
   FoldTick landed(const FoldRungReport& rep, const std::string& summary, uint32_t nowMs, uint32_t nowEpoch);
   FoldTick cycleFailed(uint32_t nowMs, uint32_t nowEpoch);
@@ -183,6 +188,12 @@ class FoldDriver {
   std::string lastTurnChat_;
   std::set<std::string> degraded_;             // "host/model" that answered empty or thin
   std::map<std::string, uint32_t> ramWaitMs_;  // no clock: chat -> monotonic ms of its next try
+  // A chat whose slice could not read its rows (SliceState Wait/Unread): when to look again.
+  struct ReadWait {
+    uint32_t waits = 0;     // looks in a row that read nothing new
+    uint32_t untilMs = 0;   // monotonic ms of the next look
+  };
+  std::map<std::string, ReadWait> readWaits_;
   std::map<std::string, std::string> thruDate_;   // chat -> the local date its summary reaches
   // The manual catch-up in progress: what its landed cycles covered so far.
   struct CatchUp {

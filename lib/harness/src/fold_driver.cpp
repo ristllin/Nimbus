@@ -230,6 +230,8 @@ bool FoldDriver::pickManual(uint32_t nowMs, std::string& chat) const {
 bool FoldDriver::dueNow(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch) {
   const auto w = ramWaitMs_.find(chat);
   if (w != ramWaitMs_.end() && (int32_t)(w->second - nowMs) > 0) return false;   // no clock: its RAM wait
+  const auto r = readWaits_.find(chat);
+  if (r != readWaits_.end() && (int32_t)(r->second.untilMs - nowMs) > 0) return false;   // its rows' read waits
   bool thrash = false;
   const uint32_t trigger = hooks_.triggerBytes ? hooks_.triggerBytes() : kDefaultTriggerBytes;
   if (folds_.evaluateDue(chat, trigger, orch::kFoldMsgsThreshold, nowEpoch, &thrash) != orch::FoldDue::Yes)
@@ -279,20 +281,54 @@ FoldTick FoldDriver::pickChat(uint32_t nowMs, uint32_t nowEpoch, std::string& ch
   return capReached(nowEpoch) ? FoldTick::Deferred : FoldTick::Pending;
 }
 
-// A due fold whose slice is empty: a manual request is answered (what an unfinished
-// catch-up covered, else "nothing yet"), an automatic one restarts its counters.
-FoldTick FoldDriver::nothingToFold(const std::string& chat, bool manual, uint32_t nowMs) {
+// A due fold whose slice read to its bound and found nothing: a manual request is answered
+// (what an unfinished catch-up covered, else "nothing yet"), an automatic one restarts its
+// counters (and gives up hidden rows only up to where the read reached).
+FoldTick FoldDriver::nothingToFold(const std::string& chat, bool manual, uint32_t nowMs, const FoldSlice& s) {
+  readWaits_.erase(chat);
   if (manual) {
     const bool caughtUp = catchUp_.chat == chat && catchUp_.span.rows;
     if (hooks_.tell) hooks_.tell(chat, caughtUp ? confirmation(catchUp_.span) : "Nothing to compact yet.");
     catchUp_ = CatchUp();
     endManual(chat, nowMs);
   } else {
-    folds_.noteFoldSkipped(chat);
+    folds_.noteFoldSkipped(chat, s.readTo, s.keptBytes);
     hlog::logf("fold(%s): nothing new beyond the kept history - skipped", chat.c_str());
   }
   changed(chat);
   return FoldTick::Skipped;
+}
+
+uint32_t FoldDriver::readWaitMs(uint32_t waits) {
+  if (waits == 0) return 0;
+  const uint32_t ms = kReadWaitFirstMs << std::min<uint32_t>(waits - 1, 6);
+  return std::min(ms, kReadWaitMaxMs);
+}
+
+// A due fold whose rows cannot be read yet (SliceState Wait or Unread): nothing in the store
+// changes, the chat's anchor and counters stay, and the hidden rows stay named. A read that
+// moved forward (a scan, a read budget it resumes from) goes on next pass; otherwise the chat
+// is tried again later, 1 minute out and doubling to 1 hour, so it never stops folding for
+// good and never reads the card every pass. A manual request is answered: a catch-up says
+// what it covered, else the owner is told the rows could not be read.
+FoldTick FoldDriver::sliceWaits(const std::string& chat, bool manual, uint32_t nowMs, const FoldSlice& s) {
+  ReadWait& w = readWaits_[chat];
+  if (!s.progressed) w.waits++;
+  w.untilMs = nowMs + readWaitMs(s.progressed ? 0 : w.waits);
+  hlog::logf("fold(%s): the slice %s (%s), the anchor stays - next look in %u s", chat.c_str(),
+             s.state == SliceState::Unread ? "meets rows the card will not give back" : "waits for its rows",
+             s.progressed ? "progress" : std::to_string((unsigned)w.waits).c_str(),
+             (unsigned)(readWaitMs(s.progressed ? 0 : w.waits) / 1000));
+  if (manual && (!s.progressed || s.state == SliceState::Unread)) {
+    const bool caughtUp = catchUp_.chat == chat && catchUp_.span.rows;
+    if (hooks_.tell)
+      hooks_.tell(chat, caughtUp ? confirmation(catchUp_.span)
+                                 : "\xE2\x9A\xA0 Couldn't read this chat's older messages just now. Try again in a few minutes.");
+    catchUp_ = CatchUp();
+    endManual(chat, nowMs);
+  }
+  changed(chat);
+  return FoldTick::Deferred;
 }
 
 FoldTick FoldDriver::startCycle(uint32_t nowMs, uint32_t nowEpoch) {
@@ -307,7 +343,12 @@ FoldTick FoldDriver::startCycle(uint32_t nowMs, uint32_t nowEpoch) {
   const size_t cap =
       std::min(orch::foldDigestAfterFailures(step, f ? f->failedCycles : 0), orch::foldDigestCap(c.prevSummary.size()));
   c.slice = hooks_.slice ? hooks_.slice(chat, cap, manual) : eng_->historyFoldSlice(chat, cap, manual);
-  if (c.slice.digest.empty()) return nothingToFold(chat, manual, nowMs);
+  if (c.slice.digest.empty()) {
+    if (c.slice.state == SliceState::Wait || c.slice.state == SliceState::Unread)
+      return sliceWaits(chat, manual, nowMs, c.slice);
+    return nothingToFold(chat, manual, nowMs, c.slice);
+  }
+  readWaits_.erase(chat);
   c.chat = chat;
   c.manual = manual;
   c.overflow = overflow;
@@ -357,7 +398,7 @@ FoldTick FoldDriver::landed(const FoldRungReport& rep, const std::string& summar
                             uint32_t nowEpoch) {
   const Cycle c = cycle_;
   cycle_ = Cycle();
-  folds_.applyFold(c.chat, summary, nowEpoch, c.slice.thru);   // the summary FIRST
+  folds_.applyFold(c.chat, summary, nowEpoch, c.slice.thru, orch::kChatSummaryMax, c.slice.keptBytes);   // the summary FIRST
   degraded_.erase(rungKey(rep.host, rep.model));
   ramWaitMs_.erase(c.chat);
   if (!c.slice.lastDate.empty()) thruDate_[c.chat] = c.slice.lastDate;
@@ -486,6 +527,7 @@ void FoldDriver::noteCleared(const std::string& chat) {
   }
   if (catchUp_.chat == chat) catchUp_ = CatchUp();
   ramWaitMs_.erase(chat);
+  readWaits_.erase(chat);
   thruDate_.erase(chat);
   changed(chat);
 }

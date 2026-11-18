@@ -239,8 +239,12 @@ class FoldStore {
   // the turn's blob write). Rows it hides make a fold due.
   void setSoftStart(const std::string& chatId, const std::string& rowId);
   // A due fold found nothing new worth a summary (the slice beyond the kept
-  // verbatim tail was empty): the counters restart without a paid call.
-  void noteFoldSkipped(const std::string& chatId);
+  // verbatim tail was empty): the counters restart without a paid call, the byte
+  // count at `keptBytes` (the conversation still after thru; 0 on the floor branch).
+  // Rows a shift hid are given up only when the read examined them (`readTo` at or
+  // after the soft start): the anchor never passes a row no read has seen.
+  void noteFoldSkipped(const std::string& chatId, const std::string& readTo = std::string(),
+                       uint32_t keptBytes = 0);
 
   // One completed turn on the chat: bumps the thrash counter and persists the
   // accumulated state (one small blob write per turn, not per message).
@@ -260,9 +264,12 @@ class FoldStore {
   // wait (a thrash wait stays), persist. (Write order: this blob FIRST - the
   // caller resets the provider chain only after this returns.) `thru` (H3) is
   // the newest row the summary now covers; a shift it covers is cleared.
+  // `keptBytes` (lane CTXR1): the conversation bytes the fold left after `thru`, where
+  // the byte counter restarts, so the trigger compares bytes after thru (0 = restart at
+  // 0, v5.1.1's reading and the floor branch's).
   void applyFold(const std::string& chatId, const std::string& summary,
                  uint32_t epoch, const std::string& thru = std::string(),
-                 size_t summaryCap = kChatSummaryMax);
+                 size_t summaryCap = kChatSummaryMax, uint32_t keptBytes = 0);
 
   // A fold cycle failed (every rung): the chat's next try is scheduled by the
   // backoff (foldBackoffS) and the failure is counted. Returns nextTry (0 when the

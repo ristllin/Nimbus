@@ -376,30 +376,48 @@ static void test_the_fold_read_goes_on_past_a_page_the_store_cut_short() {
 
 // A span the card would not give back stops the fold's read before it: the fold anchors on
 // the rows it read, so the rows past the span are folded once the card reads them, never
-// skipped by an anchor moved past them.
+// skipped by an anchor moved past them. With nothing read before the span the slice says
+// Unread (lane CTXR1): the driver keeps the anchor and tries again later.
 static void test_the_fold_read_stops_before_rows_the_card_will_not_give_back() {
   Rig r;
   r.addTurns(30);
-  r.unreadableAfter = "m0048";
+  r.marks.thru = "m0002";
+  r.unreadableAfter = "m0050";   // the second page
   const agent::FoldSlice slice = r.eng->historyFoldSlice("1001", 65536, true);
   // The read stopped short of the end, so the slice holds whole turns only (its last turn
-  // waits for the next fold too): rows m0001..m0046, never past the span.
-  TEST_ASSERT_EQUAL_STRING("m0046", slice.thru.c_str());
+  // waits for the next fold too): rows m0003..m0048, never past the span.
+  TEST_ASSERT_EQUAL_STRING("m0048", slice.thru.c_str());
   TEST_ASSERT_EQUAL(23, (int)slice.turns);
+  TEST_ASSERT_TRUE(slice.state == agent::SliceState::Ready);
+  r.marks.thru = "m0047";
+  r.unreadableAfter = "m0047";
+  const agent::FoldSlice none = r.eng->historyFoldSlice("1001", 65536, true);
+  TEST_ASSERT_TRUE(none.digest.empty());
+  TEST_ASSERT_TRUE_MESSAGE(none.state == agent::SliceState::Unread, agent::sliceStateName(none.state));
 }
 
 // After a restart a shift's hidden rows make an automatic fold due before the conversation
-// cache has read anything: the turns the fold must keep verbatim are not known yet, so the
-// slice waits for the fill rather than fold the newest exchange into the summary.
+// cache has read anything. The turns the fold keeps verbatim are not known yet, but a shift
+// never hides one of them: the slice takes the hidden rows alone (lane CTXR1; it used to come
+// back empty, which the driver took for "nothing to fold" and moved the anchor past them).
+// Once the fill holds the newest rows the tail is known and the slice reaches it.
 static void test_an_automatic_fold_waits_for_the_tail_after_a_restart() {
   Rig r;
   r.addTurns(30);
   r.marks.softStart = "m0020";   // a shift hid rows m0001..m0020 before the restart
-  TEST_ASSERT_TRUE(r.eng->historyFoldSlice("1001", 65536, false).digest.empty());
+  const agent::FoldSlice hiddenOnly = r.eng->historyFoldSlice("1001", 65536, false);
+  TEST_ASSERT_TRUE(hiddenOnly.state == agent::SliceState::Ready);
+  TEST_ASSERT_EQUAL_STRING("m0020", hiddenOnly.thru.c_str());   // the hidden rows, never past them
   TEST_ASSERT_TRUE(r.eng->historyIdleStep());   // the fill's first page: the newest rows
   const agent::FoldSlice slice = r.eng->historyFoldSlice("1001", 65536, false);
   TEST_ASSERT_FALSE(slice.digest.empty());
   TEST_ASSERT_TRUE_MESSAGE(slice.thru != "m0060", slice.thru.c_str());   // the newest exchange stays
+  // With no rows hidden and nothing held yet, the tail is unknown: the slice waits.
+  Rig w;
+  w.addTurns(30);
+  const agent::FoldSlice waits = w.eng->historyFoldSlice("1001", 65536, false);
+  TEST_ASSERT_TRUE(waits.digest.empty());
+  TEST_ASSERT_TRUE_MESSAGE(waits.state == agent::SliceState::Wait, agent::sliceStateName(waits.state));
 }
 
 // An owner's own Compact threshold below the head's keep mark (24 KB on a Sonnet head, which

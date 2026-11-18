@@ -832,12 +832,44 @@ class TurnEngine {
   // one page of card reads (a turn's reads), none when false (the fold's look at the tail).
   ConvCache::ReadFn cacheReader(const std::string& chatId);
   ConvCache::View cachedRows(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b, bool fill);
-  // The fold slice's parts: the kept tail's size and first row, and the forward read from thru.
+  // The fold slice's parts (lane CTXR1: every step says Ready, Nothing, Wait or Unread, and
+  // only a read that reached its bound may say Nothing). The kept tail's size; where the
+  // forward read stops (the tail's first row, or the soft start while the tail is unknown)
+  // and the conversation bytes the cache holds after thru; the read's start (thru, else
+  // after the chat's newest /clear); and the forward read itself.
+  struct FoldBounds {
+    std::string keepFrom;   // the read stops before this row ("" = no tail)
+    std::string stopAt;     // the read stops after this row ("" = no bound)
+    // Conversation rows the cache holds after thru: id suffix and text bytes (derived heads).
+    std::vector<std::pair<uint32_t, uint32_t>> held;
+  };
+  struct FoldRead {
+    enum class End : uint8_t { Tail, Last, Full, Wait, Unread };
+    End end = End::Last;
+    std::string lastSeen;     // the newest row the read examined, kept or not
+    std::string clearAt;      // the newest /clear it met ("" = none)
+    bool progressed = false;  // the read moved past rows a later attempt need not read again
+  };
+  // Per chat, where the fold's forward read goes on from between passes (RAM): a read budget
+  // that found none of the chat's rows, and the scan for the newest /clear of a chat with no
+  // anchor. Keyed by the anchor it was made for: a fold that moves thru starts it over.
+  struct FoldCursor {
+    std::string anchor;    // marks.thru when this was recorded
+    std::string resume;    // the read starts here instead of at its start ("" = the start)
+    std::string scanAt;    // no anchor: the scan for the newest /clear goes on after this
+    std::string clearAt;   // the newest /clear the scan met ("" = none)
+    bool scanned = false;  // the scan reached the read's bound: the start is known
+  };
   size_t foldKeepBytes(const HistoryBudget& b) const;
-  bool foldKeepFrom(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
-                    const HistoryOptions& o, bool hidden, std::string& keepFrom);
-  bool readFoldRows(const std::string& chatId, const std::string& thru, const std::string& keepFrom, size_t capBytes,
-                    std::vector<nimbus::orch::EpisodicMessage>& fwd);
+  SliceState foldBounds(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
+                        const HistoryOptions& o, bool hidden, FoldBounds& out);
+  SliceState foldStart(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
+                       const FoldBounds& bounds, std::string& from, bool& known, bool& progressed);
+  static void noteHeld(const ConvCache::View& view, const HistoryBudget& b, FoldBounds& out);
+  FoldRead readFoldRows(const std::string& chatId, const std::string& from, const FoldBounds& bounds, size_t capBytes,
+                        std::vector<nimbus::orch::EpisodicMessage>* fwd);
+  FoldCursor& foldCursor(const std::string& chatId, const std::string& anchor);
+  std::map<std::string, FoldCursor> foldCursors_;
   // The chat's newest `rows` rows, newest first, from the cache (H7's duplicate check).
   std::vector<nimbus::orch::EpisodicMessage> recentRows(const std::string& chatId, size_t rows);
   ConvCache convCache_;
