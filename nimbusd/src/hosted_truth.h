@@ -123,8 +123,7 @@ class HostedTruth {
     const uint64_t took = nowMs() - t0;
     ProbeResult out;
     out.ms = took > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)took;
-    out.verdict = sent ? parseResponse(resp.status, resp.body) : Verdict::Error;
-    if (!sent && took > r.timeoutMs) out.verdict = Verdict::Timeout;
+    out.verdict = sent ? parseResponse(resp.status, resp.body) : Verdict::Error;   // past 8 s: the check's own bound
     return out;
   }
 

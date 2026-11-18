@@ -108,8 +108,9 @@ const char* probeModelFor(const char* host);
 bool probeWire(const char* host);
 
 // The mode a head starts in on a line: its head_qual truth mode when its host's probe model
-// passes and the probe wire exists, else ReceiptOnly.
+// passes and the probe wire exists, else ReceiptOnly (startModeFrom is the rule itself).
 Truth startMode(const char* host, const char* model, headqual::Line line);
+Truth startModeFrom(Truth rowMode, bool probeWireExists, bool probeModelPasses);
 
 // ---- effects ---------------------------------------------------------------------------
 // What an effect changed, for the receipt line. Read never earns a receipt.

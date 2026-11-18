@@ -221,6 +221,11 @@ void test_a_head_without_a_passing_row_is_receipt_only() {
   TEST_ASSERT_EQUAL((int)Truth::ReceiptOnly, (int)truth::startMode("custom", "x", hq::Line::E1));
   TEST_ASSERT_EQUAL((int)Truth::ReceiptOnly, (int)truth::startMode("nowhere", "x", hq::Line::E1));
   TEST_ASSERT_EQUAL((int)Truth::ReceiptOnly, (int)truth::startMode(nullptr, nullptr, hq::Line::E1));
+  // The rule itself, over every combination: only a wire and a passing model keep the row's mode.
+  for (Truth row : {Truth::ReceiptOnly, Truth::Enforce, Truth::Shadow})
+    for (bool wire : {false, true})
+      for (bool passes : {false, true})
+        TEST_ASSERT_EQUAL((int)(wire && passes ? row : Truth::ReceiptOnly), (int)truth::startModeFrom(row, wire, passes));
   TEST_ASSERT_EQUAL_STRING("claude-haiku-5-5", truth::probeModelFor("anthropic"));
   TEST_ASSERT_EQUAL_STRING("", truth::probeModelFor("custom"));
   TEST_ASSERT_EQUAL_STRING("", truth::probeModelFor(nullptr));
@@ -704,6 +709,12 @@ void test_the_receipt_names_each_kind_whose_last_attempt_failed() {
       truth::receiptLine({eff("files_write", false, "disk full", K::File),
                           eff("routine_create", false, "clock not set", K::Routine)})
           .c_str());
+  // Three kinds: "a, b and c".
+  TEST_ASSERT_EQUAL_STRING(
+      "Note: the ledger change, the file change and the message in this reply did not go through (x; y; z)",
+      truth::receiptLine({eff("ledger_write", false, "x", K::Ledger), eff("files_write", false, "y", K::File),
+                          eff("send_message", false, "z", K::Send)})
+          .c_str());
   // The error is one line and bounded.
   const std::string l = truth::receiptLine({eff("x", false, std::string(400, 'e') + "\nsecond", K::Other)});
   TEST_ASSERT_TRUE(l.find('\n') == std::string::npos);
@@ -788,6 +799,11 @@ void test_shadow_never_holds_and_probes_now_only_for_a_failed_write() {
   truth::shadowProbe(t, s.fn(), h);
   TEST_ASSERT_EQUAL_size_t(1, s.seen.size());
   TEST_ASSERT_EQUAL_UINT32(1, h.c.shadowProbes);
+  // A tainted turn is never probed, not even from the idle step.
+  truth::Turn tainted = t;
+  tainted.tainted = true;
+  truth::shadowProbe(tainted, s.fn(), h);
+  TEST_ASSERT_EQUAL_size_t(1, s.seen.size());
   TEST_ASSERT_EQUAL_UINT32(1, h.c.shadowHits);
   TEST_ASSERT_EQUAL_UINT32(1, h.windowHits());
   TEST_ASSERT_EQUAL_UINT32(0, h.c.hits);
@@ -945,6 +961,7 @@ void test_modes_move_only_as_the_prd_says() {
   // Shadow back to enforce at 4 hits in the trailing 200 shadow probes; older hits roll out.
   truth::HeadState h;
   h.mode = Truth::Shadow;
+  h.c.effectTurns = 1000;   // what earned shadow: forgotten on the way back
   for (int i = 0; i < 3; ++i) h.pushShadow(true);
   for (int i = 0; i < 197; ++i) h.pushShadow(false);
   TEST_ASSERT_FALSE(truth::nextMode(h, true));
@@ -984,6 +1001,7 @@ void test_the_state_file_round_trips_and_refuses_damage() {
   const std::string aKey = a.key;
   truth::HeadState& b = s.head(truth::stateKey("openai", "gpt-5.6-luna", hq::Line::E2), Truth::ReceiptOnly);
   b.c.receiptsFixed = 3;   // `a` may have moved: only `b` is used from here
+  for (int i = 0; i < 450; ++i) b.pushShadow(i % 100 == 0);   // the window wraps: still 200 long
   const std::string json = truth::renderState(s);
   truth::State back;
   TEST_ASSERT_TRUE(truth::parseState(json, back));
@@ -993,6 +1011,8 @@ void test_the_state_file_round_trips_and_refuses_damage() {
   TEST_ASSERT_EQUAL_UINT32(1, back.heads[0].windowHits());
   TEST_ASSERT_EQUAL((int)Truth::Enforce, (int)back.heads[0].mode);
   TEST_ASSERT_EQUAL_UINT32(3, back.heads[1].c.receiptsFixed);
+  TEST_ASSERT_EQUAL_UINT32(200, back.heads[1].winLen);
+  TEST_ASSERT_EQUAL_UINT32(2, back.heads[1].windowHits());
   // An existing head is found, not made again.
   TEST_ASSERT_EQUAL_UINT32(7, back.head(aKey, Truth::Enforce).c.turns);
   TEST_ASSERT_EQUAL_size_t(2, back.heads.size());
@@ -1000,7 +1020,9 @@ void test_the_state_file_round_trips_and_refuses_damage() {
   for (const std::string& bad : {std::string(""), std::string("{"), std::string("[]"), std::string("{\"v\":2,\"heads\":[]}"),
                                  json.substr(0, json.size() / 2),
                                  std::string("{\"v\":1,\"heads\":[{\"k\":\"a\",\"m\":\"loose\"}]}"),
-                                 std::string("{\"v\":1,\"heads\":[{\"m\":\"enforce\"}]}")}) {
+                                 std::string("{\"v\":1,\"heads\":[{\"m\":\"enforce\"}]}"),
+                                 json.substr(0, json.find("\"n\":") + 4) + "201" +
+                                     json.substr(json.find(',', json.find("\"n\":")))}) {
     truth::State out;
     out.head("x", Truth::Enforce);
     TEST_ASSERT_FALSE_MESSAGE(truth::parseState(bad, out), bad.c_str());

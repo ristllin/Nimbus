@@ -247,9 +247,13 @@ const char* probeModelFor(const char* host) {
 
 bool probeWire(const char* host) { return same(host, "anthropic"); }
 
+Truth startModeFrom(Truth rowMode, bool probeWireExists, bool probeModelPasses) {
+  return probeWireExists && probeModelPasses ? rowMode : Truth::ReceiptOnly;
+}
+
 Truth startMode(const char* host, const char* model, headqual::Line line) {
-  if (!host || !probeWire(host) || !probePasses(probeModelFor(host))) return Truth::ReceiptOnly;
-  return headqual::lookup(host, model, line).truth;
+  if (!host) return Truth::ReceiptOnly;
+  return startModeFrom(headqual::lookup(host, model, line).truth, probeWire(host), probePasses(probeModelFor(host)));
 }
 
 // ---- effects ---------------------------------------------------------------------------
