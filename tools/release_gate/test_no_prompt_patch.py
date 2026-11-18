@@ -9,6 +9,7 @@ rates, a remove that hides added text, an edited merged entry, a tool file outsi
 catalog, a register row without a red scenario. The first test runs the gate on the real tree.
 """
 
+import json
 import os
 import re
 import shutil
@@ -447,12 +448,12 @@ def test_editing_a_merged_entry_fails(tree):
 
 @pytest.mark.parametrize("use_base", [True, False])
 def test_editing_the_baseline_fails_with_or_without_a_base(tree, use_base):
-    before = _swap(tree)  # a swap, then the baseline row rewritten to match it
-    now = stats(tree)["tool_results"]
+    before = _swap(tree, "system")  # a swap, then the baseline row rewritten to match it
+    now = stats(tree)["system"]
     text = read(tree, gate.CHANGES)
-    row = f"| e1 | tool_results | {before['bytes']} | {before['sha8']} |"
+    row = f"| e1 | system | {before['bytes']} | {before['sha8']} |"
     assert row in text
-    write(tree, gate.CHANGES, text.replace(row, f"| e1 | tool_results | {now['bytes']} | {now['sha8']} |"))
+    write(tree, gate.CHANGES, text.replace(row, f"| e1 | system | {now['bytes']} | {now['sha8']} |"))
     errs = errors(tree, use_base=use_base)
     assert any("baseline" in e and "differs" in e for e in errs), errs
 
@@ -711,9 +712,10 @@ def test_a_rebaseline_record_that_does_not_end_at_the_table_fails(tree, isolated
 
 @pytest.fixture
 def plan(tmp_path, monkeypatch):
-    """A live plan with one lane, RB-L1b."""
+    """A live plan: the real plan's lanes (the ledger's own spec entries name them) and RB-L1b, never RB-ZZ9."""
     path = tmp_path / "PLAN.json"
-    path.write_text('{"lanes": [{"id": "RB-L1b", "stage": "S1"}], "stages": []}')
+    lanes = (gate.plan_lanes(REPO) | {"RB-L1b"}) - {"RB-ZZ9"}
+    path.write_text(json.dumps({"lanes": [{"id": lane} for lane in sorted(lanes)], "stages": []}))
     monkeypatch.setattr(gate, "PLAN_JSON", str(path))
     return path
 
