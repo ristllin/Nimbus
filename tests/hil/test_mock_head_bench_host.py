@@ -133,7 +133,7 @@ class FakeUnit:
         self.model = "mock-echo"
         self.short: list = []
         self.rows: list = []
-        self.tailed = 0   # /api/state claimsTailed: kept at 0 since v5.2.0
+        self.tailed = 0  # /api/state claimsTailed: kept at 0 since v5.2.0
         self.requests: list = []
         self.refused_saves: list = []
         self.stored: dict = {}  # vector store: id -> content (content-addressed ids)
@@ -179,7 +179,7 @@ class FakeUnit:
             else:
                 self.stored[f"v{abs(hash(fact)) % 10**8:08d}"] = fact
         if self.model == "mock-claim-durable":
-            self.short = [NOTE]   # a failed flash write keeps it in RAM; the reply gets no line
+            self.short = [NOTE]  # a failed flash write keeps it in RAM; the reply gets no line
         self._row("user", text)
         self._row("assistant", reply)
 
@@ -283,7 +283,9 @@ def test_a_leg_fails_on_a_device_that_appends_a_line(unit):
 
     def appending(text):
         original(text)
-        unit.rows[-1]["text"] += "\n\n(Correction: that has not been saved yet; it is waiting on the device to be stored.)"
+        unit.rows[-1]["text"] += (
+            "\n\n(Correction: that has not been saved yet; it is waiting on the device to be stored.)"
+        )
 
     unit._turn = appending
     with pytest.raises(AssertionError, match="the reply was changed"):
