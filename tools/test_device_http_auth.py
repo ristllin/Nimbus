@@ -234,18 +234,57 @@ def test_device_api_detection_ignores_third_party_apis_and_prose():
     assert not _device_api_fragments('PLAN = """\n  # raising it over\n  #   /api/orch lets it run\n"""\n')
 
 
+# A module that can put a request on the wire itself: an HTTP library, a raw socket, a
+# subprocess (curl) or a browser driver. A file that names device API paths but imports
+# none of these hands them to another module's client (tools/refloop/arms.py calls
+# nimbusd_ctl.Nimbusd), and that client is scanned on its own.
+_REQUEST_MODULES = ("urllib.request", "http.client", "requests", "httpx", "aiohttp", "urllib3", "socket")
+_REQUEST_MODULES += ("subprocess", "playwright", "selenium")
+
+
+def _sends_requests(tree):
+    modules = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            modules.add(node.module)
+            modules.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return any(m == r or m.startswith(r + ".") for m in modules for r in _REQUEST_MODULES)
+
+
+def _device_api_client(source):
+    tree = ast.parse(source)
+    return _sends_requests(tree) and any(_DEVICE_API.search(text) for text in _string_fragments(tree))
+
+
+def test_a_tool_that_only_names_device_paths_is_not_a_client():
+    # Counter-tests: every way a tool can send a request makes it a client ...
+    assert _device_api_client('import urllib.request\nurl = f"http://{ip}/api/state"\n')
+    assert _device_api_client('from urllib import request\nurl = base + "/api/state"\n')
+    assert _device_api_client('from urllib.request import urlopen\nurl = base + "/api/state"\n')
+    assert _device_api_client('import http.client\nc.request("GET", "/api/state")\n')
+    assert _device_api_client('import requests\nrequests.get(base + "/api/state")\n')
+    assert _device_api_client('import subprocess\nsubprocess.run(["curl", f"http://{ip}/api/state"])\n')
+    assert _device_api_client('from playwright.sync_api import sync_playwright\npage.goto(base + "/api/log")\n')
+    # ... and a module that only hands paths to another module's client is not one.
+    assert not _device_api_client('import urllib.parse\nimport refloop\nd.get_json("/api/loops")\n')
+    assert not _device_api_client('from .client import Device\nd.call("GET", "/api/state")\n')
+
+
 def test_every_tool_that_calls_the_device_api_sends_the_token_header():
     clients, missing = [], []
     for path in _python_tools():
-        fragments = list(_string_fragments(ast.parse(path.read_text(encoding="utf-8"))))
-        if not any(_DEVICE_API.search(text) for text in fragments):
+        source = path.read_text(encoding="utf-8")
+        if not _device_api_client(source):
             continue
         clients.append(path.name)
-        if "X-Nimbus-Token" not in fragments:
+        if "X-Nimbus-Token" not in _string_fragments(ast.parse(source)):
             missing.append(path.name)
     assert not missing, f"device API clients without the X-Nimbus-Token header: {missing}"
-    # The guard must actually be guarding something: the known clients are found.
-    assert {"connectors_setup.py", "backup_device.py", "restore_device.py"} <= set(clients), clients
+    # The guard must actually be guarding something: the known clients are found, the
+    # refloop rig's own client among them.
+    assert {"connectors_setup.py", "backup_device.py", "restore_device.py", "nimbusd_ctl.py"} <= set(clients), clients
 
 
 if __name__ == "__main__":
