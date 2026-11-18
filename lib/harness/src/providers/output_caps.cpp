@@ -2,6 +2,7 @@
 
 #include "nimbus/harness/http.h"            // kDmaChunkFloor - the transport's pacing floor
 #include "nimbus/orch/model_defaults.h"     // lane DEF: a background turn thinks little
+#include "nimbus/orch/model_family.h"       // isMistralLarge4, mistralForcedReasoner - one alias table
 #include "nimbus/orch/request_budget.h"     // lane B: the read window, rates and minFinal of the fit
 
 #include <cctype>
@@ -75,7 +76,7 @@ OutputCap mistralCap(const std::string& model) {
   // at which Mistral's gateway closes a request (kMistralRoundMs), so a real round gets
   // less than these figures: test_mistral_caps_are_the_documented_numbers pins what it gets.
   const std::string m = startsWith(model, "mistral/") ? model.substr(8) : model;
-  const bool fast = startsWith(m, "mistral-large-4") || startsWith(m, "mistral-small") ||
+  const bool fast = nimbus::orch::isMistralLarge4(m) || startsWith(m, "mistral-small") ||
                     startsWith(m, "mistral-medium") || startsWith(m, "magistral-");
   c.maxTokens = fast ? 6000 : 4096;
   c.retryTokens = fast ? 12000 : 6144;
@@ -167,16 +168,14 @@ bool mistralTakesEffort(const std::string& model) {
   };
   for (const char* p : kReasoning)
     if (startsWith(m, p)) return true;
-  return false;
+  return nimbus::orch::mistralForcedReasoner(m);   // Large 4 under its aliases too
 }
 
 const char* mistralHeadEffort(const std::string& model) {
   if (!mistralTakesEffort(model)) return "";
-  const std::string m = startsWith(model, "mistral/") ? model.substr(8) : model;
-  // These refuse "none" with 400 code 3051 and list low, medium and high (recorded
-  // 1 Nov). With the field dropped they think at their default and get cut.
-  for (const char* p : {"mistral-large-4", "zai-glm", "glm-"})
-    if (startsWith(m, p)) return "low";
+  // The forced reasoners refuse "none" with 400 code 3051 and list low, medium and high
+  // (recorded 1 Nov). With the field dropped they think at their default and get cut.
+  if (nimbus::orch::mistralForcedReasoner(model)) return "low";
   return "none";   // every other reasoning model refuses "low" (the same recording)
 }
 
@@ -186,7 +185,7 @@ const char* sameHostNonReasoningModel(const std::string& host, const std::string
   // Only Large 4 is forced to reason (it refuses effort "none"); every other Mistral
   // head runs at "none", so a cut there is a long answer, not reasoning, and the next
   // provider - not a smaller same-provider model - is the right escape.
-  if (!startsWith(m, "mistral-large-4")) return "";
+  if (!nimbus::orch::isMistralLarge4(m)) return "";
   return "mistral-medium-latest";   // the default Mistral head, at effort "none"
 }
 
@@ -206,7 +205,7 @@ uint32_t slowestTokensPerSecond(const std::string& host, const std::string& mode
   if (host == "mistral") {
     if (startsWith(model, "mistral-small") || startsWith(model, "ministral")) return 130;   // 156 to 198, 1 Nov
     if (startsWith(model, "mistral-medium")) return 130;   // 196, 1 Nov
-    if (startsWith(model, "mistral-large-4")) return 100;   // 101 to 210, 1 Nov
+    if (nimbus::orch::isMistralLarge4(model)) return 100;   // 101 to 210, 1 Nov
     return 55;
   }
   if (host == "zai") return 60;   // 61 to 73, 1 Nov

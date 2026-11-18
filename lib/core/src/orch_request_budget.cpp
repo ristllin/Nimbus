@@ -6,6 +6,7 @@
 #include <mutex>
 #include <vector>
 
+#include "nimbus/orch/model_family.h"         // isMistralLarge4, mistralForcedReasoner - the alias table
 #include "nimbus/orch/model_price_defaults.h"   // builtinModelPrice - the price tier (longOver)
 #include "nimbus/orch/model_window.h"           // headWindowTokens, legacyCtxTokens
 #include "nimbus/orch/router_route.h"           // resolveRouterRoute - a selector's upstream
@@ -51,16 +52,14 @@ WireKey wireKey(const std::string& host, const std::string& model) {
 
 // ---- model families ------------------------------------------------------------------
 bool isGlm(const std::string& m) { return startsWith(m, "glm-") || startsWith(m, "zai-glm"); }
-bool isLarge4(const std::string& m) { return startsWith(m, "mistral-large-4"); }
+// Large 4 under every id Mistral serves it as (mistral-large-latest included: model_family.h).
+bool isLarge4(const std::string& m) { return isMistralLarge4(m); }
 // Mistral Medium and Small and their aliases (the 130 -> 70 tok/s, 2,500 tok/s prefill class).
 bool isMistralMidSmall(const std::string& m) {
   for (const char* p : {"mistral-medium", "mistral-small", "magistral-", "ministral-", "mistral-vibe-cli"})
     if (startsWith(m, p)) return true;
   return false;
 }
-// The Mistral heads that refuse effort "none" (output_caps mistralHeadEffort "low";
-// test_output_caps pins the two agree over every recorded Mistral id).
-bool forcedReasonerOnMistral(const std::string& m) { return isLarge4(m) || isGlm(m); }
 
 // A Claude id's line ("sonnet", "haiku", ...), "" for anything else.
 std::string claudeLine(const std::string& m) {
@@ -275,7 +274,7 @@ uint32_t decodeFloorTokPerS(const std::string& host, const std::string& model, u
 uint32_t minFinalTokensFor(const std::string& host, const std::string& model) {
   const WireKey k = wireKey(host, model);
   if (k.host == "zai") return 1600;
-  if (k.host == "mistral" && forcedReasonerOnMistral(k.model)) return 1500;
+  if (k.host == "mistral" && mistralForcedReasoner(k.model)) return 1500;
   return 3000;
 }
 

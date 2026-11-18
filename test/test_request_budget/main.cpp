@@ -22,6 +22,7 @@
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"   // flatPromptBudget - the wires' flat cap
 #include "nimbus/orch/budget.h"
+#include "nimbus/orch/model_family.h"
 #include "nimbus/orch/model_window.h"
 #include "nimbus/orch/request_budget.h"
 #include "nimbus/orch/wire_limits.h"
@@ -412,6 +413,89 @@ static void test_owner_settings() {
   TEST_ASSERT_EQUAL_UINT32(4096, o.toolTotalBytes);
 }
 
+// ---- every id that means Large 4 (release review v5.1.2, finding 3) --------------------------
+
+// One recorded Mistral id and whether its row is Large 4. The newest recorded list decides an
+// id both lists name (Mistral moved mistral-large-latest from mistral-large-2512 to Large 4
+// between the 2026-10 and the 14 Nov 2026 lists).
+struct MistralId {
+  std::string id;
+  bool large4 = false;
+  bool reasoning = false;
+};
+static std::vector<MistralId> recordedMistralIds() {
+  std::vector<MistralId> out;
+  std::map<std::string, bool> seen;
+  for (const char* list : {"models_2026-11", "models_2026-10"}) {
+    JsonDocument doc;
+    TEST_ASSERT_FALSE(deserializeJson(doc, recorded::readFixture(std::string("test/support/fixtures/") + list +
+                                                                 "/mistral.json")));
+    for (JsonObjectConst m : doc["data"].as<JsonArrayConst>()) {
+      std::vector<std::string> ids{m["id"] | ""};
+      for (JsonVariantConst a : m["aliases"].as<JsonArrayConst>()) ids.push_back(a | "");
+      bool large4 = std::string(m["name"] | "").rfind("mistral-large-4", 0) == 0;
+      for (const std::string& id : ids) large4 = large4 || id.rfind("mistral-large-4", 0) == 0;
+      const bool reasoning = m["capabilities"]["reasoning"] | false;
+      for (const std::string& id : ids) {
+        if (id.empty() || seen[id]) continue;
+        seen[id] = true;
+        out.push_back({id, large4, reasoning});
+      }
+    }
+  }
+  return out;
+}
+
+static bool sameRates(const RequestBudget& a, const RequestBudget& b) {
+  return a.wireBodyBytes == b.wireBodyBytes && a.bound == b.bound && a.rNomX100 == b.rNomX100 &&
+         a.prefillTokPerS == b.prefillTokPerS && a.decodeTokPerS == b.decodeTokPerS &&
+         a.minFinalTokens == b.minFinalTokens && a.windowTokens == b.windowTokens;
+}
+
+// The class: every id a recorded list gives Large 4 (the row itself and each of its aliases)
+// gets Large 4's budget, rates, effort and step-down, direct and as a router pick, and no
+// other id does. Before the fix mistral-large-latest, the id the November list stores for
+// Large 4, read as "any other Mistral id": 85,000 B at the floor.
+static void test_every_id_that_means_large_4_gets_its_row() {
+  const RequestBudget l4 = requestBudgetFor("mistral", "mistral-large-4-0", false);
+  const RequestBudget l4Lift = requestBudgetFor("mistral", "mistral-large-4-0", true, BudgetLink::Device, true);
+  int large4 = 0, others = 0;
+  for (const MistralId& r : recordedMistralIds()) {
+    const std::string what = r.id + (r.large4 ? " (Large 4)" : "");
+    TEST_ASSERT_EQUAL_MESSAGE(r.large4, isMistralLarge4(r.id), what.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(r.large4, isMistralLarge4("mistral/" + r.id), what.c_str());
+    const bool glm = r.id.rfind("glm-", 0) == 0 || r.id.rfind("zai-glm", 0) == 0;
+    TEST_ASSERT_EQUAL_MESSAGE(r.large4 || glm, mistralForcedReasoner(r.id), what.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(r.large4 || glm, mistralForcedReasoner("mistral/" + r.id), what.c_str());
+    if (!r.large4) {
+      if (r.reasoning)   // a model that reasons takes "low" exactly when it is forced to
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(glm ? "low" : "none", providers::mistralHeadEffort(r.id), what.c_str());
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("", providers::sameHostNonReasoningModel("mistral", r.id), what.c_str());
+      others++;
+      continue;
+    }
+    large4++;
+    TEST_ASSERT_TRUE_MESSAGE(sameRates(l4, requestBudgetFor("mistral", r.id, false)), what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(sameRates(l4, requestBudgetFor("mistral", "mistral/" + r.id, false)), what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(
+        sameRates(l4Lift, requestBudgetFor("cumulo", "mistral/" + r.id, true, BudgetLink::Device, true)), what.c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("low", providers::mistralHeadEffort(r.id), what.c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("low", providers::mistralHeadEffort("mistral/" + r.id), what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(providers::mistralTakesEffort(r.id), what.c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("mistral-medium-latest", providers::sameHostNonReasoningModel("mistral", r.id),
+                                     what.c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(providers::slowestTokensPerSecond("mistral", "mistral-large-4-0"),
+                                     providers::slowestTokensPerSecond("mistral", r.id), what.c_str());
+    const providers::OutputCap a = providers::outputCapFor("mistral", "mistral-large-4-0", providers::RoundKind::FinalRound, 65000);
+    const providers::OutputCap c = providers::outputCapFor("mistral", r.id, providers::RoundKind::FinalRound, 65000);
+    TEST_ASSERT_TRUE_MESSAGE(a.maxTokens == c.maxTokens && a.retryTokens == c.retryTokens, what.c_str());
+  }
+  TEST_ASSERT_TRUE(large4 >= 3);   // mistral-large-4, -4-0, -latest
+  TEST_ASSERT_TRUE(others > 20);
+  TEST_ASSERT_TRUE(isMistralLarge4("mistral-large-latest"));
+  TEST_ASSERT_FALSE(isMistralLarge4("mistral-large-2512"));
+}
+
 // ---- the turn's form (lane L): a flat turn is sized from the flat prompt budget --------------
 
 #include "table_doc.h"   // wireOf (a Cumulo head's upstream); the table it writes is checked last
@@ -677,6 +761,7 @@ int main(int, char**) {
   RUN_TEST(test_a_flat_turn_is_sized_as_v5_1_1_sized_it);
   RUN_TEST(test_a_loop_on_turn_is_the_request_budget_unchanged);
   RUN_TEST(test_the_loop_off_figures_for_the_main_heads);
+  RUN_TEST(test_every_id_that_means_large_4_gets_its_row);
   RUN_TEST(test_the_generated_table_is_current);
   return UNITY_END();
 }
