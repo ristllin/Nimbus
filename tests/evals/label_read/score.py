@@ -64,36 +64,36 @@ def columns(read: dict) -> dict:
     return out
 
 
-def score(truth: dict, read: dict) -> dict:
-    """Per-field results for one label: every printed field of every truth column.
-
-    extras counts figures the read gives for a row the label does not print (sodium aside: a label
-    that prints sodium in g has no scored sodium row), and every figure of a column the label does not
-    print at all.
-    """
-    got = columns(read)
+def extras(truth: dict, got: dict) -> int:
+    """Figures the read gives for a row the label does not print (sodium aside: a label that prints
+    sodium in g has no scored sodium row), and every figure of a column the label does not print."""
     unscored = set(truth.get("unscored") or [])
-    fields, kj_kcal, protein, extras = [], 0, 0, 0
-    for basis, tcol in truth["columns"].items():
-        rcol = got.get(basis) or {}
-        extras += sum(
+    n = 0
+    for basis, rcol in got.items():
+        tcol = truth["columns"].get(basis, {})
+        n += sum(
             1
             for f in FIELDS
             if f != "sodium_mg" and f not in tcol and f"{basis}.{f}" not in unscored and norm(rcol.get(f)) is not None
         )
-        for f in FIELDS:
-            if f not in tcol:
-                continue
-            ok = same(rcol.get(f), tcol[f])
-            fields.append({"basis": basis, "field": f, "truth": tcol[f], "read": rcol.get(f), "ok": ok})
-            if f == "protein" and not ok:
-                protein += 1
-        if kj_kcal_confused(tcol, rcol):
-            kj_kcal += 1
-    for basis, rcol in got.items():
-        if basis not in truth["columns"]:
-            extras += sum(1 for f in FIELDS if f != "sodium_mg" and norm(rcol.get(f)) is not None)
-    return {"fields": fields, "kj_kcal_confusions": kj_kcal, "protein_misreads": protein, "extras": extras}
+    return n
+
+
+def score(truth: dict, read: dict) -> dict:
+    """Per-field results for one label: every printed field of every truth column."""
+    got = columns(read)
+    fields = []
+    kj_kcal = 0
+    for basis, tcol in truth["columns"].items():
+        rcol = got.get(basis) or {}
+        fields += [
+            {"basis": basis, "field": f, "truth": tcol[f], "read": rcol.get(f), "ok": same(rcol.get(f), tcol[f])}
+            for f in FIELDS
+            if f in tcol
+        ]
+        kj_kcal += kj_kcal_confused(tcol, rcol)
+    protein = sum(1 for f in fields if f["field"] == "protein" and not f["ok"])
+    return {"fields": fields, "kj_kcal_confusions": kj_kcal, "protein_misreads": protein, "extras": extras(truth, got)}
 
 
 def kj_kcal_confused(tcol: dict, rcol: dict) -> bool:
