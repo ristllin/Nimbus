@@ -164,8 +164,11 @@ def _proof_errors(root: str, e: dict) -> "list[str]":
         errs.append(f"{eid}: scenario {sid!r} does not resolve under {SCENARIO_ROOT}/**/scenarios")
     if not _COMMIT.match(_first_word(e.get("red_at", ""))):
         errs.append(f"{eid}: a swap needs red_at: the commit where its scenario was red")
-    if not _RATES.match(e.get("rates", "")):
+    rates = _RATES.match(e.get("rates", ""))
+    if not rates:
         errs.append(f"{eid}: a swap needs the parity rates: 'rates: before=<0..1> after=<0..1>'")
+    elif float(rates.group(2)) < float(rates.group(1)):
+        errs.append(f"{eid}: the parity rate fell ({rates.group(1)} -> {rates.group(2)}); a swap may not lower it")
     return errs
 
 
@@ -302,7 +305,9 @@ def git(root: str, *args: str) -> "str | None":
 def resolve_base(root: str, arg: "str | None") -> "str | None":
     ref = arg or os.environ.get("NIMBUS_PROMPT_BASE")
     if ref:
-        out = git(root, "rev-parse", "--verify", ref + "^{commit}")
+        if ref.startswith("-"):
+            return None
+        out = git(root, "rev-parse", "--verify", "--end-of-options", ref + "^{commit}")
         return out.strip() if out else None
     for cand in BASE_REFS:
         out = git(root, "merge-base", "HEAD", cand)

@@ -24,7 +24,8 @@ for the plain engine once its `texts.h` exists). This file is the gate's ledger:
 - Kind `swap`: text was added and at least as many bytes were removed from the same class. It
   needs the red scenario first: `scenario` (an id that resolves under
   `tests/evals/**/scenarios`), `red_at` (the commit where that scenario was red) and `rates`
-  (the parity pass rate before and after the change, from the same suite and head).
+  (the parity pass rate before and after the change, from the same suite and head; the after
+  rate may not be lower).
 - Kind `remove`: the class only shrank. With a git base the gate compares the class's texts
   with the base golden, and an added text fails the entry.
 

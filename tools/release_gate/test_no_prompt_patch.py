@@ -289,6 +289,19 @@ def test_a_swap_entry_with_rates_out_of_range_fails(tree):
     assert any("parity rates" in e for e in errors(tree))
 
 
+def test_a_swap_that_lowers_the_parity_rate_fails(tree):
+    before = _swap(tree)
+    append_entry(
+        tree,
+        **entry_for(tree, "e1", "tool_results", before, "swap", **{**SWAP_PROOF, "rates": "before=0.98 after=0.90"}),
+    )
+    assert any("parity rate fell" in e for e in errors(tree))
+
+
+def test_a_base_ref_that_looks_like_an_option_is_refused(tree):
+    assert gate.resolve_base(tree, "--output=/tmp/x") is None
+
+
 def test_a_complete_swap_entry_passes(tree):
     before = _swap(tree)
     append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **SWAP_PROOF))
