@@ -222,7 +222,8 @@ struct HeadLoopConfig {
   // correction text: that answer is discarded (nothing in it runs or reaches
   // the owner) and the model gets ONE more round, with the text as the result
   // of its orch_turn call. Build it with chainFinalChecks so several checks
-  // (the turn-shape check, the claim check) share the one round.
+  // (the turn-shape check, the placeholder check) share the one round. No check
+  // reads the reply's words against the turn's effects (RB-Q1b, v5.2.0).
   // It lives on the CONFIG rather than the hooks because every adapter hands
   // its HeadTools cfg to runHeadLoop verbatim, so no provider can forget to
   // forward it. Null => no check, byte-identical to before.

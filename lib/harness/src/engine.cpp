@@ -10,7 +10,6 @@
 #include "nimbus/orch/compact.h"   // isContextOverflowError - a provider's window refusal
 #include "nimbus/orch/reply_guard.h"   // filler, work-shaped messages
 #include "nimbus/orch/action_rules.h"  // actionRuleRow - a tool's plain-words description
-#include "nimbus/orch/owner_voice.h"   // lane MLQ: the per-turn reply scope and disputed-claim lines
 #include "nimbus/orch/compact.h"   // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary (runFold)
 #include "nimbus/orch/connector_grant.h"   // whose connectors a turn's requests carry (CUM-828)
 
@@ -455,7 +454,7 @@ std::string convMapSet(std::string raw, const std::string& chat,
   return out;
 }
 
-TurnEngine::TurnEngine(Deps d, Tuning t) : d_(std::move(d)), t_(t) { claims_.useEffects(&turnFx_); }
+TurnEngine::TurnEngine(Deps d, Tuning t) : d_(std::move(d)), t_(t) {}
 
 // A fresh effect ledger for the turn, with the sub-agent results the entry wrapper folded in
 // (consumed: never carried into a later turn). Out of line: runTurn's frame stays as it was.
@@ -855,16 +854,6 @@ std::string TurnEngine::syncCapacityText() const {
   return out;
 }
 
-void TurnEngine::noteUnappliedSpawnClaim(const std::string& chatId) {
-  hlog::log("orchestrator: reply claims sub-agents but the answer was not applied - correction added");
-  hlog::log("orchestrator: spawn ledger spawned=0 claimed=1");
-  if (d_.jobs)
-    d_.jobs->noteSpawnIntentRefused(chatId, "", "",
-                                    "your reply said sub-agents were started, but that answer was "
-                                    "cut off or unreadable, so nothing in it ran and nothing is "
-                                    "running for them");
-}
-
 std::string TurnEngine::buildDynamicContext(const std::string& chatId) {
   std::string ctx;
   // F1 (lane I): the approved skills attached to THIS chat (pinned context
@@ -1082,29 +1071,6 @@ struct TurnEngine::ApplyCapture {
   ApplyCapture& operator=(const ApplyCapture&) = delete;
 };
 
-// CUM-824: the parts of this turn's input the claim check reads, as the engine took them
-// (never re-parsed from the composed text, where a sub-agent's reply could pose as a block).
-// The owner's own history rows count as sources (a follow-up about the previous message's
-// photo or label credits a source the owner really gave); the assistant's rows never do.
-TurnSources TurnEngine::claimSources(const std::string& chatId, const std::string& userText,
-                                     const ComposeInputs& ci) const {
-  TurnSources parts;
-  parts.owner = userText;
-  for (const JobEngine::FreshResult& f : turnMem().fresh) {
-    // The result's text and the tools that RAN are sources; the provenance tag's idle
-    // x0 names are not ("Source: Notion" over a "Notion x0" tally names nothing read).
-    parts.fresh += f.text + "\n" + ranSourceNames(f.provenance) + "\n";
-    parts.webRead = parts.webRead || f.provenance.find(", web: ") != std::string::npos;
-    parts.subRuns.add(nimbus::orch::runsInRecord(f.provenance));   // CUM-835
-  }
-  parts.memory = turnMem().memBody;
-  parts.rules = ci.standingPrefs;
-  if (d_.jobs) parts.ledger = d_.jobs->spawnLedgerText(chatId);
-  for (const HistMsg& m : ci.history)
-    if (m.user) parts.histOwner += m.text + "\n";
-  return parts;
-}
-
 bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                          const std::string& userText) {
   return runTurn(inputs, chatId, userText, telegramOn(chatId));
@@ -1194,7 +1160,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   }
   // Lane S: a fresh effect ledger; the sub-agent results the entry wrapper
   // folded in count as read (sourced or with no lookup behind them).
-  claims_.beginTurn();
   startTurnLedger();
   // Lifecycle hook: turn start (observer-only; source set by the entry wrapper).
   if (d_.hooks.onTurnStart) {
@@ -1259,8 +1224,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   if (!userText.empty() && freeHeap() >= t_.recallMinHeap && d_.recall)   // a channel's note never steers recall
     recall = d_.recall(userText.substr(0, nimbus::net::withoutCrossedNote(userText.data(), userText.size())), turnWho);
   const std::vector<std::string>& recalled = recall.hits;
-  std::string rec;
-  for (const std::string& r : recalled) rec += r + "\n";   // the recalled memories, apart (CUM-824)
   const uint32_t heapAfterRecall = freeHeap();
   turnMem().gate.phase("recall", heapAfterRecall, largestFreeBlock());
 
@@ -1305,7 +1268,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   auto laterBehind = [&]() {
     return d_.jobs && d_.jobs->activeCount() > 0 ? orch::LaterWork::Live : laterAtStart;
   };
-  claims_.setLaterWork(laterBehind());
   if (!liveSessions)
     specs.erase(std::remove_if(specs.begin(), specs.end(),
                                [](const orch::ToolRegistry::Spec& s) {
@@ -1352,26 +1314,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       new RunTurnLocals{d_.composeInputs ? d_.composeInputs(curChat_) : ComposeInputs{}, {}, {}, {}, {}, {}, 0, 0});
   ComposeInputs& ci = locals->ci;
   turnMem().gate.phase("context", freeHeap(), largestFreeBlock());
-  {
-    // The figure check's sources: the input block (the owner's text, captions, the
-    // window, fresh results), the owner's own history rows and, apart, the recalled
-    // memories. Only their numbers are kept. The owner's own text names the sources
-    // a reply may credit and holds the figures to credit to the owner (CUM-824); the
-    // history's USER rows name the previous message's photo or label (the review).
-    // Lane CTX: the ledger shown is a source. Its words ride the composed prompt
-    // (lastInstructions_, set at compose below), so the quote rule sees them too.
-    const std::string ledgerBlock = loadFoodLedger(chatId);
-    // On the heap with the turn's other large locals (lane STACK): 176 B.
-    const std::unique_ptr<TurnSources> claimed(new TurnSources(claimSources(chatId, userText, ci)));
-    TurnSources& sources = *claimed;
-    if (ledger_.targets.kcal > 0) sources.targets += std::to_string((long)ledger_.targets.kcal) + " ";
-    if (ledger_.targets.protein > 0) sources.targets += std::to_string((long)ledger_.targets.protein);
-    claims_.setSources(inputs + ledgerBlock, rec, sources);
-    claims_.setFoodFacts([this, chatId]() { return currentFoodFacts(chatId); });
-    if (turnSource_ == TurnSource::Loop && d_.platform.nowEpoch)
-      claims_.setRoutineDay(nimbus::orch::logDayOf((time_t)d_.platform.nowEpoch(), true).date);
-    claims_.setQuoteContext(&lastInstructions_, &inputs);   // filled at compose, below
-  }
+  loadFoodLedger(chatId);   // lane CTX: this turn's food ledger (applyFoodContext shows it)
   // W10 (prism): the speaker line is for a REAL human message only. The device
   // closure knows the chat, not the turn source - a synthesis turn ([FRESH
   // RESULTS] from untrusted sub-agent output) and a scheduled loop both carry a
@@ -1405,18 +1348,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                                      // text window was the histV1 shape
   } else if (!ci.chatSummary.empty()) {
     ci.history = renderHistory({}, ci.chatSummary, 0);   // the summary pair alone
-  }
-  {
-    // The owner's own earlier messages may state a target (the summary pair is not theirs).
-    std::string ownerRows;
-    for (const HistMsg& m : ci.history)
-      if (m.user && m.text.rfind(kSummaryUserHead, 0) != 0) ownerRows += m.text + "\n";
-    claims_.noteOwnerHistory(ownerRows);
-  }
-  if (ci.speakerPresent) {   // lane MLQ (OIR-06): the reply-scope line and check, only with something to hold
-    std::vector<std::string> unanswered = unansweredOwnerMessages(ci.history);
-    if (!unanswered.empty()) ci.replyScope = nimbus::orch::renderReplyScopeHint();
-    claims_.noteUnanswered(std::move(unanswered));
   }
   turnMem().gate.phase("history", freeHeap(), largestFreeBlock());
   // R3: this chat's TTL table choice and its per-chat cache key.
@@ -1650,27 +1581,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
           return done(r);
         }
       }
-      // A daily target nothing this turn holds is never stored (food_figures.h).
-      {
-        std::string refusal = claims_.targetWriteRefusal(regName, call.argsJson);
-        if (!refusal.empty()) {
-          r.isError = true;
-          r.output = std::move(refusal);
-          hlog::logf("claims: refused a targets write (%s)", regName.c_str());
-          return done(r);
-        }
-      }
-      // A labelled food-ledger row that fails the label's own arithmetic, or that
-      // asserts a brand/detail no turn source holds, is never stored (food_label.h).
-      {
-        std::string refusal = claims_.labelRowRefusal(regName, call.argsJson);
-        if (!refusal.empty()) {
-          r.isError = true;
-          r.output = std::move(refusal);
-          hlog::logf("claims: refused a ledger row (%s)", regName.c_str());
-          return done(r);
-        }
-      }
       JsonDocument rq;
       rq["jsonrpc"] = "2.0";
       rq["id"] = 1;
@@ -1710,8 +1620,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         const std::string& regName = (it != nameMap->end()) ? it->second : call.name;
         const uint16_t flags = toolCallFlags(regName, call.argsJson);
         orch::recordToolEffect(turnFx_, fxKindForTool(regName), r.isError, r.output, flags);
-        claims_.noteToolArgs(regName, call.argsJson);   // the words a write saved: seen when it lands
-        claims_.noteToolResult(r.isError, r.output, flags, regName);
         return r;
       };
     }
@@ -1770,18 +1678,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       };
     }
     // The final-answer checks share ONE correction round (orch::chainFinalChecks):
-    // lane L's turn-shape check (a spawn list that cannot be read, a reply that
-    // promises sub-agents it does not start) and lane S's claim check (a reply
-    // claim that neither the tools this turn ran nor the final turn's own items
-    // back). The spawn class is the shape check's: it also counts the spawn items
-    // salvaged from pseudo-tool calls, which the final turn's JSON does not carry.
+    // lane L's turn-shape check (a spawn list that cannot be read, an orch_turn that
+    // cannot be read) and the placeholder check. The reply's words are never checked
+    // against the turn's effects here (RB-Q1b deleted the claim check, v5.2.0).
     headTools.cfg.validateFinal = orch::chainFinalChecks({
-        [pseudo](const std::string& finalTurn) { return turnShapeCorrection(finalTurn, pseudo.get()); },
-        [this](const std::string& finalTurn) { return claims_.finalCheck(finalTurn, /*skipSpawned=*/true); },
+        [](const std::string& finalTurn) { return turnShapeCorrection(finalTurn); },
         [&userText](const std::string& finalTurn) { return placeholderCheck(finalTurn, userText); },
-        // Lane MLQ (OIR-06): an earlier owner message that got no reply is not taken up
-        // unless this message brings it up (owner_voice.h).
-        [this](const std::string& finalTurn) { return claims_.scopeCheck(finalTurn); },
         // Lane POL2: internal plumbing (memory ids, job ids, storage wording,
         // device paths) never reaches the owner; one correction round fixes it.
         [](const std::string& finalTurn) { return orch::plumbingCheck(finalTurn); },
@@ -2402,7 +2304,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // turn) with the honest marker, capture it, and record the cut.
     if (orch::isCutError(err)) {
       const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true, laterBehind(), userText);
-      if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
       const std::string fold = foldHeldNotices();   // L19-13 d: one message
       // With no text to keep, what the turn did run is still told (Lumi, 31 Oct: four
       // tools ran, then "how did you fail without getting back to me?").
@@ -2541,7 +2442,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // raw text and never a nested field. A cut answer gets the honest marker; the
     // delivered text is captured so the next turn sees what the owner saw.
     const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false, laterBehind(), userText);
-    if (so.claimsSpawn) noteUnappliedSpawnClaim(chatId);
     deliver(chatId, so.text, /*modelText=*/so.salvaged);   // captured as the row; salvaged text spoke
     err = (so.cut ? "cut: " : "parse: ") + perr.detail;
     // Lane T: the parse exit notes its synthetic device cause, so the chain and every
@@ -2610,7 +2510,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   PendingMem& parked     = pendingMemResults_[chatId];   // this chat's next turn only
   st.pendingMemResults   = &parked.body;
   st.unverifiedConnector = unverifiedTurn_;
-  st.spawnAttempted      = pseudo->calls > 0;
   // Every spawn that does not start reaches the head's next turn as a
   // [SPAWN REFUSED] line for this chat (and the owner line rides this reply).
   st.noteSpawnRefused = [this, chatId](const std::string& name, const std::string& task,
@@ -2618,7 +2517,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     if (d_.jobs) d_.jobs->noteSpawnIntentRefused(chatId, name, task, reason);
   };
   st.effects             = &turnFx_;
-  st.claims              = &claims_;
   bool spawned = false;
   if (memoryOnly) {
     const int dropped = dream::restrictTurn(turn);
@@ -2949,9 +2847,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
     ". Your orch_turn `reply` field is ALREADY delivered to this same channel - that is"
     " the one and only answer; never send the same answer twice." +
     channelFormatHint(chatId) +
-    loopHint +
-    // Lane MLQ: a message that disputes an attribution gets its line right before it.
-    "\n\n" + nimbus::orch::renderDisputedClaimHint(text) + "[USER]\n" + text;
+    loopHint + "\n\n[USER]\n" + text;
   turnMem().gate.phase("inputs", freeHeap(), largestFreeBlock());
   turnMem().admitted = true;   // runTurn continues this record
   runTurn(inputs, chatId, text, telegram);   // text drives associative recall

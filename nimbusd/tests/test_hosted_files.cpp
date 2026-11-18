@@ -28,7 +28,6 @@
 #include <string>
 
 #include "engine_thread.h"
-#include "nimbus/orch/claims.h"
 #include "nimbus/orch/turn_effects.h"
 #include "reply_buffer.h"
 #include "rig.h"
@@ -303,13 +302,14 @@ static void testListingsArePaged(ndtest::Ctx& c) {
        "a project filter: count is the whole store, listCount the filtered rows");
 }
 
-// A true "removed from the log" must not draw a correction on a hosted client: the
-// keyed files.append reply has to read as a replacement to the same claim check the
-// device runs. The merge-back shipped nimbusd's own "updated N rows" wording past a
-// reader that only knows the device's reply, and no test here drove the keyed path.
-static void testKeyedCorrectionBacksItsClaim(ndtest::Ctx& c) {
+// The keyed files.append reply on a hosted client has to read as a replacement to the
+// same effect ledger the device keeps (turn_effects.h): the merge-back shipped nimbusd's
+// own "updated N rows" wording past a reader that only knows the device's reply, and no
+// test here drove the keyed path. (The claim check that read the ledger is gone, lane
+// RB-Q1b; the ledger and its record of a replacement stay.)
+static void testKeyedCorrectionRecordsWhatItDid(ndtest::Ctx& c) {
   namespace orch = nimbus::orch;
-  std::printf("  -- (f) a keyed correction backs its claim --\n");
+  std::printf("  -- (f) a keyed correction records what it did --\n");
   Config cfg;
   NimbusdRig rig(cfg, opts("hf-f"));
   const std::string head = "date,meal,items,kcal,protein_g\n";
@@ -329,20 +329,12 @@ static void testKeyedCorrectionBacksItsClaim(ndtest::Ctx& c) {
     orch::recordToolEffect(fx, orch::FxKind::FileWrite, false, reply, orch::kFxLogRow);
     return fx;
   };
-  auto gaps = [](const std::string& claim, const orch::TurnEffects& fx) {
-    orch::ClaimEvidence ev;
-    ev.fx = &fx;
-    return orch::claimGaps(claim, orch::scanClaims(claim), ev).size();
-  };
-  const std::string replaceClaim = "The black beans entry is now removed from the log.";
-  const std::string logClaim = "I logged it in your food log.";
 
   const std::string first = keyed("2026-10-30,lunch,black beans,300,10\n");
   const orch::TurnEffects added = effects(first);
   c.ok(has(first, "added 1 row"), "a new row reads as added: " + first);
   c.ok(!added.anyOk(orch::FxKind::FileReplace), "a row that only landed replaced nothing");
-  c.eqi((long)gaps(logClaim, added), 0, "but it backs the log claim");
-  c.ok(gaps(replaceClaim, added) > 0, "and it does not back a replace claim");
+  c.ok(added.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "but it landed a log row");
 
   // Lane UPSERT: only a correction of the SAME item replaces; a different item under
   // the reused key "lunch" is appended under a new key and records no replacement.
@@ -350,18 +342,15 @@ static void testKeyedCorrectionBacksItsClaim(ndtest::Ctx& c) {
   const orch::TurnEffects replaced = effects(fixed);
   c.ok(replaced.anyOk(orch::FxKind::FileReplace), "a keyed correction of the same item records a replacement: " + fixed);
   c.ok(replaced.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "and a landed log row");
-  c.eqi((long)gaps(replaceClaim, replaced), 0, "the true replace claim draws no correction");
-  c.eqi((long)gaps(logClaim, replaced), 0, "the true log claim draws no correction");
 
   const std::string other = keyed("2026-10-30,lunch,rice,250,6\n");
   const orch::TurnEffects rekeyed = effects(other);
   c.ok(!rekeyed.anyOk(orch::FxKind::FileReplace), "a different item under a reused key replaced nothing: " + other);
   c.ok(rekeyed.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "but it still landed a row");
-  c.ok(gaps(replaceClaim, rekeyed) > 0, "so a replace claim over it is corrected");
 
   const orch::TurnEffects same = effects(keyed("2026-10-30,lunch,black beans,320,11\n"));
   c.ok(!same.anyOk(orch::FxKind::FileReplace), "a re-send that changed nothing replaced nothing");
-  c.ok(gaps(replaceClaim, same) > 0, "so a replace claim over it is corrected");
+  c.ok(!same.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "and landed no row");
 }
 
 // files.read of a binary file used to put its bytes in the tool result, and the next
@@ -405,7 +394,7 @@ int main() {
   testRefusedUploadLeavesNoFile(c);
   testByteQuotaEvictsCopiesFirst(c);
   testListingsArePaged(c);
-  testKeyedCorrectionBacksItsClaim(c);
+  testKeyedCorrectionRecordsWhatItDid(c);
   testBinaryReadIsRefused(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");

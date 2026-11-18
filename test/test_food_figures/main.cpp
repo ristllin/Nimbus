@@ -3,7 +3,6 @@
 #include <string>
 #include <vector>
 
-#include "nimbus/orch/claims.h"        // figureNumbers
 #include "nimbus/orch/food_figures.h"
 
 // The coach's figures against the device's records (food_figures.h). The replies are the

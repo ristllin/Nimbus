@@ -38,28 +38,9 @@ bool personChat(const std::string& chatId) { return !chatId.empty() && chatId !=
 
 bool isSummaryMessage(const HistMsg& m) { return startsWith(m.text, kSummaryUserHead) || m.text == kSummaryAck; }
 
-std::string TurnEngine::loadFoodLedger(const std::string& chatId) {
+void TurnEngine::loadFoodLedger(const std::string& chatId) {
   ledger_ = nimbus::orch::FoodLedger();
   if (d_.foodLedger && personChat(chatId)) ledger_ = d_.foodLedger(chatId);
-  return nimbus::orch::renderLedgerBlock(ledger_, /*foodTurn=*/false);
-}
-
-nimbus::orch::FoodFacts TurnEngine::currentFoodFacts(const std::string& chatId) const {
-  nimbus::orch::FoodFacts facts;
-  if (!d_.foodLedger || !personChat(chatId)) return facts;
-  const nimbus::orch::FoodLedger l = d_.foodLedger(chatId);   // after this turn's writes
-  facts.have = l.exists && l.error.empty() && l.hasKcal;
-  facts.kcalKnown = l.kcalUnread == 0;
-  facts.kcal = l.kcal;
-  facts.rows = l.kcalRows;
-  facts.protein = l.protein;
-  facts.proteinUnknown = l.proteinUnknown;
-  // The stored targets after the turn's writes (bench F03): a partial target store is
-  // told from a complete one only against what the file really holds now.
-  facts.targetsKnown = l.exists && l.error.empty();
-  facts.kcalTarget = l.targets.kcal;
-  facts.proteinTarget = l.targets.protein;
-  return facts;
 }
 
 // The owner's own method for a meal rides a logging turn (1 Nov: "Dont you have a skill guiding

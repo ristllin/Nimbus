@@ -4,7 +4,6 @@
 #include <cstring>
 
 #include "nimbus/orch/action_rules.h"  // actionRuleTable - the request-advertised action names
-#include "nimbus/orch/claims.h"        // ownerAskedHow - the asked-how gate
 #include "nimbus/orch/turn.h"          // finalTurnText - the final turn's reply and ask
 
 namespace nimbus {
@@ -32,6 +31,35 @@ size_t findWord(const std::string& hay, const char* needle, size_t from = 0) {
 }
 
 bool hasWord(const std::string& hay, const char* needle) { return findWord(hay, needle) != std::string::npos; }
+
+// The text as lowercase words joined by single spaces, the typographic apostrophe folded
+// ("don't" stays one word). Moved byte for byte from orch_claims.cpp (normalizedWords,
+// foldAt) when lane RB-Q1b deleted the claim scanner; ownerAskedHow is its one reader.
+std::string howWords(const std::string& text) {
+  std::string out;
+  out.reserve(text.size());
+  bool word = false;
+  for (size_t p = 0; p < text.size();) {
+    char c;
+    if (p + 2 < text.size() && (unsigned char)text[p] == 0xE2 && (unsigned char)text[p + 1] == 0x80 &&
+        (unsigned char)text[p + 2] == 0x99) {
+      p += 3;
+      c = '\'';
+    } else {
+      const unsigned char b = (unsigned char)text[p++];
+      c = (b >= 'A' && b <= 'Z') ? (char)(b | 0x20) : (char)b;
+    }
+    const unsigned char u = (unsigned char)c;
+    if (((u | 0x20) >= 'a' && (u | 0x20) <= 'z') || (u >= '0' && u <= '9')) {
+      if (!word && !out.empty()) out += ' ';
+      out += c;
+      word = true;
+    } else if (c != '\'') {
+      word = false;
+    }
+  }
+  return out;
+}
 
 template <size_t N>
 bool hasAnyWord(const std::string& hay, const char* const (&words)[N]) {
@@ -1113,6 +1141,18 @@ std::string laterCorrection(const std::string& excerpt) {
          "stands behind it. Do the work now with your tools, start a sub-agent or a routine for it, or say plainly "
          "what is not done and that the owner can ask to continue. Do not repeat anything already done, and do not "
          "mention this check.";
+}
+
+// The owner asked how something works or is done ("how do I check my tyre pressure?",
+// "how is rain measured?"). "How much/many" is a quantity question, not this. Moved byte for
+// byte from orch_claims.cpp (lane RB-Q1b): the owner-mechanics drop is its one reader.
+bool ownerAskedHow(const std::string& ownerText) {
+  const std::string pad = " " + howWords(ownerText) + " ";
+  for (const char* q : {" how do ", " how does ", " how to ", " how is ", " how are ", " how can ",
+                        " how could ", " how would ", " how should "})
+    if (pad.find(q) != std::string::npos) return true;
+  return pad.rfind(" how do", 0) == 0 || pad.rfind(" how is", 0) == 0 || pad.rfind(" how to", 0) == 0 ||
+         pad.rfind(" how are", 0) == 0;
 }
 
 }  // namespace orch

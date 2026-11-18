@@ -1,6 +1,7 @@
 # Food replay
 
-Replays the owner's week of 22 Oct to 1 Nov 2026 through the device's receipt and claim checks, with no model calls: the
+Replays the owner's week of 22 Oct to 1 Nov 2026 through the device's receipt checks (and, on a tree before v5.2.0, its
+claim checks), with no model calls: the
 ledger as it stood and the reply as it was delivered. Built against two trees, it gives the before and after table of what
 the device would have said.
 

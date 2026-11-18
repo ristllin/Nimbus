@@ -12,7 +12,6 @@
 #include "nimbus/orch/compact.h"   // ORCH_COMPACT_PROMPT: the fold is a plain completion (CUM-890)
 #include "nimbus/orch/connectors_wire.h"  // connector provenance (CUM-536)
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
-#include "nimbus/orch/hosted_runs.h"  // noteHostedRun - a head's server-side tool runs (CUM-835)
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/provider_park.h"  // parkKeyFingerprint - the no-effort memo
 #include "nimbus/orch/turn.h"         // leadingJsonObject - the shared whole-reply rule
@@ -1113,9 +1112,6 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
   const char* cid = doc["conversation_id"] | "";
   if (cid[0]) convId = cid;
   for (JsonObjectConst o : doc["outputs"].as<JsonArrayConst>()) {
-    // CUM-835: a tool.execution entry is a Studio connector or built-in the
-    // provider ran within this response; the claim check reads the record.
-    if (strcmp(o["type"] | "", "tool.execution") == 0) nimbus::orch::noteHostedRun(o["name"] | "");
     if (strcmp(o["type"] | "", "message.output") != 0) continue;
     outJson = mistralOutputContent(o);   // string OR array-of-text-chunks
   }

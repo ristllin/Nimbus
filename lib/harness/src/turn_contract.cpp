@@ -7,7 +7,6 @@
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/reply_markup.h"
-#include "nimbus/orch/spawn_claim.h"
 
 namespace agent {
 
@@ -127,7 +126,7 @@ int mergePseudoSpawns(orch::Turn& t, const PseudoSpawns& p) {
 namespace {
 
 // What in a parsed final turn would lose work its reply promises.
-void shapeIssues(const orch::Turn& t, size_t salvaged, std::vector<std::string>& issues) {
+void shapeIssues(const orch::Turn& t, std::vector<std::string>& issues) {
   for (const auto& d : t.spawnDrops)
     issues.push_back("a spawn item" + (d.name.empty() ? std::string() : " '" + d.name + "'") +
                      " would not start: " + d.reason);
@@ -138,16 +137,11 @@ void shapeIssues(const orch::Turn& t, size_t salvaged, std::vector<std::string>&
     const bool spawnList = note.rfind("session_ops", 0) == 0 || note.rfind("spawn", 0) == 0;
     if (lost && !spawnList) issues.push_back(note);
   }
-  if (spawnCount(t) == 0 && salvaged == 0 && orch::replyClaimsSpawn(t.reply))
-    issues.push_back(
-        "your reply says sub-agents were started, but this orch_turn carries no spawn item, so "
-        "none would start - add one session_ops spawn item per sub-agent, or change the reply "
-        "to say what actually happened");
 }
 
 }  // namespace
 
-std::string turnShapeCorrection(const std::string& finalTurn, const PseudoSpawns* pseudo) {
+std::string turnShapeCorrection(const std::string& finalTurn) {
   orch::Turn t;
   orch::ParseError e;
   std::vector<std::string> issues;
@@ -155,7 +149,7 @@ std::string turnShapeCorrection(const std::string& finalTurn, const PseudoSpawns
     issues.push_back("the orch_turn could not be read (" + e.detail +
                      "); it must be one JSON object whose reply is a string");
   else
-    shapeIssues(t, pseudo ? pseudo->items.size() : 0, issues);
+    shapeIssues(t, issues);
   if (issues.empty()) return std::string();
   std::string out =
       "[TURN CHECK] This orch_turn was not applied: nothing in it ran and the owner has not "
@@ -265,10 +259,8 @@ SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseD
     return o;
   }
   o.salvaged = true;
-  o.claimsSpawn = orch::replyClaimsSpawn(text);
   o.text = o.cut ? text + "\n\n" + orch::kSalvageCutMarker : text;
-  if (o.claimsSpawn) o.text += std::string("\n\n") + orch::kSpawnNotStartedLine;
-  // This path skips apply and its claim tail: a promise in the kept text gets its line here.
+  // This path skips apply: a promise in the kept text gets its line here.
   if (orch::laterPromiseSpan(text, nullptr, nullptr, behind)) o.text += std::string("\n\n") + orch::kLaterPromiseLine;
   return o;
 }

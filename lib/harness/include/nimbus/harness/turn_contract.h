@@ -50,8 +50,8 @@ int mergePseudoSpawns(nimbus::orch::Turn& t, const PseudoSpawns& p);
 
 // The turn-shape final check: "" when the final orch_turn is fine, else the
 // model-facing correction text (it names each problem and shows the array
-// form). `pseudo` (nullable) counts spawn items already salvaged this turn.
-std::string turnShapeCorrection(const std::string& finalTurn, const PseudoSpawns* pseudo);
+// form). The reply's words are not read (RB-Q1b): only fields the device could not use.
+std::string turnShapeCorrection(const std::string& finalTurn);
 
 // The empty-answer final check: "" unless the final orch_turn has no reply, no ask and no
 // spawn, then the model-facing correction text.
@@ -76,14 +76,10 @@ bool dropRecoveredContainers(nimbus::orch::Turn& t);
 // cut (`reportedCut`). With nothing salvageable, one plain cause line instead
 // of the old "formatting error" apology. `cut` reports which case it was, for
 // the turn-end row's err ("cut: ..." or "parse: ...").
-// Nothing in such an answer runs, so salvaged text that says sub-agents started
-// also gets the spawn correction line (`claimsSpawn`), cut or not: a claim is
-// never delivered without it.
 struct SalvageOutcome {
   std::string text;        // what to deliver (never empty)
   bool salvaged = false;   // text came from the answer itself
   bool cut = false;
-  bool claimsSpawn = false;   // the salvaged text claims sub-agents (none started)
 };
 // `behind`: what stands behind a promise in the kept text (reply_guard.h).
 // `ownerText`: the owner's message this turn answers - the asked-how gate for

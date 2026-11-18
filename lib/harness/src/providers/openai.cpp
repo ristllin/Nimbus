@@ -10,7 +10,6 @@
 #include "nimbus/orch/model_catalog.h" // gptGeneration - the reasoning-family gate
 #include "nimbus/orch/model_defaults.h" // currentTurnRole - a background turn thinks little
 #include "nimbus/orch/seam_meter.h"    // meterSubSearchRuns - a sub's search runs (lane DEF)
-#include "nimbus/orch/hosted_runs.h"     // noteHostedRun - a head's server-side tool runs (CUM-835)
 #include "nimbus/orch/sub_provenance.h"  // ToolTally - the sub's tools by name (CUM-824)
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - per-round usage
@@ -106,22 +105,6 @@ static std::string oaiToolName(JsonObjectConst item, const std::string& type) {
   const char* name = item["name"] | "";
   if (name[0]) return name;
   return type.substr(0, type.size() - 5);
-}
-
-// CUM-835: a response output item the provider ran itself (web_search_call, mcp_call,
-// file_search_call, code_interpreter_call, ...): every "*_call" but the ones the device
-// runs (function_call, custom_tool_call) or answers itself (computer_call).
-static bool hostedCallType(const std::string& type) {
-  if (type.size() < 5 || type.compare(type.size() - 5, 5, "_call") != 0) return false;
-  return type != "function_call" && type != "custom_tool_call" && type != "computer_call";
-}
-
-// Record the server-side tool runs a head response lists.
-static void noteHostedCalls(JsonArrayConst output) {
-  for (JsonObjectConst item : output) {
-    const std::string ty = item["type"] | "";
-    if (hostedCallType(ty)) nimbus::orch::noteHostedRun(oaiToolName(item, ty));
-  }
 }
 
 static JobState mapStatus(const char* s) {
@@ -736,7 +719,6 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     // controller runs them ONCE before accepting the final turn - dropping them
     // lost five memory writes while the reply said "saved permanently". (With
     // the stateless replay there is no chain to poison - the old F20 class is gone.)
-    noteHostedCalls(resp["output"].as<JsonArrayConst>());   // CUM-835: what ran server-side
     bool sawOrchTurn = false;
     for (JsonObjectConst item : resp["output"].as<JsonArrayConst>()) {
       // Reasoning items: summaries -> HeadStep.text (Glass Box A4, observed by
@@ -996,7 +978,6 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
   // whose whole prompt is ~21.9 KB / ~5.5 K tokens was billed 16,897), and a
   // stored id is the thing that goes stale and 400s the next turn.
   convId.clear();
-  noteHostedCalls(doc["output"].as<JsonArrayConst>());
   for (JsonObjectConst item : doc["output"].as<JsonArrayConst>()) {
     for (JsonObjectConst c : item["content"].as<JsonArrayConst>()) {
       if (strcmp(c["type"] | "", "output_text") == 0) outJson = (const char*)(c["text"] | "");

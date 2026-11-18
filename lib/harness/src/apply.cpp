@@ -1,5 +1,4 @@
 #include "nimbus/harness/apply.h"
-#include "nimbus/harness/claim_check.h"     // the claim check's calls only (RB-Q1b deletes them)
 #include "nimbus/harness/output_caps.h"     // modelFitNote
 #include "nimbus/harness/turn_contract.h"   // kEmptyAnswer
 #include "nimbus/orch/model_defaults.h"     // currentTurnRole
@@ -15,7 +14,6 @@
 #include "nimbus/orch/models_tool.h"     // the "not in <provider> list" answers
 #include "nimbus/orch/provider_slots.h"  // the orch_model provider enum
 #include "nimbus/orch/head_switch.h"     // a pause never moves the owner's head
-#include "nimbus/orch/spawn_claim.h"
 #include "nimbus/orch/tool_taint.h"       // toolEffect: the shared tool table the ledger reads
 #include "nimbus/orch/voice_notes.h"      // cutForSpeech: the tts action's bound
 
@@ -30,6 +28,12 @@ using nimbus::orch::ActionKind;
 using nimbus::orch::ToolResult;
 using nimbus::orch::Turn;
 using nimbus::orch::ValidatedAction;
+
+// The owner's line when a turn's sub-agent intents did not reach the job engine (the
+// device's own record: an item with no task, a full queue, a list it could not read).
+// The head hears each one as a [SPAWN REFUSED] line on its next turn.
+const char kSpawnNotStartedLine[] = "The sub-agents did not start. Ask me again and I will retry.";
+const char kSpawnSomeNotStartedLine[] = "Some of the sub-agents did not start. Ask me again and I will retry them.";
 
 // ---- the turn's effect ledger: the readings every recorder shares ----------------------
 
@@ -753,38 +757,6 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
       }
       if (!refuseWrites)
         for (const auto& w : t.mem_write) {
-          // L19-11 (CUM-664): never store an unbacked cause as a fact. A write
-          // whose content states a cause this turn's records do not show (a
-          // guess about the owner's phone, app or connection, a damaged file, a
-          // subsystem "working") is refused at apply time, logged and fed back
-          // (19 Oct: "Roy's Telegram client had a stuck outbox" was stopped only
-          // by the embedding outage).
-          std::string unbacked;
-          if (st.claims && st.claims->unsourcedFoodTarget(w.content, &unbacked)) {
-            hlog::logf("orchestrator: mem_write refused - a target with no source: %s", memExcerpt(unbacked).c_str());
-            st.memRefused++;
-            if (st.effects)
-              nimbus::orch::recordToolEffect(*st.effects, nimbus::orch::FxKind::MemWrite, true,
-                                             "refused: that daily target has no source this turn", 0);
-            if (st.pendingMemResults)
-              *st.pendingMemResults += "[MEMORY] mem_write \"" + memExcerpt(w.content) +
-                                       "\" -> NOT stored: it states a daily target nothing this turn holds (\"" +
-                                       unbacked + "\"); read it from the plan or ask the owner\n";
-            continue;
-          }
-          if (st.claims && nimbus::orch::unbackedCause(w.content, st.claims->causeEvidence(), &unbacked)) {
-            hlog::logf("orchestrator: mem_write refused - unbacked cause: %s", memExcerpt(unbacked).c_str());
-            st.memRefused++;
-            if (st.effects)
-              nimbus::orch::recordToolEffect(*st.effects, nimbus::orch::FxKind::MemWrite, true,
-                                             "refused: that cause is not on record this turn", 0);
-            if (st.pendingMemResults)
-              *st.pendingMemResults += "[MEMORY] mem_write \"" + memExcerpt(w.content) +
-                                       "\" -> NOT stored: it states a cause this turn's records do " +
-                                       "not show (\"" + unbacked + "\"); write what the records show, or " +
-                                       "that the cause is not recorded\n";
-            continue;
-          }
           JsonDocument a;
           a["content"]    = w.content;
           a["importance"] = w.importance;
@@ -951,8 +923,8 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   if (spawnedOut && d.noteSpawned) d.noteSpawned();
 
   // Report what did not start: one head note per intent, one owner line per turn.
-  // A reply that says sub-agents started while none did (the promise-without-
-  // spawn class, also checked in-turn by the final check) gets the same line.
+  // The line states the device's own record (an intent that did not reach the job
+  // engine); the reply's words are never read for it (RB-Q1b, v5.2.0).
   std::string spawnLine;
   for (const auto& dr : drops) {
     hlog::logf("orchestrator: spawn not started ('%s') - %s",
@@ -963,22 +935,13 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
     // An unapproved chat is told why, never "ask me again" (it would not help).
     spawnLine = "Sub-agents are off for this chat: the owner has not approved it.";
   } else if (!drops.empty()) {
-    spawnLine = st.spawnsEnqueued > 0 ? nimbus::orch::kSpawnSomeNotStartedLine
-                                      : nimbus::orch::kSpawnNotStartedLine;
-  } else if (st.spawnsEnqueued == 0 &&
-             (st.spawnAttempted || nimbus::orch::replyClaimsSpawn(t.reply))) {
-    spawnLine = nimbus::orch::kSpawnNotStartedLine;
-    hlog::log("orchestrator: reply claims sub-agents but none was started - correction added");
-    if (st.noteSpawnRefused)
-      st.noteSpawnRefused("", "", "your reply said sub-agents were started, but the turn carried "
-                                  "no spawn item, so nothing is running for them");
+    spawnLine = st.spawnsEnqueued > 0 ? kSpawnSomeNotStartedLine : kSpawnNotStartedLine;
   }
 
   // One countable line per turn that meant to start sub-agents: spawned (handed
-  // to the job engine) against claimed (every spawn intent, or 1 for a reply that
-  // promised some without an item). The bench and HIL legs read it.
-  const int intents = st.spawnsEnqueued + (int)drops.size();
-  const int claimed = intents > 0 ? intents : (spawnLine.empty() ? 0 : 1);
+  // to the job engine) against claimed (every spawn intent). The bench and HIL
+  // legs read it.
+  const int claimed = st.spawnsEnqueued + (int)drops.size();
   if (claimed > 0)
     hlog::logf("orchestrator: spawn ledger spawned=%d claimed=%d", st.spawnsEnqueued, claimed);
 
@@ -997,30 +960,21 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // in the reply, never latching the owner's attention state (the turn.ask row).
   const bool raiseAsk = d.emitAsk && nimbus::orch::actionAllowed("turn.ask", caller);
   // Owner-visible notes that ride the reply and are never silent: the risk
-  // override note, the spawn correction, then the claim check's lines (the reply
-  // and the ask reach the owner as one message, so both are checked; the spawn
-  // class is left to the spawn correction when it was added).
+  // override note, the speech notes and the line for sub-agents that did not start.
+  // Each states the device's own record; nothing reads the reply's words.
   const std::string riskNote = st.riskNote;
   // A reply that already ends with a question carries the ask: it is not
-  // appended again, and only what is delivered is checked and captured.
+  // appended again, and only what is delivered is captured.
   const bool askAppended = t.reply.length() && t.ask.length() && !replyAlreadyAsks(t.reply, t.ask);
   const bool carries = t.reply.length() || t.ask.length();
   // The text of a tts nothing could voice, when it is all the turn has to say: it goes out in writing
-  // as the turn's message, so it is checked like a reply.
+  // as the turn's message.
   const std::string unspokenText = carries ? std::string() : st.unspokenText;
-  const std::string claimTail =
-      st.claims ? st.claims->tailAfterApply(askAppended ? t.reply + "\n\n" + t.ask
-                                                        : (t.reply.length() ? t.reply
-                                                                            : (t.ask.length() ? t.ask : unspokenText)),
-                                            /*skipSpawned=*/!spawnLine.empty())
-                : std::string();
-  // The corrections (spawn line, claim lines) also ride the captured text.
-  const std::string correctionTail = (spawnLine.empty() ? "" : "\n\n" + spawnLine) + claimTail;
+  // The spawn line also rides the captured text.
+  const std::string correctionTail = spawnLine.empty() ? std::string() : "\n\n" + spawnLine;
   // The speech notes ride a message the owner is getting anyway, never one of their own: a routine
-  // or a reply-less turn that only spoke (and was cut short) sends nothing for it. A failed tts's
-  // note is left out when the claim check's own line already tells the owner.
-  const std::string unspokenNote =
-      nimbus::orch::tailCarriesSpeechGap(claimTail) ? std::string() : st.unspokenNote;
+  // or a reply-less turn that only spoke (and was cut short) sends nothing for it.
+  const std::string unspokenNote = st.unspokenNote;
   const std::string replyNotes = carries ? st.replyNote + unspokenNote : std::string();
   const std::string written = unspokenText.empty() ? std::string() : unspokenText + unspokenNote;
   const std::string riskTail = riskNote + replyNotes + correctionTail;
@@ -1072,8 +1026,8 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // and every one of those paths honors the owner's "Voice replies" toggle.
 
   // Episodic auto-capture (Q2): record the assistant's turn output AS
-  // DELIVERED - the spawn and claim corrections included - so a later turn reads
-  // the corrected text, not the model's.
+  // DELIVERED - the spawn line included - so a later turn reads what the owner
+  // got.
   // (The speech notes ride them: the owner got them in the same message.)
   st.delivered = t.reply.length() ? t.reply + replyNotes + correctionTail : std::string();
   // One row per message the owner received (lane FSN, storm leg g): an appended ask

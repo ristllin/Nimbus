@@ -5,7 +5,12 @@
 #include <iostream>
 #include <string>
 
+// A tree from v5.2.0 on has no reply checks (lane RB-Q1b deleted the claim scanner): a reply
+// case then gets no added line, which is what such a device delivers.
+#if __has_include("nimbus/orch/claims.h")
+#define HAS_CLAIMS 1
 #include "nimbus/orch/claims.h"
+#endif
 #include "nimbus/orch/file_append.h"
 #include "nimbus/orch/food_ledger.h"
 #include "nimbus/orch/ledger_migrate.h"
@@ -52,6 +57,10 @@ static void runAppend(JsonObjectConst in, JsonObject out) {
 }
 
 static void runReply(JsonObjectConst in, JsonObject out) {
+#ifndef HAS_CLAIMS
+  (void)in;
+  out["tail"] = "";
+#else
   const std::string reply = in["reply"] | "", owner = in["owner"] | "";
   TurnEffects none;
   ClaimEvidence ev;
@@ -81,6 +90,7 @@ static void runReply(JsonObjectConst in, JsonObject out) {
   if (!routine.empty() && !staleStatusIn(reply, routine, kStaleStatusDays, &age).empty()) tail += staleStatusNote(age);
 #endif
   out["tail"] = tail;
+#endif
 }
 
 int main() {

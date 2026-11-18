@@ -74,7 +74,6 @@
 #include "solide/touch.h"                     // live-apply a new calibration + touch::health()
 #include "nimbus/net/soak_state.h"            // CUM-257: uptime + soak counters onto /api/state
 #include "nimbus/net/page_split.h"            // CUM-565: the page and its script as two responses
-#include "nimbus/harness/claim_check.h"       // claimsCorrected / claimsTailed onto /api/state
 #include "../sys/ota_update.h"          // /api/ota/* + /api/state ota fields
 #include "../sys/poll_watch.h"          // /api/state tgPoll liveness fields (lane TGSTALL)
 #include "../sys/heap_watch.h"          // /api/state mem: low-water, alloc failures
@@ -819,10 +818,10 @@ static void buildState(String& out) {
   JsonObject fj = d["faults"].to<JsonObject>();
   for (uint8_t i = 0; i < nimbus::fault::COUNT; i++)
     fj[nimbus::fault::name(nimbus::fault::Cap(i))] = (fmask & (1u << i)) != 0;
-  // The claim check since boot (RAM only): replies sent back for one correction
-  // round, and replies delivered with a correction line.
-  d["claimsCorrected"] = agent::ClaimCheck::correctedCount();
-  d["claimsTailed"]    = agent::ClaimCheck::tailedCount();
+  // The claim check's counters (replies sent back, replies given a line) stay at 0:
+  // the check is gone (RB-Q1b, v5.2.0), and the bench and storm legs still read the keys.
+  d["claimsCorrected"] = 0;
+  d["claimsTailed"]    = 0;
   // Trace/media sidecar writes that failed since boot (L19-24): a failure leaves
   // the row with its clipped text only, so the count is what surfaces the loss.
   d["blobWriteFails"]  = agent::memory::blobWriteFails();

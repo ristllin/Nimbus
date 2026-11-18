@@ -9,7 +9,6 @@
 
 #include "nimbus/attention.h"           // nimbus::attn::Event (head Running/Offline arc)
 #include "nimbus/harness/apply.h"       // ApplyDeps / ApplyState / applyTurn (Stage E)
-#include "nimbus/harness/claim_check.h"  // ClaimCheck / TurnSources: the claim check (RB-Q1b deletes it)
 #include "nimbus/harness/compose.h"     // ComposeInputs / composeInstructions (Stage D)
 #include "nimbus/harness/config.h"      // HarnessConfig
 #include "nimbus/harness/head_tools.h"  // HeadTools (mid-turn tool loop context)
@@ -556,8 +555,6 @@ class TurnEngine {
   // The last turn's billed total, on EVERY exit (a failed turn's spend too): a
   // scheduled fire and the dream report their own spend, never a previous turn's.
   nimbus::orch::TokenUsage lastTurnUsage() const { return lastTurnUsage_; }
-  // The claim check of the current (or last) turn: its flags, over turnEffects().
-  const ClaimCheck& claimCheck() const { return claims_; }
   // The effect ledger of the current (or last) turn: what it really did.
   const nimbus::orch::TurnEffects& turnEffects() const { return turnFx_; }
   // The tags of the assistant row being captured now: S's fx: tag, and under
@@ -648,17 +645,11 @@ class TurnEngine {
   // (orch::refusalTurnAnswer).
   void deliverParkedRefusal(const std::string& chatId, const std::string& host, nimbus::orch::StepErr kind,
                             int activeJobs, bool nothingRan);
-  // Lane L: an answer that was not applied (cut or unreadable) but whose
-  // salvaged text claims sub-agents: the ledger line and the head's note, as
-  // apply gives a promise without a spawn.
-  void noteUnappliedSpawnClaim(const std::string& chatId);
   std::string buildDynamicContext(const std::string& chatId);
   // Lane CTX (day_context.cpp): load this chat's food ledger for the turn into
-  // ledger_ and return its block as claim sources ("" when it has no rows today);
-  // then, once the history is known, fill the per-turn ledger and (a food turn) the
-  // playbooks.
-  std::string loadFoodLedger(const std::string& chatId);
-  nimbus::orch::FoodFacts currentFoodFacts(const std::string& chatId) const;
+  // ledger_; then, once the history is known, fill the per-turn ledger and (a food
+  // turn) the playbooks.
+  void loadFoodLedger(const std::string& chatId);
   std::string ownerFoodSkillBlock(bool asks) const;
   std::string foodRecallBlock(const std::string& userText) const;
   void applyFoodContext(ComposeInputs& ci, const std::string& userText) const;
@@ -776,9 +767,6 @@ class TurnEngine {
 
   // The most recent composed World system prompt (for PROMPT? / diagnostics).
   std::string lastInstructions_;
-  ClaimCheck claims_;               // lane S: this turn's claim check, over turnFx_
-  TurnSources claimSources(const std::string& chatId, const std::string& userText,
-                           const ComposeInputs& ci) const;   // CUM-824
   int freshSourced_ = 0;            // sub-agent results folded into this turn: with a lookup
   int freshUnsourced_ = 0;          // ...and live-data ones with none (set by the entry wrappers)
   // The most recent tool-loop transcript brief (Glass Box P3) - filled by

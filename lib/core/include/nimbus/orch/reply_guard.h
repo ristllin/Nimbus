@@ -59,10 +59,14 @@ std::string dropEchoSentences(const std::string& reply);
 // ("say undo and I will take it off"). True when a sentence is an instruction to
 // the owner to operate an internal object (a row, field, key, column, tool, command,
 // path, json, parameter, schema, id, ledger/csv file, ...) AND the owner's message
-// does not ask how the system works (claims.h's ownerAskedHow). `begin`/`end` may
+// does not ask how the system works (ownerAskedHow below). `begin`/`end` may
 // be null.
 bool ownerMechanicsSpan(const std::string& reply, const std::string& ownerText,
                         size_t* begin = nullptr, size_t* end = nullptr);
+
+// The owner asked how something works or is done ("how do I ...", "how is ... measured?");
+// "how much" and "how many" are quantity questions, not this.
+bool ownerAskedHow(const std::string& ownerText);
 
 // The reply with every owner-mechanics sentence dropped (the echo drop runs
 // separately). `ownerText` gates the check as above; "" means the owner did not
@@ -97,8 +101,8 @@ bool laterPromiseSpan(const std::string& reply, size_t* begin = nullptr, size_t*
 // answers (a finite verb after the work verb, "now" followed by a verb, a base verb not followed by what
 // it works on, or arithmetic). After the answer nothing runs, so when the turn changed nothing it is a
 // promise with nothing behind it (a head that skips its thinking at low effort announces the
-// write instead of calling the tool): ClaimCheck::unbackedPromise holds it to the same
-// correction and owner line as a promise of later work. `begin`/`end` may be null.
+// write instead of calling the tool). The claim check that corrected it is gone (RB-Q1b, v5.2.0);
+// no device code calls this now. `begin`/`end` may be null.
 bool announcesWorkNow(const std::string& reply, size_t* begin = nullptr, size_t* end = nullptr);
 
 // Fix pass F1: true when the owner's message only asks, with no statement or instruction beside the

@@ -6,7 +6,6 @@
 
 #include "nimbus/harness/turn_contract.h"
 #include "nimbus/orch/action_rules.h"
-#include "nimbus/orch/claims.h"       // ownerAskedHow - the asked-how gate
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/head_loop.h"
 #include "nimbus/orch/reply_guard.h"

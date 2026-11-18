@@ -26,7 +26,6 @@
 // (test_harness_apply) and can never silently regress device-side.
 namespace agent {
 
-class ClaimCheck;   // claim_check.h: the claim check that reads the turn's ledger
 
 // The turn's effect ledger (nimbus/orch/turn_effects.h) is the turn state's, not a
 // check's: the engine holds it for the turn, records each head tool call and the
@@ -187,9 +186,6 @@ struct ApplyState {
   // in it (a memory write's result, an accepted or refused spawn, the scratchpad
   // save, the device actions). Null => nothing is recorded.
   nimbus::orch::TurnEffects* effects = nullptr;
-  // Lane S, the claim check: a reply claim the ledger does not back gets one owner
-  // line per class, and the history keeps the delivered text. Null => no check.
-  ClaimCheck* claims = nullptr;
   std::string delivered;            // out: the reply text as the owner received it
   std::string* pendingMemResults = nullptr;  // deferred [MEMORY RESULTS] accumulator
   // CUM-536: this turn read a sub-agent result whose connector never ran (it
@@ -203,9 +199,6 @@ struct ApplyState {
   // this reply. Null => logged only.
   std::function<void(const std::string& name, const std::string& task,
                      const std::string& reason)> noteSpawnRefused;
-  // The head called the spawn field as a tool this turn (its items, if any,
-  // were merged into the turn already).
-  bool spawnAttempted = false;
   int spawnsEnqueued = 0;   // out: spawn intents handed to the job engine
   // Out: this turn's mem_write[] outcomes (a duplicate counts as neither). The
   // turn and dream records carry them, so "ok" never hides a lost write.
@@ -223,6 +216,11 @@ struct ApplyState {
 // result (CUM-536) - shared by applyTurn's mem_write[] and the head loop's
 // memory.write tool, so both paths say the same thing.
 extern const char kUnverifiedMemoryRefusal[];
+
+// The owner's line when none, or only some, of a turn's sub-agent intents reached the
+// job engine (apply.cpp). It rides the reply and the captured row.
+extern const char kSpawnNotStartedLine[];
+extern const char kSpawnSomeNotStartedLine[];
 
 // One memory.write result, classified by its outcome code. Unknown or missing
 // codes on a failure read as Refused, so a new code can never be counted as saved.

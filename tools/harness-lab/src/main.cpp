@@ -23,7 +23,6 @@
 
 #include "lab_options.h"
 #include "lab_rig.h"
-#include "honesty_eval.h"
 #include "photo_eval.h"
 #include "lane_h_live.h"
 #include "lane_l_live.h"
@@ -43,8 +42,6 @@ void usage() {
       "  tool <name> <json-args>   call one registry tool directly\n"
       "  chat                      interactive REPL against the real turn engine\n"
       "  scenarios [name...]       run the scenario suite (no names = all)\n"
-      "  honesty [--reps=n] [--only=F1,U2]  the live honesty eval (claim check, 20 conversations;\n"
-      "                            --only=C1 adds the unrecorded-cause diagnosis)\n"
       "  list-scenarios            show what the suite covers\n"
       "  selftest                  offline checks of the lab's own seams (no keys)\n"
       "  sub <task>                one Anthropic sub-agent end to end (dispatch + polls);\n"
@@ -157,9 +154,8 @@ int main(int argc, char** argv) {
   std::string envPath = lab::Env::defaultDotenvPath();
   std::string forceHost, forceModel;
   lab::SubOptions sub;
-  lab::LaneLOptions laneL;   // --reps is shared: the lane L suites and the honesty eval
+  lab::LaneLOptions laneL;   // --reps: the lane L suites
   lab::PhotoEvalOptions pe;
-  std::string only;
 
   // The environment first (NIMBUS_LAB_*), so every flag below overrides it.
   for (int i = 1; i < argc; i++)
@@ -189,7 +185,6 @@ int main(int argc, char** argv) {
     else if (a.rfind("--heap-decay=", 0) == 0) opt.heapDecay = (uint32_t)std::stoul(a.substr(13));
     else if (a == "--nvs-full")              sub.nvsFull = true;
     else if (a.rfind("--runs=", 0) == 0)     sub.runs = std::stoi(a.substr(7));
-    else if (a.rfind("--only=", 0) == 0)     only = a.substr(7);
     else if (a.rfind("--timeout=", 0) == 0)  sub.timeoutS = std::stoi(a.substr(10));
     else if (a.rfind("--record=", 0) == 0)   sub.recordDir = opt.recordDir = a.substr(9);
     else if (a.rfind("--dir=", 0) == 0)      pe.dir = a.substr(6);
@@ -303,10 +298,6 @@ int main(int argc, char** argv) {
   if (cmd == "models-live") {
     laneL.verbose = opt.verboseHttp;
     return lab::cmdModelsLive(env, laneL, args.size() > 1 ? args[1] : "all");
-  }
-  if (cmd == "honesty") {
-    if (laneL.reps < 1 || laneL.reps > 20) { std::fprintf(stderr, "--reps must be 1..20\n"); return 2; }
-    return lab::runHonestyEval(env, opt, laneL.reps, only);
   }
 
   if (cmd == "photo-eval") {
