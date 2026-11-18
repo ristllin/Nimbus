@@ -518,32 +518,40 @@ static std::string shown(const std::string& html) {
   return out;
 }
 
+// One tag at html[i] ('<'): "" when it is a tag tgHtml writes and nests; `i` moves to its '>'.
+static std::string tagRefusal(const std::string& html, size_t& i, std::vector<std::string>& open) {
+  const size_t e = html.find('>', i);
+  if (e == std::string::npos) return "an unclosed <";
+  std::string tag = html.substr(i + 1, e - i - 1);
+  i = e;
+  const bool close = !tag.empty() && tag[0] == '/';
+  if (close) tag = tag.substr(1);
+  const std::string name = tag.substr(0, tag.find(' '));
+  if (name != "b" && name != "i" && name != "code" && name != "pre" && name != "a") return "a <" + name + "> tag";
+  if (!close) {
+    open.push_back(name);
+    return std::string();
+  }
+  if (open.empty() || open.back() != name) return "a stray </" + name + ">";
+  open.pop_back();
+  return std::string();
+}
+
 // "" when Telegram would accept `html` as parse_mode=HTML: every '<' opens or closes one of the
 // tags tgHtml writes, closes nest, nothing stays open, and every '&' starts an entity.
 static std::string htmlRefusal(const std::string& html) {
   std::vector<std::string> open;
   for (size_t i = 0; i < html.size(); i++) {
-    if (html[i] == '&') {
+    const char c = html[i];
+    if (c == '&') {
       const size_t semi = html.find(';', i);
       if (semi == std::string::npos || semi - i > 6) return "a bare &";
-      continue;
+    } else if (c == '>') {
+      return "a bare >";
+    } else if (c == '<') {
+      const std::string why = tagRefusal(html, i, open);
+      if (!why.empty()) return why;
     }
-    if (html[i] == '>') return "a bare >";
-    if (html[i] != '<') continue;
-    const size_t e = html.find('>', i);
-    if (e == std::string::npos) return "an unclosed <";
-    std::string tag = html.substr(i + 1, e - i - 1);
-    const bool close = !tag.empty() && tag[0] == '/';
-    if (close) tag = tag.substr(1);
-    const std::string name = tag.substr(0, tag.find(' '));
-    if (name != "b" && name != "i" && name != "code" && name != "pre" && name != "a") return "a <" + name + "> tag";
-    if (close) {
-      if (open.empty() || open.back() != name) return "a stray </" + name + ">";
-      open.pop_back();
-    } else {
-      open.push_back(name);
-    }
-    i = e;
   }
   return open.empty() ? std::string() : "an unclosed <" + open.back() + ">";
 }

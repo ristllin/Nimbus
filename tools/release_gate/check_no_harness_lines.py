@@ -35,7 +35,7 @@ LEADS = (b"(Correction", b"(Note")
 # RB-Q1c deleted the reply guard's later-promise line and reworded the two speech notes into
 # the plain device-line form ("Note: ...", no parenthesis; ruling 34): an entry may only be
 # added back with an orchestrator ruling.
-ALLOWED: "tuple[dict, ...]" = ()   # empty since RB-Q1c (v5.2.0): no image holds such a line
+ALLOWED: "tuple[dict, ...]" = ()  # empty since RB-Q1c (v5.2.0): no image holds such a line
 
 
 def found_lines(blob: bytes) -> "list[str]":

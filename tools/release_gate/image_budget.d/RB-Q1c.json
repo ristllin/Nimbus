@@ -1,0 +1,5 @@
+{
+  "lane": "RB-Q1c",
+  "allowance_bytes": -14848,
+  "why": "A promised deletion. PRD section 10 flash ledger: RB-Q1c about -19 KB; definition of done: image at least 15,000 B smaller on esp32s3-cyd. Measured in the lane's tree, base rb-main 9bcb0736 against tip f007b232, code bytes (firmware.bin minus the docs pack): esp32s3-cyd 5,968,254 -> 5,953,372 (-14,882), esp32s3 5,933,422 -> 5,918,428 (-14,994), test 6,087,614 -> 6,072,652 (-14,962), test-cyd 6,122,574 -> 6,107,596 (-14,978); the docs pack 416,002 -> 414,980 B (-1,022) apart; esp32s3-cyd firmware.bin 6,384,256 -> 6,368,352 (-15,904). The allowance is the smallest of the four, rounded toward zero to a multiple of 512 B, so every env must stay at least 14,848 B smaller than the baseline recorded after RB-Q1b."
+}
